@@ -972,9 +972,15 @@ impl AcpChild {
             })
             .await;
         }
-        // 75 §7: the prompt response's tokens go on the ledger under the
-        // harness model of this turn, then out with `TurnFinished`. No
-        // usage → no row (nothing to correct later, nothing to sum).
+        // 75 §7 / 06 §8.4: the prompt response's tokens go on the ledger
+        // under the harness model of this turn, flagged a lower bound when
+        // the harness reports its last request only (opencode 1.x), then
+        // out with `TurnFinished`. No usage → no row (nothing to correct
+        // later, nothing to sum).
+        let lower_bound = self
+            .harness
+            .as_ref()
+            .is_some_and(Harness::usage_is_lower_bound);
         let usage = match &turn.tokens {
             Some(t) => {
                 match self
@@ -985,6 +991,7 @@ impl AcpChild {
                         &self.name,
                         self.harness_model.as_deref(),
                         t,
+                        lower_bound,
                     )
                     .await
                 {
@@ -1265,8 +1272,8 @@ pub(crate) fn meter_update(
 /// `inputTokens` is the uncached remainder — omp 18.3.1 live: `input 4,
 /// cachedRead 12833, cachedWrite 172, total 13013`; genai's `prompt_tokens`
 /// includes the cache), `output` = `outputTokens + thoughtTokens`, the cache
-/// split kept. Otherwise raw as the harness sent it (omp: this turn's delta;
-/// opencode: its last request).
+/// split kept. Otherwise raw as the harness sent it: omp and opencode ≥ 2 the
+/// turn's sum over its steps, opencode 1.x its last request only (06 §8.4).
 pub(crate) fn tokens_of(u: &AcpUsage) -> TokenTotals {
     let cache_read = u.cached_read_tokens.unwrap_or(0);
     let cache_write = u.cached_write_tokens.unwrap_or(0);
@@ -1645,6 +1652,15 @@ impl Message<Update> for AcpChild {
                 self.set_harness_commands(u.available_commands).await;
             }
             Update::Session(SessionUpdate::UsageUpdate(u)) => self.usage(u).await,
+            // 06 §8.4: opencode ≥ 2 marks a provider retry or a compaction
+            // in `session_info_update._meta`; no event slot shows these yet.
+            Update::Session(SessionUpdate::SessionInfoUpdate(u)) => {
+                if let Some(meta) = &u.meta
+                    && meta.keys().any(|k| k.starts_with("opencode/"))
+                {
+                    tracing::debug!(session = %self.id, "session_info_update meta: {}", serde_json::Value::Object(meta.clone()));
+                }
+            }
             Update::Session(update) => {
                 // 06 §3.5 (2026-09-24): work after the prompt returned opens
                 // a continuation turn. Before any prompt on this connection
@@ -2464,11 +2480,26 @@ mod tests {
             self.send(json!({"jsonrpc": "2.0", "id": id, "result": result}));
         }
 
-        /// `initialize` → `session/new` as omp answers them, announcing `options`.
-        async fn handshake(&mut self, options: Vec<SessionConfigOption>) {
+        /// `initialize` → `session/new` as omp answers them, announcing
+        /// `options`; `agent` is the `agentInfo` to claim (06 §8.4). Checks
+        /// the client capabilities theuth must and must not advertise.
+        async fn handshake(
+            &mut self,
+            options: Vec<SessionConfigOption>,
+            agent: Option<agent_client_protocol::schema::v1::Implementation>,
+        ) {
             let m = self.next().await;
             assert_eq!(m["method"], "initialize", "{m}");
-            self.respond(&m["id"], InitializeResponse::new(ProtocolVersion::V1));
+            let caps = &m["params"]["clientCapabilities"];
+            assert_eq!(caps["_meta"]["opencode/child-session-updates"], true, "{m}");
+            assert!(
+                caps.get("elicitation")
+                    .is_none_or(serde_json::Value::is_null),
+                "{m}"
+            );
+            let mut init = InitializeResponse::new(ProtocolVersion::V1);
+            init.agent_info = agent;
+            self.respond(&m["id"], init);
             let m = self.next().await;
             assert_eq!(m["method"], "session/new", "{m}");
             let mut r =
@@ -2579,6 +2610,15 @@ mod tests {
 
         /// A rig whose `session/new` announces `options` (75 §8).
         async fn with_options(deadline: Duration, options: Vec<SessionConfigOption>) -> Self {
+            Self::with_agent(deadline, options, None).await
+        }
+
+        /// A rig whose harness claims `agent` in `initialize.agentInfo` (06 §8.4).
+        async fn with_agent(
+            deadline: Duration,
+            options: Vec<SessionConfigOption>,
+            agent: Option<agent_client_protocol::schema::v1::Implementation>,
+        ) -> Self {
             let dir = std::env::temp_dir().join(format!("theuth-acp-rig-{}", Uuid::now_v7()));
             std::fs::create_dir_all(&dir).unwrap();
             let rt = Runtime::new(figment::Figment::new(), dir.clone());
@@ -2622,7 +2662,7 @@ mod tests {
             child.retry = FAST_RETRY;
             child.quiet = FAST_QUIET;
             let actor = AcpChild::spawn(child);
-            fake.handshake(options).await;
+            fake.handshake(options, agent).await;
             Self {
                 actor,
                 fake,
@@ -3189,6 +3229,95 @@ mod tests {
         assert_eq!((usage.prompt, usage.completion, usage.cached), (0, 0, 0));
         let cost = rig.store.session_cost(rig.session).await.unwrap().unwrap();
         assert_eq!(cost.remote_tokens[0].turns, 1);
+    }
+
+    /// 06 §8.4: the recorded 2.0.22 and 1.18.30 `PromptResponse.usage`
+    /// land as the turn's tokens either way; only the 1.x row is flagged a
+    /// lower bound (its figure is the last request's), decided from
+    /// `initialize.agentInfo`. No `usage_update` at all leaves the context
+    /// gauge at zero with no size and the ledger row intact.
+    #[tokio::test]
+    async fn opencode_usage_is_flagged_lower_bound_by_version() {
+        use agent_client_protocol::schema::v1::Implementation;
+        let fixture = |version: &str| -> PromptResponse {
+            let path = format!(
+                "{}/../acp/fixtures/opencode-{version}/prompt.result.json",
+                env!("CARGO_MANIFEST_DIR")
+            );
+            serde_json::from_str(&std::fs::read_to_string(&path).expect(&path)).unwrap()
+        };
+        for (version, lower, expect) in [
+            ("2.0.22", false, (22273, 527, 18839)),
+            ("1.18.30", true, (38635, 44, 38501)),
+        ] {
+            let mut rig = Rig::with_agent(
+                Duration::from_secs(3600),
+                Vec::new(),
+                Some(Implementation::new("OpenCode", version)),
+            )
+            .await;
+            rig.input("go").await;
+            let (id, _) = rig.fake.prompt().await;
+            rig.fake.respond(&id, fixture(version));
+            let events = rig.until_finished().await;
+            let AgentEvent::TurnFinished { usage, context, .. } = events.last().unwrap() else {
+                unreachable!()
+            };
+            assert_eq!(
+                (usage.prompt, usage.completion, usage.cached),
+                expect,
+                "{version}"
+            );
+            assert_eq!(*context, 0, "{version}: no usage_update");
+            assert!(
+                !events
+                    .iter()
+                    .any(|e| matches!(e, AgentEvent::ContextUsed { .. }))
+            );
+            let cost = rig.store.session_cost(rig.session).await.unwrap().unwrap();
+            let r = &cost.remote_tokens[0];
+            assert_eq!((r.turns, r.lower_bound), (1, lower), "{version}");
+            assert_eq!(r.tokens.input, u64::from(expect.0));
+            let row = rig.store.session(rig.session).await.unwrap().unwrap();
+            assert_eq!(row.context_size, None, "{version}");
+        }
+    }
+
+    /// 06 §8.4: a sub-agent's call forwarded by opencode 2 keeps its
+    /// `<child>:<id>` id through the card events and the stored rows, and
+    /// pairs with its result like any other call.
+    #[tokio::test]
+    async fn child_session_call_ids_with_a_colon_persist_and_pair() {
+        let mut t = turn();
+        let id = "ses_f00417af0ffewZH4KxaHpEZ653:toolu_0179KkBvErCkm8J5u2hVjtLG";
+        let ev = translate(
+            SessionUpdate::ToolCall(
+                ToolCall::new(id, "Create hello.txt file: write").kind(ToolKind::Edit),
+            ),
+            &mut t,
+        );
+        assert!(matches!(&ev[..], [AgentEvent::ToolCallStarted { call_id, .. }] if call_id == id));
+        let ev = translate(
+            update(
+                id,
+                ToolCallUpdateFields::new()
+                    .status(ToolCallStatus::Completed)
+                    .content(vec![ToolCallContent::from("Wrote hello.txt")]),
+            ),
+            &mut t,
+        );
+        assert!(
+            matches!(&ev[..], [AgentEvent::ToolCallFinished { call_id, output, .. }] if call_id == id && output == "Wrote hello.txt")
+        );
+        assert!(t.open.is_empty(), "the colon id matched its start");
+        let (rows, history) = stored(&mut t).await;
+        assert_eq!(rows[1].1.content.tool_calls()[0].call_id, id);
+        assert_eq!(rows[2].1.content.tool_responses()[0].call_id, id);
+        assert!(matches!(
+            &history[1],
+            HistoryEntry::Tool { call_id, result: Some((out, false)), .. }
+                if call_id == id && out == "Wrote hello.txt"
+        ));
     }
 
     /// 06 §8.3: a `session/request_permission` with no turn open is asked

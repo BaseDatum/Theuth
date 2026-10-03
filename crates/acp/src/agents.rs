@@ -51,11 +51,16 @@ pub struct Entry {
 }
 
 impl Entry {
-    /// The SDK launch configuration for this entry.
+    /// The SDK launch configuration for this entry. `OPENCODE_PRINT_LOGS=1`
+    /// is set unless the entry's `env` says otherwise: the child's stderr
+    /// lands in `<data_dir>/logs/acp-<name>.log` (06 §8.4), and opencode
+    /// (1.x and 2.x) prints its log there only with this variable or the
+    /// removed-in-2.x `--print-logs`; other harnesses ignore it.
     #[must_use]
     pub fn config(&self) -> AcpAgentConfig {
         AcpAgentConfig::new(&self.command)
             .args(self.args.iter().cloned())
+            .env("OPENCODE_PRINT_LOGS", "1")
             .envs(self.env.iter().map(|(k, v)| (k.clone(), v.clone())))
     }
 }

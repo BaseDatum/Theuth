@@ -794,3 +794,103 @@ the message was lost. The cap semantics are unchanged (it still cancels);
   replay). The in-process fake in `acp_child::tests` reproduces the wire
   shapes above; the retry and continuation paths have not been exercised
   against a live harness in the busy state.
+
+### 8.4 opencode 2 (2026-10-03, brief OPENCODE2)
+
+Pins: `opencode acp` 2.0.22 (npm `@opencode/cli`, binaries under
+`opencode.ai/files/bin/<ver>/`; not a GitHub release; on Sky's Mac
+`~/.local/opencode2/opencode`, symlink `~/.local/bin/opencode2`) and 1.18.30
+(brew core, `/opt/homebrew/bin/opencode`), side by side as two `agents.yaml`
+entries (`opencode2`, `opencode`) sharing `~/.config/opencode/opencode.json`
+(V2 normalises V1 fields and drops per-model booleans with a WARN; V1
+`plugin` entries fail to load under V2; `mcp`/`provider` work). theuth
+drives both; what changed and what the recorded fixtures in
+`crates/acp/fixtures/opencode-{2.0.22,1.18.30}/` (raw frames of the
+2026-10-03 live smoke, option lists trimmed) pin down:
+
+- **Launch.** `agents.yaml` keeps `command: <opencode>, args: [acp]`.
+  `acp` has no own flags in 2.x (`--cwd`, `--pure`, `--log-level`,
+  mdns/cors are gone); theuth never passed any. The child's stderr goes to
+  `<data_dir>/logs/acp-<name>.log`, so `Entry::config` sets
+  `OPENCODE_PRINT_LOGS=1` (both versions print their log on stderr only
+  with it; an entry's `env` overrides; other harnesses ignore it). 2.x
+  spawns a private server child and exits 1 with `opencode acp: server
+  exited unexpectedly` if it dies — surfaced as the ordinary `Closed`.
+- **Version.** `initialize.agentInfo` is `{name: "OpenCode", version}` on
+  both; `Harness::connect` logs `acp harness OpenCode <version>` once per
+  child and keeps it (`Harness::agent_info`).
+- **Model and effort go through `session/set_config_option`.** Neither
+  version reads `session/new` `_meta` (theuth's `_meta.theuth` keeps going
+  out for harnesses that do: omp, a remote theuth). After `session/new` —
+  and after `session/load`, the `!resumed` guard is gone — the connect sets
+  `{configId: "model", value: "provider/model"}` when the announced current
+  value differs, then `effort` when theuth has one and the option's current
+  value differs. `model` resolves by id `model`, else by `category: model`
+  (`find_option`/`model_select`). **Effort is best effort**: opencode lists
+  `effort` (`category: thought_level`) only for models with variants — 2.x
+  from the start (`low/high/max/default` for the catalog default, the
+  model's own set after a switch), 1.x only once the model is set
+  (`opencode/big-pickle` has none; `anthropic/claude-haiku-4-5` → `high,
+  max`). theuth's `low|medium|…` are matched by value; a miss (no option,
+  unlisted value) is a `warn!` and the harness keeps its default — it no
+  longer fails the spawn (75 §8 said it did). The `spawn_subagent` effort
+  description says so. Recorded: 2.x `effort: high` from `default`; 1.x sat
+  on `high` after the model switch, so no request went out.
+- **`config_option_update` arrives twice right after `session/new`** on
+  2.x (catalog reload: the default model moved `github-copilot/…` →
+  `opencode/fledge-alpha-free` in the smoke before theuth's
+  `set_config_option` landed; afterwards both updates carried the set
+  model). The option list in `Harness` is replaced by every update and
+  `AcpChild` re-reads the model select, so the shown `harness · model`
+  follows; the effort's current value is readable via `harness_options`.
+- **Usage.** `PromptResponse.usage` (unstable feature) is a **per-turn sum
+  over steps on 2.x** (`inputTokens + outputTokens + thoughtTokens +
+  cachedRead + cachedWrite == totalTokens`; recorded `20/313/214/18839/3414
+  = 22800` for a two-step turn) and the **last request only on 1.x**
+  (`12/10/34/38501/122`). `tokens_of` maps both the same way (75 §7);
+  `remote_turns.lower_bound` (migration 0031, back-filled for existing
+  `opencode` rows) records which it was, from `Harness::usage_is_lower_bound`
+  (`agentInfo.name` contains `opencode` and major version < 2).
+  `RemoteTokens.lower_bound` replaces the clients' `harness == "opencode"`
+  check for the ` · last request only` / `(last request only)` label.
+  `usage_update {used, size, cost}` still lands before the prompt response
+  on both (`used` = last step's total, `size` = model context limit, `cost`
+  = cumulative USD); 2.x **skips it** when `used == 0` or the model has no
+  context limit — a turn without one leaves `TurnFinished.context` at 0,
+  `context_size` unset (footers omit ` · ctx`), and the ledger row intact
+  (`opencode_usage_is_flagged_lower_bound_by_version`).
+- **Client capabilities.** `initialize` now carries
+  `clientCapabilities._meta["opencode/child-session-updates"]: true` and
+  still no `elicitation` (theuth renders no forms; advertising `form` makes
+  2.x cancel the question and tell the model to continue).
+- **Sub-agent updates.** With that flag, 2.x sends a sub-agent's activity on
+  the extension notification `opencode/session/child_update`
+  `{rootSessionId, childSessionId, parentSessionId, depth, title, type:
+  "update", update}` (or `type: "status"`), **not** on `session/update`.
+  `acp::child_update` turns the `update` into this session's own
+  `SessionUpdate`: tool calls keep their `<childSessionId>:<toolCallId>` id
+  and `_meta["opencode/child-session"]` and become ordinary cards/rows (ids
+  are opaque strings everywhere in theuth — nothing splits on `:`); the
+  sub-agent's `agent_message_chunk` is forwarded as `agent_thought_chunk`
+  so it shows as activity without becoming the turn's result text;
+  `status` events and other kinds are dropped. The sub-agent's permission
+  asks arrive as normal `session/request_permission` on the root session
+  with the prefixed id, `kind: edit`, `content: [{type: diff, …}]`,
+  `locations: [{path}]` — rendered through the existing gate unchanged
+  (`risk(kind)`, `raw_input ∪ kind`). Option ids are still `once/always/
+  reject`.
+- **`session_info_update._meta`.** 2.x marks provider retries
+  (`opencode/retry`) and compactions (`opencode/compaction`) there. No
+  event slot renders them; the mailbox logs them at `debug` (follow-up:
+  a harness-note event when one exists; `compaction_update` lands after
+  2.0.22).
+- **cwd rule.** `session/load`/`resume`/`fork` on 2.x require `cwd` equal to
+  the session's directory. The supervisor now stores the resolved spawn cwd
+  on the row (`set_acp(…, Some(&cwd_path), …)`), so a resume of a child
+  spawned without an explicit `cwd` passes the directory it was created in,
+  not the engine's current one.
+- **Permissions in the smoke.** 2.x's default agent allows `bash` without
+  asking; the round-trip was exercised with `OPENCODE_CONFIG_CONTENT=
+  '{"permission":{"bash":"ask","edit":"ask"}}'` on the scratch entries.
+  Sky's V1-shaped `~/.config/opencode/opencode.json` loaded fine on 2.0.22
+  (providers and MCP servers in effect; V1 `plugin` entries do not run).
