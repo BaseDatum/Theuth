@@ -204,14 +204,28 @@ impl Backend {
                 chat_stream(&t.access_token, slug(resolved), req, &session.to_string()).await
             }
             Backend::Genai { client, auth } => {
-                let spec: ModelSpec = match target_for(resolved, auth) {
-                    Some(t) => ServiceTarget {
-                        endpoint: t.endpoint,
-                        auth: t.auth,
-                        model: ModelIden::new(t.kind, slug(resolved).to_owned()),
+                let (spec, label): (ModelSpec, String) = match target_for(resolved, auth) {
+                    Some(t) => (
+                        ServiceTarget {
+                            endpoint: t.endpoint,
+                            auth: t.auth,
+                            model: ModelIden::new(t.kind, slug(resolved).to_owned()),
+                        }
+                        .into(),
+                        connection_label(resolved, t.kind),
+                    ),
+                    None => {
+                        let kind = client
+                            .resolve_service_target(resolved.genai.as_str())
+                            .await
+                            .map_err(provider_error)?
+                            .model
+                            .adapter_kind;
+                        (
+                            resolved.genai.as_str().into(),
+                            connection_label(resolved, kind),
+                        )
                     }
-                    .into(),
-                    None => resolved.genai.as_str().into(),
                 };
                 // The catalog's output limit is the request's `max_tokens`; genai's
                 // per-adapter guesses are wrong for new ids (Bedrock falls back to 4096).
@@ -219,6 +233,7 @@ impl Backend {
                 if let Some(m) = &resolved.model {
                     opts = opts.with_max_tokens(m.limit.output);
                 }
+                opts = thought_connection(opts, &label);
                 let opts = openrouter_options(resolved, &auth.openrouter, opts);
                 client
                     .exec_chat_stream(spec, req, Some(&opts))
@@ -230,6 +245,23 @@ impl Backend {
             }
         }
     }
+}
+
+/// 90 §1.4: the name of the account/gateway a request goes to, so a thought
+/// signature replays only to its issuer — the theuth provider id
+/// (`anthropic`, `openai`, `opencode`, `openrouter`, `amazon-bedrock`, a user
+/// gateway's name …), else the adapter kind's lower-case name for an id
+/// without a provider.
+pub(crate) fn connection_label(resolved: &Resolved, kind: AdapterKind) -> String {
+    resolved
+        .provider
+        .clone()
+        .unwrap_or_else(|| kind.as_lower_str().to_owned())
+}
+
+// 90 §1.4: becomes opts.with_thought_connection(label) when the genai fork's feat/90-thought-origin lands (integration wires it)
+fn thought_connection(opts: ChatOptions, _label: &str) -> ChatOptions {
+    opts
 }
 
 /// genai currently wraps AWS credential failures as unsupported features.
@@ -346,6 +378,29 @@ mod tests {
         assert_eq!(
             Transport::of(zen(&r("opencode/gpt-5.6-sol")).kind),
             Transport::OpenAiLike
+        );
+    }
+
+    // 90 §1.4: the provider id names the connection; a bare id falls back to the kind.
+    #[test]
+    fn connection_label_is_provider_then_kind() {
+        let cat = catalog();
+        let r = |id: &str| cat.resolve(id, &|_| true).unwrap();
+        let z = r("opencode/claude-opus-5-5");
+        assert_eq!(connection_label(&z, zen(&z).kind), "opencode");
+        assert_eq!(
+            connection_label(&r("anthropic/claude-opus-5-5"), AdapterKind::Anthropic),
+            "anthropic"
+        );
+        let bare = Resolved {
+            id: "gpt-9".into(),
+            genai: "gpt-9".into(),
+            provider: None,
+            model: None,
+        };
+        assert_eq!(
+            connection_label(&bare, AdapterKind::OpenAIResp),
+            "openai_resp"
         );
     }
 
