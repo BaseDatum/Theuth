@@ -798,8 +798,13 @@ the message was lost. The cap semantics are unchanged (it still cancels);
 ### 8.4 opencode 2 (2026-10-03, brief OPENCODE2)
 
 Pins: `opencode acp` 2.0.22 (npm `@opencode/cli`, binaries under
-`opencode.ai/files/bin/<ver>/`; not a GitHub release) and 1.18.30 (brew
-core). theuth drives both; what changed and what the recorded fixtures in
+`opencode.ai/files/bin/<ver>/`; not a GitHub release; on Sky's Mac
+`~/.local/opencode2/opencode`, symlink `~/.local/bin/opencode2`) and 1.18.30
+(brew core, `/opt/homebrew/bin/opencode`), side by side as two `agents.yaml`
+entries (`opencode2`, `opencode`) sharing `~/.config/opencode/opencode.json`
+(V2 normalises V1 fields and drops per-model booleans with a WARN; V1
+`plugin` entries fail to load under V2; `mcp`/`provider` work). theuth
+drives both; what changed and what the recorded fixtures in
 `crates/acp/fixtures/opencode-{2.0.22,1.18.30}/` (raw frames of the
 2026-10-03 live smoke, option lists trimmed) pin down:
 
