@@ -22,6 +22,24 @@ const SAMPLE_RATE = 24_000
  * silent there while reporting `running`. Packets go in as 24 kHz buffers and the graph resamples.
  */
 let ctx: AudioContext | null = null
+/**
+ * 83 §1: the one output node. Every scheduled source connects here, not to `destination`, so a view can put an
+ * analyser on the agent's voice (the talk band). Gain stays 1: a tap point, not a volume control.
+ */
+let out: GainNode | null = null
+const outSubs = new Set<(node: AudioNode) => void>()
+
+/** The output node, `null` until the context exists (first `unlock`). */
+export const outputNode = (): AudioNode | null => out
+
+/** `cb(outputNode)` now if it exists, else once it does. Returns the unsubscribe. */
+export function onOutputReady(cb: (node: AudioNode) => void): () => void {
+  if (out) cb(out)
+  else outSubs.add(cb)
+  return () => {
+    outSubs.delete(cb)
+  }
+}
 let dec: OpusDecoder<OpusDecoderSampleRate> | null = null
 /** Rate of the utterance's packets. */
 let rate = SAMPLE_RATE
@@ -64,7 +82,14 @@ export function unlock(use: Use): AudioContext {
   if (uses.size === 0) cut()
   uses.add(use)
   session()
-  ctx ??= new AudioContext()
+  if (!ctx) {
+    ctx = new AudioContext()
+    out = ctx.createGain()
+    out.gain.value = 1
+    out.connect(ctx.destination)
+    for (const cb of outSubs) cb(out)
+    outSubs.clear()
+  }
   void ctx.resume()
   return ctx
 }
@@ -162,7 +187,7 @@ export function push(speech: string, b64: string, seq = -1): void {
   // `ready` is the wasm instantiation (ms; cached after the first utterance). `.then` on a settled
   // promise keeps packet order, and lets the first packets of an utterance queue behind it.
   void d.ready.then(() => {
-    if (dec !== d || !ctx) return
+    if (dec !== d || !ctx || !out) return
     const { channelData } = d.decodeFrame(Uint8Array.from(atob(b64), (c) => c.charCodeAt(0)))
     const pcm = channelData[0]
     if (!pcm?.length) return
@@ -171,7 +196,7 @@ export function push(speech: string, b64: string, seq = -1): void {
     buf.copyToChannel(pcm as Float32Array<ArrayBuffer>, 0)
     const src = ctx.createBufferSource()
     src.buffer = buf
-    src.connect(ctx.destination)
+    src.connect(out)
     const at = Math.max(ctx.currentTime + 0.02, next)
     src.start(at)
     next = at + buf.duration
