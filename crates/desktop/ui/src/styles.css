@@ -283,6 +283,82 @@ number-flow-react {
   }
 }
 
+/* 89 VOICE-HOLD: the composer's hold-to-record gesture (`components/chat/VoiceHold.tsx`). */
+/* "‹ slide to cancel": the shimmer above, run leftwards and faster. */
+.voice-hint {
+  background-image: linear-gradient(90deg, var(--fg-tertiary) 40%, var(--fg-primary) 50%, var(--fg-tertiary) 60%);
+  background-size: 200% 100%;
+  background-clip: text;
+  -webkit-background-clip: text;
+  color: transparent;
+  animation: shimmer 1.6s linear infinite reverse;
+}
+/* The orb entering: an overshoot from 0.6. */
+.voice-orb-in {
+  animation: voice-pop 220ms cubic-bezier(0.34, 1.56, 0.64, 1) both;
+}
+/* The lock pill's chevron beckoning. */
+.voice-bob {
+  animation: voice-bob 1.2s ease-in-out infinite;
+}
+/* The lock snapping shut. */
+.voice-bounce {
+  animation: voice-bounce 180ms ease-out both;
+}
+/* The bin popping into the timer's place and shaking its head once. */
+.voice-trash {
+  animation:
+    voice-pop 160ms ease-out both,
+    voice-wiggle 320ms ease-in-out 100ms both;
+}
+@keyframes voice-pop {
+  from {
+    transform: scale(0.6);
+    opacity: 0;
+  }
+  to {
+    transform: scale(1);
+    opacity: 1;
+  }
+}
+@keyframes voice-bob {
+  50% {
+    transform: translateY(-3px);
+  }
+}
+@keyframes voice-bounce {
+  50% {
+    transform: scale(1.15);
+  }
+}
+@keyframes voice-wiggle {
+  25% {
+    rotate: -8deg;
+  }
+  75% {
+    rotate: 8deg;
+  }
+}
+/* While a note is held or locked: no text selection under the finger, no rubber-banding behind the gesture. */
+body.voice-hold {
+  -webkit-user-select: none;
+  user-select: none;
+  overscroll-behavior: none;
+}
+@media (prefers-reduced-motion: reduce) {
+  .voice-hint,
+  .voice-orb-in,
+  .voice-bob,
+  .voice-bounce,
+  .voice-trash {
+    animation: none;
+  }
+  .voice-hint {
+    background: none;
+    color: inherit;
+  }
+}
+
 /* 76 §0.12 talk orb without WebGPU (or under reduced motion): a lit sphere; thinking pulses, speaking swells. */
 .talk-orb {
   background:
