@@ -1,0 +1,312 @@
+---
+title: Sandbox VMs
+description: Isolated Linux desktops that run on your own machine, join your mesh as engines, and give the model somewhere safe to install, run and click — with only the folders you share.
+---
+
+A sandbox VM is a small Linux desktop machine (Debian 13 with XFCE, its own kernel) that theuth boots on your computer and pairs into your mesh as an engine. Inside it runs a normal `t --headless`, so an agent can use `shell`, install packages and drive the desktop with the `computer_*` tools without touching your real machine. Use one when you want the model to try software you do not trust, build in a clean environment, or operate a GUI you would rather not have it operate on your own screen. You can watch the desktop live from the app, take over the mouse and keyboard, and hand it back.
+
+## Prerequisites
+
+- **Apple Silicon Mac** (M1 or later). The hypervisor is Apple's HVF through microsandbox (libkrun). An Intel Mac is refused with `microsandbox needs Apple Silicon (M1 or later); this Mac is Intel`; Windows with `Windows support in microsandbox is a preview; not enabled in this version`.
+- **Linux** hosts need `/dev/kvm` present and read-writable by your user (`sudo usermod -aG kvm $USER, then log in again`) and glibc ≥ 2.28. The code path exists, but as of this writing it has only been exercised on macOS.
+- **Disk**: free space of at least the VM's root disk plus about 4 GiB (2 GiB image, 2 GiB headroom). Below that the blocker `disk_low` reads `N GiB free; a VM needs root_disk + image + 2 GiB (about M GiB).`
+- **No download, no root.** The microsandbox runtime (`msb` + `libkrunfw`) is embedded in `t` and written into its home on the first create, or by pressing **Set up runtime** in Settings › Mesh. That takes well under a second. Docker is *not* needed to run VMs — only to build a developer image.
+- **Image**: the guest image `ghcr.io/basedatum/theuth-vm:<version>` (tag = your `t` version) is pulled on the first create; pull progress streams into the create card. **Do not assume it is published for your version** — as of this writing the default image has not been confirmed public, so a create may stop at the `create` step with a pull error. In that case pass a full image reference you can reach with `--image REF` (CLI) or the sheet's **Advanced** field, or build the dev image from the repository's `deploy/vm` directory (needs Docker). Check your release notes before relying on sandboxes.
+- `sandbox.enabled: true` and `sandbox.vm.enabled: true` (both defaults). Mesh is on by default; the VM reaches the host over the configured `mesh.relay`.
+- A running engine: the desktop app's daemon or `t --headless`. CLI subcommands are RPC clients of that engine.
+
+Preflight runs on demand and is cached for 60 s. The card at the top of **Settings › Mesh › Sandbox VMs** is green (`This host can run sandbox VMs. microsandbox 0.7.4 (embedded…) · virtualization via hvf`) or lists one sentence per blocker with its fix. **Add a sandbox VM** is disabled while any blocker remains; hovering it shows the first one.
+
+## How it works
+
+- **One VM = one mesh engine.** The guest's `t` is configured with `mesh.class: vm` and `mesh.hub: never`; it never becomes your hub. It pairs with the host like an SSH or Docker engine and shows up in `t mesh status`.
+- **Work is a child session.** Your host agent does not run commands "in" the VM directly; it calls `spawn_subagent{agent:"<name>"}` and the child runs on the VM's engine with the ordinary tools. `shell` runs as the guest user `engine`; `computer_screenshot`, `computer_click`, … act on the VM's X display `:1`.
+- **Nothing is shared unless you share it.** Shares are virtio-fs bind mounts of host directories you name. The host's `~/.theuth` is never mounted; the VM keeps its own data dir at `/data` on its root disk.
+- **The VM receives your vault.** Joining the mesh replicates secrets like to any other engine; there is no per-VM allowlist. The create sheet says exactly this: *This VM joins your mesh and receives your vault, like any engine.*
+- **Detached.** VMs keep running when the app quits or the engine restarts. When the engine starts again it boots every stopped VM whose `autostart` is set (default on).
+
+### States
+
+`creating` → `ready` → `running` ↔ `stopped`, plus `paused`, `starting`, `crashed`, `gone`, `destroying`, and `failed` (with the step and error). `ready` means bring-up finished but the health tick has not yet observed it running. Health is checked every `sandbox.health_interval_secs` (60 s).
+
+### Bring-up steps
+
+Create runs these steps in order, each limited to `sandbox.step_timeout_secs` (600 s); the progress card and `t mesh add --vm` print them as `step · line · pct%`:
+
+| Step | What happens |
+|---|---|
+| `create` | ports picked, image pulled, VM booted with systemd |
+| `detect` | checks the guest is Linux |
+| `config` | sets a random VNC password, prepares `/data`, writes the guest `config.yaml` |
+| `binary` | uses the image's `t`, or your `--local-t` |
+| `first_run` | first `t` run in the guest (opens its vault) |
+| `daemon` | starts the `theuth`, `xvnc`, `desktop`, `novnc` units |
+| `pair` | `t mesh pair` into your mesh, up to 6 tries 10 s apart |
+| `verify` | peer reachable (3 tries); desktop answers `GET /vnc.html` |
+
+A failure stops at its step. **Retry** (Settings › Mesh row) resumes from that step after taking an `auto-retry` snapshot. At most `sandbox.max_concurrent_bringups` (2) create at once.
+
+## Walkthrough: ask for a box in chat
+
+The model creates a sandbox when you ask for "a VM", "a Linux box", "an isolated desktop" or "somewhere safe to install and run things".
+
+```text
+› give me a Linux box with ~/code/app shared so you can try the install script there
+
+╔══════════════════════════════════════════════════════════╗
+║ approval: sandbox_create  (mutating)                     ║
+║ name: app-box  shares: [{host: "/Users/you/code/app"}]   ║
+║ [y] allow  [n/esc] deny                                  ║
+╚══════════════════════════════════════════════════════════╝
+```
+
+Allow it. The tool card then shows the live step (`create · pulling ghcr.io/basedatum/theuth-vm:… · 40%`, then `detect`, `config`, `binary`, `first_run`, `daemon`, `pair`, `verify`) and finishes with one line per record (name, state, engine, resources, shares). `sandbox_create` waits up to `sandbox.create_timeout_secs` (900 s); past that it answers `still creating after 900 s — follow with sandbox_list` and the VM keeps coming up in the background. On a warm cache a create takes about 15 s; the first pull takes longer.
+
+The share appears in the guest at `/shared/app` (default guest path is `/shared/<basename>`; `-2`, `-3` on collisions), read-write unless you asked for read-only. Next the model typically spawns a child on the box:
+
+```text
+› run the install script in the box and tell me what it changes
+
+  ⠋ spawn_subagent {agent: "app-box", task: "run /shared/app/install.sh …"}
+```
+
+The child's approvals (its `shell` calls, for instance) arrive in your UI like any subagent's. To look at the screen, click **Desktop** in the chat header (shown when the session's engine is a VM with a desktop) or ask:
+
+```text
+› open the box's desktop
+```
+
+which calls `sandbox_desktop` and pops out the `/vm/app-box` window.
+
+## Walkthrough: Settings › Mesh
+
+1. Open **Settings › Mesh**, section **Sandbox VMs**. If the card says the runtime is not set up, press **Set up runtime**.
+2. Press **Add a sandbox VM**. The sheet asks for:
+   - **Name** — lowercase letters, digits and `-`, up to 32 characters here (the engine accepts up to 63); the next free `vm-N` is prefilled.
+   - **CPUs**, **Memory**, **Disk** sliders — bounded by your cores, half your RAM, and free disk; disk is sparse and *can grow later, never shrinks*.
+   - **Shared folders** — host path, optional guest path, optional read-only.
+   - **Desktop** toggle and **Network** policy (see below).
+   - **Advanced** — a full OCI image reference.
+3. Create. The row shows the step log while creating; when done it reads `running`, the image tag, `online`, and `N running` sessions.
+
+Each row has gauges for CPU, Memory (allocated) and Disk, share chips, the buttons **Open desktop**, **Stop** / **Start** / **Resume**, and a menu with **Terminal**, **Resize…**, **Shared folders…**, **Snapshots…**, **Pause**, **Destroy…**. A failed row shows `Failed at <step>: <error>` with **Retry** and **Destroy**. A pending change shows `restart to apply shares` (or `ports`); an agent waiting on you shows `<agent> needs you`.
+
+## Walkthrough: the command line
+
+```sh
+t mesh add --vm --name app-box --cpus 4 --memory 4G --disk 20G \
+  --share ~/code/app --share ~/datasets:/shared/data:ro --network public,host
+```
+
+prints `[create] app-box: creating`, one `[step] line` per progress event, and `engine app-box (<engine id>) joined the mesh`. A refused create prints `cannot create app-box:` followed by the blocker sentences and exits 1; a failed one prints `app-box failed at <step>: <error>` and `retry from Settings › Mesh or t sandbox rm app-box`.
+
+| Command | Does |
+|---|---|
+| `t sandbox ls` | one line per record: `name backend state engine=… cpus= memory=…M disk=…M shares=N desktop=yes\|no`, or `no sandboxes` |
+| `t sandbox start NAME` | boot a stopped VM |
+| `t sandbox stop NAME [--force]` | graceful stop (20 s grace, then kill); `--force` interrupts running turns |
+| `t sandbox rm NAME [--keep-snapshots true\|false]` | destroy |
+| `t sandbox desktop NAME` | prints the noVNC URL, the password and the geometry |
+| `t mesh add --vm …` | create; flags `--name`, `--cpus`, `--memory 4G\|4096M`, `--disk 20G`, `--share HOST[:GUEST][:ro]` (repeatable), `--no-desktop`, `--network public,host\|public,host,private\|public\|none`, `--image REF`, `--local-t PATH` |
+
+In the terminal UI, `/sandbox` lists the VMs and `/sandbox desktop <name>` prints the noVNC URL. There is no CLI or TUI command for resize, shares or snapshots — use the app or ask in chat.
+
+## Watching and taking over the desktop
+
+**Open desktop** (or `sandbox_desktop`) opens the route `/vm/<name>`: a live noVNC canvas sized to the VM's geometry. The status pill reads:
+
+- `watching` — a turn is running on the VM and your input is off;
+- `live` — nothing is running; you can type and click;
+- `taken over` — you pressed **Take over** while an agent was working.
+
+**Take over** turns your input on, paints the border red, and steers every running session the host owns on that VM with a `desktop_takeover` input so the agent stops calling `computer_*`. **Hand back** reverses both. The toolbar also offers **Send keys** chords, **Fit to window** / **Actual size**, **Reconnect**, and **Start** when the VM is stopped.
+
+When an agent inside the VM needs you (a captcha, a login it must not type, a manual step) it calls `desktop_handoff {reason, url?}`. You see a banner `<agent> needs you: <reason>` with **Done** and **Cancel** in the pop-out, a `needs you` chip on the row, and an item under **Attention**. The agent waits up to `sandbox.handoff_timeout_secs` (1800 s) for your answer.
+
+The **Terminal** menu item opens a login shell as the guest user in a PTY tab; the app's **Terminals** picker lists it with the rest.
+
+## Pinning an agent to a VM
+
+An agent file (`~/.theuth/agents/<name>.md`, or the agent editor's **Runs in** select) can carry `runs_in: vm` or `runs_in: vm:<name>`. With `vm`, theuth creates a VM named `vm-<agent>` with the defaults the first time the agent needs it; with `vm:<name>` it uses that VM. A stopped VM is started on demand; until it is up the agent's task waits with `blocked: sandbox:<name>`. See [Agents](/docs/automation/agents).
+
+## Shared folders
+
+| Rule | Detail |
+|---|---|
+| Host path | absolute, existing directory, UTF-8, no `,` `:` `;` |
+| Never shareable | `/`, your data dir `~/.theuth`, the microsandbox runtime home |
+| Guest path | optional, absolute; default `/shared/<basename>` with `-2`, `-3` on collision |
+| Mode | read-write by default; `readonly: true` / `:ro` on the CLI |
+| Ownership | files the guest writes land on the host owned by the user running `t` |
+| Also | every share becomes a mesh workspace of the guest engine |
+
+Shares on a running VM take effect at the **next start**. `sandbox_share` / `sandbox_unshare` and the **Shared folders…** sheet record the change (`restart_required`), the row shows `restart to apply shares`, and **Restart now** does it: stop, disk snapshot `auto-reconfigure-<ts>`, recreate on the same disk, start.
+
+## Network policies
+
+| `network` | Internet | Host services (`host.microsandbox.internal`) | Your LAN |
+|---|---|---|---|
+| `public_host` (default) | yes | yes | no |
+| `public_host_private` | yes | yes | yes |
+| `public_only` | yes | no | no |
+| `none` | no | no | no |
+
+Published ports bind to loopback only: the desktop's noVNC (guest 6080) is at `127.0.0.1:<random port>`; nothing is reachable from other machines. With `loopback_mesh: true` the guest's mesh port is also published on `127.0.0.1` and pairing uses it; by default pairing goes through the relay.
+
+## Resources
+
+| Key under `sandbox.vm.defaults` | Default | Meaning |
+|---|---|---|
+| `cpus` | `auto` = cores/4, clamped to 2–4 | vCPUs at boot |
+| `memory_mib` | `auto` = RAM/4, clamped to 2048–8192 | memory at boot |
+| `root_disk_mib` | `20480` | root disk (sparse) |
+| `max_cpus` | `auto` = your cores | ceiling for live resize |
+| `max_memory_mib` | `auto` = RAM/2 | ceiling for live resize |
+| `desktop` | `true` | XFCE + noVNC |
+| `geometry` | `1440x900` | desktop size |
+| `network` | `public_host` | policy above |
+
+`sandbox_resize` and the **Resize…** sheet change CPUs and memory **live** up to the ceilings and wait up to `resize_settle_secs` (20 s) for the guest to converge; the disk only grows (`the root disk can only grow (N MiB now, M MiB asked)`). Raising a ceiling is recorded and applied at the next start (`Ceiling recorded — restart to apply.`). At create time `max_memory_mib` must be below the host's RAM and `max_cpus` at most its cores. Inside the guest, `MemTotal` stays at the ceiling; the live allocation is what the gauge calls *allocated*.
+
+## Snapshots, restore, destroy
+
+- **Snapshot** (`sandbox_snapshot {name, label}` or **Snapshots…**) is a disk snapshot, id `<vm>:<label>`. Labels use letters, digits, `-` `_` `.` and may not start with `auto-`. `full: true` (RAM too) is refused: `full snapshots are not available for systemd guests`.
+- theuth takes `auto-<step>-<ts>` snapshots before retry, restore, destroy and reconfigure, and keeps the newest `sandbox.snapshots_keep` (5) of them; named snapshots are never pruned. There is no snapshot-delete action.
+- **Restore** (`sandbox_restore {name, id}`, destructive) snapshots first, then boots the snapshot as a new runtime VM named `<name>-r` (alternating back on the next restore) while keeping the engine identity, shares and ports.
+- **Destroy** (`sandbox_destroy {name, keep_snapshots?}`, **Destroy…**, `t sandbox rm`) removes the mesh peer, stops and deletes both `<name>` and `<name>-r` with their disks, deletes the VNC password from the vault and the record. Snapshots are kept unless `keep_snapshots: false`. Shared host folders are untouched.
+- **Pause** keeps RAM but the engine is unreachable until **Resume**.
+
+## Reference
+
+### Configuration (`config.yaml`)
+
+```yaml
+sandbox:
+  enabled: true              # false: no actor, no sandbox_* tools, no RPC; VMs on disk keep running detached
+  vm:
+    enabled: true            # false: docker/ssh engines only
+    runtime: microsandbox    # the only value
+    home: ""                 # runtime home; "" = ~/.microsandbox, or a private one under ~/.theuth/sandbox when another msb lives there
+    image: ghcr.io/basedatum/theuth-vm   # repository; the tag is your t version
+    defaults: { cpus: auto, memory_mib: auto, root_disk_mib: 20480, max_cpus: auto, max_memory_mib: auto, desktop: true, geometry: 1440x900, network: public_host }
+    autostart: true          # boot recorded VMs with this engine
+    max_vms: 4
+    resize_settle_secs: 20
+    loopback_mesh: false     # publish the guest mesh port on 127.0.0.1 and pair over it; off = relay
+  create_timeout_secs: 900   # sandbox_create waits this long for ready
+  step_timeout_secs: 600     # per bring-up step and per guest command
+  health_interval_secs: 60   # floor 5
+  max_concurrent_bringups: 2
+  snapshots_keep: 5          # auto-* pruned; named kept
+  handoff_timeout_secs: 1800
+```
+
+`sandbox.vm.image` is a repository, not a full reference: `theuth-vm:dev` there becomes `theuth-vm:dev:<version>`. Pass a full tag per create instead (`--image theuth-vm:dev`). Config changes need an engine restart.
+
+### Tools the model calls
+
+| Tool | Risk | Arguments |
+|---|---|---|
+| `sandbox_create` | mutating | `name`, `purpose?`, `cpus?`, `memory_mib?`, `root_disk_mib?`, `max_cpus?`, `max_memory_mib?`, `shares: [{host, guest?, readonly?}]`, `desktop?`, `geometry?`, `network?`, `image?`, `autostart?`, `wait?` (default true) |
+| `sandbox_install_runtime` | mutating | none |
+| `sandbox_list` | read-only | none |
+| `sandbox_start` / `sandbox_pause` / `sandbox_resume` | mutating | `name` |
+| `sandbox_stop` | mutating | `name`, `grace_secs?` (20), `force?` (false) |
+| `sandbox_resize` | mutating | `name`, `cpus?`, `memory_mib?`, `root_disk_mib?`, `max_cpus?`, `max_memory_mib?` |
+| `sandbox_share` | mutating | `name`, `host`, `guest?`, `readonly?` |
+| `sandbox_unshare` | mutating | `name`, `guest` |
+| `sandbox_snapshot` | mutating | `name`, `label`, `full?` |
+| `sandbox_restore` | destructive | `name`, `id` |
+| `sandbox_destroy` | destructive | `name`, `keep_snapshots?` (true) |
+| `sandbox_desktop` | read-only | `name` — opens the pop-out; never returns the password |
+| `sandbox_takeover` | mutating | `name`, `on` |
+| `desktop_handoff` | read-only | `reason`, `url?` — called from inside the VM |
+
+Only `sandbox_list` and `sandbox_create` exist when `sandbox.vm.enabled` is false (create then answers that VMs are disabled). There is no `sandbox_retry` tool; the failure text says so and points to **Retry** in Settings › Mesh.
+
+### UI, slash commands, CLI
+
+| Surface | Actions |
+|---|---|
+| Settings › Mesh › Sandbox VMs | preflight card, **Set up runtime**, **Add a sandbox VM**, per-row **Open desktop**, **Stop**, **Start**, **Resume**, menu **Terminal / Resize… / Shared folders… / Snapshots… / Pause / Destroy…**, **Retry** when failed |
+| Pop-out `/vm/<name>` | **Take over** / **Hand back**, **Send keys**, **Fit to window** / **Actual size**, **Reconnect**, **Start**, hand-off banner **Done** / **Cancel** |
+| Chat header | **Desktop** when the session's engine is a VM with a desktop |
+| Agent editor | **Runs in**: any / vm / a named VM |
+| Terminal UI | `/sandbox`, `/sandbox desktop <name>` |
+| CLI | `t mesh add --vm …`, `t sandbox ls\|start\|stop\|rm\|desktop` |
+
+## Safety and permissions
+
+- Every `sandbox_*` call follows `tools.policy`: with the defaults, create, start, stop, pause, resume, share, unshare, resize, snapshot and takeover **ask**; restore and destroy are destructive and **ask**; list and desktop never ask. Approvals are the usual Allow/Deny cards (TUI `[y]`/`[n]`, desktop card, Slack buttons, Signal 👍/👎); unanswered after `tools.approval_timeout_secs` (300 s) they are denied. `/approvals off` lifts them for the session. Full details in [Tools and permissions](/docs/reference/tools-permissions).
+- Actions you take yourself in the app or on the CLI are direct and do not prompt.
+- Inside the VM the child session's own tool calls (`shell`, `computer_click`, …) are approved under the same policy; they just execute on the guest.
+- **Trust boundary.** The guest sees only its shares — read-write by default, so prefer `readonly` for anything the agent should not alter. It never sees your `~/.theuth`, your other files or your LAN under the default network policy. It *does* hold a replica of your vault; treat a sandbox as you would any paired engine.
+- The guest agent is told to type a vault placeholder only into a masked password field or a `read -s` prompt, and not to take screenshots while a secret is on screen.
+- The VNC password is 8 random characters stored in the vault as `sandbox/<name>/vnc`, hidden from `t --secret-list`, shown only by `t sandbox desktop` and used by the pop-out, and deleted on destroy.
+- A stop while sessions on the VM have a running turn is refused (`X has N session(s) with a running turn; stop with force to interrupt them`); `force` interrupts them.
+- **Take over** only steers sessions this host owns; a session on the VM started from another engine keeps going.
+
+## Limits and lifecycle
+
+| Limit | Value |
+|---|---|
+| VMs per engine | `max_vms` 4 |
+| Name | `[a-z0-9-]`, 1–63 characters (32 in the sheet) |
+| Create wait / step timeout | 900 s / 600 s |
+| Concurrent bring-ups | 2 |
+| Pair / verify retries | 6 × 10 s / 3 × 10 s |
+| Stop grace | 20 s, then kill |
+| Resize settle | 20 s |
+| Health interval | 60 s (floor 5) |
+| Auto-snapshots kept | 5 |
+| Hand-off wait | 1800 s |
+| Preflight cache | 60 s |
+| Disk needed to create | root disk + about 4 GiB |
+
+Measured on an Apple Silicon Mac with the image already pulled: create → ready 14–16 s, stop 3.4–3.7 s, start 0.5–0.9 s plus about 14 s until the peer is reachable, snapshot 0.2–0.3 s, restore 4.2 s, destroy 3.4–3.7 s.
+
+Nothing stops a VM on its own: there is no idle timeout or maximum duration. Stop or destroy what you no longer need; `sandbox_list` shows each VM's state and purpose.
+
+**Not available as of this writing:** Intel Macs, Windows, Linux without KVM, nested VMs; RAM/full snapshots; snapshot delete; an idle-stop timer; clipboard sync between host and guest; GPU, audio or Wayland; a VM acting as hub; the `--bootstrap` / "bootstrap base" image route (the CLI and sheet accept it, but the first-boot install script is not run, so it does not yield a working guest — use the published image or `--image`).
+
+## Troubleshooting
+
+| Symptom | Cause | Fix |
+|---|---|---|
+| Card red: `microsandbox needs Apple Silicon (M1 or later); this Mac is Intel` | Intel Mac | not supported |
+| `/dev/kvm is missing; the host cannot run hardware-accelerated VMs.` | Linux without virtualization | enable virtualization in firmware, or nested virtualization in the outer hypervisor |
+| `/dev/kvm is not readable and writable by this user.` | missing group | `sudo usermod -aG kvm $USER`, log in again |
+| `glibc X.Y found; the microsandbox runtime needs glibc ≥ 2.28.` | old Linux host | upgrade the host |
+| `The microsandbox runtime is only half installed (…)` | interrupted extraction | remove `<home>/bin/msb` and `<home>/lib/libkrunfw*`, press **Set up runtime** |
+| `The embedded microsandbox runtime could not be set up (…)` | home not writable | fix permissions, **Set up runtime** again |
+| `N GiB free; a VM needs root_disk + image + 2 GiB (about M GiB).` | low disk | free space or lower `sandbox.vm.defaults.root_disk_mib` |
+| Warning `theuth's VMs live in …; your own msb (…) will not list them.` | another `msb` version in `~/.microsandbox` | harmless; set `sandbox.vm.home` once versions match |
+| `name "x": use 1–63 characters of a–z, 0–9 and -` | bad name | lowercase, digits, hyphen |
+| `a sandbox named X already exists` / `an engine named X is already in the mesh` | name clash | pick another name |
+| `N sandbox VMs already exist; sandbox.vm.max_vms is 4` | limit | destroy one or raise `max_vms` |
+| `…: share paths must be absolute` / `share paths may not contain , : or ;` / `…: not a directory` / `/ cannot be shared` / `…: the data dir cannot be shared` / `…: the runtime home cannot be shared` | share validation | share an existing ordinary directory by absolute path |
+| `max_memory N MiB exceeds this host's M MiB` / `max_cpus N exceeds this host's M cores` | ceiling above host | lower the ceiling |
+| `X failed at binary: … GLIBC_2.xx not found` (or at `first_run`) | `--local-t` built against a glibc newer than the guest's 2.41 | build on Debian 13 or older, or drop `--local-t` |
+| `X is not brought up yet (…); use retry` | start on a creating/failed record | **Retry** or **Destroy** in Settings › Mesh |
+| `X: bring-up in progress; wait for it to finish or fail` | destroy during create | wait |
+| `X has N session(s) with a running turn; stop with force to interrupt them` | busy VM | let it finish, or stop with `force` / `--force` |
+| `X is a docker engine; remove it with t mesh remove` | not a VM record | `t mesh remove <id>` |
+| `X has no desktop` | created with `--no-desktop` / desktop off | recreate with a desktop |
+| `the root disk can only grow (N MiB now, M MiB asked)` | shrink attempted | ask for a larger size |
+| `full snapshots are not available for systemd guests` | `full: true` | take a disk snapshot |
+| `label: use letters, digits, - _ . and not the auto- prefix` | bad label | rename |
+| Image pull fails with a `…:dev:<version>`-style reference | `sandbox.vm.image` set to a full tag | keep a repository there; pass `--image theuth-vm:dev` per create |
+| `still creating after 900 s — follow with sandbox_list` | slow pull or step | watch the row's step log; it continues in the background |
+| Row `offline` while `running`; engine log `sandbox actor is gone … restart the engine to recover` | actor crashed | restart the engine (quit and reopen the app, or restart `t --headless`) |
+| Desktop pop-out stuck `connecting` | VM stopped or port changed | press **Start**, then **Reconnect** |
+
+## Related
+
+- [Automation overview](/docs/automation)
+- [Agents](/docs/automation/agents) — `runs_in: vm` pins
+- [Delegation](/docs/automation/delegation) — `spawn_subagent`
+- [Mesh](/docs/automation/mesh) — engines, hub, relay
+- [Browser and desktop control](/docs/automation/browser-desktop) — the `computer_*` tools
+- [Tools and permissions](/docs/reference/tools-permissions)
+- [Secrets](/docs/reference/secrets) — what the vault replica means
+- [Configuration](/docs/reference/configuration)

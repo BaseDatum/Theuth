@@ -4,23 +4,31 @@
   "version": "0.0.0",
   "type": "module",
   "scripts": {
-    "dev": "vite",
-    "build": "tsc -b && vite build",
-    "preview": "vite preview"
+    "dev": "react-router dev",
+    "check": "tsc -b && bun scripts/check-docs.ts",
+    "build": "bun run check && react-router build && bun scripts/finish.ts"
   },
   "dependencies": {
     "@fontsource-variable/geist": "^5.3.0",
     "@fontsource-variable/geist-mono": "^5.3.0",
     "@fontsource/instrument-serif": "^5.3.0",
+    "@react-router/node": "8",
     "@tailwindcss/vite": "^4.3.3",
+    "fumadocs-core": "^16.16.0",
+    "fumadocs-mdx": "^15.4.6",
+    "fumadocs-ui": "^16.16.0",
+    "isbot": "^5.2.2",
     "react": "19",
     "react-dom": "19",
+    "react-router": "8",
     "tailwindcss": "^4.3.3"
   },
   "devDependencies": {
+    "@react-router/dev": "8",
+    "@types/mdx": "^2.0.14",
+    "@types/node": "^26.6.4",
     "@types/react": "^19.3.0",
     "@types/react-dom": "^19.3.0",
-    "@vitejs/plugin-react": "^6.1.1",
     "typescript": "^7.0.2",
     "vite": "^8.3.0"
   }

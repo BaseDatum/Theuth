@@ -1,0 +1,290 @@
+---
+title: Watchers
+description: Routines that fire on a condition instead of a clock — a Python sensor polled every N seconds, edge-triggered on what it reports, with holding, cooldown and overlap rules.
+---
+
+A watcher is a routine whose `when:` line names a sensor: a small Python file that theuth polls on the routine's `every:` cadence and asks "is the condition true, and what does it look like right now?". The run fires only when the sensor says yes and the picture has changed since the last fire. Use one when you want theuth to react to the world — a file landing in a folder, a pull request moving — rather than to the time of day. Everything a watcher does not add (cron, loops, `until:`, delivery, the Routines page) is described in [Schedules](/docs/automation/schedules); this page covers the sensor side.
+
+Watchers are **polling only**. There is no filesystem-event trigger, no webhook or HTTP hook, and no "when a Slack or Signal message arrives" trigger as of this writing; channels deliver results, they do not start runs. If you need "within a few seconds of X", set a short `every:` (the floor is 30 s) and let the sensor look.
+
+## Prerequisites
+
+- `schedule.enabled: true` in `config.yaml` (the default). With it off there is no `schedule` tool, no Routines actor and nothing polls.
+- An engine that stays up: the terminal UI (`t`), the desktop app, or `t --headless`. In a mesh, only the hub engine ticks routines.
+- Sensors live in `~/.theuth/sensors/*.py`. The two built-ins, `fs_exists.py` and `pr_watch.py`, are written there on first start. Your own sensors go in the same directory (top level only; dotfiles are ignored).
+- Sensors run inside theuth's embedded Python sandbox (Monty) and need nothing installed. A sensor whose header says `# needs: cpython` instead runs under a `python3` found on your PATH; without one the routine is refused with `when: needs cpython, none found`.
+- `pr_watch.py` needs a GitHub token stored in the vault (`t --secret-set gh_token`, `/secrets`, or Library › **Secrets**). The sensor is given the vault *name*; the value never reaches Python.
+- Creating a routine from chat is a `schedule` tool call (risk mutating), so under the default policy you approve it once with the arguments visible. See [Tools and permissions](/docs/reference/tools-permissions).
+
+## How it works
+
+A watcher is an ordinary routine file in `~/.theuth/schedules/<name>.md` with an `every:` cadence plus a `when:` line and a stop (`until:`, `max_runs:` or `expires:`). Every `every:` seconds the scheduler:
+
+1. Checks `expires:` — if the routine is older than that (counted from `created:`), it ends with the row `expired`, removes the file and tells you.
+2. Skips the tick if the previous check is still running (`skipped: check still running`).
+3. Runs the sensor's `check(state, args)` with the state it returned last time (`{}` the first time) under `timeout:` (default 20 s).
+4. Feeds the result through the gate, in this order: broken → quiet → unchanged → holding → cooldown → busy → fired.
+
+The sensor returns `fire` (bool), `payload` (text, ≤ 4 KiB), `state` (JSON, ≤ 16 KiB) and `next` (seconds until it would like to be checked again, clamped to between `every` and 10 × `every`). Edge detection is **on the payload, not on true/false**: with the default `fire: on_change`, a true result fires only if `sha256(payload)` differs from the hash of the last payload that produced a *successfully completed* run. A sensor that keeps saying "yes, the same thing" produces `unchanged` rows and no runs; the moment the payload changes (a new file in the list, a new commit on the PR) it fires again. Because the hash is committed only after the run completes, a run that errors or times out leaves the condition armed: the same payload fires again on the next tick (subject to `cooldown:`), and counts a strike.
+
+Each outcome is recorded as a history row (visible in `/schedules history <name>`, the routine's **History** tab and `schedule_status`), and the newest one is shown as `last check`:
+
+| Row | Meaning |
+|---|---|
+| `quiet` | Sensor returned `fire: false`. Holding resets, strikes reset. |
+| `unchanged` | True, but the payload hash equals the last fired hash (`on_change` only). |
+| `holding: 2m 3s of 10m` | True, but `for:` has not been satisfied yet. |
+| `cooldown: 3m left` | True and changed, but the last fire was less than `cooldown:` ago. |
+| `queued` / `queued (N coalesced)` | `mode: queue`: a run is in flight; this payload waits (newest wins). |
+| `skipped: busy` | `mode: skip`: a run is in flight; this true tick is dropped. |
+| `restarted` | `mode: restart`: the in-flight run was cancelled and the new payload fired. |
+| `fired` | A run started. The next row with a session id is the run itself. |
+| `deferred` | All 4 sensor slots were busy for 1 s; retried next tick, no strike. |
+| `check broken: <error>` | The sensor raised, timed out or returned garbage. One strike. |
+| `check broken ×3, disabled` | Third consecutive strike; the file is set `enabled: false` and you are told. |
+| `skipped: check still running` | The previous check overran the cadence. |
+| `expired` | `expires:` reached; file removed. |
+| `test: would fire` / `test: quiet` | A `/schedules test` or **Test** button dry run. |
+
+When a watcher fires, the run happens in the routine's own session (bound when the routine is created, titled `<name> · <subject>` from the payload's first line) and the model receives the body of the file followed by the sensor's payload inside a `<when>` element:
+
+```text
+<schedule name="pdf-inbox" at="2026-10-03T14:02:00+02:00" quiet="false">
+Summarise each new PDF in one paragraph and tell me the file name.
+
+<when name="fs_exists.py" subject="fs/*.pdf" events="exists" coalesced="0">
+subject=fs/*.pdf events=exists
+invoice-2026-09.pdf
+paper-draft.pdf
+</when>
+</schedule>
+```
+
+`subject=`, `stage=` and `events=` are lifted from the payload's first line into attributes so the model can see what changed at a glance. With the default `memory: continue` the session's conversation is kept between fires, so "what did I already summarise?" is in context; `memory: clear` starts each run from an empty frame like a clock routine.
+
+State is persisted in `~/.theuth/schedule.sqlite` (table `watch`: sensor state, last fired hash, holding start, strikes, fire count, session). Deleting the routine file forgets its state; deleting `schedule.sqlite` resets every sensor to its first run.
+
+## Walkthrough: summarise new PDFs in a folder
+
+Ask in a chat (desktop or terminal), naming the folder, the pattern and what to do:
+
+```text
+› watch ~/Downloads for *.pdf and summarise each new one for me, for the next week
+```
+
+The model calls `schedule` with `every`, `when: fs_exists.py path=*.pdf`, `cwd: ~/Downloads`, a stop (`expires: 7d` here) and the body prompt. Before anything is written, theuth resolves the sensor, runs it twice with empty state, and compares the two payloads. The approval card shows the arguments; allow it. The tool reply is two lines — the routine summary and the **verdict line**:
+
+```text
+scheduled pdf-inbox: every 60s when fs_exists.py · every 1m when fs_exists.py path=*.pdf
+  · next: — (disabled) · disabled: resume with /schedules resume pdf-inbox or by editing enabled:
+  · session bound
+sensor fs_exists.py · 0.0 s · fire: true · would fire now · hash 3f9a1c2b…
+```
+
+Watchers created from chat are **always written `enabled: false`**, whatever was asked for. The verdict tells you what would happen if you switched it on: `fire: true · would fire now` means PDFs already sit in `~/Downloads` and the first tick will summarise all of them. If that is not what you want, say so ("ignore what's already there") — the model can re-create it after you have moved the files, or you can accept the first batch.
+
+Switch it on:
+
+- Terminal: `/schedules resume pdf-inbox` → `pdf-inbox resumed`.
+- Desktop: **Routines** in the sidebar, flip the switch on the `pdf-inbox` row (aria label *Resume pdf-inbox*).
+- File: change `enabled: false` to `enabled: true`; the directory is watched and reloads within a second.
+
+From then on, every minute a `quiet`, `unchanged` or `fired` row appears, and a new PDF produces a run whose reply ("Summary of `invoice-2026-09.pdf`: …") is delivered to your chat. The file list is the payload, so a file that stays in the folder is summarised once; a new one changes the list and fires again with the full list — the body prompt's "each new one" plus the kept session memory is what keeps the model from repeating itself.
+
+The file the tool wrote looks like this (defaults are omitted):
+
+```yaml
+---
+every: 60s
+when: fs_exists.py path=*.pdf
+expires: 7d
+created: "2026-10-03T14:01:12+02:00"
+cwd: ~/Downloads
+enabled: false
+---
+
+Summarise each new PDF in one paragraph and tell me the file name.
+```
+
+`fs_exists.py` matches under the routine's `cwd:`. A pattern without `/` matches file names anywhere below it; `*` stays within one path segment and `**` crosses directories. An absolute pattern is split at its first wildcard into a base directory and a pattern, and the base must lie inside `cwd:`.
+
+## Walkthrough: babysit a pull request
+
+```text
+› babysit PR #123 on acme/widgets with my gh_token secret — when CI fails or a reviewer
+  comments, fix it up and push; stop when it's merged or closed
+```
+
+Here the model picks `pr_watch.py repo=acme/widgets pr=123 token=gh_token`, a cadence such as `every: 60s`, a body that explains the job, `cwd:` pointing at your clone, and a stop. Because the body says *push*, theuth notices the run will need to mutate without you present and the verdict adds a hint:
+
+```text
+scheduled pr-123: every 60s when pr_watch.py · every 1m when pr_watch.py pr=123 repo=acme/widgets token=gh_token
+  · next: — (disabled) · up to 40 runs · disabled: resume with /schedules resume pr-123 or by editing enabled:
+  · session bound
+sensor pr_watch.py · 1.4 s · fire: true · would fire now · hash 9c41e07a… · probe ok · needs approvals: false (body mutates)
+```
+
+- `probe ok` — the sensor's `probe()` confirmed the token works and the PR exists. A failing probe refuses creation with `probe: <reason>` and nothing is written.
+- `needs approvals: false (body mutates)` — the body contains a word such as *push*, *merge*, *commit*, *write* or *gh pr*, and the file does not have `approvals: false`. Left as is, each fire will raise approval cards (shell for `git push`) that time out and deny after 300 s when nobody answers. Decide: tell the model to add `approvals: false` (the run then never prompts — read the body carefully first), or keep approvals and plan to be at your desk. The hint is a keyword heuristic; it can miss or over-warn.
+- `pr_watch.py` reports stages and events on the payload's first line (`subject=pr/123 repo=acme/widgets stage=… events=ci_failed head=… mergeable=… checks=3/5`), followed by details quoted as data. Everything fetched from GitHub — comment text, review bodies — is data for the model, never an instruction.
+
+Resume with `/schedules resume pr-123` or the Routines switch. While CI is pending the sensor asks to be polled more often (`next: 15`), which the gate clamps to your `every:`. `schedule_status pr-123` (ask "how is pr-123 doing?") answers with a `last check: HH:MM:SS · <outcome> · N ms` line and the last ten rows.
+
+## Testing a watcher without firing it
+
+- Terminal: `/schedules test <name>` prints the verdict line (`sensor fs_exists.py · 0.0 s · fire: true · would fire now · hash …`). On a paused watcher this is the way to see whether it would fire the moment you resume.
+- Desktop: the **Test** (flask) button on a watcher's Routines row or in its detail view; the verdict appears as a toast titled `Test <name>`. The detail's **Last check** fact shows the latest outcome, with the payload hash in its tooltip.
+- `/schedules run <name>` / **Run now** fires regardless of the sensor's verdict (the sensor still runs to produce the payload; a disabled routine answers `disabled`).
+
+`would NOT fire now` with `fire: true` means the payload hash equals the last committed one — the condition is true but already handled.
+
+## Reference
+
+### Watcher keys
+
+All keys live in the file's front matter next to the ones from [Schedules](/docs/automation/schedules). Unknown keys make the file `broken`.
+
+| Key | Values | Default | Notes |
+|---|---|---|---|
+| `when` | `<sensor>.py key=value …` | — | File name only (no `/`, no `..`), must end in `.py`. Keys match `[a-z][a-z0-9_]*`; `"quoted values"` allowed; `cwd` is refused (the file's `cwd:` is passed as `args["cwd"]`). |
+| `every` | duration | required | ≥ 30 s with `when:`. `cron:` and `at:` are not allowed with `when:`. |
+| `until` / `max_runs` / `expires` | — | one required | `when: needs a stop (until, max_runs or expires)`. |
+| `fire` | `on_change` \| `while_true` \| `once` | `on_change` | `on_change`: fire when the payload hash changes. `while_true`: fire on every true tick (still subject to `for`, `cooldown`, `mode`). `once`: fire, then set `enabled: false`; `/schedules resume` re-arms it. |
+| `for` | duration | `0s` | The condition must stay true this long (consecutive true ticks) before the first fire. A false tick resets it. |
+| `cooldown` | duration | `0s` | Minimum spacing between fires, measured from the moment of the fire — a failed run still starts the cooldown. |
+| `mode` | `skip` \| `queue` \| `restart` | `skip` | What a true tick does while a run is in flight. `queue` keeps one pending payload in memory (newest wins) and re-gates it when the run completes; `restart` cancels the run and fires anew. |
+| `memory` | `continue` \| `clear` | `continue` | Keep or clear the session's conversation between fires. |
+| `expires` | duration | — | Time to live counted from `created:`; must be ≥ `every`. Ends with `expired`. |
+| `timeout` | duration | 20 s (15 s at `every: 30s`) | Sensor wall clock. Explicit values must be ≤ 60 s and below `every / 2`; the default is `min(20s, every/2)`. |
+| `created` | RFC 3339 | stamped | Written by the `schedule` tool; a hand-written file gains it on first load. |
+| `missed` | — | — | Not allowed with `when:`. |
+
+`fire`, `for`, `cooldown`, `mode`, `memory` and `timeout` without `when:` are refused with `<key>: needs when:`.
+
+### Sensor contract
+
+A sensor is one file in `~/.theuth/sensors/`. Its first 16 lines may carry header comments; unknown `# key:` lines are ignored.
+
+| Header line | Meaning |
+|---|---|
+| `# theuth-sensor: <name> <version>` | Built-ins only. Drives the update rule: a shipped file is rewritten only when its version is newer *and* your copy is byte-identical to what was installed. An edited built-in is never overwritten; delete or rename it to take an update. |
+| `# needs: cpython` | Run under `python3 ~/.theuth/sensors/.shim.py <file>` instead of the embedded sandbox. |
+| `# hosts: a.example,b.example` | Hosts that `http_request` may `POST` to. `GET` is open to any host. |
+
+```python
+async def check(state: dict, args: dict) -> dict:
+    # state: what you returned last time (<= 16 KiB JSON); {} on the first run;
+    #        committed only after the fired run completes
+    # args:  the key=value tokens from the when: line, plus args["cwd"]
+    # return {"fire": bool, "payload": str, "state": dict, "next": int | None}
+    #   payload's first line is the envelope: subject=… stage=… events=a,b
+    ...
+
+async def probe(args: dict) -> str | None:   # optional
+    # creation-time reachability check; return None when there is nothing to say,
+    # raise to refuse creation
+    ...
+```
+
+`payload` and `state` may be omitted (treated as `""` and `{}`). Any exception, a non-dict result or a missing `fire` is `check broken: …`.
+
+Inside the embedded sandbox the sensor can call exactly these injected functions; naming anything else fails at load with `over budget: sensor uses <name>, not allowed`:
+
+| Function | Rule |
+|---|---|
+| `http_request(url, method, body, headers)` | `GET` to any host; `POST` only to hosts in `# hosts:`; other methods refused (`PermissionError`). Returns `{url, status, headers, body, truncated, took_ms}`; raises `RuntimeError` on a non-2xx reply or a body cut at 1 MiB. `{{secret:NAME}}` placeholders in `headers` are expanded by theuth — the sensor never sees the value. |
+| `read_file`, `glob`, `list_dir` | Rooted at the routine's `cwd:`; a path outside answers `<tool>: <path> is outside cwd`. |
+| `knowledge_search` | Read-only search of the knowledge store. |
+
+Budgets per evaluation: `timeout:` wall clock, 64 MiB heap, 8 awaited tool calls (the 9th raises), 1 MiB fetched (`over budget: N bytes fetched this evaluation`), payload over 4 KiB is truncated with `… [truncated, N bytes]` (no strike; the hash covers the truncated text), state over 16 KiB is rejected (`state too large: N KiB`, a strike). Four sensors run concurrently across the whole engine.
+
+**CPython sensors** (`# needs: cpython`) get `http_request`, `read_file`, `glob` and `list_dir` on `urllib`/`os` under the same host and cwd rules, but not `knowledge_search`, and **no secrets**: a `when:` line that mentions `{{secret:…}}` is refused with `cpython sensors cannot use secrets in v1`. The child gets the request on stdin, the arguments also as `THEUTH_SENSOR_<KEY>` environment variables, is killed as a process group at `timeout:`, and must print the result JSON as the last stdout line; a non-zero exit is `check broken: exit N: <tail>`.
+
+To add your own: drop `my_sensor.py` in `~/.theuth/sensors/`, then ask in chat for a routine with `when: my_sensor.py key=value`. The creation dry run (twice, with empty state) and `probe()` catch most mistakes before anything is written; `/schedules test <name>` repeats it any time. If the two dry runs hash differently the verdict ends in `payload flaps — include only stable fields`: drop timestamps and counters from the payload (keep them in `state`) or an `on_change` watcher fires every tick.
+
+### Built-in sensors
+
+| Sensor | `when:` line | Behaviour |
+|---|---|---|
+| `fs_exists.py` | `fs_exists.py path=<glob>` | `fire: true` while the glob matches under `cwd:`; payload is `subject=fs/<glob> events=exists` followed by the sorted matches. Stateless, `next` left to `every:`. |
+| `pr_watch.py` | `pr_watch.py repo=<owner>/<name> pr=<n> token=<vault name> [stale_hours=72]` | Polls the GitHub API (`# hosts: api.github.com`). Envelope `subject=pr/<n> repo=… stage=… events=… head=<sha7> mergeable=… checks=<pass>/<total>`, then failing checks, new reviews and comments quoted as data, unresolved thread count. Events: `opened new_commits force_push human_pushed ci_failed ci_passed review_comment review_requested_changes approved conflict base_moved approved_green paused pr_closed stale`. `paused` is sticky after a human pushes until a commit by the token's user is at the head. Asks for `next` 15 s while checks run, 60 s idle, 300 s when paused, draft or closed. |
+
+### Tools, commands, UI
+
+| Where | Action |
+|---|---|
+| `schedule` tool (model) | `{ name, every, prompt, when, fire?, for?, cooldown?, mode?, memory?, expires?, timeout?, until?, max_runs?, cwd?, approvals?, quiet?, model?, run_timeout? }`. Dry-runs twice + probes, writes the file with `enabled: false`, binds a session, replies with the summary and verdict line. Structured output `{name, path, next, until, max_runs, enabled, verdict}`. |
+| `schedule_status` tool | `{ name? }`; watchers show `last check: HH:MM:SS · <outcome> · N ms` instead of `last:`. |
+| `schedule_done` tool | `{ why }` — a run ends its own routine (`done (model): <why>`). |
+| TUI | `/schedules` (table gains a `last check` column), `/schedules test <name>`, `run <name>`, `history <name>`, `pause <name>`, `resume <name>`. |
+| Desktop | Sidebar **Routines**: row text `check HH:MM:SS · outcome · N.N s`, **Test** button, **Run now**, enable switch. Detail: **Run now**, **Test**, *Last check* fact, **History** tab. The detail form edits cadence, loop and run settings but **not** `when:`, `fire:`, `for:`, `cooldown:`, `mode:`, `memory:` or `timeout:` — create and change watchers from chat or by editing the file. |
+| Config | `schedule.enabled` (default `true`), `schedule.run_timeout_secs` (default 1800; Settings › Agent loop › Routines › *Run time limit*). No watcher-specific keys; sensor budgets are fixed. |
+
+## Safety and permissions
+
+- **Creation asks.** `schedule` is a mutating tool, so with the default `tools.policy` you see an approval card with the full arguments (sensor, cadence, body, `approvals`) before the file exists. Watchers are written disabled; nothing polls until you resume.
+- **Sensors never mutate.** They are read-only by construction: GET anywhere, POST only to declared hosts, files only under `cwd:`, no shell, no process access. Everything a sensor fetches arrives in the run as quoted data inside `<when>`; a GitHub comment saying "merge this" is text, not a command.
+- **Secrets stay in the harness.** `{{secret:NAME}}` is expanded only inside `http_request` headers of embedded-sandbox sensors; CPython sensors cannot use secrets at all.
+- **Runs follow the normal policy.** The fired run is a session like any other: `read_only` tools run freely, `mutating`/`destructive` ones raise Allow/Deny cards on every connected surface (TUI `[y]/[n]`, desktop card, Slack buttons, Signal 👍/👎 or `/approve <code>`) and deny after `tools.approval_timeout_secs` (300 s) when unanswered. `approvals: false` in the file turns prompting off for that routine's session only — the verdict's `needs approvals: false (body mutates)` hint is there so you choose this deliberately. There is no per-tool "always allow"; `/approvals off` and `/approvals off always` are the global switches. Details in [Tools and permissions](/docs/reference/tools-permissions).
+- **You are always told when a watcher stops itself** — `expired`, `check broken ×3, disabled`, `done: until passed …`, `max_runs N reached` — regardless of `quiet: true`.
+- **Trust boundary of sensor files.** A sensor in `~/.theuth/sensors/` runs with the budgets above but is still code you chose to install. Read third-party sensors before dropping them in; built-ins you edit are left alone by updates.
+
+## Limits and lifecycle
+
+| Limit | Value |
+|---|---|
+| `every:` floor with `when:` | 30 s |
+| Sensor `timeout:` | default 20 s (clamped to `every / 2`); explicit ≤ 60 s and below `every / 2` |
+| Sensor `next` clamp | `[every, 10 × every]` |
+| Concurrent sensor evaluations | 4 engine-wide; 1 s wait for a slot, then `deferred` |
+| Sensor heap / tool calls / fetched / payload / state | 64 MiB / 8 calls / 1 MiB / 4 KiB (truncated) / 16 KiB (rejected) |
+| Consecutive strikes before auto-disable | 3 (broken checks and failed runs both count; a quiet, unchanged or completed check resets) |
+| `until:` command cap | 120 s |
+| Run cap | `run_timeout:` or `schedule.run_timeout_secs` (1800 s) |
+| Totals | `max_runs:` counts fired runs; `expires:` caps age; check rows do not count toward `max_runs` |
+
+Lifecycle: created `enabled: false` → resumed → ticking (`quiet`/`unchanged`/`holding`/`cooldown`/`fired` rows) → ends by `until` exit 0, `max_runs`, `expires`, `schedule_done` or you deleting the file; or pauses itself after 3 strikes or after one fire with `fire: once`. Resuming resets strikes. In-memory only: a queued payload and the "check in progress" marker — a restart of theuth drops a queued payload, while sensor state, last hash and strikes survive in `schedule.sqlite`. Editing the file by hand re-runs the load-time dry run on the next tick; if that dry run breaks, the row reads `error: check broken: …` with `next —` and the routine does not tick again until the file changes.
+
+## Troubleshooting
+
+| Symptom | Cause | Fix |
+|---|---|---|
+| Tool refuses with `when: requires every` / `when: exclusive with cron` / `at: with when: a one-shot has no cadence to poll on` | Watchers poll on `every:` only. | Ask for an interval (`every 60s`) instead of a cron or a time. |
+| `every: below 30s with when:` | Polling floor. | Use 30 s or more; let the sensor's `next` ask for faster checks within the clamp. |
+| `when: needs a stop (until, max_runs or expires)` | Every watcher needs an end. | Add `expires: 7d`, `max_runs: 20` or an `until:` command. |
+| `missed: not allowed with when:` | Catch-up is a cron concept. | Remove `missed:`. |
+| `timeout: above 60s` / `timeout: must be below every / 2` | Sensor timeout bounds. | Lower `timeout:` or raise `every:`. |
+| `when: no such sensor: x.py` | The file is not in `~/.theuth/sensors/` (top level, `.py`, not a dotfile). | Check the name; restart once if a built-in is missing — they are installed at start. |
+| `when: needs cpython, none found` | Sensor header says `# needs: cpython` but no `python3` is on the engine's PATH. | Install Python or use an embedded-sandbox sensor. |
+| `when: cwd is not an accepted key …` | `cwd=` was passed as a sensor argument. | Set the routine's `cwd:` instead; the sensor receives it as `args["cwd"]`. |
+| Reply ends `… · disabled: resume with /schedules resume <name> or by editing enabled:` | Normal: watchers are always created disabled. | `/schedules resume <name>` or the Routines switch. |
+| Verdict says `payload flaps — include only stable fields` | The two dry runs produced different payloads; an `on_change` watcher would fire every tick. | Fix the sensor to keep volatile data in `state`, or switch to `fire: while_true` with a `cooldown:`. |
+| Verdict says `needs approvals: false (body mutates)` | Body mentions push/merge/commit/write/gh pr without `approvals: false`. | Add `approvals: false` if the run must act unattended; otherwise expect approval cards. |
+| `dry run: <error>` or `probe: <reason>` at creation | The sensor failed on empty state, or its probe refused (bad token, no such PR, not a clone). | Fix the argument it names (`repo= must be owner/name`, `pr= must be a number`, `token= must be a vault name`, `fs_exists: path=<glob> is required`) and retry. |
+| Rows read `unchanged` although the condition is true | Payload hash equals the last completed run's hash. | Expected. Change the payload (new file, new commit) or use `fire: while_true`. |
+| Rows read `holding: … of …` | `for:` not yet satisfied. | Wait, or lower `for:`. |
+| Rows read `cooldown: … left` | Fired less than `cooldown:` ago. | Wait, or lower `cooldown:`. |
+| Rows read `deferred` repeatedly | More than 4 sensors evaluating at once. | Stagger `every:` across watchers or reduce their number. |
+| `check broken: timeout after Ns` | Sensor exceeded `timeout:`. | Raise `timeout:` (≤ 60 s, below `every / 2`) or make the sensor do less per tick. |
+| `check broken: over budget: sensor uses <name>, not allowed` | The sensor calls a tool outside the allowlist. | Use only `http_request`, `read_file`, `glob`, `list_dir`, `knowledge_search`. |
+| `check broken: http_request: POST to <host> is not allowed; declare it in # hosts:` | POST to an undeclared host. | Add the host to the sensor's `# hosts:` header. |
+| `check broken: <tool>: <path> is outside cwd` | File access outside the routine's `cwd:`. | Set `cwd:` to the directory you want watched. |
+| `check broken: state too large: N KiB` | Returned state over 16 KiB. | Trim what you keep between ticks. |
+| `check broken: cpython sensors cannot use secrets in v1` | `{{secret:…}}` in a CPython sensor's arguments. | Use an embedded-sandbox sensor for anything that needs a token. |
+| `check broken: exit N: <tail>` | CPython sensor exited non-zero. | Read the tail; run `python3 ~/.theuth/sensors/.shim.py <file>` by hand to debug. |
+| Message `schedule <name> check broken ×3, disabled: <why>` | Three consecutive broken checks or failed runs. | Fix the cause, then `/schedules resume <name>` (strikes reset). |
+| The same payload fired twice | The first run ended in `error` or `timeout`, so the hash was never committed. | Look at the run's result in History; add `cooldown:` to space retries. |
+| A queued payload vanished after restarting theuth | `mode: queue` keeps the pending payload in memory only. | Expected; the next true tick re-queues it. |
+| Routines detail form does not show `when:` | The desktop editor does not edit watcher keys. | Change them from chat or in the file. |
+| `/schedules test <name>` answers `not a watcher` | The routine has no `when:`. | Use `/schedules run <name>` for clock routines. |
+
+## Related
+
+- [Schedules](/docs/automation/schedules) — cadences, loops, `until:`, delivery, the Routines page
+- [Automation overview](/docs/automation)
+- [Tasks](/docs/automation/tasks) — what an `agent:` routine creates on each fire
+- [Agents](/docs/automation/agents) — roster agents that can own a watcher's runs
+- [Tools and permissions](/docs/reference/tools-permissions)
+- [Secrets](/docs/reference/secrets) — the vault that `token=` names
+- [Configuration](/docs/reference/configuration)
+- [Troubleshooting](/docs/reference/troubleshooting)

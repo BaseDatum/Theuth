@@ -1,0 +1,186 @@
+---
+title: Models and providers
+description: How a provider becomes available, how to pick a model and its reasoning effort, and what the context gauge, compaction, vision fallback and cost display mean.
+---
+
+## How theuth knows about models
+
+theuth ships a trimmed copy of the [models.dev](https://models.dev) catalog (`crates/models/data/models.json`): for every model it knows the context window, output limit, prices, whether it reasons, whether it accepts images, and which effort levels it takes. The bundled catalog is not refreshed at run time. A user file, `~/.theuth/models.json`, in the same shape is merged over it — that is how local models and private gateways get their context limits.
+
+Model ids are models.dev style, `provider/model`:
+
+```text
+anthropic/claude-sonnet-4-5
+openai/gpt-5.1
+google/gemini-2.5-pro
+amazon-bedrock/us.anthropic.claude-sonnet-4-5-20250929-v1:0
+ollama/llama3
+```
+
+A bare id (`claude-sonnet-4-5`) is looked up across the providers you have configured; if exactly one has it, that one is used, otherwise theuth names the candidates (`ambiguous model …`). An id theuth has never heard of is passed through to the provider unchanged, with no known context limit.
+
+## Configuring a provider
+
+`/model` lists only models whose provider is **configured**. A provider counts as configured when any one of these holds:
+
+1. the secrets vault holds a key under the provider's **adapter name**;
+2. you logged in with `/login` (OpenAI, Anthropic, Cursor, xAI);
+3. the provider's usual environment variable is set in the daemon's environment;
+4. the provider needs no key at all (`ollama`);
+5. it is an OpenAI-compatible gateway you added with `/provider add`.
+
+A vault key beats a login, which beats an environment variable.
+
+### Vault key names
+
+The vault name is the provider's genai adapter name, which is the models.dev id except for a few:
+
+| Catalog id (in model ids) | Vault name | Environment variable |
+|---|---|---|
+| `anthropic` | `anthropic` | `ANTHROPIC_API_KEY` |
+| `openai` | `openai` | `OPENAI_API_KEY` |
+| `google` | `gemini` | `GEMINI_API_KEY` |
+| `groq` | `groq` | `GROQ_API_KEY` |
+| `xai` | `xai` | `XAI_API_KEY` |
+| `deepseek` | `deepseek` | `DEEPSEEK_API_KEY` |
+| `cohere` | `cohere` | `COHERE_API_KEY` |
+| `openrouter` | `openrouter` (legacy `open_router` also read) | `OPENROUTER_API_KEY` (or `OPEN_ROUTER_API_KEY`) |
+| `opencode` (OpenCode Zen) | `opencode` | `OPENCODE_API_KEY` |
+| `togetherai` | `together` | `TOGETHER_API_KEY` |
+| `fireworks-ai` | `fireworks` | `FIREWORKS_API_KEY` |
+| `moonshotai` | `moonshot` | `MOONSHOT_API_KEY` |
+| `amazon-bedrock` | `bedrock_api` (bearer key, optional) | see Bedrock below |
+| `ollama` | — (no key) | — |
+
+The bundled catalog also covers `alibaba` (`qwen_cloud`), `alibaba-cn` (`aliyun`), `zai`, `nebius`, `minimax`, `aihubmix`, `github-copilot` (`github_copilot`), `google-vertex` (`vertex`), `ollama-cloud` (`ollama_cloud`) and `opencode-go` (`opencode_go`); the vault name is the one in parentheses where it differs. Providers genai cannot route are not in the catalog at all.
+
+### Storing a key
+
+Keys go into the encrypted vault, never into chat or `config.yaml`. Three equivalent ways:
+
+```sh
+t --secret-set anthropic                     # asks for the value twice, without echo
+printf %s "$KEY" | t --secret-set anthropic  # or piped
+t --secret-list                              # names, versions, notes — never values
+```
+
+- Terminal UI: `/secrets add anthropic` prompts for the value in a masked field (`/secrets` alone opens the list: `a` add, `r` replace, `h` history, `d` delete).
+- Desktop: **Secrets** under *Library* in the sidebar — a `Name` / `Value` (masked) / `Note` form, with Replace, History and Delete per entry. Settings › Connections › *Built-in providers* has **Set key…** buttons for OpenCode Zen and OpenRouter that store the same `opencode` / `openrouter` secrets.
+
+A key stored while theuth is running is picked up on the next model call; no restart is needed. The vault, its key store and the `{{secret:NAME}}` placeholder the agent uses are described in [Secrets](/docs/reference/secrets).
+
+### Logging in with a subscription
+
+`/login <name>` uses an existing subscription instead of an API key. Four logins exist:
+
+| `/login` | What it uses | Flow |
+|---|---|---|
+| `openai` | ChatGPT subscription (Codex) | browser, PKCE; theuth listens on `localhost:1455` for the callback |
+| `anthropic` | Claude Pro/Max (the Claude Code client) | browser, PKCE; callback on `localhost:54545`. The grant expires about 30 days after the interactive login regardless of refreshes — log in again |
+| `cursor` | Cursor subscription | browser deep link, then polling; models come from your Cursor account, text-only |
+| `xai` | SuperGrok / X Premium+ | device code: open the printed URL, confirm |
+
+`/login` with no name opens a picker (terminal) or Settings › Connections › *Accounts* (desktop), which shows `not logged in` / `logged in` per provider with **Login** / **Logout** buttons. The terminal prints `login: open <url>` and tries to open your browser; the login has five minutes to complete. `/logout <name>` forgets it. Tokens are kept in the vault (as `oauth/<name>`); when no vault is available they are files under `~/.theuth/oauth/`, mode 0600. If a provider has both a vault key and a login, the key wins.
+
+Only these four providers have logins; everything else takes a key.
+
+### OpenAI-compatible gateways
+
+Any endpoint that speaks the OpenAI chat API can be added as a named provider:
+
+```text
+/provider add
+  provider add  name            → gateway
+  provider add  gateway  base url   → https://gateway.example.com/v1
+  provider add  gateway  api key    → (masked)
+```
+
+or in one line, `/provider add <name> <base-url> <key>`. On the desktop the same form is Settings › Connections › *Gateways* (`Name`, URL, `API key`, **Add**). Names are 1–32 characters, start with a letter, then letters, digits, `_` or `-`; `opencode`, `openrouter`, `open_router`, `zen` and the other built-in names (every catalog adapter such as `anthropic` or `openai`, the OAuth providers, `cursor`, and anything starting `genai_`) are refused because those are built in — set their secret or log in instead.
+
+Adding a gateway writes three things: `~/.theuth/providers.yaml` gets `<name>: { base_url: … }`, the key goes into the vault under `<name>`, and theuth calls `GET <base-url>/models` and writes the returned ids into `~/.theuth/models.json` as `<name>/<id>` so they show up in `/model`. Each fetched model is given context, reasoning and image flags from the closest models.dev entry by name (`Qwen/Qwen3-235B` borrows from `qwen3-235b`). If the endpoint returns nothing, the gateway is still saved but no models appear — theuth only logs a warning; add entries to `models.json` by hand in that case.
+
+`/provider` lists the built-ins (OpenCode Zen, OpenRouter, with whether their key is set) and your gateways; `/provider rm <name>` forgets one — its `providers.yaml` entry, its vault key and its `models.json` models. The OpenRouter passthrough options (`agent.openrouter.provider`, `referer`, `title`) are in [Configuration](/docs/reference/configuration).
+
+### Local models
+
+`ollama` is a keyless adapter, so `ollama/<model>` is always selectable; requests go to the genai client's default Ollama endpoint (`http://localhost:11434/`), and theuth has no setting to point it elsewhere. The catalog has no entries for local models, so the context gauge shows `ctx 12.3k` without a limit and auto-compaction cannot trigger; add an entry to `~/.theuth/models.json` to fix that:
+
+```json
+{
+  "ollama": {
+    "id": "ollama", "name": "Ollama", "env": [],
+    "models": {
+      "llama3": {
+        "id": "llama3", "name": "Llama 3",
+        "limit": { "context": 128000, "output": 8192 },
+        "reasoning": false, "tool_call": true, "image": false
+      }
+    }
+  }
+}
+```
+
+Other local servers that expose an OpenAI-compatible API are added with `/provider add` like any gateway; the form refuses an empty API key, so give one even if the server ignores it.
+
+### Amazon Bedrock
+
+Bedrock models are `amazon-bedrock/<model-id>`; cross-region inference profile ids (`us.anthropic.…`) work too. theuth uses the AWS SDK's own credential chain and never asks for AWS keys in its UI. Credentials are used in this order:
+
+1. an explicit profile selected with `/aws <profile>` — persisted as `agent.aws_profile` and applied to every session's next Bedrock request; it overrides ambient access keys and bearer keys;
+2. otherwise a bearer key: the `bedrock_api` vault secret, then `BEDROCK_API_KEY`, then `AWS_BEARER_TOKEN_BEDROCK`;
+3. otherwise the default AWS chain (environment keys, `AWS_PROFILE`, container or web-identity credentials, the `default` profile).
+
+`/aws` with no argument shows the current choice and, when several profiles exist, opens a picker whose first row is `default credential chain (<profile>)`; `/aws clear` returns to automatic. On the desktop the same selector is Settings › Connections › *AWS Bedrock*. Profiles are discovered from your AWS config and credentials files (`AWS_CONFIG_FILE`, `AWS_SHARED_CREDENTIALS_FILE` and `AWS_PROFILE` are honoured); `AWS_REGION` overrides the profile's region. A profile that disappears is shown as `not found by the AWS SDK`, never silently replaced.
+
+Bedrock is listed in `/model` as soon as theuth can see *some* credential source; a missing or expired credential fails on the first request, not when you pick the model. SSO profiles need `aws sso login --profile <profile>` from your own shell first.
+
+## Choosing a model
+
+**`agent.model`** in `~/.theuth/config.yaml` is the model new sessions start on (`anthropic/claude-sonnet-4-5` if you never change it). Each session then carries its own model.
+
+- Terminal: `/model` opens the picker — rows are `provider/model  name  200k`, `· vision` marks image-capable models, typing filters by id or name, ⏎ switches. `/model <id>` switches without the picker.
+- Desktop: the model name in the chat header is the picker (*Search models*; the current model stays pinned at the top whatever you type). `/model` in the composer opens it too.
+
+Switching **by hand** does two things: the current session changes model from its next model call (mid-turn included), and the pick becomes the new default — `agent.model` in `config.yaml` is rewritten in place, so the next new chat starts on it. Switches made by schedules or by `/model` inside a Slack thread or Signal session change only that session. There is no separate "set default" command; picking a model in any chat is it. Running subagents keep the model they started with.
+
+Switching to a model that cannot take the session's current effort level clears the level and says so.
+
+### Reasoning effort
+
+Effort is a setting beside the model, not part of its id. Precedence: the session's value, then `agent.effort` from config, then theuth's per-model default — `medium` for Anthropic reasoning models (under any provider, including Bedrock), nothing sent for other providers.
+
+- `/effort` opens a picker of the levels the current model accepts plus `clear`; `/effort <level>` and `/effort clear` skip it. On the desktop the **Effort** group sits under the models in the same picker.
+- The levels come from the catalog per model: typically `low`, `medium`, `high`, sometimes `minimal`, `xhigh` or `max`; `off` is offered for every steerable model so the default can be undone. Models that take a raw thinking budget accept a number of tokens instead; models with no reasoning support say so (`<model> has no reasoning effort levels`).
+- A manual change also becomes the default (`agent.effort`), the same way `/model` does; `clear` removes the line.
+- Effort changes take effect at the **next turn**, not mid-turn (Anthropic rejects changing thinking inside a tool-use turn).
+
+The header shows the level as `· high` beside the model; nothing is shown while unset.
+
+## What a model can and cannot do
+
+**Context window.** The gauge — `ctx 12.3k / 200k (6%)` in the terminal, `12.3k/200k · 6%` on the desktop — is the last round's prompt plus completion tokens against the catalog's `limit.context`. It turns yellow at 75 % and red at 90 %. When the provider has not reported usage yet, the number is an estimate marked `≈`. At `agent.compact_at` (default `0.8`, i.e. 80 %; `0` disables) theuth compacts the history automatically; `/compact` does it by hand, `/compact summary|cut|snap` picks a style for that run and `/compact style <s>` sets the default (`agent.compact_style`). Styles and what survives a fold are in [Sessions](/docs/workspace/sessions).
+
+**Images and PDFs.** Only models the catalog marks as image-capable receive pictures natively (`· vision` in the picker; Cursor models never do). For a text-only main model, set a **vision fallback**: `/vision <provider/model>` (terminal and desktop), or Settings › Agent loop › *Vision fallback model*, persisted as `agent.vision_model`. The fallback must be an exact, image-capable catalog entry from a configured provider. With one set, the main model writes a question about the image, the fallback answers it, and the answer is appended as an observation — the picture is sent to the fallback's provider, with extra calls. Without one, images are replaced by `[image omitted: model is text-only]` and the model is told nobody has looked at them (`/vision off` is that state). When you attach an image to a text-only model, the UI says which of the two will happen. PDFs ride as native document parts to image-capable models; a text-only model gets `[document omitted: model is text-only]`, and the vision fallback does not cover PDFs — switch model, or let the agent read the file from disk instead.
+
+**Tool calling.** theuth is an agent loop: every turn offers tools. A model that cannot call tools will not work usefully; the catalog records `tool_call` per model but the picker does not filter on it, so check the model's page on models.dev before choosing an unusual one.
+
+**Stalls and interrupted replies.** `agent.stream_idle_secs` (default `120`) is how long theuth waits without a stream event before treating the socket as dead; `agent.max_salvages` (default `2`) is how many times per turn it recovers an interrupted reply — a stalled stream or a hit output cap — before the turn stops with an error (`0` turns salvage off). Both are editable in Settings › Agent loop (*Stream idle timeout*, *Reply recoveries per turn*).
+
+**Cost.** The header carries a cost pill (`cost $0.123`, `~$0.023` for an estimate, `—` when nothing is known) and `/cost` opens the breakdown: direct, descendants and total, returned money versus estimates priced from the catalog's per-million-token rates, token counts, coverage, and one row per child session. Prices for a gateway's models are whatever its `models.json` entry says (nothing, unless you add `cost`).
+
+## Troubleshooting
+
+- **A provider is missing from `/model`.** It is not configured: no vault key under its adapter name, no login, no env var in the daemon's environment. Remember the vault name is the adapter name (`gemini`, not `google`; `together`, not `togetherai`). Keys exported in a terminal are not seen by the desktop's daemon unless your login shell exports them — store them in the vault instead.
+- **`no models: no provider is configured`.** Nothing is configured at all; store one key and reopen `/model`.
+- **The first turn fails with `provider … is not configured` / `has no credentials`.** `agent.model` names a provider you have not set up. Pick another from `/model` or add the key.
+- **`AWS authentication failed: …`** or a denied model/region. The error stays in the transcript (also after reload); it is not fed to the model as conversation. For SSO, run `aws sso login --profile <profile>` and send the request again; for `AccessDenied`, enable the model in the Bedrock console for that region. `/aws` shows which profile is in use.
+- **`<name>: login expired; run /login <name>`.** The subscription grant ended (Anthropic's lasts about 30 days); log in again.
+- **A gateway added fine but lists no models.** Its `/models` endpoint returned nothing or failed; theuth only logs the failure. Add the model ids to `~/.theuth/models.json` under the gateway's name.
+- **`ambiguous model …`.** A bare id exists at several configured providers; use the full `provider/model` form.
+- **`<id> cannot receive images` when setting `/vision`.** The fallback must be a catalog entry flagged image-capable; local or gateway models need `"image": true` in `models.json`.
+
+## Next
+
+- [Secrets](/docs/reference/secrets) — the vault, key store, versions, `{{secret:NAME}}`.
+- [Configuration](/docs/reference/configuration) — every `agent.*` key and its default.
+- [Sessions](/docs/workspace/sessions) — compaction styles, context editing, history.

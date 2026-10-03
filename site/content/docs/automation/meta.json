@@ -1,0 +1,15 @@
+{
+  "title": "Automation",
+  "pages": [
+    "index",
+    "agents",
+    "delegation",
+    "tasks",
+    "schedules",
+    "watchers",
+    "mesh",
+    "sandboxes",
+    "channels",
+    "browser-desktop"
+  ]
+}

@@ -1,0 +1,290 @@
+---
+title: Mesh, nodes and devices
+description: Pair several machines into one theuth, run work on whichever one fits, and follow every session from your phone — plus the lighter "node over SSH" path and how the link relay fits in.
+---
+
+A **mesh** is two or more running `t` engines that share one state: sessions, tasks, agents, routines, skills, MCP servers, secrets and documents replicate between them, and one of them — the **hub** — does the duties that must happen exactly once. You use it when theuth should keep working on a server after you close the laptop, when a build or a GPU lives on another box, or when you want the phone to see every machine behind one name. This page also covers the lighter alternative (a **node over SSH**, nothing synced) and **devices** (phone, browser, desktop app) that reach any of it through the link relay.
+
+## Prerequisites
+
+- theuth installed on every machine (`t` on PATH; see [Installation](/docs/getting-started/installation)). The desktop app's built-in daemon counts as an engine.
+- A daemon that stays up where you want work to run: `t --headless`, or `t --install-service` to install a user service running `t --headless` through your login shell — a launchd LaunchAgent on macOS, a `systemd --user` unit on Linux. On Windows the command writes a Task Scheduler logon task, but that path is not verified as of this writing; on other systems (`None` unit format) it prints the exec line for you to install yourself.
+- For phones and browsers: `link.enabled: true` (default `false`) and a reachable `link.relay` (default `wss://relay.theuth.io`, or your own — see [Self-hosting the relay](#self-hosting-the-relay)).
+- For the model to run anything on another machine from chat: `agent.communication: true` (default `false`). Without it `spawn_subagent` is not offered at all — see [Delegation](/docs/automation/delegation).
+- Mesh traffic goes over iroh QUIC, through `mesh.relay` (`https://iroh.relay.theuth.io` by default) when the two machines cannot reach each other directly. Nothing has to be port-forwarded.
+
+## Terminology
+
+The UI and the code use slightly different words; here is the mapping.
+
+| Word | Means |
+|---|---|
+| engine | One running `t`. The desktop UI says **node** wherever the record says engine: Settings › Mesh lists "This node" and "Nodes in this mesh". |
+| mesh | The paired set of engines, with a name (the first node's name until you set one) and a hub lease. |
+| hub | The engine that currently holds the lease: it fires routines, refreshes OAuth tokens, serves paired devices and hosts the live document server. |
+| node over SSH | A machine added with a 3-part link key (`/nodes add <key>`), reached over the link relay. It runs sessions for you but keeps its own `~/.theuth`; nothing is synced. |
+| device | A phone, browser or desktop app paired through the link relay. |
+| harness | In `agent:` strings, the external coding harness a child runs in — `native`, `omp`, `opencode` or `claude` — not a machine. `omp@build-box` means "omp on the node build-box". |
+
+## How it works
+
+### Two ways to add a machine
+
+**A. Pair it into the mesh.** On either side run `t mesh pair` (or Settings › Mesh › **Add a node** › **Show pairing string**). Paste the string on the other side with `t mesh add <string>` or the **Paste another node's pairing string** box. Pairing is mutual and transitive: the joiner learns every node the inviter knows. The string carries the inviter's vault data key, so replicated secrets open on both machines. The token inside expires after 5 minutes. From then on the two engines replicate state and either one can run sessions, tasks and routines.
+
+`t mesh add --ssh TARGET`, `t mesh add --docker` and `t mesh add --vm` make a new engine for you (over SSH, in a container, or as a sandbox VM) and pair it in one step; see [Sandboxes](/docs/automation/sandboxes).
+
+**B. Add it as a node over SSH.** On the remote box, install theuth, give it a model key and install the service:
+
+```sh
+brew install basedatum/tap/theuth
+t --secret-set anthropic
+t --install-service --relay wss://relay.example.com
+```
+
+The last command writes `link.enabled: true`, starts `t --headless` as a service, waits up to 15 s for it, prints `service installed: <scope> · relay <host> · name <name>` and then a QR plus a 3-part key. On your main machine: `/nodes add <key>` in the terminal UI, or paste the key into Settings › Mesh under **On another computer over SSH**, or scan the QR with the phone and choose **as a node of …**. The node appears in the engine switcher nested under its parent (`build-box · via <parent>`) and your paired devices are added to it automatically.
+
+A node over SSH is reachable over the link relay only; its sessions, tasks, routines, skills and secrets stay on that box. If you want them shared, pair it into the mesh (path A) instead or in addition.
+
+The README and the `t --install-service` output still mention "Settings › Nodes › Add node". There is no Nodes tab: the paste field lives in Settings › **Mesh**, and devices live in Settings › **Link**.
+
+### What replicates between mesh engines
+
+Every durable session is mirrored to every engine as a changeset log. Besides sessions: tasks, roster agents and their budgets, projects, paired devices, the secrets vault, the document index, and the files under `skills/`, `schedules/` and `mcp/*.json`. Private sessions (the **Private** switch in a new chat) never replicate.
+
+One engine **owns** each session and is the only one that writes to it. In the sidebar a session owned elsewhere carries an engine chip. Sending into it from another engine works two ways:
+
+- Your own sessions are **taken**: when the owner is unreachable the composer shows `Owned by <engine>, last seen <ago>. Continue here now?` with a **Continue here** button; the same item is in a session's menu, and `/take` in the composer does it directly. Turns the old owner had not yet shipped stay there.
+- Agent desks are **forwarded** to their owner rather than taken.
+
+An automatic takeover on write is refused until the owner has been unseen for `sessions.takeover_secs` (300 s).
+
+### The hub
+
+Connected engines elect one hub. A freshly paired engine is barred from the lease for `mesh.probation_secs` (6 h); a hub that shuts down cleanly hands over within `mesh.handover_secs` (600 s). Your preference is `mesh.hub`: `prefer`, `eligible` (default) or `never`, set with `t mesh hub …` or the **Prefer this node as hub** select in Settings › Mesh. Routines on a non-hub engine show a `not hub` chip: ticks are the hub's duty, that node does not fire them. Settings › Mesh also shows `Sessions: N here · M elsewhere` and the replication log `seq`; the desktop HUD reads `k/n nodes · hub here` or `hub <name>`.
+
+### Running work on another machine
+
+The model sees every engine through `mesh_peers`, one line each:
+
+```text
+this engine id=… reachable class=laptop harnesses=native,omp repos=~/src/app display=true gpu=false
+build-box id=… reachable class=server harnesses=native,claude repos=~/src/app display=false gpu=true hub
+```
+
+It targets a machine with `spawn_subagent{agent: "<node>"}` or `"<harness>@<node>"` (resolved by node name, else a unique mesh-id prefix), or with a task's `where` / `harness` fields ([Tasks](/docs/automation/tasks)). Mesh engines are registered as spawn targets automatically, marked `· offline` while away; nodes over SSH the same way. Approvals a remote child needs come back to whatever UI you are using; anything other than Allow is a deny. There is no `node_exec` or file-copy tool: artifacts and attachments are fetched on demand, and the only shared folders are sandbox `--share` mounts.
+
+### Devices and the link relay
+
+A device connects to the relay over a WebSocket and runs a Noise handshake end to end with your engine, so the relay forwards ciphertext. Two kinds of pairing exist:
+
+- **Mesh pairing** (4-part key, Settings › Link › Devices › **Pair a device**, `t mesh devices add`, `/mesh devices add`): the device pairs with the *mesh*. Any node can show the QR; whichever node holds the hub lease answers. The device list is replicated, and revoking a device cuts it off at every hub within about 2 s. When the hub moves, the device shows `reconnecting…` and redials the same mesh id; measured at about 31 s after a hard kill of the hub.
+- **Legacy pairing** (3-part key, `t --link`, `/link pair`): the device pairs with *this engine alone*. They are listed under **Legacy devices** in Settings › Link and keep working; re-pair with the mesh to reach every node.
+
+Either QR encodes `https://<relay-host>/link#1.…` — the secret is in the URL fragment, which browsers never send to the server. A pairing is valid for 5 minutes, one can be pending at a time, and an engine refuses new devices past `link.max_devices` (16). A phone without the app lands on the page the relay serves and pairs there.
+
+## Walkthrough: a laptop and a build server
+
+Goal: the laptop (desktop app) and a Linux build server become one theuth; builds run on the server from chat; you follow along from the phone.
+
+**1. Start the server engine.** On the server, after installing theuth and a model key:
+
+```sh
+t --install-service --no-pair
+```
+
+`--no-pair` skips the link QR. The name other nodes see is `mesh.name` in that machine's `config.yaml`, else its hostname — set it to `build-box` before the service starts if the hostname is not what you want.
+
+**2. Pair it.** On the server, `t mesh pair` prints a string. On the laptop open Settings › **Mesh** › **Add a node**, paste it into **Paste another node's pairing string** and press **Add**. "Nodes in this mesh" now lists `build-box`; `t mesh status` on either side shows the peer and who holds the lease. The laptop, already running, keeps the lease; the server becomes eligible after its 6-hour probation. If you want the server to end up as hub, set **Prefer this node as hub** there (or `t mesh hub prefer` on the server and `t mesh hub never` on the laptop).
+
+**3. Run a build there from chat.** In a new chat on the laptop (with `agent.communication: true`):
+
+```text
+› run the full test suite on build-box in ~/src/app and tell me what fails
+```
+
+The model calls `mesh_peers`, sees `build-box … repos=~/src/app`, and calls `spawn_subagent{agent: "build-box", cwd: "~/src/app", task: "…"}`. The child session appears under the parent in the sidebar with the server's engine chip. When it wants to run `cargo test`, the approval card shows up in *your* chat on the laptop — Allow or Deny as usual; it is the same Allow/Deny model described in [Tools and permissions](/docs/reference/tools-permissions). The child's result arrives as a message in the parent session.
+
+If you would rather hand the whole conversation to the server, open the session's menu and choose **Continue here** from a UI connected to the server, or type `/take` there.
+
+**4. Follow it from the phone.** On the laptop, Settings › **Link**: turn the relay on (or `/link on` in the terminal UI), then **Pair a device**. Scan the QR with the phone's camera. The phone's **Pair with a mesh** screen pairs it with the mesh, and the switcher shows one row for the mesh (`2 of 2 nodes online`). Open the running session from the phone: you see the same transcript, and an approval that is still pending can be answered there. Once the server can hold the lease (past probation, or preferred), closing the laptop does not cut the phone off: the server takes the hub, the phone shows `reconnecting…` briefly and redials the same mesh id.
+
+## Walkthrough: a node over SSH, nothing synced
+
+When you only need "run things over there" and do not want the server to hold a copy of your sessions:
+
+1. On the box: the four commands from [Two ways to add a machine](#two-ways-to-add-a-machine), ending with `t --install-service --relay wss://…`. Copy the key it prints.
+2. In the terminal UI on your main machine: `/nodes add <key>`. Or Settings › Mesh › **On another computer over SSH** › paste › **Add**.
+3. `/nodes` lists it as `<platform> · theuth <version>` (or `· offline`). Ask in chat:
+
+```text
+› use omp on build-box to bisect the flaky integration test
+```
+
+The model runs `spawn_subagent{agent: "omp@build-box", …}`; approvals come back to you. `/nodes rm <n>` removes it — the node's own `~/.theuth` is untouched, and your devices stay paired with it until you revoke them in *its* Link settings. `t --uninstall-service` on the box removes the service unit and nothing else.
+
+## Reference
+
+### Configuration
+
+All keys live in `~/.theuth/config.yaml`; any key can be overridden with `THEUTH_<SECTION>__<KEY>`. Changes need a restart unless noted.
+
+`mesh:`
+
+| Key | Default | Meaning |
+|---|---|---|
+| `relay` | `https://iroh.relay.theuth.io` | iroh relay for mesh traffic. `public` = n0's public relays; `none`, `off` or `""` = never dial a relay. |
+| `discovery` | `true` | Peer discovery. |
+| `name` | `""` | This node's name as other nodes see it; hostname when empty. |
+| `bind` | unset | `ip:port` to bind the QUIC endpoint. |
+| `hub` | `eligible` | `prefer` \| `eligible` \| `never`. Written live by `t mesh hub …` and Settings › Mesh. |
+| `probation_secs` | `21600` | A new joiner cannot hold the lease for this long. |
+| `handover_secs` | `600` | Graceful handover window when the hub leaves. |
+| `heartbeat_secs` | `10` | Heartbeat interval. |
+| `lapse_secs` | `30` | Heartbeat lapse before a peer counts as gone. |
+| `capabilities_secs` | `300` | How often harnesses/repos/display/GPU stats are refreshed. |
+| `workspaces` | `[]` | Repo paths advertised in `mesh_peers` `repos=`. |
+| `class` | unset | `server` \| `desktop` \| `laptop` \| `container` \| `vm`, shown as `class=` in `mesh_peers`. |
+| `availability_flush_secs` | `600` | Availability record flush interval. |
+| `storm_frames_per_sec` | `50` | Replication frame rate cap. |
+
+`sessions:`
+
+| Key | Default | Meaning |
+|---|---|---|
+| `takeover_secs` | `300` | Owner must be unseen this long before a write from another engine may take the session. |
+| `release_wait_secs` | `10` | Wait for the old owner to release on a user-initiated take. |
+| `orphan_keep_days` | `7` | How long orphaned sessions from a removed engine are kept. |
+
+`link:`
+
+| Key | Default | Meaning |
+|---|---|---|
+| `enabled` | `false` | Relay uplink on/off. Toggled live by `/link on\|off` and Settings › Link; the mesh uplink follows the same switch. |
+| `relay` | `wss://relay.theuth.io` | Must start with `ws://` or `wss://`. |
+| `name` | `""` | Name devices see; hostname when empty. |
+| `max_devices` | `16` | Pairing is refused past this. |
+| `guest_handshakes_per_minute` | `10` | Share-link guests admitted per minute. |
+
+`nodes:`
+
+| Key | Default | Meaning |
+|---|---|---|
+| `enabled` | `true` | `false`: no dials, nodes invisible to the model and UI; `nodes.yaml` kept. |
+
+Data files in `~/.theuth`: `mesh.sqlite`, `replica.sqlite`, `link.sqlite` (devices and pending pairings), `nodes.yaml`, the `mesh/` and `link/identity` key material, and a vault row `mesh/device_key`.
+
+### Tools the model calls
+
+| Tool | Risk | Arguments |
+|---|---|---|
+| `mesh_peers` | read_only | `reachable?: bool` — one line per engine: `<name> id=<id> reachable\|unreachable class=… harnesses=… repos=… display=… gpu=…[ hub]`; the local engine is `this engine`. |
+| `spawn_subagent` | read_only | `agent: "<node>"` or `"<harness>@<node>"`, `task`, `name?`, `cwd?`, `model?`, `effort?`, `tools?`, `skills?`. `<harness>@<this engine>` collapses to the local harness. |
+| `task_create`, `task_place`, … | mutating | `where` (an engine name from `mesh_peers`) and `harness` pick where a task runs. |
+| `sandbox_*` | see [Sandboxes](/docs/automation/sandboxes) | VMs this machine makes itself; they join the mesh as engines. |
+
+### CLI
+
+All `t mesh …` subcommands are RPC calls on the running engine on this machine.
+
+| Command | Does |
+|---|---|
+| `t mesh status` | This engine, its peers and who holds the hub lease (JSON). |
+| `t mesh pair` | Print a pairing string for `t mesh add` elsewhere (5-minute token). |
+| `t mesh add <string>` | Pair with the engine that printed the string. |
+| `t mesh add --ssh TARGET [--key NAME \| --system-ssh]` | Install and pair an engine over SSH. |
+| `t mesh add --docker [--name …] [--image … \| --local-t]` | Pair a container engine. |
+| `t mesh add --vm [--name --cpus --memory --disk --share HOST[:GUEST][:ro] --no-desktop --network …] [--image … \| --bootstrap] [--local-t]` | Create and pair a sandbox VM. |
+| `t mesh remove <id>` | Unpair an engine. |
+| `t mesh hub prefer\|eligible\|never` | Set and persist `mesh.hub`. |
+| `t mesh devices list\|add [name]\|revoke <id>\|rename <id> <name>` | Mesh-paired devices. |
+| `t --link` | Legacy per-engine phone pairing: QR + key, `expires in 5:00`. Needs a running `t --headless`. |
+| `t --install-service [--relay URL] [--name N] [--no-pair]` | Install the headless service; prints a node key unless `--no-pair`. |
+| `t --uninstall-service` | Remove the service unit only. |
+
+### Slash commands (terminal UI)
+
+| Command | Does |
+|---|---|
+| `/mesh devices [list\|add [name]\|rm <id>\|name <id> <name>]` | Devices paired with the mesh (any node serves them). |
+| `/nodes [add <key>\|rm <n>\|name <n> <name>\|invite <n>]` | Machines this engine can run sessions on. |
+| `/link [on\|off\|pair\|cancel\|rm <id>\|name <id> <name>\|relay <url>]` | Relay uplink and legacy devices; bare `/link` opens the modal. |
+| `/take` | Take the current session's ownership here. |
+
+### Desktop
+
+- Settings › **Mesh**: "This node" (name, `hub` badge, mesh name, **Prefer this node as hub**, Sessions here/elsewhere, replication log), "Nodes in this mesh", **Add a node** (pairing string show/paste, **On another computer over SSH**), sandbox VMs.
+- Settings › **Link**: relay toggle, "This node" link identity, hub status (`this node is the hub: serving the mesh's devices` or `another node holds the hub lease`), **Devices** with **Pair a device**, rename, revoke, and **Legacy devices**.
+- Engine switcher (header): the local daemon as `LOCAL`, mesh rows with `N of M nodes online`, nodes nested under their parent; chips `reconnecting…` and `revoked — pair again`.
+- Session menu and sidebar item: **Continue here**.
+
+## Safety and permissions
+
+- Tool calls on a remote engine follow the same policy as local ones: risk `read_only|mutating|destructive` → `tools.policy` → an Allow/Deny card in whatever UI you are using (desktop card, TUI `[y]/[n]`, Slack buttons, Signal 👍/👎 or `/approve <code>`). The remote child's request is forwarded as-is; a timeout after `tools.approval_timeout_secs` (300 s) or any answer other than Allow is a deny. No per-tool "always allow" exists; `/approvals off` (session) or `/approvals off always` are the only switches. Details: [Tools and permissions](/docs/reference/tools-permissions).
+- `mesh_peers` is read-only and never asks. `spawn_subagent` is read-only by design; the child's own tool calls are what ask.
+- Mesh pairing is a trust decision: the joiner adopts the inviter's vault data key and receives every replicated secret, session and document. Pair only machines you control. `t mesh remove <id>` unpairs; the copies already on the removed machine remain there.
+- A node over SSH receives none of that; it holds its own vault and config. The parent can only start sessions on it.
+- Mesh traffic is QUIC with TLS keyed by each engine's identity; the iroh relay (`mesh.relay`) only forwards when a direct path fails.
+- The link relay keeps no state and no accounts. After the WebSocket upgrade everything is Noise-encrypted end to end, so the relay — ours or yours — sees ciphertext, frame sizes, timing, IP addresses and the harness/mesh id, never your messages, keys or which device is connected. The pairing secret is in the URL fragment and never reaches it.
+- Revoking a mesh device marks it revoked everywhere (the row is kept, never deleted) and every hub refuses it from then on. Revoking a legacy device deletes its row on that engine.
+
+### Self-hosting the relay
+
+Any theuth relay works; the default `link.relay` is the operator's.
+
+```sh
+just web-build                                                             # browser UI → crates/desktop/ui/dist
+cargo run -p relay -- --listen 0.0.0.0:8787 --web crates/desktop/ui/dist   # plain; put TLS in front or add --tls CERT KEY
+RELAY_HOST=relay.example.com docker compose -f deploy/relay/compose.yaml up -d   # or: relay + Caddy with automatic TLS
+# then in config.yaml: link.relay: wss://relay.example.com
+```
+
+`--max-conns` (default 64) caps connections per harness.
+
+## Limits and lifecycle
+
+| What | Value |
+|---|---|
+| Pairing validity (mesh string and device QR) | 5 min; one pending device pairing at a time |
+| Devices per engine | `link.max_devices` = 16 |
+| Hub probation for a new joiner | 6 h (`mesh.probation_secs`) |
+| Graceful hub handover | 600 s (`mesh.handover_secs`) |
+| Device reconnect after a hub crash | about 31 s measured |
+| Revocation reaching every hub | about 2 s (one replication hop) |
+| Write takeover of a session | owner unseen ≥ 300 s (`sessions.takeover_secs`) |
+| Orphaned sessions kept | 7 days |
+| Node over SSH control connection | reconnect backoff 1→30 s, keepalive 300 s, presence wait 10 s |
+| Relay per-device idle | 600 s, then `CLOSE 2` |
+| Relay connections per harness | 64 (`CLOSE 3` past that) |
+| Relay payload | 65 535 bytes per frame; 10 upgrades/s per IP (HTTP 429 beyond) |
+| Mesh rows at startup | local-only after 10 s without a replica attach |
+
+Not available as of this writing: a `Settings › Nodes` tab (it is Mesh), devices over iroh (devices always use the link relay), and a per-engine `devices.yaml` (replaced by the replicated `link.sqlite`). The hub-preference select in Settings › Mesh shows the last value you set in this app, not the one on disk.
+
+## Troubleshooting
+
+| Symptom | Cause | Fix |
+|---|---|---|
+| `no harness on <addr>; start t --headless first` from `t mesh …` | No daemon is running on this machine; the subcommands are RPC clients. | Start `t --headless` (or the desktop app) and retry. |
+| A node row reads `· offline` or `mesh_peers` says `unreachable` | The remote engine is down, its service did not start, or it cannot reach the relay. | On the box: is the service running? `t --install-service` waits 15 s for the port and reports failure otherwise. Check `link.relay` / `mesh.relay` there. A mesh row is `unreachable` whenever its QUIC connection is down. |
+| `another engine holds the hub lease` when editing a document | Live document edits are a hub duty. Your engine could not reach the current holder (handover in progress, or no eligible node). | Wait a few seconds and retry; edits forward to the hub automatically once it is reachable. Check `t mesh status` for the holder. |
+| Routines show `not hub` and never fire here | This node does not hold the lease; ticks are the hub's duty. | Expected: they fire on the hub. To move the hub, `t mesh hub prefer` here and `t mesh hub never` on the other node; a new joiner waits out 6 h probation first. |
+| Phone or browser shows `revoked — pair again` | The engine answered `refused`: every hub forgot this device, usually because it was revoked. | Pair again from Settings › Link › **Pair a device** (or `/mesh devices add`). |
+| Phone shows `reconnecting…` for longer than a minute | Hub failover (`CLOSE 4` / `CLOSE 5`) and no node currently holds the lease, or the surviving node has `link.enabled: false`. | Make sure at least one eligible node is up with the relay enabled; `t mesh status` shows the lease. |
+| Composer says `Owned by <engine>, last seen <ago>. Continue here now?` | The session's owner is unreachable. | **Continue here** takes it (turns not yet shipped from the old owner stay there), **Wait** keeps your draft. |
+| `t --link` says it needs the daemon | Legacy pairing talks to a running engine. | Start `t --headless` first. |
+| Pairing a device fails after 16 devices | `link.max_devices` reached. | Revoke an old device in Settings › Link, or raise `link.max_devices`. |
+| `/nodes add` worked but my sessions are not on the node | Expected: a node over SSH is not synced. | Pair it into the mesh with `t mesh pair` / `t mesh add` as well. |
+| `spawn_subagent` with `agent: "build-box"` is not offered | `agent.communication` is `false`. | Set `agent.communication: true` and restart. |
+
+## Related
+
+- [Delegation](/docs/automation/delegation) — `spawn_subagent`, children and their limits
+- [Tasks](/docs/automation/tasks) — `where` / `harness` on tasks
+- [Sandboxes](/docs/automation/sandboxes) — VMs this machine makes and pairs itself
+- [Schedules](/docs/automation/schedules) — routines fire on the hub
+- [Sessions](/docs/workspace/sessions) — ownership, private sessions, compaction
+- [Tools and permissions](/docs/reference/tools-permissions)
+- [Secrets](/docs/reference/secrets) — the vault that mesh pairing shares
+- [Configuration](/docs/reference/configuration)
+- [CLI](/docs/reference/cli)

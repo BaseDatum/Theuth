@@ -1,0 +1,178 @@
+---
+title: Meetings
+description: Record a call from the desktop app, get live briefs while it runs, and end up with a speaker-labelled transcript, a note and a summary you can search and ask about later.
+---
+
+## What a meeting recording is
+
+A meeting is two audio tracks captured by the desktop app's engine — the meeting app's output (or all system audio) and your microphone — transcribed live on your machine. While it runs, a small floating strip (the *island*) shows levels, topic buttons and short briefs prepared by a dedicated agent session. When you stop, a post pass re-transcribes both tracks with word timings, labels speakers, lets you review the result, and writes a summary into the meeting's note.
+
+Recording is a desktop feature on the machine whose engine does the capture: not a phone, not a browser, not an engine reached over the relay. Every device can *read* finished meetings — list, transcript, note, search — only the local desktop records.
+
+### Platform support
+
+| | macOS | Windows | Linux |
+|---|---|---|---|
+| System / per-app audio | Core Audio process tap | WASAPI loopback | PipeWire |
+| Microphone echo cancellation | Yes (Apple voice processing) | No — `headphones recommended` | No — `headphones recommended` |
+| Island hidden from screen shares | Yes | Yes | No (`Visible in screen shares`) |
+| Island placement | At the notch, over full-screen apps, never takes focus | Top-centre of the monitor, never takes focus | Wherever you drag it; may take focus |
+
+On Windows and Linux the engine reports its capture as *partial* when the loopback backend answers and *unavailable* when it does not (no render device; no PipeWire daemon for your user). When capture is unavailable the **Start meeting…** button does not appear. These two paths are newer and far less exercised than the macOS one; treat recording there as best effort rather than a supported promise.
+
+## Prerequisites
+
+- **Models.** Live transcription uses the same English streaming model as dictation (`~/.theuth/models/nemotron-streaming-en/`); the post pass uses Parakeet TDT (`parakeet-tdt/`) and, for speaker labels, the Nemotron diarization model plus a speaker-embedding model (`nemotron-diarization/`, `pyannote/`). The desktop app downloads anything missing at start. Without the diarization models the pipeline still finishes, but every line from the other side is `Speaker 1` and the review pane says so. See [Voice](/docs/workspace/voice) for the ONNX Runtime requirement and `t --bench-models`.
+- **Permissions (macOS).** Two prompts on the first start: **Microphone** and **System audio recording**. The start form shows both rows; a denied one offers **Open System Settings**. Windows and Linux have no equivalent prompt.
+- **A model for the meeting session.** The meeting runs its own chat session; pick a fast, inexpensive model for it in the start form (**Session model**, remembered for next time). This session is what talks to your model provider — see [Privacy](#consent-and-privacy).
+- **Disk.** The engine flags `disk low` under 500 MB free.
+
+## Starting, pausing and stopping
+
+Open **Meetings** in the sidebar (route `/meetings`) and press **Start meeting…** — on every desktop OS where capture is available. On macOS the tray menu also has a **Start meeting…** entry; Windows and Linux have no tray entry (and record best-effort: partial capture, no echo cancellation, headphones recommended). The start form asks for:
+
+- **Source** — `System audio` (every app on the default output) or one app; apps currently playing are listed first with `· playing`. **Refresh** rescans.
+- **Title** — optional; the summary sets one later.
+- **Context** — what the meeting is about and who is in it; this is the first line the meeting session reads. Type it or dictate it.
+- **Session model** — the model the meeting session runs on.
+- The consent checkbox, verbatim: *I acknowledge I understand the law and this recording is legal.* **Start** stays disabled until it is ticked.
+
+Only one meeting records at a time. While it runs:
+
+- A bar at the bottom of every page shows a pulsing dot and the clock with **Meeting** (back to the meeting page), **Pause recording** / **Resume recording** and **Stop recording**.
+- The island's **⋮** menu has the same pause/resume/stop controls.
+- The recording stops by itself at `meeting.max_minutes` (default 180); the island shows `10 min left` ten minutes before.
+
+Pauses are recorded as gaps in the manifest and excluded from the recording clock.
+
+## During the meeting
+
+### The island
+
+A 440 × 44 px strip (macOS: at the notch, above full-screen apps; it never steals focus from the meeting app). It shows two level meters (mic and system), the recording clock, topic buttons, status badges, an eye button and **⋮**. When a brief is showing it grows to fit the title and up to three bullets, with **Newer brief** / **Older brief** arrows, an `↑ N new` badge, and **deeper** (ask for a longer, more specific brief). Below it, a collapsed **Transcript** dropdown and a request box: *Ask the meeting agent… a topic name = brief it*.
+
+**Hiding it from screen shares.** Both theuth windows can be excluded from screen sharing and screenshots (Settings › Meetings › **Hidden from capture**, on by default on macOS; the eye button and the **Eye hotkey**, default `Alt+Shift+E`, flip it while a meeting records). This is never automatic — theuth does not detect that you are sharing — and your own screenshots of the windows come out black while it is on. Linux cannot hide the island; its eye reads **Visible in screen shares**.
+
+### The meeting page
+
+`/meetings/<id>` is the control centre: state, elapsed time, degradation notices, pause/resume/stop, the live log (`me:` for your track, `Speaker N:` or `them:` for the other side), a typed request box (*Ask the meeting session… (answer arrives as a brief)*), the brief log, a link to the session, and the meeting's note beside it all.
+
+### Live transcript and speaker labels
+
+Each track is transcribed as it is spoken; a line commits when you or they stop talking. By default the other side's lines are labelled by voice (`Speaker 1`, `Speaker 2`, …) about eight seconds after the words, at the cost of roughly a quarter of a CPU core; switch this off in Settings › Meetings › **Live speaker labels** to see `them:` instead (the post pass labels speakers either way). The switch takes effect from the next meeting. Your own lines are always `me:`.
+
+### Topics and briefs
+
+Every 25 seconds (`meeting.batch_secs`), or after six utterances, or at once when the other side asks a question, the new transcript lines go to the meeting session as one input. The session may answer with a **topic** — a button on the island with a label of at most four words — and, when you tap it, a **brief** of two or three bullets. Briefs also come from your requests (typed in either request box, or spoken while you hold the **Push-to-talk hotkey**, default ``Alt+` ``, which is registered only while a meeting records or is paused), from **deeper**, and from the brief cache: a subject briefed in an earlier meeting reappears on the island as soon as it is spoken, before any model turn. At most six topic buttons live at once (`meeting.max_topics`); an unmentioned one expires after ten minutes (`meeting.topic_ttl_secs`). Dismissing a topic (hover **×**) tells the session it was not useful.
+
+Cached briefs are a tab of their own, **Briefs**, beside the meeting list (`/meetings/briefs`): search, read, and prepare briefs for tomorrow's meeting by hand or by asking any chat session (`brief_put`).
+
+### What the agent can do while recording
+
+The meeting session runs with a fixed toolset until you stop: `meeting_topic`, `meeting_brief`, `brief_search`, `brief_put`, `knowledge_search`, `knowledge_get`, `meeting_read`, `meeting_search`, `search_web` and `read_url` (`meeting.live_tools`), with the `meeting`, `knowledge` and `web` prompt blocks and no Python runtime. So during a call it can look up your [knowledge](/docs/workspace/knowledge), earlier meetings and the web, but cannot run code, edit files or send messages. After the stop the same session becomes an ordinary one with every tool, and you can chat with it about the meeting (**Session** on the meeting page).
+
+## Consent and privacy
+
+You, not theuth, are responsible for the legality of recording a conversation. The start form will not start without the acknowledgement above; the time you ticked it is stored in the meeting's manifest and shown on the meeting page (**Consent**). Tell the other participants you are recording — the island, hidden or not, is not visible to them.
+
+What stays on your machine, and what does not:
+
+| Stays local | Goes to the model provider of the meeting session |
+|---|---|
+| The audio files, forever (nothing uploads them) | The transcript text, in batches as the meeting runs |
+| Live and post transcription (Nemotron, Parakeet) | Your **Context** line and any requests you type or speak |
+| Speaker diarization and speaker profiles | Taps, dismissals and *deeper* requests, as short notices |
+| Full-text search index and the brief cache | The summary turn after the review, and the title |
+
+In other words: the words said in the meeting reach whichever provider the **Session model** runs on, exactly like a chat message would, and nothing else leaves the machine. A model served locally (an `ollama/...` entry in `models.json`, see [Models](/docs/getting-started/models)) keeps the transcript local too. If the local decision oracle is active for meetings (Settings › Labs), it pre-filters batches on your machine before they go out.
+
+## After the meeting
+
+Stopping starts the post pass; the meeting page shows a strip `Transcribing → Diarizing → Aligning → Review → Summarizing → Done`.
+
+1. **Review.** The transcript of record appears with speaker chips. Click a name to **Rename** it; **Enroll…** saves the voice as a profile (name plus an optional knowledge entity) so the next meeting proposes it — `looks like <name> (NN%)` with **Accept**. Select segments to relabel or merge, click a word to split, click text to fix it, play a span to check. Then **Done reviewing** and **Summarize**. Enrolled speakers are listed and deletable under Settings › Meetings › **Enrolled speakers**.
+2. **Summary.** One turn in the meeting session edits the meeting's note: it regroups the blocks you wrote during the call under headings (moving, never rewriting them), then appends a title, a **Summary**, **Decisions**, **Action items** (owner — item — due if said), **Open questions**, and **Numbers and names said aloud**. The note is snapshotted before (`meeting-before-summary`) and after (`meeting-summary`); those snapshots are never pruned, so a bad rearrangement is one restore away in the [document](/docs/workspace/documents) history. The session is renamed to the title and the knowledge harvest runs on it.
+3. **Done.** The page shows the transcript (read-only), the note, the brief log, and the actions **Re-run post pipeline** (replaces review edits; the note goes back to before the summary) and **Delete**.
+
+Action items are text in the note; theuth does not create task records from them. If the summary fails the strip offers **Retry summary**; if the pipeline fails, **Re-run post pipeline**.
+
+### Finding meetings again
+
+- The meeting list (`/meetings`) shows date, title, duration and state. Rows open the meeting, pop the note into its own window, **Attach to chat…** (or drag a row onto a composer) so a session can read it, or **Delete meeting**.
+- The global search dialog has a **Meetings** category: titles and transcript passages. See [Search](/docs/workspace/search).
+- Any session can call `meeting_list`, `meeting_read`, `meeting_search` and `meeting_speakers` — ask "what did Ana say about the deadline last Tuesday?" in a normal chat.
+
+### Storage and deletion
+
+Everything is under `~/.theuth/meetings/`:
+
+```text
+meetings/
+  meetings.sqlite          index, rebuilt from the manifests if missing
+  briefs.sqlite            the brief cache
+  speakers/<uuid>.json     enrolled speaker profiles
+  <id>/
+    manifest.json          truth: state, times, consent, pauses, tracks, failure
+    mic.opus  system.opus  mix.opus     24 kHz Ogg Opus, 32 kbit/s
+    live.jsonl             the live transcript as it was shown
+    briefs.jsonl           every brief shown
+    transcript.json        the reviewed transcript of record
+    notes.md | summary.md  the note's export (renamed once summarized)
+```
+
+**Delete meeting** (list row or the meeting page) asks `Delete this meeting and its recording?` and removes the directory, the index row, the meeting's session and its note. A recording meeting must be stopped first. There is no automatic retention: recordings stay until you delete them.
+
+## Configuration
+
+```yaml
+meeting:
+  enabled: true            # false: no recorder; meeting_* answers "meetings are disabled"
+  max_minutes: 180         # hard stop; "10 min left" at max_minutes - 10
+  batch_secs: 25           # how often new transcript lines go to the session
+  batch_utterances: 6      # … or after this many lines
+  topic_ttl_secs: 600      # a topic button unmentioned this long expires
+  max_topics: 6
+  live_model_dir: ~        # default ~/.theuth/models/nemotron-streaming-en
+  models_dir: ~            # diarization models root; default ~/.theuth/models
+  live_diarization: true   # Speaker N labels while recording (Settings › Meetings)
+  live_tools: [meeting_topic, meeting_brief, brief_search, brief_put, knowledge_search, knowledge_get, meeting_read, meeting_search, search_web, read_url]
+  live_prompts: [meeting, knowledge, web]
+```
+
+Hotkeys, the island's position and the hidden-from-capture switch are desktop-local settings (Settings › Meetings). The full key list is in [Configuration](/docs/reference/configuration).
+
+## Limitations
+
+- **Language:** English only — the live, post and speaker models are English checkpoints; there is no language setting.
+- **Speakers:** up to eight distinct voices on the other side; your microphone is always one speaker, `Me`. Labels arrive about eight seconds late while live.
+- **Length:** 180 minutes by default (`meeting.max_minutes`); one meeting at a time.
+- **Source:** `System audio` follows the *default* output device — an app routed to a different headset is silent to it; pick that app explicitly instead.
+- **No detection:** theuth does not notice that Zoom, Meet or Teams started, nor that you are screen sharing. You start, stop and hide by hand.
+- **No export or rename:** the files above are the export; the title comes from the start form or the summary.
+- **Terminal:** no meeting commands in the TUI; the terminal's search dialog can still find and attach meetings.
+
+## Troubleshooting
+
+**No `Start meeting…` button.** You are on a phone, a browser, or an engine reached over the relay — the page says *Meetings are recorded from the Mac running the node. Start one there.* (the wording says Mac; Windows and Linux desktops record too). On Windows or Linux it also disappears when capture probes as unavailable: `no default render device` or `no PipeWire daemon (is pipewire running for this user?)`.
+
+**Start fails with `process tap on pid …: … permission denied` or `microphone: permission denied`.** macOS denied one of the two prompts. The start form's **Microphone** / **System audio recording** rows show the state and **Open System Settings**; grant access and start again. The failed meeting is kept in the list with the failure shown.
+
+**The system track is silent.** The chosen app is playing through a device other than the default output, or you picked an app that stopped playing (`pid … is not playing audio`). Pick the app itself rather than `System audio`, or make the meeting device the default output.
+
+**The agent hears itself / the mic track echoes (Windows, Linux).** No echo cancellation on those platforms — the `headphones recommended` badge says so. Wear headphones.
+
+**Transcript lines show `them:` instead of names.** Live speaker labels are off, or the badge `speaker labels down` is showing; the post pass labels speakers anyway.
+
+**Review says `Diarization skipped: models not found under …`.** The diarization models have not landed; let the desktop app finish downloading (or place `nemotron-diarization/model_quantized.onnx` and `pyannote/wespeaker_en_voxceleb_CAM++.onnx` under `~/.theuth/models/`), then **Re-run post pipeline**.
+
+**`Could not register Alt+…; another app holds it`.** Change the hotkey in Settings › Meetings.
+
+**`no note` badge / `no meeting note: the documents helper is missing`.** The documents helper is not running, so the meeting has no note; the summary then goes to `summary.md` instead. See [Documents](/docs/workspace/documents).
+
+## Sources
+
+- `crates/meeting/src/lib.rs` — the recorder, config and events
+- `crates/meeting/src/capture/system.rs` — per-OS audio capture and support probing
+- `crates/meeting/src/note.rs` and `summary.rs` — the note and the summary turn
+- `crates/desktop/ui/src/components/meeting/StartForm.tsx` — the start form and consent text
+- `crates/desktop/src/island/mod.rs` — what the island can do on each OS

@@ -1,0 +1,256 @@
+---
+title: Tasks
+description: The shared task board — states and who may move what, draft cards in chat, desk checkouts, escalations, dependencies, acceptance criteria, the desktop board and task detail, tools, CLI, config, and troubleshooting.
+---
+
+Tasks are theuth's unit of delegated work: a title, a markdown brief, one owner (an agent or you), a reviewer, and a thread that logs every change. You use them when work should outlive a single chat turn — something an agent should pick up at its desk, something that waits on another task or on your decision, or something you want to review before it counts as done. Routines with an `agent:` line and agent hires file tasks on the same board. Tasks live in `~/.theuth/tasks.sqlite` and replicate across mesh engines.
+
+## Prerequisites
+
+- A running engine: the desktop app (it starts `t --headless` for you), or `t --serve` / `t --headless` for the terminal and channels. The board, the tools and `t tasks list` all talk to that engine.
+- For an agent to actually work a task you need at least one roster agent with a desk — see [Agents](/docs/automation/agents). Tasks owned by **you** are tracking only; nothing runs on them.
+- No config is required. The `tasks:` section of `config.yaml` tunes timers and caps (table below); the escalation wait is `roster.decision_wait_secs`.
+- Every task write the model makes (`task_create`, `task_update`, `task_move`, …) is a **mutating** tool call and is subject to `tools.policy.mutating` (default `ask`). `task_inbox` and `task_draft` are read-only. See [Tools and permissions](/docs/reference/tools-permissions).
+
+## How it works
+
+### States
+
+A task is always in exactly one of seven states:
+
+| State | Meaning | Board chip |
+|---|---|---|
+| `backlog` | Filed, nothing happens. No wake, no placement, not in any inbox. | `not started` |
+| `todo` | Started: the owner is woken and the task is in its inbox. | `queued for ‹agent›'s desk` (agent owner) / `todo` |
+| `doing` | Checked out by a session that is working it. | `at ‹agent›'s desk · open session` while checked out; `queued for ‹agent›'s desk` when sent back and not yet picked up; for your own tasks `in progress · open session` / `in progress` |
+| `review` | Owner says it is finished; the reviewer judges. | `review` |
+| `blocked` | Waiting on at least one blocker (task, decision, person, or a system reason). | `blocked` |
+| `done` | Closed by the reviewer. Final. | `done` |
+| `cancelled` | Dropped. Final. | `cancelled` |
+
+There is **no draft or approved state**. Proposed tasks exist only as cards in chat until you approve them (next section).
+
+### Who may move what
+
+The ledger enforces one transition table for every surface (chat tools, desktop, CLI, routines). "You" means the user, who may act for anyone; an agent may act only for itself.
+
+| From → to | Who | Notes |
+|---|---|---|
+| `backlog` ↔ `todo` | anyone | The only drag on the board. `backlog → todo` wakes the owner. |
+| `backlog` → anything else | refused | `a backlog task is started first (todo), then checked out` |
+| `todo` → `doing` | the owner, via `task_checkout` only | `todo → doing is task_checkout` |
+| `doing` → `review` | owner only | Clears the checkout; wakes the reviewer. |
+| `doing` / `todo` → `blocked` | owner | Needs at least one blocker. |
+| `blocked` → `doing` / `todo` | owner, once `blockers` is empty | Your move first strips system blockers (`no continuation`, `engine:*`, `person:*`); `decision:*` and task-id blockers stay and still block it. |
+| `review` → `doing` / `todo` (send back) | reviewer only | Wakes the owner with your notes. |
+| `review` → `done` | reviewer only | An agent that is its own reviewer may close only when the task has a `done_when`; otherwise: `done needs a reviewer other than the owner (self-review is only allowed against an explicit done_when)`. |
+| any open state → `cancelled` | anyone | |
+| `done` / `cancelled` → anything | refused | `task is done` |
+
+Anything not in the table answers `X → Y is not a transition`, and `task_move` wraps every refusal as `<from> → <to> is not allowed (<reason>); from <from> you may move to: a, b`.
+
+The reviewer defaults to the owner's manager (`reports_to` in the agent file); an agent whose line ends at theuth, and every task you own, is reviewed by you. If an agent sends a task with no `done_when` to review and the reviewer would be itself, the reviewer is rewritten to its manager.
+
+### Done because
+
+A close carries a reason, written to the thread as `done because: …`. Agents must say which: `criteria_met` (needs a `done_when`), `intent_met`, or `follow_ups_filed` with the ids of existing follow-up tasks. A self-reviewer may claim only `criteria_met`. When **you** mark a task done — detail page, Attention, or `task_move` over RPC — the reason is `intent_met`; there is no field for another.
+
+### Checkouts
+
+An agent takes a `todo` task with `task_checkout`. The checkout records the session, the engine (host name) and an **epoch** that increases on every checkout. Rules:
+
+- One live checkout at a time. A second `task_checkout` on a live `doing` task fails with `conflict: checked out by <session> on <engine> (epoch N)`.
+- A session that once held the checkout but no longer does is refused on every write: `superseded: task <id> is now checked out by <session> on <engine> (epoch N); stop, your work is stale`.
+- A session may write to at most `tasks.cross_task_write_cap` (20) tasks it does not own; after that: `tasks.cross_task_write_cap: this session has written to 20 tasks it does not own; delegate with task_create instead`.
+- `task_note {progress: true}` from the checkout session refreshes the progress clock. Progress notes wake nobody.
+- An **orphan sweep** runs every 30 s. A `doing` checkout whose engine has been unreachable for `orphan_secs` (120 s) — or, when the mesh is down, that has had no progress note for `stale_secs` (900 s) — is marked orphaned, the epoch is bumped, a thread note is written and the owner is woken to resume. The checkout is kept, so the owner's next `task_checkout` succeeds and the old session is superseded.
+- When a desk's episode closes, every `doing` task it checked out without a `continuing` disposition becomes `blocked: no continuation`, the checkout is cleared and its manager is woken for review. The same happens when a desk twice ends a turn with its woken task unmoved (it gets one nudge in between).
+
+### Wakes
+
+Agents learn about tasks through wakes, delivered to the agent's desk session as a message beginning `Wake: task <id> — <title>. Reason: <reason>.` Reasons: `assigned`, `comment`, `mention`, `schedule`, `answer`, `review`, `resume`, `resumed`, `manual`, `reassigned`, `blockers_resolved`, `children_completed`. Wakes coalesce per (agent, task, reason), dispatch every 5 s, one per agent at a time, and a wake whose reason no longer fits the task's state is dropped with a line in the thread.
+
+**Back-off.** Two consecutive wakes that change nothing put the task on a timer: the next wake waits `backoff_min_secs` doubling per repeat up to `backoff_max_secs` (120 s → 1800 s). A task in back-off is hidden from `task_inbox`. Any edit or comment by you resets it.
+
+Wakes go to agents only. You are told through the **Queue** strip at the top of the board and the **Attention** page (polled every 60 s): tasks blocked on a decision or a person, reviews where you are the reviewer, pending hires. There is no push or channel notification for ordinary state changes.
+
+### Dependencies
+
+`blocked_by` holds what a task waits on: other task ids, `decision:<id>`, `person:<name>`, or a system phrase. `blocks` is the computed inverse and is never stored. Blocker lists are cycle-checked (`blockers would form a cycle: …`). When a task closes (`done` or `cancelled`) its id is removed from every other task's blockers; a blocked task left with nothing to wait on is unblocked automatically — back to `doing` if it still has a live checkout, else `todo` — and its owner is woken `blockers_resolved`. Tasks created with `parent` form a delegation tree; when the last child closes the parent's owner is woken `children_completed`.
+
+### Escalations
+
+An agent that cannot decide something calls `escalate {task, question, options[]}`. That writes `**decision requested** (decision:<id>)` plus the options to the thread, adds a `decision:<id>` blocker, moves the task to `blocked`, and wakes the caller's manager with reason `answer`. If the manager is you, the question appears as an ask card in the agent's session with the options as buttons, and the same item shows on the Attention page and the Queue strip. The tool waits `roster.decision_wait_secs` (120 s) for an answer; if none arrives it returns ``parked: task <id> is blocked on `decision:<id>`; the answer re-wakes you. End your turn.`` and the agent stops. A manager agent answers with `decide {task, decision, answer}`; you answer from the ask card or Attention. The answer goes to the thread, the blocker is removed, and once no blockers remain the task is unblocked and the owner woken `answer`.
+
+### Acceptance criteria
+
+`done_when` is the task's checkable acceptance criteria. Agents draft one to three lines from the brief when you did not state them; the reviewer judges `done` against it first, and it is what makes self-review legal. As of this writing **the desktop has no field for it**: the New task sheet creates tasks without `done_when`, and the task detail page neither shows nor edits it. Put criteria in your chat request (they land in the draft card and the record) or in the brief; to set it on an existing task, ask in chat and the agent uses `task_update {done_when}`.
+
+### Attachments
+
+A task can carry references of kind `note`, `knowledge`, `artifact`, `session` or `meeting`. Attachments you add to a chat message (`+` in the composer, `/attach` in the terminal) are copied onto the drafts the agent proposes. The board card shows a count; the detail page has an **Attachments** editor; tools replace the whole list with `task_update {attachments}`. There are no separate attach/detach tools.
+
+## Walkthrough: from a chat request to done
+
+Describe the work in any chat — desktop or terminal:
+
+```text
+› Audit the relay's TLS setup: check the cert chain, expiry, and cipher list.
+  Done when curl shows the new expiry and ssllabs grades A. ops should do it.
+```
+
+The model does not create anything yet. It calls `task_draft`, and you get one card per proposed task with the title, brief, owner, project, blockers and the drafted `done_when`, plus three buttons: **Add to backlog**, **Start now**, **Discard**. On the desktop the cards render inline under the tool call and in the artifact panel. Pressing a button sends your choice back as a message; the model then calls `task_create` with `state: backlog`, `state: todo`, or nothing. Drafts are never stored — closing the chat without pressing anything leaves no task.
+
+Pick **Start now**. The task is created as `todo`, owner `ops`, and `ops` is woken `assigned`. In the **Tasks** view the card sits in the **todo** column with the chip `queued for ops's desk`. When the desk's session checks it out the card moves to **doing**, shows a green dot and `at ops's desk · open session`; the detail page's **Sessions** list links to that session so you can read along.
+
+When `ops` finishes it moves the task to **review** (its reviewer is its manager, or you). The task now appears in the Queue strip as `<title>   review · ops` and on the Attention page. Open it: the **Actions** panel offers **Mark done** (enabled because you are the reviewer) and **Send back** with a *Notes for the owner* box. Sending back moves it to `doing` and wakes `ops` with your notes; marking done closes it with `done because: intent_met` and releases anything that was blocked on it.
+
+Had you pressed **Add to backlog** instead, the card would sit in **backlog** with `not started` until you drag it to **todo**, press **Start** on the card, or press **Start — queue for ops's desk** in the detail page.
+
+## Walkthrough: answering an escalation
+
+While working, `ops` finds two valid cipher policies and cannot pick one. It calls `escalate`. You see, in `ops`'s session, an ask card:
+
+```text
+Keep TLS 1.2 for the legacy relay clients, or go TLS 1.3-only?
+
+(task 019a2c1e — Audit the relay's TLS setup)
+
+[ Keep 1.2 ]   [ 1.3 only ]
+```
+
+The same task shows in the Queue strip as `Audit the relay's TLS setup   ops · decision:…` and on the **Attention** page with a *Your decision…* box and an **Answer** button — a free-text answer works there too. Until you answer, the task is `blocked` and the detail page's **Unblock** button is hidden, because a decision needs its answer, not a force-unblock. Once you answer, the blocker is removed, the task returns to `doing` (or `todo` if the checkout was lost meanwhile), and `ops` is woken `answer` with your reply in the thread. If you take longer than 120 s the agent's turn has already ended with `parked: …`; the wake brings it back.
+
+If the escalating agent reports to another agent, that manager gets the wake instead and answers with `decide`; you only see it if the manager escalates further.
+
+## Walkthrough: creating a task by hand
+
+**Tasks › New task** opens a sheet: *Title*, *Brief*, *Attachments*, *Project* (combobox; a new name creates the project), *Owner*, *Reviewer* (hint `the owner's manager` while unset), *Where* (a mesh node, or `theuth decides`), *Harness* (`native`, `omp`, `opencode`, `claude`, or `theuth decides`), *Blocked by*, *Blocks*. The only submit is **Create in backlog** — nothing runs until you start it. Links belong in the brief.
+
+In the terminal, `/tasks` lists this project's tasks as `id · state · owner · title`; it does not create or move them — ask in chat for that. From a shell:
+
+```text
+t tasks list --owner agent:ops --state todo,doing,blocked --project relay
+```
+
+prints JSON. `--owner` takes `agent:<name>` or `user`; `--state` a comma list (the help hint omits `backlog`, but it is accepted); `--engine <node>` filters by placement.
+
+## Reference
+
+### Config (`tasks:` in `config.yaml`)
+
+| Key | Default | Meaning |
+|---|---|---|
+| `tasks.orphan_secs` | `120` | A checkout whose engine has been unreachable this long is orphaned and the owner re-woken. |
+| `tasks.stale_secs` | `900` | With the mesh down, a `doing` task with no progress note this long is orphaned. |
+| `tasks.note_secs` | `300` | How often work sessions are expected to write a progress note. Advisory — as of this writing nothing enforces it. |
+| `tasks.cross_task_write_cap` | `20` | Tasks one session may write to that it does not own. |
+| `tasks.backoff_min_secs` | `120` | First no-progress back-off. |
+| `tasks.backoff_max_secs` | `1800` | Back-off ceiling. |
+| `tasks.place_prefer` | `[]` | Engine names to prefer, in order, when placement leaves several candidates. |
+| `roster.decision_wait_secs` | `120` | How long `escalate` waits live for an answer before parking. |
+| `roster.max_rounds` | `3` | Follow-up child rounds a desk may spawn per task per episode. |
+| `roster.episode_idle_secs` | `21600` | Desk idle time before its episode closes (open checkouts → `blocked: no continuation`). |
+
+Config is read at startup; edits need a restart.
+
+### Tools the model calls
+
+| Tool | Arguments | Notes |
+|---|---|---|
+| `task_draft` | `tasks: [{title, brief, owner?, project?, where?, blocks[], blocked_by[], done_when?, attachments[]}]` | Read-only. Renders approval cards; persists nothing. |
+| `task_create` | `title, brief, state?: backlog\|todo, owner?, reviewer?, parent?, project?, where?, harness?, external?[], done_when?, attachments?[]` | Default state `backlog`; owner defaults to the caller; project to the session's or the parent's. Other states are refused. |
+| `task_inbox` | `state?: [..], project?` | Read-only. Caller's own tasks, default `todo, doing, blocked`, grouped by project; hides tasks in back-off. |
+| `task_checkout` | `id` | `todo → doing`; returns the record, attachment markers and the thread. |
+| `task_update` | `id, disposition?: done\|review{reviewer}\|blocked{on}\|delegated{to}\|continuing{by}, state?: cancelled\|doing, owner?, reviewer?, blockers?[], title?, brief?, external?[], done_when?, attachments?[], done_because?` | The owner's own-work path. Other `state` values answer `goes through disposition`. `delegated` needs an existing child and adds it as a blocker. |
+| `task_move` | `task, state, note?, done_because?` | User-intent moves; refusals list the allowed targets. |
+| `task_reassign` | `task, to, why` | Owner or user; from `todo`, `doing`, `blocked`. Releases the checkout (`doing → todo`); wakes the new owner `reassigned` unless blocked. |
+| `task_note` | `id, text, progress?` | Comment (wakes owner, reviewer in review, and any agent named in the text) or progress note (wakes nobody). |
+| `task_place` | `id, needs?, where?, harness?, reason?` | Picks an engine by policy, asks theuth's desk when several fit (120 s wait). No fit → `blocked: engine:<missing>`; owner pinned to a VM that is not ready → `blocked: sandbox:<name>`. |
+| `escalate` | `task, question, options?[]` | Agents only; the user gets `you are the top of the line; decide it`. |
+| `decide` | `task, decision, answer` | Answer a `decision:<id>` blocker. |
+
+All are mutating except `task_draft` and `task_inbox`.
+
+### Desktop
+
+| Where | What |
+|---|---|
+| Sidebar **Tasks** | Board with columns `backlog, todo, doing, review, blocked, done` and `cancelled` behind a toggle. Filters **Project**, **Agent** (`Any owner`, `you`, each agent), **Node**, **State**, **Cancelled**, kept in the URL. Drag only between backlog and todo; backlog cards have **Start**. |
+| **Queue** strip | Above the columns: blocked-on-decision/person tasks, reviews you own, `Approve <title>` for proposed hires. Empty → hidden. |
+| **New task** | Sheet described above; always creates in `backlog`. |
+| Task detail | Sections **Brief**, **Attachments**, **Blocked by / Blocks** (editable chips), **Placement**, **Thread** (comment box `Comment — wakes ‹agent›`), **Events**; aside **Actions**, **Sessions**, **Record** (id, created, parent, schedule, no-progress count). |
+| Actions | **Assign** / **Reassign**; **Start — queue for ‹agent›'s desk** (backlog); **Back to backlog** (todo); **Unblock — wake ‹agent›** (blocked, hidden while a `decision:` blocker is pending); **Send back** + **Mark done** (review; Mark done only when you are the reviewer); project **Move**; **Cancel task** (confirm dialog; not offered in review). |
+| **Attention** | Decision items with a *Your decision…* box and **Answer**; review items with **Move done** / send-back; hires with **Hire** / **Decline**. |
+| Home HUD | *Tasks in progress* metric and per-state counts linking into the board. |
+
+### Terminal and CLI
+
+| Command | Does |
+|---|---|
+| `/tasks` (TUI) | `id · state · owner · title` for the session's project. |
+| `t tasks list [--owner agent:<n>\|user] [--state a,b] [--engine <node>] [--project <p>]` | JSON list from the running engine. |
+
+Moving, commenting and answering decisions from the terminal happen through chat (the model's tools) or the ask card; there are no TUI commands for them.
+
+## Safety and permissions
+
+- Every task write by the model is a **mutating** tool call: with the default policy you see an Allow/Deny card for `task_create`, `task_move`, `task_update`, `task_note`, `task_reassign`, `task_checkout`, `task_place`, `escalate` and `decide`. Desks that run unattended usually have approvals relaxed; the switches are `/approvals off` (this session), `/approvals off always` (`tools.approvals: false`) and Settings › **Approvals**. No per-tool "always allow" exists. Details: [Tools and permissions](/docs/reference/tools-permissions).
+- Draft approval is a prompt rule, not a ledger rule: `task_create` accepts any agent call. What the ledger does enforce is the transition table, ownership on checkout and update, the reviewer-only close, the no-self-review-without-criteria rule, the superseded-writer check and the cross-task write cap.
+- Only an agent that owns a task (or you) can check it out, move it to review, or reassign it. Only the reviewer can close it or send it back. You can act as anyone.
+- `escalate` wakes the caller's manager, never an arbitrary agent; an agent whose line ends at theuth escalates to you.
+- A desk's wake delivery, nudges and `no continuation` rule mean an agent cannot silently keep a task checked out forever: the orphan sweep, the episode close and the back-off all return control to the board.
+- The task thread is a document of kind `task_thread`; it is hidden from the Notes lists but readable through the detail page.
+
+## Limits and lifecycle
+
+| Thing | Value |
+|---|---|
+| States | 7; `done` and `cancelled` are final |
+| Live checkouts per task | 1 (epoch bumps on every checkout) |
+| Orphan sweep | every 30 s; `orphan_secs` 120 / `stale_secs` 900 |
+| Wake dispatch | every 5 s, one wake per agent at a time; delivery retry 5 s doubling to 5 min |
+| Back-off | 120 s doubling to 1800 s after two unchanged wakes |
+| Escalation live wait | 120 s, then parked |
+| Placement wait on theuth's desk | 120 s |
+| Cross-task writes per session | 20 |
+| Child rounds per task per episode | `roster.max_rounds` 3 |
+| Activity feed | 50 entries by default, 500 max |
+| Fields that do not exist | priority, due date, labels, an assignee separate from owner |
+| Retention | none — done and cancelled tasks are kept; there is no archive or prune |
+| Replication | `tasks`, `wakes` and `answered` tables replicate across mesh peers |
+
+Routine-created tasks: each fire of a routine with an `agent:` line files a `todo` task titled `<routine> @ <time>` owned by that agent (`created_by: system`), one per fire; when the routine's `until` passes, its open tasks are set `done` with reviewer `system`. See [Schedules](/docs/automation/schedules). Hires file a `Hire agent <name> (<title>)` task for the proposer's manager, and budget warnings file `Budget: <name> at 80 %…` tasks — see [Agents](/docs/automation/agents).
+
+## Troubleshooting
+
+| Symptom | Cause | Fix |
+|---|---|---|
+| `backlog → done is not allowed (a backlog task is started first (todo), then checked out); from backlog you may move to: todo, cancelled` | Trying to skip states. | Start it (`todo`), let the owner check it out, review, then done. |
+| `todo → doing is task_checkout` | `task_move`/`task_update` cannot start work. | The owner calls `task_checkout {id}`. |
+| `done needs a reviewer other than the owner (self-review is only allowed against an explicit done_when)` | Agent is its own reviewer and the task has no `done_when`. | Set criteria via chat (`task_update {done_when}`) or name another reviewer; or mark done yourself. |
+| `a self-reviewed task is done only because its done_when criteria are met` | Self-reviewer passed `intent_met` / `follow_ups_filed`. | Use `criteria_met`, or have the manager close it. |
+| `conflict: checked out by <session> on <engine> (epoch N)` | Another live session holds the task. | Wait for the orphan sweep (120 s unreachable / 900 s stale), or reassign it; do not create a duplicate. |
+| `superseded: task … stop, your work is stale` | The session lost the checkout to a newer epoch. | That session must stop; the current checkout owner continues. |
+| `tasks.cross_task_write_cap: this session has written to 20 tasks it does not own; delegate with task_create instead` | One session editing many other owners' tasks. | File child tasks and let owners do their own writes; raise `tasks.cross_task_write_cap` only if this is intended. |
+| Task stuck in `blocked` with `decision:…`; **Unblock** missing | An escalation awaits an answer. | Answer it: the ask card in the agent's session, or **Attention › Answer**. |
+| Task `blocked: no continuation` | Desk episode closed, or the desk twice ended a turn without moving its woken task. | Open the task and press **Unblock — wake ‹agent›** (your move strips system blockers), or reassign it. |
+| `blocked: engine:<name>` / `blocked: sandbox:<name>` | Placement found no fitting node, or the owner's VM is not running. | Pair the node ([Mesh](/docs/automation/mesh)) or start the VM ([Sandboxes](/docs/automation/sandboxes)); then Unblock. |
+| Agent keeps getting woken but nothing changes; task missing from its inbox | Back-off after two unchanged wakes. | Comment on the task or edit it — a user edit resets back-off. |
+| ``parked: task … is blocked on `decision:…`; the answer re-wakes you. End your turn.`` in a transcript | Escalation outlived the 120 s live wait. | Normal; the answer wakes the agent again. |
+| `you are the top of the line; decide it` | `escalate` called in your own session. | There is nobody above you — answer in chat or set the task yourself. |
+| `blockers would form a cycle: …` | A `blocked_by` edge loops back. | Remove one edge in the **Blocked by / Blocks** chips. |
+| Draft card buttons do nothing / task never appears | The press is a chat message to the model; it must still call `task_create`. | Check the session is not waiting on an approval card; re-ask "add draft d1 to the backlog". |
+| `t tasks list` prints a connection error | No engine running. | Start the desktop app, or `t --serve`. |
+
+## Related
+
+- [Automation overview](/docs/automation)
+- [Agents](/docs/automation/agents) — desks, `reports_to`, hires, budgets
+- [Delegation](/docs/automation/delegation) — subagents and child tasks
+- [Schedules](/docs/automation/schedules) — `agent:` routines that file tasks
+- [Mesh](/docs/automation/mesh) and [Sandboxes](/docs/automation/sandboxes) — where tasks are placed
+- [Channels](/docs/automation/channels) — ask cards on Slack and Signal
+- [Tools and permissions](/docs/reference/tools-permissions)
+- [Configuration](/docs/reference/configuration)
+- [CLI](/docs/reference/cli)

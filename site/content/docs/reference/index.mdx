@@ -1,0 +1,38 @@
+---
+title: Reference
+description: The exact knobs, files, commands and gates of a theuth harness, verified against the source.
+---
+
+This section is the lookup half of the docs. It names every file in the data
+directory, every `config.yaml` key with its real default, every built-in tool
+with its risk class, every CLI flag and slash command, and the error strings
+you will actually see. Each page is written from the repository source
+(config structs, defaults, CLI definitions) rather than from design notes.
+
+If you are new, start with [Getting started](/docs/getting-started) and come
+back here when something needs an exact answer.
+
+## Pages
+
+| Page | What it answers |
+|---|---|
+| [Configuration](/docs/reference/configuration) | Data dir layout, `config.yaml` and `THEUTH_*` env precedence, keys and defaults per plugin, what applies live vs after a restart |
+| [Tools and permissions](/docs/reference/tools-permissions) | Built-in tools by group, `read_only` / `mutating` / `destructive` risk, `tools.policy` and approvals, subagent caps |
+| [MCP](/docs/reference/mcp) | Registering local and remote MCP servers, file shapes, `$VAR` / `$(cmd)` / `{{secret:…}}` expansion, risk gates, OAuth |
+| [Skills](/docs/reference/skills) | Skill files and front matter, the prompt index, `load_skill`, git repos, bundled skills |
+| [Secrets](/docs/reference/secrets) | The encrypted vault, versions and restore, `{{secret:NAME}}` substitution and scrubbing, masked entry, known limits |
+| [CLI](/docs/reference/cli) | Every `t` flag and subcommand, `theuth-relay` flags, TUI slash commands and key bindings, Signal and Slack commands |
+| [Troubleshooting](/docs/reference/troubleshooting) | Install, startup, provider auth, tool denial, MCP, mesh and sandboxes, voice, models, search, documents and apps |
+| [Development](/docs/reference/development) | Repository anatomy, toolchain, `just` recipes, plugin authoring, tests, building the desktop app and this site |
+
+## Conventions used here
+
+- `<data_dir>` is `~/.theuth` unless `--data-dir` or `THEUTH_DATA_DIR` moved it.
+- The binary is `t`. Homebrew installs it as `t`; `just run -- <args>` runs the same binary from a checkout.
+- Defaults quoted in tables are the values the code falls back to when a key is absent, not merely what the first-run template shows.
+- Tokens such as `{{secret:NAME}}`, `<job_result>` or `THEUTH_<SECTION>__<KEY>` are literal syntax; copy them as written.
+
+## Related sections
+
+- [Workspace](/docs/workspace): the desktop app, [terminal](/docs/workspace/terminal), [sessions](/docs/workspace/sessions), [voice](/docs/workspace/voice), [meetings](/docs/workspace/meetings), [documents](/docs/workspace/documents), [knowledge](/docs/workspace/knowledge), [apps](/docs/workspace/apps) and [search](/docs/workspace/search).
+- [Automation](/docs/automation): [agents](/docs/automation/agents), [delegation](/docs/automation/delegation), [tasks](/docs/automation/tasks), [schedules](/docs/automation/schedules), [watchers](/docs/automation/watchers), [mesh](/docs/automation/mesh), [sandboxes](/docs/automation/sandboxes), [channels](/docs/automation/channels) and the [browser and desktop](/docs/automation/browser-desktop) tools.

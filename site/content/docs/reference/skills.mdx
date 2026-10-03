@@ -1,0 +1,167 @@
+---
+title: Skills
+description: Markdown skills the model loads on demand, front matter, the prompt index, always-on skills, git skill repos, bundled skills and the commands and tools that manage them.
+---
+
+A skill is a markdown file the model can pull into context when it is
+relevant. The system prompt lists every skill's name and one-line
+description; the model calls `load_skill` to receive the body. Nothing is
+"installed" or "enabled": a skill is in context until the next compaction or
+`/clear`.
+
+## Where skills live
+
+`<data_dir>/skills/`, walked recursively on every model call. There is no
+watcher and no cache: a change on disk is in the next system prompt. A
+missing directory means no skills.
+
+| Path | Is |
+|---|---|
+| `<dir>/SKILL.md` | one skill named after `<dir>`; the rest of `<dir>` is supporting files and is not walked further |
+| any other `*.md` | one skill named after the file stem |
+| `README.md`, `LICENSE.md`, `CHANGELOG.md`, `CONTRIBUTING.md` (any case) | ignored |
+| `.git/`, other extensions | ignored |
+
+Subdirectories are organisation only and do not affect names. Duplicate
+names: the last file in path order wins and the log warns
+`duplicate skill name, last wins`. An unreadable file is skipped with a
+warning.
+
+There are no project-local skills: the harness reads `<data_dir>/skills/`
+only, not a `.theuth/` or `AGENTS.md` in the working directory. The flat
+skill files (not clones) also replicate to the other engines of your
+[mesh](/docs/automation/mesh).
+
+## Front matter
+
+Optional YAML between `---` delimiters at the top of the file:
+
+| Key | Default | Effect |
+|---|---|---|
+| `name` | file stem, or directory name for `SKILL.md` | the name in the index and in `load_skill` |
+| `description` | first non-empty line of the body | one line shown in the index |
+| `always` | `false` | `true`: the body is inlined into every system prompt instead of being indexed |
+
+Unknown keys (`license`, `allowed-tools`, `metadata`, …) are ignored, so
+third-party `SKILL.md` repositories load as they are. Invalid front matter
+logs a warning and the whole file is used as the body. Names must match
+`[a-z0-9][a-z0-9._-]*` when written by the harness.
+
+```markdown
+---
+name: commit
+description: Write a conventional commit message for staged changes
+---
+
+Run `git diff --cached`, then write a message in the form
+`type(scope): subject`, subject under 50 characters, body only when the
+"why" is not obvious from the diff.
+```
+
+```markdown
+---
+always: true
+---
+Never run `git push`.
+```
+
+## What the model sees
+
+The system prompt is assembled on every call in this order: the built-in
+header, `prompt.md`, the bodies of `always` skills (name order, blank-line
+separated), then the index:
+
+```text
+## Skills
+Call `load_skill()` (python: `await load_skill(name="…")`) to get a skill's full instructions.
+- commit: Write a conventional commit message for staged changes
+```
+
+`load_skill{name}` returns the body; for a `SKILL.md` skill it appends
+`files (under <dir>):` and the relative paths of the supporting files, which
+the model reads with `read_file`. An unknown name returns
+`no skill named <name>`. The TUI status line lists the skills currently in
+context (`skills: commit, review`) and the `/skills` picker marks them `●`.
+
+`prompt.md` and an `always` skill are indistinguishable to the model;
+`prompt.md` is the one place for "how I want you to behave", skills are the
+reusable pieces. `/prompt` shows the assembled prompt.
+
+## Handing a skill to the model
+
+| Where | How |
+|---|---|
+| TUI | `/skills` then Enter on a row; or `/<skill> [words]` (for example `/commit fix the typo`); `s` shows the body |
+| Desktop | the Library's Skills page (`/skills` route) with a Use action, and the same chat slash commands |
+| Slack, Signal | `/theuth skills` and `/skills` list and manage; the model still loads skills itself with `load_skill` |
+| RPC | `use_skill{name, args}` |
+
+Using a skill injects `<skill name="…">body</skill>` plus your words as your
+input: it starts a turn when the model is idle or steers the running one. The
+body is in context until compaction or `/clear`, not permanently.
+
+## Git repositories
+
+A skill repo is a plain clone directly under `skills/`; the clone is the
+record, there is no manifest, registry or lock file. Skills found inside show
+`[repo-name]` in `/skills` and refuse `add_skill` / `remove_skill` (edit
+upstream and sync, or remove the repo).
+
+```text
+~/.theuth/skills/
+  commit.md                   loose skill
+  review/SKILL.md             directory skill
+  anthropics-skills/          clone: /skills add https://github.com/anthropics/skills
+    .git/
+    skills/pdf/SKILL.md       indexed, repo = anthropics-skills
+    README.md                 ignored
+```
+
+| TUI | Tool | Does |
+|---|---|---|
+| `/skills` | `load_skill` | picker; Enter uses, `s` shows |
+| | `add_skill` (mutating) | writes `skills/<name>.md` with `name`, `description`, `always` front matter |
+| `/skills rm <name>` | `remove_skill` (destructive) | deletes a local skill file or `SKILL.md` directory |
+| `/skills add <url>` | `add_skill_repo` (mutating) | `git clone --depth 1 <url> skills/<name>`; default name = repo basename without `.git`; returns the skills found |
+| | `remove_skill_repo` (destructive) | removes `skills/<name>` if it has a `.git` |
+| `/skills sync` | `sync_skills` (mutating) | `git pull --ff-only` in every repo; per repo `updated`, `unchanged` or `error: …` |
+
+Git is your `git` binary; without one the repo operations report that and
+everything else works. The same operations exist over RPC (`list_skills`,
+`load_skill`, `use_skill`, `add_skill`, `remove_skill`, `add_skill_repo`,
+`remove_skill_repo`, `sync_skills`), on Slack as
+`/theuth skills [add <url>|rm <name>|sync]` and on Signal as
+`/skills [add <url>|rm <name>|sync]`.
+
+## Bundled skills
+
+On every start the binary (re)writes six skills it owns; edits to them are
+overwritten, everything else in `skills/` is never touched:
+
+| File | Purpose |
+|---|---|
+| `harness.md` | the model's manual for this data dir: layout, config keys, vault, MCP gates, what only the user can do |
+| `visualize.md` | drawing in replies with Mermaid and json-render blocks |
+| `pdf.md` | front matter, page breaks and Typst for `show` with a `.pdf` name |
+| `loops.md` | writing schedule and loop files |
+| `apps.md` | OpenUI Lang, the component catalog and examples for the `app` tool |
+| `board.md` | the whiteboard document tools |
+
+`apps.md` is written even when `app.enabled` is `false`.
+
+## Learning
+
+The model can write a skill itself with `add_skill` when you ask it to
+remember a procedure, and that is the only automatic path: there is no
+background skill harvesting. Durable facts belong in
+[knowledge](/docs/workspace/knowledge) (`knowledge_put`, harvested
+automatically); reusable instructions belong in skills.
+
+## External harnesses
+
+When a task is delegated to an ACP harness (`spawn_subagent{agent}`), the
+skills are materialised for it under `<cwd>/.agents/skills/<name>/SKILL.md`
+and exposed through a small MCP shim (`list_skills`, `load_skill`,
+`send_message`). `acp/agents.yaml` controls this per agent with
+`skills: true|false` and `skills_dir:`. See
+[Delegation](/docs/automation/delegation).

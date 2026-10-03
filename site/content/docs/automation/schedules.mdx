@@ -1,0 +1,303 @@
+---
+title: Schedules and loops
+description: Run a prompt on a clock — once, on a cron expression, or every N minutes — and loop it until a shell check passes. Routines in the desktop app, /schedules in the terminal, one markdown file per schedule.
+---
+
+A schedule is a prompt that theuth runs for you later, without you in the chat: a weekday morning digest, a check every 15 minutes, a reminder tonight at 21:30, or a loop that keeps retrying a job until a shell command says it is done. Each schedule is one markdown file in `~/.theuth/schedules/<name>.md`; the desktop app calls them **Routines**, the terminal UI lists them under `/schedules`. You normally create one by asking in chat — the model drafts the file through the `schedule` tool and you approve it once.
+
+## Prerequisites
+
+- The engine must be running for anything to fire: the desktop app, `t` in a terminal, or a `t --headless` / `t --serve` daemon. Nothing runs while theuth is closed; what happens to missed occurrences is covered under [Limits and lifecycle](#limits-and-lifecycle).
+- `schedule.enabled: true` in `config.yaml` (the default). With `false` there is no `schedule` tool, no prompt block, no Routines ticking, and RPC calls answer `schedule is disabled`.
+- Replies are delivered to your chat channels. To get them on your phone, run `t --headless` with Slack or Signal set up — see [Channels](/docs/automation/channels). Without a channel the run is still recorded in its session and history.
+- A run uses the same tools and the same approval policy as a chat turn. If nobody will be there to press **Allow**, the schedule needs `approvals: false` (see [Safety and permissions](#safety-and-permissions)).
+- In a mesh, only the hub engine fires schedules — see [Mesh](/docs/automation/mesh).
+
+## How it works
+
+```text
+~/.theuth/schedules/<name>.md ──(watched, 300 ms debounce)──▶ schedule actor
+                                                                   │ due
+                                                                   ▼
+                                     session "<name>" (context cleared, then the prompt)
+                                                                   │ turn ends
+                                                                   ▼
+              reply delivered to your channels ◀──(unless quiet)── history row in schedule.sqlite
+                                                                   │ until: / max_runs:
+                                                                   ▼
+                                                            fire again (loop) or stop
+```
+
+**The file.** Front matter plus a body. Exactly one of three clocks:
+
+| key | meaning | example |
+|---|---|---|
+| `at:` | once, at an instant; the file is deleted when it fires | `at: 2026-10-03T21:30` |
+| `cron:` | standard 5- or 6-field cron expression, evaluated in the machine's local time | `cron: "0 9 * * 1-5"` |
+| `every:` | an interval (`30m`, `6h`, `90s`); first fire within a minute of creation, then `last + interval` | `every: 15m` |
+
+The body is the prompt the model receives. There is no natural-language clock (`"every weekday morning"` is for you to say in chat, not to put in the file), and there is no timezone key anywhere: `cron:` and `at:` mean the local time of the machine running the engine.
+
+**One session per schedule.** The first fire creates a session titled with the schedule's name (an *isolated* session: it does not see your other chats). Every later fire reuses that session but clears its context first, so each run starts fresh. The model is told to call `knowledge_put` for anything the next run should know; [Knowledge](/docs/workspace/knowledge) is the carry-over store. You can open the session from the Routines row or the `/schedules history` table like any other.
+
+**The wrapper.** The run's input is the body wrapped in `<schedule name="…" at="…" quiet="true|false">…</schedule>` (loops add `run="N" of="M"`, and an `<until exit="1">…</until>` block carrying the last check output). The model is told this is a timer firing, not a person: nobody will answer a question, so it acts on the prompt as written. The terminal UI renders the wrapper as a `◷` card.
+
+**Loops.** Add `until: <shell command>` and/or `max_runs: N` and the schedule runs again after each run ends until the command exits 0, the cap is reached, or the model calls `schedule_done`. `every: 0s` is allowed only on a loop and means "again as soon as the previous run ends".
+
+**Delivery.** When a run ends, its final reply is delivered to your channels (origin `schedule <name>`) unless the file says `quiet: true`, the run already used `message_user`, or the reply is empty. Errors, timeouts and loop ends are always delivered, quiet or not; a run you cancelled yourself is silent.
+
+**Agents.** With `agent: <roster name>` a fire does not run a turn at all: it creates a task owned by that agent (history row `task <id>`), optionally labelled with `project:`. See [Tasks](/docs/automation/tasks) and [Agents](/docs/automation/agents).
+
+## Walkthrough: a weekday 09:00 digest
+
+Ask in a chat (desktop or terminal):
+
+```text
+› every weekday at 9am, read my inbox skill output and the open PRs on
+  owner/repo, and send me a five-line digest. Call it morning-digest.
+```
+
+The model drafts the file and calls the `schedule` tool. Because that tool is *mutating*, you get an approval card with the arguments visible before anything is written:
+
+```text
+╔══════════════════════════════════════════════════════════╗
+║ approval: schedule  (mutating)                           ║
+║ name: morning-digest                                     ║
+║ cron: 0 9 * * 1-5                                        ║
+║ prompt: Read the inbox skill output and the open PRs …   ║
+║ [y] allow  [n/esc] deny                                  ║
+╚══════════════════════════════════════════════════════════╝
+```
+
+Press **y** (desktop: **Allow**). The tool answers one line, which the model relays:
+
+```text
+scheduled morning-digest: cron 0 9 * * 1-5 · At 09:00, Monday through Friday · next Mon 06 Oct 09:00 (in 2d 12h)
+```
+
+The file it wrote is `~/.theuth/schedules/morning-digest.md`:
+
+```markdown
+---
+cron: "0 9 * * 1-5"
+---
+Read the inbox skill output and the open PRs on owner/repo, and send a
+five-line digest.
+```
+
+Monday at 09:00 local time a session named `morning-digest` appears in the sidebar, the run happens there, and the reply lands in your chat channels. If the engine was asleep at 09:00, the default `missed: skip` waits for Tuesday; add `missed: run` (desktop: the *run a missed occurrence at boot* switch, cron only) to fire once at the next start instead.
+
+Check on it any time: `/schedules` in the terminal, the **Routines** page on the desktop, or ask `how is morning-digest doing?` — the model calls `schedule_status` and reads back the last runs.
+
+## Walkthrough: a loop that retries until a check passes
+
+```text
+› keep trying to get `cargo test` green in ~/code/widget. Re-run until the
+  suite passes, at most 10 times. Don't start until I say go.
+```
+
+The model drafts the loop **disabled** and shows you the file, as it is instructed to:
+
+```markdown
+---
+every: 0s
+until: "cargo test --quiet"
+max_runs: 10
+cwd: "~/code/widget"
+enabled: false
+---
+Run the test suite. Fix the first failing test you see, commit nothing,
+and stop when the suite is green.
+```
+
+The tool reply ends with `· up to 10 runs · disabled: resume with /schedules resume green-tests or by editing enabled:`. When you say go, either flip the switch on the Routines row, run `/schedules resume green-tests`, or ask the model to edit the line.
+
+What happens per run:
+
+1. The run starts in `cwd`; the model does its work; the turn ends.
+2. theuth runs `until:` in your login shell (`-lc`) in `cwd`, with no stdin and a 120 s cap.
+3. Exit 0 → the loop ends with `done: until passed after N runs`, delivered to you.
+4. Exit 1 → the loop fires again (immediately, because `every: 0s`). The last 2 KiB of the check's stdout+stderr arrive in the next run's input as `<until exit="1">…</until>`, so the model sees the failing test names.
+5. Any other exit code, or no exit within 120 s → `until broken: exit N: <tail>` / `until broken: no exit in 120s`; the loop stops and you are told.
+6. The tenth run ends with `max_runs 10 reached` if the check never passed.
+
+The model can also end the loop itself with `schedule_done { why }` (row `done (model): <why>`, file removed, message delivered) — for example when it concludes the failure is not fixable without you.
+
+## Walkthrough: a one-off run tonight
+
+```text
+› at 21:30 tonight, check whether the deploy at https://status.example.com
+  is green and tell me either way
+```
+
+After your approval the reply is `scheduled deploy-check: at 2026-10-03T21:30 · … · next Fri 03 Oct 21:30 (in 5h 12m)`. The file has a single `at:` line:
+
+```markdown
+---
+at: 2026-10-03T21:30
+---
+Open https://status.example.com and tell me whether the deploy is green.
+```
+
+`at:` accepts RFC 3339 (`2026-10-03T21:30:00+02:00`) or `YYYY-MM-DDTHH:MM[:SS]` read as local time. It must be in the future, cannot carry `until:`/`max_runs:` (`at: a one-shot has no loop to stop`), and the file is removed when it fires, so the Routines row disappears afterwards; `/schedules history deploy-check` and `schedule_status deploy-check` still show the run (`deploy-check · no file (ended or removed) · last: …`).
+
+For a reminder that only needs to say something and not do anything, `remind_me_in` (ask: "remind me in 20 minutes to …") is lighter than a schedule.
+
+## Reference
+
+### Front-matter keys
+
+| key | default | notes |
+|---|---|---|
+| `cron:` | — | 5/6-field, local time; quoted in the file. Exactly one of `cron`/`every`/`at`. |
+| `every:` | — | humantime (`30m`, `6h`, `90s`). Floor 10 s; `0s` only with `until`/`max_runs`. |
+| `at:` | — | RFC 3339 or `YYYY-MM-DDTHH:MM[:SS]` local; future only; file removed on fire. |
+| `until:` | — | shell check, login shell in `cwd`, 120 s cap. Exit 0 = done, 1 = again, other = `until broken`. |
+| `max_runs:` | — | ≥ 1. Counted since the loop last ended; pause/resume does not reset it. |
+| `missed:` | `skip` | `run` fires once at start-up if a cron occurrence fell while the engine was down. Cron only. |
+| `quiet:` | `false` | `true`: the final reply is not delivered; `message_user` still is; ends and errors always are. |
+| `model:` | engine default | model for this schedule's session only. |
+| `cwd:` | none | `~` expands; must exist. Where `until` runs and where the session starts. |
+| `approvals:` | `true` | `false`: the run never prompts (see below). |
+| `run_timeout:` | `schedule.run_timeout_secs` | humantime, ≥ 30 s, no upper bound. Cancels the run and every subagent it spawned. |
+| `agent:` | — | roster agent name; each fire becomes a task for that agent instead of a turn. |
+| `project:` | inferred from `cwd` | task label when `agent:` is set. |
+| `enabled:` | `true` | `false`: listed, never fires (`next: — (disabled)`). |
+| `when:` … | — | watcher keys (`when`, `fire`, `for`, `cooldown`, `mode`, `memory`, `expires`, `timeout`). Documented in [Watchers](/docs/automation/watchers); without `when:` they fail with `<key>: needs when:`. |
+
+Unknown keys make the file **broken** (listed with its parse error, never fires). Names match `[a-z0-9][a-z0-9-]*`, at most 40 characters.
+
+### Configuration
+
+```yaml
+schedule:
+  enabled: true           # false: no tool, no prompt block, nothing fires
+  run_timeout_secs: 1800  # default per-run cap; a file's run_timeout: overrides it
+```
+
+`run_timeout_secs` is also editable live under **Settings › Agent loop › Routines › Run time limit** (minimum 30), which writes it back to `config.yaml`. These are the only schedule-specific settings; the `until` cap (120 s) and the `every` floor (10 s) are fixed.
+
+### Tools the model calls
+
+| tool | risk | arguments | returns |
+|---|---|---|---|
+| `schedule` | mutating | `name`, `prompt`, one of `cron`/`every`/`at`, `quiet?`, `model?`, `until?`, `max_runs?`, `run_timeout?`, `cwd?`, `approvals?`, `enabled?`, watcher keys | `scheduled <name>: <clause> · <description> · next <Wkd DD Mon HH:MM> (in …)` plus `· until: …`, `· up to N runs`, `· approvals off`, `· disabled: resume with …` as applicable. Replaces an existing file of the same name. |
+| `schedule_done` | read-only | `why` | `ended <name>: <why>`; only valid inside a schedule run (else `not a schedule run`). Ends the loop, removes the file, tells you. |
+| `schedule_status` | read-only | `name?` | one line per schedule (`name · when · next in … · runs N · running Xm\|idle · last: <result>`); with a name, the last 10 runs and the newest report. |
+
+Reading, listing and deleting schedules is done with the ordinary file tools (`read_file`, `list_dir`, delete), each under the normal file policy.
+
+### Terminal UI
+
+| command | effect |
+|---|---|
+| `/schedules` | table `name · when · next · runs · last · result · state`; `no schedules` when empty |
+| `/schedules run <name>` | fire now → `fired <name> → session <id>`; with `agent:` answers `created task <id>` |
+| `/schedules history <name>` | last 20 rows: `fired · took · result · session · report` |
+| `/schedules pause <name>` / `resume <name>` | flips `enabled:` → `<name> paused` / `<name> resumed` |
+| `/schedules test <name>` | dry-runs a watcher's sensor ([Watchers](/docs/automation/watchers)) |
+
+Anything else prints `usage: /schedules [run <name>|test <name>|history <name>|pause <name>|resume <name>]`. There are no `t` subcommands for schedules.
+
+### Desktop: Routines
+
+**Routines** in the sidebar lists every file. Each row shows the name, cadence words (`weekdays 09:00`, `every 15 min`), `next in …`, `last … ago`, `loop · runs N/M` for loops, and chips: `running`, a result badge (ok / failed / skipped), `broken`, `paused`, `not hub`, `@agent`, project, `approvals off`. Row actions: **Run now** (opens the session; disabled while running or broken), **Test** (watchers only), and an enable switch (*Pause / Resume name*). **New routine** opens the editor. The empty page reads: *No routine yet. Create one, ask the model to `schedule` one, or drop a markdown file in ~/.theuth/schedules/.*
+
+The detail page has four tabs:
+
+- **Overview** — facts (Cadence, Next run, Last run, Loop runs or Session) and the form: a Cadence fieldset (kind select cron / every / at; cron input with placeholder `0 9 * * 1-5` marked *local time*; every placeholder `30m`; at as a date-time picker; live preview; the cron-only *run a missed occurrence at boot* switch), switches **enabled / quiet / approvals**, **Agent** select, **Project**, **Model** (*Engine default*), **Directory**, **Time limit per run** (`45m, 2h; empty = the Settings default`), and a Loop fieldset (hidden for `at`) with **Until**, **Max runs** and *runs so far*.
+- **Prompt** — the body as a markdown textarea.
+- **History** — the last 50 runs.
+- **Danger** — delete the file. Deleting does not stop a run already in flight.
+
+**Save / Revert / Create** write the file through the engine, so the same parse errors as the tool are shown inline. Over RPC the same operations are `list_schedules`, `get_schedule`, `put_schedule`, `delete_schedule`, `fire_schedule`, `enable_schedule`, `schedule_history`, `test_schedule`, `set_schedule_run_timeout`; the engine publishes `ScheduleEvent::Fired`, `Skipped` and `Changed`.
+
+### Result vocabulary
+
+What `/schedules`, `schedule_status` and the history tables put in the *result* column:
+
+| result | meaning |
+|---|---|
+| `end_turn` (or another provider stop reason) | the run finished normally |
+| `error: <msg>` | the turn failed; delivered as `schedule <name> error: <msg>` |
+| `timeout` | hit `run_timeout`; delivered as `schedule <name> timeout: …` |
+| `cancelled` | you cancelled the session; not delivered |
+| `skipped: busy` | **Run now** / `/schedules run` while a run was in flight |
+| `lost` | the engine stopped mid-run (recorded on restart) |
+| `task <id>` | an `agent:` fire that created a task |
+| `done: until passed after N runs` | loop ended by the shell check |
+| `done (model): <why>` | loop ended by `schedule_done` |
+| `max_runs N reached` | loop ended by the cap |
+| `until broken: …` | the check exited with a code other than 0/1, was killed, or ran past 120 s |
+| `removed` | the file was deleted while listed |
+
+Watcher-only rows (`quiet`, `unchanged`, `holding`, `cooldown`, `queued`, `fired`, `deferred`, `check broken …`) are explained in [Watchers](/docs/automation/watchers).
+
+## Safety and permissions
+
+- **Creating a schedule asks you.** The `schedule` tool is *mutating*, so under the default policy (`tools.policy.mutating: ask`) every create or replace shows an approval card with the full arguments — name, clock, prompt, `until`, `approvals` — and you decide once. `schedule_done` and `schedule_status` are read-only and never prompt. The model only writes schedules without asking when approvals are off for that session or globally; a run with `approvals: false` can therefore create further schedules — nothing enforces otherwise.
+- **Loops are drafted off.** The model is instructed to write loops with `enabled: false`, show you the file and start only when you say so. Expect the `· disabled: resume with …` suffix and flip it yourself.
+- **Runs follow the normal policy.** Inside a run the model has every tool it has in chat, and each call goes through the same `read_only` / `mutating` / `destructive` decision. An approval card from a schedule shows up wherever you are (terminal modal, desktop card and the Pending pill, Slack buttons, Signal 👍/👎). If nobody answers within `tools.approval_timeout_secs` (300 s) the call is denied and the run continues without it — which is usually not what you want at 03:00.
+- **`approvals: false` is the unattended switch.** It sets approvals off for that schedule's session on every fire, so the run acts without prompts. The model is told to propose it only when nobody will be there and to say so; the file, the tool reply, `schedule_status`, the TUI history header and the Routines chip all show `approvals off`. Pair it with a narrow prompt, a `cwd`, and `run_timeout`. There is no per-tool "always allow"; the full model is in [Tools and permissions](/docs/reference/tools-permissions).
+- **Trust boundaries.** The session is isolated: a scheduled run does not see your other conversations, only what the prompt says, what `knowledge_put` stored, and the `<until>` tail. Secrets work as in chat (`{{secret:NAME}}` placeholders raise a call to at least *ask*; see [Secrets](/docs/reference/secrets)). Anyone who can write to `~/.theuth/schedules/` can make theuth act later, which is why the directory is yours alone and the tool asks.
+
+## Limits and lifecycle
+
+| what | value |
+|---|---|
+| `every` floor | 10 s (30 s with `when:`; `0s` allowed with a stop) |
+| `until` cap | 120 s, then `until broken` |
+| `until` tail and stored report | last 2 KiB each |
+| `run_timeout` / `run_timeout_secs` | ≥ 30 s; default 1800 s; no maximum |
+| name | `[a-z0-9][a-z0-9-]*`, ≤ 40 chars |
+| history shown | `schedule_status` 10 runs, `/schedules history` 20, Routines 50; nothing is pruned |
+| number of schedules, concurrent runs, runs per day | no cap |
+| tick resolution | the actor sleeps until the next due time, clamped between 1 s and 60 s |
+| retries | none: an `error` or `timeout` row ends that run; the next clock fire proceeds normally |
+
+**Overlap.** A clock schedule that comes due while its previous run is still going is not fired and gets no row; it stays due and fires on the first tick after the run ends. Only a forced **Run now** / `/schedules run` during a run writes `skipped: busy` and answers `busy`. A run stays open while any subagent it spawned is alive (the run timeout cancels the whole tree).
+
+**Edits.** The directory is watched (300 ms debounce): saving a file, deleting it, or the tool replacing it takes effect without a restart. Deleting cancels the schedule and writes a `removed` row, but does not stop a run already in flight. A pause (`enabled: false`) stops future fires; resuming does not reset a loop's `max_runs` count.
+
+**Restart and sleep.** `cron` with `missed: skip` (default) waits for its next occurrence; with `missed: run` it fires once at start-up if an occurrence fell while the engine was down. `every` is computed as `last + interval`, so an overdue interval fires right after start. An `at:` whose instant has passed becomes `broken` with `at: in the past`. A run interrupted by a stop is recorded as `lost`.
+
+**Mesh.** Only the hub engine ticks. A non-hub engine shows the `not hub` chip on every row and never fires; when it becomes hub again its schedules re-arm and the `missed:` policy applies. **Run now** is deliberately not hub-gated. Schedule files are mirrored across replicas every 120 s. See [Mesh](/docs/automation/mesh).
+
+## Troubleshooting
+
+| symptom | cause | fix |
+|---|---|---|
+| Row marked `broken`, `/schedules` shows a parse error, the tool refuses | the file did not parse; it is listed but never fires | read the error below the name and fix the key |
+| `exactly one of cron / every / at` | zero or two clocks in the front matter | keep one |
+| `every: below 10s` / `every: 0s needs until or max_runs` | interval too short; `0s` is only for loops | raise it, or add `until:` / `max_runs:` |
+| `at: in the past` | the instant already passed (also after a restart) | set a future time or delete the file |
+| `at: expected RFC 3339 or YYYY-MM-DDTHH:MM[:SS]` / `at: not a valid local time` | unrecognised or non-existent local time (DST gap) | use `2026-10-03T21:30` or a full RFC 3339 stamp |
+| `at: a one-shot has no loop to stop` | `until:`/`max_runs:` on an `at:` file | drop the stop or switch to `every:` |
+| `cwd: not a directory: <path>` | `cwd:` does not exist | create it or fix the path (`~` is fine) |
+| `cron: <error>` | croner rejected the expression | 5 or 6 fields, e.g. `"0 9 * * 1-5"`; quote it |
+| `run_timeout: below 30s` | too small | 30 s minimum |
+| `max_runs: at least 1` / `until: empty` | bad loop stop | fix the value |
+| `<key>: needs when:` | a watcher key (`fire`, `mode`, …) on a plain schedule | remove it or make it a [watcher](/docs/automation/watchers) |
+| Unknown key error | front matter rejects unknown fields | check the spelling against the table above |
+| Fired an hour early/late | `cron:` uses the engine machine's local time; there is no timezone key | write the expression in that machine's local time |
+| Row shows `not hub`, nothing fires | this engine is not the mesh hub | wait for the hub or make this engine hub; **Run now** still works here |
+| Run never finishes, then `timeout` | it waited on an approval nobody answered (300 s → denied) or exceeded `run_timeout` | add `approvals: false` for unattended runs; raise `run_timeout:` |
+| `busy` from Run now, row `skipped: busy` | a run is already in flight | wait for it or cancel the session |
+| `until broken: exit N` / `until broken: no exit in 120s` | the check exited with something other than 0/1, or hung | make the check return 0 (done) or 1 (again) and finish within 120 s |
+| `until: no login shell on this platform …` | no login shell to run `until:` in | use `max_runs:` or `schedule_done` instead |
+| `not a schedule run` | `schedule_done` called from a normal chat | it only works inside a schedule's run |
+| Reply never arrived | `quiet: true`, the run used `message_user`, or no channel is configured | open the schedule's session; errors and loop ends are delivered regardless of quiet |
+| `created task <id>` instead of a session | the file has `agent:`; fires create tasks | look under [Tasks](/docs/automation/tasks) |
+| `schedule is disabled` | `schedule.enabled: false` | enable it and restart |
+
+## Related
+
+- [Automation overview](/docs/automation)
+- [Watchers](/docs/automation/watchers) — `when:` sensors that fire on a condition
+- [Tasks](/docs/automation/tasks) — what `agent:` fires create
+- [Agents](/docs/automation/agents) and [Delegation](/docs/automation/delegation)
+- [Mesh](/docs/automation/mesh) — hub-only ticking
+- [Channels](/docs/automation/channels) — where replies and approvals reach you
+- [Tools and permissions](/docs/reference/tools-permissions)
+- [Knowledge](/docs/workspace/knowledge) — carry-over between runs
+- [Configuration](/docs/reference/configuration)

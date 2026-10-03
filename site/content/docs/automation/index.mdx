@@ -1,0 +1,116 @@
+---
+title: Automation and orchestration
+description: How theuth runs work without you at the keyboard — subagents, a roster of hired agents with desks, a task board, routines and watchers, channels, other machines, sandbox VMs, and the browser and desktop controls — and the one permission gate that sits under all of it.
+---
+
+A theuth session is one model talking to you and calling tools. Everything on this section's pages is a way to make work happen *beside* or *after* that conversation: a child session that does a sub-task, an agent you hired that owns a standing role, a task that waits on the board until someone picks it up, a routine that fires at 09:00, a watcher that fires when a sensor says so, a Slack thread or a phone, another machine, or an isolated Linux VM. All of it runs inside the same single process (`t`) on your data dir (`~/.theuth` unless you moved it), and all of it goes through the same tool-permission gate.
+
+## The pieces
+
+| Piece | What it is | Where you see it | Page |
+|---|---|---|---|
+| Subagent | A child session spawned by the model (`spawn_subagent`): a native theuth child, an external coding harness over ACP (opencode, omp, …), or a theuth on another machine | Sidebar tree under the parent chat; `/agents` in the terminal; a thread per child on Slack | [Delegation](/docs/automation/delegation) |
+| Agent (roster) | A standing role you hire: a charter, a manager, a model, a tool ceiling, an optional monthly budget, and one pinned **desk** session that receives work | **Agents** and **Desks** in the sidebar; `/roster` in the terminal | [Agents](/docs/automation/agents) |
+| Task | A unit of work on a board with an owner, a state, blockers and a thread; agents are *woken* by task events | **Tasks** in the sidebar; `t tasks list`; `/tasks` | [Tasks](/docs/automation/tasks) |
+| Routine (schedule) | A markdown file with `cron:`, `every:` or `at:` and a prompt; each fire is a turn in that routine's own session, optionally looping until a check passes | **Routines** in the sidebar; `/schedules` | [Schedules](/docs/automation/schedules) |
+| Watcher | A routine with `when: <sensor>.py …`: a small Python sensor polled on a cadence; the prompt runs only when the sensor says *fire* | Same Routines list, with a **Test** button and a *last check* column | [Watchers](/docs/automation/watchers) |
+| Channel | Slack and Signal as frontends: messages become turns, approvals become buttons or reactions, voice notes are transcribed | Settings › Channels | [Channels](/docs/automation/channels) |
+| Mesh / nodes / devices | Other engines (machines) that replicate your sessions and records, remote boxes reached over the link relay, and phones or browsers paired to the mesh | Settings › Mesh, Settings › Link; the engine switcher | [Mesh](/docs/automation/mesh) |
+| Sandbox VM | An isolated Linux desktop microVM on this machine that joins the mesh as an engine, with chosen host folders shared in | Settings › Mesh › Sandbox VMs; **Open desktop** | [Sandboxes](/docs/automation/sandboxes) |
+| Browser and desktop | An embedded headless browser per session, and native control of your own screen, mouse and keyboard | The globe (**Live browser**) in the chat header; Settings › Computer | [Browser and desktop](/docs/automation/browser-desktop) |
+
+The dependencies between them are few and worth knowing:
+
+- Subagents are the unit of *doing*. A desk never works in its own session; it spawns a child for every task. A routine with an `agent:` line does not run a prompt — it files a task for that agent. A sandbox is used by spawning a child *on* it (`spawn_subagent{agent: "<vm name>"}`).
+- `spawn_subagent` only exists when **communication** is on (`agent.communication: true`, off by default). With it off, desks, routines and tasks still work, but nothing can delegate.
+- Routines, desks and devices are served by whichever engine holds the mesh **hub** lease. On a single machine that is always this one; in a mesh, the other engines show a `not hub` chip and wait.
+- Channels (Slack, Signal) only run in the daemon (`t --headless`, which the desktop app starts for you). The terminal UI alone does not connect them.
+
+## How a piece of work flows
+
+```text
+you (chat, Slack, Signal, phone)         clock / sensor
+        │                                      │
+        ▼                                      ▼
+   root session  ──spawn_subagent──▶  child session(s)      routine session
+        │                                      │                   │
+        │  task_draft → Add to backlog/Start   │                   │ agent: <name>
+        ▼                                      ▼                   ▼
+   ┌───────────── task board ─────────────────────────────────────────┐
+   │ backlog → todo → doing → review → done          blocked ⇄       │
+   └──────────────┬───────────────────────────────────────────────────┘
+                  │ wake (assigned, comment, answer, review, …)
+                  ▼
+        agent desk session  ──spawn_subagent──▶  child on this engine,
+                                                 a node, or a sandbox VM
+```
+
+Every arrow that calls a tool passes the same gate, and every approval it raises lands in whichever UI you are looking at: the terminal, the desktop card, a Slack button, a Signal reaction.
+
+## The permission gate
+
+There is one decision per tool call, made in the tool registry:
+
+1. Every tool has a risk: `read_only`, `mutating` or `destructive`. MCP tools take theirs from their annotations (unset means `mutating`; `mcp/config.yaml` overrides per server or tool).
+2. A session may carry a **cap** — a ceiling set by `spawn_subagent{tools: …}` or by an agent file's `tools:` line. A call above the cap is denied outright (`denied: subagent is capped at <risk>`), and children inherit the lowest cap of their ancestors. `send_message` is exempt so a capped child can still report.
+3. `tools.policy` maps the risk to `allow`, `ask` or `deny`. The default is `{read_only: allow, mutating: ask, destructive: ask}`. A `{{secret:NAME}}` placeholder in the arguments raises the answer to at least `ask`.
+4. An `ask` becomes `allow` when approvals are off for the session (`/approvals off`, inherited by its children) or globally (`/approvals off always`, which writes `tools.approvals: false`). A `deny` is never rewritten.
+
+An approval is an **Allow / Deny** card. It waits `tools.approval_timeout_secs` (300 s) and then counts as denied. There is no per-tool "always allow"; the knobs are the policy, the approvals switch and the cap. [Tools and permissions](/docs/reference/tools-permissions) has the full reference; each page in this section lists what asks and what never asks for its own tools.
+
+Two switches are *capabilities*, not approvals, and sit above the gate:
+
+| Switch | Default | What it controls |
+|---|---|---|
+| `agent.communication` | `false` | Whether `spawn_subagent`, `discover_peers` and `send_message` exist at all. `/communication on always` turns it on and writes the key; `/communication off` opts one session and its descendants out in memory. The global value is a ceiling: a session can opt out under it, never in above it. |
+| `a2a.enabled` | `false` | Remote agents over A2A — a separate network switch that also needs communication on. Not covered further here. |
+
+Unattended runs — routines with `approvals: false`, desks with approvals off — are the only places theuth acts without a human able to answer a card. Both are explicit, per-file or per-session choices, and the pages that describe them say what to expect.
+
+## Budgets, caps and cost
+
+There is no global money or token cap per session or per day. What exists:
+
+- **Roster agents** can carry `budget: <amount> <CUR>/month`. At 80 % a task is filed for the agent's manager; at 100 % the agent is paused and a *Budget override* task is filed; un-pausing lifts the cap for the rest of that month. See [Agents](/docs/automation/agents).
+- **Structural limits** that bound a runaway session: `agent.max_tool_rounds` (32 tool rounds per turn), `agent.subagents.max_concurrent` (8), `max_runtime_secs` (600 s per child turn), `max_depth` (1: children cannot spawn children by default), `schedule.run_timeout_secs` (1800 s per routine run), and `tools.job_timeout_secs` (1800 s per shell job).
+- **Cost tracking** everywhere: `/cost` in the terminal, the cost pill in the desktop chat header (direct, descendants, total), per-child cost in the sidebar tree, and per-session cost on a task's detail page. External harnesses report what they report; opencode before 2.0 reports the last request only, and the UI says so.
+
+## Where things live
+
+Everything is a file or a SQLite database under the data dir, so you can inspect, back up or hand-edit it. The pages name the exact paths; the short map:
+
+| Path | Holds |
+|---|---|
+| `config.yaml` | Every section's settings (`agent`, `tools`, `schedule`, `roster`, `tasks`, `mesh`, `link`, `nodes`, `sandbox`, `slack`, `signal`, `browser`, `computer`, …). Any key can be overridden with `THEUTH_<SECTION>__<KEY>` in the environment. |
+| `agents/<name>.md` | One hired agent: front matter plus its charter. |
+| `schedules/<name>.md` | One routine or watcher: front matter plus its prompt. |
+| `sensors/*.py` | Watcher sensors (two built-ins are written for you). |
+| `acp/agents.yaml` | External harnesses the model may spawn. |
+| `tasks.sqlite`, `roster.sqlite`, `schedule.sqlite`, `sessions.sqlite` | The task ledger, roster mirror, run history and sensor state, session transcripts. |
+| `slack/`, `signal/` | Thread bindings and inboxes for files received on those channels. |
+| `computers/<name>.yaml` | Sandbox VM records. |
+
+See [Configuration](/docs/reference/configuration) for the file format and the restart rule: `config.yaml` is read at start, and a change needs a restart unless a UI setting writes it live.
+
+## Which page do I need?
+
+| I want to… | Start with |
+|---|---|
+| Have the model split a big job into parallel pieces, or run a coding task in opencode or omp | [Delegation](/docs/automation/delegation) |
+| Give a standing role a name, a manager, a budget and a place work arrives | [Agents](/docs/automation/agents) |
+| See what is in progress, blocked or waiting for my decision | [Tasks](/docs/automation/tasks) |
+| Run something every weekday morning, tonight at 21:30, or until a check passes | [Schedules](/docs/automation/schedules) |
+| Be told when a file appears or a pull request changes, without polling myself | [Watchers](/docs/automation/watchers) |
+| Talk to theuth from Slack or my phone, including voice notes | [Channels](/docs/automation/channels) |
+| Run work on my build server, or follow a session from the phone | [Mesh](/docs/automation/mesh) |
+| Let the model install and run things somewhere that cannot touch my machine | [Sandboxes](/docs/automation/sandboxes) |
+| Fill a web form, act as the signed-in me, or click through a native app | [Browser and desktop](/docs/automation/browser-desktop) |
+
+## Related
+
+- [Your first session](/docs/getting-started/first-session) — the basic turn, approvals and steering that everything here builds on
+- [Sessions](/docs/workspace/sessions) — the sidebar tree, compaction and resuming
+- [Tools and permissions](/docs/reference/tools-permissions) — the policy, risks and approval UI in full
+- [Configuration](/docs/reference/configuration) — `config.yaml` sections and the environment override
+- [CLI](/docs/reference/cli) — `t` flags and the `mesh`, `tasks`, `sandbox` subcommands
+- [Troubleshooting](/docs/reference/troubleshooting)

@@ -1,0 +1,270 @@
+---
+title: Tools and permissions
+description: Built-in tools by group, the read_only / mutating / destructive risk classes, tools.policy and approvals, per-session bypass, MCP gates and subagent caps.
+---
+
+Every tool call carries a risk class. `tools.policy` maps each class to an
+action; `ask` puts a prompt in front of you and the call waits. This page
+lists what the harness ships, how the gate decides, and how to answer or
+turn off prompts on each surface.
+
+## Risk classes
+
+| Risk | Meaning | Default action |
+|---|---|---|
+| `read_only` | reads, searches, screenshots, questions to you | `allow` |
+| `mutating` | writes files, sends input, changes state that can be undone | `ask` |
+| `destructive` | runs arbitrary commands, deletes, removes servers or skills | `ask` |
+
+The risk is fixed per built-in tool at compile time. The only per-tool
+override is for MCP tools through `mcp/config.yaml` (below), where a fourth
+value `off` exists; `off` is a gate, not a risk, and means "not registered at
+all".
+
+## Built-in tools
+
+Names are exact. Risk is the default class; `direct` marks tools the model
+always sees as a tool definition even with the Python runtime on (the rest are
+callable as `async` functions inside `python`).
+
+### Shell, jobs, files (tools plugin)
+
+| Tool | Risk | Notes |
+|---|---|---|
+| `shell` | destructive | brush bash in-process at the session cwd; output within `tools.job_grace_secs` comes back inline, otherwise a job id and a later `<job_result>` |
+| `start`, `send`, `screen`, `wait` | destructive, mutating, read_only, read_only | a command on a 120×40 pseudo-terminal (`$SHELL -lc`); `ready: {log, port, host, timeout}` waits for readiness; `wait` defaults to 30 s, max 120 |
+| `jobs`, `cancel_job` | read_only, mutating | list and kill; `cancel_job` replies `killed <id>; no <job_result> will follow` |
+| `read_file`, `list_dir`, `grep`, `glob` | read_only | |
+| `write_file`, `edit` | mutating | |
+| `remind_me_in` (direct), `cancel_reminder` | read_only | ceiling `tools.reminder_max_secs` |
+| `ask_user` (direct) | read_only | multiple-choice questions; gives up after `tools.ask_timeout_secs` |
+
+Shell state (cwd, variables, functions) persists per session. There is no
+sandbox around `shell`: it runs on the host as you. Isolated execution is
+what [sandboxes](/docs/automation/sandboxes) are for.
+
+### Agent, skills, communication (agent plugin)
+
+| Tool | Risk | Notes |
+|---|---|---|
+| `spawn_subagent` (direct) | read_only | only with `agent.communication: true`; `tools:` caps the child |
+| `send_message` (direct), `discover_peers`, `peer_message` | mutating, read_only, read_only | same gate; `send_message` asks under the default policy |
+| `message_user` (direct) | read_only | text and files to you on Slack or Signal |
+| `list_models`, `session_read` | read_only | |
+| `load_skill` | read_only | see [Skills](/docs/reference/skills) |
+| `add_skill`, `add_skill_repo`, `sync_skills` | mutating | |
+| `remove_skill`, `remove_skill_repo` | destructive | |
+| `python`, `todo` | read_only | loop-local; `python` is the persistent runtime every other tool is callable from |
+
+### MCP management (tools plugin)
+
+| Tool | Risk |
+|---|---|
+| `add_mcp_server`, `remove_mcp_server` | destructive |
+| `add_mcp_repo`, `sync_mcp` | mutating |
+
+### Web, scraping, code, knowledge, search
+
+| Group | Tools | Risk |
+|---|---|---|
+| web | `search_web`, `read_url` | read_only |
+| web | `http_request` | mutating; `{{secret:NAME}}` belongs in a header value |
+| scrape | `scrape_url`, `crawl`, `map_site` | read_only |
+| codeindex | `code_find`, `code_outline`, `code_refs`, `code_map`, `code_symbol`, `code_impact`, `project_profile` | read_only |
+| knowledge | `knowledge_search`, `knowledge_get`, `knowledge_list`, `knowledge_put`, `knowledge_share`, `knowledge_history` | read_only (`knowledge_put` deliberately, every write is a git commit you can undo) |
+| knowledge | `knowledge_restore` | mutating |
+| knowledge | `knowledge_delete` | destructive |
+| rpc | `search` | read_only; one fuzzy search over sessions, artifacts, knowledge and its history |
+| search-providers | `search_x` | read_only; only while an `xai` secret or login exists |
+
+### Browser and desktop
+
+| Group | Tools | Risk |
+|---|---|---|
+| browser | `browser_open`, `browser_read`, `browser_elements`, `browser_click`, `browser_fill`, `browser_type`, `browser_press`, `browser_select`, `browser_scroll`, `browser_wait`, `browser_eval`, `browser_back`, `browser_screenshot`, `browser_tabs`, `browser_close`, `browser_show` | read_only (the browser is an isolated headless instance per session) |
+| browser | `browser_list_profiles` | read_only; only with `browser.import_cookies: true` |
+| browser | `browser_import_cookies`, `browser_run` | mutating |
+| computer | `computer_screenshot` | read_only |
+| computer | `computer_move`, `computer_click`, `computer_drag`, `computer_scroll`, `computer_type`, `computer_key`, `computer_open` | mutating; macOS Screen Recording and Accessibility permissions are the consent |
+
+See [Browser and desktop](/docs/automation/browser-desktop) for usage.
+
+### Files for you, apps, documents
+
+| Group | Tools | Risk |
+|---|---|---|
+| artifact | `show` (direct), `artifact_read` | read_only |
+| artifact | `doc_export` | mutating |
+| app | `app` (direct), `task_draft`, `agent_draft` | read_only; `app` never expands secret placeholders in its source |
+| document | `doc_read` | read_only |
+| document | `doc_insert`, `doc_replace`, `doc_delete`, `doc_move`, `doc_create` | mutating |
+
+### Secrets, schedules, sandboxes
+
+| Group | Tools | Risk |
+|---|---|---|
+| secrets | `secret_list`, `secret_request` (direct), `secret_request_form` (direct), `secret_capture`, `secret_restore` | read_only; none returns a value |
+| schedule | `schedule` | mutating |
+| schedule | `schedule_done`, `schedule_status` | read_only |
+| sandbox | `sandbox_list` | read_only |
+| sandbox | `sandbox_create`, `sandbox_install_runtime`, `sandbox_start`, `sandbox_pause`, `sandbox_resume`, `sandbox_stop`, `sandbox_resize`, `sandbox_share`, `sandbox_unshare`, `sandbox_snapshot` | mutating |
+| sandbox | `sandbox_restore`, `sandbox_destroy` | destructive |
+
+### Meetings, tasks, roster, mesh, channels
+
+| Group | Tools | Risk |
+|---|---|---|
+| meeting | `meeting_topic` (direct), `meeting_brief` (direct), `meeting_read`, `meeting_search`, `meeting_speakers`, `meeting_list`, `brief_search`, `brief_list`, `brief_put`, `brief_delete` | read_only |
+| tasks | `task_inbox` | read_only |
+| tasks | `task_create`, `task_checkout`, `task_update`, `task_move`, `task_reassign`, `task_note`, `task_place`, `escalate`, `decide` | mutating |
+| roster | `agents_list`, `desktop_handoff` (direct) | read_only |
+| roster | `agent_propose`, `agent_put` | mutating |
+| routes | `site_learn`, `site_routes`, `site_call` | read_only |
+| mesh | `mesh_peers` | read_only |
+| signal, slack | `signal_status`, `slack_status` | read_only |
+| signal | `signal_link` | mutating |
+
+Voice and talk expose RPC methods and desktop controls, not model tools.
+
+### Turning groups off
+
+There is no per-tool disable list for built-ins. Groups come and go with
+their plugin's switch in `config.yaml`: `secrets.tools`, `knowledge.enabled`,
+`web.enabled`, `scrape.enabled`, `codeindex.enabled`, `browser.enabled`,
+`computer.enabled`, `documents.enabled`, `artifact.enabled`, `app.enabled`,
+`schedule.enabled`, `sandbox.enabled`, `voice.enabled`, `talk.enabled`,
+`meeting.enabled`. The communication trio needs `agent.communication: true`.
+MCP tools are switched individually in `mcp/config.yaml`.
+
+## The gate
+
+For every call the registry computes an action in this order:
+
+1. If the session (or an ancestor) has a subagent cap and the tool's risk is
+   above it: `deny`.
+2. `tools.policy.<risk>`.
+3. If any string argument contains a `{{secret:` placeholder and the tool
+   consumes secrets: at least `ask`. The approval card shows the
+   placeholder; the value is substituted only after approval.
+4. If the result is `ask` and approvals are off (`tools.approvals: false`,
+   or the session or an ancestor ran `/approvals off`): `allow`.
+
+`deny` is never rewritten by step 4. What the model sees when a call does not
+run:
+
+| Situation | Tool result |
+|---|---|
+| policy `deny` | `<tool>: denied by policy` |
+| you denied | `<tool>: denied by user` |
+| no answer within `tools.approval_timeout_secs` (300) | `<tool>: approval timed out` |
+| subagent cap | `<tool>: denied: subagent is capped at <risk>` |
+| communication off | `<tool>: communication_disabled: <why>` |
+| hidden or unknown tool | `unknown tool: <name>` |
+| turn cancelled while waiting | `<tool>: cancelled before it ran` |
+
+Policy configuration:
+
+```yaml
+tools:
+  policy:
+    read_only: allow
+    mutating: ask
+    destructive: ask      # deny on an unattended server
+  # approvals: false      # never prompt for `ask`; `deny` still denies
+  approval_timeout_secs: 300
+```
+
+## Approvals
+
+### Scope
+
+| Command | Scope | Persisted |
+|---|---|---|
+| `/approvals off` | this root session and every subagent under it | no; gone at restart |
+| `/approvals on` | undo the session bypass | no |
+| `/approvals off always` | every session | yes: `tools.approvals: false` |
+| `/approvals on always` | every session | yes: `tools.approvals: true` |
+
+The same command exists on Signal (`/approvals on|off [always]`, owner only)
+and Slack (`/theuth approvals on|off [always]`, owner only; its settings
+modal offers the same three states), and the desktop app's Settings dialog
+has an approvals switch. Children inherit the parent's bypass, hidden tools
+and cap.
+
+### Answering
+
+| Surface | Allow | Deny |
+|---|---|---|
+| TUI modal | `y` | `n` or `Esc`; `o` opens the child session that asked |
+| Print mode / piped stdin | a line `y` | a line `n`; stdin closed = deny (`denied: stdin closed`) |
+| Desktop | Allow button on the card | Deny button |
+| Slack | **Allow** block button | **Deny**; the card updates to `✅ tool allowed`, `❌ tool denied` or `⌛ tool timed out (denied)` |
+| Signal | react 👍 / ✅ / 👌, or `/approve <code>` | react 👎 / ❌ / 🚫, or `/deny <code>` |
+| ACP editors | the client's `allow` option | anything else |
+
+Slack sessions started elsewhere send their approvals to the owner's DM when
+`slack.approvals: all`, and nowhere when `threads`. On Signal, approvals for
+unbound sessions go to the owner.
+
+### Apps
+
+An [app](/docs/workspace/apps) you click is different: **the press is the
+approval.** A `Mutation` binding behind a button runs on click with no card,
+a tool the policy would ask about becomes a Load/Refresh button whose press
+is the consent, and a policy-denied tool is shown unavailable. Timer and load
+reads never run mutations.
+
+## MCP gates
+
+MCP tools default to the risk their server annotates: `readOnlyHint: true`
+is `read_only`, `destructiveHint: true` is `destructive`, anything else
+(including no annotations) is `mutating` and therefore prompts. Override per
+server or per tool in `<data_dir>/mcp/config.yaml`:
+
+```yaml
+servers:
+  kubernetes:
+    risk: read_only          # every tool of the server unless a tool line says otherwise
+    tools:
+      pods_delete: destructive
+      helm_uninstall: off    # not registered at all
+  teams:
+    risk: off                # server not even started
+```
+
+Resolution order is tool line, then server line, then annotations. The
+`/mcp` menu writes this file (Space cycles the risk, Backspace resets it,
+Enter asks whether to hide a server for this session or turn it `off` for
+good); hand edits are picked up within a second. Details in
+[MCP](/docs/reference/mcp).
+
+## Subagents
+
+Configured under `agent.subagents` (defaults `max_depth: 1`,
+`max_concurrent: 8`, `max_runtime_secs: 600`, `reply_timeout_secs: 120`):
+
+- A session at depth ≥ `max_depth` gets `subagents are not available at depth N`.
+- At most `max_concurrent` child turns run at once; further spawns queue.
+- A child turn over `max_runtime_secs` is stopped and its result is prefixed
+  `[timed out after Ns, stop=…]`.
+- `spawn_subagent{tools: read_only|mutating}` installs a cap: the child and
+  its descendants are denied anything above it and do not even see those
+  tools in their list. `destructive` means no cap. `send_message` is exempt
+  from caps so a capped child can still report back.
+- Children inherit the parent's approval bypass; their approval prompts
+  surface in your UI like the parent's.
+- Scheduled runs set `approvals: false` in the schedule file to run
+  unattended; see [Schedules](/docs/automation/schedules).
+
+More on spawning and ACP harnesses in [Delegation](/docs/automation/delegation)
+and [Agents](/docs/automation/agents).
+
+## Secrets in tool calls
+
+`{{secret:NAME}}` in any string argument of a secret-consuming tool is
+swapped for the vault value after approval and scrubbed from the output
+(exact value and its base64, values of 8+ characters). Tools that take
+literal sources or queries (`app`, `task_draft`, `agent_draft`, `search`,
+`code_*`, `project_profile`, `sandbox_*`, `secret_request_form`,
+`desktop_handoff`) do not expand placeholders and do not raise the gate. See
+[Secrets](/docs/reference/secrets).

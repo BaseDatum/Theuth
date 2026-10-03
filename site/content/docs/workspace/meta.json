@@ -1,0 +1,15 @@
+{
+  "title": "Workspace",
+  "pages": [
+    "index",
+    "desktop",
+    "terminal",
+    "sessions",
+    "voice",
+    "meetings",
+    "documents",
+    "knowledge",
+    "apps",
+    "search"
+  ]
+}

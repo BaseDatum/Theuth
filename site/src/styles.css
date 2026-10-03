@@ -77,6 +77,63 @@ html {
   outline-offset: 2px;
 }
 
+/* In @layer components so utilities (max-sm:hidden, block, py-2) still win over them. */
+@layer components {
+  /* Header and footer links: tap-sized rows, no visual change to the text. */
+  .nav-link {
+    display: inline-flex;
+    align-items: center;
+    min-height: 44px;
+    padding: 0 0.25rem;
+  }
+  .nav-link:hover {
+    color: var(--fg);
+  }
+
+  /* Links into the docs: mono, underlined like the download links. .docs-cta is the standalone, tap-sized form. */
+  .docs-link {
+    font-family: var(--font-mono);
+    font-size: 13px;
+    color: var(--fg-2);
+    text-decoration: underline;
+    text-decoration-color: var(--fg-3);
+    text-underline-offset: 4px;
+  }
+  .docs-link:hover {
+    color: var(--fg);
+  }
+  .docs-cta {
+    display: inline-flex;
+    align-items: center;
+    min-height: 44px;
+  }
+}
+
+/* Keyboard users land on the content after one Tab; the link sits off-screen until focused. */
+.skip-link {
+  position: fixed;
+  top: 0.75rem;
+  left: 1.5rem;
+  z-index: 20;
+  transform: translateY(calc(-100% - 1rem));
+}
+.skip-link:focus-visible {
+  transform: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html {
+    scroll-behavior: auto;
+  }
+  .btn,
+  .skip-link {
+    transition: none;
+  }
+  .btn:active {
+    transform: none;
+  }
+}
+
 /* Faint limestone grain over everything; almost invisible. Fixed and inert, so it never repaints on scroll. */
 body::after {
   content: "";

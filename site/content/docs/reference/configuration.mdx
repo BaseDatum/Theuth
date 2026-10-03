@@ -1,0 +1,368 @@
+---
+title: Configuration
+description: The data directory, config.yaml and THEUTH_* environment overrides, every plugin's keys and defaults, and what applies live versus after a restart.
+---
+
+theuth is one process with one data directory. Every plugin reads its own
+top-level section of `config.yaml`; a section that is missing means that
+plugin's defaults. This page lists the layout, the precedence rules and the
+keys with the defaults the code falls back to.
+
+## Data directory
+
+Resolution order: `--data-dir <path>`, then the `THEUTH_DATA_DIR` environment
+variable, then `~/.theuth`. If no home directory can be determined the binary
+exits with `cannot determine data dir; pass --data-dir`. `--config <path>`
+points at a different `config.yaml`; the default is `<data_dir>/config.yaml`.
+
+On every start (`first_run`) the binary creates `mcp/`, `acp/` and `skills/`,
+writes `config.yaml`, `prompt.md` and `acp/agents.yaml` if they are missing,
+and rewrites the six binary-owned skills (`harness.md`, `visualize.md`,
+`pdf.md`, `loops.md`, `apps.md`, `board.md`) whenever their content differs.
+Nothing else is ever overwritten.
+
+| Path | What | When it is read |
+|---|---|---|
+| `config.yaml` | every plugin's section | startup; slash commands rewrite single lines (below) |
+| `token` | bearer token for the JSON-RPC server (64 hex, owner-only mode) | startup; created on first serve |
+| `engine.lock`, `engine.json` | one running engine per data dir: pid, bound address, version | startup |
+| `logs/theuth.log.<YYYY-MM-DD>` | the process log, daily rotation, no ANSI; `RUST_LOG` raises the level | live |
+| `logs/service.log` | stdout of the `--install-service` unit | live |
+| `prompt.md` | standing instructions prepended to every model call | every call |
+| `skills/` | markdown skills; see [Skills](/docs/reference/skills) | every call |
+| `mcp/*.json`, `mcp/config.yaml`, `mcp/repos/` | MCP servers, risk gates, cloned server repos; see [MCP](/docs/reference/mcp) | watched (300 ms debounce) |
+| `oauth/mcp/<server>.json` | MCP server login tokens, mode 0600; provider `/login` grants live in the vault as hidden `oauth/<provider>` rows (legacy `oauth/<provider>.json` files are migrated and renamed `.migrated`) | on use |
+| `secrets.sqlite`, `secrets.key` | the encrypted vault and, without an OS keychain, its key (0600); see [Secrets](/docs/reference/secrets) | on use |
+| `providers.yaml`, `models.json` | named OpenAI-compatible gateways; catalog additions and overrides | startup |
+| `acp/agents.yaml` | external ACP harnesses runnable as subagents | startup |
+| `a2a/peers.yaml` | remote A2A peers and exports; `/a2a reload` re-reads it | startup, `/a2a reload` |
+| `nodes.yaml` | paired remote harnesses (`/nodes`) | live |
+| `schedules/*.md`, `schedule.sqlite` | scheduled runs and loops, run history; see [Schedules](/docs/automation/schedules) | watched |
+| `sessions.sqlite` | every session's history | live |
+| `attachments/`, `spill/` | pasted images; tool output over the cap and the verbatim text folded by each compaction (`spill/<session>/epoch_<n>.txt`) | on demand |
+| `knowledge/`, `knowledge.sqlite` | the knowledge bundle (markdown with git history) and its derived index | live, watched |
+| `documents/`, `index.sqlite` | Yjs documents behind the editor and their index | live |
+| `artifacts/`, `artifacts.sqlite`, `artifacts.owners/` | content-addressed blobs shown with `show` or published with `app`, their index, per-process owner locks | live |
+| `codeindex/<slug>-<hash>.sqlite` | per-repository symbol indexes | live |
+| `agents/`, `decisions/`, `models/`, `sandbox/`, `signal/`, `link/` | roster agents, decision logs, local speech and decision models, sandbox VM state, Signal linked-device state and inbox, link identity | plugin-specific |
+| `*.sqlite` (`mesh`, `replica`, `link`, `mcp`, `skills`, `tasks`, `roster`, `schedule`) | replication and plugin state | live |
+
+Deleting `knowledge.sqlite` is safe; it is a derived index and is rebuilt.
+Deleting `artifacts.sqlite` orphans the blobs it named, which are swept at
+the next start. Deleting `secrets.key` (or the keychain item) loses the
+vault.
+
+## How config.yaml is read
+
+The binary builds one configuration from two layers, later wins:
+
+1. `<data_dir>/config.yaml` (or `--config`).
+2. Environment variables prefixed `THEUTH_`, with `__` separating nesting
+   levels: `THEUTH_<SECTION>__<KEY>`.
+
+Each plugin then extracts its section by name. Every config struct is
+`#[serde(default)]`, so an absent key or section means the Rust default
+listed below. There is no third layer: CLI flags do not map onto config keys,
+except that `--install-service --relay <url> --name <n>` writes `link.enabled`,
+`link.relay` and `link.name` into the config file before starting the unit.
+
+Examples:
+
+```sh
+THEUTH_RPC__LISTEN=127.0.0.1:7799 t --headless      # rpc.listen
+THEUTH_AGENT__COMMUNICATION=true t                  # agent.communication
+THEUTH_TOOLS__POLICY__DESTRUCTIVE=deny t            # nested: tools.policy.destructive
+```
+
+An environment value wins over the file on every start; the `/communication`
+status reports whether its value came from `env` or the file. Scalar coercion
+(booleans, numbers) follows figment's `Env` provider; arrays and objects are
+better kept in the file.
+
+## Startup, live and restart
+
+The rule: **`config.yaml` is read once at startup and is not watched.** A hand
+edit takes effect at the next start. What makes some settings feel live is
+that specific commands rewrite one line of the file *and* swap the value in
+memory at the same time:
+
+| Command | Key written |
+|---|---|
+| `/model <id>` | `agent.model` |
+| `/effort <level\|clear>` | `agent.effort` |
+| `/aws <profile\|clear>` | `agent.aws_profile` |
+| `/communication on\|off always` | `agent.communication` |
+| `/compact style <summary\|cut\|snap>` | `agent.compact_style` |
+| `/vision <model\|off>`, `/title <model\|off>`; desktop `/subagent <model>` | `agent.vision_model`, `agent.title_model`, `agent.subagents.model` |
+| Settings → Agent loop (desktop) | `agent.max_tool_rounds`, `agent.stream_idle_secs`, `agent.max_salvages`, `agent.escalate_model`, `agent.subagents.max_runtime_secs` |
+| `/approvals on\|off always` | `tools.approvals` |
+| `/link on\|off`, `/link relay <url>`, `/link name <n>` | `link.enabled`, `link.relay`, `link.name` |
+| Settings → Search (desktop) | `web.*` read/budget keys, `search_providers.<provider>.*` |
+| `t mesh hub <mode>` | `mesh.hub` |
+| `t --slack-setup`, `t --link-signal` | `slack.owner`, `slack.enabled`, `signal.owner`, `signal.device_name` |
+
+The rewrite is line-level: it replaces the first `key:` line inside the
+section, keeps any trailing comment, and appends the key or section if it is
+missing. Only `<data_dir>/config.yaml` is written; a file passed with
+`--config` elsewhere is read but not written back.
+
+Caveats:
+
+- Directories, not the config file, are watched: `mcp/`, `schedules/`,
+  `knowledge/`, `agents/`. Changes there apply within about a second.
+- `a2a.listen` and `a2a.enabled` need a restart even through the UI.
+- `rpc.listen` is bound at start. The desktop app passes its own
+  `THEUTH_RPC__LISTEN` to the daemon it launches, so the file's value does
+  not apply there.
+- A session-scoped `/approvals off` or `/communication off` without `always`
+  is memory only and ends with the process.
+
+## Keys and defaults by plugin
+
+Defaults are the values the code uses when the key is absent. `null` means
+unset.
+
+### agent
+
+| Key | Default | Meaning |
+|---|---|---|
+| `model` | `anthropic/claude-sonnet-4-5` | models.dev id `provider/model`, or a bare id resolved against configured providers. The only required key. |
+| `effort` | `null` | provider reasoning effort (`low`, `medium`, `high`, …); unset = provider default |
+| `aws_profile` | `null` | AWS profile for `amazon-bedrock/*` models; overrides ambient credentials and bearer keys |
+| `communication` | `false` | model-to-model communication: `spawn_subagent`, `discover_peers`, `send_message`. Off is a ceiling. |
+| `max_tool_rounds` | `32` | tool-call rounds per turn before the loop asks for a text reply |
+| `stream_idle_secs` | `120` | seconds without a stream event before a model call is abandoned |
+| `max_salvages` | `2` | interrupted-reply recoveries per turn; `0` = off |
+| `max_tool_output_chars` | `32000` | tool output over this spills to `spill/` and the model gets the path |
+| `runtime_only` | `true` | only direct tools are sent as tool definitions; the rest are Python runtime functions |
+| `compact_at` | `0.8` | auto-compact at this fraction of the context window; `0` = off |
+| `compact_style` | `summary` | `summary`, `cut` or `snap` |
+| `compaction.tail_tokens` / `image_tokens` / `target_tokens` | `40000` / `30000` / `120000` | post-compaction ceilings for the verbatim tail, snap images, head + tail |
+| `title_model`, `vision_model`, `escalate_model` | `null` | session titles; image questions from a text-only main model; tier-2 of the decision oracle |
+| `openrouter.provider` / `referer` / `title` | `null` | built-in OpenRouter provider (`openrouter/<model>` ids): `provider` preferences JSON sent verbatim, `HTTP-Referer` and `X-OpenRouter-Title` overrides; key = vault secret `openrouter` (or `open_router`), else `OPENROUTER_API_KEY` / `OPEN_ROUTER_API_KEY`. The built-in Zen provider (`opencode/<model>` ids) needs only the vault secret `opencode` or `OPENCODE_API_KEY` and has no config keys |
+| `subagents.model` / `effort` | `null` | defaults for `spawn_subagent` when the call omits them, then `agent.model` |
+| `subagents.max_depth` | `1` | sessions at this depth or deeper cannot spawn |
+| `subagents.max_concurrent` | `8` | concurrent child turns; further spawns queue |
+| `subagents.max_runtime_secs` | `600` | a child turn over this is stopped and reported `timed out` |
+| `subagents.reply_timeout_secs` | `120` | `send_message{await_reply}` wait |
+| `knowledge.hint_limit` / `hint_rounds` / `harvest_every` / `harvest_max` | `5` / `4` / `3` / `8` | lines per `<knowledge>` hint, hint cadence in tool rounds, tool-using turns per harvest (`0` = off), concepts per harvest |
+| `broadcast.max_targets` | `32` | sessions one `/broadcast` may address |
+
+### tools
+
+| Key | Default | Meaning |
+|---|---|---|
+| `policy.read_only` / `mutating` / `destructive` | `allow` / `ask` / `ask` | `allow`, `ask` or `deny` per risk class; see [Tools and permissions](/docs/reference/tools-permissions) |
+| `approvals` | `true` | `false` turns every `ask` into `allow`; `/approvals off always` writes it |
+| `approval_timeout_secs` | `300` | an unanswered approval is denied after this |
+| `ask_timeout_secs` | `1800` | `ask_user` gives up (the model sees "no answer") |
+| `job_grace_secs` | `3` | `shell` replies inline if the job exits within this; `0` = always a job stub |
+| `job_timeout_secs` | `1800` | default and maximum `shell` timeout; the process group is killed |
+| `pty_ready_timeout_secs` | `30` | `start` readiness wait when `ready` gives no timeout (max 300) |
+| `pty_idle_secs` | `60` | quiet seconds before a PTY job reports `<job_idle>`; `0` = never |
+| `pty_shell` | `null` | program for `start`; default `$SHELL`, on Windows `pwsh.exe` else `powershell.exe` |
+| `login_path` | `true` | seed `shell`'s `PATH` from your login shell; `THEUTH_NO_LOGIN_PATH=1` also disables it |
+| `reminder_max_secs` | `86400` | ceiling for `remind_me_in` |
+
+### rpc, secrets, knowledge, documents
+
+| Key | Default | Meaning |
+|---|---|---|
+| `rpc.listen` | `127.0.0.1:7777` | address bound by `--serve` / `--headless`; without those flags an ephemeral loopback port is used and recorded in `engine.json` |
+| `secrets.key_store` | `auto` | `auto`, `keychain` or `file`; `auto` = keychain when one answers, else `secrets.key` with a warning |
+| `secrets.tools` | `true` | `false`: no `secret_*` tools, no prompt block, `{{secret:…}}` stays literal, nothing is scrubbed |
+| `secrets.request_timeout_secs` | `1800` | `secret_request` gives up after this |
+| `knowledge.enabled` | `true` | `false`: no store, no `knowledge_*` tools, no hints, no harvest |
+| `knowledge.sync_secs` | `300` | seconds between bundle syncs with every connected mesh engine; a sync also runs on connect |
+| `documents.enabled` | `true` | `false`: no Yjs store, no helper, no `doc_*` methods |
+| `documents.export_debounce_ms` / `export_quiet_secs` | `400` / `60` | settle time before the derived `.md` is rewritten; quiet time before an edit is recorded |
+| `documents.max_doc_bytes` | `8388608` | an update that would grow a document past this is refused |
+| `documents.snapshots_keep` | `30` | automatic snapshots kept per document; labelled ones are never pruned |
+| `documents.agent_color` | `#7c3aed` | the agent's presence colour |
+| `documents.max_members` / `sharing` | `64` / `on` | members per shared document; `on`, `off` (no new links) or `disabled` (members refused) |
+| `documents.idle_unload_secs` / `max_open_docs` | `600` / `256` | memory management |
+
+### web, scrape, codeindex, search_providers
+
+| Key | Default | Meaning |
+|---|---|---|
+| `web.enabled` | `true` | `search_web` and `read_url` |
+| `web.engines` | `[google, brave, qwant, duckduckgo, wikipedia, arxiv, github]` | keyless engines; `bing` is opt-in |
+| `web.fetch_max_chars` / `read_top` / `read_chars` | `4000` / `5` / `2500` | `read_url` cap; hits `search_web` reads; passage budget per page |
+| `web.read_budget_ms` / `render_cap_ms` | `6000` / `3000` | whole read phase; one browser-rendered page inside a search |
+| `web.recent_default` | `null` | `day`, `week`, `month` or `year` when a call passes none |
+| `web.keyless_fallback` / `degraded_is_error` | `true` / `false` | run built-ins when an external provider exists; treat a degraded search as an error |
+| `web.timeout_ms` / `overall_timeout_ms` / `max_fetch_bytes` / `max_redirects` | `4000` / `6000` / `2097152` / `5` | fetch limits |
+| `scrape.concurrency` / `max_pages` / `max_depth` | `5` / `50` / `3` | `crawl` and `map_site` limits |
+| `scrape.same_domain` / `robots` / `delay_ms` | `true` / `true` / `100` | stay under the seed's host; honour `robots.txt`; per-host gap (a larger `Crawl-delay` wins) |
+| `scrape.page_timeout_ms` / `run_timeout_ms` | `8000` / `60000` | per page; per run |
+| `codeindex.enabled` | `true` | `code_*` tools and the per-repo index |
+| `codeindex.sync_limit` / `max_file_bytes` / `cochange_commits` | `64` / `1048576` / `300` | files re-indexed before answering; larger files are listed, not parsed; first-parent commits walked |
+| `codeindex.languages` | `[rust, typescript, javascript, python, go]` | parsed languages |
+| `search_providers.firecrawl` | `{enabled: true, base_url: https://api.firecrawl.dev, secret: firecrawl, timeout_ms: 8000, priority: 30}` | inert until the `firecrawl` secret exists |
+| `search_providers.searxng` | absent | `{base_url}`; `timeout_ms` 6000, `priority` 10 when present |
+| `search_providers.openserp` | absent | `{base_url: http://127.0.0.1:7000, engines: [google, bing, duckduckgo], secret: openserp}` when present |
+| `search_providers.brave` | absent | `{enabled: true, secret: brave}` when present; provider name `brave_api` |
+| `search_providers.x` | `{enabled: true, model: grok-4.7, timeout_ms: 90000}` | `search_x`; registered only while an `xai` secret or `/login xai` exists |
+
+### browser, computer
+
+| Key | Default | Meaning |
+|---|---|---|
+| `browser.enabled` | `true` | the embedded headless browser and `browser_*` tools |
+| `browser.stealth` | `true` | TLS fingerprint and tracker blocklist |
+| `browser.proxy` / `user_agent` / `timezone` / `geolocation` | `null` | `http://user:pass@host:port` or `socks5://host:port`; UA override; IANA zone (null = host's); `"lat,lon"` |
+| `browser.allow_private_network` | `false` | let the browser reach localhost and private IPs |
+| `browser.import_cookies` | `false` | adds `browser_list_profiles` and `browser_import_cookies` |
+| `browser.idle_secs` / `max_chars` / `script_deadline_ms` | `300` / `4000` / `30000` | isolate teardown; default reply cap; script deadline for heavy SPAs |
+| `browser.capture_entries` / `capture_body_bytes` | `256` / `2097152` | network capture ring |
+| `computer.enabled` | `true` | `computer_*` tools; the OS permission prompts are the consent, actions still ask |
+| `computer.max_edge` | `1568` | screenshot long edge after scaling |
+
+### link, nodes, mesh, sandbox
+
+| Key | Default | Meaning |
+|---|---|---|
+| `link.enabled` | `false` | the uplink dials out to the relay; nothing listens |
+| `link.relay` | `wss://relay.theuth.io` | your `theuth-relay` URL when self-hosting |
+| `link.name` | `""` | display name in the QR and on devices; empty = hostname |
+| `link.max_devices` / `guest_handshakes_per_minute` | `16` / `10` | paired devices; share-link guests admitted per minute |
+| `nodes.enabled` | `true` | `false`: no dials, nodes invisible; `nodes.yaml` kept |
+| `mesh.relay` | `https://iroh.relay.theuth.io` | iroh relay when hole punching fails; `none` = never dial a relay |
+| `mesh.discovery` | `true` | DNS/pkarr and mDNS peer lookup |
+| `mesh.name` / `bind` / `class` | `""` / `null` / `null` | display name; `ip:port` for the endpoint; `server`, `desktop`, `laptop`, `container` or `vm` |
+| `mesh.hub` | `eligible` | `prefer`, `eligible` or `never` for the hub lease |
+| `mesh.probation_secs` / `handover_secs` / `heartbeat_secs` / `lapse_secs` / `capabilities_secs` | `21600` / `600` / `10` / `30` / `300` | lease timing |
+| `mesh.workspaces` | `[]` | repo roots this engine advertises for task placement |
+| `sandbox.enabled` | `true` | `false`: no actor, no `sandbox_*` tools, no RPC; VMs on disk untouched |
+| `sandbox.vm.enabled` / `runtime` / `home` | `true` / `microsandbox` / `""` | VM engine; `home` = `MSB_HOME`, empty = SDK default |
+| `sandbox.vm.image` | `ghcr.io/basedatum/theuth-vm` | pulled at the tag equal to this binary's version; the VM path works only when that image is published and reachable from your machine. `--local-t <path>` replaces the `t` inside the guest, not the image; `--bootstrap` boots the base image without the first-boot setup and does not yield a working guest |
+| `sandbox.vm.defaults` | `{cpus: auto, memory_mib: auto, root_disk_mib: 20480, max_cpus: auto, max_memory_mib: auto, desktop: true, geometry: 1440x900, network: public_host}` | `cpus` auto = clamp(cores/4, 2, 4); `memory_mib` auto = clamp(mem/4, 2048, 8192); `network` is `public_host`, `public_host_private`, `public_only` or `none` |
+| `sandbox.vm.autostart` / `max_vms` / `resize_settle_secs` / `loopback_mesh` | `true` / `4` / `20` / `false` | start recorded VMs with the engine; cap; resize settle; pair over 127.0.0.1 instead of the relay |
+| `sandbox.create_timeout_secs` / `step_timeout_secs` / `health_interval_secs` | `900` / `600` / `60` | `sandbox_create` wait; per bring-up step; status reconcile |
+| `sandbox.max_concurrent_bringups` / `snapshots_keep` / `handoff_timeout_secs` | `2` / `5` / `1800` | parallel bring-ups; auto-snapshots kept; `desktop_handoff` wait |
+
+### schedule, a2a, update, artifact, app, surface
+
+| Key | Default | Meaning |
+|---|---|---|
+| `schedule.enabled` | `true` | `false`: no watcher, no `schedule` tool, no prompt block |
+| `schedule.run_timeout_secs` | `1800` | a run over this is cancelled and reported `timeout`; a file's `run_timeout:` overrides it |
+| `a2a.enabled` | `false` | remote agents over A2A; also needs `agent.communication: true` |
+| `a2a.listen` | `127.0.0.1:7780` | loopback only; restart to change |
+| `a2a.public_url` | `null` | HTTPS base your reverse proxy publishes; without it the listener is plain HTTP for loopback development |
+| `update.enabled` | `true` | silent self-update of the `t` binary: download the release tarball, verify its signature, replace `t` and its helpers on disk, live at next start; `t --update` still works when `false`. The updater handles `.tar.gz` releases only: macOS and Linux CLI installs, not the Windows CLI zip |
+| `update.url` | `https://s3.rwx.dev/theuth/releases/latest.json` | release manifest |
+| `artifact.enabled` / `fonts` | `true` / `[]` | the `show` tool; extra font directories for PDF compilation |
+| `app.enabled` | `true` | the `app` tool, `/apps`, the parser helper and `app_*` RPC |
+| `surface.enabled` / `correct` / `correct_rounds` | `true` / `true` / `3` | Mermaid and json-render blocks in replies; fix-up rounds on invalid blocks |
+
+### voice, talk, meeting, models, decision
+
+| Key | Default | Meaning |
+|---|---|---|
+| `voice.enabled` | `true` | TTS, voice notes and dictation; `false`: `speak` answers "not running" |
+| `voice.voice` | `peter_yearsley` | a voice in the Pocket TTS checkpoint |
+| `voice.model_dir` / `stt_model_dir` / `dictation_model_dir` | `null` | default `<data_dir>/models/pocket-tts`, `models/parakeet-tdt`, `models/nemotron-streaming-en` |
+| `voice.stt_idle_secs` / `dictation_max_secs` | `600` / `300` | unload STT after idle (`0` keeps it resident); a dictation stops itself |
+| `voice.player_buffer_ms` / `player_device` | `200` / `null` | daemon speaker ring; output device by name |
+| `talk.enabled` | `true` | live spoken conversation; `false`: `talk_*` answers "talk is disabled" |
+| `talk.barge_in_min_ms` / `decide_ms` / `barge_in_vad` | `400` / `900` / `0.7` | barge-in timing and VAD threshold while the agent speaks |
+| `talk.end_of_turn_ms` / `end_of_turn_punct_ms` | `700` / `250` | turn commit delay without / with terminal punctuation |
+| `talk.hold` / `aec` / `turn_model` | `pause` / `prefer` / `none` | pause playback during classification; macOS echo cancellation; `smart-turn` when its model exists |
+| `meeting.enabled` | `true` | meeting recorder; full capture (meeting app audio + mic with echo cancellation) on macOS 15, partial on Windows and Linux (loopback capture, no echo cancellation, headphones recommended); `false`: `meeting_*` answers "meetings are disabled" |
+| `meeting.max_minutes` / `context_tokens` | `180` / `32000` | hard stop; compaction trigger for the meeting session |
+| `meeting.batch_secs` / `batch_utterances` | `25` / `6` | transcript batching |
+| `models.accelerator` | `auto` | `auto`, `cpu`, `webgpu`, `directml`, `cuda`. `auto` takes WebGPU only on a discrete GPU and otherwise stays on the CPU; `directml` is never chosen automatically; `cuda` affects only the decision model and only in a binary built with the `decision/cuda` feature. `t --bench-models` reports what runs where |
+| `models.webgpu_adapter` | `null` | substring of the adapter to use when several GPUs answer |
+| `decision.enabled` / `device` / `idle_unload` | `true` / `auto` / `3m` | local decision oracle; every family starts in `shadow` mode |
+
+### signal, slack, sessions
+
+| Key | Default | Meaning |
+|---|---|---|
+| `signal.enabled` | `true` | the daemon starts the channel when a device is linked (`--headless` only) |
+| `signal.device_name` / `owner` / `allowed` | `theuth` / `""` / `[]` | linked-device name; owner E.164 (written by `--link-signal`); more numbers |
+| `slack.enabled` | `true` | the daemon opens Socket Mode when `slack_bot` and `slack_app` secrets exist (`--headless` only) |
+| `slack.owner` / `allowed` / `channels` | `""` / `[]` / `[]` | owner member id; more user ids; channel ids where `@theuth` is honoured (empty = DMs only) |
+| `slack.tools` / `reasoning` / `approvals` | `all` / `true` / `all` | task cards per tool call (`all`, `errors`, `none`); quoted reasoning; where approvals for unbound sessions go (`all` = owner DM, `threads` = nowhere) |
+| `sessions.takeover_secs` / `release_wait_secs` / `orphan_keep_days` | `300` / `10` / `7` | transcript replication across mesh engines |
+
+## A compact config.yaml
+
+Everything below is optional except `agent.model`. Values shown are the
+defaults, so this file changes nothing; uncomment and edit what you need.
+
+```yaml
+# <data_dir>/config.yaml — env overrides: THEUTH_<SECTION>__<KEY>
+agent:
+  model: anthropic/claude-sonnet-4-5
+  communication: false          # /communication on always → true
+  # effort: high
+  # vision_model: anthropic/claude-haiku-4-5
+  # subagents: {max_depth: 1, max_concurrent: 8, max_runtime_secs: 600}
+  compact_at: 0.8
+  compact_style: summary
+
+tools:
+  policy: {read_only: allow, mutating: ask, destructive: ask}
+  # approvals: false            # /approvals off always → never prompt
+
+rpc:
+  listen: 127.0.0.1:7777
+
+# secrets: {key_store: auto, tools: true}
+# knowledge: {enabled: true}
+# web: {engines: [google, brave, qwant, duckduckgo, wikipedia, arxiv, github]}
+# browser: {allow_private_network: false, import_cookies: false}
+# link: {enabled: false, relay: wss://relay.example.com}
+# schedule: {enabled: true, run_timeout_secs: 1800}
+# update: {enabled: true}
+# a2a: {enabled: false, listen: 127.0.0.1:7780}
+```
+
+Keep API keys out of this file: provider keys live in the
+[secrets vault](/docs/reference/secrets), MCP credentials in `mcp/*.json` as
+`{{secret:NAME}}` or `$(cmd)`, AWS credentials in AWS's own files.
+
+## Other configuration files
+
+- `providers.yaml`: named OpenAI-compatible gateways, `name: {base_url}`;
+  the key is the vault secret of the same name. `/provider add` writes both
+  and fetches `GET {base}models` into `models.json`.
+- `models.json`: optional; the bundled models.dev catalog shape, adds or
+  overrides models (local `ollama/...`, private gateways).
+- `prompt.md`: read verbatim into every system prompt. Text between
+  `<!-- root-only -->` and `<!-- /root-only -->` reaches only sessions a
+  person reads; subagents and scheduled runs get the file without those
+  spans.
+- `acp/agents.yaml`: one entry per external harness,
+  `name: {command, args, env, description}`; `/acp` lists, probes, adds from
+  the registry and removes. See [Delegation](/docs/automation/delegation).
+- `a2a/peers.yaml`: owner-edited peers and exports; `/a2a reload` validates
+  the whole file and installs all of it or none.
+- `schedules/<name>.md`: `cron:` / `every:` / `at:` front matter and the
+  prompt as body; `until:`, `max_runs:`, `cwd:`, `approvals:`, `agent:`,
+  `project:` and `run_timeout:` refine a run. A `when:` sensor turns the
+  file into a watcher, with `fire:` (`on_change`, `while_true`, `once`),
+  `for:`, `cooldown:`, `mode:` (`skip`, `queue`, `restart`), `memory:`,
+  `expires:` and `timeout:`. The desktop app calls these Routines. See
+  [Schedules](/docs/automation/schedules) and
+  [Watchers](/docs/automation/watchers).
+
+## Security scope
+
+- `rpc.listen` defaults to loopback and the token is required on every
+  connection; nothing listens on other interfaces unless you change it.
+  Phones and browsers reach the harness through the outbound link uplink,
+  not an open port.
+- `a2a.listen` must be loopback; publish it only behind an HTTPS reverse
+  proxy with `a2a.public_url` set.
+- `browser.allow_private_network` and `browser.import_cookies` widen what the
+  agent can reach as you; leave them off unless you need them.
+- `tools.approvals: false` removes every prompt for `ask` actions but never
+  rewrites `deny`. Prefer `tools.policy.destructive: deny` on unattended
+  machines.
+- The desktop app launches `t --headless` through your login shell, so the
+  daemon has the same environment a terminal would, including any provider
+  keys exported there.

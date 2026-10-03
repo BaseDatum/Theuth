@@ -1,0 +1,67 @@
+---
+title: Workspace
+description: The surfaces you work in and the things that live there — sessions, voice, meetings, documents, knowledge, apps and search.
+---
+
+## One harness, several surfaces
+
+theuth is one engine with more than one face. Every surface talks to the same running engine and sees the same sessions, so you can start a chat in the terminal, continue it in the desktop app and glance at it from your phone.
+
+- **Desktop app** — a menubar/tray app with a sidebar, chat view, side panels for artifacts, terminals and the live browser, and a Settings dialog. The app finds a running engine or starts one for you. See [Desktop app](/docs/workspace/desktop).
+- **Terminal** — `t` in any terminal: the full-screen UI with slash commands and pickers, a print mode for scripts (`t -p`), and an ACP mode for editors (`t --acp`). See [Terminal](/docs/workspace/terminal).
+- **Phone or browser** — the same web UI, paired with a running engine through a relay. Pairing is a channels topic: see [Channels](/docs/automation/channels).
+
+The desktop app and a terminal `t` share one engine. If the app is running, `t` attaches to it; if `t --headless` or `t --serve` is already listening, the app reuses it instead of starting a second daemon.
+
+## What lives in the workspace
+
+### Sessions
+
+A session is one conversation with the agent, with its own model, effort, approvals and attachments. Sessions can spawn subagents, be forked, edited and regenerated from an earlier turn, grouped by project, and continued on another node. See [Sessions](/docs/workspace/sessions).
+
+### Voice
+
+Talk to a session aloud (`/talk` or the Talk entry in the desktop sidebar), dictate into the composer (`/dictate`, Ctrl+D), or record voice notes in the desktop composer. Speech models download on first use. See [Voice](/docs/workspace/voice).
+
+### Meetings
+
+The desktop app can record a meeting — your microphone plus the audio of the meeting app you choose — transcribe it live, label speakers and summarise it afterwards. Full support (system audio with echo cancellation) is macOS; Windows and Linux report partial support. See [Meetings](/docs/workspace/meetings).
+
+### Documents, notes and boards
+
+Notes are documents the agent and you edit together; a board is a note written for reading — prose with code excerpts and diagrams, a table of contents and a guided tour; anything the agent shows you is kept as a versioned artifact. See [Documents](/docs/workspace/documents).
+
+### Knowledge
+
+The knowledge base holds concepts the agent harvests from sessions, meetings and notes, with a full history: `/knowledge` lists, searches, shows and restores revisions. See [Knowledge](/docs/workspace/knowledge).
+
+### Apps and artifacts
+
+Files the agent shows you are artifacts (`/artifacts`, the `▣ N` button in the desktop header). Interactive apps the agent builds run in the desktop app and the browser; the terminal shows their source and exports them. See [Apps](/docs/workspace/apps).
+
+### Search
+
+`⌘K` in the desktop app and `/search` in the terminal search sessions, artifacts, knowledge, notes and meetings in one place, with category filters and live results. See [Search](/docs/workspace/search).
+
+## Where your data lives
+
+Everything is under one directory, `~/.theuth` by default (`--data-dir` or `THEUTH_DATA_DIR` moves it; on Windows it is `C:\Users\<you>\.theuth`). You will find there:
+
+| Path | What it is |
+| --- | --- |
+| `config.yaml` | Your configuration. See [Configuration](/docs/reference/configuration). |
+| `token` | The local RPC token the desktop app and `t` use to connect to the engine. |
+| `engine.json` | The record of the running engine (pid and listen address), so other surfaces can attach. |
+| `attachments/` | Pasted images and dropped files, named by content hash. |
+| `mcp/` | MCP server configuration. See [MCP](/docs/reference/mcp). |
+| `skills/` | Installed skills. See [Skills](/docs/reference/skills). |
+| `models/` | Downloaded speech and decision models. |
+| `logs/` | Daily log files (`theuth.log`), since the terminal UI owns the screen. |
+
+Secrets live in an encrypted vault inside the same directory and are only ever entered through a masked prompt (`/secrets` in the terminal, the **Secrets** page in the desktop sidebar, or `t --secret-set NAME`) — never pasted into a chat. See [Secrets](/docs/reference/secrets).
+
+## Where to go next
+
+- New here? Start with [First session](/docs/getting-started/first-session).
+- Choosing or logging in to a model: [Models](/docs/getting-started/models).
+- Letting the agent work while you are away: [Automation](/docs/automation).

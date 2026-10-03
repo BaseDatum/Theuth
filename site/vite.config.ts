@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs'
+import { reactRouter } from '@react-router/dev/vite'
 import tailwindcss from '@tailwindcss/vite'
-import react from '@vitejs/plugin-react'
+import { fumadocsMdx } from 'fumadocs-mdx/vite'
 import { defineConfig } from 'vite'
 
 /** The product version: `just bump-version` keeps tauri.conf.json and Cargo.toml in lockstep. */
@@ -20,7 +21,9 @@ const released = await fetch('https://s3.rwx.dev/theuth/releases/latest.json')
 
 export default defineConfig({
   define: { __APP_VERSION__: JSON.stringify(version), __RELEASE_VERSION__: JSON.stringify(released) },
-  plugins: [react(), tailwindcss()],
+  // fumadocsMdx compiles content/docs (the `defineDocs` macro in src/lib/source.ts); reactRouter owns the
+  // SPA + prerender build (react-router.config.ts) and React Fast Refresh.
+  plugins: [fumadocsMdx(), tailwindcss(), reactRouter()],
   clearScreen: false,
   server: { port: 1430, strictPort: true },
   build: { target: 'safari15' },

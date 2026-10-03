@@ -1,0 +1,212 @@
+---
+title: MCP
+description: Register local and remote MCP servers from JSON files, expand credentials from the shell or the vault, gate tools by risk, and log in to servers that need OAuth.
+---
+
+theuth is an MCP client. Drop server definitions as JSON into
+`<data_dir>/mcp/`; the directory is watched, each server is connected, and
+its tools register beside the built-ins under their own names. Risk gates and
+OAuth logins live beside the files.
+
+## Files and shapes
+
+Only files **directly in** `<data_dir>/mcp/` with a `.json` extension are
+read, sorted by path. Any file name works; `mcp.json` has no special
+meaning. Subdirectories (including `repos/`) are never scanned. Three shapes
+are accepted, detected structurally (an entry is an object with `command` or
+`url`):
+
+```json
+// one bare entry: the server is named after the file stem (filesystem.json → "filesystem")
+{ "command": "npx", "args": ["-y", "@modelcontextprotocol/server-filesystem", "/Users/me/projects"] }
+```
+
+```json
+// named entries at the top level
+{
+  "filesystem": { "command": "npx", "args": ["-y", "@modelcontextprotocol/server-filesystem", "/Users/me/projects"] },
+  "grafana":    { "url": "https://grafana.example.com/mcp", "headers": { "Authorization": "Bearer {{secret:grafana}}" } }
+}
+```
+
+```json
+// one wrapper key of any name — the shape Claude Desktop, Cursor and OpenCode files use
+{ "mcpServers": { "github": { "command": "npx", "args": ["-y", "@modelcontextprotocol/server-github"],
+                               "env": { "GITHUB_PERSONAL_ACCESS_TOKEN": "$(gh auth token)" } } } }
+```
+
+Fields per entry:
+
+| Field | Transport | Meaning |
+|---|---|---|
+| `command` | stdio | executable as a string, or an array whose first element is the executable (OpenCode style) |
+| `args` | stdio | string array, appended after an array `command` |
+| `env` (or `environment`) | stdio | object of string values; keys are not expanded |
+| `cwd` | stdio | working directory; a relative path resolves against `<data_dir>/mcp/`, so `"cwd": "repos/<name>"` runs from a clone |
+| `url` | HTTP | streamable HTTP endpoint; presence of `url` is what selects the remote transport |
+| `headers` | HTTP | object of string values |
+| `oauth` | HTTP | `{client_id, client_secret, scopes, redirect_uri}`; see OAuth below |
+| `enabled: false` or `disabled: true` | both | the entry is skipped |
+
+A `type` field (`sse`, `http`, `stdio`) is accepted and ignored: everything
+remote is streamable HTTP. Non-string values inside `args`, `env` and
+`headers` are dropped silently. If two files define the same server name the
+first file by path wins and the log says `duplicate mcp server name`.
+
+## Expansion of credentials
+
+At connect time the harness expands `command`, each `args` element, each
+`env` value, `url` and each `headers` value, in this order:
+
+1. `{{secret:NAME}}` (and `{{secret:NAME:-N}}` for an older version) is
+   filled from the [secrets vault](/docs/reference/secrets). An unknown name
+   fails the connection with `unknown secret NAME; secret_list shows the
+   names`.
+2. If the result still contains `$` or a backtick, it is run through your
+   login shell (`/bin/sh` when none) as an unquoted heredoc, so `$VAR`,
+   `${VAR:-default}`, `$(cmd)` and backticks expand; quotes stay literal and
+   `\$` escapes. A failing command is logged with the *unexpanded* string and
+   the value is kept as written. On a platform without a login shell the
+   value is kept as written with a warning.
+
+`cwd` is never expanded. Expansion happens once per connection, not on every
+reconcile, and nothing expanded is written back to the file.
+
+```json
+{
+  "github": {
+    "command": "npx", "args": ["-y", "@modelcontextprotocol/server-github"],
+    "env": { "GITHUB_PERSONAL_ACCESS_TOKEN": "{{secret:github}}" }
+  },
+  "postgres": {
+    "command": "uvx", "args": ["mcp-server-postgres", "${DATABASE_URL}"]
+  },
+  "linear": {
+    "url": "https://mcp.linear.app/mcp",
+    "oauth": { "scopes": ["read", "write"] }
+  }
+}
+```
+
+When the harness shows an entry (the `/mcp` menu, the desktop Settings page),
+values after credential-looking flags (`-p`, or a flag containing `token`,
+`secret`, `pass`, `key`, `auth`, `credential`, `bearer`) are masked
+`<redacted>`, `env` is listed by name only, headers are omitted and URLs are
+reduced to scheme, host, port and path.
+
+## Tool names
+
+A server's tools register under their remote names. When two running servers
+offer the same name, or a built-in already has it, each registers as
+`<server>__<name>` instead; the prefix drops again when the clash goes away,
+so a name can flip when a server is turned off. A remaining clash hides the
+tool with `mcp tool <name> from <server> hidden: clashes with <owner>` in the
+log. The `/mcp` menu shows `as <name>` beside a tool whose registered name
+differs.
+
+## Hot reload
+
+A filesystem watcher on `<data_dir>/mcp/` (non-recursive) feeds a reconcile
+after a 300 ms debounce. Added or changed entries connect (10 s connect
+timeout, error `no response within 10s`), removed or changed entries drop
+their child process and tools, and the gates file is re-read on every pass. A
+file with invalid JSON is skipped with `mcp file skipped` in the log and its
+servers disappear; other files still load. The harness's own writes
+(`/mcp add`, gate changes) go through a temp file and rename, so the watcher
+never sees a half-written file.
+
+The TUI status line shows `mcp <connected>/<total>` and `connecting …` or
+`N failed`; the `/mcp` rows show `● connected`, `○ login required`,
+`○ not connected` or `○ off`.
+
+## Risk gates: mcp/config.yaml
+
+Every MCP tool gets a risk class for the [approval gate](/docs/reference/tools-permissions).
+Default: the server's annotations (`readOnlyHint: true` is `read_only`,
+`destructiveHint: true` is `destructive`, otherwise `mutating`, which prompts
+under the default policy). Override in `<data_dir>/mcp/config.yaml`:
+
+```yaml
+servers:
+  kubernetes:
+    risk: read_only          # every tool of the server unless a tool line says otherwise
+    tools:
+      pods_delete: destructive
+      helm_uninstall: off    # off = not registered at all
+  teams:
+    risk: off                # server not even started
+```
+
+Values are `read_only`, `mutating`, `destructive`, `off`; a tool line beats
+the server line, which beats annotations. Unknown fields fail loudly; an
+invalid file logs `mcp gates invalid (values are read_only | mutating |
+destructive | off), all default` and every tool falls back to annotations.
+The `/mcp` menu writes this file (comments are not preserved): Space cycles
+annotations → `read_only` → `mutating` → `destructive`, Backspace resets the
+line, Enter on a running server asks `s` (hide for this session, in memory)
+or `a` (`off`, written to the file). Set `risk: read_only` once on a server
+you trust and its tools stop prompting.
+
+## Remote servers and OAuth
+
+Remote entries use streamable HTTP. If a header named `Authorization` (any
+case) is present the connection is plain and no OAuth is attempted. Otherwise
+the client wraps the transport with an OAuth manager whose token store is
+`<data_dir>/oauth/mcp/<server>.json` (written privately, mode 0600, via a
+temp file and rename).
+
+A server that answers the initialize request with a 401 challenge is
+recorded as `○ login required` with the error
+`<server>: login required (/login <server>)`. Only you can log in:
+
+- `/login <server>` in the TUI, Signal or `/theuth login <server>` on Slack,
+  or `l` on the server's row in `/mcp`, or the Login action in the desktop
+  Settings.
+- The harness starts a loopback listener on `127.0.0.1`, opens your browser
+  (the TUI also prints `login: open <url>`), and waits up to 300 s
+  (`timed out waiting for the browser`). On success the server restarts
+  logged in.
+- Without `oauth.client_id` the client registers itself dynamically with the
+  server (client name `theuth`). Servers that do not support dynamic
+  registration need a pre-registered `client_id` (and `client_secret` if the
+  registration has one).
+- `oauth.redirect_uri` is for servers that only accept a pre-registered
+  loopback URL, for example `http://localhost:8765/callback`: the port in it
+  is the port the listener binds. Without it the listener uses an ephemeral
+  port and `http://127.0.0.1:<port>/callback`.
+- `oauth.scopes` is sent when non-empty.
+
+`/logout <server>` deletes the token file and restarts the server. `/login`
+with no argument lists providers first, then every MCP server that has an
+auth state, marked `logged in` or `login required`. A stdio server answers
+`<name> is a stdio server; nothing to log in to`.
+
+## Adding servers from the UI
+
+| Command | Effect |
+|---|---|
+| `/mcp` | menu of servers and tools with status and risk; `→`/`←` opens a server's tools |
+| `/mcp add <json>` | parse one server from `{"name": {...}}`, `{"mcpServers": {"name": {...}}}` or a server object with a `name` field; it is connected first and written to `<data_dir>/mcp/<name>.json` only if the connection succeeds |
+| `/mcp add <git url>` | `git clone --depth 1` into `<data_dir>/mcp/repos/<name>` (a URL ending in `.git` or on github.com, gitlab.com or codeberg.org); the reply shows the README head and reminds you to build it and then add an entry with `"cwd": "repos/<name>"`. No entry is written |
+| `/mcp sync` (or `s` in the menu) | `git pull --ff-only` in every repo under `mcp/repos/`; servers whose `cwd` is inside an updated repo restart |
+
+Server and repo names must match `[a-z0-9][a-z0-9._-]*`. Slack has
+`/theuth mcp [add <url|json>|sync]`, Signal `/mcp [add <url|json>|sync]`, and
+the model has `add_mcp_server` / `remove_mcp_server` (destructive) and
+`add_mcp_repo` / `sync_mcp` (mutating). The user's `git` binary is used; MCP
+cloning reports that git is missing and everything else keeps working.
+
+## Security notes
+
+- MCP tools run with whatever access the server process has. A stdio server
+  started from your login shell inherits your environment.
+- An MCP tool always consumes `{{secret:…}}` placeholders in its arguments,
+  so a call carrying one asks for approval under the default policy and the
+  server, not the model, sees the value.
+- Unannotated tools prompt. If a server you trust is noisy, gate the server
+  `read_only` rather than turning approvals off.
+- Server `stderr` is logged line by line as `mcp stderr: …` in
+  `logs/theuth.log.<date>`; check it before assuming a configuration error.
+- `mcp/*.json` and `mcp/config.yaml` replicate to the other engines of your
+  [mesh](/docs/automation/mesh); keep credentials as placeholders or shell
+  expansions, never as literals, so a token never leaves the vault.

@@ -1,0 +1,282 @@
+---
+title: Browser and desktop control
+description: The embedded headless browser behind the browser_* tools, the user's real desktop behind computer_*, cookie import for signed-in sites, learned site routes, the live view, and what each surface asks before acting.
+---
+
+theuth can work the web two ways. The **embedded browser** is a headless engine linked into the daemon: the model opens pages, reads them, fills forms and clicks through, and nothing touches your screen. **Desktop control** is the opposite: the model takes a screenshot of your real displays and moves your mouse and keyboard, so it can drive native apps and the browser you are already signed in to. Use the first for any site a headless page can handle; use the second when only the real screen will do.
+
+## Prerequisites
+
+- **Embedded browser**: on by default (`browser.enabled: true`). No install step — there is no bundled Chromium, no download, no driver; the engine (obscura, a Rust browser on V8) is compiled into `t`. Works in the terminal UI, the desktop app and `t --headless` alike.
+- **Desktop control**: on by default (`computer.enabled: true`). On macOS two permissions must be granted to **the app that launched theuth** — your terminal (Ghostty, iTerm, Terminal) when you run `t`, or theuth.app for the desktop app — under System Settings › Privacy & Security:
+  - **Accessibility** for mouse and keyboard input; takes effect immediately.
+  - **Screen Recording** for screenshots; takes effect only after you restart that app. The first failed capture triggers the system prompt once.
+  - Check what is granted with `/computer` in the terminal or Settings › **Computer** in the desktop app, which shows a dot per permission, an **Open System Settings** button that deep-links to the right pane, a **Displays** list and **Refresh**.
+- **Acting as the signed-in user** in the embedded browser needs `browser.import_cookies: true` in `~/.theuth/config.yaml` and a restart; it is off by default.
+- Linux and Windows: the `computer_*` tools exist (xcap capture, enigo input, `xdg-open` / ShellExecute) but as of this writing these paths are not verified end-to-end; macOS is the supported platform.
+
+## How it works
+
+### Embedded browser (`browser_*`)
+
+Each session gets its own browser **isolate** on its own thread, spawned on the first `browser_*` call. It has an in-memory cookie jar, writes nothing to disk apart from screenshots you ask for, and is torn down after `browser.idle_secs` (300 s) of inactivity (checked every 30 s) or when the session closes. `browser_close` empties the tabs but keeps the cookies until the session ends. If a page crashes the isolate, the next call fails once with `browser restarted: <reason>` and a fresh isolate takes over.
+
+The model works from **element refs**: `browser_open` and `browser_elements` return rows like `ref=e3 button "Sign in"`, and clicks, fills and selects target a ref (or a CSS selector). Refs go stale after any navigation or click, so the model re-lists before the next action. Forms are submitted by clicking the submit button; Enter in a field does not submit.
+
+Stealth (`browser.stealth: true`) gives pages a current-Chrome TLS fingerprint and blocks trackers. It passes fingerprint checks; it does **not** solve CAPTCHAs or interactive challenges (Cloudflare turnstiles, DataDome, Akamai). `localhost` and private addresses are refused unless `browser.allow_private_network: true`.
+
+### Desktop control (`computer_*`)
+
+`computer_screenshot` captures every display (or one, `display: N`), composites them into a single PNG with black gaps, scales the long edge to `computer.max_edge` (1568 px) and attaches it to the tool result. Every coordinate the model passes afterwards is a pixel of **that** image — the daemon maps it back to screen points. A new screenshot resets the mapping; without any screenshot in the session, input tools refuse with `take a computer_screenshot first: coordinates are pixels of that image`. Input runs on a dedicated thread with a 30 s deadline per action; each capture has a 5 s deadline.
+
+`computer_open` launches an app by name (`open -a` on macOS) or a URL in your default browser, which is how the model reaches your real, signed-in browser: open it, screenshot, click, type.
+
+### What there is not
+
+- No pause-and-hand-control for the headless page. **Live browser** (below) is view-only.
+- No attach to your running Chrome over CDP, no Safari automation, no bundled Chromium.
+- No per-domain allow or deny list for the embedded browser; `browser.allow_private_network` is the only destination gate.
+
+### Live browser view (desktop app)
+
+Once a session has made any `browser_*` call, a globe appears in the chat header (or a **Live browser** row in the narrow menu). It opens a **Live browser** dialog that polls a screenshot of the session's current page every 500 ms. While a page is loading it says *Connecting…*; when the isolate is closed or idle it says *No live page — the browser is closed or idle.* You can watch; you cannot click or type into it. The model can open the same dialog for you with `browser_show` — the terminal UI ignores that call.
+
+### Logins, CAPTCHAs and other things that need you
+
+Because there is no handoff, a login wall in the headless browser has three real answers:
+
+1. **Cookie import** (`browser.import_cookies: true`): the model copies your real browser's cookies for the domain into its isolate, so the next `browser_open` is already signed in.
+2. **Desktop control**: the model opens the site in your own browser and works it with `computer_*`, where your session already exists.
+3. **Ask you**: the model's generic `ask_user` tool pauses the turn for your answer (a code, a choice, "done, I logged in on my side").
+
+### Site JSON routes (`site_*`)
+
+Many JavaScript sites load their data through JSON XHR calls. `site_learn` opens a page in the session's headless browser, waits for the network to settle (`routes.settle_ms`, 4 s), drains the engine's network capture and keeps the JSON responses that look like lists of records, storing each as a URL template with `{holes}` plus the JSON pointer to the records in `~/.theuth/routes/<domain>.json`. `site_routes` lists what is known for a domain; `site_call` replays a route over plain HTTP — no browser — within `routes.call_timeout_ms` (15 s), which is far cheaper than paging through the UI.
+
+Auth is handled carefully: only header **names** are stored on disk. The values (and the cookie header) stay in memory per session and domain, zeroed and dropped after 300 s idle. If a route needs a header that is not armed, `site_call` says `sent without <header>: open the site in this session and site_learn again to arm them`. When a site changes shape the replay fails with `route drifted (status …); re-learn with site_learn` and the row is marked `stale`.
+
+To learn more routes: open the page, click a filter, sort or *next page* control so the site fetches more data, then run `site_learn()` again with no URL. Private sessions keep routes in memory only.
+
+### `browser_run` (Labs)
+
+`browser_run{goal}` is an experimental **System-1** loop: instead of one model turn per click, a local classifier (the `decision-browser` checkpoint, ~0.7 GB, fetched with `scripts/fetch-laya-browser.sh`) picks the next click, keystroke or scroll from the page's element list. One approval covers up to 25 steps or 60 s; it stops on `done`, `blocked`, the step cap, the wall clock, 3 identical consecutive actions, or a low-confidence gate, and returns the step trace plus the current page so the model can continue with ordinary `browser_*` tools. Settings › **Labs** › *Browser System-1* sets the mode: **Off** hides the tool (at the next daemon start), **Shadow** (default) decides one step and acts on nothing, **Active** acts. Treat it as a lab feature.
+
+## Walkthrough: fill a form on a JavaScript site, watching live
+
+In the desktop app:
+
+```text
+› go to the demo signup page at https://example.test/signup and register me as
+  Alex Example, alex@example.test, company "Example Labs". show me while you do it.
+```
+
+What happens:
+
+1. `browser_open` loads the page and returns its text and refs. No approval card: navigation is read-only under the default policy.
+2. `browser_show` opens the **Live browser** dialog over the chat; the globe in the header is now lit. You see the page render and update as the model works.
+3. `browser_fill` sets each field by ref (one listing serves several fills), `browser_select` picks the company size, `browser_click` presses **Create account**, and `browser_wait{text: "Welcome"}` waits up to 30 s (60 s maximum) for the confirmation.
+4. `browser_screenshot` saves `~/.theuth/browser/<session>/shot-1.png`, reports `screenshot 1280×720 saved to …` and attaches the image, which shows as a thumbnail under the tool row.
+
+In the terminal the same request works identically except step 2: there is no live view, so ask for a `browser_screenshot` when you want to see the page.
+
+## Walkthrough: act as the signed-in user with cookie import
+
+First, in `~/.theuth/config.yaml`:
+
+```yaml
+browser:
+  import_cookies: true
+```
+
+Restart theuth. Then:
+
+```text
+› using my Chrome login, open my dashboard on https://app.example.test and
+  tell me how many invoices are overdue
+```
+
+1. `browser_list_profiles` (read-only) lists the local browser profiles found on this machine.
+2. `browser_import_cookies{browser: "chrome", domains: ["app.example.test"]}` is **mutating**, so an approval card appears — `approval: browser_import_cookies (mutating)` with the browser and domains as arguments, **Allow** / **Deny** (`[y]` / `[n]` in the terminal). Chrome, Edge and Brave encrypt their cookie store, so macOS may additionally show a keychain prompt for the launching app.
+3. On success the tool reports `Imported N cookies from chrome into this session's browser. Open or reload the target site to use them.` and `browser_open` lands on the dashboard already logged in.
+
+The cookies live only in this session's isolate and vanish with it. If the tools are missing, the setting is off; the model will tell you so and suggest `browser.import_cookies: true`. Firefox and Safari profiles are supported too; `profile:` picks one when a browser has several.
+
+## Walkthrough: drive a native app, approving each action
+
+```text
+› open Numbers, make a new blank spreadsheet and type the three totals from
+  the last message into A1:A3
+```
+
+1. `computer_open{app: "Numbers"}` → approval card, Allow.
+2. `computer_screenshot` → no card (read-only). The reply reads like `screenshot 1512×982 (all displays, scaled 0.61 from 2560×1664) · display 1 … · cursor at (640,412) · coordinates are pixels of this image` with the PNG attached.
+3. `computer_click{x: 712, y: 300}` → card `approval: computer_click (mutating)` with the coordinates; Allow. Reply `clicked left ×1 at (712,300)`.
+4. `computer_type{text: "1240"}` → card; Allow. Reply `typed 4 chars`. `computer_key{keys: "return"}` → card; Allow.
+5. `computer_screenshot` again to confirm, because the screenshot is the only way the model sees what happened.
+
+Every mutating step asks by default. If that is too chatty for a long task you trust, `/approvals off` stops prompts for this session only; the OS permissions remain the hard boundary. To stop everything at once in the desktop app press **⌥Esc** (*Cancel every running session*, rebindable in Settings › Shortcuts).
+
+## Configuration
+
+### `browser:`
+
+| key | default | meaning |
+|---|---|---|
+| `enabled` | `true` | `false` removes the browser tools and the rendering provider |
+| `stealth` | `true` | Chrome-like TLS fingerprint and tracker blocklist |
+| `proxy` | `null` | `http://user:pass@host:port` or `socks5://host:port` |
+| `user_agent` | `null` | override; default is a current-Chrome UA for the platform |
+| `timezone` | `null` | IANA name; `null` uses the host zone |
+| `geolocation` | `null` | `"lat,lon"` |
+| `allow_private_network` | `false` | let pages reach loopback, RFC 1918 and link-local addresses |
+| `import_cookies` | `false` | register `browser_list_profiles` and `browser_import_cookies` |
+| `idle_secs` | `300` | isolate torn down after this much inactivity |
+| `max_chars` | `4000` | text cap of `browser_open` / `browser_read` replies |
+| `script_deadline_ms` | `30000` | per-script execution deadline inside the page |
+| `capture_entries` | `256` | network responses kept for `site_learn` |
+| `capture_body_bytes` | `2097152` | bytes of response bodies kept for `site_learn` |
+
+### `computer:`
+
+| key | default | meaning |
+|---|---|---|
+| `enabled` | `true` | `false` removes the tools; Settings › Computer shows *Computer control is disabled* |
+| `max_edge` | `1568` | long edge of the screenshot after scaling (about 1280 suits Anthropic models' click accuracy) |
+
+### `routes:`
+
+| key | default | meaning |
+|---|---|---|
+| `enabled` | `true` | register `site_learn`, `site_routes`, `site_call` |
+| `settle_ms` | `4000` | wait after network idle before reading the capture |
+| `call_timeout_ms` | `15000` | one `site_call` |
+| `max_body_bytes` | `2097152` | largest response `site_call` keeps |
+
+Related caps elsewhere: `scrape.concurrency: 5` is the number of isolate slots the rendering provider uses for `read_url {rendered: true}` and `scrape_url`; `web.render_cap_ms: 3000` and `web.read_budget_ms: 6000` bound browser renders inside `search_web`. `browser_run` modes live under `decision.families.browser` (`mode: off|shadow|active`) with the checkpoint directory `decision.checkpoints.browser` (default `~/.theuth/models/decision-browser`). Any key can also be set as `THEUTH_BROWSER__IMPORT_COOKIES=true` style environment variables. See [Configuration](/docs/reference/configuration).
+
+## Tools the model calls
+
+### `browser_*` — all read-only unless noted
+
+| tool | arguments | notes |
+|---|---|---|
+| `browser_open` | `url`, `wait?: load\|domcontentloaded\|networkidle0` | returns URL, title, readable text, refs |
+| `browser_read` | `format?: text\|markdown`, `max_chars?` | re-read after a change |
+| `browser_elements` | — | `ref=e3 button "Sign in"` rows |
+| `browser_click` | `ref?`, `selector?` | submits forms; returns a fresh snapshot |
+| `browser_fill` | `ref?`, `selector?`, `value` | sets a field |
+| `browser_type` | `ref?`, `selector?`, `text` | appends keystrokes |
+| `browser_press` | `key`, `selector?` | one key |
+| `browser_select` | `ref?`, `selector?`, `value` | select option |
+| `browser_scroll` | `direction?: down\|up\|left\|right\|top\|bottom`, `amount?`, `ref?`, `selector?` | |
+| `browser_wait` | exactly one of `selector` / `text`; `timeout?` s, default 30, max 60 | |
+| `browser_eval` | `expression` | JavaScript in the page |
+| `browser_back` | — | |
+| `browser_screenshot` | `width?`, `height?` (CSS px) | PNG saved under `~/.theuth/browser/<session>/` and attached |
+| `browser_tabs` | `action: list\|new\|switch\|close`, `tab_id?`, `url?` | |
+| `browser_close` | — | closes tabs, keeps cookies and the isolate |
+| `browser_show` | — | opens **Live browser** in the desktop app; view-only |
+| `browser_list_profiles` | — | only with `import_cookies`; lists local browser profiles |
+| `browser_import_cookies` **(mutating)** | `browser?: chrome\|chromium\|edge\|brave\|firefox\|safari` (default `chrome`), `domains?`, `profile?` | copies cookies into the isolate |
+| `browser_run` **(mutating, Labs)** | `goal`, `max_steps?` (default and cap 25) | System-1 loop |
+
+Replies longer than `max_chars` end with `…(truncated, N more chars)`.
+
+### `computer_*` — all mutating except the screenshot
+
+| tool | arguments | reply |
+|---|---|---|
+| `computer_screenshot` | `display?: N` (1-based; omitted = all displays composited) | size, scale, cursor position, PNG |
+| `computer_move` | `x`, `y` | `moved to (x,y)` |
+| `computer_click` | `x?`, `y?`, `button?: left\|right\|middle`, `count?: 1..3`, `modifiers?: "cmd+shift"` | `clicked left ×1 at (x,y)` |
+| `computer_drag` | `from: [x,y]`, `to: [x,y]`, `button?` | |
+| `computer_scroll` | `dx?`, `dy?` (lines), `x?`, `y?` | `give dx or dy` if both missing |
+| `computer_type` | `text` | `typed N chars` |
+| `computer_key` | `keys: "cmd+shift+p"` | `pressed …`; some chords refused |
+| `computer_open` | `app` or `url` (one of them) | launches the app or the default browser |
+
+### `site_*` — all read-only
+
+| tool | arguments | notes |
+|---|---|---|
+| `site_learn` | `url?` | navigate (or re-capture the current page when omitted) and store routes |
+| `site_routes` | `url` | one row per route: `GET https://x/{id} → 214 records at /versions (auth: none)`, flags `[stale]` `[no replay]` |
+| `site_call` | `route: "domain:METHOD:/path"`, `params: {…}` | replay over HTTP; safe methods, plus GraphQL persisted-query POSTs |
+
+### Commands and UI
+
+| surface | action |
+|---|---|
+| Terminal `/computer` | prints `accessibility ✓ · screen recording ✗ · 2 displays: 1 main 1512×982 @2×, …` and what to grant |
+| Terminal `/approvals [on\|off] [always]` | approval prompts for this session; `always` writes `tools.approvals` |
+| Desktop header globe / **Live browser** | view-only dialog of the session's headless page |
+| Desktop Settings › **Computer** | Accessibility and Screen Recording status, Open System Settings, Displays, Refresh |
+| Desktop Settings › **Labs** › Browser System-1 | Off / Shadow / Active for `browser_run` |
+| Desktop **⌥Esc** | cancel every running session (Settings › Shortcuts to rebind) |
+
+## Safety and permissions
+
+Every tool call carries a risk — `read_only`, `mutating` or `destructive` — and `tools.policy` maps each to `allow`, `ask` or `deny` (defaults `allow` / `ask` / `ask`). What that means here:
+
+- **`read_only` is a prompting label, not a statement of harmlessness.** All `browser_*` navigation, reading, clicking, filling, selecting, scrolling, tabs and `browser_eval` carry the `read_only` risk, so under the default policy they **never ask**. "Read-only" here describes the host: the embedded browser cannot touch your files, processes or screen. It says nothing about the *website*: `browser_click` submits forms, `browser_fill` plus a click places orders, posts comments or changes settings, `browser_eval` runs arbitrary JavaScript in the page, and every one of those is a live network effect on whatever site is open — without an approval card.
+- **Cookie import changes what those un-prompted calls can do.** `browser_import_cookies` is `mutating` and asks once, naming the browser and domains. After you allow it, the session's browser is signed in as you on those domains, and every subsequent `browser_open`, `browser_click`, `browser_fill` and `browser_eval` acts on your account with **no further prompt** — the import card is the only consent you give. Treat allowing an import as authorising the model to act in that account for the rest of the session (cookies live until the isolate is torn down after `browser.idle_secs` or the session ends). Scope it: import only the domains the task needs, prefer a session dedicated to that task, read what the model is about to do, and deny the import when a read-only visit would do. `browser_run` is also `mutating` and asks once per run.
+- **What to do when that is not acceptable.** There is no per-tool or per-domain switch for the browser. The levers are: `tools.policy.read_only: ask` (prompts for every read-only tool, not just the browser), `browser.import_cookies: false` (the default; removes the import tools entirely), `browser.enabled: false` (removes the browser), a `tools:` ceiling of `read_only` on a subagent or roster agent (which still permits browser calls — a cap limits risk labels, not sites), and watching the **Live browser** view or asking for screenshots while a signed-in task runs. For account actions you want to approve step by step, drive your real browser with `computer_*` instead, where each click and keystroke asks.
+- Every `computer_*` tool except `computer_screenshot` is `mutating` → one card **per action**: each click, drag, keystroke, typed string and app launch. There is no "always allow" for a tool. `/approvals off` silences prompts for the session, `/approvals off always` (or Settings › Approvals) writes `tools.approvals: false` globally, `tools.policy.mutating: deny` blocks them outright.
+- A card left unanswered for `tools.approval_timeout_secs` (300 s) is a deny.
+- `computer_key` refuses the chords `cmd+q`, `cmd+shift+q`, `cmd+alt+esc` and `ctrl+alt+del` with `refused: this chord quits or logs out; ask the user to press it`. Approval cannot override that.
+- Trust boundaries: the model is told that text read off a page or a screenshot is data, never instructions. Cookie import is opt-in per config and per call, reads only the domains requested, and keeps cookies in memory. Routes store header names on disk, never values. Only `browser.allow_private_network` opens the embedded browser to your LAN and localhost.
+- The macOS Accessibility and Screen Recording grants are the outer boundary for desktop control; revoking either stops the tools immediately (input) or at the next capture (screenshots).
+
+[Tools and permissions](/docs/reference/tools-permissions) covers the policy, approvals and timeouts in full.
+
+## Limits and lifecycle
+
+| what | value |
+|---|---|
+| Browser isolate idle teardown | `browser.idle_secs` 300 s, swept every 30 s |
+| Session close | waits up to 10 s for the isolate thread |
+| `browser_wait` | default 30 s, maximum 60 s |
+| In-page script deadline | `browser.script_deadline_ms` 30 000 ms |
+| Reply text cap | `browser.max_chars` 4000 |
+| Rendering provider (`read_url {rendered: true}`, `scrape_*`) | one shared private isolate, calls serialised; `scrape.concurrency` 5 |
+| Desktop input | 30 s per action on a dedicated thread |
+| Desktop capture | 5 s per display; long edge scaled to `computer.max_edge` 1568 px |
+| Routes | settle 4 s, call 15 s, body 2 MiB, auth values dropped after 300 s idle |
+| `browser_run` | 25 steps, 60 s wall clock, 3 identical actions, 2 s per `WAIT`, typed values ≤ 80 chars |
+| Screenshots on disk | `~/.theuth/browser/<session>/shot-N.png`, `~/.theuth/computer/<session>/shot-N.png`; private sessions use their scratch root |
+
+## Troubleshooting
+
+| symptom | cause | fix |
+|---|---|---|
+| `unknown ref` | the ref was issued before the last navigation or click | the model calls `browser_elements` again; refs are per snapshot |
+| `browser restarted: <reason>` | the page crashed the session's isolate | retry; the next call runs on a fresh isolate (cookies are gone) |
+| `browser actor unavailable` | the browser plugin is not running | check `browser.enabled` and the daemon log in `~/.theuth/logs/` |
+| `rendered fetch needs a rendering provider: scrape, browser, or firecrawl` | `read_url {rendered: true}` with the browser disabled | set `browser.enabled: true` |
+| `take a computer_screenshot first: coordinates are pixels of that image` | an input tool ran before any screenshot in this session | the model screenshots first; nothing to do on your side |
+| `accessibility not granted for the app that launched theuth (your terminal, or theuth.app): System Settings › Privacy & Security › Accessibility` | the launching app lacks Accessibility | grant it to that app (not to `t`); no restart needed |
+| `screen recording not granted for the app that launched theuth … enable it, then restart theuth` | the launching app lacks Screen Recording | grant it, then quit and relaunch the terminal or theuth.app |
+| `display N does not exist (M displays)` | `display:` index out of range | indexes are 1-based; `/computer` lists them |
+| `input timed out after 30 s` / `input thread recovered: …` | the OS input call hung (a modal dialog, a secure input field) | dismiss what is on screen and retry |
+| `refused: this chord quits or logs out; ask the user to press it` | `computer_key` with a protected chord | press it yourself |
+| `Computer control is disabled (computer.enabled: false)` in Settings › Computer | the plugin is off | set `computer.enabled: true` and restart |
+| `browser_import_cookies` is missing / the model says import is off | `browser.import_cookies` is `false` | set it to `true` and restart |
+| `reading <browser> cookies failed: …` | the cookie database could not be read or decrypted | close the browser if it locks the file; on macOS allow the keychain prompt for the launching app |
+| `No matching cookies found in <browser>.` | no cookies for those domains in that profile | sign in there first, or pass the right `profile` |
+| `route drifted (status …); re-learn with site_learn` | the site changed its API shape; row marked `stale` | open the page and run `site_learn` again |
+| `no routes learned for <domain>; site_learn first` | nothing stored yet | `site_learn{url}` |
+| `no traffic captured — nothing loaded since the last site_learn; click a control that changes the list, then site_learn() again` | the page made no new JSON calls | interact with a filter or pager, then re-learn |
+| `sent without <header>: open the site in this session and site_learn again to arm them` | the stored route needs an auth header whose value expired (300 s idle) | reopen the site in this session and `site_learn` |
+| `the decision-browser checkpoint is not installed. Run scripts/fetch-laya-browser.sh …` | `browser_run` without the model files | run the script (0.7 GB into `~/.theuth/models/decision-browser`) or leave the Labs switch on Shadow/Off |
+| Live browser shows *No live page — the browser is closed or idle.* | the isolate was torn down after `idle_secs`, or `browser_close` ran | ask the model to open a page again; the dialog never starts an isolate by itself |
+| A CAPTCHA or "verify you are human" wall in the headless browser | stealth does not solve interactive challenges | import cookies, switch to `computer_*` on your real browser, or let the model ask you |
+
+## Related
+
+- [Tools and permissions](/docs/reference/tools-permissions) — risk levels, `tools.policy`, approval cards and timeouts
+- [Configuration](/docs/reference/configuration) — every key with its default
+- [Secrets](/docs/reference/secrets) — passing credentials to tools without pasting them in chat
+- [Sandboxes](/docs/automation/sandboxes) — a Linux VM with its own desktop when you do not want the model on yours
+- [Desktop app](/docs/workspace/desktop) and [Terminal UI](/docs/workspace/terminal) — where the live view, approval cards and `/computer` live
+- [Troubleshooting](/docs/reference/troubleshooting)
+- [Automation overview](/docs/automation)

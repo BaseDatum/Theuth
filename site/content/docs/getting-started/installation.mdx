@@ -1,0 +1,163 @@
+---
+title: Installation
+description: Install the t command or the desktop app on macOS, Linux and Windows, keep it updated, and remove it cleanly.
+---
+
+## Two things you can install
+
+- **The `t` command** — the whole harness in one binary: terminal UI, headless daemon, print mode, CLI subcommands. Two helper executables sit beside it: `theuth-app-parser-<hash>` (validates apps) and `theuth-documents-<version>` (the notes/knowledge editor backend). Every package below ships all three.
+- **The desktop app** (`theuth.app`, `theuth-desktop`) — a tray/menubar shell around the same engine. It bundles its own `t`, so it does not need the command installed, and it reuses an engine a terminal `t` already started on the same data directory.
+
+They share `~/.theuth` (`--data-dir` / `THEUTH_DATA_DIR` relocate it on every OS, `C:\Users\<you>\.theuth` on Windows). Installing both is normal.
+
+The updater and Homebrew tap read releases from the manifest configured as `update.url` (default `https://s3.rwx.dev/theuth/releases/latest.json`), which names the current version and a download URL per platform; the files for one version sit under `…/releases/<version>/` with a `SHA256SUMS` listing. Which platform entries a given release carries is decided per release — the manifest is the authority, not this page. Signed payloads carry a detached minisign `.sig` the updater checks against the key committed in `crates/update/pubkey.txt`.
+
+## macOS
+
+Requirements: Apple silicon and macOS 15 or newer. There is no Intel build.
+
+```sh
+brew install basedatum/tap/theuth          # `t` into $(brew --prefix)/bin
+brew install --cask basedatum/tap/theuth   # theuth.app into /Applications
+```
+
+The app behaves like a menubar utility:
+
+- No Dock icon. Left-click the tray icon to show or hide the window; right-click for the menu, including **Quit** (⌘Q also quits).
+- **⌥Space** shows or hides the window from anywhere and **⌥Esc** cancels every running session. Both are rebindable in **Settings › Shortcuts**; if another app already owns a chord, theuth shows `Could not register …` and you can pick another.
+- Closing the window hides it; the engine keeps running until you quit.
+- **Settings › General › Open at login** registers it as a login item.
+
+The CLI tarball is packed from the signed, notarized app, so `t` and its helpers carry the same Developer ID signature as `theuth.app`.
+
+### macOS permissions
+
+macOS asks for these the first time a feature needs them; grant them to **the app that launched theuth** — `theuth.app`, or your terminal (Ghostty, iTerm, Terminal) when you run `t` there:
+
+| Permission | Needed for | Notes |
+|---|---|---|
+| Microphone | voice notes, dictation, your side of a meeting | prompted by the app on first use |
+| System Audio Recording | the meeting app's audio while a meeting records | prompted when the first recording starts |
+| Screen Recording | `computer_screenshot` and the other `computer_*` tools | takes effect only after you restart the granting app |
+| Accessibility | `computer_*` mouse and keyboard actions | immediate |
+
+`/computer` in the TUI (or **Settings › Computer**) shows what is granted. The tools themselves say what is missing, for example `screen recording not granted for the app that launched theuth (your terminal, or theuth.app)`. Meetings and voice need nothing beyond the microphone and audio permissions; see [Voice](/docs/workspace/voice) and [Meetings](/docs/workspace/meetings).
+
+## Linux
+
+Requirements: x86_64 or aarch64 with glibc 2.39 or newer (Ubuntu 24.04+, Debian 13+, Fedora 40+). musl-based distributions are not supported.
+
+**The command.** The Homebrew formula works on Linuxbrew:
+
+```sh
+brew install basedatum/tap/theuth
+```
+
+Or download `theuth_<version>_linux-<arch>.tar.gz` from the release directory above (its `.sig` and `SHA256SUMS` sit beside it), unpack `t` and the two helpers into one directory on your `PATH`. The helpers must stay beside `t`; the updater keeps them together.
+
+**The desktop app.** Releases may include `theuth_<version>_linux-<arch>.deb`, `.rpm` and `.AppImage`, built with `scripts/package-linux.sh` on a Linux host of the target architecture. Check `latest.json` and `SHA256SUMS` for the version you want; if a Linux desktop file is not listed, that release shipped the CLI only and you can build the bundles yourself (`just package-linux`, see [Development](/docs/reference/development)). The `.deb` installs `theuth-desktop`, `t` and both helpers into `/usr/bin`, so the command is on your `PATH` afterwards. The app depends on WebKitGTK and the usual GTK/appindicator libraries your package manager pulls in.
+
+What differs from macOS:
+
+- Speech models and the ONNX Runtime are not in the package; the app downloads them on demand into `~/.theuth/models/`.
+- Meetings record through PipeWire. There is no echo cancellation on this path, so headphones are recommended; the meeting status reports `no echo cancellation; headphones recommended`, or the reason when no PipeWire daemon answers.
+- `t --install-service` writes a systemd user unit (`~/.config/systemd/user/theuth.service`) and runs `loginctl enable-linger` so it survives logout; it tells you if lingering could not be enabled.
+- In a VM without a GPU render node (no `/dev/dri/renderD*`), the app sets `WEBKIT_DISABLE_DMABUF_RENDERER=1` itself so WebKitGTK does not paint a blank window. If you see a blank window anyway, set that variable by hand.
+- The vault key goes into the Secret Service (for example GNOME Keyring) when one answers, otherwise into `~/.theuth/secrets.key` with a warning in the log.
+
+## Windows
+
+Windows support is x86_64 only and the installers are **unsigned**: there is no Authenticode certificate yet, so SmartScreen shows "unknown publisher" on the first run. Builds are produced on a Windows machine with `scripts/package-windows.ps1` (`just package-windows`; needs PowerShell 7, the rustup MSVC toolchain, `cargo tauri`, and `bun`). A release may publish the results under the same release directory as `windows-x86_64` / `cli-windows-x86_64` entries in `latest.json`; when they are absent, build from source ([Development](/docs/reference/development)).
+
+The two artifacts:
+
+| File | What it is |
+|---|---|
+| `theuth_<version>_windows-x86_64-setup.exe` | NSIS installer, per-user (no UAC prompt), into `%LOCALAPPDATA%\theuth\`: `theuth-desktop.exe`, `t.exe`, both helpers, `onnxruntime.dll`, `uninstall.exe`. Start-menu and desktop shortcuts, an Add/Remove Programs entry. `/S` installs silently. |
+| `theuth_<version>_windows-x86_64.zip` | `t.exe`, `theuth-app-parser-<hash>.exe`, `theuth-documents-<version>.exe` — unzip into one folder and put it on your `PATH`. |
+
+WebView2 is required by the app; Windows 11 ships it, and where it is missing the installer downloads Microsoft's bootstrapper (about 2 MB). The app lives in the notification area like on macOS (Windows may tuck a new tray icon under the overflow chevron); closing the window hides it, right-click › **Quit** stops the engine with it.
+
+What differs on Windows:
+
+- The vault key is a generic credential in the Windows Credential Manager (`secrets:C:\Users\<you>\.theuth`). Over an SSH or other network logon the Credential Manager is unavailable and theuth falls back to `secrets.key` in the data directory, saying so in the log.
+- `t --install-service` creates a Task Scheduler logon task named `theuth` for the current user (`schtasks /create /sc onlogon`). The source marks this path as not yet verified on a real Windows install; check `schtasks /query /tn theuth /v` after installing.
+- Meetings record through WASAPI loopback without echo cancellation (headphones recommended).
+- Self-update does not work for either artifact in this version (see Updating); install a newer `-setup.exe` or unzip a newer zip over the old one.
+
+## Build from source
+
+```sh
+just setup      # rustup toolchain from rust-toolchain.toml
+just run        # debug build, terminal UI
+just install    # release `t` + both helpers into ~/.cargo/bin
+```
+
+Prerequisites from the README: `cmake`, `clang`/`libclang`, `llvm-objcopy`/`llvm-nm` (`brew install cmake llvm` or `apt install cmake clang libclang-dev`), network on the first build for the prebuilt V8 archive, and `bun` to compile the helpers (not needed at run time). The desktop app, packaging recipes and the full toolchain are covered in [Development](/docs/reference/development).
+
+## Updating
+
+Nothing asks you to update. Where self-update exists — the macOS app, and the `t` command on macOS and Linux — the rule is: a newer **minor or patch** release is applied by itself; a new **major** is never installed silently (it may change the config or database layout) — install that one by hand. Downgrades never happen. The Windows CLI and the Linux and Windows desktop apps do not self-update (see Limitations below).
+
+### The `t` command
+
+Sixty seconds after start, then every six hours, the running engine fetches `latest.json`, and when a newer compatible version exists it downloads the tarball for its platform, verifies the minisign signature, stages `t` and the helpers beside the current binary and swaps them in with atomic renames. The process you are in keeps running on the old image; the next `t` starts the new one. The TUI header shows `<version> ready`, and a dim transcript line says the same.
+
+Three variants of that:
+
+- **Homebrew install** (the binary lives under `Cellar/theuth/`): theuth does not touch Homebrew's files. It runs `brew upgrade --formula theuth` itself once the tap carries the new version, so `brew list --versions theuth` always tells the truth. A plain `brew upgrade` works too.
+- **Directory not writable** (for example `/usr/bin/t` from the `.deb`, or a root-owned prefix): nothing is replaced; the header shows `<version> available` and `sudo t --update` installs it.
+- **Service installs** (`t --install-service`): once the new binary is on disk and no client has been attached for ten minutes, the daemon exits so launchd/systemd restart it on the new version.
+
+Force a check at any time; it prints one line and exits:
+
+```sh
+t --update
+# theuth 2.5.0 → 2.5.1      (or: up to date (2.5.1))
+```
+
+Two config keys, under `update:` in `config.yaml`:
+
+```yaml
+update:
+  enabled: true     # false: never checks on its own; `t --update` still works
+  url: https://s3.rwx.dev/theuth/releases/latest.json
+```
+
+Helpers are versioned by name (`theuth-app-parser-<hash>`, `theuth-documents-<version>`); an update adds the new ones and leaves older ones in place for any `t` still running. Debug builds never check.
+
+### The desktop app
+
+The app checks on the same schedule, downloads and verifies the new `theuth.app` in the background and installs it when you quit — or now, via **Settings › General › App**, which shows `<version> installs when you quit` with an **Install and restart** button, otherwise **Check for updates**. The Homebrew cask is marked `auto_updates`, so `brew upgrade` leaves it alone (pass `--greedy` if you want Homebrew to reinstall it). A `theuth.app` your user cannot write (a root-owned copy) is skipped.
+
+The bundled `t` updates together with the app, not on its own; a terminal `t` is a separate install with its own updater. Settings › General › Node also shows the engine's updater state (`<version> ready · restarts with the daemon` or `available · t --update on the node`).
+
+Limitations in this version: the in-app updater only knows how to swap a macOS `.app` bundle, so the Linux and Windows desktop apps do not self-update — install the newer `.deb`/`.rpm`/`.AppImage` or `-setup.exe`. On Windows `t --update` also fails, because the updater only downloads and unpacks `.tar.gz` payloads and the Windows CLI ships as a `.zip`.
+
+## Uninstalling
+
+1. If you installed a service: `t --uninstall-service` stops and removes the LaunchAgent / systemd unit / Task Scheduler task. The data directory and every device pairing stay.
+2. Remove the package:
+
+   ```sh
+   brew uninstall theuth                   # the command
+   brew uninstall --cask theuth            # the app; add --zap to trash ~/Library/Application Support/io.theuth.mac
+   ```
+
+   Linux: remove the `theuth` package with your package manager, or delete the AppImage / the tarball's three files. Windows: Add/Remove Programs, or `%LOCALAPPDATA%\theuth\uninstall.exe`.
+3. Decide about `~/.theuth`. Nothing above touches it: the config, the encrypted vault (`secrets.sqlite`), sessions, knowledge, artifacts, documents, logs and downloaded models all stay until you delete the directory.
+4. The vault **key** is not in that directory when a keychain was available: it is a keychain item with service `theuth` and account `secrets:<absolute data dir>` (Keychain Access on macOS, Credential Manager on Windows, your Secret Service keyring on Linux). Delete it after the directory; without the directory the item is useless, and without the item the vault cannot be opened. If you ever set `secrets.key_store: file`, the key is `~/.theuth/secrets.key` instead.
+
+## Troubleshooting first runs
+
+- **`/model` says `no models: no provider is configured`.** No key, login or env var for any provider yet. Add one as in the [Quickstart](/docs/getting-started), then open `/model` again; `t --secret-list` shows what the vault holds (names only).
+- ``engine already running (pid …) — run `t` to attach``. Another engine owns this data directory. A plain `t` or `t -p` attaches to it automatically; `t --headless` and `t --serve` will not start a second one. Point `THEUTH_DATA_DIR` elsewhere if you want two.
+- **The RPC port is taken.** The engine listens on `127.0.0.1:7777` by default (`rpc.listen` in `config.yaml`, or `THEUTH_RPC__LISTEN=127.0.0.1:<port>` for one run). The desktop app picks a free port for the engine it starts and finds a terminal engine through `~/.theuth/engine.json`.
+- **The desktop app shows `no daemon on 127.0.0.1:<port> after 15 s`.** The engine did not come up. On macOS/Linux it starts through your login shell so it inherits your environment; a `.zshrc`/`.bashrc` that prompts (`your shell startup is waiting for input`) or exits blocks it. The message quotes the last lines of the launch transcript.
+- **`app parser helper not found at …`** or Settings › General saying **`Helper missing at … — notes, knowledge editing and meeting notes are disabled`.** `t` could not find `theuth-app-parser-<hash>` / `theuth-documents-<version>` beside itself. Reinstall the package, or after a source build run `just install` so the helpers land next to `t`. For a development checkout `THEUTH_APP_PARSER=<path>` points at a helper explicitly.
+- **Log line `no keychain available: … vault key in ~/.theuth/secrets.key (mode 0600)`.** Expected on a headless server, over SSH, or in a container: the vault works, the key is a file. To make that explicit (and silence the warning) set `secrets.key_store: file`; set `keychain` to refuse the fallback instead.
+- **`Could not register Alt+Space; another app holds it`.** Rebind under Settings › Shortcuts.
+- **`screen recording not granted …` / `accessibility not granted …`** from a `computer_*` tool. Grant the permission to the app that launched theuth (see macOS permissions above); Screen Recording needs that app restarted.
+- **Linux app opens blank.** No usable GPU render node; set `WEBKIT_DISABLE_DMABUF_RENDERER=1` and start it again.
+
+Logs are daily files under `~/.theuth/logs/` (`theuth.log.<date>`); `RUST_LOG=debug t --update` shows the updater's reasoning on stderr. More in [Troubleshooting](/docs/reference/troubleshooting) and the [CLI reference](/docs/reference/cli).

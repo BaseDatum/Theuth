@@ -1,0 +1,215 @@
+---
+title: Desktop app
+description: The menubar app — launching, the tray and global shortcut, navigation, the chat view, every Settings tab as implemented, keyboard shortcuts and platform notes.
+---
+
+## Launching
+
+Install the app as described in [Installation](/docs/getting-started/installation) and open it once. On macOS it is a menubar app: there is no Dock icon, the window opens under the tray icon the first time and remembers its position afterwards. Closing the window hides it; the app keeps running in the tray until you choose **Quit**.
+
+On start the app looks for an engine before starting one:
+
+1. It reads `~/.theuth/engine.json`. If the recorded process is alive, it connects to that engine's listen address — a `t --headless`, a `t --serve`, or a terminal `t` that is already running.
+2. Otherwise it tries the address in `config.yaml` under `rpc.listen`, or `127.0.0.1:7777`.
+3. If nothing answers, it starts its own daemon: `t --headless --data-dir ~/.theuth` on a free local port. On macOS and Linux the daemon is launched through your login shell (`$SHELL -l -i -c 'exec t --headless …'`) so it inherits the same `PATH` and environment a terminal tab would; on Windows `t.exe --headless` is started directly as a hidden child process that is terminated with the app.
+
+The `t` binary used is the one bundled with the app (`THEUTH_BIN` overrides it, then `t` on the shell's `PATH`). Data lives in `~/.theuth` (or `THEUTH_DATA_DIR`), shared with the terminal. While the daemon starts, the window shows `Starting…` and the daemon's own output; a daemon the app started is shut down when you quit, a reused one is left running.
+
+### Tray and the global shortcut
+
+The tray icon toggles the window on a left click. Its menu has **Open**, **New chat**, **Knowledge**, **Start meeting…** (macOS only), **Settings** and **Quit**. The tray title shows `●N` while N tool approvals are waiting.
+
+`⌥Space` (`Alt+Space` on Windows and Linux) shows or hides the window from anywhere, and `⌥Esc` cancels every running session. Both are system-wide shortcuts and can be rebound under Settings › Shortcuts › System-wide; if another app already owns the chord the app says `Could not register …; another app holds it`.
+
+Settings › General › **Open at login** registers the app as a login item.
+
+## Navigation
+
+The sidebar has, from top to bottom:
+
+- **THEUTH** — the overview: headline numbers, an **Attention** inbox (approvals, decisions agents escalate, hires, blocked tasks, budgets, unreachable nodes, secret requests, each answerable inline), **In flight**, **Board pulse**, **Activity** and **Spend**, with a new-chat composer at the bottom.
+- **New chat** (`⇧⌘O`), **Talk** (opens or rejoins a spoken session; see [Voice](/docs/workspace/voice)).
+- **Agents**, **Tasks**, **Routines** — who works, on what, when. See [Agents](/docs/automation/agents), [Tasks](/docs/automation/tasks), [Schedules](/docs/automation/schedules).
+- **Attention** — the inbox on its own page.
+- **Library**: **Artifacts**, **Knowledge**, **Notes**, **Meetings**, **Skills**, **Secrets**, **Tools**.
+- **Desks** — one row per roster agent, when you have agents; a desk is the agent's own session.
+- The chat list: **Pinned**, then **Today**, **Yesterday**, **Previous 7 days**, **Older**; project groups when you use `/project`; **Archived (N)** at the bottom, collapsed.
+- **Settings**, with the app version beside it and a small dot when an update is waiting to install.
+
+The sidebar header holds the engine switcher (which node you are looking at), **Search** (`⌘K`), **Broadcast…** (one message to many sessions) and the sidebar toggle (`⇧⌘S`).
+
+Each chat row has a `…` menu: **Rename**, **Open in new window**, **Pin**/**Unpin**, **Archive**/**Unarchive**, **Continue here** (take over a session owned by another node), **Move to project**, **Remove from project**, **Select**, **Attach to chat…**, **Copy id** and **Delete** (which also removes the chat's subagents, after a confirmation). `⌘`-click selects several rows, `⇧`-click extends the selection; a bar below the list offers **Archive**/**Unarchive** and **Delete** for the selection. Dragging a chat (or **New chat**) onto the open chat splits the view into two panes; **Open in new window** pops a chat, terminal, artifact, meeting or sandbox desktop out into its own window. See [Sessions](/docs/workspace/sessions) for what sessions, forks and projects mean.
+
+## The chat view
+
+### Header
+
+Left to right: the model picker (`<model> · <effort> ▾` — click to search models, pick an effort level or `clear` it; for an ACP child it shows the harness options instead and a **Resume** button restarts the harness in the session's stored context), the chat title, `↳ parent` when the chat is a subagent, an owner chip when another node owns it, the context meter, the **Cost** pill, **Terminals**, **Live browser** (a globe that lights up while the agent's browser is busy; click to watch the page live), **Artifacts** as `▣ N` (newest first; pick one to open it in the side panel), **CodeMap** when a code index exists for the session, an `approvals off` badge when prompts are disabled, `●N` **Pending approvals**, **Open in new window** and the **Session menu**. In a narrow pane the less-used controls fold behind a chevron.
+
+The **Session menu** (`…`) has **Rename**, **Copy id**, **Open parent**, **Open meeting**, **Continue here**, **Compact** (summary / cut / snap), **Clear**, **Shake context…**, **Undo**, **Redo**, **Harvest knowledge**, **Show prompt**, **Jobs** (background jobs with a **Kill** button each) and **Communication & peers…**.
+
+### Composer
+
+- Type and press `Enter` to send; `Shift+Enter` inserts a line. While a turn runs the placeholder changes to **Send to steer…** and `Enter` queues your message as a steer: it appears as a `◇` chip above the box until the agent reads it. Click a chip to pull it back into the box, `×` withdraws it, `⌥↑` withdraws the newest. `⌘Enter` (or holding the **Steer** button) interjects: the running turn is cancelled and your message starts the next one. The red **Stop** button cancels the turn (`Esc` while the box has focus does the same).
+- The `+` button offers **Attach…** (notes, knowledge concepts, artifacts, chats and meetings — also reachable by typing `@` in the box), **Attach file** (images and PDF), **New note** and **Send to many…**. You can also drop files onto the box or paste an image with `⌘V`. A long pasted text becomes a **Pasted text** chip rather than filling the box.
+- If the current model does not accept images, the composer says so and names the vision fallback model that will inspect them (`/vision`, or Settings › Agent loop).
+- `/` at the start of the box opens the slash command menu. The commands are the same as in the terminal (see the table in [Terminal](/docs/workspace/terminal)); commands that open a picker there open the matching page or Settings tab here — `/login` opens Connections, `/approvals` opens Approvals, `/mcp` opens Tools, `/skills` opens Skills. The desktop adds `/subagent [model|off]`, `/escalate [model|off]` and `/skill:<name>` (park a skill on the next message).
+- The microphone button dictates on a tap (`Ctrl+D`) and records a voice note when held; the **Talk** button starts a spoken conversation. See [Voice](/docs/workspace/voice).
+
+### Tool cards and approvals
+
+Each tool call is a card: the tool name, its arguments, and a `✓`/`✗` result line; click to expand the full output, a diff for edits, or a terminal job's tail. With Settings › Chat › **Collapse tool calls by default** on, consecutive calls fold into one card with a live status line. Files the agent shows you appear as artifact cards with **Open in panel**, **Open in new window** and a **More** menu (copy, save, reveal, attach to a chat); apps the agent builds render in the side panel. See [Documents](/docs/workspace/documents) and [Apps](/docs/workspace/apps).
+
+When a tool needs your approval the card reads `approval: <tool> (<risk>)` with the arguments and two buttons, **Allow** and **Deny**. There is no "always allow" button on the card; turn prompts off for a chat or for every chat under Settings › Approvals or with `/approvals off [always]`. Pending approvals from any chat are listed behind the `●N` header button and in the Attention inbox. The policy that decides which tools ask is described in [Tools and permissions](/docs/reference/tools-permissions).
+
+### Side panels
+
+- **Artifacts** — a resizable right panel with a version selector; apps run here.
+- **Terminals** — the session tree's PTY jobs in a terminal emulator; pick a job from the drop-down, type into it, or open it in its own window.
+- **Live browser** — screenshots of the agent's browser page while it works. See [Browser and desktop](/docs/automation/browser-desktop).
+- **CodeMap** — a docked map of the indexed codebase for the session.
+
+## Settings
+
+Open Settings from the sidebar footer, from the tray menu, or with `⌘/` (which lands on Shortcuts). Each tab below is listed with its real title and what its controls change. Settings marked *local* are stored by the app on this machine; everything else is sent to the engine you are connected to.
+
+### General
+
+- **Theme** — System, Light or Dark (*local*).
+- **Serif prose on boards** — board prose in a serif face (*local*).
+- **Open at login**, **Toggle window** (shows the current chord; rebind it under Shortcuts), **App** — the installed version and **Check for updates**; once an update has downloaded the row reads `… installs when you quit` and the button becomes **Install and restart**. Desktop only.
+- **Node** — the connected engine's name and version, its **Data directory**, the **Documents** helper status (a missing helper disables notes, knowledge editing and meeting notes — reinstall the app), and the engine's own **Update** status (`t --update` on the node applies it).
+- **Connection** — the link transport diagnostics for the active engine, with **Copy diagnostics**.
+
+### Chat
+
+- **Collapse tool calls by default** (*local*).
+- **Turn chime** — a two-tone cue in the talk view when the model takes the turn (*local*).
+
+### Agent loop
+
+Engine-wide tuning; the number fields apply to new sessions.
+
+- **Model calls**: **Stream idle timeout** (seconds without model output before the call is abandoned), **Reply recoveries per turn** (0 turns recovery off), **Tool rounds per turn**, **Subagent timeout**, **Terminal idle wake** (seconds a PTY job's screen must stay still before the model is woken with its screen; 0 off).
+- **Routines**: **Run time limit** for a routine run (minimum 30 s; a routine's own `run_timeout:` overrides it).
+- **Context**: **Default compact style** (Summary, Cut or Snap) and **Show theuth nudges** (display only, *local*).
+- **Helper models**: **Title model** (names new chats), **Subagent model**, **Vision fallback model** (only image-capable models are offered) and **Escalation model** (inherits the title model when off). These are the same values `/title`, `/subagent`, `/vision` and `/escalate` set.
+
+### Approvals
+
+- **Ask before risky tools** — the default for every chat, saved to the config file.
+- **Ask in this chat** — overrides the default for the chat you opened Settings from.
+- **Pending** — how many tools are waiting across every chat.
+
+### Communication
+
+- **Let sessions message each other** — the node-wide ceiling for discovery, sends, delegation and child results.
+- **This chat may communicate** and the **Effective: on/off** row, which names the exact blocker when a chat cannot.
+- **Root scope** — **Who may discover this tree** (Isolated or Owner) and an **Alias** other roots see.
+- **Network (A2A)** — listener state, **Reload peers and exports** (re-reads `a2a/peers.yaml`), configured peers and exports.
+- **Peers** and **Peer requests** for the open chat. See [Delegation](/docs/automation/delegation).
+
+### Computer
+
+Computer-control permissions and displays, with **Refresh**: **Accessibility** and **Screen Recording**, each with **Open System Settings** on macOS, and the **Displays** list. If computer control is off the tab says `Computer control is disabled (computer.enabled: false)`. See [Browser and desktop](/docs/automation/browser-desktop).
+
+### Meetings
+
+- **Screen capture**: **Hidden from capture** (both windows are excluded from screen sharing and screenshots; your own screenshots of them come out black) and the **Eye hotkey** that flips it while a meeting records (default `⌥⇧E`).
+- **Push-to-talk**: the **Push-to-talk hotkey** (default `` ⌥` ``), registered only while a meeting records or is paused.
+- **Live transcript**: **Live speaker labels**.
+- **Local decision oracle**: its current mode, changed in Labs.
+- **Enrolled speakers**, each with **Delete**.
+
+See [Meetings](/docs/workspace/meetings).
+
+### Search
+
+- **Providers** — order, enable, URL, timeout, engines and API key (set through the masked **Set key…**, stored in the vault) per web-search provider, with **Test**, **Revert** and **Save**.
+- **Defaults** — **Pages read per search** (0–8), **Read budget (s)**, **Render cap (s)**, **Default recency**, **Keyless engines as fallback only**, **Treat degraded as error**.
+- **Status** — provider health and a **Run a test search…** box.
+
+These govern the agent's `search_web` tool, not the `⌘K` search; see [Search](/docs/workspace/search).
+
+### Labs
+
+Shown only while the local decision oracle is enabled in config. **Decision models loaded now**; **Local decision oracle** and **Browser System-1**, each **Off / Shadow / Active**; **Training data** — per family, **capture locally** (rows written under `decisions/training` in the data directory, secrets replaced by placeholders), **Open folder**, **Delete local data**, and a separate **share with theuth** consent switch.
+
+### Harnesses
+
+External ACP agents theuth can delegate to: **Installed** (with **Probe** and **Remove**) and the **Registry** (with **Add**). See [Delegation](/docs/automation/delegation).
+
+### Mesh
+
+**This node** (id, mesh name, **Prefer this node as hub**, session and replication counters), **Nodes in this mesh**, **Add a node** (**Show pairing string** for another node to paste, or paste another node's string and **Add**; **Over SSH** takes the key printed by `t --install-service`), **Sandbox VMs**, and the other meshes this app can reach with **Pair with a mesh…**. See [Mesh](/docs/automation/mesh) and [Sandboxes](/docs/automation/sandboxes).
+
+### Link
+
+**Devices paired with this mesh** — **Pair a device** shows a QR code and key for a phone, with rename and **Revoke**; the **Relay** section turns the relay on or off, sets its URL and the **Node name**, and shows this node's and this mesh's ids; **Legacy devices** paired before meshes. Pairing a phone end to end is described in [Channels](/docs/automation/channels).
+
+### Connections
+
+**Accounts** — **Login**/**Logout** for OAuth providers and MCP servers; **Built-in providers** — **Set key…**/**Replace key…** (masked, written to the secrets vault); **Gateways** — add an OpenAI-compatible gateway by name, base URL and API key, or remove one; **AWS Bedrock** — the **Profile** Bedrock signs with. See [Models](/docs/getting-started/models) and [Secrets](/docs/reference/secrets).
+
+### Channels
+
+**Signal** — account state, **Link**/**Unlink** this device (a QR code to scan from Signal › Linked devices), the **Owner** number and **Allowed numbers**; **Slack** — bot state, **Owner**, **Allowed users** and **Channels**. See [Channels](/docs/automation/channels).
+
+### Shortcuts
+
+Every binding the app listens for, rebindable: click a chord, press the keys; `Backspace` restores the default. Conflicts within the same group are refused.
+
+## Keyboard shortcuts
+
+Defaults on macOS; on Windows and Linux `⌘` is `Ctrl`.
+
+| Shortcut | Action |
+| --- | --- |
+| `⌘K` | Search |
+| `⇧⌘O` | New chat |
+| `⇧⌘S` | Toggle sidebar |
+| `⇧Esc` | Focus composer |
+| `⇧⌘C` | Copy last response |
+| `⇧⌘;` | Copy last code block |
+| `⌘/` | Show shortcuts |
+| `Ctrl+D` | Dictate |
+| `⌘T` | Stop the talk |
+| `⇧⌘T` | Show or hide the talk transcript |
+| `Enter` / `Shift+Enter` | Send / New line |
+| `⌘Enter` | Send and interrupt the running turn |
+| `⌥↑` | Withdraw last queued message |
+| `Esc` | Stop the running turn |
+| `⌥Space` | Show or hide the window (system-wide) |
+| `⌥Esc` | Cancel every running session (system-wide) |
+
+Elsewhere: `Esc` discards a dictation or voice recording, clears a selection in the chat list and cancels an inline rename; in the talk view `Esc` cancels the reply while the model thinks or speaks, otherwise returns to the chat. On touch devices only `⌘K` with a hardware keyboard is kept.
+
+## Platform notes
+
+macOS is the primary platform (macOS 15 or newer): menubar-only, native menu bar, template tray icon, `.app` and `.dmg`, and the in-app updater. Windows and Linux builds exist (`.exe` installer and `.zip` on Windows; `.deb`, `.rpm` and `.AppImage` on Linux) with these verified differences:
+
+- **Meetings** — the tray's **Start meeting…** entry is macOS only; the engine's meeting capture reports *partial* support (no echo cancellation; headphones recommended) on Windows and Linux, and the Linux island cannot be hidden from screen capture.
+- **Daemon** — started directly rather than through a login shell on Windows; killed with the app via a Job Object.
+- **Updates** — the in-app **Check for updates** flow swaps a `.app` bundle and is only active on macOS; on other platforms update the engine with `t --update` and reinstall the app package.
+- **Linux** — on a machine with no usable GPU render node the app sets `WEBKIT_DISABLE_DMABUF_RENDERER=1` for WebKitGTK itself so the window paints; the tray needs an app-indicator library.
+- **Windows** — a coloured tray icon, a native title bar, and the close button hides to the tray like everywhere else; `~/.theuth` is `C:\Users\<you>\.theuth`.
+
+Microphone access is requested the first time you dictate, record a voice note or start a meeting; system-audio recording for meetings is a separate macOS permission. Accessibility and Screen Recording are only needed for computer control (Settings › Computer).
+
+## Troubleshooting
+
+**`no daemon on 127.0.0.1:<port> after 15 s`** — the daemon did not start listening. The startup screen shows the daemon's output; if it ends with `your shell startup is waiting for input`, something in your shell rc (`.zshrc`, `.bashrc`, …) prompts on an interactive login shell. Make it non-interactive-safe, then **Relaunch**.
+
+**`daemon exited before listening (exit code N)`** — the `t` binary could not run. Check that the bundled `t` is present (or set `THEUTH_BIN`), and look at `~/.theuth/logs/theuth.log`.
+
+**The app connected to the wrong engine.** It reuses whatever `~/.theuth/engine.json` points at while that process is alive. Quit the terminal `t` or `t --headless` you do not want, then **Relaunch** from the startup screen or restart the app.
+
+**`Could not register ⌥Space; another app holds it`** — another app owns the global chord. Pick a different one under Settings › Shortcuts › System-wide.
+
+**Notes, knowledge editing or meeting notes are missing.** Settings › General › **Documents** shows `Helper missing at …`; reinstall the app so the documents helper sits beside `t`.
+
+**No microphone or audio prompt appears.** macOS only shows the prompt once; grant access under System Settings › Privacy & Security › Microphone (and › Screen & System Audio Recording for meetings). Settings › Computer links to the Accessibility and Screen Recording panes for computer control.
+
+**Approvals keep piling up in the tray (`●N`).** Open any chat and use the `●N` button, or the Attention inbox, to answer them; to stop asking, see Settings › Approvals.
+
+Source: `crates/desktop/src/launch.rs` (daemon probe and launch), `crates/desktop/src/lib.rs` (tray, window behaviour), `crates/desktop/ui/src/components/settings/SettingsDialog.tsx` (tabs), `crates/desktop/ui/src/lib/shortcuts.ts` (shortcuts).

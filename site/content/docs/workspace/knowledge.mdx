@@ -1,0 +1,138 @@
+---
+title: Knowledge
+description: How theuth remembers durable facts across sessions as plain markdown files with full history, and how you browse, edit, restore and tune that memory.
+---
+
+## What knowledge is
+
+Knowledge is theuth's long-term memory: durable facts about your machines, projects, accounts, decisions and procedures that should outlive a single session. It is not the chat transcript (see [Sessions](/docs/workspace/sessions)) and not a hidden vector store. It is a directory of markdown files you can open in any editor:
+
+```text
+~/.theuth/knowledge/
+  index.md                       generated after every write
+  log.md                         one line per write, under today's date
+  .git/                          history: one commit per write
+  facts/theuth-toolchain.md      a concept; id = facts/theuth-toolchain
+  decisions/std-mutex.md
+  procedures/signal-link.md
+```
+
+Each file is one **concept** in Google's Open Knowledge Format (OKF): YAML frontmatter (`type`, `title`, `description`, `tags`, optional `scope`, `source`, `timestamp`, `owner`, `visibility`) followed by a markdown body of at most 16 KiB. The id is the path without `.md`: lowercase `dir/slug`, at most three segments. Links between concepts are ordinary markdown links such as `[theuth](/projects/theuth.md)`.
+
+Two more files live next to the bundle:
+
+- `~/.theuth/knowledge/.git/` — a normal git repository, written in-process (no `git` binary needed). Every put, delete, restore and external edit is a commit by `theuth <theuth@localhost>`. You can `git log` it or add a remote yourself.
+- `~/.theuth/knowledge.sqlite` — a derived full-text index. It is rebuilt from the files; deleting it loses nothing.
+
+The bundle is at `<data_dir>/knowledge/`; the data dir is `~/.theuth` unless you pass `--data-dir` or set `THEUTH_DATA_DIR`. There is no config key to move the bundle elsewhere.
+
+## How knowledge gets written
+
+### Harvest
+
+The main way concepts appear is **harvest**: after a turn in which the agent used tools, the harness asks the session's own model — in the background, without blocking your next message — to write down anything durable it learned, as OKF documents. Existing related concepts are shown to the model so it updates them instead of creating near-duplicates.
+
+Harvest runs:
+
+- after every `harvest_every` tool-using turns of a root session (default 3; turns with no tool calls, cancelled turns and subagent sessions do not count);
+- right before a compaction cut, so nothing is lost when history is folded (see [compaction](/docs/workspace/sessions));
+- on demand with `/knowledge harvest` (TUI and desktop composer) or **Harvest knowledge** in the desktop session menu.
+
+While it runs the TUI status shows `harvesting…`, the desktop sidebar shows **Harvesting**, and when it lands both print `knowledge +N ~M` (added, updated). A harvest while a turn is running is refused with `turn in flight`; a harvest triggered while a previous one is still running is skipped, not queued. Each harvest accepts at most `harvest_max` documents (default 8).
+
+The cadence lives under `agent.knowledge:` in `~/.theuth/config.yaml`:
+
+```yaml
+agent:
+  knowledge:
+    hint_limit: 5       # lines per <knowledge> note
+    hint_rounds: 4      # mid-turn hint cadence in rounds
+    harvest_every: 3    # tool-using root turns per harvest; 0 disables harvest
+    harvest_max: 8      # documents accepted per harvest
+```
+
+`harvest_every: 0` turns automatic harvest off; `/knowledge harvest` still works.
+
+### The agent writing directly
+
+The model can also call `knowledge_put` at any time (and `knowledge_delete`, `knowledge_restore`, `knowledge_share`). Concepts written this way carry `source: model`; harvested ones carry `source: harvest`; files you write by hand have no `source`. `knowledge_put` on an existing id updates it. Writes from a private session (`/new private`) are refused: a private tree leaves no trace in the bundle.
+
+### You, in an editor
+
+Any editor is a knowledge editor. theuth re-syncs the directory by file mtime at the start of every turn and when you press **Sync** in the desktop Knowledge view, records external edits as a `sync: edit …` commit, and re-indexes changed files. A file that fails to parse is skipped with a warning until it parses again. In the desktop app you can also edit a concept in place — see below.
+
+## How the agent reads it
+
+- **Hints.** At the start of each turn, and again every `hint_rounds` tool rounds (default 4), the harness matches the recent conversation against the index and appends a short `<knowledge>` note listing up to `hint_limit` matching ids with title, type and a one-line description. Nothing is added when nothing matches, and each id is hinted once per epoch. The model is told to read a concept with `knowledge_get` before relying on it.
+- **Tools.** `knowledge_search(query, limit)` is a keyword search over type, title, description, tags and body (porter-stemmed FTS5, ranked by bm25; hints additionally require at least two of the query's terms to appear); `knowledge_get(id)` returns the file verbatim plus its links and the concepts citing it; `knowledge_list`, `knowledge_history`, `knowledge_restore` do what their names say. `knowledge_get("dir/slug@<commit>")` reads a past revision read-only.
+- **Scope.** A concept with a `scope:` directory is boosted when the session's working directory is under it and demoted elsewhere, so a fact about repo A is not hinted while you work in repo B.
+
+The index is never pasted into the system prompt, so a growing knowledge base does not cost you prompt cache.
+
+## Browsing in the desktop app
+
+Open **Knowledge** in the sidebar. The left rail has a search box and the concept tree; the right side shows the selected document.
+
+- **New** creates a concept (dialog **New document**: **Id** such as `projects/theuth`, **Title**).
+- **Sync** (tooltip **Sync from disk**) picks up files you changed outside theuth and reports `Synced: N added, N updated, N removed`.
+- **History** on the rail opens the whole bundle's history; the same button on a document scopes it to that concept.
+
+A concept opens in the shared document editor (the same BlockNote editor used for notes — see [Documents](/docs/workspace/documents)). Its action bar offers **Ask theuth…**, **Attach to chat…**, **Open raw** (the whole file, frontmatter included, in a code editor; `⌘S` writes it), **History**, **Copy id**, **Delete** and **Show links**/**Hide links** (backlinks and outgoing links; a broken link offers to create the missing concept). Because the concept is a live document, the owner's **Share…** action is available too; a share link follows the document-sharing rules described on the [Documents](/docs/workspace/documents) page and is unrelated to the agent-side `visibility` field below.
+
+The **History** sheet lists commits (`commit · time · message`), shows the unified diff of each changed file when you select one, and offers **Restore** per file, with a confirmation `Restore <id> from <commit>?`. For a deletion, Restore targets the parent commit, so a deleted concept comes back exactly as it was. A deleted concept's page says so and offers **Create** or **History**.
+
+If the documents plugin is disabled (`documents.enabled: false`), concepts open as raw text instead of the rich editor.
+
+## Browsing in the terminal
+
+| Command | What it does |
+|---|---|
+| `/knowledge` | List concepts: `` `id` — title [type]: description `` |
+| `/knowledge <query>` | Keyword search (same ranking the agent uses) |
+| `/knowledge history [id]` | Commits touching one concept, or the whole bundle |
+| `/knowledge show <commit> [id]` | Show one commit's diff as a card in the transcript |
+| `/knowledge restore <id> [commit]` | Restore a concept; default is the commit before its latest change |
+| `/knowledge harvest` | Run a harvest for the open session now |
+
+Keys in the concept list: `⏎` or `h` opens the highlighted concept's history, `H` the history of all concepts (deleted ones too), `Esc` closes. In the history list, `⏎` shows the diff of the selected commit (or loads 20 older commits on the last row), `r` refreshes, `Esc` closes; inside a diff, arrow keys scroll and `Esc` goes back.
+
+The TUI has no editor for concept bodies; use the desktop app or your own editor on `~/.theuth/knowledge/`.
+
+## Revisions
+
+Every write is a commit, so a concept's history is complete whoever wrote it: harvest, the model, you in the desktop editor, or you in vim. `knowledge_history` (and the History views) list commits newest first; a revision shows what changed against its first parent. Restoring is itself a new commit (`restore <id> from <commit>`) — history is never rewritten. Objects are stored loose and never packed by theuth; a bundle with tens of thousands of commits may want a manual `git gc`.
+
+## Who sees what
+
+Every concept has an `owner` (`user`, or `agent:<name>` when a named agent wrote it) and a `visibility`: `private`, `team` or `shared`. Your own sessions see everything. A named agent's session (see [Agents](/docs/automation/agents)) sees its own concepts, `shared` ones, and `team` ones from agents in its reporting line; concepts an agent records default to `private`, and it can widen them with `knowledge_share`. Files without these keys count as `owner: user`, `visibility: shared`. None of this affects what *you* can read in the Knowledge view or with `/knowledge`.
+
+## Turning it off
+
+```yaml
+knowledge:
+  enabled: false   # no store, no knowledge_* tools, no hints, no harvest
+```
+
+Files already in `~/.theuth/knowledge/` are left alone. To keep the store but stop automatic writes, set `agent.knowledge.harvest_every: 0` instead.
+
+## Troubleshooting
+
+**A concept I just wrote by hand is not surfaced.** The index resyncs at the next turn start; press **Sync** in the desktop view (or send any message) and check the file parses — frontmatter needs at least a non-empty `type:`. If the id has more than three path segments or an uppercase letter, it is rejected.
+
+**Hints never mention a concept I expect.** Hints need at least two of the query's terms to appear in the concept (one when the query has a single term), and each id is hinted only once per epoch. Ask the agent to `knowledge_search` explicitly, or check the concept's `scope:` — a scoped concept is demoted outside its directory.
+
+**Search is empty right after start or the index looks stale.** Quit theuth, delete `~/.theuth/knowledge.sqlite` (and its `-wal`/`-shm` siblings), and start again; the index is rebuilt from the files. theuth does the same automatically when the file cannot be opened.
+
+**"knowledge mutations are disabled in a private session".** Expected: `/new private` sessions cannot write knowledge. Start a normal session.
+
+**`history` says the repository is unavailable.** The `.git` directory could not be opened or created (permissions, damaged repo). Writes still land on disk and in the index; fix or remove `~/.theuth/knowledge/.git` and restart — theuth reconciles the working tree into a fresh commit.
+
+**Harvest took minutes / "compacting…" sat for a long time.** Harvest now runs detached from compaction; if you see this on an older build, update (`t --update`).
+
+## Related
+
+- [Sessions](/docs/workspace/sessions) — compaction, which triggers a harvest
+- [Search](/docs/workspace/search) — fuzzy search across current concepts and their history
+- [Documents](/docs/workspace/documents) — the editor concepts open in, and share links
+- [Configuration](/docs/reference/configuration) — every `knowledge.*` and `agent.knowledge.*` key
+- Source: `crates/knowledge`

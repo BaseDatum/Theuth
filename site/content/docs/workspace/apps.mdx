@@ -1,0 +1,128 @@
+---
+title: Apps
+description: Interactive screens the agent builds with the app tool — how they differ from static surfaces, where they run, what a button press means, and how to read their bindings before you press.
+---
+
+## What an app is
+
+When the deliverable is a screen you work *in* — a dashboard, a control panel, a form, a clickable prototype — the agent calls the `app` tool with a program written in OpenUI Lang. theuth validates the source and publishes it as an immutable `<name>.openui` artifact. The desktop app and the relay's browser UI render it as a live panel: you press buttons, fill inputs, and its `Query` bindings read installed tools without another model turn.
+
+An app is one of several ways the agent can show you something. The others are static:
+
+| What you see | How it gets there | Interactive? |
+|---|---|---|
+| A chart, table, card or diagram inside a reply | A `json-render` or `mermaid` fence in the message | No — a picture |
+| A small OpenUI block inside a reply | An inline `openui` fence | Partly — inputs and local state work; queries and actions are inert until you choose **Open as app** |
+| A file card (markdown, CSV, image, PDF …) | The `show` tool | No — read, copy, save (see [Documents, notes and boards](/docs/workspace/documents)) |
+| An app panel | The `app` tool | Yes — queries read live, actions run tools |
+
+The static kinds are called *surfaces*: the model writes a fence, each frontend renders it as well as it can (the desktop draws it, the TUI prints a text rendering, Slack and Signal receive a flattened code block). An app is different because it keeps running after the agent's turn is over: it talks to the engine on its own.
+
+The agent decides between a static picture and an app on its own, but you can simply ask: "build me a panel for …", "make this a clickable prototype", "I want a form that …". If you want a picture rather than a screen, say so ("draw a diagram", "show me a table"). You can also promote an inline `openui` fence from a reply into a real app by hovering it and choosing **Open as app** (desktop only; no model turn is spent).
+
+## Where apps run
+
+| Frontend | What you get |
+|---|---|
+| Desktop app | The live panel: the artifact card in chat opens it on the right, the `/artifacts` explorer and search also open it |
+| Browser UI through the relay (`/link`) | The same bundle, so the same live panel, from any paired device |
+| TUI | A receipt card marked `interactive on desktop/web`; `Ctrl+O` shows the `.openui` source read-only, `o` opens the file with the OS, `/apps` lists them |
+| Slack / Signal | The `.openui` source as a file with the note `Interactive app — open on desktop/web` |
+| ACP clients | The usual artifact link to the `.openui` file |
+
+Tool execution always happens on the engine that owns the session, never in the browser. Opening an app from a phone over the relay does not change what a press means.
+
+## From draft to live
+
+While the agent is still streaming the source, the desktop already renders a preview. The panel's strip says `drafting…`, then `validating…` (or `applying patch…` for an edit), then `published, loading…`, each followed by `· controls enable once published`. In that state query rows read `inert until published` and mutation rows read `runs on press once published`.
+
+When the engine commits the version, the same mounted panel becomes live: queries start reading, buttons start working. If validation fails, the panel keeps the drafted source readable and shows the error (`publishing failed`); the agent gets the diagnostics and usually fixes the program on its next call.
+
+## Queries: live reads without a model turn
+
+A `Query` binding names an installed tool (a native tool, an MCP tool, or `http_request`) and its arguments. The app calls it when the panel loads, on its refresh timer, or when its arguments change — straight through the engine's tool registry. No model turn happens, so a dashboard that polls every few seconds costs no tokens.
+
+Timer and load reads can never mutate anything: a `Mutation` binding that is triggered by anything other than a press is refused by the engine with `a Mutation runs only from a pressed action`.
+
+When a read fails, the strip under the app says why and keeps the last good data visible, marked `· showing stale data`. Common rows:
+
+| Strip text | Meaning |
+|---|---|
+| `needs your go-ahead to load` / `…to refresh` + a **Load** / **Refresh** button | The tool policy would normally ask before running this tool; pressing the button is your approval (see below) |
+| `unavailable: <reason>` | The engine will not run this binding at all — see [Gates](#gates-when-a-binding-cannot-run) |
+| `offline — refreshes when reconnected` | The engine is unreachable; the read repeats once it is back |
+| `node busy` + **Retry** | The engine's app queue is full |
+| `stale — showing earlier data` | The last refresh did not complete |
+
+## Actions and mutations: the press is the approval
+
+A `Mutation` binding runs a tool when you activate a control. **There is no second confirmation card.** One click on **Sync**, **Delete**, **Send** runs the bound tool, including destructive tools and tools whose arguments carry a `{{secret:NAME}}` placeholder. The agent is instructed to make the consequence clear in the label instead of asking twice.
+
+This is also how a gated read works: when a tool is set to *ask* in your tool policy ([Tools and permissions](/docs/reference/tools-permissions)), an automatic load does not prompt you — it parks and the strip shows a **Load** or **Refresh** button. Pressing it is the consent, for that one read.
+
+Secrets never appear in the app. A `{{secret:NAME}}` placeholder is committed literally in the `.openui` source and the engine resolves it only when the bound tool actually runs; the value is not in the panel, the artifact, or the reply. See [Secrets](/docs/reference/secrets).
+
+Pressed outcomes are durable: each press is recorded in the `app_invocations` table of `<data_dir>/artifacts.sqlite` (request id, statement, tool, argument hash, status, result up to 64 KiB), so a reopened panel still shows `last run <status>` for each action, and a press whose outcome the engine lost reports `outcome unknown — check before repeating` rather than running again.
+
+### Before you press
+
+An app can only call the tools it was published with, and you can see which. The strip lists every bound statement with its tool name; the artifact's receipt in the chat names them with their risk, for example `tools: argo_sync(mutating), argo_app_health(read_only)`. The **Source** disclosure in the panel shows the exact program. If a mutation's label does not tell you what it will do, read the source before pressing — the engine will not ask on your behalf.
+
+## Gates: when a binding cannot run
+
+The engine checks every call against the tool as it exists *now*, and against what the app was published with:
+
+| Reason | What you see |
+|---|---|
+| The tool is denied by your tool policy | `unavailable: <tool>: denied by policy`; the panel's notice also says `<tool>: denied by the tool policy` |
+| The tool is gone (MCP server removed, tool hidden from this session) | `unavailable: unknown tool: <tool>`; notice `<tool>: tool is not installed or not visible to this session` |
+| The tool changed since publishing | `unavailable: <tool>: tool identity changed since the app was published; republish to rebind`; notice `<tool>: tool changed since the app was published; republish to rebind` |
+| A press without a user activation, or a mutation on a timer | `unavailable: … a Mutation runs only from a pressed action` |
+
+Bindings are pinned by *identity*: a hash of the tool's name, its input schema and its origin (the MCP server for MCP tools, the native crate version for built-in ones). If you update an MCP server and its schema changes, the app shows that binding unavailable instead of silently calling something different. Ask the agent to republish (`edit: true`, below) to rebind.
+
+## Versions and edits
+
+Every publish is a new, immutable `.openui` artifact; the same name again in the same session becomes `v2`, `v3`, …. The agent iterates with `edit: true` plus the `base_call_id` from the receipt of the version it is changing; the engine merges the patch and commits only if that version is still the latest — otherwise the agent gets `conflict: … is no longer the latest …` and re-reads.
+
+In the desktop panel a version selector (`v1`, `v2 (latest)`) appears once there is more than one. A panel opened on the newest version follows new versions as they land; a panel opened on an older one stays pinned to it. Under the hood, apps are artifacts, so everything in [Documents, notes and boards](/docs/workspace/documents) about the artifact card, `Save as…`, `Download` and the explorer applies to them too.
+
+In the TUI, `/apps` lists the session's apps (`⏎` opens the source with the OS, `s` shows the source inline, `e` exports it to `~/Downloads/<name>`, `Esc` closes). `/artifacts` lists them alongside every other kind.
+
+## Sharing an app
+
+There is no share link for apps. Share links (`https://<relay>/d#…`) exist only for notes, knowledge concepts and boards — see [Documents, notes and boards](/docs/workspace/documents). An app runs for you on your own paired devices through the relay-served UI; a third party cannot be given a link to it.
+
+What you *can* hand over is the source: `Save as…` / `Download` in the desktop, `e` in the TUI `/apps` picker, or the `.openui` file Slack and Signal receive. The recipient can read it, or paste it to their own agent, but it will not run outside your engine.
+
+## Turning apps off
+
+```yaml
+app:
+  enabled: true   # false: no `app` tool, no prompt block, no parser helper, no app RPC
+```
+
+With `app.enabled: false` the agent has no `app` tool and the TUI hides `/apps` (typing it says `apps are off (app.enabled); /artifacts lists their sources`). Existing apps stay readable as source in `/artifacts`, the desktop explorer and `Ctrl+O`. See [Configuration](/docs/reference/configuration).
+
+## The parser helper
+
+Validation runs in a separate executable, `theuth-app-parser-<hash>`, installed beside the `t` binary (one immutable file per library hash). It is built from the same OpenUI library the desktop renders with, so source and renderer always agree. `t --app-parser-hash` prints the hash this build expects; `THEUTH_APP_PARSER=<path>` points the engine at another executable for development. The helper is started lazily on the first `app` call and restarted if it crashes or stops answering.
+
+## Troubleshooting
+
+**`apps are unavailable on this harness: parser helper missing at <path>`** — the helper is not beside the binary. Nothing else is affected: existing apps stay readable, and the agent is told to use `show` for a static file instead. Reinstall or update theuth (`t --update`; see [Installation](/docs/getting-started/installation)) or run `just install` from a source checkout; both place `theuth-app-parser-<hash>` next to `t`. For a custom build, `t --app-parser-hash` tells you which file name the engine is looking for.
+
+**`app parser helper is library <found>, this build needs <expected>`** or **`parser helper validated against library <h1>, this harness is <h2>`** — a helper from another build is on the path. The engine refuses to trust a helper whose library differs from its own; install the matching one (same release) or unset `THEUTH_APP_PARSER`.
+
+**`app parser busy: 8 validations pending; try again`** / **`app parser did not answer within 2s`** — transient; the engine kills a stuck helper and respawns it on the next request.
+
+**The panel says `Apps are disabled on this node; the source stays readable.`** — `app.enabled` is `false` on that engine. **`This node predates apps: update it to run this app.`** — the engine you are connected to is an older release; update it with `t --update`.
+
+**A button does nothing and the strip says `unavailable: …`** — see [Gates](#gates-when-a-binding-cannot-run); the message names the tool and the reason.
+
+**A control that worked yesterday now says `tool identity changed`** — an MCP server or tool schema changed. Ask the agent to republish the app so the bindings are pinned to the current tool.
+
+## Source
+
+- `crates/app` — the `app` tool, helper, invocation engine
+- `crates/desktop/ui/src/components/apps` — the live panel

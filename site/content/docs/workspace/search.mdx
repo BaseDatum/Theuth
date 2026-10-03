@@ -1,0 +1,212 @@
+---
+title: Search
+description: Finding things theuth has saved, letting the agent search the web, and how the agent understands a code tree.
+---
+
+theuth has three different kinds of search, and it helps to keep them apart:
+
+| You want to… | Use |
+|---|---|
+| Find an earlier conversation, a shown file, a knowledge concept, a note or a meeting | **Saved-record search** — `⌘K` / `Ctrl+K`, `/search` |
+| Have the agent look something up on the internet | **Web tools** — `search_web`, `read_url`, `search_x`, `scrape_url`, `crawl`, `map_site` |
+| Have the agent find where a symbol lives, who calls it, what a change touches | **Code intelligence** — `code_*` tools and the desktop **CodeMap** |
+
+## Saved-record search
+
+### Opening it
+
+- Desktop: `⌘K` (`Ctrl+K` on Linux and Windows; editable under Settings › Shortcuts), the magnifier next to the sidebar toggle, or `/search [query]` in the composer. `/sessions` opens the same dialog limited to sessions for that one search.
+- Terminal: `/search [query]`. With a query it runs at once; `Tab` cycles between the query, the category chips, the results and the footer (`↻ Refresh`, `? Help`); `Space`/`⏎` toggles a chip; `⏎` on a result opens it; `Esc` closes.
+
+### Categories
+
+Six independent categories, all selected the first time you open search. Toggle any combination; the selection is remembered for the rest of the run (not the query). The **All** chip reselects everything; deselecting all shows *Select at least one category* and searches nothing.
+
+| Chip | What it searches |
+|---|---|
+| **Sessions** | Session titles and the user/assistant text of every transcript, including turns folded by compaction. Not tool results, not reasoning. |
+| **Artifacts** | Every version of every file the agent showed: name, title and kind, plus the saved content of Markdown, text, code, CSV, HTML/SVG source, the Markdown/Typst source of compiled PDFs, and converted PDF/Office documents. |
+| **Knowledge** | The current text of every concept in `~/.theuth/knowledge/`. |
+| **Knowledge history** | Every recorded change to a concept — the complete before and after text, including concepts that have since been deleted. |
+| **Notes** | Note titles and bodies. |
+| **Meetings** | Meeting titles and transcript segments. |
+
+Images and other binaries are found by name and metadata only; there is no OCR. An artifact whose content could not be read (invalid UTF-8, an encrypted or scanned PDF, a document over the converter's 25 MiB limit) still matches on metadata and is flagged **Content not searchable**. A session hit whose message was removed with `/shake` is labelled **Removed from context**.
+
+### Query syntax
+
+Matching is fuzzy by default, space separates terms, and lowercase matches any case. The fzf operators work:
+
+| Write | To match |
+|---|---|
+| `'exact` | the substring `exact` |
+| `^prefix` | candidates starting with `prefix` |
+| `suffix$` | candidates ending with `suffix` |
+| `!not` | candidates that do **not** contain `not` |
+
+A query matches **one candidate text at a time**: a title, one message, one artifact body, one concept body, one side of a knowledge change. `!old` therefore excludes candidates containing "old", not every record that mentions it somewhere. Queries are capped at 1024 characters.
+
+### Results
+
+Results are grouped per category in a fixed order and ranked within the group; ten per category by default, **Show more** grows a group to 30, then 50, after which the heading says *More matches; refine your query or categories*. Headings say `10 shown` or `10+ matches`, never a guessed total. With an empty query and Sessions selected you get **Recent sessions · not matches**.
+
+Group states you may see: `indexing…` (the category is building its cache — artifacts and history index on first use; results appear when it finishes), `unavailable` (the plugin is off or its store is missing), `error`, and `· some content not searched` when coverage was partial. Knowledge is synced from disk when the dialog opens; edits made while it stays open need **Refresh**.
+
+### Opening a hit
+
+Opening is reading, never acting:
+
+- a **session** hit opens that session at the matching message (the terminal shows a read-only page of the transcript around it);
+- an **artifact** hit opens that exact occurrence and version in the artifact viewer (terminal: a preview; `o` opens the file, `e` exports it, `m` shows the matched text);
+- a **knowledge** hit opens the concept;
+- a **knowledge history** hit opens the historical text of that revision, read-only, with the History sheet at that commit — nothing is restored;
+- a **note** or **meeting** hit opens it in the desktop app (the terminal has no reader for these; it tells you to `/attach` them instead).
+
+The desktop remembers the search so a destination can offer **Back to results**, and a row can be attached to the open chat instead of opened.
+
+### The agent's `search` tool
+
+The agent can run the same search for you: `search(query, categories?, limit?)` returns the same groups, states and stable identities (session id, artifact `call_id`, concept id, `id@commit`, note id, meeting id) without opening anything. It waits up to 30 s for a category that is still indexing. Ask in plain words — "find the conversation where we set up the relay" — and it will cite what it found. Two neighbours are easy to confuse with it:
+
+- `knowledge_search` is the agent's keyword lookup over current concepts, the same ranking that drives `<knowledge>` hints. It is not fuzzy and does not see history. See [Knowledge](/docs/workspace/knowledge).
+- `search_web` searches the internet, below.
+
+## Web search
+
+The agent reaches the web through tools provided by the `web`, `scrape` and `search-providers` plugins. The search and fetch tools are read-only (`http_request` is not) and all follow the usual approval policy (see [Tools and permissions](/docs/reference/tools-permissions)).
+
+### `search_web` and `read_url`
+
+`search_web(query, limit, category, site, recent, read)` returns a ranked list (title, URL, snippet), then reads the top hits — five by default, `read: 0` for a cheaper results-only pass — and returns the passages of each page most relevant to the query. `category` is `general | news | it | science`; `site` restricts to a host; `recent` is `day | week | month | year`. `read_url(url, max_chars, format, rendered)` fetches one page as Markdown (default) or plain text; `rendered: true` loads it in the embedded browser for JavaScript-only sites. Private, loopback and link-local addresses are refused. `http_request` makes a single explicit API call with method, headers and body.
+
+Out of the box, searches run on **keyless built-in engines** — no account needed:
+
+```yaml
+web:
+  enabled: true
+  engines: [google, brave, qwant, duckduckgo, wikipedia, arxiv, github]   # `bing` is opt-in
+  read_top: 5           # search_web reads this many top hits
+  read_chars: 2500      # passage budget per read page
+  read_budget_ms: 6000  # whole read phase
+  render_cap_ms: 3000   # one browser-rendered page inside a search
+  recent_default: null  # day | week | month | year when a call passes none
+```
+
+Keyless engines rate-limit and occasionally serve empty pages. When too few engines answer, the result starts with `WARNING: degraded search` and the agent is told to say so rather than answer from it; `web.degraded_is_error: true` turns that into an error instead. The read-phase keys can be changed live under Settings › Search. `web.enabled: false` removes the tools entirely.
+
+### Optional providers
+
+Adding one external provider gives you search that does not rate-limit. Keys go in the encrypted vault (`t --secret-set <name>`, `/secrets add <name>`, or Settings › Search), never in `config.yaml` or chat — see [Secrets](/docs/reference/secrets).
+
+| Provider | Config block | Needs |
+|---|---|---|
+| SearXNG you run | `search_providers.searxng.base_url` | nothing (JSON format enabled on the instance) |
+| OpenSERP you run | `search_providers.openserp.base_url` | nothing for a local server; secret `openserp` for a hosted one |
+| Firecrawl | present by default, inert until its key exists | secret `firecrawl` |
+| Brave Search API (`brave_api`) | `search_providers.brave` | secret `brave` |
+
+```yaml
+search_providers:
+  searxng:
+    base_url: http://127.0.0.1:8080
+  brave:
+    enabled: true        # key: `t --secret-set brave`
+```
+
+`search_web`'s own description tells the model which providers are registered, so you will see it mention them.
+
+### `search_x`
+
+`search_x(query, handles, exclude_handles, from_date, to_date, images, videos)` searches X (Twitter) posts, profiles and threads through xAI's live index and returns Grok's synthesis with the cited posts. It only exists when an xAI credential is present: `/login xai`, the vault secret `xai`, or `XAI_API_KEY`. Without one the tool is not registered; with an expired one it answers `/login xai again or set the xai secret`. The model (`grok-4.7` by default) and the 90 s timeout live under `search_providers.x`; `search_providers.x.enabled: false` turns it off even with a credential. One X search can take tens of seconds and is billed to your xAI account.
+
+### `scrape_url`, `crawl`, `map_site`
+
+For whole sites rather than single pages:
+
+- `scrape_url(url, formats, only_main_content, rendered)` — one page to Markdown (optionally HTML and links), chrome stripped by default.
+- `crawl(url, limit, max_depth, include_paths, ignore_paths, sitemap, …)` — walk a site from a seed URL and return one Markdown document per page; stays under the seed's directory unless told otherwise.
+- `map_site(url, limit, search)` — list a site's URLs from its sitemap and a short walk without fetching bodies; `search` puts the URLs relevant to a query first.
+
+Limits and manners come from the `scrape:` section and are deliberately conservative:
+
+```yaml
+scrape:
+  concurrency: 5
+  max_pages: 50
+  max_depth: 3
+  same_domain: true
+  page_timeout_ms: 8000
+  run_timeout_ms: 60000
+  robots: true        # honour robots.txt; a larger Crawl-delay wins
+  delay_ms: 100       # per-host gap between requests
+```
+
+A crawl that hits `max_pages` or `run_timeout_ms` returns what it has. Leave `robots: true` unless you own the site.
+
+## Code intelligence
+
+When the agent works in a source tree it can answer structural questions without paging whole files through its context: where `X` is defined, who references it, what a file contains, which files matter for a task, what a diff touches. The index is built from tree-sitter tags, per repository root, under `~/.theuth/codeindex/<slug>-<hash>.sqlite`. It is derived data: deleting it only costs a rebuild. Nothing is written into your repository and nothing runs your code.
+
+| Tool | Answers |
+|---|---|
+| `code_find` | Where a symbol is defined (exact, prefix, infix, then text match) |
+| `code_outline` | The symbols, imports and parse errors of one file |
+| `code_refs` | Who references a symbol, or what a definition references |
+| `code_symbol` | One definition in full: body, callers, callees, co-changed files, tests |
+| `code_map` | A ranked map of the tree (PageRank over the file graph), fitted to a token budget |
+| `code_impact` | What a set of files or a git range (`main..HEAD`, `WORKTREE`) touches, directly and transitively |
+| `project_profile` | How the project is checked — detected from manifests and lockfiles, nothing executed |
+
+The root is the `root` argument, else the git top level of the working directory, else the directory itself. There is no watcher: every `code_*` call reconciles the index by file mtime and size first. Up to `sync_limit` changed files are re-parsed before answering; beyond that the answer is marked `stale` with a `pending` count and the rest finishes in the background. The first call on a new root pays for the whole index.
+
+```yaml
+codeindex:
+  enabled: true            # false: no plugin, no code_* functions, nothing on disk
+  sync_limit: 64           # changed files re-indexed synchronously before answering
+  max_file_bytes: 1048576  # larger files are listed, not parsed
+  cochange_commits: 300    # first-parent commits walked for co-change; 0 disables the git walk
+  languages: [rust, typescript, javascript, python, go]   # subset to parse; others are files only
+```
+
+`typescript` covers TSX. Files in other languages are still listed and searched by path, just not parsed into symbols.
+
+### CodeMap (desktop)
+
+The first time a `code_*` tool runs in a session, a **CodeMap** button appears in the chat header, the way the browser and terminal panels do. It never opens itself. The panel shows the root (with a picker when the session touched several), `files · symbols` counts, a freshness chip (`fresh` or `stale · N pending`) and three lenses:
+
+- **here** — a tree of the directories, files and symbols the agent is working in; follows its tool calls;
+- **fit** — one symbol in the middle, its callers on one side and its callees on the other;
+- **change** — the files of the current change (uncommitted work or a git range) and what they reach, directly and transitively.
+
+Keys `1`/`2`/`3` pin a lens, `p` toggles pin and follow. Right-click a row for **Ask about this** (puts `path#La-Lb` in the composer), **How it fits** and **What changes**. `⊡` (**Snapshot to board**) saves the current lens into a board as a diagram; `⤢` pops the map into its own window. Edits made by the agent re-parse only the files it touched; if the engine suspects the root is wrong a banner offers **Reconcile** for a full pass. Below 768 px the map opens as a bottom sheet. There is no terminal equivalent.
+
+## Limitations
+
+- Saved-record search covers this engine's own store. In a [mesh](/docs/automation/mesh), replicated sessions are searchable where they are replicated; there is no cross-engine aggregation.
+- Session search indexes user and assistant text only — not tool output, reasoning or compaction summaries.
+- No OCR anywhere: images in artifacts and PDFs without a text layer match by name only.
+- Web results depend on third-party engines; keyless ones degrade without notice. Treat `degraded` answers as a prompt to retry or add a provider.
+- Code intelligence is syntactic. No type inference, no language server; references are matched by name with a confidence score (same file or import, same package, or merely unique in the tree).
+
+## Troubleshooting
+
+**A category sits on `indexing…`.** Artifacts and knowledge history build their caches on first use; large archives take a moment. The dialog polls and fills in. If it stays, press **Refresh** (`↻ Refresh` in the terminal), which also resets a failed category.
+
+**A knowledge concept I just edited is not found.** Knowledge is synced when search opens, not while it stays open — **Refresh**. If the file does not parse, it is excluded until it does; see [Knowledge](/docs/workspace/knowledge).
+
+**`query is 1025 characters; the maximum is 1024`.** Shorten it; there is no truncation.
+
+**`search_web` keeps returning `WARNING: degraded search`.** The keyless engines are rate-limiting you. Add a SearXNG/OpenSERP instance or a `brave`/`firecrawl` key under `search_providers`.
+
+**`search_x` is missing from the tool list.** It registers only when an xAI credential exists: `/login xai` or `t --secret-set xai`.
+
+**`code_*` answers are `stale`.** More than `sync_limit` files changed since the last call; the background pass finishes shortly. Raise `codeindex.sync_limit` if you prefer to wait, or call again.
+
+**The CodeMap button never appears.** It needs a `code_*` call in *this* session; `codeindex.enabled: false` removes the tools and with them the panel.
+
+## Related
+
+- [Sessions](/docs/workspace/sessions) and [Knowledge](/docs/workspace/knowledge) — what the saved-record search looks through
+- [Browser and desktop control](/docs/automation/browser-desktop) — the embedded browser `read_url rendered: true` uses
+- [Tools and permissions](/docs/reference/tools-permissions), [Configuration](/docs/reference/configuration), [Secrets](/docs/reference/secrets)
+- Source: `crates/search`, `crates/web`, `crates/codeindex`

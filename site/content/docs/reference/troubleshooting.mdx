@@ -1,0 +1,182 @@
+---
+title: Troubleshooting
+description: Symptom-first checks for installation, startup, provider authentication, tool denials, MCP servers, mesh and sandboxes, voice, local models, search, documents and apps — using the harness's own log and status surfaces.
+---
+
+Start with the log. Every normal run writes
+`<data_dir>/logs/theuth.log.<YYYY-MM-DD>` (daily rotation, no colour);
+`RUST_LOG=debug t …` raises the level, `RUST_LOG=tools=debug` narrows it to
+one crate. One-shot modes (`t --update`, `t --bench-models`) log to stderr
+instead. A service installed with `--install-service` also writes
+`logs/service.log`.
+
+```sh
+tail -f ~/.theuth/logs/theuth.log.$(date +%F)
+RUST_LOG=debug t --headless
+```
+
+Chat failures (denied model access, expired AWS sessions, provider errors)
+stay in the transcript after the turn and are not sent to the model; read
+them there first.
+
+## Installation and build
+
+| Symptom | Check |
+|---|---|
+| `brew install basedatum/tap/theuth` installed but `t` is not found | the formula installs `t`; open a new shell or check `brew --prefix`/bin is on `PATH` |
+| build fails in BoringSSL / `btls-sys` | install `cmake`, `clang`/`libclang`, `llvm-objcopy`/`llvm-nm` (`brew install cmake llvm`; `apt install cmake clang libclang-dev`); the cmake ≥ 4 policy shim is already in `.cargo/config.toml` |
+| first build stalls downloading V8 | network is needed once for the prebuilt archive; set `RUSTY_V8_ARCHIVE` to a local copy to build offline |
+| `just` recipes fail with `cargo: command not found` | Homebrew's rustup installs no proxies; recipes prepend `$(dirname "$(rustup which cargo)")`, and `export PATH="$(just toolchain):$PATH"` does the same in your shell |
+| `apps are unavailable on this harness: parser helper missing at …` | the `theuth-app-parser-<hash>` executable must sit beside `t`; `just install` and the Homebrew formula place it; `t --app-parser-hash` prints the hash this build wants; `THEUTH_APP_PARSER=<path>` points at a development build |
+| the parser helper has the wrong version | the error names both hashes; rebuild with `just helper` and reinstall |
+| the self-updater never updates | `update.enabled` is `true` by default and replaces the binary on disk silently, live at the next start; `RUST_LOG=debug t --update` forces a check and says why it did not; `update.url` must point at the release manifest |
+
+## Startup and the daemon
+
+| Symptom | Check |
+|---|---|
+| `cannot determine data dir; pass --data-dir` | no home directory in the environment (a service without `HOME`); pass `--data-dir` or set `THEUTH_DATA_DIR` |
+| `t --headless` exits 3 and prints a running engine | one engine per data dir; the TUI, `-p` and `--acp` attach to it, a second headless exits. Stop the other one or use another `--data-dir` |
+| `no harness on 127.0.0.1:7777; start t --headless first` | a subcommand (`t mesh …`, `t sandbox …`, `t --link`) found no daemon on `rpc.listen`; start one, or match `THEUTH_RPC__LISTEN` |
+| the configured port is busy | with `--serve`/`--headless` the bind fails; without those flags the engine falls back to an ephemeral loopback port with a warning and records it in `engine.json` |
+| a config change did nothing | `config.yaml` is read at startup only; restart. Only the directories `mcp/`, `schedules/`, `knowledge/`, `agents/` are watched. See [Configuration](/docs/reference/configuration) |
+| an env override is ignored | the shape is `THEUTH_<SECTION>__<KEY>` with two underscores between levels; the value wins over the file on every start |
+| Signal or Slack never connects | both channels run only in `t --headless`, not in the TUI process |
+| the desktop app shows no daemon | it reuses a running `t --serve` on the configured port, else starts the bundled `t --headless` through your login shell; check `logs/theuth.log.<date>` for the start error |
+| stdout is not a TTY | `t` switches to the line printer (`stdout is not a terminal; using the line printer`); that is print mode, not a hang |
+
+## Providers and models
+
+| Symptom | Check |
+|---|---|
+| `/model` does not list a provider | only configured providers are listed: a vault secret named after the adapter (`anthropic`, `openai`, …), a `/login`, a gateway from `/provider add`, or the adapter's env var. Add one with `t --secret-set anthropic`. Zen (`opencode/*`) needs the `opencode` secret or `OPENCODE_API_KEY`; OpenRouter (`openrouter/*`) the `openrouter` secret or `OPENROUTER_API_KEY` |
+| the key is in the environment but the daemon does not see it | the desktop app and the service launch through your login shell; a key exported only in an interactive rc file may be missing. Put it in the vault instead |
+| `/login` opens no browser | the TUI prints `login: open <url>`; copy it. The loopback listener waits 300 s |
+| Bedrock: denied access or expired session | `aws sso login --profile <name>`, then send again; `/aws <profile>` selects a profile harness-wide; an explicit profile beats ambient keys and bearer tokens; `bedrock_api` in the vault or `BEDROCK_API_KEY` beats the default chain |
+| a model call dies mid-stream | `agent.stream_idle_secs` (120) abandons a stream with no events; `agent.max_salvages` (2) retries an interrupted reply; the final error stays in the transcript |
+| images are ignored by a text-only model | set `agent.vision_model` to an image-capable `provider/model` (`/vision <model>`) |
+| the context fills and quality drops | `agent.compact_at` (0.8) triggers automatic compaction; `/compact` folds now; `/shake images` removes bulky content without dropping later turns |
+| a local gateway's models are missing | `/provider add` fetches `GET {base}models` into `models.json`; edit that file for local `ollama/…` entries |
+| `secrets vault unavailable: …` in the log | provider keys then come from `/login` and the environment only; see the Secrets section below |
+
+More in [Models](/docs/getting-started/models).
+
+## Tool denials and approvals
+
+| Tool result | Meaning and fix |
+|---|---|
+| `<tool>: denied by policy` | `tools.policy.<risk>` is `deny`; no retry helps. Change the policy or the MCP gate |
+| `<tool>: denied by user` | you pressed deny |
+| `<tool>: approval timed out` | nobody answered within `tools.approval_timeout_secs` (300). On Slack the card reads `⌛ tool timed out (denied)` |
+| `<tool>: denied: subagent is capped at read_only` | the parent spawned the child with `tools: read_only`; respawn without the cap |
+| `<tool>: communication_disabled: …` | `agent.communication` is `false` (default) or the session opted out; `/communication` shows the exact blocker, `/communication on always` fixes it for good |
+| `unknown tool: <name>` | the tool is hidden for this session (`/mcp` → `s`), gated `off`, its plugin is disabled, or the name changed to `<server>__<name>` after a clash |
+| a `read_only` call still prompts | its arguments carry a `{{secret:…}}` placeholder, which raises the action to `ask` |
+| prompts keep coming on an unattended machine | `/approvals off always` (writes `tools.approvals: false`), or `approvals: false` in a schedule file; `deny` entries still deny |
+| `approval required but no approval actor is running` | the tools plugin did not start fully; check the log for `plugin tools failed to start` |
+| `shell` returns only a job id | output took longer than `tools.job_grace_secs` (3); the result arrives as `<job_result>`; `/jobs` lists, `/jobs kill <id>` stops |
+| `timed out after Ns; process group killed` | the `shell` call hit `timeout_secs` or `tools.job_timeout_secs` (1800); long servers belong in `start` |
+| a `start` job is `not ready after 30s` | the `ready` condition (`log` regex, `port`) never matched within `tools.pty_ready_timeout_secs`; `/terminals` shows the screen |
+
+`computer_*` on macOS needs Screen Recording and Accessibility granted to the
+app that launched theuth (your terminal or theuth.app) in System Settings ›
+Privacy & Security. Screen Recording applies only after restarting that app;
+`/computer` shows what is granted.
+
+## MCP
+
+| Symptom | Check |
+|---|---|
+| `<server>: login required (/login <server>)` | the remote server answered 401; `/login <server>` or `l` on its row in `/mcp` |
+| `<server>: connect failed: …` | stdio: the command is not on `PATH` or crashed, see `mcp stderr: …` lines in the log; HTTP: URL or headers |
+| `no response within 10s` | the connect timeout; slow `npx`/`uvx` cold starts usually succeed on the next reconcile, otherwise pre-install the package |
+| a server from a file never appears | only `.json` files directly in `mcp/` are read; a file with invalid JSON is skipped (`mcp file skipped` in the log); a duplicate name in a later file is ignored |
+| a tool prompts although the server is trusted | unannotated MCP tools default to `mutating`; set `risk: read_only` on the server in `mcp/config.yaml` |
+| `mcp gates invalid (values are read_only \| mutating \| destructive \| off), all default` | a typo or unknown field in `mcp/config.yaml`; the whole file is ignored until fixed |
+| tool names gained a `<server>__` prefix | two running servers offer the same name, or a built-in has it; the prefix drops when the clash goes |
+| `${VAR}` or `$(cmd)` did not expand | expansion runs through your login shell at connect time; a failing command is logged with the unexpanded string and kept as written. On Windows there is no shell expansion |
+| `unknown secret NAME; secret_list shows the names` | the `{{secret:NAME}}` in the file names a secret the vault lacks |
+| `/mcp add <git url>` cloned but no server appeared | cloning writes no entry; build the repo, then add an entry with `"cwd": "repos/<name>"` |
+| `/login` says `<name> is a stdio server; nothing to log in to` | OAuth applies to `url` entries only |
+
+## Mesh, nodes and sandboxes
+
+| Symptom | Check |
+|---|---|
+| `t mesh status` shows no peers | `mesh.discovery` (DNS/pkarr + mDNS) is on by default; on an isolated network pair explicitly with `t mesh pair` / `t mesh add <pairing>`; `mesh.relay: none` disables the fallback relay |
+| several engines on one machine fight over the endpoint | give each `mesh.bind: 127.0.0.1:<port>` |
+| a node does not accept sessions | the node runs `t --install-service`, which sets `link.enabled: true`; on the main harness `/nodes add <key>`; `nodes.enabled` must be `true` |
+| `t --install-service` unit does not start | the unit runs `$SHELL -l -i -c 'exec t --headless …'`; check `logs/service.log` and that `t` resolves in a login shell |
+| `t mesh add --vm` fails setting up the runtime | `could not set up the microsandbox runtime in <home>: …`; `t` embeds the `msb` + `libkrunfw` pair and extracts it into `~/.microsandbox`, or `<data_dir>/sandbox/msb-home` when that directory holds another version; `sandbox.vm.home` pins it |
+| a VM never reaches `ready` | `sandbox.create_timeout_secs` (900) and `step_timeout_secs` (600); the default image `sandbox.vm.image` is pulled at the tag equal to the binary's version and must be published and reachable for that version, otherwise bring-up fails before `ready`. `--local-t <path>` only swaps the `t` inside the guest, and `--bootstrap` does not produce a working guest; `t sandbox ls` shows state |
+| more VMs refuse to start | `sandbox.vm.max_vms` (4) and `max_concurrent_bringups` (2) |
+| the sandbox desktop page does not open | `t sandbox desktop <name>` prints URL, password and geometry; `sandbox.vm.defaults.desktop` must be `true` |
+| `sandbox_*` tools are missing | `sandbox.enabled: false`, or `sandbox.vm.enabled: false` for VMs |
+
+See [Mesh](/docs/automation/mesh) and [Sandboxes](/docs/automation/sandboxes).
+
+## Voice, talk, meetings
+
+| Symptom | Check |
+|---|---|
+| `speak` answers "not running" | `voice.enabled` is `false` |
+| `talk_*` answers "talk is disabled"; `meeting_*` answers "meetings are disabled" | `talk.enabled` / `meeting.enabled`; full meeting capture is macOS 15; on Windows and Linux capture is partial (no echo cancellation, headphones recommended) when a loopback backend answers, otherwise unavailable with the reason shown |
+| `no libonnxruntime… bundled, at <data_dir>/models/onnxruntime/… (nor $ORT_DYLIB_PATH, nor Homebrew)` | the desktop app downloads the ONNX Runtime at start; by hand, copy `lib/libonnxruntime.{dylib,so}` from an ONNX Runtime release (1.17 or newer) there and write its version to `models/onnxruntime/VERSION`, or set `ORT_DYLIB_PATH`, or `brew install onnxruntime` |
+| STT or dictation models are missing | defaults are `<data_dir>/models/parakeet-tdt` and `models/nemotron-streaming-en`; the desktop app fetches them; from a checkout `just fetch-models` downloads every model the daemon loads (`HF_TOKEN` for gated repositories) |
+| speech is slow | `t --bench-models [--accelerator cpu\|webgpu\|…]` reports what runs where; `models.accelerator: auto` takes WebGPU only on a discrete GPU and logs one warning when it stays on the CPU |
+| STT unloads between uses | `voice.stt_idle_secs` (600); `0` keeps it resident |
+| the agent cuts in on itself during talk | raise `talk.barge_in_vad` or `talk.decide_ms`; `talk.aec: prefer` enables macOS echo cancellation |
+
+See [Voice](/docs/workspace/voice) and [Meetings](/docs/workspace/meetings).
+
+## Search
+
+| Symptom | Check |
+|---|---|
+| `search_web` results are thin or a search is reported degraded | the keyless engines are best-effort; `bing` is opt-in because it serves flagged clients empty pages; add a provider under `search_providers` with its secret (`firecrawl`, `brave`) or run SearXNG / OpenSERP locally |
+| `search_x` is missing | it registers only while an `xai` secret or `/login xai` exists |
+| `read_url` returns little | `web.fetch_max_chars` (4000) caps a page; pages needing JavaScript are for `browser_open` |
+| the browser cannot reach `localhost` | `browser.allow_private_network: false` by default |
+| `/search` finds a session but not an artifact | artifacts match on saved text or source; images and other binaries match by name only (no OCR). The group header says whether a category is still indexing |
+| the phone app says `Method not found` for `search` | the app or browser build is older than the harness; update both together |
+
+See [Search](/docs/workspace/search).
+
+## Documents, knowledge, apps
+
+| Symptom | Check |
+|---|---|
+| a document refuses an update (`DocTooLarge`) | `documents.max_doc_bytes` (8 MiB); one update is capped at 48 KiB |
+| a share link stops working | links expire and can be revoked from the Share dialog; `documents.sharing: off` stops new links, `disabled` refuses members; guests are rate-limited by `link.guest_handshakes_per_minute` |
+| `knowledge_*` tools and hints are gone | `knowledge.enabled: false` |
+| knowledge search looks stale | `knowledge.sqlite` is a derived index and can be deleted; it is rebuilt |
+| apps render as read-only source | the TUI, Slack and Signal cannot run apps; open the session on desktop or web |
+| an app button shows a tool as unavailable | the tool is policy-denied, hidden, or its MCP server changed identity or schema since the app was built |
+| the documents helper is missing | debug builds find `packages/documents/dist/theuth-documents`; release layouts need `theuth-documents-<protocol>` beside `t` (`just install` copies it); `THEUTH_DOCUMENTS_HELPER=<path>` overrides |
+
+See [Documents](/docs/workspace/documents), [Knowledge](/docs/workspace/knowledge) and [Apps](/docs/workspace/apps).
+
+## Secrets
+
+| Symptom | Check |
+|---|---|
+| `no keychain available: …; vault key in <data_dir>/secrets.key (mode 0600)` | `secrets.key_store: auto` fell back to a file key; fine on a server, back the file up with `secrets.sqlite`. Set `keychain` to make the fallback an error |
+| the vault is unreadable after moving the data dir | the keychain item is bound to the absolute data dir path (`secrets:<path>`); move it back, or re-enter the secrets |
+| a value shows up in tool output | values under 8 characters are not scrubbed; only exact and base64 forms are; see [Secrets](/docs/reference/secrets) |
+| `t --secret-set` says `values differ` | the two no-echo entries did not match; pipe the value instead (`printf %s "$KEY" \| t --secret-set NAME`) |
+
+## Where else to look
+
+- `/communication`: global switch, session opt-out, inherited blocker, network state.
+- `/a2a`: listener and configuration errors after `/a2a reload`.
+- `/computer`: macOS permissions and displays.
+- `/cost`: per-tree model cost, including coverage of what the provider returned.
+- `t session context <id>`: what fills a session's context window.
+- The bundled `harness` skill tells the model the same facts about its own
+  data dir; if the agent claims a `config.yaml` edit took effect without a
+  restart, it is wrong.
+- The desktop app's own updater handles the macOS bundle; Linux and Windows
+  desktop packages are updated by installing the next release package. The
+  `t` binary's silent self-update (`update` plugin, `t --update`) installs
+  `.tar.gz` releases, so it covers macOS and Linux CLI installs but not the
+  Windows CLI zip.

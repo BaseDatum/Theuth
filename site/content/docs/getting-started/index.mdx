@@ -1,0 +1,97 @@
+---
+title: Quickstart
+description: Install theuth, add one provider key through the vault, and get a first reply in the terminal or the desktop app.
+---
+
+## What you need
+
+- A Mac with Apple silicon (macOS 15 or newer) or a Linux box (x86_64 or aarch64, glibc 2.39 or newer: Ubuntu 24.04+, Debian 13+, Fedora 40+). Windows (x86_64) is a preview: unsigned installers, published for some releases and otherwise built from source; see [Installation](/docs/getting-started/installation).
+- An API key for one model provider (Anthropic, OpenAI, …) **or** a subscription you can sign in to (Claude Pro/Max, ChatGPT, Cursor, SuperGrok). Keep the key in your clipboard; you will paste it into a masked field, never into the chat.
+
+## 1. Install
+
+Pick one. Both keep themselves up to date.
+
+```sh
+brew install basedatum/tap/theuth          # the `t` command (macOS arm64, Linux)
+brew install --cask basedatum/tap/theuth   # the macOS menubar app (bundles its own `t`)
+```
+
+Other options, including Linux `.deb`/`.rpm`/`.AppImage` and building from source, are in [Installation](/docs/getting-started/installation).
+
+## 2. Start it
+
+```sh
+t
+```
+
+The terminal UI opens and creates `~/.theuth` on the first run (`--data-dir <path>` or `THEUTH_DATA_DIR` relocate it). In the desktop app, click the tray icon or press ⌥Space to show the window; it starts an engine of its own, or reuses one a terminal `t` is already running.
+
+One engine runs per data directory. A second `t` (or `t -p`) in another terminal attaches to it as a client rather than starting a duplicate, so your sessions are shared; `t --headless` refuses with `engine already running (pid …)` instead. Set `THEUTH_DATA_DIR` if you really want a separate store.
+
+## 3. Add a provider
+
+Keys live in an encrypted vault and are referenced by name. Each provider has a credential name — `anthropic` and `openai` match their model ids, but some differ (`gemini` for Google, `together` for Together AI); the full table is in [Models](/docs/getting-started/models). Any of these work:
+
+- In the TUI, type `/secrets add anthropic` and paste the key into the masked box. (`/secrets` alone lists what is stored.)
+- From a shell: `t --secret-set anthropic`. The value is read without echo (asked twice), or from the first line of stdin when piped: `pbpaste | t --secret-set anthropic`. It prints `stored anthropic v1`.
+- In the desktop app, open **Secrets** in the sidebar's Library group, or **Settings › Connections** for the built-in key providers.
+- No key but a subscription? `/login` opens a picker for `anthropic` (Claude Pro/Max), `openai` (ChatGPT), `cursor` and `xai`; it goes through your browser. `/logout <name>` removes it.
+
+A provider's environment variable (`ANTHROPIC_API_KEY`, …) also counts as configured, but a vault key wins over it. Details and the full list of names: [Secrets](/docs/reference/secrets).
+
+## 4. Pick a model
+
+```text
+/model
+```
+
+The picker only shows providers that have a key, a login, or their env var set. If it says `no models: no provider is configured`, step 3 did not land. Choosing a model rewrites `agent.model` in `~/.theuth/config.yaml`; `/model <id>` sets one directly (ids are models.dev ids such as `anthropic/claude-sonnet-4-5`). `/effort` adjusts reasoning effort where the model supports it. More in [Models](/docs/getting-started/models).
+
+## 5. Say something
+
+Type a message and press Enter. The reply streams in. When the model wants to run a tool that changes something, a prompt appears under the transcript:
+
+```text
+[y] allow  [n/esc] deny
+```
+
+Read-only tools run without asking. Approval behaviour is configurable per session (`/approvals`) and in config; see [Tools and permissions](/docs/reference/tools-permissions). `/quit` (or `/exit`) leaves the TUI.
+
+That is a working harness. [First session](/docs/getting-started/first-session) walks through the UI properly.
+
+## Print mode
+
+For scripts and one-off questions, skip the full-screen UI:
+
+```sh
+t -p "summarise the git log of this repo since Monday"
+echo "what does this error mean: ETXTBSY" | t -p
+```
+
+The reply streams to stdout and the process exits when the turn ends. Print mode uses the same config, vault, model and tool policy as the TUI. An approval prompt is printed as text: answer `y` or `n` on stdin, and when stdin is a closed pipe (the `echo … |` form) pending approvals are denied, so the turn finishes rather than hanging.
+
+## Where your data lives
+
+Everything is under `~/.theuth` (or whatever `--data-dir` points at):
+
+| Path | What it is |
+|---|---|
+| `config.yaml` | every plugin's settings; `/model` and the settings UI write it in place |
+| `secrets.sqlite` | the encrypted vault; its key sits in the OS keychain (service `theuth`), or in `secrets.key` where there is none |
+| `sessions.sqlite` | chat sessions and their history |
+| `oauth/` | `/login` grants when no vault is available (with a vault they are stored as `oauth/<name>` rows inside it) |
+| `mcp/`, `skills/`, `schedules/`, `prompt.md` | MCP servers, skills, scheduled runs, standing instructions |
+| `knowledge/`, `artifacts/`, `models/` | the knowledge store, files the agent shows you, downloaded speech models |
+| `logs/`, `token`, `engine.json` | daily log files, the RPC token, the running engine's record |
+
+That is where theuth's own persistent state lives. It is not a sandbox: tools the agent runs with your approval (shell, file edits, installs), the embedded browser's and helpers' caches, files you export, and `t --install-service` write wherever they are pointed, so review what a session does — see [Tools and permissions](/docs/reference/tools-permissions).
+
+## Where next
+
+- [Installation](/docs/getting-started/installation): every platform, updating, uninstalling, first-run troubleshooting.
+- [First session](/docs/getting-started/first-session): the TUI and desktop surfaces, sessions, approvals in practice.
+- [Models](/docs/getting-started/models): providers, OAuth logins, gateways, Bedrock, vision fallback.
+- [Workspace](/docs/workspace): desktop, terminal, voice, meetings, documents, knowledge, apps, search.
+- [Automation](/docs/automation): agents, delegation, tasks, schedules, watchers, mesh, sandboxes, channels.
+- [Reference](/docs/reference): configuration keys, tools and permissions, MCP, skills, secrets, the CLI.

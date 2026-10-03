@@ -38,3 +38,5 @@ theuth.tar.gz
 **/*.log
 **/*.md
 !README.md
+site/build
+site/.react-router

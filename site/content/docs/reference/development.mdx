@@ -1,0 +1,252 @@
+---
+title: Development
+description: Repository anatomy, the Rust and Bun toolchain, just recipes for checking, testing, bindings and packaging, plugin authoring against the runtime trait, the desktop app, and how this site is built.
+---
+
+theuth is a single Rust workspace of 46 crates plus three small Bun projects
+(the desktop UI, the app-parser helper, the documents helper) and this site.
+This page is the map and the exact commands. Design rationale lives in the
+numbered design documents inside the repository; they are internal working
+notes and are not published here.
+
+## Repository anatomy
+
+| Path | What |
+|---|---|
+| `crates/` | every workspace member (`members = ["crates/*"]`, resolver 3, edition 2024) |
+| `docs/` | the plugin authoring guide (`plugins.md`), the skills format (`skills.md`) and the internal design documents |
+| `justfile` | every build, test, packaging and release recipe |
+| `scripts/` | packaging and release scripts, model fetching (`fetch-models.sh`), remote builds, smoke drivers under `scripts/apps/` and `scripts/tests/` |
+| `bindings/` | generated TypeScript wire types, `methods.json` (every RPC method name), `surface-catalog.json` |
+| `packages/apps`, `packages/documents` | Bun sources of `theuth-app-parser-<hash>` and `theuth-documents-<protocol>` |
+| `deploy/relay`, `deploy/vm`, `deploy/update` | relay container and Kubernetes manifests; sandbox VM image; Linux CLI tarball builder |
+| `vendor/` | patched `libsqlite3-sys`, `pbjson-types`, `a2a-client` |
+| `site/` | this website: Vite + React marketing page and the docs under `site/content/docs/` |
+| `assets/`, `.cargo/config.toml`, `rust-toolchain.toml` | images; cmake policy shim and aarch64-linux linker; `channel = "stable"` |
+
+There is no CI configuration in the repository; the gates below are run by
+hand (`just check`, `just clippy`, `just test`) and by the release scripts.
+
+### Crates
+
+Each crate is a plugin unless marked library. The binary crate `theuth`
+builds `t`.
+
+| Crate | Purpose |
+|---|---|
+| `theuth` | the `t` binary: load config, start the plugin list, wait for shutdown |
+| `runtime` | the `Plugin` trait, `Runtime` handle, bus helpers, config line rewriting |
+| `tools` | tool registry, approval gate, `shell` and PTY jobs, file tools, MCP client |
+| `agent` | the model loop (genai), sqlite sessions, compaction, skills, subagents, the Python runtime |
+| `rpc` | JSON-RPC 2.0 over WebSocket, the `search` tool, ACP server, bindings export |
+| `tui` | the terminal UI (iocraft) |
+| `desktop` | Tauri 2 shell: macOS menubar app, Windows and Linux desktop, iOS link client; UI under `desktop/ui` |
+| `secrets`, `oauth` (library) | encrypted vault; PKCE loopback login and token store |
+| `models` (library), `markdown` (library), `cursor` (library) | bundled models.dev catalog and ONNX init; streaming markdown; Cursor protocol client |
+| `web`, `scrape`, `search-providers`, `search`, `routes` | `search_web`/`read_url`, crawler, external engines, shared fuzzy matching, learned site routes |
+| `browser`, `computer` | embedded headless browser; screen, mouse and keyboard |
+| `codeindex`, `knowledge`, `document`, `artifact`, `app`, `surface` | code symbol index; knowledge bundle; Yjs documents; `show` files and PDFs; OpenUI apps; Mermaid/json-render catalog |
+| `schedule`, `tasks`, `roster`, `decision` | scheduled prompts; task board; agents as files; local decision oracle |
+| `link`, `relay`, `nodes`, `mesh`, `replica`, `sessionsync`, `sandbox`, `a2a`, `acp` | phone/browser uplink and the `theuth-relay` binary; remote harnesses; iroh engine mesh; replication; transcript sync; VM/ssh/docker engines; A2A network; ACP client |
+| `signal`, `slack` | the two channel frontends |
+| `voice`, `talk`, `meeting` | TTS, STT and dictation; live spoken conversation; meeting recorder |
+| `update`, `platform`, `firecrawl-native` | CLI self-update; OS primitives and the supported-platform matrix; vendored crawler heuristics |
+
+## Toolchain
+
+- Rust: `rust-toolchain.toml` pins `channel = "stable"`. `just setup` runs
+  `rustup show active-toolchain || rustup toolchain install stable`. Every
+  recipe prepends the active toolchain's bin dir because Homebrew's rustup
+  installs no `cargo` proxy; `export PATH="$(just toolchain):$PATH"` does the
+  same in your shell.
+- Lints: workspace-wide `missing_docs = "warn"` and `clippy::all = "deny"`;
+  `just clippy` runs with `-D warnings`.
+- System dependencies: `cmake`, `clang`/`libclang`, `llvm-objcopy`/`llvm-nm`
+  (`brew install cmake llvm`; on Ubuntu `scripts/setup-ubuntu-build.sh`
+  lists the apt packages and pins Bun 1.4.0). The first build downloads a
+  prebuilt V8 archive; `RUSTY_V8_ARCHIVE` points at a local copy for offline
+  builds. ONNX Runtime 1.27.0 is the pinned runtime for speech and decision
+  models (`scripts/ort-version.env`).
+- Bun is needed only to *build* the helpers and the UIs; an installed `t`
+  needs neither Node nor Bun at run time.
+- Cross-compiling to aarch64-linux uses `scripts/aarch64-linux-lld-cc.sh`
+  as the linker (`.cargo/config.toml`).
+
+### Platforms
+
+From `crates/platform/src/target.rs`:
+
+| Host | Architectures | Floor |
+|---|---|---|
+| macOS | arm64, x86_64 | macOS 15; shipped packages are arm64 only |
+| Windows | x86_64, arm64 | Windows 10 22H2 |
+| Linux | x86_64, arm64 | glibc 2.35 declared; the shipped CLI tarballs are built on Ubuntu 24.04 and need glibc 2.39; musl unsupported |
+| iOS (link client only) | arm64 | iOS 17 |
+| Android (link client only) | arm64 | minSdk 26; no build recipe in the repository |
+
+The release pipeline can produce: the macOS app and CLI (arm64), Linux CLI
+tarballs (x86_64, arm64), Linux desktop `.deb`/`.rpm`/`.AppImage` (x86_64),
+a Windows installer and CLI zip (x86_64). Which of these ship for a given
+version depends on that release; Linux and Windows desktop builds are the
+least exercised. Meeting capture is full on macOS 15 and partial (no echo
+cancellation) on Windows and Linux.
+
+## Everyday recipes
+
+```sh
+just setup                      # toolchain
+just check                      # cargo check --workspace --all-targets
+just clippy                     # cargo clippy --workspace --all-targets -- -D warnings
+just fmt                        # cargo fmt --all
+just test                       # cargo test --workspace
+just test -p tools              # one crate (ARGS pass through)
+cargo test -p tools gate        # one crate, tests matching "gate"
+just run -- --headless          # debug build, runs t
+just run -- --data-dir /tmp/theuth-dev   # a scratch data dir
+just ts                         # TypeScript bindings → bindings/ (cargo test -p rpc --features ts --lib export_bindings)
+just ts-desktop                 # the same plus a copy into crates/desktop/ui/src/rpc/bindings
+just helper                     # bun build --compile → packages/apps/dist/theuth-app-parser
+just documents-helper           # → packages/documents/dist/theuth-documents
+just install                    # release t + both helpers into ~/.cargo/bin (or $THEUTH_INSTALL_BIN)
+just models                     # refresh crates/models/data/models.json from models.dev
+just models-check               # fail when the committed catalog drifted
+just fetch-models [--check]     # every local model the daemon loads → $THEUTH_DATA_DIR/models
+```
+
+A headless smoke on a scratch data dir, the way `docs/plugins.md` describes
+it:
+
+```sh
+THEUTH_RPC__LISTEN=127.0.0.1:7791 ./target/debug/t --headless --data-dir /tmp/theuth-x
+```
+
+Debug builds find the app-parser helper at `packages/apps/dist/` and the
+documents helper at `packages/documents/dist/`; `THEUTH_APP_PARSER` and
+`THEUTH_DOCUMENTS_HELPER` override. Release layouts look beside `t` for
+`theuth-app-parser-<hash>` and `theuth-documents-<protocol>`.
+
+### Desktop
+
+```sh
+just desktop                    # bindings, documents helper, cargo build -p theuth, bun install, cargo tauri dev
+just desktop-check              # cd crates/desktop/ui && bun run check && bun run test && bun run build
+just web-build                  # static browser UI → crates/desktop/ui/dist, served by theuth-relay --web
+just package-macos              # theuth.app + DMG (ad-hoc unless THEUTH_SIGN_IDENTITY or .env.signing)
+just package-linux              # .deb/.rpm/.AppImage with the t sidecar, on a Linux host
+just package-windows            # NSIS installer + CLI zip, on a Windows host (pwsh 7)
+just package-ios                # signed IPA for TestFlight
+```
+
+The Tauri config (`crates/desktop/tauri.conf.json`) serves the Vite dev
+server on port 1420, builds `ui/dist`, bundles `t` as the external binary
+and reads the updater manifest from the release bucket. `just desktop` runs
+against `target/debug/t` (or `$THEUTH_BIN`) and honours `THEUTH_DATA_DIR`.
+The UI tests are vitest (`src/**/*.test.ts`); `bun run check` is
+`tsc -b --noEmit`.
+
+### Relay and this site
+
+```sh
+just relay                      # cargo run -p relay -- --listen 127.0.0.1:8787
+just site-build                 # cd site && bun install && bun run build → site/dist
+theuth-relay --web crates/desktop/ui/dist --site site/dist     # serve both; --site-listen defaults to 0.0.0.0:8788
+```
+
+The site is a Vite + React project (`site/package.json`: `dev`, `build` =
+`tsc -b && vite build`, `preview`); its config reads the product version
+from `crates/desktop/tauri.conf.json` and the latest release manifest at
+build time. The documentation you are reading lives as MDX under
+`site/content/docs/` with one `meta.json` per section; it is built with the
+rest of the site and served by the relay container (`deploy/relay`), which
+exposes the browser UI on 8787 and the site on 8788.
+
+### Release
+
+`just bump-version <major|minor|patch|x.y.z>` edits `Cargo.toml`,
+`tauri.conf.json` and `Cargo.lock`. `just release` runs the macOS pipeline
+(package, notarize, update payloads, publish, tag); Windows and Linux
+artifacts are built first with `just build-remote <host> windows|linux`, and
+`just release-update` publishes any platform the live version is missing.
+Signing, notarization and publishing credentials come from a local
+`.env.signing` file whose variable names are listed in `.env.signing.example`.
+Sandbox VM images are built with `just vm-image <tag>`.
+
+## Testing
+
+- `cargo test --workspace` runs unit tests, doctests and the integration
+  tests under `crates/*/tests/` (web SSRF and engine tests, codeindex,
+  replica loopback sync, document actor, artifact readers, decision and
+  meeting oracles, sandbox engines, browser live tests). No nextest.
+- Frontend: vitest in `crates/desktop/ui`; `bun test` in `packages/apps` and
+  `packages/documents`.
+- Smoke drivers that talk to a running `t --headless` over WebSocket live in
+  `scripts/apps/` (apps, steering, relay) and `scripts/codemap-smoke.ts`;
+  `scripts/tests/fetch-models-test.sh` exercises the model fetcher against a
+  fake origin.
+- `just ts` uses `--lib` so cargo does not also link `tests/prompts.rs`; the
+  bindings export is itself a test (`export_bindings`).
+
+## Writing a plugin
+
+The contract is small. From `crates/runtime/src/lib.rs`:
+
+```rust
+#[async_trait]
+pub trait Plugin: Send {
+    fn name(&self) -> &'static str;
+    async fn start(self: Box<Self>, rt: &Runtime) -> anyhow::Result<()>;
+}
+```
+
+`Runtime` carries the kameo bus, the figment `config`, `data_dir` and a
+shutdown token. Plugins talk to each other only through typed **events** on
+the bus (`rt.publish`, `rt.subscribe`) and **commands** (`ask` on an actor
+found by name through `rt.lookup_when::<A>(name)`). There is no shared event
+enum, no shared config struct, and no handle threading through `main`.
+
+The steps, each confirmed against the code:
+
+1. **Design doc first.** A numbered design document with decisions that
+   name the alternative they beat, the config section with every key and
+   default, the commands and events exactly as declared, the tools with
+   their `Risk`, the UI surface, what lives on disk, and a runnable check
+   per step. Amend the architecture document in the same commit.
+2. **Crate.** `crates/foo` with `[lints] workspace = true`, a
+   `pub const FOO_ACTOR: &str`, a `FooConfig` that is `#[serde(default)]`
+   and read with `rt.section::<FooConfig>("foo")` (a missing section is an
+   error you turn into `Default`), events as structs with
+   `#[serde(tag = "type")]`, `Serialize + Deserialize + JsonSchema` and, behind
+   a `ts` feature, `ts_rs::TS`.
+3. **`start`.** Read the config; when disabled or broken, log and return
+   `Ok(())` so the harness still runs. Spawn the actor and register it under
+   `FOO_ACTOR`. Do cross-plugin registration in a task after
+   `lookup_when`, never by blocking `start`.
+4. **Tools.** Implement `tools::Tool` (`const NAME`, `const RISK: Risk`,
+   `type Args: DeserializeOwned + JsonSchema`, `description()`, `call()`;
+   optional `DIRECT`, `RETURNS`, `CONSUMES_SECRETS`), then
+   `reg.ask(tools::RegisterTool(Arc::new(tool)))` after
+   `rt.lookup_when::<tools::ToolRegistry>(tools::REGISTRY_ACTOR)`. A prompt
+   block goes through `tools::RegisterPrompt { plugin, text }`.
+5. **Integrate.** Add the plugin to `engine_plugins()` in
+   `crates/theuth/src/main.rs`, a commented section to `DEFAULT_CONFIG`
+   there, an `Api` method in `crates/rpc/src/api.rs` (lookup + ask) with
+   events added to `forward!` in `bridge.rs` and to `export.rs`, and the
+   TUI command, event and render arms.
+6. **Verify.** `just check`, `just clippy`, `just test`,
+   `cargo check -p rpc --features ts`, a headless smoke over RPC including
+   `enabled: false`, and a Status section in the design doc saying what was
+   exercised.
+
+Nothing reads another plugin's config section or calls into its state
+directly. Libraries (`models`, `markdown`, `oauth`, `cursor`) have no actor,
+config or events and are deliberately not plugins.
+
+## Public surfaces to code against
+
+- `bindings/methods.json` and `bindings/*.ts`: the RPC surface a frontend
+  codes against; regenerate with `just ts`.
+- `bindings/surface-catalog.json`: the JSON schema of the json-render
+  blocks a reply may contain.
+- `docs/plugins.md`: the full plugin guide the steps above summarise.
+- The bundled `harness` skill is rewritten on every start from the binary;
+  any user-visible change to layout or config needs a matching change there.

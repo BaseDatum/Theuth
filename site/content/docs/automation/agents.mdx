@@ -1,0 +1,253 @@
+---
+title: Agents
+description: Hire standing agents in chat or from the Agents view, give each one a charter, a manager, a tool ceiling and a monthly budget, and talk to it at its desk.
+---
+
+An agent is a standing role on your roster: a name, a title, a charter, a manager it reports to, and optional limits on model, tools, MCP servers and monthly spend. Every active agent has a **desk** — one pinned session that receives work (tasks, routines, mentions) and gets it done through child sessions. You hire one when a kind of work keeps coming back and you want a consistent owner for it, rather than re-explaining the role in every chat. The built-in `theuth` agent is always there and routes anything unaddressed.
+
+## Prerequisites
+
+- theuth running — the desktop app, `t` in a terminal, or a `t --headless` daemon. The roster is always on; there is no switch to enable it.
+- Desks do their work in child sessions via `spawn_subagent`, which exists only when `agent.communication: true` is set in `config.yaml` (default `false`; `/communication on always` in the terminal UI, or Settings › Communication). Without it an agent can still be hired, but its desk cannot delegate work.
+- At least one model provider configured — see [Models and providers](/docs/getting-started/models). An agent's `model:` must be a catalog id for a configured provider.
+- Desks open only on the engine that holds the **hub lease**. On a single machine that is your own engine; in a [mesh](/docs/automation/mesh) it is the hub.
+- Hiring and removing need no special permission: the Hire / Approve / Remove buttons are the consent. Tool calls made at a desk follow the ordinary permission model — see [Tools and permissions](/docs/reference/tools-permissions).
+
+## How it works
+
+### One file per agent
+
+Each agent is a Markdown file, `~/.theuth/agents/<name>.md`: YAML front matter for the record, body for the charter. The file is the source of truth; theuth watches the directory, hot-reloads changes, and mirrors parsed files into `roster.sqlite`. You normally never write this file by hand — chat and the Agents view write it for you — but it is plain text and you may.
+
+Names are `[a-z0-9-]{1,32}`. `theuth` is reserved: a file `agents/theuth.md` is ignored with a warning; the built-in agent's charter is `~/.theuth/prompt.md`.
+
+### Hierarchy
+
+Agents form a tree by `reports_to`, rooted at `theuth` (which reports to you). The manager is who gets the escalations, the budget tasks and the review of work an agent cannot sign off itself. Unknown managers fall back to the root in the org chart. There is no limit on how many agents you can have.
+
+### Desks
+
+For every agent that is active (not paused, not an unapproved proposal) theuth keeps one session titled `<name> · desk` open on the hub. The desk is the agent: its system prompt is its identity (`You are <Title> (<name>), an agent on this theuth roster; you report to …`), its charter, its capabilities, its journal and an operating manual. Observable rules of that manual:
+
+- A desk never does the work in its own session — no files, shells or browsing there. It spawns a child session with a complete brief and the `model` and `tools` from its file.
+- On an `assigned` wake it runs a **fit check** against the roster's capabilities and hands the task to a better-matching agent with `task_reassign` if there is one. theuth's desk is the router by default.
+- Every turn woken for a task must end with a disposition: `done`, `review`, `blocked`, `delegated` or `continuing`. A turn that leaves its task unmoved gets one nudge; a second miss sets the task `blocked: "no continuation"` and wakes the manager.
+- At most `roster.max_rounds` (3) child rounds per task per episode.
+
+A desk's work is grouped into **episodes**. An episode closes when the desk is idle for `roster.episode_idle_secs` (21600 s = 6 h), reaches `roster.episode_context_pct` (60 %) of its context window, the thread ends, the hub lease moves, or theuth shuts down. The closing turn writes a journal (Done / Open / Next / Notes, capped at `roster.journal_max_bytes` = 8192) to `~/.theuth/roster/journal/<name>.md`, which the next episode reads back. Tasks still checked out at close without a `continuing` disposition become `blocked: no continuation`.
+
+Desks and the task board are tightly coupled; [Tasks](/docs/automation/tasks) covers wakes, checkouts and dispositions in detail.
+
+### Status
+
+Each agent shows one **Active / Paused** switch and an activity chip:
+
+| Chip | Meaning |
+|---|---|
+| `idle` | Active, nothing in flight |
+| `working` | Its desk is handling a wake right now (green dot in the Desks group) |
+| `blocked` | Every open task it owns is blocked |
+| `invalid file` | `agents/<name>.md` does not parse; the error is shown on the card; the agent takes no wakes |
+| `paused` | Switch off, or auto-paused by budget; no desk, no wakes |
+
+A proposal awaiting approval appears only in the **Hiring inbox**, not as a chip. There is no "retired" state: removing an agent deletes its file.
+
+## Walkthrough: hiring in chat
+
+Describe the role to theuth in any chat (desktop or terminal UI):
+
+```text
+› hire a research assistant who turns a topic into a sourced one-page brief,
+  reads-only, max 40 USD a month
+```
+
+theuth checks the roster, then draws an **agent draft** card rather than writing anything: name, title, manager, model, tools ceiling, budget, capabilities, and the first 600 characters of a charter it wrote for the role. The card has three buttons:
+
+- **Hire** — creates the agent active (shows as **Replace** when an agent with that name already exists).
+- **Hire paused** — creates the file with `paused: true`; nothing runs until you flip the switch in the Agents view.
+- **Discard** — nothing is written.
+
+Your press arrives as your next message (`[app agent-drafts …] agent draft a1-…: hire`) and theuth calls `agent_put`, which writes `~/.theuth/agents/<name>.md` at once. The receipt reads `hired agents/research-assistant.md (active)` or `… (paused: un-pause from the Agents view when ready)`. A new row appears under **Desks** in the sidebar, and the agent is on the org chart.
+
+To change an existing agent, ask in the same way ("give the research assistant a 60 USD budget", "let it use mutating tools") — the card comes back with **Replace** and the file is overwritten with the new fields.
+
+## Walkthrough: the Hire an agent wizard
+
+Open **Agents** in the desktop sidebar and press **Hire an agent** (route `/agents/new`). The wizard is seven steps; a half-finished draft resumes if you leave and come back.
+
+| Step | Heading | What you set |
+|---|---|---|
+| Identity | *Meet your next agent* | Title; a name is suggested from it |
+| Role | *Where does it sit?* | Manager (any roster agent or `theuth`), capabilities paragraph |
+| Runtime | *How does it run?* | Model (from the configured catalog), effort `low` / `medium` / `high` / `max`, tools ceiling, runs in *anywhere* / *its own VM* / a named VM |
+| Access | *What may it reach?* | MCP: all servers, none, or a per-server list |
+| Budget | *What may it spend?* | Monthly amount and 3-letter currency, or none |
+| Charter | *Its charter* | A document editor pre-filled with a starter (a title heading, "You are …, reporting to …", *What you own*, *How you work*, optional *When to hand off to you*), with a chat to theuth beneath it to draft together |
+| Review | *Review and hire* | **Hire** (labelled with the title) or **Hire paused** |
+
+Validation before the final step: name matches `[a-z0-9-]{1,32}`, is not `theuth` and is not taken; title present; manager exists and is not the agent itself; budget amount greater than 0 with an uppercase 3-letter currency; charter non-empty.
+
+## Walkthrough: approving a proposal
+
+Agents cannot hire. When a desk decides a role is missing it calls `agent_propose`: the file is written with `paused: true` and `proposed_by: agent:<proposer>`, and a task `Hire agent <name> (<Title>)` is filed for the proposer's manager (you, when the proposer is theuth). You see it in three places:
+
+- the **Hiring inbox** strip at the top of the Agents view (*N proposed hires await your approval*),
+- the **Attention** inbox as a `Hire` item,
+- the task board's Queue strip.
+
+Open the agent and press **Approve hire** — the proposal flags are cleared, the hire task is cancelled with the comment `approved`, the desk opens, and a toast says `Hired <name>`. **Decline** (with an optional note) deletes the file and cancels the task with `rejected: <note>`; toast `Declined <name>`. Until you decide, a proposal receives no wakes, has no desk, is hidden from `agents_list`, from chat routing and from the org chart.
+
+## Walkthrough: talking to an agent
+
+**Desktop.** Click the agent's row in the **Desks** sidebar group (or **Open desk** on its detail page). The chat that opens *is* the agent's desk session: it answers as the agent, with its charter and journal in context. Its child sessions hang under the row (5 shown, then *Show more*). Desk sessions never appear in the ordinary chat list. If no desk is open yet, the click opens one.
+
+**Charter tab.** The agent's detail page has a **Charter** tab: a document editor with a chat to theuth below it. Edits land in `agents/<name>.md` once you pause typing. theuth's own charter is shown read-only here (edit `~/.theuth/prompt.md`).
+
+**Slack and Signal.** The first word of a message routes it: `research-assistant: compare these two vendors` goes to that agent's desk and binds the thread to it; `theuth …` addresses the default explicitly; anything else is theuth's. Matching is case-insensitive and the trailing `:` or `,` is optional. Only active, approved agents are routable. There is no `@` syntax and no per-agent channel. The desktop and terminal composers do not use this routing — open the desk instead. See [Channels](/docs/automation/channels).
+
+**Task threads.** Writing an agent's name as a word in a task comment wakes it on that task.
+
+## Reference
+
+### Agent file
+
+```yaml
+---
+title: Research Assistant
+reports_to: theuth
+model: anthropic/claude-sonnet-4-5
+tools: read_only
+mcp: [github, slack.search]
+budget: 40 USD/month
+capabilities: Turns a topic into a sourced one-page brief. Hand off literature and market research.
+runs_in: any
+paused: false
+---
+# Research Assistant
+
+You are Research Assistant, reporting to theuth.
+…
+```
+
+| Key | Default | Meaning |
+|---|---|---|
+| `title` | the name | Display title |
+| `reports_to` | `theuth` | Manager; must be `theuth` or an existing agent |
+| `model` | the default | Catalog id applied to the desk session when it opens |
+| `effort` | — | Stored and shown in the UI only; as of this writing it is **not applied** to the desk or its children |
+| `tools` | — (no cap) | Risk ceiling `read_only` \| `mutating` \| `destructive`; children inherit the lowest ceiling in their ancestry |
+| `mcp` | every server | Allowlist of `server` or `server.tool`; `[]` = no MCP at all |
+| `budget` | `none` | `<amount> <CUR>/month`, e.g. `40 USD/month`; currency uppercased, no spaces around `/` |
+| `capabilities` | — | One paragraph: when to hand work to this agent; other desks see it during the fit check |
+| `paused` | `false` | No desk, no wakes |
+| `proposed_by` | — | `agent:<name>`; set only by `agent_propose`, cleared by approval |
+| `runs_in` | `any` | `vm` or `vm:<name>` pins its work sessions to a [sandbox](/docs/automation/sandboxes) |
+
+Any other key makes the file invalid. An empty body is the error `empty charter`. Files whose stem starts with `.` or that are not `.md` are ignored.
+
+### Tools the model calls
+
+| Tool | Risk | Arguments | Notes |
+|---|---|---|---|
+| `agents_list` | read-only | `{ all?: bool }` | One line per agent: name, title, manager, status, open tasks, budget use, capabilities. Default hides paused, proposed and invalid agents; `theuth` is never listed |
+| `agent_draft` | read-only | `{ agents: [{ name, title, reports_to, model?, effort?, tools?, mcp?, budget?, capabilities?, charter }] }` | Draws the Hire / Hire paused / Discard card; writes nothing |
+| `agent_put` | mutating | `{ name, title, reports_to?, charter, model?, effort?, budget?, tools?, mcp?, capabilities?, paused? }` | Creates or overwrites the file; refused from any desk other than theuth's |
+| `agent_propose` | mutating | same as `agent_put` minus `paused` | Writes the file paused with `proposed_by`, files the hire task; refuses a taken name |
+
+There is no model tool to pause, approve, remove or rename an agent — those are yours alone, through the UI or RPC.
+
+### UI, terminal and CLI
+
+| Surface | Action |
+|---|---|
+| Desktop › Agents | **Hire an agent**; **Org chart** / **List** toggle; **Hiring inbox** strip |
+| Desktop › Agents › `<name>` | Tabs **Overview · Charter · Runtime & Access · Runs · Tasks**; header **Active/Paused** switch, **Open desk**, **Remove**; for proposals **Approve hire** / **Decline** |
+| Desktop › Agents › `<name>` › Overview | **Budget** card: *Set* / *Change* / *Remove cap* |
+| Desktop sidebar › Desks | One row per active agent, `theuth` first; click opens the desk chat |
+| Desktop › Attention | `Hire` and `Budget` items |
+| Terminal UI | `/roster` prints `name · status · open` for every agent. (`/agents` is the subagent picker, not the roster.) |
+| CLI | No `t agents` subcommand. `t tasks list --owner agent:<name>` lists an agent's tasks |
+| RPC | `agents_list`, `agent_get(name)`, `desk_open(name)`, `agent_put(file)`, `agent_pause(name, paused)`, `agent_approve(name)`, `agent_remove(name, note?)` |
+
+### `roster:` config
+
+```yaml
+roster:
+  decision_wait_secs: 120     # escalate waits this long for a live answer before parking
+  episode_idle_secs: 21600    # desk idle → episode closes, journal written
+  episode_context_pct: 60     # …or at this % of the context window
+  journal_max_bytes: 8192     # ceiling on roster/journal/<name>.md
+  max_rounds: 3               # child rounds per task per episode
+```
+
+Every key has a default; an absent section is the defaults. Changing them needs a restart.
+
+## Budgets
+
+`budget:` is a money cap per calendar month (UTC). There are no token caps and no per-day caps; `budget: none` is never checked.
+
+- Every cost reported by the agent's desk or any of its child sessions is added to its month.
+- At **80 %** the manager receives a task `Budget: <name> at 80 % (x of y CUR)` and a `Budget` item appears in Attention.
+- At **100 %** theuth writes `paused: true` into the file, closes the desk, and files `Budget override: <name> spent x of y CUR in <month>` for the manager.
+- Flipping the switch back to **Active** while spend is at or over the cap records an **override for the rest of the month**: the cap will not re-pause it until the next month starts.
+
+Spend is counted on the engine that charged it; in a mesh, work done on another engine is tallied there.
+
+## Safety and permissions
+
+- **Hiring is consent.** Pressing Hire, Approve hire or finishing the wizard is the approval; `agent_put` only works from your own chats or theuth's desk. A desk that tries it is refused: `agent_put is the user's approval; as agent <name>'s desk, propose with agent_propose`. Proposals land paused and wait for you.
+- **Tool ceiling.** `tools:` installs a risk cap on the desk; children cannot exceed the lowest cap among their ancestors. A call above the cap is denied outright (`denied: subagent is capped at <risk>`), never asked. Inside the cap, the usual `tools.policy` applies — `read_only` allowed, `mutating` and `destructive` ask by default — and approval cards from a desk's children reach you wherever you are (desktop card, TUI `[y]/[n]`, Slack buttons, Signal 👍/👎). The timeout is `tools.approval_timeout_secs` (300 s → deny). `/approvals off` and the Approvals settings tab apply to desks like any other session; there is no per-agent "always allow".
+- **MCP allowlist.** `mcp:` limits which MCP servers and tools a desk and its children can see at all. Omitted means every configured server.
+- **Secrets** are never agent-scoped. `{{secret:NAME}}` in a tool call resolves on the executing engine and raises the call to at least *ask* — see [Secrets](/docs/reference/secrets).
+- **Knowledge scope.** An agent's sessions read and write knowledge as `agent:<name>` with its reporting line as the team; you and theuth see everything.
+- **Removal.** **Remove** on the detail page is an alert dialog: "Deletes `agents/<name>.md`. Its desk closes; its tasks stay on the board unowned until you reassign them. Agents reporting to it move under theuth." Its charter document goes to the trash. No model tool can remove an agent.
+
+## Limits and lifecycle
+
+| Item | Value |
+|---|---|
+| Agent name | `[a-z0-9-]{1,32}`, `theuth` reserved |
+| Number of agents | no cap |
+| Desks per agent | 1, on the hub-lease holder only |
+| Desk episode closes | idle 21600 s, or 60 % of context, or thread end / lease move / shutdown |
+| Episode closing turn grace | 10 min |
+| Journal | ≤ 8192 bytes, `~/.theuth/roster/journal/<name>.md` |
+| Child rounds per task per episode | 3 (`roster.max_rounds`) |
+| Nudges before `blocked: no continuation` | 1 |
+| Escalation wait for a live answer | 120 s (`roster.decision_wait_secs`) |
+| Budget thresholds | 80 % task; 100 % auto-pause; manual un-pause overrides the month |
+| Charter preview on the draft card | 600 characters |
+| Subagents shown under a Desks row | 5, then *Show more* |
+| Desk housekeeping tick | 60 s |
+
+Lifecycle: **draft card** → (Hire) **active** ⇄ **paused** → (Remove) **deleted**; or **proposed** (paused, `proposed_by` set) → (Approve) **active** / (Decline) **deleted**. A file that stops parsing becomes **invalid** until fixed; its desk closes and it takes no wakes.
+
+## Troubleshooting
+
+| Symptom | Cause | Fix |
+|---|---|---|
+| Activity chip `invalid file` | Front-matter parse error, unknown key, bad `tools` / `budget` / `runs_in`, or empty charter | Read the error on the card; fix the file or re-hire with **Replace** |
+| Agent paused on its own | Hit 100 % of its monthly budget | Read the *Budget override* task; flip to **Active** to override for the month, or raise the cap on the Overview › Budget card |
+| Desk click fails with `another engine holds the hub lease; desks open there` | Desks exist only on the hub | Open it from the hub engine, or move the hub (`t mesh hub prefer`) — see [Mesh](/docs/automation/mesh) |
+| `agent is a proposal awaiting approval` | Trying to open a desk for an unapproved hire | Approve or decline it in the Hiring inbox |
+| `agent is paused` | Opening a paused agent's desk | Flip the switch to **Active** |
+| `desk is closing; try again in a moment` | Episode is in its closing turn | Wait up to 10 minutes and retry |
+| `agent_put is the user's approval; as agent X's desk, propose with agent_propose` | An agent's desk tried to hire | Expected; the proposal arrives in your Hiring inbox |
+| `reports_to "x": no such agent (see agents_list); use theuth or an existing name` | Manager is not on the roster | Use `theuth` or an existing name; hire the manager first |
+| `agent <n> exists; pick another name or create a task for it` | A desk proposed a name already in use | Choose another name, or assign the existing agent a task |
+| Task set `blocked: no continuation` | The desk ended two turns without moving its task, or its episode closed mid-task | The manager was woken; **Unblock** on the task detail re-queues it |
+| `agents/theuth.md` ignored (warning in the log) | `theuth` is reserved | Edit `~/.theuth/prompt.md` for theuth's charter |
+| Desk opens but never delegates | `agent.communication` is `false`, so `spawn_subagent` is missing | `/communication on always`, or Settings › Communication |
+| Effort set on the agent has no visible effect | `effort:` is stored but not applied as of this writing | Set effort in the child session's model picker, or in `agent.effort` globally |
+
+## Related
+
+- [Automation overview](/docs/automation)
+- [Tasks](/docs/automation/tasks) — wakes, checkouts, dispositions, the board
+- [Delegation](/docs/automation/delegation) — `spawn_subagent`, tool ceilings, child sessions
+- [Schedules](/docs/automation/schedules) — routines with `agent: <name>` file a task for that agent on every fire
+- [Sandboxes](/docs/automation/sandboxes) — `runs_in: vm`
+- [Mesh](/docs/automation/mesh) — the hub lease that hosts desks
+- [Channels](/docs/automation/channels) — first-word routing on Slack and Signal
+- [Tools and permissions](/docs/reference/tools-permissions)
+- [Configuration](/docs/reference/configuration)

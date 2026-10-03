@@ -1,0 +1,122 @@
+/* Fumadocs UI on the theuth palette. styles.css owns the tokens (dark default, light via prefers-color-scheme);
+   this file only maps Fumadocs' `--color-fd-*` onto them and squares the chrome. Nothing here targets homepage markup. */
+@import "./styles.css";
+@import "fumadocs-ui/css/preset.css";
+
+@theme inline {
+  --color-fd-background: var(--page);
+  --color-fd-foreground: var(--fg);
+  --color-fd-muted: var(--raised);
+  --color-fd-muted-foreground: var(--fg-3);
+  --color-fd-popover: var(--raised);
+  --color-fd-popover-foreground: var(--fg);
+  --color-fd-card: var(--raised);
+  --color-fd-card-foreground: var(--fg);
+  --color-fd-border: var(--well);
+  --color-fd-primary: var(--accent);
+  --color-fd-primary-foreground: var(--accent-fg);
+  --color-fd-secondary: var(--well);
+  --color-fd-secondary-foreground: var(--fg);
+  --color-fd-accent: var(--well);
+  --color-fd-accent-foreground: var(--fg);
+  --color-fd-ring: var(--accent);
+  --color-fd-overlay: rgb(var(--shadow-rgb) / 0.6);
+}
+
+/* Semantic tones Fumadocs' preset references (callouts, diff lines); neutral.css normally supplies them. Warm-shifted. */
+@theme static {
+  --color-fd-info: #8a7a5e;
+  --color-fd-warning: #c47a2c;
+  --color-fd-error: #b4531e;
+  --color-fd-success: #7a8a5e;
+  --color-fd-idea: #c9a24a;
+  --color-fd-diff-remove: rgb(180 83 30 / 0.12);
+  --color-fd-diff-remove-symbol: #b4531e;
+  --color-fd-diff-add: rgb(122 138 94 / 0.14);
+  --color-fd-diff-add-symbol: #7a8a5e;
+}
+
+/* Shape lock: every corner on the site is square. The homepage uses no rounded-* utilities, so zeroing the scale is safe. */
+@theme {
+  --radius-xs: 0px;
+  --radius-sm: 0px;
+  --radius-md: 0px;
+  --radius-lg: 0px;
+  --radius-xl: 0px;
+  --radius-2xl: 0px;
+  --radius-3xl: 0px;
+  --radius-4xl: 0px;
+}
+:where(#nd-docs-layout, #nd-home-layout, [role="dialog"], [data-radix-popper-content-wrapper]) .rounded-full {
+  border-radius: 0;
+}
+
+/* Type: Instrument Serif for the page title and body headings, Geist for everything else, Geist Mono in code. */
+#nd-docs-layout h1,
+#nd-docs-layout .prose :is(h1, h2, h3) {
+  font-family: var(--font-display);
+  font-weight: 400;
+  letter-spacing: -0.01em;
+}
+#nd-docs-layout h1 {
+  font-size: 2.5rem;
+  line-height: 1.05;
+}
+#nd-docs-layout .prose h2 {
+  font-size: 1.75rem;
+}
+#nd-docs-layout .prose h3 {
+  font-size: 1.3rem;
+}
+#nd-docs-layout .prose :is(code, pre, kbd) {
+  font-family: var(--font-mono);
+}
+.prose {
+  --tw-prose-body: var(--fg-2);
+  --tw-prose-headings: var(--fg);
+  --tw-prose-links: var(--fg);
+  --tw-prose-bold: var(--fg);
+  --tw-prose-code: var(--fg);
+  --tw-prose-quotes: var(--fg-2);
+  --tw-prose-quote-borders: var(--accent);
+  --tw-prose-hr: var(--well);
+  --tw-prose-th-borders: var(--well);
+  --tw-prose-td-borders: var(--well);
+}
+.prose a {
+  text-decoration-color: var(--accent);
+  text-underline-offset: 3px;
+}
+.prose a:hover {
+  color: var(--accent);
+}
+
+/* The ochre accent only on the active sidebar item. */
+#nd-sidebar [data-active="true"] {
+  color: var(--fg);
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+
+/* Code blocks: the dual shiki themes are keyed off `html.dark`, set from prefers-color-scheme in root.tsx. */
+.shiki {
+  background-color: var(--raised) !important;
+  border-color: var(--well);
+}
+
+/* Prevent layout shift when Radix locks body scroll behind dialogs. */
+html {
+  scrollbar-gutter: stable;
+}
+html > body[data-scroll-locked] {
+  margin-right: 0 !important;
+  --removed-body-scroll-bar-size: 0px !important;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  #nd-docs-layout *,
+  [role="dialog"] *,
+  [role="dialog"] {
+    animation-duration: 1ms !important;
+    transition-duration: 1ms !important;
+  }
+}
