@@ -7,8 +7,8 @@ use std::path::Path;
 
 use genai::adapter::AdapterKind;
 use genai::chat::{
-    CacheControl, ChatMessage, ChatOptions, ChatRequest, ChatRole, ContentPart, ReasoningEffort,
-    Tool,
+    CacheControl, ChatMessage, ChatOptions, ChatRequest, ChatRole, ContentPart, MessageContent,
+    ReasoningEffort, Tool,
 };
 use runtime::SessionId;
 
@@ -181,6 +181,11 @@ pub struct Frame<'a> {
     /// A text-only turn runs [`crate::vision::project_frame`] first so images
     /// become stable references; the strip then only reaches PDFs (52 §4.2).
     pub vision: bool,
+    /// Resend after a provider rejected replayed reasoning (36 §2.1 as
+    /// amended by 90 §1.5): every `ThoughtSignature`, `ReasoningContent` and
+    /// reasoning-typed `Custom` part is removed from history and
+    /// `ToolCall.thought_signatures` cleared.
+    pub strip_reasoning: bool,
 }
 
 impl Frame<'_> {
@@ -203,6 +208,13 @@ impl Frame<'_> {
         messages.extend_from_slice(self.history);
         if !self.vision {
             messages.iter_mut().for_each(strip_images);
+        }
+        if self.strip_reasoning {
+            messages.iter_mut().for_each(strip_reasoning);
+            // A reply that was only reasoning is now an empty assistant
+            // message — a provider error. Such a message carries no tool
+            // call, so no tool result depends on it and alternation holds.
+            messages.retain(|m| m.role != ChatRole::Assistant || !m.content.is_empty());
         }
         if t == Transport::Anthropic
             && let Some(last) = messages.last_mut()
@@ -269,6 +281,31 @@ pub fn strip_images(m: &mut ChatMessage) {
         }
         _ => {}
     }
+}
+
+/// Removes every reasoning part from `m` (90 §1.5): `ThoughtSignature`,
+/// `ReasoningContent`, a `Custom` part whose `type` starts with `reasoning`
+/// (OpenRouter `reasoning.text` / `reasoning.encrypted` / `reasoning.summary`),
+/// and clears `ToolCall.thought_signatures`. Text, tool calls, tool
+/// responses and binaries are untouched.
+pub fn strip_reasoning(m: &mut ChatMessage) {
+    let parts = std::mem::take(&mut m.content).into_parts();
+    m.content = MessageContent::from_parts(
+        parts
+            .into_iter()
+            .filter_map(|part| match part {
+                ContentPart::ThoughtSignature(_) | ContentPart::ReasoningContent(_) => None,
+                ContentPart::Custom(c) if c.typ().is_some_and(|t| t.starts_with("reasoning")) => {
+                    None
+                }
+                ContentPart::ToolCall(mut call) => {
+                    call.thought_signatures = None;
+                    Some(ContentPart::ToolCall(call))
+                }
+                other => Some(other),
+            })
+            .collect::<Vec<_>>(),
+    );
 }
 
 /// The system prompt (design doc 07 §4), rendered once per turn: Claude Code
@@ -456,6 +493,7 @@ mod tests {
                     head,
                     history: &history[..n],
                     vision: true,
+                    strip_reasoning: false,
                 };
                 let (req, opts) = frame.request(t, session, None);
                 assert_eq!(opts.capture_tool_calls, Some(true));
@@ -495,6 +533,7 @@ mod tests {
             head: None,
             history: &history,
             vision: true,
+            strip_reasoning: false,
         };
         let session = SessionId::new();
 
@@ -523,6 +562,7 @@ mod tests {
             head: None,
             history: &[],
             vision: true,
+            strip_reasoning: false,
         };
         let (req, _) = empty.request(Transport::Anthropic, session, None);
         assert_eq!(
@@ -545,6 +585,7 @@ mod tests {
             head: None,
             history: &history,
             vision,
+            strip_reasoning: false,
         };
 
         let (req, _) = frame(false).request(Transport::Plain, session, None);
@@ -589,9 +630,73 @@ mod tests {
             head: None,
             history: &history,
             vision: true,
+            strip_reasoning: false,
         }
         .request(Transport::Plain, SessionId::new(), None);
         assert_eq!(req.messages[0].content.tool_responses()[0].images.len(), 1);
+    }
+
+    /// 90 §1.5: one assistant message holding every kind of part.
+    fn sig(s: &str) -> ContentPart {
+        ContentPart::ThoughtSignature(s.into())
+    }
+
+    #[test]
+    fn strip_reasoning_removes_every_reasoning_part() {
+        let custom = |typ: &str| {
+            ContentPart::Custom(genai::chat::CustomPart {
+                model_iden: None,
+                data: json!({"type": typ, "text": "t"}),
+            })
+        };
+        let mut tagged = call("c1", "shell");
+        tagged.thought_signatures = Some(vec!["sig".into()]);
+        let history = [
+            ChatMessage::user("hi"),
+            ChatMessage::assistant(MessageContent::from_parts(vec![
+                sig("sig"),
+                ContentPart::ReasoningContent("thinking".into()),
+                custom("reasoning.encrypted"),
+                custom("citation"),
+                ContentPart::Text("answer".into()),
+                ContentPart::ToolCall(tagged),
+            ])),
+            ChatMessage::from(vec![ToolResponse::new("c1", "out")]),
+            // A reasoning-only reply disappears entirely.
+            ChatMessage::assistant(MessageContent::from_parts(vec![
+                sig("sig2"),
+                ContentPart::ReasoningContent("only thinking".into()),
+            ])),
+            ChatMessage::user("next"),
+        ];
+        let frame = |strip| Frame {
+            tools: &[],
+            system: "sys",
+            head: None,
+            history: &history,
+            vision: true,
+            strip_reasoning: strip,
+        };
+        let session = SessionId::new();
+
+        let (req, _) = frame(true).request(Transport::Plain, session, None);
+        assert_eq!(req.messages.len(), 4, "{:?}", req.messages);
+        let parts = req.messages[1].content.parts();
+        assert_eq!(parts.len(), 3, "{parts:?}");
+        assert!(matches!(&parts[0], ContentPart::Custom(c) if c.typ() == Some("citation")));
+        assert!(matches!(&parts[1], ContentPart::Text(t) if t == "answer"));
+        assert!(
+            matches!(&parts[2], ContentPart::ToolCall(c) if c.call_id == "c1" && c.thought_signatures.is_none())
+        );
+        assert_eq!(req.messages[2].content.tool_responses().len(), 1);
+        assert_eq!(req.messages[3].content.first_text(), Some("next"));
+
+        // Off: bytes unchanged.
+        let (req, _) = frame(false).request(Transport::Plain, session, None);
+        assert_eq!(
+            serde_json::to_string(&req.messages).unwrap(),
+            serde_json::to_string(&history).unwrap()
+        );
     }
 
     #[test]
