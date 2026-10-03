@@ -133,3 +133,12 @@ Tests (crates/agent):
   `peer_message()`, `load_skill()`), and the `agent` block's `secret_list()`.
   Argument sketches like `task_update disposition: done` were left as they
   are (they are not plain names).
+- A third commit (`roster: desk-manual test follows the call convention`):
+  `roster::tools::tests::hiring_block_reaches_theuth_and_the_desk_manual_points_at_propose`
+  pinned `` `agent_propose` `` and was not in the brief's crate gate list;
+  caught by running the other touched crates' tests afterwards. No amend.
+- `cargo check --workspace --all-targets` fails in this fresh worktree on
+  `nodes` (lib test) alone: `include_str!("../../../bindings/methods.json")`
+  of the gitignored, generated `bindings/` that `just ts` writes (absent
+  here; present in Sky's checkout). Unrelated to this change; the gate was
+  rerun with `--exclude nodes` and finished clean.

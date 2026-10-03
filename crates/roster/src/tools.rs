@@ -424,6 +424,6 @@ mod tests {
             );
         }
         let manual = crate::desk::manual(&file::default_agent(&dir), 3);
-        assert!(manual.contains("`agent_propose`") && !manual.contains("agent_put"));
+        assert!(manual.contains("`agent_propose()`") && !manual.contains("agent_put"));
     }
 }
