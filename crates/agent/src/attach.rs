@@ -17,15 +17,15 @@ use serde::{Deserialize, Serialize};
 pub const PROMPT: &str = "**Attachments.** A user message may begin with lines \
 `[attached <kind> <id> \"<title>\" · <details>]` (older messages: `[doc <id> \"<title>\"]`, the same thing \
 for notes and knowledge). Each is a reference the user attached to that message — none of its content is in \
-your context yet. When the request concerns it, fetch what you need with the tool for its kind, and read big \
-things in pieces:\n\n\
+your context yet. When the request concerns it, fetch what you need with the tool for its kind (every tool below \
+is a python runtime function: `r = await doc_read(...)`), and read big things in pieces:\n\n\
 | kind | first look | then |\n\
 |---|---|---|\n\
 | note, knowledge | `doc_read(<id>)` outline | `doc_read(<id>, format=\"markdown\", blocks=[…])`; edit with \
-`doc_insert`/`doc_replace`. `knowledge <id>@<commit>` is a past revision: `knowledge_get(\"<id>@<commit>\")`, read-only. |\n\
+`doc_insert()`/`doc_replace()`. `knowledge <id>@<commit>` is a past revision: `knowledge_get(\"<id>@<commit>\")`, read-only. |\n\
 | artifact | `artifact_read(<id>)` (header: name, kind, version, size; first 2000 lines or the rendered PDF/document) | \
-`offset`/`limit`/`ranges`/`tail` like `read_file`; images come back as pictures; archives as a listing; a markdown \
-artifact names its document id for `doc_read`. |\n\
+`offset`/`limit`/`ranges`/`tail` like `read_file()`; images come back as pictures; archives as a listing; a markdown \
+artifact names its document id for `doc_read()`. |\n\
 | session | `session_read(<id>)` outline: numbered turns, one line each | `session_read(<id>, turns=[a,b])` for the \
 full text of those turns. |\n\
 | meeting | `meeting_read(meeting=<id>)` transcript (400 lines per call, `from_ms`/`to_ms`); `doc_read(\"meeting:<id>\")` \

@@ -43,17 +43,17 @@ impl Message<CallerOf> for Tasks {
 /// 69 TASKS): the board is primarily for observation; tasks are made in chat.
 pub const PROMPT: &str = "## Tasks\n\
 The board is for observation; work is filed from chat. When the user describes work to be done (a request \
-with pieces, \"we should…\", \"have ops…\", a plan), do not create tasks straight away: call `task_draft` with \
+with pieces, \"we should…\", \"have ops…\", a plan), do not create tasks straight away: call `task_draft()` with \
 the proposed tasks and wait for the user's approval, which arrives as their next message (`[app task-drafts …]` \
-naming a draft id and a choice). Then `task_create` with `state: backlog` for \"add to backlog\", `state: todo` \
+naming a draft id and a choice). Then `task_create()` with `state: backlog` for \"add to backlog\", `state: todo` \
 for \"start now\" (the owner is woken and the work placed), nothing for \"discard\". Every task carries \
 `done_when`, its acceptance criteria: take them from the user when stated, otherwise draft one to three \
 checkable lines from the brief. A task created in `backlog` \
 runs nothing until it is started. When the user asks to start, pull back, drop, approve or send back a task, \
-use `task_move` (it refuses illegal moves and lists what is allowed from the task's state); a move to `done` \
+use `task_move()` (it refuses illegal moves and lists what is allowed from the task's state); a move to `done` \
 says why (`done_because`: criteria met, intent met, or follow-ups filed). Your own work on a \
-task is `task_checkout`; finishing it is `task_update` with a disposition; handing it to the agent whose \
-capabilities fit it better is `task_reassign`.";
+task is `task_checkout()`; finishing it is `task_update()` with a disposition; handing it to the agent whose \
+capabilities fit it better is `task_reassign()`.";
 
 /// Register the ten tools on `reg`.
 pub async fn register(reg: &ActorRef<ToolRegistry>) {

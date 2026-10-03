@@ -15,11 +15,11 @@ use crate::engine::Scrape;
 
 /// Plugin prompt block: when to reach for scrape vs `read_url`. Runtime
 /// functions (08 §0.4): not direct tool definitions.
-pub const PROMPT: &str = "scrape_url, crawl and map_site are runtime functions \
-(pages = await crawl(url=\"…\")). scrape_url reads one page to markdown (rendered: true for JS-only pages). \
-crawl walks a site: limit, max_depth, include_paths/ignore_paths, sitemap (include|skip|only). \
-map_site lists a site's URLs without page bodies (sitemap + links; search=\"…\" ranks URLs by a query). \
-Prefer these over read_url when you need a site, not one page.";
+pub const PROMPT: &str = "`scrape_url()`, `crawl()` and `map_site()` are runtime functions (python: \
+`pages = await crawl(url=\"…\")`). `scrape_url()` reads one page to markdown (rendered: true for JS-only pages). \
+`crawl()` walks a site: limit, max_depth, include_paths/ignore_paths, sitemap (include|skip|only). \
+`map_site()` lists a site's URLs without page bodies (sitemap + links; search=\"…\" ranks URLs by a query). \
+Prefer these over `read_url()` when you need a site, not one page.";
 
 /// Register the three tools and the prompt block.
 pub async fn register(reg: &ActorRef<ToolRegistry>, scrape: Arc<Scrape>) {

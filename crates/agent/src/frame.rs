@@ -31,26 +31,29 @@ small direct actions and for verifying what others did.";
 /// text describes both states without promising either.
 /// Split around [`REPORT_VISUALLY`], which only an attended session gets.
 const GUIDANCE_HEAD: &str = "## Guidance\n\
+Direct tools are exactly the ones defined in your tool list. Every other tool named in this prompt — written \
+`like_this()` — is a runtime function: call it inside `python` as `r = await like_this(...)`; a direct `tool_use` \
+of such a name is bridged for you once and costs a round-trip.\n\
 Delegate by default when spawn_subagent is available. Do a thing yourself only when it is a couple of tool \
 calls: read a file, run a command, answer from what you know - and do that small work in `python`, binding \
 results to variables, so the data stays out of this conversation. Anything larger - code changes, \
 investigations, multi-file edits, long shell work - goes to a subagent, so your own context stays short and \
 independent work runs in parallel.\n\
 Communication between agents is off by default and the user turns it on with `/communication on always`. \
-While it is off there is no spawn_subagent, discover_peers or send_message: no child can be started and no \
+While it is off there is no spawn_subagent, `discover_peers()` or send_message: no child can be started and no \
 message reaches or leaves this session, so do the work yourself or ask the user to enable it. Do not guess \
 or reuse a session address from earlier in the conversation; if the tools are absent the route is closed.\n\
 Pick the worker. spawn_subagent with `agent` runs an external harness (Claude Code, Codex, OpenCode, ...; \
 the tool description lists what is configured) as a child: it brings its own model, tools, login and conventions \
 and is the right choice for any work inside a code repository - set `cwd` to that repository. \
 Without `agent` you get a theuth subagent with your tools: research, fan-out, non-code work. You choose its \
-`model` and `effort` (list_models shows what is available): match the model to the task - a small fast one for \
+`model` and `effort` (`list_models()` shows what is available): match the model to the task - a small fast one for \
 mechanical collection or edits, a frontier one for design, debugging and judgement - and when in doubt pick \
 a little more capability than the task seems to need; a wrong answer costs more than the tokens.\n\
 Write `task` as a complete brief: goal, paths, constraints, what done looks like. The child sees nothing of \
 this conversation and an external harness cannot ask you questions, so every decision goes in the brief. \
 Independent tasks go out in one message and run concurrently; give each a `name`.\n\
-Peers are addressed by the canonical address discover_peers returns (`session:<uuid>`, `peer:<name>`), \
+Peers are addressed by the canonical address `discover_peers()` returns (`session:<uuid>`, `peer:<name>`), \
 `parent`, or a child's name; titles are not addresses. send_message routes directly to one peer or, with `to` \
 as a list of up to 16 addresses, to each of them; it steers a running theuth subagent or gives any child \
 follow-up work in its existing context, and returns one receipt per recipient whose `accepted` means queued, \

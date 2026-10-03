@@ -104,7 +104,7 @@ Resulting system prompt fragment:
 Never run `git push`.
 
 ## Skills
-Call `load_skill` with a name to get full instructions.
+Call `load_skill()` (python: `await load_skill(name="…")`) to get a skill's full instructions.
 - commit: Write a conventional commit message for staged changes
 ```
 

@@ -324,7 +324,7 @@ mailbox; no new store.
 
 ```
 <knowledge>
-Concepts that may be relevant; call knowledge_get before relying on one:
+Concepts that may be relevant; read one with `await knowledge_get(id)` in python before relying on it:
 - `facts/theuth-toolchain` — theuth's Rust toolchain lives under rustup, not on PATH [fact]: cargo/rustc are at ~/.rustup/…
 - `procedures/signal-link` — Linking theuth as a Signal device [procedure]: run --link-signal, scan, then --headless
 </knowledge>

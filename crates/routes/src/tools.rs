@@ -15,7 +15,7 @@ use url::Url;
 use crate::{CallReply, Route, Routes};
 
 /// Plugin prompt block (44 §4): when to learn routes instead of scraping.
-pub const PROMPT: &str = "site_learn, site_routes, site_call are runtime functions. \
+pub const PROMPT: &str = "`site_learn()`, `site_routes()`, `site_call()` are runtime functions (python). \
 Listing pages (search, tables, feeds, dashboards) often render the first page as HTML: \
 site_learn(url=…) opens the page in your browser session and returns whatever JSON routes it called, \
 as URL templates with {holes}; if routes is empty, click one control that changes the list in place \

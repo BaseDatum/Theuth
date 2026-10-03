@@ -19,17 +19,17 @@ use agent::sensor::SensorRunner;
 /// The plugin's system-prompt block (34 §6, 33 §5.2). Static, so it never
 /// busts the system cache.
 pub const PROMPT: &str = "Schedules are markdown files in `~/.theuth/schedules/` (front matter `cron:` in local time, \
-`every:`, or `at:`; body = the prompt). Create or replace one with `schedule`; read them with `read_file`, \
-list with `list_dir`, cancel by deleting the file. An input wrapped in `<schedule name=… at=…>` is a timer \
+`every:`, or `at:`; body = the prompt). Create or replace one with `schedule()`; read them with `read_file()`, \
+list with `list_dir()`, cancel by deleting the file. An input wrapped in `<schedule name=… at=…>` is a timer \
 firing, not a person: nobody will answer a question, so act on the prompt as written. Your reply is \
 delivered to the user's chat channels when the run ends unless the wrapper says `quiet=\"true\"`, in which \
-case only `message_user` reaches them — stay silent when there is nothing to say. Use `knowledge_put` for \
+case only `message_user` reaches them — stay silent when there is nothing to say. Use `knowledge_put()` for \
 anything the next run should know; each run starts with a clear context. \
 A schedule with `until` (a shell command) or `max_runs` is a loop: it runs again until the command exits 0, \
-the cap is reached, or a run calls `schedule_done` — use `every: 0s` for \"keep at this until…\". The check's \
+the cap is reached, or a run calls `schedule_done()` — use `every: 0s` for \"keep at this until…\". The check's \
 last output arrives in `<until>`. Draft a loop with `enabled: false` and show the user the file; start it by \
 editing that line when they say so. `approvals: false` lets a run act without permission prompts: propose it \
-only when nobody will be there to answer, and say so. When asked how a loop is going, call `schedule_status`. \
+only when nobody will be there to answer, and say so. When asked how a loop is going, call `schedule_status()`. \
 Read `skills/loops.md` before designing one that supervises subagents.";
 
 /// The bundled `loops` skill (33 §5.3): the supervisor pattern, written to
