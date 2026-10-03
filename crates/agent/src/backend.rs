@@ -8,17 +8,25 @@ use std::pin::Pin;
 
 use cursor::chat_stream;
 use futures::{Stream, StreamExt};
+use genai::Headers;
 use genai::adapter::AdapterKind;
 use genai::chat::{ChatOptions, ChatRequest, ChatStreamEvent, StopReason, StreamEnd};
 use genai::resolver::{AuthData, Endpoint};
 use genai::{Client, ModelIden, ModelSpec, ServiceTarget};
-use models::Resolved;
+use models::{Protocol, Resolved};
 use runtime::SessionId;
 
+use crate::OpenRouterConfig;
 use crate::frame::Transport;
 use crate::loop_::ns;
 use crate::providers::Gateway;
 use crate::supervisor::Auth;
+
+/// Zen's one base URL (85 §0.2); the protocol picks the path under it.
+pub(crate) const ZEN_ENDPOINT: &str = "https://opencode.ai/zen/v1/";
+
+/// Appended when a user gateway answers Zen's `ModelProtocolUnsupported` (85 §0.8).
+const BUILTIN_HINT: &str = "built-in provider — set the `opencode` / `openrouter` secret instead";
 
 /// One model call's events, from genai or the Cursor backend.
 pub(crate) type EventStream = Pin<Box<dyn Stream<Item = Result<ChatStreamEvent, String>> + Send>>;
@@ -37,11 +45,114 @@ pub(crate) fn natural_stop(end: &StreamEnd) -> bool {
 /// ([`Backend::for_model`]), never per call.
 #[derive(Clone)]
 pub(crate) enum Backend {
-    /// A genai adapter, or a named OpenAI-compatible gateway (05 §3) looked
-    /// up in `auth` per call so `/provider add` is live.
+    /// A genai adapter, a protocol target theuth builds itself (Zen, 85 §0.2),
+    /// or a named OpenAI-compatible gateway (05 §3) — the last two looked up
+    /// in `auth` per call so `/provider add` and a new key are live.
     Genai { client: Client, auth: Auth },
     /// Cursor's AgentService (05 §2.5); the bearer is the login's token.
     Cursor { oauth: oauth::Store },
+}
+
+/// 85 §2: a genai `ServiceTarget` theuth chooses instead of letting genai
+/// infer it from the id — the kind decides the wire format and the URL path.
+#[derive(Clone, Debug)]
+pub(crate) struct ProtocolTarget {
+    pub kind: AdapterKind,
+    pub endpoint: Endpoint,
+    pub auth: AuthData,
+}
+
+/// The target for a Zen model (`opencode/*` with a key: kind from the catalog
+/// protocol, else the prefix guess) or a user gateway (kind OpenAI unless its
+/// `<data_dir>/models.json` entry names a `protocol`); `None` lets genai
+/// resolve the id itself.
+pub(crate) fn target_for(resolved: &Resolved, auth: &Auth) -> Option<ProtocolTarget> {
+    let provider = resolved.provider.as_deref()?;
+    let zen = (provider == "opencode")
+        .then(|| auth.opencode_key())
+        .flatten();
+    protocol_target(resolved, zen, auth.gateway(provider))
+}
+
+/// [`target_for`] with its key sources resolved (testable without a vault).
+fn protocol_target(
+    resolved: &Resolved,
+    zen_key: Option<String>,
+    gateway: Option<Gateway>,
+) -> Option<ProtocolTarget> {
+    // `Resolved.model` is a sibling for an unknown id (protocol stripped); the
+    // guess must read the real slug, not the sibling's.
+    let protocol = resolved.model.as_ref().and_then(|m| m.protocol);
+    if let Some(key) = zen_key {
+        return Some(ProtocolTarget {
+            kind: kind_of(protocol.unwrap_or_else(|| Protocol::guess(slug(resolved)))),
+            endpoint: Endpoint::from_static(ZEN_ENDPOINT),
+            auth: AuthData::Key(key),
+        });
+    }
+    let gw = gateway?;
+    Some(ProtocolTarget {
+        kind: protocol.map_or(AdapterKind::OpenAI, kind_of),
+        endpoint: Endpoint::from_owned(gw.base_url),
+        auth: AuthData::Key(gw.key),
+    })
+}
+
+/// 85 §0.2: protocol → the genai adapter that speaks it.
+fn kind_of(p: Protocol) -> AdapterKind {
+    match p {
+        Protocol::Anthropic => AdapterKind::Anthropic,
+        Protocol::OpenaiResponses => AdapterKind::OpenAIResp,
+        Protocol::Gemini => AdapterKind::Gemini,
+        Protocol::OpenaiChat => AdapterKind::OpenAI,
+    }
+}
+
+/// 85 §0.6: everything theuth adds to an OpenRouter request, in one place —
+/// `provider` preferences and the trailing `cache_control` breakpoint for
+/// Anthropic-backed models as body fields, header overrides as headers. genai
+/// merges `extra_body` into the chat payload and `extra_headers` into the
+/// request; the fork's dedicated OpenRouter options are a rename of these.
+fn openrouter_options(
+    resolved: &Resolved,
+    cfg: &OpenRouterConfig,
+    opts: ChatOptions,
+) -> ChatOptions {
+    if ns(&resolved.genai) != "open_router" {
+        return opts;
+    }
+    let mut body = serde_json::Map::new();
+    if let Some(p) = &cfg.provider {
+        body.insert("provider".into(), p.clone());
+    }
+    if resolved
+        .model
+        .as_ref()
+        .and_then(|m| m.canonical.as_deref())
+        .is_some_and(|c| c.starts_with("anthropic/"))
+    {
+        body.insert(
+            "cache_control".into(),
+            serde_json::json!({"type": "ephemeral"}),
+        );
+    }
+    let headers: Vec<(String, String)> = [
+        ("HTTP-Referer", &cfg.referer),
+        ("X-OpenRouter-Title", &cfg.title),
+    ]
+    .into_iter()
+    .filter_map(|(k, v)| v.as_ref().map(|v| (k.to_owned(), v.clone())))
+    .collect();
+    let opts = if body.is_empty() {
+        opts
+    } else {
+        opts.with_extra_body(serde_json::Value::Object(body))
+    };
+    if headers.is_empty() {
+        opts
+    } else {
+        opts.with_extra_headers(Headers::from(headers))
+    }
 }
 
 impl Backend {
@@ -60,21 +171,22 @@ impl Backend {
         }
     }
 
-    /// Cache marks for `resolved`'s provider (07 §3): Cursor places none,
-    /// gateways are OpenAI-compatible, genai adapters by resolved kind.
+    /// Cache marks for `resolved` (07 §3): Cursor places none; a protocol
+    /// target or gateway by the kind theuth chose (Zen Claude → Anthropic
+    /// breakpoints, Zen GPT → `prompt_cache_key`); genai adapters by resolved kind.
     pub(crate) async fn transport(&self, resolved: &Resolved) -> Result<Transport, String> {
         match self {
             Backend::Cursor { .. } => Ok(Transport::Plain),
-            Backend::Genai { auth, .. } if gateway(auth, resolved).is_some() => {
-                Ok(Transport::OpenAiLike)
-            }
-            Backend::Genai { client, .. } => {
-                let target = client
-                    .resolve_service_target(resolved.genai.as_str())
-                    .await
-                    .map_err(provider_error)?;
-                Ok(Transport::of(target.model.adapter_kind))
-            }
+            Backend::Genai { client, auth } => match target_for(resolved, auth) {
+                Some(t) => Ok(Transport::of(t.kind)),
+                None => {
+                    let target = client
+                        .resolve_service_target(resolved.genai.as_str())
+                        .await
+                        .map_err(provider_error)?;
+                    Ok(Transport::of(target.model.adapter_kind))
+                }
+            },
         }
     }
 
@@ -92,11 +204,11 @@ impl Backend {
                 chat_stream(&t.access_token, slug(resolved), req, &session.to_string()).await
             }
             Backend::Genai { client, auth } => {
-                let spec: ModelSpec = match gateway(auth, resolved) {
-                    Some(gw) => ServiceTarget {
-                        endpoint: Endpoint::from_owned(gw.base_url),
-                        auth: AuthData::Key(gw.key),
-                        model: ModelIden::new(AdapterKind::OpenAI, slug(resolved).to_owned()),
+                let spec: ModelSpec = match target_for(resolved, auth) {
+                    Some(t) => ServiceTarget {
+                        endpoint: t.endpoint,
+                        auth: t.auth,
+                        model: ModelIden::new(t.kind, slug(resolved).to_owned()),
                     }
                     .into(),
                     None => resolved.genai.as_str().into(),
@@ -107,6 +219,7 @@ impl Backend {
                 if let Some(m) = &resolved.model {
                     opts = opts.with_max_tokens(m.limit.output);
                 }
+                let opts = openrouter_options(resolved, &auth.openrouter, opts);
                 client
                     .exec_chat_stream(spec, req, Some(&opts))
                     .await
@@ -121,6 +234,8 @@ impl Backend {
 
 /// genai currently wraps AWS credential failures as unsupported features.
 /// Keep the provider detail, but explain the failed authentication and recovery.
+/// A Zen `ModelProtocolUnsupported` body means the model was reached through a
+/// user gateway that speaks only chat completions (85 §0.8): point at the built-in.
 fn provider_error(error: genai::Error) -> String {
     match error {
         genai::Error::AdapterNotSupported {
@@ -130,7 +245,14 @@ fn provider_error(error: genai::Error) -> String {
             "AWS authentication failed: {feature}\nCheck the selected AWS profile and credentials. \
              If it uses SSO, run `aws sso login --profile <profile>` (or `aws sso login` for the default profile), then retry."
         ),
-        error => error.to_string(),
+        error => {
+            let text = error.to_string();
+            if text.contains("ModelProtocolUnsupported") {
+                format!("{text}\n{BUILTIN_HINT}")
+            } else {
+                text
+            }
+        }
     }
 }
 
@@ -150,11 +272,6 @@ pub(crate) fn supports_images(resolved: &Resolved) -> bool {
     ns(&resolved.genai) != "cursor" && resolved.model.as_ref().is_some_and(|m| m.image)
 }
 
-/// The gateway `resolved`'s provider names, if any.
-fn gateway(auth: &Auth, resolved: &Resolved) -> Option<Gateway> {
-    resolved.provider.as_deref().and_then(|p| auth.gateway(p))
-}
-
 /// The model id without its `provider/` prefix.
 fn slug(resolved: &Resolved) -> &str {
     resolved
@@ -165,7 +282,231 @@ fn slug(resolved: &Resolved) -> &str {
 
 #[cfg(test)]
 mod tests {
+    use genai::resolver::ServiceTargetResolver;
+    use wiremock::matchers::method;
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
     use super::*;
+
+    fn catalog() -> models::Catalog {
+        models::Catalog::load(std::path::Path::new("/nonexistent"))
+    }
+
+    fn zen(resolved: &Resolved) -> ProtocolTarget {
+        protocol_target(resolved, Some("zk".into()), None).unwrap()
+    }
+
+    // 85 §0.2: the kind follows the catalog protocol; an unknown Zen id is guessed from its slug.
+    #[test]
+    fn zen_targets_follow_catalog_protocol_then_prefix_guess() {
+        let cat = catalog();
+        let r = |id: &str| cat.resolve(id, &|_| true).unwrap();
+        for (id, kind) in [
+            ("opencode/claude-opus-5-5", AdapterKind::Anthropic),
+            ("opencode/gpt-5.6-sol", AdapterKind::OpenAIResp),
+            ("opencode/gemini-3.5-flash", AdapterKind::Gemini),
+            ("opencode/deepseek-v4-pro", AdapterKind::OpenAI),
+            ("opencode/qwen3.8-flash", AdapterKind::Anthropic),
+            // Unknown ids: the sibling's protocol is stripped, the slug decides.
+            ("opencode/claude-opus-9", AdapterKind::Anthropic),
+            ("opencode/grok-9-fast", AdapterKind::OpenAIResp),
+            ("opencode/gemini-9", AdapterKind::Gemini),
+            ("opencode/kimi-k9", AdapterKind::OpenAI),
+        ] {
+            let t = zen(&r(id));
+            assert_eq!(t.kind, kind, "{id}");
+            assert_eq!(t.endpoint.base_url(), ZEN_ENDPOINT, "{id}");
+            assert!(matches!(&t.auth, AuthData::Key(k) if k == "zk"), "{id}");
+        }
+        // No key, no gateway: genai resolves the id itself.
+        assert!(protocol_target(&r("opencode/claude-opus-5-5"), None, None).is_none());
+        assert!(protocol_target(&r("anthropic/claude-opus-5-5"), None, None).is_none());
+        // A user gateway stays chat completions unless its entry names a protocol.
+        let gw = || {
+            Some(Gateway {
+                base_url: "https://gw.example/v1/".into(),
+                key: "gk".into(),
+            })
+        };
+        let mut g = r("rwx/claude-opus-5-5");
+        let t = protocol_target(&g, None, gw()).unwrap();
+        assert_eq!(t.kind, AdapterKind::OpenAI);
+        assert_eq!(t.endpoint.base_url(), "https://gw.example/v1/");
+        assert!(matches!(&t.auth, AuthData::Key(k) if k == "gk"));
+        g.model.as_mut().unwrap().protocol = Some(Protocol::Anthropic);
+        assert_eq!(
+            protocol_target(&g, None, gw()).unwrap().kind,
+            AdapterKind::Anthropic
+        );
+        // Transport follows the chosen kind, not the provider.
+        assert_eq!(
+            Transport::of(zen(&r("opencode/claude-opus-5-5")).kind),
+            Transport::Anthropic
+        );
+        assert_eq!(
+            Transport::of(zen(&r("opencode/gpt-5.6-sol")).kind),
+            Transport::OpenAiLike
+        );
+    }
+
+    /// A fake Zen that records every request; the body is irrelevant.
+    async fn fake() -> MockServer {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200).set_body_raw("", "text/event-stream"))
+            .mount(&server)
+            .await;
+        server
+    }
+
+    async fn send(client: &Client, spec: ModelSpec, opts: &ChatOptions) {
+        let req = ChatRequest::new(vec![genai::chat::ChatMessage::user("hi")]);
+        let r = client
+            .exec_chat_stream(spec, req, Some(opts))
+            .await
+            .unwrap();
+        let mut s = r.stream;
+        while let Some(ev) = s.next().await {
+            if ev.is_err() {
+                break;
+            }
+        }
+    }
+
+    // 85 §0.2: the path and auth header on the wire, per Zen protocol.
+    #[tokio::test]
+    async fn zen_wire_path_and_auth_header_per_protocol() {
+        let server = fake().await;
+        let base = format!("{}/zen/v1/", server.uri());
+        let client = Client::new().unwrap();
+        let cat = catalog();
+        let cases = [
+            (
+                "opencode/claude-opus-5-5",
+                "/zen/v1/messages",
+                "x-api-key",
+                "zk",
+            ),
+            (
+                "opencode/gpt-5.6-sol",
+                "/zen/v1/responses",
+                "authorization",
+                "Bearer zk",
+            ),
+            (
+                "opencode/gemini-3.5-flash",
+                "/zen/v1/models/gemini-3.5-flash:streamGenerateContent",
+                "x-goog-api-key",
+                "zk",
+            ),
+            (
+                "opencode/deepseek-v4-pro",
+                "/zen/v1/chat/completions",
+                "authorization",
+                "Bearer zk",
+            ),
+        ];
+        for (id, want_path, header, value) in cases {
+            let resolved = cat.resolve(id, &|_| true).unwrap();
+            let t = zen(&resolved);
+            let spec: ModelSpec = ServiceTarget {
+                endpoint: Endpoint::from_owned(base.clone()),
+                auth: t.auth,
+                model: ModelIden::new(t.kind, slug(&resolved).to_owned()),
+            }
+            .into();
+            send(&client, spec, &ChatOptions::default()).await;
+            let reqs = server.received_requests().await.unwrap();
+            let req = reqs.last().unwrap();
+            assert_eq!(req.url.path(), want_path, "{id}");
+            assert_eq!(
+                req.headers.get(header).map(|v| v.to_str().unwrap()),
+                Some(value),
+                "{id}"
+            );
+            let body: serde_json::Value = serde_json::from_slice(&req.body).unwrap();
+            if t.kind != AdapterKind::Gemini {
+                assert_eq!(body["model"], slug(&resolved), "{id}");
+            }
+        }
+    }
+
+    // 85 §0.6: provider preferences, the Anthropic trailing breakpoint and header
+    // overrides reach an OpenRouter chat request; nothing is added elsewhere.
+    #[tokio::test]
+    async fn openrouter_passthrough_lands_in_body_and_headers() {
+        let cat = catalog();
+        let claude = cat
+            .resolve("openrouter/anthropic/claude-opus-5.5", &|_| true)
+            .unwrap();
+        let cfg = OpenRouterConfig {
+            provider: Some(serde_json::json!({"order": ["anthropic"], "allow_fallbacks": false})),
+            referer: Some("https://example.test".into()),
+            title: Some("t".into()),
+        };
+        let opts = openrouter_options(&claude, &cfg, ChatOptions::default());
+        assert_eq!(
+            opts.extra_body,
+            Some(serde_json::json!({
+                "provider": {"order": ["anthropic"], "allow_fallbacks": false},
+                "cache_control": {"type": "ephemeral"}
+            }))
+        );
+        // Empty config on a non-Anthropic model: untouched.
+        let gpt = cat
+            .resolve("openrouter/openai/gpt-5.6-sol", &|_| true)
+            .unwrap();
+        let plain = openrouter_options(&gpt, &OpenRouterConfig::default(), ChatOptions::default());
+        assert!(plain.extra_body.is_none() && plain.extra_headers.is_none());
+        // Other providers never see the section.
+        let direct = cat.resolve("anthropic/claude-opus-5-5", &|_| true).unwrap();
+        assert!(
+            openrouter_options(&direct, &cfg, ChatOptions::default())
+                .extra_body
+                .is_none()
+        );
+
+        let server = fake().await;
+        let base = format!("{}/api/v1/", server.uri());
+        let client = Client::builder()
+            .with_service_target_resolver(ServiceTargetResolver::from_resolver_fn(
+                move |mut t: ServiceTarget| -> genai::resolver::Result<ServiceTarget> {
+                    t.endpoint = Endpoint::from_owned(base.clone());
+                    t.auth = AuthData::Key("ork".into());
+                    Ok(t)
+                },
+            ))
+            .build()
+            .unwrap();
+        send(&client, claude.genai.as_str().into(), &opts).await;
+        let reqs = server.received_requests().await.unwrap();
+        let req = reqs.last().unwrap();
+        assert_eq!(req.url.path(), "/api/v1/chat/completions");
+        let h = |k: &str| req.headers.get(k).map(|v| v.to_str().unwrap().to_owned());
+        assert_eq!(h("authorization").as_deref(), Some("Bearer ork"));
+        assert_eq!(h("http-referer").as_deref(), Some("https://example.test"));
+        assert_eq!(h("x-openrouter-title").as_deref(), Some("t"));
+        let body: serde_json::Value = serde_json::from_slice(&req.body).unwrap();
+        assert_eq!(body["model"], "anthropic/claude-opus-5.5");
+        assert_eq!(
+            body["cache_control"],
+            serde_json::json!({"type": "ephemeral"})
+        );
+        assert_eq!(body["provider"]["allow_fallbacks"], false);
+    }
+
+    // 85 §0.8: a Zen protocol refusal through a gateway names the built-in.
+    #[test]
+    fn zen_protocol_unsupported_gets_builtin_hint() {
+        let text = provider_error(genai::Error::Internal(
+            r#"{"type":"error","error":{"type":"ModelProtocolUnsupported","message":"use /messages"}}"#.into(),
+        ));
+        assert!(text.contains("ModelProtocolUnsupported") && text.ends_with(BUILTIN_HINT));
+        assert_eq!(
+            provider_error(genai::Error::Internal("boom".into())),
+            "Internal error: boom"
+        );
+    }
 
     #[test]
     fn aws_credential_failure_is_actionable_and_not_retried() {
@@ -196,6 +537,8 @@ mod tests {
             tool_call: true,
             image: true,
             reasoning_options: vec![],
+            protocol: None,
+            canonical: None,
         };
         let mut r = Resolved {
             id: "cursor/claude-sonnet-4-5".into(),

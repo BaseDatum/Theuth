@@ -139,21 +139,29 @@ impl Transport {
 
 /// The reasoning effort a main round runs with when the session has none
 /// (`agent.effort` unset, no `/effort`): `medium` for a catalog model with
-/// `reasoning: true` behind the Anthropic adapter or Bedrock's Anthropic
-/// publisher, whose API leaves thinking off unless the request asks for it
-/// (70 THINKING-TRACES). genai turns `Medium` into `thinking: adaptive` +
+/// `reasoning: true` that is an Anthropic model under any provider — the
+/// `anthropic` adapter, Bedrock's Anthropic publisher, a catalog `canonical`
+/// of `anthropic/*` (Zen, OpenRouter) or a `claude-*` slug (85 §0.4) — whose
+/// API leaves thinking off unless the request asks for it (70
+/// THINKING-TRACES). genai turns `Medium` into `thinking: adaptive` +
 /// `output_config.effort` where the model supports it, else an 8k budget.
 /// Every other provider keeps its own default; `off` still maps to `Zero`
 /// upstream, so this never overrides an explicit choice.
 pub fn default_effort(resolved: &models::Resolved) -> Option<ReasoningEffort> {
     let (ns, slug) = resolved.genai.split_once("::")?;
+    let model = resolved.model.as_ref()?;
     let anthropic = match ns {
         "anthropic" => true,
         "bedrock_sigv4" => slug.split('.').any(|seg| seg == "anthropic"),
-        _ => false,
+        _ => {
+            slug.starts_with("claude-")
+                || model
+                    .canonical
+                    .as_deref()
+                    .is_some_and(|c| c.starts_with("anthropic/"))
+        }
     };
-    (anthropic && resolved.model.as_ref().is_some_and(|m| m.reasoning))
-        .then_some(ReasoningEffort::Medium)
+    (anthropic && model.reasoning).then_some(ReasoningEffort::Medium)
 }
 
 /// One model call's input, borrowed from session state (design doc 07 §2.1).

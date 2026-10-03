@@ -6637,6 +6637,8 @@ mod tests {
                 tool_call: true,
                 image: true,
                 reasoning_options: vec![],
+                protocol: None,
+                canonical: None,
             }),
         };
         let vision_model: Arc<RwLock<Option<Resolved>>> = Arc::default();
@@ -7076,6 +7078,32 @@ mod tests {
         assert!(bad.returned.is_none() && bad.estimated.is_none());
         assert_eq!(bad.unknown_reason.as_deref(), Some("invalid amount"));
 
+        // 85 §0.5: Zen's injected `cost` arrives as ProviderReported and is
+        // the billed amount under provider `opencode`.
+        let zen = Resolved {
+            id: "opencode/claude-opus-5-5".into(),
+            genai: "opencode::claude-opus-5-5".into(),
+            provider: Some("opencode".into()),
+            model: None,
+        };
+        let billed = observe(
+            Some(&usage(cost(
+                0.01234567,
+                "USD",
+                UsageCostSource::ProviderReported,
+            ))),
+            &zen,
+        );
+        assert_eq!(billed.returned.as_ref().map(|m| m.nanos), Some(12_345_670));
+        assert!(billed.estimated.is_none());
+        assert_eq!(
+            (
+                billed.provider.as_deref(),
+                billed.requested_model.as_deref()
+            ),
+            (Some("opencode"), Some("opencode/claude-opus-5-5"))
+        );
+
         let none = observe(None, &model);
         assert_eq!(none.unknown_reason.as_deref(), Some("no usage returned"));
         assert!(none.input_tokens.is_none() && none.context_tokens.is_none());
@@ -7106,6 +7134,8 @@ mod tests {
                 tool_call: false,
                 image: false,
                 reasoning_options: vec![],
+                protocol: None,
+                canonical: None,
             }),
             ..model.clone()
         };

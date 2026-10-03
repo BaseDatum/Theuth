@@ -54,7 +54,7 @@ pub struct Model {
     #[serde(default)]
     pub reasoning_options: Vec<ReasoningOption>,
     /// Wire protocol the model speaks (85 §0.3, from models.dev `provider.npm`);
-    /// absent in user files → [`Model::protocol_or_guess`].
+    /// absent in user files → the dispatcher falls back to [`Protocol::guess`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub protocol: Option<Protocol>,
     /// Upstream vendor id (`anthropic/claude-opus-5-5`; models.dev `canonical_model_id`).
@@ -206,11 +206,6 @@ impl Model {
             accepted.push_str("no reasoning effort");
         }
         Err(format!("{} accepts {accepted}", self.id))
-    }
-
-    /// The catalog protocol, else [`Protocol::guess`] from the id (85 §0.3).
-    pub fn protocol_or_guess(&self) -> Protocol {
-        self.protocol.unwrap_or_else(|| Protocol::guess(&self.id))
     }
 }
 
@@ -750,11 +745,7 @@ mod tests {
             ("deepseek-v4", Protocol::OpenaiChat),
         ] {
             assert_eq!(Protocol::guess(slug), want, "{slug}");
-            assert_eq!(model(slug, 1).protocol_or_guess(), want, "{slug}");
         }
-        let mut m = model("deepseek-v4", 1);
-        m.protocol = Some(Protocol::Anthropic);
-        assert_eq!(m.protocol_or_guess(), Protocol::Anthropic);
         assert_eq!(zen_override("qwen3.7-max"), Some(Some(Protocol::Anthropic)));
         assert_eq!(
             zen_override("qwen3.7-plus"),

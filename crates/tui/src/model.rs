@@ -1497,7 +1497,7 @@ pub const COMMANDS: &[(&str, &str, &str)] = &[
     (
         "/provider",
         "[add|rm <name>]",
-        "OpenAI-compatible providers (add prompts for name, url, key)",
+        "providers: built-in opencode (Zen) / openrouter keyed via /secrets add; add prompts for an OpenAI-compatible gateway's name, url, key",
     ),
     (
         "/secrets",
@@ -4873,17 +4873,27 @@ impl Model {
                 }
             }
             UiEvent::Providers(list) => {
-                if list.is_empty() {
+                // 85 §0.9: the built-ins come first; a gateway list may be empty.
+                for p in &list {
+                    self.entries.push(Entry::Info(if p.builtin {
+                        format!(
+                            "{}  built-in  {} models  {}",
+                            p.name,
+                            p.models,
+                            if p.configured {
+                                "key set".to_owned()
+                            } else {
+                                format!("no key — /secrets add {}", p.name)
+                            }
+                        )
+                    } else {
+                        format!("{}  {}  {} models", p.name, p.base_url, p.models)
+                    }));
+                }
+                if list.iter().all(|p| p.builtin) {
                     self.entries.push(Entry::Info(
                         "no custom providers; /provider add to create one".into(),
                     ));
-                } else {
-                    for p in list {
-                        self.entries.push(Entry::Info(format!(
-                            "{}  {}  {} models",
-                            p.name, p.base_url, p.models
-                        )));
-                    }
                 }
             }
             UiEvent::ProviderAdded(p) => self.entries.push(Entry::Info(format!(

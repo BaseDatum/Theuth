@@ -43,6 +43,12 @@ pub fn validate_name(name: &str) -> Result<(), String> {
     {
         return Err("provider name: 1–32 chars, start with a-z, then a-z, 0-9, _ or -".into());
     }
+    // 85 §0.8: the built-in key providers are secrets, not gateways.
+    if matches!(name, "opencode" | "openrouter" | "open_router" | "zen") {
+        return Err(format!(
+            "`{name}` is a built-in provider — set the `opencode` / `openrouter` secret instead"
+        ));
+    }
     // Which namespaces have a backend (12 §6); the only other place that knows is backend.rs.
     if name == "cursor"
         || name.starts_with("genai_")
@@ -167,6 +173,8 @@ pub fn write_models(data_dir: &Path, name: &str, ids: &[String]) -> Result<(), S
                     tool_call: true,
                     image: false,
                     reasoning_options: Vec::new(),
+                    protocol: None,
+                    canonical: None,
                 },
             )
         })
@@ -290,6 +298,14 @@ mod tests {
         assert!(validate_name("cursor").is_err());
         assert!(validate_name("Anthropic").is_err());
         assert!(validate_name("1rwx").is_err());
+        // 85 §0.8: the built-ins are secrets, not gateways; the error points there.
+        for name in ["opencode", "openrouter", "open_router", "zen"] {
+            let err = validate_name(name).unwrap_err();
+            assert!(
+                err.contains("set the `opencode` / `openrouter` secret"),
+                "{name}: {err}"
+            );
+        }
         assert_eq!(
             normalize_url("https://api.ai.rwx.dev/v1").unwrap(),
             "https://api.ai.rwx.dev/v1/"
