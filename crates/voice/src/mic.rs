@@ -11,7 +11,7 @@
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
+use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
@@ -199,8 +199,8 @@ fn rechunk(stop: &AtomicBool, raw: &Receiver<Chunk>, tx: &Sender<Chunk>) {
                 let _ = tx.send(Err(e));
                 return;
             }
-            Err(RecvTimeoutError::Timeout) => continue,
-            Err(RecvTimeoutError::Disconnected) => return,
+            Err(mpsc::RecvTimeoutError::Timeout) => continue,
+            Err(mpsc::RecvTimeoutError::Disconnected) => return,
         };
         for s in pcm {
             buf.push(s);
