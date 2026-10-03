@@ -77,3 +77,11 @@ Resend semantics:
 - `Frame::request` strips reasoning before placing the Anthropic trailing cache mark, so a reasoning-only last assistant message does not receive a mark and then vanish; this ordering is not in the brief but is the only one that keeps the mark on a sent message.
 
 DONE THEUTH
+
+## Integration (orchestrator, 2026-10-03 23:40–00:10)
+
+- Fork `feat/90-thought-origin` merged to fork main `21643b71` (`--no-ff`, pushed); `docs/design/90-as-built-GENAI.md` is that worker's note.
+- `Cargo.lock`: the genai source sha only (`e85c58ab` → `21643b71`), written by hand and proved with `cargo metadata --locked`. `cargo update -p genai` was tried first and rewrote 26 unrelated dependency references in the lock (`wmi` → `windows-core 0.61.2` among them, undoing the Windows pin of 705aa1de), so it was discarded.
+- The one-line swap: `backend.rs` `thought_connection` now `opts.with_thought_connection(label)`.
+- Test constructors moved to the typed part: `genai::chat::ThoughtSignature::new(..)` in `context.rs`, `store.rs`, `vision.rs`, `frame.rs`; `thinking_tests.rs` builds tagged signatures with `sig_from(kind, connection, s)` — the rejection tests now seed an Anthropic-issued block over the `anthropic` connection (the only kind the builder replays, so the fake can refuse it), and a new `foreign_signature_is_not_replayed_at_all` seeds an `OpenAIResp`/`openai` one and shows a single request with no `thinking` block.
+- Gates on the merged tree: `cargo test -p agent --locked` 375 passed, clippy `-D warnings` clean, `cargo check --workspace --all-targets --locked` clean.

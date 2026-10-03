@@ -259,9 +259,10 @@ pub(crate) fn connection_label(resolved: &Resolved, kind: AdapterKind) -> String
         .unwrap_or_else(|| kind.as_lower_str().to_owned())
 }
 
-// 90 §1.4: becomes opts.with_thought_connection(label) when the genai fork's feat/90-thought-origin lands (integration wires it)
-fn thought_connection(opts: ChatOptions, _label: &str) -> ChatOptions {
-    opts
+/// 90 §1.4: tag the call with its connection, so the signatures it captures
+/// replay only to the same connection (genai `ThoughtSignature::readable_by`).
+fn thought_connection(opts: ChatOptions, label: &str) -> ChatOptions {
+    opts.with_thought_connection(label)
 }
 
 /// genai currently wraps AWS credential failures as unsupported features.

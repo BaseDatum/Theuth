@@ -638,7 +638,7 @@ mod tests {
 
     /// 90 §1.5: one assistant message holding every kind of part.
     fn sig(s: &str) -> ContentPart {
-        ContentPart::ThoughtSignature(s.into())
+        ContentPart::ThoughtSignature(genai::chat::ThoughtSignature::new(s))
     }
 
     #[test]

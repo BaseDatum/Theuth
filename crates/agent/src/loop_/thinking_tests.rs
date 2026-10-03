@@ -7,12 +7,13 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+use genai::adapter::AdapterKind;
 use genai::chat::{
-    ChatMessage, ChatStreamEvent, ContentPart, MessageContent, ReasoningEffort, StreamEnd, Tool,
-    ToolCall, ToolResponse,
+    ChatMessage, ChatStreamEvent, ContentPart, MessageContent, ReasoningEffort, StreamEnd,
+    ThoughtOrigin, ThoughtSignature, Tool, ToolCall, ToolResponse,
 };
 use genai::resolver::{AuthData, Endpoint, ServiceTargetResolver};
-use genai::{Client, ServiceTarget};
+use genai::{Client, ModelIden, ServiceTarget};
 use parking_lot::Mutex;
 use serde_json::{Value, json};
 use wiremock::matchers::{method, path};
@@ -245,19 +246,26 @@ impl Harness {
     }
 }
 
-/// 90 §1.5: the one construction of a thought signature in this module —
-/// integration swaps the payload type here alone.
-fn sig(s: &str) -> ContentPart {
-    ContentPart::ThoughtSignature(s.into())
+/// 90 §1.5: a stored signature of `kind` over connection `connection`, as a
+/// capture tags it. The loop labels an `anthropic/*` call `anthropic`
+/// ([`crate::backend::connection_label`]), so that pair is the one Anthropic
+/// replays; anything else is dropped before the request leaves (90 §1.2).
+fn sig_from(kind: AdapterKind, connection: &str, s: &str) -> ContentPart {
+    ContentPart::ThoughtSignature(
+        ThoughtSignature::new(s).with_origin(ThoughtOrigin::new(
+            &ModelIden::new(kind, "claude-x"),
+            Some(connection),
+        )),
+    )
 }
 
-/// A stored tool-use turn whose thinking block another provider signed:
-/// user, assistant (signature + reasoning + tool call), tool result.
-fn foreign_thinking_history() -> Vec<ChatMessage> {
+/// A stored tool-use turn — user, assistant (signature + reasoning + tool
+/// call), tool result — whose thinking block carries `signature`.
+fn thinking_history(signature: ContentPart) -> Vec<ChatMessage> {
     let mut history = user();
     history.push(ChatMessage::assistant(MessageContent::from_parts(vec![
-        sig("gAAAA-openai-fernet"),
-        ContentPart::ReasoningContent("summary from elsewhere".into()),
+        signature,
+        ContentPart::ReasoningContent("summary from before".into()),
         ContentPart::ToolCall(ToolCall {
             call_id: "toolu_1".into(),
             fn_name: "echo".into(),
@@ -267,6 +275,12 @@ fn foreign_thinking_history() -> Vec<ChatMessage> {
     ])));
     history.push(ChatMessage::from(ToolResponse::new("toolu_1", "ok")));
     history
+}
+
+/// The block Anthropic itself issued to this connection: replayed, then
+/// refused by the fake (a prefix-binding or verification failure).
+fn foreign_thinking_history() -> Vec<ChatMessage> {
+    thinking_history(sig_from(AdapterKind::Anthropic, "anthropic", "sig-refused"))
 }
 
 fn user() -> Vec<ChatMessage> {
@@ -466,6 +480,38 @@ async fn rejected_thinking_signature_is_resent_stripped() {
         (rows[0].3.as_str(), rows[1].3.as_str()),
         ("failed", "settled")
     );
+}
+
+/// 90 §1.2 end to end: a block another provider signed (an OpenAI Responses
+/// `encrypted_content` captured under the `openai` connection) never reaches
+/// Anthropic — one request, no `thinking` block, the tool round intact — so
+/// the resend path is not even needed.
+#[tokio::test]
+async fn foreign_signature_is_not_replayed_at_all() {
+    let h = Harness::new().await;
+    let fable = h.resolve("anthropic/claude-fable-5-1");
+    let history = thinking_history(sig_from(AdapterKind::OpenAIResp, "openai", "gAAAA-openai-fernet"));
+    let (end, rows) = h.turn_call(fable, &history).await;
+
+    match end {
+        Ok(_) => {}
+        Err(Abort::Model(e)) => panic!("call failed: {e}"),
+        Err(Abort::Partial { err, .. }) => panic!("partial: {err}"),
+        Err(_) => panic!("cancelled"),
+    }
+    let bodies = h.bodies.lock().clone();
+    assert_eq!(bodies.len(), 1, "{bodies:?}");
+    let msgs = bodies[0]["messages"].as_array().unwrap();
+    assert_eq!(msgs.len(), 3, "{}", bodies[0]);
+    let content = msgs[1]["content"].as_array().unwrap();
+    assert!(
+        content.iter().all(|c| c["type"] != "thinking"),
+        "{}",
+        bodies[0]
+    );
+    assert_eq!(content[0]["type"], "tool_use", "{}", bodies[0]);
+    assert_eq!(rows.len(), 1, "{rows:?}");
+    assert_eq!(rows[0].3, "settled");
 }
 
 /// 90 §1.5: a second rejection is the deterministic error it is today — two
