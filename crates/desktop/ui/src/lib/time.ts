@@ -45,12 +45,16 @@ export function withGaps<R extends { key: string }>(rows: R[], at: (row: R) => n
   return out
 }
 
-/** `text` without the leading `<time …/>` stamp line the engine prepends (74 §3). */
-export function stripTime(text: string): string {
+/** The engine's leading `<time now="2026-09-28 14:03 -07:00 (Mon)" …/>` line split off `text` (74 §3): `text` is the rest,
+ * never shown with the stamp; `at` (ms) is the stamp's instant, the hover time when the row has no `messages.at`. Every
+ * user text a frontend renders — live `TurnStarted`/`InputInjected`, history rows — passes through here. */
+export function splitTime(text: string): { text: string; at?: number } {
   const t = text.trimStart()
-  if (!t.startsWith('<time ')) return text
+  if (!t.startsWith('<time ')) return { text }
   const end = t.indexOf('/>')
-  if (end < 0) return text
+  if (end < 0) return { text }
   const rest = t.slice(end + 2)
-  return rest.startsWith('\n') ? rest.slice(1) : rest
+  const now = /^<time now="(\d{4}-\d{2}-\d{2}) (\d{2}:\d{2}) ([+-]\d{2}:\d{2})/.exec(t)
+  const at = now ? Date.parse(`${now[1]}T${now[2]}${now[3]}`) : NaN
+  return { text: rest.startsWith('\n') ? rest.slice(1) : rest, ...(Number.isNaN(at) ? {} : { at }) }
 }
