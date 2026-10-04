@@ -4,7 +4,7 @@
 // against a terminal `t --serve` without the shell.
 
 import { invoke } from '@tauri-apps/api/core'
-import { type UnlistenFn, listen } from '@tauri-apps/api/event'
+import { type UnlistenFn, emitTo, listen } from '@tauri-apps/api/event'
 import { getCurrentWindow } from '@tauri-apps/api/window'
 
 /** `launch::Connection`: what the webview needs to open the WebSocket. */
@@ -116,13 +116,18 @@ export type PointState =
   | { state: 'locked'; t0: number }
   | { state: 'sending'; t0: number }
   | { state: 'replying' }
-/** One pointer sample in logical global points, `t_ms` from the press. */
-export type PointSample = { t_ms: number; x: number; y: number }
+/** One pointer sample in logical global points, `t_ms` from the press; `pen` = drawn (false while the mouse button is up in `mouse` mode). */
+export type PointSample = { t_ms: number; x: number; y: number; pen: boolean }
 export type PointStart = { at_ms: number; locked: boolean; color_hint: string | null }
-export type PointSamples = { display_index: number; pts: [number, number][] }
+/** A tick's new points, local to one display; the batch shares one pen state. */
+export type PointSamples = { display_index: number; pts: [number, number][]; pen: boolean }
 export type PointStop = { samples: PointSample[]; duration_ms: number; reason: 'release' | 'tap' }
 export type PointCancel = { reason: 'esc' | 'short' | 'double-tap-missed' | 'cancel'; hint: string | null }
 export type PointRefused = { reason: string }
+/** When the trail is drawn: the whole hold, or only while the left mouse button is held (the overlay then takes the clicks). */
+export type Annotate = 'always' | 'mouse'
+/** Settings › Voice key → the island: show the panel to drag it (`on`), hide it again, or forget the saved spot (`reset`). */
+export type VoiceKeyPlace = { on: boolean; reset?: boolean }
 
 /** Register `chord` as the voice key (`""` unregisters); rejects with a string and keeps the old chord when it cannot be taken. */
 export const voiceKeyBind = (chord: string): Promise<void> =>
@@ -136,6 +141,9 @@ export const pointState = (): Promise<PointState> =>
 /** A standing refusal (`'meeting'` while one records) answered to the next press; `null` clears it. */
 export const pointRefuse = (reason: string | null): Promise<void> =>
   isTauri() ? invoke<void>('point_refuse', { reason }) : Promise.resolve()
+/** The trail mode (Settings › Voice key); the main webview sends it after `voice_key_bind` and on every change. */
+export const pointConfigure = (annotate: Annotate): Promise<void> =>
+  isTauri() ? invoke<void>('point_configure', { annotate }) : Promise.resolve()
 /** Create a missing `overlay-<n>` per monitor; the labels. */
 export const overlayEnsure = (): Promise<string[]> =>
   isTauri() ? invoke<string[]>('overlay_ensure') : Promise.resolve([])
@@ -145,3 +153,8 @@ export const onPointSamples = (cb: (p: PointSamples) => void) => on<PointSamples
 export const onPointStop = (cb: (p: PointStop) => void) => on<PointStop>('point:stop', cb)
 export const onPointCancel = (cb: (p: PointCancel) => void) => on<PointCancel>('point:cancel', cb)
 export const onPointRefused = (cb: (p: PointRefused) => void) => on<PointRefused>('point:refused', cb)
+export const voiceKeyPlace = (p: VoiceKeyPlace): Promise<void> => (isTauri() ? emitTo('island', 'voice-key:place', p) : Promise.resolve())
+export const onVoiceKeyPlace = (cb: (p: VoiceKeyPlace) => void) => on<VoiceKeyPlace>('voice-key:place', cb)
+/** The island left `placing` (Done, or a gesture started): Settings' button flips back. */
+export const voiceKeyPlaced = (): Promise<void> => (isTauri() ? emitTo('main', 'voice-key:placed', {}) : Promise.resolve())
+export const onVoiceKeyPlaced = (cb: () => void) => on<Record<string, never>>('voice-key:placed', cb)

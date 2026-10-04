@@ -31,6 +31,8 @@ type MeetingSettings = Saved & {
   setHidden(hidden: boolean): void
   setHotkey(kind: 'ptt' | 'eye', chord: string): void
   setPosition(key: string, pos: [number, number]): void
+  /** Forget the saved spot for `key`: the next `island_place` uses the notch default. */
+  clearPosition(key: string): void
   setSize(key: string, size: [number, number]): void
   setModel(model: string | null): void
   setSplit(split: number): void
@@ -59,6 +61,10 @@ export const useMeetingSettings = create<MeetingSettings>()((set, get) => {
     setHidden: (hidden) => save({ hidden }),
     setHotkey: (kind, chord) => save({ [kind]: chord }),
     setPosition: (key, pos) => save({ positions: { ...get().positions, [key]: pos } }),
+    clearPosition: (key) => {
+      const { [key]: _gone, ...positions } = get().positions
+      save({ positions })
+    },
     setSize: (key, size) => save({ sizes: { ...get().sizes, [key]: size } }),
     setModel: (model) => save({ model }),
     setSplit: (split) => save({ split }),
