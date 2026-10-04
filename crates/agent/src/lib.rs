@@ -1729,6 +1729,7 @@ pub enum AgentEvent {
         /// Turn.
         turn: TurnId,
         /// Milliseconds spent thinking.
+        #[cfg_attr(feature = "ts", ts(type = "number"))]
         ms: u64,
     },
     /// The model has begun emitting a tool call (name known, arguments still
