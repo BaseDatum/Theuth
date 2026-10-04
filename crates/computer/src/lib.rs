@@ -145,6 +145,7 @@ pub struct ScreenContextReq {
     /// Trail colour as `#rrggbb`; unparsable falls back to theuth's green.
     pub color: String,
     /// Press-to-release duration.
+    #[cfg_attr(feature = "ts", ts(type = "number"))]
     pub since_ms: u64,
     /// Read the accessibility tree (AND-ed with config and the TCC grant).
     pub accessibility: bool,
