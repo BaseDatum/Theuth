@@ -89,7 +89,15 @@ export type Entry = { id: string; context?: ContextEntry; at?: number } & (
       /** Opener seq of the turn this reply belongs to. */
       turn?: number;
     }
-  | { kind: "reasoning"; text: string; done: boolean }
+  | {
+      kind: "reasoning";
+      text: string;
+      done: boolean;
+      /** 91: ms the model thought; shown as "Thought 9s" once `done`. */
+      ms?: number;
+      /** Client clock of the first delta: the fallback `ms` when the engine sends no `ReasoningDone`. */
+      startedAt?: number;
+    }
   | {
       kind: "tool";
       callId: string;
@@ -329,7 +337,7 @@ export const createSessions = (): SessionsApi =>
         let dropped = 0;
         for (const e of events) {
           if (e.type === "Lagged") dropped += e.count;
-          else changed = route(draft, e, { sent }) || changed;
+          else changed = route(draft, e, { sent, now: Date.now() }) || changed;
         }
         if (changed || dropped)
           set({

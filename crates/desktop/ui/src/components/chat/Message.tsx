@@ -39,7 +39,7 @@ function body(entry: Entry, session: string, readOnly?: boolean) {
     case 'assistant':
       return <MessageAssistant id={entry.id} text={entry.text} open={entry.open} session={session} turn={entry.turn} context={entry.context} at={entry.at} readOnly={readOnly} />
     case 'reasoning':
-      return <MessageReasoning text={entry.text} done={entry.done} />
+      return <MessageReasoning text={entry.text} done={entry.done} ms={entry.ms} />
     case 'tool':
       return <MessageTool tool={entry} session={session} readOnly={readOnly} />
     case 'peer':

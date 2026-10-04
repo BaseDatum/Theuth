@@ -12,7 +12,7 @@ import codemapEvents from '@/components/codemap/__fixtures__/events.json'
 const S = 'sess'
 const T = 'turn'
 const usage: Usage = { prompt: 10, completion: 5, cached: 0 }
-const ctx = (): Ctx => ({ sent: new Set() })
+const ctx = (now = 0): Ctx => ({ sent: new Set(), now })
 /** A settled, editable `Loaded` at revision `rev` without paging fields. */
 const loaded = (rev = '1'): Omit<LoadedPage, 'history' | 'first_seq' | 'more'> => ({
   running: false,
@@ -81,6 +81,28 @@ test('reasoning deltas stream into one entry that closes when the answer starts'
   expect(u.entries[3]).toMatchObject({ kind: 'reasoning', text: 'More.', done: false })
   // A reload rebuilds the same collapsed block from the stored row.
   expect(fromHistory({ role: 'reasoning', text: 'Let me think.', turn: 1 })).toMatchObject([{ kind: 'reasoning', text: 'Let me think.', done: true }])
+})
+
+test('ReasoningDone closes the block with the engine time; without it the client clock fills in (91)', () => {
+  const open = run([
+    { type: 'TurnStarted', session: S, turn: T, text: 'hi', model: 'm', turn_seq: 1 },
+    { type: 'ReasoningDelta', session: S, turn: T, text: 'Let me ' },
+    { type: 'ReasoningDelta', session: S, turn: T, text: 'think.' },
+  ], ctx(1000))
+  expect(open.entries[1]).toMatchObject({ kind: 'reasoning', done: false, startedAt: 1000 })
+  // The engine's measurement wins and survives the text that follows.
+  const done = apply(open, { type: 'ReasoningDone', session: S, turn: T, ms: 9000 }, ctx(10_400))
+  expect(done.entries[1]).toMatchObject({ kind: 'reasoning', done: true, ms: 9000 })
+  expect(done.entries[1]).not.toHaveProperty('startedAt')
+  const text = apply(done, { type: 'TextDelta', session: S, turn: T, text: 'Red.' }, ctx(20_000))
+  expect(text.entries[1]).toMatchObject({ kind: 'reasoning', done: true, ms: 9000 })
+  expect(text.entries.map((e) => e.kind)).toEqual(['user', 'reasoning', 'assistant'])
+  // Fallback: an older engine / a harness never sends ReasoningDone.
+  const fell = apply(open, { type: 'TextDelta', session: S, turn: T, text: 'Red.' }, ctx(10_400))
+  expect(fell.entries[1]).toMatchObject({ kind: 'reasoning', done: true, ms: 9400 })
+  // Stored rows carry the engine's time; rows from before 91 have none.
+  expect(fromHistory({ role: 'reasoning', text: 't', turn: 1, thinking_ms: 9000 })).toMatchObject([{ kind: 'reasoning', done: true, ms: 9000 }])
+  expect(fromHistory({ role: 'reasoning', text: 't', turn: 1 })[0]).not.toHaveProperty('ms', expect.anything())
 })
 
 test('tool-only turns omit whitespace assistant rows', () => {

@@ -1,5 +1,5 @@
 import { expect, test } from 'vitest'
-import { formatAt, gapLabel, splitTime, withGaps } from './time'
+import { fmtThought, formatAt, gapLabel, splitTime, withGaps } from './time'
 
 // Local wall-clock instants, so the expectations hold in any zone.
 const at = (y: number, mo: number, d: number, h: number, mi: number) => new Date(y, mo - 1, d, h, mi).getTime()
@@ -57,4 +57,18 @@ test('withGaps: a divider before each row an hour past the last timed row; untim
     'e',
   ])
   expect(withGaps([], () => undefined, now)).toEqual([])
+})
+
+test('fmtThought: nothing under a second, seconds, minutes, hours (91)', () => {
+  expect(fmtThought(0)).toBeUndefined()
+  expect(fmtThought(999)).toBeUndefined()
+  expect(fmtThought(1000)).toBe('1s')
+  expect(fmtThought(9400)).toBe('9s')
+  expect(fmtThought(9600)).toBe('10s')
+  expect(fmtThought(59_400)).toBe('59s')
+  expect(fmtThought(59_600)).toBe('1m')
+  expect(fmtThought(72_000)).toBe('1m 12s')
+  expect(fmtThought(120_000)).toBe('2m')
+  expect(fmtThought(3_600_000)).toBe('1h')
+  expect(fmtThought(3_720_000)).toBe('1h 2m')
 })
