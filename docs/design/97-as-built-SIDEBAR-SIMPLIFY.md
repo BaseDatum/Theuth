@@ -115,3 +115,119 @@ tsc EXIT=0
 - The SSR smoke covers: active trigger per pathname, trigger count, presence of the `@container` and `hidden @min-[20rem]:inline` / `hidden @min-[40rem]:inline` class strings, `title` attributes. It does not render CSS, so the container-query fold (labels hidden under 20 rem / 40 rem) is asserted only as emitted class names — Tailwind 4.3 is expected to compile `@min-[20rem]:inline` to `@container (width >= 20rem)`; this was not inspected in the built CSS.
 - `Tabs` root `@container` sizing in each host (the 300 px artifacts/knowledge rails should fold the library labels; the full-width Skills/Secrets/Tools/Notes/Meetings columns should show them) is by layout reasoning, not measurement.
 - `routeTree.gen.ts` diff was inspected (only the `/library` route added); the redirect itself was not navigated.
+
+## Revision 2 — the tabs are the title bar (Sky's review, 2026-10-04 evening)
+
+Branch `feat/97b-section-band` on top of local main `ead30467`. Desktop/mobile UI only (`crates/desktop/ui`); no Rust, no route changes, no Tauri CLI.
+
+### Sky's review (2026-10-04 20:48, verbatim intent)
+
+"It's not exactly right. The tabs should be consistent, and at the top the whole time. There is no need for a title bar, because the tab IS the title. If a view has tabs of its own (Meetings), those tabs go BELOW the main set of tabs, not above. The way the tabs look on Notes, Meetings, Skills etc. is how they should look on Knowledge and Artifacts too — nested tabs inside the Knowledge/Artifacts rail make no sense. Consistent, high-quality UX: icons only on mobile, full-width tabs on desktop/iPad. Any controls for the view go below the tabs — on Agents the tree/list picker and Hire an agent go below the tabs, not above. No title bar. Order, top to bottom: tabs · the tab's own sub-tabs / controls / buttons that used to sit in the title bar · content."
+
+His three answers: (1) the section tabs stay on top on EVERY page of the section, detail pages included — each page's own header (back · title · actions) moves to the row under the tabs; pop-out windows stay tab-free. (2) Artifacts/Knowledge: the view controls (Refresh / Sync · History) go at the top of the list rail beside the filter box; the viewer keeps its own header row. (3) AgentsView keeps its count as muted text ("12 agents") on the left of the controls row.
+
+### Target layout — every page of a section, when not in a pop-out window
+
+    [ SectionBand  52 px — sidebar toggle + search (only when the sidebar is collapsed or on mobile), then the section's tabs filling the width; macOS drag region + traffic-light inset as before ]
+    [ SectionRow   44 px — the page's own things: back chevron · title (detail pages) · sub-tabs · filters · buttons ]
+    [ content ]
+
+### Shared pieces (`components/nav/`)
+
+- `SectionBand.tsx` (replaces `SectionTabs.tsx`, deleted with its test): the 52 px `<header>` every page header had (`data-tauri-drag-region`, `pl-20` inset when the sidebar is closed on the Mac, `SearchTrigger` + "Show sidebar" when `!sidebar.open || sidebar.isMobile`), then Radix `Tabs` (`value={tabOf(group, pathname) ?? ''}`, `onValueChange` → `navigate`) whose `TabsList` is `variant="line"`, `w-full gap-0 rounded-none bg-transparent p-0` and full band height; every `TabsTrigger` is `h-full flex-1 rounded-none` (equal widths), icon + `<span className="hidden md:inline">` label (icons only under 768 px), `title` + `aria-label`, `text-fg-tertiary hover:text-foreground`, active `text-foreground` with the 2 px `after:` underline moved to `after:bottom-0` so it sits on the band's border. Returns `null` when `isPopout()`. No container queries.
+- `SectionRow.tsx`: `<div className="flex h-11 shrink-0 items-center gap-1 border-b border-border-subtle px-3">` with optional `back` (`Button asChild ghost icon-sm` → `Link`, `aria-label`, caller's `className`, e.g. `md:hidden`), optional `title` in `<h2 className="min-w-0 flex-1 truncate text-sm font-semibold">`, then `children`. `back.to` is the `Tab` literal union, so `Link` type-checks without a cast.
+- `lib/nav.ts`: `groupOf(pathname): Group | null` (tested in `lib/nav.test.ts`).
+- `components/editor/DocumentPage.tsx` `Frame` (:26-69): `band?: boolean` (default `true`). `isPopout()` → exactly the old 52 px header (drag region, `md:hidden` back, title, actions, trailing `SearchTrigger md:hidden`). Otherwise `{band && <SectionBand group={groupOf(backTo) ?? 'library'} />}` then `<SectionRow back={{ to: backTo, label: backLabel, className: 'md:hidden' }}>{title}{actions}</SectionRow>`. `DocumentPage` forwards `band`. Knowledge's `Document.tsx:133` sets `band: false` in its shared `frame` object (its Explorer renders the band); `NotePage` and `TaskDetail` use the default.
+
+### Page by page (final file:line)
+
+Agents group (`group="agents"`):
+1. `components/agents/AgentsView.tsx:37-71` — band; row = `{n} agent(s)` muted count (left, `agents.data &&`), `flex-1` spacer, the org/list `ToggleGroup` (`hidden sm:flex`), "Hire an agent". Header, `SectionTabs`, `useSidebar`-for-header, `isMacDesktop`, `SearchTrigger`, `PanelLeft` gone (`useSidebar` stays for `isMobile` on the body).
+2. `components/agents/AgentDetail.tsx:57-66` — band; row = back to `/agents` (always visible, as before) + "Agents › {title}". The avatar/status/actions block and the overview · charter · runtime · runs · tasks `Tabs` follow unchanged.
+3. `components/agents/HireWizard.tsx:100-122` — band; row = back to `/agents` + "Agents › Hire an agent" + "Start over".
+4. `components/tasks/Board.tsx:122-189` — band; the filters row IS the `SectionRow` (`className="h-auto min-h-11 flex-wrap gap-2 py-1"`: the four selects + Cancelled switch wrap on a phone, so the row grows past 44 px — noted in place), "New task" `ml-auto`; `<Queue />` after the row, before the board.
+5. `components/tasks/TaskDetail.tsx` — untouched; its three `Frame`s render band + row (the caller's `<h2 … flex-1>` sits in the row as before).
+6. `components/routines/RoutinesView.tsx:30-37` — band; row = "New routine" `ml-auto`.
+7. `components/routines/RoutineDetail.tsx:101-122` — band; row = back to `/routines` (always visible), title `name ?? 'New routine'`, Run now / Test / enable switch. The sections nav (`$section`) was already inside the content column under `Facts`; it stays there.
+
+Library group (`group="library"`):
+8. `components/artifacts/Explorer.tsx:58-136` — `<article flex-col>` → band → `<div className="flex min-h-0 flex-1 overflow-hidden">` [rail][main]. Rail: `SectionRow` (:67) = filter `Input` (`flex-1`) + Refresh; kind/session chips `px-3 py-2`; list. `useSidebar`/`isMacDesktop`/`SearchTrigger`/`PanelLeft` gone.
+9. `components/artifacts/Viewer.tsx:476-502` — local `Frame`: `isPopout()` → the old 52 px drag header; else `SectionRow` with the `md:hidden` back, title block, actions (lines up with the rail's row).
+10. `components/knowledge/Explorer.tsx:63-108` — same shape; rail's first row is `SearchBox` (`components/knowledge/SearchBox.tsx:37-56`, new `actions` prop, now a 44 px `SectionRow`) with Sync · History · New as `icon-sm` tooltip buttons beside the input; the "3+ characters" hint renders under the row.
+11. `components/notes/NotesList.tsx:40-45` — band; row = "New note" `ml-auto`. `NotePage` gets band + row through `Frame`.
+12. `components/meeting/MeetingList.tsx:37-61` `MeetingHeader({ title, back?, children })`: `isPopout()` → exactly the old 52 px drag header (no toggle, no inset); else band + `SectionRow back? title`. `MeetingTabs` (:72-86) is now a `flex` `<span>` so the two sub-tab links sit in the row's `h2`. `SectionTabs` lines removed from `MeetingList` and `briefs/BriefSearch.tsx` (search box got `py-2`). `routes/meetings.new.tsx:13` passes `back` (chevron to `/meetings`); `ControlCenter` unchanged (text title + state/oracle/Session).
+13. `components/library/Page.tsx:9-28` — `Page({ back?, actions?, children })`: band + `SectionRow back={back && { ...back, className: 'md:hidden' }}` with actions in an `ml-auto` wrapper. `title` and `tabs` props dropped; `Skills.tsx:55`, `Secrets.tsx:50`, `Tools.tsx:137` updated.
+
+Untouched: `Hud.tsx`, `AttentionView.tsx`, chat, talk, settings, vm/pty/island/codemap, `AppSidebar.tsx` (comment now says `SectionBand`), `routes/*` except the one-prop change in `meetings.new.tsx` (no routing change, no `routeTree.gen.ts` regeneration).
+
+### Tests
+- `lib/nav.test.ts`: `groupOf`.
+- `components/nav/SectionBand.test.ts` (router, `useSidebar`, `SearchTrigger`, `isPopout` mocked): trigger count per group, active trigger follows the pathname, three `hidden md:inline` label spans, no `@container`, `isPopout() === true` → `''`, the toggle renders on `isMobile` or `!open` and not otherwise.
+- `components/nav/SectionRow.test.ts`: back link + aria-label + `md:hidden`, `h2` title, order back < title < children; nothing but children without `back`/`title`.
+- `SectionTabs.test.ts` deleted with the component.
+
+### Gates (verbatim)
+1. `just ts-desktop`:
+```
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 36 filtered out; finished in 2.85s
+EXIT=0
+```
+2. `cd crates/desktop/ui && bun run check`:
+```
+$ tsc -b --noEmit
+tsc EXIT=0
+```
+3. `CI=1 bun run test < /dev/null 2>&1 | grep -E 'Test Files|Tests |FAIL'` (two full runs, load average 50-65 on Sky's Mac):
+```
+ FAIL  src/lib/mobile-zoom.test.ts > no <Input>/<Textarea> shrinks its font below 16 px on mobile (iOS focus zoom)
+ Test Files  1 failed | 134 passed (135)
+      Tests  1 failed | 757 passed (758)
+```
+(both runs identical; `pairing.test.ts` green.) The one red is `Error: Test timed out in 5000ms` — the test is a synchronous `readFileSync` scan of every `.tsx` under `src/` (incl. `rpc/bindings`) and exceeds vitest's 5 s default under this load; no `<Input>`/`<Textarea>` gained a `text-sm`/`text-xs` in this wave. Re-run alone:
+```
+ Test Files  1 passed (1)
+      Tests  1 passed (1)
+```
+4. `git grep -n 'SectionTabs' -- crates/desktop/ui/src` → no hits (exit 1). `git grep -n 'h-\[52px\]' -- crates/desktop/ui/src/components`:
+```
+crates/desktop/ui/src/components/artifacts/List.tsx:114:        <Skeleton className="h-[52px] w-full" />
+crates/desktop/ui/src/components/artifacts/List.tsx:115:        <Skeleton className="h-[52px] w-full" />
+crates/desktop/ui/src/components/artifacts/List.tsx:116:        <Skeleton className="h-[52px] w-2/3" />
+crates/desktop/ui/src/components/artifacts/List.tsx:196:  const box = 'h-[52px] w-10 shrink-0 overflow-hidden rounded-md bg-layer-2'
+crates/desktop/ui/src/components/artifacts/Viewer.tsx:482:          className="flex h-[52px] shrink-0 items-center gap-1 border-b border-border-subtle px-3"
+crates/desktop/ui/src/components/chat/Header.tsx:325:    <header ref={ref} data-header-tier={tier} className="relative flex h-[52px] shrink-0 overflow-hidden">
+crates/desktop/ui/src/components/chat/SearchSession.tsx:89:      <header data-tauri-drag-region={mac || undefined} className={cn('flex h-[52px] shrink-0 items-center gap-2 px-3', !open && mac && 'pl-20')}>
+crates/desktop/ui/src/components/editor/DocumentPage.tsx:46:          className="flex h-[52px] shrink-0 items-center gap-1 border-b border-border-subtle px-3"
+crates/desktop/ui/src/components/hud/AttentionView.tsx:19:        className={cn('flex h-[52px] shrink-0 items-center gap-1 border-b border-border-subtle px-3', !sidebar.open && mac && 'pl-20')}
+crates/desktop/ui/src/components/hud/Hud.tsx:50:        className={cn('flex h-[52px] shrink-0 items-center gap-1 border-b border-border-subtle px-3', !sidebar.open && mac && 'pl-20')}
+crates/desktop/ui/src/components/meeting/MeetingList.tsx:44:      <header data-tauri-drag-region={mac || undefined} className="flex h-[52px] shrink-0 items-center gap-1 px-3">
+crates/desktop/ui/src/components/nav/SectionBand.test.ts:28:  expect(html).toContain('h-[52px]')
+crates/desktop/ui/src/components/nav/SectionBand.tsx:26:      className={cn('flex h-[52px] shrink-0 items-center gap-1 border-b border-border-subtle px-3', !sidebar.open && mac && 'pl-20')}
+crates/desktop/ui/src/components/share/GuestApp.tsx:207:      <header className="flex h-[52px] shrink-0 items-center gap-3 border-b border-border-subtle px-4">
+crates/desktop/ui/src/components/sidebar/AppSidebar.tsx:169:        className={cn('h-[52px] flex-row items-center', isMacDesktop() && 'pl-20')}
+```
+Why each remains: `artifacts/List.tsx` — list-row skeletons and thumbnail box, not a header. `Viewer.tsx:482`, `DocumentPage.tsx:46`, `MeetingList.tsx:44` — the popped-window headers (`isPopout()` branch), unchanged by design. `chat/Header.tsx`, `chat/SearchSession.tsx` — the chat (`c.$session`) headers, out of scope. `hud/Hud.tsx`, `hud/AttentionView.tsx` — not in a section, keep their title bars. `share/GuestApp.tsx` — the guest (share) shell, out of scope. `nav/SectionBand.tsx` + its test — the band itself. `sidebar/AppSidebar.tsx` — the sidebar header the band aligns with.
+5. `git status --short` → empty. `git log --oneline main..HEAD`:
+```
+447f4a61 refactor(desktop): Library section pages lose their title bars for SectionBand + SectionRow (97b)
+ad625871 refactor(desktop): Agents section pages lose their title bars for SectionBand + SectionRow (97b)
+974a8bea refactor(desktop): Frame renders band + row in the shell, the old drag bar when popped (97b)
+ef9ef710 feat(desktop): SectionBand + SectionRow replace SectionTabs; groupOf in lib/nav (97b)
+```
+(+ this note's `docs(design)` commit.)
+
+### Deviations
+- **`Frame` passes `title` as a `SectionRow` child, not its `title` prop.** Every `Frame` caller (`TaskDetail`, `NotePage`, knowledge `Document`, the artifact `Viewer`) already supplies its own styled node (`<h2 … flex-1>`, `<code … flex-1>`, the note's `TitleInput` fragment); wrapping it in the row's `h2` would nest headings. `SectionRow.title` is used where the title is plain content (`AgentDetail`, `HireWizard`, `RoutineDetail`, `MeetingHeader`).
+- **`band: false` in knowledge `Document`'s shared `frame` object** rather than only on the `DocumentPage` at :200: the same object feeds the four `Frame` fallbacks (draft, error, loading, read-only), all of which render inside the Explorer that already has the band.
+- **`groupOf(backTo) ?? 'library'`** instead of `groupOf(backTo)!`: the project avoids non-null assertions; `backTo` is a `Tab` literal so the fallback is unreachable.
+- **Knowledge rail actions are icon-only** (Sync · History · New as `icon-sm` with tooltips + `aria-label`): a 300 px rail cannot hold the input and three labelled buttons. The brief's Sky answer (2) names Sync · History; New (the old header's third button) stays beside them rather than disappearing.
+- **Tasks filters row is `h-auto min-h-11 flex-wrap`** (allowed by the brief): four selects + the Cancelled switch + New task do not fit 44 px on a phone.
+- **`MeetingHeader` grew a `back?: boolean`** and `routes/meetings.new.tsx` passes it (the brief's "if cheaply" clause) — a one-prop change in a route file's component body; no route definition touched, `routeTree.gen.ts` unchanged.
+- **`BriefSearch` search box** got `py-2` (was `pb-2`): the row above it now has a bottom border, so the input needed top breathing room.
+- **`TabsList` height override** is `group-data-[orientation=horizontal]/tabs:h-full` (not bare `h-full`): the primitive sets `h-9` under that same variant, and a bare `h-full` would lose on specificity.
+- During a scratch run of the zoom test I ran `git stash`/`git stash pop` on a clean tree; `pop` applied Sky's pre-existing `stash@{0}` ("pre-51-merge…") and conflicted. Restored with `git checkout HEAD -- crates/desktop/ui/bun.lock docs/design/00-architecture.md`; the stash entry is intact (`git stash list` still shows it), no untracked file was overwritten ("already exists, no checkout").
+
+### Not verified
+- No Tauri run, no phone/relay run, no browser screenshot: band/row alignment (52 + 44 px), the underline sitting on the band border, equal-width triggers, the icon-only fold under 768 px, the macOS drag region on the band, and the popped windows' unchanged headers were not exercised in a live window.
+- The SSR smokes cover: `SectionBand` trigger count, active trigger per pathname, the three `hidden md:inline` label spans, `h-[52px]`, the absence of `@container`, `null` when popped, the toggle under `isMobile`/`!open`; `SectionRow` back/title/children order. They do not render CSS — the Tailwind class-merge outcomes (`h-full` on the list, `after:bottom-0`, `rounded-none`, `text-fg-tertiary` over the primitive's `text-foreground/60` / `dark:text-muted-foreground`) are by reading `components/ui/tabs.tsx`, not measurement.
+- `mobile-zoom.test.ts` red in both full runs is a 5 s timeout of a synchronous source scan at load average 50-65; it passes alone. Not re-timed on an idle machine.

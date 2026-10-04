@@ -1,16 +1,14 @@
 import { Link, useNavigate } from '@tanstack/react-router'
-import { FlaskConical, PanelLeft, Play, Plus } from 'lucide-react'
+import { FlaskConical, Play, Plus } from 'lucide-react'
 import { toast } from 'sonner'
 import { Pulse } from '@/components/chat/Pulse'
-import { SectionTabs } from '@/components/nav/SectionTabs'
+import { SectionBand } from '@/components/nav/SectionBand'
+import { SectionRow } from '@/components/nav/SectionRow'
 import { Empty, useAction } from '@/components/settings/shared'
-import { SearchTrigger } from '@/components/sidebar/SearchTrigger'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
-import { useSidebar } from '@/components/ui/sidebar'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Switch } from '@/components/ui/switch'
-import { isMacDesktop } from '@/lib/hotkeys'
 import { useApi } from '@/lib/rpc'
 import { cn } from '@/lib/utils'
 import type { ScheduleInfo } from '@/rpc/bindings/ScheduleInfo'
@@ -25,32 +23,18 @@ const RESULT_CLASS: Record<Result, string> = {
 
 /** `/routines`: every schedule file as a row (paperclip's RoutineList shape) — open a row, run it, pause it, or start a new one. */
 export function RoutinesView() {
-  const sidebar = useSidebar()
-  const mac = isMacDesktop()
   const routines = useRoutines()
   const list = routines.data && sortRoutines(routines.data)
   return (
     <article className="flex min-h-0 min-w-0 flex-1 flex-col">
-      <header
-        data-tauri-drag-region={mac || undefined}
-        className={cn('flex h-[52px] shrink-0 items-center gap-1 border-b border-border-subtle px-3', !sidebar.open && mac && 'pl-20')}
-      >
-        {(!sidebar.open || sidebar.isMobile) && (
-          <div className="flex shrink-0 items-center">
-            <SearchTrigger />
-            <Button variant="ghost" size="icon-sm" aria-label="Show sidebar" onClick={sidebar.toggleSidebar}>
-              <PanelLeft />
-            </Button>
-          </div>
-        )}
-        <h2 className="min-w-0 flex-1 truncate text-sm font-semibold">Routines</h2>
-        <Button asChild size="sm">
+      <SectionBand group="agents" />
+      <SectionRow>
+        <Button asChild size="sm" className="ml-auto">
           <Link to="/routines/new">
             <Plus /> New routine
           </Link>
         </Button>
-      </header>
-      <SectionTabs group="agents" />
+      </SectionRow>
       <main className="min-h-0 flex-1 overflow-y-auto">
         <div className="mx-auto w-full max-w-[880px] p-4">
           {routines.isPending && (

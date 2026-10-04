@@ -125,10 +125,12 @@ function Doc({
       initial={missing ?? undefined}
     />
   )
+  // 97b: the knowledge Explorer renders the Library band above both panes; the document only adds its row.
   const frame = {
     backTo: '/knowledge' as const,
     backLabel: 'Back to knowledge',
     title: <code className="min-w-0 flex-1 truncate font-mono text-xs text-fg-tertiary">{id}</code>,
+    band: false,
   }
 
   if (draft !== undefined) {

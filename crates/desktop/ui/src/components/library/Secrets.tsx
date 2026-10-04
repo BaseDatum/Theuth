@@ -48,8 +48,6 @@ export function Secrets() {
 
   return (
     <Page
-      title="Secrets"
-      tabs="library"
       actions={list.data && <span className="px-2 text-[13px] text-fg-tertiary">key: {list.data.key_store}</span>}
     >
       <Column>

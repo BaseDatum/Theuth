@@ -12,6 +12,7 @@ import { MermaidView } from '@/components/artifacts/MermaidView'
 import { ArtifactMenu, PopoutButton, RevealButton, TEXT_KINDS, metaLine, saveAs, useText } from '@/components/chat/ArtifactCard'
 import { Img, useFileUrl } from '@/components/chat/Attachments'
 import { fenced, plugins, shikiTheme } from '@/components/chat/MessageAssistant'
+import { SectionRow } from '@/components/nav/SectionRow'
 import { SearchReturn } from '@/components/sidebar/SearchReturn'
 import { SearchTrigger } from '@/components/sidebar/SearchTrigger'
 import { Button } from '@/components/ui/button'
@@ -468,23 +469,33 @@ export function Viewer() {
   )
 }
 
-/** 52 px bar (title left, actions right) over the pane body. Under `md` a back chevron returns to the list and Search sits at the trailing edge (49 §5.1). */
+/**
+ * The bar over the pane body. In the shell (97b) it is the 44 px `SectionRow` under the Explorer's band, lined up with
+ * the rail's filter row; a popped window keeps the 52 px drag bar (back chevron and search trigger under `md`, 49 §5.1).
+ */
 function Frame({ title, actions, children }: { title?: ReactNode; actions?: ReactNode; children: ReactNode }) {
   return (
     <article className="flex min-h-0 min-w-0 flex-1 flex-col">
-      <header
-        data-tauri-drag-region={isMacDesktop() || undefined}
-        className="flex h-[52px] shrink-0 items-center gap-1 border-b border-border-subtle px-3"
-      >
-        <Button asChild variant="ghost" size="icon-sm" className="md:hidden" aria-label="Back to artifacts">
-          <Link to="/artifacts">
-            <ChevronLeft />
-          </Link>
-        </Button>
-        {title ?? <span className="flex-1" />}
-        {actions}
-        <SearchTrigger className="md:hidden" />
-      </header>
+      {isPopout() ? (
+        <header
+          data-tauri-drag-region={isMacDesktop() || undefined}
+          className="flex h-[52px] shrink-0 items-center gap-1 border-b border-border-subtle px-3"
+        >
+          <Button asChild variant="ghost" size="icon-sm" className="md:hidden" aria-label="Back to artifacts">
+            <Link to="/artifacts">
+              <ChevronLeft />
+            </Link>
+          </Button>
+          {title ?? <span className="flex-1" />}
+          {actions}
+          <SearchTrigger className="md:hidden" />
+        </header>
+      ) : (
+        <SectionRow back={{ to: '/artifacts', label: 'Back to artifacts', className: 'md:hidden' }}>
+          {title ?? <span className="flex-1" />}
+          {actions}
+        </SectionRow>
+      )}
       {children}
     </article>
   )

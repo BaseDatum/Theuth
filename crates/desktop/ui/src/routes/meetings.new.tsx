@@ -10,7 +10,7 @@ function New() {
   const canRecord = useCanRecord()
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      <MeetingHeader title="Start meeting" />
+      <MeetingHeader title="Start meeting" back />
       <div className="min-h-0 flex-1 overflow-y-auto">
         {canRecord ? (
           <StartForm />

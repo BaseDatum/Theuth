@@ -3,6 +3,8 @@ import { ChevronLeft } from 'lucide-react'
 import { type ComponentType, type ReactNode, type Ref } from 'react'
 import { Editor as BlockEditor } from '@/components/editor/Editor'
 import type { LiveDocument } from '@/components/editor/useDocument'
+import { SectionBand } from '@/components/nav/SectionBand'
+import { SectionRow } from '@/components/nav/SectionRow'
 import { ParticipantStrip } from '@/components/share/ParticipantStrip'
 import { ShareAction } from '@/components/share/ShareDialog'
 import { SearchTrigger } from '@/components/sidebar/SearchTrigger'
@@ -11,40 +13,56 @@ import { Skeleton } from '@/components/ui/skeleton'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { useIsMobile } from '@/hooks/use-mobile'
 import { isMacDesktop } from '@/lib/hotkeys'
+import { groupOf } from '@/lib/nav'
+import { isPopout } from '@/lib/popout'
 import { cn } from 'cn'
 
 /**
- * 52 px bar (`title` left, `actions` right) over the pane body. Under `md` a back chevron returns to `backTo`
- * and a search trigger trails the actions (49 §5.1). Knowledge and notes share it (59 §7.3).
+ * The bars over a document pane's body. In the shell (97b): the section's `SectionBand` (unless the page's explorer
+ * already renders it, `band={false}`), then a `SectionRow` with the phone-only back chevron, `title` and `actions`.
+ * In a popped window: the 52 px drag bar of 49 §5.1 (back chevron and search trigger under `md`), unchanged.
+ * `title` is the caller's own node (an `h2`, a `code`, a title input) and sits in the row as-is.
  */
 export function Frame({
   backTo,
   backLabel,
   title,
   actions,
+  band = true,
   children,
 }: {
   backTo: '/knowledge' | '/notes' | '/tasks' | '/agents'
   backLabel: string
   title: ReactNode
   actions?: ReactNode
+  band?: boolean
   children: ReactNode
 }) {
   return (
     <article className="flex min-h-0 min-w-0 flex-1 flex-col">
-      <header
-        data-tauri-drag-region={isMacDesktop() || undefined}
-        className="flex h-[52px] shrink-0 items-center gap-1 border-b border-border-subtle px-3"
-      >
-        <Button asChild variant="ghost" size="icon-sm" className="md:hidden" aria-label={backLabel}>
-          <Link to={backTo}>
-            <ChevronLeft />
-          </Link>
-        </Button>
-        {title}
-        {actions}
-        <SearchTrigger className="md:hidden" />
-      </header>
+      {isPopout() ? (
+        <header
+          data-tauri-drag-region={isMacDesktop() || undefined}
+          className="flex h-[52px] shrink-0 items-center gap-1 border-b border-border-subtle px-3"
+        >
+          <Button asChild variant="ghost" size="icon-sm" className="md:hidden" aria-label={backLabel}>
+            <Link to={backTo}>
+              <ChevronLeft />
+            </Link>
+          </Button>
+          {title}
+          {actions}
+          <SearchTrigger className="md:hidden" />
+        </header>
+      ) : (
+        <>
+          {band && <SectionBand group={groupOf(backTo) ?? 'library'} />}
+          <SectionRow back={{ to: backTo, label: backLabel, className: 'md:hidden' }}>
+            {title}
+            {actions}
+          </SectionRow>
+        </>
+      )}
       {children}
     </article>
   )
@@ -131,6 +149,7 @@ export function DocumentPage({
   backLabel: string
   title: ReactNode
   actions?: ReactNode
+  band?: boolean
 }) {
   const mobile = useIsMobile()
   // 59 §8.2, §8.5: who is here, and the owner's "Share…" — every document page alike.

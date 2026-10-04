@@ -1,27 +1,25 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { Outlet, getRouteApi, useParams } from '@tanstack/react-router'
-import { History as HistoryIcon, PanelLeft, Plus, RefreshCw } from 'lucide-react'
-import { useEffect, useState } from 'react'
+import { History as HistoryIcon, Plus, RefreshCw } from 'lucide-react'
+import { type ReactNode, useEffect, useState } from 'react'
 import { toast } from 'sonner'
 import { History } from '@/components/knowledge/History'
 import { NewDocDialog } from '@/components/knowledge/NewDocDialog'
 import { SearchBox } from '@/components/knowledge/SearchBox'
 import { Tree } from '@/components/knowledge/Tree'
-import { SectionTabs } from '@/components/nav/SectionTabs'
-import { SearchTrigger } from '@/components/sidebar/SearchTrigger'
+import { SectionBand } from '@/components/nav/SectionBand'
 import { Button } from '@/components/ui/button'
-import { useSidebar } from '@/components/ui/sidebar'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
-import { isMacDesktop } from '@/lib/hotkeys'
 import { queryKeys, useApi } from '@/lib/rpc'
 import { cn } from 'cn'
 
 const route = getRouteApi('/knowledge')
 
 /**
- * `/knowledge`: 300 px rail (search, tree) and the document outlet (25 §8). Under `md` one pane at a time: the tree at
- * `/knowledge`, the document at `/knowledge/$id`. `?history=true` at bare `/knowledge` opens the whole bundle's History
- * sheet (the composer's `/knowledge history`); with a document open the same flag belongs to that document's sheet.
+ * `/knowledge`: the Library band over two panes (97b) — a 300 px rail (search + Sync · History · New, then the tree)
+ * and the document outlet (25 §8). Under `md` one pane at a time: the tree at `/knowledge`, the document at
+ * `/knowledge/$id`. `?history=true` at bare `/knowledge` opens the whole bundle's History sheet (the composer's
+ * `/knowledge history`); with a document open the same flag belongs to that document's sheet.
  */
 export function Explorer() {
   const api = useApi()
@@ -29,7 +27,6 @@ export function Explorer() {
   const navigate = route.useNavigate()
   const { q, history } = route.useSearch()
   const { _splat: active } = useParams({ strict: false })
-  const sidebar = useSidebar()
   const [creating, setCreating] = useState(false)
   // The rail's History opens beside whatever document is shown; only the bare route's `?history=true` is URL state.
   const [historyLocal, setHistoryLocal] = useState(false)
@@ -53,80 +50,59 @@ export function Explorer() {
     return () => window.removeEventListener('focus', onFocus)
   }, [runSync])
 
-  const mac = isMacDesktop()
+  const action = (label: string, icon: ReactNode, onClick: () => void, disabled = false) => (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <Button variant="ghost" size="icon-sm" aria-label={label} disabled={disabled} onClick={onClick}>
+          {icon}
+        </Button>
+      </TooltipTrigger>
+      <TooltipContent>{label}</TooltipContent>
+    </Tooltip>
+  )
   return (
-    <div className="flex min-h-0 flex-1 overflow-hidden">
-      <aside
-        className={cn(
-          'w-full shrink-0 flex-col border-r border-border-subtle md:flex md:w-[300px]',
-          active ? 'hidden' : 'flex',
-        )}
-      >
-        <header
-          data-tauri-drag-region={mac || undefined}
+    <article className="flex min-h-0 min-w-0 flex-1 flex-col">
+      <SectionBand group="library" />
+      <div className="flex min-h-0 flex-1 overflow-hidden">
+        <aside
           className={cn(
-            'flex h-[52px] shrink-0 items-center gap-1 px-3',
-            !sidebar.open && mac && 'pl-20',
+            'w-full shrink-0 flex-col border-r border-border-subtle md:flex md:w-[300px]',
+            active ? 'hidden' : 'flex',
           )}
         >
-          {(!sidebar.open || sidebar.isMobile) && (
-            <>
-              <SearchTrigger />
-              <Button
-                variant="ghost"
-                size="icon-sm"
-                aria-label="Show sidebar"
-                onClick={sidebar.toggleSidebar}
-              >
-                <PanelLeft />
-              </Button>
-            </>
+          <SearchBox
+            initial={q ?? ''}
+            actions={
+              <>
+                {action(
+                  'Sync from disk',
+                  <RefreshCw className={sync.isPending ? 'animate-spin' : undefined} />,
+                  () =>
+                    sync.mutate(undefined, {
+                      onSuccess: (r) => toast(`Synced: ${r.added} added, ${r.updated} updated, ${r.removed} removed`),
+                      onError: (e) => toast.error(e.message),
+                    }),
+                  sync.isPending,
+                )}
+                {action('History', <HistoryIcon />, () => setHistoryOpen(true))}
+                {action('New document', <Plus />, () => setCreating(true))}
+              </>
+            }
+          >
+            <Tree active={active} />
+          </SearchBox>
+        </aside>
+        <main className={cn('min-w-0 flex-1 md:flex', active ? 'flex' : 'hidden')}>
+          {/* The `$` child also matches bare `/knowledge`, with an empty splat. */}
+          {!active ? (
+            <p className="m-auto text-sm text-fg-tertiary">Select a document</p>
+          ) : (
+            <Outlet />
           )}
-          <h2 className="flex-1 truncate text-sm font-semibold">Knowledge</h2>
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <Button
-                variant="ghost"
-                size="icon-sm"
-                aria-label="Sync"
-                disabled={sync.isPending}
-                onClick={() =>
-                  sync.mutate(undefined, {
-                    onSuccess: (r) =>
-                      toast(`Synced: ${r.added} added, ${r.updated} updated, ${r.removed} removed`),
-                    onError: (e) => toast.error(e.message),
-                  })
-                }
-              >
-                <RefreshCw className={sync.isPending ? 'animate-spin' : undefined} />
-              </Button>
-            </TooltipTrigger>
-            <TooltipContent>Sync from disk</TooltipContent>
-          </Tooltip>
-          <Button variant="ghost" size="sm" onClick={() => setHistoryOpen(true)}>
-            <HistoryIcon />
-            History
-          </Button>
-          <Button variant="ghost" size="sm" onClick={() => setCreating(true)}>
-            <Plus />
-            New
-          </Button>
-        </header>
-        <SectionTabs group="library" />
-        <SearchBox initial={q ?? ''}>
-          <Tree active={active} />
-        </SearchBox>
-      </aside>
-      <main className={cn('min-w-0 flex-1 md:flex', active ? 'flex' : 'hidden')}>
-        {/* The `$` child also matches bare `/knowledge`, with an empty splat. */}
-        {!active ? (
-          <p className="m-auto text-sm text-fg-tertiary">Select a document</p>
-        ) : (
-          <Outlet />
-        )}
-      </main>
+        </main>
+      </div>
       <NewDocDialog open={creating} onOpenChange={setCreating} />
       <History id={null} open={historyOpen} onOpenChange={setHistoryOpen} />
-    </div>
+    </article>
   )
 }
