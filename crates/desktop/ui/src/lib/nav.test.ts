@@ -1,5 +1,5 @@
 import { expect, test } from 'vitest'
-import { sectionOf, tabOf } from './nav'
+import { groupOf, sectionOf, tabOf } from './nav'
 
 test('tabOf matches the route exactly or as a prefix at a / boundary', () => {
   expect(tabOf('agents', '/agents')).toBe('/agents')
@@ -10,6 +10,17 @@ test('tabOf matches the route exactly or as a prefix at a / boundary', () => {
   expect(tabOf('library', '/meetingsx')).toBeNull()
   expect(tabOf('library', '/agents')).toBeNull()
   expect(tabOf('agents', '/artifacts')).toBeNull()
+})
+
+test('groupOf names the section a path belongs to', () => {
+  expect(groupOf('/agents')).toBe('agents')
+  expect(groupOf('/tasks/abc')).toBe('agents')
+  expect(groupOf('/routines/new')).toBe('agents')
+  expect(groupOf('/notes')).toBe('library')
+  expect(groupOf('/knowledge/a/b.md')).toBe('library')
+  expect(groupOf('/meetings/new')).toBe('library')
+  expect(groupOf('/c/abc')).toBeNull()
+  expect(groupOf('/settings/general')).toBeNull()
 })
 
 test('sectionOf lights the right sidebar row', () => {

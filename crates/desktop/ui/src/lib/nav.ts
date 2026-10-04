@@ -30,6 +30,10 @@ export const GROUPS: Record<Group, readonly { to: Tab; label: string; icon: Luci
 export const tabOf = (group: Group, pathname: string): string | null =>
   GROUPS[group].find((t) => pathname === t.to || pathname.startsWith(`${t.to}/`))?.to ?? null
 
+/** The group whose tab owns `pathname`; null outside both sections. */
+export const groupOf = (pathname: string): Group | null =>
+  tabOf('agents', pathname) ? 'agents' : tabOf('library', pathname) ? 'library' : null
+
 export type Section = 'home' | 'talk' | 'agents' | 'attention' | 'library' | 'meeting' | null
 
 /** Which sidebar row `pathname` lights up; null for chats, settings, and the rest. */
