@@ -136,6 +136,7 @@ export function Tools({ session }: { session: string | null }) {
   return (
     <Page
       title="Tools"
+      tabs="library"
       actions={
         <>
           <Button

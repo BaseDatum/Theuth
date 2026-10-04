@@ -1,6 +1,7 @@
 import { Link, getRouteApi } from '@tanstack/react-router'
 import { Blocks, Circle, PanelLeft, Play, Plus } from 'lucide-react'
 import { type MutableRefObject, useEffect, useRef, useState } from 'react'
+import { SectionTabs } from '@/components/nav/SectionTabs'
 import { ProjectIcon } from '@/components/sidebar/ProjectStyle'
 import { SearchTrigger } from '@/components/sidebar/SearchTrigger'
 import { Badge } from '@/components/ui/badge'
@@ -139,6 +140,7 @@ export function Board() {
           <Plus /> New task
         </Button>
       </header>
+      <SectionTabs group="agents" />
       <Queue />
       <div className="flex flex-wrap items-center gap-2 border-b border-border-subtle px-3 py-2">
         <Select value={project === '' ? ALL : `p:${project}`} onValueChange={(v) => set({ project: v === ALL ? '' : v.slice(2) })}>

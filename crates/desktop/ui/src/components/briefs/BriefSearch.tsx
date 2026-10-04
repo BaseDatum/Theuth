@@ -8,6 +8,7 @@ import { useEffect, useState } from 'react'
 import { BriefCard } from '@/components/briefs/BriefCard'
 import { BriefEditor } from '@/components/briefs/BriefEditor'
 import { MeetingHeader, MeetingTabs } from '@/components/meeting/MeetingList'
+import { SectionTabs } from '@/components/nav/SectionTabs'
 import { Empty, errorText, useAction } from '@/components/settings/shared'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -53,6 +54,7 @@ export function BriefSearch({ initial, focus }: { initial: string; focus: string
           <Plus className="size-3.5" /> New brief
         </Button>
       </MeetingHeader>
+      <SectionTabs group="library" />
       <div className="relative shrink-0 px-6 pb-2">
         <Search className="pointer-events-none absolute top-1/2 left-8 size-4 -translate-y-1/2 text-fg-tertiary" />
         <Input

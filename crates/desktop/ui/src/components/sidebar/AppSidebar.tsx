@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link, useNavigate, useRouterState } from '@tanstack/react-router'
-import { AudioLines, Bell, BookOpen, Bot, CalendarClock, FolderOpen, ListChecks, Lock, Megaphone, Mic, PanelLeft, Settings, Sparkles, SquarePen, StickyNote, Wrench } from 'lucide-react'
+import { AudioLines, Bell, Bot, Library, Megaphone, Mic, PanelLeft, Settings, SquarePen } from 'lucide-react'
 import { useEffect, useMemo, useState } from 'react'
 import { toast } from 'sonner'
 import { Mark } from '@/components/Mark'
@@ -21,11 +21,13 @@ import { BroadcastDialog, openBroadcastDialog } from '@/components/chat/Broadcas
 import { openNewChat } from '@/components/chat/NewChatPane'
 import { useSessionDrag } from '@/components/chat/Panes'
 import { AttentionBadge } from '@/components/hud/AttentionBadge'
+import { useCanRecord } from '@/components/meeting/MeetingList'
 import { settings } from '@/components/chat/slash'
 import { errorText } from '@/components/settings/shared'
 import { THEUTH } from '@/components/tasks/helpers'
 import { keys, useAgents } from '@/components/tasks/queries'
 import { isMacDesktop } from '@/lib/hotkeys'
+import { sectionOf } from '@/lib/nav'
 import { label } from '@/lib/chord'
 import { queryKeys, useApi } from '@/lib/rpc'
 import { subtrees } from '@/lib/session-tree'
@@ -42,24 +44,6 @@ import { SessionList } from './SessionList'
 
 /** Injected by vite `define` from tauri.conf.json. */
 declare const __APP_VERSION__: string
-
-/** Top rail after New chat: who works (agents), on what (tasks), when (routines). */
-const TOP = [
-  ['/agents', 'Agents', Bot],
-  ['/tasks', 'Tasks', ListChecks],
-  ['/routines', 'Routines', CalendarClock],
-] as const
-
-/** The Library group: what the harness knows, keeps, heard, can use, holds and reaches. Artifacts first (Sky, 2026-09-27): the most-opened entry, and this is its only nav entry. */
-const LIBRARY = [
-  ['/artifacts', 'Artifacts', FolderOpen],
-  ['/knowledge', 'Knowledge', BookOpen],
-  ['/notes', 'Notes', StickyNote],
-  ['/meetings', 'Meetings', Mic],
-  ['/skills', 'Skills', Sparkles],
-  ['/secrets', 'Secrets', Lock],
-  ['/tools', 'Tools', Wrench],
-] as const
 
 /**
  * One row per active roster agent (not proposed, not invalid), theuth first, whether or not its desk session exists
@@ -141,13 +125,20 @@ function DeskRow({
   )
 }
 
-/** ChatGPT's left rail: New chat, Knowledge, Artifacts, the chat list, Settings; Search sits in the header beside the toggle (49 §5.1). */
+/**
+ * ChatGPT's left rail: Chat, Talk, Agents, Attention, Library, Meeting, the desks, the chat list, Settings; Search sits in
+ * the header beside the toggle (49 §5.1). 97: Agents/Tasks/Routines and the seven Library pages are one row each; the
+ * page under it carries the tab row (`SectionTabs`), so the rail stays short.
+ */
 export function AppSidebar({ session }: { session: string | undefined }) {
   const navigate = useNavigate()
   const { isMobile, setOpenMobile, toggleSidebar } = useSidebar()
   // Phones: the sidebar is a sheet over the chat, so every tap that navigates (a chat, New chat,
   // Knowledge, Settings) also dismisses it. Selecting rows for deletion does not navigate.
   const href = useRouterState({ select: (s) => s.location.href })
+  const section = sectionOf(useRouterState({ select: (s) => s.location.pathname }))
+  // 97: the Meeting row starts a recording, which only this Mac's own daemon can do; elsewhere the row is noise.
+  const canRecord = useCanRecord()
   useEffect(() => {
     if (isMobile) setOpenMobile(false)
   }, [href, isMobile, setOpenMobile])
@@ -204,7 +195,7 @@ export function AppSidebar({ session }: { session: string | undefined }) {
       <SidebarContent ref={setScrollEl} className="gap-0 overflow-y-auto">
         <SidebarMenu className="px-1.5">
           <SidebarMenuItem>
-            <SidebarMenuButton asChild className="h-9 rounded-[10px] px-2.5 font-semibold tracking-[.08em]">
+            <SidebarMenuButton asChild isActive={section === 'home'} className="h-9 rounded-[10px] px-2.5 font-semibold tracking-[.08em]">
               <Link to="/" aria-label="theuth home">
                 <Mark /> THEUTH
               </Link>
@@ -214,19 +205,20 @@ export function AppSidebar({ session }: { session: string | undefined }) {
             <SidebarMenuButton asChild className="h-9 rounded-[10px] px-2.5">
               <Link
                 to="/"
+                aria-label="New chat"
                 {...dragNew}
                 onClick={(e) => {
                   e.preventDefault()
                   openNewChat(navigate)
                 }}
               >
-                <SquarePen /> New chat
+                <SquarePen /> Chat
                 <span className="ml-auto text-xs text-fg-tertiary">{label(newChat)}</span>
               </Link>
             </SidebarMenuButton>
           </SidebarMenuItem>
           <SidebarMenuItem>
-            <SidebarMenuButton asChild className="h-9 rounded-[10px] px-2.5">
+            <SidebarMenuButton asChild isActive={section === 'talk'} className="h-9 rounded-[10px] px-2.5">
               <Link
                 to="/"
                 aria-label={live ? 'Talk (running)' : 'Talk'}
@@ -246,26 +238,43 @@ export function AppSidebar({ session }: { session: string | undefined }) {
               </Link>
             </SidebarMenuButton>
           </SidebarMenuItem>
-          {TOP.map(([to, name, Icon]) => (
-            <SidebarMenuItem key={to}>
-              <SidebarMenuButton asChild className="h-9 rounded-[10px] px-2.5">
-                <Link to={to}>
-                  <Icon /> {name}
+          <SidebarMenuItem>
+            <SidebarMenuButton asChild isActive={section === 'agents'} className="h-9 rounded-[10px] px-2.5">
+              <Link to="/agents">
+                <Bot /> Agents
+              </Link>
+            </SidebarMenuButton>
+          </SidebarMenuItem>
+          <SidebarMenuItem>
+            <SidebarMenuButton asChild isActive={section === 'attention'} className="h-9 rounded-[10px] px-2.5">
+              <Link to="/attention">
+                <Bell /> Attention
+                <AttentionBadge />
+              </Link>
+            </SidebarMenuButton>
+          </SidebarMenuItem>
+          {/* Artifacts first (Sky, 2026-09-27): the most-opened Library entry; `/library` redirects there too. */}
+          <SidebarMenuItem>
+            <SidebarMenuButton asChild isActive={section === 'library'} className="h-9 rounded-[10px] px-2.5">
+              <Link to="/artifacts">
+                <Library /> Library
+              </Link>
+            </SidebarMenuButton>
+          </SidebarMenuItem>
+          {canRecord && (
+            <SidebarMenuItem>
+              <SidebarMenuButton asChild isActive={section === 'meeting'} className="h-9 rounded-[10px] px-2.5">
+                <Link to="/meetings/new">
+                  {/* The label is a span so the menu button's `[&>span:last-child]:truncate` (overflow hidden) hits it, not the icon wrapper whose dot overhangs. */}
+                  <span className="relative inline-flex">
+                    <Mic className="size-4" />
+                    <span className="absolute -top-0.5 -right-0.5 size-1.5 rounded-full bg-danger" aria-hidden />
+                  </span>
+                  <span>Meeting</span>
                 </Link>
               </SidebarMenuButton>
             </SidebarMenuItem>
-          ))}
-          <SidebarMenuItem><SidebarMenuButton asChild className="h-9 rounded-[10px] px-2.5"><Link to="/attention"><Bell /> Attention<AttentionBadge /></Link></SidebarMenuButton></SidebarMenuItem>
-          <SidebarGroupLabel className="mt-2">Library</SidebarGroupLabel>
-          {LIBRARY.map(([to, name, Icon]) => (
-            <SidebarMenuItem key={to}>
-              <SidebarMenuButton asChild className="h-9 rounded-[10px] px-2.5">
-                <Link to={to}>
-                  <Icon /> {name}
-                </Link>
-              </SidebarMenuButton>
-            </SidebarMenuItem>
-          ))}
+          )}
           <Desks active={session} />
         </SidebarMenu>
         <SessionList scrollEl={scrollEl} barEl={barEl} active={session} />
