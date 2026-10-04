@@ -1093,6 +1093,25 @@ function trackRow(
   }
 }
 
+/** 93: a child's streaming/activity events; each one beats the ancestors' rows for it (not `TurnFinished`: a finished row sits still). */
+const BEATS: Partial<Record<WireEvent["type"], true>> = {
+  TextDelta: true,
+  ReasoningDelta: true,
+  ReasoningDone: true,
+  ToolCallPending: true,
+  ToolCallStarted: true,
+  ToolCallProgress: true,
+  ToolCallFinished: true,
+  TurnStarted: true,
+};
+/** A row beats at most this often; a stream of deltas is one blink per quarter second. */
+const BEAT_MS = 250;
+
+/** The row stamped with the batch's clock, unless its last beat is younger than `BEAT_MS`. */
+function beat(row: AgentInfo, now: number): AgentInfo {
+  return row.beat !== undefined && now - row.beat < BEAT_MS ? row : { ...row, beat: now };
+}
+
 /**
  * Apply one event to a draft record of slices: the session's own slice, the
  * subtree rows of every ancestor that lists it (design doc 19 §3.3), and on
@@ -1153,15 +1172,16 @@ export function route(
   if (next !== cur) draft[e.session] = next;
   let changed = next !== cur;
   const track = trackRow(e);
-  if (track) {
+  const beats = BEATS[e.type] === true;
+  if (track || beats) {
     for (let id = cur.parent, direct = true; id; direct = false) {
       const s: SessionSlice | undefined = draft[id];
       const row = s?.children[e.session];
       if (!s || !row) break;
-      let up: SessionSlice = track.patch
-        ? { ...s, children: { ...s.children, [e.session]: track.patch(row) } }
-        : s;
-      if (direct && track.note) up = interject(up, track.note(row.name));
+      let next = track?.patch ? track.patch(row) : row;
+      if (beats) next = beat(next, ctx.now);
+      let up: SessionSlice = next !== row ? { ...s, children: { ...s.children, [e.session]: next } } : s;
+      if (direct && track?.note) up = interject(up, track.note(row.name));
       if (up !== s) {
         draft[id] = up;
         changed = true;

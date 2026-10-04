@@ -63,6 +63,21 @@ export function childrenOf(rows: readonly AgentInfo[]): Map<string, AgentInfo[]>
   return out
 }
 
+/** How many dots the chat's subagent strip shows before a `+N` tail (93). */
+export const STRIP_CAP = 24
+
+const spawn = (r: AgentInfo): number => (r.started_at ? Date.parse(r.started_at) : Number.POSITIVE_INFINITY)
+/** Spawn order: `started_at` ascending, rows without one last, name breaks ties. */
+const bySpawn = (a: AgentInfo, b: AgentInfo): number => spawn(a) - spawn(b) || a.name.localeCompare(b.name)
+
+/** The subagent strip's rows (93): the live rows of a subtree in spawn order, the first `limit` shown, the rest counted. */
+export function stripRows(children: Readonly<Record<string, AgentInfo>>, limit = STRIP_CAP): { shown: AgentInfo[]; more: number } {
+  const rows = Object.values(children)
+    .filter((r) => live(r.state.state))
+    .sort(bySpawn)
+  return { shown: rows.slice(0, limit), more: Math.max(0, rows.length - limit) }
+}
+
 /** Those of `ids` that are rows of the flat subtree `rows` (keyed by id), plus every ancestor of theirs in it. */
 export function withAncestors(rows: Readonly<Record<string, AgentInfo>>, ids: Iterable<string>): Set<string> {
   const out = new Set<string>()

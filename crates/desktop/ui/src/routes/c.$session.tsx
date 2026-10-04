@@ -12,6 +12,7 @@ import { NewChatPane } from '@/components/chat/NewChatPane'
 import { OrphansBanner } from '@/components/chat/OrphansBanner'
 import { Panes } from '@/components/chat/Panes'
 import { SearchSession } from '@/components/chat/SearchSession'
+import { SubagentStrip } from '@/components/chat/SubagentStrip'
 import { TodoCard } from '@/components/chat/TodoCard'
 import { Transcript } from '@/components/chat/Transcript'
 import { SearchReturn } from '@/components/sidebar/SearchReturn'
@@ -135,6 +136,7 @@ export function LiveSession({ session, first }: { session: string; first: boolea
       )}
       <Transcript key={`t:${session}`} session={session} />
       <TodoCard key={`d:${session}`} session={session} />
+      <SubagentStrip session={session} />
       <Composer key={`c:${session}`} session={session} />
     </>
   )

@@ -1093,12 +1093,29 @@ export function Composer({
             {/* 82 §C: while a voice note records the wave is the box; the textarea stays mounted underneath. */}
             <RecordingBox recording={recording} source={noteSource}>
               {dictating && dict.active ? (
-                <DictatedText
-                  before={dict.active.before}
-                  after={dict.active.after}
-                  utts={dict.active.utts}
-                  className={cn(BOX, touch() ? 'max-h-[160px]' : 'max-h-[200px]')}
-                />
+                // 94 DICTATION-LAYOUT: text on top at full width, the voice bar (wave + stop) spread underneath.
+                <div className="flex flex-col">
+                  <DictatedText
+                    before={dict.active.before}
+                    after={dict.active.after}
+                    utts={dict.active.utts}
+                    className={cn(BOX, touch() ? 'max-h-[160px]' : 'max-h-[200px]')}
+                  />
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <button
+                        type="button"
+                        className="mt-1 flex h-9 w-full items-center overflow-hidden rounded-full bg-fg-accent/10 px-1 text-fg-secondary hover:bg-fg-accent/15"
+                        aria-label="Stop dictation"
+                        onClick={dictate}
+                      >
+                        <VoiceWave state="listening" source={dictSource} label="Dictation level" className="h-full flex-1" />
+                        <Square className="size-3.5 shrink-0 fill-current" />
+                      </button>
+                    </TooltipTrigger>
+                    <TooltipContent>Stop dictation (Ctrl+D)</TooltipContent>
+                  </Tooltip>
+                </div>
               ) : (
                 <Textarea
                   readOnly={readOnly}
@@ -1172,35 +1189,21 @@ export function Composer({
               <TooltipContent>{talkElsewhere ? `Talking in ${talkTitle || 'another chat'} — open` : 'Talk'}</TooltipContent>
             </Tooltip>
           )}
-          {canDictate &&
-            (dictating && dict.active ? (
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <Button
-                    variant="ghost"
-                    className="h-9 w-32 shrink-0 overflow-hidden rounded-full bg-fg-accent/10 p-0"
-                    aria-label="Stop dictation"
-                    onClick={dictate}
-                  >
-                    <VoiceWave state="listening" source={dictSource} label="Dictation level" />
-                  </Button>
-                </TooltipTrigger>
-                <TooltipContent>Stop dictation (Ctrl+D)</TooltipContent>
-              </Tooltip>
-            ) : (
-              // 89 VOICE-HOLD: tap → dictation (`dictReason` says why not, via the tooltip); hold → voice note, slide up locks, left cancels.
-              <MicButton
-                recording={recording}
-                source={noteSource}
-                hint={hint}
-                onStage={setStage}
-                disabled={busy || transcribing}
-                reason={dictReason}
-                onTap={dictate}
-                onRecord={() => void record()}
-                onStop={stopRecording}
-              />
-            ))}
+          {/* 94 DICTATION-LAYOUT: while dictating the stop control lives in the voice bar under the text; nothing here. */}
+          {canDictate && !(dictating && dict.active) && (
+            // 89 VOICE-HOLD: tap → dictation (`dictReason` says why not, via the tooltip); hold → voice note, slide up locks, left cancels.
+            <MicButton
+              recording={recording}
+              source={noteSource}
+              hint={hint}
+              onStage={setStage}
+              disabled={busy || transcribing}
+              reason={dictReason}
+              onTap={dictate}
+              onRecord={() => void record()}
+              onStop={stopRecording}
+            />
+          )}
           {/* 89 VOICE-HOLD: while a note is held or locked the row is the recording's; these come back on reset. */}
           {stage === 'idle' &&
             (at !== 'idle' && session ? (

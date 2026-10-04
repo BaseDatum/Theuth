@@ -108,6 +108,8 @@ export type AgentInfo = {
   activity?: SessionActivity
   /** `spawn_subagent(tools=…)` risk ceiling (12 §5); `#[serde(default)]`, absent when uncapped. */
   cap?: Risk | null
+  /** client clock (ms) of this subagent's last streaming event — UI only, never on the wire (93) */
+  beat?: number
 }
 
 /** `AgentEvent::TitleChanged`: the titler or `rename_session` wrote a title; `tags` are the set in force after it. */

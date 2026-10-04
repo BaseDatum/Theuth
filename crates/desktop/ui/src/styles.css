@@ -359,6 +359,42 @@ body.voice-hold {
   }
 }
 
+/* 93 subagent strip: a dot entering, and its one-shot blink on the subagent's streaming events (the circle is re-keyed per beat, so the animation restarts). */
+.subagent-dot-in {
+  animation: subagent-in 160ms ease-out both;
+}
+.subagent-dot {
+  opacity: 0.6;
+}
+.subagent-blink {
+  animation: subagent-blink 380ms ease-out both;
+}
+@keyframes subagent-in {
+  from {
+    opacity: 0;
+  }
+}
+@keyframes subagent-blink {
+  50% {
+    opacity: 1;
+    transform: scale(1.35);
+  }
+}
+/* Held fully lit for the beat's duration, then back to rest: `step-end` keeps `from` until the end. */
+@keyframes subagent-lit {
+  from {
+    opacity: 1;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .subagent-dot-in {
+    animation: none;
+  }
+  .subagent-blink {
+    animation: subagent-lit 380ms step-end both;
+  }
+}
+
 /* 76 §0.12 talk orb without WebGPU (or under reduced motion): a lit sphere; thinking pulses, speaking swells. */
 .talk-orb {
   background:
