@@ -5,7 +5,7 @@ import { Branch } from '@/components/sidebar/AgentTree'
 import type { SessionSummary } from '@/rpc/bindings/SessionSummary'
 import type { SessionActivity } from '@/rpc/bindings/SessionActivity'
 import type { AgentInfo } from '@/rpc/extra'
-import { TREE_CAP, cappedTree, childrenOf, live, rankSummary, withAncestors, rootOf, subtrees } from './session-tree'
+import { STRIP_CAP, TREE_CAP, cappedTree, childrenOf, live, rankSummary, stripRows, withAncestors, rootOf, subtrees } from './session-tree'
 
 const s = (id: string, parent: string | null = null, desk?: string): SessionSummary => ({
   id,
@@ -131,4 +131,25 @@ test('a Branch renders five rows and "Show more (2)" for a parent with seven chi
   const kept = html(new Set(['g', 'f1']))
   expect(ids(kept)).toEqual(['f7', 'f6', 'f5', 'f4', 'f3', 'f1', 'g'])
   expect(kept).toContain('>Show more (1)</button>')
+})
+
+test('93 stripRows: live rows only, in spawn order (started_at, unknown last, then name), 24 dots and a count of the rest', () => {
+  const children = Object.fromEntries(
+    [
+      row('late', 'running', 'root', { started_at: day(3) }),
+      row('done', 'idle', 'root', { started_at: day(1) }),
+      row('early', 'awaiting', 'root', { started_at: day(2), state: { state: 'awaiting', from: 'x' } }),
+      row('b-unknown', 'approval', 'kid', { state: { state: 'approval', tool: 'bash' } }),
+      row('a-unknown', 'running', 'kid'),
+      row('failed', 'error', 'root', { started_at: day(1) }),
+    ].map((r) => [r.id, r]),
+  )
+  expect(stripRows(children).shown.map((r) => r.id)).toEqual(['early', 'late', 'a-unknown', 'b-unknown'])
+  expect(stripRows(children).more).toBe(0)
+  expect(stripRows({})).toEqual({ shown: [], more: 0 })
+  const many = Object.fromEntries(Array.from({ length: 30 }, (_, i) => [`r${i}`, row(`r${i}`, 'running', 'root', { started_at: day(1 + (i % 28)) })]))
+  const { shown, more } = stripRows(many)
+  expect([shown.length, more]).toEqual([STRIP_CAP, 6])
+  expect(shown[0]?.id).toBe('r0')
+  expect(stripRows(many, 3)).toMatchObject({ more: 27 })
 })
