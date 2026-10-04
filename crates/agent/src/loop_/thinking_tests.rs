@@ -26,13 +26,17 @@ const THINKING: &str = "Let me think about the square.";
 const SIGNATURE: &str = "sig-deadbeef";
 /// `output_tokens` the fake reports: Anthropic counts thinking inside it.
 const OUTPUT_TOKENS: u32 = 57;
-
 /// The fake: records every request body, answers the first `reject` requests
 /// with Anthropic's rejected-signature 400 (90 §0), then each with one signed
 /// thinking block followed by one `tool_use` (a tool-use turn), then `message_stop`.
+/// With `text`, a text block follows the thinking instead of the tool call
+/// (91: a plain reply ends the thinking); with `silent`, no thinking block
+/// streams at all. The thinking always streams as two deltas.
 struct Fake {
     bodies: Arc<Mutex<Vec<Value>>>,
     reject: AtomicUsize,
+    text: bool,
+    silent: bool,
 }
 
 /// 90 §0: the body Anthropic answers a foreign or unverifiable signature with.
@@ -51,40 +55,74 @@ impl Respond for Fake {
             return ResponseTemplate::new(400).set_body_raw(REJECTED, "application/json");
         }
         let ev = |name: &str, data: Value| format!("event: {name}\ndata: {data}\n\n");
-        let body = [
-            ev(
-                "message_start",
-                json!({"type": "message_start", "message": {"id": "m", "role": "assistant", "content": [],
-                    "usage": {"input_tokens": 12, "output_tokens": 1}}}),
-            ),
-            ev(
-                "content_block_start",
-                json!({"type": "content_block_start", "index": 0, "content_block": {"type": "thinking", "thinking": ""}}),
-            ),
-            ev(
-                "content_block_delta",
-                json!({"type": "content_block_delta", "index": 0, "delta": {"type": "thinking_delta", "thinking": THINKING}}),
-            ),
-            ev(
-                "content_block_delta",
-                json!({"type": "content_block_delta", "index": 0, "delta": {"type": "signature_delta", "signature": SIGNATURE}}),
-            ),
-            ev("content_block_stop", json!({"type": "content_block_stop", "index": 0})),
-            ev(
-                "content_block_start",
-                json!({"type": "content_block_start", "index": 1, "content_block": {"type": "tool_use", "id": "toolu_1", "name": "echo", "input": {}}}),
-            ),
-            ev(
-                "content_block_delta",
-                json!({"type": "content_block_delta", "index": 1, "delta": {"type": "input_json_delta", "partial_json": "{\"x\":1}"}}),
-            ),
-            ev("content_block_stop", json!({"type": "content_block_stop", "index": 1})),
-            ev(
-                "message_delta",
-                json!({"type": "message_delta", "delta": {"stop_reason": "tool_use"}, "usage": {"output_tokens": OUTPUT_TOKENS}}),
-            ),
-            ev("message_stop", json!({"type": "message_stop"})),
-        ]
+        // Two deltas (91: the measurement starts at the first, not the last).
+        let (thinking, second) = THINKING.split_at(THINKING.len() / 2);
+        let reply = if self.text {
+            [
+                ev(
+                    "content_block_start",
+                    json!({"type": "content_block_start", "index": 1, "content_block": {"type": "text", "text": ""}}),
+                ),
+                ev(
+                    "content_block_delta",
+                    json!({"type": "content_block_delta", "index": 1, "delta": {"type": "text_delta", "text": "Four."}}),
+                ),
+                ev("content_block_stop", json!({"type": "content_block_stop", "index": 1})),
+                ev(
+                    "message_delta",
+                    json!({"type": "message_delta", "delta": {"stop_reason": "end_turn"}, "usage": {"output_tokens": OUTPUT_TOKENS}}),
+                ),
+            ]
+        } else {
+            [
+                ev(
+                    "content_block_start",
+                    json!({"type": "content_block_start", "index": 1, "content_block": {"type": "tool_use", "id": "toolu_1", "name": "echo", "input": {}}}),
+                ),
+                ev(
+                    "content_block_delta",
+                    json!({"type": "content_block_delta", "index": 1, "delta": {"type": "input_json_delta", "partial_json": "{\"x\":1}"}}),
+                ),
+                ev("content_block_stop", json!({"type": "content_block_stop", "index": 1})),
+                ev(
+                    "message_delta",
+                    json!({"type": "message_delta", "delta": {"stop_reason": "tool_use"}, "usage": {"output_tokens": OUTPUT_TOKENS}}),
+                ),
+            ]
+        };
+        let thought = if self.silent {
+            Vec::new()
+        } else {
+            vec![
+                ev(
+                    "content_block_start",
+                    json!({"type": "content_block_start", "index": 0, "content_block": {"type": "thinking", "thinking": ""}}),
+                ),
+                ev(
+                    "content_block_delta",
+                    json!({"type": "content_block_delta", "index": 0, "delta": {"type": "thinking_delta", "thinking": thinking}}),
+                ),
+                ev(
+                    "content_block_delta",
+                    json!({"type": "content_block_delta", "index": 0, "delta": {"type": "thinking_delta", "thinking": second}}),
+                ),
+                ev(
+                    "content_block_delta",
+                    json!({"type": "content_block_delta", "index": 0, "delta": {"type": "signature_delta", "signature": SIGNATURE}}),
+                ),
+                ev("content_block_stop", json!({"type": "content_block_stop", "index": 0})),
+            ]
+        };
+        let body = [ev(
+            "message_start",
+            json!({"type": "message_start", "message": {"id": "m", "role": "assistant", "content": [],
+                "usage": {"input_tokens": 12, "output_tokens": 1}}}),
+        )]
+        .into_iter()
+        .chain(thought)
+        .chain(reply)
+        .chain([ev("message_stop", json!({"type": "message_stop"}))])
+        .collect::<Vec<_>>()
         .concat();
         ResponseTemplate::new(200).set_body_raw(body, "text/event-stream")
     }
@@ -100,11 +138,25 @@ struct Harness {
 
 impl Harness {
     async fn new() -> Self {
-        Self::rejecting(0).await
+        Self::build(0, false, false).await
     }
 
     /// A harness whose fake answers the first `reject` requests with [`REJECTED`].
     async fn rejecting(reject: usize) -> Self {
+        Self::build(reject, false, false).await
+    }
+
+    /// A harness whose fake replies with text after the thinking (91).
+    async fn texting() -> Self {
+        Self::build(0, true, false).await
+    }
+
+    /// A harness whose fake replies with text and no thinking at all (91).
+    async fn plain() -> Self {
+        Self::build(0, true, true).await
+    }
+
+    async fn build(reject: usize, text: bool, silent: bool) -> Self {
         let bodies = Arc::new(Mutex::new(Vec::new()));
         let server = MockServer::start().await;
         Mock::given(method("POST"))
@@ -112,6 +164,8 @@ impl Harness {
             .respond_with(Fake {
                 bodies: bodies.clone(),
                 reject: AtomicUsize::new(reject),
+                text,
+                silent,
             })
             .mount(&server)
             .await;
@@ -188,6 +242,13 @@ impl Harness {
         Result<StreamEnd, Abort>,
         Vec<(String, String, String, String)>,
     ) {
+        let c = self.live_call(model, history).await;
+        (c.end, c.rows)
+    }
+
+    /// [`Harness::turn_call`] as a live turn: every `AgentEvent` the call
+    /// published, in order, and the thinking time it measured (91).
+    async fn live_call(&self, model: Resolved, history: &[ChatMessage]) -> Called {
         let store = Store::open_memory().await.unwrap();
         let id = SessionId::new();
         store
@@ -195,6 +256,13 @@ impl Harness {
             .await
             .unwrap();
         let rt = Runtime::new(figment::Figment::new(), self.dir.clone());
+        let (tx, mut events) = tokio::sync::mpsc::unbounded_channel();
+        let sink = kameo::actor::Spawn::spawn_with_mailbox(
+            super::vision_fallback_tests::Sink(tx),
+            runtime::subscriber_mailbox(),
+        );
+        rt.subscribe::<super::vision_fallback_tests::Sink, AgentEvent>(&sink)
+            .await;
         let mut session = Session::new(
             id,
             0,
@@ -232,8 +300,9 @@ impl Harness {
             vision: false,
             strip_reasoning: false,
         };
+        let mut thinking = None;
         let end = turn
-            .call(&current, frame, transport, None, id, CallKind::Round)
+            .call(&current, frame, transport, turn.turn, id, CallKind::Round, &mut thinking)
             .await;
         let rows = sqlx::query_as(
             "SELECT call_id, request_id, kind, status FROM model_calls WHERE owner_id = ? ORDER BY attempt",
@@ -242,8 +311,42 @@ impl Harness {
         .fetch_all(store.pool())
         .await
         .unwrap();
-        (end, rows)
+        // The bus delivers asynchronously; a marker published after the call
+        // bounds what it emitted.
+        turn.publish(AgentEvent::Error {
+            session: id,
+            turn: turn.turn,
+            message: "marker".into(),
+        })
+        .await;
+        let mut published = Vec::new();
+        while let Some(ev) = events.recv().await {
+            if matches!(&ev, AgentEvent::Error { message, .. } if message == "marker") {
+                break;
+            }
+            published.push(ev);
+        }
+        Called {
+            end,
+            rows,
+            thinking,
+            events: published,
+            turn,
+            store,
+            id,
+        }
     }
+}
+
+/// What [`Harness::live_call`] observed.
+struct Called {
+    end: Result<StreamEnd, Abort>,
+    rows: Vec<(String, String, String, String)>,
+    thinking: Option<u64>,
+    events: Vec<AgentEvent>,
+    turn: Turn,
+    store: Store,
+    id: SessionId,
 }
 
 /// 90 §1.5: a stored signature of `kind` over connection `connection`, as a
@@ -405,7 +508,7 @@ async fn thinking_block_round_trips_with_signature_on_tool_use_turn() {
     let assistant = end.into_assistant_message_for_tool_use().unwrap();
     // …and a reload renders the same thinking ahead of the tool card (no assistant text here).
     let rows: Vec<(i64, ChatMessage)> = vec![(0, ChatMessage::user("hi")), (1, assistant.clone())];
-    let rendered = crate::supervisor::render(&rows, &Default::default());
+    let rendered = crate::supervisor::render(&rows, &Default::default(), &Default::default());
     assert!(
         matches!(&rendered[1], (1, crate::HistoryEntry::Reasoning { text, .. }) if text == THINKING),
         "{rendered:?}"
@@ -537,5 +640,110 @@ async fn second_rejection_is_a_turn_error() {
     assert_eq!(
         (rows[0].3.as_str(), rows[1].3.as_str()),
         ("failed", "failed")
+    );
+}
+
+/// 91 THOUGHT-TIME: two reasoning chunks then a text chunk publish exactly
+/// one `ReasoningDone`, before the `TextDelta`; the measured ms is handed
+/// back and, persisted on the reply row, comes back on the reloaded
+/// `Reasoning` entry.
+#[tokio::test]
+async fn thinking_time_is_measured_published_and_persisted() {
+    let h = Harness::texting().await;
+    let fable = h.resolve("anthropic/claude-fable-5-1");
+    let mut c = h.live_call(fable, &user()).await;
+    let end = match c.end {
+        Ok(end) => end,
+        Err(_) => panic!("call failed"),
+    };
+    assert_eq!(end.captured_reasoning_content.as_deref(), Some(THINKING));
+    let ms = c.thinking.expect("thinking measured");
+
+    let kinds: Vec<&str> = c
+        .events
+        .iter()
+        .map(|e| match e {
+            AgentEvent::ReasoningDelta { .. } => "delta",
+            AgentEvent::ReasoningDone { ms: m, .. } => {
+                assert_eq!(*m, ms);
+                "done"
+            }
+            AgentEvent::TextDelta { .. } => "text",
+            _ => "other",
+        })
+        .filter(|k| *k != "other")
+        .collect();
+    assert_eq!(kinds, ["delta", "delta", "done", "text"], "{:?}", c.events);
+
+    // The reply row carries the measurement; a reload renders it on the block.
+    let reply = ChatMessage::assistant(end.captured_content.unwrap());
+    assert!(c.turn.persist_timed(reply, Some(ms)).await);
+    let history = c.store.context_history(c.id).await.unwrap();
+    assert_eq!(history.thinking.get(&0), Some(&ms));
+    let rendered = crate::supervisor::render(&history.messages, &history.entries, &history.thinking);
+    assert!(
+        matches!(
+            &rendered[0],
+            (0, crate::HistoryEntry::Reasoning { text, thinking_ms: Some(got), .. })
+                if text == THINKING && *got == ms
+        ),
+        "{rendered:?}"
+    );
+    assert!(
+        matches!(&rendered[1], (0, crate::HistoryEntry::Assistant { text, .. }) if text == "Four."),
+        "{rendered:?}"
+    );
+}
+
+/// 91: a tool-use reply ends the thinking too (`ToolCallChunk`), with the
+/// `ReasoningDone` ahead of `ToolCallPending`.
+#[tokio::test]
+async fn thinking_time_ends_at_the_first_tool_call_chunk() {
+    let h = Harness::new().await;
+    let fable = h.resolve("anthropic/claude-fable-5-1");
+    let c = h.live_call(fable, &user()).await;
+    assert!(c.end.is_ok());
+    assert!(c.thinking.is_some());
+    let kinds: Vec<&str> = c
+        .events
+        .iter()
+        .filter_map(|e| match e {
+            AgentEvent::ReasoningDone { .. } => Some("done"),
+            AgentEvent::ToolCallPending { .. } => Some("tool"),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(kinds, ["done", "tool"], "{:?}", c.events);
+}
+
+/// 91: a call that streams no reasoning measures nothing and publishes no
+/// `ReasoningDone`; the row persists with `thinking_ms = NULL`.
+#[tokio::test]
+async fn no_reasoning_means_no_thinking_time() {
+    let h = Harness::plain().await;
+    let fable = h.resolve("anthropic/claude-fable-5-1");
+    let mut c = h.live_call(fable, &user()).await;
+    let end = match c.end {
+        Ok(end) => end,
+        Err(_) => panic!("call failed"),
+    };
+    assert!(c.thinking.is_none());
+    assert!(
+        !c.events.iter().any(|e| matches!(
+            e,
+            AgentEvent::ReasoningDelta { .. } | AgentEvent::ReasoningDone { .. }
+        )),
+        "{:?}",
+        c.events
+    );
+    assert!(c.events.iter().any(|e| matches!(e, AgentEvent::TextDelta { .. })));
+    let reply = ChatMessage::assistant(end.captured_content.unwrap());
+    assert!(c.turn.persist_timed(reply, c.thinking).await);
+    let history = c.store.context_history(c.id).await.unwrap();
+    assert!(history.thinking.is_empty());
+    let rendered = crate::supervisor::render(&history.messages, &history.entries, &history.thinking);
+    assert!(
+        matches!(&rendered[..], [(0, crate::HistoryEntry::Assistant { text, .. })] if text == "Four."),
+        "{rendered:?}"
     );
 }

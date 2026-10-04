@@ -193,6 +193,9 @@ pub(crate) struct Turn {
     continuation: bool,
     /// The quiet timer of a continuation turn.
     quiet: Option<AbortHandle>,
+    /// 91: when the first `agent_thought_chunk` of the current thinking
+    /// arrived; taken by the first message/tool update after it.
+    thinking: Option<Instant>,
 }
 
 impl Turn {
@@ -213,6 +216,7 @@ impl Turn {
             input: None,
             retries: 0,
             retry: None,
+            thinking: None,
             continuation: false,
             quiet: None,
         }
@@ -1294,7 +1298,25 @@ pub(crate) fn tokens_of(u: &AcpUsage) -> TokenTotals {
 /// persist queued on it (06 §3.6).
 pub(crate) fn translate(update: SessionUpdate, turn: &mut Turn) -> Vec<AgentEvent> {
     let (session, id) = (turn.session, turn.id);
-    match update {
+    // 91: the first message or tool update after thought chunks ends the
+    // thinking; `ReasoningDone` goes ahead of that update's own event.
+    let done = match &update {
+        SessionUpdate::AgentThoughtChunk(_) => {
+            turn.thinking.get_or_insert_with(Instant::now);
+            None
+        }
+        SessionUpdate::AgentMessageChunk(_)
+        | SessionUpdate::ToolCall(_)
+        | SessionUpdate::ToolCallUpdate(_) => turn.thinking.take().map(|start| {
+            AgentEvent::ReasoningDone {
+                session,
+                turn: id,
+                ms: start.elapsed().as_millis() as u64,
+            }
+        }),
+        _ => None,
+    };
+    let mut out = match update {
         SessionUpdate::AgentMessageChunk(c) => {
             let text = acp::render::content_block_text(&c.content);
             turn.text.push_str(&text);
@@ -1362,7 +1384,11 @@ pub(crate) fn translate(update: SessionUpdate, turn: &mut Turn) -> Vec<AgentEven
         // usage_update: session facts, handled in the mailbox (75 §5).
         // user_message_chunk (load replay, 06 §8.11), commands, modes, config, info.
         _ => Vec::new(),
+    };
+    if let Some(done) = done {
+        out.insert(0, done);
     }
+    out
 }
 
 /// 47 §5.3: an ACP plan as theuth todo items, upstream order and content kept.
@@ -1917,6 +1943,23 @@ mod tests {
         );
         assert!(matches!(&ev[..], [AgentEvent::ReasoningDelta { text, .. }] if &**text == "hmm"));
         assert_eq!(t.text, "Hello", "thoughts are not assistant text");
+        // 91: the next message chunk ends the thinking, `ReasoningDone` first; once.
+        let ev = translate(
+            SessionUpdate::AgentMessageChunk(ContentChunk::new(ContentBlock::from("!"))),
+            &mut t,
+        );
+        assert!(
+            matches!(
+                &ev[..],
+                [AgentEvent::ReasoningDone { .. }, AgentEvent::TextDelta { text, .. }] if &**text == "!"
+            ),
+            "{ev:?}"
+        );
+        let ev = translate(
+            SessionUpdate::AgentMessageChunk(ContentChunk::new(ContentBlock::from("?"))),
+            &mut t,
+        );
+        assert!(matches!(&ev[..], [AgentEvent::TextDelta { .. }]), "{ev:?}");
     }
 
     #[test]
@@ -2023,7 +2066,7 @@ mod tests {
             store.append(id, &m).await.unwrap();
         }
         let rows = store.messages(id).await.unwrap();
-        let history = crate::supervisor::render(&rows, &std::collections::BTreeMap::new())
+        let history = crate::supervisor::render(&rows, &Default::default(), &Default::default())
             .into_iter()
             .map(|(_, e)| e)
             .collect();
@@ -3027,19 +3070,20 @@ mod tests {
         assert!(!rig.actor.ask(IsRunning).await.unwrap());
 
         let rows = rig.store.messages(rig.session).await.unwrap();
-        let history: Vec<(String, String)> = crate::supervisor::render(&rows, &Default::default())
-            .into_iter()
-            .map(|(_, e)| match e {
-                HistoryEntry::User { text, .. } => ("user".into(), text),
-                HistoryEntry::Assistant { text, .. } => ("assistant".into(), text),
-                HistoryEntry::Tool {
-                    name,
-                    result: Some((out, false)),
-                    ..
-                } => (name, out),
-                other => panic!("{other:?}"),
-            })
-            .collect();
+        let history: Vec<(String, String)> =
+            crate::supervisor::render(&rows, &Default::default(), &Default::default())
+                .into_iter()
+                .map(|(_, e)| match e {
+                    HistoryEntry::User { text, .. } => ("user".into(), text),
+                    HistoryEntry::Assistant { text, .. } => ("assistant".into(), text),
+                    HistoryEntry::Tool {
+                        name,
+                        result: Some((out, false)),
+                        ..
+                    } => (name, out),
+                    other => panic!("{other:?}"),
+                })
+                .collect();
         assert_eq!(
             history,
             [

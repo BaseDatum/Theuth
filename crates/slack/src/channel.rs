@@ -2367,6 +2367,7 @@ impl Worker {
             | AgentEvent::SkillsChanged { .. }
             | AgentEvent::TitleChanged { .. }
             | AgentEvent::ToolCallProgress { .. }
+            | AgentEvent::ReasoningDone { .. }
             | AgentEvent::SessionDeleted { .. }
             | AgentEvent::SessionOwnerChanged { .. }
             | AgentEvent::ContextChanged { .. }

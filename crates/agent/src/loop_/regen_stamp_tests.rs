@@ -25,7 +25,7 @@ fn started(events: &[AgentEvent]) -> Vec<(i64, String)> {
 }
 
 fn shown(history: &[(i64, ChatMessage)]) -> Vec<String> {
-    crate::supervisor::render(history, &BTreeMap::new())
+    crate::supervisor::render(history, &BTreeMap::new(), &BTreeMap::new())
         .into_iter()
         .filter_map(|(_, e)| match e {
             HistoryEntry::User { text, .. } => Some(text),

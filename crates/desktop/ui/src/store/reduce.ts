@@ -11,8 +11,8 @@ import type { WireEvent } from "@/rpc/events";
 import type { AgentInfo, AppCallChanged, HistoryEntry } from "@/rpc/extra";
 import type { AppDraft, Entry, JobTail, SessionSlice } from "./sessions";
 
-/** What the reducer needs beside the slice: texts we sent, to skip their echo. */
-export type Ctx = { sent: Set<string> };
+/** `sent`: texts we submitted (echo skipped); `now`: the batch's client clock (91: the thinking-time fallback). */
+export type Ctx = { sent: Set<string>; now: number };
 
 let ids = 0;
 
@@ -382,7 +382,7 @@ function historyEntries(h: HistoryEntry): Entry[] {
           ]
         : [];
     case "reasoning":
-      return [{ id: nextId(), kind: "reasoning", text: h.text, done: true }];
+      return [{ id: nextId(), kind: "reasoning", text: h.text, done: true, ms: h.thinking_ms ?? undefined }];
     case "tool":
       return [
         {
@@ -471,11 +471,20 @@ export function adopt(old: readonly Entry[], fresh: Entry[]): Entry[] {
 }
 
 /** Anything but its own delta finishes a streaming tail: text before and after a tool call are separate entries. */
-function closeTail(s: SessionSlice, e: WireEvent): SessionSlice {
+function closeTail(s: SessionSlice, e: WireEvent, ctx: Ctx): SessionSlice {
   const at = s.entries.length - 1;
   const last = s.entries[at];
   if (last?.kind === "reasoning" && !last.done && e.type !== "ReasoningDelta") {
-    return { ...s, entries: replaceAt(s.entries, at, { ...last, done: true }) };
+    // 91: `ReasoningDone` carries the engine's measurement; anything else
+    // closing the block (an older engine, a harness) gets the client clock.
+    const ms =
+      e.type === "ReasoningDone"
+        ? e.ms
+        : last.startedAt === undefined
+          ? undefined
+          : Math.max(0, ctx.now - last.startedAt);
+    const { startedAt: _started, ...rest } = last;
+    return { ...s, entries: replaceAt(s.entries, at, { ...rest, done: true, ms }) };
   }
   if (last?.kind === "assistant" && last.open && e.type !== "TextDelta") {
     return {
@@ -696,7 +705,7 @@ export function apply(
       return { ...slice, harnessCommands: e.commands };
   }
   // Unknown events (approvals, speech, …) leave the slice — and a streaming tail — alone.
-  const next = turn(closeTail(slice, e), e, ctx);
+  const next = turn(closeTail(slice, e, ctx), e, ctx);
   return next === undefined ? slice : { ...next, live: slice.live + 1 };
 }
 
@@ -783,6 +792,7 @@ function turn(
                 kind: "reasoning" as const,
                 text: e.text,
                 done: false,
+                startedAt: ctx.now,
               },
             ];
       return { ...s, entries, waiting: false, activity: "reasoning" };
@@ -999,6 +1009,10 @@ function turn(
         },
       );
     }
+    // 91: `closeTail` already stamped the block with `e.ms`; the event only
+    // has to count as the turn's own so the change is kept.
+    case "ReasoningDone":
+      return s;
     default:
       return undefined;
   }

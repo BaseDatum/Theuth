@@ -288,6 +288,8 @@ pub struct ContextHistory {
     pub epochs: Vec<Epoch>,
     /// Per message seq.
     pub entries: BTreeMap<i64, ContextEntry>,
+    /// 91: ms the model thought before each assistant row that has it, by seq.
+    pub thinking: BTreeMap<i64, u64>,
     /// Per epoch number.
     pub heads: BTreeMap<u32, ContextEntry>,
     /// Active inventory at the same revision (`editable` left `true`).

@@ -58,3 +58,14 @@ export function splitTime(text: string): { text: string; at?: number } {
   const at = now ? Date.parse(`${now[1]}T${now[2]}${now[3]}`) : NaN
   return { text: rest.startsWith('\n') ? rest.slice(1) : rest, ...(Number.isNaN(at) ? {} : { at }) }
 }
+
+/** The thinking time behind "Thought" (91): `undefined` under a second, `9s` (nearest second) under a minute,
+ * `1m 12s` / `2m` under an hour, `1h 2m` beyond. */
+export function fmtThought(ms: number): string | undefined {
+  if (!(ms >= 1000)) return undefined
+  const total = Math.round(ms / 1000)
+  if (total < 60) return `${total}s`
+  const h = Math.floor(total / 3600), m = Math.floor((total % 3600) / 60), s = total % 60
+  if (h > 0) return m > 0 ? `${h}h ${m}m` : `${h}h`
+  return s > 0 ? `${m}m ${s}s` : `${m}m`
+}

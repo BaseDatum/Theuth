@@ -360,6 +360,8 @@ struct Row {
     vision: Option<String>,
     /// Raw `messages.at` (RFC 3339 UTC); `None` for rows older than 0026.
     at: Option<String>,
+    /// Raw `messages.thinking_ms` (91); `None` before 91 or when no reasoning streamed.
+    thinking_ms: Option<i64>,
 }
 
 /// Raw `sessions` row; ids and timestamps are TEXT and parsed on the way out.
@@ -1225,7 +1227,22 @@ impl Store {
     ) -> anyhow::Result<i64> {
         let vision = serde_json::to_string(note)?;
         let mut tx = self.begin_write().await?;
-        let seq = insert_in(&mut tx, &id.to_string(), message, Some(&vision)).await?;
+        let seq = insert_in(&mut tx, &id.to_string(), message, Some(&vision), None).await?;
+        tx.commit().await?;
+        Ok(seq)
+    }
+
+    /// [`Store::append`] for the model's reply row with the ms it thought
+    /// before it (91 THOUGHT-TIME); `None` when no reasoning streamed.
+    pub async fn append_thinking(
+        &self,
+        id: SessionId,
+        message: &ChatMessage,
+        thinking_ms: Option<u64>,
+    ) -> anyhow::Result<i64> {
+        let mut tx = self.begin_write().await?;
+        let ms = thinking_ms.map(|ms| i64::try_from(ms).unwrap_or(i64::MAX));
+        let seq = insert_in(&mut tx, &id.to_string(), message, None, ms).await?;
         tx.commit().await?;
         Ok(seq)
     }
@@ -1485,7 +1502,7 @@ impl Store {
     /// Rows hidden by undo (`seq >= cut_at`); empty when `cut_at` is NULL.
     async fn hidden(&self, id: SessionId) -> anyhow::Result<Vec<Row>> {
         let rows = sqlx::query_as(
-            "SELECT seq, body, excluded, vision, at FROM messages WHERE session_id = ?1 \
+            "SELECT seq, body, excluded, vision, at, thinking_ms FROM messages WHERE session_id = ?1 \
              AND seq >= (SELECT cut_at FROM sessions WHERE id = ?1) ORDER BY seq",
         )
         .bind(id.to_string())
@@ -2166,6 +2183,10 @@ impl Store {
         };
         let groups = active.groups();
         let snapshot = active.snapshot(&revision, &groups);
+        let thinking = rows
+            .iter()
+            .filter_map(|r| Some((r.seq, u64::try_from(r.thinking_ms?).ok()?)))
+            .collect();
         let mut entries = BTreeMap::new();
         for r in &rows {
             let active_row = r.seq >= tail_from;
@@ -2207,6 +2228,7 @@ impl Store {
             messages: rows.into_iter().map(|r| (r.seq, r.message)).collect(),
             epochs: epochs.into_iter().map(|(e, _)| e).collect(),
             entries,
+            thinking,
             heads,
             snapshot,
         })
@@ -2627,15 +2649,15 @@ fn decode_rows(id: SessionId, rows: Vec<(i64, String)>) -> Vec<(i64, ChatMessage
         .collect()
 }
 
-/// One `messages` row as selected: `(seq, body, excluded, vision, at)`.
-type RawRow = (i64, String, Option<String>, Option<String>, Option<String>);
+/// One `messages` row as selected: `(seq, body, excluded, vision, at, thinking_ms)`.
+type RawRow = (i64, String, Option<String>, Option<String>, Option<String>, Option<i64>);
 
 /// [`RawRow`]s to [`Row`]s: undecodable bodies are skipped (warned); an
 /// undecodable mask is an error, because replaying a row the user removed is
 /// the one wrong answer.
 fn decode_masked(id: SessionId, rows: Vec<RawRow>) -> anyhow::Result<Vec<Row>> {
     let mut out = Vec::with_capacity(rows.len());
-    for (seq, body, excluded, vision, at) in rows {
+    for (seq, body, excluded, vision, at, thinking_ms) in rows {
         let mask =
             Mask::decode(excluded.as_deref()).with_context(|| format!("message {seq} of {id}"))?;
         if let Some((seq, message)) = decode_rows(id, vec![(seq, body)]).pop() {
@@ -2645,6 +2667,7 @@ fn decode_masked(id: SessionId, rows: Vec<RawRow>) -> anyhow::Result<Vec<Row>> {
                 mask,
                 vision,
                 at,
+                thinking_ms,
             });
         }
     }
@@ -2671,28 +2694,30 @@ async fn append_in(
     sid: &str,
     message: &ChatMessage,
 ) -> anyhow::Result<i64> {
-    insert_in(conn, sid, message, None).await
+    insert_in(conn, sid, message, None, None).await
 }
 
-/// [`append_in`] with the row's typed vision metadata (`None` for every
-/// ordinary message).
+/// [`append_in`] with the row's typed vision metadata and thinking time
+/// (`None` for every ordinary message).
 async fn insert_in(
     conn: &mut SqliteConnection,
     sid: &str,
     message: &ChatMessage,
     vision: Option<&str>,
+    thinking_ms: Option<i64>,
 ) -> anyhow::Result<i64> {
     let body = serde_json::to_string(message)?;
     let now = chrono::Utc::now().to_rfc3339();
     let (seq,): (i64,) = sqlx::query_as(
-        "INSERT INTO messages (session_id, seq, body, vision, at) \
-         SELECT ?1, COALESCE(MAX(seq), -1) + 1, ?2, ?3, ?4 FROM messages WHERE session_id = ?1 \
+        "INSERT INTO messages (session_id, seq, body, vision, at, thinking_ms) \
+         SELECT ?1, COALESCE(MAX(seq), -1) + 1, ?2, ?3, ?4, ?5 FROM messages WHERE session_id = ?1 \
          RETURNING seq",
     )
     .bind(sid)
     .bind(body)
     .bind(vision)
     .bind(&now)
+    .bind(thinking_ms)
     .fetch_one(&mut *conn)
     .await?;
     sqlx::query(
@@ -2750,7 +2775,8 @@ async fn rows_in(
     from: i64,
 ) -> anyhow::Result<Vec<Row>> {
     let rows = sqlx::query_as(
-        "SELECT seq, body, excluded, vision, at FROM messages WHERE session_id = ?1 AND seq >= ?2 \
+        "SELECT seq, body, excluded, vision, at, thinking_ms FROM messages \
+         WHERE session_id = ?1 AND seq >= ?2 \
          AND seq < COALESCE((SELECT cut_at FROM sessions WHERE id = ?1), 9223372036854775807) \
          ORDER BY seq",
     )
@@ -2929,6 +2955,34 @@ mod tests {
             .unwrap()
             .with_timezone(&chrono::Utc);
         assert!(at >= before - chrono::Duration::seconds(1) && at <= chrono::Utc::now());
+        drop(store);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 91: the migration adds `messages.thinking_ms`; `append_thinking` writes
+    /// it on the reply row and `context_history` exposes it by seq, while
+    /// plain appends and `None` leave it NULL (absent from the map).
+    #[tokio::test]
+    async fn thinking_time_round_trips() {
+        let (store, id, dir) = fresh().await;
+        let cols: Vec<(i64, String)> =
+            sqlx::query_as("SELECT cid, name FROM pragma_table_info('messages')")
+                .fetch_all(&store.read)
+                .await
+                .unwrap();
+        assert!(cols.iter().any(|(_, n)| n == "thinking_ms"), "{cols:?}");
+        store.append(id, &ChatMessage::user("hi")).await.unwrap();
+        store
+            .append_thinking(id, &asst("hello"), Some(9_400))
+            .await
+            .unwrap();
+        store
+            .append_thinking(id, &asst("again"), None)
+            .await
+            .unwrap();
+        let h = store.context_history(id).await.unwrap();
+        assert_eq!(h.thinking, BTreeMap::from([(1, 9_400)]));
+        assert_eq!(h.messages.len(), 3);
         drop(store);
         let _ = std::fs::remove_dir_all(&dir);
     }

@@ -5296,7 +5296,7 @@ impl Message<ReadSession> for Agents {
             .context_history(m.session)
             .await
             .map_err(|e| format!("{e:#}"))?;
-        let mut out = render(&h.messages, &h.entries);
+        let mut out = render(&h.messages, &h.entries, &h.thinking);
         // Peer provenance (50 §9), as `load_session` marks it.
         if let Ok(rows) = store.consumed_exchanges(m.session).await {
             let peers: HashMap<i64, PeerOrigin> = rows
@@ -5370,6 +5370,7 @@ impl Message<LoadSession> for Agents {
                     messages,
                     epochs,
                     entries,
+                    thinking,
                     heads,
                     snapshot,
                 } = h;
@@ -5391,7 +5392,7 @@ impl Message<LoadSession> for Agents {
                 // before `at_seq`, i.e. before the first entry past it.
                 let mut dividers = epochs.iter().peekable();
                 let mut out = Vec::new();
-                for (seq, entry) in render(&messages, &entries) {
+                for (seq, entry) in render(&messages, &entries, &thinking) {
                     while let Some(e) = dividers.next_if(|e| e.at_seq < seq) {
                         out.push((e.at_seq, compacted(e, heads.get(&e.n).cloned())));
                     }
@@ -6820,10 +6821,12 @@ impl From<&Resolved> for ModelInfo {
 /// of the turn opener they belong to (design doc 29 §4.3). `entries` is the
 /// per-row context metadata (48 §3.3): a text entry gets its own row's, a
 /// tool card its response row's, narrowed to that response's images; a
-/// call still running has no stored response and so no target.
+/// call still running has no stored response and so no target. `thinking`
+/// is the per-row thinking time (91) the `Reasoning` entry carries.
 pub(crate) fn render(
     messages: &[(i64, ChatMessage)],
     entries: &BTreeMap<i64, ContextEntry>,
+    thinking: &BTreeMap<i64, u64>,
 ) -> Vec<(i64, HistoryEntry)> {
     let mut out = Vec::new();
     // ponytail: linear scan; one round's calls, never more than a handful.
@@ -6863,6 +6866,7 @@ pub(crate) fn render(
                             text: reasoning,
                             turn: current_turn,
                             context: context.cloned(),
+                            thinking_ms: thinking.get(seq).copied(),
                         },
                     ));
                 }
@@ -8444,7 +8448,7 @@ pub(crate) mod tests {
             (1, ChatMessage::from(vec![call("c1"), call("c2")])),
             (2, ChatMessage::from(vec![ToolResponse::new("c1", "ok")])),
         ];
-        let got = render(&messages, &BTreeMap::new());
+        let got = render(&messages, &BTreeMap::new(), &BTreeMap::new());
         assert_eq!(got.len(), 3);
         assert!(matches!(
             &got[1],
@@ -8487,7 +8491,7 @@ pub(crate) mod tests {
                 at: None,
             },
         );
-        let turns: Vec<Option<i64>> = render(&messages, &entries)
+        let turns: Vec<Option<i64>> = render(&messages, &entries, &BTreeMap::new())
             .into_iter()
             .filter_map(|(_, e)| match e {
                 HistoryEntry::User { turn, .. } => Some(turn),
@@ -8496,7 +8500,7 @@ pub(crate) mod tests {
             .collect();
         assert_eq!(turns, [Some(0), None, Some(3)]);
         // Untyped: only prose, so the quoted note text is an ordinary turn.
-        let turns: Vec<Option<i64>> = render(&messages, &BTreeMap::new())
+        let turns: Vec<Option<i64>> = render(&messages, &BTreeMap::new(), &BTreeMap::new())
             .into_iter()
             .filter_map(|(_, e)| match e {
                 HistoryEntry::User { turn, .. } => Some(turn),
@@ -8532,7 +8536,7 @@ pub(crate) mod tests {
                 ]),
             ),
         ];
-        let got = render(&messages, &BTreeMap::new());
+        let got = render(&messages, &BTreeMap::new(), &BTreeMap::new());
         assert!(matches!(
             &got[0],
             (1, HistoryEntry::Tool { result: Some((out, false)), files, .. })
@@ -8595,7 +8599,7 @@ pub(crate) mod tests {
                 at: None,
             },
         );
-        let got = render(&messages, &entries);
+        let got = render(&messages, &entries, &BTreeMap::new());
         let ctx = |i: usize| match &got[i].1 {
             HistoryEntry::Tool { context, .. } => context.as_ref(),
             _ => unreachable!(),
