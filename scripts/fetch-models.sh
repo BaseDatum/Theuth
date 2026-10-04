@@ -58,7 +58,7 @@ REQUIRED=(
   decision/encoder/config.json                     # convaiinnovations/laya root layout, loaded by candle/mod.rs Loaded::open
   decision/tokenizer/tokenizer.json
   decision/rl_agent_config.json
-  decision-browser/model.safetensors               # decision.checkpoints.browser (57 §4.1 item 6): cklxx/laya-browser v17s (mmBERT-base,
+  decision-browser/model.safetensors               # decision.checkpoints.browser (57 §4.1 item 6): cklxx/laya-browser v19s at the repo root (mmBERT-base,
   decision-browser/encoder/config.json             # Gemma tokenizer; upstream removed v10 on 2026-09-27), same four-file layout
   decision-browser/tokenizer/tokenizer.json
   decision-browser/rl_agent_config.json
@@ -77,7 +77,7 @@ origin_of() {
     nemotron-diarization/*)   echo "hf:onnx-community/Nemotron-3-Diarization-ONNX/onnx/${1#*/}" ;;
     pyannote/*)               echo "https://github.com/thewh1teagle/pyannote-rs/releases/download/v0.1.0/${1#*/}" ;;
     decision/*)               echo "hf:convaiinnovations/laya/${1#*/}" ;;
-    decision-browser/*)       echo "hf:cklxx/laya-browser/v17s/${1#*/}" ;;
+    decision-browser/*)       echo "hf:cklxx/laya-browser/${1#*/}" ;;   # v19s lives at the repo root (2026-10-04)
     decision-gliner/*)        echo "hf:fastino/GLiNER2.5-Decide/${1#*/}" ;;
     *)                        echo "none:not in origin_of" ;;
   esac

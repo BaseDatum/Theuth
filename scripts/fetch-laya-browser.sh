@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Fetch the browser decision checkpoint — cklxx/laya-browser v17s (design doc 57 §4.1 item 6) —
+# Fetch the browser decision checkpoint — cklxx/laya-browser v19s (design doc 57 §4.1 item 6) —
 # into <data_dir>/models/decision-browser/, the layout `decision::engine::MODEL_FILES` loads
 # (`decision.checkpoints.browser`). Interim path until `release-models.sh` publishes the same
 # four files under `decision-browser/` and the desktop downloader fetches them (54 §9).
@@ -11,7 +11,7 @@
 set -euo pipefail
 
 REPO="https://huggingface.co/cklxx/laya-browser/resolve/main"
-REV="v17s"
+REV=""   # v19s: files at the repo root since 2026-10-04 (earlier checkpoints only in commit history)
 DEST="${1:-${THEUTH_DATA_DIR:-$HOME/.theuth}/models/decision-browser}"
 
 # <remote path under $REV>  <expected bytes>
@@ -36,7 +36,7 @@ for entry in "${FILES[@]}"; do
   fi
   mkdir -p "$(dirname "$out")"
   echo "fetching  $path"
-  curl -L --fail --progress-bar -o "$out.part" "$REPO/$REV/$path"
+  curl -L --fail --progress-bar -o "$out.part" "$REPO/${REV:+$REV/}$path"
   got="$(size_of "$out.part")"
   if [ "$got" != "$want" ]; then
     echo "error: $path is $got B, expected $want B" >&2
