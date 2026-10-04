@@ -165,8 +165,9 @@ export class RpcClient {
 
   #foreground = (): void => {
     if (this.#closed || document.visibilityState !== 'visible') return
-    if (this.#state === 'reconnecting') {
-      // A socket parked on the relay (engine offline) may have died in the sleep too; a fresh one costs one upgrade.
+    if (this.#state === 'reconnecting' || this.#state === 'connecting') {
+      // A socket parked on the relay (engine offline), mid-connect or mid-handshake when iOS suspended may have
+      // died in the sleep; replace it at once instead of after the transport's watchdog. A fresh one costs one upgrade.
       this.#t.reset()
       clearTimeout(this.#timer)
       this.#timer = undefined
