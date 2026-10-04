@@ -17,7 +17,7 @@ pub fn displays() -> anyhow::Result<Vec<Display>> {
     Ok(enumerate()?.into_iter().map(|(d, _)| d).collect())
 }
 
-fn enumerate() -> anyhow::Result<Vec<(Display, xcap::Monitor)>> {
+pub(crate) fn enumerate() -> anyhow::Result<Vec<(Display, xcap::Monitor)>> {
     let mut out = xcap::Monitor::all()?
         .into_iter()
         .map(|m| -> anyhow::Result<(Display, xcap::Monitor)> {
@@ -150,6 +150,21 @@ pub fn capture(display: Option<u32>, max_edge: u32, tmp_dir: &Path) -> Result<Sh
         .write_to(&mut Cursor::new(&mut png), ImageFormat::Png)
         .map_err(other)?;
     Ok(Shot { png, frame })
+}
+
+/// One display at its native (physical) resolution, undownscaled: the per-display
+/// grab `capture` composites, for `screen_context` (96 §6.4). Permission check
+/// and request as [`capture`].
+pub(crate) fn capture_display_native(
+    d: &Display,
+    monitor: &xcap::Monitor,
+    tmp_dir: &Path,
+) -> Result<RgbaImage, CaptureError> {
+    if !screen_recording_granted() {
+        request_screen_recording();
+        return Err(CaptureError::NoScreenRecording);
+    }
+    grab(d, monitor, d.index as usize, tmp_dir)
 }
 
 /// `screencapture -x -R x,y,w,h <tmp>/<pid>-<n>.png` with a 5 s deadline, decoded with `image`.

@@ -2780,7 +2780,11 @@ impl ApiServer for Server {
         if peer(ext)?.remote() {
             return Err(failed("the screen is on the harness host"));
         }
-        ask::<Computer, _>(COMPUTER_ACTOR, ScreenContext(req)).await
+        let actor = lookup::<Computer>(COMPUTER_ACTOR).map_err(|e| match e.code() {
+            NOT_RUNNING => ErrorObjectOwned::owned(NOT_RUNNING, "disabled", None::<()>),
+            _ => e,
+        })?;
+        send(&actor, ScreenContext(req)).await
     }
 
     async fn compact(

@@ -9,6 +9,7 @@
 //!   [`ScreenContext`] (96 §6)
 
 pub mod ax;
+pub mod context;
 pub mod frame;
 pub mod input;
 pub mod pointer;
@@ -41,6 +42,8 @@ pub struct ComputerConfig {
     /// Long edge of a screenshot after logical scaling (17 §1; ~1280 for
     /// Anthropic click accuracy).
     pub max_edge: u32,
+    /// `screen_context` (96 §6.8).
+    pub screen_context: ScreenContextConfig,
 }
 
 impl Default for ComputerConfig {
@@ -48,8 +51,50 @@ impl Default for ComputerConfig {
         Self {
             enabled: true,
             max_edge: 1568,
+            screen_context: ScreenContextConfig::default(),
         }
     }
+}
+
+/// `computer.screen_context:` (96 §6.8). Every field has a default.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ScreenContextConfig {
+    /// Overview long edge.
+    pub max_edge: u32,
+    /// A crop is downscaled only above this long edge.
+    pub crop_edge: u32,
+    /// At most this many crops per call, in gesture precedence.
+    pub max_crops: usize,
+    /// `off` never calls AX even when granted.
+    pub accessibility: AxMode,
+    /// Elements reported per gesture.
+    pub max_elements: usize,
+    /// Label/value length cap in characters.
+    pub value_chars: usize,
+}
+
+impl Default for ScreenContextConfig {
+    fn default() -> Self {
+        Self {
+            max_edge: 1568,
+            crop_edge: 1024,
+            max_crops: 3,
+            accessibility: AxMode::Auto,
+            max_elements: 6,
+            value_chars: 80,
+        }
+    }
+}
+
+/// Whether `screen_context` reads the accessibility tree.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum AxMode {
+    /// Read it when the client asks and the process is trusted.
+    Auto,
+    /// Never.
+    Off,
 }
 
 /// One display as shown by `/computer` and Settings › Computer.
@@ -127,6 +172,8 @@ pub struct ScreenContext(pub ScreenContextReq);
 pub struct Computer {
     /// Shared tool state.
     pub ctx: Arc<tools::Ctx>,
+    /// `<data_dir>`: `screen_context` writes under `attachments/` and `computer/tmp`.
+    pub data_dir: PathBuf,
 }
 
 impl Message<Permissions> for Computer {
@@ -172,12 +219,22 @@ impl Message<Permissions> for Computer {
 impl Message<ScreenContext> for Computer {
     type Reply = Result<ScreenContextReply, String>;
 
+    /// Capture, stamp, read and write off the actor thread (96 §6.4).
     async fn handle(
         &mut self,
-        _: ScreenContext,
+        m: ScreenContext,
         _: &mut Context<Self, Self::Reply>,
     ) -> Self::Reply {
-        Err("not built".into())
+        let ctx = self.ctx.clone();
+        let data_dir = self.data_dir.clone();
+        match tokio::task::spawn_blocking(move || {
+            context::compose(&m.0, &ctx.cfg.screen_context, &data_dir)
+        })
+        .await
+        {
+            Ok(r) => r,
+            Err(e) => Err(format!("screen_context panicked: {e}")),
+        }
     }
 }
 
@@ -217,7 +274,10 @@ impl runtime::Plugin for ComputerPlugin {
             input: input::spawn(),
             frames: Mutex::new(HashMap::new()),
         });
-        let actor = Computer::spawn(Computer { ctx: ctx.clone() });
+        let actor = Computer::spawn(Computer {
+            ctx: ctx.clone(),
+            data_dir: rt.data_dir.clone(),
+        });
         actor.register(COMPUTER_ACTOR)?;
 
         let rt = rt.clone();
@@ -236,7 +296,7 @@ impl runtime::Plugin for ComputerPlugin {
                 let _ = reg
                     .ask(RegisterPrompt {
                         plugin: "computer",
-                        text: tools::PROMPT.to_owned(),
+                        text: format!("{}\n\n{}", tools::PROMPT, context::PROMPT),
                     })
                     .await;
             }
