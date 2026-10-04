@@ -534,13 +534,25 @@ is a well-known terminal key (`Control+D`, `Control+C`, `Control+Z`) — a hint,
 
 ### 5.1 Panel states
 
+Amended 2026-10-04 (96-as-built-FIX-PANEL): `replying` split into `working` and `speaking`; the reply ends on
+local playback, not the engine's `SpeechFinished`; `done` is 2 s; `error` and `placing` added.
+
 | Phase | Height | Shows | Leaves on |
 |---|---|---|---|
-| concealed | — | nothing (alpha 0) | `point:start` |
-| listening | 44 | `VoiceWave` on the engine level packets (`levelSource`, the composer's local-engine case), live words muted while the utterance is open and saturated when closed, `mm:ss`, a lock glyph after `point:lock`, the hint "Hold to talk · double-tap to lock" on the first three uses (`voiceKey.hintsShown`) | `point:stop`, `point:cancel` |
-| sending | 44 | the text muted, three dots; `screen_context` and `dictation_stop` in flight | send resolved / failed |
-| replying | 132 | subtitles following the spoken block as the talk view does, `VoiceWave` on `analyserNodeSource(speech.outputNode())`, a Stop square (→ `stop_speaking(null)` + `point_cancel`), "Needs your approval — Open chat" on `ApprovalRequested`, `Error` text in red | `SpeechFinished` of the last block |
-| done | 132 | the subtitles, an "Open chat" link (→ `navigate` to `/c/<desk>` in main) | 6 s → `point_done()`; Esc or a click outside → `point_cancel()` at once |
+| concealed | — | nothing (alpha 0) | `point:start`, `voice-key:place` |
+| listening | 44 | `VoiceWave` on the engine level packets (`levelSource`, the composer's local-engine case), live words muted while the utterance is open and saturated when closed, `mm:ss`, a lock glyph after `point:lock`, the hint "Hold to talk · double-tap to lock" on the first three uses (`voiceKey.hintsShown`; "Hold the left mouse button to draw" when `annotate = mouse`) | `point:stop`, `point:cancel` |
+| sending | 44 | the text muted ("Sending…" when none yet), three dots; `screen_context` and `dictation_stop` in flight | send resolved / failed |
+| working | 44 | a spinner and one status line from the desk's slice: `waiting` → "Thinking…", `reasoning` → "Reasoning…", `tool` → "Running <tool>…" (the pending tool entry's name) else "Working…", `vision` → "Looking at the screen…", `streaming` → "Writing…"; `ApprovalRequested` → "Needs your approval — Open chat" until `ApprovalResolved`; a Stop square | playback starts here (→ speaking); turn finished and nothing plays for `SPEAK_WAIT_MS` = 1.5 s (→ done); `Error` (→ error) |
+| speaking | 44 + the spoken text, ≤ 132 | a small output wave (`h-7 w-16`, `analyserNodeSource(speech.outputNode())`), a Stop square (→ `speech.stop` + `stop_speaking(null)` + `point_cancel`), below it the block being spoken (`speech.useSpeaking().entry`, else the turn's text so far) | playback ends (→ working) |
+| done | 44 | the last sentence of the spoken entry muted (else "Done"), an "Open chat" link (→ `navigate` to `/c/<desk>` in main) | `DONE_MS` = 2 s → `point_done()`; Esc or Stop → `point_cancel()` at once; a late `SpeechStarted`/playback → working/speaking |
+| error | 44 | the desk's `Error` message in red | `ERROR_MS` = 4 s → `point_cancel()` |
+| placing | 44 | "Drag me where you want the voice panel" on a `data-tauri-drag-region` strip and a Done button; a drag end saves `positions[key]` (the meeting island's rule) | Done / Settings' "Hide panel" / Esc (→ `voice-key:placed` to main), or `point:start` (the gesture continues normally) |
+
+The reply is over when BOTH hold: the desk's `TurnFinished` has arrived AND this webview's playback is idle
+(`speech.useSpeaking()` null, fed to the orchestrator by the panel). The engine's `SpeechFinished` means
+"every packet published", which Pocket TTS reaches long before playback ends; it plays no part. Between
+`TurnFinished`/the end of one block and the next block's `speak` there is one RPC round trip before
+`useSpeaking()` is set, hence the 1.5 s grace; a turn with nothing to say ends after the grace alone.
 
 Refusals render in the listening slot for 2 s: "Meeting running — use ⌥` to ask" (the panel calls
 `point_refuse("meeting")` while `useMeeting` is live and clears it on `Done`), "Nothing recognized",
@@ -568,6 +580,11 @@ none`, transparent. On `point:start` it resolves `--status-success-fg` from
 `shadowBlur 2 × dpr` in the same colour — then a 14 pt ring at the last point; on
 `point:stop`/`point:cancel` it clears. The resolved hex is the panel's `color`.
 
+Amended 2026-10-04 (96-as-built-FIX-PANEL): `point:samples.pen === false` (the left mouse button is up in
+`mouse` mode) lifts the pen — the polyline breaks, those points are not drawn, the 14 px ring follows the
+pointer at 40 percent opacity; `pen === true` draws as before. `point:start` writes `html[data-annotate]`
+from the persisted setting; `styles.css` gives `mouse` a crosshair cursor.
+
 ### 5.4 Settings
 
 `voiceKey.enabled` (on; off → the main webview calls `voice_key_bind("")`, which unregisters),
@@ -578,6 +595,15 @@ and the Open System Settings link (27 §6), a link to Settings › Shortcuts for
 disclosure: "Screenshots sent with a voice key question can contain private information — names,
 messages, documents on your screen; redaction cannot remove what the model has already seen" (52
 §8).
+
+Amended 2026-10-04 (96-as-built-FIX-PANEL): `voiceKey.annotate` (`always` | `mouse`, default `always`) — the
+row "Draw the trail" ("Always while the key is held" / "Only while the left mouse button is held"; "With the
+mouse option, clicks go to the trail while the key is held, not to the app underneath."); the main webview
+calls `point_configure(annotate)` after `voice_key_bind` at boot and on every change. The row "Panel
+position" ("The voice panel and the meeting island share this spot (saved per display layout).") with
+"Show panel to move it" (→ `emitTo('island', 'voice-key:place', { on: true })`; the island enters `placing`,
+the button reads "Hide panel" until the island answers `voice-key:placed`) and "Reset to default"
+(→ `{ reset: true }`; the island runs `island_place({})` and `clearPosition(key)` on the key it answers).
 
 ## 6. Daemon: `computer` plugin (`crates/computer`)
 
@@ -890,4 +916,12 @@ autoplay for a hotkey-started `AudioContext` in a non-activating panel (spike 1)
 `cursor_position`/monitor units on mixed DPI (spike 2), Carbon hot-key auto-repeat behaviour and the
 Rust-side `Shortcut` parser (spike 3), the AX crate (spike 4). Next: the as-built companions
 `96-as-built-SHELL.md`, `96-as-built-DAEMON.md`, `96-as-built-PANEL.md`.
+
+Amended 2026-10-04 (96-as-built-FIX-PANEL): after the first live run (Sky: "it works pretty well, a couple
+small tweaks") the panel's reply lifetime follows this webview's playback plus the desk's `TurnFinished`
+(the engine's `SpeechFinished` ended the panel mid-speech), `done` is 2 s, `replying` became `working`
+(a strip with a status line from the desk's slice) and `speaking` (grown to the spoken text), `error`
+and `placing` were added, Settings › Voice key gained "Panel position" (show-and-drag, reset) and "Draw
+the trail" (`annotate`: always | only while the left mouse button is held → `point_configure`), and the
+overlay lifts the pen on `point:samples.pen === false`. Details: `96-as-built-FIX-PANEL.md`.
 
