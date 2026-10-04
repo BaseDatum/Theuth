@@ -686,6 +686,28 @@ impl runtime::Plugin for DecisionPlugin {
             }
             Engine::spawn(engine).register(actor_name(&name))?;
         }
+        // 92 §1.2: the `decide` tools, once the registry is up; absent when the plugin or the
+        // `tool` family is off, and so is the prompt paragraph.
+        if cfg.enabled
+            && cfg
+                .families
+                .get(TOOL_FAMILY)
+                .is_some_and(|g| g.mode != Mode::Off)
+        {
+            let decide = std::sync::Arc::new(tool::Decide::new(
+                cfg.clone(),
+                &rt.data_dir.join("decisions"),
+            ));
+            let rt = rt.clone();
+            tokio::spawn(async move {
+                if let Some(reg) = rt
+                    .lookup_when::<tools::ToolRegistry>(tools::REGISTRY_ACTOR)
+                    .await
+                {
+                    tool::register(&reg, decide).await;
+                }
+            });
+        }
         Ok(())
     }
 }
