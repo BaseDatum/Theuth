@@ -1,15 +1,13 @@
-import { Link, useNavigate } from '@tanstack/react-router'
-import { ChevronLeft, PanelLeft } from 'lucide-react'
+import { useNavigate } from '@tanstack/react-router'
 import { useEffect, useState } from 'react'
 import { toast } from 'sonner'
-import { SearchTrigger } from '@/components/sidebar/SearchTrigger'
+import { SectionBand } from '@/components/nav/SectionBand'
+import { SectionRow } from '@/components/nav/SectionRow'
 import { useAgents } from '@/components/tasks/queries'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
-import { useSidebar } from '@/components/ui/sidebar'
 import { Textarea } from '@/components/ui/textarea'
-import { isMacDesktop } from '@/lib/hotkeys'
 import { useApi } from '@/lib/rpc'
 import { cn } from '@/lib/utils'
 import { CharterDoc, useCharterDoc } from './CharterDoc'
@@ -44,8 +42,6 @@ const LABEL: Record<Step, string> = { identity: 'Identity', role: 'Role', runtim
  * agent's overview — from then on the file is the source of truth and the document follows it.
  */
 export function HireWizard() {
-  const sidebar = useSidebar()
-  const mac = isMacDesktop()
   const navigate = useNavigate()
   const agents = useAgents()
   const { put } = useAgentActions()
@@ -101,26 +97,15 @@ export function HireWizard() {
 
   return (
     <article className="flex min-h-0 min-w-0 flex-1 flex-col">
-      <header
-        data-tauri-drag-region={mac || undefined}
-        className={cn('flex h-[52px] shrink-0 items-center gap-1 border-b border-border-subtle px-3', !sidebar.open && mac && 'pl-20')}
+      <SectionBand group="agents" />
+      <SectionRow
+        back={{ to: '/agents', label: 'Back to agents' }}
+        title={
+          <>
+            <span className="text-fg-tertiary">Agents › </span>Hire an agent
+          </>
+        }
       >
-        {(!sidebar.open || sidebar.isMobile) && (
-          <div className="flex shrink-0 items-center">
-            <SearchTrigger />
-            <Button variant="ghost" size="icon-sm" aria-label="Show sidebar" onClick={sidebar.toggleSidebar}>
-              <PanelLeft />
-            </Button>
-          </div>
-        )}
-        <Button asChild variant="ghost" size="icon-sm" aria-label="Back to agents">
-          <Link to="/agents">
-            <ChevronLeft />
-          </Link>
-        </Button>
-        <h2 className="min-w-0 flex-1 truncate text-sm font-semibold">
-          <span className="text-fg-tertiary">Agents › </span>Hire an agent
-        </h2>
         {saved && (
           <Button
             variant="ghost"
@@ -134,7 +119,7 @@ export function HireWizard() {
             Start over
           </Button>
         )}
-      </header>
+      </SectionRow>
       <div className="flex min-h-0 flex-1 flex-col md:flex-row">
         <nav aria-label="Hire steps" className="shrink-0 border-b border-border-subtle p-3 md:w-52 md:border-r md:border-b-0">
           <ol className="flex gap-1 overflow-x-auto md:flex-col">

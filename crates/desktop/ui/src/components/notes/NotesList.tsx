@@ -1,15 +1,14 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { Link, useNavigate } from '@tanstack/react-router'
-import { AppWindow, LayoutPanelTop, MoreHorizontal, PanelLeft, Pencil, Plus, StickyNote, Trash2 } from 'lucide-react'
+import { AppWindow, LayoutPanelTop, MoreHorizontal, Pencil, Plus, StickyNote, Trash2 } from 'lucide-react'
 import { type KeyboardEvent, useRef, useState } from 'react'
 import { toast } from 'sonner'
 import { dragSource } from '@/components/chat/AttachChip'
-import { SectionTabs } from '@/components/nav/SectionTabs'
+import { SectionBand } from '@/components/nav/SectionBand'
+import { SectionRow } from '@/components/nav/SectionRow'
 import { createNote } from '@/components/notes/create'
-import { toRef } from '@/lib/attach'
 import { useNotes } from '@/components/notes/useNotes'
 import { ago } from '@/components/sidebar/AgentTree'
-import { SearchTrigger } from '@/components/sidebar/SearchTrigger'
 import { Button } from '@/components/ui/button'
 import { DictationButton } from '@/components/ui/dictation'
 import {
@@ -18,11 +17,9 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
-import { useSidebar } from '@/components/ui/sidebar'
 import { Skeleton } from '@/components/ui/skeleton'
-import { isMacDesktop } from '@/lib/hotkeys'
+import { toRef } from '@/lib/attach'
 import { canPopout, openPopout } from '@/lib/popout'
-import { cn } from '@/lib/utils'
 import { queryKeys, useApi } from '@/lib/rpc'
 import type { DocSummary } from '@/rpc/bindings/DocSummary'
 
@@ -32,8 +29,6 @@ export function NotesList() {
   const qc = useQueryClient()
   const navigate = useNavigate()
   const notes = useNotes()
-  const sidebar = useSidebar()
-  const mac = isMacDesktop()
   // The note opens with its title focused (`?new`) as soon as it exists (`create.ts`); a create that fails before that toasts and stays.
   const create = useMutation({
     mutationFn: () => createNote(api, qc, notes.data ?? []),
@@ -42,24 +37,12 @@ export function NotesList() {
   })
   return (
     <article className="flex min-h-0 min-w-0 flex-1 flex-col">
-      <header
-        data-tauri-drag-region={mac || undefined}
-        className={cn('flex h-[52px] shrink-0 items-center gap-1 border-b border-border-subtle px-3', !sidebar.open && mac && 'pl-20')}
-      >
-        {(!sidebar.open || sidebar.isMobile) && (
-          <div className="flex shrink-0 items-center">
-            <SearchTrigger />
-            <Button variant="ghost" size="icon-sm" aria-label="Show sidebar" onClick={sidebar.toggleSidebar}>
-              <PanelLeft />
-            </Button>
-          </div>
-        )}
-        <h2 className="min-w-0 flex-1 truncate text-sm font-semibold">Notes</h2>
-        <Button variant="ghost" size="sm" disabled={create.isPending} onClick={() => create.mutate()}>
+      <SectionBand group="library" />
+      <SectionRow>
+        <Button variant="ghost" size="sm" className="ml-auto" disabled={create.isPending} onClick={() => create.mutate()}>
           <Plus /> New note
         </Button>
-      </header>
-      <SectionTabs group="library" />
+      </SectionRow>
       <div className="min-h-0 flex-1 overflow-y-auto">
         <div className="mx-auto w-full max-w-[768px] p-3">
           {notes.isPending && (

@@ -135,8 +135,6 @@ export function Tools({ session }: { session: string | null }) {
   const act = useMcpActions(session)
   return (
     <Page
-      title="Tools"
-      tabs="library"
       actions={
         <>
           <Button

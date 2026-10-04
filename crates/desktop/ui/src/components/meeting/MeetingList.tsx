@@ -4,21 +4,19 @@
 
 import { useQuery } from '@tanstack/react-query'
 import { Link, useNavigate } from '@tanstack/react-router'
-import { AppWindow, MoreHorizontal, PanelLeft, Paperclip, Trash2 } from 'lucide-react'
+import { AppWindow, MoreHorizontal, Paperclip, Trash2 } from 'lucide-react'
 import { type ReactNode, useState } from 'react'
 import { dragSource } from '@/components/chat/AttachChip'
-import { SectionTabs } from '@/components/nav/SectionTabs'
+import { SectionBand } from '@/components/nav/SectionBand'
+import { SectionRow } from '@/components/nav/SectionRow'
 import { ChatPicker } from '@/components/notes/ChatPicker'
 import { Empty, errorText, useAction } from '@/components/settings/shared'
-import { SearchTrigger } from '@/components/sidebar/SearchTrigger'
 import { Button } from '@/components/ui/button'
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
-import { useSidebar } from '@/components/ui/sidebar'
 import { isMacDesktop, touch } from '@/lib/hotkeys'
 import { isDesktop } from '@/lib/platform'
 import { canPopout, isPopout, openPopout } from '@/lib/popout'
 import { queryKeys, useApi } from '@/lib/rpc'
-import { cn } from '@/lib/utils'
 import { LOCAL, useEngines } from '@/link/engines'
 import { type AttachRef, toRef } from '@/lib/attach'
 import type { Api } from '@/rpc/api'
@@ -33,28 +31,29 @@ export const duration = (ms: number): string => {
   return m < 60 ? `${m} min` : `${Math.floor(m / 60)} h ${m % 60} min`
 }
 
-/** The 52 px drag band every meetings page starts with: sidebar toggle when the rail is closed, a title (or the tab strip), actions.
- * A popped window has no sidebar and a normal title bar: no toggle, no traffic-light inset. */
-export function MeetingHeader({ title, children }: { title: ReactNode; children?: ReactNode }) {
-  const sidebar = useSidebar()
+/**
+ * What every meetings page starts with. In the shell (97b): the Library band, then a 44 px row with `title` — the
+ * Meetings · Briefs sub-tabs on the list pages, a text title on the start form and the control center — and the
+ * actions (`children`); `back` adds a chevron to `/meetings`. A popped window (`PoppedMeetingNote`, a `?window=`
+ * meeting) has no sidebar and a normal title bar, so it keeps the 52 px drag band with no toggle and no inset.
+ */
+export function MeetingHeader({ title, back, children }: { title: ReactNode; back?: boolean; children?: ReactNode }) {
   const mac = isMacDesktop()
-  const popped = isPopout()
+  if (isPopout()) {
+    return (
+      <header data-tauri-drag-region={mac || undefined} className="flex h-[52px] shrink-0 items-center gap-1 px-3">
+        <h2 className="flex flex-1 items-center gap-1 truncate text-sm font-semibold">{title}</h2>
+        {children}
+      </header>
+    )
+  }
   return (
-    <header
-      data-tauri-drag-region={mac || undefined}
-      className={cn('flex h-[52px] shrink-0 items-center gap-1 px-3', !sidebar.open && mac && !popped && 'pl-20')}
-    >
-      {(!sidebar.open || sidebar.isMobile) && !popped && (
-        <div className="flex shrink-0 items-center">
-          <SearchTrigger />
-          <Button variant="ghost" size="icon-sm" aria-label="Show sidebar" onClick={sidebar.toggleSidebar}>
-            <PanelLeft />
-          </Button>
-        </div>
-      )}
-      <h2 className="flex flex-1 items-center gap-1 truncate text-sm font-semibold">{title}</h2>
-      {children}
-    </header>
+    <>
+      <SectionBand group="library" />
+      <SectionRow back={back ? { to: '/meetings', label: 'Back to meetings' } : undefined} title={title}>
+        {children}
+      </SectionRow>
+    </>
   )
 }
 
@@ -69,19 +68,19 @@ export function useCanRecord(): boolean {
   return local && status.data?.supported.kind !== 'None'
 }
 
-/** 05 §7: briefs are a sub-feature of meetings — a tab beside the list, not a sidebar entry. */
+/** 05 §7: briefs are a sub-feature of meetings — a tab beside the list, not a sidebar entry. 97b: the sub-tabs sit in the row under the Library band. */
 export function MeetingTabs() {
   const tab = 'rounded-md px-2 py-1 text-fg-tertiary hover:text-foreground'
   const active = { className: 'bg-layer-2 text-foreground' }
   return (
-    <>
+    <span className="flex items-center gap-1">
       <Link to="/meetings" activeOptions={{ exact: true }} className={tab} activeProps={active}>
         Meetings
       </Link>
       <Link to="/meetings/briefs" className={tab} activeProps={active}>
         Briefs
       </Link>
-    </>
+    </span>
   )
 }
 
@@ -101,7 +100,6 @@ export function MeetingList() {
           </Button>
         )}
       </MeetingHeader>
-      <SectionTabs group="library" />
       <div className="min-h-0 flex-1 overflow-y-auto px-6 pb-10">
         {list.isError && <Empty>{errorText(list.error)}</Empty>}
         {list.data?.length === 0 && <Empty>No meetings yet.</Empty>}
