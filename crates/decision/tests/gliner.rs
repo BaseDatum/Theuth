@@ -114,7 +114,7 @@ async fn ask_many_through_the_actor_in_shadow() {
     let tmp = tempfile::tempdir().unwrap();
     let log = Log::new(tmp.path().join("decisions"));
     let engine = Engine::spawn(engine(config(), &models, dir, log));
-    let ds = engine.ask(AskMany { asks: questions() }).await.unwrap();
+    let ds = engine.ask(AskMany::new(questions())).await.unwrap();
     assert_eq!(ds.len(), 3);
     for d in &ds {
         let Disposition::Shadow(inner) = &d.disposition else {
@@ -132,7 +132,8 @@ async fn ask_many_through_the_actor_in_shadow() {
         assert_eq!(d.act_probability, 0.0);
         assert!(d.confidence > 0.0 && d.confidence <= 1.0);
         assert_ne!(d.gate_version, 0);
-        assert!(d.calibrated && d.tier == 1);
+        // 92 §5: gliner is uncalibrated (temperature 1.0, no family temperature fitted).
+        assert!(!d.calibrated && d.tier == 1);
     }
     // Bool: `[false, true]` labels (the engine's order; gliner's `yes` logit is P(true)).
     let labels = |d: &decision::Decision| -> Vec<String> {

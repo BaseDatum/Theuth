@@ -324,6 +324,7 @@ mod tests {
             log_id: LogId::new(),
             tier: 1,
             calibrated: true,
+            truncated: false,
         }
     }
 

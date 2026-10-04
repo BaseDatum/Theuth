@@ -156,3 +156,12 @@ rows · 4 KB state**; capture = **per-call `capture="tool.<task>"` + `decide_lab
 4. Where the training capture consent lives: per sub-family `train:` in config (57 pattern) vs a
    per-call `capture=True` argument the model sets when the user asked for a reusable sorter.
 5. Fine-tune venue: local LoRA on the head (CPU-feasible) vs the 57 §11 shared pipeline.
+
+## 9. As built
+
+Steps 1 + 2 + the prompt/skill (§8's "this round"): `70-as-built-DECIDE.md` — the `tool` family and
+`FamilyGate.temperature`, `crates/decision/src/tool.rs` (`decide`, `decide_many`, `decide_label`;
+question dicts instead of Monty prelude helpers, the prelude being imports-only), the batch bench
+(gliner pads its forwards, `decision.tool.batch` = 8), `Decision.truncated`, `AskMany.checkpoint`,
+per-row build errors, the `decide` skill and the `## Bulk classification` prompt paragraph. Open:
+calibration fit (step 4), the email lab (step 3).

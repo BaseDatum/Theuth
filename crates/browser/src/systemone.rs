@@ -1067,7 +1067,7 @@ impl Ctx {
             }
             let has_click = asks.iter().any(|a| a.family.0 == FAMILY_TARGET);
             let t = Instant::now();
-            let ds = match engine.ask(AskMany { asks }).await {
+            let ds = match engine.ask(AskMany::new(asks)).await {
                 Ok(ds) => ds,
                 Err(e) => break Stop::Error(format!("decision: {e}")),
             };

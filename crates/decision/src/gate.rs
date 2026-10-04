@@ -91,6 +91,15 @@ pub struct FamilyGate {
     /// was trained on states cut exactly like this (the head budget dominates the sequence).
     #[serde(default)]
     pub cut_ok: bool,
+    /// Calibration temperature (92 §5): the logits are divided by it (on top of the model's own
+    /// temperature) before the softmax `confidence` and the gate read. `1.0` = none fitted, and
+    /// the probabilities are exactly what the oracle returned.
+    #[serde(default = "one")]
+    pub temperature: f32,
+}
+
+const fn one() -> f32 {
+    1.0
 }
 
 const fn yes() -> bool {
@@ -134,6 +143,21 @@ impl FamilyGate {
             checkpoint: None,
             none: true,
             cut_ok: false,
+            temperature: 1.0,
+        }
+    }
+
+    /// The `decide` tool's family (92 §2): active, no thresholds (the model's loop applies its
+    /// own on `confidence`), the `none` control kept, state cut allowed (the row reports
+    /// `truncated`), 2 s per batch, on the `gliner` checkpoint — invented labels are what
+    /// GLiNER2.5-Decide was trained for; laya base is near chance on them.
+    pub fn tool() -> Self {
+        FamilyGate {
+            mode: Mode::Active,
+            budget: Duration::from_secs(2),
+            checkpoint: Some(crate::GLINER_CHECKPOINT.to_owned()),
+            cut_ok: true,
+            ..FamilyGate::shadow(0.0, 0.0)
         }
     }
 
@@ -197,12 +221,16 @@ impl FamilyGate {
         }
     }
 
-    /// Changes whenever the thresholds or the model artifact change, so log rows are comparable
-    /// (57 §2). Mode is not part of it: flipping shadow → active keeps the rows comparable.
+    /// Changes whenever the thresholds, the temperature or the model artifact change, so log
+    /// rows are comparable (57 §2). Mode is not part of it: flipping shadow → active keeps the
+    /// rows comparable.
     pub fn version(&self, model_sha: &str) -> u32 {
         let mut h = Sha256::new();
         h.update(self.tau_top.to_bits().to_le_bytes());
         h.update(self.tau_margin.to_bits().to_le_bytes());
+        if self.temperature != 1.0 {
+            h.update(self.temperature.to_bits().to_le_bytes());
+        }
         h.update(model_sha.as_bytes());
         let d = h.finalize();
         u32::from_le_bytes([d[0], d[1], d[2], d[3]])
@@ -234,6 +262,7 @@ mod tests {
         checkpoint: None,
         none: true,
         cut_ok: false,
+        temperature: 1.0,
     };
 
     #[test]
@@ -303,6 +332,7 @@ mod tests {
             log_id: LogId::new(),
             tier: 1,
             calibrated: true,
+            truncated: false,
         }
     }
 

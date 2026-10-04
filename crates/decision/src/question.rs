@@ -66,7 +66,19 @@ impl std::fmt::Display for Family {
 }
 
 /// Identifies one log row for [`Outcome`] patching. Time-ordered.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, schemars::JsonSchema)]
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Hash,
+    Serialize,
+    Deserialize,
+    schemars::JsonSchema,
+)]
 #[serde(transparent)]
 pub struct LogId(pub uuid::Uuid);
 
@@ -190,6 +202,11 @@ pub struct Decision {
     /// `false` when `probabilities` is a model's self-reported confidence, not the calibrated head.
     #[serde(default = "yes")]
     pub calibrated: bool,
+    /// The rendered state was right-truncated to the model's window, or an option marker fell
+    /// past it (57 §0.5). A hard error only when the family does not allow a cut
+    /// (`Escalate(Truncated)`); otherwise the answer stands and the caller sees the cut here.
+    #[serde(default)]
+    pub truncated: bool,
 }
 
 const fn tier_one() -> u8 {

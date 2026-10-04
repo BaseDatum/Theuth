@@ -19,6 +19,7 @@ pub mod laya;
 pub mod log;
 pub mod question;
 pub mod subject;
+pub mod tool;
 pub mod training;
 
 use std::collections::BTreeMap;
@@ -62,6 +63,13 @@ pub const IDLE_UNLOAD: Duration = Duration::from_secs(180);
 /// The `browser` checkpoint's idle default (57 §2.1 item 2): loop steps are sub-second, so a
 /// run never trips it, and a session that stops calling `browser_run` frees 0.9 GB sooner.
 pub const BROWSER_IDLE_UNLOAD: Duration = Duration::from_secs(120);
+
+/// The GLiNER2.5-Decide checkpoint name (57 §2.2): `<data_dir>/models/decision-gliner/` unless
+/// `decision.checkpoints.gliner` says otherwise; [`Kind::Gliner`] unless configured.
+pub const GLINER_CHECKPOINT: &str = "gliner";
+
+/// The `decide` tool's family (92 §2); sub-families are `tool.<task>`.
+pub const TOOL_FAMILY: &str = "tool";
 
 /// Which classifier family a checkpoint is (`decision.checkpoints.<name>.kind`): the files
 /// expected on disk ([`engine::model_files`]) and the [`Oracle`] that loads it.
@@ -275,13 +283,41 @@ pub struct DecisionConfig {
     pub log_text: bool,
     /// `AskMany`: run the batch as one padded forward (`true`) or as one forward per question,
     /// each padded to its own length (`false`). Default from `examples/bench.rs` (b2)/(b3) on
-    /// Metal, where the forward is close to linear in padded tokens.
+    /// Metal, where laya's forward is close to linear in padded tokens. A gliner checkpoint
+    /// always pads (`examples/decide_bench.rs`); this knob only forces laya to.
     pub batch_forward: bool,
     /// Gate per decision family; a family not listed never runs. The YAML is a patch over the
     /// default table: `meeting.kind: { mode: active }` changes one field; a prefix key
-    /// (`meeting: { mode: off }`, what Settings → Meetings writes) patches every family under it.
+    /// (`meeting: { mode: off }`, what Settings → Meetings writes) patches every family under it;
+    /// `tool.mail: { train: true }` derives a new sub-family from its parent `tool`.
     #[serde(deserialize_with = "families")]
     pub families: BTreeMap<String, FamilyGate>,
+    /// The `decide` / `decide_many` runtime functions (92 §3).
+    pub tool: ToolConfig,
+}
+
+/// `decision.tool` (92 §3, §8): the caps and the batch size of `decide_many`.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(default)]
+pub struct ToolConfig {
+    /// Most questions per `decide_many` call; over it the call fails and says to loop over slices.
+    pub max_rows: usize,
+    /// Most bytes of `state` per question; over it that row is an error.
+    pub max_state_bytes: usize,
+    /// Rows per `AskMany` (one padded forward on gliner). `examples/decide_bench.rs`, 500 ×
+    /// 165-token rows, 5 labels, M3 Max under load: gliner padded 8 → 99 ms/row, 16 → 105,
+    /// 32 → 113 (per-row forwards 131–157); laya is per-row and flat (68–70 ms/row).
+    pub batch: usize,
+}
+
+impl Default for ToolConfig {
+    fn default() -> Self {
+        ToolConfig {
+            max_rows: 2000,
+            max_state_bytes: 4096,
+            batch: 8,
+        }
+    }
 }
 
 impl Default for DecisionConfig {
@@ -295,6 +331,7 @@ impl Default for DecisionConfig {
             log_text: false,
             batch_forward: BATCH_FORWARD,
             families: default_families(),
+            tool: ToolConfig::default(),
         }
     }
 }
@@ -324,11 +361,19 @@ impl DecisionConfig {
             })
     }
 
-    /// The classifier family of `checkpoint`: its `kind` if configured, else laya.
+    /// The classifier family of `checkpoint`: its `kind` if configured, else gliner for the
+    /// `gliner` checkpoint, else laya.
     pub fn kind_for(&self, checkpoint: &str) -> Kind {
-        self.checkpoints
-            .get(checkpoint)
-            .map_or(Kind::Laya, |c| c.kind)
+        self.checkpoints.get(checkpoint).map_or_else(
+            || {
+                if checkpoint == GLINER_CHECKPOINT {
+                    Kind::Gliner
+                } else {
+                    Kind::Laya
+                }
+            },
+            |c| c.kind,
+        )
     }
 
     /// Every checkpoint directory by name, given the `default` one: `browser` is
@@ -383,6 +428,8 @@ impl DecisionConfig {
 /// checkpoint — `browser.operation` executes at P ≥ 0.5, `browser.target` /
 /// `browser.type_target` at P ≥ 0.25 (cklxx shipped ungated; the bench decides), no margin, no
 /// `none`, state cut allowed. Shadow by default: `browser_run` decides but does not act.
+///
+/// 92 §2: `tool` is the `decide` tool's family ([`FamilyGate::tool`]).
 fn default_families() -> BTreeMap<String, FamilyGate> {
     [
         ("meeting.kind", FamilyGate::shadow(0.60, 0.20)),
@@ -392,6 +439,7 @@ fn default_families() -> BTreeMap<String, FamilyGate> {
         ("browser.target", FamilyGate::browser(0.25)),
         ("browser.type_target", FamilyGate::browser(0.25)),
         ("agent.readable", FamilyGate::shadow(0.85, 0.40)),
+        (TOOL_FAMILY, FamilyGate::tool()),
     ]
     .into_iter()
     .map(|(k, v)| (k.to_owned(), v))
@@ -414,6 +462,7 @@ struct FamilyPatch {
     checkpoint: Option<String>,
     none: Option<bool>,
     cut_ok: Option<bool>,
+    temperature: Option<f32>,
 }
 
 impl FamilyPatch {
@@ -452,12 +501,17 @@ impl FamilyPatch {
         if let Some(c) = self.cut_ok {
             g.cut_ok = c;
         }
+        if let Some(t) = self.temperature {
+            g.temperature = t;
+        }
     }
 }
 
 /// Patch the default table (57 §3.4): exact family names first, then prefix keys, so
 /// `meeting: { mode: off }` + `meeting.kind: { mode: active }` still ends with `meeting.kind`
-/// off — the switch wins over a hand edit. A new fully-specified family is inserted.
+/// off — the switch wins over a hand edit. A new fully-specified family is inserted; a new
+/// `parent.child` key whose parent is a family (`tool.mail`) is a sub-family derived from it
+/// (92 §2), any subset of fields.
 fn families<'de, D: serde::Deserializer<'de>>(
     d: D,
 ) -> Result<BTreeMap<String, FamilyGate>, D::Error> {
@@ -472,6 +526,12 @@ fn families<'de, D: serde::Deserializer<'de>>(
         {
             let mut g = FamilyGate::shadow(tau_top, tau_margin);
             g.mode = mode;
+            p.apply(&mut g);
+            table.insert(k.clone(), g);
+        } else if let Some(mut g) = k
+            .rsplit_once('.')
+            .and_then(|(parent, _)| table.get(parent).cloned())
+        {
             p.apply(&mut g);
             table.insert(k.clone(), g);
         } else {
@@ -629,6 +689,28 @@ impl runtime::Plugin for DecisionPlugin {
             }
             Engine::spawn(engine).register(actor_name(&name))?;
         }
+        // 92 §1.2: the `decide` tools, once the registry is up; absent when the plugin or the
+        // `tool` family is off, and so is the prompt paragraph.
+        if cfg.enabled
+            && cfg
+                .families
+                .get(TOOL_FAMILY)
+                .is_some_and(|g| g.mode != Mode::Off)
+        {
+            let decide = std::sync::Arc::new(tool::Decide::new(
+                cfg.clone(),
+                &rt.data_dir.join("decisions"),
+            ));
+            let rt = rt.clone();
+            tokio::spawn(async move {
+                if let Some(reg) = rt
+                    .lookup_when::<tools::ToolRegistry>(tools::REGISTRY_ACTOR)
+                    .await
+                {
+                    tool::register(&reg, decide).await;
+                }
+            });
+        }
         Ok(())
     }
 }
@@ -640,8 +722,40 @@ mod tests {
     #[test]
     fn config_defaults_and_yaml() {
         let d = DecisionConfig::default();
-        assert_eq!(d.families.len(), 7);
-        assert!(d.families.values().all(|g| g.mode == Mode::Shadow));
+        assert_eq!(d.families.len(), 8);
+        assert!(
+            d.families
+                .iter()
+                .all(|(k, g)| (g.mode == Mode::Active) == (k == TOOL_FAMILY))
+        );
+        assert!(d.families.values().all(|g| g.temperature == 1.0));
+        // 92 §2: the `decide` tool's family — no thresholds, `none` kept, cut reported, gliner.
+        let tool = &d.families[TOOL_FAMILY];
+        assert_eq!(
+            (
+                tool.tau_top,
+                tool.tau_margin,
+                tool.checkpoint(),
+                tool.none,
+                tool.cut_ok,
+                tool.budget,
+                tool.train
+            ),
+            (
+                0.0,
+                0.0,
+                GLINER_CHECKPOINT,
+                true,
+                true,
+                Duration::from_secs(2),
+                false
+            )
+        );
+        assert_eq!(d.kind_for(GLINER_CHECKPOINT), Kind::Gliner);
+        assert_eq!(
+            (d.tool.max_rows, d.tool.max_state_bytes, d.tool.batch),
+            (2000, 4096, 8)
+        );
         assert!(
             !d.families.contains_key("meeting.topic"),
             "step 4's topic family is gone (57 §3.5)"
@@ -690,20 +804,48 @@ mod tests {
         assert_eq!(cfg.device, Device::Cpu);
         assert!(!cfg.device.metal());
         // A listed family patches its default row; a fully specified new one is added.
-        assert_eq!(cfg.families.len(), 8);
+        assert_eq!(cfg.families.len(), 9);
         assert_eq!(cfg.families["meeting.kind"].mode, Mode::Active);
         assert_eq!(cfg.families["meeting.kind"].tau_top, 0.7);
         assert_eq!(cfg.families["meeting.kind"].budget, Duration::from_secs(1));
         assert_eq!(cfg.families["meeting.brief"].mode, Mode::Shadow);
         assert_eq!(cfg.families["new.family"].tau_top, 0.5);
-        // `checkpoint`, `none`, `cut_ok` patch like the rest; `checkpoint: default` clears.
+        // `checkpoint`, `none`, `cut_ok`, `temperature` patch like the rest; `checkpoint: default` clears.
         let cfg: DecisionConfig = serde_yaml::from_str(
-            "families:\n  meeting.kind: { checkpoint: browser, none: false, cut_ok: true }\n  browser.target: { checkpoint: default }\n",
+            "families:\n  meeting.kind: { checkpoint: browser, none: false, cut_ok: true, temperature: 1.7 }\n  browser.target: { checkpoint: default }\ntool: { max_rows: 10, batch: 4 }\n",
         )
         .unwrap();
         let k = &cfg.families["meeting.kind"];
-        assert_eq!((k.checkpoint(), k.none, k.cut_ok), ("browser", false, true));
+        assert_eq!(
+            (k.checkpoint(), k.none, k.cut_ok, k.temperature),
+            ("browser", false, true, 1.7)
+        );
         assert_eq!(cfg.families["browser.target"].checkpoint, None);
+        assert_eq!(
+            (cfg.tool.max_rows, cfg.tool.max_state_bytes, cfg.tool.batch),
+            (10, 4096, 4)
+        );
+    }
+
+    /// 92 §2: `tool.<task>` derives from `tool` with any subset of fields; a sub-family of a
+    /// non-family (`meeting.topic`) is still a no-op prefix.
+    #[test]
+    fn tool_sub_family_derives_from_its_parent() {
+        let cfg: DecisionConfig = serde_yaml::from_str(
+            "families:\n  tool: { checkpoint: default }\n  tool.mail: { train: true, temperature: 2.0 }\n  tool.files: { mode: off }\n  meeting.topic: { train: true }\n",
+        )
+        .unwrap();
+        assert_eq!(cfg.families.len(), 10);
+        let mail = &cfg.families["tool.mail"];
+        assert!(mail.train && mail.temperature == 2.0 && mail.mode == Mode::Active);
+        assert_eq!(
+            mail.checkpoint(),
+            DEFAULT_CHECKPOINT,
+            "derived from the patched parent"
+        );
+        assert!(mail.cut_ok && mail.none && mail.tau_top == 0.0);
+        assert_eq!(cfg.families["tool.files"].mode, Mode::Off);
+        assert!(!cfg.families.contains_key("meeting.topic"));
     }
 
     #[test]
@@ -713,7 +855,8 @@ mod tests {
         let default = cfg.model_dir_in(data);
         assert_eq!(default, data.join("models/decision"));
         let dirs = cfg.checkpoint_dirs(&default);
-        assert_eq!(dirs.len(), 2);
+        assert_eq!(dirs.len(), 3);
+        assert_eq!(dirs["gliner"], data.join("models/decision-gliner"));
         assert_eq!(dirs["browser"], data.join("models/decision-browser"));
         assert_eq!(cfg.checkpoint_dir(&default, "browser"), dirs["browser"]);
         // `checkpoints.default` wins over `model_dir`; `checkpoints.<x>` overrides the sibling
@@ -823,7 +966,7 @@ mod tests {
             "families:\n  meeting.kind: { mode: active }\n  meeting: { mode: off }\n",
         )
         .unwrap();
-        assert_eq!(cfg.families.len(), 7);
+        assert_eq!(cfg.families.len(), 8);
         assert_eq!(cfg.families["meeting.kind"].mode, Mode::Off);
         assert_eq!(cfg.families["meeting.brief"].mode, Mode::Off);
         assert_eq!(cfg.families["meeting.subject"].mode, Mode::Off);
@@ -840,7 +983,7 @@ mod tests {
         // A partial unknown family is neither inserted nor an error.
         let cfg: DecisionConfig =
             serde_yaml::from_str("families:\n  nobody: { mode: active }\n").unwrap();
-        assert_eq!(cfg.families.len(), 7);
+        assert_eq!(cfg.families.len(), 8);
         // 57 §11: `train` patches like `mode`, default false everywhere.
         assert!(cfg.families.values().all(|g| !g.train));
         let train: DecisionConfig =
