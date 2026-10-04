@@ -242,8 +242,7 @@ async function onStop(samples: PointSample[], durationMs: number): Promise<void>
   const settings = useVoiceKeySettings.getState()
   const screen = settings.includeScreen
     ? api
-        // `since_ms` is a u64 (`bigint` in the binding); the wire carries a JSON number (as `rpc/extra`'s `Artifact` notes).
-        .screen_context({ samples, color: trailColor(), since_ms: durationMs as unknown as bigint, accessibility: settings.accessibility !== 'off' })
+        .screen_context({ samples, color: trailColor(), since_ms: durationMs, accessibility: settings.accessibility !== 'off' })
         .catch((e: unknown) => {
           console.warn('screen_context', e)
           useVoiceKey.setState({ hint: 'Screenshots off — sent without the screen' })
