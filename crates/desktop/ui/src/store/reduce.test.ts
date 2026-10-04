@@ -432,6 +432,34 @@ test('SubagentSpawned creates the child, adds a row to the parent and its ancest
   expect(draft[S]?.entries.at(-1)).toMatchObject({ kind: 'info', text: '↳ Scout cancelled' })
 })
 
+test('93: a child\'s streaming events beat its row on every ancestor, throttled to 250 ms; the end of a turn and the child itself do not', () => {
+  const draft: Record<string, SessionSlice> = { [S]: empty(S) }
+  route(draft, { type: 'SubagentSpawned', parent: S, child: 'kid', name: 'Scout' }, ctx())
+  route(draft, { type: 'SubagentSpawned', parent: 'kid', child: 'grandkid', name: 'Deep' }, ctx())
+  expect(draft[S]?.children.kid).not.toHaveProperty('beat')
+  const kid = draft.kid
+  expect(route(draft, { type: 'TextDelta', session: 'kid', turn: T, text: 'a' }, ctx(1000))).toBe(true)
+  expect(draft[S]?.children.kid?.beat).toBe(1000)
+  // The child's own slice took the delta but no beat: beats live on the ancestors' rows only.
+  expect(draft.kid).not.toBe(kid)
+  expect(draft.kid).not.toHaveProperty('beat')
+  // Throttle: 100 ms later is too soon, 300 ms later is a new beat.
+  const parent = draft[S]
+  route(draft, { type: 'TextDelta', session: 'kid', turn: T, text: 'b' }, ctx(1100))
+  expect(draft[S]?.children.kid?.beat).toBe(1000)
+  expect(draft[S]).toBe(parent)
+  route(draft, { type: 'TextDelta', session: 'kid', turn: T, text: 'c' }, ctx(1300))
+  expect(draft[S]?.children.kid?.beat).toBe(1300)
+  // A grandchild's delta beats its row on both ancestors; the direct child's row is left alone.
+  route(draft, { type: 'ReasoningDelta', session: 'grandkid', turn: T, text: 'x' }, ctx(2000))
+  expect(draft[S]?.children.grandkid?.beat).toBe(2000)
+  expect(draft.kid?.children.grandkid?.beat).toBe(2000)
+  expect(draft[S]?.children.kid?.beat).toBe(1300)
+  // The end of the turn patches the state but is no beat.
+  route(draft, { type: 'TurnFinished', session: 'kid', turn: T, stop_reason: 'stop', usage, context: 1 }, ctx(5000))
+  expect(draft[S]?.children.kid).toMatchObject({ state: { state: 'idle' }, beat: 1300 })
+})
+
 test('route leaves untouched slices alone and ignores foreign events', () => {
   const other = empty('other')
   const draft = { [S]: empty(S), other }
