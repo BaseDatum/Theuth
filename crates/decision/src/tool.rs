@@ -784,7 +784,7 @@ pub async fn register(reg: &ActorRef<ToolRegistry>, decide: Arc<Decide>) {
 /// The system-prompt paragraph (`RegisterPrompt { plugin: "decision" }`, 92 §8): present only
 /// while the tool is registered, i.e. the plugin and the `tool` family are on.
 pub const PROMPT: &str = "## Bulk classification\n\
-`decide_many(questions)` runs the local decision model over many similar items — sort, triage, filter, rate — at milliseconds and zero tokens per item, one `{choice, probs, confidence, …}` row per question, in order. \
+`decide_many(questions)` runs the local decision model over many similar items — sort, triage, filter, rate — at ~0.1 s and zero API tokens per item, one `{choice, probs, confidence, …}` row per question, in order. \
 The loop: classify everything, threshold on `confidence`, act on the sure rows, read the unsure tail yourself; with `capture=\"<task>\"`, `decide_label(log_id, id)` what you learned. \
 `confidence` is a raw margin, not a probability of being right: pick the threshold on a 50-row sample first. \
 Labels are read by the model — short descriptive phrases, not codes; `ids` carry your keys. \

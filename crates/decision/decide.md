@@ -6,7 +6,7 @@ description: Classify many similar items with the local decision model from a Mo
 # decide: the classifier you program
 
 `decide_many(questions)` runs a local classifier over a list of items and returns one row per
-item in the same order. Each row costs milliseconds and zero API tokens. You write the loop: ask
+item in the same order. Each row costs ~0.1 s on the default checkpoint and zero API tokens. You write the loop: ask
 about everything, act on the rows the model is sure about, read the unsure tail yourself.
 
 ## When to reach for it
@@ -25,8 +25,9 @@ subwords of the state. For ten items, read them. For a hundred or more, `decide_
 
 ```python
 res = await decide_many(questions)                      # 1. classify everything
-sure   = [r for r in res if r["error"] is None and r["choice"] != "none" and r["confidence"] >= T]
-unsure = [r for r in res if r not in sure]
+ok     = lambda r: r["error"] is None and r["choice"] != "none" and r["confidence"] >= T
+sure   = [(i, r) for i, r in enumerate(res) if ok(r)]
+unsure = [(i, r) for i, r in enumerate(res) if not ok(r)]
 # 2. act on `sure` (move, tag, file — your normal tools, under the normal approval)
 # 3. read `unsure` yourself and decide
 # 4. with capture on: await decide_label(r["log_id"], the_right_id) for rows you corrected
@@ -112,14 +113,15 @@ unsure = [(m, r) for m, r in zip(mails, res) if not (r["error"] is None and r["c
 ### Files into folders by content
 
 ```python
-import os
-paths = [...]                                          # from list_files / shell find
-def head(p):
-    with open(p, "rb") as f: return f.read(1024).decode("utf-8", "replace")
+paths = (await glob(pattern="**/*", path="/Users/me/Downloads"))["files"]   # Monty has no os/open: use glob + read_file
+async def head(p):                                                           # first ~20 lines; binary files come back as noise
+    try: return (await read_file(path=p, limit=20, numbers=False))[:1024]
+    except Exception: return ""
+heads = await asyncio.gather(*[head(p) for p in paths])
 qs = [{"type": "choice", "instructions": "Which project folder does this file belong to?",
        "labels": ["tax and accounting documents", "photos and personal media", "work presentations and specs", "installers and archives"],
        "ids": ["Taxes", "Photos", "Work", "Installers"],
-       "state": f"{os.path.basename(p)}\n{head(p)}"} for p in paths]
+       "state": f"{p.rsplit('/', 1)[-1]}\n{h}"} for p, h in zip(paths, heads)]
 res = await decide_many(qs)
 ```
 
