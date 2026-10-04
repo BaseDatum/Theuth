@@ -1,14 +1,15 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { Link, useNavigate } from '@tanstack/react-router'
-import { ChevronLeft, FlaskConical, PanelLeft, Play } from 'lucide-react'
+import { FlaskConical, Play } from 'lucide-react'
 import { Fragment, useEffect, useState } from 'react'
 import { toast } from 'sonner'
 import { useModels } from '@/components/agents/queries'
 import { Field } from '@/components/agents/RuntimeAccessFields'
-import { NativeSelect } from '@/components/routines/NativeSelect'
 import { Pulse } from '@/components/chat/Pulse'
+import { SectionBand } from '@/components/nav/SectionBand'
+import { SectionRow } from '@/components/nav/SectionRow'
+import { NativeSelect } from '@/components/routines/NativeSelect'
 import { Empty, errorText, useAction } from '@/components/settings/shared'
-import { SearchTrigger } from '@/components/sidebar/SearchTrigger'
 import { useAgents, useBoardProjects } from '@/components/tasks/queries'
 import {
   AlertDialog,
@@ -24,10 +25,8 @@ import {
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
-import { useSidebar } from '@/components/ui/sidebar'
 import { Switch } from '@/components/ui/switch'
 import { Textarea } from '@/components/ui/textarea'
-import { isMacDesktop } from '@/lib/hotkeys'
 import { useApi } from '@/lib/rpc'
 import { cn } from '@/lib/utils'
 import { useConnection } from '@/store/connection'
@@ -82,8 +81,6 @@ const TITLES: Record<Section, string> = { overview: 'Overview', prompt: 'Prompt'
 
 /** `/routines/new` (`name` null) and `/routines/$name/$section`: one file as a form, saved whole with `put_schedule`. */
 export function RoutineDetail({ name, section }: { name: string | null; section: Section }) {
-  const sidebar = useSidebar()
-  const mac = isMacDesktop()
   const api = useApi()
   const navigate = useNavigate()
   const notHub = useNotHub()
@@ -101,24 +98,8 @@ export function RoutineDetail({ name, section }: { name: string | null; section:
   })
   return (
     <article className="flex min-h-0 min-w-0 flex-1 flex-col">
-      <header
-        data-tauri-drag-region={mac || undefined}
-        className={cn('flex h-[52px] shrink-0 items-center gap-1 border-b border-border-subtle px-3', !sidebar.open && mac && 'pl-20')}
-      >
-        {(!sidebar.open || sidebar.isMobile) && (
-          <div className="flex shrink-0 items-center">
-            <SearchTrigger />
-            <Button variant="ghost" size="icon-sm" aria-label="Show sidebar" onClick={sidebar.toggleSidebar}>
-              <PanelLeft />
-            </Button>
-          </div>
-        )}
-        <Button asChild variant="ghost" size="icon-sm" aria-label="Back to routines">
-          <Link to="/routines">
-            <ChevronLeft />
-          </Link>
-        </Button>
-        <h2 className="min-w-0 flex-1 truncate text-sm font-semibold">{name ?? 'New routine'}</h2>
+      <SectionBand group="agents" />
+      <SectionRow back={{ to: '/routines', label: 'Back to routines' }} title={name ?? 'New routine'}>
         {info && (
           <>
             <Button variant="outline" size="xs" disabled={fire.isPending || info.error !== null || info.running} onClick={() => fire.mutate(info.name)}>
@@ -138,7 +119,7 @@ export function RoutineDetail({ name, section }: { name: string | null; section:
             />
           </>
         )}
-      </header>
+      </SectionRow>
       <main className="min-h-0 flex-1 overflow-y-auto">
         <div className="mx-auto flex w-full max-w-[720px] flex-col gap-4 p-4">
           {name === null ? (

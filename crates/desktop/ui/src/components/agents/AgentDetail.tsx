@@ -1,8 +1,9 @@
 import { useQuery } from '@tanstack/react-query'
 import { Link, useNavigate } from '@tanstack/react-router'
-import { ChevronLeft, ExternalLink, PanelLeft, Trash2 } from 'lucide-react'
+import { ExternalLink, Trash2 } from 'lucide-react'
 import { useState } from 'react'
-import { SearchTrigger } from '@/components/sidebar/SearchTrigger'
+import { SectionBand } from '@/components/nav/SectionBand'
+import { SectionRow } from '@/components/nav/SectionRow'
 import { TaskCard } from '@/components/tasks/Board'
 import { THEUTH, age, columns } from '@/components/tasks/helpers'
 import { useAgents, useTasks } from '@/components/tasks/queries'
@@ -19,9 +20,7 @@ import {
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
-import { useSidebar } from '@/components/ui/sidebar'
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs'
-import { isMacDesktop } from '@/lib/hotkeys'
 import { queryKeys, useApi } from '@/lib/rpc'
 import { byRank, rankSummary, rootOf } from '@/lib/session-tree'
 import { cn } from '@/lib/utils'
@@ -44,8 +43,6 @@ const TAB_LABEL: Record<Tab, string> = { overview: 'Overview', charter: 'Charter
  * charter read-only (it is `prompt.md`). Activity (a journal feed) has no RPC yet and is omitted.
  */
 export function AgentDetail({ name, tab }: { name: string; tab: Tab }) {
-  const sidebar = useSidebar()
-  const mac = isMacDesktop()
   const navigate = useNavigate()
   const agents = useAgents()
   const file = useAgentFile(name)
@@ -57,28 +54,16 @@ export function AgentDetail({ name, tab }: { name: string; tab: Tab }) {
 
   return (
     <article className="flex min-h-0 min-w-0 flex-1 flex-col">
-      <header
-        data-tauri-drag-region={mac || undefined}
-        className={cn('flex h-[52px] shrink-0 items-center gap-1 border-b border-border-subtle px-3', !sidebar.open && mac && 'pl-20')}
-      >
-        {(!sidebar.open || sidebar.isMobile) && (
-          <div className="flex shrink-0 items-center">
-            <SearchTrigger />
-            <Button variant="ghost" size="icon-sm" aria-label="Show sidebar" onClick={sidebar.toggleSidebar}>
-              <PanelLeft />
-            </Button>
-          </div>
-        )}
-        <Button asChild variant="ghost" size="icon-sm" aria-label="Back to agents">
-          <Link to="/agents">
-            <ChevronLeft />
-          </Link>
-        </Button>
-        <h2 className="min-w-0 flex-1 truncate text-sm font-semibold">
-          <span className="text-fg-tertiary">Agents › </span>
-          {file.data?.title ?? name}
-        </h2>
-      </header>
+      <SectionBand group="agents" />
+      <SectionRow
+        back={{ to: '/agents', label: 'Back to agents' }}
+        title={
+          <>
+            <span className="text-fg-tertiary">Agents › </span>
+            {file.data?.title ?? name}
+          </>
+        }
+      />
       {file.isPending && <p className="p-4 text-sm text-fg-tertiary">Loading…</p>}
       {file.isError && <p className="p-4 text-sm text-fg-tertiary">{file.error.message}</p>}
       {file.data && (

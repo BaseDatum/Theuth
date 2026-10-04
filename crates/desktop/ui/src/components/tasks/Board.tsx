@@ -1,18 +1,16 @@
 import { Link, getRouteApi } from '@tanstack/react-router'
-import { Blocks, Circle, PanelLeft, Play, Plus } from 'lucide-react'
+import { Blocks, Circle, Play, Plus } from 'lucide-react'
 import { type MutableRefObject, useEffect, useRef, useState } from 'react'
-import { SectionTabs } from '@/components/nav/SectionTabs'
+import { SectionBand } from '@/components/nav/SectionBand'
+import { SectionRow } from '@/components/nav/SectionRow'
 import { ProjectIcon } from '@/components/sidebar/ProjectStyle'
-import { SearchTrigger } from '@/components/sidebar/SearchTrigger'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Label } from '@/components/ui/label'
 import { Select, SelectContent, SelectItem, SelectSeparator, SelectTrigger, SelectValue } from '@/components/ui/select'
-import { useSidebar } from '@/components/ui/sidebar'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Switch } from '@/components/ui/switch'
 import { edgeScroll, usePressDrag } from '@/hooks/use-press-drag'
-import { isMacDesktop } from '@/lib/hotkeys'
 import { cn } from '@/lib/utils'
 import type { Task } from '@/rpc/bindings/Task'
 import type { TaskState } from '@/rpc/bindings/TaskState'
@@ -69,8 +67,6 @@ function useCardDrag(task: Task, drag?: DragProps) {
 export function Board() {
   const search = route.useSearch()
   const navigate = route.useNavigate()
-  const sidebar = useSidebar()
-  const mac = isMacDesktop()
   const projects = useBoardProjects()
   const agents = useAgents()
   const mesh = useMesh()
@@ -123,26 +119,9 @@ export function Board() {
 
   return (
     <article className="flex min-h-0 min-w-0 flex-1 flex-col">
-      <header
-        data-tauri-drag-region={mac || undefined}
-        className={cn('flex h-[52px] shrink-0 items-center gap-1 border-b border-border-subtle px-3', !sidebar.open && mac && 'pl-20')}
-      >
-        {(!sidebar.open || sidebar.isMobile) && (
-          <div className="flex shrink-0 items-center">
-            <SearchTrigger />
-            <Button variant="ghost" size="icon-sm" aria-label="Show sidebar" onClick={sidebar.toggleSidebar}>
-              <PanelLeft />
-            </Button>
-          </div>
-        )}
-        <h2 className="min-w-0 flex-1 truncate text-sm font-semibold">Tasks</h2>
-        <Button variant="ghost" size="sm" onClick={() => setCreating(true)}>
-          <Plus /> New task
-        </Button>
-      </header>
-      <SectionTabs group="agents" />
-      <Queue />
-      <div className="flex flex-wrap items-center gap-2 border-b border-border-subtle px-3 py-2">
+      <SectionBand group="agents" />
+      {/* 97b: the filters are the page's row; on a phone the selects wrap, so the row grows past 44 px (`min-h-11`). */}
+      <SectionRow className="h-auto min-h-11 flex-wrap gap-2 py-1">
         <Select value={project === '' ? ALL : `p:${project}`} onValueChange={(v) => set({ project: v === ALL ? '' : v.slice(2) })}>
           <SelectTrigger size="sm" className="w-44" aria-label="Project">
             <SelectValue />
@@ -199,11 +178,15 @@ export function Board() {
             ))}
           </SelectContent>
         </Select>
-        <Label className="ml-auto flex items-center gap-2 text-[13px] text-fg-secondary">
+        <Label className="flex items-center gap-2 text-[13px] text-fg-secondary">
           <Switch checked={search.cancelled === true} onCheckedChange={(v) => set({ cancelled: v || undefined })} />
           Cancelled
         </Label>
-      </div>
+        <Button variant="ghost" size="sm" className="ml-auto" onClick={() => setCreating(true)}>
+          <Plus /> New task
+        </Button>
+      </SectionRow>
+      <Queue />
       <div ref={scroller} className="min-h-0 flex-1 overflow-x-auto overflow-y-hidden">
         {tasks.isPending && (
           <div className="flex gap-3 p-3">

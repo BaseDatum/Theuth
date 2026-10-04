@@ -1,8 +1,8 @@
 import { Link, useNavigate } from '@tanstack/react-router'
-import { List, Network, PanelLeft, UserPlus } from 'lucide-react'
+import { List, Network, UserPlus } from 'lucide-react'
 import { useState } from 'react'
-import { SectionTabs } from '@/components/nav/SectionTabs'
-import { SearchTrigger } from '@/components/sidebar/SearchTrigger'
+import { SectionBand } from '@/components/nav/SectionBand'
+import { SectionRow } from '@/components/nav/SectionRow'
 import { THEUTH } from '@/components/tasks/helpers'
 import { useAgents } from '@/components/tasks/queries'
 import { Badge } from '@/components/ui/badge'
@@ -10,7 +10,6 @@ import { Button } from '@/components/ui/button'
 import { useSidebar } from '@/components/ui/sidebar'
 import { Skeleton } from '@/components/ui/skeleton'
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
-import { isMacDesktop } from '@/lib/hotkeys'
 import { cn } from '@/lib/utils'
 import type { AgentSummary } from '@/rpc/bindings/AgentSummary'
 import { HiringInbox } from './HiringInbox'
@@ -28,7 +27,6 @@ type View = 'org' | 'list'
  */
 export function AgentsView() {
   const sidebar = useSidebar()
-  const mac = isMacDesktop()
   const agents = useAgents()
   const [view, setView] = useState<View>(() => (localStorage.getItem(VIEW_KEY) === 'list' ? 'list' : 'org'))
   const list = agents.data ?? []
@@ -36,21 +34,14 @@ export function AgentsView() {
   const root = tree(list.filter((a) => a.status !== 'proposed' && a.file.proposed_by === null))
   return (
     <article className="flex min-h-0 min-w-0 flex-1 flex-col">
-      <header
-        data-tauri-drag-region={mac || undefined}
-        className={cn('flex h-[52px] shrink-0 items-center gap-1 border-b border-border-subtle px-3', !sidebar.open && mac && 'pl-20')}
-      >
-        {(!sidebar.open || sidebar.isMobile) && (
-          <div className="flex shrink-0 items-center">
-            <SearchTrigger />
-            <Button variant="ghost" size="icon-sm" aria-label="Show sidebar" onClick={sidebar.toggleSidebar}>
-              <PanelLeft />
-            </Button>
-          </div>
+      <SectionBand group="agents" />
+      <SectionRow>
+        {agents.data && (
+          <span className="text-xs text-fg-tertiary tabular-nums">
+            {list.length} {list.length === 1 ? 'agent' : 'agents'}
+          </span>
         )}
-        <h2 className="min-w-0 flex-1 truncate text-sm font-semibold">
-          Agents {agents.data && <span className="font-normal text-fg-tertiary tabular-nums">{list.length}</span>}
-        </h2>
+        <span className="flex-1" />
         <ToggleGroup
           type="single"
           variant="outline"
@@ -77,8 +68,7 @@ export function AgentsView() {
             <UserPlus /> Hire an agent
           </Link>
         </Button>
-      </header>
-      <SectionTabs group="agents" />
+      </SectionRow>
       <HiringInbox agents={proposed(agents.data)} />
       {agents.isPending && (
         <div className="space-y-2 p-3">
