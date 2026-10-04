@@ -14,6 +14,7 @@ import { Route as ArtifactsRouteImport } from './routes/artifacts'
 import { Route as AttentionRouteImport } from './routes/attention'
 import { Route as IslandRouteImport } from './routes/island'
 import { Route as KnowledgeRouteImport } from './routes/knowledge'
+import { Route as LibraryRouteImport } from './routes/library'
 import { Route as LinkRouteImport } from './routes/link'
 import { Route as NewRouteImport } from './routes/new'
 import { Route as NotesRouteImport } from './routes/notes'
@@ -68,6 +69,11 @@ const IslandRoute = IslandRouteImport.update({
 const KnowledgeRoute = KnowledgeRouteImport.update({
   id: '/knowledge',
   path: '/knowledge',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const LibraryRoute = LibraryRouteImport.update({
+  id: '/library',
+  path: '/library',
   getParentRoute: () => rootRouteImport,
 } as any)
 const LinkRoute = LinkRouteImport.update({
@@ -227,6 +233,7 @@ export interface FileRoutesByFullPath {
   '/attention': typeof AttentionRoute
   '/island': typeof IslandRoute
   '/knowledge': typeof KnowledgeRouteWithChildren
+  '/library': typeof LibraryRoute
   '/link': typeof LinkRoute
   '/new': typeof NewRoute
   '/notes': typeof NotesRoute
@@ -264,6 +271,7 @@ export interface FileRoutesByTo {
   '/attention': typeof AttentionRoute
   '/island': typeof IslandRoute
   '/knowledge': typeof KnowledgeRouteWithChildren
+  '/library': typeof LibraryRoute
   '/link': typeof LinkRoute
   '/new': typeof NewRoute
   '/notes': typeof NotesRoute
@@ -302,6 +310,7 @@ export interface FileRoutesById {
   '/attention': typeof AttentionRoute
   '/island': typeof IslandRoute
   '/knowledge': typeof KnowledgeRouteWithChildren
+  '/library': typeof LibraryRoute
   '/link': typeof LinkRoute
   '/new': typeof NewRoute
   '/notes': typeof NotesRoute
@@ -341,6 +350,7 @@ export interface FileRouteTypes {
     | '/attention'
     | '/island'
     | '/knowledge'
+    | '/library'
     | '/link'
     | '/new'
     | '/notes'
@@ -378,6 +388,7 @@ export interface FileRouteTypes {
     | '/attention'
     | '/island'
     | '/knowledge'
+    | '/library'
     | '/link'
     | '/new'
     | '/notes'
@@ -415,6 +426,7 @@ export interface FileRouteTypes {
     | '/attention'
     | '/island'
     | '/knowledge'
+    | '/library'
     | '/link'
     | '/new'
     | '/notes'
@@ -453,6 +465,7 @@ export interface RootRouteChildren {
   AttentionRoute: typeof AttentionRoute
   IslandRoute: typeof IslandRoute
   KnowledgeRoute: typeof KnowledgeRouteWithChildren
+  LibraryRoute: typeof LibraryRoute
   LinkRoute: typeof LinkRoute
   NewRoute: typeof NewRoute
   NotesRoute: typeof NotesRoute
@@ -518,6 +531,13 @@ declare module '@tanstack/react-router' {
       path: '/knowledge'
       fullPath: '/knowledge'
       preLoaderRoute: typeof KnowledgeRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/library': {
+      id: '/library'
+      path: '/library'
+      fullPath: '/library'
+      preLoaderRoute: typeof LibraryRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/link': {
@@ -763,6 +783,7 @@ const rootRouteChildren: RootRouteChildren = {
   AttentionRoute: AttentionRoute,
   IslandRoute: IslandRoute,
   KnowledgeRoute: KnowledgeRouteWithChildren,
+  LibraryRoute: LibraryRoute,
   LinkRoute: LinkRoute,
   NewRoute: NewRoute,
   NotesRoute: NotesRoute,
