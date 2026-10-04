@@ -2,14 +2,15 @@ import { useQuery } from '@tanstack/react-query'
 import { Link, useNavigate } from '@tanstack/react-router'
 import { Search } from 'lucide-react'
 import { type ReactNode, useEffect, useState } from 'react'
+import { SectionRow } from '@/components/nav/SectionRow'
 import { Badge } from '@/components/ui/badge'
 import { Input } from '@/components/ui/input'
 import { queryKeys, useApi } from '@/lib/rpc'
 
 const MIN = 3
 
-/** Search box above the tree; while the query has 3+ characters the hits replace `children` (the tree). */
-export function SearchBox({ initial, children }: { initial: string; children: ReactNode }) {
+/** The rail's first row (97b: 44 px, the search input with `actions` beside it) above the tree; while the query has 3+ characters the hits replace `children` (the tree). */
+export function SearchBox({ initial, actions, children }: { initial: string; actions?: ReactNode; children: ReactNode }) {
   const api = useApi()
   const navigate = useNavigate()
   const [q, setQ] = useState(initial)
@@ -33,24 +34,27 @@ export function SearchBox({ initial, children }: { initial: string; children: Re
   const short = q.trim().length > 0 && q.trim().length < MIN
   return (
     <>
-      <div className="relative shrink-0 px-3 pb-2">
-        <Search className="pointer-events-none absolute top-1/2 left-5 size-4 -translate-y-1/2 text-fg-tertiary" />
-        <Input
-          value={q}
-          placeholder="Search"
-          className="h-9 rounded-[10px] bg-layer-2 pl-8"
-          onChange={(e) => setQ(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === 'Escape') {
-              setQ('')
-              setDebounced('')
-            } else if (e.key === 'Enter' && hits.data?.[0]) {
-              navigate({ to: '/knowledge/$', params: { _splat: hits.data[0].meta.id } })
-            }
-          }}
-        />
-        {short && <p className="px-1 pt-1 text-xs text-fg-tertiary">3+ characters</p>}
-      </div>
+      <SectionRow>
+        <div className="relative min-w-0 flex-1">
+          <Search className="pointer-events-none absolute top-1/2 left-2 size-4 -translate-y-1/2 text-fg-tertiary" />
+          <Input
+            value={q}
+            placeholder="Search"
+            className="h-9 rounded-[10px] bg-layer-2 pl-8"
+            onChange={(e) => setQ(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Escape') {
+                setQ('')
+                setDebounced('')
+              } else if (e.key === 'Enter' && hits.data?.[0]) {
+                navigate({ to: '/knowledge/$', params: { _splat: hits.data[0].meta.id } })
+              }
+            }}
+          />
+        </div>
+        {actions}
+      </SectionRow>
+      {short && <p className="px-4 pt-1 text-xs text-fg-tertiary">3+ characters</p>}
       {!searching ? (
         children
       ) : hits.isError ? (
