@@ -488,15 +488,6 @@ body.voice-hold {
     @apply bg-background text-foreground;
   }
 
-  /* 03 §2: the island window is transparent; only the strip paints (`components/meeting/Island.tsx`).
-     96 §5.3: the trail overlay (`routes/overlay.tsx`) paints nothing but its canvas. */
-  html[data-island],
-  html[data-island] body,
-  html[data-overlay],
-  html[data-overlay] body {
-    background: transparent;
-  }
-
   /* Chrome shows the arrow; editable areas keep the native cursor. Touch has no cursor to set. */
   @media (pointer: fine) {
     body {
@@ -513,6 +504,17 @@ body.voice-hold {
   * {
     @apply border-border outline-ring/50;
   }
+}
+
+/* 03 §2: the island window is transparent; only the strip paints (`components/meeting/Island.tsx`).
+   96 §5.3: the trail overlay (`routes/overlay.tsx`) paints nothing but its canvas.
+   Unlayered: `public/theme.css` paints `html` before the bundle arrives with an unlayered rule, and an unlayered
+   rule beats anything in `@layer base` whatever its specificity. */
+html[data-island],
+html[data-island] body,
+html[data-overlay],
+html[data-overlay] body {
+  background: transparent;
 }
 
 /* streamdown code blocks in the transcript (design 30 §8). Unlayered so they beat the utilities. */
