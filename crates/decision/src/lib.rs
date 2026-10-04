@@ -283,7 +283,8 @@ pub struct DecisionConfig {
     pub log_text: bool,
     /// `AskMany`: run the batch as one padded forward (`true`) or as one forward per question,
     /// each padded to its own length (`false`). Default from `examples/bench.rs` (b2)/(b3) on
-    /// Metal, where the forward is close to linear in padded tokens.
+    /// Metal, where laya's forward is close to linear in padded tokens. A gliner checkpoint
+    /// always pads (`examples/decide_bench.rs`); this knob only forces laya to.
     pub batch_forward: bool,
     /// Gate per decision family; a family not listed never runs. The YAML is a patch over the
     /// default table: `meeting.kind: { mode: active }` changes one field; a prefix key
@@ -303,7 +304,9 @@ pub struct ToolConfig {
     pub max_rows: usize,
     /// Most bytes of `state` per question; over it that row is an error.
     pub max_state_bytes: usize,
-    /// Rows per `AskMany` (one padded forward); `examples/decide_bench.rs` picks it.
+    /// Rows per `AskMany` (one padded forward on gliner). `examples/decide_bench.rs`, 500 ×
+    /// 165-token rows, 5 labels, M3 Max under load: gliner padded 8 → 99 ms/row, 16 → 105,
+    /// 32 → 113 (per-row forwards 131–157); laya is per-row and flat (68–70 ms/row).
     pub batch: usize,
 }
 
@@ -312,7 +315,7 @@ impl Default for ToolConfig {
         ToolConfig {
             max_rows: 2000,
             max_state_bytes: 4096,
-            batch: 16,
+            batch: 8,
         }
     }
 }
@@ -751,7 +754,7 @@ mod tests {
         assert_eq!(d.kind_for(GLINER_CHECKPOINT), Kind::Gliner);
         assert_eq!(
             (d.tool.max_rows, d.tool.max_state_bytes, d.tool.batch),
-            (2000, 4096, 16)
+            (2000, 4096, 8)
         );
         assert!(
             !d.families.contains_key("meeting.topic"),

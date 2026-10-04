@@ -823,7 +823,10 @@ impl Engine {
         self.touch(me);
 
         let qs: Vec<Question> = items.iter().map(|i| i.q.clone()).collect();
-        let batch_forward = self.cfg.batch_forward;
+        // laya (f16, Metal) runs fastest one row at a time (`examples/bench.rs` b2/b3); the
+        // GLiNER DeBERTa f32 forward is memory-bound and gains ~25 % from one padded batch
+        // (`examples/decide_bench.rs`: 99 vs 131 ms/row at batch 8, 500 × 165-token rows).
+        let batch_forward = self.cfg.batch_forward || self.kind == Kind::Gliner;
         let mut run = tokio::task::spawn_blocking(move || -> Result<Scored, Reason> {
             let mut o = shared.lock();
             // A question the oracle cannot render is that question's hard error, not the
