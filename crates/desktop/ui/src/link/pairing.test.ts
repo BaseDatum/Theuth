@@ -288,6 +288,45 @@ test('session: raw socket close (relay restart) → reconnecting → new socket 
   client.close()
 })
 
+test('session: a handshake that finishes after reset() does not resurrect the forgotten socket (95 S5)', async () => {
+  const h = await new FakeEngine().ready()
+  FakeSocket.engine = h
+  const device = await generateIdentity()
+  h.enrolled.push(b64url(device.pub))
+  const engine = { id: h.id, name: 'x', relayHost: 'relay.test', secure: false, pairedAt: 0, lastSeen: 0, order: 0, kind: 'engine' as const }
+  useEngines.getState().add(engine)
+  const t = new LinkTransport(engine, { ws: WS, identity: () => Promise.resolve(device) })
+  const states: string[] = []
+  t.onState((s) => states.push(s))
+  // On the first socket only: msg2 is the first DATA frame in; `#frame` starts one microtask later and
+  // parks on `hs.finish`, so a reset() queued behind it lands mid-await.
+  const attach = h.attach.bind(h)
+  let armed = true
+  h.attach = (ws) => {
+    attach(ws)
+    const onmessage = ws.onmessage!
+    ws.onmessage = (m) => {
+      onmessage(m)
+      if (armed && decodeFrame(new Uint8Array(m.data))?.op === 'data') {
+        armed = false
+        queueMicrotask(() => t.reset())
+      }
+    }
+  }
+  await expect(t.connect()).rejects.toThrow('socket closed')
+  expect(states).toEqual(['connecting', 'reconnecting'])
+  // An unguarded continuation would install the stale session and resolve this connect() early; the round trip
+  // then fails (stale keys on the new socket, or the send dropped when the real PRESENCE 1 drops that session).
+  const replies: string[] = []
+  t.onMessage((m) => replies.push(m))
+  await t.connect()
+  t.send(JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'info', params: [] }))
+  await until(() => replies.length === 1)
+  expect(h.attempts).toBe(2)
+  expect(states).toEqual(['connecting', 'reconnecting', 'connecting', 'open'])
+  t.close()
+})
+
 test('session: relay refuses two upgrades, then accepts → open; served from the relay origin the cookie is refetched first', async () => {
   const h = await new FakeEngine().ready()
   FakeSocket.engine = h
