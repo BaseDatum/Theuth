@@ -287,6 +287,9 @@ xcap = { version = "0.9", default-features = false }
 enigo = "0.6"
 image = { version = "0.25", default-features = false, features = ["png"] }
 objc2-core-graphics = { version = "0.3", features = ["CGWindow"] }
+# 96: the accessibility reader behind `screen_context` (AXUIElement hit-test + attributes);
+# objc2's ApplicationServices bindings, same family and versions as the entries above.
+objc2-application-services = { version = "0.3", default-features = false, features = ["std", "HIServices", "AXUIElement", "AXError", "libc"] }  # 96
 # Desktop menubar app (design doc 25): Tauri 2 shell around the RPC client; the daemon is the
 # bundled `theuth` sidecar started on a pty (design doc 18). Plugins replace hand-written
 # NSStatusItem / LaunchServices / NSUserNotification glue.

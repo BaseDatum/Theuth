@@ -16,6 +16,7 @@ export type ShortcutId =
   | 'copy-last-code'
   | 'shortcuts'
   | 'dictate'
+  | 'voice-key'
   | 'send'
   | 'interject'
   | 'newline'
@@ -47,6 +48,8 @@ export const DEFS: Record<ShortcutId, Def> = {
   'copy-last-code': { label: 'Copy last code block', chord: 'Mod+Shift+Semicolon', scope: 'window' },
   shortcuts: { label: 'Show shortcuts', chord: 'Mod+Slash', scope: 'window' },
   dictate: { label: 'Dictate', chord: 'Control+D', scope: 'window', inEditable: true },
+  // 96 §0.1: registered by the Rust shell (`voice_key_bind`), not by `App.tsx`; adjacent to `dictate` on purpose.
+  'voice-key': { label: 'Ask theuth about the screen', chord: 'Control+S', scope: 'global' },
   talk: { label: 'Stop the talk', chord: 'Mod+T', scope: 'window', inEditable: true },
   'talk-transcript': { label: 'Show or hide the talk transcript', chord: 'Mod+Shift+T', scope: 'window', inEditable: true },
   send: { label: 'Send', chord: 'Enter', scope: 'composer' },

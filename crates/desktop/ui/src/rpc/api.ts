@@ -168,6 +168,8 @@ import type { ActivityFilter } from '@/rpc/bindings/ActivityFilter'
 import type { AttentionItem } from '@/rpc/bindings/AttentionItem'
 import type { TaskPatch } from '@/rpc/bindings/TaskPatch'
 import type { TaskState } from '@/rpc/bindings/TaskState'
+import type { ScreenContextReply } from '@/rpc/bindings/ScreenContextReply'
+import type { ScreenContextReq } from '@/rpc/bindings/ScreenContextReq'
 import type { RpcClient } from '@/rpc/client'
 import type {
   AgentInfo,
@@ -264,6 +266,8 @@ export interface Api {
   compact_style(): Promise<CompactStyle>
   /** Computer-control permissions and attached displays (27 §6); rejects when the plugin is disabled. */
   computer_permissions(): Promise<PermissionStatus>
+  /** 96 §6.3: capture the displays a pointer path visited, draw the path, read the accessibility tree under it, write the PNGs under `attachments/`; the `[screen …]` lines and files. Local peers only; rejects with `disabled` or a Screen Recording denial. */
+  screen_context(req: ScreenContextReq): Promise<ScreenContextReply>
   /** Active-context inventory with its revision and `remove_with` companions (48 §3.2); `editable: false` carries the refusal `reason`. */
   context_items(session: SessionId): Promise<ContextSnapshot>
   /** Replace the turn opened at `turn` with `text` (29 §3); refused mid-turn. */
@@ -1038,6 +1042,7 @@ export const METHODS = [
   'sandbox_terminal',
   'sandboxes_list',
   'schedule_history',
+  'screen_context',
   'search',
   'search_provider_test',
   'search_refresh',

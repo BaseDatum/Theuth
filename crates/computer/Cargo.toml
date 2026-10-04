@@ -20,10 +20,16 @@ tracing = { workspace = true }
 xcap = { workspace = true }
 enigo = { workspace = true }
 image = { workspace = true }
+sha2 = { workspace = true }
 ts-rs = { workspace = true, optional = true }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2-core-graphics = { workspace = true }
+# 96: accessibility reader (`ax.rs`).
+objc2-application-services = { workspace = true }
+objc2-core-foundation = { workspace = true, features = ["CFURL", "CFNumber"] }
+objc2-app-kit = { workspace = true, features = ["NSWorkspace", "NSRunningApplication", "libc"] }
+objc2-foundation = { workspace = true }
 
 [dev-dependencies]
 figment = { workspace = true }

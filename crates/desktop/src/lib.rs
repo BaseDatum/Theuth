@@ -16,6 +16,8 @@ mod launch;
 #[cfg(desktop)]
 mod models;
 #[cfg(desktop)]
+mod point;
+#[cfg(desktop)]
 mod update;
 
 /// Build and run the app. Desktop and mobile share the opener/notification
@@ -184,7 +186,7 @@ mod desktop {
     use tauri::{AppHandle, Builder, Emitter, Manager, WebviewWindow, WindowEvent, Wry};
     use tauri_plugin_positioner::{Position, WindowExt};
 
-    use crate::{commands, island, launch, models, update};
+    use crate::{commands, island, launch, models, point, update};
 
     /// The webview acknowledges `quit-requested` with `quit_ack` (after RPC
     /// `shutdown` when it owns the daemon); this is the fallback.
@@ -236,10 +238,12 @@ mod desktop {
                 None,
             ))
             .plugin(tauri_plugin_positioner::init())
-            // The island is placed by `island::island_place`, never by saved window state (03 §1).
+            // The island is placed by `island::island_place`, never by saved window state (03 §1); the
+            // overlays by `point::overlay_ensure` (96 §4.6). The denylist is exact-match, hence the filter.
             .plugin(
                 tauri_plugin_window_state::Builder::new()
                     .with_denylist(&["island"])
+                    .with_filter(|label| !label.starts_with(point::OVERLAY_PREFIX))
                     .build(),
             )
             .plugin(tauri_plugin_dialog::init())
@@ -264,6 +268,12 @@ mod desktop {
             island::island_place,
             island::island_resign_key,
             island::island_capabilities,
+            point::voice_key_bind,
+            point::point_cancel,
+            point::point_done,
+            point::point_state,
+            point::point_refuse,
+            point::overlay_ensure,
         ]);
         // The native menu bar is macOS's (⌘C/⌘V under Accessory policy); GTK would paint it inside the window.
         #[cfg(target_os = "macos")]
@@ -291,6 +301,7 @@ mod desktop {
                 app.set_activation_policy(tauri::ActivationPolicy::Accessory);
                 setup(app.handle())?;
                 island::init(app.handle())?;
+                point::init(app.handle())?;
                 Ok(())
             })
     }
@@ -429,7 +440,7 @@ mod desktop {
     /// Not the island: it is transparent. Popouts get theirs from `open_window`; every window re-paints on
     /// `ThemeChanged`.
     pub(crate) fn paint_page_background(win: &WebviewWindow) {
-        if win.label() == "island" {
+        if win.label() == "island" || win.label().starts_with(point::OVERLAY_PREFIX) {
             return;
         }
         let dark = win.theme().is_ok_and(|t| t == tauri::Theme::Dark);
