@@ -517,6 +517,11 @@ html[data-overlay] body {
   background: transparent;
 }
 
+/* 96 (PANEL): "Only while the left mouse button is held" — the overlay takes the clicks, the cursor says so. */
+html[data-annotate="mouse"] {
+  cursor: crosshair;
+}
+
 /* streamdown code blocks in the transcript (design 30 §8). Unlayered so they beat the utilities. */
 
 /* The toolbar is `sticky top-2` upstream, so it slides down a card as the transcript scrolls; pin it to the card. */
