@@ -2729,6 +2729,26 @@ impl Turn {
         stored
     }
 
+    /// [`Turn::persist`] for the model's reply row, with the ms it thought
+    /// before it (91 THOUGHT-TIME); `None` when no reasoning streamed.
+    async fn persist_timed(&mut self, msg: ChatMessage, thinking_ms: Option<u64>) -> bool {
+        let (seq, stored) = match self
+            .shared
+            .store
+            .append_thinking(self.shared.id, &msg, thinking_ms)
+            .await
+        {
+            Ok(seq) => (seq, true),
+            Err(e) => {
+                self.error(format!("store: {e:#}")).await;
+                (self.state.history.last().map_or(0, |(s, _)| s + 1), false)
+            }
+        };
+        self.first_seq.get_or_insert(seq);
+        self.state.history.push((seq, msg));
+        stored
+    }
+
     /// A harness note: user-role tail message (07 §8.7). See [`Turn::persist`] for the flag.
     async fn note(&mut self, kind: &str, text: &str) -> bool {
         self.persist(ChatMessage::user(format!("<{kind}>\n{text}\n</{kind}>")))
@@ -2903,6 +2923,11 @@ impl Turn {
     /// reserved and marked dispatched before transport and settled after, as
     /// `kind`. A reservation the store refuses is a local, final
     /// `Abort::Model` — nothing is sent and nothing is retried.
+    ///
+    /// 91: `thinking` is set to the ms the model thought on the attempt that
+    /// returned (`None` when no reasoning streamed), reset per attempt.
+    // Every argument is a distinct per-call input; a struct would be built at the call sites alone.
+    #[allow(clippy::too_many_arguments)]
     async fn call(
         &self,
         current: &Current,
@@ -2911,6 +2936,7 @@ impl Turn {
         live: Option<TurnId>,
         conversation: SessionId,
         kind: CallKind,
+        thinking: &mut Option<u64>,
     ) -> Result<StreamEnd, Abort> {
         let request_id = Uuid::now_v7().to_string();
         let mut attempt = 0;
@@ -2930,6 +2956,7 @@ impl Turn {
             .map_err(Abort::Model)?;
             let mut text = String::new();
             let mut calls = false;
+            *thinking = None;
             let r = self
                 .stream_once(
                     current,
@@ -2939,6 +2966,7 @@ impl Turn {
                     conversation,
                     &mut text,
                     &mut calls,
+                    thinking,
                 )
                 .await;
             let (status, usage) = match &r {
@@ -3007,8 +3035,10 @@ impl Turn {
     }
 
     /// One open + drain. Streamed assistant text accumulates in `text`; `calls`
-    /// is set once a tool-call chunk arrived. No event for `agent.stream_idle_secs`
-    /// is a transient `stream idle for Ns` (36 §2.3).
+    /// is set once a tool-call chunk arrived; `thinking` is set to the ms from
+    /// the first `ReasoningChunk` to the first non-reasoning event (91). No
+    /// event for `agent.stream_idle_secs` is a transient `stream idle for Ns`
+    /// (36 §2.3).
     // Every argument is a distinct per-attempt input of the retry loop in `call`; a struct would be built there alone.
     #[allow(clippy::too_many_arguments)]
     async fn stream_once(
@@ -3020,6 +3050,7 @@ impl Turn {
         conversation: SessionId,
         text: &mut String,
         calls: &mut bool,
+        thinking: &mut Option<u64>,
     ) -> Result<StreamEnd, Abort> {
         let effort = current
             .effort
@@ -3037,6 +3068,7 @@ impl Turn {
         let mut pending: Vec<String> = Vec::new();
         let mut progress: HashMap<String, Progress> = HashMap::new();
         let idle = Duration::from_secs(self.shared.cfg.stream_idle_secs);
+        let mut thought: Option<Instant> = None;
         loop {
             let ev = tokio::select! {
                 _ = self.cancel.cancelled() => return Err(self.aborted()),
@@ -3050,6 +3082,23 @@ impl Turn {
                     }
                 },
             };
+            // 91: the first text/tool chunk or End ends the thinking (a
+            // heartbeat or signature does not); the measurement is published
+            // before that event's own delta.
+            if matches!(
+                ev,
+                Some(Ok(ChatStreamEvent::Chunk(_)
+                    | ChatStreamEvent::ToolCallChunk(_)
+                    | ChatStreamEvent::End(_)))
+            ) && let Some(start) = thought.take()
+            {
+                let ms = start.elapsed().as_millis() as u64;
+                *thinking = Some(ms);
+                if let Some(turn) = live {
+                    self.publish(AgentEvent::ReasoningDone { session, turn, ms })
+                        .await;
+                }
+            }
             match ev {
                 None => return Err(Abort::Model("stream ended without End event".into())),
                 Some(Err(e)) => return Err(Abort::Model(e)),
@@ -3066,6 +3115,7 @@ impl Turn {
                     }
                 }
                 Some(Ok(ChatStreamEvent::ReasoningChunk(c))) => {
+                    thought.get_or_insert_with(Instant::now);
                     if let Some(turn) = live {
                         self.publish(AgentEvent::ReasoningDelta {
                             session,
@@ -3818,6 +3868,7 @@ impl Turn {
             vision: current.vision(),
             strip_reasoning: false,
         };
+        let mut thinking = None;
         let end = match self
             .call(
                 &current,
@@ -3826,6 +3877,7 @@ impl Turn {
                 Some(turn),
                 self.shared.id,
                 CallKind::Round,
+                &mut thinking,
             )
             .await
         {
@@ -3986,7 +4038,9 @@ impl Turn {
                 };
                 // An unrecorded reply cannot be continued from: the store, not
                 // this process's memory, is what a continuation resumes.
-                natural &= self.persist(ChatMessage::assistant(content)).await;
+                natural &= self
+                    .persist_timed(ChatMessage::assistant(content), thinking)
+                    .await;
                 if let Some(msg) = correction_message(
                     &self.shared.cfg.surface,
                     &mut self.state.surface_rounds,
@@ -4025,7 +4079,7 @@ impl Turn {
         let assistant = end
             .into_assistant_message_for_tool_use()
             .unwrap_or_else(|| ChatMessage::from(calls.clone()));
-        self.persist(assistant).await;
+        self.persist_timed(assistant, thinking).await;
         if self.landing {
             // 36 §5: the landing call asked for text; tools are not run, the
             // pair invariant is kept with synthetic results, and the turn ends.
@@ -4968,7 +5022,16 @@ impl Turn {
                 vision: current.vision(),
                 strip_reasoning: false,
             };
-            let call = self.call(current, frame, transport, None, self.shared.id, kind);
+            let mut thinking = None;
+            let call = self.call(
+                current,
+                frame,
+                transport,
+                None,
+                self.shared.id,
+                kind,
+                &mut thinking,
+            );
             match tokio::time::timeout(SUMMARISE_TIMEOUT, call).await {
                 Err(_) => return Err("summariser timed out".into()),
                 Ok(Ok(end)) => {
@@ -5393,6 +5456,7 @@ impl Turn {
             vision,
             strip_reasoning: false,
         };
+        let mut thinking = None;
         let call = self.call(
             current,
             frame,
@@ -5400,6 +5464,7 @@ impl Turn {
             None,
             aux_conversation(self.shared.id),
             CallKind::Vision,
+            &mut thinking,
         );
         let end = match tokio::time::timeout(SUMMARISE_TIMEOUT, call).await {
             Err(_) => {
@@ -7450,7 +7515,7 @@ mod tests {
             strip_reasoning: false,
         };
         let end = turn
-            .call(&current, frame, transport, turn.turn, id, CallKind::Round)
+            .call(&current, frame, transport, turn.turn, id, CallKind::Round, &mut None)
             .await;
         assert!(end.is_ok_and(|e| e.captured_usage.is_some()));
         assert_eq!(hits.load(Ordering::SeqCst), 1);
@@ -7516,7 +7581,7 @@ mod tests {
             strip_reasoning: false,
         };
         assert!(
-            turn.call(&current, frame, transport, None, id, CallKind::Round)
+            turn.call(&current, frame, transport, None, id, CallKind::Round, &mut None)
                 .await
                 .is_ok()
         );
@@ -7567,7 +7632,7 @@ mod tests {
             strip_reasoning: false,
         };
         let err = match turn
-            .call(&current, frame, transport, None, orphan, CallKind::Round)
+            .call(&current, frame, transport, None, orphan, CallKind::Round, &mut None)
             .await
         {
             Err(Abort::Model(e)) => e,

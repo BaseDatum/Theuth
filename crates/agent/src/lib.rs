@@ -1587,6 +1587,11 @@ pub enum HistoryEntry {
         #[serde(default)]
         #[cfg_attr(feature = "ts", ts(optional))]
         context: Option<ContextEntry>,
+        /// 91: ms the model thought; `None` for rows written before 91 and
+        /// for harness (ACP) sessions.
+        #[serde(default)]
+        #[cfg_attr(feature = "ts", ts(optional, type = "number | null"))]
+        thinking_ms: Option<u64>,
     },
     /// A tool call and its result; `result` is `None` while the call is
     /// still running (a session loaded mid-turn), and `ToolCallFinished`
@@ -1714,6 +1719,17 @@ pub enum AgentEvent {
         turn: TurnId,
         /// Fragment.
         text: Arc<str>,
+    },
+    /// The thinking that `ReasoningDelta` streamed has ended (91): `ms` from
+    /// the first reasoning chunk to the first non-reasoning event of the same
+    /// model call. Published before the text/tool chunk that ended it.
+    ReasoningDone {
+        /// Session.
+        session: SessionId,
+        /// Turn.
+        turn: TurnId,
+        /// Milliseconds spent thinking.
+        ms: u64,
     },
     /// The model has begun emitting a tool call (name known, arguments still
     /// streaming). Lets a UI show activity before `ToolCallStarted`.
@@ -2069,6 +2085,7 @@ impl AgentEvent {
             Self::TurnStarted { session, .. }
             | Self::TextDelta { session, .. }
             | Self::ReasoningDelta { session, .. }
+            | Self::ReasoningDone { session, .. }
             | Self::ToolCallPending { session, .. }
             | Self::ToolCallProgress { session, .. }
             | Self::ToolCallStarted { session, .. }
