@@ -14,7 +14,7 @@ use image::imageops::{self, FilterType};
 use image::{DynamicImage, ImageFormat, RgbaImage};
 use sha2::{Digest, Sha256};
 
-use crate::ax::{self, AxElement, AxFront};
+use crate::ax::{self, AxElement, AxFront, AxHit};
 use crate::frame::Display;
 use crate::pointer::{self, Bbox, Gesture, Pt, Sample};
 use crate::{AxMode, ScreenContextConfig, ScreenContextReply, ScreenContextReq};
@@ -53,27 +53,39 @@ struct Visit<'a> {
     gestures: Vec<(Gesture, Vec<AxElement>)>,
 }
 
+/// The header's app/window: the End hit's, else the first other hit's — never
+/// theuth itself while another app resolved — else `frontmost()`.
+fn header(fronts: &[Option<AxFront>]) -> Option<AxFront> {
+    let known = || fronts.iter().rev().flatten();
+    known()
+        .find(|f| !ax::is_self(f))
+        .or_else(|| known().next())
+        .cloned()
+        .or_else(ax::frontmost)
+}
+
 /// Run the whole pipeline; see the module doc.
 pub fn compose(
     req: &ScreenContextReq,
     cfg: &ScreenContextConfig,
     data_dir: &Path,
 ) -> Result<ScreenContextReply, String> {
-    let Some(last) = req.samples.last() else {
+    if req.samples.is_empty() {
         return Err("no pointer samples".to_owned());
-    };
+    }
+    let gestures = pointer::gestures(&req.samples);
+    let end = pointer::anchor(gestures.last().expect("End is always last"));
     let all = crate::screen::enumerate().map_err(|e| format!("{e:#}"))?;
     let displays: Vec<&Display> = all.iter().map(|(d, _)| d).collect();
-    let end_display = display_at(&displays, pt_of(last))
+    let end_display = display_at(&displays, end)
         .or_else(|| displays.iter().copied().find(|d| d.main))
         .or_else(|| displays.first().copied())
         .ok_or_else(|| "no displays attached".to_owned())?;
     let visited = visited(&displays, &req.samples, end_display);
-    let gestures = pointer::gestures(&req.samples);
 
     let ax_on = req.accessibility && cfg.accessibility == AxMode::Auto && ax::granted();
     let t = Instant::now();
-    let front = if ax_on { ax::frontmost() } else { None };
+    let mut reader = ax::Reader::default();
     let mut visits: Vec<Visit<'_>> = visited
         .iter()
         .map(|d| Visit {
@@ -81,17 +93,21 @@ pub fn compose(
             gestures: Vec::new(),
         })
         .collect();
+    // One app/window per gesture, in gesture order (End last).
+    let mut fronts: Vec<Option<AxFront>> = Vec::new();
     for g in &gestures {
         let home = display_at(&displays, pointer::anchor(g)).unwrap_or(end_display);
-        let elements = if ax_on {
-            elements_for(g, cfg)
+        let (elements, front) = if ax_on {
+            elements_for(g, cfg, &mut reader)
         } else {
-            Vec::new()
+            (Vec::new(), None)
         };
+        fronts.push(front);
         if let Some(v) = visits.iter_mut().find(|v| v.display.index == home.index) {
             v.gestures.push((*g, elements));
         }
     }
+    let front = if ax_on { header(&fronts) } else { None };
     let ax_ms = t.elapsed().as_millis() as u64;
 
     let tmp_dir = data_dir.join("computer").join("tmp");
@@ -118,11 +134,11 @@ pub fn compose(
         let local: Vec<Option<Pt>> = req
             .samples
             .iter()
-            .map(|s| contains(d, pt_of(s)).then(|| local_pt(d, pt_of(s))))
+            .map(|s| (s.pen && contains(d, pt_of(s))).then(|| local_pt(d, pt_of(s))))
             .collect();
         stamp(&mut img, &local, scale, rgb);
         if d.index == end_display.index {
-            ring(&mut img, local_pt(d, pt_of(last)), scale, rgb);
+            ring(&mut img, local_pt(d, end), scale, rgb);
         }
         draw_ms += t.elapsed().as_millis() as u64;
 
@@ -182,10 +198,10 @@ fn local_pt(d: &Display, p: Pt) -> Pt {
     }
 }
 
-/// Displays holding at least one sample, in first-visit order, `end` always included.
+/// Displays holding at least one pen-down sample, in first-visit order, `end` always included.
 fn visited<'a>(displays: &[&'a Display], samples: &[Sample], end: &'a Display) -> Vec<&'a Display> {
     let mut out: Vec<&Display> = Vec::new();
-    for s in samples {
+    for s in samples.iter().filter(|s| s.pen) {
         if let Some(d) = display_at(displays, pt_of(s))
             && !out.iter().any(|o| o.index == d.index)
         {
@@ -431,16 +447,26 @@ fn anchors(g: &Gesture) -> Vec<Pt> {
 }
 
 /// Elements under a gesture's anchors, deduped by `(role, label, url)`, values
-/// cut to `value_chars`, at most `max_elements`.
-fn elements_for(g: &Gesture, cfg: &ScreenContextConfig) -> Vec<AxElement> {
+/// cut to `value_chars`, at most `max_elements`; window-level hits add no
+/// element. Also the app/window of the first anchor that resolved one.
+fn elements_for(
+    g: &Gesture,
+    cfg: &ScreenContextConfig,
+    reader: &mut ax::Reader,
+) -> (Vec<AxElement>, Option<AxFront>) {
     let mut out: Vec<AxElement> = Vec::new();
+    let mut front = None;
     for p in anchors(g) {
         if out.len() >= cfg.max_elements {
             break;
         }
-        let Some(mut e) = ax::element_at(p) else {
+        let Some(AxHit { element, front: f }) = reader.hit_at(p) else {
             continue;
         };
+        if front.is_none() {
+            front = f;
+        }
+        let Some(mut e) = element else { continue };
         e.value = e.value.map(|v| ax::truncate(&v, cfg.value_chars));
         e.label = e.label.map(|v| ax::truncate(&v, cfg.value_chars));
         if !out
@@ -450,7 +476,7 @@ fn elements_for(g: &Gesture, cfg: &ScreenContextConfig) -> Vec<AxElement> {
             out.push(e);
         }
     }
-    out
+    (out, front)
 }
 
 fn element_text(e: &AxElement) -> String {
@@ -585,6 +611,7 @@ mod tests {
     #[test]
     fn line_matches_the_grammar() {
         let front = AxFront {
+            pid: 1,
             app: "Google Chrome".into(),
             bundle_id: Some("com.google.Chrome".into()),
             window_title: Some("basedatum — GitHub".into()),
@@ -787,7 +814,12 @@ mod tests {
     fn visited_is_first_visit_order_plus_end() {
         let (a, b) = (display(), second());
         let displays = [&a, &b];
-        let s = |x: f32, y: f32| Sample { t_ms: 0, x, y };
+        let s = |x: f32, y: f32| Sample {
+            t_ms: 0,
+            x,
+            y,
+            pen: true,
+        };
         let v = visited(
             &displays,
             &[s(2000.0, 100.0), s(10.0, 10.0), s(2100.0, 100.0)],
@@ -796,6 +828,40 @@ mod tests {
         assert_eq!(v.iter().map(|d| d.index).collect::<Vec<_>>(), [2, 1]);
         let v = visited(&displays, &[s(-50.0, -50.0)], &a);
         assert_eq!(v.iter().map(|d| d.index).collect::<Vec<_>>(), [1]);
+        // A pen-up crossing of the second display does not visit it.
+        let lifted = Sample {
+            pen: false,
+            ..s(2000.0, 100.0)
+        };
+        let v = visited(&displays, &[lifted, s(10.0, 10.0)], &a);
+        assert_eq!(v.iter().map(|d| d.index).collect::<Vec<_>>(), [1]);
+    }
+
+    #[test]
+    fn header_prefers_the_end_hit_and_skips_theuth() {
+        let f = |pid: i32, app: &str, bundle: &str| {
+            Some(AxFront {
+                pid,
+                app: app.into(),
+                bundle_id: Some(bundle.into()),
+                window_title: None,
+                document_url: None,
+            })
+        };
+        let chrome = f(2, "Google Chrome", "com.google.Chrome");
+        let safari = f(3, "Safari", "com.apple.Safari");
+        let theuth = f(4, "theuth", "io.theuth.mac");
+        assert_eq!(header(&[safari.clone(), None, chrome.clone()]), chrome);
+        assert_eq!(header(&[safari.clone(), chrome.clone(), None]), chrome);
+        assert_eq!(
+            header(&[safari.clone(), chrome.clone(), theuth.clone()]),
+            chrome
+        );
+        assert_eq!(
+            header(&[chrome.clone(), safari.clone(), theuth.clone()]),
+            safari
+        );
+        assert_eq!(header(&[None, theuth.clone()]), theuth);
     }
 
     #[test]
