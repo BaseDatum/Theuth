@@ -261,7 +261,8 @@ impl Amend {
 }
 
 /// `outcome: { published: {id, title} | null }` after the model turn; `user: tapped | dismissed`
-/// on the brief. `ignored` is never written — the export derives it from the absence.
+/// on the brief; `label: { choice }` from `decide_label` (92 §6) for a `tool.<task>` example.
+/// `ignored` is never written — the export derives it from the absence.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Amendment {
@@ -272,6 +273,11 @@ pub enum Amendment {
     },
     /// The user's reaction to the brief.
     User(Reaction),
+    /// The right key for a `decide_many` row, from the calling model or the user's correction.
+    Label {
+        /// One of the row's keys, or `none`.
+        choice: String,
+    },
 }
 
 /// What the user did with a published brief.
@@ -450,8 +456,10 @@ pub struct Folded {
     pub example: Example,
     /// Tier 3's outcome, when a turn ran: what it published.
     pub outcome: Option<Option<Brief>>,
-    /// The user's reaction, when there was one.
+    /// The user's reaction, when any.
     pub user: Option<Reaction>,
+    /// `decide_label`'s key, when any (92 §6).
+    pub label: Option<String>,
 }
 
 /// Fold `example` + `amend` rows by id, file order kept; an amend without its example is dropped.
@@ -463,12 +471,14 @@ pub fn fold(rows: Vec<Row>) -> Vec<Folded> {
                 example: *e,
                 outcome: None,
                 user: None,
+                label: None,
             }),
             Row::Amend(a) => {
                 if let Some(f) = out.iter_mut().rev().find(|f| f.example.id == a.id) {
                     match a.what {
                         Amendment::Outcome { published } => f.outcome = Some(published),
                         Amendment::User(r) => f.user = Some(r),
+                        Amendment::Label { choice } => f.label = Some(choice),
                     }
                 }
             }
@@ -720,6 +730,7 @@ mod tests {
             log_id: LogId::new(),
             tier: 1,
             calibrated: true,
+            truncated: false,
         }
     }
 
@@ -957,6 +968,7 @@ mod tests {
             example,
             outcome,
             user,
+            label: None,
         }
     }
 

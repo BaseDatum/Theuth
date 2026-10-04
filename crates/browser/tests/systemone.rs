@@ -207,7 +207,7 @@ async fn browser_checkpoint_answers_type_text_into_the_search_box() {
         a.budget = Duration::from_secs(120);
     }
     let t = std::time::Instant::now();
-    let ds = engine.ask(AskMany { asks }).await.unwrap();
+    let ds = engine.ask(AskMany::new(asks)).await.unwrap();
     let first = t.elapsed();
     for d in &ds {
         eprintln!(
@@ -233,7 +233,7 @@ async fn browser_checkpoint_answers_type_text_into_the_search_box() {
     // Warm step latency, the §4.1 ≤ 300 ms target, printed (not asserted: it is the bench's job).
     let asks = systemone::render(&goal, &obs);
     let t = std::time::Instant::now();
-    let _ = engine.ask(AskMany { asks }).await.unwrap();
+    let _ = engine.ask(AskMany::new(asks)).await.unwrap();
     eprintln!("first step {first:?}, warm step {:?}", t.elapsed());
     let _ = Scroll::default();
 }

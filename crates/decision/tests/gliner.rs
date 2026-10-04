@@ -114,7 +114,7 @@ async fn ask_many_through_the_actor_in_shadow() {
     let tmp = tempfile::tempdir().unwrap();
     let log = Log::new(tmp.path().join("decisions"));
     let engine = Engine::spawn(engine(config(), &models, dir, log));
-    let ds = engine.ask(AskMany { asks: questions() }).await.unwrap();
+    let ds = engine.ask(AskMany::new(questions())).await.unwrap();
     assert_eq!(ds.len(), 3);
     for d in &ds {
         let Disposition::Shadow(inner) = &d.disposition else {

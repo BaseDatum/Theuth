@@ -30,6 +30,10 @@ pub enum EscalateError {
     Invalid(String),
     /// The `agent` plugin refused or the provider failed.
     Provider(String),
+    /// The family has no tier 2 (92 §2): the `decide` tool's `tool*` families — the reasoning
+    /// model that called the tool is tier 3 by construction, and a cheap-model pass is the cost
+    /// the tool exists to avoid.
+    Disabled,
 }
 
 impl std::fmt::Display for EscalateError {
@@ -38,6 +42,7 @@ impl std::fmt::Display for EscalateError {
             EscalateError::Timeout => f.write_str("timed out"),
             EscalateError::Invalid(s) => write!(f, "invalid answer: {s}"),
             EscalateError::Provider(s) => write!(f, "side call: {s}"),
+            EscalateError::Disabled => f.write_str("tier 2 is off for this family"),
         }
     }
 }
@@ -190,6 +195,9 @@ pub async fn escalate(
     budget: Duration,
     call: &SideCaller,
 ) -> Result<Decision, EscalateError> {
+    if crate::tool::is_tool_family(&ask.family.0) {
+        return Err(EscalateError::Disabled);
+    }
     let t = Instant::now();
     let reply = call(SideCall {
         session,
@@ -240,6 +248,7 @@ pub async fn escalate(
         log_id: LogId::new(),
         tier: 2,
         calibrated: false,
+        truncated: false,
     };
     if let Ok(Some(engine)) = ActorRef::<Engine>::lookup(DECISION_ACTOR) {
         let _ = engine
@@ -338,6 +347,7 @@ mod tests {
             log_id: LogId::new(),
             tier: 1,
             calibrated: true,
+            truncated: false,
         };
         let c = render(&choice(), Some(&oracle));
         assert!(c.contains("A local classifier estimated (abstained: low margin): SRE-2386 0.31, HR-12 0.14, none 0.55\nState:"), "{c}");
@@ -493,5 +503,26 @@ mod tests {
                 .unwrap_err(),
             EscalateError::Provider("no live session".into())
         );
+    }
+
+    /// 92 §2: no tier 2 for the `decide` tool's families — the side call is never made.
+    #[tokio::test]
+    async fn tool_families_have_no_tier_2() {
+        let seen = Arc::new(Mutex::new(None));
+        let call = caller(
+            Ok(r#"{"answer": "SRE-2386", "confidence": 0.8}"#),
+            seen.clone(),
+        );
+        for family in ["tool", "tool.mail"] {
+            let mut ask = choice();
+            ask.family = family.into();
+            assert_eq!(
+                escalate(&ask, None, SessionId::new(), Duration::from_secs(3), &*call)
+                    .await
+                    .unwrap_err(),
+                EscalateError::Disabled
+            );
+        }
+        assert!(seen.lock().is_none(), "no side call was made");
     }
 }

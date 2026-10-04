@@ -111,20 +111,35 @@ pub trait Oracle: Send {
 pub type Loader =
     Arc<dyn Fn(&Path, Kind, &DecisionConfig) -> anyhow::Result<Box<dyn Oracle>> + Send + Sync>;
 
-/// One batch's rows and their scores, in question order, plus the model sha they ran under.
-type Scored = (Vec<(Box<dyn Row>, Scores)>, String);
+/// One batch's rows and their scores, in question order — `Err(msg)` for a question the
+/// oracle could not render (the others still run) — plus the model sha they ran under.
+type Scored = (Vec<Result<(Box<dyn Row>, Scores), String>>, String);
 
 type Shared = Arc<Mutex<Box<dyn Oracle>>>;
 
 /// `ask` → `Vec<Decision>`, one per ask in order (57 §4.1 item 1): every question rendered,
 /// **one** collate and **one** forward pass, then the per-question gate and log row exactly as
 /// for a single [`Ask`]. All asks must name the same checkpoint (the first one's is used; any
-/// other escalates `HardError`); the budget is the largest one asked. `browser_run` asks its
-/// three questions this way; the meeting oracle's two asks are two round trips today.
+/// other escalates `HardError`) unless `checkpoint` overrides it; the budget is the largest
+/// one asked. `browser_run` asks its three questions this way; the meeting oracle's two asks
+/// are two round trips today.
 #[derive(Clone, Debug)]
 pub struct AskMany {
     /// The questions, answered in this order.
     pub asks: Vec<Ask>,
+    /// Run on this checkpoint's engine whatever the families' gates name (the `decide` tool's
+    /// per-call `checkpoint`, 92 §1.1); `None` = the first ask's family's checkpoint.
+    pub checkpoint: Option<String>,
+}
+
+impl AskMany {
+    /// The batch on the families' own checkpoint.
+    pub fn new(asks: Vec<Ask>) -> Self {
+        AskMany {
+            asks,
+            checkpoint: None,
+        }
+    }
 }
 
 /// `tell`: what happened after a decision, appended to the log against `log_id`.
@@ -502,6 +517,7 @@ impl Engine {
             log_id: LogId::new(),
             tier: 1,
             calibrated: true,
+            truncated: false,
         };
         let mode = gate.map_or(Mode::Off, |g| g.mode);
         let text = self.cfg.log_text.then(|| ask.question.clone());
@@ -659,9 +675,10 @@ pub fn with_none(q: Question) -> Question {
     }
 }
 
-/// One run's result folded into a [`Decision`]: labels zipped with probabilities, argmax
-/// choice, the gate's verdict (a lost option marker is always a hard error, a cut state one
-/// unless the family says `cut_ok`), then the family's mode.
+/// One run's result folded into a [`Decision`]: labels zipped with probabilities (re-softmaxed
+/// through the family's `temperature` when one is set, 92 §5), argmax choice, the gate's
+/// verdict (a lost option marker is always a hard error, a cut state one unless the family
+/// says `cut_ok`), then the family's mode. Returns the effective temperature for the log.
 fn decide(
     gate: &FamilyGate,
     family: &Family,
@@ -670,7 +687,20 @@ fn decide(
     out: &Scores,
     latency: Duration,
     model_sha: &str,
-) -> Decision {
+) -> (Decision, f32) {
+    let scaled;
+    let (out, temperature) = if gate.temperature == 1.0 {
+        (out, out.temperature)
+    } else {
+        let t = out.temperature * gate.temperature;
+        scaled = Scores {
+            probs: laya::softmax_with_temperature(&out.logits, out.probs.len(), t),
+            logits: Vec::new(),
+            temperature: t,
+            act_p: out.act_p,
+        };
+        (&scaled, t)
+    };
     let probabilities: Vec<(String, f32)> = laya::labels(q)
         .into_iter()
         .zip(out.probs.iter().copied())
@@ -692,9 +722,10 @@ fn decide(
         gate_version: gate.version(model_sha),
         log_id: LogId::new(),
         tier: 1,
-        calibrated: true,
+        calibrated: temperature != 1.0,
+        truncated: row.truncated(),
     };
-    gate.finish(d)
+    (gate.finish(d), temperature)
 }
 
 /// A decision that never ran: no probabilities, `choice = none`. The engine's `escalate`
@@ -718,6 +749,7 @@ fn escalated(
         log_id: LogId::new(),
         tier: 1,
         calibrated: true,
+        truncated: false,
     }
 }
 
@@ -732,8 +764,14 @@ impl Engine {
     /// The batch core behind [`Ask`] and [`AskMany`]: gate lookup per question, one session,
     /// one `build` per question, **one** forward, one decision + log row per question. The
     /// budget is the largest asked; over it every question answers `Escalate(Timeout)` now
-    /// and the late rows are still logged (57 §2).
-    async fn run_batch(&mut self, asks: Vec<Ask>, me: ActorRef<Self>) -> Vec<Decision> {
+    /// and the late rows are still logged (57 §2). `pinned`: the caller chose this engine
+    /// explicitly (`AskMany::checkpoint`), so a family gate naming another checkpoint is fine.
+    async fn run_batch(
+        &mut self,
+        asks: Vec<Ask>,
+        me: ActorRef<Self>,
+        pinned: bool,
+    ) -> Vec<Decision> {
         let t = Instant::now();
         if !self.cfg.enabled {
             return asks
@@ -747,7 +785,7 @@ impl Engine {
         let mut out: Vec<Option<Decision>> = Vec::with_capacity(asks.len());
         for ask in asks {
             match self.cfg.families.get(&ask.family.0).cloned() {
-                Some(g) if g.checkpoint() != self.checkpoint => {
+                Some(g) if !pinned && g.checkpoint() != self.checkpoint => {
                     let reason = Reason::HardError(format!(
                         "family {} is on checkpoint `{}`, this engine is `{}`",
                         ask.family,
@@ -788,22 +826,32 @@ impl Engine {
         let batch_forward = self.cfg.batch_forward;
         let mut run = tokio::task::spawn_blocking(move || -> Result<Scored, Reason> {
             let mut o = shared.lock();
-            let seqs = qs
+            // A question the oracle cannot render is that question's hard error, not the
+            // batch's (92 §1.1: per-row errors); the rest run.
+            let mut seqs: Vec<Box<dyn Row>> = Vec::with_capacity(qs.len());
+            let slots: Vec<Result<usize, String>> = qs
                 .iter()
-                .map(|q| o.build(q))
-                .collect::<Result<Vec<_>, _>>()
-                .map_err(Reason::HardError)?;
+                .map(|q| {
+                    o.build(q).map(|seq| {
+                        seqs.push(seq);
+                        seqs.len() - 1
+                    })
+                })
+                .collect();
             // One padded batch, or one forward per row (each padded to its own length;
             // `examples/bench.rs` (b2)/(b3) measures which wins on this device).
-            let outs = if batch_forward || seqs.len() == 1 {
+            let outs: Vec<Scores> = if seqs.is_empty() {
+                Vec::new()
+            } else if batch_forward || seqs.len() == 1 {
                 o.run(&seqs)
+                    .map_err(|e| Reason::HardError(format!("{e:#}")))?
             } else {
                 seqs.iter()
                     .map(|s| o.run(std::slice::from_ref(s)))
                     .collect::<anyhow::Result<Vec<_>>>()
                     .map(|v| v.into_iter().flatten().collect())
-            }
-            .map_err(|e| Reason::HardError(format!("{e:#}")))?;
+                    .map_err(|e| Reason::HardError(format!("{e:#}")))?
+            };
             if outs.len() != seqs.len() {
                 return Err(Reason::HardError(format!(
                     "{} rows for {} questions",
@@ -811,8 +859,13 @@ impl Engine {
                     seqs.len()
                 )));
             }
+            let mut scored: Vec<Option<(Box<dyn Row>, Scores)>> =
+                seqs.into_iter().zip(outs).map(Some).collect();
             Ok((
-                seqs.into_iter().zip(outs).collect(),
+                slots
+                    .into_iter()
+                    .map(|slot| slot.map(|i| scored[i].take().expect("each row once")))
+                    .collect(),
                 o.model_sha().lock().clone(),
             ))
         });
@@ -828,8 +881,19 @@ impl Engine {
                     .iter()
                     .zip(rows)
                     .zip(texts)
-                    .map(|((i, (seq, row)), text)| {
-                        let d =
+                    .map(|((i, scored), text)| {
+                        let (seq, row) = match scored {
+                            Ok(s) => s,
+                            Err(e) => {
+                                return self.escalate(
+                                    &i.ask,
+                                    Some(&i.gate),
+                                    Reason::HardError(e),
+                                    t,
+                                );
+                            }
+                        };
+                        let (d, temperature) =
                             decide(&i.gate, &i.ask.family, &i.q, &*seq, &row, t.elapsed(), &sha);
                         let mut r = AskRow::new(
                             &d,
@@ -837,7 +901,7 @@ impl Engine {
                             &sha,
                             seq.ids(),
                             row.logits.clone(),
-                            row.temperature,
+                            temperature,
                             text,
                         );
                         r.load_ms = load_ms;
@@ -879,8 +943,29 @@ impl Engine {
                             .iter()
                             .zip(rows)
                             .zip(texts)
-                            .map(|((i, (seq, row)), text)| {
-                                let mut d = decide(
+                            .map(|((i, scored), text)| {
+                                let (seq, row) = match scored {
+                                    Ok(s) => s,
+                                    Err(e) => {
+                                        let d = escalated(
+                                            i.ask.family.clone(),
+                                            &i.gate,
+                                            Reason::HardError(e),
+                                            t.elapsed(),
+                                            &sha,
+                                        );
+                                        return LogRow::Ask(Box::new(AskRow::new(
+                                            &d,
+                                            i.gate.mode,
+                                            &sha,
+                                            &[],
+                                            Vec::new(),
+                                            0.0,
+                                            text,
+                                        )));
+                                    }
+                                };
+                                let (mut d, temperature) = decide(
                                     &i.gate,
                                     &i.ask.family,
                                     &i.q,
@@ -896,7 +981,7 @@ impl Engine {
                                     &sha,
                                     seq.ids(),
                                     row.logits,
-                                    row.temperature,
+                                    temperature,
                                     text,
                                 )))
                             })
@@ -975,7 +1060,7 @@ impl Message<Ask> for Engine {
     async fn handle(&mut self, ask: Ask, ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
         let Some(to) = self.route(&ask.family) else {
             let me = ctx.actor_ref().clone();
-            let d = self.run_batch(vec![ask], me).await.remove(0);
+            let d = self.run_batch(vec![ask], me, false).await.remove(0);
             return ctx.reply(d);
         };
         // Another checkpoint's family: forward off this mailbox (57 §4.1 item 6).
@@ -1000,9 +1085,14 @@ impl Message<AskMany> for Engine {
     type Reply = DelegatedReply<Vec<Decision>>;
 
     async fn handle(&mut self, m: AskMany, ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
-        let Some(to) = m.asks.first().and_then(|a| self.route(&a.family)) else {
+        let to = match &m.checkpoint {
+            Some(c) => (*c != self.checkpoint).then(|| crate::actor_name(c)),
+            None => m.asks.first().and_then(|a| self.route(&a.family)),
+        };
+        let Some(to) = to else {
             let me = ctx.actor_ref().clone();
-            let ds = self.run_batch(m.asks, me).await;
+            let pinned = m.checkpoint.is_some();
+            let ds = self.run_batch(m.asks, me, pinned).await;
             return ctx.reply(ds);
         };
         let (reply, tx) = ctx.reply_sender();
@@ -1483,6 +1573,63 @@ mod tests {
         assert_eq!(s.agreement, Some(1.0));
     }
 
+    /// 92 §5: a family temperature of 1.0 leaves the oracle's probabilities bit-identical
+    /// (laya families keep theirs); any other value re-softmaxes the logits at
+    /// `model × family` and marks the decision calibrated.
+    #[test]
+    fn family_temperature_identity_and_scaling() {
+        let q = ask("t").question;
+        let row = fake_seq(&q, false);
+        let out = Scores {
+            probs: vec![0.3, 0.7],
+            logits: vec![1.0, 1.8473],
+            temperature: 1.0,
+            act_p: 0.0,
+        };
+        let gate = FamilyGate {
+            mode: Mode::Active,
+            ..FamilyGate::shadow(0.0, 0.0)
+        };
+        let (d, t) = decide(&gate, &"t".into(), &q, &row, &out, Duration::ZERO, "sha");
+        assert_eq!(t, 1.0);
+        assert!(!d.calibrated);
+        assert_eq!(
+            d.probabilities,
+            vec![("false".to_owned(), 0.3), ("true".to_owned(), 0.7)]
+        );
+        assert_eq!(d.confidence, out.confidence(&q));
+        // laya's own temperature (rl_agent_config) counts as a calibration; the probs stay.
+        let laya_out = Scores {
+            temperature: 5.03,
+            ..out.clone()
+        };
+        let (d, t) = decide(
+            &gate,
+            &"t".into(),
+            &q,
+            &row,
+            &laya_out,
+            Duration::ZERO,
+            "sha",
+        );
+        assert_eq!((t, d.calibrated), (5.03, true));
+        assert_eq!(d.probabilities[1].1, 0.7);
+        // A fitted family temperature divides the logits further.
+        let fitted = FamilyGate {
+            temperature: 2.0,
+            ..gate.clone()
+        };
+        let (d, t) = decide(&fitted, &"t".into(), &q, &row, &out, Duration::ZERO, "sha");
+        assert_eq!(t, 2.0);
+        assert!(d.calibrated);
+        let expected = laya::softmax_with_temperature(&out.logits, 2, 2.0);
+        assert_eq!(d.probabilities[0].1, expected[0]);
+        assert_eq!(d.probabilities[1].1, expected[1]);
+        assert!(d.probabilities[1].1 < 0.7 && d.probabilities[1].1 > 0.5);
+        assert_eq!(d.choice, "true");
+        assert_ne!(fitted.version("sha"), gate.version("sha"));
+    }
+
     #[tokio::test]
     async fn choice_gets_none_once_and_active_accepts() {
         let dir = tempfile::tempdir().unwrap();
@@ -1776,13 +1923,11 @@ mod tests {
         let log = Log::new(dir.path().join("d"));
         let engine = Engine::spawn(Engine::with_loader(cfg, dir.path().into(), log, loader));
         let ds = engine
-            .ask(AskMany {
-                asks: vec![
-                    Ask::new("browser.operation", jev_question(3)),
-                    Ask::new("meeting.off", jev_question(2)),
-                    Ask::new("meeting.brief", jev_question(2)),
-                ],
-            })
+            .ask(AskMany::new(vec![
+                Ask::new("browser.operation", jev_question(3)),
+                Ask::new("meeting.off", jev_question(2)),
+                Ask::new("meeting.brief", jev_question(2)),
+            ]))
             .await
             .unwrap();
         assert_eq!(
@@ -1871,9 +2016,13 @@ mod tests {
         );
         assert_eq!(d.probabilities.len(), 2);
         let ds = main
-            .ask(AskMany {
-                asks: vec![Ask::new("browser.operation", jev_question(2)); 3],
-            })
+            .ask(AskMany::new(vec![
+                Ask::new(
+                    "browser.operation",
+                    jev_question(2)
+                );
+                3
+            ]))
             .await
             .unwrap();
         assert_eq!(ds.len(), 3);
