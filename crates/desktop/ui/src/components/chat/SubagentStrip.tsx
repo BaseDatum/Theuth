@@ -7,17 +7,16 @@ import type { AgentInfo, AgentState } from '@/rpc/extra'
 import { useSessionField } from '@/store/sessions'
 
 /**
- * 93: `Subagents: ● ● ●` above the composer — one dot per live subagent (any depth) of the open session, in spawn
- * order, blinking on that subagent's streaming events (`AgentInfo.beat`, stamped by the reducer). Nothing when the
- * subtree is quiet; one row, never more, `+N` past `STRIP_CAP`.
+ * 93: `● ● ●` centred above the composer (no label — Sky, 2026-10-04) — one dot per live subagent (any depth) of the
+ * open session, in spawn order, blinking on that subagent's streaming events (`AgentInfo.beat`, stamped by the
+ * reducer). Nothing when the subtree is quiet; one row, never more, `+N` past `STRIP_CAP`.
  */
 export function SubagentStrip({ session }: { session: string }) {
   const children = useSessionField(session, 'children')
   const { shown, more } = useMemo(() => stripRows(children ?? {}), [children])
   if (shown.length === 0) return null
   return (
-    <div className="mx-auto flex h-7 w-full shrink-0 select-none items-center gap-2 px-4 text-xs text-fg-tertiary md:max-w-[768px]">
-      <span>Subagents:</span>
+    <div className="mx-auto flex h-7 w-full shrink-0 select-none items-center justify-center px-4 text-xs text-fg-tertiary md:max-w-[768px]" aria-label={`${shown.length + more} subagent${shown.length + more === 1 ? '' : 's'} running`}>
       <div className="flex items-center gap-1.5 overflow-hidden whitespace-nowrap">
         {shown.map((row) => (
           <SubagentDot key={row.id} row={row} />
