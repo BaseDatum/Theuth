@@ -4,6 +4,7 @@ import { AppWindow, LayoutPanelTop, MoreHorizontal, PanelLeft, Pencil, Plus, Sti
 import { type KeyboardEvent, useRef, useState } from 'react'
 import { toast } from 'sonner'
 import { dragSource } from '@/components/chat/AttachChip'
+import { SectionTabs } from '@/components/nav/SectionTabs'
 import { createNote } from '@/components/notes/create'
 import { toRef } from '@/lib/attach'
 import { useNotes } from '@/components/notes/useNotes'
@@ -58,6 +59,7 @@ export function NotesList() {
           <Plus /> New note
         </Button>
       </header>
+      <SectionTabs group="library" />
       <div className="min-h-0 flex-1 overflow-y-auto">
         <div className="mx-auto w-full max-w-[768px] p-3">
           {notes.isPending && (

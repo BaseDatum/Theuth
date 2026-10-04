@@ -1,10 +1,12 @@
 import { Link } from '@tanstack/react-router'
 import { ChevronLeft, PanelLeft } from 'lucide-react'
 import type { ReactNode } from 'react'
+import { SectionTabs } from '@/components/nav/SectionTabs'
 import { SearchTrigger } from '@/components/sidebar/SearchTrigger'
 import { Button } from '@/components/ui/button'
 import { useSidebar } from '@/components/ui/sidebar'
 import { isMacDesktop } from '@/lib/hotkeys'
+import type { Group } from '@/lib/nav'
 import { cn } from '@/lib/utils'
 
 /**
@@ -14,12 +16,15 @@ import { cn } from '@/lib/utils'
 export function Page({
   title,
   back,
+  tabs,
   actions,
   children,
 }: {
   title: string
   /** Phone-only back link (`/skills` from a skill), shown left of the title. */
   back?: { to: '/skills'; label: string }
+  /** 97: the Library tab row under the header, on the group's list pages only (not the skill detail). */
+  tabs?: Group
   actions?: ReactNode
   children: ReactNode
 }) {
@@ -49,6 +54,7 @@ export function Page({
         <h2 className="min-w-0 flex-1 truncate text-sm font-semibold">{title}</h2>
         {actions && <div className="flex shrink-0 items-center gap-1">{actions}</div>}
       </header>
+      {tabs && <SectionTabs group={tabs} />}
       {children}
     </article>
   )

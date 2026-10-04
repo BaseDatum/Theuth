@@ -4,6 +4,7 @@ import { PanelLeft, RefreshCw, Search, X } from 'lucide-react'
 import { useEffect, useMemo, useState } from 'react'
 import { type Filter, List, nameMatch, sessionLabel, useArtifactList } from '@/components/artifacts/List'
 import { GLYPH } from '@/components/chat/ArtifactCard'
+import { SectionTabs } from '@/components/nav/SectionTabs'
 import { SearchTrigger } from '@/components/sidebar/SearchTrigger'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -90,6 +91,7 @@ export function Explorer() {
             <TooltipContent>Refresh</TooltipContent>
           </Tooltip>
         </header>
+        <SectionTabs group="library" />
         <div className="relative shrink-0 px-3 pb-2">
           <Search className="pointer-events-none absolute top-1/2 left-5 size-4 -translate-y-1/2 text-fg-tertiary" />
           <Input

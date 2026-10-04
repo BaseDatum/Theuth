@@ -1,6 +1,7 @@
 import { Link, useNavigate } from '@tanstack/react-router'
 import { List, Network, PanelLeft, UserPlus } from 'lucide-react'
 import { useState } from 'react'
+import { SectionTabs } from '@/components/nav/SectionTabs'
 import { SearchTrigger } from '@/components/sidebar/SearchTrigger'
 import { THEUTH } from '@/components/tasks/helpers'
 import { useAgents } from '@/components/tasks/queries'
@@ -77,6 +78,7 @@ export function AgentsView() {
           </Link>
         </Button>
       </header>
+      <SectionTabs group="agents" />
       <HiringInbox agents={proposed(agents.data)} />
       {agents.isPending && (
         <div className="space-y-2 p-3">

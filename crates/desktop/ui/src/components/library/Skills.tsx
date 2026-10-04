@@ -55,6 +55,7 @@ export function SkillsPage({ name, session }: { name: string | null; session: st
     <Page
       title="Skills"
       back={name ? { to: '/skills', label: 'Back to skills' } : undefined}
+      tabs={name === null ? 'library' : undefined}
       actions={
         <>
           <Button variant="ghost" size="sm" onClick={() => setDialog('repos')}>

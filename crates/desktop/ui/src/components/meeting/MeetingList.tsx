@@ -7,6 +7,7 @@ import { Link, useNavigate } from '@tanstack/react-router'
 import { AppWindow, MoreHorizontal, PanelLeft, Paperclip, Trash2 } from 'lucide-react'
 import { type ReactNode, useState } from 'react'
 import { dragSource } from '@/components/chat/AttachChip'
+import { SectionTabs } from '@/components/nav/SectionTabs'
 import { ChatPicker } from '@/components/notes/ChatPicker'
 import { Empty, errorText, useAction } from '@/components/settings/shared'
 import { SearchTrigger } from '@/components/sidebar/SearchTrigger'
@@ -100,6 +101,7 @@ export function MeetingList() {
           </Button>
         )}
       </MeetingHeader>
+      <SectionTabs group="library" />
       <div className="min-h-0 flex-1 overflow-y-auto px-6 pb-10">
         {list.isError && <Empty>{errorText(list.error)}</Empty>}
         {list.data?.length === 0 && <Empty>No meetings yet.</Empty>}
