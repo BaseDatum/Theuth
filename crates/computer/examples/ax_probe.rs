@@ -1,5 +1,7 @@
 //! Spike 4 (design doc 96 §10): print what the accessibility tree reports
-//! under the mouse and for the frontmost window. Run with
+//! under the mouse — the element and the app/window owning it (switching
+//! `AXManualAccessibility` on for a Chromium window if needed) — and the
+//! `NSWorkspace` frontmost app for comparison. Run with
 //! `cargo run -p computer --example ax_probe` from a terminal that has
 //! Accessibility granted; pass `--watch` to poll every second.
 
@@ -12,6 +14,7 @@ use computer::{ax, input};
 async fn main() {
     let input = input::spawn();
     let watch = std::env::args().any(|a| a == "--watch");
+    let mut reader = ax::Reader::default();
     loop {
         match input.run(input::Action::Location).await {
             Ok(input::Reply::Location(x, y)) => {
@@ -22,7 +25,8 @@ async fn main() {
                 println!("granted: {}", ax::granted());
                 println!("pointer: ({x}, {y})");
                 println!("frontmost: {:#?}", ax::frontmost());
-                println!("element: {:#?}", ax::element_at(at));
+                println!("hit: {:#?}", reader.hit_at(at));
+                println!("manual accessibility set for: {reader:?}");
             }
             other => println!("pointer: {other:?}"),
         }

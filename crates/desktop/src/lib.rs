@@ -273,6 +273,7 @@ mod desktop {
             point::point_done,
             point::point_state,
             point::point_refuse,
+            point::point_configure,
             point::overlay_ensure,
         ]);
         // The native menu bar is macOS's (⌘C/⌘V under Accessory policy); GTK would paint it inside the window.

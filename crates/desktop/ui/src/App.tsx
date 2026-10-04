@@ -30,6 +30,7 @@ import {
   onNavigate,
   onPointRefused,
   onQuitRequested,
+  pointConfigure,
   quitAck,
   relaunch,
   setHiddenFromCapture,
@@ -270,6 +271,7 @@ function useTauri(): void {
   }, [])
   useGlobalShortcuts()
   useVoiceKeyBinding()
+  usePointConfigure()
 }
 
 /** ⌥Space (show/hide) and ⌥Esc (cancel all) as the user bound them (Settings › Shortcuts); desktop main window only. */
@@ -323,6 +325,15 @@ function useVoiceKeyBinding(): void {
     })
     return () => void off.then((f) => f())
   }, [])
+}
+
+/** 96 (PANEL): the trail mode follows Settings › Voice key; sent after the binding at boot and on every change. */
+function usePointConfigure(): void {
+  const annotate = voiceKey.useVoiceKeySettings((s) => s.annotate)
+  useEffect(() => {
+    if (AUX || !isDesktop()) return
+    void pointConfigure(annotate).catch((e: unknown) => console.warn('point_configure', e))
+  }, [annotate])
 }
 
 /** `session` is on screen: the URL's chat, or any pane split beside it. */

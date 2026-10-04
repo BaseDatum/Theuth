@@ -7,13 +7,16 @@ import { parseAsk } from '@/lib/board-ask'
 import { type Edit, useDrafts } from '@/lib/drafts'
 import { parseSpoken } from '@/lib/injected'
 import { useApi } from '@/lib/rpc'
+import { parseScreenLines } from '@/lib/screen-context'
 import { parseNote } from '@/lib/voice-note'
 import type { ContextEntry } from '@/rpc/bindings/ContextEntry'
+import { useConnection } from '@/store/connection'
 import { useSessionField } from '@/store/sessions'
 import { AttachChip } from './AttachChip'
 import { BoardQuoteCard } from './BoardQuoteCard'
 import { Attachments } from './Attachments'
 import { ActionButton, RemoveButton, rewind, useFork } from './MessageAssistant'
+import { ScreenContextCard } from './ScreenContextCard'
 import { SkillCard } from './SkillCard'
 import { Stamp, useStampToggle } from './Stamp'
 
@@ -89,10 +92,21 @@ function EditBubble({
   )
 }
 
+/** Card `i` of `n` gets its share of the message's images (`files`, `occurrences` or token paths alike): every image when there
+ * is one card; else overview `i` plus, on the last card, every crop (96 §6.4 orders crops loops-first across displays, so a
+ * crop's display is not recoverable — the release display gets them). */
+export function imagesFor<T>(xs: T[] | undefined, i: number, n: number): T[] | undefined {
+  if (!xs || n <= 1) return xs
+  const own = xs[i] === undefined ? [] : [xs[i] as T]
+  return i === n - 1 ? [...own, ...xs.slice(n)] : own
+}
+
 /** Right-aligned bubble; a full-width `SkillCard` above the words when the input was a skill injection. `turn` is set only on the message that opened a turn (steers carry none).
  * `context` is the stored row's membership (48 §3.3): its attachments are the authoritative occurrences (`files` is our optimistic list until then), and a removed row renders as archive.
  * `readOnly` (an inspection page) shows text and attachments only: no edit, fork or removal controls.
- * Leading `[attached …]`/`[doc …]` lines (66 §7.9) render as chips; the bubble shows the body only. */
+ * Leading `[attached …]`/`[doc …]` lines (66 §7.9) render as chips; the bubble shows the body only.
+ * `[screen …]` lines (96 §6.6) render as one `ScreenContextCard` per display under the words, carrying the message's images;
+ * `[image: …]`/`[document: …]` tokens (a send from another webview, or history before `context` lands) resolve under `<data_dir>/attachments/`. */
 export const MessageUser = memo(function MessageUser({
   text,
   skill,
@@ -124,12 +138,18 @@ export const MessageUser = memo(function MessageUser({
   const spoken = note ? null : parseSpoken(body)
   // 71 §2.9: a `[board …]` header behind the markers is a place on a board — the quote card, not a bubble.
   const ask = note || spoken ? null : parseAsk(body)
+  // 96 §0.11: the `[screen …]` lines and binary tokens come off the words; the lines are cards, the tokens thumbnails.
+  const { body: words, screens, images } = parseScreenLines(note?.body ?? spoken?.text ?? body)
+  const dataDir = useConnection((s) => s.info?.data_dir)
+  const occurrences = context?.attachments
+  // A token naming a MIME type (`[image: image/png]`, a part stored without a name) has no file to show.
+  const paths = files ?? (occurrences || !dataDir ? undefined : images.filter((n) => !n.includes('/')).map((n) => `${dataDir}/attachments/${n}`))
   const stamp = useStampToggle()
   const actions = !readOnly && !editing && !context?.removed && (context || (turn != null && !running))
   return (
     <div className="group flex flex-col items-end gap-2 py-2" onClick={stamp.onClick}>
       {skill && <SkillCard name={skill} />}
-      <Attachments files={files} occurrences={context?.attachments} session={readOnly ? undefined : session} active={context?.active} className="justify-end" />
+      {screens.length === 0 && <Attachments files={paths} occurrences={occurrences} session={readOnly ? undefined : session} active={context?.active} className="justify-end" />}
       {!editing && <ChipRow refs={refs} session={readOnly ? undefined : session} />}
       {note && (
         <span className="flex items-center gap-1 text-xs text-fg-secondary">
@@ -151,16 +171,22 @@ export const MessageUser = memo(function MessageUser({
             rewind(session, turn, () => api.edit_turn(session, turn, t, []))
           }}
         />
+      ) : ask ? (
+        <BoardQuoteCard ask={ask} />
       ) : (
-        body &&
-        (ask ? (
-          <BoardQuoteCard ask={ask} />
-        ) : (
-          <div className="max-w-[85%] rounded-[22px] bg-layer-3 px-4 py-2.5 whitespace-pre-wrap break-words md:max-w-[70%]">
-            {note?.body ?? spoken?.text ?? body}
-          </div>
-        ))
+        words && <div className="max-w-[85%] rounded-[22px] bg-layer-3 px-4 py-2.5 whitespace-pre-wrap break-words md:max-w-[70%]">{words}</div>
       )}
+      {!editing &&
+        screens.map((s, i) => (
+          <ScreenContextCard
+            key={i}
+            screen={s}
+            files={imagesFor(paths, i, screens.length)}
+            occurrences={imagesFor(occurrences, i, screens.length)}
+            session={readOnly ? undefined : session}
+            active={context?.active}
+          />
+        ))}
       {(at !== undefined || actions) && (
         <div className="-mr-2 flex items-center justify-end gap-2">
           {actions && (

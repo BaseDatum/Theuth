@@ -305,9 +305,10 @@ tauri-plugin-dialog = "2"
 tauri-plugin-updater = "2"  # 39 §3.3: the .app swaps itself at quit
 # Meetings island (design doc 53 decision 8, 03 §1): `tauri-nspanel` swizzles the island window into a
 # non-activating `NSPanel` (old `cocoa`/`objc` crates; they coexist with objc2); `objc2-app-kit` for
-# `NSScreen.safeAreaInsets` (notch placement) and the screen-parameters notification.
+# `NSScreen.safeAreaInsets` (notch placement), the screen-parameters notification, and
+# `NSEvent.pressedMouseButtons` (96 SHELL2: the voice key's hold-to-draw pen state).
 tauri-nspanel = { git = "https://github.com/ahkohd/tauri-nspanel", branch = "v2" }  # 53
-objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSScreen", "NSApplication"] }  # 53
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSScreen", "NSApplication", "NSEvent"] }  # 53, 96
 objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSNotification", "NSOperation", "NSString", "NSGeometry", "NSArray", "block2", "objc2-core-foundation"] }  # 53
 # Link (design doc 31): the harness pairs with phones through a stateless relay.
 # snow = Noise handshakes (NK registration, IKpsk2 pairing, IK sessions; suite

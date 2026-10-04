@@ -27,7 +27,7 @@ ts-rs = { workspace = true, optional = true }
 objc2-core-graphics = { workspace = true }
 # 96: accessibility reader (`ax.rs`).
 objc2-application-services = { workspace = true }
-objc2-core-foundation = { workspace = true, features = ["CFURL", "CFNumber"] }
+objc2-core-foundation = { workspace = true, features = ["CFURL", "CFNumber", "CFArray"] }
 objc2-app-kit = { workspace = true, features = ["NSWorkspace", "NSRunningApplication", "libc"] }
 objc2-foundation = { workspace = true }
 

@@ -1,7 +1,8 @@
 //! Pointer grammar (design doc 96 §6.2): a pure function from the sampled
 //! pointer path to the gestures it drew — `Loop`, `Stroke`, `Dwell`, `End` —
 //! ordered by precedence. Points are logical global (origin top-left of the
-//! primary display), as the shell samples them.
+//! primary display), as the shell samples them. Loops, strokes and dwells are
+//! found within pen-down runs only; a pen-up gap never joins two samples.
 
 use serde::{Deserialize, Serialize};
 
@@ -15,6 +16,14 @@ pub struct Sample {
     pub x: f32,
     /// Logical global y.
     pub y: f32,
+    /// Whether the pointer was drawing (left button held in the shell's pen
+    /// mode); payloads without the field were drawn throughout.
+    #[serde(default = "pen_default")]
+    pub pen: bool,
+}
+
+fn pen_default() -> bool {
+    true
 }
 
 /// A logical point.
@@ -86,20 +95,25 @@ pub const STROKE_MIN_PT: f32 = 80.0;
 pub const STROKE_MAX_DEV_PT: f32 = 15.0;
 
 /// The gestures in `samples`, ordered Loop, Stroke, Dwell, End; empty input
-/// yields nothing, otherwise `End` is always last.
+/// yields nothing, otherwise `End` is always last — at the last pen-down
+/// sample, or the last sample when the pen never went down.
 pub fn gestures(samples: &[Sample]) -> Vec<Gesture> {
     let Some(last) = samples.last() else {
         return Vec::new();
     };
-    let mut out = Vec::new();
-    let mut covered = vec![false; samples.len()];
-    for (i, j, g) in loops(samples) {
-        covered[i..=j].iter_mut().for_each(|c| *c = true);
-        out.push(g);
+    let end = samples.iter().rev().find(|s| s.pen).unwrap_or(last);
+    let (mut out, mut strokes_out, mut dwells_out) = (Vec::new(), Vec::new(), Vec::new());
+    for run in samples.split(|s| !s.pen).filter(|r| !r.is_empty()) {
+        let mut covered = vec![false; run.len()];
+        for (i, j) in loops(run, &mut out) {
+            covered[i..=j].iter_mut().for_each(|c| *c = true);
+        }
+        strokes_out.extend(strokes(run, &covered));
+        dwells(run, &mut dwells_out);
     }
-    out.extend(strokes(samples, &covered));
-    out.extend(dwells(samples));
-    out.push(Gesture::End { at: pt(last) });
+    out.append(&mut strokes_out);
+    out.append(&mut dwells_out);
+    out.push(Gesture::End { at: pt(end) });
     out
 }
 
@@ -167,11 +181,12 @@ fn iou(a: &Bbox, b: &Bbox) -> f32 {
     inter / (a.w * a.h + b.w * b.h - inter)
 }
 
-/// Closed loops as `(first index, last index, gesture)`; the walk resumes after each.
+/// Closed loops of one run as `(first index, last index)`, pushed onto `out`
+/// unless a loop there already covers the same box; the walk resumes after each.
 // ponytail: O(n²) over the path (a few thousand samples at 60 Hz); bucket the
 // samples spatially if holds ever run minutes.
-fn loops(samples: &[Sample]) -> Vec<(usize, usize, Gesture)> {
-    let mut out: Vec<(usize, usize, Gesture)> = Vec::new();
+fn loops(samples: &[Sample], out: &mut Vec<Gesture>) -> Vec<(usize, usize)> {
+    let mut spans = Vec::new();
     let mut start = 0;
     let mut j = 1;
     while j < samples.len() {
@@ -188,14 +203,15 @@ fn loops(samples: &[Sample]) -> Vec<(usize, usize, Gesture)> {
         if let Some(i) = returns.or_else(crosses) {
             let bbox = bbox_of(&samples[i..=j]);
             if bbox.w >= LOOP_MIN_PT && bbox.h >= LOOP_MIN_PT {
-                let dup = out.iter().any(|(_, _, o)| match o {
+                let dup = out.iter().any(|o| match o {
                     Gesture::Loop { bbox: b, .. } => iou(b, &bbox) > 0.5,
                     _ => false,
                 });
                 if !dup {
                     let centroid = mean(&samples[i..=j]);
-                    out.push((i, j, Gesture::Loop { bbox, centroid }));
+                    out.push(Gesture::Loop { bbox, centroid });
                 }
+                spans.push((i, j));
                 start = j + 1;
                 j = start + 1;
                 continue;
@@ -203,7 +219,7 @@ fn loops(samples: &[Sample]) -> Vec<(usize, usize, Gesture)> {
         }
         j += 1;
     }
-    out
+    spans
 }
 
 /// Distance from `p` to the line through `a` and `b` (to `a` when they coincide).
@@ -255,12 +271,12 @@ fn strokes(samples: &[Sample], covered: &[bool]) -> Vec<Gesture> {
 }
 
 /// Maximal runs within `DWELL_RADIUS_PT` of their first sample spanning
-/// ≥ `DWELL_MIN_MS`. A path that never moved is `End` alone.
-fn dwells(samples: &[Sample]) -> Vec<Gesture> {
-    let mut out: Vec<Gesture> = Vec::new();
+/// ≥ `DWELL_MIN_MS`, pushed onto `out` unless a dwell there is within
+/// `DWELL_RADIUS_PT`. A run that never moved adds nothing (`End` says where).
+fn dwells(samples: &[Sample], out: &mut Vec<Gesture>) {
     let first = pt(&samples[0]);
     if samples.iter().all(|s| pt(s) == first) {
-        return out;
+        return;
     }
     let mut a = 0;
     while a < samples.len() {
@@ -284,7 +300,6 @@ fn dwells(samples: &[Sample]) -> Vec<Gesture> {
             a += 1;
         }
     }
-    out
 }
 
 #[cfg(test)]
@@ -294,13 +309,19 @@ mod tests {
     const STEP_MS: u32 = 1000 / 60;
 
     fn path(points: impl IntoIterator<Item = (f32, f32)>) -> Vec<Sample> {
+        pen_path(points.into_iter().map(|p| (p, true)))
+    }
+
+    /// Samples at 60 Hz with a pen state per point.
+    fn pen_path(points: impl IntoIterator<Item = ((f32, f32), bool)>) -> Vec<Sample> {
         points
             .into_iter()
             .enumerate()
-            .map(|(i, (x, y))| Sample {
+            .map(|(i, ((x, y), pen))| Sample {
                 t_ms: i as u32 * STEP_MS,
                 x,
                 y,
+                pen,
             })
             .collect()
     }
@@ -467,5 +488,67 @@ mod tests {
             .collect();
         let gs = gestures(&path(pts));
         assert_eq!(kinds(&gs), ["end"], "{gs:?}");
+    }
+
+    #[test]
+    fn two_circles_split_by_a_pen_up_are_two_loops() {
+        // The pen-up travel between them would otherwise read as a stroke.
+        let mut pts: Vec<_> = circle((300.0, 300.0), 60.0, 72, 1.0)
+            .into_iter()
+            .map(|p| (p, true))
+            .collect();
+        pts.extend(
+            line((360.0, 300.0), (640.0, 300.0), 20)
+                .into_iter()
+                .map(|p| (p, false)),
+        );
+        pts.extend(
+            circle((700.0, 300.0), 60.0, 72, 1.0)
+                .into_iter()
+                .map(|p| (p, true)),
+        );
+        let gs = gestures(&pen_path(pts));
+        assert_eq!(kinds(&gs), ["loop", "loop", "end"], "{gs:?}");
+    }
+
+    #[test]
+    fn pen_up_gap_between_two_points_is_not_a_stroke() {
+        let mut pts = vec![((100.0, 500.0), true)];
+        pts.extend(
+            line((100.0, 500.0), (400.0, 500.0), 30)
+                .into_iter()
+                .map(|p| (p, false)),
+        );
+        pts.push(((400.0, 500.0), true));
+        let gs = gestures(&pen_path(pts));
+        assert_eq!(
+            gs,
+            [Gesture::End {
+                at: Pt { x: 400.0, y: 500.0 }
+            }],
+            "{gs:?}"
+        );
+    }
+
+    #[test]
+    fn all_pen_up_is_end_only_at_the_last_sample() {
+        let pts = line((100.0, 500.0), (400.0, 500.0), 30)
+            .into_iter()
+            .map(|p| (p, false));
+        let gs = gestures(&pen_path(pts));
+        assert_eq!(
+            gs,
+            [Gesture::End {
+                at: Pt { x: 400.0, y: 500.0 }
+            }]
+        );
+    }
+
+    #[test]
+    fn pen_field_defaults_to_down() {
+        let s: Sample = serde_json::from_str(r#"{"t_ms":0,"x":1.0,"y":2.0}"#).unwrap();
+        assert!(s.pen);
+        let s: Sample = serde_json::from_str(r#"{"t_ms":0,"x":1.0,"y":2.0,"pen":false}"#).unwrap();
+        assert!(!s.pen);
     }
 }
