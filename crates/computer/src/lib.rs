@@ -8,6 +8,7 @@
 //! - commands on the [`COMPUTER_ACTOR`] actor ([`Computer`]): [`Permissions`],
 //!   [`ScreenContext`] (96 §6)
 
+pub mod ax;
 pub mod frame;
 pub mod input;
 pub mod pointer;
