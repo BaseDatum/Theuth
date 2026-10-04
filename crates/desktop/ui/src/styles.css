@@ -488,9 +488,12 @@ body.voice-hold {
     @apply bg-background text-foreground;
   }
 
-  /* 03 §2: the island window is transparent; only the strip paints (`components/meeting/Island.tsx`). */
+  /* 03 §2: the island window is transparent; only the strip paints (`components/meeting/Island.tsx`).
+     96 §5.3: the trail overlay (`routes/overlay.tsx`) paints nothing but its canvas. */
   html[data-island],
-  html[data-island] body {
+  html[data-island] body,
+  html[data-overlay],
+  html[data-overlay] body {
     background: transparent;
   }
 

@@ -10,10 +10,10 @@ import { SidebarInset, SidebarProvider, useSidebar } from '@/components/ui/sideb
 import { useHotkeys } from '@/lib/hotkeys'
 import type { SearchRequest } from '@/lib/search'
 import { isPopout } from '@/lib/popout'
-import { isIsland } from '@/lib/tauri'
+import { isIsland, isOverlay } from '@/lib/tauri'
 
-/** 03 §0.1: the island webview gets no sidebar, search or hotkeys — just its route. A popout gets the routed column alone. */
-export const Route = createRootRoute({ component: isIsland() ? Outlet : isPopout() ? Popped : Root })
+/** 03 §0.1: the island webview gets no sidebar, search or hotkeys — just its route; the trail overlay (96 §5.3) likewise. A popout gets the routed column alone. */
+export const Route = createRootRoute({ component: isIsland() || isOverlay() ? Outlet : isPopout() ? Popped : Root })
 
 /** One chat or one artifact in its own window: the column without sidebar, search, drag targets or the meeting bar.
  * `SidebarProvider` stays (closed) because the chat header reads it. */
