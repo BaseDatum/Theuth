@@ -4,7 +4,7 @@
 //! 40 synthetic emails over 5 folders, shape asserted, obvious rows ≥ 80 % right; and the
 //! 57 §2.1 reclaim after the tool's own `Release`.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -41,7 +41,7 @@ fn dirs() -> Option<(PathBuf, PathBuf)> {
 
 /// The `tool` family on a uniquely named gliner checkpoint (tests in one binary share the
 /// kameo registry), its engine registered, and the tool over the same config.
-fn rig(name: &str, models: &PathBuf, dir: PathBuf, tmp: &std::path::Path) -> Arc<Decide> {
+fn rig(name: &str, models: &Path, dir: PathBuf, tmp: &Path) -> Arc<Decide> {
     let mut cfg = DecisionConfig::default();
     let mut entry = Checkpoint::from(dir.clone());
     entry.kind = Kind::Gliner;
@@ -62,7 +62,7 @@ fn rig(name: &str, models: &PathBuf, dir: PathBuf, tmp: &std::path::Path) -> Arc
     Arc::new(Decide::new(cfg, &tmp.join("decisions")))
 }
 
-fn cx(dir: &std::path::Path) -> ToolCx {
+fn cx(dir: &Path) -> ToolCx {
     ToolCx {
         session: runtime::SessionId::new(),
         call_id: "c1".into(),

@@ -631,7 +631,7 @@ fn commas(n: usize) -> String {
     let s = n.to_string();
     let mut out = String::with_capacity(s.len() + s.len() / 3);
     for (i, c) in s.chars().enumerate() {
-        if i > 0 && (s.len() - i) % 3 == 0 {
+        if i > 0 && (s.len() - i).is_multiple_of(3) {
             out.push(',');
         }
         out.push(c);
@@ -1180,29 +1180,30 @@ mod tests {
             Some("id `none` is reserved for the none control")
         );
 
-        // The model never saw the caller's keys: positional ids plus `none`, label texts.
-        let seen = r.seen.lock();
-        for opts in &seen.options {
+        {
+            // The model never saw the caller's keys: positional ids plus `none`, label texts.
+            let seen = r.seen.lock();
+            for opts in &seen.options {
+                assert!(
+                    opts.iter()
+                        .all(|o| !o.starts_with("inv=") && !o.starts_with("rec=")),
+                    "{opts:?}"
+                );
+            }
             assert!(
-                opts.iter()
-                    .all(|o| !o.starts_with("inv=") && !o.starts_with("rec=")),
-                "{opts:?}"
+                seen.options
+                    .iter()
+                    .any(|o| o.contains(&"0=invoices and receipts".to_owned()))
             );
+            // Batches of ≤ 2, shortest rows first (rendered length): 7 askable rows → 4 `AskMany`
+            // → 4 forwards (the build failure drops out of its batch, its partner still runs).
+            assert_eq!(seen.batches.len(), 4, "{:?}", seen.batches);
+            assert!(seen.batches.iter().all(|b| b.len() <= 2));
+            let lens: Vec<usize> = seen.batches.iter().flatten().map(String::len).collect();
+            let mut sorted = lens.clone();
+            sorted.sort_unstable();
+            assert_eq!(lens, sorted, "batches run shortest first");
         }
-        assert!(
-            seen.options
-                .iter()
-                .any(|o| o.contains(&"0=invoices and receipts".to_owned()))
-        );
-        // Batches of ≤ 2, shortest rows first (rendered length): 7 askable rows → 4 `AskMany`
-        // → 4 forwards (the build failure drops out of its batch, its partner still runs).
-        assert_eq!(seen.batches.len(), 4, "{:?}", seen.batches);
-        assert!(seen.batches.iter().all(|b| b.len() <= 2));
-        let lens: Vec<usize> = seen.batches.iter().flatten().map(String::len).collect();
-        let mut sorted = lens.clone();
-        sorted.sort_unstable();
-        assert_eq!(lens, sorted, "batches run shortest first");
-        drop(seen);
         // Logged under `tool`; the checkpoint was released at the end (nothing else holds it).
         assert_eq!(r.log.stats(&TOOL_FAMILY.into()).unwrap().asks, 7);
         assert!(r.engine.ask(LoadedNow).await.unwrap().is_empty());
@@ -1432,18 +1433,19 @@ mod tests {
             rows.iter()
                 .all(|r| r.choice.as_deref() == Some("a") && r.error.is_none())
         );
-        let seen = r.seen.lock();
-        let browser_at = seen
-            .batches
-            .iter()
-            .position(|b| b[0].starts_with("BROWSER"))
-            .expect("the browser ask ran");
-        assert!(
-            browser_at > 0 && browser_at < seen.batches.len() - 1,
-            "browser ask at forward {browser_at} of {}",
-            seen.batches.len()
-        );
-        drop(seen);
+        {
+            let seen = r.seen.lock();
+            let browser_at = seen
+                .batches
+                .iter()
+                .position(|b| b[0].starts_with("BROWSER"))
+                .expect("the browser ask ran");
+            assert!(
+                browser_at > 0 && browser_at < seen.batches.len() - 1,
+                "browser ask at forward {browser_at} of {}",
+                seen.batches.len()
+            );
+        }
         assert_eq!(
             r.engine.ask(LoadedNow).await.unwrap().len(),
             1,
