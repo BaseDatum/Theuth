@@ -18,6 +18,7 @@ import { Route as LibraryRouteImport } from './routes/library'
 import { Route as LinkRouteImport } from './routes/link'
 import { Route as NewRouteImport } from './routes/new'
 import { Route as NotesRouteImport } from './routes/notes'
+import { Route as OverlayRouteImport } from './routes/overlay'
 import { Route as SecretsRouteImport } from './routes/secrets'
 import { Route as ToolsRouteImport } from './routes/tools'
 import { Route as AgentsIndexRouteImport } from './routes/agents.index'
@@ -89,6 +90,11 @@ const NewRoute = NewRouteImport.update({
 const NotesRoute = NotesRouteImport.update({
   id: '/notes',
   path: '/notes',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const OverlayRoute = OverlayRouteImport.update({
+  id: '/overlay',
+  path: '/overlay',
   getParentRoute: () => rootRouteImport,
 } as any)
 const SecretsRoute = SecretsRouteImport.update({
@@ -237,6 +243,7 @@ export interface FileRoutesByFullPath {
   '/link': typeof LinkRoute
   '/new': typeof NewRoute
   '/notes': typeof NotesRoute
+  '/overlay': typeof OverlayRoute
   '/secrets': typeof SecretsRoute
   '/tools': typeof ToolsRoute
   '/agents/new': typeof AgentsNewRoute
@@ -275,6 +282,7 @@ export interface FileRoutesByTo {
   '/link': typeof LinkRoute
   '/new': typeof NewRoute
   '/notes': typeof NotesRoute
+  '/overlay': typeof OverlayRoute
   '/secrets': typeof SecretsRoute
   '/tools': typeof ToolsRoute
   '/agents/new': typeof AgentsNewRoute
@@ -314,6 +322,7 @@ export interface FileRoutesById {
   '/link': typeof LinkRoute
   '/new': typeof NewRoute
   '/notes': typeof NotesRoute
+  '/overlay': typeof OverlayRoute
   '/secrets': typeof SecretsRoute
   '/tools': typeof ToolsRoute
   '/agents/new': typeof AgentsNewRoute
@@ -354,6 +363,7 @@ export interface FileRouteTypes {
     | '/link'
     | '/new'
     | '/notes'
+    | '/overlay'
     | '/secrets'
     | '/tools'
     | '/agents/new'
@@ -392,6 +402,7 @@ export interface FileRouteTypes {
     | '/link'
     | '/new'
     | '/notes'
+    | '/overlay'
     | '/secrets'
     | '/tools'
     | '/agents/new'
@@ -430,6 +441,7 @@ export interface FileRouteTypes {
     | '/link'
     | '/new'
     | '/notes'
+    | '/overlay'
     | '/secrets'
     | '/tools'
     | '/agents/new'
@@ -469,6 +481,7 @@ export interface RootRouteChildren {
   LinkRoute: typeof LinkRoute
   NewRoute: typeof NewRoute
   NotesRoute: typeof NotesRoute
+  OverlayRoute: typeof OverlayRoute
   SecretsRoute: typeof SecretsRoute
   ToolsRoute: typeof ToolsRoute
   AgentsNewRoute: typeof AgentsNewRoute
@@ -559,6 +572,13 @@ declare module '@tanstack/react-router' {
       path: '/notes'
       fullPath: '/notes'
       preLoaderRoute: typeof NotesRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/overlay': {
+      id: '/overlay'
+      path: '/overlay'
+      fullPath: '/overlay'
+      preLoaderRoute: typeof OverlayRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/secrets': {
@@ -787,6 +807,7 @@ const rootRouteChildren: RootRouteChildren = {
   LinkRoute: LinkRoute,
   NewRoute: NewRoute,
   NotesRoute: NotesRoute,
+  OverlayRoute: OverlayRoute,
   SecretsRoute: SecretsRoute,
   ToolsRoute: ToolsRoute,
   AgentsNewRoute: AgentsNewRoute,

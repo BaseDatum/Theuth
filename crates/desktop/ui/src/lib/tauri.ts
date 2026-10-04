@@ -20,6 +20,9 @@ export const isTauri = () => '__TAURI_INTERNALS__' in window
 /** The island webview (53 decision 8, 03 §0.1): the same bundle routed by window label; `/island` in a plain browser (the fixture). */
 export const isIsland = (): boolean =>
   isTauri() ? getCurrentWindow().label === 'island' : location.pathname === '/island'
+/** 96 §4.5: an overlay webview (`overlay-<n>`, one per display) — the trail canvas; `/overlay` in a plain browser. */
+export const isOverlay = (): boolean =>
+  isTauri() ? getCurrentWindow().label.startsWith('overlay-') : location.pathname === '/overlay'
 
 const devConnection = (): Connection => {
   const url = import.meta.env.VITE_THEUTH_URL
@@ -102,3 +105,43 @@ export const islandCapabilities = (): Promise<IslandCapabilities> =>
   isTauri()
     ? invoke<IslandCapabilities>('island_capabilities')
     : Promise.resolve({ hide_from_share: true, always_on_top: true, non_activating: true, placement: 'notch' })
+
+// Voice key (`crates/desktop/src/point/`, 96 §4.3–4.4). No-ops outside Tauri.
+/** `point::machine::State` serialised (`#[serde(tag = "state")]`); times are ms since process start. */
+export type PointState =
+  | { state: 'idle' }
+  | { state: 'armed'; t0: number }
+  | { state: 'holding'; t0: number }
+  | { state: 'tap1'; t0: number; released: number }
+  | { state: 'locked'; t0: number }
+  | { state: 'sending'; t0: number }
+  | { state: 'replying' }
+/** One pointer sample in logical global points, `t_ms` from the press. */
+export type PointSample = { t_ms: number; x: number; y: number }
+export type PointStart = { at_ms: number; locked: boolean; color_hint: string | null }
+export type PointSamples = { display_index: number; pts: [number, number][] }
+export type PointStop = { samples: PointSample[]; duration_ms: number; reason: 'release' | 'tap' }
+export type PointCancel = { reason: 'esc' | 'short' | 'double-tap-missed' | 'cancel'; hint: string | null }
+export type PointRefused = { reason: string }
+
+/** Register `chord` as the voice key (`""` unregisters); rejects with a string and keeps the old chord when it cannot be taken. */
+export const voiceKeyBind = (chord: string): Promise<void> =>
+  isTauri() ? invoke<void>('voice_key_bind', { chord }) : Promise.resolve()
+/** Esc inside the panel, a click outside, Stop, or a failed send. */
+export const pointCancel = (): Promise<void> => (isTauri() ? invoke<void>('point_cancel') : Promise.resolve())
+/** The panel finished a phase: `sending → replying`, and `replying → idle` after the reply. */
+export const pointDone = (): Promise<void> => (isTauri() ? invoke<void>('point_done') : Promise.resolve())
+export const pointState = (): Promise<PointState> =>
+  isTauri() ? invoke<PointState>('point_state') : Promise.resolve({ state: 'idle' })
+/** A standing refusal (`'meeting'` while one records) answered to the next press; `null` clears it. */
+export const pointRefuse = (reason: string | null): Promise<void> =>
+  isTauri() ? invoke<void>('point_refuse', { reason }) : Promise.resolve()
+/** Create a missing `overlay-<n>` per monitor; the labels. */
+export const overlayEnsure = (): Promise<string[]> =>
+  isTauri() ? invoke<string[]>('overlay_ensure') : Promise.resolve([])
+export const onPointStart = (cb: (p: PointStart) => void) => on<PointStart>('point:start', cb)
+export const onPointLock = (cb: () => void) => on<Record<string, never>>('point:lock', cb)
+export const onPointSamples = (cb: (p: PointSamples) => void) => on<PointSamples>('point:samples', cb)
+export const onPointStop = (cb: (p: PointStop) => void) => on<PointStop>('point:stop', cb)
+export const onPointCancel = (cb: (p: PointCancel) => void) => on<PointCancel>('point:cancel', cb)
+export const onPointRefused = (cb: (p: PointRefused) => void) => on<PointRefused>('point:refused', cb)
