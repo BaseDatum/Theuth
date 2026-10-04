@@ -789,6 +789,22 @@ with `--web ui/dist`. Rules:
 today assumes macOS is re-keyed on `container()`; the unguarded ones in
 §2.2 (`saveAttachment`, `pickFiles`, `openUrl`) are replaced (§9).
 
+### 7.8 Device-socket liveness (95)
+
+`LinkTransport` arms exactly one timer per socket (`src/link/transport.ts`):
+
+- `CONNECT_MS = 15_000` — socket creation → first `PRESENCE`; expiry abandons
+  the socket like `reset()` (`lost`, `reconnecting`, the `RpcClient` backoff).
+- `HANDSHAKE_MS = 10_000` — `PRESENCE 1` → `ready`; same expiry.
+- `PARKED_RECYCLE_MS = 60_000` — while parked (`PRESENCE 0`) the socket is
+  replaced in place, silently: `connect()`'s promise is kept, no `connecting`
+  event/state/presence, and the fresh socket's repeated `PRESENCE 0` is not
+  re-reported. The relay drops a dead parked socket at 45 s and only notifies
+  its *current* parked set, so the swap is also the presence poll.
+
+`RpcClient.#foreground` resets and redials in `connecting` as well as
+`reconnecting`; `probe()` stays `open`-only.
+
 ## 8. Mobile accommodations
 
 ### 8.1 Layout rules (applied once, in `styles.css` and the shell)
