@@ -16,6 +16,7 @@ gliner-onnx = ["dep:ort"]
 
 [dependencies]
 runtime = { workspace = true }
+platform = { workspace = true }  # `sha256::cached`: the `<weights>.sha256` sidecar shared with the desktop downloader
 tools = { workspace = true }
 models = { workspace = true }  # `models::accelerator`: the `models.accelerator` knob `Device::Auto` follows (58 step 12)
 kameo = { workspace = true }

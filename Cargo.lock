@@ -4498,6 +4498,7 @@ dependencies = [
  "models",
  "ort",
  "parking_lot",
+ "platform",
  "regex",
  "runtime",
  "schemars 1.2.2",
@@ -15366,7 +15367,9 @@ dependencies = [
  "dirs 6.0.0",
  "libc",
  "self-replace",
+ "sha2 0.10.9",
  "tokio",
+ "tracing",
  "windows-sys 0.61.2",
 ]
 

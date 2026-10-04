@@ -15,7 +15,6 @@ use std::time::{Duration, Instant};
 use candle_core::{DType, Device, Tensor};
 use candle_nn::VarBuilder;
 use parking_lot::Mutex;
-use sha2::{Digest, Sha256};
 use tokenizers::Tokenizer;
 
 use self::config::{AgentConfig, EncoderConfig};
@@ -230,7 +229,7 @@ impl Loaded {
             .map_err(|e| anyhow::anyhow!("load {}: {e}", weights.display()))?;
         std::thread::spawn({
             let (weights, model_sha) = (weights, model_sha.clone());
-            move || match sha256_cached(&weights) {
+            move || match platform::sha256::cached(&weights) {
                 Ok(hex) => *model_sha.lock() = hex,
                 Err(e) => tracing::warn!(
                     "decision: sha256 of {} failed ({e}); log rows keep the size tag",
@@ -315,45 +314,6 @@ impl Oracle for Loaded {
     fn load_time(&self) -> Duration {
         self.load_time
     }
-}
-
-/// sha256 hex of `weights`, remembered beside it in `<weights>.sha256` as `<hex> <size> <mtime>`
-/// so the 843 MB pass runs once per download, not on every load (a checkpoint is released at
-/// every meeting stop / browser close and after `idle_unload`, 57 §2.1). A size or mtime
-/// mismatch rehashes; a sidecar that cannot be written is only a debug line.
-pub(crate) fn sha256_cached(weights: &Path) -> std::io::Result<String> {
-    let meta = std::fs::metadata(weights)?;
-    let stamp = format!(
-        "{} {}",
-        meta.len(),
-        meta.modified()?
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_or(0, |d| d.as_secs())
-    );
-    let mut sidecar = weights.as_os_str().to_owned();
-    sidecar.push(".sha256");
-    let sidecar = Path::new(&sidecar);
-    if let Ok(text) = std::fs::read_to_string(sidecar)
-        && let Some((hex, rest)) = text.trim().split_once(' ')
-        && rest == stamp
-        && hex.len() == 64
-    {
-        return Ok(hex.to_owned());
-    }
-    let t = Instant::now();
-    let mut hasher = Sha256::new();
-    std::io::copy(&mut std::fs::File::open(weights)?, &mut hasher)?;
-    let hex = format!("{:x}", hasher.finalize());
-    tracing::debug!(
-        "decision: {} sha256 {}… in {:?}",
-        weights.display(),
-        &hex[..12],
-        t.elapsed()
-    );
-    if let Err(e) = std::fs::write(sidecar, format!("{hex} {stamp}\n")) {
-        tracing::debug!("decision: cannot write {}: {e}", sidecar.display());
-    }
-    Ok(hex)
 }
 
 #[cfg(test)]

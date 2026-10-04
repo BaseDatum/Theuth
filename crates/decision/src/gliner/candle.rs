@@ -163,7 +163,7 @@ impl Loaded {
         let head_out = candle_nn::linear(HEAD_HIDDEN, 1, vb.pp("classifier.2"))?;
         std::thread::spawn({
             let (weights, model_sha) = (weights, model_sha.clone());
-            move || match crate::candle::sha256_cached(&weights) {
+            move || match platform::sha256::cached(&weights) {
                 Ok(hex) => *model_sha.lock() = hex,
                 Err(e) => tracing::warn!(
                     "decision: sha256 of {} failed ({e}); log rows keep the size tag",

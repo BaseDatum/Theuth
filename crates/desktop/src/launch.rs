@@ -109,6 +109,15 @@ impl Launch {
         self.start(&mut inner, app)
     }
 
+    /// The cached connection, else a probe for a live engine (18 §3); never spawns one.
+    /// `models.rs` asks before swapping a checkpoint the daemon may have loaded.
+    pub fn peek(&self) -> Option<Connection> {
+        lock(&self.inner)
+            .connection
+            .clone()
+            .or_else(|| probe(&data_dir()))
+    }
+
     /// 18 §3: hang up the pty; kill the daemon if it is still alive after 2 s.
     /// A reused daemon is left running.
     pub fn shutdown(&self) {
