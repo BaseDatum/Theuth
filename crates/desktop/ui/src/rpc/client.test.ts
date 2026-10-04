@@ -77,6 +77,15 @@ test('foreground while reconnecting skips the backoff', () => {
   expect(t.resets).toBe(1)
 })
 
+test('foreground while connecting resets and redials at once', () => {
+  const t = new Fake()
+  new RpcClient(t)
+  t.state('connecting')
+  foreground()
+  expect(t.resets).toBe(1)
+  expect(t.connects).toBe(1)
+})
+
 test('a send in flight when the socket drops is rejected at once, not left hanging', async () => {
   const t = new Fake()
   const c = new RpcClient(t)
