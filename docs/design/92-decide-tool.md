@@ -138,7 +138,15 @@ sub-family is the cheap option because the head is 2 M parameters (`classifier.0
 
 Steps 1–2 are one omp (~1 day); 3 is a lab session with Sky; 4–5 after.
 
-## 8. Open questions for Sky
+## 8. Rulings (Sky, 2026-10-04) and what stays open
+
+Ruled: default checkpoint **gliner**; taint (§4's layer-2 sentence) is moot — 28 layer 2 is not built;
+guidance = **a short paragraph in the system prompt + a full `decide` skill** (bundled by the decision
+crate like `apps.md`/`board.md`, written to `<data_dir>/skills/decide.md` on first run); caps **2,000
+rows · 4 KB state**; capture = **per-call `capture="tool.<task>"` + `decide_label()`**; this round =
+**steps 1 + 2 + prompt/skill** (calibration fit and the email lab follow). Still open:
+
+### 8.1 Originally asked
 
 1. Default checkpoint `gliner` (quality on invented labels) vs `laya` (3–5× faster) — lean gliner,
    with the docstring naming both.
