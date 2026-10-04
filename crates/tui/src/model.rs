@@ -5892,7 +5892,10 @@ impl Model {
                 self.vision = None;
                 self.entries.push(Entry::Error(message));
             }
-            AgentEvent::SubagentSpawned { .. }
+            // 91: the thinking block is already closed by the generic rule above
+            // (any non-delta event); the TUI shows no thinking time.
+            AgentEvent::ReasoningDone { .. }
+            | AgentEvent::SubagentSpawned { .. }
             | AgentEvent::MessageDelivered { .. }
             | AgentEvent::InputWithdrawn { .. }
             | AgentEvent::TitleChanged { .. }
