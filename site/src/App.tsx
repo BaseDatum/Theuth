@@ -5,7 +5,7 @@ import { Pyramid } from "./Pyramid";
 declare const __APP_VERSION__: string;
 declare const __RELEASE_VERSION__: string;
 
-const GITHUB = "https://github.com/skymoore/theuth";
+const GITHUB = "https://github.com/BaseDatum/Theuth";
 const APP = "https://app.theuth.io";
 const RELEASES = "https://s3.rwx.dev/theuth/releases";
 /** Release artifacts live at releases/<version>/theuth_<version>_<target>; there is no latest/ path, latest.json names the version. */
@@ -717,7 +717,7 @@ export function App() {
         </a>
         <nav aria-label="Primary" className="flex items-center gap-3 text-[14px] text-fg-2 sm:gap-6">
           <a href={DOCS} className="nav-link">
-            Docs
+            docs
           </a>
           <a href={GITHUB} className="nav-link max-sm:hidden">
             github
@@ -1151,7 +1151,7 @@ export function App() {
               quickstart
             </a>
             <a href={GITHUB} className="nav-link">
-              github.com/skymoore/theuth
+              github.com/BaseDatum/Theuth
             </a>
             <a href={APP} className="nav-link">
               app.theuth.io

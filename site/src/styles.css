@@ -68,6 +68,13 @@ html {
   -webkit-font-smoothing: antialiased;
 }
 
+/* The page colour lives on html, never on body. The pyramid's .stage is fixed at z-index -1: it paints above the root
+   background but below the document only while body itself has no background. Fumadocs' preset (css/lib/base.css)
+   gives body `background-color: var(--color-fd-background)`, which covered the pyramid; keep body transparent. */
+body {
+  background: transparent;
+}
+
 ::selection {
   background: rgb(196 122 44 / 0.35);
 }
