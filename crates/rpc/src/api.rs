@@ -47,7 +47,7 @@ use codeindex::{
     CODEINDEX_ACTOR, ChangeLens, CodeindexActor, FitLens, HereLens, IndexStats, LensMeta,
     LocateAnchor, Located,
 };
-use computer::{COMPUTER_ACTOR, Computer, Permissions};
+use computer::{COMPUTER_ACTOR, Computer, Permissions, ScreenContext};
 use jsonrpsee::Extensions;
 use jsonrpsee::core::{RpcResult, SubscriptionResult, async_trait};
 use jsonrpsee::proc_macros::rpc;
@@ -304,6 +304,16 @@ pub trait Api {
     /// errors with "actor not running" when `computer.enabled` is false.
     #[method(name = "computer_permissions")]
     async fn computer_permissions(&self) -> RpcResult<computer::PermissionStatus>;
+    /// Capture the displays a pointer path visited, draw the path, read the
+    /// accessibility tree under it, write the images under
+    /// `<data_dir>/attachments/`, answer the `[screen …]` lines (design doc
+    /// 96 §6.3). Local peers only; "disabled" when `computer.enabled` is
+    /// false; a Screen Recording denial names the process.
+    #[method(name = "screen_context", with_extensions)]
+    async fn screen_context(
+        &self,
+        req: computer::ScreenContextReq,
+    ) -> RpcResult<computer::ScreenContextReply>;
     /// Fold the conversation now (design doc 07 §8.6 / 11 §4.2); returns the
     /// new epoch. `style: None` uses the configured default. Refused while a
     /// turn is running.
@@ -2762,6 +2772,17 @@ impl ApiServer for Server {
         ask::<Computer, _>(COMPUTER_ACTOR, Permissions).await
     }
 
+    async fn screen_context(
+        &self,
+        ext: &Extensions,
+        req: computer::ScreenContextReq,
+    ) -> RpcResult<computer::ScreenContextReply> {
+        if peer(ext)?.remote() {
+            return Err(failed("the screen is on the harness host"));
+        }
+        ask::<Computer, _>(COMPUTER_ACTOR, ScreenContext(req)).await
+    }
+
     async fn compact(
         &self,
         ext: &Extensions,
@@ -4473,7 +4494,11 @@ impl ApiServer for Server {
 
     async fn shutdown(&self, ext: &Extensions) -> RpcResult<()> {
         match ext.get::<link::RpcPeer>() {
-            Some(p) => tracing::warn!(peer = p.id(), remote = p.remote(), "shutdown requested over rpc"),
+            Some(p) => tracing::warn!(
+                peer = p.id(),
+                remote = p.remote(),
+                "shutdown requested over rpc"
+            ),
             None => tracing::warn!("shutdown requested over rpc (unauthenticated connection)"),
         }
         self.rt.shutdown.cancel();

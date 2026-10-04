@@ -5,14 +5,17 @@
 //! ([`tools`]). The [`Computer`] actor exists so RPC has a lookup target.
 //!
 //! Public surface consumed by other plugins:
-//! - commands on the [`COMPUTER_ACTOR`] actor ([`Computer`]): [`Permissions`]
+//! - commands on the [`COMPUTER_ACTOR`] actor ([`Computer`]): [`Permissions`],
+//!   [`ScreenContext`] (96 §6)
 
 pub mod frame;
 pub mod input;
+pub mod pointer;
 pub mod screen;
 pub mod tools;
 
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use ::tools::{
@@ -85,6 +88,37 @@ pub struct PermissionStatus {
 #[derive(Clone, Copy, Debug)]
 pub struct Permissions;
 
+/// `screen_context` request (96 §6.3): the pointer path in logical global
+/// points, the trail colour (`#rrggbb`), the press-to-release span, and
+/// whether the client wants the accessibility tree read.
+#[derive(Clone, Debug, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+pub struct ScreenContextReq {
+    /// The pointer path, press to release, in logical global points.
+    pub samples: Vec<pointer::Sample>,
+    /// Trail colour as `#rrggbb`; unparsable falls back to theuth's green.
+    pub color: String,
+    /// Press-to-release duration.
+    pub since_ms: u64,
+    /// Read the accessibility tree (AND-ed with config and the TCC grant).
+    pub accessibility: bool,
+}
+
+/// `screen_context` reply: one `[screen …]` line per visited display and the
+/// PNGs written under `<data_dir>/attachments/` (overviews, then crops).
+#[derive(Clone, Debug, Default, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+pub struct ScreenContextReply {
+    /// One `[screen <i>/<n> …]` line per visited display (96 §6.6).
+    pub lines: Vec<String>,
+    /// Overview PNGs in visit order, then crops; each ≤ 5 MB.
+    pub files: Vec<PathBuf>,
+}
+
+/// `ask` → `Result<ScreenContextReply, String>` (96 §6.4).
+#[derive(Clone, Debug)]
+pub struct ScreenContext(pub ScreenContextReq);
+
 /// The [`COMPUTER_ACTOR`] actor. Tools hold [`tools::Ctx`] directly; the
 /// actor answers [`Permissions`] and keeps the shared state (and with it the
 /// input thread) alive for the process.
@@ -131,6 +165,18 @@ impl Message<Permissions> for Computer {
                 String::new()
             },
         }
+    }
+}
+
+impl Message<ScreenContext> for Computer {
+    type Reply = Result<ScreenContextReply, String>;
+
+    async fn handle(
+        &mut self,
+        _: ScreenContext,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        Err("not built".into())
     }
 }
 
