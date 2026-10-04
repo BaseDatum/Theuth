@@ -9,6 +9,8 @@ description = "OS primitives: process trees, private files, open, service units,
 tokio = { workspace = true }  # login-PATH probe (`process`, `time`), stop signal (`signal`)
 anyhow = { workspace = true }
 dirs = { workspace = true }  # LaunchAgent / systemd user unit paths
+sha2 = { workspace = true }  # `sha256`: the `<file>.sha256` sidecar shared by `decision` and the desktop downloader
+tracing = { workspace = true }
 
 [target.'cfg(unix)'.dependencies]
 libc = { workspace = true }  # killpg / kill / setsid / access / getppid

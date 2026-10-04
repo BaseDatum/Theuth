@@ -240,6 +240,7 @@ function useTauri(): void {
         const id = 'models'
         if (p.state === 'downloading')
           toast.loading(`Downloading speech models… ${Math.round((100 * p.done) / p.total)}%`, { id, description: p.file })
+        else if (p.state === 'verifying') toast.loading('Verifying models…', { id, description: p.file })
         else if (p.state === 'ready') {
           toast.success('Speech models ready', { id, description: undefined })
           // The daemon reloads lazily but the UI gates the mic on `model.state`; ask again so the button unlocks without a restart.

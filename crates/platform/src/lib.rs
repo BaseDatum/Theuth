@@ -10,6 +10,7 @@ pub mod open;
 pub mod ort;
 pub mod process;
 pub mod service;
+pub mod sha256;
 pub mod shell;
 pub mod target;
 

@@ -65,9 +65,10 @@ export const checkUpdate = (): Promise<string | null> =>
 /** Settings › General: run the quit handshake and relaunch into the parked bundle. */
 export const installUpdate = (): Promise<void> =>
   isTauri() ? invoke<void>('install_update') : Promise.resolve()
-/** `crates/desktop/src/models.rs`: speech model files fetched from the release bucket at start. */
+/** `crates/desktop/src/models.rs`: model files fetched from the release bucket at start; `verifying` = hashing a pre-existing file once. */
 export type ModelsProgress =
   | { state: 'downloading'; file: string; done: number; total: number }
+  | { state: 'verifying'; file: string }
   | { state: 'ready' }
   | { state: 'failed'; message: string }
 export const onModelsProgress = (cb: (p: ModelsProgress) => void) =>
