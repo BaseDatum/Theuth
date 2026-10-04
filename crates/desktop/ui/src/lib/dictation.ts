@@ -250,12 +250,16 @@ export function onFinish(cb: (r: Splice) => void): () => void {
   }
 }
 
+/** The store now, outside React (the voice-key orchestrator reads the open utterances and the active id). */
+export const current = (): State => state
+
 /**
- * Anchor the caret (`before`/`after`) and start dictating; a refusal toasts and returns to idle. `mic`:
- * stream this browser's microphone to the daemon (a relay peer; 54 §4.5) instead of using the engine mic.
+ * Anchor the caret (`before`/`after`) and start dictating; a refusal toasts (unless `quiet`) and returns to idle.
+ * `mic`: stream this browser's microphone to the daemon (a relay peer; 54 §4.5) instead of using the engine mic.
+ * Resolves with the refusal message, `null` when dictating.
  */
-export async function start(api: Api, before: string, after: string, mic: boolean): Promise<void> {
-  if (state.active) return
+export async function start(api: Api, before: string, after: string, mic: boolean, quiet = false): Promise<string | null> {
+  if (state.active) return null
   set({
     ...state,
     phase: 'starting',
@@ -278,9 +282,12 @@ export async function start(api: Api, before: string, after: string, mic: boolea
     if (id !== null) void api.dictation_stop(id).catch(() => undefined)
     discarding = false
     set({ ...state, phase: 'idle', active: null })
-    toast.error(e instanceof Error ? e.message : String(e))
+    const message = e instanceof Error ? e.message : String(e)
+    if (!quiet) toast.error(message)
     void refreshStatus(api).catch(() => undefined)
+    return message
   }
+  return null
 }
 
 /** Stop and keep the region; the `DictationFinished` event completes the transition (and releases the mic). */
