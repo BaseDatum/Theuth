@@ -57,8 +57,8 @@ Environment: `PATH=$HOME/.rustup/toolchains/1.98.1-aarch64-apple-darwin/bin:/opt
 2. `cargo test -p rpc --features ts export_bindings` — `test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 36 filtered out; finished in 5.27s`; `bindings/Sample.ts` line 23: `pen: boolean, };`
 3. `cargo clippy -p computer -p rpc --all-targets --no-deps -- -D warnings` — `Finished dev profile [unoptimized + debuginfo] target(s) in 5m 40s`, `EXIT=0`
 4. `cargo check -p theuth -p tui -p nodes` — `Finished dev profile [unoptimized + debuginfo] target(s) in 1m 36s`
-5. `rustfmt --edition 2024 --check` on `ax.rs`, `context.rs`, `pointer.rs`, `examples/ax_probe.rs` — exit 0 (no diff)
-6. `git diff ead30467..HEAD -- Cargo.lock | grep -E '^[+-](name|version)'` — prints nothing (only the `CFArray` feature was added to `objc2-core-foundation` in `crates/computer/Cargo.toml`)
+5. `rustfmt --edition 2024 --check` on `ax.rs`, `context.rs`, `pointer.rs`, `examples/ax_probe.rs` — exit 0 (no diff). Worker re-run of the brief's wording, `cargo fmt --all -- --check` — exit 1, 293 `Diff in` blocks, 0 of them under `crates/computer/` or `crates/rpc/` (the pre-existing drift the first wave reported in `tui`, `theuth`, `tasks`, `talk`, …).
+6. `git diff ead30467..HEAD -- Cargo.lock | grep -E '^[+-](name|version)'` — prints nothing (only the `CFArray` feature was added to `objc2-core-foundation` in `crates/computer/Cargo.toml`). Worker re-run as `git diff main..HEAD -- Cargo.lock | grep -E '^[+-](name|version)'` before the sibling merges — prints nothing; `Cargo.lock` byte-identical to `main`.
 
 ## Deviations
 
