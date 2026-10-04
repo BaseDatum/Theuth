@@ -17,7 +17,7 @@ use kameo::actor::ActorRef;
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 use tools::registry::ToolRegistry;
-use tools::{RegisterTool, Risk, Tool, ToolCx, ToolOutput};
+use tools::{RegisterPrompt, RegisterTool, Risk, Tool, ToolCx, ToolOutput};
 
 use crate::engine::{AskMany, NONE_ID, Release};
 use crate::gate::Mode;
@@ -762,8 +762,14 @@ impl Tool for DecideLabelTool {
     }
 }
 
-/// Register the three tools on `reg`.
+/// Register the prompt block and the three tools on `reg`.
 pub async fn register(reg: &ActorRef<ToolRegistry>, decide: Arc<Decide>) {
+    let _ = reg
+        .ask(RegisterPrompt {
+            plugin: "decision",
+            text: PROMPT.to_owned(),
+        })
+        .await;
     let _ = reg
         .ask(RegisterTool(Arc::new(DecideManyTool(Arc::clone(&decide)))))
         .await;
@@ -774,6 +780,21 @@ pub async fn register(reg: &ActorRef<ToolRegistry>, decide: Arc<Decide>) {
         .ask(RegisterTool(Arc::new(DecideLabelTool(decide))))
         .await;
 }
+
+/// The system-prompt paragraph (`RegisterPrompt { plugin: "decision" }`, 92 §8): present only
+/// while the tool is registered, i.e. the plugin and the `tool` family are on.
+pub const PROMPT: &str = "## Bulk classification\n\
+`decide_many(questions)` runs the local decision model over many similar items — sort, triage, filter, rate — at milliseconds and zero tokens per item, one `{choice, probs, confidence, …}` row per question, in order. \
+The loop: classify everything, threshold on `confidence`, act on the sure rows, read the unsure tail yourself; with `capture=\"<task>\"`, `decide_label(log_id, id)` what you learned. \
+`confidence` is a raw margin, not a probability of being right: pick the threshold on a 50-row sample first. \
+Labels are read by the model — short descriptive phrases, not codes; `ids` carry your keys. \
+It cannot reason, compute or read long documents; it picks among the labels you give it. \
+Load the `decide` skill for the question shapes, recipes and the numbers.";
+
+/// The bundled `decide` skill (92 §8): when to reach for the tool, the loop, the three
+/// shapes, recipes, the numbers and the pitfalls. Written to `<data_dir>/skills/decide.md`
+/// by `first_run`.
+pub const DECIDE_SKILL: &str = include_str!("../decide.md");
 
 #[cfg(test)]
 mod tests {
@@ -796,6 +817,49 @@ mod tests {
         assert!(!is_tool_family("tools"));
         assert!(!is_tool_family("toolbox.x"));
         assert!(!is_tool_family("meeting.kind"));
+    }
+
+    /// The bundled skill parses as front matter `name: decide` + a one-line description, and
+    /// the prompt paragraph stays short (92 §8: ≤ 8 lines) and only ever names things that exist.
+    #[test]
+    fn skill_front_matter_and_prompt_shape() {
+        assert!(DECIDE_SKILL.starts_with("---\nname: decide\ndescription: "));
+        let front = DECIDE_SKILL
+            .strip_prefix("---\n")
+            .and_then(|s| s.split_once("\n---\n"))
+            .expect("closed front matter")
+            .0;
+        let meta: serde_json::Value = serde_yaml::from_str(front).unwrap();
+        assert_eq!(meta["name"], "decide");
+        assert!(
+            meta["description"]
+                .as_str()
+                .is_some_and(|d| !d.is_empty() && !d.contains('\n'))
+        );
+        for must in [
+            "decide_many(",
+            "decide_label(",
+            "\"type\": \"choice\"",
+            "\"type\": \"bool\"",
+            "\"type\": \"score\"",
+            "4 KB",
+            "2,000",
+            "512 subwords",
+            "`none`",
+            "capture=",
+        ] {
+            assert!(DECIDE_SKILL.contains(must), "skill lacks {must:?}");
+        }
+        assert!(PROMPT.starts_with("## Bulk classification\n"));
+        assert!(PROMPT.lines().count() <= 8, "{}", PROMPT.lines().count());
+        for must in [
+            "decide_many(",
+            "decide_label(",
+            "`decide` skill",
+            "confidence",
+        ] {
+            assert!(PROMPT.contains(must), "prompt lacks {must:?}");
+        }
     }
 
     #[test]
