@@ -24,15 +24,19 @@ import * as talk from '@/lib/talk'
 import {
   connection,
   isIsland,
+  isOverlay,
   onCaptureHidden,
   onModelsProgress,
   onNavigate,
+  onPointRefused,
   onQuitRequested,
   quitAck,
   relaunch,
   setHiddenFromCapture,
+  voiceKeyBind,
 } from '@/lib/tauri'
 import { startUpdateListener } from '@/lib/update'
+import * as voiceKey from '@/lib/voice-key'
 import { LOCAL, applyMeshStatus, hasLocal, hydrateEngines, useEngines, useNeedsPairing } from '@/link/engines'
 import { autoPair, watchNodes } from '@/link/nodes'
 import { LinkTransport } from '@/link/transport'
@@ -48,12 +52,14 @@ import { dispatch, on, useSessions } from '@/store/sessions'
 
 /** 03 §0.1: the island webview loads the same bundle and lives at `/island`; the browser history cannot read a window label. */
 const ISLAND = isIsland()
+/** 96 §5.3: a trail overlay (`overlay-<n>`) renders `/overlay` and nothing else — no engine, no listeners but `point:*`. */
+const OVERLAY = isOverlay()
 /** A popout (`lib/popout.ts`) is a second shell at the route in its URL: it connects like main but registers none of main's singletons. */
-const AUX = ISLAND || POPOUT !== null
+const AUX = ISLAND || OVERLAY || POPOUT !== null
 
 const router = createRouter({
   routeTree,
-  history: ISLAND ? createMemoryHistory({ initialEntries: ['/island'] }) : undefined,
+  history: ISLAND || OVERLAY ? createMemoryHistory({ initialEntries: [ISLAND ? '/island' : '/overlay'] }) : undefined,
 })
 
 declare module '@tanstack/react-router' {
@@ -263,6 +269,7 @@ function useTauri(): void {
     }
   }, [])
   useGlobalShortcuts()
+  useVoiceKeyBinding()
 }
 
 /** ⌥Space (show/hide) and ⌥Esc (cancel all) as the user bound them (Settings › Shortcuts); desktop main window only. */
@@ -285,6 +292,37 @@ function useGlobalShortcuts(): void {
     }).catch(() => toast.error(`Could not register ${cancel}; another app holds it`))
     return () => void unregister([toggle, cancel]).catch(() => undefined)
   }, [toggle, cancel])
+}
+
+/**
+ * 96 §4.3: the voice key is a Rust-side global shortcut; the main webview tells the shell the chord at boot and on
+ * every rebind (`""` when the key is off). A refused chord toasts and the store falls back to the last one that bound.
+ */
+function useVoiceKeyBinding(): void {
+  const chord = useShortcuts((s) => s.chords['voice-key'])
+  const enabled = voiceKey.useVoiceKeySettings((s) => s.enabled)
+  const bound = useRef<string | null>(null)
+  useEffect(() => {
+    if (AUX || !isDesktop()) return
+    const want = enabled ? chord : ''
+    voiceKeyBind(want).then(
+      () => (bound.current = want),
+      (e: unknown) => {
+        toast.error(`Voice key: ${String(e)}`, { description: want ? `${want} stays unbound; the previous key still works` : undefined })
+        if (bound.current !== null && enabled && bound.current !== '') useShortcuts.getState().set('voice-key', bound.current)
+      },
+    )
+  }, [chord, enabled])
+  useEffect(() => {
+    if (AUX || !isDesktop()) return
+    const off = onPointRefused((p) => {
+      if (p.reason !== 'chord taken') return
+      toast.error('Voice key: another app holds this chord', {
+        action: { label: 'Change the keys', onClick: () => router.history.push('/settings/shortcuts') },
+      })
+    })
+    return () => void off.then((f) => f())
+  }, [])
 }
 
 /** `session` is on screen: the URL's chat, or any pane split beside it. */
@@ -372,7 +410,12 @@ const links = new Map<string, AbortController>()
 /** The chat each engine was showing when the user switched away, restored on the way back (`/` otherwise). */
 const lastChat = new Map<string, string>()
 
+/** 96 §5.3: an overlay webview is a canvas and three listeners — no engines, no stores, no toaster. */
 export function App() {
+  return OVERLAY ? <RouterProvider router={router} /> : <Main />
+}
+
+function Main() {
   const [attempt, setAttempt] = useState(0)
   const hydrated = useEngines((s) => s.hydrated)
   const engines = useEngines((s) => s.engines)
@@ -384,7 +427,9 @@ export function App() {
   useEffect(() => void hydrateEngines(), [])
   useEffect(watchNodes, [])
   useEffect(installSpeechListeners, [])
-  useEffect(() => (ISLAND ? undefined : installDictationListeners()), [])
+  // 96 §5: the island webview drives dictation for the voice panel; the overlays install nothing but their route's `point:*`.
+  useEffect(() => (OVERLAY ? undefined : installDictationListeners()), [])
+  useEffect(() => (ISLAND ? voiceKey.install() : undefined), [])
   useEffect(() => (ISLAND ? undefined : talk.installTalkListeners()), [])
   useEffect(installMeetingListeners, [])
   // The shell flips both windows; each webview mirrors the value into its own settings copy.

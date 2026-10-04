@@ -1,6 +1,7 @@
 import { cn } from 'cn'
 import {
   Bot,
+  AudioLines,
   ChevronLeft,
   ChevronRight,
   FlaskConical,
@@ -36,6 +37,7 @@ import { Meetings } from '@/components/settings/Meetings'
 import { Search } from '@/components/settings/Search'
 import { Mesh } from '@/components/settings/Mesh'
 import { Shortcuts } from '@/components/settings/Shortcuts'
+import { VoiceKey } from '@/components/settings/VoiceKey'
 import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog'
 import { Sheet, SheetClose, SheetContent, SheetTitle } from '@/components/ui/sheet'
 import { useIsMobile } from '@/hooks/use-mobile'
@@ -48,6 +50,7 @@ const TABS = [
   ['communication', 'Communication', Radio],
   ['computer', 'Computer', Monitor],
   ['meetings', 'Meetings', Mic],
+  ['voice-key', 'Voice key', AudioLines],
   ['search', 'Search', SearchIcon],
   ['labs', 'Labs', FlaskConical],
   ['agents', 'Harnesses', Bot],
@@ -84,6 +87,7 @@ function Pane({ tab, session, peer, onClose }: Omit<Props, 'onTab'>) {
       {tab === 'communication' && <Communication session={session} focus={peer} />}
       {tab === 'computer' && <Computer />}
       {tab === 'meetings' && <Meetings />}
+      {tab === 'voice-key' && <VoiceKey />}
       {tab === 'search' && <Search />}
       {tab === 'labs' && <Labs />}
       {tab === 'agents' && <Agents />}
