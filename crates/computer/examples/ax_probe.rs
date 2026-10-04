@@ -26,6 +26,7 @@ async fn main() {
                 println!("pointer: ({x}, {y})");
                 println!("frontmost: {:#?}", ax::frontmost());
                 println!("hit: {:#?}", reader.hit_at(at));
+                println!("manual accessibility set for: {reader:?}");
             }
             other => println!("pointer: {other:?}"),
         }
