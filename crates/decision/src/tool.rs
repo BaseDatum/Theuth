@@ -662,7 +662,7 @@ impl Tool for DecideManyTool {
 
     fn description(&self) -> String {
         format!(
-            "Classify many similar items with the local decision model (milliseconds and zero tokens per item): \
+            "Classify many similar items with the local decision model (~0.1 s and zero API tokens per item): \
              one result row per question, same order. Up to 2,000 questions per call (loop over slices for more); \
              batching is automatic. Pass `capture=\"<task>\"` only when the user wants a sorter that learns, then \
              `decide_label(log_id, id)` what you verified. {SHAPES}"
