@@ -459,13 +459,10 @@ mod tests {
     #[test]
     fn scribble_is_end_only() {
         // A zigzag that never closes, never runs straight for 80 pt, never rests.
-        let pts: Vec<_> = (0..50)
+        let pts: Vec<_> = (0..50u32)
             .map(|i| {
-                let i = i as f32;
-                (
-                    100.0 + i * 9.0,
-                    if i as u32 % 2 == 0 { 100.0 } else { 160.0 },
-                )
+                let y = if i.is_multiple_of(2) { 100.0 } else { 160.0 };
+                (100.0 + i as f32 * 9.0, y)
             })
             .collect();
         let gs = gestures(&path(pts));

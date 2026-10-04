@@ -260,9 +260,8 @@ fn composite(img: &mut RgbaImage, mask: &[bool], rgb: [u8; 3]) {
             continue;
         }
         let p = img.get_pixel_mut((i % w) as u32, (i / w) as u32);
-        for c in 0..3 {
-            p.0[c] =
-                (p.0[c] as f32 * (1.0 - TRAIL_ALPHA) + rgb[c] as f32 * TRAIL_ALPHA).round() as u8;
+        for (dst, src) in p.0.iter_mut().zip(rgb) {
+            *dst = (*dst as f32 * (1.0 - TRAIL_ALPHA) + src as f32 * TRAIL_ALPHA).round() as u8;
         }
         p.0[3] = 255;
     }

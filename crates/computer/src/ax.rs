@@ -37,7 +37,7 @@ pub struct AxFront {
 #[must_use]
 pub fn truncate(s: &str, chars: usize) -> String {
     match s.char_indices().nth(chars) {
-        Some((i, _)) => format!("{}…", &s[..i].trim_end()),
+        Some((i, _)) => format!("{}…", s[..i].trim_end()),
         None => s.to_owned(),
     }
 }
