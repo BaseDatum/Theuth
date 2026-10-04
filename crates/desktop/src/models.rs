@@ -799,4 +799,18 @@ mod tests {
             r#"{"state":"failed","message":"x"}"#
         );
     }
+
+    /// The daemon's JSON-RPC answer over plain HTTP (smoked 2026-10-04 against `t --headless`:
+    /// `{"jsonrpc":"2.0","id":1,"result":[]}`; 401 without `?token=`), names only.
+    #[tokio::test]
+    async fn decision_loaded_names_checkpoints_and_refuses_nothing_reachable() {
+        let url = serve_once(
+            br#"{"jsonrpc":"2.0","id":1,"result":[{"checkpoint":"browser","since_secs":4,"rss_mb":903}]}"#,
+        )
+        .await;
+        let ws = url.replacen("http://", "ws://", 1) + "?token=t";
+        assert_eq!(decision_loaded(&ws).await.unwrap(), ["browser"]);
+        // Nothing listening: an error, which `loaded_checkpoints` turns into "nothing loaded".
+        assert!(decision_loaded("ws://127.0.0.1:1/?token=t").await.is_err());
+    }
 }
