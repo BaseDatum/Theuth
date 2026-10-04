@@ -2,6 +2,7 @@ import { Link, useNavigate } from '@tanstack/react-router'
 import { FlaskConical, PanelLeft, Play, Plus } from 'lucide-react'
 import { toast } from 'sonner'
 import { Pulse } from '@/components/chat/Pulse'
+import { SectionTabs } from '@/components/nav/SectionTabs'
 import { Empty, useAction } from '@/components/settings/shared'
 import { SearchTrigger } from '@/components/sidebar/SearchTrigger'
 import { Badge } from '@/components/ui/badge'
@@ -49,6 +50,7 @@ export function RoutinesView() {
           </Link>
         </Button>
       </header>
+      <SectionTabs group="agents" />
       <main className="min-h-0 flex-1 overflow-y-auto">
         <div className="mx-auto w-full max-w-[880px] p-4">
           {routines.isPending && (

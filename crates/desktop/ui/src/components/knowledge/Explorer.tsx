@@ -7,6 +7,7 @@ import { History } from '@/components/knowledge/History'
 import { NewDocDialog } from '@/components/knowledge/NewDocDialog'
 import { SearchBox } from '@/components/knowledge/SearchBox'
 import { Tree } from '@/components/knowledge/Tree'
+import { SectionTabs } from '@/components/nav/SectionTabs'
 import { SearchTrigger } from '@/components/sidebar/SearchTrigger'
 import { Button } from '@/components/ui/button'
 import { useSidebar } from '@/components/ui/sidebar'
@@ -111,6 +112,7 @@ export function Explorer() {
             New
           </Button>
         </header>
+        <SectionTabs group="library" />
         <SearchBox initial={q ?? ''}>
           <Tree active={active} />
         </SearchBox>
