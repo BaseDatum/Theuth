@@ -1,7 +1,8 @@
 //! 96 §4: the voice key. The Rust shell owns the global chord (Ctrl+S by default), the gesture
-//! clock ([`machine`]), a 60 Hz pointer sampler, and one transparent click-through overlay window
-//! per display; the island webview (`/island`) and the overlays (`/overlay?display=<n>`) hear
-//! `point:*` events and draw. OS integration only (25 §0.4) — what shows is the webview's.
+//! clock ([`machine`]), a 60 Hz pointer sampler, and one transparent overlay window per display —
+//! click-through, or catching the mouse while `annotate = mouse` draws (SHELL2); the island webview
+//! (`/island`) and the overlays (`/overlay?display=<n>`) hear `point:*` events and draw. OS
+//! integration only (25 §0.4) — what shows is the webview's.
 
 mod machine;
 
@@ -40,12 +41,41 @@ const ESC: &str = "Escape";
 /// drawing.
 const MAX_SAMPLES: usize = machine::SAMPLE_HZ as usize * 120;
 
+/// When the pen is down (SHELL2): on every sample, or only while the left mouse button is held.
+/// A gesture snapshots the mode at `Start`; a change applies from the next press.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Annotate {
+    Always,
+    Mouse,
+}
+
+impl Annotate {
+    fn parse(s: &str) -> Result<Self, String> {
+        match s {
+            "always" => Ok(Self::Always),
+            "mouse" => Ok(Self::Mouse),
+            other => Err(format!(
+                "annotate: expected \"always\" or \"mouse\", got {other:?}"
+            )),
+        }
+    }
+
+    /// The pen state of one tick.
+    fn pen(self, left_button_down: bool) -> bool {
+        match self {
+            Self::Always => true,
+            Self::Mouse => left_button_down,
+        }
+    }
+}
+
 /// Managed state: the driver's inbox and what the commands read or set.
 pub struct Point {
     tx: mpsc::UnboundedSender<Event>,
     state: Mutex<State>,
     refused: Mutex<Option<String>>,
     chord: Mutex<Option<Shortcut>>,
+    annotate: Mutex<Annotate>,
 }
 
 /// Spawn the driver and follow display changes. Runs in `setup`.
@@ -56,6 +86,7 @@ pub fn init(app: &AppHandle) -> anyhow::Result<()> {
         state: Mutex::new(State::Idle),
         refused: Mutex::new(None),
         chord: Mutex::new(None),
+        annotate: Mutex::new(Annotate::Always),
     });
     tauri::async_runtime::spawn(drive(app.clone(), rx));
     // The island's screen observer (`island/macos.rs`) emits this; refit the overlays once any exist
@@ -139,6 +170,14 @@ pub fn point_refuse(point: tauri::State<'_, Point>, reason: Option<String>) {
     *point.refused.lock().unwrap() = reason;
 }
 
+/// The desktop setting `annotate`: `"always"` (default) or `"mouse"` (hold the left button to draw).
+/// The main webview calls it at boot and on change; it takes effect at the next press.
+#[tauri::command]
+pub fn point_configure(point: tauri::State<'_, Point>, annotate: String) -> Result<(), String> {
+    *point.annotate.lock().unwrap() = Annotate::parse(&annotate)?;
+    Ok(())
+}
+
 /// Create a missing `overlay-<n>` per display (concealed) and fit existing ones; the labels.
 #[tauri::command]
 pub async fn overlay_ensure(app: AppHandle) -> Result<Vec<String>, String> {
@@ -159,18 +198,23 @@ struct StartPayload {
 #[derive(Serialize)]
 struct LockPayload {}
 
+/// One tick's new points on one display and whether the pen was down for all of them. The sampler
+/// takes one point per tick, so a batch never spans a pen change.
 #[derive(Serialize)]
 struct SamplesPayload {
     display_index: u32,
     pts: Vec<[f32; 2]>,
+    pen: bool,
 }
 
-/// One pointer sample in logical global points, `t_ms` from the press.
+/// One pointer sample in logical global points, `t_ms` from the press; `pen` is false only in
+/// `annotate = mouse` with the left button up (the daemon skips those for gestures).
 #[derive(Clone, Copy, Debug, Serialize)]
 pub struct Sample {
     t_ms: u32,
     x: f32,
     y: f32,
+    pen: bool,
 }
 
 #[derive(Serialize)]
@@ -237,9 +281,11 @@ impl Driver {
             Effect::Start => {
                 self.press_at = now;
                 self.path.lock().unwrap().clear();
-                if let Err(e) = on_main(&self.app, |app| {
+                let annotate = *self.app.state::<Point>().annotate.lock().unwrap();
+                let catch_mouse = annotate == Annotate::Mouse;
+                if let Err(e) = on_main(&self.app, move |app| {
                     overlay_ensure_on_main(app)?;
-                    overlays_set_revealed(app, true)
+                    overlays_set_revealed(app, true, catch_mouse)
                 })
                 .await
                 {
@@ -255,7 +301,7 @@ impl Driver {
                     },
                 );
                 self.register_esc();
-                self.start_sampler();
+                self.start_sampler(annotate);
             }
             Effect::ShowLock => self.emit([ISLAND.to_owned()], "point:lock", &LockPayload {}),
             Effect::Stop { reason } => {
@@ -340,13 +386,15 @@ impl Driver {
         }
     }
 
-    fn start_sampler(&mut self) {
+    fn start_sampler(&mut self, annotate: Annotate) {
         self.stop_sampler();
         let app = self.app.clone();
         let path = Arc::clone(&self.path);
         let epoch = self.epoch;
         let t0 = self.press_at;
-        self.sampler = Some(tauri::async_runtime::spawn(sample(app, path, epoch, t0)));
+        self.sampler = Some(tauri::async_runtime::spawn(sample(
+            app, path, epoch, t0, annotate,
+        )));
     }
 
     fn stop_sampler(&mut self) {
@@ -356,7 +404,7 @@ impl Driver {
     }
 
     async fn conceal(&self) {
-        if let Err(e) = on_main(&self.app, |app| overlays_set_revealed(app, false)).await {
+        if let Err(e) = on_main(&self.app, |app| overlays_set_revealed(app, false, false)).await {
             tracing::warn!(error = %e, "conceal overlays");
         }
     }
@@ -436,7 +484,13 @@ fn monitor_rects(app: &AppHandle) -> Vec<MonitorRect> {
         .collect()
 }
 
-async fn sample(app: AppHandle, path: Arc<Mutex<Vec<Sample>>>, epoch: Instant, t0: u64) {
+async fn sample(
+    app: AppHandle,
+    path: Arc<Mutex<Vec<Sample>>>,
+    epoch: Instant,
+    t0: u64,
+    annotate: Annotate,
+) {
     // ponytail: the monitor set is read once per gesture; a display plugged in mid-hold gets its
     // overlay on the next press.
     let monitors = monitor_rects(&app);
@@ -454,6 +508,7 @@ async fn sample(app: AppHandle, path: Arc<Mutex<Vec<Sample>>>, epoch: Instant, t
             .unwrap_or(u64::MAX)
             .saturating_sub(t0);
         let t_ms = u32::try_from(t_ms).unwrap_or(u32::MAX);
+        let pen = annotate.pen(backend::left_button_down());
         {
             let mut p = path.lock().unwrap();
             if p.len() < MAX_SAMPLES {
@@ -461,6 +516,7 @@ async fn sample(app: AppHandle, path: Arc<Mutex<Vec<Sample>>>, epoch: Instant, t
                     t_ms,
                     x: hit.x,
                     y: hit.y,
+                    pen,
                 });
             }
         }
@@ -471,6 +527,7 @@ async fn sample(app: AppHandle, path: Arc<Mutex<Vec<Sample>>>, epoch: Instant, t
             &SamplesPayload {
                 display_index: hit.display,
                 pts: vec![hit.local],
+                pen,
             },
         ) {
             tracing::warn!(error = %e, label, "emit point:samples");
@@ -542,6 +599,9 @@ fn overlay_ensure_on_main(app: &AppHandle) -> anyhow::Result<Vec<String>> {
                     .visible(false)
                     .position(pos.x, pos.y)
                     .inner_size(size.width, size.height)
+                    // A press on a non-key panel is delivered (what `annotate = mouse` catches);
+                    // harmless while click-through.
+                    .accept_first_mouse(true)
                     .disable_drag_drop_handler()
                     .build()
                     .with_context(|| format!("build `{label}`"))?;
@@ -562,7 +622,7 @@ fn overlay_ensure_on_main(app: &AppHandle) -> anyhow::Result<Vec<String>> {
             .strip_prefix(OVERLAY_PREFIX)
             .and_then(|s| s.parse::<usize>().ok())
             && n >= monitors.len()
-            && let Err(e) = backend::set_revealed(&win, false)
+            && let Err(e) = backend::set_revealed(&win, false, false)
         {
             tracing::warn!(error = %e, label, "conceal overlay of a vanished display");
         }
@@ -570,11 +630,13 @@ fn overlay_ensure_on_main(app: &AppHandle) -> anyhow::Result<Vec<String>> {
     Ok(labels)
 }
 
-/// Alpha 1 / alpha 0 on every overlay (macOS); show / hide elsewhere. Click-through always. Main thread.
-fn overlays_set_revealed(app: &AppHandle, on: bool) -> anyhow::Result<()> {
+/// Alpha 1 / alpha 0 on every overlay (macOS); show / hide elsewhere. Click-through, except revealed
+/// with `catch_mouse` (`annotate = mouse`): concealing restores click-through first. Main thread.
+fn overlays_set_revealed(app: &AppHandle, on: bool, catch_mouse: bool) -> anyhow::Result<()> {
     for (label, win) in app.webview_windows() {
         if label.starts_with(OVERLAY_PREFIX) {
-            backend::set_revealed(&win, on).with_context(|| format!("reveal `{label}` = {on}"))?;
+            backend::set_revealed(&win, on, catch_mouse)
+                .with_context(|| format!("reveal `{label}` = {on}"))?;
         }
     }
     Ok(())
@@ -641,21 +703,42 @@ mod tests {
                 t_ms: 16,
                 x: 1.5,
                 y: 2.0,
+                pen: true,
             }],
             duration_ms: 1200,
             reason: "release",
         };
         assert_eq!(
             serde_json::to_string(&s).unwrap(),
-            r#"{"samples":[{"t_ms":16,"x":1.5,"y":2.0}],"duration_ms":1200,"reason":"release"}"#
+            r#"{"samples":[{"t_ms":16,"x":1.5,"y":2.0,"pen":true}],"duration_ms":1200,"reason":"release"}"#
         );
         let p = SamplesPayload {
             display_index: 1,
             pts: vec![[120.0, 100.0]],
+            pen: false,
         };
         assert_eq!(
             serde_json::to_string(&p).unwrap(),
-            r#"{"display_index":1,"pts":[[120.0,100.0]]}"#
+            r#"{"display_index":1,"pts":[[120.0,100.0]],"pen":false}"#
         );
+    }
+
+    #[test]
+    fn annotate_parses_always_and_mouse_only() {
+        assert_eq!(Annotate::parse("always"), Ok(Annotate::Always));
+        assert_eq!(Annotate::parse("mouse"), Ok(Annotate::Mouse));
+        assert!(Annotate::parse("sometimes").is_err());
+        assert!(Annotate::parse("Mouse").is_err());
+    }
+
+    #[test]
+    fn pen_follows_the_button_only_in_mouse_mode() {
+        let buttons = [false, false, true, true, false, true];
+        let always: Vec<bool> = buttons.iter().map(|&b| Annotate::Always.pen(b)).collect();
+        assert_eq!(always, vec![true; 6]);
+        // One point per tick: each tick is its own batch, so consecutive batches change `pen`
+        // exactly where the button did.
+        let mouse: Vec<bool> = buttons.iter().map(|&b| Annotate::Mouse.pen(b)).collect();
+        assert_eq!(mouse, buttons);
     }
 }

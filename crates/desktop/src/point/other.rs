@@ -9,11 +9,18 @@ pub fn panelize(_win: &WebviewWindow) -> anyhow::Result<()> {
     Ok(())
 }
 
-pub fn set_revealed(win: &WebviewWindow, on: bool) -> anyhow::Result<()> {
+/// Show (click-through unless `catch_mouse`) or hide (click-through restored first).
+pub fn set_revealed(win: &WebviewWindow, on: bool, catch_mouse: bool) -> anyhow::Result<()> {
+    win.set_ignore_cursor_events(!(on && catch_mouse))?;
     if on {
         win.show()?;
     } else {
         win.hide()?;
     }
     Ok(())
+}
+
+/// No global button reader here yet (96 §0.14): `annotate = mouse` draws nothing off macOS.
+pub fn left_button_down() -> bool {
+    false
 }
