@@ -29,7 +29,7 @@ MockSender`. Never run `t --headless` against `~/.theuth`; a scratch data dir on
 | `poll.rs` — lease-gated getUpdates loop, backoff, `RecentKeys`, `classify(Update) -> Incoming` | real | CONTRACT | ROUTE (spawns it) |
 | `worker.rs` — per-thread turn renderer (`WorkerCtx`, `WorkerMsg`, `spawn`) | **stub**: signatures, a loop that logs and drops | **RENDER** | ROUTE |
 | `bubble.rs`, `cards.rs`, `board.rs` | absent | **RENDER** | worker.rs |
-| `crates/markdown/src/lib.rs` — `plain()`, `chunks()` (copies of `signal::text::{markdown_to_plain, chunk_text}`) | absent | **RENDER** | api.rs plain fallback (CONTRACT calls `markdown::plain` only if it already exists — it does not at stage 1, so `Api::send_text` takes already-plain text) |
+| `crates/markdown/src/lib.rs` — `pub fn plain(md: &str) -> String`, `pub fn chunks(text: &str, max: usize) -> Vec<String>` (copies of `signal::text::{markdown_to_plain, chunk_text}` with their unit tests; `crates/signal` is never edited) | real (`crates/markdown/src/plain.rs`, re-exported from `lib.rs`; gate `cargo test -p markdown`) | — | RENDER (plain fallback); `Api::send_text` still takes already-plain text |
 | `channel.rs` — `Channel`, `Handle`, `spawn`, `Bus`, inbound routing, router, owner chat, lease gate, approvals/asks/artifact/secret/`message_user` dispatch | **skeleton**: `spawn` returns a `Handle` whose methods work (status/allow/…); `Bus` subscribes to the eight event types and forwards into one ordered `mpsc`; `handle_inbound`/`handle_event` log and drop | **ROUTE** | lib.rs |
 | `approvals.rs`, `asks.rs`, `user.rs` | `user.rs` **stub** (`impl UserSink for Handle` → `Ok(None)` / `Err("telegram: not implemented")`); the others absent | **ROUTE** | channel.rs |
 | `commands.rs`, `ui.rs`, `setup.rs` | **stubs** with the §2 signatures (`handle` → help text; `action` → `None`; `guard` → identity; `setup::run` → `Err("not implemented")`) | **COMMANDS** | channel.rs (ROUTE), poll.rs boot (`scopes`), main.rs (WIRE) |
@@ -94,7 +94,7 @@ pub fn mint_code() -> String;                                       // 16 chars 
 pub struct TelegramPlugin { pub channel: bool }
 // actor `Telegram` registered as TELEGRAM_ACTOR; messages (ask → reply):
 pub struct Status;                              // → TelegramStatus
-pub struct Link { pub owner: Option<u64> }      // → Result<PairingLink, String>
+pub struct Link { pub owner: Option<u64> }      // → Result<Option<PairingLink>, String>  (None = owner set directly; §4)
 pub struct Allow(pub u64); pub struct RemoveAllowed(pub u64);   // → Result<(), String>  (live list + write_config_value)
 pub struct AllowGroup(pub i64); pub struct RemoveGroup(pub i64); // → Result<(), String>
 pub struct SetOwner(pub u64);                   // → Result<(), String>  (live + config; used by pairing)
@@ -274,6 +274,7 @@ pub struct WorkerCtx {
     pub key: ThreadKey, pub to: Target, pub user: u64, pub session: SessionId,
     pub api: Arc<dyn Sender>, pub port: Arc<dyn Port>, pub rt: Runtime, pub cfg: RenderConfig,
     pub voice: VoiceHandles, pub topic: Option<Topic>, pub notes: mpsc::UnboundedSender<WorkerNote>,
+    pub child_name: Option<String>,    // the subagent's name when this worker renders a child session (§9)
 }
 pub enum WorkerMsg {
     Agent(AgentEvent),                 // only this session's events
@@ -281,6 +282,7 @@ pub enum WorkerMsg {
     Stopped { draft_id: i64 },         // a Stop press for a draft this worker owns
     ChildRow { child: SessionId, row: Row, idle: bool },
     TopicNamedByUser(bool),
+    Output { call_id: String, reply: tokio::sync::oneshot::Sender<Option<String>> },   // `out:<call_id>` press: the full tool output, `None` when expired (§8.4); the stub answers `None`
     Shutdown,
 }
 pub enum WorkerNote {                  // worker → channel
@@ -336,7 +338,7 @@ pub fn deep_link(username: &str, code: &str) -> String;                         
 pub struct Handle { chan: Arc<Channel> }
 impl Handle {
     pub fn status(&self) -> TelegramStatus;
-    pub async fn link(&self, owner: Option<u64>) -> Result<PairingLink, String>;
+    pub async fn link(&self, owner: Option<u64>) -> Result<Option<PairingLink>, String>;   // §4
     pub fn allow(&self, user: u64); pub fn remove_allowed(&self, user: u64);
     pub fn allow_group(&self, chat: i64); pub fn remove_group(&self, chat: i64);
     pub fn set_owner(&self, user: u64);
@@ -361,4 +363,22 @@ pub(crate) struct Channel { /* api: Arc<Api>, rt, identity: OnceLock<BotIdentity
 
 ## 4. Deviations (CONTRACT fills in)
 
-_(none yet)_
+Shapes that differ from §2 as landed on `feature/98-telegram`; the code is the reference.
+
+- **`Link` reply is `Result<Option<PairingLink>, String>`** (`lib.rs` actor message and `channel::Handle::link`): `owner: Some(id)` sets the owner live + `write_config_value(config.yaml, "telegram", "owner", id)` and answers `Ok(None)` (no link needed); `None` mints a code, publishes `TelegramEvent::PairingLink` and answers `Ok(Some(link))`; `Err("bot identity unknown yet")` before `getMe` answered. In terminal mode (no channel) `Link { owner: None }` is `Err(...)` — minting needs the bot username, which only the channel learns.
+- **`Incoming::Message(Box<IncomingMessage>)`** (clippy `large_enum_variant`, ~420 bytes vs 150). `IncomingMessage` and `Incoming` derive `PartialEq` only, not `Eq` (`location: Option<(f64, f64)>`).
+- **`PollCtx` gains `pub recent: Arc<parking_lot::Mutex<RecentKeys>>`**: the process-wide dedup set (§11) is shared between the channel (`Channel.recent`) and the poller instead of living only in `State`.
+- **`Api::on_event(&self, Arc<dyn Fn(TelegramEvent) + Send + Sync>)`** added: how `RateLimited` reaches the bus (98 §4.1); `channel::run` sets it once. Also added: `pub fn file_kind(mime, len) -> FileKind` (`Photo | Voice | Document`, the §8.10 choice) and `pub fn is_not_modified(&ApiError)` (the `NOT_MODIFIED_PREFIX` prefix match).
+- **Mutexes are `parking_lot::{Mutex, MutexGuard}`** everywhere in the crate (project rule; slack/signal predate it).
+- **`threads.rs`**: `target(key: &str)` and every `key: &ThreadKey` parameter take `&str`; `Thread` gains `pub updated_at: i64` (orders `latest_in_chat`, like slack) and `Thread::new(session, user, topic)`; `Topic` is `Copy`; `Threads::open_count() -> u32` added (fills `TelegramStatus.open`). `bind` enforces one session ↔ one thread (an older key bound to the same session is dropped), so `by_session` is a plain `find`.
+- **`Pairing.expires` is `tokio::time::Instant`**; `CODE_LEN = 16` is a pub const beside `PAIR_TTL`.
+- **`BotIdentity` derives `JsonSchema` + `TS`** (it is a field of `TelegramStatus`).
+- **`Handle::allow / remove_allowed / allow_group / remove_group / set_owner` return `()`** as written; the actor in `lib.rs` does the validation (`Allow(owner)` → `Err("… is the owner")`, removing an unlisted id → `Err`), and `set_owner` drops the new owner from the live allowlist.
+- **`Port::send_input(session: None, …, scope)`** runs `NewRootSession { scope }` first, then `SendInput { session: Some(root) }` (`agent::SendInput` has no scope field); `Port::steer` mints the `InputId` itself. No signature change.
+- **`poll::run`** publishes `Connected` again after an error cleared (not only once per (re)start) so `Status.state` recovers; `Unauthorized` (401) is treated like any other error (`Disconnected` + backoff ≤ 60 s) — "stop polling until restart" is left to ROUTE/WIRE if wanted. `message_thread_id` is taken as a topic only when `is_topic_message == true` or the chat is private (a plain supergroup sets it for reply chains).
+- **Boot repair** of `threads.json.open` is `edit_markup(at, None)` per entry (best effort, `not modified` ignored): `OpenMsg` carries no text, so `· interrupted` cannot be appended — `// NEEDS(RENDER)` in `channel::repair_open`.
+- **Counters** are per method name only (`calls[method].{ok,err,rate_limited}`); unmatched descriptions are logged at `warn` with code + text, not keyed by `error_code`.
+- **Pacer**: drafts pace only `Draft(chat, thread)`; sends/edits pace `Chat(chat)` (3000 ms for `chat < 0`) and edits additionally `Edit(chat, message)`; every call except `getUpdates` goes through the 30/s bucket.
+- **`commands::COMMANDS`** starts with `("start", "[code]", "pair with a code, or this list")`; `scopes(owner)` emits `Default`, `AllGroupChats` (9 commands, `is_ephemeral`), and `Chat(owner)` only when `owner` is `Some`.
+- **`setup::Terminal::secret`** echoes (slack's rule: tokens are pasted, not typed).
+- **Crate deps dropped** as unused in stage 1: `markdown`, `tasks`, `mime_guess` (RENDER/ROUTE add them back); added `parking_lot`, `rustls` (provider install, 21 §2.1), dev `figment`, `serde_yaml`.
