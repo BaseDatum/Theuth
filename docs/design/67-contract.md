@@ -135,7 +135,7 @@ Plugin `tasks::TasksPlugin`, actor `tasks::Tasks` as `tasks::TASKS_ACTOR = "task
 `tasks::ScheduleTasks` implements `schedule::TaskCreator` (`Err("not built")`); the plugin registers it with the schedule actor via `lookup_when` + `RegisterTaskCreator`.
 
 ### Config `tasks:` (`tasks::TasksConfig`)
-`orphan_secs: 120`, `stale_secs: 900`, `note_secs: 300`, `cross_task_write_cap: 20`, `backoff_min_secs: 120`, `backoff_max_secs: 1800`.
+`orphan_secs: 120`, `stale_secs: 900`, `note_secs: 300`, `cross_task_write_cap: 20`, `cross_task_write_window_secs: 86400`, `backoff_min_secs: 120`, `backoff_max_secs: 1800`.
 
 ### Tools (`tasks::tools`, bodies `not built`, descriptions final)
 | Name | Struct | Risk | Args |

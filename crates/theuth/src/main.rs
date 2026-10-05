@@ -971,7 +971,8 @@ agent:
 #   orphan_secs: 120         # a checkout whose engine is unreachable this long is orphaned and the owner re-woken
 #   stale_secs: 900          # a `doing` task with no progress note this long is stale on the board
 #   note_secs: 300           # work sessions write a progress note at least this often
-#   cross_task_write_cap: 20 # tasks one session may write to that it does not own
+#   cross_task_write_cap: 20 # tasks a hired agent's session may change outside its reporting line (theuth and the user are uncapped)
+#   cross_task_write_window_secs: 86400 # the cap counts writes within this window; 0 = for the session's life
 #   backoff_min_secs: 120    # no-progress back-off start, doubling …
 #   backoff_max_secs: 1800   # … to this ceiling; a human comment resets it
 

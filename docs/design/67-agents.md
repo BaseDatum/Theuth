@@ -341,7 +341,7 @@ stateDiagram-v2
 A wake is a row `{ agent, task, reason: assigned | comment | mention | schedule | answer | review | manual, idempotency_key, claimed_by }`. Dispatch (a hub duty) delivers the oldest unclaimed wake per agent to its desk as one input: *"Wake: task 12 — <title>. Reason: comment. Do not switch to another task until this wake is handled."* plus the new thread entries inline (paperclip's scoped wake with a resume delta). Rules:
 - **Coalesce**: a wake for `(agent, task, reason)` that already has an unclaimed row merges (count + 1).
 - **No-progress back-off**: if two consecutive wakes on a task end with no field change, `next_wake_after` = now + 2 min, doubling to 30 min; a human thread entry clears it.
-- **Cross-task cap**: a session may write to at most 20 tasks it does not own; the 21st is refused with the reason.
+- **Cross-task cap** (99): a hired agent's session may change at most 20 tasks outside its reporting line within 24 h (`task_update`, `task_move`, `task_reassign`; notes are free); the next is refused with the count and the window. theuth's desk, the user's own sessions and everything either spawns are uncapped; a manager writes freely to its reports' tasks.
 - **Disposition**: an episode's closing turn must leave every task it checked out in `review | blocked | done(by reviewer) | delegated (child task exists) | continuing (a schedule, reminder or live child will wake it)`. A task left in `doing` with none of these is set `blocked: "no continuation"` and the manager is woken.
 
 ### 7.4 Schedules → tasks

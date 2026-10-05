@@ -10,7 +10,7 @@
 //!   [`TaskEvents`], [`CheckoutTask`], [`PlaceTask`], [`Escalate`],
 //!   [`AwaitDecision`], [`AnswerDecision`], [`Mention`], [`MarkAnswered`],
 //!   [`NoteDisposition`], [`EpisodeClosing`], [`FinishWake`], [`ReleaseClaims`],
-//!   [`SetDispatching`], [`RegisterDeskRouter`]
+//!   [`WriteBudgetOf`], [`SetDispatching`], [`RegisterDeskRouter`]
 //! - trait [`DeskRouter`] (the roster implements it)
 //!
 //! The rules live in [`ledger`]; this file is the actor around them.
@@ -125,7 +125,8 @@ pub struct CreateTask {
 
 /// `ask` → `Result<Task, String>`: apply `patch`, guard transitions, log, wake
 /// whoever the change concerns. `Err("no such task" | "conflict: …" |
-/// "done needs a reviewer…" | "tasks.cross_task_write_cap…" | "superseded: …" |
+/// "done needs a reviewer…" | "tasks.cross_task_write_cap: …" (a hired agent's
+/// session past its cap outside its reporting line, 99) | "superseded: …" |
 /// "blockers would form a cycle: …")`.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct UpdateTask {
@@ -191,6 +192,23 @@ pub struct CommentTask {
     pub actor: String,
     /// Session doing it.
     pub session: Option<String>,
+}
+
+/// `ask` → `Result<Option<WriteBudget>, String>`: where a session stands
+/// against the cross-task write cap (99 D6); `None` = uncapped (theuth's line
+/// or the user's own sessions).
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct WriteBudgetOf(pub String);
+
+/// A capped session's standing against the cross-task write cap (99 D6).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WriteBudget {
+    /// Distinct tasks outside the agent's line written to within the window.
+    pub used: u32,
+    /// `tasks.cross_task_write_cap`.
+    pub cap: u32,
+    /// `tasks.cross_task_write_window_secs`; `0` = the session's lifetime.
+    pub window_secs: u64,
 }
 
 /// `ask` → `Result<Vec<TaskEvent>, String>`: the field-level log, oldest first.
@@ -525,6 +543,18 @@ impl Message<CommentTask> for Tasks {
         self.ledger
             .comment(&m.id, &m.text, m.progress, &m.actor, m.session.as_deref())
             .await
+    }
+}
+
+impl Message<WriteBudgetOf> for Tasks {
+    type Reply = Result<Option<WriteBudget>, String>;
+
+    async fn handle(
+        &mut self,
+        m: WriteBudgetOf,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        self.ledger.write_budget(&m.0).await
     }
 }
 
