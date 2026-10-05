@@ -22,6 +22,7 @@ import type { ActivityAppended } from '@/rpc/bindings/ActivityAppended'
 import type { SecretsEvent } from '@/rpc/bindings/SecretsEvent'
 import type { SignalEvent } from '@/rpc/bindings/SignalEvent'
 import type { SlackEvent } from '@/rpc/bindings/SlackEvent'
+import type { TelegramEvent } from '@/rpc/bindings/TelegramEvent'
 import type { VoiceEvent } from '@/rpc/bindings/VoiceEvent'
 import type { TalkEvent } from '@/rpc/bindings/TalkEvent'
 import type { MeshEvent } from '@/rpc/bindings/MeshEvent'
@@ -69,6 +70,7 @@ export type WireEvent =
   | BrowserEvent
   | SignalEvent
   | SlackEvent
+  | TelegramEvent
   | KnowledgeChanged
   /** 59 §7.3: a document was created, exported, renamed or trashed; the notes list follows it. */
   | DocumentChanged
