@@ -29,10 +29,10 @@ export function Chip({ kind }: { kind: AttentionItem['kind'] }) {
   return <span className="rounded-full bg-layer-2 px-2 py-0.5 text-[11px] uppercase tracking-wide text-fg-secondary">{KIND_LABEL[kind]}</span>
 }
 
-/** The scrolling column every screen shares: 720 px of content, padded. */
+/** The scrolling column every screen shares: 720 px of content, padded. A size container so `PacketBoard.css` can use its width (`cqi`) and visible height (`cqh`). */
 export function Body({ children }: { children: ReactNode }) {
   return (
-    <div className="min-h-0 flex-1 overflow-y-auto">
+    <div className="min-h-0 flex-1 overflow-y-auto [container-type:size]">
       <div className="mx-auto flex w-full max-w-[720px] flex-col gap-6 px-4 py-5 md:px-6">{children}</div>
     </div>
   )

@@ -1,0 +1,80 @@
+/*
+ * 101b R4/R5 — the board reader inside the attention screen. `/notes/$id` gives the reader the whole page and lets it
+ * own the scroll; here the screen's `Body` scrolls (a size container, so `cqh` is its visible height) and the board
+ * flows between the question and the options. The reader's geometry rules (`board.css`) stay; these only move what
+ * assumed "the shell is the viewport": the TOC pill, the pinned pane (side pane ≥ 920 px = `PANE_MIN` + 560, else the
+ * reader's bottom sheet) and the rail, all sticky inside the screen's scroller.
+ */
+
+/* Full width of the screen's scroller (the column is centred, so half its width minus half the scroller's). */
+.packet-board {
+  width: 100cqi;
+  margin-left: calc(50% - 50cqi);
+  /* A block that overruns the column (a long token in a callout) must not make the whole screen scroll sideways. */
+  overflow-x: clip;
+}
+/* The scroll column takes row 1 explicitly: the bottom sheet shares that row, so nothing gets pushed down. */
+.packet-board .board-scroll {
+  grid-row: 1;
+  overflow: visible;
+}
+.packet-board .board-column {
+  margin-bottom: 0;
+}
+
+/* The TOC pill is the reader's (top-left of the board); on a narrow column its open card sits under the pill instead of
+   a sheet at the board's far end (which, in flow, is off screen). */
+@container (max-width: 720px) {
+  .packet-board .board-toc[data-open] {
+    inset: 32px auto auto 24px;
+  }
+  .packet-board .board-toc[data-open] .board-toc-card {
+    width: min(320px, calc(100cqi - 48px));
+    max-height: 60cqh;
+    border-radius: 8px;
+    border-bottom: 1px solid var(--border-default);
+    padding-bottom: 12px;
+  }
+  /* A long unbreakable inline token would widen the screen's scroller (in `/notes` the reader's own scroller takes it). */
+  .packet-board .board-prose code {
+    overflow-wrap: anywhere;
+  }
+}
+/* The rail (`useRail`, wide windows) sticks to the scroller's top while the board passes. */
+.packet-board .board-page[data-rail] .board-toc {
+  position: sticky;
+  top: 0;
+  align-self: start;
+  max-height: 100cqh;
+}
+
+/* Pinned excerpts. Narrow: the reader's bottom sheet, stuck to the scroller's bottom edge over the board (it scrolls
+   away with the board's end, so the options and the action bar below are never covered). */
+@container (max-width: 919px) {
+  .packet-board .board-pane {
+    grid-column: 1 / -1;
+    grid-row: 1;
+    align-self: end;
+    position: sticky;
+    inset: auto;
+    bottom: 0;
+    height: 40cqh;
+    z-index: 30;
+  }
+}
+/* Wide: the side pane, clamped so the prose column keeps 560 px, stuck to the scroller's top while the board passes. */
+@container (min-width: 920px) {
+  .packet-board .board-page[data-pinned] {
+    grid-template-columns: var(--board-rail) minmax(0, 1fr) 10px min(var(--board-pane-width, 560px), calc(100cqi - 560px));
+    --board-wide-max: 1000px;
+  }
+  .packet-board .board-resizer {
+    display: block;
+  }
+  .packet-board .board-pane {
+    position: sticky;
+    top: 0;
+    align-self: start;
+    max-height: 100cqh;
+  }
+}
