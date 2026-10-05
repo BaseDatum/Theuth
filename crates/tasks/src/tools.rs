@@ -21,7 +21,8 @@ use crate::types::{
 };
 use crate::{
     AnswerDecision, AwaitDecision, CheckoutTask, CommentTask, CreateTask, Escalate, GetTask,
-    ListTasks, MoveTask, NoteDisposition, PlaceTask, ReassignTask, Tasks, UpdateTask, escalate,
+    ListTasks, MoveTask, NoteDisposition, PlaceTask, ReassignTask, Tasks, UpdateTask,
+    WriteBudgetOf, escalate,
 };
 
 /// `ask` → `String`: the actor text of `session`'s caller — `agent:<name>`
@@ -347,6 +348,20 @@ impl Tool for TaskInboxTool {
         }
         if text.is_empty() {
             text.push_str("inbox empty");
+        }
+        // 99 D6: a capped caller sees where it stands; uncapped callers and 0 see nothing.
+        if let Ok(Some(b)) = actor.ask(WriteBudgetOf(cx.session.to_string())).await
+            && b.used > 0
+        {
+            let when = if b.window_secs == 0 {
+                "for this session's lifetime".to_owned()
+            } else {
+                format!("in the last {}", crate::ledger::window_text(b.window_secs))
+            };
+            text.push_str(&format!(
+                "\n_cross-task writes: {}/{} {when}_",
+                b.used, b.cap
+            ));
         }
         Ok(ToolOutput::ok(text))
     }

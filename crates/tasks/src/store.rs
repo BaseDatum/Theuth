@@ -40,6 +40,15 @@ pub fn hlc(now_ms: u64) -> String {
     .to_text()
 }
 
+/// Outcome of [`Store::budget_write`] (99 WRITE-CAP-LINE).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct WriteCharge {
+    /// The write may proceed (the task is within the session's budget).
+    pub allowed: bool,
+    /// Distinct foreign tasks the session has charged within the window.
+    pub used: u32,
+}
+
 /// Handle to `<data_dir>/tasks.sqlite`. Cheap to clone.
 #[derive(Clone)]
 pub struct Store {
@@ -473,21 +482,33 @@ impl Store {
         Ok(())
     }
 
-    /// Charge a write by `session` to a task it does not own against a budget of
-    /// `cap` distinct tasks (67 §7.3). `Ok(true)` = allowed (a repeat write to a
-    /// task already charged is free); `Ok(false)` = budget spent, nothing recorded.
+    /// Charge a write by `session` to a task outside its line against a budget
+    /// of `cap` distinct tasks within `window_ms` (99 WRITE-CAP-LINE; `0` =
+    /// the session's lifetime). A repeat write to a task already charged is
+    /// free and does not refresh `at_ms`. Rows older than the window are
+    /// pruned first; `used` is the session's count after the attempt.
     pub async fn budget_write(
         &self,
         session: &str,
         task: &TaskId,
         cap: u32,
-    ) -> anyhow::Result<bool> {
+        now_ms: u64,
+        window_ms: u64,
+    ) -> anyhow::Result<WriteCharge> {
+        if window_ms > 0 {
+            sqlx::query("DELETE FROM write_budget WHERE session = ?1 AND at_ms < ?2")
+                .bind(session)
+                .bind(now_ms.saturating_sub(window_ms) as i64)
+                .execute(&self.pool)
+                .await?;
+        }
         sqlx::query(
-            "INSERT OR IGNORE INTO write_budget (session, task) SELECT ?1, ?2 \
-             WHERE (SELECT COUNT(*) FROM write_budget WHERE session = ?1) < ?3",
+            "INSERT OR IGNORE INTO write_budget (session, task, at_ms) SELECT ?1, ?2, ?3 \
+             WHERE (SELECT COUNT(*) FROM write_budget WHERE session = ?1) < ?4",
         )
         .bind(session)
         .bind(&task.0)
+        .bind(now_ms as i64)
         .bind(cap)
         .execute(&self.pool)
         .await?;
@@ -497,7 +518,36 @@ impl Store {
                 .bind(&task.0)
                 .fetch_one(&self.pool)
                 .await?;
-        Ok(n > 0)
+        let (used,): (u32,) = sqlx::query_as("SELECT COUNT(*) FROM write_budget WHERE session = ?")
+            .bind(session)
+            .fetch_one(&self.pool)
+            .await?;
+        Ok(WriteCharge {
+            allowed: n > 0,
+            used,
+        })
+    }
+
+    /// How many distinct foreign tasks `session` has charged within
+    /// `window_ms` (`0` = ever). Reads only.
+    pub async fn budget_used(
+        &self,
+        session: &str,
+        now_ms: u64,
+        window_ms: u64,
+    ) -> anyhow::Result<u32> {
+        let cutoff = if window_ms > 0 {
+            now_ms.saturating_sub(window_ms) as i64
+        } else {
+            i64::MIN
+        };
+        let (n,): (u32,) =
+            sqlx::query_as("SELECT COUNT(*) FROM write_budget WHERE session = ?1 AND at_ms >= ?2")
+                .bind(session)
+                .bind(cutoff)
+                .fetch_one(&self.pool)
+                .await?;
+        Ok(n)
     }
 
     /// Mark chat message `(sender, timestamp)` as answered (67 §4.7).
@@ -534,5 +584,38 @@ mod tests {
         assert_eq!(pa.to_text(), a);
         assert!(pa < pb, "{a} < {b}");
         assert_eq!(pa.origin, pb.origin);
+    }
+
+    /// 99 WRITE-CAP-LINE: migration 0006 gives `write_budget` an `at_ms`, and
+    /// `budget_used` counts a row inside the window but not outside it.
+    #[tokio::test]
+    async fn write_budget_at_ms_is_windowed() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = super::Store::open(&dir.path().join("tasks.sqlite"))
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO write_budget (session, task, at_ms) VALUES ('s', 't', 1000)")
+            .execute(&s.pool)
+            .await
+            .unwrap();
+        assert_eq!(s.budget_used("s", 1500, 1000).await.unwrap(), 1);
+        assert_eq!(s.budget_used("s", 2001, 1000).await.unwrap(), 0);
+        assert_eq!(
+            s.budget_used("s", 2001, 0).await.unwrap(),
+            1,
+            "0 = lifetime"
+        );
+        let c = s
+            .budget_write("s", &super::TaskId("u".into()), 1, 2001, 1000)
+            .await
+            .unwrap();
+        assert_eq!(
+            c,
+            super::WriteCharge {
+                allowed: true,
+                used: 1
+            },
+            "old row pruned"
+        );
     }
 }
