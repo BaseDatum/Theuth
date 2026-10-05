@@ -62,23 +62,27 @@ struct Cli {
     /// Interactive Slack setup: create the app from the manifest (or update
     /// `--app`), verify the bot and app-level tokens, set the owner, write the
     /// tokens into the secrets vault and the owner into config.yaml, exit.
-    #[arg(long, conflicts_with_all = ["headless", "serve", "acp", "link_signal", "slack_manifest", "prompt"])]
+    #[arg(long, conflicts_with_all = ["headless", "serve", "acp", "link_signal", "slack_manifest", "telegram_setup", "prompt"])]
     slack_setup: bool,
     /// Existing Slack app id (`A…`) that --slack-setup updates to the manifest instead of creating one.
     #[arg(long, requires = "slack_setup")]
     app: Option<String>,
+    /// Set up the Telegram bot: token into the vault, command menus, a pairing
+    /// link, writes telegram.owner/enabled (design doc 98 §10.4).
+    #[arg(long, conflicts_with_all = ["headless", "serve", "acp", "link_signal", "slack_manifest", "slack_setup", "prompt"])]
+    telegram_setup: bool,
     /// Pair a phone with the running daemon (one-shot: prints a QR and the
     /// key, waits for the scan, exits). Needs `t --headless` on this box.
-    #[arg(long, conflicts_with_all = ["headless", "serve", "acp", "prompt", "link_signal", "slack_manifest", "slack_setup"])]
+    #[arg(long, conflicts_with_all = ["headless", "serve", "acp", "prompt", "link_signal", "slack_manifest", "slack_setup", "telegram_setup"])]
     link: bool,
     /// Install this harness as a background service (launchd LaunchAgent or
     /// systemd user unit) that runs `t --headless` through the login shell,
     /// set `link.enabled: true`, start it, then pair it to your main harness
     /// as a node (design doc 32 §5.1).
-    #[arg(long, conflicts_with_all = ["headless", "serve", "acp", "prompt", "link_signal", "slack_manifest", "slack_setup", "link", "resume", "uninstall_service"])]
+    #[arg(long, conflicts_with_all = ["headless", "serve", "acp", "prompt", "link_signal", "slack_manifest", "slack_setup", "telegram_setup", "link", "resume", "uninstall_service"])]
     install_service: bool,
     /// Stop and remove the service unit written by --install-service. The data dir is untouched.
-    #[arg(long, conflicts_with_all = ["headless", "serve", "acp", "prompt", "link_signal", "slack_manifest", "slack_setup", "link", "resume"])]
+    #[arg(long, conflicts_with_all = ["headless", "serve", "acp", "prompt", "link_signal", "slack_manifest", "slack_setup", "telegram_setup", "link", "resume"])]
     uninstall_service: bool,
     /// Relay WebSocket URL for --install-service (`link.relay`); default: the configured relay.
     #[arg(long, requires = "install_service")]
@@ -91,30 +95,30 @@ struct Cli {
     no_pair: bool,
     /// Store a secret: value read from the terminal without echo (asked twice),
     /// or the first line of stdin when piped. Exit 0 with `stored NAME vN`.
-    #[arg(long, value_name = "NAME", conflicts_with_all = ["headless", "serve", "acp", "prompt", "resume", "link_signal", "slack_manifest", "slack_setup", "link", "install_service", "uninstall_service", "secret_rm", "secret_list"])]
+    #[arg(long, value_name = "NAME", conflicts_with_all = ["headless", "serve", "acp", "prompt", "resume", "link_signal", "slack_manifest", "slack_setup", "telegram_setup", "link", "install_service", "uninstall_service", "secret_rm", "secret_list"])]
     secret_set: Option<String>,
     /// Note shown in `secret_list` next to the name stored by --secret-set.
     #[arg(long, requires = "secret_set")]
     secret_note: Option<String>,
     /// Delete a secret and every version of it.
-    #[arg(long, value_name = "NAME", conflicts_with_all = ["headless", "serve", "acp", "prompt", "resume", "link_signal", "slack_manifest", "slack_setup", "link", "install_service", "uninstall_service", "secret_list"])]
+    #[arg(long, value_name = "NAME", conflicts_with_all = ["headless", "serve", "acp", "prompt", "resume", "link_signal", "slack_manifest", "slack_setup", "telegram_setup", "link", "install_service", "uninstall_service", "secret_list"])]
     secret_rm: Option<String>,
     /// List secrets: names, versions, notes, dates. Never values.
-    #[arg(long, conflicts_with_all = ["headless", "serve", "acp", "prompt", "resume", "link_signal", "slack_manifest", "slack_setup", "link", "install_service", "uninstall_service"])]
+    #[arg(long, conflicts_with_all = ["headless", "serve", "acp", "prompt", "resume", "link_signal", "slack_manifest", "slack_setup", "telegram_setup", "link", "install_service", "uninstall_service"])]
     secret_list: bool,
     /// Check the release manifest once, verify, replace this binary on disk
     /// (or `brew upgrade theuth` for a Homebrew install), print one line, exit (39 §3.2).
-    #[arg(long, conflicts_with_all = ["headless", "serve", "acp", "prompt", "resume", "link_signal", "slack_manifest", "slack_setup", "link", "install_service", "uninstall_service", "secret_set", "secret_rm", "secret_list"])]
+    #[arg(long, conflicts_with_all = ["headless", "serve", "acp", "prompt", "resume", "link_signal", "slack_manifest", "slack_setup", "telegram_setup", "link", "install_service", "uninstall_service", "secret_set", "secret_rm", "secret_list"])]
     update: bool,
     /// Print the app library compatibility hash this binary was built with and
     /// exit (46 §2.1): the updater checks a staged `theuth-app-parser-<hash>` helper
     /// against it. Before config, logging or any plugin.
-    #[arg(long, conflicts_with_all = ["headless", "serve", "acp", "prompt", "resume", "link_signal", "slack_manifest", "slack_setup", "link", "install_service", "uninstall_service", "secret_set", "secret_rm", "secret_list", "update"])]
+    #[arg(long, conflicts_with_all = ["headless", "serve", "acp", "prompt", "resume", "link_signal", "slack_manifest", "slack_setup", "telegram_setup", "link", "install_service", "uninstall_service", "secret_set", "secret_rm", "secret_list", "update"])]
     app_parser_hash: bool,
     /// 57 §11.4: fold the captured training rows of a decision family prefix (`meeting`) into
     /// the phrasing-bench fixture shape (or laya's typed-decisions rows with --format laya),
     /// print (or --out) and exit. Reads <data_dir>/decisions/training/<prefix>/*.jsonl.
-    #[arg(long, value_name = "PREFIX", conflicts_with_all = ["headless", "serve", "acp", "prompt", "resume", "link_signal", "slack_manifest", "slack_setup", "link", "install_service", "uninstall_service", "secret_set", "secret_rm", "secret_list", "update"])]
+    #[arg(long, value_name = "PREFIX", conflicts_with_all = ["headless", "serve", "acp", "prompt", "resume", "link_signal", "slack_manifest", "slack_setup", "telegram_setup", "link", "install_service", "uninstall_service", "secret_set", "secret_rm", "secret_list", "update"])]
     decision_export: Option<String>,
     /// --decision-export: only day files from this date on (YYYY-MM-DD).
     #[arg(long, requires = "decision_export", value_name = "YYYY-MM-DD")]
@@ -128,7 +132,7 @@ struct Cli {
     /// 58 step 12: load ONNX Runtime and print the execution provider sessions get, run the
     /// STT encoder once on 5 s of silence, open the decision checkpoint and run one question,
     /// each with its ms and device; exit 2 naming what is missing. `$ORT_DYLIB_PATH` honoured.
-    #[arg(long, conflicts_with_all = ["headless", "serve", "acp", "prompt", "resume", "link_signal", "slack_manifest", "slack_setup", "link", "install_service", "uninstall_service", "secret_set", "secret_rm", "secret_list", "update", "decision_export"])]
+    #[arg(long, conflicts_with_all = ["headless", "serve", "acp", "prompt", "resume", "link_signal", "slack_manifest", "slack_setup", "telegram_setup", "link", "install_service", "uninstall_service", "secret_set", "secret_rm", "secret_list", "update", "decision_export"])]
     bench_models: bool,
     /// --bench-models: override `models.accelerator` (`auto` | `cpu` | `webgpu` | `directml` | `cuda`).
     #[arg(long, requires = "bench_models", value_name = "ACCEL")]
@@ -1119,6 +1123,16 @@ rpc:
 #   tools: all              # all | errors | none — task cards per tool call
 #   reasoning: true         # post the quoted reasoning message
 #   approvals: all          # all | threads — approvals for sessions not bound to a thread go to the owner DM (all) or nowhere (threads)
+
+# telegram:                 # Telegram frontend; runs in `t --headless`. `t --telegram-setup` stores the token and fills
+#                           # this in (manual path: `t --secret-set telegram_bot`). The token is secret `telegram_bot`, never here.
+#   enabled: true           # daemon polls when the token is present
+#   owner: 123456789        # user id; set by --telegram-setup / telegram_link / the deep link; owner-only commands; receives unbound cards
+#   allowed: []             # more user ids; each owns their threads
+#   groups: []              # chat ids (−100…) where @mentions and commands are honoured; empty = private chats only
+#   tools: all              # all | errors | none — activity cards per tool batch
+#   reasoning: true         # reasoning text in the expandable quote (the thinking indicator stays)
+#   approvals: all          # all | threads — where approvals/questions for non-Telegram sessions go (98 §10.1)
 ";
 
 const DEFAULT_AGENTS: &str =
@@ -1287,6 +1301,9 @@ async fn run() -> anyhow::Result<()> {
     if cli.slack_setup {
         return slack::setup::run(&data_dir, cli.app, &mut slack::setup::Terminal).await;
     }
+    if cli.telegram_setup {
+        return telegram::setup::run(&data_dir, &mut telegram::setup::Tty).await;
+    }
     if cli.link {
         return link_cli::run(&data_dir, &config).await;
     }
@@ -1453,6 +1470,7 @@ async fn run() -> anyhow::Result<()> {
                 link: None,
             }),
             Box::new(slack::SlackPlugin { channel: false }),
+            Box::new(telegram::TelegramPlugin { channel: false }),
             Box::new(rpc::AcpPlugin { remote: None }),
         ]
     } else {
@@ -1546,6 +1564,7 @@ fn engine_plugins(headless: bool, serve: bool) -> Vec<Box<dyn Plugin>> {
             link: None,
         }),
         Box::new(slack::SlackPlugin { channel: headless }),
+        Box::new(telegram::TelegramPlugin { channel: headless }),
         Box::new(link::LinkPlugin),
         Box::new(nodes::NodesPlugin),
         Box::new(schedule::SchedulePlugin),
