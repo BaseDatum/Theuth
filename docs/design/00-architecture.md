@@ -177,9 +177,9 @@ Shared crate `runtime` contains exactly `Plugin`, `Runtime` (+ the three
 helpers above), `SessionId`, `TurnId`. Nothing else. The tool and approval
 contracts live in `tools`; the agent's commands and its `AgentEvent` live in
 `agent`. Plugins depend on each other's crates for those types along the
-`runtime ← tools ← secrets ← knowledge ← agent ← link ← {signal, slack, nodes, schedule, artifact, update, voice} ← rpc ← tui ← theuth`
+`runtime ← tools ← secrets ← knowledge ← agent ← link ← {signal, slack, telegram, nodes, schedule, artifact, update, voice} ← rpc ← tui ← theuth`
 (`knowledge` joins the chain in 12 §9; `secrets` in 37 §0.10 — `web`,
-`search-providers`, `agent`, `slack`, `rpc`, `signal` depend on it;
+`search-providers`, `agent`, `slack`, `telegram`, `rpc`, `signal` depend on it;
 `search-providers` also depends on `oauth`, a library, 80 §9; `update`
 in 39: depends on `agent` only, `rpc` forwards its `UpdateReady`; the
 `search` library in 49 §4.1 sits beside `runtime` — it depends on no
@@ -784,6 +784,7 @@ crates/
   routes/             plugin: learn a site's JSON routes from the browser session; replay them over `web::Fetcher` (44)
   signal/             plugin: Signal channel and device pairing (added in 09)
   slack/              plugin: Slack channel over Socket Mode (added in 21)
+  telegram/           plugin: Telegram channel over Bot API long polling (added in 98)
   computer/           plugin: screenshot + pointer/keyboard tools (27)
   surface/            library: json-render spec, jsonrepair parse, located validation, terminal rendering of json-render and Mermaid (merman), flatten for text channels, prompt block + visualize skill (30)
   rpc/                plugin: jsonrpsee server, event subscription bridge (§7); `search.rs`: four-category composition, `search`/`search_refresh` methods, the `search` tool and its registration-only `SearchToolsPlugin` (49 §4)
@@ -812,12 +813,12 @@ the `theuth` bin; the rest were added by the docs named beside them, each as the
 the loop must own (store, frame, compact, repl); frontends do not grow it.
 New subsystems earn a plugin. `agent/src/lib.rs` re-exports; command structs
 live next to the handler that answers them (12 §8). Dependency order:
-`runtime ← tools ← decision ← {meeting, browser}`; `runtime ← tools ← codeindex`; `runtime ← tools ← secrets ← knowledge ← agent ← link ← {signal, slack, nodes, schedule, artifact, update, voice, a2a} ← rpc ← tui ← theuth`
+`runtime ← tools ← decision ← {meeting, browser}`; `runtime ← tools ← codeindex`; `runtime ← tools ← secrets ← knowledge ← agent ← link ← {signal, slack, telegram, nodes, schedule, artifact, update, voice, a2a} ← rpc ← tui ← theuth`
 (`update` depends on `agent` and `runtime` only, `rpc` forwards
 `UpdateReady` and answers `update_status`, 39 §4.3; `voice` depends on
 `runtime` and `markdown` only, `rpc` forwards `VoiceEvent` and answers
 `speak`/`stop_speaking`/`voice_status`, 43 §6;
-`web`, `search-providers`, `agent`, `slack`, `rpc`, `signal` depend on
+`web`, `search-providers`, `agent`, `slack`, `telegram`, `rpc`, `signal` depend on
 `secrets`; `search-providers` also depends on `oauth` (a library, 80 §9);
 `agent` calls `tools::secrets::redact` from `tools`, 37 §0.10;
 `rpc` names `link`'s and `nodes`' types like every plugin's; `signal`
@@ -894,6 +895,7 @@ Workspace dependencies (versions verified 2026-09-09 via `cargo info`):
 | texting_robots | 0.2 | robots.txt: disallows, `Crawl-delay`, `Sitemap:` (firecrawl-native; 38) |
 | flate2 | 1 | gzip sitemaps inflated in the web fetcher (38); CLI update tarballs (39) |
 | slack-morphism | upstream Git rev e2a4b014 (PR #388 merged, unreleased; 21 §2.1) | Slack Socket Mode + Web API |
+| tgbot | =0.48.1 (crates.io, exact: ZeroVer; 98 §2.2) | Telegram Bot API client |
 | portable-pty | 0.9 | pty open/spawn/read/write for PTY jobs (22) |
 | vt100 | 0.16 | rendered screen of a PTY job (22) |
 | obscura-mcp | git v0.2.2 + 2 (fork, 23 §3.3, 44 §3.1) | embedded headless browser: per-session isolates, agent tool layer (stealth + render), network capture |
@@ -1079,6 +1081,7 @@ captured `Blocked` fixtures; 16 §10).
   |---|---|---|---|
   | signal | `signal` crate: channel + pairing | plugin | 09 (in-agent module rejected: only plugins may return) |
   | slack | `slack` crate: Socket Mode channel, streamed threads, approvals, subagent threads | plugin | 21 |
+  | telegram | `telegram` crate: Bot API long polling, drafts + rich messages, topics as threads, inline-keyboard approvals | plugin | 98 |
   | okf | `knowledge` crate: store, FTS index, gix history, `knowledge_*` tools | plugin | 10, 12 §9 (the harvest *model call* stays in `agent`: it is a continuation of the live frame, 07; keep-it-all-in-agent rejected by the user) |
   | control | `computer` crate | plugin | 27 (safety engine not ported: `Risk` covers it) |
   | scheduler | `schedule` crate: files, tick, one session per schedule, `Deliver` | plugin | 34 (heartbeat, goals briefings, task DAG, notify flags, phase plumbing not ported: each is a file the user writes or a primitive the harness already has) |

@@ -56,7 +56,7 @@ sink. Two passes:
    approval cards are (21 §10.1), so the user knows which conversation is
    talking. Signal prefixes the same line as text.
 
-`via: "slack" | "signal"` restricts both passes to one sink. Without it the
+`via: "slack" | "signal" | "telegram"` restricts both passes to one sink. Without it the
 fallback pass fans out to every channel — a user who configured both wants
 to be reached, and a TUI session has no better hint. Alternative rejected:
 "first configured sink only", arbitrary and silently wrong for whichever
@@ -64,7 +64,7 @@ channel the user is actually watching.
 
 No sink at all (neither plugin enabled, or both running without a channel
 — `theuth` TUI mode starts plugins with `channel: false`) → the tool errors
-`no user channel: slack and signal are not running`, and the model falls
+`no user channel: slack, signal and telegram are not running`, and the model falls
 back to saying it in the reply.
 
 ## 3. Shape
@@ -73,10 +73,10 @@ back to saying it in the reply.
 // crates/agent/src/user.rs
 pub const USER_ACTOR: &str = "user";
 
-/// What one frontend can deliver; registered by the Slack and Signal plugins at start.
+/// What one frontend can deliver; registered by the Slack, Signal and Telegram plugins at start.
 #[async_trait]
 pub trait UserSink: Send + Sync {
-    /// `"slack"` / `"signal"`: the `via` value and the word in the tool result.
+    /// `"slack"` / `"signal"` / `"telegram"`: the `via` value and the word in the tool result.
     fn name(&self) -> &'static str;
     /// Deliver `m` to the first session of `m.sessions` this sink renders
     /// (`fallback == false`), or to the owner (`fallback == true`).
@@ -111,14 +111,14 @@ pub struct MessageUserArgs {
     pub text: String,
     /// Absolute paths of files to attach. Images preview inline on both channels.
     #[serde(default)] pub files: Vec<PathBuf>,
-    /// Restrict to one channel. Default: the channel this session is bound to,
-    /// else every channel's owner.
+    /// Restrict to one channel (`slack`, `signal`, `telegram`). Default: the
+    /// channel this session is bound to, else every channel's owner.
     pub via: Option<String>,
 }
 ```
 
 Description (static, cache-safe): "Send a message, optionally with files
-or images, to the user on their chat channel (Slack or Signal). Arrives
+or images, to the user on their chat channel (Slack, Signal or Telegram). Arrives
 immediately and out of band. Your normal reply already reaches the user —
 use this only to hand over files or images, or when asked to report
 progress while working. `files` are absolute paths of existing files."
@@ -190,6 +190,19 @@ PolicyAction`; nothing special-cases this tool.
   chain resolved to).
 - The bound message arrives *before* the turn's own text, which Signal
   sends at `TurnFinished`. Acceptable and honest: it is out of band.
+
+## 6a. Telegram (`98` §8.10)
+
+- `impl UserSink for channel::Handle` in `crates/telegram/src/user.rs`,
+  `name() == "telegram"`. Bound: the first session of the chain with a
+  thread → its topic or chat. Fallback: the owner's chat (General), text
+  prefixed `_<origin>_` on its own line, so the user knows which
+  conversation is talking.
+- Text as `send_rich` (plain fallback as 98 §8.1), then one `send_file` per
+  file, no caption — `sendPhoto` for images, `sendDocument` otherwise
+  (`sendVoice` is the voice-turn path, 45 §6a). Result string:
+  `telegram: <chat title or @user>` / `telegram: owner`. Arrives below the
+  live draft, out of band by design (§6). Details: 98 §8.10.
 
 ## 7. Rejected
 

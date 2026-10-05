@@ -698,7 +698,8 @@ Unit tests live in the module they check (`cargo test -p signal`):
   the frozen transport — a third §2.2-style hunk, only if the workaround bites.
 - **Live owner change.** `signal_link { owner }` and `--link-signal --owner`
   write config only; the running channel's `owner` is fixed at start. Add an
-  `SetOwner` ask if changing the owner without a restart is ever wanted.
+  `SetOwner` ask if changing the owner without a restart is ever wanted —
+  98 does it live for Telegram (`SetOwner`); the same ask shape fits here.
 
 ## 17. Order
 

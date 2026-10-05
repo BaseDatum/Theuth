@@ -1,0 +1,54 @@
+[package]
+name = "telegram"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+description = "Telegram frontend for the daemon over Bot API long polling (design doc 98)"
+
+[dependencies]
+runtime = { workspace = true }
+agent = { workspace = true }
+tools = { workspace = true }
+artifact = { workspace = true }
+secrets = { workspace = true }
+voice = { workspace = true }
+roster = { workspace = true }
+mesh = { workspace = true }
+link = { workspace = true }
+# Stage-2 seams (98 contract §1): `markdown` for RENDER (Text, plain, chunks, urls),
+# `tasks` for ROUTE (MarkAnswered), `mime_guess` for ROUTE (inbox names). Pre-added so
+# no worker edits this file.
+markdown = { workspace = true }
+tasks = { workspace = true }
+mime_guess = { workspace = true }
+tgbot = { workspace = true }
+# tgbot's reqwest links aws-lc-rs; rustls panics on the first TLS dial unless a
+# process provider is installed (21 §2.1). `Api::new` installs it when missing.
+rustls = { version = "0.23", default-features = false, features = ["aws-lc-rs"] }
+tokio = { workspace = true }
+tokio-util = { workspace = true }
+futures = { workspace = true }
+async-trait = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+parking_lot = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+schemars = { workspace = true }
+uuid = { workspace = true }
+chrono = { workspace = true }
+tracing = { workspace = true }
+kameo = { workspace = true }
+ts-rs = { workspace = true, optional = true }
+
+[dev-dependencies]
+figment = { workspace = true }
+serde_yaml = { workspace = true }
+tempfile = "3"
+wiremock = { workspace = true }
+
+[features]
+ts = ["dep:ts-rs", "runtime/ts", "tools/ts", "agent/ts", "artifact/ts"]
+
+[lints]
+workspace = true
