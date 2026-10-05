@@ -77,6 +77,8 @@ pub struct AttentionItem {
     pub approval: Option<ApprovalId>,
     /// The `decision:<id>` blocker, for decisions.
     pub decision: Option<String>,
+    /// The packet key (`decision:<id>` | `review:<task>`) when one exists (101): `packet_get` reads it.
+    pub packet: Option<String>,
 }
 
 /// `ask` → `Result<Vec<Handoff>, String>`: unresolved hand-offs, newest first (`handoffs_list`).
@@ -115,6 +117,8 @@ pub struct DismissAttention(pub String);
 pub struct Inputs {
     /// Open tasks (todo, doing, review, blocked).
     pub tasks: Vec<tasks::Task>,
+    /// Their packets (101): `decision:<id>` and `review:<task>` rows.
+    pub packets: Vec<tasks::packet::Packet>,
     /// The roster.
     pub agents: Vec<AgentSummary>,
     /// Pending permission prompts with when they arrived.
@@ -158,6 +162,7 @@ pub fn derive(inputs: &Inputs, states: &HashMap<String, State>, now_ms: u64) -> 
         session: None,
         approval: None,
         decision: None,
+        packet: None,
     };
 
     for (a, at_ms) in &inputs.approvals {
@@ -183,6 +188,8 @@ pub fn derive(inputs: &Inputs, states: &HashMap<String, State>, now_ms: u64) -> 
         });
     }
 
+    let packets: HashMap<&str, &tasks::packet::Packet> =
+        inputs.packets.iter().map(|p| (p.key.as_str(), p)).collect();
     // Hire tasks owned by the user are the proposal's approval: one item per agent, not two.
     let hire_prefix = "Hire agent ";
     for t in &inputs.tasks {
@@ -198,10 +205,12 @@ pub fn derive(inputs: &Inputs, states: &HashMap<String, State>, now_ms: u64) -> 
                     .filter(|b| b.starts_with("decision:"))
                     .collect();
                 if let Some(d) = decisions.first() {
+                    let packet = packets.get(d.as_str());
                     out.push(AttentionItem {
                         task: Some(t.id.clone()),
                         agent: owner_agent.clone(),
                         decision: Some((*d).clone()),
+                        packet: packet.map(|p| p.key.clone()),
                         ..item(
                             format!("decision:{}:{d}", t.id),
                             AttentionKind::Decision,
@@ -209,7 +218,12 @@ pub fn derive(inputs: &Inputs, states: &HashMap<String, State>, now_ms: u64) -> 
                                 "{} asks for a decision on \u{201c}{}\u{201d}",
                                 t.owner, t.title
                             ),
-                            Some("the question is in the task thread".into()),
+                            Some(packet.map_or_else(
+                                || "the question is in the task thread".to_owned(),
+                                |p| {
+                                    tasks::packet::head(p.question.as_deref().unwrap_or(&p.summary))
+                                },
+                            )),
                             t.updated_ms,
                         )
                     });
@@ -228,14 +242,20 @@ pub fn derive(inputs: &Inputs, states: &HashMap<String, State>, now_ms: u64) -> 
                 }
             }
             tasks::TaskState::Review if t.reviewer == Some(tasks::Owner::User) => {
+                let key = tasks::packet::review_key(&t.id);
+                let packet = packets.get(key.as_str());
                 out.push(AttentionItem {
                     task: Some(t.id.clone()),
                     agent: owner_agent.clone(),
+                    packet: packet.map(|_| key.clone()),
                     ..item(
-                        format!("review:{}", t.id),
+                        key,
                         AttentionKind::Review,
                         format!("\u{201c}{}\u{201d} awaits your review", t.title),
-                        Some(format!("by {}", t.owner)),
+                        Some(packet.map_or_else(
+                            || format!("by {}", t.owner),
+                            |p| tasks::packet::head(&p.summary),
+                        )),
                         t.updated_ms,
                     )
                 });
@@ -462,8 +482,19 @@ impl Attention {
                 .unwrap_or_default(),
             None => vec![],
         };
+        let packets = match tasks::actor() {
+            Some(t) if !tasks.is_empty() => t
+                .ask(tasks::ListPackets(
+                    tasks.iter().map(|t| t.id.clone()).collect(),
+                ))
+                .await
+                .ok()
+                .unwrap_or_default(),
+            _ => vec![],
+        };
         Inputs {
             tasks,
+            packets,
             agents,
             approvals: self.pending.values().cloned().collect(),
             peers,
@@ -861,6 +892,84 @@ mod tests {
             "dismissed and live-snoozed gone, expired snooze back"
         );
         assert!(left.iter().any(|i| i.id == "budget:ops"));
+    }
+
+    fn packet(
+        key: &str,
+        task: &tasks::TaskId,
+        kind: tasks::packet::PacketKind,
+    ) -> tasks::packet::Packet {
+        tasks::packet::Packet {
+            key: key.into(),
+            task: task.clone(),
+            kind,
+            by: "agent:ops".into(),
+            at_ms: 1,
+            question: (kind == tasks::packet::PacketKind::Decision)
+                .then(|| "Cap retries at 3?\n\nmore".to_owned()),
+            summary: format!("# Summary line {}\n\nbody", "s".repeat(150)),
+            options: vec![],
+            recommended: None,
+            pointers: vec![],
+            checks: vec![],
+        }
+    }
+
+    /// 101: a decision / review item carries its packet key and the first line
+    /// of the question / summary as `detail`; without a packet today's strings stay.
+    #[test]
+    fn decision_and_review_items_carry_their_packet() {
+        let ops = tasks::Owner::Agent("ops".into());
+        let d = task(
+            "deploy",
+            tasks::TaskState::Blocked,
+            ops.clone(),
+            &["decision:d1"],
+            None,
+            50,
+        );
+        let r = task(
+            "migrate",
+            tasks::TaskState::Review,
+            ops.clone(),
+            &[],
+            Some(tasks::Owner::User),
+            40,
+        );
+        let bare = Inputs {
+            tasks: vec![d.clone(), r.clone()],
+            ..Default::default()
+        };
+        let items = derive(&bare, &HashMap::new(), 100);
+        assert_eq!(items[0].packet, None);
+        assert_eq!(
+            items[0].detail.as_deref(),
+            Some("the question is in the task thread")
+        );
+        assert_eq!(items[1].packet, None);
+        assert_eq!(items[1].detail.as_deref(), Some("by agent:ops"));
+
+        let review_key = format!("review:{}", r.id);
+        let with = Inputs {
+            tasks: vec![d.clone(), r.clone()],
+            packets: vec![
+                packet("decision:d1", &d.id, tasks::packet::PacketKind::Decision),
+                packet(&review_key, &r.id, tasks::packet::PacketKind::Review),
+                packet("review:other", &d.id, tasks::packet::PacketKind::Review),
+            ],
+            ..Default::default()
+        };
+        let items = derive(&with, &HashMap::new(), 100);
+        assert_eq!(items[0].kind, AttentionKind::Decision);
+        assert_eq!(items[0].packet.as_deref(), Some("decision:d1"));
+        assert_eq!(items[0].detail.as_deref(), Some("Cap retries at 3?"));
+        assert_eq!(items[1].kind, AttentionKind::Review);
+        assert_eq!(items[1].packet.as_deref(), Some(review_key.as_str()));
+        let detail = items[1].detail.as_deref().unwrap();
+        assert!(detail.starts_with("Summary line sss"), "{detail}");
+        assert_eq!(detail.chars().count(), 140);
+        assert!(detail.ends_with('…'));
+        assert_eq!(items.len(), 2, "a stray packet makes no item");
     }
 
     fn handoff(id: &str, agent: Option<&str>, created_ms: u64, resolved: bool) -> Handoff {

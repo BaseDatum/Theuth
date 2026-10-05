@@ -14,15 +14,16 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use tools::{RegisterTool, Risk, Tool, ToolCx, ToolOutput, ToolRegistry};
 
+use crate::packet::{self, Check, PacketOption, Pointer};
 use crate::place;
 use crate::thread::Thread;
 use crate::types::{
     Disposition, DoneBecause, Owner, TaskCreate, TaskFilter, TaskId, TaskPatch, TaskState,
 };
 use crate::{
-    AnswerDecision, AwaitDecision, CheckoutTask, CommentTask, CreateTask, Escalate, GetTask,
-    ListTasks, MoveTask, NoteDisposition, PlaceTask, ReassignTask, Tasks, UpdateTask,
-    WriteBudgetOf, escalate,
+    AnswerDecision, AwaitDecision, CheckoutTask, CommentTask, CreateTask, EffectiveReviewer,
+    Escalate, GetTask, ListTasks, MoveTask, NoteDisposition, PlaceTask, ReassignTask, ReviewPacket,
+    Tasks, UpdateTask, WriteBudgetOf, escalate,
 };
 
 /// `ask` → `String`: the actor text of `session`'s caller — `agent:<name>`
@@ -465,6 +466,19 @@ pub struct TaskUpdateArgs {
     /// evident intention), or `follow_ups_filed {tasks}` (the work continues in those tasks).
     #[serde(default)]
     pub done_because: Option<DoneBecause>,
+    /// With `disposition: review`: the review packet's markdown summary (≤ 16 KiB). Required when the
+    /// reviewer is the user.
+    #[serde(default)]
+    pub summary: Option<String>,
+    /// With `disposition: review`: exactly what to review (≤ 12), evidence inline: `code` = `ref: "path#L10-L24"`
+    /// + `text` the lines verbatim (+ `root`); `diff` = `text` a unified diff; `artifact` / `note` / `knowledge` /
+    /// `session` / `meeting` / `task` by id; `url` by `http(s)` URL. `title` and a one-line `note` each; `text`
+    /// ≤ 32 KiB. ≥ 1 when the reviewer is the user.
+    #[serde(default)]
+    pub pointers: Option<Vec<Pointer>>,
+    /// With `disposition: review`: your status against each `done_when` line (`{text, done, note}`).
+    #[serde(default)]
+    pub checks: Option<Vec<Check>>,
 }
 
 /// `task_update`: change fields and state; every change is a thread event.
@@ -482,7 +496,13 @@ impl Tool for TaskUpdateTool {
          `blocked` naming what you wait on, `delegated` naming the child task that now carries \
          the work, `continuing` naming what will wake the task again, `done` (reviewers only, with \
          `done_because`; a desk that is its own reviewer marks done only against an explicit `done_when` and \
-         only as `criteria_met`). `state: doing` sends a reviewed task \
+         only as `criteria_met`). A hand-over to review carries the review packet the reviewer reads instead \
+         of the thread: `summary` (markdown, ```mermaid / ```json-render fences welcome), `pointers` to exactly \
+         what to review with the evidence inline (`code` = `path#L10-L24` plus the lines verbatim, `diff` = a \
+         unified diff, artifacts / notes / sessions / URLs by id or URL; a one-line `note` each) and `checks` \
+         (your status against each `done_when` line). When the reviewer is the user the `summary` and at least \
+         one pointer are required and the tool refuses without them. Caps: summary 16 KiB, 12 pointers (text \
+         32 KiB each). `state: doing` sends a reviewed task \
          back to its owner; `state: cancelled` drops it. A write by a session that does not hold the \
          checkout is refused once the checkout moved on (`superseded`). One session may write to at most 20 \
          tasks it does not own. Every change is logged to the thread with your session and before/after."
@@ -517,6 +537,7 @@ impl Tool for TaskUpdateTool {
             }
         }
         let mut note = None;
+        let mut packet = None;
         if let Some(d) = a.disposition {
             let current = match flat(actor.ask(GetTask(a.id.clone())).await) {
                 Ok(t) => t,
@@ -526,6 +547,20 @@ impl Tool for TaskUpdateTool {
             match d {
                 Disposition::Done => patch.state = Some(TaskState::Done),
                 Disposition::Review { reviewer } => {
+                    packet = match review_gate(
+                        &actor,
+                        &a.id,
+                        Some(reviewer.clone()),
+                        a.summary,
+                        a.pointers,
+                        a.checks,
+                        &me,
+                    )
+                    .await
+                    {
+                        Ok(p) => p,
+                        Err(e) => return Ok(ToolOutput::err(e)),
+                    };
                     patch.state = Some(TaskState::Review);
                     patch.reviewer = Some(reviewer);
                 }
@@ -560,6 +595,15 @@ impl Tool for TaskUpdateTool {
                 .await,
         );
         if r.is_ok()
+            && let Some(p) = packet
+            && let Err(e) = flat(actor.ask(p).await)
+        {
+            return Ok(ToolOutput::err(format!(
+                "task {} is in review but its packet was not stored: {e}",
+                a.id
+            )));
+        }
+        if r.is_ok()
             && let Some(text) = note
         {
             let _ = actor
@@ -581,7 +625,8 @@ pub struct TaskMoveArgs {
     /// Task id.
     pub task: TaskId,
     /// Target state: `todo` (start a backlog task; resume a blocked one; send a reviewed one back),
-    /// `backlog` (pull a queued task back), `done` (reviewer approves), `cancelled` (drop).
+    /// `backlog` (pull a queued task back), `review` (owner hands over), `done` (reviewer approves),
+    /// `cancelled` (drop).
     pub state: TaskState,
     /// Why, for the thread (optional).
     #[serde(default)]
@@ -590,6 +635,15 @@ pub struct TaskMoveArgs {
     /// from an agent; the user's approval defaults to `intent_met`.
     #[serde(default)]
     pub done_because: Option<DoneBecause>,
+    /// With `state: review`: the review packet's markdown summary (≤ 16 KiB). Required when the reviewer is the user.
+    #[serde(default)]
+    pub summary: Option<String>,
+    /// With `state: review`: exactly what to review (≤ 12), evidence inline (see `task_update`). ≥ 1 when the reviewer is the user.
+    #[serde(default)]
+    pub pointers: Option<Vec<Pointer>>,
+    /// With `state: review`: your status against each `done_when` line.
+    #[serde(default)]
+    pub checks: Option<Vec<Check>>,
 }
 
 /// `task_move`: a state change on the user's (or the caller's) intent.
@@ -605,8 +659,10 @@ impl Tool for TaskMoveTool {
         "Move a task between states when the user asks (\"start that\", \"put it back\", \"drop it\", \
          \"approve it\"): backlog ↔ todo, anything → cancelled, review → done | todo (reviewer), blocked → todo \
          (the user's move clears system blockers such as `no continuation`; a decision needs its answer, a task \
-         blocker its task). `todo` from backlog wakes the owner. Illegal moves are refused \
-         with the list of states allowed from where the task is. Working a task yourself is `task_checkout`; \
+         blocker its task), doing → review (owner). `todo` from backlog wakes the owner. Illegal moves are refused \
+         with the list of states allowed from where the task is. A move to `review` whose reviewer is the user \
+         needs the review packet (`summary` and ≥ 1 `pointers` entry with the evidence inline, `checks` against \
+         `done_when`) and is refused without it. Working a task yourself is `task_checkout`; \
          finishing one is `task_update` with a disposition."
             .into()
     }
@@ -614,6 +670,14 @@ impl Tool for TaskMoveTool {
     async fn call(&self, a: TaskMoveArgs, cx: ToolCx) -> anyhow::Result<ToolOutput> {
         let actor = actor()?;
         let me = caller(&actor, &cx).await;
+        let packet = if a.state == TaskState::Review {
+            match review_gate(&actor, &a.task, None, a.summary, a.pointers, a.checks, &me).await {
+                Ok(p) => p,
+                Err(e) => return Ok(ToolOutput::err(e)),
+            }
+        } else {
+            None
+        };
         let r = flat(
             actor
                 .ask(MoveTask {
@@ -627,15 +691,73 @@ impl Tool for TaskMoveTool {
                 .await,
         );
         Ok(match r {
-            Ok(t) => ToolOutput::ok(format!(
-                "task {} is now {} (owner {})",
-                t.id,
-                t.state.as_str(),
-                t.owner
-            )),
+            Ok(t) => {
+                if let Some(p) = packet
+                    && let Err(e) = flat(actor.ask(p).await)
+                {
+                    return Ok(ToolOutput::err(format!(
+                        "task {} is in review but its packet was not stored: {e}",
+                        t.id
+                    )));
+                }
+                ToolOutput::ok(format!(
+                    "task {} is now {} (owner {})",
+                    t.id,
+                    t.state.as_str(),
+                    t.owner
+                ))
+            }
             Err(e) => ToolOutput::err(e),
         })
     }
+}
+
+/// 101 D1, before any write: who reviews `id` if it goes to review now; the
+/// user needs a `summary` and ≥ 1 pointer, every audience gets the caps
+/// checked. `Ok(Some(_))` is the packet to store once the task is in review;
+/// `Ok(None)` = an agent audience with nothing given.
+async fn review_gate(
+    actor: &ActorRef<Tasks>,
+    id: &TaskId,
+    reviewer: Option<Owner>,
+    summary: Option<String>,
+    pointers: Option<Vec<Pointer>>,
+    checks: Option<Vec<Check>>,
+    me: &str,
+) -> Result<Option<ReviewPacket>, String> {
+    let who = flat(
+        actor
+            .ask(EffectiveReviewer {
+                id: id.clone(),
+                reviewer,
+            })
+            .await,
+    )?;
+    let given = summary.is_some() || pointers.is_some() || checks.is_some();
+    let p = packet::Packet {
+        key: packet::review_key(id),
+        task: id.clone(),
+        kind: packet::PacketKind::Review,
+        by: me.to_owned(),
+        at_ms: 0,
+        question: None,
+        summary: summary.unwrap_or_default(),
+        options: vec![],
+        recommended: None,
+        pointers: pointers.unwrap_or_default(),
+        checks: checks.unwrap_or_default(),
+    };
+    if who == Owner::User {
+        packet::require_for_user(&p)?;
+    }
+    packet::validate(&p)?;
+    Ok((who == Owner::User || given).then_some(ReviewPacket {
+        id: id.clone(),
+        summary: p.summary,
+        pointers: p.pointers,
+        checks: p.checks,
+        actor: me.to_owned(),
+    }))
 }
 
 /// Arguments for [`TaskReassignTool`].
@@ -1039,16 +1161,57 @@ impl Tool for TaskPlaceTool {
     }
 }
 
+/// One `escalate` option (101 D2): a bare label or `{label, description}`.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(untagged)]
+pub enum OptionArg {
+    /// Just the label.
+    Label(String),
+    /// Label with its one-line trade-off.
+    Full {
+        /// A few words.
+        label: String,
+        /// One line: the trade-off.
+        #[serde(default)]
+        description: Option<String>,
+    },
+}
+
+impl From<OptionArg> for PacketOption {
+    fn from(o: OptionArg) -> Self {
+        match o {
+            OptionArg::Label(label) => Self {
+                label,
+                description: None,
+            },
+            OptionArg::Full { label, description } => Self { label, description },
+        }
+    }
+}
+
 /// Arguments for [`EscalateTool`].
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 pub struct EscalateArgs {
     /// Task id the decision is about.
     pub task: TaskId,
-    /// The question, with the context the decider needs to answer without reading the whole thread.
+    /// The question, one or two sentences; the decider sees it first.
     pub question: String,
-    /// Concrete options, when there are some; the decider may still answer freely.
+    /// Markdown (≤ 16 KiB): two to five short paragraphs on what the decision is about and what hangs on it;
+    /// a ```mermaid or ```json-render fence when structure helps. Required when your manager is the user.
     #[serde(default)]
-    pub options: Vec<String>,
+    pub summary: Option<String>,
+    /// Concrete options (≤ 6, labels ≤ 80 chars): `"label"` or `{label, description}` with a one-line
+    /// trade-off each; the decider may still answer freely.
+    #[serde(default)]
+    pub options: Vec<OptionArg>,
+    /// Index into `options` of the one you would pick.
+    #[serde(default)]
+    pub recommended: Option<u32>,
+    /// Exactly what to look at (≤ 12), evidence inline: `code` = `ref: "path#L10-L24"` + `text` the lines verbatim
+    /// (+ `root`); `diff` = `text` a unified diff; `artifact` / `note` / `knowledge` / `session` / `meeting` /
+    /// `task` by id; `url` by `http(s)` URL. `title` and a one-line `note` each; `text` ≤ 32 KiB.
+    #[serde(default)]
+    pub pointers: Vec<Pointer>,
 }
 
 /// `escalate`: a decision request up the reporting line (67 §11, decision 8).
@@ -1063,7 +1226,14 @@ impl Tool for EscalateTool {
     fn description(&self) -> String {
         "Ask your manager for a decision you cannot make yourself. The request goes up your reporting \
          line as a wake with reason `answer`: a manager that is an agent answers with `decide` or \
-         escalates further; the user gets it as a card on their channels with the options as buttons. \
+         escalates further; the user gets it on their attention surface and as a card on their channels \
+         with the options as buttons. Prepare the packet the decider reads instead of the thread: \
+         `summary` (markdown, ```mermaid / ```json-render fences welcome), `options` with one-line \
+         descriptions and a `recommended` index, and `pointers` to exactly what to look at with the \
+         evidence inline (`code` = `path#L10-L24` plus the lines verbatim, `diff` = a unified diff, \
+         artifacts / notes / sessions / URLs by id or URL), a one-line `note` each. When your manager is \
+         the user the `summary` is required and the tool refuses without it. Caps: summary 16 KiB, \
+         6 options (labels 80 chars), 12 pointers (text 32 KiB each). \
          You wait up to `roster.decision_wait_secs` (two minutes) for a live answer; if it comes it is \
          in this tool's output and the task is unblocked. If none comes the task stays \
          `blocked: decision:<id>`, your episode ends with its journal, and the answer re-wakes you. \
@@ -1079,7 +1249,10 @@ impl Tool for EscalateTool {
                 .ask(Escalate {
                     task: a.task.clone(),
                     question: a.question,
-                    options: a.options,
+                    summary: a.summary,
+                    options: a.options.into_iter().map(Into::into).collect(),
+                    recommended: a.recommended,
+                    pointers: a.pointers,
                     actor: me,
                     session: Some(cx.session.to_string()),
                 })
@@ -1177,5 +1350,189 @@ mod tests {
             a.state, None,
             "the schema does not force a state; the default is backlog"
         );
+    }
+}
+
+#[cfg(test)]
+mod review_gate_tests {
+    use kameo::actor::Spawn;
+
+    use super::*;
+    use crate::ledger::tests::rig;
+    use crate::{GetPacket, ListPackets};
+
+    fn code_pointer() -> Pointer {
+        Pointer {
+            kind: packet::PointerKind::Code,
+            ref_: "src/x.rs#L1-L2".into(),
+            title: "the fix".into(),
+            note: None,
+            text: Some("a\nb".into()),
+            root: None,
+        }
+    }
+
+    /// 101 D1 at the tool boundary: a hand-over whose effective reviewer is the
+    /// user needs a summary and a pointer (refused before any write); an agent
+    /// reviewer needs nothing; the packet is stored (and replaced) once the task
+    /// is in review; `GetPacket` answers by key.
+    #[tokio::test]
+    async fn review_gate_enforces_the_user_audience() {
+        let mut r = rig().await;
+        let ops = r.task("agent:ops").await; // ops reports to lead
+        r.ledger
+            .checkout(&ops.id, "s-ops", "agent:ops")
+            .await
+            .unwrap();
+        let lead = r.task("agent:lead").await; // lead reports to the user
+        r.ledger
+            .checkout(&lead.id, "s-lead", "agent:lead")
+            .await
+            .unwrap();
+        let actor = Tasks::spawn(Tasks {
+            ledger: r.ledger,
+            dispatching: false,
+            escalations: Default::default(),
+        });
+
+        // task_move {state: review}: the effective reviewer decides.
+        let e = review_gate(&actor, &lead.id, None, None, None, None, "agent:lead")
+            .await
+            .unwrap_err();
+        assert!(e.contains("`pointers`") && e.contains("`summary`"), "{e}");
+        assert_eq!(
+            flat(actor.ask(GetTask(lead.id.clone())).await)
+                .unwrap()
+                .state,
+            TaskState::Doing,
+            "nothing written"
+        );
+        let e = review_gate(
+            &actor,
+            &lead.id,
+            None,
+            Some("done".into()),
+            None,
+            None,
+            "agent:lead",
+        )
+        .await
+        .unwrap_err();
+        assert!(e.contains("`pointers`"), "summary alone is not enough: {e}");
+        assert!(
+            review_gate(&actor, &ops.id, None, None, None, None, "agent:ops")
+                .await
+                .unwrap()
+                .is_none(),
+            "agent reviewer, nothing given: no packet"
+        );
+        // task_update {disposition: review {reviewer: user}} names the user outright.
+        let e = review_gate(
+            &actor,
+            &ops.id,
+            Some(Owner::User),
+            None,
+            None,
+            None,
+            "agent:ops",
+        )
+        .await
+        .unwrap_err();
+        assert!(e.contains("`pointers`"), "{e}");
+        // caps apply to every audience
+        let e = review_gate(
+            &actor,
+            &ops.id,
+            None,
+            Some("x".repeat(packet::SUMMARY_MAX + 1)),
+            None,
+            None,
+            "agent:ops",
+        )
+        .await
+        .unwrap_err();
+        assert!(e.contains("`summary`") && e.contains("16 KiB"), "{e}");
+
+        // the happy path: gate, move, store; then replace
+        let key = packet::review_key(&lead.id);
+        for summary in ["first", "second"] {
+            let rp = review_gate(
+                &actor,
+                &lead.id,
+                None,
+                Some(summary.into()),
+                Some(vec![code_pointer()]),
+                None,
+                "agent:lead",
+            )
+            .await
+            .unwrap()
+            .expect("a packet for the user");
+            if summary == "first" {
+                let t = flat(
+                    actor
+                        .ask(MoveTask {
+                            id: lead.id.clone(),
+                            state: TaskState::Review,
+                            note: None,
+                            done_because: None,
+                            actor: "agent:lead".into(),
+                            session: Some("s-lead".into()),
+                        })
+                        .await,
+                )
+                .unwrap();
+                assert_eq!(
+                    (t.state, t.reviewer),
+                    (TaskState::Review, Some(Owner::User))
+                );
+            }
+            flat(actor.ask(rp).await).unwrap();
+            let p = flat(actor.ask(GetPacket(key.clone())).await)
+                .unwrap()
+                .expect("stored");
+            assert_eq!((p.summary.as_str(), p.pointers.len()), (summary, 1));
+        }
+        assert_eq!(
+            flat(
+                actor
+                    .ask(ListPackets(vec![lead.id.clone(), ops.id.clone()]))
+                    .await
+            )
+            .unwrap()
+            .len(),
+            1,
+            "replaced, one row"
+        );
+        assert_eq!(
+            flat(actor.ask(GetPacket("review:nope".into())).await).unwrap(),
+            None
+        );
+        let doc = lead.thread.clone().unwrap();
+        assert_eq!(
+            r.thread.0.lock().unwrap()[&doc]
+                .iter()
+                .filter(|b| b.contains("**review requested**"))
+                .count(),
+            2
+        );
+    }
+
+    /// 101 D2: `options` takes bare labels and `{label, description}`; the schema still generates.
+    #[test]
+    fn escalate_options_take_both_shapes() {
+        let a: EscalateArgs = serde_json::from_value(serde_json::json!({
+            "task": "t", "question": "q",
+            "options": ["yes", {"label": "no", "description": "later"}],
+            "recommended": 1
+        }))
+        .unwrap();
+        let opts: Vec<PacketOption> = a.options.into_iter().map(Into::into).collect();
+        assert_eq!(opts[0].label, "yes");
+        assert_eq!(opts[0].description, None);
+        assert_eq!(opts[1].description.as_deref(), Some("later"));
+        assert!(a.pointers.is_empty() && a.summary.is_none());
+        let schema = serde_json::to_value(schemars::schema_for!(EscalateArgs)).unwrap();
+        assert!(schema.to_string().contains("description"));
     }
 }
