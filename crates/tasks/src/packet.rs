@@ -1,8 +1,9 @@
-//! The packet (101 DECISION-SURFACE §3): what an agent prepares for the person
-//! who must decide (`decision:<id>`) or review (`review:<task>`): a summary,
-//! options, pointers to exactly what to look at with the evidence inline. Stored
-//! in `tasks.sqlite` (`packets`, replicated), mirrored into the thread as
-//! markdown ([`thread_markdown`]), required when the user is the audience
+//! The packet (101 DECISION-SURFACE §3, Revision 2): what an agent prepares for
+//! the person who must decide (`decision:<id>`) or review (`review:<task>`): a
+//! one-paragraph summary, a mini-board document with a fixed skeleton
+//! ([`check_board`]), options, pointers with the evidence inline. Stored in
+//! `tasks.sqlite` (`packets`, replicated), mirrored into the thread as markdown
+//! ([`thread_markdown`]), required when the user is the audience
 //! ([`require_for_user`]).
 
 use serde::{Deserialize, Serialize};
@@ -25,13 +26,44 @@ pub const PACKET_MAX: usize = 128 * 1024;
 pub const HEAD_MAX: usize = 140;
 
 /// D1 error: an escalation to the user without a `summary`.
-pub const NEEDS_SUMMARY: &str = "escalating to the user needs a `summary`: two to five short paragraphs on what the \
-decision is about, a ```mermaid or ```json-render fence when structure helps, and `options` with one-line \
-descriptions";
-/// D1 error: a hand-over to the user's review without a `summary` and a pointer.
-pub const NEEDS_POINTERS: &str = "handing work to the user's review needs a `summary` and at least one entry in \
-`pointers`: exactly what to look at, with the evidence inline (`code` = `path#L10-L24` plus the lines verbatim, \
-`diff` = a unified diff, artifacts / notes / sessions / URLs by id or URL), one-line `note` each";
+pub const NEEDS_SUMMARY: &str = "escalating to the user needs a `summary`: one short paragraph — the abstract the \
+inbox row, the thread and the channel card show (the detail goes on the `board`)";
+/// D1 error: a hand-over to the user's review without a `summary`.
+pub const NEEDS_REVIEW_SUMMARY: &str = "handing work to the user's review needs a `summary`: one short paragraph — \
+the abstract the inbox row and the thread show (the detail goes on the `board`)";
+/// D1 (R1) error: an escalation to the user without a `board`.
+pub const NEEDS_BOARD_DECISION: &str = "escalating to the user needs a `board`: a mini-board for the decider — \
+`r = await doc_create(title=…, kind=\"board\", root=<absolute repo or scratch dir>)`, then \
+`await doc_insert(doc=r[\"doc\"], markdown=…)` with the sections `## What you're deciding`, \
+`## Why it matters to you`, `## The picture` (one diagram with `ref` anchors), `## Options` (one `###` per option: \
+consequence, cost/risk, reversibility, recommendation), `## Look at` (Excerpts); then pass `board=r[\"doc\"]`. \
+Short is good — one block per section is enough.";
+/// D1 (R1) error: a hand-over to the user's review without a `board`.
+pub const NEEDS_BOARD_REVIEW: &str = "handing work to the user's review needs a `board`: a mini-board for the \
+reviewer — `r = await doc_create(title=…, kind=\"board\", root=<absolute repo root>)`, then \
+`await doc_insert(doc=r[\"doc\"], markdown=…)` with the sections `## What was done`, `## Why it matters to you`, \
+`## The picture` (one diagram with `ref` anchors), `## Against the criteria` (each `done_when` line with its \
+evidence anchor), `## Walk through` (Excerpts in reading order); then pass `board=r[\"doc\"]`. Short is good — one \
+block per section is enough.";
+
+/// R2: the `##` sections of a decision mini-board, in order (`Open questions` optional, unchecked).
+pub const DECISION_SECTIONS: [&str; 5] = [
+    "What you're deciding",
+    "Why it matters to you",
+    "The picture",
+    "Options",
+    "Look at",
+];
+/// R2: the `##` sections of a review mini-board, in order.
+pub const REVIEW_SECTIONS: [&str; 5] = [
+    "What was done",
+    "Why it matters to you",
+    "The picture",
+    "Against the criteria",
+    "Walk through",
+];
+/// How many leading `##` sections [`check_board`] matches against the skeleton.
+const CHECKED_SECTIONS: usize = 3;
 
 /// What the packet is for.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
@@ -139,8 +171,11 @@ pub struct Packet {
     pub at_ms: u64,
     /// Decision: the question as asked.
     pub question: Option<String>,
-    /// Markdown; ```mermaid / ```json-render / ```openui fences allowed.
+    /// Markdown; ```mermaid / ```json-render / ```openui fences allowed. One paragraph when a `board` carries the detail.
     pub summary: String,
+    /// R1: the board document (`doc_create(kind="board")`) written for the decider; required for the user.
+    #[serde(default)]
+    pub board: Option<String>,
     /// Decision only; may be empty (free-form question).
     pub options: Vec<PacketOption>,
     /// Index into `options`.
@@ -159,6 +194,8 @@ pub struct Ask {
     pub question: String,
     /// The summary; required when the user decides (D1).
     pub summary: Option<String>,
+    /// The mini-board's document id; required when the user decides (R1).
+    pub board: Option<String>,
     /// Options.
     pub options: Vec<PacketOption>,
     /// Index into `options`.
@@ -319,20 +356,74 @@ fn colon_form(r: &str) -> Option<(&str, String)> {
         .then(|| (path, format!("{a}-L{b}")))
 }
 
-/// D1: with the user as the audience a decision needs a `summary`, a review a
-/// `summary` and at least one pointer. Call only when the audience is the user.
+/// D1 (R1): with the user as the audience a packet needs a `summary` and a
+/// `board`, for both kinds. Call only when the audience is the user.
 pub fn require_for_user(p: &Packet) -> Result<(), String> {
+    let board = p.board.as_deref().is_some_and(|b| !b.trim().is_empty());
     let summary = !p.summary.trim().is_empty();
-    match p.kind {
-        PacketKind::Decision if !summary => Err(NEEDS_SUMMARY.into()),
-        PacketKind::Review if !summary || p.pointers.is_empty() => Err(NEEDS_POINTERS.into()),
-        _ => Ok(()),
+    match (p.kind, board, summary) {
+        (PacketKind::Decision, false, _) => Err(NEEDS_BOARD_DECISION.into()),
+        (PacketKind::Review, false, _) => Err(NEEDS_BOARD_REVIEW.into()),
+        (PacketKind::Decision, true, false) => Err(NEEDS_SUMMARY.into()),
+        (PacketKind::Review, true, false) => Err(NEEDS_REVIEW_SUMMARY.into()),
+        (_, true, true) => Ok(()),
     }
 }
 
+/// R2: the first three `##` headings of a board (`outline` = its top-level
+/// `(level, text)` headings in order) match the skeleton of `kind`, compared
+/// case- and whitespace-insensitively; `###` and later `##` sections are free.
+/// The error names the missing or misplaced section and the full skeleton.
+pub fn check_board(kind: PacketKind, outline: &[(u8, String)]) -> Result<(), String> {
+    let want = match kind {
+        PacketKind::Decision => &DECISION_SECTIONS,
+        PacketKind::Review => &REVIEW_SECTIONS,
+    };
+    let mut h2 = outline.iter().filter(|(l, _)| *l == 2).map(|(_, t)| t);
+    for (i, section) in want.iter().take(CHECKED_SECTIONS).enumerate() {
+        let skeleton = || {
+            want.iter()
+                .map(|s| format!("`## {s}`"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
+        match h2.next() {
+            Some(got) if fold(got) == fold(section) => {}
+            Some(got) => {
+                return Err(format!(
+                    "section {} of a {} board must be `## {section}`, found `## {}`; the sections are {}",
+                    i + 1,
+                    kind.as_str(),
+                    got.trim(),
+                    skeleton()
+                ));
+            }
+            None => {
+                return Err(format!(
+                    "section {} of a {} board is missing: `## {section}`; the sections are {}",
+                    i + 1,
+                    kind.as_str(),
+                    skeleton()
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Heading text for comparison: lowercase, straight apostrophes, single spaces.
+fn fold(s: &str) -> String {
+    s.replace(['’', '‘'], "'")
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_lowercase()
+}
+
 /// D3: the packet as the thread block (`**decision requested**` /
-/// `**review requested**`): summary, options, checks, "Look at:" with each
-/// pointer's title, ref and note. The evidence (`text`) stays in the packet.
+/// `**review requested**`): summary, the board's link, options, checks,
+/// "Look at:" with each pointer's title, ref and note. The evidence (`text`)
+/// stays in the packet.
 pub fn thread_markdown(p: &Packet) -> String {
     let mut s = match p.kind {
         PacketKind::Decision => format!("**decision requested** (`{}`)", p.key),
@@ -351,6 +442,9 @@ pub fn thread_markdown(p: &Packet) -> String {
     if !summary.is_empty() {
         s.push_str("\n\n");
         s.push_str(summary);
+    }
+    if let Some(b) = p.board.as_deref().map(str::trim).filter(|b| !b.is_empty()) {
+        s.push_str(&format!("\n\nBoard: theuth://notes/{b}"));
     }
     if !p.options.is_empty() {
         s.push_str("\n\nOptions:\n");
@@ -432,6 +526,7 @@ mod tests {
             at_ms: 1,
             question: (kind == PacketKind::Decision).then(|| "ship it?".to_owned()),
             summary: "A summary.".into(),
+            board: None,
             options: vec![],
             recommended: None,
             pointers: vec![],
@@ -578,16 +673,22 @@ mod tests {
     #[test]
     fn user_audience_rule() {
         let mut d = packet(PacketKind::Decision);
+        assert_eq!(require_for_user(&d), Err(NEEDS_BOARD_DECISION.into()));
+        d.board = Some(" ".into());
+        assert_eq!(require_for_user(&d), Err(NEEDS_BOARD_DECISION.into()));
+        d.board = Some("b1".into());
         assert_eq!(require_for_user(&d), Ok(()));
         d.summary = " \n".into();
         assert_eq!(require_for_user(&d), Err(NEEDS_SUMMARY.into()));
 
         let mut r = packet(PacketKind::Review);
-        assert_eq!(require_for_user(&r), Err(NEEDS_POINTERS.into()));
-        r.pointers = vec![pointer(PointerKind::Task, "t2", None)];
-        assert_eq!(require_for_user(&r), Ok(()));
+        assert_eq!(require_for_user(&r), Err(NEEDS_BOARD_REVIEW.into()));
+        r.board = Some("b2".into());
+        assert_eq!(require_for_user(&r), Ok(()), "pointers are optional");
         r.summary = String::new();
-        assert!(require_for_user(&r).is_err());
+        assert_eq!(require_for_user(&r), Err(NEEDS_REVIEW_SUMMARY.into()));
+        assert!(NEEDS_BOARD_DECISION.contains("`## What you're deciding`"));
+        assert!(NEEDS_BOARD_REVIEW.contains("`## Against the criteria`"));
     }
 
     #[test]
@@ -608,8 +709,14 @@ mod tests {
             note: Some("the retry".into()),
             ..pointer(PointerKind::Code, "src/x.rs#L1-L2", Some("a\nb"))
         }];
+        p.board = Some("01hzboard".into());
         let md = thread_markdown(&p);
-        assert!(md.starts_with("**decision requested** (`decision:d1`)\n\nship it?\n\nA summary."));
+        assert!(
+            md.starts_with(
+                "**decision requested** (`decision:d1`)\n\nship it?\n\nA summary.\n\nBoard: theuth://notes/01hzboard\n\nOptions:"
+            ),
+            "{md}"
+        );
         assert!(md.contains("- ship — now\n- wait (recommended)\n"), "{md}");
         assert!(
             md.contains("Look at:\n- the thing (`src/x.rs#L1-L2`) — the retry\n"),
@@ -655,5 +762,90 @@ mod tests {
         assert!(v["pointers"][0].get("ref_").is_none());
         let back: Packet = serde_json::from_value(v).unwrap();
         assert_eq!(back, p);
+        // rows written before Revision 2 have no `board`
+        let mut old = serde_json::to_value(&p).unwrap();
+        old.as_object_mut().unwrap().remove("board");
+        let back: Packet = serde_json::from_value(old).unwrap();
+        assert_eq!(back.board, None);
+        let v = serde_json::to_value(Packet {
+            board: Some("b".into()),
+            ..packet(PacketKind::Review)
+        })
+        .unwrap();
+        assert_eq!(v["board"], "b");
+    }
+
+    fn outline(h: &[(u8, &str)]) -> Vec<(u8, String)> {
+        h.iter().map(|(l, t)| (*l, (*t).to_owned())).collect()
+    }
+
+    #[test]
+    fn check_board_matches_the_first_three_sections() {
+        use PacketKind::*;
+        let full = |s: &[&str; 5]| outline(&s.map(|t| (2, t)));
+        assert_eq!(check_board(Decision, &full(&DECISION_SECTIONS)), Ok(()));
+        assert_eq!(check_board(Review, &full(&REVIEW_SECTIONS)), Ok(()));
+        // the first three suffice; `###`, `#` and later `##` are free
+        let o = outline(&[
+            (1, "Title"),
+            (2, "what  you’re DECIDING "),
+            (3, "a cluster"),
+            (2, "Why it matters to you"),
+            (2, "The picture"),
+            (2, "Anything else"),
+            (2, "Open questions"),
+        ]);
+        assert_eq!(check_board(Decision, &o), Ok(()));
+        // missing second
+        let e = check_board(
+            Decision,
+            &outline(&[
+                (2, "What you're deciding"),
+                (2, "The picture"),
+                (2, "Options"),
+            ]),
+        )
+        .unwrap_err();
+        assert!(
+            e.starts_with("section 2 of a decision board must be `## Why it matters to you`, found `## The picture`"),
+            "{e}"
+        );
+        assert!(e.contains("`## Look at`"), "names the skeleton: {e}");
+        // swapped first two
+        let e = check_board(
+            Review,
+            &outline(&[
+                (2, "Why it matters to you"),
+                (2, "What was done"),
+                (2, "The picture"),
+            ]),
+        )
+        .unwrap_err();
+        assert!(
+            e.starts_with("section 1 of a review board must be `## What was done`, found `## Why it matters to you`"),
+            "{e}"
+        );
+        // too short
+        let e = check_board(Decision, &outline(&[(2, "What you're deciding")])).unwrap_err();
+        assert!(
+            e.starts_with("section 2 of a decision board is missing: `## Why it matters to you`"),
+            "{e}"
+        );
+        assert!(
+            check_board(Review, &[])
+                .unwrap_err()
+                .starts_with("section 1")
+        );
+        // a `###` in a section's place does not count
+        let e = check_board(
+            Decision,
+            &outline(&[
+                (2, "What you're deciding"),
+                (3, "Why it matters to you"),
+                (2, "The picture"),
+            ]),
+        )
+        .unwrap_err();
+        assert!(e.contains("found `## The picture`"), "{e}");
     }
 }
