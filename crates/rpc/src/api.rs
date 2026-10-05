@@ -1718,6 +1718,10 @@ pub trait Api {
     /// Hide an attention item for good.
     #[method(name = "attention_dismiss")]
     async fn attention_dismiss(&self, id: String) -> RpcResult<()>;
+    /// The packet behind a decision / review attention item (101 §3): `decision:<id>` | `review:<task>`;
+    /// `null` when none was raised.
+    #[method(name = "packet_get")]
+    async fn packet_get(&self, key: String) -> RpcResult<Option<tasks::packet::Packet>>;
     /// Answer the `decision:<id>` a task is blocked on, as the user (67 §11); the owner is re-woken.
     #[method(name = "task_decide")]
     async fn task_decide(&self, decision: String, answer: String) -> RpcResult<()>;
@@ -5467,6 +5471,10 @@ impl ApiServer for Server {
 
     async fn attention_dismiss(&self, id: String) -> RpcResult<()> {
         send(&attention_actor()?, roster::attention::DismissAttention(id)).await
+    }
+
+    async fn packet_get(&self, key: String) -> RpcResult<Option<tasks::packet::Packet>> {
+        send(&tasks_actor()?, tasks::GetPacket(key)).await
     }
 
     async fn task_decide(&self, decision: String, answer: String) -> RpcResult<()> {
