@@ -15,6 +15,12 @@ voice = { workspace = true }
 roster = { workspace = true }
 mesh = { workspace = true }
 link = { workspace = true }
+# Stage-2 seams (98 contract §1): `markdown` for RENDER (Text, plain, chunks, urls),
+# `tasks` for ROUTE (MarkAnswered), `mime_guess` for ROUTE (inbox names). Pre-added so
+# no worker edits this file.
+markdown = { workspace = true }
+tasks = { workspace = true }
+mime_guess = { workspace = true }
 tgbot = { workspace = true }
 # tgbot's reqwest links aws-lc-rs; rustls panics on the first TLS dial unless a
 # process provider is installed (21 §2.1). `Api::new` installs it when missing.
