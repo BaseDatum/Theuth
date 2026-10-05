@@ -26,6 +26,9 @@ use tokio::time::Instant;
 use tools::{Risk, Tool, ToolCx, ToolOutput};
 
 pub mod api;
+pub mod board;
+pub mod bubble;
+pub mod cards;
 pub mod channel;
 pub mod commands;
 pub mod poll;
