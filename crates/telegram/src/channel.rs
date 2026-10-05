@@ -34,6 +34,7 @@ use crate::poll::{
 };
 use crate::port::{LivePort, Port};
 use crate::threads::{self, Thread, ThreadKey, Threads, Topic};
+use crate::ui::short;
 use crate::worker::{self, RenderConfig, Row, VoiceHandles, WorkerCtx, WorkerMsg, WorkerNote};
 use crate::{
     ApprovalsMode, BotIdentity, PAIR_TTL, Pairing, PairingLink, TelegramConfig, TelegramEvent,
@@ -1663,6 +1664,35 @@ impl Channel {
             | Outcome::AllowGroup(_)
             | Outcome::RemoveGroup(_) => {
                 let md = self.admin(out).await;
+                let r = Reply {
+                    markdown: md,
+                    keyboard: None,
+                };
+                self.reply(to, user, in_group, &r, edit).await;
+            }
+            // `/agents` → `Close topic` for a finished child (98 §10.3): close the
+            // topic bound to that session and drop the binding; the session lives on.
+            Outcome::CloseTopic(session) => {
+                let bound = {
+                    let s = self.lock();
+                    s.threads
+                        .by_session(session)
+                        .map(|(k, t)| (k.clone(), t.topic))
+                };
+                let md = match bound {
+                    Some((key, Some(topic))) => {
+                        let chat = threads::target(&key).map_or(to.chat, |t| t.chat);
+                        match self.api.close_topic(chat, topic.id).await {
+                            Ok(()) => {
+                                self.unbind_key(&key);
+                                format!("closed the topic of `{}`", short(session))
+                            }
+                            Err(e) => format!("⚠️ closeForumTopic failed: {e}"),
+                        }
+                    }
+                    Some((_, None)) => format!("`{}` has no topic to close", short(session)),
+                    None => format!("`{}` is not bound to a thread here", short(session)),
+                };
                 let r = Reply {
                     markdown: md,
                     keyboard: None,
