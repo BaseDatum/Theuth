@@ -167,7 +167,7 @@ function EmptyNote({ children }: { children: ReactNode }) {
   return <p className="rounded-lg border border-dashed border-border-subtle px-3 py-3 text-sm text-fg-tertiary">{children}</p>
 }
 
-const KIND_LABEL: Record<AttentionItem['kind'], string> = {
+export const KIND_LABEL: Record<AttentionItem['kind'], string> = {
   approval: 'approval',
   decision: 'decision',
   hire: 'hire',
@@ -195,14 +195,10 @@ export function AttentionList({ items }: { items: AttentionItem[] | undefined })
 
 /** One inbox row with its decision inline: allow/deny · answer · hire/decline · done/back · start/unblock · un-pause; snooze and dismiss on every row. */
 function AttentionCard({ item }: { item: AttentionItem }) {
-  const act = useAttentionActions()
   const qc = useQueryClient()
-  const [answer, setAnswer] = useState('')
-  const busy = Object.values(act).some((a) => a.isPending)
   // 79 §6.6: a hand-off's `detail` is the VM's name when its engine is a VM here; the click opens that desktop.
   const sandboxes = useSandboxes()
   const vm = item.kind === 'handoff' ? sandboxes.data?.find((s) => s.name === item.detail || (s.engine !== null && s.engine === item.detail)) : undefined
-  const handoffId = item.kind === 'handoff' ? item.id.replace(/^handoff:/, '') : null
   // 79 §6.6: the replicated row (`secret_requests_list`) is the card's source on every engine — `title`, `fields`, and
   // the VM it was raised on (`engine` ↔ `SandboxInfo.engine`); the local `SecretRequested` fills in until the poll lands.
   const secretId = item.kind === 'secret' ? item.id.replace(/^secret:/, '') : null
@@ -235,6 +231,11 @@ function AttentionCard({ item }: { item: AttentionItem }) {
             <button type="button" className="truncate text-left font-medium hover:underline" onClick={() => void openPopout({ kind: 'vm', name: vm.name })}>
               {item.title}
             </button>
+          ) : item.kind === 'decision' || item.kind === 'review' ? (
+            // 101 D12: decisions and reviews open their screen on the attention surface, not the whole task card.
+            <Link to="/attention/$id" params={{ id: item.id }} className="truncate font-medium hover:underline">
+              {item.title}
+            </Link>
           ) : item.task ? (
             <Link to="/tasks/$id" params={{ id: item.task }} className="truncate font-medium hover:underline">
               {item.title}
@@ -254,85 +255,104 @@ function AttentionCard({ item }: { item: AttentionItem }) {
         </div>
         {item.detail && <p className="truncate text-fg-secondary">{item.detail}</p>}
       </div>
-      <div className="flex shrink-0 flex-wrap items-center gap-1.5">
-        {item.kind === 'handoff' && handoffId && (
-          <>
-            {vm && canPopout() && (
-              <Button size="xs" disabled={busy} onClick={() => void openPopout({ kind: 'vm', name: vm.name })}>
-                Open desktop
-              </Button>
-            )}
-            <Button size="xs" variant={vm ? 'outline' : 'default'} disabled={busy} onClick={() => act.handoff.mutate({ id: handoffId, outcome: 'done' })}>
-              Done
-            </Button>
-            <Button size="xs" variant="outline" disabled={busy} onClick={() => act.handoff.mutate({ id: handoffId, outcome: 'cancelled' })}>
-              Cancel
-            </Button>
-          </>
-        )}
-        {item.kind === 'secret' && <span className="text-xs text-fg-tertiary">{rows.isPending ? 'loading the request…' : `answer it in the session${item.detail ? ` on ${item.detail}` : ''}`}</span>}
-        {item.kind === 'approval' && item.approval && (
-          <>
-            <Button size="xs" disabled={busy} onClick={() => act.approve.mutate({ id: item.approval as NonNullable<typeof item.approval>, allow: true })}>
-              Allow
-            </Button>
-            <Button size="xs" variant="outline" disabled={busy} onClick={() => act.approve.mutate({ id: item.approval as NonNullable<typeof item.approval>, allow: false })}>
-              Deny
-            </Button>
-          </>
-        )}
-        {item.kind === 'decision' && item.decision && (
-          <form
-            className="flex items-center gap-1.5"
-            onSubmit={(e) => {
-              e.preventDefault()
-              if (answer.trim() && item.decision) act.decide.mutate({ decision: item.decision, answer: answer.trim() })
-            }}
-          >
-            <Input value={answer} onChange={(e) => setAnswer(e.target.value)} placeholder="Your decision…" className="h-7 w-44 text-base md:text-xs" aria-label="Decision" />
-            <Button size="xs" type="submit" disabled={busy || !answer.trim()}>
-              Answer
-            </Button>
-          </form>
-        )}
-        {item.kind === 'hire' && item.agent && (
-          <>
-            <Button size="xs" disabled={busy} onClick={() => act.hire.mutate(item.agent as string)}>
-              Hire
-            </Button>
-            <Button size="xs" variant="outline" disabled={busy} onClick={() => act.decline.mutate(item.agent as string)}>
-              Decline
-            </Button>
-          </>
-        )}
-        {item.kind === 'review' && item.task && (
-          <>
-            <Button size="xs" disabled={busy} onClick={() => act.move.mutate({ id: item.task as string, state: 'done' })}>
-              Move done
-            </Button>
-            <Button size="xs" variant="outline" disabled={busy} onClick={() => act.move.mutate({ id: item.task as string, state: 'doing' })}>
-              Send back
-            </Button>
-          </>
-        )}
-        {item.kind === 'blocked' && item.task && (
-          <Button size="xs" variant="outline" disabled={busy} onClick={() => act.move.mutate({ id: item.task as string, state: 'todo' })}>
-            Unblock
-          </Button>
-        )}
-        {item.kind === 'budget' && item.agent && (
-          <Button size="xs" variant="outline" disabled={busy} onClick={() => act.unpause.mutate(item.agent as string)}>
-            Un-pause
-          </Button>
-        )}
-        <Button size="xs" variant="ghost" disabled={busy} title="Snooze until 09:00 tomorrow" onClick={() => act.snooze.mutate({ id: item.id, until: snoozeUntil('tomorrow') })}>
-          Snooze
-        </Button>
-        <Button size="xs" variant="ghost" disabled={busy} onClick={() => act.dismiss.mutate(item.id)}>
-          Dismiss
-        </Button>
-      </div>
+      <KindActions item={item} />
     </li>
+  )
+}
+
+/**
+ * The per-kind buttons of an inbox item — the card's inline block and the plain screen's action row (101 D7) share it.
+ * `onResolved` fires after a mutation that removes the item from the list succeeded (101 D11: the screen moves on).
+ */
+export function KindActions({ item, size = 'xs', onResolved }: { item: AttentionItem; size?: 'xs' | 'sm'; onResolved?: () => void }) {
+  const act = useAttentionActions()
+  const [answer, setAnswer] = useState('')
+  const busy = Object.values(act).some((a) => a.isPending)
+  const sandboxes = useSandboxes()
+  const vm = item.kind === 'handoff' ? sandboxes.data?.find((s) => s.name === item.detail || (s.engine !== null && s.engine === item.detail)) : undefined
+  const handoffId = item.kind === 'handoff' ? item.id.replace(/^handoff:/, '') : null
+  const rows = useSecretRequestRows(item.kind === 'secret')
+  // `useAction` already toasts the failure; the swallowed rejection only keeps the screen where it is.
+  const then = (p: Promise<unknown>) => void p.then(() => onResolved?.(), () => undefined)
+  return (
+    <div className="flex shrink-0 flex-wrap items-center gap-1.5">
+      {item.kind === 'handoff' && handoffId && (
+        <>
+          {vm && canPopout() && (
+            <Button size={size} disabled={busy} onClick={() => void openPopout({ kind: 'vm', name: vm.name })}>
+              Open desktop
+            </Button>
+          )}
+          <Button size={size} variant={vm ? 'outline' : 'default'} disabled={busy} onClick={() => then(act.handoff.mutateAsync({ id: handoffId, outcome: 'done' }))}>
+            Done
+          </Button>
+          <Button size={size} variant="outline" disabled={busy} onClick={() => then(act.handoff.mutateAsync({ id: handoffId, outcome: 'cancelled' }))}>
+            Cancel
+          </Button>
+        </>
+      )}
+      {item.kind === 'secret' && <span className="text-xs text-fg-tertiary">{rows.isPending ? 'loading the request…' : `answer it in the session${item.detail ? ` on ${item.detail}` : ''}`}</span>}
+      {item.kind === 'approval' && item.approval && (
+        <>
+          <Button size={size} disabled={busy} onClick={() => then(act.approve.mutateAsync({ id: item.approval as NonNullable<typeof item.approval>, allow: true }))}>
+            Allow
+          </Button>
+          <Button size={size} variant="outline" disabled={busy} onClick={() => then(act.approve.mutateAsync({ id: item.approval as NonNullable<typeof item.approval>, allow: false }))}>
+            Deny
+          </Button>
+        </>
+      )}
+      {item.kind === 'decision' && item.decision && (
+        <form
+          className="flex items-center gap-1.5"
+          onSubmit={(e) => {
+            e.preventDefault()
+            if (answer.trim() && item.decision) then(act.decide.mutateAsync({ decision: item.decision, answer: answer.trim() }))
+          }}
+        >
+          <Input value={answer} onChange={(e) => setAnswer(e.target.value)} placeholder="Your decision…" className={cn('w-44 text-base', size === 'xs' ? 'h-7 md:text-xs' : 'h-8 md:text-sm')} aria-label="Decision" />
+          <Button size={size} type="submit" disabled={busy || !answer.trim()}>
+            Answer
+          </Button>
+        </form>
+      )}
+      {item.kind === 'hire' && item.agent && (
+        <>
+          <Button size={size} disabled={busy} onClick={() => then(act.hire.mutateAsync(item.agent as string))}>
+            Hire
+          </Button>
+          <Button size={size} variant="outline" disabled={busy} onClick={() => then(act.decline.mutateAsync(item.agent as string))}>
+            Decline
+          </Button>
+        </>
+      )}
+      {item.kind === 'review' && item.task && (
+        <>
+          <Button size={size} disabled={busy} onClick={() => then(act.move.mutateAsync({ id: item.task as string, state: 'done' }))}>
+            Move done
+          </Button>
+          <Button size={size} variant="outline" disabled={busy} onClick={() => then(act.move.mutateAsync({ id: item.task as string, state: 'doing' }))}>
+            Send back
+          </Button>
+        </>
+      )}
+      {item.kind === 'blocked' && item.task && (
+        <Button size={size} variant="outline" disabled={busy} onClick={() => then(act.move.mutateAsync({ id: item.task as string, state: 'todo' }))}>
+          Unblock
+        </Button>
+      )}
+      {item.kind === 'budget' && item.agent && (
+        <Button size={size} variant="outline" disabled={busy} onClick={() => then(act.unpause.mutateAsync(item.agent as string))}>
+          Un-pause
+        </Button>
+      )}
+      <Button size={size} variant="ghost" disabled={busy} title="Snooze until 09:00 tomorrow" onClick={() => then(act.snooze.mutateAsync({ id: item.id, until: snoozeUntil('tomorrow') }))}>
+        Snooze
+      </Button>
+      <Button size={size} variant="ghost" disabled={busy} onClick={() => then(act.dismiss.mutateAsync(item.id))}>
+        Dismiss
+      </Button>
+    </div>
   )
 }
 
