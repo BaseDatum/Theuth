@@ -182,6 +182,7 @@ fn reaction(moment: &str) -> &'static str {
 }
 
 /// `**name** · ` on the first line of a child's messages in a flat chat (98 §9.2).
+// NEEDS(ROUTE): reply-threading of a child's messages to its marker (98 §9.2) — ROUTE owns the marker ids.
 #[must_use]
 pub fn brand(ctx: &WorkerCtx, md: &str) -> String {
     match &ctx.child_name {

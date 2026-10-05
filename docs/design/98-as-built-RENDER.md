@@ -42,8 +42,19 @@ None to signatures. Added pub consts (`TICK`, `TYPING_GAP`, `OUTPUT_TTL`, `DELIV
 
 ## Gates
 
-(filled below)
+Run with `PATH=/Users/Sky.Moore/.rustup/toolchains/1.98.1-aarch64-apple-darwin/bin:$PATH CARGO_TARGET_DIR=/Users/Sky.Moore/Develop/theuth-98-target`:
+
+```
+cargo check -p telegram --all-targets        → Finished `dev` profile [unoptimized + debuginfo] target(s) in 9m 20s
+cargo test -p telegram                       → test result: ok. 68 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.65s
+                                               test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+cargo clippy -p telegram --all-targets -- -D warnings → Finished `dev` profile [unoptimized + debuginfo] target(s) in 25.47s
+cargo fmt -p telegram -- --check             → (no diff, exit 0)
+```
+
+Tests added (design §15 item 3): `worker::tests::{draft_opens_on_first_delta_and_resends_full_text_on_tick, keepalive_resends_once_after_25s_silence, tool_pending_closes_bubble_and_card_progresses, errors_mode_opens_card_only_for_an_error, long_turn_rotates_at_block_boundary_and_reopens_fence, draft_failure_switches_to_edit_mode_within_committed, groups_use_edit_mode_and_child_prefix, reasoning_quote_and_switch, reactions_follow_the_turn, topic_renamed_once_per_title_and_never_after_user_named, delivered_message_is_its_own_message, stop_press_cancels_only_the_live_draft, board_edits_two_seconds_apart_and_ends_all_idle}`, `bubble::tests::{split_prefers_block_boundary, split_reopens_a_fence, clip_counts_the_rest}`, `cards::tests::{describe_rules, head_chars_counts_rest}`, `board::tests::ages`. The `ui::guard` check of §15.3 belongs to COMMANDS (the stage-1 guard is the identity).
 
 ## Remaining
 
-(filled below)
+- Nothing blocking. Untested by design (no bot): `<footer>`, `<tg-button>` in body, `<blockquote expandable>` acceptance — spike §16.3; `bubble::footer` is the one place to flip.
+- Voice path (`Turn::speak`) is exercised only by inspection: no `voice::Voice` actor in tests.
