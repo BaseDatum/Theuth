@@ -1,6 +1,6 @@
 # 98 — Telegram: a phone-side frontend for the daemon, on the Bot API
 
-Status: design v0.1 · 2026-10-05 (v0 the same morning chose a teloxide Git pin; §0.1 was
+Status: as-built v0.1 · 2026-10-05 (§20; v0 the same morning chose a teloxide Git pin; §0.1 was
 revised after a library survey — knowledge `facts/telegram-rust-bot-library-survey-2026-10-05`)
 · extends `00-architecture.md` §4, §7; `09-signal.md`
 (sibling frontend: trust, threads, reactions, slash table and approval wording are reused by
@@ -1291,3 +1291,32 @@ Each step leaves `theuth` runnable; formatters and the suite once per step.
   workspace needs it".
 - **README**: `## Telegram` (setup, the two @BotFather switches, groups, what the commands menu
   shows), the crate list, the config bullet.
+
+## 20. Status (as-built v0.1, 2026-10-05)
+
+Shipped on `main` the same day as the design: `crates/telegram` (`lib`, `api`, `poll`, `port`,
+`threads`, `worker`, `bubble`, `cards`, `board`, `channel`, `approvals`, `asks`, `commands`,
+`ui`, `setup`, `user`), `markdown::{plain, chunks}`, `rpc` methods/bridge/export, `t
+--telegram-setup`, `TelegramPlugin` in both plugin vectors, `DEFAULT_CONFIG`, README and the
+§19 amendments. Built as a contract-first omp wave (`98-contract.md`; as-built notes
+`98-as-built-{CONTRACT,RENDER,ROUTE,COMMANDS,WIRE,INTEGRATE}.md`) with the `tgbot = "=0.48.1"`
+pin from §0.1. Steps 2–7 of §18 done; **step 1 (the spikes) was skipped by decision** — there
+is no bot to test against from the harness, and Sky tests against a real bot independently;
+`98-as-built-INTEGRATE.md` lists the facts that live test must settle first.
+
+Exercised: `cargo test -p telegram` 112 tests (api façade on wiremock, pacer spacing, error
+table, poll classify/dedup/conflict/confirming stop, threads round-trip, renderer drafts/edit
+mode/rotation/cards/reasoning/reactions/titles/board, channel routing/trust/shapes/albums/
+approvals/asks/artifacts/secrets/lease/pairing, commands/panels/guard/setup against wiremock),
+`cargo test -p markdown` 19, clippy `-D warnings` and rustfmt on the crate, `cargo check -p rpc
+--features ts` with `just ts` emitting the `telegram_*` methods and types, `cargo check -p
+theuth`, and a scratch-engine smoke of the `Unconfigured` path and the RPC methods. **No
+Telegram API call was made.**
+
+Deviations from the draft, recorded in `98-contract.md` §4 and the as-built notes: `Link`
+answers `Option<PairingLink>`; `Incoming::Message` boxed; `Channel.api` is `Arc<dyn Sender>`
+with a `live` `Api` beside it (slack's split); flat-chat children have no thread key
+(`State.flat_children`); child topics are `named_by_user: true`; `answerCallbackQuery` carries
+the toast; `guard` runs in the `Api` façade, not per module; `Outcome::CloseTopic` added by the
+`/agents` panel and handled in the channel at integration; `/a2a reload` deferred to the
+terminal; 401 backs off instead of stopping. Follow-ups are in `98-as-built-INTEGRATE.md`.
