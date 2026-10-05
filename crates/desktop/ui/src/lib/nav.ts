@@ -41,7 +41,7 @@ export const sectionOf = (pathname: string): Section => {
   if (pathname === '/') return 'home'
   if (pathname.startsWith('/talk/')) return 'talk'
   if (tabOf('agents', pathname)) return 'agents'
-  if (pathname === '/attention') return 'attention'
+  if (pathname === '/attention' || pathname.startsWith('/attention/')) return 'attention'
   // The start form is the Meeting button's page, not a Library tab.
   if (pathname === '/meetings/new') return 'meeting'
   if (tabOf('library', pathname)) return 'library'
