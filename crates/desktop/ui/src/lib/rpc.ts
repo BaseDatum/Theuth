@@ -17,6 +17,8 @@ export function useApi(): Api {
 
 export const queryKeys = {
   sessions: ['sessions'] as const,
+  /** `agents_list()` — the Agents page roster (`components/tasks/queries` `keys.agents` aliases it); refreshed with `sessions` (100 D5). */
+  roster: ['roster'] as const,
   session: (id: string) => ['session', id] as const,
   /** `session_orphans(id)` (68 §4.3); dropped on `SessionOwnerChanged`. */
   sessionOrphans: (id: string) => ['session-orphans', id] as const,
@@ -129,17 +131,20 @@ export function withOwner(
 
 const SESSIONS_DEBOUNCE_MS = 500
 
-/** Wire events to query invalidation (25 §6.2): the session list debounced, the rest immediate. */
+/**
+ * Wire events to query invalidation (25 §6.2): the session list debounced, the rest immediate. The agents roster
+ * (`status`, `desk`) rides the same debounce (100 D5), so the Agents page's chips follow turns within ~0.5 s.
+ */
 export function useInvalidateOn(): void {
   const qc = useQueryClient()
   useEffect(() => {
     let timer: number | undefined
     const sessions = () => {
       clearTimeout(timer)
-      timer = window.setTimeout(
-        () => void qc.invalidateQueries({ queryKey: queryKeys.sessions }),
-        SESSIONS_DEBOUNCE_MS,
-      )
+      timer = window.setTimeout(() => {
+        void qc.invalidateQueries({ queryKey: queryKeys.sessions })
+        void qc.invalidateQueries({ queryKey: queryKeys.roster })
+      }, SESSIONS_DEBOUNCE_MS)
     }
     const search = () => void qc.invalidateQueries({ queryKey: queryKeys.searchAll })
     // The model inventory and both model settings depend on configured providers (52 §3.2): refetch
@@ -153,6 +158,7 @@ export function useInvalidateOn(): void {
     }
     window.addEventListener('theuth:reload-session', models)
     const offs = [
+      on('TurnStarted', sessions),
       on('TurnFinished', () => {
         sessions()
         search()
@@ -166,6 +172,7 @@ export function useInvalidateOn(): void {
       on('ContextChanged', search),
       on('SessionDeleted', (e) => {
         void qc.invalidateQueries({ queryKey: queryKeys.sessions })
+        void qc.invalidateQueries({ queryKey: queryKeys.roster })
         search()
         window.dispatchEvent(new CustomEvent('theuth:session-closing', { detail: e }))
       }),
