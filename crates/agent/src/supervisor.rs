@@ -514,6 +514,12 @@ pub struct Broadcast(pub BroadcastRequest);
 #[derive(Clone, Copy, Debug, Default)]
 pub struct ListActivity;
 
+/// `ask` → `HashMap<SessionId, SessionActivity>`: the live facts of exactly
+/// these sessions (62 §0.5), cold ones included. Internal: the tasks
+/// sweep's liveness probe (WAKE-LIVE-CHILD D4).
+#[derive(Clone, Debug)]
+pub struct ActivityOf(pub Vec<SessionId>);
+
 /// `tell` (internal): a permit was acquired; run the child's first turn.
 struct StartChildTurn {
     child: SessionId,
@@ -4846,6 +4852,14 @@ impl Message<ListActivity> for Agents {
 
     async fn handle(&mut self, _: ListActivity, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
         self.activity_rows().await
+    }
+}
+
+impl Message<ActivityOf> for Agents {
+    type Reply = HashMap<SessionId, SessionActivity>;
+
+    async fn handle(&mut self, m: ActivityOf, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        self.activity_for(&m.0).await
     }
 }
 
@@ -10347,6 +10361,29 @@ pub(crate) mod tests {
             "a cold row falls back to `updated_at`"
         );
         assert!(act.turn_started_at.is_none());
+    }
+
+    /// WAKE-LIVE-CHILD D4: `ActivityOf` answers exactly the asked ids — a cold
+    /// child included (its `last_active` from the store) — and nothing else.
+    #[tokio::test]
+    async fn activity_of_returns_rows_for_the_asked_ids() {
+        let mut a = agents().await;
+        let (root, _) = a.session(None, None, None, (None, None)).await.unwrap();
+        let child = SessionId::new();
+        a.session(Some(child), Some((root, "kid")), None, (None, None))
+            .await
+            .unwrap();
+        a.sessions.remove(&child);
+        a.running.insert(root);
+        let rows = a.activity_for(&[root, child]).await;
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[&root].state, AgentState::Running);
+        assert!(rows[&root].live && !rows[&child].live);
+        assert!(
+            rows[&child].last_active.is_some(),
+            "cold: the store's updated_at"
+        );
+        assert!(a.activity_for(&[]).await.is_empty());
     }
 
     /// 62 §3.2: `ListActivity` lists every root, cold or not, and a child only

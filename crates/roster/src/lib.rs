@@ -701,19 +701,62 @@ impl Roster {
         }
     }
 
+    /// The desk session's descendants as the agent actor sees them; empty
+    /// without the actor.
+    async fn children_of(session: runtime::SessionId) -> Vec<agent::AgentInfo> {
+        match ActorRef::<agent::Agents>::lookup(agent::AGENT_ACTOR)
+            .ok()
+            .flatten()
+        {
+            Some(a) => a
+                .ask(agent::ListAgents { session })
+                .await
+                .unwrap_or_default(),
+            None => Vec::new(),
+        }
+    }
+
     /// 70 DESK-PROTOCOL 3: a desk turn ended. If it was woken for a task and
     /// the row in [`desk::nudges::TABLE`] for its wake reason says the task is
     /// still unhandled: the first time, log `nudged: …` in the thread and re-run
     /// the turn with the nudge as input; the second time, apply the 67 §7.3
     /// rule (`blocked: no continuation`, manager woken). A handled wake clears
     /// `serving`; a turn that leaves a live child keeps it for the child's
-    /// return, which lands in this same session (70 DESK-PROTOCOL 4).
+    /// return, which lands in this same session (70 DESK-PROTOCOL 4). A live
+    /// child is one running now or spawned for this wake and not finished
+    /// ([`desk::nudges::live_child`], WAKE-LIVE-CHILD D1) — a cold descendant
+    /// of an earlier turn or process is not one.
     ///
     /// Only a turn the model ended on its own is judged ([`desk::nudges::yielded`]):
     /// a user cancel, the engine shutting down, a provider error or a timeout
-    /// leaves the task and `serving` as they are — the next wake resumes it.
+    /// leaves the task as it is and hands the wake back to the ledger
+    /// ([`tasks::ReleaseWake`], WAKE-LIVE-CHILD D2) — 5 min after a cancel,
+    /// the delivery back-off otherwise — so it is delivered again instead of
+    /// holding the agent busy for ever.
     async fn judge_turn(&mut self, name: &str, stop_reason: &str) {
         if !desk::nudges::yielded(stop_reason) {
+            let Some(s) = self.desks.get_mut(name).and_then(|d| d.serving.take()) else {
+                return;
+            };
+            tracing::info!(
+                agent = %name,
+                task = ?s.wake.task,
+                wake = %s.wake.id,
+                stop_reason,
+                "wake released: turn did not yield"
+            );
+            if let Some(t) = tasks::actor() {
+                let _ = t
+                    .tell(tasks::ReleaseWake {
+                        wake: s.wake,
+                        min_backoff_ms: if stop_reason == "cancelled" {
+                            300_000
+                        } else {
+                            0
+                        },
+                    })
+                    .await;
+            }
             return;
         }
         let Some(d) = self.desks.get(name) else {
@@ -751,28 +794,27 @@ impl Roster {
             .skip(s.events)
             .filter(|e| e.actor == me)
             .collect();
-        let live_child = match ActorRef::<agent::Agents>::lookup(agent::AGENT_ACTOR)
-            .ok()
-            .flatten()
-        {
-            Some(a) => a
-                .ask(agent::ListAgents { session })
-                .await
-                // Running, or spawned this turn and not yet started: its result is still to come.
-                .map(|kids| {
-                    kids.iter().any(|k| {
-                        !matches!(k.state, agent::AgentState::Idle) || k.finished_at.is_none()
-                    })
-                })
-                .unwrap_or(false),
-            None => false,
-        };
+        let kids = Self::children_of(session).await;
+        let live_child = desk::nudges::live_child(&s, &kids);
         if !unhandled(&s, &task, &mine, live_child) {
             self.clear_serving(name).await;
             return;
         }
         if live_child {
-            return; // the child's result continues this episode; judged again then
+            // The child's result continues this episode; judged again then.
+            if !s.logged_live_child {
+                tracing::info!(
+                    agent = %name,
+                    task = %id,
+                    wake = s.wake.reason.as_str(),
+                    children = kids.len(),
+                    "turn not judged: a child of the desk is still running"
+                );
+                if let Some(s) = self.desks.get_mut(name).and_then(|d| d.serving.as_mut()) {
+                    s.logged_live_child = true;
+                }
+            }
+            return;
         }
         if !s.nudged {
             let mut nudge = text(&task);
@@ -1140,12 +1182,22 @@ impl Message<Tick> for Roster {
 
     async fn handle(&mut self, _: Tick, _: &mut Context<Self, Self::Reply>) {
         let now = now_ms();
-        let idle: Vec<String> = self
-            .desks
-            .iter()
-            .filter(|(_, d)| d.idle_due(now, self.cfg.episode_idle_secs))
-            .map(|(n, _)| n.clone())
-            .collect();
+        // WAKE-LIVE-CHILD D5: a desk the clock alone would close stays open
+        // while a child, job or PTY of its session works (same probe as the
+        // tasks sweep). Probed only for the clock's candidates.
+        let mut idle = Vec::new();
+        for (name, d) in &self.desks {
+            if !d.idle_due(now, self.cfg.episode_idle_secs, false) {
+                continue;
+            }
+            let live_work =
+                tasks::ledger::LivenessProbe::liveness(&tasks::AgentProbe, &d.session.to_string())
+                    .await
+                    .is_some_and(|l| l.active_now);
+            if d.idle_due(now, self.cfg.episode_idle_secs, live_work) {
+                idle.push(name.clone());
+            }
+        }
         for name in idle {
             self.close_desk(&name, "idle").await;
         }
@@ -1294,6 +1346,8 @@ impl Message<DeliverWake> for Roster {
             events,
             nudged: false,
             rounds: 0,
+            children: HashSet::new(),
+            logged_live_child: false,
         });
         Ok(())
     }
@@ -1360,6 +1414,7 @@ impl Message<agent::AgentEvent> for Roster {
                     && let Some(s) = d.serving.as_mut()
                 {
                     s.rounds += 1;
+                    s.children.insert(child);
                 }
             }
             // 67 §6.4: the session's spend moved.

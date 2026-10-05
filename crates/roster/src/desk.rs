@@ -6,7 +6,7 @@
 //! manual, opening block, closing prompt, scoped wake) and the episode
 //! bookkeeping the actor drives (67 §6.2, §7.3).
 
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::RwLock;
 
@@ -331,6 +331,11 @@ pub struct Serving {
     pub nudged: bool,
     /// Children spawned for it this episode (70 DESK-PROTOCOL 2: bounded by `roster.max_rounds`).
     pub rounds: u32,
+    /// The direct children spawned under the desk while this wake was served
+    /// (WAKE-LIVE-CHILD D1): only these count as "not started yet" when cold.
+    pub children: HashSet<SessionId>,
+    /// The "a child is still running" deferral was logged for this wake.
+    pub logged_live_child: bool,
 }
 
 /// 70 DESK-PROTOCOL 3: the nudge points, in one table so Sky can rule on
@@ -456,9 +461,10 @@ user comment clears it.",
         },
         Nudge::Time {
             name: "stale checkout",
-            rule: "tasks::ledger::sweep — a `doing` checkout with no progress note for tasks.stale_secs (15 min) or \
-on a lost engine is orphaned; its epoch is bumped and the owner is woken `resume` once; a task that stays orphaned \
-is re-placed by task_place.",
+            rule: "tasks::ledger::sweep — a `doing` checkout on a lost engine, or with no progress note and no \
+session activity (own turn, job, PTY or any descendant) for tasks.stale_secs (15 min), is orphaned; a desk idle \
+between its children's results is not. Its epoch is bumped and the owner is woken `resume` once; a task that stays \
+orphaned is re-placed by task_place.",
         },
     ];
 
@@ -469,11 +475,27 @@ is re-placed by task_place.",
             .find(|n| matches!(n, Nudge::TurnEnd { reasons, .. } if reasons.contains(&reason)))
     }
 
+    /// A child of the desk whose result is still to come (WAKE-LIVE-CHILD D1):
+    /// running now (whichever turn spawned it), or spawned while `s` was
+    /// served and not finished. A descendant that is cold and was not spawned
+    /// for this wake never counts — after a restart every pre-restart child
+    /// is `Idle` with `finished_at: None`, and that must not park the wake.
+    pub fn live_child(s: &Serving, kids: &[agent::AgentInfo]) -> bool {
+        kids.iter().any(|k| {
+            matches!(
+                k.state,
+                agent::AgentState::Running
+                    | agent::AgentState::Awaiting { .. }
+                    | agent::AgentState::Approval { .. }
+            ) || (s.children.contains(&k.id) && k.finished_at.is_none())
+        })
+    }
+
     /// The turn ended by the model's own hand (`agent::AgentEvent::TurnFinished::stop_reason`
     /// is a provider stop such as `end_turn`). A user cancel or the engine
     /// shutting down (`cancelled`), a timeout (`timed_out`) or a provider
     /// error (`error`) is not a yield: nothing is judged, the task keeps its
-    /// checkout and the next wake resumes it.
+    /// checkout and the wake is released for re-delivery (WAKE-LIVE-CHILD D2).
     pub fn yielded(stop_reason: &str) -> bool {
         !matches!(stop_reason, "cancelled" | "timed_out" | "error")
     }
@@ -481,10 +503,12 @@ is re-placed by task_place.",
 
 impl Desk {
     /// Idle > `idle_secs` since the last activity, with something in the
-    /// transcript and no turn running (67 §6.2 "idle 6 h").
-    pub fn idle_due(&self, now_ms: u64, idle_secs: u64) -> bool {
+    /// transcript, no turn running and no child or job at work
+    /// (`live_work`, WAKE-LIVE-CHILD D5) (67 §6.2 "idle 6 h").
+    pub fn idle_due(&self, now_ms: u64, idle_secs: u64, live_work: bool) -> bool {
         self.primed
             && !self.working
+            && !live_work
             && now_ms.saturating_sub(self.last_active_ms) > idle_secs * 1000
     }
 }
@@ -965,6 +989,8 @@ Attached (read with the tool for the kind, see Attachments):\n\
             events: 0,
             nudged: false,
             rounds: 0,
+            children: HashSet::new(),
+            logged_live_child: false,
         };
         let ev = |field: &str, after: &str| TaskEvent {
             at_ms: 0,
@@ -1038,6 +1064,75 @@ Attached (read with the tool for the kind, see Attachments):\n\
         );
     }
 
+    /// WAKE-LIVE-CHILD D1: a cold descendant that was not spawned for this
+    /// wake is not a live child — after a restart every pre-restart child
+    /// is `Idle` with `finished_at: None`, and that must not park the wake.
+    #[test]
+    fn cold_children_are_not_live() {
+        use agent::AgentState as A;
+        let kid = |id, state, finished: bool| agent::AgentInfo {
+            id,
+            name: "kid".into(),
+            parent: SessionId::new(),
+            depth: 1,
+            agent: None,
+            model: String::new(),
+            state,
+            started_at: None,
+            finished_at: finished.then(chrono::Utc::now),
+            last: String::new(),
+            project: None,
+            retention: Default::default(),
+            activity: Default::default(),
+            cap: None,
+        };
+        let mine = SessionId::new();
+        let other = SessionId::new();
+        let s = Serving {
+            wake: tasks::Wake {
+                id: "w".into(),
+                agent: "theuth".into(),
+                task: None,
+                reason: tasks::WakeReason::Mention,
+                key: String::new(),
+                count: 1,
+                claimed_by: None,
+                created_ms: 0,
+            },
+            state: None,
+            owner: None,
+            events: 0,
+            nudged: false,
+            rounds: 0,
+            children: HashSet::from([mine]),
+            logged_live_child: false,
+        };
+        // (a) the restart case: cold, never seen finishing, not ours
+        assert!(!nudges::live_child(&s, &[kid(other, A::Idle, false)]));
+        // (b) spawned for this wake, not started yet
+        assert!(nudges::live_child(&s, &[kid(mine, A::Idle, false)]));
+        // (c) running now, whoever spawned it
+        assert!(nudges::live_child(&s, &[kid(other, A::Running, false)]));
+        assert!(nudges::live_child(
+            &s,
+            &[kid(
+                other,
+                A::Awaiting {
+                    from: "parent".into()
+                },
+                false
+            )]
+        ));
+        // (d) ours and finished
+        assert!(!nudges::live_child(&s, &[kid(mine, A::Idle, true)]));
+        // (e) failed or cancelled strangers
+        assert!(!nudges::live_child(
+            &s,
+            &[kid(other, A::Error, false), kid(other, A::Cancelled, false)]
+        ));
+        assert!(!nudges::live_child(&s, &[]));
+    }
+
     #[test]
     fn idle_rotation_uses_the_given_clock() {
         let mut d = Desk {
@@ -1051,19 +1146,19 @@ Attached (read with the tool for the kind, see Attachments):\n\
         };
         let idle = 21_600;
         assert!(
-            !d.idle_due(1_000_000 + idle * 1000, idle),
+            !d.idle_due(1_000_000 + idle * 1000, idle, false),
             "exactly the limit is not over it"
         );
-        assert!(d.idle_due(1_000_000 + idle * 1000 + 1, idle));
+        assert!(d.idle_due(1_000_000 + idle * 1000 + 1, idle, false));
         d.working = true;
         assert!(
-            !d.idle_due(u64::MAX / 2, idle),
+            !d.idle_due(u64::MAX / 2, idle, false),
             "a running turn is not idle"
         );
         d.working = false;
         d.primed = false;
         assert!(
-            !d.idle_due(u64::MAX / 2, idle),
+            !d.idle_due(u64::MAX / 2, idle, false),
             "an empty desk has nothing to journal"
         );
         assert!(context_due(61, 100, 60));
@@ -1072,6 +1167,22 @@ Attached (read with the tool for the kind, see Attachments):\n\
             !context_due(1_000_000, 0, 60),
             "unknown window never rotates"
         );
+    }
+
+    /// WAKE-LIVE-CHILD D5: a desk waiting on a running child or job is not idle.
+    #[test]
+    fn desk_with_running_child_is_not_idle() {
+        let d = Desk {
+            session: SessionId::new(),
+            episode: "e".into(),
+            last_active_ms: 0,
+            working: false,
+            primed: true,
+            model: None,
+            serving: None,
+        };
+        assert!(d.idle_due(u64::MAX / 2, 1, false));
+        assert!(!d.idle_due(u64::MAX / 2, 1, true));
     }
 
     #[test]

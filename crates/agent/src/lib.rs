@@ -115,8 +115,8 @@ pub use lifecycle::{
     SessionOpen,
 };
 pub use supervisor::{
-    Agents, Broadcast, Identity, IdentitySource, InstallIdentitySource, ListActivity, RegisterNode,
-    UnregisterNode,
+    ActivityOf, Agents, Broadcast, Identity, IdentitySource, InstallIdentitySource, ListActivity,
+    RegisterNode, UnregisterNode,
 };
 pub use tools::Retention;
 pub use user::{
