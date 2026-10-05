@@ -367,24 +367,25 @@ function Telegram() {
           <Row
             label="Bot token"
             description={
-              showToken ? (
-                <form className="mt-2 flex gap-2" onSubmit={submitToken}>
-                  <Input
-                    type="password"
-                    value={token}
-                    onChange={(e) => setToken(e.target.value)}
-                    placeholder="123456:ABC-DEF…"
-                    className="max-w-64 font-mono"
-                    autoComplete="off"
-                    spellCheck={false}
-                  />
-                  <Button type="submit" variant="outline" disabled={token.trim().length === 0 || saveToken.isPending}>
-                    Save
-                  </Button>
-                </form>
-              ) : (
-                'set'
-              )
+              <>
+                {unconfigured ? 'not set' : replacing ? 'set · the new token applies at the next restart' : 'set'}
+                {showToken && (
+                  <form className="mt-2 flex gap-2" onSubmit={submitToken}>
+                    <Input
+                      type="password"
+                      value={token}
+                      onChange={(e) => setToken(e.target.value)}
+                      placeholder="123456:ABC-DEF…"
+                      className="max-w-64 font-mono"
+                      autoComplete="off"
+                      spellCheck={false}
+                    />
+                    <Button type="submit" variant="outline" disabled={token.trim().length === 0 || saveToken.isPending}>
+                      Save
+                    </Button>
+                  </form>
+                )}
+              </>
             }
           >
             {!unconfigured &&

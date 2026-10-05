@@ -1,7 +1,29 @@
-import { expect, test } from 'vitest'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { createElement, type ReactNode } from 'react'
+import { renderToStaticMarkup } from 'react-dom/server'
+import { expect, test, vi } from 'vitest'
+import type * as Rpc from '@/lib/rpc'
 import type { TelegramEvent } from '@/rpc/bindings/TelegramEvent'
 import type { TelegramStatus } from '@/rpc/bindings/TelegramStatus'
-import { mmss, secondsLeft, telegramId, telegramState } from './Channels'
+import { Channels, mmss, secondsLeft, telegramId, telegramState } from './Channels'
+
+let telegram: TelegramStatus
+vi.mock('@/lib/rpc', async (original) => ({
+  ...(await original<typeof Rpc>()),
+  useApi: () => ({
+    signal_status: async () => ({ state: null, registered: false, number: null, owner: '', allowed: [] }),
+    slack_status: async () => ({ state: null, bot_user: null, team: null, owner: '', allowed: [], channels: [] }),
+    telegram_status: async () => telegram,
+  }),
+}))
+
+async function render(): Promise<string> {
+  const qc = new QueryClient({ defaultOptions: { queries: { staleTime: Infinity, retry: false } } })
+  const paint = () => renderToStaticMarkup(createElement(QueryClientProvider, { client: qc, children: createElement(Channels) as ReactNode }))
+  paint()
+  for (const query of qc.getQueryCache().findAll()) await qc.fetchQuery({ ...query.options, queryKey: query.queryKey })
+  return paint()
+}
 
 const base = (state: TelegramEvent | null, polling = true, bot = true): TelegramStatus => ({
   state,
@@ -54,4 +76,34 @@ test('countdown: whole seconds, floored at 0, rendered m:ss', () => {
   expect(mmss(600)).toBe('10:00')
   expect(mmss(65)).toBe('1:05')
   expect(mmss(0)).toBe('0:00')
+})
+
+test('card: no token → "not set", a password input, Pair disabled; no link block', async () => {
+  telegram = base({ type: 'Unconfigured' }, false, false)
+  const html = await render()
+  expect(html).toContain('no bot token')
+  expect(html).toContain('not set')
+  expect(html).toMatch(/<input[^>]*type="password"/)
+  expect(html).toMatch(/<button[^>]*disabled[^>]*>Pair</)
+  expect(html).not.toContain('expires in')
+})
+
+test('card: live pairing link → QR, URL, countdown; owner and lists render as text', async () => {
+  const url = 'https://t.me/omp_bot?start=abcdefgh12345678'
+  telegram = {
+    ...base({ type: 'PairingLink', url, expires_at_ms: BigInt(Date.now() + 9 * 60_000 + 30_000) }),
+    owner: 42n,
+    allowed: [1n, 2n],
+    groups: [-1001234567890n],
+  }
+  const html = await render()
+  expect(html).toContain('waiting for the owner to tap Start')
+  expect(html).toContain('>set<')
+  expect(html).toContain('Replace…')
+  expect(html).toContain('Re-pair')
+  expect(html).toContain('>42<')
+  expect(html).toMatch(/expires in 9:(29|30)/)
+  expect(html).toContain('<svg')
+  expect(html).toContain(url)
+  for (const id of ['1', '2', '-1001234567890']) expect(html).toContain(`Remove ${id}`)
 })
