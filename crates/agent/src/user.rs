@@ -1,5 +1,5 @@
 //! `message_user`: the agent reaches the user out of band (design doc 24).
-//! The Slack and Signal plugins register a [`UserSink`] with the
+//! The Slack, Signal and Telegram plugins register a [`UserSink`] with the
 //! [`UserChannels`] actor (`"user"`); [`MessageUserTool`] validates the
 //! files, builds the calling session's ancestor chain and asks the actor to
 //! deliver in two passes: bound thread first, owner fallback second (24 §2).
@@ -25,12 +25,12 @@ pub const USER_ACTOR: &str = "user";
 pub const MAX_FILE: u64 = 100 * 1024 * 1024;
 
 /// Tool error when no sink is registered (24 §2).
-const NO_CHANNEL: &str = "no user channel: slack and signal are not running";
+const NO_CHANNEL: &str = "no user channel: slack, signal and telegram are not running";
 
-/// What one frontend can deliver; registered by the Slack and Signal plugins at start (24 §3).
+/// What one frontend can deliver; registered by the Slack, Signal and Telegram plugins at start (24 §3).
 #[async_trait::async_trait]
 pub trait UserSink: Send + Sync {
-    /// `"slack"` / `"signal"`: the `via` value and the word in the tool result.
+    /// `"slack"` / `"signal"` / `"telegram"`: the `via` value and the word in the tool result.
     fn name(&self) -> &'static str;
     /// Deliver `m` to the first session of `m.sessions` this sink renders
     /// (`fallback == false`), or to the owner (`fallback == true`).
@@ -142,12 +142,12 @@ pub struct MessageUserArgs {
     /// Absolute paths of files to attach. Images preview inline on both channels.
     #[serde(default)]
     pub files: Vec<PathBuf>,
-    /// Restrict to one channel. Default: the channel this session is bound to,
-    /// else every channel's owner.
+    /// Restrict to one channel (`slack`, `signal`, `telegram`). Default: the
+    /// channel this session is bound to, else every channel's owner.
     pub via: Option<String>,
 }
 
-/// Out-of-band message to the user on Slack and/or Signal (24 §3).
+/// Out-of-band message to the user on Slack, Signal and/or Telegram (24 §3).
 pub struct MessageUserTool;
 
 #[async_trait::async_trait]
@@ -160,9 +160,10 @@ impl Tool for MessageUserTool {
 
     fn description(&self) -> String {
         "Send a message, optionally with files or images, to the user on their chat channel \
-         (Slack or Signal). Arrives immediately and out of band. Your normal reply already \
-         reaches the user — use this only to hand over files or images, or when asked to report \
-         progress while working. `files` are absolute paths of existing files."
+         (Slack, Signal or Telegram). Arrives immediately and out of band. Your normal \
+         reply already reaches the user — use this only to hand over files or images, or \
+         when asked to report progress while working. `files` are absolute paths of \
+         existing files."
             .into()
     }
 

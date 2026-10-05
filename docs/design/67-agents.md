@@ -159,14 +159,14 @@ The election inputs make the abrupt case rare: a laptop only holds the lease whe
 
 | Duty | Idempotent because |
 |---|---|
-| Slack / Signal sockets | Slack Socket Mode load-balances events across up to ten connections for one app — two hubs each receive *different* events, and thread bindings are replicated, so routing still holds **[orch: verify against Slack docs in stage 1]**. Signal: every hub-eligible engine is its own linked device and receives every message anyway (§4.7); only the hub answers, and a replicated `answered` marker keyed `(sender, timestamp)` lets a second hub see a reply already went out — a partition can still produce one duplicate reply, same window as Slack. |
+| Slack / Signal / Telegram sockets | Slack Socket Mode load-balances events across up to ten connections for one app — two hubs each receive *different* events, and thread bindings are replicated, so routing still holds **[orch: verify against Slack docs in stage 1]**. Signal: every hub-eligible engine is its own linked device and receives every message anyway (§4.7); only the hub answers, and a replicated `answered` marker keyed `(sender, timestamp)` lets a second hub see a reply already went out — a partition can still produce one duplicate reply, same window as Slack. Telegram: `getUpdates` is single-consumer (409 on a second poller), so the poller runs on the hub only; updates are retained 24 h; the double-hub window is deduplicated by the same `answered` marker keyed `(chat:user, update_id)` — 98 §3.2. |
 | Schedule ticks | A fire creates a task keyed `(schedule, fire_time)`; the second hub's create coalesces into the same row. |
 | Wake dispatch | Wakes are rows with idempotency keys; a desk claims a wake with a checkout; the loser sees the claim. |
 | Budget checks | Pure function of replicated counters. |
 | OAuth refresh | The refresher writes the new grant with the old grant's version as a precondition; the loser's refresh fails and it re-reads. A provider that rotates refresh tokens can still be logged out by a true double refresh in the same second — accepted, rare, and the fix is one login. |
 | Desks | A desk is a pinned session on the hub; on a graceful lease change the old hub closes its episode (journal written, replicated), the new hub opens the next; on an abrupt loss the new hub opens from the last journal (§4.6). Two hubs → two desks for one agent for the partition's duration, both reading the same inbox; the checkout on tasks keeps them from working the same one. |
 
-### 4.7 Signal and Slack under the lease
+### 4.7 Signal, Slack and Telegram under the lease
 
 ```mermaid
 flowchart LR
@@ -181,6 +181,9 @@ flowchart LR
   A -.- X
   B -.- X
   C -.- X
+  TG[Telegram servers] -->|getUpdates - hub polls| A
+  TG -.-|idle - no poller| B
+  TG -.-|idle - no poller| C
   classDef hub fill:none,stroke:#2563eb,stroke-width:2.5px
   classDef peer fill:none,stroke:#16a34a,stroke-width:2.5px
   classDef never fill:none,stroke:#dc2626,stroke-width:2.5px
@@ -188,7 +191,7 @@ flowchart LR
   class A hub
   class B,C peer
   class X never
-  class PH,SS,R ext
+  class PH,SS,TG,R ext
 ```
 *Blue: the hub answers. Green: linked, listening, silent. Red: per-engine protocol state that must not be copied.*
 
