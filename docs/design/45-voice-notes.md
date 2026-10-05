@@ -356,7 +356,7 @@ Static text, no session state — cache-safe by 07 §4. The transcript is the
 model's only evidence a message was spoken; the block is what makes the
 prefix mean something.
 
-### 4.5 Channel contract (Signal and Slack alike)
+### 4.5 Channel contract (every channel: Signal, Slack, Telegram)
 
 1. **Input.** For each attachment with `voice_note` or an `audio/*` mime:
    save to the inbox as today, then `Transcribe { path }` on the
@@ -428,6 +428,17 @@ it. The mirror (43 §4.6) adds `models/parakeet-tdt/<rev>/` when it is built;
   worker keeps a `spoken: usize` cursor into it). Clips go in the thread
   as `reply.mp3` uploads with no comment.
 - Manifest: `files:read` and `files:write` are already required (21 §5).
+
+## 6a. Telegram (`crates/telegram`, 98 §8.8)
+
+- Inbound voice notes arrive as `voice` (OGG/Opus) — `getFile`, save to the
+  inbox, then the same `Transcribe { path }` branch (§4.5.1); the Opus
+  packets take the `opus::Decoder` path of §0.5. The turn is marked voice
+  exactly as on Signal and Slack.
+- Outbound: each prose block is synthesised and sent with `sendVoice` right
+  after the bubble it speaks, through the same `clip_tail` chain (§4.5.4).
+  MP3 is an accepted voice format and renders as a voice bubble, so no
+  Ogg/Opus re-encode is needed. A typed steer clears the voice flag.
 
 ## 7. RPC and desktop
 

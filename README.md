@@ -25,6 +25,7 @@ just run -- --uninstall-service                                  # remove that u
 just relay                     # local theuth-relay on 127.0.0.1:8787 for link development; `just web-build` builds the browser UI it serves
 just run -- --slack-setup      # create the Slack app from the manifest, verify tokens, write config; then run --headless
 just run -- --slack-manifest   # manual path: print the Slack app manifest for api.slack.com/apps → From a manifest
+just run -- --telegram-setup   # BotFather token → vault, command menus, pairing link/QR, writes telegram.owner/enabled; then run --headless
 just run -- --acp          # Agent Client Protocol on stdio: use theuth from Zed/editors (agent_servers: {"theuth": {"command": "t", "args": ["--acp"]}})
 just ts                    # TypeScript bindings for the wire types → bindings/
 just helper                # app parser helper (bun build --compile) → packages/apps/dist/theuth-app-parser; apps need it beside `t`
@@ -93,7 +94,7 @@ Python runtime over monty worker subprocesses —
 set, a text-only main model still sees images: it writes a question, that
 image-capable fallback model answers it, and the answer is appended as an observation —
 [`docs/design/52-vision-fallback.md`](docs/design/52-vision-fallback.md); `message_user` sends text
-and files to the user on Slack or Signal out of band —
+and files to the user on Slack, Signal or Telegram out of band —
 [`docs/design/24-message-user.md`](docs/design/24-message-user.md); `ask_user`
 puts one or more multiple-choice questions to the user — pick, type your own,
 skip one, or dismiss the set to end the turn — in the TUI, the desktop app, a
@@ -105,7 +106,7 @@ the passages relevant to the query in the same call — [`docs/design/16-web.md`
 over the bus), `acp` (external
 harnesses over the Agent Client Protocol: agents.yaml, registry, harness
 connection), `signal` (phone frontend
-over Signal messenger), `slack` (Slack frontend over Socket Mode), `rpc` (jsonrpsee;
+over Signal messenger), `slack` (Slack frontend over Socket Mode), `telegram` (Telegram frontend over Bot API long polling), `rpc` (jsonrpsee;
 also registers the `search` tool — one fuzzy search over this harness's saved
 sessions, shown artifacts, current knowledge and knowledge history, for when
 you ask the agent to find something you did earlier —
@@ -157,7 +158,7 @@ model access, then send the request again.
 Config (`~/.theuth/`, created on first run; details in
 [`docs/design/01-config-and-subagents.md`](docs/design/01-config-and-subagents.md) §1):
 
-- `config.yaml` — every plugin reads its own section; `THEUTH_<SECTION>__<KEY>` env overrides. `agent.model` is a models.dev id (`anthropic/claude-sonnet-4-5`); `/model` rewrites that one line in place. The `agent`, `tools`, `secrets`, `documents`, `knowledge`, `web`, `scrape`, `codeindex`, `search_providers`, `browser`, `computer`, `link`, `nodes`, `schedule`, `a2a`, `update`, `artifact`, `app`, `voice` and `slack` sections with their defaults:
+- `config.yaml` — every plugin reads its own section; `THEUTH_<SECTION>__<KEY>` env overrides. `agent.model` is a models.dev id (`anthropic/claude-sonnet-4-5`); `/model` rewrites that one line in place. The `agent`, `tools`, `secrets`, `documents`, `knowledge`, `web`, `scrape`, `codeindex`, `search_providers`, `browser`, `computer`, `link`, `nodes`, `schedule`, `a2a`, `update`, `artifact`, `app`, `voice`, `slack` and `telegram` sections with their defaults:
 
   ```yaml
   agent:
@@ -288,6 +289,13 @@ Config (`~/.theuth/`, created on first run; details in
     tools: all                     # all | errors | none — task cards per tool call
     reasoning: true                # the quoted reasoning message
     approvals: all                 # all | threads — where approvals for non-Slack sessions go
+  telegram:
+    # owner: 123456789             # user id; set by --telegram-setup / telegram_link / the deep link; owner-only commands; receives unbound cards
+    allowed: []                    # more user ids; each owns their threads
+    groups: []                     # chat ids (−100…) where @mentions and commands are honoured; empty = private chats only
+    tools: all                     # all | errors | none — activity cards per tool batch
+    reasoning: true                # reasoning text in the expandable quote
+    approvals: all                 # all | threads — where approvals for non-Telegram sessions go
   ```
 
   The Python runtime is always on: the worker is the `theuth` binary itself (`t subprocess`, nothing to install); every tool is an `async` function inside the sandbox and state persists across turns.
@@ -479,6 +487,36 @@ model; `agents` — the subagent tree; `prompt` — the system prompt; `skills
 native stop button needs the `agent_session_stopped` event in the app's
 Event Subscriptions (the manifest includes it). See
 [`docs/design/21-slack.md`](docs/design/21-slack.md).
+
+Telegram: a phone-side frontend over the Bot API that runs only in the
+daemon (long polling, no public URL). `t --telegram-setup` walks through it
+in one terminal session: create the bot with @BotFather (`/newbot`), paste
+the token (verified with `getMe`, stored as `telegram_bot` in the secrets
+vault), it registers the `/` command menus, prints a `t.me/<bot>?start=…`
+link and QR, and waits for you to open it and tap Start — that pairs your
+user id as `telegram.owner` and writes `telegram.enabled: true`; re-running
+skips every step already done. Two @BotFather switches matter: turn
+**Topics** on (Bot Settings → Topics) so every session gets its own thread
+in the chat; for groups either disable privacy mode (`/setprivacy`) or make
+the bot an admin, then `telegram.groups: [<chat id>]` (or `/telegram group
+add <id>`; `/status` shows the id once the bot is in the group). Then
+`t --headless`. Each message in the private chat (or an `@bot` mention in a
+listed group) opens a session; the reply streams as a live draft and lands
+as one rich message per turn with activity cards for tool batches, the
+reasoning in an expandable quote when `telegram.reasoning` is on, and a
+footer with model, tokens and elapsed time; a reply in the thread steers a
+running turn. Tool approvals and `ask_user` questions are inline-keyboard
+cards in the session's thread (or in the owner's chat for sessions started
+elsewhere when `telegram.approvals: all`); subagents get their own topic
+with a board in the parent's. The `/` menu shows `help status new sessions
+resume cancel compact model agents skills mcp login logout approvals
+telegram …`; replies are panels with buttons that re-render in place, and
+`/telegram [status|link|allow <id>|rm <id>|group add|rm <id>]` (owner) is the
+admin surface. The agent has `telegram_status` and `telegram_link` tools, so
+"set up Telegram for me" works from any chat; the RPC methods are
+`telegram_status`, `telegram_link`, `telegram_allow`, `telegram_remove_allowed`,
+`telegram_allow_group`, `telegram_remove_group`. See
+[`docs/design/98-telegram.md`](docs/design/98-telegram.md).
 
 Desktop: a macOS menubar app (`crates/desktop`, Tauri 2) that looks like
 chatgpt.com and does everything the TUI does over the JSON-RPC socket —

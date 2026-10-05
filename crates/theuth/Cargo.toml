@@ -50,6 +50,7 @@ jsonrpsee = { workspace = true, features = ["ws-client"] }
 serde_json = { workspace = true }
 signal = { workspace = true }
 slack = { workspace = true }
+telegram = { workspace = true }
 tui = { workspace = true }
 tokio = { workspace = true }
 anyhow = { workspace = true }

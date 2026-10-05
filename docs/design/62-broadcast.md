@@ -401,10 +401,11 @@ defaults — old clients ignore them.
   reducer change.
 - No Tauri-only logic; the dialog is plain React over `api.broadcast`.
 
-### 5.3 Slack / Signal (owner only)
+### 5.3 Slack / Signal / Telegram (owner only)
 `/broadcast running <text>`, `/broadcast roots <text>`, `/broadcast
 <id>,<id> <text>`; optional leading `--next` for `NextTurn`. Replies with
 the receipt as compact lines (`title — started|queued|skipped: reason`).
+Telegram's `/broadcast` takes the same text form (98 §10.3).
 Non-owner contacts are refused as for `/communication` (50 §10).
 
 ## 6. Threats
