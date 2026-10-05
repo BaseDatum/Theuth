@@ -106,7 +106,17 @@ the owner's `Chat` command scope, the group note, `run t --headless and message 
 
 ## Gates
 
-(filled below from the final run)
+```
+$ cargo check -p telegram --all-targets
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 20.57s
+$ cargo test -p telegram
+test result: ok. 67 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.69s
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+$ cargo clippy -p telegram --all-targets -- -D warnings
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 9m 36s
+$ cargo fmt -p telegram -- --check
+(no diff, exit 0)
+```
 
 ## Remaining
 

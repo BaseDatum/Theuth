@@ -512,7 +512,7 @@ pub fn model(models: &[ModelInfo], current: &str, page: usize) -> Reply {
         groups
             .entry(m.provider.as_str())
             .or_default()
-            .push(cb(&label, &data));
+            .push(cb(&label, data));
     }
     let mut md = format!(
         "current: {}\n\n",
