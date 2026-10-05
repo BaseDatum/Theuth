@@ -15,6 +15,9 @@ pub use pulldown_cmark::Alignment;
 use pulldown_cmark::{CodeBlockKind, Event, Parser, Tag, TagEnd};
 use unicode_width::UnicodeWidthStr;
 
+mod plain;
+pub use plain::{chunks, plain};
+
 /// How a run of text should look. All flags may combine.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Style {

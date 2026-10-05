@@ -75,6 +75,7 @@ use serde::{Deserialize, Serialize};
 use sessionsync::types::{SessionOrphan, SessionOwner, SessionsStatus};
 use signal::{Allow, Link, RemoveAllowed, SIGNAL_ACTOR, Signal, SignalStatus, Status, Unlink};
 use slack::{SLACK_ACTOR, Slack, SlackStatus};
+use telegram::{PairingLink, TelegramStatus};
 use tokio::sync::broadcast;
 use tools::git::SyncResult;
 use tools::{
@@ -1092,6 +1093,26 @@ pub trait Api {
     /// Remove a channel id from `slack.channels`.
     #[method(name = "slack_remove_channel")]
     async fn slack_remove_channel(&self, channel: String) -> RpcResult<()>;
+    /// Telegram bot identity, poller state, trust lists, groups and bound threads (98 §13).
+    #[method(name = "telegram_status")]
+    async fn telegram_status(&self) -> RpcResult<TelegramStatus>;
+    /// Pair the owner (98 §10.4): with `owner`, set `telegram.owner` live and in the
+    /// config file and answer `None`; without, mint a single-use code and answer the
+    /// `t.me/<bot>?start=<code>` deep link (needs the daemon).
+    #[method(name = "telegram_link")]
+    async fn telegram_link(&self, owner: Option<u64>) -> RpcResult<Option<PairingLink>>;
+    /// Add a user id to `telegram.allowed` (live and in the config file).
+    #[method(name = "telegram_allow")]
+    async fn telegram_allow(&self, user: u64) -> RpcResult<()>;
+    /// Remove a user id from `telegram.allowed`.
+    #[method(name = "telegram_remove_allowed")]
+    async fn telegram_remove_allowed(&self, user: u64) -> RpcResult<()>;
+    /// Add a chat id (`-100…`) to `telegram.groups` (live and in the config file).
+    #[method(name = "telegram_allow_group")]
+    async fn telegram_allow_group(&self, chat: i64) -> RpcResult<()>;
+    /// Remove a chat id from `telegram.groups`.
+    #[method(name = "telegram_remove_group")]
+    async fn telegram_remove_group(&self, chat: i64) -> RpcResult<()>;
     /// A2A network status (50 §10): listener, configured peers and exports,
     /// and the config/listener/reload error when any. `a2a.enabled: false`
     /// answers the disabled state; enabled without a live actor is an error.
@@ -2056,6 +2077,14 @@ fn dictation() -> RpcResult<ActorRef<voice::Dictation>> {
 fn talk() -> RpcResult<ActorRef<talk::Talk>> {
     lookup::<talk::Talk>(talk::TALK_ACTOR).map_err(|e| match e.code() {
         NOT_RUNNING => ErrorObjectOwned::owned(NOT_RUNNING, "talk is disabled", None::<()>),
+        _ => e,
+    })
+}
+
+/// The telegram actor; absent when `telegram.enabled: false` or the plugin is not loaded.
+fn telegram() -> RpcResult<ActorRef<telegram::Telegram>> {
+    lookup::<telegram::Telegram>(telegram::TELEGRAM_ACTOR).map_err(|e| match e.code() {
+        NOT_RUNNING => ErrorObjectOwned::owned(NOT_RUNNING, "telegram is disabled", None::<()>),
         _ => e,
     })
 }
@@ -4480,6 +4509,30 @@ impl ApiServer for Server {
 
     async fn slack_remove_channel(&self, channel: String) -> RpcResult<()> {
         ask::<Slack, _>(SLACK_ACTOR, slack::RemoveChannel(channel)).await
+    }
+
+    async fn telegram_status(&self) -> RpcResult<TelegramStatus> {
+        send(&telegram()?, telegram::Status).await
+    }
+
+    async fn telegram_link(&self, owner: Option<u64>) -> RpcResult<Option<PairingLink>> {
+        send(&telegram()?, telegram::Link { owner }).await
+    }
+
+    async fn telegram_allow(&self, user: u64) -> RpcResult<()> {
+        send(&telegram()?, telegram::Allow(user)).await
+    }
+
+    async fn telegram_remove_allowed(&self, user: u64) -> RpcResult<()> {
+        send(&telegram()?, telegram::RemoveAllowed(user)).await
+    }
+
+    async fn telegram_allow_group(&self, chat: i64) -> RpcResult<()> {
+        send(&telegram()?, telegram::AllowGroup(chat)).await
+    }
+
+    async fn telegram_remove_group(&self, chat: i64) -> RpcResult<()> {
+        send(&telegram()?, telegram::RemoveGroup(chat)).await
     }
 
     async fn a2a_status(&self) -> RpcResult<A2aStatus> {

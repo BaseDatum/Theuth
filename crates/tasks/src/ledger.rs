@@ -144,6 +144,21 @@ fn db(e: anyhow::Error) -> String {
     format!("tasks store: {e:#}")
 }
 
+/// The built-in default agent (`roster::types::AgentName::DEFAULT`; tasks must
+/// not depend on roster): its desk and every descendant are uncapped (99 D1).
+const UNCAPPED_AGENT: &str = "theuth";
+
+/// A window in seconds as `{n} h` | `{n} min` | `{n} s` for error and inbox text (99 D5).
+pub fn window_text(secs: u64) -> String {
+    if secs.is_multiple_of(3600) {
+        format!("{} h", secs / 3600)
+    } else if secs.is_multiple_of(60) {
+        format!("{} min", secs / 60)
+    } else {
+        format!("{secs} s")
+    }
+}
+
 /// `actor` may act as `who`: the user (and the harness) may act as anyone.
 fn acts_for(actor: &str, who: &Owner) -> bool {
     actor == "user" || actor == "system" || actor == who.to_string()
@@ -343,32 +358,90 @@ impl Ledger {
         Ok(())
     }
 
-    /// The cross-task write cap (67 §7.3): a session writing to a task it
-    /// does not own (neither its checkout nor its agent's) spends one of
-    /// `cross_task_write_cap` distinct tasks.
+    /// The cross-task write cap (67 §7.3, 99 WRITE-CAP-LINE): a hired agent's
+    /// session changing a task outside its reporting line spends one of
+    /// `cross_task_write_cap` distinct tasks within the window. theuth's
+    /// desk, the user's own sessions and everything either spawns are
+    /// uncapped (D1).
     async fn charge(&self, session: Option<&str>, t: &Task) -> R<()> {
         let Some(session) = session else {
             return Ok(());
         };
+        let Some(agent) = self.capped_agent(session) else {
+            return Ok(());
+        };
         let mine = t.checkout.as_ref().is_some_and(|c| c.session == session)
-            || matches!(
-                (self.agent_for(session), agent_name(&t.owner)),
-                (Some(a), Some(o)) if a == o
-            );
-        if mine
-            || self
-                .store
-                .budget_write(session, &t.id, self.cfg.cross_task_write_cap)
-                .await
-                .map_err(db)?
-        {
+            || self.in_line(&agent, &t.owner);
+        if mine {
             return Ok(());
         }
+        let cap = self.cfg.cross_task_write_cap;
+        let window_secs = self.cfg.cross_task_write_window_secs;
+        let c = self
+            .store
+            .budget_write(session, &t.id, cap, self.now(), window_secs * 1000)
+            .await
+            .map_err(db)?;
+        if c.allowed {
+            return Ok(());
+        }
+        let when = if window_secs == 0 {
+            "for this session's lifetime".to_owned()
+        } else {
+            format!("in the last {}", window_text(window_secs))
+        };
         Err(format!(
-            "tasks.cross_task_write_cap: this session has written to {} tasks it does not own; \
-             delegate with task_create instead",
-            self.cfg.cross_task_write_cap
+            "tasks.cross_task_write_cap: this session has written to {} tasks outside {agent}'s \
+             reporting line {when}; the cap is {cap}. Wait for older writes to age out, delegate \
+             with task_create, or ask the owner's manager to make the change.",
+            c.used
         ))
+    }
+
+    /// The hired agent behind `session` when the cap applies to it; `None`
+    /// for the user's own sessions and theuth's line (D1).
+    fn capped_agent(&self, session: &str) -> Option<String> {
+        self.agent_for(session).filter(|a| a != UNCAPPED_AGENT)
+    }
+
+    /// `owner` is `agent` or reports to it, transitively (D2). Bounded:
+    /// `reports_to` can loop.
+    fn in_line(&self, agent: &str, owner: &Owner) -> bool {
+        let Some(mut o) = agent_name(owner).map(str::to_owned) else {
+            return false;
+        };
+        let mut seen = HashSet::new();
+        for _ in 0..32 {
+            if o == agent {
+                return true;
+            }
+            if !seen.insert(o.clone()) {
+                return false;
+            }
+            match self.manager_of(&o) {
+                Owner::Agent(m) => o = m,
+                _ => return false,
+            }
+        }
+        false
+    }
+
+    /// Where `session` stands against the cap (D6); `None` = uncapped.
+    pub async fn write_budget(&self, session: &str) -> R<Option<crate::WriteBudget>> {
+        if self.capped_agent(session).is_none() {
+            return Ok(None);
+        }
+        let window_secs = self.cfg.cross_task_write_window_secs;
+        let used = self
+            .store
+            .budget_used(session, self.now(), window_secs * 1000)
+            .await
+            .map_err(db)?;
+        Ok(Some(crate::WriteBudget {
+            used,
+            cap: self.cfg.cross_task_write_cap,
+            window_secs,
+        }))
     }
 
     /// 67 §7.5: a session that once held the checkout but no longer does was
@@ -1243,7 +1316,7 @@ impl Ledger {
         session: Option<&str>,
     ) -> R<()> {
         let mut t = self.load(id).await?;
-        self.charge(session, &t).await?;
+        // 99 D3: notes are free — a desk woken by a mention must be able to answer.
         self.check_epoch(session, &t).await?;
         let now = self.now();
         let mut dirty = false;
@@ -3314,6 +3387,42 @@ pub(crate) mod tests {
         );
     }
 
+    /// `update()` from `session` on `t` with a fresh title.
+    async fn retitle(r: &mut Rig, t: &Task, actor: &str, session: &str) -> R<Task> {
+        r.ledger
+            .update(
+                &t.id,
+                TaskPatch {
+                    title: Some(format!("retitled by {session}")),
+                    ..Default::default()
+                },
+                actor,
+                Some(session),
+            )
+            .await
+    }
+
+    async fn used(r: &Rig, session: &str) -> u32 {
+        r.ledger.write_budget(session).await.unwrap().unwrap().used
+    }
+
+    /// A router with the `rig()` wiring plus `extra` (`(kind, from, to)`;
+    /// kind `m` = manager, `s` = session), swapped into the ledger.
+    fn reroute(r: &mut Rig, extra: &[(&str, &str, &str)]) {
+        let mut router = MemRouter::default();
+        router.managers.insert("ops".into(), "lead".into());
+        router.sessions.insert("s-ops".into(), "ops".into());
+        router.sessions.insert("s-lead".into(), "lead".into());
+        router.sessions.insert("s-desk-ops".into(), "ops".into());
+        for (kind, from, to) in extra {
+            match *kind {
+                "m" => router.managers.insert((*from).into(), (*to).into()),
+                _ => router.sessions.insert((*from).into(), (*to).into()),
+            };
+        }
+        r.ledger.router = Some(Arc::new(router));
+    }
+
     #[tokio::test]
     async fn cross_task_write_cap() {
         let mut r = rig().await;
@@ -3322,53 +3431,132 @@ pub(crate) mod tests {
         let b = r.task("agent:lead").await;
         let c = r.task("agent:lead").await;
         let mine = r.task("agent:ops").await;
+        retitle(&mut r, &a, "agent:ops", "s-ops").await.unwrap();
+        retitle(&mut r, &b, "agent:ops", "s-ops").await.unwrap();
+        let e = retitle(&mut r, &c, "agent:ops", "s-ops").await.unwrap_err();
+        assert!(e.starts_with("tasks.cross_task_write_cap"), "{e}");
+        assert!(e.contains("2 tasks") && e.contains("24 h"), "{e}");
+        // D3: notes are free
         r.ledger
-            .comment(&a.id, "one", false, "agent:ops", Some("s-ops"))
-            .await
-            .unwrap();
-        r.ledger
-            .comment(&b.id, "two", false, "agent:ops", Some("s-ops"))
-            .await
-            .unwrap();
-        r.ledger
-            .comment(&a.id, "one again", false, "agent:ops", Some("s-ops"))
-            .await
-            .unwrap();
-        let e = r
-            .ledger
             .comment(&c.id, "three", false, "agent:ops", Some("s-ops"))
             .await
-            .unwrap_err();
-        assert!(e.starts_with("tasks.cross_task_write_cap"), "{e}");
-        assert!(
-            r.ledger
-                .update(
-                    &c.id,
-                    TaskPatch {
-                        title: Some("x".into()),
-                        ..Default::default()
-                    },
-                    "agent:ops",
-                    Some("s-ops")
-                )
-                .await
-                .is_err()
-        );
+            .unwrap();
+        // a repeat write to a charged task is free
+        retitle(&mut r, &a, "agent:ops", "s-ops").await.unwrap();
         // own tasks and other sessions are unaffected
-        r.ledger
-            .comment(&mine.id, "mine", false, "agent:ops", Some("s-ops"))
-            .await
-            .unwrap();
-        r.ledger
-            .comment(&c.id, "three", false, "agent:lead", Some("s-lead"))
-            .await
-            .unwrap();
+        retitle(&mut r, &mine, "agent:ops", "s-ops").await.unwrap();
+        retitle(&mut r, &c, "agent:lead", "s-lead").await.unwrap();
         // a checkout holder owns the task for the cap even when not the owner agent
-        r.ledger.checkout(&c.id, "s-user", "user").await.unwrap();
+        let d = r.task("agent:lead").await;
         r.ledger
-            .comment(&c.id, "holder", false, "user", Some("s-user"))
+            .checkout(&d.id, "s-desk-ops", "agent:lead")
             .await
             .unwrap();
+        retitle(&mut r, &d, "agent:ops", "s-desk-ops")
+            .await
+            .unwrap();
+        assert_eq!(used(&r, "s-desk-ops").await, 0);
+    }
+
+    #[tokio::test]
+    async fn theuth_and_user_sessions_are_uncapped() {
+        let mut r = rig().await;
+        r.ledger.cfg.cross_task_write_cap = 1;
+        reroute(&mut r, &[("s", "s-theuth", "theuth")]);
+        let tasks = [
+            r.task("agent:lead").await,
+            r.task("agent:lead").await,
+            r.task("agent:lead").await,
+            r.task("user").await,
+        ];
+        for (session, actor) in [("s-user", "user"), ("s-theuth", "agent:theuth")] {
+            for t in &tasks {
+                retitle(&mut r, t, actor, session).await.unwrap();
+            }
+            assert_eq!(r.ledger.write_budget(session).await.unwrap(), None);
+        }
+    }
+
+    #[tokio::test]
+    async fn manager_writes_to_its_line_for_free() {
+        let mut r = rig().await;
+        r.ledger.cfg.cross_task_write_cap = 1;
+        reroute(&mut r, &[("m", "sre", "ops"), ("s", "s-lead-2", "lead")]);
+        let line = [
+            r.task("agent:ops").await,
+            r.task("agent:sre").await,
+            r.task("agent:sre").await,
+        ];
+        for t in &line {
+            retitle(&mut r, t, "agent:lead", "s-lead").await.unwrap();
+        }
+        assert_eq!(used(&r, "s-lead").await, 0);
+        retitle(&mut r, &line[1], "agent:lead", "s-lead-2")
+            .await
+            .unwrap();
+        assert_eq!(used(&r, "s-lead-2").await, 0);
+        // a report writing upward is not in line
+        let up = r.task("agent:lead").await;
+        retitle(&mut r, &up, "agent:ops", "s-ops").await.unwrap();
+        assert_eq!(used(&r, "s-ops").await, 1);
+    }
+
+    #[tokio::test]
+    async fn user_owned_task_is_foreign_to_a_hired_agent() {
+        let mut r = rig().await;
+        r.ledger.cfg.cross_task_write_cap = 1;
+        let a = r.task("user").await;
+        let b = r.task("user").await;
+        retitle(&mut r, &a, "agent:ops", "s-ops").await.unwrap();
+        let e = retitle(&mut r, &b, "agent:ops", "s-ops").await.unwrap_err();
+        assert!(e.starts_with("tasks.cross_task_write_cap"), "{e}");
+    }
+
+    #[tokio::test]
+    async fn budget_window_decays() {
+        let mut r = rig().await;
+        r.ledger.cfg.cross_task_write_cap = 1;
+        r.ledger.cfg.cross_task_write_window_secs = 3600;
+        let a = r.task("agent:lead").await;
+        let b = r.task("agent:lead").await;
+        retitle(&mut r, &a, "agent:ops", "s-ops").await.unwrap();
+        let e = retitle(&mut r, &b, "agent:ops", "s-ops").await.unwrap_err();
+        assert!(e.contains("in the last 1 h"), "{e}");
+        r.tick(3_600_001);
+        retitle(&mut r, &b, "agent:ops", "s-ops").await.unwrap();
+        assert_eq!(used(&r, "s-ops").await, 1);
+    }
+
+    #[tokio::test]
+    async fn window_zero_is_lifetime() {
+        let mut r = rig().await;
+        r.ledger.cfg.cross_task_write_cap = 1;
+        r.ledger.cfg.cross_task_write_window_secs = 0;
+        let a = r.task("agent:lead").await;
+        let b = r.task("agent:lead").await;
+        retitle(&mut r, &a, "agent:ops", "s-ops").await.unwrap();
+        r.tick(10 * 86_400_000);
+        let e = retitle(&mut r, &b, "agent:ops", "s-ops").await.unwrap_err();
+        assert!(e.contains("for this session's lifetime"), "{e}");
+        assert_eq!(used(&r, "s-ops").await, 1);
+    }
+
+    #[tokio::test]
+    async fn inbox_trailer_reports_budget() {
+        let mut r = rig().await;
+        let a = r.task("agent:lead").await;
+        retitle(&mut r, &a, "agent:ops", "s-ops").await.unwrap();
+        assert_eq!(
+            r.ledger.write_budget("s-ops").await.unwrap(),
+            Some(crate::WriteBudget {
+                used: 1,
+                cap: 20,
+                window_secs: 86_400
+            })
+        );
+        assert_eq!(window_text(86_400), "24 h");
+        assert_eq!(window_text(5_400), "90 min");
+        assert_eq!(window_text(45), "45 s");
     }
 
     #[tokio::test]

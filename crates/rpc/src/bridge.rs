@@ -29,6 +29,7 @@ use signal::SignalEvent;
 use slack::SlackEvent;
 use talk::TalkEvent;
 use tasks::activity::ActivityAppended;
+use telegram::TelegramEvent;
 use tokio::sync::broadcast;
 use tools::{
     ApprovalRequested, ApprovalResolved, AskRequested, AskResolved, JobEvent, McpProgress,
@@ -106,6 +107,7 @@ forward!(
     JobEvent,
     SignalEvent,
     SlackEvent,
+    TelegramEvent,
     KnowledgeChanged,
     DocumentChanged,
     BrowserEvent,
@@ -156,6 +158,7 @@ pub async fn start(rt: &Runtime) -> broadcast::Sender<Event> {
     rt.subscribe::<Bridge, JobEvent>(&actor).await;
     rt.subscribe::<Bridge, SignalEvent>(&actor).await;
     rt.subscribe::<Bridge, SlackEvent>(&actor).await;
+    rt.subscribe::<Bridge, TelegramEvent>(&actor).await;
     rt.subscribe::<Bridge, KnowledgeChanged>(&actor).await;
     rt.subscribe::<Bridge, DocumentChanged>(&actor).await;
     rt.subscribe::<Bridge, BrowserEvent>(&actor).await;

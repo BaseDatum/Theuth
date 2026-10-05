@@ -159,14 +159,14 @@ The election inputs make the abrupt case rare: a laptop only holds the lease whe
 
 | Duty | Idempotent because |
 |---|---|
-| Slack / Signal sockets | Slack Socket Mode load-balances events across up to ten connections for one app — two hubs each receive *different* events, and thread bindings are replicated, so routing still holds **[orch: verify against Slack docs in stage 1]**. Signal: every hub-eligible engine is its own linked device and receives every message anyway (§4.7); only the hub answers, and a replicated `answered` marker keyed `(sender, timestamp)` lets a second hub see a reply already went out — a partition can still produce one duplicate reply, same window as Slack. |
+| Slack / Signal / Telegram sockets | Slack Socket Mode load-balances events across up to ten connections for one app — two hubs each receive *different* events, and thread bindings are replicated, so routing still holds **[orch: verify against Slack docs in stage 1]**. Signal: every hub-eligible engine is its own linked device and receives every message anyway (§4.7); only the hub answers, and a replicated `answered` marker keyed `(sender, timestamp)` lets a second hub see a reply already went out — a partition can still produce one duplicate reply, same window as Slack. Telegram: `getUpdates` is single-consumer (409 on a second poller), so the poller runs on the hub only; updates are retained 24 h; the double-hub window is deduplicated by the same `answered` marker keyed `(chat:user, update_id)` — 98 §3.2. |
 | Schedule ticks | A fire creates a task keyed `(schedule, fire_time)`; the second hub's create coalesces into the same row. |
 | Wake dispatch | Wakes are rows with idempotency keys; a desk claims a wake with a checkout; the loser sees the claim. |
 | Budget checks | Pure function of replicated counters. |
 | OAuth refresh | The refresher writes the new grant with the old grant's version as a precondition; the loser's refresh fails and it re-reads. A provider that rotates refresh tokens can still be logged out by a true double refresh in the same second — accepted, rare, and the fix is one login. |
 | Desks | A desk is a pinned session on the hub; on a graceful lease change the old hub closes its episode (journal written, replicated), the new hub opens the next; on an abrupt loss the new hub opens from the last journal (§4.6). Two hubs → two desks for one agent for the partition's duration, both reading the same inbox; the checkout on tasks keeps them from working the same one. |
 
-### 4.7 Signal and Slack under the lease
+### 4.7 Signal, Slack and Telegram under the lease
 
 ```mermaid
 flowchart LR
@@ -181,6 +181,9 @@ flowchart LR
   A -.- X
   B -.- X
   C -.- X
+  TG[Telegram servers] -->|getUpdates - hub polls| A
+  TG -.-|idle - no poller| B
+  TG -.-|idle - no poller| C
   classDef hub fill:none,stroke:#2563eb,stroke-width:2.5px
   classDef peer fill:none,stroke:#16a34a,stroke-width:2.5px
   classDef never fill:none,stroke:#dc2626,stroke-width:2.5px
@@ -188,7 +191,7 @@ flowchart LR
   class A hub
   class B,C peer
   class X never
-  class PH,SS,R ext
+  class PH,SS,TG,R ext
 ```
 *Blue: the hub answers. Green: linked, listening, silent. Red: per-engine protocol state that must not be copied.*
 
@@ -341,7 +344,7 @@ stateDiagram-v2
 A wake is a row `{ agent, task, reason: assigned | comment | mention | schedule | answer | review | manual, idempotency_key, claimed_by }`. Dispatch (a hub duty) delivers the oldest unclaimed wake per agent to its desk as one input: *"Wake: task 12 — <title>. Reason: comment. Do not switch to another task until this wake is handled."* plus the new thread entries inline (paperclip's scoped wake with a resume delta). Rules:
 - **Coalesce**: a wake for `(agent, task, reason)` that already has an unclaimed row merges (count + 1).
 - **No-progress back-off**: if two consecutive wakes on a task end with no field change, `next_wake_after` = now + 2 min, doubling to 30 min; a human thread entry clears it.
-- **Cross-task cap**: a session may write to at most 20 tasks it does not own; the 21st is refused with the reason.
+- **Cross-task cap** (99): a hired agent's session may change at most 20 tasks outside its reporting line within 24 h (`task_update`, `task_move`, `task_reassign`; notes are free); the next is refused with the count and the window. theuth's desk, the user's own sessions and everything either spawns are uncapped; a manager writes freely to its reports' tasks.
 - **Disposition**: an episode's closing turn must leave every task it checked out in `review | blocked | done(by reviewer) | delegated (child task exists) | continuing (a schedule, reminder or live child will wake it)`. A task left in `doing` with none of these is set `blocked: "no continuation"` and the manager is woken.
 
 ### 7.4 Schedules → tasks
