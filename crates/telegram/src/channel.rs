@@ -384,7 +384,17 @@ impl Handle {
 /// Spawns the channel under `rt.shutdown`; returns immediately. Fails only
 /// when the HTTP client cannot be built.
 pub fn spawn(cfg: TelegramConfig, token: String, rt: Runtime) -> anyhow::Result<Handle> {
-    let api = Arc::new(Api::new(&token, None)?);
+    spawn_at(cfg, token, rt, None)
+}
+
+/// [`spawn`] against `host` instead of `https://api.telegram.org` (tests). // 98b
+pub fn spawn_at(
+    cfg: TelegramConfig,
+    token: String,
+    rt: Runtime,
+    host: Option<&str>,
+) -> anyhow::Result<Handle> {
+    let api = Arc::new(Api::new(&token, host)?);
     let (inbound_tx, inbound_rx) = mpsc::unbounded_channel();
     let (chan, notes_rx) = Channel::new(
         Arc::clone(&api) as Arc<dyn Sender>,
@@ -3491,14 +3501,15 @@ pub(crate) mod tests {
     #[tokio::test]
     async fn start_with_a_live_code_pairs_and_a_dead_code_is_silent() {
         let f = fixture(true);
-        let actor = crate::Telegram::spawn(crate::Telegram {
-            handle: Some(Handle {
+        let actor = crate::Telegram::spawn(crate::Telegram::new(
+            Some(Handle {
                 chan: Arc::clone(&f.chan),
             }),
-            cfg: f.chan.cfg.clone(),
-            rt: f.rt.clone(),
-            configured: true,
-        });
+            f.chan.cfg.clone(),
+            f.rt.clone(),
+            Some("1:test"),
+            true,
+        ));
         let _ = actor.register(crate::TELEGRAM_ACTOR);
         f.inbound(msg(private(STRANGER), STRANGER, None, "/start nope"))
             .await;
