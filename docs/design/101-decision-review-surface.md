@@ -155,3 +155,50 @@ ENG: `cargo test -p tasks -p roster -p rpc --no-fail-fast`, `cargo check --works
 (never `cargo fmt --all`), `just ts` regenerates `bindings/` cleanly. UI: `just ts-desktop` then `bunx vite build`
 (regenerates `routeTree.gen.ts`), `bun run check` (tsc), `CI=1 bun run test`. Integration tree: all of the above
 plus a vite-dev screenshot pass of `/attention` and `/attention/$id` on a 1280 px and a 390 px viewport.
+
+## Revision 2 — MINI-BOARDS (Sky, 2026-10-06 00:06)
+
+> I don't know what you built for decision and review yet? But they should essentially be like mini versions of the
+> whiteboard feature where I can click through and easily understand what I'm deciding about, why it matters to me,
+> and the whole picture of what I'm reviewing. Diagram and link heavy. The goal is to reduce the cognitive load of
+> doing the reviews and making the decisions.
+
+The lens is design 71's (boards are judged by the reader's cognitive load). The first build (above) gives the
+decider a focused screen — summary markdown with diagrams, inline evidence, option cards — but the summary is
+free-form prose and nothing on it is clickable the way a board is. Revision 2 makes the packet's body a **mini-board**:
+a board document (`doc_create(kind="board")`) with a fixed skeleton, embedded in the Decision and Review screens
+with the whole board reader (anchors, hover lighting, pinned excerpts, tour).
+
+- **R1 `Packet.board: Option<String>`** — the id of a board document the agent wrote for the decider. Rust
+  `pub board: Option<String>`; TS `board: string | null`. D1 extends: when the user is the audience, `board` is
+  REQUIRED (with `summary` as the one-paragraph abstract that feeds the inbox row, the thread and the channel ask
+  card). `pointers` stay optional and render under the board when given (Excerpts inside the board are the primary
+  evidence). Error text when missing: the recipe (`doc_create(title, kind="board", root=…)` → `doc_insert` the
+  skeleton sections → pass its `doc` id as `board`).
+- **R2 Fixed skeletons** (`##` headings, this order; every section may be one block; `###` clusters allowed):
+  - Decision: **What you're deciding** · **Why it matters to you** · **The picture** · **Options** · **Look at** ·
+    *Open questions* (optional).
+  - Review: **What was done** · **Why it matters to you** · **The picture** · **Against the criteria** ·
+    **Walk through** · *Open questions* (optional).
+  "Why it matters to you" is written for the person deciding: what changes for them, what happens if nothing or if
+  wrong, urgency, reversibility. "The picture" is ONE diagram whose units carry `ref` anchors. "Options" is one
+  `###` per option with consequence, cost/risk, reversibility and the recommendation (the buttons stay on the
+  screen). "Against the criteria" lists each `done_when` line with its evidence anchor; "Walk through" is the
+  Excerpts in reading order — what to look at and what to look for — which the board's tour steps through.
+  Validation (tasks crate, through the `document` actor it already depends on): the doc exists, its kind is
+  `board`, and the first three `##` headings match the skeleton case-insensitively; the error names the missing or
+  misplaced section. Nothing else is validated — short is good.
+- **R3 Links everywhere.** Diagram units `ref` an Excerpt (`path#La-Lb`) or carry an external URL; prose claims are
+  `[label](code:path#La-Lb)` links; PRs, dashboards, runbooks, artifacts are plain markdown links the reader opens
+  outside. The board grammar is the `board` skill's; `crates/document/board.md` gains a "Mini-boards for decisions
+  and reviews" section (skeletons, the lens, a 6-block example).
+- **R4 Screens.** Decision: header · question · **`BoardReader`** (the same component `/notes/$id` mounts for a
+  board, with its TOC and *Tour this board*) · options + Answer · footer. Review: header · `BoardReader` ·
+  Acceptance (`checks`) · action bar. `board === null` → today's `summary` + pointers rendering (items raised
+  before this revision). The board is read-only here (no edit toggle).
+- **R5 Phones.** The reader must work at 390 px inside the attention screen: whatever `/notes/$id` does on a phone is
+  the baseline (pinned excerpts open inline when there is no room for the side pane); fix only what breaks in the
+  embedding; screenshots at 390 × 844.
+- **R6 Prompts.** `escalate` / `task_update` / `task_move` descriptions and the desk manual carry the skeletons and
+  the lens in one sentence each: "write for the person deciding — what, why it matters to them, the whole picture;
+  diagram and link heavy; short".
