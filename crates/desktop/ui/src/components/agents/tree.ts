@@ -43,7 +43,8 @@ export function budgetUsed(a: AgentSummary): number | null {
 
 export type Placed = { node: Node; x: number; y: number }
 export type Layout = { cards: Placed[]; edges: { from: Placed; to: Placed }[]; width: number; height: number }
-export const CARD = { w: 200, h: 92, gx: 24, gy: 56 } as const
+/** Card box; `h` includes the live-sessions strip under the card body (100 D4). */
+export const CARD = { w: 200, h: 112, gx: 24, gy: 56 } as const
 
 /**
  * Org-chart coordinates (paperclip's OrgChart layout): a parent is centred over its children, siblings sit side by

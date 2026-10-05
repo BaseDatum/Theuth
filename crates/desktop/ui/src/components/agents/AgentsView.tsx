@@ -16,6 +16,7 @@ import { HiringInbox } from './HiringInbox'
 import { OrgChart } from './OrgChart'
 import { ActiveSwitch, ActivityChip, AgentAvatar, BudgetBar } from './identity'
 import { proposed } from './hiring'
+import { AgentSessionRows } from './AgentSessionRows'
 import { type Node, tree } from './tree'
 
 const VIEW_KEY = 'theuth.agents-view'
@@ -118,28 +119,32 @@ function Table({ root }: { root: Node }) {
   )
 }
 
+/** One agent as a table row; its live sessions follow in a sibling `<tr>` (100 D3) while anything under its desk runs. */
 function Row({ name, agent: a, depth }: { name: string; agent: AgentSummary | null; depth: number }) {
   const navigate = useNavigate()
   const title = a?.file.title ?? name
   return (
-    <tr
-      className={cn('cursor-pointer border-t border-border-subtle hover:bg-layer-2 [&>td]:px-3 [&>td]:py-2', a?.file.paused && 'opacity-60')}
-      onClick={() => void navigate({ to: '/agents/$name/$tab', params: { name, tab: 'overview' } })}
-    >
-      <td>
-        <span className="flex items-center gap-2" style={{ paddingLeft: depth * 18 }}>
-          <AgentAvatar name={name} title={title} size={28} />
-          <span className="min-w-0">
-            <span className="block truncate font-medium">{title}</span>
-            <span className="block truncate font-mono text-[11px] text-fg-tertiary">{name}</span>
+    <>
+      <tr
+        className={cn('cursor-pointer border-t border-border-subtle hover:bg-layer-2 [&>td]:px-3 [&>td]:py-2', a?.file.paused && 'opacity-60')}
+        onClick={() => void navigate({ to: '/agents/$name/$tab', params: { name, tab: 'overview' } })}
+      >
+        <td>
+          <span className="flex items-center gap-2" style={{ paddingLeft: depth * 18 }}>
+            <AgentAvatar name={name} title={title} size={28} />
+            <span className="min-w-0">
+              <span className="block truncate font-medium">{title}</span>
+              <span className="block truncate font-mono text-[11px] text-fg-tertiary">{name}</span>
+            </span>
           </span>
-        </span>
-      </td>
-      <td className="hidden md:table-cell">{name === THEUTH ? <Badge variant="outline">built-in</Badge> : a && <ActiveSwitch agent={a} />}</td>
-      <td className="hidden md:table-cell">{a && !a.file.paused && <ActivityChip status={a.status} />}</td>
-      <td className="hidden text-fg-secondary md:table-cell">{name === THEUTH ? 'you' : a?.file.reports_to}</td>
-      <td className="text-right tabular-nums">{a?.open_tasks ?? '—'}</td>
-      <td className="hidden lg:table-cell">{a && (a.file.budget.type === 'monthly' ? <BudgetBar agent={a} /> : <span className="text-xs text-fg-tertiary">none</span>)}</td>
-    </tr>
+        </td>
+        <td className="hidden md:table-cell">{name === THEUTH ? <Badge variant="outline">built-in</Badge> : a && <ActiveSwitch agent={a} />}</td>
+        <td className="hidden md:table-cell">{a && !a.file.paused && <ActivityChip status={a.status} />}</td>
+        <td className="hidden text-fg-secondary md:table-cell">{name === THEUTH ? 'you' : a?.file.reports_to}</td>
+        <td className="text-right tabular-nums">{a?.open_tasks ?? '—'}</td>
+        <td className="hidden lg:table-cell">{a && (a.file.budget.type === 'monthly' ? <BudgetBar agent={a} /> : <span className="text-xs text-fg-tertiary">none</span>)}</td>
+      </tr>
+      {a?.desk && <AgentSessionRows desk={a.desk} depth={depth} />}
+    </>
   )
 }
