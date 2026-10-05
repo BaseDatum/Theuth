@@ -308,8 +308,11 @@ fn yaml_list<T: std::fmt::Display>(items: &[T]) -> String {
 type TokenSource = Arc<dyn Fn() -> BoxFuture<'static, Option<String>> + Send + Sync>;
 
 /// Starts the channel: [`channel::spawn`] in production, a local host in tests.
-type Starter =
-    Arc<dyn Fn(TelegramConfig, String, runtime::Runtime) -> anyhow::Result<channel::Handle> + Send + Sync>;
+type Starter = Arc<
+    dyn Fn(TelegramConfig, String, runtime::Runtime) -> anyhow::Result<channel::Handle>
+        + Send
+        + Sync,
+>;
 
 /// Internal `tell`: the vault was re-read after `SecretsChanged`.
 struct TokenRead(Option<String>);
@@ -624,7 +627,8 @@ impl runtime::Plugin for TelegramPlugin {
                 return;
             }
             // 98 §10.5: hot-start when the token is set later.
-            rt.subscribe::<Telegram, secrets::SecretsEvent>(&actor).await;
+            rt.subscribe::<Telegram, secrets::SecretsEvent>(&actor)
+                .await;
             if !configured {
                 rt.publish(TelegramEvent::Unconfigured).await;
             } else if !run_channel {
@@ -823,7 +827,13 @@ mod tests {
     /// An unconfigured actor with the token source answering `None`; the
     /// channel, when started, talks to a local mock instead of Telegram.
     fn unconfigured(rt: &runtime::Runtime, run_channel: bool, host: String) -> Telegram {
-        let mut t = Telegram::new(None, TelegramConfig::default(), rt.clone(), None, run_channel);
+        let mut t = Telegram::new(
+            None,
+            TelegramConfig::default(),
+            rt.clone(),
+            None,
+            run_channel,
+        );
         t.start = Arc::new(move |cfg, token, rt| channel::spawn_at(cfg, token, rt, Some(&host)));
         t
     }
