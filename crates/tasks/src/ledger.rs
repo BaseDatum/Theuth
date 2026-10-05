@@ -9,6 +9,7 @@ use std::sync::Arc;
 
 use crate::DeskRouter;
 use crate::config::TasksConfig;
+use crate::packet;
 use crate::store::Store;
 use crate::thread::Thread;
 use crate::types::{
@@ -1438,15 +1439,17 @@ impl Ledger {
         Ok(())
     }
 
-    /// `escalate` (67 §11): the question in the thread, `blocked: decision:<id>`,
-    /// the **caller's** manager woken (`answer`). Returns the decision and the
-    /// manager; `Owner::User` means the actor handler asks the user. The user
-    /// has nobody to escalate to.
+    /// `escalate` (67 §11, 101): the question in the thread, `blocked: decision:<id>`,
+    /// the **caller's** manager woken (`answer`). When the manager is the user
+    /// the request needs a `summary` (D1) and nothing is written without one;
+    /// with a summary (any audience) the request is stored as the
+    /// `decision:<id>` packet and the thread block is its markdown (D3).
+    /// Returns the decision and the manager; `Owner::User` means the actor
+    /// handler asks the user. The user has nobody to escalate to.
     pub async fn escalate(
         &mut self,
         id: &TaskId,
-        question: &str,
-        options: &[String],
+        ask: packet::Ask,
         actor: &str,
         session: Option<&str>,
     ) -> R<(String, Owner)> {
@@ -1456,13 +1459,28 @@ impl Ledger {
         };
         let t = self.load(id).await?;
         let decision = format!("decision:{}", uuid::Uuid::now_v7());
-        let mut text = format!("**decision requested** (`{decision}`)\n\n{question}");
-        if !options.is_empty() {
-            text.push_str("\n\nOptions:\n");
-            for o in options {
-                text.push_str(&format!("- {o}\n"));
-            }
+        let packet_wanted = ask.summary.is_some() || !ask.pointers.is_empty();
+        let p = packet::Packet {
+            key: decision.clone(),
+            task: id.clone(),
+            kind: packet::PacketKind::Decision,
+            by: actor.to_owned(),
+            at_ms: self.now(),
+            question: Some(ask.question),
+            summary: ask.summary.unwrap_or_default(),
+            options: ask.options,
+            recommended: ask.recommended,
+            pointers: ask.pointers,
+            checks: vec![],
+        };
+        if manager == Owner::User {
+            packet::require_for_user(&p)?;
         }
+        packet::validate(&p)?;
+        if manager == Owner::User || packet_wanted {
+            self.store.put_packet(&p).await.map_err(db)?;
+        }
+        let mut text = packet::thread_markdown(&p);
         text.push_str(&format!(
             "\n\nManager: answer with `decide {{ task, decision: \"{decision}\", answer }}`, or `escalate` the same task further."
         ));
@@ -1487,6 +1505,62 @@ impl Ledger {
         .await?;
         self.wake(&t, &manager, WakeReason::Answer, actor).await;
         Ok((decision, manager))
+    }
+
+    /// Who reviews `t` if it goes to review now: `reviewer` when given, else
+    /// the task's; a desk naming itself without a `done_when` gets its
+    /// manager (as [`Self::update`] resolves it); nobody named → the owner's
+    /// manager (the user owns a task → the user).
+    pub fn effective_reviewer(&self, t: &Task, reviewer: Option<&Owner>) -> Owner {
+        let named = reviewer.or(t.reviewer.as_ref());
+        match (&t.owner, named) {
+            (Owner::Agent(a), None) => self.manager_of(a),
+            (Owner::Agent(a), Some(r)) if *r == t.owner && t.done_when.is_none() => {
+                self.manager_of(a)
+            }
+            (_, Some(r)) => r.clone(),
+            (owner, None) => owner.clone(),
+        }
+    }
+
+    /// A hand-over to review (101 D3): the `review:<task>` packet stored
+    /// (the latest replaces) and its `**review requested**` block in the thread.
+    pub async fn review_packet(
+        &self,
+        id: &TaskId,
+        summary: String,
+        pointers: Vec<packet::Pointer>,
+        checks: Vec<packet::Check>,
+        actor: &str,
+    ) -> R<packet::Packet> {
+        let t = self.load(id).await?;
+        let p = packet::Packet {
+            key: packet::review_key(id),
+            task: id.clone(),
+            kind: packet::PacketKind::Review,
+            by: actor.to_owned(),
+            at_ms: self.now(),
+            question: None,
+            summary,
+            options: vec![],
+            recommended: None,
+            pointers,
+            checks,
+        };
+        packet::validate(&p)?;
+        self.store.put_packet(&p).await.map_err(db)?;
+        self.say(&t, actor, &packet::thread_markdown(&p)).await;
+        Ok(p)
+    }
+
+    /// One packet by key.
+    pub async fn packet(&self, key: &str) -> R<Option<packet::Packet>> {
+        self.store.packet(key).await.map_err(db)
+    }
+
+    /// Every packet of `tasks`, newest first.
+    pub async fn packets_for(&self, tasks: &[TaskId]) -> R<Vec<packet::Packet>> {
+        self.store.packets_for(tasks).await.map_err(db)
     }
 
     /// `decide` (67 §11): the answer in the thread, the `decision:<id>` blocker
@@ -4441,7 +4515,7 @@ pub(crate) mod tests {
         let other = r.task("agent:ops").await;
         let (decision, _) = r
             .ledger
-            .escalate(&t.id, "which region?", &[], "agent:ops", None)
+            .escalate(&t.id, packet::Ask::new("which region?"), "agent:ops", None)
             .await
             .unwrap();
         let blockers: Vec<String> =
@@ -4589,7 +4663,18 @@ pub(crate) mod tests {
             .unwrap();
         let (decision, manager) = r
             .ledger
-            .escalate(&t.id, "ship?", &["yes".into()], "agent:ops", Some("s-ops"))
+            .escalate(
+                &t.id,
+                packet::Ask {
+                    options: vec![packet::PacketOption {
+                        label: "yes".into(),
+                        description: None,
+                    }],
+                    ..packet::Ask::new("ship?")
+                },
+                "agent:ops",
+                Some("s-ops"),
+            )
             .await
             .unwrap();
         assert_eq!(manager, Owner::Agent("lead".into()));
@@ -4645,9 +4730,13 @@ pub(crate) mod tests {
     async fn escalate_user_path() {
         let mut r = rig().await;
         let t = r.task("agent:lead").await;
+        let ask = packet::Ask {
+            summary: Some("Spend or save.".into()),
+            ..packet::Ask::new("budget?")
+        };
         let (_, manager) = r
             .ledger
-            .escalate(&t.id, "budget?", &[], "agent:lead", None)
+            .escalate(&t.id, ask, "agent:lead", None)
             .await
             .unwrap();
         assert_eq!(manager, Owner::User);
@@ -4660,10 +4749,252 @@ pub(crate) mod tests {
         // the user is the top of the line
         assert!(
             r.ledger
-                .escalate(&t.id, "?", &[], "user", None)
+                .escalate(&t.id, packet::Ask::new("?"), "user", None)
                 .await
                 .is_err()
         );
+    }
+
+    // ---- packets (101 DECISION-SURFACE) ----------------------------------------
+
+    fn code_pointer() -> packet::Pointer {
+        packet::Pointer {
+            kind: packet::PointerKind::Code,
+            ref_: "src/x.rs#L12-L14".into(),
+            title: "the retry".into(),
+            note: Some("three attempts".into()),
+            text: Some("a\nb\nc".into()),
+            root: Some("/repo".into()),
+        }
+    }
+
+    /// 101 D1: an escalation to the user without a summary writes nothing.
+    #[tokio::test]
+    async fn escalate_to_user_needs_a_summary() {
+        let mut r = rig().await;
+        let t = r.task("agent:lead").await;
+        let doc = t.thread.clone().unwrap();
+        let before = r.thread.0.lock().unwrap()[&doc].len();
+        let e = r
+            .ledger
+            .escalate(&t.id, packet::Ask::new("budget?"), "agent:lead", None)
+            .await
+            .unwrap_err();
+        assert!(e.contains("needs a `summary`"), "{e}");
+        assert_eq!(
+            r.thread.0.lock().unwrap()[&doc].len(),
+            before,
+            "no thread line"
+        );
+        let a = r.ledger.get(&t.id).await.unwrap();
+        assert_eq!((a.state, a.blockers.is_empty()), (TaskState::Todo, true));
+        assert!(
+            r.ledger
+                .wakes()
+                .await
+                .unwrap()
+                .iter()
+                .all(|w| w.reason != WakeReason::Answer)
+        );
+        assert!(
+            r.ledger
+                .packets_for(&[t.id.clone()])
+                .await
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    /// 101 §3: the packet is stored under the decision key and mirrored into the thread.
+    #[tokio::test]
+    async fn escalate_with_a_packet_stores_and_mirrors_it() {
+        let mut r = rig().await;
+        let t = r.task("agent:lead").await;
+        let ask = packet::Ask {
+            summary: Some("## Why\n\nThe retry loop doubles cost.".into()),
+            options: vec![
+                packet::PacketOption {
+                    label: "keep".into(),
+                    description: None,
+                },
+                packet::PacketOption {
+                    label: "cap at 3".into(),
+                    description: Some("cheaper, rare misses".into()),
+                },
+            ],
+            recommended: Some(1),
+            pointers: vec![code_pointer()],
+            ..packet::Ask::new("retry policy?")
+        };
+        let (decision, _) = r
+            .ledger
+            .escalate(&t.id, ask, "agent:lead", None)
+            .await
+            .unwrap();
+        let p = r.ledger.packet(&decision).await.unwrap().expect("stored");
+        assert_eq!(
+            (p.kind, p.task.clone()),
+            (packet::PacketKind::Decision, t.id.clone())
+        );
+        assert_eq!(p.question.as_deref(), Some("retry policy?"));
+        assert_eq!(p.recommended, Some(1));
+        assert_eq!(p.pointers, vec![code_pointer()]);
+        assert_eq!(p.by, "agent:lead");
+        let doc = t.thread.clone().unwrap();
+        let blocks = r.thread.0.lock().unwrap()[&doc].clone();
+        let block = blocks
+            .iter()
+            .find(|b| b.contains("**decision requested**"))
+            .expect("thread block");
+        assert!(block.contains("The retry loop doubles cost."), "{block}");
+        assert!(
+            block.contains("- keep\n- cap at 3 (recommended) — cheaper, rare misses"),
+            "{block}"
+        );
+        assert!(
+            block.contains("Look at:\n- the retry (`src/x.rs#L12-L14`) — three attempts"),
+            "{block}"
+        );
+        assert!(block.contains("Manager: answer with `decide"), "{block}");
+        assert_eq!(
+            r.ledger.packets_for(&[t.id.clone()]).await.unwrap(),
+            vec![p]
+        );
+        assert_eq!(r.ledger.packet("decision:nope").await.unwrap(), None);
+        // the answer path is unchanged
+        r.ledger
+            .answer_decision(&decision, "cap at 3", "user", None)
+            .await
+            .unwrap();
+        assert!(r.ledger.get(&t.id).await.unwrap().blockers.is_empty());
+    }
+
+    /// 101 D1: an agent audience needs no packet; one is stored when given.
+    #[tokio::test]
+    async fn escalate_to_an_agent_keeps_the_packet_optional() {
+        let mut r = rig().await;
+        let t = r.task("agent:ops").await;
+        let (d1, m) = r
+            .ledger
+            .escalate(&t.id, packet::Ask::new("ship?"), "agent:ops", None)
+            .await
+            .unwrap();
+        assert_eq!(m, Owner::Agent("lead".into()));
+        assert_eq!(r.ledger.packet(&d1).await.unwrap(), None);
+        let ask = packet::Ask {
+            summary: Some("because".into()),
+            ..packet::Ask::new("ship?")
+        };
+        let (d2, _) = r
+            .ledger
+            .escalate(&t.id, ask, "agent:ops", None)
+            .await
+            .unwrap();
+        assert!(r.ledger.packet(&d2).await.unwrap().is_some());
+    }
+
+    /// 101 §3 caps surface from `escalate`; nothing is written on refusal.
+    #[tokio::test]
+    async fn escalate_refuses_over_cap_packets_before_writing() {
+        let mut r = rig().await;
+        let t = r.task("agent:ops").await;
+        let ask = packet::Ask {
+            summary: Some("x".repeat(packet::SUMMARY_MAX + 1)),
+            ..packet::Ask::new("?")
+        };
+        let e = r
+            .ledger
+            .escalate(&t.id, ask, "agent:ops", None)
+            .await
+            .unwrap_err();
+        assert!(e.contains("`summary`") && e.contains("16 KiB"), "{e}");
+        assert!(r.ledger.get(&t.id).await.unwrap().blockers.is_empty());
+    }
+
+    /// 101 D3: `review_packet` replaces the row and writes `**review requested**`;
+    /// `effective_reviewer` follows `update`'s resolution.
+    #[tokio::test]
+    async fn review_packet_replaces_and_mirrors() {
+        let mut r = rig().await;
+        let t = r.task("agent:ops").await;
+        assert_eq!(
+            r.ledger.effective_reviewer(&t, None),
+            Owner::Agent("lead".into()),
+            "nobody named → the manager"
+        );
+        assert_eq!(
+            r.ledger.effective_reviewer(&t, Some(&Owner::User)),
+            Owner::User
+        );
+        assert_eq!(
+            r.ledger.effective_reviewer(&t, Some(&t.owner)),
+            Owner::Agent("lead".into()),
+            "self without done_when → the manager"
+        );
+        let lead = r.task("agent:lead").await;
+        assert_eq!(r.ledger.effective_reviewer(&lead, None), Owner::User);
+        let mine = r.task("user").await;
+        assert_eq!(r.ledger.effective_reviewer(&mine, None), Owner::User);
+
+        let p1 = r
+            .ledger
+            .review_packet(
+                &t.id,
+                "first".into(),
+                vec![code_pointer()],
+                vec![],
+                "agent:ops",
+            )
+            .await
+            .unwrap();
+        assert_eq!(p1.key, format!("review:{}", t.id));
+        r.tick(10);
+        let checks = vec![packet::Check {
+            text: "tests".into(),
+            done: true,
+            note: None,
+        }];
+        let p2 = r
+            .ledger
+            .review_packet(
+                &t.id,
+                "second".into(),
+                vec![code_pointer()],
+                checks,
+                "agent:ops",
+            )
+            .await
+            .unwrap();
+        let all = r.ledger.packets_for(&[t.id.clone()]).await.unwrap();
+        assert_eq!(all, vec![p2.clone()], "one row, the latest");
+        assert_eq!(r.ledger.packet(&p1.key).await.unwrap(), Some(p2));
+        let doc = t.thread.clone().unwrap();
+        let blocks = r.thread.0.lock().unwrap()[&doc].clone();
+        assert_eq!(
+            blocks
+                .iter()
+                .filter(|b| b.contains("**review requested**"))
+                .count(),
+            2
+        );
+        assert!(blocks.last().unwrap().contains("- [x] tests"));
+        let e = r
+            .ledger
+            .review_packet(
+                &t.id,
+                "x".into(),
+                vec![],
+                (0..13)
+                    .map(|_| packet::Check {
+                        text: "c".into(),
+                        done: false,
+                        note: None,
+                    })
+                    .collect(),
+                "agent:ops",
+            )
+            .await;
+        assert!(e.is_ok(), "checks are uncapped");
     }
 
     #[tokio::test]

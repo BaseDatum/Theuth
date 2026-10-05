@@ -9,6 +9,7 @@
 //!   [`GetTask`], [`TaskBlocks`], [`CreateTask`], [`UpdateTask`], [`MoveTask`], [`CommentTask`],
 //!   [`TaskEvents`], [`CheckoutTask`], [`PlaceTask`], [`Escalate`],
 //!   [`AwaitDecision`], [`AnswerDecision`], [`Mention`], [`MarkAnswered`],
+//!   [`GetPacket`], [`ListPackets`], [`EffectiveReviewer`], [`ReviewPacket`],
 //!   [`NoteDisposition`], [`EpisodeClosing`], [`FinishWake`], [`ReleaseClaims`],
 //!   [`WriteBudgetOf`], [`SetDispatching`], [`RegisterDeskRouter`]
 //! - trait [`DeskRouter`] (the roster implements it)
@@ -19,6 +20,7 @@ pub mod activity;
 pub mod config;
 pub mod escalate;
 pub mod ledger;
+pub mod packet;
 pub mod place;
 pub mod store;
 pub mod thread;
@@ -244,18 +246,61 @@ pub struct PlaceTask {
 }
 
 /// `ask` → `Result<String, String>`: `escalate` (67 §11); the `decision:<id>` blocker.
+/// With a `summary` (required when the manager is the user, 101 D1) the
+/// request is stored as a `decision:<id>` packet.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Escalate {
     /// Which.
     pub task: TaskId,
     /// The question.
     pub question: String,
+    /// Markdown: what the decision is about (101 §3).
+    pub summary: Option<String>,
     /// Options.
-    pub options: Vec<String>,
+    pub options: Vec<packet::PacketOption>,
+    /// Index into `options`.
+    pub recommended: Option<u32>,
+    /// Where to look.
+    pub pointers: Vec<packet::Pointer>,
     /// Who.
     pub actor: String,
     /// Session.
     pub session: Option<String>,
+}
+
+/// `ask` → `Result<Option<Packet>, String>`: one packet by key (`decision:<id>` | `review:<task>`).
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct GetPacket(pub String);
+
+/// `ask` → `Result<Vec<Packet>, String>`: every packet of these tasks, newest first.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ListPackets(pub Vec<TaskId>);
+
+/// `ask` → `Result<Owner, String>`: who would review `id` if it went to review
+/// now — `reviewer` when given, else the task's, else the owner's manager
+/// (101 D1: the tools refuse a hand-over to the user without a packet).
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct EffectiveReviewer {
+    /// Which.
+    pub id: TaskId,
+    /// The reviewer the call names, if any.
+    pub reviewer: Option<Owner>,
+}
+
+/// `ask` → `Result<Packet, String>`: store (replace) the `review:<task>` packet
+/// and write the `**review requested**` thread block (101 D3).
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ReviewPacket {
+    /// Which.
+    pub id: TaskId,
+    /// Markdown.
+    pub summary: String,
+    /// Where to look.
+    pub pointers: Vec<packet::Pointer>,
+    /// Claimed status against `done_when`.
+    pub checks: Vec<packet::Check>,
+    /// Who.
+    pub actor: String,
 }
 
 /// `ask` → `Result<(), String>`: a chat message into the task's thread
@@ -487,6 +532,45 @@ impl Message<GetTask> for Tasks {
     }
 }
 
+impl Message<GetPacket> for Tasks {
+    type Reply = Result<Option<packet::Packet>, String>;
+
+    async fn handle(&mut self, m: GetPacket, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        self.ledger.packet(&m.0).await
+    }
+}
+
+impl Message<ListPackets> for Tasks {
+    type Reply = Result<Vec<packet::Packet>, String>;
+
+    async fn handle(&mut self, m: ListPackets, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        self.ledger.packets_for(&m.0).await
+    }
+}
+
+impl Message<EffectiveReviewer> for Tasks {
+    type Reply = Result<Owner, String>;
+
+    async fn handle(
+        &mut self,
+        m: EffectiveReviewer,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        let t = self.ledger.get(&m.id).await?;
+        Ok(self.ledger.effective_reviewer(&t, m.reviewer.as_ref()))
+    }
+}
+
+impl Message<ReviewPacket> for Tasks {
+    type Reply = Result<packet::Packet, String>;
+
+    async fn handle(&mut self, m: ReviewPacket, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        self.ledger
+            .review_packet(&m.id, m.summary, m.pointers, m.checks, &m.actor)
+            .await
+    }
+}
+
 impl Message<TaskBlocks> for Tasks {
     type Reply = Result<Vec<TaskId>, String>;
 
@@ -606,15 +690,16 @@ impl Message<Escalate> for Tasks {
     type Reply = Result<String, String>;
 
     async fn handle(&mut self, m: Escalate, ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        let ask = packet::Ask {
+            question: m.question.clone(),
+            summary: m.summary.clone(),
+            options: m.options.clone(),
+            recommended: m.recommended,
+            pointers: m.pointers.clone(),
+        };
         let (decision, manager) = self
             .ledger
-            .escalate(
-                &m.task,
-                &m.question,
-                &m.options,
-                &m.actor,
-                m.session.as_deref(),
-            )
+            .escalate(&m.task, ask, &m.actor, m.session.as_deref())
             .await?;
         if manager == Owner::User {
             let title = self
@@ -665,11 +750,11 @@ async fn ask_user(me: ActorRef<Tasks>, decision: String, m: Escalate, title: Str
             .options
             .iter()
             .map(|o| ::tools::Choice {
-                label: o.clone(),
-                description: None,
+                label: o.label.clone(),
+                description: o.description.clone(),
             })
             .collect(),
-        recommended: None,
+        recommended: m.recommended.map(|r| r as usize),
     };
     let Ok(out) = ask
         .ask(::tools::ask::Request {
@@ -681,7 +766,7 @@ async fn ask_user(me: ActorRef<Tasks>, decision: String, m: Escalate, title: Str
         return;
     };
     let answer = match out.answers.and_then(|v| v.into_iter().next()) {
-        Some(::tools::Answer::Choice { index }) => m.options.get(index).cloned(),
+        Some(::tools::Answer::Choice { index }) => m.options.get(index).map(|o| o.label.clone()),
         Some(::tools::Answer::Text { text }) => Some(text),
         _ => None,
     };
@@ -1065,8 +1150,8 @@ impl runtime::Plugin for TasksPlugin {
             }
         };
         let actor_store = store.clone();
-        match replica::attach(store.pool(), &["tasks", "wakes", "answered"]).await {
-            Ok(_) => tracing::info!("tasks: tasks, wakes and answered replicate"),
+        match replica::attach(store.pool(), &["tasks", "wakes", "answered", "packets"]).await {
+            Ok(_) => tracing::info!("tasks: tasks, wakes, answered and packets replicate"),
             Err(e) => tracing::debug!("tasks: local only ({e})"),
         }
         // `roster.decision_wait_secs` (67 §11) without a roster dependency.

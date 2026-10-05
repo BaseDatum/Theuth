@@ -1,0 +1,44 @@
+import { expect, test } from 'vitest'
+import type { AttentionItem } from '@/rpc/bindings/AttentionItem'
+import type { Pointer } from '@/rpc/bindings/Pointer'
+import { nextAfter, parseCodeRef, pointerRoute, urlHost } from './model'
+
+const item = (id: string): AttentionItem => ({ id, kind: 'decision', title: id, detail: null, at_ms: 1, task: null, agent: null, session: null, approval: null, decision: null, packet: null })
+const ptr = (kind: Pointer['kind'], ref: string): Pointer => ({ kind, ref, title: ref, note: null, text: null, root: null })
+
+test('parseCodeRef reads path#L<a>-L<b> and path#L<a>; rejects the rest', () => {
+  expect(parseCodeRef('src/a.rs#L10-L24')).toEqual({ path: 'src/a.rs', start: 10, end: 24 })
+  expect(parseCodeRef('src/a.rs#L10')).toEqual({ path: 'src/a.rs', start: 10, end: 10 })
+  expect(parseCodeRef('crates/x/src/lib.rs#L1-L1')).toEqual({ path: 'crates/x/src/lib.rs', start: 1, end: 1 })
+  expect(parseCodeRef('src/a.rs')).toBeNull()
+  expect(parseCodeRef('src/a.rs#L24-L10')).toBeNull()
+  expect(parseCodeRef('src/a.rs#L0')).toBeNull()
+  expect(parseCodeRef('#L3')).toBeNull()
+})
+
+test('nextAfter: the item below the resolved one, else the one above, else null', () => {
+  const items = [item('a'), item('b'), item('c')]
+  expect(nextAfter(items, 'a')?.id).toBe('b')
+  expect(nextAfter(items, 'b')?.id).toBe('c')
+  expect(nextAfter(items, 'c')?.id).toBe('b')
+  expect(nextAfter([item('a')], 'a')).toBeNull()
+  expect(nextAfter(items, 'zz')).toBeNull()
+  expect(nextAfter([], 'a')).toBeNull()
+})
+
+test('pointerRoute maps viewer kinds to their routes and leaves url/code/diff inline', () => {
+  expect(pointerRoute(ptr('artifact', 'call-1'))).toEqual({ to: '/artifacts/$callId', params: { callId: 'call-1' } })
+  expect(pointerRoute(ptr('note', 'doc-1'))).toEqual({ to: '/notes/$id', params: { id: 'doc-1' } })
+  expect(pointerRoute(ptr('knowledge', 'a/b.md'))).toEqual({ to: '/knowledge/$', params: { _splat: 'a/b.md' } })
+  expect(pointerRoute(ptr('session', 's1'))).toEqual({ to: '/c/$session', params: { session: 's1' } })
+  expect(pointerRoute(ptr('meeting', 'm1'))).toEqual({ to: '/meetings/$id', params: { id: 'm1' } })
+  expect(pointerRoute(ptr('task', 't1'))).toEqual({ to: '/tasks/$id', params: { id: 't1' } })
+  expect(pointerRoute(ptr('url', 'https://x.y/z'))).toBeNull()
+  expect(pointerRoute(ptr('code', 'a#L1'))).toBeNull()
+  expect(pointerRoute(ptr('diff', 'main..head'))).toBeNull()
+})
+
+test('urlHost', () => {
+  expect(urlHost('https://github.com/x/y/pull/1')).toBe('github.com')
+  expect(urlHost('not a url')).toBe('not a url')
+})

@@ -1,4 +1,4 @@
-//! `<data_dir>/tasks.sqlite`: `tasks`, `wakes`, `task_events`, `write_budget` (67 §7).
+//! `<data_dir>/tasks.sqlite`: `tasks`, `wakes`, `task_events`, `write_budget`, `packets` (67 §7, 101).
 //! Plain row access; the rules live in [`crate::ledger`].
 
 use std::path::Path;
@@ -9,6 +9,7 @@ use std::time::Duration;
 use anyhow::Context as _;
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePool, SqlitePoolOptions};
 
+use crate::packet::Packet;
 use crate::types::{
     Checkout, Owner, Task, TaskEvent, TaskFilter, TaskId, TaskState, Wake, WakeReason,
 };
@@ -568,6 +569,49 @@ impl Store {
         .execute(&self.pool)
         .await?;
         Ok(r.rows_affected() == 1)
+    }
+
+    /// Insert or replace one packet (101 §3; `hlc` stamped from `at_ms`).
+    pub async fn put_packet(&self, p: &Packet) -> anyhow::Result<()> {
+        sqlx::query(
+            "INSERT OR REPLACE INTO packets (key, task, kind, json, at_ms, hlc) \
+             VALUES (?, ?, ?, ?, ?, ?)",
+        )
+        .bind(&p.key)
+        .bind(&p.task.0)
+        .bind(p.kind.as_str())
+        .bind(serde_json::to_string(p)?)
+        .bind(p.at_ms as i64)
+        .bind(hlc(p.at_ms))
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// One packet by key.
+    pub async fn packet(&self, key: &str) -> anyhow::Result<Option<Packet>> {
+        let row: Option<(String,)> = sqlx::query_as("SELECT json FROM packets WHERE key = ?")
+            .bind(key)
+            .fetch_optional(&self.pool)
+            .await?;
+        row.map(|(j,)| serde_json::from_str(&j).map_err(Into::into))
+            .transpose()
+    }
+
+    /// Every packet of `tasks`, newest first. Rows that no longer parse are skipped.
+    pub async fn packets_for(&self, tasks: &[TaskId]) -> anyhow::Result<Vec<Packet>> {
+        let ids = serde_json::to_string(&tasks.iter().map(|t| t.0.as_str()).collect::<Vec<_>>())?;
+        let rows: Vec<(String,)> = sqlx::query_as(
+            "SELECT json FROM packets WHERE task IN (SELECT value FROM json_each(?)) \
+             ORDER BY at_ms DESC",
+        )
+        .bind(ids)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows
+            .into_iter()
+            .filter_map(|(j,)| serde_json::from_str(&j).ok())
+            .collect())
     }
 }
 
