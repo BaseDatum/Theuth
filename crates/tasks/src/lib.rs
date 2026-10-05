@@ -328,6 +328,17 @@ pub struct FinishWake(pub Wake);
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ReleaseClaims(pub String);
 
+/// `tell`: the desk turn that took this wake did not yield (a cancel, a
+/// timeout, a provider error — WAKE-LIVE-CHILD D2): the claim is released so
+/// the wake is delivered again, not before `min_backoff_ms`.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ReleaseWake {
+    /// The wake, as delivered.
+    pub wake: Wake,
+    /// Floor on the re-delivery back-off (ms).
+    pub min_backoff_ms: u64,
+}
+
 /// `ask` → `Result<Task, String>`: the 67 §7.3 rule on one task (70
 /// DESK-PROTOCOL: a desk turn nudged once and still not moving it) —
 /// `blocked: no continuation`, `why` in the thread, the agent's manager woken.
@@ -773,6 +784,16 @@ impl Message<ReleaseClaims> for Tasks {
     }
 }
 
+impl Message<ReleaseWake> for Tasks {
+    type Reply = ();
+
+    async fn handle(&mut self, m: ReleaseWake, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        if let Err(e) = self.ledger.release_wake(&m.wake, m.min_backoff_ms).await {
+            tracing::error!(wake = %m.wake.id, "wake not released: {e}");
+        }
+    }
+}
+
 impl Message<NoContinuation> for Tasks {
     type Reply = Result<Task, String>;
 
@@ -840,7 +861,10 @@ impl Message<Dispatch> for Tasks {
                     .deliver(&d.wake.agent, &d.wake, d.task.as_ref())
                     .await
                 {
-                    Ok(()) => true,
+                    Ok(()) => {
+                        tracing::info!(agent = %d.wake.agent, wake = %d.wake.id, task = ?d.wake.task, reason = d.wake.reason.as_str(), "wake delivered");
+                        true
+                    }
                     Err(e) => {
                         tracing::warn!(agent = %d.wake.agent, "wake not delivered: {e:#}");
                         false
@@ -900,6 +924,50 @@ async fn project_of_cwd(cwd: Option<&str>) -> Option<String> {
         .into_iter()
         .find(|s| s.cwd.as_deref() == Some(cwd) && s.project.is_some())
         .and_then(|s| s.project)
+}
+
+/// A session is at work: a turn is in flight, it waits on a peer or an
+/// approval, or it runs a job or PTY.
+fn session_active(a: &agent::SessionActivity) -> bool {
+    a.turn_started_at.is_some()
+        || matches!(
+            a.state,
+            agent::AgentState::Running
+                | agent::AgentState::Awaiting { .. }
+                | agent::AgentState::Approval { .. }
+        )
+        || a.jobs + a.ptys > 0
+}
+
+/// [`ledger::LivenessProbe`] over the agent actor (WAKE-LIVE-CHILD D4): the
+/// session's own [`agent::ActivityOf`] plus every descendant from
+/// [`agent::ListAgents`]. `None` without an agent actor or for an id this
+/// engine has no row for.
+pub struct AgentProbe;
+
+#[async_trait::async_trait]
+impl ledger::LivenessProbe for AgentProbe {
+    async fn liveness(&self, session: &str) -> Option<ledger::Liveness> {
+        let id: runtime::SessionId = session.parse().ok()?;
+        let agents = ActorRef::<agent::Agents>::lookup(agent::AGENT_ACTOR)
+            .ok()
+            .flatten()?;
+        let own = agents
+            .ask(agent::ActivityOf(vec![id]))
+            .await
+            .ok()?
+            .remove(&id)?;
+        let kids = agents.ask(agent::ListAgents { session: id }).await.ok()?;
+        let ms = |t: Option<chrono::DateTime<chrono::Utc>>| t.map(|t| t.timestamp_millis() as u64);
+        Some(ledger::Liveness {
+            active_now: session_active(&own) || kids.iter().any(|k| session_active(&k.activity)),
+            last_active_ms: kids
+                .iter()
+                .filter_map(|k| ms(k.activity.last_active))
+                .chain(ms(own.last_active))
+                .max(),
+        })
+    }
 }
 
 #[async_trait::async_trait]

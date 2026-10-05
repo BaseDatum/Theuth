@@ -80,6 +80,25 @@ impl SessionTaker for MeshTaker {
     }
 }
 
+/// What the sweep knows about a checkout's session before calling it stale
+/// (WAKE-LIVE-CHILD D4): whether it or any descendant works right now, and
+/// when any of them was last active.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Liveness {
+    /// A turn, job, PTY or child is running now.
+    pub active_now: bool,
+    /// Newest `last_active` over the session and its descendants (epoch ms).
+    pub last_active_ms: Option<u64>,
+}
+
+/// Answers [`Liveness`] for a session; `None` = unknown (no agent actor, a
+/// session this engine never saw), which keeps the progress-note rule alone.
+#[async_trait::async_trait]
+pub trait LivenessProbe: Send + Sync {
+    /// Liveness of `session` and its subtree.
+    async fn liveness(&self, session: &str) -> Option<Liveness>;
+}
+
 /// One claimed wake the actor must deliver off the mailbox.
 pub struct Delivery {
     /// The wake, `claimed_by` set.
@@ -104,6 +123,8 @@ pub struct Ledger {
     pub engine: String,
     /// Takes a lost engine's session here before its `Resume` wake (68 §4.4).
     pub taker: Arc<dyn SessionTaker>,
+    /// Whether a checkout's session still works (WAKE-LIVE-CHILD D4).
+    pub probe: Arc<dyn LivenessProbe>,
     /// `(agent, task)` → `updated_ms` of the task when the agent's wake on it
     /// was claimed: the no-progress comparison point (67 §7.3). Local: a hub
     /// move restarts the count.
@@ -112,6 +133,9 @@ pub struct Ledger {
     retry: HashMap<String, (u32, u64)>,
     /// Engine → first sweep that saw it unreachable (ms).
     unreachable_since: HashMap<String, u64>,
+    /// Agent → the claimed wake id its waiting wakes were last reported held
+    /// behind (WAKE-LIVE-CHILD D3): one log line per blocking wake.
+    reported_busy: HashMap<String, String>,
 }
 
 type R<T> = Result<T, String>;
@@ -173,9 +197,11 @@ impl Ledger {
             clock,
             engine,
             taker: Arc::new(MeshTaker),
+            probe: Arc::new(crate::AgentProbe),
             delivered: HashMap::new(),
             retry: HashMap::new(),
             unreachable_since: HashMap::new(),
+            reported_busy: HashMap::new(),
         }
     }
 
@@ -495,6 +521,7 @@ impl Ledger {
                 &format!("schedule `{schedule}` fired again ({}×)", w.count),
             )
             .await;
+            tracing::info!(schedule, agent, task = %t.id, count = w.count, "schedule fire: wake re-raised on the existing task");
             return Ok(t);
         }
         let input = TaskCreate {
@@ -516,6 +543,7 @@ impl Ledger {
             .await?;
         t.schedule = Some((schedule.to_owned(), fire_ms));
         self.save(&t).await?;
+        tracing::info!(schedule, agent, task = %t.id, "schedule fire: task created, wake raised");
         Ok(t)
     }
 
@@ -1443,6 +1471,30 @@ impl Ledger {
             .filter(|w| w.claimed_by.is_some())
             .map(|w| w.agent.as_str())
             .collect();
+        // WAKE-LIVE-CHILD D3: say once, per blocking wake, that an agent's
+        // newer wakes wait behind a claim its desk still holds.
+        // ponytail: O(claimed × wakes) scan; the table holds a handful of rows.
+        self.reported_busy
+            .retain(|agent, _| busy.contains(agent.as_str()));
+        for w in wakes.iter().filter(|w| w.claimed_by.is_some()) {
+            let waiting = wakes
+                .iter()
+                .filter(|x| x.agent == w.agent && x.claimed_by.is_none())
+                .count();
+            if waiting == 0 || self.reported_busy.get(&w.agent) == Some(&w.id) {
+                continue;
+            }
+            tracing::info!(
+                agent = %w.agent,
+                behind = %w.id,
+                reason = w.reason.as_str(),
+                task = ?w.task,
+                claimed_by = ?w.claimed_by,
+                waiting,
+                "wakes held: desk still serving an earlier wake"
+            );
+            self.reported_busy.insert(w.agent.clone(), w.id.clone());
+        }
         let mut picked: HashMap<String, Delivery> = HashMap::new();
         for w in &wakes {
             if w.claimed_by.is_some()
@@ -1538,10 +1590,21 @@ impl Ledger {
 
     /// Delivery failed: unclaim; retry after 5 s doubling to 5 min.
     pub async fn delivery_failed(&mut self, wake: &Wake) -> R<()> {
+        self.release_wake(wake, 0).await
+    }
+
+    /// The desk turn that took `wake` did not yield (WAKE-LIVE-CHILD D2: a
+    /// cancel, timeout or provider error): unclaim it so dispatch delivers it
+    /// again, not before the delivery back-off (5 s doubling to 5 min) or
+    /// `min_backoff_ms`, whichever is later.
+    pub async fn release_wake(&mut self, wake: &Wake, min_backoff_ms: u64) -> R<()> {
         let now = self.now();
         let e = self.retry.entry(wake.id.clone()).or_insert((0, 0));
         e.0 += 1;
-        e.1 = now + (5_000u64 << (e.0 - 1).min(6)).min(300_000);
+        e.1 = now
+            + (5_000u64 << (e.0 - 1).min(6))
+                .min(300_000)
+                .max(min_backoff_ms);
         self.store.claim(&wake.id, None, now).await.map_err(db)
     }
 
@@ -1591,8 +1654,12 @@ impl Ledger {
     // ---- orphan sweep, disposition enforcement -----------------------------------------
 
     /// 67 §7.5 every 30 s. `reachable`: the connected engines (self included)
-    /// when the mesh is up; `None` = staleness only. Orphans: the checkout is
-    /// kept, marked, `epoch + 1`; the owner is woken with `resume`. Wakes
+    /// when the mesh is up; `None` = staleness only. A reachable checkout is
+    /// stale when neither its session nor any descendant works right now
+    /// ([`LivenessProbe`], WAKE-LIVE-CHILD D4) and both its last progress
+    /// note and its last activity are older than `tasks.stale_secs` — a desk
+    /// idle between its children's results is not lost. Orphans: the checkout
+    /// is kept, marked, `epoch + 1`; the owner is woken with `resume`. Wakes
     /// claimed by a desk that is no longer the agent's are un-claimed.
     pub async fn sweep(&mut self, reachable: Option<&HashSet<String>>) -> R<Vec<TaskId>> {
         let now = self.now();
@@ -1615,6 +1682,7 @@ impl Ledger {
             if c.orphaned {
                 continue;
             }
+            let mut last_active_ms = None;
             let lost = match reachable {
                 Some(r) if !r.contains(&c.engine) => {
                     let since = *self
@@ -1623,7 +1691,17 @@ impl Ledger {
                         .or_insert(now);
                     now.saturating_sub(since) >= self.cfg.orphan_secs * 1000
                 }
-                _ => now.saturating_sub(c.progress_at_ms) >= self.cfg.stale_secs * 1000,
+                _ => {
+                    let stale_ms = self.cfg.stale_secs * 1000;
+                    // The probe is asked only once the notes alone look stale.
+                    now.saturating_sub(c.progress_at_ms) >= stale_ms && {
+                        let live = self.probe.liveness(&c.session).await;
+                        last_active_ms = live.and_then(|l| l.last_active_ms);
+                        !live.is_some_and(|l| l.active_now)
+                            && now.saturating_sub(c.progress_at_ms.max(last_active_ms.unwrap_or(0)))
+                                >= stale_ms
+                    }
+                }
             };
             if !lost {
                 continue;
@@ -1657,14 +1735,21 @@ impl Ledger {
                 Some(checkout_text(&n)),
             )
             .await;
+            let since = match last_active_ms {
+                Some(ms) => format!(
+                    "; last activity {} min ago",
+                    now.saturating_sub(ms) / 60_000
+                ),
+                None => String::new(),
+            };
             let note = if taken.is_ok() {
                 format!(
-                    "session {} on {} is presumed lost; taken here ({}), resume it",
+                    "session {} on {} is presumed lost{since}; taken here ({}), resume it",
                     c.session, c.engine, self.engine
                 )
             } else {
                 format!(
-                    "session {} on {} is presumed lost; resume from the last progress note",
+                    "session {} on {} is presumed lost{since}; resume from the last progress note",
                     c.session, c.engine
                 )
             };
@@ -1895,12 +1980,24 @@ pub(crate) mod tests {
         }
     }
 
+    /// A liveness probe: `session → answer`; unknown sessions answer `None`.
+    #[derive(Default)]
+    pub struct MemProbe(pub tokio::sync::Mutex<HashMap<String, Liveness>>);
+
+    #[async_trait::async_trait]
+    impl LivenessProbe for MemProbe {
+        async fn liveness(&self, session: &str) -> Option<Liveness> {
+            self.0.lock().await.get(session).copied()
+        }
+    }
+
     pub struct Rig {
         pub ledger: Ledger,
         pub clock: Arc<AtomicU64>,
         pub thread: Arc<MemThread>,
         pub router: Arc<MemRouter>,
         pub taker: Arc<MemTaker>,
+        pub probe: Arc<MemProbe>,
         _dir: tempfile::TempDir,
     }
 
@@ -1926,12 +2023,15 @@ pub(crate) mod tests {
         ledger.router = Some(router.clone());
         let taker = Arc::new(MemTaker::default());
         ledger.taker = taker.clone();
+        let probe = Arc::new(MemProbe::default());
+        ledger.probe = probe.clone();
         Rig {
             ledger,
             clock,
             thread,
             router,
             taker,
+            probe,
             _dir: dir,
         }
     }
@@ -3589,6 +3689,59 @@ pub(crate) mod tests {
         );
     }
 
+    /// WAKE-LIVE-CHILD D2: a wake handed back by a turn that did not yield is
+    /// unclaimed and re-dispatched after its floor; without a floor the
+    /// delivery back-off (5 s) applies.
+    #[tokio::test]
+    async fn release_wake_unclaims_with_a_floor() {
+        let mut r = rig().await;
+        r.task("agent:ops").await;
+        let d = r.ledger.dispatch().await.unwrap();
+        let w = &d[0].wake;
+        r.ledger.release_wake(w, 300_000).await.unwrap();
+        let row = r.ledger.wakes().await.unwrap().remove(0);
+        assert_eq!((row.id.as_str(), row.claimed_by), (w.id.as_str(), None));
+        r.tick(299_000);
+        assert!(
+            r.ledger.dispatch().await.unwrap().is_empty(),
+            "under the floor"
+        );
+        r.tick(2_000);
+        let again = r.ledger.dispatch().await.unwrap();
+        assert_eq!(again[0].wake.id, w.id, "delivered again after the floor");
+        r.ledger.delivered(&again[0].wake).await.unwrap();
+        r.ledger.release_wake(&again[0].wake, 0).await.unwrap();
+        r.tick(4_000);
+        assert!(
+            r.ledger.dispatch().await.unwrap().is_empty(),
+            "5 s back-off"
+        );
+        r.tick(2_000);
+        assert_eq!(r.ledger.dispatch().await.unwrap().len(), 1);
+    }
+
+    /// WAKE-LIVE-CHILD D3: the busy skip is reported once per blocking wake
+    /// and forgotten when the agent is free.
+    #[tokio::test]
+    async fn busy_skip_is_reported_once_per_blocking_wake() {
+        let mut r = rig().await;
+        let t = r.task("agent:ops").await;
+        let a = r.ledger.dispatch().await.unwrap().remove(0).wake;
+        assert!(r.ledger.reported_busy.is_empty(), "nothing waits yet");
+        r.ledger
+            .comment(&t.id, "ping", false, "user", None)
+            .await
+            .unwrap();
+        for _ in 0..2 {
+            assert!(r.ledger.dispatch().await.unwrap().is_empty());
+            assert_eq!(r.ledger.reported_busy.get("ops"), Some(&a.id));
+        }
+        r.ledger.finish_wake(&a).await.unwrap();
+        let b = r.ledger.dispatch().await.unwrap();
+        assert_eq!((b.len(), b[0].wake.reason), (1, WakeReason::Comment));
+        assert!(!r.ledger.reported_busy.contains_key("ops"));
+    }
+
     #[tokio::test]
     async fn send_back_wakes_owner_resumed_and_clears_backoff() {
         let mut r = rig().await;
@@ -3891,6 +4044,80 @@ pub(crate) mod tests {
         );
     }
 
+    /// WAKE-LIVE-CHILD D4: a checkout whose session (or a child of it) is at
+    /// work, or was active recently, is not stale however old its progress
+    /// note; an idle one past `stale_secs` is orphaned with a `resume` wake;
+    /// an unknown session keeps the progress-note rule.
+    #[tokio::test]
+    async fn checkout_with_live_work_is_not_stale() {
+        let mut r = rig().await;
+        let t = r.task("agent:ops").await;
+        r.ledger
+            .checkout(&t.id, "s-ops", "agent:ops")
+            .await
+            .unwrap();
+        r.tick(3_600_000);
+        let now = r.clock.load(Ordering::SeqCst);
+        let set = |r: &Rig, l: Liveness| {
+            let p = r.probe.clone();
+            async move { p.0.lock().await.insert("s-ops".into(), l) }
+        };
+        set(
+            &r,
+            Liveness {
+                active_now: true,
+                last_active_ms: None,
+            },
+        )
+        .await;
+        assert!(
+            r.ledger.sweep(None).await.unwrap().is_empty(),
+            "a running child is not lost"
+        );
+        set(
+            &r,
+            Liveness {
+                active_now: false,
+                last_active_ms: Some(now - 120_000),
+            },
+        )
+        .await;
+        assert!(
+            r.ledger.sweep(None).await.unwrap().is_empty(),
+            "active 2 min ago is not lost"
+        );
+        set(
+            &r,
+            Liveness {
+                active_now: false,
+                last_active_ms: Some(now - 1_200_000),
+            },
+        )
+        .await;
+        assert_eq!(r.ledger.sweep(None).await.unwrap(), vec![t.id.clone()]);
+        let w = r.ledger.wakes().await.unwrap();
+        assert!(
+            w.iter()
+                .any(|w| w.agent == "ops" && w.reason == WakeReason::Resume)
+        );
+        let doc = t.thread.clone().unwrap();
+        assert!(
+            r.thread.0.lock().unwrap()[&doc]
+                .iter()
+                .any(|b| b.contains("presumed lost; last activity 20 min ago")),
+        );
+        // Unknown session (no agent actor): the progress note alone decides.
+        let t2 = r.task("agent:ops").await;
+        r.ledger
+            .checkout(&t2.id, "s-other", "agent:ops")
+            .await
+            .unwrap();
+        r.tick(899_000);
+        assert!(r.ledger.sweep(None).await.unwrap().is_empty());
+        r.tick(2_000);
+        assert_eq!(r.ledger.sweep(None).await.unwrap(), vec![t2.id.clone()]);
+    }
+
     #[tokio::test]
     async fn episode_closing_blocks_leftover_tasks() {
         let mut r = rig().await;
@@ -4073,7 +4300,7 @@ pub(crate) mod tests {
 
     #[tokio::test]
     async fn schedule_fire_creates_coalesces_and_closes() {
-        let r = rig().await;
+        let mut r = rig().await;
         let t = r
             .ledger
             .create_for_schedule(
@@ -4116,6 +4343,28 @@ pub(crate) mod tests {
             .await
             .unwrap();
         assert_ne!(next.id, t.id);
+        // WAKE-LIVE-CHILD T6: the first fire's wake reaches the desk; the
+        // second waits behind it (reported once) and flows once it is finished.
+        let d = r.ledger.dispatch().await.unwrap();
+        assert_eq!(d.len(), 1);
+        let first = d.into_iter().next().unwrap();
+        assert_eq!(
+            (
+                first.wake.agent.as_str(),
+                first.wake.reason,
+                first.task.map(|x| x.id)
+            ),
+            ("ops", WakeReason::Schedule, Some(t.id.clone()))
+        );
+        assert!(r.ledger.dispatch().await.unwrap().is_empty(), "ops is busy");
+        assert_eq!(r.ledger.reported_busy.get("ops"), Some(&first.wake.id));
+        r.ledger.finish_wake(&first.wake).await.unwrap();
+        let d = r.ledger.dispatch().await.unwrap();
+        assert_eq!(
+            (d.len(), d[0].task.as_ref().map(|x| x.id.clone())),
+            (1, Some(next.id.clone()))
+        );
+        r.ledger.finish_wake(&d[0].wake).await.unwrap();
         // `until` passed: every open task of the schedule is done, reviewer system
         r.ledger
             .close_for_schedule("nightly", "done: until passed after 2 runs")
