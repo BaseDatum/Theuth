@@ -32,6 +32,7 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import { useMarkShown } from "@/components/hud/queries";
 import { ArtifactWriting, ToolSpinner } from "./Indicators";
 import {
   Tooltip,
@@ -401,6 +402,8 @@ export const ArtifactCard = memo(function ArtifactCard({
     s.sessions[session]?.appDrafts.get(tool.callId),
   );
   const [errors, setErrors] = useState(false);
+  // 104 A2: the card on screen in the open session is the user seeing the shown artifact.
+  useMarkShown(artifact ? tool.callId : null);
   const preview =
     artifact && TEXT_KINDS[artifact.kind] && artifact.kind !== "html"
       ? artifact.path

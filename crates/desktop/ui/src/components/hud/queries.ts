@@ -1,11 +1,13 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { useEffect } from 'react'
+import { useEffect, useRef } from 'react'
 import { ATTENTION_SIM, SECRET_REQUESTS_SIM, simFlag } from '@/components/settings/sandbox-queries'
 import { useAction } from '@/components/settings/shared'
 import { keys as taskKeys } from '@/components/tasks/queries'
 import { useApi } from '@/lib/rpc'
 import type { ActivityEntry } from '@/rpc/bindings/ActivityEntry'
+import type { Answer } from '@/rpc/bindings/Answer'
 import type { ApprovalId } from '@/rpc/bindings/ApprovalId'
+import type { AskId } from '@/rpc/bindings/AskId'
 import type { WireEvent } from '@/rpc/events'
 import { on } from '@/store/sessions'
 import { HANDOFFS_KEY } from '@/store/sandboxes'
@@ -18,8 +20,8 @@ export const PACKET_KEY = ['packet'] as const
 export const SECRET_REQUESTS_KEY = ['secret-requests'] as const
 export const ACTIVITY_KEY = ['activity'] as const
 
-/** Anything that can add or resolve an inbox item; the list is cheap to re-derive. */
-const ATTENTION_EVENTS = ['ActivityAppended', 'ApprovalRequested', 'ApprovalResolved', 'NodeAdded', 'NodeOnline', 'NodeRemoved', 'NodeRevoked', 'SecretRequested', 'SecretResolved', 'Takeover'] as const satisfies readonly WireEvent['type'][]
+/** Anything that can add or resolve an inbox item; the list is cheap to re-derive (104 A10: asks and shows too). */
+const ATTENTION_EVENTS = ['ActivityAppended', 'ApprovalRequested', 'ApprovalResolved', 'ArtifactShown', 'AskRequested', 'AskResolved', 'NodeAdded', 'NodeOnline', 'NodeRemoved', 'NodeRevoked', 'SecretRequested', 'SecretResolved', 'Takeover'] as const satisfies readonly WireEvent['type'][]
 
 /** `attention_list`, re-derived on every event that can change it. Polled slowly too: snoozes expire, budgets move. */
 export function useAttention() {
@@ -38,6 +40,29 @@ export function useAttention() {
     }
   }, [qc])
   return useQuery({ queryKey: ATTENTION_KEY, queryFn: () => (sim ? ATTENTION_SIM : api.attention_list()), refetchInterval: 60_000 })
+}
+
+/**
+ * 104 A2: the user saw the artifact of `callId` — on the attention Show screen (after `delayMs` on screen), in the chat
+ * `ArtifactCard` of an open session, or in the Library viewer. When the inbox cache holds `show:<callId>`, dismiss it
+ * once; nothing is fetched to find out (the cache is observed, not loaded) and nothing happens under `?sim=`.
+ */
+export function useMarkShown(callId: string | null, delayMs = 0) {
+  const api = useApi()
+  const qc = useQueryClient()
+  const sim = simFlag()
+  const list = useQuery({ queryKey: ATTENTION_KEY, queryFn: () => api.attention_list(), enabled: false })
+  const id = callId === null ? null : `show:${callId}`
+  const present = id !== null && !sim && (list.data?.some((i) => i.id === id) ?? false)
+  const fired = useRef(false)
+  useEffect(() => {
+    if (!present || fired.current || id === null) return
+    const t = setTimeout(() => {
+      fired.current = true
+      api.attention_dismiss(id).then(() => qc.invalidateQueries({ queryKey: ATTENTION_KEY }), () => undefined)
+    }, delayMs)
+    return () => clearTimeout(t)
+  }, [present, id, delayMs, api, qc])
 }
 
 /**
@@ -76,6 +101,15 @@ export function useAttentionActions() {
   return {
     dismiss: useAction((id: string) => api.attention_dismiss(id), { keys: [ATTENTION_KEY] }),
     snooze: useAction(({ id, until }: { id: string; until: number }) => api.attention_snooze(id, until), { keys: [ATTENTION_KEY] }),
+    /** 104 A6: Send (answers) or Dismiss (`null`, ends the asking turn) on the Ask screen — `AskCard`'s two buttons. */
+    ask: useAction(
+      async ({ id, answers }: { id: AskId; answers: Answer[] | null }) => {
+        const ok = await api.answer_ask(id, answers)
+        if (!ok) toast.message('That question was already answered')
+        return ok
+      },
+      { keys: [ATTENTION_KEY] },
+    ),
     approve: useAction(
       async ({ id, allow }: { id: ApprovalId; allow: boolean }) => {
         const ok = await api.resolve_approval(id, allow ? 'allow' : 'deny')
