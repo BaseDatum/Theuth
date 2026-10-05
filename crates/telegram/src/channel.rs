@@ -417,7 +417,9 @@ impl Channel {
             match self.api.edit_markup(&at, None).await {
                 Ok(()) => {}
                 Err(e) if is_not_modified(&e) => {}
-                Err(e) => tracing::debug!(chat = m.chat, message_id = m.message_id, error = %e, "stale telegram message not repaired"),
+                Err(e) => {
+                    tracing::debug!(chat = m.chat, message_id = m.message_id, error = %e, "stale telegram message not repaired")
+                }
             }
         }
     }
@@ -476,4 +478,3 @@ impl Channel {
         }
     }
 }
-

@@ -103,10 +103,7 @@ pub async fn run(ctx: PollCtx) {
                 }
                 for u in batch {
                     last = last.max(u.id);
-                    let fresh = ctx
-                        .recent
-                .lock()
-                        .insert(u.id);
+                    let fresh = ctx.recent.lock().insert(u.id);
                     if !fresh {
                         tracing::debug!(update_id = u.id, "duplicate telegram update dropped");
                         continue;
@@ -122,7 +119,10 @@ pub async fn run(ctx: PollCtx) {
                 let delay = backoff_delay(attempt);
                 attempt = attempt.saturating_add(1);
                 if e.is(CONFLICT) {
-                    tracing::warn!(delay_s = delay.as_secs(), "telegram getUpdates conflict: another poller on this token");
+                    tracing::warn!(
+                        delay_s = delay.as_secs(),
+                        "telegram getUpdates conflict: another poller on this token"
+                    );
                     (ctx.on_state)(TelegramEvent::Conflict);
                 } else {
                     tracing::warn!(error = %e, delay_s = delay.as_secs(), "telegram getUpdates failed; retrying");
@@ -319,8 +319,8 @@ pub struct IncomingCallback {
 /// A classified update (98 §7).
 #[derive(Clone, Debug, PartialEq)]
 pub enum Incoming {
-    /// A new message.
-    Message(IncomingMessage),
+    /// A new message (boxed: ~400 bytes against the other variants).
+    Message(Box<IncomingMessage>),
     /// A button press.
     Callback(IncomingCallback),
     /// The user pressed Stop on a draft.
@@ -357,11 +357,15 @@ pub enum Incoming {
 pub fn classify(u: &Update, me: &BotIdentity) -> Incoming {
     let update_id = u.id;
     match &u.update_type {
-        UpdateType::Message(m) => Incoming::Message(message(update_id, m, me)),
+        UpdateType::Message(m) => Incoming::Message(Box::new(message(update_id, m, me))),
         UpdateType::CallbackQuery(q) => {
             let (chat, message_id, thread) = match &q.message {
-                Some(MaybeInaccessibleMessage::Message(m)) => (chat_id(&m.chat), m.id, m.message_thread_id),
-                Some(MaybeInaccessibleMessage::InaccessibleMessage(m)) => (chat_id(&m.chat), m.message_id, None),
+                Some(MaybeInaccessibleMessage::Message(m)) => {
+                    (chat_id(&m.chat), m.id, m.message_thread_id)
+                }
+                Some(MaybeInaccessibleMessage::InaccessibleMessage(m)) => {
+                    (chat_id(&m.chat), m.message_id, None)
+                }
                 None => {
                     return Incoming::Ignored {
                         update_id,
@@ -388,7 +392,10 @@ pub fn classify(u: &Update, me: &BotIdentity) -> Incoming {
         UpdateType::BotStatus(cm) => Incoming::MyChatMember {
             update_id,
             chat: chat_id(&cm.chat),
-            left: matches!(cm.new_chat_member, ChatMember::Left(_) | ChatMember::Kicked(_)),
+            left: matches!(
+                cm.new_chat_member,
+                ChatMember::Left(_) | ChatMember::Kicked(_)
+            ),
         },
         other => Incoming::Ignored {
             update_id,
@@ -512,7 +519,8 @@ fn message(update_id: i64, m: &Message, me: &BotIdentity) -> IncomingMessage {
                     );
                     command = Some(Command {
                         name: name.to_lowercase(),
-                        for_other_bot: suffix.is_some_and(|s| !s.eq_ignore_ascii_case(&me.username)),
+                        for_other_bot: suffix
+                            .is_some_and(|s| !s.eq_ignore_ascii_case(&me.username)),
                         arg: rest,
                     });
                 }
@@ -521,10 +529,8 @@ fn message(update_id: i64, m: &Message, me: &BotIdentity) -> IncomingMessage {
                         mentions_bot = true;
                     }
                 }
-                TextEntity::TextMention { user, .. } => {
-                    if to_u64(i64::from(user.id)) == me.id {
-                        mentions_bot = true;
-                    }
+                TextEntity::TextMention { user, .. } if to_u64(i64::from(user.id)) == me.id => {
+                    mentions_bot = true;
                 }
                 _ => {}
             }
@@ -553,7 +559,13 @@ fn message(update_id: i64, m: &Message, me: &BotIdentity) -> IncomingMessage {
     let mut service = None;
     let secs = |d: i64| Some(to_u64(d).saturating_mul(1000));
     let size = |s: Option<i64>| s.map(to_u64);
-    let media_item = |kind, file_id: &str, file_name: Option<&str>, mime: Option<&str>, sz, dur, emoji: Option<&str>| Media {
+    let media_item = |kind,
+                      file_id: &str,
+                      file_name: Option<&str>,
+                      mime: Option<&str>,
+                      sz,
+                      dur,
+                      emoji: Option<&str>| Media {
         kind,
         file_id: file_id.to_owned(),
         file_name: file_name.map(str::to_owned),
@@ -639,8 +651,15 @@ fn message(update_id: i64, m: &Message, me: &BotIdentity) -> IncomingMessage {
             None,
             s.emoji.as_deref(),
         )),
-        MessageData::Location(l) => location = Some((f64::from(l.latitude), f64::from(l.longitude))),
-        MessageData::Venue(v) => location = Some((f64::from(v.location.latitude), f64::from(v.location.longitude))),
+        MessageData::Location(l) => {
+            location = Some((f64::from(l.latitude), f64::from(l.longitude)))
+        }
+        MessageData::Venue(v) => {
+            location = Some((
+                f64::from(v.location.latitude),
+                f64::from(v.location.longitude),
+            ))
+        }
         MessageData::Contact(c) => {
             let mut line = c.first_name.clone();
             if let Some(l) = &c.last_name {
@@ -657,7 +676,11 @@ fn message(update_id: i64, m: &Message, me: &BotIdentity) -> IncomingMessage {
                 implicit: t.is_name_implicit.unwrap_or(false),
             });
         }
-        MessageData::ForumTopicEdited(t) => service = Some(Service::TopicEdited { name: t.name.clone() }),
+        MessageData::ForumTopicEdited(t) => {
+            service = Some(Service::TopicEdited {
+                name: t.name.clone(),
+            })
+        }
         MessageData::ForumTopicClosed => service = Some(Service::TopicClosed),
         MessageData::ForumTopicReopened => service = Some(Service::TopicReopened),
         MessageData::NewChatMembers(_)
@@ -900,7 +923,9 @@ mod tests {
             update(json!({ "update_id": 8, "message": m }))
         };
         let Incoming::Message(m) = classify(
-            &base(json!({ "document": { "file_id": "d", "file_unique_id": "u", "file_name": "a.pdf", "mime_type": "application/pdf" } })),
+            &base(
+                json!({ "document": { "file_id": "d", "file_unique_id": "u", "file_name": "a.pdf", "mime_type": "application/pdf" } }),
+            ),
             &me(),
         ) else {
             panic!()
@@ -908,19 +933,26 @@ mod tests {
         assert_eq!(m.media[0].kind, MediaKind::Document);
         assert_eq!(m.media[0].file_name.as_deref(), Some("a.pdf"));
         let Incoming::Message(m) = classify(
-            &base(json!({ "sticker": { "file_id": "s", "file_unique_id": "u", "width": 1, "height": 1, "is_animated": false, "is_video": false, "type": "regular", "emoji": "🦀" } })),
+            &base(
+                json!({ "sticker": { "file_id": "s", "file_unique_id": "u", "width": 1, "height": 1, "is_animated": false, "is_video": false, "type": "regular", "emoji": "🦀" } }),
+            ),
             &me(),
         ) else {
             panic!()
         };
         assert_eq!(m.media[0].kind, MediaKind::Sticker);
         assert_eq!(m.media[0].emoji.as_deref(), Some("🦀"));
-        let Incoming::Message(m) = classify(&base(json!({ "location": { "latitude": 1.5, "longitude": -2.5 } })), &me()) else {
+        let Incoming::Message(m) = classify(
+            &base(json!({ "location": { "latitude": 1.5, "longitude": -2.5 } })),
+            &me(),
+        ) else {
             panic!()
         };
         assert_eq!(m.location, Some((1.5, -2.5)));
         let Incoming::Message(m) = classify(
-            &base(json!({ "contact": { "phone_number": "+1555", "first_name": "Bob", "last_name": "K" } })),
+            &base(
+                json!({ "contact": { "phone_number": "+1555", "first_name": "Bob", "last_name": "K" } }),
+            ),
             &me(),
         ) else {
             panic!()
@@ -1152,7 +1184,11 @@ mod tests {
     async fn batch_delivered_in_order_deduped_and_offset_confirmed_on_stop() {
         let server = MockServer::start().await;
         Mock::given(path(format!("/bot{TOKEN}/getUpdates")))
-            .respond_with(ok(json!([text_update(1, "a"), text_update(2, "b"), text_update(3, "c")])))
+            .respond_with(ok(json!([
+                text_update(1, "a"),
+                text_update(2, "b"),
+                text_update(3, "c")
+            ])))
             .up_to_n_times(1)
             .mount(&server)
             .await;
@@ -1165,8 +1201,12 @@ mod tests {
         let mut f = start(server, recent).await;
         let first = f.rx.recv().await.unwrap();
         let second = f.rx.recv().await.unwrap();
-        let Incoming::Message(a) = first else { panic!() };
-        let Incoming::Message(c) = second else { panic!() };
+        let Incoming::Message(a) = first else {
+            panic!()
+        };
+        let Incoming::Message(c) = second else {
+            panic!()
+        };
         assert_eq!((a.update_id, a.text.as_deref()), (1, Some("a")));
         assert_eq!((c.update_id, c.text.as_deref()), (3, Some("c")));
         assert_eq!(
@@ -1250,7 +1290,13 @@ mod tests {
         f.stop.cancel();
         f.task.await.unwrap();
         let events = f.events.lock().clone();
-        assert!(matches!(events[0], TelegramEvent::Disconnected { .. }), "{events:?}");
-        assert!(matches!(events.get(1), Some(TelegramEvent::Connected { .. })), "{events:?}");
+        assert!(
+            matches!(events[0], TelegramEvent::Disconnected { .. }),
+            "{events:?}"
+        );
+        assert!(
+            matches!(events.get(1), Some(TelegramEvent::Connected { .. })),
+            "{events:?}"
+        );
     }
 }

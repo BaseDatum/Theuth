@@ -17,23 +17,51 @@ pub const COMMANDS: &[(&str, &str, &str)] = &[
     ("status", "", "polling state, session, model, turn"),
     ("new", "", "start a new thread"),
     ("sessions", "", "10 newest sessions"),
-    ("resume", "<id>", "bind this thread to a session (prefix ok)"),
-    ("cancel", "[name]", "abort the turn, or a subagent's by name"),
+    (
+        "resume",
+        "<id>",
+        "bind this thread to a session (prefix ok)",
+    ),
+    (
+        "cancel",
+        "[name]",
+        "abort the turn, or a subagent's by name",
+    ),
     ("compact", "[summary|cut|snap|style …]", "fold the context"),
-    ("clear", "", "drop the conversation, keep the thread's settings"),
+    (
+        "clear",
+        "",
+        "drop the conversation, keep the thread's settings",
+    ),
     ("undo", "", "drop the last turn (redo restores)"),
     ("redo", "", "restore the last undone turn"),
     ("model", "[id]", "show or set the model"),
-    ("effort", "[level|clear]", "show or set the reasoning effort"),
-    ("agents", "", "this session's subagents: name · state · last · age"),
+    (
+        "effort",
+        "[level|clear]",
+        "show or set the reasoning effort",
+    ),
+    (
+        "agents",
+        "",
+        "this session's subagents: name · state · last · age",
+    ),
     ("jobs", "[kill <id>]", "list background jobs"),
     ("prompt", "", "the assembled system prompt"),
     ("skills", "[add <url>|rm <name>|sync]", "skills"),
     ("mcp", "[add <url|json>|sync]", "MCP servers"),
     ("login", "[name]", "list logins or start one"),
     ("logout", "<name>", "log out"),
-    ("provider", "[add <name> <url> <key>|rm <name>]", "OpenAI-compatible providers"),
-    ("approvals", "on|off [always]", "tool approval prompts (owner)"),
+    (
+        "provider",
+        "[add <name> <url> <key>|rm <name>]",
+        "OpenAI-compatible providers",
+    ),
+    (
+        "approvals",
+        "on|off [always]",
+        "tool approval prompts (owner)",
+    ),
     (
         "telegram",
         "[status|link|allow <id>|rm <id>|group add <id>|group rm <id>]",
@@ -215,7 +243,12 @@ pub async fn continue_prompt(_cx: CommandCx<'_>, _expect: Expect, _text: &str) -
 /// The help panel: the command table.
 #[must_use]
 pub fn help() -> Reply {
-    let rows = std::iter::once(vec!["command".to_owned(), "args".to_owned(), "what".to_owned()]).chain(
+    let rows = std::iter::once(vec![
+        "command".to_owned(),
+        "args".to_owned(),
+        "what".to_owned(),
+    ])
+    .chain(
         COMMANDS
             .iter()
             .map(|(n, a, d)| vec![format!("/{n}"), (*a).to_owned(), (*d).to_owned()]),
@@ -252,10 +285,18 @@ mod tests {
     #[test]
     fn table_is_well_formed_for_the_api() {
         for (n, _, d) in COMMANDS {
-            assert!(n.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_'), "{n}");
+            assert!(
+                n.bytes()
+                    .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_'),
+                "{n}"
+            );
             assert!((3..=256).contains(&d.len()), "{n}");
         }
-        assert!(!COMMANDS.iter().any(|(n, _, _)| *n == "approve" || *n == "deny" || *n == "signal"));
+        assert!(
+            !COMMANDS
+                .iter()
+                .any(|(n, _, _)| *n == "approve" || *n == "deny" || *n == "signal")
+        );
         assert!(owner_only("telegram"));
         assert!(!owner_only("help"));
         assert!(help().markdown.contains("| /help |"));

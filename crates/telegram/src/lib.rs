@@ -393,7 +393,11 @@ impl Message<Allow> for Telegram {
 impl Message<RemoveAllowed> for Telegram {
     type Reply = Result<(), String>;
 
-    async fn handle(&mut self, m: RemoveAllowed, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+    async fn handle(
+        &mut self,
+        m: RemoveAllowed,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
         if !self.cfg.allowed.contains(&m.0) {
             return Err(format!("{} is not in the allowed list", m.0));
         }
@@ -463,7 +467,9 @@ impl runtime::Plugin for TelegramPlugin {
             // The token lives in the vault (37 §3.6); wait for it, then connect.
             let vault = secrets::handle(&rt).await;
             if vault.is_none() {
-                tracing::warn!("telegram: secrets vault unavailable; starting without the bot token");
+                tracing::warn!(
+                    "telegram: secrets vault unavailable; starting without the bot token"
+                );
             }
             let token = vault
                 .as_ref()
@@ -476,13 +482,15 @@ impl runtime::Plugin for TelegramPlugin {
             }
             let configured = token.is_some();
             let handle = match token {
-                Some(token) if run_channel => match channel::spawn(cfg.clone(), token, rt.clone()) {
-                    Ok(h) => Some(h),
-                    Err(e) => {
-                        tracing::error!("telegram: channel failed to start: {e:#}");
-                        return;
+                Some(token) if run_channel => {
+                    match channel::spawn(cfg.clone(), token, rt.clone()) {
+                        Ok(h) => Some(h),
+                        Err(e) => {
+                            tracing::error!("telegram: channel failed to start: {e:#}");
+                            return;
+                        }
                     }
-                },
+                }
                 _ => None,
             };
             let sink = handle.clone();
@@ -509,7 +517,9 @@ impl runtime::Plugin for TelegramPlugin {
             else {
                 return;
             };
-            let _ = reg.ask(tools::RegisterTool(Arc::new(TelegramLinkTool))).await;
+            let _ = reg
+                .ask(tools::RegisterTool(Arc::new(TelegramLinkTool)))
+                .await;
             let _ = reg
                 .ask(tools::RegisterTool(Arc::new(TelegramStatusTool)))
                 .await;
@@ -606,7 +616,10 @@ pub fn render_status(s: &TelegramStatus) -> String {
     let state = match &s.state {
         None => "unknown".to_owned(),
         Some(TelegramEvent::Identity { bot, topics }) => {
-            format!("identity @{bot} (topics {})", if *topics { "on" } else { "off" })
+            format!(
+                "identity @{bot} (topics {})",
+                if *topics { "on" } else { "off" }
+            )
         }
         Some(TelegramEvent::Connected { bot }) => format!("connected as @{bot}"),
         Some(TelegramEvent::Disconnected { reason }) => format!("disconnected: {reason}"),
@@ -618,7 +631,9 @@ pub fn render_status(s: &TelegramStatus) -> String {
         Some(TelegramEvent::StreamFallback { session, reason }) => {
             format!("stream fallback for {session}: {reason}")
         }
-        Some(TelegramEvent::Unreachable { chat, reason }) => format!("chat {chat} unreachable: {reason}"),
+        Some(TelegramEvent::Unreachable { chat, reason }) => {
+            format!("chat {chat} unreachable: {reason}")
+        }
         Some(TelegramEvent::PairingLink { url, .. }) => format!("pairing link minted: {url}"),
         Some(TelegramEvent::Paired { user, name }) => format!("paired with {name} ({user})"),
         Some(TelegramEvent::Unconfigured) => {
@@ -639,7 +654,11 @@ pub fn render_status(s: &TelegramStatus) -> String {
             b.username,
             b.id,
             if b.topics { "on" } else { "off" },
-            if b.users_may_create_topics { ", users may create topics" } else { "" }
+            if b.users_may_create_topics {
+                ", users may create topics"
+            } else {
+                ""
+            }
         ),
         None => "-".to_owned(),
     };
@@ -691,7 +710,8 @@ mod tests {
 
     #[test]
     fn config_defaults_and_lowercase_modes() {
-        let c: TelegramConfig = serde_yaml::from_str("tools: errors\napprovals: threads\nowner: 5\n").unwrap();
+        let c: TelegramConfig =
+            serde_yaml::from_str("tools: errors\napprovals: threads\nowner: 5\n").unwrap();
         assert_eq!(c.tools, ToolsMode::Errors);
         assert_eq!(c.approvals, ApprovalsMode::Threads);
         assert_eq!(c.owner, Some(5));

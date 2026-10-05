@@ -30,7 +30,12 @@ pub trait Port: Send + Sync {
     /// `agent::NewRootSession`: an empty root with an explicit scope.
     async fn new_root(&self, scope: PeerScope) -> Result<SessionId, String>;
     /// `agent::Steer` with a fresh `InputId`: lands after the current tool batch.
-    async fn steer(&self, session: SessionId, text: String, files: Vec<PathBuf>) -> Result<(), String>;
+    async fn steer(
+        &self,
+        session: SessionId,
+        text: String,
+        files: Vec<PathBuf>,
+    ) -> Result<(), String>;
     /// `agent::Cancel`.
     async fn cancel(&self, session: SessionId) -> Result<(), String>;
     /// `agent::ListSessions`.
@@ -91,7 +96,12 @@ impl Port for LivePort {
             .map_err(|e| e.to_string())
     }
 
-    async fn steer(&self, session: SessionId, text: String, files: Vec<PathBuf>) -> Result<(), String> {
+    async fn steer(
+        &self,
+        session: SessionId,
+        text: String,
+        files: Vec<PathBuf>,
+    ) -> Result<(), String> {
         agents()?
             .ask(Steer {
                 session,
@@ -106,7 +116,10 @@ impl Port for LivePort {
 
     async fn cancel(&self, session: SessionId) -> Result<(), String> {
         agents()?
-            .ask(Cancel { session, keep: None })
+            .ask(Cancel {
+                session,
+                keep: None,
+            })
             .await
             .map_err(|e| e.to_string())
     }

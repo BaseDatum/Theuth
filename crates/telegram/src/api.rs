@@ -165,8 +165,7 @@ impl ApiError {
 
 // 98 §4.3: Telegram's verbatim descriptions (teloxide's errors.rs is the reference list).
 /// Another poller on this token.
-pub const CONFLICT: &str =
-    "Conflict: terminated by other getUpdates request; make sure that only one bot instance is running";
+pub const CONFLICT: &str = "Conflict: terminated by other getUpdates request; make sure that only one bot instance is running";
 /// An edit that changed nothing (prefix; Telegram appends detail).
 pub const NOT_MODIFIED_PREFIX: &str = "Bad Request: message is not modified";
 /// The message is gone.
@@ -226,11 +225,27 @@ pub trait Sender: Send + Sync + 'static {
         ephemeral: Option<&Ephemeral>,
     ) -> Result<i64, ApiError>;
     /// `editMessageText` with a rich message.
-    async fn edit_rich(&self, at: &MsgRef, md: &str, markup: Option<&Keyboard>) -> Result<(), ApiError>;
+    async fn edit_rich(
+        &self,
+        at: &MsgRef,
+        md: &str,
+        markup: Option<&Keyboard>,
+    ) -> Result<(), ApiError>;
     /// `sendRichMessageDraft` (private chats only; 30 s lifetime).
-    async fn draft(&self, to: &Target, draft_id: i64, md: &str, can_stop: bool) -> Result<(), ApiError>;
+    async fn draft(
+        &self,
+        to: &Target,
+        draft_id: i64,
+        md: &str,
+        can_stop: bool,
+    ) -> Result<(), ApiError>;
     /// Plain `sendMessage`, no `parse_mode`; the caller chunks to ≤ 4096.
-    async fn send_text(&self, to: &Target, text: &str, reply_to: Option<i64>) -> Result<i64, ApiError>;
+    async fn send_text(
+        &self,
+        to: &Target,
+        text: &str,
+        reply_to: Option<i64>,
+    ) -> Result<i64, ApiError>;
     /// `editMessageReplyMarkup`; `None` removes the keyboard.
     async fn edit_markup(&self, at: &MsgRef, markup: Option<&Keyboard>) -> Result<(), ApiError>;
     /// `setMessageReaction`; `None` clears.
@@ -249,7 +264,11 @@ pub trait Sender: Send + Sync + 'static {
     ) -> Result<i64, ApiError>;
     /// `getFile` + download; `TooBig` before fetching when `file_size > max`.
     /// Returns the bytes and the file name from `file_path`.
-    async fn download(&self, file_id: &str, max: u64) -> Result<(Vec<u8>, Option<String>), ApiError>;
+    async fn download(
+        &self,
+        file_id: &str,
+        max: u64,
+    ) -> Result<(Vec<u8>, Option<String>), ApiError>;
     /// `createForumTopic`; the topic id.
     async fn create_topic(&self, chat: i64, name: &str) -> Result<i64, ApiError>;
     /// `editForumTopic { name }`.
@@ -259,7 +278,11 @@ pub trait Sender: Send + Sync + 'static {
     /// `deleteMessage`.
     async fn delete_message(&self, at: &MsgRef) -> Result<(), ApiError>;
     /// `setMyCommands` for one scope.
-    async fn set_commands(&self, scope: CommandScope, cmds: &[BotCommandSpec]) -> Result<(), ApiError>;
+    async fn set_commands(
+        &self,
+        scope: CommandScope,
+        cmds: &[BotCommandSpec],
+    ) -> Result<(), ApiError>;
     /// `deleteWebhook` (a webhook left by a previous life makes `getUpdates` 409).
     async fn delete_webhook(&self) -> Result<(), ApiError>;
     /// `getMe`.
@@ -303,7 +326,11 @@ impl Pacer {
     /// Reserves a slot for `keys` now, or says how long to wait.
     fn reserve(&mut self, keys: &[(PaceKey, Duration)]) -> Option<Duration> {
         let now = Instant::now();
-        while self.recent.front().is_some_and(|t| now.duration_since(*t) >= Duration::from_secs(1)) {
+        while self
+            .recent
+            .front()
+            .is_some_and(|t| now.duration_since(*t) >= Duration::from_secs(1))
+        {
             self.recent.pop_front();
         }
         let mut wait = Duration::ZERO;
@@ -397,7 +424,10 @@ impl Api {
         let updates = self.call("getUpdates", m).await?;
         Ok(updates
             .into_iter()
-            .map(|u| RawUpdate { id: u.id, update: u })
+            .map(|u| RawUpdate {
+                id: u.id,
+                update: u,
+            })
             .collect())
     }
 
@@ -407,10 +437,7 @@ impl Api {
 
     async fn pace(&self, keys: &[(PaceKey, Duration)]) {
         loop {
-            let wait = self
-                .pacer
-                .lock()
-                .reserve(keys);
+            let wait = self.pacer.lock().reserve(keys);
             match wait {
                 None => return,
                 Some(d) => tokio::time::sleep(d).await,
@@ -435,7 +462,11 @@ impl Api {
                 Err(ApiError::RateLimited(d)) => {
                     c.rate_limited += 1;
                     drop(calls);
-                    tracing::warn!(method, retry_after_s = d.as_secs(), "telegram rate limited after retries");
+                    tracing::warn!(
+                        method,
+                        retry_after_s = d.as_secs(),
+                        "telegram rate limited after retries"
+                    );
                     if let Some(f) = self.on_rate_limited.get() {
                         f(TelegramEvent::RateLimited {
                             method: method.to_owned(),
@@ -531,7 +562,8 @@ impl Sender for Api {
         reply_to: Option<i64>,
         ephemeral: Option<&Ephemeral>,
     ) -> Result<i64, ApiError> {
-        self.pace(&[(PaceKey::Chat(to.chat), chat_gap(to.chat))]).await;
+        self.pace(&[(PaceKey::Chat(to.chat), chat_gap(to.chat))])
+            .await;
         let mut m = SendRichMessage::new(to.chat, InputRichMessage::markdown(md));
         if let Some(t) = to.thread {
             m = m.with_message_thread_id(t);
@@ -552,30 +584,50 @@ impl Sender for Api {
         Ok(self.call("sendRichMessage", m).await?.id)
     }
 
-    async fn edit_rich(&self, at: &MsgRef, md: &str, markup: Option<&Keyboard>) -> Result<(), ApiError> {
+    async fn edit_rich(
+        &self,
+        at: &MsgRef,
+        md: &str,
+        markup: Option<&Keyboard>,
+    ) -> Result<(), ApiError> {
         self.pace(&[
             (PaceKey::Chat(at.chat), chat_gap(at.chat)),
             (PaceKey::Edit(at.chat, at.id), EDIT_GAP),
         ])
         .await;
-        let mut m = EditMessageText::for_chat_message_rich(at.chat, at.id, InputRichMessage::markdown(md));
+        let mut m =
+            EditMessageText::for_chat_message_rich(at.chat, at.id, InputRichMessage::markdown(md));
         if let Some(k) = markup {
             m = m.with_reply_markup(keyboard(k));
         }
         self.call("editMessageText", m).await.map(|_| ())
     }
 
-    async fn draft(&self, to: &Target, draft_id: i64, md: &str, can_stop: bool) -> Result<(), ApiError> {
-        self.pace(&[(PaceKey::Draft(to.chat, to.thread), DRAFT_GAP)]).await;
-        let mut m = SendRichMessageDraft::new(to.chat, draft_id, InputRichMessage::markdown(md)).with_can_stop(can_stop);
+    async fn draft(
+        &self,
+        to: &Target,
+        draft_id: i64,
+        md: &str,
+        can_stop: bool,
+    ) -> Result<(), ApiError> {
+        self.pace(&[(PaceKey::Draft(to.chat, to.thread), DRAFT_GAP)])
+            .await;
+        let mut m = SendRichMessageDraft::new(to.chat, draft_id, InputRichMessage::markdown(md))
+            .with_can_stop(can_stop);
         if let Some(t) = to.thread {
             m = m.with_message_thread_id(t);
         }
         self.call("sendRichMessageDraft", m).await.map(|_| ())
     }
 
-    async fn send_text(&self, to: &Target, text: &str, reply_to: Option<i64>) -> Result<i64, ApiError> {
-        self.pace(&[(PaceKey::Chat(to.chat), chat_gap(to.chat))]).await;
+    async fn send_text(
+        &self,
+        to: &Target,
+        text: &str,
+        reply_to: Option<i64>,
+    ) -> Result<i64, ApiError> {
+        self.pace(&[(PaceKey::Chat(to.chat), chat_gap(to.chat))])
+            .await;
         let mut m = SendMessage::new(to.chat, text);
         if let Some(t) = to.thread {
             m = m.with_message_thread_id(t);
@@ -601,7 +653,8 @@ impl Sender for Api {
 
     async fn react(&self, at: &MsgRef, emoji: Option<&str>) -> Result<(), ApiError> {
         self.pace(&[]).await;
-        let m = SetMessageReaction::new(at.chat, at.id).with_reaction(emoji.map(ReactionType::emoji));
+        let m =
+            SetMessageReaction::new(at.chat, at.id).with_reaction(emoji.map(ReactionType::emoji));
         self.call("setMessageReaction", m).await.map(|_| ())
     }
 
@@ -630,7 +683,8 @@ impl Sender for Api {
         caption: Option<&str>,
         reply_to: Option<i64>,
     ) -> Result<i64, ApiError> {
-        self.pace(&[(PaceKey::Chat(to.chat), chat_gap(to.chat))]).await;
+        self.pace(&[(PaceKey::Chat(to.chat), chat_gap(to.chat))])
+            .await;
         let reply = reply_to.map(ReplyParameters::new);
         let msg = match file_kind(&file.mime, file.bytes.len()) {
             FileKind::Photo => {
@@ -676,13 +730,19 @@ impl Sender for Api {
         Ok(msg.id)
     }
 
-    async fn download(&self, file_id: &str, max: u64) -> Result<(Vec<u8>, Option<String>), ApiError> {
+    async fn download(
+        &self,
+        file_id: &str,
+        max: u64,
+    ) -> Result<(Vec<u8>, Option<String>), ApiError> {
         self.pace(&[]).await;
         let f = match self.call("getFile", GetFile::new(file_id)).await {
             Err(e) if e.is(FILE_TOO_BIG) => return Err(ApiError::TooBig),
             r => r?,
         };
-        if f.file_size.is_some_and(|s| u64::try_from(s).unwrap_or(u64::MAX) > max) {
+        if f.file_size
+            .is_some_and(|s| u64::try_from(s).unwrap_or(u64::MAX) > max)
+        {
             return Err(ApiError::TooBig);
         }
         let path = f
@@ -715,9 +775,12 @@ impl Sender for Api {
 
     async fn rename_topic(&self, chat: i64, topic: i64, name: &str) -> Result<(), ApiError> {
         self.pace(&[]).await;
-        self.call("editForumTopic", EditForumTopic::new(chat, topic).with_name(name))
-            .await
-            .map(|_| ())
+        self.call(
+            "editForumTopic",
+            EditForumTopic::new(chat, topic).with_name(name),
+        )
+        .await
+        .map(|_| ())
     }
 
     async fn close_topic(&self, chat: i64, topic: i64) -> Result<(), ApiError> {
@@ -734,7 +797,11 @@ impl Sender for Api {
             .map(|_| ())
     }
 
-    async fn set_commands(&self, scope: CommandScope, cmds: &[BotCommandSpec]) -> Result<(), ApiError> {
+    async fn set_commands(
+        &self,
+        scope: CommandScope,
+        cmds: &[BotCommandSpec],
+    ) -> Result<(), ApiError> {
         self.pace(&[]).await;
         let mut list = Vec::with_capacity(cmds.len());
         for c in cmds {
@@ -789,8 +856,14 @@ pub mod mock {
 
     use async_trait::async_trait;
 
-    use super::{ApiError, BotCommandSpec, CommandScope, Ephemeral, Keyboard, MsgRef, OutFile, Sender, Target};
+    use super::{
+        ApiError, BotCommandSpec, CommandScope, Ephemeral, Keyboard, MsgRef, OutFile, Sender,
+        Target,
+    };
     use crate::{BotIdentity, CallStats};
+
+    /// Bytes and file name a mocked download answers.
+    type Download = (Vec<u8>, Option<String>);
 
     /// One recorded call.
     #[derive(Clone, Debug, PartialEq, Eq)]
@@ -870,7 +943,7 @@ pub mod mock {
         next_id: AtomicI64,
         failures: Mutex<HashMap<&'static str, VecDeque<ApiError>>>,
         identity: Mutex<Option<BotIdentity>>,
-        downloads: Mutex<HashMap<String, (Vec<u8>, Option<String>)>>,
+        downloads: Mutex<HashMap<String, Download>>,
         next_topic: AtomicI64,
     }
 
@@ -959,7 +1032,12 @@ pub mod mock {
             Ok(self.id())
         }
 
-        async fn edit_rich(&self, at: &MsgRef, md: &str, markup: Option<&Keyboard>) -> Result<(), ApiError> {
+        async fn edit_rich(
+            &self,
+            at: &MsgRef,
+            md: &str,
+            markup: Option<&Keyboard>,
+        ) -> Result<(), ApiError> {
             self.record(
                 Call::EditRich {
                     at: *at,
@@ -970,7 +1048,13 @@ pub mod mock {
             )
         }
 
-        async fn draft(&self, to: &Target, draft_id: i64, md: &str, can_stop: bool) -> Result<(), ApiError> {
+        async fn draft(
+            &self,
+            to: &Target,
+            draft_id: i64,
+            md: &str,
+            can_stop: bool,
+        ) -> Result<(), ApiError> {
             self.record(
                 Call::Draft {
                     to: *to,
@@ -982,7 +1066,12 @@ pub mod mock {
             )
         }
 
-        async fn send_text(&self, to: &Target, text: &str, reply_to: Option<i64>) -> Result<i64, ApiError> {
+        async fn send_text(
+            &self,
+            to: &Target,
+            text: &str,
+            reply_to: Option<i64>,
+        ) -> Result<i64, ApiError> {
             self.record(
                 Call::SendText {
                     to: *to,
@@ -994,7 +1083,11 @@ pub mod mock {
             Ok(self.id())
         }
 
-        async fn edit_markup(&self, at: &MsgRef, markup: Option<&Keyboard>) -> Result<(), ApiError> {
+        async fn edit_markup(
+            &self,
+            at: &MsgRef,
+            markup: Option<&Keyboard>,
+        ) -> Result<(), ApiError> {
             self.record(
                 Call::EditMarkup {
                     at: *at,
@@ -1049,17 +1142,21 @@ pub mod mock {
             Ok(self.id())
         }
 
-        async fn download(&self, file_id: &str, max: u64) -> Result<(Vec<u8>, Option<String>), ApiError> {
+        async fn download(
+            &self,
+            file_id: &str,
+            max: u64,
+        ) -> Result<(Vec<u8>, Option<String>), ApiError> {
             self.record(Call::Download(file_id.to_owned()), "download")?;
-            let (bytes, name) = self
-                .downloads
-                .lock()
-                .get(file_id)
-                .cloned()
-                .ok_or_else(|| ApiError::Api {
-                    code: 400,
-                    description: "Bad Request: invalid file_id".into(),
-                })?;
+            let (bytes, name) =
+                self.downloads
+                    .lock()
+                    .get(file_id)
+                    .cloned()
+                    .ok_or_else(|| ApiError::Api {
+                        code: 400,
+                        description: "Bad Request: invalid file_id".into(),
+                    })?;
             if bytes.len() as u64 > max {
                 return Err(ApiError::TooBig);
             }
@@ -1096,7 +1193,11 @@ pub mod mock {
             self.record(Call::DeleteMessage(*at), "delete_message")
         }
 
-        async fn set_commands(&self, scope: CommandScope, cmds: &[BotCommandSpec]) -> Result<(), ApiError> {
+        async fn set_commands(
+            &self,
+            scope: CommandScope,
+            cmds: &[BotCommandSpec],
+        ) -> Result<(), ApiError> {
             self.record(
                 Call::SetCommands {
                     scope,
@@ -1173,11 +1274,19 @@ mod tests {
             let Some((head, val)) = part.split_once("\r\n\r\n") else {
                 continue;
             };
-            let Some(name) = head.split("name=\"").nth(1).and_then(|s| s.split('"').next()) else {
+            let Some(name) = head
+                .split("name=\"")
+                .nth(1)
+                .and_then(|s| s.split('"').next())
+            else {
                 continue;
             };
-            let val = val.trim_end_matches("\r\n").trim_end_matches("--").trim_end_matches("\r\n");
-            let v = serde_json::from_str::<Value>(val).unwrap_or_else(|_| Value::String(val.to_owned()));
+            let val = val
+                .trim_end_matches("\r\n")
+                .trim_end_matches("--")
+                .trim_end_matches("\r\n");
+            let v = serde_json::from_str::<Value>(val)
+                .unwrap_or_else(|_| Value::String(val.to_owned()));
             out.insert(name.to_owned(), v);
         }
         Value::Object(out)
@@ -1224,13 +1333,18 @@ mod tests {
                     text: "Allow".into(),
                     data: "ap:1:a".into(),
                 },
-                Button::Disabled { text: "Denied".into() },
+                Button::Disabled {
+                    text: "Denied".into(),
+                },
             ]],
             force_reply: true,
         };
         let id = api
             .send_rich(
-                &Target { chat: 7, thread: Some(99) },
+                &Target {
+                    chat: 7,
+                    thread: Some(99),
+                },
                 "# hi",
                 Some(&kb),
                 Some(12),
@@ -1262,9 +1376,16 @@ mod tests {
             .respond_with(ok(message(3)))
             .mount(&s)
             .await;
-        api.send_text(&Target { chat: 7, thread: None }, "**raw**", None)
-            .await
-            .unwrap();
+        api.send_text(
+            &Target {
+                chat: 7,
+                thread: None,
+            },
+            "**raw**",
+            None,
+        )
+        .await
+        .unwrap();
         let b = only_request(&s).await;
         assert_eq!(b["text"], "**raw**");
         assert!(b.get("parse_mode").is_none());
@@ -1278,7 +1399,9 @@ mod tests {
             .respond_with(ok(json!(true)))
             .mount(&s)
             .await;
-        api.edit_rich(&MsgRef { chat: 7, id: 55 }, "done", None).await.unwrap();
+        api.edit_rich(&MsgRef { chat: 7, id: 55 }, "done", None)
+            .await
+            .unwrap();
         let b = only_request(&s).await;
         assert_eq!(b["message_id"], 55);
         assert_eq!(b["rich_message"]["markdown"], "done");
@@ -1291,9 +1414,17 @@ mod tests {
             .respond_with(ok(json!(true)))
             .mount(&s)
             .await;
-        api.draft(&Target { chat: 7, thread: Some(2) }, 777, "wri", true)
-            .await
-            .unwrap();
+        api.draft(
+            &Target {
+                chat: 7,
+                thread: Some(2),
+            },
+            777,
+            "wri",
+            true,
+        )
+        .await
+        .unwrap();
         let b = only_request(&s).await;
         assert_eq!(b["draft_id"], 777);
         assert_eq!(b["can_stop"], true);
@@ -1323,7 +1454,9 @@ mod tests {
             .respond_with(ok(json!(true)))
             .mount(&s)
             .await;
-        api.answer_callback("q1", Some("not allowed")).await.unwrap();
+        api.answer_callback("q1", Some("not allowed"))
+            .await
+            .unwrap();
         let b = only_request(&s).await;
         assert_eq!(b["callback_query_id"], "q1");
         assert_eq!(b["text"], "not allowed");
@@ -1346,7 +1479,14 @@ mod tests {
             .await;
         let t0 = Instant::now();
         let id = api
-            .send_text(&Target { chat: 7, thread: None }, "x", None)
+            .send_text(
+                &Target {
+                    chat: 7,
+                    thread: None,
+                },
+                "x",
+                None,
+            )
             .await
             .unwrap();
         assert_eq!(id, 9);
@@ -1381,14 +1521,27 @@ mod tests {
             .respond_with(ok(json!(true)))
             .mount(&s)
             .await;
-        let to = Target { chat: 7, thread: None };
+        let to = Target {
+            chat: 7,
+            thread: None,
+        };
         let t0 = Instant::now();
         api.draft(&to, 1, "a", true).await.unwrap();
         api.draft(&to, 1, "ab", true).await.unwrap();
         assert!(t0.elapsed() >= DRAFT_GAP, "{:?}", t0.elapsed());
         // Another chat is not held back by this one.
         let t1 = Instant::now();
-        api.draft(&Target { chat: 8, thread: None }, 1, "a", true).await.unwrap();
+        api.draft(
+            &Target {
+                chat: 8,
+                thread: None,
+            },
+            1,
+            "a",
+            true,
+        )
+        .await
+        .unwrap();
         assert!(t1.elapsed() < Duration::from_millis(500));
     }
 
@@ -1443,31 +1596,61 @@ mod tests {
             })))
             .mount(&s)
             .await;
-        assert!(matches!(api.download("f1", 1 << 20).await, Err(ApiError::TooBig)));
+        assert!(matches!(
+            api.download("f1", 1 << 20).await,
+            Err(ApiError::TooBig)
+        ));
     }
 
     #[tokio::test]
     async fn send_file_picks_photo_voice_or_document() {
         let (s, api) = server().await;
         for m in ["sendPhoto", "sendVoice", "sendDocument"] {
-            Mock::given(path(p(m))).respond_with(ok(message(1))).mount(&s).await;
+            Mock::given(path(p(m)))
+                .respond_with(ok(message(1)))
+                .mount(&s)
+                .await;
         }
-        let to = Target { chat: 7, thread: None };
+        let to = Target {
+            chat: 7,
+            thread: None,
+        };
         let f = |mime: &str| OutFile {
             name: "f".into(),
             mime: mime.into(),
             bytes: vec![1, 2, 3],
         };
-        api.send_file(&to, &f("image/png"), Some("cap"), None).await.unwrap();
-        api.send_file(&Target { chat: 8, thread: None }, &f("audio/ogg"), None, None)
+        api.send_file(&to, &f("image/png"), Some("cap"), None)
             .await
             .unwrap();
-        api.send_file(&Target { chat: 9, thread: None }, &f("application/pdf"), None, Some(4))
-            .await
-            .unwrap();
+        api.send_file(
+            &Target {
+                chat: 8,
+                thread: None,
+            },
+            &f("audio/ogg"),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+        api.send_file(
+            &Target {
+                chat: 9,
+                thread: None,
+            },
+            &f("application/pdf"),
+            None,
+            Some(4),
+        )
+        .await
+        .unwrap();
         let reqs = s.received_requests().await.unwrap();
         let paths: Vec<_> = reqs.iter().map(|r| r.url.path().to_owned()).collect();
-        assert_eq!(paths, vec![p("sendPhoto"), p("sendVoice"), p("sendDocument")]);
+        assert_eq!(
+            paths,
+            vec![p("sendPhoto"), p("sendVoice"), p("sendDocument")]
+        );
         assert_eq!(body(&reqs[0])["caption"], "cap");
         assert_eq!(body(&reqs[2])["reply_parameters"]["message_id"], 4);
     }
@@ -1555,12 +1738,23 @@ mod tests {
         let m = MockSender::new();
         m.set_download("f", vec![1, 2], Some("a.bin"));
         m.fail_next("react", ApiError::TooBig);
-        let to = Target { chat: 1, thread: None };
+        let to = Target {
+            chat: 1,
+            thread: None,
+        };
         assert_eq!(m.send_text(&to, "hi", None).await.unwrap(), 1000);
         assert_eq!(m.send_text(&to, "hi", None).await.unwrap(), 1001);
-        assert!(matches!(m.react(&MsgRef { chat: 1, id: 1 }, None).await, Err(ApiError::TooBig)));
-        m.react(&MsgRef { chat: 1, id: 1 }, Some("x")).await.unwrap();
-        assert_eq!(m.download("f", 10).await.unwrap().1.as_deref(), Some("a.bin"));
+        assert!(matches!(
+            m.react(&MsgRef { chat: 1, id: 1 }, None).await,
+            Err(ApiError::TooBig)
+        ));
+        m.react(&MsgRef { chat: 1, id: 1 }, Some("x"))
+            .await
+            .unwrap();
+        assert_eq!(
+            m.download("f", 10).await.unwrap().1.as_deref(),
+            Some("a.bin")
+        );
         assert!(matches!(m.download("f", 1).await, Err(ApiError::TooBig)));
         assert!(m.me().await.is_err());
         let calls = m.take_calls();

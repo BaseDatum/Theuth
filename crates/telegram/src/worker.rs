@@ -9,10 +9,10 @@ use kameo::actor::ActorRef;
 use runtime::{Runtime, SessionId};
 use tokio::sync::{mpsc, oneshot};
 
+use crate::ToolsMode;
 use crate::api::{Sender, Target};
 use crate::port::Port;
 use crate::threads::{OpenMsg, ThreadKey, Topic};
-use crate::ToolsMode;
 
 /// What the worker renders (98 §12 `tools`, `reasoning`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -160,7 +160,9 @@ pub fn spawn(ctx: WorkerCtx) -> mpsc::UnboundedSender<WorkerMsg> {
                 WorkerMsg::Output { reply, .. } => {
                     let _ = reply.send(None);
                 }
-                other => tracing::debug!(%key, %session, msg = ?other, "telegram worker stub: dropped"),
+                other => {
+                    tracing::debug!(%key, %session, msg = ?other, "telegram worker stub: dropped")
+                }
             }
         }
     });

@@ -205,7 +205,12 @@ impl Threads {
 
     /// Flags the topic as user-named; saves when the key has a topic.
     pub fn set_named_by_user(&mut self, key: &str, v: bool) {
-        if let Some(topic) = self.file.threads.get_mut(key).and_then(|t| t.topic.as_mut()) {
+        if let Some(topic) = self
+            .file
+            .threads
+            .get_mut(key)
+            .and_then(|t| t.topic.as_mut())
+        {
             topic.named_by_user = v;
             self.save();
         }
@@ -293,8 +298,20 @@ mod tests {
     fn keys_round_trip() {
         assert_eq!(key(7, None), "7");
         assert_eq!(key(-100, Some(5)), "-100:5");
-        assert_eq!(target("-100:5"), Some(Target { chat: -100, thread: Some(5) }));
-        assert_eq!(target("7"), Some(Target { chat: 7, thread: None }));
+        assert_eq!(
+            target("-100:5"),
+            Some(Target {
+                chat: -100,
+                thread: Some(5)
+            })
+        );
+        assert_eq!(
+            target("7"),
+            Some(Target {
+                chat: 7,
+                thread: None
+            })
+        );
         assert_eq!(target("x:1"), None);
         assert_eq!(target("1:y"), None);
     }
@@ -332,7 +349,13 @@ mod tests {
         assert_eq!(got.topic.map(|t| t.named_by_user), Some(true));
         assert!(got.updated_at > 0);
         assert_eq!(th.by_session(t.session).map(|(k, _)| k), Some(&k));
-        assert_eq!(th.target_for(t.session), Some(Target { chat: 7, thread: Some(3) }));
+        assert_eq!(
+            th.target_for(t.session),
+            Some(Target {
+                chat: 7,
+                thread: Some(3)
+            })
+        );
         assert_eq!(th.list(), vec![(k.clone(), t.session)]);
         assert_eq!(th.open_count(), 1);
         assert_eq!(th.open_take(), vec![open]);
@@ -360,7 +383,10 @@ mod tests {
         th.bind(key(7, Some(2)), t.clone());
         assert_eq!(th.list().len(), 1);
         assert!(th.get("7:1").is_none());
-        assert_eq!(th.by_session(t.session).map(|(k, _)| k.as_str()), Some("7:2"));
+        assert_eq!(
+            th.by_session(t.session).map(|(k, _)| k.as_str()),
+            Some("7:2")
+        );
     }
 
     #[test]
@@ -375,8 +401,14 @@ mod tests {
         th.touch("7:1");
         let newest = th.get("7:1").unwrap().updated_at;
         th.file.threads.get_mut("7:0").unwrap().updated_at = newest - 1;
-        assert_eq!(th.latest_in_chat(7, 1).map(|(k, _)| k.as_str()), Some("7:1"));
-        assert_eq!(th.latest_in_chat(7, 2).map(|(k, _)| k.as_str()), Some("7:2"));
+        assert_eq!(
+            th.latest_in_chat(7, 1).map(|(k, _)| k.as_str()),
+            Some("7:1")
+        );
+        assert_eq!(
+            th.latest_in_chat(7, 2).map(|(k, _)| k.as_str()),
+            Some("7:2")
+        );
         assert!(th.latest_in_chat(9, 1).is_none());
         assert_eq!(th.unbind_chat(7).len(), 3);
         assert_eq!(th.list().len(), 1);
