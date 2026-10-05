@@ -179,7 +179,10 @@ impl Bubble {
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.text.raw().trim().is_empty()
-            && self.reasoning.as_ref().is_none_or(|r| r.text.trim().is_empty())
+            && self
+                .reasoning
+                .as_ref()
+                .is_none_or(|r| r.text.trim().is_empty())
     }
 
     /// The reasoning text and heading, when there is some.

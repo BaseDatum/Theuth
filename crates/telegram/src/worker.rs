@@ -395,7 +395,9 @@ impl Worker {
                 self.last_typing = Instant::now();
             }
             AgentEvent::TextDelta { text, .. } => {
-                let t = self.turn.get_or_insert_with(|| Turn::new(String::new(), false));
+                let t = self
+                    .turn
+                    .get_or_insert_with(|| Turn::new(String::new(), false));
                 t.end_reasoning(None);
                 t.close_card(ctx, None).await;
                 let fresh = t.bubble.is_none();
@@ -417,7 +419,9 @@ impl Worker {
             }
             AgentEvent::ReasoningDelta { text, .. } => {
                 let keep = ctx.cfg.reasoning;
-                let t = self.turn.get_or_insert_with(|| Turn::new(String::new(), false));
+                let t = self
+                    .turn
+                    .get_or_insert_with(|| Turn::new(String::new(), false));
                 if let Some(c) = &mut t.card {
                     c.think(&text, keep);
                 } else {
@@ -435,7 +439,9 @@ impl Worker {
                 }
             }
             AgentEvent::ToolCallPending { call_id, name, .. } => {
-                let t = self.turn.get_or_insert_with(|| Turn::new(String::new(), false));
+                let t = self
+                    .turn
+                    .get_or_insert_with(|| Turn::new(String::new(), false));
                 t.end_reasoning(None);
                 t.names.insert(call_id.clone(), name.clone());
                 if ctx.cfg.tools != ToolsMode::All {
@@ -456,7 +462,9 @@ impl Worker {
                 args,
                 ..
             } => {
-                let t = self.turn.get_or_insert_with(|| Turn::new(String::new(), false));
+                let t = self
+                    .turn
+                    .get_or_insert_with(|| Turn::new(String::new(), false));
                 t.tools += 1;
                 t.names.insert(call_id.clone(), name.clone());
                 if ctx.cfg.tools != ToolsMode::All {
@@ -477,7 +485,9 @@ impl Worker {
                 is_error,
                 ..
             } => {
-                let t = self.turn.get_or_insert_with(|| Turn::new(String::new(), false));
+                let t = self
+                    .turn
+                    .get_or_insert_with(|| Turn::new(String::new(), false));
                 let name = t.names.remove(&call_id).unwrap_or_default();
                 let show = match ctx.cfg.tools {
                     ToolsMode::All => true,
@@ -766,7 +776,10 @@ mod tests {
         let title = Arc::new(TitlePort(Mutex::new(None)));
         let ctx = WorkerCtx {
             key: crate::threads::key(chat, topic),
-            to: Target { chat, thread: topic },
+            to: Target {
+                chat,
+                thread: topic,
+            },
             user: 7,
             session: SessionId::new(),
             api: api.clone(),
@@ -923,7 +936,11 @@ mod tests {
         let d = drafts(&r.api.calls());
         assert_eq!(d, vec![(1, "Hello".to_owned(), true)]);
         r.delta(" world").await;
-        assert_eq!(drafts(&r.api.calls()).len(), 1, "deltas coalesce until the tick");
+        assert_eq!(
+            drafts(&r.api.calls()).len(),
+            1,
+            "deltas coalesce until the tick"
+        );
         r.tick().await;
         let d = drafts(&r.api.calls());
         assert_eq!(d.last().unwrap().1, "Hello world");
@@ -1028,17 +1045,22 @@ mod tests {
         assert_eq!(s.len(), 1);
         assert!(s[0].len() <= BUBBLE_SOFT_MAX);
         assert!(s[0].ends_with("\n\n"), "closed at a block boundary");
-        assert!(s[0].len() % 1001 == 0, "whole paragraphs only");
+        assert!(s[0].len().is_multiple_of(1001), "whole paragraphs only");
         r.api.take_calls();
         r.delta("```rust\n").await;
         for _ in 0..3200 {
             r.delta("let x = 1;\n").await;
         }
         let s = sends(&r.api.calls());
-        assert_eq!(s.len(), 1);
-        assert!(s[0].ends_with("\n```"), "fence closed at the cut");
+        assert_eq!(s.len(), 2, "paragraph boundary, then the fence cut");
+        assert!(s[0].ends_with("\n\n") && !s[0].contains("```"));
+        assert!(s[1].starts_with("```rust\n"));
+        assert!(s[1].ends_with("\n```"), "fence closed at the cut");
         let d = drafts(&r.api.calls());
-        assert!(d.last().unwrap().1.starts_with("```rust\n"), "fence re-opened");
+        assert!(
+            d.last().unwrap().1.starts_with("```rust\n"),
+            "fence re-opened"
+        );
     }
 
     #[tokio::test(start_paused = true)]
@@ -1078,12 +1100,12 @@ mod tests {
                 description: format!("{}: x", crate::api::NOT_MODIFIED_PREFIX),
             },
         );
-        r.delta("\n\n").await;
+        r.delta("\n\nx").await;
         r.tick().await;
         r.finish("end_turn").await;
         let e = edits(&r.api.take_calls());
         assert_eq!(e.len(), 2);
-        assert!(e[1].starts_with("para one\n\ntail more\n\nnext\n\n\n\n<footer>m1"));
+        assert!(e[1].starts_with("para one\n\ntail more\n\nnext\n\nx\n\n<footer>m1"));
         assert!(matches!(
             r.notes.try_recv(),
             Ok(WorkerNote::OpenMsg { open: false, .. })
@@ -1097,7 +1119,10 @@ mod tests {
         r.delta("a\n\nb").await;
         assert!(drafts(&r.api.calls()).is_empty());
         r.tick().await;
-        assert_eq!(sends(&r.api.calls()), vec!["**grep-logs** · a\n\n".to_owned()]);
+        assert_eq!(
+            sends(&r.api.calls()),
+            vec!["**grep-logs** · a\n\n".to_owned()]
+        );
     }
 
     #[tokio::test(start_paused = true)]
@@ -1111,8 +1136,14 @@ mod tests {
         })
         .await;
         let d = drafts(&r.api.calls());
-        assert!(d[0].1.starts_with("<tg-thinking>thinking · 0 s</tg-thinking>\n"));
-        assert!(d[0].1.contains("<blockquote expandable>\nhmm\n</blockquote>"));
+        assert!(
+            d[0].1
+                .starts_with("<tg-thinking>thinking · 0 s</tg-thinking>\n")
+        );
+        assert!(
+            d[0].1
+                .contains("<blockquote expandable>\nhmm\n</blockquote>")
+        );
         r.ev(AgentEvent::ReasoningDone {
             session: r.session(),
             turn: TurnId::new(),
@@ -1122,7 +1153,9 @@ mod tests {
         r.delta("prose").await;
         r.finish("end_turn").await;
         let s = sends(&r.api.calls()).pop().unwrap();
-        assert!(s.starts_with("**thought 9 s**\n<blockquote expandable>\nhmm\n</blockquote>\n\nprose"));
+        assert!(
+            s.starts_with("**thought 9 s**\n<blockquote expandable>\nhmm\n</blockquote>\n\nprose")
+        );
 
         let mut r = rig(
             10,

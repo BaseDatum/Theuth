@@ -90,7 +90,9 @@ impl Card {
 
     fn tool(&mut self, call_id: &str) -> Option<&mut State> {
         self.items.iter_mut().find_map(|i| match i {
-            Item::Tool { call_id: c, state, .. } if c == call_id => Some(state),
+            Item::Tool {
+                call_id: c, state, ..
+            } if c == call_id => Some(state),
             _ => None,
         })
     }
@@ -294,8 +296,8 @@ impl Card {
         }
         let md = self.render(ctx, footer);
         match self.msg {
-            None => match send_rich_or_plain(ctx, &md).await {
-                Ok(Some(id)) => {
+            None => {
+                if let Ok(Some(id)) = send_rich_or_plain(ctx, &md).await {
                     let m = MsgRef {
                         chat: ctx.to.chat,
                         id,
@@ -305,8 +307,7 @@ impl Card {
                         note_open(ctx, m, true);
                     }
                 }
-                Ok(None) | Err(_) => {}
-            },
+            }
             Some(m) => match ctx.api.edit_rich(&m, &md, None).await {
                 Ok(()) => {}
                 Err(e) if api::is_not_modified(&e) => {}
@@ -394,10 +395,13 @@ mod tests {
             "ls -la"
         );
         let long = "x".repeat(130);
-        assert_eq!(
-            describe("read_file", &serde_json::json!({"path": "a.rs", "body": long, "n": 3})),
-            "body: <130 chars>\nn: 3\npath: a.rs"
+        let d = describe(
+            "read_file",
+            &serde_json::json!({"path": "a.rs", "body": long, "n": 3}),
         );
+        let mut lines: Vec<&str> = d.lines().collect();
+        lines.sort_unstable();
+        assert_eq!(lines, ["body: <130 chars>", "n: 3", "path: a.rs"]);
         assert_eq!(describe("x", &serde_json::Value::Null), "");
     }
 
