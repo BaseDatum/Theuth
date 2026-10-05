@@ -108,7 +108,12 @@ pub async fn run_with_host(
     match fresh {
         Some(tok) => {
             vault
-                .set(SECRET_TOKEN, &tok, Some("Telegram bot token"), "telegram setup")
+                .set(
+                    SECRET_TOKEN,
+                    &tok,
+                    Some("Telegram bot token"),
+                    "telegram setup",
+                )
                 .await
                 .map_err(anyhow::Error::msg)?;
             term.say(&format!("2. token saved to the vault as {SECRET_TOKEN}"));
@@ -158,7 +163,9 @@ pub async fn run_with_host(
             }
         }
     }
-    term.say(&format!("5. telegram.owner = {owner}, telegram.enabled = true"));
+    term.say(&format!(
+        "5. telegram.owner = {owner}, telegram.enabled = true"
+    ));
     term.say(
         "groups: add the bot as an admin with Manage topics (or @BotFather /setprivacy → Disable, then re-add it), then /telegram group add <chat id> — /status shows the id once the bot is in the group",
     );
@@ -336,7 +343,11 @@ mod tests {
     impl Terminal for Fake {
         fn prompt(&mut self, q: &str) -> anyhow::Result<String> {
             self.out.lock().push(q.to_owned());
-            Ok(self.answers.pop_front().expect("unexpected prompt").to_owned())
+            Ok(self
+                .answers
+                .pop_front()
+                .expect("unexpected prompt")
+                .to_owned())
         }
         fn secret(&mut self, q: &str) -> anyhow::Result<String> {
             self.prompt(q)
@@ -477,7 +488,10 @@ mod tests {
         let vault = secrets::Vault::open(dir.path(), secrets::KeyStore::File)
             .await
             .unwrap();
-        assert_eq!(vault.get(SECRET_TOKEN, 0).as_deref().map(String::as_str), Some(TOKEN));
+        assert_eq!(
+            vault.get(SECRET_TOKEN, 0).as_deref().map(String::as_str),
+            Some(TOKEN)
+        );
 
         // The rejected token's getMe (`/botbad/getMe`, 404) is received too.
         let reqs = methods(&s).await;
@@ -519,10 +533,7 @@ mod tests {
         let vault = secrets::Vault::open(dir.path(), secrets::KeyStore::File)
             .await
             .unwrap();
-        vault
-            .set(SECRET_TOKEN, TOKEN, None, "test")
-            .await
-            .unwrap();
+        vault.set(SECRET_TOKEN, TOKEN, None, "test").await.unwrap();
         drop(vault);
         let config = dir.path().join("config.yaml");
         runtime::write_config_value(&config, "telegram", "owner", "77").unwrap();
@@ -565,11 +576,17 @@ mod tests {
     #[test]
     fn config_value_reads_two_level_yaml() {
         let y = "a: 1\nsecrets:\n  tools: true\n  key_store: \"file\" # c\ntelegram:\n  owner: 500\n  enabled: true\n";
-        assert_eq!(config_value(y, "secrets", "key_store").as_deref(), Some("file"));
+        assert_eq!(
+            config_value(y, "secrets", "key_store").as_deref(),
+            Some("file")
+        );
         assert_eq!(config_value(y, "telegram", "owner").as_deref(), Some("500"));
         assert_eq!(config_value(y, "telegram", "key_store"), None);
         assert_eq!(config_value(y, "slack", "owner"), None);
-        assert_eq!(config_value("telegram:\n  owner: null\n", "telegram", "owner"), None);
+        assert_eq!(
+            config_value("telegram:\n  owner: null\n", "telegram", "owner"),
+            None
+        );
     }
 
     #[test]

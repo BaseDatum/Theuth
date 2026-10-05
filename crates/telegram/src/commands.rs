@@ -15,7 +15,6 @@ use anyhow::Context as _;
 use kameo::actor::ActorRef;
 use runtime::SessionId;
 
-
 use crate::api::{BotCommandSpec, CommandScope, Keyboard};
 use crate::port::Port;
 use crate::ui::{self, age, k, short};
@@ -818,11 +817,15 @@ async fn provider_cmd(arg: &str) -> anyhow::Result<Outcome> {
                 return text("no custom providers; /provider add <name> <url> <key>".into());
             }
             Ok(Outcome::Reply(Reply::text(ui::table(
-                std::iter::once(vec!["name".to_owned(), "url".to_owned(), "models".to_owned()])
-                    .chain(
-                        rows.into_iter()
-                            .map(|p| vec![p.name, p.base_url, p.models.to_string()]),
-                    ),
+                std::iter::once(vec![
+                    "name".to_owned(),
+                    "url".to_owned(),
+                    "models".to_owned(),
+                ])
+                .chain(
+                    rows.into_iter()
+                        .map(|p| vec![p.name, p.base_url, p.models.to_string()]),
+                ),
             ))))
         }
         ("add", rest) => {
@@ -1406,7 +1409,11 @@ pub(crate) mod testing {
             Ok(vec![s])
         }
         async fn session_title(&self, s: SessionId) -> Result<Option<String>, String> {
-            Ok(self.sessions.iter().find(|r| r.id == s).map(|r| r.title.clone()))
+            Ok(self
+                .sessions
+                .iter()
+                .find(|r| r.id == s)
+                .map(|r| r.title.clone()))
         }
     }
 
@@ -1563,7 +1570,10 @@ mod tests {
             handle(cx(&port, 1, None), "telegram", "allow x").await,
             text("usage: /telegram allow <user id>")
         );
-        assert_eq!(handle(cx(&port, 1, None), "telegram", "link").await, Outcome::Link);
+        assert_eq!(
+            handle(cx(&port, 1, None), "telegram", "link").await,
+            Outcome::Link
+        );
         let Outcome::Reply(r) = handle(cx(&port, 1, None), "telegram", "").await else {
             panic!()
         };
@@ -1573,8 +1583,12 @@ mod tests {
     #[tokio::test]
     async fn resume_resolves_full_prefix_and_suffix_and_refuses_ambiguity() {
         // v7 ids minted together share their first 8 chars; pick two apart.
-        let a = SessionId(uuid::Uuid::from_u128(0x0123_4567_89ab_cdef_0123_4567_89ab_cdef));
-        let b = SessionId(uuid::Uuid::from_u128(0xfedc_ba98_7654_3210_fedc_ba98_7654_3210));
+        let a = SessionId(uuid::Uuid::from_u128(
+            0x0123_4567_89ab_cdef_0123_4567_89ab_cdef,
+        ));
+        let b = SessionId(uuid::Uuid::from_u128(
+            0xfedc_ba98_7654_3210_fedc_ba98_7654_3210,
+        ));
         let port = FakePort {
             sessions: vec![summary(a, "alpha"), summary(b, "beta")],
             ..Default::default()

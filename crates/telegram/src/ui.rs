@@ -114,11 +114,16 @@ pub fn guard(md: &str) -> String {
     let mut fence: Option<(u8, usize)> = None;
     for line in md.split_inclusive('\n') {
         let body = line.trim_start_matches(' ');
-        let run = body.bytes().take_while(|b| *b == b'`' || *b == b'~').count();
+        let run = body
+            .bytes()
+            .take_while(|b| *b == b'`' || *b == b'~')
+            .count();
         let marker = (run >= 3 && body.bytes().take(run).all(|b| b == body.as_bytes()[0]))
             .then(|| (body.as_bytes()[0], run));
         match (fence, marker) {
-            (Some((c, n)), Some((mc, mn))) if mc == c && mn >= n && body[run..].trim().is_empty() => {
+            (Some((c, n)), Some((mc, mn)))
+                if mc == c && mn >= n && body[run..].trim().is_empty() =>
+            {
                 fence = None;
                 out.push_str(line);
                 continue;
@@ -216,7 +221,10 @@ fn known_tag(s: &str) -> bool {
         .count();
     let name = &rest[..name_len];
     KNOWN_TAGS.contains(&name)
-        && matches!(rest.as_bytes().get(name_len), Some(b' ' | b'>' | b'/' | b'\n'))
+        && matches!(
+            rest.as_bytes().get(name_len),
+            Some(b' ' | b'>' | b'/' | b'\n')
+        )
 }
 
 /// `s` starts with a character or numeric entity (`&amp;`, `&#60;`, `&#x3c;`).
@@ -348,7 +356,10 @@ pub fn status(s: &TelegramStatus, session: Option<[String; 4]>) -> Reply {
             "bot",
             bot.map_or_else(|| "-".to_owned(), |b| format!("@{}", b.username)),
         ),
-        ("topics", bot.map_or_else(|| "-".to_owned(), |b| yes_no(b.topics))),
+        (
+            "topics",
+            bot.map_or_else(|| "-".to_owned(), |b| yes_no(b.topics)),
+        ),
         ("threads", s.threads.len().to_string()),
         ("session", sid),
         ("model", model),
@@ -393,19 +404,16 @@ pub fn sessions(rows: &[SessionSummary], page: usize) -> Reply {
         return Reply::text("no sessions yet: send a message to start one");
     }
     let md = table(
-        std::iter::once(
-            ["id", "title", "model", "age"]
-                .map(str::to_owned)
-                .to_vec(),
-        )
-        .chain(slice.iter().map(|s| {
-            vec![
-                format!("`{}`", short(s.id)),
-                clip(&s.title, 40),
-                s.model.clone(),
-                age(s.updated_at),
-            ]
-        })),
+        std::iter::once(["id", "title", "model", "age"].map(str::to_owned).to_vec()).chain(
+            slice.iter().map(|s| {
+                vec![
+                    format!("`{}`", short(s.id)),
+                    clip(&s.title, 40),
+                    s.model.clone(),
+                    age(s.updated_at),
+                ]
+            }),
+        ),
     );
     let mut buttons: Vec<Button> = slice
         .iter()
@@ -617,8 +625,10 @@ pub fn logins(providers: &[LoginInfo], servers: &[McpServer]) -> Reply {
         return Reply::text("no logins");
     }
     let md = table(
-        std::iter::once(vec!["name".to_owned(), "state".to_owned()])
-            .chain(rows.iter().map(|(n, _, s)| vec![(*n).to_owned(), s.clone()])),
+        std::iter::once(vec!["name".to_owned(), "state".to_owned()]).chain(
+            rows.iter()
+                .map(|(n, _, s)| vec![(*n).to_owned(), s.clone()]),
+        ),
     );
     let buttons = rows
         .iter()
@@ -655,7 +665,9 @@ pub fn login_url(name: &str, url: &str) -> Reply {
 #[must_use]
 pub fn approvals() -> Reply {
     Reply {
-        markdown: "approvals: ask before risky tool calls, or switch them off for this session or always".to_owned(),
+        markdown:
+            "approvals: ask before risky tool calls, or switch them off for this session or always"
+                .to_owned(),
         keyboard: Some(keyboard(vec![
             cb("ask", "cmd:approvals:ask"),
             cb("off this session", "cmd:approvals:off_session"),
@@ -854,12 +866,7 @@ mod tests {
         assert_eq!(sessions(&[], 0).keyboard, None);
 
         let models: Vec<ModelInfo> = (0..30)
-            .map(|i| {
-                model_info(
-                    &format!("p{}/model-{i}", i % 3),
-                    &format!("p{}", i % 3),
-                )
-            })
+            .map(|i| model_info(&format!("p{}/model-{i}", i % 3), &format!("p{}", i % 3)))
             .chain([model_info(
                 &format!("openrouter/{}", "x".repeat(80)),
                 "openrouter",
@@ -881,7 +888,11 @@ mod tests {
         assert_eq!(data(&st), ["cmd:refresh"]);
         let mut s = crate::commands::testing::status();
         s.calls.insert("getMe".into(), crate::CallStats::default());
-        assert!(status(&s, None).markdown.contains("<summary>calls</summary>"));
+        assert!(
+            status(&s, None)
+                .markdown
+                .contains("<summary>calls</summary>")
+        );
 
         check(&approvals());
         assert_eq!(data(&approvals()).len(), 3);
