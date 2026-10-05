@@ -10,6 +10,7 @@ export function usePacket(key: string | null) {
   return useQuery({
     queryKey: [...PACKET_KEY, key],
     queryFn: () => (sim ? (PACKET_SIM[key as string] ?? null) : api.packet_get(key as string)),
-    enabled: key !== null,
+    // `typeof`, not `!== null`: an item from an engine without 101 has no `packet` field at all.
+    enabled: typeof key === 'string',
   })
 }

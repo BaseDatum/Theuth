@@ -20,7 +20,8 @@ export function useResolved(item: AttentionItem): () => void {
   const mobile = useIsMobile()
   return () => {
     const next = mobile ? null : nextAfter(qc.getQueryData<AttentionItem[]>(ATTENTION_KEY) ?? [], item.id)
-    void (next ? navigate({ to: '/attention/$id', params: { id: next.id } }) : navigate({ to: '/attention' }))
+    // `search: true` keeps `?sim=` / `?mock=` alive in dev; in the app the route carries no search.
+    void (next ? navigate({ to: '/attention/$id', params: { id: next.id }, search: true }) : navigate({ to: '/attention', search: true }))
   }
 }
 

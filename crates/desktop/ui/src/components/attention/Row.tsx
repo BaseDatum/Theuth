@@ -11,6 +11,7 @@ export function Row({ item, active }: { item: AttentionItem; active: boolean }) 
       <Link
         to="/attention/$id"
         params={{ id: item.id }}
+        search={true}
         aria-current={active || undefined}
         className={cn('flex flex-col gap-1 px-3 py-2.5 text-[13px] transition-colors hover:bg-accent/60', active && 'bg-accent')}
       >

@@ -17,7 +17,7 @@ export function Screen({ item }: { item: AttentionItem }) {
     <>
       <header data-tauri-drag-region={isMacDesktop() || undefined} className="flex h-[52px] shrink-0 items-center gap-1 border-b border-border-subtle px-3 md:hidden">
         <Button asChild variant="ghost" size="icon-sm" aria-label="Back to attention">
-          <Link to="/attention">
+          <Link to="/attention" search={true}>
             <ChevronLeft />
           </Link>
         </Button>
