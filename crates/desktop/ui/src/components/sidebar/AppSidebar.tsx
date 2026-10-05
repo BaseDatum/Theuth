@@ -64,7 +64,19 @@ function Desks({ active }: { active: string | undefined }) {
   if (desks.length === 0) return null
   return (
     <>
-      <SidebarGroupLabel className="mt-2">Desks</SidebarGroupLabel>
+      <SidebarGroupLabel className="mt-2">
+        Desks
+        <Button
+          variant="ghost"
+          size="icon-sm"
+          className="ml-auto"
+          aria-label="Broadcast to desks"
+          title="Broadcast to desks"
+          onClick={() => openBroadcastDialog({ preset: 'desks' })}
+        >
+          <Megaphone />
+        </Button>
+      </SidebarGroupLabel>
       {desks.map((d) => (
         <DeskRow key={d.name} {...d} subagents={d.id === null ? undefined : subs.get(d.id)} active={active} />
       ))}

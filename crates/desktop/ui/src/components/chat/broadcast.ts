@@ -30,6 +30,37 @@ export function runningRoots(rows: AgentInfo[]): string[] {
 /** What `BroadcastTargets::Roots` selects. */
 export const allRoots = (rows: AgentInfo[]): string[] => rows.filter(isRoot).map((r) => r.id)
 
+/** The roster name of a desk root (`SessionSummary.desk`, 66 §8); `undefined` for every other session. */
+export const deskOf = (id: string, sessions: readonly SessionSummary[] | undefined): string | undefined =>
+  sessions?.find((s) => s.id === id)?.desk || undefined
+
+/** Stable sort key: the `theuth` desk ahead of the rest (the sidebar's Desks order). */
+const theuthFirst = (sessions: readonly SessionSummary[] | undefined) => (x: string, y: string) =>
+  Number(deskOf(y, sessions) === 'theuth') - Number(deskOf(x, sessions) === 'theuth')
+
+/** What "All desks" selects: roots whose session is a desk, in `rows` order with the `theuth` desk first (BROADCAST-DESKS D1). */
+export function deskRoots(rows: AgentInfo[], sessions: readonly SessionSummary[] | undefined): string[] {
+  return rows
+    .filter((r) => isRoot(r) && deskOf(r.id, sessions))
+    .map((r) => r.id)
+    .sort(theuthFirst(sessions))
+}
+
+/** The picker's two sections: groups whose root is a desk (theuth first), then the rest in input order (D2). */
+export function splitGroups(groups: Group[], sessions: readonly SessionSummary[] | undefined): { desks: Group[]; rest: Group[] } {
+  const by = theuthFirst(sessions)
+  return {
+    desks: groups.filter((g) => deskOf(g.root.id, sessions)).sort((x, y) => by(x.root.id, y.root.id)),
+    rest: groups.filter((g) => !deskOf(g.root.id, sessions)),
+  }
+}
+
+/** A section header's tri-state: every root of the section ticked, some, or none (an empty section is `none`). */
+export function sectionState(ids: ReadonlySet<string>, rootIds: readonly string[]): 'all' | 'some' | 'none' {
+  const n = rootIds.filter((id) => ids.has(id)).length
+  return n === 0 ? 'none' : n === rootIds.length ? 'all' : 'some'
+}
+
 export type Group = { root: AgentInfo; children: AgentInfo[] }
 
 /**

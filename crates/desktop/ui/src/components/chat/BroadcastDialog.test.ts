@@ -4,7 +4,7 @@ import type { BroadcastRow } from '@/rpc/bindings/BroadcastRow'
 import type { SessionActivity } from '@/rpc/bindings/SessionActivity'
 import type { SessionSummary } from '@/rpc/bindings/SessionSummary'
 import type { AgentInfo } from '@/rpc/extra'
-import { allRoots, groupRows, outcomeLines, runningRoots, summarize, title } from './broadcast'
+import { allRoots, deskRoots, groupRows, outcomeLines, runningRoots, sectionState, splitGroups, summarize, title } from './broadcast'
 
 const activity = (p: Partial<SessionActivity> = {}): SessionActivity => ({
   state: { state: 'idle' },
@@ -133,4 +133,34 @@ test('outcome lines put failures first and name rows like the picker: the list, 
     'T B — queued (next turn)',
     'T C — skipped: remote node',
   ])
+})
+
+// B is the scout's desk, D is theuth's; a1 (A's child) carries a desk id by mistake and C has an empty one.
+const deskSessions = [
+  summary('B', { desk: 'scout' }),
+  summary('a1', { desk: 'stray', parent: 'A' }),
+  summary('C', { desk: '' }),
+  summary('D', { desk: 'theuth' }),
+]
+
+test('"All desks" picks only roots whose session has a desk, theuth first; a desk child is not a desk root', () => {
+  expect(deskRoots(rows, deskSessions)).toEqual(['D', 'B'])
+  expect(deskRoots(rows, [])).toEqual([])
+  expect(deskRoots(rows, undefined)).toEqual([])
+})
+
+test('the picker splits groups by the root\'s desk: desks (theuth first), then the rest in order', () => {
+  const { desks, rest } = splitGroups(groupRows(rows), deskSessions)
+  expect(desks.map((g) => [g.root.id, g.children.map((c) => c.id)])).toEqual([
+    ['D', []],
+    ['B', ['b1']],
+  ])
+  expect(rest.map((g) => g.root.id)).toEqual(['A', 'C'])
+})
+
+test('a section header is all / some / none by its roots alone; an empty section is none', () => {
+  expect(sectionState(new Set(['B', 'D', 'A']), ['D', 'B'])).toBe('all')
+  expect(sectionState(new Set(['B', 'A']), ['D', 'B'])).toBe('some')
+  expect(sectionState(new Set(['A']), ['D', 'B'])).toBe('none')
+  expect(sectionState(new Set(['A']), [])).toBe('none')
 })
