@@ -41,7 +41,7 @@ const task = (id: string, state: Task['state'], extra: Partial<Task> = {}): Task
   ...extra,
 })
 
-const item = (id: string): AttentionItem => ({ id, kind: 'blocked', title: id, detail: null, at_ms: 1, task: null, agent: null, session: null, approval: null, decision: null })
+const item = (id: string): AttentionItem => ({ id, kind: 'blocked', title: id, detail: null, at_ms: 1, task: null, agent: null, session: null, approval: null, decision: null, packet: null })
 
 const row = (id: number): ActivityEntry => ({ id, ts_ms: id, kind: 'task_moved', actor: 'user', subject: 't', summary: `${id}`, cost: null })
 
