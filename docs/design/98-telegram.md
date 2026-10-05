@@ -1015,6 +1015,37 @@ text and a QR), completion arrives as an event.
   poller fails `Unauthorized` and the status says so. `threads.json` is kept — sessions outlive
   the bot (09 §11.4).
 
+### 10.5 Desktop and mobile: the Telegram card in Settings › Channels (added 2026-10-05 evening)
+
+Signal and Slack each have a card at the bottom of Settings › Channels
+(`crates/desktop/ui/src/components/settings/Channels.tsx`: `Section`/`Row`/`Dot`/`AllowList`
+over `signal_*` / `slack_*`, invalidated by their bus events). Telegram gets the third card,
+same components, same place, on desktop and the phone (one React tree), and it is the one
+channel that can be set up **entirely from the card** — no terminal, no restart:
+
+| row | shows | action |
+|---|---|---|
+| **Bot** | `Dot` + `telegramState(s)` — one phrase per `TelegramEvent` variant (`Unconfigured` → "no bot token", `Identity`/`Connected` → "connected as @bot · topics on/off", `Disconnected` → reason, `Conflict` → "another poller holds this token", `RateLimited`, `StreamFallback` → "connected", `Unreachable`, `PairingLink` → "waiting for the owner to tap Start", `Paired` → "paired with <name>", `DaemonOnly`); `polling` false while another engine holds the lease → "idle (hub elsewhere)" | — |
+| **Bot token** | "set" / "not set" (from `state == Unconfigured`; the value is never shown) | a masked input + **Save** → `set_secret("telegram_bot", value, "Telegram bot token (@BotFather /newbot)")`; the engine hot-starts the channel on `SecretsChanged` (§3, below) and the card refreshes on `Identity`. "Replace…" reveals the input when a token is set |
+| **Owner** | the owner id, or "not paired" | **Pair** (or **Re-pair**) → `telegram_link(null)` → `PairingLink { url, expires_at_ms }` → `QRCodeSVG` of the deep link + the URL + copy button + "expires in m:ss"; on `Paired` the row shows the id and the link disappears; a direct id can be typed into a small input → `telegram_link(id)` |
+| **Allowed users** | numeric ids | `AllowList` → `telegram_allow` / `telegram_remove_allowed` (digits only) |
+| **Groups** | chat ids (`-100…`) | `AllowList` → `telegram_allow_group` / `telegram_remove_group` |
+| **Setup notes** | collapsed `details`: BotFather → Bot Settings → Topics (threads per session), privacy off or admin for groups, `/telegram` commands | — |
+
+`CHANNEL_EVENTS` gains every `TelegramEvent` type; `queryKeys.telegram`; `api.ts` gains the six
+`telegram_*` methods (the bindings already carry `TelegramStatus`, `TelegramEvent`,
+`PairingLink`, `BotIdentity`). Phone: the QR is 192 px like Signal's; rows stack as the other
+cards do; nothing else is phone-specific.
+
+**Hot start (engine).** `Plugin::start` subscribes the `Telegram` actor to `SecretsEvent`; when
+the actor is `Unconfigured` (no channel) and a `SecretsChanged` arrives, it re-reads the vault;
+if `telegram_bot` is now present and this process runs the channel (`channel == true`), it
+calls `channel::spawn` exactly as boot would have, stores the `Handle`, registers the
+`UserSink`, and publishes `Identity` when `getMe` answers. A token *replaced* while the channel
+runs is picked up at the next restart (the running `Api` keeps its client); the card says so.
+Rejected: a `telegram_set_token` RPC (the vault already has `set_secret`; one secret path, 37)
+and restarting the engine from the card (heavier than it needs to be).
+
 ## 11. State, restart, and what is truth
 
 Truth on disk: `threads.json` — thread key → session (+ user, title, topic) and the `open` list
@@ -1293,6 +1324,9 @@ Each step leaves `theuth` runnable; formatters and the suite once per step.
   shows), the crate list, the config bullet.
 
 ## 20. Status (as-built v0.1, 2026-10-05)
+
+Evening addendum (98b, same day): the Settings › Channels card for desktop and mobile and the
+engine's hot start on a newly set `telegram_bot` secret (§10.5) — `98-as-built-SETTINGS.md`.
 
 Shipped on `main` the same day as the design: `crates/telegram` (`lib`, `api`, `poll`, `port`,
 `threads`, `worker`, `bubble`, `cards`, `board`, `channel`, `approvals`, `asks`, `commands`,

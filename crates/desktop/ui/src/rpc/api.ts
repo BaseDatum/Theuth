@@ -124,6 +124,8 @@ import type { SlackStatus } from '@/rpc/bindings/SlackStatus'
 import type { Sync } from '@/rpc/bindings/Sync'
 import type { SyncResult } from '@/rpc/bindings/SyncResult'
 import type { ToolSpec } from '@/rpc/bindings/ToolSpec'
+import type { PairingLink } from '@/rpc/bindings/PairingLink'
+import type { TelegramStatus } from '@/rpc/bindings/TelegramStatus'
 import type { TodoSnapshot } from '@/rpc/bindings/TodoSnapshot'
 import type { UpdateReady } from '@/rpc/bindings/UpdateReady'
 import type { Transcript } from '@/rpc/bindings/Transcript'
@@ -771,6 +773,13 @@ export interface Api {
   slack_remove_allowed(user: string): Promise<null>
   slack_remove_channel(channel: string): Promise<null>
   slack_status(): Promise<SlackStatus>
+  telegram_allow(user: number): Promise<null>
+  telegram_allow_group(chat: number): Promise<null>
+  /** With `owner`, set `telegram.owner` live and answer `null`; without, mint a single-use code and answer the deep link (98 §10.4). */
+  telegram_link(owner: number | null): Promise<PairingLink | null>
+  telegram_remove_allowed(user: number): Promise<null>
+  telegram_remove_group(chat: number): Promise<null>
+  telegram_status(): Promise<TelegramStatus>
   /** Read `text` (markdown) aloud in `session`'s name (43 §6); stops the current utterance first. Returns the `SpeechId`; audio follows as `SpeechAudio` events. `-32001` when the voice plugin is disabled. */
   speak(session: SessionId, text: string): Promise<string>
   steer(session: SessionId, text: string, id: InputId | null, files: string[], delivery?: Delivery | null): Promise<InputId>
@@ -1117,6 +1126,12 @@ export const METHODS = [
   'task_move',
   'task_update',
   'tasks_list',
+  'telegram_allow',
+  'telegram_allow_group',
+  'telegram_link',
+  'telegram_remove_allowed',
+  'telegram_remove_group',
+  'telegram_status',
   'test_schedule',
   'title_model',
   'transcribe',

@@ -76,6 +76,7 @@ export const queryKeys = {
   escalateModel: ['escalate-model'] as const,
   signal: ['signal'] as const,
   slack: ['slack'] as const,
+  telegram: ['telegram'] as const,
   computer: ['computer'] as const,
   secrets: ['secrets'] as const,
   updateStatus: ['update-status'] as const,

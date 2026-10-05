@@ -13,10 +13,12 @@
 //! - tools: [`TelegramLinkTool`], [`TelegramStatusTool`]
 
 use std::collections::BTreeMap;
+use std::hash::{DefaultHasher, Hash, Hasher};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
+use futures::future::BoxFuture;
 use kameo::actor::{ActorRef, Spawn};
 use kameo::message::{Context, Message};
 use runtime::SessionId;
@@ -302,17 +304,85 @@ fn yaml_list<T: std::fmt::Display>(items: &[T]) -> String {
     format!("[{}]", s.join(", "))
 }
 
+/// Reads the bot token on `SecretsChanged`: the vault in production, a stub in tests.
+type TokenSource = Arc<dyn Fn() -> BoxFuture<'static, Option<String>> + Send + Sync>;
+
+/// Starts the channel: [`channel::spawn`] in production, a local host in tests.
+type Starter = Arc<
+    dyn Fn(TelegramConfig, String, runtime::Runtime) -> anyhow::Result<channel::Handle>
+        + Send
+        + Sync,
+>;
+
+/// Internal `tell`: the vault was re-read after `SecretsChanged`.
+struct TokenRead(Option<String>);
+
 /// The `"telegram"` actor: control surface for the channel (daemon) or the
-/// terminal-mode stand-in that answers `Status` and edits config.
+/// terminal-mode stand-in that answers `Status` and edits config. Hot-starts
+/// the channel when the token appears later (98 §10.5).
 #[derive(kameo::Actor)]
 pub struct Telegram {
     handle: Option<channel::Handle>,
     cfg: TelegramConfig,
     rt: runtime::Runtime,
     configured: bool,
+    /// This process runs the channel (`TelegramPlugin::channel`).
+    run_channel: bool,
+    /// Hash of the token in use; never the token (98 §10.5: no hot swap, log once).
+    token_hash: Option<u64>,
+    source: TokenSource,
+    start: Starter,
+}
+
+/// `telegram_bot` from the vault, if both exist.
+fn token_from(vault: Option<&Arc<secrets::Vault>>) -> Option<String> {
+    vault
+        .and_then(|v| v.get(SECRET_TOKEN, 0))
+        .map(|t| t.as_str().to_owned())
+}
+
+fn token_hash(token: &str) -> u64 {
+    let mut h = DefaultHasher::new();
+    token.hash(&mut h);
+    h.finish()
+}
+
+/// `RegisterUserSink` once the user actor is up (24 §5).
+fn register_sink(rt: runtime::Runtime, sink: channel::Handle) {
+    tokio::spawn(async move {
+        if let Some(users) = rt
+            .lookup_when::<agent::UserChannels>(agent::USER_ACTOR)
+            .await
+        {
+            let _ = users.ask(agent::RegisterUserSink(Arc::new(sink))).await;
+        }
+    });
 }
 
 impl Telegram {
+    pub(crate) fn new(
+        handle: Option<channel::Handle>,
+        cfg: TelegramConfig,
+        rt: runtime::Runtime,
+        token: Option<&str>,
+        run_channel: bool,
+    ) -> Self {
+        let vault_rt = rt.clone();
+        Self {
+            handle,
+            cfg,
+            rt,
+            configured: token.is_some(),
+            run_channel,
+            token_hash: token.map(token_hash),
+            source: Arc::new(move || {
+                let rt = vault_rt.clone();
+                Box::pin(async move { token_from(secrets::handle(&rt).await.as_ref()) })
+            }),
+            start: Arc::new(channel::spawn),
+        }
+    }
+
     fn config_path(&self) -> PathBuf {
         self.rt.data_dir.join("config.yaml")
     }
@@ -346,6 +416,56 @@ impl Telegram {
         self.cfg.allowed.retain(|u| *u != id);
         self.persist("owner", &id.to_string())
     }
+
+    /// 98 §10.5: start the channel the way boot would have; a token replaced
+    /// under a running channel is noted, not swapped.
+    fn hot_start(&mut self, token: String) {
+        let hash = token_hash(&token);
+        if self.handle.is_some() {
+            if self.token_hash != Some(hash) {
+                self.token_hash = Some(hash);
+                tracing::info!("telegram: bot token changed; restart the engine to use it");
+            }
+            return;
+        }
+        match (self.start)(self.cfg.clone(), token, self.rt.clone()) {
+            Ok(h) => {
+                register_sink(self.rt.clone(), h.clone());
+                self.handle = Some(h);
+                self.configured = true;
+                self.token_hash = Some(hash);
+                tracing::info!("telegram: bot token set; channel started");
+            }
+            Err(e) => tracing::error!("telegram: channel failed to start: {e:#}"),
+        }
+    }
+}
+
+impl Message<secrets::SecretsEvent> for Telegram {
+    type Reply = ();
+
+    async fn handle(&mut self, ev: secrets::SecretsEvent, ctx: &mut Context<Self, ()>) {
+        // Terminal mode never runs the channel (D4); the vault read stays off the mailbox.
+        if !matches!(ev, secrets::SecretsEvent::Changed) || !self.run_channel {
+            return;
+        }
+        let me = ctx.actor_ref().clone();
+        let read = (self.source)();
+        tokio::spawn(async move {
+            let _ = me.tell(TokenRead(read.await)).await;
+        });
+    }
+}
+
+impl Message<TokenRead> for Telegram {
+    type Reply = ();
+
+    async fn handle(&mut self, m: TokenRead, _: &mut Context<Self, ()>) {
+        match m.0 {
+            Some(token) => self.hot_start(token),
+            None => tracing::debug!("telegram: secrets changed; no `{SECRET_TOKEN}`"),
+        }
+    }
 }
 
 impl Message<Status> for Telegram {
@@ -371,7 +491,7 @@ impl Message<Link> for Telegram {
         match &self.handle {
             Some(h) => h.link(None).await,
             None if !self.configured => Err(format!(
-                "telegram is not configured: set secret `{SECRET_TOKEN}` (t --telegram-setup)"
+                "telegram is not configured: set the {SECRET_TOKEN} secret (Settings › Channels, or t --telegram-setup)"
             )),
             None => Err("pairing needs the daemon: run t --headless, or pass the owner id".into()),
         }
@@ -476,19 +596,16 @@ impl runtime::Plugin for TelegramPlugin {
                     "telegram: secrets vault unavailable; starting without the bot token"
                 );
             }
-            let token = vault
-                .as_ref()
-                .and_then(|v| v.get(SECRET_TOKEN, 0))
-                .map(|t| t.as_str().to_owned());
+            let token = token_from(vault.as_ref());
             if token.is_none() {
                 tracing::warn!(
-                    "telegram: secret `{SECRET_TOKEN}` must be set (t --telegram-setup); telegram not started"
+                    "telegram: secret `{SECRET_TOKEN}` not set (Settings › Channels, or t --telegram-setup); the channel starts when it is"
                 );
             }
             let configured = token.is_some();
-            let handle = match token {
+            let handle = match &token {
                 Some(token) if run_channel => {
-                    match channel::spawn(cfg.clone(), token, rt.clone()) {
+                    match channel::spawn(cfg.clone(), token.clone(), rt.clone()) {
                         Ok(h) => Some(h),
                         Err(e) => {
                             tracing::error!("telegram: channel failed to start: {e:#}");
@@ -498,24 +615,27 @@ impl runtime::Plugin for TelegramPlugin {
                 }
                 _ => None,
             };
-            let sink = handle.clone();
-            let actor = Telegram::spawn(Telegram {
-                handle,
-                cfg,
-                rt: rt.clone(),
-                configured,
-            });
+            if let Some(sink) = handle.clone() {
+                register_sink(rt.clone(), sink);
+            }
+            let actor = Telegram::spawn_with_mailbox(
+                Telegram::new(handle, cfg, rt.clone(), token.as_deref(), run_channel),
+                runtime::subscriber_mailbox(),
+            );
             if let Err(e) = actor.register(TELEGRAM_ACTOR) {
                 tracing::error!("telegram: registering {TELEGRAM_ACTOR}: {e}");
                 return;
             }
+            // 98 §10.5: hot-start when the token is set later.
+            rt.subscribe::<Telegram, secrets::SecretsEvent>(&actor)
+                .await;
             if !configured {
                 rt.publish(TelegramEvent::Unconfigured).await;
             } else if !run_channel {
                 rt.publish(TelegramEvent::DaemonOnly).await;
             }
 
-            // First use of the registry (00 §4, 12 §2); then the user sink (24 §5).
+            // First use of the registry (00 §4, 12 §2).
             let Some(reg) = rt
                 .lookup_when::<tools::ToolRegistry>(tools::REGISTRY_ACTOR)
                 .await
@@ -528,15 +648,6 @@ impl runtime::Plugin for TelegramPlugin {
             let _ = reg
                 .ask(tools::RegisterTool(Arc::new(TelegramStatusTool)))
                 .await;
-            let Some(sink) = sink else {
-                return;
-            };
-            if let Some(users) = rt
-                .lookup_when::<agent::UserChannels>(agent::USER_ACTOR)
-                .await
-            {
-                let _ = users.ask(agent::RegisterUserSink(Arc::new(sink))).await;
-            }
         });
         Ok(())
     }
@@ -711,6 +822,66 @@ mod tests {
             assert!(c.bytes().all(|b| ALPHABET.contains(&b)), "{c}");
             assert!(seen.insert(c));
         }
+    }
+
+    /// An unconfigured actor with the token source answering `None`; the
+    /// channel, when started, talks to a local mock instead of Telegram.
+    fn unconfigured(rt: &runtime::Runtime, run_channel: bool, host: String) -> Telegram {
+        let mut t = Telegram::new(
+            None,
+            TelegramConfig::default(),
+            rt.clone(),
+            None,
+            run_channel,
+        );
+        t.start = Arc::new(move |cfg, token, rt| channel::spawn_at(cfg, token, rt, Some(&host)));
+        t
+    }
+
+    async fn state(actor: &ActorRef<Telegram>) -> Option<TelegramEvent> {
+        for _ in 0..50 {
+            let s = actor.ask(Status).await.unwrap();
+            if s.state != Some(TelegramEvent::Unconfigured) {
+                return s.state;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        Some(TelegramEvent::Unconfigured)
+    }
+
+    #[tokio::test]
+    async fn secrets_changed_hot_starts_the_channel() {
+        let dir = tempfile::tempdir().unwrap();
+        let rt = runtime::Runtime::new(figment::Figment::new(), dir.path().to_path_buf());
+        let server = wiremock::MockServer::start().await;
+
+        // Terminal mode (D4): nothing happens even with a token in the vault.
+        let mut term = unconfigured(&rt, false, server.uri());
+        term.source = Arc::new(|| Box::pin(async { Some("1:terminal".to_owned()) }));
+        let term = Telegram::spawn_with_mailbox(term, runtime::subscriber_mailbox());
+        term.tell(secrets::SecretsEvent::Changed).await.unwrap();
+        assert_eq!(state(&term).await, Some(TelegramEvent::Unconfigured));
+
+        // Daemon: no token yet → still unconfigured; token appears → channel up.
+        let vault = Arc::new(parking_lot::Mutex::new(None::<String>));
+        let mut t = unconfigured(&rt, true, server.uri());
+        let v = Arc::clone(&vault);
+        t.source = Arc::new(move || {
+            let tok = v.lock().clone();
+            Box::pin(async move { tok })
+        });
+        let actor = Telegram::spawn_with_mailbox(t, runtime::subscriber_mailbox());
+        actor.tell(secrets::SecretsEvent::Changed).await.unwrap();
+        assert_eq!(state(&actor).await, Some(TelegramEvent::Unconfigured));
+        assert!(matches!(
+            actor.ask(Link { owner: None }).await,
+            Err(e) if e.to_string().starts_with("telegram is not configured")
+        ));
+
+        *vault.lock() = Some("1:first".to_owned());
+        actor.tell(secrets::SecretsEvent::Changed).await.unwrap();
+        assert_ne!(state(&actor).await, Some(TelegramEvent::Unconfigured));
+        rt.shutdown.cancel();
     }
 
     #[test]
