@@ -564,6 +564,9 @@ impl Sender for Api {
     ) -> Result<i64, ApiError> {
         self.pace(&[(PaceKey::Chat(to.chat), chat_gap(to.chat))])
             .await;
+        // 98 §8.1 (a): bare `<`/`&` outside code would be read as HTML by Rich Markdown;
+        // guarding here covers every rich send of every module in one place.
+        let md = crate::ui::guard(md);
         let mut m = SendRichMessage::new(to.chat, InputRichMessage::markdown(md));
         if let Some(t) = to.thread {
             m = m.with_message_thread_id(t);
@@ -595,6 +598,7 @@ impl Sender for Api {
             (PaceKey::Edit(at.chat, at.id), EDIT_GAP),
         ])
         .await;
+        let md = crate::ui::guard(md);
         let mut m =
             EditMessageText::for_chat_message_rich(at.chat, at.id, InputRichMessage::markdown(md));
         if let Some(k) = markup {
@@ -612,6 +616,7 @@ impl Sender for Api {
     ) -> Result<(), ApiError> {
         self.pace(&[(PaceKey::Draft(to.chat, to.thread), DRAFT_GAP)])
             .await;
+        let md = crate::ui::guard(md);
         let mut m = SendRichMessageDraft::new(to.chat, draft_id, InputRichMessage::markdown(md))
             .with_can_stop(can_stop);
         if let Some(t) = to.thread {
