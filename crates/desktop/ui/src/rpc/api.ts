@@ -83,6 +83,7 @@ import type { ModelInfo } from '@/rpc/bindings/ModelInfo'
 import type { Node } from '@/rpc/bindings/Node'
 import type { Pairing } from '@/rpc/bindings/Pairing'
 import type { PairingPayload } from '@/rpc/bindings/PairingPayload'
+import type { Packet } from '@/rpc/bindings/Packet'
 import type { DeviceInfo } from '@/rpc/bindings/DeviceInfo'
 import type { Put } from '@/rpc/bindings/Put'
 import type { PeerEnvelope } from '@/rpc/bindings/PeerEnvelope'
@@ -534,6 +535,8 @@ export interface Api {
   activity_list(filter: ActivityFilter): Promise<ActivityEntry[]>
   /** The attention inbox — undismissed, unsnoozed, newest first; the badge is its length (70 HUD). */
   attention_list(): Promise<AttentionItem[]>
+  /** The packet an agent prepared for a decision or review item, by its key; `null` when none (101 §3). */
+  packet_get(key: string): Promise<Packet | null>
   /** Hide an attention item until `until_ms` (70 HUD). */
   attention_snooze(id: string, until_ms: number): Promise<null>
   /** Hide an attention item for good (70 HUD). */
@@ -1004,6 +1007,7 @@ export const METHODS = [
   'mesh_set_hub',
   'mesh_status',
   'new_session',
+  'packet_get',
   'path_complete',
   'peer_deliver',
   'peer_message',
