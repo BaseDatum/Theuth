@@ -679,6 +679,9 @@ fn telegram_cmd(cx: &CommandCx<'_>, arg: &str) -> anyhow::Result<Outcome> {
 /// `/skills [add <url> | rm <name> | sync]`.
 async fn skills(cx: &CommandCx<'_>, arg: &str) -> anyhow::Result<Outcome> {
     let (sub, rest) = split(arg);
+    if (sub, rest) == ("add", "") {
+        return Ok(prompt(Expect::SkillsAdd));
+    }
     let agent = agent()?;
     let out = match (sub, rest) {
         ("", _) => {
@@ -686,7 +689,6 @@ async fn skills(cx: &CommandCx<'_>, arg: &str) -> anyhow::Result<Outcome> {
             return Ok(Outcome::Reply(ui::skills(&rows, cx.page)));
         }
         ("sync", _) => synced(agent.ask(agent::SyncSkills).await.map_err(err)?),
-        ("add", "") => return Ok(prompt(Expect::SkillsAdd)),
         ("add", url) => {
             let added = agent
                 .ask(agent::AddSkillRepo {
@@ -730,6 +732,9 @@ async fn skills(cx: &CommandCx<'_>, arg: &str) -> anyhow::Result<Outcome> {
 /// `/mcp [add <url|json> | sync]`.
 async fn mcp_cmd(cx: &CommandCx<'_>, arg: &str) -> anyhow::Result<Outcome> {
     let (sub, rest) = split(arg);
+    if (sub, rest) == ("add", "") {
+        return Ok(prompt(Expect::McpAdd));
+    }
     let mcp = mcp()?;
     let out = match (sub, rest) {
         ("", _) => {
@@ -737,7 +742,6 @@ async fn mcp_cmd(cx: &CommandCx<'_>, arg: &str) -> anyhow::Result<Outcome> {
             return Ok(Outcome::Reply(ui::mcp(&rows, cx.page)));
         }
         ("sync", _) => synced(mcp.ask(tools::SyncMcp).await.map_err(err)?),
-        ("add", "") => return Ok(prompt(Expect::McpAdd)),
         ("add", src) if git_url(src) => {
             let repo = mcp
                 .ask(tools::AddRepo {
@@ -1568,8 +1572,9 @@ mod tests {
 
     #[tokio::test]
     async fn resume_resolves_full_prefix_and_suffix_and_refuses_ambiguity() {
-        let a = SessionId::new();
-        let b = SessionId::new();
+        // v7 ids minted together share their first 8 chars; pick two apart.
+        let a = SessionId(uuid::Uuid::from_u128(0x0123_4567_89ab_cdef_0123_4567_89ab_cdef));
+        let b = SessionId(uuid::Uuid::from_u128(0xfedc_ba98_7654_3210_fedc_ba98_7654_3210));
         let port = FakePort {
             sessions: vec![summary(a, "alpha"), summary(b, "beta")],
             ..Default::default()

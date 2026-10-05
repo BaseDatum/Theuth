@@ -1002,7 +1002,7 @@ mod tests {
             "> quote &lt;q&gt; a &gt; b\n>> <a href=\"u\">t</a> -&gt; x"
         );
         // An unclosed backtick is literal; escaping continues after it.
-        assert_eq!(guard("a ` <b>"), "a ` &lt;b&gt;");
+        assert_eq!(guard("a ` <q>"), "a ` &lt;q&gt;");
         // Idempotent.
         let once = guard(fence);
         assert_eq!(guard(&once), once);

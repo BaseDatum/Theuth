@@ -369,7 +369,10 @@ mod tests {
         json!({
             "id": 42, "is_bot": true, "first_name": "T", "username": "theuth_bot",
             "can_join_groups": true, "can_read_all_group_messages": false,
-            "supports_inline_queries": false, "has_topics_enabled": topics
+            "supports_inline_queries": false, "has_topics_enabled": topics,
+            "allows_users_to_create_topics": false, "can_connect_to_business": false,
+            "can_manage_bots": false, "has_main_web_app": false,
+            "supports_guest_queries": false, "supports_join_request_queries": false
         })
     }
 
