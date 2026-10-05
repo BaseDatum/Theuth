@@ -24,6 +24,8 @@ import { Route as ToolsRouteImport } from './routes/tools'
 import { Route as AgentsIndexRouteImport } from './routes/agents.index'
 import { Route as AgentsNewRouteImport } from './routes/agents.new'
 import { Route as ArtifactsCallIdRouteImport } from './routes/artifacts.$callId'
+import { Route as AttentionIndexRouteImport } from './routes/attention.index'
+import { Route as AttentionIdRouteImport } from './routes/attention.$id'
 import { Route as CSessionRouteImport } from './routes/c.$session'
 import { Route as KnowledgeSplatRouteImport } from './routes/knowledge.$'
 import { Route as MeetingsIndexRouteImport } from './routes/meetings.index'
@@ -121,6 +123,16 @@ const ArtifactsCallIdRoute = ArtifactsCallIdRouteImport.update({
   id: '/$callId',
   path: '/$callId',
   getParentRoute: () => ArtifactsRoute,
+} as any)
+const AttentionIndexRoute = AttentionIndexRouteImport.update({
+  id: '/',
+  path: '/',
+  getParentRoute: () => AttentionRoute,
+} as any)
+const AttentionIdRoute = AttentionIdRouteImport.update({
+  id: '/$id',
+  path: '/$id',
+  getParentRoute: () => AttentionRoute,
 } as any)
 const CSessionRoute = CSessionRouteImport.update({
   id: '/c/$session',
@@ -236,7 +248,7 @@ const RoutinesNameSectionRoute = RoutinesNameSectionRouteImport.update({
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/artifacts': typeof ArtifactsRouteWithChildren
-  '/attention': typeof AttentionRoute
+  '/attention': typeof AttentionRouteWithChildren
   '/island': typeof IslandRoute
   '/knowledge': typeof KnowledgeRouteWithChildren
   '/library': typeof LibraryRoute
@@ -248,6 +260,7 @@ export interface FileRoutesByFullPath {
   '/tools': typeof ToolsRoute
   '/agents/new': typeof AgentsNewRoute
   '/artifacts/$callId': typeof ArtifactsCallIdRoute
+  '/attention/$id': typeof AttentionIdRoute
   '/c/$session': typeof CSessionRoute
   '/knowledge/$': typeof KnowledgeSplatRoute
   '/meetings/$id': typeof MeetingsIdRoute
@@ -261,6 +274,7 @@ export interface FileRoutesByFullPath {
   '/tasks/$id': typeof TasksIdRoute
   '/vm/$name': typeof VmNameRoute
   '/agents/': typeof AgentsIndexRoute
+  '/attention/': typeof AttentionIndexRoute
   '/meetings/': typeof MeetingsIndexRoute
   '/routines/': typeof RoutinesIndexRoute
   '/skills/': typeof SkillsIndexRoute
@@ -275,7 +289,6 @@ export interface FileRoutesByFullPath {
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/artifacts': typeof ArtifactsRouteWithChildren
-  '/attention': typeof AttentionRoute
   '/island': typeof IslandRoute
   '/knowledge': typeof KnowledgeRouteWithChildren
   '/library': typeof LibraryRoute
@@ -287,6 +300,7 @@ export interface FileRoutesByTo {
   '/tools': typeof ToolsRoute
   '/agents/new': typeof AgentsNewRoute
   '/artifacts/$callId': typeof ArtifactsCallIdRoute
+  '/attention/$id': typeof AttentionIdRoute
   '/c/$session': typeof CSessionRoute
   '/knowledge/$': typeof KnowledgeSplatRoute
   '/meetings/$id': typeof MeetingsIdRoute
@@ -300,6 +314,7 @@ export interface FileRoutesByTo {
   '/tasks/$id': typeof TasksIdRoute
   '/vm/$name': typeof VmNameRoute
   '/agents': typeof AgentsIndexRoute
+  '/attention': typeof AttentionIndexRoute
   '/meetings': typeof MeetingsIndexRoute
   '/routines': typeof RoutinesIndexRoute
   '/skills': typeof SkillsIndexRoute
@@ -315,7 +330,7 @@ export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
   '/artifacts': typeof ArtifactsRouteWithChildren
-  '/attention': typeof AttentionRoute
+  '/attention': typeof AttentionRouteWithChildren
   '/island': typeof IslandRoute
   '/knowledge': typeof KnowledgeRouteWithChildren
   '/library': typeof LibraryRoute
@@ -327,6 +342,7 @@ export interface FileRoutesById {
   '/tools': typeof ToolsRoute
   '/agents/new': typeof AgentsNewRoute
   '/artifacts/$callId': typeof ArtifactsCallIdRoute
+  '/attention/$id': typeof AttentionIdRoute
   '/c/$session': typeof CSessionRoute
   '/knowledge/$': typeof KnowledgeSplatRoute
   '/meetings/$id': typeof MeetingsIdRoute
@@ -340,6 +356,7 @@ export interface FileRoutesById {
   '/tasks/$id': typeof TasksIdRoute
   '/vm/$name': typeof VmNameRoute
   '/agents/': typeof AgentsIndexRoute
+  '/attention/': typeof AttentionIndexRoute
   '/meetings/': typeof MeetingsIndexRoute
   '/routines/': typeof RoutinesIndexRoute
   '/skills/': typeof SkillsIndexRoute
@@ -368,6 +385,7 @@ export interface FileRouteTypes {
     | '/tools'
     | '/agents/new'
     | '/artifacts/$callId'
+    | '/attention/$id'
     | '/c/$session'
     | '/knowledge/$'
     | '/meetings/$id'
@@ -381,6 +399,7 @@ export interface FileRouteTypes {
     | '/tasks/$id'
     | '/vm/$name'
     | '/agents/'
+    | '/attention/'
     | '/meetings/'
     | '/routines/'
     | '/skills/'
@@ -395,7 +414,6 @@ export interface FileRouteTypes {
   to:
     | '/'
     | '/artifacts'
-    | '/attention'
     | '/island'
     | '/knowledge'
     | '/library'
@@ -407,6 +425,7 @@ export interface FileRouteTypes {
     | '/tools'
     | '/agents/new'
     | '/artifacts/$callId'
+    | '/attention/$id'
     | '/c/$session'
     | '/knowledge/$'
     | '/meetings/$id'
@@ -420,6 +439,7 @@ export interface FileRouteTypes {
     | '/tasks/$id'
     | '/vm/$name'
     | '/agents'
+    | '/attention'
     | '/meetings'
     | '/routines'
     | '/skills'
@@ -446,6 +466,7 @@ export interface FileRouteTypes {
     | '/tools'
     | '/agents/new'
     | '/artifacts/$callId'
+    | '/attention/$id'
     | '/c/$session'
     | '/knowledge/$'
     | '/meetings/$id'
@@ -459,6 +480,7 @@ export interface FileRouteTypes {
     | '/tasks/$id'
     | '/vm/$name'
     | '/agents/'
+    | '/attention/'
     | '/meetings/'
     | '/routines/'
     | '/skills/'
@@ -474,7 +496,7 @@ export interface FileRouteTypes {
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
   ArtifactsRoute: typeof ArtifactsRouteWithChildren
-  AttentionRoute: typeof AttentionRoute
+  AttentionRoute: typeof AttentionRouteWithChildren
   IslandRoute: typeof IslandRoute
   KnowledgeRoute: typeof KnowledgeRouteWithChildren
   LibraryRoute: typeof LibraryRoute
@@ -615,6 +637,20 @@ declare module '@tanstack/react-router' {
       fullPath: '/artifacts/$callId'
       preLoaderRoute: typeof ArtifactsCallIdRouteImport
       parentRoute: typeof ArtifactsRoute
+    }
+    '/attention/': {
+      id: '/attention/'
+      path: '/'
+      fullPath: '/attention/'
+      preLoaderRoute: typeof AttentionIndexRouteImport
+      parentRoute: typeof AttentionRoute
+    }
+    '/attention/$id': {
+      id: '/attention/$id'
+      path: '/$id'
+      fullPath: '/attention/$id'
+      preLoaderRoute: typeof AttentionIdRouteImport
+      parentRoute: typeof AttentionRoute
     }
     '/c/$session': {
       id: '/c/$session'
@@ -785,6 +821,20 @@ const ArtifactsRouteWithChildren = ArtifactsRoute._addFileChildren(
   ArtifactsRouteChildren,
 )
 
+interface AttentionRouteChildren {
+  AttentionIdRoute: typeof AttentionIdRoute
+  AttentionIndexRoute: typeof AttentionIndexRoute
+}
+
+const AttentionRouteChildren: AttentionRouteChildren = {
+  AttentionIdRoute: AttentionIdRoute,
+  AttentionIndexRoute: AttentionIndexRoute,
+}
+
+const AttentionRouteWithChildren = AttentionRoute._addFileChildren(
+  AttentionRouteChildren,
+)
+
 interface KnowledgeRouteChildren {
   KnowledgeSplatRoute: typeof KnowledgeSplatRoute
 }
@@ -800,7 +850,7 @@ const KnowledgeRouteWithChildren = KnowledgeRoute._addFileChildren(
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   ArtifactsRoute: ArtifactsRouteWithChildren,
-  AttentionRoute: AttentionRoute,
+  AttentionRoute: AttentionRouteWithChildren,
   IslandRoute: IslandRoute,
   KnowledgeRoute: KnowledgeRouteWithChildren,
   LibraryRoute: LibraryRoute,

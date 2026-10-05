@@ -38,11 +38,12 @@ export function useTasks(filter: TaskFilter = EMPTY_FILTER) {
   })
 }
 
-export function useTask(id: string) {
+export function useTask(id: string, enabled = true) {
   const api = useApi()
   return useQuery({
     queryKey: keys.task(id),
     queryFn: () => (mockOn() ? TASKS.find((t) => t.id === id) ?? Promise.reject(new Error('no such task')) : api.task_get(id)),
+    enabled,
   })
 }
 

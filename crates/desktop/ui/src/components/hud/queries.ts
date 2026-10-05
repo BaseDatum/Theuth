@@ -13,6 +13,8 @@ import { toast } from 'sonner'
 import { ACTIVITY_CAP, appendActivity } from './model'
 
 export const ATTENTION_KEY = ['attention'] as const
+/** 101 D11: `packet_get` per key, invalidated with the inbox (a packet changes only when its item does). */
+export const PACKET_KEY = ['packet'] as const
 export const SECRET_REQUESTS_KEY = ['secret-requests'] as const
 export const ACTIVITY_KEY = ['activity'] as const
 
@@ -27,6 +29,7 @@ export function useAttention() {
   useEffect(() => {
     const invalidate = () => {
       void qc.invalidateQueries({ queryKey: ATTENTION_KEY })
+      void qc.invalidateQueries({ queryKey: PACKET_KEY })
       void qc.invalidateQueries({ queryKey: SECRET_REQUESTS_KEY })
     }
     const offs = ATTENTION_EVENTS.map((t) => on(t, invalidate))
@@ -84,7 +87,8 @@ export function useAttentionActions() {
     decide: useAction(({ decision, answer }: { decision: string; answer: string }) => api.task_decide(decision, answer), { keys }),
     hire: useAction((name: string) => api.agent_approve(name), { keys }),
     decline: useAction((name: string) => api.agent_remove(name, null), { keys }),
-    move: useAction(({ id, state }: { id: string; state: 'todo' | 'done' | 'doing' }) => api.task_move(id, state, null), { keys }),
+    /** 101 D9: Approve → done / Send back → doing carry the reviewer's note into the thread. */
+    move: useAction(({ id, state, note = null }: { id: string; state: 'todo' | 'done' | 'doing'; note?: string | null }) => api.task_move(id, state, note), { keys }),
     unpause: useAction((name: string) => api.agent_pause(name, false), { keys }),
     /** 79 §6.6: Done / Cancel on a hand-off card; the pop-out's banner and the row's chip read the same list. */
     handoff: useAction(({ id, outcome }: { id: string; outcome: 'done' | 'cancelled' }) => api.handoff_resolve(id, outcome), { keys: [ATTENTION_KEY, HANDOFFS_KEY] }),

@@ -1,5 +1,5 @@
 import { createFileRoute } from '@tanstack/react-router'
-import { AttentionView } from '@/components/hud/AttentionView'
+import { Page } from '@/components/attention/Page'
 
-/** The attention inbox on its own; the sidebar row's badge is its count (70 HUD). */
-export const Route = createFileRoute('/attention')({ component: AttentionView })
+/** The attention inbox as master–detail (101 D6): the rail here, the selected item's screen in the outlet. The sidebar row's badge is its count (70 HUD). */
+export const Route = createFileRoute('/attention')({ component: Page })

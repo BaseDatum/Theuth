@@ -179,11 +179,12 @@ export const KIND_LABEL: Record<AttentionItem['kind'], string> = {
   secret: 'secret',
 }
 
-/** The inbox rows, or what will land in them. Shared by the HUD section and `/attention`. */
+/** The inbox's empty state; `/attention`'s rail says the same (101). */
+export const ATTENTION_EMPTY = 'Nothing needs you. Tool approvals, decisions agents escalate, hires, blocked or review tasks, budgets at 80 %, unreachable nodes, desktop hand-offs and secret requests land here.'
+
+/** The inbox rows, or what will land in them (the HUD's first section). */
 export function AttentionList({ items }: { items: AttentionItem[] | undefined }) {
-  if (!items || items.length === 0) {
-    return <EmptyNote>Nothing needs you. Tool approvals, decisions agents escalate, hires, blocked or review tasks, budgets at 80 %, unreachable nodes, desktop hand-offs and secret requests land here.</EmptyNote>
-  }
+  if (!items || items.length === 0) return <EmptyNote>{ATTENTION_EMPTY}</EmptyNote>
   return (
     <ul className="divide-y divide-border-subtle rounded-lg border border-border-subtle">
       {items.map((i) => (
