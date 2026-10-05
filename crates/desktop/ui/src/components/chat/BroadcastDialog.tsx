@@ -15,13 +15,28 @@ import type { BroadcastReceipt } from '@/rpc/bindings/BroadcastReceipt'
 import type { Delivery } from '@/rpc/bindings/Delivery'
 import type { SessionSummary } from '@/rpc/bindings/SessionSummary'
 import type { AgentInfo } from '@/rpc/extra'
-import { allRoots, busy, counts, groupRows, outcomeLines, runningRoots, summarize, title } from './broadcast'
+import {
+  allRoots,
+  busy,
+  counts,
+  deskOf,
+  deskRoots,
+  type Group,
+  groupRows,
+  isRoot,
+  outcomeLines,
+  runningRoots,
+  sectionState,
+  splitGroups,
+  summarize,
+  title,
+} from './broadcast'
 
 type Request = {
   /** Prefills the message. */
   text?: string
-  /** Initial tick set; `running` when omitted (62 §0.2). */
-  preset?: 'running' | 'roots'
+  /** Initial tick set; `running` when omitted (62 §0.2). `desks` falls back to `running` when no desk is open. */
+  preset?: 'running' | 'roots' | 'desks'
 }
 
 /** Open the broadcast dialog (62 §5.2): the sidebar action, `/broadcast` and the composer's "Send to many…" all end here. */
@@ -93,8 +108,17 @@ function Form({
     return () => window.clearInterval(timer)
   }, [])
 
-  // Untouched selection follows the rows until the first click: the preset applies to whatever loads.
-  const ids = picked ?? new Set(rows ? (req.preset === 'roots' ? allRoots(rows) : runningRoots(rows)) : [])
+  // Untouched selection follows the rows until the first click: the preset applies to whatever loads (a desks preset
+  // also waits for the session list, which is where `desk` lives).
+  const initial = (rows: AgentInfo[]) => {
+    if (req.preset === 'roots') return allRoots(rows)
+    if (req.preset === 'desks') {
+      const desks = deskRoots(rows, sessions)
+      if (desks.length > 0 || !sessions) return desks
+    }
+    return runningRoots(rows)
+  }
+  const ids = picked ?? new Set(rows ? initial(rows) : [])
   const key = [...ids].sort().join()
 
   useEffect(() => {
@@ -147,7 +171,9 @@ function Form({
   }
 
   const n = ids.size
-  const groups = rows ? groupRows(rows) : []
+  const { desks, rest } = splitGroups(rows ? groupRows(rows) : [], sessions)
+  const deskIds = desks.map((g) => g.root.id)
+  const section = { ids, now, sessions, onToggle: toggle, onPick: setPicked }
   return (
     <>
       <div className="-mx-2 min-h-0 flex-1 space-y-4 overflow-auto px-2 text-sm">
@@ -155,6 +181,7 @@ function Form({
           <div className="mb-1 flex items-center gap-2">
             <h3 className="font-medium">Targets</h3>
             <div className="ml-auto flex gap-1">
+              {deskIds.length > 0 && <Chip onClick={() => setPicked(new Set(deskIds))}>All desks</Chip>}
               <Chip onClick={() => rows && setPicked(new Set(runningRoots(rows)))}>Running roots</Chip>
               <Chip onClick={() => rows && setPicked(new Set(allRoots(rows)))}>All roots</Chip>
               <Chip onClick={() => setPicked(new Set())}>None</Chip>
@@ -162,26 +189,8 @@ function Form({
           </div>
           {loadError && <p className="text-danger">{loadError instanceof Error ? loadError.message : String(loadError)}</p>}
           {rows && rows.length === 0 && <p className="text-fg-tertiary">No live sessions</p>}
-          <ul aria-label="Sessions">
-            {groups.map((g) => (
-              <li key={g.root.id}>
-                <Row row={g.root} checked={ids.has(g.root.id)} now={now} sessions={sessions} onToggle={toggle} />
-                <Branch
-                  parent={g.root.id}
-                  byParent={childrenOf(g.children)}
-                  sessions={sessions ?? []}
-                  unit={16}
-                  moreClass="flex min-h-11 w-full items-center rounded-lg py-2 pr-2 text-left text-fg-tertiary hover:bg-layer-2"
-                  render={(r, sub) => (
-                    <>
-                      <Row row={r} checked={ids.has(r.id)} now={now} sessions={sessions} onToggle={toggle} />
-                      {sub}
-                    </>
-                  )}
-                />
-              </li>
-            ))}
-          </ul>
+          {desks.length > 0 && <Section label="Desks" groups={desks} {...section} />}
+          {rest.length > 0 && <Section label="Sessions" groups={rest} {...section} />}
         </section>
         <section>
           <h3 className="mb-1 font-medium">Message</h3>
@@ -233,6 +242,80 @@ function Chip({ onClick, children }: { onClick(): void; children: string }) {
   )
 }
 
+/**
+ * One section of the targets list (D2): a header row with a tri-state checkbox that adds the section's roots to the
+ * selection, or removes them when they are all ticked — never touching the other section — then its groups.
+ */
+function Section({
+  label,
+  groups,
+  ids,
+  now,
+  sessions,
+  onToggle,
+  onPick,
+}: {
+  label: string
+  groups: Group[]
+  ids: Set<string>
+  now: number
+  sessions: SessionSummary[] | undefined
+  onToggle(id: string): void
+  onPick(ids: Set<string>): void
+}) {
+  const rootIds = groups.map((g) => g.root.id)
+  const state = sectionState(ids, rootIds)
+  const picked = rootIds.filter((id) => ids.has(id)).length
+  const flip = () => {
+    const next = new Set(ids)
+    for (const id of rootIds) {
+      if (state === 'all') next.delete(id)
+      else next.add(id)
+    }
+    onPick(next)
+  }
+  return (
+    <div>
+      <label className="flex min-h-11 cursor-pointer items-center gap-3 rounded-lg py-2 pl-2 pr-2 hover:bg-layer-2 has-[:focus-visible]:ring-2 has-[:focus-visible]:ring-ring">
+        <input
+          type="checkbox"
+          className="size-4 shrink-0 accent-foreground"
+          checked={state === 'all'}
+          ref={(el) => {
+            if (el) el.indeterminate = state === 'some'
+          }}
+          onChange={flip}
+          aria-label={`All ${label.toLowerCase()}`}
+        />
+        <span className="min-w-0 flex-1 font-medium">{label}</span>
+        <span className="shrink-0 text-xs tabular-nums text-fg-tertiary">
+          {picked} of {rootIds.length}
+        </span>
+      </label>
+      <ul aria-label={label}>
+        {groups.map((g) => (
+          <li key={g.root.id}>
+            <Row row={g.root} checked={ids.has(g.root.id)} now={now} sessions={sessions} onToggle={onToggle} />
+            <Branch
+              parent={g.root.id}
+              byParent={childrenOf(g.children)}
+              sessions={sessions ?? []}
+              unit={16}
+              moreClass="flex min-h-11 w-full items-center rounded-lg py-2 pr-2 text-left text-fg-tertiary hover:bg-layer-2"
+              render={(r, sub) => (
+                <>
+                  <Row row={r} checked={ids.has(r.id)} now={now} sessions={sessions} onToggle={onToggle} />
+                  {sub}
+                </>
+              )}
+            />
+          </li>
+        ))}
+      </ul>
+    </div>
+  )
+}
+
 /** Checkbox row, 44 px tall for fingers (48 §2.3); children indent by depth like `AgentTree`. */
 function Row({
   row,
@@ -251,13 +334,15 @@ function Row({
   const state = a?.state.state ?? row.state.state
   const extra = a && counts(a)
   const age = ago(a?.last_active ?? null, now)
+  const desk = isRoot(row) ? deskOf(row.id, sessions) : undefined
   return (
     <label
       className="flex min-h-11 cursor-pointer items-center gap-3 rounded-lg py-2 pr-2 hover:bg-layer-2 has-[:focus-visible]:ring-2 has-[:focus-visible]:ring-ring"
       style={{ paddingLeft: 8 + row.depth * 16 }}
     >
       <input type="checkbox" className="size-4 shrink-0 accent-foreground" checked={checked} onChange={() => onToggle(row.id)} />
-      <span className="min-w-0 flex-1 truncate">{title(row.id, sessions, row.name)}</span>
+      <span className="min-w-0 flex-1 truncate">{desk ?? title(row.id, sessions, row.name)}</span>
+      {desk && <span className="shrink-0 rounded-md bg-layer-2 px-1.5 text-[10px] uppercase tracking-wide text-fg-secondary">desk</span>}
       <span
         className={cn('shrink-0 rounded-md bg-layer-2 px-1.5 text-xs text-fg-secondary', busy(a) && 'text-foreground')}
         title={state}
