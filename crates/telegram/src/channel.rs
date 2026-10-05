@@ -2422,3 +2422,889 @@ fn fmt_size(bytes: usize) -> String {
         format!("{bytes} B")
     }
 }
+
+#[cfg(test)]
+pub(crate) mod tests {
+    use std::sync::atomic::{AtomicI64, Ordering};
+
+    use agent::{AgentInfo, Loaded, SessionSummary};
+    use async_trait::async_trait;
+    use runtime::TurnId;
+    use tools::{Answer, AskId, Choice, Question, Risk};
+
+    use super::*;
+    use crate::api::mock::{Call, MockSender};
+    use crate::api::{BOT_BLOCKED, Button, CommandScope};
+    use crate::poll::{Command, ReplyRef};
+
+    pub(crate) const OWNER: u64 = 1001;
+    const FRIEND: u64 = 1002;
+    const STRANGER: u64 = 1003;
+    const GROUP: i64 = -100_200;
+    const OTHER_GROUP: i64 = -100_999;
+    const BOT: &str = "theuth_bot";
+
+    static NEXT_ID: AtomicI64 = AtomicI64::new(1);
+
+    #[derive(Debug, PartialEq)]
+    pub(crate) enum PortCall {
+        SendInput(Option<SessionId>, String, usize),
+        Steer(SessionId, String),
+        Resolve(ApprovalId, Decision),
+        AnswerAsk(AskId, Option<Vec<Answer>>),
+    }
+
+    pub(crate) struct Stub {
+        pub(crate) session: SessionId,
+        calls: Mutex<Vec<PortCall>>,
+        parents: Mutex<HashMap<SessionId, SessionId>>,
+    }
+
+    impl Stub {
+        pub(crate) fn calls(&self) -> Vec<PortCall> {
+            std::mem::take(&mut *self.calls.lock())
+        }
+    }
+
+    #[async_trait]
+    impl Port for Stub {
+        async fn send_input(
+            &self,
+            session: Option<SessionId>,
+            text: String,
+            files: Vec<PathBuf>,
+            _: PeerScope,
+        ) -> Result<SessionId, String> {
+            self.calls
+                .lock()
+                .push(PortCall::SendInput(session, text, files.len()));
+            Ok(session.unwrap_or(self.session))
+        }
+        async fn new_root(&self, _: PeerScope) -> Result<SessionId, String> {
+            Ok(self.session)
+        }
+        async fn steer(&self, session: SessionId, text: String, _: Vec<PathBuf>) -> Result<(), String> {
+            self.calls.lock().push(PortCall::Steer(session, text));
+            Ok(())
+        }
+        async fn cancel(&self, _: SessionId) -> Result<(), String> {
+            Ok(())
+        }
+        async fn list_sessions(&self) -> Result<Vec<SessionSummary>, String> {
+            Ok(Vec::new())
+        }
+        async fn load_session(&self, _: SessionId) -> Result<Loaded, String> {
+            Err("stub".into())
+        }
+        async fn resolve(&self, id: ApprovalId, decision: Decision) -> Result<bool, String> {
+            self.calls.lock().push(PortCall::Resolve(id, decision));
+            Ok(true)
+        }
+        async fn answer_ask(&self, id: AskId, answers: Option<Vec<Answer>>) -> Result<bool, String> {
+            self.calls.lock().push(PortCall::AnswerAsk(id, answers));
+            Ok(true)
+        }
+        async fn list_agents(&self, _: SessionId) -> Result<Vec<AgentInfo>, String> {
+            Ok(Vec::new())
+        }
+        async fn ancestors(&self, session: SessionId) -> Result<Vec<SessionId>, String> {
+            let parents = self.parents.lock();
+            let mut out = vec![session];
+            let mut cur = session;
+            while let Some(p) = parents.get(&cur) {
+                out.push(*p);
+                cur = *p;
+            }
+            Ok(out)
+        }
+        async fn session_title(&self, _: SessionId) -> Result<Option<String>, String> {
+            Ok(Some("Title".into()))
+        }
+    }
+
+    pub(crate) struct Fixture {
+        pub(crate) api: Arc<MockSender>,
+        pub(crate) stub: Arc<Stub>,
+        pub(crate) chan: Arc<Channel>,
+        pub(crate) rt: Runtime,
+        _dir: tempfile::TempDir,
+    }
+
+    pub(crate) fn fixture(topics: bool) -> Fixture {
+        fixture_with(TelegramConfig::default(), topics)
+    }
+
+    fn fixture_with(cfg: TelegramConfig, topics: bool) -> Fixture {
+        let dir = tempfile::tempdir().unwrap();
+        let rt = Runtime::new(figment::Figment::new(), dir.path().to_path_buf());
+        let api = MockSender::new();
+        let stub = Arc::new(Stub {
+            session: SessionId::new(),
+            calls: Mutex::new(Vec::new()),
+            parents: Mutex::new(HashMap::new()),
+        });
+        let cfg = TelegramConfig {
+            owner: Some(OWNER),
+            allowed: vec![FRIEND],
+            groups: vec![GROUP],
+            ..cfg
+        };
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let (chan, _notes) = Channel::new(
+            Arc::clone(&api) as Arc<dyn Sender>,
+            None,
+            cfg,
+            rt.clone(),
+            Arc::clone(&stub) as Arc<dyn Port>,
+            tx,
+        );
+        let chan = Arc::new(chan);
+        let _ = chan.identity.set(BotIdentity {
+            id: 42,
+            username: BOT.into(),
+            topics,
+            users_may_create_topics: true,
+        });
+        Fixture {
+            api,
+            stub,
+            chan,
+            rt,
+            _dir: dir,
+        }
+    }
+
+    impl Fixture {
+        /// Binds `key` to the stub's session for `user`.
+        fn bind(&self, key: &str, user: u64) -> SessionId {
+            let topic = threads::target(key).and_then(|t| t.thread).map(|id| Topic {
+                id,
+                named_by_user: false,
+            });
+            self.chan
+                .lock()
+                .threads
+                .bind(key.to_owned(), Thread::new(self.stub.session, user, topic));
+            self.stub.session
+        }
+
+        /// Replaces `key`'s worker mailbox with one the test reads.
+        fn tap_worker(&self, key: &str) -> mpsc::UnboundedReceiver<WorkerMsg> {
+            let (tx, rx) = mpsc::unbounded_channel();
+            self.chan.lock().workers.insert(key.to_owned(), tx);
+            rx
+        }
+
+        fn sends(&self) -> Vec<Call> {
+            self.api
+                .calls()
+                .into_iter()
+                .filter(|c| matches!(c, Call::SendRich { .. }))
+                .collect()
+        }
+
+        async fn inbound(&self, m: IncomingMessage) {
+            self.chan.handle_inbound(Incoming::Message(Box::new(m))).await;
+        }
+
+        async fn press(&self, user: u64, chat: i64, thread: Option<i64>, message_id: i64, data: &str) {
+            self.chan
+                .handle_inbound(Incoming::Callback(IncomingCallback {
+                    update_id: NEXT_ID.fetch_add(1, Ordering::SeqCst),
+                    id: format!("cb{message_id}"),
+                    from: sender(user),
+                    chat,
+                    message_id,
+                    thread,
+                    data: data.to_owned(),
+                }))
+                .await;
+        }
+    }
+
+    fn sender(id: u64) -> SenderRef {
+        SenderRef {
+            id,
+            is_bot: false,
+            name: format!("user{id}"),
+            username: Some(format!("u{id}")),
+        }
+    }
+
+    fn private(user: u64) -> ChatRef {
+        ChatRef {
+            id: i64::try_from(user).unwrap(),
+            kind: ChatKind::Private,
+            title: None,
+        }
+    }
+
+    fn group(id: i64) -> ChatRef {
+        ChatRef {
+            id,
+            kind: ChatKind::Supergroup { forum: false },
+            title: Some("ops".into()),
+        }
+    }
+
+    fn msg(chat: ChatRef, from: u64, thread: Option<i64>, text: &str) -> IncomingMessage {
+        let id = NEXT_ID.fetch_add(1, Ordering::SeqCst);
+        let command = text.strip_prefix('/').map(|rest| {
+            let (name, arg) = rest.split_once(' ').unwrap_or((rest, ""));
+            Command {
+                name: name.to_owned(),
+                for_other_bot: false,
+                arg: arg.trim().to_owned(),
+            }
+        });
+        IncomingMessage {
+            update_id: id,
+            chat,
+            thread,
+            message_id: id,
+            date: 1_700_000_000,
+            from: Some(sender(from)),
+            text: Some(text.to_owned()),
+            command,
+            mentions_bot: text.contains(&format!("@{BOT}")),
+            reply_to: None,
+            forward_from: None,
+            media: Vec::new(),
+            media_group_id: None,
+            location: None,
+            contact: None,
+            service: None,
+        }
+    }
+
+    fn photo(file_id: &str) -> Media {
+        Media {
+            kind: MediaKind::Photo,
+            file_id: file_id.to_owned(),
+            file_name: None,
+            mime: None,
+            size: Some(8),
+            duration_ms: None,
+            emoji: None,
+        }
+    }
+
+    fn approval(session: SessionId) -> ApprovalRequested {
+        ApprovalRequested {
+            id: ApprovalId(uuid::Uuid::new_v4()),
+            session,
+            tool: "shell".into(),
+            args: serde_json::json!({ "command": "ls" }),
+            risk: Risk::Mutating,
+        }
+    }
+
+    fn ask(session: SessionId) -> AskRequested {
+        let choice = |label: &str| Choice {
+            label: label.into(),
+            description: None,
+        };
+        AskRequested {
+            id: AskId(uuid::Uuid::new_v4()),
+            session,
+            questions: vec![
+                Question {
+                    id: "db".into(),
+                    question: "Which database?".into(),
+                    options: vec![choice("Postgres"), choice("SQLite")],
+                    recommended: Some(0),
+                },
+                Question {
+                    id: "more".into(),
+                    question: "Anything else?".into(),
+                    options: vec![],
+                    recommended: None,
+                },
+            ],
+        }
+    }
+
+    fn turn_started(session: SessionId, text: &str) -> AgentEvent {
+        AgentEvent::TurnStarted {
+            session,
+            turn: TurnId::new(),
+            text: text.into(),
+            model: "m".into(),
+            turn_seq: 0,
+        }
+    }
+
+    fn artifact(session: SessionId, dir: &Path, name: &str, kind: artifact::Kind, mime: &str) -> ArtifactShown {
+        let path = dir.join(name);
+        std::fs::write(&path, b"\x89PNG\r\n\x1a\nbytes").unwrap();
+        ArtifactShown {
+            session,
+            call_id: "call_1".into(),
+            artifact: artifact::Artifact {
+                id: "abc".into(),
+                session,
+                call_id: "call_1".into(),
+                name: name.into(),
+                title: "Report".into(),
+                kind,
+                mime: mime.into(),
+                bytes: 13,
+                version: 1,
+                path,
+                source: None,
+                preview: None,
+                pages: None,
+                origin: None,
+                created_at: 0,
+            },
+        }
+    }
+
+    const OWNER_CHAT: i64 = OWNER as i64;
+
+    #[tokio::test]
+    async fn general_message_in_a_topics_chat_creates_the_session_then_the_topic_and_binds_it() {
+        let f = fixture(true);
+        let m = msg(private(OWNER), OWNER, None, "hello world\nsecond line");
+        let mark = m.message_id;
+        f.inbound(m).await;
+        assert_eq!(
+            f.stub.calls(),
+            vec![PortCall::SendInput(None, "hello world\nsecond line".into(), 0)]
+        );
+        let calls = f.api.calls();
+        assert!(calls.contains(&Call::React {
+            at: MsgRef {
+                chat: OWNER_CHAT,
+                id: mark
+            },
+            emoji: Some(EYES.into())
+        }));
+        assert!(calls.contains(&Call::CreateTopic {
+            chat: OWNER_CHAT,
+            name: "hello world".into()
+        }));
+        let key = threads::key(OWNER_CHAT, Some(500));
+        let t = f.chan.lock().threads.get(&key).cloned().unwrap();
+        assert_eq!(t.session, f.stub.session);
+        assert_eq!(
+            t.topic,
+            Some(Topic {
+                id: 500,
+                named_by_user: false
+            })
+        );
+        assert!(f.chan.lock().workers.contains_key(&key));
+    }
+
+    #[tokio::test]
+    async fn message_in_a_bound_topic_steers_while_a_turn_runs() {
+        let f = fixture(true);
+        let key = threads::key(OWNER_CHAT, Some(7));
+        let session = f.bind(&key, OWNER);
+        f.chan.lock().running.insert(session);
+        f.inbound(msg(private(OWNER), OWNER, Some(7), "more")).await;
+        assert_eq!(f.stub.calls(), vec![PortCall::Steer(session, "more".into())]);
+        assert!(!f.api.calls().iter().any(|c| matches!(c, Call::CreateTopic { .. })));
+        f.chan.lock().running.remove(&session);
+        f.inbound(msg(private(OWNER), OWNER, Some(7), "again")).await;
+        assert_eq!(
+            f.stub.calls(),
+            vec![PortCall::SendInput(Some(session), "again".into(), 0)]
+        );
+    }
+
+    #[tokio::test]
+    async fn flat_private_chat_binds_the_chat_key() {
+        let f = fixture(false);
+        f.inbound(msg(private(FRIEND), FRIEND, None, "hi")).await;
+        assert_eq!(f.stub.calls(), vec![PortCall::SendInput(None, "hi".into(), 0)]);
+        assert!(!f.api.calls().iter().any(|c| matches!(c, Call::CreateTopic { .. })));
+        let t = f.chan.lock().threads.get(&threads::key(FRIEND as i64, None)).cloned().unwrap();
+        assert_eq!((t.session, t.user, t.topic), (f.stub.session, FRIEND, None));
+    }
+
+    #[tokio::test]
+    async fn plain_group_needs_a_mention_and_strips_it() {
+        let f = fixture(false);
+        f.inbound(msg(group(GROUP), FRIEND, None, "just chatting")).await;
+        assert!(f.stub.calls().is_empty());
+        assert!(f.api.calls().is_empty());
+        f.inbound(msg(group(GROUP), FRIEND, None, &format!("@{BOT} do it"))).await;
+        assert_eq!(f.stub.calls(), vec![PortCall::SendInput(None, "do it".into(), 0)]);
+        assert!(f.chan.lock().threads.get(&threads::key(GROUP, None)).is_some());
+        // An unlisted group is ignored even when addressed.
+        f.inbound(msg(group(OTHER_GROUP), OWNER, None, &format!("@{BOT} hi"))).await;
+        assert!(f.stub.calls().is_empty());
+    }
+
+    #[tokio::test]
+    async fn stranger_dm_is_dropped_silently() {
+        let f = fixture(true);
+        f.inbound(msg(private(STRANGER), STRANGER, None, "let me in")).await;
+        assert!(f.stub.calls().is_empty());
+        assert!(f.api.calls().is_empty());
+    }
+
+    #[tokio::test]
+    async fn non_allowed_group_member_gets_one_ephemeral_attempt_and_nothing_else() {
+        let f = fixture(false);
+        f.api.fail_next(
+            "send_rich",
+            ApiError::Api {
+                code: 400,
+                description: "Bad Request: not enough rights".into(),
+            },
+        );
+        f.inbound(msg(group(GROUP), STRANGER, None, &format!("@{BOT} hi"))).await;
+        let calls = f.api.take_calls();
+        assert_eq!(calls.len(), 1);
+        let Call::SendRich { md, ephemeral, .. } = &calls[0] else {
+            panic!("{calls:?}")
+        };
+        assert_eq!(md, "not allowed");
+        assert_eq!(ephemeral.as_ref().map(|e| e.user), Some(STRANGER));
+        assert!(f.stub.calls().is_empty());
+        // Unaddressed chatter from the same member: nothing at all.
+        f.inbound(msg(group(GROUP), STRANGER, None, "hmm")).await;
+        assert!(f.api.calls().is_empty());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn an_album_of_three_photos_is_one_input_with_three_lines() {
+        let f = fixture(false);
+        for id in ["f1", "f2", "f3"] {
+            f.api
+                .set_download(id, b"\x89PNG\r\n\x1a\nxx".to_vec(), Some("photos/file_1.jpg"));
+        }
+        for (i, id) in ["f1", "f2", "f3"].into_iter().enumerate() {
+            let mut m = msg(private(OWNER), OWNER, None, if i == 0 { "look" } else { "" });
+            m.media = vec![photo(id)];
+            m.media_group_id = Some("g1".into());
+            f.inbound(m).await;
+        }
+        assert!(f.stub.calls().is_empty());
+        tokio::time::sleep(ALBUM_WINDOW + Duration::from_millis(50)).await;
+        for _ in 0..20 {
+            tokio::task::yield_now().await;
+        }
+        let calls = f.stub.calls();
+        assert_eq!(calls.len(), 1, "{calls:?}");
+        let PortCall::SendInput(None, text, files) = &calls[0] else {
+            panic!("{calls:?}")
+        };
+        assert_eq!(*files, 3);
+        let lines: Vec<&str> = text.lines().collect();
+        assert_eq!(lines[0], "look");
+        assert_eq!(lines.len(), 4);
+        assert!(lines[1..].iter().all(|l| l.starts_with("[attachment: ") && l.contains("(image/png, 10 B)]")), "{text}");
+        assert_eq!(f.api.calls().iter().filter(|c| matches!(c, Call::Download(_))).count(), 3);
+    }
+
+    #[tokio::test]
+    async fn subagent_of_a_bound_parent_gets_a_topic_in_the_topics_shape() {
+        let f = fixture(true);
+        let parent = f.bind(&threads::key(OWNER_CHAT, Some(7)), OWNER);
+        let child = SessionId::new();
+        f.chan
+            .handle_event(Event::Agent(AgentEvent::SubagentSpawned {
+                parent,
+                child,
+                name: "grep-logs".into(),
+                cap: None,
+            }))
+            .await;
+        let calls = f.api.calls();
+        assert!(calls.contains(&Call::CreateTopic {
+            chat: OWNER_CHAT,
+            name: "↳ grep-logs".into()
+        }));
+        assert!(calls.iter().any(|c| matches!(c, Call::SendRich { to, md, .. } if *to == Target { chat: OWNER_CHAT, thread: Some(7) } && md == "↳ spawned **grep-logs**")));
+        let (key, t) = f.chan.lock().threads.by_session(child).map(|(k, t)| (k.clone(), t.clone())).unwrap();
+        assert_eq!(key, threads::key(OWNER_CHAT, Some(500)));
+        assert_eq!(t.user, OWNER);
+        // The child's first turn posts its task into the child topic.
+        f.chan.handle_event(Event::Agent(turn_started(child, "find the slow query"))).await;
+        assert!(f.api.calls().iter().any(|c| matches!(c, Call::SendRich { to, md, .. } if *to == Target { chat: OWNER_CHAT, thread: Some(500) } && md == "▸ **task**\nfind the slow query")));
+    }
+
+    /// Binds the flat parent chat and spawns `grep-logs`; returns the child and its marker id.
+    async fn spawn_flat_child(f: &Fixture) -> (SessionId, i64) {
+        let parent = f.bind(&threads::key(OWNER_CHAT, None), OWNER);
+        let child = SessionId::new();
+        f.stub.parents.lock().insert(child, parent);
+        f.chan
+            .handle_event(Event::Agent(AgentEvent::SubagentSpawned {
+                parent,
+                child,
+                name: "grep-logs".into(),
+                cap: None,
+            }))
+            .await;
+        let marker = f
+            .chan
+            .lock()
+            .markers
+            .iter()
+            .find(|(_, s)| **s == child)
+            .map(|(m, _)| m.id)
+            .expect("marker remembered");
+        (child, marker)
+    }
+
+    #[tokio::test]
+    async fn subagent_in_the_flat_shape_is_a_marker_and_a_reply_to_it_steers_the_child() {
+        let f = fixture(false);
+        let (child, marker) = spawn_flat_child(&f).await;
+        assert!(!f.api.calls().iter().any(|c| matches!(c, Call::CreateTopic { .. })));
+        assert!(f.chan.lock().threads.by_session(child).is_none());
+        assert_eq!(f.chan.target_for(child), Some(Target { chat: OWNER_CHAT, thread: None }));
+        f.chan.lock().running.insert(child);
+        let mut m = msg(private(OWNER), OWNER, None, "stop that");
+        m.reply_to = Some(ReplyRef {
+            message_id: marker,
+            from_bot: true,
+            text: Some("↳ spawned **grep-logs**".into()),
+        });
+        f.inbound(m).await;
+        assert_eq!(
+            f.stub.calls(),
+            vec![PortCall::Steer(child, "(replying to: \"↳ spawned **grep-logs**\")\nstop that".into())]
+        );
+    }
+
+    #[tokio::test]
+    async fn child_events_reach_the_parent_worker_as_rows() {
+        let f = fixture(false);
+        let mut rx = f.tap_worker(&threads::key(OWNER_CHAT, None));
+        let (child, _) = spawn_flat_child(&f).await;
+        f.chan.handle_event(Event::Agent(turn_started(child, "go"))).await;
+        let mut seen_running = false;
+        while let Ok(m) = rx.try_recv() {
+            if let WorkerMsg::ChildRow { child: c, row, idle } = m {
+                assert_eq!(c, child);
+                assert_eq!(row.name, "grep-logs");
+                if row.state == "running" {
+                    assert!(!idle);
+                    assert_eq!(row.glyph, "⠹");
+                    seen_running = true;
+                }
+            }
+        }
+        assert!(seen_running);
+    }
+
+    #[tokio::test]
+    async fn approvals_go_to_the_child_topic_or_the_owner_chat_or_nowhere() {
+        let f = fixture(true);
+        let parent = f.bind(&threads::key(OWNER_CHAT, Some(7)), OWNER);
+        let child = SessionId::new();
+        f.chan
+            .handle_event(Event::Agent(AgentEvent::SubagentSpawned {
+                parent,
+                child,
+                name: "x".into(),
+                cap: None,
+            }))
+            .await;
+        f.api.take_calls();
+        f.chan.handle_event(Event::Requested(approval(child))).await;
+        let sends = f.sends();
+        assert_eq!(sends.len(), 1);
+        let Call::SendRich { to, md, markup, .. } = &sends[0] else { panic!() };
+        assert_eq!(*to, Target { chat: OWNER_CHAT, thread: Some(500) });
+        assert!(md.starts_with("⚠️ **shell** wants to run\n```sh\nls\n```"));
+        assert_eq!(markup.as_ref().unwrap().rows[0].len(), 2);
+
+        f.api.take_calls();
+        let unbound = SessionId::new();
+        f.chan.handle_event(Event::Requested(approval(unbound))).await;
+        let sends = f.sends();
+        assert_eq!(sends.len(), 1);
+        let Call::SendRich { to, md, .. } = &sends[0] else { panic!() };
+        assert_eq!(*to, Target { chat: OWNER_CHAT, thread: None });
+        assert!(md.ends_with(&format!("session {} · Title", &unbound.to_string()[28..])), "{md}");
+
+        let g = fixture_with(
+            TelegramConfig {
+                approvals: ApprovalsMode::Threads,
+                ..TelegramConfig::default()
+            },
+            true,
+        );
+        g.chan.handle_event(Event::Requested(approval(SessionId::new()))).await;
+        assert!(g.api.calls().is_empty());
+    }
+
+    #[tokio::test]
+    async fn approval_press_by_the_thread_user_resolves_and_a_stranger_is_refused() {
+        let f = fixture(false);
+        let session = f.bind(&threads::key(FRIEND as i64, None), FRIEND);
+        let req = approval(session);
+        f.chan.handle_event(Event::Requested(req.clone())).await;
+        let card = f.chan.lock().cards.get(&req.id).and_then(|c| c.at).unwrap();
+        f.api.take_calls();
+        f.press(STRANGER, card.chat, None, card.id, &format!("ap:{}:a", req.id.0)).await;
+        assert_eq!(
+            f.api.take_calls(),
+            vec![Call::AnswerCallback {
+                id: format!("cb{}", card.id),
+                toast: Some("not allowed".into())
+            }]
+        );
+        assert!(f.stub.calls().is_empty());
+        f.press(FRIEND, card.chat, None, card.id, &format!("ap:{}:a", req.id.0)).await;
+        assert_eq!(f.stub.calls(), vec![PortCall::Resolve(req.id, Decision::Allow)]);
+        assert_eq!(
+            f.api.take_calls(),
+            vec![Call::AnswerCallback {
+                id: format!("cb{}", card.id),
+                toast: Some("allowed".into())
+            }]
+        );
+        f.chan
+            .handle_event(Event::Resolved(ApprovalResolved {
+                id: req.id,
+                decision: Decision::Allow,
+                timed_out: false,
+            }))
+            .await;
+        let calls = f.api.take_calls();
+        assert_eq!(calls.len(), 1);
+        let Call::EditRich { at, md, markup } = &calls[0] else { panic!("{calls:?}") };
+        assert_eq!(*at, card);
+        assert!(md.starts_with(&format!("✓ **shell** allowed by user{FRIEND}\n```sh\nls\n```")), "{md}");
+        assert_eq!(
+            markup.as_ref().unwrap().rows,
+            vec![vec![Button::Disabled { text: "✓ allowed".into() }]]
+        );
+        assert!(f.chan.lock().cards.is_empty());
+    }
+
+    #[tokio::test]
+    async fn asks_post_one_question_at_a_time_and_a_reply_answers_the_card() {
+        let f = fixture(false);
+        let session = f.bind(&threads::key(OWNER_CHAT, None), OWNER);
+        let req = ask(session);
+        f.chan.handle_event(Event::Ask(req.clone())).await;
+        let sends = f.sends();
+        assert_eq!(sends.len(), 1);
+        let Call::SendRich { md, markup, .. } = &sends[0] else { panic!() };
+        assert!(md.starts_with("❓ **Question 1/2** — Which database?\n1. **Postgres** _(recommended)_\n2. **SQLite**"), "{md}");
+        let kb = markup.as_ref().unwrap();
+        assert!(kb.force_reply);
+        assert_eq!(kb.rows.len(), 2);
+        let card = f.chan.lock().asks.get(&req.id).and_then(|c| c.at).unwrap();
+        f.api.take_calls();
+        let mut m = msg(private(OWNER), OWNER, None, "Postgres please");
+        m.reply_to = Some(ReplyRef {
+            message_id: card.id,
+            from_bot: true,
+            text: None,
+        });
+        f.inbound(m).await;
+        assert!(f.stub.calls().is_empty(), "nothing goes to the model before the set is answered");
+        let calls = f.api.take_calls();
+        assert!(calls.iter().any(|c| matches!(c, Call::EditRich { at, md, markup: None } if *at == card && md.ends_with("→ Postgres please"))), "{calls:?}");
+        let second = calls.iter().find_map(|c| match c {
+            Call::SendRich { md, .. } if md.starts_with("❓ **Question 2/2**") => Some(()),
+            _ => None,
+        });
+        assert!(second.is_some(), "{calls:?}");
+        let card2 = f.chan.lock().asks.get(&req.id).and_then(|c| c.at).unwrap();
+        assert_ne!(card2, card);
+        f.press(OWNER, card2.chat, None, card2.id, &format!("ask:{}:1:s", req.id.0)).await;
+        assert_eq!(
+            f.stub.calls(),
+            vec![PortCall::AnswerAsk(
+                req.id,
+                Some(vec![Answer::Text { text: "Postgres please".into() }, Answer::Skipped])
+            )]
+        );
+        // A set resolved elsewhere closes its live card.
+        let other = ask(session);
+        f.chan.handle_event(Event::Ask(other.clone())).await;
+        let card3 = f.chan.lock().asks.get(&other.id).and_then(|c| c.at).unwrap();
+        f.api.take_calls();
+        f.chan
+            .handle_event(Event::AskDone(AskResolved {
+                id: other.id,
+                dismissed: false,
+                timed_out: true,
+            }))
+            .await;
+        assert_eq!(
+            f.api.take_calls(),
+            vec![Call::EditRich {
+                at: card3,
+                md: "⌛ **Question 1/2** — timed out".into(),
+                markup: None
+            }]
+        );
+    }
+
+    #[tokio::test]
+    async fn start_with_a_live_code_pairs_and_a_dead_code_is_silent() {
+        let f = fixture(true);
+        let actor = crate::Telegram::spawn(crate::Telegram {
+            handle: Some(Handle {
+                chan: Arc::clone(&f.chan),
+            }),
+            cfg: f.chan.cfg.clone(),
+            rt: f.rt.clone(),
+            configured: true,
+        });
+        let _ = actor.register(crate::TELEGRAM_ACTOR);
+        f.inbound(msg(private(STRANGER), STRANGER, None, "/start nope")).await;
+        assert!(f.api.calls().is_empty());
+        assert_eq!(*f.chan.owner.lock(), Some(OWNER));
+        f.chan.lock().pairing = Some(Pairing {
+            code: "abcdefgh23456789".into(),
+            expires: Instant::now() + PAIR_TTL,
+        });
+        f.inbound(msg(private(STRANGER), STRANGER, None, "/start ABCDEFGH23456789")).await;
+        assert_eq!(*f.chan.owner.lock(), Some(STRANGER));
+        assert!(f.chan.lock().pairing.is_none());
+        assert!(matches!(f.chan.lock().last_event, Some(TelegramEvent::Paired { user, .. }) if user == STRANGER));
+        let calls = f.api.calls();
+        assert!(calls.iter().any(|c| matches!(c, Call::SendRich { to, md, .. } if to.chat == STRANGER as i64 && md.starts_with("👋 paired"))));
+        assert!(calls.iter().any(|c| matches!(c, Call::SetCommands { scope: CommandScope::Chat(id), .. } if *id == STRANGER as i64)));
+        let config = std::fs::read_to_string(f.rt.data_dir.join("config.yaml")).unwrap();
+        assert!(config.contains(&format!("owner: \"{STRANGER}\"")), "{config}");
+        actor.kill();
+    }
+
+    #[tokio::test]
+    async fn bot_blocked_on_a_send_unbinds_the_chat_and_publishes_unreachable() {
+        let f = fixture(false);
+        f.bind(&threads::key(OWNER_CHAT, None), OWNER);
+        f.api.fail_next(
+            "send_rich",
+            ApiError::Api {
+                code: 403,
+                description: BOT_BLOCKED.into(),
+            },
+        );
+        f.chan
+            .handle_event(Event::Secret(secrets::SecretsEvent::Requested {
+                id: secrets::RequestId(uuid::Uuid::new_v4()),
+                session: SessionId::new(),
+                name: "OPENAI_KEY".into(),
+                note: "for the api".into(),
+                current: None,
+                title: None,
+                fields: Vec::new(),
+            }))
+            .await;
+        assert!(f.chan.lock().threads.get(&threads::key(OWNER_CHAT, None)).is_none());
+        assert!(matches!(f.chan.lock().last_event, Some(TelegramEvent::Unreachable { chat, .. }) if chat == OWNER_CHAT));
+    }
+
+    #[tokio::test]
+    async fn secret_request_is_a_notice_to_the_owner_only() {
+        let f = fixture(false);
+        f.bind(&threads::key(FRIEND as i64, None), FRIEND);
+        f.chan
+            .handle_event(Event::Secret(secrets::SecretsEvent::Requested {
+                id: secrets::RequestId(uuid::Uuid::new_v4()),
+                session: f.stub.session,
+                name: "OPENAI_KEY".into(),
+                note: "for the api".into(),
+                current: None,
+                title: None,
+                fields: Vec::new(),
+            }))
+            .await;
+        assert_eq!(
+            f.api.calls(),
+            vec![Call::SendRich {
+                to: Target { chat: OWNER_CHAT, thread: None },
+                md: secret_notice("OPENAI_KEY", "for the api"),
+                markup: None,
+                reply_to: None,
+                ephemeral: None,
+            }]
+        );
+    }
+
+    #[tokio::test]
+    async fn artifact_of_a_child_lands_in_the_nearest_bound_ancestor_by_kind() {
+        let f = fixture(false);
+        let (child, _) = spawn_flat_child(&f).await;
+        let grandchild = SessionId::new();
+        f.stub.parents.lock().insert(grandchild, child);
+        f.api.take_calls();
+        f.chan
+            .handle_event(Event::Artifact(artifact(grandchild, f._dir.path(), "plot.png", artifact::Kind::Image, "image/png")))
+            .await;
+        f.chan
+            .handle_event(Event::Artifact(artifact(grandchild, f._dir.path(), "report.pdf", artifact::Kind::Pdf, "application/pdf")))
+            .await;
+        let files: Vec<(Target, String, String, Option<String>)> = f
+            .api
+            .calls()
+            .into_iter()
+            .filter_map(|c| match c {
+                Call::SendFile { to, name, mime, caption, .. } => Some((to, name, mime, caption)),
+                _ => None,
+            })
+            .collect();
+        let to = Target { chat: OWNER_CHAT, thread: None };
+        assert_eq!(
+            files,
+            vec![
+                (to, "plot.png".into(), "image/png".into(), Some("Report".into())),
+                (to, "report.pdf".into(), "application/pdf".into(), Some("Report".into())),
+            ]
+        );
+        // An unbound chain sends nothing.
+        f.api.take_calls();
+        f.chan
+            .handle_event(Event::Artifact(artifact(SessionId::new(), f._dir.path(), "x.png", artifact::Kind::Image, "image/png")))
+            .await;
+        assert!(f.api.calls().is_empty());
+    }
+
+    #[tokio::test]
+    async fn not_holding_the_lease_drops_inbound_after_recording() {
+        let f = fixture(false);
+        f.chan.lock().follower.holding = false;
+        f.inbound(msg(private(OWNER), OWNER, None, "hello")).await;
+        assert!(f.stub.calls().is_empty());
+        assert!(f.api.calls().is_empty());
+        // The chat was still recorded for `message_user` labels.
+        assert_eq!(f.chan.chat_label(OWNER_CHAT), format!("@u{OWNER}"));
+    }
+
+    #[tokio::test]
+    async fn new_thread_outcome_unbinds_and_topic_closed_unbinds() {
+        let f = fixture(true);
+        let key = threads::key(OWNER_CHAT, Some(7));
+        f.bind(&key, OWNER);
+        let mut m = msg(private(OWNER), OWNER, Some(7), "");
+        m.text = None;
+        m.service = Some(Service::TopicClosed);
+        f.inbound(m).await;
+        assert!(f.chan.lock().threads.get(&key).is_none());
+        f.bind(&key, OWNER);
+        let mut m = msg(private(OWNER), OWNER, Some(7), "");
+        m.text = None;
+        m.service = Some(Service::TopicEdited { name: Some("mine".into()) });
+        f.inbound(m).await;
+        assert_eq!(f.chan.lock().threads.get(&key).and_then(|t| t.topic).map(|t| t.named_by_user), Some(true));
+    }
+
+    #[test]
+    fn mention_stripping_and_mime_sniffing() {
+        assert_eq!(strip_mention("@Theuth_bot hi there", "theuth_bot"), "hi there");
+        assert_eq!(strip_mention("hi @theuth_bot", "theuth_bot"), "hi");
+        assert_eq!(strip_mention("plain", ""), "plain");
+        assert_eq!(effective_mime("image/jpeg", b"", "x.bin"), "image/jpeg");
+        assert_eq!(effective_mime("", b"%PDF-1.4", "x"), "application/pdf");
+        assert_eq!(effective_mime("application/octet-stream", b"zzz", "notes.txt"), "text/plain");
+        assert_eq!(effective_mime("", b"zzz", ""), "application/octet-stream");
+        assert_eq!(topic_name("\n\n  first line  \nsecond"), "first line");
+        assert_eq!(clip("abc", 3), "abc");
+        assert!(clip(&"x".repeat(200), 128).chars().count() <= 128);
+    }
+}
