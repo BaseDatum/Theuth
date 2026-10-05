@@ -83,7 +83,19 @@ so the gate is untested here; the code is `crates/signal/src/channel.rs:1146-115
 
 ## Gates
 
-(pasted below once green)
+```
+$ cargo check -p telegram --all-targets
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 9m 19s
+$ cargo test -p telegram
+test result: ok. 75 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.75s
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+$ cargo clippy -p telegram --all-targets -- -D warnings
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 41.40s
+$ cargo fmt -p telegram -- --check
+(no diff)
+```
+
+Formatting was applied with `rustfmt` on the four owned files only (never `cargo fmt --all`).
 
 ## Remaining
 

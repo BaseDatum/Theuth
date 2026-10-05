@@ -96,7 +96,11 @@ impl Card {
 
     /// Applies `kind` for `question` (`None` = the set): the text replacing
     /// the live card and what follows; `Err` = the toast to show instead.
-    pub fn step(&mut self, question: Option<usize>, kind: &Kind) -> Result<(String, Next), &'static str> {
+    pub fn step(
+        &mut self,
+        question: Option<usize>,
+        kind: &Kind,
+    ) -> Result<(String, Next), &'static str> {
         if self.done || question.is_some_and(|q| q != self.current) {
             return Err("already answered");
         }
@@ -371,7 +375,10 @@ mod tests {
         let (text, next) = c.step(None, &Kind::Dismiss).unwrap();
         assert_eq!(text, "🚫 **Questions dismissed** (turn cancelled)");
         assert_eq!(next, Next::Dismiss);
-        assert_eq!(closed(&r, 1, false, true), "⌛ **Question 2/2** — timed out");
+        assert_eq!(
+            closed(&r, 1, false, true),
+            "⌛ **Question 2/2** — timed out"
+        );
         assert!(closed(&r, 0, false, false).ends_with("→ _answered elsewhere_"));
     }
 }

@@ -721,7 +721,10 @@ impl Channel {
         reply_to: Option<i64>,
         ephemeral: Option<&Ephemeral>,
     ) -> Result<i64, ApiError> {
-        let r = self.api.send_rich(to, md, markup, reply_to, ephemeral).await;
+        let r = self
+            .api
+            .send_rich(to, md, markup, reply_to, ephemeral)
+            .await;
         if let Err(e) = &r {
             self.on_send_error(to, e).await;
         }
@@ -811,7 +814,10 @@ impl Channel {
     /// Binds `key` to `thread`, replacing the worker when the session changed.
     fn rebind(&self, key: &ThreadKey, thread: Thread) {
         let mut s = self.lock();
-        if s.threads.get(key).is_some_and(|t| t.session != thread.session) {
+        if s.threads
+            .get(key)
+            .is_some_and(|t| t.session != thread.session)
+        {
             shutdown_worker(&mut s, key);
         }
         s.threads.bind(key.clone(), thread);
@@ -968,10 +974,16 @@ impl Channel {
             }
             Incoming::MyChatMember { chat, left, .. } => {
                 if left {
-                    tracing::warn!(chat, "telegram bot removed from chat; unbinding its threads");
+                    tracing::warn!(
+                        chat,
+                        "telegram bot removed from chat; unbinding its threads"
+                    );
                     self.unbind_chat(chat);
                 } else {
-                    tracing::info!(chat, "telegram bot added to chat (listening needs `/telegram group add`)");
+                    tracing::info!(
+                        chat,
+                        "telegram bot added to chat (listening needs `/telegram group add`)"
+                    );
                 }
             }
             Incoming::Ignored { update_id, kind } => {
@@ -986,7 +998,10 @@ impl Channel {
     /// replies, albums, then the thread key and the ask.
     async fn handle_message(self: &Arc<Self>, m: IncomingMessage) {
         let Some(from) = m.from.clone() else {
-            tracing::debug!(chat = m.chat.id, "telegram message without a sender dropped");
+            tracing::debug!(
+                chat = m.chat.id,
+                "telegram message without a sender dropped"
+            );
             return;
         };
         if from.is_bot || m.chat.kind == ChatKind::Channel {
@@ -1007,7 +1022,10 @@ impl Channel {
         let allowed = self.is_allowed(from.id);
         if in_group {
             if !self.lock().groups.contains(&m.chat.id) {
-                tracing::debug!(chat = m.chat.id, "telegram message in an unlisted group ignored");
+                tracing::debug!(
+                    chat = m.chat.id,
+                    "telegram message in an unlisted group ignored"
+                );
                 return;
             }
             if !allowed {
@@ -1017,7 +1035,10 @@ impl Channel {
                 return;
             }
         } else if !allowed {
-            tracing::warn!(user = from.id, "dropping telegram message from a user not in the allowlist");
+            tracing::warn!(
+                user = from.id,
+                "dropping telegram message from a user not in the allowlist"
+            );
             return;
         }
         if let Some(service) = &m.service {
@@ -1036,7 +1057,11 @@ impl Channel {
         }
         // 67 decision 22: only the lease holder answers.
         if !self.lock().follower.holding {
-            tracing::debug!(chat = m.chat.id, update_id = m.update_id, "not the hub; recorded, silent");
+            tracing::debug!(
+                chat = m.chat.id,
+                update_id = m.update_id,
+                "not the hub; recorded, silent"
+            );
             return;
         }
         // 67 §4.7 answered markers: the first hub to mark it answers. Tasks
@@ -1049,7 +1074,11 @@ impl Channel {
                 })
                 .await
         {
-            tracing::debug!(chat = m.chat.id, update_id = m.update_id, "already answered by another hub");
+            tracing::debug!(
+                chat = m.chat.id,
+                update_id = m.update_id,
+                "already answered by another hub"
+            );
             return;
         }
         let owner = *self.owner.lock();
@@ -1110,7 +1139,9 @@ impl Channel {
 
     /// 98 §7: an album's messages within 1 s become one input.
     async fn album(self: &Arc<Self>, m: IncomingMessage) {
-        let Some(gid) = m.media_group_id.clone() else { return };
+        let Some(gid) = m.media_group_id.clone() else {
+            return;
+        };
         let key = (m.chat.id, gid);
         let first = {
             let mut s = self.lock();
@@ -1139,13 +1170,20 @@ impl Channel {
             head.media.extend(m.media);
         }
         head.media_group_id = None;
-        let Some(from) = head.from.clone() else { return };
+        let Some(from) = head.from.clone() else {
+            return;
+        };
         let owner = *self.owner.lock();
         self.route_message(head, from, owner).await;
     }
 
     /// The thread key (98 §6), the text (98 §7, §7.1), 👀, the ask, the bind.
-    async fn route_message(self: &Arc<Self>, m: IncomingMessage, from: SenderRef, owner: Option<u64>) {
+    async fn route_message(
+        self: &Arc<Self>,
+        m: IncomingMessage,
+        from: SenderRef,
+        owner: Option<u64>,
+    ) {
         let in_group = m.chat.kind != ChatKind::Private;
         let chat = m.chat.id;
         let addressed = m.mentions_bot
@@ -1192,7 +1230,10 @@ impl Channel {
             let r = if running {
                 self.port.steer(child, input, files).await
             } else {
-                self.port.send_input(Some(child), input, files, PeerScope::Isolated).await.map(|_| ())
+                self.port
+                    .send_input(Some(child), input, files, PeerScope::Isolated)
+                    .await
+                    .map(|_| ())
             };
             match (r, self.bound(child)) {
                 (Ok(()), Some(b)) => {
@@ -1218,8 +1259,16 @@ impl Channel {
         };
         let result = match session {
             Some(id) if running => self.port.steer(id, input.clone(), files).await.map(|()| id),
-            Some(id) => self.port.send_input(Some(id), input.clone(), files, scope).await,
-            None => self.port.send_input(None, input.clone(), files, scope).await,
+            Some(id) => {
+                self.port
+                    .send_input(Some(id), input.clone(), files, scope)
+                    .await
+            }
+            None => {
+                self.port
+                    .send_input(None, input.clone(), files, scope)
+                    .await
+            }
         };
         let id = match result {
             Ok(id) => id,
@@ -1277,7 +1326,12 @@ impl Channel {
     /// the `@bot` mention stripped, one line per attachment (§7.1).
     async fn assemble(&self, m: &IncomingMessage) -> (String, Vec<PathBuf>, bool) {
         let mut lines: Vec<String> = Vec::new();
-        if let Some(name) = m.forward_from.as_deref().map(str::trim).filter(|n| !n.is_empty()) {
+        if let Some(name) = m
+            .forward_from
+            .as_deref()
+            .map(str::trim)
+            .filter(|n| !n.is_empty())
+        {
             lines.push(format!("(forwarded from {name})"));
         }
         if let Some(q) = m
@@ -1310,7 +1364,12 @@ impl Channel {
         if let Some((lat, lon)) = m.location {
             lines.push(format!("[location: {lat}, {lon}]"));
         }
-        if let Some(c) = m.contact.as_deref().map(str::trim).filter(|c| !c.is_empty()) {
+        if let Some(c) = m
+            .contact
+            .as_deref()
+            .map(str::trim)
+            .filter(|c| !c.is_empty())
+        {
             lines.push(format!("[contact: {c}]"));
         }
         if m.media.is_empty() {
@@ -1464,7 +1523,10 @@ impl Channel {
             chat: m.chat.id,
             thread: m.thread,
         };
-        if let Err(e) = self.send(&to, &md, help.keyboard.as_ref(), None, None).await {
+        if let Err(e) = self
+            .send(&to, &md, help.keyboard.as_ref(), None, None)
+            .await
+        {
             tracing::warn!(error = %e, "telegram pairing welcome failed");
         }
         self.set_command_scopes(Some(from.id)).await;
@@ -1474,7 +1536,13 @@ impl Channel {
 
     /// The session a command runs against: the thread's, else the invoker's
     /// latest in the chat (98 §10.3).
-    fn command_cx(&self, user: u64, chat: i64, thread: Option<i64>, in_group: bool) -> CommandCx<'_> {
+    fn command_cx(
+        &self,
+        user: u64,
+        chat: i64,
+        thread: Option<i64>,
+        in_group: bool,
+    ) -> CommandCx<'_> {
         let session = {
             let s = self.lock();
             s.threads
@@ -1510,7 +1578,13 @@ impl Channel {
 
     /// Side effects of a command outcome and its reply; `edit` = the panel a
     /// `cmd:` press re-renders in place.
-    async fn apply_outcome(self: &Arc<Self>, out: Outcome, to: &Target, from: &SenderRef, edit: Option<MsgRef>) {
+    async fn apply_outcome(
+        self: &Arc<Self>,
+        out: Outcome,
+        to: &Target,
+        from: &SenderRef,
+        edit: Option<MsgRef>,
+    ) {
         let in_group = to.chat < 0;
         let user = from.id;
         match out {
@@ -1527,7 +1601,11 @@ impl Channel {
                 reply,
             } => {
                 let (key, at) = if self.topics_shape(to.chat) && to.thread.is_none() {
-                    match self.api.create_topic(to.chat, &clip(title.trim(), TOPIC_NAME_MAX)).await {
+                    match self
+                        .api
+                        .create_topic(to.chat, &clip(title.trim(), TOPIC_NAME_MAX))
+                        .await
+                    {
                         Ok(t) => {
                             let key = threads::key(to.chat, Some(t));
                             self.rebind(
@@ -1557,25 +1635,28 @@ impl Channel {
                 } else {
                     (threads::key(to.chat, to.thread), *to)
                 };
-                if self.lock().threads.get(&key).is_none_or(|t| t.session != session) {
+                if self
+                    .lock()
+                    .threads
+                    .get(&key)
+                    .is_none_or(|t| t.session != session)
+                {
                     let topic = {
                         let s = self.lock();
-                        s.threads
-                            .get(&key)
-                            .and_then(|t| t.topic)
-                            .or_else(|| {
-                                at.thread.map(|id| Topic {
-                                    id,
-                                    named_by_user: true,
-                                })
+                        s.threads.get(&key).and_then(|t| t.topic).or_else(|| {
+                            at.thread.map(|id| Topic {
+                                id,
+                                named_by_user: true,
                             })
+                        })
                     };
                     self.rebind(&key, Thread::new(session, user, topic));
                 }
                 if let Some(b) = self.bound_key(&key) {
                     let _ = self.worker(&b);
                 }
-                self.reply(&at, user, in_group, &reply, edit.filter(|_| at == *to)).await;
+                self.reply(&at, user, in_group, &reply, edit.filter(|_| at == *to))
+                    .await;
             }
             Outcome::Allow(_)
             | Outcome::RemoveAllowed(_)
@@ -1609,13 +1690,9 @@ impl Channel {
                     .await
                 {
                     Ok(id) => {
-                        self.lock().prompts.insert(
-                            MsgRef {
-                                chat: to.chat,
-                                id,
-                            },
-                            expect,
-                        );
+                        self.lock()
+                            .prompts
+                            .insert(MsgRef { chat: to.chat, id }, expect);
                     }
                     Err(e) => tracing::warn!(error = %e, "telegram prompt failed"),
                 }
@@ -1679,7 +1756,11 @@ impl Channel {
                 user,
                 callback_query_id: None,
             };
-            if self.send(to, &r.markdown, kb, None, Some(&eph)).await.is_ok() {
+            if self
+                .send(to, &r.markdown, kb, None, Some(&eph))
+                .await
+                .is_ok()
+            {
                 return;
             }
         }
@@ -1721,7 +1802,10 @@ impl Channel {
                 .get(&id)
                 .is_some_and(|c| c.thread_user == Some(user));
         if !permitted {
-            tracing::warn!(user, "telegram approval press from a user who may not answer it");
+            tracing::warn!(
+                user,
+                "telegram approval press from a user who may not answer it"
+            );
             return self.answer(&cb.id, Some("not allowed")).await;
         }
         match self.port.resolve(id, decision).await {
@@ -1758,7 +1842,9 @@ impl Channel {
             } else {
                 match card {
                     None => Err("already answered"),
-                    Some(c) => c.step(p.question, &p.kind).map(|(text, next)| (text, next, c.to)),
+                    Some(c) => c
+                        .step(p.question, &p.kind)
+                        .map(|(text, next)| (text, next, c.to)),
                 }
             }
         };
@@ -1790,14 +1876,19 @@ impl Channel {
             let mut s = self.lock();
             let Some(c) = s.asks.get_mut(&id) else { return };
             if owner != Some(from.id) && c.thread_user != Some(from.id) {
-                tracing::debug!(user = from.id, "telegram ask reply from a user who may not answer it");
+                tracing::debug!(
+                    user = from.id,
+                    "telegram ask reply from a user who may not answer it"
+                );
                 return;
             }
             let at = c.at;
             c.step(Some(c.current), &asks::Kind::Text(text.to_owned()))
                 .map(|(t, next)| (t, next, c.to, at))
         };
-        let Ok((card_text, next, to, at)) = step else { return };
+        let Ok((card_text, next, to, at)) = step else {
+            return;
+        };
         if let Some(at) = at {
             self.edit(at, &card_text, None).await;
         }
@@ -1835,12 +1926,17 @@ impl Channel {
             .asks
             .get(&id)
             .map(|c| (c.req.clone(), c.to, c.context.clone()));
-        let Some((req, to, context)) = card else { return };
+        let Some((req, to, context)) = card else {
+            return;
+        };
         let (text, kb) = asks::question(&req, i, context.as_deref());
         match self.send(&to, &text, Some(&kb), None, None).await {
             Ok(mid) => {
                 if let Some(c) = self.lock().asks.get_mut(&id) {
-                    c.at = Some(MsgRef { chat: to.chat, id: mid });
+                    c.at = Some(MsgRef {
+                        chat: to.chat,
+                        id: mid,
+                    });
                 }
             }
             Err(e) => tracing::warn!(error = %e, "ask card post failed"),
@@ -1895,7 +1991,10 @@ impl Channel {
             mime: "text/plain".into(),
             bytes: text.into_bytes(),
         };
-        if let Err(e) = self.send_file(&b.to, &file, None, Some(cb.message_id)).await {
+        if let Err(e) = self
+            .send_file(&b.to, &file, None, Some(cb.message_id))
+            .await
+        {
             tracing::warn!(error = %e, "tool output file failed");
         }
     }
@@ -1904,7 +2003,9 @@ impl Channel {
         match self.api.edit_rich(&at, md, kb).await {
             Ok(()) => {}
             Err(e) if is_not_modified(&e) => {}
-            Err(e) => tracing::debug!(chat = at.chat, message_id = at.id, error = %e, "telegram card edit failed"),
+            Err(e) => {
+                tracing::debug!(chat = at.chat, message_id = at.id, error = %e, "telegram card edit failed")
+            }
         }
     }
 
@@ -1965,7 +2066,10 @@ impl Channel {
                 match self.send(&to, &text, Some(&kb), None, None).await {
                     Ok(mid) => {
                         if let Some(c) = self.lock().cards.get_mut(&req.id) {
-                            c.at = Some(MsgRef { chat: to.chat, id: mid });
+                            c.at = Some(MsgRef {
+                                chat: to.chat,
+                                id: mid,
+                            });
                         }
                     }
                     Err(e) => tracing::warn!(error = %e, "approval card post failed"),
@@ -1976,8 +2080,12 @@ impl Channel {
                 let Some(card) = card else { return };
                 self.child_row(card.session, |c| c.approval(None)).await;
                 if let Some(at) = card.at {
-                    let (text, kb) =
-                        approvals::resolved(&card.body, res.decision, res.timed_out, card.by.as_deref());
+                    let (text, kb) = approvals::resolved(
+                        &card.body,
+                        res.decision,
+                        res.timed_out,
+                        card.by.as_deref(),
+                    );
                     self.edit(at, &text, Some(&kb)).await;
                 }
             }
@@ -2005,7 +2113,9 @@ impl Channel {
             // 37 §7: the model asked the user for a secret; say where to enter
             // it (never here). The owner's chat only.
             Event::Secret(secrets::SecretsEvent::Requested { name, note, .. }) => {
-                let Some(owner) = *self.owner.lock() else { return };
+                let Some(owner) = *self.owner.lock() else {
+                    return;
+                };
                 let to = Target {
                     chat: i64::try_from(owner).unwrap_or(0),
                     thread: None,
@@ -2019,7 +2129,10 @@ impl Channel {
     /// Where a card for `session` goes: its thread (owner or the thread's
     /// user may press), else the owner's chat with a context line when
     /// `approvals: all`, else nowhere (98 §10.1).
-    async fn card_target(&self, session: SessionId) -> Option<(Target, Option<u64>, Option<String>)> {
+    async fn card_target(
+        &self,
+        session: SessionId,
+    ) -> Option<(Target, Option<u64>, Option<String>)> {
         if let Some(b) = self.bound(session) {
             return Some((b.to, Some(b.user), None));
         }
@@ -2066,7 +2179,11 @@ impl Channel {
         }
         let mut flat = true;
         if self.topics_shape(pb.to.chat) {
-            match self.api.create_topic(pb.to.chat, &format!("↳ {name}")).await {
+            match self
+                .api
+                .create_topic(pb.to.chat, &format!("↳ {name}"))
+                .await
+            {
                 Ok(t) => {
                     let key = threads::key(pb.to.chat, Some(t));
                     self.rebind(
@@ -2130,16 +2247,25 @@ impl Channel {
             return;
         }
         let Some(b) = self.bound(session) else { return };
-        self.note(&b.to, &format!("▸ **task**\n{}", clip(text.trim(), TASK_MAX)))
-            .await;
+        self.note(
+            &b.to,
+            &format!("▸ **task**\n{}", clip(text.trim(), TASK_MAX)),
+        )
+        .await;
     }
 
     /// Applies `f` to `session`'s row and, when it changed, fans the row out
     /// to every bound ancestor's worker (98 §9.3).
-    async fn child_row(self: &Arc<Self>, session: SessionId, f: impl FnOnce(&mut ChildState) -> bool) {
+    async fn child_row(
+        self: &Arc<Self>,
+        session: SessionId,
+        f: impl FnOnce(&mut ChildState) -> bool,
+    ) {
         let row = {
             let mut s = self.lock();
-            let Some(c) = s.children.get_mut(&session) else { return };
+            let Some(c) = s.children.get_mut(&session) else {
+                return;
+            };
             if !f(c) {
                 return;
             }
@@ -2284,7 +2410,10 @@ fn cut(s: &str, max: usize) -> String {
     if s.chars().count() <= max {
         return s.to_owned();
     }
-    let end = s.char_indices().nth(max.saturating_sub(1)).map_or(s.len(), |(i, _)| i);
+    let end = s
+        .char_indices()
+        .nth(max.saturating_sub(1))
+        .map_or(s.len(), |(i, _)| i);
     format!("{}…", &s[..end])
 }
 
@@ -2483,7 +2612,12 @@ pub(crate) mod tests {
         async fn new_root(&self, _: PeerScope) -> Result<SessionId, String> {
             Ok(self.session)
         }
-        async fn steer(&self, session: SessionId, text: String, _: Vec<PathBuf>) -> Result<(), String> {
+        async fn steer(
+            &self,
+            session: SessionId,
+            text: String,
+            _: Vec<PathBuf>,
+        ) -> Result<(), String> {
             self.calls.lock().push(PortCall::Steer(session, text));
             Ok(())
         }
@@ -2500,7 +2634,11 @@ pub(crate) mod tests {
             self.calls.lock().push(PortCall::Resolve(id, decision));
             Ok(true)
         }
-        async fn answer_ask(&self, id: AskId, answers: Option<Vec<Answer>>) -> Result<bool, String> {
+        async fn answer_ask(
+            &self,
+            id: AskId,
+            answers: Option<Vec<Answer>>,
+        ) -> Result<bool, String> {
             self.calls.lock().push(PortCall::AnswerAsk(id, answers));
             Ok(true)
         }
@@ -2604,10 +2742,19 @@ pub(crate) mod tests {
         }
 
         async fn inbound(&self, m: IncomingMessage) {
-            self.chan.handle_inbound(Incoming::Message(Box::new(m))).await;
+            self.chan
+                .handle_inbound(Incoming::Message(Box::new(m)))
+                .await;
         }
 
-        async fn press(&self, user: u64, chat: i64, thread: Option<i64>, message_id: i64, data: &str) {
+        async fn press(
+            &self,
+            user: u64,
+            chat: i64,
+            thread: Option<i64>,
+            message_id: i64,
+            data: &str,
+        ) {
             self.chan
                 .handle_inbound(Incoming::Callback(IncomingCallback {
                     update_id: NEXT_ID.fetch_add(1, Ordering::SeqCst),
@@ -2734,7 +2881,13 @@ pub(crate) mod tests {
         }
     }
 
-    fn artifact(session: SessionId, dir: &Path, name: &str, kind: artifact::Kind, mime: &str) -> ArtifactShown {
+    fn artifact(
+        session: SessionId,
+        dir: &Path,
+        name: &str,
+        kind: artifact::Kind,
+        mime: &str,
+    ) -> ArtifactShown {
         let path = dir.join(name);
         std::fs::write(&path, b"\x89PNG\r\n\x1a\nbytes").unwrap();
         ArtifactShown {
@@ -2770,7 +2923,11 @@ pub(crate) mod tests {
         f.inbound(m).await;
         assert_eq!(
             f.stub.calls(),
-            vec![PortCall::SendInput(None, "hello world\nsecond line".into(), 0)]
+            vec![PortCall::SendInput(
+                None,
+                "hello world\nsecond line".into(),
+                0
+            )]
         );
         let calls = f.api.calls();
         assert!(calls.contains(&Call::React {
@@ -2804,10 +2961,19 @@ pub(crate) mod tests {
         let session = f.bind(&key, OWNER);
         f.chan.lock().running.insert(session);
         f.inbound(msg(private(OWNER), OWNER, Some(7), "more")).await;
-        assert_eq!(f.stub.calls(), vec![PortCall::Steer(session, "more".into())]);
-        assert!(!f.api.calls().iter().any(|c| matches!(c, Call::CreateTopic { .. })));
+        assert_eq!(
+            f.stub.calls(),
+            vec![PortCall::Steer(session, "more".into())]
+        );
+        assert!(
+            !f.api
+                .calls()
+                .iter()
+                .any(|c| matches!(c, Call::CreateTopic { .. }))
+        );
         f.chan.lock().running.remove(&session);
-        f.inbound(msg(private(OWNER), OWNER, Some(7), "again")).await;
+        f.inbound(msg(private(OWNER), OWNER, Some(7), "again"))
+            .await;
         assert_eq!(
             f.stub.calls(),
             vec![PortCall::SendInput(Some(session), "again".into(), 0)]
@@ -2818,30 +2984,57 @@ pub(crate) mod tests {
     async fn flat_private_chat_binds_the_chat_key() {
         let f = fixture(false);
         f.inbound(msg(private(FRIEND), FRIEND, None, "hi")).await;
-        assert_eq!(f.stub.calls(), vec![PortCall::SendInput(None, "hi".into(), 0)]);
-        assert!(!f.api.calls().iter().any(|c| matches!(c, Call::CreateTopic { .. })));
-        let t = f.chan.lock().threads.get(&threads::key(FRIEND as i64, None)).cloned().unwrap();
+        assert_eq!(
+            f.stub.calls(),
+            vec![PortCall::SendInput(None, "hi".into(), 0)]
+        );
+        assert!(
+            !f.api
+                .calls()
+                .iter()
+                .any(|c| matches!(c, Call::CreateTopic { .. }))
+        );
+        let t = f
+            .chan
+            .lock()
+            .threads
+            .get(&threads::key(FRIEND as i64, None))
+            .cloned()
+            .unwrap();
         assert_eq!((t.session, t.user, t.topic), (f.stub.session, FRIEND, None));
     }
 
     #[tokio::test]
     async fn plain_group_needs_a_mention_and_strips_it() {
         let f = fixture(false);
-        f.inbound(msg(group(GROUP), FRIEND, None, "just chatting")).await;
+        f.inbound(msg(group(GROUP), FRIEND, None, "just chatting"))
+            .await;
         assert!(f.stub.calls().is_empty());
         assert!(f.api.calls().is_empty());
-        f.inbound(msg(group(GROUP), FRIEND, None, &format!("@{BOT} do it"))).await;
-        assert_eq!(f.stub.calls(), vec![PortCall::SendInput(None, "do it".into(), 0)]);
-        assert!(f.chan.lock().threads.get(&threads::key(GROUP, None)).is_some());
+        f.inbound(msg(group(GROUP), FRIEND, None, &format!("@{BOT} do it")))
+            .await;
+        assert_eq!(
+            f.stub.calls(),
+            vec![PortCall::SendInput(None, "do it".into(), 0)]
+        );
+        assert!(
+            f.chan
+                .lock()
+                .threads
+                .get(&threads::key(GROUP, None))
+                .is_some()
+        );
         // An unlisted group is ignored even when addressed.
-        f.inbound(msg(group(OTHER_GROUP), OWNER, None, &format!("@{BOT} hi"))).await;
+        f.inbound(msg(group(OTHER_GROUP), OWNER, None, &format!("@{BOT} hi")))
+            .await;
         assert!(f.stub.calls().is_empty());
     }
 
     #[tokio::test]
     async fn stranger_dm_is_dropped_silently() {
         let f = fixture(true);
-        f.inbound(msg(private(STRANGER), STRANGER, None, "let me in")).await;
+        f.inbound(msg(private(STRANGER), STRANGER, None, "let me in"))
+            .await;
         assert!(f.stub.calls().is_empty());
         assert!(f.api.calls().is_empty());
     }
@@ -2856,7 +3049,8 @@ pub(crate) mod tests {
                 description: "Bad Request: not enough rights".into(),
             },
         );
-        f.inbound(msg(group(GROUP), STRANGER, None, &format!("@{BOT} hi"))).await;
+        f.inbound(msg(group(GROUP), STRANGER, None, &format!("@{BOT} hi")))
+            .await;
         let calls = f.api.take_calls();
         assert_eq!(calls.len(), 1);
         let Call::SendRich { md, ephemeral, .. } = &calls[0] else {
@@ -2874,11 +3068,19 @@ pub(crate) mod tests {
     async fn an_album_of_three_photos_is_one_input_with_three_lines() {
         let f = fixture(false);
         for id in ["f1", "f2", "f3"] {
-            f.api
-                .set_download(id, b"\x89PNG\r\n\x1a\nxx".to_vec(), Some("photos/file_1.jpg"));
+            f.api.set_download(
+                id,
+                b"\x89PNG\r\n\x1a\nxx".to_vec(),
+                Some("photos/file_1.jpg"),
+            );
         }
         for (i, id) in ["f1", "f2", "f3"].into_iter().enumerate() {
-            let mut m = msg(private(OWNER), OWNER, None, if i == 0 { "look" } else { "" });
+            let mut m = msg(
+                private(OWNER),
+                OWNER,
+                None,
+                if i == 0 { "look" } else { "" },
+            );
             m.media = vec![photo(id)];
             m.media_group_id = Some("g1".into());
             f.inbound(m).await;
@@ -2897,8 +3099,20 @@ pub(crate) mod tests {
         let lines: Vec<&str> = text.lines().collect();
         assert_eq!(lines[0], "look");
         assert_eq!(lines.len(), 4);
-        assert!(lines[1..].iter().all(|l| l.starts_with("[attachment: ") && l.contains("(image/png, 10 B)]")), "{text}");
-        assert_eq!(f.api.calls().iter().filter(|c| matches!(c, Call::Download(_))).count(), 3);
+        assert!(
+            lines[1..]
+                .iter()
+                .all(|l| l.starts_with("[attachment: ") && l.contains("(image/png, 10 B)]")),
+            "{text}"
+        );
+        assert_eq!(
+            f.api
+                .calls()
+                .iter()
+                .filter(|c| matches!(c, Call::Download(_)))
+                .count(),
+            3
+        );
     }
 
     #[tokio::test]
@@ -2920,11 +3134,19 @@ pub(crate) mod tests {
             name: "↳ grep-logs".into()
         }));
         assert!(calls.iter().any(|c| matches!(c, Call::SendRich { to, md, .. } if *to == Target { chat: OWNER_CHAT, thread: Some(7) } && md == "↳ spawned **grep-logs**")));
-        let (key, t) = f.chan.lock().threads.by_session(child).map(|(k, t)| (k.clone(), t.clone())).unwrap();
+        let (key, t) = f
+            .chan
+            .lock()
+            .threads
+            .by_session(child)
+            .map(|(k, t)| (k.clone(), t.clone()))
+            .unwrap();
         assert_eq!(key, threads::key(OWNER_CHAT, Some(500)));
         assert_eq!(t.user, OWNER);
         // The child's first turn posts its task into the child topic.
-        f.chan.handle_event(Event::Agent(turn_started(child, "find the slow query"))).await;
+        f.chan
+            .handle_event(Event::Agent(turn_started(child, "find the slow query")))
+            .await;
         assert!(f.api.calls().iter().any(|c| matches!(c, Call::SendRich { to, md, .. } if *to == Target { chat: OWNER_CHAT, thread: Some(500) } && md == "▸ **task**\nfind the slow query")));
     }
 
@@ -2956,9 +3178,20 @@ pub(crate) mod tests {
     async fn subagent_in_the_flat_shape_is_a_marker_and_a_reply_to_it_steers_the_child() {
         let f = fixture(false);
         let (child, marker) = spawn_flat_child(&f).await;
-        assert!(!f.api.calls().iter().any(|c| matches!(c, Call::CreateTopic { .. })));
+        assert!(
+            !f.api
+                .calls()
+                .iter()
+                .any(|c| matches!(c, Call::CreateTopic { .. }))
+        );
         assert!(f.chan.lock().threads.by_session(child).is_none());
-        assert_eq!(f.chan.target_for(child), Some(Target { chat: OWNER_CHAT, thread: None }));
+        assert_eq!(
+            f.chan.target_for(child),
+            Some(Target {
+                chat: OWNER_CHAT,
+                thread: None
+            })
+        );
         f.chan.lock().running.insert(child);
         let mut m = msg(private(OWNER), OWNER, None, "stop that");
         m.reply_to = Some(ReplyRef {
@@ -2969,7 +3202,10 @@ pub(crate) mod tests {
         f.inbound(m).await;
         assert_eq!(
             f.stub.calls(),
-            vec![PortCall::Steer(child, "(replying to: \"↳ spawned **grep-logs**\")\nstop that".into())]
+            vec![PortCall::Steer(
+                child,
+                "(replying to: \"↳ spawned **grep-logs**\")\nstop that".into()
+            )]
         );
     }
 
@@ -2978,10 +3214,17 @@ pub(crate) mod tests {
         let f = fixture(false);
         let mut rx = f.tap_worker(&threads::key(OWNER_CHAT, None));
         let (child, _) = spawn_flat_child(&f).await;
-        f.chan.handle_event(Event::Agent(turn_started(child, "go"))).await;
+        f.chan
+            .handle_event(Event::Agent(turn_started(child, "go")))
+            .await;
         let mut seen_running = false;
         while let Ok(m) = rx.try_recv() {
-            if let WorkerMsg::ChildRow { child: c, row, idle } = m {
+            if let WorkerMsg::ChildRow {
+                child: c,
+                row,
+                idle,
+            } = m
+            {
                 assert_eq!(c, child);
                 assert_eq!(row.name, "grep-logs");
                 if row.state == "running" {
@@ -3011,19 +3254,40 @@ pub(crate) mod tests {
         f.chan.handle_event(Event::Requested(approval(child))).await;
         let sends = f.sends();
         assert_eq!(sends.len(), 1);
-        let Call::SendRich { to, md, markup, .. } = &sends[0] else { panic!() };
-        assert_eq!(*to, Target { chat: OWNER_CHAT, thread: Some(500) });
+        let Call::SendRich { to, md, markup, .. } = &sends[0] else {
+            panic!()
+        };
+        assert_eq!(
+            *to,
+            Target {
+                chat: OWNER_CHAT,
+                thread: Some(500)
+            }
+        );
         assert!(md.starts_with("⚠️ **shell** wants to run\n```sh\nls\n```"));
         assert_eq!(markup.as_ref().unwrap().rows[0].len(), 2);
 
         f.api.take_calls();
         let unbound = SessionId::new();
-        f.chan.handle_event(Event::Requested(approval(unbound))).await;
+        f.chan
+            .handle_event(Event::Requested(approval(unbound)))
+            .await;
         let sends = f.sends();
         assert_eq!(sends.len(), 1);
-        let Call::SendRich { to, md, .. } = &sends[0] else { panic!() };
-        assert_eq!(*to, Target { chat: OWNER_CHAT, thread: None });
-        assert!(md.ends_with(&format!("session {} · Title", &unbound.to_string()[28..])), "{md}");
+        let Call::SendRich { to, md, .. } = &sends[0] else {
+            panic!()
+        };
+        assert_eq!(
+            *to,
+            Target {
+                chat: OWNER_CHAT,
+                thread: None
+            }
+        );
+        assert!(
+            md.ends_with(&format!("session {} · Title", &unbound.to_string()[28..])),
+            "{md}"
+        );
 
         let g = fixture_with(
             TelegramConfig {
@@ -3032,7 +3296,9 @@ pub(crate) mod tests {
             },
             true,
         );
-        g.chan.handle_event(Event::Requested(approval(SessionId::new()))).await;
+        g.chan
+            .handle_event(Event::Requested(approval(SessionId::new())))
+            .await;
         assert!(g.api.calls().is_empty());
     }
 
@@ -3044,7 +3310,14 @@ pub(crate) mod tests {
         f.chan.handle_event(Event::Requested(req.clone())).await;
         let card = f.chan.lock().cards.get(&req.id).and_then(|c| c.at).unwrap();
         f.api.take_calls();
-        f.press(STRANGER, card.chat, None, card.id, &format!("ap:{}:a", req.id.0)).await;
+        f.press(
+            STRANGER,
+            card.chat,
+            None,
+            card.id,
+            &format!("ap:{}:a", req.id.0),
+        )
+        .await;
         assert_eq!(
             f.api.take_calls(),
             vec![Call::AnswerCallback {
@@ -3053,8 +3326,18 @@ pub(crate) mod tests {
             }]
         );
         assert!(f.stub.calls().is_empty());
-        f.press(FRIEND, card.chat, None, card.id, &format!("ap:{}:a", req.id.0)).await;
-        assert_eq!(f.stub.calls(), vec![PortCall::Resolve(req.id, Decision::Allow)]);
+        f.press(
+            FRIEND,
+            card.chat,
+            None,
+            card.id,
+            &format!("ap:{}:a", req.id.0),
+        )
+        .await;
+        assert_eq!(
+            f.stub.calls(),
+            vec![PortCall::Resolve(req.id, Decision::Allow)]
+        );
         assert_eq!(
             f.api.take_calls(),
             vec![Call::AnswerCallback {
@@ -3071,12 +3354,21 @@ pub(crate) mod tests {
             .await;
         let calls = f.api.take_calls();
         assert_eq!(calls.len(), 1);
-        let Call::EditRich { at, md, markup } = &calls[0] else { panic!("{calls:?}") };
+        let Call::EditRich { at, md, markup } = &calls[0] else {
+            panic!("{calls:?}")
+        };
         assert_eq!(*at, card);
-        assert!(md.starts_with(&format!("✓ **shell** allowed by user{FRIEND}\n```sh\nls\n```")), "{md}");
+        assert!(
+            md.starts_with(&format!(
+                "✓ **shell** allowed by user{FRIEND}\n```sh\nls\n```"
+            )),
+            "{md}"
+        );
         assert_eq!(
             markup.as_ref().unwrap().rows,
-            vec![vec![Button::Disabled { text: "✓ allowed".into() }]]
+            vec![vec![Button::Disabled {
+                text: "✓ allowed".into()
+            }]]
         );
         assert!(f.chan.lock().cards.is_empty());
     }
@@ -3089,7 +3381,9 @@ pub(crate) mod tests {
         f.chan.handle_event(Event::Ask(req.clone())).await;
         let sends = f.sends();
         assert_eq!(sends.len(), 1);
-        let Call::SendRich { md, markup, .. } = &sends[0] else { panic!() };
+        let Call::SendRich { md, markup, .. } = &sends[0] else {
+            panic!()
+        };
         assert!(md.starts_with("❓ **Question 1/2** — Which database?\n1. **Postgres** _(recommended)_\n2. **SQLite**"), "{md}");
         let kb = markup.as_ref().unwrap();
         assert!(kb.force_reply);
@@ -3103,7 +3397,10 @@ pub(crate) mod tests {
             text: None,
         });
         f.inbound(m).await;
-        assert!(f.stub.calls().is_empty(), "nothing goes to the model before the set is answered");
+        assert!(
+            f.stub.calls().is_empty(),
+            "nothing goes to the model before the set is answered"
+        );
         let calls = f.api.take_calls();
         assert!(calls.iter().any(|c| matches!(c, Call::EditRich { at, md, markup: None } if *at == card && md.ends_with("→ Postgres please"))), "{calls:?}");
         let second = calls.iter().find_map(|c| match c {
@@ -3113,18 +3410,36 @@ pub(crate) mod tests {
         assert!(second.is_some(), "{calls:?}");
         let card2 = f.chan.lock().asks.get(&req.id).and_then(|c| c.at).unwrap();
         assert_ne!(card2, card);
-        f.press(OWNER, card2.chat, None, card2.id, &format!("ask:{}:1:s", req.id.0)).await;
+        f.press(
+            OWNER,
+            card2.chat,
+            None,
+            card2.id,
+            &format!("ask:{}:1:s", req.id.0),
+        )
+        .await;
         assert_eq!(
             f.stub.calls(),
             vec![PortCall::AnswerAsk(
                 req.id,
-                Some(vec![Answer::Text { text: "Postgres please".into() }, Answer::Skipped])
+                Some(vec![
+                    Answer::Text {
+                        text: "Postgres please".into()
+                    },
+                    Answer::Skipped
+                ])
             )]
         );
         // A set resolved elsewhere closes its live card.
         let other = ask(session);
         f.chan.handle_event(Event::Ask(other.clone())).await;
-        let card3 = f.chan.lock().asks.get(&other.id).and_then(|c| c.at).unwrap();
+        let card3 = f
+            .chan
+            .lock()
+            .asks
+            .get(&other.id)
+            .and_then(|c| c.at)
+            .unwrap();
         f.api.take_calls();
         f.chan
             .handle_event(Event::AskDone(AskResolved {
@@ -3155,22 +3470,31 @@ pub(crate) mod tests {
             configured: true,
         });
         let _ = actor.register(crate::TELEGRAM_ACTOR);
-        f.inbound(msg(private(STRANGER), STRANGER, None, "/start nope")).await;
+        f.inbound(msg(private(STRANGER), STRANGER, None, "/start nope"))
+            .await;
         assert!(f.api.calls().is_empty());
         assert_eq!(*f.chan.owner.lock(), Some(OWNER));
         f.chan.lock().pairing = Some(Pairing {
             code: "abcdefgh23456789".into(),
             expires: Instant::now() + PAIR_TTL,
         });
-        f.inbound(msg(private(STRANGER), STRANGER, None, "/start ABCDEFGH23456789")).await;
+        f.inbound(msg(
+            private(STRANGER),
+            STRANGER,
+            None,
+            "/start ABCDEFGH23456789",
+        ))
+        .await;
         assert_eq!(*f.chan.owner.lock(), Some(STRANGER));
         assert!(f.chan.lock().pairing.is_none());
-        assert!(matches!(f.chan.lock().last_event, Some(TelegramEvent::Paired { user, .. }) if user == STRANGER));
+        assert!(
+            matches!(f.chan.lock().last_event, Some(TelegramEvent::Paired { user, .. }) if user == STRANGER)
+        );
         let calls = f.api.calls();
         assert!(calls.iter().any(|c| matches!(c, Call::SendRich { to, md, .. } if to.chat == STRANGER as i64 && md.starts_with("👋 paired"))));
         assert!(calls.iter().any(|c| matches!(c, Call::SetCommands { scope: CommandScope::Chat(id), .. } if *id == STRANGER as i64)));
         let config = std::fs::read_to_string(f.rt.data_dir.join("config.yaml")).unwrap();
-        assert!(config.contains(&format!("owner: \"{STRANGER}\"")), "{config}");
+        assert!(config.contains(&format!("owner: {STRANGER}")), "{config}");
         actor.kill();
     }
 
@@ -3196,8 +3520,16 @@ pub(crate) mod tests {
                 fields: Vec::new(),
             }))
             .await;
-        assert!(f.chan.lock().threads.get(&threads::key(OWNER_CHAT, None)).is_none());
-        assert!(matches!(f.chan.lock().last_event, Some(TelegramEvent::Unreachable { chat, .. }) if chat == OWNER_CHAT));
+        assert!(
+            f.chan
+                .lock()
+                .threads
+                .get(&threads::key(OWNER_CHAT, None))
+                .is_none()
+        );
+        assert!(
+            matches!(f.chan.lock().last_event, Some(TelegramEvent::Unreachable { chat, .. }) if chat == OWNER_CHAT)
+        );
     }
 
     #[tokio::test]
@@ -3218,7 +3550,10 @@ pub(crate) mod tests {
         assert_eq!(
             f.api.calls(),
             vec![Call::SendRich {
-                to: Target { chat: OWNER_CHAT, thread: None },
+                to: Target {
+                    chat: OWNER_CHAT,
+                    thread: None
+                },
                 md: secret_notice("OPENAI_KEY", "for the api"),
                 markup: None,
                 reply_to: None,
@@ -3235,32 +3570,69 @@ pub(crate) mod tests {
         f.stub.parents.lock().insert(grandchild, child);
         f.api.take_calls();
         f.chan
-            .handle_event(Event::Artifact(artifact(grandchild, f._dir.path(), "plot.png", artifact::Kind::Image, "image/png")))
+            .handle_event(Event::Artifact(artifact(
+                grandchild,
+                f._dir.path(),
+                "plot.png",
+                artifact::Kind::Image,
+                "image/png",
+            )))
             .await;
         f.chan
-            .handle_event(Event::Artifact(artifact(grandchild, f._dir.path(), "report.pdf", artifact::Kind::Pdf, "application/pdf")))
+            .handle_event(Event::Artifact(artifact(
+                grandchild,
+                f._dir.path(),
+                "report.pdf",
+                artifact::Kind::Pdf,
+                "application/pdf",
+            )))
             .await;
         let files: Vec<(Target, String, String, Option<String>)> = f
             .api
             .calls()
             .into_iter()
             .filter_map(|c| match c {
-                Call::SendFile { to, name, mime, caption, .. } => Some((to, name, mime, caption)),
+                Call::SendFile {
+                    to,
+                    name,
+                    mime,
+                    caption,
+                    ..
+                } => Some((to, name, mime, caption)),
                 _ => None,
             })
             .collect();
-        let to = Target { chat: OWNER_CHAT, thread: None };
+        let to = Target {
+            chat: OWNER_CHAT,
+            thread: None,
+        };
         assert_eq!(
             files,
             vec![
-                (to, "plot.png".into(), "image/png".into(), Some("Report".into())),
-                (to, "report.pdf".into(), "application/pdf".into(), Some("Report".into())),
+                (
+                    to,
+                    "plot.png".into(),
+                    "image/png".into(),
+                    Some("Report".into())
+                ),
+                (
+                    to,
+                    "report.pdf".into(),
+                    "application/pdf".into(),
+                    Some("Report".into())
+                ),
             ]
         );
         // An unbound chain sends nothing.
         f.api.take_calls();
         f.chan
-            .handle_event(Event::Artifact(artifact(SessionId::new(), f._dir.path(), "x.png", artifact::Kind::Image, "image/png")))
+            .handle_event(Event::Artifact(artifact(
+                SessionId::new(),
+                f._dir.path(),
+                "x.png",
+                artifact::Kind::Image,
+                "image/png",
+            )))
             .await;
         assert!(f.api.calls().is_empty());
     }
@@ -3289,19 +3661,35 @@ pub(crate) mod tests {
         f.bind(&key, OWNER);
         let mut m = msg(private(OWNER), OWNER, Some(7), "");
         m.text = None;
-        m.service = Some(Service::TopicEdited { name: Some("mine".into()) });
+        m.service = Some(Service::TopicEdited {
+            name: Some("mine".into()),
+        });
         f.inbound(m).await;
-        assert_eq!(f.chan.lock().threads.get(&key).and_then(|t| t.topic).map(|t| t.named_by_user), Some(true));
+        assert_eq!(
+            f.chan
+                .lock()
+                .threads
+                .get(&key)
+                .and_then(|t| t.topic)
+                .map(|t| t.named_by_user),
+            Some(true)
+        );
     }
 
     #[test]
     fn mention_stripping_and_mime_sniffing() {
-        assert_eq!(strip_mention("@Theuth_bot hi there", "theuth_bot"), "hi there");
+        assert_eq!(
+            strip_mention("@Theuth_bot hi there", "theuth_bot"),
+            "hi there"
+        );
         assert_eq!(strip_mention("hi @theuth_bot", "theuth_bot"), "hi");
         assert_eq!(strip_mention("plain", ""), "plain");
         assert_eq!(effective_mime("image/jpeg", b"", "x.bin"), "image/jpeg");
         assert_eq!(effective_mime("", b"%PDF-1.4", "x"), "application/pdf");
-        assert_eq!(effective_mime("application/octet-stream", b"zzz", "notes.txt"), "text/plain");
+        assert_eq!(
+            effective_mime("application/octet-stream", b"zzz", "notes.txt"),
+            "text/plain"
+        );
         assert_eq!(effective_mime("", b"zzz", ""), "application/octet-stream");
         assert_eq!(topic_name("\n\n  first line  \nsecond"), "first line");
         assert_eq!(clip("abc", 3), "abc");
