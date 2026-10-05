@@ -2,7 +2,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
 import { useProjects } from '@/components/chat/ProjectPicker'
 import { errorText } from '@/components/settings/shared'
-import { useApi } from '@/lib/rpc'
+import { queryKeys, useApi } from '@/lib/rpc'
 import type { AgentSummary } from '@/rpc/bindings/AgentSummary'
 import type { MeshStatus } from '@/rpc/bindings/MeshStatus'
 import type { Task } from '@/rpc/bindings/Task'
@@ -18,7 +18,7 @@ export const keys = {
   tasksList: (f: TaskFilter) => ['tasks', 'list', f] as const,
   task: (id: string) => ['tasks', 'get', id] as const,
   taskEvents: (id: string) => ['tasks', 'events', id] as const,
-  agents: ['roster'] as const,
+  agents: queryKeys.roster,
   mesh: ['mesh'] as const,
 }
 

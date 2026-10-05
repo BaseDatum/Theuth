@@ -1,13 +1,17 @@
-import { Link } from '@tanstack/react-router'
+import { Link, useNavigate } from '@tanstack/react-router'
 import { Maximize2, Minus, Plus } from 'lucide-react'
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
+import { ago } from '@/components/sidebar/AgentTree'
 import { THEUTH } from '@/components/tasks/helpers'
 import { cn } from '@/lib/utils'
 import type { AgentSummary } from '@/rpc/bindings/AgentSummary'
+import type { AgentInfo } from '@/rpc/extra'
 import { ActiveSwitch, ActivityChip, AgentAvatar, BudgetBar, statusDot } from './identity'
+import { CARD_STRIP_CAP, stateText } from './sessions'
 import { CARD, type Node, layout } from './tree'
+import { useAgentSessions, useLingering } from './useAgentSessions'
 
 const PAD = 32
 
@@ -93,33 +97,79 @@ export function OrgChart({ root }: { root: Node }) {
   )
 }
 
+/** One agent: the card body links to the detail page; under it the live-sessions strip (100 D4) — a sibling, so a dot tap opens the session, not the agent. */
 function Card({ name, agent: a, style }: { name: string; agent: AgentSummary | null; style: React.CSSProperties }) {
   const title = a?.file.title ?? name
   return (
-    <Link
-      to="/agents/$name/$tab"
-      params={{ name, tab: 'overview' }}
+    <div
       draggable={false}
       onPointerDown={(e) => e.stopPropagation()}
       className={cn('absolute flex flex-col gap-1.5 rounded-lg border border-border-subtle bg-background p-2.5 text-sm shadow-xs hover:bg-layer-2', a?.file.paused && 'opacity-60')}
       style={style}
     >
-      <div className="flex items-center gap-2">
-        <span className="relative shrink-0">
-          <AgentAvatar name={name} title={title} size={32} />
-          <span className={cn('absolute -right-0.5 -bottom-0.5 size-2.5 rounded-full border-2 border-background', a ? statusDot(a.status) : 'bg-success')} aria-hidden />
-        </span>
-        <span className="min-w-0 flex-1">
-          <span className="block truncate font-semibold leading-tight">{title}</span>
-          <span className="block truncate font-mono text-[11px] text-fg-tertiary">{name}</span>
-        </span>
-        {name === THEUTH ? <Badge variant="outline">built-in</Badge> : a && <ActiveSwitch agent={a} withLabel={false} />}
-      </div>
-      <div className="flex items-center gap-1.5 text-xs text-fg-secondary">
-        {a && (a.file.paused ? <span className="text-fg-tertiary">paused</span> : <ActivityChip status={a.status} />)}
-        {a && <span className="ml-auto tabular-nums">{a.open_tasks} open</span>}
-      </div>
-      {a && <BudgetBar agent={a} />}
-    </Link>
+      <Link to="/agents/$name/$tab" params={{ name, tab: 'overview' }} draggable={false} className="flex flex-col gap-1.5">
+        <div className="flex items-center gap-2">
+          <span className="relative shrink-0">
+            <AgentAvatar name={name} title={title} size={32} />
+            <span className={cn('absolute -right-0.5 -bottom-0.5 size-2.5 rounded-full border-2 border-background', a ? statusDot(a.status) : 'bg-success')} aria-hidden />
+          </span>
+          <span className="min-w-0 flex-1">
+            <span className="block truncate font-semibold leading-tight">{title}</span>
+            <span className="block truncate font-mono text-[11px] text-fg-tertiary">{name}</span>
+          </span>
+          {name === THEUTH ? <Badge variant="outline">built-in</Badge> : a && <ActiveSwitch agent={a} withLabel={false} />}
+        </div>
+        <div className="flex items-center gap-1.5 text-xs text-fg-secondary">
+          {a && (a.file.paused ? <span className="text-fg-tertiary">paused</span> : <ActivityChip status={a.status} />)}
+          {a && <span className="ml-auto tabular-nums">{a.open_tasks} open</span>}
+        </div>
+        {a && <BudgetBar agent={a} />}
+      </Link>
+      <CardStrip desk={a?.desk ?? null} />
+    </div>
+  )
+}
+
+/**
+ * The desk dot (pulsing while the desk's own turn runs), one blinking dot per live descendant in spawn order
+ * (`CARD_STRIP_CAP`, then `+N`), and the count. Always rendered so every card keeps `CARD.h`.
+ */
+function CardStrip({ desk }: { desk: string | null }) {
+  const { rows, live, deskRunning } = useAgentSessions(desk)
+  const lingering = useLingering(useMemo(() => live.map((r) => r.id), [live]))
+  const shown = lingering.ids.map((id) => rows[id]).filter((r): r is AgentInfo => r !== undefined)
+  return (
+    <div className="flex h-5 items-center gap-1.5 text-[11px] text-fg-tertiary">
+      <span
+        className={cn('size-2 shrink-0 rounded-full', deskRunning ? 'bg-success animate-pulse' : 'bg-fg-tertiary/40')}
+        title={desk === null ? 'no desk' : `desk · ${deskRunning ? 'running' : 'idle'}`}
+      />
+      {shown.slice(0, CARD_STRIP_CAP).map((row) => (
+        <StripDot key={row.id} row={row} leaving={row.id in lingering.leaving} />
+      ))}
+      {shown.length > CARD_STRIP_CAP && <span className="tabular-nums">+{shown.length - CARD_STRIP_CAP}</span>}
+      <span className="ml-auto truncate tabular-nums">{desk === null ? 'no desk' : live.length > 0 ? `${live.length} live` : 'idle'}</span>
+    </div>
+  )
+}
+
+/** `SubagentDot`'s shape as a button (the strip is outside the card's link): the circle re-keyed per beat restarts `subagent-blink`. */
+function StripDot({ row, leaving }: { row: AgentInfo; leaving: boolean }) {
+  const navigate = useNavigate()
+  const label = `${row.name} · ${stateText(row.state)} · ${ago(row.activity?.last_active ?? row.started_at ?? row.finished_at)}`
+  return (
+    <button
+      type="button"
+      onPointerDown={(e) => e.stopPropagation()}
+      onClick={() => void navigate({ to: '/c/$session', params: { session: row.id } })}
+      className={cn('subagent-dot-in flex size-5 shrink-0 items-center justify-center', leaving && 'opacity-0 transition-opacity duration-700')}
+      title={label}
+      aria-label={label}
+    >
+      <span
+        key={row.beat ?? 0}
+        className={cn('subagent-dot size-2 rounded-full', row.state.state === 'approval' ? 'bg-warning' : 'bg-success', row.beat !== undefined && 'subagent-blink')}
+      />
+    </button>
   )
 }

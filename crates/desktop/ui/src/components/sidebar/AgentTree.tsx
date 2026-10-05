@@ -32,7 +32,8 @@ export function ago(iso: string | null, now = Date.now()): string {
   return `${Math.floor(s / 86400)}d`
 }
 
-const Row = memo(function Row({
+/** One subtree row: glyph · name · cap badge · cost · jobs · age, a link to the session's chat. Shared with the Agents page (100). */
+export const SubagentRow = memo(function SubagentRow({
   row,
   active,
   now,
@@ -175,7 +176,7 @@ export function AgentTree({ session, active, liveOnly = false }: { session: stri
         moreClass="flex h-7 items-center gap-1.5 rounded-md pr-2 text-xs text-fg-tertiary hover:bg-sidebar-accent"
         render={(r, sub) => (
           <>
-            <Row row={r} active={r.id === active} now={now} cost={cost?.children.find((c) => c.session === r.id)?.total} />
+            <SubagentRow row={r} active={r.id === active} now={now} cost={cost?.children.find((c) => c.session === r.id)?.total} />
             {sub}
           </>
         )}
