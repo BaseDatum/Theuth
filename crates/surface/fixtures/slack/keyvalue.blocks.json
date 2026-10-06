@@ -1,0 +1,23 @@
+[
+  {
+    "type": "section",
+    "fields": [
+      {
+        "type": "mrkdwn",
+        "text": "*Model*\nclaude-sonnet-4"
+      },
+      {
+        "type": "mrkdwn",
+        "text": "*Turns*\n14"
+      },
+      {
+        "type": "mrkdwn",
+        "text": "*Tokens*\n38 210 in / 4 102 out"
+      },
+      {
+        "type": "mrkdwn",
+        "text": "*Channel*\nslack"
+      }
+    ]
+  }
+]

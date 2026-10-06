@@ -237,8 +237,8 @@ pub fn render(rows: &[Row], now: Instant) -> String {
     out
 }
 
-/// `48s`, `1m32s`, `12m`, `1h05m`.
-fn fmt_age(d: Duration) -> String {
+/// `48s`, `1m32s`, `12m`, `1h05m`; also the age in a 110 §6 `↳ name · finished · <age>` title.
+pub(crate) fn fmt_age(d: Duration) -> String {
     let s = d.as_secs();
     match s {
         0..=59 => format!("{s}s"),

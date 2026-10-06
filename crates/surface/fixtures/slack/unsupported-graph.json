@@ -1,0 +1,35 @@
+{
+  "root": "c",
+  "elements": {
+    "c": {
+      "type": "Card",
+      "props": {
+        "title": "Flow"
+      },
+      "children": [
+        "g"
+      ]
+    },
+    "g": {
+      "type": "Graph",
+      "props": {
+        "nodes": [
+          {
+            "id": "a",
+            "label": "A"
+          },
+          {
+            "id": "b",
+            "label": "B"
+          }
+        ],
+        "edges": [
+          {
+            "from": "a",
+            "to": "b"
+          }
+        ]
+      }
+    }
+  }
+}

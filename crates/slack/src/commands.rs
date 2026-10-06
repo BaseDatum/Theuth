@@ -394,7 +394,13 @@ async fn run(cmd: Cmd, cx: &CommandCx<'_>) -> anyhow::Result<Outcome> {
                 Ok(s) => s,
                 Err(msg) => return text(msg),
             };
-            agent()?.ask(agent::Cancel { session, keep: None }).await.map_err(err)?;
+            agent()?
+                .ask(agent::Cancel {
+                    session,
+                    keep: None,
+                })
+                .await
+                .map_err(err)?;
             Ok(Outcome::Cancelled {
                 session,
                 reply: ui::result(&format!("cancelled {}", short(session))),
@@ -1345,6 +1351,7 @@ mod tests {
             open_streams: 0,
             calls: Default::default(),
             dropped_envelopes: 0,
+            hidden_deliveries: 0,
         }
     }
 

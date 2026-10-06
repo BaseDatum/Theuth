@@ -402,12 +402,10 @@ fn validate_pointer(i: usize, p: &Pointer) -> Result<(), String> {
                 ));
             }
         }
-        PointerKind::Diff => {
-            if p.text.as_deref().is_none_or(str::is_empty) {
-                return Err(format!(
-                    "`pointers[{i}].text` is required for a `diff` pointer: the unified diff"
-                ));
-            }
+        PointerKind::Diff if p.text.as_deref().is_none_or(str::is_empty) => {
+            return Err(format!(
+                "`pointers[{i}].text` is required for a `diff` pointer: the unified diff"
+            ));
         }
         _ => {}
     }

@@ -1,0 +1,47 @@
+{
+  "root": "s",
+  "elements": {
+    "s": {
+      "type": "Stack",
+      "children": [
+        "g",
+        "m"
+      ]
+    },
+    "g": {
+      "type": "MetricGrid",
+      "props": {
+        "items": [
+          {
+            "label": "Requests / s",
+            "value": "1 240",
+            "trend": "up",
+            "delta": "+12%"
+          },
+          {
+            "label": "Error rate",
+            "value": "0.4%",
+            "trend": "down",
+            "delta": "-0.2 pt"
+          },
+          {
+            "label": "p99",
+            "value": "180 ms",
+            "trend": "flat"
+          },
+          {
+            "label": "Hosts",
+            "value": "12"
+          }
+        ]
+      }
+    },
+    "m": {
+      "type": "Metric",
+      "props": {
+        "label": "Uptime",
+        "value": "99.98%"
+      }
+    }
+  }
+}

@@ -476,9 +476,40 @@ impl Api {
     }
 }
 
-/// Our serde_json blocks as morphism's typed blocks.
+/// Our serde_json blocks as morphism's typed blocks (the slash-command ack,
+/// `channel::ack`, answers with a typed `SlackCommandEventResponse`).
 pub(crate) fn blocks(v: serde_json::Value) -> Result<Vec<SlackBlock>, ApiError> {
     serde_json::from_value(v).map_err(|e| ApiError::Transport(format!("blocks: {e}")))
+}
+
+/// `chat.postMessage` body for [`SlackApi::post_blocks`]: the caller's
+/// blocks verbatim. Morphism `e2a4b01`'s `SlackBlock` has no `container`,
+/// `plan`, `data_table` or `data_visualization` variant and no catch-all, so
+/// the 110 §5 plan and §6 peer container cannot go through
+/// `SlackMessageContent` (design 110 as-built INTEGRATE).
+#[derive(serde::Serialize)]
+struct PostBlocks<'a> {
+    channel: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    thread_ts: Option<&'a str>,
+    blocks: &'a serde_json::Value,
+    unfurl_links: bool,
+}
+
+/// `chat.update` body for [`SlackApi::update_blocks`]; see [`PostBlocks`].
+#[derive(serde::Serialize)]
+struct UpdateBlocks<'a> {
+    channel: &'a str,
+    ts: &'a str,
+    blocks: &'a serde_json::Value,
+}
+
+/// What we read back from `chat.postMessage` / `chat.update`. Slack echoes
+/// the message (with its blocks) too; ignoring it keeps a `container` from
+/// failing typed deserialization on the way back.
+#[derive(serde::Deserialize)]
+struct Posted {
+    ts: String,
 }
 
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -584,20 +615,50 @@ impl SlackApi for Api {
         &self,
         channel: &str,
         thread_ts: Option<&str>,
-        b: serde_json::Value,
+        blocks: serde_json::Value,
     ) -> Result<String, ApiError> {
-        let content = SlackMessageContent::new().with_blocks(blocks(b)?);
-        self.post(channel, thread_ts, content).await
+        let req = PostBlocks {
+            channel,
+            thread_ts,
+            blocks: &blocks,
+            unfurl_links: false,
+        };
+        self.run("chat.postMessage", async {
+            self.client
+                .open_session(&self.bot)
+                .http_session_api
+                .http_post::<_, Posted>(
+                    "chat.postMessage",
+                    &req,
+                    Some(&CHAT_POST_MESSAGE_SPECIAL_LIMIT_RATE_CTL),
+                )
+                .await
+        })
+        .await
+        .map(|r| r.ts)
     }
 
     async fn update_blocks(
         &self,
         channel: &str,
         ts: &str,
-        b: serde_json::Value,
+        blocks: serde_json::Value,
     ) -> Result<(), ApiError> {
-        let content = SlackMessageContent::new().with_blocks(blocks(b)?);
-        self.update(channel, ts, content).await
+        let req = UpdateBlocks {
+            channel,
+            ts,
+            blocks: &blocks,
+        };
+        self.pace("chat.update", UPDATE_GAP).await;
+        self.run("chat.update", async {
+            self.client
+                .open_session(&self.bot)
+                .http_session_api
+                .http_post::<_, Posted>("chat.update", &req, Some(&SLACK_TIER3_METHOD_CONFIG))
+                .await
+        })
+        .await
+        .map(|_| ())
     }
 
     async fn ephemeral(&self, channel: &str, user: &str, text: &str) -> Result<(), ApiError> {
@@ -844,5 +905,57 @@ mod tests {
             })
         );
         assert!(SlackStreamChunk::try_from(task("not a URL")).is_err());
+    }
+
+    /// 110 §6: a `container` (unknown to morphism's `SlackBlock`) reaches
+    /// the wire untouched; the echoed message is not deserialized.
+    #[test]
+    fn raw_blocks_go_over_the_wire_verbatim_and_only_ts_is_read_back() {
+        let blocks = serde_json::json!([{
+            "type": "container",
+            "title": {"type": "plain_text", "text": "x"},
+            "is_collapsible": true,
+            "default_collapsed": true,
+            "blocks": [{"type": "markdown", "text": "body"}],
+        }]);
+        assert!(
+            super::blocks(blocks.clone()).is_err(),
+            "typed path must still refuse"
+        );
+        let wire = serde_json::to_string(&PostBlocks {
+            channel: "C1",
+            thread_ts: Some("1.1"),
+            blocks: &blocks,
+            unfurl_links: false,
+        })
+        .unwrap();
+        assert_eq!(
+            wire,
+            format!(
+                "{{\"channel\":\"C1\",\"thread_ts\":\"1.1\",\"blocks\":{},\"unfurl_links\":false}}",
+                serde_json::to_string(&blocks).unwrap()
+            )
+        );
+        let top = serde_json::to_value(PostBlocks {
+            channel: "C1",
+            thread_ts: None,
+            blocks: &blocks,
+            unfurl_links: false,
+        })
+        .unwrap();
+        assert!(top.get("thread_ts").is_none());
+        let update = serde_json::to_value(UpdateBlocks {
+            channel: "C1",
+            ts: "1.1",
+            blocks: &blocks,
+        })
+        .unwrap();
+        assert_eq!(update["ts"], "1.1");
+        assert_eq!(update["blocks"], blocks);
+        let r: Posted = serde_json::from_str(
+            r#"{"ok":true,"channel":"C1","ts":"1.2","message":{"blocks":[{"type":"container","title":{"type":"plain_text","text":"x"}}]}}"#,
+        )
+        .unwrap();
+        assert_eq!(r.ts, "1.2");
     }
 }

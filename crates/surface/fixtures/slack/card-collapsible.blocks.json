@@ -1,0 +1,66 @@
+[
+  {
+    "type": "container",
+    "title": {
+      "type": "plain_text",
+      "text": "Session"
+    },
+    "child_blocks": [
+      {
+        "type": "section",
+        "fields": [
+          {
+            "type": "mrkdwn",
+            "text": "*Model*\nclaude-sonnet-4"
+          },
+          {
+            "type": "mrkdwn",
+            "text": "*Turns*\n14"
+          }
+        ]
+      }
+    ],
+    "subtitle": {
+      "type": "plain_text",
+      "text": "sessions.sqlite · 3f9a"
+    }
+  },
+  {
+    "type": "container",
+    "title": {
+      "type": "plain_text",
+      "text": "Progress"
+    },
+    "child_blocks": [
+      {
+        "type": "section",
+        "text": {
+          "type": "mrkdwn",
+          "text": "58 of 100 hosts migrated."
+        }
+      }
+    ],
+    "is_collapsible": true,
+    "default_collapsed": true
+  },
+  {
+    "type": "container",
+    "title": {
+      "type": "plain_text",
+      "text": "Notes"
+    },
+    "child_blocks": [
+      {
+        "type": "context",
+        "elements": [
+          {
+            "type": "mrkdwn",
+            "text": "Default max is 100, so 58 reads as 58%."
+          }
+        ]
+      }
+    ],
+    "is_collapsible": true,
+    "default_collapsed": true
+  }
+]
