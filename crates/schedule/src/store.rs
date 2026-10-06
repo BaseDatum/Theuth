@@ -228,17 +228,19 @@ impl Store {
         .fetch_all(&self.pool)
         .await?;
         rows.into_iter()
-            .map(|(session, fired_at, finished_at, result, report, envelope)| {
-                Ok(RunInfo {
-                    kind: crate::RunKind::of(session.is_some(), result.as_deref()),
-                    session: session.as_deref().map(session_of).transpose()?,
-                    fired_at: time_of(&fired_at)?,
-                    finished_at: finished_at.as_deref().map(time_of).transpose()?,
-                    result,
-                    report,
-                    envelope,
-                })
-            })
+            .map(
+                |(session, fired_at, finished_at, result, report, envelope)| {
+                    Ok(RunInfo {
+                        kind: crate::RunKind::of(session.is_some(), result.as_deref()),
+                        session: session.as_deref().map(session_of).transpose()?,
+                        fired_at: time_of(&fired_at)?,
+                        finished_at: finished_at.as_deref().map(time_of).transpose()?,
+                        result,
+                        report,
+                        envelope,
+                    })
+                },
+            )
             .collect()
     }
 
@@ -640,10 +642,18 @@ mod tests {
             (Some(s), None, RunKind::Run),
             (None, Some("quiet"), RunKind::Check),
             (None, Some("holding: 2m of 10m"), RunKind::Check),
-            (None, Some("check broken: timeout after 20s"), RunKind::Check),
+            (
+                None,
+                Some("check broken: timeout after 20s"),
+                RunKind::Check,
+            ),
             (Some(s), Some("skipped: busy"), RunKind::Skip),
             (None, Some("skipped: check still running"), RunKind::Skip),
-            (Some(s), Some("done: until passed after 4 runs"), RunKind::End),
+            (
+                Some(s),
+                Some("done: until passed after 4 runs"),
+                RunKind::End,
+            ),
             (None, Some("check broken ×3, disabled"), RunKind::End),
             (Some(s), Some("max_runs 20 reached"), RunKind::End),
         ];
@@ -653,7 +663,10 @@ mod tests {
                 .await
                 .unwrap();
             if result.is_none() {
-                store.finish_run(id, at(i as i64), "end_turn", None).await.unwrap();
+                store
+                    .finish_run(id, at(i as i64), "end_turn", None)
+                    .await
+                    .unwrap();
             }
         }
         let h = store.history("w", 20).await.unwrap();
@@ -662,10 +675,16 @@ mod tests {
         assert_eq!(kinds, rows.map(|(_, _, k)| k));
         assert_eq!(RunKind::of(true, Some("expired")), RunKind::End);
         assert_eq!(RunKind::of(true, Some("removed")), RunKind::End);
-        assert_eq!(RunKind::of(true, Some("until broken: exit 2: x")), RunKind::End);
+        assert_eq!(
+            RunKind::of(true, Some("until broken: exit 2: x")),
+            RunKind::End
+        );
         assert_eq!(RunKind::of(true, Some("lost")), RunKind::Run);
         assert_eq!(RunKind::of(true, Some("error: boom")), RunKind::Run);
-        assert_eq!(RunKind::of(false, Some("queued (2 coalesced)")), RunKind::Check);
+        assert_eq!(
+            RunKind::of(false, Some("queued (2 coalesced)")),
+            RunKind::Check
+        );
         assert_eq!(RunKind::of(false, Some("task 7f3a")), RunKind::Run);
     }
 
@@ -703,7 +722,10 @@ mod tests {
             .insert_run("a", Some(resuming), fired, None)
             .await
             .unwrap();
-        store.insert_run("b", Some(dead), fired, None).await.unwrap();
+        store
+            .insert_run("b", Some(dead), fired, None)
+            .await
+            .unwrap();
         drop(store);
 
         let (store, kept) = Store::open_sparing(&path, &HashSet::from([resuming]))
@@ -719,13 +741,19 @@ mod tests {
             }]
         );
         let a = store.history("a", 10).await.unwrap();
-        assert!(a[0].result.is_none() && a[0].finished_at.is_none(), "still open");
+        assert!(
+            a[0].result.is_none() && a[0].finished_at.is_none(),
+            "still open"
+        );
         assert_eq!(
             store.history("b", 10).await.unwrap()[0].result.as_deref(),
             Some("lost")
         );
         // Closed normally later, with the resumed turn's stop reason.
-        store.finish_run(id, Local::now(), "end_turn", None).await.unwrap();
+        store
+            .finish_run(id, Local::now(), "end_turn", None)
+            .await
+            .unwrap();
         assert_eq!(
             store.latest().await.unwrap()["a"].last_result.as_deref(),
             Some("end_turn")

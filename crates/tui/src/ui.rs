@@ -2435,6 +2435,10 @@ mod tests {
         .to_string();
         assert!(frame.contains("── resumed after restart ──"), "{frame}");
         assert!(frame.contains('╭') && frame.contains('╰'), "{frame}");
-        assert_eq!(frame.trim_end_matches('\n').lines().count(), 4, "margin + 3 rows: {frame}");
+        assert_eq!(
+            frame.trim_end_matches('\n').lines().count(),
+            4,
+            "margin + 3 rows: {frame}"
+        );
     }
 }

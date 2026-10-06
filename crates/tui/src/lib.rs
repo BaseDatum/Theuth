@@ -654,7 +654,9 @@ async fn execute(api: &Engine, cmd: Command, tx: &UnboundedSender<UiEvent>) -> a
         }
         Command::ResumeChild(session) => {
             msg(api.resume_child(session).await)?;
-            UiEvent::Info("harness resumed in its previous context; send a message to continue".into())
+            UiEvent::Info(
+                "harness resumed in its previous context; send a message to continue".into(),
+            )
         }
         Command::ListMcp(session) => UiEvent::Mcp(msg(api.list_mcp(session).await)?),
         Command::McpStatus => UiEvent::McpProgress(msg(api.mcp_status().await)?),

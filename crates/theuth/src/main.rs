@@ -517,11 +517,15 @@ async fn cmd_67(data_dir: &Path, config: &Figment, cmd: Cmd) -> anyhow::Result<(
                     .await
             }
             SandboxCmd::Desktop { name } => {
-                let r: Result<sandbox::types::DesktopAccess, ClientError> =
-                    client.request("sandbox_desktop_access", rpc_params![name]).await;
+                let r: Result<sandbox::types::DesktopAccess, ClientError> = client
+                    .request("sandbox_desktop_access", rpc_params![name])
+                    .await;
                 match r {
                     Ok(d) => {
-                        println!("{}\npassword: {}\ngeometry: {}", d.http_url, d.password, d.geometry);
+                        println!(
+                            "{}\npassword: {}\ngeometry: {}",
+                            d.http_url, d.password, d.geometry
+                        );
                         return Ok(());
                     }
                     Err(e) => Err(e),
@@ -669,7 +673,9 @@ fn vm_spec(
                 }
                 "public" => "public_only",
                 "none" => "none",
-                other => anyhow::bail!("--network {other}: expected public,host | public,host,private | public | none"),
+                other => anyhow::bail!(
+                    "--network {other}: expected public,host | public,host,private | public | none"
+                ),
             };
             Ok::<_, anyhow::Error>(serde_json::from_value::<sandbox::NetPolicy>(
                 serde_json::Value::String(v.into()),
@@ -692,7 +698,10 @@ fn vm_spec(
         root_disk_mib: disk.as_deref().map(parse_mib).transpose()?,
         max_cpus: None,
         max_memory_mib: None,
-        shares: share.iter().map(|s| parse_share(s)).collect::<Result<_, _>>()?,
+        shares: share
+            .iter()
+            .map(|s| parse_share(s))
+            .collect::<Result<_, _>>()?,
         desktop: Some(!no_desktop),
         geometry: None,
         network,
@@ -784,8 +793,12 @@ async fn sandbox_create(
                 Some("failed") => {
                     eprintln!(
                         "{name} failed at {}: {}\nretry from Settings › Mesh or `t sandbox rm {name}`",
-                        ev.pointer("/sandbox/state/step").and_then(|s| s.as_str()).unwrap_or("?"),
-                        ev.pointer("/sandbox/state/error").and_then(|s| s.as_str()).unwrap_or("?")
+                        ev.pointer("/sandbox/state/step")
+                            .and_then(|s| s.as_str())
+                            .unwrap_or("?"),
+                        ev.pointer("/sandbox/state/error")
+                            .and_then(|s| s.as_str())
+                            .unwrap_or("?")
                     );
                     std::process::exit(1);
                 }
@@ -1618,13 +1631,13 @@ async fn start_plugins(rt: &Runtime, plugins: Vec<Box<dyn Plugin>>) -> anyhow::R
     let owners: Vec<&'static str> = [
         "artifact", "app", "browser", "computer", "voice", "talk", "routes",
     ]
-        .into_iter()
-        .filter(|name| {
-            rt.config
-                .extract_inner::<bool>(&format!("{name}.enabled"))
-                .unwrap_or(true)
-        })
-        .collect();
+    .into_iter()
+    .filter(|name| {
+        rt.config
+            .extract_inner::<bool>(&format!("{name}.enabled"))
+            .unwrap_or(true)
+    })
+    .collect();
     let registry_rt = rt.clone();
     tokio::spawn(async move {
         if let Some(reg) = registry_rt

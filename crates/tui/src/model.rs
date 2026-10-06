@@ -5266,10 +5266,11 @@ impl Model {
     /// `Listening`; otherwise it leaves the view, the talk keeps running.
     pub fn talk_escape(&mut self) -> Option<Command> {
         match &self.talk {
-            Some(t) if matches!(
-                t.state,
-                talk::State::Thinking | talk::State::Speaking | talk::State::Holding
-            ) =>
+            Some(t)
+                if matches!(
+                    t.state,
+                    talk::State::Thinking | talk::State::Speaking | talk::State::Holding
+                ) =>
             {
                 Some(Command::Cancel(t.session))
             }
@@ -10445,7 +10446,14 @@ pub fn schedules_table(rows: &[schedule::ScheduleInfo]) -> String {
         if checks {
             row.push_str(&s.last_check.as_ref().map_or_else(
                 || " · —".to_owned(),
-                |c| format!(" · {} {} {} ms", c.at.format("%H:%M:%S"), c.outcome, c.elapsed_ms),
+                |c| {
+                    format!(
+                        " · {} {} {} ms",
+                        c.at.format("%H:%M:%S"),
+                        c.outcome,
+                        c.elapsed_ms
+                    )
+                },
             ));
         }
         row
@@ -11040,7 +11048,11 @@ impl Model {
                 k(u32::try_from(r.tokens.output).unwrap_or(u32::MAX)),
                 k(u32::try_from(r.tokens.cache_read).unwrap_or(u32::MAX)),
                 k(u32::try_from(r.tokens.cache_write).unwrap_or(u32::MAX)),
-                if r.lower_bound { " · last request only" } else { "" }
+                if r.lower_bound {
+                    " · last request only"
+                } else {
+                    ""
+                }
             ));
         }
         rows.push(format!(
@@ -14530,7 +14542,12 @@ mod tests {
         assert_eq!(level, Level::Danger);
 
         let mut m = Model::new("anthropic/claude-sonnet-4-5".into(), true);
-        let limit = catalog.get(&m.model_id).expect("bundled model").1.limit.context;
+        let limit = catalog
+            .get(&m.model_id)
+            .expect("bundled model")
+            .1
+            .limit
+            .context;
         m.context = limit * 74 / 100;
         assert_eq!(m.header(&catalog).1, Level::Normal);
         m.context = limit * 3 / 4;
@@ -14554,19 +14571,32 @@ mod tests {
         let infos = m.entries.len();
         m.apply_agent(AgentEvent::HarnessCommandsChanged {
             session: s,
-            commands: vec![cmd("skill:ponytail"), cmd("skill:caveman"), cmd("/ponytail")],
+            commands: vec![
+                cmd("skill:ponytail"),
+                cmd("skill:caveman"),
+                cmd("/ponytail"),
+            ],
         });
         assert!(
             m.status().ends_with("harness skills: ponytail, caveman"),
             "{}",
             m.status()
         );
-        assert_eq!(m.entries.len(), infos, "first report is silent: {:?}", m.entries);
+        assert_eq!(
+            m.entries.len(),
+            infos,
+            "first report is silent: {:?}",
+            m.entries
+        );
         m.apply_agent(AgentEvent::HarnessCommandsChanged {
             session: s,
             commands: vec![cmd("/ponytail"), cmd("init")],
         });
-        assert!(m.status().ends_with("harness commands: 2"), "{}", m.status());
+        assert!(
+            m.status().ends_with("harness commands: 2"),
+            "{}",
+            m.status()
+        );
         assert_eq!(
             m.entries
                 .iter()
@@ -15316,11 +15346,17 @@ mod tests {
             m.entries
         );
         let hhmm = at.with_timezone(&chrono::Local).format("%H:%M").to_string();
-        assert!(m.status().contains(&format!("interrupted by a restart at {hhmm} — resumed")));
+        assert!(
+            m.status()
+                .contains(&format!("interrupted by a restart at {hhmm} — resumed"))
+        );
         m.apply_agent(AgentEvent::ResumeReport {
             session: s,
             turn,
-            replayed: vec![("c1".into(), "read_file".into()), ("c2".into(), "grep".into())],
+            replayed: vec![
+                ("c1".into(), "read_file".into()),
+                ("c2".into(), "grep".into()),
+            ],
             interrupted: vec![("c3".into(), "git push".into())],
             lost_jobs: vec![],
             children_restored: 0,

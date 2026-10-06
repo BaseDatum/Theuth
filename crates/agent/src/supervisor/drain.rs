@@ -129,7 +129,10 @@ impl Message<Drain> for Agents {
             if let Some(pool) = pool {
                 pool.close().await;
             }
-            tx.send(DrainReport { suspended, finished });
+            tx.send(DrainReport {
+                suspended,
+                finished,
+            });
         });
         reply
     }
@@ -189,7 +192,12 @@ pub async fn drain_engine(rt: &Runtime, reason: &'static str) -> DrainReport {
     .await;
     match report {
         Ok(Ok(r)) => {
-            tracing::info!(reason, suspended = r.suspended, finished = r.finished, "109: drained");
+            tracing::info!(
+                reason,
+                suspended = r.suspended,
+                finished = r.finished,
+                "109: drained"
+            );
             r
         }
         Ok(Err(e)) => {
@@ -273,7 +281,10 @@ mod tests {
 
         let t0 = Instant::now();
         let mut busy = vec![Until(t0 + Duration::from_secs(60)), Until(t0)];
-        assert_eq!(wait_idle(t0 + Duration::from_millis(300), &mut busy).await, 1);
+        assert_eq!(
+            wait_idle(t0 + Duration::from_millis(300), &mut busy).await,
+            1
+        );
         assert!(busy.len() == 1 && t0.elapsed() >= Duration::from_millis(300));
     }
 
@@ -306,25 +317,54 @@ mod tests {
         let sink = Sink::spawn_with_mailbox(Sink(tx), runtime::subscriber_mailbox());
         rt.subscribe::<Sink, AgentEvent>(&sink).await;
         let (sid, turn) = (SessionId::new(), TurnId::new());
-        store.create_session(sid, "m", None, None, None).await.unwrap();
         store
-            .step(sid, turn, StepKind::InputAccepted, None, &serde_json::json!({}))
+            .create_session(sid, "m", None, None, None)
+            .await
+            .unwrap();
+        store
+            .step(
+                sid,
+                turn,
+                StepKind::InputAccepted,
+                None,
+                &serde_json::json!({}),
+            )
             .await
             .unwrap();
         let agents = Agents::spawn(a);
 
         let deadline = Instant::now() + Duration::from_millis(200);
-        let report = agents.ask(Drain { deadline, reason: "update" }).await.unwrap();
-        assert_eq!(report, DrainReport { suspended: 1, finished: 0 });
+        let report = agents
+            .ask(Drain {
+                deadline,
+                reason: "update",
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            report,
+            DrainReport {
+                suspended: 1,
+                finished: 0
+            }
+        );
         let plan = store.resume_plan(sid, turn).await.unwrap();
         assert_eq!(plan.kind, crate::durability::ResumeKind::Suspended);
-        let ev = tokio::time::timeout(Duration::from_secs(2), events.recv()).await.unwrap();
+        let ev = tokio::time::timeout(Duration::from_secs(2), events.recv())
+            .await
+            .unwrap();
         assert!(
             matches!(ev, Some(AgentEvent::TurnSuspended { session, turn: t, ref reason }) if session == sid && t == turn && reason == "update"),
             "{ev:?}"
         );
         assert!(draining());
-        let again = agents.ask(Drain { deadline, reason: "update" }).await.unwrap();
+        let again = agents
+            .ask(Drain {
+                deadline,
+                reason: "update",
+            })
+            .await
+            .unwrap();
         assert_eq!(again, DrainReport::default());
     }
 }

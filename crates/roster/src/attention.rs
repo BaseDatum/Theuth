@@ -744,7 +744,9 @@ impl Attention {
                 desks.extend(desk_map(&sessions));
             }
             // 109 §4.6: under `ask` every open turn waits for the button.
-            if self.resume_ask && let Ok(open) = ag.ask(agent::supervisor::OpenTurns).await {
+            if self.resume_ask
+                && let Ok(open) = ag.ask(agent::supervisor::OpenTurns).await
+            {
                 resumes.extend(open.into_iter().map(|(s, t, at)| ResumeNeed {
                     session: s.to_string(),
                     turn: t.to_string(),
@@ -1639,12 +1641,19 @@ mod tests {
             children_restored: 1,
             children_handed_off: 0,
         };
-        assert_eq!(resume_need(&clean, 5), None, "a clean resume raises no item");
+        assert_eq!(
+            resume_need(&clean, 5),
+            None,
+            "a clean resume raises no item"
+        );
         let gaps = agent::AgentEvent::ResumeReport {
             session,
             turn,
             replayed: vec![],
-            interrupted: vec![("c2".into(), "git push".into()), ("c3".into(), "shell".into())],
+            interrupted: vec![
+                ("c2".into(), "git push".into()),
+                ("c3".into(), "shell".into()),
+            ],
             lost_jobs: vec![],
             children_restored: 0,
             children_handed_off: 1,
@@ -1652,7 +1661,9 @@ mod tests {
         let need = resume_need(&gaps, 70).unwrap();
         assert_eq!(
             need.detail.as_deref(),
-            Some("2 tool calls skipped: git push, shell — effect unknown; 1 external child handed off")
+            Some(
+                "2 tool calls skipped: git push, shell — effect unknown; 1 external child handed off"
+            )
         );
 
         let waiting = ResumeNeed {
@@ -1676,7 +1687,11 @@ mod tests {
         assert_eq!(items[0].detail, None);
         assert_eq!(items[0].session.as_deref(), Some(waiting.session.as_str()));
         assert_eq!(items[1].id, format!("resume:{session}:{turn}"));
-        assert!(items[1].title.ends_with("resumed after a restart with gaps"));
+        assert!(
+            items[1]
+                .title
+                .ends_with("resumed after a restart with gaps")
+        );
         assert_eq!(items[1].detail, need.detail);
 
         let states = HashMap::from([(
@@ -1686,7 +1701,10 @@ mod tests {
                 snoozed_until_ms: None,
             },
         )]);
-        let left: Vec<_> = derive(&inputs, &states, 100).into_iter().map(|i| i.id).collect();
+        let left: Vec<_> = derive(&inputs, &states, 100)
+            .into_iter()
+            .map(|i| i.id)
+            .collect();
         assert_eq!(left, [items[0].id.clone()]);
     }
 
