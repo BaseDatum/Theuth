@@ -94,6 +94,8 @@ pub struct Approval {
     rt: Runtime,
     timeout: Duration,
     pending: HashMap<ApprovalId, (ApprovalRequested, oneshot::Sender<Decision>)>,
+    /// 109 §6.1: the journal seam; W3 writes the `questions` rows through it.
+    pub(crate) journal: std::sync::Arc<dyn crate::Journal>,
 }
 
 impl Approval {
@@ -103,7 +105,16 @@ impl Approval {
             rt,
             timeout,
             pending: HashMap::new(),
+            journal: std::sync::Arc::new(crate::NoopJournal),
         }
+    }
+}
+
+impl Message<crate::InstallJournal> for Approval {
+    type Reply = ();
+
+    async fn handle(&mut self, m: crate::InstallJournal, _: &mut Context<Self, Self::Reply>) {
+        self.journal = m.0;
     }
 }
 

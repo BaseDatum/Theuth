@@ -24,6 +24,7 @@ use crate::approval::{Approval, Decision, RequestApproval};
 use crate::ask::{AskUser, AskUserTool};
 use crate::communication::{self, Admitted, CommunicationAccess};
 use crate::jobs::{CloseSessions, InstallActivity, JOBS_ACTOR, Jobs, lock};
+use crate::journal::{InstallJournal, Journal, NoopJournal};
 use crate::resources::{CloseAck, CloseTree, SessionResources, TreeOpened};
 use crate::{
     APPROVAL_ACTOR, ASK_ACTOR, DynTool, Policy, PolicyAction, REGISTRY_ACTOR, Risk, ToolCall,
@@ -97,6 +98,10 @@ pub struct ToolRegistry {
     /// The caller's execution bound (50 §8), from [`InstallExecutionGate`];
     /// `None`: waits are not reported to anyone.
     gate: Option<Arc<dyn ExecutionGate>>,
+    /// 109 §3.3 step 6: the journal seam, from [`InstallJournal`]; a
+    /// [`NoopJournal`] until the agent installs its store. [`invoke`] marks
+    /// every call `started` / `finished` through it.
+    journal: Arc<dyn Journal>,
     /// Lifecycle owners from [`RegisterLifecycle`] (51 §4.4), by name; a
     /// second registration under a name replaces the first.
     participants: Vec<Participant>,
@@ -1065,6 +1070,7 @@ impl ToolRegistry {
         // not retire the entry; only this task finishing does (47 §4.2 rule 2).
         let sink = self.activity.clone();
         let gate = self.gate.clone();
+        let journal = self.journal.clone();
         let resources = self.resources_for(call.session);
         let kind = Kind::Invoke {
             tool: call.name.clone(),
@@ -1100,7 +1106,7 @@ impl ToolRegistry {
             let out = activity
                 .clone()
                 .scope(invoke(
-                    tool, spec, call, approval, admitted, activity, gate, resources,
+                    tool, spec, call, approval, admitted, activity, gate, resources, journal,
                 ))
                 .await;
             drop(running);
@@ -1336,6 +1342,28 @@ impl Message<RegisterActivity> for ToolRegistry {
     }
 }
 
+impl Message<InstallJournal> for ToolRegistry {
+    type Reply = ();
+
+    /// 109 §3.3 step 6: keep the journal for [`invoke`] and hand the same
+    /// handle to the jobs, approval and ask actors (none of them asks back
+    /// into this actor, so awaiting them cannot deadlock). An actor that is
+    /// not running simply keeps its `NoopJournal`.
+    async fn handle(&mut self, m: InstallJournal, _: &mut Context<Self, Self::Reply>) {
+        self.journal = m.0.clone();
+        if let Ok(Some(jobs)) = ActorRef::<Jobs>::lookup(JOBS_ACTOR) {
+            let _ = jobs.ask(InstallJournal(m.0.clone())).await;
+        }
+        if let Ok(Some(approval)) = ActorRef::<Approval>::lookup(APPROVAL_ACTOR) {
+            let _ = approval.ask(InstallJournal(m.0.clone())).await;
+        }
+        if let Ok(Some(ask)) = ActorRef::<AskUser>::lookup(ASK_ACTOR) {
+            let _ = ask.ask(InstallJournal(m.0)).await;
+        }
+        tracing::info!("109: journal installed");
+    }
+}
+
 impl Message<ActivityRecipient> for ToolRegistry {
     type Reply = Option<ActivitySink>;
 
@@ -1507,8 +1535,10 @@ async fn invoke(
     activity: Activity,
     gate: Option<Arc<dyn ExecutionGate>>,
     resources: Arc<SessionResources>,
+    journal: Arc<dyn Journal>,
 ) -> ToolOutput {
     let session = call.session;
+    let call_id = call.id.clone();
     let suspend = || gate.as_ref().and_then(|g| g.suspend(session));
     if let Some(approval) = approval {
         let req = RequestApproval {
@@ -1560,6 +1590,10 @@ async fn invoke(
     let waiting = (spec.name == <AskUserTool as crate::Tool>::NAME)
         .then(suspend)
         .flatten();
+    // 109 §3.3 step 6: the gate resolved and nothing can refuse the call any
+    // more; from here its effect is unknown to a restart, so the journal says
+    // `started` before the body runs.
+    journal.call_started(session, &call_id).await;
     // Own task so a panicking tool is an error output, not a dead registry.
     // Task-locals do not cross `spawn`: re-enter both scopes on the spawned
     // future, so the body sees `current()` (a panic there marks the operation
@@ -1580,6 +1614,8 @@ async fn invoke(
     }
     // Every arm: an error string may echo the expanded args.
     crate::secrets::redact_output(&mut out);
+    // 109 §3.3 step 7: the result row is per call, committed as it returns.
+    journal.call_finished(session, &call_id, &out).await;
     out
 }
 
@@ -1685,6 +1721,7 @@ pub async fn start(rt: &Runtime) -> anyhow::Result<ActorRef<ToolRegistry>> {
             communication: None,
             mcp_access: None,
             gate: None,
+            journal: Arc::new(NoopJournal),
             participants: Vec::new(),
             expected: Vec::new(),
             shells,
@@ -1751,6 +1788,7 @@ mod tests {
             communication: None,
             mcp_access: None,
             gate: None,
+            journal: Arc::new(NoopJournal),
             participants: Vec::new(),
             expected: Vec::new(),
             shells: Arc::default(),

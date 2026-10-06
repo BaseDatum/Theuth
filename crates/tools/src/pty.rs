@@ -1948,7 +1948,7 @@ async fn run(mut j: Run) {
             structured: Some(serde_json::Value::String(screen.clone())),
             files: Vec::new(),
         },
-        JobExit::Timeout | JobExit::Killed => {
+        JobExit::Timeout | JobExit::Killed | JobExit::Lost => {
             ToolOutput::err(format!("{screen}{}killed", sep(&screen)))
         }
     };

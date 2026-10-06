@@ -136,6 +136,8 @@ pub struct AskUser {
     rt: Runtime,
     timeout: Duration,
     pending: HashMap<AskId, Waiter>,
+    /// 109 §6.1: the journal seam; W3 writes the `questions` rows through it.
+    pub(crate) journal: std::sync::Arc<dyn crate::Journal>,
 }
 
 impl AskUser {
@@ -145,7 +147,16 @@ impl AskUser {
             rt,
             timeout,
             pending: HashMap::new(),
+            journal: std::sync::Arc::new(crate::NoopJournal),
         }
+    }
+}
+
+impl Message<crate::InstallJournal> for AskUser {
+    type Reply = ();
+
+    async fn handle(&mut self, m: crate::InstallJournal, _: &mut Context<Self, Self::Reply>) {
+        self.journal = m.0;
     }
 }
 

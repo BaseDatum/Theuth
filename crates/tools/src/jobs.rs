@@ -84,15 +84,38 @@ pub enum JobExit {
     /// [`CancelJob`] killed the process group; the [`CancelOrigin`] decides
     /// what the model hears about it.
     Killed,
+    /// 109 §5.4: the job died with the engine (or was reaped after a
+    /// SIGKILL leaked it); its exit code is unknown. Never produced by a
+    /// running job — written by the journal's reaper and the shutdown path.
+    Lost,
 }
 
 impl std::fmt::Display for JobExit {
-    /// The [`JobView::state`] wording: `exited 0`, `timeout`, `killed`.
+    /// The [`JobView::state`] wording: `exited 0`, `timeout`, `killed`, `lost`.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             JobExit::Exited(code) => write!(f, "exited {code}"),
             JobExit::Timeout => f.write_str("timeout"),
             JobExit::Killed => f.write_str("killed"),
+            JobExit::Lost => f.write_str("lost"),
+        }
+    }
+}
+
+impl std::str::FromStr for JobExit {
+    type Err = String;
+
+    /// Inverse of [`Display`](std::fmt::Display): the `jobs.exit` column (109 §5.1).
+    fn from_str(s: &str) -> Result<Self, String> {
+        match s {
+            "timeout" => Ok(Self::Timeout),
+            "killed" => Ok(Self::Killed),
+            "lost" => Ok(Self::Lost),
+            _ => s
+                .strip_prefix("exited ")
+                .and_then(|n| n.parse().ok())
+                .map(Self::Exited)
+                .ok_or_else(|| format!("unknown job exit {s:?}")),
         }
     }
 }
@@ -576,6 +599,10 @@ pub struct Jobs {
     /// Pending reminder timers per session (`reminder.rs`); their guards
     /// live in `live` like any job's.
     pub(crate) reminders: HashMap<SessionId, crate::reminder::SessionReminders>,
+    /// 109 §5.1: the journal seam ([`crate::InstallJournal`]); a
+    /// [`crate::NoopJournal`] until the agent installs its store. W2 writes
+    /// the `jobs` / `pty_screens` rows through it.
+    pub(crate) journal: Arc<dyn crate::Journal>,
 }
 
 impl Jobs {
@@ -592,6 +619,7 @@ impl Jobs {
             pty_bytes: 0,
             snapshots: Arc::new(tokio::sync::Semaphore::new(crate::pty::SNAPSHOTS)),
             reminders: HashMap::new(),
+            journal: Arc::new(crate::NoopJournal),
         }
     }
 
@@ -1007,6 +1035,14 @@ impl Message<InstallActivity> for Jobs {
     }
 }
 
+impl Message<crate::InstallJournal> for Jobs {
+    type Reply = ();
+
+    async fn handle(&mut self, m: crate::InstallJournal, _: &mut Context<Self, Self::Reply>) {
+        self.journal = m.0;
+    }
+}
+
 /// Snapshot of the recorded trees, one per group (pipeline members share
 /// the first member's; `setup`'s hook adds them to it).
 fn groups(trees: &Mutex<Vec<ProcessTree>>) -> Vec<ProcessTree> {
@@ -1352,6 +1388,13 @@ async fn run(mut j: Run) {
             let out = ToolOutput::err(format!("{body}{}killed", sep(&body)));
             let origin = origin.expect("Killed comes from the cancel arm");
             (origin.notice().to_owned(), out)
+        }
+        (JobExit::Lost, None) => {
+            // 109: never reached by a running job (see `JobExit::Lost`);
+            // kept total so the match stays exhaustive.
+            let body = truncate(body);
+            let out = ToolOutput::err(format!("{body}{}lost", sep(&body)));
+            (body, out)
         }
     };
 
