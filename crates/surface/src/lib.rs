@@ -25,6 +25,7 @@ mod spec;
 mod validate;
 
 pub use catalog::{catalog_compact, catalog_schema};
+pub use fences::json_render_fences;
 pub use flatten::flatten;
 pub use mermaid::mermaid_lines;
 pub use prompt::*;

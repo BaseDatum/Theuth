@@ -64,6 +64,15 @@ pub(crate) fn fences(text: &str) -> impl Iterator<Item = Fence<'_>> {
     })
 }
 
+/// Every closed `json-render` fence of `text`, in order, as `(range, body)`:
+/// `range` spans the fence lines, `body` is what [`crate::slack_blocks`] and
+/// [`crate::flatten`] parse (design doc 110 §8: the caller splits its text here).
+pub fn json_render_fences(text: &str) -> impl Iterator<Item = (Range<usize>, &str)> {
+    fences(text)
+        .filter(|f| f.closed && f.lang == "json-render")
+        .map(|f| (f.range, f.body))
+}
+
 /// The line with up to three leading spaces removed; `None` if indented further.
 fn unindented(line: &str) -> Option<&str> {
     let n = line.bytes().take_while(|b| *b == b' ').count();
