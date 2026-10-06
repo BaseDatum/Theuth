@@ -163,3 +163,18 @@ export function BlockedScreen({ item }: { item: AttentionItem }) {
     </Plain>
   )
 }
+
+/** 109 §8.3: a resume that needs a human — what the restart skipped (from the `ResumeReport`), or, under
+ * `durability.resume: ask`, the turn waiting for the Resume button. Open session · Resume / Dismiss. */
+export function ResumeScreen({ item }: { item: AttentionItem }) {
+  return (
+    <Plain item={item}>
+      <div className="grid gap-4 sm:grid-cols-2">
+        <Fact label={item.detail === null ? 'Waiting' : 'What was skipped'}>
+          {item.detail ?? 'The turn is open; Resume replays it from its journal.'}
+        </Fact>
+        <Fact label="Interrupted">{age(item.at_ms)}</Fact>
+      </div>
+    </Plain>
+  )
+}

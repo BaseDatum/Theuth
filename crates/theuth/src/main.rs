@@ -517,11 +517,15 @@ async fn cmd_67(data_dir: &Path, config: &Figment, cmd: Cmd) -> anyhow::Result<(
                     .await
             }
             SandboxCmd::Desktop { name } => {
-                let r: Result<sandbox::types::DesktopAccess, ClientError> =
-                    client.request("sandbox_desktop_access", rpc_params![name]).await;
+                let r: Result<sandbox::types::DesktopAccess, ClientError> = client
+                    .request("sandbox_desktop_access", rpc_params![name])
+                    .await;
                 match r {
                     Ok(d) => {
-                        println!("{}\npassword: {}\ngeometry: {}", d.http_url, d.password, d.geometry);
+                        println!(
+                            "{}\npassword: {}\ngeometry: {}",
+                            d.http_url, d.password, d.geometry
+                        );
                         return Ok(());
                     }
                     Err(e) => Err(e),
@@ -669,7 +673,9 @@ fn vm_spec(
                 }
                 "public" => "public_only",
                 "none" => "none",
-                other => anyhow::bail!("--network {other}: expected public,host | public,host,private | public | none"),
+                other => anyhow::bail!(
+                    "--network {other}: expected public,host | public,host,private | public | none"
+                ),
             };
             Ok::<_, anyhow::Error>(serde_json::from_value::<sandbox::NetPolicy>(
                 serde_json::Value::String(v.into()),
@@ -692,7 +698,10 @@ fn vm_spec(
         root_disk_mib: disk.as_deref().map(parse_mib).transpose()?,
         max_cpus: None,
         max_memory_mib: None,
-        shares: share.iter().map(|s| parse_share(s)).collect::<Result<_, _>>()?,
+        shares: share
+            .iter()
+            .map(|s| parse_share(s))
+            .collect::<Result<_, _>>()?,
         desktop: Some(!no_desktop),
         geometry: None,
         network,
@@ -784,8 +793,12 @@ async fn sandbox_create(
                 Some("failed") => {
                     eprintln!(
                         "{name} failed at {}: {}\nretry from Settings › Mesh or `t sandbox rm {name}`",
-                        ev.pointer("/sandbox/state/step").and_then(|s| s.as_str()).unwrap_or("?"),
-                        ev.pointer("/sandbox/state/error").and_then(|s| s.as_str()).unwrap_or("?")
+                        ev.pointer("/sandbox/state/step")
+                            .and_then(|s| s.as_str())
+                            .unwrap_or("?"),
+                        ev.pointer("/sandbox/state/error")
+                            .and_then(|s| s.as_str())
+                            .unwrap_or("?")
                     );
                     std::process::exit(1);
                 }
@@ -1507,11 +1520,17 @@ async fn run() -> anyhow::Result<()> {
     }
 
     // 79 smoke bug 7: every normal exit names its origin (an rpc `shutdown` logs its peer in `api.rs`).
-    tokio::select! {
-        _ = rt.shutdown.cancelled() => tracing::warn!("exiting: shutdown token cancelled (rpc shutdown, plugin or actor)"),
-        _ = tokio::signal::ctrl_c() => { tracing::warn!("exiting: SIGINT"); rt.shutdown.cancel() }
-        _ = parent_gone() => { tracing::warn!("exiting: parent process gone"); rt.shutdown.cancel() }
-    }
+    let (origin, reason) = tokio::select! {
+        _ = rt.shutdown.cancelled() => ("shutdown token cancelled (rpc shutdown, plugin or actor)", "shutdown"),
+        _ = tokio::signal::ctrl_c() => ("SIGINT", "shutdown"),
+        _ = sigterm() => ("SIGTERM", "shutdown"),
+        _ = parent_gone() => ("parent process gone", "parent_gone"),
+    };
+    tracing::warn!("exiting: {origin}");
+    // 109 §9.2: drain before the token fires — every turn's cancel token is
+    // its child. An rpc `shutdown` drained already; this one is then a no-op.
+    agent::supervisor::drain_engine(&rt, reason).await;
+    rt.shutdown.cancel();
     // Give actors a moment to flush (sqlite writes, terminal restore), then
     // leave without waiting for the runtime: a `spawn_blocking` pipe drain
     // whose child never closed its end would otherwise pin the process.
@@ -1539,6 +1558,17 @@ async fn parent_gone() {
             return;
         }
     }
+}
+
+/// Resolves on SIGTERM (launchd/systemd stop, `kill`); never on Windows.
+async fn sigterm() {
+    #[cfg(unix)]
+    if let Ok(mut term) = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+    {
+        term.recv().await;
+        return;
+    }
+    std::future::pending().await
 }
 
 /// The engine's plugin list (every mode but `--acp` and `--link-signal`):
@@ -1601,13 +1631,13 @@ async fn start_plugins(rt: &Runtime, plugins: Vec<Box<dyn Plugin>>) -> anyhow::R
     let owners: Vec<&'static str> = [
         "artifact", "app", "browser", "computer", "voice", "talk", "routes",
     ]
-        .into_iter()
-        .filter(|name| {
-            rt.config
-                .extract_inner::<bool>(&format!("{name}.enabled"))
-                .unwrap_or(true)
-        })
-        .collect();
+    .into_iter()
+    .filter(|name| {
+        rt.config
+            .extract_inner::<bool>(&format!("{name}.enabled"))
+            .unwrap_or(true)
+    })
+    .collect();
     let registry_rt = rt.clone();
     tokio::spawn(async move {
         if let Some(reg) = registry_rt

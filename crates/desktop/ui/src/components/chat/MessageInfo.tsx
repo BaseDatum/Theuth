@@ -13,3 +13,14 @@ export const MessageError = memo(function MessageError({ text }: { text: string 
     </div>
   )
 })
+
+/** 109 §8.2: the partial an interrupted model call streamed — greyed under an `interrupted — resuming` label until the
+ * regenerated reply's first delta removes it. */
+export const MessageInterrupted = memo(function MessageInterrupted({ text }: { text: string }) {
+  return (
+    <div className="py-1 text-sm text-fg-tertiary opacity-70">
+      <div className="text-xs italic">interrupted — resuming</div>
+      <div className="whitespace-pre-wrap">{text}</div>
+    </div>
+  )
+})

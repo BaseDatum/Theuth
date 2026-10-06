@@ -831,6 +831,24 @@ pub struct Loaded {
     /// Storage class of the root (51 §4); durable unless created private.
     #[serde(default)]
     pub retention: tools::Retention,
+    /// 109 §10.3: the open turn being resumed, if any; `None` once it closed.
+    #[serde(default)]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub resume: Option<ResumeState>,
+}
+
+/// 109 §10.3: [`Loaded.resume`] — the session has an open turn (interrupted
+/// by a crash or suspended by a drain) that resume owns; the banner's state
+/// across a reload. The report rides the live `ResumeReport` event.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+pub struct ResumeState {
+    /// The open turn.
+    pub turn: TurnId,
+    /// Crash or drain.
+    pub kind: durability::ResumeKind,
+    /// Newest journal row's time.
+    pub interrupted_at: chrono::DateTime<chrono::Utc>,
 }
 
 /// `ask` → `Vec<AgentInfo>`: the subtree under `session` (children,
@@ -1643,6 +1661,18 @@ pub enum HistoryEntry {
         #[cfg_attr(feature = "ts", ts(optional))]
         context: Option<ContextEntry>,
     },
+    /// 109 §8.2: the streamed partial of an open turn's model call, dropped
+    /// when the resumed turn regenerates it. UI-only, never in the frame.
+    Interrupted {
+        /// Text streamed before the stop.
+        text: String,
+        /// When the partial was last checkpointed.
+        at: chrono::DateTime<chrono::Utc>,
+        /// Always `None`: a partial is not model context.
+        #[serde(default)]
+        #[cfg_attr(feature = "ts", ts(optional))]
+        context: Option<ContextEntry>,
+    },
 }
 
 impl HistoryEntry {
@@ -1654,7 +1684,8 @@ impl HistoryEntry {
             | Self::Reasoning { context, .. }
             | Self::Tool { context, .. }
             | Self::Compacted { context, .. }
-            | Self::Error { context, .. } => context.as_ref(),
+            | Self::Error { context, .. }
+            | Self::Interrupted { context, .. } => context.as_ref(),
         }
     }
 
@@ -1666,7 +1697,8 @@ impl HistoryEntry {
             | Self::Reasoning { context, .. }
             | Self::Tool { context, .. }
             | Self::Compacted { context, .. }
-            | Self::Error { context, .. } => context.as_mut(),
+            | Self::Error { context, .. }
+            | Self::Interrupted { context, .. } => context.as_mut(),
         }
     }
 }

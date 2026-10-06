@@ -596,6 +596,9 @@ fn replay(i: usize, entry: HistoryEntry) -> SessionUpdate {
         HistoryEntry::Error { text, .. } => {
             SessionUpdate::AgentMessageChunk(ContentChunk::new(format!("error: {text}").into()))
         }
+        HistoryEntry::Interrupted { text, .. } => SessionUpdate::AgentMessageChunk(
+            ContentChunk::new(format!("[interrupted — resuming] {text}").into()),
+        ),
     }
 }
 

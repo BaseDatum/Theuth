@@ -27,6 +27,7 @@ import {
   nextId,
   recordCall,
   reconcileTodos,
+  resumeFromLoaded,
   route,
   settleCompacting,
 } from "./reduce";
@@ -141,7 +142,22 @@ export type Entry = { id: string; context?: ContextEntry; at?: number } & (
   | { kind: "info"; text: string }
   | { kind: "error"; text: string }
   | { kind: "compacted"; epoch: number; style: CompactStyle; summary?: string }
+  /** 109 §8.2: the partial an interrupted model call streamed; greyed, removed by the regenerated reply's first delta. */
+  | { kind: "interrupted"; text: string }
 );
+
+/** 109 §8.2: the session banner's state — a turn interrupted by a restart (or suspended by a planned stop) and
+ * what its resume did. From `Loaded.resume` on load, `TurnResumed` / `ResumeReport` / `TurnSuspended` live. */
+export type ResumeBanner = {
+  turn: string;
+  kind: "interrupted" | "suspended";
+  /** When the turn was interrupted (ms since epoch). */
+  at: number;
+  /** `TurnResumed` seen: the engine is replaying. */
+  resumed: boolean;
+  /** `ResumeReport` counts; absent until it arrives. */
+  report?: { replayed: number; skipped: string[]; lostJobs: number };
+};
 
 /** What the status dot says. `harvesting` is never stored in `activity`: a
  * detached harvest (10 §5.2 as built) sets `harvesting` and shows only while
@@ -257,6 +273,8 @@ export type SessionSlice = {
   todosStale: boolean;
   /** The todo card is expanded (47 §6.1); survives snapshots and session switches within this client. */
   todosExpanded: boolean;
+  /** 109 §8.2: the interruption banner above the composer; cleared by the next turn that is not the resumed one. */
+  resume?: ResumeBanner;
 };
 
 /** What a page or settled snapshot must still match when it lands (48 §5): `historyGeneration` and `live` at request time. */
@@ -425,6 +443,8 @@ export const createSessions = (): SessionsApi =>
             contextStale: stale,
             // An older page still in flight was read before this snapshot: it must not land on top of it.
             historyGeneration: cur.historyGeneration + 1,
+            // 109 §8.2: an open turn's banner; a live `TurnResumed`/`ResumeReport` already seen for it outranks the row.
+            resume: resumeFromLoaded(cur.resume, loaded.resume),
           };
         }
         set((st) => ({ sessions: { ...st.sessions, [id]: next } }));

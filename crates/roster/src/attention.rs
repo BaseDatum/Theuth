@@ -57,13 +57,17 @@ pub enum AttentionKind {
     Ask,
     /// An agent showed the user an artifact (104 A1): see it.
     Show,
+    /// 109 §8.3: a session's interrupted turn needs a human — a replay
+    /// skipped a mutating call (effect unknown), an ACP child got a hand-off,
+    /// or `durability.resume: ask` waits for the Resume button.
+    Resume,
 }
 
 /// One inbox item. `id` is stable across derivations (dismiss / snooze key).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, schemars::JsonSchema, kameo::Reply)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct AttentionItem {
-    /// `approval:<id>` | `decision:<task>:<decision>` | `hire:<agent>` | `blocked:<task>` | `review:<task>` | `budget:<agent>` | `node:<id>` | `handoff:<id>` | `secret:<id>` | `ask:<id>` | `show:<call_id>`.
+    /// `approval:<id>` | `decision:<task>:<decision>` | `hire:<agent>` | `blocked:<task>` | `review:<task>` | `budget:<agent>` | `node:<id>` | `handoff:<id>` | `secret:<id>` | `ask:<id>` | `show:<call_id>` | `resume:<session>:<turn>`.
     pub id: String,
     /// What.
     pub kind: AttentionKind,
@@ -115,6 +119,20 @@ pub struct Shown {
     pub version: u32,
     /// ms since epoch: when it was shown.
     pub at_ms: u64,
+}
+
+/// 109 §8.3: one resume that needs a human (an `Inputs` row).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ResumeNeed {
+    /// Owning session.
+    pub session: String,
+    /// The open turn.
+    pub turn: String,
+    /// When the turn was interrupted (ms since epoch).
+    pub at_ms: u64,
+    /// What went wrong, from the `ResumeReport`; `None` under `resume: ask`,
+    /// where the turn simply waits for the button.
+    pub detail: Option<String>,
 }
 
 /// `ask` → `Result<Vec<Handoff>, String>`: unresolved hand-offs, newest first (`handoffs_list`).
@@ -175,6 +193,8 @@ pub struct Inputs {
     pub desks: HashMap<String, String>,
     /// Task id → newest `task_events.session`, for open tasks without a checkout (104 A3).
     pub task_sessions: HashMap<String, String>,
+    /// 109 §8.3: resumes that need a human.
+    pub resumes: Vec<ResumeNeed>,
 }
 
 /// Dismissed / snoozed state per item id.
@@ -535,6 +555,26 @@ pub fn derive(inputs: &Inputs, states: &HashMap<String, State>, now_ms: u64) -> 
         });
     }
 
+    for r in &inputs.resumes {
+        let agent = desk(&r.session);
+        let name = who(agent.as_deref(), &r.session);
+        let title = match &r.detail {
+            Some(_) => format!("{name} resumed after a restart with gaps"),
+            None => format!("{name} was interrupted by a restart — resume?"),
+        };
+        out.push(AttentionItem {
+            agent,
+            session: Some(r.session.clone()),
+            ..item(
+                format!("resume:{}:{}", r.session, r.turn),
+                AttentionKind::Resume,
+                title,
+                r.detail.clone(),
+                r.at_ms,
+            )
+        });
+    }
+
     out.retain(|i| {
         !states
             .get(&i.id)
@@ -574,15 +614,26 @@ fn human_bytes(n: u64) -> String {
 pub struct Attention {
     pool: SqlitePool,
     pending: HashMap<ApprovalId, (ApprovalRequested, u64)>,
+    /// 109 §8.3: `ResumeReport`s that need a human, by session; a dismissed
+    /// one is hidden by `attention_state`, a new turn replaces it.
+    reports: HashMap<String, ResumeNeed>,
+    /// `durability.resume: ask`: every open turn is an item with a Resume button.
+    resume_ask: bool,
 }
 
 impl Attention {
-    /// Spawn, register, subscribe to approvals and shows.
+    /// Spawn, register, subscribe to approvals, shows and resume reports.
     pub async fn start(rt: &Runtime, store: &Store) -> anyhow::Result<ActorRef<Self>> {
+        let resume_ask = rt.config.contains("durability")
+            && rt
+                .section::<agent::durability::DurabilityConfig>("durability")
+                .is_ok_and(|d| d.resume == agent::durability::ResumeMode::Ask);
         let actor = Self::spawn_with_mailbox(
             Self {
                 pool: store.pool().clone(),
                 pending: HashMap::new(),
+                reports: HashMap::new(),
+                resume_ask,
             },
             runtime::subscriber_mailbox(),
         );
@@ -590,6 +641,7 @@ impl Attention {
         rt.subscribe::<Self, ApprovalRequested>(&actor).await;
         rt.subscribe::<Self, ApprovalResolved>(&actor).await;
         rt.subscribe::<Self, ArtifactShown>(&actor).await;
+        rt.subscribe::<Self, agent::AgentEvent>(&actor).await;
         Ok(actor)
     }
 
@@ -686,10 +738,22 @@ impl Attention {
             .iter()
             .filter_map(|a| Some((a.desk.clone()?, a.file.name.as_str().to_owned())))
             .collect();
-        if let Ok(Some(ag)) = ActorRef::<agent::Agents>::lookup(agent::AGENT_ACTOR)
-            && let Ok(sessions) = ag.ask(agent::ListSessions).await
-        {
-            desks.extend(desk_map(&sessions));
+        let mut resumes: Vec<ResumeNeed> = self.reports.values().cloned().collect();
+        if let Ok(Some(ag)) = ActorRef::<agent::Agents>::lookup(agent::AGENT_ACTOR) {
+            if let Ok(sessions) = ag.ask(agent::ListSessions).await {
+                desks.extend(desk_map(&sessions));
+            }
+            // 109 §4.6: under `ask` every open turn waits for the button.
+            if self.resume_ask
+                && let Ok(open) = ag.ask(agent::supervisor::OpenTurns).await
+            {
+                resumes.extend(open.into_iter().map(|(s, t, at)| ResumeNeed {
+                    session: s.to_string(),
+                    turn: t.to_string(),
+                    at_ms: at.timestamp_millis().max(0) as u64,
+                    detail: None,
+                }));
+            }
         }
         Inputs {
             tasks,
@@ -704,6 +768,7 @@ impl Attention {
             shows,
             desks,
             task_sessions,
+            resumes,
         }
     }
 }
@@ -876,6 +941,53 @@ impl Message<ApprovalRequested> for Attention {
         _: &mut Context<Self, Self::Reply>,
     ) -> Self::Reply {
         self.pending.insert(m.id, (m, now_ms()));
+    }
+}
+
+/// 109 §8.3: the `ResumeNeed` a report raises, `None` for a clean resume
+/// (nothing skipped, no child handed off): the banner is enough.
+pub fn resume_need(ev: &agent::AgentEvent, now_ms: u64) -> Option<ResumeNeed> {
+    let agent::AgentEvent::ResumeReport {
+        session,
+        turn,
+        interrupted,
+        children_handed_off,
+        ..
+    } = ev
+    else {
+        return None;
+    };
+    let mut parts = Vec::new();
+    if !interrupted.is_empty() {
+        let names: Vec<&str> = interrupted.iter().map(|(_, name)| name.as_str()).collect();
+        parts.push(format!(
+            "{} tool call{} skipped: {} — effect unknown",
+            interrupted.len(),
+            if interrupted.len() == 1 { "" } else { "s" },
+            names.join(", ")
+        ));
+    }
+    if *children_handed_off > 0 {
+        parts.push(format!(
+            "{children_handed_off} external child{} handed off",
+            if *children_handed_off == 1 { "" } else { "ren" }
+        ));
+    }
+    (!parts.is_empty()).then(|| ResumeNeed {
+        session: session.to_string(),
+        turn: turn.to_string(),
+        at_ms: now_ms,
+        detail: Some(parts.join("; ")),
+    })
+}
+
+impl Message<agent::AgentEvent> for Attention {
+    type Reply = ();
+
+    async fn handle(&mut self, m: agent::AgentEvent, _: &mut Context<Self, Self::Reply>) {
+        if let Some(need) = resume_need(&m, now_ms()) {
+            self.reports.insert(need.session.clone(), need);
+        }
     }
 }
 
@@ -1511,6 +1623,89 @@ mod tests {
             left,
             ["handoff:h2", "secret:0199aaaa-0000-7000-8000-000000000002"]
         );
+    }
+
+    /// 109 §8.3: a report with a skipped mutating call raises one item, a
+    /// clean report none; an `ask`-mode open turn is an item with no detail;
+    /// Dismiss hides it like every other kind.
+    #[test]
+    fn resume_items_lifecycle() {
+        let session = runtime::SessionId::new();
+        let turn = runtime::TurnId::new();
+        let clean = agent::AgentEvent::ResumeReport {
+            session,
+            turn,
+            replayed: vec![("c1".into(), "read_file".into())],
+            interrupted: vec![],
+            lost_jobs: vec![],
+            children_restored: 1,
+            children_handed_off: 0,
+        };
+        assert_eq!(
+            resume_need(&clean, 5),
+            None,
+            "a clean resume raises no item"
+        );
+        let gaps = agent::AgentEvent::ResumeReport {
+            session,
+            turn,
+            replayed: vec![],
+            interrupted: vec![
+                ("c2".into(), "git push".into()),
+                ("c3".into(), "shell".into()),
+            ],
+            lost_jobs: vec![],
+            children_restored: 0,
+            children_handed_off: 1,
+        };
+        let need = resume_need(&gaps, 70).unwrap();
+        assert_eq!(
+            need.detail.as_deref(),
+            Some(
+                "2 tool calls skipped: git push, shell — effect unknown; 1 external child handed off"
+            )
+        );
+
+        let waiting = ResumeNeed {
+            session: "0199aaaa-bbbb-7000-8000-000000000000".into(),
+            turn: "t2".into(),
+            at_ms: 90,
+            detail: None,
+        };
+        let inputs = Inputs {
+            resumes: vec![need.clone(), waiting.clone()],
+            ..Default::default()
+        };
+        let items = derive(&inputs, &HashMap::new(), 100);
+        assert_eq!(items.len(), 2);
+        assert_eq!(items[0].kind, AttentionKind::Resume);
+        assert_eq!(items[0].id, format!("resume:{}:t2", waiting.session));
+        assert_eq!(
+            items[0].title,
+            "0199aaaa was interrupted by a restart — resume?"
+        );
+        assert_eq!(items[0].detail, None);
+        assert_eq!(items[0].session.as_deref(), Some(waiting.session.as_str()));
+        assert_eq!(items[1].id, format!("resume:{session}:{turn}"));
+        assert!(
+            items[1]
+                .title
+                .ends_with("resumed after a restart with gaps")
+        );
+        assert_eq!(items[1].detail, need.detail);
+
+        let states = HashMap::from([(
+            items[1].id.clone(),
+            State {
+                dismissed_ms: Some(1),
+                snoozed_until_ms: None,
+            },
+        )]);
+        let left: Vec<_> = derive(&inputs, &states, 100)
+            .into_iter()
+            .map(|i| i.id)
+            .collect();
+        assert_eq!(left, [items[0].id.clone()]);
     }
 
     #[tokio::test]
