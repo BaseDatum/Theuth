@@ -434,6 +434,8 @@ pub struct Channel {
     reasoning: bool,
     /// 110 §5: the plan message is on.
     plan: bool,
+    /// 110 §8: `json-render` fences as Block Kit in the bubble.
+    blocks: bool,
     approvals: ApprovalsScope,
     pub(crate) identity: OnceLock<Identity>,
     // ponytail: one std mutex for all state, never held across an await; split if it ever contends.
@@ -628,8 +630,8 @@ const EYES: &str = "eyes";
 const DONE: &str = "white_check_mark";
 const STOPPED: &str = "octagonal_sign";
 const FAILED: &str = "x";
-/// Comment on an uploaded app source (46 §8.2): the thread gets the file, not controls.
-const APP_NOTE: &str = "Interactive app — open on desktop/web";
+/// Subtitle of an app's `card` (46 §8.2, 110 §8): the thread gets a card, not controls.
+const APP_NOTE: &str = "Interactive in theuth · not runnable in Slack";
 
 impl Channel {
     fn new(
@@ -655,6 +657,7 @@ impl Channel {
             tools: cfg.tools,
             reasoning: cfg.reasoning,
             plan: cfg.plan,
+            blocks: cfg.blocks,
             approvals: cfg.approvals,
             identity: OnceLock::new(),
             state: Mutex::new(State {
@@ -1889,6 +1892,7 @@ impl Channel {
             clip_tail: None,
             plan: plan::Plan::default(),
             compacted: None,
+            board_creates: HashMap::new(),
         };
         tokio::spawn(worker.run(rx));
         s.workers.insert(key.to_owned(), tx.clone());
@@ -1992,6 +1996,9 @@ struct Worker {
     plan: plan::Plan,
     /// `Compacted { epoch }` seen between turns; handed to the next `Turn` for its footer (110 §6).
     compacted: Option<u32>,
+    /// 110 §8: open `doc_create kind: board` calls by `call_id` → title; the
+    /// result posts a `card`.
+    board_creates: HashMap<String, String>,
 }
 
 /// `agents.sessions.setStatus` codes meaning "not an agent app" (21 §8.6).
@@ -2194,9 +2201,15 @@ impl Worker {
     // -- artifacts (35 §8) -------------------------------------------------
 
     /// Uploads a `show` artifact into the thread, `title` as the comment. An
-    /// app (46 §8.2) uploads its `.openui` source the same way; the comment
-    /// says it is interactive elsewhere — no controls are pretended here.
+    /// app (46 §8.2, 110 §8) is one `card` block instead: Slack cannot run
+    /// it and its source is noise here — no upload, no pretended controls.
     async fn artifact(&self, a: Artifact) {
+        let title = a.title.trim();
+        if a.kind == artifact::Kind::App {
+            let title = if title.is_empty() { "App" } else { title };
+            self.card(ui::card(title, APP_NOTE)).await;
+            return;
+        }
         let bytes = match tokio::fs::read(&a.path).await {
             Ok(b) => b,
             Err(e) => {
@@ -2209,14 +2222,7 @@ impl Worker {
             mime: a.mime,
             bytes,
         };
-        let title = a.title.trim();
-        let comment = match (a.kind, title.is_empty()) {
-            (artifact::Kind::App, true) => Some(APP_NOTE.to_owned()),
-            (artifact::Kind::App, false) => Some(format!("{title} · {APP_NOTE}")),
-            (_, true) => None,
-            (_, false) => Some(title.to_owned()),
-        };
-        let comment = comment.as_deref();
+        let comment = (!title.is_empty()).then_some(title);
         if let Err(e) = self
             .chan
             .api
@@ -2229,6 +2235,28 @@ impl Worker {
             .await
         {
             tracing::warn!(error = %e, name = %file.name, "artifact upload failed");
+        }
+    }
+
+    /// 110 §8: a board create as one `card`; the `theuth://` scheme has no
+    /// desktop handler yet (§16), so the path is plain text, not a link.
+    async fn board_card(&self, title: &str, id: &str) {
+        let title = if title.is_empty() { "Board" } else { title };
+        self.card(ui::card(
+            &format!("Board · {title}"),
+            &format!("Open in theuth: notes/{id}"),
+        ))
+        .await;
+    }
+
+    async fn card(&self, blocks: serde_json::Value) {
+        if let Err(e) = self
+            .chan
+            .api
+            .post_blocks(&self.channel, Some(&self.thread_ts), blocks)
+            .await
+        {
+            tracing::warn!(error = %e, "deliverable card post failed");
         }
     }
 
@@ -2363,6 +2391,7 @@ impl Worker {
                     },
                     self.chan.tools,
                     self.chan.reasoning,
+                    self.chan.blocks,
                     Arc::clone(&self.chan.api),
                     self.chan.rt.clone(),
                     session,
@@ -2409,6 +2438,11 @@ impl Worker {
                 if let Some(t) = &mut self.turn {
                     t.tool_started(&call_id, &name, &args).await;
                 }
+                // 110 §8: `isBoardCreate` (desktop `BoardCard.tsx`).
+                if name == "doc_create" && args["kind"] == "board" {
+                    let title = args["title"].as_str().unwrap_or_default().trim();
+                    self.board_creates.insert(call_id, title.to_owned());
+                }
             }
             AgentEvent::ToolCallFinished {
                 call_id,
@@ -2418,6 +2452,14 @@ impl Worker {
             } => {
                 if let Some(t) = &mut self.turn {
                     t.tool_finished(&call_id, &output, is_error).await;
+                }
+                if let Some(title) = self.board_creates.remove(&call_id)
+                    && !is_error
+                    && let Some(id) = output
+                        .strip_prefix("created board ")
+                        .and_then(|r| r.split_whitespace().next())
+                {
+                    self.board_card(&title, id).await;
                 }
             }
             AgentEvent::TurnFinished {
@@ -2783,13 +2825,17 @@ pub(crate) mod tests {
         pub(crate) fn calls(&self) -> Vec<String> {
             self.calls.lock().unwrap().clone()
         }
-        /// A stream call's chunks as one line: texts verbatim, task cards as `[title]`.
+        /// A stream call's chunks as one line: texts verbatim, task cards as
+        /// `[title]`, block chunks as `{n blocks}`.
         fn texts(chunks: &[crate::api::Chunk]) -> String {
             chunks
                 .iter()
                 .map(|c| match c {
                     crate::api::Chunk::Text(s) => s.clone(),
                     crate::api::Chunk::Task { title, .. } => format!("[{title}]"),
+                    crate::api::Chunk::Blocks(b) => {
+                        format!("{{{} blocks}}", b.as_array().map_or(0, Vec::len))
+                    }
                 })
                 .collect()
         }
@@ -3553,28 +3599,99 @@ pub(crate) mod tests {
         f.until(|calls| calls.contains(&upload)).await;
     }
 
+    /// 110 §8: an app is one `card` (title, "interactive in theuth"); its
+    /// `.openui` source is not uploaded.
     #[tokio::test]
-    async fn app_for_a_bound_session_uploads_its_source_saying_where_it_runs() {
+    async fn app_for_a_bound_session_posts_one_card_and_no_upload() {
         let f = fixture();
         f.bind(OWNER);
         let mut ev = artifact(f.stub.session, f._dir.path());
-        let path = f._dir.path().join("panel.openui");
-        std::fs::write(&path, b"root = Card(TextContent(\"hi\"))").unwrap();
         ev.artifact.kind = artifact::Kind::App;
         ev.artifact.name = "panel.openui".into();
         ev.artifact.title = "Panel".into();
-        ev.artifact.path = path;
+        ev.artifact.path = f._dir.path().join("missing.openui");
         f.chan.route(Event::Artifact(ev)).await;
-        let upload = format!("upload_file {DM} 100.1 [panel.openui] Panel · {APP_NOTE}");
-        f.until(|calls| calls.contains(&upload)).await;
-        // One upload carrying the source; no blocks card pretending controls.
+        let want = format!("post_blocks {DM} 100.1 1 blocks");
+        f.until(|calls| calls.contains(&want)).await;
+        assert!(
+            !f.api.calls().iter().any(|c| c.starts_with("upload_file")),
+            "{:?}",
+            f.api.calls()
+        );
+        let blocks = f.api.blocks();
         assert_eq!(
-            f.api
-                .calls()
-                .iter()
-                .filter(|c| c.starts_with("upload_file") || c.starts_with("post_blocks"))
-                .count(),
-            1
+            blocks[0],
+            json!([{
+                "type": "card",
+                "title": { "type": "plain_text", "text": "Panel" },
+                "subtitle": { "type": "plain_text", "text": APP_NOTE },
+            }])
+        );
+    }
+
+    /// 110 §8: `doc_create kind: board` that succeeds → a `card` with the
+    /// board's path as plain text (no `theuth://` link, §16).
+    #[tokio::test(start_paused = true)]
+    async fn board_create_posts_a_card_with_the_notes_path_as_text() {
+        let f = fixture();
+        f.bind(OWNER);
+        let s = f.stub.session;
+        f.chan.route(Event::Agent(turn_started(s, "go"))).await;
+        let started = |call_id: &str, kind: &str| AgentEvent::ToolCallStarted {
+            session: s,
+            turn: TurnId::new(),
+            call_id: call_id.into(),
+            name: "doc_create".into(),
+            args: json!({ "title": "Auth flow", "kind": kind, "root": "/repo" }),
+        };
+        let finished = |call_id: &str, output: &str, is_error: bool| AgentEvent::ToolCallFinished {
+            session: s,
+            turn: TurnId::new(),
+            call_id: call_id.into(),
+            output: output.into(),
+            is_error,
+            files: Vec::new(),
+        };
+        // A note, a failed board and a board that succeeds.
+        f.chan.route(Event::Agent(started("c1", "note"))).await;
+        f.chan
+            .route(Event::Agent(finished(
+                "c1",
+                "created note n1 (theuth://notes/n1)\n",
+                false,
+            )))
+            .await;
+        f.chan.route(Event::Agent(started("c2", "board"))).await;
+        f.chan
+            .route(Event::Agent(finished("c2", "root /repo is not a directory", true)))
+            .await;
+        f.chan.route(Event::Agent(started("c3", "board"))).await;
+        f.chan
+            .route(Event::Agent(finished(
+                "c3",
+                "created board b7 (theuth://notes/b7)\n",
+                false,
+            )))
+            .await;
+        let want = format!("post_blocks {DM} 100.1 1 blocks");
+        f.until(|calls| calls.contains(&want)).await;
+        let cards: Vec<_> = f
+            .api
+            .blocks()
+            .into_iter()
+            .filter(|b| b[0]["type"] == "card")
+            .collect();
+        assert_eq!(
+            cards,
+            vec![json!([{
+                "type": "card",
+                "title": { "type": "plain_text", "text": "Board · Auth flow" },
+                "subtitle": { "type": "plain_text", "text": "Open in theuth: notes/b7" },
+            }])]
+        );
+        assert!(
+            !serde_json::to_string(&cards).unwrap().contains("theuth://"),
+            "{cards:?}"
         );
     }
 
@@ -4116,10 +4233,12 @@ pub(crate) mod tests {
         let title = c["title"]["text"].as_str().unwrap();
         assert!(title.starts_with("↳ grep-logs · finished · "), "{title}");
         assert_eq!(c["subtitle"]["text"], "found it in auth.rs");
+        // §14.5: no `markdown` child; the body is plain `section`s.
         assert_eq!(c["child_blocks"].as_array().unwrap().len(), 1);
-        assert_eq!(c["child_blocks"][0]["type"], "markdown");
+        assert_eq!(c["child_blocks"][0]["type"], "section");
+        assert_eq!(c["child_blocks"][0]["text"]["type"], "plain_text");
         assert_eq!(
-            c["child_blocks"][0]["text"],
+            c["child_blocks"][0]["text"]["text"],
             "found it in auth.rs\n\nline 42 panics on an empty token"
         );
     }
@@ -4141,7 +4260,12 @@ pub(crate) mod tests {
         let blocks = f.api.blocks();
         let c = &blocks[0][0];
         assert_eq!(c["title"]["text"], "↳ peer:remote-ops · delivered");
-        let text = c["child_blocks"][0]["text"].as_str().unwrap();
+        let kids = c["child_blocks"].as_array().unwrap();
+        assert!(kids.iter().all(|k| k["type"] == "section"), "{kids:?}");
+        let text: String = kids
+            .iter()
+            .map(|k| k["text"]["text"].as_str().unwrap())
+            .collect();
         assert!(text.chars().count() <= MARKDOWN_TEXT_MAX);
         assert!(
             text.ends_with("… (532 more chars)"),

@@ -43,6 +43,9 @@ const SOURCES_MAX: usize = 3;
 const OPEN_ATTEMPTS: u8 = 3;
 /// Column width `json-render` fences are rendered at for Slack (30 §9).
 const FLATTEN_WIDTH: usize = 60;
+/// Block Kit blocks one message may carry (110 §8); past it every further
+/// fence of the bubble flattens, since Slack drops blocks over 50.
+const BLOCKS_MAX: usize = 50;
 
 /// `startStream` errors that mean "this thread cannot stream": fall back to
 /// update mode for the rest of the turn (21 §8.1).
@@ -128,6 +131,10 @@ struct Bubble {
     /// Bytes of `text.raw()` Slack has shown: everything appended (Stream)
     /// or `committed()` at the last update (Update).
     sent: usize,
+    /// Stream mode: Block Kit blocks appended so far, against [`BLOCKS_MAX`].
+    blocks_sent: usize,
+    /// Update mode: rendered fences already posted as their own message.
+    blocks_posted: usize,
     opened: Instant,
     last_append: Instant,
 }
@@ -139,6 +146,8 @@ impl Bubble {
             mode: Mode::Unsent,
             text: markdown::Text::new(),
             sent: 0,
+            blocks_sent: 0,
+            blocks_posted: 0,
             opened: now,
             last_append: now,
         }
@@ -149,10 +158,68 @@ impl Bubble {
         self.text.raw()[..self.text.committed()].chars().count()
     }
 
-    /// `raw[range]` as it goes on the wire: `json-render` fences rendered
-    /// inside a plain code block (30 §9); everything else verbatim.
+    /// `raw[range]` as plain markdown: every `json-render` fence rendered
+    /// inside a code block (30 §9), everything else verbatim. The repair
+    /// text, and the update-mode text when blocks are off.
     fn out(&self, range: std::ops::Range<usize>) -> String {
         surface::flatten(&self.text.raw()[range], FLATTEN_WIDTH)
+    }
+
+    /// `raw[range]` split at the closed `json-render` fences that render as
+    /// Block Kit (110 §8): `Chunk::Text` runs (other fences flattened as in
+    /// [`Self::out`]) around one `Chunk::Blocks` per such fence, in order.
+    /// `budget` is how many blocks this message may still take; a fence
+    /// that does not render, or would overshoot it, stays in the text as a
+    /// code block. With `blocks` off this is one `Chunk::Text` of `out`.
+    fn segments(&self, range: std::ops::Range<usize>, blocks: bool, budget: usize) -> Vec<Chunk> {
+        let raw = &self.text.raw()[range];
+        let mut out = Vec::new();
+        let mut pos = 0;
+        let mut budget = budget;
+        if blocks {
+            for (r, body) in surface::json_render_fences(raw) {
+                if budget == 0 {
+                    break;
+                }
+                let rendered = match surface::slack_blocks(body) {
+                    Ok(b) if b.len() <= budget => b,
+                    Ok(b) => {
+                        tracing::debug!(blocks = b.len(), budget, "fence over the block cap; flattened");
+                        continue;
+                    }
+                    Err(e) => {
+                        tracing::debug!(error = %e, "fence has no block form; flattened");
+                        continue;
+                    }
+                };
+                budget -= rendered.len();
+                if r.start > pos {
+                    out.push(Chunk::Text(surface::flatten(&raw[pos..r.start], FLATTEN_WIDTH)));
+                }
+                out.push(Chunk::Blocks(serde_json::Value::Array(rendered)));
+                pos = r.end;
+            }
+        }
+        if pos < raw.len() {
+            out.push(Chunk::Text(surface::flatten(&raw[pos..], FLATTEN_WIDTH)));
+        }
+        out
+    }
+
+    /// Update mode (110 §8): the bubble's markdown with the fences that
+    /// render as blocks left out (they are their own messages), and those
+    /// block payloads in order.
+    fn split(&self, range: std::ops::Range<usize>, blocks: bool) -> (String, Vec<serde_json::Value>) {
+        let mut md = String::new();
+        let mut posts = Vec::new();
+        for c in self.segments(range, blocks, BLOCKS_MAX) {
+            match c {
+                Chunk::Text(s) => md.push_str(&s),
+                Chunk::Blocks(b) => posts.push(b),
+                Chunk::Task { .. } => unreachable!("segments yields text and blocks"),
+            }
+        }
+        (md, posts)
     }
 
     /// Stream mode: bytes of `raw` that may be appended now. A `json-render`
@@ -172,6 +239,17 @@ impl Bubble {
             raw.len()
         }
     }
+}
+
+/// Blocks inside the `Chunk::Blocks` of `chunks`, for the bubble's budget.
+fn blocks_in(chunks: &[Chunk]) -> usize {
+    chunks
+        .iter()
+        .map(|c| match c {
+            Chunk::Blocks(b) => b.as_array().map_or(0, Vec::len),
+            Chunk::Text(_) | Chunk::Task { .. } => 0,
+        })
+        .sum()
 }
 
 /// Mirrors `isDeliverable` in `crates/desktop/ui/src/components/chat/ToolRunCard.tsx:19-22`;
@@ -566,6 +644,9 @@ pub struct Turn {
     target: Target,
     tools_mode: ToolCards,
     reasoning: bool,
+    /// `slack.blocks` (110 §8–9): `json-render` fences as Block Kit; off
+    /// flattens them as 30 §9 did.
+    blocks: bool,
     api: Arc<dyn SlackApi>,
     rt: Runtime,
     session: SessionId,
@@ -596,6 +677,7 @@ impl Turn {
         target: Target,
         tools_mode: ToolCards,
         reasoning: bool,
+        blocks: bool,
         api: Arc<dyn SlackApi>,
         rt: Runtime,
         session: SessionId,
@@ -604,6 +686,7 @@ impl Turn {
             target,
             tools_mode,
             reasoning,
+            blocks,
             api,
             rt,
             session,
@@ -1063,12 +1146,12 @@ impl Turn {
             }
             self.open().await;
         }
-        let Some(b) = self.bubble.take() else { return };
+        let Some(mut b) = self.bubble.take() else { return };
         let mut footer = footer.to_string();
         if let Some(epoch) = self.compacted {
             footer.push_str(&format!(" · ⟲ epoch {epoch}"));
         }
-        let raw = b.out(0..b.text.raw().len());
+        let len = b.text.raw().len();
         match &b.mode {
             Mode::Unsent => {
                 tracing::warn!("turn finished before its bubble could be opened; text dropped");
@@ -1077,8 +1160,8 @@ impl Turn {
                 // Cards first: they completed before the text that follows them.
                 let (mut chunks, _) = self.collect(true);
                 self.queue.clear();
-                if b.sent < b.text.raw().len() {
-                    chunks.push(Chunk::Text(b.out(b.sent..b.text.raw().len())));
+                if b.sent < len {
+                    chunks.extend(b.segments(b.sent..len, self.blocks, BLOCKS_MAX - b.blocks_sent));
                 }
                 let stopped = self
                     .api
@@ -1093,18 +1176,21 @@ impl Turn {
                 if let Err(e) = stopped {
                     tracing::warn!(error = %e, ts, "stopStream failed; repairing");
                     self.publish_fallback(e.to_string()).await;
+                    let raw = b.out(0..len);
                     self.repair(ts, &format!("{raw}\n\n_{footer}_")).await;
                 }
             }
             Mode::Update(ts) => {
                 self.flush_cards(true).await;
+                let (raw, posts) = b.split(0..len, self.blocks);
                 let md = format!("{raw}\n\n_{footer}_");
-                if let Err(e) = self
+                match self
                     .api
                     .update_markdown(&self.target.channel, ts, md.trim_start())
                     .await
                 {
-                    tracing::warn!(error = %e, ts, "final update failed");
+                    Ok(()) => post_fence_blocks(&*self.api, &self.target, &mut b, posts).await,
+                    Err(e) => tracing::warn!(error = %e, ts, "final update failed"),
                 }
             }
         }
@@ -1158,18 +1244,14 @@ impl Turn {
     /// the stream is dead) and start a fresh one seeded with the remainder,
     /// the live batch cards and the live reasoning card (21 §8.4, 110 §4.6).
     async fn rotate(&mut self, cut: usize, mut dead: bool) {
-        let Some(b) = self.bubble.take() else { return };
-        let raw = b.text.raw();
+        let Some(mut b) = self.bubble.take() else { return };
         let t = &self.target;
         match &b.mode {
             Mode::Unsent => {}
             Mode::Stream(ts) => {
                 if !dead && b.sent < cut {
-                    match self
-                        .api
-                        .append_stream(&t.channel, ts, vec![Chunk::Text(b.out(b.sent..cut))])
-                        .await
-                    {
+                    let chunks = b.segments(b.sent..cut, self.blocks, BLOCKS_MAX - b.blocks_sent);
+                    match self.api.append_stream(&t.channel, ts, chunks).await {
                         Ok(()) => {}
                         Err(e) if is_dead(&e) => dead = true,
                         Err(e) => {
@@ -1198,13 +1280,15 @@ impl Turn {
                 }
             }
             Mode::Update(ts) => {
+                let (md, posts) = b.split(0..cut, self.blocks);
                 if b.sent != cut {
-                    self.repair(ts, &b.out(0..cut)).await;
+                    self.repair(ts, &md).await;
                 }
+                post_fence_blocks(&*self.api, t, &mut b, posts).await;
             }
         }
         let mut next = Bubble::new();
-        next.text.push(&raw[cut..]);
+        next.text.push(&b.text.raw()[cut..]);
         let mut reemit = Vec::new();
         for b in &mut self.batches {
             if b.open() && emits(self.tools_mode, b) {
@@ -1287,14 +1371,16 @@ impl Turn {
                 }
             }
         }
+        let blocks = self.blocks;
         let Some(b) = self.bubble.as_mut() else {
             return;
         };
         let committed = b.text.committed();
-        let body = if committed == 0 {
+        let (md, posts) = b.split(0..committed, blocks);
+        let body = if md.trim().is_empty() {
             "…".to_owned()
         } else {
-            b.out(0..committed)
+            md
         };
         let t = &self.target;
         match self
@@ -1306,6 +1392,7 @@ impl Turn {
                 b.mode = Mode::Update(ts);
                 b.sent = committed;
                 b.opened = Instant::now();
+                post_fence_blocks(&*self.api, t, b, posts).await;
                 self.flush_cards(false).await;
             }
             Err(e) => tracing::warn!(error = %e, "postMessage for update-mode bubble failed"),
@@ -1321,8 +1408,9 @@ impl Turn {
         let end = b.streamable();
         let (mut chunks, sent) = self.collect(false);
         if end > 0 {
-            chunks.push(Chunk::Text(b.out(0..end)));
+            chunks.extend(b.segments(0..end, self.blocks, BLOCKS_MAX));
         }
+        let blocks_sent = blocks_in(&chunks);
         let t = &self.target;
         match self
             .api
@@ -1333,6 +1421,7 @@ impl Turn {
                 let b = self.bubble.as_mut().expect("bubble present");
                 b.mode = Mode::Stream(ts);
                 b.sent = end;
+                b.blocks_sent = blocks_sent;
                 b.opened = Instant::now();
                 b.last_append = b.opened;
                 self.open_failures = 0;
@@ -1364,8 +1453,9 @@ impl Turn {
         let end = b.streamable();
         let (mut chunks, mut sent) = self.collect(false);
         if b.sent < end {
-            chunks.push(Chunk::Text(b.out(b.sent..end)));
+            chunks.extend(b.segments(b.sent..end, self.blocks, BLOCKS_MAX - b.blocks_sent));
         }
+        let blocks_sent = blocks_in(&chunks);
         if chunks.is_empty() {
             if b.last_append.elapsed() < KEEPALIVE {
                 return;
@@ -1384,6 +1474,7 @@ impl Turn {
             Ok(()) => {
                 let b = self.bubble.as_mut().expect("bubble present");
                 b.sent = end;
+                b.blocks_sent += blocks_sent;
                 b.last_append = Instant::now();
                 self.mark_sent(&sent);
             }
@@ -1396,21 +1487,23 @@ impl Turn {
         }
     }
 
-    /// Update-mode flush (21 §8.2): committed text edited in place, then
+    /// Update-mode flush (21 §8.2): committed text edited in place, the
+    /// rendered fences it contains as their own messages (110 §8), then
     /// the cards.
     async fn flush_update(&mut self) {
+        let blocks = self.blocks;
         let Some(b) = self.bubble.as_mut() else {
             return;
         };
         let Mode::Update(ts) = &b.mode else { return };
         let committed = b.text.committed();
         if b.sent < committed {
-            match self
-                .api
-                .update_markdown(&self.target.channel, ts, &b.out(0..committed))
-                .await
-            {
-                Ok(()) => b.sent = committed,
+            let (md, posts) = b.split(0..committed, blocks);
+            match self.api.update_markdown(&self.target.channel, ts, &md).await {
+                Ok(()) => {
+                    b.sent = committed;
+                    post_fence_blocks(&*self.api, &self.target, b, posts).await;
+                }
                 Err(e) => tracing::warn!(error = %e, ts, "chat.update failed; will retry"),
             }
         }
@@ -1472,10 +1565,33 @@ impl Turn {
     }
 }
 
+/// Update mode (110 §8): the rendered fences of a bubble not yet posted,
+/// each as its own `post_blocks` message after the bubble's edit; stops at
+/// the first failure so the next flush retries from there, in order.
+async fn post_fence_blocks(
+    api: &dyn SlackApi,
+    t: &Target,
+    b: &mut Bubble,
+    posts: Vec<serde_json::Value>,
+) {
+    for blocks in posts.into_iter().skip(b.blocks_posted) {
+        match api
+            .post_blocks(&t.channel, Some(&t.thread_ts), blocks)
+            .await
+        {
+            Ok(_) => b.blocks_posted += 1,
+            Err(e) => {
+                tracing::warn!(error = %e, "fence blocks post failed; will retry");
+                return;
+            }
+        }
+    }
+}
+
 fn chunk_id(c: &Chunk) -> Option<&str> {
     match c {
         Chunk::Task { id, .. } => Some(id),
-        Chunk::Text(_) => None,
+        Chunk::Text(_) | Chunk::Blocks(_) => None,
     }
 }
 
@@ -1831,6 +1947,9 @@ mod tests {
             md: String,
         },
         Upload,
+        PostBlocks {
+            blocks: serde_json::Value,
+        },
     }
 
     #[derive(Default)]
@@ -1983,9 +2102,11 @@ mod tests {
             &self,
             _channel: &str,
             _thread_ts: Option<&str>,
-            _blocks: serde_json::Value,
+            blocks: serde_json::Value,
         ) -> Result<String, ApiError> {
-            unimplemented!()
+            self.check("post_blocks")?;
+            self.record(Call::PostBlocks { blocks });
+            Ok(self.next_ts())
         }
         async fn update_blocks(
             &self,
@@ -2051,10 +2172,10 @@ mod tests {
     }
 
     fn turn(api: &Arc<FakeApi>, mode: ToolCards) -> Turn {
-        turn_with(api, mode, true)
+        turn_with(api, mode, true, true)
     }
 
-    fn turn_with(api: &Arc<FakeApi>, mode: ToolCards, reasoning: bool) -> Turn {
+    fn turn_with(api: &Arc<FakeApi>, mode: ToolCards, reasoning: bool, blocks: bool) -> Turn {
         let rt = Runtime::new(figment::Figment::new(), std::env::temp_dir());
         let target = Target {
             channel: "C1".into(),
@@ -2062,7 +2183,15 @@ mod tests {
             user: "U1".into(),
             team: "T1".into(),
         };
-        Turn::new(target, mode, reasoning, api.clone(), rt, SessionId::new())
+        Turn::new(
+            target,
+            mode,
+            reasoning,
+            blocks,
+            api.clone(),
+            rt,
+            SessionId::new(),
+        )
     }
 
     fn footer() -> Footer {
@@ -2091,17 +2220,37 @@ mod tests {
         assert_eq!(t.open_stream(), Some("ts0"));
     }
 
-    /// 30 §9: a `json-render` fence reaches Slack as a code block of its
-    /// rendering, not its JSON; while open it is held back, not streamed raw.
-    #[tokio::test(start_paused = true)]
-    async fn json_render_fence_streams_flattened() {
-        let spec = r#"{"root":"c","elements":{
+    /// A `Card` + `Checklist` fence: renders as one `container` (110 §8).
+    const CARD_SPEC: &str = r#"{"root":"c","elements":{
   "c":{"type":"Card","props":{"title":"Rollout"},"children":["l"]},
   "l":{"type":"Checklist","props":{"items":[{"text":"schema migration","done":true}]}}}}"#;
+
+    /// Every text chunk of every stream call, in order, concatenated.
+    fn streamed_text(api: &FakeApi) -> String {
+        api.calls()
+            .into_iter()
+            .flat_map(|c| match c {
+                Call::Start { chunks, .. }
+                | Call::Append { chunks, .. }
+                | Call::Stop { chunks, .. } => chunks,
+                _ => Vec::new(),
+            })
+            .filter_map(|c| match c {
+                Chunk::Text(s) => Some(s),
+                Chunk::Task { .. } | Chunk::Blocks(_) => None,
+            })
+            .collect()
+    }
+
+    /// 30 §9 with `slack.blocks: false`: a `json-render` fence reaches Slack
+    /// as a code block of its rendering, not its JSON; while open it is held
+    /// back, not streamed raw.
+    #[tokio::test(start_paused = true)]
+    async fn json_render_fence_streams_flattened_when_blocks_are_off() {
         let api = FakeApi::new();
-        let mut t = turn(&api, ToolCards::All);
+        let mut t = turn_with(&api, ToolCards::All, true, false);
         t.text("Status:\n\n```json-render\n").await;
-        t.text(spec).await;
+        t.text(CARD_SPEC).await;
         t.tick().await;
         let [ref opened] = api.starts()[..] else {
             panic!()
@@ -2112,20 +2261,13 @@ mod tests {
         );
         t.text("\n```\n\nDone.").await;
         t.finish(footer()).await;
-        let sent: String = api
-            .calls()
-            .into_iter()
-            .flat_map(|c| match c {
-                Call::Start { chunks, .. }
-                | Call::Append { chunks, .. }
-                | Call::Stop { chunks, .. } => chunks,
-                _ => Vec::new(),
-            })
-            .filter_map(|c| match c {
-                Chunk::Text(s) => Some(s),
-                Chunk::Task { .. } => None,
-            })
-            .collect();
+        assert!(
+            !api
+                .calls()
+                .iter()
+                .any(|c| matches!(c, Call::PostBlocks { .. })),
+        );
+        let sent = streamed_text(&api);
         assert!(
             sent.trim_start_matches("Status:")
                 .trim_start()
@@ -2135,6 +2277,128 @@ mod tests {
         assert!(sent.contains("[x] schema migration"), "{sent}");
         assert!(!sent.contains("\"type\""), "{sent}");
         assert!(sent.ends_with("```\n\nDone."), "{sent}");
+    }
+
+    /// 110 §8: a fence that renders goes out as one `blocks` chunk between
+    /// the text before and after it, in one stream call.
+    #[tokio::test(start_paused = true)]
+    async fn json_render_fence_streams_as_a_blocks_chunk_between_text() {
+        let api = FakeApi::new();
+        let mut t = turn(&api, ToolCards::All);
+        t.text(&format!("Status:\n\n```json-render\n{CARD_SPEC}\n```\n\nDone."))
+            .await;
+        t.tick().await;
+        let [ref chunks] = api.starts()[..] else {
+            panic!("{:?}", api.calls())
+        };
+        let [Chunk::Text(before), Chunk::Blocks(blocks), Chunk::Text(after)] = &chunks[..] else {
+            panic!("{chunks:?}")
+        };
+        assert_eq!(before, "Status:\n\n");
+        assert_eq!(blocks[0]["type"], "container");
+        assert_eq!(blocks[0]["title"]["text"], "Rollout");
+        assert_eq!(after, "\n\nDone.");
+        t.finish(footer()).await;
+        assert!(!streamed_text(&api).contains("```"), "fence source leaked");
+    }
+
+    /// 110 §8: a fence with no block form (Graph) flattens as before.
+    #[tokio::test(start_paused = true)]
+    async fn unsupported_fence_streams_flattened() {
+        let spec = r#"{"root":"g","elements":{"g":{"type":"Graph","props":{
+  "nodes":[{"id":"a","label":"A"},{"id":"b","label":"B"}],"edges":[{"from":"a","to":"b"}]}}}}"#;
+        let api = FakeApi::new();
+        let mut t = turn(&api, ToolCards::All);
+        t.text(&format!("See:\n\n```json-render\n{spec}\n```\n")).await;
+        t.finish(footer()).await;
+        let chunks: Vec<Chunk> = api
+            .calls()
+            .into_iter()
+            .flat_map(|c| match c {
+                Call::Start { chunks, .. } | Call::Stop { chunks, .. } => chunks,
+                _ => Vec::new(),
+            })
+            .collect();
+        assert!(
+            chunks.iter().all(|c| matches!(c, Chunk::Text(_))),
+            "{chunks:?}"
+        );
+        let sent = streamed_text(&api);
+        assert!(sent.contains("```\n"), "{sent}");
+        assert!(!sent.contains("\"nodes\""), "{sent}");
+    }
+
+    /// 110 §8 update mode: the bubble's text leaves the fence out and the
+    /// blocks follow as their own message right after the edit.
+    #[tokio::test(start_paused = true)]
+    async fn update_mode_posts_fence_blocks_after_the_edit() {
+        let api = FakeApi::new();
+        let mut t = turn(&api, ToolCards::All);
+        api.fail("start", "channel_type_not_supported");
+        t.text("Status:\n\n").await;
+        t.tick().await;
+        assert!(matches!(api.calls()[..], [Call::Post { .. }]));
+        t.text(&format!("```json-render\n{CARD_SPEC}\n```\n\nDone.\n\n")).await;
+        t.tick().await;
+        let calls = api.calls();
+        let [_, Call::Update { md, .. }, Call::PostBlocks { blocks }] = &calls[..] else {
+            panic!("{calls:?}")
+        };
+        assert!(md.starts_with("Status:"), "{md}");
+        assert!(!md.contains("```") && !md.contains("Rollout"), "{md}");
+        assert!(!md.contains("Done."), "pending paragraph shown: {md}");
+        assert_eq!(blocks[0]["type"], "container");
+        // The final edit does not post the same blocks again.
+        t.finish(footer()).await;
+        let calls = api.calls();
+        assert_eq!(
+            calls
+                .iter()
+                .filter(|c| matches!(c, Call::PostBlocks { .. }))
+                .count(),
+            1,
+            "{calls:?}"
+        );
+        let Some(Call::Update { md, .. }) = calls.last() else {
+            panic!("{calls:?}")
+        };
+        assert!(!md.contains("Rollout"), "{md}");
+    }
+
+    /// 110 §8: once a bubble carries 50 blocks, further fences flatten.
+    #[tokio::test(start_paused = true)]
+    async fn fence_blocks_cap_at_fifty_per_bubble() {
+        // A Stack of 30 Separators: 30 `divider` blocks.
+        let ids: Vec<String> = (0..30).map(|i| format!("\"d{i}\"")).collect();
+        let elements: Vec<String> = (0..30)
+            .map(|i| format!("\"d{i}\":{{\"type\":\"Separator\"}}"))
+            .collect();
+        let spec = format!(
+            "{{\"root\":\"s\",\"elements\":{{\"s\":{{\"type\":\"Stack\",\"children\":[{}]}},{}}}}}",
+            ids.join(","),
+            elements.join(",")
+        );
+        let fence = format!("```json-render\n{spec}\n```\n\n");
+        let api = FakeApi::new();
+        let mut t = turn(&api, ToolCards::All);
+        t.text(&format!("A\n\n{fence}")).await;
+        t.tick().await;
+        t.text(&format!("B\n\n{fence}C\n\n")).await;
+        t.tick().await;
+        let calls = api.calls();
+        let [Call::Start { chunks: first, .. }, Call::Append { chunks: second, .. }] = &calls[..]
+        else {
+            panic!("{calls:?}")
+        };
+        assert!(
+            matches!(&first[..], [Chunk::Text(_), Chunk::Blocks(b), Chunk::Text(_)] if b.as_array().unwrap().len() == 30),
+            "{first:?}"
+        );
+        // 30 + 30 > 50: the second fence stays text.
+        assert!(
+            matches!(&second[..], [Chunk::Text(s)] if s.contains("```")),
+            "{second:?}"
+        );
     }
 
     #[tokio::test(start_paused = true)]
@@ -2258,7 +2522,7 @@ mod tests {
                     texts.insert(ts, md);
                 }
                 Call::Post { .. } => panic!("no fallback expected"),
-                Call::Upload => panic!(),
+                Call::Upload | Call::PostBlocks { .. } => panic!(),
             }
         }
         assert!(order.len() >= 3, "{} bubbles", order.len());
@@ -2285,7 +2549,7 @@ mod tests {
             .iter()
             .filter_map(|c| match c {
                 Chunk::Text(s) => Some(s.as_str()),
-                Chunk::Task { .. } => None,
+                Chunk::Task { .. } | Chunk::Blocks(_) => None,
             })
             .collect()
     }
@@ -2375,7 +2639,7 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn reasoning_off_emits_nothing() {
         let api = FakeApi::new();
-        let mut t = turn_with(&api, ToolCards::All, false);
+        let mut t = turn_with(&api, ToolCards::All, false, true);
         t.reasoning("hidden").await;
         t.tick().await;
         assert!(api.calls().is_empty());
@@ -2448,7 +2712,7 @@ mod tests {
                     output: output.clone(),
                     sources: sources.clone(),
                 }),
-                Chunk::Text(_) => None,
+                Chunk::Text(_) | Chunk::Blocks(_) => None,
             })
             .collect()
     }
@@ -2992,7 +3256,7 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn reasoning_off_drops_thought_lines() {
         let api = FakeApi::new();
-        let mut t = turn_with(&api, ToolCards::All, false);
+        let mut t = turn_with(&api, ToolCards::All, false, true);
         run(&mut t, "c1", "a", "1", false).await;
         t.reasoning("hidden").await;
         run(&mut t, "c2", "b", "2", false).await;
