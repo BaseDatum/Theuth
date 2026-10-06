@@ -13,6 +13,7 @@ artifact = { workspace = true }
 link = { workspace = true }
 agent = { workspace = true }
 roster = { workspace = true }
+schedule = { workspace = true }
 kameo = { workspace = true }
 tokio = { workspace = true }
 tokio-util = { workspace = true }
@@ -33,7 +34,7 @@ tracing-subscriber = { workspace = true }
 tempfile = "3"
 
 [features]
-ts = ["dep:ts-rs", "runtime/ts", "tools/ts", "artifact/ts", "agent/ts"]
+ts = ["dep:ts-rs", "runtime/ts", "tools/ts", "artifact/ts", "agent/ts", "schedule/ts"]
 
 [lints]
 workspace = true

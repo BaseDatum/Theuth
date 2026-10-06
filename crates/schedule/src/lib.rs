@@ -66,6 +66,49 @@ impl Default for ScheduleConfig {
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
 pub struct ListSchedules;
 
+/// `ask` → `Vec<SensorInfo>`: every `<data_dir>/sensors/*.py`, resolved (108 §9.2).
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
+pub struct ListSensors;
+
+/// `ask` → `Result<Verdict, String>`: the 40 §1.12 dry run on an unsaved file
+/// (108 §9.4) — nothing written, bound or reconciled. `Err` with the parse
+/// error or `not a watcher`.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct TestFile(pub file::ScheduleFile);
+
+/// One installed sensor as the form's Sensor select and the `routines` skill
+/// see it (108 §9.2).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema, kameo::Reply)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+pub struct SensorInfo {
+    /// File name: `pr_watch.py`.
+    pub name: String,
+    /// First line of the module docstring.
+    pub description: Option<String>,
+    /// The docstring's `when:` line.
+    pub usage: Option<String>,
+    /// `# arg:` lines in header order.
+    pub args: Vec<agent::sensor::SensorArg>,
+    /// `# theuth-sensor:` version; `None` for a user file.
+    pub version: Option<String>,
+    /// The name is one of the shipped built-ins.
+    pub builtin: bool,
+    /// A built-in whose text differs from the shipped and the last-installed copy.
+    pub edited: bool,
+    /// The binary's version of a built-in (differs from `version` when `edited` blocks an update).
+    pub shipped_version: Option<String>,
+    /// `# needs: cpython`.
+    pub needs_cpython: bool,
+    /// A CPython was found on `PATH`.
+    pub cpython_available: bool,
+    /// `# hosts:`.
+    pub hosts: Vec<String>,
+    /// The file defines `probe`.
+    pub has_probe: bool,
+    /// Header error; the other fields are best-effort.
+    pub error: Option<String>,
+}
+
 /// `ask` → `Result<SessionId, String>`: fire now (`/schedules run`), ignoring `next`.
 /// `Err("no such schedule" | "busy" | "disabled" | "<parse error>")`.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -331,16 +374,69 @@ pub struct ScheduleInfo {
     pub project: Option<String>,
     /// `when:` as written for a watcher (40 §2): `pr_watch.py repo=o/r pr=482`; `None` for a clock-only file.
     pub when_sensor: Option<String>,
+    /// The sensor file alone (`pr_watch.py`); `None` for a clock-only file.
+    pub sensor: Option<String>,
     /// `fire:` (`on_change` / `while_true` / `once`); `None` without `when`.
     pub fire: Option<String>,
+    /// `for:` as a duration string (`2m`, `0s`); `None` without `when`.
+    #[serde(rename = "for")]
+    pub for_: Option<String>,
+    /// `cooldown:` as a duration string; `None` without `when`.
+    pub cooldown: Option<String>,
     /// `mode:` (`skip` / `queue` / `restart`); `None` without `when`.
     pub mode: Option<String>,
     /// `memory:` (`continue` / `clear`); `None` without `when`.
     pub memory: Option<String>,
     /// `expires:` as a duration string (`14d`); `None` when unset.
     pub expires: Option<String>,
+    /// `timeout:` — the sensor wall clock as a duration string; `None` without `when`.
+    pub timeout: Option<String>,
+    /// `model:` as written.
+    pub model: Option<String>,
+    /// `run_timeout:` as a duration string; `None` = the setting.
+    pub run_timeout: Option<String>,
+    /// `created:` (40 §2); what `expires` counts from.
+    pub created: Option<DateTime<Local>>,
     /// The last sensor check (40 §3.1); `None` before the first or for a clock-only file.
     pub last_check: Option<LastCheck>,
+}
+
+/// What a history row is (108 §9.3), computed from the row on read.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[serde(rename_all = "snake_case")]
+pub enum RunKind {
+    /// A fire: the prompt entered a session.
+    Run,
+    /// A gate outcome (`quiet`, `unchanged`, `holding…`, `cooldown…`, `deferred`, `queued…`, `check broken: …`).
+    Check,
+    /// The loop or watcher ended (`done…`, `max_runs N reached`, `until broken…`, `expired`, `removed`, `check broken ×3, disabled`).
+    End,
+    /// `skipped: …`.
+    Skip,
+}
+
+impl RunKind {
+    /// The kind of a `runs` row from its `session` and `result` (108 §9.3).
+    pub fn of(session: bool, result: Option<&str>) -> Self {
+        match result {
+            Some(r) if r.starts_with("skipped:") => Self::Skip,
+            Some(r)
+                if r.starts_with("done")
+                    || r.starts_with("max_runs ") && r.ends_with(" reached")
+                    || r.starts_with("until broken")
+                    || r == "expired"
+                    || r == "removed"
+                    || r.starts_with("check broken ×") =>
+            {
+                Self::End
+            }
+            // An `agent:` fire is a task, not a session (`task <id>`, 67 §7.4).
+            Some(r) if r.starts_with("task ") => Self::Run,
+            _ if session => Self::Run,
+            _ => Self::Check,
+        }
+    }
 }
 
 /// One row of `runs` (34 §7).
@@ -361,6 +457,8 @@ pub struct RunInfo {
     pub report: Option<String>,
     /// The payload's first line on a `when:` fire (40 §1.5); `None` otherwise.
     pub envelope: Option<String>,
+    /// What the row is (108 §9.3).
+    pub kind: RunKind,
 }
 
 /// Bus events (34 §5).
@@ -2110,14 +2208,91 @@ impl Schedule {
             agent: spec.and_then(|s| s.agent.clone()),
             project: spec.and_then(|s| s.project.clone()),
             when_sensor: sensor.map(file::Sensor::render),
+            sensor: sensor.map(|s| s.file.clone()),
             fire: sensor.map(|_| spec_fire.to_string()),
+            for_: sensor.and(spec).map(|s| dur(s.for_)),
+            cooldown: sensor.and(spec).map(|s| dur(s.cooldown)),
             mode: sensor.map(|_| spec_mode.to_string()),
             memory: sensor.map(|_| spec_memory.to_string()),
-            expires: spec
-                .and_then(|s| s.expires)
-                .map(|d| humantime::format_duration(d).to_string()),
+            expires: spec.and_then(|s| s.expires).map(dur),
+            timeout: sensor.and(spec).map(|s| dur(s.timeout)),
+            model: spec.and_then(|s| s.model.clone()),
+            run_timeout: spec.and_then(|s| s.run_timeout).map(dur),
+            created: spec.and_then(|s| s.created),
             last_check,
         }
+    }
+}
+
+/// A duration as the file writes it (`5m`, `14d`, `0s`).
+fn dur(d: Duration) -> String {
+    humantime::format_duration(d).to_string()
+}
+
+impl Message<ListSensors> for Schedule {
+    type Reply = Vec<SensorInfo>;
+
+    async fn handle(&mut self, _: ListSensors, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        list_sensors(&self.sensors)
+    }
+}
+
+/// 108 §9.2: every `*.py` in the sensors directory (non-recursive, dotfiles
+/// ignored), sorted by name, resolved; a header error fills `error`.
+pub fn list_sensors(sensors: &agent::sensor::SensorRunner) -> Vec<SensorInfo> {
+    let cpython_available = agent::sensor::find_cpython().is_some();
+    let mut names: Vec<String> = std::fs::read_dir(sensors.sensors_dir())
+        .map(|rd| {
+            rd.filter_map(Result::ok)
+                .filter(|e| e.path().is_file())
+                .filter_map(|e| e.file_name().into_string().ok())
+                .filter(|n| n.ends_with(".py") && !n.starts_with('.'))
+                .collect()
+        })
+        .unwrap_or_default();
+    names.sort();
+    names
+        .into_iter()
+        .map(|name| {
+            let shipped_version = agent::sensor::SensorRunner::shipped_version(&name);
+            let mut info = SensorInfo {
+                description: None,
+                usage: None,
+                args: Vec::new(),
+                version: None,
+                builtin: shipped_version.is_some(),
+                edited: sensors.edited(&name),
+                shipped_version: shipped_version.map(str::to_owned),
+                needs_cpython: false,
+                cpython_available,
+                hosts: Vec::new(),
+                has_probe: false,
+                error: None,
+                name,
+            };
+            match sensors.resolve(&info.name) {
+                Ok(m) => {
+                    info.description = m.description;
+                    info.usage = m.usage;
+                    info.args = m.args;
+                    info.version = m.version;
+                    info.needs_cpython = m.needs_cpython;
+                    info.hosts = m.hosts;
+                    info.has_probe = m.has_probe;
+                }
+                Err(agent::sensor::SensorError::NeedsCpython) => info.needs_cpython = true,
+                Err(e) => info.error = Some(e.to_string()),
+            }
+            info
+        })
+        .collect()
+}
+
+impl Message<TestFile> for Schedule {
+    type Reply = Result<Verdict, String>;
+
+    async fn handle(&mut self, m: TestFile, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        validate::test_file(&m.0, &self.sensors).await
     }
 }
 

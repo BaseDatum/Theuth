@@ -32,6 +32,7 @@ const BUILTINS: &[(&str, &str)] = &[
         "pr_watch.py",
         include_str!("../../../../assets/sensors/pr_watch.py"),
     ),
+    ("rss.py", include_str!("../../../../assets/sensors/rss.py")),
     (
         ".shim.py",
         include_str!("../../../../assets/sensors/.shim.py"),
@@ -42,6 +43,20 @@ const TRUNCATED_MARKER: &str = "… [truncated, ";
 
 /// Directory under `data_dir` holding the sensors (40 §4.5).
 pub const DIR: &str = "sensors";
+
+/// One `# arg:` header line (108 §9.1): what the form and the skill show for an argument.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+pub struct SensorArg {
+    /// `[a-z][a-z0-9_]*`; never `cwd`.
+    pub name: String,
+    /// `required` / `optional`.
+    pub required: bool,
+    /// The placeholder token; `None` when the line said `-`.
+    pub example: Option<String>,
+    /// Free text after ` — ` / ` -- `; may be empty.
+    pub help: String,
+}
 
 /// What the header of a sensor file says (40 §4.1: the first 16 lines).
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -58,6 +73,12 @@ pub struct SensorMeta {
     pub hosts: Vec<String>,
     /// The file defines `async def probe(args)` (40 §1.12).
     pub has_probe: bool,
+    /// `# arg:` lines in header order (108 §9.1).
+    pub args: Vec<SensorArg>,
+    /// First non-empty line of the module docstring.
+    pub description: Option<String>,
+    /// The docstring line starting `when:`.
+    pub usage: Option<String>,
 }
 
 /// One `check` result, validated (40 §1.4, §5).
@@ -230,6 +251,7 @@ impl SensorRunner {
         }
         let src = std::fs::read_to_string(&path)
             .map_err(|e| SensorError::Header(format!("{file}: {e}")))?;
+        let (description, usage) = docstring(&src);
         let mut meta = SensorMeta {
             name: file.to_owned(),
             path,
@@ -237,6 +259,9 @@ impl SensorRunner {
             needs_cpython: false,
             hosts: Vec::new(),
             has_probe: src.lines().any(|l| l.starts_with("async def probe(")),
+            args: Vec::new(),
+            description,
+            usage,
         };
         let bad = |what: &str| SensorError::Header(format!("{file}: {what}"));
         for line in src.lines().take(HEADER_LINES) {
@@ -272,6 +297,15 @@ impl SensorRunner {
                         )));
                     }
                 }
+                "arg" => match parse_arg(value) {
+                    Some(a) if !meta.args.iter().any(|x| x.name == a.name) => meta.args.push(a),
+                    Some(a) => return Err(bad(&format!("`# arg: {}` repeated", a.name))),
+                    None => {
+                        return Err(bad(&format!(
+                            "`# arg:` wants `<name> <required|optional> <example> — <help>`, got `{value}`"
+                        )));
+                    }
+                },
                 _ => {}
             }
         }
@@ -432,6 +466,36 @@ impl SensorRunner {
         )?;
         Ok(written)
     }
+
+    /// The binary's `# theuth-sensor:` version of a built-in; `None` for a user file.
+    pub fn shipped_version(name: &str) -> Option<&'static str> {
+        BUILTINS
+            .iter()
+            .find(|(n, _)| *n == name)
+            .and_then(|(_, body)| header_version(body))
+    }
+
+    /// A built-in whose on-disk text is neither the shipped copy nor the one
+    /// `sensors.json` recorded at the last install — [`Self::install_builtins`]'
+    /// "edited" rule (40 §4.5). `false` for a user file or an unreadable one.
+    pub fn edited(&self, name: &str) -> bool {
+        let Some((_, body)) = BUILTINS.iter().find(|(n, _)| *n == name) else {
+            return false;
+        };
+        let dir = self.sensors_dir();
+        let Ok(on_disk) = std::fs::read_to_string(dir.join(name)) else {
+            return false;
+        };
+        let sha = payload_hash(&on_disk);
+        if sha == payload_hash(body) {
+            return false;
+        }
+        let manifest: BTreeMap<String, Installed> = std::fs::read(dir.join("sensors.json"))
+            .ok()
+            .and_then(|b| serde_json::from_slice(&b).ok())
+            .unwrap_or_default();
+        manifest.get(name).is_none_or(|last| last.sha256 != sha)
+    }
 }
 
 /// `sensors.json` row: what the last install wrote for a built-in (40 §4.5).
@@ -468,6 +532,64 @@ fn header_version(text: &str) -> Option<&str> {
             _ => None,
         }
     })
+}
+
+/// `<name> <required|optional> <example> [— <help>]` (108 §9.1), the text after
+/// `# arg:`. `None` when the three tokens are not there, the name is not a
+/// `when:` key, or the mode is neither word. ` -- ` is accepted for ` — `.
+fn parse_arg(value: &str) -> Option<SensorArg> {
+    let (head, help) = value
+        .split_once(" — ")
+        .or_else(|| value.split_once(" -- "))
+        .map_or((value, ""), |(h, t)| (h, t.trim()));
+    let mut it = head.split_whitespace();
+    let (name, mode, example) = (it.next()?, it.next()?, it.next()?);
+    if it.next().is_some()
+        || name == "cwd"
+        || !name.starts_with(|c: char| c.is_ascii_lowercase())
+        || !name.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
+    {
+        return None;
+    }
+    let required = match mode {
+        "required" => true,
+        "optional" => false,
+        _ => return None,
+    };
+    Some(SensorArg {
+        name: name.to_owned(),
+        required,
+        example: (example != "-").then(|| example.to_owned()),
+        help: help.to_owned(),
+    })
+}
+
+/// The module docstring's first non-empty line and its `when:` line (108 §9.2).
+fn docstring(src: &str) -> (Option<String>, Option<String>) {
+    let mut lines = src.lines().map(str::trim);
+    let first = lines.find_map(|l| l.strip_prefix("\"\"\""));
+    let Some(first) = first else {
+        return (None, None);
+    };
+    let mut description = None;
+    let mut usage = None;
+    let mut body = std::iter::once(first).chain(lines);
+    for line in body.by_ref() {
+        let (line, last) = match line.split_once("\"\"\"") {
+            Some((l, _)) => (l.trim(), true),
+            None => (line, false),
+        };
+        if description.is_none() && !line.is_empty() {
+            description = Some(line.to_owned());
+        }
+        if usage.is_none() && line.starts_with("when:") {
+            usage = Some(line.to_owned());
+        }
+        if last {
+            break;
+        }
+    }
+    (description, usage)
 }
 
 /// Numeric when both parse, else textual.
@@ -751,6 +873,12 @@ mod tests {
             ("n.py", "# needs: ruby\n", "needs"),
             ("h.py", "# hosts:\n", "hosts"),
             ("h2.py", "# hosts: https://x.org\n", "hosts"),
+            ("a1.py", "# arg: repo\n", "arg"),
+            ("a2.py", "# arg: repo needed o/r — x\n", "arg"),
+            ("a3.py", "# arg: cwd required . — x\n", "arg"),
+            ("a4.py", "# arg: Repo required o/r\n", "arg"),
+            ("a5.py", "# arg: repo required o/r extra\n", "arg"),
+            ("a6.py", "# arg: a required -\n# arg: a optional -\n", "repeated"),
         ] {
             std::fs::write(r.sensors_dir().join(name), src).unwrap();
             match r.resolve(name).unwrap_err() {
@@ -759,7 +887,72 @@ mod tests {
             }
         }
         let built = r.resolve("fs_exists.py").unwrap();
-        assert_eq!(built.version.as_deref(), Some("2"));
+        assert_eq!(built.version.as_deref(), Some("3"));
+        assert_eq!(
+            built.args,
+            [SensorArg {
+                name: "path".into(),
+                required: true,
+                example: Some("drop/*.txt".into()),
+                help: "glob under the routine's directory; fires while it matches".into(),
+            }]
+        );
+        assert_eq!(
+            built.description.as_deref(),
+            Some("Fires while a path exists under the file's cwd (design 40 §9 step 2).")
+        );
+        assert_eq!(built.usage.as_deref(), Some("when: fs_exists.py path=<glob>"));
+        let _ = std::fs::remove_dir_all(r.sensors_dir().parent().unwrap());
+    }
+
+    /// 108 §9.1: `# arg:` lines in header order, required/optional, `-` =
+    /// no example, ` -- ` as the em dash, empty help; `# needs:` / `# hosts:`
+    /// beside them still parse; the docstring gives description and usage.
+    #[test]
+    fn arg_header_lines() {
+        let r = runner("args", None);
+        let m = put(
+            &r,
+            "x.py",
+            "# theuth-sensor: x 1\n# arg: repo required owner/name — the repository\n# unknown: ignored\n# arg: n optional - -- a count\n# hosts: api.github.com\n# arg: bare required 1\n\"\"\"\n\nFirst line.\n\nwhen: x.py repo=<o/r> [n=1]\nmore\n\"\"\"\nasync def check(s, a):\n    return {\"fire\": False}\n",
+        );
+        let arg = |name: &str, required: bool, example: Option<&str>, help: &str| SensorArg {
+            name: name.into(),
+            required,
+            example: example.map(Into::into),
+            help: help.into(),
+        };
+        assert_eq!(
+            m.args,
+            [
+                arg("repo", true, Some("owner/name"), "the repository"),
+                arg("n", false, None, "a count"),
+                arg("bare", true, Some("1"), ""),
+            ]
+        );
+        assert_eq!(m.version.as_deref(), Some("1"));
+        assert_eq!(m.hosts, ["api.github.com"]);
+        assert_eq!(m.description.as_deref(), Some("First line."));
+        assert_eq!(m.usage.as_deref(), Some("when: x.py repo=<o/r> [n=1]"));
+        // No docstring, no args: both absent.
+        let m = put(&r, "y.py", "async def check(s, a):\n    return {\"fire\": False}\n");
+        assert!(m.args.is_empty() && m.description.is_none() && m.usage.is_none());
+        // The shipped built-ins describe themselves.
+        let pr = r.resolve("pr_watch.py").unwrap();
+        assert_eq!(
+            pr.args.iter().map(|a| (a.name.as_str(), a.required)).collect::<Vec<_>>(),
+            [("repo", true), ("pr", true), ("token", true), ("stale_hours", false)]
+        );
+        assert_eq!(pr.args[2].example.as_deref(), Some("secret"));
+        assert!(pr.usage.as_deref().is_some_and(|u| u.starts_with("when: pr_watch.py repo=")));
+        let rss = r.resolve("rss.py").unwrap();
+        assert_eq!(rss.args.len(), 3);
+        assert_eq!(rss.args[1].example, None);
+        assert_eq!(SensorRunner::shipped_version("rss.py"), Some("1"));
+        assert_eq!(SensorRunner::shipped_version("x.py"), None);
+        assert!(!r.edited("pr_watch.py") && !r.edited("x.py"));
+        std::fs::write(r.sensors_dir().join("pr_watch.py"), "# theuth-sensor: pr_watch 2\n# mine\n").unwrap();
+        assert!(r.edited("pr_watch.py"));
         let _ = std::fs::remove_dir_all(r.sensors_dir().parent().unwrap());
     }
 
@@ -862,10 +1055,10 @@ mod tests {
         // Fresh: everything written, manifest recorded.
         let mut fresh = r.install_builtins().unwrap();
         fresh.sort();
-        assert_eq!(fresh, [".shim.py", "fs_exists.py", "pr_watch.py"]);
+        assert_eq!(fresh, [".shim.py", "fs_exists.py", "pr_watch.py", "rss.py"]);
         let manifest: BTreeMap<String, Installed> =
             serde_json::from_slice(&std::fs::read(dir.join("sensors.json")).unwrap()).unwrap();
-        assert_eq!(manifest["fs_exists.py"].version, "2");
+        assert_eq!(manifest["fs_exists.py"].version, "3");
         assert_eq!(manifest["fs_exists.py"].sha256, payload_hash(BUILTINS[0].1));
         // Unchanged: nothing written.
         assert_eq!(r.install_builtins().unwrap(), Vec::<String>::new());

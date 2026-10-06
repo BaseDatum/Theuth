@@ -9,10 +9,21 @@ CPython shim, not a sensor).
 ## Header (first 16 lines; unknown `# key:` lines are ignored)
 
 ```python
-# theuth-sensor: pr_watch 1          # built-ins only: <name> <version>; drives the update rule (40 §4.5)
+# theuth-sensor: pr_watch 2          # built-ins only: <name> <version>; drives the update rule (40 §4.5)
 # needs: cpython                     # optional: run as a child of a PATH Python via .shim.py, not Monty (40 §1.3)
 # hosts: api.github.com,github.com   # optional: hosts http_request may POST to; GET is open (40 §4.3)
+# arg: repo required owner/name — the repository   # one per argument (108 §9.1), see below
 ```
+
+`# arg: <name> <required|optional> <example> — <help text to end of line>` describes one
+argument for the Routines form, `list_sensors` and the `routines` skill: `<name>` matches the
+`when:` key rule `[a-z][a-z0-9_]*` (`cwd` refused); `required` / `optional` is literal; `<example>` is
+one token (no spaces) shown as the field's placeholder — `-` means none, `secret` means a vault
+name (the form offers the secret names), `url[,url]` a URL list; ` — ` (or ` -- `) separates the
+help, free text to the end of the line, may be empty. Line order = form order and the order in the
+routine's sentence. A malformed `# arg:` is a header error like a bad `# hosts:`: the sensor is
+listed with the error and cannot be picked. The docstring's first line is the sensor's
+description and its `when:` line its usage; both are shown beside the arguments.
 
 ## Contract (40 §1.4)
 
