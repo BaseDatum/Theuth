@@ -14,7 +14,7 @@ A theuth session is one model talking to you and calling tools. Everything on th
 | Task | A unit of work on a board with an owner, a state, blockers and a thread; agents are *woken* by task events | **Tasks** in the sidebar; `t tasks list`; `/tasks` | [Tasks](/docs/automation/tasks) |
 | Routine (schedule) | A markdown file with `cron:`, `every:` or `at:` and a prompt; each fire is a turn in that routine's own session, optionally looping until a check passes | **Routines** in the sidebar; `/schedules` | [Schedules](/docs/automation/schedules) |
 | Watcher | A routine with `when: <sensor>.py …`: a small Python sensor polled on a cadence; the prompt runs only when the sensor says *fire* | Same Routines list, with a **Test** button and a *last check* column | [Watchers](/docs/automation/watchers) |
-| Channel | Slack and Signal as frontends: messages become turns, approvals become buttons or reactions, voice notes are transcribed | Settings › Channels | [Channels](/docs/automation/channels) |
+| Channel | Slack, Signal and Telegram as frontends: messages become turns, approvals become buttons or reactions, voice notes are transcribed | Settings › Channels | [Channels](/docs/automation/channels) |
 | Mesh / nodes / devices | Other engines (machines) that replicate your sessions and records, remote boxes reached over the link relay, and phones or browsers paired to the mesh | Settings › Mesh, Settings › Link; the engine switcher | [Mesh](/docs/automation/mesh) |
 | Sandbox VM | An isolated Linux desktop microVM on this machine that joins the mesh as an engine, with chosen host folders shared in | Settings › Mesh › Sandbox VMs; **Open desktop** | [Sandboxes](/docs/automation/sandboxes) |
 | Browser and desktop | An embedded headless browser per session, and native control of your own screen, mouse and keyboard | The globe (**Live browser**) in the chat header; Settings › Computer | [Browser and desktop](/docs/automation/browser-desktop) |
@@ -24,12 +24,12 @@ The dependencies between them are few and worth knowing:
 - Subagents are the unit of *doing*. A desk never works in its own session; it spawns a child for every task. A routine with an `agent:` line does not run a prompt — it files a task for that agent. A sandbox is used by spawning a child *on* it (`spawn_subagent{agent: "<vm name>"}`).
 - `spawn_subagent` only exists when **communication** is on (`agent.communication: true`, off by default). With it off, desks, routines and tasks still work, but nothing can delegate.
 - Routines, desks and devices are served by whichever engine holds the mesh **hub** lease. On a single machine that is always this one; in a mesh, the other engines show a `not hub` chip and wait.
-- Channels (Slack, Signal) only run in the daemon (`t --headless`, which the desktop app starts for you). The terminal UI alone does not connect them.
+- Channels (Slack, Signal, Telegram) only run in the daemon (`t --headless`, which the desktop app starts for you). The terminal UI alone does not connect them.
 
 ## How a piece of work flows
 
 ```text
-you (chat, Slack, Signal, phone)         clock / sensor
+you (chat, Slack, Signal, Telegram, phone)   clock / sensor
         │                                      │
         ▼                                      ▼
    root session  ──spawn_subagent──▶  child session(s)      routine session
@@ -45,7 +45,7 @@ you (chat, Slack, Signal, phone)         clock / sensor
                                                  a node, or a sandbox VM
 ```
 
-Every arrow that calls a tool passes the same gate, and every approval it raises lands in whichever UI you are looking at: the terminal, the desktop card, a Slack button, a Signal reaction.
+Every arrow that calls a tool passes the same gate, and every approval it raises lands in whichever UI you are looking at: the terminal, the desktop card, a Slack or Telegram button, a Signal reaction.
 
 ## The permission gate
 
@@ -81,13 +81,13 @@ Everything is a file or a SQLite database under the data dir, so you can inspect
 
 | Path | Holds |
 |---|---|
-| `config.yaml` | Every section's settings (`agent`, `tools`, `schedule`, `roster`, `tasks`, `mesh`, `link`, `nodes`, `sandbox`, `slack`, `signal`, `browser`, `computer`, …). Any key can be overridden with `THEUTH_<SECTION>__<KEY>` in the environment. |
+| `config.yaml` | Every section's settings (`agent`, `tools`, `schedule`, `roster`, `tasks`, `mesh`, `link`, `nodes`, `sandbox`, `slack`, `signal`, `telegram`, `browser`, `computer`, …). Any key can be overridden with `THEUTH_<SECTION>__<KEY>` in the environment. |
 | `agents/<name>.md` | One hired agent: front matter plus its charter. |
 | `schedules/<name>.md` | One routine or watcher: front matter plus its prompt. |
 | `sensors/*.py` | Watcher sensors (two built-ins are written for you). |
 | `acp/agents.yaml` | External harnesses the model may spawn. |
 | `tasks.sqlite`, `roster.sqlite`, `schedule.sqlite`, `sessions.sqlite` | The task ledger, roster mirror, run history and sensor state, session transcripts. |
-| `slack/`, `signal/` | Thread bindings and inboxes for files received on those channels. |
+| `slack/`, `signal/`, `telegram/` | Thread bindings and inboxes for files received on those channels. |
 | `computers/<name>.yaml` | Sandbox VM records. |
 
 See [Configuration](/docs/reference/configuration) for the file format and the restart rule: `config.yaml` is read at start, and a change needs a restart unless a UI setting writes it live.

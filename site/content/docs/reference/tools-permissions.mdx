@@ -49,7 +49,7 @@ what [sandboxes](/docs/automation/sandboxes) are for.
 |---|---|---|
 | `spawn_subagent` (direct) | read_only | only with `agent.communication: true`; `tools:` caps the child |
 | `send_message` (direct), `discover_peers`, `peer_message` | mutating, read_only, read_only | same gate; `send_message` asks under the default policy |
-| `message_user` (direct) | read_only | text and files to you on Slack or Signal |
+| `message_user` (direct) | read_only | text and files to you on Slack, Signal or Telegram |
 | `list_models`, `session_read` | read_only | |
 | `load_skill` | read_only | see [Skills](/docs/reference/skills) |
 | `add_skill`, `add_skill_repo`, `sync_skills` | mutating | |
@@ -121,8 +121,8 @@ See [Browser and desktop](/docs/automation/browser-desktop) for usage.
 | roster | `agent_propose`, `agent_put` | mutating |
 | routes | `site_learn`, `site_routes`, `site_call` | read_only |
 | mesh | `mesh_peers` | read_only |
-| signal, slack | `signal_status`, `slack_status` | read_only |
-| signal | `signal_link` | mutating |
+| signal, slack, telegram | `signal_status`, `slack_status`, `telegram_status` | read_only |
+| signal, telegram | `signal_link`, `telegram_link` | mutating |
 
 Voice and talk expose RPC methods and desktop controls, not model tools.
 
@@ -185,11 +185,11 @@ tools:
 | `/approvals off always` | every session | yes: `tools.approvals: false` |
 | `/approvals on always` | every session | yes: `tools.approvals: true` |
 
-The same command exists on Signal (`/approvals on|off [always]`, owner only)
-and Slack (`/theuth approvals on|off [always]`, owner only; its settings
-modal offers the same three states), and the desktop app's Settings dialog
-has an approvals switch. Children inherit the parent's bypass, hidden tools
-and cap.
+The same command exists on Signal and Telegram (`/approvals on|off [always]`, owner only;
+Telegram's reply is a panel with the three states as buttons) and Slack
+(`/theuth approvals on|off [always]`, owner only; its settings modal offers
+the same three states), and the desktop app's Settings dialog has an
+approvals switch. Children inherit the parent's bypass, hidden tools and cap.
 
 ### Answering
 
@@ -200,11 +200,13 @@ and cap.
 | Desktop | Allow button on the card | Deny button |
 | Slack | **Allow** block button | **Deny**; the card updates to `✅ tool allowed`, `❌ tool denied` or `⌛ tool timed out (denied)` |
 | Signal | react 👍 / ✅ / 👌, or `/approve <code>` | react 👎 / ❌ / 🚫, or `/deny <code>` |
+| Telegram | **Allow** inline button | **Deny**; the card updates to `✓ tool allowed by <name>`, `✗ tool denied` or `⌛ tool timed out` and the buttons collapse into one disabled verdict |
 | ACP editors | the client's `allow` option | anything else |
 
 Slack sessions started elsewhere send their approvals to the owner's DM when
-`slack.approvals: all`, and nowhere when `threads`. On Signal, approvals for
-unbound sessions go to the owner.
+`slack.approvals: all`, and nowhere when `threads`; Telegram does the same with
+`telegram.approvals` and the owner's chat. On Signal, approvals for unbound
+sessions go to the owner.
 
 ### Apps
 

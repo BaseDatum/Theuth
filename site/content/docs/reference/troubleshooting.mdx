@@ -41,7 +41,7 @@ them there first.
 | the configured port is busy | with `--serve`/`--headless` the bind fails; without those flags the engine falls back to an ephemeral loopback port with a warning and records it in `engine.json` |
 | a config change did nothing | `config.yaml` is read at startup only; restart. Only the directories `mcp/`, `schedules/`, `knowledge/`, `agents/` are watched. See [Configuration](/docs/reference/configuration) |
 | an env override is ignored | the shape is `THEUTH_<SECTION>__<KEY>` with two underscores between levels; the value wins over the file on every start |
-| Signal or Slack never connects | both channels run only in `t --headless`, not in the TUI process |
+| Signal, Slack or Telegram never connects | all three channels run only in `t --headless`, not in the TUI process |
 | the desktop app shows no daemon | it reuses a running `t --serve` on the configured port, else starts the bundled `t --headless` through your login shell; check `logs/theuth.log.<date>` for the start error |
 | stdout is not a TTY | `t` switches to the line printer (`stdout is not a terminal; using the line printer`); that is print mode, not a hang |
 
@@ -150,7 +150,7 @@ See [Search](/docs/workspace/search).
 | a share link stops working | links expire and can be revoked from the Share dialog; `documents.sharing: off` stops new links, `disabled` refuses members; guests are rate-limited by `link.guest_handshakes_per_minute` |
 | `knowledge_*` tools and hints are gone | `knowledge.enabled: false` |
 | knowledge search looks stale | `knowledge.sqlite` is a derived index and can be deleted; it is rebuilt |
-| apps render as read-only source | the TUI, Slack and Signal cannot run apps; open the session on desktop or web |
+| apps render as read-only source | the TUI, Slack, Signal and Telegram cannot run apps; open the session on desktop or web |
 | an app button shows a tool as unavailable | the tool is policy-denied, hidden, or its MCP server changed identity or schema since the app was built |
 | the documents helper is missing | debug builds find `packages/documents/dist/theuth-documents`; release layouts need `theuth-documents-<protocol>` beside `t` (`just install` copies it); `THEUTH_DOCUMENTS_HELPER=<path>` overrides |
 

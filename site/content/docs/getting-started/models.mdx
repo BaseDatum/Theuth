@@ -141,7 +141,7 @@ Bedrock is listed in `/model` as soon as theuth can see *some* credential source
 - Terminal: `/model` opens the picker — rows are `provider/model  name  200k`, `· vision` marks image-capable models, typing filters by id or name, ⏎ switches. `/model <id>` switches without the picker.
 - Desktop: the model name in the chat header is the picker (*Search models*; the current model stays pinned at the top whatever you type). `/model` in the composer opens it too.
 
-Switching **by hand** does two things: the current session changes model from its next model call (mid-turn included), and the pick becomes the new default — `agent.model` in `config.yaml` is rewritten in place, so the next new chat starts on it. Switches made by schedules or by `/model` inside a Slack thread or Signal session change only that session. There is no separate "set default" command; picking a model in any chat is it. Running subagents keep the model they started with.
+Switching **by hand** does two things: the current session changes model from its next model call (mid-turn included), and the pick becomes the new default — `agent.model` in `config.yaml` is rewritten in place, so the next new chat starts on it. Switches made by schedules or by `/model` inside a Slack thread, Signal session or Telegram topic change only that session. There is no separate "set default" command; picking a model in any chat is it. Running subagents keep the model they started with.
 
 Switching to a model that cannot take the session's current effort level clears the level and says so.
 
