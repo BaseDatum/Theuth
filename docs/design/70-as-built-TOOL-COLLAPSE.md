@@ -68,3 +68,26 @@ per-turn marker client-side, and a run cannot cross a user row because a user ro
   `running \`read_file\` · 3 of 5` with spinner and the last hint, then updated in place to
   `5 tools · 33.6 s · 1 failed (edit)` without opening; 390 px viewport renders the same header; Settings › Chat switch off
   → 0 run headers, individual cards back. Screenshots `/tmp/69/toolc-{collapsed,running,expanded,mobile}.png`.
+
+## Deliverables stay out of runs (2026-10-06)
+
+Sky, 2026-10-06 11:20: "Show tool cards are never folded in with the collapsed sequential tools. They are always shown
+in the transcript; they need to be easy for the user to find."
+
+- `isDeliverable(tool)` (exported from `ToolRunCard.tsx`, the one place): tool name in `show`, `app`, `agent_draft`,
+  `task_draft`, `routine_draft` (named ahead of its tool so that wave needs no change here), or `isBoardCreate` (71 §2.11,
+  unchanged). `foldRuns` uses it where it used `isBoardCreate`: a deliverable never joins a run and splits one —
+  `[a, b] show [c, d]` → `[[a, b], show, [c, d]]`; a single tool either side stays a plain entry as before.
+- Rendering: an unfolded deliverable is a plain `{ entry }` row in `Transcript.buildRows` and renders through `Message` →
+  `MessageTool` exactly as with collapse off (`ArtifactCard` / `BoardCard`, full width, title, Open/Save). The transcript
+  has no "lone tool" styling (no indent, no muting), so no change there; `MessageTool.tsx` untouched. No new chrome.
+- Files: `ToolRunCard.tsx` (predicate + `foldRuns`), `ToolRunCard.test.ts` (split with `show`; `[a,b] show c` →
+  `[[a,b], show, c]`; `app`/`agent_draft`/`task_draft`/`routine_draft` the same; board create as before; `doc_create` of a
+  note is not a deliverable; a run with no deliverable unchanged), this note.
+- Gates (`crates/desktop/ui`, after `bun install` here and in `packages/apps`): `CI=1 bunx vitest run
+  src/components/chat/ToolRunCard.test.ts` 4/4; `CI=1 bun run test` 141 files / 805 tests green, 1 pre-existing failure
+  `src/rpc/api.test.ts` (`METHODS` ≠ copied `bindings/methods.json`); `bunx vite build` ✓. `bun run check` (`tsc -b
+  --noEmit`) and the `tsc -b` half of `bun run build` are red before and after this change: the copied `src/rpc/bindings/`
+  lacks `Packet`, `PairingLink`, `TelegramStatus`, `TelegramEvent`, `ScreenContextReq/Reply` (the main checkout lacks them
+  too; regenerating needs cargo, out of bounds here) — 71 errors, none in `components/chat/` beyond the missing import in
+  `AskCard.tsx`, none in the files changed.
