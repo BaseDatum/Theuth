@@ -18,9 +18,15 @@ import { useAsks } from '@/store/approvals'
 import { ActionButton } from './MessageAssistant'
 
 /** Draft answer per question: an option, typed text, an explicit skip, or nothing yet. */
-type Draft = Answer | null
+export type Draft = Answer | null
 
-function toAnswer(d: Draft): Answer {
+/** The starting drafts: the recommended option pre-picked, else nothing (the attention Ask screen starts the same way, 104). */
+export const draftsFor = (questions: readonly Question[]): Draft[] => questions.map((q) => (q.recommended === undefined ? null : { kind: 'choice', index: q.recommended }))
+
+/** Every question has an option, non-blank text, or an explicit skip. */
+export const allAnswered = (drafts: readonly Draft[]): boolean => drafts.every((d) => d !== null && !(d.kind === 'text' && d.text.trim() === ''))
+
+export function toAnswer(d: Draft): Answer {
   if (!d) return { kind: 'skipped' }
   if (d.kind === 'text' && d.text.trim() === '') return { kind: 'skipped' }
   if (d.kind === 'text') return { kind: 'text', text: d.text.trim() }
@@ -56,8 +62,8 @@ function OwnAnswer({ value, active, onChange }: { value: string; active: boolean
   return <Input placeholder="Type your own…" value={value} onChange={(e) => onChange(e.target.value)} className={cn('h-8 min-w-0 flex-1 text-base md:text-sm', active && 'border-fg-accent')} />
 }
 
-/** One question. `locked`: the answer was sent; everything renders but nothing changes. */
-function QuestionBlock({
+/** One question. `locked`: the answer was sent; everything renders but nothing changes. 104: the attention Ask screen renders the same block. */
+export function QuestionBlock({
   q,
   draft,
   onChange,
@@ -157,10 +163,8 @@ export const AskCard = memo(function AskCard({ ask }: { ask: AskRequested }) {
   const [expanded, setExpanded] = useState(false)
   const [busy, setBusy] = useState(false)
   const [sent, setSent] = useState(false)
-  const [drafts, setDrafts] = useState<Draft[]>(() =>
-    ask.questions.map((q) => (q.recommended === undefined ? null : { kind: 'choice', index: q.recommended })),
-  )
-  const answered = drafts.every((d) => d !== null && !(d.kind === 'text' && d.text.trim() === ''))
+  const [drafts, setDrafts] = useState<Draft[]>(() => draftsFor(ask.questions))
+  const answered = allAnswered(drafts)
   const send = async (answers: Answer[] | null) => {
     setBusy(true)
     try {

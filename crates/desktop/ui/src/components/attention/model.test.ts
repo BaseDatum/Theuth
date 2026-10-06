@@ -1,10 +1,41 @@
 import { expect, test } from 'vitest'
 import type { AttentionItem } from '@/rpc/bindings/AttentionItem'
 import type { Pointer } from '@/rpc/bindings/Pointer'
-import { nextAfter, parseCodeRef, pointerRoute, urlHost } from './model'
+import type { HistoryEntry } from '@/rpc/extra'
+import { clampText, groupItems, lastAssistantBefore, nextAfter, parseCodeRef, pointerRoute, urlHost } from './model'
 
-const item = (id: string): AttentionItem => ({ id, kind: 'decision', title: id, detail: null, at_ms: 1, task: null, agent: null, session: null, approval: null, decision: null, packet: null })
+const item = (id: string, kind: AttentionItem['kind'] = 'decision', at_ms = 1): AttentionItem => ({ id, kind, title: id, detail: null, at_ms, task: null, agent: null, session: null, approval: null, decision: null, packet: null, ask: null, turn: null })
 const ptr = (kind: Pointer['kind'], ref: string): Pointer => ({ kind, ref, title: ref, note: null, text: null, root: null })
+
+test('groupItems: Sky’s order, empty groups omitted, newest first inside, hand-offs and secrets share a group', () => {
+  const groups = groupItems([item('h', 'handoff', 5), item('a1', 'ask', 10), item('s', 'secret', 50), item('a2', 'ask', 30), item('d', 'decision', 1), item('n', 'node', 2)])
+  expect(groups.map((g) => g.key)).toEqual(['decisions', 'questions', 'hand', 'mesh'])
+  expect(groups.map((g) => g.label)).toEqual(['Decisions', 'Questions', 'Needs a hand', 'Mesh'])
+  expect(groups[1]?.items.map((i) => i.id)).toEqual(['a2', 'a1'])
+  expect(groups[2]?.items.map((i) => i.id)).toEqual(['s', 'h'])
+  expect(groupItems([])).toEqual([])
+})
+
+test('clampText: short text verbatim, long text cut at a word boundary with an ellipsis within the limit', () => {
+  expect(clampText('  hello  ')).toBe('hello')
+  const long = `${'word '.repeat(200)}end`
+  const cut = clampText(long)
+  expect(cut.length).toBeLessThanOrEqual(601)
+  expect(cut.endsWith('…')).toBe(true)
+  expect(cut.endsWith('word…')).toBe(true)
+  expect(clampText('abcdefghij', 4)).toBe('abcd…')
+})
+
+test('lastAssistantBefore: the newest assistant row at or before the instant; undated rows count; user/tool rows do not', () => {
+  const row = (role: 'assistant' | 'user', text: string, at?: string): HistoryEntry =>
+    ({ role, text, turn: null, context: at === undefined ? undefined : { at } }) as unknown as HistoryEntry
+  const t = Date.parse('2026-10-06T00:00:00Z')
+  const history = [row('assistant', 'one', '2026-10-05T23:00:00Z'), row('user', 'q'), row('assistant', 'two', '2026-10-05T23:30:00Z'), row('assistant', 'late', '2026-10-06T01:00:00Z')]
+  expect(lastAssistantBefore(history, t)).toBe('two')
+  expect(lastAssistantBefore([row('assistant', 'undated'), row('assistant', 'late', '2026-10-06T01:00:00Z')], t)).toBe('undated')
+  expect(lastAssistantBefore([row('user', 'only'), row('assistant', '   ')], t)).toBeNull()
+  expect(lastAssistantBefore([], t)).toBeNull()
+})
 
 test('parseCodeRef reads path#L<a>-L<b> and path#L<a>; rejects the rest', () => {
   expect(parseCodeRef('src/a.rs#L10-L24')).toEqual({ path: 'src/a.rs', start: 10, end: 24 })

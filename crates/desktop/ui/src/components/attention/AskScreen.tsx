@@ -1,0 +1,72 @@
+import { Link } from '@tanstack/react-router'
+import { useState } from 'react'
+import { type Draft, QuestionBlock, allAnswered, draftsFor, toAnswer } from '@/components/chat/AskCard'
+import { useAttentionActions } from '@/components/hud/queries'
+import { Button } from '@/components/ui/button'
+import * as speech from '@/lib/speech'
+import type { AttentionItem } from '@/rpc/bindings/AttentionItem'
+import { Body, useResolved } from './shared'
+import { ActionBar, ContextLine, SnoozeButton, Source } from './source'
+
+/**
+ * 104 A6: an `ask_user` from any session — Source · the context line · `AskCard`'s question blocks with the recommended
+ * option pre-picked · **Send** (`answer_ask(id, answers)`) / **Dismiss (ends the question)** (`answer_ask(id, null)`) /
+ * Snooze in the fixed bar. Without the questions on the item (an older engine) the screen points at the session.
+ */
+export function AskScreen({ item }: { item: AttentionItem }) {
+  const ask = item.ask
+  const act = useAttentionActions()
+  const onResolved = useResolved(item)
+  const voice = speech.useVoice()
+  const [drafts, setDrafts] = useState<Draft[]>(() => draftsFor(ask?.questions ?? []))
+  const answered = allAnswered(drafts)
+  const busy = act.ask.isPending
+  const send = (answers: Draft[] | null) => {
+    if (!ask) return
+    void act.ask.mutateAsync({ id: ask.id, answers: answers ? answers.map(toAnswer) : null }).then(onResolved, () => undefined)
+  }
+  return (
+    <>
+      <Body>
+        <Source item={item} />
+        <ContextLine session={item.session} beforeMs={item.at_ms} />
+        {ask ? (
+          <>
+            <h1 className="text-xl font-semibold leading-snug md:text-2xl">{ask.questions.length === 1 ? 'The agent has a question' : `The agent has ${ask.questions.length} questions`}</h1>
+            <div className="flex flex-col gap-5 text-sm">
+              {ask.questions.map((q, i) => (
+                <QuestionBlock key={q.id} q={q} draft={drafts[i] ?? null} onChange={(d) => setDrafts((ds) => ds.map((x, j) => (j === i ? d : x)))} session={ask.session} entryKey={`${ask.id}/${q.id}`} voice={voice} />
+              ))}
+            </div>
+          </>
+        ) : (
+          <>
+            <h1 className="text-xl font-semibold leading-snug md:text-2xl">{item.title}</h1>
+            <p className="text-sm text-fg-secondary">
+              The questions are not on this item (an older engine). Answer them in the session
+              {item.session && (
+                <>
+                  {' — '}
+                  <Link to="/c/$session" params={{ session: item.session }} className="underline underline-offset-2">
+                    open it
+                  </Link>
+                </>
+              )}
+              .
+            </p>
+          </>
+        )}
+      </Body>
+      <ActionBar>
+        <Button size="sm" disabled={busy || !ask || !answered} onClick={() => send(drafts)}>
+          Send
+        </Button>
+        <Button size="sm" variant="outline" disabled={busy || !ask} title="Ends the agent's question without an answer" onClick={() => send(null)}>
+          Dismiss (ends the question)
+        </Button>
+        <SnoozeButton item={item} onResolved={onResolved} />
+        {ask && !answered && <span className="text-xs text-fg-tertiary">answer or skip every question</span>}
+      </ActionBar>
+    </>
+  )
+}

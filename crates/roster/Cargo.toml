@@ -8,6 +8,7 @@ description = "Agents as files: agents/ directory, desks and episodes, journal, 
 [dependencies]
 runtime = { workspace = true }
 tools = { workspace = true }
+artifact = { workspace = true }  # the attention inbox records `ArtifactShown` (104 A1)
 tasks = { workspace = true }
 agent = { workspace = true }
 knowledge = { workspace = true }

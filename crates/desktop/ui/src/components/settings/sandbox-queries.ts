@@ -16,6 +16,7 @@ import type { ResourceChange } from '@/rpc/bindings/ResourceChange'
 import type { SandboxCreate } from '@/rpc/bindings/SandboxCreate'
 import type { SandboxInfo } from '@/rpc/bindings/SandboxInfo'
 import type { SecretRequest } from '@/rpc/bindings/SecretRequest'
+import type { Artifact } from '@/rpc/extra'
 import { HANDOFFS_KEY, PREFLIGHT_KEY, type ProgressLine, SANDBOXES_KEY, sandboxLogKey } from '@/store/sandboxes'
 
 export type Sim = 'sandbox-blocked' | 'sandbox-ok' | null
@@ -180,15 +181,79 @@ export const SECRET_REQUESTS_SIM: SecretRequest[] = [
 const SIM_TASK_DECISION = '0192a000-0000-7000-8000-000000000002'
 const SIM_TASK_REVIEW = '0192a000-0000-7000-8000-000000000003'
 
-/** The inbox as `attention_list` derives it from the fixtures (roster `attention.rs`: titles, `detail` = engine name or id; 101: the first line of the packet). */
+/** 104: the session the sim's ask, show and approval come from (a desk, so `agent` is the desk name); the sim's decision/review tasks hang off `SIM_SESSION_OPS`. */
+const SIM_SESSION_DESK = '01a0dd86-a95b-7162-8ed3-431bbc4d2040'
+const SIM_SESSION_OPS = '01a0dd86-0000-7000-8000-0000000000aa'
+const SIM_SHOW_CALL = 'toolu_015AZQL17aTdoAMD49A3uZkD'
+
+/** The inbox as `attention_list` derives it from the fixtures (roster `attention.rs`: titles, `detail` = engine name or id; 101: the first line of the packet; 104: `ask`, `show`, `session` on every row). */
 export const ATTENTION_SIM: AttentionItem[] = [
-  { id: `decision:${SIM_TASK_DECISION}:decision:dns-9c21`, kind: 'decision', title: 'Portal DNS cut-over', detail: 'Approve the ten portal DNS changes for tonight?', at_ms: NOW - 8_000, task: SIM_TASK_DECISION, agent: 'manager', session: null, approval: null, decision: 'decision:dns-9c21', packet: 'decision:dns-9c21' },
-  { id: `decision:${SIM_TASK_DECISION}:decision:apr-7f3a`, kind: 'decision', title: 'Rotate the Grafana API token', detail: 'Which rotation path for the Grafana token?', at_ms: NOW - 20_000, task: SIM_TASK_DECISION, agent: 'ops', session: null, approval: null, decision: 'decision:apr-7f3a', packet: 'decision:apr-7f3a' },
-  { id: 'secret:0199aaaa-0000-7000-8000-00000000sim2', kind: 'secret', title: '77aa11bb asks for a secret: Postgres login', detail: 'engine-host-0000', at_ms: NOW - 30_000, task: null, agent: null, session: 'sess-host-77aa11bb', approval: null, decision: null, packet: null },
-  { id: `review:${SIM_TASK_REVIEW}`, kind: 'review', title: 'Write the Q4 release notes', detail: 'Release notes for 2.4: three sections, one diagram, a diff of the changelog.', at_ms: NOW - 45_000, task: SIM_TASK_REVIEW, agent: 'writer', session: null, approval: null, decision: null, packet: `review:${SIM_TASK_REVIEW}` },
-  { id: 'secret:0199aaaa-0000-7000-8000-00000000sim1', kind: 'secret', title: '01a0f02b asks for a secret: GITHUB_TOKEN', detail: 'lab', at_ms: NOW - 90_000, task: null, agent: null, session: 'sess-lab-01a0f02b', approval: null, decision: null, packet: null },
-  { id: 'handoff:h-sim-1', kind: 'handoff', title: 'researcher needs you: the login page wants a 2FA code', detail: 'lab', at_ms: NOW - 120_000, task: null, agent: 'researcher', session: 'sess-lab-01a0f02b', approval: null, decision: null, packet: null },
+  { id: `decision:${SIM_TASK_DECISION}:decision:dns-9c21`, kind: 'decision', title: 'Portal DNS cut-over', detail: 'Approve the ten portal DNS changes for tonight?', at_ms: NOW - 8_000, task: SIM_TASK_DECISION, agent: 'manager', session: SIM_SESSION_OPS, approval: null, decision: 'decision:dns-9c21', packet: 'decision:dns-9c21', ask: null, turn: null },
+  {
+    id: 'ask:ask-sim-01',
+    kind: 'ask',
+    title: 'theuth asks: Which release notes format?',
+    detail: 'Which release notes format? · Anything to leave out?',
+    at_ms: NOW - 8_000,
+    task: null,
+    agent: 'theuth',
+    session: SIM_SESSION_DESK,
+    approval: null,
+    decision: null,
+    packet: null,
+    ask: {
+      type: 'AskRequested',
+      id: 'ask-sim-01',
+      session: SIM_SESSION_DESK,
+      questions: [
+        {
+          id: 'format',
+          question: 'Which release notes format should 2.4 ship with?',
+          options: [
+            { label: 'Three sections', description: 'Highlights · Changes · Fixes — the 2.3 shape.' },
+            { label: 'One flat list', description: 'Shortest; loses the grouping readers used last time.' },
+            { label: 'Per-area pages', description: 'A page per crate; more to maintain.' },
+          ],
+          recommended: 0,
+        },
+        { id: 'omit', question: 'Anything to leave out of the public notes?', options: [] },
+      ],
+    },
+    turn: 14,
+  },
+  { id: `approval:apr-sim-01`, kind: 'approval', title: `${SIM_SESSION_DESK} wants to run shell`, detail: 'git push origin feat/release-notes --force-with-lease', at_ms: NOW - 12_000, task: null, agent: 'theuth', session: SIM_SESSION_DESK, approval: 'apr-sim-01', decision: null, packet: null, ask: null, turn: 14 },
+  { id: `show:${SIM_SHOW_CALL}`, kind: 'show', title: 'Proposed DR task division (not assigned)', detail: 'DIVISION.md · markdown · 4.4 KB', at_ms: NOW - 15_000, task: null, agent: 'theuth', session: SIM_SESSION_DESK, approval: null, decision: null, packet: null, ask: null, turn: 13 },
+  { id: `decision:${SIM_TASK_DECISION}:decision:apr-7f3a`, kind: 'decision', title: 'Rotate the Grafana API token', detail: 'Which rotation path for the Grafana token?', at_ms: NOW - 20_000, task: SIM_TASK_DECISION, agent: 'ops', session: SIM_SESSION_OPS, approval: null, decision: 'decision:apr-7f3a', packet: 'decision:apr-7f3a', ask: null, turn: null },
+  { id: 'secret:0199aaaa-0000-7000-8000-00000000sim2', kind: 'secret', title: '77aa11bb asks for a secret: Postgres login', detail: 'engine-host-0000', at_ms: NOW - 30_000, task: null, agent: null, session: 'sess-host-77aa11bb', approval: null, decision: null, packet: null, ask: null, turn: null },
+  { id: `review:${SIM_TASK_REVIEW}`, kind: 'review', title: 'Write the Q4 release notes', detail: 'Release notes for 2.4: three sections, one diagram, a diff of the changelog.', at_ms: NOW - 45_000, task: SIM_TASK_REVIEW, agent: 'writer', session: SIM_SESSION_OPS, approval: null, decision: null, packet: `review:${SIM_TASK_REVIEW}`, ask: null, turn: null },
+  { id: 'secret:0199aaaa-0000-7000-8000-00000000sim1', kind: 'secret', title: '01a0f02b asks for a secret: GITHUB_TOKEN', detail: 'lab', at_ms: NOW - 90_000, task: null, agent: null, session: 'sess-lab-01a0f02b', approval: null, decision: null, packet: null, ask: null, turn: null },
+  { id: 'handoff:h-sim-1', kind: 'handoff', title: 'researcher needs you: the login page wants a 2FA code', detail: 'lab', at_ms: NOW - 120_000, task: null, agent: 'researcher', session: 'sess-lab-01a0f02b', approval: null, decision: null, packet: null, ask: null, turn: null },
 ]
+
+/**
+ * 104: the artifact behind the sim's `show` item, served by the Show screen under `?sim=` instead of `get_artifact`. The
+ * `path` is a real blob of the local daemon on the machine the fixture was written on, so `ArtifactView` renders content
+ * there; elsewhere the body shows "could not load" and the screen's chrome is what the sim demonstrates.
+ */
+export const ARTIFACT_SIM: Record<string, Artifact> = {
+  [SIM_SHOW_CALL]: {
+    id: '96b213f0572a8e19',
+    session: SIM_SESSION_DESK,
+    call_id: SIM_SHOW_CALL,
+    name: 'DIVISION.md',
+    title: 'Proposed DR task division (not assigned)',
+    kind: 'markdown',
+    mime: 'text/markdown',
+    bytes: 4464,
+    version: 1,
+    path: '/Users/Sky.Moore/.theuth/artifacts/96b213f0572a8e19.md',
+    source: null,
+    preview: null,
+    pages: null,
+    origin: null,
+    created_at: Math.round((NOW - 15_000) / 1000),
+  },
+}
 
 /**
  * 101b R1: the sim has no live document, and the browser cannot `doc_create(kind="board")`, so these point at the

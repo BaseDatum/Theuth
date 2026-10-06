@@ -1,8 +1,59 @@
 // 101: pure helpers of the decision & review surface — the code-ref grammar of §3, the D11 "next item" rule, and the
-// in-app route a pointer opens. No React, no fetches.
+// in-app route a pointer opens. 104: the grouped rail and the context line's clamp. No React, no fetches.
 
 import type { AttentionItem } from '@/rpc/bindings/AttentionItem'
 import type { Pointer } from '@/rpc/bindings/Pointer'
+import type { HistoryEntry } from '@/rpc/extra'
+
+type Kind = AttentionItem['kind']
+
+/** 104 A4: the rail's groups in Sky's order; a kind outside the table never reaches the rail (every kind is listed). */
+export const GROUPS: readonly { key: string; label: string; kinds: readonly Kind[] }[] = [
+  { key: 'decisions', label: 'Decisions', kinds: ['decision'] },
+  { key: 'reviews', label: 'Reviews', kinds: ['review'] },
+  { key: 'questions', label: 'Questions', kinds: ['ask'] },
+  { key: 'approvals', label: 'Approvals', kinds: ['approval'] },
+  { key: 'shown', label: 'Shown to you', kinds: ['show'] },
+  { key: 'hand', label: 'Needs a hand', kinds: ['handoff', 'secret'] },
+  { key: 'agents', label: 'Agents', kinds: ['hire', 'budget'] },
+  { key: 'blocked', label: 'Blocked', kinds: ['blocked'] },
+  { key: 'mesh', label: 'Mesh', kinds: ['node'] },
+]
+
+export type Group = { key: string; label: string; items: AttentionItem[] }
+
+/** The inbox grouped by kind in `GROUPS` order, empty groups omitted, newest first inside each. */
+export function groupItems(items: readonly AttentionItem[]): Group[] {
+  return GROUPS.flatMap(({ key, label, kinds }) => {
+    const mine = items.filter((i) => kinds.includes(i.kind)).sort((a, b) => b.at_ms - a.at_ms)
+    return mine.length > 0 ? [{ key, label, items: mine }] : []
+  })
+}
+
+export const CONTEXT_MAX = 600
+
+/** `text` cut to `max` chars on a word boundary when one is near, with "…"; shorter text verbatim. */
+export function clampText(text: string, max = CONTEXT_MAX): string {
+  const t = text.trim()
+  if (t.length <= max) return t
+  const cut = t.slice(0, max)
+  const space = cut.lastIndexOf(' ')
+  return `${(space > max * 0.6 ? cut.slice(0, space) : cut).trimEnd()}…`
+}
+
+/**
+ * 104 A7: the agent's last assistant text stored before `beforeMs` — a row without a timestamp counts as before (older
+ * engines stored none); `null` when the page has no such row.
+ */
+export function lastAssistantBefore(history: readonly HistoryEntry[], beforeMs: number): string | null {
+  for (let i = history.length - 1; i >= 0; i--) {
+    const h = history[i]
+    if (!h || h.role !== 'assistant' || !h.text.trim()) continue
+    const at = h.context?.at ? Date.parse(h.context.at) : NaN
+    if (Number.isNaN(at) || at <= beforeMs) return h.text
+  }
+  return null
+}
 
 export type CodeRef = { path: string; start: number; end: number }
 

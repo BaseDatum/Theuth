@@ -177,10 +177,12 @@ export const KIND_LABEL: Record<AttentionItem['kind'], string> = {
   node: 'node',
   handoff: 'hand-off',
   secret: 'secret',
+  ask: 'question',
+  show: 'shown',
 }
 
-/** The inbox's empty state; `/attention`'s rail says the same (101). */
-export const ATTENTION_EMPTY = 'Nothing needs you. Tool approvals, decisions agents escalate, hires, blocked or review tasks, budgets at 80 %, unreachable nodes, desktop hand-offs and secret requests land here.'
+/** The inbox's empty state; `/attention`'s rail says the same (101, 104). */
+export const ATTENTION_EMPTY = 'Nothing needs you. Agents\u2019 questions and what they show you, tool approvals, decisions agents escalate, hires, blocked or review tasks, budgets at 80 %, unreachable nodes, desktop hand-offs and secret requests land here.'
 
 /** The inbox rows, or what will land in them (the HUD's first section). */
 export function AttentionList({ items }: { items: AttentionItem[] | undefined }) {
@@ -197,9 +199,8 @@ export function AttentionList({ items }: { items: AttentionItem[] | undefined })
 /** One inbox row with its decision inline: allow/deny · answer · hire/decline · done/back · start/unblock · un-pause; snooze and dismiss on every row. */
 function AttentionCard({ item }: { item: AttentionItem }) {
   const qc = useQueryClient()
-  // 79 §6.6: a hand-off's `detail` is the VM's name when its engine is a VM here; the click opens that desktop.
+  // 79 §6.6: the VM a secret request or hand-off was raised on (`engine` ↔ `SandboxInfo.engine`) names its origin.
   const sandboxes = useSandboxes()
-  const vm = item.kind === 'handoff' ? sandboxes.data?.find((s) => s.name === item.detail || (s.engine !== null && s.engine === item.detail)) : undefined
   // 79 §6.6: the replicated row (`secret_requests_list`) is the card's source on every engine — `title`, `fields`, and
   // the VM it was raised on (`engine` ↔ `SandboxInfo.engine`); the local `SecretRequested` fills in until the poll lands.
   const secretId = item.kind === 'secret' ? item.id.replace(/^secret:/, '') : null
@@ -228,30 +229,10 @@ function AttentionCard({ item }: { item: AttentionItem }) {
       <div className="min-w-0 flex-1">
         <div className="flex items-center gap-2">
           <span className="rounded-full bg-layer-2 px-2 py-0.5 text-[11px] uppercase tracking-wide text-fg-secondary">{KIND_LABEL[item.kind]}</span>
-          {vm && canPopout() ? (
-            <button type="button" className="truncate text-left font-medium hover:underline" onClick={() => void openPopout({ kind: 'vm', name: vm.name })}>
-              {item.title}
-            </button>
-          ) : item.kind === 'decision' || item.kind === 'review' ? (
-            // 101 D12: decisions and reviews open their screen on the attention surface, not the whole task card.
-            <Link to="/attention/$id" params={{ id: item.id }} className="truncate font-medium hover:underline">
-              {item.title}
-            </Link>
-          ) : item.task ? (
-            <Link to="/tasks/$id" params={{ id: item.task }} className="truncate font-medium hover:underline">
-              {item.title}
-            </Link>
-          ) : item.agent ? (
-            <Link to="/agents/$name/$tab" params={{ name: item.agent, tab: 'overview' }} className="truncate font-medium hover:underline">
-              {item.title}
-            </Link>
-          ) : item.session ? (
-            <Link to="/c/$session" params={{ session: item.session }} className="truncate font-medium hover:underline">
-              {item.title}
-            </Link>
-          ) : (
-            <span className="truncate font-medium">{item.title}</span>
-          )}
+          {/* 104 A8: every title opens its screen on the attention surface (101 D12 did this for decisions and reviews). */}
+          <Link to="/attention/$id" params={{ id: item.id }} className="truncate font-medium hover:underline">
+            {item.title}
+          </Link>
           <span className="ml-auto shrink-0 text-xs text-fg-tertiary tabular-nums">{age(item.at_ms)}</span>
         </div>
         {item.detail && <p className="truncate text-fg-secondary">{item.detail}</p>}
@@ -265,7 +246,7 @@ function AttentionCard({ item }: { item: AttentionItem }) {
  * The per-kind buttons of an inbox item — the card's inline block and the plain screen's action row (101 D7) share it.
  * `onResolved` fires after a mutation that removes the item from the list succeeded (101 D11: the screen moves on).
  */
-export function KindActions({ item, size = 'xs', onResolved }: { item: AttentionItem; size?: 'xs' | 'sm'; onResolved?: () => void }) {
+export function KindActions({ item, size = 'xs', onResolved }: { item: AttentionItem; size?: 'xs' | 'sm' | 'default'; onResolved?: () => void }) {
   const act = useAttentionActions()
   const [answer, setAnswer] = useState('')
   const busy = Object.values(act).some((a) => a.isPending)
@@ -277,6 +258,14 @@ export function KindActions({ item, size = 'xs', onResolved }: { item: Attention
   const then = (p: Promise<unknown>) => void p.then(() => onResolved?.(), () => undefined)
   return (
     <div className="flex shrink-0 flex-wrap items-center gap-1.5">
+      {(item.kind === 'ask' || item.kind === 'show') && (
+        // 104: the questions and the artifact need the screen; the card only points there.
+        <Button asChild size={size} variant="outline">
+          <Link to="/attention/$id" params={{ id: item.id }}>
+            {item.kind === 'ask' ? 'Answer' : 'Open'}
+          </Link>
+        </Button>
+      )}
       {item.kind === 'handoff' && handoffId && (
         <>
           {vm && canPopout() && (
