@@ -19466,7 +19466,7 @@ dependencies = [
 [[package]]
 name = "slack-morphism"
 version = "2.29.0"
-source = "git+https://github.com/skymoore/slack-morphism-rust?rev=34de7199f9b715cd33f233722d639c7465976993#34de7199f9b715cd33f233722d639c7465976993"
+source = "git+https://github.com/skymoore/slack-morphism-rust?rev=1f7996d3c6978b1efd4c59e400d4c93bc87da3fa#1f7996d3c6978b1efd4c59e400d4c93bc87da3fa"
 dependencies = [
  "async-recursion",
  "async-trait",

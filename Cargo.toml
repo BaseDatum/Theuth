@@ -169,7 +169,7 @@ jsonschema = { version = "0.33", default-features = false }
 reqwest = { version = "0.13", default-features = false, features = ["rustls", "json", "form", "query", "http2", "stream"] }
 # Fork `feat/block-kit-2026-blocks` = upstream 2.29.0 (1945e53c) + `SlackBlock::Unknown` catch-all,
 # typed container/plan/data_table/data_visualization, blocks.validate, canvases.* (design 110 W6).
-slack-morphism = { git = "https://github.com/skymoore/slack-morphism-rust", rev = "34de7199f9b715cd33f233722d639c7465976993", features = ["hyper"] }
+slack-morphism = { git = "https://github.com/skymoore/slack-morphism-rust", rev = "1f7996d3c6978b1efd4c59e400d4c93bc87da3fa", features = ["hyper"] }
 # Telegram Bot API client (98 §0.1). ZeroVer: exact pin, bumped by hand against its CHANGELOG.
 tgbot = { version = "=0.48.1", default-features = false }
 sha2 = "0.10"
