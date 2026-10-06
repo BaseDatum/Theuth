@@ -1,0 +1,66 @@
+[
+  {
+    "type": "data_table",
+    "caption": "Table",
+    "rows": [
+      [
+        {
+          "type": "raw_text",
+          "text": "Crate"
+        },
+        {
+          "type": "raw_text",
+          "text": "Tests"
+        },
+        {
+          "type": "raw_text",
+          "text": "Status"
+        }
+      ],
+      [
+        {
+          "type": "raw_text",
+          "text": "agent"
+        },
+        {
+          "type": "raw_number",
+          "value": 412.0,
+          "text": "412"
+        },
+        {
+          "type": "raw_text",
+          "text": "ok"
+        }
+      ],
+      [
+        {
+          "type": "raw_text",
+          "text": "surface"
+        },
+        {
+          "type": "raw_number",
+          "value": 57.0,
+          "text": "57"
+        },
+        {
+          "type": "raw_text",
+          "text": "ok"
+        }
+      ],
+      [
+        {
+          "type": "raw_text",
+          "text": "slack"
+        },
+        {
+          "type": "raw_text",
+          "text": "—"
+        },
+        {
+          "type": "raw_text",
+          "text": "flaky"
+        }
+      ]
+    ]
+  }
+]

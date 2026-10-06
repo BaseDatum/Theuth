@@ -1,0 +1,32 @@
+{
+  "root": "t",
+  "elements": {
+    "t": {
+      "type": "Table",
+      "props": {
+        "columns": [
+          "Crate",
+          "Tests",
+          "Status"
+        ],
+        "rows": [
+          [
+            "agent",
+            "412",
+            "ok"
+          ],
+          [
+            "surface",
+            "57",
+            "ok"
+          ],
+          [
+            "slack",
+            "",
+            "flaky"
+          ]
+        ]
+      }
+    }
+  }
+}

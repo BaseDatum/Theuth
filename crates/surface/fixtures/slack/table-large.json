@@ -1,0 +1,80 @@
+{
+  "root": "t",
+  "elements": {
+    "t": {
+      "type": "Table",
+      "props": {
+        "columns": [
+          "Host",
+          "Role"
+        ],
+        "rows": [
+          [
+            "host-01",
+            "worker"
+          ],
+          [
+            "host-02",
+            "worker"
+          ],
+          [
+            "host-03",
+            "primary"
+          ],
+          [
+            "host-04",
+            "worker"
+          ],
+          [
+            "host-05",
+            "worker"
+          ],
+          [
+            "host-06",
+            "primary"
+          ],
+          [
+            "host-07",
+            "worker"
+          ],
+          [
+            "host-08",
+            "worker"
+          ],
+          [
+            "host-09",
+            "primary"
+          ],
+          [
+            "host-10",
+            "worker"
+          ],
+          [
+            "host-11",
+            "worker"
+          ],
+          [
+            "host-12",
+            "primary"
+          ],
+          [
+            "host-13",
+            "worker"
+          ],
+          [
+            "host-14",
+            "worker"
+          ],
+          [
+            "host-15",
+            "primary"
+          ],
+          [
+            "host-16",
+            "worker"
+          ]
+        ]
+      }
+    }
+  }
+}

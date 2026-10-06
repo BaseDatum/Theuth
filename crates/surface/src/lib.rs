@@ -20,6 +20,7 @@ mod mermaid;
 pub mod prompt;
 mod render;
 mod sequence;
+pub mod slack;
 mod spec;
 mod validate;
 
@@ -28,6 +29,7 @@ pub use flatten::flatten;
 pub use mermaid::mermaid_lines;
 pub use prompt::*;
 pub use render::{fence, spec_lines};
+pub use slack::{SlackBlocksError, slack_blocks};
 pub use spec::*;
 
 use serde_json::Value;

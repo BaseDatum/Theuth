@@ -1,0 +1,16 @@
+[
+  {
+    "type": "rich_text",
+    "elements": [
+      {
+        "type": "rich_text_preformatted",
+        "elements": [
+          {
+            "type": "text",
+            "text": "Host    │ Role\n────────┼────────\nhost-01 │ worker\nhost-02 │ worker\nhost-03 │ primary\nhost-04 │ worker\nhost-05 │ worker\nhost-06 │ primary\nhost-07 │ worker\nhost-08 │ worker\nhost-09 │ primary\nhost-10 │ worker\nhost-11 │ worker\nhost-12 │ primary\nhost-13 │ worker\nhost-14 │ worker\nhost-15 │ primary\nhost-16 │ worker"
+          }
+        ]
+      }
+    ]
+  }
+]

@@ -1,0 +1,64 @@
+{
+  "root": "s",
+  "elements": {
+    "s": {
+      "type": "Stack",
+      "children": [
+        "t",
+        "g",
+        "tags"
+      ]
+    },
+    "t": {
+      "type": "Timeline",
+      "props": {
+        "items": [
+          {
+            "when": "Mon",
+            "title": "Bake-off",
+            "detail": "merman vs mmdflux",
+            "state": "done"
+          },
+          {
+            "when": "Tue",
+            "title": "parse + validate",
+            "state": "active"
+          },
+          {
+            "when": "Wed",
+            "title": "Desktop"
+          }
+        ]
+      }
+    },
+    "g": {
+      "type": "Glossary",
+      "props": {
+        "items": [
+          {
+            "term": "Fence",
+            "text": "A triple-backtick block with a language tag."
+          }
+        ]
+      }
+    },
+    "tags": {
+      "type": "Tags",
+      "props": {
+        "items": [
+          {
+            "text": "rust"
+          },
+          {
+            "text": "reviewed",
+            "variant": "success"
+          },
+          {
+            "text": "flaky",
+            "variant": "warning"
+          }
+        ]
+      }
+    }
+  }
+}

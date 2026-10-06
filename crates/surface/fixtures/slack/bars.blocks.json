@@ -1,0 +1,40 @@
+[
+  {
+    "type": "data_visualization",
+    "title": "Values",
+    "chart": {
+      "type": "bar",
+      "series": [
+        {
+          "name": "Value",
+          "data": [
+            {
+              "label": "agent",
+              "value": 96.5
+            },
+            {
+              "label": "tui",
+              "value": 41.0
+            },
+            {
+              "label": "markdown",
+              "value": 8.0
+            },
+            {
+              "label": "surface",
+              "value": 3.2
+            }
+          ]
+        }
+      ],
+      "axis_config": {
+        "categories": [
+          "agent",
+          "tui",
+          "markdown",
+          "surface"
+        ]
+      }
+    }
+  }
+]

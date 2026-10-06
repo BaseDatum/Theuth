@@ -1,0 +1,31 @@
+[
+  {
+    "type": "header",
+    "text": {
+      "type": "plain_text",
+      "text": "Architecture"
+    },
+    "level": 2
+  },
+  {
+    "type": "divider"
+  },
+  {
+    "type": "image",
+    "image_url": "https://example.com/arch.png",
+    "alt_text": "Architecture diagram",
+    "title": {
+      "type": "plain_text",
+      "text": "Three crates, one bus"
+    }
+  },
+  {
+    "type": "context",
+    "elements": [
+      {
+        "type": "mrkdwn",
+        "text": "`shipped`"
+      }
+    ]
+  }
+]
