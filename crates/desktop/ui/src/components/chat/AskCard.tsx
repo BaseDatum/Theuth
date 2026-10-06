@@ -1,6 +1,9 @@
+import { Link } from '@tanstack/react-router'
 import { Square, Volume2 } from 'lucide-react'
 import { memo, useCallback, useState } from 'react'
 import { toast } from 'sonner'
+import { head } from '@/components/attention/Bundle'
+import { usePacket } from '@/components/attention/queries'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -9,6 +12,7 @@ import { useApi } from '@/lib/rpc'
 import * as speech from '@/lib/speech'
 import type { Answer } from '@/rpc/bindings/Answer'
 import type { AskRequested } from '@/rpc/bindings/AskRequested'
+import type { Packet } from '@/rpc/bindings/Packet'
 import type { Question } from '@/rpc/bindings/Question'
 import { useAsks } from '@/store/approvals'
 import { ActionButton } from './MessageAssistant'
@@ -141,11 +145,22 @@ export function QuestionBlock({
 
 const FRAME = 'my-2 flex flex-col gap-4 rounded-xl border border-info-border bg-info-bg px-4 py-3 text-sm'
 
+/**
+ * 103 F4: the one question a decision raises carries the decision key as its id (`tasks/src/lib.rs ask_user`); with a
+ * packet behind it the card is the compact relay (`RelayCard`) until expanded.
+ */
+function decisionKey(ask: AskRequested): string | null {
+  const id = ask.questions.length === 1 ? ask.questions[0]!.id : ''
+  return id.startsWith('decision:') ? id : null
+}
+
 /** The model's questions, all at once: pick, type, or skip each; Send answers or Dismiss (ends the turn).
  * After Send the card stays with the choices locked until the tool row's result replaces it (`AnsweredAskCard`). */
 export const AskCard = memo(function AskCard({ ask }: { ask: AskRequested }) {
   const api = useApi()
   const voice = speech.useVoice()
+  const packet = usePacket(decisionKey(ask)).data ?? null
+  const [expanded, setExpanded] = useState(false)
   const [busy, setBusy] = useState(false)
   const [sent, setSent] = useState(false)
   const [drafts, setDrafts] = useState<Draft[]>(() => draftsFor(ask.questions))
@@ -166,6 +181,7 @@ export const AskCard = memo(function AskCard({ ask }: { ask: AskRequested }) {
       setBusy(false)
     }
   }
+  if (packet && !expanded && !sent) return <RelayCard packet={packet} onExpand={() => setExpanded(true)} />
   return (
     <div className={FRAME}>
       <div className="font-medium text-info">
@@ -199,6 +215,44 @@ export const AskCard = memo(function AskCard({ ask }: { ask: AskRequested }) {
     </div>
   )
 })
+
+/** The compact relay: who asks · the question · `head(summary)` · the backed option · Open in Attention · expand. */
+function RelayCard({ packet, onExpand }: { packet: Packet; onExpand: () => void }) {
+  const rec = packet.recommendation
+  const index = rec?.option ?? packet.recommended
+  const label = index === null ? undefined : packet.options[index]?.label
+  const by = packet.by.replace(/^agent:/, '')
+  return (
+    <div className={FRAME}>
+      <div className="font-medium text-info">{by} asks for a decision</div>
+      {packet.question && <div className="font-medium">{packet.question}</div>}
+      <div className="text-fg-secondary">{head(packet.summary)}</div>
+      {(label || rec) && (
+        <div className="flex flex-wrap items-center gap-2">
+          {label && (
+            <span className="flex items-center gap-2">
+              {label}
+              <Badge variant="secondary" className="px-1.5 py-0 text-[10px]">
+                recommended
+              </Badge>
+            </span>
+          )}
+          {rec && <span className="text-xs text-fg-secondary">{rec.text}</span>}
+        </div>
+      )}
+      <div className="flex flex-wrap gap-2">
+        <Button asChild size="sm">
+          <Link to="/attention/$id" params={{ id: `decision:${packet.task}:${packet.key}` }} search={true}>
+            Open in Attention
+          </Link>
+        </Button>
+        <Button size="sm" variant="ghost" onClick={onExpand}>
+          Answer here
+        </Button>
+      </div>
+    </div>
+  )
+}
 
 /** `ask_user`'s `{questions}` arguments, or `null` when the row is not that shape. */
 export function askQuestions(args: unknown): Question[] | null {
