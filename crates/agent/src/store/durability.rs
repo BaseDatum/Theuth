@@ -9,7 +9,7 @@
 use std::path::PathBuf;
 
 use chrono::{DateTime, Utc};
-use genai::chat::{MessageContent, ToolCall};
+use genai::chat::{ChatMessage, MessageContent, ToolCall};
 use runtime::{SessionId, TurnId};
 use serde_json::Value;
 use sqlx::SqliteConnection;
@@ -18,10 +18,12 @@ use tools::{
     QuestionState, Risk, ToolOutput, WaitKind, WaitRow,
 };
 
-use super::Store;
+use super::{InnerCall, Store, insert_in, put_todos};
+use crate::cost::{CallId, CallKind};
 use crate::durability::{
     CallState, JournaledCall, LastStep, PartialContent, ResumeKind, ResumePlan, StepKind,
 };
+use crate::todo::{Todo, TodoSnapshot, TodoSource};
 
 fn now() -> String {
     Utc::now().to_rfc3339()
@@ -78,7 +80,6 @@ pub(crate) async fn step_in(
 /// Delete the turn's `assistant_partial` rows inside the caller's
 /// transaction: folded into the write that persists the final assistant row
 /// (§8.1), so a finished model call leaves no partial behind.
-#[allow(dead_code)] // 109: W1 calls it from the loop's final persist
 pub(crate) async fn partial_delete_in(
     conn: &mut SqliteConnection,
     session: SessionId,
@@ -96,7 +97,6 @@ pub(crate) async fn partial_delete_in(
 
 /// One `tool_calls` row per call in `planned`, inside the transaction that
 /// persists the assistant `tool_use` row at `at_seq` (§3.3 step 5).
-#[allow(dead_code)] // 109: W1 calls it from the loop's tool_use persist
 pub(crate) async fn calls_planned_in(
     conn: &mut SqliteConnection,
     session: SessionId,
@@ -140,6 +140,72 @@ pub(crate) async fn delete_journal_in(
         .await?;
     }
     Ok(())
+}
+
+/// §3.2 `turn_finished` + §4.5 bookkeeping inside the caller's transaction:
+/// the step (closing the turn), the turn's partials gone, and
+/// `sessions.last_stop` / `finished_at` set.
+pub(crate) async fn turn_finished_in(
+    conn: &mut SqliteConnection,
+    session: SessionId,
+    turn: TurnId,
+    stop_reason: &str,
+) -> anyhow::Result<()> {
+    partial_delete_in(conn, session, turn).await?;
+    step_in(
+        conn,
+        session,
+        turn,
+        StepKind::TurnFinished,
+        None,
+        &serde_json::json!({ "stop_reason": stop_reason }),
+    )
+    .await?;
+    sqlx::query("UPDATE sessions SET last_stop = ?, finished_at = ? WHERE id = ?")
+        .bind(stop_reason)
+        .bind(now())
+        .bind(session.to_string())
+        .execute(conn)
+        .await?;
+    Ok(())
+}
+
+/// §3.2: journal rows anchored at or above the session's `cut_at` go with
+/// the messages a `commit_cut` removes (as `errors` / `inner_calls` do);
+/// `waits` by the removed calls' ids. The caller's transaction.
+pub(crate) async fn cut_journal_in(conn: &mut SqliteConnection, sid: &str) -> anyhow::Result<()> {
+    sqlx::query(
+        "DELETE FROM waits WHERE session_id = ?1 AND tool_call_id IN \
+         (SELECT call_id FROM tool_calls WHERE session_id = ?1 \
+          AND at_seq >= (SELECT cut_at FROM sessions WHERE id = ?1))",
+    )
+    .bind(sid)
+    .execute(&mut *conn)
+    .await?;
+    for table in ["tool_calls", "turn_steps"] {
+        // Names are this list's, never input.
+        sqlx::query(sqlx::AssertSqlSafe(format!(
+            "DELETE FROM {table} WHERE session_id = ?1 \
+             AND at_seq >= (SELECT cut_at FROM sessions WHERE id = ?1)"
+        )))
+        .bind(sid)
+        .execute(&mut *conn)
+        .await?;
+    }
+    Ok(())
+}
+
+/// One call's row update at batch end ([`Store::append_batch`]): the
+/// spill-capped text the model sees, or a `skipped` settlement.
+pub struct BatchRow<'a> {
+    /// Provider call id.
+    pub call_id: &'a str,
+    /// What the row's `output` becomes (the capped content; `ERROR:`-less).
+    pub output: &'a str,
+    /// Move a non-terminal row to `skipped` (cancel / landing, §3.3 step 9).
+    pub skipped: bool,
+    /// With `skipped`: the error flag.
+    pub is_error: bool,
 }
 
 /// One `turn_steps` row as read.
@@ -551,6 +617,286 @@ impl Store {
             calls,
             partial,
         })
+    }
+
+    // ---- W1: the loop's piggy-backed writes (§3.3) ----------------------------
+
+    /// §3.3 step 1: the user row plus `turn_steps(input_accepted)` in one
+    /// transaction; returns the row's seq.
+    pub async fn append_input(
+        &self,
+        session: SessionId,
+        turn: TurnId,
+        message: &ChatMessage,
+        input_id: Option<&str>,
+        source: &str,
+    ) -> anyhow::Result<i64> {
+        let mut tx = self.begin_write().await?;
+        let seq = insert_in(&mut tx, &session.to_string(), message, None, None).await?;
+        step_in(
+            &mut tx,
+            session,
+            turn,
+            StepKind::InputAccepted,
+            None,
+            &serde_json::json!({ "input_id": input_id, "source": source }),
+        )
+        .await?;
+        tx.commit().await?;
+        Ok(seq)
+    }
+
+    /// §3.3 step 1 for a peer input already consumed by `consume_exchange`
+    /// (its own transaction, 50 §7): the step alone.
+    pub async fn input_accepted(
+        &self,
+        session: SessionId,
+        turn: TurnId,
+        input_id: Option<&str>,
+        source: &str,
+    ) -> anyhow::Result<()> {
+        self.step(
+            session,
+            turn,
+            StepKind::InputAccepted,
+            None,
+            &serde_json::json!({ "input_id": input_id, "source": source }),
+        )
+        .await
+    }
+
+    /// §3.3 step 2: `reserve_call` plus `turn_steps(model_call)` with the
+    /// attempt's `call_id`, one transaction.
+    #[expect(clippy::too_many_arguments, reason = "one row, one call")]
+    pub async fn reserve_journaled_call(
+        &self,
+        owner: SessionId,
+        turn: TurnId,
+        request_id: &str,
+        attempt: u32,
+        kind: CallKind,
+        provider: Option<&str>,
+        model: Option<&str>,
+    ) -> anyhow::Result<CallId> {
+        let mut tx = self.begin_write().await?;
+        let call = super::accounting::reserve_call_in(
+            &mut tx,
+            owner,
+            request_id,
+            attempt,
+            Some(turn),
+            kind,
+            provider,
+            model,
+        )
+        .await?;
+        step_in(
+            &mut tx,
+            owner,
+            turn,
+            StepKind::ModelCall,
+            Some(&call.0),
+            &serde_json::json!({ "request_id": request_id, "attempt": attempt, "kind": kind.as_str() }),
+        )
+        .await?;
+        tx.commit().await?;
+        Ok(call)
+    }
+
+    /// §3.3 step 5: the assistant `tool_use` row, the turn's partials gone
+    /// (§8.1), `turn_steps(tool_batch)` and one `planned` row per call, all
+    /// in one transaction; returns the row's seq.
+    pub async fn append_tool_use(
+        &self,
+        session: SessionId,
+        turn: TurnId,
+        message: &ChatMessage,
+        thinking_ms: Option<u64>,
+        round: u32,
+        calls: &[(ToolCall, Risk)],
+    ) -> anyhow::Result<i64> {
+        let mut tx = self.begin_write().await?;
+        let ms = thinking_ms.map(|ms| i64::try_from(ms).unwrap_or(i64::MAX));
+        let seq = insert_in(&mut tx, &session.to_string(), message, None, ms).await?;
+        partial_delete_in(&mut tx, session, turn).await?;
+        let ids: Vec<&str> = calls.iter().map(|(c, _)| c.call_id.as_str()).collect();
+        step_in(
+            &mut tx,
+            session,
+            turn,
+            StepKind::ToolBatch,
+            None,
+            &serde_json::json!({ "call_ids": ids, "round": round }),
+        )
+        .await?;
+        calls_planned_in(&mut tx, session, turn, seq, calls).await?;
+        tx.commit().await?;
+        Ok(seq)
+    }
+
+    /// §3.3 step 4 + §4.5: the final assistant row, the partials gone,
+    /// `turn_steps(turn_finished)` and `sessions.last_stop/finished_at`, one
+    /// transaction; returns the row's seq.
+    pub async fn append_final(
+        &self,
+        session: SessionId,
+        turn: TurnId,
+        message: &ChatMessage,
+        thinking_ms: Option<u64>,
+        stop_reason: &str,
+    ) -> anyhow::Result<i64> {
+        let mut tx = self.begin_write().await?;
+        let ms = thinking_ms.map(|ms| i64::try_from(ms).unwrap_or(i64::MAX));
+        let seq = insert_in(&mut tx, &session.to_string(), message, None, ms).await?;
+        turn_finished_in(&mut tx, session, turn, stop_reason).await?;
+        tx.commit().await?;
+        Ok(seq)
+    }
+
+    /// [`turn_finished_in`] alone: the cancel / error / landing paths whose
+    /// last row is not an assistant reply (§3.2), and a resumed turn closed
+    /// without a model call.
+    pub async fn finish_turn(
+        &self,
+        session: SessionId,
+        turn: TurnId,
+        stop_reason: &str,
+    ) -> anyhow::Result<()> {
+        let mut tx = self.begin_write().await?;
+        turn_finished_in(&mut tx, session, turn, stop_reason).await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
+    /// §3.3 step 8: the batch's one tool message, the plan it changed (47
+    /// §5.1, when `todos` is set), the rows' spill-capped `output` (step 7)
+    /// and the `skipped` rows of a cancel / landing (step 9), one transaction.
+    pub async fn append_batch(
+        &self,
+        session: SessionId,
+        message: &ChatMessage,
+        todos: Option<(TodoSource, &[Todo])>,
+        rows: &[BatchRow<'_>],
+    ) -> anyhow::Result<(i64, Option<TodoSnapshot>)> {
+        let sid = session.to_string();
+        let mut tx = self.begin_write().await?;
+        let seq = insert_in(&mut tx, &sid, message, None, None).await?;
+        let snapshot = match todos {
+            Some((source, items)) => Some(put_todos(&mut tx, &sid, seq, source, items).await?),
+            None => None,
+        };
+        let ts = now();
+        for r in rows {
+            match r.skipped {
+                true => {
+                    sqlx::query(
+                        "UPDATE tool_calls SET state = 'skipped', finished_at = ?, output = ?, is_error = ? \
+                         WHERE session_id = ? AND call_id = ? AND state IN ('planned', 'started')",
+                    )
+                    .bind(&ts)
+                    .bind(r.output)
+                    .bind(i64::from(r.is_error))
+                    .bind(&sid)
+                    .bind(r.call_id)
+                    .execute(&mut *tx)
+                    .await?;
+                }
+                false => {
+                    sqlx::query(
+                        "UPDATE tool_calls SET output = ? WHERE session_id = ? AND call_id = ? AND output IS NOT ?",
+                    )
+                    .bind(r.output)
+                    .bind(&sid)
+                    .bind(r.call_id)
+                    .bind(r.output)
+                    .execute(&mut *tx)
+                    .await?;
+                }
+            }
+        }
+        tx.commit().await?;
+        Ok((seq, snapshot))
+    }
+
+    /// Drop the turn's `assistant_partial` rows on their own (§4.2 row 2: the
+    /// partial of a lost model call is published as dropped, never replayed).
+    pub async fn partial_delete(&self, session: SessionId, turn: TurnId) -> anyhow::Result<()> {
+        let mut tx = self.begin_write().await?;
+        partial_delete_in(&mut tx, session, turn).await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
+    /// §4.2: a `started` read-only call (or a `python` cell with only
+    /// read-only inner calls) runs again as `attempt + 1`: back to `planned`
+    /// so the registry hook moves it through `started` → `finished` once more.
+    pub async fn call_replan(&self, session: SessionId, call_id: &str) -> anyhow::Result<bool> {
+        let mut tx = self.begin_write().await?;
+        let n = sqlx::query(
+            "UPDATE tool_calls SET state = 'planned', attempt = attempt + 1, started_at = NULL \
+             WHERE session_id = ? AND call_id = ? AND state IN ('planned', 'started')",
+        )
+        .bind(session.to_string())
+        .bind(call_id)
+        .execute(&mut *tx)
+        .await?
+        .rows_affected();
+        tx.commit().await?;
+        Ok(n > 0)
+    }
+
+    /// `sessions.last_stop` / `finished_at` (§4.5), as `turn_finished` wrote
+    /// them; `None` for a session that never finished a turn since 0033.
+    pub async fn last_stop(
+        &self,
+        session: SessionId,
+    ) -> anyhow::Result<Option<(String, DateTime<Utc>)>> {
+        let row: Option<(Option<String>, Option<String>)> =
+            sqlx::query_as("SELECT last_stop, finished_at FROM sessions WHERE id = ?")
+                .bind(session.to_string())
+                .fetch_optional(&self.read)
+                .await?;
+        match row {
+            Some((Some(stop), Some(at))) => Ok(Some((stop, parse_dt(&at)?))),
+            _ => Ok(None),
+        }
+    }
+
+    /// The inner calls of one `python` cell (08 as-built), in `n` order: the
+    /// python rule's F (finished) and U (`result: None`) sets (§4.2).
+    pub async fn inner_calls_of(
+        &self,
+        session: SessionId,
+        parent: &str,
+    ) -> anyhow::Result<Vec<InnerCall>> {
+        Ok(self
+            .inner_calls(session)
+            .await?
+            .remove(parent)
+            .unwrap_or_default())
+    }
+
+    /// §4.2 python rule: the unfinished inner calls of `parent` are closed
+    /// with `note` as an error so the reloaded transcript shows them settled.
+    pub async fn inner_calls_interrupt(
+        &self,
+        session: SessionId,
+        parent: &str,
+        note: &str,
+    ) -> anyhow::Result<u64> {
+        let mut tx = self.begin_write().await?;
+        let n = sqlx::query(
+            "UPDATE inner_calls SET output = ?, is_error = 1 \
+             WHERE session_id = ? AND parent_id = ? AND output IS NULL",
+        )
+        .bind(note)
+        .bind(session.to_string())
+        .bind(parent)
+        .execute(&mut *tx)
+        .await?
+        .rows_affected();
+        tx.commit().await?;
+        Ok(n)
     }
 
     // ---- questions (§6) -----------------------------------------------------

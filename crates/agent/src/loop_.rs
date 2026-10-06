@@ -55,8 +55,8 @@ use tokio::sync::{OwnedSemaphorePermit, Semaphore, oneshot};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use tools::{
-    Invoke, ListPrompts, ListTools, REGISTRY_ACTOR, SessionResources, ToolOutput, ToolRegistry,
-    ToolSpec,
+    Invoke, ListPrompts, ListTools, REGISTRY_ACTOR, Risk, SessionResources, ToolOutput,
+    ToolRegistry, ToolSpec,
 };
 use uuid::Uuid;
 
@@ -72,12 +72,16 @@ use crate::continuation::{
     YieldDecision,
 };
 use crate::cost::{CallId, CallKind, CallStatus, CostObservation, Money};
+use crate::durability::{
+    CallState, JournaledCall, LastStep, ResumeKind, ResumePlan, crash, crash_point,
+};
 use crate::frame::{self, Frame, Transport};
 use crate::peers::SpawnSubagentTool;
 use crate::repl::{self, Repl, RunCx};
 use crate::snap;
 use crate::store::Store;
 use crate::store::communication::CommError;
+use crate::store::durability::BatchRow;
 use crate::supervisor::{Auth, PeerContext, Roster};
 use crate::title;
 use crate::vision::{self, VisionImage, VisionSource, VisionStatus};
@@ -1011,6 +1015,9 @@ impl Session {
         self.scope = scope;
         let mut task = Turn::new(self.shared.clone(), Some(turn), cancel, state);
         task.scope = scope;
+        // 109 §4.1: an open turn of an earlier process is closed before the
+        // opener's row, so its tool message follows its `tool_use` row.
+        task.settle_open_turns(turn).await;
         let mut inputs = inputs.into_iter();
         let mut ids = Vec::new();
         let mut texts = Vec::new();
@@ -1166,6 +1173,44 @@ impl Message<UserInput> for Session {
         if let Some(event) = event {
             self.shared.rt.publish(event).await;
         }
+    }
+}
+
+/// `ask` → `bool`: resume the open turn `plan` describes (109 §4.1), as
+/// `Agents::session`'s lazily loaded actor is handed it. `slots` is the boot
+/// scan's `Semaphore(resume_parallel)`: the turn task takes one slot before
+/// its first step and holds it until the turn ends. `false` when a turn is
+/// already in flight (the input that beat the scan resumes it lazily).
+pub struct Resume {
+    /// From `Store::resume_plan`.
+    pub plan: ResumePlan,
+    /// The boot scan's concurrency bound, if any.
+    pub slots: Option<Arc<Semaphore>>,
+}
+
+impl Message<Resume> for Session {
+    type Reply = bool;
+
+    async fn handle(&mut self, m: Resume, ctx: &mut Context<Self, Self::Reply>) -> bool {
+        if self.inflight.is_some() {
+            return false;
+        }
+        if self.state.as_ref().is_some_and(|s| s.todo_version == 0) {
+            self.load_todos(false).await;
+        }
+        let Some(state) = self.claim().await else {
+            return false;
+        };
+        let turn = m.plan.turn;
+        let cancel = self.shared.rt.shutdown.child_token();
+        self.enter(cancel.clone(), Some(turn)).await;
+        let task = Turn::new(self.shared.clone(), Some(turn), cancel, state);
+        let me = ctx.actor_ref().clone();
+        tokio::spawn(async move {
+            let state = task.resume(m.plan, m.slots).await;
+            let _ = me.tell(TurnDone(state)).await;
+        });
+        true
     }
 }
 
@@ -2049,6 +2094,15 @@ struct Turn {
     vision_failed: BTreeSet<VisionSource>,
     /// The "no vision fallback configured" note was appended this turn.
     vision_noticed: bool,
+    /// Risk per registry tool name, from this turn's `ListTools` (109 §3.3
+    /// step 5: the `tool_calls.risk` column; `read_only` for loop-local tools).
+    risks: HashMap<String, Risk>,
+    /// 109 §4.2 row 2: the lost model call's `(request_id, attempt + 1)` the
+    /// next round call re-issues under; taken by the first `call`.
+    resume_call: parking_lot::Mutex<Option<(String, u32)>>,
+    /// The `turn_finished` step rode the final assistant row (109 §3.3 step
+    /// 4); `drive` writes it on its own otherwise.
+    finished_written: bool,
 }
 
 /// Execution accounting of a peer-opened turn (50 §8): the wall deadline of
@@ -2158,7 +2212,9 @@ struct Reserved {
 impl Reserved {
     /// `Err` is conclusively local: nothing was sent, the row (if any) is
     /// `not_dispatched`, and the caller must not retry — the store that
-    /// refused once refuses the same request again.
+    /// refused once refuses the same request again. A `Round` call of a turn
+    /// also journals `turn_steps(model_call)` in the reservation's
+    /// transaction (109 §3.3 step 2).
     #[expect(clippy::too_many_arguments, reason = "one row, one call")]
     async fn open(
         store: &Store,
@@ -2170,18 +2226,36 @@ impl Reserved {
         kind: CallKind,
         model: &Resolved,
     ) -> Result<Self, String> {
-        let call = store
-            .reserve_call(
-                owner,
-                request_id,
-                attempt,
-                turn,
-                kind,
-                provider_of(model),
-                Some(&model.id),
-            )
-            .await
-            .map_err(|e| format!("accounting: {e:#}"))?;
+        let reserved = match turn.filter(|_| kind == CallKind::Round) {
+            Some(turn) => {
+                store
+                    .reserve_journaled_call(
+                        owner,
+                        turn,
+                        request_id,
+                        attempt,
+                        kind,
+                        provider_of(model),
+                        Some(&model.id),
+                    )
+                    .await
+            }
+            None => {
+                store
+                    .reserve_call(
+                        owner,
+                        request_id,
+                        attempt,
+                        turn,
+                        kind,
+                        provider_of(model),
+                        Some(&model.id),
+                    )
+                    .await
+            }
+        };
+        let call = reserved.map_err(|e| format!("accounting: {e:#}"))?;
+        crash_point(crash::MODEL_AFTER_RESERVE);
         if let Err(e) = store.mark_dispatched(&call).await {
             if let Err(e2) = store
                 .mark_not_dispatched(&call, "dispatch marker failed")
@@ -2191,11 +2265,17 @@ impl Reserved {
             }
             return Err(format!("accounting: {e:#}"));
         }
+        crash_point(crash::MODEL_AFTER_DISPATCH);
         Ok(Self {
             call: Some(call),
             store: store.clone(),
             rt: rt.clone(),
         })
+    }
+
+    /// The attempt's accounting id (the `assistant_partial` key, 109 §8.1).
+    fn id(&self) -> Option<&str> {
+        self.call.as_ref().map(|c| c.0.as_str())
     }
 
     /// Settle with `usage` (what the stream's `End` carried; `None` for a
@@ -2592,6 +2672,9 @@ impl Turn {
             first_seq: None,
             vision_failed: BTreeSet::new(),
             vision_noticed: false,
+            risks: HashMap::new(),
+            resume_call: parking_lot::Mutex::new(None),
+            finished_written: false,
         }
     }
 
@@ -2771,27 +2854,26 @@ impl Turn {
     /// `false` when the store refused: the row is in the frame for this
     /// process only, and nothing that requires durability may treat it as done.
     async fn persist(&mut self, msg: ChatMessage) -> bool {
-        let (seq, stored) = match self.shared.store.append(self.shared.id, &msg).await {
-            Ok(seq) => (seq, true),
-            Err(e) => {
-                self.error(format!("store: {e:#}")).await;
-                (self.state.history.last().map_or(0, |(s, _)| s + 1), false)
-            }
-        };
-        self.first_seq.get_or_insert(seq);
-        self.state.history.push((seq, msg));
-        stored
+        let r = self.shared.store.append(self.shared.id, &msg).await;
+        self.record(msg, r).await
     }
 
     /// [`Turn::persist`] for the model's reply row, with the ms it thought
     /// before it (91 THOUGHT-TIME); `None` when no reasoning streamed.
     async fn persist_timed(&mut self, msg: ChatMessage, thinking_ms: Option<u64>) -> bool {
-        let (seq, stored) = match self
+        let r = self
             .shared
             .store
             .append_thinking(self.shared.id, &msg, thinking_ms)
-            .await
-        {
+            .await;
+        self.record(msg, r).await
+    }
+
+    /// The tail every append shares: push `msg` into the frame at the seq the
+    /// store minted (or the next one, flagged unstored, when it refused) and
+    /// report the refusal. See [`Turn::persist`] for the flag's meaning.
+    async fn record(&mut self, msg: ChatMessage, r: anyhow::Result<i64>) -> bool {
+        let (seq, stored) = match r {
             Ok(seq) => (seq, true),
             Err(e) => {
                 self.error(format!("store: {e:#}")).await;
@@ -2811,28 +2893,390 @@ impl Turn {
 
     /// 36 §3: a frame ending in an assistant `tool_use` with no `tool_result`
     /// (the process died between the two persists) is rejected by the provider
-    /// on every request. Append one tool message answering every call.
+    /// on every request. Append one tool message answering every call. 109
+    /// §4.1 demotes this to the last resort for a transcript with no
+    /// `tool_calls` rows (written before 0033); the message is kept verbatim.
     async fn repair_dangling(&mut self) {
-        let responses: Vec<ToolResponse> = match self.state.history.last() {
-            Some((_, m)) if m.role == ChatRole::Assistant => m
-                .content
-                .tool_calls()
-                .into_iter()
-                .map(|tc| {
-                    ToolResponse::new(
-                        tc.call_id.clone(),
-                        "ERROR: not run: the harness exited before this tool completed",
-                    )
-                })
-                .collect(),
-            _ => return,
-        };
+        let responses: Vec<ToolResponse> = self
+            .dangling_calls()
+            .iter()
+            .map(|tc| {
+                ToolResponse::new(
+                    tc.call_id.clone(),
+                    "ERROR: not run: the harness exited before this tool completed",
+                )
+            })
+            .collect();
         if responses.is_empty() {
             return;
         }
         let n = responses.len();
         self.persist(ChatMessage::from(responses)).await;
         tracing::info!(session = %self.shared.id, n, "resume: repaired {n} dangling tool calls");
+    }
+
+    /// The calls of the frame's trailing assistant `tool_use` row, when no
+    /// tool message follows it; empty otherwise.
+    fn dangling_calls(&self) -> Vec<ToolCall> {
+        for (_, m) in self.state.history.iter().rev() {
+            match m.role {
+                // Inputs taken after the kill (a steer, a fresh turn's opener).
+                ChatRole::User => continue,
+                ChatRole::Assistant => {
+                    return m.content.tool_calls().into_iter().cloned().collect();
+                }
+                _ => return Vec::new(),
+            }
+        }
+        Vec::new()
+    }
+
+    /// 109 §4.6 (`resume: off | ask`, or an input that beat the scan): a fresh
+    /// turn on a session whose earlier turn is still open closes it first.
+    /// A dangling `tool_use` with journal rows is answered from the rows —
+    /// finished results reused, everything else `interrupted` with the §4.3
+    /// note; nothing runs, the model has moved on. Without rows (a pre-0033
+    /// transcript) [`Turn::repair_dangling`] applies. Each open turn gets its
+    /// `turn_finished` so the next boot does not resume it.
+    async fn settle_open_turns(&mut self, current: TurnId) {
+        let session = self.shared.id;
+        let open: Vec<TurnId> = match self.shared.store.open_turns().await {
+            Ok(open) => open
+                .into_iter()
+                .filter(|(s, t, _)| *s == session && *t != current)
+                .map(|(_, t, _)| t)
+                .collect(),
+            Err(e) => {
+                tracing::warn!(session = %session, "open_turns: {e:#}");
+                Vec::new()
+            }
+        };
+        let dangling = self.dangling_calls();
+        let mut answered = dangling.is_empty();
+        for turn in open {
+            let plan = match self.shared.store.resume_plan(session, turn).await {
+                Ok(plan) => plan,
+                Err(e) => {
+                    tracing::warn!(session = %session, %turn, "resume_plan: {e:#}");
+                    continue;
+                }
+            };
+            if !answered
+                && matches!(plan.last, LastStep::ToolBatch { .. })
+                && same_calls(&dangling, &plan.calls)
+            {
+                let mut interrupted = 0;
+                for row in &plan.calls {
+                    if row.state.is_terminal() {
+                        continue;
+                    }
+                    let note = resume_calls::interrupted_note(row, &plan);
+                    self.journal_interrupted(&row.call_id, &note.content).await;
+                    interrupted += 1;
+                }
+                let outputs = vec![Some(ToolOutput::ok("")); dangling.len()];
+                let note = restart_note(&plan, 0, interrupted);
+                self.finish_batch(turn, dangling.clone(), outputs, false, None, Some(note))
+                    .await;
+                answered = true;
+            }
+            if let Err(e) = self
+                .shared
+                .store
+                .finish_turn(session, turn, "superseded")
+                .await
+            {
+                tracing::warn!(session = %session, %turn, "finish_turn: {e:#}");
+            }
+        }
+        if !answered {
+            self.repair_dangling().await;
+        }
+    }
+
+    /// 109 §4.2: what a resumed turn does first. `Some(round)` is the result
+    /// of the resumed batch; `None` goes straight to an ordinary `round`.
+    async fn resume_prelude(
+        &mut self,
+        registry: &ActorRef<ToolRegistry>,
+        turn: TurnId,
+        plan: &ResumePlan,
+    ) -> Option<Round> {
+        let session = self.shared.id;
+        match &plan.last {
+            // Row 1: the frame ends in the input; an ordinary round.
+            LastStep::InputAccepted | LastStep::Finished => {
+                self.report(turn, Vec::new(), Vec::new()).await;
+                None
+            }
+            // Row 2: re-issue the lost call as `attempt + 1` of the same
+            // request; the partial is for the human, never the model (I5).
+            LastStep::ModelCall {
+                request_id,
+                attempt,
+            } => {
+                if let Some(p) = &plan.partial {
+                    self.publish(AgentEvent::PartialDropped {
+                        session,
+                        turn,
+                        call_id: p.call_id.clone(),
+                    })
+                    .await;
+                }
+                if let Err(e) = self.shared.store.partial_delete(session, turn).await {
+                    tracing::warn!(session = %session, "partial_delete: {e:#}");
+                }
+                *self.resume_call.lock() = Some((request_id.clone(), attempt + 1));
+                self.report(turn, Vec::new(), Vec::new()).await;
+                None
+            }
+            // Rows 3–4: the batch message is missing (the frame still ends in
+            // the `tool_use` row) → per-call rule, then the message; present
+            // (the kill fell after it) → the next round.
+            LastStep::ToolBatch { .. } => {
+                let dangling = self.dangling_calls();
+                if dangling.is_empty() || !same_calls(&dangling, &plan.calls) {
+                    self.report(turn, Vec::new(), Vec::new()).await;
+                    return None;
+                }
+                Some(self.resume_batch(registry, turn, plan).await)
+            }
+        }
+    }
+
+    /// §4.2 rows 3–4: the per-call rule over the open batch's rows, then the
+    /// batch as [`Turn::run_batch`] runs one — presets for the rows that are
+    /// not run, the `<engine_restart …/>` note on the first response.
+    async fn resume_batch(
+        &mut self,
+        registry: &ActorRef<ToolRegistry>,
+        turn: TurnId,
+        plan: &ResumePlan,
+    ) -> Round {
+        let mut calls = Vec::with_capacity(plan.calls.len());
+        let mut outputs = Vec::with_capacity(plan.calls.len());
+        let mut replayed = Vec::new();
+        let mut interrupted = Vec::new();
+        for row in &plan.calls {
+            calls.push(ToolCall {
+                call_id: row.call_id.clone(),
+                fn_name: row.name.clone(),
+                fn_arguments: row.args.clone(),
+                thought_signatures: None,
+            });
+            let preset = match row.state {
+                CallState::Finished | CallState::Skipped | CallState::Interrupted => {
+                    Some(ToolOutput::ok(""))
+                }
+                CallState::Planned => None,
+                CallState::Started => {
+                    let (preset, replay) = self.resume_started(row, plan).await;
+                    let tag = (row.call_id.clone(), row.name.clone());
+                    match (replay, &preset) {
+                        (true, _) => replayed.push(tag),
+                        (false, Some(out)) if out.is_error => interrupted.push(tag),
+                        _ => {}
+                    }
+                    preset
+                }
+            };
+            outputs.push(preset);
+        }
+        let note = restart_note(plan, replayed.len(), interrupted.len());
+        let r = self
+            .run_batch(registry, turn, 0, calls, outputs, Some(note))
+            .await;
+        self.report(turn, replayed, interrupted).await;
+        r
+    }
+
+    /// §4.2 per-call rule for one `started` row: `(preset, replayed)` —
+    /// `preset: None` runs the call again (its row back to `planned`,
+    /// `attempt + 1`); `Some` is settled on the row and not run. The
+    /// tool-specific rows precede the risk row; the job / question / wait
+    /// rules live in [`resume_calls`] (W2 / W3).
+    async fn resume_started(
+        &mut self,
+        row: &JournaledCall,
+        plan: &ResumePlan,
+    ) -> (Option<ToolOutput>, bool) {
+        let name = row.name.as_str();
+        let settled = match name {
+            "shell" | "start" | "send" | "wait" => {
+                Some(resume_calls::resume_job_call(row, plan).await)
+            }
+            "ask_user" | "desktop_handoff" => {
+                Some(resume_calls::resume_question_call(row, plan).await)
+            }
+            n if n.starts_with("secret_request") => {
+                Some(resume_calls::resume_question_call(row, plan).await)
+            }
+            n if n == <SpawnSubagentTool as tools::Tool>::NAME => {
+                Some(resume_calls::resume_wait_call(row, plan).await)
+            }
+            n if peer_wait(n, &row.args) => Some(resume_calls::resume_wait_call(row, plan).await),
+            n if n == repl::NAME => return self.resume_python(row, plan).await,
+            n if n == todo::NAME => None,
+            // §4.2: a `reminders` row set since the call began is its effect.
+            "remind_me_in" => self.reminder_since(row.started_at).await,
+            _ => match row.risk {
+                Risk::ReadOnly => None,
+                Risk::Mutating | Risk::Destructive => {
+                    Some(resume_calls::interrupted_note(row, plan))
+                }
+            },
+        };
+        match settled {
+            None => {
+                self.journal_replan(&row.call_id).await;
+                (None, true)
+            }
+            Some(out) => {
+                self.journal_settled(&row.call_id, &out).await;
+                (Some(out), false)
+            }
+        }
+    }
+
+    /// §4.2 `remind_me_in` row: the reminder this session set at or after
+    /// `since` (the call's `started_at`), as the tool reports one; `None` →
+    /// the call runs again.
+    async fn reminder_since(
+        &self,
+        since: Option<chrono::DateTime<chrono::Utc>>,
+    ) -> Option<ToolOutput> {
+        let since = since?.timestamp();
+        let rows = match self.shared.store.reminders().await {
+            Ok(rows) => rows,
+            Err(e) => {
+                tracing::warn!(session = %self.shared.id, "reminders: {e:#}");
+                return None;
+            }
+        };
+        let r = rows
+            .into_iter()
+            .filter(|r| r.session == self.shared.id && r.set_at >= since)
+            .max_by_key(|r| r.set_at)?;
+        let fires_at = tools::reminder::local_rfc3339(r.fires_at);
+        let mut out = ToolOutput::ok(format!(
+            "{} set: fires at {} (in {} s); end your turn, the message comes back as <reminder id=\"{}\">",
+            r.id, fires_at, r.seconds, r.id
+        ));
+        out.structured = Some(serde_json::json!({
+            "id": r.id,
+            "fires_at": fires_at,
+            "seconds": r.seconds,
+        }));
+        Some(out)
+    }
+
+    /// §4.2 python rule: every inner call read-only → the cell runs again
+    /// from the previous heap dump (`Repl::open` restores it); otherwise the
+    /// cell note names F (finished) and U (unknown) and U's rows are closed.
+    async fn resume_python(
+        &mut self,
+        row: &JournaledCall,
+        plan: &ResumePlan,
+    ) -> (Option<ToolOutput>, bool) {
+        let session = self.shared.id;
+        let inner = match self
+            .shared
+            .store
+            .inner_calls_of(session, &row.call_id)
+            .await
+        {
+            Ok(inner) => inner,
+            Err(e) => {
+                tracing::warn!(session = %session, "inner_calls_of: {e:#}");
+                Vec::new()
+            }
+        };
+        if inner
+            .iter()
+            .all(|c| self.risk_of(&c.name) == Risk::ReadOnly)
+        {
+            self.journal_replan(&row.call_id).await;
+            return (None, true);
+        }
+        let finished: Vec<String> = inner
+            .iter()
+            .filter_map(|c| {
+                let (_, is_error) = c.result.as_ref()?;
+                Some(format!(
+                    "{} ({})",
+                    c.name,
+                    if *is_error { "error" } else { "ok" }
+                ))
+            })
+            .collect();
+        let unknown: Vec<String> = inner
+            .iter()
+            .filter(|c| c.result.is_none())
+            .map(|c| c.name.clone())
+            .collect();
+        let out = ToolOutput::err(cell_note(plan, &finished, &unknown));
+        if let Err(e) = self
+            .shared
+            .store
+            .inner_calls_interrupt(session, &row.call_id, INNER_INTERRUPTED)
+            .await
+        {
+            tracing::warn!(session = %session, "inner_calls_interrupt: {e:#}");
+        }
+        self.journal_settled(&row.call_id, &out).await;
+        (Some(out), false)
+    }
+
+    /// A resume rule's result onto its row: an error is the row's
+    /// `interrupted` note (the `ERROR:` the batch re-adds stripped), a plain
+    /// result is `finished`.
+    async fn journal_settled(&self, call_id: &str, out: &ToolOutput) {
+        if out.is_error {
+            self.journal_interrupted(call_id, &out.content).await;
+        } else {
+            self.journal_finished(call_id, out).await;
+        }
+    }
+
+    /// `tool_calls → interrupted` (§4.2): `note` as the row's error output,
+    /// `ERROR:`-less (the batch message re-adds the prefix).
+    async fn journal_interrupted(&self, call_id: &str, note: &str) {
+        let note = note.strip_prefix("ERROR: ").unwrap_or(note);
+        if let Err(e) = self
+            .shared
+            .store
+            .call_interrupted(self.shared.id, call_id, note)
+            .await
+        {
+            tracing::warn!(session = %self.shared.id, call_id, "call_interrupted: {e:#}");
+        }
+    }
+
+    /// `tool_calls → planned, attempt + 1` (§4.2): the call runs again.
+    async fn journal_replan(&self, call_id: &str) {
+        if let Err(e) = self.shared.store.call_replan(self.shared.id, call_id).await {
+            tracing::warn!(session = %self.shared.id, call_id, "call_replan: {e:#}");
+        }
+    }
+
+    /// `ResumeReport` (109 §8.2) once the resumed step settled; the job and
+    /// ACP counts are W2 / W4's.
+    async fn report(
+        &self,
+        turn: TurnId,
+        replayed: Vec<(String, String)>,
+        interrupted: Vec<(String, String)>,
+    ) {
+        self.publish(AgentEvent::ResumeReport {
+            session: self.shared.id,
+            turn,
+            replayed,
+            interrupted,
+            lost_jobs: Vec::new(),
+            children_restored: 0,
+            children_handed_off: 0,
+        })
+        .await;
     }
 
     /// Turn start: render the system prompt and log a rebase when it changed
@@ -2883,6 +3327,8 @@ impl Turn {
                 Vec::new()
             }
         };
+        // 109 §3.3 step 5: `tool_calls.risk` comes from the registry's spec.
+        self.risks = specs.iter().map(|s| (s.name.clone(), s.risk)).collect();
         let toolset = self.shared.toolset.read().clone();
         // Nobody reads a subagent (depth > 0) or a scheduler-opened root directly.
         let attended = self.shared.depth == 0
@@ -2992,8 +3438,16 @@ impl Turn {
         kind: CallKind,
         thinking: &mut Option<u64>,
     ) -> Result<StreamEnd, Abort> {
-        let request_id = Uuid::now_v7().to_string();
-        let mut attempt = 0;
+        // 109 §4.2 row 2: a resumed turn re-issues the lost round call as a
+        // further attempt of the same request; `attempt` is the accounting
+        // number, `tries` indexes this process's backoff table.
+        let resumed = if kind == CallKind::Round && live.is_some() {
+            self.resume_call.lock().take()
+        } else {
+            None
+        };
+        let (request_id, mut attempt) = resumed.unwrap_or_else(|| (Uuid::now_v7().to_string(), 0));
+        let mut tries = 0;
         let mut stripped = false;
         let mut shrunk = false;
         loop {
@@ -3002,7 +3456,7 @@ impl Turn {
                 &self.shared.rt,
                 self.shared.id,
                 &request_id,
-                attempt as u32,
+                attempt,
                 self.turn,
                 kind,
                 &current.model,
@@ -3012,6 +3466,12 @@ impl Turn {
             let mut text = String::new();
             let mut calls = false;
             *thinking = None;
+            let partial = match (self.turn, reserved.id()) {
+                (Some(turn), Some(id)) if kind == CallKind::Round && live.is_some() => {
+                    Some((turn, id.to_owned()))
+                }
+                _ => None,
+            };
             let r = self
                 .stream_once(
                     current,
@@ -3022,6 +3482,7 @@ impl Turn {
                     &mut text,
                     &mut calls,
                     thinking,
+                    partial.as_ref().map(|(t, id)| (*t, id.as_str())),
                 )
                 .await;
             let (status, usage) = match &r {
@@ -3084,7 +3545,7 @@ impl Turn {
             if !text.is_empty() || calls {
                 return Err(Abort::Partial { text, err: e });
             }
-            if attempt >= RETRY_BACKOFF.len()
+            if tries >= RETRY_BACKOFF.len()
                 || self.retries.load(Ordering::Relaxed) >= RETRY_MAX_PER_TURN
             {
                 return Err(Abort::Model(e));
@@ -3093,10 +3554,11 @@ impl Turn {
                 .duration_since(std::time::UNIX_EPOCH)
                 .map_or(0, |d| d.subsec_nanos());
             let wait =
-                Duration::from_secs(RETRY_BACKOFF[attempt]) + Duration::from_nanos(jitter.into());
+                Duration::from_secs(RETRY_BACKOFF[tries]) + Duration::from_nanos(jitter.into());
             tracing::info!(session = %self.shared.id, attempt, wait = ?wait, "retrying model call: {e}");
             self.retries.fetch_add(1, Ordering::Relaxed);
             attempt += 1;
+            tries += 1;
             tokio::select! {
                 // Nothing of this call streamed: a `keep` here is not this
                 // call's text (76 §7 names the stream arms only); drop it.
@@ -3123,7 +3585,10 @@ impl Turn {
     /// is set once a tool-call chunk arrived; `thinking` is set to the ms from
     /// the first `ReasoningChunk` to the first non-reasoning event (91). No
     /// event for `agent.stream_idle_secs` is a transient `stream idle for Ns`
-    /// (36 §2.3).
+    /// (36 §2.3). `partial` = `(turn, model call id)` keys the
+    /// `assistant_partial` checkpoints of 109 §8.1: upserted when a content
+    /// block closes and every `partial_checkpoint_ms` the text grew — never
+    /// per token.
     // Every argument is a distinct per-attempt input of the retry loop in `call`; a struct would be built there alone.
     #[allow(clippy::too_many_arguments)]
     async fn stream_once(
@@ -3136,6 +3601,7 @@ impl Turn {
         text: &mut String,
         calls: &mut bool,
         thinking: &mut Option<u64>,
+        partial: Option<(TurnId, &str)>,
     ) -> Result<StreamEnd, Abort> {
         let (req, opts) = frame.request(transport, conversation, current.effort());
         let open = current
@@ -3150,6 +3616,37 @@ impl Turn {
         let mut progress: HashMap<String, Progress> = HashMap::new();
         let idle = Duration::from_secs(self.shared.cfg.stream_idle_secs);
         let mut thought: Option<Instant> = None;
+        let checkpoint = Duration::from_millis(self.shared.cfg.durability.partial_checkpoint_ms);
+        let mut checkpointed = Instant::now();
+        let mut checkpointed_len = 0usize;
+        let mut first_delta = true;
+        // Upsert the partial when the text grew since the last one and either
+        // a block boundary (`force`) or the timer says so.
+        let mut checkpoint_now = async |text: &str, force: bool, thinking: Option<u64>| {
+            let Some((turn, call_id)) = partial else {
+                return;
+            };
+            if text.len() == checkpointed_len || (!force && checkpointed.elapsed() < checkpoint) {
+                return;
+            }
+            checkpointed_len = text.len();
+            checkpointed = Instant::now();
+            if let Err(e) = self
+                .shared
+                .store
+                .partial_upsert(
+                    session,
+                    turn,
+                    call_id,
+                    &MessageContent::from_text(text),
+                    thinking,
+                )
+                .await
+            {
+                tracing::warn!(session = %session, "partial_upsert: {e:#}");
+            }
+            crash_point(crash::STREAM_AFTER_PARTIAL);
+        };
         loop {
             let ev = tokio::select! {
                 _ = self.cancel.cancelled() => return Err(self.aborted()),
@@ -3185,6 +3682,9 @@ impl Turn {
                 Some(Err(e)) => return Err(Abort::Model(e)),
                 Some(Ok(ChatStreamEvent::End(end))) => return Ok(end),
                 Some(Ok(ChatStreamEvent::Chunk(c))) => {
+                    // Reasoning → text is a block boundary (§8.1); `thinking`
+                    // was just set by the arm above when it is.
+                    let boundary = text.is_empty() && thinking.is_some();
                     text.push_str(&c.content);
                     if let Some(turn) = live {
                         self.publish(AgentEvent::TextDelta {
@@ -3194,6 +3694,10 @@ impl Turn {
                         })
                         .await
                     }
+                    if std::mem::take(&mut first_delta) {
+                        crash_point(crash::STREAM_MID);
+                    }
+                    checkpoint_now(text, boundary, *thinking).await;
                 }
                 Some(Ok(ChatStreamEvent::ReasoningChunk(c))) => {
                     thought.get_or_insert_with(Instant::now);
@@ -3211,6 +3715,10 @@ impl Turn {
                 // the cumulative partial JSON is surfaced, coalesced, as
                 // ToolCallProgress.
                 Some(Ok(ChatStreamEvent::ToolCallChunk(c))) => {
+                    // Text → tool-use is a block boundary (§8.1).
+                    if !*calls {
+                        checkpoint_now(text, true, *thinking).await;
+                    }
                     *calls = true;
                     let Some(turn) = live else { continue };
                     let tc = c.tool_call;
@@ -3267,6 +3775,7 @@ impl Turn {
         }
         let ticket = input.ticket;
         let peer = input.peer.take();
+        let replayed = input.replay.is_some();
         let msg = match input.replay.take() {
             Some(m) => m,
             None => {
@@ -3281,7 +3790,23 @@ impl Turn {
         if let Some(peer) = peer {
             return self.consume_peer(peer, ticket, msg).await;
         }
-        let stored = self.persist(msg).await;
+        // 109 §3.3 step 1: the user row and `input_accepted` in one
+        // transaction; a mini-turn (`turn: None`) takes no input.
+        let stored = match self.turn {
+            Some(turn) => {
+                crash_point(crash::INPUT_BEFORE_PERSIST);
+                let source = if replayed { "replay" } else { "user" };
+                let r = self
+                    .shared
+                    .store
+                    .append_input(self.shared.id, turn, &msg, None, source)
+                    .await;
+                let stored = self.record(msg, r).await;
+                crash_point(crash::INPUT_AFTER_PERSIST);
+                stored
+            }
+            None => self.persist(msg).await,
+        };
         if let (Some(ticket), Some(turn)) = (ticket, self.turn)
             && stored
         {
@@ -3337,6 +3862,17 @@ impl Turn {
             Ok(Some((seq, msg))) => {
                 self.first_seq.get_or_insert(seq);
                 self.state.history.push((seq, msg));
+                // 109 §3.3 step 1: the consumption is its own transaction
+                // (50 §7), so the step follows it; a kill between the two
+                // leaves the exchange consumed and the turn without this
+                // step (as-built W1 deviation).
+                if let Err(e) = store
+                    .input_accepted(session, turn, Some(&peer.id.to_string()), "peer")
+                    .await
+                {
+                    tracing::warn!(session = %session, "input_accepted: {e:#}");
+                }
+                crash_point(crash::INPUT_AFTER_PERSIST);
                 if let Some(ticket) = ticket {
                     self.control_epoch.get_or_insert(ticket.epoch);
                     continuation::notify(InputConsumed {
@@ -3453,9 +3989,39 @@ impl Turn {
     /// `inputs` are the turn's inputs after the first, which
     /// [`Session::start_turn`] already persisted.
     async fn run(mut self, turn: TurnId, inputs: Vec<Input>) -> SessionState {
+        // 109 §4.1: what an earlier process left open is closed before this
+        // turn's rows (a no-op after `Session::start_turn` did it).
+        self.settle_open_turns(turn).await;
         for input in inputs {
             self.take_input(input).await;
         }
+        self.drive(turn, None).await
+    }
+
+    /// 109 §4.1: continue the open turn `plan` describes instead of taking an
+    /// input — the frame is the stored one, `rebase` runs as at a turn start,
+    /// and the §4.2 state machine decides the first step. `slots` bounds how
+    /// many turns resume at once (§4.6): one is taken here and held until the
+    /// turn ends; a cancel while waiting proceeds into `drive`, whose first
+    /// round stops on it.
+    async fn resume(mut self, plan: ResumePlan, slots: Option<Arc<Semaphore>>) -> SessionState {
+        let turn = plan.turn;
+        self.turn = Some(turn);
+        let permit = match slots {
+            Some(slots) => tokio::select! {
+                _ = self.cancel.cancelled() => None,
+                p = slots.acquire_owned() => p.ok(),
+            },
+            None => None,
+        };
+        let state = self.drive(turn, Some(plan)).await;
+        drop(permit);
+        state
+    }
+
+    /// The turn after its inputs: rounds until a stop, then the end-of-turn
+    /// bookkeeping. `plan` = a resumed turn (109 §4.2).
+    async fn drive(mut self, turn: TurnId, plan: Option<ResumePlan>) -> SessionState {
         // 50 §8: the wall deadline of a peer-opened turn covers everything —
         // model calls, tools and waits — and ends it through its own token.
         let deadline = self.peer_work.as_ref().map(|w| {
@@ -3472,6 +4038,17 @@ impl Turn {
         let registry = ActorRef::<ToolRegistry>::lookup(REGISTRY_ACTOR)
             .ok()
             .flatten();
+        if let Some(plan) = &plan {
+            self.publish(AgentEvent::TurnResumed {
+                session: self.shared.id,
+                turn,
+                kind: plan.kind,
+                interrupted_at: plan.interrupted_at,
+                resumed_at: chrono::Utc::now(),
+                partial_dropped: plan.partial.is_some(),
+            })
+            .await;
+        }
         let stop_reason = match &registry {
             None => {
                 self.error("tool registry not running".into()).await;
@@ -3479,14 +4056,24 @@ impl Turn {
             }
             Some(registry) => {
                 self.rebase(registry).await;
-                self.repair_dangling().await;
+                // 109 §4.1: a resumed turn's journal replaces `repair_dangling`
+                // (a fresh turn settled what an earlier process left open in
+                // `run` / `start_turn`, before its inputs).
+                let mut first = match &plan {
+                    Some(plan) => self.resume_prelude(registry, turn, plan).await,
+                    None => None,
+                };
                 self.state.todo_touched_round = 0;
                 self.state.knowledge_hinted_round = 0;
                 self.state.surface_rounds = 0;
                 let mut rounds = 0u32;
                 self.landing = false;
                 loop {
-                    match self.round(registry, turn, rounds).await {
+                    let outcome = match first.take() {
+                        Some(r) => r,
+                        None => self.round(registry, turn, rounds).await,
+                    };
+                    match outcome {
                         Round::Tools => {
                             rounds += 1;
                             let max = self.shared.cfg.max_tool_rounds;
@@ -3527,6 +4114,8 @@ impl Turn {
                             if !self.propose(turn, rounds).await {
                                 break reason;
                             }
+                            // The turn goes on past the row that closed it.
+                            self.finished_written = false;
                         }
                     }
                 }
@@ -3581,6 +4170,20 @@ impl Turn {
                     tracing::warn!(session = %self.shared.id, "harvest: {e}");
                 }
             }
+        }
+        // 109 §3.2 / §4.5: a turn whose last row was not a final reply (cancel,
+        // error, landing, a stop after a continuation) closes here.
+        if !self.finished_written {
+            crash_point(crash::TURN_BEFORE_FINISHED);
+            if let Err(e) = self
+                .shared
+                .store
+                .finish_turn(self.shared.id, turn, &stop_reason)
+                .await
+            {
+                tracing::warn!(session = %self.shared.id, "finish_turn: {e:#}");
+            }
+            crash_point(crash::TURN_AFTER_FINISHED);
         }
         // 50 §6.3/§7: the turn's own result, by TurnId — never "assistant text
         // since the latest user row" — after its final persist and before the
@@ -4092,7 +4695,7 @@ impl Turn {
         // 47 §3.3: the display string above defaults; the classification does
         // not. The landing call is excluded whatever it says (36 §5).
         let mut natural = natural_stop(&end) && !self.landing;
-        let mut calls: Vec<ToolCall> = end
+        let calls: Vec<ToolCall> = end
             .captured_tool_calls()
             .map(|v| v.into_iter().cloned().collect())
             .unwrap_or_default();
@@ -4123,9 +4726,27 @@ impl Turn {
                 };
                 // An unrecorded reply cannot be continued from: the store, not
                 // this process's memory, is what a continuation resumes.
-                natural &= self
-                    .persist_timed(ChatMessage::assistant(content), thinking)
-                    .await;
+                // 109 §3.3 step 4: when this reply ends the turn, the
+                // `turn_finished` step rides its transaction (§4.5 with it).
+                let continues = !failing.is_empty()
+                    || ((stop == "max_tokens" || stop == "length")
+                        && self.salvaged < self.shared.cfg.max_salvages);
+                crash_point(crash::STREAM_BEFORE_END_PERSIST);
+                let msg = ChatMessage::assistant(content);
+                natural &= if continues {
+                    self.persist_timed(msg, thinking).await
+                } else {
+                    crash_point(crash::TURN_BEFORE_FINISHED);
+                    let r = self
+                        .shared
+                        .store
+                        .append_final(self.shared.id, turn, &msg, thinking, &stop)
+                        .await;
+                    let stored = self.record(msg, r).await;
+                    self.finished_written = stored;
+                    crash_point(crash::TURN_AFTER_FINISHED);
+                    stored
+                };
                 if let Some(msg) = correction_message(
                     &self.shared.cfg.surface,
                     &mut self.state.surface_rounds,
@@ -4164,30 +4785,95 @@ impl Turn {
         let assistant = end
             .into_assistant_message_for_tool_use()
             .unwrap_or_else(|| ChatMessage::from(calls.clone()));
-        self.persist_timed(assistant, thinking).await;
+        // 109 §3.3 step 5: the `tool_use` row, `turn_steps(tool_batch)` and
+        // the batch's `planned` rows in one transaction; `read_only` for the
+        // loop-local tools and for a name the registry does not know (refused
+        // in `run_batch`), the registry's spec risk for the rest.
+        let planned: Vec<(ToolCall, Risk)> = calls
+            .iter()
+            .map(|c| (c.clone(), self.risk_of(&c.fn_name)))
+            .collect();
+        let r = self
+            .shared
+            .store
+            .append_tool_use(self.shared.id, turn, &assistant, thinking, round, &planned)
+            .await;
+        self.record(assistant, r).await;
+        crash_point(crash::BATCH_AFTER_TOOL_USE_PERSIST);
+        let n = calls.len();
+        self.run_batch(registry, turn, round, calls, vec![None; n], None)
+            .await
+    }
+
+    /// `tool_calls.risk` for `name` (109 §3.3 step 5): the registry's spec,
+    /// `read_only` for the loop-local `todo` / `python` and for a name the
+    /// registry does not list (refused before it runs).
+    fn risk_of(&self, name: &str) -> Risk {
+        self.risks.get(name).copied().unwrap_or(Risk::ReadOnly)
+    }
+
+    /// The tool batch of one round (109 §3.3 steps 6–9) once the `tool_use`
+    /// row and its `planned` rows are committed. `outputs[i]` set = a result
+    /// the journal already holds (a resumed batch, §4.2) that is not run
+    /// again; the rest run — the registry calls in parallel, then the
+    /// loop-local ones in order — and [`Turn::finish_batch`] assembles the one
+    /// tool message from the `tool_calls` rows. `restart` is the
+    /// `<engine_restart …/>` note of a resumed batch (§4.3).
+    async fn run_batch(
+        &mut self,
+        registry: &ActorRef<ToolRegistry>,
+        turn: TurnId,
+        round: u32,
+        mut calls: Vec<ToolCall>,
+        mut outputs: Vec<Option<ToolOutput>>,
+        restart: Option<String>,
+    ) -> Round {
+        let session = self.shared.id;
         if self.landing {
             // 36 §5: the landing call asked for text; tools are not run, the
             // pair invariant is kept with synthetic results, and the turn ends.
-            const NOT_RUN: &str = "ERROR: not run: tool rounds exhausted";
+            // §3.3 step 9: the rows are `skipped` with the same text.
+            const NOT_RUN: &str = "not run: tool rounds exhausted";
             let mut responses = Vec::with_capacity(calls.len());
             for c in &calls {
                 self.publish(AgentEvent::ToolCallFinished {
-                    session: self.shared.id,
+                    session,
                     turn,
                     call_id: c.call_id.clone(),
-                    output: NOT_RUN.into(),
+                    output: format!("ERROR: {NOT_RUN}"),
                     is_error: true,
                     files: Vec::new(),
                 })
                 .await;
-                responses.push(ToolResponse::new(c.call_id.clone(), NOT_RUN));
+                responses.push(ToolResponse::new(
+                    c.call_id.clone(),
+                    format!("ERROR: {NOT_RUN}"),
+                ));
             }
-            self.persist(ChatMessage::from(responses)).await;
+            let rows: Vec<BatchRow<'_>> = calls
+                .iter()
+                .map(|c| BatchRow {
+                    call_id: &c.call_id,
+                    output: NOT_RUN,
+                    skipped: true,
+                    is_error: true,
+                })
+                .collect();
+            let msg = ChatMessage::from(responses);
+            let r = self
+                .shared
+                .store
+                .append_batch(session, &msg, None, &rows)
+                .await
+                .map(|(seq, _)| seq);
+            self.record(msg, r).await;
             return Round::Stop("max_tool_rounds".into());
         }
 
-        let session = self.shared.id;
-        for call in &calls {
+        for (i, call) in calls.iter().enumerate() {
+            if outputs[i].is_some() {
+                continue;
+            }
             self.publish(AgentEvent::ToolCallStarted {
                 session,
                 turn,
@@ -4206,9 +4892,8 @@ impl Turn {
         // (86 RUNTIME-BRIDGE); anything else is refused.
         let local = |name: &str| name == todo::NAME || name == repl::NAME;
         let mut bridged: Vec<Option<String>> = vec![None; calls.len()];
-        let mut outputs: Vec<Option<ToolOutput>> = vec![None; calls.len()];
         for (i, c) in calls.iter_mut().enumerate() {
-            if self.tools.iter().any(|t| t.name.as_str() == c.fn_name) {
+            if outputs[i].is_some() || self.tools.iter().any(|t| t.name.as_str() == c.fn_name) {
                 continue;
             }
             if self.runtime_names.contains(&c.fn_name) {
@@ -4217,10 +4902,12 @@ impl Turn {
                     serde_json::json!({ "code": repl::bridge_cell(&name, &c.fn_arguments) });
                 bridged[i] = Some(name);
             } else {
-                outputs[i] = Some(ToolOutput::err(format!(
+                let out = ToolOutput::err(format!(
                     "{} is not available in this session (not a direct tool and not a runtime function you can see)",
                     c.fn_name
-                )));
+                ));
+                self.journal_finished(&c.call_id, &out).await;
+                outputs[i] = Some(out);
             }
         }
         let remote: Vec<usize> = (0..calls.len())
@@ -4231,20 +4918,26 @@ impl Turn {
         // counts a blocking peer send as waiting from the start, adds human
         // waits (approval, `ask_user`) as they begin, and holds a resuming
         // invocation until a permit is back. The permit is held only while at
-        // least one operation is actually executing.
+        // least one operation is actually executing. The registry's journal
+        // hook moves each row `started` → `finished` (109 §3.3 steps 6–7).
         let cancel = self.cancel.clone();
         let mut cancelled = false;
         let outs = tokio::select! {
             _ = cancel.cancelled() => { cancelled = true; Vec::new() }
             outs = join_all(remote.iter().map(|&i| {
                 let c = &calls[i];
-                registry.ask(Invoke(tools::ToolCall {
-                    id: c.call_id.clone(),
-                    name: c.fn_name.clone(),
-                    args: c.fn_arguments.clone(),
-                    session,
-                    quiet: false,
-                })).send()
+                crash_point(&crash::call_point(i, crash::CALL_BEFORE_STARTED));
+                async move {
+                    let out = registry.ask(Invoke(tools::ToolCall {
+                        id: c.call_id.clone(),
+                        name: c.fn_name.clone(),
+                        args: c.fn_arguments.clone(),
+                        session,
+                        quiet: false,
+                    })).send().await;
+                    crash_point(&crash::call_point(i, crash::CALL_AFTER_FINISHED));
+                    out
+                }
             })) => outs,
         };
         for (i, out) in remote.into_iter().zip(outs) {
@@ -4258,6 +4951,10 @@ impl Turn {
             if cancelled || outputs[i].is_some() {
                 continue;
             }
+            // §3.3 step 6: the loop-local calls journal themselves.
+            crash_point(&crash::call_point(i, crash::CALL_BEFORE_STARTED));
+            self.journal_started(&call.call_id).await;
+            crash_point(&crash::call_point(i, crash::CALL_AFTER_STARTED));
             let out = if call.fn_name == todo::NAME {
                 self.state.todo_touched_round = round;
                 let work = plan.get_or_insert_with(|| self.state.todos.clone());
@@ -4274,12 +4971,85 @@ impl Turn {
                 }
                 out
             };
+            crash_point(&crash::call_point(i, crash::CALL_BEFORE_FINISHED));
+            self.journal_finished(&call.call_id, &out).await;
+            crash_point(&crash::call_point(i, crash::CALL_AFTER_FINISHED));
             outputs[i] = Some(out);
         }
+        self.finish_batch(turn, calls, outputs, cancelled, plan, restart)
+            .await
+    }
 
-        let outs: Vec<ToolOutput> = outputs
-            .into_iter()
-            .map(|o| o.unwrap_or_else(|| ToolOutput::err("cancelled by user")))
+    /// `tool_calls → started` for a loop-local call (109 §3.3 step 6).
+    async fn journal_started(&self, call_id: &str) {
+        if let Err(e) = self
+            .shared
+            .store
+            .call_started(self.shared.id, call_id)
+            .await
+        {
+            tracing::warn!(session = %self.shared.id, call_id, "call_started: {e:#}");
+        }
+    }
+
+    /// `tool_calls → finished` for a loop-local call (109 §3.3 step 7).
+    async fn journal_finished(&self, call_id: &str, out: &ToolOutput) {
+        if let Err(e) = self
+            .shared
+            .store
+            .call_finished(self.shared.id, call_id, out)
+            .await
+        {
+            tracing::warn!(session = %self.shared.id, call_id, "call_finished: {e:#}");
+        }
+    }
+
+    /// §3.3 step 8: the batch's one tool message, assembled from the
+    /// `tool_calls` rows (the in-memory result only where a row is missing
+    /// or not terminal), spill-capped and budgeted as before, persisted with
+    /// the plan it changed and the rows' capped `output` / `skipped`
+    /// settlements in one transaction. `outputs[i] == None` = cancelled
+    /// before it ran.
+    async fn finish_batch(
+        &mut self,
+        turn: TurnId,
+        calls: Vec<ToolCall>,
+        outputs: Vec<Option<ToolOutput>>,
+        cancelled: bool,
+        plan: Option<Vec<todo::Todo>>,
+        restart: Option<String>,
+    ) -> Round {
+        let session = self.shared.id;
+        let rows = match self.shared.store.calls_of(session, turn).await {
+            Ok(rows) => rows,
+            Err(e) => {
+                tracing::warn!(session = %session, "calls_of: {e:#}");
+                Vec::new()
+            }
+        };
+        let mut skipped: Vec<bool> = vec![false; calls.len()];
+        let outs: Vec<ToolOutput> = calls
+            .iter()
+            .zip(outputs)
+            .enumerate()
+            .map(|(i, (call, out))| {
+                let row = rows
+                    .iter()
+                    .find(|r| r.call_id == call.call_id && r.state.is_terminal());
+                match (row, out) {
+                    (Some(r), _) => ToolOutput {
+                        content: r.output.clone().unwrap_or_default(),
+                        is_error: r.is_error,
+                        files: r.files.clone(),
+                        structured: None,
+                    },
+                    (None, Some(out)) => out,
+                    (None, None) => {
+                        skipped[i] = true;
+                        ToolOutput::err("cancelled by user")
+                    }
+                }
+            })
             .collect();
         // 36 §4.3: the (name, args) of an error result seen twice in a row this turn.
         let mut repeat: Option<String> = None;
@@ -4287,6 +5057,8 @@ impl Turn {
         let mut responses = Vec::with_capacity(calls.len());
         // 47 §5.1: published once the batch (and any plan it changed) is committed.
         let mut finished = Vec::with_capacity(calls.len());
+        // The capped text each row keeps (§3.3 step 7), `ERROR:`-less.
+        let mut capped: Vec<String> = Vec::with_capacity(calls.len());
         for (call, out) in calls.iter().zip(&outs) {
             let mut display = frame::truncate(&out.content, DISPLAY_OUTPUT_CHARS);
             for f in &out.files {
@@ -4310,6 +5082,7 @@ impl Turn {
                 self.shared.cfg.max_tool_output_chars,
                 &self.shared.spill_dir,
             );
+            capped.push(content.clone());
             let mut content = if out.is_error {
                 failed = true;
                 let key = (call.fn_name.clone(), call.fn_arguments.clone());
@@ -4359,6 +5132,7 @@ impl Turn {
         // 36 §4.2: bound the batch, not only each result — four capped results can
         // still fill a small window. Halve the largest until the batch fits a quarter
         // of the compaction threshold; the floor keeps a marker plus a hint per result.
+        let current = self.model();
         let window = self.window(&current.model);
         if window > 0 {
             let limit = self.threshold(window).unwrap_or(window);
@@ -4387,6 +5161,7 @@ impl Turn {
                     chars / 2,
                     &self.shared.spill_dir,
                 );
+                capped[i] = content.clone();
                 if out.is_error {
                     content.insert_str(0, "ERROR: ");
                 }
@@ -4399,32 +5174,60 @@ impl Turn {
                 tracing::info!(session = %self.shared.id, budget, total_before = before, total, "tool batch over budget; shrunk {shrunk} results");
             }
         }
-        // 74 §3: a long autonomous run still glances at the clock.
+        // 74 §3: a long autonomous run still glances at the clock; 109 §4.3:
+        // the restart note of a resumed batch rides the same first response.
         if let Some(first) = responses.first_mut() {
             clock::prepend_due(
                 &mut first.content,
                 chrono::Local::now(),
                 &mut self.state.last_stamp,
             );
+            if let Some(note) = &restart {
+                first.content.insert_str(0, &format!("{note}\n"));
+            }
         }
+        let rows: Vec<BatchRow<'_>> = calls
+            .iter()
+            .zip(&capped)
+            .zip(&skipped)
+            .map(|((c, text), &skipped)| BatchRow {
+                call_id: &c.call_id,
+                output: text,
+                skipped,
+                is_error: true,
+            })
+            .collect();
         // One tool message carrying every response (genai: `ChatMessage::from(Vec<ToolResponse>)`).
         // 47 §5.1–§5.2: a changed plan lands in the same transaction as the
         // batch; a failed write keeps the old canonical list, the events say so
         // and the turn ends instead of running on an unsaved frame.
         let msg = ChatMessage::from(responses);
         let mut changed = None;
+        crash_point(crash::BATCH_BEFORE_MESSAGE);
         match plan.filter(|p| *p != self.state.todos) {
             None => {
-                self.persist(msg).await;
+                let r = self
+                    .shared
+                    .store
+                    .append_batch(session, &msg, None, &rows)
+                    .await
+                    .map(|(seq, _)| seq);
+                self.record(msg, r).await;
             }
             Some(items) => {
                 let committed = self
                     .shared
                     .store
-                    .append_with_todos(session, &msg, todo::TodoSource::Native, &items)
+                    .append_batch(
+                        session,
+                        &msg,
+                        Some((todo::TodoSource::Native, &items)),
+                        &rows,
+                    )
                     .await;
                 match committed {
                     Ok((seq, snapshot)) => {
+                        let snapshot = snapshot.expect("todos requested");
                         self.state.history.push((seq, msg));
                         self.state.todos = items;
                         self.state.todo_version = snapshot.version;
@@ -4451,6 +5254,7 @@ impl Turn {
                 }
             }
         }
+        crash_point(crash::BATCH_AFTER_MESSAGE);
         for event in finished {
             self.publish(event).await;
         }
@@ -5724,6 +6528,57 @@ fn peer_wait(tool: &str, args: &serde_json::Value) -> bool {
         && args.get("await_reply").and_then(serde_json::Value::as_bool) == Some(true)
 }
 
+/// 109 §4.2 python rule: what U's `inner_calls` rows are closed with.
+const INNER_INTERRUPTED: &str = "interrupted by an engine restart; effect unknown";
+
+/// The frame's dangling calls and the journal's batch name the same ids.
+fn same_calls(dangling: &[ToolCall], rows: &[JournaledCall]) -> bool {
+    dangling.len() == rows.len()
+        && dangling
+            .iter()
+            .all(|c| rows.iter().any(|r| r.call_id == c.call_id))
+}
+
+/// Local `HH:MM:SS`, as 109 §4.3's notes read.
+fn hhmmss(t: chrono::DateTime<chrono::Utc>) -> String {
+    t.with_timezone(&chrono::Local)
+        .format("%H:%M:%S")
+        .to_string()
+}
+
+/// 109 §4.3 restart note, prepended to the first response of a resumed
+/// batch: the only turn-level trace of the restart.
+fn restart_note(plan: &ResumePlan, replayed: usize, interrupted: usize) -> String {
+    let now = chrono::Utc::now();
+    let after = (now - plan.interrupted_at).num_seconds().max(0);
+    let kind = match plan.kind {
+        ResumeKind::Interrupted => "crash",
+        ResumeKind::Suspended => "shutdown",
+    };
+    format!(
+        "<engine_restart at=\"{}\" after=\"{after}s\" kind=\"{kind}\" replayed=\"{replayed}\" interrupted=\"{interrupted}\"/>",
+        hhmmss(now)
+    )
+}
+
+/// 109 §4.3 cell note: a `python` cell with a mutating inner call that was
+/// `started` when the engine died is not re-run; `finished` = "name (ok|error)".
+fn cell_note(plan: &ResumePlan, finished: &[String], unknown: &[String]) -> String {
+    let list = |v: &[String]| {
+        if v.is_empty() {
+            "none".to_owned()
+        } else {
+            v.join(", ")
+        }
+    };
+    format!(
+        "RuntimeError: the engine restarted at {} while this cell ran; state restored to after the previous cell — this cell's effects are lost from the runtime, not from the world. Inner calls that finished before the restart: {}. Started, outcome unknown: {}.",
+        hhmmss(plan.interrupted_at),
+        list(finished),
+        list(unknown)
+    )
+}
+
 /// A peer exchange leaves the harness unconsumed (50 §7): suppress its row
 /// when `suppress` (idempotent; a row its task owner already settled is
 /// `Terminal` and left alone), then release its ticket through
@@ -5819,7 +6674,6 @@ fn progress_due(prev: Option<&Progress>, now: Instant, len: usize) -> bool {
 mod side;
 
 /// 109 §4.2: the job / question / wait resume rules (stubs; W2, W3 fill them).
-#[allow(dead_code)] // wired by W1's per-call rule
 pub(crate) mod resume_calls;
 
 /// 52 §10 gates against a fake provider, through a real turn.
@@ -5861,6 +6715,10 @@ mod runtime_bridge_tests;
 /// REGEN-STAMP: a regenerated opener replays its `<time …/>` stamp to the model only.
 #[cfg(test)]
 mod regen_stamp_tests;
+
+/// 109 W1: the journal's write points, the §4.2 resume rules and the §11.1 crash matrix.
+#[cfg(test)]
+mod durability_tests;
 
 #[cfg(test)]
 mod tests {

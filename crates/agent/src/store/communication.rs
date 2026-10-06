@@ -1478,6 +1478,30 @@ impl Store {
         Ok(Interrupted { exchanges, tasks })
     }
 
+    /// 109 §7.2: the `result:<turn>` exchanges from `session:*` senders that
+    /// [`Store::fail_interrupted`] spared and nobody consumed yet — every
+    /// `accepted` child result, as `(parent, child, exchange id)`, oldest
+    /// first. The boot pass after `resume_scan` delivers them.
+    pub async fn spared_child_results(&self) -> anyhow::Result<Vec<(SessionId, SessionId, Uuid)>> {
+        let rows: Vec<(String, String, String)> = sqlx::query_as(
+            "SELECT recipient_session, sender_session, id FROM peer_exchanges \
+             WHERE state = 'accepted' AND sender LIKE 'session:%' AND request_id LIKE 'result:%' \
+               AND recipient_session IS NOT NULL AND sender_session IS NOT NULL \
+             ORDER BY accepted_seq",
+        )
+        .fetch_all(&self.read)
+        .await?;
+        rows.into_iter()
+            .map(|(p, c, id)| {
+                Ok((
+                    p.parse().map_err(|e| anyhow::anyhow!("recipient_session: {e}"))?,
+                    c.parse().map_err(|e| anyhow::anyhow!("sender_session: {e}"))?,
+                    id.parse()?,
+                ))
+            })
+            .collect()
+    }
+
     // ---- A2A contexts and tasks --------------------------------------------
 
     /// Mint a context for `(principal, export)` over `session` (50 §6.3).

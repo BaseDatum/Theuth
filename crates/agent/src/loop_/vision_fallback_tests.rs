@@ -26,7 +26,7 @@ const ANSWER: &str = "A solid crimson-red square filling the whole 4x4 image.";
 /// The second image's fact (two-image scenario).
 const ANSWER2: &str = "A solid navy-blue square filling the whole 4x4 image.";
 /// The main model's final reply once it has the observation.
-const FINAL: &str = "The square is red.";
+pub(super) const FINAL: &str = "The square is red.";
 /// The reply of a main call the fake cuts off (`finish_reason: length`).
 const TRUNCATED: &str = "Working on it";
 /// A main request carrying this text gets an empty reply (`finish_reason:
@@ -40,7 +40,7 @@ const LEAKY_QUESTION: &str = "Is the token sk-live-deadbeef42 visible in m0.p1?"
 /// Per-route usage `(prompt, completion)` so the turn's totals are attributable.
 const QUESTION_USAGE: (u32, u32) = (11, 2);
 const VISION_USAGE: (u32, u32) = (23, 5);
-const MAIN_USAGE: (u32, u32) = (37, 7);
+pub(super) const MAIN_USAGE: (u32, u32) = (37, 7);
 
 /// The summariser's reply: long enough not to count as degenerate.
 fn summary() -> String {
@@ -56,7 +56,7 @@ fn summary() -> String {
 /// One OpenAI chat-completions SSE reply: a content chunk (none when `text` is
 /// empty — a refused/filtered reply has no blocks), the finish chunk, a
 /// usage-only chunk, `[DONE]`.
-fn sse(text: &str, finish: &str, (prompt, completion): (u32, u32)) -> ResponseTemplate {
+pub(super) fn sse(text: &str, finish: &str, (prompt, completion): (u32, u32)) -> ResponseTemplate {
     let chunk = |choices: Value, usage: Option<Value>| {
         let mut v =
             json!({"id": "c", "object": "chat.completion.chunk", "model": "m", "choices": choices});
@@ -241,7 +241,7 @@ impl tools::secrets::Secrets for Vault {
 
 // region:    --- Request readers
 
-fn body(r: &Request) -> Value {
+pub(super) fn body(r: &Request) -> Value {
     r.body_json().expect("provider request is JSON")
 }
 
@@ -313,10 +313,11 @@ impl Message<AgentEvent> for Sink {
 pub(super) struct Harness {
     pub(super) dir: PathBuf,
     pub(super) store: Store,
-    rt: Runtime,
-    server: MockServer,
-    client: Client,
-    catalog: Arc<models::Catalog>,
+    pub(super) rt: Runtime,
+    /// `None` for a harness attached to another process's provider (109 crash tests).
+    server: Option<MockServer>,
+    pub(super) client: Client,
+    pub(super) catalog: Arc<models::Catalog>,
     vision_model: Arc<RwLock<Option<Resolved>>>,
     pub(super) id: SessionId,
     events: UnboundedReceiver<AgentEvent>,
@@ -327,10 +328,12 @@ pub(super) struct Harness {
     png2_b64: String,
     /// The python worker pool a turn gets (`None`: no runtime, every tool direct).
     pub(super) pool: Option<Arc<Pool>>,
+    /// Remove `dir` on drop (not for an attached harness).
+    owned: bool,
 }
 
 impl Harness {
-    pub(super) async fn new(fake: Fake) -> Self {
+    pub(super) async fn new(fake: impl Respond + 'static) -> Self {
         let dir = std::env::temp_dir().join(format!("theuth-vision-e2e-{}", Uuid::now_v7()));
         std::fs::create_dir_all(&dir).unwrap();
         let model = |id: &str, image: bool| {
@@ -381,16 +384,7 @@ impl Harness {
             .mount(&server)
             .await;
         let endpoint = format!("{}/v1/", server.uri());
-        let client = Client::builder()
-            .with_service_target_resolver(ServiceTargetResolver::from_resolver_fn(
-                move |mut t: ServiceTarget| -> genai::resolver::Result<ServiceTarget> {
-                    t.endpoint = Endpoint::from_owned(endpoint.clone());
-                    t.auth = AuthData::Key("x".into());
-                    Ok(t)
-                },
-            ))
-            .build()
-            .unwrap();
+        let client = client_for(&endpoint);
 
         let store = Store::open(&dir.join("sessions.sqlite"), None)
             .await
@@ -409,7 +403,7 @@ impl Harness {
             dir,
             store,
             rt,
-            server,
+            server: Some(server),
             client,
             vision_model: Arc::default(),
             id,
@@ -419,7 +413,43 @@ impl Harness {
             png2,
             png2_b64,
             pool: None,
+            owned: true,
         }
+    }
+
+    /// A harness over another harness's `dir` (its `models.json`, store and
+    /// session) and provider `endpoint`, for a second process or a second
+    /// life of the same one (109 §11.1): nothing is created, nothing removed.
+    pub(super) async fn attach(dir: PathBuf, endpoint: &str, id: SessionId) -> Self {
+        let store = Store::open(&dir.join("sessions.sqlite"), None)
+            .await
+            .unwrap();
+        let rt = Runtime::new(figment::Figment::new(), dir.clone());
+        let (tx, events) = unbounded_channel();
+        let sink = Sink::spawn_with_mailbox(Sink(tx), runtime::subscriber_mailbox());
+        rt.subscribe::<Sink, AgentEvent>(&sink).await;
+        Self {
+            catalog: Arc::new(models::Catalog::load(&dir)),
+            png: dir.join("shot.png"),
+            png2: dir.join("second.png"),
+            dir,
+            store,
+            rt,
+            server: None,
+            client: client_for(endpoint),
+            vision_model: Arc::default(),
+            id,
+            events,
+            png_b64: String::new(),
+            png2_b64: String::new(),
+            pool: None,
+            owned: false,
+        }
+    }
+
+    /// The fake provider's `…/v1/` endpoint.
+    pub(super) fn endpoint(&self) -> String {
+        format!("{}/v1/", self.server.as_ref().expect("own server").uri())
     }
 
     fn resolve(&self, id: &str) -> Resolved {
@@ -574,6 +604,8 @@ impl Harness {
 
     pub(super) async fn requests(&self) -> Vec<Value> {
         self.server
+            .as_ref()
+            .expect("own server")
             .received_requests()
             .await
             .unwrap()
@@ -598,9 +630,26 @@ impl Harness {
     }
 }
 
+/// A genai client whose every request goes to `endpoint` (the fake provider).
+fn client_for(endpoint: &str) -> Client {
+    let endpoint = endpoint.to_owned();
+    Client::builder()
+        .with_service_target_resolver(ServiceTargetResolver::from_resolver_fn(
+            move |mut t: ServiceTarget| -> genai::resolver::Result<ServiceTarget> {
+                t.endpoint = Endpoint::from_owned(endpoint.clone());
+                t.auth = AuthData::Key("x".into());
+                Ok(t)
+            },
+        ))
+        .build()
+        .unwrap()
+}
+
 impl Drop for Harness {
     fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.dir);
+        if self.owned {
+            let _ = std::fs::remove_dir_all(&self.dir);
+        }
     }
 }
 
