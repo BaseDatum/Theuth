@@ -1,0 +1,386 @@
+diff --git a/internal/api/admin.go b/internal/api/admin.go
+index d8af9c1..0d68c27 100644
+--- a/internal/api/admin.go
++++ b/internal/api/admin.go
+@@ -5,6 +5,7 @@ import (
+ 	"log/slog"
+ 	"net/http"
+ 	"strconv"
++	"strings"
+ 	"time"
+ 
+ 	"github.com/skrashevich/telegram-mock-ai/internal/bot"
+@@ -69,6 +70,10 @@ func (a *AdminServer) Handler() http.Handler {
+ 	// State dump
+ 	mux.HandleFunc("GET /api/state", a.handleDumpState)
+ 
++	// Bot API call ledger (?since=<seq>); DELETE clears it
++	mux.HandleFunc("GET /api/calls", a.handleListCalls)
++	mux.HandleFunc("DELETE /api/calls", a.handleResetCalls)
++
+ 	return mux
+ }
+ 
+@@ -238,8 +243,9 @@ func (a *AdminServer) handleInjectMessage(w http.ResponseWriter, r *http.Request
+ 	}
+ 
+ 	var req struct {
+-		UserID int64  `json:"user_id"`
+-		Text   string `json:"text"`
++		UserID   int64                  `json:"user_id"`
++		Text     string                 `json:"text"`
++		Entities []models.MessageEntity `json:"entities,omitempty"`
+ 	}
+ 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+ 		respondError(w, http.StatusBadRequest, "Bad Request: invalid JSON")
+@@ -258,11 +264,19 @@ func (a *AdminServer) handleInjectMessage(w http.ResponseWriter, r *http.Request
+ 		return
+ 	}
+ 
++	// Like a real client: a leading "/word" is a bot_command entity unless the
++	// caller supplied entities explicitly.
++	if req.Entities == nil && strings.HasPrefix(req.Text, "/") {
++		word := strings.Fields(req.Text)[0]
++		req.Entities = []models.MessageEntity{{Type: "bot_command", Offset: 0, Length: len(word)}}
++	}
++
+ 	msg := a.store.StoreMessage(models.Message{
+-		From: user,
+-		Chat: *chat,
+-		Date: time.Now().Unix(),
+-		Text: req.Text,
++		From:     user,
++		Chat:     *chat,
++		Date:     time.Now().Unix(),
++		Text:     req.Text,
++		Entities: req.Entities,
+ 	})
+ 
+ 	// Dispatch to all bots in this chat
+@@ -331,3 +345,13 @@ func (a *AdminServer) handleDumpState(w http.ResponseWriter, r *http.Request) {
+ 	}
+ 	respondJSON(w, http.StatusOK, state)
+ }
++
++func (a *AdminServer) handleListCalls(w http.ResponseWriter, r *http.Request) {
++	since, _ := strconv.ParseInt(r.URL.Query().Get("since"), 10, 64)
++	respondJSON(w, http.StatusOK, ledger.Since(since))
++}
++
++func (a *AdminServer) handleResetCalls(w http.ResponseWriter, r *http.Request) {
++	ledger.Reset()
++	respondJSON(w, http.StatusOK, map[string]string{"status": "cleared"})
++}
+diff --git a/internal/api/handler_info.go b/internal/api/handler_info.go
+index 555da3d..4af10b5 100644
+--- a/internal/api/handler_info.go
++++ b/internal/api/handler_info.go
+@@ -8,7 +8,24 @@ import (
+ )
+ 
+ func (s *Server) handleGetMe(w http.ResponseWriter, r *http.Request, b *bot.Bot) {
+-	respondOK(w, b.User)
++	// api.telegram.org returns a User plus the bot capability flags; strict
++	// clients (tgbot's `Bot`) require every flag, so the mock sends them all.
++	respondOK(w, map[string]any{
++		"id":                             b.User.ID,
++		"is_bot":                         true,
++		"first_name":                     b.User.FirstName,
++		"username":                       b.User.Username,
++		"can_join_groups":                true,
++		"can_read_all_group_messages":    false,
++		"supports_inline_queries":        false,
++		"can_connect_to_business":        false,
++		"has_main_web_app":               false,
++		"has_topics_enabled":             false,
++		"allows_users_to_create_topics":  false,
++		"can_manage_bots":                false,
++		"supports_guest_queries":         false,
++		"supports_join_request_queries":  false,
++	})
+ }
+ 
+ func (s *Server) handleGetChat(w http.ResponseWriter, r *http.Request, b *bot.Bot) {
+diff --git a/internal/api/handler_messages.go b/internal/api/handler_messages.go
+index e792462..fe8ad72 100644
+--- a/internal/api/handler_messages.go
++++ b/internal/api/handler_messages.go
+@@ -356,6 +356,7 @@ func (s *Server) handleSendRichMessage(w http.ResponseWriter, r *http.Request, b
+ 		Chat:        *chat,
+ 		Date:        time.Now().Unix(),
+ 		RichMessage: json.RawMessage(richMessageRaw),
++		ReplyMarkup: parseReplyMarkup(r),
+ 	})
+ 
+ 	respondOK(w, msg)
+@@ -390,15 +391,10 @@ func (s *Server) handleSendRichMessageDraft(w http.ResponseWriter, r *http.Reque
+ 		return
+ 	}
+ 
+-	// Draft messages are stored like regular rich messages
+-	msg := s.store.StoreMessage(models.Message{
+-		From:        &b.User,
+-		Chat:        *chat,
+-		Date:        time.Now().Unix(),
+-		RichMessage: json.RawMessage(richMessageRaw),
+-	})
+-
+-	respondOK(w, msg)
++	// A draft is not a stored message: api.telegram.org answers True (clients
++	// decode a bool), and the draft text is visible in the call ledger.
++	_ = chat
++	respondBool(w, true)
+ }
+ 
+ func defaultReplyPrompt(user models.User) string {
+@@ -412,3 +408,16 @@ Keep your responses concise and conversational.
+ Output ONLY the message text, no JSON, no formatting markers.
+ Use the language that the bot writes in.`
+ }
++
++// parseReplyMarkup reads an optional inline keyboard; nil when absent or invalid.
++func parseReplyMarkup(r *http.Request) *models.InlineKeyboard {
++	rm := parseStringParam(r, "reply_markup")
++	if rm == "" {
++		return nil
++	}
++	var kb models.InlineKeyboard
++	if err := json.Unmarshal([]byte(rm), &kb); err != nil {
++		return nil
++	}
++	return &kb
++}
+diff --git a/internal/api/ledger.go b/internal/api/ledger.go
+new file mode 100644
+index 0000000..63df253
+--- /dev/null
++++ b/internal/api/ledger.go
+@@ -0,0 +1,148 @@
++package api
++
++import (
++	"bytes"
++	"encoding/json"
++	"io"
++	"net/http"
++	"strings"
++	"sync"
++	"time"
++)
++
++// LedgerEntry is one Bot API call as the mock saw it.
++type LedgerEntry struct {
++	Seq      int64           `json:"seq"`
++	At       time.Time       `json:"at"`
++	Method   string          `json:"method"`
++	Params   json.RawMessage `json:"params,omitempty"`
++	Status   int             `json:"status"`
++	Response json.RawMessage `json:"response,omitempty"`
++	TookMS   int64           `json:"took_ms"`
++}
++
++// Ledger is an append-only record of Bot API calls, served by the admin API.
++type Ledger struct {
++	mu      sync.Mutex
++	entries []LedgerEntry
++	next    int64
++}
++
++// ledger is process-wide: the bot server appends, the admin server reads.
++var ledger = &Ledger{next: 1}
++
++// Since returns entries with seq >= since.
++func (l *Ledger) Since(since int64) []LedgerEntry {
++	l.mu.Lock()
++	defer l.mu.Unlock()
++	out := make([]LedgerEntry, 0, len(l.entries))
++	for _, e := range l.entries {
++		if e.Seq >= since {
++			out = append(out, e)
++		}
++	}
++	return out
++}
++
++// Reset drops every entry; seq keeps counting.
++func (l *Ledger) Reset() {
++	l.mu.Lock()
++	l.entries = nil
++	l.mu.Unlock()
++}
++
++func (l *Ledger) add(e LedgerEntry) {
++	l.mu.Lock()
++	e.Seq = l.next
++	l.next++
++	l.entries = append(l.entries, e)
++	l.mu.Unlock()
++}
++
++// recorder captures the status and body written by a handler.
++type recorder struct {
++	http.ResponseWriter
++	status int
++	body   bytes.Buffer
++}
++
++func (r *recorder) WriteHeader(code int) {
++	r.status = code
++	r.ResponseWriter.WriteHeader(code)
++}
++
++func (r *recorder) Write(b []byte) (int, error) {
++	r.body.Write(b)
++	return r.ResponseWriter.Write(b)
++}
++
++// requestParams snapshots the request parameters as JSON (JSON body as-is,
++// form/query values as an object), leaving the body readable for the handler.
++func requestParams(r *http.Request) json.RawMessage {
++	ct := r.Header.Get("Content-Type")
++	if strings.HasPrefix(ct, "application/json") && r.Body != nil {
++		body, err := io.ReadAll(io.LimitReader(r.Body, 10<<20))
++		if err != nil {
++			return nil
++		}
++		r.Body.Close()
++		r.Body = io.NopCloser(bytes.NewReader(body))
++		if json.Valid(body) {
++			return json.RawMessage(body)
++		}
++		b, _ := json.Marshal(string(body))
++		return b
++	}
++	if strings.HasPrefix(ct, "multipart/form-data") {
++		// Text fields only (files are named, not stored); the parsed form stays
++		// on the request for the handler's FormValue calls.
++		if err := r.ParseMultipartForm(32 << 20); err != nil {
++			b, _ := json.Marshal(map[string]string{"multipart_error": err.Error()})
++			return b
++		}
++		m := make(map[string]any, len(r.MultipartForm.Value)+1)
++		for k, v := range r.MultipartForm.Value {
++			if len(v) > 0 {
++				if json.Valid([]byte(v[0])) {
++					m[k] = json.RawMessage(v[0])
++				} else {
++					m[k] = v[0]
++				}
++			}
++		}
++		for k := range r.MultipartForm.File {
++			m[k] = "<file>"
++		}
++		b, _ := json.Marshal(m)
++		return b
++	}
++	_ = r.ParseForm()
++	m := make(map[string]string, len(r.Form))
++	for k, v := range r.Form {
++		if len(v) > 0 {
++			m[k] = v[0]
++		}
++	}
++	b, _ := json.Marshal(m)
++	return b
++}
++
++// recordCall runs handler and appends the call to the ledger.
++func recordCall(method string, w http.ResponseWriter, r *http.Request, handler func(http.ResponseWriter)) {
++	params := requestParams(r)
++	rec := &recorder{ResponseWriter: w, status: http.StatusOK}
++	start := time.Now()
++	handler(rec)
++	var resp json.RawMessage
++	if json.Valid(rec.body.Bytes()) {
++		resp = json.RawMessage(bytes.Clone(rec.body.Bytes()))
++	}
++	ledger.add(LedgerEntry{
++		At:       start,
++		Method:   method,
++		Params:   params,
++		Status:   rec.status,
++		Response: resp,
++		TookMS:   time.Since(start).Milliseconds(),
++	})
++}
+diff --git a/internal/api/params.go b/internal/api/params.go
+index 82103c5..0b8aaac 100644
+--- a/internal/api/params.go
++++ b/internal/api/params.go
+@@ -33,9 +33,15 @@ func parseStringParam(r *http.Request, name string) string {
+ 		return v
+ 	}
+ 
+-	// Try form data
++	// Try form data (multipart needs ParseMultipartForm; ParseForm ignores it)
+ 	ct := r.Header.Get("Content-Type")
+-	if strings.HasPrefix(ct, "application/x-www-form-urlencoded") || strings.HasPrefix(ct, "multipart/form-data") {
++	if strings.HasPrefix(ct, "multipart/form-data") {
++		if err := r.ParseMultipartForm(32 << 20); err == nil {
++			if v := r.FormValue(name); v != "" {
++				return v
++			}
++		}
++	} else if strings.HasPrefix(ct, "application/x-www-form-urlencoded") {
+ 		if err := r.ParseForm(); err == nil {
+ 			if v := r.FormValue(name); v != "" {
+ 				return v
+diff --git a/internal/api/router.go b/internal/api/router.go
+index b2f3790..4cde483 100644
+--- a/internal/api/router.go
++++ b/internal/api/router.go
+@@ -3,6 +3,7 @@ package api
+ import (
+ 	"log/slog"
+ 	"net/http"
++	"os"
+ 	"strings"
+ 
+ 	"github.com/skrashevich/telegram-mock-ai/internal/bot"
+@@ -174,18 +175,21 @@ func (s *Server) handleBotRequest(w http.ResponseWriter, r *http.Request) {
+ 		}
+ 	}
+ 
+-	// On first connection, trigger welcome messages
+-	if s.registry.MarkConnected(token) {
++	// On first connection, trigger welcome messages (TELEGRAM_MOCK_WELCOME_ENABLED=false
++	// keeps the chats silent for deterministic bot tests).
++	if s.registry.MarkConnected(token) && os.Getenv("TELEGRAM_MOCK_WELCOME_ENABLED") != "false" {
+ 		go s.sendWelcomeMessages(b)
+ 	}
+ 
+ 	methodLower := strings.ToLower(method)
+ 	handler, ok := s.handlers[methodLower]
+ 	if !ok {
+-		respondError(w, http.StatusBadRequest, "Bad Request: method not found")
++		recordCall(method, w, r, func(w http.ResponseWriter) {
++			respondError(w, http.StatusBadRequest, "Bad Request: method not found")
++		})
+ 		return
+ 	}
+ 
+ 	slog.Debug("API request", "method", method, "bot", b.User.Username)
+-	handler(w, r, b)
++	recordCall(method, w, r, func(w http.ResponseWriter) { handler(w, r, b) })
+ }
+diff --git a/internal/state/store.go b/internal/state/store.go
+index 59431a9..b95071a 100644
+--- a/internal/state/store.go
++++ b/internal/state/store.go
+@@ -78,6 +78,15 @@ func (s *Store) ListUsers() []models.User {
+ // CreateChat adds a chat to the store. If ID is 0, auto-generates one.
+ // Group chats get negative IDs.
+ func (s *Store) CreateChat(c models.Chat) *models.Chat {
++	// A private chat is the peer user: Bot API clients require its first_name.
++	// Looked up before chatMu so the store never nests chatMu → userMu.
++	if c.Type == "private" && c.FirstName == "" {
++		if u, ok := s.GetUser(c.ID); ok {
++			c.FirstName, c.LastName, c.Username = u.FirstName, u.LastName, u.Username
++		} else {
++			c.FirstName = "Private"
++		}
++	}
+ 	s.chatMu.Lock()
+ 	defer s.chatMu.Unlock()
+ 	if c.ID == 0 {
