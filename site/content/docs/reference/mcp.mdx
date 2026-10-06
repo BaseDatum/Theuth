@@ -159,7 +159,7 @@ A server that answers the initialize request with a 401 challenge is
 recorded as `○ login required` with the error
 `<server>: login required (/login <server>)`. Only you can log in:
 
-- `/login <server>` in the TUI, Signal or `/theuth login <server>` on Slack,
+- `/login <server>` in the TUI, Signal or Telegram, or `/theuth login <server>` on Slack,
   or `l` on the server's row in `/mcp`, or the Login action in the desktop
   Settings.
 - The harness starts a loopback listener on `127.0.0.1`, opens your browser
@@ -191,7 +191,7 @@ auth state, marked `logged in` or `login required`. A stdio server answers
 | `/mcp sync` (or `s` in the menu) | `git pull --ff-only` in every repo under `mcp/repos/`; servers whose `cwd` is inside an updated repo restart |
 
 Server and repo names must match `[a-z0-9][a-z0-9._-]*`. Slack has
-`/theuth mcp [add <url|json>|sync]`, Signal `/mcp [add <url|json>|sync]`, and
+`/theuth mcp [add <url|json>|sync]`, Signal and Telegram `/mcp [add <url|json>|sync]`, and
 the model has `add_mcp_server` / `remove_mcp_server` (destructive) and
 `add_mcp_repo` / `sync_mcp` (mutating). The user's `git` binary is used; MCP
 cloning reports that git is missing and everything else keeps working.

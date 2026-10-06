@@ -103,7 +103,7 @@ Open the agent and press **Approve hire** — the proposal flags are cleared, th
 
 **Charter tab.** The agent's detail page has a **Charter** tab: a document editor with a chat to theuth below it. Edits land in `agents/<name>.md` once you pause typing. theuth's own charter is shown read-only here (edit `~/.theuth/prompt.md`).
 
-**Slack and Signal.** The first word of a message routes it: `research-assistant: compare these two vendors` goes to that agent's desk and binds the thread to it; `theuth …` addresses the default explicitly; anything else is theuth's. Matching is case-insensitive and the trailing `:` or `,` is optional. Only active, approved agents are routable. There is no `@` syntax and no per-agent channel. The desktop and terminal composers do not use this routing — open the desk instead. See [Channels](/docs/automation/channels).
+**Slack and Signal.** The first word of a message routes it: `research-assistant: compare these two vendors` goes to that agent's desk and binds the thread to it; `theuth …` addresses the default explicitly; anything else is theuth's. Matching is case-insensitive and the trailing `:` or `,` is optional. Only active, approved agents are routable. There is no `@` syntax and no per-agent channel. **Telegram does not route by first word**: every message in the bot's chats goes to theuth, and a leading `name:` reaches the model as ordinary text. The desktop and terminal composers do not use this routing either — open the desk instead. See [Channels](/docs/automation/channels).
 
 **Task threads.** Writing an agent's name as a word in a task comment wakes it on that task.
 
@@ -196,7 +196,7 @@ Spend is counted on the engine that charged it; in a mesh, work done on another 
 ## Safety and permissions
 
 - **Hiring is consent.** Pressing Hire, Approve hire or finishing the wizard is the approval; `agent_put` only works from your own chats or theuth's desk. A desk that tries it is refused: `agent_put is the user's approval; as agent <name>'s desk, propose with agent_propose`. Proposals land paused and wait for you.
-- **Tool ceiling.** `tools:` installs a risk cap on the desk; children cannot exceed the lowest cap among their ancestors. A call above the cap is denied outright (`denied: subagent is capped at <risk>`), never asked. Inside the cap, the usual `tools.policy` applies — `read_only` allowed, `mutating` and `destructive` ask by default — and approval cards from a desk's children reach you wherever you are (desktop card, TUI `[y]/[n]`, Slack buttons, Signal 👍/👎). The timeout is `tools.approval_timeout_secs` (300 s → deny). `/approvals off` and the Approvals settings tab apply to desks like any other session; there is no per-agent "always allow".
+- **Tool ceiling.** `tools:` installs a risk cap on the desk; children cannot exceed the lowest cap among their ancestors. A call above the cap is denied outright (`denied: subagent is capped at <risk>`), never asked. Inside the cap, the usual `tools.policy` applies — `read_only` allowed, `mutating` and `destructive` ask by default — and approval cards from a desk's children reach you wherever you are (desktop card, TUI `[y]/[n]`, Slack or Telegram buttons, Signal 👍/👎). The timeout is `tools.approval_timeout_secs` (300 s → deny). `/approvals off` and the Approvals settings tab apply to desks like any other session; there is no per-agent "always allow".
 - **MCP allowlist.** `mcp:` limits which MCP servers and tools a desk and its children can see at all. Omitted means every configured server.
 - **Secrets** are never agent-scoped. `{{secret:NAME}}` in a tool call resolves on the executing engine and raises the call to at least *ask* — see [Secrets](/docs/reference/secrets).
 - **Knowledge scope.** An agent's sessions read and write knowledge as `agent:<name>` with its reporting line as the team; you and theuth see everything.
@@ -248,6 +248,6 @@ Lifecycle: **draft card** → (Hire) **active** ⇄ **paused** → (Remove) **de
 - [Schedules](/docs/automation/schedules) — routines with `agent: <name>` file a task for that agent on every fire
 - [Sandboxes](/docs/automation/sandboxes) — `runs_in: vm`
 - [Mesh](/docs/automation/mesh) — the hub lease that hosts desks
-- [Channels](/docs/automation/channels) — first-word routing on Slack and Signal
+- [Channels](/docs/automation/channels) — first-word routing on Slack and Signal (not on Telegram)
 - [Tools and permissions](/docs/reference/tools-permissions)
 - [Configuration](/docs/reference/configuration)

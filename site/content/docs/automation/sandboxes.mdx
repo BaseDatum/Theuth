@@ -237,7 +237,7 @@ Only `sandbox_list` and `sandbox_create` exist when `sandbox.vm.enabled` is fals
 
 ## Safety and permissions
 
-- Every `sandbox_*` call follows `tools.policy`: with the defaults, create, start, stop, pause, resume, share, unshare, resize, snapshot and takeover **ask**; restore and destroy are destructive and **ask**; list and desktop never ask. Approvals are the usual Allow/Deny cards (TUI `[y]`/`[n]`, desktop card, Slack buttons, Signal 👍/👎); unanswered after `tools.approval_timeout_secs` (300 s) they are denied. `/approvals off` lifts them for the session. Full details in [Tools and permissions](/docs/reference/tools-permissions).
+- Every `sandbox_*` call follows `tools.policy`: with the defaults, create, start, stop, pause, resume, share, unshare, resize, snapshot and takeover **ask**; restore and destroy are destructive and **ask**; list and desktop never ask. Approvals are the usual Allow/Deny cards (TUI `[y]`/`[n]`, desktop card, Slack or Telegram buttons, Signal 👍/👎); unanswered after `tools.approval_timeout_secs` (300 s) they are denied. `/approvals off` lifts them for the session. Full details in [Tools and permissions](/docs/reference/tools-permissions).
 - Actions you take yourself in the app or on the CLI are direct and do not prompt.
 - Inside the VM the child session's own tool calls (`shell`, `computer_click`, …) are approved under the same policy; they just execute on the guest.
 - **Trust boundary.** The guest sees only its shares — read-write by default, so prefer `readonly` for anything the agent should not alter. It never sees your `~/.theuth`, your other files or your LAN under the default network policy. It *does* hold a replica of your vault; treat a sandbox as you would any paired engine.

@@ -44,7 +44,7 @@ Nothing else is ever overwritten.
 | `documents/`, `index.sqlite` | Yjs documents behind the editor and their index | live |
 | `artifacts/`, `artifacts.sqlite`, `artifacts.owners/` | content-addressed blobs shown with `show` or published with `app`, their index, per-process owner locks | live |
 | `codeindex/<slug>-<hash>.sqlite` | per-repository symbol indexes | live |
-| `agents/`, `decisions/`, `models/`, `sandbox/`, `signal/`, `link/` | roster agents, decision logs, local speech and decision models, sandbox VM state, Signal linked-device state and inbox, link identity | plugin-specific |
+| `agents/`, `decisions/`, `models/`, `sandbox/`, `signal/`, `telegram/`, `link/` | roster agents, decision logs, local speech and decision models, sandbox VM state, Signal linked-device state and inbox, Telegram thread bindings (`threads.json`) and inbox, link identity | plugin-specific |
 | `*.sqlite` (`mesh`, `replica`, `link`, `mcp`, `skills`, `tasks`, `roster`, `schedule`) | replication and plugin state | live |
 
 Deleting `knowledge.sqlite` is safe; it is a derived index and is rebuilt.
@@ -99,7 +99,8 @@ memory at the same time:
 | `/link on\|off`, `/link relay <url>`, `/link name <n>` | `link.enabled`, `link.relay`, `link.name` |
 | Settings → Search (desktop) | `web.*` read/budget keys, `search_providers.<provider>.*` |
 | `t mesh hub <mode>` | `mesh.hub` |
-| `t --slack-setup`, `t --link-signal` | `slack.owner`, `slack.enabled`, `signal.owner`, `signal.device_name` |
+| `t --slack-setup`, `t --link-signal`, `t --telegram-setup` | `slack.owner`, `slack.enabled`, `signal.owner`, `signal.device_name`, `telegram.owner`, `telegram.enabled` |
+| Telegram pairing (`/start <code>`, `telegram_link`), `/telegram allow\|rm\|group add\|group rm`, Settings › Channels › Telegram | `telegram.owner`, `telegram.allowed`, `telegram.groups` |
 
 The rewrite is line-level: it replaces the first `key:` line inside the
 section, keeps any trailing comment, and appends the key or section if it is
@@ -277,7 +278,7 @@ unset.
 | `models.webgpu_adapter` | `null` | substring of the adapter to use when several GPUs answer |
 | `decision.enabled` / `device` / `idle_unload` | `true` / `auto` / `3m` | local decision oracle; every family starts in `shadow` mode |
 
-### signal, slack, sessions
+### signal, slack, telegram, sessions
 
 | Key | Default | Meaning |
 |---|---|---|
@@ -286,6 +287,9 @@ unset.
 | `slack.enabled` | `true` | the daemon opens Socket Mode when `slack_bot` and `slack_app` secrets exist (`--headless` only) |
 | `slack.owner` / `allowed` / `channels` | `""` / `[]` / `[]` | owner member id; more user ids; channel ids where `@theuth` is honoured (empty = DMs only) |
 | `slack.tools` / `reasoning` / `approvals` | `all` / `true` / `all` | task cards per tool call (`all`, `errors`, `none`); quoted reasoning; where approvals for unbound sessions go (`all` = owner DM, `threads` = nowhere) |
+| `telegram.enabled` | `true` | the daemon polls the Bot API when the `telegram_bot` secret exists (`--headless` only) |
+| `telegram.owner` / `allowed` / `groups` | unset / `[]` / `[]` | owner's numeric user id (written by `--telegram-setup` or pairing); more user ids; chat ids where mentions and commands are honoured (empty = private chats only) |
+| `telegram.tools` / `reasoning` / `approvals` | `all` / `true` / `all` | activity cards per tool batch (`all`, `errors`, `none`); reasoning text in the expandable quote; where approvals for unbound sessions go (`all` = owner chat, `threads` = nowhere) |
 | `sessions.takeover_secs` / `release_wait_secs` / `orphan_keep_days` | `300` / `10` / `7` | transcript replication across mesh engines |
 
 ## A compact config.yaml

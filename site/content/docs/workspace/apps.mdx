@@ -16,7 +16,7 @@ An app is one of several ways the agent can show you something. The others are s
 | A file card (markdown, CSV, image, PDF …) | The `show` tool | No — read, copy, save (see [Documents, notes and boards](/docs/workspace/documents)) |
 | An app panel | The `app` tool | Yes — queries read live, actions run tools |
 
-The static kinds are called *surfaces*: the model writes a fence, each frontend renders it as well as it can (the desktop draws it, the TUI prints a text rendering, Slack and Signal receive a flattened code block). An app is different because it keeps running after the agent's turn is over: it talks to the engine on its own.
+The static kinds are called *surfaces*: the model writes a fence, each frontend renders it as well as it can (the desktop draws it, the TUI prints a text rendering, Slack, Signal and Telegram receive a flattened code block). An app is different because it keeps running after the agent's turn is over: it talks to the engine on its own.
 
 The agent decides between a static picture and an app on its own, but you can simply ask: "build me a panel for …", "make this a clickable prototype", "I want a form that …". If you want a picture rather than a screen, say so ("draw a diagram", "show me a table"). You can also promote an inline `openui` fence from a reply into a real app by hovering it and choosing **Open as app** (desktop only; no model turn is spent).
 
@@ -27,7 +27,7 @@ The agent decides between a static picture and an app on its own, but you can si
 | Desktop app | The live panel: the artifact card in chat opens it on the right, the `/artifacts` explorer and search also open it |
 | Browser UI through the relay (`/link`) | The same bundle, so the same live panel, from any paired device |
 | TUI | A receipt card marked `interactive on desktop/web`; `Ctrl+O` shows the `.openui` source read-only, `o` opens the file with the OS, `/apps` lists them |
-| Slack / Signal | The `.openui` source as a file with the note `Interactive app — open on desktop/web` |
+| Slack / Signal / Telegram | The `.openui` source as a file with the note `Interactive app — open on desktop/web` |
 | ACP clients | The usual artifact link to the `.openui` file |
 
 Tool execution always happens on the engine that owns the session, never in the browser. Opening an app from a phone over the relay does not change what a press means.
@@ -93,7 +93,7 @@ In the TUI, `/apps` lists the session's apps (`⏎` opens the source with the OS
 
 There is no share link for apps. Share links (`https://<relay>/d#…`) exist only for notes, knowledge concepts and boards — see [Documents, notes and boards](/docs/workspace/documents). An app runs for you on your own paired devices through the relay-served UI; a third party cannot be given a link to it.
 
-What you *can* hand over is the source: `Save as…` / `Download` in the desktop, `e` in the TUI `/apps` picker, or the `.openui` file Slack and Signal receive. The recipient can read it, or paste it to their own agent, but it will not run outside your engine.
+What you *can* hand over is the source: `Save as…` / `Download` in the desktop, `e` in the TUI `/apps` picker, or the `.openui` file Slack, Signal and Telegram receive. The recipient can read it, or paste it to their own agent, but it will not run outside your engine.
 
 ## Turning apps off
 

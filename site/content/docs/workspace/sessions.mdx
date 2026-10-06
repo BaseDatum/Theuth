@@ -35,7 +35,7 @@ theuth runs **one engine per data dir**. Whatever starts first — `t`, `t --hea
 
 - **Attached terminal.** `/quit` or `Ctrl+C` closes only your view; the engine, its sessions and any running turn carry on. Reopen with `t` or `t --resume <id>`.
 - **Terminal that is the engine.** Quitting stops the process. Messages already written are safe; a turn that was mid-reply stops with the process and is not re-sent when you come back — a dangling tool call is repaired on resume so the next turn works.
-- **Daemon.** `t --headless` (or the installed service, `t --install-service`) keeps sessions running with no UI attached; phones, Slack and Signal talk to it (see [Channels](/docs/automation/channels)).
+- **Daemon.** `t --headless` (or the installed service, `t --install-service`) keeps sessions running with no UI attached; phones, Slack, Signal and Telegram talk to it (see [Channels](/docs/automation/channels)).
 
 A second engine on the same data dir is refused with:
 

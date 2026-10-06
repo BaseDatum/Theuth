@@ -1,6 +1,6 @@
 ---
 title: CLI
-description: Every flag and subcommand of the t binary, theuth-relay flags, the TUI slash commands and key bindings, and the Signal and Slack command sets, as implemented.
+description: Every flag and subcommand of the t binary, theuth-relay flags, the TUI slash commands and key bindings, and the Signal, Slack and Telegram command sets, as implemented.
 ---
 
 The binary is `t` (`t --version` prints the release). From a checkout,
@@ -12,7 +12,7 @@ each other; the subcommands talk to a running daemon over JSON-RPC.
 | Invocation | What it does |
 |---|---|
 | `t` | terminal UI. If an engine is already running on this data dir, the TUI attaches to it instead of starting a second one |
-| `t --headless` | daemon only: JSON-RPC on `rpc.listen` (default `127.0.0.1:7777`) with the bearer in `<data_dir>/token`; the Signal and Slack channels run only here. Implies `--serve` |
+| `t --headless` | daemon only: JSON-RPC on `rpc.listen` (default `127.0.0.1:7777`) with the bearer in `<data_dir>/token`; the Signal, Slack and Telegram channels run only here. Implies `--serve` |
 | `t --serve` | start the TUI and also bind `rpc.listen` (without it the engine still serves on an ephemeral loopback port recorded in `engine.json`) |
 | `t --resume <id>` | open an existing session in the TUI |
 | `t -p "prompt"`, `t --prompt "prompt"` | print mode: stream the reply as lines, exit when the turn ends; `-p` alone reads the prompt from stdin (`echo "prompt" \| t -p`). Approvals are answered by typing `y` or `n` on stdin; a closed stdin denies them |
@@ -23,6 +23,7 @@ each other; the subcommands talk to a running daemon over JSON-RPC.
 | `t --uninstall-service` | remove that unit; data dir and pairings stay |
 | `t --slack-setup [--app <A…>]` | create or update the Slack app from the bundled manifest, verify tokens, write secrets and config |
 | `t --slack-manifest` | print the Slack app manifest (no data dir needed) |
+| `t --telegram-setup` | verify a @BotFather token with `getMe`, store it as the `telegram_bot` secret, register the bot's command menus, print a `t.me/<bot>?start=<code>` pairing link and QR, wait up to 10 min for the owner's `/start`, write `telegram.owner` / `telegram.enabled`. Refuses while an engine runs on this data dir (`daemon running: use /telegram link or the telegram_link tool`) |
 | `t --update` | force an update check; logs to stderr (`RUST_LOG=debug t --update` for detail); exit 1 on `update: <error>`. Installs `.tar.gz` releases (macOS, Linux CLI); the Windows CLI zip is not self-updated |
 | `t --secret-set NAME [--secret-note <text>]`, `t --secret-rm NAME`, `t --secret-list` | vault management; see [Secrets](/docs/reference/secrets) |
 | `t --app-parser-hash` | print the app parser helper hash this build wants |
@@ -152,7 +153,7 @@ table is the complete list as implemented; `[…]` marks optional arguments.
 | `/sandbox [desktop <name>]` | sandbox VMs |
 
 There is no `/help`, `/status` or `/doctor` in the TUI; `/status` exists on
-Signal and `status` on Slack. The desktop app has its own command list that
+Signal and Telegram and `status` on Slack. The desktop app has its own command list that
 mirrors this one and adds `/escalate`, `/subagent` and `/skill:`; it lacks
 TUI-only commands such as `/dictate`, `/terminals`, `/secrets`, `/link`,
 `/mesh`, `/nodes` and `/sandbox`, which have Settings pages instead.
@@ -217,4 +218,23 @@ command shows help; owner-only commands answer
 `a2a [reload]`, `broadcast [--next] …`,
 `slack [status|allow <U>|rm <U>|channel add <C>|channel rm <C>]` (owner).
 
-See [Channels](/docs/automation/channels) for pairing and threading on both.
+## Telegram commands
+
+Native bot commands (Telegram's `/` menu lists them). Unknown words return
+the help; replies in groups are ephemeral; owner-only commands answer
+`This command is restricted to the owner.`
+
+`/start [code]` (pair, or help), `/help`, `/status`, `/new`, `/sessions`,
+`/resume <id>`, `/cancel [name]`, `/compact [summary|cut|snap|style …]`,
+`/clear`, `/undo`, `/redo`, `/model [id]`, `/effort [level|clear]`, `/agents`,
+`/jobs [kill <id>]`, `/prompt`, `/skills [add <url>|rm <name>|sync]`,
+`/mcp [add <url|json>|sync]`, `/login [name]`, `/logout <name>`,
+`/provider [add <name> <url> <key>|rm <name>]`.
+
+Owner only: `/approvals on|off [always]`,
+`/telegram [status|link|allow <id>|rm <id>|group add <id>|group rm <id>]`,
+`/communication [on|off [always]]`, `/peers [<query> | scope owner|isolated [alias]]`,
+`/requests [<id> | answer <id> <text>]`, `/broadcast [--next] running|roots|<id>[,<id>…] <text>`,
+`/a2a [reload]`. There is no `/approve` or `/deny`: approvals are buttons.
+
+See [Channels](/docs/automation/channels) for pairing and threading on all three.

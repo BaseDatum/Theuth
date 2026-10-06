@@ -18,7 +18,7 @@ Delegation is theuth spawning a **child session** to do part of a job: a researc
 - **For external harnesses:** the harness installed and logged in, plus an entry in `~/.theuth/acp/agents.yaml` (added with `/acp add …` or Settings › Harnesses, below). Anything that speaks ACP v1 over stdio works.
 - **For other machines:** a paired node or mesh engine — see [Mesh](/docs/automation/mesh).
 
-No special mode is needed: delegation works in the desktop app, the terminal UI, and in `t --headless` behind Slack and Signal.
+No special mode is needed: delegation works in the desktop app, the terminal UI, and in `t --headless` behind Slack, Signal and Telegram.
 
 ## How it works
 
@@ -112,7 +112,7 @@ If the child stops and you want to continue in the *same* harness context — fo
 | `/peers scope owner\|isolated [alias]` | Promote or isolate a root (owner only; no model tool does this) |
 | Settings › Communication | Desktop switches for the same global and per-chat state |
 
-Scope: roots you open from the desktop or terminal are `owner` scope and may also reach other owner roots; roots created by a routine, an ACP client (`t --acp`), or a non-owner Slack/Signal contact are `isolated` to their own tree. Children always belong to their parent's tree. The model never sees another root's title, cwd or transcript.
+Scope: roots you open from the desktop or terminal are `owner` scope and may also reach other owner roots; roots created by a routine, an ACP client (`t --acp`), or a non-owner Slack/Signal/Telegram contact are `isolated` to their own tree. Children always belong to their parent's tree. The model never sees another root's title, cwd or transcript.
 
 ### `spawn_subagent` arguments
 
@@ -192,12 +192,13 @@ Exercised in this repo as of this writing: **opencode 1.18.30 and 2.0.22**, **om
 | `/subagent [model\|off]` (desktop) | Default child model |
 | `/cost`, desktop **CostPill** | Direct, descendants and total spend with a per-child table |
 | Slack | Each subagent gets its own thread; a live board of descendants in the parent thread; `/theuth agents` shows the tree |
-| `t --acp` | Run theuth itself as an ACP agent inside an editor (Zed: `agent_servers: {"theuth": {"command": "t", "args": ["--acp"]}}`); sessions opened this way are `isolated` scope. This mode loads a reduced plugin set — tools, secrets, knowledge, documents, web, browser, code index, routes, computer, artifacts, apps, the agent loop — and **no** routines, roster, tasks, mesh, sandboxes, meetings or voice; Slack and Signal load without their channel (status only) |
+| Telegram | With Topics on, each subagent gets its own topic (`↳ <name>`, renamed to `↳ <name> · <title>`); without topics it runs inline behind a `↳ spawned **name**` marker that you can reply to; a live board of descendants in the parent (8 rows, then `… n more`, `agents · all idle` when done); `/agents` shows the tree with **Cancel** and **Close topic** buttons |
+| `t --acp` | Run theuth itself as an ACP agent inside an editor (Zed: `agent_servers: {"theuth": {"command": "t", "args": ["--acp"]}}`); sessions opened this way are `isolated` scope. This mode loads a reduced plugin set — tools, secrets, knowledge, documents, web, browser, code index, routes, computer, artifacts, apps, the agent loop — and **no** routines, roster, tasks, mesh, sandboxes, meetings or voice; Slack, Signal and Telegram load without their channel (status only) |
 
 ## Safety and permissions
 
 - **Nothing about spawning is a privilege by itself.** `spawn_subagent` is a read-only tool and does not ask. The gate is `agent.communication`: off hides the whole family of tools and blocks delivery; `/communication off` on a session opts that tree out underneath a global on. Session opt-outs are memory-only.
-- **Children ask you, not the parent.** A native child's mutating/destructive calls go through the normal `tools.policy` and surface as Allow/Deny cards on the child session (TUI `[y]`/`[n]`, desktop card, Slack buttons, Signal 👍/👎 or `/approve <code>`); unanswered cards deny after `tools.approval_timeout_secs` (300 s). The parent transcript shows a pointer card to the waiting child.
+- **Children ask you, not the parent.** A native child's mutating/destructive calls go through the normal `tools.policy` and surface as Allow/Deny cards on the child session (TUI `[y]`/`[n]`, desktop card, Slack or Telegram buttons, Signal 👍/👎 or `/approve <code>`); unanswered cards deny after `tools.approval_timeout_secs` (300 s). The parent transcript shows a pointer card to the waiting child.
 - **Harness permissions are forwarded through the same gate.** Every `session/request_permission` from an external harness becomes a theuth approval with the harness's tool title and arguments, classified by the kind the harness reports. Allow maps to the harness's allow option, Deny to its reject option; a cancelled turn answers `cancelled`.
 - **`/approvals off` is inherited.** A session that opted out of prompts passes that to its children; `/approvals off always` writes `tools.approvals: false` for everyone. There is no per-tool "always allow". Details in [Tools and permissions](/docs/reference/tools-permissions).
 - **`tools:` ceilings are hard for theuth children only.** A native child capped at `read_only` is refused anything higher with `denied: subagent is capped at read_only`, and so are its descendants. An external harness only *reads* the cap as the first line of its brief — its own permission prompts are still forwarded to you, but the cap is advice, not enforcement.
@@ -250,7 +251,7 @@ Cost rolls up: each child's spend (returned by the provider, or an estimate show
 - [Agents](/docs/automation/agents) — named roster agents and desks, which also appear with subagent trees in the sidebar
 - [Mesh](/docs/automation/mesh) — nodes and engines you can delegate to with `agent: "<node>"`
 - [Tasks](/docs/automation/tasks)
-- [Channels](/docs/automation/channels) — subagent threads and approvals on Slack and Signal
+- [Channels](/docs/automation/channels) — subagent threads and approvals on Slack, Signal and Telegram
 - [Tools and permissions](/docs/reference/tools-permissions)
 - [Skills](/docs/reference/skills) — what `skills:` writes into a harness's cwd
 - [Configuration](/docs/reference/configuration)

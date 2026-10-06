@@ -1,16 +1,17 @@
 ---
-title: Channels — Slack and Signal
-description: Talk to theuth from Slack or from your phone over Signal — setup, who may talk, how threads and contacts map to sessions, approvals from chat, voice notes, and the limits.
+title: Channels — Slack, Signal and Telegram
+description: Talk to theuth from Slack, from your phone over Signal, or through a Telegram bot — setup, who may talk, how threads, contacts and topics map to sessions, approvals from chat, voice notes, and the limits.
 ---
 
-Channels let you use theuth from a chat app instead of the desktop app or the terminal. Slack turns the bot's DM (and `@theuth` mentions in channels you list) into sessions whose replies stream into a thread; Signal pairs the daemon as a linked device so texts from your phone become turns in a per-contact session. Both are full frontends — the same tools, the same approval rules — and both double as the place where tool approvals and `message_user` deliveries reach you when you are away from your desk.
+Channels let you use theuth from a chat app instead of the desktop app or the terminal. Slack turns the bot's DM (and `@theuth` mentions in channels you list) into sessions whose replies stream into a thread; Signal pairs the daemon as a linked device so texts from your phone become turns in a per-contact session; Telegram drives a bot you create with @BotFather, so the private chat with it (one topic per session when Topics are on) and the groups you list become sessions whose replies stream as a live draft. All three are full frontends — the same tools, the same approval rules — and all three double as the place where tool approvals and `message_user` deliveries reach you when you are away from your desk.
 
 ## Prerequisites
 
-- **A running daemon.** Channels only run in `t --headless`. The desktop app starts `t --headless` for you, so leaving the app open is enough; the terminal UI alone does not connect to Slack or Signal (`slack_status` / `signal_status` answer `daemon only` there).
+- **A running daemon.** Channels only run in `t --headless`. The desktop app starts `t --headless` for you, so leaving the app open is enough; the terminal UI alone does not connect to Slack, Signal or Telegram (`slack_status` / `signal_status` / `telegram_status` answer `daemon only` there).
 - **A model provider** configured, as for any session — see [Models and providers](/docs/getting-started/models).
 - **Slack:** permission to create an app in your workspace, plus your member id (`U…`). Tokens are stored in the secrets vault as `slack_bot` and `slack_app`, never in `config.yaml`.
 - **Signal:** a Signal account with a primary phone. The daemon joins as a *linked device*, so the usual setup is a dedicated number on a spare phone that you text from your own account. Group messages are ignored, and "Note to Self" on your own account is not supported, so a second number is in practice required.
+- **Telegram:** a bot from @BotFather (`/newbot`). Its token is saved as the `telegram_bot` secret by `t --telegram-setup` or in **Settings › Channels › Telegram** — never typed into Telegram itself. Turn **Topics** on for the bot (@BotFather → `/mybots` → the bot → *Bot Settings* → *Topics*) if you want one topic per session; without it the private chat holds one session at a time.
 - **Voice notes (optional):** the voice plugin (`voice.enabled`, on by default) and the local speech models under `~/.theuth/models/`. The desktop app downloads them; `t` on its own does not (use `scripts/fetch-models.sh` from the repository on a server).
 
 Approvals, risk levels and the `tools.policy` keys are shared with every other surface; [Tools and permissions](/docs/reference/tools-permissions) has the full story.
@@ -19,22 +20,22 @@ Approvals, risk levels and the `tools.policy` keys are shared with every other s
 
 Each channel is a plugin inside the daemon that maps a conversation to a session:
 
-| | Slack | Signal |
-|---|---|---|
-| Unit of conversation | one thread (`channel:thread_ts`) | one contact (phone number) |
-| New session | a top-level DM message, or an `@theuth` mention in a listed channel | the first message from a contact, or after `/new` |
-| Follow-up | a reply in the thread: steers a running turn, else starts the next one | the next text: steers a running turn, else starts the next one |
-| Pick up an old session | `/theuth resume <id>` in a new thread | `/resume <id>` |
-| Progress | 👀 on your message while working, then ✅ done / 🛑 cancelled / ❌ error | same reactions, plus a typing indicator and read receipts |
-| Output | one streamed bubble per turn, task cards per tool call, a quoted reasoning message, a footer with model, tokens and time | plain text in chunks of 2 000 characters |
-| Inbound files | `~/.theuth/slack/inbox/` | `~/.theuth/signal/inbox/` |
-| Bindings kept in | `~/.theuth/slack/threads.json` | `~/.theuth/signal/threads.json` |
+| | Slack | Signal | Telegram |
+|---|---|---|---|
+| Unit of conversation | one thread (`channel:thread_ts`) | one contact (phone number) | one chat (`<chat>`), or one topic (`<chat>:<topic>`) when the bot has Topics on |
+| New session | a top-level DM message, or an `@theuth` mention in a listed channel | the first message from a contact, or after `/new` | a message in the General area of a topics chat (a topic is created for it), the first message in a chat without topics, or after `/new` |
+| Follow-up | a reply in the thread: steers a running turn, else starts the next one | the next text: steers a running turn, else starts the next one | the next message in the topic or chat: steers a running turn, else starts the next one |
+| Pick up an old session | `/theuth resume <id>` in a new thread | `/resume <id>` | `/resume <id>` (from General it opens a topic named after the session) |
+| Progress | 👀 on your message while working, then ✅ done / 🛑 cancelled / ❌ error | same reactions, plus a typing indicator and read receipts | 👀 on your message while working, then 👌 done / 🤷 cancelled / 😱 error, plus a typing indicator |
+| Output | one streamed bubble per turn, task cards per tool call, a quoted reasoning message, a footer with model, tokens and time | plain text in chunks of 2 000 characters | a live draft with a native **Stop** button, persisted as Markdown messages; one collapsible activity card per tool batch; reasoning in an expandable quote; a footer with model, tokens, time and tool count |
+| Inbound files | `~/.theuth/slack/inbox/` | `~/.theuth/signal/inbox/` | `~/.theuth/telegram/inbox/` |
+| Bindings kept in | `~/.theuth/slack/threads.json` | `~/.theuth/signal/threads.json` | `~/.theuth/telegram/threads.json` |
 
 Sessions started from a channel are ordinary sessions: they appear in the desktop sidebar and `/sessions`, they can be resumed from the terminal with `t --resume <id>`, and they get the same tool set and approval policy as a chat you start on the desktop. Only the *scope* differs: roots opened by the owner are `owner` scope (they can see and message your other sessions when communication is on); roots opened by any other allowed user are `isolated`.
 
-**Routing to a named agent.** Start a message with an agent's name and a colon — `researcher: find three recent papers on …` — and the turn goes to that roster agent instead of theuth; `theuth: …` returns to the default. Agents are described in [Agents](/docs/automation/agents).
+**Routing to a named agent.** On Slack and Signal, start a message with an agent's name and a colon — `researcher: find three recent papers on …` — and the turn goes to that roster agent instead of theuth; `theuth: …` returns to the default. Telegram does not do this: every Telegram message goes to theuth, and a leading `name:` is sent as ordinary text. Agents are described in [Agents](/docs/automation/agents).
 
-**Several engines.** In a [mesh](/docs/automation/mesh) only the engine holding the hub lease opens the Slack socket (the others report `Disconnected` with reason `hub lease held elsewhere`). Every engine stays linked to Signal and listens, but only the hub answers; the others drop the message silently.
+**Several engines.** In a [mesh](/docs/automation/mesh) only the engine holding the hub lease opens the Slack socket (the others report `Disconnected` with reason `hub lease held elsewhere`). Telegram's `getUpdates` long poll is single-consumer in the same way, so only the hub polls and the others report `disconnected: hub lease held elsewhere`; an engine that loses the lease confirms the updates it consumed before it stops, and a message that two hubs see during a handover is answered once. Every engine stays linked to Signal and listens, but only the hub answers; the others drop the message silently.
 
 ## Walkthrough: set up Slack and send the first DM
 
@@ -121,9 +122,53 @@ A tool approval on Signal is a plain message:
 
 React 👍 (or ✅, 👌) on that message to allow, 👎 (❌, 🚫) to deny, or send `/approve k7mq` / `/deny k7mq`. Sending the bare code `k7mq` also approves. Codes are four characters, case-insensitive, and never contain `0 O 1 I l`. theuth marks its own approval message with ✅, ❌ or ⌛ once it is resolved.
 
+## Walkthrough: set up Telegram and pair the owner
+
+Create the bot first: open @BotFather in Telegram, send `/newbot`, give it a name and a username ending in `bot`, and copy the token it prints. Then, with the daemon stopped (setup owns the bot's single poller while it runs):
+
+```text
+$ t --telegram-setup
+theuth telegram setup
+1. bot token: @BotFather → /newbot → a name, then a username ending in `bot` → copy the token (123456:ABC-…)
+bot token: 123456:ABC-…
+   @my_theuth_bot · topics on
+2. token saved to the vault as telegram_bot
+3. commands registered
+4. open this from the owner's Telegram and press Start (valid 10 min):
+https://t.me/my_theuth_bot?start=k7mqv3n8p2rswx5y
+[QR code]
+   paired with Ann Lee (500)
+5. telegram.owner = 500, telegram.enabled = true
+groups: add the bot as an admin with Manage topics (or @BotFather /setprivacy → Disable, then re-add it), then /telegram group add <chat id> — /status shows the id once the bot is in the group
+telegram ready: run t --headless and message the bot
+```
+
+Step by step:
+
+1. The **token** is checked with `getMe` (three attempts). Setup prints the bot's username and whether Topics are on; if they are off it tells you where to switch them on. On a re-run a token that still works is kept (`1. bot token ok (existing)`).
+2. The token is written to the secrets vault as `telegram_bot`; the native `/` command menus are registered.
+3. **Pairing.** Nobody types a user id: setup mints a one-time code, prints `https://t.me/<bot>?start=<code>` and a QR, and waits up to 10 minutes for someone to open the link and press **Start**. The first `/start <code>` wins and that user becomes `telegram.owner`; the code is single-use and a late or wrong code is ignored without a reply. If an owner is already set, setup asks `re-pair? [y/N]` and keeps the current one unless you say `y`.
+4. Setup writes `telegram.owner` and `telegram.enabled: true` into `config.yaml` and registers the owner-only commands in the owner's chat.
+
+If the daemon is already running, `t --telegram-setup` stops with `daemon running: use /telegram link or the telegram_link tool` — pair from there instead: **Settings › Channels › Telegram** has a **Bot token** field (saving it starts the channel without a restart) and a **Pair** button that shows the same link and QR with a countdown; the owner can send `/telegram link` in the bot chat to re-pair; or ask theuth in a desktop chat, which calls `telegram_link`. If you already know the owner's numeric id, type it into the **Owner** field in Settings or call `telegram_link` with `owner` — it applies live, no deep link needed. A newly paired owner sees `👋 paired: **<name>** is the owner now.` followed by the command list.
+
+Now open the bot's chat and type a message. With Topics on, a message in the General area starts a session and the bot opens a topic for it, named after your first line and renamed to the session title once the turn ends; later messages in that topic belong to that session, and a new General message is a new session. Without Topics the chat holds one session: the next message continues it, `/new` starts over.
+
+**Groups.** The bot only listens in chats listed in `telegram.groups`; add one with `/telegram group add <chat id>` (owner only, or the **Groups** list in Settings) — the daemon log notes `telegram bot added to chat` with the id when the bot joins. In a plain group it answers an `@mention`, a `/command`, or a reply to one of its own messages, and ignores everything else; the mention is stripped before the model sees the text. In a forum supergroup each topic is a session like in the private chat, and a topic that is already bound takes every message in it. Command replies in groups are sent ephemerally (only you see them) where Telegram allows it. Telegram bots in groups run in *privacy mode* by default and do not receive plain messages, so either make the bot an admin or turn privacy off in @BotFather and re-add it.
+
+**How replies look.** While the model writes, the chat shows a live draft that animates in place, with a `thinking · N s` indicator while it reasons and a native **Stop** button that cancels the turn. At each block boundary — the first tool call of a batch, the end of the turn, or the size cap — the text so far is persisted as one Markdown message rendered by Telegram itself (headings, fences, tables). Tool calls of one batch share one activity card: a collapsible entry per call (`✓ shell · cargo test -p agent · 1.2 s`) that opens to the arguments and the first 2 500 characters of output, with a **full output** button that sends the rest as a text document. Reasoning is kept as an expandable quote. Your message carries 👀 while the turn runs and ends on 👌 (done), 🤷 (cancelled) or 😱 (error). An approval is an inline keyboard:
+
+```text
+⚠️ shell wants to run
+$ gh run list --limit 1 --json conclusion,url
+[ Allow ]  [ Deny ]
+```
+
+Press **Allow**: the card rewrites itself to `✓ shell allowed by Ann` and the buttons collapse into one disabled `✓ allowed`. `ask_user` questions arrive one at a time as `❓ Question 1/3 — …` with a button per option plus **Skip** and **Dismiss**; typing your answer as a reply to the card works too. Send a voice note and the reply comes back as text and as a voice bubble, exactly as on Signal.
+
 ## Configuration
 
-Both sections live in `~/.theuth/config.yaml`; any key can be overridden with `THEUTH_SLACK__<KEY>` / `THEUTH_SIGNAL__<KEY>`. Allowlist edits made from chat or the desktop are written back to this file live; everything else needs a daemon restart.
+All three sections live in `~/.theuth/config.yaml`; any key can be overridden with `THEUTH_SLACK__<KEY>` / `THEUTH_SIGNAL__<KEY>` / `THEUTH_TELEGRAM__<KEY>`. Allowlist edits made from chat or the desktop are written back to this file live; everything else needs a daemon restart.
 
 ### `slack:`
 
@@ -145,6 +190,20 @@ Both sections live in `~/.theuth/config.yaml`; any key can be overridden with `T
 | `device_name` | `theuth` | Name shown under *Linked devices* on the phone. |
 | `owner` | `""` | Your number in E.164 form. Written by `t --link-signal --owner`. |
 | `allowed` | `[]` | Further numbers that may text the bot. Each gets its own isolated session. |
+
+### `telegram:`
+
+| Key | Default | Meaning |
+|---|---|---|
+| `enabled` | `true` | Poll the Bot API when the `telegram_bot` secret exists in the vault. |
+| `owner` | unset | Your numeric Telegram user id. Owner-only commands, may press any card, receives approvals for sessions not bound to Telegram. Written by `t --telegram-setup` or pairing. |
+| `allowed` | `[]` | Further user ids that may talk to the bot. Each owns their own threads. |
+| `groups` | `[]` | Chat ids (negative for groups) where mentions and commands are honoured. Empty = private chats only. |
+| `tools` | `all` | Which tool batches get an activity card: `all`, `errors`, `none`. |
+| `reasoning` | `true` | Keep the model's reasoning text in the expandable quote; `false` keeps only the thinking indicator. |
+| `approvals` | `all` | Where approvals for sessions *not* bound to a Telegram thread go: `all` = the owner's chat, `threads` = nowhere on Telegram. |
+
+`owner`, `allowed` and `groups` change live when edited from chat, the desktop or the `telegram_*` RPC methods (the owner is removed from `allowed` automatically). Setting the `telegram_bot` secret while the channel is unconfigured starts it at once; replacing the token under a running channel applies at the next restart.
 
 ### `voice:` keys that matter for channels
 
@@ -214,25 +273,51 @@ Owner only:
 
 Unknown or ambiguous commands print the help. Session commands before any message answer `no session yet: send a message first`.
 
+### Telegram: `/…`
+
+The commands are registered as native bot commands, so Telegram's `/` menu lists them with completion. Everyone sees the public set; the owner's chat also gets the owner-only ones; groups get a short set (`help status new sessions resume cancel compact model agents`) whose replies are ephemeral. Where you would otherwise type an id, the reply is a panel with buttons — `/sessions` offers **Resume**, `/agents` offers **Cancel** and **Close topic** per child, `/model` one button per model, `/skills` and `/mcp` **Sync** and **Add…**, `/login` **Log in** / **Log out**, `/approvals` the three states.
+
+| Command | What it does |
+|---|---|
+| `/start [code]` | Pair with a one-time code, or show the command list (owner). A bare `/start` from anyone else gets no reply. |
+| `/help`, `/status`, `/sessions` | Help, state (polling · bot · topics · threads · session · model · turn · context), the 10 newest sessions with **Resume** buttons. |
+| `/new` | Drop the binding; the next message starts a fresh session. |
+| `/resume <id>` | Bind this chat or topic to an existing session (prefix is enough); from General it creates a topic for it. |
+| `/cancel [name]` | Stop the running turn, or a subagent's by name. |
+| `/compact [summary\|cut\|snap\|style …]`, `/clear`, `/undo`, `/redo` | Context management, as in the terminal. |
+| `/model [id]`, `/effort [level\|clear]` | Model and reasoning effort for this session. |
+| `/agents`, `/jobs [kill <id>]`, `/prompt` | Subagent tree with buttons, background jobs, system prompt. |
+| `/skills …`, `/mcp …`, `/login [name]`, `/logout <name>`, `/provider [add <name> <url> <key>\|rm <name>]` | Skills, MCP, OAuth, custom providers. |
+
+Owner only (anyone else gets `This command is restricted to the owner.`):
+
+| Command | What it does |
+|---|---|
+| `/approvals on\|off [always]` | Approval prompts for this session, or globally with `always`. |
+| `/telegram [status\|link\|allow <id>\|rm <id>\|group add <id>\|group rm <id>]` | Connection state; mint a new pairing link; edit `telegram.allowed` / `telegram.groups`. |
+| `/communication`, `/peers`, `/requests`, `/a2a`, `/broadcast` | As in the terminal (`/a2a reload` answers that it needs the terminal). |
+
+There is no `/approve` or `/deny`: approvals are buttons. Unknown commands print the help. Session commands before any message answer `no session yet: send a message first` with a **Sessions** button; in General they act on your latest topic in that chat.
+
 ### CLI, tools, desktop
 
 | Surface | Items |
 |---|---|
-| CLI | `t --slack-setup [--app A…]`, `t --slack-manifest`, `t --link-signal --owner +E164 [--device-name <name>]`, `t --secret-set slack_bot` / `slack_app`, `t --bench-models` |
-| Tools the model can call | `slack_status` (no args), `signal_status` (no args), `signal_link{owner?}` — all read-only; `message_user{text, files?, via?}` to send you something out of band |
-| Desktop | **Settings › Channels**: *Signal* (Account state, **Link** / **Unlink**, Owner, **Allowed numbers**) and *Slack* (Bot state, Owner, **Allowed users**, **Channels**) |
+| CLI | `t --slack-setup [--app A…]`, `t --slack-manifest`, `t --link-signal --owner +E164 [--device-name <name>]`, `t --telegram-setup`, `t --secret-set slack_bot` / `slack_app` / `telegram_bot`, `t --bench-models` |
+| Tools the model can call | `slack_status`, `signal_status`, `telegram_status` (no args, read-only), `signal_link{owner?}`, `telegram_link{owner?}` (mint a pairing link, or set the owner id directly); `message_user{text, files?, via?}` to send you something out of band |
+| Desktop | **Settings › Channels**: *Signal* (Account state, **Link** / **Unlink**, Owner, **Allowed numbers**), *Slack* (Bot state, Owner, **Allowed users**, **Channels**) and *Telegram* (Bot state, **Bot token**, Owner with **Pair**, **Allowed users**, **Groups**) |
 
-`message_user` delivers to the session's own thread or contact when it has one (walking up to the parent for subagents); for a session that started elsewhere it goes to every channel's owner. `via: "slack"` or `"signal"` forces one. Files up to 100 MiB each are uploaded alongside the text — useful for a routine that should drop a report into your DM.
+`message_user` delivers to the session's own thread, contact or topic when it has one (walking up to the parent for subagents); for a session that started elsewhere it goes to every channel's owner. `via: "slack"`, `"signal"` or `"telegram"` forces one. Files up to 100 MiB each are uploaded alongside the text — useful for a routine that should drop a report into your DM. On Telegram an image up to 10 MB arrives as a photo, an MP3 as a voice bubble, anything else as a document.
 
 ## Safety and permissions
 
-- **Who gets in.** Slack: the owner and `slack.allowed`; DMs from anyone else are dropped silently, mentions from them in a listed channel get an ephemeral `not allowed`, as do their slash commands and button clicks. Signal: the owner and `signal.allowed`; strangers are dropped with no reply at all. Nothing is ever auto-added to an allowlist.
-- **What the bot can read.** Slack: only its own DMs (`im:history`) and messages that mention it in `slack.channels`. Signal: only one-to-one messages from allowed numbers; groups are ignored.
-- **Approvals follow the normal policy.** Reading needs no prompt; mutating and destructive tools ask, unless `tools.policy` says otherwise. The prompt is a card with **Allow** / **Deny** on Slack and a 👍/👎 or code message on Signal. Unanswered requests are denied after `tools.approval_timeout_secs` (300 s): Slack rewrites the card to `⌛ … timed out (denied)`, Signal sends `⌛ <code> expired`. There is no per-tool "always allow"; `/approvals off` turns prompts off for the session, `/approvals off always` for every session.
-- **Who may answer.** On Slack: the owner, or the user who owns the thread. On Signal: only the number the session is bound to; reactions from anyone else and removed reactions are ignored. A code that was already used answers `<code> was already allowed` / `denied` / `timed out` for 600 s.
-- **Questions from the model** (`ask_user`) arrive as one card (Slack) or one text message (Signal) per question and are answered by clicking or replying; they expire after `tools.ask_timeout_secs` (1 800 s).
-- **Secrets never go through chat.** When the model needs a secret it posts a notice asking you to enter it on the desktop, in the terminal, or with `t --secret-set`. Do not paste API keys into Slack or Signal.
-- **Where approvals do not go.** Signal only carries approvals for the session directly bound to a contact — approvals raised by that session's subagents, or by sessions started in the terminal or the desktop, are not sent to the phone; answer those on the desktop or in the terminal. Slack routes approvals of subagents to their own thread (or the nearest bound ancestor), and approvals from non-Slack sessions to the owner's DM when `slack.approvals: all`.
+- **Who gets in.** Slack: the owner and `slack.allowed`; DMs from anyone else are dropped silently, mentions from them in a listed channel get an ephemeral `not allowed`, as do their slash commands and button clicks. Signal: the owner and `signal.allowed`; strangers are dropped with no reply at all. Telegram: the owner and `telegram.allowed`; a stranger's private message is dropped with no reply (the log warns once per message), a non-allowed member who addresses the bot in a listed group gets an ephemeral `not allowed`, and messages from other bots or from broadcast channels are ignored. Nothing is ever auto-added to an allowlist — the only thing a stranger can do is pair with a live `/start` code, which makes them the owner.
+- **What the bot can read.** Slack: only its own DMs (`im:history`) and messages that mention it in `slack.channels`. Signal: only one-to-one messages from allowed numbers; groups are ignored. Telegram: its private chats and the groups in `telegram.groups`; in those groups only mentions, commands, replies to the bot and messages inside a topic already bound to a session are delivered.
+- **Approvals follow the normal policy.** Reading needs no prompt; mutating and destructive tools ask, unless `tools.policy` says otherwise. The prompt is a card with **Allow** / **Deny** on Slack and Telegram and a 👍/👎 or code message on Signal. Unanswered requests are denied after `tools.approval_timeout_secs` (300 s): Slack rewrites the card to `⌛ … timed out (denied)`, Telegram to `⌛ shell timed out`, Signal sends `⌛ <code> expired`. There is no per-tool "always allow"; `/approvals off` turns prompts off for the session, `/approvals off always` for every session.
+- **Who may answer.** On Slack: the owner, or the user who owns the thread. On Signal: only the number the session is bound to; reactions from anyone else and removed reactions are ignored. A code that was already used answers `<code> was already allowed` / `denied` / `timed out` for 600 s. On Telegram: the owner, or the user whose topic or chat the session is bound to; anyone else pressing a button gets a `not allowed` toast, and a card resolved elsewhere answers `already resolved`.
+- **Questions from the model** (`ask_user`) arrive as one card (Slack, Telegram) or one text message (Signal) per question and are answered by clicking or replying; they expire after `tools.ask_timeout_secs` (1 800 s). On Telegram **Dismiss** cancels the turn.
+- **Secrets never go through chat.** When the model needs a secret it posts a notice asking you to enter it on the desktop, in the terminal, or with `t --secret-set`. Do not paste API keys into Slack, Signal or Telegram — the bot token itself goes into the vault through `t --telegram-setup` or Settings, never into a Telegram message.
+- **Where approvals do not go.** Signal only carries approvals for the session directly bound to a contact — approvals raised by that session's subagents, or by sessions started in the terminal or the desktop, are not sent to the phone; answer those on the desktop or in the terminal. Slack routes approvals of subagents to their own thread (or the nearest bound ancestor), and approvals from non-Slack sessions to the owner's DM when `slack.approvals: all`. Telegram sends a subagent's approvals to its own topic (or its parent's chat when the chat has no topics), and approvals of any session without a Telegram thread to the owner's chat with a `session <last 8> · <title>` line when `telegram.approvals: all`.
 - **Communication scope.** Owner-opened channel sessions are `owner` scope; other allowed users' sessions are `isolated` and cannot reach your other sessions. The owner can change this with `/peers scope owner|isolated`. See [Delegation](/docs/automation/delegation).
 - **Storage.** Tokens live only in the encrypted vault. Thread bindings are in `threads.json`; downloaded files stay in the `inbox/` directories and are never garbage-collected — clear them yourself. Transcripts are ordinary session rows, visible to anyone with access to `~/.theuth`.
 
@@ -255,23 +340,42 @@ Unknown or ambiguous commands print the help. Session commands before any messag
 - Removing the device on the phone, **Unlink** in Settings, `/signal unlink` or the `signal_unlink` RPC deletes `presage.db` and returns to the QR rotation; thread bindings are kept.
 - Audio longer than 180 s is transcribed in 180 s pieces. Supported containers: aac/m4a, mp3, ogg/opus, wav, webm/mkv. Transcription and spoken replies load their models on first use; the STT model is unloaded after `voice.stt_idle_secs`.
 
-**Not available.** Signal groups, "Note to Self", and approvals for Signal-rooted subagents on the phone. Private Slack channels (`G…` ids) are accepted by the config validator, but the manifest has no `groups:*` scope, so as of this writing treat channel mentions as a public-channel feature. The phone and browser microphone in the theuth composer is a different path (recorded in the app, uploaded with a 16 MB cap, transcribed by the same local model) and is covered in [Voice](/docs/workspace/voice).
+**Telegram**
+
+- Live drafts exist in private chats only; in groups the bubble is a message edited at block boundaries. A draft that has been silent for 25 s is re-sent so Telegram does not expire it. A bubble rotates to a new message at 30 000 bytes, at a block boundary, closing and reopening an open code fence.
+- A Markdown message Telegram refuses is re-sent as plain text in 4 096-character chunks; `telegram_status` then shows `stream fallback for <session>: <reason>`.
+- Activity-card entries show the first 2 500 characters of a tool's output; the **full output** button sends the rest as `<call id>-output.txt` and works for one hour (`output expired` afterwards). Card summaries are cut at 256 characters, approval arguments at 600, topic names at 128.
+- Calls are paced per chat (one send per second in private chats, one per 3 s in groups), drafts one per second, edits 1.5 s apart per message, and 30 calls per second overall. A 429 is retried twice, then counted in `telegram_status` as rate limited.
+- Polling fetches up to 100 updates per 30 s long poll; errors back off from 1 s doubling to 60 s. A second poller on the same token shows `conflict: another poller uses this token`; a leftover webhook is deleted at start.
+- Inbound photos, documents, voice and video notes up to 20 MB are downloaded; larger ones arrive as `[attachment: … — too large for the Bot API (20 MB); not downloaded]`. Images and PDFs are given to the model as input; stickers, locations and contacts arrive as a text line. Albums sent within one second become one message. Quote-replies are passed as `(replying to: "…")`, forwards as `(forwarded from …)`.
+- Outbound: images up to 10 MB go as photos, MP3 as voice bubbles, everything else as documents; `show` artifacts over 50 MB are replaced by a note.
+- A pairing code is 16 characters, valid 10 minutes, single-use. Topics are renamed to the session title (`↳ <name> · <title>` for subagents) unless you rename them; closing a topic drops its binding, and the bot being removed from a group drops that group's bindings (the group stays in `telegram.groups`). A chat that blocks the bot is unbound and reported as `chat <id> unreachable: <reason>`.
+
+**Not available.** Signal groups, "Note to Self", and approvals for Signal-rooted subagents on the phone. Private Slack channels (`G…` ids) are accepted by the config validator, but the manifest has no `groups:*` scope, so as of this writing treat channel mentions as a public-channel feature. On Telegram: webhooks (the daemon polls), posts in broadcast channels, messages from other bots, and first-word routing to roster agents. The phone and browser microphone in the theuth composer is a different path (recorded in the app, uploaded with a 16 MB cap, transcribed by the same local model) and is covered in [Voice](/docs/workspace/voice).
 
 ## Troubleshooting
 
 | Symptom | Cause | Fix |
 |---|---|---|
 | `slack_status` says `unconfigured (secrets slack_bot / slack_app missing; run t --slack-setup)` | one or both tokens are not in the vault | run `t --slack-setup`, or `t --secret-set slack_bot` and `t --secret-set slack_app` |
-| `slack_status` / `signal_status` says `daemon only (runs in t --headless)` | you are in the terminal UI or `-p` mode | start `t --headless` (or the desktop app) and keep it running |
+| `slack_status` / `signal_status` / `telegram_status` says `daemon only (runs in t --headless)` | you are in the terminal UI or `-p` mode | start `t --headless` (or the desktop app) and keep it running |
 | DM to the bot gets no reaction and no reply | sender is neither `slack.owner` nor in `slack.allowed` | `/theuth slack allow U…` from the owner, or Settings › Channels › Slack › Allowed users |
 | `@theuth` in a channel is ignored | channel id not in `slack.channels` | `/theuth slack channel add C…`; check the id starts with `C` |
 | Log warns `agents.sessions.setStatus refused` | app was not created from the manifest (no `agent_view`) | recreate the app with `t --slack-setup` or from `t --slack-manifest` |
 | Slack's **Stop** button does nothing | `agent_session_stopped` missing from Event Subscriptions | re-create the app from the manifest; the event is in it |
-| Slack shows `Disconnected` with `hub lease held elsewhere` | another engine in the mesh is the hub | expected; the hub answers. Change with `t mesh hub prefer` on the engine you want |
+| Slack shows `Disconnected` with `hub lease held elsewhere`; `telegram_status` says `disconnected: hub lease held elsewhere` | another engine in the mesh is the hub | expected; the hub answers. Change with `t mesh hub prefer` on the engine you want |
 | Log warns `dropping signal message from a number not in the allowlist` with `sender=unknown` | sealed sender: the owner is not a saved contact on the primary phone | save the owner's number as a contact there; the resolution cache clears after 300 s |
 | Same warning with a real number | number not in `signal.owner` / `signal.allowed` | `/signal allow +E164` from the owner, or Settings › Channels › Signal › Allowed numbers |
 | `t --link-signal` prints `already linked as <number>` | this data dir is already paired | `/signal unlink` (or Unlink in Settings) first if you want a different account |
 | Settings › Channels › Signal shows `unlinked` and a QR | the device was removed on the phone or unlinked | scan the new code; the sessions and allowlist are untouched |
+| `telegram_status` says `unconfigured (secret telegram_bot missing; run t --telegram-setup)` | the bot token is not in the vault | `t --telegram-setup`, the **Bot token** field in Settings › Channels › Telegram, or `t --secret-set telegram_bot` |
+| `t --telegram-setup` prints `daemon running: use /telegram link or the telegram_link tool` | an engine on this data dir holds the bot's poller | pair from Settings › Channels › Telegram, `/telegram link`, or the `telegram_link` tool — or stop the daemon first |
+| The `t.me/…?start=` link does nothing | the code expired (10 min) or was already used | mint a new one (**Pair** in Settings, `/telegram link`, `telegram_link`) |
+| Log warns `dropping telegram message from a user not in the allowlist` | the sender is neither `telegram.owner` nor in `telegram.allowed` | `/telegram allow <id>` from the owner, or Settings › Channels › Telegram › Allowed users |
+| Messages in a group are ignored | the chat is not in `telegram.groups`, the bot was not addressed, or privacy mode hides plain messages from it | `/telegram group add <chat id>` (the id is in the `telegram bot added to chat` log line); mention the bot or reply to it; make it an admin or disable privacy in @BotFather and re-add it |
+| `telegram_status` says `conflict: another poller uses this token` | another process is calling `getUpdates` with the same token | stop the other instance; one bot token means one poller |
+| Every session shares the private chat; no topics appear | Topics are off for the bot (`telegram_status` shows `topics off`) | @BotFather → `/mybots` → the bot → Bot Settings → Topics, then restart the daemon |
+| Replies arrive as plain text without formatting | Telegram refused the Markdown message | expected fallback; `telegram_status` shows `stream fallback for <session>: <reason>` |
 | Voice note answered with `(transcription unavailable)`; log says `voice note not transcribed` | `voice.enabled: false`, no checkpoint (`no STT model in <dir>`), or no `libonnxruntime` | start the desktop app once to download the models (or run `scripts/fetch-models.sh`); `t --bench-models` shows what loads |
 | Voice note transcribed as `(nothing recognized)` | silence or unsupported speech in the clip | re-record; check the clip plays back |
 | No spoken reply, only text | the voice actor is not running, or you typed a message since (voice mode ended) | check `voice.enabled`; send another voice note |
@@ -282,11 +386,11 @@ Logs are in `~/.theuth/logs/theuth.log.<date>`; run the daemon with `RUST_LOG=de
 ## Related
 
 - [Automation overview](/docs/automation)
-- [Agents](/docs/automation/agents) — name an agent in the first word to route a message to it
+- [Agents](/docs/automation/agents) — name an agent in the first word to route a message to it (Slack and Signal)
 - [Delegation](/docs/automation/delegation) — subagents, scope and communication
-- [Mesh](/docs/automation/mesh) — which engine answers Slack and Signal
+- [Mesh](/docs/automation/mesh) — which engine answers Slack, Signal and Telegram
 - [Schedules](/docs/automation/schedules) — routines that report back through `message_user`
 - [Voice](/docs/workspace/voice) — dictation and voice notes in the desktop and phone composer
 - [Tools and permissions](/docs/reference/tools-permissions) — risk levels, policy, approval timeouts
-- [Secrets](/docs/reference/secrets) — the vault that holds `slack_bot` / `slack_app`
+- [Secrets](/docs/reference/secrets) — the vault that holds `slack_bot` / `slack_app` / `telegram_bot`
 - [CLI](/docs/reference/cli) — every `t` flag
