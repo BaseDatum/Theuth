@@ -9,6 +9,7 @@ use std::sync::{Arc, LazyLock};
 use ::search::SearchCategory;
 use acp::EntryInfo;
 use acp::registry::RegistryAgent;
+use agent::durability::ResumeKind;
 use agent::todo::{Status as TodoStatus, TodoSnapshot, TodoSource};
 use agent::{
     AgentEvent, AgentInfo, AgentState, AwsProfiles, CommunicationChanged, CommunicationState,
@@ -1028,6 +1029,9 @@ pub enum Entry {
         /// Show the summary.
         expanded: bool,
     },
+    /// 109 §10.3: a plain divider in the `Compacted` shape (`── resumed after
+    /// restart ──`); nothing to expand.
+    Divider(String),
     /// Informational line (session lists, notices).
     Info(String),
     /// Error line.
@@ -1152,6 +1156,7 @@ impl Entry {
                     _ => 0,
                 }
             }
+            Entry::Divider(_) => 3,
         }
     }
 }
@@ -3196,6 +3201,9 @@ pub struct Model {
     notice: Option<String>,
     /// The shown session's summariser call is in flight (`Compacting`).
     pub compacting: bool,
+    /// 109 §10.3: the status-line note after a restart (`resumed · 2
+    /// replayed · 1 skipped`); cleared by the next `TurnFinished`.
+    pub resume_note: Option<String>,
     /// The shown session's harvest is in flight (`Harvesting` … `Harvested`).
     /// Detached from the turn (10 §5.2 as built): survives `TurnFinished`,
     /// shown only while nothing else is.
@@ -5815,6 +5823,7 @@ impl Model {
                 self.context_estimated = false;
                 self.compacting = false;
                 self.vision = None;
+                self.resume_note = None;
             }
             // The gauge moves per round, with the cost (51 §6.4).
             AgentEvent::ContextUsed { context, size, .. } => {
@@ -5936,11 +5945,53 @@ impl Model {
             | AgentEvent::ModelUsageChanged { .. }
             | AgentEvent::SessionOwnerChanged { .. }
             | AgentEvent::SessionClosing { .. }
-            // 109: the resumed/suspended divider and banner are W5's.
-            | AgentEvent::TurnResumed { .. }
-            | AgentEvent::ResumeReport { .. }
-            | AgentEvent::TurnSuspended { .. }
             | AgentEvent::PartialDropped { .. } => {}
+            // 109 §10.3: the divider and the status-line note.
+            AgentEvent::TurnResumed {
+                kind,
+                interrupted_at,
+                ..
+            } => {
+                let at = interrupted_at.with_timezone(&chrono::Local).format("%H:%M");
+                let (label, note) = match kind {
+                    ResumeKind::Interrupted => (
+                        "resumed after restart",
+                        format!("interrupted by a restart at {at} — resumed"),
+                    ),
+                    ResumeKind::Suspended => (
+                        "resumed after update",
+                        format!("paused for an update at {at} — resumed"),
+                    ),
+                };
+                self.interject(Entry::Divider(label.to_owned()));
+                self.resume_note = Some(note);
+            }
+            AgentEvent::ResumeReport {
+                replayed,
+                interrupted,
+                lost_jobs,
+                ..
+            } => {
+                let mut note = format!("resumed · {} replayed", replayed.len());
+                if !interrupted.is_empty() {
+                    let names: Vec<&str> = interrupted.iter().map(|(_, n)| n.as_str()).collect();
+                    note.push_str(&format!(
+                        " · {} skipped: {} — effect unknown",
+                        interrupted.len(),
+                        names.join(", ")
+                    ));
+                }
+                if !lost_jobs.is_empty() {
+                    note.push_str(&format!(" · {} job(s) lost", lost_jobs.len()));
+                }
+                if !interrupted.is_empty() || !lost_jobs.is_empty() {
+                    self.interject(Entry::Info(note.clone()));
+                }
+                self.resume_note = Some(note);
+            }
+            AgentEvent::TurnSuspended { reason, .. } => {
+                self.interject(Entry::Divider(format!("suspended for {reason}")));
+            }
         }
     }
 
@@ -6723,8 +6774,12 @@ impl Model {
             .attached
             .as_deref()
             .map_or_else(String::new, |a| format!("  ·  {a}"));
+        let resumed = self
+            .resume_note
+            .as_deref()
+            .map_or_else(String::new, |n| format!("  ·  {n}"));
         format!(
-            "{session}  {state}{usage}{agents}{queued}{jobs}{skills}{editing}{scrolled}{todos}{talk}{attached}"
+            "{session}  {state}{usage}{agents}{queued}{jobs}{skills}{editing}{scrolled}{todos}{talk}{attached}{resumed}"
         )
     }
 
@@ -9627,6 +9682,11 @@ fn from_history(h: HistoryEntry, opts: &markdown::Options) -> Vec<Entry> {
         }
         // Never model content: shown, never reasoned over (48 §3.3 has nothing to remove).
         HistoryEntry::Error { text, .. } => vec![Entry::Error(text)],
+        // 109 §8.2: the dropped partial, greyed as an info line under its divider.
+        HistoryEntry::Interrupted { text, .. } => vec![
+            Entry::Divider("interrupted — resuming".to_owned()),
+            Entry::Info(text),
+        ],
     }
 }
 
@@ -15221,6 +15281,73 @@ mod tests {
         assert!(matches!(m.entries.last(), Some(Entry::Error(_))));
         // A long provider message is measured wrapped, not as one row.
         assert_eq!(Entry::Error("x".repeat(50)).height(20), 3);
+    }
+
+    /// 109 §10.3: `TurnResumed` interjects the divider and sets the status
+    /// note; `ResumeReport` fills the counts (a skipped call also gets a
+    /// transcript line); `TurnFinished` clears the note; a reload renders the
+    /// stored partial under its own divider.
+    #[test]
+    fn resume_events_draw_divider_and_status_note() {
+        let mut m = Model::new("m".into(), true);
+        let s = SessionId::new();
+        let turn = TurnId::new();
+        m.session = Some(s);
+        let at = chrono::Utc::now();
+        m.apply_agent(AgentEvent::TurnResumed {
+            session: s,
+            turn,
+            kind: ResumeKind::Interrupted,
+            interrupted_at: at,
+            resumed_at: at,
+            partial_dropped: true,
+        });
+        assert!(
+            matches!(m.entries.last(), Some(Entry::Divider(l)) if l == "resumed after restart"),
+            "{:?}",
+            m.entries
+        );
+        let hhmm = at.with_timezone(&chrono::Local).format("%H:%M").to_string();
+        assert!(m.status().contains(&format!("interrupted by a restart at {hhmm} — resumed")));
+        m.apply_agent(AgentEvent::ResumeReport {
+            session: s,
+            turn,
+            replayed: vec![("c1".into(), "read_file".into()), ("c2".into(), "grep".into())],
+            interrupted: vec![("c3".into(), "git push".into())],
+            lost_jobs: vec![],
+            children_restored: 0,
+            children_handed_off: 0,
+        });
+        let note = "resumed · 2 replayed · 1 skipped: git push — effect unknown";
+        assert!(m.status().contains(note), "{}", m.status());
+        assert!(matches!(m.entries.last(), Some(Entry::Info(t)) if t == note));
+        m.apply_agent(AgentEvent::TurnFinished {
+            session: s,
+            turn,
+            stop_reason: "end_turn".into(),
+            usage: Usage::default(),
+            context: 0,
+        });
+        assert!(!m.status().contains("resumed"), "{}", m.status());
+
+        m.apply(UiEvent::History(
+            s,
+            Loaded {
+                history: vec![HistoryEntry::Interrupted {
+                    text: "half a reply".into(),
+                    at,
+                    context: None,
+                }],
+                ..Loaded::default()
+            },
+        ));
+        let n = m.entries.len();
+        assert!(
+            matches!(&m.entries[n - 2], Entry::Divider(l) if l == "interrupted — resuming"),
+            "{:?}",
+            m.entries
+        );
+        assert!(matches!(&m.entries[n - 1], Entry::Info(t) if t == "half a reply"));
     }
 
     /// One consultation (52 §6): `Questioning` and `Inspecting` name the

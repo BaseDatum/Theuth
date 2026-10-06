@@ -657,7 +657,14 @@ fn spawn_ticks(rt: Runtime, me: ActorRef<UpdateActor>, cfg: UpdateConfig, curren
                     }
                 };
             match me.ask(Landed(found)).await {
-                Ok(true) => std::process::exit(EXIT_RESTART),
+                Ok(true) => {
+                    // 109 §9.3: a drain precedes the swap; the token then
+                    // lets the jobs actor kill its groups as on any exit.
+                    agent::supervisor::drain_engine(&rt, "update").await;
+                    rt.shutdown.cancel();
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+                    std::process::exit(EXIT_RESTART)
+                }
                 Ok(false) => {}
                 Err(_) => break,
             }

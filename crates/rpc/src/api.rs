@@ -1729,6 +1729,10 @@ pub trait Api {
     /// Hide an attention item for good.
     #[method(name = "attention_dismiss")]
     async fn attention_dismiss(&self, id: String) -> RpcResult<()>;
+    /// 109 §10.3: resume `session`'s open turn now (the `resume: ask` mode's
+    /// Resume button). `false` when the session has no open turn.
+    #[method(name = "resume_turn", with_extensions)]
+    async fn resume_turn(&self, session: SessionId) -> RpcResult<bool>;
     /// The packet behind a decision / review attention item (101 §3): `decision:<id>` | `review:<task>`;
     /// `null` when none was raised.
     #[method(name = "packet_get")]
@@ -4573,7 +4577,13 @@ impl ApiServer for Server {
             ),
             None => tracing::warn!("shutdown requested over rpc (unauthenticated connection)"),
         }
-        self.rt.shutdown.cancel();
+        // 109 §9.2: the drain runs before the token (every turn's cancel is
+        // its child); off the request so the caller's reply is immediate.
+        let rt = self.rt.clone();
+        tokio::spawn(async move {
+            agent::supervisor::drain_engine(&rt, "shutdown").await;
+            rt.shutdown.cancel();
+        });
         Ok(())
     }
 
@@ -5493,6 +5503,16 @@ impl ApiServer for Server {
 
     async fn attention_dismiss(&self, id: String) -> RpcResult<()> {
         send(&attention_actor()?, roster::attention::DismissAttention(id)).await
+    }
+
+    async fn resume_turn(&self, ext: &Extensions, session: SessionId) -> RpcResult<bool> {
+        self.authorize(ext, session).await?;
+        let agents = lookup::<Agents>(agent::AGENT_ACTOR)?;
+        let Some(turn) = send(&agents, agent::supervisor::OpenTurn(session)).await? else {
+            return Ok(false);
+        };
+        send(&agents, agent::supervisor::ResumeTurn { session, turn }).await?;
+        Ok(true)
     }
 
     async fn packet_get(&self, key: String) -> RpcResult<Option<tasks::packet::Packet>> {

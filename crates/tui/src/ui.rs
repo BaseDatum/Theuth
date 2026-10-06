@@ -2004,6 +2004,12 @@ fn entry(e: &Entry, spinner: &str, skip: usize, width: u16) -> AnyElement<'stati
             }
             .into_any()
         }
+        Entry::Divider(label) => element! {
+            View(border_style: BorderStyle::Round, border_color: PROMPT, padding_left: 1, padding_right: 1, margin_top: 1) {
+                Text(content: format!("── {label} ──"), color: PROMPT, weight: Weight::Bold)
+            }
+        }
+        .into_any(),
         Entry::Info(t) => plain(t, TextWrap::Wrap, |c| c.color(SAND)),
         Entry::Error(t) => plain(t, TextWrap::Wrap, |c| c.color(CARNELIAN)),
     }
@@ -2414,5 +2420,21 @@ mod tests {
         assert!(frame.contains("spoken 5 s · cut in"), "{frame}");
         assert!(frame.contains("hello"), "{frame}");
         assert!(!frame.contains("[spoken"), "{frame}");
+    }
+
+    /// 109 §10.3: the resume divider takes the `Compacted` shape — a
+    /// bordered `── label ──` line, 3 rows (`Entry::height` agrees).
+    #[test]
+    fn resume_divider_takes_the_compacted_shape() {
+        let e = Entry::Divider("resumed after restart".into());
+        let frame = element! {
+            View(flex_direction: FlexDirection::Column, width: 60u16) {
+                #(entry(&e, "", 0, 60))
+            }
+        }
+        .to_string();
+        assert!(frame.contains("── resumed after restart ──"), "{frame}");
+        assert!(frame.contains('╭') && frame.contains('╰'), "{frame}");
+        assert_eq!(frame.trim_end_matches('\n').lines().count(), 4, "margin + 3 rows: {frame}");
     }
 }

@@ -957,6 +957,39 @@ impl Schedule {
         }
     }
 
+    /// 109 §4.6 step 12: the fires the store spared at open become runs
+    /// again, turn open, so the resumed turn's `TurnFinished` closes them
+    /// with its real stop reason; a fresh deadline guards the resume itself.
+    fn reattach(&mut self, spared: Vec<store::OpenRun>) {
+        for r in spared {
+            let quiet = self
+                .entries
+                .get(&r.name)
+                .and_then(|e| e.spec.as_ref().ok())
+                .is_some_and(|s| s.quiet);
+            tracing::info!(name = %r.name, session = %r.session, "run re-attached to a resumed turn");
+            self.running.insert(
+                r.session,
+                Run {
+                    id: r.id,
+                    name: r.name,
+                    quiet,
+                    text: String::new(),
+                    messaged: false,
+                    last_error: None,
+                    deadline: Instant::now() + self.timeout,
+                    timed_out: false,
+                    children: HashSet::new(),
+                    pending: HashSet::new(),
+                    turn_open: true,
+                    last_stop: String::new(),
+                    watch: None,
+                    fired_at: r.fired_at,
+                },
+            );
+        }
+    }
+
     fn is_running(&self, e: &Entry) -> bool {
         e.session.is_some_and(|s| self.running.contains_key(&s))
     }
@@ -2530,13 +2563,26 @@ impl runtime::Plugin for SchedulePlugin {
             DIR,
             std::time::Duration::from_secs(120),
         ));
-        let store = match store::Store::open(&rt.data_dir.join(DB)).await {
-            Ok(s) => s,
-            Err(e) => {
-                tracing::warn!("schedule unavailable: {e:#}");
-                return Ok(());
-            }
-        };
+        // 109 §4.6 step 12: a run whose session has an open turn stays open
+        // and re-attaches to the resumed turn's `TurnFinished`; `agent`
+        // started before us, so its answer is final.
+        let open_sessions: HashSet<SessionId> =
+            match ActorRef::<agent::Agents>::lookup(agent::AGENT_ACTOR) {
+                Ok(Some(agents)) => agents
+                    .ask(agent::supervisor::OpenTurns)
+                    .await
+                    .map(|open| open.into_iter().map(|(s, _, _)| s).collect())
+                    .unwrap_or_default(),
+                _ => HashSet::new(),
+            };
+        let (store, spared) =
+            match store::Store::open_sparing(&rt.data_dir.join(DB), &open_sessions).await {
+                Ok(s) => s,
+                Err(e) => {
+                    tracing::warn!("schedule unavailable: {e:#}");
+                    return Ok(());
+                }
+            };
         let timeout = Duration::from_secs(cfg.run_timeout_secs);
         // 40 §4.2: the sensor-profile pool; the worker is this binary (`t subprocess`,
         // 08 §9) as for the main runtime. Without it Monty sensors are `Unavailable`.
@@ -2557,10 +2603,10 @@ impl runtime::Plugin for SchedulePlugin {
         if let Err(e) = sensors.install_builtins() {
             tracing::warn!("sensors directory not created: {e}");
         }
-        let actor = Schedule::spawn_with_mailbox(
-            Schedule::load(rt.clone(), dir.clone(), store, timeout, sensors.clone()).await,
-            runtime::subscriber_mailbox(),
-        );
+        let mut schedule =
+            Schedule::load(rt.clone(), dir.clone(), store, timeout, sensors.clone()).await;
+        schedule.reattach(spared);
+        let actor = Schedule::spawn_with_mailbox(schedule, runtime::subscriber_mailbox());
         actor.register(SCHEDULE_ACTOR)?;
         rt.subscribe::<Schedule, agent::AgentEvent>(&actor).await;
         rt.subscribe::<Schedule, agent::PeerDelivered>(&actor).await;

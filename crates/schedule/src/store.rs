@@ -2,7 +2,7 @@
 //! One row per fire and per skip; everything the actor needs at boot is a
 //! query over it.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::time::Duration;
 
@@ -42,10 +42,33 @@ type RunRow = (
     Option<String>,
 );
 
+/// A fire still open at boot whose session is being resumed (109 §4.6
+/// step 12): the actor re-attaches a run to it instead of writing `lost`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OpenRun {
+    /// Row id.
+    pub id: i64,
+    /// Schedule name.
+    pub name: String,
+    /// The run's session.
+    pub session: SessionId,
+    /// When it fired.
+    pub fired_at: DateTime<Local>,
+}
+
 impl Store {
     /// Open or create the file, run the migration, and close every row still
     /// `NULL` in `finished_at` as `lost` (the harness died mid-run).
     pub async fn open(path: &Path) -> anyhow::Result<Self> {
+        Ok(Self::open_sparing(path, &HashSet::new()).await?.0)
+    }
+
+    /// [`Store::open`] that keeps the orphan rows of `spare` sessions open
+    /// (their turn is being resumed, 109 §4.6 step 12) and returns them.
+    pub async fn open_sparing(
+        path: &Path,
+        spare: &HashSet<SessionId>,
+    ) -> anyhow::Result<(Self, Vec<OpenRun>)> {
         let opts = SqliteConnectOptions::new()
             .filename(path)
             .create_if_missing(true)
@@ -60,11 +83,32 @@ impl Store {
             .run(&pool)
             .await
             .context("run migrations")?;
-        sqlx::query("UPDATE runs SET finished_at = ?, result = 'lost' WHERE finished_at IS NULL")
-            .bind(Local::now().to_rfc3339())
-            .execute(&pool)
-            .await?;
-        Ok(Self { pool })
+        let orphans: Vec<(i64, String, Option<String>, String)> = sqlx::query_as(
+            "SELECT id, name, session, fired_at FROM runs WHERE finished_at IS NULL",
+        )
+        .fetch_all(&pool)
+        .await?;
+        let mut kept = Vec::new();
+        let now = Local::now().to_rfc3339();
+        for (id, name, session, fired_at) in orphans {
+            let session = session.and_then(|s| s.parse::<SessionId>().ok());
+            match session.filter(|s| spare.contains(s)) {
+                Some(session) => kept.push(OpenRun {
+                    id,
+                    name,
+                    session,
+                    fired_at: fired_at.parse().unwrap_or_else(|_| Local::now()),
+                }),
+                None => {
+                    sqlx::query("UPDATE runs SET finished_at = ?, result = 'lost' WHERE id = ?")
+                        .bind(&now)
+                        .bind(id)
+                        .execute(&pool)
+                        .await?;
+                }
+            }
+        }
+        Ok((Self { pool }, kept))
     }
 
     /// Insert a fire (`result: None`, finished later by [`Store::finish_run`])
@@ -643,6 +687,48 @@ mod tests {
         assert_eq!(
             store.latest().await.unwrap()["a"].last_result.as_deref(),
             Some("lost")
+        );
+    }
+
+    /// 109 §4.6 step 12: a run whose session is being resumed stays open
+    /// and comes back as an `OpenRun`; the other orphan is `lost`.
+    #[tokio::test]
+    async fn reopen_spares_runs_of_resuming_sessions() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("schedule.sqlite");
+        let store = Store::open(&path).await.unwrap();
+        let (resuming, dead) = (SessionId::new(), SessionId::new());
+        let fired = Local::now();
+        let id = store
+            .insert_run("a", Some(resuming), fired, None)
+            .await
+            .unwrap();
+        store.insert_run("b", Some(dead), fired, None).await.unwrap();
+        drop(store);
+
+        let (store, kept) = Store::open_sparing(&path, &HashSet::from([resuming]))
+            .await
+            .unwrap();
+        assert_eq!(
+            kept,
+            [OpenRun {
+                id,
+                name: "a".into(),
+                session: resuming,
+                fired_at: fired,
+            }]
+        );
+        let a = store.history("a", 10).await.unwrap();
+        assert!(a[0].result.is_none() && a[0].finished_at.is_none(), "still open");
+        assert_eq!(
+            store.history("b", 10).await.unwrap()[0].result.as_deref(),
+            Some("lost")
+        );
+        // Closed normally later, with the resumed turn's stop reason.
+        store.finish_run(id, Local::now(), "end_turn", None).await.unwrap();
+        assert_eq!(
+            store.latest().await.unwrap()["a"].last_result.as_deref(),
+            Some("end_turn")
         );
     }
 

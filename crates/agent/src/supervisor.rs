@@ -108,7 +108,7 @@ use tools::{
 mod drain;
 mod resume;
 mod waits;
-pub use drain::{Drain, DrainReport};
+pub use drain::{Drain, DrainReport, OpenTurns, drain_engine, draining}; // 109 W5
 pub use resume::{OpenTurn, ResumeTurn};
 
 /// The supervisor actor. Look up with `ActorRef::<Agents>::lookup(AGENT_ACTOR)`.
@@ -5550,6 +5550,10 @@ impl Message<LoadSession> for Agents {
             .ok();
         self.mirror(m.session).await;
         let communication = self.communication.0.read().state(Some(m.session)).ok();
+        // 109 W5 §10.3: the open turn's state and its partial, after everything stored.
+        let (resume, partial) = self.resume_state(m.session).await;
+        let mut history = history;
+        history.extend(partial);
         Loaded {
             history,
             running,
@@ -5575,6 +5579,7 @@ impl Message<LoadSession> for Agents {
             communication,
             project,
             retention: self.retention_of(m.session),
+            resume,
         }
     }
 }

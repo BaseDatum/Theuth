@@ -1292,6 +1292,9 @@ fn print_history(out: &mut impl Write, loaded: &agent::Loaded) -> std::io::Resul
             )
         }
         agent::HistoryEntry::Error { text, .. } => writeln!(out, "error: {text}"),
+        agent::HistoryEntry::Interrupted { text, .. } => {
+            writeln!(out, "── interrupted — resuming ──\n{text}")
+        }
     })
 }
 
@@ -1377,6 +1380,22 @@ fn print_event(out: &mut impl Write, model: &Model, ev: &UiEvent) {
         UiEvent::Agent(AgentEvent::Compacted { epoch, style, .. }) => {
             writeln!(out, "context compacted (epoch {epoch} · {style})")
         }
+        // 109 §10.3: the divider, then the counts once the batch is reassembled.
+        UiEvent::Agent(AgentEvent::TurnResumed { kind, .. }) => {
+            writeln!(out, "── resumed after restart ({kind:?}) ──")
+        }
+        UiEvent::Agent(AgentEvent::ResumeReport {
+            replayed,
+            interrupted,
+            lost_jobs,
+            ..
+        }) => writeln!(
+            out,
+            "resumed · {} replayed · {} skipped · {} job(s) lost",
+            replayed.len(),
+            interrupted.len(),
+            lost_jobs.len()
+        ),
         UiEvent::Agent(AgentEvent::Harvested { added, updated, .. }) => {
             writeln!(out, "knowledge +{added} ~{updated}")
         }
