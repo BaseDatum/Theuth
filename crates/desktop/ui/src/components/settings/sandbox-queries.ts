@@ -273,6 +273,7 @@ export const PACKET_SIM: Record<string, Packet> = {
     task: SIM_TASK_DECISION,
     kind: 'decision',
     by: 'agent:ops',
+    to: 'user',
     at_ms: NOW - 20_000,
     question: 'Which rotation path for the Grafana token?',
     summary: `The Grafana service-account token in \`infra/grafana/.env\` expires on Friday. Three dashboards and the on-call alert rule authenticate with it, so a rotation that misses one consumer silently stops alerts.
@@ -322,6 +323,7 @@ Whichever path, the new value lands in the \`GRAFANA_TOKEN\` secret and the runb
     task: SIM_TASK_DECISION,
     kind: 'decision',
     by: 'agent:manager',
+    to: 'user',
     at_ms: NOW - 8_000,
     question: 'Approve the ten portal DNS changes for tonight?',
     summary: `The portal moves to the new load balancer tonight; the SRE desk prepared ten DNS changes (apex, www, api, mail, certificates, the old LB's retirement) and asks for a go on each. TTLs went to 60 s yesterday, so every change can be reverted within a minute.
@@ -354,6 +356,7 @@ Forwarded from the SRE desk's \`decision:dns-4b10\` — the desk's picks are pre
     task: SIM_TASK_REVIEW,
     kind: 'review',
     by: 'agent:writer',
+    to: 'user',
     at_ms: NOW - 45_000,
     question: null,
     summary: `Release notes for 2.4: three sections (Highlights, Changes, Upgrade notes), one diagram of the new sync flow, and the changelog entry. I kept every item to one line and linked the design notes instead of restating them.
