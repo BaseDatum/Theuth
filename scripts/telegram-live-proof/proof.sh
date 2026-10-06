@@ -28,7 +28,7 @@ DD=$SCRATCH/data-$LABEL
 OUT=$SCRATCH/out-$LABEL
 SRC_HOME=${THEUTH_SRC_HOME:-$HOME/.theuth}
 T_BIN=$CARGO_TARGET_DIR/debug/t
-MODEL_TIMEOUT=120; STEP_TIMEOUT=10
+MODEL_TIMEOUT=${MODEL_TIMEOUT:-120}; STEP_TIMEOUT=${STEP_TIMEOUT:-10}
 RPC="bun $HERE/rpc.ts"; INJ="bun $HERE/inject.ts"
 
 now_ms() { perl -MTime::HiRes=time -e 'printf "%.0f\n", time*1000'; }
@@ -53,6 +53,10 @@ start_engine() { # $1 = log suffix
     RUST_LOG=info,telegram=debug,tgbot=debug \
     nohup "$T_BIN" --headless --data-dir "$DD" >"$OUT/engine-$1.out" 2>&1 &
   $RPC wait "$DD" 60 >/dev/null || { log "engine failed to start; see $OUT/engine-$1.out"; return 1; }
+}
+dump_threads() { # macOS `sample`: where every engine thread is parked right now
+  local pid; pid=$(engine_pids | head -1); [ -n "$pid" ] || return 0
+  sample "$pid" 2 -mayDie -file "$OUT/threads-$1.txt" >/dev/null 2>&1 && log "thread sample → $OUT/threads-$1.txt"
 }
 status_ms() { # prints "<ms> <state-type> <bot-username>" or "<ms> ERR"
   local t0 t1 s; t0=$(now_ms)
@@ -153,7 +157,8 @@ turn() {
   t0=$(now_ms); seq=$($INJ seq)
   $INJ message "$text" >"$OUT/$step-inject.json" || { result "$step" FAIL 0 "inject failed"; return; }
   if ! react=$($INJ await setMessageReaction "$seq" $MODEL_TIMEOUT --chat "$CHAT"); then
-    result "$step" FAIL $(($(now_ms) - t0)) "no setMessageReaction (👀) within ${MODEL_TIMEOUT}s: the message was never dispatched"; return
+    dump_threads "$step"
+    result "$step" FAIL $(($(now_ms) - t0)) "no setMessageReaction (👀) within ${MODEL_TIMEOUT}s: the message was never dispatched; telegram_status now: $(status_ms)"; return
   fi
   $INJ await sendChatAction "$seq" $STEP_TIMEOUT --chat "$CHAT" >/dev/null || log "$step: no sendChatAction (continuing)"
   if send=$($INJ await sendRichMessageDraft,sendRichMessage,sendMessage "$seq" $MODEL_TIMEOUT --chat "$CHAT"); then
@@ -162,6 +167,7 @@ turn() {
     closed=$($INJ await setMessageReaction "$(echo "$react" | bun -e 'console.log(JSON.parse(await Bun.stdin.text()).seq)')" 30 --chat "$CHAT" --match '👌|😱|🤷' | summary) || closed="(no closing reaction)"
     result "$step" PASS $(($(now_ms) - t0)) "👀 → $(echo "$send" | summary), final $final, closed by $closed"
   else
+    dump_threads "$step"
     result "$step" FAIL $(($(now_ms) - t0)) "👀 seen, no send within ${MODEL_TIMEOUT}s"
   fi
 }
@@ -177,7 +183,8 @@ if panel=$($INJ await sendRichMessage,sendMessage "$SEQ" $MODEL_TIMEOUT --chat "
   result P2 PASS $(($(now_ms) - T0)) "$(echo "$panel" | bun -e 'const e=JSON.parse(await Bun.stdin.text());console.log(e.method+" message_id="+(e.response?.result?.message_id??"?")+" @"+e.waited_ms+"ms: "+JSON.stringify(e.params.rich_message??e.params.text).slice(0,120))')"
 else
   PANEL_ID=""
-  result P2 FAIL $(($(now_ms) - T0)) "no sessions panel within ${MODEL_TIMEOUT}s (mock ledger shows no send to the chat)"
+  dump_threads P2
+  result P2 FAIL $(($(now_ms) - T0)) "no sessions panel within ${MODEL_TIMEOUT}s; telegram_status now: $(status_ms)"
 fi
 
 # ---- P3 ---------------------------------------------------------------------

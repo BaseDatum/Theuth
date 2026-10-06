@@ -71,6 +71,36 @@ index d8af9c1..0d68c27 100644
 +	ledger.Reset()
 +	respondJSON(w, http.StatusOK, map[string]string{"status": "cleared"})
 +}
+diff --git a/internal/api/handler_info.go b/internal/api/handler_info.go
+index 555da3d..4af10b5 100644
+--- a/internal/api/handler_info.go
++++ b/internal/api/handler_info.go
+@@ -8,7 +8,24 @@ import (
+ )
+ 
+ func (s *Server) handleGetMe(w http.ResponseWriter, r *http.Request, b *bot.Bot) {
+-	respondOK(w, b.User)
++	// api.telegram.org returns a User plus the bot capability flags; strict
++	// clients (tgbot's `Bot`) require every flag, so the mock sends them all.
++	respondOK(w, map[string]any{
++		"id":                             b.User.ID,
++		"is_bot":                         true,
++		"first_name":                     b.User.FirstName,
++		"username":                       b.User.Username,
++		"can_join_groups":                true,
++		"can_read_all_group_messages":    false,
++		"supports_inline_queries":        false,
++		"can_connect_to_business":        false,
++		"has_main_web_app":               false,
++		"has_topics_enabled":             false,
++		"allows_users_to_create_topics":  false,
++		"can_manage_bots":                false,
++		"supports_guest_queries":         false,
++		"supports_join_request_queries":  false,
++	})
+ }
+ 
+ func (s *Server) handleGetChat(w http.ResponseWriter, r *http.Request, b *bot.Bot) {
 diff --git a/internal/api/handler_messages.go b/internal/api/handler_messages.go
 index e792462..cdc9f23 100644
 --- a/internal/api/handler_messages.go
@@ -102,10 +132,10 @@ index e792462..cdc9f23 100644
 +}
 diff --git a/internal/api/ledger.go b/internal/api/ledger.go
 new file mode 100644
-index 0000000..423bb77
+index 0000000..63df253
 --- /dev/null
 +++ b/internal/api/ledger.go
-@@ -0,0 +1,130 @@
+@@ -0,0 +1,148 @@
 +package api
 +
 +import (
@@ -202,8 +232,26 @@ index 0000000..423bb77
 +		return b
 +	}
 +	if strings.HasPrefix(ct, "multipart/form-data") {
-+		// Files are not recorded; only the field names.
-+		b, _ := json.Marshal(map[string]string{"multipart": ct})
++		// Text fields only (files are named, not stored); the parsed form stays
++		// on the request for the handler's FormValue calls.
++		if err := r.ParseMultipartForm(32 << 20); err != nil {
++			b, _ := json.Marshal(map[string]string{"multipart_error": err.Error()})
++			return b
++		}
++		m := make(map[string]any, len(r.MultipartForm.Value)+1)
++		for k, v := range r.MultipartForm.Value {
++			if len(v) > 0 {
++				if json.Valid([]byte(v[0])) {
++					m[k] = json.RawMessage(v[0])
++				} else {
++					m[k] = v[0]
++				}
++			}
++		}
++		for k := range r.MultipartForm.File {
++			m[k] = "<file>"
++		}
++		b, _ := json.Marshal(m)
 +		return b
 +	}
 +	_ = r.ParseForm()
@@ -236,6 +284,28 @@ index 0000000..423bb77
 +		TookMS:   time.Since(start).Milliseconds(),
 +	})
 +}
+diff --git a/internal/api/params.go b/internal/api/params.go
+index 82103c5..0b8aaac 100644
+--- a/internal/api/params.go
++++ b/internal/api/params.go
+@@ -33,9 +33,15 @@ func parseStringParam(r *http.Request, name string) string {
+ 		return v
+ 	}
+ 
+-	// Try form data
++	// Try form data (multipart needs ParseMultipartForm; ParseForm ignores it)
+ 	ct := r.Header.Get("Content-Type")
+-	if strings.HasPrefix(ct, "application/x-www-form-urlencoded") || strings.HasPrefix(ct, "multipart/form-data") {
++	if strings.HasPrefix(ct, "multipart/form-data") {
++		if err := r.ParseMultipartForm(32 << 20); err == nil {
++			if v := r.FormValue(name); v != "" {
++				return v
++			}
++		}
++	} else if strings.HasPrefix(ct, "application/x-www-form-urlencoded") {
+ 		if err := r.ParseForm(); err == nil {
+ 			if v := r.FormValue(name); v != "" {
+ 				return v
 diff --git a/internal/api/router.go b/internal/api/router.go
 index b2f3790..4cde483 100644
 --- a/internal/api/router.go
@@ -274,3 +344,23 @@ index b2f3790..4cde483 100644
 -	handler(w, r, b)
 +	recordCall(method, w, r, func(w http.ResponseWriter) { handler(w, r, b) })
  }
+diff --git a/internal/state/store.go b/internal/state/store.go
+index 59431a9..b95071a 100644
+--- a/internal/state/store.go
++++ b/internal/state/store.go
+@@ -78,6 +78,15 @@ func (s *Store) ListUsers() []models.User {
+ // CreateChat adds a chat to the store. If ID is 0, auto-generates one.
+ // Group chats get negative IDs.
+ func (s *Store) CreateChat(c models.Chat) *models.Chat {
++	// A private chat is the peer user: Bot API clients require its first_name.
++	// Looked up before chatMu so the store never nests chatMu → userMu.
++	if c.Type == "private" && c.FirstName == "" {
++		if u, ok := s.GetUser(c.ID); ok {
++			c.FirstName, c.LastName, c.Username = u.FirstName, u.LastName, u.Username
++		} else {
++			c.FirstName = "Private"
++		}
++	}
+ 	s.chatMu.Lock()
+ 	defer s.chatMu.Unlock()
+ 	if c.ID == 0 {
