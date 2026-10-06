@@ -14,6 +14,7 @@
 
 pub mod actor;
 pub mod agent_draft;
+pub mod routine_draft;
 pub mod draft;
 pub mod fence;
 pub mod helper;
@@ -30,6 +31,7 @@ use serde::{Deserialize, Serialize};
 
 pub use actor::{Apps, CallStatusOf, CallTool, CloseApp, GetApp, PublishFromUi};
 pub use agent_draft::{AgentDraft, AgentDraftArgs, AgentDraftTool};
+pub use routine_draft::{RoutineDraft, RoutineDraftArgs, RoutineDraftTool};
 pub use draft::{Draft, TaskDraftArgs, TaskDraftTool};
 pub use tool::{AppArgs, AppTool, EXAMPLE, prompt};
 
@@ -353,6 +355,11 @@ impl runtime::Plugin for AppPlugin {
                     .await;
                 let _ = reg
                     .ask(tools::RegisterTool(Arc::new(AgentDraftTool {
+                        core: core.clone(),
+                    })))
+                    .await;
+                let _ = reg
+                    .ask(tools::RegisterTool(Arc::new(RoutineDraftTool {
                         core: core.clone(),
                     })))
                     .await;

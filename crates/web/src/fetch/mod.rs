@@ -206,7 +206,7 @@ impl Fetcher {
                 .await
                 .map_err(|e| FetchError::from_reqwest(&e))?;
             let status = response.status();
-            if status.is_redirection() {
+            if Self::is_redirect(status) {
                 if redirects >= self.max_redirects {
                     return Err(FetchError::Rejected(format!(
                         "too many redirects (max {})",
@@ -276,7 +276,7 @@ impl Fetcher {
             }
             let response = req.send().await.map_err(|e| FetchError::from_reqwest(&e))?;
             let status = response.status();
-            if status.is_redirection() {
+            if Self::is_redirect(status) {
                 if redirects >= self.max_redirects {
                     return Err(FetchError::Rejected(format!(
                         "too many redirects (max {})",
@@ -322,6 +322,20 @@ impl Fetcher {
                 took_ms: u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
             });
         }
+    }
+
+    /// The 3xx statuses that carry a `Location` to follow (RFC 9110 §15.4).
+    /// `304 Not Modified` (a conditional GET's answer) and the other 3xx are
+    /// ordinary responses returned with their status (108 D1).
+    fn is_redirect(status: reqwest::StatusCode) -> bool {
+        matches!(
+            status,
+            reqwest::StatusCode::MOVED_PERMANENTLY
+                | reqwest::StatusCode::FOUND
+                | reqwest::StatusCode::SEE_OTHER
+                | reqwest::StatusCode::TEMPORARY_REDIRECT
+                | reqwest::StatusCode::PERMANENT_REDIRECT
+        )
     }
 
     /// Refuse an oversize `Content-Length`, then read the body cut at `max_bytes`.

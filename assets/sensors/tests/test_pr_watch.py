@@ -1,4 +1,5 @@
 """pr_watch.py under CPython via monty_shim. Run: python3 -m unittest discover -s assets/sensors/tests"""
+import datetime
 import json
 import re
 import sys
@@ -16,9 +17,18 @@ AUTHOR = "alice"
 REVIEWER = "bob"
 H = [c * 40 for c in "abcdefgh"]
 BASE = ["1" * 40, "2" * 40]
-T0 = "2026-09-28T10:00:00Z"
-T1 = "2026-09-28T11:00:00Z"
-T2 = "2026-09-28T12:00:00Z"
+
+
+def iso_hours_ago(h):
+    """`updated_at` relative to the wall clock: pr_watch._hours_since compares against now, so a
+    pinned date goes `stale` (72 h) on its own; fresh fixtures must move with the clock."""
+    t = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(hours=h)
+    return t.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+T0 = iso_hours_ago(3)
+T1 = iso_hours_ago(2)
+T2 = iso_hours_ago(1)
 P = f"/repos/{REPO}"
 
 
@@ -451,7 +461,7 @@ class Lint(unittest.TestCase):
                     r"\bimport (pathlib|asyncio|sys|threading)\b", r"\{\{secret:\w"):
             self.assertIsNone(re.search(pat, src, re.M), pat)
         header = src.split("\n")[:16]
-        self.assertIn("# theuth-sensor: pr_watch 1", header)
+        self.assertIn("# theuth-sensor: pr_watch 2", header)
         self.assertIn("# hosts: api.github.com", header)
         self.assertFalse(any(h.startswith("# needs:") for h in header))
 

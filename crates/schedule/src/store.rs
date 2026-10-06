@@ -186,6 +186,7 @@ impl Store {
         rows.into_iter()
             .map(|(session, fired_at, finished_at, result, report, envelope)| {
                 Ok(RunInfo {
+                    kind: crate::RunKind::of(session.is_some(), result.as_deref()),
                     session: session.as_deref().map(session_of).transpose()?,
                     fired_at: time_of(&fired_at)?,
                     finished_at: finished_at.as_deref().map(time_of).transpose()?,
@@ -577,6 +578,51 @@ mod tests {
             .unwrap();
         assert_eq!(store.count_since_end("plain").await.unwrap(), 2);
         assert_eq!(store.count_since_end("nothing").await.unwrap(), 0);
+    }
+
+    /// 108 §9.3: `kind` is derived on read — a fire is `run`, a gate row is
+    /// `check`, an end string is `end` whether or not a session is attached,
+    /// and `skipped: …` is `skip` even with a session.
+    #[tokio::test]
+    async fn history_rows_carry_their_kind() {
+        use crate::RunKind;
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(&dir.path().join("schedule.sqlite"))
+            .await
+            .unwrap();
+        let s = SessionId::new();
+        let at = |i: i64| Local::now() + chrono::Duration::seconds(i);
+        let rows: [(Option<SessionId>, Option<&str>, RunKind); 9] = [
+            (Some(s), None, RunKind::Run),
+            (None, Some("quiet"), RunKind::Check),
+            (None, Some("holding: 2m of 10m"), RunKind::Check),
+            (None, Some("check broken: timeout after 20s"), RunKind::Check),
+            (Some(s), Some("skipped: busy"), RunKind::Skip),
+            (None, Some("skipped: check still running"), RunKind::Skip),
+            (Some(s), Some("done: until passed after 4 runs"), RunKind::End),
+            (None, Some("check broken ×3, disabled"), RunKind::End),
+            (Some(s), Some("max_runs 20 reached"), RunKind::End),
+        ];
+        for (i, (session, result, _)) in rows.iter().enumerate() {
+            let id = store
+                .insert_run("w", *session, at(i as i64), *result)
+                .await
+                .unwrap();
+            if result.is_none() {
+                store.finish_run(id, at(i as i64), "end_turn", None).await.unwrap();
+            }
+        }
+        let h = store.history("w", 20).await.unwrap();
+        let mut kinds: Vec<RunKind> = h.iter().map(|r| r.kind).collect();
+        kinds.reverse();
+        assert_eq!(kinds, rows.map(|(_, _, k)| k));
+        assert_eq!(RunKind::of(true, Some("expired")), RunKind::End);
+        assert_eq!(RunKind::of(true, Some("removed")), RunKind::End);
+        assert_eq!(RunKind::of(true, Some("until broken: exit 2: x")), RunKind::End);
+        assert_eq!(RunKind::of(true, Some("lost")), RunKind::Run);
+        assert_eq!(RunKind::of(true, Some("error: boom")), RunKind::Run);
+        assert_eq!(RunKind::of(false, Some("queued (2 coalesced)")), RunKind::Check);
+        assert_eq!(RunKind::of(false, Some("task 7f3a")), RunKind::Run);
     }
 
     #[tokio::test]

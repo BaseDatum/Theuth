@@ -9,10 +9,21 @@ CPython shim, not a sensor).
 ## Header (first 16 lines; unknown `# key:` lines are ignored)
 
 ```python
-# theuth-sensor: pr_watch 1          # built-ins only: <name> <version>; drives the update rule (40 §4.5)
+# theuth-sensor: pr_watch 2          # built-ins only: <name> <version>; drives the update rule (40 §4.5)
 # needs: cpython                     # optional: run as a child of a PATH Python via .shim.py, not Monty (40 §1.3)
 # hosts: api.github.com,github.com   # optional: hosts http_request may POST to; GET is open (40 §4.3)
+# arg: repo required owner/name — the repository   # one per argument (108 §9.1), see below
 ```
+
+`# arg: <name> <required|optional> <example> — <help text to end of line>` describes one
+argument for the Routines form, `list_sensors` and the `routines` skill: `<name>` matches the
+`when:` key rule `[a-z][a-z0-9_]*` (`cwd` refused); `required` / `optional` is literal; `<example>` is
+one token (no spaces) shown as the field's placeholder — `-` means none, `secret` means a vault
+name (the form offers the secret names), `url[,url]` a URL list; ` — ` (or ` -- `) separates the
+help, free text to the end of the line, may be empty. Line order = form order and the order in the
+routine's sentence. A malformed `# arg:` is a header error like a bad `# hosts:`: the sensor is
+listed with the error and cannot be picked. The docstring's first line is the sensor's
+description and its `when:` line its usage; both are shown beside the arguments.
 
 ## Contract (40 §1.4)
 
@@ -96,6 +107,45 @@ bot's last one; it fires on the transition only.
 
 `next`: 15 while checks pending or `mergeable` unknown (300 after 5 unknown
 ticks), 60 idle, 300 paused / draft / closed.
+
+## rss
+
+`when: rss.py urls=<url>[,<url>…] [filter=<regex on title>] [backfill=0]`
+
+Atom, RSS 2.0 and YouTube `videos.xml`
+(`https://www.youtube.com/feeds/videos.xml?channel_id=UC…`), parsed with
+regexes (no XML parser in the Monty subset): `<entry>` / `<item>` blocks,
+CDATA, the five XML entities and numeric references. Ids: `yt:videoId` →
+Atom `<id>` → RSS `<guid>` → link. Up to 7 feeds — one GET each inside the
+8-call budget; an 8th is refused with `urls: at most 7`.
+
+Envelope: `subject=feed/<host> events=new count=<N>` (`channel/<title>` for a
+YouTube feed, `feeds/<M>` when several); one line per new entry, newest
+first: `id=<id> published=<iso> title=<title> url=<url>`, then `+K more`
+when the 4 KiB budget stops it. Feed text is data: tags stripped, `<`
+neutralised. Per-feed failures go in the tail (`feed=<host> error=HTTP 500`
+/ `error=no entries parsed (N bytes)`) and do not break the check; every
+feed failing raises (`check broken`).
+
+Per tick: `GET` each feed with `If-None-Match` / `If-Modified-Since` from
+state; a `304` leaves that feed's state as is. A feed that redirected is
+fetched at its final URL next time (caller headers never cross origins); a
+failing feed drops its conditionals so the next check goes bare. State:
+`seen` (ids newest first, FIFO ≤ 300 and ≤ 12 KB), `feeds` (`etag`,
+`last_modified`, `title`, `kind`, final `url`), `seeded`.
+
+First check (`state == {}`): every entry is seeded silently — `fire: false`,
+`events=seeded count=N`, `seeded N entries from M feeds` — so the creation
+dry-run says *would not fire*; `backfill=N` fires on the N newest instead. A
+URL added later seeds the same way while the others keep firing. `filter`
+is `re.search` on the title; non-matching entries are ignored entirely.
+
+`next`: `Cache-Control: max-age` or `<sy:updatePeriod>` / `updateFrequency`
+(the smallest across feeds), else `None`; the gate clamps it.
+
+`probe`: one bare GET per feed → `<host>: <N> entries, parsed as
+<atom|rss|youtube>` / `<host>: no entries parsed (N bytes)` / `<host>: HTTP
+<status>`, joined by `; `. Never raises.
 
 ## Tests
 

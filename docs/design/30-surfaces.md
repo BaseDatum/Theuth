@@ -690,6 +690,8 @@ into `attachments/` and the channel attaches it (`message_user{files}`
 already carries images, 24 §5); Signal then shows a picture where jarvis
 shows nothing.
 
+*Amended by 110 §7–§8 (2026-10-06): Slack inbound text carries a `[slack …]` marker and the prompt gains a `## Slack` section so the model writes Slack-plain; in wave 2 the json-render components that have a native Block Kit block (the 110 §8 table: Alert, Table, Bars, Metric, Checklist, Card, … ) go out as a `blocks` chunk via `surface::slack_blocks`; everything else still flattens here. Signal and `message_user` are unchanged.*
+
 ## 10. Catalog v0
 
 Thirty-six components, chosen for what an assistant *shows*: layout (Card,

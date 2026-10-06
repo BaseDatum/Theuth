@@ -1196,6 +1196,10 @@ pub trait Api {
     /// Every schedule file with its next/last fire and parse state (34 §8).
     #[method(name = "list_schedules")]
     async fn list_schedules(&self) -> RpcResult<Vec<schedule::ScheduleInfo>>;
+    /// Every installed sensor with its `# arg:` header, description and
+    /// install state (108 §9.2) for the Routines form and the `routines` skill.
+    #[method(name = "list_sensors")]
+    async fn list_sensors(&self) -> RpcResult<Vec<schedule::SensorInfo>>;
     /// The self-updater's latest state: `null`, or the version that is on disk
     /// (`applied`) / available but not writable (39 §4.3).
     #[method(name = "update_status")]
@@ -1537,6 +1541,13 @@ pub trait Api {
     /// or not a watcher.
     #[method(name = "test_schedule")]
     async fn test_schedule(&self, name: String) -> RpcResult<schedule::Verdict>;
+    /// The 40 §1.12 verdict on an unsaved file (108 §9.4): render + parse +
+    /// dry-run, nothing written. `Err` with the parse error or `not a watcher`.
+    #[method(name = "test_schedule_file")]
+    async fn test_schedule_file(
+        &self,
+        file: schedule::file::ScheduleFile,
+    ) -> RpcResult<schedule::Verdict>;
     /// This engine, its peers and the hub lease (67 §4, §12).
     #[method(name = "mesh_status")]
     async fn mesh_status(&self) -> RpcResult<mesh::MeshStatus>;
@@ -4634,6 +4645,10 @@ impl ApiServer for Server {
         send(&schedule()?, schedule::ListSchedules).await
     }
 
+    async fn list_sensors(&self) -> RpcResult<Vec<schedule::SensorInfo>> {
+        send(&schedule()?, schedule::ListSensors).await
+    }
+
     async fn update_status(&self) -> RpcResult<Option<update::UpdateReady>> {
         send(&update_actor()?, update::Status).await
     }
@@ -5160,6 +5175,13 @@ impl ApiServer for Server {
 
     async fn test_schedule(&self, name: String) -> RpcResult<schedule::Verdict> {
         send(&schedule()?, schedule::TestSchedule { name }).await
+    }
+
+    async fn test_schedule_file(
+        &self,
+        file: schedule::file::ScheduleFile,
+    ) -> RpcResult<schedule::Verdict> {
+        send(&schedule()?, schedule::TestFile(file)).await
     }
 
     // 67: every method is one `ask`; the actors answer `not built` until

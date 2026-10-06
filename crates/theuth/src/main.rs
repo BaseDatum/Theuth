@@ -1157,8 +1157,8 @@ const HARNESS_SKILL: &str = include_str!("../harness.md");
 
 /// Creates the data-dir skeleton on first run. Existing files are never
 /// overwritten, except `skills/harness.md`, `skills/visualize.md`,
-/// `skills/pdf.md`, `skills/loops.md`, `skills/apps.md`, `skills/board.md` and
-/// `skills/decide.md`, which the binary owns and rewrites so they always describe
+/// `skills/pdf.md`, `skills/loops.md`, `skills/routines.md`, `skills/apps.md`,
+/// `skills/board.md` and `skills/decide.md`, which the binary owns and rewrites so they always describe
 /// the running version.
 fn first_run(data_dir: &Path, config_path: &Path) -> std::io::Result<()> {
     std::fs::create_dir_all(data_dir.join("mcp"))?;
@@ -1170,6 +1170,7 @@ fn first_run(data_dir: &Path, config_path: &Path) -> std::io::Result<()> {
         ("visualize.md", surface::visualize_skill()),
         ("pdf.md", artifact::pdf::skill()),
         ("loops.md", schedule::tools::LOOPS_SKILL.to_owned()),
+        ("routines.md", schedule::tools::ROUTINES_SKILL.to_owned()),
         ("apps.md", app::skill()),
         ("board.md", document::tools::BOARD_SKILL.to_owned()),
         ("decide.md", decision::tool::DECIDE_SKILL.to_owned()),
