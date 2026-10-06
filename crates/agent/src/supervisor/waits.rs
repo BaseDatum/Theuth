@@ -9,11 +9,12 @@
 //!   resumed call; the `approval` rows of `planned` calls are settled: a
 //!   `pending` one is `superseded` (its registry invocation died with the
 //!   process, §6.2), an `answered` one is handed to the approval actor as a
-//!   [`HonourAnswer`] so the replay does not ask again. It ends by queueing
-//!   [`DeliverSparedResults`] behind the handler, i.e. after `resume_scan`.
-//! - [`DeliverSparedResults`]: the boot pass of §7.2 — every child result
-//!   `fail_interrupted` spared is enqueued into its parent through the same
-//!   intake as a fresh one; the dedup key makes a double delivery impossible.
+//!   [`HonourAnswer`] so the replay does not ask again.
+//! - [`Agents::deliver_spared_results`]: the boot pass of §7.2, run once by
+//!   the `ActivityRegistered` handler after `resume_scan` and the ACP
+//!   respawn — every child result `fail_interrupted` spared is enqueued into
+//!   its parent through the same intake as a fresh one; the dedup key makes
+//!   a double delivery impossible.
 //! - [`ResumeQuestion`] / [`ResumeWait`]: what `loop_/resume_calls.rs` asks
 //!   for a `started` human-wait / `send_message{await_reply}` call.
 
@@ -32,7 +33,6 @@ use tools::{Decision, QuestionKind, QuestionRow, QuestionState, WaitKind, WaitRo
 use uuid::Uuid;
 
 use super::Agents;
-use crate::AGENT_ACTOR;
 use crate::communication::{PeerAddress, PeerMessageState, PeerReceipt, PeerRecord};
 use crate::durability::CallState;
 
@@ -48,14 +48,11 @@ fn rearmed() -> parking_lot::MutexGuard<'static, HashMap<Uuid, oneshot::Receiver
     REARMED.lock()
 }
 
-/// `tell` (internal): the §7.2 boot pass over spared `result:` exchanges.
-pub(super) struct DeliverSparedResults;
-
-/// `ask` → `Result<(SessionId, Option<QuestionRow>), String>`: the session of
-/// open turn `turn` and the newest `questions` row of `call_id` (§6.2).
+/// `ask` → `Result<Option<QuestionRow>, String>`: the newest `questions`
+/// row of `call_id` in `session` (§6.2).
 pub(crate) struct ResumeQuestion {
-    /// The open turn being resumed.
-    pub turn: TurnId,
+    /// The session whose turn is being resumed.
+    pub session: SessionId,
     /// The `started` human-wait call.
     pub call_id: String,
 }
@@ -63,6 +60,8 @@ pub(crate) struct ResumeQuestion {
 /// `ask` → `Result<ResumedWait, String>`: what a `started`
 /// `send_message{await_reply}` call blocks on after a restart (§4.4).
 pub(crate) struct ResumeWait {
+    /// The session whose turn is being resumed.
+    pub session: SessionId,
     /// The open turn being resumed.
     pub turn: TurnId,
     /// The waiting call.
@@ -180,13 +179,6 @@ impl Agents {
                 "109: waits and approvals rebuilt from the journal"
             );
         }
-        // §7.2: behind this handler's remaining work (`resume_scan`), so a
-        // resumed parent is queued before its spared results arrive.
-        if let Ok(Some(me)) = ActorRef::<Agents>::lookup(AGENT_ACTOR)
-            && let Err(e) = me.tell(DeliverSparedResults).try_send()
-        {
-            tracing::error!("109: spared child results not scheduled: {e}");
-        }
     }
 
     /// Re-create the live [`super::Wait`] of exchange `id` for `session`
@@ -234,18 +226,6 @@ impl Agents {
         }
     }
 
-    /// The session whose open turn is `turn`, from the journal.
-    async fn session_of_turn(&self, turn: TurnId) -> Result<SessionId, String> {
-        self.store
-            .open_turns()
-            .await
-            .map_err(|e| e.to_string())?
-            .into_iter()
-            .find(|(_, t, _)| *t == turn)
-            .map(|(s, _, _)| s)
-            .ok_or_else(|| format!("turn {turn} is not open"))
-    }
-
     /// Deliver one spared child result into its parent (§7.2), the tail of
     /// `hand_off` without the live-child bookkeeping.
     async fn deliver_spared(&mut self, record: PeerRecord) {
@@ -273,13 +253,15 @@ impl Agents {
                 Ok(r) => self.peer_changed(&r).await,
                 Err(e) => tracing::error!(%id, "fail_exchange: {e:#}"),
             }
+            self.error(parent, format!("subagent result not delivered: {reason}"))
+                .await;
         }
     }
 }
 
 impl Agents {
-    /// [`DeliverSparedResults`]'s body.
-    async fn deliver_spared_results(&mut self) {
+    /// The §7.2 boot pass (module doc).
+    pub(super) async fn deliver_spared_results(&mut self) {
         let spared = match self.store.spared_child_results().await {
             Ok(s) => s,
             Err(e) => return tracing::error!("109: spared child results unreadable: {e:#}"),
@@ -318,23 +300,25 @@ impl Agents {
     /// [`ResumeQuestion`]'s body.
     async fn resume_question(
         &mut self,
-        turn: TurnId,
+        session: SessionId,
         call_id: &str,
-    ) -> Result<(SessionId, Option<QuestionRow>), String> {
-        let session = self.session_of_turn(turn).await?;
-        let row = self
+    ) -> Result<Option<QuestionRow>, String> {
+        Ok(self
             .store
             .questions_of_call(session, call_id)
             .await
             .map_err(|e| e.to_string())?
             .into_iter()
-            .next();
-        Ok((session, row))
+            .next())
     }
 
     /// [`ResumeWait`]'s body.
-    async fn resume_wait(&mut self, turn: TurnId, call_id: &str) -> Result<ResumedWait, String> {
-        let session = self.session_of_turn(turn).await?;
+    async fn resume_wait(
+        &mut self,
+        session: SessionId,
+        turn: TurnId,
+        call_id: &str,
+    ) -> Result<ResumedWait, String> {
         let row = self
             .store
             .waits_of(session, turn)
@@ -400,23 +384,15 @@ impl Agents {
     }
 }
 
-impl Message<DeliverSparedResults> for Agents {
-    type Reply = ();
-
-    async fn handle(&mut self, _: DeliverSparedResults, _: &mut Context<Self, Self::Reply>) {
-        self.deliver_spared_results().await;
-    }
-}
-
 impl Message<ResumeQuestion> for Agents {
-    type Reply = Result<(SessionId, Option<QuestionRow>), String>;
+    type Reply = Result<Option<QuestionRow>, String>;
 
     async fn handle(
         &mut self,
         m: ResumeQuestion,
         _: &mut Context<Self, Self::Reply>,
     ) -> Self::Reply {
-        self.resume_question(m.turn, &m.call_id).await
+        self.resume_question(m.session, &m.call_id).await
     }
 }
 
@@ -424,7 +400,7 @@ impl Message<ResumeWait> for Agents {
     type Reply = Result<ResumedWait, String>;
 
     async fn handle(&mut self, m: ResumeWait, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
-        self.resume_wait(m.turn, &m.call_id).await
+        self.resume_wait(m.session, m.turn, &m.call_id).await
     }
 }
 
@@ -605,11 +581,10 @@ mod tests {
             .await
             .unwrap();
         assert!(r.timed_out);
-        // The session of an open turn resolves; a closed one does not.
-        let (session, row) = a.resume_question(_t, "c3").await.unwrap();
-        assert_eq!(session, s);
+        // The newest row of the call; an unknown call has none.
+        let row = a.resume_question(s, "c3").await.unwrap();
         assert_eq!(row.unwrap().id, ask_row.id);
-        assert!(a.resume_question(TurnId::new(), "c3").await.is_err());
+        assert!(a.resume_question(s, "zz").await.unwrap().is_none());
     }
 
     /// `root` awaiting `child`'s answer to one accepted exchange, journaled
@@ -673,7 +648,7 @@ mod tests {
         let (received, _) = a.pending_requests(child);
         assert_eq!(received, [receipt.id]);
 
-        let mut w = a.resume_wait(t, "c1").await.unwrap();
+        let mut w = a.resume_wait(root, t, "c1").await.unwrap();
         let row = w.row.unwrap();
         let left = remaining(row.deadline.unwrap()).unwrap();
         assert!(left > Duration::from_secs(9 * 60) && left <= Duration::from_secs(10 * 60));
@@ -698,12 +673,12 @@ mod tests {
         assert!(a.waits.is_empty());
 
         // A row whose deadline passed while down: nothing left to wait.
-        let (_, _, t2, r2) = awaiting(&mut a, -chrono::Duration::seconds(30)).await;
-        let w = a.resume_wait(t2, "c1").await.unwrap();
+        let (root2, _, t2, r2) = awaiting(&mut a, -chrono::Duration::seconds(30)).await;
+        let w = a.resume_wait(root2, t2, "c1").await.unwrap();
         assert!(remaining(w.row.unwrap().deadline.unwrap()).is_none());
         assert_eq!(w.receipts[0].id, r2.id);
         // No row at all: the call wrote nothing before the kill.
-        let w = a.resume_wait(t2, "zz").await.unwrap();
+        let w = a.resume_wait(root2, t2, "zz").await.unwrap();
         assert!(w.row.is_none() && w.receipts.is_empty());
     }
 
@@ -712,7 +687,7 @@ mod tests {
     #[tokio::test]
     async fn replied_exchange_delivered_on_resume() {
         let mut a = agents_with(true).await;
-        let (_root, child, t, receipt) = awaiting(&mut a, chrono::Duration::minutes(10)).await;
+        let (root, child, t, receipt) = awaiting(&mut a, chrono::Duration::minutes(10)).await;
         a.store
             .owner_answer(receipt.id, child, "while you were out")
             .await
@@ -720,7 +695,7 @@ mod tests {
 
         a.rebuild_waits().await;
         assert!(a.waits.is_empty(), "a replied exchange has no waiter");
-        let w = a.resume_wait(t, "c1").await.unwrap();
+        let w = a.resume_wait(root, t, "c1").await.unwrap();
         assert!(w.pending.is_empty());
         assert_eq!(w.receipts.len(), 1);
         assert_eq!(w.receipts[0].state, PeerMessageState::Replied);
@@ -823,7 +798,7 @@ mod tests {
             !a.enqueued.contains(&r2.id),
             "awaited by an open turn: not injected"
         );
-        let w = a.resume_wait(t, "c1").await.unwrap();
+        let w = a.resume_wait(q, t, "c1").await.unwrap();
         assert_eq!(w.child_results, ["kid2 finished"]);
         assert_eq!(
             a.store

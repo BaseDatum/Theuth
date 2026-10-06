@@ -777,10 +777,11 @@ async fn spared_child_results_are_listed() {
         failed.exchanges.iter().map(|r| r.id).collect::<Vec<_>>(),
         [plain.id]
     );
-    assert_eq!(
-        store.spared_child_results().await.unwrap(),
-        [(parent, child, result.id)]
-    );
+    let spared = store.spared_child_results().await.unwrap();
+    assert_eq!(spared.len(), 1);
+    assert_eq!(spared[0].receipt.id, result.id);
+    assert_eq!(spared[0].from, format!("session:{child}"));
+    assert_eq!(spared[0].receipt.to, format!("session:{parent}"));
 }
 
 /// `THEUTH_CRASH_AT=<point>` as the §11.1 matrix: the child (this binary,

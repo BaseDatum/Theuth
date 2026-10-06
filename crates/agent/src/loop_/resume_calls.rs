@@ -192,13 +192,17 @@ async fn append_last_seen(text: &mut String, store: &Store, session: SessionId, 
 /// asking, and answers a passed deadline with its own timeout text. With no
 /// row at all (the kill fell before the question was journaled) the call
 /// re-runs and asks afresh.
-pub(crate) async fn resume_question_call(call: &JournaledCall, plan: &ResumePlan) -> ToolOutput {
+pub(crate) async fn resume_question_call(
+    session: SessionId,
+    call: &JournaledCall,
+    plan: &ResumePlan,
+) -> ToolOutput {
     let Ok(agents) = crate::peers::supervisor() else {
         return interrupted_note(call, plan);
     };
-    let (session, row) = match agents
+    let row = match agents
         .ask(ResumeQuestion {
-            turn: plan.turn,
+            session,
             call_id: call.call_id.clone(),
         })
         .await
@@ -238,12 +242,17 @@ pub(crate) async fn resume_question_call(call: &JournaledCall, plan: &ResumePlan
 /// row's remaining deadline — a passed deadline is the tool's own timeout
 /// receipt. A `child_result` wait delivers the spared `result:` text. No
 /// `waits` row (nothing was accepted before the kill) → the interrupted note.
-pub(crate) async fn resume_wait_call(call: &JournaledCall, plan: &ResumePlan) -> ToolOutput {
+pub(crate) async fn resume_wait_call(
+    session: SessionId,
+    call: &JournaledCall,
+    plan: &ResumePlan,
+) -> ToolOutput {
     let Ok(agents) = crate::peers::supervisor() else {
         return interrupted_note(call, plan);
     };
     let mut w = match agents
         .ask(ResumeWait {
+            session,
             turn: plan.turn,
             call_id: call.call_id.clone(),
         })

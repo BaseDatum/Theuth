@@ -3101,20 +3101,25 @@ impl Turn {
         plan: &ResumePlan,
     ) -> (Option<ToolOutput>, bool) {
         let name = row.name.as_str();
+        let session = self.shared.id;
         let settled = match name {
+            // §5.6: `None` = no `jobs` row — the kill fell between approval
+            // and spawn, nothing ran; the row is `planned` and runs now.
             "shell" | "start" | "send" | "wait" => {
-                Some(resume_calls::resume_job_call(row, plan).await)
+                resume_calls::resume_job_call(&self.shared.store, session, row, plan).await
             }
             "ask_user" | "desktop_handoff" => {
-                Some(resume_calls::resume_question_call(row, plan).await)
+                Some(resume_calls::resume_question_call(session, row, plan).await)
             }
             n if n.starts_with("secret_request") => {
-                Some(resume_calls::resume_question_call(row, plan).await)
+                Some(resume_calls::resume_question_call(session, row, plan).await)
             }
             n if n == <SpawnSubagentTool as tools::Tool>::NAME => {
-                Some(resume_calls::resume_wait_call(row, plan).await)
+                Some(resume_calls::resume_wait_call(session, row, plan).await)
             }
-            n if peer_wait(n, &row.args) => Some(resume_calls::resume_wait_call(row, plan).await),
+            n if peer_wait(n, &row.args) => {
+                Some(resume_calls::resume_wait_call(session, row, plan).await)
+            }
             n if n == repl::NAME => return self.resume_python(row, plan).await,
             n if n == todo::NAME => None,
             // §4.2: a `reminders` row set since the call began is its effect.
