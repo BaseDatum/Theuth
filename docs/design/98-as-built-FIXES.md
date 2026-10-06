@@ -120,7 +120,37 @@ export PATH=/Users/Sky.Moore/.rustup/toolchains/1.98.1-aarch64-apple-darwin/bin:
 export CARGO_TARGET_DIR=/Users/Sky.Moore/Develop/theuth-98c-target
 ```
 
-GATE_RESULTS
+Result lines (code state = commit `69ee546e` + docs; this note's results commit is docs-only):
+
+```
+cargo test -p telegram
+  test result: ok. 119 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.63s
+  test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s   (doc-tests)
+cargo clippy -p telegram --all-targets -- -D warnings -D clippy::await_holding_lock
+  error: could not compile `tasks` (lib) due to 4 previous errors        ← exit 101, see below
+cargo clippy -p telegram --all-targets --no-deps -- -D warnings -D clippy::await_holding_lock
+  Finished `dev` profile [unoptimized + debuginfo] target(s) in 38.88s   ← exit 0: zero lints in `telegram`
+cargo fmt -p telegram -- --check
+  (no output) exit 0
+cargo check -p rpc -p theuth
+  Finished `dev` profile [unoptimized + debuginfo] target(s) in 18.74s   exit 0
+cd crates/desktop/ui && bun run check
+  $ tsc -b --noEmit   exit 0
+bunx vitest run src/components/settings/Channels.test.ts
+  Test Files  1 passed (1)
+  Tests  8 passed (8)
+```
+
+The brief's clippy line as written fails **in `crates/tasks`** (`collapsible_match` at
+`tasks/src/packet.rs:406`, two `doc_lazy_continuation` at `tasks/src/tools.rs:480-481`,
+`too_many_arguments` at `tasks/src/tools.rs:741`): `cargo clippy -p <crate>` also lints
+workspace path dependencies, and `-D warnings` turns those pre-existing lints into errors.
+`crates/tasks` is untouched on this branch (`git diff --stat ef1ad0a3 -- crates/tasks` is
+empty), so the same line fails identically on `ef1ad0a3`; it is outside this fix's file list.
+The `--no-deps` run is the same lint set restricted to `telegram` and is clean, including
+`await_holding_lock` (which is also `#![deny]`ed in `lib.rs`, so a hit fails `cargo test` too).
+The UI gates ran after `bun install` in `crates/desktop/ui` and `packages/apps` and one
+`just ts-desktop` (bindings unchanged by this fix).
 
 ## Not exercised
 
