@@ -772,6 +772,7 @@ async fn review_gate(
         checks: checks.unwrap_or_default(),
         recommendation: None,
         items: vec![],
+        to: None,
     };
     if who == Owner::User {
         packet::require_for_user(&p)?;

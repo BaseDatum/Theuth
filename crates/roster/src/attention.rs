@@ -327,12 +327,20 @@ pub fn derive(inputs: &Inputs, states: &HashMap<String, State>, now_ms: u64) -> 
             .or_else(|| inputs.task_sessions.get(&t.id.0).cloned());
         match t.state {
             tasks::TaskState::Blocked => {
-                let decisions: Vec<&String> = t
+                // 106 F-2: the newest decision addressed to the user (`to` =
+                // `user`, or unset on legacy / packet-less rows); a decision
+                // addressed to an agent is not the user's and makes no item.
+                let decision = t
                     .blockers
                     .iter()
+                    .rev()
                     .filter(|b| b.starts_with("decision:"))
-                    .collect();
-                if let Some(d) = decisions.first() {
+                    .find(|b| {
+                        packets
+                            .get(b.as_str())
+                            .is_none_or(|p| p.to.as_deref().is_none_or(|to| to == "user"))
+                    });
+                if let Some(d) = decision {
                     let packet = packets.get(d.as_str());
                     out.push(AttentionItem {
                         task: Some(t.id.clone()),
@@ -345,7 +353,8 @@ pub fn derive(inputs: &Inputs, states: &HashMap<String, State>, now_ms: u64) -> 
                             AttentionKind::Decision,
                             format!(
                                 "{} asks for a decision on \u{201c}{}\u{201d}",
-                                t.owner, t.title
+                                packet.map_or_else(|| t.owner.to_string(), |p| p.by.clone()),
+                                t.title
                             ),
                             Some(packet.map_or_else(
                                 || "the question is in the task thread".to_owned(),
@@ -356,7 +365,7 @@ pub fn derive(inputs: &Inputs, states: &HashMap<String, State>, now_ms: u64) -> 
                             t.updated_ms,
                         )
                     });
-                } else if !t.blockers.is_empty() {
+                } else if t.blockers.iter().any(|b| !b.starts_with("decision:")) {
                     out.push(AttentionItem {
                         task: Some(t.id.clone()),
                         agent: owner_agent.clone(),
@@ -1200,6 +1209,7 @@ mod tests {
             checks: vec![],
             recommendation: None,
             items: vec![],
+            to: None,
         }
     }
 
@@ -1258,6 +1268,118 @@ mod tests {
         assert_eq!(detail.chars().count(), 140);
         assert!(detail.ends_with('…'));
         assert_eq!(items.len(), 2, "a stray packet makes no item");
+    }
+
+    /// 106 F-2: a forward chain lists the newest decision addressed to the
+    /// user; an agent-addressed decision alone makes no item (a non-decision
+    /// blocker still makes the Blocked item); a legacy packet without `to`
+    /// still counts.
+    #[test]
+    fn decision_item_is_the_newest_one_addressed_to_the_user() {
+        let ops = tasks::Owner::Agent("ops".into());
+        let addressed = |key: &str, task: &tasks::TaskId, by: &str, to: &str| {
+            let mut p = packet(key, task, tasks::packet::PacketKind::Decision);
+            p.by = by.into();
+            p.to = Some(to.into());
+            p
+        };
+        // forward chain: d1 ops → lead, d2 lead → user
+        let chain = task(
+            "deploy",
+            tasks::TaskState::Blocked,
+            ops.clone(),
+            &["decision:d1", "decision:d2"],
+            None,
+            50,
+        );
+        let inputs = Inputs {
+            tasks: vec![chain.clone()],
+            packets: vec![
+                addressed("decision:d1", &chain.id, "agent:ops", "agent:lead"),
+                addressed("decision:d2", &chain.id, "agent:lead", "user"),
+            ],
+            ..Default::default()
+        };
+        let items = derive(&inputs, &HashMap::new(), 100);
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].kind, AttentionKind::Decision);
+        assert_eq!(items[0].id, format!("decision:{}:decision:d2", chain.id));
+        assert_eq!(items[0].decision.as_deref(), Some("decision:d2"));
+        assert_eq!(items[0].packet.as_deref(), Some("decision:d2"));
+        assert!(
+            items[0].title.starts_with("agent:lead asks"),
+            "{}",
+            items[0].title
+        );
+
+        // only an agent-audience decision: nothing for the user
+        let agents_only = task(
+            "deploy",
+            tasks::TaskState::Blocked,
+            ops.clone(),
+            &["decision:d1"],
+            None,
+            50,
+        );
+        let inputs = Inputs {
+            tasks: vec![agents_only.clone()],
+            packets: vec![addressed(
+                "decision:d1",
+                &agents_only.id,
+                "agent:ops",
+                "agent:lead",
+            )],
+            ..Default::default()
+        };
+        assert!(derive(&inputs, &HashMap::new(), 100).is_empty());
+
+        // … unless something else blocks it too: the Blocked item as before
+        let mixed = task(
+            "deploy",
+            tasks::TaskState::Blocked,
+            ops.clone(),
+            &["no continuation", "decision:d1"],
+            None,
+            50,
+        );
+        let inputs = Inputs {
+            tasks: vec![mixed.clone()],
+            packets: vec![addressed(
+                "decision:d1",
+                &mixed.id,
+                "agent:ops",
+                "agent:lead",
+            )],
+            ..Default::default()
+        };
+        let items = derive(&inputs, &HashMap::new(), 100);
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].kind, AttentionKind::Blocked);
+
+        // legacy packet (no `to`) after an agent-addressed one: still an item
+        let legacy = task(
+            "deploy",
+            tasks::TaskState::Blocked,
+            ops,
+            &["decision:d0", "decision:d1"],
+            None,
+            50,
+        );
+        let inputs = Inputs {
+            tasks: vec![legacy.clone()],
+            packets: vec![
+                packet(
+                    "decision:d0",
+                    &legacy.id,
+                    tasks::packet::PacketKind::Decision,
+                ),
+                addressed("decision:d1", &legacy.id, "agent:ops", "agent:lead"),
+            ],
+            ..Default::default()
+        };
+        let items = derive(&inputs, &HashMap::new(), 100);
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].decision.as_deref(), Some("decision:d0"));
     }
 
     fn handoff(id: &str, agent: Option<&str>, created_ms: u64, resolved: bool) -> Handoff {

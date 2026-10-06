@@ -1524,6 +1524,7 @@ impl Ledger {
             checks: vec![],
             recommendation: ask.recommendation,
             items: ask.items,
+            to: Some(manager.to_string()),
         };
         if manager == Owner::User {
             packet::require_for_user(&p)?;
@@ -1608,6 +1609,7 @@ impl Ledger {
             checks,
             recommendation: None,
             items: vec![],
+            to: Some(self.effective_reviewer(&t, None).to_string()),
         };
         packet::validate(&p)?;
         self.store.put_packet(&p).await.map_err(db)?;
@@ -1642,7 +1644,10 @@ impl Ledger {
     }
 
     /// `decide` (67 §11): the answer in the thread, the `decision:<id>` blocker
-    /// dropped — the last blocker going re-wakes the owner (`answer`).
+    /// dropped — the last blocker going re-wakes the owner (`answer`). 106 F-3:
+    /// when the packet was raised by an agent other than the owner (a
+    /// forwarding manager, 103 F1) that agent is woken `answer` too — the
+    /// parent decision still blocks, so the owner wake alone never comes.
     pub async fn answer_decision(
         &mut self,
         decision: &str,
@@ -1676,6 +1681,13 @@ impl Ledger {
             session,
         )
         .await?;
+        if let Ok(Some(p)) = self.store.packet(decision).await
+            && let Ok(by @ Owner::Agent(_)) = p.by.parse::<Owner>()
+            && by != t.owner
+            && p.by != actor
+        {
+            self.wake(&t, &by, WakeReason::Answer, actor).await;
+        }
         Ok(())
     }
 
@@ -5163,6 +5175,8 @@ pub(crate) mod tests {
         let parent = r.ledger.packet(&d1).await.unwrap().unwrap();
         let p = r.ledger.packet(&d2).await.unwrap().unwrap();
         assert_eq!(p.by, "agent:lead");
+        assert_eq!(p.to.as_deref(), Some("user"), "106: addressed to the user");
+        assert_eq!(parent.to.as_deref(), Some("agent:lead"));
         assert_eq!(p.question.as_deref(), Some("approve PR 42?"));
         assert_eq!(p.summary, "Approve the autopay PR.");
         assert_eq!(p.board.as_deref(), Some("b1"));
@@ -5198,7 +5212,12 @@ pub(crate) mod tests {
         );
         let b = r.ledger.get(&t.id).await.unwrap();
         assert_eq!(b.blockers, vec![d1.clone(), d2.clone()]);
-        // the user answers the forward; lead then answers the parent with `decide`, as today
+        // 106 F-3: the user answers the forward → lead (the forwarder, not the
+        // owner) is woken `answer`; d1 still blocks, so no owner wake.
+        for d in r.ledger.dispatch().await.unwrap() {
+            r.ledger.finish_wake(&d.wake).await.unwrap();
+        }
+        assert!(r.ledger.wakes().await.unwrap().is_empty());
         r.ledger
             .answer_decision(&d2, "approve", "user", None)
             .await
@@ -5207,11 +5226,30 @@ pub(crate) mod tests {
             r.ledger.get(&t.id).await.unwrap().blockers,
             vec![d1.clone()]
         );
+        let w = r.ledger.wakes().await.unwrap();
+        assert_eq!(
+            w.iter()
+                .map(|w| (w.agent.as_str(), w.reason))
+                .collect::<Vec<_>>(),
+            vec![("lead", WakeReason::Answer)],
+            "{w:?}"
+        );
+        for d in r.ledger.dispatch().await.unwrap() {
+            r.ledger.finish_wake(&d.wake).await.unwrap();
+        }
+        // lead answers the parent with `decide`: the owner is woken as today, lead is not
         r.ledger
             .answer_decision(&d1, "approve", "agent:lead", Some("s-lead"))
             .await
             .unwrap();
         assert!(r.ledger.get(&t.id).await.unwrap().blockers.is_empty());
+        let w = r.ledger.wakes().await.unwrap();
+        assert!(
+            w.iter()
+                .any(|w| w.agent == "ops" && w.reason == WakeReason::Answer),
+            "{w:?}"
+        );
+        assert!(w.iter().all(|w| w.agent != "lead"), "{w:?}");
     }
 
     /// 103 F1: a manager that passes its own fields keeps them; only the empty
