@@ -102,7 +102,7 @@ index 555da3d..4af10b5 100644
  
  func (s *Server) handleGetChat(w http.ResponseWriter, r *http.Request, b *bot.Bot) {
 diff --git a/internal/api/handler_messages.go b/internal/api/handler_messages.go
-index e792462..cdc9f23 100644
+index e792462..fe8ad72 100644
 --- a/internal/api/handler_messages.go
 +++ b/internal/api/handler_messages.go
 @@ -356,6 +356,7 @@ func (s *Server) handleSendRichMessage(w http.ResponseWriter, r *http.Request, b
@@ -113,7 +113,27 @@ index e792462..cdc9f23 100644
  	})
  
  	respondOK(w, msg)
-@@ -412,3 +413,16 @@ Keep your responses concise and conversational.
+@@ -390,15 +391,10 @@ func (s *Server) handleSendRichMessageDraft(w http.ResponseWriter, r *http.Reque
+ 		return
+ 	}
+ 
+-	// Draft messages are stored like regular rich messages
+-	msg := s.store.StoreMessage(models.Message{
+-		From:        &b.User,
+-		Chat:        *chat,
+-		Date:        time.Now().Unix(),
+-		RichMessage: json.RawMessage(richMessageRaw),
+-	})
+-
+-	respondOK(w, msg)
++	// A draft is not a stored message: api.telegram.org answers True (clients
++	// decode a bool), and the draft text is visible in the call ledger.
++	_ = chat
++	respondBool(w, true)
+ }
+ 
+ func defaultReplyPrompt(user models.User) string {
+@@ -412,3 +408,16 @@ Keep your responses concise and conversational.
  Output ONLY the message text, no JSON, no formatting markers.
  Use the language that the bot writes in.`
  }
