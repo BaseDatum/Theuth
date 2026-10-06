@@ -182,6 +182,9 @@ pub enum TelegramEvent {
     Unconfigured,
     /// Terminal mode: the channel only runs in `t --headless`.
     DaemonOnly,
+    /// 98c: the actor is up but the vault has not answered yet; `Status`
+    /// reports this instead of guessing `Unconfigured`. Never on the bus.
+    Starting,
 }
 
 /// `getMe` (98 §3.1).
@@ -333,7 +336,8 @@ pub struct Telegram {
     handle: Option<channel::Handle>,
     cfg: TelegramConfig,
     rt: runtime::Runtime,
-    configured: bool,
+    /// `None` until the vault answered at boot (98c: `Starting`).
+    configured: Option<bool>,
     /// This process runs the channel (`TelegramPlugin::channel`).
     run_channel: bool,
     /// Hash of the token in use; never the token (98 §10.5: no hot swap, log once).
@@ -380,7 +384,7 @@ impl Telegram {
             handle,
             cfg,
             rt,
-            configured: token.is_some(),
+            configured: Some(token.is_some()),
             run_channel,
             token_hash: token.map(token_hash),
             source: Arc::new(move || {
@@ -388,6 +392,15 @@ impl Telegram {
                 Box::pin(async move { token_from(secrets::handle(&rt).await.as_ref()) })
             }),
             start: Arc::new(channel::spawn),
+        }
+    }
+
+    /// The boot-time actor (98c): no handle yet and the token state unknown
+    /// (`Starting`) until the vault answers with a `TokenRead`.
+    pub(crate) fn starting(cfg: TelegramConfig, rt: runtime::Runtime, run_channel: bool) -> Self {
+        Self {
+            configured: None,
+            ..Self::new(None, cfg, rt, None, run_channel)
         }
     }
 
@@ -443,7 +456,7 @@ impl Telegram {
             Ok(h) => {
                 register_sink(self.rt.clone(), h.clone());
                 self.handle = Some(h);
-                self.configured = true;
+                self.configured = Some(true);
                 self.token_hash = Some(hash);
                 tracing::info!("telegram: bot token present; channel started");
             }
@@ -474,13 +487,14 @@ impl Message<TokenRead> for Telegram {
     async fn handle(&mut self, m: TokenRead, _: &mut Context<Self, ()>) {
         let Some(token) = m.0 else {
             tracing::debug!("telegram: vault read; no `{SECRET_TOKEN}`");
+            self.configured.get_or_insert(false);
             return;
         };
         if self.run_channel {
             self.hot_start(token);
-        } else if !self.configured {
+        } else if self.configured != Some(true) {
             // Terminal mode (D4): the token exists, the channel runs in `t --headless`.
-            self.configured = true;
+            self.configured = Some(true);
             self.token_hash = Some(token_hash(&token));
             self.rt.publish(TelegramEvent::DaemonOnly).await;
         }
@@ -491,10 +505,11 @@ impl Message<Status> for Telegram {
     type Reply = TelegramStatus;
 
     async fn handle(&mut self, _: Status, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
-        match &self.handle {
-            Some(h) => h.status(),
-            None if !self.configured => self.offline_status(TelegramEvent::Unconfigured),
-            None => self.offline_status(TelegramEvent::DaemonOnly),
+        match (&self.handle, self.configured) {
+            (Some(h), _) => h.status(),
+            (None, None) => self.offline_status(TelegramEvent::Starting),
+            (None, Some(false)) => self.offline_status(TelegramEvent::Unconfigured),
+            (None, Some(true)) => self.offline_status(TelegramEvent::DaemonOnly),
         }
     }
 }
@@ -507,12 +522,15 @@ impl Message<Link> for Telegram {
             self.set_owner(id)?;
             return Ok(None);
         }
-        match &self.handle {
-            Some(h) => h.link(None).await,
-            None if !self.configured => Err(format!(
+        match (&self.handle, self.configured) {
+            (Some(h), _) => h.link(None).await,
+            (None, None) => Err("telegram is starting: the vault has not answered yet".into()),
+            (None, Some(false)) => Err(format!(
                 "telegram is not configured: set the {SECRET_TOKEN} secret (Settings › Channels, or t --telegram-setup)"
             )),
-            None => Err("pairing needs the daemon: run t --headless, or pass the owner id".into()),
+            (None, Some(true)) => {
+                Err("pairing needs the daemon: run t --headless, or pass the owner id".into())
+            }
         }
     }
 }
@@ -610,7 +628,7 @@ impl runtime::Plugin for TelegramPlugin {
         // 98c: the actor exists and answers `Status` before any waiting —
         // the vault, getMe and the rest never sit between RPC and a snapshot.
         let actor = Telegram::spawn_with_mailbox(
-            Telegram::new(None, cfg, rt.clone(), None, run_channel),
+            Telegram::starting(cfg, rt.clone(), run_channel),
             runtime::subscriber_mailbox(),
         );
         if let Err(e) = actor.register(TELEGRAM_ACTOR) {
@@ -758,6 +776,7 @@ pub fn render_status(s: &TelegramStatus) -> String {
             format!("unconfigured (secret {SECRET_TOKEN} missing; run t --telegram-setup)")
         }
         Some(TelegramEvent::DaemonOnly) => "daemon only (runs in t --headless)".into(),
+        Some(TelegramEvent::Starting) => "starting (waiting for the vault)".into(),
     };
     let dash = |v: Vec<String>| {
         if v.is_empty() {
@@ -884,6 +903,40 @@ mod tests {
         actor.tell(secrets::SecretsEvent::Changed).await.unwrap();
         assert_ne!(state(&actor).await, Some(TelegramEvent::Unconfigured));
         rt.shutdown.cancel();
+    }
+
+    /// 98c H5: `Plugin::start` registers the actor before waiting for the
+    /// vault. No secrets actor runs in this process, so `secrets::handle`
+    /// would wait `HANDLE_WAIT` (10 s); `Status` still answers at once, as
+    /// `Starting`, and `Link` says so instead of "not configured".
+    #[tokio::test]
+    async fn plugin_start_registers_the_actor_before_the_vault_answers() {
+        use runtime::Plugin as _;
+        let _registry = channel::tests::REGISTRY.lock().await;
+        let dir = tempfile::tempdir().unwrap();
+        let rt = runtime::Runtime::new(figment::Figment::new(), dir.path().to_path_buf());
+        let started = Instant::now();
+        Box::new(TelegramPlugin { channel: true })
+            .start(&rt)
+            .await
+            .unwrap();
+        let actor = telegram_actor().expect("registered synchronously in start");
+        let s = tokio::time::timeout(Duration::from_secs(1), actor.ask(Status))
+            .await
+            .expect("Status answered within 1 s")
+            .unwrap();
+        assert_eq!(s.state, Some(TelegramEvent::Starting));
+        assert!(
+            started.elapsed() < secrets::HANDLE_WAIT,
+            "{:?}",
+            started.elapsed()
+        );
+        assert!(matches!(
+            actor.ask(Link { owner: None }).await,
+            Err(e) if e.to_string().starts_with("telegram is starting")
+        ));
+        rt.shutdown.cancel();
+        channel::tests::kill_registered(actor).await;
     }
 
     #[test]

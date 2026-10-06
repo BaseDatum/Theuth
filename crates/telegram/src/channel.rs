@@ -571,7 +571,7 @@ async fn dispatch_inbound(chan: Arc<Channel>, mut rx: mpsc::UnboundedReceiver<In
     // reap on idle if a bot ever sees thousands of chats.
     let mut lanes: HashMap<ThreadKey, mpsc::UnboundedSender<Incoming>> = HashMap::new();
     while let Some(inc) = rx.recv().await {
-        let Some(key) = lane_key(&inc) else {
+        let Some(key) = chan.lane_key(&inc) else {
             let chan = Arc::clone(&chan);
             tokio::spawn(async move { chan.handle_guarded(inc).await });
             continue;
@@ -586,20 +586,38 @@ async fn dispatch_inbound(chan: Arc<Channel>, mut rx: mpsc::UnboundedReceiver<In
             });
             tx
         });
-        let _ = lane.send(inc);
+        if let Err(e) = lane.send(inc) {
+            // Unreachable while the lane task lives (it owns the receiver and
+            // never returns); logged rather than assumed.
+            tracing::debug!(
+                kind = e.0.kind(),
+                update_id = e.0.update_id(),
+                "telegram lane gone; update dropped"
+            );
+        }
     }
 }
 
-/// The lane an update is ordered on; `None` runs free (commands, presses,
-/// ignored updates).
-fn lane_key(inc: &Incoming) -> Option<ThreadKey> {
-    match inc {
-        Incoming::Message(m) if m.command.as_ref().is_none_or(|c| c.for_other_bot) => {
-            Some(threads::key(m.chat.id, m.thread))
+impl Channel {
+    /// The lane an update is ordered on; `None` runs free: commands, presses,
+    /// ignored updates and replies to a live `force_reply` prompt (the
+    /// continuation asks the engine like a command; `prompts.remove` in the
+    /// handler is atomic, so order is not needed).
+    fn lane_key(&self, inc: &Incoming) -> Option<ThreadKey> {
+        match inc {
+            Incoming::Message(m) if m.command.as_ref().is_none_or(|c| c.for_other_bot) => {
+                let prompt_reply = m.reply_to.as_ref().is_some_and(|r| {
+                    self.lock().prompts.contains_key(&MsgRef {
+                        chat: m.chat.id,
+                        id: r.message_id,
+                    })
+                });
+                (!prompt_reply).then(|| threads::key(m.chat.id, m.thread))
+            }
+            Incoming::Stopped { chat, thread, .. } => Some(threads::key(*chat, *thread)),
+            Incoming::MyChatMember { chat, .. } => Some(threads::key(*chat, None)),
+            Incoming::Message(_) | Incoming::Callback(_) | Incoming::Ignored { .. } => None,
         }
-        Incoming::Stopped { chat, thread, .. } => Some(threads::key(*chat, *thread)),
-        Incoming::MyChatMember { chat, .. } => Some(threads::key(*chat, None)),
-        Incoming::Message(_) | Incoming::Callback(_) | Incoming::Ignored { .. } => None,
     }
 }
 
@@ -627,7 +645,7 @@ fn command_timed_out(name: &str) -> Outcome {
     );
     Outcome::Reply(Reply::text(format!(
         "error: {}",
-        crate::port::ASK_TIMED_OUT
+        crate::port::ask_timed_out()
     )))
 }
 
@@ -1274,8 +1292,20 @@ impl Channel {
                 let text = m.text.clone().unwrap_or_default();
                 let out = {
                     let cx = self.command_cx(from.id, m.chat.id, m.thread, in_group);
-                    commands::continue_prompt(cx, expect, text.trim()).await
+                    tokio::time::timeout(
+                        COMMAND_BOUND,
+                        commands::continue_prompt(cx, expect, text.trim()),
+                    )
+                    .await
+                    .unwrap_or_else(|_| command_timed_out("prompt reply"))
                 };
+                tracing::info!(
+                    ?expect,
+                    user = from.id,
+                    chat = m.chat.id,
+                    outcome = out.variant(),
+                    "telegram prompt reply"
+                );
                 let to = Target {
                     chat: m.chat.id,
                     thread: m.thread,
@@ -1623,7 +1653,11 @@ impl Channel {
                     }
                     Err(e) => {
                         tracing::warn!(error = %e, path = %path.display(), "voice note not transcribed");
-                        suffix = " (transcription unavailable)";
+                        suffix = if e.starts_with("transcription timed out") {
+                            " (transcription timed out)"
+                        } else {
+                            " (transcription unavailable)"
+                        };
                     }
                 }
             }
@@ -1667,10 +1701,8 @@ impl Channel {
         self.set_owner(from.id);
         match crate::telegram_actor() {
             Some(actor) => {
-                if let Err(e) = actor
-                    .ask(crate::SetOwner(from.id))
-                    .await
-                    .map_err(|e| e.to_string())
+                if let Err(e) =
+                    crate::port::timed("SetOwner", actor.ask(crate::SetOwner(from.id))).await
                 {
                     tracing::warn!(error = %e, "telegram owner not written to config");
                 }
@@ -1920,28 +1952,19 @@ impl Channel {
         };
         let (r, ok) = match out {
             Outcome::Allow(id) => (
-                actor.ask(crate::Allow(id)).await.map_err(|e| e.to_string()),
+                crate::port::timed("Allow", actor.ask(crate::Allow(id))).await,
                 format!("allowed {id}"),
             ),
             Outcome::RemoveAllowed(id) => (
-                actor
-                    .ask(crate::RemoveAllowed(id))
-                    .await
-                    .map_err(|e| e.to_string()),
+                crate::port::timed("RemoveAllowed", actor.ask(crate::RemoveAllowed(id))).await,
                 format!("removed {id}"),
             ),
             Outcome::AllowGroup(id) => (
-                actor
-                    .ask(crate::AllowGroup(id))
-                    .await
-                    .map_err(|e| e.to_string()),
+                crate::port::timed("AllowGroup", actor.ask(crate::AllowGroup(id))).await,
                 format!("group {id} added"),
             ),
             Outcome::RemoveGroup(id) => (
-                actor
-                    .ask(crate::RemoveGroup(id))
-                    .await
-                    .map_err(|e| e.to_string()),
+                crate::port::timed("RemoveGroup", actor.ask(crate::RemoveGroup(id))).await,
                 format!("group {id} removed"),
             ),
             _ => return String::new(),
@@ -2605,17 +2628,26 @@ fn shutdown_worker(s: &mut State, key: &str) {
     }
 }
 
-/// `Transcribe` on the `voice` plugin's actor; `Err` when it is not running (45 §4.5.1).
+/// Longest wait on STT for one voice note (98c): a lane-blocking ask.
+const TRANSCRIBE_BOUND: Duration = Duration::from_secs(60);
+
+/// `Transcribe` on the `voice` plugin's actor; `Err` when it is not running
+/// (45 §4.5.1) or when it took longer than [`TRANSCRIBE_BOUND`].
 async fn transcribe(path: &Path) -> Result<voice::Transcript, String> {
     let stt = ActorRef::<voice::Transcriber>::lookup(voice::TRANSCRIBER_ACTOR)
         .ok()
         .flatten()
         .ok_or_else(|| "voice plugin is not running".to_owned())?;
-    stt.ask(voice::Transcribe {
+    let ask = stt.ask(voice::Transcribe {
         path: path.to_path_buf(),
-    })
-    .await
-    .map_err(|e| e.to_string())
+    });
+    match tokio::time::timeout(TRANSCRIBE_BOUND, ask).await {
+        Ok(r) => r.map_err(|e| e.to_string()),
+        Err(_) => Err(format!(
+            "transcription timed out after {} s",
+            TRANSCRIBE_BOUND.as_secs()
+        )),
+    }
 }
 
 /// The first line of `input`, ≤ [`TOPIC_NAME_MAX`] chars, for `createForumTopic`.
@@ -2794,7 +2826,7 @@ fn fmt_size(bytes: usize) -> String {
 
 #[cfg(test)]
 pub(crate) mod tests {
-    use std::sync::atomic::AtomicI64;
+    use std::sync::atomic::{AtomicI64, AtomicUsize};
 
     use agent::{AgentInfo, Loaded, SessionSummary};
     use async_trait::async_trait;
@@ -2829,6 +2861,8 @@ pub(crate) mod tests {
         parents: Mutex<HashMap<SessionId, SessionId>>,
         /// `list_sessions` sleeps this long first; `Duration::MAX` = never answers.
         list_delay: Mutex<Option<Duration>>,
+        /// `list_sessions` calls that answered.
+        list_done: AtomicUsize,
     }
 
     impl Stub {
@@ -2873,6 +2907,7 @@ pub(crate) mod tests {
                 Some(d) if d == Duration::MAX => std::future::pending::<()>().await,
                 Some(d) => tokio::time::sleep(d).await,
             }
+            self.list_done.fetch_add(1, Ordering::SeqCst);
             Ok(Vec::new())
         }
         async fn load_session(&self, _: SessionId) -> Result<Loaded, String> {
@@ -2931,6 +2966,7 @@ pub(crate) mod tests {
             calls: Mutex::new(Vec::new()),
             parents: Mutex::new(HashMap::new()),
             list_delay: Mutex::new(None),
+            list_done: AtomicUsize::new(0),
         });
         let cfg = TelegramConfig {
             owner: Some(OWNER),
@@ -3712,6 +3748,7 @@ pub(crate) mod tests {
 
     #[tokio::test]
     async fn start_with_a_live_code_pairs_and_a_dead_code_is_silent() {
+        let _registry = REGISTRY.lock().await;
         let f = fixture(true);
         let actor = crate::Telegram::spawn(crate::Telegram::new(
             Some(Handle {
@@ -3722,7 +3759,7 @@ pub(crate) mod tests {
             Some("1:test"),
             true,
         ));
-        let _ = actor.register(crate::TELEGRAM_ACTOR);
+        actor.register(crate::TELEGRAM_ACTOR).unwrap();
         f.inbound(msg(private(STRANGER), STRANGER, None, "/start nope"))
             .await;
         assert!(f.api.calls().is_empty());
@@ -3748,7 +3785,7 @@ pub(crate) mod tests {
         assert!(calls.iter().any(|c| matches!(c, Call::SetCommands { scope: CommandScope::Chat(id), .. } if *id == STRANGER as i64)));
         let config = std::fs::read_to_string(f.rt.data_dir.join("config.yaml")).unwrap();
         assert!(config.contains(&format!("owner: {STRANGER}")), "{config}");
-        actor.kill();
+        kill_registered(actor).await;
     }
 
     #[tokio::test]
@@ -4098,6 +4135,8 @@ pub(crate) mod tests {
                     Some("1:test"),
                     true,
                 ));
+                // The command is literally in flight: its Port ask never answers.
+                *f.stub.list_delay.lock() = Some(Duration::MAX);
                 let chan = Arc::clone(&f.chan);
                 tokio::spawn(async move {
                     chan.handle_inbound(Incoming::Message(Box::new(msg(
@@ -4175,12 +4214,13 @@ pub(crate) mod tests {
             *f.stub.list_delay.lock() = Some(delay);
             f.push("/sessions");
             f.push("hello again");
-            let started = Instant::now();
             f.wait_input().await;
-            assert!(
-                started.elapsed() < Duration::from_secs(2),
-                "the regular message waited {:?} behind /sessions",
-                started.elapsed()
+            // Ordering, not timing: the input landed while `list_sessions`
+            // was still pending.
+            assert_eq!(
+                f.stub.list_done.load(Ordering::SeqCst),
+                0,
+                "the regular message waited for /sessions ({delay:?})"
             );
         }
     }
@@ -4225,5 +4265,56 @@ pub(crate) mod tests {
         assert!(!s.polling);
         actor.kill();
         rt.shutdown.cancel();
+    }
+
+    /// R2-1: a `force_reply` prompt answer whose handler never returns (the
+    /// mock makes its reply send hang — the fixture has no engine actor to
+    /// hang `AddSkillRepo` on) runs free: the next plain message in the same
+    /// chat is answered and the prompt was consumed.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn hung_prompt_reply_does_not_block_the_next_message() {
+        let f = fixture(false);
+        f.start_dispatch();
+        f.push("/skills add");
+        let prompt = tokio::time::timeout(STEP, async {
+            loop {
+                if let Some(at) = f.chan.lock().prompts.keys().next().copied() {
+                    break at;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("the force_reply prompt was posted");
+        f.api.hang_next("send_rich");
+        let mut reply = msg(private(OWNER), OWNER, None, "https://x/y.git");
+        reply.reply_to = Some(ReplyRef {
+            message_id: prompt.id,
+            from_bot: true,
+            text: Some("Reply with the URL".into()),
+        });
+        f.chan
+            .inbound_tx
+            .send(Incoming::Message(Box::new(reply)))
+            .unwrap();
+        f.push("hello");
+        f.wait_input().await;
+        assert!(f.chan.lock().prompts.is_empty(), "the prompt reply ran");
+    }
+
+    /// Tests that `register` the `"telegram"` actor take this (the kameo
+    /// registry is process-wide) and wait for the name to clear when done.
+    pub(crate) static REGISTRY: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+    /// Kills `actor` and waits until `telegram_actor()` no longer finds it.
+    pub(crate) async fn kill_registered(actor: ActorRef<crate::Telegram>) {
+        actor.kill();
+        tokio::time::timeout(STEP, async {
+            while crate::telegram_actor().is_some() {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("the telegram actor left the registry");
     }
 }

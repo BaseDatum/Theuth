@@ -19,12 +19,16 @@ use tokio::time::Instant;
 use tools::{APPROVAL_ACTOR, Answer, Approval, ApprovalId, AskId, Decision, Resolve};
 
 /// Longest wait on another actor (98c). Past it the ask answers
-/// [`ASK_TIMED_OUT`] instead of pinning the dispatch task that made it.
+/// [`ask_timed_out`] instead of pinning the dispatch task that made it.
 pub const ASK_TIMEOUT: Duration = Duration::from_secs(20);
 /// An ask still unanswered after this long is logged at WARN while it waits.
 pub const ASK_SLOW: Duration = Duration::from_secs(5);
+
 /// The `Err` text of an ask that hit [`ASK_TIMEOUT`].
-pub const ASK_TIMED_OUT: &str = "engine did not answer in 20 s";
+#[must_use]
+pub fn ask_timed_out() -> String {
+    format!("engine did not answer in {} s", ASK_TIMEOUT.as_secs())
+}
 
 /// `ask` under [`ASK_TIMEOUT`]; a WARN at [`ASK_SLOW`] while still waiting
 /// and another on timeout. `what` names the ask in the log.
@@ -50,7 +54,7 @@ pub async fn timed<T, E: Display>(
                 waited_s = started.elapsed().as_secs(),
                 "telegram: engine ask timed out"
             );
-            Err(ASK_TIMED_OUT.to_owned())
+            Err(ask_timed_out())
         }
     }
 }
