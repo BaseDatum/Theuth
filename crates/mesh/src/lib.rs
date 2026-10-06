@@ -867,6 +867,7 @@ mod tests {
                         masked: true,
                         current: None,
                     }],
+                    id: None,
                 })
                 .await
         });

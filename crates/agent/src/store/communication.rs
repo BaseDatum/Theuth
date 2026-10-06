@@ -1415,6 +1415,22 @@ impl Store {
         rows.into_iter().map(PeerRecord::try_from).collect()
     }
 
+    /// 109 W3 (§7.2): the child results [`Self::fail_interrupted`] spared —
+    /// `accepted` rows from a `session:*` sender with a `result:` request id
+    /// — in acceptance order, for the boot pass that delivers them.
+    pub async fn spared_child_results(&self) -> anyhow::Result<Vec<PeerRecord>> {
+        let rows: Vec<ExchangeRow> = sqlx::query_as(concat!(
+            "SELECT ",
+            exchange_cols!(),
+            " FROM peer_exchanges \
+             WHERE state = 'accepted' AND sender LIKE 'session:%' AND request_id LIKE 'result:%' \
+             ORDER BY accepted_seq"
+        ))
+        .fetch_all(&self.read)
+        .await?;
+        rows.into_iter().map(PeerRecord::try_from).collect()
+    }
+
     /// Every exchange linked into `recipient`'s history, as `(history_seq,
     /// record)` in seq order: the provenance of peer-originated user rows
     /// when a transcript is loaded (50 §9).

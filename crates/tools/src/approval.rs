@@ -307,3 +307,171 @@ impl Message<PendingApprovals> for Approval {
         self.pending.values().map(|p| p.requested.clone()).collect()
     }
 }
+
+#[cfg(test)]
+pub(crate) mod tests {
+    use std::sync::Mutex;
+
+    use futures::future::BoxFuture;
+    use kameo::actor::Spawn;
+
+    use super::*;
+    use crate::jobs::lock;
+
+    /// A journal that keeps every row it was handed (109 W3 tests).
+    #[derive(Default)]
+    pub(crate) struct RecJournal {
+        pub(crate) questions: Mutex<Vec<QuestionRow>>,
+        /// `(call_id, Some(row))` on put, `(call_id, None)` on clear.
+        pub(crate) waits: Mutex<Vec<(String, Option<WaitRow>)>>,
+    }
+
+    impl RecJournal {
+        pub(crate) fn questions(&self) -> Vec<QuestionRow> {
+            lock(&self.questions).clone()
+        }
+
+        pub(crate) fn waits(&self) -> Vec<(String, Option<WaitRow>)> {
+            lock(&self.waits).clone()
+        }
+    }
+
+    impl Journal for RecJournal {
+        fn call_started(&self, _: SessionId, _: &str) -> BoxFuture<'_, ()> {
+            Box::pin(async {})
+        }
+        fn call_finished(&self, _: SessionId, _: &str, _: &crate::ToolOutput) -> BoxFuture<'_, ()> {
+            Box::pin(async {})
+        }
+        fn question(&self, q: QuestionRow) -> BoxFuture<'_, ()> {
+            lock(&self.questions).push(q);
+            Box::pin(async {})
+        }
+        fn wait(&self, w: Option<WaitRow>, _: SessionId, call_id: &str) -> BoxFuture<'_, ()> {
+            lock(&self.waits).push((call_id.to_owned(), w));
+            Box::pin(async {})
+        }
+        fn job(&self, _: crate::JobRow) -> BoxFuture<'_, ()> {
+            Box::pin(async {})
+        }
+        fn pty_screen(&self, _: crate::PtyScreenRow) -> BoxFuture<'_, ()> {
+            Box::pin(async {})
+        }
+    }
+
+    /// Bus subscriber counting the cards it sees.
+    #[derive(kameo::Actor)]
+    pub(crate) struct Seen(pub(crate) Arc<Mutex<Vec<ApprovalId>>>);
+
+    impl Message<ApprovalRequested> for Seen {
+        type Reply = ();
+        async fn handle(&mut self, m: ApprovalRequested, _: &mut Context<Self, ()>) {
+            lock(&self.0).push(m.id);
+        }
+    }
+
+    async fn actor(timeout: Duration) -> (Runtime, kameo::actor::ActorRef<Approval>, Arc<RecJournal>) {
+        let rt = Runtime::new(figment::Figment::new(), std::env::temp_dir());
+        let journal = Arc::new(RecJournal::default());
+        let actor = Approval::spawn(Approval::new(rt.clone(), timeout));
+        actor
+            .ask(crate::InstallJournal(journal.clone()))
+            .await
+            .unwrap();
+        (rt, actor, journal)
+    }
+
+    fn request(session: SessionId, call_id: Option<&str>) -> RequestApproval {
+        RequestApproval {
+            session,
+            tool: "shell".into(),
+            args: serde_json::json!({ "command": "rm x" }),
+            risk: Risk::Destructive,
+            call_id: call_id.map(Into::into),
+        }
+    }
+
+    /// §6.1: a raised approval is a `pending` row with the card as payload and
+    /// a `waits(question)` row for its call; the answer makes it `answered`
+    /// with the decision and clears the wait.
+    #[tokio::test]
+    async fn question_row_pending_then_answered() {
+        let (_rt, actor, journal) = actor(Duration::from_secs(5)).await;
+        let session = SessionId::new();
+        let pending = tokio::spawn({
+            let actor = actor.clone();
+            async move { actor.ask(request(session, Some("c1"))).await.unwrap() }
+        });
+        let id = loop {
+            if let Some(r) = actor.ask(PendingApprovals).await.unwrap().first() {
+                break r.id;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        };
+        let rows = journal.questions();
+        assert_eq!(rows.len(), 1);
+        let row = &rows[0];
+        assert_eq!(row.id, id.0.to_string());
+        assert_eq!((row.kind, row.state), (QuestionKind::Approval, QuestionState::Pending));
+        assert_eq!(row.tool_call_id.as_deref(), Some("c1"));
+        assert_eq!(row.payload["tool"], "shell");
+        assert_eq!(row.deadline - row.asked_at, chrono::Duration::seconds(5));
+        let waits = journal.waits();
+        assert_eq!(waits.len(), 1);
+        let w = waits[0].1.as_ref().unwrap();
+        assert_eq!((w.kind, w.target.as_str()), (WaitKind::Question, row.id.as_str()));
+
+        assert!(actor.ask(Resolve { id, decision: Decision::Allow }).await.unwrap());
+        let resolved = pending.await.unwrap();
+        assert_eq!((resolved.decision, resolved.timed_out), (Decision::Allow, false));
+        let rows = journal.questions();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[1].state, QuestionState::Answered);
+        assert_eq!(rows[1].answer, Some(serde_json::json!("allow")));
+        assert!(rows[1].answered_at.is_some());
+        assert_eq!(journal.waits().last().map(|(c, w)| (c.as_str(), w.is_none())), Some(("c1", true)));
+        // §6.3: an answer for an id no longer pending is refused.
+        assert!(!actor.ask(Resolve { id, decision: Decision::Deny }).await.unwrap());
+    }
+
+    /// §6.3: nobody answers → `Deny`, `timed_out`, and the row is `timed_out`.
+    #[tokio::test]
+    async fn deadline_elapsed_is_timeout() {
+        let (_rt, actor, journal) = actor(Duration::from_millis(20)).await;
+        let r = actor.ask(request(SessionId::new(), Some("c1"))).await.unwrap();
+        assert_eq!((r.decision, r.timed_out), (Decision::Deny, true));
+        let rows = journal.questions();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[1].state, QuestionState::TimedOut);
+        assert!(rows[1].answer.is_none());
+        assert!(actor.ask(PendingApprovals).await.unwrap().is_empty());
+    }
+
+    /// §6.2 (D-call): a stored answer for the call is honoured — no card is
+    /// published, no row is written, the decision comes back at once; it is
+    /// consumed by that one replay, and another call still asks.
+    #[tokio::test]
+    async fn answered_row_honoured_on_replay() {
+        let (rt, actor, journal) = actor(Duration::from_millis(50)).await;
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let sub = Seen::spawn(Seen(seen.clone()));
+        rt.subscribe::<Seen, ApprovalRequested>(&sub).await;
+        let session = SessionId::new();
+        actor
+            .tell(HonourAnswer {
+                session,
+                call_id: "c1".into(),
+                decision: Decision::Deny,
+            })
+            .await
+            .unwrap();
+        let r = actor.ask(request(session, Some("c1"))).await.unwrap();
+        assert_eq!((r.decision, r.timed_out), (Decision::Deny, false));
+        assert!(journal.questions().is_empty(), "no second question");
+        // Consumed: the same call asks again normally (and times out here).
+        let r = actor.ask(request(session, Some("c1"))).await.unwrap();
+        assert!(r.timed_out);
+        assert_eq!(lock(&seen).len(), 1, "one card for the real ask");
+        assert_eq!(journal.questions().len(), 2);
+    }
+}
