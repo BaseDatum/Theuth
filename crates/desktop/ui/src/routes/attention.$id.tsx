@@ -1,13 +1,21 @@
 import { Link, createFileRoute } from '@tanstack/react-router'
+import { useRef } from 'react'
 import { Screen } from '@/components/attention/Screen'
 import { useAttention } from '@/components/hud/queries'
 import { Skeleton } from '@/components/ui/skeleton'
+import type { AttentionItem } from '@/rpc/bindings/AttentionItem'
 
-/** `/attention/$id` (101 D6): the selected item's screen; the router decodes the `:`-bearing id. */
+/**
+ * `/attention/$id` (101 D6): the selected item's screen; the router decodes the `:`-bearing id. 104 A2: an item that
+ * leaves the list while its screen is open (a show marked seen by being looked at) stays on screen until the user moves.
+ */
 function Selected() {
   const { id } = Route.useParams()
   const attention = useAttention()
-  const item = attention.data?.find((i) => i.id === id)
+  const held = useRef<AttentionItem | null>(null)
+  const live = attention.data?.find((i) => i.id === id)
+  if (live) held.current = live
+  const item = live ?? (held.current?.id === id ? held.current : undefined)
   if (item) return <Screen item={item} />
   if (attention.isPending) {
     return (
