@@ -21,6 +21,15 @@ check *ARGS:
 test *ARGS:
     cargo test --workspace {{ARGS}}
 
+# Design doc 109 §11: the crash-injection suite. The §11.1 matrix (every crash point, spawned
+# children that abort, resume, transcript check), the drain/suspend path, the journal store tests,
+# the reaper, waits/questions re-arm, the ACP respawn trigger, and the jobs/PTY tests in `tools`.
+# Crate-level by name; ~1 minute on an M-series laptop. `--test-threads=1` is the sqlx teardown
+# workaround (00 §12) for the `tools` half only; the `agent` half serialises itself.
+durability:
+    cargo test -p agent --lib -- loop_::durability_tests durability:: store::durability supervisor::waits supervisor::drain supervisor::resume supervisor::acp_resume
+    cargo test -p tools --lib -- --test-threads=1 jobs:: pty::
+
 clippy:
     cargo clippy --workspace --all-targets -- -D warnings
 
