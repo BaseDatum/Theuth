@@ -78,6 +78,24 @@ export const needsPerson = (t: Task): boolean =>
 export const awaitsMyReview = (t: Task): boolean =>
   t.state === 'review' && (t.reviewer ? t.reviewer.type === 'user' : t.owner.type === 'user')
 
+/** `n decision(s)`; the queue bar's breakdown pluralises each kind on its own. */
+const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`
+
+/**
+ * The collapsed queue bar's text (115): `4 need you` · `2 decisions · 1 review · 1 proposed agent`. Kinds at zero are
+ * left out, order is decisions · reviews · proposed agents, and a lone item reads `1 needs you`. Pure, so the bar is
+ * one line and the wording is tested.
+ */
+export function queueSummary({ decisions, reviews, proposed }: { decisions: number; reviews: number; proposed: number }): { headline: string; breakdown: string } {
+  const total = decisions + reviews + proposed
+  const parts = [
+    ...(decisions > 0 ? [plural(decisions, 'decision')] : []),
+    ...(reviews > 0 ? [plural(reviews, 'review')] : []),
+    ...(proposed > 0 ? [plural(proposed, 'proposed agent')] : []),
+  ]
+  return { headline: total === 1 ? '1 needs you' : `${total} need you`, breakdown: parts.join(' · ') }
+}
+
 /** `3s` / `12m` / `5h` / `3d` since `ms`; `now` is injectable for tests. */
 export function age(ms: number, now = Date.now()): string {
   const s = Math.max(0, Math.round((now - ms) / 1000))
