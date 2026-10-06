@@ -1829,10 +1829,11 @@ mod tests {
         );
         assert_eq!(items[1].detail, need.detail);
 
+        // 119: a dismissal hides the version the user saw (`dismissed_ms >= at_ms`).
         let states = HashMap::from([(
             items[1].id.clone(),
             State {
-                dismissed_ms: Some(1),
+                dismissed_ms: Some(items[1].at_ms),
                 snoozed_until_ms: None,
             },
         )]);
