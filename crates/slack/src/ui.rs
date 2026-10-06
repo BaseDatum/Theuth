@@ -27,6 +27,10 @@ pub const BLOCKS_MAX: usize = 50;
 const OPTIONS_MAX: usize = 100;
 /// `plain_text` cap in buttons and options.
 const LABEL_MAX: usize = 75;
+/// `alert.text` cap (110 §6).
+pub const ALERT_MAX: usize = 200;
+/// `container.title` / `subtitle` cap (110 §6).
+const CONTAINER_TITLE_MAX: usize = 150;
 
 /// A command reply: the one-line notification `text` and, for panels,
 /// the Block Kit `blocks` array.
@@ -145,9 +149,10 @@ pub fn slack_panel(s: &SlackStatus) -> Reply {
         }
     };
     blocks.push(context(&format!(
-        "allowed: {} · channels: {}",
+        "allowed: {} · channels: {} · hidden deliveries: {}",
         list(&s.allowed),
-        list(&s.channels)
+        list(&s.channels),
+        s.hidden_deliveries
     )));
     Reply::blocks(format!("slack: {}", state(s)), blocks)
 }
@@ -515,6 +520,33 @@ pub fn modal_add(kind: &str, channel: &str) -> Value {
     })
 }
 
+/// 110 §6: one `alert` block, level `error`, first line of `text` ≤ [`ALERT_MAX`].
+#[must_use]
+pub fn alert_error(text: &str) -> Value {
+    let line = text.lines().next().unwrap_or_default();
+    json!([{ "type": "alert", "text": plain_text(&clip(line, ALERT_MAX)), "level": "error" }])
+}
+
+/// 110 §6: one collapsed `container` (title, subtitle = the body's first
+/// line) holding `body` as a `markdown` block. `body` is the caller's to cap.
+#[must_use]
+pub fn collapsed(title: &str, body: &str) -> Value {
+    let first = body.lines().next().unwrap_or_default();
+    json!([{
+        "type": "container",
+        "title": plain_text(&clip(title, CONTAINER_TITLE_MAX)),
+        "subtitle": plain_text(&clip(first, CONTAINER_TITLE_MAX)),
+        "is_collapsible": true,
+        "default_collapsed": true,
+        "child_blocks": [{ "type": "markdown", "text": body }],
+    }])
+}
+
+/// `plain_text` without the button [`LABEL_MAX`].
+fn plain_text(text: &str) -> Value {
+    json!({ "type": "plain_text", "text": text })
+}
+
 // -- pieces ------------------------------------------------------------
 
 fn push_more(blocks: &mut Vec<Value>, panel: &str, more: Option<usize>) {
@@ -575,7 +607,7 @@ fn esc(s: &str) -> String {
 }
 
 /// `s` cut to `max` chars with a `…` when it was longer.
-fn clip(s: &str, max: usize) -> String {
+pub(crate) fn clip(s: &str, max: usize) -> String {
     if s.chars().count() <= max {
         return s.to_owned();
     }
@@ -716,6 +748,7 @@ mod tests {
             .into_iter()
             .collect(),
             dropped_envelopes: 0,
+            hidden_deliveries: 4,
         }
     }
 

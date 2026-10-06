@@ -28,6 +28,8 @@ pub mod board;
 pub mod bubble;
 pub mod channel;
 pub mod commands;
+pub mod plan;
+mod prompt;
 pub mod setup;
 pub mod socket;
 pub mod threads;
@@ -59,6 +61,14 @@ pub struct SlackConfig {
     pub reasoning: bool,
     /// Where approvals for sessions not bound to a thread go.
     pub approvals: ApprovalsScope,
+    /// The plan message (110 §5).
+    pub plan: bool,
+    /// What `MessageDelivered` renders (110 §6).
+    pub deliveries: Deliveries,
+    /// Wave 2 (110 §8): json-render → Block Kit. Parsed, unused yet.
+    pub blocks: bool,
+    /// Wave 2 (110 §8): a canvas beside the board. Parsed, unused yet.
+    pub canvases: bool,
 }
 
 impl Default for SlackConfig {
@@ -71,6 +81,10 @@ impl Default for SlackConfig {
             tools: ToolCards::All,
             reasoning: true,
             approvals: ApprovalsScope::All,
+            plan: true,
+            deliveries: Deliveries::Hidden,
+            blocks: true,
+            canvases: false,
         }
     }
 }
@@ -95,6 +109,16 @@ pub enum ApprovalsScope {
     All,
     /// Only sessions bound to a thread get cards.
     Threads,
+}
+
+/// `slack.deliveries` (110 §9): one variant so the key exists before its
+/// second value (`collapsed`) does.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Deliveries {
+    /// `MessageDelivered` posts nothing; counted in `SlackStatus.hidden_deliveries`.
+    #[default]
+    Hidden,
 }
 
 /// Bus event: connection and rendering state (21 §13).
@@ -168,6 +192,9 @@ pub struct SlackStatus {
     pub calls: BTreeMap<String, CallStats>,
     /// Envelopes dropped: unknown events and unparsable payloads.
     pub dropped_envelopes: u64,
+    /// `MessageDelivered` events not rendered (110 §6).
+    #[serde(default)]
+    pub hidden_deliveries: u64,
 }
 
 /// `ask` → [`SlackStatus`].
@@ -263,6 +290,7 @@ impl Slack {
             open_streams: 0,
             calls: BTreeMap::new(),
             dropped_envelopes: 0,
+            hidden_deliveries: 0,
         }
     }
 }
@@ -414,6 +442,13 @@ impl runtime::Plugin for SlackPlugin {
             let _ = reg
                 .ask(tools::RegisterTool(Arc::new(SlackStatusTool)))
                 .await;
+            // 110 §7.2: the `## Slack` prompt section, like `voice`'s.
+            let _ = reg
+                .ask(tools::RegisterPrompt {
+                    plugin: "slack",
+                    text: prompt::PROMPT.to_owned(),
+                })
+                .await;
             let Some(sink) = sink else {
                 return;
             };
@@ -485,7 +520,7 @@ pub fn render_status(s: &SlackStatus) -> String {
         }
     };
     let mut out = format!(
-        "state: {state}\nbot: {}\nteam: {}\nowner: {}\nallowed: {}\nchannels: {}\nopen streams: {}\ndropped envelopes: {}\n",
+        "state: {state}\nbot: {}\nteam: {}\nowner: {}\nallowed: {}\nchannels: {}\nopen streams: {}\ndropped envelopes: {}\nhidden deliveries: {}\n",
         s.bot_user.as_deref().unwrap_or("-"),
         s.team.as_deref().unwrap_or("-"),
         if s.owner.is_empty() { "-" } else { &s.owner },
@@ -493,6 +528,7 @@ pub fn render_status(s: &SlackStatus) -> String {
         dash(&s.channels),
         s.open_streams,
         s.dropped_envelopes,
+        s.hidden_deliveries,
     );
     if s.threads.is_empty() {
         out.push_str("threads: -\n");
@@ -543,5 +579,17 @@ mod tests {
         let m: serde_yaml::Value = serde_yaml::from_str(MANIFEST).unwrap();
         assert_eq!(m["features"]["slash_commands"][0]["command"], "/theuth");
         assert_eq!(m["settings"]["socket_mode_enabled"], true);
+    }
+
+    #[test]
+    fn config_defaults_and_the_110_keys_parse() {
+        let d = SlackConfig::default();
+        assert!(d.plan && d.blocks && !d.canvases);
+        assert_eq!(d.deliveries, Deliveries::Hidden);
+        let c: SlackConfig =
+            serde_yaml::from_str("plan: false\ndeliveries: hidden\nblocks: false\ncanvases: true")
+                .unwrap();
+        assert!(!c.plan && !c.blocks && c.canvases);
+        assert!(serde_yaml::from_str::<SlackConfig>("deliveries: collapsed").is_err());
     }
 }

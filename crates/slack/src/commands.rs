@@ -1345,6 +1345,7 @@ mod tests {
             open_streams: 0,
             calls: Default::default(),
             dropped_envelopes: 0,
+            hidden_deliveries: 0,
         }
     }
 
