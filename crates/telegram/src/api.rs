@@ -947,6 +947,8 @@ pub mod mock {
         calls: Mutex<Vec<Call>>,
         next_id: AtomicI64,
         failures: Mutex<HashMap<&'static str, VecDeque<ApiError>>>,
+        /// Methods whose next N calls never return (a wedged handler).
+        hangs: Mutex<HashMap<&'static str, usize>>,
         identity: Mutex<Option<BotIdentity>>,
         downloads: Mutex<HashMap<String, Download>>,
         next_topic: AtomicI64,
@@ -959,6 +961,7 @@ pub mod mock {
                 calls: Mutex::new(Vec::new()),
                 next_id: AtomicI64::new(1000),
                 failures: Mutex::new(HashMap::new()),
+                hangs: Mutex::new(HashMap::new()),
                 identity: Mutex::new(None),
                 downloads: Mutex::new(HashMap::new()),
                 next_topic: AtomicI64::new(500),
@@ -982,6 +985,27 @@ pub mod mock {
                 .entry(method)
                 .or_default()
                 .push_back(err);
+        }
+
+        /// The next call of `method` records itself and then never returns.
+        pub fn hang_next(&self, method: &'static str) {
+            *self.hangs.lock().entry(method).or_default() += 1;
+        }
+
+        async fn maybe_hang(&self, method: &'static str) {
+            let hang = {
+                let mut hangs = self.hangs.lock();
+                match hangs.get_mut(method) {
+                    Some(n) if *n > 0 => {
+                        *n -= 1;
+                        true
+                    }
+                    _ => false,
+                }
+            };
+            if hang {
+                std::future::pending::<()>().await;
+            }
         }
 
         /// What `me()` answers.
@@ -1034,6 +1058,7 @@ pub mod mock {
                 },
                 "send_rich",
             )?;
+            self.maybe_hang("send_rich").await;
             Ok(self.id())
         }
 

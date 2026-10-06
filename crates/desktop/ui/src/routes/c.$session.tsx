@@ -135,8 +135,8 @@ export function LiveSession({ session, first }: { session: string; first: boolea
         </div>
       )}
       <Transcript key={`t:${session}`} session={session} />
-      <TodoCard key={`d:${session}`} session={session} />
       <SubagentStrip session={session} />
+      <TodoCard key={`d:${session}`} session={session} />
       <Composer key={`c:${session}`} session={session} />
     </>
   )

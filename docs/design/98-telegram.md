@@ -297,6 +297,17 @@ animated when the same `draft_id` is re-sent; `sendChatAction` lasts 5 s; `/star
    `UserSink` with `lookup_when::<agent::UserChannels>(agent::USER_ACTOR)` (24 §3, as
    `crates/slack/src/lib.rs:421-424`).
 
+**Revision 2026-10-06 (98c, `98-as-built-FIXES.md`).** The order is now 3 → 1 → 2: the
+`Telegram` actor is spawned and registered *synchronously in `start`* with `handle: None`, so
+`telegram_status` answers from the first RPC; the vault read runs on a task and feeds the actor a
+`TokenRead`, which is the same path as the §10.5 hot start (`hot_start`). Nothing network-bound
+(getMe, `setMyCommands`, `repair_open`) is ever awaited inside an actor handler — the supervisor
+owns it. Before this, `start` awaited the vault (up to `secrets::HANDLE_WAIT` = 10 s) *before*
+registering, and the Settings card errored with `telegram is disabled` meanwhile. Until the
+`TokenRead` arrives the actor's `configured` is unknown (`Option<bool>` = `None`) and `Status`
+reports `TelegramEvent::Starting` — not `Unconfigured`, which would flash "no bot token" and the
+token input on a configured bot (r2); `Link` answers `telegram is starting` meanwhile.
+
 ### 3.1 The supervisor (`poll::run`)
 
 ```
@@ -532,6 +543,29 @@ Follow-ups while a turn runs become `Steer` — the steer lands after the curren
 (09 §7). Telegram delivers one `Message` per photo in an album (`media_group_id`): the worker
 coalesces an album for 1 s into one input with several attachment lines, so three photos are one
 turn, not three.
+
+**Revision 2026-10-06 (98c; r2 the same day).** Dispatch is no longer one sequential `while let
+… recv().await` (`channel::dispatch_inbound`): a plain message, a Stop and a `my_chat_member` run
+on a **lane per chat key** (`chat[:topic]`), so two messages in one thread still see each other's
+binding (the `session = threads[key]` step of the block above); a **command, a callback press or
+a reply to a live `force_reply` prompt runs on its own task**, so an engine ask that stalls
+delays one reply and nothing else. *Ordering caveat:* because commands run free, `/new`,
+`/resume` and `/cancel` can race a plain message sent in the same second in the same thread —
+in practice `/new` wins (its unbind is synchronous before its first await; the message's bind
+waits for `SendInput`'s HTTP round-trip), but the design does not guarantee it. A handler panic
+is logged at ERROR with the update kind and `update_id` and the lane lives on; a dispatch loop
+(inbound/events/notes) that ends while the channel lives is an ERROR, never silence.
+
+Deadlines: every `Port` ask, `MarkAnswered`, and the `"telegram"`-actor asks in `pair`/`admin`
+run under `port::ASK_TIMEOUT` (20 s; WARN at 5 s while still waiting; `Err(port::ask_timed_out())`
+= `engine did not answer in 20 s`). `send_input(None, …)` is two timed asks (`NewRootSession`,
+then `SendInput`): up to 40 s on the lane before the ⚠️ line. The whole of a command, panel action
+or prompt continuation runs under `COMMAND_BOUND` (21 s) — the ~42 direct `agent()?.ask(..)` arms
+in `commands.rs` are bounded only by that outer deadline, not individually. `transcribe()` (STT on
+the lane) is bounded at `TRANSCRIBE_BOUND` = 60 s; the attachment line then says `(transcription
+timed out)`. Each early exit above logs a `debug!` naming its step; each command, press and
+prompt reply logs an `info!` (`telegram command name=… user=… chat=… outcome=…`, `telegram press
+kind=… user=…`, `telegram prompt reply expect=… outcome=…`).
 
 ### 7.1 Files and voice notes
 
@@ -968,6 +1002,13 @@ a panel older than the process (restart) still works because every press carries
 The dispatcher is a `match` over the table's names, each one `ask` plus a formatter — the third
 copy of the asks the TUI, Signal and Slack already accept (09 §14 priced a shared layer; §14).
 
+**Revision 2026-10-06 (98c).** `command_cx` is the one place `CommandCx` is built; it takes its
+snapshots (`owner`, `status()`) into locals *before* the struct literal. The v0.1 literal held the
+`owner` mutex guard as a temporary while `status()` locked it again — a self-deadlock on every
+command, which also pinned the single inbound task (98c root cause). A command whose asks do
+not answer replies `error: engine did not answer in 20 s` and the log carries
+`telegram command … outcome=Reply` plus the `engine ask timed out` WARN.
+
 ### 10.4 Pairing and setup
 
 Pairing follows the `/login` shape (09 §11): a command returns a URL, every surface renders it (as
@@ -1061,6 +1102,13 @@ cards survive because their buttons carry the ids. Pairing codes are process-loc
 Per thread, in memory: the `Worker` (§8). Per process: `Threads`, `RecentKeys`, the pacer, the
 `BotIdentity`, the call counters, tool outputs for `out:` presses (1 h), the pairing code.
 
+**Revision 2026-10-06 (98c).** Per process, one lock on channel state: `Channel::state`
+(parking_lot). The owner is an `AtomicU64` (`0` = none), not a second mutex. The only nesting
+left is **state → `Api.calls`** (`status()` holds the state guard while `api.stats()` takes the
+façade's counters lock); never the reverse. A guard never crosses an `.await`
+(`#![deny(clippy::await_holding_lock)]` on the crate, enforced by the clippy gate) and is never
+taken twice on the same task.
+
 ## 12. Config
 
 ```yaml
@@ -1072,6 +1120,7 @@ telegram:
   tools: all               # all | errors | none — activity cards per tool batch
   reasoning: true          # reasoning text in the expandable quote (the thinking indicator stays)
   approvals: all           # all | threads — where approvals/questions for non-Telegram sessions go (§10.1)
+  # api_host: http://127.0.0.1:8081   # tests and proofs only; overrides https://api.telegram.org (default unset)
 ```
 
 The token is secret `telegram_bot` in the encrypted vault (37; `t --telegram-setup` writes it,
@@ -1104,6 +1153,7 @@ pub enum TelegramEvent {
     Paired        { user: u64, name: String },
     Unconfigured,                                                  // token missing; nothing started
     DaemonOnly,                                                    // terminal mode
+    Starting,                                                      // 98c r2: actor up, vault not answered yet (Status only, never on the bus)
 }
 pub struct TelegramStatus {
     state: Option<TelegramEvent>, bot: Option<BotIdentity { id: u64, username: String, topics: bool, users_may_create_topics: bool }>,
@@ -1114,7 +1164,7 @@ pub struct TelegramStatus {
 
 // telegram/src/channel.rs
 pub struct Handle { chan: Arc<Channel> }
-struct Channel { api: Api /* the only tgbot-aware module */, rt: Runtime, identity: OnceLock<BotIdentity>, owner: Mutex<Option<u64>>,
+struct Channel { api: Api /* the only tgbot-aware module */, rt: Runtime, identity: OnceLock<BotIdentity>, owner: AtomicU64 /* 98c: 0 = none */,
                  state: Mutex<State { allowed, groups, threads: Threads, workers: HashMap<ThreadKey, mpsc::UnboundedSender<Out>>,
                                       recent: RecentKeys, last_event, dropped, pairing: Option<Pairing>, lease: roster::lease::Follower }>,
                  approvals: Mutex<HashMap<ApprovalId, MsgRef>>, asks: Mutex<asks::Pending>, outputs: Mutex<Outputs /* call_id → text, 1 h */>,
@@ -1131,6 +1181,13 @@ Tools: `telegram_link` (`Mutating`), `telegram_status` (`ReadOnly`), §10.4. RPC
 `telegram_link(owner?) -> PairingLink`, `telegram_allow(user)`, `telegram_remove_allowed(user)`,
 `telegram_allow_group(chat)`, `telegram_remove_group(chat)`; `TelegramEvent` forwarded in
 `bridge.rs`, both types in `export.rs` (`ts` feature forwards to `telegram/ts`).
+
+**Revision 2026-10-06 (98c).** `Status` is answered from the actor's own state at any time —
+before the vault read, while getMe retries, while a command is in flight (`channel.rs`
+`status_answers_within_a_second_*` tests). `port::{ASK_TIMEOUT, ASK_SLOW, ASK_TIMED_OUT, timed}`
+are the ask deadline; `Incoming::{kind, update_id}` name an update in logs. The Settings card
+renders `loading…` while the query is pending and the error text with a Retry button when it
+fails (`Channels.tsx`), never nothing.
 
 ## 14. Rejected
 
@@ -1327,6 +1384,13 @@ Each step leaves `theuth` runnable; formatters and the suite once per step.
 
 Evening addendum (98b, same day): the Settings › Channels card for desktop and mobile and the
 engine's hot start on a newly set `telegram_bot` secret (§10.5) — `98-as-built-SETTINGS.md`.
+
+2026-10-06 (98c, `98-as-built-FIXES.md`): a slash command deadlocked the channel (`command_cx`
+held the owner guard across `status()`); owner is an atomic, dispatch is per-key lanes + free
+tasks for commands/presses/prompt replies, every `Port` ask and every lane-blocking ask is
+timed (the direct command arms sit under the one `COMMAND_BOUND`), the actor registers before
+the vault wait and reports `Starting` until it answers, the Settings card never renders blank.
+Revisions in §3, §7, §10.3, §11, §13.
 
 Shipped on `main` the same day as the design: `crates/telegram` (`lib`, `api`, `poll`, `port`,
 `threads`, `worker`, `bubble`, `cards`, `board`, `channel`, `approvals`, `asks`, `commands`,

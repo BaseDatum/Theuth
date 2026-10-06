@@ -5,6 +5,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
@@ -61,6 +62,10 @@ const EYES: &str = "👀";
 const FAILED: &str = "😱";
 /// Caption on an app's source attachment (46 §8.2): the file, not controls.
 const APP_NOTE: &str = "Interactive app — open on desktop/web";
+/// 98c: the whole of a command or panel action — its arms also ask actors
+/// directly, outside `Port` — under one deadline, a second past the Port
+/// one so a Port timeout can answer with its own text first.
+const COMMAND_BOUND: Duration = Duration::from_secs(crate::port::ASK_TIMEOUT.as_secs() + 1);
 
 /// `<data_dir>/telegram/threads.json`.
 #[must_use]
@@ -266,7 +271,15 @@ struct Bound {
     child_name: Option<String>,
 }
 
-/// Mutable channel state; one lock, never held across an await.
+/// Mutable channel state behind the channel's ONE lock (`Channel::lock`).
+///
+/// Lock discipline (98c): a guard never lives across an `.await`
+/// (`clippy::await_holding_lock` is denied crate-wide) and is never nested —
+/// parking_lot mutexes are not re-entrant, so `self.lock()` while a guard is
+/// alive deadlocks the task AND pins its OS thread. Beware temporaries: the
+/// guard in `foo: *self.x.lock()` inside a struct literal lives until the
+/// whole literal is built (that was the 98c wedge). The owner is an atomic,
+/// not a second mutex, so there is no lock order to keep.
 pub(crate) struct State {
     pub(crate) allowed: Vec<u64>,
     pub(crate) groups: Vec<i64>,
@@ -313,7 +326,8 @@ pub(crate) struct Channel {
     live: Option<Arc<Api>>,
     pub(crate) rt: Runtime,
     pub(crate) identity: OnceLock<BotIdentity>,
-    pub(crate) owner: Mutex<Option<u64>>,
+    /// `telegram.owner`; `0` = none (Telegram user ids start at 1).
+    owner: AtomicU64,
     pub(crate) state: Mutex<State>,
     pub(crate) port: Arc<dyn Port>,
     pub(crate) cfg: TelegramConfig,
@@ -382,9 +396,11 @@ impl Handle {
 }
 
 /// Spawns the channel under `rt.shutdown`; returns immediately. Fails only
-/// when the HTTP client cannot be built.
+/// when the HTTP client cannot be built. `cfg.api_host` (tests and proofs
+/// only) replaces `https://api.telegram.org`.
 pub fn spawn(cfg: TelegramConfig, token: String, rt: Runtime) -> anyhow::Result<Handle> {
-    spawn_at(cfg, token, rt, None)
+    let host = cfg.api_host.clone();
+    spawn_at(cfg, token, rt, host.as_deref())
 }
 
 /// [`spawn`] against `host` instead of `https://api.telegram.org` (tests). // 98b
@@ -414,7 +430,7 @@ pub fn spawn_at(
 /// poller follows the lease until shutdown.
 async fn run(
     chan: Arc<Channel>,
-    mut inbound_rx: mpsc::UnboundedReceiver<Incoming>,
+    inbound_rx: mpsc::UnboundedReceiver<Incoming>,
     mut notes_rx: mpsc::UnboundedReceiver<WorkerNote>,
 ) {
     let (ev_tx, mut ev_rx) = mpsc::unbounded_channel::<Event>();
@@ -447,31 +463,36 @@ async fn run(
             }
         })
     };
-    let inbound = {
-        let chan = Arc::clone(&chan);
-        tokio::spawn(async move {
-            while let Some(inc) = inbound_rx.recv().await {
-                chan.handle_inbound(inc).await;
-            }
-        })
-    };
+    let shutdown = chan.rt.shutdown.clone();
+    let inbound = watch(
+        "inbound",
+        tokio::spawn(dispatch_inbound(Arc::clone(&chan), inbound_rx)),
+        &shutdown,
+    );
     let events = {
         let chan = Arc::clone(&chan);
-        tokio::spawn(async move {
-            while let Some(ev) = ev_rx.recv().await {
-                chan.handle_event(ev).await;
-            }
-        })
+        watch(
+            "events",
+            tokio::spawn(async move {
+                while let Some(ev) = ev_rx.recv().await {
+                    guarded("event", 0, chan.handle_event(ev)).await;
+                }
+            }),
+            &shutdown,
+        )
     };
     let notes = {
         let chan = Arc::clone(&chan);
-        tokio::spawn(async move {
-            while let Some(n) = notes_rx.recv().await {
-                chan.handle_note(n).await;
-            }
-        })
+        watch(
+            "notes",
+            tokio::spawn(async move {
+                while let Some(n) = notes_rx.recv().await {
+                    guarded("note", 0, chan.handle_note(n)).await;
+                }
+            }),
+            &shutdown,
+        )
     };
-    let shutdown = chan.rt.shutdown.clone();
     let mut attempt: u32 = 0;
     let identity = loop {
         match chan.api.me().await {
@@ -502,7 +523,7 @@ async fn run(
         if let Err(e) = chan.api.delete_webhook().await {
             tracing::warn!(error = %e, "telegram deleteWebhook failed");
         }
-        let owner = *chan.owner.lock();
+        let owner = chan.owner();
         chan.set_command_scopes(owner).await;
         chan.repair_open().await;
         chan.sync_poller().await;
@@ -513,6 +534,119 @@ async fn run(
     events.abort();
     notes.abort();
     bus.kill();
+}
+
+/// 98c: a dispatch loop that ends while the channel lives is an ERROR with
+/// the reason (a panic's message, or a closed channel), never silence.
+/// Returns the abort handle `run` uses at shutdown.
+fn watch(
+    name: &'static str,
+    task: tokio::task::JoinHandle<()>,
+    shutdown: &CancellationToken,
+) -> tokio::task::AbortHandle {
+    let abort = task.abort_handle();
+    let shutdown = shutdown.clone();
+    tokio::spawn(async move {
+        tokio::select! {
+            biased;
+            () = shutdown.cancelled() => {}
+            r = task => match r {
+                Ok(()) => tracing::error!(task = name, "telegram dispatch loop ended while the channel lives"),
+                Err(e) if e.is_panic() => tracing::error!(task = name, panic = %panic_text(e.into_panic().as_ref()), "telegram dispatch loop panicked"),
+                Err(_) => {}
+            },
+        }
+    });
+    abort
+}
+
+/// 98c: inbound dispatch. Plain messages, Stop and membership updates keep
+/// the §7 order per chat key — consecutive messages in one thread must see
+/// each other's binding — on a small per-key lane; commands and presses,
+/// the updates that ask the engine, run on their own task so a slow ask
+/// stalls one reply, never the channel. A handler panic is logged with the
+/// update kind and the lane lives on.
+async fn dispatch_inbound(chan: Arc<Channel>, mut rx: mpsc::UnboundedReceiver<Incoming>) {
+    // ponytail: lanes are never reaped (one idle task per chat key ever seen);
+    // reap on idle if a bot ever sees thousands of chats.
+    let mut lanes: HashMap<ThreadKey, mpsc::UnboundedSender<Incoming>> = HashMap::new();
+    while let Some(inc) = rx.recv().await {
+        let Some(key) = chan.lane_key(&inc) else {
+            let chan = Arc::clone(&chan);
+            tokio::spawn(async move { chan.handle_guarded(inc).await });
+            continue;
+        };
+        let lane = lanes.entry(key).or_insert_with(|| {
+            let (tx, mut lane_rx) = mpsc::unbounded_channel();
+            let chan = Arc::clone(&chan);
+            tokio::spawn(async move {
+                while let Some(inc) = lane_rx.recv().await {
+                    chan.handle_guarded(inc).await;
+                }
+            });
+            tx
+        });
+        if let Err(e) = lane.send(inc) {
+            // Unreachable while the lane task lives (it owns the receiver and
+            // never returns); logged rather than assumed.
+            tracing::debug!(
+                kind = e.0.kind(),
+                update_id = e.0.update_id(),
+                "telegram lane gone; update dropped"
+            );
+        }
+    }
+}
+
+impl Channel {
+    /// The lane an update is ordered on; `None` runs free: commands, presses,
+    /// ignored updates and replies to a live `force_reply` prompt (the
+    /// continuation asks the engine like a command; `prompts.remove` in the
+    /// handler is atomic, so order is not needed).
+    fn lane_key(&self, inc: &Incoming) -> Option<ThreadKey> {
+        match inc {
+            Incoming::Message(m) if m.command.as_ref().is_none_or(|c| c.for_other_bot) => {
+                let prompt_reply = m.reply_to.as_ref().is_some_and(|r| {
+                    self.lock().prompts.contains_key(&MsgRef {
+                        chat: m.chat.id,
+                        id: r.message_id,
+                    })
+                });
+                (!prompt_reply).then(|| threads::key(m.chat.id, m.thread))
+            }
+            Incoming::Stopped { chat, thread, .. } => Some(threads::key(*chat, *thread)),
+            Incoming::MyChatMember { chat, .. } => Some(threads::key(*chat, None)),
+            Incoming::Message(_) | Incoming::Callback(_) | Incoming::Ignored { .. } => None,
+        }
+    }
+}
+
+/// Runs `fut`, logging a panic at ERROR with what was being handled.
+async fn guarded(kind: &'static str, update_id: i64, fut: impl Future<Output = ()>) {
+    use futures::FutureExt as _;
+    if let Err(p) = std::panic::AssertUnwindSafe(fut).catch_unwind().await {
+        tracing::error!(kind, update_id, panic = %panic_text(p.as_ref()), "telegram handler panicked; the update is lost");
+    }
+}
+
+fn panic_text(p: &(dyn std::any::Any + Send)) -> String {
+    p.downcast_ref::<&str>()
+        .map(|s| (*s).to_owned())
+        .or_else(|| p.downcast_ref::<String>().cloned())
+        .unwrap_or_else(|| "non-string panic payload".to_owned())
+}
+
+/// The reply of a command that hit [`COMMAND_BOUND`].
+fn command_timed_out(name: &str) -> Outcome {
+    tracing::warn!(
+        command = name,
+        bound_s = COMMAND_BOUND.as_secs(),
+        "telegram command timed out"
+    );
+    Outcome::Reply(Reply::text(format!(
+        "error: {}",
+        crate::port::ask_timed_out()
+    )))
 }
 
 impl Channel {
@@ -536,7 +670,7 @@ impl Channel {
             api,
             live,
             identity: OnceLock::new(),
-            owner: Mutex::new(owner),
+            owner: AtomicU64::new(owner.unwrap_or(0)),
             state: Mutex::new(State {
                 allowed,
                 groups: cfg.groups.clone(),
@@ -580,14 +714,22 @@ impl Channel {
         self.rt.publish(ev).await;
     }
 
+    /// The owner, if paired.
+    pub(crate) fn owner(&self) -> Option<u64> {
+        match self.owner.load(Ordering::Relaxed) {
+            0 => None,
+            id => Some(id),
+        }
+    }
+
     /// Sets the owner live; the owner leaves the allowlist.
     pub(crate) fn set_owner(&self, user: u64) {
-        *self.owner.lock() = Some(user);
+        self.owner.store(user, Ordering::Relaxed);
         self.lock().allowed.retain(|u| *u != user);
     }
 
     fn is_allowed(&self, user: u64) -> bool {
-        *self.owner.lock() == Some(user) || self.lock().allowed.contains(&user)
+        self.owner() == Some(user) || self.lock().allowed.contains(&user)
     }
 
     /// Mints a pairing code, publishes `PairingLink`, returns the link (98 §10.4).
@@ -693,7 +835,7 @@ impl Channel {
 
     /// The 98 §13 snapshot.
     pub(crate) fn status(&self) -> TelegramStatus {
-        let owner = *self.owner.lock();
+        let owner = self.owner();
         let s = self.lock();
         TelegramStatus {
             state: s.last_event.clone(),
@@ -969,6 +1111,12 @@ impl Channel {
 
     // -- inbound (98 §7) -----------------------------------------------------
 
+    /// [`handle_inbound`] with a panic logged as ERROR (kind, update_id).
+    async fn handle_guarded(self: &Arc<Self>, inc: Incoming) {
+        let (kind, update_id) = (inc.kind(), inc.update_id());
+        guarded(kind, update_id, self.handle_inbound(inc)).await;
+    }
+
     async fn handle_inbound(self: &Arc<Self>, inc: Incoming) {
         match inc {
             Incoming::Message(m) => self.handle_message(*m).await,
@@ -978,11 +1126,14 @@ impl Channel {
                 thread,
                 draft_id,
                 ..
-            } => {
-                if let Some(b) = self.bound_key(&threads::key(chat, thread)) {
+            } => match self.bound_key(&threads::key(chat, thread)) {
+                Some(b) => {
                     let _ = self.worker(&b).send(WorkerMsg::Stopped { draft_id });
                 }
-            }
+                None => {
+                    tracing::debug!(chat, ?thread, "telegram Stop for an unbound thread ignored")
+                }
+            },
             Incoming::MyChatMember { chat, left, .. } => {
                 if left {
                     tracing::warn!(
@@ -1016,6 +1167,11 @@ impl Channel {
             return;
         };
         if from.is_bot || m.chat.kind == ChatKind::Channel {
+            tracing::debug!(
+                chat = m.chat.id,
+                update_id = m.update_id,
+                "telegram message from a bot or a channel dropped (98 §7)"
+            );
             return;
         }
         let in_group = m.chat.kind != ChatKind::Private;
@@ -1040,6 +1196,11 @@ impl Channel {
                 return;
             }
             if !allowed {
+                tracing::debug!(
+                    chat = m.chat.id,
+                    user = from.id,
+                    "telegram group message from a non-allowed member dropped"
+                );
                 if m.mentions_bot || m.command.as_ref().is_some_and(|c| !c.for_other_bot) {
                     self.not_allowed(&m, from.id).await;
                 }
@@ -1061,7 +1222,10 @@ impl Channel {
                         let _ = self.worker(&b).send(WorkerMsg::TopicNamedByUser(true));
                     }
                 }
-                Service::TopicClosed => self.unbind_key(&key),
+                Service::TopicClosed => {
+                    tracing::debug!(key, "telegram topic closed; unbound");
+                    self.unbind_key(&key);
+                }
                 _ => tracing::debug!(?service, "telegram service message ignored"),
             }
             return;
@@ -1078,12 +1242,14 @@ impl Channel {
         // 67 §4.7 answered markers: the first hub to mark it answers. Tasks
         // down (`None` / `Err`) must not mute Telegram, so only `Ok(false)` stops.
         if let Some(tasks) = tasks::actor()
-            && let Ok(false) = tasks
-                .ask(tasks::MarkAnswered {
+            && let Ok(false) = crate::port::timed(
+                "MarkAnswered",
+                tasks.ask(tasks::MarkAnswered {
                     sender: format!("{}:{}", m.chat.id, from.id),
                     timestamp: u64::try_from(m.update_id).unwrap_or(0),
-                })
-                .await
+                }),
+            )
+            .await
         {
             tracing::debug!(
                 chat = m.chat.id,
@@ -1092,7 +1258,7 @@ impl Channel {
             );
             return;
         }
-        let owner = *self.owner.lock();
+        let owner = self.owner();
         if let Some(cmd) = &m.command
             && !cmd.for_other_bot
         {
@@ -1105,6 +1271,11 @@ impl Channel {
                     };
                     self.reply(&to, from.id, in_group, &commands::help(), None)
                         .await;
+                } else {
+                    tracing::debug!(
+                        user = from.id,
+                        "telegram /start with a dead code or from a non-owner: silent (98 §10.4)"
+                    );
                 }
                 return;
             }
@@ -1121,8 +1292,20 @@ impl Channel {
                 let text = m.text.clone().unwrap_or_default();
                 let out = {
                     let cx = self.command_cx(from.id, m.chat.id, m.thread, in_group);
-                    commands::continue_prompt(cx, expect, text.trim()).await
+                    tokio::time::timeout(
+                        COMMAND_BOUND,
+                        commands::continue_prompt(cx, expect, text.trim()),
+                    )
+                    .await
+                    .unwrap_or_else(|_| command_timed_out("prompt reply"))
                 };
+                tracing::info!(
+                    ?expect,
+                    user = from.id,
+                    chat = m.chat.id,
+                    outcome = out.variant(),
+                    "telegram prompt reply"
+                );
                 let to = Target {
                     chat: m.chat.id,
                     thread: m.thread,
@@ -1184,7 +1367,7 @@ impl Channel {
         let Some(from) = head.from.clone() else {
             return;
         };
-        let owner = *self.owner.lock();
+        let owner = self.owner();
         self.route_message(head, from, owner).await;
     }
 
@@ -1225,6 +1408,11 @@ impl Channel {
         }
         let (input, files, voice) = self.assemble(&m).await;
         if input.is_empty() {
+            tracing::debug!(
+                chat,
+                update_id = m.update_id,
+                "telegram message with nothing to send (no text, no usable attachment) dropped"
+            );
             return;
         }
         let mark = MsgRef {
@@ -1465,7 +1653,11 @@ impl Channel {
                     }
                     Err(e) => {
                         tracing::warn!(error = %e, path = %path.display(), "voice note not transcribed");
-                        suffix = " (transcription unavailable)";
+                        suffix = if e.starts_with("transcription timed out") {
+                            " (transcription timed out)"
+                        } else {
+                            " (transcription unavailable)"
+                        };
                     }
                 }
             }
@@ -1509,10 +1701,8 @@ impl Channel {
         self.set_owner(from.id);
         match crate::telegram_actor() {
             Some(actor) => {
-                if let Err(e) = actor
-                    .ask(crate::SetOwner(from.id))
-                    .await
-                    .map_err(|e| e.to_string())
+                if let Err(e) =
+                    crate::port::timed("SetOwner", actor.ask(crate::SetOwner(from.id))).await
                 {
                     tracing::warn!(error = %e, "telegram owner not written to config");
                 }
@@ -1561,14 +1751,19 @@ impl Channel {
                 .map(|t| t.session)
                 .or_else(|| s.threads.latest_in_chat(chat, user).map(|(_, t)| t.session))
         };
+        // Each snapshot is taken before the literal: no guard outlives a call
+        // that locks again (the 98c wedge was `owner: *self.owner.lock()`
+        // alive while `self.status()` locked the same mutex).
+        let owner = self.owner();
+        let status = self.status();
         CommandCx {
             user,
-            owner: *self.owner.lock(),
+            owner,
             chat,
             thread,
             in_group,
             session,
-            status: self.status(),
+            status,
             port: self.port.as_ref(),
             page: 0,
         }
@@ -1578,8 +1773,17 @@ impl Channel {
         let Some(cmd) = &m.command else { return };
         let out = {
             let cx = self.command_cx(from.id, m.chat.id, m.thread, in_group);
-            commands::handle(cx, &cmd.name, &cmd.arg).await
+            tokio::time::timeout(COMMAND_BOUND, commands::handle(cx, &cmd.name, &cmd.arg))
+                .await
+                .unwrap_or_else(|_| command_timed_out(&cmd.name))
         };
+        tracing::info!(
+            name = %cmd.name,
+            user = from.id,
+            chat = m.chat.id,
+            outcome = out.variant(),
+            "telegram command"
+        );
         let to = Target {
             chat: m.chat.id,
             thread: m.thread,
@@ -1748,28 +1952,19 @@ impl Channel {
         };
         let (r, ok) = match out {
             Outcome::Allow(id) => (
-                actor.ask(crate::Allow(id)).await.map_err(|e| e.to_string()),
+                crate::port::timed("Allow", actor.ask(crate::Allow(id))).await,
                 format!("allowed {id}"),
             ),
             Outcome::RemoveAllowed(id) => (
-                actor
-                    .ask(crate::RemoveAllowed(id))
-                    .await
-                    .map_err(|e| e.to_string()),
+                crate::port::timed("RemoveAllowed", actor.ask(crate::RemoveAllowed(id))).await,
                 format!("removed {id}"),
             ),
             Outcome::AllowGroup(id) => (
-                actor
-                    .ask(crate::AllowGroup(id))
-                    .await
-                    .map_err(|e| e.to_string()),
+                crate::port::timed("AllowGroup", actor.ask(crate::AllowGroup(id))).await,
                 format!("group {id} added"),
             ),
             Outcome::RemoveGroup(id) => (
-                actor
-                    .ask(crate::RemoveGroup(id))
-                    .await
-                    .map_err(|e| e.to_string()),
+                crate::port::timed("RemoveGroup", actor.ask(crate::RemoveGroup(id))).await,
                 format!("group {id} removed"),
             ),
             _ => return String::new(),
@@ -1815,9 +2010,16 @@ impl Channel {
     /// routes `ap:` / `ask:` / `cmd:` / `out:`.
     async fn handle_callback(self: &Arc<Self>, cb: IncomingCallback) {
         if cb.from.is_bot {
+            tracing::debug!(user = cb.from.id, "telegram press from a bot ignored");
             return self.answer(&cb.id, None).await;
         }
         let data = cb.data.as_str();
+        tracing::info!(
+            kind = data.split(':').next().unwrap_or(""),
+            user = cb.from.id,
+            chat = cb.chat,
+            "telegram press"
+        );
         if let Some((id, decision)) = approvals::parse(data) {
             self.press_approval(&cb, id, decision).await;
         } else if let Some(p) = asks::parse(data) {
@@ -1835,7 +2037,7 @@ impl Channel {
     /// Owner or the card's thread user may answer (98 §10.1).
     async fn press_approval(&self, cb: &IncomingCallback, id: ApprovalId, decision: Decision) {
         let user = cb.from.id;
-        let permitted = *self.owner.lock() == Some(user)
+        let permitted = self.owner() == Some(user)
             || self
                 .lock()
                 .cards
@@ -1872,7 +2074,7 @@ impl Channel {
     async fn press_ask(self: &Arc<Self>, cb: &IncomingCallback, p: asks::Press) {
         let user = cb.from.id;
         let step = {
-            let owner = *self.owner.lock();
+            let owner = self.owner();
             let mut s = self.lock();
             let card = s.asks.get_mut(&p.id);
             let permitted =
@@ -1912,7 +2114,7 @@ impl Channel {
             return;
         }
         let step = {
-            let owner = *self.owner.lock();
+            let owner = self.owner();
             let mut s = self.lock();
             let Some(c) = s.asks.get_mut(&id) else { return };
             if owner != Some(from.id) && c.thread_user != Some(from.id) {
@@ -1988,14 +2190,35 @@ impl Channel {
         let user = cb.from.id;
         let b = self.bound_key(&threads::key(cb.chat, cb.thread));
         if !(self.is_allowed(user) || b.as_ref().is_some_and(|b| b.user == user)) {
+            tracing::debug!(
+                user,
+                data = rest,
+                "telegram panel press from a user who may not"
+            );
             return self.answer(&cb.id, Some("not allowed")).await;
         }
         self.answer(&cb.id, None).await;
         let out = {
             let cx = self.command_cx(user, cb.chat, cb.thread, cb.chat < 0);
-            ui::action(cx, rest).await
+            match tokio::time::timeout(COMMAND_BOUND, ui::action(cx, rest)).await {
+                Ok(out) => out,
+                Err(_) => Some(command_timed_out(rest)),
+            }
         };
-        let Some(out) = out else { return };
+        let Some(out) = out else {
+            tracing::debug!(
+                data = rest,
+                "telegram panel press with unknown data; nothing to do"
+            );
+            return;
+        };
+        tracing::info!(
+            data = rest,
+            user,
+            chat = cb.chat,
+            outcome = out.variant(),
+            "telegram panel action"
+        );
         let to = Target {
             chat: cb.chat,
             thread: cb.thread,
@@ -2153,7 +2376,7 @@ impl Channel {
             // 37 §7: the model asked the user for a secret; say where to enter
             // it (never here). The owner's chat only.
             Event::Secret(secrets::SecretsEvent::Requested { name, note, .. }) => {
-                let Some(owner) = *self.owner.lock() else {
+                let Some(owner) = self.owner() else {
                     return;
                 };
                 let to = Target {
@@ -2179,7 +2402,7 @@ impl Channel {
         if self.cfg.approvals != ApprovalsMode::All {
             return None;
         }
-        let owner = (*self.owner.lock())?;
+        let owner = self.owner()?;
         let context = self.session_context(session).await;
         Some((
             Target {
@@ -2405,17 +2628,26 @@ fn shutdown_worker(s: &mut State, key: &str) {
     }
 }
 
-/// `Transcribe` on the `voice` plugin's actor; `Err` when it is not running (45 §4.5.1).
+/// Longest wait on STT for one voice note (98c): a lane-blocking ask.
+const TRANSCRIBE_BOUND: Duration = Duration::from_secs(60);
+
+/// `Transcribe` on the `voice` plugin's actor; `Err` when it is not running
+/// (45 §4.5.1) or when it took longer than [`TRANSCRIBE_BOUND`].
 async fn transcribe(path: &Path) -> Result<voice::Transcript, String> {
     let stt = ActorRef::<voice::Transcriber>::lookup(voice::TRANSCRIBER_ACTOR)
         .ok()
         .flatten()
         .ok_or_else(|| "voice plugin is not running".to_owned())?;
-    stt.ask(voice::Transcribe {
+    let ask = stt.ask(voice::Transcribe {
         path: path.to_path_buf(),
-    })
-    .await
-    .map_err(|e| e.to_string())
+    });
+    match tokio::time::timeout(TRANSCRIBE_BOUND, ask).await {
+        Ok(r) => r.map_err(|e| e.to_string()),
+        Err(_) => Err(format!(
+            "transcription timed out after {} s",
+            TRANSCRIBE_BOUND.as_secs()
+        )),
+    }
 }
 
 /// The first line of `input`, ≤ [`TOPIC_NAME_MAX`] chars, for `createForumTopic`.
@@ -2594,7 +2826,7 @@ fn fmt_size(bytes: usize) -> String {
 
 #[cfg(test)]
 pub(crate) mod tests {
-    use std::sync::atomic::{AtomicI64, Ordering};
+    use std::sync::atomic::{AtomicI64, AtomicUsize};
 
     use agent::{AgentInfo, Loaded, SessionSummary};
     use async_trait::async_trait;
@@ -2627,6 +2859,10 @@ pub(crate) mod tests {
         pub(crate) session: SessionId,
         calls: Mutex<Vec<PortCall>>,
         parents: Mutex<HashMap<SessionId, SessionId>>,
+        /// `list_sessions` sleeps this long first; `Duration::MAX` = never answers.
+        list_delay: Mutex<Option<Duration>>,
+        /// `list_sessions` calls that answered.
+        list_done: AtomicUsize,
     }
 
     impl Stub {
@@ -2665,6 +2901,13 @@ pub(crate) mod tests {
             Ok(())
         }
         async fn list_sessions(&self) -> Result<Vec<SessionSummary>, String> {
+            let delay = *self.list_delay.lock();
+            match delay {
+                None => {}
+                Some(d) if d == Duration::MAX => std::future::pending::<()>().await,
+                Some(d) => tokio::time::sleep(d).await,
+            }
+            self.list_done.fetch_add(1, Ordering::SeqCst);
             Ok(Vec::new())
         }
         async fn load_session(&self, _: SessionId) -> Result<Loaded, String> {
@@ -2705,6 +2948,8 @@ pub(crate) mod tests {
         pub(crate) stub: Arc<Stub>,
         pub(crate) chan: Arc<Channel>,
         pub(crate) rt: Runtime,
+        /// The poller side of the inbound channel; `start_dispatch` takes it.
+        inbound_rx: Mutex<Option<mpsc::UnboundedReceiver<Incoming>>>,
         _dir: tempfile::TempDir,
     }
 
@@ -2720,6 +2965,8 @@ pub(crate) mod tests {
             session: SessionId::new(),
             calls: Mutex::new(Vec::new()),
             parents: Mutex::new(HashMap::new()),
+            list_delay: Mutex::new(None),
+            list_done: AtomicUsize::new(0),
         });
         let cfg = TelegramConfig {
             owner: Some(OWNER),
@@ -2727,7 +2974,7 @@ pub(crate) mod tests {
             groups: vec![GROUP],
             ..cfg
         };
-        let (tx, _rx) = mpsc::unbounded_channel();
+        let (tx, rx) = mpsc::unbounded_channel();
         let (chan, _notes) = Channel::new(
             Arc::clone(&api) as Arc<dyn Sender>,
             None,
@@ -2748,6 +2995,7 @@ pub(crate) mod tests {
             stub,
             chan,
             rt,
+            inbound_rx: Mutex::new(Some(rx)),
             _dir: dir,
         }
     }
@@ -3500,6 +3748,7 @@ pub(crate) mod tests {
 
     #[tokio::test]
     async fn start_with_a_live_code_pairs_and_a_dead_code_is_silent() {
+        let _registry = REGISTRY.lock().await;
         let f = fixture(true);
         let actor = crate::Telegram::spawn(crate::Telegram::new(
             Some(Handle {
@@ -3510,11 +3759,11 @@ pub(crate) mod tests {
             Some("1:test"),
             true,
         ));
-        let _ = actor.register(crate::TELEGRAM_ACTOR);
+        actor.register(crate::TELEGRAM_ACTOR).unwrap();
         f.inbound(msg(private(STRANGER), STRANGER, None, "/start nope"))
             .await;
         assert!(f.api.calls().is_empty());
-        assert_eq!(*f.chan.owner.lock(), Some(OWNER));
+        assert_eq!(f.chan.owner(), Some(OWNER));
         f.chan.lock().pairing = Some(Pairing {
             code: "abcdefgh23456789".into(),
             expires: Instant::now() + PAIR_TTL,
@@ -3526,7 +3775,7 @@ pub(crate) mod tests {
             "/start ABCDEFGH23456789",
         ))
         .await;
-        assert_eq!(*f.chan.owner.lock(), Some(STRANGER));
+        assert_eq!(f.chan.owner(), Some(STRANGER));
         assert!(f.chan.lock().pairing.is_none());
         assert!(
             matches!(f.chan.lock().last_event, Some(TelegramEvent::Paired { user, .. }) if user == STRANGER)
@@ -3536,7 +3785,7 @@ pub(crate) mod tests {
         assert!(calls.iter().any(|c| matches!(c, Call::SetCommands { scope: CommandScope::Chat(id), .. } if *id == STRANGER as i64)));
         let config = std::fs::read_to_string(f.rt.data_dir.join("config.yaml")).unwrap();
         assert!(config.contains(&format!("owner: {STRANGER}")), "{config}");
-        actor.kill();
+        kill_registered(actor).await;
     }
 
     #[tokio::test]
@@ -3735,5 +3984,337 @@ pub(crate) mod tests {
         assert_eq!(topic_name("\n\n  first line  \nsecond"), "first line");
         assert_eq!(clip("abc", 3), "abc");
         assert!(clip(&"x".repeat(200), 128).chars().count() <= 128);
+    }
+
+    // -- 98c: a slash command must not wedge the channel ----------------------
+
+    /// Hard deadline per step; a hang fails the test instead of the suite.
+    const STEP: Duration = Duration::from_secs(10);
+
+    impl Fixture {
+        /// `handle_inbound(inc)` on its own OS thread and runtime so a sync
+        /// deadlock (a parking_lot lock taken twice) cannot pin the test's
+        /// thread; `Err` when the handler did not return within [`STEP`].
+        fn inbound_timed(&self, inc: Incoming) -> Result<(), String> {
+            let chan = Arc::clone(&self.chan);
+            let (tx, rx) = std::sync::mpsc::channel();
+            std::thread::spawn(move || {
+                let rt = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .unwrap();
+                rt.block_on(chan.handle_inbound(inc));
+                let _ = tx.send(());
+            });
+            rx.recv_timeout(STEP)
+                .map_err(|_| format!("handle_inbound did not return within {STEP:?}"))
+        }
+
+        fn text_timed(&self, text: &str) -> Result<(), String> {
+            self.inbound_timed(Incoming::Message(Box::new(msg(
+                private(OWNER),
+                OWNER,
+                None,
+                text,
+            ))))
+        }
+
+        /// The stub saw an input (`SendInput` or `Steer`) since the last drain.
+        fn took_input(&self) -> bool {
+            self.stub
+                .calls()
+                .iter()
+                .any(|c| matches!(c, PortCall::SendInput(..) | PortCall::Steer(..)))
+        }
+
+        /// Drains the mock and returns the Rich Message texts sent.
+        fn sent_texts(&self) -> Vec<String> {
+            self.api
+                .take_calls()
+                .into_iter()
+                .filter_map(|c| match c {
+                    Call::SendRich { md, .. } => Some(md),
+                    _ => None,
+                })
+                .collect()
+        }
+    }
+
+    /// 1a: regular → `/sessions` → regular; the third answer is the proof.
+    #[tokio::test]
+    async fn regular_then_sessions_then_regular_all_answered() {
+        let f = fixture(false);
+        f.text_timed("hello").unwrap();
+        assert!(f.took_input());
+        f.text_timed("/sessions").unwrap();
+        let texts = f.sent_texts();
+        assert!(
+            texts.iter().any(|t| t.contains("no sessions yet")),
+            "{texts:?}"
+        );
+        f.text_timed("hello again").unwrap();
+        assert!(f.took_input());
+    }
+
+    /// 1b: regular → `/help` → `/status` → regular.
+    #[tokio::test]
+    async fn regular_then_help_then_status_then_regular_all_answered() {
+        let f = fixture(false);
+        f.text_timed("hello").unwrap();
+        assert!(f.took_input());
+        f.text_timed("/help").unwrap();
+        assert_eq!(f.sent_texts().len(), 1);
+        f.text_timed("/status").unwrap();
+        assert_eq!(f.sent_texts().len(), 1);
+        f.text_timed("hello again").unwrap();
+        assert!(f.took_input());
+    }
+
+    /// 1c: regular → `/sessions` → press the panel's `cmd:` button → regular.
+    #[tokio::test]
+    async fn regular_then_sessions_then_panel_press_then_regular_all_answered() {
+        let f = fixture(false);
+        f.text_timed("hello").unwrap();
+        assert!(f.took_input());
+        f.text_timed("/sessions").unwrap();
+        let panel = f
+            .api
+            .calls()
+            .into_iter()
+            .find_map(|c| match c {
+                Call::SendRich { .. } => Some(NEXT_ID.fetch_add(1, Ordering::SeqCst)),
+                _ => None,
+            })
+            .expect("the panel was sent");
+        f.inbound_timed(Incoming::Callback(IncomingCallback {
+            update_id: NEXT_ID.fetch_add(1, Ordering::SeqCst),
+            id: format!("cb{panel}"),
+            from: sender(OWNER),
+            chat: OWNER_CHAT,
+            message_id: panel,
+            thread: None,
+            data: "cmd:sessions".into(),
+        }))
+        .unwrap();
+        let calls = f.api.calls();
+        assert!(
+            calls
+                .iter()
+                .any(|c| matches!(c, Call::AnswerCallback { .. })),
+            "{calls:?}"
+        );
+        assert!(
+            calls.iter().any(|c| matches!(c, Call::EditRich { .. })),
+            "{calls:?}"
+        );
+        f.text_timed("hello again").unwrap();
+        assert!(f.took_input());
+    }
+
+    /// 1e: `Status` on the actor answers within 1 s while a command runs.
+    /// Everything runs on a throwaway thread + runtime: a wedged handler
+    /// must fail the step, never pin the test runtime (whose drop would
+    /// join the stuck worker).
+    #[test]
+    fn status_answers_within_a_second_while_a_command_is_in_flight() {
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let rt = tokio::runtime::Builder::new_multi_thread()
+                .worker_threads(2)
+                .enable_all()
+                .build()
+                .unwrap();
+            rt.block_on(async move {
+                let f = fixture(false);
+                let actor = crate::Telegram::spawn(crate::Telegram::new(
+                    Some(Handle {
+                        chan: Arc::clone(&f.chan),
+                    }),
+                    f.chan.cfg.clone(),
+                    f.rt.clone(),
+                    Some("1:test"),
+                    true,
+                ));
+                // The command is literally in flight: its Port ask never answers.
+                *f.stub.list_delay.lock() = Some(Duration::MAX);
+                let chan = Arc::clone(&f.chan);
+                tokio::spawn(async move {
+                    chan.handle_inbound(Incoming::Message(Box::new(msg(
+                        private(OWNER),
+                        OWNER,
+                        None,
+                        "/sessions",
+                    ))))
+                    .await;
+                });
+                tokio::time::sleep(Duration::from_millis(200)).await;
+                let s = tokio::time::timeout(Duration::from_secs(1), actor.ask(crate::Status))
+                    .await
+                    .map_err(|_| "Status not answered within 1 s".to_owned())
+                    .map(|r| r.unwrap().owner);
+                let _ = tx.send(s);
+                actor.kill();
+            });
+            // A wedged worker would make `rt`'s drop hang: leak it instead.
+            std::mem::forget(rt);
+        });
+        let owner = rx
+            .recv_timeout(STEP)
+            .expect("the Status step finished")
+            .unwrap();
+        assert_eq!(owner, Some(OWNER));
+    }
+
+    impl Fixture {
+        /// Runs the real `dispatch_inbound` loop over the fixture's inbound
+        /// channel, as `run` does; updates then go in through `inbound_tx`.
+        fn start_dispatch(&self) {
+            let rx = self
+                .inbound_rx
+                .lock()
+                .take()
+                .expect("dispatch started once");
+            tokio::spawn(dispatch_inbound(Arc::clone(&self.chan), rx));
+        }
+
+        fn push(&self, text: &str) {
+            self.chan
+                .inbound_tx
+                .send(Incoming::Message(Box::new(msg(
+                    private(OWNER),
+                    OWNER,
+                    None,
+                    text,
+                ))))
+                .unwrap();
+        }
+
+        /// Polls until the stub took an input, or fails after [`STEP`].
+        async fn wait_input(&self) {
+            tokio::time::timeout(STEP, async {
+                while !self.took_input() {
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+            })
+            .await
+            .expect("a regular message was answered within the step");
+        }
+    }
+
+    /// 1d: with the real dispatch loop, a `/sessions` whose Port ask never
+    /// resolves (and one that takes 3 s) does not delay the next regular
+    /// message: commands run on their own task.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn hung_or_slow_port_ask_does_not_block_the_next_message() {
+        for delay in [Duration::MAX, Duration::from_secs(3)] {
+            let f = fixture(false);
+            f.start_dispatch();
+            f.push("hello");
+            f.wait_input().await;
+            *f.stub.list_delay.lock() = Some(delay);
+            f.push("/sessions");
+            f.push("hello again");
+            f.wait_input().await;
+            // Ordering, not timing: the input landed while `list_sessions`
+            // was still pending.
+            assert_eq!(
+                f.stub.list_done.load(Ordering::SeqCst),
+                0,
+                "the regular message waited for /sessions ({delay:?})"
+            );
+        }
+    }
+
+    /// 4: `Status` answers at once even when the fake host sits on getMe for 5 s.
+    #[tokio::test]
+    async fn status_answers_within_a_second_while_get_me_is_slow() {
+        use wiremock::matchers::path_regex;
+        let dir = tempfile::tempdir().unwrap();
+        let rt = Runtime::new(figment::Figment::new(), dir.path().to_path_buf());
+        let server = wiremock::MockServer::start().await;
+        wiremock::Mock::given(path_regex(r"/bot.*/getMe$"))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200)
+                    .set_delay(Duration::from_secs(5))
+                    .set_body_json(serde_json::json!({
+                        "ok": true,
+                        "result": { "id": 42, "is_bot": true, "first_name": "t", "username": BOT }
+                    })),
+            )
+            .mount(&server)
+            .await;
+        let handle = spawn_at(
+            TelegramConfig::default(),
+            "1:test".into(),
+            rt.clone(),
+            Some(&server.uri()),
+        )
+        .unwrap();
+        let actor = crate::Telegram::spawn(crate::Telegram::new(
+            Some(handle),
+            TelegramConfig::default(),
+            rt.clone(),
+            Some("1:test"),
+            true,
+        ));
+        let s = tokio::time::timeout(Duration::from_secs(1), actor.ask(crate::Status))
+            .await
+            .expect("Status answered within 1 s while getMe hangs")
+            .unwrap();
+        assert!(s.bot.is_none(), "{s:?}");
+        assert!(!s.polling);
+        actor.kill();
+        rt.shutdown.cancel();
+    }
+
+    /// R2-1: a `force_reply` prompt answer whose handler never returns (the
+    /// mock makes its reply send hang — the fixture has no engine actor to
+    /// hang `AddSkillRepo` on) runs free: the next plain message in the same
+    /// chat is answered and the prompt was consumed.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn hung_prompt_reply_does_not_block_the_next_message() {
+        let f = fixture(false);
+        f.start_dispatch();
+        f.push("/skills add");
+        let prompt = tokio::time::timeout(STEP, async {
+            loop {
+                if let Some(at) = f.chan.lock().prompts.keys().next().copied() {
+                    break at;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("the force_reply prompt was posted");
+        f.api.hang_next("send_rich");
+        let mut reply = msg(private(OWNER), OWNER, None, "https://x/y.git");
+        reply.reply_to = Some(ReplyRef {
+            message_id: prompt.id,
+            from_bot: true,
+            text: Some("Reply with the URL".into()),
+        });
+        f.chan
+            .inbound_tx
+            .send(Incoming::Message(Box::new(reply)))
+            .unwrap();
+        f.push("hello");
+        f.wait_input().await;
+        assert!(f.chan.lock().prompts.is_empty(), "the prompt reply ran");
+    }
+
+    /// Tests that `register` the `"telegram"` actor take this (the kameo
+    /// registry is process-wide) and wait for the name to clear when done.
+    pub(crate) static REGISTRY: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+    /// Kills `actor` and waits until `telegram_actor()` no longer finds it.
+    pub(crate) async fn kill_registered(actor: ActorRef<crate::Telegram>) {
+        actor.kill();
+        tokio::time::timeout(STEP, async {
+            while crate::telegram_actor().is_some() {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("the telegram actor left the registry");
     }
 }

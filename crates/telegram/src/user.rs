@@ -25,8 +25,9 @@ impl UserSink for Handle {
     async fn deliver(&self, m: &Outbound, fallback: bool) -> Result<Option<String>, String> {
         let chan = &self.chan;
         let (to, text, label) = if fallback {
-            let owner =
-                (*chan.owner.lock()).ok_or_else(|| "telegram: no owner paired".to_owned())?;
+            let owner = chan
+                .owner()
+                .ok_or_else(|| "telegram: no owner paired".to_owned())?;
             let to = Target {
                 chat: i64::try_from(owner).map_err(|e| format!("telegram: owner id: {e}"))?,
                 thread: None,

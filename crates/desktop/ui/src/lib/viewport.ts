@@ -10,8 +10,12 @@
  */
 import { touch } from '@/lib/platform'
 
-/** Smaller collapses are browser chrome / rounding, not a keyboard. */
-const SLACK = 50
+/**
+ * Smaller collapses are not a keyboard: browser chrome, rounding, and the iPad shortcuts bar a hardware
+ * keyboard leaves behind — WebKit shrinks the visual viewport by it even though the bar floats (~69 px on an
+ * iPad Pro, bugs.webkit.org/247410). The smallest real keyboard (iPhone, landscape) is well past this.
+ */
+const SLACK = 120
 
 const editing = (): boolean => {
   const el = document.activeElement
@@ -19,21 +23,24 @@ const editing = (): boolean => {
 }
 
 /**
- * The screen's block edge: the one full-height reading that survives both
- * keyboard modes (`innerHeight` itself shrinks in one of them).
+ * The window's full height (112 §2): the tallest viewport reading taken while no editable had focus, at the
+ * current width. Per window, not per screen: a Stage Manager window is always shorter than the screen and used
+ * to read as keyboard-open whenever an editable had focus.
  */
-const screenBlock = (): number => {
-  const { width: w, height: h } = window.screen
-  return matchMedia('(orientation: landscape)').matches ? Math.min(w, h) : Math.max(w, h)
-}
+let base = { width: 0, height: 0 }
 
 /** Read the viewports and write the variables; exported for tests. */
 export function applyViewport(): void {
   const layout = window.innerHeight
   const visible = Math.round(window.visualViewport?.height ?? layout)
-  // ponytail: a touch window shorter than the screen (iPad Stage Manager) reads as keyboard-open while editing; only `--safe-bottom` is affected.
-  const full = touch() ? Math.max(layout, screenBlock()) : layout
-  const open = editing() && visible < full - SLACK
+  const tall = Math.max(layout, visible)
+  const edit = editing()
+  // A keyboard never widens the window or grows it: a new width (rotation, window resize) or a taller reading
+  // re-bases even mid-edit. ponytail: a height-only window resize while editing still reads as a keyboard
+  // until blur; `resize` carries no cause, so there is nothing cheaper to tell them apart.
+  if (!edit || window.innerWidth !== base.width || tall > base.height) base = { width: window.innerWidth, height: tall }
+  const full = touch() ? base.height : layout
+  const open = edit && visible < full - SLACK
   const root = document.documentElement
   root.style.setProperty('--visible-band', `${open ? visible : layout}px`)
   root.toggleAttribute('data-keyboard-open', open)
