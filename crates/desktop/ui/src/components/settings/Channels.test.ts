@@ -55,6 +55,7 @@ test('telegramState: one phrase per variant (98 §10.5)', () => {
     [{ type: 'PairingLink', url: 'https://t.me/omp_bot?start=x', expires_at_ms: 0n }, 'waiting for the owner to tap Start'],
     [{ type: 'Paired', user: 42n, name: 'Sky' }, 'paired with Sky'],
     [{ type: 'DaemonOnly' }, 'daemon only'],
+    [{ type: 'Starting' }, 'starting…'],
   ]
   for (const [state, phrase] of cases) expect(telegramState(base(state))).toBe(phrase)
   expect(telegramState(base(null))).toBe('unknown')
@@ -110,6 +111,16 @@ test('card: live pairing link → QR, URL, countdown; owner and lists render as 
   expect(html).toContain('<svg')
   expect(html).toContain(url)
   for (const id of ['1', '2', '-1001234567890']) expect(html).toContain(`Remove ${id}`)
+})
+
+test('card: Starting (vault not answered yet) → "starting…", no token input, Pair disabled', async () => {
+  telegram = base({ type: 'Starting' }, false, false)
+  const html = await render()
+  expect(html).toContain('starting…')
+  expect(html).toContain('checking the vault…')
+  expect(html).not.toContain('no bot token')
+  expect(html).not.toMatch(/<input[^>]*type="password"/)
+  expect(html).toMatch(/<button[^>]*disabled[^>]*>Pair</)
 })
 
 test('card: while telegram_status is pending the section shows "loading…", never nothing', () => {
