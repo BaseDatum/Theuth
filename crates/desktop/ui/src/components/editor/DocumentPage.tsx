@@ -22,10 +22,13 @@ import { cn } from 'cn'
  * already renders it, `band={false}`), then a `SectionRow` with the phone-only back chevron, `title` and `actions`.
  * In a popped window: the 52 px drag bar of 49 §5.1 (back chevron and search trigger under `md`), unchanged.
  * `title` is the caller's own node (an `h2`, a `code`, a title input) and sits in the row as-is.
+ * 118: the back chevron hides from `md` up because Notes/Knowledge have their list pane beside the document there;
+ * a page without one (a task) passes `backAlways` and keeps its back at every width, in both shells.
  */
 export function Frame({
   backTo,
   backLabel,
+  backAlways = false,
   title,
   actions,
   band = true,
@@ -33,11 +36,13 @@ export function Frame({
 }: {
   backTo: '/knowledge' | '/notes' | '/tasks' | '/agents'
   backLabel: string
+  backAlways?: boolean
   title: ReactNode
   actions?: ReactNode
   band?: boolean
   children: ReactNode
 }) {
+  const backClass = backAlways ? undefined : 'md:hidden'
   return (
     <article className="flex min-h-0 min-w-0 flex-1 flex-col">
       {isPopout() ? (
@@ -45,7 +50,7 @@ export function Frame({
           data-tauri-drag-region={isMacDesktop() || undefined}
           className="flex h-[52px] shrink-0 items-center gap-1 border-b border-border-subtle px-3"
         >
-          <Button asChild variant="ghost" size="icon-sm" className="md:hidden" aria-label={backLabel}>
+          <Button asChild variant="ghost" size="icon-sm" className={backClass} aria-label={backLabel}>
             <Link to={backTo}>
               <ChevronLeft />
             </Link>
@@ -57,7 +62,7 @@ export function Frame({
       ) : (
         <>
           {band && <SectionBand group={groupOf(backTo) ?? 'library'} />}
-          <SectionRow back={{ to: backTo, label: backLabel, className: 'md:hidden' }}>
+          <SectionRow back={{ to: backTo, label: backLabel, className: backClass }}>
             {title}
             {actions}
           </SectionRow>
