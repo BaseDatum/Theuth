@@ -1,5 +1,5 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query'
-import { Link, useNavigate } from '@tanstack/react-router'
+import { Link, useNavigate, useSearch } from '@tanstack/react-router'
 import { ChevronRight, FlaskConical, MessageSquarePlus, Play } from 'lucide-react'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { toast } from 'sonner'
@@ -95,7 +95,6 @@ export function RoutineDetail({ name, section, chat }: { name: string | null; se
   const sensors = useSensors().data
   const [ratio, setRatio] = useState(0.5)
   const [verdict, setVerdict] = useState<Verdict | null>(null)
-  const [seed, setSeed] = useState<{ name: string; text: string }>()
   const fire = useAction((n: string) => api.fire_schedule(n), {
     keys: [KEY],
     onSuccess: (session) => void navigate({ to: '/c/$session', params: { session }, search: {} }),
@@ -108,6 +107,8 @@ export function RoutineDetail({ name, section, chat }: { name: string | null; se
       ? navigate({ to: '/routines/new', search: c ? { chat: c } : {} })
       : navigate({ to: '/routines/$name/$section', params: { name, section }, search: c ? { chat: c } : {} }))
   const sessionId = chat && chat !== '1' ? chat : null
+  // §6.6: on a detail page the pane edits this routine — the file as the engine returned it rides along with the first send.
+  const seed = name !== null && file.data ? { name, text: fileText(file.data) } : undefined
 
   // §6.4: the newest `routine_draft` card in the pane's session fills the form live.
   const entries = useSessions((s) => (sessionId ? s.sessions[sessionId]?.entries : undefined))
@@ -142,10 +143,7 @@ export function RoutineDetail({ name, section, chat }: { name: string | null; se
       session={sessionId}
       seed={seed}
       onSession={(id) => setChat(id)}
-      onClose={() => {
-        setSeed(undefined)
-        setChat(undefined)
-      }}
+      onClose={() => setChat(undefined)}
     />
   )
   const paneOpen = pane !== false
@@ -154,14 +152,7 @@ export function RoutineDetail({ name, section, chat }: { name: string | null; se
       <SectionBand group="agents" />
       <SectionRow back={{ to: '/routines', label: 'Back to routines' }} title={name ?? 'New routine'}>
         {!paneOpen && (
-          <Button
-            variant="outline"
-            size="xs"
-            onClick={() => {
-              if (file.data) setSeed({ name: file.data.name, text: fileText(file.data) })
-              setChat('1')
-            }}
-          >
+          <Button variant="outline" size="xs" onClick={() => setChat('1')}>
             <MessageSquarePlus /> {name === null ? 'Describe it' : 'Edit by chat'}
           </Button>
         )}
@@ -192,7 +183,7 @@ export function RoutineDetail({ name, section, chat }: { name: string | null; se
               <Editor initial={NEW} info={null} section="overview" isNew sensors={sensors} draft={draft} focusForm={focusForm} />
             ) : (
               <>
-                {info && <Facts s={info} notHub={notHub} verdict={verdict} sensors={sensors} />}
+                {info && <Facts s={info} notHub={notHub} verdict={verdict} sensors={sensors} prompt={file.data?.prompt ?? null} />}
                 <nav className="flex gap-1 border-b border-border-subtle" aria-label="Routine sections">
                   {SECTIONS.map((s) => (
                     <Link
@@ -251,11 +242,11 @@ const MODE_TEXT: Record<string, string> = {
 }
 
 /** §4 Overview: the sentence with its prompt gist, then one labelled row per part — Trigger · Stop · Run · Concurrency. */
-function Facts({ s, notHub, verdict, sensors }: { s: ScheduleInfo; notHub: boolean; verdict: Verdict | null; sensors: SensorInfo[] | undefined }) {
+function Facts({ s, notHub, verdict, sensors, prompt }: { s: ScheduleInfo; notHub: boolean; verdict: Verdict | null; sensors: SensorInfo[] | undefined; prompt: string | null }) {
   const r = fromInfo(s)
   const kind = kindOf(r)
   const title = [s.when, s.when_sensor].filter(Boolean).join(' · ')
-  const trigger: string[] = [s.error !== null ? s.error : sentence({ ...r, until: null, max_runs: null, expires: null, quiet: false, agent: null, approvals: true, model: null, cwd: null, run_timeout: null }, sensorArgs(s, sensors))]
+  const trigger: string[] = [s.error !== null ? s.error : s.sensor ?? s.when_sensor ? `Every ${r.every} · checks ${s.sensor ?? s.when_sensor?.split(' ')[0]}` : sentence({ ...r, until: null, max_runs: null, expires: null, quiet: false, agent: null, approvals: true, model: null, cwd: null, run_timeout: null })]
   if (s.next) trigger.push(`next ${relative(s.next)}`)
   else if (!s.enabled) trigger.push('paused')
   if (s.last_check) trigger.push(`last check ${lastCheckText(s.last_check)}`)
@@ -277,7 +268,7 @@ function Facts({ s, notHub, verdict, sensors }: { s: ScheduleInfo; notHub: boole
   return (
     <div className="flex flex-col gap-2 text-sm">
       <h3 className="text-base font-medium leading-snug" title={title}>
-        {s.error !== null ? <span className="text-danger">{s.error}</span> : sentence(r, sensorArgs(s, sensors))}
+        {s.error !== null ? <span className="text-danger">{s.error}</span> : sentence({ ...r, prompt }, sensorArgs(s, sensors))}
       </h3>
       <div className="grid gap-x-3 gap-y-1.5 sm:grid-cols-[auto_1fr]">
         <Fact label="Trigger" badge={kind}>
@@ -409,6 +400,7 @@ function Editor({
   const api = useRoutinesApi()
   const qc = useQueryClient()
   const navigate = useNavigate()
+  const chat = (useSearch({ strict: false }) as { chat?: string }).chat
   const agents = useAgents().data ?? []
   const projects = useBoardProjects()
   const models = useModels()
@@ -452,7 +444,8 @@ function Editor({
     onSuccess: (s) => {
       void qc.invalidateQueries({ queryKey: KEY })
       toast(isNew ? `Created ${s.name}` : `Saved ${s.name}`)
-      if (isNew) void navigate({ to: '/routines/$name/$section', params: { name: s.name, section: 'overview' }, search: {} })
+      // The pane (if open) stays beside the new routine's Overview (§6.5).
+      if (isNew) void navigate({ to: '/routines/$name/$section', params: { name: s.name, section: 'overview' }, search: chat ? { chat } : {} })
     },
   })
   const err = save.error ? plainError(errorText(save.error)) : null
