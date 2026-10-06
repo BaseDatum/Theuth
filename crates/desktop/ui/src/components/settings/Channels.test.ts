@@ -123,7 +123,8 @@ test('card: while telegram_status is pending the section shows "loading…", nev
 test('card: a failing telegram_status renders the error and a Retry button', async () => {
   telegramError = new Error('telegram actor is not running')
   try {
-    const qc = new QueryClient({ defaultOptions: { queries: { staleTime: Infinity, retry: false } } })
+    // `retryOnMount: false`: a fresh server-render observer would otherwise show the errored query as pending again.
+    const qc = new QueryClient({ defaultOptions: { queries: { staleTime: Infinity, retry: false, retryOnMount: false } } })
     const paint = () => renderToStaticMarkup(createElement(QueryClientProvider, { client: qc, children: createElement(Channels) as ReactNode }))
     paint()
     for (const query of qc.getQueryCache().findAll()) await qc.fetchQuery({ ...query.options, queryKey: query.queryKey }).catch(() => undefined)
