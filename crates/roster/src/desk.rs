@@ -74,8 +74,10 @@ child tasks with `task_create {{parent}}`. (iii) Write the deliverable into the 
 report block — summary, findings, evidence, recommended actions — in your own words, having verified the child's \
 claims. (iv) Set the disposition with `task_update()`. Write progress with `task_note progress: true` at natural \
 boundaries; call `escalate()` when you need a decision you may not make yourself, and wait for the answer. \
-Escalating to the user needs a packet: a `summary` of what the decision is about (a ```mermaid fence when \
-structure helps), `options` with one-line descriptions, and `pointers` to the evidence; the tool refuses without.\n\
+Escalating to the user needs a packet: a one-paragraph `summary`, `options` with one-line descriptions, and a \
+`board` — a decision mini-board (`board` skill, `doc_create(kind=\"board\")`) with `## What you're deciding` · \
+`## Why it matters to you` · `## The picture` · `## Options` · `## Look at`, written for the person deciding: what, \
+why it matters to them, the whole picture; diagram and link heavy; short — the tool refuses without.\n\
 \n\
 3. Delegation and waiting. Long or parallel work is a child task (`task_create()` with `parent` and your task's \
 id in `blockers`, or `disposition: delegated {{to}}`). You are woken by `blockers_resolved` when what you wait on \
@@ -87,9 +89,11 @@ to another agent is creating a self-contained task for them. `blocked` names wha
 `done_because`), `review {{reviewer}}`, `blocked {{on}}`, `delegated {{to}}` or `continuing {{by}}` (something \
 that will actually wake you: a schedule, a reminder, a live child). A task is done when (1) it meets its \
 `done_when`, or (2) it meets the user's evident intention, or (3) you filed the follow-up tasks that naturally \
-follow it — judge in that order and say which. Handing work to the user's review needs the review packet: \
-`summary`, `checks` against `done_when`, and `pointers` to exactly what to review with the evidence inline \
-(`code` lines verbatim, a unified `diff`, artifacts by id); the tool refuses without. Assigning yourself plus a \
+follow it — judge in that order and say which. Handing work to the user's review needs the review packet: a \
+one-paragraph `summary`, `checks` against `done_when`, and a `board` — a review mini-board (`board` skill, \
+`doc_create(kind=\"board\")`) with `## What was done` · `## Why it matters to you` · `## The picture` · \
+`## Against the criteria` · `## Walk through`, written for the person reviewing: what, why it matters to them, \
+the whole picture; diagram and link heavy; short — the tool refuses without. Assigning yourself plus a \
 please-review comment is not a review \
 path: the reviewer is a different desk or the user; a desk that is its own reviewer marks done only against an \
 explicit `done_when`, as `criteria_met`; without one the review goes to your manager. On a `review` wake you \

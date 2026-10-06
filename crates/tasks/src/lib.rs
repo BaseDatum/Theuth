@@ -246,8 +246,8 @@ pub struct PlaceTask {
 }
 
 /// `ask` → `Result<String, String>`: `escalate` (67 §11); the `decision:<id>` blocker.
-/// With a `summary` (required when the manager is the user, 101 D1) the
-/// request is stored as a `decision:<id>` packet.
+/// With a `summary` and a `board` (both required when the manager is the user,
+/// 101 D1/R1) the request is stored as a `decision:<id>` packet.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Escalate {
     /// Which.
@@ -256,6 +256,8 @@ pub struct Escalate {
     pub question: String,
     /// Markdown: what the decision is about (101 §3).
     pub summary: Option<String>,
+    /// The decision mini-board's document id (101 R1).
+    pub board: Option<String>,
     /// Options.
     pub options: Vec<packet::PacketOption>,
     /// Index into `options`.
@@ -295,12 +297,25 @@ pub struct ReviewPacket {
     pub id: TaskId,
     /// Markdown.
     pub summary: String,
+    /// The review mini-board's document id (101 R1).
+    pub board: Option<String>,
     /// Where to look.
     pub pointers: Vec<packet::Pointer>,
     /// Claimed status against `done_when`.
     pub checks: Vec<packet::Check>,
     /// Who.
     pub actor: String,
+}
+
+/// `ask` → `Result<(), String>`: 101 R2 — `board` exists, is a board document
+/// and carries the skeleton of `kind` ([`packet::check_board`]); the tools run
+/// it for the user audience before any write.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct CheckBoard {
+    /// Decision or review skeleton.
+    pub kind: packet::PacketKind,
+    /// The board document id.
+    pub board: String,
 }
 
 /// `ask` → `Result<(), String>`: a chat message into the task's thread
@@ -566,8 +581,16 @@ impl Message<ReviewPacket> for Tasks {
 
     async fn handle(&mut self, m: ReviewPacket, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
         self.ledger
-            .review_packet(&m.id, m.summary, m.pointers, m.checks, &m.actor)
+            .review_packet(&m.id, m.summary, m.board, m.pointers, m.checks, &m.actor)
             .await
+    }
+}
+
+impl Message<CheckBoard> for Tasks {
+    type Reply = Result<(), String>;
+
+    async fn handle(&mut self, m: CheckBoard, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        self.ledger.check_board(m.kind, &m.board).await
     }
 }
 
@@ -693,6 +716,7 @@ impl Message<Escalate> for Tasks {
         let ask = packet::Ask {
             question: m.question.clone(),
             summary: m.summary.clone(),
+            board: m.board.clone(),
             options: m.options.clone(),
             recommended: m.recommended,
             pointers: m.pointers.clone(),

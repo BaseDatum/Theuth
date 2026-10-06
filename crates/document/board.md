@@ -63,6 +63,83 @@ per cluster of the change (see Clusters). The `# Title` block is created for you
 - **Checks** — what proves it: tests by path (`code:` links), a `Checklist` of what you ran.
 - **Open questions** — what you could not verify, ambiguous symbols, unresolved imports.
 
+## Mini-boards for decisions and reviews
+
+`escalate` to the user and a hand-over to the user's review (`task_update` / `task_move` → `review`) carry a
+`board`: a short board whose reader is the person deciding or reviewing, embedded in their Decision / Review
+screen with this reader (anchors, hover lighting, pinned excerpts, tour). Same grammar as above, a fixed
+skeleton instead of the six sections; the tool refuses a board whose first three `##` are not these, in this order.
+
+**Decision** — `## What you're deciding` → `## Why it matters to you` → `## The picture` → `## Options` →
+`## Look at` → `## Open questions` (optional).
+
+- **What you're deciding** — the question and its scope in two sentences.
+- **Why it matters to you** — for the decider: what changes for them, what happens if nothing or if wrong, urgency, reversibility.
+- **The picture** — ONE diagram of the whole situation, `ref` on every unit.
+- **Options** — one `###` per option: consequence, cost/risk, reversibility, your recommendation (the buttons stay on the screen).
+- **Look at** — the `Excerpt`s that carry the evidence, in reading order.
+
+**Review** — `## What was done` → `## Why it matters to you` → `## The picture` → `## Against the criteria` →
+`## Walk through` → `## Open questions` (optional).
+
+- **What was done** — the change in the reviewer's words, two sentences.
+- **Why it matters to you** — what it changes for them, the risk if it is wrong, what reverting costs.
+- **The picture** — ONE diagram of the change in its surroundings, `ref` on every unit.
+- **Against the criteria** — each `done_when` line with its evidence anchor (`[label](code:path#La-Lb)`).
+- **Walk through** — the `Excerpt`s in reading order: what to look at and what to look for; the tour steps through them.
+
+The lens: write for the person deciding — what, why it matters to them, the whole picture; diagram and link
+heavy; short. One block per section is enough. Every diagram unit has a `ref` (`path#La-Lb`, ideally the lines an
+`Excerpt` quotes, or `block:<id>`; a unit that is not code is left out or named in the label of the unit that
+calls it); every claim is a link (`code:` links for code; PRs, dashboards, runbooks, invoices, artifacts as plain
+markdown links the reader opens outside). `root` is the repository the anchors resolve against; a scratch
+directory when there is no repository. Then pass the id: `escalate(..., board=r["doc"])` /
+`task_update(..., board=r["doc"])`.
+
+A decision mini-board, six blocks — the frontmatter `doc_create` wrote, then one `doc_insert` per section:
+
+````markdown
+---
+root: /Users/me/src/theuth
+---
+
+## What you're deciding
+
+Whether the retry loop in [`fetch()`](code:crates/net/src/fetch.rs#L40-L58) keeps retrying five times or stops at three.
+
+## Why it matters to you
+
+Five retries doubled last month's API bill ([invoice](https://billing.example.com/2026-09)); three cuts it back and
+risks a rare miss on a flaky morning. Nothing happens until you answer; either way is one line and reverts in a minute.
+
+## The picture
+
+```json-render
+{ "root": "g", "elements": { "g": {"type": "Graph", "props": {"direction": "LR", "nodes": [
+  {"id": "sync", "label": "sync()", "ref": "crates/net/src/sync.rs#L12-L30"},
+  {"id": "fetch", "label": "fetch() retries ×5", "ref": "crates/net/src/fetch.rs#L40-L58", "state": "danger"},
+  {"id": "get", "label": "get() → billing API", "ref": "crates/net/src/http.rs#L5-L20"}],
+  "edges": [{"from": "sync", "to": "fetch", "label": "every 5 min"}, {"from": "fetch", "to": "get", "label": "up to 5 billed calls"}]}} } }
+```
+
+## Options
+
+### Cap at 3 (recommended)
+Consequence: the bill returns to August's level. Cost/risk: ~2 misses a month, retried on the next tick. Reversible: one constant.
+
+### Keep 5
+Consequence: no misses. Cost/risk: the bill stays doubled. Reversible: nothing to do.
+
+## Look at
+
+```json-render
+{ "root": "e", "elements": { "e": {"type": "Excerpt", "props": {
+  "path": "crates/net/src/fetch.rs", "start": 40, "lang": "rust", "symbol": "fetch",
+  "text": "pub async fn fetch(url: &str) -> Result<Body> {\n    for attempt in 0..5 {\n        if let Ok(b) = get(url).await {\n            return Ok(b);\n        }",
+  "mark": [[41, 41]], "caption": "the five is here; every attempt is a billed call"}} } }
+```
+````
+
 ## Write incrementally
 
 Write small and often. The reader sees the board draw itself in real time: one paragraph or one

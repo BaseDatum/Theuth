@@ -1,7 +1,10 @@
 //! The task thread is a 59 document: comments, answers, notes and the
 //! one-line event log are blocks appended at its end (67 §7.1).
 
-use document::{Bind, Binding, BlockEdit, Create, DocId, Edit, Handle, Markdown, Principal};
+use document::{
+    Bind, Binding, BlockEdit, Create, DocHeadings, DocId, Edit, Handle, Headings, Markdown,
+    Principal,
+};
 
 /// Where thread text goes. One real implementation ([`DocThread`]); tests
 /// keep blocks in memory.
@@ -14,6 +17,10 @@ pub trait Thread: Send + Sync {
     async fn append(&self, doc: &str, markdown: &str);
     /// The whole thread as markdown.
     async fn read(&self, doc: &str) -> Option<String>;
+    /// The kind and top-level `(level, text)` headings of document `doc` — what a packet's
+    /// mini-board is checked against (101 R2); `Ok(None)` when no such document exists,
+    /// `Err` when documents are unavailable.
+    async fn headings(&self, doc: &str) -> Result<Option<DocHeadings>, String>;
 }
 
 /// The document plugin, looked up per call so start order never matters.
@@ -72,6 +79,16 @@ impl Thread for DocThread {
             .await
             .ok()
     }
+
+    async fn headings(&self, doc: &str) -> Result<Option<DocHeadings>, String> {
+        let Some(h) = Handle::lookup() else {
+            return Err("documents are not running; the board cannot be read".into());
+        };
+        let Some(id) = DocId::parse(doc) else {
+            return Ok(None);
+        };
+        h.actor().ask(Headings(id)).await.map_err(|e| e.to_string())
+    }
 }
 
 /// TASK-NOTES-HIDDEN: threads minted before this fix are `kind: note` and list as notes. Bind every
@@ -102,5 +119,97 @@ pub async fn adopt_threads(pool: &sqlx::SqlitePool) {
             Ok(false) => {}
             Err(e) => tracing::warn!(task, doc, "task thread not adopted: {e}"),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use document::{AgentStyle, DocKind, DocMeta, DocumentActor, DocumentsConfig};
+    use kameo::actor::Spawn;
+
+    use super::*;
+
+    fn meta(kind: DocKind) -> DocMeta {
+        let id = DocId::new();
+        DocMeta {
+            derived: Binding::Note.derived(&id),
+            id,
+            kind,
+            title: "t".into(),
+            binding: Binding::Note,
+            fragment: document::FRAGMENT.into(),
+            members: vec![],
+            links: vec![],
+            agent: AgentStyle::default(),
+            last_export: None,
+            authors: Default::default(),
+            created_ms: 1,
+            updated_ms: 1,
+        }
+    }
+
+    /// 101 R2, the actor hop: `DocThread::headings` reaches the registered document actor,
+    /// which answers the kind from its store and the headings from the helper's outline
+    /// (a `sh` helper with one canned tree); an unknown or malformed id is `None`.
+    #[tokio::test]
+    async fn headings_reach_the_document_actor() {
+        let dir = tempfile::tempdir().unwrap();
+        let script = dir.path().join("helper.sh");
+        std::fs::write(
+            &script,
+            format!(
+                r#"#!/bin/sh
+if [ "$1" = --version ]; then echo "theuth-documents {}"; exit 0; fi
+while IFS= read -r line; do
+  id=$(printf '%s' "$line" | sed -n 's/.*"id":\([0-9]*\).*/\1/p')
+  case "$line" in
+    *'"op":"outline"'*) printf '{{"id":%s,"ok":true,"result":{{"outline":"","blocks":[{{"id":"t","type":"heading","text":"[h1] T","children":[]}},{{"id":"a","type":"heading","text":"[h2] What was done","children":[]}},{{"id":"p","type":"paragraph","text":"x","children":[]}}]}}}}\n' "$id" ;;
+    *) printf '{{"id":%s,"ok":true,"result":{{}}}}\n' "$id" ;;
+  esac
+done
+"#,
+                document::protocol_version()
+            ),
+        )
+        .unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let rt = runtime::Runtime::new(figment::Figment::new(), dir.path().to_path_buf());
+        let store = document::store::Store::open(dir.path()).await.unwrap();
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let helper = document::helper::Helper::new(script, tx, rt.shutdown.clone());
+        let actor = DocumentActor::spawn(DocumentActor::new(
+            store.clone(),
+            helper,
+            DocumentsConfig::default(),
+            rt,
+        ));
+        actor.register(document::DOCUMENT_ACTOR).unwrap();
+        let board = meta(DocKind::Board);
+        let note = meta(DocKind::Note);
+        store.create(&board).await.unwrap();
+        store.create(&note).await.unwrap();
+
+        assert_eq!(
+            DocThread.headings(board.id.as_str()).await,
+            Ok(Some(DocHeadings {
+                kind: DocKind::Board,
+                headings: vec![(1, "T".into()), (2, "What was done".into())],
+            }))
+        );
+        assert_eq!(
+            DocThread
+                .headings(note.id.as_str())
+                .await
+                .unwrap()
+                .unwrap()
+                .kind,
+            DocKind::Note
+        );
+        assert_eq!(DocThread.headings(DocId::new().as_str()).await, Ok(None));
+        assert_eq!(DocThread.headings("nope").await, Ok(None));
     }
 }

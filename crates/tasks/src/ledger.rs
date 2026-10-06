@@ -1441,11 +1441,12 @@ impl Ledger {
 
     /// `escalate` (67 §11, 101): the question in the thread, `blocked: decision:<id>`,
     /// the **caller's** manager woken (`answer`). When the manager is the user
-    /// the request needs a `summary` (D1) and nothing is written without one;
-    /// with a summary (any audience) the request is stored as the
-    /// `decision:<id>` packet and the thread block is its markdown (D3).
-    /// Returns the decision and the manager; `Owner::User` means the actor
-    /// handler asks the user. The user has nobody to escalate to.
+    /// the request needs a `summary` and a `board` with the decision skeleton
+    /// (D1, R1, R2) and nothing is written without them; with a summary, board
+    /// or pointers (any audience) the request is stored as the `decision:<id>`
+    /// packet and the thread block is its markdown (D3). Returns the decision
+    /// and the manager; `Owner::User` means the actor handler asks the user.
+    /// The user has nobody to escalate to.
     pub async fn escalate(
         &mut self,
         id: &TaskId,
@@ -1459,7 +1460,8 @@ impl Ledger {
         };
         let t = self.load(id).await?;
         let decision = format!("decision:{}", uuid::Uuid::now_v7());
-        let packet_wanted = ask.summary.is_some() || !ask.pointers.is_empty();
+        let packet_wanted =
+            ask.summary.is_some() || ask.board.is_some() || !ask.pointers.is_empty();
         let p = packet::Packet {
             key: decision.clone(),
             task: id.clone(),
@@ -1468,6 +1470,7 @@ impl Ledger {
             at_ms: self.now(),
             question: Some(ask.question),
             summary: ask.summary.unwrap_or_default(),
+            board: ask.board,
             options: ask.options,
             recommended: ask.recommended,
             pointers: ask.pointers,
@@ -1475,6 +1478,8 @@ impl Ledger {
         };
         if manager == Owner::User {
             packet::require_for_user(&p)?;
+            self.check_board(p.kind, p.board.as_deref().unwrap_or_default())
+                .await?;
         }
         packet::validate(&p)?;
         if manager == Owner::User || packet_wanted {
@@ -1529,6 +1534,7 @@ impl Ledger {
         &self,
         id: &TaskId,
         summary: String,
+        board: Option<String>,
         pointers: Vec<packet::Pointer>,
         checks: Vec<packet::Check>,
         actor: &str,
@@ -1542,6 +1548,7 @@ impl Ledger {
             at_ms: self.now(),
             question: None,
             summary,
+            board,
             options: vec![],
             recommended: None,
             pointers,
@@ -1551,6 +1558,22 @@ impl Ledger {
         self.store.put_packet(&p).await.map_err(db)?;
         self.say(&t, actor, &packet::thread_markdown(&p)).await;
         Ok(p)
+    }
+
+    /// 101 R2: `board` exists, is a board, and its first `##` sections are the
+    /// skeleton of `kind` ([`packet::check_board`]). Run for the user audience
+    /// before any write.
+    pub async fn check_board(&self, kind: packet::PacketKind, board: &str) -> R<()> {
+        let Some(d) = self.thread.headings(board).await? else {
+            return Err(format!("board `{board}` does not exist"));
+        };
+        if d.kind != document::DocKind::Board {
+            return Err(format!(
+                "`{board}` is a {}, not a board (create it with doc_create(kind=\"board\"))",
+                d.kind
+            ));
+        }
+        packet::check_board(kind, &d.headings).map_err(|e| format!("board `{board}`: {e}"))
     }
 
     /// One packet by key.
@@ -2067,6 +2090,39 @@ pub(crate) mod tests {
         async fn read(&self, doc: &str) -> Option<String> {
             self.0.lock().unwrap().get(doc).map(|b| b.join("\n\n"))
         }
+        /// A doc whose first block is a `root:` frontmatter is a board; headings are its `#` lines.
+        async fn headings(&self, doc: &str) -> Result<Option<document::DocHeadings>, String> {
+            let map = self.0.lock().unwrap();
+            let Some(blocks) = map.get(doc) else {
+                return Ok(None);
+            };
+            let board = blocks.first().is_some_and(|b| b.starts_with("---\nroot:"));
+            let headings = blocks
+                .iter()
+                .flat_map(|b| b.lines())
+                .filter_map(|l| {
+                    let text = l.trim_start_matches('#');
+                    let level = l.len() - text.len();
+                    (level > 0 && text.starts_with(' '))
+                        .then(|| (level as u8, text.trim().to_owned()))
+                })
+                .collect();
+            Ok(Some(document::DocHeadings {
+                kind: if board {
+                    document::DocKind::Board
+                } else {
+                    document::DocKind::Note
+                },
+                headings,
+            }))
+        }
+    }
+
+    /// A board document under `id` whose `##` sections are `sections`, in order.
+    pub fn board(thread: &MemThread, id: &str, sections: &[&str]) {
+        let mut blocks = vec!["---\nroot: /repo\n---".to_owned(), "# Board".to_owned()];
+        blocks.extend(sections.iter().map(|s| format!("## {s}\n\nOne block.")));
+        thread.0.lock().unwrap().insert(id.to_owned(), blocks);
     }
 
     /// A roster: `agent → manager`, `agent → desk`, `session → agent`, delivery log.
@@ -4730,8 +4786,10 @@ pub(crate) mod tests {
     async fn escalate_user_path() {
         let mut r = rig().await;
         let t = r.task("agent:lead").await;
+        board(&r.thread, "b1", &packet::DECISION_SECTIONS);
         let ask = packet::Ask {
             summary: Some("Spend or save.".into()),
+            board: Some("b1".into()),
             ..packet::Ask::new("budget?")
         };
         let (_, manager) = r
@@ -4768,9 +4826,11 @@ pub(crate) mod tests {
         }
     }
 
-    /// 101 D1: an escalation to the user without a summary writes nothing.
+    /// 101 D1 + R1/R2: an escalation to the user without a summary, without a
+    /// board, with a board that does not exist, is a note, or lacks the skeleton
+    /// writes nothing; the thread, blockers, wakes and packets stay as they were.
     #[tokio::test]
-    async fn escalate_to_user_needs_a_summary() {
+    async fn escalate_to_user_needs_a_summary_and_a_board() {
         let mut r = rig().await;
         let t = r.task("agent:lead").await;
         let doc = t.thread.clone().unwrap();
@@ -4778,6 +4838,55 @@ pub(crate) mod tests {
         let e = r
             .ledger
             .escalate(&t.id, packet::Ask::new("budget?"), "agent:lead", None)
+            .await
+            .unwrap_err();
+        assert!(e.contains("needs a `board`"), "{e}");
+        assert!(e.contains("`## What you're deciding`"), "{e}");
+        let with = |board: &str| packet::Ask {
+            summary: Some("Spend or save.".into()),
+            board: Some(board.into()),
+            ..packet::Ask::new("budget?")
+        };
+        let e = r
+            .ledger
+            .escalate(&t.id, with("nope"), "agent:lead", None)
+            .await
+            .unwrap_err();
+        assert_eq!(e, "board `nope` does not exist");
+        r.thread.append("n1", "# Just a note").await;
+        let e = r
+            .ledger
+            .escalate(&t.id, with("n1"), "agent:lead", None)
+            .await
+            .unwrap_err();
+        assert_eq!(
+            e,
+            "`n1` is a note, not a board (create it with doc_create(kind=\"board\"))"
+        );
+        board(&r.thread, "b0", &["What you're deciding", "The picture"]);
+        let e = r
+            .ledger
+            .escalate(&t.id, with("b0"), "agent:lead", None)
+            .await
+            .unwrap_err();
+        assert!(
+            e.starts_with(
+                "board `b0`: section 2 of a decision board must be `## Why it matters to you`"
+            ),
+            "{e}"
+        );
+        board(&r.thread, "b1", &packet::DECISION_SECTIONS);
+        let e = r
+            .ledger
+            .escalate(
+                &t.id,
+                packet::Ask {
+                    summary: None,
+                    ..with("b1")
+                },
+                "agent:lead",
+                None,
+            )
             .await
             .unwrap_err();
         assert!(e.contains("needs a `summary`"), "{e}");
@@ -4826,6 +4935,17 @@ pub(crate) mod tests {
             pointers: vec![code_pointer()],
             ..packet::Ask::new("retry policy?")
         };
+        let e = r
+            .ledger
+            .escalate(&t.id, ask.clone(), "agent:lead", None)
+            .await
+            .unwrap_err();
+        assert!(e.contains("needs a `board`"), "{e}");
+        board(&r.thread, "b1", &packet::DECISION_SECTIONS);
+        let ask = packet::Ask {
+            board: Some("b1".into()),
+            ..ask
+        };
         let (decision, _) = r
             .ledger
             .escalate(&t.id, ask, "agent:lead", None)
@@ -4840,6 +4960,7 @@ pub(crate) mod tests {
         assert_eq!(p.recommended, Some(1));
         assert_eq!(p.pointers, vec![code_pointer()]);
         assert_eq!(p.by, "agent:lead");
+        assert_eq!(p.board.as_deref(), Some("b1"));
         let doc = t.thread.clone().unwrap();
         let blocks = r.thread.0.lock().unwrap()[&doc].clone();
         let block = blocks
@@ -4856,6 +4977,10 @@ pub(crate) mod tests {
             "{block}"
         );
         assert!(block.contains("Manager: answer with `decide"), "{block}");
+        assert!(
+            block.contains("\n\nBoard: theuth://notes/b1\n\n"),
+            "{block}"
+        );
         assert_eq!(
             r.ledger.packets_for(&[t.id.clone()]).await.unwrap(),
             vec![p]
@@ -4941,6 +5066,7 @@ pub(crate) mod tests {
             .review_packet(
                 &t.id,
                 "first".into(),
+                None,
                 vec![code_pointer()],
                 vec![],
                 "agent:ops",
@@ -4959,6 +5085,7 @@ pub(crate) mod tests {
             .review_packet(
                 &t.id,
                 "second".into(),
+                Some("rb1".into()),
                 vec![code_pointer()],
                 checks,
                 "agent:ops",
@@ -4967,6 +5094,7 @@ pub(crate) mod tests {
             .unwrap();
         let all = r.ledger.packets_for(&[t.id.clone()]).await.unwrap();
         assert_eq!(all, vec![p2.clone()], "one row, the latest");
+        assert_eq!(p2.board.as_deref(), Some("rb1"));
         assert_eq!(r.ledger.packet(&p1.key).await.unwrap(), Some(p2));
         let doc = t.thread.clone().unwrap();
         let blocks = r.thread.0.lock().unwrap()[&doc].clone();
@@ -4983,6 +5111,7 @@ pub(crate) mod tests {
             .review_packet(
                 &t.id,
                 "x".into(),
+                None,
                 vec![],
                 (0..13)
                     .map(|_| packet::Check {
