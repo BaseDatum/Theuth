@@ -1,6 +1,6 @@
 //! The `## Slack` prompt section (design doc 110 §7.2), registered by
-//! `SlackPlugin::start` as `RegisterPrompt { plugin: "slack" }`. Wave 2
-//! (§8) swaps the monospace-box clause for "which Slack shows as native blocks".
+//! `SlackPlugin::start` as `RegisterPrompt { plugin: "slack" }`. Wave 2 (§8)
+//! swapped the monospace-box clause for "which Slack shows as native blocks".
 
 /// One paragraph after its heading, like `## Voice notes`.
 pub const PROMPT: &str = "## Slack\n\
@@ -9,8 +9,7 @@ renders there as a Slack message in the same thread. Lead with the answer. One s
 lines — unless the user asks for more. Write the markdown Slack renders: bold, bullets, numbered lists, \
 tables of up to six columns, fenced code, links. Draw nothing Slack cannot show: no mermaid, no openui, \
 and no json-render except Alert, Callout, Table, Bars, Sparkline, Metric, MetricGrid, KeyValueList and \
-Checklist — and until Slack shows those natively they arrive as a monospace box, so prefer a markdown \
-table. Anything longer or richer than one screen goes through `show`; it arrives as a file the user \
+Checklist — which Slack shows as native blocks. Anything longer or richer than one screen goes through `show`; it arrives as a file the user \
 can preview. Your tool activity is one collapsed card the user can expand, so the sentence before a \
 batch of tool calls says what you are doing and why in one line, and you never list what each call \
 did. Subagents appear to the user as their own threads and a live board; do not narrate their \
@@ -41,5 +40,8 @@ mod tests {
             assert!(body.contains(c), "{c} missing");
         }
         assert!(body.contains("`[slack dm]`") && body.contains("`[slack channel]`"));
+        // 110 §7.2 wave 2: the clause names native blocks, not a monospace box.
+        assert!(body.contains("Checklist — which Slack shows as native blocks. Anything longer"));
+        assert!(!body.contains("monospace box"));
     }
 }
