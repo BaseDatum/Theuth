@@ -1,5 +1,9 @@
-# theuth-sensor: pr_watch 1
+# theuth-sensor: pr_watch 2
 # hosts: api.github.com
+# arg: repo  required owner/name — the repository
+# arg: pr    required 482        — the pull request number
+# arg: token required secret     — vault name of a GitHub token with repo scope
+# arg: stale_hours optional 72   — hours without activity before `stale` fires
 """PR babysitter sensor (design 40 section 8).
 
 when: pr_watch.py repo=<owner>/<name> pr=<n> token=<vault name> [stale_hours=72]

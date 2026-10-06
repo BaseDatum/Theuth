@@ -84,6 +84,17 @@ pub async fn dry_run_with_subject(
     run(spec, sensors, None).await
 }
 
+/// 108 §9.4: the verdict on an unsaved file — `render` + `parse` as `Put`
+/// does, then [`dry_run`] with no last hash. Nothing is written, bound or
+/// reconciled. `Err` with the parse error or `not a watcher`.
+pub async fn test_file(file: &crate::file::ScheduleFile, sensors: &SensorRunner) -> Result<Verdict, String> {
+    if !crate::file::valid_name(&file.name) {
+        return Err("name: [a-z0-9][a-z0-9-]*, at most 40 chars".into());
+    }
+    let spec = crate::file::parse(&file.name, &crate::file::render(&file.args()))?;
+    dry_run(&spec, sensors, None).await
+}
+
 async fn run<R: Runner>(
     spec: &Spec,
     sensors: &R,
@@ -233,6 +244,9 @@ mod tests {
             needs_cpython: false,
             hosts: Vec::new(),
             has_probe,
+            args: Vec::new(),
+            description: None,
+            usage: None,
         }
     }
 
