@@ -55,8 +55,8 @@ use tokio::sync::{OwnedSemaphorePermit, Semaphore, oneshot};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use tools::{
-    Invoke, ListPrompts, ListTools, REGISTRY_ACTOR, SessionResources, ToolOutput, ToolRegistry,
-    ToolSpec,
+    Invoke, ListPrompts, ListTools, REGISTRY_ACTOR, Risk, SessionResources, ToolOutput,
+    ToolRegistry, ToolSpec,
 };
 use uuid::Uuid;
 
@@ -72,6 +72,9 @@ use crate::continuation::{
     YieldDecision,
 };
 use crate::cost::{CallId, CallKind, CallStatus, CostObservation, Money};
+use crate::durability::{
+    CallState, JournaledCall, LastStep, ResumeKind, ResumePlan, crash, crash_point,
+};
 use crate::frame::{self, Frame, Transport};
 use crate::peers::SpawnSubagentTool;
 use crate::repl::{self, Repl, RunCx};
@@ -2023,6 +2026,15 @@ struct Turn {
     vision_failed: BTreeSet<VisionSource>,
     /// The "no vision fallback configured" note was appended this turn.
     vision_noticed: bool,
+    /// Risk per registry tool name, from this turn's `ListTools` (109 §3.3
+    /// step 5: the `tool_calls.risk` column; `read_only` for loop-local tools).
+    risks: HashMap<String, Risk>,
+    /// 109 §4.2 row 2: the lost model call's `(request_id, attempt + 1)` the
+    /// next round call re-issues under; taken by the first `call`.
+    resume_call: parking_lot::Mutex<Option<(String, u32)>>,
+    /// The `turn_finished` step rode the final assistant row (109 §3.3 step
+    /// 4); `drive` writes it on its own otherwise.
+    finished_written: bool,
 }
 
 /// Execution accounting of a peer-opened turn (50 §8): the wall deadline of
@@ -2566,6 +2578,9 @@ impl Turn {
             first_seq: None,
             vision_failed: BTreeSet::new(),
             vision_noticed: false,
+            risks: HashMap::new(),
+            resume_call: parking_lot::Mutex::new(None),
+            finished_written: false,
         }
     }
 
