@@ -187,6 +187,7 @@ const FLAGS = [
   "t tasks list",
   "t --slack-setup",
   "t --link-signal",
+  "t --telegram-setup",
 ];
 
 const TOOL_FAMILIES = [
@@ -240,6 +241,10 @@ const SURFACES: { group: string; doc: string; items: { name: string; href?: stri
       {
         name: "Signal",
         body: "t --link-signal, then headless. Texts become turns in a per-contact session; approvals are answered with a thumbs-up.",
+      },
+      {
+        name: "Telegram",
+        body: "t --telegram-setup, then headless. The bot's chat gets a topic per session; replies stream as a live draft with a Stop button; approvals are Allow and Deny buttons.",
       },
     ],
   },
@@ -302,7 +307,7 @@ const TEAM = [
     name: "mesh",
     title: "Several machines, one harness",
     doc: "automation/mesh",
-    body: "Engines pair with a short string and find each other on the LAN, through NAT or through the relay. Agents, tasks, schedules and sessions replicate; the most stable engine holds Slack, Signal, schedule ticks and desks, and hands them over when it goes away.",
+    body: "Engines pair with a short string and find each other on the LAN, through NAT or through the relay. Agents, tasks, schedules and sessions replicate; the most stable engine holds Slack, Signal, Telegram, schedule ticks and desks, and hands them over when it goes away.",
   },
   {
     name: "sandboxes",
@@ -380,7 +385,7 @@ const LEDGER: { group: string; doc: string; items: [string, string, string][] }[
       ],
       [
         "message_user",
-        "Sends text and files to you on Slack or Signal while you are not looking at the chat.",
+        "Sends text and files to you on Slack, Signal or Telegram while you are not looking at the chat.",
         "It can finish the job after you close the laptop and tell you where the result is.",
       ],
       [
@@ -390,7 +395,7 @@ const LEDGER: { group: string; doc: string; items: [string, string, string][] }[
       ],
       [
         "ask_user",
-        "Puts one or more multiple-choice questions to you: pick, type your own, skip one or dismiss. Works in the TUI, the app, a Slack thread and over Signal.",
+        "Puts one or more multiple-choice questions to you: pick, type your own, skip one or dismiss. Works in the TUI, the app, a Slack thread, over Signal and in a Telegram chat.",
         "Fewer confident wrong guesses on the decisions that matter.",
       ],
     ],
@@ -406,12 +411,12 @@ const LEDGER: { group: string; doc: string; items: [string, string, string][] }[
       ],
       [
         "app",
-        "Interactive screens in OpenUI Lang: a dashboard, a control panel, a form. Buttons and inputs bind to your installed tools and run them live, without another model turn. The press is the approval. Fifty-three curated components, from Tabs and Steps to radar charts and a Graph that lights up the node an app is talking about. A reply can carry a static openui card inline; Open as app publishes it, no model turn. Apps run in the desktop app and the browser UI; the TUI, Slack and Signal get a receipt and the source.",
+        "Interactive screens in OpenUI Lang: a dashboard, a control panel, a form. Buttons and inputs bind to your installed tools and run them live, without another model turn. The press is the approval. Fifty-three curated components, from Tabs and Steps to radar charts and a Graph that lights up the node an app is talking about. A reply can carry a static openui card inline; Open as app publishes it, no model turn. Apps run in the desktop app and the browser UI; the TUI, Slack, Signal and Telegram get a receipt and the source.",
         "A tool the agent builds once and you use for months.",
       ],
       [
         "visualize",
-        "A mermaid, json-render or openui fence in the model's reply renders as a picture in the TUI and the app and reads as text on Slack and Signal. json-render has a typed catalog: cards, tables, metrics, timelines, checklists, a Graph with typed nodes and edges laid out by ELK. A block that fails to render goes back to the model for up to three fix-up rounds; you never see a red card, at worst one dim diagram omitted.",
+        "A mermaid, json-render or openui fence in the model's reply renders as a picture in the TUI and the app and reads as text on Slack, Signal and Telegram. json-render has a typed catalog: cards, tables, metrics, timelines, checklists, a Graph with typed nodes and edges laid out by ELK. A block that fails to render goes back to the model for up to three fix-up rounds; you never see a red card, at worst one dim diagram omitted.",
         "Architecture, flows and status boards arrive as one picture, and a typo in the picture is the model's problem, not yours.",
       ],
       [
@@ -492,7 +497,7 @@ const LEDGER: { group: string; doc: string; items: [string, string, string][] }[
       ],
       [
         "broadcast",
-        "One message to every running session, all roots, or the ones you tick, as a steer or as the next turn: /broadcast in the TUI, Broadcast in the app, owner-only /broadcast on Slack and Signal. Each recipient's transcript carries a broadcast marker; a dry run shows who is busy first.",
+        "One message to every running session, all roots, or the ones you tick, as a steer or as the next turn: /broadcast in the TUI, Broadcast in the app, owner-only /broadcast on Slack, Signal and Telegram. Each recipient's transcript carries a broadcast marker; a dry run shows who is busy first.",
         'Tell four agents "stop touching Cargo.lock" once, and each knows it was not the only one told.',
       ],
       [
@@ -568,7 +573,7 @@ const LEDGER: { group: string; doc: string; items: [string, string, string][] }[
       ],
       [
         "mesh",
-        "Several engines, no leader: t mesh pair prints a string, t mesh add pairs with it over iroh QUIC, on the LAN by mDNS, through NAT by hole punching, through the relay otherwise. Agents, tasks, schedules, skills, secrets and sessions replicate; the most stable engine holds the hub lease, the Slack and Signal sockets, schedule ticks and desks, and the lease moves when it goes away. t mesh add --ssh installs an engine on a Linux or Mac host; --docker runs one in a container on this machine.",
+        "Several engines, no leader: t mesh pair prints a string, t mesh add pairs with it over iroh QUIC, on the LAN by mDNS, through NAT by hole punching, through the relay otherwise. Agents, tasks, schedules, skills, secrets and sessions replicate; the most stable engine holds the hub lease, the Slack socket, the Telegram poller, the Signal answers, schedule ticks and desks, and the lease moves when it goes away. t mesh add --ssh installs an engine on a Linux or Mac host; --docker runs one in a container on this machine.",
         "Your laptop, a server and a VM are one harness; close the laptop and another engine takes the duties.",
       ],
       [
@@ -585,6 +590,11 @@ const LEDGER: { group: string; doc: string; items: [string, string, string][] }[
         "signal",
         "t --link-signal pairs the daemon as a linked device. Texts become turns in a per-contact session; eyes while working, a check when done; approvals answered with a thumbs-up; owner-only /broadcast; files land in an inbox.",
         "The agent in your pocket over the messenger you already trust.",
+      ],
+      [
+        "telegram",
+        "t --telegram-setup verifies a @BotFather token and pairs the owner with a one-time t.me link. With Topics on, every session and subagent gets its own topic; replies stream as a live draft with a native Stop button and land as Telegram-rendered Markdown; one collapsible card per tool batch; eyes while working, an OK when done; Allow and Deny buttons; owner-only /broadcast; files land in an inbox.",
+        "The agent in your pocket, with buttons.",
       ],
       [
         "acp",
@@ -617,7 +627,7 @@ const LEDGER: { group: string; doc: string; items: [string, string, string][] }[
 
 const SOON = ["iOS app: a paired client over the link, TestFlight pipeline in the repo", "Android app"];
 const NOT = [
-  "Telegram, Discord or WhatsApp",
+  "Discord or WhatsApp",
   "Intel Mac builds",
   "A published Docker image: t mesh add --docker builds the engine container locally",
 ];
@@ -803,8 +813,8 @@ export function App() {
                 t is the daemon, the terminal UI, the headless server and the
                 editor agent. Plugins are Rust crates on a typed message bus.
                 Every frontend attaches over JSON-RPC: the TUI, the macOS app, a
-                phone through the relay, Slack, Signal, your editor. One binary,
-                one data directory, one set of approvals.
+                phone through the relay, Slack, Signal, Telegram, your editor. One
+                binary, one data directory, one set of approvals.
               </p>
               <ul className="mt-8 flex flex-wrap gap-x-6 gap-y-2 font-mono text-[13px] text-fg-3">
                 {FLAGS.map((f) => (
@@ -846,8 +856,8 @@ export function App() {
                 Every tool carries a risk class; tools.policy maps each class to
                 allow, ask or deny. By default read-only tools run and
                 mutating and destructive ones ask, in the thread you are in: a
-                card in the TUI or the app, Allow and Deny in Slack, a thumbs-up
-                on Signal. The class is the tool's, not the effect's: a browser
+                card in the TUI or the app, Allow and Deny in Slack or Telegram, a
+                thumbs-up on Signal. The class is the tool's, not the effect's: a browser
                 click is read-only. Secrets live in an encrypted vault; the
                 model uses them by name and never sees a value.
               </p>
