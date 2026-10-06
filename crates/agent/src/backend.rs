@@ -227,13 +227,7 @@ impl Backend {
                         )
                     }
                 };
-                // The catalog's output limit is the request's `max_tokens`; genai's
-                // per-adapter guesses are wrong for new ids (Bedrock falls back to 4096).
-                let mut opts = opts.clone();
-                if let Some(m) = &resolved.model {
-                    opts = opts.with_max_tokens(m.limit.output);
-                }
-                opts = thought_connection(opts, &label);
+                let opts = thought_connection(reply_cap(opts.clone(), resolved), &label);
                 let opts = openrouter_options(resolved, &auth.openrouter, opts);
                 client
                     .exec_chat_stream(spec, req, Some(&opts))
@@ -244,6 +238,16 @@ impl Backend {
                     .map_err(provider_error)
             }
         }
+    }
+}
+
+/// The catalog's output limit is the request's `max_tokens` unless the frame
+/// already set one (116: the reply budget, clamped to the remaining window);
+/// genai's per-adapter guesses are wrong for new ids (Bedrock falls back to 4096).
+fn reply_cap(opts: ChatOptions, resolved: &Resolved) -> ChatOptions {
+    match &resolved.model {
+        Some(m) if opts.max_tokens.is_none() => opts.with_max_tokens(m.limit.output),
+        _ => opts,
     }
 }
 
@@ -609,5 +613,38 @@ mod tests {
         assert!(!supports_images(&r));
         r.model = None;
         assert!(!supports_images(&r));
+    }
+
+    // 116: a frame's reply budget is not overwritten; an unset one still gets the catalog limit.
+    #[test]
+    fn reply_cap_keeps_a_budget_the_frame_set() {
+        let r = Resolved {
+            id: "anthropic/claude-sonnet-4-5".into(),
+            genai: "anthropic::claude-sonnet-4-5".into(),
+            provider: Some("anthropic".into()),
+            model: Some(models::Model {
+                id: "claude-sonnet-4-5".into(),
+                name: "Sonnet".into(),
+                limit: models::Limit {
+                    context: 200_000,
+                    output: 8_192,
+                },
+                cost: None,
+                reasoning: false,
+                tool_call: true,
+                image: true,
+                reasoning_options: vec![],
+                protocol: None,
+                canonical: None,
+            }),
+        };
+        let set = ChatOptions::default().with_max_tokens(4_000);
+        assert_eq!(reply_cap(set, &r).max_tokens, Some(4_000));
+        assert_eq!(
+            reply_cap(ChatOptions::default(), &r).max_tokens,
+            Some(8_192)
+        );
+        let unknown = Resolved { model: None, ..r };
+        assert_eq!(reply_cap(ChatOptions::default(), &unknown).max_tokens, None);
     }
 }
