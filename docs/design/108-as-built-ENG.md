@@ -20,6 +20,7 @@ Branch `feat/108-eng` off `8490bb5a`. Spec: `108-routines-ui.md` §7, §8, §9, 
 | `crates/rpc/src/api.rs` | `list_sensors`, `test_schedule_file` methods |
 | `crates/rpc/src/export.rs` | `schedule::SensorInfo`, `schedule::RunKind`, `agent::sensor::SensorArg` |
 | `crates/theuth/src/main.rs` | `("routines.md", ROUTINES_SKILL)` in `first_run`'s binary-owned list |
+| `crates/web/src/fetch/mod.rs`, `crates/web/tests/request.rs` | **D1** (below): `Fetcher::is_redirect` — only 301/302/303/307/308 follow `Location`; test `not_modified_is_a_response_not_a_redirect` |
 
 ## Judgement calls beyond the doc
 
@@ -34,12 +35,27 @@ Branch `feat/108-eng` off `8490bb5a`. Spec: `108-routines-ui.md` §7, §8, §9, 
 9. **The skill's agent-routed example drops `missed: run`** from the §2.2 fixture sentence: `ScheduleArgs`/`RoutineDraft` have no `missed` (the tool hard-codes `missed_run: false`), so a card cannot set it; the skill says it is form-only.
 10. **`docstring()` scans the whole file**, not just 16 header lines, for the first `"""` block: `usage` lines sit at lines 5–7 in the built-ins but the docstring is not bounded by `HEADER_LINES` in 40 §4.1.
 
+## D1 — `304 Not Modified` is a response, not a redirect
+
+Delta from the orchestrator (11:47): `fetch/mod.rs` treated every 3xx as a redirect
+(`status.is_redirection()`), so a conditional GET's `304` — no `Location` — failed as
+`FetchError::Failed("redirect missing Location header")` and reached a sensor as a `RuntimeError`.
+Fix: `Fetcher::is_redirect(status)` = `301 | 302 | 303 | 307 | 308`, used by **both** loops
+(`fetch` and `request` — same bug, one predicate). A 304 (and any other 3xx) now returns
+`RawResponse { status: 304, body: [] , headers }` from `request`; `fetch` reports it as its usual
+non-2xx `Failed`. A 301 *without* `Location` is still `redirect missing Location header`; the
+cross-origin header-stripping, method rewrite (301/302/303 → GET) and hop count are untouched.
+Test in `tests/request.rs` beside the redirect tests: wiremock 304 with `ETag` → `Ok`, status 304,
+empty body, header kept; 301 without `Location` → `Failed`.
+
 ## Gates
 
 All with `export PATH=/Users/Sky.Moore/.rustup/toolchains/1.98.1-aarch64-apple-darwin/bin:$PATH CARGO_TARGET_DIR=/Users/Sky.Moore/Develop/theuth-108-eng-target`.
 
 ```
 cargo test -p schedule -p app -p rpc -p agent --no-fail-fast
+  (and, for D1) cargo test -p web --no-fail-fast
+  web: 85 + 17 + 22 + 7 + 7 + 10 + 7 passed; 0 failed (request.rs 10 incl. not_modified_is_a_response_not_a_redirect)
   agent:    test result: ok. 381 passed; 0 failed; 0 ignored
   app:      test result: ok. 43 passed; 0 failed; 0 ignored   (routine_draft: 3 new)
   app/publish.rs: ok. 1 passed
@@ -54,6 +70,7 @@ cargo clippy --workspace --all-targets -- -D warnings
     crates/tasks/src/tools.rs:480,481,741, crates/tasks/src/ledger.rs:4977,5052,5391,5470
   `git status crates/talk crates/tasks` is empty on this branch; last change to policy.rs is cde73913.
 cargo clippy --no-deps -p agent -p schedule -p app -p rpc -p theuth --all-targets -- -D warnings
+  Finished `dev` profile (clean); cargo clippy --no-deps -p web --all-targets -- -D warnings: Finished (clean, 32 s)
   Finished `dev` profile [unoptimized + debuginfo] target(s) in 1m 23s        (clean)
 just ts
   test result: ok. 8 passed; 0 failed   → bindings/{SensorArg,SensorInfo,RunKind,RunInfo,ScheduleInfo}.ts,
