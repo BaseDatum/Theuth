@@ -1072,6 +1072,7 @@ telegram:
   tools: all               # all | errors | none — activity cards per tool batch
   reasoning: true          # reasoning text in the expandable quote (the thinking indicator stays)
   approvals: all           # all | threads — where approvals/questions for non-Telegram sessions go (§10.1)
+  # api_host: http://127.0.0.1:8081   # tests and proofs only; overrides https://api.telegram.org (default unset)
 ```
 
 The token is secret `telegram_bot` in the encrypted vault (37; `t --telegram-setup` writes it,

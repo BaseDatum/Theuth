@@ -73,6 +73,9 @@ pub struct TelegramConfig {
     pub reasoning: bool,
     /// Where approvals for sessions not bound to a thread go.
     pub approvals: ApprovalsMode,
+    /// Tests and proofs only: overrides `https://api.telegram.org` so a live
+    /// engine can be pointed at a fake Bot API server. `None` in production.
+    pub api_host: Option<String>,
 }
 
 impl Default for TelegramConfig {
@@ -85,6 +88,7 @@ impl Default for TelegramConfig {
             tools: ToolsMode::All,
             reasoning: true,
             approvals: ApprovalsMode::All,
+            api_host: None,
         }
     }
 }
