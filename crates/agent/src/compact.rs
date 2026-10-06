@@ -396,8 +396,11 @@ pub fn reply_budget(
 /// 116: the numbers a provider quotes in a context-overflow error.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct OverflowNumbers {
+    /// The context window the server enforces.
     pub window: u32,
+    /// The prompt as the server counted it.
     pub prompt: u32,
+    /// The `max_tokens` the request carried, when the body quotes it.
     pub max_tokens: Option<u32>,
 }
 
@@ -461,7 +464,9 @@ fn nums(s: &str) -> impl Iterator<Item = u32> + '_ {
 /// The integer immediately before the first `anchor` (`"120000 in the messages"`).
 fn num_before(s: &str, anchor: &str) -> Option<u32> {
     let head = &s[..s.find(anchor)?];
-    let start = head.rfind(|c: char| !c.is_ascii_digit()).map_or(0, |i| i + 1);
+    let start = head
+        .rfind(|c: char| !c.is_ascii_digit())
+        .map_or(0, |i| i + 1);
     head[start..].parse().ok()
 }
 
@@ -1136,7 +1141,10 @@ mod tests {
         // The incident: output 943 717 in a 1 048 576 window with a 105 663 prompt.
         let incident = reply_budget(943_717, 1_048_576, 105_663, None, 0);
         assert!(incident < 943_717, "{incident}");
-        assert!(incident + 105_663 * 5 / 4 + HEADROOM_PAD <= 1_048_576, "{incident}");
+        assert!(
+            incident + 105_663 * 5 / 4 + HEADROOM_PAD <= 1_048_576,
+            "{incident}"
+        );
         // A calibrated estimate reserves a thinner margin.
         assert!(reply_budget(943_717, 1_048_576, 105_663, Some(1.0), 0) > incident);
         // Projected near the window: the floor, and the request still goes out.
