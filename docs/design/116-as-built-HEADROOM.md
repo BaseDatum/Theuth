@@ -53,6 +53,7 @@ No pre-existing red.
 3. **`window_of`.** `window()` split into a `&self` core (`window_of`) plus the once-per-turn log, so `continuation`/`reply_budget` (`&self`) can read the window. Behaviour of `window()` unchanged.
 4. **`output == 0` placeholders.** `reply_cap` still sends `with_max_tokens(0)` for a catalog model with `output: 0` when the frame set nothing (pre-existing behaviour, D8); with a known window the frame now sets a real budget first, so such models get `max(remaining, floor)`.
 5. Intermediate commit `fbe57489` (frame.rs/backend.rs/thinking_tests.rs) does not compile alone — loop_.rs/side.rs literals land in `e3caf61d`. The branch head builds.
+6. **fmt churn in `e3caf61d`.** `crates/agent` at `eaf1b8bd` is not `cargo fmt`-clean (34 hunks in `acp_child.rs`, `loop_/harvest_compact_tests.rs`, `sensor/mod.rs`, `store.rs`, `store/accounting.rs`, `store/turn_usage.rs`, `supervisor.rs`), so the required `cargo fmt -p agent` reformatted them and `git add -A crates/agent` swept them into the wiring commit. Pure whitespace/line-wrap; verified by restoring the seven files to base and watching `cargo fmt -p agent -- --check` fail on exactly those. Required for the `FMT-OK` gate; no rebase to split them out (brief: no rebase).
 
 ## Not verified
 
