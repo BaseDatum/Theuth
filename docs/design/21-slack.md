@@ -437,6 +437,8 @@ task's chunk unchanged — a status refresh, which is a legitimate
 `task_update`, not a hack. A turn with no tool in flight and no text for
 20 s is a stalled model; then the stream dies and §8.4 heals it.
 
+*Amended by 110 §4 (2026-10-06): one `task_update` per tool batch (70's fold rule), itemised lines in `output`, no per-call snippet upload; a lone call and a deliverable keep a card of their own. `KEEPALIVE` is 25 s as built.*
+
 ### 8.4 Rotation and repair: one routine, three triggers
 
 `rotate(reason)`: close the current bubble — `chat.stopStream` normally, or
@@ -488,6 +490,8 @@ one message created at turn start and Slack orders a thread by post time.
 Not an edit race; a consequence of one bubble per turn, fixed by putting
 reasoning inside it.
 
+*Amended by 110 §4 (2026-10-06): a reasoning run between two tool calls is a `💭` line inside the batch card, not its own card; only a trailing run keeps a card, titled `Thought N s` once finished.*
+
 ### 8.6 Status: reactions, session status, title
 
 Reactions on the *user's* message, the 09 §8.2 table verbatim: 👀 on
@@ -529,6 +533,8 @@ line`.
   along; unbound sessions land in the owner DM prefixed `_session <last 8>
   · <title>_`. `user.rs`; `SlackApi::upload_file`, of which `upload_text`
   (§8.3) is now a wrapper.
+
+*Amended by 110 §6 (2026-10-06): `MessageDelivered` (now only `<job_result>`, `<job_idle>`, `<reminder>` and the human's own echo) posts nothing; a child's or peer's result arrives as `PeerDelivered` and is posted as a collapsed `container`; `Error` and a child's error are `alert` blocks; `Compacted` is a footer item.*
 
 ## 9. Subagents
 
@@ -584,6 +590,8 @@ When every child is idle the last edit reads `**agents** · all idle` and
 the message stays as history. After a restart the board is rebuilt on the
 next child event from `list_agents` (one ask, 19 §2.1). No new
 `AgentEvent`; derive, don't duplicate (19 §1).
+
+*Amended by 110 §6 (2026-10-06): the `↳ spawned` line in the parent thread is dropped; the board row and the child root carry it. The board itself is unchanged.*
 
 ## 10. Interactivity
 
