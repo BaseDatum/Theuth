@@ -3663,7 +3663,11 @@ pub(crate) mod tests {
             .await;
         f.chan.route(Event::Agent(started("c2", "board"))).await;
         f.chan
-            .route(Event::Agent(finished("c2", "root /repo is not a directory", true)))
+            .route(Event::Agent(finished(
+                "c2",
+                "root /repo is not a directory",
+                true,
+            )))
             .await;
         f.chan.route(Event::Agent(started("c3", "board"))).await;
         f.chan

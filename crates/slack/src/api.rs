@@ -604,11 +604,7 @@ impl SlackApi for Api {
             self.client
                 .open_session(&self.bot)
                 .http_session_api
-                .http_post::<_, Posted>(
-                    "chat.appendStream",
-                    &req,
-                    Some(&SLACK_TIER4_METHOD_CONFIG),
-                )
+                .http_post::<_, Posted>("chat.appendStream", &req, Some(&SLACK_TIER4_METHOD_CONFIG))
                 .await
         })
         .await
@@ -995,7 +991,10 @@ mod tests {
         ])
         .unwrap()
         .unwrap();
-        assert_eq!(c[0], serde_json::json!({"type": "markdown_text", "text": "before"}));
+        assert_eq!(
+            c[0],
+            serde_json::json!({"type": "markdown_text", "text": "before"})
+        );
         assert_eq!(c[1], serde_json::json!({"type": "blocks", "blocks": table}));
         assert_eq!(c[2]["type"], "task_update");
         assert_eq!(c[2]["id"], "c1");

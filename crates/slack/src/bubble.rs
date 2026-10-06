@@ -184,7 +184,11 @@ impl Bubble {
                 let rendered = match surface::slack_blocks(body) {
                     Ok(b) if b.len() <= budget => b,
                     Ok(b) => {
-                        tracing::debug!(blocks = b.len(), budget, "fence over the block cap; flattened");
+                        tracing::debug!(
+                            blocks = b.len(),
+                            budget,
+                            "fence over the block cap; flattened"
+                        );
                         continue;
                     }
                     Err(e) => {
@@ -194,7 +198,10 @@ impl Bubble {
                 };
                 budget -= rendered.len();
                 if r.start > pos {
-                    out.push(Chunk::Text(surface::flatten(&raw[pos..r.start], FLATTEN_WIDTH)));
+                    out.push(Chunk::Text(surface::flatten(
+                        &raw[pos..r.start],
+                        FLATTEN_WIDTH,
+                    )));
                 }
                 out.push(Chunk::Blocks(serde_json::Value::Array(rendered)));
                 pos = r.end;
@@ -209,7 +216,11 @@ impl Bubble {
     /// Update mode (110 §8): the bubble's markdown with the fences that
     /// render as blocks left out (they are their own messages), and those
     /// block payloads in order.
-    fn split(&self, range: std::ops::Range<usize>, blocks: bool) -> (String, Vec<serde_json::Value>) {
+    fn split(
+        &self,
+        range: std::ops::Range<usize>,
+        blocks: bool,
+    ) -> (String, Vec<serde_json::Value>) {
         let mut md = String::new();
         let mut posts = Vec::new();
         for c in self.segments(range, blocks, BLOCKS_MAX) {
@@ -1146,7 +1157,9 @@ impl Turn {
             }
             self.open().await;
         }
-        let Some(mut b) = self.bubble.take() else { return };
+        let Some(mut b) = self.bubble.take() else {
+            return;
+        };
         let mut footer = footer.to_string();
         if let Some(epoch) = self.compacted {
             footer.push_str(&format!(" · ⟲ epoch {epoch}"));
@@ -1244,7 +1257,9 @@ impl Turn {
     /// the stream is dead) and start a fresh one seeded with the remainder,
     /// the live batch cards and the live reasoning card (21 §8.4, 110 §4.6).
     async fn rotate(&mut self, cut: usize, mut dead: bool) {
-        let Some(mut b) = self.bubble.take() else { return };
+        let Some(mut b) = self.bubble.take() else {
+            return;
+        };
         let t = &self.target;
         match &b.mode {
             Mode::Unsent => {}
@@ -1499,7 +1514,11 @@ impl Turn {
         let committed = b.text.committed();
         if b.sent < committed {
             let (md, posts) = b.split(0..committed, blocks);
-            match self.api.update_markdown(&self.target.channel, ts, &md).await {
+            match self
+                .api
+                .update_markdown(&self.target.channel, ts, &md)
+                .await
+            {
                 Ok(()) => {
                     b.sent = committed;
                     post_fence_blocks(&*self.api, &self.target, b, posts).await;
@@ -2262,8 +2281,7 @@ mod tests {
         t.text("\n```\n\nDone.").await;
         t.finish(footer()).await;
         assert!(
-            !api
-                .calls()
+            !api.calls()
                 .iter()
                 .any(|c| matches!(c, Call::PostBlocks { .. })),
         );
@@ -2285,13 +2303,20 @@ mod tests {
     async fn json_render_fence_streams_as_a_blocks_chunk_between_text() {
         let api = FakeApi::new();
         let mut t = turn(&api, ToolCards::All);
-        t.text(&format!("Status:\n\n```json-render\n{CARD_SPEC}\n```\n\nDone."))
-            .await;
+        t.text(&format!(
+            "Status:\n\n```json-render\n{CARD_SPEC}\n```\n\nDone."
+        ))
+        .await;
         t.tick().await;
         let [ref chunks] = api.starts()[..] else {
             panic!("{:?}", api.calls())
         };
-        let [Chunk::Text(before), Chunk::Blocks(blocks), Chunk::Text(after)] = &chunks[..] else {
+        let [
+            Chunk::Text(before),
+            Chunk::Blocks(blocks),
+            Chunk::Text(after),
+        ] = &chunks[..]
+        else {
             panic!("{chunks:?}")
         };
         assert_eq!(before, "Status:\n\n");
@@ -2309,7 +2334,8 @@ mod tests {
   "nodes":[{"id":"a","label":"A"},{"id":"b","label":"B"}],"edges":[{"from":"a","to":"b"}]}}}}"#;
         let api = FakeApi::new();
         let mut t = turn(&api, ToolCards::All);
-        t.text(&format!("See:\n\n```json-render\n{spec}\n```\n")).await;
+        t.text(&format!("See:\n\n```json-render\n{spec}\n```\n"))
+            .await;
         t.finish(footer()).await;
         let chunks: Vec<Chunk> = api
             .calls()
@@ -2338,7 +2364,8 @@ mod tests {
         t.text("Status:\n\n").await;
         t.tick().await;
         assert!(matches!(api.calls()[..], [Call::Post { .. }]));
-        t.text(&format!("```json-render\n{CARD_SPEC}\n```\n\nDone.\n\n")).await;
+        t.text(&format!("```json-render\n{CARD_SPEC}\n```\n\nDone.\n\n"))
+            .await;
         t.tick().await;
         let calls = api.calls();
         let [_, Call::Update { md, .. }, Call::PostBlocks { blocks }] = &calls[..] else {
@@ -2386,7 +2413,10 @@ mod tests {
         t.text(&format!("B\n\n{fence}C\n\n")).await;
         t.tick().await;
         let calls = api.calls();
-        let [Call::Start { chunks: first, .. }, Call::Append { chunks: second, .. }] = &calls[..]
+        let [
+            Call::Start { chunks: first, .. },
+            Call::Append { chunks: second, .. },
+        ] = &calls[..]
         else {
             panic!("{calls:?}")
         };
