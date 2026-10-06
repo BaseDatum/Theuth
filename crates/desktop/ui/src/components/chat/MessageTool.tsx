@@ -18,10 +18,12 @@ type Tool = Extract<Entry, { kind: 'tool' }>
 
 function Job({ job }: { job: JobTail }) {
   const lines = job.screen ? job.screen.rows : rows(job.lines)
-  const exit = job.exit && `exit ${typeof job.exit.exit === 'string' ? job.exit.exit : job.exit.exit.exited} · ${job.exit.secs}s`
+  // 109 §8.4: `lost` = the job died with the engine (never an exit code).
+  const lost = job.exit?.exit === 'lost'
+  const exit = job.exit && `${lost ? 'lost with the engine' : `exit ${typeof job.exit.exit === 'string' ? job.exit.exit : job.exit.exit.exited}`} · ${job.exit.secs}s`
   return (
     <div className="mt-2 font-mono text-xs leading-5 text-fg-tertiary">
-      <div className="italic">
+      <div className={lost ? 'italic text-warning' : 'italic'}>
         {job.id}
         {exit && ` · ${exit}`}
       </div>

@@ -13600,10 +13600,17 @@ mod tests {
                 agent: None,
                 project: None,
                 when_sensor: None,
+                sensor: None,
                 fire: None,
+                for_: None,
+                cooldown: None,
                 mode: None,
                 memory: None,
                 expires: None,
+                timeout: None,
+                model: None,
+                run_timeout: None,
+                created: None,
                 last_check: None,
             };
         let rows = [
@@ -13646,6 +13653,7 @@ mod tests {
             result: Some("end_turn".into()),
             report: Some(format!("\n  {}\nsecond line", "x".repeat(70))),
             envelope: None,
+            kind: schedule::RunKind::Run,
         };
         let table = schedule_history_table("checked", Some(&rows[2]), &[run]);
         let mut lines = table.lines();

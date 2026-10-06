@@ -14,7 +14,7 @@ export const GROUPS: readonly { key: string; label: string; kinds: readonly Kind
   { key: 'questions', label: 'Questions', kinds: ['ask'] },
   { key: 'approvals', label: 'Approvals', kinds: ['approval'] },
   { key: 'shown', label: 'Shown to you', kinds: ['show'] },
-  { key: 'hand', label: 'Needs a hand', kinds: ['handoff', 'secret'] },
+  { key: 'hand', label: 'Needs a hand', kinds: ['handoff', 'secret', 'resume'] },
   { key: 'agents', label: 'Agents', kinds: ['hire', 'budget'] },
   { key: 'blocked', label: 'Blocked', kinds: ['blocked'] },
   { key: 'mesh', label: 'Mesh', kinds: ['node'] },

@@ -4,7 +4,7 @@ import type { Usage } from '@/rpc/bindings/Usage'
 import type { TodoSnapshot } from '@/rpc/bindings/TodoSnapshot'
 import type { WireEvent } from '@/rpc/events'
 import type { LoadedPage, VisionNote, VisionSource } from '@/rpc/extra'
-import { adopt, apply, empty, fromHistory, route, settleCompacting, type Ctx } from './reduce'
+import { adopt, apply, empty, fromHistory, resumeFromLoaded, route, settleCompacting, type Ctx } from './reduce'
 import { type Freshness, type SessionSlice, browserBusy, freshness, shownActivity, useSessions } from './sessions'
 import type { CodeToolRan } from '@/lib/codemap/types'
 import codemapEvents from '@/components/codemap/__fixtures__/events.json'
@@ -1043,4 +1043,54 @@ test('ToolCallStarted edit/write_file appends the root-relative path under its r
   expect(s.codemap.edited).toEqual({ [ROOT]: ['crates/tools/src/registry.rs', 'crates/desktop/ui/src/x.ts'] })
   const none = run([{ type: 'ToolCallStarted', session: S, turn: T, call_id: 'e4', name: 'write_file', args: { path: '/elsewhere/z.rs', content: '' } }])
   expect(none.codemap.edited).toEqual({})
+})
+
+test('109 §8.2: the banner follows TurnResumed → ResumeReport, the next turn clears it; a lost job keeps its exit', () => {
+  const at = '2026-10-06T12:05:00Z'
+  let s = run([{ type: 'TurnResumed', session: S, turn: T, kind: 'interrupted', interrupted_at: at, resumed_at: at, partial_dropped: true }])
+  expect(s.resume).toEqual({ turn: T, kind: 'interrupted', at: Date.parse(at), resumed: true, report: undefined })
+  s = apply(s, { type: 'ResumeReport', session: S, turn: T, replayed: [['c1', 'read_file'], ['c2', 'grep']], interrupted: [['c3', 'git push']], lost_jobs: ['j1'], children_restored: 0, children_handed_off: 0 }, ctx())
+  expect(s.resume?.report).toEqual({ replayed: 2, skipped: ['git push'], lostJobs: 1 })
+  // The resumed turn's own events keep the banner; a different turn drops it.
+  expect(apply(s, { type: 'TurnStarted', session: S, turn: T, text: 'x', model: 'm', turn_seq: 1 }, ctx()).resume).toBe(s.resume)
+  expect(apply(s, { type: 'TurnStarted', session: S, turn: 'next', text: 'x', model: 'm', turn_seq: 2 }, ctx()).resume).toBeUndefined()
+  const suspended = apply(s, { type: 'TurnSuspended', session: S, turn: 'u', reason: 'update' }, ctx())
+  expect(suspended.resume).toMatchObject({ turn: 'u', kind: 'suspended', resumed: false })
+
+  let j = run([{ type: 'ToolCallStarted', session: S, turn: T, call_id: 'c1', name: 'shell', args: { command: 'make' } }])
+  j = apply(j, { type: 'JobStarted', session: S, id: 'j1', command: 'make', call_id: 'c1', log: '/l', name: null, pty: false }, ctx())
+  j = apply(j, { type: 'JobFinished', session: S, id: 'j1', command: 'make', exit: 'lost', secs: 4n, output: '', inline: false, pty: false }, ctx())
+  expect(j.entries[0]).toMatchObject({ job: { exit: { exit: 'lost', secs: 4 } } })
+  expect(j.jobs.size).toBe(0)
+})
+
+test('109 §8.2: the interrupted partial loads greyed and the regenerated reply\u2019s first delta replaces it', () => {
+  const st = useSessions.getState()
+  const at = '2026-10-06T12:05:00Z'
+  st.loadHistory(
+    S,
+    {
+      ...loaded(),
+      history: [
+        { role: 'user', text: 'hi', turn: 1, context: msg(1) },
+        { role: 'interrupted', text: 'half a re', at },
+      ],
+      first_seq: 1,
+      more: false,
+      resume: { turn: T, kind: 'interrupted', interrupted_at: at },
+    },
+    'replace',
+  )
+  let s = useSessions.getState().sessions[S] as SessionSlice
+  expect(s.entries.map((e) => e.kind)).toEqual(['user', 'interrupted'])
+  expect(s.resume).toEqual({ turn: T, kind: 'interrupted', at: Date.parse(at), resumed: false })
+  s = apply(s, { type: 'TurnResumed', session: S, turn: T, kind: 'interrupted', interrupted_at: at, resumed_at: at, partial_dropped: true }, ctx())
+  expect(s.entries.map((e) => e.kind)).toEqual(['user', 'interrupted'])
+  s = apply(s, { type: 'TextDelta', session: S, turn: T, text: 'half a reply' }, ctx())
+  expect(s.entries.map((e) => e.kind)).toEqual(['user', 'assistant'])
+  // A live state already seen for the same turn outranks the row; another open turn replaces it; no row keeps what we have.
+  const row = { turn: T, kind: 'interrupted' as const, interrupted_at: at }
+  expect(resumeFromLoaded(s.resume, row)).toBe(s.resume)
+  expect(resumeFromLoaded(s.resume, { ...row, turn: 'other' })).toMatchObject({ turn: 'other', resumed: false })
+  expect(resumeFromLoaded(s.resume, undefined)).toBe(s.resume)
 })

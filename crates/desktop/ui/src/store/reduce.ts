@@ -8,8 +8,8 @@ import type { ContextEntry } from "@/rpc/bindings/ContextEntry";
 import type { PeerOrigin } from "@/rpc/bindings/PeerOrigin";
 import type { TodoSnapshot } from "@/rpc/bindings/TodoSnapshot";
 import type { WireEvent } from "@/rpc/events";
-import type { AgentInfo, AppCallChanged, HistoryEntry } from "@/rpc/extra";
-import type { AppDraft, Entry, JobTail, SessionSlice } from "./sessions";
+import type { AgentInfo, AppCallChanged, HistoryEntry, LoadedPage } from "@/rpc/extra";
+import type { AppDraft, Entry, JobTail, ResumeBanner, SessionSlice } from "./sessions";
 
 /** `sent`: texts we submitted (echo skipped); `now`: the batch's client clock (91: the thinking-time fallback). */
 export type Ctx = { sent: Set<string>; now: number };
@@ -419,7 +419,27 @@ function historyEntries(h: HistoryEntry): Entry[] {
     // Never model content: shown as it was live, nothing to remove from context.
     case "error":
       return [{ id: nextId(), kind: "error", text: h.text, context }];
+    // 109 §8.2: the open turn's streamed partial; greyed until the regenerated reply replaces it.
+    case "interrupted":
+      return [{ id: nextId(), kind: "interrupted", text: h.text }];
   }
+}
+
+/** 109 §8.2: the banner from `Loaded.resume`; a live `TurnResumed`/`ResumeReport` already seen for the same turn
+ * carries more than the row and wins. No open turn (or a different one) → the row's state, or nothing. */
+export function resumeFromLoaded(
+  cur: ResumeBanner | undefined,
+  loaded: LoadedPage["resume"] | undefined,
+): ResumeBanner | undefined {
+  if (!loaded) return cur;
+  if (cur?.turn === loaded.turn) return cur;
+  const at = Date.parse(loaded.interrupted_at);
+  return {
+    turn: loaded.turn,
+    kind: loaded.kind,
+    at: Number.isNaN(at) ? Date.now() : at,
+    resumed: false,
+  };
 }
 
 /** What makes two renderings of one stored row the same card: kind plus its stable handle, not the process-local id. */
@@ -579,6 +599,34 @@ export function apply(
         { ...slice, live: slice.live + 1 },
         peerEntry(e.origin, e.text, e.seq),
       );
+    // 109 §8.2: the banner changes state at once; the dropped partial stays until the first regenerated delta.
+    case "TurnResumed": {
+      const at = Date.parse(e.interrupted_at);
+      return {
+        ...slice,
+        resume: {
+          turn: e.turn,
+          kind: e.kind,
+          at: Number.isNaN(at) ? Date.now() : at,
+          resumed: true,
+          report: slice.resume?.turn === e.turn ? slice.resume.report : undefined,
+        },
+      };
+    }
+    case "ResumeReport": {
+      const base = slice.resume?.turn === e.turn ? slice.resume : { turn: e.turn, kind: "interrupted" as const, at: Date.now(), resumed: true };
+      return {
+        ...slice,
+        resume: {
+          ...base,
+          report: { replayed: e.replayed.length, skipped: e.interrupted.map(([, name]) => name), lostJobs: e.lost_jobs.length },
+        },
+      };
+    }
+    case "TurnSuspended":
+      return { ...slice, resume: { turn: e.turn, kind: "suspended", at: Date.now(), resumed: false } };
+    case "PartialDropped":
+      return slice;
     case "TitleChanged": {
       const tags = e.tags;
       const same =
@@ -744,6 +792,8 @@ function turn(
         lastInjected: undefined,
         // The actor is busy; the settled reload after `TurnDone` restores the authoritative flag.
         contextEditable: false,
+        // 109 §8.2: one banner, for the resumed turn only; the next turn clears it.
+        resume: s.resume?.turn === e.turn ? s.resume : undefined,
       };
     }
     // The steer enters the context now: its card moves from the queue to
@@ -761,13 +811,15 @@ function turn(
       };
     }
     case "TextDelta": {
-      const at = s.entries.length - 1;
-      const last = s.entries[at];
+      // 109 §8.2: the regenerated reply's first delta replaces the greyed partial.
+      const base = s.entries.some((x) => x.kind === "interrupted") ? s.entries.filter((x) => x.kind !== "interrupted") : s.entries;
+      const at = base.length - 1;
+      const last = base[at];
       const entries =
         last?.kind === "assistant" && last.open
-          ? replaceAt(s.entries, at, { ...last, text: last.text + e.text })
+          ? replaceAt(base, at, { ...last, text: last.text + e.text })
           : [
-              ...s.entries,
+              ...base,
               {
                 id: nextId(),
                 kind: "assistant" as const,

@@ -10,6 +10,7 @@ import { LinkBanner } from '@/components/link/LinkFailure'
 import { lastCode } from '@/components/chat/MessageAssistant'
 import { NewChatPane } from '@/components/chat/NewChatPane'
 import { OrphansBanner } from '@/components/chat/OrphansBanner'
+import { ResumeBanner } from '@/components/chat/ResumeBanner'
 import { Panes } from '@/components/chat/Panes'
 import { SearchSession } from '@/components/chat/SearchSession'
 import { SubagentStrip } from '@/components/chat/SubagentStrip'
@@ -129,6 +130,7 @@ export function LiveSession({ session, first }: { session: string; first: boolea
       <LinkBanner />
       <PrivateStrip session={session} />
       <OrphansBanner session={session} />
+      <ResumeBanner session={session} />
       {fromSearch && (
         <div className="mx-auto flex w-full shrink-0 justify-end md:max-w-[768px] px-4">
           <SearchReturn />

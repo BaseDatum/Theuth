@@ -176,7 +176,8 @@ function JobsSheet({
                     {j.name ? `${j.name} · ` : ''}
                     {j.command}
                   </td>
-                  <td className="py-2">{j.state}</td>
+                  {/* 109 §8.4: a job that died with the engine; its log is still readable. */}
+                  <td className={j.state === 'lost' ? 'py-2 text-warning' : 'py-2'}>{j.state === 'lost' ? 'lost (engine restarted)' : j.state}</td>
                   <td className="py-2 tabular-nums">{Number(j.secs)}</td>
                   <td className="py-1 text-right whitespace-nowrap">
                     {j.pty && <PopoutTerminalButton session={j.session} job={j.id} className="size-7" />}

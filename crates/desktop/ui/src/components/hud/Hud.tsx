@@ -179,10 +179,11 @@ export const KIND_LABEL: Record<AttentionItem['kind'], string> = {
   secret: 'secret',
   ask: 'question',
   show: 'shown',
+  resume: 'resume',
 }
 
 /** The inbox's empty state; `/attention`'s rail says the same (101, 104). */
-export const ATTENTION_EMPTY = 'Nothing needs you. Agents\u2019 questions and what they show you, tool approvals, decisions agents escalate, hires, blocked or review tasks, budgets at 80 %, unreachable nodes, desktop hand-offs and secret requests land here.'
+export const ATTENTION_EMPTY = 'Nothing needs you. Agents\u2019 questions and what they show you, tool approvals, decisions agents escalate, hires, blocked or review tasks, budgets at 80 %, unreachable nodes, desktop hand-offs, secret requests and turns a restart could not finish cleanly land here.'
 
 /** The inbox rows, or what will land in them (the HUD's first section). */
 export function AttentionList({ items }: { items: AttentionItem[] | undefined }) {
@@ -278,6 +279,19 @@ export function KindActions({ item, size = 'xs', onResolved }: { item: Attention
           </Button>
           <Button size={size} variant="outline" disabled={busy} onClick={() => then(act.handoff.mutateAsync({ id: handoffId, outcome: 'cancelled' }))}>
             Cancel
+          </Button>
+        </>
+      )}
+      {item.kind === 'resume' && item.session && (
+        // 109 §8.3: under `resume: ask` the turn waits for this button; a report item (detail set) only needs reading.
+        <>
+          {item.detail === null && (
+            <Button size={size} disabled={busy} onClick={() => then(act.resume.mutateAsync(item.session as string))}>
+              Resume
+            </Button>
+          )}
+          <Button size={size} variant="outline" disabled={busy} onClick={() => then(act.dismiss.mutateAsync(item.id))}>
+            Dismiss
           </Button>
         </>
       )}
