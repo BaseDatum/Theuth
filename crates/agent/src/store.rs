@@ -54,6 +54,7 @@ use crate::{ProjectStyle, SessionSummary};
 pub mod accounting;
 mod capture;
 pub mod communication;
+pub mod durability;
 pub mod turn_usage;
 pub use capture::ATTACHED;
 
@@ -2344,6 +2345,7 @@ impl Store {
                 .bind(&sid)
                 .execute(&mut *tx)
                 .await?;
+            durability::delete_journal_in(&mut tx, &sid).await?;
             sqlx::query("DELETE FROM sessions WHERE id = ?")
                 .bind(&sid)
                 .execute(&mut *tx)

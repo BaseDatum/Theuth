@@ -68,11 +68,17 @@ pub enum ResumeMode {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum StepKind {
+    /// Beside the user row `take_input` persisted.
     InputAccepted,
+    /// Beside `reserve_call`; `call_id` set.
     ModelCall,
+    /// Upserted in place while streaming (§8.1).
     AssistantPartial,
+    /// With the assistant `tool_use` row and its `tool_calls` in `planned`.
     ToolBatch,
+    /// With the final assistant row; closes the turn.
     TurnFinished,
+    /// By the drain (§9); open, only changes the resume wording.
     Suspended,
 }
 
@@ -107,10 +113,15 @@ impl StepKind {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CallState {
+    /// Row written with the batch; the body has not run.
     Planned,
+    /// The body is running; its effect is unknown to a restart.
     Started,
+    /// Returned; `output` is the result.
     Finished,
+    /// A restart found it `started` and mutating; not re-run (§4.2).
     Interrupted,
+    /// Never run: cancelled or landed (`NOT_RUN`).
     Skipped,
 }
 
@@ -147,15 +158,25 @@ impl CallState {
 /// One `tool_calls` row of the open batch (§4.2's per-call rule reads it).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct JournaledCall {
+    /// Provider call id.
     pub call_id: String,
+    /// Tool name.
     pub name: String,
+    /// Arguments as sent.
     pub args: Value,
+    /// The registry's risk for the tool (`read_only` for loop-local tools).
     pub risk: tools::Risk,
+    /// Lifecycle state.
     pub state: CallState,
+    /// 1 on the first run; a replay bumps it.
     pub attempt: u32,
+    /// When the body began.
     pub started_at: Option<DateTime<Utc>>,
+    /// Spill-capped content; `None` until terminal.
     pub output: Option<String>,
+    /// The output is an error.
     pub is_error: bool,
+    /// Files the tool produced.
     pub files: Vec<PathBuf>,
 }
 
@@ -165,9 +186,17 @@ pub enum LastStep {
     /// The input is in the frame; the turn never reached the model.
     InputAccepted,
     /// A model call was dispatched and never settled.
-    ModelCall { request_id: String, attempt: u32 },
-    /// A tool batch was persisted; `all_finished` when every row is terminal.
-    ToolBatch { all_finished: bool },
+    ModelCall {
+        /// The accounting request id; the re-issued call reuses it.
+        request_id: String,
+        /// The lost attempt; the re-issue is `attempt + 1`.
+        attempt: u32,
+    },
+    /// A tool batch was persisted.
+    ToolBatch {
+        /// Every row is terminal: only the batch message is missing.
+        all_finished: bool,
+    },
     /// `turn_finished`: not open.
     Finished,
 }
@@ -177,31 +206,41 @@ pub enum LastStep {
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 #[serde(rename_all = "snake_case")]
 pub enum ResumeKind {
+    /// No `suspended` row: a crash.
     Interrupted,
+    /// A `suspended` row: a drain (§9).
     Suspended,
 }
 
 /// The `assistant_partial` of an open model call (§8.1).
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct PartialContent {
+    /// The model call.
     pub call_id: String,
+    /// What streamed so far, as `persist` would write it.
     pub content: MessageContent,
+    /// Thinking time so far.
     pub thinking_ms: Option<u64>,
+    /// When the row was last upserted.
     pub at: DateTime<Utc>,
 }
 
 /// What `ResumeTurn` acts on, computed from the journal by
 /// `Store::resume_plan` (§4.1).
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug)]
 pub struct ResumePlan {
+    /// The open turn.
     pub turn: TurnId,
+    /// Crash or drain.
     pub kind: ResumeKind,
     /// Newest journal row's `at`.
     pub interrupted_at: DateTime<Utc>,
+    /// What to act on (§4.2).
     pub last: LastStep,
     /// The open batch's `tool_calls` rows, in `tool_batch.payload.call_ids`
     /// order; empty unless `last` is a `ToolBatch`.
     pub calls: Vec<JournaledCall>,
+    /// The open model call's partial, for the UI (§8.1).
     pub partial: Option<PartialContent>,
 }
 
@@ -209,25 +248,39 @@ pub struct ResumePlan {
 /// crash suite (W6) so both spell them identically. Per-call points are
 /// built with [`call_point`].
 pub mod crash {
+    /// Before `take_input` persists.
     pub const INPUT_BEFORE_PERSIST: &str = "input.before_persist";
+    /// After `take_input` committed.
     pub const INPUT_AFTER_PERSIST: &str = "input.after_persist";
+    /// After `reserve_call`.
     pub const MODEL_AFTER_RESERVE: &str = "model.after_reserve";
+    /// After the model call was dispatched.
     pub const MODEL_AFTER_DISPATCH: &str = "model.after_dispatch";
     /// After the first text delta.
     pub const STREAM_MID: &str = "stream.mid";
+    /// After a partial upsert.
     pub const STREAM_AFTER_PARTIAL: &str = "stream.after_partial";
+    /// Before the final assistant row persists.
     pub const STREAM_BEFORE_END_PERSIST: &str = "stream.before_end_persist";
+    /// After the `tool_use` row and planned rows committed.
     pub const BATCH_AFTER_TOOL_USE_PERSIST: &str = "batch.after_tool_use_persist";
+    /// Before the batch message persists.
     pub const BATCH_BEFORE_MESSAGE: &str = "batch.before_message";
+    /// After the batch message committed.
     pub const BATCH_AFTER_MESSAGE: &str = "batch.after_message";
+    /// Before the `turn_finished` step.
     pub const TURN_BEFORE_FINISHED: &str = "turn.before_finished";
+    /// After the `turn_finished` step committed.
     pub const TURN_AFTER_FINISHED: &str = "turn.after_finished";
     /// Suffixes of `call.<i>.<suffix>`.
     pub const CALL_BEFORE_STARTED: &str = "before_started";
+    /// After `tool_calls → started` committed.
     pub const CALL_AFTER_STARTED: &str = "after_started";
     /// Inside a fake tool.
     pub const CALL_MID: &str = "mid";
+    /// Before `tool_calls → finished`.
     pub const CALL_BEFORE_FINISHED: &str = "before_finished";
+    /// After `tool_calls → finished` committed.
     pub const CALL_AFTER_FINISHED: &str = "after_finished";
 
     /// `call.<i>.<suffix>` for the i-th call of a batch.

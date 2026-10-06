@@ -1441,13 +1441,16 @@ impl Store {
 
     /// Restart accounting (50 §7): every `accepted` exchange fails with
     /// `reason`, every nonterminal task becomes `failed` keeping its snapshot
-    /// and recording `reason`. Nothing is re-run.
+    /// and recording `reason`. Nothing is re-run. Narrowed by 109 §7.2: a
+    /// child's finished result (`request_id = result:<turn>` from a
+    /// `session:*` sender) stays `accepted` and is delivered on resume.
     pub async fn fail_interrupted(&self, reason: &str) -> anyhow::Result<Interrupted> {
         let mut tx = self.begin_write().await?;
         let ts = now();
         let rows: Vec<ExchangeRow> = sqlx::query_as(concat!(
             "UPDATE peer_exchanges SET state = 'failed', error = ?, updated_at = ? \
-             WHERE state = 'accepted' RETURNING ",
+             WHERE state = 'accepted' \
+               AND NOT (sender LIKE 'session:%' AND request_id LIKE 'result:%') RETURNING ",
             exchange_cols!()
         ))
         .bind(reason)
@@ -2224,6 +2227,15 @@ mod tests {
             .accept_exchange(&accept(&so, &sf, Some(other), Some(far), "5"))
             .await
             .unwrap();
+        // 109 §7.2: a child's finished result (`result:<turn>` from a
+        // `session:*` sender) survives the restart; a `result:` request from a
+        // non-session sender does not.
+        let mut child_result = accept(&sf, &so, Some(far), Some(other), "done");
+        child_result.request_id = Some("result:11111111-1111-1111-1111-111111111111");
+        let spared = store.accept_exchange(&child_result).await.unwrap();
+        let mut foreign_result = accept("a2a:peer", &so, None, Some(other), "done");
+        foreign_result.request_id = Some("result:x");
+        let failed_result = store.accept_exchange(&foreign_result).await.unwrap();
 
         let hit = store
             .suppress_exchanges(Some(kid), "opt-out")
@@ -2253,8 +2265,13 @@ mod tests {
             .await
             .unwrap();
         let ids: Vec<Uuid> = done.exchanges.iter().map(|r| r.id).collect();
-        assert_eq!(ids.len(), 2);
+        assert_eq!(ids.len(), 3, "{ids:?}");
         assert!(ids.contains(&inbound.id) && ids.contains(&untouched.id));
+        assert!(ids.contains(&failed_result.id) && !ids.contains(&spared.id));
+        assert_eq!(
+            store.exchange_receipt(spared.id).await.unwrap().unwrap().state,
+            PeerMessageState::Accepted
+        );
         assert_eq!(
             store
                 .exchange_receipt(inbound.id)

@@ -5717,6 +5717,10 @@ fn progress_due(prev: Option<&Progress>, now: Instant, len: usize) -> bool {
 
 mod side;
 
+/// 109 §4.2: the job / question / wait resume rules (stubs; W2, W3 fill them).
+#[allow(dead_code)] // wired by W1's per-call rule
+pub(crate) mod resume_calls;
+
 /// 52 §10 gates against a fake provider, through a real turn.
 #[cfg(test)]
 mod vision_fallback_tests;

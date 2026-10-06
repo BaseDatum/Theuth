@@ -104,6 +104,13 @@ use tools::{
     CloseTree, CloseTreeAll, OpenTree, ParticipantsReady, Retention, SessionResources, TreeOpened,
 };
 
+// 109: handler bodies in their own files so the waves do not collide.
+mod drain;
+mod resume;
+mod waits;
+pub use drain::{Drain, DrainReport};
+pub use resume::{OpenTurn, ResumeTurn};
+
 /// The supervisor actor. Look up with `ActorRef::<Agents>::lookup(AGENT_ACTOR)`.
 #[derive(kameo::Actor)]
 pub struct Agents {
@@ -1942,6 +1949,13 @@ impl Message<ActivityRegistered> for Agents {
     async fn handle(&mut self, _: ActivityRegistered, _: &mut Context<Self, Self::Reply>) {
         self.ledger.certify();
         self.rearm_reminders().await;
+        // 109 §4.6 step 10, in this order: no `ResumeTurn` before the reaper.
+        let reaped = crate::durability::jobs::reap_jobs(&self.store).await;
+        if reaped != crate::durability::jobs::ReapReport::default() {
+            tracing::info!("109: reaper: {reaped:?}");
+        }
+        self.rebuild_waits().await;
+        self.resume_scan().await;
     }
 }
 
@@ -2328,6 +2342,7 @@ pub(crate) fn job_result(
         JobExit::Exited(code) => code.to_string(),
         JobExit::Timeout => "timeout".into(),
         JobExit::Killed => "killed".into(),
+        JobExit::Lost => "lost".into(),
     };
     let pty = if pty { " pty=\"true\"" } else { "" };
     format!(
@@ -7311,6 +7326,10 @@ pub async fn start(rt: &Runtime) -> anyhow::Result<()> {
     if rt.config.contains("surface") {
         cfg.surface = rt.section("surface")?;
     }
+    // 109 §10.1: its own top-level section, carried on `cfg` like `surface`.
+    if rt.config.contains("durability") {
+        cfg.durability = rt.section("durability")?;
+    }
     let cfg = Arc::new(cfg);
     // 68 §2: `sessions.owner` is this engine's mesh id. The mesh plugin
     // starts after us, so read (or create) the identity file directly.
@@ -7534,6 +7553,14 @@ pub async fn start(rt: &Runtime) -> anyhow::Result<()> {
             .await
         {
             Ok(()) => {
+                // 109: journal seam — installed before anything can be resumed.
+                if let Ok(store) = agents.ask(DurableStore).await {
+                    let _ = reg
+                        .ask(tools::InstallJournal(Arc::new(
+                            crate::durability::journal::StoreJournal(Arc::new(store)),
+                        )))
+                        .await;
+                }
                 let _ = agents.tell(ActivityRegistered).await;
             }
             // A handler `Err` (no `Jobs` actor / install failed: jobs not
