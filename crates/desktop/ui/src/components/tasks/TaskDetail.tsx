@@ -1,7 +1,7 @@
 import { useMutation, useQueries } from '@tanstack/react-query'
 import { Link, useNavigate } from '@tanstack/react-router'
 import { MessageSquare } from 'lucide-react'
-import { type ReactNode, useMemo, useState } from 'react'
+import { type ReactNode, useEffect, useMemo, useState } from 'react'
 import { toast } from 'sonner'
 import { Streamdown } from 'streamdown'
 import { ProjectPicker } from '@/components/chat/ProjectPicker'
@@ -30,6 +30,7 @@ import type { Task } from '@/rpc/bindings/Task'
 import type { TaskEvent } from '@/rpc/bindings/TaskEvent'
 import type { TaskPatch } from '@/rpc/bindings/TaskPatch'
 import { AttachmentsEditor } from './Attachments'
+import { rememberOpenedTask } from './boardMemory'
 import { OwnerSelect } from './OwnerSelect'
 import { TaskChips } from './TaskChips'
 import { actionsFor, age, ownerLabel, ownerText, parseBlocker, parseOwner, shortId, stateChip } from './helpers'
@@ -43,9 +44,11 @@ import { useAgents, useInvalidateTasks, useMoveTask, useTask, useTaskEvents, use
 export function TaskDetail({ id }: { id: string }) {
   const task = useTask(id)
   const events = useTaskEvents(id)
+  // 118: the board scrolls this card into view and rings it when the user comes back.
+  useEffect(() => rememberOpenedTask(id), [id])
   if (task.isPending) {
     return (
-      <Frame backTo="/tasks" backLabel="Back to tasks" title={<Skeleton className="h-5 w-48" />}>
+      <Frame backTo="/tasks" backLabel="Back to tasks" backAlways title={<Skeleton className="h-5 w-48" />}>
         <div className="space-y-3 p-6">
           <Skeleton className="h-4 w-2/3" />
           <Skeleton className="h-4 w-1/2" />
@@ -55,7 +58,7 @@ export function TaskDetail({ id }: { id: string }) {
   }
   if (task.isError) {
     return (
-      <Frame backTo="/tasks" backLabel="Back to tasks" title={<h2 className="text-sm font-semibold">Task</h2>}>
+      <Frame backTo="/tasks" backLabel="Back to tasks" backAlways title={<h2 className="text-sm font-semibold">Task</h2>}>
         <p className="p-6 text-center text-sm text-fg-tertiary">{task.error.message}</p>
       </Frame>
     )
@@ -65,6 +68,7 @@ export function TaskDetail({ id }: { id: string }) {
     <Frame
       backTo="/tasks"
       backLabel="Back to tasks"
+      backAlways
       title={
         <h2 className="flex min-w-0 flex-1 items-center gap-2 truncate text-sm font-semibold">
           <ProjectIcon project={t.project} className="size-4" />

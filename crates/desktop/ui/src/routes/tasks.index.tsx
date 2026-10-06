@@ -1,18 +1,17 @@
-import { createFileRoute } from '@tanstack/react-router'
+import { createFileRoute, redirect } from '@tanstack/react-router'
 import { Board } from '@/components/tasks/Board'
-import { STATES } from '@/components/tasks/helpers'
-import type { TaskState } from '@/rpc/bindings/TaskState'
+import { type BoardSearch, boardEntryRedirect, parseBoardSearch, recallBoard } from '@/components/tasks/boardMemory'
 
-/** Board filters live in the URL so a board survives reload and can be linked. `project: ''` = all projects. */
-export type BoardSearch = { project?: string; agent?: string; engine?: string; state?: TaskState; cancelled?: boolean }
+export type { BoardSearch }
 
 export const Route = createFileRoute('/tasks/')({
-  validateSearch: (s: Record<string, unknown>): BoardSearch => ({
-    ...(typeof s.project === 'string' && { project: s.project }),
-    ...(typeof s.agent === 'string' && s.agent !== '' && { agent: s.agent }),
-    ...(typeof s.engine === 'string' && s.engine !== '' && { engine: s.engine }),
-    ...(typeof s.state === 'string' && (STATES as readonly string[]).includes(s.state) && { state: s.state as TaskState }),
-    ...(s.cancelled === true && { cancelled: true }),
-  }),
+  validateSearch: parseBoardSearch,
+  // 118: a bare `/tasks` (the band's Tasks tab, the task page's back, the navigate after cancelling a task) is entered
+  // with the filters this device last had. An explicit search (AgentDetail, the Hud) and in-place filter edits on the
+  // board (`cause: 'stay'`, including clearing the last filter) are untouched; hover preloads never redirect.
+  beforeLoad: ({ cause, search }) => {
+    const to = boardEntryRedirect(cause, search, recallBoard())
+    if (to) throw redirect({ to: '/tasks', search: to, replace: true })
+  },
   component: Board,
 })
