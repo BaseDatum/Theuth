@@ -382,9 +382,11 @@ impl Handle {
 }
 
 /// Spawns the channel under `rt.shutdown`; returns immediately. Fails only
-/// when the HTTP client cannot be built.
+/// when the HTTP client cannot be built. `cfg.api_host` (tests and proofs
+/// only) replaces `https://api.telegram.org`.
 pub fn spawn(cfg: TelegramConfig, token: String, rt: Runtime) -> anyhow::Result<Handle> {
-    spawn_at(cfg, token, rt, None)
+    let host = cfg.api_host.clone();
+    spawn_at(cfg, token, rt, host.as_deref())
 }
 
 /// [`spawn`] against `host` instead of `https://api.telegram.org` (tests). // 98b
