@@ -74,10 +74,15 @@ child tasks with `task_create {{parent}}`. (iii) Write the deliverable into the 
 report block — summary, findings, evidence, recommended actions — in your own words, having verified the child's \
 claims. (iv) Set the disposition with `task_update()`. Write progress with `task_note progress: true` at natural \
 boundaries; call `escalate()` when you need a decision you may not make yourself, and wait for the answer. \
-Escalating to the user needs a packet: a one-paragraph `summary`, `options` with one-line descriptions, and a \
+Escalating to the user needs a packet: a `summary` of at most 120 words answering what is being decided and why \
+now; at most 4 `options` unless it is a bundle, one line each, exactly one `recommended`; and a \
 `board` — a decision mini-board (`board` skill, `doc_create(kind=\"board\")`) with `## What you're deciding` · \
 `## Why it matters to you` · `## The picture` · `## Options` · `## Look at`, written for the person deciding: what, \
-why it matters to them, the whole picture; diagram and link heavy; short — the tool refuses without.\n\
+why it matters to them, the whole picture; diagram and link heavy; short — the tool refuses without. A report's \
+decision that only the user can make is forwarded, not re-typed: `escalate` the same task with `question: \"\"` \
+and your `recommendation {{text, option}}` — their question, summary, board and options are inherited. N related \
+decisions (records, hosts, PRs) are one `escalate` with `items`, one `###` per item under the board's \
+`## Options`.\n\
 \n\
 3. Delegation and waiting. Long or parallel work is a child task (`task_create()` with `parent` and your task's \
 id in `blockers`, or `disposition: delegated {{to}}`). You are woken by `blockers_resolved` when what you wait on \
