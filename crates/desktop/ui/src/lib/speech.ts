@@ -67,6 +67,8 @@ let done: string | null = null
  */
 export const TAIL_MS = 400
 let tailTimer = 0
+/** 117 D2 R1: our `ctx.resume()` still pending; `state` lags it by the session's activation time (iOS: up to hundreds of ms). */
+let resuming: Promise<void> | null = null
 
 /** Who holds the audio session: read-aloud, a dictation's mic tap (54 §4.5), a voice-note recording (45 §7.2), a talk's mic tap (76 §5.3). */
 export type Use = 'speak' | 'dictate' | 'record' | 'talk'
@@ -95,7 +97,9 @@ export function unlock(use: Use): AudioContext {
   // 117 D2: the same for a context iOS suspended or interrupted under us (route change, lock screen): what is
   // frozen in it plays on `resume()`, ahead of what `use` is starting — a recording, a dictation, a talk, a new
   // utterance. A mic use gives the frozen reply up; for `speak`, `start`/`begin` take over from the cut.
-  const frozen = ctx !== null && ctx.state !== 'running'
+  // `suspended` while our own resume is in flight is not frozen (mic-tap unlocks twice around `getUserMedia`);
+  // `interrupted` is, even then: WebKit's resume stays pending until the interruption ends.
+  const frozen = ctx !== null && ctx.state !== 'running' && !(resuming !== null && ctx.state === 'suspended')
   if (uses.size === 0 || frozen) {
     if (frozen && use !== 'speak' && (id !== null || active.size > 0)) abandon()
     cut()
@@ -111,7 +115,12 @@ export function unlock(use: Use): AudioContext {
     for (const cb of outSubs) cb(out)
     outSubs.clear()
   }
-  void ctx.resume()
+  const p = ctx.resume()
+  resuming = p
+  const settled = () => {
+    if (resuming === p) resuming = null
+  }
+  void p.then(settled, settled)
   return ctx
 }
 
@@ -126,6 +135,7 @@ export async function release(use: Use): Promise<void> {
   if (uses.size === 0) {
     cut()
     await ctx?.suspend()
+    resuming = null
   }
   session()
 }

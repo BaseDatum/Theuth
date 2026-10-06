@@ -83,8 +83,17 @@ class FakeContext {
   }
   resume() {
     calls.push('resume')
-    this.state = 'running'
-    return Promise.resolve()
+    if (!deferResume) {
+      this.state = 'running'
+      return Promise.resolve()
+    }
+    // iOS: the session activates asynchronously, `state` stays `suspended` until then.
+    const { promise, resolve } = Promise.withResolvers<void>()
+    pendingResumes.push(() => {
+      this.state = 'running'
+      resolve()
+    })
+    return promise
   }
   suspend() {
     calls.push('suspend')
@@ -92,6 +101,9 @@ class FakeContext {
     return Promise.resolve()
   }
 }
+/** Set by a test to hold every `resume()` open until `pendingResumes` are called. */
+let deferResume = false
+const pendingResumes: (() => void)[] = []
 const audioSession = { type: 'auto' }
 // `speech.ts` reads both lazily, inside `unlock`/`release`, so stubbing after the import is in time.
 vi.stubGlobal('AudioContext', FakeContext)
@@ -120,6 +132,8 @@ async function utter(id: string, n: number): Promise<void> {
 
 beforeEach(async () => {
   vi.useFakeTimers()
+  deferResume = false
+  pendingResumes.length = 0
   for (const u of ['speak', 'dictate', 'record', 'talk'] as const) await speech.release(u)
   speech.setTalk(null)
   speech.setSpeaking(null)
@@ -304,6 +318,25 @@ test('a second unlock after a stop resumes the context with nothing of the old u
   await utter('s2', 1)
   expect(sources).toHaveLength(3)
   expect(sources[2]!.connected).toBe(true)
+})
+
+test('a second unlock while our own resume is still activating is not a frozen context: nothing is cut (117 D2 R1)', async () => {
+  deferResume = true
+  await utter('s1', 2)
+  expect(context!.state).toBe('suspended')
+  expect(sources).toHaveLength(2)
+  // mic-tap's second `unlock` after `getUserMedia`, before the activation landed.
+  speech.unlock('record')
+  expect(sources.map((s) => s.stopped)).toEqual([false, false])
+  expect(calls).not.toContain('stop')
+  expect(calls).not.toContain('suspend')
+  expect(audioSession.type).toBe('play-and-record')
+  for (const done of pendingResumes.splice(0)) done()
+  await settle()
+  expect(context!.state).toBe('running')
+  expect(calls).not.toContain('stop')
+  await speech.release('record')
+  expect(audioSession.type).toBe('playback')
 })
 
 test('the last holder out stops leftover sources before suspending', async () => {
