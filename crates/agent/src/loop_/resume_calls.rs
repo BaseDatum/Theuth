@@ -6,12 +6,15 @@
 //! `send_message{await_reply}` / `spawn_subagent` to [`resume_wait_call`].
 
 use chrono::{DateTime, Local, Utc};
+use kameo::actor::ActorRef;
+use kameo::error::SendError;
 use runtime::SessionId;
 use tools::{JobKind, JobRow, ToolOutput};
 
 use crate::durability::jobs::{hhmmss_ms, log_tail};
 use crate::durability::{JournaledCall, ResumeKind, ResumePlan};
 use crate::store::Store;
+use crate::supervisor::{DropWait, ResumeQuestion, ResumeWait, remaining};
 
 /// The §4.3 interrupted note: a `started` mutating call the restart must not
 /// repeat. `ERROR:`-prefixed so the model's tool-error handling applies.
@@ -182,16 +185,112 @@ async fn append_last_seen(text: &mut String, store: &Store, session: SessionId, 
     }
 }
 
-/// **W3 fills this.** The question rule (§6.2): re-publish the pending
-/// `questions` row under the same id with the remaining deadline; an
-/// answered row is honoured; a passed deadline is the tool's own timeout.
+/// The question rule (§6.2, W3): the call's newest `questions` row is handed
+/// to its tool through `tools::registry::republish` and the call is
+/// re-invoked — the body re-arms the *same* question (same id, `deadline -
+/// now`) instead of raising a new one, renders an `answered` row without
+/// asking, and answers a passed deadline with its own timeout text. With no
+/// row at all (the kill fell before the question was journaled) the call
+/// re-runs and asks afresh.
 pub(crate) async fn resume_question_call(call: &JournaledCall, plan: &ResumePlan) -> ToolOutput {
-    interrupted_note(call, plan)
+    let Ok(agents) = crate::peers::supervisor() else {
+        return interrupted_note(call, plan);
+    };
+    let (session, row) = match agents
+        .ask(ResumeQuestion {
+            turn: plan.turn,
+            call_id: call.call_id.clone(),
+        })
+        .await
+    {
+        Ok(r) => r,
+        Err(SendError::HandlerError(e)) => {
+            return ToolOutput::err(format!("{}: resume: {e}", call.name));
+        }
+        Err(e) => return ToolOutput::err(format!("{}: agent supervisor: {e}", call.name)),
+    };
+    if let Some(row) = row {
+        // A passed deadline (§6.3) is the tool's own timeout: each body
+        // settles the row `timed_out` when it finds nothing left to wait.
+        tools::registry::republish(row);
+    }
+    let Ok(Some(registry)) = ActorRef::<tools::ToolRegistry>::lookup(tools::REGISTRY_ACTOR) else {
+        return ToolOutput::err(format!("{}: tool registry not running", call.name));
+    };
+    match registry
+        .ask(tools::Invoke(tools::ToolCall {
+            id: call.call_id.clone(),
+            name: call.name.clone(),
+            args: call.args.clone(),
+            session,
+            quiet: false,
+        }))
+        .await
+    {
+        Ok(out) => out,
+        Err(e) => ToolOutput::err(format!("tool registry: {e}")),
+    }
 }
 
-/// **W3 fills this.** The wait rule (§4.4): a replied exchange or spared
-/// `result:` row is delivered as the call's result; otherwise the wait is
-/// re-created with `deadline - now`; a passed deadline is the timeout receipt.
+/// The wait rule (§4.4, W3) for `send_message{await_reply}`: every awaited
+/// exchange already `replied` is the result as it stands; the ones still
+/// open are awaited again on the waiter `rebuild_waits` re-armed, until the
+/// row's remaining deadline — a passed deadline is the tool's own timeout
+/// receipt. A `child_result` wait delivers the spared `result:` text. No
+/// `waits` row (nothing was accepted before the kill) → the interrupted note.
 pub(crate) async fn resume_wait_call(call: &JournaledCall, plan: &ResumePlan) -> ToolOutput {
-    interrupted_note(call, plan)
+    let Ok(agents) = crate::peers::supervisor() else {
+        return interrupted_note(call, plan);
+    };
+    let mut w = match agents
+        .ask(ResumeWait {
+            turn: plan.turn,
+            call_id: call.call_id.clone(),
+        })
+        .await
+    {
+        Ok(w) => w,
+        Err(SendError::HandlerError(e)) => {
+            return ToolOutput::err(format!("{}: resume: {e}", call.name));
+        }
+        Err(e) => return ToolOutput::err(format!("{}: agent supervisor: {e}", call.name)),
+    };
+    let Some(row) = w.row.take() else {
+        return interrupted_note(call, plan);
+    };
+    if !w.child_results.is_empty() {
+        return ToolOutput::ok(w.child_results.join("\n\n"));
+    }
+    if w.receipts.is_empty() {
+        return interrupted_note(call, plan);
+    }
+    let deadline = row
+        .deadline
+        .and_then(remaining)
+        .map(|d| tokio::time::Instant::now() + d);
+    // The tool's own wording: the wait began with the call, so the row's
+    // deadline minus `started_at` is the timeout it was given.
+    let after = match (row.deadline, call.started_at) {
+        (Some(d), Some(s)) => format!(" after {}s", (d - s).num_seconds().max(0)),
+        _ => String::new(),
+    };
+    for r in &mut w.receipts {
+        let Some(rx) = w.pending.remove(&r.id) else {
+            continue;
+        };
+        let fin = match deadline {
+            Some(at) => tokio::time::timeout_at(at, rx).await.ok(),
+            None => None,
+        };
+        match fin {
+            Some(Ok(fin)) => *r = fin,
+            Some(Err(_)) => r.error = Some("wait dropped".into()),
+            // Deadline passed, now or while down: the timeout receipt.
+            None => {
+                let _ = agents.tell(DropWait(r.id)).await;
+                r.error = Some(format!("timed out{after}; message not recalled"));
+            }
+        }
+    }
+    crate::peers::receipts_output(&w.receipts)
 }

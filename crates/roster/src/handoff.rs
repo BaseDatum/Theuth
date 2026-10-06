@@ -10,7 +10,9 @@ use std::time::{Duration, Instant};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use sqlx::sqlite::SqlitePool;
-use tools::{Risk, Tool, ToolCx, ToolOutput};
+use tools::{
+    QuestionKind, QuestionRow, QuestionState, Risk, Tool, ToolCx, ToolOutput, WaitKind, WaitRow,
+};
 
 use crate::desk::Shared;
 
@@ -182,30 +184,87 @@ impl Tool for DesktopHandoffTool {
     }
 
     async fn call(&self, a: HandoffArgs, cx: ToolCx) -> anyhow::Result<ToolOutput> {
-        if a.reason.trim().is_empty() {
-            return Ok(ToolOutput::err("reason: say what the user has to do"));
-        }
-        let engine = match mesh::actor() {
-            Some(m) => match m.ask(mesh::Status).await {
-                Ok(s) => s.self_id.0,
-                Err(_) => platform::process::hostname().to_owned(),
+        // 109 §6.2: a resumed call polls the `handoffs` row it already wrote
+        // until its remaining deadline instead of raising a second card.
+        let republished = tools::registry::take_republish(cx.session, &cx.call_id);
+        let (row, mut q) = match republished {
+            Some(q) => match q.state {
+                QuestionState::Pending => {
+                    let Some(h) = get(&self.pool, &q.id).await? else {
+                        return Ok(ToolOutput::err("the hand-off row is gone"));
+                    };
+                    (h, q)
+                }
+                QuestionState::Answered => {
+                    let outcome = q
+                        .answer
+                        .as_ref()
+                        .and_then(|a| a.get("outcome"))
+                        .and_then(|o| o.as_str())
+                        .unwrap_or("cancelled")
+                        .to_owned();
+                    return Ok(result(&outcome, 0));
+                }
+                QuestionState::TimedOut => return Ok(result("timeout", 0)),
+                QuestionState::Superseded => return Ok(ToolOutput::err("superseded")),
             },
-            None => platform::process::hostname().to_owned(),
+            None => {
+                if a.reason.trim().is_empty() {
+                    return Ok(ToolOutput::err("reason: say what the user has to do"));
+                }
+                let engine = match mesh::actor() {
+                    Some(m) => match m.ask(mesh::Status).await {
+                        Ok(s) => s.self_id.0,
+                        Err(_) => platform::process::hostname().to_owned(),
+                    },
+                    None => platform::process::hostname().to_owned(),
+                };
+                let row = Handoff {
+                    id: uuid::Uuid::now_v7().to_string(),
+                    engine,
+                    session: cx.session.to_string(),
+                    agent: self.shared.agent_of(cx.session),
+                    reason: a.reason,
+                    url: a.url,
+                    created_ms: now_ms(),
+                    resolved_ms: None,
+                    outcome: None,
+                    hlc: None,
+                };
+                insert(&self.pool, &row).await?;
+                let timeout = a.timeout_secs.map_or(self.timeout, Duration::from_secs);
+                let asked_at = chrono::Utc::now();
+                let q = QuestionRow {
+                    id: row.id.clone(),
+                    session: cx.session,
+                    tool_call_id: Some(cx.call_id.clone()),
+                    kind: QuestionKind::Handoff,
+                    payload: serde_json::json!(row),
+                    state: QuestionState::Pending,
+                    asked_at,
+                    deadline: asked_at + timeout,
+                    answered_at: None,
+                    answer: None,
+                };
+                (row, q)
+            }
         };
-        let row = Handoff {
-            id: uuid::Uuid::now_v7().to_string(),
-            engine,
-            session: cx.session.to_string(),
-            agent: self.shared.agent_of(cx.session),
-            reason: a.reason,
-            url: a.url,
-            created_ms: now_ms(),
-            resolved_ms: None,
-            outcome: None,
-            hlc: None,
-        };
-        insert(&self.pool, &row).await?;
-        let timeout = a.timeout_secs.map_or(self.timeout, Duration::from_secs);
+        let journal = tools::registry::journal();
+        journal.question(q.clone()).await;
+        journal
+            .wait(
+                Some(WaitRow {
+                    session: cx.session,
+                    tool_call_id: cx.call_id.clone(),
+                    kind: WaitKind::Question,
+                    target: row.id.clone(),
+                    deadline: Some(q.deadline),
+                    payload: serde_json::json!({}),
+                }),
+                cx.session,
+                &cx.call_id,
+            )
+            .await;
         let started = Instant::now();
         let outcome = loop {
             tokio::time::sleep(POLL).await;
@@ -214,24 +273,37 @@ impl Tool for DesktopHandoffTool {
             {
                 break o;
             }
-            if started.elapsed() >= timeout {
+            if chrono::Utc::now() >= q.deadline {
                 resolve(&self.pool, &row.id, "timeout", now_ms()).await?;
                 break "timeout".to_owned();
             }
         };
-        let elapsed_secs = started.elapsed().as_secs();
-        let text = format!("{outcome} after {elapsed_secs} s");
-        let mut out = if outcome == "done" {
-            ToolOutput::ok(text)
+        q.answered_at = Some(chrono::Utc::now());
+        if outcome == "timeout" {
+            q.state = QuestionState::TimedOut;
         } else {
-            ToolOutput::err(text)
-        };
-        out.structured = Some(serde_json::json!({
-            "outcome": outcome,
-            "elapsed_secs": elapsed_secs,
-        }));
-        Ok(out)
+            q.state = QuestionState::Answered;
+            q.answer = Some(serde_json::json!({ "outcome": outcome }));
+        }
+        journal.wait(None, cx.session, &cx.call_id).await;
+        journal.question(q).await;
+        Ok(result(&outcome, started.elapsed().as_secs()))
     }
+}
+
+/// `{ outcome, elapsed_secs }`; an error unless `done`.
+fn result(outcome: &str, elapsed_secs: u64) -> ToolOutput {
+    let text = format!("{outcome} after {elapsed_secs} s");
+    let mut out = if outcome == "done" {
+        ToolOutput::ok(text)
+    } else {
+        ToolOutput::err(text)
+    };
+    out.structured = Some(serde_json::json!({
+        "outcome": outcome,
+        "elapsed_secs": elapsed_secs,
+    }));
+    out
 }
 
 /// The `sandbox:` keys this crate reads, by name — no dependency on the sandbox crate.

@@ -820,6 +820,7 @@ async fn ask_user(me: ActorRef<Tasks>, p: packet::Packet, session: Option<String
         .ask(::tools::ask::Request {
             session,
             questions: vec![question],
+            call_id: None,
         })
         .await
     else {

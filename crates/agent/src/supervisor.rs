@@ -111,6 +111,8 @@ mod resume;
 mod waits;
 pub use drain::{Drain, DrainReport};
 pub use resume::{OpenTurn, ResumeTurn};
+// 109 W3: what a resumed human-wait / peer-wait call asks the supervisor for.
+pub(crate) use waits::{ResumeQuestion, ResumeWait, remaining};
 
 /// The supervisor actor. Look up with `ActorRef::<Agents>::lookup(AGENT_ACTOR)`.
 #[derive(kameo::Actor)]

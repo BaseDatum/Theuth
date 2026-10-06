@@ -7,16 +7,20 @@
 //! set is `answers: None`, which the RPC layer turns into a turn cancel.
 
 use std::collections::HashMap;
+use std::sync::Arc;
 use std::time::Duration;
 
+use chrono::Utc;
 use kameo::actor::ActorRef;
 use kameo::message::{Context, Message};
 use kameo::reply::DelegatedReply;
 use runtime::{Runtime, SessionId};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use tokio::sync::oneshot;
 
+use crate::journal::{Journal, QuestionKind, QuestionRow, QuestionState, WaitKind, WaitRow};
 use crate::{Risk, Tool, ToolCx, ToolOutput};
 
 /// Correlates a request with its answer.
@@ -118,17 +122,29 @@ pub struct Request {
     pub session: SessionId,
     /// What to ask.
     pub questions: Vec<Question>,
+    /// The asking tool call (109 §6.1: `questions.tool_call_id`); `None`
+    /// when no tool call asks (`escalate`).
+    pub call_id: Option<String>,
 }
+
+/// Resume → actor (109 §6.2): re-arm a `pending` `questions` row of kind
+/// `ask` under its own id with `deadline - now` left, and publish the same
+/// [`AskRequested`] again so a reconnecting UI renders the card it would
+/// have rendered. `ask` → the [`Outcome`], as for [`Request`]; a passed
+/// deadline is `timed_out` at once. Idempotent on the id.
+pub struct Republish(pub QuestionRow);
 
 /// Internal: drop a pending entry whose waiter gave up.
 struct Expire(AskId);
 
-/// A waiting tool call: its session and where its answers go.
-type Waiter = (
-    SessionId,
-    Vec<Question>,
-    oneshot::Sender<Option<Vec<Answer>>>,
-);
+/// A waiting tool call: its session, questions, journal row and where its
+/// answers go.
+struct Waiter {
+    session: SessionId,
+    questions: Vec<Question>,
+    row: QuestionRow,
+    tx: oneshot::Sender<Option<Vec<Answer>>>,
+}
 
 /// The ask actor.
 #[derive(kameo::Actor)]
@@ -136,8 +152,8 @@ pub struct AskUser {
     rt: Runtime,
     timeout: Duration,
     pending: HashMap<AskId, Waiter>,
-    /// 109 §6.1: the journal seam; W3 writes the `questions` rows through it.
-    pub(crate) journal: std::sync::Arc<dyn crate::Journal>,
+    /// 109 §6.1: the journal seam the `questions` rows go through.
+    pub(crate) journal: Arc<dyn Journal>,
 }
 
 impl AskUser {
@@ -147,8 +163,92 @@ impl AskUser {
             rt,
             timeout,
             pending: HashMap::new(),
-            journal: std::sync::Arc::new(crate::NoopJournal),
+            journal: Arc::new(crate::NoopJournal),
         }
+    }
+
+    /// Journal a pending row's end (`answered` with the answers — `null`
+    /// when dismissed — or `timed_out`) and clear the call's `waits` row.
+    async fn settle(&self, mut row: QuestionRow, state: QuestionState, answer: Option<Value>) {
+        row.state = state;
+        row.answered_at = Some(Utc::now());
+        row.answer = answer;
+        if let Some(call) = &row.tool_call_id {
+            self.journal.wait(None, row.session, call).await;
+        }
+        self.journal.question(row).await;
+    }
+
+    /// Insert the waiter, journal the row (and the call's `waits(question)`
+    /// row), publish the card and wait `timeout` for its answer off the
+    /// mailbox. Shared by [`Request`] (fresh row) and [`Republish`] (the
+    /// stored one).
+    async fn arm(
+        &mut self,
+        ctx: &mut Context<Self, DelegatedReply<Outcome>>,
+        row: QuestionRow,
+        questions: Vec<Question>,
+        timeout: Duration,
+    ) -> DelegatedReply<Outcome> {
+        let (reply, tx) = ctx.reply_sender();
+        let id = AskId(uuid::Uuid::parse_str(&row.id).unwrap_or_else(|_| uuid::Uuid::now_v7()));
+        let session = row.session;
+        self.journal.question(row.clone()).await;
+        if let Some(call) = &row.tool_call_id {
+            self.journal
+                .wait(
+                    Some(WaitRow {
+                        session,
+                        tool_call_id: call.clone(),
+                        kind: WaitKind::Question,
+                        target: row.id.clone(),
+                        deadline: Some(row.deadline),
+                        payload: serde_json::json!({}),
+                    }),
+                    session,
+                    call,
+                )
+                .await;
+        }
+        let (atx, arx) = oneshot::channel();
+        self.pending.insert(
+            id,
+            Waiter {
+                session,
+                questions: questions.clone(),
+                row,
+                tx: atx,
+            },
+        );
+        let rt = self.rt.clone();
+        let me = ctx.actor_ref().clone();
+        tokio::spawn(async move {
+            rt.publish(AskRequested {
+                id,
+                session,
+                questions,
+            })
+            .await;
+            let (answers, timed_out) = match tokio::time::timeout(timeout, arx).await {
+                Ok(Ok(a)) => (a, false),
+                // Sender dropped: actor died; treat as dismissed.
+                Ok(Err(_)) => (None, false),
+                Err(_) => {
+                    let _ = me.ask(Expire(id)).await;
+                    (None, true)
+                }
+            };
+            rt.publish(AskResolved {
+                id,
+                dismissed: answers.is_none() && !timed_out,
+                timed_out,
+            })
+            .await;
+            if let Some(tx) = tx {
+                tx.send(Outcome { answers, timed_out });
+            }
+        });
+        reply
     }
 }
 
@@ -173,41 +273,70 @@ impl Message<Request> for AskUser {
     type Reply = DelegatedReply<Outcome>;
 
     async fn handle(&mut self, m: Request, ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
-        let (reply, tx) = ctx.reply_sender();
         let id = AskId(uuid::Uuid::now_v7());
-        let (atx, arx) = oneshot::channel();
-        self.pending
-            .insert(id, (m.session, m.questions.clone(), atx));
-        let rt = self.rt.clone();
-        let timeout = self.timeout;
-        let me = ctx.actor_ref().clone();
-        tokio::spawn(async move {
-            rt.publish(AskRequested {
+        let asked_at = Utc::now();
+        let row = QuestionRow {
+            id: id.0.to_string(),
+            session: m.session,
+            tool_call_id: m.call_id,
+            kind: QuestionKind::Ask,
+            payload: serde_json::json!(AskRequested {
                 id,
                 session: m.session,
-                questions: m.questions,
-            })
-            .await;
-            let (answers, timed_out) = match tokio::time::timeout(timeout, arx).await {
-                Ok(Ok(a)) => (a, false),
-                // Sender dropped: actor died; treat as dismissed.
-                Ok(Err(_)) => (None, false),
-                Err(_) => {
-                    let _ = me.tell(Expire(id)).await;
-                    (None, true)
-                }
-            };
-            rt.publish(AskResolved {
-                id,
-                dismissed: answers.is_none() && !timed_out,
-                timed_out,
-            })
-            .await;
+                questions: m.questions.clone(),
+            }),
+            state: QuestionState::Pending,
+            asked_at,
+            deadline: asked_at + self.timeout,
+            answered_at: None,
+            answer: None,
+        };
+        self.arm(ctx, row, m.questions, self.timeout).await
+    }
+}
+
+impl Message<Republish> for AskUser {
+    type Reply = DelegatedReply<Outcome>;
+
+    async fn handle(
+        &mut self,
+        Republish(row): Republish,
+        ctx: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        let questions: Vec<Question> = row
+            .payload
+            .get("questions")
+            .cloned()
+            .and_then(|q| serde_json::from_value(q).ok())
+            .unwrap_or_default();
+        let left = (row.deadline - Utc::now()).to_std().unwrap_or_default();
+        if left.is_zero() {
+            // 109 §6.3: downtime counted against the wait; the tool's own timeout.
+            let (reply, tx) = ctx.reply_sender();
+            self.settle(row, QuestionState::TimedOut, None).await;
             if let Some(tx) = tx {
-                tx.send(Outcome { answers, timed_out });
+                tx.send(Outcome {
+                    answers: None,
+                    timed_out: true,
+                });
             }
-        });
-        reply
+            return reply;
+        }
+        if let Ok(id) = uuid::Uuid::parse_str(&row.id)
+            && self.pending.contains_key(&AskId(id))
+        {
+            // Already re-armed (§6.4: idempotent on the id): the live
+            // waiter answers the earlier ask; this one is dismissed.
+            let (reply, tx) = ctx.reply_sender();
+            if let Some(tx) = tx {
+                tx.send(Outcome {
+                    answers: None,
+                    timed_out: false,
+                });
+            }
+            return reply;
+        }
+        self.arm(ctx, row, questions, left).await
     }
 }
 
@@ -215,8 +344,11 @@ impl Message<AnswerAsk> for AskUser {
     type Reply = Option<SessionId>;
 
     async fn handle(&mut self, m: AnswerAsk, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
-        let (session, _questions, tx) = self.pending.remove(&m.id)?;
-        tx.send(m.answers).ok().map(|()| session)
+        let w = self.pending.remove(&m.id)?;
+        let answer = Some(serde_json::json!(m.answers));
+        let delivered = w.tx.send(m.answers).ok().map(|()| w.session);
+        self.settle(w.row, QuestionState::Answered, answer).await;
+        delivered
     }
 }
 
@@ -224,7 +356,9 @@ impl Message<Expire> for AskUser {
     type Reply = ();
 
     async fn handle(&mut self, m: Expire, _: &mut Context<Self, Self::Reply>) {
-        self.pending.remove(&m.0);
+        if let Some(w) = self.pending.remove(&m.0) {
+            self.settle(w.row, QuestionState::TimedOut, None).await;
+        }
     }
 }
 
@@ -239,10 +373,10 @@ impl Message<PendingAsks> for AskUser {
     async fn handle(&mut self, _: PendingAsks, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
         self.pending
             .iter()
-            .map(|(id, (session, questions, _))| AskRequested {
+            .map(|(id, w)| AskRequested {
                 id: *id,
-                session: *session,
-                questions: questions.clone(),
+                session: w.session,
+                questions: w.questions.clone(),
             })
             .collect()
     }
@@ -277,6 +411,40 @@ impl Tool for AskUserTool {
     }
 
     async fn call(&self, args: Self::Args, cx: ToolCx) -> anyhow::Result<ToolOutput> {
+        // 109 §6.2: a resumed call re-arms its stored question instead of
+        // asking a second time; an answer that landed before the kill is
+        // rendered without asking at all.
+        if let Some(row) = crate::registry::take_republish(cx.session, &cx.call_id) {
+            let questions: Vec<Question> = row
+                .payload
+                .get("questions")
+                .cloned()
+                .and_then(|q| serde_json::from_value(q).ok())
+                .unwrap_or_default();
+            return Ok(match row.state {
+                QuestionState::Pending => {
+                    let out = self.0.ask(Republish(row)).await?;
+                    outcome(&questions, out)
+                }
+                QuestionState::Answered => {
+                    let answers: Option<Vec<Answer>> =
+                        row.answer.and_then(|a| serde_json::from_value(a).ok());
+                    outcome(
+                        &questions,
+                        Outcome {
+                            answers,
+                            timed_out: false,
+                        },
+                    )
+                }
+                QuestionState::TimedOut => {
+                    ToolOutput::err("ask_user: no answer from the user in time")
+                }
+                QuestionState::Superseded => {
+                    ToolOutput::err("ask_user: the question was superseded")
+                }
+            });
+        }
         if args.questions.is_empty() {
             return Ok(ToolOutput::err("ask_user: no questions"));
         }
@@ -295,16 +463,20 @@ impl Tool for AskUserTool {
             .ask(Request {
                 session: cx.session,
                 questions: questions.clone(),
+                call_id: Some(cx.call_id.clone()),
             })
             .await?;
-        let Some(answers) = out.answers else {
-            return Ok(ToolOutput::err(if out.timed_out {
-                "ask_user: no answer from the user in time"
-            } else {
-                "ask_user: the user dismissed the questions"
-            }));
-        };
-        Ok(render(&questions, &answers))
+        Ok(outcome(&questions, out))
+    }
+}
+
+/// The tool's result for an [`Outcome`]: the rendered answers, or the
+/// timeout / dismissal error.
+fn outcome(questions: &[Question], out: Outcome) -> ToolOutput {
+    match out.answers {
+        Some(answers) => render(questions, &answers),
+        None if out.timed_out => ToolOutput::err("ask_user: no answer from the user in time"),
+        None => ToolOutput::err("ask_user: the user dismissed the questions"),
     }
 }
 
@@ -455,5 +627,219 @@ mod tests {
         .unwrap();
         assert!(out.is_error);
         assert!(out.content.contains("in time"));
+    }
+
+    fn one_question() -> Vec<Question> {
+        vec![Question {
+            id: "q".into(),
+            question: "which?".into(),
+            options: vec![Choice {
+                label: "a".into(),
+                description: None,
+            }],
+            recommended: Some(0),
+        }]
+    }
+
+    async fn with_journal(
+        timeout: Duration,
+    ) -> (
+        Runtime,
+        ActorRef<AskUser>,
+        Arc<crate::approval::tests::RecJournal>,
+    ) {
+        use kameo::actor::Spawn;
+        let rt = Runtime::new(figment::Figment::new(), std::env::temp_dir());
+        let journal = Arc::new(crate::approval::tests::RecJournal::default());
+        let actor = AskUser::spawn(AskUser::new(rt.clone(), timeout));
+        actor
+            .ask(crate::InstallJournal(journal.clone()))
+            .await
+            .unwrap();
+        (rt, actor, journal)
+    }
+
+    fn cx(session: SessionId, call_id: &str) -> ToolCx {
+        ToolCx {
+            session,
+            call_id: call_id.into(),
+            quiet: false,
+            resources: crate::SessionResources::durable_arc(&std::env::temp_dir()),
+        }
+    }
+
+    /// 109 §6.1 / §6.2: the raise is a `pending` row (card as payload, the
+    /// call's `waits(question)` row beside it); a *second* actor over the
+    /// stored row — the restart — re-publishes the card under the **same
+    /// id**, the answer to that id resolves the resumed call, and the row
+    /// ends `answered` with the answers. Via the tool, so the
+    /// `take_republish` path is the one exercised.
+    #[tokio::test]
+    async fn republish_same_id() {
+        let (_rt, first, journal) = with_journal(Duration::from_secs(30)).await;
+        let session = SessionId::new();
+        let asked = tokio::spawn({
+            let first = first.clone();
+            async move {
+                Tool::call(
+                    &AskUserTool(first),
+                    AskArgs {
+                        questions: one_question(),
+                    },
+                    cx(session, "c1"),
+                )
+                .await
+            }
+        });
+        let row = loop {
+            if let Some(r) = journal.questions().first() {
+                break r.clone();
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        };
+        assert_eq!(
+            (row.kind, row.state),
+            (QuestionKind::Ask, QuestionState::Pending)
+        );
+        assert_eq!(row.tool_call_id.as_deref(), Some("c1"));
+        assert_eq!(row.payload["questions"][0]["id"], "q");
+        assert_eq!(journal.waits().len(), 1);
+        assert_eq!(
+            journal.waits()[0].1.as_ref().unwrap().kind,
+            WaitKind::Question
+        );
+        // The engine dies: the first actor and its waiter are gone.
+        drop(asked);
+        first.kill();
+
+        let (rt2, second, journal2) = with_journal(Duration::from_secs(30)).await;
+        let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+        #[derive(kameo::Actor)]
+        struct Seen(Arc<std::sync::Mutex<Vec<AskRequested>>>);
+        impl Message<AskRequested> for Seen {
+            type Reply = ();
+            async fn handle(&mut self, m: AskRequested, _: &mut Context<Self, ()>) {
+                crate::jobs::lock(&self.0).push(m);
+            }
+        }
+        let sub = kameo::actor::Spawn::spawn(Seen(seen.clone()));
+        rt2.subscribe::<Seen, AskRequested>(&sub).await;
+        crate::registry::republish(row.clone());
+        let resumed = tokio::spawn({
+            let second = second.clone();
+            async move {
+                Tool::call(
+                    &AskUserTool(second),
+                    AskArgs {
+                        questions: Vec::new(),
+                    },
+                    cx(session, "c1"),
+                )
+                .await
+                .unwrap()
+            }
+        });
+        let card = loop {
+            if let Some(c) = crate::jobs::lock(&seen).first() {
+                break c.clone();
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        };
+        assert_eq!(card.id.0.to_string(), row.id, "same id after the restart");
+        assert_eq!(card.questions, one_question());
+        let pending = second.ask(PendingAsks).await.unwrap();
+        assert_eq!(pending.len(), 1, "the attention item derives from this set");
+        // Idempotent on the id (§6.4): a second Republish arms nothing.
+        let dup = second.ask(Republish(row.clone())).await.unwrap();
+        assert!(dup.answers.is_none() && !dup.timed_out);
+        assert_eq!(second.ask(PendingAsks).await.unwrap().len(), 1);
+
+        let answered = second
+            .ask(AnswerAsk {
+                id: card.id,
+                answers: Some(vec![Answer::Choice { index: 0 }]),
+            })
+            .await
+            .unwrap();
+        assert_eq!(answered, Some(session));
+        let out = resumed.await.unwrap();
+        assert_eq!(out.content, "q: a");
+        let rows = journal2.questions();
+        assert_eq!(
+            rows.first().map(|r| (r.id.as_str(), r.state)),
+            Some((row.id.as_str(), QuestionState::Pending))
+        );
+        let last = rows.last().unwrap();
+        assert_eq!(
+            (last.id.as_str(), last.state),
+            (row.id.as_str(), QuestionState::Answered)
+        );
+        assert_eq!(
+            last.answer,
+            Some(serde_json::json!([{"kind": "choice", "index": 0}]))
+        );
+        assert!(journal2.waits().last().unwrap().1.is_none(), "wait cleared");
+    }
+
+    /// §6.3: a stored row whose deadline passed while the engine was down is
+    /// `timed_out` at resume and the tool answers its own timeout; an
+    /// `answered` row is rendered without asking anyone.
+    #[tokio::test]
+    async fn republish_past_deadline_and_answered_row() {
+        let (_rt, actor, journal) = with_journal(Duration::from_secs(30)).await;
+        let session = SessionId::new();
+        let asked_at = Utc::now() - chrono::Duration::minutes(40);
+        let row = QuestionRow {
+            id: uuid::Uuid::now_v7().to_string(),
+            session,
+            tool_call_id: Some("c2".into()),
+            kind: QuestionKind::Ask,
+            payload: serde_json::json!({ "id": "x", "session": session, "questions": one_question() }),
+            state: QuestionState::Pending,
+            asked_at,
+            deadline: asked_at + chrono::Duration::minutes(30),
+            answered_at: None,
+            answer: None,
+        };
+        crate::registry::republish(row.clone());
+        let out = Tool::call(
+            &AskUserTool(actor.clone()),
+            AskArgs {
+                questions: Vec::new(),
+            },
+            cx(session, "c2"),
+        )
+        .await
+        .unwrap();
+        assert!(out.is_error && out.content.contains("in time"), "{out:?}");
+        let rows = journal.questions();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(
+            (rows[0].id.as_str(), rows[0].state),
+            (row.id.as_str(), QuestionState::TimedOut)
+        );
+        assert!(actor.ask(PendingAsks).await.unwrap().is_empty());
+
+        let answered = QuestionRow {
+            state: QuestionState::Answered,
+            answer: Some(serde_json::json!([{"kind": "text", "text": "mine"}])),
+            ..row
+        };
+        crate::registry::republish(answered);
+        let out = Tool::call(
+            &AskUserTool(actor.clone()),
+            AskArgs {
+                questions: Vec::new(),
+            },
+            cx(session, "c2"),
+        )
+        .await
+        .unwrap();
+        assert_eq!(out.content, "q: mine");
+        assert_eq!(
+            journal.questions().len(),
+            1,
+            "nothing asked, nothing journaled"
+        );
     }
 }

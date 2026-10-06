@@ -24,7 +24,7 @@ use crate::approval::{Approval, Decision, RequestApproval};
 use crate::ask::{AskUser, AskUserTool};
 use crate::communication::{self, Admitted, CommunicationAccess};
 use crate::jobs::{CloseSessions, InstallActivity, JOBS_ACTOR, Jobs, lock};
-use crate::journal::{InstallJournal, Journal, NoopJournal};
+use crate::journal::{InstallJournal, Journal, NoopJournal, QuestionRow};
 use crate::resources::{CloseAck, CloseTree, SessionResources, TreeOpened};
 use crate::{
     APPROVAL_ACTOR, ASK_ACTOR, DynTool, Policy, PolicyAction, REGISTRY_ACTOR, Risk, ToolCall,
@@ -1195,6 +1195,7 @@ impl Message<ExternalApproval> for ToolRegistry {
                 tool: m.tool,
                 args: m.args,
                 risk: m.risk,
+                call_id: None,
             };
             // Timeout already resolves as `Deny`; an unreachable actor is one too.
             tx.send(
@@ -1351,6 +1352,7 @@ impl Message<InstallJournal> for ToolRegistry {
     /// not running simply keeps its `NoopJournal`.
     async fn handle(&mut self, m: InstallJournal, _: &mut Context<Self, Self::Reply>) {
         self.journal = m.0.clone();
+        *lock(&JOURNAL) = m.0.clone();
         if let Ok(Some(jobs)) = ActorRef::<Jobs>::lookup(JOBS_ACTOR) {
             let _ = jobs.ask(InstallJournal(m.0.clone())).await;
         }
@@ -1362,6 +1364,37 @@ impl Message<InstallJournal> for ToolRegistry {
         }
         tracing::info!("109: journal installed");
     }
+}
+
+/// 109 §6.1: the installed journal, for the human-wait tools other crates
+/// register (`desktop_handoff`, `secret_request*`, `send_message`), which
+/// receive no [`InstallJournal`] of their own. [`NoopJournal`] before the
+/// install.
+static JOURNAL: std::sync::LazyLock<Mutex<Arc<dyn Journal>>> =
+    std::sync::LazyLock::new(|| Mutex::new(Arc::new(crate::NoopJournal)));
+
+/// The journal [`InstallJournal`] installed last ([`NoopJournal`] until then).
+pub fn journal() -> Arc<dyn Journal> {
+    lock(&JOURNAL).clone()
+}
+
+/// 109 §6.2 (`Republish`): the pending `questions` row of a human-wait call
+/// the resume path is about to re-invoke, by `(session, call_id)`. The tool
+/// body takes it with [`take_republish`] and re-arms that question — same id,
+/// remaining deadline — instead of raising a new one.
+static REPUBLISH: std::sync::LazyLock<Mutex<HashMap<(SessionId, String), QuestionRow>>> =
+    std::sync::LazyLock::new(Default::default);
+
+/// Hand the row of `(row.session, row.tool_call_id)` to its next invocation.
+pub fn republish(row: QuestionRow) {
+    if let Some(call) = row.tool_call_id.clone() {
+        lock(&REPUBLISH).insert((row.session, call), row);
+    }
+}
+
+/// The row [`republish`] left for this call, if any; taken once.
+pub fn take_republish(session: SessionId, call_id: &str) -> Option<QuestionRow> {
+    lock(&REPUBLISH).remove(&(session, call_id.to_owned()))
 }
 
 impl Message<ActivityRecipient> for ToolRegistry {
@@ -1546,6 +1579,7 @@ async fn invoke(
             tool: spec.name.clone(),
             args: call.args.clone(),
             risk: spec.risk,
+            call_id: Some(call_id.clone()),
         };
         let suspended = suspend();
         let answer = approval.ask(req).await;

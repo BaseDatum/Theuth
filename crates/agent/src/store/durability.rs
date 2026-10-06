@@ -965,6 +965,24 @@ impl Store {
         rows.into_iter().map(question_of).collect()
     }
 
+    /// 109 W3 (§6.2): every `questions` row of one tool call, newest first —
+    /// the resume path reads the pending one to re-publish it and the
+    /// `answered` one to honour it.
+    pub async fn questions_of_call(
+        &self,
+        session: SessionId,
+        call_id: &str,
+    ) -> anyhow::Result<Vec<QuestionRow>> {
+        let rows: Vec<QuestionTuple> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
+            "SELECT {QUESTION_COLS} FROM questions WHERE session_id = ? AND tool_call_id = ? ORDER BY asked_at DESC, id DESC"
+        )))
+        .bind(session.to_string())
+        .bind(call_id)
+        .fetch_all(&self.read)
+        .await?;
+        rows.into_iter().map(question_of).collect()
+    }
+
     // ---- waits (§4.4) ---------------------------------------------------------
 
     /// Upsert the `waits` row of `w.tool_call_id`: the call began blocking.
