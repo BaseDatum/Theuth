@@ -1,5 +1,11 @@
-import { beforeEach, expect, test, vi } from 'vitest'
+import { afterEach, beforeEach, expect, test, vi } from 'vitest'
 import * as speech from './speech'
+
+// No React render in the runner: `useSpeaking()` reads the store's snapshot straight, to assert the badge.
+vi.mock('react', async (importOriginal) => ({
+  ...(await importOriginal<object>()),
+  useSyncExternalStore: (_sub: unknown, get: () => unknown) => get(),
+}))
 
 // `start`/`prime` open a decoder (libopus as wasm); the fake decodes any packet to 10 ms of silence.
 vi.mock('opus-decoder', () => ({
@@ -26,7 +32,7 @@ const emit = (type: string, e: Record<string, unknown>) => handlers.get(type)?.(
 // iOS keeps its Now Playing island up while the page's context runs or the type is forced, so the idle state
 // (nothing speaking, dictating or recording) must be exactly "suspended + `auto`". A suspended context keeps
 // its scheduled sources and plays them on the next resume, so `speak` must be held until the last one ended
-// and every source must be stopped before a suspend.
+// plus the tail grace (117 D1), and every source must be stopped before a suspend or a resume (117 D2).
 const calls: string[] = []
 class FakeSource {
   buffer: unknown = null
@@ -55,9 +61,15 @@ class FakeGain {
     this.to = node
   }
 }
+let context: FakeContext | null = null
 class FakeContext {
   destination = {}
   currentTime = 0
+  state = 'running'
+  outputLatency = 0
+  constructor() {
+    context = this
+  }
   createGain() {
     return new FakeGain()
   }
@@ -71,10 +83,12 @@ class FakeContext {
   }
   resume() {
     calls.push('resume')
+    this.state = 'running'
     return Promise.resolve()
   }
   suspend() {
     calls.push('suspend')
+    this.state = 'suspended'
     return Promise.resolve()
   }
 }
@@ -82,6 +96,8 @@ const audioSession = { type: 'auto' }
 // `speech.ts` reads both lazily, inside `unlock`/`release`, so stubbing after the import is in time.
 vi.stubGlobal('AudioContext', FakeContext)
 vi.stubGlobal('navigator', { audioSession })
+// The tail timer is `window.setTimeout`; no DOM in the runner.
+vi.stubGlobal('window', globalThis)
 vi.stubGlobal('document', { visibilityState: 'visible', addEventListener: () => undefined, removeEventListener: () => undefined })
 speech.installSpeechListeners()
 // Registered before any `unlock`: the node does not exist yet, so the callback must wait for the first context.
@@ -103,12 +119,17 @@ async function utter(id: string, n: number): Promise<void> {
 }
 
 beforeEach(async () => {
+  vi.useFakeTimers()
   for (const u of ['speak', 'dictate', 'record', 'talk'] as const) await speech.release(u)
   speech.setTalk(null)
   speech.setSpeaking(null)
   calls.length = 0
   sources.length = 0
 })
+afterEach(() => vi.useRealTimers())
+
+/** How often the context was suspended. */
+const suspends = () => calls.filter((c) => c === 'suspend').length
 
 test('a lone use holds the session and its release leaves it suspended and auto', async () => {
   speech.unlock('dictate')
@@ -150,9 +171,10 @@ test('a stray release of a use never held leaves a real holder untouched', async
   expect(calls).toEqual(['resume'])
 })
 
-test('done releases speak only after the last scheduled source has ended', async () => {
+test('done releases speak only after the last scheduled source has ended, then the tail grace (117 D1)', async () => {
   await utter('s1', 3)
   expect(sources).toHaveLength(3)
+  expect(speech.useSpeaking()).toEqual({ id: 's1', entry: 'e' })
   emit('SpeechFinished', { id: 's1', reason: { reason: 'done' } })
   await settle()
   sources[0]!.onended?.()
@@ -162,7 +184,15 @@ test('done releases speak only after the last scheduled source has ended', async
   expect(audioSession.type).toBe('playback')
   sources[2]!.onended?.()
   await settle()
-  expect(calls).toContain('suspend')
+  // Rendered is not yet heard: the badge drops now, the session stays up for the grace.
+  expect(speech.useSpeaking()).toBeNull()
+  expect(calls).not.toContain('suspend')
+  expect(audioSession.type).toBe('playback')
+  vi.advanceTimersByTime(speech.TAIL_MS - 1)
+  expect(calls).not.toContain('suspend')
+  vi.advanceTimersByTime(1)
+  await settle()
+  expect(suspends()).toBe(1)
   expect(audioSession.type).toBe('auto')
 })
 
@@ -180,7 +210,78 @@ test('a packet arriving after the scheduled sources drained keeps the hold and s
   expect(calls).not.toContain('suspend')
   sources[1]!.onended?.()
   await settle()
-  expect(calls).toContain('suspend')
+  expect(calls).not.toContain('suspend')
+  vi.advanceTimersByTime(speech.TAIL_MS)
+  await settle()
+  expect(suspends()).toBe(1)
+})
+
+test('the next block inside the grace keeps the context running: no suspend/resume churn between blocks (117 D1)', async () => {
+  await utter('s1', 1)
+  emit('SpeechFinished', { id: 's1', reason: { reason: 'done' } })
+  await settle()
+  sources[0]!.onended?.()
+  await settle()
+  expect(speech.useSpeaking()).toBeNull()
+  vi.advanceTimersByTime(speech.TAIL_MS / 2)
+  await utter('s2', 1)
+  expect(sources[1]!.connected).toBe(true)
+  vi.advanceTimersByTime(speech.TAIL_MS * 2)
+  await settle()
+  expect(calls).not.toContain('suspend')
+  emit('SpeechFinished', { id: 's2', reason: { reason: 'done' } })
+  await settle()
+  sources[1]!.onended?.()
+  vi.advanceTimersByTime(speech.TAIL_MS)
+  await settle()
+  expect(suspends()).toBe(1)
+  expect(audioSession.type).toBe('auto')
+})
+
+test('stop inside the grace suspends at once, and the timer does not suspend again', async () => {
+  await utter('s1', 1)
+  emit('SpeechFinished', { id: 's1', reason: { reason: 'done' } })
+  await settle()
+  sources[0]!.onended?.()
+  await settle()
+  speech.stop()
+  await settle()
+  expect(suspends()).toBe(1)
+  expect(audioSession.type).toBe('auto')
+  vi.advanceTimersByTime(speech.TAIL_MS * 3)
+  await settle()
+  expect(suspends()).toBe(1)
+})
+
+test('a mic use unlocking a context iOS interrupted cuts the frozen tail and gives the reply up (117 D2)', async () => {
+  await utter('s1', 2)
+  emit('SpeechFinished', { id: 's1', reason: { reason: 'done' } })
+  await settle()
+  // Interrupted mid-tail: the two sources froze in the graph, their `onended` never comes.
+  context!.state = 'interrupted'
+  const out = speech.outputNode()
+  calls.length = 0
+  speech.unlock('record')
+  expect(sources.map((s) => s.stopped)).toEqual([true, true])
+  expect(speech.outputNode()).toBe(out)
+  expect(speech.useSpeaking()).toBeNull()
+  expect(audioSession.type).toBe('play-and-record')
+  expect(calls).toEqual(['stop', 'stop', 'resume'])
+  await speech.release('record')
+  expect(suspends()).toBe(1)
+  expect(audioSession.type).toBe('auto')
+})
+
+test('a new utterance on an interrupted context starts clean: the frozen tail is stopped, the new packet plays (117 D2)', async () => {
+  await utter('s1', 2)
+  emit('SpeechFinished', { id: 's1', reason: { reason: 'done' } })
+  await settle()
+  context!.state = 'interrupted'
+  speech.start('s2', 24_000)
+  speech.push('s2', 'AA==')
+  await settle()
+  expect(sources.map((s) => s.stopped)).toEqual([true, true, false])
+  expect(sources[2]!.connected).toBe(true)
 })
 
 test('stop halts every scheduled source before the suspend, so none can resume later', async () => {

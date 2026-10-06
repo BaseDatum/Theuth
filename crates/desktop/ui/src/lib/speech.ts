@@ -1,6 +1,8 @@
 // 43 §7: read a reply aloud. The engine synthesizes and streams one Opus packet per
 // `SpeechAudio` event; this module decodes (libopus as wasm) and schedules each packet
 // back-to-back on one `AudioContext`, gapless as long as packets arrive before `next`.
+// 117: the session is held `TAIL_MS` past the last `onended` (what is rendered is not yet
+// out of the speaker), and a context iOS left non-running is cut before `unlock` resumes it.
 
 import { useQuery } from '@tanstack/react-query'
 import { OpusDecoder, type OpusDecoderSampleRate } from 'opus-decoder'
@@ -49,11 +51,22 @@ let next = 0
 let id: string | null = null
 /**
  * Sources scheduled and not yet ended. `cut` stops them: a source that is merely disconnected, or left
- * scheduled through `suspend`, plays on (iOS: from where it stopped) the next time the context resumes.
+ * scheduled through `suspend`, plays on (iOS: from where it stopped) the next time the context resumes —
+ * which is why `unlock` cuts whatever a non-running context still holds (117 D2).
  */
 const active = new Set<AudioBufferSourceNode>()
-/** Utterance whose every packet is published (`SpeechFinished { done }`); it ends when `active` drains. */
+/**
+ * Utterance whose every packet is published (`SpeechFinished { done }`); it ends when `active` drains, and the
+ * `speak` hold goes `TAIL_MS` later (117 D1): `onended` is the end of rendering, not of what the speaker plays.
+ */
 let done: string | null = null
+/**
+ * 117 D1: what `onended` does not account for — WebKit's render-ahead ring buffer and the device output latency
+ * (`armTail` adds `outputLatency` on top). Suspending on the spot froze the last words in the output path, to come
+ * out at the next `resume` (the next mic press).
+ */
+export const TAIL_MS = 400
+let tailTimer = 0
 
 /** Who holds the audio session: read-aloud, a dictation's mic tap (54 §4.5), a voice-note recording (45 §7.2), a talk's mic tap (76 §5.3). */
 export type Use = 'speak' | 'dictate' | 'record' | 'talk'
@@ -79,7 +92,15 @@ function session(): void {
  */
 export function unlock(use: Use): AudioContext {
   // Nothing held: whatever is still scheduled belongs to a finished utterance and must not resume with us.
-  if (uses.size === 0) cut()
+  // 117 D2: the same for a context iOS suspended or interrupted under us (route change, lock screen): what is
+  // frozen in it plays on `resume()`, ahead of what `use` is starting — a recording, a dictation, a talk, a new
+  // utterance. A mic use gives the frozen reply up; for `speak`, `start`/`begin` take over from the cut.
+  const frozen = ctx !== null && ctx.state !== 'running'
+  if (uses.size === 0 || frozen) {
+    if (frozen && use !== 'speak' && (id !== null || active.size > 0)) abandon()
+    cut()
+  }
+  if (use === 'speak') clearTail()
   uses.add(use)
   session()
   if (!ctx) {
@@ -100,6 +121,7 @@ export function unlock(use: Use): AudioContext {
  * `unlock` resumes it without a gesture. Idempotent; a use never held releases nothing but the idle state.
  */
 export async function release(use: Use): Promise<void> {
+  if (use === 'speak') clearTail()
   uses.delete(use)
   if (uses.size === 0) {
     cut()
@@ -219,22 +241,63 @@ export function push(speech: string, b64: string, seq = -1): void {
   })
 }
 
-/** The last scheduled source of a fully published utterance has played: clear it and give back `speak`. */
+/** The last scheduled source of a fully published utterance has played: end it. */
 function drain(): void {
   if (done === null || active.size > 0) return
   const speech = done
   done = null
-  clear(speech)
+  end(speech)
 }
 
-/** Utterance `speech` is over: drop the badge and, if it is the one playing (or none is), the `speak` hold. */
+/**
+ * 117 D1: the natural end of `speech`. The badge drops now (so a queued block proceeds at once); the `speak` hold
+ * goes after the tail grace. No `cut`: `active` is empty and `heard` has reported the end; `next` carries over.
+ */
+function end(speech: string): void {
+  if (speaking?.id === speech) setSpeaking(null)
+  // `id === null`: finished (error) before its `SpeechStarted`; only `prime`'s hold is let go then.
+  if (id === speech || id === null) {
+    dec?.free()
+    dec = null
+    id = null
+    armTail()
+  }
+}
+
+/** Release `speak` once what is rendered has left the speaker; `unlock('speak')` within the grace keeps the hold. */
+function armTail(): void {
+  clearTail()
+  // `outputLatency` is absent on older WebKits.
+  const latency = (ctx as { outputLatency?: number } | null)?.outputLatency ?? 0
+  tailTimer = window.setTimeout(() => {
+    tailTimer = 0
+    void release('speak')
+  }, TAIL_MS + latency * 1000)
+}
+
+function clearTail(): void {
+  window.clearTimeout(tailTimer)
+  tailTimer = 0
+}
+
+/** 117 D2: give up the utterance frozen in a non-running context: badge off, decoder freed, `speak` let go at once (no tail). */
+function abandon(): void {
+  setSpeaking(null)
+  dec?.free()
+  dec = null
+  id = null
+  clearTail()
+  uses.delete('speak')
+}
+
+/** Utterance `speech` is over before its end (error, interrupted): drop the badge and, if it is the one playing (or none is), stop. */
 function clear(speech: string): void {
   if (speaking?.id === speech) setSpeaking(null)
   // `id === null`: finished (error) before its `SpeechStarted`; `stop` only drops `prime`'s hold then.
   if (id === speech || id === null) stop()
 }
 
-/** Halt playback now, release the decoder and the session's `speak` hold (see `release`). */
+/** Halt playback now, release the decoder and the session's `speak` hold at once — no tail grace (see `release`). */
 export function stop(): void {
   cut()
   void release('speak')
