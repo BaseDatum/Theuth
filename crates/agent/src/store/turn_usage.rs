@@ -69,7 +69,8 @@ pub(super) fn by_model(rows: &[Sums]) -> Vec<RemoteTokens> {
         let e = by_model
             .entry((&r.harness, r.model.as_deref()))
             .or_default();
-        e.0 = e.0.saturating_add(u32::try_from(r.turns).unwrap_or(u32::MAX));
+        e.0 =
+            e.0.saturating_add(u32::try_from(r.turns).unwrap_or(u32::MAX));
         r.add_to(&mut e.1);
         e.2 |= r.lower_bound;
     }

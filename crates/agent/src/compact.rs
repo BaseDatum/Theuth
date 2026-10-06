@@ -354,6 +354,122 @@ pub fn is_overflow(err: &str) -> bool {
     OVERFLOW_NEEDLES.iter().any(|n| e.contains(n))
 }
 
+/// 116: fewest tokens worth asking for; below this the request is sent anyway and the
+/// overflow path (C, then compaction) takes over.
+pub const REPLY_FLOOR: u32 = 4_096;
+/// 116: flat pad over the scaled prompt estimate (tool-definition and framing drift).
+pub const HEADROOM_PAD: u32 = 2_048;
+
+/// 116: the `max_tokens` to send — the catalog output limit, clamped so the projected
+/// prompt plus the reply fits the window. `window == 0` (unknown) → `output_limit`.
+/// `projected` is in `est` units; `calibration` scales it to the provider's
+/// (`None` reserves a 25 % margin for chars/4 against a real tokeniser, `Some`
+/// 10 %). `output_limit == 0` (unknown) → the remaining window when it is
+/// known, else 0 (the caller leaves `Frame::max_tokens` unset).
+pub fn reply_budget(
+    output_limit: u32,
+    window: u32,
+    projected: u32,
+    calibration: Option<f32>,
+    reasoning_floor: u32,
+) -> u32 {
+    if window == 0 {
+        return output_limit;
+    }
+    let scaled = calibrated(projected, calibration);
+    let margin = if calibration.is_none() {
+        scaled / 4
+    } else {
+        scaled / 10
+    };
+    let reserve = scaled.saturating_add(margin).saturating_add(HEADROOM_PAD);
+    let remaining = window.saturating_sub(reserve);
+    let floor = REPLY_FLOOR.max(reasoning_floor);
+    let fit = remaining.max(floor);
+    if output_limit == 0 {
+        fit
+    } else {
+        output_limit.min(fit)
+    }
+}
+
+/// 116: the numbers a provider quotes in a context-overflow error.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct OverflowNumbers {
+    /// The context window the server enforces.
+    pub window: u32,
+    /// The prompt as the server counted it.
+    pub prompt: u32,
+    /// The `max_tokens` the request carried, when the body quotes it.
+    pub max_tokens: Option<u32>,
+}
+
+/// 116: the window, prompt and `max_tokens` a provider's overflow body
+/// quotes, when it quotes them — vLLM/litellm ("maximum context length is W
+/// … (P prompt tokens plus max_tokens M)"), OpenAI ("maximum context length
+/// is W … (P in the messages, M in the completion)"), Anthropic ("context
+/// limit: P + M > W" and "prompt is too long: P tokens > W maximum", the
+/// latter with no `max_tokens`). `None` when no window is recognisable.
+pub fn overflow_numbers(err: &str) -> Option<OverflowNumbers> {
+    let e = err.to_lowercase();
+    if let Some(rest) = after(&e, "context limit:") {
+        let mut n = nums(rest);
+        let (prompt, max_tokens, window) = (n.next()?, n.next()?, n.next()?);
+        return Some(OverflowNumbers {
+            window,
+            prompt,
+            max_tokens: Some(max_tokens),
+        });
+    }
+    if let Some(rest) = after(&e, "maximum context length is") {
+        let window = nums(rest).next()?;
+        let (prompt, max_tokens) = match num_before(rest, " prompt tokens") {
+            Some(p) => (p, after(rest, "max_tokens").and_then(|r| nums(r).next())),
+            None => (
+                num_before(rest, " in the messages")?,
+                num_before(rest, " in the completion"),
+            ),
+        };
+        return Some(OverflowNumbers {
+            window,
+            prompt,
+            max_tokens,
+        });
+    }
+    if let Some(rest) = after(&e, "too long:") {
+        let prompt = nums(rest).next()?;
+        let window = after(rest, ">").and_then(|r| nums(r).next())?;
+        if rest.contains("maximum") {
+            return Some(OverflowNumbers {
+                window,
+                prompt,
+                max_tokens: None,
+            });
+        }
+    }
+    None
+}
+
+/// The text after the first `anchor`.
+fn after<'a>(s: &'a str, anchor: &str) -> Option<&'a str> {
+    s.find(anchor).map(|i| &s[i + anchor.len()..])
+}
+
+/// Every unsigned integer in `s`, in order (a number too big for `u32` is skipped).
+fn nums(s: &str) -> impl Iterator<Item = u32> + '_ {
+    s.split(|c: char| !c.is_ascii_digit())
+        .filter_map(|t| t.parse().ok())
+}
+
+/// The integer immediately before the first `anchor` (`"120000 in the messages"`).
+fn num_before(s: &str, anchor: &str) -> Option<u32> {
+    let head = &s[..s.find(anchor)?];
+    let start = head
+        .rfind(|c: char| !c.is_ascii_digit())
+        .map_or(0, |i| i + 1);
+    head[start..].parse().ok()
+}
+
 /// Whether a provider error message means a replayed reasoning block was
 /// refused (90 §1.5): the request is resent once without reasoning parts.
 pub fn is_reasoning_rejected(err: &str) -> bool {
@@ -1015,5 +1131,83 @@ mod tests {
             style_of_head(&wrap_head(2, CompactStyle::Cut, "x", Vec::<String>::new())),
             CompactStyle::Cut
         );
+    }
+
+    // 116: the incident numbers and the edges of the clamp.
+    #[test]
+    fn reply_budget_clamps_to_the_remaining_window() {
+        // Unknown window: the catalog figure stands.
+        assert_eq!(reply_budget(943_717, 0, 105_663, None, 0), 943_717);
+        // The incident: output 943 717 in a 1 048 576 window with a 105 663 prompt.
+        let incident = reply_budget(943_717, 1_048_576, 105_663, None, 0);
+        assert!(incident < 943_717, "{incident}");
+        assert!(
+            incident + 105_663 * 5 / 4 + HEADROOM_PAD <= 1_048_576,
+            "{incident}"
+        );
+        // A calibrated estimate reserves a thinner margin.
+        assert!(reply_budget(943_717, 1_048_576, 105_663, Some(1.0), 0) > incident);
+        // Projected near the window: the floor, and the request still goes out.
+        assert_eq!(reply_budget(64_000, 200_000, 199_000, None, 0), REPLY_FLOOR);
+        // Unknown output limit with a known window: whatever remains.
+        assert_eq!(
+            reply_budget(0, 200_000, 100_000, Some(1.0), 0),
+            200_000 - 100_000 - 10_000 - HEADROOM_PAD
+        );
+        // Unknown both: 0, the caller leaves max_tokens unset.
+        assert_eq!(reply_budget(0, 0, 100_000, None, 0), 0);
+        // A reasoning floor above REPLY_FLOOR wins.
+        assert_eq!(reply_budget(64_000, 200_000, 199_000, None, 16_384), 16_384);
+        // Never over the catalog limit when one is known.
+        assert_eq!(reply_budget(8_192, 200_000, 1_000, None, 16_384), 8_192);
+    }
+
+    const OVERFLOW_BODIES: [(&str, Option<OverflowNumbers>); 5] = [
+        (
+            "This server's maximum context length is 1048576 tokens: this request needs a 1049380-token context (105663 prompt tokens plus max_tokens 943717), which exceeds the context window this server was started for; shorten the prompt or reply.",
+            Some(OverflowNumbers {
+                window: 1_048_576,
+                prompt: 105_663,
+                max_tokens: Some(943_717),
+            }),
+        ),
+        (
+            "This model's maximum context length is 128000 tokens. However, you requested 130000 tokens (120000 in the messages, 10000 in the completion). Please reduce the length of the messages or completion.",
+            Some(OverflowNumbers {
+                window: 128_000,
+                prompt: 120_000,
+                max_tokens: Some(10_000),
+            }),
+        ),
+        (
+            "input length and max_tokens exceed context limit: 190000 + 64000 > 200000",
+            Some(OverflowNumbers {
+                window: 200_000,
+                prompt: 190_000,
+                max_tokens: Some(64_000),
+            }),
+        ),
+        (
+            "prompt is too long: 210000 tokens > 200000 maximum",
+            Some(OverflowNumbers {
+                window: 200_000,
+                prompt: 210_000,
+                max_tokens: None,
+            }),
+        ),
+        ("request too large for this model (status 413)", None),
+    ];
+
+    // 116: the four provider bodies, bare and inside genai's web-error wrapper.
+    #[test]
+    fn overflow_numbers_reads_each_provider_body() {
+        for (body, want) in OVERFLOW_BODIES {
+            assert_eq!(overflow_numbers(body), want, "{body}");
+            let wrapped = format!(
+                "Web stream error for model 'zai-org/GLM-5.3-Flash': status 400. Body: {{\"error\":{{\"message\":\"litellm.BadRequestError: OpenAIException - {body}\",\"type\":\"invalid_request_error\",\"code\":400}}}}"
+            );
+            assert!(is_overflow(&wrapped) || want.is_none());
+            assert_eq!(overflow_numbers(&wrapped), want, "{wrapped}");
+        }
     }
 }

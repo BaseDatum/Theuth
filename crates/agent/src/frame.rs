@@ -186,6 +186,8 @@ pub struct Frame<'a> {
     /// reasoning-typed `Custom` part is removed from history and
     /// `ToolCall.thought_signatures` cleared.
     pub strip_reasoning: bool,
+    /// 116: the reply budget for this call, `None` = the catalog output limit (backend.rs).
+    pub max_tokens: Option<u32>,
 }
 
 impl Frame<'_> {
@@ -247,6 +249,9 @@ impl Frame<'_> {
         }
         if let Some(e) = effort {
             opts = opts.with_reasoning_effort(e);
+        }
+        if let Some(n) = self.max_tokens {
+            opts = opts.with_max_tokens(n);
         }
         (req, opts)
     }
@@ -494,6 +499,7 @@ mod tests {
                     history: &history[..n],
                     vision: true,
                     strip_reasoning: false,
+                    max_tokens: None,
                 };
                 let (req, opts) = frame.request(t, session, None);
                 assert_eq!(opts.capture_tool_calls, Some(true));
@@ -534,6 +540,7 @@ mod tests {
             history: &history,
             vision: true,
             strip_reasoning: false,
+            max_tokens: None,
         };
         let session = SessionId::new();
 
@@ -563,6 +570,7 @@ mod tests {
             history: &[],
             vision: true,
             strip_reasoning: false,
+            max_tokens: None,
         };
         let (req, _) = empty.request(Transport::Anthropic, session, None);
         assert_eq!(
@@ -586,6 +594,7 @@ mod tests {
             history: &history,
             vision,
             strip_reasoning: false,
+            max_tokens: None,
         };
 
         let (req, _) = frame(false).request(Transport::Plain, session, None);
@@ -631,6 +640,7 @@ mod tests {
             history: &history,
             vision: true,
             strip_reasoning: false,
+            max_tokens: None,
         }
         .request(Transport::Plain, SessionId::new(), None);
         assert_eq!(req.messages[0].content.tool_responses()[0].images.len(), 1);
@@ -676,6 +686,7 @@ mod tests {
             history: &history,
             vision: true,
             strip_reasoning: strip,
+            max_tokens: None,
         };
         let session = SessionId::new();
 

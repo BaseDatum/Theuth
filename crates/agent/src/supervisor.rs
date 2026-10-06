@@ -855,7 +855,9 @@ impl Agents {
                         stored_names.push(name);
                     } else {
                         tracing::warn!(session = %id, skill = %name, "stored skill no longer exists, not materialised on resume");
-                        notes.push(format!("skill {name} no longer exists and was not materialised"));
+                        notes.push(format!(
+                            "skill {name} no longer exists and was not materialised"
+                        ));
                     }
                 }
                 &stored_names
@@ -1774,13 +1776,15 @@ fn mcp_shim(
     use agent_client_protocol::schema::v1::{McpServer, McpServerStdio};
     let exe = std::env::current_exe()
         .map_err(|e| anyhow::anyhow!("cannot locate own executable: {e}"))?;
-    Ok(McpServer::Stdio(McpServerStdio::new("theuth", exe).args(vec![
-        "--data-dir".to_owned(),
-        data_dir.to_string_lossy().into_owned(),
-        "mcp".to_owned(),
-        "--session".to_owned(),
-        session.to_string(),
-    ])))
+    Ok(McpServer::Stdio(McpServerStdio::new("theuth", exe).args(
+        vec![
+            "--data-dir".to_owned(),
+            data_dir.to_string_lossy().into_owned(),
+            "mcp".to_owned(),
+            "--session".to_owned(),
+            session.to_string(),
+        ],
+    )))
 }
 
 /// Where a peer address points after [`Agents::resolve`].
@@ -2550,7 +2554,11 @@ impl Message<EditTurn> for Agents {
 impl Message<TrimAssistant> for Agents {
     type Reply = Result<(), String>;
 
-    async fn handle(&mut self, m: TrimAssistant, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+    async fn handle(
+        &mut self,
+        m: TrimAssistant,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
         self.search.invalidate();
         // A context edit: candidates admitted against the full reply are stale.
         self.ledger.bump(m.session);
@@ -6399,8 +6407,16 @@ impl Message<ResumeChild> for Agents {
                 "`{agent}` is not a local harness in agents.yaml; a node's session cannot be resumed here"
             ));
         }
-        if self.store.acp_session(m.session).await.map_err(|e| e.to_string())?.is_none() {
-            return Err(format!("{agent}: no harness session id stored; nothing to resume"));
+        if self
+            .store
+            .acp_session(m.session)
+            .await
+            .map_err(|e| e.to_string())?
+            .is_none()
+        {
+            return Err(format!(
+                "{agent}: no harness session id stored; nothing to resume"
+            ));
         }
         // The replayed turn ended `cancelled` — the last one this process
         // saw, or the one the shutdown below is about to cut — so the first
