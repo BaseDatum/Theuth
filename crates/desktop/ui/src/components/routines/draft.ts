@@ -90,8 +90,11 @@ export function draftToFile(d: RoutineDraft): ScheduleFile {
   }
 }
 
+/** A card's draft and the tool call it came from (§6.4). */
+export type Draft = { draft: RoutineDraft; callId: string }
+
 /** The newest `routine_draft` call with args in a session's entries (§6.4), or `null`. */
-export function latestDraft(entries: readonly Entry[]): { draft: RoutineDraft; callId: string } | null {
+export function latestDraft(entries: readonly Entry[]): Draft | null {
   for (let i = entries.length - 1; i >= 0; i--) {
     const e = entries[i]
     if (e?.kind !== 'tool' || e.name !== 'routine_draft') continue

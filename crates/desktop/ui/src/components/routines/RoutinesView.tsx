@@ -1,36 +1,50 @@
 import { Link, useNavigate } from '@tanstack/react-router'
-import { FlaskConical, Play, Plus } from 'lucide-react'
+import { FlaskConical, MessageSquarePlus, Play, Plus } from 'lucide-react'
 import { toast } from 'sonner'
 import { Pulse } from '@/components/chat/Pulse'
 import { SectionBand } from '@/components/nav/SectionBand'
 import { SectionRow } from '@/components/nav/SectionRow'
-import { Empty, useAction } from '@/components/settings/shared'
+import { useAction } from '@/components/settings/shared'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Switch } from '@/components/ui/switch'
-import { useApi } from '@/lib/rpc'
 import { cn } from '@/lib/utils'
 import type { ScheduleInfo } from '@/rpc/bindings/ScheduleInfo'
-import { type Result, cadence, lastCheckText, relative, resultKind, runCount, sortRoutines, verdictText } from './helpers'
-import { KEY, useNotHub, useRoutines } from './queries'
+import type { SensorInfo } from '@/rpc/bindings/SensorInfo'
+import { type Kind, type Result, fromInfo, kindOf, lastCheckText, relative, resultKind, resultLabel, runCount, sentence, sortRoutines, verdictText } from './helpers'
+import { KEY, useNotHub, useRoutines, useRoutinesApi, useSensors } from './queries'
 
-const RESULT_CLASS: Record<Result, string> = {
+export const RESULT_CLASS: Record<Result, string> = {
   ok: 'border-success/40 text-success',
   failed: 'border-danger/40 text-danger',
   skipped: 'border-warning/40 text-warning',
+  check: 'border-border text-fg-tertiary',
 }
 
-/** `/routines`: every schedule file as a row (paperclip's RoutineList shape) — open a row, run it, pause it, or start a new one. */
+const KIND_CLASS: Record<Kind, string> = {
+  Clock: 'bg-layer-2 text-fg-secondary',
+  Once: 'bg-layer-2 text-fg-secondary',
+  Watcher: 'bg-info/15 text-info',
+  Loop: 'bg-warning/15 text-warning',
+}
+
+/** `/routines`: every schedule file as a row — badge · name · sentence · health; open a row, run it, pause it, or describe a new one. */
 export function RoutinesView() {
   const routines = useRoutines()
+  const sensors = useSensors().data
   const list = routines.data && sortRoutines(routines.data)
   return (
     <article className="flex min-h-0 min-w-0 flex-1 flex-col">
       <SectionBand group="agents" />
       <SectionRow>
         <Button asChild size="sm" className="ml-auto">
-          <Link to="/routines/new">
+          <Link to="/routines/new" search={{ chat: '1' }}>
+            <MessageSquarePlus /> Describe it
+          </Link>
+        </Button>
+        <Button asChild size="sm" variant="outline">
+          <Link to="/routines/new" search={{}}>
             <Plus /> New routine
           </Link>
         </Button>
@@ -45,14 +59,26 @@ export function RoutinesView() {
           )}
           {routines.isError && <p className="text-sm text-fg-tertiary">{routines.error.message}</p>}
           {list?.length === 0 && (
-            <Empty>
-              No routine yet. Create one, ask the model to <code>schedule</code> one, or drop a markdown file in ~/.theuth/schedules/.
-            </Empty>
+            <div className="flex flex-col items-start gap-3 py-6">
+              <p className="text-sm text-fg-secondary">A routine is a prompt that runs on a clock, when a sensor says so, or again until done.</p>
+              <div className="flex gap-2">
+                <Button asChild size="sm">
+                  <Link to="/routines/new" search={{ chat: '1' }}>
+                    <MessageSquarePlus /> Describe it
+                  </Link>
+                </Button>
+                <Button asChild size="sm" variant="outline">
+                  <Link to="/routines/new" search={{}}>
+                    Use the form
+                  </Link>
+                </Button>
+              </div>
+            </div>
           )}
           {list && list.length > 0 && (
             <ul className="divide-y divide-border-subtle rounded-lg border border-border-subtle">
               {list.map((s) => (
-                <RoutineRow key={s.name} s={s} />
+                <RoutineRow key={s.name} s={s} sensors={sensors} />
               ))}
             </ul>
           )}
@@ -63,6 +89,31 @@ export function RoutinesView() {
         </div>
       </main>
     </article>
+  )
+}
+
+/** D6 badge: what wakes it. */
+export function KindBadge({ kind }: { kind: Kind }) {
+  return <span className={cn('rounded px-1.5 py-px text-[11px] font-medium', KIND_CLASS[kind])}>{kind}</span>
+}
+
+/** The stop chip (§3 line 1): `until` · `runs 3/10` · `expires 14d`; nothing for a Loop (its trigger is the stop) or no stop. */
+export function StopChip({ s }: { s: ScheduleInfo }) {
+  if (kindOf(fromInfo(s)) === 'Loop') return null
+  const parts: { text: string; title?: string }[] = []
+  if (s.until !== null) parts.push({ text: 'until', title: s.until })
+  if (s.max_runs !== null) parts.push({ text: `runs ${runCount(s)}` })
+  if (s.expires !== null) parts.push({ text: `expires ${s.expires}` })
+  if (parts.length === 0) return null
+  return (
+    <span className="text-xs text-fg-tertiary">
+      {parts.map((p, i) => (
+        <span key={p.text} title={p.title}>
+          {i > 0 && ' · '}
+          {p.text}
+        </span>
+      ))}
+    </span>
   )
 }
 
@@ -78,7 +129,7 @@ export function RoutineChips({ s, notHub }: { s: ScheduleInfo; notHub: boolean }
       )}
       {result && (
         <Badge variant="outline" className={cn('font-normal', RESULT_CLASS[result])} title={s.last_result ?? undefined}>
-          {result}
+          {resultLabel(s.last_result)}
         </Badge>
       )}
       {notHub && s.enabled && (
@@ -105,8 +156,12 @@ export function RoutineChips({ s, notHub }: { s: ScheduleInfo; notHub: boolean }
   )
 }
 
-function RoutineRow({ s }: { s: ScheduleInfo }) {
-  const api = useApi()
+/** The `# arg:` header of the routine's sensor when `list_sensors` knows it (the sentence then names required args only). */
+export const sensorArgs = (s: Pick<ScheduleInfo, 'sensor' | 'when_sensor'>, sensors: SensorInfo[] | undefined) =>
+  sensors?.find((x) => x.name === (s.sensor ?? s.when_sensor?.split(' ')[0]))?.args
+
+function RoutineRow({ s, sensors }: { s: ScheduleInfo; sensors: SensorInfo[] | undefined }) {
+  const api = useRoutinesApi()
   const navigate = useNavigate()
   const notHub = useNotHub()
   const fire = useAction((name: string) => api.fire_schedule(name), {
@@ -119,25 +174,25 @@ function RoutineRow({ s }: { s: ScheduleInfo }) {
     keys: [KEY],
     onSuccess: (v) => toast.message(`Test ${s.name}`, { description: verdictText(v) }),
   })
-  const loop = s.until !== null || s.max_runs !== null
+  const r = fromInfo(s)
+  const title = [s.when, s.when_sensor].filter(Boolean).join(' · ')
   return (
-    <li className={cn('flex items-center gap-3 px-3 py-2.5 hover:bg-layer-1', !s.enabled && 'text-fg-tertiary')}>
-      <Link to="/routines/$name/$section" params={{ name: s.name, section: 'overview' }} className="min-w-0 flex-1">
-        <div className="flex items-center gap-2 text-sm">
+    <li className={cn('flex flex-col gap-2 px-3 py-2.5 hover:bg-layer-1 md:flex-row md:items-center md:gap-3', !s.enabled && 'text-fg-tertiary')}>
+      <Link to="/routines/$name/$section" params={{ name: s.name, section: 'overview' }} search={{}} className="min-w-0 flex-1">
+        <div className="flex flex-wrap items-center gap-2 text-sm">
+          <KindBadge kind={kindOf(r)} />
           <span className="truncate font-medium">{s.name}</span>
           {s.error !== null ? (
             <span className="text-xs text-danger">broken</span>
           ) : !s.enabled ? (
             <span className="text-xs text-fg-tertiary">paused</span>
           ) : null}
-          {loop && (
-            <span className="text-xs text-fg-tertiary" title={s.until ?? undefined}>
-              loop · runs {runCount(s)}
-            </span>
-          )}
+          <StopChip s={s} />
+        </div>
+        <div className="mt-0.5 truncate text-[13px] text-fg-secondary" title={title}>
+          {s.error !== null ? <span className="text-danger">{s.error}</span> : sentence(r, sensorArgs(s, sensors))}
         </div>
         <div className="mt-0.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-fg-secondary">
-          {s.error !== null ? <span className="text-danger">{s.error}</span> : <span title={s.when}>{cadence(s)}</span>}
           {s.next && (
             <span className="tabular-nums" title={new Date(s.next).toLocaleString()}>
               next {relative(s.next)}
@@ -150,27 +205,29 @@ function RoutineRow({ s }: { s: ScheduleInfo }) {
           )}
           {s.last_check && (
             <span className="tabular-nums" title={s.last_check.hash ?? undefined}>
-              check {lastCheckText(s.last_check)}
+              last check {lastCheckText(s.last_check)}
             </span>
           )}
           <RoutineChips s={s} notHub={notHub} />
         </div>
       </Link>
-      <Button variant="outline" size="xs" disabled={fire.isPending || s.error !== null || s.running} onClick={() => fire.mutate(s.name)}>
-        <Play /> Run now
-      </Button>
-      {s.when_sensor !== null && (
-        <Button variant="outline" size="xs" disabled={test.isPending || s.error !== null} onClick={() => test.mutate(s.name)}>
-          <FlaskConical /> Test
+      <div className="flex flex-wrap items-center gap-2">
+        <Button variant="outline" size="xs" disabled={fire.isPending || s.error !== null || s.running} onClick={() => fire.mutate(s.name)}>
+          <Play /> Run now
         </Button>
-      )}
-      <Switch
-        size="sm"
-        checked={s.enabled}
-        disabled={enable.isPending || s.error !== null}
-        aria-label={`${s.enabled ? 'Pause' : 'Resume'} ${s.name}`}
-        onCheckedChange={(v) => enable.mutate(v)}
-      />
+        {s.when_sensor !== null && (
+          <Button variant="outline" size="xs" className="hidden md:inline-flex" disabled={test.isPending || s.error !== null} onClick={() => test.mutate(s.name)}>
+            <FlaskConical /> Test
+          </Button>
+        )}
+        <Switch
+          size="sm"
+          checked={s.enabled}
+          disabled={enable.isPending || s.error !== null}
+          aria-label={`${s.enabled ? 'Pause' : 'Resume'} ${s.name}`}
+          onCheckedChange={(v) => enable.mutate(v)}
+        />
+      </div>
     </li>
   )
 }

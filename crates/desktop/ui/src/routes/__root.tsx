@@ -4,6 +4,7 @@ import { openNewChat } from '@/components/chat/NewChatPane'
 import { DragOverlay } from '@/components/chat/Panes'
 import { MeetingBar } from '@/components/meeting/MeetingBar'
 import { settings } from '@/components/chat/slash'
+import { RoutineDraftBridge } from '@/components/routines/RoutineChat'
 import { AppSidebar } from '@/components/sidebar/AppSidebar'
 import { SearchDialog } from '@/components/sidebar/SearchDialog'
 import { SidebarInset, SidebarProvider, useSidebar } from '@/components/ui/sidebar'
@@ -55,6 +56,7 @@ function Root() {
     <SidebarProvider open={open} onOpenChange={setOpen} style={WIDTH} className="h-band min-h-0">
       <AppSidebar session={session} />
       <SearchHost />
+      <RoutineDraftBridge />
       <DragOverlay />
       <SidebarInset className="min-h-0 overflow-hidden pt-[var(--safe-top)] pr-[var(--safe-right)] pb-[var(--safe-bottom)] pl-[var(--safe-left)]">
         <Outlet />

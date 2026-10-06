@@ -245,7 +245,10 @@ test('§6.2 first send: new_session → rename → seed slice → onSession → 
       return id ?? ''
     }),
   }
-  const loaded = vi.spyOn(useSessions.getState(), 'loadHistory').mockImplementation(() => calls.push('loadHistory'))
+  const loaded = vi.spyOn(useSessions.getState(), 'loadHistory').mockImplementation(() => {
+    calls.push('loadHistory')
+    return true
+  })
   const id = await startRoutineChat(api, 'brief me weekdays', undefined, (s) => calls.push(`onSession ${s}`))
   expect(id).toBe('s1')
   expect(calls).toEqual(['new_session', 'rename_session s1 New routine', 'loadHistory', 'onSession s1', 'use_skill s1 routines brief me weekdays'])
