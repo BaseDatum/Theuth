@@ -6,6 +6,7 @@
 
 use agent::todo::{Status, TodoSnapshot};
 use serde_json::{Value, json};
+use slack_morphism::prelude::*;
 use tokio::time::Instant;
 
 use crate::board;
@@ -89,6 +90,7 @@ impl Plan {
 /// One `plan` block (§5): title = the `in_progress` item, else
 /// `Plan · n of m done`; one task per non-dropped item, `task_id` = its
 /// index in the snapshot; `blocked` → `error` with the reason as details.
+/// Built typed (`SlackPlanBlock`), handed to `post_blocks` as JSON.
 #[must_use]
 pub fn blocks(snapshot: &TodoSnapshot) -> Value {
     let items: Vec<(usize, &agent::todo::Todo)> = snapshot
@@ -113,45 +115,40 @@ pub fn blocks(snapshot: &TodoSnapshot) -> Value {
     } else {
         items.len()
     };
-    let mut tasks: Vec<Value> = items
+    let mut tasks: Vec<SlackTaskCardBlock> = items
         .iter()
         .take(shown)
         .map(|(i, t)| {
             let status = match t.status {
-                Status::Done => "complete",
-                Status::InProgress => "in_progress",
-                Status::Blocked => "error",
-                Status::Pending | Status::Dropped => "pending",
+                Status::Done => SlackTaskCardStatus::Complete,
+                Status::InProgress => SlackTaskCardStatus::InProgress,
+                Status::Blocked => SlackTaskCardStatus::Error,
+                Status::Pending | Status::Dropped => SlackTaskCardStatus::Pending,
             };
-            let mut task = json!({
-                "task_id": i.to_string(),
-                "title": ui::clip(&t.text, TASK_TITLE_MAX),
-                "status": status,
-            });
-            if let Some(reason) = t.reason.as_deref().filter(|r| !r.trim().is_empty()) {
-                task["details"] = rich_text(reason);
-            }
-            task
+            SlackTaskCardBlock::new(i.to_string().into(), ui::clip(&t.text, TASK_TITLE_MAX))
+                .with_status(status)
+                .opt_details(
+                    t.reason
+                        .as_deref()
+                        .filter(|r| !r.trim().is_empty())
+                        .map(rich_text),
+                )
         })
         .collect();
     if items.len() > shown {
-        tasks.push(json!({
-            "task_id": "more",
-            "title": format!("… {} more", items.len() - shown),
-            "status": "pending",
-        }));
+        tasks.push(
+            SlackTaskCardBlock::new("more".into(), format!("… {} more", items.len() - shown))
+                .with_status(SlackTaskCardStatus::Pending),
+        );
     }
-    json!([{ "type": "plan", "title": ui::clip(&title, TITLE_MAX), "tasks": tasks }])
+    json!([SlackBlock::from(SlackPlanBlock::new(
+        ui::clip(&title, TITLE_MAX),
+        tasks
+    ))])
 }
 
-fn rich_text(text: &str) -> Value {
-    json!({
-        "type": "rich_text",
-        "elements": [{
-            "type": "rich_text_section",
-            "elements": [{ "type": "text", "text": text }],
-        }],
-    })
+fn rich_text(text: &str) -> SlackRichTextInlineContent {
+    SlackRichTextBlock::new(vec![SlackRichTextSection::from(text).into()]).into()
 }
 
 #[cfg(test)]

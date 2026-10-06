@@ -741,6 +741,13 @@ mod tests {
     #[test]
     fn collapsed_body_is_plain_sections_capped_at_ten_children() {
         let v = collapsed("↳ x · finished · 2s", "**bold** first\n`code` line");
+        // The JSON matches the fork's typed model (not a `SlackBlock::Unknown`).
+        let typed = crate::api::blocks(v.clone()).unwrap();
+        assert!(matches!(
+            typed[0],
+            slack_morphism::prelude::SlackBlock::Container(_)
+        ));
+        assert_eq!(serde_json::to_value(&typed).unwrap(), v);
         let c = &v[0];
         assert_eq!(c["subtitle"]["text"], "**bold** first");
         assert_eq!(
