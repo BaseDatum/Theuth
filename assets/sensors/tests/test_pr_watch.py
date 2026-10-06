@@ -461,7 +461,7 @@ class Lint(unittest.TestCase):
                     r"\bimport (pathlib|asyncio|sys|threading)\b", r"\{\{secret:\w"):
             self.assertIsNone(re.search(pat, src, re.M), pat)
         header = src.split("\n")[:16]
-        self.assertIn("# theuth-sensor: pr_watch 1", header)
+        self.assertIn("# theuth-sensor: pr_watch 2", header)
         self.assertIn("# hosts: api.github.com", header)
         self.assertFalse(any(h.startswith("# needs:") for h in header))
 
