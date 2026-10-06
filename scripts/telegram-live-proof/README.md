@@ -2,12 +2,14 @@
 
 Runs a scratch theuth engine against a local [telegram-mock-ai](https://github.com/skrashevich/telegram-mock-ai)
 and drives the slash-command wedge scenario end to end: P0 connect, P1 model turn,
-P2 `/sessions`, P3 panel button, P4 model turn after the command, P5 `telegram_status`
+P2 `/sessions`, P3 panel button, P3b `/skills add` prompt → reply with a stalling git URL →
+plain message must still be answered, P4 model turn after the command, P5 `telegram_status`
 latency, P6 restart + turn. Prints a PASS/FAIL table; exit 0 only when all pass.
 
 ```sh
 scripts/telegram-live-proof/proof.sh main            # label = data dir + evidence dir name
 scripts/telegram-live-proof/proof.sh fix --no-build  # reuse the last engine binary
+ENGINE_SRC=~/Develop/theuth-98c scripts/telegram-live-proof/proof.sh final   # build the engine from another checkout
 ```
 
 ## Prerequisites
@@ -52,10 +54,13 @@ scripts/telegram-live-proof/proof.sh fix --no-build  # reuse the last engine bin
 - `rpc.ts` — `bun rpc.ts call|wait|latency <data_dir> …`: JSON-RPC over the engine's WebSocket
   (`engine.json` + `token`), every call with a hard timeout.
 - `inject.ts` — `bun inject.ts message|callback|seq|await|calls|messages|ledger …`: the mock's
-  Admin API (inject a user message or a `callback_query`, wait for a Bot API call in the ledger).
+  Admin API (inject a user message — `--reply-to <id>` makes it a reply — or a `callback_query`;
+  `await … --match/--exclude <regex>` waits for a Bot API call in the ledger).
 - `mock.patch` — against mock commit `314c594`: Bot API call ledger (`GET/DELETE /api/calls`),
-  `reply_markup` stored on `sendRichMessage`, `bot_command` entity on injected `/commands`
-  (+ optional `entities`), `TELEGRAM_MOCK_WELCOME_ENABLED=false`.
+  full `getMe` shape, private-chat `first_name`, multipart params, `sendRichMessageDraft` → `True`,
+  `reply_markup` (inline keyboards only) stored on `sendRichMessage`, `bot_command` entity on
+  injected `/commands` (+ optional `entities`), `reply_to_message_id` on injected messages,
+  `TELEGRAM_MOCK_WELCOME_ENABLED=false`.
 - `mock-config.yaml` — the mock's seed.
 
 ## Reading a failure
@@ -65,3 +70,7 @@ scripts/telegram-live-proof/proof.sh fix --no-build  # reuse the last engine bin
 - `P2` `no sessions panel` — `/sessions` was dispatched (or not) and no `sendRichMessage`
   followed: look for the last `telegram` debug line in `theuth.log.*`.
 - `P5` errors — `telegram_status` stalled: a lock, not a dispatch wedge.
+- `P3b` `no model reply … channel notice` — the plain message was dispatched (👀) but the engine
+  did not take `SendInput` while the prompt's continuation (the stalled clone) was pending: an
+  engine-side stall, not a channel one. `P3b` `no force_reply prompt` — `/skills add` was not
+  answered with a prompt.

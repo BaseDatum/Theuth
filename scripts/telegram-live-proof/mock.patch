@@ -1,5 +1,5 @@
 diff --git a/internal/api/admin.go b/internal/api/admin.go
-index d8af9c1..0d68c27 100644
+index d8af9c1..afd1912 100644
 --- a/internal/api/admin.go
 +++ b/internal/api/admin.go
 @@ -5,6 +5,7 @@ import (
@@ -21,19 +21,20 @@ index d8af9c1..0d68c27 100644
  	return mux
  }
  
-@@ -238,8 +243,9 @@ func (a *AdminServer) handleInjectMessage(w http.ResponseWriter, r *http.Request
+@@ -238,8 +243,10 @@ func (a *AdminServer) handleInjectMessage(w http.ResponseWriter, r *http.Request
  	}
  
  	var req struct {
 -		UserID int64  `json:"user_id"`
 -		Text   string `json:"text"`
-+		UserID   int64                  `json:"user_id"`
-+		Text     string                 `json:"text"`
-+		Entities []models.MessageEntity `json:"entities,omitempty"`
++		UserID           int64                  `json:"user_id"`
++		Text             string                 `json:"text"`
++		Entities         []models.MessageEntity `json:"entities,omitempty"`
++		ReplyToMessageID int                    `json:"reply_to_message_id,omitempty"`
  	}
  	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
  		respondError(w, http.StatusBadRequest, "Bad Request: invalid JSON")
-@@ -258,11 +264,19 @@ func (a *AdminServer) handleInjectMessage(w http.ResponseWriter, r *http.Request
+@@ -258,11 +265,30 @@ func (a *AdminServer) handleInjectMessage(w http.ResponseWriter, r *http.Request
  		return
  	}
  
@@ -44,20 +45,31 @@ index d8af9c1..0d68c27 100644
 +		req.Entities = []models.MessageEntity{{Type: "bot_command", Offset: 0, Length: len(word)}}
 +	}
 +
++	// A reply: the quoted message must exist in this chat (as on Telegram).
++	var replyTo *models.Message
++	if req.ReplyToMessageID != 0 {
++		replyTo, exists = a.store.GetMessage(chatID, req.ReplyToMessageID)
++		if !exists {
++			respondError(w, http.StatusBadRequest, "Bad Request: reply_to_message_id not found")
++			return
++		}
++	}
++
  	msg := a.store.StoreMessage(models.Message{
 -		From: user,
 -		Chat: *chat,
 -		Date: time.Now().Unix(),
 -		Text: req.Text,
-+		From:     user,
-+		Chat:     *chat,
-+		Date:     time.Now().Unix(),
-+		Text:     req.Text,
-+		Entities: req.Entities,
++		From:           user,
++		Chat:           *chat,
++		Date:           time.Now().Unix(),
++		Text:           req.Text,
++		Entities:       req.Entities,
++		ReplyToMessage: replyTo,
  	})
  
  	// Dispatch to all bots in this chat
-@@ -331,3 +345,13 @@ func (a *AdminServer) handleDumpState(w http.ResponseWriter, r *http.Request) {
+@@ -331,3 +357,13 @@ func (a *AdminServer) handleDumpState(w http.ResponseWriter, r *http.Request) {
  	}
  	respondJSON(w, http.StatusOK, state)
  }
@@ -102,7 +114,7 @@ index 555da3d..4af10b5 100644
  
  func (s *Server) handleGetChat(w http.ResponseWriter, r *http.Request, b *bot.Bot) {
 diff --git a/internal/api/handler_messages.go b/internal/api/handler_messages.go
-index e792462..fe8ad72 100644
+index e792462..d01849b 100644
 --- a/internal/api/handler_messages.go
 +++ b/internal/api/handler_messages.go
 @@ -356,6 +356,7 @@ func (s *Server) handleSendRichMessage(w http.ResponseWriter, r *http.Request, b
@@ -133,7 +145,7 @@ index e792462..fe8ad72 100644
  }
  
  func defaultReplyPrompt(user models.User) string {
-@@ -412,3 +408,16 @@ Keep your responses concise and conversational.
+@@ -412,3 +408,18 @@ Keep your responses concise and conversational.
  Output ONLY the message text, no JSON, no formatting markers.
  Use the language that the bot writes in.`
  }
@@ -145,7 +157,9 @@ index e792462..fe8ad72 100644
 +		return nil
 +	}
 +	var kb models.InlineKeyboard
-+	if err := json.Unmarshal([]byte(rm), &kb); err != nil {
++	// force_reply / remove-keyboard markups are not echoed on the Message (as on
++	// Telegram); a null inline_keyboard would not decode in strict clients.
++	if err := json.Unmarshal([]byte(rm), &kb); err != nil || kb.InlineKeyboard == nil {
 +		return nil
 +	}
 +	return &kb

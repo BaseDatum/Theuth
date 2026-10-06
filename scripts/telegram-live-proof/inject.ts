@@ -1,10 +1,10 @@
 #!/usr/bin/env bun
 // telegram-mock-ai Admin API driver (patched mock: see mock.patch).
 //
-//   bun inject.ts message <text>                  → owner sends <text> in the private chat; prints the Message
+//   bun inject.ts message <text> [--reply-to <id>]  → owner sends <text> in the private chat (as a reply); prints the Message
 //   bun inject.ts callback <message_id> <data>    → owner presses a button on <message_id>; prints the callback id
 //   bun inject.ts seq                             → highest ledger seq so far (0 when empty)
-//   bun inject.ts await <m1,m2,…> <since> <timeout_s> [--chat <id>] [--match <regex>]
+//   bun inject.ts await <m1,m2,…> <since> <timeout_s> [--chat <id>] [--match <regex>] [--exclude <regex>]
 //                                                 → first ledger call after <since> whose method is in the list
 //                                                   (and whose params JSON matches --match); exit 1 on timeout
 //   bun inject.ts calls <since> [--all]           → ledger entries (getUpdates filtered unless --all)
@@ -60,7 +60,12 @@ const [cmd, ...args] = process.argv.slice(2);
 try {
   switch (cmd) {
     case "message": {
-      const msg = await api("POST", `/api/chats/${CHAT}/messages`, { user_id: OWNER, text: args[0] });
+      const replyTo = flag(args, "--reply-to");
+      const msg = await api("POST", `/api/chats/${CHAT}/messages`, {
+        user_id: OWNER,
+        text: args[0],
+        ...(replyTo ? { reply_to_message_id: Number(replyTo) } : {}),
+      });
       console.log(JSON.stringify(msg));
       break;
     }
@@ -90,6 +95,8 @@ try {
       const chat = flag(args, "--chat");
       const match = flag(args, "--match");
       const re = match ? new RegExp(match) : null;
+      const ex = flag(args, "--exclude");
+      const exclude = ex ? new RegExp(ex) : null;
       const t0 = Date.now();
       for (;;) {
         for (const e of await calls(since, false)) {
@@ -97,6 +104,7 @@ try {
           const p = JSON.stringify(e.params ?? {});
           if (chat && !new RegExp(`"chat_id":"?${chat}"?`).test(p)) continue;
           if (re && !re.test(p)) continue;
+          if (exclude && exclude.test(p)) continue;
           console.log(JSON.stringify({ waited_ms: Date.now() - t0, ...e }));
           process.exit(0);
         }

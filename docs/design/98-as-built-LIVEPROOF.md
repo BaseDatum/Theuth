@@ -8,9 +8,11 @@ real engine against a local Bot API mock. Worker omp-98c-proof on `test/98c-live
 - Fix (B): throwaway `tmp/98c-integration` = `test/98c-live-proof` + `git merge fix/98c-telegram-wedge`
   (fix commit `69ee546e fix(telegram): a slash command no longer wedges the channel (98c)`).
 - Mock: [telegram-mock-ai](https://github.com/skrashevich/telegram-mock-ai) `314c594` +
-  `scripts/telegram-live-proof/mock.patch` (7 files, +239/−22).
+  `scripts/telegram-live-proof/mock.patch` (7 files, +253/−22).
+- Final (C): `af348178` on `fix/98c-telegram-wedge` round 2, built from the sibling's worktree
+  (`ENGINE_SRC`); adds P3b (prompt reply whose continuation hangs).
 - Evidence dirs (kept on this machine, not committed): `/tmp/98c-proof/out-main/` (A),
-  `/tmp/98c-proof/out-fix/` (B); first-round runs in `out-main-r1/`, `out-fix-r1/`.
+  `/tmp/98c-proof/out-fix/` (B), `/tmp/98c-proof/out-final/` (C); earlier rounds in `*-r1/`.
 
 ## Result
 
@@ -75,6 +77,8 @@ Read first (`internal/`), as the brief asked:
 | injected text has no entities | theuth parses commands from the `bot_command` entity at offset 0, not from `/` | `admin.go`: a leading `/word` gets `bot_command` (0, len) unless `entities` is given |
 | no record of what the bot called | nothing to assert on | `ledger.go` + `GET/DELETE /api/calls?since=`: seq, time, method, params (JSON / multipart fields), status, response, duration |
 | welcome message on first connect | spurious model turn | `router.go`: `TELEGRAM_MOCK_WELCOME_ENABLED=false` |
+| injected message cannot be a reply | the `force_reply` continuation needs `reply_to_message.message_id` | `admin.go`: `reply_to_message_id` on `POST /api/chats/<id>/messages` |
+| `force_reply` markup echoed as `{"inline_keyboard":null}` | tgbot cannot decode a null keyboard on the prompt message quoted in the reply | `handler_messages.go`: only inline keyboards are stored on the message |
 
 The remaining distinction the proof relies on: "wedged" = the ledger shows `getUpdates`
 continuing while no `setMessageReaction`/`send*` follows an injected message; "mock gap" =
@@ -253,6 +257,79 @@ P5 caveat: the fixed run is so short (P0–P4 in 7 s) that the 2 s sampler got 4
 them inside P2–P4 (1 ms and 0 ms). Every step-level `telegram_status` probe in B answered in
 25–45 ms.
 
+## Run C — final branch `af348178` (`fix/98c-telegram-wedge` round 2, 14:08 local)
+
+Built directly from the sibling's worktree (`ENGINE_SRC=/Users/Sky.Moore/Develop/theuth-98c`,
+HEAD `af348178`, which already folds in this proof branch and main `5044521e`). New step
+**P3b** before P4: `/skills add` with no argument → `force_reply` prompt; the owner replies to
+that prompt (`reply_to_message_id` = the prompt's id) with `http://10.255.255.1/hang.git` (a
+non-routable host, so the engine's `AddSkillRepo` clone stalls) and immediately sends a plain
+"still there? one word". Script changes: `inject.ts message … --reply-to <id>`,
+`inject.ts await … --exclude <regex>` (a channel timeout notice is not a model reply),
+`proof.sh` `ENGINE_SRC`, P6 records the sequence of states seen. Evidence `/tmp/98c-proof/out-final/`
+(first attempt with the loose matcher: `out-final-r1/`).
+
+| step | status | ms | detail |
+|---|---|---:|---|
+| P0 | PASS | 1219 | getMe+setMyCommands seen; telegram_status 35 ms → Identity theuth_proof_bot polling=true |
+| P1 | PASS | 1202 | 👀 → sendRichMessageDraft @812ms, final sendRichMessage @204ms, closed by 👌 @1ms |
+| P2 | PASS | 888 | sendRichMessage message_id=4 @807ms: sessions table, `Resume ae7b92e2` button |
+| P3 | PASS | 966 | pressed `cmd:resume:ae7b92e2` → answerCallbackQuery, editMessageText @809ms |
+| P3b | PASS* | 75827 | 👀 @0 s → **channel notice `⚠️ engine did not answer in 20 s` + 😱 @20 s** → model reply (draft @65.5 s, final +2 ms), closed by 👌; prompt itself answered `error: engine did not answer in 20 s` @21 s |
+| P4 | PASS | 1166 | 👀 → sendRichMessageDraft @607ms, final sendRichMessage @404ms, closed by 👌 @1ms |
+| P5 | PASS | — | samples=42 max=7ms errors=0 during_P2-P4=40 (errors 0) — `telegram_status` never stalled, including through the 75 s clone |
+| P6 | PASS | 1041 | restart; telegram_status 24 ms, 69 ms after engine.json → Identity theuth_proof_bot polling=true; states seen: Identity |
+| P6b | PASS | 1933 | 👀 → sendRichMessageDraft @810ms, final sendRichMessage @810ms, closed by 👌 @1ms |
+
+\* PASS by the stated criterion (👀 and a model reply within 120 s), **with a finding**: the
+channel is no longer the bottleneck — the prompt reply ran free, bounded and answered, and the
+plain message was dispatched instantly — but the *engine* did not take `SendInput` for the
+whole duration of the stalled clone. The reply arrived at +75 s after the hang URL only because
+macOS gave up the TCP connect (`agent::skills` reloads skills at the same instant). A host
+that accepts the connection and then stalls would hold every Telegram turn until the clone ends;
+the channel would keep posting `⚠️ engine did not answer in 20 s` + 😱 per message (as it did
+for both P3b and P4 in `out-final-r1`, where P4 was sent 20 s into the clone). The engine logs
+nothing about the clone start or failure.
+
+### P3b ledger (`out-final/ledger.txt`, local time; injections from `mock.out`)
+
+```
+injected 14:08:22.24  "/skills add"                              (msg 5)
+ 20 14:08:23.00 sendRichMessage      {"chat_id":777000111,"reply_markup":{"inline_keyboard":[],"force_reply":true},"rich_message":{"markdown":"Reply with the URL"}}   (msg 6, the prompt)
+injected 14:08:23.11  "http://10.255.255.1/hang.git" reply_to_message_id=6   (msg 7, the reply)
+injected 14:08:23.18  "still there? one word"                    (msg 8, the plain message)
+ 22 14:08:23.183 setMessageReaction   {"chat_id":777000111,"message_id":8,"reaction":[{"emoji":"👀"}]}        ← dispatched at once (lane free)
+ 23 14:08:43.186 sendRichMessage      {"chat_id":777000111,"rich_message":{"markdown":"⚠️ engine did not answer in 20 s"}}   ← SendInput ask bound (20 s)
+ 24 14:08:43.187 setMessageReaction   {… "message_id":8, "emoji":"😱"}
+ 25 14:08:44.187 sendRichMessage      {"chat_id":777000111,"rich_message":{"markdown":"error: engine did not answer in 20 s"}}   ← the prompt reply's own bound (21 s)
+ 28 14:09:38.190 sendChatAction       {"action":"typing","chat_id":777000111}                                 ← engine unblocked (+75 s)
+ 29 14:09:38.690 sendRichMessageDraft {… "draft_id":1 …}
+ 30 14:09:38.891 sendRichMessage      {"chat_id":777000111,"rich_message":{"markdown":"**thought 0 s** … Yes."}}   ← the late model reply to msg 8
+injected 14:09:39.06  "hello again, one word" (P4)               → 👀 @ .068, draft @ .692, final @ .971, 👌 @ .972
+```
+
+### Engine log (round-2 lines)
+
+```
+13:08:22.242Z INFO telegram::channel: telegram command name=skills user=777000111 chat=777000111 outcome="Prompt"
+13:08:28.185Z WARN telegram::port: telegram: engine ask still unanswered ask="SendInput" waited_s=5
+13:08:43.184Z WARN telegram::port: telegram: engine ask timed out ask="SendInput" waited_s=20
+13:08:43.184Z WARN telegram::channel: agent ask failed error=engine did not answer in 20 s
+13:08:44.115Z WARN telegram::channel: telegram command timed out command="prompt reply" bound_s=21
+13:08:44.116Z INFO telegram::channel: telegram prompt reply expect=SkillsAdd user=777000111 chat=777000111 outcome="Reply"
+13:09:38.206Z WARN agent::skills: skill front matter invalid, using file as body path=…/skills/pdf.md   ← skills reloaded = clone attempt over
+```
+
+P6 on this branch: `rpc wait` connects only once the RPC server accepts, by which time
+`TokenRead` has already run, so the 200 ms status poll saw `Identity` straight away and never
+caught `Starting` (the state exists; it is just shorter than the RPC start-up here).
+
+Mock additions for this round (in `mock.patch`): `reply_to_message_id` on injected messages
+(stored, so the engine sees `reply_to_message.message_id`; 400 if the quoted message is not in
+the chat), and `force_reply` / non-inline markups are no longer echoed as
+`"reply_markup":{"inline_keyboard":null}` on the stored message (tgbot cannot decode a null
+keyboard; the `force_reply` request is still visible in the ledger params).
+
 ## Not covered versus real Telegram
 
 - **Draft pacing / animation**: the mock accepts `sendRichMessageDraft` at any rate and only
@@ -275,8 +352,7 @@ them inside P2–P4 (1 ms and 0 ms). Every step-level `telegram_status` probe in
 ```sh
 export ANTHROPIC_API_KEY=…                       # model key for the scratch engine
 scripts/telegram-live-proof/proof.sh main        # on ef1ad0a3 + seam → expect P2/P4/P5 FAIL
-git checkout -b tmp/98c-integration && git merge fix/98c-telegram-wedge
-scripts/telegram-live-proof/proof.sh fix         # → expect all PASS
+ENGINE_SRC=/path/to/fix-worktree scripts/telegram-live-proof/proof.sh final   # build from another checkout → expect all PASS
 ```
 
 Prereqs, knobs (`MODEL_TIMEOUT`, `STEP_TIMEOUT`, `PROOF_MODEL`, `--keep`, `--no-build`) and the
