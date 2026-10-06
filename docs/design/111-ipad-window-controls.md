@@ -80,8 +80,11 @@ not a `deviceName() === 'iPad'` inset.
 ## 6. Sky verifies on device (`just release-ios`)
 
 1. Launch (release build) on iPad 26 and iPhone: no crash at launch (the tao#1244 path is ours now).
-2. iPad windowed: controls sit in a strip above the page; sidebar header / mesh selector and the
-   first-pane header are fully visible; full screen still fine.
+2. iPad, both window modes. Sky's observation on 2.9.0: the overlap happens only when the window is
+   not full screen — in full screen the controls are gone (tauri#15521), which is why no static inset
+   is right. Expected now: windowed → controls in their own strip, `--safe-top` grows, sidebar header /
+   mesh selector and the first-pane header sit below it; full screen → no strip, chrome at the top as
+   today. Toggle between the two with the app open; the chrome must follow without a reload.
 3. Background the app mid-turn → notification still arrives (background task via `Focused`).
 4. Deep link: scan a pairing QR / open a universal link with the app running and cold.
 5. iPad "New Window" (window menu or App Exposé "+"): the extra window closes itself.
