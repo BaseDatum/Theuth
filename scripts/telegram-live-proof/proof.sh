@@ -154,7 +154,7 @@ fi
 # → closing reaction (👌 done / 😱 failed / 🤷 cancelled). Args: step text
 summary() { bun -e 'const e=JSON.parse(await Bun.stdin.text());console.log(e.method+" @"+e.waited_ms+"ms")'; }
 turn() {
-  local step=$1 text=$2 t0 seq react send final closed
+  local step=$1 text=$2 t0 seq react send final closed notice
   t0=$(now_ms); seq=$($INJ seq)
   $INJ message "$text" >"$OUT/$step-inject.json" || { result "$step" FAIL 0 "inject failed"; return; }
   if ! react=$($INJ await setMessageReaction "$seq" $MODEL_TIMEOUT --chat "$CHAT"); then
@@ -162,14 +162,18 @@ turn() {
     result "$step" FAIL $(($(now_ms) - t0)) "no setMessageReaction (👀) within ${MODEL_TIMEOUT}s: the message was never dispatched; telegram_status now: $(status_ms)"; return
   fi
   $INJ await sendChatAction "$seq" $STEP_TIMEOUT --chat "$CHAT" >/dev/null || log "$step: no sendChatAction (continuing)"
-  if send=$($INJ await sendRichMessageDraft,sendRichMessage,sendMessage "$seq" $MODEL_TIMEOUT --chat "$CHAT"); then
-    final=$($INJ await sendRichMessage,sendMessage "$seq" $MODEL_TIMEOUT --chat "$CHAT" | summary) || final="(no final send)"
+  # a model reply — the channel's own "engine did not answer" notice is not one
+  local NOTICE='did not answer'
+  if send=$($INJ await sendRichMessageDraft,sendRichMessage,sendMessage "$seq" $MODEL_TIMEOUT --chat "$CHAT" --exclude "$NOTICE"); then
+    final=$($INJ await sendRichMessage,sendMessage "$seq" $MODEL_TIMEOUT --chat "$CHAT" --exclude "$NOTICE" | summary) || final="(no final send)"
     # the turn is over when the worker swaps 👀 for the closing reaction
     closed=$($INJ await setMessageReaction "$(echo "$react" | bun -e 'console.log(JSON.parse(await Bun.stdin.text()).seq)')" 30 --chat "$CHAT" --match '👌|😱|🤷' | summary) || closed="(no closing reaction)"
-    result "$step" PASS $(($(now_ms) - t0)) "👀 → $(echo "$send" | summary), final $final, closed by $closed"
+    notice=$($INJ await sendRichMessage,sendMessage "$seq" 0 --chat "$CHAT" --match 'did not answer' | summary) && notice=", timeout notice $notice" || notice=""
+    result "$step" PASS $(($(now_ms) - t0)) "👀 → $(echo "$send" | summary), final $final, closed by $closed$notice"
   else
     dump_threads "$step"
-    result "$step" FAIL $(($(now_ms) - t0)) "👀 seen, no send within ${MODEL_TIMEOUT}s"
+    notice=$($INJ await sendRichMessage,sendMessage "$seq" 0 --chat "$CHAT" --match 'did not answer' | summary) && notice="; channel notice $notice" || notice=""
+    result "$step" FAIL $(($(now_ms) - t0)) "👀 seen, no model reply within ${MODEL_TIMEOUT}s$notice"
   fi
 }
 
