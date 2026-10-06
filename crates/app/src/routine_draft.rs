@@ -276,7 +276,10 @@ fn validate(d: &RoutineDraft, sensors: &agent::sensor::SensorRunner) -> Result<(
 fn parts(d: &RoutineDraft) -> String {
     let trigger = match (&d.cron, &d.every, &d.at, &d.when) {
         (Some(c), _, _, _) => format!("cron {c}"),
-        (_, Some(e), _, Some(w)) => format!("every {e} when {w}"),
+        (_, Some(e), _, Some(w)) => format!(
+            "every {e} when {}",
+            w.split_whitespace().next().unwrap_or_default()
+        ),
         (_, Some(e), _, None) => format!("every {e}"),
         (_, _, Some(a), _) => format!("at {a}"),
         _ => "—".to_owned(),
@@ -487,7 +490,7 @@ mod tests {
         assert!(src.contains(r#"c1_head = CardHeader("argo", "routine draft r1-ab12")"#));
         assert!(src.contains(r#"c2_sentence = TextContent("**Weekdays at 09:00**")"#));
         assert!(src.contains(r#"c2_prompt = TextContent("Brief me on \"today\".\nKeep it short.")"#));
-        assert!(src.contains("Trigger `every 60s when pr_watch.py repo=o/r pr=7 token=gh_token` · Stop `max_runs 40` · Run `quiet, approvals false, cwd ~` · Concurrency `queue`"), "{src}");
+        assert!(src.contains("Trigger `every 60s when pr_watch.py` · Stop `max_runs 40` · Run `quiet, approvals false, cwd ~` · Concurrency `queue`"), "{src}");
         assert!(src.contains("Trigger `cron 0 9 * * 1-5` · Stop `never` · Run `defaults` · Concurrency `deferred`"), "{src}");
         assert!(src.contains("**2 routine drafts**"));
         assert!(src.lines().all(|l| l.contains(" = ")));

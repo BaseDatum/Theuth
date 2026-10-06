@@ -622,7 +622,7 @@ mod tests {
         }));
         let text = render_args(&watcher);
         assert!(text.contains("enabled: false\n"), "{text}");
-        assert!(text.contains("agent: nikolai\n") && text.contains("project: web\n"), "{text}");
+        assert!(text.contains("agent: nikolai\n") && text.contains("project: \"web\"\n"), "{text}");
         assert!(!text.contains("fire:") && text.contains("mode: queue\n"), "defaults dropped: {text}");
         assert!(text.contains("created: "), "{text}");
         let spec = file::parse("w", &text).unwrap();
