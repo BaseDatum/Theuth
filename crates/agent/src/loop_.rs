@@ -73,7 +73,7 @@ use crate::continuation::{
 };
 use crate::cost::{CallId, CallKind, CallStatus, CostObservation, Money};
 use crate::durability::{
-    CallState, JournaledCall, LastStep, ResumeKind, ResumePlan, crash, crash_point,
+    CallState, JournaledCall, LastStep, ResumeKind, ResumePlan, StepKind, crash, crash_point,
 };
 use crate::frame::{self, Frame, Transport};
 use crate::peers::SpawnSubagentTool;
@@ -410,6 +410,10 @@ pub struct ContextHistoryNow {
 
 /// Refusal text for context edits while the state is owned by a task (48 §2.3).
 const BUSY: &str = "Session is busy; wait or stop it, then retry.";
+
+/// 109 §9.2: the stop reason of a turn cut by a drain — not written as
+/// `turn_finished`; the next start resumes it.
+const SUSPENDED: &str = "suspended";
 
 /// `tell` (from the turn task to its own session): the turn ended.
 pub struct TurnDone(SessionState);
@@ -4138,6 +4142,13 @@ impl Turn {
                 stop_reason = "timed_out".into();
             }
         }
+        // 109 §9.2: a cancel that came from the shutdown token (a drain's
+        // deadline, SIGTERM) is a suspension — the turn stays open in the
+        // journal and the next start resumes it; nothing below closes it.
+        if stop_reason == "cancelled" && self.shared.rt.shutdown.is_cancelled() {
+            stop_reason = SUSPENDED.into();
+        }
+        let suspended = stop_reason == SUSPENDED;
         // The permit is not held while the result is handed back and the
         // supervisor decides what continues (50 §8); a reacquire that lands
         // later finds another turn (or none) in the slot and drops itself.
@@ -4149,7 +4160,7 @@ impl Turn {
         }
         let interrupted = matches!(
             stop_reason.as_str(),
-            "cancelled" | "timed_out" | "interrupted"
+            "cancelled" | "timed_out" | "interrupted" | SUSPENDED
         );
         if let Some(repl) = self.repl.take() {
             if interrupted {
@@ -4175,6 +4186,10 @@ impl Turn {
                     tracing::warn!(session = %self.shared.id, "harvest: {e}");
                 }
             }
+        }
+        if suspended {
+            tracing::info!(session = %self.shared.id, %turn, "109: turn suspended; resumes on the next start");
+            return self.state;
         }
         // 109 §3.2 / §4.5: a turn whose last row was not a final reply (cancel,
         // error, landing, a stop after a continuation) closes here.
@@ -4392,6 +4407,20 @@ impl Turn {
         turn: TurnId,
         round: u32,
     ) -> Round {
+        // 109 §9.2 step 2: no new model call opens during a drain — the turn
+        // is marked `suspended` and resumes from its newest journal step.
+        if crate::supervisor::draining() {
+            let payload = serde_json::json!({ "reason": "drain" });
+            if let Err(e) = self
+                .shared
+                .store
+                .step(self.shared.id, turn, StepKind::Suspended, None, &payload)
+                .await
+            {
+                tracing::warn!(session = %self.shared.id, "suspended step: {e:#}");
+            }
+            return Round::Stop(SUSPENDED.into());
+        }
         if !self.hold_permit().await {
             return Round::Stop("cancelled".into());
         }
@@ -4980,6 +5009,12 @@ impl Turn {
             self.journal_finished(&call.call_id, &out).await;
             crash_point(&crash::call_point(i, crash::CALL_AFTER_FINISHED));
             outputs[i] = Some(out);
+        }
+        // 109 §9.2 step 3: a batch cut by the shutdown token (a drain's
+        // deadline) is left as the journal has it — `started` rows resume by
+        // the per-call rule, `planned` ones run then; no batch message.
+        if cancelled && self.shared.rt.shutdown.is_cancelled() {
+            return Round::Stop(SUSPENDED.into());
         }
         self.finish_batch(turn, calls, outputs, cancelled, plan, restart)
             .await

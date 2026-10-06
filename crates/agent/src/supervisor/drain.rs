@@ -4,8 +4,11 @@
 //! `start_turn`): in-flight turns get until the deadline, every open turn is
 //! journaled `suspended` (durably, at the start, so a SIGKILL during the
 //! window still reads as a planned stop), the turns still open at the
-//! deadline get a `TurnSuspended` event, idle Monty workers are closed, and
-//! the existing shutdown continues (jobs `KillAll` on the token, W2).
+//! deadline get a `TurnSuspended` event, the job groups are killed (rows
+//! `lost` first, §5.5 — awaited here so the rows are on disk before the
+//! process exits), idle Monty workers are closed, and the existing shutdown
+//! continues. The loop reads [`draining`]: no new model call opens during
+//! the window and a batch cut by the token stays open for the resume.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
@@ -123,6 +126,13 @@ impl Message<Drain> for Agents {
                     reason: m.reason.to_owned(),
                 })
                 .await;
+            }
+            // §9.2 step 6: the job groups go after the window, rows `lost`
+            // first (§5.5). The token-fired `KillAll` that follows is a no-op.
+            if let Ok(Some(jobs)) = ActorRef::<tools::Jobs>::lookup(tools::JOBS_ACTOR)
+                && let Err(e) = jobs.ask(tools::jobs::KillAll).await
+            {
+                tracing::warn!("109: drain: KillAll: {e}");
             }
             // §9.2 step 5: idle workers exit cleanly; a checked-out one goes
             // with its turn (the previous dump stands, 08 §5).
