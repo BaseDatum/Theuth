@@ -7,7 +7,9 @@
 //! reviewer, proposed agents (the hire approval), budgets at 80 % / paused,
 //! unreachable mesh peers, unresolved desktop hand-offs and unanswered secret
 //! requests (79 §6.6, replicated rows). Only dismiss / snooze per item id is
-//! stored (`attention_state`, engine-local). Badge count = the returned list's length.
+//! stored (`attention_state`, engine-local); a dismissal hides the version the
+//! user saw (`dismissed_ms >= at_ms`), a newer version surfaces again (119).
+//! Badge count = the returned list's length.
 
 use std::collections::HashMap;
 
@@ -180,15 +182,17 @@ pub struct Inputs {
 /// Dismissed / snoozed state per item id.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct State {
-    /// When it was dismissed; `Some` = hidden for good.
+    /// When it was dismissed; hides the item while its `at_ms` is not newer
+    /// (119: a re-submitted review / updated task is a new version and surfaces).
     pub dismissed_ms: Option<u64>,
     /// Hidden until then.
     pub snoozed_until_ms: Option<u64>,
 }
 
 impl State {
-    fn hidden(self, now_ms: u64) -> bool {
-        self.dismissed_ms.is_some() || self.snoozed_until_ms.is_some_and(|u| u > now_ms)
+    fn hidden(self, now_ms: u64, at_ms: u64) -> bool {
+        self.dismissed_ms.is_some_and(|d| d >= at_ms)
+            || self.snoozed_until_ms.is_some_and(|u| u > now_ms)
     }
 }
 
@@ -396,7 +400,8 @@ pub fn derive(inputs: &Inputs, states: &HashMap<String, State>, now_ms: u64) -> 
                             || format!("by {}", t.owner),
                             |p| tasks::packet::head(&p.summary),
                         )),
-                        t.updated_ms,
+                        // 119: a re-submitted packet is a new version even when the task row did not change.
+                        packet.map_or(t.updated_ms, |p| p.at_ms.max(t.updated_ms)),
                     )
                 });
             }
@@ -540,7 +545,7 @@ pub fn derive(inputs: &Inputs, states: &HashMap<String, State>, now_ms: u64) -> 
             .get(&i.id)
             .copied()
             .unwrap_or_default()
-            .hidden(now_ms)
+            .hidden(now_ms, i.at_ms)
     });
     out.sort_by_key(|i| std::cmp::Reverse(i.at_ms));
     out
@@ -1164,7 +1169,7 @@ mod tests {
         states.insert(
             hire.id.clone(),
             State {
-                dismissed_ms: Some(1),
+                dismissed_ms: Some(20),
                 snoozed_until_ms: None,
             },
         );
@@ -1271,6 +1276,136 @@ mod tests {
         assert_eq!(detail.chars().count(), 140);
         assert!(detail.ends_with('…'));
         assert_eq!(items.len(), 2, "a stray packet makes no item");
+    }
+
+    /// 119: a dismissal hides the version the user saw. A review re-submitted
+    /// after the dismissal (packet `at_ms` > `dismissed_ms`, task row unchanged)
+    /// is back; dismissed at or after its `at_ms` it stays hidden; a snooze is
+    /// time-based regardless of `at_ms`.
+    #[test]
+    fn dismissal_hides_only_the_dismissed_version() {
+        let ops = tasks::Owner::Agent("ops".into());
+        let r = task(
+            "migrate",
+            tasks::TaskState::Review,
+            ops.clone(),
+            &[],
+            Some(tasks::Owner::User),
+            40,
+        );
+        let key = format!("review:{}", r.id);
+        let mut p = packet(&key, &r.id, tasks::packet::PacketKind::Review);
+        p.at_ms = 70;
+        let inputs = Inputs {
+            tasks: vec![r.clone()],
+            packets: vec![p],
+            ..Default::default()
+        };
+        let dismissed = |ms| {
+            HashMap::from([(
+                key.clone(),
+                State {
+                    dismissed_ms: Some(ms),
+                    snoozed_until_ms: None,
+                },
+            )])
+        };
+        let items = derive(&inputs, &HashMap::new(), 100);
+        assert_eq!(items[0].at_ms, 70, "the packet time wins over updated_ms");
+        assert_eq!(
+            derive(&inputs, &dismissed(60), 100).len(),
+            1,
+            "re-submitted after the dismissal: visible"
+        );
+        assert!(
+            derive(&inputs, &dismissed(70), 100).is_empty(),
+            "dismissed at at_ms: hidden"
+        );
+        assert!(
+            derive(&inputs, &dismissed(80), 100).is_empty(),
+            "dismissed later: hidden"
+        );
+
+        let snoozed = |until| {
+            HashMap::from([(
+                key.clone(),
+                State {
+                    dismissed_ms: None,
+                    snoozed_until_ms: Some(until),
+                },
+            )])
+        };
+        assert!(
+            derive(&inputs, &snoozed(200), 100).is_empty(),
+            "snoozed into the future: hidden"
+        );
+        assert_eq!(
+            derive(&inputs, &snoozed(90), 100).len(),
+            1,
+            "snooze expired: visible"
+        );
+
+        // Without a packet the task row is the version: updated_ms 40 vs dismissed 50.
+        let bare = Inputs {
+            tasks: vec![r],
+            ..Default::default()
+        };
+        assert!(derive(&bare, &dismissed(50), 100).is_empty());
+    }
+
+    /// 119: a blocked item dismissed, then the task updated → visible again;
+    /// a `decision:` item's `at_ms` does not move on its own, so it stays hidden.
+    #[test]
+    fn blocked_item_resurfaces_on_update_and_decision_stays_dismissed() {
+        let ops = tasks::Owner::Agent("ops".into());
+        let mut b = task(
+            "deploy",
+            tasks::TaskState::Blocked,
+            ops.clone(),
+            &["someone"],
+            None,
+            40,
+        );
+        let d = task(
+            "cap",
+            tasks::TaskState::Blocked,
+            ops,
+            &["decision:d1"],
+            None,
+            40,
+        );
+        let states = HashMap::from([
+            (
+                format!("blocked:{}", b.id),
+                State {
+                    dismissed_ms: Some(50),
+                    snoozed_until_ms: None,
+                },
+            ),
+            (
+                format!("decision:{}:decision:d1", d.id),
+                State {
+                    dismissed_ms: Some(50),
+                    snoozed_until_ms: None,
+                },
+            ),
+        ]);
+        let inputs = Inputs {
+            tasks: vec![b.clone(), d.clone()],
+            ..Default::default()
+        };
+        assert!(
+            derive(&inputs, &states, 100).is_empty(),
+            "both dismissed after their at_ms"
+        );
+        b.updated_ms = 60;
+        let inputs = Inputs {
+            tasks: vec![b, d],
+            ..Default::default()
+        };
+        let items = derive(&inputs, &states, 100);
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].kind, AttentionKind::Blocked);
     }
 
     /// 106 F-2: a forward chain lists the newest decision addressed to the
@@ -1491,7 +1626,7 @@ mod tests {
             (
                 "handoff:h1".to_owned(),
                 State {
-                    dismissed_ms: Some(1),
+                    dismissed_ms: Some(50),
                     snoozed_until_ms: None,
                 },
             ),
@@ -1653,7 +1788,7 @@ mod tests {
             (
                 "show:c1".to_owned(),
                 State {
-                    dismissed_ms: Some(1),
+                    dismissed_ms: Some(50),
                     snoozed_until_ms: None,
                 },
             ),
@@ -1671,7 +1806,7 @@ mod tests {
             .collect();
         assert_eq!(
             left,
-            [m.id.clone()],
+            std::slice::from_ref(&m.id),
             "dismissed show and snoozed ask hidden"
         );
     }
