@@ -65,9 +65,12 @@ pub struct SlackConfig {
     pub plan: bool,
     /// What `MessageDelivered` renders (110 §6).
     pub deliveries: Deliveries,
-    /// Wave 2 (110 §8): json-render → Block Kit. Parsed, unused yet.
+    /// `json-render` fences in the reply as Block Kit (110 §8); `false`
+    /// flattens them into code blocks as 30 §9 did.
     pub blocks: bool,
-    /// Wave 2 (110 §8): a canvas beside the board. Parsed, unused yet.
+    /// Deferred (110 §8 optional, §16): a canvas beside a board create.
+    /// Parsed and unused — needs the `canvases:write` scope in
+    /// `manifest.yaml` and a reinstall of the app.
     pub canvases: bool,
 }
 
