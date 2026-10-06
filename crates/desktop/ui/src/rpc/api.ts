@@ -99,6 +99,7 @@ import type { RepoInfo } from '@/rpc/bindings/RepoInfo'
 import type { Revision } from '@/rpc/bindings/Revision'
 import type { RunInfo } from '@/rpc/bindings/RunInfo'
 import type { ScheduleInfo } from '@/rpc/bindings/ScheduleInfo'
+import type { SensorInfo } from '@/rpc/bindings/SensorInfo'
 import type { ScheduleFile } from '@/rpc/bindings/ScheduleFile'
 import type { Verdict } from '@/rpc/bindings/Verdict'
 import type { ArtifactMatchContext } from '@/rpc/bindings/ArtifactMatchContext'
@@ -720,6 +721,10 @@ export interface Api {
   delete_schedule(name: string): Promise<void>
   /** The 40 §1.12 verdict for a `when:` schedule (dry-run twice, probe); rejects with `no such schedule` / `not a watcher`. */
   test_schedule(name: string): Promise<Verdict>
+  /** The 40 §1.12 dry run on an unsaved file (108 §9.4): nothing written; rejects with the parse error or `not a watcher`. */
+  test_schedule_file(file: ScheduleFile): Promise<Verdict>
+  /** Every installed sensor with its `# arg:` header (108 §9.2); the form's Sensor picker. */
+  list_sensors(): Promise<SensorInfo[]>
   /** `id`: the client input id (70 SEND-NEVER-LOSES); a retry with the same id within the engine's window is acked without a second row. */
   send_input(
     session: SessionId | null,
@@ -961,6 +966,7 @@ export const METHODS = [
   'list_queued',
   'list_schedules',
   'list_secrets',
+  'list_sensors',
   'list_sessions',
   'list_skills',
   'list_terminals',
@@ -1137,6 +1143,7 @@ export const METHODS = [
   'telegram_remove_group',
   'telegram_status',
   'test_schedule',
+  'test_schedule_file',
   'title_model',
   'transcribe',
   'undo',
