@@ -5993,6 +5993,50 @@ mod tests {
         );
     }
 
+    /// 109 §10.3 wire shapes the desktop's bindings rely on: the interrupted
+    /// history row, `Loaded.resume` (absent → `None`), the `resume` attention
+    /// kind, and `resume_turn` registered on the module.
+    #[tokio::test]
+    async fn durability_wire_shapes() {
+        let at = chrono::DateTime::parse_from_rfc3339("2026-10-06T12:05:00Z")
+            .unwrap()
+            .with_timezone(&chrono::Utc);
+        let row = agent::HistoryEntry::Interrupted {
+            text: "half a re".into(),
+            at,
+            context: None,
+        };
+        assert_eq!(
+            serde_json::to_value(&row).unwrap(),
+            serde_json::json!({ "role": "interrupted", "text": "half a re", "at": "2026-10-06T12:05:00Z", "context": null })
+        );
+        let turn = runtime::TurnId::new();
+        let loaded = agent::Loaded {
+            resume: Some(agent::ResumeState {
+                turn,
+                kind: agent::durability::ResumeKind::Suspended,
+                interrupted_at: at,
+            }),
+            ..Default::default()
+        };
+        let v = serde_json::to_value(&loaded).unwrap();
+        assert_eq!(v["resume"]["kind"], "suspended");
+        assert_eq!(v["resume"]["turn"], turn.to_string());
+        let back: agent::Loaded = serde_json::from_value(v).unwrap();
+        assert_eq!(back.resume, loaded.resume);
+        let mut pre109 = serde_json::to_value(agent::Loaded::default()).unwrap();
+        pre109.as_object_mut().unwrap().remove("resume");
+        let old: agent::Loaded = serde_json::from_value(pre109).unwrap();
+        assert_eq!(old.resume, None, "a pre-109 engine's page still parses");
+        assert_eq!(
+            serde_json::to_value(roster::attention::AttentionKind::Resume).unwrap(),
+            "resume"
+        );
+        let rt = Runtime::new(figment::Figment::new(), std::env::temp_dir());
+        let names: Vec<&str> = Server::new(rt).into_rpc().method_names().collect();
+        assert!(names.contains(&"resume_turn"), "{names:?}");
+    }
+
     #[test]
     fn communication_changed_reaches_scoped_and_tree_subscribers() {
         let global =
