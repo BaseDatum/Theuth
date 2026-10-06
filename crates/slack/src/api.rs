@@ -103,20 +103,18 @@ pub enum Chunk {
         sources: Vec<Source>,
     },
     /// Block Kit blocks (a serde_json array) in the body where they appear
-    /// (110 §8): sent verbatim, so `container` / `data_table` /
-    /// `data_visualization` / `plan` pass although morphism's `SlackBlock`
-    /// cannot type them.
+    /// (110 §8). Typed through [`blocks`]: a block morphism does not model
+    /// lands in `SlackBlock::Unknown` and serialises verbatim.
     Blocks(serde_json::Value),
 }
 
-impl Chunk {
-    /// The chunk object inside `chunks` on the wire. `Task` goes through
-    /// morphism's `SlackStreamChunk::TaskUpdate` so its source URLs are
-    /// validated; the other two are raw.
-    fn wire(self) -> Result<serde_json::Value, ApiError> {
-        Ok(match self {
-            Chunk::Text(text) => serde_json::json!({ "type": "markdown_text", "text": text }),
-            Chunk::Blocks(blocks) => serde_json::json!({ "type": "blocks", "blocks": blocks }),
+impl TryFrom<Chunk> for SlackStreamChunk {
+    type Error = ApiError;
+
+    fn try_from(c: Chunk) -> Result<Self, Self::Error> {
+        Ok(match c {
+            Chunk::Text(text) => SlackStreamChunk::MarkdownText { text },
+            Chunk::Blocks(b) => SlackStreamChunk::Blocks { blocks: blocks(b)? },
             Chunk::Task {
                 id,
                 title,
@@ -124,42 +122,38 @@ impl Chunk {
                 details,
                 output,
                 sources,
-            } => {
-                let task = SlackStreamChunk::TaskUpdate {
-                    id: id.into(),
-                    title,
-                    hide_title: None,
-                    icon: None,
-                    status: status.wire(),
-                    details,
-                    output,
-                    sources: (!sources.is_empty())
-                        .then(|| {
-                            sources
-                                .into_iter()
-                                .map(|s| {
-                                    let url = s.url.parse().map_err(|e| {
-                                        ApiError::Transport(format!("task source URL: {e}"))
-                                    })?;
-                                    Ok(SlackTaskCardSource::Url(SlackUrlSourceElement::new(
-                                        url, s.text,
-                                    )))
-                                })
-                                .collect::<Result<Vec<_>, ApiError>>()
-                        })
-                        .transpose()?,
-                };
-                serde_json::to_value(task)
-                    .map_err(|e| ApiError::Transport(format!("task_update: {e}")))?
-            }
+            } => SlackStreamChunk::TaskUpdate {
+                id: id.into(),
+                title,
+                hide_title: None,
+                icon: None,
+                status: status.wire(),
+                details,
+                output,
+                sources: (!sources.is_empty())
+                    .then(|| {
+                        sources
+                            .into_iter()
+                            .map(|s| {
+                                let url = s.url.parse().map_err(|e| {
+                                    ApiError::Transport(format!("task source URL: {e}"))
+                                })?;
+                                Ok(SlackTaskCardSource::Url(SlackUrlSourceElement::new(
+                                    url, s.text,
+                                )))
+                            })
+                            .collect::<Result<Vec<_>, ApiError>>()
+                    })
+                    .transpose()?,
+            },
         })
     }
 }
 
 /// `chunks` for a stream request; `None` when there is nothing to send.
-fn chunks(v: Vec<Chunk>) -> Result<Option<Vec<serde_json::Value>>, ApiError> {
+fn chunks(v: Vec<Chunk>) -> Result<Option<Vec<SlackStreamChunk>>, ApiError> {
     (!v.is_empty())
-        .then(|| v.into_iter().map(Chunk::wire).collect())
+        .then(|| v.into_iter().map(TryInto::try_into).collect())
         .transpose()
 }
 
@@ -429,24 +423,15 @@ impl Api {
         r
     }
 
-    fn post(
-        &self,
-        channel: &str,
-        thread_ts: Option<&str>,
-        content: SlackMessageContent,
-    ) -> impl Future<Output = Result<String, ApiError>> + '_ {
-        let req = SlackApiChatPostMessageRequest::new(channel.into(), content)
-            .opt_thread_ts(thread_ts.map(Into::into));
-        async move {
-            self.run("chat.postMessage", async {
-                self.client
-                    .open_session(&self.bot)
-                    .chat_post_message(&req)
-                    .await
-            })
-            .await
-            .map(|r| r.ts.0)
-        }
+    async fn post(&self, req: SlackApiChatPostMessageRequest) -> Result<String, ApiError> {
+        self.run("chat.postMessage", async {
+            self.client
+                .open_session(&self.bot)
+                .chat_post_message(&req)
+                .await
+        })
+        .await
+        .map(|r| r.ts.0)
     }
 
     fn update(
@@ -488,76 +473,13 @@ impl Api {
     }
 }
 
-/// Our serde_json blocks as morphism's typed blocks (the slash-command ack,
-/// `channel::ack`, answers with a typed `SlackCommandEventResponse`).
+/// Our serde_json blocks as morphism's typed blocks. Total since the fork
+/// pin (design 110 W6): a block morphism does not model — or whose body
+/// does not match its model — lands in `SlackBlock::Unknown` and serialises
+/// verbatim, so `container` / `plan` / `data_table` / `data_visualization`
+/// reach the wire untouched. Only a non-array / non-object input fails.
 pub(crate) fn blocks(v: serde_json::Value) -> Result<Vec<SlackBlock>, ApiError> {
     serde_json::from_value(v).map_err(|e| ApiError::Transport(format!("blocks: {e}")))
-}
-
-/// `chat.postMessage` body for [`SlackApi::post_blocks`]: the caller's
-/// blocks verbatim. Morphism `e2a4b01`'s `SlackBlock` has no `container`,
-/// `plan`, `data_table` or `data_visualization` variant and no catch-all, so
-/// the 110 §5 plan and §6 peer container cannot go through
-/// `SlackMessageContent` (design 110 as-built INTEGRATE).
-#[derive(serde::Serialize)]
-struct PostBlocks<'a> {
-    channel: &'a str,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    thread_ts: Option<&'a str>,
-    blocks: &'a serde_json::Value,
-    unfurl_links: bool,
-}
-
-/// `chat.update` body for [`SlackApi::update_blocks`]; see [`PostBlocks`].
-#[derive(serde::Serialize)]
-struct UpdateBlocks<'a> {
-    channel: &'a str,
-    ts: &'a str,
-    blocks: &'a serde_json::Value,
-}
-
-/// `chat.startStream` body (timeline mode); `chunks` are [`Chunk::wire`]
-/// objects, so a `blocks` chunk carries any block (110 §8, the same reason
-/// as [`PostBlocks`]).
-#[derive(serde::Serialize)]
-struct StartStream<'a> {
-    channel: &'a str,
-    thread_ts: &'a str,
-    recipient_user_id: &'a str,
-    recipient_team_id: &'a str,
-    task_display_mode: &'static str,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    chunks: Option<Vec<serde_json::Value>>,
-}
-
-/// `chat.appendStream` body; see [`StartStream`].
-#[derive(serde::Serialize)]
-struct AppendStream<'a> {
-    channel: &'a str,
-    ts: &'a str,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    chunks: Option<Vec<serde_json::Value>>,
-}
-
-/// `chat.stopStream` body; `blocks` is the footer `context` block.
-#[derive(serde::Serialize)]
-struct StopStream<'a> {
-    channel: &'a str,
-    ts: &'a str,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    blocks: Option<serde_json::Value>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    chunks: Option<Vec<serde_json::Value>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    session_status: Option<SlackAgentSessionStatus>,
-}
-
-/// What we read back from `chat.postMessage` / `chat.update` and the three
-/// stream methods. Slack echoes the message (with its blocks) too; ignoring
-/// it keeps a `container` from failing typed deserialization on the way back.
-#[derive(serde::Deserialize)]
-struct Posted {
-    ts: String,
 }
 
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -574,37 +496,30 @@ impl SlackApi for Api {
         team: &str,
         first: Vec<Chunk>,
     ) -> Result<String, ApiError> {
-        let req = StartStream {
-            channel,
-            thread_ts,
-            recipient_user_id: user,
-            recipient_team_id: team,
-            task_display_mode: "timeline",
-            chunks: chunks(first)?,
-        };
+        let req = SlackApiChatStartStreamRequest::new(channel.into())
+            .with_thread_ts(thread_ts.into())
+            .with_recipient_user_id(user.into())
+            .with_recipient_team_id(team.into())
+            .with_task_display_mode(SlackStreamTaskDisplayMode::Timeline)
+            .opt_chunks(chunks(first)?);
         self.run("chat.startStream", async {
             self.client
                 .open_session(&self.bot)
-                .http_session_api
-                .http_post::<_, Posted>("chat.startStream", &req, Some(&SLACK_TIER2_METHOD_CONFIG))
+                .chat_start_stream(&req)
                 .await
         })
         .await
-        .map(|r| r.ts)
+        .map(|r| r.ts.0)
     }
 
     async fn append_stream(&self, channel: &str, ts: &str, c: Vec<Chunk>) -> Result<(), ApiError> {
-        let req = AppendStream {
-            channel,
-            ts,
-            chunks: chunks(c)?,
-        };
+        let req =
+            SlackApiChatAppendStreamRequest::new(channel.into(), ts.into()).opt_chunks(chunks(c)?);
         self.pace("chat.appendStream", APPEND_GAP).await;
         self.run("chat.appendStream", async {
             self.client
                 .open_session(&self.bot)
-                .http_session_api
-                .http_post::<_, Posted>("chat.appendStream", &req, Some(&SLACK_TIER4_METHOD_CONFIG))
+                .chat_append_stream(&req)
                 .await
         })
         .await
@@ -619,23 +534,18 @@ impl SlackApi for Api {
         footer: Option<String>,
         session_status: Option<&str>,
     ) -> Result<(), ApiError> {
-        let req = StopStream {
-            channel,
-            ts,
-            blocks: footer.map(|f| {
-                serde_json::json!([{
-                    "type": "context",
-                    "elements": [{ "type": "mrkdwn", "text": f }],
-                }])
-            }),
-            chunks: chunks(c)?,
-            session_status: session_status.map(self::session_status).transpose()?,
-        };
+        let content = SlackMessageContent::new().opt_blocks(footer.map(|f| {
+            vec![SlackBlock::Context(SlackContextBlock::new(vec![
+                SlackContextBlockElement::MarkDown(SlackBlockMarkDownText::new(f)),
+            ]))]
+        }));
+        let req = SlackApiChatStopStreamRequest::new(channel.into(), ts.into(), content)
+            .opt_chunks(chunks(c)?)
+            .opt_session_status(session_status.map(self::session_status).transpose()?);
         self.run("chat.stopStream", async {
             self.client
                 .open_session(&self.bot)
-                .http_session_api
-                .http_post::<_, Posted>("chat.stopStream", &req, Some(&SLACK_TIER2_METHOD_CONFIG))
+                .chat_stop_stream(&req)
                 .await
         })
         .await
@@ -648,10 +558,10 @@ impl SlackApi for Api {
         thread_ts: Option<&str>,
         markdown: &str,
     ) -> Result<String, ApiError> {
+        let content = SlackMessageContent::new().with_markdown_text(markdown.to_owned());
         self.post(
-            channel,
-            thread_ts,
-            SlackMessageContent::new().with_markdown_text(markdown.to_owned()),
+            SlackApiChatPostMessageRequest::new(channel.into(), content)
+                .opt_thread_ts(thread_ts.map(Into::into)),
         )
         .await
     }
@@ -674,50 +584,25 @@ impl SlackApi for Api {
         &self,
         channel: &str,
         thread_ts: Option<&str>,
-        blocks: serde_json::Value,
+        b: serde_json::Value,
     ) -> Result<String, ApiError> {
-        let req = PostBlocks {
-            channel,
-            thread_ts,
-            blocks: &blocks,
-            unfurl_links: false,
-        };
-        self.run("chat.postMessage", async {
-            self.client
-                .open_session(&self.bot)
-                .http_session_api
-                .http_post::<_, Posted>(
-                    "chat.postMessage",
-                    &req,
-                    Some(&CHAT_POST_MESSAGE_SPECIAL_LIMIT_RATE_CTL),
-                )
-                .await
-        })
+        let content = SlackMessageContent::new().with_blocks(blocks(b)?);
+        self.post(
+            SlackApiChatPostMessageRequest::new(channel.into(), content)
+                .opt_thread_ts(thread_ts.map(Into::into))
+                .with_unfurl_links(false),
+        )
         .await
-        .map(|r| r.ts)
     }
 
     async fn update_blocks(
         &self,
         channel: &str,
         ts: &str,
-        blocks: serde_json::Value,
+        b: serde_json::Value,
     ) -> Result<(), ApiError> {
-        let req = UpdateBlocks {
-            channel,
-            ts,
-            blocks: &blocks,
-        };
-        self.pace("chat.update", UPDATE_GAP).await;
-        self.run("chat.update", async {
-            self.client
-                .open_session(&self.bot)
-                .http_session_api
-                .http_post::<_, Posted>("chat.update", &req, Some(&SLACK_TIER3_METHOD_CONFIG))
-                .await
-        })
-        .await
-        .map(|_| ())
+        let content = SlackMessageContent::new().with_blocks(blocks(b)?);
+        self.update(channel, ts, content).await
     }
 
     async fn ephemeral(&self, channel: &str, user: &str, text: &str) -> Result<(), ApiError> {
@@ -954,7 +839,10 @@ mod tests {
                 text: "output".into(),
             }],
         };
-        let wire = task("https://example.com/output").wire().unwrap();
+        let wire = serde_json::to_value(
+            SlackStreamChunk::try_from(task("https://example.com/output")).unwrap(),
+        )
+        .unwrap();
         assert_eq!(wire["type"], "task_update");
         assert_eq!(wire["status"], "complete");
         assert_eq!(
@@ -963,20 +851,26 @@ mod tests {
                 "type": "url", "url": "https://example.com/output", "text": "output"
             })
         );
-        assert!(task("not a URL").wire().is_err());
+        assert!(SlackStreamChunk::try_from(task("not a URL")).is_err());
     }
 
-    /// 110 §8: a `blocks` chunk carrying a `data_table` (unknown to
-    /// morphism) sits verbatim in `chunks` beside a `task_update` and a
-    /// `markdown_text`; the stream responses parse to their `ts`.
+    /// 110 §8: a `blocks` chunk carrying a `data_table` (typed by the fork)
+    /// and a block morphism does not model (`SlackBlock::Unknown`) reaches
+    /// `chunks` value-equal beside a `task_update` and a `markdown_text`;
+    /// the typed stream responses parse an echoed message holding them.
     #[test]
     fn blocks_chunk_reaches_the_stream_wire_verbatim() {
-        let table = serde_json::json!([{
-            "type": "data_table",
-            "caption": "Table",
-            "column_settings": [{"is_wrapped": true}],
-            "rows": [[{"type": "raw_text", "text": "a"}]],
-        }]);
+        let table = serde_json::json!([
+            {
+                "type": "data_table",
+                "caption": "Table",
+                "rows": [
+                    [{"type": "raw_text", "text": "n"}],
+                    [{"type": "raw_number", "value": 3.0, "text": "3"}],
+                ],
+            },
+            {"type": "some_future_block", "x": [1, 2]},
+        ]);
         let c = chunks(vec![
             Chunk::Text("before".into()),
             Chunk::Blocks(table.clone()),
@@ -991,102 +885,185 @@ mod tests {
         ])
         .unwrap()
         .unwrap();
-        assert_eq!(
-            c[0],
-            serde_json::json!({"type": "markdown_text", "text": "before"})
-        );
-        assert_eq!(c[1], serde_json::json!({"type": "blocks", "blocks": table}));
-        assert_eq!(c[2]["type"], "task_update");
-        assert_eq!(c[2]["id"], "c1");
-        assert_eq!(c[2]["status"], "in_progress");
-        assert!(c[2].get("sources").is_none(), "{:?}", c[2]);
+        assert!(matches!(c[1], SlackStreamChunk::Blocks { .. }));
         assert!(chunks(Vec::new()).unwrap().is_none());
 
-        let append = serde_json::to_value(AppendStream {
-            channel: "C1",
-            ts: "1.1",
-            chunks: Some(c.clone()),
-        })
+        let append = serde_json::to_value(
+            SlackApiChatAppendStreamRequest::new("C1".into(), "1.1".into()).with_chunks(c.clone()),
+        )
         .unwrap();
+        assert_eq!(
+            append["chunks"][0],
+            serde_json::json!({"type": "markdown_text", "text": "before"})
+        );
         assert_eq!(append["chunks"][1]["blocks"], table);
-        let start = serde_json::to_value(StartStream {
-            channel: "C1",
-            thread_ts: "1.1",
-            recipient_user_id: "U1",
-            recipient_team_id: "T1",
-            task_display_mode: "timeline",
-            chunks: None,
-        })
+        assert_eq!(append["chunks"][2]["type"], "task_update");
+        assert_eq!(append["chunks"][2]["id"], "c1");
+        assert_eq!(append["chunks"][2]["status"], "in_progress");
+        assert!(append["chunks"][2].get("sources").is_none(), "{append:?}");
+        let start = serde_json::to_value(
+            SlackApiChatStartStreamRequest::new("C1".into())
+                .with_thread_ts("1.1".into())
+                .with_task_display_mode(SlackStreamTaskDisplayMode::Timeline),
+        )
         .unwrap();
         assert_eq!(start["task_display_mode"], "timeline");
         assert!(start.get("chunks").is_none());
-        let stop = serde_json::to_value(StopStream {
-            channel: "C1",
-            ts: "1.1",
-            blocks: Some(serde_json::json!([{"type": "context"}])),
-            chunks: Some(c),
-            session_status: Some(session_status("active").unwrap()),
-        })
+        let footer = SlackMessageContent::new().with_blocks(vec![SlackBlock::Context(
+            SlackContextBlock::new(vec![SlackContextBlockElement::MarkDown(
+                SlackBlockMarkDownText::new("f".into()),
+            )]),
+        )]);
+        let stop = serde_json::to_value(
+            SlackApiChatStopStreamRequest::new("C1".into(), "1.1".into(), footer)
+                .with_chunks(c)
+                .with_session_status(session_status("active").unwrap()),
+        )
         .unwrap();
         assert_eq!(stop["session_status"], "active");
-        assert_eq!(stop["blocks"][0]["type"], "context");
-        assert_eq!(stop["chunks"][1]["type"], "blocks");
-        let r: Posted = serde_json::from_str(
-            r#"{"ok":true,"channel":"C1","ts":"1.3","message":{"blocks":[{"type":"data_table"}]}}"#,
-        )
-        .unwrap();
-        assert_eq!(r.ts, "1.3");
+        assert_eq!(
+            stop["blocks"],
+            serde_json::json!([{"type": "context", "elements": [{"type": "mrkdwn", "text": "f"}]}])
+        );
+        assert_eq!(stop["chunks"][1]["blocks"], table);
+
+        let r: SlackApiChatStartStreamResponse =
+            serde_json::from_str(r#"{"ok":true,"channel":"C1","ts":"1.3"}"#).unwrap();
+        assert_eq!(r.ts.0, "1.3");
+        let echo = serde_json::json!({
+            "ok": true, "channel": "C1", "ts": "1.3",
+            "message": {"type": "message", "ts": "1.3", "bot_id": "B1", "text": "", "blocks": table},
+        });
+        let r: SlackApiChatStopStreamResponse = serde_json::from_value(echo).unwrap();
+        assert_eq!(r.ts.0, "1.3");
+        assert_eq!(
+            serde_json::to_value(r.message.unwrap().content.blocks.unwrap()).unwrap(),
+            table
+        );
     }
 
-    /// 110 §6: a `container` (unknown to morphism's `SlackBlock`) reaches
-    /// the wire untouched; the echoed message is not deserialized.
+    /// 110 §5/§6 after the fork pin: the `container` `ui::collapsed` builds,
+    /// the `plan` of `plan::blocks` and an unmodelled block all go through
+    /// `blocks()` value-equal, sit in the typed `chat.postMessage` /
+    /// `chat.update` requests, and the typed responses parse Slack's echo.
     #[test]
-    fn raw_blocks_go_over_the_wire_verbatim_and_only_ts_is_read_back() {
-        let blocks = serde_json::json!([{
-            "type": "container",
-            "title": {"type": "plain_text", "text": "x"},
-            "is_collapsible": true,
-            "default_collapsed": true,
-            "blocks": [{"type": "markdown", "text": "body"}],
-        }]);
-        assert!(
-            super::blocks(blocks.clone()).is_err(),
-            "typed path must still refuse"
-        );
-        let wire = serde_json::to_string(&PostBlocks {
-            channel: "C1",
-            thread_ts: Some("1.1"),
-            blocks: &blocks,
-            unfurl_links: false,
-        })
-        .unwrap();
-        assert_eq!(
-            wire,
-            format!(
-                "{{\"channel\":\"C1\",\"thread_ts\":\"1.1\",\"blocks\":{},\"unfurl_links\":false}}",
-                serde_json::to_string(&blocks).unwrap()
-            )
-        );
-        let top = serde_json::to_value(PostBlocks {
-            channel: "C1",
-            thread_ts: None,
-            blocks: &blocks,
-            unfurl_links: false,
-        })
-        .unwrap();
-        assert!(top.get("thread_ts").is_none());
-        let update = serde_json::to_value(UpdateBlocks {
-            channel: "C1",
-            ts: "1.1",
-            blocks: &blocks,
-        })
-        .unwrap();
-        assert_eq!(update["ts"], "1.1");
-        assert_eq!(update["blocks"], blocks);
-        let r: Posted = serde_json::from_str(
-            r#"{"ok":true,"channel":"C1","ts":"1.2","message":{"blocks":[{"type":"container","title":{"type":"plain_text","text":"x"}}]}}"#,
+    fn typed_blocks_round_trip_container_plan_and_unknown() {
+        let input = serde_json::json!([
+            {
+                "type": "container",
+                "title": {"type": "plain_text", "text": "x"},
+                "subtitle": {"type": "plain_text", "text": "first line"},
+                "is_collapsible": true,
+                "default_collapsed": true,
+                "child_blocks": [
+                    {"type": "section", "text": {"type": "plain_text", "text": "body"}},
+                    {"type": "context", "elements": [{"type": "plain_text", "text": "… 3 more chars"}]},
+                ],
+            },
+            {
+                "type": "plan",
+                "title": "read the code",
+                "tasks": [
+                    {"task_id": "0", "title": "read the code", "status": "in_progress"},
+                    {
+                        "task_id": "1", "title": "wait", "status": "error",
+                        "details": {"type": "rich_text", "elements": [{
+                            "type": "rich_text_section",
+                            "elements": [{"type": "text", "text": "waiting on the user"}],
+                        }]},
+                    },
+                ],
+            },
+            {"type": "callout", "text": "unmodelled"},
+        ]);
+        let typed = blocks(input.clone()).unwrap();
+        assert!(matches!(typed[0], SlackBlock::Container(_)));
+        assert!(matches!(typed[1], SlackBlock::Plan(_)));
+        assert!(matches!(typed[2], SlackBlock::Unknown(_)));
+        assert_eq!(serde_json::to_value(&typed).unwrap(), input);
+        assert!(blocks(serde_json::json!("not blocks")).is_err());
+
+        let content = SlackMessageContent::new().with_blocks(typed.clone());
+        let post = serde_json::to_value(
+            SlackApiChatPostMessageRequest::new("C1".into(), content.clone())
+                .opt_thread_ts(Some("1.1".into()))
+                .with_unfurl_links(false),
         )
         .unwrap();
-        assert_eq!(r.ts, "1.2");
+        assert_eq!(post["channel"], "C1");
+        assert_eq!(post["thread_ts"], "1.1");
+        assert_eq!(post["unfurl_links"], false);
+        assert_eq!(post["blocks"], input);
+        let top = serde_json::to_value(
+            SlackApiChatPostMessageRequest::new("C1".into(), content.clone()).opt_thread_ts(None),
+        )
+        .unwrap();
+        assert!(top.get("thread_ts").is_none());
+        let update = serde_json::to_value(SlackApiChatUpdateRequest::new(
+            "C1".into(),
+            content,
+            "1.1".into(),
+        ))
+        .unwrap();
+        assert_eq!(update["ts"], "1.1");
+        assert_eq!(update["blocks"], input);
+
+        let echo = serde_json::json!({
+            "ok": true, "channel": "C1", "ts": "1.2",
+            "message": {
+                "type": "message", "subtype": "bot_message", "ts": "1.2", "bot_id": "B1",
+                "text": "", "blocks": input,
+            },
+        });
+        let r: SlackApiChatPostMessageResponse = serde_json::from_value(echo.clone()).unwrap();
+        assert_eq!(r.ts.0, "1.2");
+        assert_eq!(
+            serde_json::to_value(r.message.content.blocks.unwrap()).unwrap(),
+            input
+        );
+        let r: SlackApiChatUpdateResponse = serde_json::from_value(echo).unwrap();
+        assert_eq!(r.ts.0, "1.2");
+    }
+
+    /// Every block `surface::slack_blocks` emits (the `crates/surface`
+    /// goldens: container, data_table, data_visualization, alert, header,
+    /// image, rich_text, section, context, divider) survives the typed path
+    /// value-equal. Known fork gap: `SlackHeaderBlock` has no `level`, so a
+    /// `header.level` is dropped; stripped on both sides here.
+    // ponytail: drop `strip` once the fork models `header.level`.
+    #[test]
+    fn surface_goldens_round_trip_through_typed_blocks() {
+        fn strip(v: &mut serde_json::Value) {
+            if v["type"] == "header" {
+                v.as_object_mut().unwrap().remove("level");
+            }
+            if let Some(kids) = v.get_mut("child_blocks").and_then(|k| k.as_array_mut()) {
+                kids.iter_mut().for_each(strip);
+            }
+        }
+        let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/../surface/fixtures/slack");
+        let mut seen = 0;
+        for e in std::fs::read_dir(dir).unwrap() {
+            let p = e.unwrap().path();
+            if !p.to_str().unwrap().ends_with(".blocks.json") {
+                continue;
+            }
+            let v: serde_json::Value =
+                serde_json::from_str(&std::fs::read_to_string(&p).unwrap()).unwrap();
+            if !v.is_array() {
+                continue; // an error golden
+            }
+            let mut back = serde_json::to_value(blocks(v.clone()).unwrap()).unwrap();
+            let mut want = v;
+            for b in back.as_array_mut().unwrap() {
+                strip(b);
+            }
+            for b in want.as_array_mut().unwrap() {
+                strip(b);
+            }
+            assert_eq!(back, want, "{}", p.display());
+            seen += 1;
+        }
+        assert!(seen >= 10, "{seen} goldens");
     }
 }
