@@ -24,6 +24,10 @@ pub const LABEL_MAX: usize = 80;
 pub const PACKET_MAX: usize = 128 * 1024;
 /// [`head`] cap, chars.
 pub const HEAD_MAX: usize = 140;
+/// `items` cap (103 F3).
+pub const ITEMS_MAX: usize = 20;
+/// `recommendation.text` cap, bytes (103 F2).
+pub const RECOMMENDATION_MAX: usize = 1024;
 
 /// D1 error: an escalation to the user without a `summary`.
 pub const NEEDS_SUMMARY: &str = "escalating to the user needs a `summary`: one short paragraph — the abstract the \
@@ -154,6 +158,38 @@ pub struct Pointer {
     pub root: Option<String>,
 }
 
+/// 103 F2: the forwarding manager's view — one or two sentences and the
+/// option it backs. The Decision screen pre-picks `option` over `recommended`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+pub struct Recommendation {
+    /// One or two sentences (≤ 1 KiB).
+    pub text: String,
+    /// Index into `options`.
+    #[serde(default)]
+    pub option: Option<u32>,
+}
+
+/// 103 F3: one sub-decision of a bundle. `id` is the slug of the `###`
+/// heading under the board's Options section that describes it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+pub struct Item {
+    /// Unique within the packet; the board's `###` heading slug.
+    pub id: String,
+    /// A few words.
+    pub title: String,
+    /// One line.
+    #[serde(default)]
+    pub description: Option<String>,
+    /// ≤ 6, labels ≤ 80 chars.
+    #[serde(default)]
+    pub options: Vec<PacketOption>,
+    /// Index into `options`.
+    #[serde(default)]
+    pub recommended: Option<u32>,
+}
+
 /// The packet (101 §3).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, schemars::JsonSchema, kameo::Reply)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
@@ -184,6 +220,12 @@ pub struct Packet {
     pub pointers: Vec<Pointer>,
     /// Review: the agent's claimed status against `done_when`.
     pub checks: Vec<Check>,
+    /// 103 F2: the forwarding manager's view.
+    #[serde(default)]
+    pub recommendation: Option<Recommendation>,
+    /// 103 F3: a bundle — N related sub-decisions.
+    #[serde(default)]
+    pub items: Vec<Item>,
 }
 
 /// The `escalate` request as the ledger takes it (the packet before the key,
@@ -202,6 +244,10 @@ pub struct Ask {
     pub recommended: Option<u32>,
     /// Where to look.
     pub pointers: Vec<Pointer>,
+    /// The forwarding manager's view (103 F2).
+    pub recommendation: Option<Recommendation>,
+    /// A bundle (103 F3).
+    pub items: Vec<Item>,
 }
 
 impl Ask {
@@ -227,30 +273,37 @@ pub fn validate(p: &Packet) -> Result<(), String> {
             p.summary.len()
         ));
     }
-    if p.options.len() > OPTIONS_MAX {
-        return Err(format!(
-            "`options` has {} entries; the cap is {OPTIONS_MAX}",
-            p.options.len()
-        ));
-    }
-    for (i, o) in p.options.iter().enumerate() {
-        let n = o.label.chars().count();
-        if n > LABEL_MAX {
+    validate_options("", &p.options, p.recommended)?;
+    if let Some(r) = &p.recommendation {
+        if r.text.len() > RECOMMENDATION_MAX {
             return Err(format!(
-                "`options[{i}].label` is {n} chars; the cap is {LABEL_MAX}"
+                "`recommendation.text` is {} bytes; the cap is {RECOMMENDATION_MAX} bytes (1 KiB)",
+                r.text.len()
             ));
         }
-        if o.label.trim().is_empty() {
-            return Err(format!("`options[{i}].label` is empty"));
+        if let Some(o) = r.option
+            && o as usize >= p.options.len()
+        {
+            return Err(format!(
+                "`recommendation.option` is {o} but `options` has {} entries",
+                p.options.len()
+            ));
         }
     }
-    if let Some(r) = p.recommended
-        && r as usize >= p.options.len()
-    {
+    if p.items.len() > ITEMS_MAX {
         return Err(format!(
-            "`recommended` is {r} but `options` has {} entries",
-            p.options.len()
+            "`items` has {} entries; the cap is {ITEMS_MAX}",
+            p.items.len()
         ));
+    }
+    for (i, it) in p.items.iter().enumerate() {
+        if it.id.trim().is_empty() {
+            return Err(format!("`items[{i}].id` is empty"));
+        }
+        if p.items[..i].iter().any(|o| o.id == it.id) {
+            return Err(format!("`items[{i}].id` `{}` is used twice", it.id));
+        }
+        validate_options(&format!("items[{i}]."), &it.options, it.recommended)?;
     }
     if p.pointers.len() > POINTERS_MAX {
         return Err(format!(
@@ -266,6 +319,41 @@ pub fn validate(p: &Packet) -> Result<(), String> {
         return Err(format!(
             "the packet is {} bytes as JSON; the cap is {PACKET_MAX} bytes (128 KiB)",
             json.len()
+        ));
+    }
+    Ok(())
+}
+
+/// `options` ≤ 6, labels non-empty and ≤ 80 chars, `recommended` in range;
+/// `at` prefixes the field name (`""` | `items[3].`).
+fn validate_options(
+    at: &str,
+    options: &[PacketOption],
+    recommended: Option<u32>,
+) -> Result<(), String> {
+    if options.len() > OPTIONS_MAX {
+        return Err(format!(
+            "`{at}options` has {} entries; the cap is {OPTIONS_MAX}",
+            options.len()
+        ));
+    }
+    for (i, o) in options.iter().enumerate() {
+        let n = o.label.chars().count();
+        if n > LABEL_MAX {
+            return Err(format!(
+                "`{at}options[{i}].label` is {n} chars; the cap is {LABEL_MAX}"
+            ));
+        }
+        if o.label.trim().is_empty() {
+            return Err(format!("`{at}options[{i}].label` is empty"));
+        }
+    }
+    if let Some(r) = recommended
+        && r as usize >= options.len()
+    {
+        return Err(format!(
+            "`{at}recommended` is {r} but `{at}options` has {} entries",
+            options.len()
         ));
     }
     Ok(())
@@ -421,14 +509,22 @@ fn fold(s: &str) -> String {
 }
 
 /// D3: the packet as the thread block (`**decision requested**` /
-/// `**review requested**`): summary, the board's link, options, checks,
-/// "Look at:" with each pointer's title, ref and note. The evidence (`text`)
-/// stays in the packet.
+/// `**review requested**`): recommendation, question, summary, the board's
+/// link, options, items, checks, "Look at:" with each pointer's title, ref
+/// and note. The evidence (`text`) stays in the packet.
 pub fn thread_markdown(p: &Packet) -> String {
     let mut s = match p.kind {
         PacketKind::Decision => format!("**decision requested** (`{}`)", p.key),
         PacketKind::Review => "**review requested**".to_owned(),
     };
+    if let Some(r) = &p.recommendation {
+        s.push_str("\n\nRecommendation: ");
+        if let Some(o) = r.option.and_then(|o| p.options.get(o as usize)) {
+            s.push_str(&o.label);
+            s.push_str(" — ");
+        }
+        s.push_str(r.text.trim());
+    }
     if let Some(q) = p
         .question
         .as_deref()
@@ -466,6 +562,38 @@ pub fn thread_markdown(p: &Packet) -> String {
             s.push('\n');
         }
     }
+    if !p.items.is_empty() {
+        s.push_str("\n\nItems:\n");
+        for (n, it) in p.items.iter().enumerate() {
+            s.push_str(&format!("{}. {}", n + 1, it.title));
+            if let Some(d) = it
+                .description
+                .as_deref()
+                .map(str::trim)
+                .filter(|d| !d.is_empty())
+            {
+                s.push_str(" — ");
+                s.push_str(d);
+            }
+            if !it.options.is_empty() {
+                s.push_str(": ");
+                let labels: Vec<String> = it
+                    .options
+                    .iter()
+                    .enumerate()
+                    .map(|(i, o)| {
+                        if it.recommended == Some(i as u32) {
+                            format!("{} (recommended)", o.label)
+                        } else {
+                            o.label.clone()
+                        }
+                    })
+                    .collect();
+                s.push_str(&labels.join(" | "));
+            }
+            s.push('\n');
+        }
+    }
     if !p.checks.is_empty() {
         s.push_str("\n\nChecks:\n");
         for c in &p.checks {
@@ -490,6 +618,24 @@ pub fn thread_markdown(p: &Packet) -> String {
         }
     }
     s
+}
+
+/// 103 F3 / 101 D4: the bundle as numbered lines for the channel ask card —
+/// `n. <title> — recommended: <label>` (≤ 20, one per item). Empty without items.
+pub fn items_summary(items: &[Item]) -> String {
+    items
+        .iter()
+        .enumerate()
+        .map(|(n, it)| {
+            let pick = it
+                .recommended
+                .and_then(|r| it.options.get(r as usize))
+                .map(|o| format!(" — recommended: {}", o.label))
+                .unwrap_or_default();
+            format!("{}. {}{pick}", n + 1, it.title)
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 /// The first non-blank line of `text`, ≤ 140 chars (`…` when cut): an
@@ -531,7 +677,178 @@ mod tests {
             recommended: None,
             pointers: vec![],
             checks: vec![],
+            recommendation: None,
+            items: vec![],
         }
+    }
+
+    fn opt(label: &str) -> PacketOption {
+        PacketOption {
+            label: label.into(),
+            description: None,
+        }
+    }
+
+    fn item(id: &str, labels: &[&str], recommended: Option<u32>) -> Item {
+        Item {
+            id: id.into(),
+            title: format!("record {id}"),
+            description: None,
+            options: labels.iter().map(|l| opt(l)).collect(),
+            recommended,
+        }
+    }
+
+    /// 103: items ≤ 20, each ≤ 6 options / labels ≤ 80 / `recommended` in range,
+    /// ids non-empty and unique; `recommendation.option` in range, text ≤ 1 KiB.
+    #[test]
+    fn item_and_recommendation_caps() {
+        let mut p = packet(PacketKind::Decision);
+        p.items = (0..21)
+            .map(|i| item(&format!("r{i}"), &["keep"], Some(0)))
+            .collect();
+        let e = validate(&p).unwrap_err();
+        assert!(e.contains("`items`") && e.contains("20"), "{e}");
+        p.items.truncate(20);
+        assert_eq!(validate(&p), Ok(()));
+
+        p.items = vec![item("a", &["1", "2", "3", "4", "5", "6", "7"], None)];
+        let e = validate(&p).unwrap_err();
+        assert!(e.contains("`items[0].options`") && e.contains("6"), "{e}");
+        p.items = vec![item("a", &[&"x".repeat(81)], None)];
+        let e = validate(&p).unwrap_err();
+        assert!(
+            e.contains("`items[0].options[0].label`") && e.contains("80"),
+            "{e}"
+        );
+        p.items = vec![item("a", &["keep"], Some(1))];
+        let e = validate(&p).unwrap_err();
+        assert!(
+            e.starts_with("`items[0].recommended` is 1 but `items[0].options` has 1"),
+            "{e}"
+        );
+        p.items = vec![item("a", &[], None), item(" ", &[], None)];
+        assert_eq!(validate(&p).unwrap_err(), "`items[1].id` is empty");
+        p.items = vec![
+            item("a", &[], None),
+            item("b", &[], None),
+            item("a", &[], None),
+        ];
+        assert_eq!(validate(&p).unwrap_err(), "`items[2].id` `a` is used twice");
+        p.items = vec![item("a", &["x"], Some(0)), item("b", &[], None)];
+        assert_eq!(validate(&p), Ok(()));
+
+        p.options = vec![opt("keep"), opt("drop")];
+        p.recommendation = Some(Recommendation {
+            text: "drop it".into(),
+            option: Some(2),
+        });
+        let e = validate(&p).unwrap_err();
+        assert!(
+            e.starts_with("`recommendation.option` is 2 but `options` has 2"),
+            "{e}"
+        );
+        p.recommendation = Some(Recommendation {
+            text: "x".repeat(RECOMMENDATION_MAX + 1),
+            option: None,
+        });
+        let e = validate(&p).unwrap_err();
+        assert!(
+            e.contains("`recommendation.text`") && e.contains("1 KiB"),
+            "{e}"
+        );
+        p.recommendation = Some(Recommendation {
+            text: "x".repeat(RECOMMENDATION_MAX),
+            option: Some(1),
+        });
+        assert_eq!(validate(&p), Ok(()));
+        // the top-level option errors keep their names
+        p.recommended = Some(5);
+        assert!(
+            validate(&p)
+                .unwrap_err()
+                .starts_with("`recommended` is 5 but `options` has 2")
+        );
+    }
+
+    /// 103: the thread block carries the recommendation line and the numbered items.
+    #[test]
+    fn thread_block_carries_recommendation_and_items() {
+        let mut p = packet(PacketKind::Decision);
+        p.options = vec![opt("approve"), opt("hold")];
+        p.recommendation = Some(Recommendation {
+            text: "Low risk, reversible.".into(),
+            option: Some(0),
+        });
+        p.items = vec![
+            Item {
+                description: Some("A record".into()),
+                ..item("a-rec", &["add", "skip"], Some(0))
+            },
+            item("mx", &[], None),
+        ];
+        let md = thread_markdown(&p);
+        assert!(
+            md.starts_with(
+                "**decision requested** (`decision:d1`)\n\nRecommendation: approve — Low risk, reversible.\n\nship it?"
+            ),
+            "{md}"
+        );
+        assert!(
+            md.contains(
+                "Items:\n1. record a-rec — A record: add (recommended) | skip\n2. record mx\n"
+            ),
+            "{md}"
+        );
+        p.recommendation = Some(Recommendation {
+            text: "Either.".into(),
+            option: None,
+        });
+        assert!(thread_markdown(&p).contains("\n\nRecommendation: Either.\n\n"));
+
+        assert_eq!(
+            items_summary(&p.items),
+            "1. record a-rec — recommended: add\n2. record mx"
+        );
+        assert_eq!(items_summary(&[]), "");
+    }
+
+    /// 103 §3: `Item` / `Recommendation` round-trip; rows written before 103 have neither field.
+    #[test]
+    fn items_and_recommendation_wire_shape() {
+        let p = Packet {
+            recommendation: Some(Recommendation {
+                text: "go".into(),
+                option: None,
+            }),
+            items: vec![item("a", &["x"], Some(0))],
+            ..packet(PacketKind::Decision)
+        };
+        let v = serde_json::to_value(&p).unwrap();
+        assert_eq!(v["recommendation"]["option"], serde_json::Value::Null);
+        assert_eq!(v["items"][0]["id"], "a");
+        assert_eq!(v["items"][0]["options"][0]["label"], "x");
+        let back: Packet = serde_json::from_value(v.clone()).unwrap();
+        assert_eq!(back, p);
+        let mut old = v;
+        let o = old.as_object_mut().unwrap();
+        o.remove("recommendation");
+        o.remove("items");
+        let back: Packet = serde_json::from_value(old).unwrap();
+        assert_eq!((back.recommendation, back.items), (None, vec![]));
+        // an item needs only `id` and `title`
+        let it: Item =
+            serde_json::from_value(serde_json::json!({"id": "a", "title": "A"})).unwrap();
+        assert_eq!(
+            it,
+            Item {
+                id: "a".into(),
+                title: "A".into(),
+                description: None,
+                options: vec![],
+                recommended: None
+            }
+        );
     }
 
     fn pointer(kind: PointerKind, r: &str, text: Option<&str>) -> Pointer {

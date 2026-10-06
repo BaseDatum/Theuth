@@ -913,6 +913,8 @@ mod tests {
             recommended: None,
             pointers: vec![],
             checks: vec![],
+            recommendation: None,
+            items: vec![],
         }
     }
 

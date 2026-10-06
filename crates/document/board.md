@@ -96,6 +96,14 @@ markdown links the reader opens outside). `root` is the repository the anchors r
 directory when there is no repository. Then pass the id: `escalate(..., board=r["doc"])` /
 `task_update(..., board=r["doc"])`.
 
+Bundles: N related decisions (ten DNS records, a set of hosts, a batch of PRs) are ONE `escalate` with `items`
+(`{id, title, description?, options?, recommended?}` each, ≤ 20) and one board. Its `## Options` section then
+holds one `###` per item — not per option — whose heading slug equals the item `id` (`### a-record` for
+`id: "a-record"`; lowercase, spaces → `-`), with that item's consequence, cost/risk, reversibility and your
+recommended pick; the Decision screen lights the item's section when the item is hovered and offers *Approve
+all as recommended*. Forwarding a report's decision needs no new board: `escalate` the same task with
+`question: ""` and your `recommendation` — the report's board is inherited.
+
 A decision mini-board, six blocks — the frontmatter `doc_create` wrote, then one `doc_insert` per section:
 
 ````markdown
