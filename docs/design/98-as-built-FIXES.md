@@ -153,7 +153,7 @@ clippy gate enforces it — `cargo test` does not).
 The UI gates ran after `bun install` in `crates/desktop/ui` and `packages/apps` and one
 `just ts-desktop` (bindings unchanged by this fix).
 
-## Review round (98c-r2, 2026-10-06 13:34 review; code commit `d87bc64f`, UI/docs commit R2DOCS)
+## Review round (98c-r2, 2026-10-06 13:34 review; code commit `d87bc64f`, UI/docs commit `6f8a7c6f`)
 
 Worktree HEAD had moved to `e7e96d89` (live-proof branch + local `main` folded in); built on it,
 no rebase, no amend.
@@ -164,14 +164,33 @@ no rebase, no amend.
 | 2 | H5 untested | `plugin_start_registers_the_actor_before_the_vault_answers` (lib.rs): `TelegramPlugin::start` on a runtime with no secrets actor; `telegram_actor()` is found at once, `Status` answers `Starting` within 1 s and well under `HANDLE_WAIT`; `Link` answers `telegram is starting`. Tests that register the `"telegram"` name serialise on `channel::tests::REGISTRY` and `kill_registered` waits for the name to clear (kameo unregisters on stop). | `d87bc64f` lib.rs tests; channel.rs tests |
 | 3 | 1e had no command in flight | `list_delay = Some(Duration::MAX)` before `/sessions`; `Status` still answers in < 1 s while that free task is pending for ever. | `d87bc64f` channel.rs `status_answers_within_a_second_while_a_command_is_in_flight` |
 | 4 | timing margins | 1d asserts ordering: `Stub.list_done == 0` when the regular message's input landed (the 3 s and the never case) — no wall-clock bound. 1e / test 4 keep the 1 s deadline the brief specifies: both steps are pure in-process actor asks (no network, no disk), so 1 s is two orders of magnitude of margin; under a scheduler stall that long the whole suite is already degraded. | `d87bc64f` |
-| 5 | boot flash "no bot token" | `Telegram.configured: Option<bool>`; `Telegram::starting()` at boot → `TelegramEvent::Starting` (status-only, never on the bus) until `TokenRead`; `Link` says `telegram is starting`. UI: `starting…` phrase, token row `checking the vault…` with no input/Replace, Pair disabled. Bindings regenerated (`just ts-desktop`), `Channels.test.ts` covers the phrase and the card. | `d87bc64f` lib.rs; R2DOCS Channels.tsx/test, bindings |
-| 6 | remaining lane-blocking asks | `transcribe()` under `TRANSCRIBE_BOUND` = 60 s → attachment line `(transcription timed out)`; `pair()`'s `SetOwner` and `admin()`'s `Allow/RemoveAllowed/AllowGroup/RemoveGroup` under `port::timed` (20 s). §20 now says "every `Port` ask and every lane-blocking ask is timed (the direct command arms sit under the one `COMMAND_BOUND`)". | `d87bc64f` channel.rs; R2DOCS 98-telegram.md §7, §20 |
-| 7 | docs | §7: ordering caveat (`/new`, `/resume`, `/cancel` vs a same-second message; `/new` wins by an HTTP round-trip in practice, not guaranteed); "(step 519 above)" → "the `session = threads[key]` step of the block above"; §11: nesting left is state → `Api.calls` (`api.stats()` inside `status()`), never the reverse; this note no longer claims `cargo test` enforces the clippy deny. | R2DOCS |
-| 8 | one constant; two asks; lane send | `port::ask_timed_out()` formats from `ASK_TIMEOUT`; §7 states `send_input(None, …)` is two timed asks (up to 40 s on the lane) — kept as two because `NewRootSession` and `SendInput` are two actor round-trips with their own failure texts; `lane.send` error is logged at debug with kind + update_id. | `d87bc64f` port.rs, channel.rs; R2DOCS §7 |
+| 5 | boot flash "no bot token" | `Telegram.configured: Option<bool>`; `Telegram::starting()` at boot → `TelegramEvent::Starting` (status-only, never on the bus) until `TokenRead`; `Link` says `telegram is starting`. UI: `starting…` phrase, token row `checking the vault…` with no input/Replace, Pair disabled. Bindings regenerated (`just ts-desktop`), `Channels.test.ts` covers the phrase and the card. | `d87bc64f` lib.rs; `6f8a7c6f` Channels.tsx/test, bindings |
+| 6 | remaining lane-blocking asks | `transcribe()` under `TRANSCRIBE_BOUND` = 60 s → attachment line `(transcription timed out)`; `pair()`'s `SetOwner` and `admin()`'s `Allow/RemoveAllowed/AllowGroup/RemoveGroup` under `port::timed` (20 s). §20 now says "every `Port` ask and every lane-blocking ask is timed (the direct command arms sit under the one `COMMAND_BOUND`)". | `d87bc64f` channel.rs; `6f8a7c6f` 98-telegram.md §7, §20 |
+| 7 | docs | §7: ordering caveat (`/new`, `/resume`, `/cancel` vs a same-second message; `/new` wins by an HTTP round-trip in practice, not guaranteed); "(step 519 above)" → "the `session = threads[key]` step of the block above"; §11: nesting left is state → `Api.calls` (`api.stats()` inside `status()`), never the reverse; this note no longer claims `cargo test` enforces the clippy deny. | `6f8a7c6f` |
+| 8 | one constant; two asks; lane send | `port::ask_timed_out()` formats from `ASK_TIMEOUT`; §7 states `send_input(None, …)` is two timed asks (up to 40 s on the lane) — kept as two because `NewRootSession` and `SendInput` are two actor round-trips with their own failure texts; `lane.send` error is logged at debug with kind + update_id. | `d87bc64f` port.rs, channel.rs; `6f8a7c6f` §7 |
 
 Gates after the last r2 commit:
 
-R2GATES
+```
+cargo test -p telegram
+  test result: ok. 121 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.70s
+  test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s   (doc-tests)
+cargo clippy -p telegram --all-targets -- -D warnings -D clippy::await_holding_lock
+  error: could not compile `tasks` (lib) due to 4 previous errors        ← exit 101; pre-existing `crates/tasks` lints, unchanged on this branch (see the first round)
+cargo clippy -p telegram --all-targets --no-deps -- -D warnings -D clippy::await_holding_lock
+  Finished `dev` profile [unoptimized + debuginfo] target(s) in 38.08s   exit 0
+cargo fmt -p telegram -- --check
+  (no output) exit 0
+cargo check -p rpc -p theuth
+  Finished `dev` profile [unoptimized + debuginfo] target(s) in 43.02s   exit 0
+just ts-desktop
+  cp -R bindings/. crates/desktop/ui/src/rpc/bindings/   exit 0 (bindings are gitignored; TelegramEvent.ts now carries `Starting`)
+cd crates/desktop/ui && bun run check
+  $ tsc -b --noEmit   exit 0
+bunx vitest run src/components/settings/Channels.test.ts
+  Test Files  1 passed (1)
+  Tests  9 passed (9)
+```
 
 ## Not exercised
 
