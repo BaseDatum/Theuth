@@ -4,7 +4,9 @@ Status: as-built · 2026-10-06 · amends 43 §7 / the 2026-09-24 fix 2b8e9a64. B
 
 Commits (oldest first):
 - `2319f030` fix(speech): hold the session TAIL_MS past the last onended; cut a frozen tail on unlock (117)
-- docs(design): 117 speech-tail (this note)
+- `7289f4ca` docs(design): 117 speech-tail (this note)
+- `76359a00` fix(speech): our own resume in flight is not a frozen context (117 D2 R1)
+- docs(design): 117 speech-tail R1 (this note)
 
 ## The complaint (Sky, 2026-10-06 17:08, verbatim)
 
@@ -27,6 +29,8 @@ Which route fires on Sky's device is not known (no device here); both are real c
 
 **D3 — tests** (`speech.test.ts`, 12 → 16). `FakeContext` gains writable `state` (`'running'`; `suspend()`/`resume()` flip it) and `outputLatency = 0`; fake timers in `beforeEach`, real ones in `afterEach`; `window` stubbed to `globalThis` for `window.setTimeout`; `react`'s `useSyncExternalStore` mocked to return the snapshot so `useSpeaking()` asserts the badge without a render. The two 2026-09-24 tests that asserted a suspend on the last `onended` now assert *no* suspend there, `playback` still set, badge null, and exactly one suspend + `auto` after `TAIL_MS`. New: next block inside the grace (never a suspend; one after the second block's grace); `stop()` inside the grace (one suspend, none from the timer); Route B with `unlock('record')` (both frozen sources stopped, output node unchanged, badge null, `play-and-record`, calls `stop, stop, resume`; `release('record')` → one suspend, `auto`); Route B with `start('s2')` (old sources stopped, the new packet's source not).
 
+**Revision 1 (review of 7289f4ca) — D2: our own resume in flight is not a frozen context.** `ctx.state` lags our `ctx.resume()` by the session's activation time (iOS: tens to hundreds of ms); a second `unlock` inside that window — `lib/mic-tap.ts::openTap` unlocks before and again after `await getUserMedia` — read `suspended`, took the frozen branch and would have cut sources scheduled since the first unlock (and sent a spurious `onHeard(null, true)`). `resuming` now tracks the pending `resume()` promise (cleared when it settles, and after a `suspend` in `release`); `suspended` while it is in flight is not frozen, `interrupted` still is (WebKit's resume stays pending until the interruption ends). Test: the fake `resume()` can be deferred; a double unlock during activation stops nothing, holds both uses, and the context ends `running`.
+
 ## Device test (Sky, iPad/iPhone after a rebuild)
 
 1. Voice note → a long reply: the speech plays to the last word; nothing is left to replay.
@@ -37,8 +41,8 @@ Which route fires on Sky's device is not known (no device here); both are real c
 
 ## As built
 
-- `speech.ts` (503 lines): `TAIL_MS` L68, `tailTimer` L69, `unlock` L93–116 (frozen cut + `abandon`), `release` L123–131 (clears the tail), `drain` L245–250, `end` L256–265, `armTail` L268–276, `clearTail` L278–281, `abandon` L284–291, `clear` L294–298 (non-`done` reasons only), `stop` L301–307. Header comment and the `active`/`done` comments mention the grace and the non-running cut.
-- Gates in `crates/desktop/ui` on the committed tree: `bun run check` → **exit 0**; `CI=1 bun run test` → **145 files, 843 passed | 1 skipped (844)** in 248 s, no flake, no re-run needed; `bunx vitest run src/lib/speech.test.ts` → **16 passed (16)**.
+- `speech.ts` (513 lines): `TAIL_MS` L68, `tailTimer` L69, `resuming` L71, `unlock` L95–125 (frozen cut + `abandon`, resume tracking), `release` L132–140 (clears the tail and the resume window), `drain` L255–260, `end` L266–275, `armTail` L278–286, `clearTail` L288–291, `abandon` L294–301, `clear` L304–308 (non-`done` reasons only), `stop` L311–317. Header comment and the `active`/`done` comments mention the grace and the non-running cut.
+- Gates in `crates/desktop/ui` on the committed tree, first at `7289f4ca`: `bun run check` → **exit 0**; `CI=1 bun run test` → **145 files, 843 passed | 1 skipped (844)** in 248 s; `bunx vitest run src/lib/speech.test.ts` → **16 passed (16)**. Again at `76359a00` (R1): `bun run check` → **exit 0**; `CI=1 bun run test` → **145 files, 844 passed | 1 skipped (845)** in 72 s, no flake, no re-run needed; `bunx vitest run src/lib/speech.test.ts` → **17 passed (17)**.
 - Deviation from the brief: the tail timer is a `number` from `window.setTimeout` (the file's sibling `voice-key.ts` convention; the runner has no DOM, so the test stubs `window = globalThis`) rather than a bare `setTimeout` handle. `TAIL_MS` is exported so the tests advance by the real constant.
 - Environment note, not a code change: the worktree's pre-copied gitignored `src/rpc/bindings` (464 files) was stale — `bun run check` gave 119 errors on the untouched base, one of them in `speech.ts` (`held` not narrowed because `SpeechAudio.id` typed `any`). Replacing it with the 482-file set from `~/Develop/theuth-bindings` (`b5aaf52d`, read only) gives 0 errors; the same as design 115 found.
 - Not verified here: any device behaviour (no iOS build in this wave); the 400 ms figure is the brief's, with `outputLatency` added on top where WebKit reports it.
