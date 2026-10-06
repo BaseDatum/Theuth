@@ -10,7 +10,7 @@ Branch `feat/108-eng` off `8490bb5a`. Spec: `108-routines-ui.md` §7, §8, §9, 
 | `assets/sensors/rss.py` | **placeholder** (§11 rule): header `# theuth-sensor: rss 1` + the three `# arg:` lines from §10, a docstring with the `when:` line, a `check` that never fires. RSS's file overwrites it at integration |
 | `assets/sensors/pr_watch.py`, `fs_exists.py` | headers only: `# arg:` lines per §9.1; versions `pr_watch 2`, `fs_exists 3` |
 | `assets/sensors/README.md` | §Header: the `# arg:` grammar paragraph; example version bumped to match the file |
-| `crates/schedule/src/lib.rs` | `ListSensors`, `TestFile` messages; `SensorInfo`; `RunKind` + `RunKind::of`; `RunInfo.kind`; `ScheduleInfo` gains `sensor`, `for` (serde rename), `cooldown`, `timeout`, `model`, `run_timeout`, `created`; `list_sensors(&SensorRunner)` free fn; `dur()` |
+| `crates/schedule/src/lib.rs` | `ListSensors`, `TestFile` messages; `SensorInfo`; `RunKind` + `RunKind::of`; `RunInfo.kind`; `ScheduleInfo` gains `sensor`, `for` (serde rename), `cooldown`, `timeout`, `model`, `run_timeout`, `created`; `list_sensors(&SensorRunner)` free fn (test `list_sensors_rows`: 68 schedule tests after it); `dur()` |
 | `crates/schedule/src/store.rs` | `history()` computes `kind`; test `history_rows_carry_their_kind` |
 | `crates/schedule/src/validate.rs` | `test_file(file, sensors)` (§9.4) shared by the RPC; test `meta()` gains the new fields |
 | `crates/schedule/src/tools.rs` | `ROUTINES_SKILL`; `PROMPT` + "load the `routines` skill" sentence; `ScheduleArgs` gains `agent`, `project`; `render_args()` extracted (pub — `routine_draft` reuses the exact pre-write path); `enabled: a.enabled.unwrap_or(!watcher)` (D12); `ListSensorsTool` (`list_sensors`, ReadOnly) + `sensor_line`; tests |
@@ -81,5 +81,5 @@ and `mcp.rs` through `main.rs`'s modules) — reverted to keep the diff to this 
 
 - The **clean-verdict `enabled: true` write** end-to-end through `ScheduleTool::call` (needs a Monty worker pool for a real `check`): covered at the render level (`render_args_enabled_rule_and_routing`) plus the refusal path; the dry run itself is unchanged from 40.
 - `routine_draft` through `commit_source` (the OpenUI helper): `source()`/`validate()`/`approval()` are unit-tested like `agent_draft`'s; the actor path is the same code `agent_draft` runs.
-- `list_sensors` / `test_schedule_file` over a live RPC socket; the handlers are one `ask` each and `list_sensors()` is exercised through `resolve()`'s tests.
+- `list_sensors` / `test_schedule_file` over a live RPC socket; the handlers are one `ask` each; `list_sensors()` itself is unit-tested (`list_sensors_rows`), `test_file()` only through `dry_run`'s existing tests (it is render + parse + `dry_run`).
 - `rss.py`'s body (placeholder only); its header parses (`arg_header_lines` asserts three args).

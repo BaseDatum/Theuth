@@ -3144,6 +3144,37 @@ mod watch_tests {
         chrono::TimeDelta::seconds(n)
     }
 
+    /// 108 §9.2: every `*.py` in the sensors dir is a row, sorted; built-ins
+    /// carry their header and shipped version; a bad header is `error`; a
+    /// dotfile and a non-`.py` file are not listed.
+    #[test]
+    fn list_sensors_rows() {
+        let tmp = tempfile::tempdir().unwrap();
+        let sensors = agent::sensor::SensorRunner::new(tmp.path().to_path_buf(), None, None, Default::default());
+        sensors.install_builtins().unwrap();
+        let dir = sensors.sensors_dir();
+        std::fs::write(dir.join("bad.py"), "# arg: x\nasync def check(s, a): ...\n").unwrap();
+        std::fs::write(dir.join("mine.py"), "\"\"\"Mine.\n\nwhen: mine.py k=<v>\n\"\"\"\nasync def check(s, a): ...\n").unwrap();
+        std::fs::write(dir.join("notes.txt"), "x").unwrap();
+        let rows = list_sensors(&sensors);
+        let names: Vec<&str> = rows.iter().map(|r| r.name.as_str()).collect();
+        assert_eq!(names, ["bad.py", "fs_exists.py", "mine.py", "pr_watch.py", "rss.py"]);
+        let bad = &rows[0];
+        assert!(bad.error.as_deref().is_some_and(|e| e.contains("`# arg:`")), "{bad:?}");
+        assert!(!bad.builtin && bad.shipped_version.is_none());
+        let pr = &rows[3];
+        assert!(pr.builtin && !pr.edited && pr.error.is_none());
+        assert_eq!((pr.version.as_deref(), pr.shipped_version.as_deref()), (Some("2"), Some("2")));
+        assert_eq!(pr.args.len(), 4);
+        assert_eq!(pr.hosts, ["api.github.com"]);
+        assert!(pr.has_probe);
+        let mine = &rows[2];
+        assert_eq!(mine.description.as_deref(), Some("Mine."));
+        assert_eq!(mine.usage.as_deref(), Some("when: mine.py k=<v>"));
+        assert!(mine.args.is_empty() && mine.version.is_none() && !mine.builtin);
+        assert!(rows.iter().all(|r| r.cpython_available == agent::sensor::find_cpython().is_some()));
+    }
+
     fn run(
         fire: bool,
         payload: String,
