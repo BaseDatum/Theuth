@@ -281,6 +281,37 @@ pub const ROUTABLE: &[&str] = &[
     "aihubmix",
 ];
 
+/// 116: the models.dev provider that is a model family's own vendor, keyed by the
+/// family token `tokens()` yields first (lower-case). Aggregators (openrouter,
+/// togetherai, nebius, bedrock, …) list the same models with their own output caps;
+/// on a name-match tie the vendor's figures win.
+const VENDORS: &[(&str, &str)] = &[
+    ("claude", "anthropic"),
+    ("gpt", "openai"),
+    ("o1", "openai"),
+    ("o3", "openai"),
+    ("o4", "openai"),
+    ("gemini", "google"),
+    ("gemma", "google"),
+    ("glm", "zai"),
+    ("deepseek", "deepseek"),
+    ("kimi", "moonshotai"),
+    ("grok", "xai"),
+    ("qwen", "alibaba"),
+    ("qwen2", "alibaba"),
+    ("qwen3", "alibaba"),
+    ("minimax", "minimax"),
+    ("command", "cohere"),
+];
+
+/// Vendor provider id for a family token (case-insensitive), per [`VENDORS`].
+fn vendor_of(family: &str) -> Option<&'static str> {
+    VENDORS
+        .iter()
+        .find(|(f, _)| f.eq_ignore_ascii_case(family))
+        .map(|(_, p)| *p)
+}
+
 static BUNDLED: LazyLock<BTreeMap<String, Provider>> = LazyLock::new(|| {
     serde_json::from_str(include_str!("../data/models.json"))
         .expect("bundled data/models.json is valid")
@@ -364,10 +395,10 @@ impl Catalog {
     /// name tokens with the model part (`cursor/claude-4.6-sonnet-medium` →
     /// `claude-sonnet-4-6`). Effort/lane words (`low`, `xhigh`, `thinking`,
     /// `max`, ...) are ignored; the family token (`claude`, `gpt`) must agree.
-    /// Ties go to the larger context, then the lower provider id. Models with
-    /// no context limit are never candidates. For limits only; never for what
-    /// is sent to the provider — [`Catalog::resolve`] drops a sibling's
-    /// `protocol`/`canonical` for that reason.
+    /// Ties go to the family's vendor provider (116), then the larger context,
+    /// then the lower provider id. Models with no context limit are never
+    /// candidates. For limits only; never for what is sent to the provider —
+    /// [`Catalog::resolve`] drops a sibling's `protocol`/`canonical` for that reason.
     pub fn closest(&self, id: &str) -> Option<&Model> {
         if let Some((_, m)) = self.get(id) {
             return Some(m);
@@ -382,6 +413,7 @@ impl Catalog {
             want.remove(0);
         }
         let family = *want.first()?;
+        let vendor = vendor_of(family);
         self.providers
             .iter()
             .flat_map(|(pid, p)| p.models.values().map(move |m| (pid, m)))
@@ -398,9 +430,10 @@ impl Catalog {
                     .count() as i32;
                 let score =
                     2 * shared - (want.len() as i32 - shared) - (have.len() as i32 - shared);
-                Some((score, m.limit.context, std::cmp::Reverse(pid), m))
+                let is_vendor = vendor == Some(pid.as_str());
+                Some((score, is_vendor, m.limit.context, std::cmp::Reverse(pid), m))
             })
-            .max_by_key(|(score, ctx, pid, _)| (*score, *ctx, *pid))
+            .max_by_key(|(score, vendor, ctx, pid, _)| (*score, *vendor, *ctx, *pid))
             .map(|(.., m)| m)
     }
 
@@ -654,6 +687,82 @@ mod tests {
         );
         // Vision flag survives the trim (design doc 13 §3).
         assert!(c.providers["anthropic"].models["claude-opus-4-6"].image);
+    }
+
+    // 116: on a name-match tie the family's vendor provider wins over aggregators.
+    #[test]
+    fn closest_prefers_vendor_on_tie_in_bundled_catalog() {
+        let c = Catalog {
+            providers: BUNDLED.clone(),
+        };
+        let pid_of = |hit: &Model| {
+            c.providers
+                .iter()
+                .find(|(_, p)| p.models.values().any(|m| std::ptr::eq(m, hit)))
+                .map(|(pid, _)| pid.as_str())
+                .unwrap()
+        };
+        let glm = c.closest("litellm/zai-org/GLM-5.3-Flash").unwrap();
+        assert_eq!((pid_of(glm), glm.id.as_str()), ("zai", "glm-5.3-flash"));
+        assert_eq!((glm.limit.context, glm.limit.output), (1_000_000, 131_072));
+        assert_ne!(glm.limit.output, 943_717, "openrouter's cap must not win");
+        let claude = c.closest("gateway/claude-sonnet-4-5").unwrap();
+        assert_eq!(pid_of(claude), "anthropic", "{}", claude.id);
+        let gpt = c.closest("gateway/gpt-5").unwrap();
+        assert_eq!(pid_of(gpt), "openai", "{}", gpt.id);
+        let r = c
+            .resolve("litellm/zai-org/GLM-5.3-Flash", &|_| true)
+            .unwrap();
+        let m = r.model.unwrap();
+        assert_eq!(m.limit.output, 131_072);
+        assert!(m.protocol.is_none() && m.canonical.is_none());
+    }
+
+    // 116: score dominates the vendor bit; families without a vendor row keep
+    // the larger-context-then-lower-pid rule.
+    #[test]
+    fn closest_vendor_bit_is_below_score_and_absent_without_row() {
+        let c = Catalog {
+            providers: BTreeMap::from([
+                provider("anthropic", &[("claude-sonnet-4", 200_000)]),
+                provider("openrouter", &[("anthropic/claude-sonnet-4-5", 1_000_000)]),
+                provider("meta", &[("llama-4", 100_000)]),
+                provider("groq", &[("llama-4", 100_000)]),
+                provider("nebius", &[("meta/llama-4", 200_000)]),
+            ]),
+        };
+        let hit = |id: &str| c.closest(id).unwrap();
+        assert_eq!(hit("gw/claude-sonnet-4-5").limit.context, 1_000_000);
+        assert_eq!(hit("gw/llama-4").limit.context, 200_000, "larger context");
+        let c2 = Catalog {
+            providers: BTreeMap::from([
+                provider("meta", &[("llama-4", 100_000)]),
+                provider("groq", &[("llama-4", 100_000)]),
+            ]),
+        };
+        assert!(std::ptr::eq(
+            c2.closest("gw/llama-4").unwrap(),
+            c2.get("groq/llama-4").unwrap().1
+        ));
+        assert_eq!(vendor_of("GLM"), Some("zai"));
+        assert_eq!(vendor_of("llama"), None);
+    }
+
+    // 116: every VENDORS row names a bundled provider with a model of that family,
+    // so a `just models` refresh that drops one fails here.
+    #[test]
+    fn vendors_table_matches_bundled_catalog() {
+        for (family, pid) in VENDORS {
+            let p = BUNDLED
+                .get(*pid)
+                .unwrap_or_else(|| panic!("{pid} not bundled"));
+            assert!(
+                p.models.values().any(|m| tokens(&m.id)
+                    .next()
+                    .is_some_and(|t| t.eq_ignore_ascii_case(family))),
+                "{pid} has no {family} model"
+            );
+        }
     }
 
     fn with_options(opts: Vec<ReasoningOption>) -> Model {

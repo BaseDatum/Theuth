@@ -15,14 +15,21 @@ fn scratch_data_dir(tag: &str) -> PathBuf {
 #[test]
 fn a_failed_load_is_final_for_the_process() {
     let bad = scratch_data_dir("bad");
-    std::fs::write(models::onnx::runtime_path(&bad), b"not a mach-o / elf image").unwrap();
+    std::fs::write(
+        models::onnx::runtime_path(&bad),
+        b"not a mach-o / elf image",
+    )
+    .unwrap();
     let good = scratch_data_dir("good");
 
     // The search misses: not a load, not cached. A box with `$ORT_DYLIB_PATH` or a Homebrew
     // runtime loads it for real here and cannot exercise the failure.
     let missing = match models::onnx::ort_lib(&good) {
         Ok(lib) => {
-            eprintln!("skipped: a runtime is installed globally at {}", lib.display());
+            eprintln!(
+                "skipped: a runtime is installed globally at {}",
+                lib.display()
+            );
             return;
         }
         Err(e) => e,
