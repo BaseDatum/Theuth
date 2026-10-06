@@ -102,14 +102,21 @@ pub enum Chunk {
         /// Links.
         sources: Vec<Source>,
     },
+    /// Block Kit blocks (a serde_json array) in the body where they appear
+    /// (110 §8): sent verbatim, so `container` / `data_table` /
+    /// `data_visualization` / `plan` pass although morphism's `SlackBlock`
+    /// cannot type them.
+    Blocks(serde_json::Value),
 }
 
-impl TryFrom<Chunk> for SlackStreamChunk {
-    type Error = ApiError;
-
-    fn try_from(c: Chunk) -> Result<Self, Self::Error> {
-        Ok(match c {
-            Chunk::Text(text) => SlackStreamChunk::MarkdownText { text },
+impl Chunk {
+    /// The chunk object inside `chunks` on the wire. `Task` goes through
+    /// morphism's `SlackStreamChunk::TaskUpdate` so its source URLs are
+    /// validated; the other two are raw.
+    fn wire(self) -> Result<serde_json::Value, ApiError> {
+        Ok(match self {
+            Chunk::Text(text) => serde_json::json!({ "type": "markdown_text", "text": text }),
+            Chunk::Blocks(blocks) => serde_json::json!({ "type": "blocks", "blocks": blocks }),
             Chunk::Task {
                 id,
                 title,
@@ -117,37 +124,42 @@ impl TryFrom<Chunk> for SlackStreamChunk {
                 details,
                 output,
                 sources,
-            } => SlackStreamChunk::TaskUpdate {
-                id: id.into(),
-                title,
-                hide_title: None,
-                icon: None,
-                status: status.wire(),
-                details,
-                output,
-                sources: (!sources.is_empty())
-                    .then(|| {
-                        sources
-                            .into_iter()
-                            .map(|s| {
-                                let url = s.url.parse().map_err(|e| {
-                                    ApiError::Transport(format!("task source URL: {e}"))
-                                })?;
-                                Ok(SlackTaskCardSource::Url(SlackUrlSourceElement::new(
-                                    url, s.text,
-                                )))
-                            })
-                            .collect::<Result<Vec<_>, ApiError>>()
-                    })
-                    .transpose()?,
-            },
+            } => {
+                let task = SlackStreamChunk::TaskUpdate {
+                    id: id.into(),
+                    title,
+                    hide_title: None,
+                    icon: None,
+                    status: status.wire(),
+                    details,
+                    output,
+                    sources: (!sources.is_empty())
+                        .then(|| {
+                            sources
+                                .into_iter()
+                                .map(|s| {
+                                    let url = s.url.parse().map_err(|e| {
+                                        ApiError::Transport(format!("task source URL: {e}"))
+                                    })?;
+                                    Ok(SlackTaskCardSource::Url(SlackUrlSourceElement::new(
+                                        url, s.text,
+                                    )))
+                                })
+                                .collect::<Result<Vec<_>, ApiError>>()
+                        })
+                        .transpose()?,
+                };
+                serde_json::to_value(task)
+                    .map_err(|e| ApiError::Transport(format!("task_update: {e}")))?
+            }
         })
     }
 }
 
-fn chunks(v: Vec<Chunk>) -> Result<Option<Vec<SlackStreamChunk>>, ApiError> {
+/// `chunks` for a stream request; `None` when there is nothing to send.
+fn chunks(v: Vec<Chunk>) -> Result<Option<Vec<serde_json::Value>>, ApiError> {
     (!v.is_empty())
-        .then(|| v.into_iter().map(TryInto::try_into).collect())
+        .then(|| v.into_iter().map(Chunk::wire).collect())
         .transpose()
 }
 
@@ -504,9 +516,45 @@ struct UpdateBlocks<'a> {
     blocks: &'a serde_json::Value,
 }
 
-/// What we read back from `chat.postMessage` / `chat.update`. Slack echoes
-/// the message (with its blocks) too; ignoring it keeps a `container` from
-/// failing typed deserialization on the way back.
+/// `chat.startStream` body (timeline mode); `chunks` are [`Chunk::wire`]
+/// objects, so a `blocks` chunk carries any block (110 §8, the same reason
+/// as [`PostBlocks`]).
+#[derive(serde::Serialize)]
+struct StartStream<'a> {
+    channel: &'a str,
+    thread_ts: &'a str,
+    recipient_user_id: &'a str,
+    recipient_team_id: &'a str,
+    task_display_mode: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    chunks: Option<Vec<serde_json::Value>>,
+}
+
+/// `chat.appendStream` body; see [`StartStream`].
+#[derive(serde::Serialize)]
+struct AppendStream<'a> {
+    channel: &'a str,
+    ts: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    chunks: Option<Vec<serde_json::Value>>,
+}
+
+/// `chat.stopStream` body; `blocks` is the footer `context` block.
+#[derive(serde::Serialize)]
+struct StopStream<'a> {
+    channel: &'a str,
+    ts: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    blocks: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    chunks: Option<Vec<serde_json::Value>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    session_status: Option<SlackAgentSessionStatus>,
+}
+
+/// What we read back from `chat.postMessage` / `chat.update` and the three
+/// stream methods. Slack echoes the message (with its blocks) too; ignoring
+/// it keeps a `container` from failing typed deserialization on the way back.
 #[derive(serde::Deserialize)]
 struct Posted {
     ts: String,
@@ -526,30 +574,41 @@ impl SlackApi for Api {
         team: &str,
         first: Vec<Chunk>,
     ) -> Result<String, ApiError> {
-        let req = SlackApiChatStartStreamRequest::new(channel.into())
-            .with_thread_ts(thread_ts.into())
-            .with_recipient_user_id(user.into())
-            .with_recipient_team_id(team.into())
-            .with_task_display_mode(SlackStreamTaskDisplayMode::Timeline)
-            .opt_chunks(chunks(first)?);
+        let req = StartStream {
+            channel,
+            thread_ts,
+            recipient_user_id: user,
+            recipient_team_id: team,
+            task_display_mode: "timeline",
+            chunks: chunks(first)?,
+        };
         self.run("chat.startStream", async {
             self.client
                 .open_session(&self.bot)
-                .chat_start_stream(&req)
+                .http_session_api
+                .http_post::<_, Posted>("chat.startStream", &req, Some(&SLACK_TIER2_METHOD_CONFIG))
                 .await
         })
         .await
-        .map(|r| r.ts.0)
+        .map(|r| r.ts)
     }
 
     async fn append_stream(&self, channel: &str, ts: &str, c: Vec<Chunk>) -> Result<(), ApiError> {
-        let req =
-            SlackApiChatAppendStreamRequest::new(channel.into(), ts.into()).opt_chunks(chunks(c)?);
+        let req = AppendStream {
+            channel,
+            ts,
+            chunks: chunks(c)?,
+        };
         self.pace("chat.appendStream", APPEND_GAP).await;
         self.run("chat.appendStream", async {
             self.client
                 .open_session(&self.bot)
-                .chat_append_stream(&req)
+                .http_session_api
+                .http_post::<_, Posted>(
+                    "chat.appendStream",
+                    &req,
+                    Some(&SLACK_TIER4_METHOD_CONFIG),
+                )
                 .await
         })
         .await
@@ -564,19 +623,23 @@ impl SlackApi for Api {
         footer: Option<String>,
         session_status: Option<&str>,
     ) -> Result<(), ApiError> {
-        let session_status = session_status.map(self::session_status).transpose()?;
-        let content = SlackMessageContent::new().opt_blocks(footer.map(|f| {
-            vec![SlackBlock::Context(SlackContextBlock::new(vec![
-                SlackContextBlockElement::MarkDown(SlackBlockMarkDownText::new(f)),
-            ]))]
-        }));
-        let req = SlackApiChatStopStreamRequest::new(channel.into(), ts.into(), content)
-            .opt_chunks(chunks(c)?)
-            .opt_session_status(session_status);
+        let req = StopStream {
+            channel,
+            ts,
+            blocks: footer.map(|f| {
+                serde_json::json!([{
+                    "type": "context",
+                    "elements": [{ "type": "mrkdwn", "text": f }],
+                }])
+            }),
+            chunks: chunks(c)?,
+            session_status: session_status.map(self::session_status).transpose()?,
+        };
         self.run("chat.stopStream", async {
             self.client
                 .open_session(&self.bot)
-                .chat_stop_stream(&req)
+                .http_session_api
+                .http_post::<_, Posted>("chat.stopStream", &req, Some(&SLACK_TIER2_METHOD_CONFIG))
                 .await
         })
         .await
@@ -895,8 +958,8 @@ mod tests {
                 text: "output".into(),
             }],
         };
-        let chunk = SlackStreamChunk::try_from(task("https://example.com/output")).unwrap();
-        let wire = serde_json::to_value(chunk).unwrap();
+        let wire = task("https://example.com/output").wire().unwrap();
+        assert_eq!(wire["type"], "task_update");
         assert_eq!(wire["status"], "complete");
         assert_eq!(
             wire["sources"][0],
@@ -904,7 +967,76 @@ mod tests {
                 "type": "url", "url": "https://example.com/output", "text": "output"
             })
         );
-        assert!(SlackStreamChunk::try_from(task("not a URL")).is_err());
+        assert!(task("not a URL").wire().is_err());
+    }
+
+    /// 110 §8: a `blocks` chunk carrying a `data_table` (unknown to
+    /// morphism) sits verbatim in `chunks` beside a `task_update` and a
+    /// `markdown_text`; the stream responses parse to their `ts`.
+    #[test]
+    fn blocks_chunk_reaches_the_stream_wire_verbatim() {
+        let table = serde_json::json!([{
+            "type": "data_table",
+            "caption": "Table",
+            "column_settings": [{"is_wrapped": true}],
+            "rows": [[{"type": "raw_text", "text": "a"}]],
+        }]);
+        let c = chunks(vec![
+            Chunk::Text("before".into()),
+            Chunk::Blocks(table.clone()),
+            Chunk::Task {
+                id: "c1".into(),
+                title: "shell".into(),
+                status: TaskStatus::InProgress,
+                details: None,
+                output: None,
+                sources: Vec::new(),
+            },
+        ])
+        .unwrap()
+        .unwrap();
+        assert_eq!(c[0], serde_json::json!({"type": "markdown_text", "text": "before"}));
+        assert_eq!(c[1], serde_json::json!({"type": "blocks", "blocks": table}));
+        assert_eq!(c[2]["type"], "task_update");
+        assert_eq!(c[2]["id"], "c1");
+        assert_eq!(c[2]["status"], "in_progress");
+        assert!(c[2].get("sources").is_none(), "{:?}", c[2]);
+        assert!(chunks(Vec::new()).unwrap().is_none());
+
+        let append = serde_json::to_value(AppendStream {
+            channel: "C1",
+            ts: "1.1",
+            chunks: Some(c.clone()),
+        })
+        .unwrap();
+        assert_eq!(append["chunks"][1]["blocks"], table);
+        let start = serde_json::to_value(StartStream {
+            channel: "C1",
+            thread_ts: "1.1",
+            recipient_user_id: "U1",
+            recipient_team_id: "T1",
+            task_display_mode: "timeline",
+            chunks: None,
+        })
+        .unwrap();
+        assert_eq!(start["task_display_mode"], "timeline");
+        assert!(start.get("chunks").is_none());
+        let stop = serde_json::to_value(StopStream {
+            channel: "C1",
+            ts: "1.1",
+            blocks: Some(serde_json::json!([{"type": "context"}])),
+            chunks: Some(c),
+            session_status: Some(session_status("active").unwrap()),
+        })
+        .unwrap();
+        assert_eq!(stop["session_status"], "active");
+        assert_eq!(stop["blocks"][0]["type"], "context");
+        assert_eq!(stop["chunks"][1]["type"], "blocks");
+        let r: Posted = serde_json::from_str(
+            r#"{"ok":true,"channel":"C1","ts":"1.3","message":{"blocks":[{"type":"data_table"}]}}"#,
+        )
+        .unwrap();
+        assert_eq!(r.ts, "1.3");
     }
 
     /// 110 §6: a `container` (unknown to morphism's `SlackBlock`) reaches
