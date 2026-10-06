@@ -36,7 +36,46 @@ Branch `feat/108-eng` off `8490bb5a`. Spec: `108-routines-ui.md` §7, §8, §9, 
 
 ## Gates
 
-GATES_PLACEHOLDER
+All with `export PATH=/Users/Sky.Moore/.rustup/toolchains/1.98.1-aarch64-apple-darwin/bin:$PATH CARGO_TARGET_DIR=/Users/Sky.Moore/Develop/theuth-108-eng-target`.
+
+```
+cargo test -p schedule -p app -p rpc -p agent --no-fail-fast
+  agent:    test result: ok. 381 passed; 0 failed; 0 ignored
+  app:      test result: ok. 43 passed; 0 failed; 0 ignored   (routine_draft: 3 new)
+  app/publish.rs: ok. 1 passed
+  rpc:      test result: ok. 36 passed; 0 failed; 0 ignored
+  rpc/prompts.rs: ok. 1 passed
+  schedule: test result: ok. 67 passed; 0 failed; 0 ignored   (after the one fix below)
+cargo check --workspace
+  Finished `dev` profile [unoptimized + debuginfo] target(s) in 13m 08s
+cargo clippy --workspace --all-targets -- -D warnings
+  FAILS on PRE-EXISTING code outside this branch (untouched files, toolchain 1.98.1 lints):
+    crates/talk/src/policy.rs:580 (iter_with_drain), crates/tasks/src/packet.rs:406,
+    crates/tasks/src/tools.rs:480,481,741, crates/tasks/src/ledger.rs:4977,5052,5391,5470
+  `git status crates/talk crates/tasks` is empty on this branch; last change to policy.rs is cde73913.
+cargo clippy --no-deps -p agent -p schedule -p app -p rpc -p theuth --all-targets -- -D warnings
+  Finished `dev` profile [unoptimized + debuginfo] target(s) in 1m 23s        (clean)
+just ts
+  test result: ok. 8 passed; 0 failed   → bindings/{SensorArg,SensorInfo,RunKind,RunInfo,ScheduleInfo}.ts,
+  methods.json gains "list_sensors", "test_schedule_file"
+```
+
+The first `cargo test` run had one failure, `tools::tests::render_args_enabled_rule_and_routing`:
+my assertion expected `project: web`; `file::render` writes `project: "web"` (YAML string). Test
+fixed, not the renderer.
+
+**Generated TS vs §9.6**: identical in shape. `SensorArg { name: string, required: boolean,
+example: string | null, help: string }`; `SensorInfo` has the 13 fields of §9.2 in order
+(`Option` → `| null`, `Vec` → `Array<>`); `RunKind = "run" | "check" | "end" | "skip"`;
+`RunInfo.kind: RunKind`; `ScheduleInfo` + `sensor`, `for`, `cooldown`, `timeout`, `model`,
+`run_timeout` (`string | null`) and `created: string | null` (ts-rs renders `DateTime<Local>` as
+`string`, like `next`/`last`). The UI tree's hand-written stubs are not in this worktree
+(`crates/desktop/ui/src/rpc/bindings/` is absent here), so the diff against them is the
+integrator's; the field list above is what they must match.
+
+rustfmt: run on `crates/app/src/routine_draft.rs` (new file) only. Running it on the other
+touched files reformatted pre-existing code (e.g. 41 lines of `main.rs`, 94 of `validate.rs`,
+and `mcp.rs` through `main.rs`'s modules) — reverted to keep the diff to this wave's lines.
 
 ## Not exercised
 

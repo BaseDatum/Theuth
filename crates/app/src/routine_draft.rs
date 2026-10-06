@@ -164,12 +164,8 @@ impl Tool for RoutineDraftTool {
         }
         let data_dir = &self.core.rt.data_dir;
         let dir = data_dir.join(schedule::DIR);
-        let sensors = agent::sensor::SensorRunner::new(
-            data_dir.clone(),
-            None,
-            None,
-            Default::default(),
-        );
+        let sensors =
+            agent::sensor::SensorRunner::new(data_dir.clone(), None, None, Default::default());
         let existing: BTreeSet<String> = args
             .routines
             .iter()
@@ -338,7 +334,11 @@ fn parts(d: &RoutineDraft) -> String {
 /// The card set's OpenUI source and the draft ids, one per routine (`r1-<suffix>`, …).
 /// Every button's `@ToAssistant` message is `routine draft <id>: <choice>`; a name in
 /// `existing` adds a note that *Create…* replaces the file.
-pub fn source(routines: &[RoutineDraft], existing: &BTreeSet<String>, suffix: &str) -> (String, Vec<String>) {
+pub fn source(
+    routines: &[RoutineDraft],
+    existing: &BTreeSet<String>,
+    suffix: &str,
+) -> (String, Vec<String>) {
     let ids: Vec<String> = (1..=routines.len())
         .map(|i| {
             if suffix.is_empty() {
@@ -456,7 +456,9 @@ mod tests {
 
     fn watcher(name: &str) -> RoutineDraft {
         RoutineDraft {
-            sentence: "Every 60s checks pr_watch.py on repo=o/r pr=7 · fires on change · at most 40 times".into(),
+            sentence:
+                "Every 60s checks pr_watch.py on repo=o/r pr=7 · fires on change · at most 40 times"
+                    .into(),
             cron: None,
             every: Some("60s".into()),
             when: Some("pr_watch.py repo=o/r pr=7 token=gh_token".into()),
@@ -481,15 +483,22 @@ mod tests {
             assert!(src.contains(&format!("{c}_paused = Button(\"Create paused\", Action([@ToAssistant(\"routine draft {id}: create paused\")]))")), "{src}");
             assert!(src.contains(&format!("{c}_start = Button(\"Create and start\", Action([@ToAssistant(\"routine draft {id}: create and start\")]), \"secondary\")")), "{src}");
             assert!(src.contains(&format!("{c}_form = Button(\"Open in form\", Action([@ToAssistant(\"routine draft {id}: open in form\")]), \"tertiary\")")), "{src}");
-            assert!(src.contains(&format!("\"routine draft {id}\"")), "the header names the draft");
+            assert!(
+                src.contains(&format!("\"routine draft {id}\"")),
+                "the header names the draft"
+            );
         }
         assert!(!src.contains("Discard"), "no discard button: {src}");
         assert!(src.contains("c1 = Card([c1_head, c1_sentence, c1_parts, c1_prompt, c1_buttons])"));
-        assert!(src.contains("c2 = Card([c2_head, c2_sentence, c2_parts, c2_prompt, c2_note, c2_buttons])"));
+        assert!(src.contains(
+            "c2 = Card([c2_head, c2_sentence, c2_parts, c2_prompt, c2_note, c2_buttons])"
+        ));
         assert!(src.contains("`brief` exists — *Create…* replaces schedules/brief.md."));
         assert!(src.contains(r#"c1_head = CardHeader("argo", "routine draft r1-ab12")"#));
         assert!(src.contains(r#"c2_sentence = TextContent("**Weekdays at 09:00**")"#));
-        assert!(src.contains(r#"c2_prompt = TextContent("Brief me on \"today\".\nKeep it short.")"#));
+        assert!(
+            src.contains(r#"c2_prompt = TextContent("Brief me on \"today\".\nKeep it short.")"#)
+        );
         assert!(src.contains("Trigger `every 60s when pr_watch.py` · Stop `max_runs 40` · Run `quiet, approvals false, cwd ~` · Concurrency `queue`"), "{src}");
         assert!(src.contains("Trigger `cron 0 9 * * 1-5` · Stop `never` · Run `defaults` · Concurrency `deferred`"), "{src}");
         assert!(src.contains("**2 routine drafts**"));
@@ -503,7 +512,11 @@ mod tests {
             prompt: "x".repeat(PREVIEW + 1),
             ..draft("brief")
         };
-        assert!(source(&[long], &existing, "").0.contains(&format!("{}…", "x".repeat(PREVIEW))));
+        assert!(
+            source(&[long], &existing, "")
+                .0
+                .contains(&format!("{}…", "x".repeat(PREVIEW)))
+        );
     }
 
     #[test]
@@ -517,27 +530,77 @@ mod tests {
     #[test]
     fn validate_refuses_what_schedule_would() {
         let tmp = tempfile::tempdir().unwrap();
-        let sensors = agent::sensor::SensorRunner::new(tmp.path().to_path_buf(), None, None, Default::default());
+        let sensors = agent::sensor::SensorRunner::new(
+            tmp.path().to_path_buf(),
+            None,
+            None,
+            Default::default(),
+        );
         sensors.install_builtins().unwrap();
         assert!(validate(&draft("brief"), &sensors).is_ok());
-        assert!(validate(&watcher("argo"), &sensors).is_ok(), "resolves, not dry-run");
-        assert!(validate(&draft("Brief"), &sensors).unwrap_err().contains("name:"));
+        assert!(
+            validate(&watcher("argo"), &sensors).is_ok(),
+            "resolves, not dry-run"
+        );
+        assert!(
+            validate(&draft("Brief"), &sensors)
+                .unwrap_err()
+                .contains("name:")
+        );
         assert_eq!(
-            validate(&RoutineDraft { sentence: " ".into(), ..draft("brief") }, &sensors).unwrap_err(),
+            validate(
+                &RoutineDraft {
+                    sentence: " ".into(),
+                    ..draft("brief")
+                },
+                &sensors
+            )
+            .unwrap_err(),
             "sentence: empty"
         );
         assert_eq!(
-            validate(&RoutineDraft { cron: None, every: Some("5s".into()), ..draft("fast") }, &sensors).unwrap_err(),
+            validate(
+                &RoutineDraft {
+                    cron: None,
+                    every: Some("5s".into()),
+                    ..draft("fast")
+                },
+                &sensors
+            )
+            .unwrap_err(),
             "every: below 10s"
         );
         assert_eq!(
-            validate(&RoutineDraft { max_runs: None, ..watcher("argo") }, &sensors).unwrap_err(),
+            validate(
+                &RoutineDraft {
+                    max_runs: None,
+                    ..watcher("argo")
+                },
+                &sensors
+            )
+            .unwrap_err(),
             "when: needs a stop (until, max_runs or expires)"
         );
         assert_eq!(
-            validate(&RoutineDraft { when: Some("missing.py".into()), ..watcher("argo") }, &sensors).unwrap_err(),
+            validate(
+                &RoutineDraft {
+                    when: Some("missing.py".into()),
+                    ..watcher("argo")
+                },
+                &sensors
+            )
+            .unwrap_err(),
             "when: no such sensor: missing.py"
         );
-        assert!(validate(&RoutineDraft { prompt: String::new(), ..draft("brief") }, &sensors).is_err());
+        assert!(
+            validate(
+                &RoutineDraft {
+                    prompt: String::new(),
+                    ..draft("brief")
+                },
+                &sensors
+            )
+            .is_err()
+        );
     }
 }
