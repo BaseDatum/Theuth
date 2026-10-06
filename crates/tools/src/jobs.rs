@@ -2446,4 +2446,253 @@ pub(crate) mod tests {
         assert!(!log.parent().unwrap().exists());
         assert!(list(&fx).await.is_empty());
     }
+    /// 109: a journal that records every row, noting for each `jobs` row
+    /// whether its process group answered signal 0 at write time.
+    #[derive(Default)]
+    pub(crate) struct RecJournal {
+        pub(crate) jobs: Mutex<Vec<(JobRow, bool)>>,
+        pub(crate) screens: Mutex<Vec<PtyScreenRow>>,
+        pub(crate) waits: Mutex<Vec<Option<crate::journal::WaitRow>>>,
+    }
+
+    impl crate::Journal for RecJournal {
+        fn call_started(&self, _: SessionId, _: &str) -> futures::future::BoxFuture<'_, ()> {
+            Box::pin(async {})
+        }
+        fn call_finished(
+            &self,
+            _: SessionId,
+            _: &str,
+            _: &ToolOutput,
+        ) -> futures::future::BoxFuture<'_, ()> {
+            Box::pin(async {})
+        }
+        fn question(&self, _: crate::journal::QuestionRow) -> futures::future::BoxFuture<'_, ()> {
+            Box::pin(async {})
+        }
+        fn wait(
+            &self,
+            w: Option<crate::journal::WaitRow>,
+            _: SessionId,
+            _: &str,
+        ) -> futures::future::BoxFuture<'_, ()> {
+            lock(&self.waits).push(w);
+            Box::pin(async {})
+        }
+        fn job(&self, j: JobRow) -> futures::future::BoxFuture<'_, ()> {
+            let alive = j
+                .pgid
+                .and_then(|p| ProcessTree::adopt(p as u32).ok())
+                .is_some_and(|t| t.alive());
+            lock(&self.jobs).push((j, alive));
+            Box::pin(async {})
+        }
+        fn pty_screen(&self, s: PtyScreenRow) -> futures::future::BoxFuture<'_, ()> {
+            lock(&self.screens).push(s);
+            Box::pin(async {})
+        }
+    }
+
+    /// A fixture with a [`RecJournal`] installed.
+    pub(crate) async fn journaled(grace: Duration, timeout: Duration) -> (Fx, Arc<RecJournal>) {
+        let fx = fixture(grace, timeout).await;
+        let journal = Arc::new(RecJournal::default());
+        fx.jobs
+            .ask(crate::InstallJournal(journal.clone()))
+            .await
+            .unwrap();
+        (fx, journal)
+    }
+
+    /// Poll the journal until `pred` holds on the `jobs` rows.
+    pub(crate) async fn rows_until(
+        journal: &RecJournal,
+        within: Duration,
+        pred: impl Fn(&[(JobRow, bool)]) -> bool,
+    ) -> Vec<(JobRow, bool)> {
+        let deadline = Instant::now() + within;
+        loop {
+            let v: Vec<_> = lock(&journal.jobs).clone();
+            if pred(&v) {
+                return v;
+            }
+            assert!(Instant::now() < deadline, "journal never satisfied: {v:?}");
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    }
+
+    /// 109 §5.1: a shell job writes `running` (then with its pgid), and
+    /// `settled` with its exit; a quiet job writes nothing.
+    #[tokio::test]
+    async fn job_rows_follow_the_job() {
+        let (fx, journal) = journaled(Duration::from_secs(3), Duration::from_secs(60)).await;
+        let StartReply::Done(out) = spawn_job(&fx, "echo hi; exit 3").await else {
+            panic!("expected Done");
+        };
+        assert!(out.is_error);
+        let rows = rows_until(&journal, Duration::from_secs(2), |r| {
+            r.iter().any(|(j, _)| j.state == JobState::Settled)
+        })
+        .await;
+        let first = &rows[0].0;
+        assert_eq!((first.state, first.exit.clone()), (JobState::Running, None));
+        assert_eq!(first.kind, JobKind::Shell);
+        assert_eq!(first.id.0, "j1");
+        assert!(first.log.as_ref().unwrap().ends_with("j1.log"));
+        let last = &rows.last().unwrap().0;
+        assert_eq!(last.state, JobState::Settled);
+        assert_eq!(last.exit, Some(JobExit::Exited(3)));
+        assert!(last.settled_ms.unwrap() >= last.started_ms);
+        // A quiet job: no row.
+        let before = lock(&journal.jobs).len();
+        let _ = spawn_quiet(&fx, "true", true).await;
+        assert_eq!(lock(&journal.jobs).len(), before);
+    }
+
+    /// 109 §5.5: every running row is written `exit = lost` while its
+    /// group is still alive, and only then is the group killed.
+    #[tokio::test]
+    async fn killall_writes_lost_before_kill() {
+        let (fx, journal) = journaled(Duration::ZERO, Duration::from_secs(600)).await;
+        let StartReply::Running { id, .. } = spawn_job(&fx, "sleep 600").await else {
+            panic!("expected Running");
+        };
+        let rows = rows_until(&journal, Duration::from_secs(5), |r| {
+            r.iter().any(|(j, _)| j.pgid.is_some())
+        })
+        .await;
+        let pgid = rows.last().unwrap().0.pgid.unwrap() as u32;
+        let tree = ProcessTree::adopt(pgid).unwrap();
+        assert!(tree.alive());
+        fx.jobs.tell(KillAll).await.unwrap();
+        let rows = rows_until(&journal, Duration::from_secs(5), |r| {
+            r.iter().any(|(j, _)| j.exit == Some(JobExit::Lost))
+        })
+        .await;
+        let (lost, alive_at_write) = rows
+            .iter()
+            .find(|(j, _)| j.exit == Some(JobExit::Lost))
+            .unwrap();
+        assert_eq!(lost.id, id);
+        assert_eq!(lost.pgid, Some(i64::from(pgid)));
+        assert!(alive_at_write, "the row went to disk after the kill");
+        assert!(lost.settled_ms.is_some());
+        // Still `running` for `jobs_open`: the reaper settles and reports it.
+        assert_eq!(lost.state, JobState::Running);
+        assert!(group_gone(&tree, Some(tokio::time::Instant::now() + KILL_WAIT)).await);
+    }
+
+    /// 109 §4.4: the `shell` grace wait is a `job` wait while it lasts.
+    #[tokio::test]
+    async fn grace_wait_writes_and_clears_a_job_wait() {
+        let (fx, journal) = journaled(Duration::from_millis(200), Duration::from_secs(60)).await;
+        let reply = fx
+            .jobs
+            .ask(Start {
+                session: fx.session,
+                command: "sleep 1".into(),
+                call_id: "c1".into(),
+                quiet: false,
+                shell: ShellTool::build_shell(false).await.unwrap(),
+                put_back: Arc::new(|_| {}),
+                root: fx.dir.clone(),
+                activity: None,
+                timeout: None,
+            })
+            .await
+            .unwrap();
+        assert!(matches!(reply, StartReply::Running { .. }));
+        let waits = lock(&journal.waits).clone();
+        assert_eq!(waits.len(), 2, "{waits:?}");
+        let w = waits[0].as_ref().unwrap();
+        assert_eq!(
+            (w.kind, w.target.as_str(), w.tool_call_id.as_str()),
+            (crate::journal::WaitKind::Job, "j1", "c1")
+        );
+        assert!(waits[1].is_none());
+    }
+
+    fn lost_row(session: SessionId, id: &str, kind: JobKind, log: &std::path::Path) -> JobRow {
+        JobRow {
+            session,
+            id: JobId(id.into()),
+            kind,
+            call_id: "c0".into(),
+            command: "cargo build".into(),
+            name: None,
+            pgid: None,
+            log: Some(log.to_path_buf()),
+            started_ms: 1_000,
+            state: JobState::Lost,
+            exit: Some(JobExit::Lost),
+            settled_ms: Some(8_000),
+        }
+    }
+
+    /// 109 §5.4: a reaped job lists as `lost` with its log tail, later jobs
+    /// number past it, and — when the model had its stub — its
+    /// `<job_result exit="lost">` settles through the ledger.
+    #[tokio::test]
+    async fn reaped_jobs_list_lost_and_deliver_through_the_ledger() {
+        use crate::activity::test_sink::Seen;
+        let (fx, ledger, seen) = certified(Duration::ZERO, Duration::from_secs(60)).await;
+        let log = fx.dir.join("j7.log");
+        std::fs::write(&log, "building…\nerror: boom\n").unwrap();
+        fx.jobs
+            .tell(Reaped {
+                restarted_at: chrono::Utc::now(),
+                jobs: vec![
+                    LostJob {
+                        row: lost_row(fx.session, "j7", JobKind::Shell, &log),
+                        screen: None,
+                        tail: "error: boom\n".into(),
+                        deliver: Some("this job died with the engine".into()),
+                    },
+                    LostJob {
+                        row: lost_row(fx.session, "j3", JobKind::Shell, &log),
+                        screen: None,
+                        tail: String::new(),
+                        deliver: None,
+                    },
+                ],
+            })
+            .await
+            .unwrap();
+        let v = ledger_until(&ledger, &seen, Duration::from_secs(2), |v| {
+            v.iter().any(|s| matches!(s, Seen::Result(_)))
+        })
+        .await;
+        // One delivery: j7's. j3 is the resumed batch's to report.
+        assert_eq!(v.iter().filter(|s| matches!(s, Seen::Result(_))).count(), 1);
+        let views = list(&fx).await;
+        let j7 = views.iter().find(|v| v.id.0 == "j7").unwrap();
+        assert_eq!(
+            (j7.state.as_str(), j7.secs, j7.tail.as_str()),
+            ("lost", 7, "error: boom\n")
+        );
+        assert_eq!(j7.log, log);
+        assert!(table(&views).contains("j7  lost"), "{}", table(&views));
+        let finished: Vec<_> = lock(&fx.events)
+            .iter()
+            .filter_map(|e| match e {
+                JobEvent::Finished {
+                    id, exit, inline, ..
+                } => Some((id.0.clone(), exit.clone(), *inline)),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            finished.contains(&("j7".into(), JobExit::Lost, false)),
+            "{finished:?}"
+        );
+        assert!(
+            finished.contains(&("j3".into(), JobExit::Lost, true)),
+            "{finished:?}"
+        );
+        // The next job of the session numbers past the lost ones.
+        let StartReply::Running { id, .. } = spawn_job(&fx, "sleep 5").await else {
+            panic!("expected Running");
+        };
+        assert_eq!(id.0, "j8");
+    }
 }

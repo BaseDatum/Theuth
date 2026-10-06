@@ -4005,4 +4005,175 @@ mod tests {
         assert!(v[0].3.starts_with("same\n"), "{v:?}");
         cancel(&fx, "j1").await;
     }
+
+    /// 109 §5.1 / §5.3: a PTY job writes its row at spawn, a screen row as
+    /// `screen`/`send` return (revision-gated: an unchanged screen is not
+    /// rewritten), the final screen and the settled row at exit.
+    #[tokio::test]
+    async fn screen_snapshot_on_screen_and_timer() {
+        use crate::jobs::tests::{journaled, rows_until};
+        let (fx, journal) = journaled(Duration::from_millis(100), Duration::from_secs(60)).await;
+        let (start, send, screen, ..) = tools(&fx);
+        let out = Tool::call(&start, start_args("cat"), cx(&fx))
+            .await
+            .unwrap();
+        assert!(
+            out.content.starts_with("job j1 · running"),
+            "{}",
+            out.content
+        );
+        let rows = lock(&journal.jobs).clone();
+        assert_eq!(rows[0].0.kind, JobKind::Pty);
+        assert_eq!(rows[0].0.state, JobState::Running);
+        assert!(rows[0].0.pgid.is_some());
+        // `send` typed a line: the echoed screen is new → one row with it.
+        let mut args = send_args("j1");
+        args.text = Some("hello snapshot".into());
+        Tool::call(&send, args, cx(&fx)).await.unwrap();
+        let n = lock(&journal.screens).len();
+        let last = lock(&journal.screens).last().cloned().unwrap();
+        assert!(last.text.contains("hello snapshot"), "{:?}", last.text);
+        assert_eq!((last.rows, last.cols), (ROWS, COLS));
+        assert_eq!(last.job_id.0, "j1");
+        // `screen` with nothing new: the revision gate skips the write.
+        Tool::call(&screen, ScreenArgs { id: "j1".into() }, cx(&fx))
+            .await
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert_eq!(lock(&journal.screens).len(), n);
+        // Exit: the final screen and the settled row.
+        let mut args = send_args("j1");
+        args.keys = Some(vec![Key::Ctrl('d')]);
+        Tool::call(&send, args, cx(&fx)).await.unwrap();
+        let rows = rows_until(&journal, Duration::from_secs(5), |r| {
+            r.iter().any(|(j, _)| j.state == JobState::Settled)
+        })
+        .await;
+        let settled = &rows.last().unwrap().0;
+        assert_eq!(settled.exit, Some(JobExit::Exited(0)));
+        let screens = lock(&journal.screens).clone();
+        assert!(screens.len() > n, "no exit snapshot");
+        assert!(screens.last().unwrap().revision > last.revision);
+    }
+
+    /// 109 §5.3: after a restart `screen`/`send` on a lost PTY serve the
+    /// stored page under the banner; `pty_screen` serves it as a page with
+    /// `exit = lost` and no epoch; `wait` says the job is lost.
+    #[tokio::test]
+    async fn screen_after_restart_serves_banner() {
+        use crate::jobs::{LostJob, Reaped};
+        let fx = fixture(Duration::ZERO, Duration::from_secs(60)).await;
+        let (_, send, screen, wait) = tools(&fx);
+        let restarted_at = chrono::Utc::now();
+        let row = JobRow {
+            session: fx.session,
+            id: JobId("j2".into()),
+            kind: JobKind::Pty,
+            call_id: "c2".into(),
+            command: "python3 -q".into(),
+            name: Some("py".into()),
+            pgid: None,
+            log: Some(fx.dir.join("j2.log")),
+            started_ms: 0,
+            state: JobState::Lost,
+            exit: Some(JobExit::Lost),
+            settled_ms: Some(41_000),
+        };
+        let stored = PtyScreenRow {
+            session: fx.session,
+            job_id: JobId("j2".into()),
+            revision: 418,
+            rows: 40,
+            cols: 120,
+            cursor_row: 1,
+            cursor_col: 4,
+            text: ">>> 1+1\n2\n>>>".into(),
+            at_ms: 1_700_000_000_000,
+        };
+        fx.jobs
+            .tell(Reaped {
+                restarted_at,
+                jobs: vec![LostJob {
+                    row,
+                    screen: Some(stored.clone()),
+                    tail: String::new(),
+                    deliver: Some("gone".into()),
+                }],
+            })
+            .await
+            .unwrap();
+        let out = Tool::call(&screen, ScreenArgs { id: "py".into() }, cx(&fx))
+            .await
+            .unwrap();
+        let at = hhmmss(&restarted_at);
+        let captured = hhmmss(&chrono::DateTime::from_timestamp_millis(stored.at_ms).unwrap());
+        assert_eq!(
+            out.content,
+            format!(
+                "job j2 (py) · lost · 41s\n[process gone — the engine restarted at {at}; this is the last screen captured at {captured} (revision 418)]\nscreen:\n>>> 1+1\n2\n>>>\ncursor: row 2 col 5"
+            )
+        );
+        assert!(!out.is_error);
+        assert_eq!(out.structured.as_ref().unwrap()["lost"], true);
+        let out = Tool::call(&send, send_args("j2"), cx(&fx)).await.unwrap();
+        assert!(
+            out.content.contains(&format!(
+                "the terminal is gone (engine restarted at {at}); last screen follows\n[process gone"
+            )),
+            "{}",
+            out.content
+        );
+        let out = Tool::call(
+            &wait,
+            WaitArgs {
+                id: "j2".into(),
+                pattern: None,
+                timeout: Some(1),
+            },
+            cx(&fx),
+        )
+        .await
+        .unwrap();
+        assert!(out.is_error);
+        assert_eq!(out.content, "j2 (py) lost — start it again");
+        // The viewer's page.
+        let page = fx
+            .jobs
+            .ask(PtyScreen {
+                session: fx.session,
+                id: JobId("j2".into()),
+                viewport: PtyViewport::Live,
+                if_revision: None,
+            })
+            .await
+            .unwrap();
+        let PtyScreenReply::Updated(page) = page else {
+            panic!("{page:?}");
+        };
+        assert_eq!(
+            (page.revision, page.epoch, page.exit),
+            (418, None, Some(JobExit::Lost))
+        );
+        assert_eq!(page.cursor, Some((1, 4)));
+        assert_eq!(page.lines.len(), 3);
+        assert_eq!(text(&page.lines[0]), ">>> 1+1");
+        let same = fx
+            .jobs
+            .ask(PtyScreen {
+                session: fx.session,
+                id: JobId("j2".into()),
+                viewport: PtyViewport::Live,
+                if_revision: Some(418),
+            })
+            .await
+            .unwrap();
+        assert!(matches!(
+            same,
+            PtyScreenReply::Unchanged { revision: 418, .. }
+        ));
+        let views = list(&fx).await;
+        assert_eq!(views[0].state, "lost");
+        assert_eq!(views[0].tail, ">>> 1+1\n2\n>>>");
+        assert!(views[0].pty);
+    }
 }
