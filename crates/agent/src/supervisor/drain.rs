@@ -21,6 +21,7 @@ use runtime::{Runtime, SessionId, TurnId};
 
 use super::{Agents, LiveActor};
 use crate::durability::{DurabilityConfig, StepKind};
+use crate::loop_::Draining;
 use crate::{AGENT_ACTOR, AgentEvent, HistoryEntry, ResumeState};
 
 /// Set by the first [`Drain`]; a second one (the token-fired path in
@@ -102,8 +103,13 @@ impl Message<Drain> for Agents {
                     tracing::error!(%session, %turn, "109: drain: suspended step: {e:#}");
                 }
             }
+            // §9.2 step 2: no new model call opens in the window (the loop
+            // reads the flag at each `round`); in-flight tool calls finish.
             let mut busy: Vec<LiveActor> = Vec::with_capacity(live.len());
             for actor in live {
+                if let LiveActor::Native(session) = &actor {
+                    let _ = session.tell(Draining).await;
+                }
                 if actor.is_running().await {
                     busy.push(actor);
                 }

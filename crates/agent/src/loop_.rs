@@ -418,6 +418,21 @@ const SUSPENDED: &str = "suspended";
 /// `tell` (from the turn task to its own session): the turn ended.
 pub struct TurnDone(SessionState);
 
+/// `tell` (from the supervisor's `Drain`, 109 §9.2): the engine is leaving.
+/// The running turn opens no further model call — its next `round` writes
+/// `suspended` and stops — so the next start resumes from the journal.
+pub struct Draining;
+
+impl Message<Draining> for Session {
+    type Reply = ();
+
+    async fn handle(&mut self, _: Draining, _: &mut Context<Self, Self::Reply>) {
+        self.shared
+            .draining
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
 /// Per-session state that crosses turns (07 §11). Moved into the running
 /// turn and handed back in [`TurnDone`]; rebuilt from the store after an
 /// undo/redo or a [`RestartTurn`] cut (design doc 29 §4.2).
@@ -676,6 +691,9 @@ struct Shared {
     /// cleared when a turn is entered so a cancel that landed outside a stream
     /// never leaks into the next turn.
     keep: Arc<parking_lot::Mutex<Option<String>>>,
+    /// 109 §9.2: set by [`Draining`] — no new model call opens in this
+    /// session; the running turn stops `suspended` at its next round.
+    draining: Arc<std::sync::atomic::AtomicBool>,
 }
 
 /// The model, what streams it (12 §6) and the resolution error of the
@@ -790,6 +808,7 @@ impl Session {
                 steer: Arc::default(),
                 permit: Arc::default(),
                 keep: Arc::default(),
+                draining: Arc::default(),
                 catalog,
                 pool,
                 knowledge: None,
@@ -4409,7 +4428,11 @@ impl Turn {
     ) -> Round {
         // 109 §9.2 step 2: no new model call opens during a drain — the turn
         // is marked `suspended` and resumes from its newest journal step.
-        if crate::supervisor::draining() {
+        if self
+            .shared
+            .draining
+            .load(std::sync::atomic::Ordering::SeqCst)
+        {
             let payload = serde_json::json!({ "reason": "drain" });
             if let Err(e) = self
                 .shared
