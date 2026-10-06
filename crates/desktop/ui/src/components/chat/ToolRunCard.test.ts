@@ -2,7 +2,7 @@ import { createElement } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { expect, test, vi } from 'vitest'
 import type { Entry } from '@/store/sessions'
-import { foldRuns, summarize, ToolRunCard } from './ToolRunCard'
+import { foldRuns, isDeliverable, summarize, ToolRunCard } from './ToolRunCard'
 
 // `renderToStaticMarkup` reads zustand's server snapshot (the initial state), so the open map is a plain object here.
 const store = vi.hoisted(() => ({ open: {} as Record<string, boolean>, toggle: () => {} }))
@@ -30,6 +30,22 @@ test('foldRuns: assistant text splits runs, reasoning rides along, a lone call s
   expect(foldRuns([c, a, c])).toEqual([c, a, c])
   // A trailing reasoning row is not part of the run.
   expect(foldRuns([a, b, e])).toEqual([[a, b], e])
+})
+
+test('foldRuns: a deliverable never joins a run — it splits one; a board create still does; no deliverable, no change', () => {
+  const [a, b, c, d] = [tool(1), tool(2), tool(3), tool(4)]
+  for (const name of ['show', 'app', 'agent_draft', 'task_draft', 'routine_draft']) {
+    const s = tool(9, { name })
+    expect(isDeliverable(s)).toBe(true)
+    expect(foldRuns([a, b, s, c, d])).toEqual([[a, b], s, [c, d]])
+    expect(foldRuns([a, b, s, c])).toEqual([[a, b], s, c])
+    expect(foldRuns([s, a, s])).toEqual([s, a, s])
+  }
+  const board = tool(8, { name: 'doc_create', args: { kind: 'board', title: 'T' } })
+  expect(isDeliverable(board)).toBe(true)
+  expect(foldRuns([a, board, b, c])).toEqual([a, board, [b, c]])
+  expect(isDeliverable(tool(7, { name: 'doc_create', args: { kind: 'note' } }))).toBe(false)
+  expect(foldRuns([a, b, c, d])).toEqual([[a, b, c, d]])
 })
 
 test('summarize: live status names the current call and its position; the ending summary counts, times and names failures', () => {
