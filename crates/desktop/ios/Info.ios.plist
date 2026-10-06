@@ -9,5 +9,15 @@
   <!-- Skip the App Store Connect encryption questionnaire on every upload. -->
   <key>ITSAppUsesNonExemptEncryption</key>
   <false/>
+  <!-- 111: the scene lifecycle, so `ios_windowing.rs` can answer iPadOS 26's windowing-control
+       style. tao 0.35 only wires its scene delegate when multiple scenes are declared; extra
+       scenes are dismissed in `lib.rs` (the app is one window). -->
+  <key>UIApplicationSceneManifest</key>
+  <dict>
+    <key>UIApplicationSupportsMultipleScenes</key>
+    <true/>
+    <key>UISceneConfigurations</key>
+    <dict/>
+  </dict>
 </dict>
 </plist>
