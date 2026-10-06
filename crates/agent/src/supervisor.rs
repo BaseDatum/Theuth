@@ -105,6 +105,7 @@ use tools::{
 };
 
 // 109: handler bodies in their own files so the waves do not collide.
+mod acp_resume; // 109 W4
 mod drain;
 mod resume;
 mod waits;
@@ -1960,6 +1961,7 @@ impl Message<ActivityRegistered> for Agents {
         }
         self.rebuild_waits().await;
         self.resume_scan().await;
+        self.respawn_acp_children().await; // 109 W4 §7.3
     }
 }
 
