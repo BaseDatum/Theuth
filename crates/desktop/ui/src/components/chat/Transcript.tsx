@@ -113,12 +113,7 @@ export function Transcript({ session, compact = false }: { session: string; comp
   const approvals = useApprovals((s) => s.pending)
   const asks = useAsks((s) => s.pending)
   const secrets = useSecretRequests((s) => s.pending)
-  const approvalsAt = useApprovals((s) => s.at)
-  const asksAt = useAsks((s) => s.at)
-  const secretsAt = useSecretRequests((s) => s.at)
   const pending = useMemo<Prompt[]>(() => [...approvals, ...asks, ...secrets], [approvals, asks, secrets])
-  // Ids are uuids across all three kinds: one lookup for the rows.
-  const pendingAt = useMemo(() => new Map([...approvalsAt, ...asksAt, ...secretsAt]), [approvalsAt, asksAt, secretsAt])
   const more = useSessionField(session, 'more')
   const firstSeq = useSessionField(session, 'firstSeq')
   const running = useSessionField(session, 'running')
@@ -136,10 +131,7 @@ export function Transcript({ session, compact = false }: { session: string; comp
   const [at, setAt] = useState(0)
 
   const collapse = useToolRuns((s) => s.collapse)
-  const rows = useMemo(
-    () => buildRows(entries, pending, pendingAt, session, children, collapse),
-    [entries, pending, pendingAt, session, children, collapse],
-  )
+  const rows = useMemo(() => buildRows(entries, pending, session, children, collapse), [entries, pending, session, children, collapse])
   const v = useVirtualizer({
     count: rows.length,
     getScrollElement: () => ref.current,

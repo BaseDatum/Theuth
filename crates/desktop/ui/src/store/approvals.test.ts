@@ -26,21 +26,6 @@ test('resolve drops the card by id and a late Requested for it is ignored', () =
   expect(asks.getState().pending.map((p) => p.id)).toEqual(['b'])
 })
 
-test('an arrival time is stamped on add, dropped on resolve, kept only for ids a snapshot still reports (114)', () => {
-  const asks = createAsks()
-  const st = asks.getState()
-  st.add(ask('a'))
-  st.add(ask('b'))
-  const a = asks.getState().at.get('a')
-  expect(a).toBeTypeOf('number')
-  expect(asks.getState().at.get('b')).toBeGreaterThanOrEqual(a!)
-  st.resolve('b')
-  expect(asks.getState().at.has('b')).toBe(false)
-  st.replace([ask('a'), ask('fresh')])
-  expect(asks.getState().at.get('a')).toBe(a)
-  expect(asks.getState().at.has('fresh')).toBe(false) // no timestamp in the bindings: the transcript puts it last
-})
-
 test('PendingPrompts replaces the pending set with what the engine reports', () => {
   const st = scope('test-asksync')
   dispatch([ask('stale'), { type: 'ApprovalRequested', id: 'ap', session: 's1', tool: 'shell', args: {}, risk: 'mutating' }], st)
