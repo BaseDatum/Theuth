@@ -43,7 +43,8 @@ function useRise(id: string): { 'data-rise'?: true } {
   return useContext(FreshContext).has(id) ? { 'data-rise': true } : {}
 }
 
-export function BoardReader({ provider }: { provider: EngineProvider }) {
+/** `children` (101b): extra controls in the chrome row, rendered under the anchor store (the attention screens' phone tour button). */
+export function BoardReader({ provider, children }: { provider: EngineProvider; children?: ReactNode }) {
   const store = useMemo(createAnchorStore, [provider])
   const blocks = useBlocks(provider)
   const excerpts = useMemo(() => excerptsOf(blocks), [blocks])
@@ -184,6 +185,7 @@ export function BoardReader({ provider }: { provider: EngineProvider }) {
                         <MessageSquareQuote /> Ask to refresh
                       </Button>
                     )}
+                    {children}
                   </div>
                   {sections.map((s) =>
                     s.heading ? (

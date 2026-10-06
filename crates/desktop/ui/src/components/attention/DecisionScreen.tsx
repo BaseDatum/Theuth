@@ -9,15 +9,17 @@ import { Input } from '@/components/ui/input'
 import { Skeleton } from '@/components/ui/skeleton'
 import { cn } from '@/lib/utils'
 import type { AttentionItem } from '@/rpc/bindings/AttentionItem'
+import { PacketBoard } from './PacketBoard'
 import { PacketMarkdown } from './PacketMarkdown'
 import { Pointers } from './Pointers'
 import { usePacket } from './queries'
 import { Body, Chip, Footer, SectionTitle, useResolved } from './shared'
 
 /**
- * 101 D8: who asks · the task · age → the question → the agent's summary → "Look at" → option cards (recommended
- * pre-picked) + "Type your own…" → one Answer. A pick alone answers nothing (mis-tap protection); no confirm after Answer.
- * Without a packet (an item raised before this build) the question is the title and the free text still works.
+ * 101 D8: who asks · the task · age → the question → the agent's board (101b R4; the `summary` when there is none) →
+ * "Look at" → option cards (recommended pre-picked) + "Type your own…" → one Answer. A pick alone answers nothing
+ * (mis-tap protection); no confirm after Answer. Without a packet (an item raised before this build) the question is
+ * the title and the free text still works.
  */
 export function DecisionScreen({ item }: { item: AttentionItem }) {
   const packet = usePacket(item.packet)
@@ -60,7 +62,7 @@ export function DecisionScreen({ item }: { item: AttentionItem }) {
           <Skeleton className="h-4 w-2/3" />
         </div>
       ) : p ? (
-        <PacketMarkdown text={p.summary} />
+        p.board ? <PacketBoard board={p.board} summary={p.summary} /> : <PacketMarkdown text={p.summary} />
       ) : (
         <p className="text-sm text-fg-tertiary">
           No summary — the question is in the task thread.{' '}

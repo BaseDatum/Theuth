@@ -1187,6 +1187,7 @@ mod tests {
             question: (kind == tasks::packet::PacketKind::Decision)
                 .then(|| "Cap retries at 3?\n\nmore".to_owned()),
             summary: format!("# Summary line {}\n\nbody", "s".repeat(150)),
+            board: None,
             options: vec![],
             recommended: None,
             pointers: vec![],
