@@ -74,11 +74,13 @@ raw-window-handle = "0.6"
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging"] }
 
 # iOS only: `UIApplication.beginBackgroundTask` so the relay socket outlives
-# backgrounding for the grace period iOS grants (31 §8). Same objc2 line tauri uses.
+# backgrounding for the grace period iOS grants (31 §8), and the scene-configuration /
+# windowing-control-style surface `ios_windowing.rs` uses (111). Same objc2 line tauri uses.
 [target.'cfg(target_os = "ios")'.dependencies]
 objc2 = "0.6"
 block2 = "0.6"
-objc2-ui-kit = { version = "0.3", default-features = false, features = ["std", "UIApplication", "UIResponder", "UIScreen", "UITraitCollection", "UIInterface", "block2"] }
+objc2-foundation = { workspace = true }
+objc2-ui-kit = { version = "0.3", default-features = false, features = ["std", "UIApplication", "UIResponder", "UIScreen", "UITraitCollection", "UIInterface", "UIScene", "UISceneConfiguration", "UISceneDefinitions", "UISceneOptions", "UISceneSession", "UISceneWindowingControlStyle", "block2"] }
 
 [build-dependencies]
 tauri-build = { workspace = true }

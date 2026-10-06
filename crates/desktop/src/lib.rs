@@ -11,6 +11,8 @@
 mod commands;
 #[cfg(desktop)]
 mod island;
+#[cfg(target_os = "ios")]
+mod ios_windowing;
 #[cfg(desktop)]
 mod launch;
 #[cfg(desktop)]
@@ -37,6 +39,8 @@ pub fn run() {
     let app = builder
         .build(tauri::generate_context!())
         .expect("build tauri app");
+    #[cfg(target_os = "ios")]
+    ios_windowing::install();
     #[cfg(desktop)]
     app.run(|app, event| {
         if let tauri::RunEvent::Exit = event {
@@ -47,7 +51,7 @@ pub fn run() {
         }
     });
     #[cfg(mobile)]
-    app.run(|_, event| mobile::on_event(&event));
+    app.run(mobile::on_event);
 }
 
 /// `--bg-page` from `ui/src/styles.css` as the native window + webview background, so the frames before the
@@ -64,7 +68,7 @@ fn page_background(dark: bool) -> tauri::window::Color {
 /// The phone (31 §8): plugins, the one window, and the background grace period.
 #[cfg(mobile)]
 mod mobile {
-    use tauri::{Builder, RunEvent, WebviewUrl, WebviewWindowBuilder, WindowEvent, Wry};
+    use tauri::{AppHandle, Builder, RunEvent, WebviewUrl, WebviewWindowBuilder, WindowEvent, Wry};
 
     use crate::commands;
 
@@ -108,19 +112,25 @@ mod mobile {
         false
     }
 
-    /// `Suspended` is `applicationWillResignActive`, `Resumed` is `willEnterForeground`.
-    pub(super) fn on_event(event: &RunEvent) {
-        let RunEvent::WindowEvent { event, .. } = event else {
-            return;
-        };
+    /// Legacy lifecycle: `Suspended` is `applicationWillResignActive`, `Resumed` is `willEnterForeground`.
+    /// Scene lifecycle (`ios_windowing`): tao 0.35 emits neither and reports `sceneWillResignActive` /
+    /// `sceneDidBecomeActive` as `Focused`, so both pairs drive the background task.
+    #[cfg(target_os = "ios")]
+    pub(super) fn on_event(app: &AppHandle, event: RunEvent) {
         match event {
-            #[cfg(target_os = "ios")]
-            WindowEvent::Suspended => background::hold(),
-            #[cfg(target_os = "ios")]
-            WindowEvent::Resumed => background::release(),
+            RunEvent::SceneRequested { scene, .. } => crate::ios_windowing::dismiss(app, &scene),
+            RunEvent::WindowEvent { event: WindowEvent::Suspended | WindowEvent::Focused(false), .. } => {
+                background::hold()
+            }
+            RunEvent::WindowEvent { event: WindowEvent::Resumed | WindowEvent::Focused(true), .. } => {
+                background::release()
+            }
             _ => {}
         }
     }
+
+    #[cfg(not(target_os = "ios"))]
+    pub(super) fn on_event(_: &AppHandle, _: RunEvent) {}
 
     /// iOS suspends the process seconds after the app leaves the screen, and the
     /// relay socket dies with it. A background task buys the ~30 s iOS grants, so
