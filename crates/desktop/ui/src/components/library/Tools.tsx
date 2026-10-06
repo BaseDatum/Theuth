@@ -1,9 +1,10 @@
 import { useQuery } from '@tanstack/react-query'
 import { openUrl } from '@tauri-apps/plugin-opener'
 import { ChevronRight, Plus, RefreshCw, Trash2 } from 'lucide-react'
-import { useState } from 'react'
+import { Fragment, useState } from 'react'
 import { toast } from 'sonner'
 import { Column, Page } from '@/components/library/Page'
+import { segments } from '@/components/library/names'
 import { type Action, Dot, Empty, toastSync, useAction } from '@/components/settings/shared'
 import {
   AlertDialog,
@@ -234,13 +235,15 @@ function ServerRow({
         <CollapsibleTrigger asChild>
           <button
             type="button"
-            className="flex min-w-0 flex-1 items-center gap-2 text-left"
+            className="flex min-w-0 flex-1 flex-wrap items-center gap-x-2 gap-y-1 text-left sm:flex-nowrap"
             disabled={s.tools.length === 0}
           >
             <ChevronRight
               className={`size-4 shrink-0 text-fg-tertiary transition-transform ${open ? 'rotate-90' : ''}`}
             />
-            <span className="wrap-anywhere text-sm font-medium">{s.name}</span>
+            <span className="text-sm font-medium break-words">
+              <Name name={s.name} />
+            </span>
             <span className="shrink-0 text-[13px] text-fg-tertiary">
               {s.connected ? `${s.tools.length} tools` : '–'}
             </span>
@@ -251,10 +254,7 @@ function ServerRow({
             )}
           </button>
         </CollapsibleTrigger>
-        <span className="flex shrink-0 items-center gap-1.5 text-[13px] text-fg-secondary">
-          <Dot on={on} />
-          {status}
-        </span>
+        <Status on={on} label={status} className="hidden sm:flex" />
         <AlertDialog>
           <AlertDialogTrigger asChild>
             <Button variant="ghost" size="icon-sm" aria-label={`Remove ${s.name}`}>
@@ -279,8 +279,9 @@ function ServerRow({
           </AlertDialogContent>
         </AlertDialog>
       </div>
-      {/* Controls on their own line: three of them beside the name squashed it. */}
+      {/* Controls on their own line: three of them beside the name squashed it. On a phone the status joins them. */}
       <div className="mt-2 ml-6 flex flex-wrap items-center gap-2">
+        <Status on={on} label={status} className="sm:hidden" />
         <span title={sessionHint}>
           <ToggleGroup
             type="single"
@@ -336,17 +337,22 @@ function ToolRow({
   // `mutating* (ask)`: effective risk, `*` when the tool's own line sets it, then what `tools.policy` does with it.
   const risk = t.gate === 'off' ? '' : `${RISK_NAME[t.risk]}${t.gate ? '*' : ''} (${t.action})`
   return (
-    <div className="flex items-start gap-3 border-b border-border-subtle py-2 last:border-0">
+    // 113: a phone stacks the controls under the name; beside it they left the name a few px wide.
+    <div className="flex flex-col gap-2 border-b border-border-subtle py-2 last:border-0 sm:flex-row sm:items-start sm:gap-3">
       <div className="min-w-0 flex-1">
-        <div className="flex flex-wrap items-baseline gap-x-2 text-sm">
-          <span className="wrap-anywhere">{t.name}</span>
+        <div className="flex flex-wrap items-baseline gap-x-2 text-sm break-words">
+          <span>
+            <Name name={t.name} />
+          </span>
           {t.registered && t.registered !== t.name && (
-            <span className="text-[13px] text-fg-tertiary">as {t.registered}</span>
+            <span className="text-[13px] text-fg-tertiary">
+              as <Name name={t.registered} />
+            </span>
           )}
         </div>
         <div className="text-[13px] wrap-break-word text-fg-secondary">{t.description}</div>
       </div>
-      <div className="flex shrink-0 items-center gap-3">
+      <div className="flex shrink-0 flex-wrap items-center gap-3">
         <span className="text-[13px] text-fg-tertiary">{risk}</span>
         <GateSelect
           value={t.gate}
@@ -363,6 +369,26 @@ function ToolRow({
         />
       </div>
     </div>
+  )
+}
+
+/** A server or tool name with a `<wbr/>` after every underscore run: wraps at `_`/`__`, never mid-word. */
+function Name({ name }: { name: string }) {
+  return segments(name).map((seg, i) => (
+    <Fragment key={i}>
+      {i > 0 && <wbr />}
+      {seg}
+    </Fragment>
+  ))
+}
+
+/** The connection dot and its word; twice in `ServerRow`: beside the name above `sm`, first of the controls below it. */
+function Status({ on, label, className }: { on: boolean; label: string; className: string }) {
+  return (
+    <span className={`${className} shrink-0 items-center gap-1.5 text-[13px] text-fg-secondary`}>
+      <Dot on={on} />
+      {label}
+    </span>
   )
 }
 
