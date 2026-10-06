@@ -67,7 +67,11 @@ impl Tool for MeshPeersTool {
             if args.reachable && !p.reachable {
                 continue;
             }
-            lines.push(peer_line(p, stats.iter().find(|s| s.id == p.id), hub.as_ref()));
+            lines.push(peer_line(
+                p,
+                stats.iter().find(|s| s.id == p.id),
+                hub.as_ref(),
+            ));
         }
         if lines.is_empty() {
             lines.push("no engines match".into());
@@ -77,7 +81,11 @@ impl Tool for MeshPeersTool {
 }
 
 /// One `mesh_peers` line: `<name> id=<id> <reach> class=<class> harnesses=… repos=… display=… gpu=…[ hub]`.
-fn peer_line(p: &crate::Peer, s: Option<&crate::EngineStats>, hub: Option<&crate::EngineId>) -> String {
+fn peer_line(
+    p: &crate::Peer,
+    s: Option<&crate::EngineStats>,
+    hub: Option<&crate::EngineId>,
+) -> String {
     let (class, harnesses, repos, display, gpu) = match s {
         Some(s) => (
             crate::store::class_str(s.class).to_owned(),
@@ -102,7 +110,11 @@ fn peer_line(p: &crate::Peer, s: Option<&crate::EngineStats>, hub: Option<&crate
         "{name} id={id} {reach} class={class} harnesses={harnesses} repos={repos} display={display} gpu={gpu}{hub}",
         name = p.name,
         id = p.id,
-        reach = if p.reachable { "reachable" } else { "unreachable" },
+        reach = if p.reachable {
+            "reachable"
+        } else {
+            "unreachable"
+        },
         hub = if hub == Some(&p.id) { " hub" } else { "" },
     )
 }
@@ -135,6 +147,9 @@ mod tests {
             peer_line(&p, Some(&s), None),
             "lab id=id1 reachable class=vm harnesses=native,omp repos=- display=true gpu=false"
         );
-        assert!(peer_line(&p, None, Some(&p.id)).ends_with("class=unknown harnesses=- repos=- display=false gpu=false hub"));
+        assert!(
+            peer_line(&p, None, Some(&p.id))
+                .ends_with("class=unknown harnesses=- repos=- display=false gpu=false hub")
+        );
     }
 }

@@ -4,7 +4,7 @@
 //! hot-reloaded; `mcp/config.yaml` overrides a tool's [`Risk`] with a [`Gate`]).
 //!
 //! Public surface consumed by other plugins:
-//! - commands on the `"tools"` actor ([`ToolRegistry`]): [`ListTools`], [`Invoke`], [`AppInvoke`], [`InspectTool`], [`DescribeTools`], [`ExternalApproval`], [`RegisterTool`], [`UnregisterTool`], [`RegisterActivity`], [`ActivityRecipient`], [`InstallCommunicationAccess`], [`RegisterLifecycle`], [`ExpectParticipants`], [`ParticipantsReady`], [`OpenTree`], [`CloseTreeAll`]
+//! - commands on the `"tools"` actor ([`ToolRegistry`]): [`ListTools`], [`Invoke`], [`AppInvoke`], [`InspectTool`], [`DescribeTools`], [`ExternalApproval`], [`RegisterTool`], [`UnregisterTool`], [`RegisterActivity`], [`ActivityRecipient`], [`InstallCommunicationAccess`], [`InstallJournal`], [`RegisterLifecycle`], [`ExpectParticipants`], [`ParticipantsReady`], [`OpenTree`], [`CloseTreeAll`]
 //! - commands on the `"approval"` actor ([`Approval`]): [`Resolve`]
 //! - commands on the `"ask"` actor ([`AskUser`]): [`AnswerAsk`]
 //! - commands on the `"mcp"` actor ([`Mcp`]): [`ListServers`], [`SetGate`], [`Restart`], [`AddServer`], [`RemoveServer`], [`AddRepo`], [`SyncMcp`], [`McpLogin`], [`McpLogout`]
@@ -33,6 +33,7 @@ pub mod git;
 pub mod glob;
 pub mod images;
 pub mod jobs;
+pub mod journal;
 pub mod mcp;
 pub mod pty;
 pub mod registry;
@@ -57,6 +58,10 @@ pub use jobs::CloseSessions;
 pub use jobs::{
     CancelJob, CancelOrigin, InstallActivity, JOBS_ACTOR, JobCounts, JobEvent, JobExit, JobId,
     JobView, Jobs, ListJobs,
+};
+pub use journal::{
+    InstallJournal, JobKind, JobRow, JobState, Journal, NoopJournal, PtyScreenRow, QuestionKind,
+    QuestionRow, QuestionState, WaitKind, WaitRow,
 };
 pub use mcp::{
     AddRepo, AddServer, ListServers, Mcp, McpAuth, McpLogin, McpLogout, McpProgress, McpServer,

@@ -518,8 +518,9 @@ pub struct ListPeerMessages {
 }
 
 /// Reply to [`ListPeerMessages`]. Pending sets derive from live waiters,
-/// never abandoned oneshots, so after a daemon restart both are empty and a
-/// request's durable outcome is its `state`.
+/// never abandoned oneshots; after an engine restart the waiters of open
+/// turns are rebuilt from the `waits` rows (109 §4.4, `Agents::rebuild_waits`),
+/// so those requests stay pending, and a request's durable outcome is its `state`.
 #[derive(
     Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema, kameo::Reply,
 )]

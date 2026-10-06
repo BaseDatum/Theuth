@@ -223,8 +223,11 @@ impl Ctx {
     /// carry liveness.
     async fn refresh_stats(&self) {
         let cfg = self.cfg();
-        let (id, started, data_dir) =
-            (self.net.id.clone(), self.started_ms, self.rt.data_dir.clone());
+        let (id, started, data_dir) = (
+            self.net.id.clone(),
+            self.started_ms,
+            self.rt.data_dir.clone(),
+        );
         let Ok(s) = tokio::task::spawn_blocking(move || {
             stats::probe(id, started, &data_dir, &cfg.workspaces, cfg.class)
         })
@@ -628,7 +631,9 @@ impl runtime::Plugin for MeshPlugin {
         let stop = rt.shutdown.clone();
         tokio::spawn(async move {
             if platform::process::stop_signal().await.is_ok() {
-                tracing::warn!("exiting: SIGTERM (mesh plugin releases the lease and cancels shutdown)");
+                tracing::warn!(
+                    "exiting: SIGTERM (mesh plugin releases the lease and cancels shutdown)"
+                );
                 stop.cancel();
             }
         });
@@ -698,8 +703,12 @@ impl runtime::Plugin for MeshPlugin {
         let (events, _) = broadcast::channel(256);
         let started_ms = now_ms();
         let self_stats = {
-            let (id, data_dir, workspaces, class) =
-                (net.id.clone(), rt.data_dir.clone(), cfg.workspaces.clone(), cfg.class);
+            let (id, data_dir, workspaces, class) = (
+                net.id.clone(),
+                rt.data_dir.clone(),
+                cfg.workspaces.clone(),
+                cfg.class,
+            );
             tokio::task::spawn_blocking(move || {
                 stats::probe(id, started_ms, &data_dir, &workspaces, class)
             })
@@ -867,6 +876,7 @@ mod tests {
                         masked: true,
                         current: None,
                     }],
+                    id: None,
                 })
                 .await
         });

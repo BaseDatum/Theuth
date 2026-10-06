@@ -33,6 +33,7 @@ pub mod communication;
 pub mod compact;
 pub mod context;
 pub mod continuation;
+pub mod durability;
 pub mod frame;
 pub mod loop_;
 pub mod peers;
@@ -830,6 +831,24 @@ pub struct Loaded {
     /// Storage class of the root (51 §4); durable unless created private.
     #[serde(default)]
     pub retention: tools::Retention,
+    /// 109 §10.3: the open turn being resumed, if any; `None` once it closed.
+    #[serde(default)]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub resume: Option<ResumeState>,
+}
+
+/// 109 §10.3: [`Loaded.resume`] — the session has an open turn (interrupted
+/// by a crash or suspended by a drain) that resume owns; the banner's state
+/// across a reload. The report rides the live `ResumeReport` event.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+pub struct ResumeState {
+    /// The open turn.
+    pub turn: TurnId,
+    /// Crash or drain.
+    pub kind: durability::ResumeKind,
+    /// Newest journal row's time.
+    pub interrupted_at: chrono::DateTime<chrono::Utc>,
 }
 
 /// `ask` → `Vec<AgentInfo>`: the subtree under `session` (children,
@@ -1642,6 +1661,18 @@ pub enum HistoryEntry {
         #[cfg_attr(feature = "ts", ts(optional))]
         context: Option<ContextEntry>,
     },
+    /// 109 §8.2: the streamed partial of an open turn's model call, dropped
+    /// when the resumed turn regenerates it. UI-only, never in the frame.
+    Interrupted {
+        /// Text streamed before the stop.
+        text: String,
+        /// When the partial was last checkpointed.
+        at: chrono::DateTime<chrono::Utc>,
+        /// Always `None`: a partial is not model context.
+        #[serde(default)]
+        #[cfg_attr(feature = "ts", ts(optional))]
+        context: Option<ContextEntry>,
+    },
 }
 
 impl HistoryEntry {
@@ -1653,7 +1684,8 @@ impl HistoryEntry {
             | Self::Reasoning { context, .. }
             | Self::Tool { context, .. }
             | Self::Compacted { context, .. }
-            | Self::Error { context, .. } => context.as_ref(),
+            | Self::Error { context, .. }
+            | Self::Interrupted { context, .. } => context.as_ref(),
         }
     }
 
@@ -1665,7 +1697,8 @@ impl HistoryEntry {
             | Self::Reasoning { context, .. }
             | Self::Tool { context, .. }
             | Self::Compacted { context, .. }
-            | Self::Error { context, .. } => context.as_mut(),
+            | Self::Error { context, .. }
+            | Self::Interrupted { context, .. } => context.as_mut(),
         }
     }
 }
@@ -2077,6 +2110,58 @@ pub enum AgentEvent {
         #[cfg_attr(feature = "ts", ts(type = "number"))]
         generation: u64,
     },
+    /// 109 §8.2: an open turn is being resumed after a restart (crash) or a
+    /// drain (`Suspended`); published before anything else happens.
+    TurnResumed {
+        /// Session.
+        session: SessionId,
+        /// Turn.
+        turn: TurnId,
+        /// Crash or drain.
+        kind: durability::ResumeKind,
+        /// Newest journal row's time.
+        interrupted_at: chrono::DateTime<chrono::Utc>,
+        /// When the resume began.
+        resumed_at: chrono::DateTime<chrono::Utc>,
+        /// An `assistant_partial` existed and was discarded.
+        partial_dropped: bool,
+    },
+    /// 109 §8.2: the resumed batch was reassembled; the banner's counts.
+    ResumeReport {
+        /// Session.
+        session: SessionId,
+        /// Turn.
+        turn: TurnId,
+        /// `(call_id, name)` of calls run as a new attempt.
+        replayed: Vec<(String, String)>,
+        /// `(call_id, name)` of rows marked `interrupted`: effect unknown.
+        interrupted: Vec<(String, String)>,
+        /// Jobs that died with the engine (§5).
+        lost_jobs: Vec<tools::JobId>,
+        /// ACP children restored with `session/load` (§7.3).
+        children_restored: u32,
+        /// ACP children replaced by a fresh child with a handoff (§7.3).
+        children_handed_off: u32,
+    },
+    /// 109 §9: a drain could not finish the turn; a `suspended` step was written.
+    TurnSuspended {
+        /// Session.
+        session: SessionId,
+        /// Turn.
+        turn: TurnId,
+        /// `shutdown` | `update` | `parent_gone`.
+        reason: String,
+    },
+    /// 109 §8.2: the streamed partial of the open model call was discarded;
+    /// the re-issued call regenerates it.
+    PartialDropped {
+        /// Session.
+        session: SessionId,
+        /// Turn.
+        turn: TurnId,
+        /// The model call whose `assistant_partial` was dropped.
+        call_id: String,
+    },
 }
 
 impl AgentEvent {
@@ -2115,7 +2200,11 @@ impl AgentEvent {
             | Self::Error { session, .. }
             | Self::ModelUsageChanged { session, .. }
             | Self::ContextUsed { session, .. }
-            | Self::SessionClosing { session, .. } => Some(*session),
+            | Self::SessionClosing { session, .. }
+            | Self::TurnResumed { session, .. }
+            | Self::ResumeReport { session, .. }
+            | Self::TurnSuspended { session, .. }
+            | Self::PartialDropped { session, .. } => Some(*session),
             Self::SubagentSpawned { child, .. } => Some(*child),
             Self::DefaultModelChanged { .. } | Self::DefaultEffortChanged { .. } => None,
         }
@@ -2199,6 +2288,10 @@ pub struct AgentConfig {
     /// `supervisor::start` — not part of `agent:`.
     #[serde(skip)]
     pub surface: SurfaceConfig,
+    /// The top-level `durability:` section (design doc 109 §10.1), filled by
+    /// `supervisor::start` the way `surface` is — not part of `agent:`.
+    #[serde(skip)]
+    pub durability: durability::DurabilityConfig,
 }
 
 impl Default for AgentConfig {
@@ -2224,6 +2317,7 @@ impl Default for AgentConfig {
             compaction: CompactionConfig::default(),
             openrouter: OpenRouterConfig::default(),
             surface: SurfaceConfig::default(),
+            durability: durability::DurabilityConfig::default(),
         }
     }
 }

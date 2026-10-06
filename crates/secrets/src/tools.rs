@@ -12,12 +12,12 @@ use kameo::error::SendError;
 use schemars::JsonSchema;
 use serde::Deserialize;
 use tools::{
-    Invoke, REGISTRY_ACTOR, RegisterPrompt, RegisterTool, Risk, Tool, ToolCall, ToolCx, ToolOutput,
-    ToolRegistry,
+    Invoke, QuestionKind, QuestionRow, QuestionState, REGISTRY_ACTOR, RegisterPrompt, RegisterTool,
+    Risk, Tool, ToolCall, ToolCx, ToolOutput, ToolRegistry, WaitKind, WaitRow,
 };
 
 use crate::vault::{self, MIN_REDACT, SecretInfo, Vault};
-use crate::{Outcome, Request, SecretRequestField, SecretsActor};
+use crate::{Outcome, Request, RequestId, SecretRequestField, SecretsActor};
 
 /// The plugin's system-prompt block (37 §4). Static, so it never busts the
 /// system cache.
@@ -162,20 +162,13 @@ impl Tool for SecretRequestTool {
             return Ok(ToolOutput::err("name: [A-Za-z0-9_.-]{1,64}"));
         }
         let name = a.name;
-        let out = match self
-            .actor
-            .ask(Request {
-                session: cx.session,
-                title: None,
-                fields: vec![SecretRequestField {
-                    name: name.clone(),
-                    label: a.note,
-                    masked: true,
-                    current: None,
-                }],
-            })
-            .await
-        {
+        let fields = vec![SecretRequestField {
+            name: name.clone(),
+            label: a.note,
+            masked: true,
+            current: None,
+        }];
+        let out = match request(&self.actor, self.timeout, &cx, None, fields).await {
             Ok(o) => o,
             Err(SendError::HandlerError(e)) => return Ok(ToolOutput::err(e)),
             Err(e) => return Ok(ToolOutput::err(format!("secrets actor: {e}"))),
@@ -198,6 +191,111 @@ fn not_stored(out: &Outcome, timeout: Duration) -> ToolOutput {
     } else {
         ToolOutput::err("declined")
     }
+}
+
+/// Ask the actor and journal the `questions` row around it (109 §6.1): a
+/// fresh `secret` row with a tool-minted id, or — for a resumed call whose
+/// row [`tools::registry::republish`] left for it — the stored row's id and
+/// fields, re-armed on the same `secret_requests` row with its remaining
+/// deadline (§6.2). The row ends `answered` (`{outcome}`) or `timed_out`.
+async fn request(
+    actor: &ActorRef<SecretsActor>,
+    timeout: Duration,
+    cx: &ToolCx,
+    title: Option<String>,
+    fields: Vec<SecretRequestField>,
+) -> Result<Outcome, SendError<Request, String>> {
+    let journal = tools::registry::journal();
+    let (row, title, fields) = match tools::registry::take_republish(cx.session, &cx.call_id) {
+        Some(row) if row.state == QuestionState::Pending => {
+            let title = row
+                .payload
+                .get("title")
+                .and_then(|t| serde_json::from_value(t.clone()).ok())
+                .unwrap_or(title);
+            let fields = row
+                .payload
+                .get("fields")
+                .and_then(|f| serde_json::from_value(f.clone()).ok())
+                .unwrap_or(fields);
+            (row, title, fields)
+        }
+        Some(row) if row.state == QuestionState::Answered => {
+            // The answer landed before the kill; the `secret_requests` row
+            // already holds it and the actor resolves at once.
+            (row, title, fields)
+        }
+        Some(row) => {
+            return Ok(Outcome {
+                stored: Vec::new(),
+                timed_out: row.state == QuestionState::TimedOut,
+            });
+        }
+        None => {
+            let id = RequestId(uuid::Uuid::now_v7());
+            let asked_at = chrono::Utc::now();
+            let row = QuestionRow {
+                id: id.0.to_string(),
+                session: cx.session,
+                tool_call_id: Some(cx.call_id.clone()),
+                kind: QuestionKind::Secret,
+                payload: serde_json::json!({ "id": id, "title": title, "fields": fields }),
+                state: QuestionState::Pending,
+                asked_at,
+                deadline: asked_at + timeout,
+                answered_at: None,
+                answer: None,
+            };
+            (row, title, fields)
+        }
+    };
+    let id =
+        RequestId(uuid::Uuid::parse_str(&row.id).map_err(|e| {
+            SendError::HandlerError(format!("secret request id {:?}: {e}", row.id))
+        })?);
+    if row.state == QuestionState::Pending {
+        journal.question(row.clone()).await;
+        journal
+            .wait(
+                Some(WaitRow {
+                    session: cx.session,
+                    tool_call_id: cx.call_id.clone(),
+                    kind: WaitKind::Question,
+                    target: row.id.clone(),
+                    deadline: Some(row.deadline),
+                    payload: serde_json::json!({}),
+                }),
+                cx.session,
+                &cx.call_id,
+            )
+            .await;
+    }
+    let out = actor
+        .ask(Request {
+            session: cx.session,
+            title,
+            fields,
+            id: Some(id),
+        })
+        .await;
+    if row.state == QuestionState::Pending {
+        let mut row = row;
+        row.answered_at = Some(chrono::Utc::now());
+        match &out {
+            Ok(o) if o.timed_out => row.state = QuestionState::TimedOut,
+            Ok(o) => {
+                row.state = QuestionState::Answered;
+                row.answer = Some(serde_json::json!({
+                    "outcome": if o.stored.is_empty() { "declined" } else { "stored" },
+                }));
+            }
+            // The actor refused or died: the question was never raised.
+            Err(_) => row.state = QuestionState::Superseded,
+        }
+        journal.wait(None, cx.session, &cx.call_id).await;
+        journal.question(row).await;
+    }
+    out
 }
 
 /// One field of a `secret_request_form`.
@@ -255,24 +353,17 @@ impl Tool for SecretRequestFormTool {
                 f.name
             )));
         }
-        let out = match self
-            .actor
-            .ask(Request {
-                session: cx.session,
-                title: Some(a.title),
-                fields: a
-                    .fields
-                    .into_iter()
-                    .map(|f| SecretRequestField {
-                        name: f.name,
-                        label: f.label,
-                        masked: f.masked.unwrap_or(true),
-                        current: None,
-                    })
-                    .collect(),
+        let fields = a
+            .fields
+            .into_iter()
+            .map(|f| SecretRequestField {
+                name: f.name,
+                label: f.label,
+                masked: f.masked.unwrap_or(true),
+                current: None,
             })
-            .await
-        {
+            .collect();
+        let out = match request(&self.actor, self.timeout, &cx, Some(a.title), fields).await {
             Ok(o) => o,
             Err(SendError::HandlerError(e)) => return Ok(ToolOutput::err(e)),
             Err(e) => return Ok(ToolOutput::err(format!("secrets actor: {e}"))),

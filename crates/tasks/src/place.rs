@@ -520,12 +520,23 @@ mod tests {
     fn pin_wins_over_every_better_engine() {
         let mut f = fleet();
         // A VM with the repo nowhere near it and no display; `build-a` has the repo, `mac` the display.
-        f.push(engine("vm-ops", EngineClass::Vm, &["native", "omp"], &[], false, false));
+        f.push(engine(
+            "vm-ops",
+            EngineClass::Vm,
+            &["native", "omp"],
+            &[],
+            false,
+            false,
+        ));
         let t = task("fix the flaky test in /srv/theuth and screenshot the browser");
         let p = placed(decide(&pinned(&t, &f, "vm-ops")));
         assert_eq!(p.where_, "vm-ops");
         assert_eq!(p.harness, "omp", "repo work → omp on the pinned engine");
-        assert!(p.reason.starts_with("pinned to vm-ops (runs_in)"), "{}", p.reason);
+        assert!(
+            p.reason.starts_with("pinned to vm-ops (runs_in)"),
+            "{}",
+            p.reason
+        );
 
         // `where`/`harness` set on the task do not beat the pin.
         let mut t2 = task("anything");

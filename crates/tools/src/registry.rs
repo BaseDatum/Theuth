@@ -24,6 +24,7 @@ use crate::approval::{Approval, Decision, RequestApproval};
 use crate::ask::{AskUser, AskUserTool};
 use crate::communication::{self, Admitted, CommunicationAccess};
 use crate::jobs::{CloseSessions, InstallActivity, JOBS_ACTOR, Jobs, lock};
+use crate::journal::{InstallJournal, Journal, NoopJournal, QuestionRow};
 use crate::resources::{CloseAck, CloseTree, SessionResources, TreeOpened};
 use crate::{
     APPROVAL_ACTOR, ASK_ACTOR, DynTool, Policy, PolicyAction, REGISTRY_ACTOR, Risk, ToolCall,
@@ -97,6 +98,10 @@ pub struct ToolRegistry {
     /// The caller's execution bound (50 §8), from [`InstallExecutionGate`];
     /// `None`: waits are not reported to anyone.
     gate: Option<Arc<dyn ExecutionGate>>,
+    /// 109 §3.3 step 6: the journal seam, from [`InstallJournal`]; a
+    /// [`NoopJournal`] until the agent installs its store. [`invoke`] marks
+    /// every call `started` / `finished` through it.
+    journal: Arc<dyn Journal>,
     /// Lifecycle owners from [`RegisterLifecycle`] (51 §4.4), by name; a
     /// second registration under a name replaces the first.
     participants: Vec<Participant>,
@@ -1065,6 +1070,7 @@ impl ToolRegistry {
         // not retire the entry; only this task finishing does (47 §4.2 rule 2).
         let sink = self.activity.clone();
         let gate = self.gate.clone();
+        let journal = self.journal.clone();
         let resources = self.resources_for(call.session);
         let kind = Kind::Invoke {
             tool: call.name.clone(),
@@ -1100,7 +1106,7 @@ impl ToolRegistry {
             let out = activity
                 .clone()
                 .scope(invoke(
-                    tool, spec, call, approval, admitted, activity, gate, resources,
+                    tool, spec, call, approval, admitted, activity, gate, resources, journal,
                 ))
                 .await;
             drop(running);
@@ -1189,6 +1195,7 @@ impl Message<ExternalApproval> for ToolRegistry {
                 tool: m.tool,
                 args: m.args,
                 risk: m.risk,
+                call_id: None,
             };
             // Timeout already resolves as `Deny`; an unreachable actor is one too.
             tx.send(
@@ -1334,6 +1341,60 @@ impl Message<RegisterActivity> for ToolRegistry {
             .map(drop)
             .map_err(|e| format!("jobs actor did not install the activity sink: {e}"))
     }
+}
+
+impl Message<InstallJournal> for ToolRegistry {
+    type Reply = ();
+
+    /// 109 §3.3 step 6: keep the journal for [`invoke`] and hand the same
+    /// handle to the jobs, approval and ask actors (none of them asks back
+    /// into this actor, so awaiting them cannot deadlock). An actor that is
+    /// not running simply keeps its `NoopJournal`.
+    async fn handle(&mut self, m: InstallJournal, _: &mut Context<Self, Self::Reply>) {
+        self.journal = m.0.clone();
+        *lock(&JOURNAL) = m.0.clone();
+        if let Ok(Some(jobs)) = ActorRef::<Jobs>::lookup(JOBS_ACTOR) {
+            let _ = jobs.ask(InstallJournal(m.0.clone())).await;
+        }
+        if let Ok(Some(approval)) = ActorRef::<Approval>::lookup(APPROVAL_ACTOR) {
+            let _ = approval.ask(InstallJournal(m.0.clone())).await;
+        }
+        if let Ok(Some(ask)) = ActorRef::<AskUser>::lookup(ASK_ACTOR) {
+            let _ = ask.ask(InstallJournal(m.0)).await;
+        }
+        tracing::info!("109: journal installed");
+    }
+}
+
+/// 109 §6.1: the installed journal, for the human-wait tools other crates
+/// register (`desktop_handoff`, `secret_request*`, `send_message`), which
+/// receive no [`InstallJournal`] of their own. [`NoopJournal`] before the
+/// install.
+static JOURNAL: std::sync::LazyLock<Mutex<Arc<dyn Journal>>> =
+    std::sync::LazyLock::new(|| Mutex::new(Arc::new(crate::NoopJournal)));
+
+/// The journal [`InstallJournal`] installed last ([`NoopJournal`] until then).
+pub fn journal() -> Arc<dyn Journal> {
+    lock(&JOURNAL).clone()
+}
+
+/// 109 §6.2 (`Republish`): the pending `questions` row of a human-wait call
+/// the resume path is about to re-invoke, by `(session, call_id)`. The tool
+/// body takes it with [`take_republish`] and re-arms that question — same id,
+/// remaining deadline — instead of raising a new one.
+static REPUBLISH: std::sync::LazyLock<Mutex<HashMap<(SessionId, String), QuestionRow>>> =
+    std::sync::LazyLock::new(Default::default);
+
+/// Hand the row of `(row.session, row.tool_call_id)` to its next invocation.
+pub fn republish(row: QuestionRow) {
+    if let Some(call) = row.tool_call_id.clone() {
+        lock(&REPUBLISH).insert((row.session, call), row);
+    }
+}
+
+/// The row [`republish`] left for this call, if any; taken once.
+pub fn take_republish(session: SessionId, call_id: &str) -> Option<QuestionRow> {
+    lock(&REPUBLISH).remove(&(session, call_id.to_owned()))
 }
 
 impl Message<ActivityRecipient> for ToolRegistry {
@@ -1507,8 +1568,10 @@ async fn invoke(
     activity: Activity,
     gate: Option<Arc<dyn ExecutionGate>>,
     resources: Arc<SessionResources>,
+    journal: Arc<dyn Journal>,
 ) -> ToolOutput {
     let session = call.session;
+    let call_id = call.id.clone();
     let suspend = || gate.as_ref().and_then(|g| g.suspend(session));
     if let Some(approval) = approval {
         let req = RequestApproval {
@@ -1516,6 +1579,7 @@ async fn invoke(
             tool: spec.name.clone(),
             args: call.args.clone(),
             risk: spec.risk,
+            call_id: Some(call_id.clone()),
         };
         let suspended = suspend();
         let answer = approval.ask(req).await;
@@ -1560,6 +1624,10 @@ async fn invoke(
     let waiting = (spec.name == <AskUserTool as crate::Tool>::NAME)
         .then(suspend)
         .flatten();
+    // 109 §3.3 step 6: the gate resolved and nothing can refuse the call any
+    // more; from here its effect is unknown to a restart, so the journal says
+    // `started` before the body runs.
+    journal.call_started(session, &call_id).await;
     // Own task so a panicking tool is an error output, not a dead registry.
     // Task-locals do not cross `spawn`: re-enter both scopes on the spawned
     // future, so the body sees `current()` (a panic there marks the operation
@@ -1580,6 +1648,8 @@ async fn invoke(
     }
     // Every arm: an error string may echo the expanded args.
     crate::secrets::redact_output(&mut out);
+    // 109 §3.3 step 7: the result row is per call, committed as it returns.
+    journal.call_finished(session, &call_id, &out).await;
     out
 }
 
@@ -1685,6 +1755,7 @@ pub async fn start(rt: &Runtime) -> anyhow::Result<ActorRef<ToolRegistry>> {
             communication: None,
             mcp_access: None,
             gate: None,
+            journal: Arc::new(NoopJournal),
             participants: Vec::new(),
             expected: Vec::new(),
             shells,
@@ -1751,6 +1822,7 @@ mod tests {
             communication: None,
             mcp_access: None,
             gate: None,
+            journal: Arc::new(NoopJournal),
             participants: Vec::new(),
             expected: Vec::new(),
             shells: Arc::default(),

@@ -362,7 +362,7 @@ fn receipt_line(r: &PeerReceipt) -> String {
 
 /// One line per recipient; `structured = {"receipts": [...]}` always a list;
 /// `is_error` only when every recipient failed.
-fn receipts_output(receipts: &[PeerReceipt]) -> ToolOutput {
+pub(crate) fn receipts_output(receipts: &[PeerReceipt]) -> ToolOutput {
     let text = receipts
         .iter()
         .map(receipt_line)
@@ -480,6 +480,32 @@ impl Tool for SendMessageTool {
         // One shared deadline for every awaited reply.
         let secs = self.cfg.subagents.reply_timeout_secs;
         let deadline = tokio::time::Instant::now() + Duration::from_secs(secs);
+        // 109 W3 §4.4: the `waits(peer_reply)` row while this call blocks, so
+        // a restart re-arms the waiter (`Agents::rebuild_waits`) and the
+        // resumed call takes the reply that landed meanwhile.
+        let awaited: Vec<Uuid> = receipts
+            .iter()
+            .zip(&waits)
+            .filter(|(_, w)| w.is_some())
+            .map(|(r, _)| r.id)
+            .collect();
+        let journal = tools::registry::journal();
+        if let Some(first) = awaited.first() {
+            journal
+                .wait(
+                    Some(tools::WaitRow {
+                        session: cx.session,
+                        tool_call_id: cx.call_id.clone(),
+                        kind: tools::WaitKind::PeerReply,
+                        target: first.to_string(),
+                        deadline: Some(chrono::Utc::now() + Duration::from_secs(secs)),
+                        payload: serde_json::json!({ "request_id": first, "request_ids": awaited }),
+                    }),
+                    cx.session,
+                    &cx.call_id,
+                )
+                .await;
+        }
         for (r, rx) in receipts.iter_mut().zip(waits) {
             let Some(rx) = rx else { continue };
             match tokio::time::timeout_at(deadline, rx).await {
@@ -492,6 +518,9 @@ impl Tool for SendMessageTool {
                     r.error = Some(format!("timed out after {secs}s; message not recalled"));
                 }
             }
+        }
+        if !awaited.is_empty() {
+            journal.wait(None, cx.session, &cx.call_id).await;
         }
         Ok(receipts_output(&receipts))
     }

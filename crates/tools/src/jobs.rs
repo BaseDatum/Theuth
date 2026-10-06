@@ -32,6 +32,7 @@ use tokio::task::{AbortHandle, JoinHandle};
 use tokio_util::sync::CancellationToken;
 
 use crate::activity::{self, Activity, ActivitySink, Kind, OperationId, Rejected};
+use crate::journal::{JobKind, JobRow, JobState, PtyScreenRow};
 use crate::resources::CloseAck;
 use crate::{Risk, Tool, ToolCx, ToolOutput};
 
@@ -84,15 +85,38 @@ pub enum JobExit {
     /// [`CancelJob`] killed the process group; the [`CancelOrigin`] decides
     /// what the model hears about it.
     Killed,
+    /// 109 §5.4: the job died with the engine (or was reaped after a
+    /// SIGKILL leaked it); its exit code is unknown. Never produced by a
+    /// running job — written by the journal's reaper and the shutdown path.
+    Lost,
 }
 
 impl std::fmt::Display for JobExit {
-    /// The [`JobView::state`] wording: `exited 0`, `timeout`, `killed`.
+    /// The [`JobView::state`] wording: `exited 0`, `timeout`, `killed`, `lost`.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             JobExit::Exited(code) => write!(f, "exited {code}"),
             JobExit::Timeout => f.write_str("timeout"),
             JobExit::Killed => f.write_str("killed"),
+            JobExit::Lost => f.write_str("lost"),
+        }
+    }
+}
+
+impl std::str::FromStr for JobExit {
+    type Err = String;
+
+    /// Inverse of [`Display`](std::fmt::Display): the `jobs.exit` column (109 §5.1).
+    fn from_str(s: &str) -> Result<Self, String> {
+        match s {
+            "timeout" => Ok(Self::Timeout),
+            "killed" => Ok(Self::Killed),
+            "lost" => Ok(Self::Lost),
+            _ => s
+                .strip_prefix("exited ")
+                .and_then(|n| n.parse().ok())
+                .map(Self::Exited)
+                .ok_or_else(|| format!("unknown job exit {s:?}")),
         }
     }
 }
@@ -263,7 +287,8 @@ pub struct JobView {
     pub id: JobId,
     /// Command line.
     pub command: String,
-    /// `running` | `exited 0` | `timeout` | `killed`.
+    /// `running` | `exited 0` | `timeout` | `killed` | `lost` (109 §5.4: died
+    /// with a previous engine; `tail` is the log tail or the stored screen).
     pub state: String,
     /// Seconds running so far, or total when finished.
     pub secs: u64,
@@ -379,8 +404,37 @@ pub(crate) struct Finished {
     pub(crate) result: Option<JobEvent>,
 }
 
-/// `tell` on `rt.shutdown`: kill every running job's process groups.
-struct KillAll;
+/// `tell` on `rt.shutdown`: write every running job's row `exit = lost`,
+/// then kill its process groups (109 §5.5). Public so a drain (§9.2 step 6)
+/// can send it after its window instead of at the instant the token fires.
+pub struct KillAll;
+
+/// `tell` from the agent's reaper (109 §5.4): the `jobs` rows a previous
+/// engine left `running`, settled `lost` in the store by the caller. Each
+/// becomes a `lost` row here — `jobs()`, `screen()` and `pty_screen` answer
+/// for it, its id is not reused — and, when [`LostJob::deliver`] is set,
+/// the model's `<job_result exit="lost">` goes through the activity ledger,
+/// the path every finished job's result takes (47 §4.1).
+pub struct Reaped {
+    /// When this engine started: the banner's "restarted at".
+    pub restarted_at: chrono::DateTime<chrono::Utc>,
+    /// The rows, oldest first.
+    pub jobs: Vec<LostJob>,
+}
+
+/// One lost job for [`Reaped`].
+pub struct LostJob {
+    /// The settled row (`state = lost`).
+    pub row: JobRow,
+    /// The stored screen of a PTY job, if any (§5.3).
+    pub screen: Option<PtyScreenRow>,
+    /// Last ≤ 8 KiB of the log file: [`JobView::tail`] for the row.
+    pub tail: String,
+    /// `Some(body)` when the model already had the job's stub: the
+    /// `<job_result exit="lost">` body to inject. `None` when the resumed
+    /// batch reports the job itself (§4.3's job note).
+    pub deliver: Option<String>,
+}
 
 /// `ask` → `()`: the activity supervisor (47 §4.2 rule 7), forwarded by the
 /// registry's `RegisterActivity` before that is acknowledged. Every job still
@@ -441,6 +495,14 @@ impl Log {
         }
     }
 
+    /// A file-less log whose tail is `bytes` (109 §5.4: a lost job's row
+    /// shows the last of what its log file holds).
+    pub(crate) fn from_tail(bytes: &[u8]) -> Self {
+        let mut log = Self::new(None);
+        keep_last(&mut log.tail, bytes);
+        log
+    }
+
     /// Every chunk from a pipe or a pty passes here before the log file, the
     /// tail and `JobEvent::Output`. Known secret values are scrubbed first —
     /// best effort, a value split across two chunks escapes; `run`'s pass
@@ -476,12 +538,24 @@ fn keep_last(buf: &mut VecDeque<u8>, chunk: &[u8]) {
     buf.extend(&chunk[chunk.len().saturating_sub(TAIL)..]);
 }
 
+/// 109 §5.4: what a job that died with a previous engine keeps in memory
+/// once the reaper reported it: when this engine started and, for a PTY,
+/// the last stored screen.
+pub(crate) struct Lost {
+    pub(crate) restarted_at: chrono::DateTime<chrono::Utc>,
+    pub(crate) screen: Option<PtyScreenRow>,
+}
+
 pub(crate) struct Job {
     pub(crate) id: JobId,
     /// The job's admitted operation, keying [`Jobs::live`].
     pub(crate) op: OperationId,
     pub(crate) command: String,
+    /// The `shell` / `start` call (the `jobs.call_id` column).
+    pub(crate) call_id: String,
     pub(crate) started: Instant,
+    /// Spawn time, unix ms (the `jobs.started_ms` column).
+    pub(crate) started_ms: i64,
     /// `None` while running.
     pub(crate) exit: Option<JobExit>,
     /// Total seconds once finished.
@@ -498,6 +572,8 @@ pub(crate) struct Job {
     /// The pseudo-terminal, for PTY jobs (22 §4.8); `None` for a pipe job or
     /// once evicted under the budget (51 §7.4).
     pub(crate) pty: Option<Arc<crate::pty::PtyHandle>>,
+    /// `Some` for a job a previous engine lost (109 §5.4).
+    pub(crate) lost: Option<Lost>,
 }
 
 impl Job {
@@ -509,11 +585,39 @@ impl Job {
         }
     }
 
-    /// `running` | `exited 0` | `timeout` | `killed`.
+    /// `running` | `exited 0` | `timeout` | `killed` | `lost`.
     pub(crate) fn state(&self) -> String {
         self.exit
             .as_ref()
             .map_or_else(|| "running".to_owned(), ToString::to_string)
+    }
+
+    /// The `jobs` row this job mirrors (109 §5.1), in the given state.
+    pub(crate) fn row(
+        &self,
+        session: SessionId,
+        state: JobState,
+        exit: Option<JobExit>,
+        settled_ms: Option<i64>,
+    ) -> JobRow {
+        JobRow {
+            session,
+            id: self.id.clone(),
+            kind: if self.on_pty {
+                JobKind::Pty
+            } else {
+                JobKind::Shell
+            },
+            call_id: self.call_id.clone(),
+            command: self.command.clone(),
+            name: self.name.clone(),
+            pgid: lock(&self.pgids).first().map(|t| i64::from(t.id())),
+            log: Some(self.log_path.clone()),
+            started_ms: self.started_ms,
+            state,
+            exit,
+            settled_ms,
+        }
     }
 
     fn view(&self, session: SessionId) -> JobView {
@@ -524,9 +628,15 @@ impl Job {
             state: self.state(),
             secs: self.secs(),
             log: self.log_path.clone(),
-            tail: match &self.pty {
-                Some(pty) => pty.screen().0.join("\n"),
-                None => lock(&self.log).tail_text(TAIL),
+            tail: match (&self.pty, &self.lost) {
+                (Some(pty), _) => pty.screen().0.join("\n"),
+                (
+                    None,
+                    Some(Lost {
+                        screen: Some(s), ..
+                    }),
+                ) => s.text.clone(),
+                (None, _) => lock(&self.log).tail_text(TAIL),
             },
             name: self.name.clone(),
             pty: self.on_pty,
@@ -576,6 +686,12 @@ pub struct Jobs {
     /// Pending reminder timers per session (`reminder.rs`); their guards
     /// live in `live` like any job's.
     pub(crate) reminders: HashMap<SessionId, crate::reminder::SessionReminders>,
+    /// 109 §5.1: the journal seam ([`crate::InstallJournal`]); a
+    /// [`crate::NoopJournal`] until the agent installs its store; the
+    /// `jobs` / `pty_screens` rows are written through it.
+    pub(crate) journal: Arc<dyn crate::Journal>,
+    /// 109 §5.3: the PTY screen snapshot timer (`durability.pty_snapshot_secs`).
+    pub(crate) pty_snapshot: Duration,
 }
 
 impl Jobs {
@@ -592,7 +708,18 @@ impl Jobs {
             pty_bytes: 0,
             snapshots: Arc::new(tokio::sync::Semaphore::new(crate::pty::SNAPSHOTS)),
             reminders: HashMap::new(),
+            journal: Arc::new(crate::NoopJournal),
+            pty_snapshot: Duration::from_secs(5),
         }
+    }
+
+    /// 109 §5.4: a job a previous engine lost, by exact id or name.
+    pub(crate) fn lost(&self, session: SessionId, id: &str) -> Option<&Job> {
+        let jobs = self.sessions.get(&session)?;
+        jobs.jobs
+            .iter()
+            .filter(|j| j.lost.is_some())
+            .find(|j| j.id.0 == id || j.name.as_deref() == Some(id))
     }
 
     fn job_mut(&mut self, session: SessionId, id: &JobId) -> Option<&mut Job> {
@@ -645,10 +772,14 @@ impl Jobs {
 /// Spawn and register the actor, and kill every running job when `rt.shutdown`
 /// fires (00 §12: the `setsid` escape stays).
 pub fn start(rt: &Runtime, grace: Duration, timeout: Duration) -> anyhow::Result<ActorRef<Jobs>> {
-    let jobs = Jobs::spawn_with_mailbox(
-        Jobs::new(rt.clone(), grace, timeout),
-        runtime::subscriber_mailbox(),
-    );
+    let mut actor = Jobs::new(rt.clone(), grace, timeout);
+    if let Ok(secs) = rt
+        .config
+        .extract_inner::<u64>("durability.pty_snapshot_secs")
+    {
+        actor.pty_snapshot = Duration::from_secs(secs.max(1));
+    }
+    let jobs = Jobs::spawn_with_mailbox(actor, runtime::subscriber_mailbox());
     jobs.register(JOBS_ACTOR)?;
     let shutdown = rt.shutdown.clone();
     let me = jobs.clone();
@@ -676,6 +807,8 @@ impl Message<Start> for Jobs {
         let sink = self.activity.clone();
         let me = ctx.actor_ref().clone();
         let grace = self.grace;
+        let journal = self.journal.clone();
+        let (session, call_id) = (m.session, m.call_id.clone());
         // Admission, then the grace wait, leave the mailbox so `ListJobs` /
         // `CancelJob` stay live. The caller's invocation stays admitted until
         // it gets this reply, so the job's admission opens no gap (47 §4.2 rule 3).
@@ -718,10 +851,32 @@ impl Message<Start> for Jobs {
                 return;
             }
             // `Some`: the task finished (or died) within grace; `None`: grace elapsed.
+            // 109 §4.4: the grace wait is a `job` wait while it lasts.
             let within = if grace.is_zero() {
                 None
             } else {
-                tokio::time::timeout(grace, &mut done).await.ok()
+                let waits = !call_id.is_empty();
+                if waits {
+                    journal
+                        .wait(
+                            Some(crate::journal::WaitRow {
+                                session,
+                                tool_call_id: call_id.clone(),
+                                kind: crate::journal::WaitKind::Job,
+                                target: id.0.clone(),
+                                deadline: Some(chrono::Utc::now() + grace),
+                                payload: serde_json::json!({}),
+                            }),
+                            session,
+                            &call_id,
+                        )
+                        .await;
+                }
+                let r = tokio::time::timeout(grace, &mut done).await.ok();
+                if waits {
+                    journal.wait(None, session, &call_id).await;
+                }
+                r
             };
             let done = match within {
                 Some(r) => r.ok(),
@@ -756,9 +911,10 @@ impl Message<Launch<Start>> for Jobs {
         let log_path = dir.join(format!("{id}.log"));
         let pgids: Arc<Mutex<Vec<ProcessTree>>> = Arc::default();
         let log_file = (!quiet).then_some(log_path.as_path());
+        let (pgid_tx, pgid_rx) = tokio::sync::mpsc::unbounded_channel();
         // On `Err` the admitted guard drops here: settled `Finished`, no blocker.
         let (file, params, out_r, err_r) =
-            setup(&dir, log_file, &m.shell, &pgids).map_err(|e| format!("{e:#}"))?;
+            setup(&dir, log_file, &m.shell, &pgids, pgid_tx).map_err(|e| format!("{e:#}"))?;
         let log = Arc::new(Mutex::new(Log::new(file)));
         let cancel = Arc::new(Cancel::default());
         let (done_tx, done) = oneshot::channel();
@@ -770,8 +926,10 @@ impl Message<Launch<Start>> for Jobs {
         // (`Started`/`Finished`, `JobView`, `<job_result command>`) is scrubbed.
         let shown = crate::secrets::redact(&m.command).into_owned();
         let started = Instant::now();
+        let started_ms = chrono::Utc::now().timestamp_millis();
         self.track(&activity);
         let op = activity.id();
+        let call_id = m.call_id;
         let task = tokio::spawn(run(Run {
             rt: self.rt.clone(),
             me: ctx.actor_ref().clone(),
@@ -779,7 +937,7 @@ impl Message<Launch<Start>> for Jobs {
             id: id.clone(),
             command: m.command,
             shown: shown.clone(),
-            call_id: m.call_id,
+            call_id: call_id.clone(),
             shell: m.shell,
             put_back: m.put_back,
             params,
@@ -788,9 +946,12 @@ impl Message<Launch<Start>> for Jobs {
             log_path: log_path.clone(),
             log: log.clone(),
             pgids: pgids.clone(),
+            pgid_rx,
             cancel: cancel.clone(),
             claimable: claimable.clone(),
             quiet,
+            journal: self.journal.clone(),
+            started_ms,
             timeout: m.timeout.map_or(self.timeout, |t| {
                 t.clamp(Duration::from_secs(1), self.timeout)
             }),
@@ -807,7 +968,9 @@ impl Message<Launch<Start>> for Jobs {
                     id,
                     op,
                     command: shown,
+                    call_id,
                     started,
+                    started_ms,
                     exit: None,
                     secs: 0,
                     log_path: log_path.clone(),
@@ -818,6 +981,7 @@ impl Message<Launch<Start>> for Jobs {
                     name: None,
                     on_pty: false,
                     pty: None,
+                    lost: None,
                 },
             );
         }
@@ -977,6 +1141,28 @@ impl Message<KillAll> for Jobs {
     type Reply = ();
 
     async fn handle(&mut self, _: KillAll, _: &mut Context<Self, Self::Reply>) {
+        // 109 §5.5: the truth goes to disk before the signal — a crash during
+        // the kill still leaves `exit = lost` on every running row, and the
+        // reaper (§5.4) settles and reports it on the next start as `killed
+        // at shutdown`. The row stays `running` so `jobs_open` finds it: the
+        // store has no "reported" mark, and a `lost` state would be final.
+        let now = chrono::Utc::now().timestamp_millis();
+        let mut rows = Vec::new();
+        let mut screens = Vec::new();
+        for (session, sj) in &self.sessions {
+            for job in sj.jobs.iter().filter(|j| j.exit.is_none()) {
+                rows.push(job.row(*session, JobState::Running, Some(JobExit::Lost), Some(now)));
+                if let Some(pty) = &job.pty {
+                    screens.push((Arc::clone(pty), *session, job.id.clone()));
+                }
+            }
+        }
+        for row in rows {
+            self.journal.job(row).await;
+        }
+        for (pty, session, id) in screens {
+            pty.snapshot_to_store(&*self.journal, session, &id).await;
+        }
         for job in self.sessions.values_mut().flat_map(|s| &mut s.jobs) {
             if job.exit.is_none() {
                 kill(&job.pgids);
@@ -994,6 +1180,87 @@ impl Message<KillAll> for Jobs {
     }
 }
 
+impl Message<Reaped> for Jobs {
+    type Reply = ();
+
+    async fn handle(&mut self, m: Reaped, _: &mut Context<Self, Self::Reply>) {
+        for LostJob {
+            row,
+            screen,
+            tail,
+            deliver,
+        } in m.jobs
+        {
+            let session = row.session;
+            let sj = self.sessions.entry(session).or_default();
+            if sj.jobs.iter().any(|j| j.id == row.id) {
+                continue;
+            }
+            // Later jobs of the session number past the lost one, so `j7`
+            // keeps naming the lost job for the rest of this engine's life.
+            if let Some(n) = row.id.0.strip_prefix('j').and_then(|n| n.parse().ok()) {
+                sj.next = sj.next.max(n);
+            }
+            let secs = row.settled_ms.map_or(0, |s| {
+                u64::try_from((s - row.started_ms) / 1000).unwrap_or(0)
+            });
+            let pty = row.kind == JobKind::Pty;
+            let event = JobEvent::Finished {
+                session,
+                id: row.id.clone(),
+                command: row.command.clone(),
+                exit: JobExit::Lost,
+                secs,
+                output: deliver.clone().unwrap_or_default(),
+                // The resumed batch reports a job whose call never returned
+                // its stub (§4.3): nothing to inject for it.
+                inline: deliver.is_none(),
+                pty,
+            };
+            self.push(
+                session,
+                Job {
+                    id: row.id.clone(),
+                    // Nothing is live for it: never in `live`.
+                    op: OperationId(0),
+                    command: row.command,
+                    call_id: row.call_id,
+                    started: Instant::now(),
+                    started_ms: row.started_ms,
+                    exit: Some(JobExit::Lost),
+                    secs,
+                    log_path: row.log.unwrap_or_default(),
+                    log: Arc::new(Mutex::new(Log::from_tail(tail.as_bytes()))),
+                    pgids: Arc::default(),
+                    cancel: Arc::default(),
+                    task: tokio::spawn(async {}).abort_handle(),
+                    name: row.name,
+                    on_pty: pty,
+                    pty: None,
+                    lost: Some(Lost {
+                        restarted_at: m.restarted_at,
+                        screen,
+                    }),
+                },
+            );
+            if deliver.is_some() {
+                // The model had this job's stub: its `<job_result>` travels
+                // the one delivery path, a settled operation with a result
+                // (47 §4.1). Admission asks the supervisor, so off the mailbox.
+                let sink = self.activity.clone();
+                let (id, result) = (row.id, event.clone());
+                tokio::spawn(async move {
+                    match admit_job(None, sink.as_ref(), session, Kind::Job(id.clone())).await {
+                        Ok(a) => a.set_result(result),
+                        Err(e) => tracing::warn!("lost job {id} not reported: {e}"),
+                    }
+                });
+            }
+            self.rt.publish(event).await;
+        }
+    }
+}
+
 impl Message<InstallActivity> for Jobs {
     type Reply = ();
 
@@ -1004,6 +1271,14 @@ impl Message<InstallActivity> for Jobs {
             a.adopt(&m.0);
         }
         self.activity = Some(m.0);
+    }
+}
+
+impl Message<crate::InstallJournal> for Jobs {
+    type Reply = ();
+
+    async fn handle(&mut self, m: crate::InstallJournal, _: &mut Context<Self, Self::Reply>) {
+        self.journal = m.0;
     }
 }
 
@@ -1050,6 +1325,7 @@ fn setup(
     log_path: Option<&std::path::Path>,
     shell: &Shell,
     trees: &Arc<Mutex<Vec<ProcessTree>>>,
+    pgid_tx: tokio::sync::mpsc::UnboundedSender<u32>,
 ) -> anyhow::Result<(
     Option<std::fs::File>,
     ExecutionParameters,
@@ -1083,7 +1359,13 @@ fn setup(
             let mut trees = lock(&trees);
             let r = match trees.iter().find(|t| t.id() == pgid as u32) {
                 Some(t) => t.add(pid as u32),
-                None => ProcessTree::adopt(pgid as u32).map(|t| trees.push(t)),
+                None => ProcessTree::adopt(pgid as u32).map(|t| {
+                    // 109 §5.1: the first group is the row's `pgid`.
+                    if trees.is_empty() {
+                        let _ = pgid_tx.send(pgid as u32);
+                    }
+                    trees.push(t);
+                }),
             };
             if let Err(e) = r {
                 tracing::warn!(pid, pgid, "could not track the job's process: {e}");
@@ -1112,10 +1394,16 @@ struct Run {
     log_path: PathBuf,
     log: Arc<Mutex<Log>>,
     pgids: Arc<Mutex<Vec<ProcessTree>>>,
+    /// The first process group as it spawns (109 §5.1): the row's `pgid`.
+    pgid_rx: tokio::sync::mpsc::UnboundedReceiver<u32>,
     cancel: Arc<Cancel>,
     claimable: Arc<AtomicBool>,
     /// [`Start::quiet`]: publish nothing, take no row.
     quiet: bool,
+    /// 109 §5.1: where the `jobs` row goes; a quiet job writes none.
+    journal: Arc<dyn crate::Journal>,
+    /// Spawn time, unix ms (the row's `started_ms`).
+    started_ms: i64,
     /// Deadline actually applied.
     timeout: Duration,
     /// [`Start::timeout`] as given, for the timeout message.
@@ -1248,7 +1536,24 @@ fn drain(mut r: std::io::PipeReader, log: Arc<Mutex<Log>>) -> Drain {
 }
 
 async fn run(mut j: Run) {
-    if !j.quiet {
+    // 109 §5.1: the row exists from the spawn on; `pgid` follows with the
+    // first group, the exit settles it. A quiet job has no row.
+    let mut row = (!j.quiet).then(|| JobRow {
+        session: j.session,
+        id: j.id.clone(),
+        kind: JobKind::Shell,
+        call_id: j.call_id.clone(),
+        command: j.shown.clone(),
+        name: None,
+        pgid: None,
+        log: Some(j.log_path.clone()),
+        started_ms: j.started_ms,
+        state: JobState::Running,
+        exit: None,
+        settled_ms: None,
+    });
+    if let Some(r) = &row {
+        j.journal.job(r.clone()).await;
         j.rt.publish(JobEvent::Started {
             session: j.session,
             id: j.id.clone(),
@@ -1260,6 +1565,7 @@ async fn run(mut j: Run) {
         })
         .await;
     }
+    let mut pgid_pending = row.is_some();
 
     let out = drain(j.out_r, j.log.clone());
     let err = drain(j.err_r, j.log.clone());
@@ -1281,6 +1587,13 @@ async fn run(mut j: Run) {
                     Err(e) => (JobExit::Exited(1), Some(e.to_string()), None, None),
                 },
                 _ = tick.tick(), if !j.quiet => flush(&j.rt, j.session, &j.id, &j.log).await,
+                got = j.pgid_rx.recv(), if pgid_pending => {
+                    pgid_pending = false;
+                    if let (Some(pgid), Some(r)) = (got, row.as_mut()) {
+                        r.pgid = Some(i64::from(pgid));
+                        j.journal.job(r.clone()).await;
+                    }
+                }
             }
         }
     };
@@ -1353,6 +1666,13 @@ async fn run(mut j: Run) {
             let origin = origin.expect("Killed comes from the cancel arm");
             (origin.notice().to_owned(), out)
         }
+        (JobExit::Lost, None) => {
+            // 109: never reached by a running job (see `JobExit::Lost`);
+            // kept total so the match stays exhaustive.
+            let body = truncate(body);
+            let out = ToolOutput::err(format!("{body}{}lost", sep(&body)));
+            (body, out)
+        }
     };
 
     // A killed shell was dropped mid-command; its state is not worth keeping.
@@ -1376,6 +1696,16 @@ async fn run(mut j: Run) {
     });
     if !j.quiet {
         flush(&j.rt, j.session, &j.id, &j.log).await;
+    }
+    // The row settles before anyone can act on the result or the event.
+    if let Some(mut r) = row {
+        if r.pgid.is_none() {
+            r.pgid = lock(&j.pgids).first().map(|t| i64::from(t.id()));
+        }
+        r.state = JobState::Settled;
+        r.exit = Some(exit.clone());
+        r.settled_ms = Some(chrono::Utc::now().timestamp_millis());
+        j.journal.job(r).await;
     }
     // The result rides the guard only when nobody else returns it: not
     // inline (the tool call has it), not quiet (the caller consumes it).
@@ -2116,5 +2446,254 @@ pub(crate) mod tests {
         assert!(!platform::process::pid_alive(pid));
         assert!(!log.parent().unwrap().exists());
         assert!(list(&fx).await.is_empty());
+    }
+    /// 109: a journal that records every row, noting for each `jobs` row
+    /// whether its process group answered signal 0 at write time.
+    #[derive(Default)]
+    pub(crate) struct RecJournal {
+        pub(crate) jobs: Mutex<Vec<(JobRow, bool)>>,
+        pub(crate) screens: Mutex<Vec<PtyScreenRow>>,
+        pub(crate) waits: Mutex<Vec<Option<crate::journal::WaitRow>>>,
+    }
+
+    impl crate::Journal for RecJournal {
+        fn call_started(&self, _: SessionId, _: &str) -> futures::future::BoxFuture<'_, ()> {
+            Box::pin(async {})
+        }
+        fn call_finished(
+            &self,
+            _: SessionId,
+            _: &str,
+            _: &ToolOutput,
+        ) -> futures::future::BoxFuture<'_, ()> {
+            Box::pin(async {})
+        }
+        fn question(&self, _: crate::journal::QuestionRow) -> futures::future::BoxFuture<'_, ()> {
+            Box::pin(async {})
+        }
+        fn wait(
+            &self,
+            w: Option<crate::journal::WaitRow>,
+            _: SessionId,
+            _: &str,
+        ) -> futures::future::BoxFuture<'_, ()> {
+            lock(&self.waits).push(w);
+            Box::pin(async {})
+        }
+        fn job(&self, j: JobRow) -> futures::future::BoxFuture<'_, ()> {
+            let alive = j
+                .pgid
+                .and_then(|p| ProcessTree::adopt(p as u32).ok())
+                .is_some_and(|t| t.alive());
+            lock(&self.jobs).push((j, alive));
+            Box::pin(async {})
+        }
+        fn pty_screen(&self, s: PtyScreenRow) -> futures::future::BoxFuture<'_, ()> {
+            lock(&self.screens).push(s);
+            Box::pin(async {})
+        }
+    }
+
+    /// A fixture with a [`RecJournal`] installed.
+    pub(crate) async fn journaled(grace: Duration, timeout: Duration) -> (Fx, Arc<RecJournal>) {
+        let fx = fixture(grace, timeout).await;
+        let journal = Arc::new(RecJournal::default());
+        fx.jobs
+            .ask(crate::InstallJournal(journal.clone()))
+            .await
+            .unwrap();
+        (fx, journal)
+    }
+
+    /// Poll the journal until `pred` holds on the `jobs` rows.
+    pub(crate) async fn rows_until(
+        journal: &RecJournal,
+        within: Duration,
+        pred: impl Fn(&[(JobRow, bool)]) -> bool,
+    ) -> Vec<(JobRow, bool)> {
+        let deadline = Instant::now() + within;
+        loop {
+            let v: Vec<_> = lock(&journal.jobs).clone();
+            if pred(&v) {
+                return v;
+            }
+            assert!(Instant::now() < deadline, "journal never satisfied: {v:?}");
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    }
+
+    /// 109 §5.1: a shell job writes `running` (then with its pgid), and
+    /// `settled` with its exit; a quiet job writes nothing.
+    #[tokio::test]
+    async fn job_rows_follow_the_job() {
+        let (fx, journal) = journaled(Duration::from_secs(3), Duration::from_secs(60)).await;
+        let StartReply::Done(out) = spawn_job(&fx, "echo hi; exit 3").await else {
+            panic!("expected Done");
+        };
+        assert!(out.is_error);
+        let rows = rows_until(&journal, Duration::from_secs(2), |r| {
+            r.iter().any(|(j, _)| j.state == JobState::Settled)
+        })
+        .await;
+        let first = &rows[0].0;
+        assert_eq!((first.state, first.exit.clone()), (JobState::Running, None));
+        assert_eq!(first.kind, JobKind::Shell);
+        assert_eq!(first.id.0, "j1");
+        assert!(first.log.as_ref().unwrap().ends_with("j1.log"));
+        let last = &rows.last().unwrap().0;
+        assert_eq!(last.state, JobState::Settled);
+        assert_eq!(last.exit, Some(JobExit::Exited(3)));
+        assert!(last.settled_ms.unwrap() >= last.started_ms);
+        // A quiet job: no row.
+        let before = lock(&journal.jobs).len();
+        let _ = spawn_quiet(&fx, "true", true).await;
+        assert_eq!(lock(&journal.jobs).len(), before);
+    }
+
+    /// 109 §5.5: every running row is written `exit = lost` while its
+    /// group is still alive, and only then is the group killed.
+    #[tokio::test]
+    async fn killall_writes_lost_before_kill() {
+        let (fx, journal) = journaled(Duration::ZERO, Duration::from_secs(600)).await;
+        let StartReply::Running { id, .. } = spawn_job(&fx, "sleep 600").await else {
+            panic!("expected Running");
+        };
+        let rows = rows_until(&journal, Duration::from_secs(5), |r| {
+            r.iter().any(|(j, _)| j.pgid.is_some())
+        })
+        .await;
+        let pgid = rows.last().unwrap().0.pgid.unwrap() as u32;
+        let tree = ProcessTree::adopt(pgid).unwrap();
+        assert!(tree.alive());
+        fx.jobs.tell(KillAll).await.unwrap();
+        let rows = rows_until(&journal, Duration::from_secs(5), |r| {
+            r.iter().any(|(j, _)| j.exit == Some(JobExit::Lost))
+        })
+        .await;
+        let (lost, alive_at_write) = rows
+            .iter()
+            .find(|(j, _)| j.exit == Some(JobExit::Lost))
+            .unwrap();
+        assert_eq!(lost.id, id);
+        assert_eq!(lost.pgid, Some(i64::from(pgid)));
+        assert!(alive_at_write, "the row went to disk after the kill");
+        assert!(lost.settled_ms.is_some());
+        // Still `running` for `jobs_open`: the reaper settles and reports it.
+        assert_eq!(lost.state, JobState::Running);
+        assert!(group_gone(&tree, Some(tokio::time::Instant::now() + KILL_WAIT)).await);
+    }
+
+    /// 109 §4.4: the `shell` grace wait is a `job` wait while it lasts.
+    #[tokio::test]
+    async fn grace_wait_writes_and_clears_a_job_wait() {
+        let (fx, journal) = journaled(Duration::from_millis(200), Duration::from_secs(60)).await;
+        let reply = fx
+            .jobs
+            .ask(Start {
+                session: fx.session,
+                command: "sleep 1".into(),
+                call_id: "c1".into(),
+                quiet: false,
+                shell: ShellTool::build_shell(false).await.unwrap(),
+                put_back: Arc::new(|_| {}),
+                root: fx.dir.clone(),
+                activity: None,
+                timeout: None,
+            })
+            .await
+            .unwrap();
+        assert!(matches!(reply, StartReply::Running { .. }));
+        let waits = lock(&journal.waits).clone();
+        assert_eq!(waits.len(), 2, "{waits:?}");
+        let w = waits[0].as_ref().unwrap();
+        assert_eq!(
+            (w.kind, w.target.as_str(), w.tool_call_id.as_str()),
+            (crate::journal::WaitKind::Job, "j1", "c1")
+        );
+        assert!(waits[1].is_none());
+    }
+
+    fn lost_row(session: SessionId, id: &str, kind: JobKind, log: &std::path::Path) -> JobRow {
+        JobRow {
+            session,
+            id: JobId(id.into()),
+            kind,
+            call_id: "c0".into(),
+            command: "cargo build".into(),
+            name: None,
+            pgid: None,
+            log: Some(log.to_path_buf()),
+            started_ms: 1_000,
+            state: JobState::Lost,
+            exit: Some(JobExit::Lost),
+            settled_ms: Some(8_000),
+        }
+    }
+
+    /// 109 §5.4: a reaped job lists as `lost` with its log tail, later jobs
+    /// number past it, and — when the model had its stub — its
+    /// `<job_result exit="lost">` settles through the ledger.
+    #[tokio::test]
+    async fn reaped_jobs_list_lost_and_deliver_through_the_ledger() {
+        use crate::activity::test_sink::Seen;
+        let (fx, ledger, seen) = certified(Duration::ZERO, Duration::from_secs(60)).await;
+        let log = fx.dir.join("j7.log");
+        std::fs::write(&log, "building…\nerror: boom\n").unwrap();
+        fx.jobs
+            .tell(Reaped {
+                restarted_at: chrono::Utc::now(),
+                jobs: vec![
+                    LostJob {
+                        row: lost_row(fx.session, "j7", JobKind::Shell, &log),
+                        screen: None,
+                        tail: "error: boom\n".into(),
+                        deliver: Some("this job died with the engine".into()),
+                    },
+                    LostJob {
+                        row: lost_row(fx.session, "j3", JobKind::Shell, &log),
+                        screen: None,
+                        tail: String::new(),
+                        deliver: None,
+                    },
+                ],
+            })
+            .await
+            .unwrap();
+        let v = ledger_until(&ledger, &seen, Duration::from_secs(2), |v| {
+            v.iter().any(|s| matches!(s, Seen::Result(_)))
+        })
+        .await;
+        // One delivery: j7's. j3 is the resumed batch's to report.
+        assert_eq!(v.iter().filter(|s| matches!(s, Seen::Result(_))).count(), 1);
+        let views = list(&fx).await;
+        let j7 = views.iter().find(|v| v.id.0 == "j7").unwrap();
+        assert_eq!(
+            (j7.state.as_str(), j7.secs, j7.tail.as_str()),
+            ("lost", 7, "error: boom\n")
+        );
+        assert_eq!(j7.log, log);
+        assert!(table(&views).contains("j7  lost"), "{}", table(&views));
+        let finished: Vec<_> = lock(&fx.events)
+            .iter()
+            .filter_map(|e| match e {
+                JobEvent::Finished {
+                    id, exit, inline, ..
+                } => Some((id.0.clone(), exit.clone(), *inline)),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            finished.contains(&("j7".into(), JobExit::Lost, false)),
+            "{finished:?}"
+        );
+        assert!(
+            finished.contains(&("j3".into(), JobExit::Lost, true)),
+            "{finished:?}"
+        );
+        // The next job of the session numbers past the lost ones.
+        let StartReply::Running { id, .. } = spawn_job(&fx, "sleep 5").await else {
+            panic!("expected Running");
+        };
+        assert_eq!(id.0, "j8");
     }
 }

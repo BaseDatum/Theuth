@@ -89,6 +89,7 @@ async fn prompts_resolve_everywhere_and_replay_only_while_pending() {
                     options: vec![],
                     recommended: None,
                 }],
+                call_id: None,
             })
             .await
             .unwrap()
@@ -103,6 +104,7 @@ async fn prompts_resolve_everywhere_and_replay_only_while_pending() {
                     tool: "shell".into(),
                     args: serde_json::json!({ "command": "rm x" }),
                     risk: tools::Risk::Destructive,
+                    call_id: None,
                 })
                 .await
                 .unwrap()

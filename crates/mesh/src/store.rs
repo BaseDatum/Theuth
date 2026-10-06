@@ -619,7 +619,9 @@ mod tests {
             host.meta_default("name", "smoke-host", 1_700_000_000_000)
                 .await
                 .unwrap();
-            vm.meta_default("name", "lab", 1_700_000_100_000).await.unwrap();
+            vm.meta_default("name", "lab", 1_700_000_100_000)
+                .await
+                .unwrap();
             let host_to_vm = async {
                 host_handle.flush().await.unwrap();
                 while let Ok(batch) = host_feed.try_recv() {

@@ -116,6 +116,41 @@ pub(crate) async fn tombstone_owner_in(
     Ok(())
 }
 
+/// One `model_calls` attempt row (`pending`, coverage `unresolved`) inside
+/// the caller's transaction: [`Store::reserve_call`], and the loop's
+/// `model_call` journal step (109 §3.3 step 2) which rides the same commit.
+#[expect(clippy::too_many_arguments, reason = "one row, one call")]
+pub(crate) async fn reserve_call_in(
+    conn: &mut SqliteConnection,
+    owner: SessionId,
+    request_id: &str,
+    attempt: u32,
+    turn: Option<TurnId>,
+    kind: CallKind,
+    provider: Option<&str>,
+    model: Option<&str>,
+) -> anyhow::Result<CallId> {
+    let call = CallId(Uuid::now_v7().to_string());
+    sqlx::query(
+        "INSERT INTO model_calls (call_id, owner_id, request_id, attempt, turn_id, kind, status, \
+         provider, requested_model, coverage, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+    )
+    .bind(&call.0)
+    .bind(owner.to_string())
+    .bind(request_id)
+    .bind(i64::from(attempt))
+    .bind(turn.map(|t| t.to_string()))
+    .bind(kind.as_str())
+    .bind(CallStatus::Pending.as_str())
+    .bind(provider)
+    .bind(model)
+    .bind(CallStatus::Unresolved.as_str())
+    .bind(now())
+    .execute(conn)
+    .await?;
+    Ok(call)
+}
+
 /// Root delete: every call, meter and owner under `root`, owners child-first.
 pub(crate) async fn delete_root_ledger_in(
     conn: &mut SqliteConnection,
@@ -338,25 +373,9 @@ impl Store {
         provider: Option<&str>,
         model: Option<&str>,
     ) -> anyhow::Result<CallId> {
-        let call = CallId(Uuid::now_v7().to_string());
         let mut tx = self.begin_write().await?;
-        sqlx::query(
-            "INSERT INTO model_calls (call_id, owner_id, request_id, attempt, turn_id, kind, status, \
-             provider, requested_model, coverage, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        )
-        .bind(&call.0)
-        .bind(owner.to_string())
-        .bind(request_id)
-        .bind(i64::from(attempt))
-        .bind(turn.map(|t| t.to_string()))
-        .bind(kind.as_str())
-        .bind(CallStatus::Pending.as_str())
-        .bind(provider)
-        .bind(model)
-        .bind(CallStatus::Unresolved.as_str())
-        .bind(now())
-        .execute(&mut *tx)
-        .await?;
+        let call =
+            reserve_call_in(&mut tx, owner, request_id, attempt, turn, kind, provider, model).await?;
         tx.commit().await?;
         Ok(call)
     }

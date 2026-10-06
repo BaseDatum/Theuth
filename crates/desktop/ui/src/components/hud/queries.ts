@@ -100,6 +100,15 @@ export function useAttentionActions() {
   const keys = [ATTENTION_KEY, taskKeys.tasks, taskKeys.agents] as const
   return {
     dismiss: useAction((id: string) => api.attention_dismiss(id), { keys: [ATTENTION_KEY] }),
+    /** 109 §8.3: the Resume button of a `resume:` item under `durability.resume: ask`. */
+    resume: useAction(
+      async (session: string) => {
+        const ok = await api.resume_turn(session)
+        if (!ok) toast.message('That turn was already resumed')
+        return ok
+      },
+      { keys: [ATTENTION_KEY] },
+    ),
     snooze: useAction(({ id, until }: { id: string; until: number }) => api.attention_snooze(id, until), { keys: [ATTENTION_KEY] }),
     /** 104 A6: Send (answers) or Dismiss (`null`, ends the asking turn) on the Ask screen — `AskCard`'s two buttons. */
     ask: useAction(

@@ -54,6 +54,7 @@ use crate::{ProjectStyle, SessionSummary};
 pub mod accounting;
 mod capture;
 pub mod communication;
+pub mod durability;
 pub mod turn_usage;
 pub use capture::ATTACHED;
 
@@ -1669,6 +1670,8 @@ impl Store {
         .bind(&sid)
         .execute(&mut *tx)
         .await?;
+        // 109 §3.2: the journal rows anchored at the cut go with their messages.
+        durability::cut_journal_in(&mut tx, &sid).await?;
         sqlx::query(
             "UPDATE sessions SET cut_at = NULL, context_revision = context_revision + 1 \
              WHERE id = ? AND cut_at IS NOT NULL",
@@ -2359,6 +2362,7 @@ impl Store {
                 .bind(&sid)
                 .execute(&mut *tx)
                 .await?;
+            durability::delete_journal_in(&mut tx, &sid).await?;
             sqlx::query("DELETE FROM sessions WHERE id = ?")
                 .bind(&sid)
                 .execute(&mut *tx)

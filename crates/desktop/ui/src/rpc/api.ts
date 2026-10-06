@@ -687,6 +687,8 @@ export interface Api {
   /** Like `put_attachment`, but under `session`'s storage root (private scratch when private). */
   put_session_attachment(session: SessionId, bytes_base64: string, file_ext: string): Promise<string>
   resolve_approval(id: ApprovalId, decision: Decision): Promise<boolean>
+  /** 109 §10.3: resume `session`'s open turn now (the `resume: ask` mode's button); `false` when none is open. */
+  resume_turn(session: SessionId): Promise<boolean>
   /** Answer a pending `ask_user`: one answer per question, or `null` to dismiss the set (which cancels the turn). */
   answer_ask(id: AskId, answers: Answer[] | null): Promise<boolean>
   /** Answer a `SecretsEvent.SecretRequested` (37 §3.8) or a replicated `secret_requests` row (79 §6.6): `value` answers the (first) field, `values` answers a form by field name (H's positional params); both `null` declines. `false` when `id` was no longer pending. */
@@ -1041,6 +1043,7 @@ export const METHODS = [
   'restore_secret',
   'resume_child',
   'resume_private',
+  'resume_turn',
   'sandbox_create',
   'sandbox_desktop_access',
   'sandbox_destroy',

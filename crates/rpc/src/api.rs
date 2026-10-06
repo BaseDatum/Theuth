@@ -1729,6 +1729,10 @@ pub trait Api {
     /// Hide an attention item for good.
     #[method(name = "attention_dismiss")]
     async fn attention_dismiss(&self, id: String) -> RpcResult<()>;
+    /// 109 §10.3: resume `session`'s open turn now (the `resume: ask` mode's
+    /// Resume button). `false` when the session has no open turn.
+    #[method(name = "resume_turn", with_extensions)]
+    async fn resume_turn(&self, session: SessionId) -> RpcResult<bool>;
     /// The packet behind a decision / review attention item (101 §3): `decision:<id>` | `review:<task>`;
     /// `null` when none was raised.
     #[method(name = "packet_get")]
@@ -4573,7 +4577,13 @@ impl ApiServer for Server {
             ),
             None => tracing::warn!("shutdown requested over rpc (unauthenticated connection)"),
         }
-        self.rt.shutdown.cancel();
+        // 109 §9.2: the drain runs before the token (every turn's cancel is
+        // its child); off the request so the caller's reply is immediate.
+        let rt = self.rt.clone();
+        tokio::spawn(async move {
+            agent::supervisor::drain_engine(&rt, "shutdown").await;
+            rt.shutdown.cancel();
+        });
         Ok(())
     }
 
@@ -5495,6 +5505,16 @@ impl ApiServer for Server {
         send(&attention_actor()?, roster::attention::DismissAttention(id)).await
     }
 
+    async fn resume_turn(&self, ext: &Extensions, session: SessionId) -> RpcResult<bool> {
+        self.authorize(ext, session).await?;
+        let agents = lookup::<Agents>(agent::AGENT_ACTOR)?;
+        let Some(turn) = send(&agents, agent::supervisor::OpenTurn(session)).await? else {
+            return Ok(false);
+        };
+        send(&agents, agent::supervisor::ResumeTurn { session, turn }).await?;
+        Ok(true)
+    }
+
     async fn packet_get(&self, key: String) -> RpcResult<Option<tasks::packet::Packet>> {
         send(&tasks_actor()?, tasks::GetPacket(key)).await
     }
@@ -5971,6 +5991,50 @@ mod tests {
             err.message().contains("unsupported attachment type .exe"),
             "{err}"
         );
+    }
+
+    /// 109 §10.3 wire shapes the desktop's bindings rely on: the interrupted
+    /// history row, `Loaded.resume` (absent → `None`), the `resume` attention
+    /// kind, and `resume_turn` registered on the module.
+    #[tokio::test]
+    async fn durability_wire_shapes() {
+        let at = chrono::DateTime::parse_from_rfc3339("2026-10-06T12:05:00Z")
+            .unwrap()
+            .with_timezone(&chrono::Utc);
+        let row = agent::HistoryEntry::Interrupted {
+            text: "half a re".into(),
+            at,
+            context: None,
+        };
+        assert_eq!(
+            serde_json::to_value(&row).unwrap(),
+            serde_json::json!({ "role": "interrupted", "text": "half a re", "at": "2026-10-06T12:05:00Z", "context": null })
+        );
+        let turn = runtime::TurnId::new();
+        let loaded = agent::Loaded {
+            resume: Some(agent::ResumeState {
+                turn,
+                kind: agent::durability::ResumeKind::Suspended,
+                interrupted_at: at,
+            }),
+            ..Default::default()
+        };
+        let v = serde_json::to_value(&loaded).unwrap();
+        assert_eq!(v["resume"]["kind"], "suspended");
+        assert_eq!(v["resume"]["turn"], turn.to_string());
+        let back: agent::Loaded = serde_json::from_value(v).unwrap();
+        assert_eq!(back.resume, loaded.resume);
+        let mut pre109 = serde_json::to_value(agent::Loaded::default()).unwrap();
+        pre109.as_object_mut().unwrap().remove("resume");
+        let old: agent::Loaded = serde_json::from_value(pre109).unwrap();
+        assert_eq!(old.resume, None, "a pre-109 engine's page still parses");
+        assert_eq!(
+            serde_json::to_value(roster::attention::AttentionKind::Resume).unwrap(),
+            "resume"
+        );
+        let rt = Runtime::new(figment::Figment::new(), std::env::temp_dir());
+        let names: Vec<&str> = Server::new(rt).into_rpc().method_names().collect();
+        assert!(names.contains(&"resume_turn"), "{names:?}");
     }
 
     #[test]
