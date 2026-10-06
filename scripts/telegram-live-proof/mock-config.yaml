@@ -1,0 +1,31 @@
+# telegram-mock-ai config for the 98c live proof: no LLM, no proactive traffic,
+# one owner, one private chat (chat id == user id), one pre-registered bot.
+server:
+  host: 127.0.0.1
+  port: 8081
+llm:
+  enabled: false
+proactive:
+  enabled: false
+admin:
+  enabled: true
+  host: 127.0.0.1
+  port: 8082
+log:
+  level: info
+  format: text
+seed:
+  users:
+    - id: 777000111
+      first_name: Proof
+      last_name: Owner
+      username: proofowner
+  chats:
+    - id: 777000111
+      type: private
+      title: ""
+      members: [777000111]
+  bots:
+    - token: "123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11"
+      username: theuth_proof_bot
+      first_name: theuth
