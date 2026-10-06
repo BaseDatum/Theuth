@@ -1,0 +1,23 @@
+{
+  "root": "s",
+  "elements": {
+    "s": {
+      "type": "Steps",
+      "props": {
+        "items": [
+          {
+            "title": "Install the CLI",
+            "detail": "brew install theuth"
+          },
+          {
+            "title": "Sign in",
+            "detail": "theuth login opens the browser once."
+          },
+          {
+            "title": "Run the first session"
+          }
+        ]
+      }
+    }
+  }
+}

@@ -1,0 +1,24 @@
+{
+  "root": "c",
+  "elements": {
+    "c": {
+      "type": "Checklist",
+      "props": {
+        "items": [
+          {
+            "text": "Parse and validate",
+            "done": true
+          },
+          {
+            "text": "Render blocks",
+            "done": true
+          },
+          {
+            "text": "Validate against blocks.validate",
+            "done": false
+          }
+        ]
+      }
+    }
+  }
+}

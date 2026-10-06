@@ -1,0 +1,44 @@
+{
+  "root": "s",
+  "elements": {
+    "s": {
+      "type": "Stack",
+      "children": [
+        "l",
+        "c",
+        "q"
+      ]
+    },
+    "l": {
+      "type": "LinkList",
+      "props": {
+        "items": [
+          {
+            "title": "Design doc 30",
+            "url": "https://example.com/docs/30",
+            "note": "Surfaces"
+          },
+          {
+            "title": "Tracking issue",
+            "url": "https://example.com/issues/67"
+          }
+        ]
+      }
+    },
+    "c": {
+      "type": "Code",
+      "props": {
+        "lang": "rust",
+        "title": "src/main.rs",
+        "text": "fn main() {\n    println!(\"hi\");\n}"
+      }
+    },
+    "q": {
+      "type": "Quote",
+      "props": {
+        "text": "Show first, then tell.",
+        "source": "design doc 30 §6"
+      }
+    }
+  }
+}

@@ -1,0 +1,84 @@
+[
+  {
+    "type": "rich_text",
+    "elements": [
+      {
+        "type": "rich_text_list",
+        "style": "bullet",
+        "elements": [
+          {
+            "type": "rich_text_section",
+            "elements": [
+              {
+                "type": "link",
+                "url": "https://example.com/docs/30",
+                "text": "Design doc 30"
+              },
+              {
+                "type": "text",
+                "text": " — Surfaces"
+              }
+            ]
+          },
+          {
+            "type": "rich_text_section",
+            "elements": [
+              {
+                "type": "link",
+                "url": "https://example.com/issues/67",
+                "text": "Tracking issue"
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "type": "rich_text",
+    "elements": [
+      {
+        "type": "rich_text_section",
+        "elements": [
+          {
+            "type": "text",
+            "text": "src/main.rs",
+            "style": {
+              "bold": true
+            }
+          }
+        ]
+      },
+      {
+        "type": "rich_text_preformatted",
+        "elements": [
+          {
+            "type": "text",
+            "text": "fn main() {\n    println!(\"hi\");\n}"
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "type": "rich_text",
+    "elements": [
+      {
+        "type": "rich_text_quote",
+        "elements": [
+          {
+            "type": "text",
+            "text": "Show first, then tell."
+          },
+          {
+            "type": "text",
+            "text": " — design doc 30 §6",
+            "style": {
+              "italic": true
+            }
+          }
+        ]
+      }
+    ]
+  }
+]

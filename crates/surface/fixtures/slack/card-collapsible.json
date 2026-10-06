@@ -1,0 +1,63 @@
+{
+  "root": "s",
+  "elements": {
+    "s": {
+      "type": "Stack",
+      "children": [
+        "c",
+        "acc"
+      ]
+    },
+    "c": {
+      "type": "Card",
+      "props": {
+        "title": "Session",
+        "description": "sessions.sqlite · 3f9a"
+      },
+      "children": [
+        "kv"
+      ]
+    },
+    "kv": {
+      "type": "KeyValueList",
+      "props": {
+        "items": [
+          {
+            "key": "Model",
+            "value": "claude-sonnet-4"
+          },
+          {
+            "key": "Turns",
+            "value": "14"
+          }
+        ]
+      }
+    },
+    "acc": {
+      "type": "Accordion",
+      "props": {
+        "titles": [
+          "Progress",
+          "Notes"
+        ]
+      },
+      "children": [
+        "p",
+        "n"
+      ]
+    },
+    "p": {
+      "type": "Text",
+      "props": {
+        "text": "58 of 100 hosts migrated."
+      }
+    },
+    "n": {
+      "type": "Text",
+      "props": {
+        "text": "Default max is 100, so 58 reads as 58%.",
+        "variant": "muted"
+      }
+    }
+  }
+}
