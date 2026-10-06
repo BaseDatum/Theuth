@@ -71,7 +71,10 @@ impl Agents {
             return;
         }
         let mode = self.cfg.durability.resume;
-        tracing::info!("109: {} open turn(s); durability.resume = {mode:?}", open.len());
+        tracing::info!(
+            "109: {} open turn(s); durability.resume = {mode:?}",
+            open.len()
+        );
         match mode {
             ResumeMode::Off => {}
             // The open set is the Attention item's source (§8.3, W5); the

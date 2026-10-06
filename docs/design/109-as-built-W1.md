@@ -12,16 +12,16 @@ Line numbers are of this branch's last commit.
 
 | step | where | store fn (`store/durability.rs`) | one transaction with |
 |---|---|---|---|
-| 1 `input_accepted` | `Turn::take_input` LOOP_TAKE_INPUT | `Store::append_input` STORE_APPEND_INPUT | the user row (`insert_in`) |
-| 1 (peer) | `Turn::consume_peer` LOOP_CONSUME_PEER | `Store::input_accepted` | *its own* tx after `consume_exchange` (deviation 1) |
-| 2 `model_call` | `Reserved::open` LOOP_RESERVED_OPEN | `Store::reserve_journaled_call` STORE_RESERVE | `reserve_call_in` (`accounting.rs` ACCOUNTING_RESERVE_IN) — `Round` calls of a turn only |
-| 3 `assistant_partial` | `Turn::stream_once` LOOP_STREAM_ONCE (`checkpoint_now`) | `Store::partial_upsert` (contract) | its own small tx; at a block boundary (reasoning→text, text→tool-use) or when `partial_checkpoint_ms` passed and the text grew; never per token |
-| 4 `turn_finished` + §4.5 | `Turn::round` text reply LOOP_FINAL | `Store::append_final` STORE_APPEND_FINAL → `turn_finished_in` STORE_TURN_FINISHED_IN | the final assistant row, the partials' DELETE, `sessions.last_stop/finished_at` |
-| 4' `turn_finished` (cancel / error / landing / after a continuation) | `Turn::drive` end LOOP_DRIVE_FINISH | `Store::finish_turn` | its own tx |
-| 5 `tool_batch` + `planned` rows | `Turn::round` LOOP_TOOL_USE | `Store::append_tool_use` STORE_APPEND_TOOL_USE | the assistant `tool_use` row, the partials' DELETE, `calls_planned_in` (`risk` from `Turn::risks`, filled in `rebase` LOOP_RISKS; `read_only` for `todo`/`python`/unknown names) |
+| 1 `input_accepted` | `Turn::take_input` `loop_.rs:3691` | `Store::append_input` `:628` | the user row (`insert_in`) |
+| 1 (peer) | `Turn::consume_peer` `loop_.rs:3750` | `Store::input_accepted` | *its own* tx after `consume_exchange` (deviation 1) |
+| 2 `model_call` | `Reserved::open` `loop_.rs:2193` | `Store::reserve_journaled_call` `:673` | `reserve_call_in` (`accounting.rs` `:123`) — `Round` calls of a turn only |
+| 3 `assistant_partial` | `Turn::stream_once` `loop_.rs:3509`, `checkpoint_now` `:3544` (`checkpoint_now`) | `Store::partial_upsert` (contract) | its own small tx; at a block boundary (reasoning→text, text→tool-use) or when `partial_checkpoint_ms` passed and the text grew; never per token |
+| 4 `turn_finished` + §4.5 | `Turn::round` text reply `loop_.rs:4646-4670` | `Store::append_final` `:742` → `turn_finished_in` `:150` | the final assistant row, the partials' DELETE, `sessions.last_stop/finished_at` |
+| 4' `turn_finished` (cancel / error / landing / after a continuation) | `Turn::drive` end `loop_.rs:4095` | `Store::finish_turn` | its own tx |
+| 5 `tool_batch` + `planned` rows | `Turn::round` `loop_.rs:4714` | `Store::append_tool_use` `:711` | the assistant `tool_use` row, the partials' DELETE, `calls_planned_in` (`risk` from `Turn::risks`, filled in `rebase` `:3277`; `read_only` for `todo`/`python`/unknown names) |
 | 6–7 registry calls | `tools::registry::invoke` hook (contract) | `StoreJournal` | — |
-| 6–7 `python` / `todo` / refused names | `Turn::run_batch` LOOP_RUN_BATCH (`journal_started` / `journal_finished`) | `call_started` / `call_finished` | their own tx, immediately before / after the body |
-| 7 spill cap | `Turn::finish_batch` LOOP_FINISH_BATCH | `Store::append_batch` STORE_APPEND_BATCH (`BatchRow.output`) | the batch message: every row's `output` is overwritten with the capped text the model sees (addendum: batch-end cap, not in `StoreJournal`) |
+| 6–7 `python` / `todo` / refused names | `Turn::run_batch` `loop_.rs:4737` (`journal_started` / `journal_finished`) | `call_started` / `call_finished` | their own tx, immediately before / after the body |
+| 7 spill cap | `Turn::finish_batch` `loop_.rs:4928` | `Store::append_batch` `:776` (`BatchRow.output`) | the batch message: every row's `output` is overwritten with the capped text the model sees (addendum: batch-end cap, not in `StoreJournal`) |
 | 8 batch message | `Turn::finish_batch` | `Store::append_batch` | the plan it changed (`put_todos`), the rows' capped `output`, the `skipped` rows |
 | 9 cancel / landing | `Turn::finish_batch` (`skipped[i]`) / `Turn::run_batch` landing arm | `Store::append_batch` `BatchRow { skipped: true }` | the batch message |
 
@@ -29,6 +29,14 @@ The model-facing message (step 8) is built from `calls_of(session, turn)`: for e
 row's `output` / `is_error` / `files`; the in-memory result only when no terminal row exists (a
 refused store write), the cancel text when the call never ran. On a normal run rows and memory are
 the same bytes; on a resumed run they differ by the §4.3 notes.
+
+`checkpoint_now` is an `async` closure over the stream loop's state; the partial carries the text so
+far as `MessageContent::from_text`. `Turn::call` (`loop_.rs:3377`) passes `(turn, call_id)` from
+`Reserved::id` for `Round` calls only.
+
+Boot wiring: `supervisor.rs:1962-1965` (`rebuild_waits` → `resume_scan` → `deliver_spared_results`);
+`supervisor/resume.rs`: `ResumeTurn` handler `:31`, `resume_scan` `:65`, `resume_turn` `:95`,
+`deliver_spared_results` `:133`.
 
 Crash points (`durability::crash_point`, right after each commit, the contract's constants):
 `input.before_persist` / `input.after_persist` (take_input, peer path after-only), `model.after_reserve`
@@ -42,25 +50,25 @@ before the `Invoke` is sent; local calls: before `call_started`), `call.<i>.afte
 
 ## 2. Resume (§4) — `loop_.rs`, `supervisor/resume.rs`
 
-- `Session` message `Resume { plan, slots }` LOOP_RESUME_MSG: claims the state like `start_turn`,
+- `Session` message `Resume { plan, slots }` `loop_.rs:1158-1194`: claims the state like `start_turn`,
   spawns `Turn::resume(plan, slots)`; `false` when a turn is in flight.
-- `Turn::resume` LOOP_TURN_RESUME: adopts `plan.turn`, takes one `resume_parallel` slot (held to the
-  end), then `drive(turn, Some(plan))`. `drive` LOOP_DRIVE publishes `TurnResumed` first, runs
-  `rebase`, then `resume_prelude` LOOP_PRELUDE decides the first step:
+- `Turn::resume` `loop_.rs:3926`: adopts `plan.turn`, takes one `resume_parallel` slot (held to the
+  end), then `drive(turn, Some(plan))`. `drive` `loop_.rs:3943` publishes `TurnResumed` first, runs
+  `rebase`, then `resume_prelude` `loop_.rs:2945` decides the first step:
 
 | newest step | built |
 |---|---|
 | `input_accepted` | ordinary `round` |
-| `model_call` | `PartialDropped` if a partial exists, `partial_delete`, `Turn::resume_call = (request_id, attempt + 1)`; `Turn::call` LOOP_CALL takes it for the first round call (same `request_id`, accounting `attempt + 1`; this process's backoff index is separate), no note to the model |
-| `tool_batch`, frame still ends in the `tool_use` row | `resume_batch` LOOP_RESUME_BATCH: per-call rule → `run_batch` with presets → `finish_batch` with the restart note |
+| `model_call` | `PartialDropped` if a partial exists, `partial_delete`, `Turn::resume_call = (request_id, attempt + 1)`; `Turn::call` `loop_.rs:3377` takes it for the first round call (same `request_id`, accounting `attempt + 1`; this process's backoff index is separate), no note to the model |
+| `tool_batch`, frame still ends in the `tool_use` row | `resume_batch` `loop_.rs:2996`: per-call rule → `run_batch` with presets → `finish_batch` with the restart note |
 | `tool_batch`, batch message already in the frame (`batch.after_message`) | ordinary `round` |
 | `turn_finished` | not resumed (`resume_turn` returns) |
 | `suspended` | `kind = Suspended` → `kind="shutdown"` in the note; otherwise identical |
 
-Per-call rule (`resume_started` LOOP_RESUME_STARTED), tool-specific rows first:
+Per-call rule (`resume_started` `loop_.rs:3044`), tool-specific rows first:
 `shell`/`start`/`send`/`wait` → `resume_calls::resume_job_call` (W2 stub); `ask_user`/`desktop_handoff`/
 `secret_request*` → `resume_question_call` (W3); `spawn_subagent`, `send_message{await_reply}` →
-`resume_wait_call` (W3); `python` → python rule (`resume_python` LOOP_RESUME_PYTHON); `todo` → run again;
+`resume_wait_call` (W3); `python` → python rule (`resume_python` `loop_.rs:3122`); `todo` → run again;
 `remind_me_in` → a `reminders` row of this session with `set_at ≥ started_at` is the result (`reminder_since`),
 else run again; then by risk: `read_only` → `call_replan` (planned, `attempt + 1`) and run; `mutating` /
 `destructive` → `call_interrupted` with the interrupted note. A stub/rule result with `is_error` is
@@ -74,11 +82,11 @@ closes U with `interrupted by an engine restart; effect unknown`, row → `inter
 `ResumeReport { replayed, interrupted, lost_jobs: [], children_*: 0 }` is published after the resumed
 batch's message (or right after the prelude for the other rows).
 
-Lazy path (`resume: off|ask`, or an input that beat the scan): `Turn::settle_open_turns` LOOP_SETTLE runs
+Lazy path (`resume: off|ask`, or an input that beat the scan): `Turn::settle_open_turns` `loop_.rs:2887`; `start_turn` `:994`, `run` `:3910` runs
 in `Session::start_turn` before the opener's row and in `Turn::run` before its inputs. A dangling `tool_use`
 whose ids match an open `tool_batch` is answered from the rows — finished reused, every other row
 `interrupted` with the note, nothing re-run (the model has moved on) — and every other open turn of the
-session gets `turn_finished { stop_reason: "superseded" }`. `repair_dangling` LOOP_REPAIR is reached only
+session gets `turn_finished { stop_reason: "superseded" }`. `repair_dangling` `loop_.rs:2845` is reached only
 when no journal answered the dangling row (pre-0033 transcripts); its text is unchanged.
 
 Boot (`supervisor/resume.rs`): `resume_scan` → `open_turns()` (most recent first); `auto` → `resume_turn`
@@ -87,8 +95,8 @@ per row with one shared `Semaphore(resume_parallel)` the turn tasks acquire (the
 `Agents::session(Some(id), …)` (the lazy load), `actor.ask(Resume)`; an ACP actor is logged and left to W4.
 `ResumeTurn` (tell) = `resume_turn(session, turn, None)`. Then `deliver_spared_results` (§7.2): every
 `accepted` `result:` exchange from a `session:*` sender (`Store::spared_child_results`,
-`store/communication.rs` STORE_SPARED) → `enqueue_peer` under the `enqueued` dedup set, `fail_exchange`
-+ `Error` on refusal. `Agents::session` reads `Store::last_stop` into `Agents.last_stop` (§4.5) SUP_LAST_STOP.
+`store/communication.rs` `:1485`) → `enqueue_peer` under the `enqueued` dedup set, `fail_exchange`
++ `Error` on refusal. `Agents::session` reads `Store::last_stop` into `Agents.last_stop` (§4.5) `supervisor.rs:631`.
 
 ## 3. §4.3 wording as shipped
 
@@ -111,7 +119,7 @@ per row with one shared `Semaphore(resume_parallel)` the turn tasks acquire (the
 `append_input`, `input_accepted`, `reserve_journaled_call`, `append_tool_use`, `append_final`,
 `finish_turn`, `append_batch` (+ `BatchRow`), `partial_delete`, `call_replan`, `last_stop`,
 `inner_calls_of`, `inner_calls_interrupt`; free `turn_finished_in`, `cut_journal_in`.
-`Store::commit_cut` STORE_COMMIT_CUT deletes `waits` (by the cut calls), `tool_calls`, `turn_steps` with
+`Store::commit_cut` `store.rs:1671` deletes `waits` (by the cut calls), `tool_calls`, `turn_steps` with
 `at_seq >= cut_at` (§3.2). `reserve_call` is now a wrapper over the new `reserve_call_in`.
 `Store::spared_child_results` (communication.rs). No existing signature changed.
 

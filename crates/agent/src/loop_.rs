@@ -3087,7 +3087,10 @@ impl Turn {
     /// §4.2 `remind_me_in` row: the reminder this session set at or after
     /// `since` (the call's `started_at`), as the tool reports one; `None` →
     /// the call runs again.
-    async fn reminder_since(&self, since: Option<chrono::DateTime<chrono::Utc>>) -> Option<ToolOutput> {
+    async fn reminder_since(
+        &self,
+        since: Option<chrono::DateTime<chrono::Utc>>,
+    ) -> Option<ToolOutput> {
         let since = since?.timestamp();
         let rows = match self.shared.store.reminders().await {
             Ok(rows) => rows,
@@ -3122,7 +3125,12 @@ impl Turn {
         plan: &ResumePlan,
     ) -> (Option<ToolOutput>, bool) {
         let session = self.shared.id;
-        let inner = match self.shared.store.inner_calls_of(session, &row.call_id).await {
+        let inner = match self
+            .shared
+            .store
+            .inner_calls_of(session, &row.call_id)
+            .await
+        {
             Ok(inner) => inner,
             Err(e) => {
                 tracing::warn!(session = %session, "inner_calls_of: {e:#}");
@@ -3384,8 +3392,7 @@ impl Turn {
         } else {
             None
         };
-        let (request_id, mut attempt) =
-            resumed.unwrap_or_else(|| (Uuid::now_v7().to_string(), 0));
+        let (request_id, mut attempt) = resumed.unwrap_or_else(|| (Uuid::now_v7().to_string(), 0));
         let mut tries = 0;
         let mut stripped = false;
         loop {
@@ -3535,10 +3542,10 @@ impl Turn {
         // Upsert the partial when the text grew since the last one and either
         // a block boundary (`force`) or the timer says so.
         let mut checkpoint_now = async |text: &str, force: bool, thinking: Option<u64>| {
-            let Some((turn, call_id)) = partial else { return };
-            if text.len() == checkpointed_len
-                || (!force && checkpointed.elapsed() < checkpoint)
-            {
+            let Some((turn, call_id)) = partial else {
+                return;
+            };
+            if text.len() == checkpointed_len || (!force && checkpointed.elapsed() < checkpoint) {
                 return;
             }
             checkpointed_len = text.len();
@@ -3546,7 +3553,13 @@ impl Turn {
             if let Err(e) = self
                 .shared
                 .store
-                .partial_upsert(session, turn, call_id, &MessageContent::from_text(text), thinking)
+                .partial_upsert(
+                    session,
+                    turn,
+                    call_id,
+                    &MessageContent::from_text(text),
+                    thinking,
+                )
                 .await
             {
                 tracing::warn!(session = %session, "partial_upsert: {e:#}");
@@ -4884,7 +4897,12 @@ impl Turn {
 
     /// `tool_calls → started` for a loop-local call (109 §3.3 step 6).
     async fn journal_started(&self, call_id: &str) {
-        if let Err(e) = self.shared.store.call_started(self.shared.id, call_id).await {
+        if let Err(e) = self
+            .shared
+            .store
+            .call_started(self.shared.id, call_id)
+            .await
+        {
             tracing::warn!(session = %self.shared.id, call_id, "call_started: {e:#}");
         }
     }
@@ -5115,7 +5133,12 @@ impl Turn {
                 let committed = self
                     .shared
                     .store
-                    .append_batch(session, &msg, Some((todo::TodoSource::Native, &items)), &rows)
+                    .append_batch(
+                        session,
+                        &msg,
+                        Some((todo::TodoSource::Native, &items)),
+                        &rows,
+                    )
                     .await;
                 match committed {
                     Ok((seq, snapshot)) => {
@@ -5343,7 +5366,11 @@ impl Turn {
         detached.tools = self.tools.clone();
         detached.cwd = self.cwd.clone();
         let session = self.shared.id;
-        let what = if chain { "harvest before compaction" } else { "harvest" };
+        let what = if chain {
+            "harvest before compaction"
+        } else {
+            "harvest"
+        };
         let previous = chain
             .then(|| self.state.harvest_task.take())
             .flatten()
@@ -6417,7 +6444,9 @@ fn same_calls(dangling: &[ToolCall], rows: &[JournaledCall]) -> bool {
 
 /// Local `HH:MM:SS`, as 109 §4.3's notes read.
 fn hhmmss(t: chrono::DateTime<chrono::Utc>) -> String {
-    t.with_timezone(&chrono::Local).format("%H:%M:%S").to_string()
+    t.with_timezone(&chrono::Local)
+        .format("%H:%M:%S")
+        .to_string()
 }
 
 /// 109 §4.3 restart note, prepended to the first response of a resumed
@@ -8352,7 +8381,15 @@ mod tests {
             strip_reasoning: false,
         };
         let end = turn
-            .call(&current, frame, transport, turn.turn, id, CallKind::Round, &mut None)
+            .call(
+                &current,
+                frame,
+                transport,
+                turn.turn,
+                id,
+                CallKind::Round,
+                &mut None,
+            )
             .await;
         assert!(end.is_ok_and(|e| e.captured_usage.is_some()));
         assert_eq!(hits.load(Ordering::SeqCst), 1);
@@ -8418,9 +8455,17 @@ mod tests {
             strip_reasoning: false,
         };
         assert!(
-            turn.call(&current, frame, transport, None, id, CallKind::Round, &mut None)
-                .await
-                .is_ok()
+            turn.call(
+                &current,
+                frame,
+                transport,
+                None,
+                id,
+                CallKind::Round,
+                &mut None
+            )
+            .await
+            .is_ok()
         );
         assert_eq!(hits.load(Ordering::SeqCst), 2);
 
@@ -8469,7 +8514,15 @@ mod tests {
             strip_reasoning: false,
         };
         let err = match turn
-            .call(&current, frame, transport, None, orphan, CallKind::Round, &mut None)
+            .call(
+                &current,
+                frame,
+                transport,
+                None,
+                orphan,
+                CallKind::Round,
+                &mut None,
+            )
             .await
         {
             Err(Abort::Model(e)) => e,

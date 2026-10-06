@@ -53,9 +53,11 @@ impl Respond for BatchFake {
         }
         let chunk = |choices: Value| json!({"id": "c", "object": "chat.completion.chunk", "model": "m", "choices": choices});
         let call = |i: u32, id: &str, name: &str, args: &str| {
-            chunk(json!([{"index": 0, "delta": {"role": "assistant", "tool_calls": [
+            chunk(
+                json!([{"index": 0, "delta": {"role": "assistant", "tool_calls": [
                 {"index": i, "id": id, "type": "function", "function": {"name": name, "arguments": args}}
-            ]}, "finish_reason": null}]))
+            ]}, "finish_reason": null}]),
+            )
         };
         let body = format!(
             "data: {}\n\ndata: {}\n\ndata: {}\n\ndata: {}\n\ndata: [DONE]\n\n",
@@ -177,12 +179,14 @@ async fn journal(registry: &ActorRef<ToolRegistry>, store: &Store) {
 
 /// `turn_steps.kind` of the turn, in `n` order.
 async fn kinds(store: &Store, session: SessionId, turn: TurnId) -> Vec<String> {
-    sqlx::query_scalar("SELECT kind FROM turn_steps WHERE session_id = ? AND turn_id = ? ORDER BY n")
-        .bind(session.to_string())
-        .bind(turn.to_string())
-        .fetch_all(store.pool())
-        .await
-        .unwrap()
+    sqlx::query_scalar(
+        "SELECT kind FROM turn_steps WHERE session_id = ? AND turn_id = ? ORDER BY n",
+    )
+    .bind(session.to_string())
+    .bind(turn.to_string())
+    .fetch_all(store.pool())
+    .await
+    .unwrap()
 }
 
 /// The session's one open turn.
@@ -274,13 +278,22 @@ async fn normal_turn_journals_every_write_point(
     let events = h.drain().await;
     assert_eq!(
         kinds(&h.store, h.id, tid).await,
-        ["input_accepted", "model_call", "tool_batch", "model_call", "turn_finished"]
+        [
+            "input_accepted",
+            "model_call",
+            "tool_batch",
+            "model_call",
+            "turn_finished"
+        ]
     );
     let rows = h.store.calls_of(h.id, tid).await.unwrap();
     assert_eq!(rows.len(), 2);
     for r in &rows {
         assert_eq!(r.state, CallState::Finished, "{r:?}");
-        assert_eq!(r.output.as_deref(), Some(format!("{} done", r.name).as_str()));
+        assert_eq!(
+            r.output.as_deref(),
+            Some(format!("{} done", r.name).as_str())
+        );
         assert_eq!(r.attempt, 1);
     }
     assert_eq!(rows[0].risk, Risk::ReadOnly);
@@ -292,12 +305,14 @@ async fn normal_turn_journals_every_write_point(
     let messages = h.store.messages(h.id).await.unwrap();
     let tools = tool_texts(&messages);
     assert_eq!(tools.len(), 1);
-    assert!(tools[0].contains("probe done") && tools[0].contains("poke done"), "{}", tools[0]);
     assert!(
-        events
-            .iter()
-            .any(|e| matches!(e, AgentEvent::TurnFinished { stop_reason, .. } if stop_reason == "stop"))
+        tools[0].contains("probe done") && tools[0].contains("poke done"),
+        "{}",
+        tools[0]
     );
+    assert!(events.iter().any(
+        |e| matches!(e, AgentEvent::TurnFinished { stop_reason, .. } if stop_reason == "stop")
+    ));
     normalised(&messages)
 }
 
@@ -320,8 +335,12 @@ async fn interrupt_mid_batch(
     let running = tokio::spawn(async move { turn.run(tid, vec![input]).await });
     for _ in 0..200 {
         let rows = h.store.calls_of(h.id, tid).await.unwrap();
-        if rows.iter().any(|r| r.call_id == held && r.state == CallState::Started)
-            && rows.iter().any(|r| r.call_id == done && r.state == CallState::Finished)
+        if rows
+            .iter()
+            .any(|r| r.call_id == held && r.state == CallState::Started)
+            && rows
+                .iter()
+                .any(|r| r.call_id == done && r.state == CallState::Finished)
         {
             break;
         }
@@ -331,7 +350,12 @@ async fn interrupt_mid_batch(
     let _ = running.await;
     hold.store(false, Ordering::SeqCst);
     let plan = h.store.resume_plan(h.id, tid).await.unwrap();
-    assert_eq!(plan.last, LastStep::ToolBatch { all_finished: false });
+    assert_eq!(
+        plan.last,
+        LastStep::ToolBatch {
+            all_finished: false
+        }
+    );
     (h, tid)
 }
 
@@ -348,7 +372,11 @@ async fn interrupted_mutating_call_is_reported_not_rerun(
     let (turn, _) = h.turn("openai/textonly", CancellationToken::new()).await;
     turn.resume(plan, None).await;
     let events = h.drain().await;
-    assert!(events.iter().any(|e| matches!(e, AgentEvent::TurnResumed { turn, .. } if *turn == tid)));
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, AgentEvent::TurnResumed { turn, .. } if *turn == tid))
+    );
     let (replayed, interrupted) = report(&events);
     assert!(replayed.is_empty());
     assert_eq!(interrupted, [C2]);
@@ -363,7 +391,11 @@ async fn interrupted_mutating_call_is_reported_not_rerun(
             && note.ends_with("; its effect is unknown — check before repeating it."),
         "{note}"
     );
-    assert_eq!(hits_of(hits), [PROBE, POKE], "poke ran once across both lives");
+    assert_eq!(
+        hits_of(hits),
+        [PROBE, POKE],
+        "poke ran once across both lives"
+    );
     let messages = h.store.messages(h.id).await.unwrap();
     let tools = tool_texts(&messages);
     assert_eq!(tools.len(), 1);
@@ -375,7 +407,10 @@ async fn interrupted_mutating_call_is_reported_not_rerun(
     );
     assert!(tools[0].contains("probe done"), "{}", tools[0]);
     assert!(tools[0].contains(&format!("ERROR: {note}")), "{}", tools[0]);
-    assert_eq!(kinds(&h.store, h.id, tid).await.last().unwrap(), "turn_finished");
+    assert_eq!(
+        kinds(&h.store, h.id, tid).await.last().unwrap(),
+        "turn_finished"
+    );
     // The transcript equals the uninterrupted run's modulo the note.
     let got = normalised(&messages);
     assert_eq!(got.len(), reference.len());
@@ -427,12 +462,26 @@ async fn open_model_call_drops_the_partial_and_reissues(
         .unwrap();
     let call = h
         .store
-        .reserve_journaled_call(h.id, tid, "req-1", 0, CallKind::Round, Some("openai"), Some(&model.id))
+        .reserve_journaled_call(
+            h.id,
+            tid,
+            "req-1",
+            0,
+            CallKind::Round,
+            Some("openai"),
+            Some(&model.id),
+        )
         .await
         .unwrap();
     h.store.mark_dispatched(&call).await.unwrap();
     h.store
-        .partial_upsert(h.id, tid, &call.0, &MessageContent::from_text("The squ"), None)
+        .partial_upsert(
+            h.id,
+            tid,
+            &call.0,
+            &MessageContent::from_text("The squ"),
+            None,
+        )
         .await
         .unwrap();
     h.store.unresolve_open_calls().await.unwrap();
@@ -449,14 +498,18 @@ async fn open_model_call_drops_the_partial_and_reissues(
     turn.resume(plan, None).await;
     let events = h.drain().await;
     assert!(
-        events.iter().any(
-            |e| matches!(e, AgentEvent::PartialDropped { call_id, .. } if *call_id == call.0)
-        ),
+        events
+            .iter()
+            .any(|e| matches!(e, AgentEvent::PartialDropped { call_id, .. } if *call_id == call.0)),
         "{events:?}"
     );
-    assert!(events.iter().any(
-        |e| matches!(e, AgentEvent::TurnResumed { partial_dropped: true, .. })
-    ));
+    assert!(events.iter().any(|e| matches!(
+        e,
+        AgentEvent::TurnResumed {
+            partial_dropped: true,
+            ..
+        }
+    )));
     let attempts: Vec<(String, i64, String)> = sqlx::query_as(
         "SELECT request_id, attempt, status FROM model_calls WHERE owner_id = ? ORDER BY attempt",
     )
@@ -466,15 +519,31 @@ async fn open_model_call_drops_the_partial_and_reissues(
     .unwrap();
     assert_eq!(attempts.len(), 2, "{attempts:?}");
     assert_eq!(
-        (attempts[0].0.as_str(), attempts[0].1, attempts[0].2.as_str()),
+        (
+            attempts[0].0.as_str(),
+            attempts[0].1,
+            attempts[0].2.as_str()
+        ),
         ("req-1", 0, "unresolved")
     );
     assert_eq!(
-        (attempts[1].0.as_str(), attempts[1].1, attempts[1].2.as_str()),
+        (
+            attempts[1].0.as_str(),
+            attempts[1].1,
+            attempts[1].2.as_str()
+        ),
         ("req-1", 1, "settled")
     );
     let steps = kinds(&h.store, h.id, tid).await;
-    assert_eq!(steps, ["input_accepted", "model_call", "model_call", "turn_finished"]);
+    assert_eq!(
+        steps,
+        [
+            "input_accepted",
+            "model_call",
+            "model_call",
+            "turn_finished"
+        ]
+    );
     let messages = h.store.messages(h.id).await.unwrap();
     assert_eq!(text_of(&messages.last().unwrap().1.content), FINAL);
     assert!(hits_of(hits).is_empty(), "no tool ran");
@@ -539,9 +608,12 @@ async fn python_rule_both_ways(registry: &ActorRef<ToolRegistry>) {
         .unwrap();
     let plan = h.store.resume_plan(h.id, tid).await.unwrap();
     let (mut turn, _) = h.turn("openai/textonly", CancellationToken::new()).await;
-    turn.risks = [(PROBE.to_owned(), Risk::ReadOnly), (POKE.to_owned(), Risk::Mutating)]
-        .into_iter()
-        .collect();
+    turn.risks = [
+        (PROBE.to_owned(), Risk::ReadOnly),
+        (POKE.to_owned(), Risk::Mutating),
+    ]
+    .into_iter()
+    .collect();
     let rows = plan.calls.clone();
     let (preset, replay) = turn.resume_python(&rows[0], &plan).await;
     assert!(preset.is_none() && replay, "all read-only: run again");
@@ -600,7 +672,10 @@ async fn stale_batch_closes_from_the_journal_and_pre_0033_repairs(
             &ChatMessage::from(vec![call(C1, PROBE), call(C2, POKE)]),
             None,
             0,
-            &[(call(C1, PROBE), Risk::ReadOnly), (call(C2, POKE), Risk::Mutating)],
+            &[
+                (call(C1, PROBE), Risk::ReadOnly),
+                (call(C2, POKE), Risk::Mutating),
+            ],
         )
         .await
         .unwrap();
@@ -618,9 +693,16 @@ async fn stale_batch_closes_from_the_journal_and_pre_0033_repairs(
     assert_eq!(tools.len(), 1);
     assert!(tools[0].starts_with("<engine_restart "), "{}", tools[0]);
     assert!(tools[0].contains("probe done"), "{}", tools[0]);
-    assert!(tools[0].contains("ERROR: interrupted: the engine restarted at "), "{}", tools[0]);
+    assert!(
+        tools[0].contains("ERROR: interrupted: the engine restarted at "),
+        "{}",
+        tools[0]
+    );
     assert!(hits_of(hits).is_empty(), "nothing re-ran");
-    assert_eq!(kinds(&h.store, h.id, old).await.last().unwrap(), "turn_finished");
+    assert_eq!(
+        kinds(&h.store, h.id, old).await.last().unwrap(),
+        "turn_finished"
+    );
     assert!(h.store.open_turns().await.unwrap().is_empty());
     let rows = h.store.calls_of(h.id, old).await.unwrap();
     assert_eq!(rows[1].state, CallState::Interrupted);
@@ -628,9 +710,15 @@ async fn stale_batch_closes_from_the_journal_and_pre_0033_repairs(
     // Pre-0033: the same dangling row, no journal at all.
     let mut h = Harness::new(BatchFake).await;
     journal(registry, &h.store).await;
-    h.store.append(h.id, &ChatMessage::user("go")).await.unwrap();
     h.store
-        .append(h.id, &ChatMessage::from(vec![call(C1, PROBE), call(C2, POKE)]))
+        .append(h.id, &ChatMessage::user("go"))
+        .await
+        .unwrap();
+    h.store
+        .append(
+            h.id,
+            &ChatMessage::from(vec![call(C1, PROBE), call(C2, POKE)]),
+        )
         .await
         .unwrap();
     let (turn, tid) = h.turn("openai/textonly", CancellationToken::new()).await;
@@ -681,7 +769,10 @@ async fn spared_child_results_are_listed() {
     };
     let result = accept("result:t1", child, parent).await;
     let plain = accept("msg-1", parent, child).await;
-    let failed = store.fail_interrupted("interrupted_by_restart").await.unwrap();
+    let failed = store
+        .fail_interrupted("interrupted_by_restart")
+        .await
+        .unwrap();
     assert_eq!(
         failed.exchanges.iter().map(|r| r.id).collect::<Vec<_>>(),
         [plain.id]
@@ -713,7 +804,12 @@ async fn crash_matrix(
         let h = Harness::new(BatchFake).await;
         journal(registry, &h.store).await;
         let status = tokio::process::Command::new(std::env::current_exe().unwrap())
-            .args(["--exact", "loop_::durability_tests::crash_child", "--include-ignored", "--nocapture"])
+            .args([
+                "--exact",
+                "loop_::durability_tests::crash_child",
+                "--include-ignored",
+                "--nocapture",
+            ])
             .env("THEUTH_CRASH_AT", point)
             .env("THEUTH_109_DIR", &h.dir)
             .env("THEUTH_109_ENDPOINT", h.endpoint())
@@ -724,7 +820,10 @@ async fn crash_matrix(
             .status()
             .await
             .unwrap();
-        assert!(!status.success(), "{point}: the child must abort, got {status}");
+        assert!(
+            !status.success(),
+            "{point}: the child must abort, got {status}"
+        );
         // The next life opens the store anew (`Store::open` reads the log's
         // seq; the first harness's handle predates the child's writes). The
         // first harness stays alive for its provider and `dir`.
@@ -743,11 +842,21 @@ async fn crash_matrix(
         let hit = hits_of(hits);
         let probe = hit.iter().filter(|h| *h == PROBE).count();
         let poke = hit.iter().filter(|h| *h == POKE).count();
-        assert!(probe_hits.contains(&probe), "{point}: probe ran {probe}x: {hit:?}");
+        assert!(
+            probe_hits.contains(&probe),
+            "{point}: probe ran {probe}x: {hit:?}"
+        );
         assert_eq!(poke, poke_hits, "{point}: poke ran {poke}x: {hit:?}");
         let rows = h.store.calls_of(h.id, tid).await.unwrap();
-        assert!(rows.iter().all(|r| r.state.is_terminal()), "{point}: {rows:?}");
-        assert_eq!(kinds(&h.store, h.id, tid).await.last().unwrap(), "turn_finished", "{point}");
+        assert!(
+            rows.iter().all(|r| r.state.is_terminal()),
+            "{point}: {rows:?}"
+        );
+        assert_eq!(
+            kinds(&h.store, h.id, tid).await.last().unwrap(),
+            "turn_finished",
+            "{point}"
+        );
         let partials: i64 = sqlx::query_scalar(
             "SELECT COUNT(*) FROM turn_steps WHERE session_id = ? AND kind = 'assistant_partial'",
         )
@@ -763,7 +872,11 @@ async fn crash_matrix(
         for (g, r) in got.iter().zip(reference) {
             assert_eq!(g.0, r.0, "{point}");
             if g.0 == "Tool" && !interrupted.is_empty() {
-                assert!(g.1.contains("ERROR: interrupted: the engine restarted at "), "{point}: {}", g.1);
+                assert!(
+                    g.1.contains("ERROR: interrupted: the engine restarted at "),
+                    "{point}: {}",
+                    g.1
+                );
                 assert!(g.1.contains("probe done"), "{point}: {}", g.1);
             } else {
                 assert_eq!(g.1, r.1, "{point}");
@@ -787,7 +900,11 @@ async fn crash_matrix(
                 lost.1 == 0 && matches!(lost.2.as_str(), "settled" | "unresolved"),
                 "{attempts:?}"
             );
-            assert_eq!((last.0 == lost.0, last.1, last.2.as_str()), (true, 1, "settled"), "{attempts:?}");
+            assert_eq!(
+                (last.0 == lost.0, last.1, last.2.as_str()),
+                (true, 1, "settled"),
+                "{attempts:?}"
+            );
         }
     }
 }
@@ -800,7 +917,10 @@ fn crash_child() {
         return;
     };
     let endpoint = std::env::var("THEUTH_109_ENDPOINT").unwrap();
-    let session: SessionId = std::env::var("THEUTH_109_SESSION").unwrap().parse().unwrap();
+    let session: SessionId = std::env::var("THEUTH_109_SESSION")
+        .unwrap()
+        .parse()
+        .unwrap();
     let hits = PathBuf::from(std::env::var_os("THEUTH_109_HITS").unwrap());
     crate::with_test_registry(async move {
         let reg_dir = std::env::temp_dir().join(format!("theuth-109-child-{}", Uuid::now_v7()));
