@@ -1,4 +1,5 @@
-# theuth-sensor: fs_exists 2
+# theuth-sensor: fs_exists 3
+# arg: path required drop/*.txt — glob under the routine's directory; fires while it matches
 """Fires while a path exists under the file's cwd (design 40 §9 step 2).
 
 when: fs_exists.py path=<glob>

@@ -31,11 +31,16 @@ last output arrives in `<until>`. Draft a loop with `enabled: false` and show th
 editing that line when they say so. `approvals: false` lets a run act without permission prompts: propose it \
 only when nobody will be there to answer, and say so. When asked how a loop is going, call `schedule_status()`. \
 `run_timeout:` (e.g. `45m`) caps one run; the default is Settings › Agent loop › Routines. \
-Read `skills/loops.md` before designing one that supervises subagents.";
+Read `skills/loops.md` before designing one that supervises subagents. \
+To design a routine with the user, load the `routines` skill.";
 
 /// The bundled `loops` skill (33 §5.3): the supervisor pattern, written to
 /// `<data_dir>/skills/loops.md` by `first_run` like `visualize.md`.
 pub const LOOPS_SKILL: &str = include_str!("../loops.md");
+
+/// The bundled `routines` skill (108 §7): the mental model, the sentence
+/// grammar and the `routine_draft` flow; installed beside `loops.md`.
+pub const ROUTINES_SKILL: &str = include_str!("../routines.md");
 
 /// Register the three tools and the prompt block on `reg`; `dir` is the
 /// schedules directory the `schedule` tool writes into.
@@ -51,6 +56,7 @@ pub async fn register(reg: &ActorRef<ToolRegistry>, dir: PathBuf, sensors: Arc<S
         .await;
     let _ = reg.ask(RegisterTool(Arc::new(ScheduleDoneTool))).await;
     let _ = reg.ask(RegisterTool(Arc::new(ScheduleStatusTool))).await;
+    let _ = reg.ask(RegisterTool(Arc::new(ListSensorsTool))).await;
 }
 
 /// The schedule actor; `None` when the plugin is disabled or not yet started.
@@ -104,8 +110,13 @@ pub struct ScheduleArgs {
     pub cwd: Option<String>,
     /// false: the run never asks permission; say so when you propose it. Default true.
     pub approvals: Option<bool>,
-    /// false: draft only; nothing fires until the enabled: line is flipped. Default true.
+    /// false: draft only; nothing fires until the enabled: line is flipped. Default true for a clock file,
+    /// false for a watcher (`when`); an explicit true on a watcher is honoured when its dry run is clean (108 D12).
     pub enabled: Option<bool>,
+    /// A roster agent: each fire creates a task owned by it instead of running in the schedule's own session (67 §7.4).
+    pub agent: Option<String>,
+    /// The project label of that task; only with `agent`.
+    pub project: Option<String>,
     /// Watcher (40 §2): `<file>.py key=value …` — "requires `every`; exclusive with `cron` / `at`; first token a `.py` file in the sensors directory; then `key=value` tokens (`"quoted with spaces"` allowed), keys `[a-z][a-z0-9_]*`; `cwd` is not an accepted key". Needs a stop: until, max_runs or expires.
     pub when: Option<String>,
     /// 40 §2: "`on_change` (default) / `while_true` / `once`; requires `when`".
@@ -134,6 +145,43 @@ pub struct ScheduleTool {
     pub sensors: Arc<SensorRunner>,
 }
 
+/// The file text `schedule` writes for `a` (108 §8.1 shares it with
+/// `routine_draft`). 40 §2: watcher keys are written only when present and
+/// non-default (a plain file keeps them so `<key>: needs when:` still
+/// surfaces); `created: now` anchors `expires` on every write of a `when:` file.
+pub fn render_args(a: &ScheduleArgs) -> String {
+    let watcher = a.when.is_some();
+    let created =
+        watcher.then(|| Local::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, false));
+    file::render(&FileArgs {
+        cron: a.cron.as_deref(),
+        every: a.every.as_deref(),
+        at: a.at.as_deref(),
+        quiet: a.quiet,
+        model: a.model.as_deref(),
+        prompt: &a.prompt,
+        until: a.until.as_deref(),
+        max_runs: a.max_runs,
+        run_timeout: a.run_timeout.as_deref(),
+        cwd: a.cwd.as_deref(),
+        approvals: a.approvals.unwrap_or(true),
+        // 40 §1.12 / 108 D12: a watcher defaults to `enabled: false`; an
+        // explicit `true` stands because an `Err` verdict refuses the write.
+        enabled: a.enabled.unwrap_or(!watcher),
+        missed_run: false,
+        agent: a.agent.as_deref(),
+        project: a.project.as_deref(),
+        when: a.when.as_deref(),
+        fire: non_default(a.fire.as_deref(), "on_change", watcher),
+        for_: non_default(a.for_.as_deref(), "0s", watcher),
+        cooldown: non_default(a.cooldown.as_deref(), "0s", watcher),
+        mode: non_default(a.mode.as_deref(), "skip", watcher),
+        memory: non_default(a.memory.as_deref(), "continue", watcher),
+        expires: a.expires.as_deref(),
+        timeout: non_default(a.timeout.as_deref(), "20s", watcher),
+        created: created.as_deref(),
+    })
+}
 
 #[async_trait::async_trait]
 impl Tool for ScheduleTool {
@@ -158,39 +206,7 @@ impl Tool for ScheduleTool {
                 "name: [a-z0-9][a-z0-9-]*, at most 40 chars",
             ));
         }
-        // 40 §2: watcher keys are written only when present and non-default
-        // (a plain file keeps them so `<key>: needs when:` still surfaces);
-        // `created: now` anchors `expires` on every write of a `when:` file.
-        let watcher = a.when.is_some();
-        let created =
-            watcher.then(|| Local::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, false));
-        let text = file::render(&FileArgs {
-            cron: a.cron.as_deref(),
-            every: a.every.as_deref(),
-            at: a.at.as_deref(),
-            quiet: a.quiet,
-            model: a.model.as_deref(),
-            prompt: &a.prompt,
-            until: a.until.as_deref(),
-            max_runs: a.max_runs,
-            run_timeout: a.run_timeout.as_deref(),
-            cwd: a.cwd.as_deref(),
-            approvals: a.approvals.unwrap_or(true),
-            // 40 §1.12: a watcher is always written `enabled: false`.
-            enabled: a.enabled.unwrap_or(true) && a.when.is_none(),
-            missed_run: false,
-            agent: None,
-            project: None,
-            when: a.when.as_deref(),
-            fire: non_default(a.fire.as_deref(), "on_change", watcher),
-            for_: non_default(a.for_.as_deref(), "0s", watcher),
-            cooldown: non_default(a.cooldown.as_deref(), "0s", watcher),
-            mode: non_default(a.mode.as_deref(), "skip", watcher),
-            memory: non_default(a.memory.as_deref(), "continue", watcher),
-            expires: a.expires.as_deref(),
-            timeout: non_default(a.timeout.as_deref(), "20s", watcher),
-            created: created.as_deref(),
-        });
+        let text = render_args(&a);
         let spec = match file::parse(&a.name, &text) {
             Ok(s) => s,
             Err(e) => return Ok(ToolOutput::err(e)),
@@ -467,6 +483,91 @@ fn last_check(c: &crate::LastCheck) -> String {
     format!("{} · {} · {} ms", c.at.format("%H:%M:%S"), c.outcome, c.elapsed_ms)
 }
 
+/// Arguments for [`ListSensorsTool`]: none.
+#[derive(Debug, Default, Serialize, Deserialize, JsonSchema)]
+pub struct ListSensorsArgs {}
+
+/// `list_sensors` (108 §9.2): the installed sensors with their `# arg:`
+/// headers, for the `routines` skill. Same rows as the `list_sensors` RPC.
+pub struct ListSensorsTool;
+
+#[async_trait::async_trait]
+impl Tool for ListSensorsTool {
+    const NAME: &'static str = "list_sensors";
+    const RISK: Risk = Risk::ReadOnly;
+    const RETURNS: &'static str = "list";
+    type Args = ListSensorsArgs;
+
+    fn description(&self) -> String {
+        "The sensors a watcher routine can poll (`when: <file>.py key=value …`): one line per installed \
+         sensor with its description, `when:` usage and arguments (name, required/optional, example, help). \
+         Offer only sensors without `error`; a `needs cpython` sensor needs a Python on this machine."
+            .into()
+    }
+
+    async fn call(&self, _: ListSensorsArgs, _cx: ToolCx) -> anyhow::Result<ToolOutput> {
+        let Some(actor) = actor() else {
+            return Ok(ToolOutput::err("schedule is not running"));
+        };
+        let list = actor
+            .ask(crate::ListSensors)
+            .await
+            .map_err(|e| anyhow::anyhow!("schedule actor: {e}"))?;
+        if list.is_empty() {
+            return Ok(ToolOutput::ok("no sensors installed"));
+        }
+        let lines: Vec<String> = list.iter().map(sensor_line).collect();
+        Ok(ToolOutput {
+            structured: Some(serde_json::to_value(&list)?),
+            ..ToolOutput::ok(lines.join("\n"))
+        })
+    }
+}
+
+/// `pr_watch.py · PR babysitter … · when: pr_watch.py repo=… · args: repo (required, e.g. owner/name) —
+/// the repository; … · needs cpython (none found) · edited · error: …`.
+fn sensor_line(s: &crate::SensorInfo) -> String {
+    let mut out = s.name.clone();
+    if let Some(d) = &s.description {
+        out.push_str(&format!(" · {d}"));
+    }
+    if let Some(u) = &s.usage {
+        out.push_str(&format!(" · {u}"));
+    }
+    if !s.args.is_empty() {
+        let args: Vec<String> = s
+            .args
+            .iter()
+            .map(|a| {
+                let mut t = format!("{} ({}", a.name, if a.required { "required" } else { "optional" });
+                if let Some(e) = &a.example {
+                    t.push_str(&format!(", e.g. {e}"));
+                }
+                t.push(')');
+                if !a.help.is_empty() {
+                    t.push_str(&format!(" — {}", a.help));
+                }
+                t
+            })
+            .collect();
+        out.push_str(&format!(" · args: {}", args.join("; ")));
+    }
+    if s.needs_cpython {
+        out.push_str(if s.cpython_available {
+            " · needs cpython"
+        } else {
+            " · needs cpython (none found)"
+        });
+    }
+    if s.edited {
+        out.push_str(" · edited");
+    }
+    if let Some(e) = &s.error {
+        out.push_str(&format!(" · error: {e}"));
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -498,12 +599,72 @@ mod tests {
             }),
         };
         let args: ScheduleArgs = serde_json::from_value(serde_json::json!({
-            "name": "w", "prompt": "say hi", "every": "60s", "when": "missing.py", "max_runs": 3
+            "name": "w", "prompt": "say hi", "every": "60s", "when": "missing.py", "max_runs": 3,
+            "enabled": true
         }))
         .unwrap();
         let out = tool.call(args, cx).await.unwrap();
         assert!(out.is_error, "{}", out.content);
         assert_eq!(out.content, "when: no such sensor: missing.py");
-        assert!(!dir.join("w.md").exists());
+        assert!(!dir.join("w.md").exists(), "D12: an explicit enabled: true does not bypass the refusal");
+    }
+
+    /// 108 §9.5: `agent` / `project` reach the file; a watcher without
+    /// `enabled` is written paused, with `enabled: true` it is written live
+    /// (the dry run, not the render, is what refuses a broken one); a clock
+    /// file keeps its default of enabled.
+    #[test]
+    fn render_args_enabled_rule_and_routing() {
+        let args = |v: serde_json::Value| -> ScheduleArgs { serde_json::from_value(v).unwrap() };
+        let watcher = args(serde_json::json!({
+            "name": "w", "prompt": "say hi", "every": "60s", "when": "pr_watch.py repo=o/r pr=1 token=t",
+            "max_runs": 3, "agent": "nikolai", "project": "web", "fire": "on_change", "mode": "queue"
+        }));
+        let text = render_args(&watcher);
+        assert!(text.contains("enabled: false\n"), "{text}");
+        assert!(text.contains("agent: nikolai\n") && text.contains("project: \"web\"\n"), "{text}");
+        assert!(!text.contains("fire:") && text.contains("mode: queue\n"), "defaults dropped: {text}");
+        assert!(text.contains("created: "), "{text}");
+        let spec = file::parse("w", &text).unwrap();
+        assert_eq!((spec.agent.as_deref(), spec.project.as_deref(), spec.enabled), (Some("nikolai"), Some("web"), false));
+
+        let live = args(serde_json::json!({
+            "name": "w", "prompt": "say hi", "every": "60s", "when": "pr_watch.py repo=o/r pr=1 token=t",
+            "max_runs": 3, "enabled": true
+        }));
+        let text = render_args(&live);
+        assert!(!text.contains("enabled:"), "{text}");
+        assert!(file::parse("w", &text).unwrap().enabled);
+
+        let clock = args(serde_json::json!({ "name": "c", "prompt": "brief", "cron": "0 9 * * 1-5" }));
+        assert!(file::parse("c", &render_args(&clock)).unwrap().enabled);
+        let paused = args(serde_json::json!({ "name": "c", "prompt": "brief", "cron": "0 9 * * 1-5", "enabled": false }));
+        assert!(!file::parse("c", &render_args(&paused)).unwrap().enabled);
+    }
+
+    #[test]
+    fn sensor_line_reads_header() {
+        let s = crate::SensorInfo {
+            name: "pr_watch.py".into(),
+            description: Some("PR babysitter.".into()),
+            usage: Some("when: pr_watch.py repo=<o/r>".into()),
+            args: vec![
+                agent::sensor::SensorArg { name: "repo".into(), required: true, example: Some("o/r".into()), help: "the repository".into() },
+                agent::sensor::SensorArg { name: "n".into(), required: false, example: None, help: String::new() },
+            ],
+            version: Some("2".into()),
+            builtin: true,
+            edited: true,
+            shipped_version: Some("2".into()),
+            needs_cpython: true,
+            cpython_available: false,
+            hosts: vec![],
+            has_probe: true,
+            error: None,
+        };
+        assert_eq!(
+            sensor_line(&s),
+            "pr_watch.py · PR babysitter. · when: pr_watch.py repo=<o/r> · args: repo (required, e.g. o/r) — the repository; n (optional) · needs cpython (none found) · edited"
+        );
     }
 }

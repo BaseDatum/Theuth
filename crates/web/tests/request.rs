@@ -195,6 +195,46 @@ async fn same_origin_redirect_keeps_credentials() {
     assert_eq!(r.body, b"ok");
 }
 
+/// 108 D1: a conditional GET's `304 Not Modified` has no `Location` and is
+/// not a redirect — it comes back as a response with its status and an empty
+/// body, so a sensor's `http_request` sees `status: 304`. A 301 without
+/// `Location` is still the fetcher's error.
+#[tokio::test]
+async fn not_modified_is_a_response_not_a_redirect() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/feed"))
+        .and(header("if-none-match", "\"v1\""))
+        .respond_with(ResponseTemplate::new(304).insert_header("ETag", "\"v1\""))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/moved"))
+        .respond_with(ResponseTemplate::new(301))
+        .mount(&server)
+        .await;
+    let f = fetcher(&server, 1 << 20);
+    let r = f
+        .request(
+            "GET",
+            &format!("{}/feed", server.uri()),
+            &[hdr("if-none-match", "\"v1\"")],
+            None,
+        )
+        .await
+        .expect("304 is Ok");
+    assert_eq!(r.status, 304);
+    assert!(r.body.is_empty());
+    assert_eq!(r.url, format!("{}/feed", server.uri()));
+    assert!(r.headers.iter().any(|(k, v)| k == "etag" && v == "\"v1\""));
+    let e = f
+        .request("GET", &format!("{}/moved", server.uri()), &[], None)
+        .await
+        .expect_err("a 301 without Location is still an error");
+    assert!(matches!(&e, FetchError::Failed(m) if m.contains("missing Location")), "{e}");
+}
+
 /// wiremock always sends `Content-Length`, which the fetcher refuses up front;
 /// the streaming cap needs a chunked body, so serve one from a std socket.
 fn chunked_server(total: usize) -> std::net::SocketAddr {

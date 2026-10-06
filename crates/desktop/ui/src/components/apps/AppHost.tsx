@@ -439,6 +439,8 @@ export default function AppHost({ session, artifact, draft }: AppViewProps) {
           ? { name: ev.formName, values: ev.formState }
           : undefined,
       );
+      // 108 §6.5 / D9: the Routines pane (or the root bridge) hears a draft-card press before it is sent.
+      window.dispatchEvent(new CustomEvent("theuth:app-press", { detail: { session, app: applied.current.name, message: text } }));
       // The same paths the composer takes: a steer while the turn runs, else a new input (46 §6.3).
       const st = useSessions.getState();
       if (st.sessions[session]?.running) {

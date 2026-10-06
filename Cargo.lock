@@ -561,6 +561,7 @@ dependencies = [
  "platform",
  "roster",
  "runtime",
+ "schedule",
  "schemars 1.2.2",
  "serde",
  "serde_json",
