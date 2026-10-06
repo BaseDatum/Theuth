@@ -16,8 +16,10 @@ scripts/telegram-live-proof/proof.sh fix --no-build  # reuse the last engine bin
 - the toolchain the script exports:
   `PATH=/Users/Sky.Moore/.rustup/toolchains/1.98.1-aarch64-apple-darwin/bin:$PATH`,
   `CARGO_TARGET_DIR=<repo>-target` (override with `CARGO_TARGET_DIR`)
-- a `~/.theuth` with `config.yaml`, `secrets.sqlite` (model keys), `acp/agents.yaml`, `skills/`
-  (`THEUTH_SRC_HOME` overrides). Only those are copied; the live dir is never written.
+- a `~/.theuth` with `config.yaml`, `acp/agents.yaml`, `skills/` (`THEUTH_SRC_HOME` overrides).
+  Only those are copied; the live dir is never written. The vault is **not** copied (its key is a
+  per-data-dir Keychain item): set `ANTHROPIC_API_KEY`; the scratch engine gets a file-keyed vault
+  seeded from it and runs `anthropic/claude-haiku-4-5` (`PROOF_MODEL` overrides).
 - a tree that has the `telegram.api_host` config seam (`feat(telegram): telegram.api_host config seam`).
 
 ## What it does
@@ -27,18 +29,21 @@ scripts/telegram-live-proof/proof.sh fix --no-build  # reuse the last engine bin
    messages off (`mock-config.yaml`: Bot API 127.0.0.1:8081, Admin API 127.0.0.1:8082,
    owner 777000111 in a private chat with the same id, bot token `123456:ABC-DEF…`).
 2. `cargo build -p theuth` (skip with `--no-build`).
-3. Scratch data dir `/tmp/98c-proof/data-<label>`: copies the four items above (vault via
-   `sqlite3 .backup`), appends `telegram: {enabled, api_host, owner}` to the config.
+3. Scratch data dir `/tmp/98c-proof/data-<label>`: copies the three items above, writes
+   `credentials.yaml` from `ANTHROPIC_API_KEY` (imported and unlinked by the engine on first
+   open), appends `telegram: {enabled, api_host, owner}` to the config.
 4. Starts `t --headless --data-dir …` with `RUST_LOG=info,telegram=debug,tgbot=debug` and these
    env overrides so the scratch engine cannot collide with a live one on the same box:
    `THEUTH_RPC__LISTEN=127.0.0.1:0`, `THEUTH_SLACK__ENABLED=false`,
    `THEUTH_MESH__DISCOVERY=false`, `THEUTH_MESH__RELAY=none`.
 5. Samples `telegram_status` over RPC every 2 s (`latency.csv`), sets the bot token via
    `set_secret` (the channel hot-starts), and runs the steps with hard timeouts
-   (120 s for model turns, 10 s otherwise).
+   (`MODEL_TIMEOUT`, default 120 s, for model turns; `STEP_TIMEOUT`, default 10 s, otherwise).
 6. Writes evidence to `/tmp/98c-proof/out-<label>/`: `table.md`, `proof.log`, `ledger*.txt`
    (the mock's Bot API call ledger, with and without `getUpdates`), `messages*.json`,
-   `latency.csv`, `engine-*.out`, the engine's `theuth.log.<date>`.
+   `latency.csv`, `engine-*.out`, the engine's `theuth.log.<date>`, and on a P1/P2/P4/P6b
+   failure a macOS `sample` of the engine's threads (`threads-<step>.txt`; demangle with
+   `cargo install rustfilt && rustfilt -i threads-P2.txt`).
 7. SIGTERMs only the processes it started and removes the data dir (`--keep` keeps it).
 
 ## Files
