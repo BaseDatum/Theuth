@@ -113,3 +113,160 @@ impl Agents {
         Ok(true)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use runtime::TurnId;
+    use serde_json::json;
+    use tools::{Risk, WaitRow};
+
+    use super::*;
+    use crate::durability::StepKind;
+    use crate::store::communication::AcceptExchange;
+    use crate::store::durability::{calls_planned_in, step_in};
+    use crate::supervisor::Live;
+    use crate::supervisor::tests::agents_with;
+
+    fn wait(parent: SessionId, call: &str, child: SessionId) -> WaitRow {
+        WaitRow {
+            session: parent,
+            tool_call_id: call.into(),
+            kind: WaitKind::ChildResult,
+            target: child.to_string(),
+            deadline: None,
+            payload: json!({}),
+        }
+    }
+
+    /// The §7.3 table: a native child, a node's child, a child whose result
+    /// the boot pass spared and a child with no row are not respawned; a
+    /// local ACP child whose parent's open turn waits on it is — once, and
+    /// not again while its actor lives. `resume: off` respawns nothing.
+    #[tokio::test]
+    async fn respawn_decision_table() {
+        let mut a = agents_with(true).await;
+        let store = a.store.clone();
+        acp::save(
+            &a.rt.data_dir,
+            &serde_yaml::from_str("omp:\n  command: /nonexistent/theuth-test-harness\n").unwrap(),
+        )
+        .unwrap();
+        let parent = SessionId::new();
+        store
+            .create_session(parent, "m", None, None, None)
+            .await
+            .unwrap();
+        let turn = TurnId::new();
+        store
+            .step(parent, turn, StepKind::InputAccepted, None, &json!({}))
+            .await
+            .unwrap();
+        let children: Vec<SessionId> = (0..4).map(|_| SessionId::new()).collect();
+        let [native, node, spared, acp_child] = children[..] else {
+            unreachable!()
+        };
+        let calls: Vec<(genai::chat::ToolCall, Risk)> = (1..=6)
+            .map(|i| {
+                (
+                    genai::chat::ToolCall {
+                        call_id: format!("c{i}"),
+                        fn_name: "send_message".into(),
+                        fn_arguments: json!({}),
+                        thought_signatures: None,
+                    },
+                    Risk::ReadOnly,
+                )
+            })
+            .collect();
+        let mut tx = store.begin_write().await.unwrap();
+        step_in(
+            &mut tx,
+            parent,
+            turn,
+            StepKind::ToolBatch,
+            None,
+            &json!({"call_ids": ["c1", "c2", "c3", "c4", "c5", "c6"]}),
+        )
+        .await
+        .unwrap();
+        calls_planned_in(&mut tx, parent, turn, 0, &calls)
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+        for (name, id) in [
+            ("native", native),
+            ("node", node),
+            ("spared", spared),
+            ("acp", acp_child),
+        ] {
+            let agent = match name {
+                "native" => "m",
+                "node" => "omp@box",
+                _ => "omp",
+            };
+            store
+                .create_session(id, agent, Some(parent), Some(name), None)
+                .await
+                .unwrap();
+            if name != "native" {
+                store.set_acp(id, agent, None, &[]).await.unwrap();
+            }
+        }
+        // Two waits on the ACP child (c4, c6): respawned once.
+        let ghost = SessionId::new();
+        for (i, child) in [native, node, spared, acp_child, ghost, acp_child]
+            .iter()
+            .enumerate()
+        {
+            store
+                .wait_put(&wait(parent, &format!("c{}", i + 1), *child))
+                .await
+                .unwrap();
+        }
+        let (from, to) = (format!("session:{spared}"), format!("session:{parent}"));
+        let request_id = format!("result:{}", TurnId::new());
+        store
+            .accept_exchange(&AcceptExchange {
+                sender: &from,
+                recipient: &to,
+                sender_session: Some(spared),
+                recipient_session: Some(parent),
+                request_id: Some(&request_id),
+                reply_to: None,
+                request_scope: None,
+                generation: 1,
+                body: "done before the crash",
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(a.respawn_acp_child(parent, native).await, Ok(false));
+        assert_eq!(a.respawn_acp_child(parent, node).await, Ok(false));
+        assert_eq!(a.respawn_acp_child(parent, spared).await, Ok(false));
+        assert_eq!(a.respawn_acp_child(parent, ghost).await, Ok(false));
+        assert!(a.sessions.is_empty(), "nothing spawned so far");
+
+        std::sync::Arc::make_mut(&mut a.cfg).durability.resume = ResumeMode::Off;
+        a.respawn_acp_children().await;
+        assert!(a.sessions.is_empty(), "resume: off respawns nothing");
+
+        std::sync::Arc::make_mut(&mut a.cfg).durability.resume = ResumeMode::Auto;
+        a.respawn_acp_children().await;
+        assert_eq!(
+            a.sessions.len(),
+            1,
+            "one actor for two waits on the same child: {:?}",
+            a.sessions.keys()
+        );
+        assert!(
+            matches!(
+                a.sessions.get(&acp_child),
+                Some(Live {
+                    actor: LiveActor::Acp(_),
+                    ..
+                })
+            ),
+            "the ACP child has a live actor"
+        );
+    }
+}

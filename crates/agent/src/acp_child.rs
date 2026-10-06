@@ -2989,6 +2989,220 @@ mod tests {
         assert_eq!(stop_reasons(&rig.until_finished().await), ["end_turn"]);
     }
 
+    /// 109 §7.3: a second actor for `session` on `rig`'s store and runtime,
+    /// told [`Respawn`] before its handshake (the boot trigger's order).
+    async fn respawned(
+        rig: &Rig,
+        session: SessionId,
+        resume: Option<&str>,
+        transport: Transport,
+    ) -> ActorRef<AcpChild> {
+        let mut child = AcpChild::new(
+            session,
+            "omp".into(),
+            transport,
+            rig.rt.data_dir.clone(),
+            resume.map(str::to_owned),
+            None,
+            None,
+            None,
+            None,
+            Duration::from_secs(60),
+            rig.store.clone(),
+            rig.rt.clone(),
+            Default::default(),
+            Vec::new(),
+        );
+        child.remote = false;
+        let actor = AcpChild::spawn(child);
+        actor.tell(Respawn(4000)).await.unwrap();
+        actor
+    }
+
+    /// `initialize` advertising `loadSession`, then the `session/load` request.
+    async fn load_request(fake: &mut Fake) -> serde_json::Value {
+        let m = fake.next().await;
+        assert_eq!(m["method"], "initialize", "{m}");
+        let mut init = InitializeResponse::new(ProtocolVersion::V1);
+        init.agent_capabilities.load_session = true;
+        fake.respond(&m["id"], init);
+        let m = fake.next().await;
+        assert_eq!(m["method"], "session/load", "{m}");
+        assert_eq!(m["params"]["sessionId"], "s1", "{m}");
+        m
+    }
+
+    fn turn_texts(events: &[AgentEvent]) -> Vec<&str> {
+        events
+            .iter()
+            .filter_map(|e| match e {
+                AgentEvent::TurnStarted { text, .. } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// 109 §7.3, `acp_session` present × load ok: the respawned child's
+    /// first prompt is the restored note — no delta, no "starting fresh"
+    /// error — persisted as the turn's user text, and its result closes
+    /// the turn through the ordinary path.
+    #[tokio::test]
+    async fn respawn_after_successful_load_prompts_restored_note() {
+        let mut rig = Rig::new(Duration::from_secs(60)).await;
+        rig.actor.tell(Shutdown).await.unwrap();
+        rig.actor.wait_for_shutdown().await;
+        let (mut fake, dialer) = Fake::new();
+        let actor = respawned(&rig, rig.session, Some("s1"), Transport::Dial(dialer)).await;
+        let m = load_request(&mut fake).await;
+        fake.respond(&m["id"], LoadSessionResponse::new());
+        let (id, text) = fake.prompt().await;
+        assert!(text.starts_with("<resume_handoff>\n"), "{text}");
+        assert!(text.contains("has been restored"), "{text}");
+        assert!(!text.contains("could not be restored"), "{text}");
+        assert!(!text.contains("session_read"), "no delta: {text}");
+        fake.update(chunk("done"));
+        fake.end_turn(&id);
+        let events = rig.until_finished().await;
+        assert_eq!(stop_reasons(&events), ["end_turn"], "{events:?}");
+        assert!(errors(&events).is_empty(), "{events:?}");
+        assert_eq!(turn_texts(&events), [text.as_str()], "{events:?}");
+        let rows = rig.rows().await;
+        assert_eq!(
+            rows,
+            [
+                (ChatRole::User, text.clone()),
+                (ChatRole::Assistant, "done".into())
+            ]
+        );
+        assert!(actor.is_alive(), "idle after its turn, like any child");
+    }
+
+    /// 109 §7.3, `acp_session` present × load fails: the harness falls back
+    /// to `session/new`, the existing "not restored" error is published, and
+    /// the first prompt is the delta handoff — the child's last report, the
+    /// `session_read` pointer, no git sections (the cwd is no repo).
+    #[tokio::test]
+    async fn respawn_after_failed_load_prompts_delta_handoff() {
+        let mut rig = Rig::new(Duration::from_secs(60)).await;
+        rig.input("task").await;
+        let (id, _) = rig.fake.prompt().await;
+        rig.fake.update(chunk("Edited foo.rs so far"));
+        rig.fake.end_turn(&id);
+        assert_eq!(stop_reasons(&rig.until_finished().await), ["end_turn"]);
+        rig.actor.tell(Shutdown).await.unwrap();
+        rig.actor.wait_for_shutdown().await;
+
+        let (mut fake, dialer) = Fake::new();
+        let actor = respawned(&rig, rig.session, Some("s1"), Transport::Dial(dialer)).await;
+        let m = load_request(&mut fake).await;
+        fake.send(json!({"jsonrpc": "2.0", "id": m["id"], "error": {
+            "code": -32603, "message": "session not found",
+        }}));
+        let m = fake.next().await;
+        assert_eq!(m["method"], "session/new", "falls back: {m}");
+        fake.respond(
+            &m["id"],
+            NewSessionResponse::new(agent_client_protocol::schema::v1::SessionId::new("s2")),
+        );
+        let (id, text) = fake.prompt().await;
+        assert!(text.starts_with("<resume_handoff>\n"), "{text}");
+        assert!(text.contains("could not be restored"), "{text}");
+        assert!(text.contains("Keep the uncommitted diff"), "{text}");
+        assert!(
+            text.contains("What you had reported last: \"Edited foo.rs so far\""),
+            "{text}"
+        );
+        assert!(
+            text.contains(&format!("session_read(\"{}\")", rig.session)),
+            "{text}"
+        );
+        assert!(!text.contains("Uncommitted work"), "no repo in cwd: {text}");
+        assert!(text.len() <= 16_000, "{}", text.len());
+        fake.end_turn(&id);
+        let events = rig.until_finished().await;
+        assert_eq!(stop_reasons(&events), ["end_turn"], "{events:?}");
+        assert_eq!(
+            errors(&events),
+            ["omp: previous harness session not restored; starting fresh"],
+            "{events:?}"
+        );
+        assert_eq!(turn_texts(&events), [text.as_str()], "{events:?}");
+        assert_eq!(
+            rig.store.acp_session(rig.session).await.unwrap().as_deref(),
+            Some("s2")
+        );
+        assert!(actor.is_alive());
+    }
+
+    /// 109 §7.3, `acp_session` absent: nothing to load, so the fresh child
+    /// gets the handoff without any "not restored" error.
+    #[tokio::test]
+    async fn respawn_without_stored_session_prompts_delta_handoff() {
+        let mut rig = Rig::new(Duration::from_secs(60)).await;
+        let session = SessionId::new();
+        rig.store
+            .create_session(session, "omp", None, None, None)
+            .await
+            .unwrap();
+        let (mut fake, dialer) = Fake::new();
+        let actor = respawned(&rig, session, None, Transport::Dial(dialer)).await;
+        fake.handshake(Vec::new(), None).await;
+        let (id, text) = fake.prompt().await;
+        assert!(text.contains("could not be restored"), "{text}");
+        assert!(
+            !text.contains("What you had reported"),
+            "no transcript: {text}"
+        );
+        fake.end_turn(&id);
+        let events = rig.until_finished().await;
+        assert_eq!(stop_reasons(&events), ["end_turn"], "{events:?}");
+        assert!(errors(&events).is_empty(), "{events:?}");
+        assert!(actor.is_alive());
+    }
+
+    #[derive(Debug)]
+    struct Refuse;
+
+    #[async_trait::async_trait]
+    impl acp::Dialer for Refuse {
+        async fn dial(&self) -> Result<acp::LineDuplex, String> {
+            Err("harness binary missing".to_owned())
+        }
+    }
+
+    /// 109 §7.3: a respawn whose harness cannot be connected still runs one
+    /// turn — the connect error as its result — so the parent's wait is
+    /// answered instead of hanging; the actor then stops.
+    #[tokio::test]
+    async fn respawn_connect_failure_is_the_turns_error() {
+        let mut rig = Rig::new(Duration::from_secs(60)).await;
+        rig.actor.tell(Shutdown).await.unwrap();
+        rig.actor.wait_for_shutdown().await;
+        let actor = respawned(
+            &rig,
+            rig.session,
+            Some("s1"),
+            Transport::Dial(Arc::new(Refuse)),
+        )
+        .await;
+        let events = rig.until_finished().await;
+        assert_eq!(stop_reasons(&events), ["error"], "{events:?}");
+        assert_eq!(turn_texts(&events), [RESPAWN_FAILED_INPUT], "{events:?}");
+        assert!(
+            errors(&events)
+                .iter()
+                .any(|e| e.contains("harness binary missing")),
+            "{events:?}"
+        );
+        actor.wait_for_shutdown().await;
+        let rows = rig.rows().await;
+        assert_eq!(rows[0], (ChatRole::User, RESPAWN_FAILED_INPUT.into()));
+        assert!(
+            rows[1].1.contains("harness binary missing"),
+            "the error is the assistant row: {rows:?}"
+        );
+    }
+
     /// 06 §8.3: a `session_busy` refusal keeps the turn open — no
     /// `TurnFinished`, a visible retry note, the session still running —
     /// and the same text is prompted again after the first backoff step;
