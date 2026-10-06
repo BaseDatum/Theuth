@@ -13,6 +13,8 @@ test('groupItems: Sky’s order, empty groups omitted, newest first inside, hand
   expect(groups.map((g) => g.label)).toEqual(['Decisions', 'Questions', 'Needs a hand', 'Mesh'])
   expect(groups[1]?.items.map((i) => i.id)).toEqual(['a2', 'a1'])
   expect(groups[2]?.items.map((i) => i.id)).toEqual(['s', 'h'])
+  // 109 §8.3: a resume that needs a human sits with the hand-offs.
+  expect(groupItems([item('r', 'resume', 7)]).map((g) => g.key)).toEqual(['hand'])
   expect(groupItems([])).toEqual([])
 })
 

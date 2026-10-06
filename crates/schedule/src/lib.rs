@@ -78,7 +78,9 @@ pub struct TestFile(pub file::ScheduleFile);
 
 /// One installed sensor as the form's Sensor select and the `routines` skill
 /// see it (108 §9.2).
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema, kameo::Reply)]
+#[derive(
+    Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema, kameo::Reply,
+)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct SensorInfo {
     /// File name: `pr_watch.py`.
@@ -282,7 +284,9 @@ pub struct LastCheck {
 
 /// The 40 §1.12 verdict: what `schedule` replies with for a `when:` file,
 /// `/schedules test` shows, and the desktop's Test button expands.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema, kameo::Reply)]
+#[derive(
+    Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema, kameo::Reply,
+)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct Verdict {
     /// Sensor file name.
@@ -957,6 +961,39 @@ impl Schedule {
         }
     }
 
+    /// 109 §4.6 step 12: the fires the store spared at open become runs
+    /// again, turn open, so the resumed turn's `TurnFinished` closes them
+    /// with its real stop reason; a fresh deadline guards the resume itself.
+    fn reattach(&mut self, spared: Vec<store::OpenRun>) {
+        for r in spared {
+            let quiet = self
+                .entries
+                .get(&r.name)
+                .and_then(|e| e.spec.as_ref().ok())
+                .is_some_and(|s| s.quiet);
+            tracing::info!(name = %r.name, session = %r.session, "run re-attached to a resumed turn");
+            self.running.insert(
+                r.session,
+                Run {
+                    id: r.id,
+                    name: r.name,
+                    quiet,
+                    text: String::new(),
+                    messaged: false,
+                    last_error: None,
+                    deadline: Instant::now() + self.timeout,
+                    timed_out: false,
+                    children: HashSet::new(),
+                    pending: HashSet::new(),
+                    turn_open: true,
+                    last_stop: String::new(),
+                    watch: None,
+                    fired_at: r.fired_at,
+                },
+            );
+        }
+    }
+
     fn is_running(&self, e: &Entry) -> bool {
         e.session.is_some_and(|s| self.running.contains_key(&s))
     }
@@ -1317,11 +1354,16 @@ impl Schedule {
                     e.raw = raw;
                 }
                 None => {
-                    self.entries.insert(name.clone(), Entry::new(raw, spec, now));
+                    self.entries
+                        .insert(name.clone(), Entry::new(raw, spec, now));
                 }
             }
             // A new or changed watcher is dry-run by its first check (40 §1.12).
-            if self.entries[&name].spec.as_ref().is_ok_and(|s| s.sensor.is_some()) {
+            if self.entries[&name]
+                .spec
+                .as_ref()
+                .is_ok_and(|s| s.sensor.is_some())
+            {
                 self.unvalidated.insert(name);
             }
         }
@@ -1570,12 +1612,21 @@ async fn cancel_tree(
     name: &str,
 ) -> Result<(), String> {
     for child in live_children(agents, session).await {
-        if let Err(e) = agents.ask(agent::Cancel { session: child, keep: None }).await {
+        if let Err(e) = agents
+            .ask(agent::Cancel {
+                session: child,
+                keep: None,
+            })
+            .await
+        {
             tracing::warn!(%name, %child, "cancel of subagent failed: {e}");
         }
     }
     agents
-        .ask(agent::Cancel { session, keep: None })
+        .ask(agent::Cancel {
+            session,
+            keep: None,
+        })
         .await
         .map_err(|e| e.to_string())
 }
@@ -2477,7 +2528,14 @@ impl Message<TestSchedule> for Schedule {
             }
         };
         let verdict = validate::dry_run(spec, &self.sensors, last_hash.as_deref()).await?;
-        let outcome = format!("test: {}", if verdict.would_fire { "would fire" } else { "quiet" });
+        let outcome = format!(
+            "test: {}",
+            if verdict.would_fire {
+                "would fire"
+            } else {
+                "quiet"
+            }
+        );
         if let Err(e) = self
             .store
             .watch_last_check(&m.name, Local::now(), &outcome, verdict.elapsed_ms)
@@ -2530,13 +2588,26 @@ impl runtime::Plugin for SchedulePlugin {
             DIR,
             std::time::Duration::from_secs(120),
         ));
-        let store = match store::Store::open(&rt.data_dir.join(DB)).await {
-            Ok(s) => s,
-            Err(e) => {
-                tracing::warn!("schedule unavailable: {e:#}");
-                return Ok(());
-            }
-        };
+        // 109 §4.6 step 12: a run whose session has an open turn stays open
+        // and re-attaches to the resumed turn's `TurnFinished`; `agent`
+        // started before us, so its answer is final.
+        let open_sessions: HashSet<SessionId> =
+            match ActorRef::<agent::Agents>::lookup(agent::AGENT_ACTOR) {
+                Ok(Some(agents)) => agents
+                    .ask(agent::supervisor::OpenTurns)
+                    .await
+                    .map(|open| open.into_iter().map(|(s, _, _)| s).collect())
+                    .unwrap_or_default(),
+                _ => HashSet::new(),
+            };
+        let (store, spared) =
+            match store::Store::open_sparing(&rt.data_dir.join(DB), &open_sessions).await {
+                Ok(s) => s,
+                Err(e) => {
+                    tracing::warn!("schedule unavailable: {e:#}");
+                    return Ok(());
+                }
+            };
         let timeout = Duration::from_secs(cfg.run_timeout_secs);
         // 40 §4.2: the sensor-profile pool; the worker is this binary (`t subprocess`,
         // 08 §9) as for the main runtime. Without it Monty sensors are `Unavailable`.
@@ -2557,10 +2628,10 @@ impl runtime::Plugin for SchedulePlugin {
         if let Err(e) = sensors.install_builtins() {
             tracing::warn!("sensors directory not created: {e}");
         }
-        let actor = Schedule::spawn_with_mailbox(
-            Schedule::load(rt.clone(), dir.clone(), store, timeout, sensors.clone()).await,
-            runtime::subscriber_mailbox(),
-        );
+        let mut schedule =
+            Schedule::load(rt.clone(), dir.clone(), store, timeout, sensors.clone()).await;
+        schedule.reattach(spared);
+        let actor = Schedule::spawn_with_mailbox(schedule, runtime::subscriber_mailbox());
         actor.register(SCHEDULE_ACTOR)?;
         rt.subscribe::<Schedule, agent::AgentEvent>(&actor).await;
         rt.subscribe::<Schedule, agent::PeerDelivered>(&actor).await;
@@ -3150,21 +3221,39 @@ mod watch_tests {
     #[test]
     fn list_sensors_rows() {
         let tmp = tempfile::tempdir().unwrap();
-        let sensors = agent::sensor::SensorRunner::new(tmp.path().to_path_buf(), None, None, Default::default());
+        let sensors = agent::sensor::SensorRunner::new(
+            tmp.path().to_path_buf(),
+            None,
+            None,
+            Default::default(),
+        );
         sensors.install_builtins().unwrap();
         let dir = sensors.sensors_dir();
         std::fs::write(dir.join("bad.py"), "# arg: x\nasync def check(s, a): ...\n").unwrap();
-        std::fs::write(dir.join("mine.py"), "\"\"\"Mine.\n\nwhen: mine.py k=<v>\n\"\"\"\nasync def check(s, a): ...\n").unwrap();
+        std::fs::write(
+            dir.join("mine.py"),
+            "\"\"\"Mine.\n\nwhen: mine.py k=<v>\n\"\"\"\nasync def check(s, a): ...\n",
+        )
+        .unwrap();
         std::fs::write(dir.join("notes.txt"), "x").unwrap();
         let rows = list_sensors(&sensors);
         let names: Vec<&str> = rows.iter().map(|r| r.name.as_str()).collect();
-        assert_eq!(names, ["bad.py", "fs_exists.py", "mine.py", "pr_watch.py", "rss.py"]);
+        assert_eq!(
+            names,
+            ["bad.py", "fs_exists.py", "mine.py", "pr_watch.py", "rss.py"]
+        );
         let bad = &rows[0];
-        assert!(bad.error.as_deref().is_some_and(|e| e.contains("`# arg:`")), "{bad:?}");
+        assert!(
+            bad.error.as_deref().is_some_and(|e| e.contains("`# arg:`")),
+            "{bad:?}"
+        );
         assert!(!bad.builtin && bad.shipped_version.is_none());
         let pr = &rows[3];
         assert!(pr.builtin && !pr.edited && pr.error.is_none());
-        assert_eq!((pr.version.as_deref(), pr.shipped_version.as_deref()), (Some("2"), Some("2")));
+        assert_eq!(
+            (pr.version.as_deref(), pr.shipped_version.as_deref()),
+            (Some("2"), Some("2"))
+        );
         assert_eq!(pr.args.len(), 4);
         assert_eq!(pr.hosts, ["api.github.com"]);
         assert!(pr.has_probe);
@@ -3172,7 +3261,10 @@ mod watch_tests {
         assert_eq!(mine.description.as_deref(), Some("Mine."));
         assert_eq!(mine.usage.as_deref(), Some("when: mine.py k=<v>"));
         assert!(mine.args.is_empty() && mine.version.is_none() && !mine.builtin);
-        assert!(rows.iter().all(|r| r.cpython_available == agent::sensor::find_cpython().is_some()));
+        assert!(
+            rows.iter()
+                .all(|r| r.cpython_available == agent::sensor::find_cpython().is_some())
+        );
     }
 
     fn run(
@@ -3661,7 +3753,15 @@ mod watch_tests {
         actor.tell(turn("end_turn")).await.unwrap();
         tokio::time::sleep(grace).await;
         assert!(rec.calls.lock().unwrap().is_empty(), "closed too early");
-        assert!(store.watch_get("w").await.unwrap().unwrap().last_hash.is_none());
+        assert!(
+            store
+                .watch_get("w")
+                .await
+                .unwrap()
+                .unwrap()
+                .last_hash
+                .is_none()
+        );
 
         // the child's result lands (50 §10: `PeerDelivered`, not `MessageDelivered`)
         // and starts the continuation turn
@@ -3698,7 +3798,11 @@ mod watch_tests {
         tokio::time::sleep(grace).await;
         let calls = rec.calls.lock().unwrap().clone();
         assert_eq!(calls.len(), 1, "queued payload fired once");
-        assert!(calls[0].3.contains("coalesced=\"0\">\nevents=x"), "{}", calls[0].3);
+        assert!(
+            calls[0].3.contains("coalesced=\"0\">\nevents=x"),
+            "{}",
+            calls[0].3
+        );
         let w = store.watch_get("w").await.unwrap().unwrap();
         assert_eq!(w.fired_count, 2, "the closed run and the queued fire");
     }
@@ -3803,15 +3907,16 @@ mod watch_tests {
         let dir = tempfile::tempdir().unwrap();
         let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let c = calls.clone();
-        let fake: FakeSensor = Arc::new(move |_, _| {
-            match c.fetch_add(1, std::sync::atomic::Ordering::SeqCst) {
-                0 => Err(SensorError::Budget("deferred".into())),
-                1 => run(false, String::new(), serde_json::json!({})),
-                2 => run(true, "here".into(), serde_json::json!({})),
-                3 => Err(SensorError::Budget("deferred".into())),
-                _ => Err(SensorError::Timeout(Duration::from_secs(20))),
-            }
-        });
+        let fake: FakeSensor =
+            Arc::new(
+                move |_, _| match c.fetch_add(1, std::sync::atomic::Ordering::SeqCst) {
+                    0 => Err(SensorError::Budget("deferred".into())),
+                    1 => run(false, String::new(), serde_json::json!({})),
+                    2 => run(true, "here".into(), serde_json::json!({})),
+                    3 => Err(SensorError::Budget("deferred".into())),
+                    _ => Err(SensorError::Timeout(Duration::from_secs(20))),
+                },
+            );
         let (mut sched, rec) =
             watcher(dir.path(), "when: fs_exists.py path=/x\nfor: 5m\n", fake).await;
         let t0 = Local::now();
@@ -3826,16 +3931,25 @@ mod watch_tests {
             (Some("deferred"), None)
         );
         let w = sched.store.watch_get("w").await.unwrap().unwrap();
-        assert_eq!((w.last_outcome.as_deref(), w.strikes), (Some("deferred"), 0));
+        assert_eq!(
+            (w.last_outcome.as_deref(), w.strikes),
+            (Some("deferred"), 0)
+        );
 
-        assert_eq!(step(&mut sched, t0 + s(30)).await, Some(CheckOutcome::Quiet));
+        assert_eq!(
+            step(&mut sched, t0 + s(30)).await,
+            Some(CheckOutcome::Quiet)
+        );
         assert!(!sched.unvalidated.contains("w"), "the dry run ran");
         assert_eq!(
             step(&mut sched, t0 + s(60)).await.map(|o| o.to_string()),
             Some("holding: 0s of 5m".into())
         );
         // deferred mid-hold: first_true_at survives
-        assert_eq!(step(&mut sched, t0 + s(90)).await, Some(CheckOutcome::Deferred));
+        assert_eq!(
+            step(&mut sched, t0 + s(90)).await,
+            Some(CheckOutcome::Deferred)
+        );
         let w = sched.store.watch_get("w").await.unwrap().unwrap();
         assert_eq!(w.holding_since, Some(t0 + s(60)));
         assert_eq!(w.strikes, 0);
@@ -3898,8 +4012,14 @@ mod watch_tests {
             .replace("nope.py", "fs_exists.py");
         std::fs::write(dir.path().join("schedules/w.md"), text).unwrap();
         sched.rescan(t0 + s(3600)).await;
-        assert!(sched.unvalidated.contains("w"), "a changed file is dry-run again");
-        assert_eq!(step(&mut sched, t0 + s(3600)).await, Some(CheckOutcome::Quiet));
+        assert!(
+            sched.unvalidated.contains("w"),
+            "a changed file is dry-run again"
+        );
+        assert_eq!(
+            step(&mut sched, t0 + s(3600)).await,
+            Some(CheckOutcome::Quiet)
+        );
         assert!(sched.entries["w"].spec.is_ok());
     }
 
@@ -3908,8 +4028,12 @@ mod watch_tests {
     #[tokio::test]
     async fn first_load_writes_created_and_expires_counts_from_it() {
         let dir = tempfile::tempdir().unwrap();
-        let (sched, _) =
-            watcher(dir.path(), "when: fs_exists.py path=/x\nexpires: 1h\n", fs_exists()).await;
+        let (sched, _) = watcher(
+            dir.path(),
+            "when: fs_exists.py path=/x\nexpires: 1h\n",
+            fs_exists(),
+        )
+        .await;
         let path = dir.path().join("schedules/w.md");
         let text = std::fs::read_to_string(&path).unwrap();
         let spec = sched.entries["w"].spec.as_ref().unwrap();

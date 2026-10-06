@@ -12,7 +12,7 @@ import { AskCard } from './AskCard'
 import { BroadcastCard, DeskCard, WakeCard } from './HarnessCards'
 import { MessageAssistant, RemoveButton } from './MessageAssistant'
 import { MessageCompacted } from './MessageCompacted'
-import { MessageError, MessageInfo } from './MessageInfo'
+import { MessageError, MessageInfo, MessageInterrupted } from './MessageInfo'
 import { MessagePeer } from './MessagePeer'
 import { MessageReasoning } from './MessageReasoning'
 import { MessageTool } from './MessageTool'
@@ -58,6 +58,8 @@ function body(entry: Entry, session: string, readOnly?: boolean) {
       return <MessageError text={entry.text} />
     case 'compacted':
       return <MessageCompacted epoch={entry.epoch} style={entry.style} summary={entry.summary} />
+    case 'interrupted':
+      return <MessageInterrupted text={entry.text} />
   }
 }
 

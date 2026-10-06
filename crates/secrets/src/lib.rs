@@ -166,6 +166,13 @@ pub struct Request {
     pub title: Option<String>,
     /// What to store, in card order (`label` = what it is for). `current` is filled here.
     pub fields: Vec<SecretRequestField>,
+    /// 109 §6.2: the row id. `None` mints one. A `Some` naming a row that
+    /// already exists re-arms the wait on that row — its own `fields`, the
+    /// same [`SecretsEvent::Requested`], `created_ms + request_timeout_secs`
+    /// as the deadline — instead of inserting a second one (a resumed
+    /// `secret_request*` call); an answered row resolves at once.
+    #[serde(default)]
+    pub id: Option<RequestId>,
 }
 
 /// What [`Request`] resolves to: the new version per field when stored, else why not.
@@ -374,7 +381,7 @@ impl Message<Request> for SecretsActor {
             return reply;
         }
         let known = self.vault.list();
-        let fields: Vec<SecretRequestField> = m
+        let mut fields: Vec<SecretRequestField> = m
             .fields
             .into_iter()
             .map(|mut f| {
@@ -382,37 +389,53 @@ impl Message<Request> for SecretsActor {
                 f
             })
             .collect();
-        let id = RequestId(uuid::Uuid::now_v7());
-        let row = SecretRequest {
-            id,
-            engine: self.engine(),
-            session: m.session.to_string(),
-            title: m.title.clone(),
-            fields: fields.clone(),
-            created_ms: now_ms(),
-            answered_ms: None,
-            outcome: None,
-            hlc: None,
-        };
-        if let Err(e) = requests::insert(self.vault.pool(), &row).await {
-            fail(tx, format!("secret_requests: {e:#}"));
-            return reply;
+        let id = m.id.unwrap_or_else(|| RequestId(uuid::Uuid::now_v7()));
+        let mut title = m.title;
+        let mut timeout = self.timeout;
+        match requests::get(self.vault.pool(), id).await {
+            Ok(Some(row)) => {
+                // 109 §6.2: re-arm the stored row; downtime counts (§6.3).
+                fields = row.fields;
+                title = row.title;
+                let deadline = row.created_ms.saturating_add(timeout.as_millis() as u64);
+                timeout = Duration::from_millis(deadline.saturating_sub(now_ms()));
+            }
+            Ok(None) => {
+                let row = SecretRequest {
+                    id,
+                    engine: self.engine(),
+                    session: m.session.to_string(),
+                    title: title.clone(),
+                    fields: fields.clone(),
+                    created_ms: now_ms(),
+                    answered_ms: None,
+                    outcome: None,
+                    hlc: None,
+                };
+                if let Err(e) = requests::insert(self.vault.pool(), &row).await {
+                    fail(tx, format!("secret_requests: {e:#}"));
+                    return reply;
+                }
+            }
+            Err(e) => {
+                fail(tx, format!("secret_requests: {e:#}"));
+                return reply;
+            }
         }
         let first = &fields[0];
         let requested = SecretsEvent::Requested {
             id,
             session: m.session,
             name: first.name.clone(),
-            note: m.title.clone().unwrap_or_else(|| first.label.clone()),
+            note: title.clone().unwrap_or_else(|| first.label.clone()),
             current: first.current,
-            title: m.title,
+            title,
             fields: fields.clone(),
         };
         let (atx, arx) = oneshot::channel();
         self.pending.insert(id, (m.session, requested.clone(), atx));
         let rt = self.rt.clone();
         let vault = self.vault.clone();
-        let timeout = self.timeout;
         let me = ctx.actor_ref().clone();
         tokio::spawn(async move {
             rt.publish(requested).await;
@@ -873,6 +896,7 @@ mod tests {
                 session: SessionId::new(),
                 title,
                 fields,
+                id: None,
             })
             .await
             .map_err(|e| e.to_string())

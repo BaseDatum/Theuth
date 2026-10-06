@@ -104,6 +104,16 @@ use tools::{
     CloseTree, CloseTreeAll, OpenTree, ParticipantsReady, Retention, SessionResources, TreeOpened,
 };
 
+// 109: handler bodies in their own files so the waves do not collide.
+mod acp_resume; // 109 W4
+mod drain;
+mod resume;
+mod waits;
+pub use drain::{Drain, DrainReport, OpenTurns, drain_engine, draining}; // 109 W5
+pub use resume::{OpenTurn, ResumeTurn};
+// 109 W3: what a resumed human-wait / peer-wait call asks the supervisor for.
+pub(crate) use waits::{ResumeQuestion, ResumeWait, remaining};
+
 /// The supervisor actor. Look up with `ActorRef::<Agents>::lookup(AGENT_ACTOR)`.
 #[derive(kameo::Actor)]
 pub struct Agents {
@@ -619,6 +629,11 @@ impl Agents {
                 let todos = store.todos(id).await?;
                 state.todos = todos.items;
                 state.todo_version = todos.version;
+                // 109 §4.5: the persisted `last_stop` / `finished_at`, so a
+                // cold session reports its real end after a restart.
+                if let Ok(Some(stop)) = store.last_stop(id).await {
+                    self.last_stop.entry(id).or_insert(stop);
+                }
                 (
                     self.resolve_model(&row.model),
                     row.effort,
@@ -1946,6 +1961,16 @@ impl Message<ActivityRegistered> for Agents {
     async fn handle(&mut self, _: ActivityRegistered, _: &mut Context<Self, Self::Reply>) {
         self.ledger.certify();
         self.rearm_reminders().await;
+        // 109 §4.6 step 10, in this order: no `ResumeTurn` before the reaper.
+        let reaped = crate::durability::jobs::reap_jobs(&self.store).await;
+        if reaped != crate::durability::jobs::ReapReport::default() {
+            tracing::info!("109: reaper: {reaped:?}");
+        }
+        self.rebuild_waits().await;
+        self.resume_scan().await;
+        self.respawn_acp_children().await; // 109 W4 §7.3
+        // 109 §7.2: the spared child results, after the open turns are queued.
+        self.deliver_spared_results().await;
     }
 }
 
@@ -2332,6 +2357,7 @@ pub(crate) fn job_result(
         JobExit::Exited(code) => code.to_string(),
         JobExit::Timeout => "timeout".into(),
         JobExit::Killed => "killed".into(),
+        JobExit::Lost => "lost".into(),
     };
     let pty = if pty { " pty=\"true\"" } else { "" };
     format!(
@@ -5543,6 +5569,10 @@ impl Message<LoadSession> for Agents {
             .ok();
         self.mirror(m.session).await;
         let communication = self.communication.0.read().state(Some(m.session)).ok();
+        // 109 W5 §10.3: the open turn's state and its partial, after everything stored.
+        let (resume, partial) = self.resume_state(m.session).await;
+        let mut history = history;
+        history.extend(partial);
         Loaded {
             history,
             running,
@@ -5568,6 +5598,7 @@ impl Message<LoadSession> for Agents {
             communication,
             project,
             retention: self.retention_of(m.session),
+            resume,
         }
     }
 }
@@ -7327,6 +7358,10 @@ pub async fn start(rt: &Runtime) -> anyhow::Result<()> {
     if rt.config.contains("surface") {
         cfg.surface = rt.section("surface")?;
     }
+    // 109 §10.1: its own top-level section, carried on `cfg` like `surface`.
+    if rt.config.contains("durability") {
+        cfg.durability = rt.section("durability")?;
+    }
     let cfg = Arc::new(cfg);
     // 68 §2: `sessions.owner` is this engine's mesh id. The mesh plugin
     // starts after us, so read (or create) the identity file directly.
@@ -7550,6 +7585,14 @@ pub async fn start(rt: &Runtime) -> anyhow::Result<()> {
             .await
         {
             Ok(()) => {
+                // 109: journal seam — installed before anything can be resumed.
+                if let Ok(store) = agents.ask(DurableStore).await {
+                    let _ = reg
+                        .ask(tools::InstallJournal(Arc::new(
+                            crate::durability::journal::StoreJournal(Arc::new(store)),
+                        )))
+                        .await;
+                }
                 let _ = agents.tell(ActivityRegistered).await;
             }
             // A handler `Err` (no `Jobs` actor / install failed: jobs not

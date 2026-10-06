@@ -2551,7 +2551,12 @@ impl Worker {
             | AgentEvent::ModelUsageChanged { .. }
             | AgentEvent::HarnessCommandsChanged { .. }
             | AgentEvent::ContextUsed { .. }
-            | AgentEvent::SessionClosing { .. } => {}
+            | AgentEvent::SessionClosing { .. }
+            // 109: resume/suspend banners are the desktop's (W5); nothing to say in a thread yet.
+            | AgentEvent::TurnResumed { .. }
+            | AgentEvent::ResumeReport { .. }
+            | AgentEvent::TurnSuspended { .. }
+            | AgentEvent::PartialDropped { .. } => {}
         }
     }
 

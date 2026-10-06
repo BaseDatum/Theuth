@@ -28,9 +28,10 @@ use tokio::sync::{Notify, broadcast, mpsc, oneshot};
 
 use crate::activity::{self, Activity, Kind, Tracked};
 use crate::jobs::{
-    self, Cancel, CancelOrigin, Finished, Job, JobEvent, JobExit, JobId, Jobs, Launch, Log,
+    self, Cancel, CancelOrigin, Finished, Job, JobEvent, JobExit, JobId, Jobs, Launch, Log, Lost,
     admit_job, lock, sep,
 };
+use crate::journal::{JobKind, JobRow, JobState, Journal, PtyScreenRow, WaitKind, WaitRow};
 use crate::{Risk, Tool, ToolCx, ToolOutput};
 
 /// Screen height at `start` (22 §1.9); a viewer may resize it (`pty_resize`).
@@ -501,6 +502,9 @@ pub(crate) struct PtyHandle {
     /// acted — reset to the log length by `send`, moved past each `wait`
     /// match — so a prompt already on screen matches at once.
     cursor: AtomicU64,
+    /// The revision last written to `pty_screens` (109 §5.3); `u64::MAX`
+    /// before the first write. Equal revisions skip the write.
+    snapshotted: AtomicU64,
 }
 
 /// One item of [`PtyHandle::stream`].
@@ -630,6 +634,36 @@ impl PtyHandle {
         };
         let size = screen.size();
         (replay(screen), size, rx, self.exit())
+    }
+
+    /// 109 §5.3: write the live screen as the job's `pty_screens` row when
+    /// the revision moved since the last write. Called as `screen` / `send`
+    /// / `wait` return, on the snapshot timer, and at exit.
+    pub(crate) async fn snapshot_to_store(
+        &self,
+        journal: &dyn Journal,
+        session: SessionId,
+        id: &JobId,
+    ) {
+        let snap = self.snapshot(PtyViewport::Live);
+        if self.snapshotted.load(SeqCst) == snap.revision {
+            return;
+        }
+        let (rows, cols) = (snap.rows, snap.cols);
+        let (cursor_row, cursor_col) = snap.cursor_pos;
+        let row = PtyScreenRow {
+            session,
+            job_id: id.clone(),
+            revision: snap.revision,
+            rows,
+            cols,
+            cursor_row,
+            cursor_col,
+            text: snap.text().join("\n"),
+            at_ms: chrono::Utc::now().timestamp_millis(),
+        };
+        self.snapshotted.store(snap.revision, SeqCst);
+        journal.pty_screen(row).await;
     }
 
     /// Someone touched the job (61 §1.3): the idle timer restarts. `model`
@@ -962,6 +996,8 @@ pub struct Screen {
 pub struct Wait {
     /// Owning session.
     pub session: SessionId,
+    /// Provider call id: the `pty_wait` row's key (109 §4.4); empty = no row.
+    pub call_id: String,
     /// The tool arguments (`id` inside).
     pub args: WaitArgs,
     /// [`activity::current`] at the caller: the wait runs under it.
@@ -1062,11 +1098,23 @@ pub enum PtyChunk {
 
 /// A resolved PTY job as the tool paths see it, detached from the actor.
 struct Live {
+    session: SessionId,
     id: JobId,
     name: Option<String>,
     log_path: PathBuf,
     started: Instant,
     pty: Arc<PtyHandle>,
+    /// Where the screen snapshot goes as a reply returns (109 §5.3).
+    journal: Arc<dyn Journal>,
+}
+
+impl Live {
+    /// 109 §5.3: the model just saw this screen.
+    async fn snapshot(&self) {
+        self.pty
+            .snapshot_to_store(&*self.journal, self.session, &self.id)
+            .await;
+    }
 }
 
 impl Jobs {
@@ -1098,11 +1146,55 @@ impl Jobs {
             ));
         };
         Ok(Live {
+            session,
             id: job.id.clone(),
             name: job.name.clone(),
             log_path: job.log_path.clone(),
             started: job.started,
             pty: Arc::clone(pty),
+            journal: Arc::clone(&self.journal),
+        })
+    }
+
+    /// 109 §5.3: the `screen` / `send` reply for a PTY job a previous engine
+    /// lost — the stored page under the "process gone" banner; `None` when
+    /// `id` is not such a job.
+    fn lost_page(&self, session: SessionId, id: &str, note: Option<&str>) -> Option<ToolOutput> {
+        let job = self.lost(session, id)?;
+        let lost = job.lost.as_ref()?;
+        let screen = lost.screen.as_ref()?;
+        let rows: Vec<String> = if screen.text.is_empty() {
+            Vec::new()
+        } else {
+            screen.text.split('\n').map(str::to_owned).collect()
+        };
+        let cursor = (screen.cursor_row, screen.cursor_col);
+        let captured = chrono::DateTime::<chrono::Utc>::from_timestamp_millis(screen.at_ms)
+            .map_or_else(|| "?".to_owned(), |t| hhmmss(&t));
+        let mut content = format!(
+            "job {} · lost · {}s\n",
+            label(&job.id, job.name.as_deref()),
+            job.secs
+        );
+        if let Some(n) = note {
+            content.push_str(n);
+            content.push('\n');
+        }
+        let _ = writeln!(
+            content,
+            "[process gone — the engine restarted at {}; this is the last screen captured at {captured} (revision {})]",
+            hhmmss(&lost.restarted_at),
+            screen.revision
+        );
+        content.push_str(&screen_block(&rows, cursor));
+        Some(ToolOutput {
+            content,
+            is_error: false,
+            structured: Some(serde_json::json!({
+                "job": job.id, "rows": rows, "cursor": cursor, "lost": true,
+                "restarted_at": lost.restarted_at.to_rfc3339(),
+            })),
+            files: Vec::new(),
         })
     }
 }
@@ -1145,6 +1237,8 @@ impl Message<StartPty> for Jobs {
         let sink = self.activity.clone();
         let me = ctx.actor_ref().clone();
         let grace = self.grace;
+        let journal = Arc::clone(&self.journal);
+        let session = m.session;
         // Admission leaves the mailbox (47 §4.1); `Launch` spawns under the
         // actor's state; the readiness wait below runs under the caller's
         // invocation so it counts until it actually ends (47 §4.2 rule 3).
@@ -1215,24 +1309,30 @@ impl Message<StartPty> for Jobs {
                 None if claimable.swap(false, SeqCst) => None,
                 None => done.await.ok(),
             };
-            tx.send(done.unwrap_or_else(|| {
-                let (rows, cursor) = pty.screen();
-                let mut content = format!(
-                    "job {} · running · pid {}{note}\nlog: {}\n",
-                    label(&id, name.as_deref()),
-                    pty.pid,
-                    log_path.display()
-                );
-                content.push_str(&screen_block(&rows, cursor));
-                ToolOutput {
-                    content,
-                    is_error: false,
-                    structured: Some(serde_json::json!({
-                        "job": id, "log": log_path, "pid": pty.pid, "rows": rows, "cursor": cursor,
-                    })),
-                    files: Vec::new(),
+            let out = match done {
+                Some(out) => out,
+                None => {
+                    let (rows, cursor) = pty.screen();
+                    let mut content = format!(
+                        "job {} · running · pid {}{note}\nlog: {}\n",
+                        label(&id, name.as_deref()),
+                        pty.pid,
+                        log_path.display()
+                    );
+                    content.push_str(&screen_block(&rows, cursor));
+                    // 109 §5.3: the model saw this screen.
+                    pty.snapshot_to_store(&*journal, session, &id).await;
+                    ToolOutput {
+                        content,
+                        is_error: false,
+                        structured: Some(serde_json::json!({
+                            "job": id, "log": log_path, "pid": pty.pid, "rows": rows, "cursor": cursor,
+                        })),
+                        files: Vec::new(),
+                    }
                 }
-            }));
+            };
+            tx.send(out);
         };
         tokio::spawn(
             Tracked {
@@ -1296,6 +1396,7 @@ impl Message<Launch<StartPty>> for Jobs {
             waiting: AtomicUsize::new(0),
             interacted: AtomicBool::new(false),
             cursor: AtomicU64::new(0),
+            snapshotted: AtomicU64::new(u64::MAX),
         });
         let log = Arc::new(Mutex::new(Log::new(Some(s.file))));
         let cancel = Arc::new(Cancel::default());
@@ -1303,6 +1404,7 @@ impl Message<Launch<StartPty>> for Jobs {
         // Same claim protocol as the pipes path (14): first swap owns the result.
         let claimable = Arc::new(AtomicBool::new(true));
         let started = Instant::now();
+        let started_ms = chrono::Utc::now().timestamp_millis();
         // 37 §3.4: `spawn` above ran the real command; every stored/published
         // copy is scrubbed.
         let shown = crate::secrets::redact(&m.args.command).into_owned();
@@ -1310,6 +1412,7 @@ impl Message<Launch<StartPty>> for Jobs {
         std::thread::spawn(move || read_loop(s.reader, &chunk_tx));
         self.track(&activity);
         let op = activity.id();
+        let call_id = m.call_id;
         let task = tokio::spawn(run(Run {
             rt: self.rt.clone(),
             me: ctx.actor_ref().clone(),
@@ -1317,7 +1420,7 @@ impl Message<Launch<StartPty>> for Jobs {
             id: id.clone(),
             command: shown.clone(),
             name: m.args.name.clone(),
-            call_id: m.call_id,
+            call_id: call_id.clone(),
             log_path: log_path.clone(),
             log: log.clone(),
             pty: Arc::clone(&pty),
@@ -1326,9 +1429,12 @@ impl Message<Launch<StartPty>> for Jobs {
             cancel: cancel.clone(),
             claimable: claimable.clone(),
             started,
+            started_ms,
             idle_after: m.idle_after,
             done: done_tx,
             activity,
+            journal: Arc::clone(&self.journal),
+            snapshot_every: self.pty_snapshot,
         }))
         .abort_handle();
         self.push(
@@ -1337,7 +1443,9 @@ impl Message<Launch<StartPty>> for Jobs {
                 id,
                 op,
                 command: shown,
+                call_id,
                 started,
+                started_ms,
                 exit: None,
                 secs: 0,
                 log_path: log_path.clone(),
@@ -1348,6 +1456,7 @@ impl Message<Launch<StartPty>> for Jobs {
                 name: m.args.name,
                 on_pty: true,
                 pty: Some(Arc::clone(&pty)),
+                lost: None,
             },
         );
         Ok(Running {
@@ -1365,6 +1474,20 @@ impl Message<SendInput> for Jobs {
     async fn handle(&mut self, m: SendInput, ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
         let (reply, tx) = ctx.reply_sender();
         let Some(tx) = tx else { return reply };
+        // 109 §5.3: typing into a terminal a previous engine lost.
+        if let Some(out) = self.lost(m.session, &m.args.id).and_then(|j| {
+            let at = j.lost.as_ref().map(|l| hhmmss(&l.restarted_at))?;
+            self.lost_page(
+                m.session,
+                &m.args.id,
+                Some(&format!(
+                    "the terminal is gone (engine restarted at {at}); last screen follows"
+                )),
+            )
+        }) {
+            tx.send(Ok(out));
+            return reply;
+        }
         match self.pty(m.session, &m.args.id) {
             Ok(live) => {
                 // Under the caller's guard: the settle wait is its work until
@@ -1373,7 +1496,11 @@ impl Message<SendInput> for Jobs {
                     message: m.args,
                     activity: m.activity,
                 };
-                tokio::spawn(tracked.scope(|args| async move { tx.send(send(&live, args).await) }));
+                tokio::spawn(tracked.scope(|args| async move {
+                    let out = send(&live, args).await;
+                    live.snapshot().await;
+                    tx.send(out);
+                }));
             }
             Err(e) => tx.send(Err(e)),
         }
@@ -1385,8 +1512,14 @@ impl Message<Screen> for Jobs {
     type Reply = Result<ToolOutput, String>;
 
     async fn handle(&mut self, m: Screen, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
-        self.pty(m.session, &m.id)
-            .map(|live| reply(&live, None, None))
+        if let Some(out) = self.lost_page(m.session, &m.id, None) {
+            return Ok(out);
+        }
+        let live = self.pty(m.session, &m.id)?;
+        let out = reply(&live, None, None);
+        // Off the mailbox: the row is a store write.
+        tokio::spawn(async move { live.snapshot().await });
+        Ok(out)
     }
 }
 
@@ -1402,7 +1535,37 @@ impl Message<Wait> for Jobs {
                     message: m.args,
                     activity: m.activity,
                 };
-                tokio::spawn(tracked.scope(|args| async move { tx.send(wait(&live, args).await) }));
+                let call_id = m.call_id;
+                tokio::spawn(tracked.scope(|args| async move {
+                    // 109 §4.4: a `pty_wait` row while the call blocks.
+                    let waits = !call_id.is_empty();
+                    if waits {
+                        let secs = args.timeout.unwrap_or(WAIT_DEFAULT).min(WAIT_MAX);
+                        live.journal
+                            .wait(
+                                Some(WaitRow {
+                                    session: live.session,
+                                    tool_call_id: call_id.clone(),
+                                    kind: WaitKind::PtyWait,
+                                    target: live.id.0.clone(),
+                                    deadline: Some(chrono::Utc::now() + Duration::from_secs(secs)),
+                                    payload: serde_json::json!({
+                                        "pattern": args.pattern,
+                                        "cursor": live.pty.cursor.load(SeqCst),
+                                    }),
+                                }),
+                                live.session,
+                                &call_id,
+                            )
+                            .await;
+                    }
+                    let out = wait(&live, args).await;
+                    if waits {
+                        live.journal.wait(None, live.session, &call_id).await;
+                    }
+                    live.snapshot().await;
+                    tx.send(out);
+                }));
             }
             Err(e) => tx.send(Err(e)),
         }
@@ -1449,12 +1612,34 @@ impl Message<PtyScreen> for Jobs {
     async fn handle(&mut self, m: PtyScreen, ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
         let (reply, tx) = ctx.reply_sender();
         let Some(tx) = tx else { return reply };
-        let pty = self
+        let job = self
             .sessions
             .get(&m.session)
-            .and_then(|s| s.jobs.iter().find(|j| j.id == m.id))
-            .and_then(|j| j.pty.as_ref());
-        let Some(pty) = pty else {
+            .and_then(|s| s.jobs.iter().find(|j| j.id == m.id));
+        // 109 §5.3 / §8.4: a job a previous engine lost serves its stored
+        // page (`exit = lost`, `epoch: None`); the viewer renders it under
+        // the banner.
+        if let Some(Job {
+            pty: None,
+            lost:
+                Some(Lost {
+                    screen: Some(screen),
+                    ..
+                }),
+            ..
+        }) = job
+        {
+            tx.send(Ok(if m.if_revision == Some(screen.revision) {
+                PtyScreenReply::Unchanged {
+                    viewport: m.viewport,
+                    revision: screen.revision,
+                }
+            } else {
+                PtyScreenReply::Updated(stored_page(screen, m.viewport))
+            }));
+            return reply;
+        }
+        let Some(pty) = job.and_then(|j| j.pty.as_ref()) else {
             tx.send(Ok(PtyScreenReply::Unavailable));
             return reply;
         };
@@ -1693,12 +1878,18 @@ struct Run {
     cancel: Arc<Cancel>,
     claimable: Arc<AtomicBool>,
     started: Instant,
+    /// Spawn time, unix ms (the row's `started_ms`).
+    started_ms: i64,
     /// Screen-quiet interval before `<job_idle>` (61 §3.4); `None` = off.
     idle_after: Option<Duration>,
     done: oneshot::Sender<ToolOutput>,
     /// The job's admitted lifetime (`Kind::Pty`); the actor holds the other
     /// clone in [`Jobs::live`]. Dropped when this task returns.
     activity: Activity,
+    /// 109 §5.1 / §5.3: the `jobs` row and the screen snapshots.
+    journal: Arc<dyn Journal>,
+    /// `durability.pty_snapshot_secs`.
+    snapshot_every: Duration,
 }
 
 /// The reader still draining a lingering slave, and the log its bytes reach.
@@ -1827,6 +2018,23 @@ impl Idle {
 /// model when the screen goes quiet (61), detect exit (reaper or EOF,
 /// whichever first), then the 14 finish path with the final screen as `output`.
 async fn run(mut j: Run) {
+    // 109 §5.1: the row before anything can refer to the job; the screen
+    // rows (§5.3) key on it.
+    let mut row = JobRow {
+        session: j.session,
+        id: j.id.clone(),
+        kind: JobKind::Pty,
+        call_id: j.call_id.clone(),
+        command: j.command.clone(),
+        name: j.name.clone(),
+        pgid: Some(i64::from(j.pty.tree.id())),
+        log: Some(j.log_path.clone()),
+        started_ms: j.started_ms,
+        state: JobState::Running,
+        exit: None,
+        settled_ms: None,
+    };
+    j.journal.job(row.clone()).await;
     j.rt.publish(JobEvent::Started {
         session: j.session,
         id: j.id.clone(),
@@ -1844,6 +2052,8 @@ async fn run(mut j: Run) {
     let mut carry = Vec::new();
     let mut dirty = false;
     let mut tick = tokio::time::interval(jobs::OUTPUT_EVERY);
+    let mut snap = tokio::time::interval(j.snapshot_every);
+    snap.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     let mut idle = j.idle_after.map(|base| Idle::new(base, j.started));
     let (exit, killed, origin) = loop {
         let due = idle.as_ref().and_then(|i| i.deadline(&j.pty));
@@ -1882,6 +2092,9 @@ async fn run(mut j: Run) {
                 j.rt.publish(JobEvent::Screen { session: j.session, id: j.id.clone(), rows, cursor }).await;
                 dirty = false;
             }
+            // 109 §5.3: bounds the loss for a busy screen nobody reads;
+            // an unchanged revision writes nothing.
+            _ = snap.tick() => j.pty.snapshot_to_store(&*j.journal, j.session, &j.id).await,
             () = tokio::time::sleep_until(due.unwrap_or_else(tokio::time::Instant::now)), if due.is_some() => {
                 if let Some(i) = &mut idle
                     && let Some((nudge, quiet_secs)) = i.fire(&j.pty)
@@ -1948,7 +2161,7 @@ async fn run(mut j: Run) {
             structured: Some(serde_json::Value::String(screen.clone())),
             files: Vec::new(),
         },
-        JobExit::Timeout | JobExit::Killed => {
+        JobExit::Timeout | JobExit::Killed | JobExit::Lost => {
             ToolOutput::err(format!("{screen}{}killed", sep(&screen)))
         }
     };
@@ -1959,6 +2172,12 @@ async fn run(mut j: Run) {
         let _ = j.pty.stream.send(PtyOut::Exit(exit.clone()));
     }
     j.pty.output.notify_waiters();
+    // 109 §5.3 / §5.1: the final screen, then the settled row.
+    j.pty.snapshot_to_store(&*j.journal, j.session, &j.id).await;
+    row.state = JobState::Settled;
+    row.exit = Some(exit.clone());
+    row.settled_ms = Some(chrono::Utc::now().timestamp_millis());
+    j.journal.job(row).await;
     j.rt.publish(JobEvent::Screen {
         session: j.session,
         id: j.id.clone(),
@@ -2308,6 +2527,54 @@ fn label(id: &JobId, name: Option<&str>) -> String {
     }
 }
 
+/// Local `HH:MM:SS`, as the 109 §5.3 banner reads.
+fn hhmmss(t: &chrono::DateTime<chrono::Utc>) -> String {
+    t.with_timezone(&chrono::Local)
+        .format("%H:%M:%S")
+        .to_string()
+}
+
+/// 109 §5.3: a [`PtyPage`] from a stored `pty_screens` row — plain cells,
+/// no scrollback, `exit = lost`. The `Live` viewport only; a history page
+/// of a terminal that no longer exists is the same rows.
+fn stored_page(s: &PtyScreenRow, viewport: PtyViewport) -> PtyPage {
+    let lines: Vec<Vec<StyledRun>> = s
+        .text
+        .split('\n')
+        .map(|row| {
+            vec![StyledRun {
+                style: Style::default(),
+                cells: row
+                    .chars()
+                    .map(|c| Cell {
+                        text: c.to_string(),
+                        wide: false,
+                        continuation: false,
+                    })
+                    .collect(),
+            }]
+        })
+        .collect();
+    PtyPage {
+        session: s.session,
+        id: s.job_id.clone(),
+        revision: s.revision,
+        epoch: None,
+        viewport,
+        origin: 0,
+        retained: 0,
+        rows: s.rows,
+        cols: s.cols,
+        alternate: false,
+        cursor: Some((s.cursor_row, s.cursor_col)),
+        wrapped: vec![false; lines.len()],
+        lines,
+        truncated: false,
+        redaction_complete: true,
+        exit: Some(JobExit::Lost),
+    }
+}
+
 /// Rows then the `cursor:` line (22 §2.2): the `<job_idle>` body (61 §2.2).
 fn screen_body(rows: &[String], cursor: (u16, u16)) -> String {
     let mut s = rows.join("\n");
@@ -2523,6 +2790,7 @@ impl Tool for WaitTool {
             self.0
                 .ask(Wait {
                     session: cx.session,
+                    call_id: cx.call_id.clone(),
                     args,
                     activity: activity::current(),
                 })
@@ -3681,6 +3949,7 @@ mod tests {
             async move {
                 jobs.ask(Wait {
                     session,
+                    call_id: String::new(),
                     args: WaitArgs {
                         id: "j1".into(),
                         pattern: Some("never".into()),
@@ -3735,5 +4004,176 @@ mod tests {
         let v = idles_within(&fx, 1, Duration::from_secs(3)).await;
         assert!(v[0].3.starts_with("same\n"), "{v:?}");
         cancel(&fx, "j1").await;
+    }
+
+    /// 109 §5.1 / §5.3: a PTY job writes its row at spawn, a screen row as
+    /// `screen`/`send` return (revision-gated: an unchanged screen is not
+    /// rewritten), the final screen and the settled row at exit.
+    #[tokio::test]
+    async fn screen_snapshot_on_screen_and_timer() {
+        use crate::jobs::tests::{journaled, rows_until};
+        let (fx, journal) = journaled(Duration::from_millis(100), Duration::from_secs(60)).await;
+        let (start, send, screen, ..) = tools(&fx);
+        let out = Tool::call(&start, start_args("cat"), cx(&fx))
+            .await
+            .unwrap();
+        assert!(
+            out.content.starts_with("job j1 · running"),
+            "{}",
+            out.content
+        );
+        let rows = lock(&journal.jobs).clone();
+        assert_eq!(rows[0].0.kind, JobKind::Pty);
+        assert_eq!(rows[0].0.state, JobState::Running);
+        assert!(rows[0].0.pgid.is_some());
+        // `send` typed a line: the echoed screen is new → one row with it.
+        let mut args = send_args("j1");
+        args.text = Some("hello snapshot".into());
+        Tool::call(&send, args, cx(&fx)).await.unwrap();
+        let n = lock(&journal.screens).len();
+        let last = lock(&journal.screens).last().cloned().unwrap();
+        assert!(last.text.contains("hello snapshot"), "{:?}", last.text);
+        assert_eq!((last.rows, last.cols), (ROWS, COLS));
+        assert_eq!(last.job_id.0, "j1");
+        // `screen` with nothing new: the revision gate skips the write.
+        Tool::call(&screen, ScreenArgs { id: "j1".into() }, cx(&fx))
+            .await
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert_eq!(lock(&journal.screens).len(), n);
+        // Exit: the final screen and the settled row.
+        let mut args = send_args("j1");
+        args.keys = Some(vec![Key::Ctrl('d')]);
+        Tool::call(&send, args, cx(&fx)).await.unwrap();
+        let rows = rows_until(&journal, Duration::from_secs(5), |r| {
+            r.iter().any(|(j, _)| j.state == JobState::Settled)
+        })
+        .await;
+        let settled = &rows.last().unwrap().0;
+        assert_eq!(settled.exit, Some(JobExit::Exited(0)));
+        let screens = lock(&journal.screens).clone();
+        assert!(screens.len() > n, "no exit snapshot");
+        assert!(screens.last().unwrap().revision > last.revision);
+    }
+
+    /// 109 §5.3: after a restart `screen`/`send` on a lost PTY serve the
+    /// stored page under the banner; `pty_screen` serves it as a page with
+    /// `exit = lost` and no epoch; `wait` says the job is lost.
+    #[tokio::test]
+    async fn screen_after_restart_serves_banner() {
+        use crate::jobs::{LostJob, Reaped};
+        let fx = fixture(Duration::ZERO, Duration::from_secs(60)).await;
+        let (_, send, screen, wait) = tools(&fx);
+        let restarted_at = chrono::Utc::now();
+        let row = JobRow {
+            session: fx.session,
+            id: JobId("j2".into()),
+            kind: JobKind::Pty,
+            call_id: "c2".into(),
+            command: "python3 -q".into(),
+            name: Some("py".into()),
+            pgid: None,
+            log: Some(fx.dir.join("j2.log")),
+            started_ms: 0,
+            state: JobState::Lost,
+            exit: Some(JobExit::Lost),
+            settled_ms: Some(41_000),
+        };
+        let stored = PtyScreenRow {
+            session: fx.session,
+            job_id: JobId("j2".into()),
+            revision: 418,
+            rows: 40,
+            cols: 120,
+            cursor_row: 1,
+            cursor_col: 4,
+            text: ">>> 1+1\n2\n>>>".into(),
+            at_ms: 1_700_000_000_000,
+        };
+        fx.jobs
+            .tell(Reaped {
+                restarted_at,
+                jobs: vec![LostJob {
+                    row,
+                    screen: Some(stored.clone()),
+                    tail: String::new(),
+                    deliver: Some("gone".into()),
+                }],
+            })
+            .await
+            .unwrap();
+        let out = Tool::call(&screen, ScreenArgs { id: "py".into() }, cx(&fx))
+            .await
+            .unwrap();
+        let at = hhmmss(&restarted_at);
+        let captured = hhmmss(&chrono::DateTime::from_timestamp_millis(stored.at_ms).unwrap());
+        assert_eq!(
+            out.content,
+            format!(
+                "job j2 (py) · lost · 41s\n[process gone — the engine restarted at {at}; this is the last screen captured at {captured} (revision 418)]\nscreen:\n>>> 1+1\n2\n>>>\ncursor: row 2 col 5"
+            )
+        );
+        assert!(!out.is_error);
+        assert_eq!(out.structured.as_ref().unwrap()["lost"], true);
+        let out = Tool::call(&send, send_args("j2"), cx(&fx)).await.unwrap();
+        assert!(
+            out.content.contains(&format!(
+                "the terminal is gone (engine restarted at {at}); last screen follows\n[process gone"
+            )),
+            "{}",
+            out.content
+        );
+        let out = Tool::call(
+            &wait,
+            WaitArgs {
+                id: "j2".into(),
+                pattern: None,
+                timeout: Some(1),
+            },
+            cx(&fx),
+        )
+        .await
+        .unwrap();
+        assert!(out.is_error);
+        assert_eq!(out.content, "j2 (py) lost — start it again");
+        // The viewer's page.
+        let page = fx
+            .jobs
+            .ask(PtyScreen {
+                session: fx.session,
+                id: JobId("j2".into()),
+                viewport: PtyViewport::Live,
+                if_revision: None,
+            })
+            .await
+            .unwrap();
+        let PtyScreenReply::Updated(page) = page else {
+            panic!("{page:?}");
+        };
+        assert_eq!(
+            (page.revision, page.epoch, page.exit),
+            (418, None, Some(JobExit::Lost))
+        );
+        assert_eq!(page.cursor, Some((1, 4)));
+        assert_eq!(page.lines.len(), 3);
+        assert_eq!(text(&page.lines[0]), ">>> 1+1");
+        let same = fx
+            .jobs
+            .ask(PtyScreen {
+                session: fx.session,
+                id: JobId("j2".into()),
+                viewport: PtyViewport::Live,
+                if_revision: Some(418),
+            })
+            .await
+            .unwrap();
+        assert!(matches!(
+            same,
+            PtyScreenReply::Unchanged { revision: 418, .. }
+        ));
+        let views = list(&fx).await;
+        assert_eq!(views[0].state, "lost");
+        assert_eq!(views[0].tail, ">>> 1+1\n2\n>>>");
+        assert!(views[0].pty);
     }
 }

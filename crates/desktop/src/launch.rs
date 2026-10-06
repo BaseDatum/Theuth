@@ -27,7 +27,12 @@ const DEFAULT_LISTEN: &str = "127.0.0.1:7777";
 const PROBE_TIMEOUT: Duration = Duration::from_millis(500);
 const READY_TIMEOUT: Duration = Duration::from_secs(15);
 const POLL: Duration = Duration::from_millis(200);
-const EXIT_GRACE: Duration = Duration::from_secs(2);
+/// How long a daemon told `shutdown` may take to exit before it is killed.
+/// 109 §9.2: the daemon drains in-flight turns for `durability.drain_secs`
+/// (default 10 s) plus a second of slack before it exits; this covers that
+/// default so a quit never SIGKILLs a drain in progress. A daemon with
+/// nothing to drain exits in well under a second as before.
+const EXIT_GRACE: Duration = Duration::from_secs(12);
 const LOG_CAP: usize = 64 * 1024;
 
 /// What the webview needs to open the WebSocket (18 §2 step 5).
@@ -514,8 +519,8 @@ fn last_lines(text: &str, n: usize) -> String {
 }
 
 /// Hang up (Unix: drop the master, SIGHUP once every fd is closed; Windows has
-/// no line to hang up — stdin is already null), give the daemon 2 s to exit on
-/// its own (the webview called RPC `shutdown` first), then kill. On Windows the
+/// no line to hang up — stdin is already null), give the daemon [`EXIT_GRACE`]
+/// to exit on its own (the webview called RPC `shutdown` first), then kill. On Windows the
 /// kill is the whole Job Object, and dropping its handle afterwards kills
 /// whatever a clean daemon exit left behind.
 fn stop(daemon: Option<Daemon>) {
