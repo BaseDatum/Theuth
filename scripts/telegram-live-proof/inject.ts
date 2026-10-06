@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 // telegram-mock-ai Admin API driver (patched mock: see mock.patch).
 //
-//   bun inject.ts message <text>                  → owner sends <text> in the private chat; prints the Message
+//   bun inject.ts message <text> [--reply-to <id>]  → owner sends <text> in the private chat (as a reply); prints the Message
 //   bun inject.ts callback <message_id> <data>    → owner presses a button on <message_id>; prints the callback id
 //   bun inject.ts seq                             → highest ledger seq so far (0 when empty)
 //   bun inject.ts await <m1,m2,…> <since> <timeout_s> [--chat <id>] [--match <regex>]
@@ -60,7 +60,12 @@ const [cmd, ...args] = process.argv.slice(2);
 try {
   switch (cmd) {
     case "message": {
-      const msg = await api("POST", `/api/chats/${CHAT}/messages`, { user_id: OWNER, text: args[0] });
+      const replyTo = flag(args, "--reply-to");
+      const msg = await api("POST", `/api/chats/${CHAT}/messages`, {
+        user_id: OWNER,
+        text: args[0],
+        ...(replyTo ? { reply_to_message_id: Number(replyTo) } : {}),
+      });
       console.log(JSON.stringify(msg));
       break;
     }

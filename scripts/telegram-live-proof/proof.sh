@@ -11,6 +11,7 @@ set -u -o pipefail
 
 HERE=$(cd "$(dirname "$0")" && pwd)
 ROOT=$(cd "$HERE/../.." && pwd)
+ENGINE_SRC=${ENGINE_SRC:-$ROOT}   # checkout to build the engine from (another worktree, e.g. the fix branch)
 LABEL=${1:?label (main|fix)}; shift || true
 BUILD=1; KEEP=0
 for a in "$@"; do case $a in --no-build) BUILD=0;; --keep) KEEP=1;; esac; done
@@ -89,8 +90,8 @@ fi
 log "mock: $(git -C "$MOCK_SRC" rev-parse --short HEAD) + mock.patch"
 (cd "$MOCK_SRC" && go build -o "$MOCK_BIN" ./cmd/telegram-mock-ai) || exit 2
 if [ "$BUILD" = 1 ]; then
-  log "cargo build -p theuth …"
-  (cd "$ROOT" && cargo build -p theuth 2>&1 | tail -3 >>"$OUT/proof.log") || exit 2
+  log "cargo build -p theuth in $ENGINE_SRC ($(git -C "$ENGINE_SRC" rev-parse --short HEAD)) …"
+  (cd "$ENGINE_SRC" && cargo build -p theuth 2>&1 | tail -3 >>"$OUT/proof.log") || exit 2
 fi
 [ -x "$T_BIN" ] || { echo "no engine binary at $T_BIN"; exit 2; }
 
@@ -209,6 +210,26 @@ else
   result P3 SKIP 0 "no panel from P2"
 fi
 
+# ---- P3b: a force_reply prompt whose continuation hangs must not block the chat ---------
+# /skills add (no argument) → prompt; reply with a git URL whose clone stalls (non-routable
+# host) → immediately a plain message, which must still be answered.
+T0=$(now_ms); SEQ=$($INJ seq)
+$INJ message "/skills add" >"$OUT/p3b-inject-cmd.json"
+if prompt=$($INJ await sendRichMessage,sendMessage "$SEQ" $STEP_TIMEOUT --chat "$CHAT" --match 'force_reply'); then
+  PROMPT_ID=$(echo "$prompt" | bun -e 'const e=JSON.parse(await Bun.stdin.text());console.log(e.response?.result?.message_id??"")')
+  SEQ=$($INJ seq)
+  $INJ message "${HANG_URL:-http://10.255.255.1/hang.git}" --reply-to "$PROMPT_ID" >"$OUT/p3b-inject-reply.json"
+  turn P3b "still there? one word"
+  # the bounded continuation answers the prompt on its own (ASK_TIMEOUT + 1 s)
+  if to=$($INJ await sendRichMessage,sendMessage "$SEQ" 40 --chat "$CHAT" --match 'did not answer|error:'); then
+    log "P3b: prompt answered by $(echo "$to" | summary): $(echo "$to" | bun -e 'const e=JSON.parse(await Bun.stdin.text());console.log(JSON.stringify(e.params.rich_message??e.params.text).slice(0,120))')"
+  else
+    log "P3b: no bounded error reply to the prompt within 40 s"
+  fi
+else
+  result P3b FAIL $(($(now_ms) - T0)) "no force_reply prompt for /skills add within ${STEP_TIMEOUT}s"
+fi
+
 # ---- P4 ---------------------------------------------------------------------
 turn P4 "hello again, one word"
 P4_END=$(now_ms)
@@ -239,13 +260,14 @@ T0=$(now_ms); SEQ=$($INJ seq)
 stop_engine
 rm -f "$DD/engine.json"
 if start_engine restart; then
-  T1=$(now_ms); P6_STATUS=FAIL; st="(never answered)"; ms=0
+  T1=$(now_ms); P6_STATUS=FAIL; st="(never answered)"; ms=0; SEEN=""
   while [ $(($(now_ms) - T1)) -lt 5000 ]; do
     read -r ms st <<<"$(status_ms)"
+    SEEN="$SEEN${SEEN:+ → }${st%% *}"
     if [[ "$st" == *theuth_proof_bot* ]]; then P6_STATUS=PASS; break; fi
-    sleep 0.5
+    sleep 0.2
   done
-  result P6 "$P6_STATUS" $(($(now_ms) - T0)) "restart; telegram_status ${ms} ms, $(($(now_ms) - T1)) ms after engine.json → $st"
+  result P6 "$P6_STATUS" $(($(now_ms) - T0)) "restart; telegram_status ${ms} ms, $(($(now_ms) - T1)) ms after engine.json → $st; states seen: $SEEN"
   # the channel re-reads the token at boot: wait for getMe, then P1 again
   $INJ await getMe "$SEQ" $STEP_TIMEOUT >/dev/null || log "P6: no getMe after restart"
   sleep 2
