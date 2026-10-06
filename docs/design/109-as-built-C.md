@@ -169,9 +169,12 @@ changed.
 `AgentEvent::TurnResumed { session, turn, kind: ResumeKind, interrupted_at, resumed_at,
 partial_dropped }`, `ResumeReport { session, turn, replayed, interrupted, lost_jobs:
 Vec<JobId>, children_restored, children_handed_off }`, `TurnSuspended { session, turn,
-reason }`, `PartialDropped { session, turn, call_id }`. ts-exported like their siblings;
-`crates/agent/bindings/AgentEvent.ts` regenerated with the repo's `just ts` command
-(`cargo test -p rpc --features ts --lib --quiet export_bindings`); `just ts-desktop` not run.
+reason }`, `PartialDropped { session, turn, call_id }`. ts-exported like their siblings. The repo's
+`just ts` (`cargo test -p rpc --features ts --lib --quiet export_bindings`) was run: it writes
+to the git-ignored root `bindings/` (`bindings/AgentEvent.ts` now carries the four variants,
+`bindings/ResumeKind.ts` is new, `bindings/JobExit.ts` gained `"lost"`), so nothing tracked
+changed; the tracked `crates/agent/bindings/AgentEvent.ts` is a stale artifact from b058019d
+that `just ts` does not write and was left alone. `just ts-desktop` was not run.
 `JobEvent::Finished` carries `exit: "lost"` through the existing `JobExit` serde.
 
 ## Deviations from the design / brief
@@ -202,9 +205,43 @@ not spill-capped); the batch-end path should overwrite `output` with the spill-c
 - `crates/tools/src/pty.rs:1951` — `JobExit::Lost` added to the exit match arm.
 - `crates/agent/src/supervisor.rs:2345` — `JobExit::Lost => "lost"` in `job_result`.
 - `crates/tools/src/jobs.rs:1392` — `(JobExit::Lost, None)` arm in the settlement match.
-- No tui/rpc/desktop edits were needed: `cargo check --workspace` found no other
+- `crates/slack/src/channel.rs:2554-2559` — the four new `AgentEvent` variants added to the
+  thread worker's ignore arm (exhaustive match).
+- `crates/tui/src/model.rs:5938-5943` — same, in `apply_agent`'s exhaustive match.
+- No rpc/desktop/schedule edits were needed: `cargo check --workspace` found no other
   exhaustive matches on `JobExit` or `AgentEvent`.
 
 ## Gates
 
-GATES_PLACEHOLDER
+All with `CARGO_TARGET_DIR=$HOME/Develop/theuth-109-target`, cargo 1.98.1, in this order:
+
+1. `cargo test -p tools` — `154 passed; 0 failed` (lib) + `0 passed` (doc).
+2. `cargo test -p agent` — first run `388 passed; 1 failed`
+   (`supervisor::tests::private_root_is_owned_and_unlisted`, a `CreateSession … .unwrap()`
+   at `supervisor.rs:10642`); passes alone and on two full reruns:
+   `389 passed; 0 failed` (lib) + `0 passed` (doc). The test does not touch any 109 code
+   path (private `:memory:` store, no registry); recorded as a flake, not fixed.
+   The 109 tests alone: `cargo test -p agent --lib durability` → `8 passed`.
+3. `cargo check --workspace` — two exhaustive `AgentEvent` matches fixed (slack, tui; see
+   cross-seam touches), then `Finished dev profile`.
+4. `cargo clippy -p tools -p agent` — 0 warnings in files touched by this wave (two
+   `pub(crate)` helpers W1 wires carry `#[allow(dead_code)]`); pre-existing warnings
+   elsewhere left alone.
+5. `cargo test -p rpc --features ts --lib --quiet export_bindings` (`just ts`) — `8 passed`
+   (the first attempt died in `wavekat-vad`'s `build.rs`, a dependency build unrelated to
+   this change; the rerun built and passed).
+6. Smoke, migration on an existing database: a `.backup` copy of the user's 598 MB
+   `sessions.sqlite` (at migration 32) opened through `Store::open` in a throwaway
+   integration test; `open_turns` / `jobs_open` / `journal_prune(7)` ran against it and
+   `PRAGMA table_info(sessions)` showed `last_stop` / `finished_at`. Test file and copy
+   removed afterwards.
+
+Files touched: `crates/agent/migrations/0033_durability.sql` (new);
+`crates/agent/src/{lib.rs, loop_.rs, supervisor.rs, store.rs}`;
+`crates/agent/src/durability/{mod.rs, journal.rs, jobs.rs, handoff.rs}` (new);
+`crates/agent/src/store/{durability.rs (new), capture.rs, communication.rs}`;
+`crates/agent/src/supervisor/{resume.rs, drain.rs, waits.rs}` (new);
+`crates/agent/src/loop_/resume_calls.rs` (new);
+`crates/tools/src/{journal.rs (new), lib.rs, jobs.rs, registry.rs, approval.rs, ask.rs, pty.rs}`;
+`crates/slack/src/channel.rs`, `crates/tui/src/model.rs` (cross-seam);
+`docs/design/109-as-built-C.md` (this note).
