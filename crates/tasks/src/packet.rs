@@ -226,6 +226,11 @@ pub struct Packet {
     /// 103 F3: a bundle — N related sub-decisions.
     #[serde(default)]
     pub items: Vec<Item>,
+    /// 106: who the packet is addressed to — `user` | `agent:<name>` (the
+    /// resolved manager for a decision, the effective reviewer for a review).
+    /// `None` on rows written before 106.
+    #[serde(default)]
+    pub to: Option<String>,
 }
 
 /// The `escalate` request as the ledger takes it (the packet before the key,
@@ -679,6 +684,7 @@ mod tests {
             checks: vec![],
             recommendation: None,
             items: vec![],
+            to: None,
         }
     }
 

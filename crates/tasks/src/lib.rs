@@ -28,10 +28,13 @@ pub mod tools;
 pub mod types;
 
 use std::collections::HashSet;
+use std::convert::Infallible;
+use std::ops::ControlFlow;
 use std::sync::Arc;
 use std::time::Duration;
 
-use kameo::actor::{ActorRef, Spawn};
+use kameo::actor::{Actor, ActorRef, Spawn, WeakActorRef};
+use kameo::error::{ActorStopReason, PanicError};
 use kameo::message::{Context, Message};
 use kameo::reply::DelegatedReply;
 use runtime::Runtime;
@@ -481,11 +484,35 @@ struct Delivered {
 struct SetEngine(String);
 
 /// The [`TASKS_ACTOR`] actor.
-#[derive(kameo::Actor)]
 pub struct Tasks {
     ledger: ledger::Ledger,
     dispatching: bool,
     escalations: escalate::Escalations,
+}
+
+impl Actor for Tasks {
+    type Args = Self;
+    type Error = Infallible;
+
+    fn name() -> &'static str {
+        "Tasks"
+    }
+
+    async fn on_start(args: Self, _: ActorRef<Self>) -> Result<Self, Infallible> {
+        Ok(args)
+    }
+
+    /// An `Err` reply to a `tell` (or a panic in a handler) must not stop the
+    /// ledger: every task RPC would fail with "tasks not running" until a
+    /// restart (101 live proof F-4). Log it and keep going.
+    async fn on_panic(
+        &mut self,
+        _: WeakActorRef<Self>,
+        err: PanicError,
+    ) -> Result<ControlFlow<ActorStopReason>, Infallible> {
+        tracing::error!(%err, "tasks actor: handler failed; continuing");
+        Ok(ControlFlow::Continue(()))
+    }
 }
 
 impl Tasks {
@@ -804,14 +831,47 @@ async fn ask_user(me: ActorRef<Tasks>, p: packet::Packet, session: Option<String
         _ => None,
     };
     if let Some(answer) = answer {
-        let _ = me
-            .tell(AnswerDecision {
-                decision,
+        // `ask`, not `tell`: an `Err` reply to a tell stops the actor (F-4).
+        match me
+            .ask(AnswerDecision {
+                decision: decision.clone(),
                 answer,
                 actor: "user".into(),
                 session: None,
             })
-            .await;
+            .await
+        {
+            Ok(()) => {}
+            Err(e) => {
+                tracing::warn!(%decision, error = %e, "stale ask card: decision already answered elsewhere")
+            }
+        }
+    }
+}
+
+/// The ask card [`ask_user`] raised for `decision` is dismissed once the
+/// decision is answered by any path (`decide`, `task_decide`, the card
+/// itself): the card's question id is the decision key, so the pending list
+/// is the record. A dismissed card resolves `ask_user` with no answer.
+async fn drop_card(decision: String) {
+    let Some(ask) = ActorRef::<::tools::AskUser>::lookup(::tools::ASK_ACTOR)
+        .ok()
+        .flatten()
+    else {
+        return;
+    };
+    let Ok(pending) = ask.ask(::tools::PendingAsks).await else {
+        return;
+    };
+    for req in pending {
+        if req.questions.iter().any(|q| q.id == decision) {
+            let _ = ask
+                .ask(::tools::AnswerAsk {
+                    id: req.id,
+                    answers: None,
+                })
+                .await;
+        }
     }
 }
 
@@ -842,6 +902,7 @@ impl Message<AnswerDecision> for Tasks {
             .answer_decision(&m.decision, &m.answer, &m.actor, m.session.as_deref())
             .await?;
         self.escalations.answer(&m.decision, &m.answer);
+        tokio::spawn(drop_card(m.decision));
         Ok(())
     }
 }
@@ -1323,6 +1384,7 @@ mod tests {
             checks: vec![],
             recommendation: None,
             items: vec![],
+            to: None,
         };
         assert_eq!(
             card_question(&p, "portal"),
@@ -1348,5 +1410,111 @@ mod tests {
             card_question(&p, "portal"),
             "DNS records?\n\n1. A record — recommended: add\n2. MX\n\n(task 01234567 — portal)"
         );
+    }
+
+    /// 106 F-4: answering a decision through `decide` dismisses its ask card;
+    /// a stale card answered afterwards (or any `Err` reply to a `tell`) is
+    /// logged and leaves the actor alive.
+    #[tokio::test]
+    async fn stale_card_and_fallible_tell_leave_the_actor_alive() {
+        let mut r = ledger::tests::rig().await;
+        let t = r.task("agent:lead").await; // lead reports to the user
+        ledger::tests::board(&r.thread, "b1", &packet::DECISION_SECTIONS);
+        let rt = Runtime::new(figment::Figment::new(), std::env::temp_dir());
+        let ask = ::tools::AskUser::spawn(::tools::AskUser::new(rt, Duration::from_secs(30)));
+        ask.register(::tools::ASK_ACTOR).unwrap();
+        let actor = Tasks::spawn(Tasks {
+            ledger: r.ledger,
+            dispatching: false,
+            escalations: Default::default(),
+        });
+        let session = runtime::SessionId::new().to_string();
+        let opt = |l: &str| packet::PacketOption {
+            label: l.into(),
+            description: None,
+        };
+        let decision = actor
+            .ask(Escalate {
+                task: t.id.clone(),
+                question: "ship?".into(),
+                summary: Some("Ship the release.".into()),
+                board: Some("b1".into()),
+                options: vec![opt("yes"), opt("no")],
+                recommended: Some(0),
+                pointers: vec![],
+                recommendation: None,
+                items: vec![],
+                actor: "agent:lead".into(),
+                session: Some(session.clone()),
+            })
+            .await
+            .unwrap();
+        let pending = |n: usize| {
+            let ask = ask.clone();
+            async move {
+                for _ in 0..200 {
+                    let p = ask.ask(::tools::PendingAsks).await.unwrap();
+                    if p.len() == n {
+                        return p;
+                    }
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+                panic!("pending asks never reached {n}");
+            }
+        };
+        let card = pending(1).await.remove(0);
+        assert_eq!(card.questions[0].id, decision);
+
+        // the decision is answered elsewhere: the card goes
+        actor
+            .ask(AnswerDecision {
+                decision: decision.clone(),
+                answer: "yes".into(),
+                actor: "user".into(),
+                session: None,
+            })
+            .await
+            .unwrap();
+        pending(0).await;
+        assert!(
+            actor
+                .ask(GetTask(t.id.clone()))
+                .await
+                .unwrap()
+                .blockers
+                .is_empty()
+        );
+
+        // a stale card for the answered decision (the F-4 race): answered → Err logged, actor alive
+        let p = actor
+            .ask(GetPacket(decision.clone()))
+            .await
+            .unwrap()
+            .unwrap();
+        let stale = tokio::spawn(ask_user(actor.clone(), p, Some(session), "t".into()));
+        let card = pending(1).await.remove(0);
+        ask.ask(::tools::AnswerAsk {
+            id: card.id,
+            answers: Some(vec![::tools::Answer::Choice { index: 1 }]),
+        })
+        .await
+        .unwrap();
+        stale.await.unwrap();
+        assert!(
+            actor.ask(GetTask(t.id.clone())).await.is_ok(),
+            "actor stopped"
+        );
+
+        // on_panic: an Err reply to a tell no longer stops the ledger
+        actor
+            .tell(AnswerDecision {
+                decision: "decision:nope".into(),
+                answer: "x".into(),
+                actor: "user".into(),
+                session: None,
+            })
+            .await
+            .unwrap();
+        assert!(actor.ask(GetTask(t.id)).await.is_ok(), "actor stopped");
     }
 }
