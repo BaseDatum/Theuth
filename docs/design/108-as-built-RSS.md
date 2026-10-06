@@ -73,12 +73,22 @@ Ran 23 tests in 0.100s
 OK
 ```
 
-The 13 failures are all in `test_pr_watch.py` and **pre-exist on the base commit**: with
+The 13 failures were all in `test_pr_watch.py` and **pre-existed on the base commit**: with
 `rss.py` and `test_rss.py` stashed, `python3 -m unittest test_pr_watch` → `Ran 37 tests …
-FAILED (failures=13)`, every one an unexpected extra `stale` event. Cause: the fixtures pin
-`updated_at` to `2026-09-28` (`test_pr_watch.py:19-21`) and `pr_watch._hours_since` reads the
-wall clock (`pr_watch.py:152-161`), so from 2026-10-01 on every PR is ≥ 72 h stale. Not my
-file; not fixed here. The other 24 pr_watch cases pass.
+FAILED (failures=13)`, every one an unexpected extra `stale` event. Cause: the fixtures pinned
+`updated_at` to `2026-09-28` and `pr_watch._hours_since` reads the wall clock
+(`pr_watch.py:152-161`), so from 2026-10-01 on every PR was ≥ 72 h stale.
+
+**F1 (follow-up, ownership extended to `test_pr_watch.py`):** `T0/T1/T2` are now
+`iso_hours_ago(3/2/1)` (UTC `strftime`, the shape `_hours_since`'s regex reads); `test_stale_once`
+keeps its 2020 instant and still asserts `stale`. `pr_watch.py` unchanged; `monty_shim.py` has no
+clock hook, none needed. Gate after F1:
+
+```
+python3 -m unittest discover -s assets/sensors/tests
+Ran 60 tests in 0.390s
+OK
+```
 
 ## Monty-subset constructs I could not verify (no engine build here)
 
