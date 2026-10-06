@@ -1,6 +1,6 @@
 import { Link, getRouteApi } from '@tanstack/react-router'
 import { Blocks, Circle, Play, Plus } from 'lucide-react'
-import { type MutableRefObject, useEffect, useRef, useState } from 'react'
+import { type MutableRefObject, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { SectionBand } from '@/components/nav/SectionBand'
 import { SectionRow } from '@/components/nav/SectionRow'
 import { ProjectIcon } from '@/components/sidebar/ProjectStyle'
@@ -17,6 +17,7 @@ import type { Task } from '@/rpc/bindings/Task'
 import type { TaskState } from '@/rpc/bindings/TaskState'
 import { AttachmentCount } from './Attachments'
 import { NewTaskSheet } from './NewTaskSheet'
+import { recallBoardScroll, rememberBoard, rememberBoardScroll, takeOpenedTask } from './boardMemory'
 import { QueueBar, QueueList, useQueue, useQueueOpen } from './Queue'
 import { DRAG_STATES, STATES, age, canDrag, columns, nodesOf, ownerLabel, parseBlocker, stateChip } from './helpers'
 import { useAgents, useBoardProjects, useMesh, useMoveTask, useTasks } from './queries'
@@ -120,6 +121,33 @@ export function Board() {
   })
   const set = (patch: Partial<typeof search>) =>
     void navigate({ search: (s) => ({ ...s, ...patch }), replace: true })
+  // 118: the device remembers the RAW url search (a never-picked project stays "first project", `{}` is "no filters");
+  // the route's `beforeLoad` brings it back on the next bare entry to `/tasks`.
+  useEffect(() => rememberBoard(search), [search])
+  // 118: coming back, show where the user was — the card they opened (scrolled into view, ringed for a moment) or,
+  // without one on this board, the horizontal position they left. Once per mount, on the first render with columns.
+  const [returned, setReturned] = useState<string | null>(null)
+  const placed = useRef(false)
+  const loaded = tasks.data !== undefined
+  useLayoutEffect(() => {
+    const el = scroller.current
+    if (!loaded || placed.current || !el) return
+    placed.current = true
+    const id = takeOpenedTask()
+    const card = id ? Array.from(el.querySelectorAll<HTMLElement>('[data-task-id]')).find((c) => c.dataset.taskId === id) : undefined
+    if (card && id) {
+      card.scrollIntoView({ block: 'nearest', inline: 'nearest' })
+      setReturned(id)
+    } else {
+      el.scrollLeft = recallBoardScroll()
+    }
+  }, [loaded])
+  // The ring lasts 1.5 s; owning the timer here (not in the layout effect) survives StrictMode's effect replay.
+  useEffect(() => {
+    if (returned === null) return
+    const timer = setTimeout(() => setReturned(null), 1500)
+    return () => clearTimeout(timer)
+  }, [returned])
 
   return (
     <article className="flex min-h-0 min-w-0 flex-1 flex-col">
@@ -204,7 +232,11 @@ export function Board() {
               <QueueList items={queue} />
             </CollapsibleContent>
           )}
-          <div ref={scroller} className="min-h-full flex-1 overflow-x-auto overflow-y-hidden">
+          <div
+            ref={scroller}
+            className="min-h-full flex-1 overflow-x-auto overflow-y-hidden"
+            onScroll={(e) => rememberBoardScroll(e.currentTarget.scrollLeft)}
+          >
             {tasks.isPending && (
               <div className="flex gap-3 p-3">
                 <Skeleton className="h-40 w-64" />
@@ -235,6 +267,7 @@ export function Board() {
                           <TaskCard
                             key={t.id}
                             task={t}
+                            returned={t.id === returned}
                             drag={DRAG_STATES.includes(t.state) ? { ref: dragRef, set: setDrag, onDrop: (to) => move.mutate({ id: t.id, state: to }) } : undefined}
                             onStart={t.state === 'backlog' ? () => move.mutate({ id: t.id, state: 'todo' }) : undefined}
                           />
@@ -265,17 +298,21 @@ export function Board() {
  * One card: title, state chip ("not started", "queued for ops's desk", "at ops's desk · open session"), owner and
  * reviewer chips, node, age, blocked/waiting badges, a progress dot while checked out. `onStart` renders the Start
  * button (backlog → todo, the keyboard's way); `drag` makes the card a pointer-drag source between Backlog and Todo.
+ * `returned` (118) rings the card the user just came back from; the ring fades out when the prop drops.
  */
-export function TaskCard({ task: t, onStart, drag }: { task: Task; onStart?: () => void; drag?: DragProps }) {
+export function TaskCard({ task: t, onStart, drag, returned }: { task: Task; onStart?: () => void; drag?: DragProps; returned?: boolean }) {
   const first = t.blockers[0] ? parseBlocker(t.blockers[0]) : null
   const handlers = useCardDrag(t, drag)
   return (
-    <li {...handlers} className={cn(drag && 'cursor-grab select-none active:cursor-grabbing')}>
+    <li {...handlers} data-task-id={t.id} className={cn(drag && 'cursor-grab select-none active:cursor-grabbing')}>
       <Link
         to="/tasks/$id"
         params={{ id: t.id }}
         draggable={false}
-        className="block rounded-lg border border-border-subtle bg-background p-2.5 text-sm hover:bg-layer-2"
+        className={cn(
+          'block rounded-lg border border-border-subtle bg-background p-2.5 text-sm transition-shadow duration-700 hover:bg-layer-2',
+          returned && 'ring-2 ring-primary/60',
+        )}
       >
         <div className="flex items-start gap-1.5">
           {t.checkout && <Circle className="mt-1 size-2 shrink-0 fill-success text-success" aria-label="in progress" />}
