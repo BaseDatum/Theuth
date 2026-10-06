@@ -25,9 +25,8 @@ Not touched, worth a follow-up: `Skills.tsx` lists use `truncate` (names clip, n
 
 No engine in the worktree and routes render only once connected, so a throwaway vite entry (`harness.html` + `src/dev/tools-harness.tsx`, deleted before commit) mounted `ServerRow`/`AddPopover`/`Empty` with two fixture servers (one with the 46-char name, a `destructive* (ask)` tool, an `off` tool and an alias of 64 chars; one disconnected `login required`). Headless Chromium at 390×844 and 1280×900, expanded, screenshots taken; measured per name span: one client-rect line each at 390 px, the 64-char alias folded at `__`, `scrollWidth` = viewport. 1280 px: status once, beside the name; stacked rows gone.
 
-Gates (`crates/desktop/ui`, stale bindings copied from `~/Develop/theuth` — `BINDINGS-READY` never appeared during this run):
+Gates (`crates/desktop/ui`). First pass on the stale bindings copied from `~/Develop/theuth`; second pass once `~/Develop/theuth-bindings/BINDINGS-READY` appeared (fresh `rpc/bindings/` + `bindings/methods.json` copied in):
 - `bun install` here and in `packages/apps`: ok.
-- `bun run check`: 119 errors, all in files not owned here (stale ts-rs bindings); 0 in `library/Tools.tsx`, `library/names.ts`, `library/names.test.ts`.
-- `CI=1 bun run test`: 143 files / 831 tests pass; 1 fails — `src/rpc/api.test.ts` "METHODS equals the server method list" (331 methods in `api.ts` vs 321 in the stale `bindings/methods.json`), a bindings-freshness failure, not this change. `library/names.test.ts`, `grouping.test.ts`, `moved.test.ts` pass.
-- `bun run build`: `tsc -b` stops on the same stale-bindings errors (`store/reduce.ts`, `store/sessions.ts`, `store/reduce.test.ts` — not owned); `bunx vite build` alone: ✓ built in 35.9 s, `dist/index.html` present.
-- Re-run `bun run check` / the two tests on the fresh bindings once `BINDINGS-READY` appears.
+- `bun run check`: stale 119 errors, none in `library/Tools.tsx`, `library/names.ts`, `library/names.test.ts`; fresh **0 errors**.
+- `CI=1 bun run test`: stale 143 files / 831 pass, 1 fail — `src/rpc/api.test.ts` "METHODS equals the server method list" (331 methods in `api.ts` vs 321 in the stale `methods.json`); fresh: `api.test.ts` + the three `library/*.test.ts` pass (4 files / 9 tests).
+- `bun run build`: stale `tsc -b` stopped on the same bindings errors (`bunx vite build` alone ✓); fresh **✓ built in 36.4 s**.
