@@ -6,6 +6,7 @@ import { SectionRow } from '@/components/nav/SectionRow'
 import { ProjectIcon } from '@/components/sidebar/ProjectStyle'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
+import { Collapsible, CollapsibleContent } from '@/components/ui/collapsible'
 import { Label } from '@/components/ui/label'
 import { Select, SelectContent, SelectItem, SelectSeparator, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Skeleton } from '@/components/ui/skeleton'
@@ -16,7 +17,7 @@ import type { Task } from '@/rpc/bindings/Task'
 import type { TaskState } from '@/rpc/bindings/TaskState'
 import { AttachmentCount } from './Attachments'
 import { NewTaskSheet } from './NewTaskSheet'
-import { Queue } from './Queue'
+import { QueueBar, QueueList, useQueue, useQueueOpen } from './Queue'
 import { DRAG_STATES, STATES, age, canDrag, columns, nodesOf, ownerLabel, parseBlocker, stateChip } from './helpers'
 import { useAgents, useBoardProjects, useMesh, useMoveTask, useTasks } from './queries'
 
@@ -72,6 +73,9 @@ export function Board() {
   const mesh = useMesh()
   const move = useMoveTask()
   const [creating, setCreating] = useState(false)
+  // 115: the "does it need me" queue — collapsed by default, the choice kept per device.
+  const queue = useQueue()
+  const [queueOpen, setQueueOpen] = useQueueOpen()
   const [drag, setDragState] = useState<Drag | null>(null)
   // Handlers read the latest drag without re-binding per render.
   const dragRef = useRef<Drag | null>(null)
@@ -186,57 +190,72 @@ export function Board() {
           <Plus /> New task
         </Button>
       </SectionRow>
-      <Queue />
-      <div ref={scroller} className="min-h-0 flex-1 overflow-x-auto overflow-y-hidden">
-        {tasks.isPending && (
-          <div className="flex gap-3 p-3">
-            <Skeleton className="h-40 w-64" />
-            <Skeleton className="h-40 w-64" />
+      {/*
+       * 115: the queue bar is pinned under the filters; below it one vertical scroller holds the queue's rows (when open)
+       * and then the board, which is never shorter than the scroller (`min-h-full`): closed, nothing scrolls and the
+       * columns get the whole height as before; open, the page scrolls past the rows and the board fills the screen
+       * after them. The Radix root is the flex column so the height chain stays definite down to the columns' `h-full`.
+       */}
+      <Collapsible open={queueOpen} onOpenChange={setQueueOpen} className="flex min-h-0 flex-1 flex-col">
+        <QueueBar items={queue} />
+        <div className="flex min-h-0 flex-1 flex-col overflow-y-auto">
+          {queue.total > 0 && (
+            <CollapsibleContent className="shrink-0">
+              <QueueList items={queue} />
+            </CollapsibleContent>
+          )}
+          <div ref={scroller} className="min-h-full flex-1 overflow-x-auto overflow-y-hidden">
+            {tasks.isPending && (
+              <div className="flex gap-3 p-3">
+                <Skeleton className="h-40 w-64" />
+                <Skeleton className="h-40 w-64" />
+              </div>
+            )}
+            {tasks.isError && <p className="p-6 text-center text-sm text-fg-tertiary">{tasks.error.message}</p>}
+            {tasks.data && (
+              <div className="flex h-full snap-x gap-3 p-3">
+                {columns(tasks.data, search.cancelled === true).map(({ state, tasks: col }) => {
+                  const droppable = drag !== null && canDrag(drag.task.state, state)
+                  return (
+                    <section
+                      key={state}
+                      data-state={state}
+                      className={cn(
+                        'flex h-full w-64 shrink-0 snap-start flex-col rounded-[10px] bg-layer-1',
+                        droppable && 'ring-2 ring-primary/40',
+                        droppable && drag.over === state && 'bg-primary/10 ring-primary',
+                      )}
+                    >
+                      <h3 className="flex items-center gap-2 px-3 py-2 text-xs font-semibold uppercase tracking-wide text-fg-secondary">
+                        {state}
+                        <span className="font-normal text-fg-tertiary tabular-nums">{col.length}</span>
+                      </h3>
+                      <ul className="flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto px-2 pb-2">
+                        {col.map((t) => (
+                          <TaskCard
+                            key={t.id}
+                            task={t}
+                            drag={DRAG_STATES.includes(t.state) ? { ref: dragRef, set: setDrag, onDrop: (to) => move.mutate({ id: t.id, state: to }) } : undefined}
+                            onStart={t.state === 'backlog' ? () => move.mutate({ id: t.id, state: 'todo' }) : undefined}
+                          />
+                        ))}
+                      </ul>
+                    </section>
+                  )
+                })}
+              </div>
+            )}
+            {drag && (
+              <div
+                className="pointer-events-none fixed z-50 max-w-56 truncate rounded-lg border border-border-subtle bg-background px-2.5 py-1.5 text-sm shadow-md"
+                style={{ left: drag.x + 12, top: drag.y + 12 }}
+              >
+                {drag.task.title}
+              </div>
+            )}
           </div>
-        )}
-        {tasks.isError && <p className="p-6 text-center text-sm text-fg-tertiary">{tasks.error.message}</p>}
-        {tasks.data && (
-          <div className="flex h-full snap-x gap-3 p-3">
-            {columns(tasks.data, search.cancelled === true).map(({ state, tasks: col }) => {
-              const droppable = drag !== null && canDrag(drag.task.state, state)
-              return (
-                <section
-                  key={state}
-                  data-state={state}
-                  className={cn(
-                    'flex h-full w-64 shrink-0 snap-start flex-col rounded-[10px] bg-layer-1',
-                    droppable && 'ring-2 ring-primary/40',
-                    droppable && drag.over === state && 'bg-primary/10 ring-primary',
-                  )}
-                >
-                  <h3 className="flex items-center gap-2 px-3 py-2 text-xs font-semibold uppercase tracking-wide text-fg-secondary">
-                    {state}
-                    <span className="font-normal text-fg-tertiary tabular-nums">{col.length}</span>
-                  </h3>
-                  <ul className="flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto px-2 pb-2">
-                    {col.map((t) => (
-                      <TaskCard
-                        key={t.id}
-                        task={t}
-                        drag={DRAG_STATES.includes(t.state) ? { ref: dragRef, set: setDrag, onDrop: (to) => move.mutate({ id: t.id, state: to }) } : undefined}
-                        onStart={t.state === 'backlog' ? () => move.mutate({ id: t.id, state: 'todo' }) : undefined}
-                      />
-                    ))}
-                  </ul>
-                </section>
-              )
-            })}
-          </div>
-        )}
-        {drag && (
-          <div
-            className="pointer-events-none fixed z-50 max-w-56 truncate rounded-lg border border-border-subtle bg-background px-2.5 py-1.5 text-sm shadow-md"
-            style={{ left: drag.x + 12, top: drag.y + 12 }}
-          >
-            {drag.task.title}
-          </div>
-        )}
-      </div>
+        </div>
+      </Collapsible>
       <NewTaskSheet open={creating} onOpenChange={setCreating} project={project === '' ? null : project} />
     </article>
   )

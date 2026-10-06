@@ -67,7 +67,10 @@ impl Respond for Fake {
                     "content_block_delta",
                     json!({"type": "content_block_delta", "index": 1, "delta": {"type": "text_delta", "text": "Four."}}),
                 ),
-                ev("content_block_stop", json!({"type": "content_block_stop", "index": 1})),
+                ev(
+                    "content_block_stop",
+                    json!({"type": "content_block_stop", "index": 1}),
+                ),
                 ev(
                     "message_delta",
                     json!({"type": "message_delta", "delta": {"stop_reason": "end_turn"}, "usage": {"output_tokens": OUTPUT_TOKENS}}),
@@ -83,7 +86,10 @@ impl Respond for Fake {
                     "content_block_delta",
                     json!({"type": "content_block_delta", "index": 1, "delta": {"type": "input_json_delta", "partial_json": "{\"x\":1}"}}),
                 ),
-                ev("content_block_stop", json!({"type": "content_block_stop", "index": 1})),
+                ev(
+                    "content_block_stop",
+                    json!({"type": "content_block_stop", "index": 1}),
+                ),
                 ev(
                     "message_delta",
                     json!({"type": "message_delta", "delta": {"stop_reason": "tool_use"}, "usage": {"output_tokens": OUTPUT_TOKENS}}),
@@ -110,7 +116,10 @@ impl Respond for Fake {
                     "content_block_delta",
                     json!({"type": "content_block_delta", "index": 0, "delta": {"type": "signature_delta", "signature": SIGNATURE}}),
                 ),
-                ev("content_block_stop", json!({"type": "content_block_stop", "index": 0})),
+                ev(
+                    "content_block_stop",
+                    json!({"type": "content_block_stop", "index": 0}),
+                ),
             ]
         };
         let body = [ev(
@@ -212,6 +221,7 @@ impl Harness {
             history,
             vision: false,
             strip_reasoning: false,
+            max_tokens: None,
         };
         let effort = effort.or_else(|| default_effort(model));
         let (req, opts) = frame.request(Transport::Anthropic, SessionId::new(), effort);
@@ -299,10 +309,19 @@ impl Harness {
             history,
             vision: false,
             strip_reasoning: false,
+            max_tokens: None,
         };
         let mut thinking = None;
         let end = turn
-            .call(&current, frame, transport, turn.turn, id, CallKind::Round, &mut thinking)
+            .call(
+                &current,
+                frame,
+                transport,
+                turn.turn,
+                id,
+                CallKind::Round,
+                &mut thinking,
+            )
             .await;
         let rows = sqlx::query_as(
             "SELECT call_id, request_id, kind, status FROM model_calls WHERE owner_id = ? ORDER BY attempt",
@@ -354,12 +373,10 @@ struct Called {
 /// ([`crate::backend::connection_label`]), so that pair is the one Anthropic
 /// replays; anything else is dropped before the request leaves (90 §1.2).
 fn sig_from(kind: AdapterKind, connection: &str, s: &str) -> ContentPart {
-    ContentPart::ThoughtSignature(
-        ThoughtSignature::new(s).with_origin(ThoughtOrigin::new(
-            &ModelIden::new(kind, "claude-x"),
-            Some(connection),
-        )),
-    )
+    ContentPart::ThoughtSignature(ThoughtSignature::new(s).with_origin(ThoughtOrigin::new(
+        &ModelIden::new(kind, "claude-x"),
+        Some(connection),
+    )))
 }
 
 /// A stored tool-use turn — user, assistant (signature + reasoning + tool
@@ -435,6 +452,7 @@ fn default_effort_is_medium_for_anthropic_thinking_models_only() {
         history: &user(),
         vision: false,
         strip_reasoning: false,
+        max_tokens: None,
     }
     .request(
         Transport::OpenAiLike,
@@ -593,7 +611,11 @@ async fn rejected_thinking_signature_is_resent_stripped() {
 async fn foreign_signature_is_not_replayed_at_all() {
     let h = Harness::new().await;
     let fable = h.resolve("anthropic/claude-fable-5-1");
-    let history = thinking_history(sig_from(AdapterKind::OpenAIResp, "openai", "gAAAA-openai-fernet"));
+    let history = thinking_history(sig_from(
+        AdapterKind::OpenAIResp,
+        "openai",
+        "gAAAA-openai-fernet",
+    ));
     let (end, rows) = h.turn_call(fable, &history).await;
 
     match end {
@@ -680,7 +702,8 @@ async fn thinking_time_is_measured_published_and_persisted() {
     assert!(c.turn.persist_timed(reply, Some(ms)).await);
     let history = c.store.context_history(c.id).await.unwrap();
     assert_eq!(history.thinking.get(&0), Some(&ms));
-    let rendered = crate::supervisor::render(&history.messages, &history.entries, &history.thinking);
+    let rendered =
+        crate::supervisor::render(&history.messages, &history.entries, &history.thinking);
     assert!(
         matches!(
             &rendered[0],
@@ -736,12 +759,17 @@ async fn no_reasoning_means_no_thinking_time() {
         "{:?}",
         c.events
     );
-    assert!(c.events.iter().any(|e| matches!(e, AgentEvent::TextDelta { .. })));
+    assert!(
+        c.events
+            .iter()
+            .any(|e| matches!(e, AgentEvent::TextDelta { .. }))
+    );
     let reply = ChatMessage::assistant(end.captured_content.unwrap());
     assert!(c.turn.persist_timed(reply, c.thinking).await);
     let history = c.store.context_history(c.id).await.unwrap();
     assert!(history.thinking.is_empty());
-    let rendered = crate::supervisor::render(&history.messages, &history.entries, &history.thinking);
+    let rendered =
+        crate::supervisor::render(&history.messages, &history.entries, &history.thinking);
     assert!(
         matches!(&rendered[..], [(0, crate::HistoryEntry::Assistant { text, .. })] if text == "Four."),
         "{rendered:?}"

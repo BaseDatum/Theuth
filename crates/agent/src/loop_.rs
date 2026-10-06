@@ -697,6 +697,32 @@ impl Current {
     fn vision(&self) -> bool {
         crate::backend::supports_images(&self.model)
     }
+
+    /// The reasoning effort a call carries: the session's, else [`crate::frame::default_effort`].
+    fn effort(&self) -> Option<ReasoningEffort> {
+        self.effort
+            .clone()
+            .or_else(|| crate::frame::default_effort(&self.model))
+    }
+
+    /// 116: the least `max_tokens` a call may carry. Anthropic requires
+    /// `max_tokens > thinking.budget_tokens`, so an effort on that transport
+    /// floors the reply at genai's budget for it (`ant_reasoning.rs`:
+    /// low 1 024, medium 8 000, high 24 000, `Budget(n)` n) plus 1 024 of
+    /// answer; 0 elsewhere.
+    fn reply_floor(&self, transport: Transport) -> u32 {
+        if transport != Transport::Anthropic {
+            return 0;
+        }
+        let budget = match self.effort() {
+            None | Some(ReasoningEffort::Zero) => return 0,
+            Some(ReasoningEffort::Budget(n)) => n,
+            Some(ReasoningEffort::Low | ReasoningEffort::Minimal) => 1_024,
+            Some(ReasoningEffort::Medium) => 8_000,
+            Some(ReasoningEffort::High | ReasoningEffort::XHigh | ReasoningEffort::Max) => 24_000,
+        };
+        budget.saturating_add(1_024)
+    }
 }
 
 impl Session {
@@ -2614,21 +2640,49 @@ impl Turn {
     }
 
     /// Context window of `model`; the catalog's figure, else the projection that
-    /// last overflowed (36 §6.6), else 0 (07 §8.1).
+    /// last overflowed (36 §6.6), else 0 (07 §8.1) — logged once per turn.
     fn window(&mut self, model: &Resolved) -> u32 {
-        let mut window = self
-            .shared
-            .catalog
-            .closest(&model.id)
-            .map_or(0, |m| m.limit.context);
-        if window == 0 {
-            window = self.state.window_hint;
-        }
+        let window = self.window_of(model);
         if window == 0 && !self.window_logged {
             self.window_logged = true;
             tracing::info!(session = %self.shared.id, model = %model.id, "context window unknown; auto-compaction off");
         }
         window
+    }
+
+    /// [`Turn::window`] without the log.
+    fn window_of(&self, model: &Resolved) -> u32 {
+        let window = self
+            .shared
+            .catalog
+            .closest(&model.id)
+            .map_or(0, |m| m.limit.context);
+        if window == 0 {
+            self.state.window_hint
+        } else {
+            window
+        }
+    }
+
+    /// 116: `Frame::max_tokens` for a call on the live frame — the catalog
+    /// output limit clamped so `projected` (`est` units, the measure the
+    /// session's calibration was derived from) plus the reply fits the
+    /// window; `None` when neither the window nor the output limit is known.
+    fn reply_budget(&self, current: &Current, transport: Transport, projected: u32) -> Option<u32> {
+        let window = self.window_of(&current.model);
+        let output = current.model.model.as_ref().map_or(0, |m| m.limit.output);
+        let calibration = self.state.calibration;
+        let budget = compact::reply_budget(
+            output,
+            window,
+            projected,
+            calibration,
+            current.reply_floor(transport),
+        );
+        if budget < output {
+            tracing::debug!(session = %self.shared.id, window, projected, calibration, output, budget, "reply budget clamped to the remaining window");
+        }
+        (budget > 0).then_some(budget)
     }
 
     /// The session's [`CompactionOverride::at_tokens`], if set.
@@ -2941,6 +2995,7 @@ impl Turn {
         let request_id = Uuid::now_v7().to_string();
         let mut attempt = 0;
         let mut stripped = false;
+        let mut shrunk = false;
         loop {
             let reserved = Reserved::open(
                 &self.shared.store,
@@ -2992,6 +3047,36 @@ impl Turn {
                 self.retries.fetch_add(1, Ordering::Relaxed);
                 attempt += 1;
                 continue;
+            }
+            // 116 (C): the provider counted the prompt and it fits; resend
+            // once with the reply budget it leaves, no backoff. A prompt that
+            // does not fit on its own falls through to round()'s compaction.
+            if !shrunk
+                && text.is_empty()
+                && !calls
+                && compact::is_overflow(&e)
+                && let Some(n) = compact::overflow_numbers(&e)
+                && let Some(sent) = n.max_tokens
+            {
+                let floor = compact::REPLY_FLOOR.max(current.reply_floor(transport));
+                if n.prompt.saturating_add(floor) <= n.window {
+                    let retry = (n.window - n.prompt)
+                        .saturating_sub(compact::HEADROOM_PAD)
+                        .max(floor);
+                    tracing::warn!(
+                        session = %self.shared.id,
+                        window = n.window,
+                        prompt = n.prompt,
+                        sent,
+                        retry,
+                        "overflow: provider counted the prompt; retrying with a smaller reply budget"
+                    );
+                    frame.max_tokens = Some(retry);
+                    shrunk = true;
+                    self.retries.fetch_add(1, Ordering::Relaxed);
+                    attempt += 1;
+                    continue;
+                }
             }
             if !matches!(compact::classify(&e), compact::Failure::Transient) {
                 return Err(Abort::Model(e));
@@ -3052,11 +3137,7 @@ impl Turn {
         calls: &mut bool,
         thinking: &mut Option<u64>,
     ) -> Result<StreamEnd, Abort> {
-        let effort = current
-            .effort
-            .clone()
-            .or_else(|| crate::frame::default_effort(&current.model));
-        let (req, opts) = frame.request(transport, conversation, effort);
+        let (req, opts) = frame.request(transport, conversation, current.effort());
         let open = current
             .backend
             .stream(&current.model, req, &opts, conversation);
@@ -3860,6 +3941,9 @@ impl Turn {
         }
 
         let (head, msgs) = self.projected(&images);
+        // 116: budgeted from the post-compaction frame, the same `est` measure
+        // the calibration ratio is derived from.
+        let max_tokens = self.reply_budget(&current, transport, self.est_frame());
         let frame = Frame {
             tools: &self.tools,
             system: &self.state.baseline,
@@ -3867,6 +3951,7 @@ impl Turn {
             history: &msgs,
             vision: current.vision(),
             strip_reasoning: false,
+            max_tokens,
         };
         let mut thinking = None;
         let end = match self
@@ -4562,7 +4647,11 @@ impl Turn {
         detached.tools = self.tools.clone();
         detached.cwd = self.cwd.clone();
         let session = self.shared.id;
-        let what = if chain { "harvest before compaction" } else { "harvest" };
+        let what = if chain {
+            "harvest before compaction"
+        } else {
+            "harvest"
+        };
         let previous = chain
             .then(|| self.state.harvest_task.take())
             .flatten()
@@ -5014,6 +5103,12 @@ impl Turn {
         let summary = instruction.starts_with(compact::COMPACT_INSTRUCTION);
         let mut text_only = false;
         loop {
+            // 116: the fold's frame, priced like the live one.
+            let projected = full
+                .iter()
+                .map(compact::est)
+                .fold(self.system_tokens(), u32::saturating_add)
+                .saturating_add(head.map_or(0, compact::est));
             let frame = Frame {
                 tools: &self.tools,
                 system: &self.state.baseline,
@@ -5021,6 +5116,7 @@ impl Turn {
                 history: full.as_slice(),
                 vision: current.vision(),
                 strip_reasoning: false,
+                max_tokens: self.reply_budget(current, transport, projected),
             };
             let mut thinking = None;
             let call = self.call(
@@ -5448,6 +5544,10 @@ impl Turn {
         message: ChatMessage,
         vision: bool,
     ) -> Result<Option<String>, String> {
+        // 116: one message on the fallback model; no calibration for it.
+        let output = current.model.model.as_ref().map_or(0, |m| m.limit.output);
+        let est = compact::est(&message).saturating_add((system.len() / 4) as u32);
+        let budget = compact::reply_budget(output, self.window_of(&current.model), est, None, 0);
         let frame = Frame {
             tools: &[],
             system,
@@ -5455,6 +5555,7 @@ impl Turn {
             history: std::slice::from_ref(&message),
             vision,
             strip_reasoning: false,
+            max_tokens: (budget > 0).then_some(budget),
         };
         let mut thinking = None;
         let call = self.call(
@@ -7345,14 +7446,22 @@ mod tests {
         )
     }
 
-    /// A local OpenAI-compatible endpoint: every connection is counted and
-    /// answered with the next scripted response (500 once they run out).
-    async fn fake_openai(responses: Vec<String>) -> (String, Arc<std::sync::atomic::AtomicUsize>) {
+    /// A local OpenAI-compatible endpoint: every connection is counted, its
+    /// request body recorded, and answered with the next scripted response
+    /// (500 once they run out).
+    async fn fake_openai(
+        responses: Vec<String>,
+    ) -> (
+        String,
+        Arc<std::sync::atomic::AtomicUsize>,
+        Arc<parking_lot::Mutex<Vec<String>>>,
+    ) {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let base_url = format!("http://{}/v1/", listener.local_addr().unwrap());
         let hits = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        let counter = hits.clone();
+        let bodies = Arc::new(parking_lot::Mutex::new(Vec::new()));
+        let (counter, recorded) = (hits.clone(), bodies.clone());
         tokio::spawn(async move {
             let mut responses = responses.into_iter();
             while let Ok((mut sock, _)) = listener.accept().await {
@@ -7384,6 +7493,13 @@ mod tests {
                         want = pos + 4 + len;
                     }
                 }
+                let body_at = buf
+                    .windows(4)
+                    .position(|w| w == b"\r\n\r\n")
+                    .map_or(buf.len(), |pos| pos + 4);
+                recorded
+                    .lock()
+                    .push(String::from_utf8_lossy(&buf[body_at..]).into_owned());
                 let response = responses
                     .next()
                     .unwrap_or_else(|| http(500, "text/plain", "no scripted response left"));
@@ -7391,7 +7507,7 @@ mod tests {
                 let _ = sock.shutdown().await;
             }
         });
-        (base_url, hits)
+        (base_url, hits, bodies)
     }
 
     /// A turn of session `id` on `store` whose model is the OpenAI-compatible
@@ -7502,7 +7618,7 @@ mod tests {
             .create_session(id, "fake/m", None, None, None)
             .await
             .unwrap();
-        let (base_url, hits) = fake_openai(vec![sse(
+        let (base_url, hits, _) = fake_openai(vec![sse(
             r#"{"prompt_tokens":10,"completion_tokens":5,"total_tokens":15,"cost":0.25}"#,
         )])
         .await;
@@ -7517,9 +7633,18 @@ mod tests {
             history: &history,
             vision: false,
             strip_reasoning: false,
+            max_tokens: None,
         };
         let end = turn
-            .call(&current, frame, transport, turn.turn, id, CallKind::Round, &mut None)
+            .call(
+                &current,
+                frame,
+                transport,
+                turn.turn,
+                id,
+                CallKind::Round,
+                &mut None,
+            )
             .await;
         assert!(end.is_ok_and(|e| e.captured_usage.is_some()));
         assert_eq!(hits.load(Ordering::SeqCst), 1);
@@ -7567,7 +7692,7 @@ mod tests {
             .create_session(id, "fake/m", None, None, None)
             .await
             .unwrap();
-        let (base_url, hits) = fake_openai(vec![
+        let (base_url, hits, _) = fake_openai(vec![
             http(500, "text/plain", "upstream hiccup"),
             sse(r#"{"prompt_tokens":10,"completion_tokens":5,"total_tokens":15,"cost":0.25}"#),
         ])
@@ -7583,11 +7708,20 @@ mod tests {
             history: &history,
             vision: false,
             strip_reasoning: false,
+            max_tokens: None,
         };
         assert!(
-            turn.call(&current, frame, transport, None, id, CallKind::Round, &mut None)
-                .await
-                .is_ok()
+            turn.call(
+                &current,
+                frame,
+                transport,
+                None,
+                id,
+                CallKind::Round,
+                &mut None
+            )
+            .await
+            .is_ok()
         );
         assert_eq!(hits.load(Ordering::SeqCst), 2);
 
@@ -7612,6 +7746,122 @@ mod tests {
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
+    /// The litellm/vLLM overflow body of the 116 incident, as the gateway returns it.
+    const OVERFLOW_400: &str = r#"{"error":{"message":"litellm.BadRequestError: OpenAIException - This server's maximum context length is 1048576 tokens: this request needs a 1049380-token context (105663 prompt tokens plus max_tokens 943717), which exceeds the context window this server was started for; shorten the prompt or reply.","type":"invalid_request_error","code":400}}"#;
+
+    fn max_tokens_of(body: &str) -> Option<u64> {
+        serde_json::from_str::<serde_json::Value>(body).unwrap()["max_tokens"].as_u64()
+    }
+
+    /// 116 (C): a 400 that counts the prompt is resent once, before any
+    /// backoff, with `max_tokens = window − prompt − HEADROOM_PAD`; the
+    /// frame's own budget reaches the wire on the first attempt.
+    #[tokio::test]
+    async fn overflow_with_numbers_is_resent_with_the_servers_reply_budget() {
+        let dir = std::env::temp_dir().join(format!("theuth-116-{}", Uuid::now_v7()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let store = Store::open_memory().await.unwrap();
+        let id = SessionId::new();
+        store
+            .create_session(id, "fake/m", None, None, None)
+            .await
+            .unwrap();
+        let (base_url, hits, bodies) = fake_openai(vec![
+            http(400, "application/json", OVERFLOW_400),
+            sse(r#"{"prompt_tokens":10,"completion_tokens":5,"total_tokens":15}"#),
+        ])
+        .await;
+        let (turn, current, transport, _events) =
+            gateway_turn(&dir, store.clone(), id, base_url).await;
+
+        let history = [ChatMessage::user("hi")];
+        let frame = Frame {
+            tools: &[],
+            system: "s",
+            head: None,
+            history: &history,
+            vision: false,
+            strip_reasoning: false,
+            max_tokens: Some(943_717),
+        };
+        let started = Instant::now();
+        assert!(
+            turn.call(
+                &current,
+                frame,
+                transport,
+                None,
+                id,
+                CallKind::Round,
+                &mut None
+            )
+            .await
+            .is_ok()
+        );
+        assert!(started.elapsed() < Duration::from_secs(RETRY_BACKOFF[0]));
+        assert_eq!(hits.load(Ordering::SeqCst), 2);
+        let bodies = bodies.lock();
+        assert_eq!(max_tokens_of(&bodies[0]), Some(943_717));
+        assert_eq!(
+            max_tokens_of(&bodies[1]),
+            Some(u64::from(1_048_576 - 105_663 - compact::HEADROOM_PAD))
+        );
+        assert_eq!(turn.retries.load(Ordering::Relaxed), 1);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// 116 (C): a prompt that does not fit on its own is not resent — the
+    /// overflow goes back to `round()` for its one compaction.
+    #[tokio::test]
+    async fn overflow_of_the_prompt_alone_is_left_to_compaction() {
+        let dir = std::env::temp_dir().join(format!("theuth-116-{}", Uuid::now_v7()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let store = Store::open_memory().await.unwrap();
+        let id = SessionId::new();
+        store
+            .create_session(id, "fake/m", None, None, None)
+            .await
+            .unwrap();
+        let (base_url, hits, _) = fake_openai(vec![http(
+            400,
+            "application/json",
+            r#"{"type":"error","error":{"type":"invalid_request_error","message":"prompt is too long: 210000 tokens > 200000 maximum"}}"#,
+        )])
+        .await;
+        let (turn, current, transport, _events) =
+            gateway_turn(&dir, store.clone(), id, base_url).await;
+
+        let history = [ChatMessage::user("hi")];
+        let frame = Frame {
+            tools: &[],
+            system: "s",
+            head: None,
+            history: &history,
+            vision: false,
+            strip_reasoning: false,
+            max_tokens: None,
+        };
+        let err = match turn
+            .call(
+                &current,
+                frame,
+                transport,
+                None,
+                id,
+                CallKind::Round,
+                &mut None,
+            )
+            .await
+        {
+            Err(Abort::Model(e)) => e,
+            _ => panic!("a prompt that does not fit alone is a model abort for round()"),
+        };
+        assert!(compact::is_overflow(&err), "{err}");
+        assert_eq!(hits.load(Ordering::SeqCst), 1);
+        assert_eq!(turn.retries.load(Ordering::Relaxed), 0);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
     /// 51 §6.1: no reservation, no transport. A session the ledger does not
     /// know (no `cost_owners` row) cannot reserve; the call aborts locally
     /// and the endpoint is never contacted.
@@ -7621,7 +7871,7 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let store = Store::open_memory().await.unwrap();
         let orphan = SessionId::new();
-        let (base_url, hits) =
+        let (base_url, hits, _) =
             fake_openai(vec![sse(r#"{"prompt_tokens":1,"completion_tokens":1}"#)]).await;
         let (turn, current, transport, _events) =
             gateway_turn(&dir, store.clone(), orphan, base_url).await;
@@ -7634,9 +7884,18 @@ mod tests {
             history: &history,
             vision: false,
             strip_reasoning: false,
+            max_tokens: None,
         };
         let err = match turn
-            .call(&current, frame, transport, None, orphan, CallKind::Round, &mut None)
+            .call(
+                &current,
+                frame,
+                transport,
+                None,
+                orphan,
+                CallKind::Round,
+                &mut None,
+            )
             .await
         {
             Err(Abort::Model(e)) => e,
@@ -7665,7 +7924,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("theuth-role-{}", Uuid::now_v7()));
         std::fs::create_dir_all(&dir).unwrap();
         let store = Store::open_memory().await.unwrap();
-        let (base_url, _hits) = fake_openai(vec![]).await;
+        let (base_url, _hits, _) = fake_openai(vec![]).await;
         let (turn, _, _, _events) = gateway_turn(&dir, store, SessionId::new(), base_url).await;
         let shared = &turn.shared;
         let id_of = |role: ModelRole| shared.role_model(&role).map(|r| r.id);
@@ -7709,7 +7968,7 @@ mod tests {
             .create_session(id, "fake/m", None, None, None)
             .await
             .unwrap();
-        let (base_url, hits) = fake_openai(vec![
+        let (base_url, hits, _) = fake_openai(vec![
             sse(r#"{"prompt_tokens":10,"completion_tokens":5,"total_tokens":15,"cost":0.25}"#),
             http(
                 200,

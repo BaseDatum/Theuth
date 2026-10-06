@@ -560,7 +560,9 @@ pub fn configure(builder: SessionBuilder) -> SessionBuilder {
     if !ort_ready() {
         // A builder exists, so `ort` found a runtime by itself (`$ORT_DYLIB_PATH`, a library on
         // the loader path) — never the one `ort_lib` would have chosen. Name that.
-        tracing::warn!("onnxruntime: configure() before ort_lib(): the runtime was not loaded by ort_lib");
+        tracing::warn!(
+            "onnxruntime: configure() before ort_lib(): the runtime was not loaded by ort_lib"
+        );
     }
     if webgpu_ready() {
         let index = WEBGPU_CHOICE

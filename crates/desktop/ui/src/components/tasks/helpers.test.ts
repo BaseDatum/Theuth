@@ -1,7 +1,7 @@
 import { expect, test } from 'vitest'
 import type { AgentSummary } from '@/rpc/bindings/AgentSummary'
 import type { Task } from '@/rpc/bindings/Task'
-import { USER, actionsFor, age, agent, awaitsMyReview, canDrag, columns, defaultReviewer, needsPerson, nodesOf, ownerText, parseBlocker, parseOwner, stateChip } from './helpers'
+import { USER, actionsFor, age, agent, awaitsMyReview, canDrag, columns, defaultReviewer, needsPerson, nodesOf, ownerText, parseBlocker, parseOwner, queueSummary, stateChip } from './helpers'
 
 const task = (t: Partial<Task>): Task => ({
   id: 'x', title: 't', brief: '', done_when: null, attachments: [], owner: USER, state: 'todo', reviewer: null, blockers: [], blocks: [], parent: null, project: null,
@@ -101,4 +101,13 @@ test('age buckets', () => {
   expect(age(0, 5 * 60_000)).toBe('5m')
   expect(age(0, 3 * 3_600_000)).toBe('3h')
   expect(age(0, 72 * 3_600_000)).toBe('3d')
+})
+
+test('queue bar wording: kinds at zero omitted, plurals per kind, one item "needs"', () => {
+  expect(queueSummary({ decisions: 2, reviews: 1, proposed: 1 })).toEqual({ headline: '4 need you', breakdown: '2 decisions · 1 review · 1 proposed agent' })
+  expect(queueSummary({ decisions: 0, reviews: 1, proposed: 0 })).toEqual({ headline: '1 needs you', breakdown: '1 review' })
+  expect(queueSummary({ decisions: 1, reviews: 0, proposed: 0 })).toEqual({ headline: '1 needs you', breakdown: '1 decision' })
+  expect(queueSummary({ decisions: 0, reviews: 0, proposed: 2 })).toEqual({ headline: '2 need you', breakdown: '2 proposed agents' })
+  expect(queueSummary({ decisions: 3, reviews: 2, proposed: 0 })).toEqual({ headline: '5 need you', breakdown: '3 decisions · 2 reviews' })
+  expect(queueSummary({ decisions: 0, reviews: 0, proposed: 0 })).toEqual({ headline: '0 need you', breakdown: '' })
 })

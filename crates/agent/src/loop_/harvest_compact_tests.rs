@@ -75,7 +75,8 @@ fn compaction_does_not_wait_for_the_harvest() {
 }
 
 async fn scenarios() {
-    let reg_dir = std::env::temp_dir().join(format!("theuth-harvest-compact-reg-{}", Uuid::now_v7()));
+    let reg_dir =
+        std::env::temp_dir().join(format!("theuth-harvest-compact-reg-{}", Uuid::now_v7()));
     std::fs::create_dir_all(&reg_dir).unwrap();
     let reg_rt = Runtime::new(figment::Figment::new(), reg_dir.clone());
     tools::registry::start(&reg_rt).await.unwrap();
@@ -142,10 +143,18 @@ async fn compaction_returns_before_the_harvest() {
         .await;
     assert_eq!(harvested(&events), Some((1, 0)));
     let reqs = h.requests().await;
-    assert_eq!(reqs.len(), main_calls + 1, "the harvest is the only new call: {reqs:#?}");
+    assert_eq!(
+        reqs.len(),
+        main_calls + 1,
+        "the harvest is the only new call: {reqs:#?}"
+    );
     let harvest = harvest_requests(&h).await;
     assert_eq!(harvest.len(), 1);
-    assert!(harvest[0].contains(MARKER), "the pre-fold frame: {}", harvest[0]);
+    assert!(
+        harvest[0].contains(MARKER),
+        "the pre-fold frame: {}",
+        harvest[0]
+    );
     assert!(
         !harvest[0].contains("Recent turns follow verbatim"),
         "not the compaction head: {}",
@@ -205,10 +214,18 @@ async fn a_running_harvest_is_chained_not_skipped() {
     let events = h
         .drain_until(|e| matches!(e, AgentEvent::Harvested { .. }))
         .await;
-    assert_eq!(harvested(&events), Some((0, 1)), "the pre-compaction harvest");
+    assert_eq!(
+        harvested(&events),
+        Some((0, 1)),
+        "the pre-compaction harvest"
+    );
     let harvest = harvest_requests(&h).await;
     assert_eq!(harvest.len(), 2, "two requests, none skipped");
-    assert!(harvest[1].contains(MARKER), "the pre-fold frame: {}", harvest[1]);
+    assert!(
+        harvest[1].contains(MARKER),
+        "the pre-fold frame: {}",
+        harvest[1]
+    );
     assert!(
         compacting
             .state
@@ -232,16 +249,14 @@ async fn a_cancelled_compaction_rolls_back_and_the_harvest_lands() {
     let cancel = CancellationToken::new();
     let (mut turn, _) = h.turn("openai/textonly", cancel.clone()).await;
     turn.state.turns_since_harvest = 1;
-    let (result, events) = tokio::join!(
-        turn.compact_now(Some(CompactStyle::Summary), None),
-        async {
+    let (result, events) =
+        tokio::join!(turn.compact_now(Some(CompactStyle::Summary), None), async {
             let events = h
                 .drain_until(|e| matches!(e, AgentEvent::Harvesting { .. }))
                 .await;
             cancel.cancel();
             events
-        }
-    );
+        });
     let err = result.unwrap_err();
     assert!(err.contains("cancelled"), "{err}");
     assert_eq!(harvesting(&events), 1);

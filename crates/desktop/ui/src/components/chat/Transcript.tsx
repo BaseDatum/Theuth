@@ -7,13 +7,10 @@ import { useNudges } from '@/lib/nudges'
 import { useApi } from '@/lib/rpc'
 import { useToolRuns } from '@/lib/tool-runs'
 import { cn } from '@/lib/utils'
-import { withGaps } from '@/lib/time'
-import type { AgentInfo } from '@/rpc/extra'
 import { type Prompt, useApprovals, useAsks, useSecretRequests } from '@/store/approvals'
 import { useScope } from '@/store/engine-scope'
 import {
   type Activity,
-  type Entry,
   freshness,
   shownActivity,
   useEntries,
@@ -21,7 +18,8 @@ import {
 } from '@/store/sessions'
 import { Message, PromptCard } from './Message'
 import { ActivityIndicator } from './Indicators'
-import { foldRuns, type Run, ToolRunCard } from './ToolRunCard'
+import { type Row, buildRows } from './rows'
+import { ToolRunCard } from './ToolRunCard'
 
 const PAGE = 60
 /** Distance from the bottom (px) within which new content keeps the view pinned. */
@@ -38,47 +36,6 @@ const WORD: Record<Activity, string> = {
   compacting: 'compacting…',
   harvesting: 'harvesting…',
   vision: 'inspecting images…',
-}
-
-type Row =
-  | { key: string; entry: Entry; prompts: Prompt[] | null }
-  | { key: string; run: Run; prompts: Prompt[] | null }
-  | { key: string; prompt: Prompt; from?: AgentInfo }
-  /** `1 h 12 min later · 15:15` between two rows at least an hour apart (74 §5). */
-  | { key: string; gap: string }
-
-/** `at` of a row: the entry's, or the first entry's of a folded run. */
-const rowAt = (row: Row): number | undefined => ('entry' in row ? row.entry.at : 'run' in row ? row.run[0]?.at : undefined)
-
-/** Entries (consecutive tool calls folded into one run row when `collapse`, 70), each with the prompts waiting on its
- * (unfinished, same-named) tool call; prompts with no such row come last.
- * A subagent's prompt (19 §3.4: `children` is the session's subtree) is a loose row too, labelled with the child. */
-function buildRows(entries: Entry[], pending: Prompt[], session: string, children: Record<string, AgentInfo> | undefined, collapse: boolean): Row[] {
-  const items = collapse ? foldRuns(entries) : entries
-  const rows: Row[] = items.map((item) =>
-    Array.isArray(item) ? { key: (item[0] as Entry).id, run: item, prompts: null } : { key: item.id, entry: item, prompts: null },
-  )
-  const loose: Row[] = []
-  for (const prompt of pending) {
-    if (prompt.session !== session) {
-      const from = children?.[prompt.session]
-      if (from) loose.push({ key: prompt.id, prompt, from })
-      continue
-    }
-    const tool =
-      prompt.type === 'ApprovalRequested' ? prompt.tool : prompt.type === 'AskRequested' ? 'ask_user' : 'secret_request'
-    const waits = (e: Entry) => e.kind === 'tool' && e.name === tool && !e.result
-    let at = items.length - 1
-    while (at >= 0) {
-      const item = items[at] as Entry | Run
-      if (Array.isArray(item) ? item.some(waits) : waits(item)) break
-      at--
-    }
-    const row = rows[at]
-    if (row && 'prompts' in row) row.prompts = [...(row.prompts ?? []), prompt]
-    else loose.push({ key: prompt.id, prompt })
-  }
-  return withGaps(rows.concat(loose), rowAt)
 }
 
 type Tick = { index: number; ask: string; reply: string }

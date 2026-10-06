@@ -1151,7 +1151,10 @@ impl Store {
     }
 
     /// The manifest [`Self::set_harness_commands`] stored; empty when none.
-    pub async fn harness_commands(&self, id: SessionId) -> anyhow::Result<Vec<crate::HarnessCommand>> {
+    pub async fn harness_commands(
+        &self,
+        id: SessionId,
+    ) -> anyhow::Result<Vec<crate::HarnessCommand>> {
         let row: Option<(Option<String>,)> =
             sqlx::query_as("SELECT harness_commands FROM sessions WHERE id = ?")
                 .bind(id.to_string())
@@ -1694,7 +1697,13 @@ impl Store {
         id: SessionId,
         turn: i64,
         keep: &str,
-    ) -> anyhow::Result<(String, usize, u32, Option<ChatMessage>, Vec<(i64, ChatMessage)>)> {
+    ) -> anyhow::Result<(
+        String,
+        usize,
+        u32,
+        Option<ChatMessage>,
+        Vec<(i64, ChatMessage)>,
+    )> {
         let sid = id.to_string();
         let mut tx = self.begin_write().await?;
         let visible = rows_in(&mut tx, id, 0).await?;
@@ -1743,7 +1752,13 @@ impl Store {
         let active = active_in(&mut tx, id).await?;
         tx.commit().await?;
         let (head, tail) = active.effective();
-        Ok((revision.to_string(), assistants.len(), active.epoch, head, tail))
+        Ok((
+            revision.to_string(),
+            assistants.len(),
+            active.epoch,
+            head,
+            tail,
+        ))
     }
 
     /// New session with the source's title/model/effort/cwd and copies of the
@@ -2652,7 +2667,14 @@ fn decode_rows(id: SessionId, rows: Vec<(i64, String)>) -> Vec<(i64, ChatMessage
 }
 
 /// One `messages` row as selected: `(seq, body, excluded, vision, at, thinking_ms)`.
-type RawRow = (i64, String, Option<String>, Option<String>, Option<String>, Option<i64>);
+type RawRow = (
+    i64,
+    String,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    Option<i64>,
+);
 
 /// [`RawRow`]s to [`Row`]s: undecodable bodies are skipped (warned); an
 /// undecodable mask is an error, because replaying a row the user removed is

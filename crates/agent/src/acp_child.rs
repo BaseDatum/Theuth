@@ -499,7 +499,11 @@ impl AcpChild {
         self.context = u32::try_from(u.used).unwrap_or(u32::MAX);
         let size = u32::try_from(u.size).ok().filter(|s| *s > 0);
         if size.is_some() && size != self.context_size {
-            match self.store.set_context_size(self.id, size.unwrap_or(0)).await {
+            match self
+                .store
+                .set_context_size(self.id, size.unwrap_or(0))
+                .await
+            {
                 Ok(()) => self.context_size = size,
                 Err(e) => tracing::warn!(session = %self.id, "set_context_size: {e:#}"),
             }
@@ -1286,7 +1290,9 @@ pub(crate) fn tokens_of(u: &AcpUsage) -> TokenTotals {
             .input_tokens
             .saturating_add(cache_read)
             .saturating_add(cache_write),
-        output: u.output_tokens.saturating_add(u.thought_tokens.unwrap_or(0)),
+        output: u
+            .output_tokens
+            .saturating_add(u.thought_tokens.unwrap_or(0)),
         cache_read,
         cache_write,
         unknown_calls: 0,
@@ -1307,13 +1313,13 @@ pub(crate) fn translate(update: SessionUpdate, turn: &mut Turn) -> Vec<AgentEven
         }
         SessionUpdate::AgentMessageChunk(_)
         | SessionUpdate::ToolCall(_)
-        | SessionUpdate::ToolCallUpdate(_) => turn.thinking.take().map(|start| {
-            AgentEvent::ReasoningDone {
+        | SessionUpdate::ToolCallUpdate(_) => {
+            turn.thinking.take().map(|start| AgentEvent::ReasoningDone {
                 session,
                 turn: id,
                 ms: start.elapsed().as_millis() as u64,
-            }
-        }),
+            })
+        }
         _ => None,
     };
     let mut out = match update {
@@ -3176,7 +3182,10 @@ mod tests {
         let row = rig.store.session(rig.session).await.unwrap().unwrap();
         assert_eq!(row.context_size, Some(200_000));
         let cost = rig.store.session_cost(rig.session).await.unwrap().unwrap();
-        assert_eq!(cost.direct.returned, vec![Money::from_f64(0.25, "USD").unwrap()]);
+        assert_eq!(
+            cost.direct.returned,
+            vec![Money::from_f64(0.25, "USD").unwrap()]
+        );
 
         // omp's `agent_end` usage can land after the prompt response: no
         // turn open, still applied, attributed to the turn just closed.
@@ -3195,7 +3204,10 @@ mod tests {
             } => assert_eq!((t, context, size), (*turn, 6_000, Some(200_000))),
             other => panic!("{other:?}"),
         }
-        assert!(!rig.actor.ask(IsRunning).await.unwrap(), "no continuation turn");
+        assert!(
+            !rig.actor.ask(IsRunning).await.unwrap(),
+            "no continuation turn"
+        );
     }
 
     /// 75 §7: a `session/prompt` response with `usage` lands as this turn's
