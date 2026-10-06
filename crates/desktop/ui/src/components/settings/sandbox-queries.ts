@@ -188,6 +188,14 @@ export const ATTENTION_SIM: AttentionItem[] = [
   { id: 'handoff:h-sim-1', kind: 'handoff', title: 'researcher needs you: the login page wants a 2FA code', detail: 'lab', at_ms: NOW - 120_000, task: null, agent: 'researcher', session: 'sess-lab-01a0f02b', approval: null, decision: null, packet: null },
 ]
 
+/**
+ * 101b R1: the sim has no live document, and the browser cannot `doc_create(kind="board")`, so these point at the
+ * board notes `doc_list("board")` returned on the dev daemon (2026-10-06). Elsewhere `PacketBoard` shows its
+ * "could not be opened" line and the summary — also a state worth seeing.
+ */
+const SIM_BOARD_DECISION = 'agqpgxemf5zcdnb45r3i6ryn3e'
+const SIM_BOARD_REVIEW = 'agqol5d3h52ohgmj56t666drem'
+
 /** 101 §3: the packets behind the two items above, served by `usePacket` under `?sim=`. */
 export const PACKET_SIM: Record<string, Packet> = {
   'decision:apr-7f3a': {
@@ -235,6 +243,7 @@ Whichever path, the new value lands in the \`GRAFANA_TOKEN\` secret and the runb
       },
     ],
     checks: [],
+    board: SIM_BOARD_DECISION,
   },
   [`review:${SIM_TASK_REVIEW}`]: {
     key: `review:${SIM_TASK_REVIEW}`,
@@ -305,6 +314,7 @@ Self-hosted: run \`theuth migrate\` first.`,
       { text: 'Diagram of the sync flow', done: true, note: 'rendered from the mermaid artifact' },
       { text: 'Pricing change reviewed by finance', done: false, note: 'asked in #finance, no answer yet' },
     ],
+    board: SIM_BOARD_REVIEW,
   },
 }
 

@@ -21,9 +21,9 @@ use crate::types::{
     Disposition, DoneBecause, Owner, TaskCreate, TaskFilter, TaskId, TaskPatch, TaskState,
 };
 use crate::{
-    AnswerDecision, AwaitDecision, CheckoutTask, CommentTask, CreateTask, EffectiveReviewer,
-    Escalate, GetTask, ListTasks, MoveTask, NoteDisposition, PlaceTask, ReassignTask, ReviewPacket,
-    Tasks, UpdateTask, WriteBudgetOf, escalate,
+    AnswerDecision, AwaitDecision, CheckBoard, CheckoutTask, CommentTask, CreateTask,
+    EffectiveReviewer, Escalate, GetTask, ListTasks, MoveTask, NoteDisposition, PlaceTask,
+    ReassignTask, ReviewPacket, Tasks, UpdateTask, WriteBudgetOf, escalate,
 };
 
 /// `ask` → `String`: the actor text of `session`'s caller — `agent:<name>`
@@ -466,14 +466,19 @@ pub struct TaskUpdateArgs {
     /// evident intention), or `follow_ups_filed {tasks}` (the work continues in those tasks).
     #[serde(default)]
     pub done_because: Option<DoneBecause>,
-    /// With `disposition: review`: the review packet's markdown summary (≤ 16 KiB). Required when the
+    /// With `disposition: review`: the review packet's one-paragraph summary (≤ 16 KiB). Required when the
     /// reviewer is the user.
     #[serde(default)]
     pub summary: Option<String>,
+    /// With `disposition: review`: the `doc` id of the review mini-board (`doc_create(kind="board")`, sections
+    /// `## What was done` · `## Why it matters to you` · `## The picture` · `## Against the criteria` ·
+    /// `## Walk through`). Required when the reviewer is the user.
+    #[serde(default)]
+    pub board: Option<String>,
     /// With `disposition: review`: exactly what to review (≤ 12), evidence inline: `code` = `ref: "path#L10-L24"`
     /// + `text` the lines verbatim (+ `root`); `diff` = `text` a unified diff; `artifact` / `note` / `knowledge` /
     /// `session` / `meeting` / `task` by id; `url` by `http(s)` URL. `title` and a one-line `note` each; `text`
-    /// ≤ 32 KiB. ≥ 1 when the reviewer is the user.
+    /// ≤ 32 KiB. Optional — the board's Excerpts are the primary evidence.
     #[serde(default)]
     pub pointers: Option<Vec<Pointer>>,
     /// With `disposition: review`: your status against each `done_when` line (`{text, done, note}`).
@@ -497,15 +502,21 @@ impl Tool for TaskUpdateTool {
          the work, `continuing` naming what will wake the task again, `done` (reviewers only, with \
          `done_because`; a desk that is its own reviewer marks done only against an explicit `done_when` and \
          only as `criteria_met`). A hand-over to review carries the review packet the reviewer reads instead \
-         of the thread: `summary` (markdown, ```mermaid / ```json-render fences welcome), `pointers` to exactly \
-         what to review with the evidence inline (`code` = `path#L10-L24` plus the lines verbatim, `diff` = a \
-         unified diff, artifacts / notes / sessions / URLs by id or URL; a one-line `note` each) and `checks` \
-         (your status against each `done_when` line). When the reviewer is the user the `summary` and at least \
-         one pointer are required and the tool refuses without them. Caps: summary 16 KiB, 12 pointers (text \
-         32 KiB each). `state: doing` sends a reviewed task \
-         back to its owner; `state: cancelled` drops it. A write by a session that does not hold the \
-         checkout is refused once the checkout moved on (`superseded`). One session may write to at most 20 \
-         tasks it does not own. Every change is logged to the thread with your session and before/after."
+         of the thread: `summary` (one short paragraph: the abstract the inbox row shows), `board` — the id of \
+         a review mini-board you wrote for the reviewer (`doc_create(kind=\"board\", root=…)` then `doc_insert`, \
+         see the `board` skill) with the sections `## What was done`, `## Why it matters to you`, `## The picture` \
+         (one diagram, `ref` on every unit), `## Against the criteria` (each `done_when` line with its evidence \
+         anchor), `## Walk through` (Excerpts in reading order), optionally `## Open questions`; write for the \
+         person reviewing — what, why it matters to them, the whole picture; diagram and link heavy; short — \
+         `checks` (your status against each `done_when` line) and optional `pointers` with the evidence inline \
+         (`code` = `path#L10-L24` plus the lines verbatim, `diff` = a unified diff, artifacts / notes / sessions / \
+         URLs by id or URL; a one-line `note` each). When the reviewer is the user the `summary` and the `board` \
+         are required (the board must exist, be a board and open with those sections) and the tool refuses \
+         without them, naming what to fix. Caps: summary 16 KiB, 12 pointers (text 32 KiB each). `state: doing` \
+         sends a reviewed task back to its owner; `state: cancelled` drops it. A write by a session that does \
+         not hold the checkout is refused once the checkout moved on (`superseded`). One session may write to \
+         at most 20 tasks it does not own. Every change is logged to the thread with your session and \
+         before/after."
             .into()
     }
 
@@ -552,6 +563,7 @@ impl Tool for TaskUpdateTool {
                         &a.id,
                         Some(reviewer.clone()),
                         a.summary,
+                        a.board,
                         a.pointers,
                         a.checks,
                         &me,
@@ -635,10 +647,13 @@ pub struct TaskMoveArgs {
     /// from an agent; the user's approval defaults to `intent_met`.
     #[serde(default)]
     pub done_because: Option<DoneBecause>,
-    /// With `state: review`: the review packet's markdown summary (≤ 16 KiB). Required when the reviewer is the user.
+    /// With `state: review`: the review packet's one-paragraph summary (≤ 16 KiB). Required when the reviewer is the user.
     #[serde(default)]
     pub summary: Option<String>,
-    /// With `state: review`: exactly what to review (≤ 12), evidence inline (see `task_update`). ≥ 1 when the reviewer is the user.
+    /// With `state: review`: the `doc` id of the review mini-board (see `task_update`). Required when the reviewer is the user.
+    #[serde(default)]
+    pub board: Option<String>,
+    /// With `state: review`: exactly what to review (≤ 12), evidence inline (see `task_update`); optional.
     #[serde(default)]
     pub pointers: Option<Vec<Pointer>>,
     /// With `state: review`: your status against each `done_when` line.
@@ -661,8 +676,11 @@ impl Tool for TaskMoveTool {
          (the user's move clears system blockers such as `no continuation`; a decision needs its answer, a task \
          blocker its task), doing → review (owner). `todo` from backlog wakes the owner. Illegal moves are refused \
          with the list of states allowed from where the task is. A move to `review` whose reviewer is the user \
-         needs the review packet (`summary` and ≥ 1 `pointers` entry with the evidence inline, `checks` against \
-         `done_when`) and is refused without it. Working a task yourself is `task_checkout`; \
+         needs the review packet — `summary` (one paragraph) and `board`, the id of a review mini-board \
+         (`doc_create(kind=\"board\")`, sections `## What was done`, `## Why it matters to you`, `## The picture`, \
+         `## Against the criteria`, `## Walk through`; write for the person reviewing — what, why it matters to \
+         them, the whole picture; diagram and link heavy; short), plus `checks` against `done_when` — and is \
+         refused without it. Working a task yourself is `task_checkout`; \
          finishing one is `task_update` with a disposition."
             .into()
     }
@@ -671,7 +689,11 @@ impl Tool for TaskMoveTool {
         let actor = actor()?;
         let me = caller(&actor, &cx).await;
         let packet = if a.state == TaskState::Review {
-            match review_gate(&actor, &a.task, None, a.summary, a.pointers, a.checks, &me).await {
+            match review_gate(
+                &actor, &a.task, None, a.summary, a.board, a.pointers, a.checks, &me,
+            )
+            .await
+            {
                 Ok(p) => p,
                 Err(e) => return Ok(ToolOutput::err(e)),
             }
@@ -712,15 +734,16 @@ impl Tool for TaskMoveTool {
     }
 }
 
-/// 101 D1, before any write: who reviews `id` if it goes to review now; the
-/// user needs a `summary` and ≥ 1 pointer, every audience gets the caps
-/// checked. `Ok(Some(_))` is the packet to store once the task is in review;
-/// `Ok(None)` = an agent audience with nothing given.
+/// 101 D1/R1/R2, before any write: who reviews `id` if it goes to review now;
+/// the user needs a `summary` and a `board` with the review skeleton, every
+/// audience gets the caps checked. `Ok(Some(_))` is the packet to store once
+/// the task is in review; `Ok(None)` = an agent audience with nothing given.
 async fn review_gate(
     actor: &ActorRef<Tasks>,
     id: &TaskId,
     reviewer: Option<Owner>,
     summary: Option<String>,
+    board: Option<String>,
     pointers: Option<Vec<Pointer>>,
     checks: Option<Vec<Check>>,
     me: &str,
@@ -733,7 +756,7 @@ async fn review_gate(
             })
             .await,
     )?;
-    let given = summary.is_some() || pointers.is_some() || checks.is_some();
+    let given = summary.is_some() || board.is_some() || pointers.is_some() || checks.is_some();
     let p = packet::Packet {
         key: packet::review_key(id),
         task: id.clone(),
@@ -742,6 +765,7 @@ async fn review_gate(
         at_ms: 0,
         question: None,
         summary: summary.unwrap_or_default(),
+        board,
         options: vec![],
         recommended: None,
         pointers: pointers.unwrap_or_default(),
@@ -749,11 +773,20 @@ async fn review_gate(
     };
     if who == Owner::User {
         packet::require_for_user(&p)?;
+        flat(
+            actor
+                .ask(CheckBoard {
+                    kind: p.kind,
+                    board: p.board.clone().unwrap_or_default(),
+                })
+                .await,
+        )?;
     }
     packet::validate(&p)?;
     Ok((who == Owner::User || given).then_some(ReviewPacket {
         id: id.clone(),
         summary: p.summary,
+        board: p.board,
         pointers: p.pointers,
         checks: p.checks,
         actor: me.to_owned(),
@@ -1196,10 +1229,15 @@ pub struct EscalateArgs {
     pub task: TaskId,
     /// The question, one or two sentences; the decider sees it first.
     pub question: String,
-    /// Markdown (≤ 16 KiB): two to five short paragraphs on what the decision is about and what hangs on it;
-    /// a ```mermaid or ```json-render fence when structure helps. Required when your manager is the user.
+    /// Markdown (≤ 16 KiB): one short paragraph — the abstract the inbox row, the thread and the channel card
+    /// show; the detail goes on the `board`. Required when your manager is the user.
     #[serde(default)]
     pub summary: Option<String>,
+    /// The `doc` id of the mini-board you wrote for the decider (`doc_create(kind="board")`, sections
+    /// `## What you're deciding` · `## Why it matters to you` · `## The picture` · `## Options` · `## Look at`).
+    /// Required when your manager is the user.
+    #[serde(default)]
+    pub board: Option<String>,
     /// Concrete options (≤ 6, labels ≤ 80 chars): `"label"` or `{label, description}` with a one-line
     /// trade-off each; the decider may still answer freely.
     #[serde(default)]
@@ -1228,12 +1266,18 @@ impl Tool for EscalateTool {
          line as a wake with reason `answer`: a manager that is an agent answers with `decide` or \
          escalates further; the user gets it on their attention surface and as a card on their channels \
          with the options as buttons. Prepare the packet the decider reads instead of the thread: \
-         `summary` (markdown, ```mermaid / ```json-render fences welcome), `options` with one-line \
-         descriptions and a `recommended` index, and `pointers` to exactly what to look at with the \
-         evidence inline (`code` = `path#L10-L24` plus the lines verbatim, `diff` = a unified diff, \
-         artifacts / notes / sessions / URLs by id or URL), a one-line `note` each. When your manager is \
-         the user the `summary` is required and the tool refuses without it. Caps: summary 16 KiB, \
-         6 options (labels 80 chars), 12 pointers (text 32 KiB each). \
+         `summary` (one short paragraph: the abstract the inbox row and the card show), `board` — the id \
+         of a mini-board you wrote for the decider (`doc_create(kind=\"board\", root=…)` then `doc_insert`, \
+         see the `board` skill) with the sections `## What you're deciding`, `## Why it matters to you`, \
+         `## The picture` (one diagram, `ref` on every unit), `## Options` (one `###` per option: consequence, \
+         cost/risk, reversibility, recommendation), `## Look at` (Excerpts), optionally `## Open questions`; \
+         write for the person deciding — what, why it matters to them, the whole picture; diagram and link \
+         heavy; short. Then `options` with one-line descriptions and a `recommended` index, and optional \
+         `pointers` with the evidence inline (`code` = `path#L10-L24` plus the lines verbatim, `diff` = a \
+         unified diff, artifacts / notes / sessions / URLs by id or URL), a one-line `note` each. When your \
+         manager is the user the `summary` and the `board` are required (the board must exist, be a board \
+         and open with those sections) and the tool refuses without them, naming what to fix. Caps: summary \
+         16 KiB, 6 options (labels 80 chars), 12 pointers (text 32 KiB each). \
          You wait up to `roster.decision_wait_secs` (two minutes) for a live answer; if it comes it is \
          in this tool's output and the task is unblocked. If none comes the task stays \
          `blocked: decision:<id>`, your episode ends with its journal, and the answer re-wakes you. \
@@ -1250,6 +1294,7 @@ impl Tool for EscalateTool {
                     task: a.task.clone(),
                     question: a.question,
                     summary: a.summary,
+                    board: a.board,
                     options: a.options.into_iter().map(Into::into).collect(),
                     recommended: a.recommended,
                     pointers: a.pointers,
@@ -1358,7 +1403,7 @@ mod review_gate_tests {
     use kameo::actor::Spawn;
 
     use super::*;
-    use crate::ledger::tests::rig;
+    use crate::ledger::tests::{board, rig};
     use crate::{GetPacket, ListPackets};
 
     fn code_pointer() -> Pointer {
@@ -1372,10 +1417,10 @@ mod review_gate_tests {
         }
     }
 
-    /// 101 D1 at the tool boundary: a hand-over whose effective reviewer is the
-    /// user needs a summary and a pointer (refused before any write); an agent
-    /// reviewer needs nothing; the packet is stored (and replaced) once the task
-    /// is in review; `GetPacket` answers by key.
+    /// 101 D1/R1/R2 at the tool boundary: a hand-over whose effective reviewer is
+    /// the user needs a summary and a board with the review skeleton (refused
+    /// before any write); an agent reviewer needs nothing; the packet is stored
+    /// (and replaced) once the task is in review; `GetPacket` answers by key.
     #[tokio::test]
     async fn review_gate_enforces_the_user_audience() {
         let mut r = rig().await;
@@ -1396,10 +1441,10 @@ mod review_gate_tests {
         });
 
         // task_move {state: review}: the effective reviewer decides.
-        let e = review_gate(&actor, &lead.id, None, None, None, None, "agent:lead")
+        let e = review_gate(&actor, &lead.id, None, None, None, None, None, "agent:lead")
             .await
             .unwrap_err();
-        assert!(e.contains("`pointers`") && e.contains("`summary`"), "{e}");
+        assert!(e.contains("needs a `board`"), "{e}");
         assert_eq!(
             flat(actor.ask(GetTask(lead.id.clone())).await)
                 .unwrap()
@@ -1414,13 +1459,17 @@ mod review_gate_tests {
             Some("done".into()),
             None,
             None,
+            None,
             "agent:lead",
         )
         .await
         .unwrap_err();
-        assert!(e.contains("`pointers`"), "summary alone is not enough: {e}");
         assert!(
-            review_gate(&actor, &ops.id, None, None, None, None, "agent:ops")
+            e.contains("needs a `board`") && e.contains("`## What was done`"),
+            "summary alone is not enough: {e}"
+        );
+        assert!(
+            review_gate(&actor, &ops.id, None, None, None, None, None, "agent:ops")
                 .await
                 .unwrap()
                 .is_none(),
@@ -1434,11 +1483,12 @@ mod review_gate_tests {
             None,
             None,
             None,
+            None,
             "agent:ops",
         )
         .await
         .unwrap_err();
-        assert!(e.contains("`pointers`"), "{e}");
+        assert!(e.contains("`board`"), "{e}");
         // caps apply to every audience
         let e = review_gate(
             &actor,
@@ -1447,11 +1497,43 @@ mod review_gate_tests {
             Some("x".repeat(packet::SUMMARY_MAX + 1)),
             None,
             None,
+            None,
             "agent:ops",
         )
         .await
         .unwrap_err();
         assert!(e.contains("`summary`") && e.contains("16 KiB"), "{e}");
+        // R2 through the actor: the board must exist, be a board, and open with the review skeleton
+        board(&r.thread, "rb-bad", &["What was done", "The picture"]);
+        for (b, want) in [
+            ("nope", "board `nope` does not exist"),
+            (
+                "rb-bad",
+                "board `rb-bad`: section 2 of a review board must be `## Why it matters to you`",
+            ),
+        ] {
+            let e = review_gate(
+                &actor,
+                &lead.id,
+                None,
+                Some("done".into()),
+                Some(b.into()),
+                None,
+                None,
+                "agent:lead",
+            )
+            .await
+            .unwrap_err();
+            assert!(e.starts_with(want), "{e}");
+        }
+        assert_eq!(
+            flat(actor.ask(GetTask(lead.id.clone())).await)
+                .unwrap()
+                .state,
+            TaskState::Doing,
+            "nothing written"
+        );
+        board(&r.thread, "rb", &packet::REVIEW_SECTIONS);
 
         // the happy path: gate, move, store; then replace
         let key = packet::review_key(&lead.id);
@@ -1461,6 +1543,7 @@ mod review_gate_tests {
                 &lead.id,
                 None,
                 Some(summary.into()),
+                Some("rb".into()),
                 Some(vec![code_pointer()]),
                 None,
                 "agent:lead",
@@ -1468,6 +1551,7 @@ mod review_gate_tests {
             .await
             .unwrap()
             .expect("a packet for the user");
+            assert_eq!(rp.board.as_deref(), Some("rb"));
             if summary == "first" {
                 let t = flat(
                     actor
@@ -1491,7 +1575,10 @@ mod review_gate_tests {
             let p = flat(actor.ask(GetPacket(key.clone())).await)
                 .unwrap()
                 .expect("stored");
-            assert_eq!((p.summary.as_str(), p.pointers.len()), (summary, 1));
+            assert_eq!(
+                (p.summary.as_str(), p.board.as_deref(), p.pointers.len()),
+                (summary, Some("rb"), 1)
+            );
         }
         assert_eq!(
             flat(

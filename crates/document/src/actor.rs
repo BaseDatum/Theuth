@@ -1512,6 +1512,69 @@ fn label_outline(outline: &str, authors: &HashMap<String, String>) -> String {
     out
 }
 
+/// `ask` → `Result<Option<DocHeadings>, String>`: the kind of `doc` and its top-level headings in
+/// order; `None` when no such document exists. What a task packet's mini-board is checked against
+/// (101 R2) — an `Outline` at depth 1 reduced to its `[hN]` lines.
+#[derive(Clone, Debug)]
+pub struct Headings(pub DocId);
+
+/// A document's kind and its top-level headings as `(level, text)`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DocHeadings {
+    /// `kind` of the document.
+    pub kind: DocKind,
+    /// `(level, text)` of every top-level heading block, in order.
+    pub headings: Vec<(u8, String)>,
+}
+
+impl Message<Headings> for DocumentActor {
+    type Reply = DelegatedReply<Result<Option<DocHeadings>, String>>;
+
+    async fn handle(&mut self, m: Headings, ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        let (reply, tx) = ctx.reply_sender();
+        let Some(tx) = tx else { return reply };
+        if !self.open.contains_key(&m.0) && self.store.read_meta(&m.0).is_err() {
+            tx.send(Ok(None));
+            return reply;
+        }
+        let kind = match self.load(&m.0) {
+            Ok(o) => o.meta.kind,
+            Err(e) => {
+                tx.send(Err(e));
+                return reply;
+            }
+        };
+        let helper = self.helper.clone();
+        tokio::spawn(async move {
+            tx.send(
+                helper
+                    .outline(&m.0, Some(1))
+                    .await
+                    .map(|r| {
+                        Some(DocHeadings {
+                            kind,
+                            headings: headings(&r.blocks),
+                        })
+                    })
+                    .map_err(|e| e.to_string()),
+            );
+        });
+        reply
+    }
+}
+
+/// The `(level, text)` of an outline tree's top-level heading blocks (`text` is `[hN] <text>`).
+fn headings(blocks: &[serde_json::Value]) -> Vec<(u8, String)> {
+    blocks
+        .iter()
+        .filter(|b| b["type"] == "heading")
+        .filter_map(|b| {
+            let (level, text) = b["text"].as_str()?.strip_prefix("[h")?.split_once(']')?;
+            Some((level.parse().ok()?, text.trim().to_owned()))
+        })
+        .collect()
+}
+
 /// `ask` → `Result<DocMeta, String>`: the metadata of `doc` for `by`, members admitted like [`OpenDoc`].
 #[derive(Clone, Debug)]
 pub struct MetaOf {
@@ -2486,5 +2549,25 @@ mod tests {
         assert!(!admit_awareness(&mut slot, t0 + Duration::from_millis(900)));
         assert!(admit_awareness(&mut slot, t0 + Duration::from_millis(1000)));
         assert_eq!(slot.sent, 1);
+    }
+
+    #[test]
+    fn headings_reads_the_outline_tree() {
+        let blocks = serde_json::json!([
+            {"id": "fm", "type": "frontmatter", "text": "root=/r", "children": []},
+            {"id": "t", "type": "heading", "text": "[h1] Title", "children": []},
+            {"id": "p", "type": "paragraph", "text": "prose", "children": []},
+            {"id": "a", "type": "heading", "text": "[h2] What you're deciding", "children": []},
+            {"id": "b", "type": "heading", "text": "[h3] ", "children": []},
+            {"id": "c", "type": "codeBlock", "text": "[code:rust] fn", "children": []}
+        ]);
+        assert_eq!(
+            headings(blocks.as_array().unwrap()),
+            vec![
+                (1, "Title".to_owned()),
+                (2, "What you're deciding".to_owned()),
+                (3, String::new())
+            ]
+        );
     }
 }
