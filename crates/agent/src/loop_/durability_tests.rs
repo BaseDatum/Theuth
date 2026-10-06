@@ -641,7 +641,8 @@ async fn stale_batch_closes_from_the_journal_and_pre_0033_repairs(
     assert_eq!(tools.len(), 1);
     assert_eq!(
         tools[0],
-        "ERROR: not run: the harness exited before this tool completed\nERROR: not run: the harness exited before this tool completed"
+        "ERROR: not run: the harness exited before this tool completed".repeat(2),
+        "both calls answered with the verbatim pre-0033 text"
     );
     assert!(hits_of(hits).is_empty());
 }
@@ -709,7 +710,7 @@ async fn crash_matrix(
     ];
     for (point, probe_hits, poke_hits, interrupted) in matrix {
         let _ = std::fs::remove_file(hits);
-        let mut h = Harness::new(BatchFake).await;
+        let h = Harness::new(BatchFake).await;
         journal(registry, &h.store).await;
         let status = tokio::process::Command::new(std::env::current_exe().unwrap())
             .args(["--exact", "loop_::durability_tests::crash_child", "--include-ignored", "--nocapture"])
@@ -724,6 +725,12 @@ async fn crash_matrix(
             .await
             .unwrap();
         assert!(!status.success(), "{point}: the child must abort, got {status}");
+        // The next life opens the store anew (`Store::open` reads the log's
+        // seq; the first harness's handle predates the child's writes). The
+        // first harness stays alive for its provider and `dir`.
+        let server = h;
+        let mut h = Harness::attach(server.dir.clone(), &server.endpoint(), server.id).await;
+        journal(registry, &h.store).await;
         // Boot: accounting marks the lost attempt, then the scan finds the turn.
         h.store.unresolve_open_calls().await.unwrap();
         let tid = open_turn(&h.store, h.id).await;
@@ -773,7 +780,13 @@ async fn crash_matrix(
             .unwrap();
             let last = &attempts[attempts.len() - 1];
             let lost = &attempts[attempts.len() - 2];
-            assert_eq!((lost.1, lost.2.as_str()), (0, "unresolved"), "{attempts:?}");
+            // The kill fell after the stream's `End` settled the attempt and
+            // before the reply persisted: the row is `settled`; a kill
+            // mid-stream leaves `unresolved` (boot's `unresolve_open_calls`).
+            assert!(
+                lost.1 == 0 && matches!(lost.2.as_str(), "settled" | "unresolved"),
+                "{attempts:?}"
+            );
             assert_eq!((last.0 == lost.0, last.1, last.2.as_str()), (true, 1, "settled"), "{attempts:?}");
         }
     }

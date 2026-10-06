@@ -3910,8 +3910,9 @@ impl Turn {
     /// many turns resume at once (§4.6): one is taken here and held until the
     /// turn ends; a cancel while waiting proceeds into `drive`, whose first
     /// round stops on it.
-    async fn resume(self, plan: ResumePlan, slots: Option<Arc<Semaphore>>) -> SessionState {
+    async fn resume(mut self, plan: ResumePlan, slots: Option<Arc<Semaphore>>) -> SessionState {
         let turn = plan.turn;
+        self.turn = Some(turn);
         let permit = match slots {
             Some(slots) => tokio::select! {
                 _ = self.cancel.cancelled() => None,
