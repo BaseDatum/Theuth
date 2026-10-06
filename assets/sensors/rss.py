@@ -115,9 +115,12 @@ async def _fetch(url: str, headers: dict) -> dict:
         reply = await http_request(url, "GET", None, headers)
     except RuntimeError as e:
         msg = " ".join(str(e).split())
-        if "HTTP 304 " in msg:
+        code = re.search(r"\bHTTP (\d{3})\b", msg)
+        if code is None:
+            return {"status": 0, "url": url, "headers": {}, "body": "", "error": msg[:120]}
+        if code.group(1) == "304":
             return not_modified
-        return {"status": 0, "url": url, "headers": {}, "body": "", "error": msg[:120]}
+        return {"status": int(code.group(1)), "url": url, "headers": {}, "body": "", "error": "HTTP " + code.group(1)}
     status = int(reply.get("status") or 0)
     if status == 304:
         return not_modified
