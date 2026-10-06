@@ -244,6 +244,12 @@ pub fn derive(inputs: &Inputs, states: &HashMap<String, State>, now_ms: u64) -> 
     }
 
     for a in &inputs.asks {
+        // 105: an escalation to the user raises BOTH a `decision:` blocker (the Decision
+        // item below) and, for the channels, an ask card on the calling session whose
+        // question id is that same `decision:<id>` key — one inbox item, not two.
+        if a.questions.iter().any(|q| q.id.starts_with("decision:")) {
+            continue;
+        }
         let session = a.session.to_string();
         let agent = desk(&session);
         let first = a.questions.first();
@@ -1440,6 +1446,26 @@ mod tests {
             version: 2,
             at_ms,
         }
+    }
+
+    /// 105: the ask card an escalation raises for the channels carries the
+    /// `decision:<id>` key as its question id; the Decision item already
+    /// represents it, so the ask is not a second inbox row.
+    #[test]
+    fn an_escalation_ask_card_is_not_a_second_item() {
+        let desk = runtime::SessionId::new();
+        let mut card = ask(desk, &[("Which path?", &["A", "B"])]);
+        card.questions[0].id = "decision:0199-abc".into();
+        let plain = ask(desk, &[("Ship?", &["Yes"])]);
+        let inputs = Inputs {
+            asks: vec![card.clone(), plain.clone()],
+            ..Default::default()
+        };
+        let ids: Vec<_> = derive(&inputs, &HashMap::new(), 100)
+            .into_iter()
+            .map(|i| i.id)
+            .collect();
+        assert_eq!(ids, [format!("ask:{}", plain.id.0)]);
     }
 
     #[test]
