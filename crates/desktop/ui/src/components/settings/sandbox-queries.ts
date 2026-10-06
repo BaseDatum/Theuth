@@ -9,6 +9,7 @@ import { queryKeys, useApi } from '@/lib/rpc'
 import type { AttentionItem } from '@/rpc/bindings/AttentionItem'
 import type { Handoff } from '@/rpc/bindings/Handoff'
 import type { Mount } from '@/rpc/bindings/Mount'
+import type { Item } from '@/rpc/bindings/Item'
 import type { Packet } from '@/rpc/bindings/Packet'
 import type { Preflight } from '@/rpc/bindings/Preflight'
 import type { ResourceChange } from '@/rpc/bindings/ResourceChange'
@@ -181,6 +182,7 @@ const SIM_TASK_REVIEW = '0192a000-0000-7000-8000-000000000003'
 
 /** The inbox as `attention_list` derives it from the fixtures (roster `attention.rs`: titles, `detail` = engine name or id; 101: the first line of the packet). */
 export const ATTENTION_SIM: AttentionItem[] = [
+  { id: `decision:${SIM_TASK_DECISION}:decision:dns-9c21`, kind: 'decision', title: 'Portal DNS cut-over', detail: 'Approve the ten portal DNS changes for tonight?', at_ms: NOW - 8_000, task: SIM_TASK_DECISION, agent: 'manager', session: null, approval: null, decision: 'decision:dns-9c21', packet: 'decision:dns-9c21' },
   { id: `decision:${SIM_TASK_DECISION}:decision:apr-7f3a`, kind: 'decision', title: 'Rotate the Grafana API token', detail: 'Which rotation path for the Grafana token?', at_ms: NOW - 20_000, task: SIM_TASK_DECISION, agent: 'ops', session: null, approval: null, decision: 'decision:apr-7f3a', packet: 'decision:apr-7f3a' },
   { id: 'secret:0199aaaa-0000-7000-8000-00000000sim2', kind: 'secret', title: '77aa11bb asks for a secret: Postgres login', detail: 'engine-host-0000', at_ms: NOW - 30_000, task: null, agent: null, session: 'sess-host-77aa11bb', approval: null, decision: null, packet: null },
   { id: `review:${SIM_TASK_REVIEW}`, kind: 'review', title: 'Write the Q4 release notes', detail: 'Release notes for 2.4: three sections, one diagram, a diff of the changelog.', at_ms: NOW - 45_000, task: SIM_TASK_REVIEW, agent: 'writer', session: null, approval: null, decision: null, packet: `review:${SIM_TASK_REVIEW}` },
@@ -195,6 +197,9 @@ export const ATTENTION_SIM: AttentionItem[] = [
  */
 const SIM_BOARD_DECISION = 'agqpgxemf5zcdnb45r3i6ryn3e'
 const SIM_BOARD_REVIEW = 'agqol5d3h52ohgmj56t666drem'
+
+/** 103 F3: one bundle item of the sim's forwarded DNS decision; `id` is the slug of the board's `###` heading. */
+const dns = (id: string, title: string, description: string, labels: string[], recommended: number | null): Item => ({ id, title, description, options: labels.map((label) => ({ label, description: null })), recommended })
 
 /** 101 §3: the packets behind the two items above, served by `usePacket` under `?sim=`. */
 export const PACKET_SIM: Record<string, Packet> = {
@@ -244,6 +249,40 @@ Whichever path, the new value lands in the \`GRAFANA_TOKEN\` secret and the runb
     ],
     checks: [],
     board: SIM_BOARD_DECISION,
+    recommendation: null,
+    items: [],
+  },
+  'decision:dns-9c21': {
+    key: 'decision:dns-9c21',
+    task: SIM_TASK_DECISION,
+    kind: 'decision',
+    by: 'agent:manager',
+    at_ms: NOW - 8_000,
+    question: 'Approve the ten portal DNS changes for tonight?',
+    summary: `The portal moves to the new load balancer tonight; the SRE desk prepared ten DNS changes (apex, www, api, mail, certificates, the old LB's retirement) and asks for a go on each. TTLs went to 60 s yesterday, so every change can be reverted within a minute.
+
+Forwarded from the SRE desk's \`decision:dns-4b10\` — the desk's picks are pre-selected below; the API cut-over is the one I changed.`,
+    options: [
+      { label: 'Apply the bundle tonight', description: '22:00–23:00 UTC, the quiet window; the desk is on call for the hour.' },
+      { label: "Hold until Monday's change window", description: 'Nothing changes tonight; the old LB keeps serving.' },
+    ],
+    recommended: 0,
+    pointers: [],
+    checks: [],
+    board: SIM_BOARD_DECISION,
+    recommendation: { text: "Nine of the ten are the desk's picks; I moved the API cut-over behind its canary. Tonight's window is quiet and the TTLs are already down.", option: 0 },
+    items: [
+      dns('portal-apex-a-record', 'portal.example.com A record', 'Apex → 203.0.113.10 (new LB). The old address keeps answering until the LB is retired.', ['Switch tonight', 'Switch Monday', 'Keep'], 0),
+      dns('www-cname', 'www CNAME', 'www.portal.example.com → portal.example.com.', ['Switch tonight', 'Keep on the old LB'], 0),
+      dns('api-cname', 'api CNAME', 'api.portal.example.com → api-gw.prod. The gateway canary finishes at 21:30.', ['Switch tonight', 'Switch after the API canary', 'Keep'], 1),
+      dns('ttl-lowering', 'TTLs at 60 s', 'Lowered yesterday 20:00; confirm before the cut-over.', ['Already done — proceed', 'Wait another day'], 0),
+      dns('mx-records', 'MX records', 'Mail stays on Google Workspace; nothing moves tonight.', ['Leave as is', 'Move to SES'], 0),
+      dns('spf-txt', 'SPF TXT', 'Add the new LB egress range so transactional mail from the portal keeps passing.', ['Add tonight', 'Skip'], 0),
+      dns('dkim-selector', 'DKIM selector', 'Rotate the selector while mail is quiet, or keep the current key another week.', ['Rotate tonight', 'Rotate next week', 'Skip'], 1),
+      dns('caa-record', 'CAA record', "Pin certificate issuance to Let's Encrypt.", ['Add tonight', 'Skip'], 0),
+      dns('old-lb-decommission', 'Old LB decommission', 'How long the old load balancer keeps answering after the switch.', ['After 7 days', 'After 30 days', 'Keep indefinitely'], 1),
+      dns('status-page-dns', 'status CNAME', 'status.portal.example.com → the hosted status page.', ['Switch tonight', 'Keep on the old host'], 0),
+    ],
   },
   [`review:${SIM_TASK_REVIEW}`]: {
     key: `review:${SIM_TASK_REVIEW}`,
@@ -315,6 +354,8 @@ Self-hosted: run \`theuth migrate\` first.`,
       { text: 'Pricing change reviewed by finance', done: false, note: 'asked in #finance, no answer yet' },
     ],
     board: SIM_BOARD_REVIEW,
+    recommendation: null,
+    items: [],
   },
 }
 
