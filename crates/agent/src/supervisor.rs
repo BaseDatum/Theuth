@@ -626,6 +626,11 @@ impl Agents {
                 let todos = store.todos(id).await?;
                 state.todos = todos.items;
                 state.todo_version = todos.version;
+                // 109 §4.5: the persisted `last_stop` / `finished_at`, so a
+                // cold session reports its real end after a restart.
+                if let Ok(Some(stop)) = store.last_stop(id).await {
+                    self.last_stop.entry(id).or_insert(stop);
+                }
                 (
                     self.resolve_model(&row.model),
                     row.effort,
@@ -1956,6 +1961,8 @@ impl Message<ActivityRegistered> for Agents {
         }
         self.rebuild_waits().await;
         self.resume_scan().await;
+        // 109 §7.2: the spared child results, after the open turns are queued.
+        self.deliver_spared_results().await;
     }
 }
 
