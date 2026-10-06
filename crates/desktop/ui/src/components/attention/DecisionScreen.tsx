@@ -12,14 +12,16 @@ import type { AttentionItem } from '@/rpc/bindings/AttentionItem'
 import { PacketBoard } from './PacketBoard'
 import { PacketMarkdown } from './PacketMarkdown'
 import { Pointers } from './Pointers'
+import { Bundle, type Pick, allAnswered, allRecommended, bundleAnswer } from './Bundle'
 import { usePacket } from './queries'
 import { Body, Chip, Footer, SectionTitle, useResolved } from './shared'
 
 /**
- * 101 D8: who asks · the task · age → the question → the agent's board (101b R4; the `summary` when there is none) →
- * "Look at" → option cards (recommended pre-picked) + "Type your own…" → one Answer. A pick alone answers nothing
- * (mis-tap protection); no confirm after Answer. Without a packet (an item raised before this build) the question is
- * the title and the free text still works.
+ * 101 D8: who asks · the task · age → the question → the forwarding manager's recommendation (103 F2) → the agent's
+ * board (101b R4; the `summary` when there is none) → "Look at" → the bundle (103 F3) → option cards (recommended
+ * pre-picked) + "Type your own…" → one Answer (plus **Approve all as recommended** for a bundle). A pick alone answers
+ * nothing (mis-tap protection); no confirm after Answer. Without a packet (an item raised before this build) the
+ * question is the title and the free text still works.
  */
 export function DecisionScreen({ item }: { item: AttentionItem }) {
   const packet = usePacket(item.packet)
@@ -29,11 +31,18 @@ export function DecisionScreen({ item }: { item: AttentionItem }) {
   // `undefined` = untouched, so the recommendation applies once the packet lands without an effect.
   const [picked, setPicked] = useState<number | null | undefined>(undefined)
   const [own, setOwn] = useState('')
+  const [bundle, setBundle] = useState<Pick[] | undefined>(undefined)
   const p = packet.data ?? null
   const options = p?.options ?? []
-  const choice = picked === undefined ? (p?.recommended ?? null) : picked
+  const items = p?.items ?? []
+  const picks = bundle ?? items.map((it) => it.recommended)
+  const choice = picked === undefined ? (p?.recommendation?.option ?? p?.recommended ?? null) : picked
   const typed = own.trim()
-  const answer = typed || (choice !== null ? (options[choice]?.label ?? '') : '')
+  const top = typed || (choice !== null ? (options[choice]?.label ?? '') : '')
+  const answer = items.length > 0 ? (allAnswered(items, picks) ? bundleAnswer(items, picks, top) : '') : top
+  const by = p?.by.replace(/^agent:/, '')
+  const rec = p?.recommendation ?? null
+  const recommendedLabel = rec?.option !== null && rec?.option !== undefined ? options[rec.option]?.label : undefined
   const busy = act.decide.isPending
   const send = () => {
     if (!item.decision || !answer) return
@@ -54,6 +63,13 @@ export function DecisionScreen({ item }: { item: AttentionItem }) {
         </div>
         <h1 className="text-xl font-semibold leading-snug md:text-2xl">{p?.question ?? item.title}</h1>
       </div>
+
+      {rec && (
+        <div className="rounded-md border border-info-border bg-info-bg px-3 py-2 text-sm">
+          <span className="font-medium text-info">{by} recommends:</span> {recommendedLabel && <span className="font-medium">{recommendedLabel} — </span>}
+          {rec.text}
+        </div>
+      )}
 
       {item.packet !== null && packet.isPending ? (
         <div className="flex flex-col gap-2">
@@ -88,7 +104,13 @@ export function DecisionScreen({ item }: { item: AttentionItem }) {
           send()
         }}
       >
-        {options.length > 0 && <SectionTitle>Options</SectionTitle>}
+        {items.length > 0 && (
+          <>
+            <SectionTitle>{items.length} decisions</SectionTitle>
+            <Bundle items={items} picks={picks} onPick={(i, pick) => setBundle(picks.map((x, j) => (j === i ? pick : x)))} anchored={!!p?.board} />
+          </>
+        )}
+        {options.length > 0 && <SectionTitle>{items.length > 0 ? 'Overall' : 'Options'}</SectionTitle>}
         {options.map((c, i) => {
           const on = !typed && choice === i
           return (
@@ -127,9 +149,16 @@ export function DecisionScreen({ item }: { item: AttentionItem }) {
           aria-label="Your own answer"
           className={cn('h-9 text-base md:text-sm', typed && 'border-fg-accent')}
         />
-        <Button type="submit" size="sm" className="w-full sm:w-fit" disabled={busy || !answer || !item.decision}>
-          Answer
-        </Button>
+        <div className="flex flex-wrap gap-2">
+          {items.length > 0 && (
+            <Button type="submit" size="sm" className="w-full sm:w-fit" disabled={busy || !answer || !item.decision || !allRecommended(items, picks) || !!typed}>
+              Approve all as recommended
+            </Button>
+          )}
+          <Button type="submit" size="sm" variant={items.length > 0 ? 'outline' : 'default'} className="w-full sm:w-fit" disabled={busy || !answer || !item.decision}>
+            Answer
+          </Button>
+        </div>
       </form>
 
       <Footer item={item} onResolved={onResolved} />

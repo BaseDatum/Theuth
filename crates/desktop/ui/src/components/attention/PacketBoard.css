@@ -22,6 +22,15 @@
   margin-bottom: 0;
 }
 
+/* 103: the screen's question is the heading — the board's own `#` title would repeat it right under it. */
+.packet-board h1.board-prose {
+  display: none;
+}
+/* Scratch boards have no git root, so the live chip's `verify failed` is the expected state here: muted, not red. */
+.packet-board .board-chrome[data-anchors] .text-destructive {
+  color: inherit;
+}
+
 /* The TOC pill is the reader's (top-left of the board); on a narrow column its open card sits under the pill instead of
    a sheet at the board's far end (which, in flow, is off screen). */
 @container (max-width: 720px) {
