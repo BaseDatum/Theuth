@@ -1990,7 +1990,7 @@ struct Worker {
     clip_tail: Option<tokio::task::JoinHandle<()>>,
     /// The plan message (110 §5).
     plan: plan::Plan,
-    /// `Compacted { epoch }` seen since the last turn ended; the next footer's `⟲ epoch n` (110 §6).
+    /// `Compacted { epoch }` seen between turns; handed to the next `Turn` for its footer (110 §6).
     compacted: Option<u32>,
 }
 
@@ -2109,7 +2109,7 @@ impl Worker {
     }
 
     /// 110 §6: `blocks` into the thread; `md` as a plain message when Slack
-    /// (or the typed façade) refuses the blocks, so nothing is lost.
+    /// refuses the blocks (a real `ApiError`), so nothing is lost.
     async fn post_blocks_or_markdown(&self, blocks: serde_json::Value, md: &str) {
         if let Err(e) = self
             .chan
@@ -2367,10 +2367,13 @@ impl Worker {
                     self.chan.rt.clone(),
                     session,
                 ));
-                if let Some(title) = &self.agent_title
-                    && let Some(t) = &mut self.turn
-                {
-                    t.text(&format!("{title} — ")).await;
+                if let Some(t) = &mut self.turn {
+                    if let Some(epoch) = self.compacted.take() {
+                        t.compacted(epoch);
+                    }
+                    if let Some(title) = &self.agent_title {
+                        t.text(&format!("{title} — ")).await;
+                    }
                 }
                 self.set_status("processing").await;
             }
@@ -2383,6 +2386,12 @@ impl Worker {
             AgentEvent::ReasoningDelta { text, .. } => {
                 if let Some(t) = &mut self.turn {
                     t.reasoning(&text).await;
+                }
+            }
+            // 110 §4.1: the time behind a trailing `Thought N s` card.
+            AgentEvent::ReasoningDone { ms, .. } => {
+                if let Some(t) = &mut self.turn {
+                    t.reasoning_done(ms);
                 }
             }
             AgentEvent::ToolCallPending { call_id, name, .. } => {
@@ -2418,8 +2427,6 @@ impl Worker {
                 ..
             } => {
                 self.speak();
-                // 110 §6: the integrator wires `Footer.compacted` (W1's field) here.
-                let _compacted = self.compacted.take();
                 if let Some(mut t) = self.turn.take() {
                     let streamed = t.open_stream().is_some();
                     let footer = Footer {
@@ -2460,8 +2467,12 @@ impl Worker {
                 self.chan.lock().hidden += 1;
                 tracing::debug!(%from, chars = text.chars().count(), "slack delivery hidden");
             }
-            // 110 §6: no message; `⟲ epoch n` rides on the next footer.
-            AgentEvent::Compacted { epoch, .. } => self.compacted = Some(epoch),
+            // 110 §6: no message; `⟲ epoch n` rides on this turn's footer, or
+            // the next one's when no turn is open.
+            AgentEvent::Compacted { epoch, .. } => match &mut self.turn {
+                Some(t) => t.compacted(epoch),
+                None => self.compacted = Some(epoch),
+            },
             // 110 §5: the plan message.
             AgentEvent::TodoChanged { snapshot, .. } => {
                 if self.chan.plan && self.plan.update(snapshot) {
@@ -2490,7 +2501,6 @@ impl Worker {
             | AgentEvent::SkillsChanged { .. }
             | AgentEvent::TitleChanged { .. }
             | AgentEvent::ToolCallProgress { .. }
-            | AgentEvent::ReasoningDone { .. }
             | AgentEvent::SessionDeleted { .. }
             | AgentEvent::SessionOwnerChanged { .. }
             | AgentEvent::ContextChanged { .. }
@@ -2773,13 +2783,13 @@ pub(crate) mod tests {
         pub(crate) fn calls(&self) -> Vec<String> {
             self.calls.lock().unwrap().clone()
         }
-        /// The `Chunk::Text`s of a stream call, joined.
+        /// A stream call's chunks as one line: texts verbatim, task cards as `[title]`.
         fn texts(chunks: &[crate::api::Chunk]) -> String {
             chunks
                 .iter()
-                .filter_map(|c| match c {
-                    crate::api::Chunk::Text(s) => Some(s.as_str()),
-                    crate::api::Chunk::Task { .. } => None,
+                .map(|c| match c {
+                    crate::api::Chunk::Text(s) => s.clone(),
+                    crate::api::Chunk::Task { title, .. } => format!("[{title}]"),
                 })
                 .collect()
         }
@@ -2821,9 +2831,12 @@ pub(crate) mod tests {
             &self,
             channel: &str,
             ts: &str,
-            _: Vec<crate::api::Chunk>,
+            chunks: Vec<crate::api::Chunk>,
         ) -> Result<(), ApiError> {
-            self.record(format!("append_stream {channel} {ts}"));
+            self.record(format!(
+                "append_stream {channel} {ts} {}",
+                Self::texts(&chunks)
+            ));
             Ok(())
         }
         async fn stop_stream(
@@ -2831,12 +2844,13 @@ pub(crate) mod tests {
             channel: &str,
             ts: &str,
             chunks: Vec<crate::api::Chunk>,
-            _: Option<String>,
+            footer: Option<String>,
             _: Option<&str>,
         ) -> Result<(), ApiError> {
             self.record(format!(
-                "stop_stream {channel} {ts} {}",
-                Self::texts(&chunks)
+                "stop_stream {channel} {ts} {} | {}",
+                Self::texts(&chunks),
+                footer.unwrap_or_default()
             ));
             Ok(())
         }
@@ -3949,32 +3963,128 @@ pub(crate) mod tests {
         assert_eq!(f.chan.status().hidden_deliveries, 3);
     }
 
-    #[tokio::test(start_paused = true)]
-    async fn compacted_posts_nothing_and_lands_in_the_next_footer() {
-        let f = fixture();
-        f.bind(OWNER);
-        f.chan
-            .route(Event::Agent(AgentEvent::Compacted {
-                session: f.stub.session,
-                turn: None,
-                epoch: 3,
-                before: 90_000,
-                after: 20_000,
-                folded: 40,
-                style: agent::CompactStyle::default(),
-            }))
-            .await;
+    fn compacted(session: SessionId, epoch: u32) -> AgentEvent {
+        AgentEvent::Compacted {
+            session,
+            turn: None,
+            epoch,
+            before: 90_000,
+            after: 20_000,
+            folded: 40,
+            style: agent::CompactStyle::default(),
+        }
+    }
+
+    fn text_delta(session: SessionId, text: &str) -> AgentEvent {
+        AgentEvent::TextDelta {
+            session,
+            turn: TurnId::new(),
+            text: text.into(),
+        }
+    }
+
+    /// Drives `text` through one turn and returns the `stop_stream` lines so far.
+    async fn one_turn(f: &Fixture, text: &str, stops: usize) -> Vec<String> {
         f.chan
             .route(Event::Agent(turn_started(f.stub.session, "go")))
             .await;
-        let processing = format!("set_session_status {DM} 100.1 processing");
-        f.until(|calls| calls.contains(&processing)).await;
+        f.chan
+            .route(Event::Agent(text_delta(f.stub.session, text)))
+            .await;
+        f.chan
+            .route(Event::Agent(turn_finished(f.stub.session, "end_turn")))
+            .await;
+        f.until(|calls| {
+            calls
+                .iter()
+                .filter(|c| c.starts_with("stop_stream"))
+                .count()
+                == stops
+        })
+        .await;
+        f.api
+            .calls()
+            .into_iter()
+            .filter(|c| c.starts_with("stop_stream"))
+            .collect()
+    }
+
+    /// 110 §6: no message; the epoch rides on the footer of the turn it
+    /// lands in, or the next one's when it arrives between turns.
+    #[tokio::test(start_paused = true)]
+    async fn compacted_posts_nothing_and_lands_in_the_footer() {
+        let f = fixture();
+        f.bind(OWNER);
+        // Between turns: held for the next footer.
+        f.chan
+            .route(Event::Agent(compacted(f.stub.session, 3)))
+            .await;
+        let stops = one_turn(&f, "hi", 1).await;
+        assert!(stops[0].ends_with(" · ⟲ epoch 3"), "{stops:?}");
+        let calls = f.api.calls();
+        assert!(!calls.iter().any(|c| c.contains("compacted")), "{calls:?}");
+        // Mid-turn: this turn's footer.
+        f.chan
+            .route(Event::Agent(turn_started(f.stub.session, "again")))
+            .await;
+        f.chan
+            .route(Event::Agent(compacted(f.stub.session, 4)))
+            .await;
+        f.chan
+            .route(Event::Agent(text_delta(f.stub.session, "hi")))
+            .await;
+        f.chan
+            .route(Event::Agent(turn_finished(f.stub.session, "end_turn")))
+            .await;
+        f.until(|calls| {
+            calls
+                .iter()
+                .filter(|c| c.starts_with("stop_stream"))
+                .count()
+                == 2
+        })
+        .await;
+        // Neither epoch is carried into a turn that saw no compaction.
+        let stops = one_turn(&f, "hi", 3).await;
+        assert!(stops[1].ends_with(" · ⟲ epoch 4"), "{stops:?}");
+        assert!(!stops[2].contains("epoch"), "{stops:?}");
+    }
+
+    /// 110 §4.1: `ReasoningDone.ms` titles the thinking card that text ends.
+    #[tokio::test(start_paused = true)]
+    async fn reasoning_done_titles_the_thought_card_with_its_seconds() {
+        let f = fixture();
+        f.bind(OWNER);
+        f.chan
+            .route(Event::Agent(turn_started(f.stub.session, "go")))
+            .await;
+        f.chan
+            .route(Event::Agent(AgentEvent::ReasoningDelta {
+                session: f.stub.session,
+                turn: TurnId::new(),
+                text: "first idea".into(),
+            }))
+            .await;
+        f.chan
+            .route(Event::Agent(AgentEvent::ReasoningDone {
+                session: f.stub.session,
+                turn: TurnId::new(),
+                ms: 3_000,
+            }))
+            .await;
+        f.chan
+            .route(Event::Agent(text_delta(f.stub.session, "answer")))
+            .await;
+        f.chan
+            .route(Event::Agent(turn_finished(f.stub.session, "end_turn")))
+            .await;
+        f.until(|calls| calls.iter().any(|c| c.starts_with("stop_stream")))
+            .await;
+        let calls = f.api.calls();
         assert!(
-            !f.api.calls().iter().any(|c| c.contains("compacted")),
-            "{:?}",
-            f.api.calls()
+            calls.iter().any(|c| c.contains("[Thought 3 s]")),
+            "{calls:?}"
         );
-        // 110 §6: the `⟲ epoch 3` footer item is W1's `Footer.compacted`; wired by the integrator.
     }
 
     #[tokio::test(start_paused = true)]
@@ -3990,6 +4100,14 @@ pub(crate) mod tests {
             .await;
         let want = format!("post_blocks {DM} 100.1 1 blocks");
         f.until(|calls| calls.contains(&want)).await;
+        // The blocks went through: no markdown fallback for the same body.
+        let calls = f.api.calls();
+        assert!(
+            !calls
+                .iter()
+                .any(|c| c.starts_with("post_markdown") && c.contains("↳ grep-logs")),
+            "{calls:?}"
+        );
         let blocks = f.api.blocks();
         let c = &blocks[0][0];
         assert_eq!(c["type"], "container");

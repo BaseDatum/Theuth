@@ -669,9 +669,7 @@ impl Turn {
 
     /// `ReasoningDone { ms }` (110 §4.1): the time behind `Thought N s` or
     /// `💭 thought N s` for the run that is ending. Published before the
-    /// event that ends the run, so it lands on the live one. Not wired
-    /// today: `channel.rs` must call `t.reasoning_done(ms)` in its
-    /// `ReasoningDone` arm.
+    /// event that ends the run, so it lands on the live one.
     pub fn reasoning_done(&mut self, ms: u64) {
         if let Some(i) = self.open_batch()
             && let Some(Item::Thought(t)) = self.batches[i].items.last_mut()
@@ -686,9 +684,8 @@ impl Turn {
     }
 
     /// `Compacted { epoch }` (110 §6): no message; `⟲ epoch n` joins this
-    /// turn's footer. Not wired today: `channel.rs` must call
-    /// `t.compacted(epoch)` (holding the epoch for the next turn when none
-    /// is open).
+    /// turn's footer (`channel.rs` holds the epoch for the next turn when
+    /// none is open).
     pub fn compacted(&mut self, epoch: u32) {
         self.compacted = Some(epoch);
     }
