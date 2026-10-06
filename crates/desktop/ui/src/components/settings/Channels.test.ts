@@ -8,12 +8,16 @@ import type { TelegramStatus } from '@/rpc/bindings/TelegramStatus'
 import { Channels, mmss, secondsLeft, telegramId, telegramState } from './Channels'
 
 let telegram: TelegramStatus
+let telegramError: Error | null = null
 vi.mock('@/lib/rpc', async (original) => ({
   ...(await original<typeof Rpc>()),
   useApi: () => ({
     signal_status: async () => ({ state: null, registered: false, number: null, owner: '', allowed: [] }),
     slack_status: async () => ({ state: null, bot_user: null, team: null, owner: '', allowed: [], channels: [] }),
-    telegram_status: async () => telegram,
+    telegram_status: async () => {
+      if (telegramError) throw telegramError
+      return telegram
+    },
   }),
 }))
 
@@ -106,4 +110,27 @@ test('card: live pairing link → QR, URL, countdown; owner and lists render as 
   expect(html).toContain('<svg')
   expect(html).toContain(url)
   for (const id of ['1', '2', '-1001234567890']) expect(html).toContain(`Remove ${id}`)
+})
+
+test('card: while telegram_status is pending the section shows "loading…", never nothing', () => {
+  telegram = base({ type: 'Unconfigured' }, false, false)
+  const qc = new QueryClient({ defaultOptions: { queries: { staleTime: Infinity, retry: false } } })
+  const html = renderToStaticMarkup(createElement(QueryClientProvider, { client: qc, children: createElement(Channels) as ReactNode }))
+  expect(html).toContain('Telegram')
+  expect(html).toContain('loading…')
+})
+
+test('card: a failing telegram_status renders the error and a Retry button', async () => {
+  telegramError = new Error('telegram actor is not running')
+  try {
+    const qc = new QueryClient({ defaultOptions: { queries: { staleTime: Infinity, retry: false } } })
+    const paint = () => renderToStaticMarkup(createElement(QueryClientProvider, { client: qc, children: createElement(Channels) as ReactNode }))
+    paint()
+    for (const query of qc.getQueryCache().findAll()) await qc.fetchQuery({ ...query.options, queryKey: query.queryKey }).catch(() => undefined)
+    const html = paint()
+    expect(html).toContain('status unavailable: telegram actor is not running')
+    expect(html).toMatch(/<button[^>]*>Retry</)
+  } finally {
+    telegramError = null
+  }
 })

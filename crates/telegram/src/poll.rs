@@ -352,6 +352,33 @@ pub enum Incoming {
     },
 }
 
+impl Incoming {
+    /// The update kind for logs.
+    #[must_use]
+    pub fn kind(&self) -> &'static str {
+        match self {
+            Self::Message(m) if m.command.as_ref().is_some_and(|c| !c.for_other_bot) => "command",
+            Self::Message(_) => "message",
+            Self::Callback(_) => "callback",
+            Self::Stopped { .. } => "stopped",
+            Self::MyChatMember { .. } => "my_chat_member",
+            Self::Ignored { kind, .. } => kind,
+        }
+    }
+
+    /// The `update_id`.
+    #[must_use]
+    pub fn update_id(&self) -> i64 {
+        match self {
+            Self::Message(m) => m.update_id,
+            Self::Callback(cb) => cb.update_id,
+            Self::Stopped { update_id, .. }
+            | Self::MyChatMember { update_id, .. }
+            | Self::Ignored { update_id, .. } => *update_id,
+        }
+    }
+}
+
 /// Classifies one update (98 §7).
 #[must_use]
 pub fn classify(u: &Update, me: &BotIdentity) -> Incoming {

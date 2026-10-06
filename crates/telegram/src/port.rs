@@ -3,7 +3,10 @@
 //! §13; `crates/slack/src/channel.rs` `trait Port` plus `ancestors` and
 //! `session_title`).
 
+use std::fmt::Display;
 use std::path::PathBuf;
+use std::pin::pin;
+use std::time::Duration;
 
 use agent::{
     AGENT_ACTOR, AgentInfo, Agents, Ancestors, Cancel, ListAgents, ListSessions, LoadSession,
@@ -12,7 +15,45 @@ use agent::{
 use async_trait::async_trait;
 use kameo::actor::ActorRef;
 use runtime::{InputId, SessionId};
+use tokio::time::Instant;
 use tools::{APPROVAL_ACTOR, Answer, Approval, ApprovalId, AskId, Decision, Resolve};
+
+/// Longest wait on another actor (98c). Past it the ask answers
+/// [`ASK_TIMED_OUT`] instead of pinning the dispatch task that made it.
+pub const ASK_TIMEOUT: Duration = Duration::from_secs(20);
+/// An ask still unanswered after this long is logged at WARN while it waits.
+pub const ASK_SLOW: Duration = Duration::from_secs(5);
+/// The `Err` text of an ask that hit [`ASK_TIMEOUT`].
+pub const ASK_TIMED_OUT: &str = "engine did not answer in 20 s";
+
+/// `ask` under [`ASK_TIMEOUT`]; a WARN at [`ASK_SLOW`] while still waiting
+/// and another on timeout. `what` names the ask in the log.
+pub async fn timed<T, E: Display>(
+    what: &'static str,
+    ask: impl IntoFuture<Output = Result<T, E>>,
+) -> Result<T, String> {
+    let started = Instant::now();
+    let mut fut = pin!(tokio::time::timeout(ASK_TIMEOUT, ask.into_future()));
+    let r = tokio::select! {
+        r = &mut fut => r,
+        () = tokio::time::sleep(ASK_SLOW) => {
+            tracing::warn!(ask = what, waited_s = ASK_SLOW.as_secs(), "telegram: engine ask still unanswered");
+            fut.await
+        }
+    };
+    match r {
+        Ok(Ok(v)) => Ok(v),
+        Ok(Err(e)) => Err(e.to_string()),
+        Err(_) => {
+            tracing::warn!(
+                ask = what,
+                waited_s = started.elapsed().as_secs(),
+                "telegram: engine ask timed out"
+            );
+            Err(ASK_TIMED_OUT.to_owned())
+        }
+    }
+}
 
 /// What the channel asks of the agent and approval actors.
 #[async_trait]
@@ -77,23 +118,25 @@ impl Port for LivePort {
             Some(s) => s,
             None => self.new_root(scope).await?,
         };
-        agents()?
-            .ask(SendInput {
+        timed(
+            "SendInput",
+            agents()?.ask(SendInput {
                 session: Some(session),
                 text,
                 files,
                 delivery: agent::Delivery::default(),
                 id: None,
-            })
-            .await
-            .map_err(|e| e.to_string())
+            }),
+        )
+        .await
     }
 
     async fn new_root(&self, scope: PeerScope) -> Result<SessionId, String> {
-        agents()?
-            .ask(NewRootSession { cwd: None, scope })
-            .await
-            .map_err(|e| e.to_string())
+        timed(
+            "NewRootSession",
+            agents()?.ask(NewRootSession { cwd: None, scope }),
+        )
+        .await
     }
 
     async fn steer(
@@ -102,73 +145,67 @@ impl Port for LivePort {
         text: String,
         files: Vec<PathBuf>,
     ) -> Result<(), String> {
-        agents()?
-            .ask(Steer {
+        timed(
+            "Steer",
+            agents()?.ask(Steer {
                 session,
                 id: InputId::new(),
                 text,
                 files,
                 delivery: agent::Delivery::default(),
-            })
-            .await
-            .map_err(|e| e.to_string())
+            }),
+        )
+        .await
     }
 
     async fn cancel(&self, session: SessionId) -> Result<(), String> {
-        agents()?
-            .ask(Cancel {
+        timed(
+            "Cancel",
+            agents()?.ask(Cancel {
                 session,
                 keep: None,
-            })
-            .await
-            .map_err(|e| e.to_string())
+            }),
+        )
+        .await
     }
 
     async fn list_sessions(&self) -> Result<Vec<SessionSummary>, String> {
-        agents()?.ask(ListSessions).await.map_err(|e| e.to_string())
+        timed("ListSessions", agents()?.ask(ListSessions)).await
     }
 
     async fn load_session(&self, session: SessionId) -> Result<Loaded, String> {
-        agents()?
-            .ask(LoadSession {
+        timed(
+            "LoadSession",
+            agents()?.ask(LoadSession {
                 session,
                 before: None,
                 limit: None,
                 settled_only: false,
-            })
-            .await
-            .map_err(|e| e.to_string())
+            }),
+        )
+        .await
     }
 
     async fn resolve(&self, id: ApprovalId, decision: Decision) -> Result<bool, String> {
-        ActorRef::<Approval>::lookup(APPROVAL_ACTOR)
+        let approval = ActorRef::<Approval>::lookup(APPROVAL_ACTOR)
             .ok()
             .flatten()
-            .ok_or_else(|| "approval actor is not running".to_string())?
-            .ask(Resolve { id, decision })
-            .await
-            .map_err(|e| e.to_string())
+            .ok_or_else(|| "approval actor is not running".to_string())?;
+        timed("Resolve", approval.ask(Resolve { id, decision })).await
     }
 
     async fn answer_ask(&self, id: AskId, answers: Option<Vec<Answer>>) -> Result<bool, String> {
-        agent::answer_ask(id, answers)
-            .await
-            .map_err(|e| e.to_string())
+        timed("answer_ask", agent::answer_ask(id, answers)).await
     }
 
     async fn list_agents(&self, session: SessionId) -> Result<Vec<AgentInfo>, String> {
-        agents()?
-            .ask(ListAgents { session })
-            .await
-            .map_err(|e| e.to_string())
+        timed("ListAgents", agents()?.ask(ListAgents { session })).await
     }
 
     async fn ancestors(&self, session: SessionId) -> Result<Vec<SessionId>, String> {
-        agents()?
-            .ask(Ancestors { session })
+        timed("Ancestors", agents()?.ask(Ancestors { session }))
             .await
             .map(|chain| chain.into_iter().map(|a| a.id).collect())
-            .map_err(|e| e.to_string())
     }
 
     async fn session_title(&self, session: SessionId) -> Result<Option<String>, String> {

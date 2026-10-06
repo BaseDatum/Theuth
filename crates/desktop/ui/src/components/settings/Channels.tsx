@@ -353,6 +353,14 @@ function Telegram() {
 
   return (
     <Section title="Telegram">
+      {status.isPending && <Row label="Bot" description="loading…" />}
+      {status.isError && (
+        <Row label="Bot" description={`status unavailable: ${status.error instanceof Error ? status.error.message : String(status.error)}`}>
+          <Button variant="outline" size="sm" onClick={() => void status.refetch()}>
+            Retry
+          </Button>
+        </Row>
+      )}
       {s && (
         <>
           <Row
