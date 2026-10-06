@@ -108,7 +108,10 @@ async def _fetch(url: str, headers: dict) -> dict:
 
     Under Monty a non-2xx reply *raises* RuntimeError (README `http_request`),
     so a 304 is recognised from the message text; the CPython test shim
-    returns the status instead, and both paths land here.
+    returns the status instead, and both paths land here. The fetcher treats
+    every 3xx as a redirect (`web/src/fetch/mod.rs` `is_redirection`), so a
+    real 304 surfaces as `redirect missing Location header` — on a conditional
+    GET that can only be a 304.
     """
     not_modified = {"status": 304, "url": url, "headers": {}, "body": "", "error": ""}
     try:
@@ -117,6 +120,8 @@ async def _fetch(url: str, headers: dict) -> dict:
         msg = " ".join(str(e).split())
         code = re.search(r"\bHTTP (\d{3})\b", msg)
         if code is None:
+            if headers and "missing Location" in msg:
+                return not_modified
             return {"status": 0, "url": url, "headers": {}, "body": "", "error": msg[:120]}
         if code.group(1) == "304":
             return not_modified

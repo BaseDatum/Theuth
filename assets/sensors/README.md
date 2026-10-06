@@ -97,6 +97,45 @@ bot's last one; it fires on the transition only.
 `next`: 15 while checks pending or `mergeable` unknown (300 after 5 unknown
 ticks), 60 idle, 300 paused / draft / closed.
 
+## rss
+
+`when: rss.py urls=<url>[,<url>…] [filter=<regex on title>] [backfill=0]`
+
+Atom, RSS 2.0 and YouTube `videos.xml`
+(`https://www.youtube.com/feeds/videos.xml?channel_id=UC…`), parsed with
+regexes (no XML parser in the Monty subset): `<entry>` / `<item>` blocks,
+CDATA, the five XML entities and numeric references. Ids: `yt:videoId` →
+Atom `<id>` → RSS `<guid>` → link. Up to 7 feeds — one GET each inside the
+8-call budget; an 8th is refused with `urls: at most 7`.
+
+Envelope: `subject=feed/<host> events=new count=<N>` (`channel/<title>` for a
+YouTube feed, `feeds/<M>` when several); one line per new entry, newest
+first: `id=<id> published=<iso> title=<title> url=<url>`, then `+K more`
+when the 4 KiB budget stops it. Feed text is data: tags stripped, `<`
+neutralised. Per-feed failures go in the tail (`feed=<host> error=HTTP 500`
+/ `error=no entries parsed (N bytes)`) and do not break the check; every
+feed failing raises (`check broken`).
+
+Per tick: `GET` each feed with `If-None-Match` / `If-Modified-Since` from
+state; a `304` leaves that feed's state as is. A feed that redirected is
+fetched at its final URL next time (caller headers never cross origins); a
+failing feed drops its conditionals so the next check goes bare. State:
+`seen` (ids newest first, FIFO ≤ 300 and ≤ 12 KB), `feeds` (`etag`,
+`last_modified`, `title`, `kind`, final `url`), `seeded`.
+
+First check (`state == {}`): every entry is seeded silently — `fire: false`,
+`events=seeded count=N`, `seeded N entries from M feeds` — so the creation
+dry-run says *would not fire*; `backfill=N` fires on the N newest instead. A
+URL added later seeds the same way while the others keep firing. `filter`
+is `re.search` on the title; non-matching entries are ignored entirely.
+
+`next`: `Cache-Control: max-age` or `<sy:updatePeriod>` / `updateFrequency`
+(the smallest across feeds), else `None`; the gate clamps it.
+
+`probe`: one bare GET per feed → `<host>: <N> entries, parsed as
+<atom|rss|youtube>` / `<host>: no entries parsed (N bytes)` / `<host>: HTTP
+<status>`, joined by `; `. Never raises.
+
 ## Tests
 
 ```

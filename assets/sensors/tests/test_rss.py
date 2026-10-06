@@ -18,7 +18,9 @@ class FakeFeeds:
     """Scripted responder keyed on the full URL. `routes[url] = body | (status, body) | (status, body, headers)`.
 
     `raising=True` mimics the Monty bridge, where a non-2xx reply raises
-    RuntimeError("http_request: HTTP <status> for GET <url> (...)") instead of returning.
+    RuntimeError("http_request: HTTP <status> for GET <url> (...)") instead of returning —
+    except a 304, which the fetcher takes for a redirect and reports as
+    `redirect missing Location header` (`web/src/fetch/mod.rs` `is_redirection`).
     """
 
     def __init__(self, routes, raising=False):
@@ -36,6 +38,8 @@ class FakeFeeds:
             status, reply = hit[0], hit[1]
             if len(hit) > 2:
                 resp_headers = hit[2]
+        if self.raising and status == 304:
+            raise RuntimeError("http_request: redirect missing Location header")
         if self.raising and not 200 <= status < 300:
             raise RuntimeError(f"http_request: HTTP {status} for {method} {url} (0 bytes, 1 ms)")
         return {"url": url, "status": status, "headers": resp_headers, "body": reply, "truncated": False, "took_ms": 1}
@@ -212,6 +216,20 @@ class Conditional(unittest.TestCase):
         res, _ = tick(state, {BLOG: (304, "")}, raising=True)
         self.assertFalse(res["fire"])
         self.assertEqual(res["state"], state)
+        self.assertEqual(res["payload"], "subject=feed/blog.example events= count=0")
+
+        async def plain_304(url, method, body=None, headers=None):
+            raise RuntimeError(f"http_request: HTTP 304 for GET {url} (0 bytes, 1 ms)")
+
+        res = run(load("rss.py", plain_304)["check"](state, {"urls": BLOG}))
+        self.assertEqual(res["state"], state)
+
+    def test_missing_location_without_conditionals_is_an_error(self):
+        async def no_location(url, method, body=None, headers=None):
+            raise RuntimeError("http_request: redirect missing Location header")
+
+        out = run(load("rss.py", no_location)["probe"]({"urls": BLOG}))
+        self.assertEqual(out, "blog.example: http_request: redirect missing Location header")
 
     def test_next_from_max_age_and_sy_update_period(self):
         res, _ = tick({}, {BLOG: (200, rss(RSS_ITEMS), self.HEADERS)})
