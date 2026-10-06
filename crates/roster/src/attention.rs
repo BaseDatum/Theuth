@@ -751,19 +751,22 @@ pub async fn record_show(pool: &SqlitePool, ev: &ArtifactShown, now_ms: u64) -> 
     Ok(())
 }
 
+/// One `attention_shows` row: call_id, session, title, name, kind, mime, bytes, version, at_ms.
+type ShowRow = (
+    String,
+    String,
+    String,
+    String,
+    String,
+    String,
+    i64,
+    i64,
+    i64,
+);
+
 /// Undismissed `attention_shows` rows, newest first (snooze is `derive`'s job).
 pub async fn shows(pool: &SqlitePool) -> anyhow::Result<Vec<Shown>> {
-    let rows: Vec<(
-        String,
-        String,
-        String,
-        String,
-        String,
-        String,
-        i64,
-        i64,
-        i64,
-    )> = sqlx::query_as(
+    let rows: Vec<ShowRow> = sqlx::query_as(
         "SELECT s.call_id, s.session, s.title, s.name, s.kind, s.mime, s.bytes, s.version, s.at_ms \
          FROM attention_shows s \
          LEFT JOIN attention_state st ON st.id = 'show:' || s.call_id \
