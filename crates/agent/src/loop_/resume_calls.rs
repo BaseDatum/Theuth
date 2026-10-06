@@ -69,9 +69,7 @@ pub(crate) async fn resume_question_call(call: &JournaledCall, plan: &ResumePlan
         // settles the row `timed_out` when it finds nothing left to wait.
         tools::registry::republish(row);
     }
-    let Ok(Some(registry)) =
-        ActorRef::<tools::ToolRegistry>::lookup(tools::REGISTRY_ACTOR)
-    else {
+    let Ok(Some(registry)) = ActorRef::<tools::ToolRegistry>::lookup(tools::REGISTRY_ACTOR) else {
         return ToolOutput::err(format!("{}: tool registry not running", call.name));
     };
     match registry
@@ -132,7 +130,9 @@ pub(crate) async fn resume_wait_call(call: &JournaledCall, plan: &ResumePlan) ->
         _ => String::new(),
     };
     for r in &mut w.receipts {
-        let Some(rx) = w.pending.remove(&r.id) else { continue };
+        let Some(rx) = w.pending.remove(&r.id) else {
+            continue;
+        };
         let fin = match deadline {
             Some(at) => tokio::time::timeout_at(at, rx).await.ok(),
             None => None,

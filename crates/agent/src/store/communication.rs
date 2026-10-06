@@ -2285,7 +2285,12 @@ mod tests {
         assert!(ids.contains(&inbound.id) && ids.contains(&untouched.id));
         assert!(ids.contains(&failed_result.id) && !ids.contains(&spared.id));
         assert_eq!(
-            store.exchange_receipt(spared.id).await.unwrap().unwrap().state,
+            store
+                .exchange_receipt(spared.id)
+                .await
+                .unwrap()
+                .unwrap()
+                .state,
             PeerMessageState::Accepted
         );
         assert_eq!(

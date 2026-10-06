@@ -109,14 +109,21 @@ impl Agents {
             .flatten();
         let (mut rearmed, mut honoured, mut superseded) = (0usize, 0usize, 0usize);
         for (session, turn, _) in &open {
-            let calls = self.store.calls_of(*session, *turn).await.unwrap_or_default();
+            let calls = self
+                .store
+                .calls_of(*session, *turn)
+                .await
+                .unwrap_or_default();
             for call in calls.iter().filter(|c| c.state == CallState::Planned) {
                 let rows = self
                     .store
                     .questions_of_call(*session, &call.call_id)
                     .await
                     .unwrap_or_default();
-                for row in rows.into_iter().filter(|r| r.kind == QuestionKind::Approval) {
+                for row in rows
+                    .into_iter()
+                    .filter(|r| r.kind == QuestionKind::Approval)
+                {
                     match row.state {
                         QuestionState::Pending => {
                             // §6.2: the gate's invocation died with the process.
@@ -131,9 +138,8 @@ impl Agents {
                             }
                         }
                         QuestionState::Answered => {
-                            let decision: Option<Decision> = row
-                                .answer
-                                .and_then(|a| serde_json::from_value(a).ok());
+                            let decision: Option<Decision> =
+                                row.answer.and_then(|a| serde_json::from_value(a).ok());
                             if let (Some(a), Some(decision)) = (&approval, decision) {
                                 let _ = a
                                     .tell(HonourAnswer {
@@ -149,7 +155,11 @@ impl Agents {
                     }
                 }
             }
-            let waits = self.store.waits_of(*session, *turn).await.unwrap_or_default();
+            let waits = self
+                .store
+                .waits_of(*session, *turn)
+                .await
+                .unwrap_or_default();
             for w in waits.iter().filter(|w| w.kind == WaitKind::PeerReply) {
                 for id in request_ids(w) {
                     rearmed += usize::from(self.rearm_peer_wait(*session, id).await);
@@ -343,7 +353,8 @@ impl Agents {
                         receipt.state,
                         PeerMessageState::Accepted | PeerMessageState::Consumed
                     );
-                    if open && self.rearm_peer_wait(session, id).await
+                    if open
+                        && self.rearm_peer_wait(session, id).await
                         && let Some(rx) = rearmed().remove(&id)
                     {
                         out.pending.insert(id, rx);
@@ -394,7 +405,11 @@ impl Message<DeliverSparedResults> for Agents {
 impl Message<ResumeQuestion> for Agents {
     type Reply = Result<(SessionId, Option<QuestionRow>), String>;
 
-    async fn handle(&mut self, m: ResumeQuestion, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+    async fn handle(
+        &mut self,
+        m: ResumeQuestion,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
         self.resume_question(m.turn, &m.call_id).await
     }
 }
@@ -480,7 +495,9 @@ mod tests {
                 )
             })
             .collect();
-        calls_planned_in(&mut tx, s, t, seq, &planned).await.unwrap();
+        calls_planned_in(&mut tx, s, t, seq, &planned)
+            .await
+            .unwrap();
         tx.commit().await.unwrap();
         for id in started {
             assert!(a.store.call_started(s, id).await.unwrap());
@@ -488,7 +505,12 @@ mod tests {
         t
     }
 
-    fn approval_row(s: SessionId, call: &str, state: QuestionState, answer: Option<&str>) -> QuestionRow {
+    fn approval_row(
+        s: SessionId,
+        call: &str,
+        state: QuestionState,
+        answer: Option<&str>,
+    ) -> QuestionRow {
         let asked_at = Utc::now();
         QuestionRow {
             id: Uuid::now_v7().to_string(),
@@ -543,12 +565,22 @@ mod tests {
             let rows = futures::executor::block_on(a.store.questions_pending(s)).unwrap();
             rows.iter().any(|r| r.id == id)
         };
-        assert!(!state(&pending.id), "c1's pending approval is no longer pending");
-        assert!(state(&ask_row.id), "c3's ask row (a started call) is untouched");
+        assert!(
+            !state(&pending.id),
+            "c1's pending approval is no longer pending"
+        );
+        assert!(
+            state(&ask_row.id),
+            "c3's ask row (a started call) is untouched"
+        );
         let c1 = a.store.questions_of_call(s, "c1").await.unwrap();
         assert_eq!(c1[0].state, QuestionState::Superseded);
         let c2 = a.store.questions_of_call(s, "c2").await.unwrap();
-        assert_eq!(c2[0].state, QuestionState::Answered, "the answered row stands");
+        assert_eq!(
+            c2[0].state,
+            QuestionState::Answered,
+            "the answered row stands"
+        );
         // The replay of c2 asks the gate again: honoured, no card, no timeout.
         let r = approval
             .ask(RequestApproval {
@@ -647,7 +679,10 @@ mod tests {
         assert!(left > Duration::from_secs(9 * 60) && left <= Duration::from_secs(10 * 60));
         assert_eq!(w.receipts.len(), 1);
         assert_eq!(w.receipts[0].state, PeerMessageState::Accepted);
-        let rx = w.pending.remove(&receipt.id).expect("live receiver for the open exchange");
+        let rx = w
+            .pending
+            .remove(&receipt.id)
+            .expect("live receiver for the open exchange");
         assert!(w.child_results.is_empty());
 
         // The child answers after the restart: the same path as before it.
@@ -710,28 +745,39 @@ mod tests {
             .unwrap();
         a.ledger.certify();
         let generation = a.communication.0.write().route(child, p).unwrap();
-        let result = |turn: TurnId| AcceptExchange {
-            sender: &format!("session:{child}"),
-            recipient: &format!("session:{p}"),
-            sender_session: Some(child),
-            recipient_session: Some(p),
-            request_id: None,
-            reply_to: None,
-            request_scope: None,
-            generation: generation.revision() as i64,
-            body: "done",
-        };
         let ct = TurnId::new();
-        let rid = format!("result:{ct}");
-        let mut ex = result(ct);
-        ex.request_id = Some(&rid);
-        let receipt = a.store.accept_exchange(&ex).await.unwrap();
+        let (from, to, rid) = (
+            format!("session:{child}"),
+            format!("session:{p}"),
+            format!("result:{ct}"),
+        );
+        let receipt = a
+            .store
+            .accept_exchange(&AcceptExchange {
+                sender: &from,
+                recipient: &to,
+                sender_session: Some(child),
+                recipient_session: Some(p),
+                request_id: Some(&rid),
+                reply_to: None,
+                request_scope: None,
+                generation: generation.revision() as i64,
+                body: "done",
+            })
+            .await
+            .unwrap();
         assert_eq!(a.store.spared_child_results().await.unwrap().len(), 1);
         assert_eq!(a.ledger.activity(p), None);
 
         a.deliver_spared_results().await;
-        assert!(a.enqueued.contains(&receipt.id), "handed to the parent's intake");
-        assert!(a.ledger.activity(p).is_some(), "the parent is admitted a ticket");
+        assert!(
+            a.enqueued.contains(&receipt.id),
+            "handed to the parent's intake"
+        );
+        assert!(
+            a.ledger.activity(p).is_some(),
+            "the parent is admitted a ticket"
+        );
         // Again: the dedup set refuses a second delivery.
         a.deliver_spared_results().await;
         assert_eq!(a.enqueued.len(), 1);
@@ -773,13 +819,28 @@ mod tests {
             .await
             .unwrap();
         a.deliver_spared_results().await;
-        assert!(!a.enqueued.contains(&r2.id), "awaited by an open turn: not injected");
+        assert!(
+            !a.enqueued.contains(&r2.id),
+            "awaited by an open turn: not injected"
+        );
         let w = a.resume_wait(t, "c1").await.unwrap();
         assert_eq!(w.child_results, ["kid2 finished"]);
         assert_eq!(
-            a.store.exchange_receipt(r2.id).await.unwrap().unwrap().state,
+            a.store
+                .exchange_receipt(r2.id)
+                .await
+                .unwrap()
+                .unwrap()
+                .state,
             PeerMessageState::Consumed
         );
-        assert!(a.store.spared_child_results().await.unwrap().iter().all(|r| r.receipt.id != r2.id));
+        assert!(
+            a.store
+                .spared_child_results()
+                .await
+                .unwrap()
+                .iter()
+                .all(|r| r.receipt.id != r2.id)
+        );
     }
 }

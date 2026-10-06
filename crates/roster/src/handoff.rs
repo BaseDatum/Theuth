@@ -10,7 +10,9 @@ use std::time::{Duration, Instant};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use sqlx::sqlite::SqlitePool;
-use tools::{QuestionKind, QuestionRow, QuestionState, Risk, Tool, ToolCx, ToolOutput, WaitKind, WaitRow};
+use tools::{
+    QuestionKind, QuestionRow, QuestionState, Risk, Tool, ToolCx, ToolOutput, WaitKind, WaitRow,
+};
 
 use crate::desk::Shared;
 

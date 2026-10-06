@@ -12,8 +12,8 @@ use kameo::error::SendError;
 use schemars::JsonSchema;
 use serde::Deserialize;
 use tools::{
-    Invoke, QuestionKind, QuestionRow, QuestionState, REGISTRY_ACTOR, RegisterPrompt,
-    RegisterTool, Risk, Tool, ToolCall, ToolCx, ToolOutput, ToolRegistry, WaitKind, WaitRow,
+    Invoke, QuestionKind, QuestionRow, QuestionState, REGISTRY_ACTOR, RegisterPrompt, RegisterTool,
+    Risk, Tool, ToolCall, ToolCx, ToolOutput, ToolRegistry, WaitKind, WaitRow,
 };
 
 use crate::vault::{self, MIN_REDACT, SecretInfo, Vault};
@@ -249,9 +249,10 @@ async fn request(
             (row, title, fields)
         }
     };
-    let id = RequestId(uuid::Uuid::parse_str(&row.id).map_err(|e| {
-        SendError::HandlerError(format!("secret request id {:?}: {e}", row.id))
-    })?);
+    let id =
+        RequestId(uuid::Uuid::parse_str(&row.id).map_err(|e| {
+            SendError::HandlerError(format!("secret request id {:?}: {e}", row.id))
+        })?);
     if row.state == QuestionState::Pending {
         journal.question(row.clone()).await;
         journal

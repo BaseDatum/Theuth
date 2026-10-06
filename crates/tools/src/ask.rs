@@ -680,7 +680,16 @@ mod tests {
         let session = SessionId::new();
         let asked = tokio::spawn({
             let first = first.clone();
-            async move { Tool::call(&AskUserTool(first), AskArgs { questions: one_question() }, cx(session, "c1")).await }
+            async move {
+                Tool::call(
+                    &AskUserTool(first),
+                    AskArgs {
+                        questions: one_question(),
+                    },
+                    cx(session, "c1"),
+                )
+                .await
+            }
         });
         let row = loop {
             if let Some(r) = journal.questions().first() {
@@ -688,11 +697,17 @@ mod tests {
             }
             tokio::time::sleep(Duration::from_millis(5)).await;
         };
-        assert_eq!((row.kind, row.state), (QuestionKind::Ask, QuestionState::Pending));
+        assert_eq!(
+            (row.kind, row.state),
+            (QuestionKind::Ask, QuestionState::Pending)
+        );
         assert_eq!(row.tool_call_id.as_deref(), Some("c1"));
         assert_eq!(row.payload["questions"][0]["id"], "q");
         assert_eq!(journal.waits().len(), 1);
-        assert_eq!(journal.waits()[0].1.as_ref().unwrap().kind, WaitKind::Question);
+        assert_eq!(
+            journal.waits()[0].1.as_ref().unwrap().kind,
+            WaitKind::Question
+        );
         // The engine dies: the first actor and its waiter are gone.
         drop(asked);
         first.kill();
@@ -712,7 +727,17 @@ mod tests {
         crate::registry::republish(row.clone());
         let resumed = tokio::spawn({
             let second = second.clone();
-            async move { Tool::call(&AskUserTool(second), AskArgs { questions: Vec::new() }, cx(session, "c1")).await.unwrap() }
+            async move {
+                Tool::call(
+                    &AskUserTool(second),
+                    AskArgs {
+                        questions: Vec::new(),
+                    },
+                    cx(session, "c1"),
+                )
+                .await
+                .unwrap()
+            }
         });
         let card = loop {
             if let Some(c) = crate::jobs::lock(&seen).first() {
@@ -740,10 +765,19 @@ mod tests {
         let out = resumed.await.unwrap();
         assert_eq!(out.content, "q: a");
         let rows = journal2.questions();
-        assert_eq!(rows.first().map(|r| (r.id.as_str(), r.state)), Some((row.id.as_str(), QuestionState::Pending)));
+        assert_eq!(
+            rows.first().map(|r| (r.id.as_str(), r.state)),
+            Some((row.id.as_str(), QuestionState::Pending))
+        );
         let last = rows.last().unwrap();
-        assert_eq!((last.id.as_str(), last.state), (row.id.as_str(), QuestionState::Answered));
-        assert_eq!(last.answer, Some(serde_json::json!([{"kind": "choice", "index": 0}])));
+        assert_eq!(
+            (last.id.as_str(), last.state),
+            (row.id.as_str(), QuestionState::Answered)
+        );
+        assert_eq!(
+            last.answer,
+            Some(serde_json::json!([{"kind": "choice", "index": 0}]))
+        );
         assert!(journal2.waits().last().unwrap().1.is_none(), "wait cleared");
     }
 
@@ -768,13 +802,22 @@ mod tests {
             answer: None,
         };
         crate::registry::republish(row.clone());
-        let out = Tool::call(&AskUserTool(actor.clone()), AskArgs { questions: Vec::new() }, cx(session, "c2"))
-            .await
-            .unwrap();
+        let out = Tool::call(
+            &AskUserTool(actor.clone()),
+            AskArgs {
+                questions: Vec::new(),
+            },
+            cx(session, "c2"),
+        )
+        .await
+        .unwrap();
         assert!(out.is_error && out.content.contains("in time"), "{out:?}");
         let rows = journal.questions();
         assert_eq!(rows.len(), 1);
-        assert_eq!((rows[0].id.as_str(), rows[0].state), (row.id.as_str(), QuestionState::TimedOut));
+        assert_eq!(
+            (rows[0].id.as_str(), rows[0].state),
+            (row.id.as_str(), QuestionState::TimedOut)
+        );
         assert!(actor.ask(PendingAsks).await.unwrap().is_empty());
 
         let answered = QuestionRow {
@@ -783,10 +826,20 @@ mod tests {
             ..row
         };
         crate::registry::republish(answered);
-        let out = Tool::call(&AskUserTool(actor.clone()), AskArgs { questions: Vec::new() }, cx(session, "c2"))
-            .await
-            .unwrap();
+        let out = Tool::call(
+            &AskUserTool(actor.clone()),
+            AskArgs {
+                questions: Vec::new(),
+            },
+            cx(session, "c2"),
+        )
+        .await
+        .unwrap();
         assert_eq!(out.content, "q: mine");
-        assert_eq!(journal.questions().len(), 1, "nothing asked, nothing journaled");
+        assert_eq!(
+            journal.questions().len(),
+            1,
+            "nothing asked, nothing journaled"
+        );
     }
 }

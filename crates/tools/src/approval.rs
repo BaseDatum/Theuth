@@ -370,7 +370,9 @@ pub(crate) mod tests {
         }
     }
 
-    async fn actor(timeout: Duration) -> (Runtime, kameo::actor::ActorRef<Approval>, Arc<RecJournal>) {
+    async fn actor(
+        timeout: Duration,
+    ) -> (Runtime, kameo::actor::ActorRef<Approval>, Arc<RecJournal>) {
         let rt = Runtime::new(figment::Figment::new(), std::env::temp_dir());
         let journal = Arc::new(RecJournal::default());
         let actor = Approval::spawn(Approval::new(rt.clone(), timeout));
@@ -412,33 +414,67 @@ pub(crate) mod tests {
         assert_eq!(rows.len(), 1);
         let row = &rows[0];
         assert_eq!(row.id, id.0.to_string());
-        assert_eq!((row.kind, row.state), (QuestionKind::Approval, QuestionState::Pending));
+        assert_eq!(
+            (row.kind, row.state),
+            (QuestionKind::Approval, QuestionState::Pending)
+        );
         assert_eq!(row.tool_call_id.as_deref(), Some("c1"));
         assert_eq!(row.payload["tool"], "shell");
         assert_eq!(row.deadline - row.asked_at, chrono::Duration::seconds(5));
         let waits = journal.waits();
         assert_eq!(waits.len(), 1);
         let w = waits[0].1.as_ref().unwrap();
-        assert_eq!((w.kind, w.target.as_str()), (WaitKind::Question, row.id.as_str()));
+        assert_eq!(
+            (w.kind, w.target.as_str()),
+            (WaitKind::Question, row.id.as_str())
+        );
 
-        assert!(actor.ask(Resolve { id, decision: Decision::Allow }).await.unwrap());
+        assert!(
+            actor
+                .ask(Resolve {
+                    id,
+                    decision: Decision::Allow
+                })
+                .await
+                .unwrap()
+        );
         let resolved = pending.await.unwrap();
-        assert_eq!((resolved.decision, resolved.timed_out), (Decision::Allow, false));
+        assert_eq!(
+            (resolved.decision, resolved.timed_out),
+            (Decision::Allow, false)
+        );
         let rows = journal.questions();
         assert_eq!(rows.len(), 2);
         assert_eq!(rows[1].state, QuestionState::Answered);
         assert_eq!(rows[1].answer, Some(serde_json::json!("allow")));
         assert!(rows[1].answered_at.is_some());
-        assert_eq!(journal.waits().last().map(|(c, w)| (c.as_str(), w.is_none())), Some(("c1", true)));
+        assert_eq!(
+            journal
+                .waits()
+                .last()
+                .map(|(c, w)| (c.as_str(), w.is_none())),
+            Some(("c1", true))
+        );
         // §6.3: an answer for an id no longer pending is refused.
-        assert!(!actor.ask(Resolve { id, decision: Decision::Deny }).await.unwrap());
+        assert!(
+            !actor
+                .ask(Resolve {
+                    id,
+                    decision: Decision::Deny
+                })
+                .await
+                .unwrap()
+        );
     }
 
     /// §6.3: nobody answers → `Deny`, `timed_out`, and the row is `timed_out`.
     #[tokio::test]
     async fn deadline_elapsed_is_timeout() {
         let (_rt, actor, journal) = actor(Duration::from_millis(20)).await;
-        let r = actor.ask(request(SessionId::new(), Some("c1"))).await.unwrap();
+        let r = actor
+            .ask(request(SessionId::new(), Some("c1")))
+            .await
+            .unwrap();
         assert_eq!((r.decision, r.timed_out), (Decision::Deny, true));
         let rows = journal.questions();
         assert_eq!(rows.len(), 2);

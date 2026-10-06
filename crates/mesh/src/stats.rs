@@ -173,7 +173,14 @@ mod tests {
         let detected = probe(EngineId("e".into()), 0, dir.path(), &[], None).class;
         // Pick a declared value the host cannot detect as, so the assertion bites.
         assert_eq!(
-            probe(EngineId("e".into()), 0, dir.path(), &[], Some(EngineClass::Vm)).class,
+            probe(
+                EngineId("e".into()),
+                0,
+                dir.path(),
+                &[],
+                Some(EngineClass::Vm)
+            )
+            .class,
             EngineClass::Vm
         );
         assert_ne!(detected, EngineClass::Vm, "detection never yields vm");

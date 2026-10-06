@@ -193,7 +193,13 @@ mod tests {
         let vm = cand("a-vm", EngineClass::Vm);
         assert_eq!(class_rank(vm.class), class_rank(laptop.class));
         assert_eq!(
-            elect(&[vm.clone(), laptop.clone()], None, NOW, PROBATION, HANDOVER),
+            elect(
+                &[vm.clone(), laptop.clone()],
+                None,
+                NOW,
+                PROBATION,
+                HANDOVER
+            ),
             id("a-vm"),
             "equal class: id tie-break only"
         );
@@ -205,7 +211,13 @@ mod tests {
             "more uptime on the laptop wins; vm has no class edge"
         );
         assert_eq!(
-            elect(&[vm, cand("c-desktop", EngineClass::Desktop)], None, NOW, PROBATION, HANDOVER),
+            elect(
+                &[vm, cand("c-desktop", EngineClass::Desktop)],
+                None,
+                NOW,
+                PROBATION,
+                HANDOVER
+            ),
             id("c-desktop")
         );
         let mut never = cand("a-never-vm", EngineClass::Vm);
