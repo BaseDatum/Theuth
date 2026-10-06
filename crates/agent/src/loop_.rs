@@ -989,6 +989,9 @@ impl Session {
         self.scope = scope;
         let mut task = Turn::new(self.shared.clone(), Some(turn), cancel, state);
         task.scope = scope;
+        // 109 §4.1: an open turn of an earlier process is closed before the
+        // opener's row, so its tool message follows its `tool_use` row.
+        task.settle_open_turns(turn).await;
         let mut inputs = inputs.into_iter();
         let mut ids = Vec::new();
         let mut texts = Vec::new();
@@ -2861,12 +2864,17 @@ impl Turn {
     /// The calls of the frame's trailing assistant `tool_use` row, when no
     /// tool message follows it; empty otherwise.
     fn dangling_calls(&self) -> Vec<ToolCall> {
-        match self.state.history.last() {
-            Some((_, m)) if m.role == ChatRole::Assistant => {
-                m.content.tool_calls().into_iter().cloned().collect()
+        for (_, m) in self.state.history.iter().rev() {
+            match m.role {
+                // Inputs taken after the kill (a steer, a fresh turn's opener).
+                ChatRole::User => continue,
+                ChatRole::Assistant => {
+                    return m.content.tool_calls().into_iter().cloned().collect();
+                }
+                _ => return Vec::new(),
             }
-            _ => Vec::new(),
         }
+        Vec::new()
     }
 
     /// 109 §4.6 (`resume: off | ask`, or an input that beat the scan): a fresh
@@ -3000,6 +3008,7 @@ impl Turn {
                 call_id: row.call_id.clone(),
                 fn_name: row.name.clone(),
                 fn_arguments: row.args.clone(),
+                thought_signatures: None,
             });
             let preset = match row.state {
                 CallState::Finished | CallState::Skipped | CallState::Interrupted => {
@@ -3054,6 +3063,8 @@ impl Turn {
             n if peer_wait(n, &row.args) => Some(resume_calls::resume_wait_call(row, plan).await),
             n if n == repl::NAME => return self.resume_python(row, plan).await,
             n if n == todo::NAME => None,
+            // §4.2: a `reminders` row set since the call began is its effect.
+            "remind_me_in" => self.reminder_since(row.started_at).await,
             _ => match row.risk {
                 Risk::ReadOnly => None,
                 Risk::Mutating | Risk::Destructive => {
@@ -3071,6 +3082,35 @@ impl Turn {
                 (Some(out), false)
             }
         }
+    }
+
+    /// §4.2 `remind_me_in` row: the reminder this session set at or after
+    /// `since` (the call's `started_at`), as the tool reports one; `None` →
+    /// the call runs again.
+    async fn reminder_since(&self, since: Option<chrono::DateTime<chrono::Utc>>) -> Option<ToolOutput> {
+        let since = since?.timestamp();
+        let rows = match self.shared.store.reminders().await {
+            Ok(rows) => rows,
+            Err(e) => {
+                tracing::warn!(session = %self.shared.id, "reminders: {e:#}");
+                return None;
+            }
+        };
+        let r = rows
+            .into_iter()
+            .filter(|r| r.session == self.shared.id && r.set_at >= since)
+            .max_by_key(|r| r.set_at)?;
+        let fires_at = tools::reminder::local_rfc3339(r.fires_at);
+        let mut out = ToolOutput::ok(format!(
+            "{} set: fires at {} (in {} s); end your turn, the message comes back as <reminder id=\"{}\">",
+            r.id, fires_at, r.seconds, r.id
+        ));
+        out.structured = Some(serde_json::json!({
+            "id": r.id,
+            "fires_at": fires_at,
+            "seconds": r.seconds,
+        }));
+        Some(out)
     }
 
     /// §4.2 python rule: every inner call read-only → the cell runs again
@@ -3855,6 +3895,9 @@ impl Turn {
     /// `inputs` are the turn's inputs after the first, which
     /// [`Session::start_turn`] already persisted.
     async fn run(mut self, turn: TurnId, inputs: Vec<Input>) -> SessionState {
+        // 109 §4.1: what an earlier process left open is closed before this
+        // turn's rows (a no-op after `Session::start_turn` did it).
+        self.settle_open_turns(turn).await;
         for input in inputs {
             self.take_input(input).await;
         }
@@ -3918,14 +3961,12 @@ impl Turn {
             }
             Some(registry) => {
                 self.rebase(registry).await;
-                // 109 §4.1: a resumed turn's journal replaces `repair_dangling`;
-                // a fresh turn closes what an earlier process left open.
+                // 109 §4.1: a resumed turn's journal replaces `repair_dangling`
+                // (a fresh turn settled what an earlier process left open in
+                // `run` / `start_turn`, before its inputs).
                 let mut first = match &plan {
                     Some(plan) => self.resume_prelude(registry, turn, plan).await,
-                    None => {
-                        self.settle_open_turns(turn).await;
-                        None
-                    }
+                    None => None,
                 };
                 self.state.todo_touched_round = 0;
                 self.state.knowledge_hinted_round = 0;
@@ -4555,7 +4596,7 @@ impl Turn {
         // 47 §3.3: the display string above defaults; the classification does
         // not. The landing call is excluded whatever it says (36 §5).
         let mut natural = natural_stop(&end) && !self.landing;
-        let mut calls: Vec<ToolCall> = end
+        let calls: Vec<ToolCall> = end
             .captured_tool_calls()
             .map(|v| v.into_iter().cloned().collect())
             .unwrap_or_default();
@@ -6506,7 +6547,6 @@ fn progress_due(prev: Option<&Progress>, now: Instant, len: usize) -> bool {
 mod side;
 
 /// 109 §4.2: the job / question / wait resume rules (stubs; W2, W3 fill them).
-#[allow(dead_code)] // wired by W1's per-call rule
 pub(crate) mod resume_calls;
 
 /// 52 §10 gates against a fake provider, through a real turn.
@@ -6548,6 +6588,10 @@ mod runtime_bridge_tests;
 /// REGEN-STAMP: a regenerated opener replays its `<time …/>` stamp to the model only.
 #[cfg(test)]
 mod regen_stamp_tests;
+
+/// 109 W1: the journal's write points, the §4.2 resume rules and the §11.1 crash matrix.
+#[cfg(test)]
+mod durability_tests;
 
 #[cfg(test)]
 mod tests {

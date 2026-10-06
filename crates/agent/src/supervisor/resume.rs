@@ -140,7 +140,7 @@ impl Agents {
                 Ok(g) => g,
                 Err(e) => {
                     self.enqueued.remove(&id);
-                    tracing::info!(session = %child, %parent, %id, "109: spared result not delivered: {e}");
+                    tracing::info!(session = %child, %parent, %id, "109: spared result not delivered: {e:?}");
                     continue;
                 }
             };
