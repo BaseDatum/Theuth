@@ -1,0 +1,32 @@
+[
+  {
+    "type": "section",
+    "fields": [
+      {
+        "type": "mrkdwn",
+        "text": "*Requests / s*\n1 240 ↑ +12%"
+      },
+      {
+        "type": "mrkdwn",
+        "text": "*Error rate*\n0.4% ↓ -0.2 pt"
+      },
+      {
+        "type": "mrkdwn",
+        "text": "*p99*\n180 ms →"
+      },
+      {
+        "type": "mrkdwn",
+        "text": "*Hosts*\n12"
+      }
+    ]
+  },
+  {
+    "type": "section",
+    "fields": [
+      {
+        "type": "mrkdwn",
+        "text": "*Uptime*\n99.98%"
+      }
+    ]
+  }
+]

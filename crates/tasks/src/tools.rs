@@ -475,10 +475,10 @@ pub struct TaskUpdateArgs {
     /// `## Walk through`). Required when the reviewer is the user.
     #[serde(default)]
     pub board: Option<String>,
-    /// With `disposition: review`: exactly what to review (≤ 12), evidence inline: `code` = `ref: "path#L10-L24"`
-    /// + `text` the lines verbatim (+ `root`); `diff` = `text` a unified diff; `artifact` / `note` / `knowledge` /
-    /// `session` / `meeting` / `task` by id; `url` by `http(s)` URL. `title` and a one-line `note` each; `text`
-    /// ≤ 32 KiB. Optional — the board's Excerpts are the primary evidence.
+    /// With `disposition: review`: exactly what to review (≤ 12), evidence inline:
+    /// `code` = `ref: "path#L10-L24"` + `text` the lines verbatim (+ `root`); `diff` = `text` a unified diff;
+    /// `artifact` / `note` / `knowledge` / `session` / `meeting` / `task` by id; `url` by `http(s)` URL.
+    /// `title` and a one-line `note` each; `text` ≤ 32 KiB. Optional — the board's Excerpts are the primary evidence.
     #[serde(default)]
     pub pointers: Option<Vec<Pointer>>,
     /// With `disposition: review`: your status against each `done_when` line (`{text, done, note}`).
@@ -738,6 +738,8 @@ impl Tool for TaskMoveTool {
 /// the user needs a `summary` and a `board` with the review skeleton, every
 /// audience gets the caps checked. `Ok(Some(_))` is the packet to store once
 /// the task is in review; `Ok(None)` = an agent audience with nothing given.
+// Every argument is a distinct per-call input of the two `disposition: review` call sites; a struct would only be built there.
+#[allow(clippy::too_many_arguments)]
 async fn review_gate(
     actor: &ActorRef<Tasks>,
     id: &TaskId,

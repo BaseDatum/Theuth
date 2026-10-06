@@ -4974,7 +4974,7 @@ pub(crate) mod tests {
         );
         assert!(
             r.ledger
-                .packets_for(&[t.id.clone()])
+                .packets_for(std::slice::from_ref(&t.id))
                 .await
                 .unwrap()
                 .is_empty()
@@ -5049,7 +5049,10 @@ pub(crate) mod tests {
             "{block}"
         );
         assert_eq!(
-            r.ledger.packets_for(&[t.id.clone()]).await.unwrap(),
+            r.ledger
+                .packets_for(std::slice::from_ref(&t.id))
+                .await
+                .unwrap(),
             vec![p]
         );
         assert_eq!(r.ledger.packet("decision:nope").await.unwrap(), None);
@@ -5388,7 +5391,11 @@ pub(crate) mod tests {
             .expect("stored for items alone");
         assert_eq!(p.items, items);
         assert_eq!(
-            r.ledger.packets_for(&[t.id.clone()]).await.unwrap()[0].items,
+            r.ledger
+                .packets_for(std::slice::from_ref(&t.id))
+                .await
+                .unwrap()[0]
+                .items,
             items
         );
         let doc = t.thread.clone().unwrap();
@@ -5467,7 +5474,11 @@ pub(crate) mod tests {
             )
             .await
             .unwrap();
-        let all = r.ledger.packets_for(&[t.id.clone()]).await.unwrap();
+        let all = r
+            .ledger
+            .packets_for(std::slice::from_ref(&t.id))
+            .await
+            .unwrap();
         assert_eq!(all, vec![p2.clone()], "one row, the latest");
         assert_eq!(p2.board.as_deref(), Some("rb1"));
         assert_eq!(r.ledger.packet(&p1.key).await.unwrap(), Some(p2));

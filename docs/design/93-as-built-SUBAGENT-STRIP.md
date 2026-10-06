@@ -52,3 +52,7 @@ vitest EXIT=0
 - `BEATS` is a `Partial<Record<…, true>>` rather than a `Set` (project rule: static string-keyed tables are `Record`s). Same semantics.
 - The ancestor walk now skips replacing a slice whose row did not change (`next !== row`), which is slightly tighter than before for `ToolCallFinished` on a non-awaiting row; needed so a throttled beat does not churn every ancestor slice per delta.
 - Nothing else: file list, placement, classes, timings and tests are as the brief decided.
+
+## 2026-10-06 — strip above the to-do card (Sky; 112 §1)
+
+Sky: "Move the little subagent dots above the chat input, on top of where the to-do renders … above the to-do if the to-do is rendered, otherwise directly on top of the chat input." `src/routes/c.$session.tsx:138-140` now renders `<SubagentStrip/>`, `<TodoCard/>`, `<Composer/>`: transcript · dots · to-do · composer. The strip's `h-7` row carries no margin or border and the card keeps its `pb-2`, so the rhythm with either neighbour absent is what it was; nothing in `SubagentStrip.tsx` or `TodoCard.tsx` changed beyond the strip's doc comment. Line 21 above ("between `TodoCard` and `Composer`") is superseded. Branch `fix/chat-bottom-stack`, commit `caa2c8f5`.

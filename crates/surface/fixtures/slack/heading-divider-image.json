@@ -1,0 +1,39 @@
+{
+  "root": "s",
+  "elements": {
+    "s": {
+      "type": "Stack",
+      "children": [
+        "h",
+        "sep",
+        "i",
+        "b"
+      ]
+    },
+    "h": {
+      "type": "Heading",
+      "props": {
+        "text": "Architecture",
+        "level": 2
+      }
+    },
+    "sep": {
+      "type": "Separator"
+    },
+    "i": {
+      "type": "Image",
+      "props": {
+        "src": "https://example.com/arch.png",
+        "alt": "Architecture diagram",
+        "caption": "Three crates, one bus"
+      }
+    },
+    "b": {
+      "type": "Badge",
+      "props": {
+        "text": "shipped",
+        "variant": "success"
+      }
+    }
+  }
+}

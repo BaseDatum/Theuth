@@ -1,0 +1,48 @@
+[
+  {
+    "type": "alert",
+    "text": {
+      "type": "mrkdwn",
+      "text": "The daemon restarts automatically after an update."
+    },
+    "level": "info"
+  },
+  {
+    "type": "alert",
+    "text": {
+      "type": "mrkdwn",
+      "text": "*Migrated*\nAll 12 hosts are on the new schema."
+    },
+    "level": "success"
+  },
+  {
+    "type": "alert",
+    "text": {
+      "type": "mrkdwn",
+      "text": "*Canary*\np99 latency is up 8% on the canary."
+    },
+    "level": "warning"
+  },
+  {
+    "type": "alert",
+    "text": {
+      "type": "mrkdwn",
+      "text": "Notarization failed: certificate expired."
+    },
+    "level": "error"
+  },
+  {
+    "type": "alert",
+    "text": {
+      "type": "mrkdwn",
+      "text": "Sessions are stored per plugin in sqlite."
+    }
+  },
+  {
+    "type": "alert",
+    "text": {
+      "type": "mrkdwn",
+      "text": "*Faster builds*\nUse cargo check while iterating."
+    }
+  }
+]

@@ -15,7 +15,8 @@ use std::time::Duration;
 
 use agent::{
     AGENT_ACTOR, AgentEvent, AgentInfo, Agents, Cancel, ListAgents, ListSessions, NewRootSession,
-    SendInput, SessionSummary, Steer, communication::PeerScope,
+    SendInput, SessionSummary, Steer,
+    communication::{PeerDelivered, PeerScope},
 };
 use artifact::{Artifact, ArtifactShown};
 use async_trait::async_trait;
@@ -36,9 +37,9 @@ use crate::api::{Api, ApiError, MARKDOWN_TEXT_MAX, SlackApi};
 use crate::bubble::{self, Footer, Target, Turn};
 use crate::commands::{self, CommandCx, Outcome, Reply};
 use crate::threads::{Thread, ThreadKey, Threads, thread_key};
-use crate::ui;
 use crate::{
-    ApprovalsScope, SlackConfig, SlackEvent, SlackStatus, ToolCards, approvals, asks, board, socket,
+    ApprovalsScope, SlackConfig, SlackEvent, SlackStatus, ToolCards, approvals, asks, board, plan,
+    socket, ui,
 };
 
 /// Dedup set size for `event_id` / `trigger_id` (21 §3.1).
@@ -184,7 +185,10 @@ impl Port for Actors {
 
     async fn cancel(&self, session: SessionId) -> Result<(), String> {
         agents()?
-            .ask(Cancel { session, keep: None })
+            .ask(Cancel {
+                session,
+                keep: None,
+            })
             .await
             .map_err(|e| e.to_string())
     }
@@ -228,6 +232,8 @@ enum Event {
     Secret(secrets::SecretsEvent),
     /// 67 §4.4: the hub lease moved.
     Lease(mesh::LeaseState),
+    /// 110 §6: a child's or peer's result reached a session.
+    Peer(PeerDelivered),
 }
 
 /// Bus subscriber: forwards into the ordered router.
@@ -285,6 +291,13 @@ impl Message<secrets::SecretsEvent> for Bus {
     }
 }
 
+impl Message<PeerDelivered> for Bus {
+    type Reply = ();
+    async fn handle(&mut self, m: PeerDelivered, _: &mut Context<Self, ()>) {
+        let _ = self.tx.send(Event::Peer(m));
+    }
+}
+
 impl Message<mesh::MeshEvent> for Bus {
     type Reply = ();
     async fn handle(&mut self, m: mesh::MeshEvent, _: &mut Context<Self, ()>) {
@@ -329,6 +342,8 @@ enum Out {
     ChildApproval(SessionId, Option<String>),
     /// One markdown line for this thread (the 37 §7 secret notice).
     Note(String),
+    /// 110 §6: a peer's result for this thread's session, as a collapsed container.
+    Peer(Box<PeerDelivered>),
 }
 
 /// `auth.test` identity plus the owner DM (21 §11).
@@ -388,6 +403,8 @@ struct State {
     recent: RecentKeys,
     last_event: Option<SlackEvent>,
     dropped: u64,
+    /// 110 §6: `MessageDelivered` events not rendered.
+    hidden: u64,
     /// Pending approval cards by id (thread and owner-DM alike).
     cards: HashMap<ApprovalId, Card>,
     /// Pending `ask_user` questions by id.
@@ -415,6 +432,8 @@ pub struct Channel {
     owner: String,
     tools: ToolCards,
     reasoning: bool,
+    /// 110 §5: the plan message is on.
+    plan: bool,
     approvals: ApprovalsScope,
     pub(crate) identity: OnceLock<Identity>,
     // ponytail: one std mutex for all state, never held across an await; split if it ever contends.
@@ -514,6 +533,7 @@ async fn run(
     chan.rt.subscribe::<Bus, ArtifactShown>(&bus).await;
     chan.rt.subscribe::<Bus, secrets::SecretsEvent>(&bus).await;
     chan.rt.subscribe::<Bus, mesh::MeshEvent>(&bus).await;
+    chan.rt.subscribe::<Bus, PeerDelivered>(&bus).await;
     // 67 §4.7: learn our engine id once the mesh is up; the lease resolves then.
     let me = {
         let chan = Arc::clone(&chan);
@@ -634,6 +654,7 @@ impl Channel {
             owner,
             tools: cfg.tools,
             reasoning: cfg.reasoning,
+            plan: cfg.plan,
             approvals: cfg.approvals,
             identity: OnceLock::new(),
             state: Mutex::new(State {
@@ -645,6 +666,7 @@ impl Channel {
                 recent: RecentKeys::default(),
                 last_event: None,
                 dropped: 0,
+                hidden: 0,
                 cards: HashMap::new(),
                 asks: HashMap::new(),
                 parent_of: HashMap::new(),
@@ -717,6 +739,7 @@ impl Channel {
             open_streams: s.threads.open_streams(),
             calls: self.live.as_ref().map(|a| a.stats()).unwrap_or_default(),
             dropped_envelopes: s.dropped,
+            hidden_deliveries: s.hidden,
         }
     }
 
@@ -1183,6 +1206,7 @@ impl Channel {
                     team,
                     text: content.text.unwrap_or_default(),
                     files: content.files.unwrap_or_default(),
+                    dm: true,
                 })
                 .await;
             }
@@ -1203,6 +1227,7 @@ impl Channel {
                     team,
                     text: a.content.text.unwrap_or_default(),
                     files: a.content.files.unwrap_or_default(),
+                    dm: false,
                 })
                 .await;
             }
@@ -1250,7 +1275,14 @@ impl Channel {
             None => (text, bound.as_ref().and_then(|t| t.agent.clone())),
         };
         if !text.is_empty() {
-            lines.push(text);
+            // 110 §7.1: one marker line so the model writes for Slack. File and
+            // voice-note lines carry their own markers and none of this one.
+            let marker = if m.dm {
+                "[slack dm]"
+            } else {
+                "[slack channel]"
+            };
+            lines.push(format!("{marker}\n{text}"));
         }
         let (file_lines, files, voice) = self.save_files(&m.ts, &m.files).await;
         lines.extend(file_lines);
@@ -1678,6 +1710,11 @@ impl Channel {
                 self.lock().follower.observe(&lease);
                 self.sync_socket().await;
             }
+            Event::Peer(p) => {
+                if let Some((key, thread)) = self.bound(p.session) {
+                    let _ = self.worker(&key, &thread).send(Out::Peer(Box::new(p)));
+                }
+            }
         }
     }
 
@@ -1850,6 +1887,8 @@ impl Channel {
             voice: false,
             unspoken: String::new(),
             clip_tail: None,
+            plan: plan::Plan::default(),
+            compacted: None,
         };
         tokio::spawn(worker.run(rx));
         s.workers.insert(key.to_owned(), tx.clone());
@@ -1902,6 +1941,8 @@ struct Msg {
     team: String,
     text: String,
     files: Vec<SlackFile>,
+    /// A direct message (`channel_type == "im"`), not a channel mention (110 §7.1).
+    dm: bool,
 }
 
 /// One ordered task per bound thread holding all per-thread state (21 §8).
@@ -1947,6 +1988,10 @@ struct Worker {
     unspoken: String,
     /// The previous block's clip upload; the next waits for it (45 §4.5.4).
     clip_tail: Option<tokio::task::JoinHandle<()>>,
+    /// The plan message (110 §5).
+    plan: plan::Plan,
+    /// `Compacted { epoch }` seen between turns; handed to the next `Turn` for its footer (110 §6).
+    compacted: Option<u32>,
 }
 
 /// `agents.sessions.setStatus` codes meaning "not an agent app" (21 §8.6).
@@ -1973,10 +2018,11 @@ impl Worker {
                     Some(Out::Approval(req)) => self.approval(*req).await,
                     Some(Out::Resolved(res, by)) => self.resolved(res, by.as_deref()).await,
                     Some(Out::Ask(req, i)) => self.ask(*req, i).await,
-                    Some(Out::Spawned { child, name, link, depth }) => self.spawned(child, name, link, depth).await,
+                    Some(Out::Spawned { child, name, link, depth }) => self.spawned(child, name, link, depth),
                     Some(Out::Child(session, ev)) => self.child(session, &ev).await,
                     Some(Out::Artifact(a)) => self.artifact(*a).await,
                     Some(Out::Note(md)) => { self.post_markdown_in_thread(&md).await; }
+                    Some(Out::Peer(p)) => self.peer(*p).await,
                     Some(Out::ChildApproval(session, tool)) => {
                         if let Some(row) = self.rows.iter_mut().find(|r| r.session == session) {
                             self.rows_dirty |= row.approval(tool.as_deref());
@@ -2030,6 +2076,73 @@ impl Worker {
         {
             self.render_board().await;
         }
+        self.flush_plan(false).await;
+    }
+
+    /// 110 §5: posts or edits the plan message when an edit is due; `force`
+    /// on `TurnFinished`.
+    async fn flush_plan(&mut self, force: bool) {
+        let Some(edit) = self.plan.take_due(Instant::now(), force) else {
+            return;
+        };
+        match edit.ts {
+            Some(ts) => {
+                if let Err(e) = self
+                    .chan
+                    .api
+                    .update_blocks(&self.channel, &ts, edit.blocks)
+                    .await
+                {
+                    tracing::debug!(error = %e, "plan update failed");
+                }
+            }
+            None => match self
+                .chan
+                .api
+                .post_blocks(&self.channel, Some(&self.thread_ts), edit.blocks)
+                .await
+            {
+                Ok(ts) => self.plan.posted(ts),
+                Err(e) => tracing::debug!(error = %e, "plan post failed"),
+            },
+        }
+    }
+
+    /// 110 §6: `blocks` into the thread; `md` as a plain message when Slack
+    /// refuses the blocks (a real `ApiError`), so nothing is lost.
+    async fn post_blocks_or_markdown(&self, blocks: serde_json::Value, md: &str) {
+        if let Err(e) = self
+            .chan
+            .api
+            .post_blocks(&self.channel, Some(&self.thread_ts), blocks)
+            .await
+        {
+            tracing::debug!(error = %e, "blocks refused; posting markdown instead");
+            self.post_markdown_in_thread(md).await;
+        }
+    }
+
+    /// 110 §6: a child's or peer's result as one collapsed container titled
+    /// from its board row (`↳ name · finished · age`), else `↳ <from> · delivered`.
+    async fn peer(&self, p: PeerDelivered) {
+        let row = p
+            .origin
+            .from
+            .strip_prefix("session:")
+            .and_then(|id| id.parse::<SessionId>().ok())
+            .and_then(|id| self.rows.iter().find(|r| r.session == id));
+        let title = match row {
+            Some(r) => format!(
+                "↳ {} · finished · {}",
+                r.name,
+                board::fmt_age(std::time::Instant::now().saturating_duration_since(r.since))
+            ),
+            None => format!("↳ {} · delivered", p.origin.from),
+        };
+        let body = clip(&p.text, MARKDOWN_TEXT_MAX);
+        let md = clip(&format!("{title}\n\n{}", p.text), MARKDOWN_TEXT_MAX);
+        self.post_blocks_or_markdown(ui::collapsed(&title, &body), &md)
+            .await;
     }
 
     /// Posts or edits the board message; drops it once every row is idle so
@@ -2159,20 +2272,16 @@ impl Worker {
 
     // -- descendants (21 §9) ---------------------------------------------
 
-    /// A descendant got its thread: the `↳ spawned` line for a direct child
-    /// and an idle board row.
-    async fn spawned(&mut self, child: SessionId, name: String, link: String, depth: u8) {
-        if depth == 1 {
-            self.post_markdown_in_thread(&format!("↳ spawned **{name}** → <{link}|thread>"))
-                .await;
-        }
+    /// A descendant got its thread: an idle board row. No `↳ spawned` line
+    /// (110 §6): the row and the child root's `child of` link carry it.
+    fn spawned(&mut self, child: SessionId, name: String, link: String, depth: u8) {
         self.rows.retain(|r| r.session != child);
         self.rows
             .push(board::Row::new(child, name, depth, Some(link)));
     }
 
-    /// A descendant's event: its board row, plus one interjected line for a
-    /// direct child's error or cancellation (21 §9.1).
+    /// A descendant's event: its board row, plus one `alert` for a direct
+    /// child's error or cancellation (21 §9.1, 110 §6).
     async fn child(&mut self, session: SessionId, ev: &AgentEvent) {
         let Some(row) = self.rows.iter_mut().find(|r| r.session == session) else {
             return;
@@ -2182,18 +2291,26 @@ impl Worker {
             return;
         }
         let name = row.name.clone();
-        match ev {
+        let text = match ev {
             AgentEvent::Error { message, .. } => {
-                let line = message.lines().next().unwrap_or_default();
-                self.post_markdown_in_thread(&format!("↳ **{name}** error: {line}"))
-                    .await;
+                format!(
+                    "{name} · error: {}",
+                    message.lines().next().unwrap_or_default()
+                )
             }
             AgentEvent::TurnFinished { stop_reason, .. } if stop_reason == "cancelled" => {
-                self.post_markdown_in_thread(&format!("↳ **{name}** cancelled"))
-                    .await;
+                format!("{name} · cancelled")
             }
-            _ => {}
-        }
+            _ => return,
+        };
+        self.alert(&text).await;
+    }
+
+    /// 110 §6: one `alert` block, level `error`; `⚠️ <text>` when refused.
+    async fn alert(&self, text: &str) {
+        let line = text.lines().next().unwrap_or_default();
+        self.post_blocks_or_markdown(ui::alert_error(line), &format!("⚠️ {line}"))
+            .await;
     }
 
     /// Mirrors the open stream ts into `threads.json.streams` on change (21 §11).
@@ -2250,10 +2367,13 @@ impl Worker {
                     self.chan.rt.clone(),
                     session,
                 ));
-                if let Some(title) = &self.agent_title
-                    && let Some(t) = &mut self.turn
-                {
-                    t.text(&format!("{title} — ")).await;
+                if let Some(t) = &mut self.turn {
+                    if let Some(epoch) = self.compacted.take() {
+                        t.compacted(epoch);
+                    }
+                    if let Some(title) = &self.agent_title {
+                        t.text(&format!("{title} — ")).await;
+                    }
                 }
                 self.set_status("processing").await;
             }
@@ -2266,6 +2386,12 @@ impl Worker {
             AgentEvent::ReasoningDelta { text, .. } => {
                 if let Some(t) = &mut self.turn {
                     t.reasoning(&text).await;
+                }
+            }
+            // 110 §4.1: the time behind a trailing `Thought N s` card.
+            AgentEvent::ReasoningDone { ms, .. } => {
+                if let Some(t) = &mut self.turn {
+                    t.reasoning_done(ms);
                 }
             }
             AgentEvent::ToolCallPending { call_id, name, .. } => {
@@ -2317,6 +2443,9 @@ impl Worker {
                         self.set_status("active").await;
                     }
                 }
+                // 110 §5: the plan's last edit, kept as history.
+                self.flush_plan(true).await;
+                self.plan.finish();
                 let emoji = match stop_reason.as_str() {
                     "cancelled" => STOPPED,
                     "error" => FAILED,
@@ -2328,30 +2457,35 @@ impl Worker {
             }
             AgentEvent::Error { message, .. } => {
                 self.speak();
-                self.post_markdown_in_thread(&format!("⚠️ {message}")).await;
+                tracing::warn!(session = %self.session, %message, "slack thread: agent error");
+                self.alert(&message).await;
                 self.react_marks(FAILED).await;
             }
+            // 110 §6: model input and the human's own echo; nothing to show,
+            // the count is in `SlackStatus.hidden_deliveries`.
             AgentEvent::MessageDelivered { from, text, .. } => {
-                let head = format!("⟵ **{from}**\n\n");
-                let body = clip(
-                    &text,
-                    MARKDOWN_TEXT_MAX.saturating_sub(head.chars().count()),
-                );
-                self.post_markdown_in_thread(&format!("{head}{body}")).await;
+                self.chan.lock().hidden += 1;
+                tracing::debug!(%from, chars = text.chars().count(), "slack delivery hidden");
             }
-            AgentEvent::Compacted { epoch, folded, .. } => {
-                self.post_markdown_in_thread(&format!(
-                    "⟲ compacted → epoch {epoch} ({folded} messages folded)"
-                ))
-                .await;
+            // 110 §6: no message; `⟲ epoch n` rides on this turn's footer, or
+            // the next one's when no turn is open.
+            AgentEvent::Compacted { epoch, .. } => match &mut self.turn {
+                Some(t) => t.compacted(epoch),
+                None => self.compacted = Some(epoch),
+            },
+            // 110 §5: the plan message.
+            AgentEvent::TodoChanged { snapshot, .. } => {
+                if self.chan.plan && self.plan.update(snapshot) {
+                    self.flush_plan(false).await;
+                }
             }
             // Intercepted by the router (`Channel::spawned`), or session
             // bookkeeping with nothing to say in a thread (`ContextChanged`
-            // is a projection revision notice, 48 §3.2 — not a reply;
-            // `TodoChanged` is plan state for persistent UIs, 47 §5.1 — a
-            // thread is not one).
+            // is a projection revision notice, 48 §3.2 — not a reply).
             // 75 §5: an external harness's window size, for the footer.
-            AgentEvent::ContextUsed { size: Some(size), .. } => self.context_size = Some(size),
+            AgentEvent::ContextUsed {
+                size: Some(size), ..
+            } => self.context_size = Some(size),
             AgentEvent::SubagentSpawned { .. }
             | AgentEvent::InputQueued { .. }
             | AgentEvent::InputInjected { .. }
@@ -2367,11 +2501,9 @@ impl Worker {
             | AgentEvent::SkillsChanged { .. }
             | AgentEvent::TitleChanged { .. }
             | AgentEvent::ToolCallProgress { .. }
-            | AgentEvent::ReasoningDone { .. }
             | AgentEvent::SessionDeleted { .. }
             | AgentEvent::SessionOwnerChanged { .. }
             | AgentEvent::ContextChanged { .. }
-            | AgentEvent::TodoChanged { .. }
             | AgentEvent::VisionProgress { .. }
             | AgentEvent::SessionMetadataChanged { .. }
             | AgentEvent::ModelUsageChanged { .. }
@@ -2643,24 +2775,39 @@ pub(crate) mod tests {
     #[derive(Default)]
     pub(crate) struct FakeApi {
         calls: Mutex<Vec<String>>,
+        /// Every `post_blocks` / `update_blocks` payload, in call order.
+        blocks: Mutex<Vec<serde_json::Value>>,
     }
 
     impl FakeApi {
         pub(crate) fn calls(&self) -> Vec<String> {
             self.calls.lock().unwrap().clone()
         }
-        /// The `Chunk::Text`s of a stream call, joined.
+        /// A stream call's chunks as one line: texts verbatim, task cards as `[title]`.
         fn texts(chunks: &[crate::api::Chunk]) -> String {
             chunks
                 .iter()
-                .filter_map(|c| match c {
-                    crate::api::Chunk::Text(s) => Some(s.as_str()),
-                    crate::api::Chunk::Task { .. } => None,
+                .map(|c| match c {
+                    crate::api::Chunk::Text(s) => s.clone(),
+                    crate::api::Chunk::Task { title, .. } => format!("[{title}]"),
                 })
                 .collect()
         }
         fn record(&self, line: String) {
             self.calls.lock().unwrap().push(line);
+        }
+        /// The block payloads sent so far.
+        fn blocks(&self) -> Vec<serde_json::Value> {
+            self.blocks
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .clone()
+        }
+        fn keep(&self, blocks: serde_json::Value) {
+            self.blocks
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .push(blocks);
         }
     }
 
@@ -2684,9 +2831,12 @@ pub(crate) mod tests {
             &self,
             channel: &str,
             ts: &str,
-            _: Vec<crate::api::Chunk>,
+            chunks: Vec<crate::api::Chunk>,
         ) -> Result<(), ApiError> {
-            self.record(format!("append_stream {channel} {ts}"));
+            self.record(format!(
+                "append_stream {channel} {ts} {}",
+                Self::texts(&chunks)
+            ));
             Ok(())
         }
         async fn stop_stream(
@@ -2694,12 +2844,13 @@ pub(crate) mod tests {
             channel: &str,
             ts: &str,
             chunks: Vec<crate::api::Chunk>,
-            _: Option<String>,
+            footer: Option<String>,
             _: Option<&str>,
         ) -> Result<(), ApiError> {
             self.record(format!(
-                "stop_stream {channel} {ts} {}",
-                Self::texts(&chunks)
+                "stop_stream {channel} {ts} {} | {}",
+                Self::texts(&chunks),
+                footer.unwrap_or_default()
             ));
             Ok(())
         }
@@ -2730,15 +2881,17 @@ pub(crate) mod tests {
                 "post_blocks {channel} {} {n} blocks",
                 thread_ts.unwrap_or("-")
             ));
+            self.keep(blocks);
             Ok("7.7".into())
         }
         async fn update_blocks(
             &self,
             channel: &str,
             ts: &str,
-            _: serde_json::Value,
+            blocks: serde_json::Value,
         ) -> Result<(), ApiError> {
             self.record(format!("update_blocks {channel} {ts}"));
+            self.keep(blocks);
             Ok(())
         }
         async fn ephemeral(&self, channel: &str, user: &str, text: &str) -> Result<(), ApiError> {
@@ -3061,7 +3214,7 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
-    async fn top_level_dm_from_owner_opens_an_owner_root_and_binds_the_thread() {
+    async fn dm_text_is_prefixed_with_the_slack_dm_marker() {
         let f = fixture();
         f.chan
             .handle_inbound(Inbound::Push(Box::new(dm(
@@ -3073,7 +3226,7 @@ pub(crate) mod tests {
             f.stub.calls(),
             vec![
                 Call::NewRoot(PeerScope::Owner),
-                Call::SendInput(Some(f.stub.session), "hi there".into())
+                Call::SendInput(Some(f.stub.session), "[slack dm]\nhi there".into())
             ]
         );
         let key = thread_key(DM, "100.1");
@@ -3107,7 +3260,7 @@ pub(crate) mod tests {
             .await;
         assert_eq!(
             f.stub.calls(),
-            vec![Call::Steer(f.stub.session, "also this".into())]
+            vec![Call::Steer(f.stub.session, "[slack dm]\nalso this".into())]
         );
         assert_eq!(f.api.calls(), vec![format!("react {DM} 100.2 {EYES}")]);
     }
@@ -3161,7 +3314,10 @@ pub(crate) mod tests {
                 "<@UBOT> hi",
             ))))
             .await;
-        assert_eq!(f.stub.calls(), vec![Call::SendInput(None, "hi".into())]);
+        assert_eq!(
+            f.stub.calls(),
+            vec![Call::SendInput(None, "[slack channel]\nhi".into())]
+        );
         assert!(
             f.chan
                 .lock()
@@ -3181,7 +3337,7 @@ pub(crate) mod tests {
             f.stub.calls(),
             vec![
                 Call::NewRoot(PeerScope::Owner),
-                Call::SendInput(Some(f.stub.session), "ops: hi".into())
+                Call::SendInput(Some(f.stub.session), "[slack dm]\nops: hi".into())
             ]
         );
         let t = f
@@ -3202,7 +3358,10 @@ pub(crate) mod tests {
             .await;
         assert_eq!(
             f.stub.calls(),
-            vec![Call::SendInput(Some(f.stub.session), "also this".into())]
+            vec![Call::SendInput(
+                Some(f.stub.session),
+                "[slack dm]\nalso this".into()
+            )]
         );
     }
 
@@ -3608,8 +3767,59 @@ pub(crate) mod tests {
         child
     }
 
-    #[tokio::test]
-    async fn subagent_spawned_posts_the_child_root_and_binds_it() {
+    fn turn_finished(session: SessionId, stop_reason: &str) -> AgentEvent {
+        AgentEvent::TurnFinished {
+            session,
+            turn: TurnId::new(),
+            stop_reason: stop_reason.into(),
+            usage: agent::Usage::default(),
+            context: 0,
+        }
+    }
+
+    fn todo_changed(session: SessionId, version: u64, items: &[(&str, &str)]) -> AgentEvent {
+        AgentEvent::TodoChanged {
+            session,
+            snapshot: agent::todo::TodoSnapshot {
+                version,
+                source: agent::todo::TodoSource::Native,
+                items: items
+                    .iter()
+                    .map(|(text, status)| agent::todo::Todo {
+                        text: (*text).to_owned(),
+                        status: status.parse().unwrap(),
+                        reason: (*status == "blocked").then(|| "needs a token".to_owned()),
+                    })
+                    .collect(),
+            },
+        }
+    }
+
+    fn peer_delivered(session: SessionId, from: &str, text: &str) -> PeerDelivered {
+        PeerDelivered {
+            session,
+            origin: agent::communication::PeerOrigin {
+                id: uuid::Uuid::new_v4(),
+                from: from.into(),
+                reply_to: None,
+                scope: None,
+            },
+            text: text.into(),
+            seq: 1,
+            turn: TurnId::new(),
+        }
+    }
+
+    /// The one alert block in `blocks`, when it is one.
+    fn alert_text(blocks: &serde_json::Value) -> Option<&str> {
+        let arr = blocks.as_array()?;
+        (arr.len() == 1 && arr[0]["type"] == "alert" && arr[0]["level"] == "error")
+            .then(|| arr[0]["text"]["text"].as_str())
+            .flatten()
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn subagent_spawned_posts_the_child_root_and_no_spawned_line() {
         let f = fixture();
         let child = spawn_child(&f).await;
         let root = format!(
@@ -3626,10 +3836,22 @@ pub(crate) mod tests {
                 Some((f.stub.session, "grep-logs"))
             );
         }
-        let line = format!(
-            "post_markdown {DM} 100.1 ↳ spawned **grep-logs** → <https://example.slack.com/archives/{DM}/p8.8|thread>"
+        // The board row proves the parent worker consumed `Spawned`; the line never came.
+        f.chan
+            .route(Event::Agent(turn_started(child, "find the failing test")))
+            .await;
+        let board = format!("post_markdown {DM} 100.1 **agents**");
+        f.until(|calls| {
+            calls
+                .iter()
+                .any(|c| c.starts_with(&board) && c.contains("grep-logs"))
+        })
+        .await;
+        assert!(
+            !f.api.calls().iter().any(|c| c.contains("↳ spawned")),
+            "{:?}",
+            f.api.calls()
         );
-        f.until(|calls| calls.contains(&line)).await;
     }
 
     #[tokio::test]
@@ -3650,8 +3872,8 @@ pub(crate) mod tests {
         .await;
     }
 
-    #[tokio::test]
-    async fn child_error_interjects_in_the_parent_thread() {
+    #[tokio::test(start_paused = true)]
+    async fn child_error_is_an_alert_block() {
         let f = fixture();
         let child = spawn_child(&f).await;
         f.chan
@@ -3661,10 +3883,420 @@ pub(crate) mod tests {
                 message: "boom\nstack".into(),
             }))
             .await;
-        let line = format!("post_markdown {DM} 100.1 ↳ **grep-logs** error: boom");
-        f.until(|calls| calls.contains(&line)).await;
-        let own = format!("post_markdown {DM} 8.8 ⚠️ boom\nstack");
-        f.until(|calls| calls.contains(&own)).await;
+        let parent = format!("post_blocks {DM} 100.1 1 blocks");
+        let own = format!("post_blocks {DM} 8.8 1 blocks");
+        f.until(|calls| calls.contains(&parent) && calls.contains(&own))
+            .await;
+        let texts: Vec<String> = f
+            .api
+            .blocks()
+            .iter()
+            .filter_map(|b| alert_text(b).map(str::to_owned))
+            .collect();
+        assert!(
+            texts.contains(&"grep-logs · error: boom".to_owned()),
+            "{texts:?}"
+        );
+        assert!(texts.contains(&"boom".to_owned()), "{texts:?}");
+        assert!(!f.api.calls().iter().any(|c| c.contains("⚠️")));
+        // A cancelled child turn is an alert too.
+        f.chan
+            .route(Event::Agent(turn_finished(child, "cancelled")))
+            .await;
+        f.until(|calls| calls.iter().filter(|c| **c == parent).count() == 2)
+            .await;
+        assert!(
+            f.api
+                .blocks()
+                .iter()
+                .any(|b| alert_text(b) == Some("grep-logs · cancelled"))
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn error_is_an_alert_block_and_reacts() {
+        let f = fixture();
+        f.chan
+            .handle_inbound(Inbound::Push(Box::new(dm(OWNER, "100.1", None, "go"))))
+            .await;
+        let long = format!("{}\nstack", "x".repeat(300));
+        f.chan
+            .route(Event::Agent(AgentEvent::Error {
+                turn: None,
+                session: f.stub.session,
+                message: long,
+            }))
+            .await;
+        let want = format!("react {DM} 100.1 {FAILED}");
+        f.until(|calls| calls.contains(&want)).await;
+        let blocks = f.api.blocks();
+        let text = alert_text(&blocks[0]).expect("one error alert");
+        assert_eq!(text.chars().count(), ui::ALERT_MAX);
+        assert!(text.ends_with('…') && !text.contains("stack"));
+        assert!(!f.api.calls().iter().any(|c| c.starts_with("post_markdown")));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn message_delivered_posts_nothing_and_counts() {
+        let f = fixture();
+        f.bind(OWNER);
+        for from in ["job j3", "reminder r1", "you"] {
+            f.chan
+                .route(Event::Agent(AgentEvent::MessageDelivered {
+                    session: f.stub.session,
+                    from: from.into(),
+                    text: "<job_result>done</job_result>".into(),
+                }))
+                .await;
+        }
+        // A later event proves the worker drained the three deliveries.
+        f.chan
+            .route(Event::Agent(turn_started(f.stub.session, "go")))
+            .await;
+        let processing = format!("set_session_status {DM} 100.1 processing");
+        f.until(|calls| calls.contains(&processing)).await;
+        assert!(
+            !f.api.calls().iter().any(|c| c.starts_with("post_")),
+            "{:?}",
+            f.api.calls()
+        );
+        assert_eq!(f.chan.status().hidden_deliveries, 3);
+    }
+
+    fn compacted(session: SessionId, epoch: u32) -> AgentEvent {
+        AgentEvent::Compacted {
+            session,
+            turn: None,
+            epoch,
+            before: 90_000,
+            after: 20_000,
+            folded: 40,
+            style: agent::CompactStyle::default(),
+        }
+    }
+
+    fn text_delta(session: SessionId, text: &str) -> AgentEvent {
+        AgentEvent::TextDelta {
+            session,
+            turn: TurnId::new(),
+            text: text.into(),
+        }
+    }
+
+    /// Drives `text` through one turn and returns the `stop_stream` lines so far.
+    async fn one_turn(f: &Fixture, text: &str, stops: usize) -> Vec<String> {
+        f.chan
+            .route(Event::Agent(turn_started(f.stub.session, "go")))
+            .await;
+        f.chan
+            .route(Event::Agent(text_delta(f.stub.session, text)))
+            .await;
+        f.chan
+            .route(Event::Agent(turn_finished(f.stub.session, "end_turn")))
+            .await;
+        f.until(|calls| {
+            calls
+                .iter()
+                .filter(|c| c.starts_with("stop_stream"))
+                .count()
+                == stops
+        })
+        .await;
+        f.api
+            .calls()
+            .into_iter()
+            .filter(|c| c.starts_with("stop_stream"))
+            .collect()
+    }
+
+    /// 110 §6: no message; the epoch rides on the footer of the turn it
+    /// lands in, or the next one's when it arrives between turns.
+    #[tokio::test(start_paused = true)]
+    async fn compacted_posts_nothing_and_lands_in_the_footer() {
+        let f = fixture();
+        f.bind(OWNER);
+        // Between turns: held for the next footer.
+        f.chan
+            .route(Event::Agent(compacted(f.stub.session, 3)))
+            .await;
+        let stops = one_turn(&f, "hi", 1).await;
+        assert!(stops[0].ends_with(" · ⟲ epoch 3"), "{stops:?}");
+        let calls = f.api.calls();
+        assert!(!calls.iter().any(|c| c.contains("compacted")), "{calls:?}");
+        // Mid-turn: this turn's footer.
+        f.chan
+            .route(Event::Agent(turn_started(f.stub.session, "again")))
+            .await;
+        f.chan
+            .route(Event::Agent(compacted(f.stub.session, 4)))
+            .await;
+        f.chan
+            .route(Event::Agent(text_delta(f.stub.session, "hi")))
+            .await;
+        f.chan
+            .route(Event::Agent(turn_finished(f.stub.session, "end_turn")))
+            .await;
+        f.until(|calls| {
+            calls
+                .iter()
+                .filter(|c| c.starts_with("stop_stream"))
+                .count()
+                == 2
+        })
+        .await;
+        // Neither epoch is carried into a turn that saw no compaction.
+        let stops = one_turn(&f, "hi", 3).await;
+        assert!(stops[1].ends_with(" · ⟲ epoch 4"), "{stops:?}");
+        assert!(!stops[2].contains("epoch"), "{stops:?}");
+    }
+
+    /// 110 §4.1: `ReasoningDone.ms` titles the thinking card that text ends.
+    #[tokio::test(start_paused = true)]
+    async fn reasoning_done_titles_the_thought_card_with_its_seconds() {
+        let f = fixture();
+        f.bind(OWNER);
+        f.chan
+            .route(Event::Agent(turn_started(f.stub.session, "go")))
+            .await;
+        f.chan
+            .route(Event::Agent(AgentEvent::ReasoningDelta {
+                session: f.stub.session,
+                turn: TurnId::new(),
+                text: "first idea".into(),
+            }))
+            .await;
+        f.chan
+            .route(Event::Agent(AgentEvent::ReasoningDone {
+                session: f.stub.session,
+                turn: TurnId::new(),
+                ms: 3_000,
+            }))
+            .await;
+        f.chan
+            .route(Event::Agent(text_delta(f.stub.session, "answer")))
+            .await;
+        f.chan
+            .route(Event::Agent(turn_finished(f.stub.session, "end_turn")))
+            .await;
+        f.until(|calls| calls.iter().any(|c| c.starts_with("stop_stream")))
+            .await;
+        let calls = f.api.calls();
+        assert!(
+            calls.iter().any(|c| c.contains("[Thought 3 s]")),
+            "{calls:?}"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn peer_delivered_from_a_child_posts_a_collapsed_container_titled_from_the_board_row() {
+        let f = fixture();
+        let child = spawn_child(&f).await;
+        f.chan
+            .route(Event::Peer(peer_delivered(
+                f.stub.session,
+                &format!("session:{child}"),
+                "found it in auth.rs\n\nline 42 panics on an empty token",
+            )))
+            .await;
+        let want = format!("post_blocks {DM} 100.1 1 blocks");
+        f.until(|calls| calls.contains(&want)).await;
+        // The blocks went through: no markdown fallback for the same body.
+        let calls = f.api.calls();
+        assert!(
+            !calls
+                .iter()
+                .any(|c| c.starts_with("post_markdown") && c.contains("↳ grep-logs")),
+            "{calls:?}"
+        );
+        let blocks = f.api.blocks();
+        let c = &blocks[0][0];
+        assert_eq!(c["type"], "container");
+        assert_eq!(c["is_collapsible"], true);
+        assert_eq!(c["default_collapsed"], true);
+        let title = c["title"]["text"].as_str().unwrap();
+        assert!(title.starts_with("↳ grep-logs · finished · "), "{title}");
+        assert_eq!(c["subtitle"]["text"], "found it in auth.rs");
+        assert_eq!(c["child_blocks"].as_array().unwrap().len(), 1);
+        assert_eq!(c["child_blocks"][0]["type"], "markdown");
+        assert_eq!(
+            c["child_blocks"][0]["text"],
+            "found it in auth.rs\n\nline 42 panics on an empty token"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn peer_delivered_body_is_clipped_with_a_count() {
+        let f = fixture();
+        f.bind(OWNER);
+        let body = "y".repeat(MARKDOWN_TEXT_MAX + 500);
+        f.chan
+            .route(Event::Peer(peer_delivered(
+                f.stub.session,
+                "peer:remote-ops",
+                &body,
+            )))
+            .await;
+        let want = format!("post_blocks {DM} 100.1 1 blocks");
+        f.until(|calls| calls.contains(&want)).await;
+        let blocks = f.api.blocks();
+        let c = &blocks[0][0];
+        assert_eq!(c["title"]["text"], "↳ peer:remote-ops · delivered");
+        let text = c["child_blocks"][0]["text"].as_str().unwrap();
+        assert!(text.chars().count() <= MARKDOWN_TEXT_MAX);
+        assert!(
+            text.ends_with("… (532 more chars)"),
+            "{}",
+            &text[text.len() - 40..]
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn plan_message_posts_on_the_first_snapshot_and_turn_finished_forces_the_last_edit() {
+        let f = fixture();
+        f.bind(OWNER);
+        f.chan
+            .route(Event::Agent(turn_started(f.stub.session, "go")))
+            .await;
+        f.chan
+            .route(Event::Agent(todo_changed(
+                f.stub.session,
+                1,
+                &[("read the code", "in_progress"), ("fix it", "pending")],
+            )))
+            .await;
+        let posted = format!("post_blocks {DM} 100.1 1 blocks");
+        f.until(|calls| calls.contains(&posted)).await;
+        let first = f.api.blocks()[0][0].clone();
+        assert_eq!(first["type"], "plan");
+        assert_eq!(first["title"], "read the code");
+        // Two more snapshots inside the 2 s gap: coalesced, the last one wins on TurnFinished.
+        f.chan
+            .route(Event::Agent(todo_changed(
+                f.stub.session,
+                2,
+                &[("read the code", "done"), ("fix it", "in_progress")],
+            )))
+            .await;
+        f.chan
+            .route(Event::Agent(todo_changed(
+                f.stub.session,
+                3,
+                &[
+                    ("read the code", "done"),
+                    ("fix it", "done"),
+                    ("old idea", "dropped"),
+                    ("ship", "blocked"),
+                ],
+            )))
+            .await;
+        f.chan
+            .route(Event::Agent(turn_finished(f.stub.session, "end_turn")))
+            .await;
+        let edited = format!("update_blocks {DM} 7.7");
+        f.until(|calls| calls.contains(&edited)).await;
+        let blocks = f.api.blocks();
+        assert_eq!(
+            blocks.iter().filter(|b| b[0]["type"] == "plan").count(),
+            2,
+            "one post, one edit: {blocks:?}"
+        );
+        let last = &blocks[blocks.len() - 1][0];
+        assert_eq!(last["title"], "Plan · 2 of 3 done");
+        let tasks = last["tasks"].as_array().unwrap();
+        assert_eq!(tasks.len(), 3, "dropped omitted");
+        assert_eq!(tasks[2]["status"], "error");
+        assert_eq!(
+            tasks[2]["details"]["elements"][0]["elements"][0]["text"],
+            "needs a token"
+        );
+        // The next turn's snapshot is a fresh message.
+        f.chan
+            .route(Event::Agent(todo_changed(
+                f.stub.session,
+                4,
+                &[("ship", "in_progress")],
+            )))
+            .await;
+        f.until(|calls| calls.iter().filter(|c| **c == posted).count() == 2)
+            .await;
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn plan_false_posts_nothing() {
+        let f = fixture_with(SlackConfig {
+            plan: false,
+            ..SlackConfig::default()
+        });
+        f.bind(OWNER);
+        f.chan
+            .route(Event::Agent(turn_started(f.stub.session, "go")))
+            .await;
+        f.chan
+            .route(Event::Agent(todo_changed(
+                f.stub.session,
+                1,
+                &[("read the code", "in_progress")],
+            )))
+            .await;
+        f.chan
+            .route(Event::Agent(turn_finished(f.stub.session, "end_turn")))
+            .await;
+        let active = format!("set_session_status {DM} 100.1 active");
+        f.until(|calls| calls.contains(&active)).await;
+        assert!(f.api.blocks().is_empty(), "{:?}", f.api.calls());
+    }
+
+    #[tokio::test]
+    async fn mention_text_is_prefixed_with_the_channel_marker_after_agent_routing() {
+        let f = fixture();
+        f.chan
+            .handle_inbound(Inbound::Push(Box::new(mention(
+                FRIEND,
+                LISTED,
+                "200.3",
+                "<@UBOT> theuth: hi",
+            ))))
+            .await;
+        assert_eq!(
+            f.stub.calls(),
+            vec![Call::SendInput(None, "[slack channel]\nhi".into())]
+        );
+    }
+
+    #[tokio::test]
+    async fn attachment_lines_carry_no_slack_marker() {
+        let f = fixture();
+        let mut ev = dm(OWNER, "100.1", None, "");
+        let SlackEventCallbackBody::Message(m) = &mut ev.event else {
+            unreachable!()
+        };
+        let content = m.content.get_or_insert_with(SlackMessageContent::new);
+        content.files = Some(vec![
+            serde_json::from_value(json!({
+                "id": "F1",
+                "name": "clip.m4a",
+                "mimetype": "audio/mp4",
+                "url_private_download": "https://files.slack.com/clip.m4a",
+            }))
+            .unwrap(),
+        ]);
+        f.chan.handle_inbound(Inbound::Push(Box::new(ev))).await;
+        let calls = f.stub.calls();
+        let Some(Call::SendInput(_, text)) = calls.last() else {
+            panic!("{calls:?}");
+        };
+        assert!(text.starts_with("[attachment: "), "{text}");
+        assert!(!text.contains("[slack"), "{text}");
+    }
+
+    #[tokio::test]
+    async fn empty_text_with_no_files_still_posts_nothing() {
+        let f = fixture();
+        f.chan
+            .handle_inbound(Inbound::Push(Box::new(dm(OWNER, "100.1", None, "<@UBOT>"))))
+            .await;
+        assert!(f.api.calls().is_empty());
+        assert!(f.stub.calls().is_empty());
     }
 
     #[tokio::test]
