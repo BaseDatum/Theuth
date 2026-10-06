@@ -266,6 +266,8 @@ function telegramPhrase(s: TelegramStatus): string {
       return `paired with ${e.name}`
     case 'DaemonOnly':
       return 'daemon only'
+    case 'Starting':
+      return 'starting…'
   }
 }
 
@@ -318,7 +320,8 @@ function Telegram() {
   const [replacing, setReplacing] = useState(false)
   const [ownerId, setOwnerId] = useState('')
   const s = status.data
-  const unconfigured = !s?.state || s.state.type === 'Unconfigured'
+  const starting = s?.state?.type === 'Starting'
+  const unconfigured = !starting && (!s?.state || s.state.type === 'Unconfigured')
 
   const saveToken = useAction((v: string) => api.set_secret('telegram_bot', v, 'Telegram bot token (@BotFather /newbot)'), {
     keys,
@@ -337,7 +340,7 @@ function Telegram() {
 
   const pairing: PairingLink | null = link.data ?? (s?.state?.type === 'PairingLink' ? s.state : null)
   const left = useCountdown(pairing ? Number(pairing.expires_at_ms) : null)
-  const showToken = unconfigured || replacing
+  const showToken = (unconfigured || replacing) && !starting
 
   const submitToken = (e: FormEvent) => {
     e.preventDefault()
@@ -353,6 +356,14 @@ function Telegram() {
 
   return (
     <Section title="Telegram">
+      {status.isPending && <Row label="Bot" description="loading…" />}
+      {status.isError && (
+        <Row label="Bot" description={`status unavailable: ${status.error instanceof Error ? status.error.message : String(status.error)}`}>
+          <Button variant="outline" size="sm" onClick={() => void status.refetch()}>
+            Retry
+          </Button>
+        </Row>
+      )}
       {s && (
         <>
           <Row
@@ -368,7 +379,7 @@ function Telegram() {
             label="Bot token"
             description={
               <>
-                {unconfigured ? 'not set' : replacing ? 'set · the new token applies at the next restart' : 'set'}
+                {starting ? 'checking the vault…' : unconfigured ? 'not set' : replacing ? 'set · the new token applies at the next restart' : 'set'}
                 {showToken && (
                   <form className="mt-2 flex gap-2" onSubmit={submitToken}>
                     <Input
@@ -389,6 +400,7 @@ function Telegram() {
             }
           >
             {!unconfigured &&
+              !starting &&
               (replacing ? (
                 <Button variant="ghost" size="sm" onClick={() => setReplacing(false)}>
                   Cancel
@@ -419,7 +431,7 @@ function Telegram() {
               </>
             }
           >
-            <Button variant="outline" size="sm" disabled={link.isPending || unconfigured} onClick={() => link.mutate(null)}>
+            <Button variant="outline" size="sm" disabled={link.isPending || unconfigured || starting} onClick={() => link.mutate(null)}>
               {s.owner === null ? 'Pair' : 'Re-pair'}
             </Button>
           </Row>

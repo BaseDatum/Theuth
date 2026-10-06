@@ -260,6 +260,26 @@ pub enum Outcome {
     },
 }
 
+impl Outcome {
+    /// The variant name, for logs.
+    #[must_use]
+    pub fn variant(&self) -> &'static str {
+        match self {
+            Self::Reply(_) => "Reply",
+            Self::NewThread(_) => "NewThread",
+            Self::Resume { .. } => "Resume",
+            Self::Cancelled { .. } => "Cancelled",
+            Self::CloseTopic(_) => "CloseTopic",
+            Self::Allow(_) => "Allow",
+            Self::RemoveAllowed(_) => "RemoveAllowed",
+            Self::AllowGroup(_) => "AllowGroup",
+            Self::RemoveGroup(_) => "RemoveGroup",
+            Self::Link => "Link",
+            Self::Prompt { .. } => "Prompt",
+        }
+    }
+}
+
 /// What a prompted reply is for.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Expect {
