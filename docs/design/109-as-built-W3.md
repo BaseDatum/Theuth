@@ -14,35 +14,35 @@ seam; the actors keep their oneshots for the live path.
 
 | kind | raise / resolve | file:line |
 |---|---|---|
-| `approval` | `Approval` actor: `RequestApproval` (now carries `call_id: Option<String>`) writes the row and the wait; `Resolve` → `answered` with `"allow"`/`"deny"`; `Expire` (timeout) → `timed_out` | `crates/tools/src/approval.rs:171-293`; registry passes `call_id` at `registry.rs:1577-1583`, `None` for `ExternalApproval` (`:1193-1199`) |
-| `ask` | `AskUser`: `Request` (now `call_id`) → `arm` writes the row/wait and publishes; `AnswerAsk` → `answered` with the answers JSON (`null` = dismissed); `Expire` → `timed_out` | `crates/tools/src/ask.rs:181-252` (`arm`), `:271-293` (`Request`), `:342-362` |
-| `handoff` | the tool body itself (no actor): row id = the `handoffs` row id, payload = that row; polls the row to `q.deadline`; `answered` `{outcome}` / `timed_out` | `crates/roster/src/handoff.rs:184-291` |
-| `secret` | `secrets::tools::request`: the tool mints the `RequestId`, writes the row (payload `{id, title, fields}` — field names/labels/`current` versions, never values), asks the actor with `Request.id = Some(id)`, settles `answered {outcome: stored|declined}` / `timed_out` | `crates/secrets/src/tools.rs:196-298`; `secrets/src/lib.rs:162-176, 392-424` (`Request.id`, re-arm) |
+| `approval` | `Approval` actor: `RequestApproval` (now carries `call_id: Option<String>`) writes the row and the wait; `Resolve` → `answered` with `"allow"`/`"deny"`; `Expire` (timeout) → `timed_out` | `crates/tools/src/approval.rs:171-293`; registry passes `call_id` at `registry.rs:1582`, `None` for `ExternalApproval` (`:1198`) |
+| `ask` | `AskUser`: `Request` (now `call_id`) → `arm` writes the row/wait and publishes; `AnswerAsk` → `answered` with the answers JSON (`null` = dismissed); `Expire` → `timed_out` | `crates/tools/src/ask.rs:186-253` (`arm`), `:272-296` (`Request`), `:343-363` |
+| `handoff` | the tool body itself (no actor): row id = the `handoffs` row id, payload = that row; polls the row to `q.deadline`; `answered` `{outcome}` / `timed_out` | `crates/roster/src/handoff.rs:186-292` |
+| `secret` | `secrets::tools::request`: the tool mints the `RequestId`, writes the row (payload `{id, title, fields}` — field names/labels/`current` versions, never values), asks the actor with `Request.id = Some(id)`, settles `answered {outcome: stored|declined}` / `timed_out` | `crates/secrets/src/tools.rs:201-300`; `secrets/src/lib.rs:162-176, 392-425` (`Request.id`, re-arm) |
 
 Tools outside `crates/tools` (handoff, secrets, `send_message`) reach the installed journal through
 `tools::registry::journal()` — a process-wide handle set by the `InstallJournal` handler
-(`registry.rs:1369-1378`); `NoopJournal` before the install.
+(`registry.rs:1369-1379`); `NoopJournal` before the install.
 
 ### 1.1 Resume path A — `Republish` (`started` human-wait call)
 
-`resume_question_call` (`crates/agent/src/loop_/resume_calls.rs:43-88`) asks the supervisor
+`resume_question_call` (`crates/agent/src/loop_/resume_calls.rs:43-91`) asks the supervisor
 `ResumeQuestion { turn, call_id }` → `(session, newest questions row of the call)`
-(`supervisor/waits.rs:303-318`), hands the row to `tools::registry::republish(row)`
-(`registry.rs:1380-1398`, keyed `(session, call_id)`), and re-invokes the call through the
+(`supervisor/waits.rs:319-333`), hands the row to `tools::registry::republish(row)`
+(`registry.rs:1381-1398`, keyed `(session, call_id)`), and re-invokes the call through the
 registry's ordinary `Invoke`. The tool body takes the row with `take_republish(cx.session,
 &cx.call_id)` and, instead of raising a new question:
 
-- `ask_user` (`ask.rs:412-468`): a `pending` row → `AskUser::Republish(row)` (`ask.rs:295-340`)
+- `ask_user` (`ask.rs:413-470`): a `pending` row → `AskUser::Republish(row)` (`ask.rs:298-341`)
   re-inserts the waiter **under the row's id** with `deadline - now` left and publishes the same
   `AskRequested` (same id → the desktop card and 104's `ask:<id>` item come back); `PendingAsks`
   lists it, so the attention item re-derives. Deadline passed → `timed_out` row and the tool's own
   `no answer from the user in time`. An `answered` row → rendered from `row.answer` without
   asking. Idempotent on the id (§6.4): a second `Republish` arms nothing.
-- `desktop_handoff` (`handoff.rs:188-208`): a `pending` row → polls the existing `handoffs` row
+- `desktop_handoff` (`handoff.rs:190-210`): a `pending` row → polls the existing `handoffs` row
   until `q.deadline`; `answered`/`timed_out` rows → the stored outcome.
-- `secret_request*` (`secrets/tools.rs:217-240`): a `pending` row → `Request { id: Some(row id) }`;
+- `secret_request*` (`secrets/tools.rs:209-237`): a `pending` row → `Request { id: Some(row id) }`;
   the actor finds the existing `secret_requests` row and re-arms its `wait()` on it with
-  `created_ms + request_timeout_secs − now` (`lib.rs:395-400`), publishing `SecretsEvent::Requested`
+  `created_ms + request_timeout_secs − now` (`lib.rs:396-402`), publishing `SecretsEvent::Requested`
   with the same id; an already-answered row resolves at once from the row.
 
 Re-invoking through `Invoke` keeps the journal consistent: `call_started` on a `started` row is a
@@ -51,11 +51,11 @@ no-op (contract), `call_finished` closes it with what the model sees.
 ### 1.2 Resume path B — approvals (`planned` call)
 
 A `planned` call replays through the registry and the gate asks again. At boot
-`Agents::rebuild_waits` (`supervisor/waits.rs:98-172`) walks every open turn's `planned` calls:
+`Agents::rebuild_waits` (`supervisor/waits.rs:102-191`; the body is `rebuild_waits_with(approval)` so a test can hand in the actor) walks every open turn's `planned` calls:
 a `pending` approval row → `question_resolve(id, Superseded)` (its registry invocation died with
 the process; §6.2); an `answered` approval row → `Approval::HonourAnswer { session, call_id,
-decision }` (`approval.rs:94-106, 163-169`). The next `RequestApproval` for that `(session,
-call_id)` resolves with the stored decision at once — no card, no new row (`approval.rs:181-195`);
+decision }` (`approval.rs:99-106, 163-169`). The next `RequestApproval` for that `(session,
+call_id)` resolves with the stored decision at once — no card, no new row (`approval.rs:179-195`);
 `deny` surfaces as the registry's `denied by user`. Approval-before-`Start` is untouched: the
 gate still runs before `call_started` and the body.
 
@@ -67,20 +67,20 @@ gate still runs before `call_started` and the body.
   await loop (`:522-524`). (The PK is `(session, call)`, so a fan-out's ids ride in the payload.)
 - `question`: written by the four kinds above (`target` = question id).
 - `Agents::rebuild_waits` (boot, after `reap_jobs`, before `resume_scan`): for every open turn's
-  `peer_reply` row and each of its ids, `rearm_peer_wait` (`waits.rs:178-222`) re-creates the
+  `peer_reply` row and each of its ids, `rearm_peer_wait` (`waits.rs:196-240`) re-creates the
   `Wait` in `Agents.waits` via the existing `Agents::wait` with the route's current generation
   (`route(session, to)` / `remote(session)`) **only while the exchange is still `accepted` /
   `consumed`**; the receiver is parked in the module-level `REARMED` map until the resumed call
   takes it. A reply arriving in between settles through `settle_wait` as before and is buffered in
   the oneshot. Terminal exchanges are not re-armed: the receipt is the result.
-- `resume_wait_call` (`resume_calls.rs:90-146`) asks `ResumeWait { turn, call_id }`
-  (`waits.rs:320-383`): per awaited id the current receipt and, for the open ones, the live
+- `resume_wait_call` (`resume_calls.rs:96-149`) asks `ResumeWait { turn, call_id }`
+  (`waits.rs:336-399`): per awaited id the current receipt and, for the open ones, the live
   receiver; `replied` receipts are delivered as they stand; open ones are awaited until the row's
   remaining deadline (`remaining(deadline)`), a passed deadline being the tool's own `timed
   out…; message not recalled` receipt with `DropWait`; output via `peers::receipts_output` (made
   `pub(crate)`). No `waits` row → the interrupted note (nothing was accepted before the kill).
 - `child_result`: `ResumeWait` consumes the spared `result:` exchanges from `session:<child>`
-  (`consume_exchange_direct`) and returns their texts as the call's result (`waits.rs:357-382`).
+  (`consume_exchange_direct`) and returns their texts as the call's result (`waits.rs:371-396`).
   No code writes a `child_result` row today — `spawn_subagent` returns immediately and
   `send_message`'s child answer is a `peer_reply` on its exchange — so this arm is reachable only
   by a future writer; the brief asked for it, it is small, and the boot pass below respects it.
@@ -92,10 +92,10 @@ gate still runs before `call_started` and the body.
   "rows + live waiters" after boot without a second source. Doc comment corrected
   (`communication.rs:520-523`).
 - Boot pass over spared results: `rebuild_waits` ends by `try_send`ing `DeliverSparedResults`
-  to the supervisor itself (`waits.rs:165-171`) — queued behind the running `ActivityRegistered`
-  handler, i.e. after `resume_scan`, as §7.2 orders. The handler (`waits.rs:266-301`) reads
+  to the supervisor itself (`waits.rs:184-190`) — queued behind the running `ActivityRegistered`
+  handler, i.e. after `resume_scan`, as §7.2 orders. The handler (`deliver_spared_results`, `waits.rs:282-317`) reads
   `Store::spared_child_results()` and enqueues each into its parent through `enqueue_peer`
-  (`deliver_spared`, `waits.rs:239-262`: `enqueued` dedup, route generation, `fail_exchange` on
+  (`deliver_spared`, `waits.rs:251-278`: `enqueued` dedup, route generation, `fail_exchange` on
   refusal — `hand_off`'s tail without the live-child bookkeeping); a result whose parent has an
   open turn with a `child_result` wait on that child is skipped (the resumed call consumes it).
 
@@ -133,10 +133,10 @@ resumed call and consumed there).
 
 ## 6. Cross-seam touches
 
-- `crates/agent/src/store/durability.rs:622-638` — `Store::questions_of_call(session, call_id)`
+- `crates/agent/src/store/durability.rs:622-641` — `Store::questions_of_call(session, call_id)`
   (newest first): the contract has only `questions_pending`; the honour/republish paths need the
   `answered` row.
-- `crates/agent/src/store/communication.rs:1418-1432` — `Store::spared_child_results()`: the
+- `crates/agent/src/store/communication.rs:1418-1433` — `Store::spared_child_results()`: the
   boot pass needs the spared rows without knowing their recipients.
 - `crates/agent/src/peers.rs:365, 483-524` — `receipts_output` `pub(crate)`; the `peer_reply`
   wait row around the await loop (the only place that knows the call id and the exchange ids).
@@ -144,7 +144,7 @@ resumed call and consumed there).
   `ResumeWait`, `remaining`.
 - `crates/agent/src/communication.rs:520-523` — doc comment of `PeerMessagePage` (its
   "after a restart both are empty" was made false by this wave).
-- `crates/secrets/src/lib.rs:162-176, 392-432` — `Request.id: Option<RequestId>` and the re-arm
+- `crates/secrets/src/lib.rs:162-176, 392-425` — `Request.id: Option<RequestId>` and the re-arm
   branch; `:899` test constructor. `crates/mesh/src/lib.rs:870` — `id: None`.
 - `crates/tasks/src/lib.rs:823`, `crates/rpc/tests/prompts.rs:92, 107` — `call_id: None` for the
   new `ask::Request` / `RequestApproval` field.
@@ -173,4 +173,30 @@ Not touched: `loop_.rs`, `jobs.rs`, `pty.rs`, `shell.rs`, `acp_child.rs`, `super
 
 All with `CARGO_TARGET_DIR=$HOME/Develop/theuth-109-target`, cargo 1.98.1:
 
-GATES_PLACEHOLDER
+1. `cargo test -p tools` — `159 passed; 0 failed` (lib) + `0 passed` (doc). The 5 new tests:
+   `cargo test -p tools --lib -- approval:: ask::` → `7 passed`.
+2. `cargo test -p agent` — `393 passed; 0 failed` (lib) + `0 passed` (doc). The 4 new tests alone:
+   `cargo test -p agent --lib -- supervisor::waits` → `4 passed`. (One earlier full run failed
+   `superseded_on_reask_and_answered_row_honoured` with `ActorStopped`: the test had looked up
+   the process-wide `APPROVAL_ACTOR`, which another test's dying runtime owned; fixed by handing
+   the actor to `rebuild_waits_with` directly. No shared-state test depends on the registry name.)
+3. `cargo test -p secrets -p roster` — `23 passed` (secrets lib), `57 passed` (roster lib), docs
+   `0 passed`.
+4. `cargo clippy -p roster` and `cargo clippy -p tools -p agent -p secrets -p tasks -p mesh
+   --tests` — 0 warnings in any touched file (0 warnings overall). `cargo clippy -p roster
+   --tests` stops on a pre-existing `clone_on_ref_ptr`-class lint in `roster/src/attention.rs:1672`
+   (untouched; left alone per the brief).
+5. Not run: the Tauri CLI, `cargo fmt --all`, `--workspace` gates (brief). `cargo check -p tasks`
+   and `-p mesh` passed as part of step 4.
+
+Every gate was preceded by `touch` of the touched sources because the shared target dir's
+`libtools-*` is overwritten by sibling worktrees (see §7); two runs that skipped the touch
+compiled `agent` against a sibling's `tools` and failed with `HonourAnswer`/`republish` not found
+— not a code defect, re-run green after the touch.
+
+Files touched: `crates/tools/src/{approval.rs, ask.rs, registry.rs}`;
+`crates/secrets/src/{tools.rs, lib.rs}`; `crates/roster/src/handoff.rs`;
+`crates/agent/src/supervisor/waits.rs`, `crates/agent/src/loop_/resume_calls.rs`,
+`crates/agent/src/{supervisor.rs, peers.rs, communication.rs}`,
+`crates/agent/src/store/{durability.rs, communication.rs}`; `crates/mesh/src/lib.rs`,
+`crates/tasks/src/lib.rs`, `crates/rpc/tests/prompts.rs`; `docs/design/109-as-built-W3.md` (this note).
