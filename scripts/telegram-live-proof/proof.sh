@@ -5,7 +5,7 @@
 #
 # <label> names the run (main | fix | …): data dir /tmp/98c-proof/data-<label>,
 # evidence in /tmp/98c-proof/out-<label>/. Never touches ~/.theuth except to
-# copy config.yaml, secrets.sqlite (vault backup), acp/agents.yaml, skills/.
+# copy config.yaml, acp/agents.yaml, skills/ (the vault is per-data_dir keyed: see below).
 # Prints PASS/FAIL per step with timings; exit 0 only when every step passed.
 set -u -o pipefail
 
@@ -49,6 +49,7 @@ start_engine() { # $1 = log suffix
   env -u THEUTH_RPC__LISTEN -u THEUTH_LAUNCH \
     THEUTH_RPC__LISTEN=127.0.0.1:0 THEUTH_SLACK__ENABLED=false \
     THEUTH_MESH__DISCOVERY=false THEUTH_MESH__RELAY=none \
+    THEUTH_SECRETS__KEY_STORE=file THEUTH_AGENT__MODEL="$PROOF_MODEL" \
     RUST_LOG=info,telegram=debug,tgbot=debug \
     nohup "$T_BIN" --headless --data-dir "$DD" >"$OUT/engine-$1.out" 2>&1 &
   $RPC wait "$DD" 60 >/dev/null || { log "engine failed to start; see $OUT/engine-$1.out"; return 1; }
@@ -102,9 +103,15 @@ curl -sf $MOCK_ADMIN/api/health >/dev/null || { log "mock did not come up"; exit
 curl -s -X DELETE $MOCK_ADMIN/api/calls >/dev/null
 
 # ---- scratch data dir -------------------------------------------------------
+# The vault key is a per-data_dir Keychain item, so a copied ~/.theuth/secrets.sqlite
+# cannot open here ("the mesh key does not open with this engine's key"). The proof
+# seeds its own file-keyed vault from the environment instead (credentials.yaml is
+# imported and unlinked by the engine on first open) and runs a model that key serves.
+: "${ANTHROPIC_API_KEY:?ANTHROPIC_API_KEY must be set (model key for the scratch engine)}"
+PROOF_MODEL=${PROOF_MODEL:-anthropic/claude-haiku-4-5}
 rm -rf "$DD"; mkdir -p "$DD/acp"
 cp "$SRC_HOME/config.yaml" "$DD/config.yaml"
-sqlite3 "$SRC_HOME/secrets.sqlite" ".backup '$DD/secrets.sqlite'"
+(umask 077; printf 'ANTHROPIC_API_KEY: "%s"\n' "$ANTHROPIC_API_KEY" >"$DD/credentials.yaml")
 cp "$SRC_HOME/acp/agents.yaml" "$DD/acp/agents.yaml"
 [ -d "$SRC_HOME/skills" ] && cp -R "$SRC_HOME/skills" "$DD/skills"
 grep -q '^telegram:' "$DD/config.yaml" && { echo "config.yaml already has a telegram: section"; exit 2; }
