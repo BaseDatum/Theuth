@@ -38,6 +38,7 @@ use crate::continuation::{
     self, InputConsumed, InputDropped, InputTicket, SessionUnknown, TurnEntered, TurnReturned,
 };
 use crate::cost::{MeterUpdate, Money, TokenTotals};
+use crate::durability::handoff;
 use crate::loop_::{
     CancelPeerScope, CancelTurn, DISPLAY_OUTPUT_CHARS, IsRunning, PEER_INTAKE, PeerInput, PeerMeta,
     SuppressPeerInputs, UserInput, peer_wrapper, refuse_peer,
@@ -131,6 +132,8 @@ pub struct AcpChild {
     /// Runtime notes for the harness, each sent as `<runtime>…</runtime>`
     /// ahead of the first prompt's text and never persisted (75 §10, §4).
     notes: Vec<String>,
+    /// A pending [`Respawn`] (its token budget), acted on at `Connected`.
+    respawn: Option<usize>,
 }
 
 /// One input waiting its turn: the caller's [`InputId`], the supervisor's
@@ -365,6 +368,21 @@ pub struct Note(pub String);
 /// the unfinished work and the harness would otherwise pick it up.
 pub const CANCELLED_NOTE: &str = "your previous turn was cancelled by the user before it finished; do not continue it — answer only the message below";
 
+/// `tell` (109 §7.3): this actor is the boot respawn of a child whose
+/// parent's open turn waits on its result. Once connected, the child is
+/// prompted with a first input the supervisor never typed: the short
+/// [`handoff::restored_note`] when `session/load` restored the harness
+/// context, else the delta handoff ([`handoff::compose_handoff`]) under
+/// `.0` tokens. Its turn ends through the ordinary path, so the parent's
+/// wait is answered exactly as a live child's result would be — as an
+/// error result when the harness cannot even be connected.
+#[derive(Clone, Copy, Debug)]
+pub struct Respawn(pub usize);
+
+/// Persisted user text of a respawn whose harness never connected (109
+/// §7.3): the error result the parent gets needs a turn to ride on.
+const RESPAWN_FAILED_INPUT: &str = "<runtime>respawn after a theuth restart</runtime>";
+
 /// A `session/set_config_option` round trip is bounded so a hung harness
 /// cannot hold the actor's mailbox.
 // ponytail: the option request is awaited on the mailbox (one short round
@@ -436,6 +454,7 @@ impl AcpChild {
             skills: Some(skills),
             pending_options: Vec::new(),
             notes: Vec::new(),
+            respawn: None,
         }
     }
 
@@ -499,7 +518,11 @@ impl AcpChild {
         self.context = u32::try_from(u.used).unwrap_or(u32::MAX);
         let size = u32::try_from(u.size).ok().filter(|s| *s > 0);
         if size.is_some() && size != self.context_size {
-            match self.store.set_context_size(self.id, size.unwrap_or(0)).await {
+            match self
+                .store
+                .set_context_size(self.id, size.unwrap_or(0))
+                .await
+            {
                 Ok(()) => self.context_size = size,
                 Err(e) => tracing::warn!(session = %self.id, "set_context_size: {e:#}"),
             }
@@ -1086,6 +1109,36 @@ impl AcpChild {
         }
     }
 
+    /// An input theuth itself puts to the harness (109 §7.3): no caller id,
+    /// no admission ticket, no peer exchange; persisted and reported like
+    /// any other.
+    fn synthetic(text: &str) -> Queued {
+        Queued {
+            id: None,
+            ticket: None,
+            text: text.to_owned(),
+            scope: None,
+            peer: None,
+            admitted: Instant::now(),
+        }
+    }
+
+    /// 109 §7.3, the `resumed()` branch: the respawned child's first input
+    /// goes to the front of the queue — the restored note when
+    /// `session/load` brought the harness context back, else the delta
+    /// handoff under `tokens`. The two `git` reads in it run here, on the
+    /// mailbox, 5 s capped each (boot only).
+    async fn queue_respawn(&mut self, tokens: usize) {
+        let restored = self.harness.as_ref().is_some_and(Harness::resumed);
+        let text = if restored {
+            handoff::restored_note(chrono::Utc::now())
+        } else {
+            handoff::compose_handoff(&self.store, self.id, tokens).await
+        };
+        tracing::info!(session = %self.id, restored, "109: ACP child respawned; prompting");
+        self.queue.push_front(Self::synthetic(&text));
+    }
+
     /// The connection is gone. A child process that exited is known
     /// stopped: end the turn in flight as an error, fail the queue, stop. A
     /// dialled remote is not, once it was ever prompted (work it started can
@@ -1286,7 +1339,9 @@ pub(crate) fn tokens_of(u: &AcpUsage) -> TokenTotals {
             .input_tokens
             .saturating_add(cache_read)
             .saturating_add(cache_write),
-        output: u.output_tokens.saturating_add(u.thought_tokens.unwrap_or(0)),
+        output: u
+            .output_tokens
+            .saturating_add(u.thought_tokens.unwrap_or(0)),
         cache_read,
         cache_write,
         unknown_calls: 0,
@@ -1307,13 +1362,13 @@ pub(crate) fn translate(update: SessionUpdate, turn: &mut Turn) -> Vec<AgentEven
         }
         SessionUpdate::AgentMessageChunk(_)
         | SessionUpdate::ToolCall(_)
-        | SessionUpdate::ToolCallUpdate(_) => turn.thinking.take().map(|start| {
-            AgentEvent::ReasoningDone {
+        | SessionUpdate::ToolCallUpdate(_) => {
+            turn.thinking.take().map(|start| AgentEvent::ReasoningDone {
                 session,
                 turn: id,
                 ms: start.elapsed().as_millis() as u64,
-            }
-        }),
+            })
+        }
         _ => None,
     };
     let mut out = match update {
@@ -1514,10 +1569,18 @@ impl Message<Connected> for AcpChild {
                     self.apply_meter(zero).await;
                 }
                 self.harness = Some(h);
+                if let Some(tokens) = self.respawn.take() {
+                    self.queue_respawn(tokens).await;
+                }
                 let me = ctx.actor_ref().clone();
                 self.next(&me).await;
             }
             Err(e) => {
+                // 109 §7.3: a boot respawn that cannot connect still answers
+                // the waiting parent — with the connect error as its result.
+                if self.respawn.take().is_some() {
+                    self.queue.push_front(Self::synthetic(RESPAWN_FAILED_INPUT));
+                }
                 if self.queue.is_empty() {
                     if let Err(err) = self.store.record_error(self.id, &e).await {
                         tracing::warn!(session = %self.id, "record_error: {err:#}");
@@ -1816,6 +1879,27 @@ impl Message<Note> for AcpChild {
 
     async fn handle(&mut self, Note(n): Note, _: &mut Context<Self, Self::Reply>) {
         self.notes.push(n);
+    }
+}
+
+/// 109 §7.3: remembered until the connection is up; acted on at once when
+/// it already is (or already failed).
+impl Message<Respawn> for AcpChild {
+    type Reply = ();
+
+    async fn handle(&mut self, Respawn(tokens): Respawn, ctx: &mut Context<Self, Self::Reply>) {
+        if let Some(why) = self.dead.clone() {
+            self.fail(Self::synthetic(RESPAWN_FAILED_INPUT), &why).await;
+            ctx.stop();
+            return;
+        }
+        if self.harness.is_none() {
+            self.respawn = Some(tokens);
+            return;
+        }
+        self.queue_respawn(tokens).await;
+        let me = ctx.actor_ref().clone();
+        self.next(&me).await;
     }
 }
 
@@ -3176,7 +3260,10 @@ mod tests {
         let row = rig.store.session(rig.session).await.unwrap().unwrap();
         assert_eq!(row.context_size, Some(200_000));
         let cost = rig.store.session_cost(rig.session).await.unwrap().unwrap();
-        assert_eq!(cost.direct.returned, vec![Money::from_f64(0.25, "USD").unwrap()]);
+        assert_eq!(
+            cost.direct.returned,
+            vec![Money::from_f64(0.25, "USD").unwrap()]
+        );
 
         // omp's `agent_end` usage can land after the prompt response: no
         // turn open, still applied, attributed to the turn just closed.
@@ -3195,7 +3282,10 @@ mod tests {
             } => assert_eq!((t, context, size), (*turn, 6_000, Some(200_000))),
             other => panic!("{other:?}"),
         }
-        assert!(!rig.actor.ask(IsRunning).await.unwrap(), "no continuation turn");
+        assert!(
+            !rig.actor.ask(IsRunning).await.unwrap(),
+            "no continuation turn"
+        );
     }
 
     /// 75 §7: a `session/prompt` response with `usage` lands as this turn's
