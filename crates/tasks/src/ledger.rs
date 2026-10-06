@@ -1439,18 +1439,24 @@ impl Ledger {
         Ok(())
     }
 
-    /// `escalate` (67 §11, 101): the question in the thread, `blocked: decision:<id>`,
+    /// `escalate` (67 §11, 101, 103): the question in the thread, `blocked: decision:<id>`,
     /// the **caller's** manager woken (`answer`). When the manager is the user
     /// the request needs a `summary` and a `board` with the decision skeleton
-    /// (D1, R1, R2) and nothing is written without them; with a summary, board
-    /// or pointers (any audience) the request is stored as the `decision:<id>`
-    /// packet and the thread block is its markdown (D3). Returns the decision
-    /// and the manager; `Owner::User` means the actor handler asks the user.
-    /// The user has nobody to escalate to.
+    /// (D1, R1, R2) and nothing is written without them; with a summary, board,
+    /// pointers, recommendation or items (any audience) the request is stored as
+    /// the `decision:<id>` packet and the thread block is its markdown (D3).
+    /// 103 F1: when the task is already blocked on a decision somebody else
+    /// raised (the newest such packet is the parent) every field the caller
+    /// left empty — `question` (`""`), `summary`, `board`, `options` (with
+    /// `recommended`), `pointers`, `items` — is inherited from it, D1 is judged
+    /// on the merged packet, and the thread block's second line says
+    /// `forwarded from <parent> by <actor>`. Returns the decision and the
+    /// manager; `Owner::User` means the actor handler asks the user. The user
+    /// has nobody to escalate to.
     pub async fn escalate(
         &mut self,
         id: &TaskId,
-        ask: packet::Ask,
+        mut ask: packet::Ask,
         actor: &str,
         session: Option<&str>,
     ) -> R<(String, Owner)> {
@@ -1459,9 +1465,50 @@ impl Ledger {
             None => return Err("you are the top of the line; decide it".into()),
         };
         let t = self.load(id).await?;
+        let mut parent = None;
+        for b in t
+            .blockers
+            .iter()
+            .rev()
+            .filter(|b| b.starts_with("decision:"))
+        {
+            if let Some(p) = self.store.packet(b).await.map_err(db)?
+                && p.by != actor
+            {
+                parent = Some(p);
+                break;
+            }
+        }
+        if let Some(par) = &parent {
+            if ask.question.trim().is_empty() {
+                ask.question = par.question.clone().unwrap_or_default();
+            }
+            if ask.summary.as_deref().is_none_or(|s| s.trim().is_empty()) {
+                ask.summary = Some(par.summary.clone()).filter(|s| !s.trim().is_empty());
+            }
+            if ask.board.is_none() {
+                ask.board = par.board.clone();
+            }
+            if ask.options.is_empty() {
+                ask.options = par.options.clone();
+                if ask.recommended.is_none() {
+                    ask.recommended = par.recommended;
+                }
+            }
+            if ask.pointers.is_empty() {
+                ask.pointers = par.pointers.clone();
+            }
+            if ask.items.is_empty() {
+                ask.items = par.items.clone();
+            }
+        }
         let decision = format!("decision:{}", uuid::Uuid::now_v7());
-        let packet_wanted =
-            ask.summary.is_some() || ask.board.is_some() || !ask.pointers.is_empty();
+        let packet_wanted = parent.is_some()
+            || ask.summary.is_some()
+            || ask.board.is_some()
+            || !ask.pointers.is_empty()
+            || ask.recommendation.is_some()
+            || !ask.items.is_empty();
         let p = packet::Packet {
             key: decision.clone(),
             task: id.clone(),
@@ -1475,6 +1522,8 @@ impl Ledger {
             recommended: ask.recommended,
             pointers: ask.pointers,
             checks: vec![],
+            recommendation: ask.recommendation,
+            items: ask.items,
         };
         if manager == Owner::User {
             packet::require_for_user(&p)?;
@@ -1486,6 +1535,10 @@ impl Ledger {
             self.store.put_packet(&p).await.map_err(db)?;
         }
         let mut text = packet::thread_markdown(&p);
+        if let Some(par) = &parent {
+            let eol = text.find('\n').unwrap_or(text.len());
+            text.insert_str(eol, &format!("\nforwarded from {} by {actor}", par.key));
+        }
         text.push_str(&format!(
             "\n\nManager: answer with `decide {{ task, decision: \"{decision}\", answer }}`, or `escalate` the same task further."
         ));
@@ -1553,6 +1606,8 @@ impl Ledger {
             recommended: None,
             pointers,
             checks,
+            recommendation: None,
+            items: vec![],
         };
         packet::validate(&p)?;
         self.store.put_packet(&p).await.map_err(db)?;
@@ -5033,6 +5088,288 @@ pub(crate) mod tests {
             .await
             .unwrap_err();
         assert!(e.contains("`summary`") && e.contains("16 KiB"), "{e}");
+        assert!(r.ledger.get(&t.id).await.unwrap().blockers.is_empty());
+    }
+
+    fn desk_ask() -> packet::Ask {
+        packet::Ask {
+            summary: Some("Approve the autopay PR.".into()),
+            board: Some("b1".into()),
+            options: vec![
+                packet::PacketOption {
+                    label: "approve".into(),
+                    description: Some("ships today".into()),
+                },
+                packet::PacketOption {
+                    label: "hold".into(),
+                    description: None,
+                },
+            ],
+            recommended: Some(1),
+            pointers: vec![code_pointer()],
+            items: vec![packet::Item {
+                id: "a-rec".into(),
+                title: "A record".into(),
+                description: None,
+                options: vec![packet::PacketOption {
+                    label: "add".into(),
+                    description: None,
+                }],
+                recommended: Some(0),
+            }],
+            ..packet::Ask::new("approve PR 42?")
+        }
+    }
+
+    fn backs(option: Option<u32>) -> packet::Recommendation {
+        packet::Recommendation {
+            text: "Low risk; CI is green.".into(),
+            option,
+        }
+    }
+
+    /// 103 F1: the desk escalates with a full packet to its manager (lead); lead
+    /// forwards with an empty question and a recommendation. The new packet
+    /// inherits question, summary, board, options, recommended, pointers and
+    /// items; the inherited board satisfies D1 for the user; the thread block's
+    /// second line names the parent; the parent decision is untouched.
+    #[tokio::test]
+    async fn escalate_forwards_the_parent_packet_with_a_recommendation() {
+        let mut r = rig().await;
+        let t = r.task("agent:ops").await;
+        board(&r.thread, "b1", &packet::DECISION_SECTIONS);
+        let (d1, m) = r
+            .ledger
+            .escalate(&t.id, desk_ask(), "agent:ops", None)
+            .await
+            .unwrap();
+        assert_eq!(m, Owner::Agent("lead".into()));
+        r.tick(1000);
+        let (d2, m) = r
+            .ledger
+            .escalate(
+                &t.id,
+                packet::Ask {
+                    recommendation: Some(backs(Some(0))),
+                    ..packet::Ask::new("")
+                },
+                "agent:lead",
+                Some("s-lead"),
+            )
+            .await
+            .unwrap();
+        assert_eq!(m, Owner::User);
+        assert_ne!(d1, d2);
+        let parent = r.ledger.packet(&d1).await.unwrap().unwrap();
+        let p = r.ledger.packet(&d2).await.unwrap().unwrap();
+        assert_eq!(p.by, "agent:lead");
+        assert_eq!(p.question.as_deref(), Some("approve PR 42?"));
+        assert_eq!(p.summary, "Approve the autopay PR.");
+        assert_eq!(p.board.as_deref(), Some("b1"));
+        assert_eq!(p.options, parent.options);
+        assert_eq!(p.recommended, Some(1));
+        assert_eq!(p.pointers, vec![code_pointer()]);
+        assert_eq!(p.items, parent.items);
+        assert_eq!(p.recommendation, Some(backs(Some(0))));
+        assert_eq!(parent.recommendation, None, "the parent is untouched");
+        let doc = t.thread.clone().unwrap();
+        let blocks = r.thread.0.lock().unwrap()[&doc].clone();
+        let block = blocks
+            .iter()
+            .find(|b| b.contains(&format!("**decision requested** (`{d2}`)")))
+            .expect("thread block");
+        assert!(
+            block.contains(&format!(
+                "**decision requested** (`{d2}`)\nforwarded from {d1} by agent:lead\n\nRecommendation: approve — Low risk; CI is green.\n\napprove PR 42?\n\nApprove the autopay PR.\n\nBoard: theuth://notes/b1\n\nOptions:\n- approve — ships today\n- hold (recommended)\n"
+            )),
+            "{block}"
+        );
+        assert!(
+            block.contains("Items:\n1. A record: add (recommended)\n"),
+            "{block}"
+        );
+        // the parent's block has no forwarded line
+        assert!(
+            !blocks
+                .iter()
+                .find(|b| b.contains(&format!("(`{d1}`)")))
+                .unwrap()
+                .contains("forwarded from")
+        );
+        let b = r.ledger.get(&t.id).await.unwrap();
+        assert_eq!(b.blockers, vec![d1.clone(), d2.clone()]);
+        // the user answers the forward; lead then answers the parent with `decide`, as today
+        r.ledger
+            .answer_decision(&d2, "approve", "user", None)
+            .await
+            .unwrap();
+        assert_eq!(
+            r.ledger.get(&t.id).await.unwrap().blockers,
+            vec![d1.clone()]
+        );
+        r.ledger
+            .answer_decision(&d1, "approve", "agent:lead", Some("s-lead"))
+            .await
+            .unwrap();
+        assert!(r.ledger.get(&t.id).await.unwrap().blockers.is_empty());
+    }
+
+    /// 103 F1: a manager that passes its own fields keeps them; only the empty
+    /// ones are inherited (own options drop the parent's `recommended`).
+    #[tokio::test]
+    async fn escalate_forward_keeps_the_callers_own_fields() {
+        let mut r = rig().await;
+        let t = r.task("agent:ops").await;
+        board(&r.thread, "b1", &packet::DECISION_SECTIONS);
+        let (d1, _) = r
+            .ledger
+            .escalate(&t.id, desk_ask(), "agent:ops", None)
+            .await
+            .unwrap();
+        let (d2, _) = r
+            .ledger
+            .escalate(
+                &t.id,
+                packet::Ask {
+                    summary: Some("Lead's abstract.".into()),
+                    options: vec![packet::PacketOption {
+                        label: "ship".into(),
+                        description: None,
+                    }],
+                    recommendation: Some(backs(None)),
+                    ..packet::Ask::new("ship it?")
+                },
+                "agent:lead",
+                None,
+            )
+            .await
+            .unwrap();
+        let p = r.ledger.packet(&d2).await.unwrap().unwrap();
+        assert_eq!(p.question.as_deref(), Some("ship it?"));
+        assert_eq!(p.summary, "Lead's abstract.");
+        assert_eq!(p.options.len(), 1);
+        assert_eq!(p.recommended, None);
+        assert_eq!(p.board.as_deref(), Some("b1"), "inherited");
+        assert_eq!(p.pointers, vec![code_pointer()], "inherited");
+        assert_eq!(p.items.len(), 1, "inherited");
+        let doc = t.thread.clone().unwrap();
+        let blocks = r.thread.0.lock().unwrap()[&doc].clone();
+        let block = blocks
+            .iter()
+            .find(|b| b.contains(&format!("(`{d2}`)")))
+            .unwrap();
+        assert!(block.contains(&format!("\nforwarded from {d1} by agent:lead\n\nRecommendation: Low risk; CI is green.\n\nship it?")), "{block}");
+    }
+
+    /// 103 F1: no parent (no decision blocker, or only the caller's own) → plain
+    /// behaviour: the empty question stays empty, D1 refuses without a board.
+    #[tokio::test]
+    async fn escalate_without_a_parent_inherits_nothing() {
+        let mut r = rig().await;
+        let t = r.task("agent:lead").await;
+        let e = r
+            .ledger
+            .escalate(
+                &t.id,
+                packet::Ask {
+                    recommendation: Some(backs(None)),
+                    ..packet::Ask::new("")
+                },
+                "agent:lead",
+                None,
+            )
+            .await
+            .unwrap_err();
+        assert!(e.contains("needs a `board`"), "{e}");
+        assert!(r.ledger.get(&t.id).await.unwrap().blockers.is_empty());
+        // ops' own earlier decision is not a parent for ops
+        let o = r.task("agent:ops").await;
+        let (d1, _) = r
+            .ledger
+            .escalate(&o.id, desk_ask(), "agent:ops", None)
+            .await
+            .unwrap();
+        let (d2, _) = r
+            .ledger
+            .escalate(&o.id, packet::Ask::new(""), "agent:ops", None)
+            .await
+            .unwrap();
+        let p = r.ledger.packet(&d2).await.unwrap();
+        assert_eq!(p, None, "no packet without a parent or a summary");
+        let doc = o.thread.clone().unwrap();
+        let blocks = r.thread.0.lock().unwrap()[&doc].clone();
+        let block = blocks
+            .iter()
+            .find(|b| b.contains(&format!("(`{d2}`)")))
+            .unwrap();
+        assert!(!block.contains("forwarded from"), "{block}");
+        assert!(!block.contains(&d1), "{block}");
+    }
+
+    /// 103 F3: a bundle round-trips through the store and reads back from `packets_for`.
+    #[tokio::test]
+    async fn escalate_stores_items_round_trip() {
+        let mut r = rig().await;
+        let t = r.task("agent:ops").await;
+        let items: Vec<packet::Item> = (0..3)
+            .map(|i| packet::Item {
+                id: format!("rec-{i}"),
+                title: format!("Record {i}"),
+                description: (i == 0).then(|| "the apex".to_owned()),
+                options: vec![
+                    packet::PacketOption {
+                        label: "add".into(),
+                        description: None,
+                    },
+                    packet::PacketOption {
+                        label: "skip".into(),
+                        description: Some("later".into()),
+                    },
+                ],
+                recommended: (i < 2).then_some(0),
+            })
+            .collect();
+        let (d, _) = r
+            .ledger
+            .escalate(
+                &t.id,
+                packet::Ask {
+                    items: items.clone(),
+                    ..packet::Ask::new("DNS records?")
+                },
+                "agent:ops",
+                None,
+            )
+            .await
+            .unwrap();
+        let p = r
+            .ledger
+            .packet(&d)
+            .await
+            .unwrap()
+            .expect("stored for items alone");
+        assert_eq!(p.items, items);
+        assert_eq!(
+            r.ledger.packets_for(&[t.id.clone()]).await.unwrap()[0].items,
+            items
+        );
+        let doc = t.thread.clone().unwrap();
+        let blocks = r.thread.0.lock().unwrap()[&doc].clone();
+        let block = blocks.iter().find(|b| b.contains("Items:")).unwrap();
+        assert!(
+            block.contains("Items:\n1. Record 0 — the apex: add (recommended) | skip\n2. Record 1: add (recommended) | skip\n3. Record 2: add | skip\n"),
+            "{block}"
+        );
+        // the answer is plain text through `answer_decision`
+        r.ledger
+            .answer_decision(
+                &d,
+                "1. Record 0: add\n2. Record 1: add\n3. Record 2: skip",
+                "agent:lead",
+                None,
+            )
+            .await
+            .unwrap();
         assert!(r.ledger.get(&t.id).await.unwrap().blockers.is_empty());
     }
 

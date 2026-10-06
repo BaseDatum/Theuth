@@ -14,7 +14,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use tools::{RegisterTool, Risk, Tool, ToolCx, ToolOutput, ToolRegistry};
 
-use crate::packet::{self, Check, PacketOption, Pointer};
+use crate::packet::{self, Check, Item, PacketOption, Pointer, Recommendation};
 use crate::place;
 use crate::thread::Thread;
 use crate::types::{
@@ -770,6 +770,8 @@ async fn review_gate(
         recommended: None,
         pointers: pointers.unwrap_or_default(),
         checks: checks.unwrap_or_default(),
+        recommendation: None,
+        items: vec![],
     };
     if who == Owner::User {
         packet::require_for_user(&p)?;
@@ -1227,10 +1229,13 @@ impl From<OptionArg> for PacketOption {
 pub struct EscalateArgs {
     /// Task id the decision is about.
     pub task: TaskId,
-    /// The question, one or two sentences; the decider sees it first.
+    /// The question, one or two sentences; the decider sees it first. Forwarding a report's decision
+    /// (the task is already blocked on their `decision:<id>`): pass `""` to inherit their question,
+    /// summary, board, options, pointers and items — never re-type them.
     pub question: String,
-    /// Markdown (≤ 16 KiB): one short paragraph — the abstract the inbox row, the thread and the channel card
-    /// show; the detail goes on the `board`. Required when your manager is the user.
+    /// Markdown (≤ 16 KiB): the abstract — at most 120 words answering what is being decided and why now;
+    /// the inbox row, the thread and the channel card show it, the detail goes on the `board`. Required when
+    /// your manager is the user.
     #[serde(default)]
     pub summary: Option<String>,
     /// The `doc` id of the mini-board you wrote for the decider (`doc_create(kind="board")`, sections
@@ -1238,11 +1243,11 @@ pub struct EscalateArgs {
     /// Required when your manager is the user.
     #[serde(default)]
     pub board: Option<String>,
-    /// Concrete options (≤ 6, labels ≤ 80 chars): `"label"` or `{label, description}` with a one-line
-    /// trade-off each; the decider may still answer freely.
+    /// Concrete options (at most 4 unless a bundle; cap 6, labels ≤ 80 chars): `"label"` or
+    /// `{label, description}` with a one-line trade-off each; the decider may still answer freely.
     #[serde(default)]
     pub options: Vec<OptionArg>,
-    /// Index into `options` of the one you would pick.
+    /// Index into `options` of the one you would pick — exactly one.
     #[serde(default)]
     pub recommended: Option<u32>,
     /// Exactly what to look at (≤ 12), evidence inline: `code` = `ref: "path#L10-L24"` + `text` the lines verbatim
@@ -1250,6 +1255,15 @@ pub struct EscalateArgs {
     /// `task` by id; `url` by `http(s)` URL. `title` and a one-line `note` each; `text` ≤ 32 KiB.
     #[serde(default)]
     pub pointers: Vec<Pointer>,
+    /// Forwarding a report's decision: your view in one or two sentences (`text`, ≤ 1 KiB) and the index of
+    /// the option you back (`option`). With an empty `question` this is the whole call.
+    #[serde(default)]
+    pub recommendation: Option<Recommendation>,
+    /// A bundle (≤ 20): N related sub-decisions, each `{id, title, description?, options?, recommended?}` —
+    /// `id` unique, the slug of the item's `###` heading under the board's `## Options`; options as
+    /// `{label, description}` (≤ 6). The decider answers all at once (`1. <title>: <pick>` per line).
+    #[serde(default)]
+    pub items: Vec<Item>,
 }
 
 /// `escalate`: a decision request up the reporting line (67 §11, decision 8).
@@ -1266,18 +1280,24 @@ impl Tool for EscalateTool {
          line as a wake with reason `answer`: a manager that is an agent answers with `decide` or \
          escalates further; the user gets it on their attention surface and as a card on their channels \
          with the options as buttons. Prepare the packet the decider reads instead of the thread: \
-         `summary` (one short paragraph: the abstract the inbox row and the card show), `board` — the id \
-         of a mini-board you wrote for the decider (`doc_create(kind=\"board\", root=…)` then `doc_insert`, \
-         see the `board` skill) with the sections `## What you're deciding`, `## Why it matters to you`, \
-         `## The picture` (one diagram, `ref` on every unit), `## Options` (one `###` per option: consequence, \
-         cost/risk, reversibility, recommendation), `## Look at` (Excerpts), optionally `## Open questions`; \
-         write for the person deciding — what, why it matters to them, the whole picture; diagram and link \
-         heavy; short. Then `options` with one-line descriptions and a `recommended` index, and optional \
+         `summary` — the abstract, at most 120 words answering what is being decided and why now (the \
+         inbox row and the card show it); `board` — the id of a mini-board you wrote for the decider \
+         (`doc_create(kind=\"board\", root=…)` then `doc_insert`, see the `board` skill) with the sections \
+         `## What you're deciding`, `## Why it matters to you`, `## The picture` (one diagram, `ref` on \
+         every unit), `## Options` (one `###` per option: consequence, cost/risk, reversibility, \
+         recommendation), `## Look at` (Excerpts), optionally `## Open questions`; write for the person \
+         deciding — what, why it matters to them, the whole picture; diagram and link heavy; short. Then \
+         `options`: at most 4 unless it is a bundle, one line each, exactly one `recommended`; optional \
          `pointers` with the evidence inline (`code` = `path#L10-L24` plus the lines verbatim, `diff` = a \
-         unified diff, artifacts / notes / sessions / URLs by id or URL), a one-line `note` each. When your \
+         unified diff, artifacts / notes / sessions / URLs by id or URL), a one-line `note` each. \
+         Forwarding a report's decision (the task is already blocked on their `decision:<id>`): pass \
+         `question: \"\"` and your `recommendation` {text, option}; their question, summary, board, options \
+         and pointers are inherited — do not re-type the report into `question`. N related decisions \
+         (records, hosts, PRs): one call with `items`, one `{id, title, options, recommended}` each, and \
+         one `###` per item under the board's `## Options` whose heading slug is the item `id`. When your \
          manager is the user the `summary` and the `board` are required (the board must exist, be a board \
          and open with those sections) and the tool refuses without them, naming what to fix. Caps: summary \
-         16 KiB, 6 options (labels 80 chars), 12 pointers (text 32 KiB each). \
+         16 KiB, 6 options (labels 80 chars), 20 items, 12 pointers (text 32 KiB each). \
          You wait up to `roster.decision_wait_secs` (two minutes) for a live answer; if it comes it is \
          in this tool's output and the task is unblocked. If none comes the task stays \
          `blocked: decision:<id>`, your episode ends with its journal, and the answer re-wakes you. \
@@ -1298,6 +1318,8 @@ impl Tool for EscalateTool {
                     options: a.options.into_iter().map(Into::into).collect(),
                     recommended: a.recommended,
                     pointers: a.pointers,
+                    recommendation: a.recommendation,
+                    items: a.items,
                     actor: me,
                     session: Some(cx.session.to_string()),
                 })
@@ -1619,7 +1641,22 @@ mod review_gate_tests {
         assert_eq!(opts[0].description, None);
         assert_eq!(opts[1].description.as_deref(), Some("later"));
         assert!(a.pointers.is_empty() && a.summary.is_none());
+        assert!(a.recommendation.is_none() && a.items.is_empty());
         let schema = serde_json::to_value(schemars::schema_for!(EscalateArgs)).unwrap();
         assert!(schema.to_string().contains("description"));
+        // 103: a forward and a bundle parse; an item needs only `id` and `title`
+        let a: EscalateArgs = serde_json::from_value(serde_json::json!({
+            "task": "t", "question": "",
+            "recommendation": {"text": "approve"},
+            "items": [{"id": "a-rec", "title": "A record", "options": [{"label": "add"}], "recommended": 0},
+                      {"id": "mx", "title": "MX"}]
+        }))
+        .unwrap();
+        assert_eq!(a.recommendation.unwrap().option, None);
+        assert_eq!(a.items[0].options[0].label, "add");
+        assert_eq!(
+            (a.items[1].recommended, a.items[1].options.len()),
+            (None, 0)
+        );
     }
 }

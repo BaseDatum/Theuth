@@ -264,6 +264,10 @@ pub struct Escalate {
     pub recommended: Option<u32>,
     /// Where to look.
     pub pointers: Vec<packet::Pointer>,
+    /// Forwarding (103 F1/F2): the manager's view.
+    pub recommendation: Option<packet::Recommendation>,
+    /// A bundle (103 F3).
+    pub items: Vec<packet::Item>,
     /// Who.
     pub actor: String,
     /// Session.
@@ -714,30 +718,33 @@ impl Message<Escalate> for Tasks {
 
     async fn handle(&mut self, m: Escalate, ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
         let ask = packet::Ask {
-            question: m.question.clone(),
-            summary: m.summary.clone(),
-            board: m.board.clone(),
-            options: m.options.clone(),
+            question: m.question,
+            summary: m.summary,
+            board: m.board,
+            options: m.options,
             recommended: m.recommended,
-            pointers: m.pointers.clone(),
+            pointers: m.pointers,
+            recommendation: m.recommendation,
+            items: m.items,
         };
         let (decision, manager) = self
             .ledger
             .escalate(&m.task, ask, &m.actor, m.session.as_deref())
             .await?;
         if manager == Owner::User {
+            // The stored packet, not the message: a forward (103 F1) inherits
+            // its question and options from the parent.
+            let Ok(Some(p)) = self.ledger.packet(&decision).await else {
+                tracing::warn!(%decision, "no packet stored for the user's decision; parked");
+                return Ok(decision);
+            };
             let title = self
                 .ledger
                 .get(&m.task)
                 .await
                 .map(|t| t.title)
                 .unwrap_or_default();
-            tokio::spawn(ask_user(
-                ctx.actor_ref().clone(),
-                decision.clone(),
-                m,
-                title,
-            ));
+            tokio::spawn(ask_user(ctx.actor_ref().clone(), p, m.session, title));
         }
         Ok(decision)
     }
@@ -747,9 +754,9 @@ impl Message<Escalate> for Tasks {
 /// calling session — desktop, slack and signal already render `AskRequested`
 /// — and the answer back through [`AnswerDecision`]. Without a session there
 /// is no card; the task waits parked for a `decide`.
-async fn ask_user(me: ActorRef<Tasks>, decision: String, m: Escalate, title: String) {
-    let Some(session) = m
-        .session
+async fn ask_user(me: ActorRef<Tasks>, p: packet::Packet, session: Option<String>, title: String) {
+    let decision = p.key.clone();
+    let Some(session) = session
         .as_deref()
         .and_then(|s| s.parse::<runtime::SessionId>().ok())
     else {
@@ -765,12 +772,8 @@ async fn ask_user(me: ActorRef<Tasks>, decision: String, m: Escalate, title: Str
     };
     let question = ::tools::Question {
         id: decision.clone(),
-        question: format!(
-            "{}\n\n(task {} — {title})",
-            m.question,
-            m.task.0.get(..8).unwrap_or(&m.task.0)
-        ),
-        options: m
+        question: card_question(&p, &title),
+        options: p
             .options
             .iter()
             .map(|o| ::tools::Choice {
@@ -778,7 +781,13 @@ async fn ask_user(me: ActorRef<Tasks>, decision: String, m: Escalate, title: Str
                 description: o.description.clone(),
             })
             .collect(),
-        recommended: m.recommended.map(|r| r as usize),
+        // 103 F2: the forwarding manager's pick wins over the report's.
+        recommended: p
+            .recommendation
+            .as_ref()
+            .and_then(|r| r.option)
+            .or(p.recommended)
+            .map(|r| r as usize),
     };
     let Ok(out) = ask
         .ask(::tools::ask::Request {
@@ -790,7 +799,7 @@ async fn ask_user(me: ActorRef<Tasks>, decision: String, m: Escalate, title: Str
         return;
     };
     let answer = match out.answers.and_then(|v| v.into_iter().next()) {
-        Some(::tools::Answer::Choice { index }) => m.options.get(index).map(|o| o.label.clone()),
+        Some(::tools::Answer::Choice { index }) => p.options.get(index).map(|o| o.label.clone()),
         Some(::tools::Answer::Text { text }) => Some(text),
         _ => None,
     };
@@ -804,6 +813,21 @@ async fn ask_user(me: ActorRef<Tasks>, decision: String, m: Escalate, title: Str
             })
             .await;
     }
+}
+
+/// The ask card's text (101 D4, 103 item 5): the question, the bundle as
+/// numbered lines (`packet::items_summary`), the task's short id and title.
+fn card_question(p: &packet::Packet, title: &str) -> String {
+    let mut s = p.question.clone().unwrap_or_default();
+    if !p.items.is_empty() {
+        s.push_str("\n\n");
+        s.push_str(&packet::items_summary(&p.items));
+    }
+    s.push_str(&format!(
+        "\n\n(task {} — {title})",
+        p.task.0.get(..8).unwrap_or(&p.task.0)
+    ));
+    s
 }
 
 impl Message<AnswerDecision> for Tasks {
@@ -1271,4 +1295,58 @@ impl runtime::Plugin for TasksPlugin {
 /// The tasks actor; `None` before the plugin started or when its store failed.
 pub fn actor() -> Option<ActorRef<Tasks>> {
     ActorRef::<Tasks>::lookup(TASKS_ACTOR).ok().flatten()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 103 item 5: the ask card lists a bundle's items with their recommended pick.
+    #[test]
+    fn card_question_lists_the_bundle() {
+        let opt = |l: &str| packet::PacketOption {
+            label: l.into(),
+            description: None,
+        };
+        let mut p = packet::Packet {
+            key: "decision:d1".into(),
+            task: TaskId("0123456789abcdef".into()),
+            kind: packet::PacketKind::Decision,
+            by: "agent:ops".into(),
+            at_ms: 1,
+            question: Some("DNS records?".into()),
+            summary: String::new(),
+            board: None,
+            options: vec![],
+            recommended: None,
+            pointers: vec![],
+            checks: vec![],
+            recommendation: None,
+            items: vec![],
+        };
+        assert_eq!(
+            card_question(&p, "portal"),
+            "DNS records?\n\n(task 01234567 — portal)"
+        );
+        p.items = vec![
+            packet::Item {
+                id: "a".into(),
+                title: "A record".into(),
+                description: None,
+                options: vec![opt("add"), opt("skip")],
+                recommended: Some(0),
+            },
+            packet::Item {
+                id: "mx".into(),
+                title: "MX".into(),
+                description: None,
+                options: vec![],
+                recommended: None,
+            },
+        ];
+        assert_eq!(
+            card_question(&p, "portal"),
+            "DNS records?\n\n1. A record — recommended: add\n2. MX\n\n(task 01234567 — portal)"
+        );
+    }
 }
