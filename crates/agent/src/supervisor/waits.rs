@@ -100,13 +100,19 @@ impl Agents {
     /// Boot (§4.6 step 10): rebuild the live waiters and settle the dead
     /// approvals of every open turn from their rows; see the module doc.
     pub(super) async fn rebuild_waits(&mut self) {
+        let approval = ActorRef::<tools::Approval>::lookup(tools::APPROVAL_ACTOR)
+            .ok()
+            .flatten()
+            .filter(ActorRef::is_alive);
+        self.rebuild_waits_with(approval).await;
+    }
+
+    /// [`Self::rebuild_waits`] with the approval actor the honoured answers go to.
+    async fn rebuild_waits_with(&mut self, approval: Option<ActorRef<tools::Approval>>) {
         let open = match self.store.open_turns().await {
             Ok(o) => o,
             Err(e) => return tracing::error!("109: open turns unreadable: {e:#}"),
         };
-        let approval = ActorRef::<tools::Approval>::lookup(tools::APPROVAL_ACTOR)
-            .ok()
-            .flatten();
         let (mut rearmed, mut honoured, mut superseded) = (0usize, 0usize, 0usize);
         for (session, turn, _) in &open {
             let calls = self
@@ -548,18 +554,12 @@ mod tests {
         for r in [&pending, &answered, &ask_row] {
             a.store.question_put(r).await.unwrap();
         }
-        // The approval actor as the engine registers it; another test may
-        // already have one up — the registered one serves either way.
+        // The approval actor, as the engine registers it (handed in directly:
+        // the process-wide registry name belongs to whichever test is up).
         let rt = runtime::Runtime::new(figment::Figment::new(), std::env::temp_dir());
-        let spawned = tools::Approval::spawn(tools::Approval::new(rt, Duration::from_millis(50)));
-        let approval = match spawned.register(tools::APPROVAL_ACTOR) {
-            Ok(()) => spawned,
-            Err(_) => ActorRef::<tools::Approval>::lookup(tools::APPROVAL_ACTOR)
-                .unwrap()
-                .unwrap(),
-        };
+        let approval = tools::Approval::spawn(tools::Approval::new(rt, Duration::from_millis(50)));
 
-        a.rebuild_waits().await;
+        a.rebuild_waits_with(Some(approval.clone())).await;
 
         let state = |id: &str| {
             let rows = futures::executor::block_on(a.store.questions_pending(s)).unwrap();
