@@ -5935,7 +5935,12 @@ impl Model {
             AgentEvent::SessionMetadataChanged { .. }
             | AgentEvent::ModelUsageChanged { .. }
             | AgentEvent::SessionOwnerChanged { .. }
-            | AgentEvent::SessionClosing { .. } => {}
+            | AgentEvent::SessionClosing { .. }
+            // 109: the resumed/suspended divider and banner are W5's.
+            | AgentEvent::TurnResumed { .. }
+            | AgentEvent::ResumeReport { .. }
+            | AgentEvent::TurnSuspended { .. }
+            | AgentEvent::PartialDropped { .. } => {}
         }
     }
 
