@@ -13,22 +13,30 @@ type Tool = Extract<Entry, { kind: 'tool' }>
 /** A run: tool rows, possibly with reasoning rows between them; starts and ends with a tool. */
 export type Run = Entry[]
 
+/** Deliverable tools (Sky, 2026-10-06): "Show tool cards are never folded in with the collapsed sequential tools. They
+ * are always shown in the transcript; they need to be easy for the user to find." A board create (71 §2.11) and the
+ * full-width artifact cards `MessageTool` draws. `routine_draft` is named ahead of its tool so that wave needs no change here. */
+const DELIVERABLE_TOOLS: Record<string, true> = { show: true, app: true, agent_draft: true, task_draft: true, routine_draft: true }
+export function isDeliverable(tool: Tool): boolean {
+  return DELIVERABLE_TOOLS[tool.name] === true || isBoardCreate(tool)
+}
+
 /** Entries with every maximal run of two or more tool cards (reasoning between them rides along; any other row,
- * including assistant text, ends the run) folded into one `Run`. A lone tool call stays a plain entry. A board
- * create (71 §2.11) is the turn's deliverable — its card ("drawing · section", Open) stays out of every run. */
+ * including assistant text, ends the run) folded into one `Run`. A lone tool call stays a plain entry. A deliverable
+ * (`isDeliverable`) is never in a run: it splits one, `[a, b] show [c, d]` → `[[a, b], show, [c, d]]`. */
 export function foldRuns(entries: Entry[]): (Entry | Run)[] {
   const out: (Entry | Run)[] = []
   let i = 0
   while (i < entries.length) {
     const e = entries[i] as Entry
-    if (e.kind !== 'tool' || isBoardCreate(e)) {
+    if (e.kind !== 'tool' || isDeliverable(e)) {
       out.push(e)
       i++
       continue
     }
     let end = i + 1
     let lastTool = i
-    while (end < entries.length && ((entries[end]?.kind === 'tool' && !isBoardCreate(entries[end] as Tool)) || entries[end]?.kind === 'reasoning')) {
+    while (end < entries.length && ((entries[end]?.kind === 'tool' && !isDeliverable(entries[end] as Tool)) || entries[end]?.kind === 'reasoning')) {
       if (entries[end]?.kind === 'tool') lastTool = end
       end++
     }
