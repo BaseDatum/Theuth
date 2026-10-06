@@ -31,6 +31,10 @@ const LABEL_MAX: usize = 75;
 pub const ALERT_MAX: usize = 200;
 /// `container.title` / `subtitle` cap (110 §6).
 const CONTAINER_TITLE_MAX: usize = 150;
+/// `section.text` chars per container child (under Slack's 3000).
+const CONTAINER_SECTION_MAX: usize = 2900;
+/// Container children (Slack caps at 10); the last slot is the `… n more` line.
+const CONTAINER_CHILDREN_MAX: usize = 10;
 
 /// A command reply: the one-line notification `text` and, for panels,
 /// the Block Kit `blocks` array.
@@ -528,17 +532,49 @@ pub fn alert_error(text: &str) -> Value {
 }
 
 /// 110 §6: one collapsed `container` (title, subtitle = the body's first
-/// line) holding `body` as a `markdown` block. `body` is the caller's to cap.
+/// line). Slack allows no `markdown` child (§14.5 spike), so the body goes
+/// through [`markdown::plain`] into `plain_text` `section`s of
+/// ≤ [`CONTAINER_SECTION_MAX`] chars cut at line boundaries, at most nine,
+/// then a `context` line `… n more chars` for what did not fit.
 #[must_use]
 pub fn collapsed(title: &str, body: &str) -> Value {
     let first = body.lines().next().unwrap_or_default();
+    let plain = markdown::plain(body);
+    let parts = markdown::chunks(&plain, CONTAINER_SECTION_MAX);
+    let keep = parts.len().min(CONTAINER_CHILDREN_MAX - 1);
+    let mut children: Vec<Value> = parts[..keep]
+        .iter()
+        .map(|p| json!({ "type": "section", "text": plain_text(p) }))
+        .collect();
+    let rest: usize = parts[keep..].iter().map(|p| p.chars().count()).sum();
+    if rest > 0 {
+        children.push(json!({
+            "type": "context",
+            "elements": [plain_text(&format!("… {rest} more chars"))],
+        }));
+    }
+    if children.is_empty() {
+        children.push(json!({ "type": "section", "text": plain_text("—") }));
+    }
     json!([{
         "type": "container",
         "title": plain_text(&clip(title, CONTAINER_TITLE_MAX)),
         "subtitle": plain_text(&clip(first, CONTAINER_TITLE_MAX)),
         "is_collapsible": true,
         "default_collapsed": true,
-        "child_blocks": [{ "type": "markdown", "text": body }],
+        "child_blocks": children,
+    }])
+}
+
+/// 110 §8: one `card` block — `title` and `subtitle` as `plain_text` (≤ 150
+/// each; a card needs at least a title). No actions, no links: the
+/// deliverable lives in theuth.
+#[must_use]
+pub fn card(title: &str, subtitle: &str) -> Value {
+    json!([{
+        "type": "card",
+        "title": plain_text(&clip(title, CONTAINER_TITLE_MAX)),
+        "subtitle": plain_text(&clip(subtitle, CONTAINER_TITLE_MAX)),
     }])
 }
 
@@ -698,6 +734,33 @@ mod tests {
         assert!(ids.iter().all(|i| i.starts_with("cmd:")), "{ids:?}");
         assert!(reply.blocks.as_ref().unwrap().as_array().unwrap().len() <= BLOCKS_MAX);
         assert!(!reply.text.contains('\n'), "{:?}", reply.text);
+    }
+
+    /// 110 §6 / §14.5: the body is `plain_text` sections cut at lines, nine
+    /// at most, then one `context` line counting what was left out.
+    #[test]
+    fn collapsed_body_is_plain_sections_capped_at_ten_children() {
+        let v = collapsed("↳ x · finished · 2s", "**bold** first\n`code` line");
+        let c = &v[0];
+        assert_eq!(c["subtitle"]["text"], "**bold** first");
+        assert_eq!(
+            c["child_blocks"],
+            json!([{ "type": "section", "text": { "type": "plain_text", "text": "bold first\ncode line" } }])
+        );
+        // 40 lines of 1000 chars: 2 per section, 9 sections hold 18 lines.
+        let body = (0..40)
+            .map(|_| "z".repeat(1000))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let v = collapsed("t", &body);
+        let kids = v[0]["child_blocks"].as_array().unwrap();
+        assert_eq!(kids.len(), 10);
+        assert!(kids[..9].iter().all(|k| k["type"] == "section"
+            && k["text"]["text"].as_str().unwrap().chars().count() <= CONTAINER_SECTION_MAX));
+        assert_eq!(kids[9]["type"], "context");
+        // 22 lines left as 11 two-line chunks of 2001 chars (the newline
+        // between chunks is the cut, not counted).
+        assert_eq!(kids[9]["elements"][0]["text"], "… 22011 more chars");
     }
 
     fn session(i: usize) -> SessionSummary {
