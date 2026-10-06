@@ -3,6 +3,11 @@
 toolchain_bin := `dirname "$(rustup which cargo)"`
 export PATH := toolchain_bin + ":" + env("PATH")
 
+# Gates (check/test/clippy/durability) build without incremental caches: they add ~1 GB per crate
+# per session to target/ and only pay off for the second build of an edited crate. Editing and
+# running tests in a loop? `CARGO_INCREMENTAL=1 just test -p agent`.
+incremental := env("CARGO_INCREMENTAL", "0")
+
 # Print the toolchain bin dir; `export PATH="$(just toolchain):$PATH"` in any shell.
 toolchain:
     @echo {{toolchain_bin}}
@@ -16,10 +21,10 @@ build *ARGS:
     cargo build {{ARGS}}
 
 check *ARGS:
-    cargo check --workspace --all-targets {{ARGS}}
+    CARGO_INCREMENTAL={{incremental}} cargo check --workspace --all-targets {{ARGS}}
 
 test *ARGS:
-    cargo test --workspace {{ARGS}}
+    CARGO_INCREMENTAL={{incremental}} cargo test --workspace {{ARGS}}
 
 # Design doc 109 §11: the crash-injection suite. The §11.1 matrix (every crash point, spawned
 # children that abort, resume, transcript check), the drain/suspend path, the journal store tests,
@@ -27,11 +32,17 @@ test *ARGS:
 # Crate-level by name; ~1 minute on an M-series laptop. `--test-threads=1` is the sqlx teardown
 # workaround (00 §12) for the `tools` half only; the `agent` half serialises itself.
 durability:
-    cargo test -p agent --lib -- loop_::durability_tests durability:: store::durability supervisor::waits supervisor::drain supervisor::resume supervisor::acp_resume
-    cargo test -p tools --lib -- --test-threads=1 jobs:: pty::
+    CARGO_INCREMENTAL={{incremental}} cargo test -p agent --lib -- loop_::durability_tests durability:: store::durability supervisor::waits supervisor::drain supervisor::resume supervisor::acp_resume
+    CARGO_INCREMENTAL={{incremental}} cargo test -p tools --lib -- --test-threads=1 jobs:: pty::
 
 clippy:
-    cargo clippy --workspace --all-targets -- -D warnings
+    CARGO_INCREMENTAL={{incremental}} cargo clippy --workspace --all-targets -- -D warnings
+
+# Remove target/ artifacts no build has used for three days (cargo keeps every stale hash forever;
+# a checkout reached 167 GB). `cargo install cargo-sweep` once. `just sweep 0` clears the lot.
+sweep days="3":
+    cargo sweep --time {{days}} 2>/dev/null || (echo "cargo-sweep missing: cargo install cargo-sweep" && exit 1)
+    rm -rf target/debug/incremental
 
 fmt:
     cargo fmt --all

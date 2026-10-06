@@ -430,6 +430,17 @@ libsqlite3-sys = { path = "vendor/libsqlite3-sys" }
 [patch."https://github.com/signalapp/boring"]
 boring-sys = { git = "https://github.com/skymoore/boring", branch = "theuth/cargo-include" }
 
+# target/ hygiene (2026-10-07): with the default dev profile every test binary carried ~0.7 GB of
+# DWARF and every incremental cache ~1 GB, and cargo never garbage-collects target/, so one checkout
+# reached 167 GB. Line tables keep file:line in panics and backtraces; `--profile dev-full` is for a
+# real debugger session. `just sweep` removes artifacts no build has touched for three days.
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev-full]
+inherits = "dev"
+debug = true
+
 # The microsandbox SDK embeds its 28.5 MB runtime archive as a `const` (`include_bytes!`), which
 # rustc materialises once per codegen unit that touches it: with the default 16 units the release
 # `t` carried four copies (+114 MiB, F6 measured). One unit for that crate = one copy.
