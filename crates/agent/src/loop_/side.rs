@@ -13,7 +13,7 @@ use uuid::Uuid;
 
 use super::{Current, Frame, Reserved, Shared};
 use crate::cost::{CallKind, CallStatus};
-use crate::{ModelRole, SideReply};
+use crate::{ModelRole, SideReply, compact};
 
 /// What a detached call needs from the session, cloned out of [`Shared`] so the
 /// task owns it.
@@ -88,6 +88,14 @@ impl Side {
         let current = Current::new(model, None, &self.client, &self.auth);
         let transport = current.backend.transport(&current.model).await?;
         let message = ChatMessage::user(user);
+        // 116: the reply budget from the model's own limits; no calibration here.
+        let (window, output) = current
+            .model
+            .model
+            .as_ref()
+            .map_or((0, 0), |m| (m.limit.context, m.limit.output));
+        let est = compact::est(&message).saturating_add((system.len() / 4) as u32);
+        let reply = compact::reply_budget(output, window, est, None, 0);
         let frame = Frame {
             tools: &[],
             system,
@@ -95,6 +103,7 @@ impl Side {
             history: std::slice::from_ref(&message),
             vision: false,
             strip_reasoning: false,
+            max_tokens: (reply > 0).then_some(reply),
         };
         let (req, opts) = frame.request(transport, self.session, None);
         let request_id = Uuid::now_v7().to_string();

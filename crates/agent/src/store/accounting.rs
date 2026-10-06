@@ -529,12 +529,14 @@ impl Store {
                     && s.baseline_kind == "known_zero"
                     && s.high_water_nanos.unwrap_or(0) == 0
                 {
-                    sqlx::query("UPDATE remote_meters SET currency = ?, updated_at = ? WHERE id = ?")
-                        .bind(&total.currency)
-                        .bind(now())
-                        .bind(&s.id)
-                        .execute(&mut *tx)
-                        .await?;
+                    sqlx::query(
+                        "UPDATE remote_meters SET currency = ?, updated_at = ? WHERE id = ?",
+                    )
+                    .bind(&total.currency)
+                    .bind(now())
+                    .bind(&s.id)
+                    .execute(&mut *tx)
+                    .await?;
                     s.currency = total.currency.clone();
                 }
                 if s.currency == total.currency {
@@ -1121,16 +1123,31 @@ mod tests {
         let store = fresh().await;
         let child = SessionId::new();
         store.ensure_owner(child, None).await.unwrap();
-        store.apply_meter(child, guard_upd(0.0, "USD")).await.unwrap();
-        store.apply_meter(child, guard_upd(1.0, "EUR")).await.unwrap();
+        store
+            .apply_meter(child, guard_upd(0.0, "USD"))
+            .await
+            .unwrap();
+        store
+            .apply_meter(child, guard_upd(1.0, "EUR"))
+            .await
+            .unwrap();
         let rows = meters(&store).await;
         assert_eq!(rows.len(), 1, "no new epoch");
-        assert_eq!((rows[0].0, rows[0].1.as_str(), rows[0].2.as_str()), (0, "EUR", "complete"));
+        assert_eq!(
+            (rows[0].0, rows[0].1.as_str(), rows[0].2.as_str()),
+            (0, "EUR", "complete")
+        );
         let cost = store.session_cost(child).await.unwrap().unwrap();
-        assert_eq!(cost.direct.returned, vec![Money::from_f64(1.0, "EUR").unwrap()]);
+        assert_eq!(
+            cost.direct.returned,
+            vec![Money::from_f64(1.0, "EUR").unwrap()]
+        );
         assert_eq!(cost.remote_meter_gaps, 0);
         // After attribution a currency change still opens an epoch.
-        store.apply_meter(child, guard_upd(0.5, "USD")).await.unwrap();
+        store
+            .apply_meter(child, guard_upd(0.5, "USD"))
+            .await
+            .unwrap();
         assert_eq!(meters(&store).await.len(), 2);
     }
 
@@ -1142,7 +1159,10 @@ mod tests {
         let child = SessionId::new();
         store.ensure_owner(child, None).await.unwrap();
         for amount in [0.0, 0.2, 0.2, 0.35, 0.5] {
-            store.apply_meter(child, guard_upd(amount, "USD")).await.unwrap();
+            store
+                .apply_meter(child, guard_upd(amount, "USD"))
+                .await
+                .unwrap();
         }
         let cost = store.session_cost(child).await.unwrap().unwrap();
         assert_eq!(cost.remote_meter_gaps, 0);
@@ -1153,25 +1173,47 @@ mod tests {
         assert_eq!(m.reports.len(), 5);
         assert!(!m.delta_suspected);
 
-        store.apply_meter(child, guard_upd(0.1, "USD")).await.unwrap();
+        store
+            .apply_meter(child, guard_upd(0.1, "USD"))
+            .await
+            .unwrap();
         let m = meta(&meters(&store).await);
         assert_eq!((m.lower_totals, m.delta_suspected), (1, false));
-        assert!(!store.session_cost(child).await.unwrap().unwrap().delta_suspected);
-        store.apply_meter(child, guard_upd(0.2, "USD")).await.unwrap();
+        assert!(
+            !store
+                .session_cost(child)
+                .await
+                .unwrap()
+                .unwrap()
+                .delta_suspected
+        );
+        store
+            .apply_meter(child, guard_upd(0.2, "USD"))
+            .await
+            .unwrap();
         let rows = meters(&store).await;
         let m = meta(&rows);
         assert_eq!((m.lower_totals, m.delta_suspected), (2, true));
         assert_eq!(rows[0].2, "ambiguous");
         // The ring keeps the last eight reports only.
         for amount in [0.3, 0.4, 0.6] {
-            store.apply_meter(child, guard_upd(amount, "USD")).await.unwrap();
+            store
+                .apply_meter(child, guard_upd(amount, "USD"))
+                .await
+                .unwrap();
         }
         let m = meta(&meters(&store).await);
         assert_eq!(m.reports.len(), RAW_REPORTS);
         assert_eq!(m.reports.back().unwrap().amount, 600_000_000);
         // High water is still the rule: 0.6 > 0.5 attributed the delta, nothing summed.
         let cost = store.session_cost(child).await.unwrap().unwrap();
-        assert_eq!(cost.direct.returned, vec![Money::from_f64(0.6, "USD").unwrap()]);
-        assert!(cost.delta_suspected, "surfaced on the summary for the cost dialog");
+        assert_eq!(
+            cost.direct.returned,
+            vec![Money::from_f64(0.6, "USD").unwrap()]
+        );
+        assert!(
+            cost.delta_suspected,
+            "surfaced on the summary for the cost dialog"
+        );
     }
 }

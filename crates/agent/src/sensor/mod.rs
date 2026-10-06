@@ -547,7 +547,9 @@ fn parse_arg(value: &str) -> Option<SensorArg> {
     if it.next().is_some()
         || name == "cwd"
         || !name.starts_with(|c: char| c.is_ascii_lowercase())
-        || !name.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
+        || !name
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
     {
         return None;
     }
@@ -878,7 +880,11 @@ mod tests {
             ("a3.py", "# arg: cwd required . — x\n", "arg"),
             ("a4.py", "# arg: Repo required o/r\n", "arg"),
             ("a5.py", "# arg: repo required o/r extra\n", "arg"),
-            ("a6.py", "# arg: a required -\n# arg: a optional -\n", "repeated"),
+            (
+                "a6.py",
+                "# arg: a required -\n# arg: a optional -\n",
+                "repeated",
+            ),
         ] {
             std::fs::write(r.sensors_dir().join(name), src).unwrap();
             match r.resolve(name).unwrap_err() {
@@ -901,7 +907,10 @@ mod tests {
             built.description.as_deref(),
             Some("Fires while a path exists under the file's cwd (design 40 §9 step 2).")
         );
-        assert_eq!(built.usage.as_deref(), Some("when: fs_exists.py path=<glob>"));
+        assert_eq!(
+            built.usage.as_deref(),
+            Some("when: fs_exists.py path=<glob>")
+        );
         let _ = std::fs::remove_dir_all(r.sensors_dir().parent().unwrap());
     }
 
@@ -935,23 +944,43 @@ mod tests {
         assert_eq!(m.description.as_deref(), Some("First line."));
         assert_eq!(m.usage.as_deref(), Some("when: x.py repo=<o/r> [n=1]"));
         // No docstring, no args: both absent.
-        let m = put(&r, "y.py", "async def check(s, a):\n    return {\"fire\": False}\n");
+        let m = put(
+            &r,
+            "y.py",
+            "async def check(s, a):\n    return {\"fire\": False}\n",
+        );
         assert!(m.args.is_empty() && m.description.is_none() && m.usage.is_none());
         // The shipped built-ins describe themselves.
         let pr = r.resolve("pr_watch.py").unwrap();
         assert_eq!(
-            pr.args.iter().map(|a| (a.name.as_str(), a.required)).collect::<Vec<_>>(),
-            [("repo", true), ("pr", true), ("token", true), ("stale_hours", false)]
+            pr.args
+                .iter()
+                .map(|a| (a.name.as_str(), a.required))
+                .collect::<Vec<_>>(),
+            [
+                ("repo", true),
+                ("pr", true),
+                ("token", true),
+                ("stale_hours", false)
+            ]
         );
         assert_eq!(pr.args[2].example.as_deref(), Some("secret"));
-        assert!(pr.usage.as_deref().is_some_and(|u| u.starts_with("when: pr_watch.py repo=")));
+        assert!(
+            pr.usage
+                .as_deref()
+                .is_some_and(|u| u.starts_with("when: pr_watch.py repo="))
+        );
         let rss = r.resolve("rss.py").unwrap();
         assert_eq!(rss.args.len(), 3);
         assert_eq!(rss.args[1].example, None);
         assert_eq!(SensorRunner::shipped_version("rss.py"), Some("1"));
         assert_eq!(SensorRunner::shipped_version("x.py"), None);
         assert!(!r.edited("pr_watch.py") && !r.edited("x.py"));
-        std::fs::write(r.sensors_dir().join("pr_watch.py"), "# theuth-sensor: pr_watch 2\n# mine\n").unwrap();
+        std::fs::write(
+            r.sensors_dir().join("pr_watch.py"),
+            "# theuth-sensor: pr_watch 2\n# mine\n",
+        )
+        .unwrap();
         assert!(r.edited("pr_watch.py"));
         let _ = std::fs::remove_dir_all(r.sensors_dir().parent().unwrap());
     }
@@ -1172,14 +1201,30 @@ mod tests {
         // directory when that lies inside cwd; outside cwd the runtime refuses.
         let abs = args(&[("path", &format!("{}/sub/*.txt", cwd.display()))]);
         let run = r
-            .check(&meta, &abs, &Value::Null, Some(&cwd), Duration::from_secs(20))
+            .check(
+                &meta,
+                &abs,
+                &Value::Null,
+                Some(&cwd),
+                Duration::from_secs(20),
+            )
             .await
             .unwrap();
         assert!(run.fire, "{}", run.payload);
-        assert!(run.payload.ends_with("events=exists\ndeep.txt"), "{}", run.payload);
+        assert!(
+            run.payload.ends_with("events=exists\ndeep.txt"),
+            "{}",
+            run.payload
+        );
         let outside = args(&[("path", "/etc/*.conf")]);
         let e = r
-            .check(&meta, &outside, &Value::Null, Some(&cwd), Duration::from_secs(20))
+            .check(
+                &meta,
+                &outside,
+                &Value::Null,
+                Some(&cwd),
+                Duration::from_secs(20),
+            )
             .await
             .unwrap_err();
         assert!(e.to_string().contains("outside cwd"), "{e}");
