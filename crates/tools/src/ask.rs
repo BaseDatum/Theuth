@@ -74,7 +74,7 @@ pub enum Answer {
 }
 
 /// Event: a tool call is waiting on the user's answers. Every UI subscribes.
-#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 #[serde(tag = "type")]
 pub struct AskRequested {
