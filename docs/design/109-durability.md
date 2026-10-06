@@ -7,6 +7,13 @@ in this document was read on `~/Develop/theuth-109-durability` at `ef1ad0a3` (20
 recon citation had drifted the corrected line is used here and noted in §13. Waves write their
 as-built notes as `docs/design/109-as-built-W<n>.md`. Calls the brief left open are marked `(call)`.
 
+Revision 1 (2026-10-06 12:28): jobs are not durable — job adoption, no-kill shutdown and log-file
+redirection removed after Sky's correction (*"I thought we decided jobs aren't durable"*). §0
+R1/D3/D6/D8,
+§2 I4, §3.1 `jobs`, §4.2–§4.6 job rows, §5, §8.4, §9.2, §10, §11, §12 W2, §13, §14 and §15 changed;
+nothing
+else moved.
+
 Sky's words (2026-10-06 11:39): *"ok we need the full durability feature in theuth. I want to be
 able
 to kill the harness and re-open it and it just picks up exactly where it left off. create a design
@@ -32,21 +39,22 @@ Rulings (ask_user, 2026-10-06 11:54):
 
 | # | Decision | Recommendation / Ruled | Why |
 |---|---|---|---|
-| R1 | Child processes | **Ruled**: journal + native resume. Jobs/PTYs journaled and adopted when alive (§5); ACP children resumed via `session/load` with a delta handoff (§7.3); no job-keeper daemon | most of the value for a fraction of the work; the keeper stays a later stage (§14) |
+| R1 | Child processes | **Ruled**: journal + native resume. **Jobs are not durable**: a shell or PTY job dies with the engine. Its `jobs` row exists so that on resume the model gets `<job_result exit="lost">` with the log path, `screen()` serves the last snapshot with a "process gone" banner, and a process group leaked by a SIGKILL is reaped on the next start (§5). ACP children resumed via `session/load` with a delta handoff (§7.3); no job-keeper daemon | the honest contract for a process the engine owns; the keeper stays a later stage (§14) |
 | R2 | Interrupted turn | **Ruled**: auto-continue with safe replay (§4) | the frame is byte-identical, so the re-issued call is a cache hit; the only thing that cannot be replayed is an effect, and that is reported, not repeated |
 | D1 | Where the journal lives | **`sessions.sqlite`, written inside the same `WriteTx` as every other store write** (`crates/agent/src/store.rs:164-266`); new tables `turn_steps`, `tool_calls`, `questions`, `waits`, `jobs`, `pty_screens` in migration `0033_durability.sql` (§3) | one commit = one `session_log` row, so 68 replicates the journal for free and a taken-over session can later resume elsewhere; no second file, no second fsync discipline |
 | D2 | Resume at boot | **Eager `ResumeTurn` for every session with an open turn**, most recently active first, `durability.resume_parallel` (4) at a time; every other session stays lazy (§4.6) | today boot only marks (`unresolved`, `failed: interrupted_by_restart`, `lost`) and "auto-runs nothing" (`docs/design/00-architecture.md:484-485`); routines and children must come back without a human |
-| D3 | Jobs and PTYs | **`jobs` + `pty_screens` tables; adopt a live process group on restart; graceful shutdown stops killing job groups; a sweeper kills groups whose session is gone** (§5). Refinement against the code: job stdout/stderr must go straight to the log file, not through an engine-held pipe, or the orphan dies on its next write (§5.2) | reverses 14 §5's "no jobs table for v0"; a `cargo build` or an omp worker survives an upgrade |
+| D3 | Jobs and PTYs | **`jobs` + `pty_screens` tables for accounting and last-known state only; NO adoption; graceful shutdown keeps killing job groups exactly as today (`KillAll` after the drain window); at start, before any `ResumeTurn` runs, journaled pgids still alive (leaked by a SIGKILL) are killed and their rows settled `lost`, so a re-run never races a half-dead build; pipes stay as they are; behaviour identical on every OS** (§5) | reverses 14 §5's "no jobs table for v0" for accounting only; the model learns a job's fate instead of guessing |
 | D4 | Streaming checkpoints | **`assistant_partial` row per model call, updated at content-block boundaries and every `partial_checkpoint_ms` (1000)**; never per token; the UI shows it as interrupted, the model never sees it (§8.1) | a kill mid-stream loses the text today (`crates/agent/src/loop_.rs:4025-4043`); the re-issued call regenerates it from the identical frame, so the checkpoint is for the human, not the frame |
 | D5 | ACP children | **Respawn with `session/load` when a parent's tool call waits on the child; on a failed load, prompt a fresh child with a composed delta handoff** (§7.3); theuth-subagent children are sessions with open turns and are covered by D2 | `session/load` already exists on demand (`crates/agent/src/supervisor.rs:887-911`, `crates/acp/src/harness.rs:478-483`); only the trigger and the fallback are new |
-| D6 | Graceful shutdown | **Drain up to `drain_secs` (10), checkpoint, mark open turns `suspended`, dump and release Monty, leave job groups running**; SIGTERM, app close and `t update` converge on the same resume protocol (§9) | a planned stop should look like a crash to the resume code and only differ in wording |
+| D6 | Graceful shutdown | **Drain up to `drain_secs` (10), checkpoint, mark open turns `suspended`, dump and release Monty, then `KillAll` the job groups as today (journaled `lost` first)**; SIGTERM, app close and `t update` converge on the same resume protocol (§9) | a planned stop should look like a crash to the resume code and only differ in wording |
 | D7 | UI | **One session banner, one Attention item (104) when a human is needed; `AgentEvent::TurnResumed` / `TurnSuspended` / `PartialDropped`** (§8) | engine-first; as-built UI docs follow |
-| D8 | Config | **`durability:` section** — `resume: auto \| ask \| off` (auto), `resume_parallel` 4, `drain_secs` 10, `partial_checkpoint_ms` 1000, `adopt_jobs` true, `job_sweep` true (§10) | `resume: ask` is the pause-and-ask behaviour as a setting, not the default |
-| D9 | Out of scope | detached job keeper (later), event-sourcing rewrite, cross-engine resume of an in-flight turn (follow-on), meeting live meters, replaying tool side effects | §14 |
+| D8 | Config | **`durability:` section** — `resume: auto \| ask \| off` (auto), `resume_parallel` 4, `drain_secs` 10, `partial_checkpoint_ms` 1000, `pty_snapshot_secs` 5 (§10); the job reaper has no key | `resume: ask` is the pause-and-ask behaviour as a setting, not the default |
+| D9 | Out of scope | detached job keeper (later), process-surviving jobs by adoption (rejected by Sky, D14), event-sourcing rewrite, cross-engine resume of an in-flight turn (follow-on), meeting live meters, replaying tool side effects | §14 |
 | D10 | Verification | **crash-injection harness** `THEUTH_CRASH_AT=<step>` aborting at every journal boundary; transcript equality with the uninterrupted run; job adoption and PTY snapshot tests; manual smoke (§11) | the invariant is testable only by killing |
 | D11 | Build order | **W1 journal + safe replay → W2 jobs → W3 questions/waits → W4 ACP → W5 drain + UI → W6 crash suite**, seams in §12; W2 ∥ W3 and W4 ∥ W5 | file ownership keeps two omp waves apart |
 | D12 | `fail_interrupted` | **Narrowed**: `result:<turn>` exchanges from `session:*` senders stay `accepted` and are delivered on resume; other accepted exchanges and `a2a_tasks` keep today's behaviour (§7.2) | a child's finished result is the one accepted exchange a restart must not throw away (`109-recon.md §10` fact 8) |
 | D13 | Per-call tool journaling | **`tool_calls.finished` per call as each returns; the model-facing tool message stays one per batch and is assembled from the journal** (§3.3) | today one row after the whole batch (`loop_.rs:4202-4333`); a kill after call 1 of 3 must not re-run call 1 |
+| D14 | Job adoption | **Rejected by Sky (2026-10-06 12:28)**: the orchestrator's v0 proposal — adopt live process groups at boot, stop killing them at shutdown, redirect job output to log-file fds and tail them — is withdrawn; §14 records it | "I thought we decided jobs aren't durable" — R1 means the job dies with the engine and the journal only reports it |
 
 ## 1. Today
 
@@ -125,9 +133,10 @@ Sub-invariants the sections below implement:
 - **I3 Questions survive.** A pending approval, `ask_user`, `desktop_handoff` or `secret_request` is
   a `questions` row; after a restart the user sees the same card, with the same id and the remaining
   deadline, and an answer given before the kill is honoured (§6).
-- **I4 Jobs are accounted for.** Every shell/PTY job has a row; after a restart every running row
-  ends as `adopted` (process still alive, output tailed from its log) or `lost` (dead, log kept),
-  and the model receives exactly one `<job_result>` either way (§5).
+- **I4 Jobs are accounted for, not revived.** Every shell/PTY job has a row; after a restart every
+  running row ends `lost` — the process is dead, or is killed by the reaper if a SIGKILL of the
+  engine leaked it — the log and the last PTY screen are kept, and the model receives exactly one
+  report of the loss (§5).
 - **I5 The frame is the truth.** The model never sees a checkpointed partial; a re-issued model call
   is built from the persisted frame alone, so it is byte-identical to the lost one and a provider
   cache hit (07 §8.4; §8.1).
@@ -138,7 +147,8 @@ Sub-invariants the sections below implement:
   (68 §3).
 
 Not promised: an effect whose outcome is unknown is not made known — the model is told and decides;
-a process that died with the engine is not brought back — its log and last screen are.
+a process that died with the engine is not brought back — its log and last screen are; a process
+that outlived a SIGKILL of the engine is reaped, not adopted (R1).
 
 ## 3. The journal
 
@@ -218,26 +228,25 @@ CREATE TABLE waits (
     PRIMARY KEY (session_id, tool_call_id)
 );
 
--- 109 §5: every shell / PTY job. `pgid` is the leader's id
--- (platform::ProcessTree::id); NULL on Windows once the Job Object is gone.
+-- 109 §5: every shell / PTY job, for accounting and last-known state — a job
+-- is never revived. `pgid` is the leader's id (platform::ProcessTree::id), kept
+-- so the reaper can kill a group a SIGKILL of the engine leaked.
 CREATE TABLE jobs (
     session_id   TEXT    NOT NULL REFERENCES sessions(id),
     id           TEXT    NOT NULL,              -- j<n> per session
     kind         TEXT    NOT NULL,              -- shell | pty
     call_id      TEXT    NOT NULL,              -- the `shell` / `start` call
     command      TEXT    NOT NULL,
-    cwd          TEXT,
     name         TEXT,                          -- `start`'s label
-    pid          INTEGER,
     pgid         INTEGER,
     log          TEXT,                          -- log path; NULL for a quiet job
     started_ms   INTEGER NOT NULL,
-    state        TEXT    NOT NULL,              -- running | settled | lost | adopted
-    exit         TEXT,                          -- exited <n> | timeout | killed | lost | unknown
+    state        TEXT    NOT NULL,              -- running | settled | lost
+    exit         TEXT,                          -- exited <n> | timeout | killed | lost
     settled_ms   INTEGER,
     PRIMARY KEY (session_id, id)
 );
-CREATE INDEX jobs_running ON jobs (state) WHERE state IN ('running', 'adopted');
+CREATE INDEX jobs_running ON jobs (state) WHERE state = 'running';
 
 -- 109 §5.3: the last rendered screen of a PTY job, scrubbed (37 §3.4).
 CREATE TABLE pty_screens (
@@ -339,7 +348,7 @@ per-inner-call journal the §4.2 python rule reads.
 records (`capture.rs:15-25`); every attached table must have a column naming its session
 (`store.rs:2564-2567`). 109 attaches `turn_steps`, `tool_calls`, `questions`, `waits` and `jobs` by
 `session_id`. `pty_screens` is **not** attached `(call)`: a screen row rewrites up to ~5 KB every
-few seconds per live PTY and a process cannot be adopted on another engine anyway, so the row is
+few seconds per live PTY and a process never outlives its engine anyway (R1), so the row is
 engine-local like `peer_exchanges` (68 decision 8). Consequences:
 
 - A taken-over session (68 §4.2) arrives on the taker with its open turn, its tool-call states, its
@@ -414,9 +423,9 @@ it:
 | `started` | `read_only` | run again as `attempt + 1`; the first attempt only observed | none |
 | `started` | `mutating` / `destructive` | **do not run**; row → `interrupted` | the *interrupted* note (§4.3) |
 | `started` | `python` (spec risk `read_only`, `repl.rs:117`) | the **python rule** below | the *cell* note |
-| `started` | `shell` (`destructive`, `crates/tools/src/shell.rs:266`) | the **job rule** (§5.4) — the row's `jobs` entry decides | the *job* note |
-| `started` | `start` (`destructive`, `pty.rs:2424`) / `send` (`mutating`, `pty.rs:2463`) | job rule; `send`'s typed bytes are an unknown effect → interrupted note plus the last screen | job note |
-| `started` | `wait` (`read_only`, `pty.rs:2514`) | re-arm as a `waits(pty_wait)` with the remaining timeout against the live or adopted job; dead job → the tool's own "exited" reply with the last screen | none |
+| `started` | `shell` (`destructive`, `crates/tools/src/shell.rs:266`) | the **job rule** (§5.4): row → `interrupted`; the job, if it was spawned, is dead or reaped and its row is `lost` | the *job* note: the interrupted note plus the job id, log path and log tail |
+| `started` | `start` (`destructive`, `pty.rs:2424`) / `send` (`mutating`, `pty.rs:2463`) | job rule; the PTY is gone; `send`'s typed bytes are an unknown effect | interrupted note plus the last screen (§5.3) |
+| `started` | `wait` (`read_only`, `pty.rs:2514`) | the job is gone after any restart (R1): the tool's own "exited" reply with the last screen and `exit="lost"` | none |
 | `started` | `send_message` with `await_reply` | the **wait rule** (§4.4) | none, or the wait's own expiry text |
 | `started` | `spawn_subagent` | if a child session row with `parent = this` was created by this call (the call id is stored on the child's `sessions` row `(call)`) the effect happened: finish the row with the child's id and the child's current state; else `planned` | none |
 | `started` | `remind_me_in` (`read_only`, `reminder.rs:405`) | a `reminders` row for this session with `set_at` ≥ `started_at` exists → finish with its `{id, fires_at, seconds}`; else run again | none |
@@ -467,23 +476,22 @@ ERROR: interrupted: the engine restarted at 12:05:02 while this call was running
 its effect is unknown — check before repeating it.
 ```
 
-The **job note** for a `shell` call whose job row is `running` and whose process group is alive
-(adopted, §5.4) is not an error; it is the stub the model would have received had the call returned
-`Running`:
+The **job note** for a `shell` call that was `started` when the engine died. The job is gone (R1):
+dead with the engine, or killed by the reaper (§5.4) if a SIGKILL leaked it. The call's result is
+the interrupted note extended with the job row:
 
 ```
-{"job": "j7", "log": "/Users/sky/.theuth/jobs/<session>/j7.log", "adopted": true,
- "note": "the engine restarted at 12:05:02 while this command ran; the process group is still running and its
- output is being followed from the log — a <job_result exit=\"unknown\"> will arrive when it ends"}
-```
-
-and for a dead process group:
-
-```
-ERROR: interrupted: the engine restarted at 12:05:02 while this command ran; its process group is gone and its
-exit code is unknown. Log: /Users/sky/.theuth/jobs/<session>/j7.log (last 40 lines follow)
+ERROR: interrupted: the engine restarted at 12:05:02 while this command ran (job j7, started 12:03:41); the job
+died with the engine and its exit code is unknown — check before repeating it.
+Log: /Users/sky/.theuth/jobs/<session>/j7.log (last 40 lines follow)
 …
 ```
+
+No separate `<job_result>` follows for this job: the model never received its stub, so the note is
+its one report. A job whose `shell` call had already returned the `{"job": …}` stub in an earlier
+batch or turn is reported instead by an injected `<job_result exit="lost">` (§5.4). A `shell` call
+`started` with no `jobs` row (the kill fell between approval and spawn) is treated as `planned` —
+nothing ran.
 
 The **cell note** (`python`, mixed effects):
 
@@ -506,8 +514,8 @@ deletes it when it unblocks (I2). Kinds and the resume action:
 |---|---|---|---|
 | `peer_reply` | `send_message{await_reply}` once the exchange is accepted (`supervisor.rs:239-250` holds it in memory today) | the exchange id; `payload.request_id` | a `replied` exchange exists → deliver its reply as the call's result; else re-create the `Wait` with `deadline - now`; ≤ 0 → the timeout receipt |
 | `child_result` | the same tool when the peer is an owned child's `result:` (and `spawn_subagent`'s implicit wait on its child's first turn) | the child session id | a `result:<turn>` exchange from `session:<child>` in `accepted` → deliver it (§7.2); else the child is itself a session with an open turn and is resumed by §4.6; the parent's wait is re-created with no deadline |
-| `job` | the `shell` call while it waits out `job_grace_secs` (14 §2) | the job id | the job rule (§5.4); the grace is not re-waited |
-| `pty_wait` | `wait` | job id; `payload.pattern`, `payload.cursor` (the log read cursor, `pty.rs:500-503`) | re-arm against the adopted job's log from `cursor`; dead job → exit reply |
+| `job` | the `shell` call while it waits out `job_grace_secs` (14 §2) | the job id | the job rule (§5.4): the job is gone, the call gets the job note; the grace is not re-waited |
+| `pty_wait` | `wait` | job id; `payload.pattern`, `payload.cursor` (the log read cursor, `pty.rs:500-503`) | the job is gone after a restart: the tool's exited reply with the last screen; the row exists so a *drain* (§9) that outlives the wait can still answer it |
 | `question` | the human-wait tools and the registry's approval gate | the question id | the question rule (§6.2) |
 
 Re-arming reuses the in-memory structures as they are (`Agents.waits`, the jobs actor's waiters);
@@ -534,7 +542,7 @@ Today's sequence is `109-recon.md §2` steps 1–13. With 109:
 | 3 `unresolve_open_calls` | marks | **stays** — the accounting row of a lost call is `unresolved`; the resumed turn reserves a new attempt |
 | 8 `fail_interrupted` | fails every accepted exchange and every non-terminal a2a task | **narrowed** (§7.2): `WHERE state = 'accepted' AND NOT (sender LIKE 'session:%' AND request_id LIKE 'result:%')`; a2a unchanged |
 | 9 `Agents` spawned | maps empty | unchanged; `waits`, `approvals` etc. are rebuilt per session by `ResumeTurn`, not globally |
-| 10 `ActivityRegistered` → `rearm_reminders` | | + **`adopt_jobs`** (§5.4) right after the reminders — the jobs actor is up and the activity ledger can admit the adopted operations; then **`resume_scan`**: `SELECT session_id, turn_id, MAX(at) FROM turn_steps GROUP BY session_id, turn_id HAVING kind-of-newest != 'turn_finished' ORDER BY MAX(at) DESC` (written as a window query in the store), each row → `tell(ResumeTurn)` through a `Semaphore(resume_parallel)` |
+| 10 `ActivityRegistered` → `rearm_reminders` | | + **`reap_jobs`** (§5.4) right after the reminders — every `running` row's pgid that is still alive is killed, every `running` row is settled `lost`, and `<job_result exit="lost">` is injected for jobs whose stub the model already had; then **`resume_scan`**: `SELECT session_id, turn_id, MAX(at) FROM turn_steps GROUP BY session_id, turn_id HAVING kind-of-newest != 'turn_finished' ORDER BY MAX(at) DESC` (written as a window query in the store), each row → `tell(ResumeTurn)` through a `Semaphore(resume_parallel)` |
 | 11 lazy `Agents::session` | | unchanged for every session without an open turn |
 | 12 schedule plugin marks runs `lost` | `UPDATE runs SET result = 'lost' WHERE finished_at IS NULL` (`schedule/src/store.rs:63`) | the schedule plugin starts after `agent` (`crates/theuth/src/main.rs:1546-1591`); it now asks the supervisor `OpenTurn(session)` before closing a row and keeps the run open (re-attaching its watcher to the session's `TurnFinished`) when the session is being resumed; `lost` only when it is not `(call)` |
 | 12 tasks | releases `dispatching` claims | unchanged; a desk whose turn resumes is not idle, so the sweep's liveness test sees a running session |
@@ -545,12 +553,22 @@ the session resumes it lazily (the journal still applies — the per-call rule r
 instead of at boot). Private trees (`:memory:` stores, 51 §4) have no journal to resume and are
 unaffected.
 
-Ordering invariant: no `ResumeTurn` runs before `adopt_jobs` has scanned the `jobs` table, so a
-`shell` row's job rule always sees the adopted/lost verdict; and no lazy `Agents::session` for a
-session with an open turn is served before its `ResumeTurn` has been queued — `Agents` checks the
-open-turn set it built in step 10 and routes the input to the resuming actor as a queued steer.
+Ordering invariant: no `ResumeTurn` runs before `reap_jobs` has finished, so a replayed or re-issued
+command never races a half-dead build left by the previous process, and a `shell` row's job rule
+always finds its job settled `lost`; and no lazy `Agents::session` for a session with an open turn
+is served before its `ResumeTurn` has been queued — `Agents` checks the open-turn set it built in
+step 10 and routes the input to the resuming actor as a queued steer.
 
 ## 5. Jobs and PTYs
+
+Jobs are **not durable** (R1). A shell or PTY job is a child of the engine process and dies with it;
+109 does not try to keep it alive or re-attach to it. What 109 adds is accounting: a `jobs` row so
+the model and the UI learn the job's fate after a restart, a `pty_screens` row so `screen()` can
+show the last thing the model saw, and a reaper so a process group that a SIGKILL of the engine
+leaked (`109-recon.md §1`: own pgid, stdout on a pipe nobody reads) is killed on the next start
+instead of running half-dead beside a replayed command. Behaviour is identical on every OS: on
+Windows the Job Object's `KILL_ON_JOB_CLOSE` already kills the group with the engine
+(`crates/platform/src/process.rs:24-27`, `:255`); on Unix the reaper does what the OS did not.
 
 ### 5.1 The table and its writes
 
@@ -559,39 +577,28 @@ reminder timers. Writes, each through the `tools::Journal` seam of §3.3 step 6:
 
 | event | write |
 |---|---|
-| `Start` spawned the process (the `on_spawn` hook reports the first `(pid, pgid)`, `jobs.rs:1079-1092`) | `INSERT jobs (…, state = 'running', pid, pgid, log, started_ms)` |
+| `Start` spawned the process (the `on_spawn` hook reports the first `(pid, pgid)`, `jobs.rs:1079-1092`) | `INSERT jobs (…, state = 'running', pgid, log, started_ms)` |
 | a later pipeline member joins | no write (one group) |
 | exit / timeout / cancel (`JobExit`, `jobs.rs:78-87`) | `state = 'settled', exit, settled_ms` |
-| adoption at boot (§5.4) | `state = 'adopted'` or `state = 'lost', exit = 'lost'` |
-| adopted job ends | `state = 'settled', exit = 'unknown'` |
+| `KillAll` at shutdown (§5.5) | `state = 'lost', exit = 'lost', settled_ms` — written **before** the kill |
+| reaper at start (§5.4) | `state = 'lost', exit = 'lost', settled_ms` |
 | session deleted | rows deleted (the log directory already goes) |
 
-The `call_id` column lets a resumed `shell`/`start` tool call find its job (§4.2); `cwd` and
-`command` let the `<job_result>` and `jobs()` read as today without the actor's memory.
+The `call_id` column lets a resumed `shell`/`start` tool call find its job (§4.2); `command`, `name`
+and `log` let `<job_result>` and `jobs()` read as today without the actor's memory. Pipes, drains
+and the log writer stay exactly as they are (`jobs.rs:1066-1067`, `:1225`, `:1264-1265`).
 
-### 5.2 Output must bypass the engine
+### 5.2 Why a job dies with the engine, and why that is the contract
 
-Today the child's stdout/stderr are pipes the engine drains into the log (`jobs.rs:1066-1067`,
-`:1225`, `:1264-1265`). If the engine dies, the next `write(2)` in the child hits a pipe with no
-reader: `SIGPIPE`, and most programs — a `cargo build`, a shell script, an `omp` worker printing
-progress — die right there. So "orphaned and keep running" (`109-recon.md §1`) holds only until the
-next byte of output, and adoption would almost always find a corpse. The refinement, cited as the
-brief asked: **the job's fds 1 and 2 are the log file itself** (opened `O_APPEND`, one `File` dup'ed
-for both, `params.set_fd(1, …)`/`set_fd(2, …)` as `jobs.rs:1072-1074` already does for the pipes),
-and the engine's task **tails the file** (position-based reads on `inotify`/`kqueue` wake-ups or a
-250 ms poll `(call)`) to produce `Output` events and the in-memory `tail`. The quiet job (`log_path`
-absent, `jobs.rs:1046-1047`) keeps a pipe: it is by definition not durable. The `Log` struct
-(`jobs.rs:490`) becomes a reader with a cursor instead of a writer.
-
-Cost: one extra `read` per output chunk; the log file already received every byte, so disk traffic
-is unchanged. Benefit: a job whose engine died keeps writing; a job whose engine is alive is
-unchanged to the model.
-
-PTY jobs cannot get this treatment: their output is the master side of a pseudo-terminal held by the
-engine (`PtyHandle.master`, `pty.rs:481`). When the engine dies the master closes, the child gets
-`SIGHUP` and, unless it ignores it, exits. **Adoption for PTYs is liveness + log only**: the child
-cannot be re-attached (no controlling terminal survives), its screen is the last snapshot (§5.3),
-and `send` after a restart answers `the terminal is gone; last screen follows`.
+A shell job's stdout and stderr are pipes the engine drains into the log (`jobs.rs:1066-1067`,
+`:1264-1265`); a PTY job's output is the master side of a pseudo-terminal the engine holds
+(`PtyHandle.master`, `pty.rs:481`). When the engine dies the pipe loses its reader and the master
+closes: the child gets `SIGPIPE` on its next write or `SIGHUP` at once, and nearly everything exits.
+A child that happens to survive (it ignored the signal, or has not written yet) is a process nobody
+can observe, steer or wait on. Keeping such a process alive and pretending to own it was the
+orchestrator's v0 proposal (adoption, log-file fds, tailing) and Sky rejected it (D14): the only
+honest statement after a restart is *this job is gone; here is its log*. The detached keeper (§14)
+is the way to make jobs genuinely durable later, behind the same rows.
 
 ### 5.3 PTY screen snapshots
 
@@ -616,92 +623,62 @@ After a restart, `screen(id)` for a `lost` PTY returns the stored rows with the 
 [process gone — the engine restarted at 12:05:02; this is the last screen captured at 12:04:58 (revision 418)]
 ```
 
-and `jobs()` shows the row as `lost (pty)`. For an `adopted` PTY (a child that ignored `SIGHUP`),
-the screen is also the stored one — there is no terminal to render — and the banner says `terminal
-detached; process still running; log <path>`.
+`send(id)` answers `the terminal is gone (engine restarted at 12:05:02); last screen follows` with
+the same rows, and `jobs()` shows the row as `lost (pty)`.
 
-### 5.4 Adoption at boot (`adopt_jobs`)
+### 5.4 The reaper at start (`reap_jobs`)
 
-Runs once after `rearm_reminders` (§4.6 step 10), `durability.adopt_jobs` permitting:
+Runs once after `rearm_reminders` and **before** `resume_scan` (§4.6 step 10); always on, no config
+key — a test calls the function directly on a store. For every `jobs` row in `running`:
 
 ```
-for row in jobs WHERE state IN ('running', 'adopted'):
-    if session row missing          → sweep: kill the group if alive (ProcessTree::adopt(pgid).kill()), delete the row
-    elif pgid alive (ProcessTree::adopt(pgid)?.alive())
-        kind = shell                → state = adopted; spawn a tail task on `log` from its current length;
-                                      poll alive() every 1 s; on death: settle exit = 'unknown',
-                                      publish JobEvent::Finished { exit: Unknown, output: tail }, inject <job_result>
-        kind = pty                  → state = adopted; no terminal; poll alive(); on death as above with the stored screen
-    else                            → state = lost, exit = 'lost'; publish Finished { exit: Lost, output: last 8 KiB of log };
-                                      inject <job_result exit="lost">
+if pgid alive (wrap pgid in a ProcessTree, process.rs:28-30; alive() = killpg(pgid, 0), :154-156)
+                                → kill() the group (:45-47), log "reaped job <id> of <session> leaked by a restart"
+settle: state = lost, exit = lost, settled_ms = now
+if the session row is missing   → delete the row (and its pty_screens)
+elif the job's call_id is a `started` tool_calls row of an open turn
+                                → nothing more: the job rule (§4.2) reports it inside the resumed batch
+else                            → publish JobEvent::Finished { exit: Lost, output: last 8 KiB of the log (TAIL, jobs.rs:43) }
+                                   and inject <job_result exit="lost"> (Agents::inject, supervisor.rs:1114; 14 §3)
 ```
 
-`ProcessTree::adopt` and `alive()` exist (`crates/platform/src/process.rs:28-30`, `:61-63`; Unix
-`killpg(pgid, 0)`, `:154-156`). The exit code of an adopted group is unobtainable — we are not its
-parent, `waitpid` answers `ECHILD` — hence `exit="unknown"`; the model is told so in the
-`<job_result>` body's first line. `JobExit` gains `Lost` and `Unknown` (`jobs.rs:78-87`; display
-`lost` / `unknown`), which 14 §1.2 reserved for exactly this.
-
-The injected result for a lost job:
+`JobExit` gains `Lost` (`jobs.rs:78-87`; display `lost`), the value 14 §1.2 reserved for exactly
+this. The injected result:
 
 ```
 <job_result id="j7" command="cargo build" exit="lost" secs="…" log="/…/j7.log">
-the engine restarted at 12:05:02 while this job ran and its process group is gone; the exit code is unknown.
-Last 8 KiB of the log:
+this job died with the engine (restarted at 12:05:02); its exit code is unknown. Last 8 KiB of the log:
 …
 </job_result>
 ```
 
-and for an adopted job that ended:
+For a PTY job the body is the stored screen instead of the log tail, as a PTY's final `<job_result>`
+is today (`pty.rs:569-572`). Injection goes into a running turn after its batch, else as a new turn,
+like every `<job_result>` (14 §3) — so a session whose turn is being resumed sees the loss right
+after the resumed batch, and an idle session is woken by it.
 
-```
-<job_result id="j7" command="cargo build" exit="unknown" secs="…" log="/…/j7.log">
-this job survived an engine restart at 12:05:02 and ended at 12:11:40; the engine was not its parent, so the exit code
-is unknown — check the output.
-…
-</job_result>
-```
-
-Both go through `Agents::inject` (`supervisor.rs:1114`) like every `<job_result>` (14 §3): into a
-running turn after its batch, else as a new turn. Because a `shell` row of the resumed batch is
-answered by the job rule (§4.2) *and* the job will later inject a `<job_result>`, the model gets the
-same two messages it gets today for a long job: the stub, then the result.
-
-**Windows.** A job is a Job Object with `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` (`process.rs:24-27`,
-`:255`): the handle dies with the engine and takes the processes with it. Adoption on Windows
-therefore always finds the group dead → `lost`, log kept. Dropping the kill-on-close flag would leak
-processes nobody can address later; keep it, state the limitation `(call)`.
-
-### 5.5 Graceful shutdown stops killing job groups
+### 5.5 Graceful shutdown keeps killing job groups
 
 `tools::jobs::start` tells `KillAll` on `rt.shutdown` (`jobs.rs:645-660`) and the handler SIGKILLs
 every running group, aborts the task and releases the activity charge as `killed at shutdown before
-it settled` (`jobs.rs:976-994`). 109 replaces `KillAll` with `Detach`: stop the tail/drain tasks,
-flush the last `pty_screens` row, leave the rows `running`, **do not signal the groups**.
-`CloseSessions` (`jobs.rs:362`, a session actually closing) still kills, as does `cancel_job`, the
-deadline and `/jobs kill`. The 00 §12 "known gap" line about killing every group on shutdown is
-retired (§13).
+it settled` (`jobs.rs:976-994`), publishing no `Finished` (14 §1.2 as-built). Unchanged, with one
+addition and one reordering: the handler writes each running row `lost` **before** it kills (so a
+crash during the kill still leaves the truth on disk), and it runs **after** the drain window of
+§9.2 rather than at the instant the token fires, so a `shell` call that would have returned inside
+`drain_secs` returns normally. On resume the killed jobs are reported as `<job_result exit="lost">`
+with the body `killed at shutdown (engine stopped at 12:05:02)` — today they vanish (`109-recon.md
+§5`). `CloseSessions` (`jobs.rs:362`), `cancel_job`, the deadline and `/jobs kill` are untouched.
 
-PTYs: the master is closed when the process exits regardless; the child receives `SIGHUP`. That is
-the OS, not a kill by us, and it is what the §5.2 limitation documents.
-
-### 5.6 The sweeper
-
-Also at boot, before adoption: rows whose session no longer exists are killed if alive and deleted
-(above); rows older than `job_timeout_secs` (1800) with a live group are killed and settled
-`timeout` — the deadline the job would have hit had the engine lived `(call)`.
-`durability.job_sweep: false` disables both (a debugging aid; default on).
-
-### 5.7 What the model is told, in one place
+### 5.6 What the model is told, in one place
 
 | situation | reply |
 |---|---|
-| `shell` row `started`, job adopted | the adopted stub (§4.3), then `<job_result exit="unknown">` when it ends |
-| `shell` row `started`, job lost | the dead-group note (§4.3) with the log tail; no further `<job_result>` |
+| `shell` row `started`, job row exists | the job note (§4.3): interrupted, job id, log path, log tail; the row is `lost`; no further `<job_result>` |
 | `shell` row `started`, no `jobs` row (the kill fell between approval and spawn) | the job never started: `planned` → run now |
-| job started in an earlier, finished turn, engine restarted | `<job_result exit="lost">` or `<job_result exit="unknown">` injected as a new input, as a long job's result is today |
+| job running in the background (its stub already delivered) when the engine died or was stopped | `<job_result exit="lost">` injected on the next start, with the log tail or the last screen |
 | PTY `start`/`send` row `started` | the interrupted note with the last screen; `screen()` thereafter shows the banner |
-| `jobs()` | adopted rows as `adopted`, lost rows as `lost`, with the log path |
+| `wait` row `started` | the tool's exited reply, `exit="lost"`, with the last screen |
+| `jobs()` | lost rows as `lost`, with the log path; finished rows as before |
 
 ## 6. Questions
 
@@ -846,10 +823,11 @@ special path (D5), and their parents' `child_result` waits are answered when the
 
 ### 7.4 Sandbox VMs
 
-Already adopted: the microsandbox actor re-issues mounts and ports from its record after a restart
-(`crates/sandbox/src/vm/microsandbox.rs:55-57`) and `create` adopts an existing VM by name (`:451`).
-A subagent running *inside* a sandbox is a session on that engine, journaled there; nothing in 109
-changes the sandbox crate.
+Already handled by the sandbox crate: the microsandbox actor re-issues mounts and ports from its
+record after a restart (`crates/sandbox/src/vm/microsandbox.rs:55-57`) and `create` re-uses an
+existing VM by name (`:451`) — a VM is the msb runtime's process, not the engine's child. A subagent
+running *inside* a sandbox is a session on that engine, journaled there; nothing in 109 changes the
+sandbox crate.
 
 ## 8. Streaming checkpoints and what the UI shows
 
@@ -888,7 +866,7 @@ AgentEvent::ResumeReport {
     session: SessionId, turn: TurnId,
     replayed: Vec<(String /* call_id */, String /* name */)>,
     interrupted: Vec<(String, String)>,     // marked `interrupted`: effect unknown
-    adopted_jobs: Vec<JobId>, lost_jobs: Vec<JobId>,
+    lost_jobs: Vec<JobId>,                  // jobs that died with the engine (§5)
     children_restored: u32, children_handed_off: u32,
 }
 AgentEvent::TurnSuspended { session: SessionId, turn: TurnId, reason: String }   // §9
@@ -918,11 +896,10 @@ banner is enough.
 
 ### 8.4 Job events
 
-`JobEvent::Finished` carries `exit: JobExit::Lost | Unknown` (§5.4) and the desktop job row shows
-`lost` / `adopted` / `ended (exit unknown)`; `JobEvent::Adopted { session, id, log }` lets a UI
-re-attach its live output card to a job that outlived the engine. The TUI's existing `Daemon
-restarted.` note on PTY pages (`crates/tui/src/model.rs:2027-2030`, `:2230`) stays and now sits
-beside a screen that is the stored one.
+`JobEvent::Finished` carries `exit: JobExit::Lost` (§5.4) and the desktop job row shows `lost` with
+the log link; the `screen` viewer renders the stored page under the §5.3 banner. The TUI's existing
+`Daemon restarted.` note on PTY pages (`crates/tui/src/model.rs:2027-2030`, `:2230`) stays and now
+sits beside a screen that is the stored one.
 
 ## 9. Graceful shutdown and upgrade
 
@@ -954,7 +931,9 @@ durability.drain_secs }` and waits for the reply or the deadline, then exits as 
    differs (§8.2), nothing else does.
 5. **Monty.** `Repl::close` on every live repl (dump + finish, 08 §5) — a cell still running at the
    deadline is dropped, and the previous dump stands (the python rule, §4.2).
-6. **Jobs.** `Detach`, not `KillAll` (§5.5).
+6. **Jobs.** `KillAll` exactly as today, now after the drain window instead of at the instant the
+   token fires; every running row is written `lost` first (§5.5). A job cannot outlive the engine
+   (R1).
 7. **Release.** Actors stop; `rpc::engine::release()`; exit.
 
 `drain_secs` is 10 by default: long enough for a `write_file` or a `git commit`, short enough for
@@ -987,11 +966,10 @@ durability:
   resume_parallel: 4        # ResumeTurn concurrency; the rest queue, most recent first
   drain_secs: 10            # graceful-shutdown budget for in-flight tool calls (§9.2)
   partial_checkpoint_ms: 1000   # assistant_partial cadence (§8.1); never per token
-  adopt_jobs: true          # adopt live job groups at boot (§5.4); false = every running row is `lost`
-  job_sweep: true           # kill groups whose session is gone / past deadline at boot (§5.6)
   pty_snapshot_secs: 5      # PTY screen snapshot timer (§5.3)
   journal_keep_days: 7      # finished-turn journal retention (§3.6)
   handoff_tokens: 4000      # ACP delta handoff budget (§7.3)
+  # the job reaper (§5.4) has no key: it always runs before any ResumeTurn
 ```
 
 Read once at startup like every other section (`agent_config(rt)`, `supervisor.rs:7309`);
@@ -1003,7 +981,7 @@ Read once at startup like every other section (`agent_config(rt)`, `supervisor.r
 ```rust
 // agent::durability (new module; the store half in store/durability.rs)
 pub struct DurabilityConfig { pub resume: ResumeMode, pub resume_parallel: usize, pub drain_secs: u64,
-    pub partial_checkpoint_ms: u64, pub adopt_jobs: bool, pub job_sweep: bool, pub pty_snapshot_secs: u64,
+    pub partial_checkpoint_ms: u64, pub pty_snapshot_secs: u64,
     pub journal_keep_days: u32, pub handoff_tokens: usize }
 pub enum ResumeMode { Auto, Ask, Off }
 pub enum StepKind { InputAccepted, ModelCall, AssistantPartial, ToolBatch, TurnFinished, Suspended }
@@ -1042,7 +1020,7 @@ pub trait Journal: Send + Sync {
     fn pty_screen(&self, s: PtyScreenRow) -> BoxFuture<'_, ()>;
 }
 pub struct InstallJournal(pub Arc<dyn Journal>);     // registry, jobs, approval, ask actors
-pub enum JobExit { Exited(u8), Timeout, Killed, Lost, Unknown }
+pub enum JobExit { Exited(u8), Timeout, Killed, Lost }
 
 // supervisor messages
 pub struct ResumeTurn { pub session: SessionId, pub turn: TurnId }
@@ -1054,12 +1032,12 @@ pub struct OpenTurn(pub SessionId);                  // ask → Option<TurnId>, 
 
 - `load_session` → `Loaded.history` gains `HistoryEntry::Interrupted { content, at }` for an open
   turn's partial and `Loaded.resume: Option<ResumeState>` (`kind`, `interrupted_at`, `report`).
-- `list_jobs` / `JobView.state` gains `adopted` and `lost`; `pty_screen` for a lost job returns the
-  stored page with `epoch: None` and a `banner: Option<String>`.
+- `list_jobs` / `JobView.state` gains `lost`; `pty_screen` for a lost job returns the stored page
+  with `epoch: None` and a `banner: Option<String>`.
 - `attention_list` gains `resume:` items (§8.3); `resume_turn(session)` RPC for the `ask` mode's
   button; `attention_dismiss` clears as today.
-- Events: `TurnResumed`, `ResumeReport`, `TurnSuspended`, `JobEvent::Adopted` (ts-exported like
-  every `AgentEvent`).
+- Events: `TurnResumed`, `ResumeReport`, `TurnSuspended` (ts-exported like every `AgentEvent`);
+  `JobEvent::Finished` with `exit: lost`.
 - TUI: the banner as a status-line note and a `── resumed after restart ──` divider in the
   transcript (the `Compacted` divider shape, 07 §8.4); `/jobs` shows the two new states.
 - Tools: no new tool. `jobs()` and `screen()` read as described in §5.
@@ -1108,7 +1086,7 @@ of aborting.
 | wave | tests (crate-level) |
 |---|---|
 | W1 | the §11.1 matrix; `store::durability::tests` for every store fn (round trip, `at_seq` anchoring, cut deletes journal rows, `open_turns` ordering); a replication test that the new tables ship in `session_log` (extend 68's capture test with `turn_steps`); `fail_interrupted_spares_child_results` |
-| W2 | `jobs::tests::adopt_live_group` (spawn `sleep 30` through `Start`, drop the actor without `KillAll`, new actor + `adopt_jobs`, `alive()` true, kill, `<job_result exit="unknown">` arrives); `lost_group` (same with the process killed first → `exit="lost"` with the log tail); `output_survives_engine_death` (child writes after the actor is gone; log grows — the §5.2 point); `pty::tests::screen_snapshot_on_screen_and_timer` (revision gate, scrubbed text, row after exit); `detach_does_not_kill`; `sweep_kills_orphans` |
+| W2 | `jobs::tests::reaper_kills_leaked_group` (spawn `sleep 600` through `Start`, drop the actor without `KillAll` — the SIGKILL shape — reopen the store, `reap_jobs`, assert `killpg(pgid, 0)` fails, the row is `lost`, and `<job_result exit="lost">` with the log tail was injected); `reaper_skips_open_batch_job` (the job's call is a `started` row of an open turn → no injection; the job rule reports it); `killall_writes_lost_before_kill`; `pty::tests::screen_snapshot_on_screen_and_timer` (revision gate, scrubbed text, row after exit); `screen_after_restart_serves_banner` |
 | W3 | `approval::tests::answered_row_honoured_on_replay`, `superseded_on_reask`, `deadline_elapsed_is_timeout`; `ask::tests::republish_same_id`; `waits` re-arm with remaining deadline; a `send_message await_reply` reply that landed while down is delivered |
 | W4 | `acp_child::tests::handoff_composition` (budget, truncation markers, git sections from a temp repo); the recorded-fixture harness (84) driven through `session/load` success and failure; `resume_scan` respawns an ACP child with an open turn |
 | W5 | `Drain` finishes a quick batch inside the deadline and suspends a slow one; `TurnResumed`/`ResumeReport` emitted with the right counts; desktop `vitest` for the banner, the interrupted partial and the two job states; attention item lifecycle |
@@ -1124,11 +1102,12 @@ W3), `cargo test -p acp` (W4), `just ts-desktop` + `bun run test` in `crates/des
    `remind_me_in(300, "x")`, and `ask_user` with one question. Do not answer.
 2. `kill -9 $(pgrep -f 't --headless')`.
 3. Reopen the app. Expect: the session shows the banner within a few seconds; the `ask_user` card is
-   back with the same question; `jobs()` lists the build as `adopted` and the PTY as `lost`;
-   `screen(<pty>)` shows the banner over the last prompt; the build's `<job_result exit="unknown">`
-   arrives when it ends; the reminder fires on time.
-4. Repeat with `kill -TERM`: the banner says paused, the build is `adopted` again, and a
-   `write_file` in flight completed before the exit (check the file).
+   back with the same question; `<job_result exit="lost">` for the build arrives with the log tail
+   and `ps` shows no leaked `cargo` (the reaper killed it if it survived the kill); `jobs()` lists
+   both jobs as `lost`; `screen(<pty>)` shows the banner over the last prompt; the reminder fires on
+   time.
+4. Repeat with `kill -TERM`: the banner says paused, both jobs are `lost` with `killed at shutdown`,
+   and a `write_file` in flight completed before the exit (check the file).
 5. Spawn an omp child on a worktree, let it start editing, `kill -9` the engine, reopen: the child
    comes back via `session/load` (omp supports it) and continues; break the load (`rm` omp's session
    file) and repeat: the child restarts with the `<resume_handoff>` naming the uncommitted files.
@@ -1136,7 +1115,7 @@ W3), `cargo test -p acp` (W4), `just ts-desktop` + `bun run test` in `crates/des
 ### 11.4 Done means
 
 - W1: the §11.1 matrix green; a real chat survives `kill -9` mid-batch with a correct transcript.
-- W2: the smoke's build survives; no job group is killed by a graceful stop.
+- W2: smoke steps 3–4 for jobs: the loss is reported once, the log is intact, nothing is leaked.
 - W3: the smoke's `ask_user` card returns; an approval raised before a crash is re-asked, an
   answered one is honoured.
 - W4: smoke step 5 both ways.
@@ -1151,7 +1130,7 @@ must not touch" list below and names the sibling worktrees.
 | wave | builds | owns | must not touch | gate | size |
 |---|---|---|---|---|---|
 | **W1** journal + safe replay | `0033_durability.sql` (all six tables, so later waves add no migration); `store/durability.rs`; `turn_steps`/`tool_calls` writes in `loop_.rs` (§3.3 steps 1–5, 7–9); `ResumeTurn`, `resume_scan`, `resume_plan`; the per-call rule minus the job/question/wait rows; python rule; `repair_dangling` demoted; `last_stop`/`finished_at`; `assistant_partial` upserts; `fail_interrupted` narrowed + boot pass | `crates/agent/migrations/0033_durability.sql`, `crates/agent/src/store/durability.rs`, `store.rs` (new fns + `ATTACHED`), `store/capture.rs:15-25`, `store/communication.rs:1442-1476`, `loop_.rs`, `supervisor.rs` (start sequence, `ResumeTurn`, `last_stop`), `lib.rs` (config, events) | `crates/tools/**`, `crates/acp/**`, `acp_child.rs`, `crates/desktop/**`, `crates/schedule/**` | `cargo test -p agent` | ~2.5 k lines, 1 omp, the critical path |
-| **W2** jobs | `jobs` writes, log-file fds + tail, `Detach`, `adopt_jobs`, sweeper, `JobExit::{Lost, Unknown}`, `pty_screens` snapshots and the banner, `tools::Journal` trait + `InstallJournal`; agent side: the `Journal` impl over the store, the job rule rows of §4.2 | `crates/tools/src/jobs.rs`, `pty.rs`, `shell.rs`, `crates/tools/src/lib.rs` (trait, `JobExit`), `crates/platform/src/process.rs` (nothing expected; listed for `adopt`), `crates/agent/src/durability/journal.rs` (new), the job-rule arm in `loop_.rs` (one function W1 leaves as a stub `resume_job_call`) | `store.rs`, `supervisor.rs` start sequence except the one `adopt_jobs` call W1 leaves as a stub, `registry.rs`, `approval.rs`, `ask.rs` | `cargo test -p tools`, `cargo test -p agent` | ~1.5 k lines |
+| **W2** jobs | `jobs` writes, `KillAll` writes `lost` first and runs after the drain window, `reap_jobs`, `JobExit::Lost` + the `<job_result exit="lost">` delivery, `pty_screens` snapshots and the banner, `tools::Journal` trait + `InstallJournal`; agent side: the `Journal` impl over the store, the job rule rows of §4.2 | `crates/tools/src/jobs.rs`, `pty.rs`, `shell.rs`, `crates/tools/src/lib.rs` (trait, `JobExit`), `crates/agent/src/durability/journal.rs` (new), the job-rule arm in `loop_.rs` (one function W1 leaves as a stub `resume_job_call`) | `store.rs`, `supervisor.rs` start sequence except the one `reap_jobs` call W1 leaves as a stub, `crates/platform/**`, `registry.rs`, `approval.rs`, `ask.rs` | `cargo test -p tools`, `cargo test -p agent` | ~800 lines |
 | **W3** questions + waits | `questions` and `waits` writes in the registry gate, `Approval`, `AskUser`, handoff and secret tools; `Republish`; answered-row honouring; `waits` re-arm for `peer_reply`/`child_result`/`pty_wait`/`question`; the question/wait rows of §4.2 | `crates/tools/src/registry.rs`, `approval.rs`, `ask.rs`, `crates/secrets/src/tools.rs`, `crates/roster/src/handoff.rs`, `supervisor.rs` (`Wait` rebuild, `inject` of spared results), the question/wait arms in `loop_.rs` (stubs `resume_question_call`, `resume_wait_call`) | `jobs.rs`, `pty.rs`, `store.rs` beyond calling W1's fns, `acp_child.rs` | `cargo test -p tools`, `cargo test -p agent` | ~1.2 k lines; **runs parallel to W2** (disjoint files; both call W1's store API) |
 | **W4** ACP | boot respawn trigger, handoff composition, `Note` delivery, `resumed()` branch | `crates/agent/src/acp_child.rs`, `crates/acp/src/harness.rs` (only if `open` must expose more), `supervisor.rs::acp_session` | `loop_.rs`, `store.rs`, `crates/tools/**`, `crates/desktop/**` | `cargo test -p agent`, `cargo test -p acp` | ~800 lines |
 | **W5** drain + UI | `Drain`, `main.rs` wiring, `suspended` rows, `TurnResumed`/`ResumeReport`/`TurnSuspended` publication, `HistoryEntry::Interrupted`, `Loaded.resume`, attention `Resume` kind, desktop banner/partial/job states, TUI divider, schedule `OpenTurn` | `crates/theuth/src/main.rs:1508-1520`, `supervisor.rs` (`Drain` handler), `crates/rpc/**` (new fields), `crates/roster/src/attention.rs`, `crates/desktop/ui/**`, `crates/tui/**`, `crates/schedule/src/lib.rs` + `store.rs:46-67` | `loop_.rs` except publishing the two events at the points W1 marks, `store.rs`, `crates/tools/**`, `acp_child.rs` | `cargo test -p agent -p rpc -p roster -p schedule`, `just ts-desktop`, `bun run test` | ~1.5 k lines; **runs parallel to W4** |
@@ -1174,12 +1153,12 @@ For the integrator, one list:
    attempt, and the open tool batch completed from the `tool_calls` journal (109 §4). The frame
    itself is unchanged: journal rows never enter it."*
 2. **14 §5 Persistence and restart** (`docs/design/14-jobs.md:304-311`): replace the paragraph with
-   *"Superseded by 109 §5: a `jobs` table (migration 0033) mirrors every job; a live process group
-   is adopted after a restart and a dead one yields `<job_result exit="lost">`; graceful shutdown no
-   longer kills job groups (`Detach`); job output goes straight to the log file and is tailed. The
-   v0 rejection stands as history."* **14 §1.2**: `exit` gains `unknown` (adopted job ended; the
-   engine was not its parent). **14 §2** paragraph "On `rt.shutdown` the actor kills every running
-   group": strike; point at 109 §5.5.
+   *"Superseded by 109 §5: a `jobs` table (migration 0033) mirrors every job for accounting; a job
+   still dies with the engine, and on the next start its row yields `<job_result exit="lost">` with
+   the log path (a PTY: the last screen under a banner); process groups a SIGKILL leaked are reaped
+   before any turn resumes. The v0 rejection stands as history."* **14 §1.2**: `exit` gains `lost`
+   in practice (the value was reserved; now delivered). **14 §2** "On `rt.shutdown` the actor kills
+   every running group": unchanged — add "after 109's drain window; rows are written `lost` first".
 3. **36 §3 Resume repair** (`docs/design/36-survival.md:178-192`): add *"109: `repair_dangling` is
    the fallback for transcripts with no `tool_calls` rows (pre-0033). With the journal, a dangling
    `tool_use` is answered per call from the journal — finished results reused, unstarted and
@@ -1198,8 +1177,8 @@ For the integrator, one list:
    child's finished result, and resumes every open turn (109 §4)"*. **00 §4 tool contract**: add one
    sentence under the registry's execution seam: *"every registry invocation is journaled `started`
    before its body and `finished` as it returns (109 §3.3), through `tools::Journal`."* **00 §12
-   known gaps**: strike "the `Jobs` actor kills every process group on shutdown (14 §2)". Status
-   table: the row added with this document.
+   known gaps**: the "`Jobs` actor kills every process group on shutdown" line stays — it is the
+   ruled behaviour. Status table: the row added with this document.
 7. **34** (schedule): a run whose session has an open turn at boot is kept open and re-attached, not
    marked `lost` (109 §4.6 step 12).
 8. **104**: `AttentionKind::Resume` added to the kinds and the inbox group order (under "Needs a
@@ -1214,10 +1193,17 @@ For the integrator, one list:
   engine).** The most faithful answer to R1 — a PTY would survive, an ACP child would keep its stdio
   — and the most work: a second long-lived process with its own lifecycle, IPC for every job
   operation, its own crash story, and a second place to upgrade. Offered to Sky and not chosen for
-  now; the journal + adoption of §5 gets a `cargo build` and an omp worker across a restart, which
-  is the case that hurts today. Later stage: when a transcript shows a PTY or an un-loadable harness
+  now; the omp-worker case is covered by `session/load` + the delta handoff (§7.3), and a lost build
+  is one `shell()` away. Later stage: when a transcript shows a PTY or an un-loadable harness
   session that mattered, build the keeper *behind* the same `jobs`/`waits` rows, so nothing above
   the tools crate changes.
+- **Process-surviving jobs by adoption** — the orchestrator's middle ground between the keeper and
+  plain journaling: adopt a live process group at boot (`ProcessTree` + `killpg(pgid, 0)`), stop
+  `KillAll` at shutdown, redirect job stdout/stderr to the log file and tail it, report
+  `exit="unknown"` when the adopted group ends. **Rejected by Sky 2026-10-06 12:28** ("I thought we
+  decided jobs aren't durable"): it keeps alive a process the engine can neither steer nor wait on,
+  it needed a different I/O path on Unix and could not work on Windows at all, and R1 had already
+  drawn the line at journaling. Design v0 carried it as D3; Revision 1 removed it.
 - **Pause and ask as the default** (and the hybrid "auto for routines, pause for chats"). Offered,
   not chosen: an overnight restart would strand every routine and child until morning, and the
   hybrid needs a classification of sessions the engine does not have cleanly (a chat can spawn a
@@ -1241,9 +1227,9 @@ For the integrator, one list:
   Correct but blunt; a follow-on once the single-engine protocol has run for a while.
 - **Marking every `started` call "not run" (today)** or every `started` call "done". Both lie half
   the time; the journal lets the engine say what it knows and no more.
-- **A `jobs` table only for `<job_result exit="lost">`** (14 §5's own deferred option). Adoption is
-  the same scan plus `alive()`; stopping at `lost` would still kill a running build on every
-  upgrade.
+- **No `jobs` table at all** (14 §5's v0 ruling, kept until now). Without the row the model is never
+  told a job vanished and a leaked group is never reaped; the table costs one migration and the scan
+  14 §5 declined, and buys exactly the `exit="lost"` reporting 14 §1.2 reserved.
 
 ## 15. Open questions
 
@@ -1264,8 +1250,9 @@ Each with the default this design assumes.
    over `created_at`.
 5. **Desktop auto-relaunch of a dead daemon.** Default: not in 109 (96/25 own the launcher); the
    protocol makes it safe.
-6. **Windows adoption.** Default: `lost` always (§5.4); revisit if a Windows user runs long jobs
-   through theuth.
+6. **Should the reaper spare a leaked group whose session has `resume: off`?** Default no: a
+   half-dead build beside a session that may be resumed by hand later is still a leak; one rule,
+   every row.
 7. **Resume ordering across engines in a mesh.** Two engines never own the same session (68), so
    there is no race; default: no cross-engine coordination, each engine resumes its own open turns.
 
