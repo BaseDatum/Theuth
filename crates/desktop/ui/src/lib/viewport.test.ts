@@ -1,0 +1,100 @@
+// `applyViewport` (112 §2): keyboard-open only when the visible band collapsed against this window's own
+// idle height, never because the window is shorter than the screen (iPad Stage Manager, hardware keyboard).
+import { afterEach, expect, test, vi } from 'vitest'
+import { applyViewport } from './viewport'
+
+class Input {}
+class TextArea {}
+class Element {}
+
+const root = { band: '', open: false }
+let win: { innerWidth: number; innerHeight: number; visualViewport: { height: number }; scrollX: number; scrollY: number; scrollTo(): void }
+let active: unknown = null
+
+function setup(opts: { touch: boolean; width?: number; height: number; visible?: number }) {
+  win = { innerWidth: opts.width ?? 390, innerHeight: opts.height, visualViewport: { height: opts.visible ?? opts.height }, scrollX: 0, scrollY: 0, scrollTo: vi.fn() }
+  active = null
+  vi.stubGlobal('HTMLInputElement', Input)
+  vi.stubGlobal('HTMLTextAreaElement', TextArea)
+  vi.stubGlobal('HTMLElement', Element)
+  vi.stubGlobal('window', win)
+  vi.stubGlobal('matchMedia', () => ({ matches: opts.touch }))
+  vi.stubGlobal('document', {
+    get activeElement() {
+      return active
+    },
+    documentElement: { style: { setProperty: (_: string, v: string) => (root.band = v) }, toggleAttribute: (_: string, on: boolean) => (root.open = on) },
+  })
+  applyViewport() // idle baseline for this window
+}
+
+const focus = () => (active = new TextArea())
+const state = () => ({ open: root.open, band: root.band })
+
+afterEach(() => vi.unstubAllGlobals())
+
+test('phone, visual viewport shrinks: open, band follows the visual viewport, closes on blur', () => {
+  setup({ touch: true, height: 844 })
+  focus()
+  win.visualViewport.height = 844 - 336
+  applyViewport()
+  expect(state()).toEqual({ open: true, band: '508px' })
+  active = null
+  win.visualViewport.height = 844
+  applyViewport()
+  expect(state()).toEqual({ open: false, band: '844px' })
+})
+
+test('phone, layout viewport shrinks too (resizes-content): open against the idle height', () => {
+  setup({ touch: true, height: 844 })
+  focus()
+  win.innerHeight = 508
+  win.visualViewport.height = 508
+  applyViewport()
+  expect(state()).toEqual({ open: true, band: '508px' })
+})
+
+test('windowed iPad with a hardware keyboard: focus without a keyboard is a no-op, shortcuts bar included', () => {
+  // The window is far shorter than the screen; the old screen comparison fired here.
+  setup({ touch: true, width: 1024, height: 727 })
+  focus()
+  applyViewport()
+  expect(state()).toEqual({ open: false, band: '727px' })
+  // WebKit 247410: the floating shortcuts bar still takes ~69 px off the visual viewport.
+  win.visualViewport.height = 658
+  applyViewport()
+  expect(state()).toEqual({ open: false, band: '727px' })
+})
+
+test('window resize while idle re-bases: the smaller window does not read as a keyboard on focus', () => {
+  setup({ touch: true, width: 1024, height: 1000 })
+  win.innerHeight = win.visualViewport.height = 600
+  applyViewport()
+  focus()
+  applyViewport()
+  expect(state()).toEqual({ open: false, band: '600px' })
+  // A real keyboard against the new baseline still opens.
+  win.visualViewport.height = 300
+  applyViewport()
+  expect(state()).toEqual({ open: true, band: '300px' })
+})
+
+test('rotation while editing re-bases (a keyboard never changes the width)', () => {
+  setup({ touch: true, width: 390, height: 844 })
+  focus()
+  win.visualViewport.height = 508
+  applyViewport()
+  expect(root.open).toBe(true)
+  win.innerWidth = 844
+  win.innerHeight = win.visualViewport.height = 390
+  applyViewport()
+  expect(state()).toEqual({ open: false, band: '390px' })
+})
+
+test('desktop (no touch): the baseline is not consulted; a window resize while editing is just the new layout height', () => {
+  setup({ touch: false, width: 1440, height: 900 })
+  focus()
+  win.innerHeight = win.visualViewport.height = 700
+  applyViewport()
+  expect(state()).toEqual({ open: false, band: '700px' })
+})

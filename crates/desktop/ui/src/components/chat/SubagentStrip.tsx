@@ -7,9 +7,10 @@ import type { AgentInfo, AgentState } from '@/rpc/extra'
 import { useSessionField } from '@/store/sessions'
 
 /**
- * 93: `● ● ●` centred above the composer (no label — Sky, 2026-10-04) — one dot per live subagent (any depth) of the
- * open session, in spawn order, blinking on that subagent's streaming events (`AgentInfo.beat`, stamped by the
- * reducer). Nothing when the subtree is quiet; one row, never more, `+N` past `STRIP_CAP`.
+ * 93: `● ● ●` centred above the to-do card, else directly above the composer (no label — Sky, 2026-10-04; above the
+ * to-do — Sky, 2026-10-06, 112 §1) — one dot per live subagent (any depth) of the open session, in spawn order,
+ * blinking on that subagent's streaming events (`AgentInfo.beat`, stamped by the reducer). Nothing when the subtree
+ * is quiet; one row, never more, `+N` past `STRIP_CAP`.
  */
 export function SubagentStrip({ session }: { session: string }) {
   const children = useSessionField(session, 'children')
