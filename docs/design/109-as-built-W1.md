@@ -15,7 +15,7 @@ Line numbers are of this branch's last commit.
 | 1 `input_accepted` | `Turn::take_input` `loop_.rs:3691` | `Store::append_input` `:628` | the user row (`insert_in`) |
 | 1 (peer) | `Turn::consume_peer` `loop_.rs:3750` | `Store::input_accepted` | *its own* tx after `consume_exchange` (deviation 1) |
 | 2 `model_call` | `Reserved::open` `loop_.rs:2193` | `Store::reserve_journaled_call` `:673` | `reserve_call_in` (`accounting.rs` `:123`) — `Round` calls of a turn only |
-| 3 `assistant_partial` | `Turn::stream_once` `loop_.rs:3509`, `checkpoint_now` `:3544` (`checkpoint_now`) | `Store::partial_upsert` (contract) | its own small tx; at a block boundary (reasoning→text, text→tool-use) or when `partial_checkpoint_ms` passed and the text grew; never per token |
+| 3 `assistant_partial` | `Turn::stream_once` `loop_.rs:3509`, `checkpoint_now` `:3544` | `Store::partial_upsert` (contract) | its own small tx; at a block boundary (reasoning→text, text→tool-use) or when `partial_checkpoint_ms` passed and the text grew; never per token |
 | 4 `turn_finished` + §4.5 | `Turn::round` text reply `loop_.rs:4646-4670` | `Store::append_final` `:742` → `turn_finished_in` `:150` | the final assistant row, the partials' DELETE, `sessions.last_stop/finished_at` |
 | 4' `turn_finished` (cancel / error / landing / after a continuation) | `Turn::drive` end `loop_.rs:4095` | `Store::finish_turn` | its own tx |
 | 5 `tool_batch` + `planned` rows | `Turn::round` `loop_.rs:4714` | `Store::append_tool_use` `:711` | the assistant `tool_use` row, the partials' DELETE, `calls_planned_in` (`risk` from `Turn::risks`, filled in `rebase` `:3277`; `read_only` for `todo`/`python`/unknown names) |
@@ -197,4 +197,24 @@ Harness changes (`loop_/vision_fallback_tests.rs`): `Harness::new` takes any `Re
 
 ## 9. Gates
 
-GATES
+All with `CARGO_TARGET_DIR=$HOME/Develop/theuth-109-target`, cargo 1.98.1 (the shared target dir
+replays a sibling's artifacts as fresh when its build is newer than this tree's edits; every run below
+touched `loop_.rs` first so the binary was this tree's):
+
+1. `cargo test -p agent --lib loop_::durability_tests` — `1 passed; 0 failed; 1 ignored` (the ignored
+   test is `crash_child`, the matrix's spawned life); the matrix spawned four children, each died by
+   `abort` and each resume matched the reference transcript.
+2. `cargo test -p agent` — `390 passed; 0 failed; 1 ignored` (lib) + `0 passed` (doc).
+   `supervisor::tests::private_root_is_owned_and_unlisted` (the known flake) passed.
+3. `cargo clippy -p agent --tests` — `Finished`, no warnings.
+4. `rustfmt --edition 2024` on `loop_.rs`, `loop_/durability_tests.rs`, `supervisor/resume.rs`;
+   the formatter's drift in untouched regions of `supervisor.rs`, `store.rs`, `store/accounting.rs`,
+   `store/communication.rs` and in three test files it followed `mod` declarations into was reverted,
+   those files keep their hand-formatted additions.
+
+Not run: `cargo check --workspace` / the Tauri CLI (brief); a real `kill -9` smoke (§11.4 W1, Sky's).
+
+Files changed: `crates/agent/src/{loop_.rs, store.rs, supervisor.rs}`,
+`crates/agent/src/loop_/{durability_tests.rs (new), vision_fallback_tests.rs}`,
+`crates/agent/src/store/{durability.rs, accounting.rs, communication.rs}`,
+`crates/agent/src/supervisor/resume.rs`, `docs/design/109-as-built-W1.md` (this note).

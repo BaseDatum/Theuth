@@ -80,7 +80,6 @@ pub(crate) async fn step_in(
 /// Delete the turn's `assistant_partial` rows inside the caller's
 /// transaction: folded into the write that persists the final assistant row
 /// (§8.1), so a finished model call leaves no partial behind.
-#[allow(dead_code)] // 109: W1 calls it from the loop's final persist
 pub(crate) async fn partial_delete_in(
     conn: &mut SqliteConnection,
     session: SessionId,
@@ -98,7 +97,6 @@ pub(crate) async fn partial_delete_in(
 
 /// One `tool_calls` row per call in `planned`, inside the transaction that
 /// persists the assistant `tool_use` row at `at_seq` (§3.3 step 5).
-#[allow(dead_code)] // 109: W1 calls it from the loop's tool_use persist
 pub(crate) async fn calls_planned_in(
     conn: &mut SqliteConnection,
     session: SessionId,
