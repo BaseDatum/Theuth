@@ -287,7 +287,8 @@ pub struct JobView {
     pub id: JobId,
     /// Command line.
     pub command: String,
-    /// `running` | `exited 0` | `timeout` | `killed`.
+    /// `running` | `exited 0` | `timeout` | `killed` | `lost` (109 §5.4: died
+    /// with a previous engine; `tail` is the log tail or the stored screen).
     pub state: String,
     /// Seconds running so far, or total when finished.
     pub secs: u64,
