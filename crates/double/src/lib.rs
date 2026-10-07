@@ -11,7 +11,11 @@
 //! - [`config`]: the `double:` section (§12).
 //! - [`events`]: the four bus events (§13).
 //! - [`types`]: the `double_*` RPC wire types (§13).
-//! - [`mesh`]: the `theuth/double/1` seam (§8.4).
+//! - [`mesh`]: the `theuth/double/1` bundle protocol (§8.4).
+//! - [`train_a`]: Tier A — temperatures, k-NN index, logistic heads (§7.2).
+//! - [`sched`] + [`precond`]: the training cycle and its preconditions (§8.1–8.3).
+//! - [`venue`]: `auto | local | node:<name> | off` (§8.4).
+//! - [`versions`]: `models/<version>/`, the `active` pointer, rollback (§8.5).
 //!
 //! Wave C (this file's shape) is the contract; the behaviour lands in the
 //! modules the `// 126 W<n>` markers name.
@@ -22,8 +26,13 @@ pub mod class;
 pub mod config;
 pub mod events;
 pub mod mesh;
+pub mod precond;
+pub mod sched;
 pub mod store;
+pub mod train_a;
 pub mod types;
+pub mod venue;
+pub mod versions;
 
 pub use class::{Card, CardKind, DraftKind, Requester, class_key};
 pub use config::DoubleConfig;
@@ -33,6 +42,7 @@ pub use events::{
 };
 pub use store::Store;
 pub use types::*;
+pub use versions::ActiveVersion;
 
 /// Registry name of the double actor (`DOUBLE_ACTOR`, §4).
 pub const DOUBLE_ACTOR: &str = "double";
@@ -41,8 +51,7 @@ pub const DOUBLE_ACTOR: &str = "double";
 // grace timers, `TakeOver`), `pub mod labels;`, `pub mod predict;`,
 // `pub mod ladder;` — and the RPC stubs in crates/rpc/src/api.rs become
 // `ask::<actor::Double, _>(DOUBLE_ACTOR, …)` calls.
-// 126 W2: `pub mod train_a;`, `pub mod sched;`, `pub mod precond;`,
-// `pub mod venue;`, `pub mod versions;`.
+// 126 W2 (built): `train_a`, `sched`, `precond`, `venue`, `versions`.
 // 126 W3: `pub mod train_b;`.
 // 126 W5: `pub mod tool;` (the `double_*` chat runtime functions), the
 // `double` skill and the `## Double` prompt paragraph.
@@ -74,11 +83,23 @@ impl runtime::Plugin for DoublePlugin {
                 return Ok(());
             }
         };
-        let _ = (store, cfg);
         // 126 W1: spawn `actor::Double` with `runtime::subscriber_mailbox()`,
         // `register(DOUBLE_ACTOR)`, `rt.subscribe::<_, tools::ApprovalRequested>`,
         // `ApprovalResolved`, `AskRequested`, `AskResolved`, `agent::AgentEvent`.
-        // 126 W2: `sched::start(store, cfg.training, rt.clone())`.
+        // 126 W2: the scheduler (Tier A locally; W3 wraps `tier_a_factory` to add
+        // Tier B) and the `theuth/double/1` node side (refusing until W3).
+        let factory = sched::tier_a_factory(
+            store.clone(),
+            versions::models_dir(&rt.data_dir),
+            // ponytail: the checkpoint *name* stands in for its sha256 until W3
+            // (the decision crate owns the checkpoint path and its `.sha256` sidecar).
+            cfg.model.checkpoint.clone(),
+        );
+        if let Err(e) = sched::start(rt.clone(), store.clone(), cfg.clone(), factory) {
+            tracing::warn!("double scheduler not started: {e:#}");
+        }
+        tokio::spawn(mesh::serve(rt.clone(), std::sync::Arc::new(mesh::NotYet)));
+        let _ = (store, cfg);
         // 126 W5: register `tool::*` once `rt.lookup_when::<ToolRegistry>` answers.
         Ok(())
     }

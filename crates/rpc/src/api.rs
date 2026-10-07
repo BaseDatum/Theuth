@@ -5073,10 +5073,8 @@ impl ApiServer for Server {
     }
 
     async fn double_train(&self, tier: double::Tier, venue: double::Venue) -> RpcResult<double::RunId> {
-        Err(double_not_yet(
-            &format!("train tier {} on {}", tier.as_str(), venue.as_config()),
-            "W2",
-        ))
+        ask::<double::sched::Scheduler, _>(double::sched::ACTOR, double::sched::Train { tier, venue })
+            .await
     }
 
     async fn double_pause(&self, _on: bool) -> RpcResult<double::DoubleStatus> {
@@ -5088,7 +5086,8 @@ impl ApiServer for Server {
     }
 
     async fn double_rollback(&self, version: String) -> RpcResult<double::DoubleStatus> {
-        Err(double_not_yet(&format!("rollback to {version:?}"), "W2"))
+        ask::<double::sched::Scheduler, _>(double::sched::ACTOR, double::sched::Rollback(version))
+            .await
     }
 
     async fn double_set_cap(
@@ -5101,11 +5100,11 @@ impl ApiServer for Server {
     }
 
     async fn double_export(&self) -> RpcResult<double::DoubleExport> {
-        Err(double_not_yet("export", "W2"))
+        ask::<double::sched::Scheduler, _>(double::sched::ACTOR, double::sched::Export).await
     }
 
     async fn double_delete_all(&self) -> RpcResult<()> {
-        Err(double_not_yet("delete all", "W2"))
+        ask::<double::sched::Scheduler, _>(double::sched::ACTOR, double::sched::DeleteAll).await
     }
 
     async fn double_take_over(&self, _question_id: String) -> RpcResult<bool> {
@@ -5119,9 +5118,13 @@ impl ApiServer for Server {
 
     async fn double_settings_set(
         &self,
-        _settings: double::DoubleConfig,
+        settings: double::DoubleConfig,
     ) -> RpcResult<double::DoubleConfig> {
-        Err(double_not_yet("settings set", "W1"))
+        ask::<double::sched::Scheduler, _>(
+            double::sched::ACTOR,
+            double::sched::SetSettings(settings),
+        )
+        .await
     }
 
     async fn meeting_oracle_mode(&self) -> RpcResult<decision::ModeInfo> {
