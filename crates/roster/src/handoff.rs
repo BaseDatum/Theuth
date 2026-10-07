@@ -245,6 +245,7 @@ impl Tool for DesktopHandoffTool {
                     deadline: asked_at + timeout,
                     answered_at: None,
                     answer: None,
+                    answered_by: None,
                 };
                 (row, q)
             }

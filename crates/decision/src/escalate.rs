@@ -249,6 +249,7 @@ pub async fn escalate(
         tier: 2,
         calibrated: false,
         truncated: false,
+        embedding: None,
     };
     if let Ok(Some(engine)) = ActorRef::<Engine>::lookup(DECISION_ACTOR) {
         let _ = engine
@@ -348,6 +349,7 @@ mod tests {
             tier: 1,
             calibrated: true,
             truncated: false,
+            embedding: None,
         };
         let c = render(&choice(), Some(&oracle));
         assert!(c.contains("A local classifier estimated (abstained: low margin): SRE-2386 0.31, HR-12 0.14, none 0.55\nState:"), "{c}");

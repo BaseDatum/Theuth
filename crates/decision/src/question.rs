@@ -207,6 +207,11 @@ pub struct Decision {
     /// (`Escalate(Truncated)`); otherwise the answer stands and the caller sees the cut here.
     #[serde(default)]
     pub truncated: bool,
+    /// The pooled encoder state of the rendered question (126 §7.2): `Some`
+    /// only for a family whose gate says `embed: true` (the `double.*`
+    /// families); never logged — the log row picks its fields.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub embedding: Option<Vec<f32>>,
 }
 
 const fn tier_one() -> u8 {

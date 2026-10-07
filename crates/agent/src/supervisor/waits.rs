@@ -505,6 +505,7 @@ mod tests {
             deadline: asked_at + chrono::Duration::minutes(5),
             answered_at: answer.map(|_| asked_at),
             answer: answer.map(|a| json!(a)),
+            answered_by: answer.map(|_| tools::Answerer::Human),
         }
     }
 

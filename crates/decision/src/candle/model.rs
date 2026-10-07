@@ -20,9 +20,11 @@
 //!    in f16 loses precision at long positions.
 
 use candle_core::{D, DType, Device, IndexOp, Result, Tensor};
+#[cfg(not(feature = "train"))]
+use candle_nn::ops::softmax_last_dim;
 use candle_nn::{
     Embedding, LayerNorm, LayerNormConfig, Linear, Module, VarBuilder, embedding, layer_norm,
-    layer_norm_no_bias, linear, linear_no_bias, ops::softmax_last_dim,
+    layer_norm_no_bias, linear, linear_no_bias,
 };
 use std::sync::Arc;
 
@@ -30,6 +32,25 @@ use super::config::{AgentConfig, EncoderConfig, FULL_ATTENTION};
 
 /// Logit assigned to marker slots that do not correspond to a real option.
 const MASKED_LOGIT: f64 = -1e4;
+
+// 126 W0 (`train` feature only): candle-nn 0.11's fused `softmax_last_dim` and the fused
+// biased `LayerNorm::forward` are custom ops applied with `apply_op*_no_bwd`, so they cut the
+// autograd graph silently (no error, no gradient). Training swaps in the primitive-composed
+// siblings; the default build keeps the fused kernels and is byte-identical.
+
+#[cfg(feature = "train")]
+fn softmax_last_dim(xs: &Tensor) -> Result<Tensor> {
+    candle_nn::ops::softmax(xs, D::Minus1)
+}
+
+/// Forward of a decision-head norm (these carry a bias, unlike the encoder's).
+fn head_norm(norm: &LayerNorm, xs: &Tensor) -> Result<Tensor> {
+    #[cfg(feature = "train")]
+    if let Some(bias) = norm.bias() {
+        return candle_nn::ops::layer_norm_slow(xs, norm.weight(), bias, norm.eps() as f32);
+    }
+    norm.forward(xs)
+}
 
 // ---------------------------------------------------------------- rotary
 
@@ -72,8 +93,14 @@ impl Rotary {
         // `rope` is the half-split (NeoX) form, matching MLX's
         // `fast.rope(..., traditional=False)`. `rope_i` would be the
         // interleaved variant and is *not* what upstream uses.
-        let q = candle_nn::rotary_emb::rope(&q.contiguous()?, &cos, &sin)?;
-        let k = candle_nn::rotary_emb::rope(&k.contiguous()?, &cos, &sin)?;
+        // 126 W0: `rope` is a `CustomOp3` without a `bwd` in candle 0.11; the `train`
+        // feature swaps in `rope_slow` (same maths from differentiable primitives).
+        #[cfg(not(feature = "train"))]
+        use candle_nn::rotary_emb::rope;
+        #[cfg(feature = "train")]
+        use candle_nn::rotary_emb::rope_slow as rope;
+        let q = rope(&q.contiguous()?, &cos, &sin)?;
+        let k = rope(&k.contiguous()?, &cos, &sin)?;
         Ok((q, k))
     }
 }
@@ -474,9 +501,9 @@ impl HeadLayer {
     }
 
     fn forward(&self, xs: &Tensor, mask: &Tensor) -> Result<Tensor> {
-        let normed = self.norm1.forward(xs)?;
+        let normed = head_norm(&self.norm1, xs)?;
         let xs = (xs + self.self_attn.forward(&normed, mask)?)?;
-        let normed = self.norm2.forward(&xs)?;
+        let normed = head_norm(&self.norm2, &xs)?;
         // ReLU, not GELU: torch's TransformerEncoderLayer defaults to ReLU even
         // though the encoder and scoring head use GELU.
         let ff = self
@@ -502,13 +529,18 @@ pub struct DecisionModel {
     act_dtype: DType,
 }
 
-/// One forward pass: masked scoring logits and action probabilities' logits.
+/// One forward pass: masked scoring logits, action probabilities' logits and
+/// the pooled encoder state (126 §7.2).
 #[derive(Debug, Clone)]
 pub struct ModelOutput {
     /// `(batch, slots)` in f32, already masked to `-1e4` on unused slots.
     pub logits: Tensor,
     /// `(batch, act_classes)` in f32.
     pub action: Tensor,
+    /// `(batch, hidden)` in f32: the `[CLS]` position after the decision head —
+    /// the state the act head reads, without its four confidence features. The
+    /// double's embedding (126 §7.2); already computed, no second forward.
+    pub pooled: Tensor,
 }
 
 impl DecisionModel {
@@ -591,7 +623,7 @@ impl DecisionModel {
         let scored = self.scorer_out.forward(
             &self
                 .scorer_in
-                .forward(&self.scorer_norm.forward(&markers)?)?
+                .forward(&head_norm(&self.scorer_norm, &markers)?)?
                 .gelu_erf()?,
         )?;
         let logits = scored.squeeze(D::Minus1)?.to_dtype(DType::F32)?;
@@ -624,18 +656,23 @@ impl DecisionModel {
             D::Minus1,
         )?;
 
-        let pooled = Tensor::cat(&[xs.i((.., 0))?.to_dtype(DType::F32)?, features], D::Minus1)?;
+        let pooled = xs.i((.., 0))?.to_dtype(DType::F32)?;
+        let act_in = Tensor::cat(&[pooled.clone(), features], D::Minus1)?;
         let action = self
             .act_out
             .forward(
                 &self
                     .act_in
-                    .forward(&pooled.to_dtype(self.act_dtype)?)?
+                    .forward(&act_in.to_dtype(self.act_dtype)?)?
                     .gelu_erf()?,
             )?
             .to_dtype(DType::F32)?;
 
-        Ok(ModelOutput { logits, action })
+        Ok(ModelOutput {
+            logits,
+            action,
+            pooled,
+        })
     }
 }
 

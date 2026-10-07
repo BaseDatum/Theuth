@@ -49,9 +49,11 @@ pub use activity::{
 };
 pub use approval::{
     Approval, ApprovalId, ApprovalRequested, ApprovalResolved, Decision, PendingApprovals, Resolve,
+    ResolveBy,
 };
 pub use ask::{
-    Answer, AnswerAsk, AskId, AskRequested, AskResolved, AskUser, Choice, PendingAsks, Question,
+    Answer, AnswerAsk, AnswerAskBy, AskId, AskRequested, AskResolved, AskUser, Choice, PendingAsks,
+    Question,
 };
 pub use communication::{CommunicationAccess, Disabled};
 pub use jobs::CloseSessions;
@@ -60,8 +62,8 @@ pub use jobs::{
     JobView, Jobs, ListJobs,
 };
 pub use journal::{
-    InstallJournal, JobKind, JobRow, JobState, Journal, NoopJournal, PtyScreenRow, QuestionKind,
-    QuestionRow, QuestionState, WaitKind, WaitRow,
+    Answerer, InstallJournal, JobKind, JobRow, JobState, Journal, NoopJournal, PtyScreenRow,
+    QuestionKind, QuestionRow, QuestionState, WaitKind, WaitRow,
 };
 pub use mcp::{
     AddRepo, AddServer, ListServers, Mcp, McpAuth, McpLogin, McpLogout, McpProgress, McpServer,

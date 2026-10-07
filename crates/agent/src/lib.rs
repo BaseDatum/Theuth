@@ -330,6 +330,23 @@ pub async fn answer_ask(
     Ok(session.is_some())
 }
 
+/// [`answer_ask`] for the owner's double (126 §4.3): the row is settled with
+/// `answered_by = by`, and the set is never dismissed (a dismiss cancels the
+/// turn). `Ok(true)` if the ask was still pending.
+pub async fn answer_ask_by(
+    id: tools::AskId,
+    answers: Vec<tools::Answer>,
+    by: tools::Answerer,
+) -> anyhow::Result<bool> {
+    use kameo::actor::ActorRef;
+    let ask = ActorRef::<tools::AskUser>::lookup(tools::ASK_ACTOR)?
+        .ok_or_else(|| anyhow::anyhow!("ask actor is not running"))?;
+    Ok(ask
+        .ask(tools::AnswerAskBy { id, answers, by })
+        .await?
+        .is_some())
+}
+
 /// `ask` → `Result<u32 /* epoch */, String>`: compact `session` now,
 /// threshold ignored (design doc 07 §8.6). Refused while a turn is running.
 /// `style: None` uses the configured default (design doc 11). `head: Some`

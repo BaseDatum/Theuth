@@ -1,0 +1,54 @@
+[package]
+name = "double"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+description = "The owner's double: a local model of the owner's own decisions, with a per-class autonomy ladder (design doc 126)"
+
+[dependencies]
+runtime = { workspace = true }
+tools = { workspace = true }
+replica = { workspace = true }
+decision = { workspace = true }  # 126 §7 oracle + embedding (W1); Tier B LoRA over the frozen laya checkpoint (`decision::candle::lora`, W3)
+agent = { workspace = true }
+roster = { workspace = true }
+schedule = { workspace = true }
+mesh = { workspace = true }  # 126 §8.4 venue: `Status` / `ListStats`, `EngineStats`, `Peer`
+platform = { workspace = true }  # 126 §8.2 sensors: idle, power, thermal, load, disk, memory, pid liveness
+meeting = { workspace = true }  # 126 §8.2 "no live meeting": one `MeetingStatus` ask
+talk = { workspace = true }  # 126 §8.2 "no live talk": one `TalkStatus` ask
+voice = { workspace = true }  # 126 §8.2 "no live dictation": one `DictationStatus` ask
+kameo = { workspace = true }
+tokio = { workspace = true }
+tokio-util = { workspace = true, features = ["codec"] }  # 126 §8.4 bundle frames
+futures = { workspace = true }
+bytes = { workspace = true }
+postcard = { version = "1", features = ["alloc"] }  # 126 §8.4 bundle frames, as `artifact::mesh`
+parking_lot = { workspace = true }
+async-trait = { workspace = true }
+anyhow = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+serde_yaml = { workspace = true }  # 126 §12 `double_settings_set` persists the section
+schemars = { workspace = true }
+chrono = { workspace = true }
+tracing = { workspace = true }
+sqlx = { workspace = true }
+sha2 = { workspace = true }
+half = { workspace = true }
+uuid = { workspace = true }
+ts-rs = { workspace = true, optional = true }
+candle-core = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"
+tokio = { workspace = true, features = ["test-util"] }  # 126 §8.1 fake clock for the scheduler tests
+figment = { workspace = true }
+# The trainer tests need the differentiable encoder; dev-only, so `t` is built without it.
+decision = { workspace = true, features = ["train"] }
+
+[features]
+ts = ["dep:ts-rs", "runtime/ts", "tools/ts", "roster/ts"]
+
+[lints]
+workspace = true

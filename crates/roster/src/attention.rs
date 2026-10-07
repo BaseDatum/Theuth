@@ -63,6 +63,10 @@ pub enum AttentionKind {
     /// skipped a mutating call (effect unknown), an ACP child got a hand-off,
     /// or `durability.resume: ask` waits for the Resume button.
     Resume,
+    /// 126 §10: the double answered a card for the owner ("double answered
+    /// Allow for `git push` · undo 14 s"), or the daily L3 digest.
+    // 126 W1 produces items; W4 renders.
+    Double,
     /// 130 E3: a root or desk session's turn ended cleanly — the receipt, with
     /// `summary` and the agent's `## Next` suggestions.
     Finished,
@@ -225,6 +229,18 @@ pub struct SnoozeAttention {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct DismissAttention(pub String);
 
+/// 126: another plugin's inbox items, pulled on every `ListAttention` (the
+/// double's "answers Allow in 14 s — take over" rows). Items are shaped by the
+/// source; dismiss / snooze apply to their ids like any other.
+#[async_trait::async_trait]
+pub trait Source: Send + Sync {
+    /// The source's current items.
+    async fn items(&self) -> Vec<AttentionItem>;
+}
+
+/// `tell`: add a [`Source`] the inbox pulls from.
+pub struct RegisterSource(pub std::sync::Arc<dyn Source>);
+
 /// What `derive` needs; the actor gathers it, tests build it by hand.
 #[derive(Default)]
 pub struct Inputs {
@@ -254,6 +270,8 @@ pub struct Inputs {
     pub task_sessions: HashMap<String, String>,
     /// 109 §8.3: resumes that need a human.
     pub resumes: Vec<ResumeNeed>,
+    /// Items from registered [`Source`]s (126), already shaped.
+    pub external: Vec<AttentionItem>,
     /// 130 E2: ask id → ms since epoch the `AskRequested` arrived (the actor
     /// records it when a pending ask is first seen).
     pub ask_since: HashMap<tools::AskId, u64>,
@@ -646,6 +664,7 @@ pub fn derive(inputs: &Inputs, states: &HashMap<String, State>, now_ms: u64) -> 
             )
         });
     }
+    out.extend(inputs.external.iter().cloned());
 
     // 130 E3: one receipt per root / desk session; waits on nobody.
     for f in &inputs.finished {
@@ -761,6 +780,8 @@ pub struct Attention {
     reports: HashMap<String, ResumeNeed>,
     /// `durability.resume: ask`: every open turn is an item with a Resume button.
     resume_ask: bool,
+    /// 126: other plugins' item sources, pulled on every list.
+    sources: Vec<std::sync::Arc<dyn Source>>,
     /// 130 E1: the bus, for `AttentionChanged`.
     rt: Runtime,
     /// 130 E1: the id set of the last derive; `announce` diffs against it.
@@ -785,6 +806,7 @@ impl Attention {
                 pending: HashMap::new(),
                 reports: HashMap::new(),
                 resume_ask,
+                sources: Vec::new(),
                 rt: rt.clone(),
                 last_ids: HashSet::new(),
                 ask_since: HashMap::new(),
@@ -939,6 +961,13 @@ impl Attention {
             desks,
             task_sessions,
             resumes,
+            external: {
+                let mut v = Vec::new();
+                for s in &self.sources {
+                    v.extend(s.items().await);
+                }
+                v
+            },
             ask_since: self
                 .ask_since
                 .iter()
@@ -1412,6 +1441,14 @@ impl Message<DismissAttention> for Attention {
             .map_err(|e| e.to_string())?;
         self.recheck_quietly().await;
         Ok(())
+    }
+}
+
+impl Message<RegisterSource> for Attention {
+    type Reply = ();
+
+    async fn handle(&mut self, m: RegisterSource, _: &mut Context<Self, ()>) {
+        self.sources.push(m.0);
     }
 }
 

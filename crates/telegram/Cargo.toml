@@ -9,6 +9,7 @@ description = "Telegram frontend for the daemon over Bot API long polling (desig
 runtime = { workspace = true }
 agent = { workspace = true }
 tools = { workspace = true }
+double = { workspace = true }
 artifact = { workspace = true }
 secrets = { workspace = true }
 voice = { workspace = true }

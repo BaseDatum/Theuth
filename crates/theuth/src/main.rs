@@ -175,6 +175,33 @@ enum Cmd {
         #[arg(long)]
         session: String,
     },
+    /// The owner's double (design doc 126): the Tier B training job a GPU node runs in-process
+    /// (`t double train-b`), without an engine.
+    Double {
+        #[command(subcommand)]
+        cmd: DoubleCmd,
+    },
+}
+
+/// `t double …` (126 §8.4, Revision 2): one-shot jobs, no running engine needed.
+#[derive(clap::Subcommand, Debug)]
+enum DoubleCmd {
+    /// Train a Tier B LoRA adapter from a bundle dir (`manifest.json` + `rows.jsonl`) into
+    /// `--out` (`adapter.safetensors` + `manifest.json`); progress on stdout; exit 0 when the
+    /// candidate dir is populated. Needs a `t` built with `--features decision/train`
+    /// (and `decision/cuda` on a CUDA node). The checkpoint is `decision.checkpoints.default`
+    /// under `--data-dir`, fetched by the models downloader beforehand.
+    TrainB {
+        /// The bundle dir.
+        #[arg(long)]
+        bundle: PathBuf,
+        /// The candidate version dir (a `checkpoint/` inside it resumes a paused run).
+        #[arg(long)]
+        out: PathBuf,
+        /// `auto` (the `decision.device` / `models.accelerator` rule) | `metal` | `cuda` | `cpu`.
+        #[arg(long, default_value = "auto")]
+        device: String,
+    },
 }
 
 #[derive(clap::Subcommand, Debug)]
@@ -534,6 +561,7 @@ async fn cmd_67(data_dir: &Path, config: &Figment, cmd: Cmd) -> anyhow::Result<(
         },
         // Dispatched by `run` before this: stdout is its protocol channel.
         Cmd::Mcp { .. } => unreachable!("t mcp is served by mcp::run"),
+        Cmd::Double { .. } => unreachable!("t double runs without an engine"),
     };
     match r {
         Ok(v) => {
@@ -1098,6 +1126,9 @@ agent:
 #                            # secret-scrubbed, local only; `t --decision-export meeting` folds it into the phrasing-bench fixture shape.
 #                            # share: true (57 §7.1, default false) is consent to upload those rows to theuth; needs train (train: false
 #                            # clears it); recorded now, honoured by the uploader once the relay endpoint ships (step 11).
+#                            # embed: true (126 §7.2, default false) returns the pooled encoder state with each decision — one
+#                            # tensor copy per batch; the `double.*` families (double.approval/ask/attention/packet/draft/correction)
+#                            # ship active with it on; everything else pays nothing.
 #     meeting.kind:    { mode: shadow, tau_top: 0.60, tau_margin: 0.20 }  # small-talk Bool: skip at P ≥ 0.6 with no mentions (57 §3.5)
 #     meeting.brief:   { mode: shadow, tau_top: 0.60, tau_margin: 0.30 }  # ≤ 4 cached briefs: publish at P ≥ 0.6, margin ≥ 0.3
 #     meeting.subject: { mode: shadow, tau_top: 0.50, tau_margin: 0.00 }  # tier-2 subject extraction rows (cheap model, never the oracle)
@@ -1108,6 +1139,31 @@ agent:
 #                            # `browser_run` act; shadow decides and hands back; off hides the tool. none/cut_ok: the fine-tune
 #                            # learned a closed option list and right-cut states, so no `none` control and a cut state is not an error.
 #     agent.readable: { mode: shadow, tau_top: 0.85, tau_margin: 0.40 }
+
+# double:                    # the owner's double (design doc 126): predicts your answer to every approval / ask / packet
+#                            # card before you see it, learns from what you did next, and earns per-class autonomy
+#                            # (L0 observe → L1 suggest → L2 act after a grace). Settings › Double; `t --double-*`.
+#   enabled: false           # restart. true: the store under <data_dir>/double/, the chip on cards, the double_* tools
+#   capture: { approvals: true, asks: true, attention: true, packets: true, drafts: true }   # which cards it learns from
+#   ladder:
+#     grace_secs: 30         # L2 countdown before it answers (Revision 1); you can take any card over
+#     caps: { read_only: 2, mutating: 1, destructive: 1 }   # max rung by risk; destructive never passes L1
+#     mutating_opt_in: false # default for new classes: a mutating class needs an explicit opt-in to reach L2
+#   training:
+#     venue: auto            # auto | local | node:<name> | off — auto picks a non-laptop, non-VM mesh engine with a GPU
+#     window: \"02:00-06:00\"  # local hours Tier B (LoRA) may run; on AC power, user idle, no meeting, nominal thermals
+#     idle_min: 15
+#     run_cap_min: 90        # minutes of training per night; a run resumes the next night
+#     triggers: { labels: 200, days: 7 }   # Tier B eligibility, whichever first; Tier A runs every 25 labels or nightly
+#     share_data: true       # ship scrubbed bundles to your own GPU nodes (never a sandbox VM)
+#     tiers:
+#       a: { enabled: true }
+#       b: { enabled: true, local: false, rank: 8, batch: 16, epochs: 3, lr: 1.0e-4 } # local: train on this machine (idle-only, aborts on activity); off = GPU node or nothing
+#       c: { enabled: false } # full fine-tune: owner action only (Settings › Rebuild)
+#   retention_days: 365      # rows older than this go, except golden rows and the last 1,000 per class
+#   model:
+#     checkpoint: default    # a `decision.checkpoints` name; restart
+#     adapter_rank: 8        # restart
 
 # a2a:                       # remote agents over A2A 1.0 (design doc 50 §6); peers/exports live in <data_dir>/a2a/peers.yaml, `/a2a reload` applies edits
 #   enabled: false           # false: no actor, listener, card fetch or credential load. Needs agent.communication too.
@@ -1180,8 +1236,8 @@ const HARNESS_SKILL: &str = include_str!("../harness.md");
 /// Creates the data-dir skeleton on first run. Existing files are never
 /// overwritten, except `skills/harness.md`, `skills/visualize.md`,
 /// `skills/pdf.md`, `skills/loops.md`, `skills/routines.md`, `skills/apps.md`,
-/// `skills/board.md` and `skills/decide.md`, which the binary owns and rewrites so they always describe
-/// the running version.
+/// `skills/board.md`, `skills/decide.md` and `skills/double.md`, which the binary owns and rewrites so
+/// they always describe the running version.
 fn first_run(data_dir: &Path, config_path: &Path) -> std::io::Result<()> {
     std::fs::create_dir_all(data_dir.join("mcp"))?;
     std::fs::create_dir_all(data_dir.join("acp"))?;
@@ -1196,6 +1252,7 @@ fn first_run(data_dir: &Path, config_path: &Path) -> std::io::Result<()> {
         ("apps.md", app::skill()),
         ("board.md", document::tools::BOARD_SKILL.to_owned()),
         ("decide.md", decision::tool::DECIDE_SKILL.to_owned()),
+        ("double.md", double::tool::DOUBLE_SKILL.to_owned()),
     ] {
         let path = skills.join(name);
         if std::fs::read_to_string(&path).ok().as_deref() != Some(body.as_str()) {
@@ -1234,6 +1291,124 @@ fn main() -> anyhow::Result<()> {
     result
 }
 
+/// `t double train-b` (126 Revision 2, W3): the Tier B job a node runs — the same
+/// `double::train_b::TierB::train` W2's mesh `train_on` calls in-process, with `Never` as the
+/// pause signal. Exit 0 with `out` populated; 2 = bad input / missing checkpoint; 3 = the run
+/// cap paused it (re-run to resume); 1 = any other failure.
+fn double_train_b(
+    data_dir: &Path,
+    decision_cfg: &decision::DecisionConfig,
+    double_cfg: &double::DoubleConfig,
+    bundle: &Path,
+    out: &Path,
+    device: &str,
+) -> i32 {
+    use decision::candle::lora::{Base, TRAIN_BUILD};
+    use double::train_b::{Bundle, Hooks, Never, TierB, TrainConfig, TrainOutcome};
+
+    if !TRAIN_BUILD {
+        eprintln!(
+            "double train-b: this `t` was built without `--features decision/train`; the \
+             encoder's fused kernels cut the gradient silently, so training is refused"
+        );
+        return 2;
+    }
+    let device = match device {
+        "auto" => decision_cfg.device,
+        "cpu" => decision::Device::Cpu,
+        "metal" => decision::Device::Metal,
+        "cuda" => decision::Device::Cuda,
+        other => {
+            eprintln!("double train-b: --device {other}: auto | metal | cuda | cpu");
+            return 2;
+        }
+    };
+    let gpu = device.gpu();
+    let dev = match gpu.open() {
+        Ok(d) => d,
+        Err(e) => {
+            eprintln!("double train-b: {e}");
+            return 2;
+        }
+    };
+    let dir = decision_cfg.model_dir_in(data_dir);
+    if !dir.is_dir() {
+        eprintln!(
+            "double train-b: no checkpoint at {} (fetch it with the models downloader first)",
+            dir.display()
+        );
+        return 2;
+    }
+    let bundle = match Bundle::read(bundle) {
+        Ok(b) => b,
+        Err(e) => {
+            eprintln!("double train-b: bundle: {e:#}");
+            return 2;
+        }
+    };
+    let t = std::time::Instant::now();
+    let base = match Base::open(&dir, dev, gpu.dtype()) {
+        Ok(b) => b,
+        Err(e) => {
+            eprintln!("double train-b: load {}: {e:#}", dir.display());
+            return 1;
+        }
+    };
+    println!(
+        "loaded {} ({} tensors, {:?} {:?}) in {:.1}s; {} rows in the bundle",
+        dir.display(),
+        base.tensors.len(),
+        base.device.location(),
+        base.dtype,
+        t.elapsed().as_secs_f64(),
+        bundle.rows.len()
+    );
+    let mut cfg = TrainConfig::from_double(double_cfg);
+    cfg.venue = format!("node:{}", platform::process::hostname());
+    let mut on_progress = |p: &double::train_b::Progress| {
+        println!(
+            "step {}/{} epoch {}/{} loss {:.4} elapsed {}s",
+            p.step,
+            p.total_steps,
+            p.epoch,
+            p.epochs,
+            p.loss,
+            p.elapsed.as_secs()
+        );
+    };
+    let hooks = Hooks {
+        pause: &Never,
+        on_progress: &mut on_progress,
+    };
+    match TierB::train(&bundle, &cfg, &base, out, hooks) {
+        Ok(TrainOutcome::Finished(c)) => {
+            println!(
+                "candidate {} in {}: {} steps, train loss {:.4}, hold-out log-loss {:.4} acc {:.3} ece {:.3} (n {})",
+                c.id,
+                c.dir.display(),
+                c.manifest.steps,
+                c.manifest.metrics.train_loss,
+                c.manifest.metrics.holdout_log_loss,
+                c.manifest.metrics.accuracy,
+                c.manifest.metrics.ece,
+                c.manifest.metrics.n_holdout
+            );
+            0
+        }
+        Ok(TrainOutcome::Paused { step, checkpoint }) => {
+            println!(
+                "run cap reached at step {step}; checkpoint in {} — re-run to resume",
+                checkpoint.display()
+            );
+            3
+        }
+        Err(e) => {
+            eprintln!("double train-b: {e:#}");
+            1
+        }
+    }
+}
+
 async fn run() -> anyhow::Result<()> {
     // reqwest links `ring`, slack/relay link `aws-lc-rs`; with both present rustls
     // panics on the first TLS dial unless a process provider is chosen (21 §2.1).
@@ -1261,6 +1436,22 @@ async fn run() -> anyhow::Result<()> {
     match cli.cmd {
         Some(Cmd::Mcp { session }) => {
             return mcp::run(&data_dir, &listen(&data_dir, &config), session).await;
+        }
+        Some(Cmd::Double {
+            cmd: DoubleCmd::TrainB { bundle, out, device },
+        }) => {
+            let models_cfg: models::accelerator::ModelsConfig =
+                config.extract_inner("models").unwrap_or_default();
+            models::accelerator::set(models_cfg.accelerator);
+            let decision_cfg: decision::DecisionConfig =
+                config.extract_inner("decision").unwrap_or_default();
+            let double_cfg: double::DoubleConfig =
+                config.extract_inner("double").unwrap_or_default();
+            let code = tokio::task::spawn_blocking(move || {
+                double_train_b(&data_dir, &decision_cfg, &double_cfg, &bundle, &out, &device)
+            })
+            .await?;
+            std::process::exit(code);
         }
         Some(cmd) => return cmd_67(&data_dir, &config, cmd).await,
         None => {}
@@ -1625,6 +1816,8 @@ fn engine_plugins(headless: bool, serve: bool) -> Vec<Box<dyn Plugin>> {
         Box::new(voice::VoicePlugin),
         Box::new(talk::TalkPlugin),
         Box::new(decision::DecisionPlugin),
+        // 126: the owner's double; off unless `double.enabled: true` (a client of the bus, after decision).
+        Box::new(double::DoublePlugin),
     ];
     // 58 §6.1: capture backends per OS; `MeetingStatus.supported` says what this host can do.
     plugins.push(Box::new(meeting::MeetingPlugin));

@@ -1120,6 +1120,7 @@ mod tests {
             tier: 1,
             calibrated: true,
             truncated: false,
+            embedding: None,
         }
     }
 

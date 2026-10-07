@@ -217,6 +217,7 @@ pub async fn extract(
         tier: 2,
         calibrated: false,
         truncated: false,
+        embedding: None,
     };
     if let Ok(Some(engine)) = kameo::actor::ActorRef::<crate::Engine>::lookup(crate::DECISION_ACTOR)
     {

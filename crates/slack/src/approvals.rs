@@ -1,6 +1,7 @@
 //! Approval cards and button clicks (design doc 21 §10.1). Pure: Block Kit JSON
 //! in, parsed clicks out; the channel does the posting and resolving.
 
+use double::{DoubleAnswered, DoublePredicted};
 use slack_morphism::prelude::{SlackInteractionActionContainer, SlackInteractionEvent};
 use tools::{ApprovalId, ApprovalRequested, Decision};
 
@@ -15,9 +16,29 @@ const MAX_ARGS_CHARS: usize = 600;
 /// `context`: `Some("session 1a2b3c4d · <title>")` adds a trailing context block
 /// (owner-DM cards, where the thread does not identify the session).
 pub fn card(req: &ApprovalRequested, context: Option<&str>) -> serde_json::Value {
-    let id = req.id.0.to_string();
+    blocks(&body(req), req.id, None, context)
+}
+
+/// [`card`] rebuilt from the `body` it was posted with, plus the double's context
+/// line (126 §10): `[markdown, actions, context(double)[, context(session)]]`.
+pub fn predicted_card(
+    body: &str,
+    id: ApprovalId,
+    p: &DoublePredicted,
+    context: Option<&str>,
+) -> serde_json::Value {
+    blocks(body, id, Some(p), context)
+}
+
+fn blocks(
+    body: &str,
+    id: ApprovalId,
+    double: Option<&DoublePredicted>,
+    context: Option<&str>,
+) -> serde_json::Value {
+    let id = id.0.to_string();
     let mut blocks = vec![
-        markdown(&body(req)),
+        markdown(body),
         serde_json::json!({
             "type": "actions",
             "elements": [
@@ -26,6 +47,9 @@ pub fn card(req: &ApprovalRequested, context: Option<&str>) -> serde_json::Value
             ],
         }),
     ];
+    if let Some(p) = double {
+        blocks.push(double_context(p));
+    }
     if let Some(text) = context {
         blocks.push(serde_json::json!({
             "type": "context",
@@ -33,6 +57,35 @@ pub fn card(req: &ApprovalRequested, context: Option<&str>) -> serde_json::Value
         }));
     }
     serde_json::Value::Array(blocks)
+}
+
+/// The double's line as a `context` block: `double would: Allow (91 %)`, with the
+/// grace countdown at L2 (126 §10). Shared with [`crate::asks`].
+pub fn double_context(p: &DoublePredicted) -> serde_json::Value {
+    let now = u64::try_from(chrono::Utc::now().timestamp_millis()).unwrap_or(0);
+    serde_json::json!({
+        "type": "context",
+        "elements": [{ "type": "mrkdwn", "text": double::chip::would(p, now) }],
+    })
+}
+
+/// A freshly built card with the double's context line appended (the ask cards,
+/// whose builder has the request at hand).
+pub fn with_double(mut blocks: serde_json::Value, p: &DoublePredicted) -> serde_json::Value {
+    if let Some(arr) = blocks.as_array_mut() {
+        arr.push(double_context(p));
+    }
+    blocks
+}
+
+/// The line when the double answered at L2 (126 §10): `🤖 double answered Allow (…)`.
+pub fn answered_text(a: &DoubleAnswered) -> String {
+    format!("🤖 {}", double::chip::answered(a))
+}
+
+/// [`answered_text`] as one markdown block (the owner DM).
+pub fn answered_blocks(a: &DoubleAnswered) -> serde_json::Value {
+    serde_json::Value::Array(vec![markdown(&answered_text(a))])
 }
 
 /// Card after resolution: one markdown block, no buttons. `body` is the text
@@ -210,6 +263,64 @@ mod tests {
             with[2]["elements"][0]["text"],
             "session 1a2b3c4d · fix tests"
         );
+    }
+
+    #[test]
+    fn double_line_is_one_context_block_before_the_session_context() {
+        let r = req("shell", json!({ "command": "git push" }));
+        let p = DoublePredicted {
+            question_id: r.id.0.to_string(),
+            session: Some(r.session),
+            kind: double::CardKind::Approval,
+            class: "approval:shell:mutating:git push:root".into(),
+            choice: "Allow".into(),
+            index: None,
+            p: 0.912,
+            probs: vec![],
+            rung: 1,
+            will_act_at: None,
+            version: "baseline".into(),
+            explain: Default::default(),
+        };
+        let b = predicted_card(&body(&r), r.id, &p, Some("session 1a2b3c4d · fix tests"));
+        let b = b.as_array().unwrap();
+        assert_eq!(b.len(), 4);
+        // The first two blocks are the live card's, so clicks keep working.
+        assert_eq!(&b[..2], &card(&r, None).as_array().unwrap()[..]);
+        assert_eq!(b[2]["type"], "context");
+        assert_eq!(b[2]["elements"][0]["type"], "mrkdwn");
+        assert_eq!(b[2]["elements"][0]["text"], "double would: Allow (91 %)");
+        assert_eq!(b[3]["elements"][0]["text"], "session 1a2b3c4d · fix tests");
+        // Appended to any card; the thread line is one markdown block.
+        let asked = with_double(crate::asks::question_card(&ask_req(), 0, None), &p);
+        let asked = asked.as_array().unwrap();
+        assert_eq!(asked.len(), 4);
+        assert_eq!(asked[3], b[2]);
+        let line = answered_blocks(&DoubleAnswered {
+            question_id: p.question_id.clone(),
+            session: p.session,
+            class: p.class.clone(),
+            choice: "Allow".into(),
+            version: "baseline".into(),
+            undo_until: None,
+        });
+        assert_eq!(
+            line,
+            json!([{ "type": "markdown", "text": "🤖 double answered Allow (approval:shell:mutating:git push:root)" }])
+        );
+    }
+
+    fn ask_req() -> tools::AskRequested {
+        tools::AskRequested {
+            id: tools::AskId(uuid::Uuid::from_u128(8)),
+            session: SessionId::new(),
+            questions: vec![tools::Question {
+                id: "which".into(),
+                question: "Which?".into(),
+                options: vec![],
+                recommended: None,
+            }],
+        }
     }
 
     #[test]

@@ -287,6 +287,8 @@ async fn publish(rt: &Runtime, v: &serde_json::Value) {
         meeting::BriefEvent,
         app::AppCallChanged,
         codeindex::CodeindexEvent,
+        double::DoublePredicted,
+        double::DoubleAnswered,
         roster::attention::AttentionChanged,
     );
     tracing::debug!(

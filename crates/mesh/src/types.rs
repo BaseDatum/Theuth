@@ -126,8 +126,54 @@ pub struct EngineStats {
     pub repos: Vec<String>,
     /// Has a display (browser, screenshots).
     pub display: bool,
-    /// Has a usable GPU.
+    /// Has a usable GPU. `true` on every Apple-silicon Mac and any Linux box
+    /// with a render node — not a training-grade signal; see `accelerator`.
     pub gpu: bool,
+    /// Which training-grade accelerator the GPU is (126 §8.4); `None` from an
+    /// engine older than this field. Optional on the wire so older engines
+    /// deserialise newer rows and vice versa.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub accelerator: Option<Accelerator>,
+}
+
+/// The training-grade accelerator an engine advertises (126 §8.4), detected
+/// the cheap way: Apple silicon → `metal`; `/dev/nvidia0` → `cuda`; else
+/// `cpu` (a probed machine with no training-grade GPU — an Intel iGPU still
+/// says `gpu = true`). Spelled like `models.accelerator`.
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, schemars::JsonSchema,
+)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[serde(rename_all = "snake_case")]
+pub enum Accelerator {
+    /// Apple silicon (candle Metal).
+    Metal,
+    /// An NVIDIA device (`/dev/nvidia0`; candle CUDA with the `decision/cuda` build).
+    Cuda,
+    /// No training-grade GPU.
+    Cpu,
+}
+
+impl Accelerator {
+    /// The column / stats-line spelling.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Metal => "metal",
+            Self::Cuda => "cuda",
+            Self::Cpu => "cpu",
+        }
+    }
+
+    /// Inverse of [`Self::as_str`].
+    pub fn parse(s: &str) -> Option<Self> {
+        Some(match s {
+            "metal" => Self::Metal,
+            "cuda" => Self::Cuda,
+            "cpu" => Self::Cpu,
+            _ => return None,
+        })
+    }
 }
 
 /// Who holds the hub lease (67 §4.3).
