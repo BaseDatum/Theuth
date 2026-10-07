@@ -80,13 +80,14 @@ impl Tool for MeshPeersTool {
     }
 }
 
-/// One `mesh_peers` line: `<name> id=<id> <reach> class=<class> harnesses=… repos=… display=… gpu=…[ hub]`.
+/// One `mesh_peers` line: `<name> id=<id> <reach> class=<class> harnesses=… repos=… display=… gpu=…[ accel=…][ hub]`.
+/// `accel` (126 §8.4) is printed only when the engine advertised one.
 fn peer_line(
     p: &crate::Peer,
     s: Option<&crate::EngineStats>,
     hub: Option<&crate::EngineId>,
 ) -> String {
-    let (class, harnesses, repos, display, gpu) = match s {
+    let (class, harnesses, repos, display, gpu, accel) = match s {
         Some(s) => (
             crate::store::class_str(s.class).to_owned(),
             s.harnesses.join(","),
@@ -97,6 +98,9 @@ fn peer_line(
             },
             s.display,
             s.gpu,
+            s.accelerator
+                .map(|a| format!(" accel={}", a.as_str()))
+                .unwrap_or_default(),
         ),
         None => (
             "unknown".to_owned(),
@@ -104,10 +108,11 @@ fn peer_line(
             "-".to_owned(),
             false,
             false,
+            String::new(),
         ),
     };
     format!(
-        "{name} id={id} {reach} class={class} harnesses={harnesses} repos={repos} display={display} gpu={gpu}{hub}",
+        "{name} id={id} {reach} class={class} harnesses={harnesses} repos={repos} display={display} gpu={gpu}{accel}{hub}",
         name = p.name,
         id = p.id,
         reach = if p.reachable {
@@ -142,10 +147,21 @@ mod tests {
             repos: vec![],
             display: true,
             gpu: false,
+            accelerator: None,
         };
         assert_eq!(
             peer_line(&p, Some(&s), None),
             "lab id=id1 reachable class=vm harnesses=native,omp repos=- display=true gpu=false"
+        );
+        let s = crate::EngineStats {
+            gpu: true,
+            accelerator: Some(crate::Accelerator::Metal),
+            ..s
+        };
+        assert!(
+            peer_line(&p, Some(&s), None).ends_with("display=true gpu=true accel=metal"),
+            "{}",
+            peer_line(&p, Some(&s), None)
         );
         assert!(
             peer_line(&p, None, Some(&p.id))

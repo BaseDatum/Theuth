@@ -1279,7 +1279,7 @@ export function route(
     return true;
   }
   // Policy revisions (global `session: null` or a subtree) are query invalidations, not slice state: see `useInvalidateOn`.
-  if (e.type === "CommunicationChanged" || !("session" in e) || e.session === null) return false;
+  if (e.type === "CommunicationChanged" || !("session" in e) || e.session == null) return false;
   const cur = draft[e.session] ?? empty(e.session);
   const next = apply(cur, e, ctx);
   if (next !== cur) draft[e.session] = next;

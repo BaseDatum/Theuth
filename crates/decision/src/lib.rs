@@ -430,6 +430,11 @@ impl DecisionConfig {
 /// `none`, state cut allowed. Shadow by default: `browser_run` decides but does not act.
 ///
 /// 92 §2: `tool` is the `decide` tool's family ([`FamilyGate::tool`]).
+///
+/// 126 §12: the `double.*` families ([`FamilyGate::double`]) — one per card kind plus the
+/// `double.correction` Bool ("is this message a correction of the assistant's previous
+/// action?", 126 §6). Active with `embed: true`; the ladder, not this gate, decides whether
+/// anything acts.
 fn default_families() -> BTreeMap<String, FamilyGate> {
     [
         ("meeting.kind", FamilyGate::shadow(0.60, 0.20)),
@@ -440,6 +445,12 @@ fn default_families() -> BTreeMap<String, FamilyGate> {
         ("browser.type_target", FamilyGate::browser(0.25)),
         ("agent.readable", FamilyGate::shadow(0.85, 0.40)),
         (TOOL_FAMILY, FamilyGate::tool()),
+        ("double.approval", FamilyGate::double()),
+        ("double.ask", FamilyGate::double()),
+        ("double.attention", FamilyGate::double()),
+        ("double.packet", FamilyGate::double()),
+        ("double.draft", FamilyGate::double()),
+        ("double.correction", FamilyGate::double()),
     ]
     .into_iter()
     .map(|(k, v)| (k.to_owned(), v))
@@ -463,6 +474,7 @@ struct FamilyPatch {
     none: Option<bool>,
     cut_ok: Option<bool>,
     temperature: Option<f32>,
+    embed: Option<bool>,
 }
 
 impl FamilyPatch {
@@ -503,6 +515,9 @@ impl FamilyPatch {
         }
         if let Some(t) = self.temperature {
             g.temperature = t;
+        }
+        if let Some(e) = self.embed {
+            g.embed = e;
         }
     }
 }
@@ -722,11 +737,17 @@ mod tests {
     #[test]
     fn config_defaults_and_yaml() {
         let d = DecisionConfig::default();
-        assert_eq!(d.families.len(), 8);
+        // 8 of 57/92 plus the six `double.*` families of 126 §12.
+        assert_eq!(d.families.len(), 14);
+        // Active ships only for the `decide` tool and the double (whose output is a chip).
+        assert!(d.families.iter().all(|(k, g)| {
+            (g.mode == Mode::Active) == (k == TOOL_FAMILY || k.starts_with("double."))
+        }));
+        // `embed` is the double's alone (126 §7.2).
         assert!(
             d.families
                 .iter()
-                .all(|(k, g)| (g.mode == Mode::Active) == (k == TOOL_FAMILY))
+                .all(|(k, g)| g.embed == k.starts_with("double."))
         );
         assert!(d.families.values().all(|g| g.temperature == 1.0));
         // 92 §2: the `decide` tool's family — no thresholds, `none` kept, cut reported, gliner.
@@ -804,7 +825,7 @@ mod tests {
         assert_eq!(cfg.device, Device::Cpu);
         assert!(!cfg.device.metal());
         // A listed family patches its default row; a fully specified new one is added.
-        assert_eq!(cfg.families.len(), 9);
+        assert_eq!(cfg.families.len(), 15);
         assert_eq!(cfg.families["meeting.kind"].mode, Mode::Active);
         assert_eq!(cfg.families["meeting.kind"].tau_top, 0.7);
         assert_eq!(cfg.families["meeting.kind"].budget, Duration::from_secs(1));
@@ -835,7 +856,7 @@ mod tests {
             "families:\n  tool: { checkpoint: default }\n  tool.mail: { train: true, temperature: 2.0 }\n  tool.files: { mode: off }\n  meeting.topic: { train: true }\n",
         )
         .unwrap();
-        assert_eq!(cfg.families.len(), 10);
+        assert_eq!(cfg.families.len(), 16);
         let mail = &cfg.families["tool.mail"];
         assert!(mail.train && mail.temperature == 2.0 && mail.mode == Mode::Active);
         assert_eq!(
@@ -966,7 +987,7 @@ mod tests {
             "families:\n  meeting.kind: { mode: active }\n  meeting: { mode: off }\n",
         )
         .unwrap();
-        assert_eq!(cfg.families.len(), 8);
+        assert_eq!(cfg.families.len(), 14);
         assert_eq!(cfg.families["meeting.kind"].mode, Mode::Off);
         assert_eq!(cfg.families["meeting.brief"].mode, Mode::Off);
         assert_eq!(cfg.families["meeting.subject"].mode, Mode::Off);
@@ -983,7 +1004,7 @@ mod tests {
         // A partial unknown family is neither inserted nor an error.
         let cfg: DecisionConfig =
             serde_yaml::from_str("families:\n  nobody: { mode: active }\n").unwrap();
-        assert_eq!(cfg.families.len(), 8);
+        assert_eq!(cfg.families.len(), 14);
         // 57 §11: `train` patches like `mode`, default false everywhere.
         assert!(cfg.families.values().all(|g| !g.train));
         let train: DecisionConfig =

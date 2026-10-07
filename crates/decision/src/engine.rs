@@ -81,6 +81,10 @@ pub struct Scores {
     pub temperature: f32,
     /// laya's act head, logged only; `0.0` for a model without one.
     pub act_p: f32,
+    /// The pooled `[CLS]` state, `(hidden,)` f32 (126 §7.2): `Some` only when the
+    /// family's gate says `embed: true`; `None` from every other family and every
+    /// oracle without one (gliner, fakes).
+    pub embedding: Option<Vec<f32>>,
 }
 
 impl Scores {
@@ -103,6 +107,12 @@ pub trait Oracle: Send {
     fn build(&self, q: &Question) -> Result<Box<dyn Row>, String>;
     /// One forward pass, `rows` as `build` returned them.
     fn run(&mut self, rows: &[Box<dyn Row>]) -> anyhow::Result<Vec<Scores>>;
+    /// [`Self::run`], filling [`Scores::embedding`] when `embed` (126 §7.2). An
+    /// oracle without a pooled state answers [`Self::run`] with `embedding: None`.
+    fn run_embed(&mut self, rows: &[Box<dyn Row>], embed: bool) -> anyhow::Result<Vec<Scores>> {
+        let _ = embed;
+        self.run(rows)
+    }
     /// Cold-load wall clock, logged once.
     fn load_time(&self) -> Duration;
 }
@@ -518,6 +528,7 @@ impl Engine {
             tier: 1,
             calibrated: true,
             truncated: false,
+            embedding: None,
         };
         let mode = gate.map_or(Mode::Off, |g| g.mode);
         let text = self.cfg.log_text.then(|| ask.question.clone());
@@ -698,6 +709,7 @@ fn decide(
             logits: Vec::new(),
             temperature: t,
             act_p: out.act_p,
+            embedding: out.embedding.clone(),
         };
         (&scaled, t)
     };
@@ -724,6 +736,11 @@ fn decide(
         tier: 1,
         calibrated: temperature != 1.0,
         truncated: row.truncated(),
+        embedding: if gate.embed {
+            out.embedding.clone()
+        } else {
+            None
+        },
     };
     (gate.finish(d), temperature)
 }
@@ -750,6 +767,7 @@ fn escalated(
         tier: 1,
         calibrated: true,
         truncated: false,
+        embedding: None,
     }
 }
 
@@ -827,6 +845,8 @@ impl Engine {
         // GLiNER DeBERTa f32 forward is memory-bound and gains ~25 % from one padded batch
         // (`examples/decide_bench.rs`: 99 vs 131 ms/row at batch 8, 500 × 165-token rows).
         let batch_forward = self.cfg.batch_forward || self.kind == Kind::Gliner;
+        // 126 §7.2: one `to_vec2` of the pooled state when any family in the batch asks.
+        let embed = items.iter().any(|i| i.gate.embed);
         let mut run = tokio::task::spawn_blocking(move || -> Result<Scored, Reason> {
             let mut o = shared.lock();
             // A question the oracle cannot render is that question's hard error, not the
@@ -846,11 +866,11 @@ impl Engine {
             let outs: Vec<Scores> = if seqs.is_empty() {
                 Vec::new()
             } else if batch_forward || seqs.len() == 1 {
-                o.run(&seqs)
+                o.run_embed(&seqs, embed)
                     .map_err(|e| Reason::HardError(format!("{e:#}")))?
             } else {
                 seqs.iter()
-                    .map(|s| o.run(std::slice::from_ref(s)))
+                    .map(|s| o.run_embed(std::slice::from_ref(s), embed))
                     .collect::<anyhow::Result<Vec<_>>>()
                     .map(|v| v.into_iter().flatten().collect())
                     .map_err(|e| Reason::HardError(format!("{e:#}")))?
@@ -1461,6 +1481,7 @@ mod tests {
             probs,
             temperature: 1.0,
             act_p: 0.5,
+            embedding: None,
         }
     }
 
@@ -1487,6 +1508,16 @@ mod tests {
                     Ok(last_wins(s.marker_pos.len()))
                 })
                 .collect()
+        }
+        /// Eight 0.5s per row when asked — the shape the engine must gate per family.
+        fn run_embed(&mut self, rows: &[Box<dyn Row>], embed: bool) -> anyhow::Result<Vec<Scores>> {
+            let mut out = self.run(rows)?;
+            if embed {
+                for s in &mut out {
+                    s.embedding = Some(vec![0.5; 8]);
+                }
+            }
+            Ok(out)
         }
         fn load_time(&self) -> Duration {
             Duration::from_millis(1)
@@ -1576,6 +1607,55 @@ mod tests {
         assert_eq!(s.agreement, Some(1.0));
     }
 
+    /// 126 §7.2: the embedding comes back only for a family whose gate says `embed`; a
+    /// family without it gets `None` even when the oracle filled it for a sibling in the
+    /// same batch, and a batch with no `embed` family never asks the oracle for one.
+    #[tokio::test]
+    async fn embedding_follows_the_family_gate() {
+        let dir = tempfile::tempdir().unwrap();
+        let model_dir = dir.path().join("models/decision");
+        touch_files(&model_dir);
+        let cfg = DecisionConfig {
+            families: [
+                (
+                    "double.ask".to_owned(),
+                    FamilyGate {
+                        mode: Mode::Active,
+                        embed: true,
+                        ..FamilyGate::shadow(0.0, 0.0)
+                    },
+                ),
+                (
+                    "meeting.kind".to_owned(),
+                    FamilyGate {
+                        mode: Mode::Active,
+                        ..FamilyGate::shadow(0.0, 0.0)
+                    },
+                ),
+            ]
+            .into(),
+            batch_forward: true,
+            ..DecisionConfig::default()
+        };
+        let engine = Engine::spawn(Engine::with_loader(
+            cfg,
+            model_dir,
+            Log::new(dir.path().join("decisions")),
+            fake_loader(Duration::ZERO),
+        ));
+        let ds = engine
+            .ask(AskMany::new(vec![ask("double.ask"), ask("meeting.kind")]))
+            .await
+            .unwrap();
+        assert_eq!(ds[0].embedding.as_ref().map(Vec::len), Some(8));
+        assert_eq!(ds[1].embedding, None);
+        let d = engine.ask(ask("meeting.kind")).await.unwrap();
+        assert_eq!(d.embedding, None);
+        // The wire shape drops the field when absent.
+        let v = serde_json::to_value(&d).unwrap();
+        assert!(v.get("embedding").is_none());
+    }
+
     /// 92 §5: a family temperature of 1.0 leaves the oracle's probabilities bit-identical
     /// (laya families keep theirs); any other value re-softmaxes the logits at
     /// `model × family` and marks the decision calibrated.
@@ -1588,6 +1668,7 @@ mod tests {
             logits: vec![1.0, 1.8473],
             temperature: 1.0,
             act_p: 0.0,
+            embedding: None,
         };
         let gate = FamilyGate {
             mode: Mode::Active,
@@ -1745,6 +1826,7 @@ mod tests {
                         probs,
                         temperature: 1.0,
                         act_p: 0.0,
+                        embedding: None,
                     })
                 })
                 .collect()

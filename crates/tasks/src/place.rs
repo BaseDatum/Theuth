@@ -429,6 +429,7 @@ mod tests {
                 repos: repos.iter().map(|s| (*s).to_owned()).collect(),
                 display,
                 gpu,
+                accelerator: None,
             },
         }
     }

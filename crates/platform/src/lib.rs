@@ -6,8 +6,10 @@
 
 pub mod env;
 pub mod files;
+pub mod idle;
 pub mod open;
 pub mod ort;
+pub mod power;
 pub mod process;
 pub mod service;
 pub mod sha256;

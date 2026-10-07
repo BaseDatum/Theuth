@@ -13,7 +13,12 @@ sha2 = { workspace = true }  # `sha256`: the `<file>.sha256` sidecar shared by `
 tracing = { workspace = true }
 
 [target.'cfg(unix)'.dependencies]
-libc = { workspace = true }  # killpg / kill / setsid / access / getppid
+libc = { workspace = true }  # killpg / kill / setsid / access / getppid; 126: getloadavg / statvfs / sysctlbyname
+
+[target.'cfg(target_os = "macos")'.dependencies]
+# 126 §8.2: `idle` (CGEventSourceSecondsSinceLastEventType) and `power` (NSProcessInfo.thermalState).
+objc2-core-graphics = { workspace = true, features = ["CGEventSource", "CGEventTypes"] }
+objc2-foundation = { workspace = true, features = ["NSProcessInfo"] }
 
 [target.'cfg(windows)'.dependencies]
 # 58 §0.4 Job Objects, §0.8 owner-only DACLs, §4 ShellExecuteW; features are the four API families used and nothing else.

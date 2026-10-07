@@ -13,7 +13,9 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::oneshot;
 
 use crate::Risk;
-use crate::journal::{Journal, QuestionKind, QuestionRow, QuestionState, WaitKind, WaitRow};
+use crate::journal::{
+    Answerer, Journal, QuestionKind, QuestionRow, QuestionState, WaitKind, WaitRow,
+};
 
 /// Correlates a request with its resolution.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, schemars::JsonSchema)]
@@ -65,13 +67,27 @@ pub struct ApprovalResolved {
     pub timed_out: bool,
 }
 
-/// `ask` → `bool`: true if the id was pending and is now resolved.
+/// `ask` → `bool`: true if the id was pending and is now resolved. A human
+/// answer; the double answers with [`ResolveBy`] (126 §4.3).
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 pub struct Resolve {
     /// The request.
     pub id: ApprovalId,
     /// The answer.
     pub decision: Decision,
+}
+
+/// [`Resolve`] naming who answers (126 §4.3): the double's L2/L3 answer
+/// settles the row with `answered_by = double`; everything else is as for
+/// a human `Resolve`.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+pub struct ResolveBy {
+    /// The request.
+    pub id: ApprovalId,
+    /// The answer.
+    pub decision: Decision,
+    /// Who answers.
+    pub by: Answerer,
 }
 
 /// Registry → approval: publish [`ApprovalRequested`] and wait for a
@@ -140,15 +156,35 @@ impl Approval {
     }
 
     /// Journal a pending row's end: the `questions` row leaves `pending`
-    /// and the call's `waits(question)` row goes (§4.4).
-    async fn settle(&self, mut row: QuestionRow, state: QuestionState, answer: Option<Decision>) {
+    /// and the call's `waits(question)` row goes (§4.4). `by` names who
+    /// answered (126 §4.3); `None` on a timeout.
+    async fn settle(
+        &self,
+        mut row: QuestionRow,
+        state: QuestionState,
+        answer: Option<Decision>,
+        by: Option<Answerer>,
+    ) {
         row.state = state;
         row.answered_at = Some(Utc::now());
         row.answer = answer.map(|d| serde_json::json!(d));
+        row.answered_by = by;
         if let Some(call) = &row.tool_call_id {
             self.journal.wait(None, row.session, call).await;
         }
         self.journal.question(row).await;
+    }
+
+    /// Deliver `decision` to the parked call and settle the row; `false` when
+    /// `id` was not pending.
+    async fn resolve(&mut self, id: ApprovalId, decision: Decision, by: Answerer) -> bool {
+        let Some(p) = self.pending.remove(&id) else {
+            return false;
+        };
+        let delivered = p.tx.send(decision).is_ok();
+        self.settle(p.row, QuestionState::Answered, Some(decision), Some(by))
+            .await;
+        delivered
     }
 }
 
@@ -214,6 +250,7 @@ impl Message<RequestApproval> for Approval {
             deadline,
             answered_at: None,
             answer: None,
+            answered_by: None,
         };
         self.journal.question(row.clone()).await;
         if let Some(call) = &row.tool_call_id {
@@ -272,13 +309,15 @@ impl Message<Resolve> for Approval {
     type Reply = bool;
 
     async fn handle(&mut self, m: Resolve, _: &mut Context<Self, Self::Reply>) -> bool {
-        let Some(p) = self.pending.remove(&m.id) else {
-            return false;
-        };
-        let delivered = p.tx.send(m.decision).is_ok();
-        self.settle(p.row, QuestionState::Answered, Some(m.decision))
-            .await;
-        delivered
+        self.resolve(m.id, m.decision, Answerer::Human).await
+    }
+}
+
+impl Message<ResolveBy> for Approval {
+    type Reply = bool;
+
+    async fn handle(&mut self, m: ResolveBy, _: &mut Context<Self, Self::Reply>) -> bool {
+        self.resolve(m.id, m.decision, m.by).await
     }
 }
 
@@ -287,7 +326,7 @@ impl Message<Expire> for Approval {
 
     async fn handle(&mut self, m: Expire, _: &mut Context<Self, Self::Reply>) {
         if let Some(p) = self.pending.remove(&m.0) {
-            self.settle(p.row, QuestionState::TimedOut, None).await;
+            self.settle(p.row, QuestionState::TimedOut, None, None).await;
         }
     }
 }
@@ -448,6 +487,7 @@ pub(crate) mod tests {
         assert_eq!(rows[1].state, QuestionState::Answered);
         assert_eq!(rows[1].answer, Some(serde_json::json!("allow")));
         assert!(rows[1].answered_at.is_some());
+        assert_eq!(rows[1].answered_by, Some(Answerer::Human));
         assert_eq!(
             journal
                 .waits()
@@ -467,6 +507,43 @@ pub(crate) mod tests {
         );
     }
 
+    /// 126 §4.3: the double's answer settles the row with `answered_by =
+    /// double`; the `answer` JSON keeps the bare `Decision` shape.
+    #[tokio::test]
+    async fn resolve_by_double_names_the_answerer() {
+        let (_rt, actor, journal) = actor(Duration::from_secs(5)).await;
+        let session = SessionId::new();
+        let pending = tokio::spawn({
+            let actor = actor.clone();
+            async move { actor.ask(request(session, Some("c1"))).await.unwrap() }
+        });
+        let id = loop {
+            if let Some(r) = actor.ask(PendingApprovals).await.unwrap().first() {
+                break r.id;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        };
+        assert!(
+            actor
+                .ask(ResolveBy {
+                    id,
+                    decision: Decision::Allow,
+                    by: Answerer::Double,
+                })
+                .await
+                .unwrap()
+        );
+        let resolved = pending.await.unwrap();
+        assert_eq!(
+            (resolved.decision, resolved.timed_out),
+            (Decision::Allow, false)
+        );
+        let rows = journal.questions();
+        assert_eq!(rows[1].state, QuestionState::Answered);
+        assert_eq!(rows[1].answer, Some(serde_json::json!("allow")));
+        assert_eq!(rows[1].answered_by, Some(Answerer::Double));
+    }
+
     /// §6.3: nobody answers → `Deny`, `timed_out`, and the row is `timed_out`.
     #[tokio::test]
     async fn deadline_elapsed_is_timeout() {
@@ -480,6 +557,7 @@ pub(crate) mod tests {
         assert_eq!(rows.len(), 2);
         assert_eq!(rows[1].state, QuestionState::TimedOut);
         assert!(rows[1].answer.is_none());
+        assert!(rows[1].answered_by.is_none());
         assert!(actor.ask(PendingApprovals).await.unwrap().is_empty());
     }
 

@@ -37,6 +37,7 @@ use tools::{
 };
 use tools::{JobId, Key, PtyPage, PtyScreenReply, PtyViewport, TerminalSummary};
 use uuid::Uuid;
+use double::{DoubleAnswered, DoublePredicted};
 
 use crate::broadcast::{Broadcast, BroadcastStage};
 use crate::clip::Image;
@@ -62,6 +63,10 @@ pub enum UiEvent {
     Ask(AskRequested),
     /// An ask was answered or dismissed (by anyone).
     AskResolved(AskResolved),
+    /// The double predicted a card's answer (126 §10); keyed by `question_id`.
+    DoublePredicted(DoublePredicted),
+    /// The double answered a card at L2/L3 (126 §10).
+    DoubleAnswered(DoubleAnswered),
     /// Reply to [`Command::ListSessions`].
     Sessions(Vec<SessionSummary>),
     /// Reply to [`Command::Search`], tagged with the view generation that asked (49 §6.1).
@@ -587,6 +592,8 @@ pub enum Command {
         /// On or off.
         enabled: bool,
     },
+    /// `/double …` (126 §10): one `double_*` call, answered with an `Info` line.
+    Double(DoubleCmd),
     /// `get_prompt`.
     ShowPrompt(Option<SessionId>),
     /// `list_skills`.
@@ -1625,6 +1632,11 @@ pub const COMMANDS: &[(&str, &str, &str)] = &[
         "[reload]",
         "network (A2A) status: listener, configured peers and exports; reload swaps peers.yaml",
     ),
+    (
+        "/double",
+        "[status|off|pause [off]|train [a|b] [venue]|rollback <version>|cap <class> <rung> [opt-in]]",
+        "the owner's double (126): its numbers, learning on/off, a training run, caps",
+    ),
     ("/cancel", "", "abort the in-flight turn"),
     (
         "/compact",
@@ -1707,6 +1719,94 @@ pub fn slash_matches(
         .iter()
         .filter(|c| c.0.starts_with(word) && (app_enabled || c.0 != "/apps"))
         .collect()
+}
+
+/// One `/double` subcommand (126 §10).
+#[derive(Clone, Debug, PartialEq)]
+pub enum DoubleCmd {
+    /// `double_status`.
+    Status,
+    /// `enabled: false` in config.yaml via `double_settings_set`; takes effect at restart.
+    Off,
+    /// `double_pause(on)`.
+    Pause(bool),
+    /// `double_train(tier, venue)`.
+    Train {
+        /// `a` | `b`.
+        tier: double::Tier,
+        /// `auto` | `local` | `node:<name>`.
+        venue: double::Venue,
+    },
+    /// `double_rollback(version)`.
+    Rollback(String),
+    /// `double_set_cap(class, rung, mutating_opt_in)`.
+    Cap {
+        /// The §3 key.
+        class: String,
+        /// 0..=3.
+        rung: u8,
+        /// `opt-in` was given.
+        opt_in: bool,
+    },
+}
+
+impl DoubleCmd {
+    /// The usage line.
+    pub const USAGE: &'static str = "usage: /double [status|off|pause [off]|train [a|b] [auto|local|node:<name>]|rollback <version>|cap <class> <rung> [opt-in]]";
+
+    /// Parse the text after `/double`; `None` is a usage error. A class key may
+    /// contain spaces (`approval:shell:mutating:git push:root`), so `cap` reads
+    /// its trailing `<rung> [opt-in]` first and the rest is the key.
+    pub fn parse(arg: &str) -> Option<Self> {
+        let mut w = arg.split_whitespace();
+        let head = w.next().unwrap_or("status");
+        if head == "cap" {
+            let mut rest: Vec<&str> = w.collect();
+            let opt_in = rest.last() == Some(&"opt-in");
+            if opt_in {
+                rest.pop();
+            }
+            let rung: u8 = rest.pop()?.parse().ok().filter(|r| *r <= 3)?;
+            if rest.is_empty() {
+                return None;
+            }
+            return Some(Self::Cap {
+                class: rest.join(" "),
+                rung,
+                opt_in,
+            });
+        }
+        Some(match (head, w.next(), w.next(), w.next()) {
+            ("status", None, ..) => Self::Status,
+            ("off", None, ..) => Self::Off,
+            ("pause", None, ..) => Self::Pause(true),
+            ("pause", Some("off"), None, _) => Self::Pause(false),
+            ("train", tier, venue, None) => Self::Train {
+                tier: match tier.unwrap_or("a") {
+                    "a" => double::Tier::A,
+                    "b" => double::Tier::B,
+                    _ => return None,
+                },
+                venue: match double::Venue::parse(venue.unwrap_or("auto"))? {
+                    double::Venue::Off => return None,
+                    v => v,
+                },
+            },
+            ("rollback", Some(v), None, _) => Self::Rollback(v.to_owned()),
+            _ => return None,
+        })
+    }
+}
+
+/// The chip text for one card's prediction (126 §10): `double: Allow 91 % · L1`, or at L2
+/// the countdown `double: Allow 91 % · L2 · answers in 18 s (answer to take over)`.
+/// `none` is the double saying it is unsure.
+pub fn double_chip(p: &DoublePredicted, now_ms: u64) -> String {
+    let mut s = format!("double: {} {:.0} % · L{}", p.choice, p.p * 100.0, p.rung);
+    if let Some(left) = double::chip::grace_left_s(p, now_ms) {
+        s.push_str(&format!(" · answers in {left} s (answer to take over)"));
+    }
+    s
 }
 
 /// Tool arguments as display lines. `shell` shows the command itself
@@ -3339,6 +3439,9 @@ pub struct Model {
     pub approvals: VecDeque<ApprovalRequested>,
     /// Pending `ask_user` calls for the current session or its subtree, oldest first; the front is shown.
     pub asks: VecDeque<Ask>,
+    /// The double's prediction per pending card (`question_id` as text), from `DoublePredicted`;
+    /// dropped when the card resolves.
+    pub double: HashMap<String, DoublePredicted>,
     /// `tools.approvals` (global); false = never prompts.
     pub approvals_global: bool,
     /// The root session opted out of prompts (`/approvals off`).
@@ -3762,6 +3865,26 @@ impl Model {
     /// The ask currently shown, if any.
     pub fn ask(&self) -> Option<&Ask> {
         self.asks.front()
+    }
+
+    /// The double's prediction for the shown approval (first) or ask, when it has one.
+    fn shown_prediction(&self) -> Option<&DoublePredicted> {
+        let id = match (self.approval(), self.ask()) {
+            (Some(a), _) => a.id.0,
+            (None, Some(a)) => a.req.id.0,
+            (None, None) => return None,
+        };
+        self.double.get(&id.to_string())
+    }
+
+    /// The double's chip for the shown approval or ask, when it has predicted it.
+    pub fn double_chip(&self) -> Option<String> {
+        self.shown_prediction().map(|p| double_chip(p, now_ms()))
+    }
+
+    /// The shown card is in an L2 grace: frames are needed for the countdown.
+    fn double_counting_down(&self) -> bool {
+        self.shown_prediction().is_some_and(|p| p.will_act_at.is_some())
     }
 
     /// The `secret_request` currently shown, if any.
@@ -4361,6 +4484,7 @@ impl Model {
             || self.advisor.state == AdvisorState::Reviewing
             || self.agents.values().any(AgentRow::live)
             || self.pairing.is_some()
+            || self.double_counting_down()
             || self.invite.is_some()
             || self.dictation.is_some()
             || self.talk_view
@@ -4526,6 +4650,7 @@ impl Model {
                     self.approval_done(session);
                 }
                 self.approvals.retain(|a| a.id != r.id);
+                self.double.remove(&r.id.0.to_string());
             }
             UiEvent::Ask(req) => {
                 if !req.questions.is_empty()
@@ -4534,7 +4659,21 @@ impl Model {
                     self.asks.push_back(Ask::new(req));
                 }
             }
-            UiEvent::AskResolved(r) => self.asks.retain(|a| a.req.id != r.id),
+            UiEvent::AskResolved(r) => {
+                self.asks.retain(|a| a.req.id != r.id);
+                self.double.remove(&r.id.0.to_string());
+            }
+            UiEvent::DoublePredicted(p) => {
+                self.double.insert(p.question_id.clone(), p);
+            }
+            UiEvent::DoubleAnswered(a) => {
+                self.double.remove(&a.question_id);
+                if a.session.is_none_or(|s| {
+                    self.session == Some(s) || self.agents.contains_key(&s)
+                }) {
+                    self.entries.push(Entry::Info(double::chip::answered(&a)));
+                }
+            }
             UiEvent::Sessions(list) => {
                 if list.is_empty() {
                     self.entries.push(Entry::Info("no sessions".into()));
@@ -6501,6 +6640,10 @@ impl Model {
             "/a2a" => self
                 .entries
                 .push(Entry::Error("usage: /a2a [reload]".into())),
+            "/double" => match DoubleCmd::parse(arg) {
+                Some(cmd) => send(tx, Command::Double(cmd)),
+                None => self.entries.push(Entry::Error(DoubleCmd::USAGE.into())),
+            },
             "/mcp" if arg.is_empty() => {
                 self.awaiting_mcp = true;
                 send(tx, Command::ListMcp(self.session));
@@ -17815,6 +17958,93 @@ mod tests {
         assert_eq!(model_row_ids(&m), level);
     }
 
+    #[test]
+    fn double_cmd_parses_the_table() {
+        use double::{Tier, Venue};
+        assert_eq!(DoubleCmd::parse(""), Some(DoubleCmd::Status));
+        assert_eq!(DoubleCmd::parse("off"), Some(DoubleCmd::Off));
+        assert_eq!(DoubleCmd::parse("pause"), Some(DoubleCmd::Pause(true)));
+        assert_eq!(DoubleCmd::parse("pause off"), Some(DoubleCmd::Pause(false)));
+        assert_eq!(
+            DoubleCmd::parse("train"),
+            Some(DoubleCmd::Train { tier: Tier::A, venue: Venue::Auto })
+        );
+        assert_eq!(
+            DoubleCmd::parse("train b node:gpu"),
+            Some(DoubleCmd::Train { tier: Tier::B, venue: Venue::Node("gpu".into()) })
+        );
+        assert_eq!(
+            DoubleCmd::parse("cap approval:shell:mutating:git push:root 2 opt-in"),
+            Some(DoubleCmd::Cap {
+                class: "approval:shell:mutating:git push:root".into(),
+                rung: 2,
+                opt_in: true
+            })
+        );
+        assert_eq!(DoubleCmd::parse("rollback v3"), Some(DoubleCmd::Rollback("v3".into())));
+        for bad in ["train c", "train a off", "cap k 4", "cap k", "cap 2", "pause maybe", "rollback", "x"] {
+            assert_eq!(DoubleCmd::parse(bad), None, "{bad}");
+        }
+    }
+
+    #[test]
+    fn double_chip_follows_the_shown_card_and_counts_down() {
+        let mut m = Model::new("m".into(), true);
+        let s = SessionId::new();
+        m.session = Some(s);
+        let id = ApprovalId(Uuid::new_v4());
+        let pred = |will_act_at: Option<String>| double::DoublePredicted {
+            question_id: id.0.to_string(),
+            session: Some(s),
+            kind: double::CardKind::Approval,
+            class: "approval:shell:mutating:git push:root".into(),
+            choice: "Allow".into(),
+            index: None,
+            p: 0.912,
+            probs: vec![],
+            rung: 1,
+            will_act_at,
+            version: "baseline".into(),
+            explain: Default::default(),
+        };
+        // The prediction arrives before the card: kept, shown once the card is.
+        m.apply(UiEvent::DoublePredicted(pred(None)));
+        assert_eq!(m.double_chip(), None);
+        assert!(!m.animating());
+        m.apply(UiEvent::Approval(ApprovalRequested {
+            id,
+            session: s,
+            tool: "shell".into(),
+            args: serde_json::json!({"command": "git push"}),
+            risk: tools::Risk::Mutating,
+        }));
+        assert_eq!(m.double_chip().as_deref(), Some("double: Allow 91 % · L1"));
+        // L2: the countdown is derived from `will_act_at` and keeps frames coming.
+        let p = pred(Some("2030-01-01T00:00:30Z".into()));
+        let t0 = chrono::DateTime::parse_from_rfc3339("2030-01-01T00:00:12Z").unwrap();
+        assert_eq!(
+            double_chip(&p, u64::try_from(t0.timestamp_millis()).unwrap()),
+            "double: Allow 91 % · L1 · answers in 18 s (answer to take over)"
+        );
+        m.apply(UiEvent::DoublePredicted(p));
+        assert!(m.animating());
+        // Resolution drops it; a later answer line names the choice.
+        m.apply(UiEvent::Resolved(ApprovalResolved { id, decision: Decision::Allow, timed_out: false }));
+        assert_eq!(m.double_chip(), None);
+        assert!(m.double.is_empty());
+        m.apply(UiEvent::DoubleAnswered(double::DoubleAnswered {
+            question_id: id.0.to_string(),
+            session: Some(s),
+            class: "approval:shell:mutating:git push:root".into(),
+            choice: "Allow".into(),
+            version: "baseline".into(),
+            undo_until: None,
+        }));
+        assert!(matches!(
+            m.entries.last(),
+            Some(Entry::Info(t)) if t == "double answered Allow (approval:shell:mutating:git push:root)"
+        ));
+    }
     /// 127 §3: favorites lead the providers level in starring order (only
     /// those in the catalog), the Current row shows only when the current
     /// model is not one of them, the cursor starts on the first favorite,

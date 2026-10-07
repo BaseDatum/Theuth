@@ -14,7 +14,7 @@ use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePool, SqlitePo
 
 use crate::lease::Candidate;
 use crate::pairing::PeerEntry;
-use crate::types::{EngineClass, EngineId, EngineStats, HubPref};
+use crate::types::{Accelerator, EngineClass, EngineId, EngineStats, HubPref};
 
 /// 30 days in ms: the availability window (67 §4.5).
 pub const WINDOW_MS: u64 = 30 * 24 * 3600 * 1000;
@@ -142,12 +142,12 @@ impl Store {
         let hlc = self.hlc(updated_ms);
         sqlx::query(
             "INSERT INTO engine_stats (id, uptime_since_ms, class, harnesses_json, repos_json, display, gpu,
-                                       hub_pref, first_seen_ms, updated_ms, hlc)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                       hub_pref, first_seen_ms, updated_ms, hlc, accelerator)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
              ON CONFLICT(id) DO UPDATE SET uptime_since_ms = excluded.uptime_since_ms, class = excluded.class,
              harnesses_json = excluded.harnesses_json, repos_json = excluded.repos_json, display = excluded.display,
              gpu = excluded.gpu, hub_pref = excluded.hub_pref, first_seen_ms = excluded.first_seen_ms,
-             updated_ms = excluded.updated_ms, hlc = excluded.hlc",
+             updated_ms = excluded.updated_ms, hlc = excluded.hlc, accelerator = excluded.accelerator",
         )
         .bind(&s.id.0)
         .bind(s.uptime_since_ms as i64)
@@ -160,6 +160,7 @@ impl Store {
         .bind(first_seen_ms as i64)
         .bind(updated_ms as i64)
         .bind(&hlc)
+        .bind(s.accelerator.map(Accelerator::as_str))
         .execute(&self.pool)
         .await?;
         Ok(hlc)
@@ -197,7 +198,7 @@ impl Store {
     /// Every known engine's stats (`availability_30d` filled from the ledger).
     pub async fn stats(&self) -> anyhow::Result<Vec<EngineStats>> {
         let rows = sqlx::query(
-            "SELECT id, uptime_since_ms, class, harnesses_json, repos_json, display, gpu FROM engine_stats ORDER BY id",
+            "SELECT id, uptime_since_ms, class, harnesses_json, repos_json, display, gpu, accelerator FROM engine_stats ORDER BY id",
         )
         .fetch_all(&self.pool)
         .await?;
@@ -217,6 +218,10 @@ impl Store {
                 repos: serde_json::from_str(&r.get::<String, _>("repos_json")).unwrap_or_default(),
                 display: r.get::<i32, _>("display") != 0,
                 gpu: r.get::<i32, _>("gpu") != 0,
+                accelerator: r
+                    .get::<Option<String>, _>("accelerator")
+                    .as_deref()
+                    .and_then(Accelerator::parse),
             });
         }
         Ok(out)
@@ -490,6 +495,7 @@ mod tests {
             repos: vec![],
             display: false,
             gpu: false,
+            accelerator: Some(Accelerator::Cuda),
         };
         let hlc = store
             .put_stats(&stats, HubPref::Prefer, 5, 3_000)
@@ -526,6 +532,10 @@ mod tests {
             (c.hub_pref, c.first_seen_ms, c.class) == (HubPref::Prefer, 5, EngineClass::Server)
         );
         assert!(store.candidate(&peer, 0, 3_000).await.unwrap().is_none());
+        // 126 §8.4: the accelerator column round-trips.
+        let all = store.stats().await.unwrap();
+        assert_eq!(all.len(), 1);
+        assert_eq!(all[0].accelerator, Some(Accelerator::Cuda));
     }
 
     #[tokio::test]

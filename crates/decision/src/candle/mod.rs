@@ -4,6 +4,7 @@
 //! ([`collate`]), calibration and confidence ([`postprocess`]), the gate and the log are ours.
 
 pub mod config;
+pub mod lora;
 pub mod model;
 pub mod weights;
 
@@ -159,15 +160,11 @@ impl Gpu {
             Gpu::None | Gpu::Cuda => DType::F32,
         }
     }
-}
 
-impl Loaded {
-    /// Open a laya checkpoint dir (`crate::engine::model_files(Kind::Laya)`, the Hugging Face layout) on
-    /// `gpu` or the CPU at `dtype`. A GPU that cannot be created — or CUDA in a binary built
-    /// without `decision/cuda` — falls back to CPU f32 with a warning.
-    pub fn open(dir: &Path, gpu: Gpu, dtype: DType) -> anyhow::Result<Loaded> {
-        let t = Instant::now();
-        let picked = match gpu {
+    /// Create the candle device, or say why it cannot be (no GPU; CUDA in a binary built
+    /// without `decision/cuda`).
+    pub fn open(self) -> std::result::Result<Device, String> {
+        match self {
             Gpu::None => Ok(Device::Cpu),
             Gpu::Metal => Device::new_metal(0).map_err(|e| format!("Metal unavailable ({e})")),
             #[cfg(feature = "cuda")]
@@ -176,7 +173,17 @@ impl Loaded {
             Gpu::Cuda => {
                 Err("this build has no CUDA (needs `--features decision/cuda` and nvcc)".into())
             }
-        };
+        }
+    }
+}
+
+impl Loaded {
+    /// Open a laya checkpoint dir (`crate::engine::model_files(Kind::Laya)`, the Hugging Face layout) on
+    /// `gpu` or the CPU at `dtype`. A GPU that cannot be created — or CUDA in a binary built
+    /// without `decision/cuda` — falls back to CPU f32 with a warning.
+    pub fn open(dir: &Path, gpu: Gpu, dtype: DType) -> anyhow::Result<Loaded> {
+        let t = Instant::now();
+        let picked = gpu.open();
         let (device, dtype) = match picked {
             Ok(d) => (d, dtype),
             Err(e) => {
@@ -257,6 +264,17 @@ impl Loaded {
     /// head's top-2 features need them), one [`RowOut`] per row. The head's logits come back
     /// raw (unused slots at −1e4) and go through our [`postprocess`]; nothing is calibrated twice.
     pub fn run<R: Borrow<Sequence>>(&self, rows: &[R]) -> anyhow::Result<Vec<RowOut>> {
+        self.run_with(rows, false)
+    }
+
+    /// [`Self::run`] that also copies the pooled `[CLS]` state into
+    /// `RowOut::embedding` when `embed` (126 §7.2): one `to_vec2` per batch,
+    /// no second forward; the families that do not ask pay nothing.
+    pub fn run_with<R: Borrow<Sequence>>(
+        &self,
+        rows: &[R],
+        embed: bool,
+    ) -> anyhow::Result<Vec<RowOut>> {
         if rows.is_empty() {
             return Ok(Vec::new());
         }
@@ -274,17 +292,26 @@ impl Loaded {
                 batch.k
             );
         }
+        let mut pooled: Vec<Vec<f32>> = if embed {
+            out.pooled.to_vec2()?
+        } else {
+            Vec::new()
+        };
         let (k, na) = (batch.k, act.len() / batch.b);
         Ok(rows
             .iter()
             .enumerate()
             .map(|(i, row)| {
-                postprocess(
+                let mut r = postprocess(
                     row.borrow(),
                     &logits[i * k..(i + 1) * k],
                     &act[i * na..(i + 1) * na],
                     &self.laya,
-                )
+                );
+                if embed {
+                    r.embedding = Some(std::mem::take(&mut pooled[i]));
+                }
+                r
             })
             .collect())
     }
@@ -298,6 +325,9 @@ impl Oracle for Loaded {
         Loaded::build(self, q).map(|s| Box::new(s) as Box<dyn Row>)
     }
     fn run(&mut self, rows: &[Box<dyn Row>]) -> anyhow::Result<Vec<Scores>> {
+        self.run_embed(rows, false)
+    }
+    fn run_embed(&mut self, rows: &[Box<dyn Row>], embed: bool) -> anyhow::Result<Vec<Scores>> {
         let seqs = rows
             .iter()
             .map(|r| {
@@ -306,7 +336,7 @@ impl Oracle for Loaded {
                     .ok_or_else(|| anyhow::anyhow!("laya oracle given a row it did not build"))
             })
             .collect::<anyhow::Result<Vec<&Sequence>>>()?;
-        Ok(Loaded::run(self, &seqs)?
+        Ok(Loaded::run_with(self, &seqs, embed)?
             .into_iter()
             .map(Scores::from)
             .collect())
