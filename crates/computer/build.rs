@@ -1,4 +1,4 @@
-//! Spike 121 (docs/design/121-sck-capture-spike.md §6): the Swift bridges of
+//! ScreenCaptureKit link fixes (121 §6): the Swift bridges of
 //! `screencapturekit` / `apple-cf` / `apple-metal` force-load the static
 //! `libswiftCompatibility*.a` libraries, and `apple-metal` 0.10's build.rs only
 //! adds the link-search path for them under a full Xcode

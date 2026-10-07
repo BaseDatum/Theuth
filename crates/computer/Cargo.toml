@@ -25,7 +25,7 @@ ts-rs = { workspace = true, optional = true }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2-core-graphics = { workspace = true }
-# Spike 121: `THEUTH_CAPTURE_BACKEND=sck` path in `screen.rs`.
+# 121: ScreenCaptureKit screenshots, the default macOS capture path (`screen.rs`).
 screencapturekit = { workspace = true }
 # 96: accessibility reader (`ax.rs`).
 objc2-application-services = { workspace = true }
