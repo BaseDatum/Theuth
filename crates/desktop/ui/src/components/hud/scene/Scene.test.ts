@@ -116,13 +116,52 @@ test('Scene draws the fixture: rings, needs, flows, panels, links, tokens only',
   expect(html).toContain('06 NEED YOU')
   expect(html).toContain('>9 OUTCOMES TODAY<')
   expect(html).toContain('>6 IN FLIGHT<')
-  expect(html).toContain('$31.20 THIS MONTH')
+  expect(html).toContain('$4,102.00 THIS MONTH') // Revision 3: the ledger's month, not the roster's budget sum
   for (const t of ['AGENTS', 'ARRIVALS', 'OUTCOMES', 'SPEND', 'STREAM']) expect(html).toContain(`>${t}<`)
   expect(html).toContain('>19:49<')
   // Accessibility: the field is one image with a title and a summary; the band is HTML (four SVG panels + the stream box).
   expect(html).toMatch(/<svg[^>]*viewBox="0 0 1920 812"[^>]*role="img"[^>]*aria-labelledby="hud-scene-title hud-scene-desc"/)
   expect(count(html, /viewBox="0 0 352 248"/g)).toBe(4)
   expect(html).toContain('6 need you · 2 agents working')
+})
+
+test('Revision 3 — SPEND: month big number, TODAY meta, seven bars (today faience, $0 day a hairline), owner rows with glyphs and links, cap rows only for budgeted agents, no gold/carnelian', () => {
+  const html = renderToStaticMarkup(createElement(Scene, { data: F, now: NOW }))
+  const panel = /<text x="24" y="19"[^>]*>SPEND<\/text>(.*?)<\/g><\/svg>/.exec(html)![1]!
+  expect(panel).toContain('>TODAY $1,302.38<')
+  expect(panel).toMatch(/<text x="340" y="236"[^>]*>\$4,102\.00<\/text>/)
+  // Seven bars 28 wide; six secondary, today faience; the $0 Saturday is a 1-unit hairline, the max day fills 52.
+  const bars = [...panel.matchAll(/<rect x="[\d.]+" y="([\d.]+)" width="28" height="([\d.]+)" fill="([^"]+)">/g)].map((m) => [Number(m[1]), Number(m[2]), m[3]] as const)
+  expect(bars).toHaveLength(7)
+  expect(bars.filter(([, , fill]) => fill === 'var(--status-info-fg)')).toHaveLength(1)
+  expect(bars[6]).toEqual([40, 52, 'var(--status-info-fg)'])
+  expect(bars[3]).toEqual([91, 1, 'var(--fg-secondary)'])
+  expect(panel).toMatch(/>t<.*>f<.*>s<.*>s<.*>m<.*>t<.*>w</s)
+  // Owners: you (plain, unlinked), builder + research (ring dot → /agents/<name>), nightly-digest (square → /routines/<name>).
+  expect(panel).toContain('>you<')
+  expect(panel).not.toMatch(/<a href="[^"]*"><text x="28" y="124"/)
+  expect(panel).toMatch(/<a href="\/agents\/builder"><circle cx="18"/)
+  expect(panel).toMatch(/<a href="\/routines\/nightly-digest"><rect x="15.5"/)
+  expect(panel).toContain('>$2,210.50<')
+  expect(panel).not.toContain('ops-desk</text>') // the fifth owner is cut at four
+  // Cap rows: only budgeted agents, in share order; with four owner rows one fits (docs-desk, the fullest), analyst (no cap) never.
+  expect(panel).toContain('>docs-desk cap<')
+  expect(panel).not.toContain('analyst')
+  expect(panel).not.toContain('var(--fg-accent)')
+  expect(panel).not.toContain('var(--status-danger-fg)')
+  // Compact: the text line carries month, today and the top two owners.
+  const compact = renderToStaticMarkup(createElement(SceneCompact, { data: F, now: NOW }))
+  const line = /<div aria-label="Spend"[^>]*>(.*?)<svg viewBox="0 0 352 248"/.exec(compact)![1]!
+  expect(line).toContain('$4,102.00 month')
+  expect(line).toContain('$1,302.38 today')
+  expect(line).toContain('you $2,210.50')
+  expect(line).toMatch(/<a href="\/agents\/builder"[^>]*><span[^>]*>builder \$1,104\.20/)
+  expect(line).not.toContain('research')
+  // No report: seven hairlines, $0.00 everywhere, no owner rows; the chrome stays.
+  const empty = /<text x="24" y="19"[^>]*>SPEND<\/text>(.*?)<\/g><\/svg>/.exec(renderToStaticMarkup(createElement(Scene, { data: {}, now: NOW })))![1]!
+  expect(count(empty, /height="1" fill=/g)).toBe(7)
+  expect(empty).toContain('>TODAY $0.00<')
+  expect(empty).not.toMatch(/<text x="28"/)
 })
 
 test('Revision 4 — satellites: none for a root without live children; capped at 8 with a "+N" after the last; the fold ring draws none', () => {

@@ -1,6 +1,6 @@
 import { expect, test } from 'vitest'
 import { sceneFixture, T } from './fixtures'
-import { ARC, arc, arcPoint, C, contextFill, ctxTitle, dueFlows, END_X, FIELD_H, fieldHeight, flowPath, gaugeEnd, gaugePath, geom, hairlines, HAIRLINES_MAX, hourOf, kTokens, LABEL_GAP, layoutEnds, needFlows, needsYou, outcomeMix, outcomes, punchCard, RING, ringByActor, ringByRoutine, ringBySession, rings, rng, running, scene, sessionPresence, sessionsToday, shortId, startOfDay, streamLink } from './model'
+import { ARC, arc, arcPoint, C, contextFill, ctxTitle, dueFlows, END_X, FIELD_H, fieldHeight, flowPath, fmtUsd, gaugeEnd, gaugePath, geom, hairlines, HAIRLINES_MAX, hourOf, kTokens, LABEL_GAP, layoutEnds, localDay, needFlows, needsYou, outcomeMix, outcomes, punchCard, RING, ringByActor, ringByRoutine, ringBySession, rings, rng, running, scene, sessionPresence, sessionsToday, shortId, spendPanel, startOfDay, streamLink } from './model'
 
 // A fixed local evening, as the mockup's clock reads.
 const NOW = new Date(2026, 9, 7, 19, 49, 19).getTime()
@@ -466,7 +466,7 @@ test('outcomeMix counts today’s moves; running counts every doing task', () =>
 test('scene: footer numbers (IN FLIGHT counts the running routine) and the whole model from the fixture; empty data draws nothing but the chrome', () => {
   const s = scene(F, NOW)
   // SESSIONS LIVE: running first, 15-min recency as the fallback (chat-1/2/4, child-21/22/23, child-c1, desk-analyst, adv-1; arch-1 never).
-  expect(s.footer).toEqual({ sessionsLive: 9, agentsWorking: 2, needYou: 6, month: 31.2, outcomes: 9, inFlight: 3 + 1 + 2 })
+  expect(s.footer).toEqual({ sessionsLive: 9, agentsWorking: 2, needYou: 6, month: 4102, outcomes: 9, inFlight: 3 + 1 + 2 }) // Revision 3: month from the ledger
   expect(s.rings).toHaveLength(12)
   expect(s.needs).toHaveLength(6)
   expect(s.flows).toHaveLength(6 + 9 + 6 + 1) // needs, outcomes, running (3 tasks + nightly-digest + 2 roots), the due connector
@@ -480,4 +480,35 @@ test('scene: footer numbers (IN FLIGHT counts the running routine) and the whole
   expect(empty.flows).toEqual([])
   expect(empty.hairlines).toEqual([])
   expect(empty.footer.needYou).toBeNull() // the inbox has not loaded — not a false 0
+})
+
+test('spendPanel: seven bars with weekday letters and today flagged last, month/today numbers, owners capped at 4, caps only with a budget', () => {
+  const p = spendPanel(F.spend, F.agents, NOW)
+  expect(p.days).toHaveLength(7)
+  // 2026-10-07 is a Wednesday: the week reads t f s s m t w, today last.
+  expect(p.days.map((d) => d.label).join('')).toBe('tfssmtw')
+  expect(p.days.map((d) => d.today)).toEqual([false, false, false, false, false, false, true])
+  expect(p.days[3]!.usd).toBe(0) // a $0 day is a bar of nothing, still a day
+  expect(p.today).toBe(1302.38)
+  expect(p.month).toBe(4102)
+  expect(p.owners.map((o) => [o.kind, o.name])).toEqual([
+    ['user', 'you'],
+    ['agent', 'builder'],
+    ['agent', 'research'],
+    ['routine', 'nightly-digest'],
+  ])
+  // analyst has no cap → no cap row; docs-desk is paused but capped → still a row.
+  expect(p.caps.map((c) => c.name)).toEqual(['docs-desk', 'builder', 'research', 'ops-desk'])
+  expect(p.caps.every((c) => c.cap !== null)).toBe(true)
+  // A report longer than a week keeps the last seven; a missing report is a week of $0 ending today.
+  const long = spendPanel({ ...F.spend, days: [{ day: '2026-09-30', usd: 9, calls: 1, unresolved: 0 }, ...F.spend.days] }, [], NOW)
+  expect(long.days).toHaveLength(7)
+  expect(long.days[6]!.today).toBe(true)
+  const none = spendPanel(undefined, F.agents, NOW)
+  expect(none.days.map((d) => d.usd)).toEqual([0, 0, 0, 0, 0, 0, 0])
+  expect(none.days[6]).toEqual({ label: 'w', usd: 0, today: true })
+  expect([none.month, none.today, none.owners]).toEqual([0, 0, []])
+  expect(localDay(NOW)).toBe('2026-10-07')
+  expect(fmtUsd(1302.38)).toBe('$1,302.38')
+  expect(fmtUsd(0)).toBe('$0.00')
 })

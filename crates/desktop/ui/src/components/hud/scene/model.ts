@@ -6,8 +6,11 @@ import type { ContextBreakdown } from '@/rpc/bindings/ContextBreakdown'
 import type { ModelInfo } from '@/rpc/bindings/ModelInfo'
 import type { ScheduleInfo } from '@/rpc/bindings/ScheduleInfo'
 import type { SessionSummary } from '@/rpc/bindings/SessionSummary'
+import type { SpendOwnerKind } from '@/rpc/bindings/SpendOwnerKind'
+import type { SpendReport } from '@/rpc/bindings/SpendReport'
 import type { Task } from '@/rpc/bindings/Task'
 import type { TaskState } from '@/rpc/bindings/TaskState'
+import { type Spend, spend } from '../model'
 
 /**
  * 128 HUD-SCENE: everything the `/` scene draws is a pure function of (data, now) in the 1920×1080 viewBox of the
@@ -695,12 +698,13 @@ export function outcomeMix(tasks: readonly Task[], now: number): OutcomeMix {
 /** `needYou` is `null` while the inbox is still loading — the chrome shows `—`, not a false `00`. */
 export type Footer = { sessionsLive: number; agentsWorking: number; needYou: number | null; month: number; outcomes: number; inFlight: number }
 
-export function footer(agents: readonly AgentSummary[], sessions: readonly SessionSummary[], attention: readonly AttentionItem[] | undefined, outcomesToday: number, inFlight: number, now: number): Footer {
+export function footer(agents: readonly AgentSummary[], sessions: readonly SessionSummary[], attention: readonly AttentionItem[] | undefined, outcomesToday: number, inFlight: number, now: number, ledgerMonth?: number): Footer {
   return {
     sessionsLive: sessions.filter((s) => !s.archived && (s.running || now - Date.parse(s.updated_at) <= 15 * 60_000)).length,
     agentsWorking: agents.filter((a) => a.status === 'working').length,
     needYou: attention?.length ?? null,
-    month: agents.reduce((sum, a) => sum + a.spent_month, 0),
+    // Rev 3: the ledger's month when it has loaded; the roster's budget sum (capped agents only) until then.
+    month: ledgerMonth ?? agents.reduce((sum, a) => sum + a.spent_month, 0),
     outcomes: outcomesToday,
     inFlight,
   }
@@ -753,6 +757,8 @@ export type SceneData = {
   activityWeek?: readonly ActivityEntry[]
   /** The last 50 rows (`useActivity`), for STREAM. */
   activity?: readonly ActivityEntry[]
+  /** Rev 3: the model-call ledger (`spend_report(7)`), for SPEND. */
+  spend?: SpendReport
   /** Revision 2: desk session id → context gauge (`useDeskContexts`); absent or missing a session → no gauge on that ring. */
   contexts?: ReadonlyMap<string, Ctx>
 }
@@ -772,6 +778,8 @@ export type SceneModel = {
   punch: PunchCard
   mix: OutcomeMix
   footer: Footer
+  /** Rev 3: the SPEND panel (`spendPanel`). */
+  spend: SpendPanelModel
 }
 
 /** The whole picture from the data at field height `hv` (R4: the viewBox follows the window); missing queries draw nothing (the chrome stays). */
@@ -790,6 +798,7 @@ export function scene(data: SceneData, now: number, hv: number = FIELD_H): Scene
   const laid = layoutEnds([...needFlows(needs, rs, now), ...outs.flows, ...runs], g)
   const drawn = new Set(laid.flows.map((f) => f.id))
   const inFlight = tasks.filter((t) => t.state === 'doing').length + routines.filter((r) => r.running).length + sessionPresence(sessions, now).filter((r) => r.s.running).length
+  const spend = spendPanel(data.spend, agents, now)
   return {
     now,
     hv,
@@ -803,6 +812,41 @@ export function scene(data: SceneData, now: number, hv: number = FIELD_H): Scene
     hairlines: hairlines(today, sessionsToday(sessions, now), rs, drawn, now, g),
     punch: punchCard(data.activityWeek ?? [], now),
     mix: outcomeMix(tasks, now),
-    footer: footer(agents, sessions, data.attention, outs.total, inFlight, now),
+    footer: footer(agents, sessions, data.attention, outs.total, inFlight, now, data.spend?.month.usd),
+    spend,
+  }
+}
+
+// --------------------------------------------------------------------------------------------------------------- spend
+
+/** `YYYY-MM-DD` of `ms` in local time — the engine's `SpendDay.day` shape. */
+export const localDay = (ms: number): string => {
+  const d = new Date(ms)
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+}
+
+/** `$1,302.38`: dollars with a thousands separator and two decimals. */
+export const fmtUsd = (usd: number): string => `$${usd.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+
+export type SpendBar = { label: string; usd: number; today: boolean }
+export type SpendOwnerRow = { kind: SpendOwnerKind; name: string; usd: number }
+export type SpendPanelModel = { month: number; today: number; days: SpendBar[]; owners: SpendOwnerRow[]; caps: Spend[] }
+
+/**
+ * Rev 3: the SPEND panel from the ledger — month to date, today, the last seven local days as bars (weekday letter, today
+ * flagged), the top four owners, and the budget rows only for agents with a monthly cap. No report = seven empty days.
+ */
+export function spendPanel(report: SpendReport | undefined, agents: readonly AgentSummary[], now: number): SpendPanelModel {
+  const today = localDay(now)
+  const days = (report?.days ?? Array.from({ length: 7 }, (_, i) => ({ day: localDay(now - (6 - i) * DAY_MS), usd: 0 }))).slice(-7).map((d) => {
+    const [y, m, day] = d.day.split('-').map(Number)
+    return { label: 'smtwtfs'[new Date(y ?? 0, (m ?? 1) - 1, day ?? 1).getDay()] ?? '', usd: d.usd, today: d.day === today }
+  })
+  return {
+    month: report?.month.usd ?? 0,
+    today: days.find((d) => d.today)?.usd ?? 0,
+    days,
+    owners: (report?.owners ?? []).slice(0, 4).map((o) => ({ kind: o.kind, name: o.name, usd: o.usd })),
+    caps: spend(agents).filter((r) => r.cap !== null),
   }
 }

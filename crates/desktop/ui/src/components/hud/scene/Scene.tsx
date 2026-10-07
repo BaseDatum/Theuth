@@ -2,10 +2,8 @@ import { Link } from '@tanstack/react-router'
 import { type CSSProperties, type ReactNode, type RefObject, type SVGProps, useEffect, useMemo, useRef, useState } from 'react'
 import { age } from '@/components/tasks/helpers'
 import { cn } from '@/lib/utils'
-import { spend } from '../model'
-import { C, type Color, FIELD_H, fieldHeight, hhmm, hhmmss, MIX_ORDER, type Hairline, type OutcomeMix, type PunchCard, type Ring, type SceneData, type SceneModel, type Target, actorLabel, ctxTitle, GAUGE_R, gaugeEnd, gaugePath, ringColor, ringDashed, ringDots, SAT_MAX, satPoint, scene, streamColor, streamLink, truncate, W } from './model'
+import { C, type Color, FIELD_H, fieldHeight, fmtUsd, hhmm, hhmmss, MIX_ORDER, type Hairline, type OutcomeMix, type PunchCard, type Ring, type SceneData, type SceneModel, type SpendOwnerRow, type SpendPanelModel, type Target, actorLabel, ctxTitle, GAUGE_R, gaugeEnd, gaugePath, ringColor, ringDashed, ringDots, SAT_MAX, satPoint, scene, streamColor, streamLink, truncate, W } from './model'
 import type { ActivityEntry } from '@/rpc/bindings/ActivityEntry'
-import type { AgentSummary } from '@/rpc/bindings/AgentSummary'
 import type { Task } from '@/rpc/bindings/Task'
 
 /**
@@ -290,26 +288,68 @@ export function OutcomesPanel({ mix, tasks }: { mix: OutcomeMix; tasks: readonly
   )
 }
 
-export function SpendPanel({ agents }: { agents: readonly AgentSummary[] }) {
-  const rows = spend(agents)
-  const total = agents.reduce((s, a) => s + a.spent_month, 0)
+/** Where an owner row goes: an agent to its page, a routine to its page, `you`/`other` nowhere (there is no sessions list route). */
+export const ownerTarget = (o: SpendOwnerRow): Target | null => (o.kind === 'agent' ? { route: 'agent', name: o.name } : o.kind === 'routine' ? { route: 'routine', name: o.name } : null)
+
+const BAR_SLOT = 324 / 7
+const BAR_W = 28
+const BAR_TOP = 40
+const BAR_H = 52
+const OWNER_Y0 = 124
+const OWNER_DY = 16
+
+/**
+ * Rev 3: SPEND reads the model-call ledger (`spend_report`). Big number = month to date, meta = today; seven thin bars for
+ * the last local days scaled to the week's max (today faience, the rest secondary ink; a $0 day is a hairline, never blank);
+ * then the owner rows (ring dot = agent, square = routine, plain = you) and, only for agents with a monthly cap, the budget
+ * rows with their share bar. No gold and no carnelian here: nothing in this panel is a need or an error.
+ */
+export function SpendPanel({ p }: { p: SpendPanelModel }) {
+  const max = Math.max(0, ...p.days.map((d) => d.usd))
+  const capsY0 = OWNER_Y0 + OWNER_DY * p.owners.length + 8
+  const caps = p.caps.map((r, i) => ({ r, y: capsY0 + 18 * i })).filter(({ y }) => y + 9 <= 212)
   return (
-    <Panel title="SPEND" meta="MONTH" big={`$${total.toFixed(2)}`} bigLink={{ route: 'agents' }}>
-      {rows.slice(0, 5).map((r, i) => {
-        const y = 50 + 32 * i
+    <Panel title="SPEND" meta={`TODAY ${fmtUsd(p.today)}`} big={fmtUsd(p.month)} bigLink={{ route: 'agents' }}>
+      {p.days.map((d, i) => {
+        const x = 14 + BAR_SLOT * i + (BAR_SLOT - BAR_W) / 2
+        const h = max > 0 ? Math.max(1, (BAR_H * d.usd) / max) : 1
+        const ink = d.today ? C.info : C.secondary
         return (
-          <To key={r.name} target={{ route: 'agent', name: r.name }} title={`${r.name} · $${r.spent.toFixed(2)}${r.cap === null ? '' : ` of $${r.cap}`} this month`}>
-            <text x={14} y={y} fontSize={10} fill={C.primary}>
-              {r.name}
+          <To key={i} target={null} title={`${d.today ? 'today' : d.label} · ${fmtUsd(d.usd)}`}>
+            <rect x={x} y={BAR_TOP + BAR_H - h} width={BAR_W} height={h} fill={ink} />
+            <text x={x + BAR_W / 2} y={BAR_TOP + BAR_H + 12} fontSize={8} fill={d.today ? C.info : C.tertiary} textAnchor="middle">
+              {d.label}
             </text>
-            <text x={340} y={y} fontSize={9} fill={C.secondary} textAnchor="end">
-              {r.cap === null ? `$${r.spent.toFixed(1)} · no cap` : `$${r.spent.toFixed(1)} / $${r.cap}`}
-            </text>
-            <line x1={14} y1={y + 9} x2={338} y2={y + 9} stroke={C.borderStrong} strokeWidth={2} />
-            {r.share !== null && r.share > 0 && <line x1={14} y1={y + 9} x2={14 + 324 * r.share} y2={y + 9} stroke={r.share > 0.85 ? C.danger : C.success} strokeWidth={2} />}
           </To>
         )
       })}
+      {p.owners.map((o, i) => {
+        const y = OWNER_Y0 + OWNER_DY * i
+        return (
+          <To key={`${o.kind}:${o.name}`} target={ownerTarget(o)} title={`${o.name} · ${fmtUsd(o.usd)} this week`}>
+            {o.kind === 'agent' && <circle cx={18} cy={y - 3.5} r={3} fill="none" stroke={C.secondary} strokeWidth={1} />}
+            {o.kind === 'routine' && <rect x={15.5} y={y - 6} width={5} height={5} fill={C.secondary} />}
+            <text x={28} y={y} fontSize={10} fill={C.primary}>
+              {truncate(o.name, 28)}
+            </text>
+            <text x={338} y={y} fontSize={9} fill={C.secondary} textAnchor="end">
+              {fmtUsd(o.usd)}
+            </text>
+          </To>
+        )
+      })}
+      {caps.map(({ r, y }) => (
+        <To key={r.name} target={{ route: 'agent', name: r.name }} title={`${r.name} · $${r.spent.toFixed(2)} of $${r.cap} this month`}>
+          <text x={14} y={y} fontSize={9} fill={C.tertiary}>
+            {r.name} cap
+          </text>
+          <text x={340} y={y} fontSize={9} fill={C.tertiary} textAnchor="end">
+            {`$${r.spent.toFixed(1)} / $${r.cap}`}
+          </text>
+          <line x1={14} y1={y + 5} x2={338} y2={y + 5} stroke={C.borderStrong} strokeWidth={2} />
+          {r.share !== null && r.share > 0 && <line x1={14} y1={y + 5} x2={14 + 324 * r.share} y2={y + 5} stroke={r.share > 0.85 ? C.primary : C.success} strokeWidth={2} />}
+        </To>
+      ))}
     </Panel>
   )
 }
@@ -392,7 +432,7 @@ export function footerSegments(m: SceneModel): { text: string; color: Color; tar
     { text: `${f.sessionsLive} SESSIONS LIVE`, color: C.tertiary, target: { route: 'new' } },
     { text: `${f.agentsWorking} AGENTS WORKING`, color: C.tertiary, target: { route: 'agents' } },
     { text: `${f.needYou === null ? '—' : pad2(f.needYou)} NEED YOU`, color: f.needYou !== null && f.needYou > 0 ? C.accent : C.tertiary, target: { route: 'attention-list' } },
-    { text: `$${f.month.toFixed(2)} THIS MONTH`, color: C.tertiary, target: { route: 'agents' } },
+    { text: `${fmtUsd(f.month)} THIS MONTH`, color: C.tertiary, target: { route: 'agents' } },
     { text: `${f.outcomes} OUTCOMES TODAY`, color: C.tertiary, target: { route: 'tasks', state: 'done' } },
     { text: `${f.inFlight} IN FLIGHT`, color: C.tertiary, target: { route: 'tasks', state: 'doing' } },
   ]
@@ -412,7 +452,7 @@ export function Panels({ data, m, now, stream }: { data: SceneData; m: SceneMode
         <OutcomesPanel mix={m.mix} tasks={data.tasks ?? []} />
       </PanelSvg>
       <PanelSvg>
-        <SpendPanel agents={data.agents ?? []} />
+        <SpendPanel p={m.spend} />
       </PanelSvg>
       <StreamPanel activity={data.activity ?? []} className={stream} />
     </>

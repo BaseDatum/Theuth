@@ -38,7 +38,8 @@ use agent::{
 use agent::{
     Authorize, Authorized, CloseResult, CreateSession, CreateSessionOptions, LeaveSession,
     ListProjectStyles, PeerDeliver, PeerEnvelope, PrivateTrees, ProjectStyle, ResumePrivate,
-    SessionCost, SessionCostQuery, SessionOpen, SetProjectStyle, SetSessionProject,
+    SessionCost, SessionCostQuery, SessionOpen, SetProjectStyle, SetSessionProject, SpendReport,
+    SpendReportQuery,
 };
 use agent::{AwsProfiles, ListAwsProfiles, SetAwsProfile};
 use agent::{GetFavoriteModels, SetModelFavorite};
@@ -477,6 +478,12 @@ pub trait Api {
     /// `ModelUsageChanged` bumps. `Err` when the session owns no ledger.
     #[method(name = "session_cost", with_extensions)]
     async fn session_cost(&self, session: SessionId) -> RpcResult<SessionCost>;
+    /// Model-call spend of the durable ledger (128 Rev 3): the last `days`
+    /// local calendar days (clamped to 1..=31, oldest first), the month to
+    /// date, and the window's top owners by root session. Re-read on
+    /// `ModelUsageChanged`.
+    #[method(name = "spend_report")]
+    async fn spend_report(&self, days: u32) -> RpcResult<SpendReport>;
     /// Set a session's title by hand; `TitleChanged` follows on the stream.
     #[method(name = "rename_session", with_extensions)]
     async fn rename_session(&self, session: SessionId, title: String) -> RpcResult<()>;
@@ -3270,6 +3277,10 @@ impl ApiServer for Server {
         ask::<Agents, _>(agent::AGENT_ACTOR, SessionCostQuery(session))
             .await?
             .ok_or_else(|| failed(format!("{session}: no accounting owner")))
+    }
+
+    async fn spend_report(&self, days: u32) -> RpcResult<SpendReport> {
+        ask::<Agents, _>(agent::AGENT_ACTOR, SpendReportQuery(days)).await
     }
 
     async fn session_take(
@@ -7106,6 +7117,51 @@ mod tests {
     async fn dictation_status_reaches_relay_peers() {
         let v = remote_dictation_call("dictation_status", "[]").await;
         assert_eq!(v["error"]["code"].as_i64(), Some(i64::from(NOT_RUNNING)));
+    }
+
+    /// 128 Rev 3: `spend_report` is registered, parses `[days]` and reaches
+    /// the agent lookup (no actor here, so `NOT_RUNNING`); its reply type
+    /// round-trips with `kind` on the wire as the snake-case string.
+    #[tokio::test]
+    async fn spend_report_is_registered_and_round_trips() {
+        let rt = Runtime::new(figment::Figment::new(), std::env::temp_dir());
+        let methods: jsonrpsee::Methods = Server::new(rt).into_rpc().into();
+        assert!(methods.method_names().any(|m| m == "spend_report"));
+        let (resp, _) = methods
+            .raw_json_request(
+                r#"{"jsonrpc":"2.0","method":"spend_report","params":[7],"id":1}"#,
+                1,
+            )
+            .await
+            .unwrap();
+        let v: serde_json::Value = serde_json::from_str(resp.get()).unwrap();
+        assert_eq!(v["error"]["code"].as_i64(), Some(i64::from(NOT_RUNNING)));
+
+        let report = SpendReport {
+            days: vec![agent::SpendDay {
+                day: "2026-10-07".into(),
+                usd: 1302.38,
+                calls: 3,
+                unresolved: 1,
+            }],
+            month: agent::SpendDay {
+                day: "2026-10".into(),
+                usd: 4102.0,
+                calls: 36_861,
+                unresolved: 0,
+            },
+            owners: vec![agent::SpendOwner {
+                kind: agent::SpendOwnerKind::Agent,
+                name: "builder".into(),
+                usd: 12.5,
+                calls: 40,
+            }],
+        };
+        let json = serde_json::to_value(&report).unwrap();
+        assert_eq!(json["owners"][0]["kind"], "agent");
+        assert_eq!(json["days"][0]["day"], "2026-10-07");
+        let back: SpendReport = serde_json::from_value(json).unwrap();
+        assert_eq!(back, report);
     }
 
     /// The daemon's devices are out of a relay peer's reach: `talk_start` with

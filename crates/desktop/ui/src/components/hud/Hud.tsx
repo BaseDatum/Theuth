@@ -21,7 +21,7 @@ import { cn } from '@/lib/utils'
 import type { AttentionItem } from '@/rpc/bindings/AttentionItem'
 import { useSecretRequests } from '@/store/approvals'
 import { snoozeUntil } from './model'
-import { ATTENTION_KEY, SECRET_REQUESTS_KEY, useActivity, useActivityToday, useActivityWeek, useAttention, useAttentionActions, useSessionContexts, useSecretRequestRows, useSessionList } from './queries'
+import { ATTENTION_KEY, SECRET_REQUESTS_KEY, useActivity, useActivityToday, useActivityWeek, useAttention, useAttentionActions, useSessionContexts, useSecretRequestRows, useSessionList, useSpendReport } from './queries'
 import { sceneFixture } from './scene/fixtures'
 import type { SceneData } from './scene/model'
 import { SceneSwitch } from './scene/SceneCompact'
@@ -45,6 +45,7 @@ export function Hud() {
   const activityWeek = useActivityWeek()
   const sessions = useSessionList()
   const contexts = useSessionContexts(sessions.data)
+  const spend = useSpendReport()
   useEffect(() => {
     document.title = ''
   }, [])
@@ -62,8 +63,9 @@ export function Hud() {
       activityWeek: activityWeek.data,
       activity: fixture?.activity ?? activity.data,
       contexts: fixture?.contexts ?? contexts,
+      spend: spend.data,
     }),
-    [fixture, attention.data, agents.data, tasks.data, routines.data, sessions.data, activityToday.data, activityWeek.data, activity.data, contexts],
+    [fixture, attention.data, agents.data, tasks.data, routines.data, sessions.data, activityToday.data, activityWeek.data, activity.data, contexts, spend.data],
   )
   const sceneErrors = (
     [
@@ -75,6 +77,7 @@ export function Hud() {
       ['activity today', activityToday.error],
       ['activity week', activityWeek.error],
       ['activity', activity.error],
+      ['spend', spend.error],
     ] as const
   )
     .filter(([, e]) => e !== null)

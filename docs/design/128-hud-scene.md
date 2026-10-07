@@ -629,3 +629,53 @@ whose breakdown has not arrived, has `ctx: null`: no track, no sweep, no `ctx` t
 6. **SceneCompact** lists the session rings with the same `k running · n children · age` sub-label; no satellites there.
 7. **Fixtures**: four active roots (running + 3 live children of which 2 running; running alone; idle with one running child;
    idle-but-recent), one old root, one advisor, one archived chat — the last three never drawn; contexts for two roots.
+## Revision 3 — SPEND reads the model-call ledger (Sky, 2026-10-07 15:21)
+
+> "one other issue I noticed is that the spend shows no data in the HUD, but for sure there is cost data in the db right? what gives?"
+
+**Cause.** `SpendPanel` → `spend(agents)` → `AgentSummary.spent_month`, which the roster reads from `roster.sqlite` `budget`. The
+roster's `charge()` writes that table ONLY for agents with `Budget::Monthly` (and skips the default agent); no agent had a cap, so
+the table had 0 rows, every row was filtered out and the panel was empty. The real ledger is `sessions.sqlite` `model_calls`
+(+ `cost_owners` for lineage): on Sky's machine $4,102 in October, $1,302 that day, 36,861 calls in 8 days.
+
+**Decision.** SPEND means money spent on model calls, from `model_calls`, attributed by root session. Budget caps stay a
+secondary row set for agents that have one. Nothing is invented: a day with no calls is `$0.00`; a call with neither returned nor
+estimated money counts in `unresolved`, never as a number. Private trees (51 §4.5) are not in the durable ledger and are not shown.
+
+**RPC `spend_report(days: u32) -> SpendReport`** (`crates/rpc/src/api.rs`, registered like `list_sessions`; `days` clamped 1..=31;
+`Store::spend_report(now_ms, days)` in `crates/agent/src/store/accounting.rs`; `SpendReportQuery` on the `Agents` actor):
+
+```
+SpendReport { days: SpendDay[], month: SpendDay, owners: SpendOwner[] }
+SpendDay    { day: "YYYY-MM-DD" (month: "YYYY-MM"), usd: f64, calls: u32, unresolved: u32 }
+SpendOwner  { kind: "agent" | "user" | "routine" | "other", name: string, usd: f64, calls: u32 }
+```
+
+- `days`: one entry per LOCAL calendar day (the engine host's `chrono::Local`, computed in Rust, not SQL), oldest first, today last.
+  `usd = Σ (returned_nanos ?? estimated_nanos) / 1e9` over calls whose money currency is USD; another currency counts in `calls`
+  but not in `usd`; no money → `unresolved`. `not_dispatched` attempts are skipped. `created_at` is RFC3339 text, so the SQL
+  bound is a one-day-early prefilter and the exact day test is on the parsed timestamp.
+- `month`: the same shape for the current local month to date.
+- `owners`: the window attributed by `cost_owners.root_id`, top 8 by `usd`. Attribution reads the root's `sessions` row:
+  `desk` set → `agent` named by the desk (the same answer as the roster's `agent_of`: children inherit their desk root);
+  `unattended = 1` on a ROOT → `routine` (only the scheduler opens unattended roots; subagents are unattended but never roots),
+  named by the title before ` · ` (`<name>` or `<name> · <subject>`, 34 §4); otherwise `user`, all folded into ONE row named
+  `you`; a root whose session row is gone → `other` (one row). There is no `origin`/`schedule` column on `sessions`; the
+  unattended-root rule is the durable marker that exists.
+- Re-read on `ModelUsageChanged`; the UI query (`useSpendReport`, key `['spend', 7]`) is fresh for 20 s and refetches each minute
+  so the local-day boundary moves.
+
+**Panel** (`scene/model.ts` `spendPanel(report, agents, now)` → `SceneModel.spend`; `Scene.tsx` `SpendPanel`): big number =
+MONTH (`$4,102.00`, thousands separator; links to `/agents` as before); meta `TODAY $1,302.38`. Seven 28-wide bars at y 40–92
+scaled to the week's max — today faience (`--status-info-fg`), the rest secondary ink; a `$0` day is a 1-unit hairline, never
+blank; weekday letter under each (today's in faience). Then up to four owner rows (y 124 + 16·i): ring dot = agent (→
+`/agents/<name>`), square = routine (→ `/routines/<name>`), plain = `you` (no link — there is no sessions-list route). Then the
+cap rows, only for agents with a monthly cap, as far as they fit above the big number (`<name> cap`, `$spent / $cap`, the 2 px
+share bar). **No gold and no carnelian anywhere in this panel**: nothing here is a need or an error, so the share bar past 85 %
+is primary ink (D12's carnelian threshold is retired with the old panel). `SceneCompact` adds a text line — month, today, the
+top two owners — above the panels. The footer's `THIS MONTH` segment now shows the ledger's month when it has loaded (the
+roster's budget sum until then), so the chrome and the panel agree.
+
+**Skipped.** Per-root user rows (the brief allowed folding them into `you`; one row keeps the list agents + routines + you).
+Currency conversion (USD only; other currencies are counted, not summed). A `spend_report` over private trees. A sessions-list
+link for `you` (no route).

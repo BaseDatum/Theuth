@@ -40,6 +40,7 @@ const base: ScheduleFile = {
   timeout: null,
   created: null,
   run_timeout: null,
+  runtime: null,
   prompt: '',
 }
 

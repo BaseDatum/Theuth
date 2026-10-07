@@ -132,6 +132,16 @@ export function useSessionList() {
   return useQuery({ queryKey: queryKeys.sessions, queryFn: () => (sim ? sceneFixture(Date.now()).sessions : api.list_sessions()) })
 }
 
+/** Rev 3: `spend_report(7)` for SPEND — fresh for 20 s, refetched each minute (the local day moves), invalidated by `ModelUsageChanged`. */
+export const SPEND_KEY = ['spend', 7] as const
+export function useSpendReport() {
+  const api = useApi()
+  const qc = useQueryClient()
+  const sim = simFlag()
+  useEffect(() => on('ModelUsageChanged', () => void qc.invalidateQueries({ queryKey: SPEND_KEY })), [qc])
+  return useQuery({ queryKey: SPEND_KEY, queryFn: () => (sim ? sceneFixture(Date.now()).spend : api.spend_report(7)), staleTime: 20_000, refetchInterval: 60_000 })
+}
+
 /** Revision 2: the per-session events that change a desk's context — a turn ends, a compaction lands, the provider bills a frame. */
 const CONTEXT_EVENTS = ['TurnFinished', 'Compacted', 'ContextUsed'] as const satisfies readonly WireEvent['type'][]
 const contextKey = (session: string) => ['context', 'breakdown', session] as const

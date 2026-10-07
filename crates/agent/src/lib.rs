@@ -107,7 +107,8 @@ pub use context::{
 };
 pub use cost::{
     CallId, CallKind, CallStatus, ChildCost, CostBucket, CostObservation, CostScope, Coverage,
-    MeterUpdate, Money, Provenance, SessionCost, TokenTotals,
+    MeterUpdate, Money, Provenance, SessionCost, SpendDay, SpendOwner, SpendOwnerKind, SpendReport,
+    TokenTotals,
 };
 pub use lifecycle::{
     Authorize, Authorized, CreateSession, LeaveSession, PrivateTrees, ResumePrivate, TreeOpened,
@@ -767,6 +768,11 @@ pub struct GetTodos {
 /// session is not an accounting owner.
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 pub struct SessionCostQuery(pub SessionId);
+
+/// `ask` → `Result<SpendReport, String>`: model-call spend of the durable
+/// ledger over the last `days` local days (128 Rev 3; clamped to 1..=31).
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+pub struct SpendReportQuery(pub u32);
 
 /// One entry of an external harness's command manifest
 /// (`available_commands_update`, design doc 75 §3). omp announces loaded

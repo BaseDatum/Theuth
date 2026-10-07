@@ -97,7 +97,8 @@ use crate::{
     SyncSkills, TrimAssistant, Undo, UseSkill, Withdraw, effort_of,
 };
 use crate::{
-    AdvisorConfig, DurableStore, SessionCostQuery, SessionKind, SubagentsConfig, UnloadSession,
+    AdvisorConfig, DurableStore, SessionCostQuery, SessionKind, SpendReportQuery, SubagentsConfig,
+    UnloadSession,
 };
 use crate::{AwsProfiles, ListAwsProfiles, SetAwsProfile};
 use crate::{GetFavoriteModels, SetModelFavorite};
@@ -9114,6 +9115,22 @@ impl Message<SessionCostQuery> for Agents {
     ) -> Self::Reply {
         self.store_for(m.0)
             .session_cost(m.0)
+            .await
+            .map_err(|e| format!("{e:#}"))
+    }
+}
+
+impl Message<SpendReportQuery> for Agents {
+    type Reply = Result<crate::cost::SpendReport, String>;
+
+    async fn handle(
+        &mut self,
+        m: SpendReportQuery,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        // The durable store only: private trees (51 §4.5) never reach the HUD's ledger.
+        self.store
+            .spend_report(Utc::now().timestamp_millis().max(0) as u64, m.0)
             .await
             .map_err(|e| format!("{e:#}"))
     }

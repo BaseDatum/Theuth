@@ -15,7 +15,8 @@ use uuid::Uuid;
 use super::Store;
 use crate::cost::{
     CallId, CallKind, CallStatus, ChildCost, CostBucket, CostObservation, CostScope, Coverage,
-    MeterUpdate, Money, Provenance, SessionCost, add_by_currency,
+    MeterUpdate, Money, Provenance, SessionCost, SpendDay, SpendOwner, SpendOwnerKind, SpendReport,
+    add_by_currency,
 };
 
 /// Ancestry/subtree walks stop here: deeper is a cycle in persisted topology.
@@ -198,6 +199,63 @@ struct CallRow {
     output_tokens: Option<i64>,
     cache_read_tokens: Option<i64>,
     cache_write_tokens: Option<i64>,
+}
+
+/// One `model_calls` row with its root session, for [`Store::spend_report`].
+#[derive(FromRow)]
+struct SpendRow {
+    created_at: String,
+    status: String,
+    returned_nanos: Option<i64>,
+    returned_currency: Option<String>,
+    estimated_nanos: Option<i64>,
+    estimated_currency: Option<String>,
+    /// `sessions.desk` of the root: the roster agent whose tree this is.
+    desk: Option<String>,
+    /// `sessions.unattended` of the root: on a root, only the scheduler sets it.
+    unattended: Option<bool>,
+    /// `NULL` when the root's session row is gone (or the owner was never registered).
+    title: Option<String>,
+}
+
+impl SpendRow {
+    /// Dollars of this attempt (`returned ?? estimated`, USD only); `None`
+    /// when no money was observed, `Some(0.0)` for another currency.
+    fn usd(&self) -> Option<f64> {
+        let m = money(self.returned_nanos, self.returned_currency.as_deref())
+            .or_else(|| money(self.estimated_nanos, self.estimated_currency.as_deref()))?;
+        Some(if m.currency == "USD" {
+            m.nanos as f64 / crate::cost::NANOS_PER_UNIT as f64
+        } else {
+            0.0
+        })
+    }
+
+    /// Who the root belongs to: the desk's agent, a scheduler root's routine
+    /// (title `<name>` or `<name> · <subject>`), the user, or a gone root.
+    fn owner(&self) -> (SpendOwnerKind, String) {
+        let Some(title) = &self.title else {
+            return (SpendOwnerKind::Other, "other".to_owned());
+        };
+        if let Some(agent) = &self.desk {
+            return (SpendOwnerKind::Agent, agent.clone());
+        }
+        if self.unattended == Some(true) {
+            let name = title.split(" · ").next().unwrap_or("").trim();
+            let name = if name.is_empty() { "routine" } else { name };
+            return (SpendOwnerKind::Routine, name.to_owned());
+        }
+        (SpendOwnerKind::User, "you".to_owned())
+    }
+}
+
+/// Add one attempt to a day/month bucket.
+fn fold_spend(d: &mut SpendDay, usd: Option<f64>) {
+    d.calls = d.calls.saturating_add(1);
+    match usd {
+        Some(v) => d.usd += v,
+        None => d.unresolved = d.unresolved.saturating_add(1),
+    }
 }
 
 /// Raw `remote_meters` columns the summary needs.
@@ -811,6 +869,100 @@ impl Store {
         }))
     }
 
+    /// Model-call spend by local day (128 Rev 3): the last `days` local
+    /// calendar days ending on `now_ms`'s day (clamped to 1..=31), the month
+    /// to date, and the window's top 8 owners by root session. Local day =
+    /// this host's timezone, computed here, not in SQL.
+    pub async fn spend_report(&self, now_ms: u64, days: u32) -> anyhow::Result<SpendReport> {
+        use chrono::{Datelike, Local, TimeZone};
+        let days = days.clamp(1, 31);
+        let now = chrono::Utc
+            .timestamp_millis_opt(i64::try_from(now_ms).unwrap_or(i64::MAX))
+            .single()
+            .ok_or_else(|| anyhow::anyhow!("now_ms {now_ms} out of range"))?;
+        let today = now.with_timezone(&Local).date_naive();
+        let first = today - chrono::Days::new(u64::from(days - 1));
+        let month_first = today.with_day(1).unwrap_or(today);
+        // `created_at` is RFC3339 text, so the SQL bound is only a coarse
+        // prefilter (one day early covers any stored offset); the exact day
+        // test is on the parsed timestamp below.
+        let since = (first.min(month_first) - chrono::Days::new(1))
+            .and_hms_opt(0, 0, 0)
+            .unwrap_or_default()
+            .and_utc()
+            .to_rfc3339();
+        let rows: Vec<SpendRow> = sqlx::query_as(
+            "SELECT m.created_at, m.status, m.returned_nanos, m.returned_currency, \
+             m.estimated_nanos, m.estimated_currency, s.desk, s.unattended, s.title \
+             FROM model_calls m \
+             LEFT JOIN cost_owners c ON c.id = m.owner_id \
+             LEFT JOIN sessions s ON s.id = c.root_id \
+             WHERE m.created_at >= ?",
+        )
+        .bind(&since)
+        .fetch_all(&self.read)
+        .await?;
+
+        let mut report = SpendReport {
+            days: (0..days)
+                .map(|i| SpendDay {
+                    day: (first + chrono::Days::new(u64::from(i)))
+                        .format("%Y-%m-%d")
+                        .to_string(),
+                    ..Default::default()
+                })
+                .collect(),
+            month: SpendDay {
+                day: today.format("%Y-%m").to_string(),
+                ..Default::default()
+            },
+            owners: Vec::new(),
+        };
+        let mut owners: HashMap<(SpendOwnerKind, String), SpendOwner> = HashMap::new();
+        for r in &rows {
+            if r.status.parse::<CallStatus>().ok() == Some(CallStatus::NotDispatched) {
+                continue;
+            }
+            let Ok(at) = chrono::DateTime::parse_from_rfc3339(&r.created_at) else {
+                continue;
+            };
+            let day = at.with_timezone(&Local).date_naive();
+            if day > today {
+                continue;
+            }
+            let usd = r.usd();
+            if day >= month_first {
+                fold_spend(&mut report.month, usd);
+            }
+            if day < first {
+                continue;
+            }
+            let i = usize::try_from((day - first).num_days()).unwrap_or(0);
+            fold_spend(&mut report.days[i], usd);
+            let (kind, name) = r.owner();
+            let o = owners
+                .entry((kind, name.clone()))
+                .or_insert_with(|| SpendOwner {
+                    kind,
+                    name,
+                    usd: 0.0,
+                    calls: 0,
+                });
+            o.usd += usd.unwrap_or(0.0);
+            o.calls = o.calls.saturating_add(1);
+        }
+        let mut owners: Vec<SpendOwner> = owners.into_values().collect();
+        owners.sort_by(|a, b| {
+            b.usd
+                .total_cmp(&a.usd)
+                .then_with(|| b.calls.cmp(&a.calls))
+                .then_with(|| a.name.cmp(&b.name))
+        });
+        owners.truncate(8);
+        report.owners = owners;
+        Ok(report)
+    }
+
     /// Child delete (see [`tombstone_owner_in`]).
     pub async fn tombstone_owner(&self, id: SessionId) -> anyhow::Result<()> {
         let mut tx = self.begin_write().await?;
@@ -1236,5 +1388,135 @@ mod tests {
             cost.delta_suspected,
             "surfaced on the summary for the cost dialog"
         );
+    }
+
+    /// 128 Rev 3: local-day buckets, month to date, `unresolved` for calls
+    /// without money, another currency counted but not summed, and owners
+    /// attributed by root session (desk → agent, unattended root → routine,
+    /// plain root → `you`, gone root → `other`).
+    #[tokio::test]
+    async fn spend_report_buckets_days_month_and_owners() {
+        use chrono::{Datelike, Local};
+        let store = fresh().await;
+        let now = chrono::Utc::now();
+        let now_ms = u64::try_from(now.timestamp_millis()).unwrap();
+        let today = now.with_timezone(&Local).date_naive();
+        let yesterday = now - chrono::Duration::days(1);
+        // Outside every window (≤ 31 days) and outside this month.
+        let long_ago = now - chrono::Duration::days(40);
+        async fn at(store: &Store, call: &CallId, when: chrono::DateTime<chrono::Utc>) {
+            sqlx::query("UPDATE model_calls SET created_at = ? WHERE call_id = ?")
+                .bind(when.to_rfc3339())
+                .bind(&call.0)
+                .execute(&store.read)
+                .await
+                .unwrap();
+        }
+        let obs = |m: Option<Money>, estimated: bool| CostObservation {
+            returned: (!estimated).then(|| m.clone()).flatten(),
+            estimated: estimated.then(|| m.clone()).flatten(),
+            ..Default::default()
+        };
+
+        // The user's own root: today $1.00, yesterday $0.50 (estimate), 40 days ago $10,
+        // today EUR 3 (counted, not summed), today no money (unresolved).
+        let me = SessionId::new();
+        store
+            .create_session(me, "m", None, None, None)
+            .await
+            .unwrap();
+        store.set_title(me, "my chat").await.unwrap();
+        charge(&store, me, obs(Some(usd(1.0)), false)).await;
+        let c = charge(&store, me, obs(Some(usd(0.5)), true)).await;
+        at(&store, &c, yesterday).await;
+        let c = charge(&store, me, obs(Some(usd(10.0)), false)).await;
+        at(&store, &c, long_ago).await;
+        charge(
+            &store,
+            me,
+            obs(Some(Money::from_f64(3.0, "EUR").unwrap()), false),
+        )
+        .await;
+        charge(&store, me, obs(None, false)).await;
+
+        // An agent's desk root with the call on a child: attributed to the root's desk.
+        let (desk, child) = (SessionId::new(), SessionId::new());
+        store
+            .create_session(desk, "m", None, None, None)
+            .await
+            .unwrap();
+        store.set_desk(desk, Some("builder")).await.unwrap();
+        store
+            .create_session(child, "m", Some(desk), Some("sub"), None)
+            .await
+            .unwrap();
+        charge(&store, child, obs(Some(usd(2.0)), false)).await;
+
+        // A scheduler root: `unattended`, titled `<name> · <subject>`.
+        let routine = SessionId::new();
+        store
+            .create_session(routine, "m", None, None, None)
+            .await
+            .unwrap();
+        store.set_unattended(routine).await.unwrap();
+        store.set_title(routine, "nightly · report").await.unwrap();
+        charge(&store, routine, obs(Some(usd(0.25)), false)).await;
+
+        // A root whose session row is gone but whose ledger remains.
+        let gone = SessionId::new();
+        store
+            .create_session(gone, "m", None, None, None)
+            .await
+            .unwrap();
+        charge(&store, gone, obs(Some(usd(0.1)), false)).await;
+        sqlx::query("DELETE FROM sessions WHERE id = ?")
+            .bind(gone.to_string())
+            .execute(&store.read)
+            .await
+            .unwrap();
+
+        let r = store.spend_report(now_ms, 7).await.unwrap();
+        assert_eq!(r.days.len(), 7);
+        assert_eq!(r.days[6].day, today.format("%Y-%m-%d").to_string());
+        assert_eq!(
+            r.days[0].day,
+            (today - chrono::Days::new(6))
+                .format("%Y-%m-%d")
+                .to_string()
+        );
+        let t = &r.days[6];
+        assert!((t.usd - 3.35).abs() < 1e-9, "{t:?}");
+        assert_eq!((t.calls, t.unresolved), (6, 1));
+        let y = &r.days[5];
+        assert!((y.usd - 0.5).abs() < 1e-9, "{y:?}");
+        assert_eq!((y.calls, y.unresolved), (1, 0));
+        assert!(r.days[..5].iter().all(|d| d.usd == 0.0 && d.calls == 0));
+
+        // Month to date: today's rows, yesterday's only when it is this month, never the old one.
+        let yesterday_in_month =
+            yesterday.with_timezone(&Local).date_naive().month() == today.month();
+        let month = 3.35 + if yesterday_in_month { 0.5 } else { 0.0 };
+        assert_eq!(r.month.day, today.format("%Y-%m").to_string());
+        assert!((r.month.usd - month).abs() < 1e-9, "{:?}", r.month);
+        assert_eq!(r.month.unresolved, 1);
+
+        let owners: Vec<(SpendOwnerKind, &str, f64, u32)> = r
+            .owners
+            .iter()
+            .map(|o| (o.kind, o.name.as_str(), o.usd, o.calls))
+            .collect();
+        assert_eq!(
+            owners,
+            vec![
+                (SpendOwnerKind::Agent, "builder", 2.0, 1),
+                (SpendOwnerKind::User, "you", 1.5, 4),
+                (SpendOwnerKind::Routine, "nightly", 0.25, 1),
+                (SpendOwnerKind::Other, "other", 0.1, 1),
+            ]
+        );
+
+        // `days` is clamped: 0 → one day (today), 99 → 31.
+        assert_eq!(store.spend_report(now_ms, 0).await.unwrap().days.len(), 1);
+        assert_eq!(store.spend_report(now_ms, 99).await.unwrap().days.len(), 31);
     }
 }
