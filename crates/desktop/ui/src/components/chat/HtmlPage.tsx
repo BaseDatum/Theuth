@@ -25,6 +25,8 @@ export const MIN_HEIGHT = 80
 export const MAX_HEIGHT = 2000
 /** Reserved before the page's first `size-changed` when the agent set no `height`: the transcript below does not move for a well-sized page. */
 export const RESERVE = 240
+/** 135 §2: the last height each page reported, so a reopened page (card remount, panel) starts at it, not at the reserve. */
+const reported = new Map<string, number>()
 
 /** The frame's cap (§6): the agent's `show{height}`, `undefined` = 2000 (the card), `'none'` = uncapped (the panel). */
 export type Cap = number | 'none' | undefined
@@ -101,7 +103,7 @@ export function HtmlPage({
   const [src, setSrc] = useState<{ url?: string; doc?: string } | null>(null)
   const [failed, setFailed] = useState(false)
   const [loaded, setLoaded] = useState(false)
-  const [report, setReport] = useState<number | null>(null)
+  const [report, setReport] = useState<number | null>(() => reported.get(callId) ?? null)
   const [errors, setErrors] = useState<string[]>([])
   const [showErrors, setShowErrors] = useState(false)
 
@@ -111,7 +113,7 @@ export function HtmlPage({
     setSrc(null)
     setFailed(false)
     setLoaded(false)
-    setReport(null)
+    setReport(reported.get(callId) ?? null)
     setErrors([])
     if (!html) return
     const doc = injectBootstrap(html, latest.current)
@@ -142,14 +144,17 @@ export function HtmlPage({
         source: frame.current?.contentWindow,
         focused: document.activeElement === frame.current,
         activation: navigator.userActivation?.isActive !== false,
-        onHeight: setReport,
+        onHeight: (h) => {
+          reported.set(callId, h)
+          setReport(h)
+        },
         onConsole: (l) => setErrors((e) => errorsAfter(e, l)),
         open: (url) => window.open(url, '_blank', 'noopener,noreferrer'),
         reply: (msg) => frame.current?.contentWindow?.postMessage(msg, '*'),
       })
     window.addEventListener('message', onMessage)
     return () => window.removeEventListener('message', onMessage)
-  }, [])
+  }, [callId])
 
   const height = frameHeight(report, cap)
   const chrome = errors.length > 0

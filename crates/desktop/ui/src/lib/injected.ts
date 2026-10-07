@@ -29,10 +29,10 @@ export type Injected =
   | { kind: 'reminder'; id: string; after: string; late: boolean; text: string }
   /** A desk episode's opening block (roster 67 §6.2): the agent's charter, its journal and the operating manual. */
   | { kind: 'desk'; agent: string; charter: string; journal: string; manual: string }
-  /** A scoped wake (roster 67 §7.3). `id`/`title` name the task when there is one; `state`…`body` come from the
+  /** A scoped wake (roster 67 §7.3). `task`/`title` name the task when there is one; `state`…`body` come from the
    * `<task>` record that follows when the task was loaded; `count` when the wake was raised more than once;
    * `roster` is the fit-check block an assigned/reassigned wake carries (70 DESK-PROTOCOL). */
-  | { kind: 'wake'; id?: string; title?: string; reason: string; count?: number; state?: string; owner?: string; reviewer?: string; thread?: string; body?: string; roster?: string }
+  | { kind: 'wake'; task?: string; title?: string; reason: string; count?: number; state?: string; owner?: string; reviewer?: string; thread?: string; body?: string; roster?: string }
   /** 125 §5.4: one `<advisory severity="…">` element of an advisor row — a card, never a `you` bubble. */
   | { kind: 'advisory'; severity: AdvisorSeverity; text: string }
   | { kind: 'engine'; notice: keyof typeof ENGINE_NOTICES; text: string }
@@ -65,7 +65,7 @@ function wake(text: string): Extract<Injected, { kind: 'wake' }> | null {
   if (!m) return null
   const [, id, title, reason = '', count, open = '', body, roster] = m
   const w: Extract<Injected, { kind: 'wake' }> = { kind: 'wake', reason }
-  if (id !== undefined) w.id = id
+  if (id !== undefined) w.task = id
   if (title !== undefined) w.title = title
   if (count !== undefined) w.count = Number(count)
   if (body !== undefined) {
