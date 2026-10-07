@@ -1,16 +1,21 @@
-//! The nested Swift companion (130 D10, §5.8): `theuth.app/Contents/Library/LoginItems/Theuth
-//! Companion.app`, bundle id [`BUNDLE_ID`]. The shell launches it at start, watches it by bundle id,
-//! tells every webview `companion-alive { alive }`, hides its own tray while the companion owns the
-//! menu bar (D9), and terminates it in the quit handshake. macOS only; the other backends are no-ops
-//! so Windows and Linux keep today's tray and notifications (§5.9).
+//! The companion helper (130 D10, §5.8; 134 D10): on macOS the nested Swift app `theuth.app/Contents/
+//! Library/LoginItems/Theuth Companion.app`, bundle id [`BUNDLE_ID`]; on Windows the C# app
+//! `<exe dir>\companion\Theuth.Companion.exe`. The shell launches it at start, watches it (bundle id ·
+//! named mutex), tells every webview `companion-alive { alive }`, hides its own tray while the companion
+//! owns the menu bar / notification area (D9), and terminates it in the quit handshake. Linux keeps
+//! today's tray and notifications (130 §5.9).
 
 #[cfg(target_os = "macos")]
 mod macos;
 #[cfg(target_os = "macos")]
 pub use macos::*;
-#[cfg(not(target_os = "macos"))]
+#[cfg(target_os = "windows")]
+mod windows;
+#[cfg(target_os = "windows")]
+pub use windows::*;
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
 mod other;
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
 pub use other::*;
 #[cfg(target_os = "macos")]
 pub mod login_item;
@@ -35,13 +40,19 @@ pub fn companion_alive() -> bool {
 
 /// 130 W2: the login item's `SMAppService` status (`not_registered` · `enabled` · `requires_approval` ·
 /// `not_found` · `unavailable`), for the main UI to show beside the companion's Launch-at-login toggle.
+/// 134 D12: on Windows the companion owns the Run key and mirrors it to `companion.json`
+/// (`enabled` · `not_registered`).
 #[tauri::command]
 pub fn companion_login_item_status() -> String {
     #[cfg(target_os = "macos")]
     {
         login_item::status().as_str().into()
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(target_os = "windows")]
+    {
+        login_item_status().into()
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     {
         "unavailable".into()
     }
