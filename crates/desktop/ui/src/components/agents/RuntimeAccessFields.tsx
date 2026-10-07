@@ -1,5 +1,6 @@
 import { Link } from '@tanstack/react-router'
 import { useState } from 'react'
+import { ModelCombobox } from '@/components/chat/ModelCombobox'
 import { useSandboxes } from '@/components/settings/sandbox-queries'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -38,20 +39,7 @@ export function RuntimeFields({ d, set }: { d: Draft; set: Setter }) {
   return (
     <div className="grid gap-4 sm:grid-cols-2">
       <Field label="Model" id="rt-model" hint="Every session this agent opens; default = the node's model.">
-        <Select value={d.model ?? NONE} onValueChange={(v) => set('model', v === NONE ? null : v)}>
-          <SelectTrigger id="rt-model" size="sm" className="w-full">
-            <SelectValue placeholder="Node default" />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value={NONE}>Node default</SelectItem>
-            {models.data?.map((m) => (
-              <SelectItem key={m.id} value={m.id}>
-                {m.name} <span className="text-fg-tertiary">{m.provider}</span>
-              </SelectItem>
-            ))}
-            {d.model && !models.data?.some((m) => m.id === d.model) && <SelectItem value={d.model}>{d.model}</SelectItem>}
-          </SelectContent>
-        </Select>
+        <ModelCombobox id="rt-model" size="sm" className="w-full" models={models.data ?? []} value={d.model} none={{ label: 'Node default' }} onChange={(v) => set('model', v)} />
       </Field>
       <Field label="Thinking effort" id="rt-effort" hint="Reasoning depth for its sessions.">
         <Select value={d.effort ?? NONE} onValueChange={(v) => set('effort', v === NONE ? null : v)}>

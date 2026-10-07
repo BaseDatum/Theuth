@@ -9,10 +9,9 @@ import { openUrl } from '@tauri-apps/plugin-opener'
 import { Check, ChevronDown, LoaderCircle, RefreshCw, X } from 'lucide-react'
 import { useState } from 'react'
 import { toast } from 'sonner'
-import { ModelItems, modelItemValue, pinnedFilter } from '@/components/chat/ModelMenu'
+import { ModelPicker } from '@/components/chat/ModelPicker'
 import { Empty, Row, Section, errorText, useAction } from '@/components/settings/shared'
 import { Button } from '@/components/ui/button'
-import { Command, CommandEmpty, CommandInput, CommandList } from '@/components/ui/command'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
@@ -110,20 +109,14 @@ export function StartForm() {
               </Button>
             </PopoverTrigger>
             <PopoverContent align="start" className="w-80 p-0">
-              <Command filter={pinnedFilter(current && modelItemValue(current))}>
-                <CommandInput placeholder="Search models" />
-                <CommandList className="max-h-96">
-                  <CommandEmpty>No model matches.</CommandEmpty>
-                  <ModelItems
-                    models={models.data ?? []}
-                    model={model}
-                    onSelect={(id) => {
-                      useMeetingSettings.getState().setModel(id)
-                      setPickModel(false)
-                    }}
-                  />
-                </CommandList>
-              </Command>
+              <ModelPicker
+                models={models.data ?? []}
+                model={model}
+                onSelect={(id) => {
+                  useMeetingSettings.getState().setModel(id)
+                  setPickModel(false)
+                }}
+              />
             </PopoverContent>
           </Popover>
         </Row>
