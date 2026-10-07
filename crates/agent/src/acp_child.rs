@@ -1865,7 +1865,7 @@ impl Message<CancelTurn> for AcpChild {
             return;
         }
         let me = ctx.actor_ref().clone();
-        turn.kill = Some(Self::timer(&me, CANCEL_GRACE, KillTimer(turn.id)));
+        turn.kill = Some(Self::timer(&me, self.grace, KillTimer(turn.id)));
     }
 }
 
@@ -1884,6 +1884,9 @@ impl Message<KillTimer> for AcpChild {
             return;
         }
         self.finish("cancelled", None).await;
+        // As `closed()`: the inputs queued behind the killed turn get their
+        // error result and release their tickets (R2.2), not a silent drop.
+        self.drain("cancelled").await;
         ctx.stop();
     }
 }
@@ -4017,5 +4020,38 @@ pub(crate) mod tests {
                 _ => {}
             }
         }
+    }
+
+    /// R2.2: a cancel the harness never acknowledges hits the kill timer:
+    /// the open turn ends `cancelled` and the input queued behind it gets
+    /// its error result too (its ticket is not dropped), then the actor stops.
+    #[tokio::test]
+    async fn kill_timer_drains_the_queue() {
+        let mut rig = Rig::tuned(
+            Duration::from_secs(60),
+            |c| c.grace = Duration::from_millis(200),
+            true,
+        )
+        .await;
+        rig.input("first").await;
+        rig.input("second").await;
+        let (_, text) = rig.fake.prompt().await;
+        assert_eq!(text, "first");
+        rig.actor.tell(CancelTurn { keep: None }).await.unwrap();
+        let m = rig.fake.next().await;
+        assert_eq!(m["method"], "session/cancel", "{m}");
+        // No PromptResponse ever comes.
+        let first = rig.until_finished().await;
+        assert_eq!(stop_reasons(&first), ["cancelled"], "{first:?}");
+        let second = rig.until_finished().await;
+        assert_eq!(stop_reasons(&second), ["error"], "{second:?}");
+        assert!(errors(&second).contains(&"cancelled"), "{second:?}");
+        rig.actor.wait_for_shutdown().await;
+        let rows = rig.rows().await;
+        assert!(
+            rows.iter()
+                .any(|(r, t)| *r == ChatRole::User && t == "second"),
+            "the queued input is in the transcript with its result: {rows:?}"
+        );
     }
 }
