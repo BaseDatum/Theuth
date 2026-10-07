@@ -26,6 +26,13 @@ internal static class Native
     public const uint WM_APP = 0x8000;
     public const uint NIN_SELECT = 0x0400;
     public const uint NIN_KEYSELECT = 0x0401;
+    public const uint WM_MOUSEACTIVATE = 0x0021;
+    public const uint WM_SETCURSOR = 0x0020;
+    public const uint WM_ACTIVATE = 0x0006;
+    public const uint WM_NCACTIVATE = 0x0086;
+    public const uint WM_SETFOCUS = 0x0007;
+    public const uint WM_GETMINMAXINFO = 0x0024;
+    public const int MA_NOACTIVATE = 3;
     public const int HTTRANSPARENT = -1;
     public const int HTCLIENT = 1;
 
@@ -55,6 +62,9 @@ internal static class Native
 
     [StructLayout(LayoutKind.Sequential)]
     public struct POINT { public int X, Y; }
+
+    [StructLayout(LayoutKind.Sequential)]
+    public struct MINMAXINFO { public POINT ptReserved, ptMaxSize, ptMaxPosition, ptMinTrackSize, ptMaxTrackSize; }
 
     [StructLayout(LayoutKind.Sequential)]
     public struct LASTINPUTINFO { public uint cbSize; public uint dwTime; }

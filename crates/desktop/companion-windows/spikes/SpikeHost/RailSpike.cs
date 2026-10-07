@@ -14,7 +14,7 @@ namespace SpikeHost;
 /// never activated, excluded from capture, mouse passes through everywhere except over three marks.
 /// Variant (second argument): "hittest" (default) = WM_NCHITTEST -> HTTRANSPARENT subclass on the top-level
 /// and child HWNDs; "layered" = WS_EX_LAYERED|WS_EX_TRANSPARENT toggled by a cursor poll; "region" = SetWindowRgn
-/// clipped to the marks; "all" = hittest + layered.
+/// clipped to the marks; "all" = hittest + layered. Extra token "capturable" skips SetWindowDisplayAffinity (control run).
 /// </summary>
 internal sealed class RailSpike
 {
@@ -35,6 +35,12 @@ internal sealed class RailSpike
     private IntPtr _lastForeignFg;
     private int _hitLogs;
     private int _toggleLogs;
+    private int _traceLogs;
+    private int _wfpLogs;
+    private IntPtr _lastWfp;
+    private readonly bool _capturable;
+    private readonly HashSet<long> _seenMsgs = new();
+    private int _targetW, _targetH;
 
     public RailSpike(string[] argv)
     {
@@ -50,7 +56,9 @@ internal sealed class RailSpike
 
         // The rail.
         _rail = new Window { Title = "SpikeHost S1 rail" };
-        _root = new Grid { Background = new SolidColorBrush(Windows.UI.Color.FromArgb(255, 28, 30, 44)) };
+        _capturable = argv.Contains("capturable");
+        // Vivid background so the rail is unmistakable in a screen capture (the desktop behind it is black).
+        _root = new Grid { Background = new SolidColorBrush(Windows.UI.Color.FromArgb(255, 255, 140, 0)) };
         var stack = new StackPanel { HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center, Spacing = 48 };
         var colors = new[] { Windows.UI.Color.FromArgb(255, 230, 70, 70), Windows.UI.Color.FromArgb(255, 70, 200, 90), Windows.UI.Color.FromArgb(255, 80, 140, 255) };
         for (int i = 0; i < 3; i++)
@@ -67,6 +75,16 @@ internal sealed class RailSpike
         _rail.Content = _root;
 
         _hwnd = Ui.Hwnd(_rail);
+        _scale = Ui.Scale(_hwnd);
+        _targetW = (int)Math.Round(RailW * _scale);
+        _targetH = (int)Math.Round(RailH * _scale);
+
+        // Subclass the top-level HWND first: WM_GETMINMAXINFO must be answered before the first resize, otherwise
+        // the window is clamped to SM_CXMINTRACK (136 px at 96 dpi) — observed on build 1: asked 26x400, got 136x400.
+        bool subTop = Native.SetWindowSubclass(_hwnd, _proc, new UIntPtr(0x134), UIntPtr.Zero);
+        if (subTop) _subclassed.Add(_hwnd);
+        SpikeLog.Append($"SetWindowSubclass(top 0x{_hwnd.ToInt64():X}) before presenter/resize -> {subTop}");
+
         var aw = _rail.AppWindow;
         var presenter = OverlappedPresenter.Create();
         presenter.SetBorderAndTitleBar(false, false);
@@ -74,18 +92,24 @@ internal sealed class RailSpike
         presenter.IsMaximizable = false;
         presenter.IsMinimizable = false;
         presenter.IsAlwaysOnTop = true;
+        try
+        {
+            presenter.PreferredMinimumWidth = _targetW;
+            presenter.PreferredMinimumHeight = _targetH;
+            SpikeLog.Append($"presenter.PreferredMinimumWidth/Height = {_targetW}/{_targetH}");
+        }
+        catch (Exception ex) { SpikeLog.Append($"PreferredMinimum* EXCEPTION hr=0x{ex.HResult:X8} {ex.Message}"); }
         aw.SetPresenter(presenter);
         aw.IsShownInSwitchers = false;
 
-        _scale = Ui.Scale(_hwnd);
         var area = DisplayArea.Primary;
         var ob = area.OuterBounds;
         var wa = area.WorkArea;
-        int w = (int)Math.Round(RailW * _scale), h = (int)Math.Round(RailH * _scale);
+        int w = _targetW, h = _targetH;
         int x = ob.X + ob.Width - w;
         int y = wa.Y + (wa.Height - h) / 2;
         aw.MoveAndResize(new RectInt32(x, y, w, h));
-        SpikeLog.Append($"rail hwnd=0x{_hwnd.ToInt64():X} dpi={Native.GetDpiForWindow(_hwnd)} scale={_scale:F2} monitor outer={ob.X},{ob.Y} {ob.Width}x{ob.Height} work={wa.X},{wa.Y} {wa.Width}x{wa.Height} -> target ({x},{y}) {w}x{h}");
+        SpikeLog.Append($"rail hwnd=0x{_hwnd.ToInt64():X} dpi={Native.GetDpiForWindow(_hwnd)} scale={_scale:F2} monitor outer={ob.X},{ob.Y} {ob.Width}x{ob.Height} work={wa.X},{wa.Y} {wa.Width}x{wa.Height} -> target ({x},{y}) {w}x{h}; got {Ui.Rect(_hwnd)}");
 
         // Extended styles BEFORE the first show.
         long before = (long)Native.GetWindowLongPtr(_hwnd, Native.GWL_EXSTYLE);
@@ -104,10 +128,17 @@ internal sealed class RailSpike
         long after = (long)Native.GetWindowLongPtr(_hwnd, Native.GWL_EXSTYLE);
         SpikeLog.Append($"exstyle before={Ui.ExStyleBits(before)} wanted={Ui.ExStyleBits(want)} after={Ui.ExStyleBits(after)} (SetWindowLongPtr err={setErr})");
 
-        bool aff = Native.SetWindowDisplayAffinity(_hwnd, Native.WDA_EXCLUDEFROMCAPTURE);
-        int affErr = Marshal.GetLastWin32Error();
-        Native.GetWindowDisplayAffinity(_hwnd, out var got);
-        SpikeLog.Append($"SetWindowDisplayAffinity(WDA_EXCLUDEFROMCAPTURE=0x11) -> {aff} err={affErr}; GetWindowDisplayAffinity -> 0x{got:X}");
+        if (_capturable)
+        {
+            SpikeLog.Append("capturable: SetWindowDisplayAffinity NOT called (control run)");
+        }
+        else
+        {
+            bool aff = Native.SetWindowDisplayAffinity(_hwnd, Native.WDA_EXCLUDEFROMCAPTURE);
+            int affErr = Marshal.GetLastWin32Error();
+            Native.GetWindowDisplayAffinity(_hwnd, out var got);
+            SpikeLog.Append($"SetWindowDisplayAffinity(WDA_EXCLUDEFROMCAPTURE=0x11) -> {aff} err={affErr}; GetWindowDisplayAffinity -> 0x{got:X}");
+        }
 
         // Show without activating (Window.Activate() would activate it).
         aw.Show(false);
@@ -137,14 +168,19 @@ internal sealed class RailSpike
         Native.EnumChildWindows(_hwnd, (h, l) => { children.Add(h); return true; }, IntPtr.Zero);
         foreach (var c in children) SpikeLog.Append($"child hwnd {Ui.Describe(c)}");
 
-        if (_variant == "hittest" || _variant == "all")
+        foreach (var h in children)
         {
-            foreach (var h in new[] { _hwnd }.Concat(children))
-            {
-                bool ok = Native.SetWindowSubclass(h, _proc, new UIntPtr(0x134), UIntPtr.Zero);
-                if (ok) _subclassed.Add(h);
-                SpikeLog.Append($"SetWindowSubclass(0x{h.ToInt64():X}) -> {ok}");
-            }
+            bool ok = Native.SetWindowSubclass(h, _proc, new UIntPtr(0x134), UIntPtr.Zero);
+            if (ok) _subclassed.Add(h);
+            SpikeLog.Append($"SetWindowSubclass(child 0x{h.ToInt64():X}) -> {ok}");
+        }
+        Native.GetWindowRect(_hwnd, out var cur);
+        if (cur.Right - cur.Left != _targetW || cur.Bottom - cur.Top != _targetH)
+        {
+            var ob = DisplayArea.Primary.OuterBounds;
+            var wa = DisplayArea.Primary.WorkArea;
+            _rail.AppWindow.MoveAndResize(new RectInt32(ob.X + ob.Width - _targetW, wa.Y + (wa.Height - _targetH) / 2, _targetW, _targetH));
+            SpikeLog.Append($"size was {cur.Right - cur.Left}x{cur.Bottom - cur.Top}, re-applied MoveAndResize -> {Ui.Rect(_hwnd)}");
         }
         if (_variant == "region")
         {
@@ -178,7 +214,29 @@ internal sealed class RailSpike
 
     private IntPtr HitTestProc(IntPtr hWnd, uint uMsg, IntPtr wParam, IntPtr lParam, UIntPtr uIdSubclass, UIntPtr dwRefData)
     {
-        if (uMsg == Native.WM_NCHITTEST)
+        // Trace: the first time each (hwnd, message) pair is seen, for input/activation-related messages.
+        bool interesting = uMsg == Native.WM_NCHITTEST || uMsg == Native.WM_MOUSEACTIVATE || uMsg == Native.WM_SETCURSOR
+            || uMsg == Native.WM_ACTIVATE || uMsg == Native.WM_NCACTIVATE || uMsg == Native.WM_SETFOCUS || uMsg == Native.WM_GETMINMAXINFO
+            || (uMsg >= Native.WM_MOUSEMOVE && uMsg <= 0x020A) || (uMsg >= 0x00A0 && uMsg <= 0x00A9) || (uMsg >= 0x0240 && uMsg <= 0x024F);
+        if (interesting && _traceLogs < 60 && _seenMsgs.Add((hWnd.ToInt64() << 16) ^ uMsg))
+        {
+            _traceLogs++;
+            SpikeLog.Append($"trace: first 0x{uMsg:X4} on 0x{hWnd.ToInt64():X} wParam=0x{wParam.ToInt64():X} lParam=0x{lParam.ToInt64():X}");
+        }
+        if (uMsg == Native.WM_GETMINMAXINFO && hWnd == _hwnd && _targetW > 0)
+        {
+            var res = Native.DefSubclassProc(hWnd, uMsg, wParam, lParam);
+            var mmi = Marshal.PtrToStructure<Native.MINMAXINFO>(lParam);
+            mmi.ptMinTrackSize = new Native.POINT { X = _targetW, Y = _targetH };
+            Marshal.StructureToPtr(mmi, lParam, false);
+            return res;
+        }
+        if (uMsg == Native.WM_MOUSEACTIVATE)
+        {
+            // Belt and braces for WS_EX_NOACTIVATE: tell the system a click must not activate this window.
+            return new IntPtr(Native.MA_NOACTIVATE);
+        }
+        if (uMsg == Native.WM_NCHITTEST && (_variant == "hittest" || _variant == "all"))
         {
             int sx = Native.LoWord(lParam), sy = Native.HiWord(lParam);
             bool over = OverMark(sx, sy);
@@ -200,11 +258,21 @@ internal sealed class RailSpike
         {
             _lastForeignFg = fg;
         }
-        if (_variant != "layered" && _variant != "all") return;
-
         Native.GetCursorPos(out var c);
         Native.GetWindowRect(_hwnd, out var wr);
         bool inside = c.X >= wr.Left && c.X < wr.Right && c.Y >= wr.Top && c.Y < wr.Bottom;
+        if (inside && _wfpLogs < 8)
+        {
+            var wfp = Native.WindowFromPoint(c);
+            if (wfp != _lastWfp)
+            {
+                _lastWfp = wfp;
+                _wfpLogs++;
+                SpikeLog.Append($"cursor ({c.X},{c.Y}) inside rail, overMark={OverMark(c.X, c.Y)}: WindowFromPoint = {Ui.Describe(wfp)} isRailOrChild={wfp == _hwnd || _subclassed.Contains(wfp)}");
+            }
+        }
+        if (_variant != "layered" && _variant != "all") return;
+
         bool over = inside && OverMark(c.X, c.Y);
         bool wantTransparent = !over;
         if (wantTransparent == _transparentNow) return;
