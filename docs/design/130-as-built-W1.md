@@ -3,7 +3,8 @@
 Status: built 2026-10-07 on `feat/130-w1-companion` (cut from main `eba311ed`), against TODAY's engine RPC
 (2.10.0, no W0 fields). Design: `docs/design/130-companion.md` §0 D1, D2, D4, D5, D6, D9, D11; §4.1, §4.2;
 §5.1, §5.2, §5.4, §5.6; §7 row W1; §10 mock round 2 frames 2–5 and 8. Toolchain: Command Line Tools only
-(Swift 6.3.2, macOS 26.6.2) — no Xcode, as spike SA proved. Addendum A1 (Revision 1 lifecycle rules) applied.
+(Swift 6.3.2, macOS 26.6.2) — no Xcode, as spike SA proved. Addenda A1 (Revision 1 lifecycle rules), A2 (ad-hoc
+signing, debug mode) and A3 (theuth's tray glyph and .icns, not an SF Symbol / drawn icon) applied.
 
 ## 1. File map (path:line)
 
@@ -35,7 +36,7 @@ Status: built 2026-10-07 on `feat/130-w1-companion` (cut from main `eba311ed`), 
 | `Sources/Companion/main.swift` | Accessory policy; Revision 1: a second instance (same bundle id) exits 0 at once |
 | `Sources/Companion/AppDelegate.swift:7-10` | `KeyboardShortcuts.Name.openPanel`, default `⌃⇧Space` |
 | `AppDelegate.swift:21-57` | Launch: status item, rail, panel, hotkey → `toggle(anchor: .mouse)`, engine discovery → `Store.start`; `applicationWillTerminate` → `exit(0)` (Revision 1) |
-| `AppDelegate.swift:59-104` | `NSStatusItem`: template SF Symbol `circle.hexagongrid`; `" ●N"` in gold as `attributedTitle` when needs-you > 0; left click → panel under `button.window.frame`; right/⌥-click → menu (Open theuth → `theuth://new`, Quit) |
+| `AppDelegate.swift:59-104` | `NSStatusItem`: theuth's own tray glyph (`Contents/Resources/tray{,@2x}.png` from `crates/desktop/icons/`, the Tauri tray's file, template, 18 pt; SF Symbol `circle.hexagongrid` only if the resource is missing, logged — A3); `" ●N"` in gold as `attributedTitle` (a separate, non-template layer) when needs-you > 0; left click → panel under `button.window.frame`; right/⌥-click → menu (Open theuth → `theuth://new`, Quit) |
 | `AppDelegate.swift:106-114` | Mark click: needs-you/finished → panel beside the rail on that item; agent → `theuth://c/<session>` |
 | `AppDelegate.swift:120-145` | `--probe N`: log counts + first `PendingPrompts`, show rail + panel (not key), quit after N s |
 | `Sources/Companion/Store.swift` | `@MainActor Store`: items/agents/activity/approvals/packets; events → 250 ms debounced refetch (`:66-95`), `Lagged`/`PendingPrompts` → immediate; `packet_get` for every decision/review (`:127-132`); `perform(Intent)` (`:148-176`); the hold (`:194-219`) and `commit` with the E5 re-read (`:221-255`): engine `false` → "already answered elsewhere", never retried |
@@ -44,9 +45,8 @@ Status: built 2026-10-07 on `feat/130-w1-companion` (cut from main `eba311ed`), 
 | `Sources/Companion/AttentionPanel.swift` | `KeyPanel` (`canBecomeKey`), `PanelController`: non-activating, `becomesKeyOnlyIfNeeded = false`, 372 pt, ≤ 560 pt, `NSGlassEffectView` behind `#available(macOS 26, *)` else `NSVisualEffectView .hudWindow`, anchors (status item · rail mark · mouse screen 20 % down), local key monitor → `KeyGrammar` (`:140-152`), `place()` sizes to the SwiftUI content before ordering front (`:154-166`), closes on resign-key or ⎋ and re-activates the previously frontmost app (`:129-137`) |
 | `Sources/Companion/PanelView.swift` | SwiftUI: header sentence (gold count), `CardView` (who · how long → question → why → options with key badges, "recommended · ⏎", chips, send-back note field), lines (≤ 6 then "+N more · J to walk them"), footer hints, `ReceiptView` with the countdown bar |
 | `Sources/Companion/Palette.swift` | Dark/light pairs with the exact `UI/styles.css` values: gold `#c47a2c`/`#b4531e`, faience `#5b8f8a`/`#3d6b66`, malachite `#4a8a6e`/`#2f5d4a`, carnelian `#c45a48`/`#9b2d1f`, bone/soot text and surfaces; gold used only by the wordmark, the count and needs-you marks; `Log`, `Flags` (`--probe`, `--shareable`), `Settings` (`UserDefaults` `undoDelay` 0–5, `railSide`) |
-| `crates/desktop/companion/bundle/icon.swift` | 1024² PNG (gold wordmark on soot) drawn with AppKit, run by the `swift` interpreter |
 | `crates/desktop/companion/test.sh` | `swift test` with the CLT's Swift Testing framework and interop dylib on the search path (§3) |
-| `scripts/bundle-companion.sh` | `swift build -c release` (through `build-lock` when present) → `target/release/companion/Theuth Companion.app`: `CFBundleIdentifier io.theuth.mac.companion`, `LSUIElement`, `LSMinimumSystemVersion 15.0`, `NSPrincipalClass NSApplication`, version from the workspace `Cargo.toml`, `CFBundleIconFile` via `iconutil`, `PkgInfo`, dependency resource bundles into `Contents/Resources`, ad-hoc `codesign --deep` or `THEUTH_SIGN_IDENTITY` with `--options runtime --timestamp`, `codesign --verify --deep --strict` |
+| `scripts/bundle-companion.sh` | `swift build -c release` (through `build-lock` when present) → `target/release/companion/Theuth Companion.app`: `CFBundleIdentifier io.theuth.mac.companion`, `LSUIElement`, `LSMinimumSystemVersion 15.0`, `NSPrincipalClass NSApplication`, version from the workspace `Cargo.toml`, `AppIcon.icns` = `crates/desktop/icons/icon.icns` (the main app's, A3) and `tray{,@2x}.png` into `Contents/Resources`, `PkgInfo`, dependency resource bundles into `Contents/Resources`, ad-hoc `codesign --deep` or `THEUTH_SIGN_IDENTITY` with `--options runtime --timestamp`, `codesign --verify --deep --strict` |
 | `justfile` (tail) | `just companion` → the script |
 
 ## 2. What works live
@@ -87,7 +87,7 @@ Attention panel sits top-centre of the mouse's screen (x 1094–1466, y 312–74
 the header "● 24 need you · 8 working · 1 of 28", the oldest item's card (`blocked`, nikolai · anthropic/claude-opus-5-5
 · waiting 21 h · the task title · "on person:Sky" · `O Open in theuth` · S snooze 30 m · ⌘O session), six lines
 (stas · ivan ×4 · dmitri, 21 h), "+21 more · J to walk them", the footer hints and "answers wait 3 s · ⎋ undoes";
-the menu bar shows the template glyph with `●24` in gold. Verdict: **both surfaces and the status item appeared,
+the menu bar shows theuth's tray glyph (the same file the Tauri tray item beside it uses) with `●24` in gold (`/tmp/130-w1-crop-menubar.png`, 13:49 run after A3). Verdict: **both surfaces and the status item appeared,
 in the right places and sizes; the CGWindowList bounds match the AppKit frames.** (`/tmp/130-w1-shot.png`;
 sips crops `/tmp/130-w1-crop-rail.png`, downscale `/tmp/130-w1-shot-small.png`.)
 
