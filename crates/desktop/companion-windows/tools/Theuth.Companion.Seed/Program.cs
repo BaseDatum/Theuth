@@ -5,7 +5,7 @@ using Theuth.Companion.Rpc;
 namespace Theuth.Companion.Seed;
 
 /// <summary>
-/// <c>seed decision|review|blocked|hire|all [--count N] [--title TEXT]</c> · <c>seed list</c> · <c>seed clear</c> — real
+/// <c>seed decision|blocked|hire|all [--count N] [--title TEXT]</c> · <c>seed list</c> · <c>seed clear</c> — real
 /// attention items on the local engine (engine.json + token, as the companion finds it) through the engine's own RPCs,
 /// for UI tests on a scratch engine that has no model provider. Seeded tasks carry project <c>companion-seed</c> and are
 /// owned and reviewed by the user (no desk is woken); seeded hires are agent files named <c>seed-…</c>.
@@ -25,6 +25,7 @@ public static class Program
         ["handoff"] = "a handoff is a session asking for the user at its desktop — it needs a model turn",
         ["resume"] = "a resume item is a turn interrupted by a restart — it needs a model turn",
         ["budget"] = "a budget item needs an agent's monthly spend at 80 % of its cap — it needs model spend",
+        ["review"] = "a review is a task its owner moved doing → review; doing is task_checkout by a session (the user's task_update refuses backlog/todo → review) — it needs a desk turn",
         ["node"] = "a node item needs a mesh peer that went unreachable — it needs a second engine",
     };
 
@@ -32,9 +33,8 @@ public static class Program
     {
         if (args.Length == 0 || args[0] is "help" or "--help" or "-h")
         {
-            Console.WriteLine("usage: seed decision|review|blocked|hire|all [--count N] [--title TEXT] | list | clear");
+            Console.WriteLine("usage: seed decision|blocked|hire|all [--count N] [--title TEXT] | list | clear");
             Console.WriteLine("  decision  a user task blocked on a decision:<id> (no packet: only an agent's escalate tool writes the options)");
-            Console.WriteLine("  review    a user task in review with the user as reviewer (the card offers Approve / Send back…)");
             Console.WriteLine("  blocked   a user task blocked on a non-decision blocker");
             Console.WriteLine("  hire      a proposed agent seed-<n> (agent_put with proposed_by)");
             Console.WriteLine("  not seedable without a model: " + string.Join(", ", NeedsAModel.Keys));
@@ -68,7 +68,7 @@ public static class Program
         if (kinds.Contains("clear")) await Clear(client);
         else if (!kinds.Contains("list"))
         {
-            if (kinds.Remove("all")) kinds.AddRange(new[] { "decision", "review", "blocked", "hire" });
+            if (kinds.Remove("all")) kinds.AddRange(new[] { "decision", "blocked", "hire", "review" });
             foreach (var kind in kinds)
             {
                 if (NeedsAModel.TryGetValue(kind, out var why))
@@ -103,12 +103,6 @@ public static class Program
                 await c.CallRawAsync("task_update", id, new { state = "blocked", blockers = new[] { decision } });
                 return $"seeded decision task {id} blocked on {decision}";
             }
-            case "review":
-            {
-                var id = await CreateTask(c, title ?? $"Seed review {n}: nightly backup routine rewrite");
-                await c.CallRawAsync("task_update", id, new { state = "review", reviewer = new { type = "user" } });
-                return $"seeded review task {id}";
-            }
             case "blocked":
             {
                 var id = await CreateTask(c, title ?? $"Seed blocked {n}: waiting on the staging bucket");
@@ -132,7 +126,7 @@ public static class Program
                 return $"seeded hire {name}";
             }
             default:
-                throw new ArgumentException($"unknown kind {kind} (decision, review, blocked, hire, all, list, clear)");
+                throw new ArgumentException($"unknown kind {kind} (decision, blocked, hire, all, list, clear)");
         }
     }
 
@@ -140,7 +134,7 @@ public static class Program
     {
         var task = await c.CallRawAsync("task_create", new
         {
-            state = "backlog",
+            state = "todo", // backlog → blocked is refused; todo → blocked is the user's move (ledger guard)
             title,
             brief = "Created by the companion seeding tool for a UI test; `seed clear` removes it.",
             owner = new { type = "user" },

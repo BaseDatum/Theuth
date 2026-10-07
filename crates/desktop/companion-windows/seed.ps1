@@ -11,5 +11,5 @@ param([Parameter(ValueFromRemainingArguments = $true)] [string[]] $Rest)
 $ErrorActionPreference = 'Stop'
 $proj = Join-Path $PSScriptRoot 'tools\Theuth.Companion.Seed\Theuth.Companion.Seed.csproj'
 if (-not $Rest -or $Rest.Count -eq 0) { $Rest = @('help') }
-& dotnet run --project $proj -c Release --nologo -- @Rest
+& dotnet run --project $proj -c Release -- @Rest
 exit $LASTEXITCODE
