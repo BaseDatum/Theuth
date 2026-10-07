@@ -59,14 +59,33 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func setUpStatusItem() {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         guard let button = statusItem.button else { return }
-        let img = NSImage(systemSymbolName: "circle.hexagongrid", accessibilityDescription: "theuth")
-        img?.isTemplate = true
-        button.image = img
+        button.image = Self.trayImage()
         button.imagePosition = .imageLeading
         button.target = self
         button.action = #selector(statusClicked(_:))
         button.sendAction(on: [.leftMouseUp, .rightMouseUp])
         button.setAccessibilityLabel("theuth")
+    }
+
+    /// theuth's own tray glyph (`crates/desktop/icons/tray.png` + `@2x`, the file the Tauri tray uses,
+    /// `tauri.conf.json:44`), bundled as `Contents/Resources/tray{,@2x}.png`; template so the menu bar tints it.
+    /// The gold dot + count live in `attributedTitle`, a separate layer the template tinting never touches.
+    private static func trayImage() -> NSImage? {
+        if let url = Bundle.main.url(forResource: "tray", withExtension: "png"), let img = NSImage(contentsOf: url) {
+            if let url2 = Bundle.main.url(forResource: "tray@2x", withExtension: "png"), let rep = NSImageRep(contentsOf: url2),
+               !img.representations.contains(where: { $0.pixelsWide == rep.pixelsWide }) {
+                rep.size = img.size
+                img.addRepresentation(rep)
+            }
+            img.isTemplate = true
+            img.size = NSSize(width: 18, height: 18)
+            img.accessibilityDescription = "theuth"
+            return img
+        }
+        Log.write("tray.png missing from the bundle — falling back to an SF Symbol")
+        let img = NSImage(systemSymbolName: "circle.hexagongrid", accessibilityDescription: "theuth")
+        img?.isTemplate = true
+        return img
     }
 
     private func updateStatusItem(_ r: Rail) {

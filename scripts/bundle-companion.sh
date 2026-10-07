@@ -1,7 +1,7 @@
 #!/bin/bash
 # Build `Theuth Companion.app` from the SwiftPM package with the Command Line Tools alone (no Xcode;
-# spike SA): `swift build -c release`, a hand-written Info.plist, PkgInfo, an .icns via `iconutil` from a
-# PNG drawn in Swift, codesign (ad-hoc, or `THEUTH_SIGN_IDENTITY`), `codesign --verify --deep --strict`.
+# spike SA): `swift build -c release`, a hand-written Info.plist, PkgInfo, theuth's own tray glyph and .icns from
+# crates/desktop/icons, codesign (ad-hoc, or `THEUTH_SIGN_IDENTITY`), `codesign --verify --deep --strict`.
 # Output: target/release/companion/Theuth Companion.app. Nesting into the Tauri bundle is W1S's.
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -31,19 +31,11 @@ printf 'APPL????' > "$APP/Contents/PkgInfo"
 for b in "$BIN_DIR"/*.bundle; do [ -d "$b" ] && cp -R "$b" "$APP/Contents/Resources/"; done
 chmod -R u+w "$APP/Contents/Resources"
 
-echo "== icon (iconutil)"
-ICON_KEY=""
-if swift "$PKG/bundle/icon.swift" "$OUT/icon-1024.png"; then
-  ICONSET="$OUT/AppIcon.iconset"; rm -rf "$ICONSET"; mkdir -p "$ICONSET"
-  for s in 16 32 128 256 512; do
-    sips -z $s $s "$OUT/icon-1024.png" --out "$ICONSET/icon_${s}x${s}.png" >/dev/null
-    d=$((s*2)); sips -z $d $d "$OUT/icon-1024.png" --out "$ICONSET/icon_${s}x${s}@2x.png" >/dev/null
-  done
-  iconutil -c icns "$ICONSET" -o "$APP/Contents/Resources/AppIcon.icns"
-  ICON_KEY="<key>CFBundleIconFile</key><string>AppIcon</string>"
-else
-  echo "icon.swift failed — bundling without an icon" >&2
-fi
+echo "== icons (theuth's own: the Tauri tray glyph and the main app's .icns)"
+ICONS="$ROOT/crates/desktop/icons"
+cp "$ICONS/tray.png" "$ICONS/tray@2x.png" "$APP/Contents/Resources/"
+cp "$ICONS/icon.icns" "$APP/Contents/Resources/AppIcon.icns"
+ICON_KEY="<key>CFBundleIconFile</key><string>AppIcon</string>"
 
 cat > "$APP/Contents/Info.plist" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
