@@ -111,7 +111,8 @@ mod unix {
         // SAFETY: a zeroed statvfs is a valid out-parameter; `c` is NUL-terminated.
         let mut st: libc::statvfs = unsafe { std::mem::zeroed() };
         let rc = unsafe { libc::statvfs(c.as_ptr(), &mut st) };
-        (rc == 0).then(|| u64::from(st.f_bavail) * u64::from(st.f_frsize))
+        // `f_bavail` / `f_frsize` are u32 or u64 by platform; widen without a `From` clippy would call useless.
+        (rc == 0).then(|| st.f_bavail as u64 * st.f_frsize as u64)
     }
 }
 
@@ -123,7 +124,10 @@ mod imp {
     pub use super::unix::{free_disk_bytes, load1};
 
     pub fn power() -> Power {
-        match std::process::Command::new("pmset").args(["-g", "batt"]).output() {
+        match std::process::Command::new("pmset")
+            .args(["-g", "batt"])
+            .output()
+        {
             Ok(o) if o.status.success() => super::parse_pmset(&String::from_utf8_lossy(&o.stdout)),
             _ => Power::Unknown,
         }
@@ -203,7 +207,10 @@ mod imp {
         let some = s
             .lines()
             .find(|l| l.starts_with("some"))
-            .and_then(|l| l.split_whitespace().find_map(|kv| kv.strip_prefix("avg10=")))
+            .and_then(|l| {
+                l.split_whitespace()
+                    .find_map(|kv| kv.strip_prefix("avg10="))
+            })
             .and_then(|v| v.parse::<f64>().ok());
         match some {
             Some(v) if v < 5.0 => MemoryPressure::Normal,
@@ -243,11 +250,15 @@ mod tests {
     #[test]
     fn pmset_first_line_names_the_source() {
         assert_eq!(
-            parse_pmset("Now drawing from 'AC Power'\n -InternalBattery-0 (id=123)\t100%; charged; 0:00 remaining present: true\n"),
+            parse_pmset(
+                "Now drawing from 'AC Power'\n -InternalBattery-0 (id=123)\t100%; charged; 0:00 remaining present: true\n"
+            ),
             Power::Ac
         );
         assert_eq!(
-            parse_pmset("Now drawing from 'Battery Power'\n -InternalBattery-0\t83%; discharging; 4:10 remaining present: true\n"),
+            parse_pmset(
+                "Now drawing from 'Battery Power'\n -InternalBattery-0\t83%; discharging; 4:10 remaining present: true\n"
+            ),
             Power::Battery
         );
         assert_eq!(parse_pmset(""), Power::Unknown);

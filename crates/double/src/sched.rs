@@ -134,7 +134,8 @@ pub async fn run_one(d: &Deps, run: &mut RunRow, trainer: &mut dyn Trainer) -> R
 }
 
 async fn drive(d: &Deps, run: &mut RunRow, trainer: &mut dyn Trainer) -> anyhow::Result<RunState> {
-    d.transition(run, RunState::Eligible, None, "trigger met").await?;
+    d.transition(run, RunState::Eligible, None, "trigger met")
+        .await?;
     wait_for_preconditions(d, run).await?;
 
     let needs_slot = run.tier != Tier::A;
@@ -183,8 +184,13 @@ async fn drive(d: &Deps, run: &mut RunRow, trainer: &mut dyn Trainer) -> anyhow:
         }
 
         let progress = i as f32 / steps as f32;
-        d.transition(run, RunState::Running, Some(progress), format!("step {}/{steps}", i + 1))
-            .await?;
+        d.transition(
+            run,
+            RunState::Running,
+            Some(progress),
+            format!("step {}/{steps}", i + 1),
+        )
+        .await?;
         let started = tokio::time::Instant::now();
         finished = trainer.step(i).await?;
         spent += started.elapsed();
@@ -199,7 +205,10 @@ async fn drive(d: &Deps, run: &mut RunRow, trainer: &mut dyn Trainer) -> anyhow:
                 run,
                 RunState::Paused,
                 Some((i + 1) as f32 / steps as f32),
-                format!("run cap {} min reached; resumes next night", cap.as_secs() / 60),
+                format!(
+                    "run cap {} min reached; resumes next night",
+                    cap.as_secs() / 60
+                ),
             )
             .await?;
             while current_night(d) == night {
@@ -224,8 +233,13 @@ async fn drive(d: &Deps, run: &mut RunRow, trainer: &mut dyn Trainer) -> anyhow:
     }
     drop(slot);
 
-    d.transition(run, RunState::Evaluating, Some(1.0), "scoring the candidate")
-        .await?;
+    d.transition(
+        run,
+        RunState::Evaluating,
+        Some(1.0),
+        "scoring the candidate",
+    )
+    .await?;
     let Some(Finished { version, verdict }) = finished else {
         return reject(d, run, "rejected: nothing new to train on").await;
     };
@@ -237,15 +251,19 @@ async fn drive(d: &Deps, run: &mut RunRow, trainer: &mut dyn Trainer) -> anyhow:
     match verdict {
         Ok(()) => {
             let previous = versions::activate(&d.store, &d.models, &row.id).await?;
-            d.rt
-                .publish(DoubleVersionActivated {
-                    version: row.id.clone(),
-                    previous,
-                    metrics: row.metrics.clone(),
-                })
-                .await;
-            d.transition(run, RunState::Promoted, Some(1.0), format!("promoted {}", row.id))
-                .await?;
+            d.rt.publish(DoubleVersionActivated {
+                version: row.id.clone(),
+                previous,
+                metrics: row.metrics.clone(),
+            })
+            .await;
+            d.transition(
+                run,
+                RunState::Promoted,
+                Some(1.0),
+                format!("promoted {}", row.id),
+            )
+            .await?;
             Ok(RunState::Promoted)
         }
         Err(why) => reject(d, run, why).await,
@@ -265,15 +283,23 @@ async fn wait_for_preconditions(d: &Deps, run: &mut RunRow) -> anyhow::Result<()
             return Ok(());
         }
         if run.state != RunState::Waiting {
-            d.transition(run, RunState::Waiting, None, format!("waiting: {}", describe(&blockers)))
-                .await?;
+            d.transition(
+                run,
+                RunState::Waiting,
+                None,
+                format!("waiting: {}", describe(&blockers)),
+            )
+            .await?;
         }
         tokio::time::sleep(RETRY).await;
     }
 }
 
 fn describe(b: &[Blocker]) -> String {
-    b.iter().map(ToString::to_string).collect::<Vec<_>>().join(", ")
+    b.iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 fn window(cfg: &Training) -> Window {
@@ -290,12 +316,11 @@ fn current_night(d: &Deps) -> NaiveDate {
 
 /// Labels (any source but `excluded`) landed after `since`.
 pub async fn labels_since(store: &Store, since: Option<DateTime<Utc>>) -> anyhow::Result<u32> {
-    let n: i64 = sqlx::query_scalar(
-        "SELECT count(*) FROM labels WHERE source != 'excluded' AND at > ?",
-    )
-    .bind(since.map(|t| t.to_rfc3339()).unwrap_or_default())
-    .fetch_one(store.pool())
-    .await?;
+    let n: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM labels WHERE source != 'excluded' AND at > ?")
+            .bind(since.map(|t| t.to_rfc3339()).unwrap_or_default())
+            .fetch_one(store.pool())
+            .await?;
     Ok(n as u32)
 }
 
@@ -413,7 +438,11 @@ impl Scheduler {
     /// Start `tier` on `venue` now: one run at a time.
     async fn start_run(&self, tier: Tier, requested: Venue) -> Result<RunId, String> {
         if let Some(r) = self.current.lock().as_ref() {
-            return Err(format!("a run is in progress: {} ({})", r.id, r.state.as_str()));
+            return Err(format!(
+                "a run is in progress: {} ({})",
+                r.id,
+                r.state.as_str()
+            ));
         }
         let cfg = self.deps.training();
         let resolved = venue::resolve(&requested, &cfg.venue, cfg.share_data).await;
@@ -452,7 +481,13 @@ impl Scheduler {
     async fn status(&self) -> DoubleStatus {
         let cfg = self.config.lock().clone();
         let active = self.deps.store.active_version().await.ok().flatten();
-        let last = self.deps.store.runs(1).await.ok().and_then(|v| v.into_iter().next());
+        let last = self
+            .deps
+            .store
+            .runs(1)
+            .await
+            .ok()
+            .and_then(|v| v.into_iter().next());
         let training = self.deps.training();
         let now = self.deps.sensors.now_local();
         DoubleStatus {
@@ -560,7 +595,12 @@ impl Message<Status> for Scheduler {
 /// Spawn the scheduler: the actor, registered as [`ACTOR`], and the 60 s
 /// trigger tick. `factory` supplies trainers; [`tier_a_factory`] is the W2
 /// one (Tier A only; W3 wraps it to add Tier B).
-pub fn start(rt: Runtime, store: Store, cfg: DoubleConfig, factory: Arc<Factory>) -> anyhow::Result<ActorRef<Scheduler>> {
+pub fn start(
+    rt: Runtime,
+    store: Store,
+    cfg: DoubleConfig,
+    factory: Arc<Factory>,
+) -> anyhow::Result<ActorRef<Scheduler>> {
     let models = versions::models_dir(&rt.data_dir);
     let deps = Deps {
         store,
@@ -595,7 +635,13 @@ pub fn start(rt: Runtime, store: Store, cfg: DoubleConfig, factory: Arc<Factory>
             let has_b = tick.ask(HasTierB).await.unwrap_or(false);
             match triggers.due(&deps, has_b).await {
                 Ok(Some(tier)) => {
-                    if let Err(e) = tick.ask(Train { tier, venue: Venue::Auto }).await {
+                    if let Err(e) = tick
+                        .ask(Train {
+                            tier,
+                            venue: Venue::Auto,
+                        })
+                        .await
+                    {
                         tracing::debug!("double: trigger for tier {} skipped: {e}", tier.as_str());
                     }
                 }
@@ -638,7 +684,8 @@ impl Trainer for TierA {
         let active = versions::load_active(&self.store, &self.models).await?;
         let now = Utc::now();
         let Some(c) =
-            crate::train_a::run(&self.store, active.artifacts.as_ref(), &self.base_hash, now).await?
+            crate::train_a::run(&self.store, active.artifacts.as_ref(), &self.base_hash, now)
+                .await?
         else {
             return Ok(None);
         };
@@ -686,7 +733,10 @@ pub async fn export(store: &Store, data_dir: &Path) -> anyhow::Result<DoubleExpo
     use std::io::Write as _;
     let dir = data_dir.join(crate::store::DIR).join("export");
     std::fs::create_dir_all(&dir)?;
-    let path = dir.join(format!("double-{}.jsonl", Utc::now().format("%Y%m%dT%H%M%SZ")));
+    let path = dir.join(format!(
+        "double-{}.jsonl",
+        Utc::now().format("%Y%m%dT%H%M%SZ")
+    ));
     let mut f = std::io::BufWriter::new(std::fs::File::create(&path)?);
     let rows = sqlx::query(
         "SELECT id, class, question_id, requester, card_text, options, embedding, asked_at
@@ -978,7 +1028,10 @@ mod tests {
                 RunState::Promoted
             ]
         );
-        assert_eq!(h.deps.store.active_version().await.unwrap().unwrap().id, "v-3");
+        assert_eq!(
+            h.deps.store.active_version().await.unwrap().unwrap().id,
+            "v-3"
+        );
         assert_eq!(versions::pointer(&h.deps.models).as_deref(), Some("v-3"));
         assert!(!h.deps.slots.join("0").exists(), "slot released");
         let row = h.deps.store.runs(1).await.unwrap().remove(0);
@@ -1001,7 +1054,10 @@ mod tests {
         // Kept inactive with metrics; the active pointer is untouched.
         let versions = h.deps.store.versions().await.unwrap();
         assert!(versions.iter().any(|v| v.id == "v-1" && !v.active));
-        assert_eq!(h.deps.store.active_version().await.unwrap().unwrap().id, "v-3");
+        assert_eq!(
+            h.deps.store.active_version().await.unwrap().unwrap().id,
+            "v-3"
+        );
     }
 
     #[tokio::test]
@@ -1078,7 +1134,11 @@ mod tests {
         // One step per night; the fourth night never comes.
         assert_eq!(*ran.lock(), vec![0, 1, 2]);
         let s = states(&h);
-        assert_eq!(s.iter().filter(|x| **x == RunState::Paused).count(), 3, "{s:?}");
+        assert_eq!(
+            s.iter().filter(|x| **x == RunState::Paused).count(),
+            3,
+            "{s:?}"
+        );
         assert_eq!(h.events.lock().last().unwrap().message, "rejected: stale");
         assert_eq!(*s.last().unwrap(), RunState::Rejected);
         *h.fake.now.lock() = at(3, 0);
@@ -1126,9 +1186,19 @@ mod tests {
             }
         }
         let mut run = run_row(Tier::A);
-        assert_eq!(run_one(&h.deps, &mut run, &mut Nothing).await, RunState::Rejected);
+        assert_eq!(
+            run_one(&h.deps, &mut run, &mut Nothing).await,
+            RunState::Rejected
+        );
         settle().await;
-        assert!(h.events.lock().last().unwrap().message.contains("nothing new"));
+        assert!(
+            h.events
+                .lock()
+                .last()
+                .unwrap()
+                .message
+                .contains("nothing new")
+        );
     }
 
     #[tokio::test]
@@ -1171,8 +1241,10 @@ mod tests {
         assert_eq!(tr.due(&h.deps, false).await.unwrap(), None);
         assert_eq!(tr.due(&h.deps, false).await.unwrap(), Some(Tier::A));
         // Nightly: inside the window, once per night, only with labels.
-        let mut tr = Triggers::default();
-        tr.last_a_count = Some(25);
+        let mut tr = Triggers {
+            last_a_count: Some(25),
+            ..Default::default()
+        };
         *h.fake.now.lock() = at(2, 30);
         h.deps.training.lock().tiers.a.enabled = true;
         // Pretend a version consumed the labels so the count trigger is quiet.
@@ -1186,7 +1258,11 @@ mod tests {
                 head_path: None,
                 knn_path: None,
                 metrics: serde_json::json!({}),
-                data_range: format!("{}..{}", Utc::now().to_rfc3339(), (Utc::now() + ChronoDuration::hours(1)).to_rfc3339()),
+                data_range: format!(
+                    "{}..{}",
+                    Utc::now().to_rfc3339(),
+                    (Utc::now() + ChronoDuration::hours(1)).to_rfc3339()
+                ),
                 trained_at: Utc::now(),
                 venue: "local".into(),
                 duration_s: 0,
@@ -1194,7 +1270,11 @@ mod tests {
             })
             .await
             .unwrap();
-        assert_eq!(tr.due(&h.deps, false).await.unwrap(), None, "no labels after the version");
+        assert_eq!(
+            tr.due(&h.deps, false).await.unwrap(),
+            None,
+            "no labels after the version"
+        );
         // Tier B is never due without a trainer.
         assert_eq!(tr.due(&h.deps, false).await.unwrap(), None);
     }
@@ -1208,12 +1288,17 @@ mod tests {
             "agent:\n  model: x   # keep\n\ndouble:\n  enabled: false\n  training:\n    venue: auto\n\nslack:\n  enabled: false\n",
         )
         .unwrap();
-        let mut cfg = DoubleConfig::default();
-        cfg.enabled = true;
+        let mut cfg = DoubleConfig {
+            enabled: true,
+            ..Default::default()
+        };
         cfg.training.venue = "node:gpu".into();
         persist(&path, &cfg).unwrap();
         let text = std::fs::read_to_string(&path).unwrap();
-        assert!(text.starts_with("agent:\n  model: x   # keep\n\ndouble:\n"), "{text}");
+        assert!(
+            text.starts_with("agent:\n  model: x   # keep\n\ndouble:\n"),
+            "{text}"
+        );
         assert!(text.ends_with("\nslack:\n  enabled: false\n"), "{text}");
         let doc: serde_yaml::Value = serde_yaml::from_str(&text).unwrap();
         let back: DoubleConfig = serde_yaml::from_value(doc["double"].clone()).unwrap();
@@ -1221,14 +1306,21 @@ mod tests {
         // No block → appended; missing file → created.
         let p2 = dir.path().join("fresh.yaml");
         persist(&p2, &cfg).unwrap();
-        let doc: serde_yaml::Value = serde_yaml::from_str(&std::fs::read_to_string(&p2).unwrap()).unwrap();
-        assert_eq!(doc["double"]["training"]["venue"], serde_yaml::Value::from("node:gpu"));
+        let doc: serde_yaml::Value =
+            serde_yaml::from_str(&std::fs::read_to_string(&p2).unwrap()).unwrap();
+        assert_eq!(
+            doc["double"]["training"]["venue"],
+            serde_yaml::Value::from("node:gpu")
+        );
     }
 
     #[test]
     fn next_window_start() {
         let w = Window::parse("02:00-06:00").unwrap();
         assert_eq!(next_window(&w, at(1, 0)), at(2, 0));
-        assert_eq!(next_window(&w, at(3, 0)), at(2, 0) + ChronoDuration::days(1));
+        assert_eq!(
+            next_window(&w, at(3, 0)),
+            at(2, 0) + ChronoDuration::days(1)
+        );
     }
 }

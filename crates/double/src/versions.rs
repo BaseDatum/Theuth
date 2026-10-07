@@ -125,11 +125,7 @@ pub fn set_pointer(models: &Path, id: &str) -> std::io::Result<()> {
 /// Make `id` active: the version must exist in `versions` (and on disk unless
 /// it is `baseline`). Pointer first, table second. Returns the previously
 /// active id (`None` = baseline only).
-pub async fn activate(
-    store: &Store,
-    models: &Path,
-    id: &str,
-) -> anyhow::Result<Option<String>> {
+pub async fn activate(store: &Store, models: &Path, id: &str) -> anyhow::Result<Option<String>> {
     let previous = store.active_version().await?.map(|v| v.id);
     if id == BASELINE {
         set_pointer(models, BASELINE)?;
@@ -215,7 +211,9 @@ mod tests {
 
     async fn store() -> (tempfile::TempDir, Store) {
         let dir = tempfile::tempdir().unwrap();
-        let s = Store::open(&dir.path().join("double.sqlite")).await.unwrap();
+        let s = Store::open(&dir.path().join("double.sqlite"))
+            .await
+            .unwrap();
         (dir, s)
     }
 
@@ -260,7 +258,10 @@ mod tests {
         }
         assert_eq!(activate(&s, &models, "v1").await.unwrap(), None);
         assert_eq!(pointer(&models).as_deref(), Some("v1"));
-        assert_eq!(activate(&s, &models, "v2").await.unwrap(), Some("v1".into()));
+        assert_eq!(
+            activate(&s, &models, "v2").await.unwrap(),
+            Some("v1".into())
+        );
         assert_eq!(pointer(&models).as_deref(), Some("v2"));
 
         let (prev, metrics) = rollback(&s, &models, "v1").await.unwrap();

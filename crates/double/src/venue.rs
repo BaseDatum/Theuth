@@ -64,13 +64,13 @@ pub fn choose(
     match effective(requested, configured) {
         Venue::Off => Resolved::Off,
         Venue::Local => Resolved::Local,
-        Venue::Node(name) => peers
-            .iter()
-            .find(|p| p.name == name && p.reachable)
-            .map_or(Resolved::Unreachable(name), |p| Resolved::Node {
+        Venue::Node(name) => peers.iter().find(|p| p.name == name && p.reachable).map_or(
+            Resolved::Unreachable(name),
+            |p| Resolved::Node {
                 name: p.name.clone(),
                 peer: PeerId(p.id.0.clone()),
-            }),
+            },
+        ),
         Venue::Auto => {
             if !share_data {
                 return Resolved::Local;
@@ -91,10 +91,12 @@ pub fn choose(
                     .then(b.1.availability_30d.total_cmp(&a.1.availability_30d))
                     .then(a.0.name.cmp(&b.0.name))
             });
-            candidates.first().map_or(Resolved::Local, |(p, _)| Resolved::Node {
-                name: p.name.clone(),
-                peer: PeerId(p.id.0.clone()),
-            })
+            candidates
+                .first()
+                .map_or(Resolved::Local, |(p, _)| Resolved::Node {
+                    name: p.name.clone(),
+                    peer: PeerId(p.id.0.clone()),
+                })
         }
     }
 }
@@ -142,7 +144,13 @@ mod tests {
         }
     }
 
-    fn st(name: &str, class: EngineClass, gpu: bool, acc: Option<Accelerator>, avail: f32) -> EngineStats {
+    fn st(
+        name: &str,
+        class: EngineClass,
+        gpu: bool,
+        acc: Option<Accelerator>,
+        avail: f32,
+    ) -> EngineStats {
         EngineStats {
             id: EngineId(format!("id-{name}")),
             uptime_since_ms: 0,
@@ -166,11 +174,35 @@ mod tests {
             peer("studio", true),
         ];
         let stats = vec![
-            st("mac2", EngineClass::Laptop, true, Some(Accelerator::Metal), 1.0),
+            st(
+                "mac2",
+                EngineClass::Laptop,
+                true,
+                Some(Accelerator::Metal),
+                1.0,
+            ),
             st("vmgpu", EngineClass::Vm, true, Some(Accelerator::Cuda), 1.0),
-            st("box", EngineClass::Server, true, Some(Accelerator::Cuda), 0.9),
-            st("rig", EngineClass::Server, true, Some(Accelerator::Cuda), 1.0),
-            st("studio", EngineClass::Desktop, true, Some(Accelerator::Metal), 1.0),
+            st(
+                "box",
+                EngineClass::Server,
+                true,
+                Some(Accelerator::Cuda),
+                0.9,
+            ),
+            st(
+                "rig",
+                EngineClass::Server,
+                true,
+                Some(Accelerator::Cuda),
+                1.0,
+            ),
+            st(
+                "studio",
+                EngineClass::Desktop,
+                true,
+                Some(Accelerator::Metal),
+                1.0,
+            ),
         ];
         let r = choose(&Venue::Auto, "auto", true, &peers, &stats);
         assert_eq!(
@@ -182,27 +214,64 @@ mod tests {
         );
         assert_eq!(r.to_string(), "node:box");
         // Without the CUDA box, the Metal desktop wins over the laptop.
-        let r = choose(&Venue::Auto, "auto", true, &peers[..2].iter().chain(&peers[3..]).cloned().collect::<Vec<_>>(), &stats);
+        let r = choose(
+            &Venue::Auto,
+            "auto",
+            true,
+            &peers[..2]
+                .iter()
+                .chain(&peers[3..])
+                .cloned()
+                .collect::<Vec<_>>(),
+            &stats,
+        );
         assert_eq!(r.to_string(), "node:studio");
         // `gpu = true` without an accelerator, or `cpu`, is not enough.
         let weak = vec![
             st("box", EngineClass::Server, true, None, 1.0),
-            st("studio", EngineClass::Server, true, Some(Accelerator::Cpu), 1.0),
+            st(
+                "studio",
+                EngineClass::Server,
+                true,
+                Some(Accelerator::Cpu),
+                1.0,
+            ),
         ];
-        assert_eq!(choose(&Venue::Auto, "auto", true, &peers, &weak), Resolved::Local);
+        assert_eq!(
+            choose(&Venue::Auto, "auto", true, &peers, &weak),
+            Resolved::Local
+        );
         // share_data off → never leaves the laptop.
-        assert_eq!(choose(&Venue::Auto, "auto", false, &peers, &stats), Resolved::Local);
+        assert_eq!(
+            choose(&Venue::Auto, "auto", false, &peers, &stats),
+            Resolved::Local
+        );
         // One-engine mesh → local.
-        assert_eq!(choose(&Venue::Auto, "auto", true, &[], &[]), Resolved::Local);
+        assert_eq!(
+            choose(&Venue::Auto, "auto", true, &[], &[]),
+            Resolved::Local
+        );
     }
 
     #[test]
     fn explicit_requests_win_over_the_config() {
         let peers = vec![peer("box", true), peer("down", false)];
-        assert_eq!(choose(&Venue::Local, "node:box", true, &peers, &[]), Resolved::Local);
-        assert_eq!(choose(&Venue::Off, "auto", true, &peers, &[]), Resolved::Off);
-        assert_eq!(choose(&Venue::Auto, "off", true, &peers, &[]), Resolved::Off);
-        assert_eq!(choose(&Venue::Auto, "local", true, &peers, &[]), Resolved::Local);
+        assert_eq!(
+            choose(&Venue::Local, "node:box", true, &peers, &[]),
+            Resolved::Local
+        );
+        assert_eq!(
+            choose(&Venue::Off, "auto", true, &peers, &[]),
+            Resolved::Off
+        );
+        assert_eq!(
+            choose(&Venue::Auto, "off", true, &peers, &[]),
+            Resolved::Off
+        );
+        assert_eq!(
+            choose(&Venue::Auto, "local", true, &peers, &[]),
+            Resolved::Local
+        );
         assert_eq!(
             choose(&Venue::Auto, "node:box", false, &peers, &[]),
             Resolved::Node {
@@ -211,8 +280,17 @@ mod tests {
             },
             "an explicit node needs no stats"
         );
-        assert_eq!(choose(&Venue::Node("down".into()), "auto", true, &peers, &[]), Resolved::Unreachable("down".into()));
-        assert_eq!(choose(&Venue::Node("ghost".into()), "auto", true, &peers, &[]), Resolved::Unreachable("ghost".into()));
-        assert_eq!(choose(&Venue::Auto, "garbage", true, &peers, &[]), Resolved::Local);
+        assert_eq!(
+            choose(&Venue::Node("down".into()), "auto", true, &peers, &[]),
+            Resolved::Unreachable("down".into())
+        );
+        assert_eq!(
+            choose(&Venue::Node("ghost".into()), "auto", true, &peers, &[]),
+            Resolved::Unreachable("ghost".into())
+        );
+        assert_eq!(
+            choose(&Venue::Auto, "garbage", true, &peers, &[]),
+            Resolved::Local
+        );
     }
 }

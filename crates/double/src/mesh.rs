@@ -202,7 +202,10 @@ fn encode<T: Serialize>(v: &T) -> anyhow::Result<Bytes> {
 }
 
 fn sha256_hex(b: &[u8]) -> String {
-    Sha256::digest(b).iter().map(|x| format!("{x:02x}")).collect()
+    Sha256::digest(b)
+        .iter()
+        .map(|x| format!("{x:02x}"))
+        .collect()
 }
 
 async fn send(framed: &mut Stream, f: &Frame) -> anyhow::Result<()> {
@@ -334,7 +337,9 @@ pub async fn train_on(
     );
     send(&mut framed, &Frame::Ack).await?;
     match tokio::time::timeout(IDLE, recv(&mut framed)).await {
-        Ok(Ok(Frame::Cleaned)) => on_event(RunState::Cleaned, None, "node deleted the bundle".into()),
+        Ok(Ok(Frame::Cleaned)) => {
+            on_event(RunState::Cleaned, None, "node deleted the bundle".into())
+        }
         Ok(Ok(other)) => tracing::debug!("double: node answered {other:?} to Ack"),
         Ok(Err(e)) => tracing::debug!("double: node closed before Cleaned: {e}"),
         Err(_) => tracing::debug!("double: node did not confirm cleanup in time"),
@@ -377,7 +382,12 @@ pub async fn serve_on(rt: Runtime, transport: Arc<dyn Transport>, runner: Arc<dy
 
 /// One accepted stream: the whole node-side protocol.
 pub async fn answer(runner: &dyn Runner, mut framed: Stream) -> anyhow::Result<()> {
-    let Frame::Train { run_id, manifest, sha } = recv(&mut framed).await? else {
+    let Frame::Train {
+        run_id,
+        manifest,
+        sha,
+    } = recv(&mut framed).await?
+    else {
         anyhow::bail!("first frame was not Train");
     };
     if let Err(why) = runner.accept(&manifest).await {
@@ -400,7 +410,11 @@ pub async fn answer(runner: &dyn Runner, mut framed: Stream) -> anyhow::Result<(
     let bundle: Bundle = match postcard::from_bytes(&bytes) {
         Ok(b) => b,
         Err(e) => {
-            send(&mut framed, &Frame::Error(format!("bundle does not decode: {e}"))).await?;
+            send(
+                &mut framed,
+                &Frame::Error(format!("bundle does not decode: {e}")),
+            )
+            .await?;
             return Ok(());
         }
     };
@@ -477,17 +491,33 @@ mod tests {
     #[async_trait::async_trait]
     impl Transport for Loop {
         fn peers(&self) -> Vec<PeerId> {
-            self.inboxes.lock().keys().filter(|p| **p != self.me).cloned().collect()
+            self.inboxes
+                .lock()
+                .keys()
+                .filter(|p| **p != self.me)
+                .cloned()
+                .collect()
         }
         async fn open(&self, peer: &PeerId, alpn: &str) -> anyhow::Result<Box<dyn ByteStream>> {
             assert_eq!(alpn, ALPN_DOUBLE);
             let (mine, theirs) = tokio::io::duplex(1 << 20);
-            let to = self.inboxes.lock().get(peer).cloned().ok_or_else(|| anyhow::anyhow!("no such peer"))?;
-            to.send((self.me.clone(), Box::new(theirs))).map_err(|_| anyhow::anyhow!("peer gone"))?;
+            let to = self
+                .inboxes
+                .lock()
+                .get(peer)
+                .cloned()
+                .ok_or_else(|| anyhow::anyhow!("no such peer"))?;
+            to.send((self.me.clone(), Box::new(theirs)))
+                .map_err(|_| anyhow::anyhow!("peer gone"))?;
             Ok(Box::new(mine))
         }
         async fn accept(&self, _alpn: &str) -> anyhow::Result<Inbound> {
-            self.inbox.lock().await.recv().await.ok_or_else(|| anyhow::anyhow!("closed"))
+            self.inbox
+                .lock()
+                .await
+                .recv()
+                .await
+                .ok_or_else(|| anyhow::anyhow!("closed"))
         }
         fn subscribe(&self) -> broadcast::Receiver<replica::PeerEvent> {
             self.events.subscribe()
@@ -507,7 +537,11 @@ mod tests {
             assert_eq!(m.tier, Tier::B);
             self.refuse.clone().map_or(Ok(()), Err)
         }
-        async fn run(&self, bundle: Bundle, progress: mpsc::Sender<(f32, String)>) -> anyhow::Result<TrainResult> {
+        async fn run(
+            &self,
+            bundle: Bundle,
+            progress: mpsc::Sender<(f32, String)>,
+        ) -> anyhow::Result<TrainResult> {
             let trained = bundle.rows.iter().filter(|r| !r.golden).count();
             progress.send((0.5, "epoch 1/2".into())).await.unwrap();
             progress.send((1.0, "epoch 2/2".into())).await.unwrap();
@@ -575,14 +609,22 @@ mod tests {
         let b = bundle(12);
         let events = Arc::new(Mutex::new(Vec::new()));
         let ev = events.clone();
-        let result = train_on(laptop.as_ref(), &PeerId("gpu-node".into()), &b, move |s, p, m| {
-            ev.lock().push((s, p, m));
-        })
+        let result = train_on(
+            laptop.as_ref(),
+            &PeerId("gpu-node".into()),
+            &b,
+            move |s, p, m| {
+                ev.lock().push((s, p, m));
+            },
+        )
         .await
         .unwrap();
         assert_eq!(result.run_id, "run-1");
         assert_eq!(result.adapter.as_ref().map(Vec::len), Some(1234));
-        assert_eq!(result.metrics_json, serde_json::json!({"trained": 10}).to_string());
+        assert_eq!(
+            result.metrics_json,
+            serde_json::json!({"trained": 10}).to_string()
+        );
         assert_eq!(*runner.seen.lock(), Some(b));
         let ev = events.lock().clone();
         assert_eq!(ev[0], (RunState::Running, Some(0.5), "epoch 1/2".into()));
@@ -600,9 +642,14 @@ mod tests {
             seen: Mutex::new(None),
         });
         serve(node, runner);
-        let e = train_on(laptop.as_ref(), &PeerId("gpu-node".into()), &bundle(3), |_, _, _| {})
-            .await
-            .unwrap_err();
+        let e = train_on(
+            laptop.as_ref(),
+            &PeerId("gpu-node".into()),
+            &bundle(3),
+            |_, _, _| {},
+        )
+        .await
+        .unwrap_err();
         assert!(e.to_string().contains("refused by node: busy"), "{e}");
         let why = NotYet.accept(&bundle(1).manifest).await.unwrap_err();
         assert!(why.contains("W3"));
@@ -619,20 +666,39 @@ mod tests {
         });
         serve(node, runner.clone());
         let b = bundle(3);
-        let mut f = framed(laptop.open(&PeerId("gpu-node".into()), ALPN_DOUBLE).await.unwrap());
-        send(&mut f, &Frame::Train { run_id: "run-1".into(), manifest: b.manifest.clone(), sha: "00".into() })
+        let mut f = framed(
+            laptop
+                .open(&PeerId("gpu-node".into()), ALPN_DOUBLE)
+                .await
+                .unwrap(),
+        );
+        send(
+            &mut f,
+            &Frame::Train {
+                run_id: "run-1".into(),
+                manifest: b.manifest.clone(),
+                sha: "00".into(),
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(recv(&mut f).await.unwrap(), Frame::Accepted);
+        send_bytes(&mut f, &postcard::to_allocvec(&b).unwrap())
             .await
             .unwrap();
-        assert_eq!(recv(&mut f).await.unwrap(), Frame::Accepted);
-        send_bytes(&mut f, &postcard::to_allocvec(&b).unwrap()).await.unwrap();
-        assert_eq!(recv(&mut f).await.unwrap(), Frame::Error("bundle sha256 mismatch".into()));
+        assert_eq!(
+            recv(&mut f).await.unwrap(),
+            Frame::Error("bundle sha256 mismatch".into())
+        );
         assert!(runner.seen.lock().is_none());
     }
 
     #[tokio::test]
     async fn build_bundle_reads_the_store() {
         let dir = tempfile::tempdir().unwrap();
-        let store = Store::open(&dir.path().join("double.sqlite")).await.unwrap();
+        let store = Store::open(&dir.path().join("double.sqlite"))
+            .await
+            .unwrap();
         store
             .put_class(&crate::store::ClassRow {
                 key: "c".into(),
@@ -675,12 +741,20 @@ mod tests {
             }
         }
         store.put_golden("e0").await.unwrap();
-        let b = build_bundle(&store, "run-9", Tier::B, "h", &TierB::default()).await.unwrap();
+        let b = build_bundle(&store, "run-9", Tier::B, "h", &TierB::default())
+            .await
+            .unwrap();
         assert_eq!(b.manifest.rows, 2, "the unlabelled row stays home");
         assert_eq!(b.manifest.dim, 4);
         assert!(b.rows[0].golden && !b.rows[1].golden);
-        assert_eq!(b.rows[1].labels, vec![("direct".to_owned(), "Allow".to_owned(), 1.0)]);
+        assert_eq!(
+            b.rows[1].labels,
+            vec![("direct".to_owned(), "Allow".to_owned(), 1.0)]
+        );
         assert_eq!(b.embeddings.len(), 2);
-        assert_eq!(crate::store::decode_f16(&b.embeddings[0]), vec![1.0, 2.0, 3.0, 4.0]);
+        assert_eq!(
+            crate::store::decode_f16(&b.embeddings[0]),
+            vec![1.0, 2.0, 3.0, 4.0]
+        );
     }
 }

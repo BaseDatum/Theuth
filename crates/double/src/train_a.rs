@@ -342,7 +342,10 @@ impl Artifacts {
     pub fn read(heads: &[u8], knn: &[u8], temperatures: &[u8]) -> anyhow::Result<Self> {
         let heads: Heads = serde_json::from_slice(heads)?;
         let temperatures: BTreeMap<String, f32> = serde_json::from_slice(temperatures)?;
-        anyhow::ensure!(knn.len() >= 8 && &knn[..4] == KNN_MAGIC, "knn.bin: bad magic");
+        anyhow::ensure!(
+            knn.len() >= 8 && &knn[..4] == KNN_MAGIC,
+            "knn.bin: bad magic"
+        );
         let mut at = 4;
         let take = |at: &mut usize, n: usize| -> anyhow::Result<&[u8]> {
             let s = knn
@@ -400,8 +403,16 @@ impl Artifacts {
         let labels: Vec<(&str, f64)> = rows
             .map(|e| {
                 let age_days = (now_ms - e.asked_at_ms) as f64 / 86_400_000.0;
-                let label = vocab.options.get(e.option as usize).map_or(NONE, String::as_str);
-                (label, (-age_days / DECAY_DAYS).exp() * f64::from(e.weight) * cosine(&e.embedding, embedding))
+                let label = vocab
+                    .options
+                    .get(e.option as usize)
+                    .map_or(NONE, String::as_str);
+                (
+                    label,
+                    (-age_days / DECAY_DAYS).exp()
+                        * f64::from(e.weight)
+                        * cosine(&e.embedding, embedding),
+                )
             })
             .collect();
         vote(options, labels)
@@ -419,7 +430,11 @@ impl Artifacts {
         knn: &[f32],
     ) -> Vec<f32> {
         let feats = self.features(class, options, oracle, knn);
-        let head = self.heads.per_class.get(class).unwrap_or(&self.heads.global);
+        let head = self
+            .heads
+            .per_class
+            .get(class)
+            .unwrap_or(&self.heads.global);
         let t = f64::from(*self.temperatures.get(class).unwrap_or(&1.0)).max(1e-3);
         let logits: Vec<f64> = head
             .logits(&feats, &ctx(requester_idx(requester), risk_idx(class)))
@@ -520,10 +535,13 @@ pub struct Example {
     pub golden: bool,
 }
 
+/// `(source, choice, weight)` as the `labels` table has it.
+pub type Label = (LabelSource, String, f32);
+
 /// Net label weights over `options` from the §6 rows: positive sources add
 /// their weight to their choice, hindsight sources subtract it; negatives are
 /// clamped at zero. `None` when nothing positive remains.
-pub fn net_target(options: &[String], labels: &[(LabelSource, String, f32)]) -> Option<Vec<f32>> {
+pub fn net_target(options: &[String], labels: &[Label]) -> Option<Vec<f32>> {
     let mut t = vec![0.0f32; options.len()];
     for (source, choice, weight) in labels {
         let Some(i) = options.iter().position(|o| o == choice) else {
@@ -566,7 +584,7 @@ pub async fn load_examples(store: &Store) -> anyhow::Result<Vec<Example>> {
         oracle.insert(r.get("example_id"), probs);
     }
     // Group label rows by example (the query orders by example).
-    let mut grouped: Vec<(Example, Vec<(LabelSource, String, f32)>)> = Vec::new();
+    let mut grouped: Vec<(Example, Vec<Label>)> = Vec::new();
     for r in rows {
         let id: String = r.get("id");
         let at = dt(r.get("at"));
@@ -647,7 +665,11 @@ pub async fn assign_golden(store: &Store, examples: &mut [Example]) -> anyhow::R
     for idxs in by_class.values() {
         let want = golden_target(idxs.len());
         let have = idxs.iter().filter(|&&i| examples[i].golden).count();
-        for &i in idxs.iter().filter(|&&i| !examples[i].golden).take(want.saturating_sub(have)) {
+        for &i in idxs
+            .iter()
+            .filter(|&&i| !examples[i].golden)
+            .take(want.saturating_sub(have))
+        {
             added.push(i);
         }
     }
@@ -660,7 +682,9 @@ pub async fn assign_golden(store: &Store, examples: &mut [Example]) -> anyhow::R
 
 /// Golden rows a class of `n` rows owes: `max(5, ⌈n/10⌉)`, at most `n`.
 pub fn golden_target(n: usize) -> usize {
-    ((n as f64 * GOLDEN_SHARE).ceil() as usize).max(GOLDEN_MIN).min(n)
+    ((n as f64 * GOLDEN_SHARE).ceil() as usize)
+        .max(GOLDEN_MIN)
+        .min(n)
 }
 
 // --- the fit -------------------------------------------------------------
@@ -683,7 +707,10 @@ pub fn fit(examples: &[Example], now: DateTime<Utc>) -> Artifacts {
         let mut options: Vec<String> = c.keys().filter(|o| *o != NONE).cloned().collect();
         options.push(NONE.to_owned());
         let z: f64 = c.values().sum::<f64>() + options.len() as f64;
-        let prior = options.iter().map(|o| ((c.get(o).copied().unwrap_or(0.0) + 1.0) / z) as f32).collect();
+        let prior = options
+            .iter()
+            .map(|o| ((c.get(o).copied().unwrap_or(0.0) + 1.0) / z) as f32)
+            .collect();
         let n = train.iter().filter(|e| &e.class == class).count() as u32;
         classes.insert(class.clone(), ClassVocab { options, prior, n });
     }
@@ -700,7 +727,11 @@ pub fn fit(examples: &[Example], now: DateTime<Utc>) -> Artifacts {
                 .map(|(i, w)| (i, *w))
                 .unwrap_or((0, 0.0));
             let label = &e.options[best];
-            let option = classes[&e.class].options.iter().position(|o| o == label).unwrap_or(0) as u32;
+            let option = classes[&e.class]
+                .options
+                .iter()
+                .position(|o| o == label)
+                .unwrap_or(0) as u32;
             KnnEntry {
                 class: e.class.clone(),
                 option,
@@ -772,7 +803,8 @@ pub fn fit(examples: &[Example], now: DateTime<Utc>) -> Artifacts {
                 let knn = art.knn_vote(class, &e.options, &e.embedding, now);
                 let feats = art.features(class, &e.options, &e.oracle, &knn);
                 let head = art.heads.per_class.get(class).unwrap_or(&art.heads.global);
-                let logits = head.logits(&feats, &ctx(requester_idx(&e.requester), risk_idx(class)));
+                let logits =
+                    head.logits(&feats, &ctx(requester_idx(&e.requester), risk_idx(class)));
                 let w: f32 = e.target.iter().sum();
                 (logits, e.target.iter().map(|t| f64::from(*t / w)).collect())
             })
@@ -784,7 +816,10 @@ pub fn fit(examples: &[Example], now: DateTime<Utc>) -> Artifacts {
                 .iter()
                 .map(|(l, tg)| {
                     let p = softmax(&l.iter().map(|x| x / t).collect::<Vec<_>>());
-                    -tg.iter().zip(&p).map(|(t, p)| t * p.max(1e-12).ln()).sum::<f64>()
+                    -tg.iter()
+                        .zip(&p)
+                        .map(|(t, p)| t * p.max(1e-12).ln())
+                        .sum::<f64>()
                 })
                 .sum();
             if nll < best.0 - 1e-12 {
@@ -831,12 +866,28 @@ pub fn metrics(rows: &[(Vec<f32>, Vec<f32>)]) -> Metrics {
     let mut bins = vec![(0.0f64, 0.0f64, 0u32); 10];
     for (p, t) in rows {
         let z: f32 = t.iter().sum();
-        let label = t.iter().enumerate().max_by(|a, b| a.1.total_cmp(b.1).then(b.0.cmp(&a.0))).map_or(0, |x| x.0);
-        let top = p.iter().enumerate().max_by(|a, b| a.1.total_cmp(b.1).then(b.0.cmp(&a.0))).map_or(0, |x| x.0);
+        let label = t
+            .iter()
+            .enumerate()
+            .max_by(|a, b| a.1.total_cmp(b.1).then(b.0.cmp(&a.0)))
+            .map_or(0, |x| x.0);
+        let top = p
+            .iter()
+            .enumerate()
+            .max_by(|a, b| a.1.total_cmp(b.1).then(b.0.cmp(&a.0)))
+            .map_or(0, |x| x.0);
         let hit = f64::from(u8::from(top == label));
         m.accuracy += hit;
-        m.log_loss -= t.iter().zip(p).map(|(t, p)| f64::from(t / z) * f64::from(p.max(1e-7)).ln()).sum::<f64>();
-        m.brier += p.iter().zip(t).map(|(p, t)| (f64::from(*p) - f64::from(t / z)).powi(2)).sum::<f64>();
+        m.log_loss -= t
+            .iter()
+            .zip(p)
+            .map(|(t, p)| f64::from(t / z) * f64::from(p.max(1e-7)).ln())
+            .sum::<f64>();
+        m.brier += p
+            .iter()
+            .zip(t)
+            .map(|(p, t)| (f64::from(*p) - f64::from(t / z)).powi(2))
+            .sum::<f64>();
         let conf = f64::from(p[top]);
         let b = ((conf * 10.0) as usize).min(9);
         bins[b].0 += conf;
@@ -857,7 +908,11 @@ pub fn metrics(rows: &[(Vec<f32>, Vec<f32>)]) -> Metrics {
 }
 
 /// Score `rows` with `art` (or, with `None`, the zero-shot oracle alone) as of `now`.
-pub fn score(art: Option<&Artifacts>, rows: &[&Example], now: DateTime<Utc>) -> Vec<(Vec<f32>, Vec<f32>)> {
+pub fn score(
+    art: Option<&Artifacts>,
+    rows: &[&Example],
+    now: DateTime<Utc>,
+) -> Vec<(Vec<f32>, Vec<f32>)> {
     rows.iter()
         .map(|e| {
             let p = match art {
@@ -1031,7 +1086,11 @@ mod tests {
                 emb[0] = if allow { 1.0 } else { -1.0 };
                 emb[1 + (i % 7)] = 0.3;
                 let options = vec!["Allow".to_owned(), "Deny".to_owned(), NONE.to_owned()];
-                let target = if allow { vec![1.0, 0.0, 0.0] } else { vec![0.0, 1.0, 0.0] };
+                let target = if allow {
+                    vec![1.0, 0.0, 0.0]
+                } else {
+                    vec![0.0, 1.0, 0.0]
+                };
                 Example {
                     id: format!("e{i:03}"),
                     class: class.into(),
@@ -1057,8 +1116,15 @@ mod tests {
         let b = fit(&ex, now);
         assert_eq!(a.heads_json().unwrap(), b.heads_json().unwrap());
         assert_eq!(a.knn_bin(), b.knn_bin());
-        assert_eq!(a.temperatures_json().unwrap(), b.temperatures_json().unwrap());
-        assert!(a.heads.per_class.contains_key("approval:shell:mutating:git push:root"));
+        assert_eq!(
+            a.temperatures_json().unwrap(),
+            b.temperatures_json().unwrap()
+        );
+        assert!(
+            a.heads
+                .per_class
+                .contains_key("approval:shell:mutating:git push:root")
+        );
 
         let golden: Vec<&Example> = ex.iter().filter(|e| e.golden).collect();
         let cand = metrics(&score(Some(&a), &golden, now));
@@ -1093,10 +1159,20 @@ mod tests {
         let a = fit(&ex, t0() + Duration::days(1));
         let opts = vec!["Allow".to_owned(), "Deny".to_owned(), NONE.to_owned()];
         // Before the first row: nothing to vote with → uniform.
-        let v = a.knn_vote("c", &opts, &[1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], t0() - Duration::hours(1));
+        let v = a.knn_vote(
+            "c",
+            &opts,
+            &[1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+            t0() - Duration::hours(1),
+        );
         assert!((v[0] - v[1]).abs() < 1e-6 && (v[1] - v[2]).abs() < 1e-6);
         // After: an Allow-shaped query leans Allow; `none` keeps the floor.
-        let v = a.knn_vote("c", &opts, &[1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], t0() + Duration::days(1));
+        let v = a.knn_vote(
+            "c",
+            &opts,
+            &[1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+            t0() + Duration::days(1),
+        );
         assert!(v[0] > v[1] && v[2] > 0.0, "{v:?}");
         // Unknown class → uniform.
         assert_eq!(a.knn_vote("other", &opts, &[1.0; 8], t0()), uniform(3));
@@ -1115,17 +1191,51 @@ mod tests {
         let inc = m(30, 0.90, 0.40, 0.03);
         assert_eq!(gate(good, inc, good, inc, good), Ok(()));
         // Cold start: no proxy rows → (a) skipped.
-        assert_eq!(gate(m(0, 0.0, 0.0, 0.0), m(0, 0.0, 0.0, 0.0), good, inc, good), Ok(()));
+        assert_eq!(
+            gate(m(0, 0.0, 0.0, 0.0), m(0, 0.0, 0.0, 0.0), good, inc, good),
+            Ok(())
+        );
         // Worse proxy log-loss.
-        assert!(gate(m(30, 0.95, 0.45, 0.02), inc, good, inc, good).unwrap_err().contains("proxy"));
+        assert!(
+            gate(m(30, 0.95, 0.45, 0.02), inc, good, inc, good)
+                .unwrap_err()
+                .contains("proxy")
+        );
         // Golden regression beyond a point.
-        assert!(gate(good, inc, m(10, 0.85, 0.3, 0.02), m(10, 0.90, 0.3, 0.02), good).unwrap_err().contains("golden accuracy"));
+        assert!(
+            gate(
+                good,
+                inc,
+                m(10, 0.85, 0.3, 0.02),
+                m(10, 0.90, 0.3, 0.02),
+                good
+            )
+            .unwrap_err()
+            .contains("golden accuracy")
+        );
         // Exactly one point down is tolerated.
-        assert_eq!(gate(good, inc, m(10, 0.89, 0.3, 0.02), m(10, 0.90, 0.3, 0.02), good), Ok(()));
+        assert_eq!(
+            gate(
+                good,
+                inc,
+                m(10, 0.89, 0.3, 0.02),
+                m(10, 0.90, 0.3, 0.02),
+                good
+            ),
+            Ok(())
+        );
         // Miscalibrated.
-        assert!(gate(good, inc, good, inc, m(30, 0.95, 0.2, 0.08)).unwrap_err().contains("ECE"));
+        assert!(
+            gate(good, inc, good, inc, m(30, 0.95, 0.2, 0.08))
+                .unwrap_err()
+                .contains("ECE")
+        );
         // No golden rows at all.
-        assert!(gate(good, inc, m(0, 0.0, 0.0, 0.0), inc, good).unwrap_err().contains("no golden"));
+        assert!(
+            gate(good, inc, m(0, 0.0, 0.0, 0.0), inc, good)
+                .unwrap_err()
+                .contains("no golden")
+        );
     }
 
     #[test]
@@ -1154,7 +1264,13 @@ mod tests {
         )
         .unwrap();
         assert_eq!(t, vec![0.5, 0.25, 0.0]);
-        assert!(net_target(&opts, &[(LabelSource::HindsightRewind, "Allow".into(), 0.5)]).is_none());
+        assert!(
+            net_target(
+                &opts,
+                &[(LabelSource::HindsightRewind, "Allow".into(), 0.5)]
+            )
+            .is_none()
+        );
         assert!(net_target(&opts, &[(LabelSource::Excluded, "Allow".into(), 0.0)]).is_none());
     }
 

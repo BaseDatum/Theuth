@@ -171,10 +171,10 @@ pub async fn check(tier: Tier, cfg: &Training, s: &dyn Sensors) -> Vec<Blocker> 
     {
         out.push(Blocker::Idle);
     }
-    if let Some(l) = s.load1() {
-        if l >= s.cores().max(1) as f64 / LOAD_CORES_DIV {
-            out.push(Blocker::Load);
-        }
+    if let Some(l) = s.load1()
+        && l >= s.cores().max(1) as f64 / LOAD_CORES_DIV
+    {
+        out.push(Blocker::Load);
     }
     if !matches!(s.thermal(), Thermal::Nominal | Thermal::Unknown) {
         out.push(Blocker::Thermal);
@@ -324,26 +324,23 @@ impl Sensors for Live {
     }
     async fn live_capture(&self) -> Option<&'static str> {
         use kameo::actor::ActorRef;
-        if let Ok(Some(m)) = ActorRef::<meeting::Meeting>::lookup(meeting::MEETING_ACTOR) {
-            if let Ok(s) = m.ask(meeting::MeetingStatus).await {
-                if s.state != meeting::MeetingState::Idle {
-                    return Some("meeting");
-                }
-            }
+        if let Ok(Some(m)) = ActorRef::<meeting::Meeting>::lookup(meeting::MEETING_ACTOR)
+            && let Ok(s) = m.ask(meeting::MeetingStatus).await
+            && s.state != meeting::MeetingState::Idle
+        {
+            return Some("meeting");
         }
-        if let Ok(Some(t)) = ActorRef::<talk::Talk>::lookup(talk::TALK_ACTOR) {
-            if let Ok(s) = t.ask(talk::TalkStatus).await {
-                if s.active.is_some() {
-                    return Some("talk");
-                }
-            }
+        if let Ok(Some(t)) = ActorRef::<talk::Talk>::lookup(talk::TALK_ACTOR)
+            && let Ok(s) = t.ask(talk::TalkStatus).await
+            && s.active.is_some()
+        {
+            return Some("talk");
         }
-        if let Ok(Some(d)) = ActorRef::<voice::Dictation>::lookup(voice::DICTATION_ACTOR) {
-            if let Ok(s) = d.ask(voice::DictationStatus).await {
-                if s.active.is_some() {
-                    return Some("dictation");
-                }
-            }
+        if let Ok(Some(d)) = ActorRef::<voice::Dictation>::lookup(voice::DICTATION_ACTOR)
+            && let Ok(s) = d.ask(voice::DictationStatus).await
+            && s.active.is_some()
+        {
+            return Some("dictation");
         }
         None
     }
@@ -464,7 +461,10 @@ mod tests {
         assert!(check(Tier::B, &cfg(), &s).await.is_empty());
 
         *s.live.lock() = Some("meeting");
-        assert_eq!(check(Tier::B, &cfg(), &s).await, vec![Blocker::Live("meeting")]);
+        assert_eq!(
+            check(Tier::B, &cfg(), &s).await,
+            vec![Blocker::Live("meeting")]
+        );
         *s.live.lock() = None;
 
         *s.load.lock() = Some(4.0); // cores 8 → limit 4
@@ -507,7 +507,10 @@ mod tests {
         s.foreign.lock().push("126-C".into());
         assert_eq!(
             check(Tier::A, &cfg(), &s).await,
-            vec![Blocker::Live("dictation"), Blocker::BuildSlot("126-C".into())]
+            vec![
+                Blocker::Live("dictation"),
+                Blocker::BuildSlot("126-C".into())
+            ]
         );
     }
 
@@ -521,8 +524,14 @@ mod tests {
         assert!(w.contains(NaiveTime::from_hms_opt(1, 0, 0).unwrap()));
         assert!(!w.contains(NaiveTime::from_hms_opt(12, 0, 0).unwrap()));
         let d = chrono::NaiveDate::from_ymd_opt(2026, 10, 7).unwrap();
-        assert_eq!(w.night_of(d, NaiveTime::from_hms_opt(1, 0, 0).unwrap()), d.pred_opt().unwrap());
-        assert_eq!(w.night_of(d, NaiveTime::from_hms_opt(23, 30, 0).unwrap()), d);
+        assert_eq!(
+            w.night_of(d, NaiveTime::from_hms_opt(1, 0, 0).unwrap()),
+            d.pred_opt().unwrap()
+        );
+        assert_eq!(
+            w.night_of(d, NaiveTime::from_hms_opt(23, 30, 0).unwrap()),
+            d
+        );
         assert!(Window::parse("2-6").is_none());
     }
 
@@ -535,17 +544,30 @@ mod tests {
         std::fs::create_dir_all(&slot0).unwrap();
         std::fs::write(
             slot0.join("owner"),
-            format!("{} 126-W2 1759840000 cargo test -p double\n", std::process::id()),
+            format!(
+                "{} 126-W2 1759840000 cargo test -p double\n",
+                std::process::id()
+            ),
         )
         .unwrap();
-        assert!(BuildSlot::try_acquire(slots, TRAIN_LABEL, "tier a").unwrap().is_none());
+        assert!(
+            BuildSlot::try_acquire(slots, TRAIN_LABEL, "tier a")
+                .unwrap()
+                .is_none()
+        );
         assert_eq!(foreign_slots(slots, TRAIN_LABEL), vec!["126-W2".to_owned()]);
         assert!(foreign_slots(slots, "126-W2").is_empty());
 
         // A dead pid is stale: reclaimed, and our owner file is byte-compatible.
-        std::fs::write(slot0.join("owner"), "999999999 126-C 1759840000 cargo test -p double\n").unwrap();
+        std::fs::write(
+            slot0.join("owner"),
+            "999999999 126-C 1759840000 cargo test -p double\n",
+        )
+        .unwrap();
         assert!(foreign_slots(slots, TRAIN_LABEL).is_empty());
-        let held = BuildSlot::try_acquire(slots, TRAIN_LABEL, "tier b").unwrap().unwrap();
+        let held = BuildSlot::try_acquire(slots, TRAIN_LABEL, "tier b")
+            .unwrap()
+            .unwrap();
         let owner = Owner::read(held.path()).unwrap();
         assert_eq!(owner.pid, std::process::id());
         assert_eq!(owner.label, TRAIN_LABEL);
@@ -556,10 +578,18 @@ mod tests {
         assert!(raw.ends_with('\n'));
 
         // Held by us → a second acquire in this process is refused (we are alive).
-        assert!(BuildSlot::try_acquire(slots, TRAIN_LABEL, "again").unwrap().is_none());
+        assert!(
+            BuildSlot::try_acquire(slots, TRAIN_LABEL, "again")
+                .unwrap()
+                .is_none()
+        );
         drop(held);
         assert!(!slot0.exists());
-        assert!(BuildSlot::try_acquire(slots, TRAIN_LABEL, "after").unwrap().is_some());
+        assert!(
+            BuildSlot::try_acquire(slots, TRAIN_LABEL, "after")
+                .unwrap()
+                .is_some()
+        );
     }
 
     #[test]
