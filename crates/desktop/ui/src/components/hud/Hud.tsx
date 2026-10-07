@@ -1,7 +1,7 @@
 import { useQueryClient } from '@tanstack/react-query'
-import { Link } from '@tanstack/react-router'
+import { Link, useNavigate } from '@tanstack/react-router'
 import { PanelLeft } from 'lucide-react'
-import { type ReactNode, useEffect, useMemo, useState } from 'react'
+import { type ReactNode, useEffect, useMemo, useRef, useState } from 'react'
 import { Composer } from '@/components/chat/Composer'
 import { SecretRequestCard } from '@/components/chat/SecretRequestCard'
 import { simFlag, useSandboxes } from '@/components/settings/sandbox-queries'
@@ -14,6 +14,7 @@ import { Input } from '@/components/ui/input'
 import { useSidebar } from '@/components/ui/sidebar'
 import { Skeleton } from '@/components/ui/skeleton'
 import { isMacDesktop } from '@/lib/hotkeys'
+import { useApi } from '@/lib/rpc'
 import { canPopout, openPopout } from '@/lib/popout'
 import { cn } from '@/lib/utils'
 import type { AttentionItem } from '@/rpc/bindings/AttentionItem'
@@ -97,9 +98,34 @@ export function Hud() {
         </div>
       </div>
       <div className="shrink-0 border-t border-border-subtle px-4 pt-3">
-        <Composer session={null} draftCreate={{ private: false, project: null }} compact />
+        <DeskComposer known={sessions.data?.find((s) => s.desk === 'theuth')?.id ?? null} />
       </div>
     </article>
+  )
+}
+
+/**
+ * R6 (Sky): the home composer talks to theuth's desk, not a new session — the voice key's route (lib/voice-key.ts). The
+ * desk id comes from the sessions list when a `desk: 'theuth'` row is already there, else from `api.desk_open('theuth')`
+ * on the first submit (cached for this mount; the composer stays enabled meanwhile and the send awaits it). A known desk
+ * goes through `Composer`'s own steer/send_input path; either way a successful send opens `/c/<desk>` so the reply shows.
+ */
+function DeskComposer({ known }: { known: string | null }) {
+  const api = useApi()
+  const navigate = useNavigate()
+  const cached = useRef<string | null>(null)
+  const desk = known ?? cached.current
+  const open = (session: string) => void navigate({ to: '/c/$session', params: { session } })
+  if (desk !== null) return <Composer session={desk} onSent={open} compact />
+  return (
+    <Composer
+      session={null}
+      resolveSession={async () => {
+        cached.current = await api.desk_open('theuth')
+        return cached.current
+      }}
+      compact
+    />
   )
 }
 
