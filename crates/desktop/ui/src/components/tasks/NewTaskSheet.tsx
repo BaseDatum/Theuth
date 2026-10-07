@@ -67,6 +67,7 @@ export function NewTaskSheet({ open, onOpenChange, project: boardProject }: { op
         title: title.trim(),
         brief,
         done_when: null,
+        priority: null,
         owner: parseOwner(owner),
         reviewer: parseOwner(effectiveReviewer),
         parent: null,

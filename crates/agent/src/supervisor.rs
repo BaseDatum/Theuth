@@ -2735,6 +2735,36 @@ impl Message<SendInput> for Agents {
     }
 }
 
+impl Message<crate::LateAnswer> for Agents {
+    type Reply = Result<(), String>;
+
+    /// 132 D6: the journal's `questions` row names the session and carries the
+    /// `AskRequested` payload; the answers become one user message on that
+    /// session, routed like a chat prompt. An unknown or payload-less row is a no-op.
+    async fn handle(
+        &mut self,
+        m: crate::LateAnswer,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        let row = self
+            .store
+            .question_get(&m.id.0.to_string())
+            .await
+            .map_err(|e| format!("store: {e:#}"))?;
+        let Some(row) = row else { return Ok(()) };
+        let Ok(asked) = serde_json::from_value::<tools::AskRequested>(row.payload) else {
+            return Ok(());
+        };
+        let text = tools::late_answer_text(&asked.questions, &m.answers);
+        if text.is_empty() {
+            return Ok(());
+        }
+        self.human_input(Some(row.session), None, text, Vec::new(), Delivery::default())
+            .await
+            .map(|_| ())
+    }
+}
+
 impl Message<UseSkill> for Agents {
     type Reply = Result<SessionId, String>;
 

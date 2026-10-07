@@ -330,6 +330,8 @@ async fn export_bindings() {
         tasks::TaskFilter,
         tasks::TaskCreate,
         tasks::TaskPatch,
+        tasks::Priority,
+        tasks::ledger::Waiting,
         tasks::activity::ActivityKind,
         tasks::activity::ActivityEntry,
         tasks::activity::ActivityFilter,

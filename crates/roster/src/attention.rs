@@ -119,6 +119,15 @@ pub struct AttentionItem {
     #[serde(default)]
     #[cfg_attr(feature = "ts", ts(as = "Option<Vec<String>>", optional))]
     pub next_steps: Vec<String>,
+    /// 132 D4: the task's priority — task-born items and session items whose
+    /// session is a task checkout; `None` otherwise.
+    #[serde(default)]
+    #[cfg_attr(feature = "ts", ts(optional = nullable))]
+    pub priority: Option<tasks::Priority>,
+    /// 132 D4: [`tasks::rank::rank`] of that task (`project_order` step + priority
+    /// weight); `Priority::Medium.weight()` (5) for items without one. Higher first.
+    #[serde(default)]
+    pub rank: u32,
 }
 
 /// 130 E1: bus event the [`Attention`] actor publishes after a derive whose
@@ -277,6 +286,8 @@ pub struct Inputs {
     pub ask_since: HashMap<tools::AskId, u64>,
     /// 130 E3: undismissed `attention_finished` rows.
     pub finished: Vec<Finished>,
+    /// 132 D4: `tasks.project_order` from config, for [`tasks::rank::rank`].
+    pub project_order: Vec<String>,
 }
 
 /// Dismissed / snoozed state per item id.
@@ -296,7 +307,8 @@ impl State {
     }
 }
 
-/// The inbox from its inputs: pure, newest first, hidden items removed.
+/// The inbox from its inputs: pure, hidden items removed, ordered rank desc →
+/// waiting_since asc (None last) → at_ms desc (132 D4).
 pub fn derive(inputs: &Inputs, states: &HashMap<String, State>, now_ms: u64) -> Vec<AttentionItem> {
     let mut out = Vec::new();
     let item = |id: String, kind, title: String, detail: Option<String>, at_ms| AttentionItem {
@@ -317,6 +329,25 @@ pub fn derive(inputs: &Inputs, states: &HashMap<String, State>, now_ms: u64) -> 
         waiting_since_ms: Some(at_ms),
         summary: None,
         next_steps: Vec::new(),
+        priority: None,
+        rank: tasks::Priority::Medium.weight(),
+    };
+    // 132 D4: a task's (priority, rank); session items borrow their checkout task's.
+    let ranked = |t: &tasks::Task| {
+        (
+            Some(t.priority),
+            tasks::rank::rank(t.priority, t.project.as_deref(), &inputs.project_order),
+        )
+    };
+    let checkouts: HashMap<&str, &tasks::Task> = inputs
+        .tasks
+        .iter()
+        .filter_map(|t| t.checkout.as_ref().map(|c| (c.session.as_str(), t)))
+        .collect();
+    let by_session = |session: &str| {
+        checkouts
+            .get(session)
+            .map_or((None, tasks::Priority::Medium.weight()), |t| ranked(t))
     };
     // 104 A3: the desk a session belongs to (itself or an ancestor), when the roster knows it.
     let desk = |session: &str| inputs.desks.get(session).cloned();
@@ -337,10 +368,13 @@ pub fn derive(inputs: &Inputs, states: &HashMap<String, State>, now_ms: u64) -> 
             _ => None,
         };
         let session = a.session.to_string();
+        let (priority, rank) = by_session(&session);
         out.push(AttentionItem {
             agent: desk(&session),
             session: Some(session),
             approval: Some(a.id),
+            priority,
+            rank,
             ..item(
                 format!("approval:{}", a.id.0),
                 AttentionKind::Approval,
@@ -376,11 +410,14 @@ pub fn derive(inputs: &Inputs, states: &HashMap<String, State>, now_ms: u64) -> 
                     .unwrap_or_default(),
             )
         };
+        let (priority, rank) = by_session(&session);
         out.push(AttentionItem {
             agent: agent.clone(),
             session: Some(session.clone()),
             ask: Some(a.clone()),
             waiting_since_ms: Some(inputs.ask_since.get(&a.id).copied().unwrap_or(now_ms)),
+            priority,
+            rank,
             ..item(
                 format!("ask:{}", a.id.0),
                 AttentionKind::Ask,
@@ -397,9 +434,12 @@ pub fn derive(inputs: &Inputs, states: &HashMap<String, State>, now_ms: u64) -> 
 
     for s in &inputs.shows {
         let agent = desk(&s.session);
+        let (priority, rank) = by_session(&s.session);
         out.push(AttentionItem {
             agent: agent.clone(),
             session: Some(s.session.clone()),
+            priority,
+            rank,
             ..item(
                 format!("show:{}", s.call_id),
                 AttentionKind::Show,
@@ -434,6 +474,7 @@ pub fn derive(inputs: &Inputs, states: &HashMap<String, State>, now_ms: u64) -> 
             .as_ref()
             .map(|c| c.session.clone())
             .or_else(|| inputs.task_sessions.get(&t.id.0).cloned());
+        let (priority, rank) = ranked(t);
         match t.state {
             tasks::TaskState::Blocked => {
                 // 106 F-2: the newest decision addressed to the user (`to` =
@@ -451,26 +492,41 @@ pub fn derive(inputs: &Inputs, states: &HashMap<String, State>, now_ms: u64) -> 
                     });
                 if let Some(d) = decision {
                     let packet = packets.get(d.as_str());
+                    // 132 D1: the row leads with the question, sentence-clipped; the byline is the detail.
+                    let question = packet
+                        .and_then(|p| p.question.as_deref())
+                        .map(str::trim)
+                        .filter(|q| !q.is_empty());
+                    let (title, detail) = match (packet, question) {
+                        (Some(p), Some(q)) => (
+                            tasks::packet::head_sentence(q, tasks::packet::ROW_BUDGET),
+                            format!("{} \u{b7} {}", p.by, t.title),
+                        ),
+                        _ => (
+                            format!(
+                                "{} asks for a decision on \u{201c}{}\u{201d}",
+                                packet.map_or_else(|| t.owner.to_string(), |p| p.by.clone()),
+                                t.title
+                            ),
+                            packet.map_or_else(
+                                || "the question is in the task thread".to_owned(),
+                                |p| tasks::packet::head(&p.summary),
+                            ),
+                        ),
+                    };
                     out.push(AttentionItem {
                         task: Some(t.id.clone()),
                         agent: owner_agent.clone(),
                         session: session.clone(),
                         decision: Some((*d).clone()),
                         packet: packet.map(|p| p.key.clone()),
+                        priority,
+                        rank,
                         ..item(
                             format!("decision:{}:{d}", t.id),
                             AttentionKind::Decision,
-                            format!(
-                                "{} asks for a decision on \u{201c}{}\u{201d}",
-                                packet.map_or_else(|| t.owner.to_string(), |p| p.by.clone()),
-                                t.title
-                            ),
-                            Some(packet.map_or_else(
-                                || "the question is in the task thread".to_owned(),
-                                |p| {
-                                    tasks::packet::head(p.question.as_deref().unwrap_or(&p.summary))
-                                },
-                            )),
+                            title,
+                            Some(detail),
                             t.updated_ms,
                         )
                     });
@@ -479,6 +535,8 @@ pub fn derive(inputs: &Inputs, states: &HashMap<String, State>, now_ms: u64) -> 
                         task: Some(t.id.clone()),
                         agent: owner_agent.clone(),
                         session: session.clone(),
+                        priority,
+                        rank,
                         ..item(
                             format!("blocked:{}", t.id),
                             AttentionKind::Blocked,
@@ -492,19 +550,29 @@ pub fn derive(inputs: &Inputs, states: &HashMap<String, State>, now_ms: u64) -> 
             tasks::TaskState::Review if t.reviewer == Some(tasks::Owner::User) => {
                 let key = tasks::packet::review_key(&t.id);
                 let packet = packets.get(key.as_str());
+                // 132 D1: the row leads with the outcome (the summary's first sentence).
+                let (title, detail) = match packet.filter(|p| !p.summary.trim().is_empty()) {
+                    Some(p) => (
+                        tasks::packet::head_sentence(&p.summary, tasks::packet::ROW_BUDGET),
+                        format!("\u{201c}{}\u{201d} \u{b7} by {}", t.title, p.by),
+                    ),
+                    None => (
+                        format!("\u{201c}{}\u{201d} awaits your review", t.title),
+                        format!("by {}", t.owner),
+                    ),
+                };
                 out.push(AttentionItem {
                     task: Some(t.id.clone()),
                     agent: owner_agent.clone(),
                     session: session.clone(),
                     packet: packet.map(|_| key.clone()),
+                    priority,
+                    rank,
                     ..item(
                         key,
                         AttentionKind::Review,
-                        format!("\u{201c}{}\u{201d} awaits your review", t.title),
-                        Some(packet.map_or_else(
-                            || format!("by {}", t.owner),
-                            |p| tasks::packet::head(&p.summary),
-                        )),
+                        title,
+                        Some(detail),
                         // 119: a re-submitted packet is a new version even when the task row did not change.
                         packet.map_or(t.updated_ms, |p| p.at_ms.max(t.updated_ms)),
                     )
@@ -533,10 +601,13 @@ pub fn derive(inputs: &Inputs, states: &HashMap<String, State>, now_ms: u64) -> 
                 .and_then(|p| p.strip_prefix("agent:"))
                 .and_then(|n| inputs.agents.iter().find(|x| x.file.name.as_str() == n))
                 .and_then(|x| x.desk.clone());
+            let (priority, rank) = hire_task.map_or((None, tasks::Priority::Medium.weight()), ranked);
             out.push(AttentionItem {
                 task: hire_task.map(|t| t.id.clone()),
                 agent: Some(name.clone()),
                 session,
+                priority,
+                rank,
                 ..item(
                     format!("hire:{name}"),
                     AttentionKind::Hire,
@@ -568,6 +639,19 @@ pub fn derive(inputs: &Inputs, states: &HashMap<String, State>, now_ms: u64) -> 
             } else {
                 "at 80 %: the cap pauses it"
             };
+            // 132 D8: the crossing time is when the roster filed the budget task for it.
+            let crossed = inputs
+                .tasks
+                .iter()
+                .filter(|t| {
+                    t.title
+                        .strip_prefix("Budget: ")
+                        .or_else(|| t.title.strip_prefix("Budget override: "))
+                        .is_some_and(|rest| rest.starts_with(&format!("{name} ")))
+                })
+                .map(|t| t.created_ms)
+                .max()
+                .unwrap_or(now_ms);
             out.push(AttentionItem {
                 agent: Some(name.clone()),
                 ..item(
@@ -578,7 +662,7 @@ pub fn derive(inputs: &Inputs, states: &HashMap<String, State>, now_ms: u64) -> 
                         a.spent_month
                     ),
                     Some(detail.into()),
-                    now_ms,
+                    crossed,
                 )
             });
         }
@@ -603,9 +687,12 @@ pub fn derive(inputs: &Inputs, states: &HashMap<String, State>, now_ms: u64) -> 
     };
 
     for h in &inputs.handoffs {
+        let (priority, rank) = by_session(&h.session);
         out.push(AttentionItem {
             agent: h.agent.clone(),
             session: Some(h.session.clone()),
+            priority,
+            rank,
             ..item(
                 format!("handoff:{}", h.id),
                 AttentionKind::Handoff,
@@ -629,9 +716,12 @@ pub fn derive(inputs: &Inputs, states: &HashMap<String, State>, now_ms: u64) -> 
                 .join(", ")
         });
         let agent = desk(&r.session);
+        let (priority, rank) = by_session(&r.session);
         out.push(AttentionItem {
             agent: agent.clone(),
             session: Some(r.session.clone()),
+            priority,
+            rank,
             ..item(
                 format!("secret:{}", r.id.0),
                 AttentionKind::Secret,
@@ -652,9 +742,12 @@ pub fn derive(inputs: &Inputs, states: &HashMap<String, State>, now_ms: u64) -> 
             Some(_) => format!("{name} resumed after a restart with gaps"),
             None => format!("{name} was interrupted by a restart — resume?"),
         };
+        let (priority, rank) = by_session(&r.session);
         out.push(AttentionItem {
             agent,
             session: Some(r.session.clone()),
+            priority,
+            rank,
             ..item(
                 format!("resume:{}:{}", r.session, r.turn),
                 AttentionKind::Resume,
@@ -670,12 +763,15 @@ pub fn derive(inputs: &Inputs, states: &HashMap<String, State>, now_ms: u64) -> 
     for f in &inputs.finished {
         let agent = desk(&f.session);
         let name = who(agent.as_deref(), &f.session);
+        let (priority, rank) = by_session(&f.session);
         out.push(AttentionItem {
             agent,
             session: Some(f.session.clone()),
             waiting_since_ms: None,
             summary: f.summary.clone(),
             next_steps: f.next_steps.clone(),
+            priority,
+            rank,
             ..item(
                 format!("finished:{}:{}", f.session, f.turn),
                 AttentionKind::Finished,
@@ -693,7 +789,18 @@ pub fn derive(inputs: &Inputs, states: &HashMap<String, State>, now_ms: u64) -> 
             .unwrap_or_default()
             .hidden(now_ms, i.at_ms)
     });
-    out.sort_by_key(|i| std::cmp::Reverse(i.at_ms));
+    // 132 D4: rank desc → waiting_since asc (None last) → at_ms desc.
+    out.sort_by(|a, b| {
+        b.rank
+            .cmp(&a.rank)
+            .then_with(|| match (a.waiting_since_ms, b.waiting_since_ms) {
+                (Some(x), Some(y)) => x.cmp(&y),
+                (Some(_), None) => std::cmp::Ordering::Less,
+                (None, Some(_)) => std::cmp::Ordering::Greater,
+                (None, None) => std::cmp::Ordering::Equal,
+            })
+            .then_with(|| b.at_ms.cmp(&a.at_ms))
+    });
     out
 }
 
@@ -974,6 +1081,11 @@ impl Attention {
                 .map(|(id, (_, at))| (*id, *at))
                 .collect(),
             finished,
+            project_order: self
+                .rt
+                .section::<tasks::TasksConfig>("tasks")
+                .map(|c| c.project_order)
+                .unwrap_or_default(),
         }
     }
 
@@ -1484,6 +1596,7 @@ mod tests {
             brief: String::new(),
             done_when: None,
             attachments: vec![],
+            priority: tasks::Priority::Medium,
             owner,
             state,
             reviewer,
@@ -1631,16 +1744,17 @@ mod tests {
         };
         let items = derive(&inputs, &HashMap::new(), 100);
         let kinds: Vec<_> = items.iter().map(|i| i.kind).collect();
+        // 132 D4: equal rank → the longest-waiting first; budgets without a filed task wait since `now`.
         assert_eq!(
             kinds,
             [
-                AttentionKind::Budget,
-                AttentionKind::Budget,
-                AttentionKind::Decision,
-                AttentionKind::Blocked,
-                AttentionKind::Review,
+                AttentionKind::Node,
                 AttentionKind::Hire,
-                AttentionKind::Node
+                AttentionKind::Review,
+                AttentionKind::Blocked,
+                AttentionKind::Decision,
+                AttentionKind::Budget,
+                AttentionKind::Budget
             ]
         );
         let hire = items
@@ -1722,6 +1836,7 @@ mod tests {
             recommendation: None,
             items: vec![],
             to: None,
+            if_wrong: None,
         }
     }
 
@@ -1750,14 +1865,20 @@ mod tests {
             tasks: vec![d.clone(), r.clone()],
             ..Default::default()
         };
+        // 132 D4 order: the review (waiting since 40) before the decision (50); legacy strings stay.
         let items = derive(&bare, &HashMap::new(), 100);
-        assert_eq!(items[0].packet, None);
+        assert_eq!(items[1].packet, None);
         assert_eq!(
-            items[0].detail.as_deref(),
+            items[1].title,
+            "agent:ops asks for a decision on \u{201c}deploy\u{201d}"
+        );
+        assert_eq!(
+            items[1].detail.as_deref(),
             Some("the question is in the task thread")
         );
-        assert_eq!(items[1].packet, None);
-        assert_eq!(items[1].detail.as_deref(), Some("by agent:ops"));
+        assert_eq!(items[0].packet, None);
+        assert_eq!(items[0].title, "\u{201c}migrate\u{201d} awaits your review");
+        assert_eq!(items[0].detail.as_deref(), Some("by agent:ops"));
 
         let review_key = format!("review:{}", r.id);
         let with = Inputs {
@@ -1769,17 +1890,25 @@ mod tests {
             ],
             ..Default::default()
         };
+        // 132 D1: the decision row leads with the question, the byline is the detail;
+        // the review row leads with the outcome (summary clipped to ROW_BUDGET), the task and author follow.
         let items = derive(&with, &HashMap::new(), 100);
-        assert_eq!(items[0].kind, AttentionKind::Decision);
-        assert_eq!(items[0].packet.as_deref(), Some("decision:d1"));
-        assert_eq!(items[0].detail.as_deref(), Some("Cap retries at 3?"));
-        assert_eq!(items[1].kind, AttentionKind::Review);
-        assert_eq!(items[1].packet.as_deref(), Some(review_key.as_str()));
-        let detail = items[1].detail.as_deref().unwrap();
-        assert!(detail.starts_with("Summary line sss"), "{detail}");
-        assert_eq!(detail.chars().count(), 140);
-        assert!(detail.ends_with('…'));
+        assert_eq!(items[1].kind, AttentionKind::Decision);
+        assert_eq!(items[1].packet.as_deref(), Some("decision:d1"));
+        assert_eq!(items[1].title, "Cap retries at 3?");
+        assert_eq!(items[1].detail.as_deref(), Some("agent:ops \u{b7} deploy"));
+        assert_eq!(items[0].kind, AttentionKind::Review);
+        assert_eq!(items[0].packet.as_deref(), Some(review_key.as_str()));
+        let title = items[0].title.as_str();
+        assert!(title.starts_with("Summary line sss"), "{title}");
+        assert_eq!(title.chars().count(), tasks::packet::ROW_BUDGET);
+        assert!(title.ends_with('…'));
+        assert_eq!(
+            items[0].detail.as_deref(),
+            Some("\u{201c}migrate\u{201d} \u{b7} by agent:ops")
+        );
         assert_eq!(items.len(), 2, "a stray packet makes no item");
+        assert!(items.iter().all(|i| i.priority == Some(tasks::Priority::Medium) && i.rank == 5));
     }
 
     /// 119: a dismissal hides the version the user saw. A review re-submitted
@@ -1948,10 +2077,11 @@ mod tests {
         assert_eq!(items[0].id, format!("decision:{}:decision:d2", chain.id));
         assert_eq!(items[0].decision.as_deref(), Some("decision:d2"));
         assert_eq!(items[0].packet.as_deref(), Some("decision:d2"));
+        assert_eq!(items[0].title, "Cap retries at 3?");
         assert!(
-            items[0].title.starts_with("agent:lead asks"),
-            "{}",
-            items[0].title
+            items[0].detail.as_deref().unwrap().starts_with("agent:lead \u{b7} "),
+            "{:?}",
+            items[0].detail
         );
 
         // only an agent-audience decision: nothing for the user
@@ -2099,14 +2229,14 @@ mod tests {
         assert_eq!(
             ids,
             [
-                "secret:0199aaaa-0000-7000-8000-000000000001",
-                "handoff:h2",
-                "handoff:h1",
                 "secret:0199aaaa-0000-7000-8000-000000000002",
+                "handoff:h1",
+                "handoff:h2",
+                "secret:0199aaaa-0000-7000-8000-000000000001",
             ],
-            "newest first"
+            "longest waiting first (132 D4)"
         );
-        let h1 = &items[2];
+        let h1 = &items[1];
         assert_eq!(h1.kind, AttentionKind::Handoff);
         assert_eq!(h1.title, "OPS needs you: log in to GitHub", "agent title");
         assert_eq!(h1.detail.as_deref(), Some("lab"), "engine's peer name");
@@ -2117,14 +2247,14 @@ mod tests {
         );
         assert_eq!(h1.at_ms, 50);
         assert_eq!(
-            items[1].title, "0199aaaa needs you: log in to GitHub",
+            items[2].title, "0199aaaa needs you: log in to GitHub",
             "session short id"
         );
-        let form = &items[0];
+        let form = &items[3];
         assert_eq!(form.kind, AttentionKind::Secret);
         assert_eq!(form.title, "s-secret asks for a secret: GitHub login");
         assert_eq!(form.detail.as_deref(), Some("e9"), "unknown engine: the id");
-        assert_eq!(items[3].title, "s-secret asks for a secret: TOKEN");
+        assert_eq!(items[0].title, "s-secret asks for a secret: TOKEN");
 
         let states = HashMap::from([
             (
@@ -2148,7 +2278,7 @@ mod tests {
             .collect();
         assert_eq!(
             left,
-            ["handoff:h2", "secret:0199aaaa-0000-7000-8000-000000000002"]
+            ["secret:0199aaaa-0000-7000-8000-000000000002", "handoff:h2"]
         );
     }
 
@@ -2205,27 +2335,27 @@ mod tests {
         };
         let items = derive(&inputs, &HashMap::new(), 100);
         assert_eq!(items.len(), 2);
-        assert_eq!(items[0].kind, AttentionKind::Resume);
-        assert_eq!(items[0].id, format!("resume:{}:t2", waiting.session));
+        assert_eq!(items[1].kind, AttentionKind::Resume);
+        assert_eq!(items[1].id, format!("resume:{}:t2", waiting.session));
         assert_eq!(
-            items[0].title,
+            items[1].title,
             "0199aaaa was interrupted by a restart — resume?"
         );
-        assert_eq!(items[0].detail, None);
-        assert_eq!(items[0].session.as_deref(), Some(waiting.session.as_str()));
-        assert_eq!(items[1].id, format!("resume:{session}:{turn}"));
+        assert_eq!(items[1].detail, None);
+        assert_eq!(items[1].session.as_deref(), Some(waiting.session.as_str()));
+        assert_eq!(items[0].id, format!("resume:{session}:{turn}"));
         assert!(
-            items[1]
+            items[0]
                 .title
                 .ends_with("resumed after a restart with gaps")
         );
-        assert_eq!(items[1].detail, need.detail);
+        assert_eq!(items[0].detail, need.detail);
 
         // 119: a dismissal hides the version the user saw (`dismissed_ms >= at_ms`).
         let states = HashMap::from([(
-            items[1].id.clone(),
+            items[0].id.clone(),
             State {
-                dismissed_ms: Some(items[1].at_ms),
+                dismissed_ms: Some(items[0].at_ms),
                 snoozed_until_ms: None,
             },
         )]);
@@ -2233,7 +2363,7 @@ mod tests {
             .into_iter()
             .map(|i| i.id)
             .collect();
-        assert_eq!(left, [items[0].id.clone()]);
+        assert_eq!(left, [items[1].id.clone()]);
     }
 
     #[tokio::test]
@@ -2340,8 +2470,8 @@ mod tests {
         let kinds: Vec<_> = items.iter().map(|i| i.kind).collect();
         assert_eq!(
             kinds,
-            [AttentionKind::Ask, AttentionKind::Ask, AttentionKind::Show],
-            "asks are now, the show is older"
+            [AttentionKind::Show, AttentionKind::Ask, AttentionKind::Ask],
+            "the show has waited since 50, the asks since now"
         );
         let a = items
             .iter()
@@ -2364,7 +2494,7 @@ mod tests {
             "session short id: {}",
             m.title
         );
-        let s = &items[2];
+        let s = &items[0];
         assert_eq!(s.id, "show:c1");
         assert_eq!(s.title, "OPS showed you Report");
         assert_eq!(s.detail.as_deref(), Some("pdf \u{b7} 1.2 MB \u{b7} v2"));
@@ -2441,7 +2571,7 @@ mod tests {
         };
         let items = derive(&inputs, &HashMap::new(), 100);
         let sessions: Vec<_> = items.iter().map(|i| i.session.as_deref()).collect();
-        assert_eq!(sessions, [Some("work-1"), Some("work-2"), None]);
+        assert_eq!(sessions, [None, Some("work-2"), Some("work-1")]);
     }
 
     #[test]
@@ -2647,5 +2777,101 @@ mod tests {
             .await
             .unwrap();
         assert!(finished(store.pool()).await.unwrap().is_empty());
+    }
+
+    // ---- 132 ATTENTION-ROWS-AND-ORDER ---------------------------------------------
+
+    /// D4: rank desc (project order step, then priority) → waiting_since asc (None
+    /// last) → at_ms desc; a session item borrows its checkout task's priority/rank.
+    #[test]
+    fn order_is_rank_then_waiting_then_newest() {
+        let ops = tasks::Owner::Agent("ops".into());
+        let mut urgent = task("urgent one", tasks::TaskState::Blocked, ops.clone(), &["person:a"], None, 90);
+        urgent.priority = tasks::Priority::Urgent;
+        let mut ranked = task("ranked", tasks::TaskState::Blocked, ops.clone(), &["person:b"], None, 95);
+        ranked.priority = tasks::Priority::Low;
+        ranked.project = Some("sre".into());
+        let old = task("old medium", tasks::TaskState::Blocked, ops.clone(), &["person:c"], None, 10);
+        let new = task("new medium", tasks::TaskState::Blocked, ops.clone(), &["person:d"], None, 80);
+        let mut checked = task("checked out", tasks::TaskState::Doing, ops.clone(), &[], None, 5);
+        checked.priority = tasks::Priority::High;
+        checked.checkout = Some(tasks::Checkout {
+            session: "work-9".into(),
+            engine: "e1".into(),
+            epoch: 1,
+            progress_at_ms: 5,
+            orphaned: false,
+            taken: false,
+        });
+        let finished = Finished {
+            session: "root-1".into(),
+            turn: "t1".into(),
+            at_ms: 99,
+            summary: Some("done".into()),
+            next_steps: vec![],
+        };
+        let inputs = Inputs {
+            tasks: vec![urgent.clone(), ranked.clone(), old.clone(), new.clone(), checked],
+            handoffs: vec![handoff("h-checked", Some("ops"), 50, false)],
+            shows: vec![shown("c1", "work-9", 60)],
+            finished: vec![finished],
+            project_order: vec!["sre".into()],
+            ..Default::default()
+        };
+        let items = derive(&inputs, &HashMap::new(), 100);
+        let ids: Vec<&str> = items.iter().map(|i| i.id.as_str()).collect();
+        assert_eq!(
+            ids,
+            [
+                format!("blocked:{}", ranked.id).as_str(), // 102: project step beats priority
+                format!("blocked:{}", urgent.id).as_str(), // 9
+                "show:c1",                                 // 7: borrowed from the checkout task
+                format!("blocked:{}", old.id).as_str(),    // 5, waiting since 10
+                "handoff:h-checked",                       // 5, waiting since 50 (no checkout on its session)
+                format!("blocked:{}", new.id).as_str(),    // 5, waiting since 80
+                "finished:root-1:t1",                      // 5, waits on nobody → last
+            ],
+            "{items:#?}"
+        );
+        assert_eq!((items[0].priority, items[0].rank), (Some(tasks::Priority::Low), 102));
+        assert_eq!((items[1].priority, items[1].rank), (Some(tasks::Priority::Urgent), 9));
+        assert_eq!((items[2].priority, items[2].rank), (Some(tasks::Priority::High), 7));
+        assert_eq!((items[4].priority, items[4].rank), (None, 5));
+        assert_eq!((items[6].priority, items[6].rank), (None, 5));
+    }
+
+    /// D8: a budget item's time is the crossing — the budget task the roster
+    /// filed for that agent — not `now`; without one `now` stays the fallback.
+    #[test]
+    fn budget_item_carries_the_crossing_time() {
+        let inputs = Inputs {
+            tasks: vec![
+                task(
+                    "Budget: ops at 80 % (33.00 of 40.00 USD)",
+                    tasks::TaskState::Todo,
+                    tasks::Owner::User,
+                    &[],
+                    None,
+                    42,
+                ),
+                task(
+                    "Budget override: other spent 10.00 of 10.00 USD in 2026-10",
+                    tasks::TaskState::Todo,
+                    tasks::Owner::User,
+                    &[],
+                    None,
+                    7,
+                ),
+            ],
+            agents: vec![
+                agent("ops", AgentStatus::Idle, "40 USD/month".parse().unwrap(), 33.0, None, false),
+                agent("dev", AgentStatus::Idle, "40 USD/month".parse().unwrap(), 39.0, None, false),
+            ],
+            ..Default::default()
+        };
+        let items = derive(&inputs, &HashMap::new(), 100);
+        let at = |id: &str| items.iter().find(|i| i.id == id).map(|i| (i.at_ms, i.waiting_since_ms));
+        assert_eq!(at("budget:ops"), Some((42, Some(42))));
+        assert_eq!(at("budget:dev"), Some((100, Some(100))), "no filed task → now");
     }
 }

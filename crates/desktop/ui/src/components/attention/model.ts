@@ -26,12 +26,19 @@ export const GROUPS: readonly { key: string; label: string; kinds: readonly Kind
 
 export type Group = { key: string; label: string; items: AttentionItem[] }
 
-/** The inbox grouped by kind in `GROUPS` order, empty groups omitted, newest first inside each. */
+/**
+ * The inbox grouped for the rail: Urgent first (every `priority === 'urgent'` item, taken out of its kind group), then
+ * the kinds in `GROUPS` order; empty groups omitted. 132 D4: inside every group the ENGINE's order stands (rank desc,
+ * waiting-since asc, newest) — no client re-sort by `at_ms`.
+ */
 export function groupItems(items: readonly AttentionItem[]): Group[] {
-  return GROUPS.flatMap(({ key, label, kinds }) => {
-    const mine = items.filter((i) => kinds.includes(i.kind)).sort((a, b) => b.at_ms - a.at_ms)
+  const urgent = items.filter((i) => i.priority === 'urgent')
+  const rest = items.filter((i) => i.priority !== 'urgent')
+  const groups = GROUPS.flatMap(({ key, label, kinds }) => {
+    const mine = rest.filter((i) => kinds.includes(i.kind))
     return mine.length > 0 ? [{ key, label, items: mine }] : []
   })
+  return urgent.length > 0 ? [{ key: 'urgent', label: 'Urgent', items: urgent }, ...groups] : groups
 }
 
 export const CONTEXT_MAX = 600

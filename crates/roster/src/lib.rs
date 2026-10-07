@@ -1119,6 +1119,7 @@ impl Roster {
             external: vec![],
             done_when: None,
             attachments: vec![],
+            priority: None,
         };
         if let Some(t) = budget::crossed(&f.budget, before, after) {
             let pct = if t == budget::Threshold::Warn {

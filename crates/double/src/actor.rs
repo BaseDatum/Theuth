@@ -806,6 +806,8 @@ impl Double {
             waiting_since_ms: None,
             summary: None,
             next_steps: Vec::new(),
+            priority: None,
+            rank: 5, // 132: Priority::Medium.weight(); no task behind a double card
         })
     }
 

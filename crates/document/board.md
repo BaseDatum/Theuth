@@ -96,6 +96,20 @@ markdown links the reader opens outside). `root` is the repository the anchors r
 directory when there is no repository. Then pass the id: `escalate(..., board=r["doc"])` /
 `task_update(..., board=r["doc"])`.
 
+The row the user reads is yours, not the engine's (132). The decision row leads with your `question`: its first
+sentence is the thing the user has to say back, at most 15 words, and the `options` answer it in the same words
+("Move the relay before Friday?" → "Move it Thursday" / "Wait for the new host") — write the question last,
+off the options. `if_wrong` is one honest line on the cost of a wrong answer ("low, one-line revert" /
+"high, real users get this email"); the tool refuses a decision to the user without it. The review row leads
+with the outcome: retitle the task (`task_update title`) to state it when you hand over, and open the `summary`
+with the same sentence. If your run changed anything there is something to decide — a review's `options` are
+the next moves after approval ("Merge and continue to X" (recommended) / "Revise Y first" / "Park it", at most
+4); never offer what the run already did; a question answered or a thing read ends with no options, and
+options that can no longer be chosen come out. `## Walk through` opens with a demonstration — an image, a page,
+a URL, real input and output — when one can exist; diffs second. Before `escalate`, `task_waiting_on_user`:
+stuck is the bar for a new escalation; a follow-up earns one only with a new option, a fact that changes the
+decision, or a deadline — otherwise `task_note` on the waiting one.
+
 Bundles: N related decisions (ten DNS records, a set of hosts, a batch of PRs) are ONE `escalate` with `items`
 (`{id, title, description?, options?, recommended?}` each, ≤ 20) and one board. Its `## Options` section then
 holds one `###` per item — not per option — whose heading slug equals the item `id` (`### a-record` for

@@ -11,7 +11,7 @@ use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePool, SqlitePo
 
 use crate::packet::Packet;
 use crate::types::{
-    Checkout, Owner, Task, TaskEvent, TaskFilter, TaskId, TaskState, Wake, WakeReason,
+    Checkout, Owner, Priority, Task, TaskEvent, TaskFilter, TaskId, TaskState, Wake, WakeReason,
 };
 
 /// Origin stamped into every `hlc`: the mesh engine id once known, else `local`.
@@ -82,6 +82,7 @@ struct Row {
     next_wake_after_ms: Option<i64>,
     done_when: Option<String>,
     attachments_json: String,
+    priority: String,
 }
 
 fn state_of(s: &str) -> TaskState {
@@ -144,6 +145,7 @@ impl From<Row> for Task {
             next_wake_after_ms: r.next_wake_after_ms.map(|v| v as u64),
             done_when: r.done_when,
             attachments: serde_json::from_str(&r.attachments_json).unwrap_or_default(),
+            priority: Priority::parse(&r.priority).unwrap_or_default(),
         }
     }
 }
@@ -151,7 +153,7 @@ impl From<Row> for Task {
 const COLS: &str = "id, title, brief, owner, state, reviewer, blockers_json, parent, project, where_, \
                     harness, external_json, thread, checkout_json, schedule_name, schedule_fire_ms, \
                     created_by, created_ms, updated_ms, no_progress_count, next_wake_after_ms, done_when, \
-                    attachments_json";
+                    attachments_json, priority";
 
 impl Store {
     /// Open or create the file and run the migrations.
@@ -182,7 +184,7 @@ impl Store {
     pub async fn put(&self, t: &Task) -> anyhow::Result<()> {
         sqlx::query(sqlx::AssertSqlSafe(format!(
             "INSERT OR REPLACE INTO tasks ({COLS}, hlc) VALUES \
-             (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23,?24)"
+             (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23,?24,?25)"
         )))
         .bind(&t.id.0)
         .bind(&t.title)
@@ -207,6 +209,7 @@ impl Store {
         .bind(t.next_wake_after_ms.map(|v| v as i64))
         .bind(&t.done_when)
         .bind(serde_json::to_string(&t.attachments)?)
+        .bind(t.priority.as_str())
         .bind(hlc(t.updated_ms))
         .execute(&self.pool)
         .await?;

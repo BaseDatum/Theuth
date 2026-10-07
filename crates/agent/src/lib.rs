@@ -328,26 +328,58 @@ pub struct Cancel {
 /// Answer a pending `ask_user`: one answer per question, or
 /// `None` to dismiss the set, which also cancels the owning session's turn.
 /// `Ok(true)` if the ask was still pending. Every frontend answers through here.
+/// 132 D6: answers for an ask no longer pending are not dropped — the
+/// session gets them as a user message ([`LateAnswer`]); the result is still `false`.
 pub async fn answer_ask(
     id: tools::AskId,
     answers: Option<Vec<tools::Answer>>,
 ) -> anyhow::Result<bool> {
     use kameo::actor::ActorRef;
-    let dismissed = answers.is_none();
     let ask = ActorRef::<tools::AskUser>::lookup(tools::ASK_ACTOR)?
         .ok_or_else(|| anyhow::anyhow!("ask actor is not running"))?;
-    let session = ask.ask(tools::AnswerAsk { id, answers }).await?;
-    if let Some(session) = session.filter(|_| dismissed) {
+    let session = ask
+        .ask(tools::AnswerAsk {
+            id,
+            answers: answers.clone(),
+        })
+        .await?;
+    let agents = || {
         ActorRef::<Agents>::lookup(AGENT_ACTOR)?
-            .ok_or_else(|| anyhow::anyhow!("agent actor is not running"))?
-            .ask(Cancel {
-                session,
-                keep: None,
-                scope: CancelScope::Root,
-            })
-            .await?;
+            .ok_or_else(|| anyhow::anyhow!("agent actor is not running"))
+    };
+    match (session, answers) {
+        (Some(session), None) => {
+            agents()?
+                .ask(Cancel {
+                    session,
+                    keep: None,
+                    scope: CancelScope::Root,
+                })
+                .await?;
+            Ok(true)
+        }
+        (Some(_), Some(_)) => Ok(true),
+        (None, Some(answers)) if !answers.is_empty() => {
+            agents()?
+                .ask(LateAnswer { id, answers })
+                .await
+                .map_err(|e| anyhow::anyhow!("late answer: {e}"))?;
+            Ok(false)
+        }
+        (None, _) => Ok(false),
     }
-    Ok(session.is_some())
+}
+
+/// `ask` → `Result<(), String>`: 132 D6 — the answers to an ask that is no
+/// longer pending, delivered to the asking session as a user message
+/// (`Answer to your earlier question “<q>”: <a>`, one line per question),
+/// the way a chat prompt lands. A question the journal does not know is `Ok(())`.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct LateAnswer {
+    /// The ask.
+    pub id: tools::AskId,
+    /// One per question, in order.
+    pub answers: Vec<tools::Answer>,
 }
 
 /// [`answer_ask`] for the owner's double (126 §4.3): the row is settled with

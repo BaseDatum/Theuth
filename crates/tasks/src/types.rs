@@ -79,6 +79,58 @@ impl TaskState {
     }
 }
 
+/// How soon a task wants attention (132 D4). The user alone sets it; one
+/// [`crate::rank::rank`] orders the inbox and an agent's wake dispatch by it.
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize, schemars::JsonSchema,
+)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[serde(rename_all = "snake_case")]
+pub enum Priority {
+    /// Its own group at the top of the rail.
+    Urgent,
+    /// Before the ordinary.
+    High,
+    /// The default.
+    #[default]
+    Medium,
+    /// When nothing else waits.
+    Low,
+}
+
+impl Priority {
+    /// agentbox weights: 9 / 7 / 5 / 2.
+    pub const fn weight(self) -> u32 {
+        match self {
+            Self::Urgent => 9,
+            Self::High => 7,
+            Self::Medium => 5,
+            Self::Low => 2,
+        }
+    }
+
+    /// Column value.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Urgent => "urgent",
+            Self::High => "high",
+            Self::Medium => "medium",
+            Self::Low => "low",
+        }
+    }
+
+    /// The inverse of [`Self::as_str`]; `None` for anything else.
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "urgent" => Some(Self::Urgent),
+            "high" => Some(Self::High),
+            "medium" => Some(Self::Medium),
+            "low" => Some(Self::Low),
+            _ => None,
+        }
+    }
+}
+
 /// Who owns (or reviews) a task. JSON: `{ "type": "agent", "name": "ops" }` |
 /// `{ "type": "user" }`; text (columns, filters, prompts): `agent:ops` | `user`.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, schemars::JsonSchema)]
@@ -205,6 +257,9 @@ pub struct Task {
     /// sees them as `[attached …]` lines under the brief and reads them with the per-kind tools.
     #[serde(default)]
     pub attachments: Vec<agent::attach::AttachRef>,
+    /// How soon it wants attention (132 D4); the user alone sets it.
+    #[serde(default)]
+    pub priority: Priority,
 }
 
 /// Why an agent is woken (67 §7.3).
@@ -276,13 +331,16 @@ impl WakeReason {
     ];
 
     /// Whether a wake with this reason still has a purpose on a task in
-    /// `state` (STALE-WAKE-DESKS). A closed task wants nobody; `review` is
-    /// the reviewer's move (and the manager's on a `blocked: no continuation`);
-    /// the "pick it up" reasons need the task open for work; the rest
-    /// (comment, mention, answer, manual, schedule) hold in any open state.
+    /// `state` (STALE-WAKE-DESKS). A closed task wants nobody — except an
+    /// `answer` on a `done` one (132 D3: the reviewer's next move, `**next**`
+    /// in the thread, is the owner's to pick up); `review` is the reviewer's
+    /// move (and the manager's on a `blocked: no continuation`); the "pick it
+    /// up" reasons need the task open for work; the rest (comment, mention,
+    /// answer, manual, schedule) hold in any open state.
     pub const fn applies_to(self, state: TaskState) -> bool {
         use TaskState::*;
         match self {
+            Self::Answer if matches!(state, Done) => true,
             _ if matches!(state, Done | Cancelled) => false,
             Self::Review => matches!(state, Review | Blocked),
             Self::Assigned
@@ -476,6 +534,9 @@ pub struct TaskCreate {
     /// Attached references (design 66 refs), deduplicated by kind + id.
     #[serde(default)]
     pub attachments: Vec<agent::attach::AttachRef>,
+    /// Priority; `None` = medium. The ledger refuses it from an agent.
+    #[serde(default)]
+    pub priority: Option<Priority>,
 }
 
 impl TaskCreate {
@@ -517,6 +578,8 @@ pub struct TaskPatch {
     pub attachments: Option<Vec<agent::attach::AttachRef>>,
     /// Required from an agent moving a task to `done`; `user`/`system` default to intent met.
     pub done_because: Option<DoneBecause>,
+    /// Priority; the user only (the ledger refuses agents).
+    pub priority: Option<Priority>,
 }
 
 #[cfg(test)]
@@ -556,6 +619,7 @@ mod tests {
             external: vec![],
             done_when: None,
             attachments: vec![],
+            priority: None,
         };
         let v = serde_json::to_value(&t).unwrap();
         assert_eq!(v["where"], "build-A");

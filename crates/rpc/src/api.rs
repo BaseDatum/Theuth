@@ -1816,12 +1816,15 @@ pub trait Api {
     async fn task_update(&self, id: String, patch: tasks::TaskPatch) -> RpcResult<tasks::Task>;
     /// Move a task on the user's intent (67 §7.2): backlog ↔ todo, → cancelled,
     /// review → done | todo, blocked → todo. `Err` names the allowed targets.
+    /// `next` (132 D3): with `done` on a review that offered next moves, the
+    /// index of the pick — `**next** (n) <label>` in the thread, the owner woken `answer`.
     #[method(name = "task_move", with_extensions)]
     async fn task_move(
         &self,
         id: String,
         state: tasks::TaskState,
         note: Option<String>,
+        next: Option<u32>,
     ) -> RpcResult<tasks::Task>;
     /// Append a comment to a task's thread as the user; wakes the owner (67 §7.3).
     #[method(name = "task_comment")]
@@ -5846,12 +5849,14 @@ impl ApiServer for Server {
         id: String,
         state: tasks::TaskState,
         note: Option<String>,
+        next: Option<u32>,
     ) -> RpcResult<tasks::Task> {
         let m = tasks::MoveTask {
             id: tasks::TaskId(id),
             state,
             note,
             done_because: None,
+            next,
             actor: crate::Client::actor(ext),
             session: None,
         };

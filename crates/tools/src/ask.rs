@@ -558,6 +558,32 @@ fn render(questions: &[Question], answers: &[Answer]) -> ToolOutput {
     }
 }
 
+/// 132 D6: a late answer (the question is no longer pending) as the user
+/// message the session gets instead of losing it — one line per question:
+/// `Answer to your earlier question “<q>”: <a>` (the picked option's label,
+/// the typed text, or `(skipped)`). Empty when there is nothing to say.
+pub fn late_answer_text(questions: &[Question], answers: &[Answer]) -> String {
+    questions
+        .iter()
+        .zip(answers)
+        .map(|(q, a)| {
+            let a = match a {
+                Answer::Choice { index } => q
+                    .options
+                    .get(*index)
+                    .map_or_else(|| format!("option {index}"), |c| c.label.clone()),
+                Answer::Text { text } => text.clone(),
+                Answer::Skipped => "(skipped)".to_owned(),
+            };
+            format!(
+                "Answer to your earlier question \u{201c}{}\u{201d}: {a}",
+                q.question.trim()
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -591,6 +617,45 @@ mod tests {
             out.structured.unwrap(),
             serde_json::json!({"a": "opt1", "b": "mine", "c": null, "d": null})
         );
+    }
+
+    /// 132 D6: the late-answer message names each question and its answer, one line each.
+    #[test]
+    fn late_answer_text_one_line_per_question() {
+        let q = |text: &str, labels: &[&str]| Question {
+            id: "q".into(),
+            question: text.into(),
+            options: labels
+                .iter()
+                .map(|l| Choice {
+                    label: (*l).to_owned(),
+                    description: None,
+                })
+                .collect(),
+            recommended: None,
+        };
+        let qs = [
+            q("Ship tonight? ", &["Yes", "No"]),
+            q("Which region?", &[]),
+            q("Keep the cache?", &["Keep"]),
+        ];
+        let text = late_answer_text(
+            &qs,
+            &[
+                Answer::Choice { index: 1 },
+                Answer::Text {
+                    text: "eu-west".into(),
+                },
+                Answer::Skipped,
+            ],
+        );
+        assert_eq!(
+            text,
+            "Answer to your earlier question \u{201c}Ship tonight?\u{201d}: No\n\
+             Answer to your earlier question \u{201c}Which region?\u{201d}: eu-west\n\
+             Answer to your earlier question \u{201c}Keep the cache?\u{201d}: (skipped)"
+        );
+        assert_eq!(late_answer_text(&qs, &[]), "");
     }
 
     /// Bus subscriber that answers the first ask it sees.

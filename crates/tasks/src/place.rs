@@ -408,7 +408,7 @@ mod tests {
     use mesh::{EngineClass, EngineId};
 
     use super::*;
-    use crate::types::{Owner, TaskId, TaskState};
+    use crate::types::{Owner, Priority, TaskId, TaskState};
 
     fn engine(
         name: &str,
@@ -488,6 +488,7 @@ mod tests {
             next_wake_after_ms: None,
             done_when: None,
             attachments: vec![],
+            priority: Priority::Medium,
         }
     }
 

@@ -22,6 +22,7 @@ pub mod escalate;
 pub mod ledger;
 pub mod packet;
 pub mod place;
+pub mod rank;
 pub mod store;
 pub mod thread;
 pub mod tools;
@@ -42,8 +43,8 @@ use serde::{Deserialize, Serialize};
 
 pub use config::TasksConfig;
 pub use types::{
-    Checkout, Disposition, DoneBecause, Owner, Task, TaskCreate, TaskEvent, TaskFilter, TaskId,
-    TaskPatch, TaskState, Wake, WakeReason,
+    Checkout, Disposition, DoneBecause, Owner, Priority, Task, TaskCreate, TaskEvent, TaskFilter,
+    TaskId, TaskPatch, TaskState, Wake, WakeReason,
 };
 
 /// Registry name of the [`Tasks`] actor.
@@ -113,6 +114,12 @@ pub struct ListTasks(pub TaskFilter);
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct GetTask(pub TaskId);
 
+/// `ask` → `Result<Vec<ledger::Waiting>, String>`: 132 D5 — decisions and
+/// reviews addressed to the user on tasks in the actor's reporting line
+/// (every task for the user), oldest first.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct WaitingOnUser(pub String);
+
 /// `ask` → `Result<Vec<TaskId>, String>`: tasks whose `blockers` name this one.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct TaskBlocks(pub TaskId);
@@ -160,6 +167,9 @@ pub struct MoveTask {
     /// The verdict a move to `done` records (70 DESK-PROTOCOL); `None` from an agent is refused.
     #[serde(default)]
     pub done_because: Option<DoneBecause>,
+    /// 132 D3: with `done` on a review that offered next moves, the index of the pick.
+    #[serde(default)]
+    pub next: Option<u32>,
     /// `agent:<name>` | `user` | `system`.
     pub actor: String,
     /// Session doing it.
@@ -271,6 +281,8 @@ pub struct Escalate {
     pub recommendation: Option<packet::Recommendation>,
     /// A bundle (103 F3).
     pub items: Vec<packet::Item>,
+    /// The cost of a wrong answer (132 D2); required when the user decides.
+    pub if_wrong: Option<String>,
     /// Who.
     pub actor: String,
     /// Session.
@@ -310,6 +322,15 @@ pub struct ReviewPacket {
     pub pointers: Vec<packet::Pointer>,
     /// Claimed status against `done_when`.
     pub checks: Vec<packet::Check>,
+    /// 132 D3: the next moves after approval (≤ 4); `recommended` indexes them.
+    #[serde(default)]
+    pub options: Vec<packet::PacketOption>,
+    /// Index into `options`.
+    #[serde(default)]
+    pub recommended: Option<u32>,
+    /// The cost of a wrong call (132 D2), optional on a review.
+    #[serde(default)]
+    pub if_wrong: Option<String>,
     /// Who.
     pub actor: String,
 }
@@ -582,6 +603,14 @@ impl Message<ListTasks> for Tasks {
     }
 }
 
+impl Message<WaitingOnUser> for Tasks {
+    type Reply = Result<Vec<ledger::Waiting>, String>;
+
+    async fn handle(&mut self, m: WaitingOnUser, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        self.ledger.waiting_on_user(&m.0).await
+    }
+}
+
 impl Message<GetTask> for Tasks {
     type Reply = Result<Task, String>;
 
@@ -623,9 +652,7 @@ impl Message<ReviewPacket> for Tasks {
     type Reply = Result<packet::Packet, String>;
 
     async fn handle(&mut self, m: ReviewPacket, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
-        self.ledger
-            .review_packet(&m.id, m.summary, m.board, m.pointers, m.checks, &m.actor)
-            .await
+        self.ledger.review_packet(m).await
     }
 }
 
@@ -680,6 +707,7 @@ impl Message<MoveTask> for Tasks {
                 m.state,
                 m.note.as_deref(),
                 m.done_because,
+                m.next,
                 &m.actor,
                 m.session.as_deref(),
             )
@@ -765,6 +793,7 @@ impl Message<Escalate> for Tasks {
             pointers: m.pointers,
             recommendation: m.recommendation,
             items: m.items,
+            if_wrong: m.if_wrong,
         };
         let (decision, manager) = self
             .ledger
@@ -1463,6 +1492,7 @@ mod tests {
             recommendation: None,
             items: vec![],
             to: None,
+            if_wrong: None,
         };
         assert_eq!(
             card_question(&p, "portal"),
@@ -1522,6 +1552,7 @@ mod tests {
                 pointers: vec![],
                 recommendation: None,
                 items: vec![],
+                if_wrong: Some("low, the release is a tag".into()),
                 actor: "agent:lead".into(),
                 session: Some(session.clone()),
             })

@@ -14343,6 +14343,7 @@ mod tests {
             next_wake_after_ms: None,
             done_when: None,
             attachments: vec![],
+            priority: tasks::Priority::Medium,
         };
         assert_eq!(
             tasks_table(Some("sre"), &[task]),

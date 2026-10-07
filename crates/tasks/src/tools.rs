@@ -18,7 +18,8 @@ use crate::packet::{self, Check, Item, PacketOption, Pointer, Recommendation};
 use crate::place;
 use crate::thread::Thread;
 use crate::types::{
-    Disposition, DoneBecause, Owner, TaskCreate, TaskFilter, TaskId, TaskPatch, TaskState,
+    Disposition, DoneBecause, Owner, Priority, TaskCreate, TaskFilter, TaskId, TaskPatch,
+    TaskState,
 };
 use crate::{
     AnswerDecision, AwaitDecision, CheckBoard, CheckoutTask, CommentTask, CreateTask,
@@ -57,10 +58,11 @@ says why (`done_because`: criteria met, intent met, or follow-ups filed). Your o
 task is `task_checkout()`; finishing it is `task_update()` with a disposition; handing it to the agent whose \
 capabilities fit it better is `task_reassign()`.";
 
-/// Register the ten tools on `reg`.
+/// Register the eleven tools on `reg`.
 pub async fn register(reg: &ActorRef<ToolRegistry>) {
     let _ = reg.ask(RegisterTool(Arc::new(TaskCreateTool))).await;
     let _ = reg.ask(RegisterTool(Arc::new(TaskInboxTool))).await;
+    let _ = reg.ask(RegisterTool(Arc::new(TaskWaitingOnUserTool))).await;
     let _ = reg.ask(RegisterTool(Arc::new(TaskCheckoutTool))).await;
     let _ = reg.ask(RegisterTool(Arc::new(TaskUpdateTool))).await;
     let _ = reg.ask(RegisterTool(Arc::new(TaskMoveTool))).await;
@@ -171,6 +173,10 @@ pub struct TaskCreateArgs {
     /// user's message when the task is drafted from it.
     #[serde(default)]
     pub attachments: Vec<AttachRef>,
+    /// `urgent` | `high` | `medium` | `low` (default medium). The user's to set — only when the user said so;
+    /// an agent's call with it is refused.
+    #[serde(default)]
+    pub priority: Option<Priority>,
 }
 
 /// `task_create`: a new task record; owner and reviewer default per the line.
@@ -223,6 +229,7 @@ impl Tool for TaskCreateTool {
             external: a.external,
             done_when: a.done_when,
             attachments: a.attachments,
+            priority: a.priority,
         };
         let r = flat(
             actor
@@ -368,6 +375,77 @@ impl Tool for TaskInboxTool {
     }
 }
 
+/// Arguments for [`TaskWaitingOnUserTool`].
+#[derive(Debug, Default, Serialize, Deserialize, JsonSchema)]
+pub struct TaskWaitingOnUserArgs {
+    /// Only tasks in this project; default: every project.
+    #[serde(default)]
+    pub project: Option<String>,
+}
+
+/// `task_waiting_on_user` (132 D5): what of the caller's line already waits on the user.
+pub struct TaskWaitingOnUserTool;
+
+/// `3 d` | `5 h` | `12 min` | `40 s` since `then_ms`.
+fn age(now_ms: u64, then_ms: u64) -> String {
+    let s = now_ms.saturating_sub(then_ms) / 1000;
+    match s {
+        0..=59 => format!("{s} s"),
+        60..=3599 => format!("{} min", s / 60),
+        3600..=86_399 => format!("{} h", s / 3600),
+        _ => format!("{} d", s / 86_400),
+    }
+}
+
+#[async_trait::async_trait]
+impl Tool for TaskWaitingOnUserTool {
+    const NAME: &'static str = "task_waiting_on_user";
+    const RISK: Risk = Risk::ReadOnly;
+    type Args = TaskWaitingOnUserArgs;
+
+    fn description(&self) -> String {
+        "The decisions and reviews of your reporting line that already wait on the user, oldest first — one \
+         line each: kind, key, task title, how long it has waited, the question or outcome. Call it before \
+         `escalate`: a task already waiting on the user does not get a second escalation from you (the tool \
+         refuses with `ALREADY_WAITING`). Stuck is the bar for a new one; a follow-up earns its own escalation \
+         only with a new option, a fact that changes the decision, or a deadline — otherwise add what you \
+         learned with `task_note` on the waiting one and go on with work the answer does not gate."
+            .into()
+    }
+
+    async fn call(&self, a: TaskWaitingOnUserArgs, cx: ToolCx) -> anyhow::Result<ToolOutput> {
+        let actor = actor()?;
+        let me = caller(&actor, &cx).await;
+        let rows = match flat(actor.ask(crate::WaitingOnUser(me)).await) {
+            Ok(r) => r,
+            Err(e) => return Ok(ToolOutput::err(e)),
+        };
+        let now = now_ms();
+        let mut lines = Vec::new();
+        for w in rows {
+            if let Some(p) = &a.project
+                && !flat(actor.ask(GetTask(w.task.clone())).await)
+                    .is_ok_and(|t| t.project.as_deref() == Some(p))
+            {
+                continue;
+            }
+            lines.push(format!(
+                "{} {} · {} · waiting {} · {}",
+                w.kind.as_str(),
+                w.key,
+                w.title,
+                age(now, w.since_ms),
+                w.head
+            ));
+        }
+        Ok(ToolOutput::ok(if lines.is_empty() {
+            "nothing of yours is waiting on the user".to_owned()
+        } else {
+            lines.join("\n")
+        }))
+    }
+}
+
 /// Arguments for [`TaskCheckoutTool`].
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 pub struct TaskCheckoutArgs {
@@ -466,6 +544,10 @@ pub struct TaskUpdateArgs {
     /// evident intention), or `follow_ups_filed {tasks}` (the work continues in those tasks).
     #[serde(default)]
     pub done_because: Option<DoneBecause>,
+    /// `urgent` | `high` | `medium` | `low`. The user's to set: pass it only when the user said so; otherwise
+    /// say why it should change in `task_note` and the user decides.
+    #[serde(default)]
+    pub priority: Option<Priority>,
     /// With `disposition: review`: the review packet's one-paragraph summary (≤ 16 KiB). Required when the
     /// reviewer is the user.
     #[serde(default)]
@@ -484,6 +566,17 @@ pub struct TaskUpdateArgs {
     /// With `disposition: review`: your status against each `done_when` line (`{text, done, note}`).
     #[serde(default)]
     pub checks: Option<Vec<Check>>,
+    /// With `disposition: review`: the next moves after approval (≤ 4, labels ≤ 80 chars) — e.g. "Merge and
+    /// continue to X" (recommended) / "Revise Y first" / "Park it". Never what the run already did; a thing read
+    /// or a question answered ends with none. The reviewer's pick is written to the thread as `**next** (n) <label>`.
+    #[serde(default)]
+    pub options: Vec<OptionArg>,
+    /// With `disposition: review`: index into `options` of the move you would make.
+    #[serde(default)]
+    pub recommended: Option<u32>,
+    /// With `disposition: review`: one honest line (≤ 200 chars) on the cost of approving wrongly; optional.
+    #[serde(default)]
+    pub if_wrong: Option<String>,
 }
 
 /// `task_update`: change fields and state; every change is a thread event.
@@ -501,18 +594,27 @@ impl Tool for TaskUpdateTool {
          `blocked` naming what you wait on, `delegated` naming the child task that now carries \
          the work, `continuing` naming what will wake the task again, `done` (reviewers only, with \
          `done_because`; a desk that is its own reviewer marks done only against an explicit `done_when` and \
-         only as `criteria_met`). A hand-over to review carries the review packet the reviewer reads instead \
-         of the thread: `summary` (one short paragraph: the abstract the inbox row shows), `board` — the id of \
+         only as `criteria_met`). When you hand over or finish, retitle the task (`title`) to state the outcome \
+         — the inbox row leads with it — and open the `summary` with the same sentence. A hand-over to review \
+         carries the review packet the reviewer reads instead \
+         of the thread: `summary` (one short paragraph: the outcome first), `board` — the id of \
          a review mini-board you wrote for the reviewer (`doc_create(kind=\"board\", root=…)` then `doc_insert`, \
          see the `board` skill) with the sections `## What was done`, `## Why it matters to you`, `## The picture` \
          (one diagram, `ref` on every unit), `## Against the criteria` (each `done_when` line with its evidence \
-         anchor), `## Walk through` (Excerpts in reading order), optionally `## Open questions`; write for the \
+         anchor), `## Walk through` (open with a demonstration — image, page, URL, real input and output — when \
+         one can exist, diffs second; Excerpts in reading order), optionally `## Open questions`; write for the \
          person reviewing — what, why it matters to them, the whole picture; diagram and link heavy; short — \
          `checks` (your status against each `done_when` line) and optional `pointers` with the evidence inline \
          (`code` = `path#L10-L24` plus the lines verbatim, `diff` = a unified diff, artifacts / notes / sessions / \
-         URLs by id or URL; a one-line `note` each). When the reviewer is the user the `summary` and the `board` \
-         are required (the board must exist, be a board and open with those sections) and the tool refuses \
-         without them, naming what to fix. Caps: summary 16 KiB, 12 pointers (text 32 KiB each). `state: doing` \
+         URLs by id or URL; a one-line `note` each). If your run changed anything there is something to decide: \
+         `options` are the next moves after approval (\"Merge and continue to X\" (recommended) / \"Revise Y \
+         first\" / \"Park it\"; at most 4, one `recommended`) — never what the run already did; a question \
+         answered or a thing read ends with no options, and options that can no longer be chosen come out. \
+         `if_wrong` (optional): one honest line on the cost of approving wrongly. When the reviewer is the user \
+         the `summary` and the `board` are required (the board must exist, be a board and open with those \
+         sections) and the tool refuses without them, naming what to fix. Caps: summary 16 KiB, 12 pointers \
+         (text 32 KiB each), 4 options, `if_wrong` 200 chars. `priority` is the user's to set: pass it only when \
+         the user said so. `state: doing` \
          sends a reviewed task back to its owner; `state: cancelled` drops it. A write by a session that does \
          not hold the checkout is refused once the checkout moved on (`superseded`). One session may write to \
          at most 20 tasks it does not own. Every change is logged to the thread with your session and \
@@ -535,6 +637,7 @@ impl Tool for TaskUpdateTool {
             done_when: a.done_when,
             attachments: a.attachments,
             done_because: a.done_because,
+            priority: a.priority,
             ..Default::default()
         };
         match a.state {
@@ -566,6 +669,9 @@ impl Tool for TaskUpdateTool {
                         a.board,
                         a.pointers,
                         a.checks,
+                        a.options,
+                        a.recommended,
+                        a.if_wrong,
                         &me,
                     )
                     .await
@@ -659,6 +765,19 @@ pub struct TaskMoveArgs {
     /// With `state: review`: your status against each `done_when` line.
     #[serde(default)]
     pub checks: Option<Vec<Check>>,
+    /// With `state: done` on a review that offered next moves: the index of the move the reviewer picks.
+    /// Written to the thread as `**next** (n) <label>`; the owner is woken with reason `answer`.
+    #[serde(default)]
+    pub next: Option<u32>,
+    /// With `state: review`: the next moves after approval (≤ 4; see `task_update`).
+    #[serde(default)]
+    pub options: Vec<OptionArg>,
+    /// With `state: review`: index into `options` of the move you would make.
+    #[serde(default)]
+    pub recommended: Option<u32>,
+    /// With `state: review`: one honest line on the cost of approving wrongly; optional.
+    #[serde(default)]
+    pub if_wrong: Option<String>,
 }
 
 /// `task_move`: a state change on the user's (or the caller's) intent.
@@ -675,11 +794,15 @@ impl Tool for TaskMoveTool {
          \"approve it\"): backlog ↔ todo, anything → cancelled, review → done | todo (reviewer), blocked → todo \
          (the user's move clears system blockers such as `no continuation`; a decision needs its answer, a task \
          blocker its task), doing → review (owner). `todo` from backlog wakes the owner. Illegal moves are refused \
-         with the list of states allowed from where the task is. A move to `review` whose reviewer is the user \
-         needs the review packet — `summary` (one paragraph) and `board`, the id of a review mini-board \
-         (`doc_create(kind=\"board\")`, sections `## What was done`, `## Why it matters to you`, `## The picture`, \
-         `## Against the criteria`, `## Walk through`; write for the person reviewing — what, why it matters to \
-         them, the whole picture; diagram and link heavy; short), plus `checks` against `done_when` — and is \
+         with the list of states allowed from where the task is. Approving a review that offered next moves: \
+         `done` with `next` (the index of the move the user picked) writes `**next** (n) <label>` to the thread \
+         and wakes the owner with reason `answer`. A move to `review` whose reviewer is the user \
+         needs the review packet — `summary` (one paragraph, the outcome first) and `board`, the id of a review \
+         mini-board (`doc_create(kind=\"board\")`, sections `## What was done`, `## Why it matters to you`, \
+         `## The picture`, `## Against the criteria`, `## Walk through`; write for the person reviewing — what, \
+         why it matters to them, the whole picture; diagram and link heavy; short), plus `checks` against \
+         `done_when` and, if the run changed anything, `options` — the next moves after approval (at most 4, one \
+         `recommended`; never what the run already did) — and is \
          refused without it. Working a task yourself is `task_checkout`; \
          finishing one is `task_update` with a disposition."
             .into()
@@ -690,7 +813,17 @@ impl Tool for TaskMoveTool {
         let me = caller(&actor, &cx).await;
         let packet = if a.state == TaskState::Review {
             match review_gate(
-                &actor, &a.task, None, a.summary, a.board, a.pointers, a.checks, &me,
+                &actor,
+                &a.task,
+                None,
+                a.summary,
+                a.board,
+                a.pointers,
+                a.checks,
+                a.options,
+                a.recommended,
+                a.if_wrong,
+                &me,
             )
             .await
             {
@@ -707,6 +840,7 @@ impl Tool for TaskMoveTool {
                     state: a.state,
                     note: a.note,
                     done_because: a.done_because,
+                    next: a.next,
                     actor: me,
                     session: Some(cx.session.to_string()),
                 })
@@ -748,6 +882,9 @@ async fn review_gate(
     board: Option<String>,
     pointers: Option<Vec<Pointer>>,
     checks: Option<Vec<Check>>,
+    options: Vec<OptionArg>,
+    recommended: Option<u32>,
+    if_wrong: Option<String>,
     me: &str,
 ) -> Result<Option<ReviewPacket>, String> {
     let who = flat(
@@ -758,7 +895,11 @@ async fn review_gate(
             })
             .await,
     )?;
-    let given = summary.is_some() || board.is_some() || pointers.is_some() || checks.is_some();
+    let given = summary.is_some()
+        || board.is_some()
+        || pointers.is_some()
+        || checks.is_some()
+        || !options.is_empty();
     let p = packet::Packet {
         key: packet::review_key(id),
         task: id.clone(),
@@ -768,13 +909,14 @@ async fn review_gate(
         question: None,
         summary: summary.unwrap_or_default(),
         board,
-        options: vec![],
-        recommended: None,
+        options: options.into_iter().map(Into::into).collect(),
+        recommended,
         pointers: pointers.unwrap_or_default(),
         checks: checks.unwrap_or_default(),
         recommendation: None,
         items: vec![],
         to: None,
+        if_wrong: if_wrong.map(|w| w.trim().to_owned()).filter(|w| !w.is_empty()),
     };
     if who == Owner::User {
         packet::require_for_user(&p)?;
@@ -794,6 +936,9 @@ async fn review_gate(
         board: p.board,
         pointers: p.pointers,
         checks: p.checks,
+        options: p.options,
+        recommended: p.recommended,
+        if_wrong: p.if_wrong,
         actor: me.to_owned(),
     }))
 }
@@ -1232,9 +1377,10 @@ impl From<OptionArg> for PacketOption {
 pub struct EscalateArgs {
     /// Task id the decision is about.
     pub task: TaskId,
-    /// The question, one or two sentences; the decider sees it first. Forwarding a report's decision
-    /// (the task is already blocked on their `decision:<id>`): pass `""` to inherit their question,
-    /// summary, board, options, pointers and items — never re-type them.
+    /// The question; the inbox row leads with it. Its first sentence is the thing the user has to say back
+    /// (≤ 15 words) and the `options` answer it in the same words — write it last, off the options.
+    /// Forwarding a report's decision (the task is already blocked on their `decision:<id>`): pass `""` to
+    /// inherit their question, summary, board, options, pointers, items and `if_wrong` — never re-type them.
     pub question: String,
     /// Markdown (≤ 16 KiB): the abstract — at most 120 words answering what is being decided and why now;
     /// the inbox row, the thread and the channel card show it, the detail goes on the `board`. Required when
@@ -1267,6 +1413,10 @@ pub struct EscalateArgs {
     /// `{label, description}` (≤ 6). The decider answers all at once (`1. <title>: <pick>` per line).
     #[serde(default)]
     pub items: Vec<Item>,
+    /// One honest line (≤ 200 chars) on the cost of a wrong answer — "low, one-line revert" or "high, real users
+    /// get this email". Required when your manager is the user; inherited on a forward.
+    #[serde(default)]
+    pub if_wrong: Option<String>,
 }
 
 /// `escalate`: a decision request up the reporting line (67 §11, decision 8).
@@ -1282,9 +1432,16 @@ impl Tool for EscalateTool {
         "Ask your manager for a decision you cannot make yourself. The request goes up your reporting \
          line as a wake with reason `answer`: a manager that is an agent answers with `decide` or \
          escalates further; the user gets it on their attention surface and as a card on their channels \
-         with the options as buttons. Prepare the packet the decider reads instead of the thread: \
-         `summary` — the abstract, at most 120 words answering what is being decided and why now (the \
-         inbox row and the card show it); `board` — the id of a mini-board you wrote for the decider \
+         with the options as buttons. First call `task_waiting_on_user`: a task already waiting on the \
+         user does not get a second escalation from you (refused with `ALREADY_WAITING`); stuck is the bar, \
+         and a follow-up earns a new one only with a new option, a fact that changes the decision, or a \
+         deadline — otherwise `task_note` on the waiting one. The row the user reads leads with your \
+         `question`: its first sentence is the thing they have to say back (at most 15 words) and the \
+         `options` answer it in the same words — write the question last, off the options. `if_wrong`: one \
+         honest line on the cost of a wrong answer (\"low, one-line revert\" / \"high, real users get this \
+         email\"); the user sees it above the options. Prepare the packet the decider reads instead of the \
+         thread: `summary` — the abstract, at most 120 words answering what is being decided and why now \
+         (the thread and the card show it); `board` — the id of a mini-board you wrote for the decider \
          (`doc_create(kind=\"board\", root=…)` then `doc_insert`, see the `board` skill) with the sections \
          `## What you're deciding`, `## Why it matters to you`, `## The picture` (one diagram, `ref` on \
          every unit), `## Options` (one `###` per option: consequence, cost/risk, reversibility, \
@@ -1294,15 +1451,15 @@ impl Tool for EscalateTool {
          `pointers` with the evidence inline (`code` = `path#L10-L24` plus the lines verbatim, `diff` = a \
          unified diff, artifacts / notes / sessions / URLs by id or URL), a one-line `note` each. \
          Forwarding a report's decision (the task is already blocked on their `decision:<id>`): pass \
-         `question: \"\"` and your `recommendation` {text, option}; their question, summary, board, options \
-         and pointers are inherited — do not re-type the report into `question`. N related decisions \
-         (records, hosts, PRs): one call with `items`, one `{id, title, options, recommended}` each, and \
-         one `###` per item under the board's `## Options` whose heading slug is the item `id`. When your \
-         manager is the user the `summary` and the `board` are required (the board must exist, be a board \
-         and open with those sections) and the tool refuses without them, naming what to fix. Caps: summary \
-         16 KiB, 6 options (labels 80 chars), 20 items, 12 pointers (text 32 KiB each). \
-         You wait up to `roster.decision_wait_secs` (two minutes) for a live answer; if it comes it is \
-         in this tool's output and the task is unblocked. If none comes the task stays \
+         `question: \"\"` and your `recommendation` {text, option}; their question, summary, board, options, \
+         pointers and `if_wrong` are inherited — do not re-type the report into `question`. N related \
+         decisions (records, hosts, PRs): one call with `items`, one `{id, title, options, recommended}` each, \
+         and one `###` per item under the board's `## Options` whose heading slug is the item `id`. When your \
+         manager is the user the `summary`, the `board` and `if_wrong` are required (the board must exist, be \
+         a board and open with those sections) and the tool refuses without them, naming what to fix. Caps: \
+         summary 16 KiB, 6 options (labels 80 chars), 20 items, 12 pointers (text 32 KiB each), `if_wrong` \
+         200 chars. You wait up to `roster.decision_wait_secs` (two minutes) for a live answer; if it comes \
+         it is in this tool's output and the task is unblocked. If none comes the task stays \
          `blocked: decision:<id>`, your episode ends with its journal, and the answer re-wakes you. \
          Do not poll: either the reply is in this tool's output or you should end your turn."
             .into()
@@ -1323,6 +1480,7 @@ impl Tool for EscalateTool {
                     pointers: a.pointers,
                     recommendation: a.recommendation,
                     items: a.items,
+                    if_wrong: a.if_wrong,
                     actor: me,
                     session: Some(cx.session.to_string()),
                 })
@@ -1466,7 +1624,7 @@ mod review_gate_tests {
         });
 
         // task_move {state: review}: the effective reviewer decides.
-        let e = review_gate(&actor, &lead.id, None, None, None, None, None, "agent:lead")
+        let e = review_gate(&actor, &lead.id, None, None, None, None, None, vec![], None, None, "agent:lead")
             .await
             .unwrap_err();
         assert!(e.contains("needs a `board`"), "{e}");
@@ -1485,6 +1643,9 @@ mod review_gate_tests {
             None,
             None,
             None,
+            vec![],
+            None,
+            None,
             "agent:lead",
         )
         .await
@@ -1494,7 +1655,7 @@ mod review_gate_tests {
             "summary alone is not enough: {e}"
         );
         assert!(
-            review_gate(&actor, &ops.id, None, None, None, None, None, "agent:ops")
+            review_gate(&actor, &ops.id, None, None, None, None, None, vec![], None, None, "agent:ops")
                 .await
                 .unwrap()
                 .is_none(),
@@ -1509,6 +1670,9 @@ mod review_gate_tests {
             None,
             None,
             None,
+            vec![],
+            None,
+            None,
             "agent:ops",
         )
         .await
@@ -1521,6 +1685,9 @@ mod review_gate_tests {
             None,
             Some("x".repeat(packet::SUMMARY_MAX + 1)),
             None,
+            None,
+            None,
+            vec![],
             None,
             None,
             "agent:ops",
@@ -1543,6 +1710,9 @@ mod review_gate_tests {
                 None,
                 Some("done".into()),
                 Some(b.into()),
+                None,
+                None,
+                vec![],
                 None,
                 None,
                 "agent:lead",
@@ -1571,6 +1741,9 @@ mod review_gate_tests {
                 Some("rb".into()),
                 Some(vec![code_pointer()]),
                 None,
+                vec![],
+                None,
+                None,
                 "agent:lead",
             )
             .await
@@ -1585,6 +1758,7 @@ mod review_gate_tests {
                             state: TaskState::Review,
                             note: None,
                             done_because: None,
+                            next: None,
                             actor: "agent:lead".into(),
                             session: Some("s-lead".into()),
                         })
