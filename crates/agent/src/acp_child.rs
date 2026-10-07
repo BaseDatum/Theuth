@@ -1161,6 +1161,7 @@ impl AcpChild {
     /// unknown first ([`Self::lose`], 47 §4.2 rule 6). The next
     /// `send_message` respawns the child from the store row either way (06 §3.2).
     async fn closed(&mut self, why: String, ctx: &mut Context<Self, ()>) {
+        tracing::warn!(session = %self.id, harness = %self.name, in_turn = self.turn.is_some(), "harness closed: {why}");
         self.close_harness();
         if self.remote && self.worked {
             self.lose(why, ctx).await;
