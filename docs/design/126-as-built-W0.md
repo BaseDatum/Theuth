@@ -93,10 +93,10 @@ Two beyond rope, both found by the probe and fixed with the candle-provided `*_s
 | `build-lock cargo clippy -p decision --features train --all-targets -- -D warnings` | see "Gate log" below |
 | `build-lock cargo build [--release] -p decision --features train --example lora_step` | clean, no warnings |
 
-Gate log (filled in when the runs finished; both ran after the owner's stop, both through build-lock):
+Gate log (both ran after the owner's stop, both through build-lock, at `3df3955d`):
 
-- clippy: GATE_CLIPPY
-- test: GATE_TEST
+- `cargo clippy -p decision --features train --all-targets -- -D warnings`: **clean**, exit 0 (first run flagged `clippy::type_complexity` on the probe's case vector; fixed with a local `type Case`).
+- `cargo test -p decision` (default features): lib **88 passed** (859.8 s), `tests/decide.rs` 2, `tests/gliner.rs` 3, `tests/model.rs` 3 (readme parity against the real checkpoint on Metal included), doc-tests 0 — **96 passed, 0 failed, 0 ignored**, no warnings; identical counts to the baseline. The default forward is unchanged.
 
 ## What W3 must know
 
