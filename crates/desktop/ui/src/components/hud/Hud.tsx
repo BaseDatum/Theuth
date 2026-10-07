@@ -166,6 +166,7 @@ export const KIND_LABEL: Record<AttentionItem['kind'], string> = {
   ask: 'question',
   show: 'shown',
   resume: 'resume',
+  finished: 'Finished',
 }
 
 /** The inbox's empty state; `/attention`'s rail says the same (101, 104). */

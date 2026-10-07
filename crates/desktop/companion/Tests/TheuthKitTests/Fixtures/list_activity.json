@@ -1,0 +1,61 @@
+[
+  {
+    "id": "0192c5e0-7a1b-7c2d-9e3f-4a5b6c7d8e02",
+    "name": "",
+    "parent": "0192c5e0-7a1b-7c2d-9e3f-4a5b6c7d8e02",
+    "depth": 0,
+    "agent": null,
+    "model": "anthropic/claude-fable",
+    "state": { "state": "running" },
+    "started_at": "2026-10-07T10:30:02.963742Z",
+    "finished_at": "2026-10-07T10:12:00Z",
+    "last": "Running cargo test -p rpc",
+    "project": "theuth",
+    "retention": "durable",
+    "activity": {
+      "state": { "state": "running" },
+      "last_active": "2026-10-07T10:31:02.100Z",
+      "turn_started_at": "2026-10-07T10:30:02.963742Z",
+      "jobs": 1,
+      "ptys": 0,
+      "children": 2,
+      "asks": null,
+      "live": true
+    }
+  },
+  {
+    "id": "0192c5e0-7a1b-7c2d-9e3f-4a5b6c7d8e05",
+    "name": "",
+    "parent": "0192c5e0-7a1b-7c2d-9e3f-4a5b6c7d8e05",
+    "depth": 0,
+    "agent": null,
+    "model": "openai/gpt-5",
+    "state": { "state": "approval", "tool": "shell" },
+    "started_at": null,
+    "finished_at": null,
+    "last": "",
+    "activity": {
+      "state": { "state": "approval", "tool": "shell" },
+      "last_active": null,
+      "turn_started_at": null,
+      "jobs": 0,
+      "ptys": 0,
+      "children": 0,
+      "asks": null,
+      "live": true,
+      "waiting_since_ms": 1791448800000
+    }
+  },
+  {
+    "id": "0192c5e0-7a1b-7c2d-9e3f-4a5b6c7d8e06",
+    "name": "",
+    "parent": "0192c5e0-7a1b-7c2d-9e3f-4a5b6c7d8e06",
+    "depth": 0,
+    "agent": "codex",
+    "model": "gpt-5-codex",
+    "state": { "state": "error" },
+    "started_at": null,
+    "finished_at": "2026-10-07T09:58:10Z",
+    "last": "stream ended early"
+  }
+]

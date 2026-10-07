@@ -11,7 +11,7 @@
 //! user saw (`dismissed_ms >= at_ms`), a newer version surfaces again (119).
 //! Badge count = the returned list's length.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use artifact::ArtifactShown;
 use kameo::actor::{ActorRef, Spawn};
@@ -63,6 +63,9 @@ pub enum AttentionKind {
     /// skipped a mutating call (effect unknown), an ACP child got a hand-off,
     /// or `durability.resume: ask` waits for the Resume button.
     Resume,
+    /// 130 E3: a root or desk session's turn ended cleanly — the receipt, with
+    /// `summary` and the agent's `## Next` suggestions.
+    Finished,
 }
 
 /// One inbox item. `id` is stable across derivations (dismiss / snooze key).
@@ -98,7 +101,61 @@ pub struct AttentionItem {
     /// The turn the item belongs to, when the source carries one (104 A3). No source does yet.
     #[serde(default)]
     pub turn: Option<u32>,
+    /// 130 E2: ms since epoch the user has been waited on — the approval's
+    /// arrival, the ask's arrival, the blocker's / review's `task_events`
+    /// time when known, else `at_ms`. `None` for kinds that wait on nobody.
+    #[serde(default)]
+    #[cfg_attr(feature = "ts", ts(optional, type = "number | null"))]
+    pub waiting_since_ms: Option<u64>,
+    /// 130 E3: the first line of the turn's final text, ≤ 160 chars (Finished items).
+    #[serde(default)]
+    #[cfg_attr(feature = "ts", ts(optional = nullable))]
+    pub summary: Option<String>,
+    /// 130 E3: the agent's `## Next` list, ≤ 2 items of ≤ 80 chars (Finished items).
+    #[serde(default)]
+    #[cfg_attr(feature = "ts", ts(as = "Option<Vec<String>>", optional))]
+    pub next_steps: Vec<String>,
 }
+
+/// 130 E1: bus event the [`Attention`] actor publishes after a derive whose
+/// result differs from the previous one by id set; `count` is the new badge.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[serde(tag = "type")]
+pub struct AttentionChanged {
+    /// The new list's length (the badge).
+    pub count: u32,
+    /// Ids present now and not before, sorted.
+    pub ids_added: Vec<String>,
+    /// Ids present before and not now, sorted.
+    pub ids_removed: Vec<String>,
+    /// ms since epoch of the derive.
+    #[cfg_attr(feature = "ts", ts(type = "number"))]
+    pub at_ms: u64,
+}
+
+/// 130 E3: one `attention_finished` row — a root / desk session's last clean
+/// turn; the item id is `finished:<session>:<turn>`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Finished {
+    /// Owning session (one row per session: the newest turn replaces the last).
+    pub session: String,
+    /// The turn that finished.
+    pub turn: String,
+    /// ms since epoch: when it finished.
+    pub at_ms: u64,
+    /// First line of the final text (≤ 160 chars), else the session title.
+    pub summary: Option<String>,
+    /// The `## Next` list, ≤ 2 × 80 chars.
+    pub next_steps: Vec<String>,
+}
+
+/// 130 E3: `summary` cap in chars.
+pub const SUMMARY_MAX: usize = 160;
+/// 130 E3: cap of each `next_steps` item in chars.
+pub const NEXT_STEP_MAX: usize = 80;
+/// 130 E3: how many `next_steps` an item carries at most.
+pub const NEXT_STEPS_MAX: usize = 2;
 
 /// One `attention_shows` row: an artifact an agent showed since this build (104 A1).
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -197,6 +254,11 @@ pub struct Inputs {
     pub task_sessions: HashMap<String, String>,
     /// 109 §8.3: resumes that need a human.
     pub resumes: Vec<ResumeNeed>,
+    /// 130 E2: ask id → ms since epoch the `AskRequested` arrived (the actor
+    /// records it when a pending ask is first seen).
+    pub ask_since: HashMap<tools::AskId, u64>,
+    /// 130 E3: undismissed `attention_finished` rows.
+    pub finished: Vec<Finished>,
 }
 
 /// Dismissed / snoozed state per item id.
@@ -233,6 +295,10 @@ pub fn derive(inputs: &Inputs, states: &HashMap<String, State>, now_ms: u64) -> 
         packet: None,
         ask: None,
         turn: None,
+        // 130 E2: every kind waits since it arose unless it knows better (asks) or waits on nobody (finished).
+        waiting_since_ms: Some(at_ms),
+        summary: None,
+        next_steps: Vec::new(),
     };
     // 104 A3: the desk a session belongs to (itself or an ancestor), when the roster knows it.
     let desk = |session: &str| inputs.desks.get(session).cloned();
@@ -296,6 +362,7 @@ pub fn derive(inputs: &Inputs, states: &HashMap<String, State>, now_ms: u64) -> 
             agent: agent.clone(),
             session: Some(session.clone()),
             ask: Some(a.clone()),
+            waiting_since_ms: Some(inputs.ask_since.get(&a.id).copied().unwrap_or(now_ms)),
             ..item(
                 format!("ask:{}", a.id.0),
                 AttentionKind::Ask,
@@ -580,6 +647,26 @@ pub fn derive(inputs: &Inputs, states: &HashMap<String, State>, now_ms: u64) -> 
         });
     }
 
+    // 130 E3: one receipt per root / desk session; waits on nobody.
+    for f in &inputs.finished {
+        let agent = desk(&f.session);
+        let name = who(agent.as_deref(), &f.session);
+        out.push(AttentionItem {
+            agent,
+            session: Some(f.session.clone()),
+            waiting_since_ms: None,
+            summary: f.summary.clone(),
+            next_steps: f.next_steps.clone(),
+            ..item(
+                format!("finished:{}:{}", f.session, f.turn),
+                AttentionKind::Finished,
+                format!("{name} finished"),
+                f.summary.clone(),
+                f.at_ms,
+            )
+        });
+    }
+
     out.retain(|i| {
         !states
             .get(&i.id)
@@ -589,6 +676,56 @@ pub fn derive(inputs: &Inputs, states: &HashMap<String, State>, now_ms: u64) -> 
     });
     out.sort_by_key(|i| std::cmp::Reverse(i.at_ms));
     out
+}
+
+/// 130 E3: `(summary, next_steps)` from a turn's final assistant text — a
+/// trailing `## Next` section's first [`NEXT_STEPS_MAX`] list items (`- ` or
+/// `1.`), each cut to [`NEXT_STEP_MAX`] chars; the summary is the first
+/// non-empty line of what precedes it, cut to [`SUMMARY_MAX`], else `fallback`.
+pub fn parse_finished(text: &str, fallback: Option<&str>) -> (Option<String>, Vec<String>) {
+    let cut = |s: &str, max: usize| -> String {
+        let s = s.trim();
+        if s.chars().count() <= max {
+            s.to_owned()
+        } else {
+            let mut out: String = s.chars().take(max - 1).collect();
+            out.push('\u{2026}');
+            out
+        }
+    };
+    let lines: Vec<&str> = text.lines().collect();
+    let (body, next) = match lines
+        .iter()
+        .rposition(|l| l.trim().eq_ignore_ascii_case("## next"))
+    {
+        Some(i) => (&lines[..i], &lines[i + 1..]),
+        None => (&lines[..], &lines[..0]),
+    };
+    let next_steps: Vec<String> = next
+        .iter()
+        .map(|l| l.trim())
+        .filter_map(|l| {
+            l.strip_prefix("- ")
+                .or_else(|| l.strip_prefix("* "))
+                .or_else(|| {
+                    let digits = l.trim_start_matches(|c: char| c.is_ascii_digit());
+                    (digits.len() < l.len())
+                        .then(|| digits.strip_prefix(". "))
+                        .flatten()
+                })
+        })
+        .filter(|l| !l.trim().is_empty())
+        .take(NEXT_STEPS_MAX)
+        .map(|l| cut(l, NEXT_STEP_MAX))
+        .collect();
+    let summary = body
+        .iter()
+        .map(|l| l.trim().trim_start_matches('#').trim())
+        .find(|l| !l.is_empty())
+        .map(|l| cut(l, SUMMARY_MAX))
+        .or_else(|| fallback.map(|f| cut(f, SUMMARY_MAX)))
+        .filter(|s| !s.is_empty());
+    (summary, next_steps)
 }
 
 fn stamp(ms: u64) -> String {
@@ -624,6 +761,15 @@ pub struct Attention {
     reports: HashMap<String, ResumeNeed>,
     /// `durability.resume: ask`: every open turn is an item with a Resume button.
     resume_ask: bool,
+    /// 130 E1: the bus, for `AttentionChanged`.
+    rt: Runtime,
+    /// 130 E1: the id set of the last derive; `announce` diffs against it.
+    last_ids: HashSet<String>,
+    /// 130 E2: when each pending ask was first seen.
+    ask_since: HashMap<tools::AskId, (runtime::SessionId, u64)>,
+    /// 130 E3: assistant text of each running turn since its last tool call —
+    /// the "final text" once `TurnFinished` arrives. One entry per running session.
+    texts: HashMap<runtime::SessionId, String>,
 }
 
 impl Attention {
@@ -639,6 +785,10 @@ impl Attention {
                 pending: HashMap::new(),
                 reports: HashMap::new(),
                 resume_ask,
+                rt: rt.clone(),
+                last_ids: HashSet::new(),
+                ask_since: HashMap::new(),
+                texts: HashMap::new(),
             },
             runtime::subscriber_mailbox(),
         );
@@ -647,10 +797,14 @@ impl Attention {
         rt.subscribe::<Self, ApprovalResolved>(&actor).await;
         rt.subscribe::<Self, ArtifactShown>(&actor).await;
         rt.subscribe::<Self, agent::AgentEvent>(&actor).await;
+        rt.subscribe::<Self, AskRequested>(&actor).await;
+        rt.subscribe::<Self, tools::AskResolved>(&actor).await;
+        rt.subscribe::<Self, tasks::activity::ActivityAppended>(&actor)
+            .await;
         Ok(actor)
     }
 
-    async fn gather(&self) -> Inputs {
+    async fn gather(&mut self) -> Inputs {
         let tasks = match tasks::actor() {
             Some(t) => t
                 .ask(tasks::ListTasks(tasks::TaskFilter {
@@ -734,6 +888,17 @@ impl Attention {
             Ok(Some(a)) => a.ask(tools::PendingAsks).await.ok().unwrap_or_default(),
             _ => vec![],
         };
+        // 130 E2: a pending ask is "waiting since" the first time this actor saw it.
+        let now = now_ms();
+        self.ask_since
+            .retain(|id, _| asks.iter().any(|a| a.id == *id));
+        for a in &asks {
+            self.ask_since.entry(a.id).or_insert((a.session, now));
+        }
+        let finished = finished(&self.pool).await.unwrap_or_else(|e| {
+            tracing::warn!("attention: finished: {e:#}");
+            vec![]
+        });
         let shows = shows(&self.pool).await.unwrap_or_else(|e| {
             tracing::warn!("attention: shows: {e:#}");
             vec![]
@@ -774,8 +939,136 @@ impl Attention {
             desks,
             task_sessions,
             resumes,
+            ask_since: self
+                .ask_since
+                .iter()
+                .map(|(id, (_, at))| (*id, *at))
+                .collect(),
+            finished,
         }
     }
+
+    /// 130 E1: derive now and announce the difference from the last derive.
+    async fn recheck(&mut self) -> Result<Vec<AttentionItem>, String> {
+        let inputs = self.gather().await;
+        let states = states(&self.pool).await.map_err(|e| e.to_string())?;
+        let now = now_ms();
+        let items = derive(&inputs, &states, now);
+        if let Some(ev) = changed(&self.last_ids, &items, now) {
+            self.last_ids = items.iter().map(|i| i.id.clone()).collect();
+            self.rt.publish(ev).await;
+        }
+        Ok(items)
+    }
+
+    /// `recheck` for the event handlers: the list is nobody's, an error is a log line.
+    async fn recheck_quietly(&mut self) {
+        if let Err(e) = self.recheck().await {
+            tracing::warn!("attention: recheck: {e}");
+        }
+    }
+
+    /// 130 E3: a root / desk turn ended cleanly with nothing pending → one
+    /// `attention_finished` row for the session (the previous turn's is replaced).
+    async fn finish_turn(&mut self, session: runtime::SessionId, turn: runtime::TurnId) {
+        let text = self.texts.remove(&session).unwrap_or_default();
+        if self.pending.values().any(|(a, _)| a.session == session)
+            || self.ask_since.values().any(|(s, _)| *s == session)
+        {
+            return;
+        }
+        let Ok(Some(ag)) = ActorRef::<agent::Agents>::lookup(agent::AGENT_ACTOR) else {
+            return;
+        };
+        let Ok(chain) = ag.ask(agent::Ancestors { session }).await else {
+            return;
+        };
+        // A subagent has ancestors; the parent reports for it.
+        if chain.len() != 1 {
+            return;
+        }
+        let (summary, next_steps) = parse_finished(&text, chain[0].title.as_deref());
+        let row = Finished {
+            session: session.to_string(),
+            turn: turn.to_string(),
+            at_ms: now_ms(),
+            summary,
+            next_steps,
+        };
+        if let Err(e) = record_finished(&self.pool, &row).await {
+            tracing::warn!("attention: record finished {session}: {e:#}");
+        }
+        self.recheck_quietly().await;
+    }
+}
+
+/// 130 E1: the `AttentionChanged` a derive raises against the previous id set; `None` when equal.
+pub fn changed(
+    prev: &HashSet<String>,
+    items: &[AttentionItem],
+    at_ms: u64,
+) -> Option<AttentionChanged> {
+    let now: HashSet<&str> = items.iter().map(|i| i.id.as_str()).collect();
+    let mut ids_added: Vec<String> = now
+        .iter()
+        .filter(|id| !prev.contains(**id))
+        .map(|id| (*id).to_owned())
+        .collect();
+    let mut ids_removed: Vec<String> = prev
+        .iter()
+        .filter(|id| !now.contains(id.as_str()))
+        .cloned()
+        .collect();
+    if ids_added.is_empty() && ids_removed.is_empty() {
+        return None;
+    }
+    ids_added.sort();
+    ids_removed.sort();
+    Some(AttentionChanged {
+        count: items.len() as u32,
+        ids_added,
+        ids_removed,
+        at_ms,
+    })
+}
+
+/// 130 E3: upsert the session's receipt (one row per session; the newest turn wins).
+pub async fn record_finished(pool: &SqlitePool, f: &Finished) -> anyhow::Result<()> {
+    sqlx::query(
+        "INSERT INTO attention_finished (session, turn, at_ms, summary, next_steps) \
+         VALUES (?, ?, ?, ?, ?) \
+         ON CONFLICT(session) DO UPDATE SET turn = excluded.turn, at_ms = excluded.at_ms, \
+         summary = excluded.summary, next_steps = excluded.next_steps",
+    )
+    .bind(&f.session)
+    .bind(&f.turn)
+    .bind(f.at_ms as i64)
+    .bind(&f.summary)
+    .bind(serde_json::to_string(&f.next_steps)?)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+/// 130 E3: undismissed `attention_finished` rows, newest first (snooze is `derive`'s job).
+pub async fn finished(pool: &SqlitePool) -> anyhow::Result<Vec<Finished>> {
+    let rows: Vec<(String, String, i64, Option<String>, String)> = sqlx::query_as(
+        "SELECT f.session, f.turn, f.at_ms, f.summary, f.next_steps FROM attention_finished f \
+         LEFT JOIN attention_state st ON st.id = 'finished:' || f.session || ':' || f.turn \
+         WHERE st.dismissed_ms IS NULL ORDER BY f.at_ms DESC",
+    )
+    .fetch_all(pool)
+    .await?;
+    Ok(rows
+        .into_iter()
+        .map(|(session, turn, at_ms, summary, next_steps)| Finished {
+            session,
+            turn,
+            at_ms: at_ms as u64,
+            summary,
+            next_steps: serde_json::from_str(&next_steps).unwrap_or_default(),
+        })
+        .collect())
 }
 
 /// Session id → desk agent name for every session that is a desk or sits under one.
@@ -946,6 +1239,7 @@ impl Message<ApprovalRequested> for Attention {
         _: &mut Context<Self, Self::Reply>,
     ) -> Self::Reply {
         self.pending.insert(m.id, (m, now_ms()));
+        self.recheck_quietly().await;
     }
 }
 
@@ -992,6 +1286,32 @@ impl Message<agent::AgentEvent> for Attention {
     async fn handle(&mut self, m: agent::AgentEvent, _: &mut Context<Self, Self::Reply>) {
         if let Some(need) = resume_need(&m, now_ms()) {
             self.reports.insert(need.session.clone(), need);
+            self.recheck_quietly().await;
+            return;
+        }
+        // 130 E3: the final text is what streamed after the last tool call.
+        match m {
+            agent::AgentEvent::TurnStarted { session, .. }
+            | agent::AgentEvent::ToolCallStarted { session, .. } => {
+                self.texts.insert(session, String::new());
+            }
+            agent::AgentEvent::TextDelta { session, text, .. } => {
+                // ponytail: unbounded per running turn; a model's final answer is tens of KB at most.
+                self.texts.entry(session).or_default().push_str(&text);
+            }
+            agent::AgentEvent::TurnFinished {
+                session,
+                turn,
+                stop_reason,
+                ..
+            } => {
+                if stop_reason == "end_turn" {
+                    self.finish_turn(session, turn).await;
+                } else {
+                    self.texts.remove(&session);
+                }
+            }
+            _ => {}
         }
     }
 }
@@ -1005,6 +1325,7 @@ impl Message<ApprovalResolved> for Attention {
         _: &mut Context<Self, Self::Reply>,
     ) -> Self::Reply {
         self.pending.remove(&m.id);
+        self.recheck_quietly().await;
     }
 }
 
@@ -1015,6 +1336,38 @@ impl Message<ArtifactShown> for Attention {
         if let Err(e) = record_show(&self.pool, &m, now_ms()).await {
             tracing::warn!("attention: record show {}: {e:#}", m.call_id);
         }
+        self.recheck_quietly().await;
+    }
+}
+
+impl Message<AskRequested> for Attention {
+    type Reply = ();
+
+    async fn handle(&mut self, m: AskRequested, _: &mut Context<Self, Self::Reply>) {
+        self.ask_since.insert(m.id, (m.session, now_ms()));
+        self.recheck_quietly().await;
+    }
+}
+
+impl Message<tools::AskResolved> for Attention {
+    type Reply = ();
+
+    async fn handle(&mut self, m: tools::AskResolved, _: &mut Context<Self, Self::Reply>) {
+        self.ask_since.remove(&m.id);
+        self.recheck_quietly().await;
+    }
+}
+
+impl Message<tasks::activity::ActivityAppended> for Attention {
+    type Reply = ();
+
+    async fn handle(
+        &mut self,
+        _: tasks::activity::ActivityAppended,
+        _: &mut Context<Self, Self::Reply>,
+    ) {
+        // Task and agent changes reach the inbox through the feed (130 §5.3 E1).
+        self.recheck_quietly().await;
     }
 }
 
@@ -1026,9 +1379,7 @@ impl Message<ListAttention> for Attention {
         _: ListAttention,
         _: &mut Context<Self, Self::Reply>,
     ) -> Self::Reply {
-        let inputs = self.gather().await;
-        let states = states(&self.pool).await.map_err(|e| e.to_string())?;
-        Ok(derive(&inputs, &states, now_ms()))
+        self.recheck().await
     }
 }
 
@@ -1042,7 +1393,9 @@ impl Message<SnoozeAttention> for Attention {
     ) -> Self::Reply {
         set_state(&self.pool, &m.id, Some(m.until_ms), now_ms())
             .await
-            .map_err(|e| e.to_string())
+            .map_err(|e| e.to_string())?;
+        self.recheck_quietly().await;
+        Ok(())
     }
 }
 
@@ -1056,7 +1409,9 @@ impl Message<DismissAttention> for Attention {
     ) -> Self::Reply {
         set_state(&self.pool, &m.0, None, now_ms())
             .await
-            .map_err(|e| e.to_string())
+            .map_err(|e| e.to_string())?;
+        self.recheck_quietly().await;
+        Ok(())
     }
 }
 
@@ -2123,5 +2478,137 @@ mod tests {
             shows(store.pool()).await.unwrap().is_empty(),
             "dismissed rows stay out"
         );
+    }
+
+    /// 130 E1: equal id sets are silent; an added id, a dismissed id each announce once.
+    #[test]
+    fn attention_changed_diffs_id_sets() {
+        let desk = runtime::SessionId::new();
+        let one = ask(desk, &[("Ship?", &["Yes"])]);
+        let two = ask(desk, &[("Deploy?", &["Yes"])]);
+        let mut inputs = Inputs {
+            asks: vec![one.clone()],
+            ..Default::default()
+        };
+        let first = derive(&inputs, &HashMap::new(), 100);
+        let ev = changed(&HashSet::new(), &first, 100).expect("first derive announces");
+        assert_eq!(
+            (ev.count, ev.ids_added.len(), ev.ids_removed.len()),
+            (1, 1, 0)
+        );
+        let prev: HashSet<String> = first.iter().map(|i| i.id.clone()).collect();
+        assert_eq!(
+            changed(&prev, &derive(&inputs, &HashMap::new(), 101), 101),
+            None,
+            "same ids: nothing"
+        );
+        inputs.asks.push(two.clone());
+        let more = derive(&inputs, &HashMap::new(), 102);
+        let ev = changed(&prev, &more, 102).unwrap();
+        assert_eq!(ev.ids_added, [format!("ask:{}", two.id.0)]);
+        assert!(ev.ids_removed.is_empty());
+        assert_eq!(ev.count, 2);
+        let prev: HashSet<String> = more.iter().map(|i| i.id.clone()).collect();
+        let states = HashMap::from([(
+            format!("ask:{}", one.id.0),
+            State {
+                dismissed_ms: Some(200),
+                snoozed_until_ms: None,
+            },
+        )]);
+        let ev = changed(&prev, &derive(&inputs, &states, 103), 103).unwrap();
+        assert_eq!(ev.ids_removed, [format!("ask:{}", one.id.0)]);
+        assert!(ev.ids_added.is_empty());
+        assert_eq!(ev.count, 1);
+    }
+
+    /// 130 E2: an approval waits since it arrived, an ask since it was first seen.
+    #[test]
+    fn waiting_since_for_approvals_and_asks() {
+        let s = runtime::SessionId::new();
+        let a = ApprovalRequested {
+            id: ApprovalId(uuid::Uuid::now_v7()),
+            session: s,
+            tool: "bash".into(),
+            args: serde_json::json!({ "command": "rm -rf /tmp/x" }),
+            risk: tools::Risk::Destructive,
+        };
+        let q = ask(s, &[("Ship?", &["Yes"])]);
+        let inputs = Inputs {
+            approvals: vec![(a.clone(), 40)],
+            asks: vec![q.clone()],
+            ask_since: HashMap::from([(q.id, 70)]),
+            ..Default::default()
+        };
+        let items = derive(&inputs, &HashMap::new(), 100);
+        let by = |id: String| items.iter().find(|i| i.id == id).unwrap().waiting_since_ms;
+        assert_eq!(by(format!("approval:{}", a.id.0)), Some(40));
+        assert_eq!(by(format!("ask:{}", q.id.0)), Some(70));
+    }
+
+    /// 130 E3: the `## Next` parser — two items, none, over-long.
+    #[test]
+    fn next_section_parses_two_items_none_and_long() {
+        let (summary, next) = parse_finished(
+            "Rotated the token and redeployed.\n\nDetails follow.\n\n## Next\n- Check the Grafana alerts\n2. Close the incident\n- a third one\n",
+            Some("Title"),
+        );
+        assert_eq!(
+            summary.as_deref(),
+            Some("Rotated the token and redeployed.")
+        );
+        assert_eq!(next, ["Check the Grafana alerts", "Close the incident"]);
+
+        let (summary, next) = parse_finished("", Some("Rotate the Grafana token"));
+        assert_eq!(
+            summary.as_deref(),
+            Some("Rotate the Grafana token"),
+            "title fallback"
+        );
+        assert!(next.is_empty());
+        assert_eq!(parse_finished("  \n", None), (None, vec![]));
+
+        let long = "x".repeat(300);
+        let (summary, next) = parse_finished(&format!("{long}\n## Next\n- {long}"), None);
+        assert_eq!(summary.as_ref().unwrap().chars().count(), SUMMARY_MAX);
+        assert!(summary.unwrap().ends_with('\u{2026}'));
+        assert_eq!(next[0].chars().count(), NEXT_STEP_MAX);
+    }
+
+    /// 130 E3: one Finished item per session; the next turn's row replaces it; a dismissed one stays out.
+    #[tokio::test]
+    async fn finished_rows_replace_per_session_and_dismiss_hides() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(&dir.path().join("r.sqlite")).await.unwrap();
+        let s = runtime::SessionId::new().to_string();
+        let row = |turn: &str, at_ms: u64| Finished {
+            session: s.clone(),
+            turn: turn.into(),
+            at_ms,
+            summary: Some("done".into()),
+            next_steps: vec!["Reply ok".into()],
+        };
+        record_finished(store.pool(), &row("t1", 5)).await.unwrap();
+        record_finished(store.pool(), &row("t2", 6)).await.unwrap();
+        let rows = finished(store.pool()).await.unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!((rows[0].turn.as_str(), rows[0].at_ms), ("t2", 6));
+        assert_eq!(rows[0].next_steps, ["Reply ok"]);
+        let inputs = Inputs {
+            finished: rows,
+            ..Default::default()
+        };
+        let items = derive(&inputs, &HashMap::new(), 100);
+        assert_eq!(items.len(), 1);
+        let it = &items[0];
+        assert_eq!(it.kind, AttentionKind::Finished);
+        assert_eq!(it.id, format!("finished:{s}:t2"));
+        assert_eq!(it.summary.as_deref(), Some("done"));
+        assert_eq!(it.next_steps, ["Reply ok"]);
+        assert_eq!(it.waiting_since_ms, None, "a receipt waits on nobody");
+        set_state(store.pool(), &format!("finished:{s}:t2"), None, 7)
+            .await
+            .unwrap();
+        assert!(finished(store.pool()).await.unwrap().is_empty());
     }
 }

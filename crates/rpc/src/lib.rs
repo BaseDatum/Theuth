@@ -55,6 +55,36 @@ impl Default for RpcConfig {
     }
 }
 
+/// 130 E4: the client a connection declared with `X-Theuth-Client` on the
+/// WebSocket upgrade — `desktop | tui | ios | companion`, `desktop` when the
+/// header is absent or unknown. [`Auth`] puts it in every admitted request's
+/// extensions beside the peer, so each call on the socket can stamp
+/// `ActivityEntry.actor = user@<client>` ([`Client::actor`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Client(pub &'static str);
+
+impl Client {
+    /// The header name.
+    pub const HEADER: &'static str = "x-theuth-client";
+    /// What an absent or unknown header means.
+    pub const DEFAULT: Client = Client("desktop");
+    const KNOWN: [&'static str; 4] = ["desktop", "tui", "ios", "companion"];
+
+    /// The header's value when it names a known client, else [`Self::DEFAULT`].
+    pub fn parse(value: Option<&str>) -> Self {
+        value
+            .map(str::trim)
+            .and_then(|v| Self::KNOWN.iter().find(|k| k.eq_ignore_ascii_case(v)))
+            .map_or(Self::DEFAULT, |k| Client(k))
+    }
+
+    /// `user@<client>` for the connection behind `ext` (`user@desktop` when
+    /// the call did not come over the socket, e.g. the in-process TUI).
+    pub fn actor(ext: &jsonrpsee::Extensions) -> String {
+        format!("user@{}", ext.get::<Client>().unwrap_or(&Self::DEFAULT).0)
+    }
+}
+
 /// The plugin. Reads `<data_dir>/token` (creating it) and requires it as
 /// `Authorization: Bearer <token>` on the WebSocket upgrade.
 pub struct RpcPlugin {
@@ -280,7 +310,13 @@ where
 
     fn call(&mut self, mut req: HttpRequest<B>) -> Self::Future {
         if self.authorized(&req) {
+            let client = Client::parse(
+                req.headers()
+                    .get(Client::HEADER)
+                    .and_then(|v| v.to_str().ok()),
+            );
             req.extensions_mut().insert(self.peer.clone());
+            req.extensions_mut().insert(client);
             Either::Right(self.inner.call(req))
         } else {
             let resp = HttpResponse::builder()
@@ -328,6 +364,9 @@ mod tests {
             .register_method("peer", |_, _, ext| {
                 ext.get::<RpcPeer>().map(|p| (p.id(), p.is_closed()))
             })
+            .unwrap();
+        module
+            .register_method("actor", |_, _, ext| Client::actor(ext))
             .unwrap();
         module
             .register_async_method("wait_closed", |_, tx, ext| async move {
@@ -397,6 +436,38 @@ mod tests {
         // waiting call would block the server's graceful shutdown.
         stop_tx.send(()).unwrap();
         assert_eq!(next_closed(&mut rx).await, Some(("closed", ida)));
+    }
+
+    /// 130 E4: `X-Theuth-Client: companion` on the upgrade stamps every call
+    /// on that socket `user@companion`; no header (or an unknown one) is `user@desktop`.
+    #[tokio::test]
+    async fn client_header_stamps_the_connection() {
+        let (addr, _rx) = probe(std::future::pending()).await;
+        let with = |value: &'static str| async move {
+            let mut headers = HeaderMap::new();
+            headers.insert("authorization", HeaderValue::from_static("Bearer t"));
+            headers.insert("x-theuth-client", HeaderValue::from_static(value));
+            WsClientBuilder::default()
+                .set_headers(headers)
+                .build(format!("ws://{addr}"))
+                .await
+                .unwrap()
+        };
+        let actor = |c: WsClient| async move {
+            let a: String = c.request("actor", rpc_params![]).await.unwrap();
+            let again: String = c.request("actor", rpc_params![]).await.unwrap();
+            assert_eq!(a, again, "per connection, not per call");
+            a
+        };
+        assert_eq!(actor(with("companion").await).await, "user@companion");
+        assert_eq!(actor(with("TUI").await).await, "user@tui");
+        assert_eq!(actor(with("toaster").await).await, "user@desktop");
+        assert_eq!(actor(client(addr).await).await, "user@desktop");
+        assert_eq!(
+            Client::actor(&jsonrpsee::Extensions::new()),
+            "user@desktop",
+            "in-process callers"
+        );
     }
 
     #[tokio::test]

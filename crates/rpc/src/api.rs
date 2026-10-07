@@ -584,11 +584,11 @@ pub trait Api {
     #[method(name = "list_tools")]
     async fn list_tools(&self) -> RpcResult<Vec<ToolSpec>>;
     /// Answer a pending approval; `true` if it was still pending.
-    #[method(name = "resolve_approval")]
+    #[method(name = "resolve_approval", with_extensions)]
     async fn resolve_approval(&self, id: ApprovalId, decision: Decision) -> RpcResult<bool>;
     /// Answer a pending `ask_user`: one answer per question, or `None` to
     /// dismiss the set, which also cancels the turn. `true` if it was still pending.
-    #[method(name = "answer_ask")]
+    #[method(name = "answer_ask", with_extensions)]
     async fn answer_ask(&self, id: AskId, answers: Option<Vec<Answer>>) -> RpcResult<bool>;
     /// A client's answer to a `PagePreviewRequested` (120 §11.2): `Started`
     /// extends the wait, the first `Done`/`Failed` resolves it. `true` if the
@@ -1734,7 +1734,7 @@ pub trait Api {
     #[method(name = "agent_pause")]
     async fn agent_pause(&self, name: String, paused: bool) -> RpcResult<()>;
     /// Approve a proposed agent: clears `proposed_by`, unpauses (67 §6.5).
-    #[method(name = "agent_approve")]
+    #[method(name = "agent_approve", with_extensions)]
     async fn agent_approve(&self, name: String) -> RpcResult<()>;
     /// Delete `agents/<name>.md`; a pending proposal is refused with `note` on its hire task (67 §6.5). `theuth` is refused.
     #[method(name = "agent_remove")]
@@ -1753,7 +1753,7 @@ pub trait Api {
     async fn task_update(&self, id: String, patch: tasks::TaskPatch) -> RpcResult<tasks::Task>;
     /// Move a task on the user's intent (67 §7.2): backlog ↔ todo, → cancelled,
     /// review → done | todo, blocked → todo. `Err` names the allowed targets.
-    #[method(name = "task_move")]
+    #[method(name = "task_move", with_extensions)]
     async fn task_move(
         &self,
         id: String,
@@ -1794,7 +1794,7 @@ pub trait Api {
     #[method(name = "packet_get")]
     async fn packet_get(&self, key: String) -> RpcResult<Option<tasks::packet::Packet>>;
     /// Answer the `decision:<id>` a task is blocked on, as the user (67 §11); the owner is re-woken.
-    #[method(name = "task_decide")]
+    #[method(name = "task_decide", with_extensions)]
     async fn task_decide(&self, decision: String, answer: String) -> RpcResult<()>;
     /// Every artifact shown in `session` (`null` = every session), newest
     /// first; `descendants: true` (default `false`) widens to the session's
@@ -3443,14 +3443,56 @@ impl ApiServer for Server {
         ask::<ToolRegistry, _>(tools::REGISTRY_ACTOR, ListTools(None)).await
     }
 
-    async fn resolve_approval(&self, id: ApprovalId, decision: Decision) -> RpcResult<bool> {
-        ask::<Approval, _>(tools::APPROVAL_ACTOR, Resolve { id, decision }).await
+    async fn resolve_approval(
+        &self,
+        ext: &Extensions,
+        id: ApprovalId,
+        decision: Decision,
+    ) -> RpcResult<bool> {
+        let pending = ask::<Approval, _>(tools::APPROVAL_ACTOR, Resolve { id, decision }).await?;
+        // 130 E4: the receipt the companion reads back (`activity_list`).
+        if pending {
+            let what = match decision {
+                Decision::Allow => "allowed",
+                Decision::Deny => "denied",
+            };
+            tasks::activity::record(
+                &self.rt,
+                tasks::activity::ActivityKind::ApprovalResolved,
+                &crate::Client::actor(ext),
+                &id.0.to_string(),
+                format!("{what} approval {}", id.0),
+            )
+            .await;
+        }
+        Ok(pending)
     }
 
-    async fn answer_ask(&self, id: AskId, answers: Option<Vec<Answer>>) -> RpcResult<bool> {
-        agent::answer_ask(id, answers)
+    async fn answer_ask(
+        &self,
+        ext: &Extensions,
+        id: AskId,
+        answers: Option<Vec<Answer>>,
+    ) -> RpcResult<bool> {
+        let what = if answers.is_some() {
+            "answered"
+        } else {
+            "dismissed"
+        };
+        let pending = agent::answer_ask(id, answers)
             .await
-            .map_err(|e| ErrorObjectOwned::owned(ASK_FAILED, e.to_string(), None::<()>))
+            .map_err(|e| ErrorObjectOwned::owned(ASK_FAILED, e.to_string(), None::<()>))?;
+        if pending {
+            tasks::activity::record(
+                &self.rt,
+                tasks::activity::ActivityKind::AskAnswered,
+                &crate::Client::actor(ext),
+                &id.0.to_string(),
+                format!("{what} question {}", id.0),
+            )
+            .await;
+        }
+        Ok(pending)
     }
 
     async fn answer_page_preview(
@@ -5575,8 +5617,12 @@ impl ApiServer for Server {
         send(&roster_actor()?, roster::PauseAgent { name, paused }).await
     }
 
-    async fn agent_approve(&self, name: String) -> RpcResult<()> {
-        send(&roster_actor()?, roster::ApproveAgent(name)).await
+    async fn agent_approve(&self, ext: &Extensions, name: String) -> RpcResult<()> {
+        let m = roster::ApproveAgent {
+            name,
+            actor: crate::Client::actor(ext),
+        };
+        send(&roster_actor()?, m).await
     }
 
     async fn agent_remove(&self, name: String, note: Option<String>) -> RpcResult<()> {
@@ -5612,6 +5658,7 @@ impl ApiServer for Server {
 
     async fn task_move(
         &self,
+        ext: &Extensions,
         id: String,
         state: tasks::TaskState,
         note: Option<String>,
@@ -5621,7 +5668,7 @@ impl ApiServer for Server {
             state,
             note,
             done_because: None,
-            actor: "user".into(),
+            actor: crate::Client::actor(ext),
             session: None,
         };
         send(&tasks_actor()?, m).await
@@ -5684,11 +5731,16 @@ impl ApiServer for Server {
         send(&tasks_actor()?, tasks::GetPacket(key)).await
     }
 
-    async fn task_decide(&self, decision: String, answer: String) -> RpcResult<()> {
+    async fn task_decide(
+        &self,
+        ext: &Extensions,
+        decision: String,
+        answer: String,
+    ) -> RpcResult<()> {
         let m = tasks::AnswerDecision {
             decision,
             answer,
-            actor: "user".into(),
+            actor: crate::Client::actor(ext),
             session: None,
         };
         send(&tasks_actor()?, m).await
@@ -6427,6 +6479,31 @@ mod tests {
         assert!(wanted(&root, Some("c"), Some(&mut tree)));
         assert!(!wanted(&other, Some("c"), None));
         assert!(!wanted(&other, Some("c"), Some(&mut tree)));
+    }
+
+    /// 130 E1: the inbox-changed event is a tagged object every `subscribe_events(null)` client sees.
+    #[test]
+    fn attention_changed_wire_shape() {
+        let ev = roster::attention::AttentionChanged {
+            count: 2,
+            ids_added: vec!["finished:s1:t9".into()],
+            ids_removed: vec!["ask:a1".into()],
+            at_ms: 1_700_000_000_000,
+        };
+        let v = serde_json::to_value(&ev).unwrap();
+        assert_eq!(
+            v,
+            serde_json::json!({ "type": "AttentionChanged", "count": 2, "ids_added": ["finished:s1:t9"], "ids_removed": ["ask:a1"], "at_ms": 1_700_000_000_000u64 })
+        );
+        assert!(
+            wanted(&v, None, None),
+            "session-less: every global subscriber"
+        );
+        assert!(wanted(&v, Some("other"), None));
+        assert_eq!(
+            serde_json::to_value(roster::attention::AttentionKind::Finished).unwrap(),
+            "finished"
+        );
     }
 
     /// Private events reach their owner only (51 §4.2): a member's event is
