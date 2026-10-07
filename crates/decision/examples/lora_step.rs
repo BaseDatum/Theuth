@@ -163,7 +163,8 @@ fn probe(device: &Device) -> Result<()> {
     let w = Tensor::ones(head_dim, DType::F32, device)?;
     let b = Tensor::zeros(head_dim, DType::F32, device)?;
     let biased = candle_nn::LayerNorm::new(w.clone(), b.clone(), 1e-5);
-    let cases: Vec<(&str, Box<dyn Fn(&Tensor) -> Result<Tensor>>)> = vec![
+    type Case<'a> = (&'a str, Box<dyn Fn(&Tensor) -> Result<Tensor> + 'a>);
+    let cases: Vec<Case> = vec![
         ("rope", Box::new(|t| rotary_emb::rope(t, &cos, &sin))),
         ("rope_slow", Box::new(|t| rotary_emb::rope_slow(t, &cos, &sin))),
         ("softmax_last_dim", Box::new(ops::softmax_last_dim)),
