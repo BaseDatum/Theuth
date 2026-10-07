@@ -44,7 +44,7 @@ test('Scene draws the fixture: rings, needs, flows, panels, links, tokens only',
   expect(html).toContain('href="/agents/builder"')
   expect(html).toContain('href="/routines/morning-brief"')
   expect(html).toMatch(/<a href="\/attention"><text x="28" y="60"/)
-  expect(count(html, /href="\/new"/g)).toBe(2)
+  expect(count(html, /href="\/new"/g)).toBe(3) // the theuth ring, its AGENTS row, SESSIONS LIVE
   expect(html).toMatch(/href="\/tasks\?state=done&amp;project="><tspan>11 OUTCOMES TODAY<\/tspan>/)
   expect(html).toMatch(/href="\/tasks\?state=doing&amp;project="><tspan>4 IN FLIGHT<\/tspan>/)
   for (const s of ['done', 'doing', 'review', 'blocked', 'cancelled', 'backlog', 'todo']) expect(html).toContain(`href="/tasks?state=${s}&amp;project="`)
@@ -99,7 +99,7 @@ test('SceneCompact: pills, needs rows, ring list, four SVG panels + the stream b
   expect(count(html, /<li title="/g)).toBe(F.activity.length)
   expect(html).not.toMatch(/(fill|stroke)="#/)
   // Every desktop destination is a tap here too: pills, ring rows, panel links.
-  expect(count(html, /href="\/new"/g)).toBe(2)
+  expect(count(html, /href="\/new"/g)).toBe(3) // the theuth ring row, its AGENTS row, the SESSIONS LIVE pill
   expect(html).toContain('href="/agents/builder"')
   expect(html).toContain('href="/routines/nightly-digest"')
   expect(html).toContain('href="/tasks?state=doing&amp;project="')
