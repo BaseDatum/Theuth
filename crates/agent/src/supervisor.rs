@@ -9017,6 +9017,14 @@ impl Message<SessionCostQuery> for Agents {
 }
 
 #[cfg(test)]
+impl Agents {
+    /// The credential bundle sessions stream with (tests point a gateway at a fake provider).
+    pub(crate) fn test_auth(&self) -> &Auth {
+        &self.auth
+    }
+}
+
+#[cfg(test)]
 pub(crate) mod tests {
     use super::*;
     use crate::CreateSessionOptions;

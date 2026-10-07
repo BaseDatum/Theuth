@@ -447,12 +447,16 @@ impl Advisors {
         let Some(link) = self.links.get_mut(&session) else {
             return;
         };
-        let rewritten = link.prefix.len() > rows.len()
-            || link
-                .prefix
+        // `prefix` covers the tail of the delivered span: a cursor seeded at
+        // attach/boot (D1, D7) has an empty prefix and nothing to compare.
+        let count = usize::try_from(link.row.cursor).unwrap_or(0);
+        let rewritten = count > rows.len() || {
+            let base = count - link.prefix.len().min(count);
+            link.prefix
                 .iter()
-                .zip(rows.iter())
-                .any(|(fp, (_, e))| *fp != fingerprint(e));
+                .zip(rows[base..count].iter())
+                .any(|(fp, (_, e))| *fp != fingerprint(e))
+        };
         if rewritten {
             // Replay the bounded current transcript: rows after the latest
             // compaction head, or everything.
@@ -500,9 +504,6 @@ impl Advisors {
             self.publish(session).await;
             return;
         }
-        let count = usize::try_from(link.row.cursor)
-            .unwrap_or(0)
-            .min(rows.len());
         let fresh = &rows[count..];
         if fresh.is_empty() {
             link.backlog = 0;
@@ -547,17 +548,40 @@ impl Advisors {
         let advisor = link.row.advisor;
         match self.store.first_turn(advisor).await {
             Ok(Some(turn)) => {
-                self.tell_agents(crate::EditTurn {
+                self.restart(move || crate::EditTurn {
                     session: advisor,
                     turn,
-                    text,
+                    text: text.clone(),
                     files: Vec::new(),
-                })
-                .await;
+                });
             }
             Ok(None) => self.tell_agents(AdvisorInput { advisor, text }).await,
             Err(e) => tracing::warn!(session = %advisor, "first_turn: {e:#}"),
         }
+    }
+
+    /// `ask` a `RestartTurn`-backed supervisor message off the mailbox,
+    /// retrying "turn in flight": the advisor's `TurnFinished` is published
+    /// a hair before its state is handed back to the actor.
+    fn restart<M>(&self, make: impl Fn() -> M + Send + 'static)
+    where
+        Agents: Message<M, Reply = Result<(), String>>,
+        M: Send + 'static,
+    {
+        let Some(agents) = self.agents() else {
+            return;
+        };
+        tokio::spawn(async move {
+            for _ in 0..40 {
+                match agents.ask(make()).await {
+                    Err(kameo::error::SendError::HandlerError(e)) if e == "turn in flight" => {
+                        tokio::time::sleep(Duration::from_millis(50)).await;
+                    }
+                    Err(e) => return tracing::warn!("advisor restart: {e}"),
+                    Ok(()) => return,
+                }
+            }
+        });
     }
 
     /// Deliver `notes` as one card.
@@ -768,13 +792,10 @@ impl Message<Attach> for Advisors {
                     (link.row.advisor, link.last_opener, link.last_update.clone())
                 };
                 match opener {
-                    Some(turn) => {
-                        self.tell_agents(crate::Regenerate {
-                            session: advisor,
-                            turn,
-                        })
-                        .await;
-                    }
+                    Some(turn) => self.restart(move || crate::Regenerate {
+                        session: advisor,
+                        turn,
+                    }),
                     None => self.tell_agents(AdvisorInput { advisor, text }).await,
                 }
                 self.publish(session).await;
@@ -912,15 +933,21 @@ impl Message<AdvisorStep> for Advisors {
         let active = matches!(link.row.state, AdvisorState::Idle | AdvisorState::Reviewing);
         let park =
             !m.will_continue && busy && active && threshold.is_some_and(|t| link.backlog >= t);
-        match tx {
-            Some(tx) if park => link.waiters.push(tx),
-            Some(tx) => tx.send(()),
-            None => {}
-        }
+        let parked = match tx {
+            Some(tx) if park => {
+                link.waiters.push(tx);
+                None
+            }
+            other => other,
+        };
         if !busy && active {
             self.send_update(m.session).await;
         } else {
             self.publish(m.session).await;
+        }
+        // The status is published before the loop goes on to `TurnFinished`.
+        if let Some(tx) = parked {
+            tx.send(());
         }
         reply
     }
@@ -1021,13 +1048,10 @@ impl Message<Retry> for Advisors {
             return;
         }
         match link.last_opener {
-            Some(turn) => {
-                self.tell_agents(crate::Regenerate {
-                    session: advisor,
-                    turn,
-                })
-                .await;
-            }
+            Some(turn) => self.restart(move || crate::Regenerate {
+                session: advisor,
+                turn,
+            }),
             None => {
                 let text = link.last_update.clone();
                 self.tell_agents(AdvisorInput { advisor, text }).await;

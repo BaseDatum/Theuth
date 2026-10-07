@@ -5,8 +5,8 @@
 //! actor runs on the same store (no supervisor: its routing `tell`s are
 //! dropped, which pins the hook bookkeeping without a second model).
 
+use parking_lot::Mutex;
 use std::collections::VecDeque;
-use std::sync::Mutex as StdMutex;
 
 use kameo::actor::Spawn as _;
 use serde_json::{Value, json};
@@ -15,18 +15,20 @@ use wiremock::{Request, Respond, ResponseTemplate};
 use super::vision_fallback_tests::{Harness, MAIN_USAGE, sse, system, texts};
 use super::*;
 use crate::advisor::{ADVISORS_ACTOR, Advisors, Attach};
-use crate::{AdvisorConfig, AdvisorLink, AdvisorSeverity, AdvisorState, AdvisoryNote};
+use crate::{
+    AdvisorConfig, AdvisorLink, AdvisorSeverity, AdvisorState, AdvisoryNote, HistoryEntry,
+};
 
 /// A scripted provider: replies in order, then `fallback` forever.
 struct Script {
-    queue: StdMutex<VecDeque<ResponseTemplate>>,
+    queue: Mutex<VecDeque<ResponseTemplate>>,
     fallback: ResponseTemplate,
 }
 
 impl Script {
     fn new(replies: Vec<ResponseTemplate>) -> Self {
         Self {
-            queue: StdMutex::new(replies.into_iter().collect()),
+            queue: Mutex::new(replies.into_iter().collect()),
             fallback: sse("ok.", "stop", MAIN_USAGE),
         }
     }
@@ -36,7 +38,6 @@ impl Respond for Script {
     fn respond(&self, _: &Request) -> ResponseTemplate {
         self.queue
             .lock()
-            .unwrap_or_else(|p| p.into_inner())
             .pop_front()
             .unwrap_or_else(|| self.fallback.clone())
     }
@@ -47,10 +48,12 @@ fn tool_call(id: &str, name: &str, arguments: &Value) -> ResponseTemplate {
     let chunk = |choices: Value| json!({"id": "c", "object": "chat.completion.chunk", "model": "m", "choices": choices});
     let body = format!(
         "data: {}\n\ndata: {}\n\ndata: {}\n\ndata: [DONE]\n\n",
-        chunk(json!([{"index": 0, "delta": {"role": "assistant", "tool_calls": [
+        chunk(
+            json!([{"index": 0, "delta": {"role": "assistant", "tool_calls": [
             {"index": 0, "id": id, "type": "function",
              "function": {"name": name, "arguments": arguments.to_string()}}
-        ]}, "finish_reason": null}])),
+        ]}, "finish_reason": null}])
+        ),
         chunk(json!([{"index": 0, "delta": {}, "finish_reason": "tool_calls"}])),
         json!({"id": "c", "object": "chat.completion.chunk", "model": "m", "choices": [],
             "usage": {"prompt_tokens": MAIN_USAGE.0, "completion_tokens": MAIN_USAGE.1,
@@ -93,7 +96,10 @@ async fn spawn(h: &Harness, id: SessionId, kind: SessionKind) -> ActorRef<Sessio
         Session::new(
             id,
             0,
-            (h.catalog.resolve("openai/textonly", &|_| true).unwrap(), None),
+            (
+                h.catalog.resolve("openai/textonly", &|_| true).unwrap(),
+                None,
+            ),
             None,
             SessionState::resume(epoch, head, history),
             Arc::new(AgentConfig::default()),
@@ -170,12 +176,7 @@ fn hooks_fire_per_batch_and_at_turn_end() {
             .await
             .unwrap();
         // One refused tool round (a batch all the same), then a final answer.
-        let mut h = Harness::new(Script::new(vec![tool_call(
-            "c1",
-            "nope_tool",
-            &json!({}),
-        )]))
-        .await;
+        let mut h = Harness::new(Script::new(vec![tool_call("c1", "nope_tool", &json!({}))])).await;
         let adv = advisors(&h, AdvisorConfig::default()).await;
         let advisor = SessionId::new();
         h.store
@@ -244,8 +245,10 @@ fn passive_cards_never_open_a_turn_and_land_at_the_boundary() {
         tools::registry::start(&Runtime::new(figment::Figment::new(), reg_dir.clone()))
             .await
             .unwrap();
-        // The first reply is held 1.5 s: the busy window the cards arrive in.
+        // Reply 1 answers the idle blocker's turn; reply 2 (the `go` turn's
+        // first call) is held 1.5 s: the busy window the card arrives in.
         let mut h = Harness::new(Script::new(vec![
+            sse("ok.", "stop", MAIN_USAGE),
             tool_call("c1", "nope_tool", &json!({})).set_delay(Duration::from_millis(1500)),
         ]))
         .await;
@@ -268,7 +271,10 @@ fn passive_cards_never_open_a_turn_and_land_at_the_boundary() {
             0
         );
         let rows = h.store.rows_since(h.id, 0).await.unwrap();
-        assert!(matches!(rows.last(), Some((_, HistoryEntry::Advisory { .. }))));
+        assert!(matches!(
+            rows.last(),
+            Some((_, HistoryEntry::Advisory { .. }))
+        ));
         // (3) idle: a concern steer is preserved (card only); a blocker opens a turn.
         let (a, t) = card(advisor, AdvisorSeverity::Concern, "idle concern");
         actor
@@ -396,7 +402,11 @@ fn advisor_kind_session_runs_advise_locally_with_the_bare_prompt() {
             .await
             .unwrap();
         let mut h = Harness::new(Script::new(vec![
-            tool_call("a1", "advise", &json!({"note": "run the check first", "severity": "concern"})),
+            tool_call(
+                "a1",
+                "advise",
+                &json!({"note": "run the check first", "severity": "concern"}),
+            ),
             tool_call("a2", "todo", &json!({"op": "view"})),
         ]))
         .await;
@@ -449,10 +459,17 @@ fn advisor_kind_session_runs_advise_locally_with_the_bare_prompt() {
         // not a tool of an advisor.
         assert_eq!(
             finished[0],
-            ("a1".to_owned(), false, crate::advisor::guard::ACK_ACCEPTED.to_owned()),
+            (
+                "a1".to_owned(),
+                false,
+                crate::advisor::guard::ACK_ACCEPTED.to_owned()
+            ),
             "{finished:?}"
         );
-        assert!(finished[1].1 && finished[1].2.contains("todo is not available"), "{finished:?}");
+        assert!(
+            finished[1].1 && finished[1].2.contains("todo is not available"),
+            "{finished:?}"
+        );
         let reqs = h.requests().await;
         let sys = system(&reqs[0]);
         assert!(sys.starts_with("<conventions>"), "{sys}");
@@ -464,7 +481,10 @@ fn advisor_kind_session_runs_advise_locally_with_the_bare_prompt() {
             .iter()
             .filter_map(|t| t["function"]["name"].as_str())
             .collect();
-        assert!(names.contains(&"advise") && !names.contains(&"todo"), "{names:?}");
+        assert!(
+            names.contains(&"advise") && !names.contains(&"todo"),
+            "{names:?}"
+        );
         let _ = std::fs::remove_dir_all(&reg_dir);
     });
 }

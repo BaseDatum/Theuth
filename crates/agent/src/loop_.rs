@@ -3639,9 +3639,17 @@ impl Turn {
             .map(|r| r.id.clone());
         let advisor = self.shared.kind == SessionKind::Advisor;
         // 125 §5.1: the advisor's prompt is its identity plus the header
-        // lines — no skills, peers, plugin blocks or guidance.
+        // lines — no skills, peers, plugin blocks or guidance. The supervisor
+        // supplies it with the live `max_notes_per_update`; without one the
+        // boot config's value serves.
         let mut baseline = if advisor {
-            frame::advisor_baseline(identity.as_deref().unwrap_or_default())
+            let identity = identity.unwrap_or_else(|| {
+                advisor::identity::identity(
+                    &self.shared.rt.data_dir,
+                    self.shared.cfg.advisor.max_notes_per_update,
+                )
+            });
+            frame::advisor_baseline(&identity)
         } else {
             frame::baseline(
                 &self.shared.rt.data_dir,
@@ -7101,6 +7109,9 @@ mod regen_stamp_tests;
 /// 109 W1: the journal's write points, the §4.2 resume rules and the §11.1 crash matrix.
 #[cfg(test)]
 mod durability_tests;
+
+#[cfg(test)]
+pub(crate) mod advisor_tests;
 
 #[cfg(test)]
 mod tests {
