@@ -257,7 +257,7 @@ Three fenced blocks render inline, merged into your reply with the same margins 
 /// Everything of the block after the catalog.
 const BLOCK_TAIL: &str = "\n\
 - ```openui: richer static components with local interaction, rendered inline exactly like json-render (not as an app card; the reader can open one as an app if they want): Steps/StepsItem, Tabs/TabItem, Callout, Card/CardHeader, Table/Col, BarChart/LineChart/Series, MetricIndicatorInline, ListBlock/ListItem, Tag, Accordion/AccordionItem, CodeBlock, Chips/ChipItem, OptionCards/OptionCard, Buttons/Button with @Set/@OpenUrl. No Query/Mutation/@ToAssistant in a fence — a live screen is the `app` tool.\n\
-- ```mermaid: sequenceDiagram, stateDiagram-v2, classDiagram, erDiagram, gantt, timeline, mindmap (flowchart only when you need mermaid syntax; boxes and arrows are otherwise a Graph).\n\
+- ```mermaid: sequenceDiagram (un-anchored sketches), mindmap (flowchart only when you need mermaid syntax; boxes and arrows are otherwise a Graph; state, class and ER pictures are StateMachine / Entities).\n\
 \n\
 Pick by the shape of the answer:\n\
 | The answer is… | Draw |\n\
@@ -265,14 +265,22 @@ Pick by the shape of the answer:\n\
 | components, dependencies, data flow, pipeline, call graph | json-render Graph (state per node for health/progress) |\n\
 | how code in this repository works, or what a change did, in three or more parts | a board (see Boards) — not an inline fence |\n\
 | who calls whom in what order | mermaid sequenceDiagram |\n\
-| lifecycle, modes, retries, transitions | mermaid stateDiagram-v2 |\n\
-| schema, types, relationships | mermaid erDiagram / classDiagram |\n\
+| lifecycle, modes, retries, transitions | json-render StateMachine (kind: initial/final, guard per transition) |\n\
+| schema, types, classes, relationships | json-render Entities (detail: model / schema / class) |\n\
+| who does which step; handoffs | json-render Swimlane |\n\
+| what a change did to a topology | json-render GraphDelta (before / after share ids) |\n\
 | how-to or explanation in steps | json-render Steps, or openui Steps |\n\
 | options with trade-offs, alternatives | openui Tabs (one per option), or json-render Table on shared criteria |\n\
 | a comparison, before/after, a matrix | json-render Table (Badge for verdict cells); two versions of text or config: Diff; rows × columns of intensity: Heatmap |\n\
 | status of work, checks, tests, a rollout | json-render MetricGrid + Checklist (or Progress); work in stages: Kanban |\n\
-| what happened when: incident, history, plan | json-render Timeline (state per item); days of a week or month: Calendar |\n\
-| numbers, counts, durations, sizes | json-render MetricGrid / Bars; one value against a limit: Gauge; a trend without axes: Sparkline or Metric with spark; openui BarChart / LineChart for full charts |\n\
+| what happened when: incident, history | json-render Timeline (state per item; scale: time for real dates); days of a week or month: Calendar |\n\
+| tasks over dates; a plan with overlap | json-render Gantt (depends, group, today) |\n\
+| quantities by category or over time | json-render BarChart / LineChart (Bars for a quick list; Sparkline for a trend without axes) |\n\
+| numbers, counts, durations, sizes | json-render MetricGrid; one value against a limit: Gauge; a trend inline: Metric with spark |\n\
+| two variables; position; priority | json-render ScatterChart / Quadrant |\n\
+| where a quantity goes; what adds up | json-render Sankey / Waterfall / Treemap / Funnel |\n\
+| causes of one effect; a cycle; stacked levels | json-render Fishbone / Loop / Layers |\n\
+| an experience across stages; overlap of sets | json-render Journey / Venn |\n\
 | a warning, a blocker, the one thing to act on | json-render Alert (severity) |\n\
 | an aside: a tip, a note, a question, a must-know | json-render Callout or openui Callout |\n\
 | facts about one thing (config, host, PR) | json-render KeyValueList |\n\
@@ -288,7 +296,7 @@ Pick by the shape of the answer:\n\
 Shapes for the replies you write most:\n\
 - **Finished work / a subagent's result:** one sentence on the outcome → MetricGrid (files, tests, cost/time) + Checklist of what was done and verified → a short prose line per caveat or open item.\n\
 - **Investigation / root cause:** one-sentence verdict → Graph or sequenceDiagram marking where it breaks (state: \"error\") → Timeline if timing matters → prose for evidence you must quote exactly.\n\
-- **Plan or proposal:** Steps or Timeline (Calendar when dates matter) → Table of risks/choices → the question for the user in words.\n\
+- **Plan or proposal:** Steps, or Gantt when tasks have dates (Calendar for days) → Table of risks/choices → the question for the user in words.\n\
 - **\"How does X work\":** Graph or sequenceDiagram first, then prose only for what the arrows don't say — unless X is code in this repository and the answer has three or more parts: that is a board (see Boards).\n\
 - **Status check / \"how's it going\":** MetricGrid + Checklist/Progress; prose only for what changed or is stuck.\n\
 \n\
@@ -528,6 +536,46 @@ mod tests {
         // Every worked example in the skill validates; the catalog examples are checked below.
         let errs = check(&skill);
         assert!(errs.is_empty(), "{errs:?}");
+        // 123 §8.1: the skill loads on demand, the cap is discipline — over it, move prose to
+        // the design doc, never cut the routing table.
+        assert!(skill.len() < 48 * 1024, "skill is {} bytes", skill.len());
+        // 123 §8.1 (g): the six grammar examples are real elements of their component, so a
+        // model copying one copies something the validator accepts.
+        let roots: Vec<String> = crate::fences::json_render_fences(&skill)
+            .map(|(_, body)| {
+                let v: Value = serde_json::from_str(body).unwrap();
+                v["elements"][v["root"].as_str().unwrap()]["type"].as_str().unwrap().to_owned()
+            })
+            .collect();
+        for name in ["StateMachine", "Entities", "Swimlane", "Gantt", "GraphDelta", "Sankey"] {
+            assert!(roots.iter().any(|r| r == name), "no worked example for {name}: {roots:?}");
+        }
+    }
+
+    /// 123 §3: every one of the 44 taxonomy types routes somewhere in "Pick the diagram".
+    #[test]
+    fn skill_routes_every_taxonomy_type() {
+        let skill = visualize_skill();
+        let (_, rest) = skill.split_once("\n## Pick the diagram\n").unwrap();
+        let (table, _) = rest.split_once("\n## Behavioural triggers\n").unwrap();
+        let types = [
+            "Architecture:", "Architecture delta", "IT current-state", "Flowchart", "Sequence:",
+            "State machine", "ER / data model", "Timeline:", "Swimlane:", "Quadrant", "Radar",
+            "Polar", "Loop", "Nested", "Tree:", "Org chart", "Layer stack", "Exploded axonometric",
+            "Axonometric plan", "Venn", "Pyramid / funnel", "Bar / dumbbell", "Waterfall",
+            "Treemap", "Heatmap", "Line / slopegraph / bump", "Gantt", "Scatter / bubble / beeswarm",
+            "High-level", "Process", "Medallion", "Data flow", "DP integration",
+            "DP security matrix", "Sankey", "Fishbone", "Wardley map", "Kanban", "User journey",
+            "Deployment", "Dependency graph", "UML class", "Story map", "Database schema",
+        ];
+        assert_eq!(types.len(), 44);
+        for t in types {
+            assert!(table.contains(&format!("\n| {t}")), "{t}");
+        }
+        assert_eq!(table.matches("\n| ").count() - 1, 44, "header row excluded");
+        let (_, rest) = rest.split_once("\n## Behavioural triggers\n").unwrap();
+        let (triggers, _) = rest.split_once("\n## Budgets\n").unwrap();
+        assert_eq!(triggers.matches("\n| ").count() - 1, 9);
     }
 
     #[test]
