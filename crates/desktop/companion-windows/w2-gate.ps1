@@ -138,6 +138,17 @@ switch ($Action) {
             @($r.result) | ForEach-Object { "  {0:HH:mm:ss} {1} {2} {3} — {4}" -f [DateTimeOffset]::FromUnixTimeMilliseconds([long]$_.ts_ms).ToLocalTime(), $_.actor, $_.kind, $_.subject, $_.summary }
         }
     }
+    'crash' {
+        $dir = Join-Path $env:LOCALAPPDATA 'theuth\companion\logs'
+        Get-ChildItem $dir -Filter '*.crash.json' -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending | Select-Object -First 2 | ForEach-Object {
+            "---- $($_.FullName) $($_.LastWriteTime)"
+            Get-Content $_.FullName -Raw
+        }
+        $mins = if ($Rest.Count -gt 0) { [int]$Rest[0] } else { 20 }
+        Get-WinEvent -FilterHashtable @{ LogName = 'Application'; StartTime = (Get-Date).AddMinutes(-$mins) } -ErrorAction SilentlyContinue |
+            Where-Object { $_.ProviderName -in @('Application Error', '.NET Runtime', 'Windows Error Reporting') -and $_.Message -match 'Theuth' } |
+            Select-Object -First 4 | ForEach-Object { "==== $($_.TimeCreated) $($_.ProviderName) id=$($_.Id)"; ($_.Message -split "`n" | Select-Object -First 40) -join "`n" }
+    }
     'rpc' {
         $method = $Rest[0]
         $json = if ($Rest.Count -gt 1) { $Rest[1] } else { '[]' }
