@@ -62,6 +62,7 @@ export function empty(id: string): SessionSlice {
     todos: null,
     todosStale: false,
     todosExpanded: false,
+    todosShown: false,
   };
 }
 

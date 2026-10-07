@@ -1038,6 +1038,23 @@ test('store: expansion survives snapshots, events and the reconnect reload; plan
   expect(sb).toMatchObject({ todosExpanded: false, todosStale: true })
 })
 
+test('store: todosShown is per session, hidden by default, and a repeated value is a no-op', () => {
+  const a = 'shown-a'
+  const b = 'shown-b'
+  expect(empty(a).todosShown).toBe(false)
+  const st = useSessions.getState()
+  st.applyEvents([
+    { type: 'TodoChanged', session: a, snapshot: plan(1, 'a1') },
+    { type: 'TodoChanged', session: b, snapshot: plan(1, 'b1') },
+  ])
+  st.setTodosShown(a, true)
+  const after = useSessions.getState()
+  expect(after.sessions[a]).toMatchObject({ todosShown: true, todosExpanded: false })
+  expect(after.sessions[b]).toMatchObject({ todosShown: false })
+  st.setTodosShown(a, true)
+  expect(useSessions.getState()).toBe(after)
+})
+
 test('AppCallChanged keeps the newest status per statement of each record, bounded to the newest records, without touching the tail', () => {
   const call = (record: string, statement: string, status: 'running' | 'succeeded', ms: number): WireEvent => ({
     type: 'AppCallChanged',
