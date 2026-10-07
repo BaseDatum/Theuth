@@ -186,6 +186,10 @@ was gone afterwards (`process list` → 0).
   `DictationAudioAsync` takes `ReadOnlySpan<short>`); `StreamDelta.Decode` / `DictationEvent.Decode` for the stream;
   `AskRouter`, `AskDictation`, `AskVoiceMachine`, `ReceiptModel` are ported with their tests; `SetEventFocusAsync`
   answers -32601 on pre-129 engines (ignore it).
+- **UI tests on build-B's scratch engine** (no model provider): seed real items with
+  `pwsh -File crates\desktop\companion-windows\seed.ps1 all | decision [--count N] [--title TEXT] | list | clear` — through
+  the build service as a `script` job with `args` — decision (option-less), blocked and hire can be seeded; review,
+  approval, ask, show, finished need a model turn (§7.3). The Store every wave builds on is described in §7.1.
 - **W5 (shell · bundle)**: the publish folder is `target\release\companion-windows\` (460 files, 171.0 MB, exe
   `Theuth.Companion.exe`); the alive mutex is `Local\io.theuth.companion`; logs live in `%LOCALAPPDATA%\theuth\companion\logs`.
 
@@ -196,3 +200,94 @@ was gone afterwards (`process list` → 0).
 - The counts above come from a fresh scratch engine; a populated engine (items of every kind) is W2's panel gate.
 - Not built in W1 by design: single instance, tray, rail, panel, hotkeys, notifications, settings window, Run key, Ask
   bar, voice (W2–W4); the NSIS/bundle step (W5).
+
+## 7. W1b — the Store, and the seeding tool
+
+Added on the same branch after W1 (orchestrator's W1b brief): the macOS Store (`SWIFT/Companion/Store.swift` and the
+store half of `AskBar/Store+Ask.swift`) ported so W2, W3 and W4 start from one shared state object, plus a tool that puts
+real attention items on build-B's scratch engine.
+
+### 7.1 Store contract (for W2–W4)
+
+- **Shape.** `Theuth.Companion.Core.StoreModel` (portable, `Core/StoreModel.cs`; engine, timers and clock injected through
+  `IStoreEngine` / `IStoreScheduler` / `Func<DateTimeOffset>`, `Core/StoreEngine.cs`) holds all state and logic.
+  `Theuth.Companion.Store : StoreModel` (`src/Theuth.Companion/Store.cs`) is the thin UI-thread adapter and is
+  **`public sealed partial`**: a wave adds members in its own `Store.W2.cs` / `Store.W3.cs` / `Store.W4.cs`, never in
+  `Store.cs`. The app's instance is `((App)Application.Current).Store`, created in `App.OnLaunched`
+  (`Store.Create(dispatcher, EngineProbe.Locate)`, subscribe, then `Store.Start()`).
+- **Threading rule.** One owner: the UI thread (App's `DispatcherQueue`). Call every member from it; every
+  `PropertyChanged` and every event below is raised on it. The `RpcClient` runs on the thread pool and its callbacks are
+  marshalled with `TryEnqueue` before `HandleState`/`HandleEvent`; timers are `DispatcherQueueTimer`s; async work resumes
+  on the UI thread through Program.Main's `DispatcherQueueSynchronizationContext`. Code on another thread (a toast's
+  `NotificationInvoked`, a hook callback) marshals with `store.Dispatcher.TryEnqueue(...)` first.
+- **Change notification.** `INotifyPropertyChanged` (WinUI-bindable), property name = the member name. Published:
+  `Items`, `Agents`, `Activity` (the three lists), `Approvals` (id → `ApprovalRequested`, from the stream), `Packets`
+  (key → `Packet`, `packet_get` once per decision/review), `Rail`, `Panel` (a `PanelModel` mutated in place — the
+  notification follows every Store mutation), `Connection` (`RpcClient.State`), `Receipt` (`ReceiptRow?`: `Holding(Held)`
+  · `Sent(text)` · `Undone` · `Stale` = already answered elsewhere · `Failed(error)` · `Reply(who, text, session)`),
+  `Now` (100 ms during a hold), `NoteFor` (settable), `Ask` (`AskModel`: router, receipts, `ReplyFor`, `Current`,
+  `Dictation`; mutated in place). Read-only helpers: `HoldRemaining`, `HeldNow`, `FocusedCard`, `FocusedReceipt`,
+  `CardFor(item)`. Settable: `UndoDelay` (seconds, read at every hold — W3 wires Settings), `AskProbe` (W4 logging).
+- **Events.** `CloseRequested`, `OpenUrlRequested(Uri)` (D · O · Ctrl+O, Done-zone sessions), `PendingPromptsReceived`,
+  `Refetched`, `AskBarRequested` (Ctrl+L), `LegendRequested`, `SettingsRequested`, `DictationChanged(AskDictation, take)`,
+  `DictationWire(raw)`.
+- **Actions.** W2: `Perform(Intent)` (the whole panel grammar incl. R, Ctrl+L, Esc order note → hold → close, Done-zone
+  E/O), `Pick(option, card)`, `FocusOn(id)`, `Hold(Held)`, `SubmitNote(text)`. W3: `AnswerNow(held, note?, session?)` —
+  a toast button commits at once through the same E5 path (re-read `attention_list`, then send; `false` from the engine
+  or a vanished item → `Receipt = Stale`, never retried); subscribe to `Items` / `Connection` / `Receipt` /
+  `PendingPromptsReceived`. W4: `SubmitAsk(text)` (hold → `mesh_status` → `desk_open("theuth")` or the replicated desk →
+  `send_input` → reply streamed from `TextDelta`/`TurnFinished` into `Receipt` and `Ask.Receipts`; `set_event_focus([desk])`
+  re-applied on every `PendingPrompts`), `SubmitReply(text)`, `SetReceipt`, `SetReceiptCount`, `ExpireReceipt(s)`;
+  `Client` for the dictation calls (`AskRpc`). Also `Refetch()` (one in flight, a request during it runs once after),
+  `Close()`.
+- **Refetch triggers** (Swift's): `PendingPrompts` and `Lagged` at once; `ApprovalRequested`/`Resolved`, `AskRequested`/
+  `Resolved`, `AttentionChanged`, `TurnFinished`, the 13 attention triggers, `TurnStarted`, `SubagentSpawned` after 250 ms;
+  each refetch then loads missing packets and the 24 h `activity_list` receipts (`user@companion`).
+- **Tests.** `Core.Tests/StoreModelTests.cs` (14, virtual time + a recording engine): debounce and immediate triggers,
+  coalesced refetch, lists/rail/panel/packets/receipts, hold → tick → re-read → send, Esc undo then close,
+  answered-elsewhere (vanished and `false`, no retry), failure text, displaced hold, send-back note, snooze/approve,
+  toast `AnswerNow` with a note, Ask → desk routing + streamed reply + focus re-apply, R field, hooks.
+
+### 7.2 Two Swift defects not copied (deviations)
+
+1. `Store.hold` recreated the `UndoQueue` before holding (to read the delay setting), so a second keystroke during a hold
+   silently dropped the first action instead of committing it (130 §5.4, `UndoQueue.hold`'s contract). The port commits the
+   displaced action at once, then holds the new one.
+2. `Store.refetch`'s `defer { fetching = false }` runs after its `if fetchAgain { refetch() }`, so the follow-up refetch
+   always found `fetching == true` and never ran. The port clears `fetching` first; a request during a refetch runs exactly
+   once after it.
+
+### 7.3 The seeding tool (`tools/Theuth.Companion.Seed`, `seed.ps1`)
+
+A net10.0 console on `Theuth.Companion.Rpc` (in the portable filter; not part of the app). It finds the engine like the
+companion (engine.json + token) and uses only the engine's RPCs. Seeded tasks are owned and reviewed by the user (no desk
+is woken) with project `companion-seed`; seeded hires are agent files `seed-<hhmmss>-<n>`.
+
+```
+pwsh -File crates\desktop\companion-windows\seed.ps1 all                 # decision + blocked + hire (+ the review refusal line)
+pwsh -File crates\desktop\companion-windows\seed.ps1 decision --count 3 [--title TEXT]
+pwsh -File crates\desktop\companion-windows\seed.ps1 list
+pwsh -File crates\desktop\companion-windows\seed.ps1 clear              # cancel companion-seed tasks, remove seed- proposals, dismiss leftovers
+```
+
+Through the build service: `{"action":"script","target":"crates/desktop/companion-windows/seed.ps1","args":["all"]}`.
+Every run prints what it created and the resulting `attention_list` kinds and ids.
+
+| Kind | How | Card |
+|---|---|---|
+| `decision` | `task_create` (todo) + `task_update` state blocked, blockers `["decision:<uuid>"]` | **no options**: the packet with options/recommendation is written only by an agent's `escalate` tool — there is no packet RPC — so the card shows the question line only |
+| `blocked` | `task_update` state blocked on a non-decision blocker | Blocked (no options, as in Swift) |
+| `hire` | `agent_put` with `proposed_by: agent:theuth`, `paused: true` | Hire |
+| `review` | **not seedable without a desk turn**: the ledger allows `doing → review` only, and `doing` is `task_checkout` by a session (`backlog → review` and `todo → review` are refused) | — |
+| `approval`, `ask`, `show`, `finished`, `secret`, `handoff`, `resume`, `budget`, `node` | not seedable without a model turn (or model spend / a second engine); the tool says so per kind | — |
+
+Verified on build-B (scratch engine 2.12.0): `seed.ps1 all` →
+`attention_list=4 [hire,hire,blocked,decision]` (one hire from an earlier run); the Store-backed probe then logged
+`probe attention_list=4 [hire,hire,blocked,decision] agents_list=3 … rail: needsYou=4 working=0 marks=5 quiet=false
+headline="4 need you"` and exit 0; `seed.ps1 clear` → cancelled the five `companion-seed` tasks (three backlog leftovers of a first attempt included), removed both proposals, `attention_list=0 []`.
+
+### 7.4 W1b gates
+
+Mac (`just companion-windows-test`): **Rpc 35/35, Core 89/89 — 124 passed** (110 + 14 Store tests). build-B: the app with
+the Store builds with **0 errors, 0 warnings** (`bdebdd48`, 14.5 s); `probe.ps1 -From debug -Seconds 12` → the same probe
+lines through the Store (above), exit code 0, PROBE OK; seed → list → clear as above.
