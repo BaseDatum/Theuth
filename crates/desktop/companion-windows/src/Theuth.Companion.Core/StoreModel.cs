@@ -591,8 +591,9 @@ public class StoreModel : INotifyPropertyChanged
         }
     }
 
-    /// <summary><c>mesh_status</c> → on the hub <c>desk_open("theuth")</c>; off it, a replicated desk id or a refusal. Cached.</summary>
-    private async Task<string> ResolveDesk()
+    /// <summary><c>mesh_status</c> → on the hub <c>desk_open("theuth")</c>; off it, a replicated desk id or a refusal. Cached.
+    /// Public for W4's <c>--ask-probe</c>, which resolves the desk without sending (Swift <c>AskProbe.run</c>).</summary>
+    public async Task<string> ResolveDesk()
     {
         if (Ask.Router.DeskSession is { } known) return known;
         if (Ask.Router.Desk is AskDesk.Unavailable u) throw new InvalidOperationException(u.Reason);
