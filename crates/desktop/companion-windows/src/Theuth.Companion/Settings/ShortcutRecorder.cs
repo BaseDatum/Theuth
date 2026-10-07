@@ -74,20 +74,20 @@ internal sealed partial class ShortcutRecorder : Button
         if (recording)
         {
             text.Text = "Type a shortcut…";
-            text.Foreground = (Brush)Application.Current.Resources["TextFillColorSecondaryBrush"];
+            text.Foreground = Theme.Brush("TextFillColorSecondaryBrush");
         }
         else if (chord is not null)
         {
             text.Text = chord.Symbol;
-            text.Foreground = (Brush)Application.Current.Resources["TextFillColorPrimaryBrush"];
+            text.Foreground = Theme.Brush("TextFillColorPrimaryBrush", 0xE0);
         }
         else
         {
             text.Text = "unassigned";
             // Lost to a move → the warning colour; unassigned by default → secondary.
             text.Foreground = model.Keys.Binding(action).DefaultChord is null
-                ? (Brush)Application.Current.Resources["TextFillColorSecondaryBrush"]
-                : (Brush)Application.Current.Resources["SystemFillColorCautionBrush"];
+                ? Theme.Brush("TextFillColorSecondaryBrush")
+                : Theme.Brush("SystemFillColorCautionBrush", 0xC0);
         }
     }
 
@@ -219,7 +219,7 @@ internal static class KeyRow
                 Width = 170,
                 TextAlignment = TextAlignment.Center,
                 VerticalAlignment = VerticalAlignment.Center,
-                Foreground = (Brush)Application.Current.Resources["TextFillColorSecondaryBrush"],
+                Foreground = Theme.Brush("TextFillColorSecondaryBrush"),
             };
             ToolTipService.SetToolTip(t, "Fixed: Esc cancels the recorder and closes every surface");
             AutomationProperties.SetAutomationId(t, $"settings-keys-{binding.Action.RawValue()}");
@@ -252,7 +252,7 @@ internal static class KeyRow
                 Text = notice.Text,
                 FontSize = 12,
                 VerticalAlignment = VerticalAlignment.Center,
-                Foreground = (Brush)Application.Current.Resources["SystemFillColorCautionBrush"],
+                Foreground = Theme.Brush("SystemFillColorCautionBrush", 0xC0),
             });
             AutomationProperties.SetAutomationId(line, $"settings-keys-notice-{binding.Action.RawValue()}");
             if (notice.MoveChord is { } chord)
