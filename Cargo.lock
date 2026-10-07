@@ -5109,6 +5109,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "bytes",
+ "candle-core",
  "chrono",
  "decision",
  "figment",

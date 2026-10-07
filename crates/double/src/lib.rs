@@ -36,6 +36,7 @@ pub mod sched;
 pub mod store;
 pub mod tool;
 pub mod train_a;
+pub mod train_b;
 pub mod types;
 pub mod venue;
 pub mod versions;
@@ -56,8 +57,8 @@ pub const DOUBLE_ACTOR: &str = "double";
 // 126 W1 (built): `actor`, `labels`, `predict`, `ladder`; the RPC methods in
 // crates/rpc/src/api.rs are `ask::<actor::Double, _>(DOUBLE_ACTOR, …)` calls.
 // 126 W2 (built): `train_a`, `sched`, `precond`, `venue`, `versions`.
-// 126 W3: `pub mod train_b;`.
-// 126 W5: `tool` (the `double_*` chat runtime functions, the `## Double`
+// 126 W3 (built): `train_b` — the Tier B trainer, `t double train-b`, `TierB::local_allowed`.
+// 126 W5 (built): `tool` (the `double_*` chat runtime functions, the `## Double`
 // prompt paragraph and the `double` skill) and `chip` (the surfaces' text).
 
 /// The plugin. Reads `double:`, and when enabled opens the store under

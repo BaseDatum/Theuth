@@ -9,7 +9,7 @@ description = "The owner's double: a local model of the owner's own decisions, w
 runtime = { workspace = true }
 tools = { workspace = true }
 replica = { workspace = true }
-decision = { workspace = true }
+decision = { workspace = true }  # 126 §7 oracle + embedding (W1); Tier B LoRA over the frozen laya checkpoint (`decision::candle::lora`, W3)
 agent = { workspace = true }
 roster = { workspace = true }
 schedule = { workspace = true }
@@ -38,11 +38,14 @@ sha2 = { workspace = true }
 half = { workspace = true }
 uuid = { workspace = true }
 ts-rs = { workspace = true, optional = true }
+candle-core = { workspace = true }
 
 [dev-dependencies]
 tempfile = "3"
 tokio = { workspace = true, features = ["test-util"] }  # 126 §8.1 fake clock for the scheduler tests
 figment = { workspace = true }
+# The trainer tests need the differentiable encoder; dev-only, so `t` is built without it.
+decision = { workspace = true, features = ["train"] }
 
 [features]
 ts = ["dep:ts-rs", "runtime/ts", "tools/ts", "roster/ts"]
