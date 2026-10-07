@@ -14,7 +14,7 @@ Status: integration of design 126 "double" on `feat/126-double` (worktree `~/Dev
 | merge W3 | `f7766092` | `feat/126-w3` 2d35678d (+ the four W0 spike commits) — Tier B LoRA trainer, node entry; conflicts: `Cargo.lock`, `crates/double/Cargo.toml` (`decision` dep from W1 and W3 deduped), `crates/double/src/lib.rs`, `crates/theuth/src/main.rs` (config template lines) |
 | hand-offs 1 | `6e3c17a6` | roster attention `Source` seam — the derived inbox pulls the double's rows (`crates/roster/src/attention.rs`, +33); `DoublePredicted`/`DoubleAnswered` added to the `republish!` list in `crates/rpc/src/client.rs` so an attached TUI gets the chip |
 | hand-offs 2 | `01beb12d` | `crates/double/src/tier_b.rs` (new, 623 lines): `LocalTierB` / `NodeTierB` / `NodeRunner` adapt W3's `train_b` to W2's `sched::Trainer` + `mesh::Runner`, gate via `train_a::gate` + `train_b::rescore_golden`, `PlatformIdle` (W3's `IdleSeconds` over `platform::idle`), per-night cap; predictor uses W2's Tier A head + `versions::load_active`; ONE card prompt (`predict::question`) shared by training and inference; `SettingsChanged` / `SetConfig` / `DoubleVersionActivated` handlers in the actor; `double_status` merges the scheduler's state; `double_forget` by `question_id` (W4's wire shape); local Tier B only behind `training.tiers.b.local`; the actor `Handle` implements W5's `tool::Seams` and the roster `attention::Source` (replaces `tool::NotYet`) |
-| fold | `0a440a67` | `origin/main` 1098ae72 (125 advisor, 127 favourites, 128 HUD scene, 129 event-focus, 130 docs, no_emoji scope, v2.10.0, 126 Revision 2) — `api.rs`: 129's stream + 126's republish both kept; TUI tests: both blocks; migration renumbered `0034_double` → `0035_double` (0034 is 125's advisor); release notes renamed to 2.11.0 |
+| fold | `0a440a67` | `origin/main` 1098ae72 (125 advisor, 127 favourites, 128 HUD scene, 129 event-focus, 130 docs, no_emoji scope, v2.10.0, 126 Revision 2) — `api.rs`: 129's stream + 126's republish both kept; TUI tests: both blocks; migration renumbered `0034_double` → `0036_double` (0034 is 125's advisor); release notes renamed to 2.11.0 |
 | gate fixes | `1fe77db7` | see "Gate fixes" |
 
 Diff of the whole wave against main (1098ae72): 121 files, +20,424 / −124. Against the contract commit: 204 files, +36,637 / −680.
@@ -63,7 +63,7 @@ Shipped defaults: `double.enabled: false`, `double.training.tiers.b.local: false
 
 ## Open items for Sky
 
-1. Engine + desktop rebuild owed (migration `0035_double`, 13 new RPC methods, 4 events).
+1. Engine + desktop rebuild owed (migration `0036_double`, 13 new RPC methods, 4 events).
 2. The two-engine mesh smoke for Tier B (`126-as-built-W2.md` §Smoke) and the first real Tier A night have not run — no training ran on this machine, by rule.
 3. `approvals_off_sessions` needs the session registry seam (W1 open item).
 4. `tui/tests/no_emoji.rs` is green only because main narrowed its scope; the 21 surface-crate emoji strings from design 123 remain.
