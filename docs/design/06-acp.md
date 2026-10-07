@@ -290,10 +290,14 @@ parent or resolves an `await_reply` waiter. What differs:
   synthesised. A harness that answers the cancel but keeps working, refuses
   the next prompt as busy, or asks permission with no turn open: §8.3
   (2026-09-24).
-- **Limits.** `max_concurrent`, `max_runtime_secs` (→ `Cancel` on the child)
-  and `reply_timeout_secs` apply as-is. `max_depth`: ACP children are leaves
-  (`depth(child) = depth(parent)+1` from the store, and they have no
-  `spawn_subagent`), so the existing check covers them.
+- **Limits.** `max_runtime_secs` (→ `Cancel` on the child) and
+  `reply_timeout_secs` apply as-is. The spawn turn's permit comes from the
+  orchestrator tree's **external** pool (`subagents.max_concurrent_external`,
+  01 §2.6, 2026-10-07), never the native one: a harness turn of hours cannot
+  starve a native spawn, and a queued ACP child is reported to its parent and
+  dropped if stopped before it starts, like any child. `max_depth`: ACP
+  children are leaves (`depth(child) = depth(parent)+1` from the store, and
+  they have no `spawn_subagent`), so the existing check covers them.
 
 ### 3.6 Store, events, UI
 

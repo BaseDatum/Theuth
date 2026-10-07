@@ -1042,7 +1042,7 @@ already started are not rolled back. Dropping SSE or closing a frontend is
 neighboring peer's task.
 
 Limits are constants except the existing user-configured child/reply limits
-(`subagents.max_concurrent` 8, `max_runtime_secs` 600, `reply_timeout_secs`
+(`subagents.max_concurrent` 16 per orchestrator tree, `max_runtime_secs` 600, `reply_timeout_secs`
 120); tune from measurements, not a new configuration matrix. Values as built,
 with the constant that holds each:
 
@@ -1053,7 +1053,7 @@ with the constant that holds each:
 | Task text artifacts / status | 1 MiB cumulative artifacts per task (`ARTIFACT_BYTES_MAX`, both directions), 32 KiB per status message (`client::STATUS_TEXT_MAX`); imported remote task ≤ 4096 items (`TASK_ITEMS_MAX`). Persist bounded chunks and reject excess visibly; never treat a truncated artifact as complete. |
 | Pending peer inputs | 32 per recipient, 256 per harness (`PENDING_PER_RECIPIENT/HARNESS`); 1 MiB / 8 MiB payload budgets (`store::PENDING_BYTES_*`). Return busy, never silently drop. |
 | Pending waits | 16 per session, 128 per harness (`WAITS_PER_SESSION/HARNESS`); reply timeout `reply_timeout_secs`. |
-| Active peer-triggered native scopes | Share the existing child-work semaphore (`max_concurrent`, default 8); include follow-ups, not only initial spawns. Release the execution permit while a scope waits solely for peers, children or humans; reacquire before model/tool continuation. A Python cell awaiting its host calls is suspended, not executing: only those calls count, so a blocking send inside a cell releases exactly as a direct one, and the interpreter resumes only under a permit. Request ownership remains active while the permit is released. |
+| Active peer-triggered native scopes | Share the recipient's orchestrator tree's native child-work semaphore (`max_concurrent`, default 16 per tree; 01 §2.6); include follow-ups, not only initial spawns. Release the execution permit while a scope waits solely for peers, children or humans; reacquire before model/tool continuation. A Python cell awaiting its host calls is suspended, not executing: only those calls count, so a blocking send inside a cell releases exactly as a direct one, and the interpreter resumes only under a permit. Request ownership remains active while the permit is released. A peer input addressed to a child whose spawn turn still waits for its permit is held by the supervisor and routed after the brief (01 §2.6), so no bounded turn ever waits for a second permit while the child's spawn permit sits idle. |
 | Request execution deadline | `subagents.max_runtime_secs` (`supervisor::request_deadline`); wall deadline includes waits, stops unbounded collaboration chains. |
 | Automatic communication chain | 32 peer-triggered continuations per initiating request (`CHAIN_MAX`); inherited across local replies/child results, reset only by fresh external/user input. Exhaustion is visible and does not auto-retry. |
 | SSE subscribers / buffers | 4 per task, 128 globally (`network::SUBSCRIBERS_PER_TASK/MAX`, `server::SUBSCRIBERS_MAX`); per-subscriber buffer is **64 events** (`SUBSCRIBER_BUFFER`, a broadcast channel), each event itself bounded above, not the 64 KiB byte budget the first draft named. On overflow disconnect that subscriber; stream idle 120 s (`STREAM_IDLE`); retained snapshot enables recovery. |
