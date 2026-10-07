@@ -16,7 +16,7 @@ mod engine;
 mod provider;
 mod tools;
 
-pub use crawl::{CrawlOpts, MapHit, Page, SitemapMode};
+pub use crawl::{CrawlOpts, Crawled, MapHit, Page, SitemapMode};
 pub use engine::Scrape;
 pub use tools::{CrawlPage, CrawlResult, ScrapeResponse, Skipped};
 

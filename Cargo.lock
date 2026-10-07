@@ -18265,6 +18265,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "browser",
+ "chrono",
  "firecrawl-native",
  "futures",
  "html-to-markdown-rs",
