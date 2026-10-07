@@ -148,6 +148,7 @@ import type { PtyViewport } from '@/rpc/bindings/PtyViewport'
 import type { Key } from '@/rpc/bindings/Key'
 import type { SessionCost } from '@/rpc/bindings/SessionCost'
 import type { SessionOpen } from '@/rpc/bindings/SessionOpen'
+import type { SpendReport } from '@/rpc/bindings/SpendReport'
 import type { TerminalSummary } from '@/rpc/bindings/TerminalSummary'
 import type { AgentFile } from '@/rpc/bindings/AgentFile'
 import type { AgentSummary } from '@/rpc/bindings/AgentSummary'
@@ -815,6 +816,8 @@ export interface Api {
   telegram_status(): Promise<TelegramStatus>
   /** Read `text` (markdown) aloud in `session`'s name (43 §6); stops the current utterance first. Returns the `SpeechId`; audio follows as `SpeechAudio` events. `-32001` when the voice plugin is disabled. */
   speak(session: SessionId, text: string): Promise<string>
+  /** 128 Rev 3: model-call spend of the ledger — the last `days` local days (≤ 31, oldest first), the month to date, the window's top owners by root session. */
+  spend_report(days: number): Promise<SpendReport>
   steer(session: SessionId, text: string, id: InputId | null, files: string[], delivery?: Delivery | null): Promise<InputId>
   /** Stop utterance `id`, or whatever is speaking when `null`; idempotent (43 §6). */
   stop_speaking(id: string | null): Promise<null>
@@ -1153,6 +1156,7 @@ export const METHODS = [
   'slack_remove_channel',
   'slack_status',
   'speak',
+  'spend_report',
   'steer',
   'stop_speaking',
   'subagent_model',

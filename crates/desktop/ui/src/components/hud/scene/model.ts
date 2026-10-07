@@ -4,8 +4,11 @@ import type { AgentSummary } from '@/rpc/bindings/AgentSummary'
 import type { AttentionItem } from '@/rpc/bindings/AttentionItem'
 import type { ScheduleInfo } from '@/rpc/bindings/ScheduleInfo'
 import type { SessionSummary } from '@/rpc/bindings/SessionSummary'
+import type { SpendOwnerKind } from '@/rpc/bindings/SpendOwnerKind'
+import type { SpendReport } from '@/rpc/bindings/SpendReport'
 import type { Task } from '@/rpc/bindings/Task'
 import type { TaskState } from '@/rpc/bindings/TaskState'
+import { type Spend, spend } from '../model'
 
 /**
  * 128 HUD-SCENE: everything the `/` scene draws is a pure function of (data, now) in the 1920×1080 viewBox of the
@@ -553,6 +556,8 @@ export type SceneData = {
   activityWeek?: readonly ActivityEntry[]
   /** The last 50 rows (`useActivity`), for STREAM. */
   activity?: readonly ActivityEntry[]
+  /** Rev 3: the model-call ledger (`spend_report(7)`), for SPEND. */
+  spend?: SpendReport
 }
 
 export type SceneModel = {
@@ -602,5 +607,39 @@ export function scene(data: SceneData, now: number, hv: number = FIELD_H): Scene
     punch: punchCard(data.activityWeek ?? [], now),
     mix: outcomeMix(tasks, now),
     footer: footer(agents, sessions, data.attention, outs.total, inFlight, now),
+  }
+}
+
+// --------------------------------------------------------------------------------------------------------------- spend
+
+/** `YYYY-MM-DD` of `ms` in local time — the engine's `SpendDay.day` shape. */
+export const localDay = (ms: number): string => {
+  const d = new Date(ms)
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+}
+
+/** `$1,302.38`: dollars with a thousands separator and two decimals. */
+export const fmtUsd = (usd: number): string => `$${usd.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+
+export type SpendBar = { label: string; usd: number; today: boolean }
+export type SpendOwnerRow = { kind: SpendOwnerKind; name: string; usd: number }
+export type SpendPanelModel = { month: number; today: number; days: SpendBar[]; owners: SpendOwnerRow[]; caps: Spend[] }
+
+/**
+ * Rev 3: the SPEND panel from the ledger — month to date, today, the last seven local days as bars (weekday letter, today
+ * flagged), the top four owners, and the budget rows only for agents with a monthly cap. No report = seven empty days.
+ */
+export function spendPanel(report: SpendReport | undefined, agents: readonly AgentSummary[], now: number): SpendPanelModel {
+  const today = localDay(now)
+  const days = (report?.days ?? Array.from({ length: 7 }, (_, i) => ({ day: localDay(now - (6 - i) * DAY_MS), usd: 0 }))).slice(-7).map((d) => {
+    const [y, m, day] = d.day.split('-').map(Number)
+    return { label: 'smtwtfs'[new Date(y ?? 0, (m ?? 1) - 1, day ?? 1).getDay()] ?? '', usd: d.usd, today: d.day === today }
+  })
+  return {
+    month: report?.month.usd ?? 0,
+    today: days.find((d) => d.today)?.usd ?? 0,
+    days,
+    owners: (report?.owners ?? []).slice(0, 4).map((o) => ({ kind: o.kind, name: o.name, usd: o.usd })),
+    caps: spend(agents).filter((r) => r.cap !== null),
   }
 }

@@ -3,8 +3,9 @@ import type { AgentSummary } from '@/rpc/bindings/AgentSummary'
 import type { AttentionItem } from '@/rpc/bindings/AttentionItem'
 import type { ScheduleInfo } from '@/rpc/bindings/ScheduleInfo'
 import type { SessionSummary } from '@/rpc/bindings/SessionSummary'
+import type { SpendReport } from '@/rpc/bindings/SpendReport'
 import type { Task } from '@/rpc/bindings/Task'
-import { HOUR_MS, rng, type SceneData, startOfDay } from './model'
+import { DAY_MS, HOUR_MS, localDay, rng, type SceneData, startOfDay } from './model'
 
 /**
  * Synthetic data that reproduces the approved mockup: 6 needs-you items, 7 rings, 8 done, 3 running, ~230 field lines,
@@ -217,5 +218,18 @@ export function sceneFixture(now: number): Required<SceneData> {
     if (hour < 8 || hour > 20 ? rw() < 0.15 : true) activityWeek.push(row(ts, 'task_commented', pick(actors, rw()), T('1150'), `week ${i}`))
   }
   activityWeek.sort((a, b) => b.ts_ms - a.ts_ms)
-  return { attention, agents, tasks, routines, sessions, activityToday, activityWeek, activity: activityToday.slice(0, 44) }
+  // Rev 3: a week of ledger spend ending today (the mock's $1,302.38 today), the month to date, owners by root.
+  const spendDays = [412.1, 388.4, 540.9, 0, 611.2, 849.0, 1302.38]
+  const spend: SpendReport = {
+    days: spendDays.map((usd, i) => ({ day: localDay(now - (6 - i) * DAY_MS), usd, calls: usd === 0 ? 0 : 300 + i * 40, unresolved: i === 6 ? 2 : 0 })),
+    month: { day: localDay(now).slice(0, 7), usd: 4102.0, calls: 36_861, unresolved: 2 },
+    owners: [
+      { kind: 'user', name: 'you', usd: 2210.5, calls: 2104 },
+      { kind: 'agent', name: 'builder', usd: 1104.2, calls: 1230 },
+      { kind: 'agent', name: 'research', usd: 522.0, calls: 610 },
+      { kind: 'routine', name: 'nightly-digest', usd: 148.9, calls: 160 },
+      { kind: 'agent', name: 'ops-desk', usd: 118.4, calls: 90 },
+    ],
+  }
+  return { attention, agents, tasks, routines, sessions, activityToday, activityWeek, activity: activityToday.slice(0, 44), spend }
 }
