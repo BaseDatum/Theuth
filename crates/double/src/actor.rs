@@ -23,6 +23,7 @@ use tools::{
     Answerer, ApprovalRequested, ApprovalResolved, AskRequested, AskResolved, Decision, Question,
 };
 
+use crate::DOUBLE_ACTOR;
 use crate::class::{Card, CardKind, Requester, class_key};
 use crate::config::DoubleConfig;
 use crate::events::{DoubleAnswered, DoublePredicted};
@@ -34,7 +35,6 @@ use crate::types::{
     DoubleClass, DoubleClassDetail, DoubleExample, DoubleRun, DoubleStatus, ForgetTarget,
     LabelSource, Outcome, RunId,
 };
-use crate::DOUBLE_ACTOR;
 
 /// `predictions.version` before Tier A has activated a version (W2).
 pub const V0: &str = "v0-zero-shot";
@@ -178,7 +178,9 @@ pub async fn start(
     if let Some(j) = &journal
         && !j.has_questions().await
     {
-        tracing::info!("double: sessions.sqlite has no `questions` table yet; labels from bus events only");
+        tracing::info!(
+            "double: sessions.sqlite has no `questions` table yet; labels from bus events only"
+        );
     }
     let actor = Double::spawn_with_mailbox(
         Double {
@@ -315,7 +317,8 @@ impl Double {
         if let Some(c) = self.store.class(key).await? {
             return Ok(c);
         }
-        let (cap, _) = ladder::hard_cap(&self.cfg.ladder.caps, key, self.cfg.ladder.mutating_opt_in);
+        let (cap, _) =
+            ladder::hard_cap(&self.cfg.ladder.caps, key, self.cfg.ladder.mutating_opt_in);
         let c = ClassRow {
             key: key.to_owned(),
             kind,
@@ -431,7 +434,8 @@ impl Double {
         let rung = ladder::effective_rung(class.rung, p.escalated);
         let grace_until = match rung {
             2 => {
-                let deadline = now + chrono::Duration::from_std(timeout)? - chrono::Duration::from_std(DEADLINE_MARGIN)?;
+                let deadline = now + chrono::Duration::from_std(timeout)?
+                    - chrono::Duration::from_std(DEADLINE_MARGIN)?;
                 Some((now + chrono::Duration::from_std(self.grace())?).min(deadline))
             }
             3 => Some(now),
@@ -543,19 +547,22 @@ impl Double {
         if self.paused {
             return;
         }
-        let overridden = pc.grace_until.is_some()
-            && pc.predicted.as_ref().is_some_and(|p| p.choice != choice);
+        let overridden =
+            pc.grace_until.is_some() && pc.predicted.as_ref().is_some_and(|p| p.choice != choice);
         let (source, weight) = if overridden {
             (LabelSource::Override, labels::W_OVERRIDE)
         } else {
             (LabelSource::Direct, labels::W_DIRECT)
         };
-        if let Err(e) = labels::label(&self.store, &pc.example_id, source, choice, weight, now).await {
+        if let Err(e) =
+            labels::label(&self.store, &pc.example_id, source, choice, weight, now).await
+        {
             tracing::warn!("double label: {e:#}");
             return;
         }
         let answer_ms = u32::try_from((now - pc.asked_at).num_milliseconds().max(0)).ok();
-        self.reladder(&pc.class, Some((choice, answer_ms)), overridden).await;
+        self.reladder(&pc.class, Some((choice, answer_ms)), overridden)
+            .await;
     }
 
     /// Re-evaluate one class after a label: stats, rung (demotion on an
@@ -585,7 +592,13 @@ impl Double {
             stats.l2_since = None;
         }
         if class.rung != before {
-            tracing::info!(class = key, from = before, to = class.rung, demote, "double ladder");
+            tracing::info!(
+                class = key,
+                from = before,
+                to = class.rung,
+                demote,
+                "double ladder"
+            );
         }
         stats.last_30d = Some(ladder::kpis(&rows, stats.median_answer_ms));
         class.stats = serde_json::to_value(&stats).unwrap_or_default();
@@ -636,9 +649,16 @@ impl Double {
         if pc.taken_over || pc.acted {
             return;
         }
-        let rows = self.store.predictions(&pc.example_id).await.unwrap_or_default();
+        let rows = self
+            .store
+            .predictions(&pc.example_id)
+            .await
+            .unwrap_or_default();
         let Some(mut row) = rows.into_iter().find(|r| r.version == pred.version) else {
-            tracing::error!(qid, "double: no prediction row for a card in grace; not acting");
+            tracing::error!(
+                qid,
+                "double: no prediction row for a card in grace; not acting"
+            );
             pc.taken_over = true;
             return;
         };
@@ -650,17 +670,19 @@ impl Double {
         pc.acted = true;
         let sent = match &pc.payload {
             Payload::Approval(a) => match label_decision(&pred.choice) {
-                Some(decision) => match ActorRef::<tools::Approval>::lookup(tools::APPROVAL_ACTOR) {
-                    Ok(Some(approval)) => approval
-                        .ask(tools::ResolveBy {
-                            id: a.id,
-                            decision,
-                            by: Answerer::Double,
-                        })
-                        .await
-                        .unwrap_or(false),
-                    _ => false,
-                },
+                Some(decision) => {
+                    match ActorRef::<tools::Approval>::lookup(tools::APPROVAL_ACTOR) {
+                        Ok(Some(approval)) => approval
+                            .ask(tools::ResolveBy {
+                                id: a.id,
+                                decision,
+                                by: Answerer::Double,
+                            })
+                            .await
+                            .unwrap_or(false),
+                        _ => false,
+                    }
+                }
                 None => false,
             },
             Payload::Ask(a) => match pred.index {
@@ -675,7 +697,10 @@ impl Double {
         }
         let now = Utc::now();
         let (session, class) = (pc.session, pc.class.clone());
-        let item = self.pending.get(qid).and_then(|pc| self.item(pc, now, true));
+        let item = self
+            .pending
+            .get(qid)
+            .and_then(|pc| self.item(pc, now, true));
         if let Some(item) = item {
             self.acted.push(Acted { item, at: now });
         }
@@ -695,7 +720,13 @@ impl Double {
     fn item(&self, pc: &PendingCard, now: DateTime<Utc>, answered: bool) -> Option<AttentionItem> {
         let pred = pc.predicted.as_ref()?;
         let what = match &pc.payload {
-            Payload::Approval(a) => format!("`{}`", approval_text(&a.tool, &a.args).chars().take(80).collect::<String>()),
+            Payload::Approval(a) => format!(
+                "`{}`",
+                approval_text(&a.tool, &a.args)
+                    .chars()
+                    .take(80)
+                    .collect::<String>()
+            ),
             Payload::Ask(a) => a
                 .questions
                 .first()
@@ -705,10 +736,11 @@ impl Double {
         let title = if answered {
             format!("double answered {} for {what}", pred.choice)
         } else {
-            let left = pc
-                .grace_until
-                .map_or(0, |t| (t - now).num_seconds().max(0));
-            format!("double answers {} for {what} in {left} s — take over", pred.choice)
+            let left = pc.grace_until.map_or(0, |t| (t - now).num_seconds().max(0));
+            format!(
+                "double answers {} for {what} in {left} s — take over",
+                pred.choice
+            )
         };
         let (approval, ask) = match &pc.payload {
             Payload::Approval(a) => (Some(a.id), None),
@@ -786,7 +818,13 @@ impl Double {
         DoubleStatus {
             enabled: true,
             paused: self.paused,
-            active_version: self.store.active_version().await.ok().flatten().map(|v| v.id),
+            active_version: self
+                .store
+                .active_version()
+                .await
+                .ok()
+                .flatten()
+                .map(|v| v.id),
             last_run,
             next_window: None,
             venue: self.cfg.training.venue.clone(),
@@ -906,10 +944,13 @@ impl Message<AskRequested> for Double {
         let single = labels::ask_single(&m.questions).is_some();
         let card = Card::Ask { options: &options };
         let text = ask_text(&m.questions);
-        let call_id = self
-            .ask_calls
-            .get_mut(&m.session)
-            .and_then(|v| if v.is_empty() { None } else { Some(v.remove(0)) });
+        let call_id = self.ask_calls.get_mut(&m.session).and_then(|v| {
+            if v.is_empty() {
+                None
+            } else {
+                Some(v.remove(0))
+            }
+        });
         let timeout = self.ask_timeout;
         let me = ctx.actor_ref().clone();
         if let Err(e) = self
@@ -977,8 +1018,9 @@ impl Message<AgentEvent> for Double {
                 let ask = decision::Ask::new(
                     "double.correction",
                     decision::Question::Bool {
-                        statement: "This message is a correction of the assistant's previous action."
-                            .to_owned(),
+                        statement:
+                            "This message is a correction of the assistant's previous action."
+                                .to_owned(),
                         state: text.chars().take(predict::GOAL_CHARS).collect(),
                     },
                 );
@@ -1009,8 +1051,12 @@ impl Message<AgentEvent> for Double {
             } => {
                 let targets = self.turns.cancelled(session, Utc::now());
                 if stop_reason == "cancelled" {
-                    self.hindsight(&targets, LabelSource::HindsightInterrupt, labels::W_INTERRUPT)
-                        .await;
+                    self.hindsight(
+                        &targets,
+                        LabelSource::HindsightInterrupt,
+                        labels::W_INTERRUPT,
+                    )
+                    .await;
                 }
             }
             AgentEvent::ToolCallStarted {
@@ -1227,7 +1273,11 @@ impl Message<Republish> for Double {
 impl Message<ListAttention> for Double {
     type Reply = Vec<AttentionItem>;
 
-    async fn handle(&mut self, _: ListAttention, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+    async fn handle(
+        &mut self,
+        _: ListAttention,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
         let now = Utc::now();
         self.acted.retain(|a| now - a.at <= ACTED_TTL);
         let mut out: Vec<AttentionItem> = self
@@ -1367,11 +1417,19 @@ mod tests {
 
         /// Raise a real approval through the approval actor; returns its id once predicted.
         /// Risk: `read_file` read-only, `rm -rf` destructive, else mutating.
-        async fn raise(&self, session: SessionId, tool: &str, args: serde_json::Value) -> ApprovalId {
+        async fn raise(
+            &self,
+            session: SessionId,
+            tool: &str,
+            args: serde_json::Value,
+        ) -> ApprovalId {
             let before = self.probe.predicted.lock().len();
             let risk = if tool == "read_file" {
                 Risk::ReadOnly
-            } else if args["command"].as_str().is_some_and(|c| c.starts_with("rm -rf")) {
+            } else if args["command"]
+                .as_str()
+                .is_some_and(|c| c.starts_with("rm -rf"))
+            {
                 Risk::Destructive
             } else {
                 Risk::Mutating
@@ -1414,7 +1472,10 @@ mod tests {
     }
 
     fn oracle(allow: f32) -> Arc<FakeOracle> {
-        Arc::new(FakeOracle::new(vec![allow, 1.0 - allow - 0.05, 0.05], Some(vec![1.0, 0.0, 0.0])))
+        Arc::new(FakeOracle::new(
+            vec![allow, 1.0 - allow - 0.05, 0.05],
+            Some(vec![1.0, 0.0, 0.0]),
+        ))
     }
 
     /// L0: a card is predicted (both ledger rows before the chip), the owner answers, the
@@ -1423,22 +1484,43 @@ mod tests {
     async fn predicts_then_labels_from_the_bus() {
         let h = Harness::new(oracle(0.8), 30).await;
         let s = SessionId::new();
-        let id = h.raise(s, "shell", serde_json::json!({"command": "git push"})).await;
+        let id = h
+            .raise(s, "shell", serde_json::json!({"command": "git push"}))
+            .await;
         let ev = h.probe.predicted.lock()[0].clone();
         assert_eq!(ev.class, "approval:shell:mutating:git push:root");
         assert_eq!(ev.choice, ALLOW);
         assert_eq!(ev.rung, 0);
         assert_eq!(ev.version, V0);
         assert!(ev.will_act_at.is_none());
-        let ex = h.store.example_for_question(&id.0.to_string()).await.unwrap().unwrap();
-        assert!(ex.card_text.starts_with("git push\nclass: approval:shell:mutating:git push:root\nrequester: root"));
+        let ex = h
+            .store
+            .example_for_question(&id.0.to_string())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(ex.card_text.starts_with(
+            "git push\nclass: approval:shell:mutating:git push:root\nrequester: root"
+        ));
         assert_eq!(ex.embedding, Some(vec![1.0, 0.0, 0.0]));
         let preds = h.store.predictions(&ex.id).await.unwrap();
         assert_eq!(preds.len(), 2);
         assert!(preds.iter().any(|p| p.version == BASELINE));
-        assert!(preds.iter().all(|p| p.outcome == Outcome::Unlabelled && !p.acted));
+        assert!(
+            preds
+                .iter()
+                .all(|p| p.outcome == Outcome::Unlabelled && !p.acted)
+        );
         // The owner denies: a wrong direct label.
-        assert!(h.approval.ask(Resolve { id, decision: Decision::Deny }).await.unwrap());
+        assert!(
+            h.approval
+                .ask(Resolve {
+                    id,
+                    decision: Decision::Deny
+                })
+                .await
+                .unwrap()
+        );
         wait_for(|| (!h.probe.resolved.lock().is_empty()).then_some(())).await;
         let labels = labels_when(&h.store, &ex.id, 1).await;
         assert_eq!(labels[0].source, LabelSource::Direct);
@@ -1458,7 +1540,10 @@ mod tests {
         assert_eq!(st.kpis.accuracy, 0.0);
         let cs = h.double.ask(Classes).await.unwrap();
         assert_eq!(cs.len(), 1);
-        assert_eq!(cs[0].cap_reason.as_deref(), Some("mutating — opt in to allow L2"));
+        assert_eq!(
+            cs[0].cap_reason.as_deref(),
+            Some("mutating — opt in to allow L2")
+        );
         let d = h.double.ask(ClassDetail(ev.class.clone())).await.unwrap();
         assert_eq!(d.examples.len(), 1);
         assert_eq!(d.examples[0].chose.as_deref(), Some(DENY));
@@ -1497,7 +1582,9 @@ mod tests {
         let h = Harness::new(oracle(0.9), 1).await;
         h.seed("approval:read_file:read_only:root", 2).await;
         let s = SessionId::new();
-        let id = h.raise(s, "read_file", serde_json::json!({"path": "/tmp/x"})).await;
+        let id = h
+            .raise(s, "read_file", serde_json::json!({"path": "/tmp/x"}))
+            .await;
         let ev = h.probe.predicted.lock()[0].clone();
         assert_eq!(ev.rung, 2);
         assert!(ev.will_act_at.is_some());
@@ -1515,7 +1602,12 @@ mod tests {
         let r = h.probe.resolved.lock()[0].clone();
         assert_eq!(r.decision, Decision::Allow);
         assert!(!r.timed_out);
-        let ex = h.store.example_for_question(&id.0.to_string()).await.unwrap().unwrap();
+        let ex = h
+            .store
+            .example_for_question(&id.0.to_string())
+            .await
+            .unwrap()
+            .unwrap();
         let preds = h.store.predictions(&ex.id).await.unwrap();
         let live = preds.iter().find(|p| p.version == V0).unwrap();
         assert!(live.acted);
@@ -1525,7 +1617,11 @@ mod tests {
         // The inbox now shows "answered for you".
         let items = h.double.ask(ListAttention).await.unwrap();
         assert_eq!(items.len(), 1);
-        assert!(items[0].title.starts_with("double answered Allow"), "{}", items[0].title);
+        assert!(
+            items[0].title.starts_with("double answered Allow"),
+            "{}",
+            items[0].title
+        );
         // Taking over an already-answered card is a no-op.
         assert!(!h.double.ask(TakeOver(id.0.to_string())).await.unwrap());
         h.stop().await;
@@ -1538,8 +1634,15 @@ mod tests {
         let h = Harness::new(oracle(0.9), 1).await;
         h.seed("approval:read_file:read_only:root", 2).await;
         let s = SessionId::new();
-        let id = h.raise(s, "read_file", serde_json::json!({"path": "/tmp/x"})).await;
-        let ex = h.store.example_for_question(&id.0.to_string()).await.unwrap().unwrap();
+        let id = h
+            .raise(s, "read_file", serde_json::json!({"path": "/tmp/x"}))
+            .await;
+        let ex = h
+            .store
+            .example_for_question(&id.0.to_string())
+            .await
+            .unwrap()
+            .unwrap();
         sqlx::query("DELETE FROM predictions WHERE example_id = ?")
             .bind(&ex.id)
             .execute(h.store.pool())
@@ -1549,7 +1652,15 @@ mod tests {
         assert!(h.probe.answered.lock().is_empty());
         assert!(h.probe.resolved.lock().is_empty());
         // The card is still the owner's.
-        assert!(h.approval.ask(Resolve { id, decision: Decision::Allow }).await.unwrap());
+        assert!(
+            h.approval
+                .ask(Resolve {
+                    id,
+                    decision: Decision::Allow
+                })
+                .await
+                .unwrap()
+        );
         h.stop().await;
     }
 
@@ -1560,28 +1671,66 @@ mod tests {
         let h = Harness::new(oracle(0.9), 1).await;
         h.seed("approval:read_file:read_only:root", 2).await;
         let s = SessionId::new();
-        let id = h.raise(s, "read_file", serde_json::json!({"path": "/tmp/x"})).await;
+        let id = h
+            .raise(s, "read_file", serde_json::json!({"path": "/tmp/x"}))
+            .await;
         assert!(h.double.ask(TakeOver(id.0.to_string())).await.unwrap());
         assert!(!h.double.ask(TakeOver(id.0.to_string())).await.unwrap());
         assert!(!h.double.ask(TakeOver("nope".into())).await.unwrap());
         tokio::time::sleep(Duration::from_millis(1_300)).await;
-        assert!(h.probe.answered.lock().is_empty(), "the double acted after a take-over");
-        assert!(h.approval.ask(Resolve { id, decision: Decision::Deny }).await.unwrap());
-        let ex = h.store.example_for_question(&id.0.to_string()).await.unwrap().unwrap();
+        assert!(
+            h.probe.answered.lock().is_empty(),
+            "the double acted after a take-over"
+        );
+        assert!(
+            h.approval
+                .ask(Resolve {
+                    id,
+                    decision: Decision::Deny
+                })
+                .await
+                .unwrap()
+        );
+        let ex = h
+            .store
+            .example_for_question(&id.0.to_string())
+            .await
+            .unwrap()
+            .unwrap();
         let labels = labels_when(&h.store, &ex.id, 1).await;
         assert_eq!(labels[0].source, LabelSource::Override);
         assert_eq!(labels[0].weight, 3.0);
-        let class = h.store.class("approval:read_file:read_only:root").await.unwrap().unwrap();
+        let class = h
+            .store
+            .class("approval:read_file:read_only:root")
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(class.rung, 1, "override demotes one rung");
         let st = h.double.ask(Status).await.unwrap();
         assert_eq!(st.kpis.undo_rate_per_100, 0.0);
         // Agreeing after a take-over is a plain direct label and no demotion.
-        let id2 = h.raise(s, "read_file", serde_json::json!({"path": "/tmp/y"})).await;
+        let id2 = h
+            .raise(s, "read_file", serde_json::json!({"path": "/tmp/y"}))
+            .await;
         let ev = h.probe.predicted.lock()[1].clone();
         assert_eq!(ev.rung, 1);
         assert!(ev.will_act_at.is_none());
-        assert!(h.approval.ask(Resolve { id: id2, decision: Decision::Allow }).await.unwrap());
-        let ex2 = h.store.example_for_question(&id2.0.to_string()).await.unwrap().unwrap();
+        assert!(
+            h.approval
+                .ask(Resolve {
+                    id: id2,
+                    decision: Decision::Allow
+                })
+                .await
+                .unwrap()
+        );
+        let ex2 = h
+            .store
+            .example_for_question(&id2.0.to_string())
+            .await
+            .unwrap()
+            .unwrap();
         let labels = labels_when(&h.store, &ex2.id, 1).await;
         assert_eq!(labels[0].source, LabelSource::Direct);
         h.stop().await;
@@ -1594,7 +1743,9 @@ mod tests {
         let h = Harness::new(oracle(0.9), 1).await;
         h.seed("approval:shell:destructive:rm -rf:root", 2).await;
         let s = SessionId::new();
-        let id = h.raise(s, "shell", serde_json::json!({"command": "rm -rf /tmp/x"})).await;
+        let id = h
+            .raise(s, "shell", serde_json::json!({"command": "rm -rf /tmp/x"}))
+            .await;
         let ev = h.probe.predicted.lock()[0].clone();
         assert_eq!(ev.class, "approval:shell:destructive:rm -rf:root");
         assert_eq!(ev.rung, 1);
@@ -1604,7 +1755,9 @@ mod tests {
         // `none` on top: a read-only L2 class still does not act.
         *h.probe.predicted.lock() = Vec::new();
         h.seed("approval:read_file:read_only:root", 2).await;
-        let id2 = h.raise(s, "read_file", serde_json::json!({"path": "/tmp/x"})).await;
+        let id2 = h
+            .raise(s, "read_file", serde_json::json!({"path": "/tmp/x"}))
+            .await;
         let ev2 = h.probe.predicted.lock()[0].clone();
         assert_eq!(ev2.rung, 2);
         assert!(ev2.will_act_at.is_some(), "confident → grace");
@@ -1616,7 +1769,12 @@ mod tests {
             timed_out: true,
         })
         .await;
-        let ex = h.store.example_for_question(&id.0.to_string()).await.unwrap().unwrap();
+        let ex = h
+            .store
+            .example_for_question(&id.0.to_string())
+            .await
+            .unwrap()
+            .unwrap();
         let labels = labels_when(&h.store, &ex.id, 1).await;
         assert_eq!(labels[0].source, LabelSource::Timeout);
         assert_eq!(labels[0].weight, 0.25);
@@ -1632,7 +1790,9 @@ mod tests {
         let h = Harness::new(o, 1).await;
         h.seed("approval:read_file:read_only:root", 2).await;
         let s = SessionId::new();
-        let _id = h.raise(s, "read_file", serde_json::json!({"path": "/tmp/x"})).await;
+        let _id = h
+            .raise(s, "read_file", serde_json::json!({"path": "/tmp/x"}))
+            .await;
         let ev = h.probe.predicted.lock()[0].clone();
         assert_eq!(ev.choice, NONE);
         assert_eq!(ev.rung, 2, "the chip reports the class's rung");
@@ -1695,7 +1855,12 @@ mod tests {
             files: Vec::new(),
         })
         .await;
-        let ex = h.store.example_for_question(&ask_id.0.to_string()).await.unwrap().unwrap();
+        let ex = h
+            .store
+            .example_for_question(&ask_id.0.to_string())
+            .await
+            .unwrap()
+            .unwrap();
         let labels = labels_when(&h.store, &ex.id, 1).await;
         assert_eq!(labels[0].choice, "Start now");
         assert_eq!(labels[0].source, LabelSource::Direct);
@@ -1728,9 +1893,24 @@ mod tests {
             turn_seq: 1,
         })
         .await;
-        let id = h.raise(s, "shell", serde_json::json!({"command": "git push"})).await;
-        assert!(h.approval.ask(Resolve { id, decision: Decision::Allow }).await.unwrap());
-        let ex = h.store.example_for_question(&id.0.to_string()).await.unwrap().unwrap();
+        let id = h
+            .raise(s, "shell", serde_json::json!({"command": "git push"}))
+            .await;
+        assert!(
+            h.approval
+                .ask(Resolve {
+                    id,
+                    decision: Decision::Allow
+                })
+                .await
+                .unwrap()
+        );
+        let ex = h
+            .store
+            .example_for_question(&id.0.to_string())
+            .await
+            .unwrap()
+            .unwrap();
         labels_when(&h.store, &ex.id, 1).await;
         h.rt.publish(AgentEvent::ContextChanged {
             session: s,
@@ -1739,16 +1919,36 @@ mod tests {
         })
         .await;
         let labels = labels_when(&h.store, &ex.id, 2).await;
-        let hs = labels.iter().find(|l| l.source == LabelSource::HindsightRewind).unwrap();
+        let hs = labels
+            .iter()
+            .find(|l| l.source == LabelSource::HindsightRewind)
+            .unwrap();
         assert_eq!((hs.choice.as_str(), hs.weight), (ALLOW, 0.5));
         // The memory nets Allow to +0.5 (direct 1.0 − rewind 0.5).
-        let mem = predict::memory(&h.store, "approval:shell:mutating:git push:root").await.unwrap();
+        let mem = predict::memory(&h.store, "approval:shell:mutating:git push:root")
+            .await
+            .unwrap();
         assert_eq!(mem.len(), 1);
         assert_eq!(mem[0].votes, vec![(ALLOW.to_owned(), 0.5)]);
         // Interrupt on a second card.
-        let id2 = h.raise(s, "shell", serde_json::json!({"command": "git push"})).await;
-        assert!(h.approval.ask(Resolve { id: id2, decision: Decision::Allow }).await.unwrap());
-        let ex2 = h.store.example_for_question(&id2.0.to_string()).await.unwrap().unwrap();
+        let id2 = h
+            .raise(s, "shell", serde_json::json!({"command": "git push"}))
+            .await;
+        assert!(
+            h.approval
+                .ask(Resolve {
+                    id: id2,
+                    decision: Decision::Allow
+                })
+                .await
+                .unwrap()
+        );
+        let ex2 = h
+            .store
+            .example_for_question(&id2.0.to_string())
+            .await
+            .unwrap()
+            .unwrap();
         labels_when(&h.store, &ex2.id, 1).await;
         h.rt.publish(AgentEvent::TurnFinished {
             session: s,
@@ -1759,7 +1959,10 @@ mod tests {
         })
         .await;
         let labels = labels_when(&h.store, &ex2.id, 2).await;
-        let hi = labels.iter().find(|l| l.source == LabelSource::HindsightInterrupt).unwrap();
+        let hi = labels
+            .iter()
+            .find(|l| l.source == LabelSource::HindsightInterrupt)
+            .unwrap();
         assert_eq!(hi.weight, 0.25);
         h.stop().await;
     }
@@ -1772,12 +1975,30 @@ mod tests {
         let s = SessionId::new();
         let st = h.double.ask(Pause(true)).await.unwrap();
         assert!(st.paused);
-        let id = h.raise(s, "shell", serde_json::json!({"command": "git push"})).await;
-        assert!(h.approval.ask(Resolve { id, decision: Decision::Allow }).await.unwrap());
+        let id = h
+            .raise(s, "shell", serde_json::json!({"command": "git push"}))
+            .await;
+        assert!(
+            h.approval
+                .ask(Resolve {
+                    id,
+                    decision: Decision::Allow
+                })
+                .await
+                .unwrap()
+        );
         wait_for(|| (!h.probe.resolved.lock().is_empty()).then_some(())).await;
         tokio::time::sleep(Duration::from_millis(100)).await;
-        let ex = h.store.example_for_question(&id.0.to_string()).await.unwrap().unwrap();
-        assert!(h.store.labels(&ex.id).await.unwrap().is_empty(), "paused: no label");
+        let ex = h
+            .store
+            .example_for_question(&id.0.to_string())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            h.store.labels(&ex.id).await.unwrap().is_empty(),
+            "paused: no label"
+        );
         let key = "approval:shell:mutating:git push:root";
         let c = h
             .double
@@ -1810,7 +2031,15 @@ mod tests {
         let class = h.store.class(key).await.unwrap().unwrap();
         assert_eq!((class.n, class.rung), (0, 0));
         assert!(h.double.ask(ClassDetail("nope".into())).await.is_err());
-        assert_eq!(h.double.ask(Forget(ForgetTarget::Examples { ids: vec!["x".into()] })).await.unwrap(), 0);
+        assert_eq!(
+            h.double
+                .ask(Forget(ForgetTarget::Examples {
+                    ids: vec!["x".into()]
+                }))
+                .await
+                .unwrap(),
+            0
+        );
         h.stop().await;
     }
 
@@ -1819,9 +2048,21 @@ mod tests {
     async fn republish_pending() {
         let h = Harness::new(oracle(0.8), 30).await;
         let s = SessionId::new();
-        let id = h.raise(s, "shell", serde_json::json!({"command": "git push"})).await;
-        let _id2 = h.raise(s, "shell", serde_json::json!({"command": "git status"})).await;
-        assert!(h.approval.ask(Resolve { id, decision: Decision::Allow }).await.unwrap());
+        let id = h
+            .raise(s, "shell", serde_json::json!({"command": "git push"}))
+            .await;
+        let _id2 = h
+            .raise(s, "shell", serde_json::json!({"command": "git status"}))
+            .await;
+        assert!(
+            h.approval
+                .ask(Resolve {
+                    id,
+                    decision: Decision::Allow
+                })
+                .await
+                .unwrap()
+        );
         wait_for(|| (!h.probe.resolved.lock().is_empty()).then_some(())).await;
         let before = h.probe.predicted.lock().len();
         h.double.tell(Republish).await.unwrap();

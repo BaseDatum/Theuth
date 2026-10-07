@@ -401,7 +401,11 @@ mod tests {
         let path = dir.path().join("sessions.sqlite");
         let pool = SqlitePoolOptions::new()
             .max_connections(1)
-            .connect_with(SqliteConnectOptions::new().filename(&path).create_if_missing(true))
+            .connect_with(
+                SqliteConnectOptions::new()
+                    .filename(&path)
+                    .create_if_missing(true),
+            )
             .await
             .unwrap();
         let j = Journal::open(dir.path()).await.unwrap();

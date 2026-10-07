@@ -155,7 +155,10 @@ pub fn accuracy(labelled: &[&Scored]) -> f32 {
     if labelled.is_empty() {
         return 0.0;
     }
-    let ok = labelled.iter().filter(|r| r.correct() == Some(true)).count();
+    let ok = labelled
+        .iter()
+        .filter(|r| r.correct() == Some(true))
+        .count();
     ok as f32 / labelled.len() as f32
 }
 
@@ -170,7 +173,11 @@ pub fn brier(labelled: &[&Scored]) -> f32 {
             r.probs
                 .iter()
                 .map(|(l, p)| {
-                    let y = if r.label.as_deref() == Some(l) { 1.0 } else { 0.0 };
+                    let y = if r.label.as_deref() == Some(l) {
+                        1.0
+                    } else {
+                        0.0
+                    };
                     (p - y) * (p - y)
                 })
                 .sum::<f32>()
@@ -272,7 +279,10 @@ pub fn promote_hint(current: u8, cap: u8, rows: &[Scored]) -> String {
     }
     if acc < need_acc {
         // k more correct in a row lift acc = ok/n to (ok+k)/(n+k) ≥ need_acc.
-        let ok = labelled.iter().filter(|r| r.correct() == Some(true)).count() as f32;
+        let ok = labelled
+            .iter()
+            .filter(|r| r.correct() == Some(true))
+            .count() as f32;
         let n = labelled.len() as f32;
         let k = ((need_acc * n - ok) / (1.0 - need_acc)).ceil().max(1.0) as usize;
         return format!("{k} more correct in a row (acc ≥ {need_acc:.2})");
@@ -322,7 +332,11 @@ pub async fn ledger(
     since: DateTime<Utc>,
 ) -> anyhow::Result<Vec<Scored>> {
     let op = if baseline { "=" } else { "!=" };
-    let class_clause = if class.is_some() { "AND e.class = ?" } else { "" };
+    let class_clause = if class.is_some() {
+        "AND e.class = ?"
+    } else {
+        ""
+    };
     let sql = format!(
         "SELECT p.example_id, p.choice, p.probs, p.p_top, p.acted, p.grace_until, p.at
          FROM predictions p JOIN examples e ON e.id = p.example_id
@@ -385,7 +399,10 @@ pub async fn ledger(
 
 /// `(label, overridden, strike)` from an example's labels: the override's
 /// choice wins over the direct one; a timeout is not a label (§6).
-pub fn summarise(labels: &[(LabelSource, String, f32)], acted: bool) -> (Option<String>, bool, bool) {
+pub fn summarise(
+    labels: &[(LabelSource, String, f32)],
+    acted: bool,
+) -> (Option<String>, bool, bool) {
     let mut label = None;
     let mut overridden = false;
     let mut strike = false;
@@ -506,9 +523,18 @@ mod tests {
             1
         );
         let (cap, why) = hard_cap(&caps, "approval:shell:mutating:git push:root", false);
-        assert_eq!((cap, why.as_deref()), (1, Some("mutating — opt in to allow L2")));
-        assert_eq!(hard_cap(&caps, "approval:shell:mutating:git push:root", true), (2, None));
-        assert_eq!(hard_cap(&caps, "approval:read_file:read_only:root", false), (2, None));
+        assert_eq!(
+            (cap, why.as_deref()),
+            (1, Some("mutating — opt in to allow L2"))
+        );
+        assert_eq!(
+            hard_cap(&caps, "approval:shell:mutating:git push:root", true),
+            (2, None)
+        );
+        assert_eq!(
+            hard_cap(&caps, "approval:read_file:read_only:root", false),
+            (2, None)
+        );
         assert_eq!(hard_cap(&caps, "ask:b9474647c6a4:root", false), (2, None));
         assert_eq!(effective_rung(2, true), 0);
         assert_eq!(effective_rung(2, false), 2);
@@ -547,9 +573,15 @@ mod tests {
 
     #[test]
     fn hints() {
-        assert_eq!(promote_hint(0, 2, &rows(5, 0, 0.9)), "15 more labelled decisions (n ≥ 20)");
+        assert_eq!(
+            promote_hint(0, 2, &rows(5, 0, 0.9)),
+            "15 more labelled decisions (n ≥ 20)"
+        );
         // 16/20 right: 16 + k ≥ 0.9 (20 + k) → k = 20.
-        assert_eq!(promote_hint(0, 2, &rows(20, 4, 0.9)), "20 more correct in a row (acc ≥ 0.90)");
+        assert_eq!(
+            promote_hint(0, 2, &rows(20, 4, 0.9)),
+            "20 more correct in a row (acc ≥ 0.90)"
+        );
         assert_eq!(promote_hint(1, 1, &rows(60, 0, 0.9)), "at its cap (L1)");
     }
 
@@ -566,8 +598,11 @@ mod tests {
             (LabelSource::Direct, "Allow".to_owned(), 1.0),
             (LabelSource::HindsightRewind, "Allow".to_owned(), 0.5),
         ];
-        assert_eq!(summarise(&hs, true).2, true);
-        assert_eq!(summarise(&hs, false).2, false);
-        assert_eq!(outcome("Allow", &[(LabelSource::Timeout, "Deny".into(), 0.25)]), Outcome::Unlabelled);
+        assert!(summarise(&hs, true).2);
+        assert!(!summarise(&hs, false).2);
+        assert_eq!(
+            outcome("Allow", &[(LabelSource::Timeout, "Deny".into(), 0.25)]),
+            Outcome::Unlabelled
+        );
     }
 }

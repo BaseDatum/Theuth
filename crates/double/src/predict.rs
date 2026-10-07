@@ -58,9 +58,8 @@ pub struct EngineOracle;
 #[async_trait::async_trait]
 impl Oracle for EngineOracle {
     async fn decide(&self, ask: decision::Ask) -> anyhow::Result<decision::Decision> {
-        let engine =
-            kameo::actor::ActorRef::<decision::Engine>::lookup(decision::DECISION_ACTOR)?
-                .ok_or_else(|| anyhow::anyhow!("decision engine is not running"))?;
+        let engine = kameo::actor::ActorRef::<decision::Engine>::lookup(decision::DECISION_ACTOR)?
+            .ok_or_else(|| anyhow::anyhow!("decision engine is not running"))?;
         Ok(engine.ask(ask).await?)
     }
 }
@@ -428,7 +427,11 @@ pub async fn predict(
         index: (top < options.len()).then_some(top as u32),
         p: probs[top],
         probs: paired,
-        oracle_probs: labels.iter().cloned().zip(oracle_p.iter().copied()).collect(),
+        oracle_probs: labels
+            .iter()
+            .cloned()
+            .zip(oracle_p.iter().copied())
+            .collect(),
         embedding,
         escalated,
         explain: Explain {
@@ -605,7 +608,16 @@ pub(crate) mod tests {
     #[tokio::test]
     async fn zero_shot_alone() {
         let o = FakeOracle::new(vec![0.7, 0.2, 0.1], Some(vec![1.0, 0.0]));
-        let p = predict(&o, CardKind::Approval, &opts(), "s".into(), &[], &ClassStats::default(), Utc::now()).await;
+        let p = predict(
+            &o,
+            CardKind::Approval,
+            &opts(),
+            "s".into(),
+            &[],
+            &ClassStats::default(),
+            Utc::now(),
+        )
+        .await;
         assert_eq!(p.choice, "Allow");
         assert_eq!(p.index, Some(0));
         assert!(!p.escalated);
@@ -613,17 +625,34 @@ pub(crate) mod tests {
         assert_eq!(p.probs.len(), 3);
         assert_eq!(p.oracle_probs, p.probs);
         assert_eq!(p.explain.neighbours.len(), 0);
-        let asks = o.asks.lock();
-        assert_eq!(asks[0].family.0, "double.approval");
+        assert_eq!(o.asks.lock()[0].family.0, "double.approval");
         // none wins → escalate.
         let o = FakeOracle::new(vec![0.2, 0.1, 0.7], None);
-        let p = predict(&o, CardKind::Ask, &opts(), "s".into(), &[], &ClassStats::default(), Utc::now()).await;
+        let p = predict(
+            &o,
+            CardKind::Ask,
+            &opts(),
+            "s".into(),
+            &[],
+            &ClassStats::default(),
+            Utc::now(),
+        )
+        .await;
         assert_eq!(p.choice, NONE);
         assert_eq!(p.index, None);
         assert!(p.escalated);
         // a low margin escalates too.
         let o = FakeOracle::new(vec![0.5, 0.4, 0.1], None);
-        let p = predict(&o, CardKind::Ask, &opts(), "s".into(), &[], &ClassStats::default(), Utc::now()).await;
+        let p = predict(
+            &o,
+            CardKind::Ask,
+            &opts(),
+            "s".into(),
+            &[],
+            &ClassStats::default(),
+            Utc::now(),
+        )
+        .await;
         assert_eq!(p.choice, "Allow");
         assert!(p.escalated);
     }
@@ -633,7 +662,16 @@ pub(crate) mod tests {
     async fn engine_down_is_uniform() {
         let mut o = FakeOracle::new(vec![], None);
         o.fail = true;
-        let p = predict(&o, CardKind::Approval, &opts(), "s".into(), &[], &ClassStats::default(), Utc::now()).await;
+        let p = predict(
+            &o,
+            CardKind::Approval,
+            &opts(),
+            "s".into(),
+            &[],
+            &ClassStats::default(),
+            Utc::now(),
+        )
+        .await;
         assert!(p.escalated);
         assert!(p.embedding.is_none());
         assert!((p.probs[0].1 - 1.0 / 3.0).abs() < 1e-5);
@@ -643,8 +681,19 @@ pub(crate) mod tests {
     #[tokio::test]
     async fn memory_is_the_early_workhorse() {
         let o = FakeOracle::new(vec![0.3, 0.6, 0.1], Some(vec![1.0, 0.0, 0.0]));
-        let memory: Vec<Memory> = (0..20).map(|i| mem(vec![1.0, 0.05 * i as f32, 0.0], "Allow", i)).collect();
-        let p = predict(&o, CardKind::Approval, &opts(), "s".into(), &memory, &ClassStats::default(), Utc::now()).await;
+        let memory: Vec<Memory> = (0..20)
+            .map(|i| mem(vec![1.0, 0.05 * i as f32, 0.0], "Allow", i))
+            .collect();
+        let p = predict(
+            &o,
+            CardKind::Approval,
+            &opts(),
+            "s".into(),
+            &memory,
+            &ClassStats::default(),
+            Utc::now(),
+        )
+        .await;
         assert_eq!(p.choice, "Allow");
         assert!(!p.escalated);
         assert_eq!(p.explain.neighbours.len(), 3);
@@ -663,8 +712,19 @@ pub(crate) mod tests {
         // Class A (`git push`): 10 old Allow rows. The burst belongs to class B and is simply
         // not in A's memory.
         let o = FakeOracle::new(vec![0.45, 0.45, 0.1], Some(vec![0.0, 1.0]));
-        let a: Vec<Memory> = (0..10).map(|i| mem(vec![0.0, 1.0], "Allow", 3 + i)).collect();
-        let p = predict(&o, CardKind::Approval, &opts(), "s".into(), &a, &ClassStats::default(), Utc::now()).await;
+        let a: Vec<Memory> = (0..10)
+            .map(|i| mem(vec![0.0, 1.0], "Allow", 3 + i))
+            .collect();
+        let p = predict(
+            &o,
+            CardKind::Approval,
+            &opts(),
+            "s".into(),
+            &a,
+            &ClassStats::default(),
+            Utc::now(),
+        )
+        .await;
         assert_eq!(p.choice, "Allow");
         assert!(!p.escalated);
         // Within one class: 500 Deny rows from 60 days ago vs 15 Allow rows from this week,
@@ -672,7 +732,16 @@ pub(crate) mod tests {
         // burst) keeps this week's answers in the k = 15 neighbourhood.
         let mut m: Vec<Memory> = (0..500).map(|_| mem(vec![0.0, 1.0], "Deny", 60)).collect();
         m.extend((0..15).map(|_| mem(vec![0.0, 1.0], "Allow", 2)));
-        let p = predict(&o, CardKind::Approval, &opts(), "s".into(), &m, &ClassStats::default(), Utc::now()).await;
+        let p = predict(
+            &o,
+            CardKind::Approval,
+            &opts(),
+            "s".into(),
+            &m,
+            &ClassStats::default(),
+            Utc::now(),
+        )
+        .await;
         assert_eq!(p.choice, "Allow", "{:?}", p.probs);
     }
 
@@ -685,12 +754,21 @@ pub(crate) mod tests {
         s.record("Deny", Some(2_000));
         assert_eq!(s.median_answer_ms, 2_000);
         assert_eq!(s.previously(), "previously: Allow ×2 Deny ×1 (median 2 s)");
-        let st = state_text("git push", "approval:shell:mutating:git push:root", "root", &s, Some(&"x".repeat(700)));
+        let st = state_text(
+            "git push",
+            "approval:shell:mutating:git push:root",
+            "root",
+            &s,
+            Some(&"x".repeat(700)),
+        );
         assert!(st.starts_with("git push\nclass: approval:shell:mutating:git push:root\nrequester: root\npreviously: Allow ×2"));
         assert_eq!(st.len(), st.find("goal: ").unwrap() + 6 + GOAL_CHARS);
         let j = serde_json::to_value(&s).unwrap();
         assert_eq!(ClassStats::from_json(&j), s);
-        assert_eq!(ClassStats::from_json(&serde_json::json!({})), ClassStats::default());
+        assert_eq!(
+            ClassStats::from_json(&serde_json::json!({})),
+            ClassStats::default()
+        );
     }
 
     #[test]
