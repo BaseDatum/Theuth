@@ -1,1 +1,10 @@
-*Quadrant: 5 items*
+Quadrant: What to do first — 5 items
+┌──────────┬──────────┐
+│ Do first │ Plan     │
+│ Cache    │ Rewrite  │
+│          │ Tests    │
+├──────────┼──────────┤
+│ Fill-ins │ Avoid    │
+│ Docs     │ Theme    │
+└──────────┴──────────┘
+Effort: low → high · Impact: low → high

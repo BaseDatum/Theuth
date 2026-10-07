@@ -1,0 +1,3 @@
+LineChart: 1 series
+replicas  ▁▁▅██▃  2 → 3
+          00:00 … 20:00

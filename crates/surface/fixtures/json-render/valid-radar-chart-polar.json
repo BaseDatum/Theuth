@@ -1,0 +1,33 @@
+{
+  "root": "r",
+  "elements": {
+    "r": {
+      "type": "RadarChart",
+      "props": {
+        "title": "Hours by area",
+        "axes": [
+          "Rust",
+          "TS",
+          "Docs",
+          "Review",
+          "Ops",
+          "Design"
+        ],
+        "series": [
+          {
+            "name": "this week",
+            "values": [
+              14,
+              9,
+              3,
+              6,
+              2,
+              5
+            ]
+          }
+        ],
+        "variant": "polar"
+      }
+    }
+  }
+}

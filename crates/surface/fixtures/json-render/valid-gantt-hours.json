@@ -1,0 +1,52 @@
+{
+  "root": "g",
+  "elements": {
+    "g": {
+      "type": "Gantt",
+      "props": {
+        "title": "Release day",
+        "today": "2026-10-08T13:30:00Z",
+        "tasks": [
+          {
+            "id": "freeze",
+            "label": "Code freeze",
+            "start": "2026-10-08T09:00:00Z",
+            "end": "2026-10-08T10:00:00Z",
+            "state": "done",
+            "progress": 1
+          },
+          {
+            "id": "qa",
+            "label": "QA pass",
+            "start": "2026-10-08T10:00:00Z",
+            "end": "2026-10-08T14:00:00Z",
+            "depends": [
+              "freeze"
+            ],
+            "state": "active",
+            "progress": 0.6
+          },
+          {
+            "id": "ship",
+            "label": "Ship",
+            "start": "2026-10-08T15:00:00Z",
+            "end": "2026-10-08T16:00:00Z",
+            "depends": [
+              "qa"
+            ]
+          },
+          {
+            "id": "watch",
+            "label": "Watch dashboards",
+            "start": "2026-10-08T16:00:00Z",
+            "end": "2026-10-09T09:00:00Z",
+            "depends": [
+              "ship"
+            ],
+            "state": "muted"
+          }
+        ]
+      }
+    }
+  }
+}

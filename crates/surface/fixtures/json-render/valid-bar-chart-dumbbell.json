@@ -1,0 +1,43 @@
+{
+  "root": "b",
+  "elements": {
+    "b": {
+      "type": "BarChart",
+      "props": {
+        "title": "Latency before and after",
+        "labels": [
+          "chat",
+          "tools",
+          "search",
+          "export"
+        ],
+        "series": [
+          {
+            "name": "Before",
+            "values": [
+              410,
+              120,
+              250,
+              90
+            ],
+            "state": "muted"
+          },
+          {
+            "name": "After",
+            "values": [
+              220,
+              80,
+              190,
+              95
+            ],
+            "state": "done"
+          }
+        ],
+        "variant": "dumbbell",
+        "unit": "ms",
+        "xLabel": "surface",
+        "yLabel": "p95"
+      }
+    }
+  }
+}

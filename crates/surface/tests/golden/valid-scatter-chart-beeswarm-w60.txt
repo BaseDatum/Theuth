@@ -1,0 +1,11 @@
+ScatterChart: 8 points
+label │ Review time (h) │ ignored │ group
+──────┼─────────────────┼─────────┼──────
+·     │ 1               │ 0       │ UI
+·     │ 1.2             │ 0       │ UI
+·     │ 1.1             │ 0       │ Rust
+slow  │ 3               │ 0       │ Rust
+·     │ 0.9             │ 0       │ UI
+·     │ 1.05            │ 0       │ Rust
+·     │ 4.5             │ 0       │ UI
+·     │ 2               │ 0       │ Rust

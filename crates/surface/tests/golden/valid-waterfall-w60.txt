@@ -1,1 +1,9 @@
-*Waterfall: 6 steps*
+Waterfall: Headcount 2026 — 6 steps
+step         │ Δ   │ total
+─────────────┼─────┼───────────
+Jan          │ =   │ 100 people
+Hires        │ +12 │ 112 people
+Leavers      │ -5  │ 107 people
+Q1           │ =   │ 107 people
+Transfers in │ +4  │ 111 people
+Dec          │ =   │ 111 people
