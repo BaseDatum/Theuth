@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 use tools::{RegisterPrompt, RegisterTool, Risk, Tool, ToolCx, ToolOutput, ToolRegistry};
 
 use crate::file::{self, FileArgs, When};
-use crate::{validate, ScheduleInfo};
+use crate::{ScheduleInfo, validate};
 use agent::sensor::SensorRunner;
 
 /// The plugin's system-prompt block (34 §6, 33 §5.2). Static, so it never
@@ -24,7 +24,8 @@ list with `list_dir()`, cancel by deleting the file. An input wrapped in `<sched
 firing, not a person: nobody will answer a question, so act on the prompt as written. Your reply is \
 delivered to the user's chat channels when the run ends unless the wrapper says `quiet=\"true\"`, in which \
 case only `message_user` reaches them — stay silent when there is nothing to say. Use `knowledge_put()` for \
-anything the next run should know; each run starts with a clear context. \
+anything the next run should know; each run starts with a clear context and an empty python runtime \
+(`runtime: keep` in the front matter keeps the python globals between runs). \
 A schedule with `until` (a shell command) or `max_runs` is a loop: it runs again until the command exits 0, \
 the cap is reached, or a run calls `schedule_done()` — use `every: 0s` for \"keep at this until…\". The check's \
 last output arrives in `<until>`. Draft a loop with `enabled: false` and show the user the file; start it by \
@@ -130,6 +131,8 @@ pub struct ScheduleArgs {
     pub mode: Option<String>,
     /// 40 §2: "`continue` (default with `when`) / `clear`; requires `when`" — whether the session keeps its context between fires.
     pub memory: Option<String>,
+    /// 131 D1: "`clear` (default) / `keep`" — reset the python globals before each run that clears the context, or keep them.
+    pub runtime: Option<String>,
     /// 40 §2: "duration ≥ `every`; from the file's `created:` line" — TTL; on expiry the file is removed and the user told.
     pub expires: Option<String>,
     /// 40 §2: "sensor wall clock; default `20s`, ≤ `60s`, `< every / 2`; requires `when`".
@@ -151,8 +154,7 @@ pub struct ScheduleTool {
 /// surfaces); `created: now` anchors `expires` on every write of a `when:` file.
 pub fn render_args(a: &ScheduleArgs) -> String {
     let watcher = a.when.is_some();
-    let created =
-        watcher.then(|| Local::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, false));
+    let created = watcher.then(|| Local::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, false));
     file::render(&FileArgs {
         cron: a.cron.as_deref(),
         every: a.every.as_deref(),
@@ -177,6 +179,8 @@ pub fn render_args(a: &ScheduleArgs) -> String {
         cooldown: non_default(a.cooldown.as_deref(), "0s", watcher),
         mode: non_default(a.mode.as_deref(), "skip", watcher),
         memory: non_default(a.memory.as_deref(), "continue", watcher),
+        // 131 D1: `clear` is the default for every kind, so it is dropped always.
+        runtime: non_default(a.runtime.as_deref(), "clear", true),
         expires: a.expires.as_deref(),
         timeout: non_default(a.timeout.as_deref(), "20s", watcher),
         created: created.as_deref(),
@@ -269,7 +273,9 @@ impl Tool for ScheduleTool {
                         Err(e) => tracing::warn!(name = %spec.name, "bind at creation: {e}"),
                     }
                 }
-                None => tracing::warn!(name = %spec.name, "bind at creation: schedule actor not running"),
+                None => {
+                    tracing::warn!(name = %spec.name, "bind at creation: schedule actor not running")
+                }
             }
             content.push('\n');
             content.push_str(&validate::render(v));
@@ -480,7 +486,12 @@ fn status_line(s: &ScheduleInfo, now: DateTime<Local>) -> String {
 
 /// `<at> · <outcome> · <elapsed> ms` (40 §6) from [`crate::LastCheck`].
 fn last_check(c: &crate::LastCheck) -> String {
-    format!("{} · {} · {} ms", c.at.format("%H:%M:%S"), c.outcome, c.elapsed_ms)
+    format!(
+        "{} · {} · {} ms",
+        c.at.format("%H:%M:%S"),
+        c.outcome,
+        c.elapsed_ms
+    )
 }
 
 /// Arguments for [`ListSensorsTool`]: none.
@@ -539,7 +550,11 @@ fn sensor_line(s: &crate::SensorInfo) -> String {
             .args
             .iter()
             .map(|a| {
-                let mut t = format!("{} ({}", a.name, if a.required { "required" } else { "optional" });
+                let mut t = format!(
+                    "{} ({}",
+                    a.name,
+                    if a.required { "required" } else { "optional" }
+                );
                 if let Some(e) = &a.example {
                     t.push_str(&format!(", e.g. {e}"));
                 }
@@ -606,7 +621,10 @@ mod tests {
         let out = tool.call(args, cx).await.unwrap();
         assert!(out.is_error, "{}", out.content);
         assert_eq!(out.content, "when: no such sensor: missing.py");
-        assert!(!dir.join("w.md").exists(), "D12: an explicit enabled: true does not bypass the refusal");
+        assert!(
+            !dir.join("w.md").exists(),
+            "D12: an explicit enabled: true does not bypass the refusal"
+        );
     }
 
     /// 108 §9.5: `agent` / `project` reach the file; a watcher without
@@ -622,11 +640,20 @@ mod tests {
         }));
         let text = render_args(&watcher);
         assert!(text.contains("enabled: false\n"), "{text}");
-        assert!(text.contains("agent: nikolai\n") && text.contains("project: \"web\"\n"), "{text}");
-        assert!(!text.contains("fire:") && text.contains("mode: queue\n"), "defaults dropped: {text}");
+        assert!(
+            text.contains("agent: nikolai\n") && text.contains("project: \"web\"\n"),
+            "{text}"
+        );
+        assert!(
+            !text.contains("fire:") && text.contains("mode: queue\n"),
+            "defaults dropped: {text}"
+        );
         assert!(text.contains("created: "), "{text}");
         let spec = file::parse("w", &text).unwrap();
-        assert_eq!((spec.agent.as_deref(), spec.project.as_deref(), spec.enabled), (Some("nikolai"), Some("web"), false));
+        assert_eq!(
+            (spec.agent.as_deref(), spec.project.as_deref(), spec.enabled),
+            (Some("nikolai"), Some("web"), false)
+        );
 
         let live = args(serde_json::json!({
             "name": "w", "prompt": "say hi", "every": "60s", "when": "pr_watch.py repo=o/r pr=1 token=t",
@@ -636,10 +663,39 @@ mod tests {
         assert!(!text.contains("enabled:"), "{text}");
         assert!(file::parse("w", &text).unwrap().enabled);
 
-        let clock = args(serde_json::json!({ "name": "c", "prompt": "brief", "cron": "0 9 * * 1-5" }));
+        let clock =
+            args(serde_json::json!({ "name": "c", "prompt": "brief", "cron": "0 9 * * 1-5" }));
         assert!(file::parse("c", &render_args(&clock)).unwrap().enabled);
-        let paused = args(serde_json::json!({ "name": "c", "prompt": "brief", "cron": "0 9 * * 1-5", "enabled": false }));
+        let paused = args(
+            serde_json::json!({ "name": "c", "prompt": "brief", "cron": "0 9 * * 1-5", "enabled": false }),
+        );
         assert!(!file::parse("c", &render_args(&paused)).unwrap().enabled);
+    }
+
+    /// 131 D1: `runtime` reaches the file only when it is `keep`.
+    #[test]
+    fn render_args_runtime_key_only_when_keep() {
+        let args = |v: serde_json::Value| -> ScheduleArgs { serde_json::from_value(v).unwrap() };
+        let keep = args(
+            serde_json::json!({ "name": "c", "prompt": "brief", "every": "1h", "runtime": "keep" }),
+        );
+        let text = render_args(&keep);
+        assert!(text.contains("\nruntime: keep\n"), "{text}");
+        assert_eq!(
+            file::parse("c", &text).unwrap().runtime,
+            file::Runtime::Keep
+        );
+        for v in [
+            serde_json::json!({ "name": "c", "prompt": "brief", "every": "1h" }),
+            serde_json::json!({ "name": "c", "prompt": "brief", "every": "1h", "runtime": "clear" }),
+        ] {
+            let text = render_args(&args(v));
+            assert!(!text.contains("runtime:"), "{text}");
+            assert_eq!(
+                file::parse("c", &text).unwrap().runtime,
+                file::Runtime::Clear
+            );
+        }
     }
 
     #[test]
@@ -649,8 +705,18 @@ mod tests {
             description: Some("PR babysitter.".into()),
             usage: Some("when: pr_watch.py repo=<o/r>".into()),
             args: vec![
-                agent::sensor::SensorArg { name: "repo".into(), required: true, example: Some("o/r".into()), help: "the repository".into() },
-                agent::sensor::SensorArg { name: "n".into(), required: false, example: None, help: String::new() },
+                agent::sensor::SensorArg {
+                    name: "repo".into(),
+                    required: true,
+                    example: Some("o/r".into()),
+                    help: "the repository".into(),
+                },
+                agent::sensor::SensorArg {
+                    name: "n".into(),
+                    required: false,
+                    example: None,
+                    help: String::new(),
+                },
             ],
             version: Some("2".into()),
             builtin: true,

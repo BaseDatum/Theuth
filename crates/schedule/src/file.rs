@@ -162,6 +162,19 @@ pub enum Memory {
     Clear,
 }
 
+/// `runtime:` — what happens to the session's python runtime at a fire that
+/// clears the frame (131 D1). Watchers with `memory: continue` never clear,
+/// so their runtime is kept whatever this says.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Runtime {
+    /// The saved heap and inventory are removed before each fire.
+    #[default]
+    Clear,
+    /// Python globals persist between runs.
+    Keep,
+}
+
 impl std::fmt::Display for Fire {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(match self {
@@ -187,6 +200,15 @@ impl std::fmt::Display for Memory {
         f.write_str(match self {
             Memory::Continue => "continue",
             Memory::Clear => "clear",
+        })
+    }
+}
+
+impl std::fmt::Display for Runtime {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Runtime::Clear => "clear",
+            Runtime::Keep => "keep",
         })
     }
 }
@@ -217,6 +239,15 @@ fn parse_memory(s: &str) -> Result<Memory, String> {
         "continue" => Ok(Memory::Continue),
         "clear" => Ok(Memory::Clear),
         _ => Err("memory: expected continue|clear".into()),
+    }
+}
+
+/// `clear` / `keep`, else `Err("runtime: expected clear|keep")`.
+fn parse_runtime(s: &str) -> Result<Runtime, String> {
+    match s.trim() {
+        "clear" => Ok(Runtime::Clear),
+        "keep" => Ok(Runtime::Keep),
+        _ => Err("runtime: expected clear|keep".into()),
     }
 }
 
@@ -326,6 +357,9 @@ pub struct Spec {
     pub mode: Mode,
     /// `memory:` — default `continue` with `when` (40 §1.11).
     pub memory: Memory,
+    /// `runtime:` — default `clear`: the python runtime is reset at a fire
+    /// that clears the frame (131 D1).
+    pub runtime: Runtime,
     /// `expires:` — TTL from `created` (40 §1.10).
     pub expires: Option<Duration>,
     /// `timeout:` — the sensor's wall clock; default [`DEFAULT_SENSOR_TIMEOUT`] (40 §5).
@@ -359,6 +393,7 @@ struct FrontMatter {
     cooldown: Option<String>,
     mode: Option<String>,
     memory: Option<String>,
+    runtime: Option<String>,
     expires: Option<String>,
     timeout: Option<String>,
     created: Option<String>,
@@ -527,6 +562,12 @@ pub fn parse(name: &str, text: &str) -> Result<Spec, String> {
         .map(parse_memory)
         .transpose()?
         .unwrap_or_default();
+    let runtime = fm
+        .runtime
+        .as_deref()
+        .map(parse_runtime)
+        .transpose()?
+        .unwrap_or_default();
     // 40 §2: `expires` ≥ `every`; `timeout` ≤ MAX_SENSOR_TIMEOUT and < every / 2.
     let every = match when {
         When::Every(d) => Some(d),
@@ -611,6 +652,7 @@ pub fn parse(name: &str, text: &str) -> Result<Spec, String> {
         cooldown,
         mode,
         memory,
+        runtime,
         expires,
         timeout,
         created,
@@ -712,6 +754,8 @@ pub struct FileArgs<'a> {
     pub mode: Option<&'a str>,
     /// `memory:` — written only when present.
     pub memory: Option<&'a str>,
+    /// `runtime:` — written only when present.
+    pub runtime: Option<&'a str>,
     /// `expires:` — written only when present.
     pub expires: Option<&'a str>,
     /// `timeout:` — written only when present.
@@ -771,6 +815,8 @@ pub struct ScheduleFile {
     pub mode: Option<String>,
     /// `memory:` as written.
     pub memory: Option<String>,
+    /// `runtime:` as written.
+    pub runtime: Option<String>,
     /// `expires:` as written.
     pub expires: Option<String>,
     /// `timeout:` as written.
@@ -812,6 +858,7 @@ impl ScheduleFile {
             cooldown: fm.cooldown,
             mode: fm.mode,
             memory: fm.memory,
+            runtime: fm.runtime,
             expires: fm.expires,
             timeout: fm.timeout,
             created: fm.created,
@@ -845,6 +892,7 @@ impl ScheduleFile {
             cooldown: some(&self.cooldown),
             mode: some(&self.mode),
             memory: some(&self.memory),
+            runtime: some(&self.runtime),
             expires: some(&self.expires),
             timeout: some(&self.timeout),
             created: some(&self.created),
@@ -891,6 +939,9 @@ pub fn render(a: &FileArgs<'_>) -> String {
     }
     if let Some(v) = a.memory {
         s.push_str(&format!("memory: {}\n", v.trim()));
+    }
+    if let Some(v) = a.runtime {
+        s.push_str(&format!("runtime: {}\n", v.trim()));
     }
     if let Some(v) = a.expires {
         s.push_str(&format!("expires: {}\n", v.trim()));
@@ -1131,6 +1182,7 @@ mod tests {
         cooldown: None,
         mode: None,
         memory: None,
+        runtime: None,
         expires: None,
         timeout: None,
         created: None,
@@ -1193,6 +1245,39 @@ mod tests {
         )
         .unwrap();
         assert_eq!(w.run_timeout, Some(Duration::from_secs(90)));
+    }
+
+    #[test]
+    fn runtime_key() {
+        // 131 D1: `clear` (default) | `keep`; written only when non-default.
+        let s = parse("x", &md("every: 1h\nruntime: keep", "p")).unwrap();
+        assert_eq!(s.runtime, Runtime::Keep);
+        assert_eq!(
+            parse("x", &md("every: 1h\nruntime: clear", "p"))
+                .unwrap()
+                .runtime,
+            Runtime::Clear
+        );
+        assert_eq!(
+            parse("x", &md("every: 1h", "p")).unwrap().runtime,
+            Runtime::Clear
+        );
+        assert_eq!(
+            parse("x", &md("every: 1h\nruntime: sometimes", "p")).unwrap_err(),
+            "runtime: expected clear|keep"
+        );
+        let f = ScheduleFile {
+            every: Some("1h".into()),
+            runtime: Some("keep".into()),
+            prompt: "p".into(),
+            ..ScheduleFile::default()
+        };
+        let text = render(&f.args());
+        assert!(text.contains("\nruntime: keep\n"), "{text}");
+        let back = ScheduleFile::read("x", &text).unwrap();
+        assert_eq!(back.runtime.as_deref(), Some("keep"));
+        assert_eq!(render(&back.args()), text);
+        assert!(!render(&BASE).contains("runtime:"));
     }
 
     #[test]
