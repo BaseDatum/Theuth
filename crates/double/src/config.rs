@@ -130,17 +130,22 @@ pub struct TierA {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 #[serde(default)]
-/// Tier B: the LoRA adapter, data-triggered, gate-promoted.
+/// Tier B: the LoRA adapter, data-triggered, gate-promoted. Revision 2: node-first; the local
+/// path is behind `local` (default off) and aborts on owner activity.
 pub struct TierB {
     /// Off: no Tier B runs.
     pub enabled: bool,
+    /// Allow Tier B on this machine (inside the window, on AC, idle, holding a build slot,
+    /// aborting within one step on keyboard / mouse activity). Off: a mesh GPU node or nothing.
+    pub local: bool,
     /// LoRA rank.
     pub rank: u32,
-    /// Rows per step.
+    /// Rows per optimiser step (the effective batch; the micro-batch is 2 × 256, the measured
+    /// memory ceiling — `train_b::TrainConfig`).
     pub batch: u32,
     /// Passes over the corpus per run.
     pub epochs: u32,
-    /// Learning rate.
+    /// Learning rate (1e-4 was the stable value at 2 × 256; 1e-3 diverged).
     pub lr: f32,
 }
 
@@ -242,10 +247,11 @@ impl Default for TierB {
     fn default() -> Self {
         Self {
             enabled: true,
+            local: false,
             rank: 8,
-            batch: 8,
+            batch: 16,
             epochs: 3,
-            lr: 2.0e-4,
+            lr: 1.0e-4,
         }
     }
 }

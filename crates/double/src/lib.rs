@@ -23,6 +23,7 @@ pub mod config;
 pub mod events;
 pub mod mesh;
 pub mod store;
+pub mod train_b;
 pub mod types;
 
 pub use class::{Card, CardKind, DraftKind, Requester, class_key};
@@ -43,7 +44,7 @@ pub const DOUBLE_ACTOR: &str = "double";
 // `ask::<actor::Double, _>(DOUBLE_ACTOR, …)` calls.
 // 126 W2: `pub mod train_a;`, `pub mod sched;`, `pub mod precond;`,
 // `pub mod venue;`, `pub mod versions;`.
-// 126 W3: `pub mod train_b;`.
+// 126 W3: `train_b` (above) — the Tier B trainer, `t double train-b`, `TierB::local_allowed`.
 // 126 W5: `pub mod tool;` (the `double_*` chat runtime functions), the
 // `double` skill and the `## Double` prompt paragraph.
 

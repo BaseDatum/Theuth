@@ -175,6 +175,33 @@ enum Cmd {
         #[arg(long)]
         session: String,
     },
+    /// The owner's double (design doc 126): the Tier B training job a GPU node runs in-process
+    /// (`t double train-b`), without an engine.
+    Double {
+        #[command(subcommand)]
+        cmd: DoubleCmd,
+    },
+}
+
+/// `t double …` (126 §8.4, Revision 2): one-shot jobs, no running engine needed.
+#[derive(clap::Subcommand, Debug)]
+enum DoubleCmd {
+    /// Train a Tier B LoRA adapter from a bundle dir (`manifest.json` + `rows.jsonl`) into
+    /// `--out` (`adapter.safetensors` + `manifest.json`); progress on stdout; exit 0 when the
+    /// candidate dir is populated. Needs a `t` built with `--features decision/train`
+    /// (and `decision/cuda` on a CUDA node). The checkpoint is `decision.checkpoints.default`
+    /// under `--data-dir`, fetched by the models downloader beforehand.
+    TrainB {
+        /// The bundle dir.
+        #[arg(long)]
+        bundle: PathBuf,
+        /// The candidate version dir (a `checkpoint/` inside it resumes a paused run).
+        #[arg(long)]
+        out: PathBuf,
+        /// `auto` (the `decision.device` / `models.accelerator` rule) | `metal` | `cuda` | `cpu`.
+        #[arg(long, default_value = "auto")]
+        device: String,
+    },
 }
 
 #[derive(clap::Subcommand, Debug)]
@@ -534,6 +561,7 @@ async fn cmd_67(data_dir: &Path, config: &Figment, cmd: Cmd) -> anyhow::Result<(
         },
         // Dispatched by `run` before this: stdout is its protocol channel.
         Cmd::Mcp { .. } => unreachable!("t mcp is served by mcp::run"),
+        Cmd::Double { .. } => unreachable!("t double runs without an engine"),
     };
     match r {
         Ok(v) => {
@@ -1122,7 +1150,7 @@ agent:
 #     share_data: true       # ship scrubbed bundles to your own GPU nodes (never a sandbox VM)
 #     tiers:
 #       a: { enabled: true }
-#       b: { enabled: true, rank: 8, batch: 8, epochs: 3, lr: 2.0e-4 }
+#       b: { enabled: true, local: false, rank: 8, batch: 16, epochs: 3, lr: 1.0e-4 } # local: train on this machine (idle-only, aborts on activity); off = GPU node or nothing
 #       c: { enabled: false } # full fine-tune: owner action only (Settings › Rebuild)
 #   retention_days: 365      # rows older than this go, except golden rows and the last 1,000 per class
 #   model:
@@ -1254,6 +1282,124 @@ fn main() -> anyhow::Result<()> {
     result
 }
 
+/// `t double train-b` (126 Revision 2, W3): the Tier B job a node runs — the same
+/// `double::train_b::TierB::train` W2's mesh `train_on` calls in-process, with `Never` as the
+/// pause signal. Exit 0 with `out` populated; 2 = bad input / missing checkpoint; 3 = the run
+/// cap paused it (re-run to resume); 1 = any other failure.
+fn double_train_b(
+    data_dir: &Path,
+    decision_cfg: &decision::DecisionConfig,
+    double_cfg: &double::DoubleConfig,
+    bundle: &Path,
+    out: &Path,
+    device: &str,
+) -> i32 {
+    use decision::candle::lora::{Base, TRAIN_BUILD};
+    use double::train_b::{Bundle, Hooks, Never, TierB, TrainConfig, TrainOutcome};
+
+    if !TRAIN_BUILD {
+        eprintln!(
+            "double train-b: this `t` was built without `--features decision/train`; the \
+             encoder's fused kernels cut the gradient silently, so training is refused"
+        );
+        return 2;
+    }
+    let device = match device {
+        "auto" => decision_cfg.device,
+        "cpu" => decision::Device::Cpu,
+        "metal" => decision::Device::Metal,
+        "cuda" => decision::Device::Cuda,
+        other => {
+            eprintln!("double train-b: --device {other}: auto | metal | cuda | cpu");
+            return 2;
+        }
+    };
+    let gpu = device.gpu();
+    let dev = match gpu.open() {
+        Ok(d) => d,
+        Err(e) => {
+            eprintln!("double train-b: {e}");
+            return 2;
+        }
+    };
+    let dir = decision_cfg.model_dir_in(data_dir);
+    if !dir.is_dir() {
+        eprintln!(
+            "double train-b: no checkpoint at {} (fetch it with the models downloader first)",
+            dir.display()
+        );
+        return 2;
+    }
+    let bundle = match Bundle::read(bundle) {
+        Ok(b) => b,
+        Err(e) => {
+            eprintln!("double train-b: bundle: {e:#}");
+            return 2;
+        }
+    };
+    let t = std::time::Instant::now();
+    let base = match Base::open(&dir, dev, gpu.dtype()) {
+        Ok(b) => b,
+        Err(e) => {
+            eprintln!("double train-b: load {}: {e:#}", dir.display());
+            return 1;
+        }
+    };
+    println!(
+        "loaded {} ({} tensors, {:?} {:?}) in {:.1}s; {} rows in the bundle",
+        dir.display(),
+        base.tensors.len(),
+        base.device.location(),
+        base.dtype,
+        t.elapsed().as_secs_f64(),
+        bundle.rows.len()
+    );
+    let mut cfg = TrainConfig::from_double(double_cfg);
+    cfg.venue = format!("node:{}", platform::process::hostname());
+    let mut on_progress = |p: &double::train_b::Progress| {
+        println!(
+            "step {}/{} epoch {}/{} loss {:.4} elapsed {}s",
+            p.step,
+            p.total_steps,
+            p.epoch,
+            p.epochs,
+            p.loss,
+            p.elapsed.as_secs()
+        );
+    };
+    let hooks = Hooks {
+        pause: &Never,
+        on_progress: &mut on_progress,
+    };
+    match TierB::train(&bundle, &cfg, &base, out, hooks) {
+        Ok(TrainOutcome::Finished(c)) => {
+            println!(
+                "candidate {} in {}: {} steps, train loss {:.4}, hold-out log-loss {:.4} acc {:.3} ece {:.3} (n {})",
+                c.id,
+                c.dir.display(),
+                c.manifest.steps,
+                c.manifest.metrics.train_loss,
+                c.manifest.metrics.holdout_log_loss,
+                c.manifest.metrics.accuracy,
+                c.manifest.metrics.ece,
+                c.manifest.metrics.n_holdout
+            );
+            0
+        }
+        Ok(TrainOutcome::Paused { step, checkpoint }) => {
+            println!(
+                "run cap reached at step {step}; checkpoint in {} — re-run to resume",
+                checkpoint.display()
+            );
+            3
+        }
+        Err(e) => {
+            eprintln!("double train-b: {e:#}");
+            1
+        }
+    }
+}
+
 async fn run() -> anyhow::Result<()> {
     // reqwest links `ring`, slack/relay link `aws-lc-rs`; with both present rustls
     // panics on the first TLS dial unless a process provider is chosen (21 §2.1).
@@ -1281,6 +1427,22 @@ async fn run() -> anyhow::Result<()> {
     match cli.cmd {
         Some(Cmd::Mcp { session }) => {
             return mcp::run(&data_dir, &listen(&data_dir, &config), session).await;
+        }
+        Some(Cmd::Double {
+            cmd: DoubleCmd::TrainB { bundle, out, device },
+        }) => {
+            let models_cfg: models::accelerator::ModelsConfig =
+                config.extract_inner("models").unwrap_or_default();
+            models::accelerator::set(models_cfg.accelerator);
+            let decision_cfg: decision::DecisionConfig =
+                config.extract_inner("decision").unwrap_or_default();
+            let double_cfg: double::DoubleConfig =
+                config.extract_inner("double").unwrap_or_default();
+            let code = tokio::task::spawn_blocking(move || {
+                double_train_b(&data_dir, &decision_cfg, &double_cfg, &bundle, &out, &device)
+            })
+            .await?;
+            std::process::exit(code);
         }
         Some(cmd) => return cmd_67(&data_dir, &config, cmd).await,
         None => {}

@@ -4,6 +4,7 @@
 //! ([`collate`]), calibration and confidence ([`postprocess`]), the gate and the log are ours.
 
 pub mod config;
+pub mod lora;
 pub mod model;
 pub mod weights;
 
@@ -159,15 +160,11 @@ impl Gpu {
             Gpu::None | Gpu::Cuda => DType::F32,
         }
     }
-}
 
-impl Loaded {
-    /// Open a laya checkpoint dir (`crate::engine::model_files(Kind::Laya)`, the Hugging Face layout) on
-    /// `gpu` or the CPU at `dtype`. A GPU that cannot be created — or CUDA in a binary built
-    /// without `decision/cuda` — falls back to CPU f32 with a warning.
-    pub fn open(dir: &Path, gpu: Gpu, dtype: DType) -> anyhow::Result<Loaded> {
-        let t = Instant::now();
-        let picked = match gpu {
+    /// Create the candle device, or say why it cannot be (no GPU; CUDA in a binary built
+    /// without `decision/cuda`).
+    pub fn open(self) -> std::result::Result<Device, String> {
+        match self {
             Gpu::None => Ok(Device::Cpu),
             Gpu::Metal => Device::new_metal(0).map_err(|e| format!("Metal unavailable ({e})")),
             #[cfg(feature = "cuda")]
@@ -176,7 +173,17 @@ impl Loaded {
             Gpu::Cuda => {
                 Err("this build has no CUDA (needs `--features decision/cuda` and nvcc)".into())
             }
-        };
+        }
+    }
+}
+
+impl Loaded {
+    /// Open a laya checkpoint dir (`crate::engine::model_files(Kind::Laya)`, the Hugging Face layout) on
+    /// `gpu` or the CPU at `dtype`. A GPU that cannot be created — or CUDA in a binary built
+    /// without `decision/cuda` — falls back to CPU f32 with a warning.
+    pub fn open(dir: &Path, gpu: Gpu, dtype: DType) -> anyhow::Result<Loaded> {
+        let t = Instant::now();
+        let picked = gpu.open();
         let (device, dtype) = match picked {
             Ok(d) => (d, dtype),
             Err(e) => {

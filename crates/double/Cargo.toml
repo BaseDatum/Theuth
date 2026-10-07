@@ -21,11 +21,16 @@ sha2 = { workspace = true }
 half = { workspace = true }
 uuid = { workspace = true }
 ts-rs = { workspace = true, optional = true }
+# 126 W3 Tier B: the LoRA trainer over the frozen laya checkpoint (`decision::candle::lora`).
+decision = { workspace = true }
+candle-core = { workspace = true }
 
 [dev-dependencies]
 tempfile = "3"
 tokio = { workspace = true }
 serde_yaml = { workspace = true }
+# The trainer tests need the differentiable encoder; dev-only, so `t` is built without it.
+decision = { workspace = true, features = ["train"] }
 
 [features]
 ts = ["dep:ts-rs", "runtime/ts", "tools/ts"]

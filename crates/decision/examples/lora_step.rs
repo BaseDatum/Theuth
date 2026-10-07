@@ -1,86 +1,25 @@
-//! 126 W0 spike: can candle 0.11 train a LoRA adapter through the vendored laya encoder?
+//! 126 W0 spike, now a thin client of `decision::candle::lora` (W3): train a rank-`r` LoRA
+//! through the vendored laya encoder on one fixed synthetic batch and print per-step timings.
 //!
-//! Needs `--features train` (the encoder's rotary call becomes `rope_slow`, which has a
-//! backward). Loads the real checkpoint from `~/.theuth/models/decision/` (or
-//! `$DECISION_MODEL_DIR`, as `tests/model.rs` does), keeps every base tensor frozen, attaches a
-//! rank-`r` LoRA to `Wqkv` / `Wo` / `Wi` / `Wo` of every encoder layer, and runs `--steps`
-//! AdamW steps on one fixed synthetic batch with a Choice-style cross-entropy on the decision
-//! head's logits. Prints per-step wall time and loss; exits 0 when the loss at the last step is
-//! below the loss at the first.
+//! Needs `--features train` (the encoder's rope / softmax / biased layer-norm become their
+//! differentiable siblings). Loads the real checkpoint from `~/.theuth/models/decision/` (or
+//! `$DECISION_MODEL_DIR`, as `tests/model.rs` does). **Do not run it on a machine someone is
+//! using**: a Metal step saturates the GPU (126 as-built W0).
 //!
 //! ```text
 //! cargo run -p decision --features train --example lora_step -- [--device metal|cpu]
-//!     [--batch 8] [--seq 512] [--rank 8] [--steps 50] [--lr 1e-3] [--probe] [--save DIR]
+//!     [--batch 2] [--seq 256] [--rank 8] [--steps 50] [--lr 1e-4] [--probe] [--save DIR]
 //! ```
 //!
-//! `--probe` only runs one `backward()` through the stock `candle_nn::rotary_emb::rope` and
-//! through `rope_slow` on an encoder-shaped tensor and prints what each returns.
-//!
-//! How the adapter reaches the frozen model without touching `model.rs`: the model's `Linear`s
-//! are private, so instead of wrapping them the adapter is applied through the `VarBuilder`.
-//! [`LoraBackend`] serves every checkpoint tensor from a device-resident cache and, for the four
-//! adapted matrices per layer, returns `W + scale · (B · A)` with `A`, `B` `Var`s from a
-//! `VarMap`. The sum is a graph node, so `backward()` reaches `A` and `B`; the model is rebuilt
-//! from the `VarBuilder` every step (112 rank-8 matmuls — the base tensors are only cloned)
-//! so the merged weights follow the optimiser. Mathematically the same LoRA as a wrapped
-//! `Linear`; the shipped `lora.rs` (W3) should wrap the `Linear`s instead so the forward does
-//! not materialise merged weights.
+//! `--probe` only runs one `backward()` through each fused candle-nn op the forward uses and
+//! through its primitive-composed sibling, and prints what each returns.
 
-use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::Instant;
 
-use candle_core::{DType, Device, Error, Result, Shape, Tensor, Var};
-use candle_nn::var_builder::SimpleBackend;
-use candle_nn::{AdamW, Init, Optimizer, ParamsAdamW, VarBuilder, VarMap};
-use decision::candle::config::{AgentConfig, EncoderConfig};
-use decision::candle::model::DecisionModel;
-use decision::candle::weights::{SanitizedBackend, sanitize_name};
+use candle_core::{DType, Device, Result, Tensor, Var};
+use decision::candle::lora::{AdamW, Base, Lora, TRAIN_BUILD, weighted_nll_sum};
 use decision::engine::model_files;
-
-/// Serves the frozen checkpoint from device memory and merges the LoRA delta on lookup.
-struct LoraBackend {
-    /// Sanitized name -> tensor on the device in the model dtype (frozen, no graph).
-    base: HashMap<String, Tensor>,
-    /// Sanitized name -> `(A (r, in), B (out, r))`, f32 `Var`-backed tensors.
-    adapters: HashMap<String, (Tensor, Tensor)>,
-    scale: f64,
-}
-
-impl LoraBackend {
-    fn merged(&self, name: &str, dtype: DType) -> Result<Tensor> {
-        let base = self
-            .base
-            .get(name)
-            .ok_or_else(|| Error::CannotFindTensor { path: name.into() })?;
-        match self.adapters.get(name) {
-            // Cast the (tiny) factors first so the weight-sized delta and its gradient are
-            // in the model dtype (f16 on Metal); scale folds into B.
-            Some((a, b)) => {
-                base + (b * self.scale)?.to_dtype(dtype)?.matmul(&a.to_dtype(dtype)?)?
-            }
-            None => Ok(base.clone()),
-        }
-    }
-}
-
-impl SimpleBackend for LoraBackend {
-    fn get(&self, s: Shape, name: &str, _: Init, dtype: DType, _: &Device) -> Result<Tensor> {
-        let tensor = self.merged(name, dtype)?;
-        if tensor.shape() != &s {
-            candle_core::bail!("shape mismatch for {name}: {s:?} <> {:?}", tensor.shape());
-        }
-        Ok(tensor)
-    }
-
-    fn get_unchecked(&self, name: &str, dtype: DType, _: &Device) -> Result<Tensor> {
-        self.merged(name, dtype)
-    }
-
-    fn contains_tensor(&self, name: &str) -> bool {
-        self.base.contains_key(name)
-    }
-}
 
 struct Args {
     device: String,
@@ -96,11 +35,11 @@ struct Args {
 fn parse_args() -> Args {
     let mut a = Args {
         device: "metal".into(),
-        batch: 8,
-        seq: 512,
+        batch: 2,
+        seq: 256,
         rank: 8,
         steps: 50,
-        lr: 1e-3,
+        lr: 1e-4,
         probe: false,
         save: None,
     };
@@ -203,6 +142,7 @@ fn main() -> anyhow::Result<()> {
         probe(&device)?;
         return Ok(());
     }
+    anyhow::ensure!(TRAIN_BUILD, "built without the `train` feature: the graph is cut");
     // Same dtype rule as `candle::Gpu::dtype`: f16 on Metal, f32 on CPU.
     let dtype = if device.is_metal() {
         DType::F16
@@ -210,83 +150,27 @@ fn main() -> anyhow::Result<()> {
         DType::F32
     };
 
-    // ---- load the frozen checkpoint the way `Loaded::open` does (crates/decision/src/candle/mod.rs)
-    let dir = model_dir();
     let t = Instant::now();
-    let agent_raw: serde_json::Value =
-        serde_json::from_slice(&std::fs::read(dir.join("rl_agent_config.json"))?)?;
-    let encoder_raw: serde_json::Value =
-        serde_json::from_slice(&std::fs::read(dir.join("encoder/config.json"))?)?;
-    let enc = EncoderConfig::from_value(&encoder_raw)?;
-    let agent = AgentConfig::from_value(&agent_raw, enc.max_position_embeddings)?;
-    // SAFETY: read-only for the process lifetime, as in `Loaded::open`.
-    let mmaped =
-        unsafe { candle_core::safetensors::MmapedSafetensors::new(dir.join("model.safetensors"))? };
-    let stored: Vec<String> = mmaped.tensors().into_iter().map(|(n, _)| n).collect();
-    let sanitized = SanitizedBackend::new(Box::new(mmaped), stored.iter().cloned());
-    let mut base = HashMap::with_capacity(stored.len());
-    for name in &stored {
-        let name = sanitize_name(name);
-        let tensor = sanitized.get_unchecked(&name, dtype, &device)?;
-        base.insert(name, tensor);
-    }
-    let base_params: usize = base.values().map(Tensor::elem_count).sum();
+    let base = Base::open(&model_dir(), device.clone(), dtype)?;
+    let base_params: usize = base.tensors.values().map(Tensor::elem_count).sum();
     println!(
         "loaded {} tensors ({base_params} params, {dtype:?}) on {:?} in {:.1}s",
-        base.len(),
+        base.tensors.len(),
         device.location(),
         t.elapsed().as_secs_f64()
     );
-
-    // ---- rank-r LoRA on Wqkv / Wo / Wi / Wo of every encoder layer, f32 Vars in a VarMap
-    let varmap = VarMap::new();
-    let mut adapters = HashMap::new();
-    for layer in 0..enc.num_hidden_layers {
-        for matrix in ["attn.Wqkv", "attn.Wo", "mlp.Wi", "mlp.Wo"] {
-            let name = format!("encoder.layers.{layer}.{matrix}.weight");
-            let (out, inp) = base[&name].dims2()?;
-            let a = varmap.get(
-                (args.rank, inp),
-                &format!("{name}.lora_a"),
-                Init::Randn {
-                    mean: 0.,
-                    stdev: 1. / (inp as f64).sqrt(),
-                },
-                DType::F32,
-                &device,
-            )?;
-            let b = varmap.get(
-                (out, args.rank),
-                &format!("{name}.lora_b"),
-                Init::Const(0.),
-                DType::F32,
-                &device,
-            )?;
-            adapters.insert(name, (a, b));
-        }
-    }
-    let lora_params: usize = varmap
-        .all_vars()
-        .iter()
-        .map(|v| v.as_tensor().elem_count())
-        .sum();
+    let lora = Lora::new(&base, args.rank, 0x126)?;
     println!(
-        "lora rank {}: {} matrices, {lora_params} trainable params ({:.1} MB f32)",
+        "lora rank {}: {} trainable params ({:.1} MB f32)",
         args.rank,
-        adapters.len(),
-        lora_params as f64 * 4. / 1e6
+        lora.param_count(),
+        lora.param_count() as f64 * 4. / 1e6
     );
-    let backend = LoraBackend {
-        base,
-        adapters,
-        scale: 2.0, // alpha = 2r
-    };
-    let vb = VarBuilder::from_backend(Box::new(backend), dtype, device.clone());
 
     // ---- one fixed synthetic batch: random ids, no padding, 4 marker slots, Choice qtype 0
     let (b, s, k) = (args.batch, args.seq, 4usize);
     let mut rng = Rng(0x126_0007);
-    let ids: Vec<u32> = (0..b * s).map(|_| rng.below(enc.vocab_size) as u32).collect();
+    let ids: Vec<u32> = (0..b * s).map(|_| rng.below(base.enc.vocab_size) as u32).collect();
     let mut pos = Vec::with_capacity(b * k);
     for _ in 0..b {
         let mut row: Vec<i64> = (0..k).map(|_| rng.below(s - 1) as i64 + 1).collect();
@@ -300,14 +184,9 @@ fn main() -> anyhow::Result<()> {
     let marker_mask = Tensor::ones((b, k), DType::U8, &device)?;
     let qtype = Tensor::zeros(b, DType::U32, &device)?;
     let labels = Tensor::from_vec(labels, b, &device)?;
+    let weights = Tensor::full(1. / b as f32, b, &device)?;
 
-    let mut opt = AdamW::new(
-        varmap.all_vars(),
-        ParamsAdamW {
-            lr: args.lr,
-            ..Default::default()
-        },
-    )?;
+    let mut opt = AdamW::new(lora.varmap(), args.lr)?;
 
     println!("batch {b} x seq {s}, {} steps, lr {}", args.steps, args.lr);
     println!("step  load_ms  fwd_ms  bwd_ms  opt_ms  total_ms  loss");
@@ -315,35 +194,16 @@ fn main() -> anyhow::Result<()> {
     let mut steady = Vec::new();
     for step in 1..=args.steps {
         let t0 = Instant::now();
-        let model = DecisionModel::load(vb.clone(), &enc, &agent, dtype, &device)?;
+        let model = base.model(Some(&lora), true)?;
         device.synchronize()?;
         let t_load = t0.elapsed();
         let out = model.forward(&input_ids, &attention_mask, &marker_pos, &marker_mask, &qtype)?;
-        let loss = candle_nn::loss::cross_entropy(&out.logits, &labels)?;
+        let loss = weighted_nll_sum(&out.logits, &labels, &weights)?;
         let loss_v = loss.to_scalar::<f32>()?;
         let t_fwd = t0.elapsed() - t_load;
         let grads = loss.backward()?;
         device.synchronize()?;
         let t_bwd = t0.elapsed() - t_load - t_fwd;
-        if step == 1 {
-            // Does the gradient reach the q and k thirds of Wqkv (they pass through rope) or
-            // only the v third (which bypasses it)? Stock `rope` cuts the graph silently.
-            let vars = varmap.data().lock().unwrap();
-            for layer in [0, enc.num_hidden_layers - 1] {
-                let name = format!("encoder.layers.{layer}.attn.Wqkv.weight.lora_b");
-                let g = grads.get(vars[&name].as_tensor());
-                let norms: Vec<String> = (0..3)
-                    .map(|i| match g {
-                        Some(g) => g
-                            .narrow(0, i * enc.hidden_size, enc.hidden_size)
-                            .and_then(|t| t.sqr()?.sum_all()?.sqrt()?.to_scalar::<f32>())
-                            .map_or_else(|e| e.to_string(), |n| format!("{n:.3e}")),
-                        None => "none".into(),
-                    })
-                    .collect();
-                println!("  layer {layer} Wqkv.lora_b grad norm q {} | k {} | v {}", norms[0], norms[1], norms[2]);
-            }
-        }
         opt.step(&grads)?;
         device.synchronize()?;
         let total = t0.elapsed();
@@ -380,7 +240,6 @@ fn main() -> anyhow::Result<()> {
         mem.footprint as f64 / 1e6,
         mem.resident as f64 / 1e6
     );
-    // A 5,000-row epoch at this batch size, from the steady-state mean.
     println!(
         "5,000-row epoch at batch {b}: {:.1} min",
         5000f64 / b as f64 * mean / 60e3
@@ -389,7 +248,7 @@ fn main() -> anyhow::Result<()> {
     if let Some(dir) = &args.save {
         std::fs::create_dir_all(dir)?;
         let path = dir.join("adapter.safetensors");
-        varmap.save(&path)?;
+        lora.save(&path)?;
         println!(
             "saved {} ({} bytes)",
             path.display(),
@@ -397,7 +256,6 @@ fn main() -> anyhow::Result<()> {
         );
     }
 
-    // The gradient-flow check: on a fixed batch the loss must fall.
     let (first, last) = (losses[0], losses[losses.len() - 1]);
     anyhow::ensure!(last < first, "loss did not fall: {first} -> {last}");
     Ok(())
