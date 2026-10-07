@@ -11,6 +11,7 @@ import { PairScreen } from '@/components/link/PairScreen'
 import { Toaster } from '@/components/ui/sonner'
 import { describe } from '@/lib/describe'
 import { installDictationListeners, refreshStatus, setModel } from '@/lib/dictation'
+import { companionAlive, onCompanionAlive } from '@/lib/companion'
 import { FocusTracker, Throttle, deriveFocus, typeCounts } from '@/lib/event-focus'
 import { useMeetingHotkeys } from '@/lib/meeting-hotkeys'
 import { useMeetingSettings } from '@/lib/meeting-settings'
@@ -398,17 +399,32 @@ function useEventSideEffects(st: Stores): void {
       }
     }
     const toasts = new Throttle(() => toast('Events dropped, resyncing'), LAGGED_TOAST_MS, false)
+    // 130 D8: while the macOS companion is alive it owns banners and the menu bar count, so the
+    // webview posts no notifications and clears its tray `●N` title; both come back when it exits.
+    let companion = false
+    const badge = (n: number) =>
+      void TrayIcon.getById('main').then((t) => t?.setTitle(n ? `●${n}` : null))
+    const setCompanion = (alive: boolean) => {
+      if (alive === companion) return
+      companion = alive
+      if (isDesktop()) badge(alive ? 0 : st.approvals.getState().pending.length)
+    }
+    void companionAlive().then(setCompanion)
     const offs = [
+      onCompanionAlive(setCompanion),
       on('Lagged', () => {
         resyncs.call()
         toasts.call()
       }),
       on(
         'ApprovalRequested',
-        (e) => void notifyIfHidden(`Approval: ${e.tool}`, describe(e.tool, e.args).join('\n')),
+        (e) => {
+          if (companion) return
+          void notifyIfHidden(`Approval: ${e.tool}`, describe(e.tool, e.args).join('\n'))
+        },
       ),
       on('TurnFinished', (e) => {
-        if (visible(e.session)) return
+        if (companion || visible(e.session)) return
         const slice = st.sessions.getState().sessions[e.session]
         const summary = qc
           .getQueryData<SessionSummary[]>(queryKeys.sessions)
@@ -424,10 +440,8 @@ function useEventSideEffects(st: Stores): void {
         if (to) router.history.push(`/c/${to}`)
       }),
       st.approvals.subscribe((s, prev) => {
-        if (!isDesktop() || s.pending.length === prev.pending.length) return
-        void TrayIcon.getById('main').then((t) =>
-          t?.setTitle(s.pending.length ? `●${s.pending.length}` : null),
-        )
+        if (!isDesktop() || companion || s.pending.length === prev.pending.length) return
+        badge(s.pending.length)
       }),
     ]
     return () => {
