@@ -38,7 +38,7 @@ export function DecisionScreen({ item }: { item: AttentionItem }) {
   const options = p?.options ?? []
   // 126 §9.2: at L1 the double's option is the pick until the owner touches the card; the packet's `recommended` badge stays.
   const prediction = usePrediction(item.packet, item.decision, item.id)
-  const doublePick = preselect(prediction, options.map((o) => o.label))
+  const doublePick = preselect(prediction, options.map((o: { label: string }) => o.label))
   useEffect(() => {
     if (doublePick !== null) setPicked((cur) => (cur === undefined ? doublePick : cur))
   }, [doublePick])

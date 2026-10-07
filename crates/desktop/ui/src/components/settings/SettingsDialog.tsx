@@ -18,6 +18,7 @@ import {
   Search as SearchIcon,
   Settings2,
   Share2,
+  UserRoundCheck,
   ShieldCheck,
   X,
 } from 'lucide-react'
@@ -29,6 +30,7 @@ import { Chat } from '@/components/settings/Chat'
 import { Communication } from '@/components/settings/Communication'
 import { Computer } from '@/components/settings/Computer'
 import { Connections } from '@/components/settings/Connections'
+import { Double } from '@/components/settings/Double'
 import { General } from '@/components/settings/General'
 import { Link } from '@/components/settings/Link'
 import { Loop } from '@/components/settings/Loop'
@@ -53,6 +55,7 @@ const TABS = [
   ['voice-key', 'Voice key', AudioLines],
   ['search', 'Search', SearchIcon],
   ['labs', 'Labs', FlaskConical],
+  ['double', 'Double', UserRoundCheck],
   ['agents', 'Harnesses', Bot],
   ['mesh', 'Mesh', Share2],
   ['link', 'Link', Link2],
@@ -90,6 +93,7 @@ function Pane({ tab, session, peer, onClose }: Omit<Props, 'onTab'>) {
       {tab === 'voice-key' && <VoiceKey />}
       {tab === 'search' && <Search />}
       {tab === 'labs' && <Labs />}
+      {tab === 'double' && <Double />}
       {tab === 'agents' && <Agents />}
       {tab === 'mesh' && <Mesh />}
       {tab === 'link' && <Link />}
