@@ -1,0 +1,11 @@
+{
+  "issue": "consent_wall",
+  "tier_hint": "fetch",
+  "method": "body",
+  "min_words": 0,
+  "must_contain": [],
+  "must_not_contain": [
+    "We value your privacy",
+    "Accept All"
+  ]
+}

@@ -1,0 +1,14 @@
+{
+  "issue": null,
+  "tier_hint": "fetch",
+  "method": "scored",
+  "min_words": 340,
+  "must_contain": [
+    "# Mooring fees 2027"
+  ],
+  "must_not_contain": [
+    "Berths",
+    "__VIEWSTATE",
+    "\u00a9 2026 Harbour Office"
+  ]
+}

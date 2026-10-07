@@ -1,0 +1,18 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Verify you are human</title>
+  <meta name="robots" content="noindex,nofollow">
+  <script src="https://www.google.com/recaptcha/api.js" async defer></script>
+</head>
+<body>
+  <h1>One more step</h1>
+  <p>Please complete the security check to access example-shop.test.</p>
+  <form id="captcha-form" method="post" action="/verify">
+    <div class="g-recaptcha" data-sitekey="6LcExampleSiteKey_AAAAAAAAAAAAAAAAAAAAAAAAA"></div>
+    <input type="hidden" name="return_to" value="/catalog">
+    <input type="submit" value="Continue">
+  </form>
+</body>
+</html>

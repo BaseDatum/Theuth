@@ -1,0 +1,15 @@
+{
+  "issue": null,
+  "tier_hint": "fetch",
+  "method": "main",
+  "min_words": 300,
+  "must_contain": [
+    "# Harbour update: October",
+    "### Night ferry now running",
+    "Partner 12"
+  ],
+  "must_not_contain": [
+    "Updates",
+    "\u00a9 2026 Harbour Authority"
+  ]
+}
