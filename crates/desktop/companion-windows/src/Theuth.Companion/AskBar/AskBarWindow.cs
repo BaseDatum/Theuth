@@ -1,7 +1,6 @@
 using System.ComponentModel;
 using Microsoft.UI;
 using Microsoft.UI.Composition.SystemBackdrops;
-using Microsoft.UI.Input;
 using Microsoft.UI.Windowing;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Automation;
@@ -11,33 +10,38 @@ using Microsoft.UI.Xaml.Input;
 using Microsoft.UI.Xaml.Media;
 using Microsoft.UI.Xaml.Shapes;
 using Theuth.Companion.Core;
+using Theuth.Companion.Interop;
+using Theuth.Companion.Ui;
 using Theuth.Companion.Voice;
 using Windows.Graphics;
 using Windows.System;
-using Windows.UI.Core;
+using Windows.Win32;
+using Windows.Win32.Foundation;
+using Windows.Win32.UI.WindowsAndMessaging;
 using DispatcherQueue = Microsoft.UI.Dispatching.DispatcherQueue;
 using DispatcherQueueTimer = Microsoft.UI.Dispatching.DispatcherQueueTimer;
 
 namespace Theuth.Companion.AskBar;
 
 /// <summary>
-/// The Ask bar (design 134 §4.3, D7; mock round 2 frame 4): a borderless, topmost, switcher-hidden 480 epx window at the
-/// top-centre of the display under the mouse — the field "Ask theuth…" (<c>AutomationId="ask-field"</c>), the mic glyph,
-/// the hints row and the receipt row (<c>receipt-row</c>). It is <see cref="AskBarModel"/>'s surface: the model decides,
-/// this renders; <see cref="VoiceRecorder"/> is its microphone. Summoned it takes the foreground (the WM_HOTKEY grant makes
-/// that legitimate) and on Esc hands it back to the window it took it from (D5, verified in spike S3). Keys go through
-/// the Ask-bar scope of the key table (Enter sends, Esc undoes then closes, Ctrl+O opens the desk's session, Ctrl+/ the
-/// legend); the live dictation owns the field until it lands (finals, then the open partial after a space — a TextBox
-/// cannot mute a range, so the partial is told apart by the status "listening…" and the mic pulse).
+/// The Ask bar (design 134 §4.3, D7; mock round 2 frame 4): a <see cref="ToolWindow"/> like the Attention panel — 480 epx,
+/// borderless, topmost, hidden from Alt+Tab, acrylic, excluded from capture unless <c>--shareable</c> — at the top-centre of
+/// the display under the mouse: the field "Ask theuth…" (<c>AutomationId="ask-field"</c>), the mic glyph, the hints row and
+/// the receipt row (<c>receipt-row</c>). It is <see cref="AskBarModel"/>'s surface: the model decides, this renders;
+/// <see cref="VoiceRecorder"/> is its microphone. Summoned it takes the foreground (the WM_HOTKEY grant makes that
+/// legitimate) and on Esc hands it back to the window it took it from (D5, spike S3); losing the foreground closes it
+/// (Swift: <c>didResignKey</c>), except under a probe. Keys go through the Ask-bar scope of the key table (Enter sends, Esc
+/// undoes then closes, Ctrl+O opens the desk's session, Ctrl+/ the legend); the live dictation owns the field until it
+/// lands (finals, then the open partial after a space — a TextBox cannot mute a range, so the partial is told apart by the
+/// status "listening…" and the mic pulse).
 /// </summary>
-internal sealed partial class AskBarWindow : Window, IAskBarSurface
+internal sealed partial class AskBarWindow : ToolWindow, IAskBarSurface
 {
     public const int Width = 480;
 
     private readonly Store store;
     private readonly DispatcherQueue dispatcher;
     private readonly VoiceRecorder recorder;
-    private readonly nint hwnd;
     private readonly Grid root;
     private readonly TextBox field;
     private readonly FontIcon mic;
@@ -52,19 +56,18 @@ internal sealed partial class AskBarWindow : Window, IAskBarSurface
     private readonly Rectangle holdBar;
     private readonly Brush ink, ink2, sand, carnelian, malachite, rule;
     private AskBarModel? model;
-    private nint previousForeground;
+    private HWND previousForeground;
     private bool settingText;
     private DispatcherQueueTimer? pressPoll;
     private int pressVk;
     private bool contentLoaded;
 
     public AskBarWindow(Store store, DispatcherQueue dispatcher)
+        : base("Ask theuth", default, excludeFromCapture: !Flags.Shareable)
     {
         this.store = store;
         this.dispatcher = dispatcher;
         recorder = new VoiceRecorder(dispatcher);
-        Title = "Ask theuth";
-        hwnd = WinRT.Interop.WindowNative.GetWindowHandle(this);
 
         bool dark = Application.Current.RequestedTheme == ApplicationTheme.Dark;
         ink = Solid(dark ? 0xe8dcc8u : 0x1a1612u);
@@ -183,24 +186,7 @@ internal sealed partial class AskBarWindow : Window, IAskBarSurface
             Fit();
         };
         Content = root;
-
-        // Window chrome: borderless, topmost, hidden from Alt+Tab and the taskbar, never resizable (D5's shape).
-        if (AppWindow.Presenter is OverlappedPresenter p)
-        {
-            p.SetBorderAndTitleBar(false, false);
-            p.IsResizable = false;
-            p.IsMaximizable = false;
-            p.IsMinimizable = false;
-            p.IsAlwaysOnTop = true;
-        }
-        AppWindow.IsShownInSwitchers = false;
-        AppWindow.Closing += (_, e) =>
-        {
-            e.Cancel = true; // Alt+F4: close like Esc, never destroy the window
-            model?.Close(returnFocus: true);
-        };
-        if (!Flags.Shareable) Win32.SetWindowDisplayAffinity(hwnd, Win32.WdaExcludeFromCapture); // C11
-        AppWindow.Resize(new SizeInt32(Physical(Width), Physical(96)));
+        Place(new RectInt32(0, 0, Physical(Width), Physical(96)));
 
         recorder.OnChunk = c => model?.Feed(c);
         recorder.OnFailed = why => model?.MicrophoneFailed(why);
@@ -217,29 +203,41 @@ internal sealed partial class AskBarWindow : Window, IAskBarSurface
 
     public VoiceRecorder Recorder => recorder;
 
-    public nint Hwnd => hwnd;
+    // MARK: ToolWindow
 
-    public bool IsVisible => AppWindow.IsVisible;
+    /// <summary>Alt+F4: close like Esc, never destroy the window.</summary>
+    protected override void OnCloseRequested() => model?.Close(returnFocus: true);
+
+    /// <summary>Losing the foreground closes the bar (Swift's <c>didResignKey</c>); a probe keeps it (the harness activates other windows).</summary>
+    protected override void OnActivate(bool active, HWND other)
+    {
+        if (active || model is not { IsOpen: true, Automated: false }) return;
+        if (!IsShown) return;
+        dispatcher.TryEnqueue(() =>
+        {
+            if (model is { IsOpen: true } && !IsForeground) model.Close(returnFocus: false);
+        });
+    }
 
     // MARK: IAskBarSurface
 
     public void Show(bool activate)
     {
-        if (activate && !AppWindow.IsVisible)
+        if (activate && !IsShown)
         {
-            var fg = Win32.GetForegroundWindow();
-            previousForeground = fg == hwnd ? 0 : fg;
+            var fg = PInvoke.GetForegroundWindow();
+            previousForeground = fg == Hwnd || Win32.IsOurs(fg) ? default : fg;
         }
-        Place();
+        PlaceAtMouse();
         if (activate)
         {
-            Activate();
+            if (!ShowActive()) Log.Write("ask bar: Windows refused the foreground");
             field.Focus(FocusState.Programmatic);
             field.SelectionStart = field.Text.Length;
         }
         else
         {
-            AppWindow.Show(false);
+            ShowPassive();
         }
         Fit();
     }
@@ -247,10 +245,10 @@ internal sealed partial class AskBarWindow : Window, IAskBarSurface
     public void Hide(bool returnFocus)
     {
         StopPressPoll();
-        AppWindow.Hide();
+        HideWindow();
         var prev = previousForeground;
-        previousForeground = 0;
-        if (returnFocus && prev != 0) Win32.SetForegroundWindow(prev);
+        previousForeground = default;
+        if (returnFocus && !prev.IsNull) Win32.Foreground(prev);
     }
 
     public Task<string?> StartMicrophoneAsync()
@@ -267,18 +265,15 @@ internal sealed partial class AskBarWindow : Window, IAskBarSurface
 
     public void CancelMicrophone() => recorder.Cancel();
 
-    public void OpenUrl(Uri url)
-    {
-        Log.Write($"open {url.OriginalString}");
-        _ = Launcher.LaunchUriAsync(url);
-    }
+    public void OpenUrl(Uri url) => _ = Links.Open(url);
 
-    // MARK: the hotkey (W2's RegisterHotKey delivers the key-down; the release is seen here)
+    // MARK: the hotkey (W2's RegisterHotKey delivers the key-down; the release is seen here or reported by W2's Hotkeys.Released)
 
     /// <summary>
-    /// W2 calls this when Ctrl+Shift+Space goes down and the press is the Ask bar's (nothing needs you). The key-up never
-    /// reaches <c>WM_HOTKEY</c>, so the release is observed: the window's own KeyUp once it has the foreground, and a
-    /// 50 ms poll of the key's physical state (<c>GetAsyncKeyState</c>) for a release before that.
+    /// The hotkey went down and the press is the Ask bar's (W2 routes it here when nothing needs you — see
+    /// <see cref="AskBarInstall"/>). The key-up never reaches <c>WM_HOTKEY</c>, so the release is observed: the window's own
+    /// KeyUp once it has the foreground, a 50 ms poll of the key's physical state before that, or W2's
+    /// <c>Hotkeys.Released</c> — whichever comes first; the rest are no-ops.
     /// </summary>
     public void HotkeyDown(ushort keyCode = VirtualKeys.Space)
     {
@@ -288,7 +283,7 @@ internal sealed partial class AskBarWindow : Window, IAskBarSurface
         if (!model.Automated) StartPressPoll();
     }
 
-    /// <summary>The key came up (W2 may also call this; idempotent).</summary>
+    /// <summary>The key came up (idempotent).</summary>
     public void HotkeyUp()
     {
         if (pressVk == 0) return;
@@ -305,7 +300,7 @@ internal sealed partial class AskBarWindow : Window, IAskBarSurface
         pressPoll.IsRepeating = true;
         pressPoll.Tick += (_, _) =>
         {
-            if (pressVk != 0 && !Win32.IsKeyDown(pressVk)) HotkeyUp();
+            if (pressVk != 0 && (PInvoke.GetAsyncKeyState(pressVk) & 0x8000) == 0) HotkeyUp();
         };
         pressPoll.Start();
     }
@@ -326,8 +321,7 @@ internal sealed partial class AskBarWindow : Window, IAskBarSurface
             e.Handled = true; // the held hotkey's own key must not type
             return;
         }
-        var press = KeyPressFrom(e);
-        if (model.HandleKey(press)) e.Handled = true;
+        if (model.HandleKey(KeyInput.From(e))) e.Handled = true;
     }
 
     private void OnPreviewKeyUp(object sender, KeyRoutedEventArgs e)
@@ -338,33 +332,6 @@ internal sealed partial class AskBarWindow : Window, IAskBarSurface
             HotkeyUp();
         }
     }
-
-    /// <summary>A WinUI key event as the key table reads it (134 as-built W1 §5: chars without modifiers, VK code, modifier state).</summary>
-    internal static KeyPress KeyPressFrom(KeyRoutedEventArgs e)
-    {
-        var mods = ChordModifiers.None;
-        if (Down(VirtualKey.Control)) mods |= ChordModifiers.Control;
-        if (Down(VirtualKey.Shift)) mods |= ChordModifiers.Shift;
-        if (Down(VirtualKey.Menu)) mods |= ChordModifiers.Alt;
-        if (Down(VirtualKey.LeftWindows) || Down(VirtualKey.RightWindows)) mods |= ChordModifiers.Win;
-        var vk = (ushort)e.Key;
-        if (e.Key == VirtualKey.Enter && e.KeyStatus.IsExtendedKey) vk = VirtualKeys.NumpadEnter;
-        return new KeyPress(CharsFor(e.Key), vk, mods);
-    }
-
-    private static bool Down(VirtualKey k) => InputKeyboardSource.GetKeyStateForCurrentThread(k).HasFlag(CoreVirtualKeyStates.Down);
-
-    /// <summary>The key's character ignoring modifiers for the keys the table binds; "" for special keys.</summary>
-    private static string CharsFor(VirtualKey k) => k switch
-    {
-        >= VirtualKey.A and <= VirtualKey.Z => ((char)('a' + (k - VirtualKey.A))).ToString(),
-        >= VirtualKey.Number0 and <= VirtualKey.Number9 => ((char)('0' + (k - VirtualKey.Number0))).ToString(),
-        >= VirtualKey.NumberPad0 and <= VirtualKey.NumberPad9 => ((char)('0' + (k - VirtualKey.NumberPad0))).ToString(),
-        (VirtualKey)VirtualKeys.Oem2Slash => "/",
-        (VirtualKey)VirtualKeys.OemComma => ",",
-        (VirtualKey)VirtualKeys.OemPeriod => ".",
-        _ => "",
-    };
 
     // MARK: rendering
 
@@ -442,13 +409,12 @@ internal sealed partial class AskBarWindow : Window, IAskBarSurface
 
     // MARK: placement (top-centre of the display under the mouse, ≈ 20 % down, like the Attention panel's `.mouse`)
 
-    private int Physical(double epx) => (int)Math.Round(epx * Win32.GetDpiForWindow(hwnd) / 96.0);
+    private int Physical(double epx) => (int)Math.Round(epx * Scale);
 
-    private void Place()
+    private void PlaceAtMouse()
     {
-        var area = Win32.GetCursorPos(out var cursor)
-            ? DisplayArea.GetFromPoint(new PointInt32(cursor.X, cursor.Y), DisplayAreaFallback.Primary)
-            : DisplayArea.Primary;
+        var cursor = Win32.Cursor();
+        var area = DisplayArea.GetFromPoint(new PointInt32(cursor.X, cursor.Y), DisplayAreaFallback.Primary);
         var wa = area.WorkArea;
         int w = Physical(Width);
         int h = Math.Max(AppWindow.Size.Height, Physical(72));
@@ -456,16 +422,20 @@ internal sealed partial class AskBarWindow : Window, IAskBarSurface
         int y = wa.Y + (int)(wa.Height * 0.2);
         x = Math.Min(Math.Max(wa.X + 8, x), wa.X + wa.Width - w - 8);
         y = Math.Min(Math.Max(wa.Y + 8, y), wa.Y + wa.Height - h - 8);
-        AppWindow.MoveAndResize(new RectInt32(x, y, w, h));
+        Place(new RectInt32(x, y, w, h));
     }
 
-    /// <summary>Size the window to its content (the receipt row comes and goes).</summary>
+    /// <summary>Size the window to its content (the receipt row comes and goes and grows to two lines).</summary>
     private void Fit()
     {
         if (!contentLoaded || root.XamlRoot is null) return;
         root.Measure(new Windows.Foundation.Size(Width, double.PositiveInfinity));
         var h = Physical(Math.Max(72, root.DesiredSize.Height));
-        if (Math.Abs(AppWindow.Size.Height - h) > 1) AppWindow.Resize(new SizeInt32(Physical(Width), h));
+        if (Math.Abs(AppWindow.Size.Height - h) > 1)
+        {
+            var p = AppWindow.Position;
+            Place(new RectInt32(p.X, p.Y, Physical(Width), h));
+        }
     }
 
     // MARK: brushes and small views

@@ -459,6 +459,9 @@ public class StoreModel : INotifyPropertyChanged
                     ok = await engine.ResolveApprovalAsync(dn.ApprovalId, Decision.Deny);
                     if (ok && dn.Session is { } s) await engine.SteerAsync(s, dn.Note);
                     break;
+                case CardAction.HireAgent ha: await engine.AgentApproveAsync(ha.Name); break; // 134 W2
+                case CardAction.DeclineHire dh: await engine.AgentRemoveAsync(dh.Name, null); break; // 134 W2
+                case CardAction.Unblock ub: await engine.TaskMoveAsync(ub.Task, "todo", null); break; // 134 W2
                 default: return;
             }
             Receipt = ok ? new ReceiptRow.Sent($"{h.Who} · {h.Label}") : ReceiptRow.Stale.Instance;

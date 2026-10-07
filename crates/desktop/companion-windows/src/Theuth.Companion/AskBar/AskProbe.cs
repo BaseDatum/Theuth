@@ -40,7 +40,7 @@ internal static class AskProbe
         {
             install.Model.Open(); // activated: the harness types into ask-field (the Swift probe showed the bar without key)
             var w = install.Bar.AppWindow;
-            AskLog.Write($"ask-probe bar shown activated=true visible={Word(w.IsVisible)} pos={w.Position.X},{w.Position.Y} size={w.Size.Width}x{w.Size.Height} foreground={(Win32.GetForegroundWindow() == install.Bar.Hwnd ? "ask-bar" : "other")}");
+            AskLog.Write($"ask-probe bar shown activated=true visible={Word(w.IsVisible)} pos={w.Position.X},{w.Position.Y} size={w.Size.Width}x{w.Size.Height} foreground={(install.Bar.IsForeground ? "ask-bar" : "other")}");
             if (AskFlags.Replay) _ = Replay(store);
         });
         After(dispatcher, seconds, () =>

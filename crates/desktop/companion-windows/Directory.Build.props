@@ -39,6 +39,11 @@
     <WasdkRuntimeVersion>2.5.1</WasdkRuntimeVersion>
   </PropertyGroup>
 
+  <!-- W2: Win32 interop source generator (tray, rail styles, hotkeys) for src/Theuth.Companion. -->
+  <PropertyGroup>
+    <CsWin32Version>0.3.358</CsWin32Version>
+  </PropertyGroup>
+
   <!-- W4: NAudio.Wasapi (D7, R2-4) — the microphone for the Ask bar's live dictation. -->
   <PropertyGroup>
     <NAudioWasapiVersion>3.1.0</NAudioWasapiVersion>

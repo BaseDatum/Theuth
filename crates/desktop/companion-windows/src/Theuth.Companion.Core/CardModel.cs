@@ -32,6 +32,15 @@ public abstract record CardAction
     /// <summary>W3 Ask bar: <c>send_input(theuth's desk, text)</c> after the hold; no item, so no stale guard.</summary>
     public sealed record AskTheuth(string Text) : CardAction;
 
+    /// <summary>134 W2, 130 §4.2 per-kind table — Hire: <c>agent_approve(name)</c> (the engine stamps the actor, E4).</summary>
+    public sealed record HireAgent(string Name) : CardAction;
+
+    /// <summary>134 W2 — Hire → Decline: <c>agent_remove(name, null)</c>.</summary>
+    public sealed record DeclineHire(string Name) : CardAction;
+
+    /// <summary>134 W2 — Blocked → Unblock: <c>task_move(task, todo)</c> (the ledger allows blocked → todo).</summary>
+    public sealed record Unblock(string Task) : CardAction;
+
     /// <summary>Not sendable yet: the app must collect the note and hold <see cref="ReviewSendBackNote"/> instead.</summary>
     public bool NeedsNote => this is ReviewSendBack;
 }
@@ -141,6 +150,22 @@ public sealed record Card
                     card.Options = item.NextSteps.Take(2).Select((t, i) => new CardOption(
                         i + 1, t, null, i == 0, new CardAction.SendNextStep(s, t))).ToValueList();
                 }
+                break;
+            }
+            case AttentionKindTag.Hire:
+            {
+                // 134 W2 (130 §4.2): Hire · Decline (· Open = O, as on every card). No pre-pick: a hire spends budget (P13).
+                if (item.Agent is not { } name) return card;
+                card.Options = ValueList.Of(
+                    new CardOption(1, "Hire", null, false, new CardAction.HireAgent(name)),
+                    new CardOption(2, "Decline", null, false, new CardAction.DeclineHire(name)));
+                break;
+            }
+            case AttentionKindTag.Blocked:
+            {
+                // 134 W2 (130 §4.2): "one line + Open in theuth (and Unblock …)"; a decision blocker is the decision kind.
+                if (item.Task is not { } task || item.Decision is not null) return card;
+                card.Options = ValueList.Of(new CardOption(1, "Unblock", "back to todo", false, new CardAction.Unblock(task)));
                 break;
             }
             case AttentionKindTag.Show:

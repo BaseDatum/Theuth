@@ -69,6 +69,10 @@ public sealed class AskBarModel : INotifyPropertyChanged
     private IDisposable? voiceTimer;
     private IDisposable? probeTimer;
     private IDisposable? finishCap;
+    private DateTimeOffset openedAt = DateTimeOffset.MinValue;
+
+    /// <summary>A bar opened this recently by the same press (W2 opens it through <c>Store.AskBarRequested</c> before the press reaches here) counts as opened by the press.</summary>
+    public static readonly TimeSpan OpenedByPressWindow = TimeSpan.FromMilliseconds(100);
     private Task sendTask = Task.CompletedTask;
     private bool prewarmed;
     private readonly List<short[]> pendingChunks = new();
@@ -178,6 +182,7 @@ public sealed class AskBarModel : INotifyPropertyChanged
     /// <summary>Summon: show, take the keyboard, prewarm the dictation model once.</summary>
     public void Open()
     {
+        if (!IsOpen) openedAt = clock();
         IsOpen = true;
         surface.Show(activate: true);
         Prewarm();
@@ -269,7 +274,7 @@ public sealed class AskBarModel : INotifyPropertyChanged
     public void HotkeyDown()
     {
         if (Automated) return;
-        if (IsOpen)
+        if (IsOpen && clock() - openedAt > OpenedByPressWindow)
         {
             OpenedByPress = false;
             VoiceEvent(new AskVoiceMachine.Event.KeyDown(clock()));

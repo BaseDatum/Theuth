@@ -37,6 +37,18 @@
     <PackageReference Include="Microsoft.WindowsAppSDK.Runtime" Version="$(WasdkRuntimeVersion)" ExcludeAssets="all" PrivateAssets="all" GeneratePathProperty="true" />
   </ItemGroup>
 
+  <!-- W2 (tray · rail · panel · hotkeys): CsWin32 generates the Win32 surface listed in Interop\NativeMethods.txt (its code
+       uses pointers, hence AllowUnsafeBlocks); the tray sprites ship beside the exe under Assets\tray\. -->
+  <PropertyGroup>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Windows.CsWin32" Version="$(CsWin32Version)" PrivateAssets="all" />
+    <AdditionalFiles Include="Interop\NativeMethods.txt" />
+    <Content Include="Assets\tray\*.ico" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+    <None Remove="Assets\tray\make-tray-sprites.swift" />
+  </ItemGroup>
+
   <!-- W4 (Ask bar · dictation): WASAPI capture through NAudio.Wasapi (D7, R2-4; MIT, net9.0+; pulls NAudio.Core). -->
   <ItemGroup>
     <PackageReference Include="NAudio.Wasapi" Version="$(NAudioWasapiVersion)" />

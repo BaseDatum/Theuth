@@ -166,6 +166,7 @@ public sealed class AskBarModelTests
         Assert.True(bar.IsOpen);
         Assert.Equal(AskVoiceMachine.StateKind.Idle, bar.VoiceState.Kind);
         Assert.DoesNotContain("mic start", surface.Events);
+        clock.Advance(0.5);
         bar.HotkeyDown();
         clock.Advance(0.1);
         bar.HotkeyUp(); // a tap on the open bar closes it and hands the foreground back
@@ -367,6 +368,23 @@ public sealed class AskBarModelTests
         store.Perform(Intent.AskBar);
         Assert.True(bar.IsOpen);
         Assert.Equal(new[] { "show+activate" }, surface.Events);
+    }
+
+    [Fact]
+    public void ABarOpenedByW2ForTheSamePressCountsAsOpenedByThePress()
+    {
+        store.Perform(Intent.AskBar); // W2's hotkey handler opens the bar through the Store first…
+        bar.HotkeyDown(); // …then the same press reaches the bar
+        Assert.True(bar.OpenedByPress);
+        clock.Advance(0.1);
+        bar.HotkeyUp(); // a tap: the bar stays open
+        Assert.True(bar.IsOpen);
+        clock.Advance(1);
+        bar.HotkeyDown(); // a later press on the open bar is a voice press; its tap closes
+        Assert.False(bar.OpenedByPress);
+        clock.Advance(0.1);
+        bar.HotkeyUp();
+        Assert.False(bar.IsOpen);
     }
 
     [Fact]
