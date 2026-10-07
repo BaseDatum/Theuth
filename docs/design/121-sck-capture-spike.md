@@ -438,4 +438,4 @@ Workers, cut from d06b08c3 in their own worktrees:
 | 7 CI image notes (`swift` + CLT, ~70 s budget, cache `swift-build*`) | **Open** — no wave 121 worker owns CI notes. |
 | 8 design 27 edits | **Met in a different form by W3**: a dated Revision section at the end of design 27 plus one-line "Superseded" pointers at §0.4 item 4, the §2.1 xcap fact and the §3.2 capture paragraph; the original text is not rewritten. The code-side items of §7.8 (`screen.rs` module doc, `tmp_dir`) are W1's. |
 
-Integration: TBD-by-integrator
+Integration: branch `feat/121-sck-capture` (W3 697c9498 → W1 834f2726 → W2 ecd125a0 → fold of main e04f1d1a 237049ef → packaging guard 9698edd1), gated on its own target dir and landed on main by `merge --no-ff` on 2026-10-07 (see `121-as-built-I.md`).
