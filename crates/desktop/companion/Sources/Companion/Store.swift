@@ -282,4 +282,13 @@ final class Store: ObservableObject {
     /// W3: the Ask bar's receipts share this row.
     func setReceipt(_ r: Receipt?) { receipt = r }
     func setReceiptCount(_ n: Int) { panel.receiptCount = n }
+    // MARK: W2 notifications
+
+    /// A deliberate tap on a notification action (D8): the same commit path, no hold; an optional note
+    /// goes to the session as `send_input` (R1-5's "deny with a note").
+    func answerNow(_ h: Held, note: String? = nil, session: String? = nil) {
+        commit(h)
+        guard let note, let session else { return }
+        Task { _ = try? await client.sendInput(session: session, text: note) }
+    }
 }

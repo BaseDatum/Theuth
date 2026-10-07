@@ -52,7 +52,7 @@ final class RailController {
 
     private func railChanged(_ rail: Rail) {
         if rail.quiet {
-            if quietTimer == nil && !collapsed {
+            if quietTimer == nil && !collapsed && Settings.collapseWhenQuiet { // W2: Settings › Rail
                 quietTimer = Timer.scheduledTimer(withTimeInterval: Self.quietDelay, repeats: false) { [weak self] _ in
                     Task { @MainActor in self?.setCollapsed(true) }
                 }
