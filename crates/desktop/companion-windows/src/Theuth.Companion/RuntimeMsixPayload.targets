@@ -43,12 +43,12 @@
     <Copy SourceFiles="@(_TheuthRuntimeMsixPayload)" DestinationFolder="$(OutDir)" SkipUnchangedFiles="true">
       <Output TaskParameter="CopiedFiles" ItemName="FileWrites" />
     </Copy>
-    <Message Importance="high" Text="ExtractRuntimeMsixPayload: @(TheuthRuntimeMsixEntry->Count()) runtime-MSIX files → $(OutDir)" />
+    <Message Importance="high" Text="ExtractRuntimeMsixPayload: @(TheuthRuntimeMsixEntry->Count()) runtime-MSIX files -> $(OutDir)" />
   </Target>
 
   <!-- Every publish output (build.ps1: target\release\companion-windows\). -->
   <Target Name="ExtractRuntimeMsixPayloadToPublishDir" AfterTargets="Publish" DependsOnTargets="_TheuthUnpackRuntimeMsixPayload">
     <Copy SourceFiles="@(_TheuthRuntimeMsixPayload)" DestinationFolder="$(PublishDir)" SkipUnchangedFiles="true" />
-    <Message Importance="high" Text="ExtractRuntimeMsixPayload: @(TheuthRuntimeMsixEntry->Count()) runtime-MSIX files → $(PublishDir)" />
+    <Message Importance="high" Text="ExtractRuntimeMsixPayload: @(TheuthRuntimeMsixEntry->Count()) runtime-MSIX files -> $(PublishDir)" />
   </Target>
 </Project>
