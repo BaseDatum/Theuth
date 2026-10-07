@@ -546,8 +546,8 @@ export interface Api {
   task_create(input: TaskCreate): Promise<Task>
   /** Patch a task as the user (67 §7.2). */
   task_update(id: string, patch: TaskPatch): Promise<Task>
-  /** Move a task on the user's intent: backlog ↔ todo, → cancelled, review → done | doing | todo (67 §7.2, 69). `Err` names the allowed targets. */
-  task_move(id: string, state: TaskState, note: string | null): Promise<Task>
+  /** Move a task on the user's intent: backlog ↔ todo, → cancelled, review → done | doing | todo (67 §7.2, 69). `Err` names the allowed targets. 132 D3: `next` = the index of the review packet's next move, valid only for review → done; an older engine ignores it. */
+  task_move(id: string, state: TaskState, note: string | null, next?: number | null): Promise<Task>
   /** Comment on a task's thread as the user (67 §7.3). */
   task_comment(id: string, text: string): Promise<null>
   /** The task's field-level event log (67 §7.2). */

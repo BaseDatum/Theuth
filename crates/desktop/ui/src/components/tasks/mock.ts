@@ -39,6 +39,7 @@ const task = (n: number, t: Partial<Task> & Pick<Task, 'title' | 'owner' | 'stat
   updated_ms: now - n * (H / 3),
   no_progress_count: 0,
   next_wake_after_ms: null,
+  priority: 'medium',
   ...t,
 })
 

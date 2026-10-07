@@ -1,7 +1,7 @@
 import { useQueries, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useEffect, useMemo, useRef } from 'react'
 import { useModels } from '@/components/agents/queries'
-import { ATTENTION_SIM, SECRET_REQUESTS_SIM, simFlag } from '@/components/settings/sandbox-queries'
+import { ATTENTION_CROWDED, ATTENTION_SIM, SECRET_REQUESTS_SIM, crowdedFlag, simFlag } from '@/components/settings/sandbox-queries'
 import { useAction } from '@/components/settings/shared'
 import { keys as taskKeys } from '@/components/tasks/queries'
 import { queryKeys, useApi } from '@/lib/rpc'
@@ -11,6 +11,7 @@ import type { ActivityEntry } from '@/rpc/bindings/ActivityEntry'
 import type { Answer } from '@/rpc/bindings/Answer'
 import type { ApprovalId } from '@/rpc/bindings/ApprovalId'
 import type { AskId } from '@/rpc/bindings/AskId'
+import type { Priority } from '@/rpc/bindings/Priority'
 import type { WireEvent } from '@/rpc/events'
 import { on } from '@/store/sessions'
 import { HANDOFFS_KEY } from '@/store/sandboxes'
@@ -32,10 +33,11 @@ export const ACTIVITY_KEY = ['activity'] as const
  */
 const ATTENTION_EVENTS = ['ActivityAppended', 'ApprovalRequested', 'ApprovalResolved', 'ArtifactShown', 'AskRequested', 'AskResolved', 'NodeAdded', 'NodeOnline', 'NodeRemoved', 'NodeRevoked', 'SecretRequested', 'SecretResolved', 'Takeover', 'DoubleAnswered', 'AttentionChanged'] as const satisfies readonly WireEvent['type'][]
 
-/** `attention_list`, re-derived on every event that can change it (130 E1: no timer poll). */
+/** `attention_list`, re-derived on every event that can change it (130 E1: no timer poll). 132 D10: `?mock=crowded` serves the sixty-row fixture. */
 export function useAttention() {
   const api = useApi()
   const qc = useQueryClient()
+  const crowded = crowdedFlag()
   const sim = simFlag()
   useEffect(() => {
     const invalidate = () => {
@@ -48,7 +50,7 @@ export function useAttention() {
       for (const off of offs) off()
     }
   }, [qc])
-  return useQuery({ queryKey: ATTENTION_KEY, queryFn: () => (sim ? ATTENTION_SIM : api.attention_list()) })
+  return useQuery({ queryKey: ATTENTION_KEY, queryFn: () => (sim ? ATTENTION_SIM : crowded ? ATTENTION_CROWDED : api.attention_list()) })
 }
 
 /**
@@ -199,11 +201,11 @@ export function useAttentionActions() {
       { keys: [ATTENTION_KEY] },
     ),
     snooze: useAction(({ id, until }: { id: string; until: number }) => api.attention_snooze(id, until), { keys: [ATTENTION_KEY] }),
-    /** 104 A6: Send (answers) or Dismiss (`null`, ends the asking turn) on the Ask screen — `AskCard`'s two buttons. */
+    /** 104 A6: Send (answers) or Dismiss (`null`, ends the asking turn) on the Ask screen — `AskCard`'s two buttons. 132 D6: a late answer is not lost — the engine hands it to the session as a message; the toast says so. */
     ask: useAction(
       async ({ id, answers }: { id: AskId; answers: Answer[] | null }) => {
         const ok = await api.answer_ask(id, answers)
-        if (!ok) toast.message('That question was already answered')
+        if (!ok) toast.message(answers ? 'That question had already closed — your answer went to the session as a message.' : 'That question was already answered')
         return ok
       },
       { keys: [ATTENTION_KEY] },
@@ -217,10 +219,12 @@ export function useAttentionActions() {
       { keys },
     ),
     decide: useAction(({ decision, answer }: { decision: string; answer: string }) => api.task_decide(decision, answer), { keys }),
+    /** 132 D4: the user sets a task's priority; the engine re-ranks the inbox on the refetch. */
+    priority: useAction(({ id, priority }: { id: string; priority: Priority }) => api.task_update(id, { priority }), { keys }),
     hire: useAction((name: string) => api.agent_approve(name), { keys }),
     decline: useAction((name: string) => api.agent_remove(name, null), { keys }),
-    /** 101 D9: Approve → done / Send back → doing carry the reviewer's note into the thread. */
-    move: useAction(({ id, state, note = null }: { id: string; state: 'todo' | 'done' | 'doing'; note?: string | null }) => api.task_move(id, state, note), { keys }),
+    /** 101 D9: Approve → done / Send back → doing carry the reviewer's note into the thread. 132 D3: `next` (a review's picked next move) rides along only when picked, so an older engine sees the old three params. */
+    move: useAction(({ id, state, note = null, next }: { id: string; state: 'todo' | 'done' | 'doing'; note?: string | null; next?: number }) => (next === undefined ? api.task_move(id, state, note) : api.task_move(id, state, note, next)), { keys }),
     unpause: useAction((name: string) => api.agent_pause(name, false), { keys }),
     /** 79 §6.6: Done / Cancel on a hand-off card; the pop-out's banner and the row's chip read the same list. */
     handoff: useAction(({ id, outcome }: { id: string; outcome: 'done' | 'cancelled' }) => api.handoff_resolve(id, outcome), { keys: [ATTENTION_KEY, HANDOFFS_KEY] }),

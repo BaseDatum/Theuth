@@ -12,13 +12,15 @@ import { PacketBoard } from './PacketBoard'
 import { PacketMarkdown } from './PacketMarkdown'
 import { Pointers } from './Pointers'
 import { usePacket } from './queries'
-import { Body, Chip, Footer, SectionTitle, useResolved } from './shared'
+import { Body, Chip, Footer, IfWrong, OptionCards, PrioritySelect, SectionTitle, useResolved } from './shared'
 
 /**
  * 101 D9: the task · by whom · age → the agent's board (101b R4; the `summary` when there is none) → Acceptance
- * (`done_when` + the agent's checks, read-only) → "Review these" (pointers inline) → a bottom bar that sticks: Approve →
- * done · Send back (a required note) · Open task · Snooze · Dismiss. Without a packet the summary says so and the
- * actions still work.
+ * (`done_when` + the agent's checks, read-only) → "Review these" (pointers inline) → 132 D3 "Next move" (the packet's
+ * `options`, recommended pre-picked; a second tap on the lit card clears the pick) → a bottom bar that sticks: 132 D2
+ * `If wrong` · **Approve → ‹picked label›** (`task_move(task, 'done', note, next)`; `Approve → done` without a pick, no
+ * `next` sent) · Send back (a required note) · Open task · Snooze · Dismiss · 132 D4 Priority. Without a packet the
+ * summary says so and the actions still work.
  */
 export function ReviewScreen({ item }: { item: AttentionItem }) {
   const packet = usePacket(item.packet)
@@ -27,12 +29,19 @@ export function ReviewScreen({ item }: { item: AttentionItem }) {
   const onResolved = useResolved(item)
   const [sendingBack, setSendingBack] = useState(false)
   const [note, setNote] = useState('')
+  // `undefined` = untouched, so the recommendation applies once the packet lands without an effect.
+  const [picked, setPicked] = useState<number | null | undefined>(undefined)
   const p = packet.data ?? null
+  const moves = p?.options ?? []
+  const next = picked === undefined ? (p?.recommended ?? null) : picked
+  /** The lit next move, only when it indexes a real option — what `Approve` names and sends. */
+  const pick = next !== null && moves[next] ? next : undefined
+  const nextLabel = pick === undefined ? undefined : moves[pick]?.label
   const busy = act.move.isPending
   const by = item.agent ?? (task.data ? ownerText(task.data.owner).replace(/^agent:/, '') : null)
   const move = (state: 'done' | 'doing', n: string | null) => {
     if (!item.task) return
-    void act.move.mutateAsync({ id: item.task, state, note: n }).then(onResolved, () => undefined)
+    void act.move.mutateAsync({ id: item.task, state, note: n, next: state === 'done' ? pick : undefined }).then(onResolved, () => undefined)
   }
   return (
     <>
@@ -92,10 +101,18 @@ export function ReviewScreen({ item }: { item: AttentionItem }) {
             <Pointers list={p.pointers} />
           </section>
         )}
+
+        {moves.length > 0 && (
+          <section className="flex flex-col gap-2">
+            <SectionTitle>Next move</SectionTitle>
+            <OptionCards options={moves} picked={next} recommended={p?.recommended} onPick={(i) => setPicked(next === i ? null : i)} />
+          </section>
+        )}
       </Body>
 
       <div className="shrink-0 border-t border-border-subtle bg-background px-4 pt-3 pb-[calc(0.75rem+var(--safe-bottom))] md:px-6">
         <div className="mx-auto flex w-full max-w-[720px] flex-col gap-2">
+          <IfWrong text={p?.if_wrong} />
           {sendingBack && (
             <form
               className="flex flex-col gap-2"
@@ -117,13 +134,14 @@ export function ReviewScreen({ item }: { item: AttentionItem }) {
           )}
           <Footer item={item} onResolved={onResolved}>
             <Button size="sm" disabled={busy || !item.task} onClick={() => move('done', null)}>
-              Approve → done
+              Approve → {nextLabel ?? 'done'}
             </Button>
             {!sendingBack && (
               <Button size="sm" variant="outline" disabled={busy || !item.task} onClick={() => setSendingBack(true)}>
                 Send back
               </Button>
             )}
+            <PrioritySelect item={item} />
           </Footer>
         </div>
       </div>

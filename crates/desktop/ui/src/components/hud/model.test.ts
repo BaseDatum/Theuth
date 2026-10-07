@@ -38,10 +38,11 @@ const task = (id: string, state: Task['state'], extra: Partial<Task> = {}): Task
   updated_ms: 10,
   no_progress_count: 0,
   next_wake_after_ms: null,
+  priority: 'medium',
   ...extra,
 })
 
-const item = (id: string): AttentionItem => ({ id, kind: 'blocked', title: id, detail: null, at_ms: 1, task: null, agent: null, session: null, approval: null, decision: null, packet: null, ask: null, turn: null })
+const item = (id: string): AttentionItem => ({ id, kind: 'blocked', title: id, detail: null, at_ms: 1, task: null, agent: null, session: null, approval: null, decision: null, packet: null, ask: null, turn: null, rank: 5 })
 
 const row = (id: number): ActivityEntry => ({ id, ts_ms: id, kind: 'task_moved', actor: 'user', subject: 't', summary: `${id}`, cost: null })
 
