@@ -40,6 +40,8 @@ Where this doc and 00 disagree, 00 wins; §11 lists the 00 lines it amends.
    replaced xcap's deprecated `CGWindowListCreateImage` path with the system
    binary after 30 s stalls and measured < 0.5 s (P:`CHANGELOG.md:397`);
    a native platform command with a 5 s deadline beats a deprecated API.
+   Superseded 2026-10-07 — see the Revision at the end: SCK is the default,
+   the shell-out the fallback.
 5. **Input: `enigo` 0.6 on one thread.** enigo's macOS backend already does
    what oh-my-pi hand-wrote for the global path — HID event source, click
    state for double-clicks, keyboard-layout-aware typing via
@@ -95,6 +97,8 @@ ships it as theuth tools, no more.
   Declared `default-features = false`; brings `image ^0.25` and
   `objc2-core-graphics ^0.3` (feature `CGWindow`:
   `CGPreflightScreenCaptureAccess`, `CGRequestScreenCaptureAccess`).
+  Superseded 2026-10-07 — see the Revision at the end: SCK is the default,
+  the shell-out the fallback.
 - **enigo 0.6.1**. `Enigo::new(&Settings) -> Result<_, NewConError>`;
   `NewConError::NoPermission`; `Settings::open_prompt_to_get_permissions`
   (default `true`, macOS). `Mouse`: `move_mouse(x, y, Coordinate::Abs)`
@@ -230,6 +234,8 @@ Encode PNG. Cursor: `enigo.location()` through the input thread when it is
 up, mapped into the image. `image` is in the tree through xcap; 13 §0.4's
 reason not to depend on it no longer applies (`default-features = false,
 features = ["png"]`).
+Superseded 2026-10-07 — see the Revision at the end: SCK is the default,
+the shell-out the fallback.
 
 Display order and index: `main` first, then by `(x, y)`; the index is what
 the text shows and what `display:` accepts. `id` (CGDirectDisplayID) is
@@ -568,3 +574,146 @@ on the harness's broker process, consistent with §2.2's responsible-process
 rule; whether Accessibility needs a restart (it was already granted);
 Linux/Windows paths; hot-plug; ⌥Esc and Settings › Computer in the running
 desktop app (type-checked and unit-tested only); `just desktop` end to end.
+
+## Revision 2026-10-07 — ScreenCaptureKit is the default macOS capture (wave 121)
+
+Record of the adoption ruled on 2026-10-07 08:34 after spike 121
+(`docs/design/121-sck-capture-spike.md`, "121 §n" below). The text above is
+left as written on 2026-09-15; the three "Superseded" pointers (§0.4 item 4,
+§2.1 xcap fact, §3.2 capture paragraph) lead here. Worker as-builts:
+`121-as-built-W1-CAPTURE.md` (code), W2 LINK's as-built (rpath + packaging),
+`121-as-built-W3-DOCS.md` (this record).
+
+### What changed
+
+- Default macOS grab = `screencapturekit` 11 (`macos_15_0` feature,
+  `SCScreenshotManager::capture_sample_buffer`) → `CVPixelBuffer` (BGRA,
+  read-only lock, stride-aware row copy with a BGRA→RGBA swizzle) →
+  `image::RgbaImage`, in-process, on whatever thread calls it — the existing
+  `spawn_blocking` call site in `crates/computer/src/tools.rs` is unchanged
+  (121 §1, §3). Per display: on-screen-only `SCShareableContent`, `SCDisplay`
+  by `display_id() == d.id` (the same `CGDirectDisplayID` xcap reports),
+  `SCContentFilter` over the display, `SCStreamConfiguration` at physical
+  pixels (`round(logical × scale)`) with `shows_cursor(false)`.
+- `/usr/sbin/screencapture -x -R x,y,w,h` (§3.2 above) stays in the tree as
+  the automatic per-call fallback on any SCK error and on macOS < 14
+  (`SCScreenshotManager` is 14.0+; the app floor is 15.0 but the `t` CLI has
+  none).
+- Env `THEUTH_CAPTURE_BACKEND=screencapture` forces the shell-out;
+  `THEUTH_CAPTURE_BACKEND=sck` forces SCK with no fallback (the spike's
+  opt-in switch, inverted into an opt-out).
+- Public API unchanged: `enumerate`, `capture(display, max_edge, tmp_dir)`,
+  `capture_display_native`, `Shot`/`Frame`, the error enum. The `Frame`
+  geometry (§3.3) is untouched because `capture` resizes whatever `grab`
+  returns to the display's logical rect.
+
+### Why
+
+Measured in 121 §4 on one 2560×1440 scale-1 display, release bench, 3 warm-ups
++ 20 timed grabs:
+
+| | SCK (shipped route) | `screencapture` |
+|---|---|---|
+| grab, quiet machine (run 5), min / median / p95 ms | 43.2 / **49.4** / 58.5 | 130.0 / **162.7** / 216.3 |
+| grab under load avg 25–50 (run 3; predates R1, so SCK is the `CGImage` route there), min / median / p95 ms | 91.3 / **103.0** / 140.5 | 235.8 / **407.6** / 582.4 |
+| `capture(None, 1568)` composite (run 5), ms | **96.6** | **211.3** |
+| pixels vs `screencapture`, mean \|ΔRGB\| | 0.004–0.005 (byte-identical bar live-desktop noise) | — |
+| max RSS / footprint over 60 shots | 49.0 MB / 20.1–20.6 MB, flat | 31.2 MB / 18.6–19.7 MB |
+
+Ratio 3.3× at the quiet median, 2.0–4.0× across six runs. No temp file, no
+child process, no 5 s kill timer on the default path. SCK is the framework
+Apple names as the replacement for the deprecated `CGWindowListCreateImage`
+that §0.4 item 4 rejected xcap for (121 §1).
+
+The user's words. 2026-10-07 02:08: "Builds already take a while, if it's
+clearly better maybe we should consider. Is it?" — the spike answered.
+2026-10-07 08:34: "Yes adopt, fresh git worktree, omp agents, parallel
+implementation, get it done."
+
+### What it costs
+
+- Three Swift bridges (`screencapturekit`, `apple-cf` 0.11, `apple-metal`
+  0.10) built by their `build.rs` via `swift build -c release`: **+63 s cold
+  `cargo check -p computer`, +76 s cold build** (user 91 s / 99 s), paid once
+  per cold target dir per Mac, also by `cargo check`, `cargo clippy` and
+  rust-analyzer's check-on-save (121 §4.4, §6.1). Warm incremental rebuild of
+  `computer` after a `screen.rs` edit: 3.4–4.4 s. Static libs 4.77 MB.
+- Every macOS build host needs `swift` on PATH and a macOS SDK ≥ 13.0
+  (`xcrun --sdk macosx --show-sdk-version`, asserted by the crate's
+  `build.rs`). Command Line Tools suffice; full Xcode is not required
+  (121 §6.1–6.2). Linux/Windows untouched — the dependency is under
+  `[target.'cfg(target_os = "macos")'.dependencies]`.
+- Two carried fixes for defects in the published crates (upstream drafts in
+  `121-upstream-issues.md`):
+  1. `crates/computer/build.rs`: `rustc-link-search` for
+     `<xcrun --find swift>/../../lib/swift/macosx`, because `apple-metal`
+     0.10's `build.rs` adds the Swift lib directory only under full Xcode
+     and a CLT-only host otherwise fails to link
+     (`__swift_FORCE_LOAD_$_swiftCompatibility56` undefined; 121 §6.2).
+  2. `cargo:rustc-link-arg=-Wl,-rpath,/usr/lib/swift` in the `build.rs` of
+     **every crate that links `computer`** — `theuth`, `rpc`, `tui` (wave 121
+     W2) — because Cargo applies `rustc-link-arg` only to the emitting
+     package's own binaries; without it the binary has no `LC_RPATH` and
+     aborts at launch with `dyld: Library not loaded:
+     @rpath/libswift_Concurrency.dylib … Reason: no LC_RPATH's found`
+     (121 §6.3). `computer/build.rs` carries the same line for its own
+     tests and examples.
+- `t` release binary +1 066 064 B (+0.14 %); 23 `/usr/lib/swift/libswift*`
+  load commands (all system dylibs in the shared cache, 14 weak), nothing to
+  bundle or sign beyond the static bridges (121 §4.4, §6.4, §6.6).
+- Crate churn: three majors in four weeks, one maintainer; pin `=11.0.x`
+  (121 §6.8).
+
+### Invariants
+
+- **Never `capture_image()` + `CGImageExt::rgba_data()`.** That route renders
+  the `CGImage` through a CoreGraphics context and leaves one ~14.1 MB decode
+  cache per shot in `DefaultPurgeableMallocZone` (max RSS 63 → 522 MB over
+  60 shots; purgeable, invisible to `phys_footprint`, not released by an
+  autorelease pool or by dropping the image) and shifts colours to sRGB
+  (mean |ΔRGB| 1.48). `capture_sample_buffer` → `CVPixelBuffer` is flat at
+  49 MB and byte-identical (121 §4.3, §4.5). The bench keeps the old route as
+  `sck-cg` for comparison only.
+- **Every crate that links `computer` needs the rpath `build.rs` line**, or
+  its test binaries and executables abort at launch (above; 121 §6.3). A new
+  dependent of `computer` must add it.
+- **Keep `crates/computer/build.rs`** until `apple-metal` fixes its link
+  search upstream (121 §7.1).
+- Cursor excluded (`shows_cursor(false)`; SCK's default is `true`), menu bar
+  included (as the shell-out did), physical pixels per display, BGRA asserted
+  — `grab_sck` errors (→ fallback) rather than guess on another pixel format
+  (121 §5, §8).
+- The permission preflight is unchanged: `CGPreflightScreenCaptureAccess`
+  false → `CGRequestScreenCaptureAccess` once → `NoScreenRecording`. SCK uses
+  the same TCC service; an SCK error while the preflight is false maps to
+  `NoScreenRecording`, otherwise to `Other` (121 §5 "Screen Recording
+  denied").
+- Pixel path stays on the `macos_14_0`-level API; `macos_15_0` is enabled
+  only because it is the app floor — nothing from 15.x/26 is used (121 §2).
+
+### What remains
+
+- Retina / scale-2 and notched-display verification: the spike had one
+  scale-1 display, so `round(logical × scale)` and the BGRA format are
+  verified at scale 1 only (121 §4, §8). Status after wave 121: see
+  `121-as-built-W1-CAPTURE.md`.
+- `SCDisplay`/`SCContentFilter` caching with refresh-on-miss, and fetching
+  `SCShareableContent` once per `capture()` instead of once per display:
+  worth 11–24 ms per grab (121 §4.2, §7.4). Not in wave 121.
+- Deadline parity with the shell-out's 5 s: the crate's completion timeout
+  is 30 s by default (`SCREENCAPTUREKIT_COMPLETION_TIMEOUT_SECS`; 121 §2,
+  §7.3). Status: see `121-as-built-W1-CAPTURE.md`.
+- Upstream: the three drafts in `121-upstream-issues.md` (apple-metal link
+  search on CLT hosts; screencapturekit rpath documentation + `rgba_data`
+  decode cache; `apple-metal` behind a feature). Drafts only — nothing is
+  posted until the user approves.
+- Intel (`x86_64`) build unexercised; the crate's `build.rs` passes
+  `--triple x86_64-apple-macosx13.0` for it (121 §6.5).
+- macOS CI image notes (`swift` + CLT, ~70 s per cold check/build, caching
+  `target/*/build/*/out/swift-build*`; 121 §7.7) — not owned by any wave 121
+  worker.
+- The in-place edits 121 §7.8 proposed (the §4 facts row for
+  `/usr/sbin/screencapture`, the dependency table row, `screen.rs` module doc,
+  the now-unused `tmp_dir` parameter on macOS) were deliberately not made:
+  this revision plus the three pointers is the record; the code-side items
+  belong to W1.
