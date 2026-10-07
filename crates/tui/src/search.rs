@@ -135,6 +135,8 @@ pub enum RequestKind {
 
 /// What came back, tagged in `UiEvent::Search(generation, reply)`.
 #[derive(Debug)]
+// One `Loaded` page per reply; a short-lived message, not worth a Box.
+#[allow(clippy::large_enum_variant)]
 pub enum Reply {
     /// Answer to [`RequestKind::Results`]; `Err` is the whole call failing.
     Results {
@@ -782,6 +784,8 @@ pub enum Act {
 
 /// What a reply asks the model to do beyond state.
 #[derive(Debug)]
+// One `Loaded` page per reply; a short-lived message, not worth a Box.
+#[allow(clippy::large_enum_variant)]
 pub enum Effect {
     /// Nothing beyond state.
     None,
