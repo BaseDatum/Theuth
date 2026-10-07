@@ -405,3 +405,37 @@ route only** (breakdown of run 1, `uv run --with pillow --with numpy`):
 - Apple: https://developer.apple.com/documentation/screencapturekit/scscreenshotmanager · https://developer.apple.com/documentation/screencapturekit/scstreamerror/code/userdeclined · https://developer.apple.com/documentation/appkit/nswindow/sharingtype-swift.enum/none · https://developer.apple.com/forums/thread/808016 · https://developer.apple.com/documentation/ScreenCaptureKit (usage-description key) · `man screencapture` (26.6.2).
 - Tree: `crates/computer/src/{screen,frame,tools}.rs`, `crates/computer/Cargo.toml`, `/Cargo.toml`, `docs/design/27-computer.md`, `docs/design/78-aec-spike.md`, `crates/desktop/{tauri.macos.conf.json,entitlements.plist}`, `scripts/package-macos.sh`, `.cargo/config.toml`.
 - Raw outputs under `/tmp/sck-spike/`: `bench-release.txt` (run 2), `bench-release-run3.txt`, `-run4.txt` (sck-cv trial), `-run5.txt` (R1, quiet), `rss.txt`, `rss-scaling.txt` (first version), `rss-scaling-pool.txt` (autorelease pool A/B), `rss-pieces.txt` (`sck-image` / `sck-rgba` / `sck-content`), `rss-cv.txt`, `rss-scaling-final.txt` (sck-cg / sck / screencapture at 1/5/20/60), `vmmap-sck-60.txt` + `vmmap-sck-60-full.txt` (first version, 60 rounds, held), `vmmap-sck-cv-60.txt` (shipped route), `swift-*.log`, the PNGs and crops listed in §4.5; run 1 and run 6 numbers are in this document only (run 1's stdout was captured before the bench grew its composed rows; run 6 was a gate re-run).
+
+## 10. Outcome (2026-10-07)
+
+**Adopted** as wave 121 on the user's ruling of 2026-10-07 08:34: "Yes adopt,
+fresh git worktree, omp agents, parallel implementation, get it done" (asked
+at 02:08: "Builds already take a while, if it's clearly better maybe we should
+consider. Is it?"). SCK becomes the default macOS capture; the
+`/usr/sbin/screencapture` shell-out stays as the automatic per-call fallback
+(any SCK error, macOS < 14) and behind `THEUTH_CAPTURE_BACKEND=screencapture`;
+`=sck` forces SCK without fallback. Base for every worker: d06b08c3 (main
+5bc474b9 + the six spike commits).
+
+Workers, cut from d06b08c3 in their own worktrees:
+
+| Worker | Owns |
+|---|---|
+| W1 CAPTURE | `crates/computer`: `grab()` default → `grab_sck`, fallback to `grab_screencapture`, the env switch, tests. As-built: `121-as-built-W1-CAPTURE.md`. |
+| W2 LINK | `-Wl,-rpath,/usr/lib/swift` `build.rs` in `theuth`, `rpc`, `tui` (every crate that links `computer`, §6.3) + `crates/desktop/Info.plist` `NSScreenCaptureUsageDescription` and `scripts/package-macos.sh` checks (§6.6). |
+| W3 DOCS | This section; design 27 revision + three pointers; `121-upstream-issues.md` (drafts, nothing posted); `121-as-built-W3-DOCS.md`. |
+
+§7 conditions against the wave:
+
+| §7 | Status |
+|---|---|
+| 1 rpath in `theuth` (and every other bin linking `computer`); keep `computer/build.rs`; file both upstream | **Met by W2** (rpath) and kept (`computer/build.rs` untouched). Upstream: **drafted** in `121-upstream-issues.md`, **not posted** — awaits the user's approval. |
+| 2 SCK default in `grab()`; env switch kept as documented fallback | **Met by W1** (switch kept, inverted to opt-out). |
+| 3 deadline parity (`SCREENCAPTUREKIT_COMPLETION_TIMEOUT_SECS` or a 5 s wrap) | Not in this brief's description of W1's scope; see `121-as-built-W1-CAPTURE.md`. Otherwise **open** (30 s crate default). |
+| 4 `SCShareableContent` once per `capture()`; `SCDisplay` cache with refresh-on-miss (11–24 ms) | **Open** — follow-up, not in wave 121. |
+| 5 keep the `CVPixelBuffer` route; BGRA assert/test on Retina and HDR | Route kept (W1). Retina/HDR format check: see `121-as-built-W1-CAPTURE.md`; otherwise **open**. |
+| 6 Retina + notch + two-display test; compare `capture_display_native` dimensions | See `121-as-built-W1-CAPTURE.md`; not verifiable from this machine's one scale-1 display. |
+| 7 CI image notes (`swift` + CLT, ~70 s budget, cache `swift-build*`) | **Open** — no wave 121 worker owns CI notes. |
+| 8 design 27 edits | **Met in a different form by W3**: a dated Revision section at the end of design 27 plus one-line "Superseded" pointers at §0.4 item 4, the §2.1 xcap fact and the §3.2 capture paragraph; the original text is not rewritten. The code-side items of §7.8 (`screen.rs` module doc, `tmp_dir`) are W1's. |
+
+Integration: TBD-by-integrator
