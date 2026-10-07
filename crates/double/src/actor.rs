@@ -21,7 +21,6 @@ use roster::attention::{AttentionItem, AttentionKind};
 use runtime::{Runtime, SessionId};
 use tools::{
     Answerer, ApprovalRequested, ApprovalResolved, AskRequested, AskResolved, Decision, Question,
-    Risk,
 };
 
 use crate::class::{Card, CardKind, Requester, class_key};
@@ -32,7 +31,7 @@ use crate::ladder::{self, Scored};
 use crate::predict::{self, ClassStats, NONE, Oracle};
 use crate::store::{BASELINE, ClassRow, ExampleRow, PredictionRow, Store};
 use crate::types::{
-    DoubleClass, DoubleClassDetail, DoubleExample, DoubleRun, DoubleStatus, ForgetTarget, Kpis,
+    DoubleClass, DoubleClassDetail, DoubleExample, DoubleRun, DoubleStatus, ForgetTarget,
     LabelSource, Outcome, RunId,
 };
 use crate::DOUBLE_ACTOR;
@@ -1250,7 +1249,7 @@ mod tests {
     use std::sync::Arc;
 
     use parking_lot::Mutex;
-    use tools::{Approval, ApprovalId, RequestApproval, Resolve};
+    use tools::{Approval, ApprovalId, RequestApproval, Resolve, Risk};
 
     use super::*;
     use crate::predict::tests::FakeOracle;
@@ -1362,17 +1361,17 @@ mod tests {
         /// Raise a real approval through the approval actor; returns its id once predicted.
         async fn raise(&self, session: SessionId, tool: &str, args: serde_json::Value) -> ApprovalId {
             let before = self.probe.predicted.lock().len();
-            let _reply = self
-                .approval
-                .ask(RequestApproval {
+            // `tell`: the reply is delegated to the resolution, which the test drives later.
+            self.approval
+                .tell(RequestApproval {
                     session,
                     tool: tool.into(),
                     args,
                     risk: if tool == "read_file" { Risk::ReadOnly } else { Risk::Mutating },
                     call_id: None,
                 })
-                .await;
-            // The reply is delegated (it resolves with the decision); the card is on the bus now.
+                .await
+                .unwrap();
             let id = wait_for(|| {
                 let p = self.probe.predicted.lock();
                 (p.len() > before).then(|| p[before].question_id.clone())
