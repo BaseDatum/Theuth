@@ -155,6 +155,7 @@ internal sealed partial class SettingsWindow : Window
     private void OnStoreChanged(object? sender, System.ComponentModel.PropertyChangedEventArgs e)
     {
         if (CurrentPage == "engine" && e.PropertyName is nameof(Store.Connection)) ShowPage(CurrentPage);
+        if (CurrentPage == "keys" && e.PropertyName is nameof(Store.HotkeyNotice) or nameof(Store.Keys)) ShowPage(CurrentPage); // W2's resolution notice
     }
 
     private void ShowPage(string key)
@@ -196,7 +197,7 @@ internal sealed partial class SettingsWindow : Window
     private void Keys(StackPanel page)
     {
         Heading(page, "Keys");
-        if (model.HotkeyNotice is { } n)
+        if ((store.HotkeyNotice ?? model.HotkeyNotice) is { } n)
         {
             var notice = Caption(page, n);
             notice.Foreground = Theme.Brush("SystemFillColorCautionBrush", 0xC0);

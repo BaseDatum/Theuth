@@ -57,7 +57,27 @@ internal sealed class NotificationsInstaller : IDisposable
         store.ApplySettings(model.Value);
         model.Changed += OnSettingsChanged;
         store.SettingsRequested += () => Settings.Show(activate: !W3Flags.AnyProbe);
-        store.OpenItemRequested += id => Log.Write($"open requested item={id ?? "oldest"} (W2's panel opens here)");
+
+        // W2's surfaces (Ui.Surfaces.Current, started just before us): the tray menu's Pause ▸ and Launch at login rows, the
+        // panel for toast bodies and double-tap Alt, redirected toast activations.
+        var ui = Ui.Surfaces.Current;
+        if (ui is not null)
+        {
+            ui.PauseRequested += what => Notifier.Pause(what switch
+            {
+                "1h" => DateTimeOffset.Now.AddHours(1),
+                "tomorrow" => Notifier.Tomorrow,
+                _ => null,
+            });
+            ui.LaunchAtLoginToggled += on => model.Update(s => s.LaunchAtLogin = on);
+            ui.LaunchAtLoginState = () => model.Value.LaunchAtLogin;
+            ui.Redirected += Notifier.Redirected;
+            store.OpenItemRequested += id => ui.OpenPanelOn(id);
+        }
+        else
+        {
+            store.OpenItemRequested += id => Log.Write($"open requested item={id ?? "oldest"} — no surfaces in this build");
+        }
 
         Notifier.Start();
         Breakpoints.Breakpoint += Notifier.Breakpoint;
@@ -66,7 +86,8 @@ internal sealed class NotificationsInstaller : IDisposable
         DoubleTap.DoubleTap += () =>
         {
             if (W3Flags.AnyProbe) return;
-            Log.Write("double-tap Alt → toggle the panel (W2's panel toggles here)");
+            if (Ui.Surfaces.Current is { } s) s.TogglePanel();
+            else Log.Write("double-tap Alt — no surfaces in this build");
         };
         if (model.Value.DoubleTapAlt && !DoubleTap.Install()) Log.Write("double-tap Alt: on in settings but the hook could not be installed");
 
@@ -91,11 +112,15 @@ internal sealed class NotificationsInstaller : IDisposable
 
     private void OnSettingsChanged(CompanionSettings old, CompanionSettings now)
     {
-        if (old.UndoDelay != now.UndoDelay) store.ApplySettings(now);
         if (old.LaunchAtLogin != now.LaunchAtLogin) LoginItem.Apply(now.LaunchAtLogin, now);
         if (old.DoubleTapAlt != now.DoubleTapAlt && !now.DoubleTapAlt) DoubleTap.Uninstall();
-        if (old.Keys != now.Keys) Log.Write("settings: key table changed (W2's Hotkeys re-applies the global rows here)");
-        if (old.RailSide != now.RailSide || old.RailDisplay != now.RailDisplay || old.RailPresence != now.RailPresence) Log.Write("settings: rail settings changed (W2's rail re-lays out here)");
+        bool surfaces = old.Keys != now.Keys || old.UndoDelay != now.UndoDelay
+            || old.RailSide != now.RailSide || old.RailDisplay != now.RailDisplay || old.RailPresence != now.RailPresence;
+        if (!surfaces) return;
+        // W2 applies keys (hotkeys + grammar + legend), the undo delay and the rail live; without surfaces the Store gets the delay.
+        if (Ui.Surfaces.Current is { } ui) ui.ApplySettings(now);
+        else store.ApplySettings(now);
+        Log.Write($"settings: applied live (keys={(old.Keys != now.Keys ? "changed" : "same")} undo={now.UndoDelay} rail={now.RailPresence.RawValue()} {now.RailSide})");
     }
 
     /// <summary>At exit: hooks off, the COM activator unregistered (a later click launches a new process).</summary>

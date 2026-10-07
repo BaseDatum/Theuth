@@ -373,6 +373,19 @@ internal sealed class Notifier : IDisposable
 
     // MARK: taps → the Store's answer path (immediately, no hold) → receipt
 
+    /// <summary>
+    /// W2's single instance redirected a second launch's activation here (Ui.Surfaces.Redirected): a toast's arguments when the
+    /// click reached a fresh process instead of our COM server; W2 handles plain launches itself.
+    /// </summary>
+    public void Redirected(Microsoft.Windows.AppLifecycle.AppActivationArguments e)
+    {
+        if (e.Kind == Microsoft.Windows.AppLifecycle.ExtendedActivationKind.AppNotification && e.Data is AppNotificationActivatedEventArgs a)
+        {
+            Log.Write($"notifications: redirected toast activation argument='{a.Argument}'");
+            Invoked(a);
+        }
+    }
+
     private void Invoked(AppNotificationActivatedEventArgs args)
     {
         var a = args.Arguments;
