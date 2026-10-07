@@ -389,6 +389,64 @@ pub struct SessionCost {
     pub remote_tokens: Vec<RemoteTokens>,
 }
 
+/// One local calendar day (or the month to date) of model-call spend
+/// (128 Rev 3). `usd` sums `returned ?? estimated` over USD calls;
+/// `unresolved` counts calls with no money at all (never a number).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+pub struct SpendDay {
+    /// `YYYY-MM-DD` in the engine host's local timezone.
+    pub day: String,
+    /// Dollars.
+    pub usd: f64,
+    /// Attempts that were not `not_dispatched`.
+    pub calls: u32,
+    /// Attempts with neither returned nor estimated money.
+    pub unresolved: u32,
+}
+
+/// Who a root session's calls belong to.
+#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[serde(rename_all = "snake_case")]
+pub enum SpendOwnerKind {
+    /// A roster agent's desk tree (`sessions.desk`).
+    Agent,
+    /// The user's own roots, folded into one row named `you`.
+    User,
+    /// A scheduler-opened root (`sessions.unattended` on a root).
+    Routine,
+    /// Roots whose session row is gone, folded into one row.
+    Other,
+}
+
+/// Spend of the report window attributed to one owner.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+pub struct SpendOwner {
+    /// Attribution class.
+    pub kind: SpendOwnerKind,
+    /// Agent name, routine name, `you` or `other`.
+    pub name: String,
+    /// Dollars over the window.
+    pub usd: f64,
+    /// Attempts over the window.
+    pub calls: u32,
+}
+
+/// What `spend_report` answers (128 Rev 3): the last `days` local days,
+/// oldest first, the month to date, and the window's top owners.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+pub struct SpendReport {
+    /// One entry per local day, oldest first, today last; a day with no calls is `$0.00`.
+    pub days: Vec<SpendDay>,
+    /// The current local month to date (`day` = `YYYY-MM`).
+    pub month: SpendDay,
+    /// Top 8 owners of the window by `usd`.
+    pub owners: Vec<SpendOwner>,
+}
+
 /// One cumulative remote meter observation (§6.3).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
