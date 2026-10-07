@@ -1036,7 +1036,8 @@ fn menu(m: &Model, input: &str, width: u16, height: u16) -> Option<AnyElement<'s
                 } else {
                     ""
                 };
-                format!("{noun} › {p} ({})  ⏎ set  {back}esc close", rows.len())
+                let models = rows.iter().filter(|r| !matches!(r, ModelRow::Off { .. })).count();
+                format!("{noun} › {p} ({models})  ⏎ set  {back}esc close")
             } else {
                 format!("{noun}  ⏎ open provider  type to search all models  esc close")
             };

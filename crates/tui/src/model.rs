@@ -4638,6 +4638,7 @@ impl Model {
                 }
             }
             UiEvent::Models(items) => {
+                let target = std::mem::take(&mut self.pick_target);
                 if items.is_empty() {
                     self.entries
                         .push(Entry::Error("no models: no provider is configured".into()));
@@ -4652,7 +4653,7 @@ impl Model {
                         filter: String::new(),
                         cursor: 0,
                         provider,
-                        target: std::mem::take(&mut self.pick_target),
+                        target,
                     });
                     self.models_home();
                 }
@@ -8559,6 +8560,13 @@ impl Model {
         let picked = self.pick_current();
         let current = items.iter().find(|m| Some(m.id.as_str()) == picked);
         let mut rows = Vec::new();
+        // 125 §7.2: the advisor's picker leads with `Off` while browsing (either
+        // level — a single provider skips the providers one), marked while there is none.
+        if filter.is_empty() && *target == PickTarget::Advisor {
+            rows.push(ModelRow::Off {
+                current: picked.is_none(),
+            });
+        }
         if !filter.is_empty() {
             rows.extend(current.map(ModelRow::Current));
             rows.extend(
@@ -8570,12 +8578,6 @@ impl Model {
         } else if let Some(p) = provider {
             rows.extend(provider_models(items, p).into_iter().map(ModelRow::Model));
         } else {
-            // 125 §7.2: the advisor's picker leads with `Off`, marked while there is none.
-            if *target == PickTarget::Advisor {
-                rows.push(ModelRow::Off {
-                    current: picked.is_none(),
-                });
-            }
             rows.extend(current.map(ModelRow::Current));
             let now = current.map(|c| c.provider.as_str());
             rows.extend(providers(items).into_iter().map(|(id, count)| {
@@ -8769,13 +8771,13 @@ impl Model {
             KeyCode::Right => {
                 if let Some((true, Some(p))) = picked {
                     *provider = Some(p);
-                    *cursor = 0;
+                    home = true;
                 }
             }
             KeyCode::Enter => match (picked, target) {
                 (Some((true, Some(p))), _) => {
                     *provider = Some(p);
-                    *cursor = 0;
+                    home = true;
                 }
                 (Some((false, Some(model))), PickTarget::Session) => {
                     send(
