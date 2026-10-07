@@ -26,6 +26,8 @@ public enum Intent: Equatable, Sendable {
     case clear
     /// D · O · ⌘O: deep links into the main window.
     case openDiff, openBoard, openSession
+    /// R: reply in words (W3); ⌘L: jump to the Ask bar (W3).
+    case reply, askBar
     case none
 }
 
@@ -56,6 +58,8 @@ public enum KeyGrammar {
         case ("d", false): return .openDiff
         case ("o", false): return .openBoard
         case ("o", true): return .openSession
+        case ("r", false): return .reply
+        case ("l", true): return .askBar
         default: return .none
         }
     }

@@ -25,11 +25,14 @@ struct PanelView: View {
                     Text("+\(others.count - shown.count) more · J to walk them")
                         .font(.system(size: 11)).foregroundColor(.sand).padding(.horizontal, 12).padding(.vertical, 6)
                 }
+            } else if store.panel.receiptFocus != nil {
+                AskItemLines(store: store) // W3: the focus is in the Done zone; the items stay as lines
             } else {
                 Text(store.connection == .open ? "Nothing needs you." : "Connecting to the engine…")
                     .font(.system(size: 12.5)).foregroundColor(.ink2)
                     .frame(maxWidth: .infinity).padding(.vertical, 26)
             }
+            DoneZone(store: store) // W3: the last 24 h of receipts, after the items
             Divider().overlay(Color.rule.opacity(0.6))
             footer
             if let r = store.receipt { ReceiptView(receipt: r, remaining: store.holdRemaining, delay: store.undo.delay) }
@@ -122,12 +125,14 @@ struct CardView: View {
                     }
                 }
             }
+            if store.ask.replyFor == card.item.id { ReplyField(card: card, store: store) } // W3: R
             HStack(spacing: 10) {
                 Hint("S", "snooze 30 m")
                 if card.clearable { Hint("E", "clear") }
                 if card.item.kind == .decision { Hint("O", "board") }
                 if card.item.kind == .review || card.item.kind == .finished { Hint("D", "diff") }
                 if card.sessionURL != nil { Hint("⌘O", "session") }
+                if card.replyAction("") != nil { Hint("R", "reply") } // W3
             }
         }
         .padding(.horizontal, 12).padding(.top, 11).padding(.bottom, 10)
@@ -217,6 +222,7 @@ struct ReceiptView: View {
     let receipt: Store.Receipt
     let remaining: TimeInterval
     let delay: TimeInterval
+    var width: CGFloat = PanelController.width // W3: the Ask bar is wider
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -235,13 +241,17 @@ struct ReceiptView: View {
                     Text("Already answered elsewhere").font(.system(size: 12)).foregroundColor(.sand)
                 case .failed(let e):
                     Text("Failed · \(e)").font(.system(size: 12)).foregroundColor(.carnelian).lineLimit(1)
+                case .reply(let who, let text, let session): // W3: the desk's streamed answer
+                    (Text("\(who) · ").fontWeight(.semibold) + Text(text)).font(.system(size: 12)).lineLimit(2)
+                    Spacer()
+                    if session != nil { Text("Open ⌘O").font(.system(size: 11)).foregroundColor(.ink2) }
                 }
             }
             .padding(.horizontal, 12).padding(.vertical, 8)
             .background(Color.malachite.opacity(0.12))
             .overlay(alignment: .bottomLeading) {
                 if case .holding = receipt, delay > 0 {
-                    Rectangle().fill(Color.malachite).frame(width: PanelController.width * CGFloat(remaining / delay), height: 2)
+                    Rectangle().fill(Color.malachite).frame(width: width * CGFloat(remaining / delay), height: 2)
                 }
             }
         }

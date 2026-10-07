@@ -13,6 +13,10 @@ public enum CardAction: Equatable, Sendable {
     case sendNextStep(session: String, text: String)
     case dismiss(id: String)
     case snooze(id: String)
+    /// W3 R on an approval (R1-5: Decision is Allow|Deny): `resolve_approval(Deny)` then `steer(session, note)`.
+    case denyWithNote(approvalId: String, session: String?, note: String)
+    /// W3 Ask bar: `send_input(theuth's desk, text)` after the hold; no item, so no stale guard.
+    case askTheuth(text: String)
     /// Not sendable yet: the app must collect the note and hold `.reviewSendBackNote` instead.
     public var needsNote: Bool {
         if case .reviewSendBack = self { return true }
