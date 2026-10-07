@@ -794,7 +794,9 @@ impl Agents {
             None => id,
         };
         let permits = self.tree_pools(root).native.clone();
-        let actor = Session::spawn(Session::new(
+        // Unbounded (R2.6): `route` awaits `tell_input` inside a supervisor
+        // handler; a full bounded mailbox here would stall the engine.
+        let session = Session::new(
             id,
             depth,
             model,
@@ -814,7 +816,8 @@ impl Agents {
             self.pool.clone(),
             permits,
             resources,
-        ));
+        );
+        let actor = Session::spawn_with_mailbox(session, runtime::subscriber_mailbox());
         let actor = LiveActor::Native(actor);
         self.ledger
             .register(id, parent.as_ref().map(|p| p.0), resumed);
@@ -1019,7 +1022,9 @@ impl Agents {
         self.inherit_approvals(id, parent.as_ref().map(|p| p.0))
             .await;
         self.mirror(id).await;
-        let actor = LiveActor::Acp(AcpChild::spawn(AcpChild::new(
+        // Unbounded (R2.6): the supervisor `tell`s into this mailbox from
+        // its own handlers and must never block on a chatty harness.
+        let child = AcpChild::new(
             id,
             name,
             transport,
@@ -1034,7 +1039,11 @@ impl Agents {
             self.rt.clone(),
             materialised,
             mcp_servers,
-        )));
+        );
+        let actor = LiveActor::Acp(AcpChild::spawn_with_mailbox(
+            child,
+            runtime::subscriber_mailbox(),
+        ));
         if let LiveActor::Acp(a) = &actor {
             for n in notes {
                 let _ = a.tell(crate::acp_child::Note(n)).await;
