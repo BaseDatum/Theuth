@@ -12,11 +12,12 @@ use acp::registry::RegistryAgent;
 use agent::durability::ResumeKind;
 use agent::todo::{Status as TodoStatus, TodoSnapshot, TodoSource};
 use agent::{
-    AgentEvent, AgentInfo, AgentState, AwsProfiles, CommunicationChanged, CommunicationState,
-    CompactStyle, ContextAttachment, ContextEntry, ContextItem, ContextKind, ContextRemoval,
-    ContextSnapshot, ContextTarget, HistoryEntry, Loaded, ModelInfo, PeerDelivered, PeerInfo,
-    PeerMessageChanged, PeerMessagePage, PeerOrigin, PeerPage, PeerReceipt, PeerRecord, PeerScope,
-    ProviderInfo, QueuedInput, SessionSummary, SkillBody, SkillMeta, Usage, VisionNote,
+    AdvisorDefaults, AdvisorSeverity, AdvisorState, AdvisorStatus, Advisory, AgentEvent,
+    AgentInfo, AgentState, AwsProfiles, CommunicationChanged, CommunicationState, CompactStyle,
+    ContextAttachment, ContextEntry, ContextItem, ContextKind, ContextRemoval, ContextSnapshot,
+    ContextTarget, HistoryEntry, Loaded, ModelInfo, PeerDelivered, PeerInfo, PeerMessageChanged,
+    PeerMessagePage, PeerOrigin, PeerPage, PeerReceipt, PeerRecord, PeerScope, ProviderInfo,
+    QueuedInput, SessionKind, SessionSummary, SkillBody, SkillMeta, Usage, VisionNote,
     VisionStage, VisionStatus,
 };
 use agent::{
@@ -104,6 +105,8 @@ pub enum UiEvent {
     ModelSet(ModelInfo),
     /// Reply to [`Command::SetEffort`]: the value now in force.
     EffortSet(Option<String>),
+    /// Reply to [`Command::SetAdvisor`] / [`Command::AdvisorStatus`] (125 §7.1).
+    AdvisorStatus(AdvisorStatus),
     /// Reply to [`Command::HarnessOptions`] (75 §8): the harness's option list.
     HarnessOptions(Vec<acp::ConfigOption>),
     /// Reply to [`Command::SetHarnessOption`]: the option key asked for, the value, and the result.
@@ -518,6 +521,17 @@ pub enum Command {
         /// Effort keyword or token budget; `None` clears it (provider default).
         effort: Option<String>,
     },
+    /// `set_advisor` (125 §7.1): `model: None` turns the advisor off.
+    SetAdvisor {
+        /// The advised session.
+        session: SessionId,
+        /// `provider/model` of the advisor; `None` = off.
+        model: Option<String>,
+        /// Its effort.
+        effort: Option<String>,
+    },
+    /// `advisor_status` (125 §7.3).
+    AdvisorStatus(SessionId),
     /// `harness_options` on an ACP session (75 §8).
     HarnessOptions(SessionId),
     /// `set_harness_option` on an ACP session (75 §8): `config_id` is an
@@ -1032,6 +1046,14 @@ pub enum Entry {
     /// 109 §10.3: a plain divider in the `Compacted` shape (`── resumed after
     /// restart ──`); nothing to expand.
     Divider(String),
+    /// 125 §7.4: one Advisory card — every note the advisor raised at one
+    /// step boundary. Three notes until Ctrl+O (`ADVISORY_COLLAPSED`).
+    Advisory {
+        /// The typed metadata of the row.
+        advisory: Advisory,
+        /// Show every note.
+        expanded: bool,
+    },
     /// Informational line (session lists, notices).
     Info(String),
     /// Error line.
@@ -1092,6 +1114,96 @@ fn card(kind: CardKind, title: String, text: &str) -> Entry {
     }
 }
 
+/// Notes an [`Entry::Advisory`] shows before Ctrl+O (125 §7.4).
+pub const ADVISORY_COLLAPSED: usize = 3;
+/// The advisor glyph (U+25CE; outside `tests/no_emoji.rs`' ranges, `◉` is Vision).
+pub const ADVISOR_GLYPH: &str = "◎";
+
+/// `nit` / `concern` / `blocker`: the badge word.
+pub fn severity_name(s: AdvisorSeverity) -> &'static str {
+    match s {
+        AdvisorSeverity::Nit => "nit",
+        AdvisorSeverity::Concern => "concern",
+        AdvisorSeverity::Blocker => "blocker",
+    }
+}
+
+/// The card's severity: the worst of its notes (`Nit` for an empty list).
+pub fn advisory_severity(a: &Advisory) -> AdvisorSeverity {
+    a.notes
+        .iter()
+        .map(|n| n.severity)
+        .max()
+        .unwrap_or(AdvisorSeverity::Nit)
+}
+
+/// `◎ advisor · 2 notes`: the card title.
+pub fn advisory_title(a: &Advisory) -> String {
+    let n = a.notes.len();
+    format!(
+        "{ADVISOR_GLYPH} advisor · {n} note{}",
+        if n == 1 { "" } else { "s" }
+    )
+}
+
+/// `off` / `idle` / `reviewing` / `paused` / `halted`.
+pub fn advisor_state_name(s: AdvisorState) -> &'static str {
+    match s {
+        AdvisorState::Off => "off",
+        AdvisorState::Idle => "idle",
+        AdvisorState::Reviewing => "reviewing",
+        AdvisorState::Paused => "paused",
+        AdvisorState::Halted => "halted",
+    }
+}
+
+/// `/advisor status` (125 §7.3): the four lines, `—` for unknowns; one
+/// line when off.
+pub fn advisor_status_lines(s: &AdvisorStatus) -> Vec<String> {
+    if s.state == AdvisorState::Off {
+        return vec!["advisor: off  ·  /advisor to pick a model".to_owned()];
+    }
+    let dash = || "—".to_owned();
+    // Why paused / halted rides on the state line.
+    let detail = s
+        .detail
+        .as_deref()
+        .map_or_else(String::new, |d| format!("  ·  {d}"));
+    let mut out = vec![
+        format!(
+            "advisor: {}  ·  {}  ·  {}{detail}",
+            advisor_state_name(s.state),
+            s.model.clone().unwrap_or_else(dash),
+            s.effort.clone().unwrap_or_else(dash)
+        ),
+        format!(
+            "notes: {} nit · {} concern · {} blocker  ·  step {}  ·  backlog {}",
+            s.notes.nit, s.notes.concern, s.notes.blocker, s.step, s.backlog
+        ),
+    ];
+    let context = if s.context_limit > 0 {
+        format!(
+            "{} / {} ({}%)",
+            k(s.context_used),
+            k(s.context_limit),
+            u64::from(s.context_used) * 100 / u64::from(s.context_limit)
+        )
+    } else {
+        k(s.context_used)
+    };
+    out.push(format!(
+        "context: {context}  ·  in {} · out {}  ·  cost {}",
+        k(u32::try_from(s.tokens_in).unwrap_or(u32::MAX)),
+        k(u32::try_from(s.tokens_out).unwrap_or(u32::MAX)),
+        s.cost.as_ref().map_or_else(dash, cost_short)
+    ));
+    out.push(match &s.last_note {
+        Some(n) => format!("last: [{}] {}", severity_name(n.severity), n.note),
+        None => "last: —".to_owned(),
+    });
+    out
+}
+
 /// Rows a string of `chars` occupies at `width` columns (at least one).
 fn rows(chars: usize, width: usize) -> usize {
     chars.div_ceil(width.max(1)).max(1)
@@ -1126,6 +1238,15 @@ impl Entry {
             // width, so they count one row per line like everything else.
             Entry::Assistant(t) => md(t, width),
             Entry::Card { text, expanded, .. } => 4 + if *expanded { md(text, inner) } else { 0 },
+            // 125 §7.4: border + title + margin, one row per note shown, the `… +N more` row.
+            Entry::Advisory { advisory, expanded } => {
+                let n = advisory.notes.len();
+                if *expanded {
+                    4 + n
+                } else {
+                    4 + n.min(ADVISORY_COLLAPSED) + usize::from(n > ADVISORY_COLLAPSED)
+                }
+            }
             Entry::Reasoning { done: true, .. } => 1,
             Entry::Reasoning { text, .. } | Entry::Info(text) | Entry::Error(text) => {
                 text_rows(text, width)
@@ -1233,6 +1354,8 @@ pub fn injected(text: &str) -> Option<Vec<(CardKind, String, String)>> {
             "knowledge" => (None, "</knowledge>"),
             "nudge" => (None, "</nudge>"),
             "journal" => (None, "</journal>"),
+            // 125 §7.4: an advisory steer's row is carded by `AdvisoryAdded`, never echoed.
+            "advisory" => (None, "</advisory>"),
             _ => return None,
         };
         let (body, tail) = after.split_once(close)?;
@@ -1328,6 +1451,11 @@ pub const COMMANDS: &[(&str, &str, &str)] = &[
         "/effort",
         "[level|clear]",
         "reasoning effort (picker without arg)",
+    ),
+    (
+        "/advisor",
+        "[off|on|status|<provider/model>]",
+        "a second model that reviews this session (picker without argument)",
     ),
     (
         "/aws",
@@ -1633,6 +1761,25 @@ pub fn window(len: usize, cursor: usize, max: usize) -> Range<usize> {
     start..len.min(start + max)
 }
 
+/// Where a `/model` / `/effort` pick goes (125 §7.2).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum PickTarget {
+    /// `set_model` / `set_effort`: the shown session (and the default).
+    #[default]
+    Session,
+    /// `set_advisor`: the shown session's advisor.
+    Advisor,
+}
+
+/// Why a `set_advisor` / `advisor_status` call was made (125 §7.1).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum AdvisorReply {
+    /// `/advisor status`: print the lines of §7.3.
+    Status,
+    /// A model pick: chain into the advisor's effort picker when it has levels.
+    Pick,
+}
+
 /// An open menu; modal except `Slash`, which rides on the input box.
 #[derive(Debug)]
 pub enum Menu {
@@ -1651,6 +1798,8 @@ pub enum Menu {
         cursor: usize,
         /// The provider whose models are listed; `None` is the providers level.
         provider: Option<String>,
+        /// Whose model a pick sets (125 §7.2): the session's or its advisor's.
+        target: PickTarget,
     },
     /// `/effort` picker.
     Efforts {
@@ -1658,6 +1807,8 @@ pub enum Menu {
         items: Vec<String>,
         /// Highlighted row.
         cursor: usize,
+        /// Whose effort a pick sets.
+        target: PickTarget,
     },
     /// `/aws` picker.
     AwsProfiles {
@@ -3332,6 +3483,21 @@ pub struct Model {
     /// The ledger of the shown session (or an ancestor) changed: the event
     /// loop re-asks `session_cost`.
     pub refresh_cost: bool,
+    /// The shown session's advisor (125 §7.5): the status segment, the
+    /// header tag, the picker's `●`. `state: Off` until a reply or event says otherwise.
+    pub advisor: AdvisorStatus,
+    /// `Info.advisor` (125 §6.5): the last remembered pick, served by `/advisor on`;
+    /// follows every `AdvisorChanged` with a model.
+    pub advisor_default: AdvisorDefaults,
+    /// Where the next `UiEvent::Models` picker sends its pick.
+    pick_target: PickTarget,
+    /// What the next `UiEvent::AdvisorStatus` reply is for; `None` installs it silently.
+    advisor_reply: Option<AdvisorReply>,
+    /// Seqs of the Advisory rows `AdvisoryAdded` carded: a `TurnStarted`
+    /// opened by one is not echoed as `◆ you`.
+    advisory_seqs: BTreeSet<i64>,
+    /// A transcript was loaded: the event loop re-asks `advisor_status`.
+    pub refresh_advisor: bool,
     /// Effective project of the shown session's root (`Loaded.project`).
     pub project: Option<String>,
     /// A `/sessions` or `/artifacts` menu is open and session metadata
@@ -3391,6 +3557,7 @@ impl Model {
             // (the global default after `/new`).
             refresh_communication: true,
             app_enabled: self.app_enabled,
+            advisor_default: std::mem::take(&mut self.advisor_default),
             vision_model: self.vision_model.take(),
             search: std::mem::take(&mut self.search),
             private: self.private.take(),
@@ -3450,6 +3617,8 @@ impl Model {
         self.project = loaded.project;
         // The header's cost tag is the owner's summary, re-read on every load (51 §6.2).
         self.refresh_cost = true;
+        // The link survives a restart (125 §3): re-read it with the transcript.
+        self.refresh_advisor = true;
         if let Some(n) = loaded.context_estimate {
             self.context = n;
             self.context_estimated = true;
@@ -4068,12 +4237,14 @@ impl Model {
                         summary: Some(_),
                         ..
                     }
-            )
+            ) || matches!(e, Entry::Advisory { advisory, .. } if advisory.notes.len() > ADVISORY_COLLAPSED)
         }) else {
             return;
         };
         match e {
-            Entry::Card { expanded, .. } | Entry::Compacted { expanded, .. } => {
+            Entry::Card { expanded, .. }
+            | Entry::Compacted { expanded, .. }
+            | Entry::Advisory { expanded, .. } => {
                 *expanded = !*expanded;
             }
             Entry::Tool {
@@ -4156,6 +4327,7 @@ impl Model {
             || self.compacting
             || self.harvesting
             || self.vision.is_some()
+            || self.advisor.state == AdvisorState::Reviewing
             || self.agents.values().any(AgentRow::live)
             || self.pairing.is_some()
             || self.invite.is_some()
@@ -4358,6 +4530,8 @@ impl Model {
                 let mut old = std::mem::take(&mut self.agents);
                 self.agents = list
                     .into_iter()
+                    // 125 §7.5: the hidden advisor child is never a board row.
+                    .filter(|info| info.kind != SessionKind::Advisor)
                     .map(|info| {
                         let row = match old.remove(&info.id) {
                             Some(mut row) => {
@@ -4460,6 +4634,7 @@ impl Model {
                         filter: String::new(),
                         cursor: 0,
                         provider,
+                        target: std::mem::take(&mut self.pick_target),
                     });
                     self.models_home();
                 }
@@ -4469,7 +4644,7 @@ impl Model {
             UiEvent::ModelSet(info) => {
                 self.model_id = info.id;
                 if !info.efforts.is_empty() {
-                    self.open_efforts(info.efforts);
+                    self.open_efforts(info.efforts, PickTarget::Session);
                 }
             }
             UiEvent::EffortSet(effort) => {
@@ -4479,6 +4654,36 @@ impl Model {
                     None => "effort cleared".to_owned(),
                 }));
                 self.effort = effort;
+            }
+            // The reply of `/advisor …` or a load's refresh (125 §7.1): installed
+            // silently; `status` prints its lines; a pick chains into the effort picker.
+            UiEvent::AdvisorStatus(status) => {
+                if status.session != self.session.unwrap_or(status.session) {
+                    return;
+                }
+                let why = self.advisor_reply.take();
+                self.set_advisor_status(status);
+                match why {
+                    Some(AdvisorReply::Status) => {
+                        for line in advisor_status_lines(&self.advisor) {
+                            self.entries.push(Entry::Info(line));
+                        }
+                    }
+                    Some(AdvisorReply::Pick) => {
+                        let levels = self
+                            .advisor
+                            .model
+                            .as_deref()
+                            .zip(self.catalog.as_ref())
+                            .and_then(|(id, c)| c.closest(id))
+                            .map(|m| m.efforts())
+                            .unwrap_or_default();
+                        if !levels.is_empty() {
+                            self.open_efforts(levels, PickTarget::Advisor);
+                        }
+                    }
+                    None => {}
+                }
             }
             UiEvent::HarnessOptions(options) => {
                 for line in harness_options_lines(&options) {
