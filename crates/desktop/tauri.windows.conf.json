@@ -13,7 +13,15 @@
       "webviewInstallMode": { "type": "downloadBootstrapper", "silent": true },
       "nsis": {
         "installMode": "currentUser",
-        "installerIcon": "icons/icon.ico"
+        "installerIcon": "icons/icon.ico",
+        "installerHooks": "nsis/hooks.nsh"
+      }
+    }
+  },
+  "plugins": {
+    "deep-link": {
+      "desktop": {
+        "schemes": ["theuth"]
       }
     }
   }
