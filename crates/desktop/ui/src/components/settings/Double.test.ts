@@ -7,7 +7,7 @@ import type { DoubleClass } from '@/rpc/bindings/DoubleClass'
 import type { DoubleClassDetail } from '@/rpc/bindings/DoubleClassDetail'
 import type { DoubleStatus } from '@/rpc/bindings/DoubleStatus'
 import type { Kpis } from '@/rpc/bindings/Kpis'
-import { Double, chartProps, forgetClass, mergeCurves, runLine, setCap, setOptIn, venueOf } from './Double'
+import { Double, chartProps, forgetClass, mergeCurves, runLine, setCap, setOptIn } from './Double'
 
 const zero: Kpis = { n: 0, accuracy: 0, brier: 0, ece: 0, coverage_2pct: 0, asks_avoided: 0, minutes_saved: 0, overrides_per_100: 0, undo_rate_per_100: 0 }
 /** What C's stub answers before W1/W2: `enabled: false`, no version, no run, empty numbers, no classes. */
@@ -84,14 +84,6 @@ test('row actions hit the right methods with the class key: cap → double_set_c
     ['set_cap', 'k', 1, true],
     ['forget', { target: 'class', key: 'k' }],
   ])
-})
-
-test('venueOf maps the config spelling to the Venue argument', () => {
-  expect(venueOf('auto')).toEqual({ venue: 'auto' })
-  expect(venueOf('local')).toEqual({ venue: 'local' })
-  expect(venueOf('node:gpu-1')).toEqual({ venue: 'node', name: 'gpu-1' })
-  expect(venueOf('off')).toEqual({ venue: 'off' })
-  expect(venueOf('???')).toEqual({ venue: 'auto' })
 })
 
 test('the overall curve is the n-weighted merge of the per-class curves, weeks ascending; chart series in percent', () => {

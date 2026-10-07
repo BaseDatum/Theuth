@@ -41,12 +41,6 @@ import { rungGlyph } from '@/components/chat/DoubleChip'
 const pct = (x: number): string => `${Math.round(x * 100)} %`
 const at = (iso: string | null | undefined): string => (iso ? formatAt(Date.parse(iso)) : '—')
 
-/** `local` | `node:<name>` | `auto` | `off` (config spelling) → the `Venue` argument of `double_train`. */
-export function venueOf(s: string): Venue {
-  if (s === 'auto' || s === 'local' || s === 'off') return { venue: s }
-  return s.startsWith('node:') ? { venue: 'node', name: s.slice(5) } : { venue: 'auto' }
-}
-
 /**
  * The overall curve out of the per-class ones (`double_class(key).curve`; `double_status` carries no curve): per week,
  * accuracy and coverage weighted by each class's `n`, current and baseline. Weeks sorted ascending.
