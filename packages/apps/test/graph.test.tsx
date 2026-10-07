@@ -61,9 +61,15 @@ describe("Graph schema parity with crates/surface", () => {
   test("highlight is the reactive prop; Graph closes every container child union", () => {
     expect(reactiveProps(library).Graph).toEqual(["highlight"]);
     expect(library.toSpec().components.Card!.signature).toContain("Graph");
-    expect(library.toSpec().components.Graph!.signature).toBe(
-      'Graph(nodes: {id: string, label: string, kind?: "box" | "rounded" | "pill" | "diamond" | "cylinder" | "actor", group?: string, state?: "default" | "active" | "done" | "muted" | "danger"}[], edges: {from: string, to: string, label?: string, style?: "solid" | "dashed"}[], groups?: {id: string, label: string}[], direction?: "LR" | "TB", highlight?: $binding<string[]>, onSelect?: ActionExpression)',
+    const sig = library.toSpec().components.Graph!.signature;
+    expect(sig).toStartWith(
+      'Graph(nodes: {id: string, label: string, kind?: "box" | "rounded" | "pill" | "diamond" | "cylinder" | "actor" | "hexagon" | "circle" | "note", group?: string, state?: "default" | "active" | "done" | "muted" | "danger", sub?: string, tag?: string, icon?: "server" |',
     );
+    expect(sig).toContain(
+      '}[], edges: {from: string, to: string, label?: string, style?: "solid" | "dashed", state?: "default" | "active" | "done" | "muted" | "danger", arrow?: "forward" | "both" | "none"}[], groups?: {id: string, label: string, parent?: string, kind?: "zone" | "boundary" | "cluster"}[], ',
+    );
+    expect(sig).toContain('direction?: "LR" | "TB", highlight?: $binding<string[]>, onSelect?: ActionExpression, legend?: {');
+    expect(sig).toEndWith(', title?: string)');
   });
 });
 
@@ -135,6 +141,14 @@ describe("walkthrough app", () => {
       [],
     );
     expect(stray.diagnostics.map((d) => d.code)).toEqual(["state-undeclared"]);
+    // 123 §6: every diagram's positional `onSelect` (last argument) scopes `$value`; one argument earlier it does not.
+    const gantt = (at: string) =>
+      check(
+        `root = Gantt([{id: "a", label: "A", start: "2026-10-08", end: "2026-10-10"}], null, "Plan", ${at})\n$pick = ""`,
+        [],
+      ).diagnostics.map((d) => d.code);
+    expect(gantt(`null, Action([@Set($pick, $value)])`)).toEqual([]);
+    expect(gantt(`[$value], null`)).toEqual(["state-undeclared"]);
   });
 
   test("steps through three highlight states and a node press reaches @Set and @ToAssistant", async () => {

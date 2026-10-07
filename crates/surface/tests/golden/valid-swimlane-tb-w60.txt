@@ -1,0 +1,9 @@
+User
+  ▶ Open board
+  ■ Read
+App
+  ▱ Load blocks (board.md) → Render
+  • Render
+
+Open board → Load blocks
+Render → Read

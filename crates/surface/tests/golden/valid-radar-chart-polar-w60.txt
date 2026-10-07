@@ -1,0 +1,9 @@
+RadarChart: Hours by area — 1 series
+axis   │ this week
+───────┼──────────
+Rust   │ 14
+TS     │ 9
+Docs   │ 3
+Review │ 6
+Ops    │ 2
+Design │ 5

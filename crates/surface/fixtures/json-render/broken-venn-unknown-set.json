@@ -1,0 +1,52 @@
+{
+  "root": "v",
+  "elements": {
+    "v": {
+      "type": "Venn",
+      "props": {
+        "title": "Release gates",
+        "sets": [
+          {
+            "id": "tests",
+            "label": "Has tests",
+            "size": 41
+          },
+          {
+            "id": "docs",
+            "label": "Has docs",
+            "size": 28
+          },
+          {
+            "id": "review",
+            "label": "Reviewed",
+            "size": 35
+          }
+        ],
+        "overlaps": [
+          {
+            "sets": [
+              "tests",
+              "ci"
+            ],
+            "label": "Documented + tested"
+          },
+          {
+            "sets": [
+              "tests",
+              "review"
+            ],
+            "label": "Ship candidates"
+          },
+          {
+            "sets": [
+              "tests",
+              "docs",
+              "review"
+            ],
+            "label": "Release-ready"
+          }
+        ]
+      }
+    }
+  }
+}

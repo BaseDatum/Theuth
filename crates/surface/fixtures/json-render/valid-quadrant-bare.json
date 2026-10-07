@@ -1,0 +1,43 @@
+{
+  "root": "q",
+  "elements": {
+    "q": {
+      "type": "Quadrant",
+      "props": {
+        "xLabel": "Risk",
+        "yLabel": "Reward",
+        "items": [
+          {
+            "label": "Edge case",
+            "x": 0.5,
+            "y": 0.5
+          },
+          {
+            "label": "Safe bet",
+            "x": 0.1,
+            "y": 0.9,
+            "state": "done",
+            "size": 3
+          },
+          {
+            "label": "Gamble",
+            "x": 0.95,
+            "y": 0.95,
+            "state": "danger"
+          },
+          {
+            "label": "Skip",
+            "x": 0.7,
+            "y": 0.1,
+            "state": "muted"
+          },
+          {
+            "label": "A rather long item label that must truncate",
+            "x": 0.2,
+            "y": 0.2
+          }
+        ]
+      }
+    }
+  }
+}

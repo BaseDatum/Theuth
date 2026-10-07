@@ -1,0 +1,88 @@
+{
+  "root": "r",
+  "elements": {
+    "r": {
+      "type": "Stack",
+      "props": {},
+      "children": [
+        "nodes",
+        "nested",
+        "list"
+      ]
+    },
+    "nodes": {
+      "type": "Tree",
+      "props": {
+        "title": "Org",
+        "layout": "org",
+        "items": [
+          {
+            "id": "ceo",
+            "label": "CEO"
+          },
+          {
+            "id": "cto",
+            "label": "CTO",
+            "depth": 1,
+            "state": "active",
+            "ref": "docs/org.md"
+          },
+          {
+            "id": "eng",
+            "label": "Engineering",
+            "depth": 2
+          },
+          {
+            "id": "cfo",
+            "label": "CFO",
+            "depth": 1
+          }
+        ]
+      }
+    },
+    "nested": {
+      "type": "Tree",
+      "props": {
+        "layout": "nested",
+        "items": [
+          {
+            "label": "Workspace"
+          },
+          {
+            "label": "crates",
+            "depth": 1
+          },
+          {
+            "label": "surface",
+            "depth": 2,
+            "detail": "json-render"
+          },
+          {
+            "label": "packages",
+            "depth": 1
+          }
+        ]
+      }
+    },
+    "list": {
+      "type": "Tree",
+      "props": {
+        "layout": "nodes",
+        "items": [
+          {
+            "label": "root"
+          },
+          {
+            "label": "left",
+            "depth": 1
+          },
+          {
+            "label": "right",
+            "depth": 1,
+            "state": "done"
+          }
+        ]
+      }
+    }
+  }
+}

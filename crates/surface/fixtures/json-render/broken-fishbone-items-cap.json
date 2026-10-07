@@ -1,0 +1,46 @@
+{
+  "root": "f",
+  "elements": {
+    "f": {
+      "type": "Fishbone",
+      "props": {
+        "title": "Why are replies slow?",
+        "effect": "Slow replies",
+        "causes": [
+          {
+            "category": "Model",
+            "items": [
+              "c0",
+              "c1",
+              "c2",
+              "c3",
+              "c4",
+              "c5",
+              "c6"
+            ]
+          },
+          {
+            "category": "Tools",
+            "items": [
+              "cold ELK",
+              "serial calls"
+            ]
+          },
+          {
+            "category": "Network",
+            "items": [
+              "proxy",
+              "retries"
+            ]
+          },
+          {
+            "category": "Prompt",
+            "items": [
+              "57-row table"
+            ]
+          }
+        ]
+      }
+    }
+  }
+}

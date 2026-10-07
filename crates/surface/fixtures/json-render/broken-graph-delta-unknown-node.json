@@ -1,0 +1,91 @@
+{
+  "root": "d",
+  "elements": {
+    "d": {
+      "type": "GraphDelta",
+      "props": {
+        "title": "Add a cache",
+        "direction": "LR",
+        "before": {
+          "nodes": [
+            {
+              "id": "web",
+              "label": "Web"
+            },
+            {
+              "id": "api",
+              "label": "API"
+            },
+            {
+              "id": "db",
+              "label": "Postgres",
+              "kind": "cylinder"
+            }
+          ],
+          "edges": [
+            {
+              "from": "web",
+              "to": "api"
+            },
+            {
+              "from": "api",
+              "to": "db",
+              "label": "reads"
+            }
+          ]
+        },
+        "after": {
+          "nodes": [
+            {
+              "id": "web",
+              "label": "Web"
+            },
+            {
+              "id": "api",
+              "label": "API",
+              "state": "active"
+            },
+            {
+              "id": "cache",
+              "label": "Redis",
+              "kind": "cylinder",
+              "state": "done"
+            },
+            {
+              "id": "db",
+              "label": "Postgres",
+              "kind": "cylinder"
+            }
+          ],
+          "edges": [
+            {
+              "from": "web",
+              "to": "api"
+            },
+            {
+              "from": "api",
+              "to": "cache",
+              "label": "reads"
+            },
+            {
+              "from": "cache",
+              "to": "db",
+              "label": "miss",
+              "style": "dashed"
+            },
+            {
+              "from": "api",
+              "to": "queue"
+            }
+          ],
+          "groups": [
+            {
+              "id": "data",
+              "label": "Data"
+            }
+          ]
+        }
+      }
+    }
+  }
+}

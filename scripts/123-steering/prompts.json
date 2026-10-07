@@ -1,0 +1,38 @@
+{
+  "$comment": "Design 123 §8.3 steering measurement. `grammar`: 20 prompts whose right answer is one of the nineteen new json-render grammars (5 lifecycles, 5 schemas, 5 plans/handoffs, 5 quantities); a pick is right when the reply's json-render elements include a type in `expect`. `hold`: 10 prompts whose right answer is prose, a Table, a Graph or a plain code block; a reply that draws any new grammar is a false draw. Bar: ≥ 16/20 and ≤ 1/10 (one re-tune of the prompt rows allowed).",
+  "new_grammars": ["StateMachine", "Entities", "Swimlane", "GraphDelta", "BarChart", "LineChart", "ScatterChart", "RadarChart", "Waterfall", "Funnel", "Gantt", "Quadrant", "Treemap", "Sankey", "Venn", "Loop", "Layers", "Journey", "Fishbone"],
+  "grammar": [
+    {"id": "life-order", "group": "lifecycle", "expect": ["StateMachine"], "prompt": "Explain the lifecycle of an order in our shop: it starts as a cart, becomes placed when the customer pays, then packed, shipped and delivered; a placed or packed order can be cancelled, and a delivered one can be returned within 14 days."},
+    {"id": "life-pr", "group": "lifecycle", "expect": ["StateMachine"], "prompt": "What are the states a pull request goes through in GitHub, and what moves it between them? Include draft, review requested, changes requested, approved, merged and closed."},
+    {"id": "life-tcp", "group": "lifecycle", "expect": ["StateMachine"], "prompt": "Walk me through the TCP connection states on the client side, from CLOSED through the handshake to ESTABLISHED and back through FIN_WAIT and TIME_WAIT."},
+    {"id": "life-job", "group": "lifecycle", "expect": ["StateMachine"], "prompt": "Our background job runner has jobs that are queued, running, retrying (up to 3 times with backoff), failed or succeeded; a running job can also be cancelled by an operator. Describe how a job moves between these."},
+    {"id": "life-session", "group": "lifecycle", "expect": ["StateMachine"], "prompt": "Describe the modes of a chat session in an agent harness: idle, running a turn, waiting for a tool approval, compacting context, and ended. What transitions exist and what guards them?"},
+    {"id": "schema-blog", "group": "schema", "expect": ["Entities"], "prompt": "Design the database schema for a small blog: users, posts, comments and tags, with the keys and the relationships between the tables."},
+    {"id": "schema-orders", "group": "schema", "expect": ["Entities"], "prompt": "Show me the data model for an e-commerce order system: customers, orders, order lines, products and payments. Which fields are primary and foreign keys?"},
+    {"id": "schema-classes", "group": "schema", "expect": ["Entities"], "prompt": "Sketch the class design for a notification service in TypeScript: an abstract Channel with send(), Email/SMS/Push implementations, a Notifier that composes channels, and a Template the Notifier depends on."},
+    {"id": "schema-sessions", "group": "schema", "expect": ["Entities"], "prompt": "Propose SQLite tables for storing chat sessions, turns, tool calls and per-turn cost, with types, primary keys and the foreign keys between them."},
+    {"id": "schema-library", "group": "schema", "expect": ["Entities"], "prompt": "Model a library system: members borrow copies of books; each book has authors; a loan has a due date and may be renewed. Give me the entities and how they relate."},
+    {"id": "plan-release", "group": "plan", "expect": ["Gantt"], "prompt": "Plan a four-week release: week 1 freeze and bug triage, weeks 1–2 QA regression, week 2–3 docs and release notes in parallel, week 3 release candidate, week 4 rollout after RC sign-off. Starting 2026-11-02."},
+    {"id": "plan-migration", "group": "plan", "expect": ["Gantt"], "prompt": "Lay out a timeline for migrating our Postgres 13 cluster to 16: dual-write starts 2026-10-20 for a week, backfill the next week, read cutover depends on backfill, then decommission two weeks after cutover."},
+    {"id": "handoff-incident", "group": "handoff", "expect": ["Swimlane"], "prompt": "Describe our incident process across on-call engineer, incident commander and communications lead: who detects, who declares, who writes the status page update, who runs the postmortem, and where the handoffs are."},
+    {"id": "handoff-deploy", "group": "handoff", "expect": ["Swimlane"], "prompt": "How does a change get to production here? Developer opens a PR, CI builds and tests, a reviewer approves, the release bot tags and deploys to staging, QA verifies, then ops promotes to prod. Show who does which step."},
+    {"id": "handoff-hiring", "group": "handoff", "expect": ["Swimlane", "Gantt"], "prompt": "Explain our hiring pipeline across recruiter, hiring manager and the panel: sourcing, screen, take-home review, onsite, debrief, offer. Which role owns each step and where does the candidate get handed over?"},
+    {"id": "qty-spend", "group": "quantity", "expect": ["Sankey", "BarChart", "Treemap"], "prompt": "Last week we spent $312 on Opus, $48 on Sonnet and $9 on Haiku. Opus went 60% to the design-123 session, 30% to bug triage and 10% to docs; Sonnet was all bug triage; Haiku was session titles. Show where the money went."},
+    {"id": "qty-latency", "group": "quantity", "expect": ["LineChart", "BarChart"], "prompt": "p95 latency per release: v1.0 410 ms, v1.1 380 ms, v1.2 290 ms, v1.3 305 ms, v1.4 240 ms; p50 was 120, 118, 95, 99, 80. Show the trend."},
+    {"id": "qty-headcount", "group": "quantity", "expect": ["Waterfall", "BarChart"], "prompt": "We started the year with 42 engineers, hired 12, lost 5 to attrition, moved 3 to the platform org and acquired a team of 4. Show how we got to the year-end number."},
+    {"id": "qty-funnel", "group": "quantity", "expect": ["Funnel", "BarChart"], "prompt": "Signup conversion last month: 12,400 visited the pricing page, 3,100 started signup, 1,900 verified email, 640 created a workspace, 210 paid. Where do we lose people?"},
+    {"id": "qty-tests", "group": "quantity", "expect": ["BarChart", "LineChart"], "prompt": "Test runs per day this week and how many failed: Mon 48/3, Tue 52/1, Wed 61/7, Thu 44/0, Fri 39/2. Give me the picture."}
+  ],
+  "hold": [
+    {"id": "hold-fact", "prompt": "What port does PostgreSQL listen on by default?"},
+    {"id": "hold-command", "prompt": "Give me the git command to delete a local branch that was already merged."},
+    {"id": "hold-compare", "prompt": "Compare SQLite, Postgres and DynamoDB for a small internal tool on setup effort, concurrency, query power and cost."},
+    {"id": "hold-arch", "prompt": "Explain the architecture of a typical three-tier web app: a browser talks to a load balancer, which fronts stateless API servers, which read and write a Postgres primary with a read replica and a Redis cache."},
+    {"id": "hold-letconst", "prompt": "What is the difference between let and const in JavaScript?"},
+    {"id": "hold-regex", "prompt": "Write a regular expression that matches an ISO 8601 date like 2026-10-07 and explain each part briefly."},
+    {"id": "hold-steps", "prompt": "How do I rotate an AWS IAM access key safely? Give me the steps."},
+    {"id": "hold-config", "prompt": "Here is my nginx server block; tell me the three settings I should change for a production TLS site: server_name, listen 80, and no HSTS header."},
+    {"id": "hold-glossary", "prompt": "Define these terms in one line each: idempotent, eventual consistency, backpressure, circuit breaker."},
+    {"id": "hold-review", "prompt": "I renamed `parse_config` to `load_config` in three files and updated the two call sites. Anything else I should check before opening the PR?"}
+  ]
+}

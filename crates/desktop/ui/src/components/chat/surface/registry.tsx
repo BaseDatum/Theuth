@@ -18,7 +18,6 @@ import {
 } from 'lucide-react'
 import { Children, type ComponentProps, isValidElement, type ReactNode, useState } from 'react'
 import { toast } from 'sonner'
-import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible'
 import { Separator } from '@/components/ui/separator'
@@ -26,8 +25,32 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { cn } from '@/lib/utils'
 import { catalog } from './catalog'
 import { Excerpt } from './Excerpt'
+import { BarChartView } from './diagrams/BarChart'
+import { EntitiesView } from './diagrams/Entities'
+import { FishboneView } from './diagrams/Fishbone'
+import { FunnelView } from './diagrams/Funnel'
+import { GanttView } from './diagrams/Gantt'
+import { GraphDeltaView } from './diagrams/GraphDelta'
+import { Heatmap } from './diagrams/Heatmap'
+import { JourneyView } from './diagrams/Journey'
+import { Kanban } from './diagrams/Kanban'
+import { LayersView } from './diagrams/Layers'
+import { LineChartView } from './diagrams/LineChart'
+import { LoopView } from './diagrams/Loop'
+import { QuadrantView } from './diagrams/Quadrant'
+import { RadarChartView } from './diagrams/RadarChart'
+import { SankeyView } from './diagrams/Sankey'
+import { ScatterChartView } from './diagrams/ScatterChart'
+import { StateMachineView } from './diagrams/StateMachine'
+import { SwimlaneView } from './diagrams/Swimlane'
+import { TimelineAxisView } from './diagrams/TimelineAxis'
+import { TreeDiagramView } from './diagrams/TreeDiagram'
+import { TreemapView } from './diagrams/Treemap'
+import { VennView } from './diagrams/Venn'
+import { WaterfallView } from './diagrams/Waterfall'
 import { GraphView } from './Graph'
 import { SequenceView } from './Sequence'
+import { Tag } from './Tag'
 
 // Every string is a React text node — no `dangerouslySetInnerHTML` (design 30 §11). Text, lists and headings are
 // `div`s with ARIA roles because the Streamdown wrapper styles `p`/`li`/`h1-h4` descendants for prose.
@@ -67,10 +90,6 @@ const TEXT: Record<string, string> = {
   lead: 'text-lg',
   code: 'font-mono text-xs',
 }
-const BADGE: Record<string, string> = {
-  success: 'border-success-border bg-success-bg text-success',
-  warning: 'border-warning-border bg-warning-bg text-warning',
-}
 const TONE: Record<string, { className: string; Icon: typeof Info }> = {
   info: { className: 'border-info-border bg-info-bg text-info', Icon: Info },
   success: { className: 'border-success-border bg-success-bg text-success', Icon: CircleCheck },
@@ -88,18 +107,6 @@ const DOT: Record<string, string> = {
   pending: 'border-border-strong',
 }
 const CALLOUT: Record<string, typeof Info> = { note: Info, tip: Lightbulb, question: CircleHelp, important: Flag }
-
-/** The `Badge` component body, shared with `Tags` and `Kanban` cards. */
-function Tag({ text, variant }: { text: string; variant?: string }) {
-  const v = variant ?? 'default'
-  return v in BADGE ? (
-    <Badge variant="outline" className={BADGE[v]}>
-      {text}
-    </Badge>
-  ) : (
-    <Badge variant={v as 'default' | 'secondary' | 'destructive'}>{text}</Badge>
-  )
-}
 
 /** Inline polyline over `values` in a 100×24 box; a flat run is a mid-height line. */
 function Spark({ values, className }: { values: number[]; className?: string }) {
@@ -332,7 +339,10 @@ const components: Components<typeof catalog> = {
       </div>
     )
   },
-  Timeline: ({ props }) => (
+  // 123 §4.1: `scale: time` draws the axis renderer (W2's `TimelineAxis.tsx`); the default `list` keeps this HTML form.
+  Timeline: ({ props }) => {
+    if (props.scale === 'time') return <TimelineAxisView props={props} />
+    return (
     <div role="list" className="flex flex-col text-sm">
       {props.items.map((it, i) => (
         <div key={i} role="listitem" className="flex gap-3">
@@ -348,7 +358,8 @@ const components: Components<typeof catalog> = {
         </div>
       ))}
     </div>
-  ),
+  )
+  },
   Checklist: ({ props }) => (
     <div role="list" className="flex flex-col gap-1 text-sm">
       {props.items.map((it, i) => (
@@ -454,11 +465,15 @@ const components: Components<typeof catalog> = {
   },
   // 71 §2.5: real code pinned to `path:start`; renders in chat and artifacts too, so the board reader reuses it as the code window.
   Excerpt: ({ props }) => <Excerpt {...props} />,
-  Tree: ({ props }) => (
-    <div className="flex flex-col gap-0.5 text-sm">
-      <TreeRows nodes={nest(props.items)} />
-    </div>
-  ),
+  // 123 §4.1: `layout: nodes|org|nested` draws the diagram renderer (W1's `TreeDiagram.tsx`); `list` (default) stays HTML.
+  Tree: ({ props }) =>
+    props.layout && props.layout !== 'list' ? (
+      <TreeDiagramView props={props} />
+    ) : (
+      <div className="flex flex-col gap-0.5 text-sm">
+        <TreeRows nodes={nest(props.items)} />
+      </div>
+    ),
   Glossary: ({ props }) => (
     <dl className="flex flex-col gap-2 text-sm">
       {props.items.map((it, i) => (
@@ -518,47 +533,7 @@ const components: Components<typeof catalog> = {
       {props.label && <span className="text-xs text-fg-tertiary">{props.label}</span>}
     </div>
   ),
-  Heatmap: ({ props }) => {
-    const max = props.max ?? Math.max(0, ...props.cells.flat())
-    return (
-      <div className="overflow-x-auto">
-        <table className="border-separate border-spacing-0.5 text-xs tabular-nums">
-          <thead>
-            <tr>
-              <th />
-              {props.cols.map((c, j) => (
-                <th key={j} className="px-1 pb-1 font-normal text-fg-secondary">
-                  {c}
-                </th>
-              ))}
-            </tr>
-          </thead>
-          <tbody>
-            {props.rows.map((r, i) => (
-              <tr key={i}>
-                <th scope="row" className="pr-2 text-left font-normal text-fg-secondary">
-                  {r}
-                </th>
-                {props.cells[i]?.map((v, j) => {
-                  const pct = max > 0 ? Math.round(Math.min(100, Math.max(0, (v / max) * 100))) : 0
-                  return (
-                    <td
-                      key={j}
-                      title={`${r} · ${props.cols[j]}: ${v}`}
-                      className="size-8 rounded-sm text-center"
-                      style={{ backgroundColor: `color-mix(in oklab, var(--color-fg-accent) ${pct}%, transparent)` }}
-                    >
-                      {v}
-                    </td>
-                  )
-                })}
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-    )
-  },
+  Heatmap: ({ props }) => <Heatmap props={props} />,
   Person: ({ props }) => (
     <div className="flex items-center gap-3 text-sm">
       <div className="flex size-9 shrink-0 items-center justify-center rounded-full bg-layer-2 text-xs font-semibold" aria-hidden>
@@ -592,25 +567,7 @@ const components: Components<typeof catalog> = {
       })}
     </div>
   ),
-  Kanban: ({ props }) => (
-    <div className="flex gap-3 overflow-x-auto text-sm">
-      {props.columns.map((col, i) => (
-        <div key={i} className="flex min-w-48 flex-1 flex-col gap-2 rounded-xl bg-layer-2 p-2">
-          <div className="flex items-baseline justify-between px-1">
-            <span className="font-medium">{col.title}</span>
-            <span className="text-xs text-fg-tertiary tabular-nums">{col.cards.length}</span>
-          </div>
-          {col.cards.map((c, j) => (
-            <div key={j} className="flex flex-col items-start gap-1 rounded-lg border border-border-subtle bg-layer-1 p-2">
-              <div>{c.title}</div>
-              {c.detail && <div className="text-xs text-fg-secondary">{c.detail}</div>}
-              {c.tag && <Tag text={c.tag} variant="secondary" />}
-            </div>
-          ))}
-        </div>
-      ))}
-    </div>
-  ),
+  Kanban: ({ props }) => <Kanban props={props} />,
   Calendar: ({ props }) => (
     <div className="flex flex-col gap-2 text-sm">
       {props.title && <div className="font-medium">{props.title}</div>}
@@ -625,6 +582,28 @@ const components: Components<typeof catalog> = {
       </div>
     </div>
   ),
+  // ---- 123 ELK family (W1) ----
+  StateMachine: ({ props, loading }) => <StateMachineView props={props} loading={loading} />,
+  Entities: ({ props, loading }) => <EntitiesView props={props} loading={loading} />,
+  Swimlane: ({ props, loading }) => <SwimlaneView props={props} loading={loading} />,
+  GraphDelta: ({ props, loading }) => <GraphDeltaView props={props} loading={loading} />,
+  // ---- 123 chart family (W2) ----
+  BarChart: ({ props, loading }) => <BarChartView props={props} loading={loading} />,
+  LineChart: ({ props, loading }) => <LineChartView props={props} loading={loading} />,
+  ScatterChart: ({ props, loading }) => <ScatterChartView props={props} loading={loading} />,
+  RadarChart: ({ props, loading }) => <RadarChartView props={props} loading={loading} />,
+  Waterfall: ({ props, loading }) => <WaterfallView props={props} loading={loading} />,
+  Funnel: ({ props, loading }) => <FunnelView props={props} loading={loading} />,
+  Gantt: ({ props, loading }) => <GanttView props={props} loading={loading} />,
+  Quadrant: ({ props, loading }) => <QuadrantView props={props} loading={loading} />,
+  // ---- 123 part-of-whole + misc (W3) ----
+  Treemap: ({ props, loading }) => <TreemapView props={props} loading={loading} />,
+  Sankey: ({ props, loading }) => <SankeyView props={props} loading={loading} />,
+  Venn: ({ props, loading }) => <VennView props={props} loading={loading} />,
+  Loop: ({ props, loading }) => <LoopView props={props} loading={loading} />,
+  Layers: ({ props, loading }) => <LayersView props={props} loading={loading} />,
+  Journey: ({ props, loading }) => <JourneyView props={props} loading={loading} />,
+  Fishbone: ({ props, loading }) => <FishboneView props={props} loading={loading} />,
 }
 
 /** json-render registry over the v0 catalog; the only thing `JsonRenderFence` needs. */

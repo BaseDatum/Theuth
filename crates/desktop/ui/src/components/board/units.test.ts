@@ -44,6 +44,33 @@ test('highlight = the units whose anchor overlaps the active one (M4); a bare pa
   expect(highlightOf(unitsOf(GRAPH), null)).toEqual([])
 })
 
+const RUST = new URL('../../../../../surface/fixtures/json-render/', import.meta.url)
+const rustDiagram = (name: string) => classifyCode(codeBlock(name, 'json-render', readFileSync(new URL(`${name}.json`, RUST), 'utf8')) as Extract<DocBlock, { type: 'codeBlock' }>)
+
+test('123 §7: the ELK family and a drawn Tree are board diagrams with units by id; a list Tree stays a surface', () => {
+  const sm = rustDiagram('valid-state-machine')
+  if (sm.kind !== 'diagram') throw new Error(sm.kind)
+  expect(sm.diagram.type).toBe('StateMachine')
+  expect(unitsOf(sm.diagram).map((u) => u.id)).toEqual(['todo', 'doing', 'blocked', 'review', 'gate', 'done'])
+  expect(highlightOf(unitsOf(sm.diagram), a('crates/agent/src/task.rs#L50'))).toEqual(['doing'])
+  const sw = rustDiagram('valid-swimlane')
+  if (sw.kind !== 'diagram') throw new Error(sw.kind)
+  expect(unitsOf(sw.diagram).find((u) => u.id === 'build')).toMatchObject({ detail: 'CI', anchor: a('justfile#L12-L30') })
+  const en = rustDiagram('valid-entities')
+  if (en.kind !== 'diagram') throw new Error(en.kind)
+  expect(highlightOf(unitsOf(en.diagram), a('crates/store/src/schema.rs'))).toEqual(['user'])
+  const gd = rustDiagram('valid-graph-delta')
+  if (gd.kind !== 'diagram') throw new Error(gd.kind)
+  expect(unitsOf(gd.diagram).map((u) => u.id)).toEqual(['web', 'api', 'cache', 'db'])
+  const tree = rustDiagram('valid-tree-nodes')
+  if (tree.kind !== 'diagram') throw new Error(tree.kind)
+  expect(unitsOf(tree.diagram).map((u) => u.id)).toEqual(['ws', 'agent', 'loop', 'surface', 'render', 'graph', 'desktop'])
+  expect(highlightOf(unitsOf(tree.diagram), a('crates/agent/src/lib.rs#L7'))).toEqual(['agent'])
+  const list = classifyCode(codeBlock('t', 'json-render', JSON.stringify({ root: 't', elements: { t: { type: 'Tree', props: { items: [{ label: 'a' }] } } } })) as Extract<DocBlock, { type: 'codeBlock' }>)
+  expect(list.kind).toBe('surface')
+  expect(unitsOf({ type: 'Tree', props: { items: [{ label: 'a' }, { label: 'b', depth: 1 }], layout: 'nested' } }).map((u) => u.id)).toEqual(['i:0', 'i:1'])
+})
+
 test('a diagram tour has one stop per unit; a unit without a ref (or with a bad one) is an explanation stop', () => {
   const d: Diagram = {
     type: 'Graph',

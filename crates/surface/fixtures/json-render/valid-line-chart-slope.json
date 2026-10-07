@@ -1,0 +1,42 @@
+{
+  "root": "l",
+  "elements": {
+    "l": {
+      "type": "LineChart",
+      "props": {
+        "title": "Error rate per surface",
+        "labels": [
+          "Q1",
+          "Q2"
+        ],
+        "series": [
+          {
+            "name": "chat",
+            "values": [
+              2.4,
+              1.1
+            ],
+            "state": "done"
+          },
+          {
+            "name": "tools",
+            "values": [
+              0.8,
+              1.6
+            ],
+            "state": "danger"
+          },
+          {
+            "name": "export",
+            "values": [
+              0.5,
+              0.5
+            ]
+          }
+        ],
+        "variant": "slope",
+        "unit": "%"
+      }
+    }
+  }
+}

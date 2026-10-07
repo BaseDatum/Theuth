@@ -12,17 +12,48 @@ import { type Diagram, type DocBlock, type Inline, classifyCode, codeAnchor, exc
 /** One addressable unit: a node (`id` = node id) or a step (`id` = its index as a string). */
 export type Unit = { id: string; label: string; detail: string | null; anchor: Anchor | null }
 
-/** Every unit in authored order (Graph: `nodes`; Sequence: `steps`); a `ref` that fails the grammar counts as none. */
+/**
+ * Every unit in authored order (Graph/GraphDelta: nodes — `after` then the `before`-only ones; Sequence: steps by
+ * index; StateMachine: states; Entities: entities; Swimlane: steps; Tree: rows by `id` or `i:<index>`, as
+ * `TreeDiagram`'s `forest()` names them); a `ref` that fails the grammar counts as none.
+ */
 export function unitsOf(d: Diagram): Unit[] {
   const ref = (r: string | null | undefined): Anchor | null => {
     if (!r) return null
     const a = parseAnchor(r)
     return typeof a === 'string' ? null : a
   }
-  if (d.type === 'Graph') return d.props.nodes.map((n) => ({ id: n.id, label: n.label, detail: null, anchor: ref(n.ref) }))
-  const actors: Record<string, string> = {}
-  for (const a of d.props.actors) actors[a.id] = a.label
-  return d.props.steps.map((s, i) => ({ id: String(i), label: s.label, detail: `${actors[s.from] ?? s.from} → ${actors[s.to] ?? s.to}`, anchor: ref(s.ref) }))
+  const unit = (id: string, label: string, r: string | null | undefined, detail: string | null = null): Unit => ({ id, label, detail, anchor: ref(r) })
+  switch (d.type) {
+    case 'Graph':
+      return d.props.nodes.map((n) => unit(n.id, n.label, n.ref))
+    case 'StateMachine':
+      return d.props.states.map((s) => unit(s.id, s.label, s.ref, s.sub ?? null))
+    case 'Entities':
+      return d.props.entities.map((e) => unit(e.id, e.label, e.ref, e.kind ?? null))
+    case 'Swimlane': {
+      const lanes: Record<string, string> = {}
+      for (const l of d.props.lanes) lanes[l.id] = l.label
+      return d.props.steps.map((s) => unit(s.id, s.label, s.ref, lanes[s.lane] ?? s.lane))
+    }
+    case 'GraphDelta': {
+      const seen: Record<string, true> = {}
+      const out: Unit[] = []
+      for (const n of [...d.props.after.nodes, ...d.props.before.nodes]) {
+        if (seen[n.id]) continue
+        seen[n.id] = true
+        out.push(unit(n.id, n.label, n.ref))
+      }
+      return out
+    }
+    case 'Tree':
+      return d.props.items.map((it, i) => unit(it.id ?? `i:${i}`, it.label, it.ref, it.detail ?? null))
+    case 'Sequence': {
+      const actors: Record<string, string> = {}
+      for (const a of d.props.actors) actors[a.id] = a.label
+      return d.props.steps.map((s, i) => unit(String(i), s.label, s.ref, `${actors[s.from] ?? s.from} → ${actors[s.to] ?? s.to}`))
+    }
+  }
 }
 
 /** Ids of the units whose anchor overlaps `active` — what the view's `highlight` recolours (M4). */
@@ -93,7 +124,10 @@ export function unitBy(blockId: string, unitId: string): string {
   return `unit:${blockId}:${unitId}`
 }
 
-/** Focus the element `by` names: a `data-anchor-id` (spans, excerpts, buttons) or a unit's `<g data-node|data-step>`. */
+/**
+ * Focus the element `by` names: a `data-anchor-id` (spans, excerpts, buttons) or a unit's `<g data-unit>` (123 §5.3 —
+ * the one attribute every diagram renderer carries; `data-node` / `data-step` stay as aliases one release).
+ */
 export function focusBy(root: ParentNode | null, by: string): void {
   if (!root || !by) return
   let el = root.querySelector<HTMLElement>(`[data-anchor-id="${CSS.escape(by)}"]`)
@@ -102,16 +136,16 @@ export function focusBy(root: ParentNode | null, by: string): void {
     if (sep > 0) {
       const block = CSS.escape(by.slice('unit:'.length, sep))
       const unit = CSS.escape(by.slice(sep + 1))
-      el = root.querySelector<HTMLElement>(`[data-block="${block}"] :is([data-node="${unit}"], [data-step="${unit}"])`)
+      el = root.querySelector<HTMLElement>(`[data-block="${block}"] :is([data-unit="${unit}"], [data-node="${unit}"], [data-step="${unit}"])`)
     }
   }
   el?.focus()
 }
 
-/** The unit element under an event target, if any. */
+/** The unit element under an event target, if any (`data-unit`, or the legacy `data-node` / `data-step`). */
 function unitOf(target: EventTarget | null): string | null {
-  const g = (target as Element | null)?.closest?.<HTMLElement>('[data-node], [data-step]')
-  return g ? (g.dataset.node ?? g.dataset.step ?? null) : null
+  const g = (target as Element | null)?.closest?.<HTMLElement>('[data-unit], [data-node], [data-step]')
+  return g ? (g.dataset.unit ?? g.dataset.node ?? g.dataset.step ?? null) : null
 }
 
 /**

@@ -1,0 +1,61 @@
+{
+  "root": "q",
+  "elements": {
+    "q": {
+      "type": "Quadrant",
+      "props": {
+        "title": "What to do first",
+        "xLabel": "Effort",
+        "yLabel": "Impact",
+        "quadrants": [
+          "Do first",
+          "Plan",
+          "Fill-ins",
+          "Avoid"
+        ],
+        "xTicks": [
+          "low",
+          "high"
+        ],
+        "yTicks": [
+          "low",
+          "high"
+        ],
+        "items": [
+          {
+            "id": "cache",
+            "label": "Cache",
+            "x": 0.2,
+            "y": 0.8,
+            "state": "active"
+          },
+          {
+            "id": "rewrite",
+            "label": "Rewrite",
+            "x": 0.9,
+            "y": 0.7
+          },
+          {
+            "id": "docs",
+            "label": "Docs",
+            "x": 0.3,
+            "y": 0.3
+          },
+          {
+            "id": "theme",
+            "label": "Theme",
+            "x": 0.8,
+            "y": 0.2,
+            "state": "muted"
+          },
+          {
+            "label": "Tests",
+            "x": 0.5,
+            "y": 0.6,
+            "size": 2
+          }
+        ]
+      }
+    }
+  }
+}

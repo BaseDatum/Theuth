@@ -1,0 +1,35 @@
+[
+  {
+    "type": "data_visualization",
+    "title": "Spend by model",
+    "chart": {
+      "type": "bar",
+      "series": [
+        {
+          "name": "Value",
+          "data": [
+            {
+              "label": "opus",
+              "value": 412.5
+            },
+            {
+              "label": "sonnet",
+              "value": 96.0
+            },
+            {
+              "label": "haiku",
+              "value": 8.25
+            }
+          ]
+        }
+      ],
+      "axis_config": {
+        "categories": [
+          "opus",
+          "sonnet",
+          "haiku"
+        ]
+      }
+    }
+  }
+]

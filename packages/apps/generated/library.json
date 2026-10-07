@@ -1,5 +1,5 @@
 {
-  "hash": "4691f8041bf62892c0da90ab09d00d502488aca0fd5cd381e2051fe874c0b0f8",
+  "hash": "5e864f05eda4048c93ffd4bb4fbe5b3b3652473ef781469493a25fa83d58d0a4",
   "pins": {
     "@openuidev/lang-core": "0.3.0",
     "@openuidev/react-headless": "0.16.1",
@@ -76,7 +76,22 @@
     "Buttons",
     "Graph",
     "OptionCards",
-    "OptionCard"
+    "OptionCard",
+    "StateMachine",
+    "Entities",
+    "Swimlane",
+    "GraphDelta",
+    "Waterfall",
+    "Funnel",
+    "Gantt",
+    "Quadrant",
+    "Treemap",
+    "Sankey",
+    "Venn",
+    "Loop",
+    "Layers",
+    "Journey",
+    "Fishbone"
   ],
   "componentGroups": [
     {
@@ -242,7 +257,7 @@
       "description": "Flex container. direction: \"row\"|\"column\" (default \"column\"). gap: \"none\"|\"xs\"|\"s\"|\"m\"|\"l\"|\"xl\"|\"2xl\" (default \"m\"). align: \"start\"|\"center\"|\"end\"|\"stretch\"|\"baseline\". justify: \"start\"|\"center\"|\"end\"|\"between\"|\"around\"|\"evenly\"."
     },
     "Card": {
-      "signature": "Card(children: (TextContent | MarkDownRenderer | CardHeader | Callout | TextCallout | CodeBlock | Image | ImageGallery | Separator | HorizontalBarChart | RadarChart | PieChart | SingleStackedBarChart | ScatterChart | AreaChart | BarChart | LineChart | Table | TagBlock | Buttons | Steps | Tabs | Carousel | Stack | Graph)[], variant?: \"card\" | \"sunk\" | \"clear\", direction?: \"row\" | \"column\", gap?: \"none\" | \"xs\" | \"s\" | \"m\" | \"l\" | \"xl\" | \"2xl\", align?: \"start\" | \"center\" | \"end\" | \"stretch\" | \"baseline\", justify?: \"start\" | \"center\" | \"end\" | \"between\" | \"around\" | \"evenly\", wrap?: boolean)",
+      "signature": "Card(children: (TextContent | MarkDownRenderer | CardHeader | Callout | TextCallout | CodeBlock | Image | ImageGallery | Separator | HorizontalBarChart | RadarChart | PieChart | SingleStackedBarChart | ScatterChart | AreaChart | BarChart | LineChart | Table | TagBlock | Buttons | Steps | Tabs | Carousel | Stack | Graph | StateMachine | Entities | Swimlane | GraphDelta | Waterfall | Funnel | Gantt | Quadrant | Treemap | Sankey | Venn | Loop | Layers | Journey | Fishbone)[], variant?: \"card\" | \"sunk\" | \"clear\", direction?: \"row\" | \"column\", gap?: \"none\" | \"xs\" | \"s\" | \"m\" | \"l\" | \"xl\" | \"2xl\", align?: \"start\" | \"center\" | \"end\" | \"stretch\" | \"baseline\", justify?: \"start\" | \"center\" | \"end\" | \"between\" | \"around\" | \"evenly\", wrap?: boolean)",
       "description": "Styled container. variant: \"card\" (default, elevated) | \"sunk\" (recessed) | \"clear\" (transparent). Always full width. Accepts all Stack flex params (default: direction \"column\"). Cards flex to share space in row/wrap layouts."
     },
     "CardHeader": {
@@ -258,7 +273,7 @@
       "description": "Tabbed container"
     },
     "TabItem": {
-      "signature": "TabItem(value: string, trigger: string, content: (TextContent | MarkDownRenderer | CardHeader | Callout | TextCallout | CodeBlock | Image | ImageGallery | Separator | HorizontalBarChart | RadarChart | PieChart | SingleStackedBarChart | ScatterChart | AreaChart | BarChart | LineChart | Table | TagBlock | Buttons | Steps | Graph)[])",
+      "signature": "TabItem(value: string, trigger: string, content: (TextContent | MarkDownRenderer | CardHeader | Callout | TextCallout | CodeBlock | Image | ImageGallery | Separator | HorizontalBarChart | RadarChart | PieChart | SingleStackedBarChart | ScatterChart | AreaChart | BarChart | LineChart | Table | TagBlock | Buttons | Steps | Graph | StateMachine | Entities | Swimlane | GraphDelta | Waterfall | Funnel | Gantt | Quadrant | Treemap | Sankey | Venn | Loop | Layers | Journey | Fishbone)[])",
       "description": "value is unique id, trigger is tab label, content is array of components"
     },
     "Accordion": {
@@ -266,11 +281,11 @@
       "description": "Collapsible sections"
     },
     "AccordionItem": {
-      "signature": "AccordionItem(value: string, trigger: string, content: (TextContent | MarkDownRenderer | CardHeader | Callout | TextCallout | CodeBlock | Image | ImageGallery | Separator | HorizontalBarChart | RadarChart | PieChart | SingleStackedBarChart | ScatterChart | AreaChart | BarChart | LineChart | Table | TagBlock | Buttons | Steps | Graph)[])",
+      "signature": "AccordionItem(value: string, trigger: string, content: (TextContent | MarkDownRenderer | CardHeader | Callout | TextCallout | CodeBlock | Image | ImageGallery | Separator | HorizontalBarChart | RadarChart | PieChart | SingleStackedBarChart | ScatterChart | AreaChart | BarChart | LineChart | Table | TagBlock | Buttons | Steps | Graph | StateMachine | Entities | Swimlane | GraphDelta | Waterfall | Funnel | Gantt | Quadrant | Treemap | Sankey | Venn | Loop | Layers | Journey | Fishbone)[])",
       "description": "value is unique id, trigger is section title"
     },
     "Carousel": {
-      "signature": "Carousel(children: (TextContent | MarkDownRenderer | CardHeader | Callout | TextCallout | CodeBlock | Image | ImageGallery | Separator | HorizontalBarChart | RadarChart | PieChart | SingleStackedBarChart | ScatterChart | AreaChart | BarChart | LineChart | Table | TagBlock | Buttons | Steps | Graph)[][], variant?: \"card\" | \"sunk\")",
+      "signature": "Carousel(children: (TextContent | MarkDownRenderer | CardHeader | Callout | TextCallout | CodeBlock | Image | ImageGallery | Separator | HorizontalBarChart | RadarChart | PieChart | SingleStackedBarChart | ScatterChart | AreaChart | BarChart | LineChart | Table | TagBlock | Buttons | Steps | Graph | StateMachine | Entities | Swimlane | GraphDelta | Waterfall | Funnel | Gantt | Quadrant | Treemap | Sankey | Venn | Loop | Layers | Journey | Fishbone)[][], variant?: \"card\" | \"sunk\")",
       "description": "Horizontal scrollable carousel"
     },
     "TextContent": {
@@ -450,16 +465,76 @@
       "description": "Group of Button components. direction: \"row\" (default) | \"column\"."
     },
     "Graph": {
-      "signature": "Graph(nodes: {id: string, label: string, kind?: \"box\" | \"rounded\" | \"pill\" | \"diamond\" | \"cylinder\" | \"actor\", group?: string, state?: \"default\" | \"active\" | \"done\" | \"muted\" | \"danger\"}[], edges: {from: string, to: string, label?: string, style?: \"solid\" | \"dashed\"}[], groups?: {id: string, label: string}[], direction?: \"LR\" | \"TB\", highlight?: $binding<string[]>, onSelect?: ActionExpression)",
-      "description": "Typed boxes and arrows: nodes (id, label, kind?, group?, state?), directed edges (from, to, label?, style?), optional groups. `highlight` marks node ids active; `onSelect` runs an Action when a node is pressed, with `$value` bound to the node id (`@Set($selected, $value)`)."
+      "signature": "Graph(nodes: {id: string, label: string, kind?: \"box\" | \"rounded\" | \"pill\" | \"diamond\" | \"cylinder\" | \"actor\" | \"hexagon\" | \"circle\" | \"note\", group?: string, state?: \"default\" | \"active\" | \"done\" | \"muted\" | \"danger\", sub?: string, tag?: string, icon?: \"server\" | \"database\" | \"cloud\" | \"user\" | \"users\" | \"globe\" | \"lock\" | \"shield\" | \"key\" | \"queue\" | \"cpu\" | \"box\" | \"package\" | \"file\" | \"folder\" | \"terminal\" | \"laptop\" | \"phone\" | \"mail\" | \"clock\" | \"settings\" | \"code\" | \"git-branch\" | \"bot\" | \"browser\"}[], edges: {from: string, to: string, label?: string, style?: \"solid\" | \"dashed\", state?: \"default\" | \"active\" | \"done\" | \"muted\" | \"danger\", arrow?: \"forward\" | \"both\" | \"none\"}[], groups?: {id: string, label: string, parent?: string, kind?: \"zone\" | \"boundary\" | \"cluster\"}[], direction?: \"LR\" | \"TB\", highlight?: $binding<string[]>, onSelect?: ActionExpression, legend?: {label: string, state?: \"default\" | \"active\" | \"done\" | \"muted\" | \"danger\", style?: \"solid\" | \"dashed\", kind?: \"box\" | \"rounded\" | \"pill\" | \"diamond\" | \"cylinder\" | \"actor\" | \"hexagon\" | \"circle\" | \"note\"}[], title?: string)",
+      "description": "Typed boxes and arrows: nodes (id, label, kind?, group?, state?, sub?, tag?, icon?), directed edges (from, to, label?, style?, state?, arrow?), optional groups (nested by parent) and legend. `highlight` marks node ids active; `onSelect` runs an Action when a node is pressed, with `$value` bound to the node id (`@Set($selected, $value)`)."
     },
     "OptionCards": {
       "signature": "OptionCards(name: string, type?: \"single\" | \"multiple\", items?: OptionCard[], rules?: {required?: boolean, email?: boolean, url?: boolean, numeric?: boolean, min?: number, max?: number, minLength?: number, maxLength?: number, pattern?: string}, defaultValue?: string | string[])",
       "description": "A form field of selectable cards (title, optional subtitle, optional icon or image) laid out in a responsive grid for choosing one or many options; the selection is stored under `name`."
     },
     "OptionCard": {
-      "signature": "OptionCard(value: string, title: string, subtitle?: string, topContent?: Icon | Image | Graph, disabled?: boolean)",
+      "signature": "OptionCard(value: string, title: string, subtitle?: string, topContent?: Icon | Image | Graph | StateMachine | Entities | Swimlane | GraphDelta | Waterfall | Funnel | Gantt | Quadrant | Treemap | Sankey | Venn | Loop | Layers | Journey | Fishbone, disabled?: boolean)",
       "description": "A single selectable card inside an OptionCards group, with a value, title, optional subtitle and an optional Icon or Image on top."
+    },
+    "StateMachine": {
+      "signature": "StateMachine(states: {id: string, label: string, kind?: \"initial\" | \"final\" | \"state\" | \"choice\", sub?: string, state?: \"default\" | \"active\" | \"done\" | \"muted\" | \"danger\", ref?: string}[], transitions: {from: string, to: string, label?: string, guard?: string, style?: \"solid\" | \"dashed\", state?: \"default\" | \"active\" | \"done\" | \"muted\" | \"danger\"}[], direction?: \"LR\" | \"TB\", title?: string, highlight?: $binding<string[]>, onSelect?: ActionExpression)",
+      "description": "States and transitions of a lifecycle: states (id, label, kind? initial|final|state|choice, sub?, state?), transitions (from, to, label? = event, guard?, style?, state?). `highlight` lights state ids; `onSelect` runs with the pressed state id as $value."
+    },
+    "Entities": {
+      "signature": "Entities(entities: {id: string, label: string, kind?: \"entity\" | \"table\" | \"class\" | \"interface\" | \"enum\", fields: {name: string, type?: string, key?: \"pk\" | \"fk\" | \"uk\", nullable?: boolean, note?: string}[], methods?: {name: string, sig?: string}[], state?: \"default\" | \"active\" | \"done\" | \"muted\" | \"danger\", ref?: string}[], relations: {from: string, to: string, kind: \"one-one\" | \"one-many\" | \"many-many\" | \"inherits\" | \"implements\" | \"composes\" | \"aggregates\" | \"depends\" | \"references\", label?: string, from_field?: string, to_field?: string}[], detail?: \"model\" | \"schema\" | \"class\", title?: string, highlight?: $binding<string[]>, onSelect?: ActionExpression)",
+      "description": "Entities, tables or classes with fields and typed relations (one-one|one-many|many-many|inherits|implements|composes|aggregates|depends|references). `highlight` lights entity ids; `onSelect` runs with the pressed entity id as $value."
+    },
+    "Swimlane": {
+      "signature": "Swimlane(lanes: {id: string, label: string}[], steps: {id: string, lane: string, label: string, kind?: \"step\" | \"decision\" | \"start\" | \"end\" | \"data\", sub?: string, state?: \"default\" | \"active\" | \"done\" | \"muted\" | \"danger\", ref?: string}[], edges: {from: string, to: string, label?: string, style?: \"solid\" | \"dashed\"}[], direction?: \"LR\" | \"TB\", title?: string, highlight?: $binding<string[]>, onSelect?: ActionExpression)",
+      "description": "Steps in lanes (teams, systems) with edges across lanes: lanes (id, label), steps (id, lane, label, kind?, sub?, state?), edges (from, to, label?, style?). `highlight` lights step ids; `onSelect` runs with the pressed step id as $value."
+    },
+    "GraphDelta": {
+      "signature": "GraphDelta(before: {nodes: {id: string, label: string, kind?: \"box\" | \"rounded\" | \"pill\" | \"diamond\" | \"cylinder\" | \"actor\" | \"hexagon\" | \"circle\" | \"note\", group?: string, state?: \"default\" | \"active\" | \"done\" | \"muted\" | \"danger\", sub?: string, tag?: string, icon?: \"server\" | \"database\" | \"cloud\" | \"user\" | \"users\" | \"globe\" | \"lock\" | \"shield\" | \"key\" | \"queue\" | \"cpu\" | \"box\" | \"package\" | \"file\" | \"folder\" | \"terminal\" | \"laptop\" | \"phone\" | \"mail\" | \"clock\" | \"settings\" | \"code\" | \"git-branch\" | \"bot\" | \"browser\"}[], edges: {from: string, to: string, label?: string, style?: \"solid\" | \"dashed\", state?: \"default\" | \"active\" | \"done\" | \"muted\" | \"danger\", arrow?: \"forward\" | \"both\" | \"none\"}[], groups?: {id: string, label: string, parent?: string, kind?: \"zone\" | \"boundary\" | \"cluster\"}[]}, after: {nodes: {id: string, label: string, kind?: \"box\" | \"rounded\" | \"pill\" | \"diamond\" | \"cylinder\" | \"actor\" | \"hexagon\" | \"circle\" | \"note\", group?: string, state?: \"default\" | \"active\" | \"done\" | \"muted\" | \"danger\", sub?: string, tag?: string, icon?: \"server\" | \"database\" | \"cloud\" | \"user\" | \"users\" | \"globe\" | \"lock\" | \"shield\" | \"key\" | \"queue\" | \"cpu\" | \"box\" | \"package\" | \"file\" | \"folder\" | \"terminal\" | \"laptop\" | \"phone\" | \"mail\" | \"clock\" | \"settings\" | \"code\" | \"git-branch\" | \"bot\" | \"browser\"}[], edges: {from: string, to: string, label?: string, style?: \"solid\" | \"dashed\", state?: \"default\" | \"active\" | \"done\" | \"muted\" | \"danger\", arrow?: \"forward\" | \"both\" | \"none\"}[], groups?: {id: string, label: string, parent?: string, kind?: \"zone\" | \"boundary\" | \"cluster\"}[]}, direction?: \"LR\" | \"TB\", title?: string, highlight?: $binding<string[]>, onSelect?: ActionExpression)",
+      "description": "Two graphs, before and after, over one layout; the added/removed/changed ledger is derived by node id. `highlight` lights node ids; `onSelect` runs with the pressed node id as $value."
+    },
+    "Waterfall": {
+      "signature": "Waterfall(steps: {label: string, value: number, kind?: \"delta\" | \"total\" | \"subtotal\", state?: \"default\" | \"active\" | \"done\" | \"muted\" | \"danger\"}[], unit?: string, title?: string, highlight?: $binding<string[]>, onSelect?: ActionExpression)",
+      "description": "Deltas carrying a running total between absolute levels: steps (label, value, kind? delta|total|subtotal, state?), unit?. `highlight` lights step indices as strings; `onSelect` runs with the pressed index as $value."
+    },
+    "Funnel": {
+      "signature": "Funnel(stages: {label: string, value?: number, note?: string, state?: \"default\" | \"active\" | \"done\" | \"muted\" | \"danger\"}[], variant?: \"funnel\" | \"pyramid\", unit?: string, title?: string, highlight?: $binding<string[]>, onSelect?: ActionExpression)",
+      "description": "Stages narrowing (funnel) or widening (pyramid) with values on all stages or none. `highlight` lights stage indices as strings; `onSelect` runs with the pressed index as $value."
+    },
+    "Gantt": {
+      "signature": "Gantt(tasks: {id: string, label: string, start: string, end: string, group?: string, state?: \"default\" | \"active\" | \"done\" | \"muted\" | \"danger\", progress?: number, depends?: string[], ref?: string}[], today?: string, title?: string, highlight?: $binding<string[]>, onSelect?: ActionExpression)",
+      "description": "Tasks on a date scale: tasks (id, label, start, end as ISO dates, group?, state?, progress? 0..1, depends? ids), today?. `highlight` lights task ids; `onSelect` runs with the pressed task id as $value."
+    },
+    "Quadrant": {
+      "signature": "Quadrant(xLabel: string, yLabel: string, items: {id?: string, label: string, x: number, y: number, size?: number, state?: \"default\" | \"active\" | \"done\" | \"muted\" | \"danger\", ref?: string}[], quadrants?: string[], xTicks?: string[], yTicks?: string[], title?: string, highlight?: $binding<string[]>, onSelect?: ActionExpression)",
+      "description": "Items in a 2×2 by two 0..1 coordinates (xLabel, yLabel, items (id?, label, x, y, size?, state?), quadrants? exactly 4, xTicks?/yTicks? exactly 2). `highlight` lights item ids; `onSelect` runs with the pressed item id as $value."
+    },
+    "Treemap": {
+      "signature": "Treemap(items: {label: string, value: number, group?: string, state?: \"default\" | \"active\" | \"done\" | \"muted\" | \"danger\", ref?: string}[], title?: string, highlight?: $binding<string[]>, onSelect?: ActionExpression)",
+      "description": "Part-of-whole as nested rectangles sized by value: items (label, value > 0, group?, state?). `highlight` lights item labels; `onSelect` runs with the pressed label as $value."
+    },
+    "Sankey": {
+      "signature": "Sankey(nodes: {id: string, label: string, stage?: number, state?: \"default\" | \"active\" | \"done\" | \"muted\" | \"danger\"}[], flows: {from: string, to: string, value: number, label?: string, state?: \"default\" | \"active\" | \"done\" | \"muted\" | \"danger\"}[], unit?: string, title?: string, highlight?: $binding<string[]>, onSelect?: ActionExpression)",
+      "description": "Flows between staged nodes, ribbons sized by value, no cycles: nodes (id, label, stage?, state?), flows (from, to, value > 0, label?, state?), unit?. `highlight` lights node ids; `onSelect` runs with the pressed node id as $value."
+    },
+    "Venn": {
+      "signature": "Venn(sets: {id: string, label: string, size?: number}[], overlaps?: {sets: string[], label: string}[], title?: string, highlight?: $binding<string[]>, onSelect?: ActionExpression)",
+      "description": "Two or three overlapping sets (id, label, size?) with labelled overlaps (sets, label). `highlight` lights set ids; `onSelect` runs with the pressed set id as $value."
+    },
+    "Loop": {
+      "signature": "Loop(steps: {label: string, note?: string, state?: \"default\" | \"active\" | \"done\" | \"muted\" | \"danger\", ref?: string}[], hub?: string, title?: string, highlight?: $binding<string[]>, onSelect?: ActionExpression)",
+      "description": "A cycle of 2–8 steps (label, note?, state?) drawn clockwise around an optional hub. `highlight` lights step indices as strings; `onSelect` runs with the pressed index as $value."
+    },
+    "Layers": {
+      "signature": "Layers(layers: {label: string, items?: string[], note?: string, state?: \"default\" | \"active\" | \"done\" | \"muted\" | \"danger\", ref?: string}[], direction?: \"top-down\" | \"bottom-up\", title?: string, highlight?: $binding<string[]>, onSelect?: ActionExpression)",
+      "description": "Stacked horizontal layers (label, items?, note?, state?), top-down or bottom-up. `highlight` lights layer indices as strings; `onSelect` runs with the pressed index as $value."
+    },
+    "Journey": {
+      "signature": "Journey(stages: string[], rows: {label: string, cells: string[]}[], mood?: number[], pains?: {stage: number, text: string}[], title?: string, highlight?: $binding<string[]>, onSelect?: ActionExpression)",
+      "description": "Stages across, rows down (label, cells one per stage), a mood line (−1..1 per stage) and pain points (stage index, text). `highlight` lights stage indices as strings; `onSelect` runs with the pressed index as $value."
+    },
+    "Fishbone": {
+      "signature": "Fishbone(effect: string, causes: {category: string, items: string[]}[], title?: string, highlight?: $binding<string[]>, onSelect?: ActionExpression)",
+      "description": "Cause and effect: an effect with categorised causes (category, items) on the bones. `highlight` lights category indices as strings; `onSelect` runs with the pressed index as $value."
     }
   },
   "reactive": {
@@ -488,6 +563,51 @@
       "value"
     ],
     "Graph": [
+      "highlight"
+    ],
+    "StateMachine": [
+      "highlight"
+    ],
+    "Entities": [
+      "highlight"
+    ],
+    "Swimlane": [
+      "highlight"
+    ],
+    "GraphDelta": [
+      "highlight"
+    ],
+    "Waterfall": [
+      "highlight"
+    ],
+    "Funnel": [
+      "highlight"
+    ],
+    "Gantt": [
+      "highlight"
+    ],
+    "Quadrant": [
+      "highlight"
+    ],
+    "Treemap": [
+      "highlight"
+    ],
+    "Sankey": [
+      "highlight"
+    ],
+    "Venn": [
+      "highlight"
+    ],
+    "Loop": [
+      "highlight"
+    ],
+    "Layers": [
+      "highlight"
+    ],
+    "Journey": [
+      "highlight"
+    ],
+    "Fishbone": [
       "highlight"
     ]
   },
@@ -662,6 +782,51 @@
       },
       "OptionCard": {
         "$ref": "#/$defs/OptionCard"
+      },
+      "StateMachine": {
+        "$ref": "#/$defs/StateMachine"
+      },
+      "Entities": {
+        "$ref": "#/$defs/Entities"
+      },
+      "Swimlane": {
+        "$ref": "#/$defs/Swimlane"
+      },
+      "GraphDelta": {
+        "$ref": "#/$defs/GraphDelta"
+      },
+      "Waterfall": {
+        "$ref": "#/$defs/Waterfall"
+      },
+      "Funnel": {
+        "$ref": "#/$defs/Funnel"
+      },
+      "Gantt": {
+        "$ref": "#/$defs/Gantt"
+      },
+      "Quadrant": {
+        "$ref": "#/$defs/Quadrant"
+      },
+      "Treemap": {
+        "$ref": "#/$defs/Treemap"
+      },
+      "Sankey": {
+        "$ref": "#/$defs/Sankey"
+      },
+      "Venn": {
+        "$ref": "#/$defs/Venn"
+      },
+      "Loop": {
+        "$ref": "#/$defs/Loop"
+      },
+      "Layers": {
+        "$ref": "#/$defs/Layers"
+      },
+      "Journey": {
+        "$ref": "#/$defs/Journey"
+      },
+      "Fishbone": {
+        "$ref": "#/$defs/Fishbone"
       }
     },
     "required": [
@@ -720,7 +885,22 @@
       "Buttons",
       "Graph",
       "OptionCards",
-      "OptionCard"
+      "OptionCard",
+      "StateMachine",
+      "Entities",
+      "Swimlane",
+      "GraphDelta",
+      "Waterfall",
+      "Funnel",
+      "Gantt",
+      "Quadrant",
+      "Treemap",
+      "Sankey",
+      "Venn",
+      "Loop",
+      "Layers",
+      "Journey",
+      "Fishbone"
     ],
     "additionalProperties": false,
     "$defs": {
@@ -862,6 +1042,51 @@
                 },
                 {
                   "$ref": "#/$defs/Graph"
+                },
+                {
+                  "$ref": "#/$defs/StateMachine"
+                },
+                {
+                  "$ref": "#/$defs/Entities"
+                },
+                {
+                  "$ref": "#/$defs/Swimlane"
+                },
+                {
+                  "$ref": "#/$defs/GraphDelta"
+                },
+                {
+                  "$ref": "#/$defs/Waterfall"
+                },
+                {
+                  "$ref": "#/$defs/Funnel"
+                },
+                {
+                  "$ref": "#/$defs/Gantt"
+                },
+                {
+                  "$ref": "#/$defs/Quadrant"
+                },
+                {
+                  "$ref": "#/$defs/Treemap"
+                },
+                {
+                  "$ref": "#/$defs/Sankey"
+                },
+                {
+                  "$ref": "#/$defs/Venn"
+                },
+                {
+                  "$ref": "#/$defs/Loop"
+                },
+                {
+                  "$ref": "#/$defs/Layers"
+                },
+                {
+                  "$ref": "#/$defs/Journey"
+                },
+                {
+                  "$ref": "#/$defs/Fishbone"
                 }
               ]
             }
@@ -1742,6 +1967,51 @@
                 },
                 {
                   "$ref": "#/$defs/Graph"
+                },
+                {
+                  "$ref": "#/$defs/StateMachine"
+                },
+                {
+                  "$ref": "#/$defs/Entities"
+                },
+                {
+                  "$ref": "#/$defs/Swimlane"
+                },
+                {
+                  "$ref": "#/$defs/GraphDelta"
+                },
+                {
+                  "$ref": "#/$defs/Waterfall"
+                },
+                {
+                  "$ref": "#/$defs/Funnel"
+                },
+                {
+                  "$ref": "#/$defs/Gantt"
+                },
+                {
+                  "$ref": "#/$defs/Quadrant"
+                },
+                {
+                  "$ref": "#/$defs/Treemap"
+                },
+                {
+                  "$ref": "#/$defs/Sankey"
+                },
+                {
+                  "$ref": "#/$defs/Venn"
+                },
+                {
+                  "$ref": "#/$defs/Loop"
+                },
+                {
+                  "$ref": "#/$defs/Layers"
+                },
+                {
+                  "$ref": "#/$defs/Journey"
+                },
+                {
+                  "$ref": "#/$defs/Fishbone"
                 }
               ]
             }
@@ -1777,7 +2047,10 @@
                     "pill",
                     "diamond",
                     "cylinder",
-                    "actor"
+                    "actor",
+                    "hexagon",
+                    "circle",
+                    "note"
                   ]
                 },
                 "group": {
@@ -1791,6 +2064,42 @@
                     "done",
                     "muted",
                     "danger"
+                  ]
+                },
+                "sub": {
+                  "type": "string"
+                },
+                "tag": {
+                  "type": "string"
+                },
+                "icon": {
+                  "type": "string",
+                  "enum": [
+                    "server",
+                    "database",
+                    "cloud",
+                    "user",
+                    "users",
+                    "globe",
+                    "lock",
+                    "shield",
+                    "key",
+                    "queue",
+                    "cpu",
+                    "box",
+                    "package",
+                    "file",
+                    "folder",
+                    "terminal",
+                    "laptop",
+                    "phone",
+                    "mail",
+                    "clock",
+                    "settings",
+                    "code",
+                    "git-branch",
+                    "bot",
+                    "browser"
                   ]
                 }
               },
@@ -1821,6 +2130,24 @@
                     "solid",
                     "dashed"
                   ]
+                },
+                "state": {
+                  "type": "string",
+                  "enum": [
+                    "default",
+                    "active",
+                    "done",
+                    "muted",
+                    "danger"
+                  ]
+                },
+                "arrow": {
+                  "type": "string",
+                  "enum": [
+                    "forward",
+                    "both",
+                    "none"
+                  ]
                 }
               },
               "required": [
@@ -1840,6 +2167,17 @@
                 },
                 "label": {
                   "type": "string"
+                },
+                "parent": {
+                  "type": "string"
+                },
+                "kind": {
+                  "type": "string",
+                  "enum": [
+                    "zone",
+                    "boundary",
+                    "cluster"
+                  ]
                 }
               },
               "required": [
@@ -1917,6 +2255,55 @@
                 "additionalProperties": false
               }
             ]
+          },
+          "legend": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "label": {
+                  "type": "string"
+                },
+                "state": {
+                  "type": "string",
+                  "enum": [
+                    "default",
+                    "active",
+                    "done",
+                    "muted",
+                    "danger"
+                  ]
+                },
+                "style": {
+                  "type": "string",
+                  "enum": [
+                    "solid",
+                    "dashed"
+                  ]
+                },
+                "kind": {
+                  "type": "string",
+                  "enum": [
+                    "box",
+                    "rounded",
+                    "pill",
+                    "diamond",
+                    "cylinder",
+                    "actor",
+                    "hexagon",
+                    "circle",
+                    "note"
+                  ]
+                }
+              },
+              "required": [
+                "label"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "title": {
+            "type": "string"
           }
         },
         "required": [
@@ -1924,7 +2311,2346 @@
           "edges"
         ],
         "additionalProperties": false,
-        "description": "Typed boxes and arrows: nodes (id, label, kind?, group?, state?), directed edges (from, to, label?, style?), optional groups. `highlight` marks node ids active; `onSelect` runs an Action when a node is pressed, with `$value` bound to the node id (`@Set($selected, $value)`)."
+        "description": "Typed boxes and arrows: nodes (id, label, kind?, group?, state?, sub?, tag?, icon?), directed edges (from, to, label?, style?, state?, arrow?), optional groups (nested by parent) and legend. `highlight` marks node ids active; `onSelect` runs an Action when a node is pressed, with `$value` bound to the node id (`@Set($selected, $value)`)."
+      },
+      "StateMachine": {
+        "type": "object",
+        "properties": {
+          "states": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "label": {
+                  "type": "string"
+                },
+                "kind": {
+                  "type": "string",
+                  "enum": [
+                    "initial",
+                    "final",
+                    "state",
+                    "choice"
+                  ]
+                },
+                "sub": {
+                  "type": "string"
+                },
+                "state": {
+                  "type": "string",
+                  "enum": [
+                    "default",
+                    "active",
+                    "done",
+                    "muted",
+                    "danger"
+                  ]
+                },
+                "ref": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "id",
+                "label"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "transitions": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "from": {
+                  "type": "string"
+                },
+                "to": {
+                  "type": "string"
+                },
+                "label": {
+                  "type": "string"
+                },
+                "guard": {
+                  "type": "string"
+                },
+                "style": {
+                  "type": "string",
+                  "enum": [
+                    "solid",
+                    "dashed"
+                  ]
+                },
+                "state": {
+                  "type": "string",
+                  "enum": [
+                    "default",
+                    "active",
+                    "done",
+                    "muted",
+                    "danger"
+                  ]
+                }
+              },
+              "required": [
+                "from",
+                "to"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "direction": {
+            "type": "string",
+            "enum": [
+              "LR",
+              "TB"
+            ]
+          },
+          "title": {
+            "type": "string"
+          },
+          "highlight": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "onSelect": {
+            "anyOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "type": {
+                    "type": "string",
+                    "const": "open_url"
+                  },
+                  "url": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "url"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "type": {
+                    "type": "string",
+                    "const": "continue_conversation"
+                  },
+                  "context": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "type": {
+                    "type": "string"
+                  },
+                  "params": {
+                    "type": "object",
+                    "propertyNames": {
+                      "type": "string"
+                    },
+                    "additionalProperties": {}
+                  }
+                },
+                "required": [
+                  "type"
+                ],
+                "additionalProperties": false
+              }
+            ]
+          }
+        },
+        "required": [
+          "states",
+          "transitions"
+        ],
+        "additionalProperties": false,
+        "description": "States and transitions of a lifecycle: states (id, label, kind? initial|final|state|choice, sub?, state?), transitions (from, to, label? = event, guard?, style?, state?). `highlight` lights state ids; `onSelect` runs with the pressed state id as $value."
+      },
+      "Entities": {
+        "type": "object",
+        "properties": {
+          "entities": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "label": {
+                  "type": "string"
+                },
+                "kind": {
+                  "type": "string",
+                  "enum": [
+                    "entity",
+                    "table",
+                    "class",
+                    "interface",
+                    "enum"
+                  ]
+                },
+                "fields": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "name": {
+                        "type": "string"
+                      },
+                      "type": {
+                        "type": "string"
+                      },
+                      "key": {
+                        "type": "string",
+                        "enum": [
+                          "pk",
+                          "fk",
+                          "uk"
+                        ]
+                      },
+                      "nullable": {
+                        "type": "boolean"
+                      },
+                      "note": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "name"
+                    ],
+                    "additionalProperties": false
+                  }
+                },
+                "methods": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "name": {
+                        "type": "string"
+                      },
+                      "sig": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "name"
+                    ],
+                    "additionalProperties": false
+                  }
+                },
+                "state": {
+                  "type": "string",
+                  "enum": [
+                    "default",
+                    "active",
+                    "done",
+                    "muted",
+                    "danger"
+                  ]
+                },
+                "ref": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "id",
+                "label",
+                "fields"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "relations": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "from": {
+                  "type": "string"
+                },
+                "to": {
+                  "type": "string"
+                },
+                "kind": {
+                  "type": "string",
+                  "enum": [
+                    "one-one",
+                    "one-many",
+                    "many-many",
+                    "inherits",
+                    "implements",
+                    "composes",
+                    "aggregates",
+                    "depends",
+                    "references"
+                  ]
+                },
+                "label": {
+                  "type": "string"
+                },
+                "from_field": {
+                  "type": "string"
+                },
+                "to_field": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "from",
+                "to",
+                "kind"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "detail": {
+            "type": "string",
+            "enum": [
+              "model",
+              "schema",
+              "class"
+            ]
+          },
+          "title": {
+            "type": "string"
+          },
+          "highlight": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "onSelect": {
+            "anyOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "type": {
+                    "type": "string",
+                    "const": "open_url"
+                  },
+                  "url": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "url"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "type": {
+                    "type": "string",
+                    "const": "continue_conversation"
+                  },
+                  "context": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "type": {
+                    "type": "string"
+                  },
+                  "params": {
+                    "type": "object",
+                    "propertyNames": {
+                      "type": "string"
+                    },
+                    "additionalProperties": {}
+                  }
+                },
+                "required": [
+                  "type"
+                ],
+                "additionalProperties": false
+              }
+            ]
+          }
+        },
+        "required": [
+          "entities",
+          "relations"
+        ],
+        "additionalProperties": false,
+        "description": "Entities, tables or classes with fields and typed relations (one-one|one-many|many-many|inherits|implements|composes|aggregates|depends|references). `highlight` lights entity ids; `onSelect` runs with the pressed entity id as $value."
+      },
+      "Swimlane": {
+        "type": "object",
+        "properties": {
+          "lanes": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "label": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "id",
+                "label"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "steps": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "lane": {
+                  "type": "string"
+                },
+                "label": {
+                  "type": "string"
+                },
+                "kind": {
+                  "type": "string",
+                  "enum": [
+                    "step",
+                    "decision",
+                    "start",
+                    "end",
+                    "data"
+                  ]
+                },
+                "sub": {
+                  "type": "string"
+                },
+                "state": {
+                  "type": "string",
+                  "enum": [
+                    "default",
+                    "active",
+                    "done",
+                    "muted",
+                    "danger"
+                  ]
+                },
+                "ref": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "id",
+                "lane",
+                "label"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "edges": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "from": {
+                  "type": "string"
+                },
+                "to": {
+                  "type": "string"
+                },
+                "label": {
+                  "type": "string"
+                },
+                "style": {
+                  "type": "string",
+                  "enum": [
+                    "solid",
+                    "dashed"
+                  ]
+                }
+              },
+              "required": [
+                "from",
+                "to"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "direction": {
+            "type": "string",
+            "enum": [
+              "LR",
+              "TB"
+            ]
+          },
+          "title": {
+            "type": "string"
+          },
+          "highlight": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "onSelect": {
+            "anyOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "type": {
+                    "type": "string",
+                    "const": "open_url"
+                  },
+                  "url": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "url"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "type": {
+                    "type": "string",
+                    "const": "continue_conversation"
+                  },
+                  "context": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "type": {
+                    "type": "string"
+                  },
+                  "params": {
+                    "type": "object",
+                    "propertyNames": {
+                      "type": "string"
+                    },
+                    "additionalProperties": {}
+                  }
+                },
+                "required": [
+                  "type"
+                ],
+                "additionalProperties": false
+              }
+            ]
+          }
+        },
+        "required": [
+          "lanes",
+          "steps",
+          "edges"
+        ],
+        "additionalProperties": false,
+        "description": "Steps in lanes (teams, systems) with edges across lanes: lanes (id, label), steps (id, lane, label, kind?, sub?, state?), edges (from, to, label?, style?). `highlight` lights step ids; `onSelect` runs with the pressed step id as $value."
+      },
+      "GraphDelta": {
+        "type": "object",
+        "properties": {
+          "before": {
+            "type": "object",
+            "properties": {
+              "nodes": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string"
+                    },
+                    "label": {
+                      "type": "string"
+                    },
+                    "kind": {
+                      "type": "string",
+                      "enum": [
+                        "box",
+                        "rounded",
+                        "pill",
+                        "diamond",
+                        "cylinder",
+                        "actor",
+                        "hexagon",
+                        "circle",
+                        "note"
+                      ]
+                    },
+                    "group": {
+                      "type": "string"
+                    },
+                    "state": {
+                      "type": "string",
+                      "enum": [
+                        "default",
+                        "active",
+                        "done",
+                        "muted",
+                        "danger"
+                      ]
+                    },
+                    "sub": {
+                      "type": "string"
+                    },
+                    "tag": {
+                      "type": "string"
+                    },
+                    "icon": {
+                      "type": "string",
+                      "enum": [
+                        "server",
+                        "database",
+                        "cloud",
+                        "user",
+                        "users",
+                        "globe",
+                        "lock",
+                        "shield",
+                        "key",
+                        "queue",
+                        "cpu",
+                        "box",
+                        "package",
+                        "file",
+                        "folder",
+                        "terminal",
+                        "laptop",
+                        "phone",
+                        "mail",
+                        "clock",
+                        "settings",
+                        "code",
+                        "git-branch",
+                        "bot",
+                        "browser"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "label"
+                  ],
+                  "additionalProperties": false
+                }
+              },
+              "edges": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "from": {
+                      "type": "string"
+                    },
+                    "to": {
+                      "type": "string"
+                    },
+                    "label": {
+                      "type": "string"
+                    },
+                    "style": {
+                      "type": "string",
+                      "enum": [
+                        "solid",
+                        "dashed"
+                      ]
+                    },
+                    "state": {
+                      "type": "string",
+                      "enum": [
+                        "default",
+                        "active",
+                        "done",
+                        "muted",
+                        "danger"
+                      ]
+                    },
+                    "arrow": {
+                      "type": "string",
+                      "enum": [
+                        "forward",
+                        "both",
+                        "none"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "from",
+                    "to"
+                  ],
+                  "additionalProperties": false
+                }
+              },
+              "groups": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string"
+                    },
+                    "label": {
+                      "type": "string"
+                    },
+                    "parent": {
+                      "type": "string"
+                    },
+                    "kind": {
+                      "type": "string",
+                      "enum": [
+                        "zone",
+                        "boundary",
+                        "cluster"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "label"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "required": [
+              "nodes",
+              "edges"
+            ],
+            "additionalProperties": false
+          },
+          "after": {
+            "type": "object",
+            "properties": {
+              "nodes": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string"
+                    },
+                    "label": {
+                      "type": "string"
+                    },
+                    "kind": {
+                      "type": "string",
+                      "enum": [
+                        "box",
+                        "rounded",
+                        "pill",
+                        "diamond",
+                        "cylinder",
+                        "actor",
+                        "hexagon",
+                        "circle",
+                        "note"
+                      ]
+                    },
+                    "group": {
+                      "type": "string"
+                    },
+                    "state": {
+                      "type": "string",
+                      "enum": [
+                        "default",
+                        "active",
+                        "done",
+                        "muted",
+                        "danger"
+                      ]
+                    },
+                    "sub": {
+                      "type": "string"
+                    },
+                    "tag": {
+                      "type": "string"
+                    },
+                    "icon": {
+                      "type": "string",
+                      "enum": [
+                        "server",
+                        "database",
+                        "cloud",
+                        "user",
+                        "users",
+                        "globe",
+                        "lock",
+                        "shield",
+                        "key",
+                        "queue",
+                        "cpu",
+                        "box",
+                        "package",
+                        "file",
+                        "folder",
+                        "terminal",
+                        "laptop",
+                        "phone",
+                        "mail",
+                        "clock",
+                        "settings",
+                        "code",
+                        "git-branch",
+                        "bot",
+                        "browser"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "label"
+                  ],
+                  "additionalProperties": false
+                }
+              },
+              "edges": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "from": {
+                      "type": "string"
+                    },
+                    "to": {
+                      "type": "string"
+                    },
+                    "label": {
+                      "type": "string"
+                    },
+                    "style": {
+                      "type": "string",
+                      "enum": [
+                        "solid",
+                        "dashed"
+                      ]
+                    },
+                    "state": {
+                      "type": "string",
+                      "enum": [
+                        "default",
+                        "active",
+                        "done",
+                        "muted",
+                        "danger"
+                      ]
+                    },
+                    "arrow": {
+                      "type": "string",
+                      "enum": [
+                        "forward",
+                        "both",
+                        "none"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "from",
+                    "to"
+                  ],
+                  "additionalProperties": false
+                }
+              },
+              "groups": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string"
+                    },
+                    "label": {
+                      "type": "string"
+                    },
+                    "parent": {
+                      "type": "string"
+                    },
+                    "kind": {
+                      "type": "string",
+                      "enum": [
+                        "zone",
+                        "boundary",
+                        "cluster"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "label"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "required": [
+              "nodes",
+              "edges"
+            ],
+            "additionalProperties": false
+          },
+          "direction": {
+            "type": "string",
+            "enum": [
+              "LR",
+              "TB"
+            ]
+          },
+          "title": {
+            "type": "string"
+          },
+          "highlight": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "onSelect": {
+            "anyOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "type": {
+                    "type": "string",
+                    "const": "open_url"
+                  },
+                  "url": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "url"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "type": {
+                    "type": "string",
+                    "const": "continue_conversation"
+                  },
+                  "context": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "type": {
+                    "type": "string"
+                  },
+                  "params": {
+                    "type": "object",
+                    "propertyNames": {
+                      "type": "string"
+                    },
+                    "additionalProperties": {}
+                  }
+                },
+                "required": [
+                  "type"
+                ],
+                "additionalProperties": false
+              }
+            ]
+          }
+        },
+        "required": [
+          "before",
+          "after"
+        ],
+        "additionalProperties": false,
+        "description": "Two graphs, before and after, over one layout; the added/removed/changed ledger is derived by node id. `highlight` lights node ids; `onSelect` runs with the pressed node id as $value."
+      },
+      "Waterfall": {
+        "type": "object",
+        "properties": {
+          "steps": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "label": {
+                  "type": "string"
+                },
+                "value": {
+                  "type": "number"
+                },
+                "kind": {
+                  "type": "string",
+                  "enum": [
+                    "delta",
+                    "total",
+                    "subtotal"
+                  ]
+                },
+                "state": {
+                  "type": "string",
+                  "enum": [
+                    "default",
+                    "active",
+                    "done",
+                    "muted",
+                    "danger"
+                  ]
+                }
+              },
+              "required": [
+                "label",
+                "value"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "unit": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "highlight": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "onSelect": {
+            "anyOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "type": {
+                    "type": "string",
+                    "const": "open_url"
+                  },
+                  "url": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "url"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "type": {
+                    "type": "string",
+                    "const": "continue_conversation"
+                  },
+                  "context": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "type": {
+                    "type": "string"
+                  },
+                  "params": {
+                    "type": "object",
+                    "propertyNames": {
+                      "type": "string"
+                    },
+                    "additionalProperties": {}
+                  }
+                },
+                "required": [
+                  "type"
+                ],
+                "additionalProperties": false
+              }
+            ]
+          }
+        },
+        "required": [
+          "steps"
+        ],
+        "additionalProperties": false,
+        "description": "Deltas carrying a running total between absolute levels: steps (label, value, kind? delta|total|subtotal, state?), unit?. `highlight` lights step indices as strings; `onSelect` runs with the pressed index as $value."
+      },
+      "Funnel": {
+        "type": "object",
+        "properties": {
+          "stages": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "label": {
+                  "type": "string"
+                },
+                "value": {
+                  "type": "number"
+                },
+                "note": {
+                  "type": "string"
+                },
+                "state": {
+                  "type": "string",
+                  "enum": [
+                    "default",
+                    "active",
+                    "done",
+                    "muted",
+                    "danger"
+                  ]
+                }
+              },
+              "required": [
+                "label"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "variant": {
+            "type": "string",
+            "enum": [
+              "funnel",
+              "pyramid"
+            ]
+          },
+          "unit": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "highlight": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "onSelect": {
+            "anyOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "type": {
+                    "type": "string",
+                    "const": "open_url"
+                  },
+                  "url": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "url"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "type": {
+                    "type": "string",
+                    "const": "continue_conversation"
+                  },
+                  "context": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "type": {
+                    "type": "string"
+                  },
+                  "params": {
+                    "type": "object",
+                    "propertyNames": {
+                      "type": "string"
+                    },
+                    "additionalProperties": {}
+                  }
+                },
+                "required": [
+                  "type"
+                ],
+                "additionalProperties": false
+              }
+            ]
+          }
+        },
+        "required": [
+          "stages"
+        ],
+        "additionalProperties": false,
+        "description": "Stages narrowing (funnel) or widening (pyramid) with values on all stages or none. `highlight` lights stage indices as strings; `onSelect` runs with the pressed index as $value."
+      },
+      "Gantt": {
+        "type": "object",
+        "properties": {
+          "tasks": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "label": {
+                  "type": "string"
+                },
+                "start": {
+                  "type": "string"
+                },
+                "end": {
+                  "type": "string"
+                },
+                "group": {
+                  "type": "string"
+                },
+                "state": {
+                  "type": "string",
+                  "enum": [
+                    "default",
+                    "active",
+                    "done",
+                    "muted",
+                    "danger"
+                  ]
+                },
+                "progress": {
+                  "type": "number",
+                  "minimum": 0,
+                  "maximum": 1
+                },
+                "depends": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "ref": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "id",
+                "label",
+                "start",
+                "end"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "today": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "highlight": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "onSelect": {
+            "anyOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "type": {
+                    "type": "string",
+                    "const": "open_url"
+                  },
+                  "url": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "url"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "type": {
+                    "type": "string",
+                    "const": "continue_conversation"
+                  },
+                  "context": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "type": {
+                    "type": "string"
+                  },
+                  "params": {
+                    "type": "object",
+                    "propertyNames": {
+                      "type": "string"
+                    },
+                    "additionalProperties": {}
+                  }
+                },
+                "required": [
+                  "type"
+                ],
+                "additionalProperties": false
+              }
+            ]
+          }
+        },
+        "required": [
+          "tasks"
+        ],
+        "additionalProperties": false,
+        "description": "Tasks on a date scale: tasks (id, label, start, end as ISO dates, group?, state?, progress? 0..1, depends? ids), today?. `highlight` lights task ids; `onSelect` runs with the pressed task id as $value."
+      },
+      "Quadrant": {
+        "type": "object",
+        "properties": {
+          "xLabel": {
+            "type": "string"
+          },
+          "yLabel": {
+            "type": "string"
+          },
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "label": {
+                  "type": "string"
+                },
+                "x": {
+                  "type": "number",
+                  "minimum": 0,
+                  "maximum": 1
+                },
+                "y": {
+                  "type": "number",
+                  "minimum": 0,
+                  "maximum": 1
+                },
+                "size": {
+                  "type": "number"
+                },
+                "state": {
+                  "type": "string",
+                  "enum": [
+                    "default",
+                    "active",
+                    "done",
+                    "muted",
+                    "danger"
+                  ]
+                },
+                "ref": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "label",
+                "x",
+                "y"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "quadrants": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "xTicks": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "yTicks": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "title": {
+            "type": "string"
+          },
+          "highlight": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "onSelect": {
+            "anyOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "type": {
+                    "type": "string",
+                    "const": "open_url"
+                  },
+                  "url": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "url"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "type": {
+                    "type": "string",
+                    "const": "continue_conversation"
+                  },
+                  "context": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "type": {
+                    "type": "string"
+                  },
+                  "params": {
+                    "type": "object",
+                    "propertyNames": {
+                      "type": "string"
+                    },
+                    "additionalProperties": {}
+                  }
+                },
+                "required": [
+                  "type"
+                ],
+                "additionalProperties": false
+              }
+            ]
+          }
+        },
+        "required": [
+          "xLabel",
+          "yLabel",
+          "items"
+        ],
+        "additionalProperties": false,
+        "description": "Items in a 2×2 by two 0..1 coordinates (xLabel, yLabel, items (id?, label, x, y, size?, state?), quadrants? exactly 4, xTicks?/yTicks? exactly 2). `highlight` lights item ids; `onSelect` runs with the pressed item id as $value."
+      },
+      "Treemap": {
+        "type": "object",
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "label": {
+                  "type": "string"
+                },
+                "value": {
+                  "type": "number"
+                },
+                "group": {
+                  "type": "string"
+                },
+                "state": {
+                  "type": "string",
+                  "enum": [
+                    "default",
+                    "active",
+                    "done",
+                    "muted",
+                    "danger"
+                  ]
+                },
+                "ref": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "label",
+                "value"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "title": {
+            "type": "string"
+          },
+          "highlight": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "onSelect": {
+            "anyOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "type": {
+                    "type": "string",
+                    "const": "open_url"
+                  },
+                  "url": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "url"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "type": {
+                    "type": "string",
+                    "const": "continue_conversation"
+                  },
+                  "context": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "type": {
+                    "type": "string"
+                  },
+                  "params": {
+                    "type": "object",
+                    "propertyNames": {
+                      "type": "string"
+                    },
+                    "additionalProperties": {}
+                  }
+                },
+                "required": [
+                  "type"
+                ],
+                "additionalProperties": false
+              }
+            ]
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "additionalProperties": false,
+        "description": "Part-of-whole as nested rectangles sized by value: items (label, value > 0, group?, state?). `highlight` lights item labels; `onSelect` runs with the pressed label as $value."
+      },
+      "Sankey": {
+        "type": "object",
+        "properties": {
+          "nodes": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "label": {
+                  "type": "string"
+                },
+                "stage": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9007199254740991
+                },
+                "state": {
+                  "type": "string",
+                  "enum": [
+                    "default",
+                    "active",
+                    "done",
+                    "muted",
+                    "danger"
+                  ]
+                }
+              },
+              "required": [
+                "id",
+                "label"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "flows": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "from": {
+                  "type": "string"
+                },
+                "to": {
+                  "type": "string"
+                },
+                "value": {
+                  "type": "number"
+                },
+                "label": {
+                  "type": "string"
+                },
+                "state": {
+                  "type": "string",
+                  "enum": [
+                    "default",
+                    "active",
+                    "done",
+                    "muted",
+                    "danger"
+                  ]
+                }
+              },
+              "required": [
+                "from",
+                "to",
+                "value"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "unit": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "highlight": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "onSelect": {
+            "anyOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "type": {
+                    "type": "string",
+                    "const": "open_url"
+                  },
+                  "url": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "url"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "type": {
+                    "type": "string",
+                    "const": "continue_conversation"
+                  },
+                  "context": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "type": {
+                    "type": "string"
+                  },
+                  "params": {
+                    "type": "object",
+                    "propertyNames": {
+                      "type": "string"
+                    },
+                    "additionalProperties": {}
+                  }
+                },
+                "required": [
+                  "type"
+                ],
+                "additionalProperties": false
+              }
+            ]
+          }
+        },
+        "required": [
+          "nodes",
+          "flows"
+        ],
+        "additionalProperties": false,
+        "description": "Flows between staged nodes, ribbons sized by value, no cycles: nodes (id, label, stage?, state?), flows (from, to, value > 0, label?, state?), unit?. `highlight` lights node ids; `onSelect` runs with the pressed node id as $value."
+      },
+      "Venn": {
+        "type": "object",
+        "properties": {
+          "sets": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "label": {
+                  "type": "string"
+                },
+                "size": {
+                  "type": "number"
+                }
+              },
+              "required": [
+                "id",
+                "label"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "overlaps": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "sets": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "label": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "sets",
+                "label"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "title": {
+            "type": "string"
+          },
+          "highlight": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "onSelect": {
+            "anyOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "type": {
+                    "type": "string",
+                    "const": "open_url"
+                  },
+                  "url": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "url"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "type": {
+                    "type": "string",
+                    "const": "continue_conversation"
+                  },
+                  "context": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "type": {
+                    "type": "string"
+                  },
+                  "params": {
+                    "type": "object",
+                    "propertyNames": {
+                      "type": "string"
+                    },
+                    "additionalProperties": {}
+                  }
+                },
+                "required": [
+                  "type"
+                ],
+                "additionalProperties": false
+              }
+            ]
+          }
+        },
+        "required": [
+          "sets"
+        ],
+        "additionalProperties": false,
+        "description": "Two or three overlapping sets (id, label, size?) with labelled overlaps (sets, label). `highlight` lights set ids; `onSelect` runs with the pressed set id as $value."
+      },
+      "Loop": {
+        "type": "object",
+        "properties": {
+          "steps": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "label": {
+                  "type": "string"
+                },
+                "note": {
+                  "type": "string"
+                },
+                "state": {
+                  "type": "string",
+                  "enum": [
+                    "default",
+                    "active",
+                    "done",
+                    "muted",
+                    "danger"
+                  ]
+                },
+                "ref": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "label"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "hub": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "highlight": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "onSelect": {
+            "anyOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "type": {
+                    "type": "string",
+                    "const": "open_url"
+                  },
+                  "url": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "url"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "type": {
+                    "type": "string",
+                    "const": "continue_conversation"
+                  },
+                  "context": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "type": {
+                    "type": "string"
+                  },
+                  "params": {
+                    "type": "object",
+                    "propertyNames": {
+                      "type": "string"
+                    },
+                    "additionalProperties": {}
+                  }
+                },
+                "required": [
+                  "type"
+                ],
+                "additionalProperties": false
+              }
+            ]
+          }
+        },
+        "required": [
+          "steps"
+        ],
+        "additionalProperties": false,
+        "description": "A cycle of 2–8 steps (label, note?, state?) drawn clockwise around an optional hub. `highlight` lights step indices as strings; `onSelect` runs with the pressed index as $value."
+      },
+      "Layers": {
+        "type": "object",
+        "properties": {
+          "layers": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "label": {
+                  "type": "string"
+                },
+                "items": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "note": {
+                  "type": "string"
+                },
+                "state": {
+                  "type": "string",
+                  "enum": [
+                    "default",
+                    "active",
+                    "done",
+                    "muted",
+                    "danger"
+                  ]
+                },
+                "ref": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "label"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "direction": {
+            "type": "string",
+            "enum": [
+              "top-down",
+              "bottom-up"
+            ]
+          },
+          "title": {
+            "type": "string"
+          },
+          "highlight": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "onSelect": {
+            "anyOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "type": {
+                    "type": "string",
+                    "const": "open_url"
+                  },
+                  "url": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "url"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "type": {
+                    "type": "string",
+                    "const": "continue_conversation"
+                  },
+                  "context": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "type": {
+                    "type": "string"
+                  },
+                  "params": {
+                    "type": "object",
+                    "propertyNames": {
+                      "type": "string"
+                    },
+                    "additionalProperties": {}
+                  }
+                },
+                "required": [
+                  "type"
+                ],
+                "additionalProperties": false
+              }
+            ]
+          }
+        },
+        "required": [
+          "layers"
+        ],
+        "additionalProperties": false,
+        "description": "Stacked horizontal layers (label, items?, note?, state?), top-down or bottom-up. `highlight` lights layer indices as strings; `onSelect` runs with the pressed index as $value."
+      },
+      "Journey": {
+        "type": "object",
+        "properties": {
+          "stages": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "rows": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "label": {
+                  "type": "string"
+                },
+                "cells": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                }
+              },
+              "required": [
+                "label",
+                "cells"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "mood": {
+            "type": "array",
+            "items": {
+              "type": "number"
+            }
+          },
+          "pains": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "stage": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9007199254740991
+                },
+                "text": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "stage",
+                "text"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "title": {
+            "type": "string"
+          },
+          "highlight": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "onSelect": {
+            "anyOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "type": {
+                    "type": "string",
+                    "const": "open_url"
+                  },
+                  "url": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "url"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "type": {
+                    "type": "string",
+                    "const": "continue_conversation"
+                  },
+                  "context": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "type": {
+                    "type": "string"
+                  },
+                  "params": {
+                    "type": "object",
+                    "propertyNames": {
+                      "type": "string"
+                    },
+                    "additionalProperties": {}
+                  }
+                },
+                "required": [
+                  "type"
+                ],
+                "additionalProperties": false
+              }
+            ]
+          }
+        },
+        "required": [
+          "stages",
+          "rows"
+        ],
+        "additionalProperties": false,
+        "description": "Stages across, rows down (label, cells one per stage), a mood line (−1..1 per stage) and pain points (stage index, text). `highlight` lights stage indices as strings; `onSelect` runs with the pressed index as $value."
+      },
+      "Fishbone": {
+        "type": "object",
+        "properties": {
+          "effect": {
+            "type": "string"
+          },
+          "causes": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "category": {
+                  "type": "string"
+                },
+                "items": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                }
+              },
+              "required": [
+                "category",
+                "items"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "title": {
+            "type": "string"
+          },
+          "highlight": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "onSelect": {
+            "anyOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "type": {
+                    "type": "string",
+                    "const": "open_url"
+                  },
+                  "url": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "url"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "type": {
+                    "type": "string",
+                    "const": "continue_conversation"
+                  },
+                  "context": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "type": {
+                    "type": "string"
+                  },
+                  "params": {
+                    "type": "object",
+                    "propertyNames": {
+                      "type": "string"
+                    },
+                    "additionalProperties": {}
+                  }
+                },
+                "required": [
+                  "type"
+                ],
+                "additionalProperties": false
+              }
+            ]
+          }
+        },
+        "required": [
+          "effect",
+          "causes"
+        ],
+        "additionalProperties": false,
+        "description": "Cause and effect: an effect with categorised causes (category, items) on the bones. `highlight` lights category indices as strings; `onSelect` runs with the pressed index as $value."
       },
       "Carousel": {
         "type": "object",
@@ -2000,6 +4726,51 @@
                   },
                   {
                     "$ref": "#/$defs/Graph"
+                  },
+                  {
+                    "$ref": "#/$defs/StateMachine"
+                  },
+                  {
+                    "$ref": "#/$defs/Entities"
+                  },
+                  {
+                    "$ref": "#/$defs/Swimlane"
+                  },
+                  {
+                    "$ref": "#/$defs/GraphDelta"
+                  },
+                  {
+                    "$ref": "#/$defs/Waterfall"
+                  },
+                  {
+                    "$ref": "#/$defs/Funnel"
+                  },
+                  {
+                    "$ref": "#/$defs/Gantt"
+                  },
+                  {
+                    "$ref": "#/$defs/Quadrant"
+                  },
+                  {
+                    "$ref": "#/$defs/Treemap"
+                  },
+                  {
+                    "$ref": "#/$defs/Sankey"
+                  },
+                  {
+                    "$ref": "#/$defs/Venn"
+                  },
+                  {
+                    "$ref": "#/$defs/Loop"
+                  },
+                  {
+                    "$ref": "#/$defs/Layers"
+                  },
+                  {
+                    "$ref": "#/$defs/Journey"
+                  },
+                  {
+                    "$ref": "#/$defs/Fishbone"
                   }
                 ]
               }
@@ -2113,6 +4884,51 @@
                 },
                 {
                   "$ref": "#/$defs/Graph"
+                },
+                {
+                  "$ref": "#/$defs/StateMachine"
+                },
+                {
+                  "$ref": "#/$defs/Entities"
+                },
+                {
+                  "$ref": "#/$defs/Swimlane"
+                },
+                {
+                  "$ref": "#/$defs/GraphDelta"
+                },
+                {
+                  "$ref": "#/$defs/Waterfall"
+                },
+                {
+                  "$ref": "#/$defs/Funnel"
+                },
+                {
+                  "$ref": "#/$defs/Gantt"
+                },
+                {
+                  "$ref": "#/$defs/Quadrant"
+                },
+                {
+                  "$ref": "#/$defs/Treemap"
+                },
+                {
+                  "$ref": "#/$defs/Sankey"
+                },
+                {
+                  "$ref": "#/$defs/Venn"
+                },
+                {
+                  "$ref": "#/$defs/Loop"
+                },
+                {
+                  "$ref": "#/$defs/Layers"
+                },
+                {
+                  "$ref": "#/$defs/Journey"
+                },
+                {
+                  "$ref": "#/$defs/Fishbone"
                 }
               ]
             }
@@ -3042,6 +5858,51 @@
               },
               {
                 "$ref": "#/$defs/Graph"
+              },
+              {
+                "$ref": "#/$defs/StateMachine"
+              },
+              {
+                "$ref": "#/$defs/Entities"
+              },
+              {
+                "$ref": "#/$defs/Swimlane"
+              },
+              {
+                "$ref": "#/$defs/GraphDelta"
+              },
+              {
+                "$ref": "#/$defs/Waterfall"
+              },
+              {
+                "$ref": "#/$defs/Funnel"
+              },
+              {
+                "$ref": "#/$defs/Gantt"
+              },
+              {
+                "$ref": "#/$defs/Quadrant"
+              },
+              {
+                "$ref": "#/$defs/Treemap"
+              },
+              {
+                "$ref": "#/$defs/Sankey"
+              },
+              {
+                "$ref": "#/$defs/Venn"
+              },
+              {
+                "$ref": "#/$defs/Loop"
+              },
+              {
+                "$ref": "#/$defs/Layers"
+              },
+              {
+                "$ref": "#/$defs/Journey"
+              },
+              {
+                "$ref": "#/$defs/Fishbone"
               }
             ]
           },

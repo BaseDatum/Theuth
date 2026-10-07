@@ -1,0 +1,47 @@
+{
+  "root": "b",
+  "elements": {
+    "b": {
+      "type": "BarChart",
+      "props": {
+        "labels": [
+          "Alpha",
+          "Beta",
+          "Gamma",
+          "Delta",
+          "Epsilon",
+          "Zeta",
+          "Eta",
+          "Theta",
+          "Iota",
+          "Kappa",
+          "Lambda",
+          "Mu",
+          "Nu"
+        ],
+        "series": [
+          {
+            "name": "Open issues",
+            "values": [
+              12,
+              7,
+              3,
+              9,
+              14,
+              2,
+              5,
+              8,
+              1,
+              6,
+              4,
+              10,
+              11
+            ]
+          }
+        ],
+        "variant": "horizontal",
+        "xLabel": "issues"
+      }
+    }
+  }
+}

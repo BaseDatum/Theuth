@@ -19,6 +19,10 @@ import { useApi } from '@/lib/rpc'
 import type { Api } from '@/rpc/api'
 import { useSessions } from '@/store/sessions'
 import { FenceContext, FenceFallback } from './JsonRenderFence'
+import { registerDiagramHosts } from './diagram-hosts'
+
+// 123 §6: a static openui fence draws its diagrams with the chat's renderers, as `AppHost` does.
+registerDiagramHosts()
 
 export const INERT = 'Open as app to run queries and actions'
 

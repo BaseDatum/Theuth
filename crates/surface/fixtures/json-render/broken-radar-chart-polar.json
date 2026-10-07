@@ -1,0 +1,43 @@
+{
+  "root": "r",
+  "elements": {
+    "r": {
+      "type": "RadarChart",
+      "props": {
+        "title": "Plan comparison",
+        "axes": [
+          "Speed",
+          "Cost",
+          "Safety",
+          "Coverage",
+          "Effort"
+        ],
+        "series": [
+          {
+            "name": "Plan A",
+            "values": [
+              4,
+              2,
+              5,
+              3,
+              2
+            ]
+          },
+          {
+            "name": "Plan B",
+            "values": [
+              2,
+              4,
+              3,
+              5,
+              4
+            ],
+            "state": "active"
+          }
+        ],
+        "max": 5,
+        "variant": "polar"
+      }
+    }
+  }
+}

@@ -175,6 +175,63 @@ narrative = TextContent(steps[$step].text + ($selected == "" ? "" : " Selected: 
 nav = Buttons([Button("Back", Action([@Set($step, $step > 0 ? $step - 1 : 0)]), "secondary"), Button("Next", Action([@Set($step, $step < 2 ? $step + 1 : 2)]))])
 ```
 
+### When a diagram is an app
+
+A diagram is an app when live data feeds its props (`Query`), a press must do something
+(`Action`), or the reader steps through states (`$step` → `highlight`). Static picture: a
+`json-render` fence (the `visualize` skill). Reader flips `Tabs`/`Steps` locally with no live
+data: an `openui` fence. The diagram components take the json-render props positionally in
+catalog order, then `highlight` (unit ids, or indices as strings where the catalog says so) and
+`onSelect`. OpenUI Lang has no map: the tool returns rows already in the component's shape (an
+MCP tool of yours, item 4 above — `task_inbox` and `schedule_status` are line-oriented today).
+`BarChart`/`LineChart`/`ScatterChart`/`RadarChart` here are the upstream recharts charts, not the
+json-render grammars of the same names.
+
+Routines as a `Gantt` with Run-now; `plan_status` returns `{tasks: [{id, label, start, end, state}], today, running: [id]}`:
+
+```openui
+root = Stack([plan, controls])
+$pick = "nightly-digest"
+st = Query("plan_status", {}, {tasks: [], today: "2026-10-07", running: []}, 30)
+fire = Mutation("schedule_fire", {name: $pick})
+plan = Gantt(st.tasks, st.today, "Routines", st.running)
+controls = Stack([pick, run], "row")
+pick = Select("routine", @Each(st.tasks, "t", SelectItem(t.id, t.label)), "Routine", null, $pick)
+run = Button("Run " + $pick + " now", Action([@Run(fire), @Run(st)]))
+```
+
+A task's lifecycle with the live state highlighted; `task_state` returns `{state, title}`:
+
+```openui
+root = Stack([machine, explain])
+task = Query("task_state", {id: "01a1"}, {state: "todo", title: ""}, 15)
+machine = StateMachine(states, transitions, "LR", "Task lifecycle", [task.state])
+states = [{id: "todo", label: "Todo", kind: "initial"}, {id: "doing", label: "Doing"}, {id: "blocked", label: "Blocked", state: "muted"}, {id: "done", label: "Done", kind: "final"}]
+transitions = [{from: "todo", to: "doing", label: "start"}, {from: "doing", to: "blocked", label: "wait"}, {from: "blocked", to: "doing", label: "unblock"}, {from: "doing", to: "done", label: "finish"}]
+explain = Button("Why is it " + task.state + "?", Action([@ToAssistant("Explain why this task is in state " + task.state, task)]))
+```
+
+Spend by model → session as a `Sankey`; `session_cost` returns `{nodes: [{id, label, stage}], flows: [{from, to, value}]}`:
+
+```openui
+root = Sankey(cost.nodes, cost.flows, "USD", "Spend by model and session")
+cost = Query("session_cost", {}, {nodes: [], flows: []}, 60)
+```
+
+The inbox as a `Swimlane` by state with a move per card; `task_board` returns `{steps: [{id, lane, label}], blocked: [id]}`:
+
+```openui
+root = Stack([board, controls])
+$card = ""
+inbox = Query("task_board", {}, {steps: [], blocked: []}, 15)
+start = Mutation("task_move", {task: $card, state: "doing"})
+board = Swimlane(lanes, inbox.steps, [], "TB", "Inbox", inbox.blocked)
+lanes = [{id: "todo", label: "Todo"}, {id: "doing", label: "Doing"}, {id: "blocked", label: "Blocked"}]
+controls = Stack([pick, move], "row")
+pick = Select("task", @Each(@Filter(inbox.steps, "lane", "==", "todo"), "t", SelectItem(t.id, t.label)), "Task", null, $card)
+move = Button("Start " + $card, Action([@Run(start), @Run(inbox)]))
+```
+
 ## Catalog
 
 {{catalog}}

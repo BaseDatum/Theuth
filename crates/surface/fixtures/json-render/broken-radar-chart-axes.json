@@ -1,0 +1,33 @@
+{
+  "root": "r",
+  "elements": {
+    "r": {
+      "type": "RadarChart",
+      "props": {
+        "title": "Plan comparison",
+        "axes": [
+          "A",
+          "B"
+        ],
+        "series": [
+          {
+            "name": "Plan A",
+            "values": [
+              1,
+              2
+            ]
+          },
+          {
+            "name": "Plan B",
+            "values": [
+              1,
+              2
+            ],
+            "state": "active"
+          }
+        ],
+        "max": 5
+      }
+    }
+  }
+}

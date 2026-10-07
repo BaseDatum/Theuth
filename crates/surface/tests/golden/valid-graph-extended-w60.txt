@@ -1,0 +1,8 @@
+Cloud
+  VPC
+    ◉ API (:8080) [SERVICE] → Postgres (SQL), ✗→ Jobs
+    • Jobs
+    DB subnet
+      • Postgres [DB]
+• CDN → API (HTTPS)
+○ Blue/green since v1.4

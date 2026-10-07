@@ -1,0 +1,67 @@
+{
+  "root": "s",
+  "elements": {
+    "s": {
+      "type": "ScatterChart",
+      "props": {
+        "xLabel": "Review time (h)",
+        "yLabel": "ignored",
+        "variant": "beeswarm",
+        "groups": [
+          {
+            "id": "ui",
+            "label": "UI"
+          },
+          {
+            "id": "rs",
+            "label": "Rust"
+          }
+        ],
+        "points": [
+          {
+            "x": 1,
+            "y": 0,
+            "group": "ui"
+          },
+          {
+            "x": 1.2,
+            "y": 0,
+            "group": "ui"
+          },
+          {
+            "x": 1.1,
+            "y": 0,
+            "group": "rs"
+          },
+          {
+            "x": 3,
+            "y": 0,
+            "group": "rs",
+            "label": "slow",
+            "state": "danger"
+          },
+          {
+            "x": 0.9,
+            "y": 0,
+            "group": "ui"
+          },
+          {
+            "x": 1.05,
+            "y": 0,
+            "group": "rs"
+          },
+          {
+            "x": 4.5,
+            "y": 0,
+            "group": "ui"
+          },
+          {
+            "x": 2,
+            "y": 0,
+            "group": "rs"
+          }
+        ]
+      }
+    }
+  }
+}

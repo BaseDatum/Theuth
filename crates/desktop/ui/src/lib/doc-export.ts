@@ -55,12 +55,15 @@ export function exportAssets(mounted: readonly MountedDiagram[], from: DiagramTo
   return out
 }
 
-const COLOURS: (keyof DiagramTokens)[] = ['background', 'foreground', 'primary', 'muted', 'mutedForeground', 'border', 'card', 'accent', 'success', 'danger']
+const COLOURS: Exclude<keyof DiagramTokens, 'font' | 'series'>[] = ['background', 'foreground', 'primary', 'muted', 'mutedForeground', 'border', 'card', 'accent', 'success', 'danger']
 
-/** One pass over the markup: every `from` colour becomes its `to` counterpart (one pass, so swaps never chain). */
+/** One pass over the markup: every `from` colour (tokens and the series palette) becomes its `to` counterpart (one pass, so swaps never chain). */
 function recolour(from: DiagramTokens, to: DiagramTokens): (markup: string) => string {
   const map = new Map<string, string>()
   for (const k of COLOURS) if (from[k] !== to[k]) map.set(from[k].toLowerCase(), to[k])
+  from.series.forEach((c, i) => {
+    if (c !== to.series[i]) map.set(c.toLowerCase(), to.series[i]!)
+  })
   if (map.size === 0) return (m) => m
   const re = new RegExp([...map.keys()].map((c) => c.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|'), 'gi')
   return (m) => m.replace(re, (hit) => map.get(hit.toLowerCase()) ?? hit)

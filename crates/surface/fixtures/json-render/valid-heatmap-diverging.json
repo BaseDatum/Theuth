@@ -1,0 +1,44 @@
+{
+  "root": "h",
+  "elements": {
+    "h": {
+      "type": "Heatmap",
+      "props": {
+        "title": "Latency delta vs last week (ms)",
+        "palette": "diverging",
+        "rows": [
+          "chat",
+          "tools",
+          "boards"
+        ],
+        "cols": [
+          "Mon",
+          "Tue",
+          "Wed",
+          "Thu"
+        ],
+        "cells": [
+          [
+            -12,
+            -4,
+            3,
+            8
+          ],
+          [
+            5,
+            0,
+            -2,
+            -9
+          ],
+          [
+            20,
+            14,
+            -1,
+            -6
+          ]
+        ],
+        "max": 20
+      }
+    }
+  }
+}

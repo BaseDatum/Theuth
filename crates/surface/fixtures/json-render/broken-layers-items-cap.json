@@ -1,0 +1,58 @@
+{
+  "root": "l",
+  "elements": {
+    "l": {
+      "type": "Layers",
+      "props": {
+        "title": "theuth stack",
+        "direction": "top-down",
+        "layers": [
+          {
+            "label": "Surfaces",
+            "items": [
+              "i0",
+              "i1",
+              "i2",
+              "i3",
+              "i4",
+              "i5",
+              "i6",
+              "i7",
+              "i8",
+              "i9",
+              "i10",
+              "i11",
+              "i12"
+            ]
+          },
+          {
+            "label": "Agent",
+            "items": [
+              "loop",
+              "tools",
+              "skills"
+            ],
+            "state": "active",
+            "ref": "crates/agent/src/lib.rs"
+          },
+          {
+            "label": "Surface crate",
+            "items": [
+              "parse",
+              "validate",
+              "render"
+            ],
+            "note": "one catalog"
+          },
+          {
+            "label": "Store",
+            "items": [
+              "sqlite",
+              "journal"
+            ]
+          }
+        ]
+      }
+    }
+  }
+}

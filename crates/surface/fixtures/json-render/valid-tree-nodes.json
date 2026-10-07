@@ -1,0 +1,21 @@
+{
+  "root": "t",
+  "elements": {
+    "t": {
+      "type": "Tree",
+      "props": {
+        "title": "Crates",
+        "layout": "nodes",
+        "items": [
+          { "id": "ws", "label": "workspace" },
+          { "id": "agent", "label": "agent", "depth": 1, "state": "active", "ref": "crates/agent/src/lib.rs" },
+          { "id": "loop", "label": "loop_", "depth": 2, "detail": "the turn loop" },
+          { "id": "surface", "label": "surface", "depth": 1 },
+          { "id": "render", "label": "render", "depth": 2 },
+          { "id": "graph", "label": "graph", "depth": 2, "state": "done" },
+          { "id": "desktop", "label": "desktop", "depth": 1, "state": "muted" }
+        ]
+      }
+    }
+  }
+}

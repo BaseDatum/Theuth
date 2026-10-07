@@ -30,7 +30,7 @@ pub struct Element {
     pub children: Vec<String>,
 }
 
-/// Catalog v0: thirty-eight components, adjacently tagged as `{"type": Name, "props": {...}}`.
+/// Catalog v1: fifty-seven components, adjacently tagged as `{"type": Name, "props": {...}}`.
 ///
 /// Declaration order is the catalog order shown to the model.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
@@ -113,6 +113,47 @@ pub enum Component {
     Kanban(KanbanProps),
     /// A strip of days with a marker each.
     Calendar(CalendarProps),
+    // ---- 123 ELK family (W1) ----
+    /// States and transitions of a lifecycle; `initial`/`final` dots, events on the arrows (design doc 123).
+    StateMachine(StateMachineProps),
+    /// Entities, tables or classes with their fields and typed relations (ER / class diagram).
+    Entities(EntitiesProps),
+    /// Steps in lanes (teams, systems), edges across lanes: a handoff or cross-functional flow.
+    Swimlane(SwimlaneProps),
+    /// Two graphs, before and after, over one layout; the added/removed/changed ledger is derived by id.
+    GraphDelta(GraphDeltaProps),
+    // ---- 123 chart family (W2) ----
+    /// Bars per label, one or more series: grouped, stacked, dumbbell or horizontal.
+    BarChart(BarChartProps),
+    /// Values over ordered labels: line, area, slope, bump or step.
+    LineChart(LineChartProps),
+    /// Points on two numeric axes: scatter, bubble (size) or beeswarm (one axis).
+    ScatterChart(ScatterChartProps),
+    /// Several criteria compared on spokes: radar, or polar bars for one series.
+    RadarChart(RadarChartProps),
+    /// Deltas that carry a running total from a start level to an end level.
+    Waterfall(WaterfallProps),
+    /// Stages narrowing from top to bottom (funnel) or widening (pyramid).
+    Funnel(FunnelProps),
+    /// Tasks on a date scale with groups, dependencies, progress and a today line.
+    Gantt(GanttProps),
+    /// Items placed in a 2×2 by two 0..1 coordinates (effort/impact, urgency/importance).
+    Quadrant(QuadrantProps),
+    // ---- 123 part-of-whole + misc (W3) ----
+    /// Part-of-whole as nested rectangles sized by value, grouped.
+    Treemap(TreemapProps),
+    /// Flows between staged nodes, ribbons sized by value; no cycles.
+    Sankey(SankeyProps),
+    /// Two or three overlapping sets with labelled overlaps.
+    Venn(VennProps),
+    /// A cycle of 2–8 steps drawn clockwise around an optional hub.
+    Loop(LoopProps),
+    /// Stacked horizontal layers (architecture tiers, medallion, a stack).
+    Layers(LayersProps),
+    /// Stages across, rows down (does / thinks / feels), a mood line and pain points.
+    Journey(JourneyProps),
+    /// Cause-and-effect: an effect with categorised causes on the bones.
+    Fishbone(FishboneProps),
 }
 
 /// `Card` props.
@@ -388,6 +429,10 @@ pub struct Bar {
 pub struct TimelineProps {
     /// Steps, in order.
     pub items: Vec<TimelineItem>,
+    /// `list` (default) keeps `when` as free text; `time` places items on a date axis and requires ISO `when`/`until`.
+    pub scale: Option<TimelineScale>,
+    /// Title above the timeline.
+    pub title: Option<String>,
 }
 
 /// One `Timeline` step.
@@ -403,6 +448,23 @@ pub struct TimelineItem {
     pub detail: Option<String>,
     /// Marker state; default pending.
     pub state: Option<TimelineState>,
+    /// End of a span (`scale: time`): ISO date or datetime.
+    pub until: Option<String>,
+    /// Unique id so boards and apps can point at this item.
+    pub id: Option<String>,
+    /// Code this item is about: `path`, `path#L10` or `path#L10-L24` (root-relative), or `block:<id>`.
+    pub r#ref: Option<String>,
+}
+
+/// `Timeline.scale`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[serde(rename_all = "lowercase")]
+pub enum TimelineScale {
+    /// Items in authored order, `when` as written.
+    List,
+    /// Items on a date axis; every `when` and `until` is an ISO date or datetime.
+    Time,
 }
 
 /// `Timeline` item state.
@@ -469,6 +531,10 @@ pub struct GraphProps {
     pub groups: Option<Vec<GraphGroup>>,
     /// Flow direction; default LR.
     pub direction: Option<GraphDirection>,
+    /// Legend entries, ≤ 5: a label per state, edge style or node kind used.
+    pub legend: Option<Vec<GraphLegendEntry>>,
+    /// Title above the graph.
+    pub title: Option<String>,
 }
 
 /// One `Graph` node.
@@ -488,6 +554,12 @@ pub struct GraphNode {
     pub state: Option<GraphState>,
     /// Code this node explains: `path`, `path#L10` or `path#L10-L24` (root-relative), or `block:<id>`.
     pub r#ref: Option<String>,
+    /// Mono second line, ≤ 40 characters: a port, a version, a capacity.
+    pub sub: Option<String>,
+    /// Small rectangular tag, ≤ 12 characters: SERVICE, DB, QUEUE.
+    pub tag: Option<String>,
+    /// Icon drawn before the label; the TUI prints nothing for it.
+    pub icon: Option<GraphIcon>,
 }
 
 /// `GraphNode.kind`.
@@ -507,6 +579,12 @@ pub enum GraphKind {
     Cylinder,
     /// Person or external party.
     Actor,
+    /// Hexagon: a service or a process.
+    Hexagon,
+    /// Circle: a start, an end or a point.
+    Circle,
+    /// Note: a folded-corner annotation.
+    Note,
 }
 
 /// `GraphNode.state`.
@@ -539,6 +617,23 @@ pub struct GraphEdge {
     pub label: Option<String>,
     /// Line style; default solid.
     pub style: Option<GraphEdgeStyle>,
+    /// Semantic state of the arrow; default default.
+    pub state: Option<GraphState>,
+    /// Arrowheads; default forward.
+    pub arrow: Option<GraphArrow>,
+}
+
+/// `GraphEdge.arrow`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[serde(rename_all = "lowercase")]
+pub enum GraphArrow {
+    /// Head at `to`.
+    Forward,
+    /// Heads at both ends.
+    Both,
+    /// A plain line.
+    None,
 }
 
 /// `GraphEdge.style`.
@@ -561,6 +656,95 @@ pub struct GraphGroup {
     pub id: String,
     /// Title of the box; ≤ 80 characters.
     pub label: String,
+    /// Id of the enclosing group (nested zones); depth ≤ 3.
+    pub parent: Option<String>,
+    /// Box treatment; default zone. `boundary` draws dashed.
+    pub kind: Option<GraphGroupKind>,
+}
+
+/// `GraphGroup.kind`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[serde(rename_all = "lowercase")]
+pub enum GraphGroupKind {
+    /// Solid labelled box.
+    Zone,
+    /// Dashed box: a trust or network boundary.
+    Boundary,
+    /// Light box: a loose cluster.
+    Cluster,
+}
+
+/// One `Graph.legend` entry: a label for a state, an edge style or a node kind.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[serde(deny_unknown_fields)]
+pub struct GraphLegendEntry {
+    /// What the swatch means; ≤ 80 characters.
+    pub label: String,
+    /// The state this entry explains.
+    pub state: Option<GraphState>,
+    /// The edge style this entry explains.
+    pub style: Option<GraphEdgeStyle>,
+    /// The node kind this entry explains.
+    pub kind: Option<GraphKind>,
+}
+
+/// `GraphNode.icon`: a closed set drawn from lucide.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[serde(rename_all = "kebab-case")]
+pub enum GraphIcon {
+    /// A server.
+    Server,
+    /// A database.
+    Database,
+    /// A cloud service.
+    Cloud,
+    /// One person.
+    User,
+    /// A team.
+    Users,
+    /// The internet.
+    Globe,
+    /// A lock.
+    Lock,
+    /// A shield.
+    Shield,
+    /// A key.
+    Key,
+    /// A queue.
+    Queue,
+    /// A processor.
+    Cpu,
+    /// A box.
+    Box,
+    /// A package.
+    Package,
+    /// A file.
+    File,
+    /// A folder.
+    Folder,
+    /// A terminal.
+    Terminal,
+    /// A laptop.
+    Laptop,
+    /// A phone.
+    Phone,
+    /// Mail.
+    Mail,
+    /// A clock.
+    Clock,
+    /// Settings.
+    Settings,
+    /// Code.
+    Code,
+    /// A git branch.
+    GitBranch,
+    /// A bot.
+    Bot,
+    /// A browser.
+    Browser,
 }
 
 /// `Graph.direction`.
@@ -584,6 +768,40 @@ pub struct SequenceProps {
     pub steps: Vec<SequenceStep>,
     /// Title above the lanes.
     pub title: Option<String>,
+    /// Combined fragments over step index ranges, ≤ 2, disjoint, not nested.
+    pub fragments: Option<Vec<SequenceFragment>>,
+}
+
+/// One `Sequence` fragment: a frame around steps `from..=to`.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[serde(deny_unknown_fields)]
+pub struct SequenceFragment {
+    /// Frame kind.
+    pub kind: SequenceFragmentKind,
+    /// First step index (0-based).
+    pub from: usize,
+    /// Last step index (0-based), ≥ `from`.
+    pub to: usize,
+    /// Condition or caption in the frame's corner; ≤ 80 characters.
+    pub label: Option<String>,
+    /// `alt` only: the step index where the else region starts, inside `from..=to`.
+    pub r#else: Option<usize>,
+}
+
+/// `SequenceFragment.kind`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[serde(rename_all = "lowercase")]
+pub enum SequenceFragmentKind {
+    /// Alternatives; `else` splits the regions.
+    Alt,
+    /// Optional.
+    Opt,
+    /// Repeated.
+    Loop,
+    /// Parallel.
+    Par,
 }
 
 /// One `Sequence` actor.
@@ -612,6 +830,10 @@ pub struct SequenceStep {
     pub style: Option<SequenceStyle>,
     /// Code this step runs: `path`, `path#L10` or `path#L10-L24` (root-relative), or `block:<id>`.
     pub r#ref: Option<String>,
+    /// Note beside the step, ≤ 80 characters; ≤ 2 notes per sequence.
+    pub note: Option<String>,
+    /// Semantic state of the arrow; default default.
+    pub state: Option<GraphState>,
 }
 
 /// `SequenceStep.style`.
@@ -732,6 +954,25 @@ pub struct ExcerptProps {
 pub struct TreeProps {
     /// Rows in reading order; a row nests under the nearest earlier row of smaller depth.
     pub items: Vec<TreeItem>,
+    /// `list` (default) is the indented list; `nodes`/`org` draw a node tree, `nested` nested boxes.
+    pub layout: Option<TreeLayout>,
+    /// Title above the tree.
+    pub title: Option<String>,
+}
+
+/// `Tree.layout`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[serde(rename_all = "lowercase")]
+pub enum TreeLayout {
+    /// Indented list.
+    List,
+    /// Top-down node tree.
+    Nodes,
+    /// Nested boxes.
+    Nested,
+    /// Org chart: top-down, siblings aligned.
+    Org,
 }
 
 /// One `Tree` row.
@@ -746,6 +987,12 @@ pub struct TreeItem {
     pub depth: Option<u8>,
     /// Dim text after the label.
     pub detail: Option<String>,
+    /// Unique id so boards and apps can point at this row.
+    pub id: Option<String>,
+    /// Semantic state; default default.
+    pub state: Option<GraphState>,
+    /// Code this row is about: `path`, `path#L10` or `path#L10-L24` (root-relative), or `block:<id>`.
+    pub r#ref: Option<String>,
 }
 
 /// `Glossary` props.
@@ -873,6 +1120,21 @@ pub struct HeatmapProps {
     pub cells: Vec<Vec<f64>>,
     /// Darkest-cell value; default the largest cell.
     pub max: Option<f64>,
+    /// `sequential` (default) shades from light to dark; `diverging` runs negative→neutral→positive about 0.
+    pub palette: Option<HeatmapPalette>,
+    /// Title above the grid.
+    pub title: Option<String>,
+}
+
+/// `Heatmap.palette`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[serde(rename_all = "lowercase")]
+pub enum HeatmapPalette {
+    /// Light to dark.
+    Sequential,
+    /// Two hues about zero.
+    Diverging,
 }
 
 /// `Person` props.
@@ -917,6 +1179,12 @@ pub struct FileItem {
 pub struct KanbanProps {
     /// Columns, left to right.
     pub columns: Vec<KanbanColumn>,
+    /// Story-map rows; cards pick one by `row` index.
+    pub rows: Option<Vec<String>>,
+    /// Story map: the release line is drawn after row `cut`.
+    pub cut: Option<usize>,
+    /// Title above the board.
+    pub title: Option<String>,
 }
 
 /// One `Kanban` column.
@@ -928,6 +1196,8 @@ pub struct KanbanColumn {
     pub title: String,
     /// Cards, top to bottom.
     pub cards: Vec<KanbanCard>,
+    /// WIP limit; a column over it is marked.
+    pub limit: Option<usize>,
 }
 
 /// One `Kanban` card.
@@ -941,6 +1211,27 @@ pub struct KanbanCard {
     pub detail: Option<String>,
     /// Short label on the card.
     pub tag: Option<String>,
+    /// Card state; default default.
+    pub state: Option<KanbanState>,
+    /// Unique id so boards and apps can point at this card.
+    pub id: Option<String>,
+    /// Code this card is about: `path`, `path#L10` or `path#L10-L24` (root-relative), or `block:<id>`.
+    pub r#ref: Option<String>,
+    /// Story-map row index into `rows`.
+    pub row: Option<usize>,
+}
+
+/// `KanbanCard.state`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[serde(rename_all = "lowercase")]
+pub enum KanbanState {
+    /// Plain.
+    Default,
+    /// Waiting on something.
+    Blocked,
+    /// Finished.
+    Done,
 }
 
 /// `Calendar` props.
@@ -965,4 +1256,926 @@ pub struct CalendarDay {
     pub label: Option<String>,
     /// Marker; the same states as `Timeline`.
     pub state: Option<TimelineState>,
+}
+
+// ---- 123 ELK family (W1) ----
+
+/// `StateMachine` props (design doc 123 §4.2).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[serde(deny_unknown_fields)]
+pub struct StateMachineProps {
+    /// States, in authored order; ≤ 40, at most one `initial`.
+    pub states: Vec<MachineState>,
+    /// Transitions between state ids; ≤ 80.
+    pub transitions: Vec<Transition>,
+    /// Flow direction; default LR.
+    pub direction: Option<GraphDirection>,
+    /// Title above the diagram.
+    pub title: Option<String>,
+}
+
+/// One `StateMachine` state.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[serde(deny_unknown_fields)]
+pub struct MachineState {
+    /// Unique within the machine; referenced by transitions.
+    pub id: String,
+    /// Text in the state; ≤ 80 characters.
+    pub label: String,
+    /// Shape; default state.
+    pub kind: Option<MachineStateKind>,
+    /// Mono second line, ≤ 40 characters: an entry action, a timeout.
+    pub sub: Option<String>,
+    /// Semantic state; default default.
+    pub state: Option<GraphState>,
+    /// Code this state is: `path`, `path#L10` or `path#L10-L24` (root-relative), or `block:<id>`.
+    pub r#ref: Option<String>,
+}
+
+/// `MachineState.kind`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[serde(rename_all = "lowercase")]
+pub enum MachineStateKind {
+    /// The entry dot; at most one.
+    Initial,
+    /// A terminal ringed dot.
+    Final,
+    /// A rounded box.
+    State,
+    /// A diamond: a guarded branch.
+    Choice,
+}
+
+/// One `StateMachine` transition.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[serde(deny_unknown_fields)]
+pub struct Transition {
+    /// Source state id.
+    pub from: String,
+    /// Target state id; may equal `from`.
+    pub to: String,
+    /// The event; ≤ 80 characters.
+    pub label: Option<String>,
+    /// The condition, drawn in brackets; ≤ 40 characters.
+    pub guard: Option<String>,
+    /// Line style; default solid.
+    pub style: Option<GraphEdgeStyle>,
+    /// Semantic state of the arrow; default default.
+    pub state: Option<GraphState>,
+}
+
+/// `Entities` props (design doc 123 §4.2).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[serde(deny_unknown_fields)]
+pub struct EntitiesProps {
+    /// Entities, in authored order; ≤ 24.
+    pub entities: Vec<Entity>,
+    /// Relations between entity ids; ≤ 48.
+    pub relations: Vec<Relation>,
+    /// How much to show; default model.
+    pub detail: Option<EntitiesDetail>,
+    /// Title above the diagram.
+    pub title: Option<String>,
+}
+
+/// `Entities.detail`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[serde(rename_all = "lowercase")]
+pub enum EntitiesDetail {
+    /// Names and relations only.
+    Model,
+    /// Fields with types and keys.
+    Schema,
+    /// Fields and methods.
+    Class,
+}
+
+/// One `Entities` entity.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[serde(deny_unknown_fields)]
+pub struct Entity {
+    /// Unique within the diagram; referenced by relations.
+    pub id: String,
+    /// Header text; ≤ 80 characters.
+    pub label: String,
+    /// Header treatment; default entity.
+    pub kind: Option<EntityKind>,
+    /// Fields, in order; ≤ 32 with unique names.
+    pub fields: Vec<Field>,
+    /// Methods; only on `class` or `interface`.
+    pub methods: Option<Vec<Method>>,
+    /// Semantic state; default default.
+    pub state: Option<GraphState>,
+    /// Code this entity is: `path`, `path#L10` or `path#L10-L24` (root-relative), or `block:<id>`.
+    pub r#ref: Option<String>,
+}
+
+/// `Entity.kind`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[serde(rename_all = "lowercase")]
+pub enum EntityKind {
+    /// A domain entity.
+    Entity,
+    /// A database table.
+    Table,
+    /// A class.
+    Class,
+    /// An interface (italic header).
+    Interface,
+    /// An enum.
+    Enum,
+}
+
+/// One `Entity` field.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[serde(deny_unknown_fields)]
+pub struct Field {
+    /// Field name; unique within the entity.
+    pub name: String,
+    /// Type, as written.
+    pub r#type: Option<String>,
+    /// Key role.
+    pub key: Option<FieldKey>,
+    /// Nullable; default false.
+    pub nullable: Option<bool>,
+    /// Short remark after the type.
+    pub note: Option<String>,
+}
+
+/// `Field.key`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[serde(rename_all = "lowercase")]
+pub enum FieldKey {
+    /// Primary key.
+    Pk,
+    /// Foreign key.
+    Fk,
+    /// Unique key.
+    Uk,
+}
+
+/// One `Entity` method.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[serde(deny_unknown_fields)]
+pub struct Method {
+    /// Method name.
+    pub name: String,
+    /// Signature after the name, e.g. `(id) -> User`.
+    pub sig: Option<String>,
+}
+
+/// One `Entities` relation.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[serde(deny_unknown_fields)]
+pub struct Relation {
+    /// Source entity id.
+    pub from: String,
+    /// Target entity id.
+    pub to: String,
+    /// Cardinality or UML relation; chooses the line ends.
+    pub kind: RelationKind,
+    /// Text on the line; ≤ 80 characters.
+    pub label: Option<String>,
+    /// A field of `from` the line leaves.
+    pub from_field: Option<String>,
+    /// A field of `to` the line enters.
+    pub to_field: Option<String>,
+}
+
+/// `Relation.kind`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[serde(rename_all = "kebab-case")]
+pub enum RelationKind {
+    /// 1 : 1.
+    OneOne,
+    /// 1 : n (crow's foot at `to`).
+    OneMany,
+    /// n : m.
+    ManyMany,
+    /// `from` extends `to`.
+    Inherits,
+    /// `from` implements `to`.
+    Implements,
+    /// `from` owns `to` (filled diamond).
+    Composes,
+    /// `from` has `to` (open diamond).
+    Aggregates,
+    /// `from` uses `to` (dashed).
+    Depends,
+    /// `from` points at `to`.
+    References,
+}
+
+/// `Swimlane` props (design doc 123 §4.2).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[serde(deny_unknown_fields)]
+pub struct SwimlaneProps {
+    /// Lanes, in order; ≤ 8.
+    pub lanes: Vec<Lane>,
+    /// Steps, each in a lane; ≤ 40.
+    pub steps: Vec<LaneStep>,
+    /// Edges between step ids; ≤ 80.
+    pub edges: Vec<LaneEdge>,
+    /// Flow direction; default LR (lanes are rows).
+    pub direction: Option<GraphDirection>,
+    /// Title above the diagram.
+    pub title: Option<String>,
+}
+
+/// One `Swimlane` lane.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[serde(deny_unknown_fields)]
+pub struct Lane {
+    /// Unique within the diagram; referenced by `LaneStep.lane`.
+    pub id: String,
+    /// Lane title; ≤ 80 characters.
+    pub label: String,
+}
+
+/// One `Swimlane` step.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[serde(deny_unknown_fields)]
+pub struct LaneStep {
+    /// Unique within the diagram; referenced by edges.
+    pub id: String,
+    /// The lane this step sits in.
+    pub lane: String,
+    /// Text in the step; ≤ 80 characters.
+    pub label: String,
+    /// Shape; default step.
+    pub kind: Option<LaneStepKind>,
+    /// Mono second line, ≤ 40 characters.
+    pub sub: Option<String>,
+    /// Semantic state; default default.
+    pub state: Option<GraphState>,
+    /// Code this step runs: `path`, `path#L10` or `path#L10-L24` (root-relative), or `block:<id>`.
+    pub r#ref: Option<String>,
+}
+
+/// `LaneStep.kind`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[serde(rename_all = "lowercase")]
+pub enum LaneStepKind {
+    /// A rounded box.
+    Step,
+    /// A diamond.
+    Decision,
+    /// The entry pill.
+    Start,
+    /// The exit pill.
+    End,
+    /// A parallelogram: a document or a dataset.
+    Data,
+}
+
+/// One `Swimlane` edge.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[serde(deny_unknown_fields)]
+pub struct LaneEdge {
+    /// Source step id.
+    pub from: String,
+    /// Target step id.
+    pub to: String,
+    /// Text on the arrow; ≤ 80 characters.
+    pub label: Option<String>,
+    /// Line style; default solid.
+    pub style: Option<GraphEdgeStyle>,
+}
+
+/// `GraphDelta` props (design doc 123 §4.2): ids are the identity across sides.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[serde(deny_unknown_fields)]
+pub struct GraphDeltaProps {
+    /// The graph as it was.
+    pub before: GraphSide,
+    /// The graph as it is; nodes with the same id keep their place.
+    pub after: GraphSide,
+    /// Flow direction; default LR.
+    pub direction: Option<GraphDirection>,
+    /// Title above both panels.
+    pub title: Option<String>,
+}
+
+/// One side of a `GraphDelta`: a `Graph` without direction.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[serde(deny_unknown_fields)]
+pub struct GraphSide {
+    /// Nodes, in authored order.
+    pub nodes: Vec<GraphNode>,
+    /// Directed edges between node ids.
+    pub edges: Vec<GraphEdge>,
+    /// Groups a node may belong to.
+    pub groups: Option<Vec<GraphGroup>>,
+}
+
+// ---- 123 chart family (W2) ----
+
+/// One chart series: `values[i]` belongs to the i-th label or axis.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[serde(deny_unknown_fields)]
+pub struct Series {
+    /// Legend name; ≤ 80 characters.
+    pub name: String,
+    /// One value per label.
+    pub values: Vec<f64>,
+    /// Semantic state colouring the series; default default.
+    pub state: Option<GraphState>,
+}
+
+/// `BarChart` props (design doc 123 §4.2).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct BarChartProps {
+    /// Category labels; ≤ 40.
+    pub labels: Vec<String>,
+    /// Series; ≤ 8, each with `labels.len()` values. `dumbbell` needs exactly 2.
+    pub series: Vec<Series>,
+    /// Layout; default grouped.
+    pub variant: Option<BarVariant>,
+    /// Category axis title.
+    pub x_label: Option<String>,
+    /// Value axis title.
+    pub y_label: Option<String>,
+    /// Unit after values, e.g. `ms`, `USD`.
+    pub unit: Option<String>,
+    /// Title above the chart.
+    pub title: Option<String>,
+}
+
+/// `BarChart.variant`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[serde(rename_all = "lowercase")]
+pub enum BarVariant {
+    /// Series side by side per label.
+    Grouped,
+    /// Series stacked per label.
+    Stacked,
+    /// Two series as the ends of one connector per label.
+    Dumbbell,
+    /// Bars run left to right, labels down the side.
+    Horizontal,
+}
+
+/// `LineChart` props (design doc 123 §4.2).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct LineChartProps {
+    /// Ordered x labels; ≤ 60.
+    pub labels: Vec<String>,
+    /// Series; ≤ 8, each with `labels.len()` values. `slope` needs exactly 2 labels; `bump` values are ranks ≥ 1.
+    pub series: Vec<Series>,
+    /// Mark; default line.
+    pub variant: Option<LineVariant>,
+    /// X axis title.
+    pub x_label: Option<String>,
+    /// Y axis title.
+    pub y_label: Option<String>,
+    /// Unit after values.
+    pub unit: Option<String>,
+    /// Title above the chart.
+    pub title: Option<String>,
+}
+
+/// `LineChart.variant`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[serde(rename_all = "lowercase")]
+pub enum LineVariant {
+    /// Plain lines.
+    Line,
+    /// Filled under the line.
+    Area,
+    /// Two labels, one segment per series.
+    Slope,
+    /// Ranks over time, 1 at the top.
+    Bump,
+    /// Horizontal runs with vertical jumps.
+    Step,
+}
+
+/// `ScatterChart` props (design doc 123 §4.2).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct ScatterChartProps {
+    /// Points; ≤ 200.
+    pub points: Vec<Point>,
+    /// X axis title.
+    pub x_label: String,
+    /// Y axis title.
+    pub y_label: String,
+    /// Point groups a point may name; ≤ 8, each a legend entry.
+    pub groups: Option<Vec<PointGroup>>,
+    /// Mark; default scatter. `bubble` needs `size` on every point; `beeswarm` ignores `y`.
+    pub variant: Option<ScatterVariant>,
+    /// Title above the chart.
+    pub title: Option<String>,
+}
+
+/// One `ScatterChart` point.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[serde(deny_unknown_fields)]
+pub struct Point {
+    /// X value.
+    pub x: f64,
+    /// Y value.
+    pub y: f64,
+    /// Text beside the point; ≤ 80 characters.
+    pub label: Option<String>,
+    /// Bubble size (any positive scale).
+    pub size: Option<f64>,
+    /// Group id from `groups`.
+    pub group: Option<String>,
+    /// Semantic state; default default.
+    pub state: Option<GraphState>,
+    /// Code this point is about: `path`, `path#L10` or `path#L10-L24` (root-relative), or `block:<id>`.
+    pub r#ref: Option<String>,
+}
+
+/// One `ScatterChart` group.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[serde(deny_unknown_fields)]
+pub struct PointGroup {
+    /// Unique within the chart; referenced by `Point.group`.
+    pub id: String,
+    /// Legend text; ≤ 80 characters.
+    pub label: String,
+}
+
+/// `ScatterChart.variant`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[serde(rename_all = "lowercase")]
+pub enum ScatterVariant {
+    /// Dots.
+    Scatter,
+    /// Dots sized by `size`.
+    Bubble,
+    /// Dots spread along x only.
+    Beeswarm,
+}
+
+/// `RadarChart` props (design doc 123 §4.2).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[serde(deny_unknown_fields)]
+pub struct RadarChartProps {
+    /// Spoke labels; 3 to 8.
+    pub axes: Vec<String>,
+    /// Series; ≤ 5, each with `axes.len()` values. `polar` needs exactly 1.
+    pub series: Vec<Series>,
+    /// Outer ring value; default the largest value.
+    pub max: Option<f64>,
+    /// Mark; default radar.
+    pub variant: Option<RadarVariant>,
+    /// Title above the chart.
+    pub title: Option<String>,
+}
+
+/// `RadarChart.variant`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[serde(rename_all = "lowercase")]
+pub enum RadarVariant {
+    /// A polygon per series.
+    Radar,
+    /// Radial bars, one series.
+    Polar,
+}
+
+/// `Waterfall` props (design doc 123 §4.2): the running total is computed.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[serde(deny_unknown_fields)]
+pub struct WaterfallProps {
+    /// Steps, in order; ≤ 20.
+    pub steps: Vec<WaterfallStep>,
+    /// Unit after values.
+    pub unit: Option<String>,
+    /// Title above the chart.
+    pub title: Option<String>,
+}
+
+/// One `Waterfall` step.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[serde(deny_unknown_fields)]
+pub struct WaterfallStep {
+    /// Step text; ≤ 80 characters.
+    pub label: String,
+    /// A delta for `delta`; the absolute level for `total`/`subtotal`.
+    pub value: f64,
+    /// Bar kind; default delta.
+    pub kind: Option<WaterfallKind>,
+    /// Semantic state; default default.
+    pub state: Option<GraphState>,
+}
+
+/// `WaterfallStep.kind`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[serde(rename_all = "lowercase")]
+pub enum WaterfallKind {
+    /// A floating change.
+    Delta,
+    /// An absolute level from the baseline.
+    Total,
+    /// An absolute level mid-way.
+    Subtotal,
+}
+
+/// `Funnel` props (design doc 123 §4.2).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[serde(deny_unknown_fields)]
+pub struct FunnelProps {
+    /// Stages, top to bottom; ≤ 10. Values on all or none.
+    pub stages: Vec<FunnelStage>,
+    /// Shape; default funnel.
+    pub variant: Option<FunnelVariant>,
+    /// Unit after values.
+    pub unit: Option<String>,
+    /// Title above the chart.
+    pub title: Option<String>,
+}
+
+/// One `Funnel` stage.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[serde(deny_unknown_fields)]
+pub struct FunnelStage {
+    /// Stage text; ≤ 80 characters.
+    pub label: String,
+    /// Count at this stage.
+    pub value: Option<f64>,
+    /// Short remark.
+    pub note: Option<String>,
+    /// Semantic state; default default.
+    pub state: Option<GraphState>,
+}
+
+/// `Funnel.variant`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[serde(rename_all = "lowercase")]
+pub enum FunnelVariant {
+    /// Narrowing downwards.
+    Funnel,
+    /// Widening downwards.
+    Pyramid,
+}
+
+/// `Gantt` props (design doc 123 §4.2).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[serde(deny_unknown_fields)]
+pub struct GanttProps {
+    /// Tasks, top to bottom; ≤ 60.
+    pub tasks: Vec<GanttTask>,
+    /// The today line: ISO date or datetime.
+    pub today: Option<String>,
+    /// Title above the chart.
+    pub title: Option<String>,
+}
+
+/// One `Gantt` task.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[serde(deny_unknown_fields)]
+pub struct GanttTask {
+    /// Unique within the chart; referenced by `depends`.
+    pub id: String,
+    /// Row text; ≤ 80 characters.
+    pub label: String,
+    /// Start: ISO date or datetime.
+    pub start: String,
+    /// End: ISO date or datetime, ≥ `start`.
+    pub end: String,
+    /// Band the task sits in; equal groups are adjacent.
+    pub group: Option<String>,
+    /// Semantic state; default default.
+    pub state: Option<GraphState>,
+    /// Done fraction, 0 to 1.
+    #[schemars(range(min = 0.0, max = 1.0))]
+    pub progress: Option<f64>,
+    /// Ids of tasks this one waits for.
+    pub depends: Option<Vec<String>>,
+    /// Code this task is about: `path`, `path#L10` or `path#L10-L24` (root-relative), or `block:<id>`.
+    pub r#ref: Option<String>,
+}
+
+/// `Quadrant` props (design doc 123 §4.2).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct QuadrantProps {
+    /// X axis title.
+    pub x_label: String,
+    /// Y axis title.
+    pub y_label: String,
+    /// Items; ≤ 40.
+    pub items: Vec<QuadrantItem>,
+    /// Quadrant captions, exactly 4: top-left, top-right, bottom-left, bottom-right.
+    pub quadrants: Option<Vec<String>>,
+    /// X end labels, exactly 2: low, high.
+    pub x_ticks: Option<Vec<String>>,
+    /// Y end labels, exactly 2: low, high.
+    pub y_ticks: Option<Vec<String>>,
+    /// Title above the chart.
+    pub title: Option<String>,
+}
+
+/// One `Quadrant` item.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[serde(deny_unknown_fields)]
+pub struct QuadrantItem {
+    /// Unique id so boards and apps can point at this item.
+    pub id: Option<String>,
+    /// Text beside the dot; ≤ 80 characters.
+    pub label: String,
+    /// Horizontal position, 0 (left) to 1 (right).
+    #[schemars(range(min = 0.0, max = 1.0))]
+    pub x: f64,
+    /// Vertical position, 0 (bottom) to 1 (top).
+    #[schemars(range(min = 0.0, max = 1.0))]
+    pub y: f64,
+    /// Dot size (any positive scale).
+    pub size: Option<f64>,
+    /// Semantic state; default default.
+    pub state: Option<GraphState>,
+    /// Code this item is about: `path`, `path#L10` or `path#L10-L24` (root-relative), or `block:<id>`.
+    pub r#ref: Option<String>,
+}
+
+// ---- 123 part-of-whole + misc (W3) ----
+
+/// `Treemap` props (design doc 123 §4.2).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[serde(deny_unknown_fields)]
+pub struct TreemapProps {
+    /// Cells; ≤ 60 over ≤ 12 groups.
+    pub items: Vec<TreemapCell>,
+    /// Title above the map.
+    pub title: Option<String>,
+}
+
+/// One `Treemap` cell.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[serde(deny_unknown_fields)]
+pub struct TreemapCell {
+    /// Cell text; ≤ 80 characters.
+    pub label: String,
+    /// Area weight, > 0.
+    pub value: f64,
+    /// Group name; equal groups share a headed rectangle.
+    pub group: Option<String>,
+    /// Semantic state; default default.
+    pub state: Option<GraphState>,
+    /// Code this cell is about: `path`, `path#L10` or `path#L10-L24` (root-relative), or `block:<id>`.
+    pub r#ref: Option<String>,
+}
+
+/// `Sankey` props (design doc 123 §4.2).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[serde(deny_unknown_fields)]
+pub struct SankeyProps {
+    /// Nodes; ≤ 24.
+    pub nodes: Vec<SankeyNode>,
+    /// Flows between node ids; ≤ 48, no self-flow, no cycle.
+    pub flows: Vec<SankeyFlow>,
+    /// Unit after values.
+    pub unit: Option<String>,
+    /// Title above the diagram.
+    pub title: Option<String>,
+}
+
+/// One `Sankey` node.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[serde(deny_unknown_fields)]
+pub struct SankeyNode {
+    /// Unique within the diagram; referenced by flows.
+    pub id: String,
+    /// Node text; ≤ 80 characters.
+    pub label: String,
+    /// Column, 0-based; derived from the flows when absent.
+    pub stage: Option<usize>,
+    /// Semantic state; default default.
+    pub state: Option<GraphState>,
+}
+
+/// One `Sankey` flow.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[serde(deny_unknown_fields)]
+pub struct SankeyFlow {
+    /// Source node id.
+    pub from: String,
+    /// Target node id; ≠ `from`.
+    pub to: String,
+    /// Ribbon width, > 0.
+    pub value: f64,
+    /// Text on the ribbon; ≤ 80 characters.
+    pub label: Option<String>,
+    /// Semantic state; default default.
+    pub state: Option<GraphState>,
+}
+
+/// `Venn` props (design doc 123 §4.2): exactly 2 or 3 sets.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[serde(deny_unknown_fields)]
+pub struct VennProps {
+    /// Sets; exactly 2 or 3.
+    pub sets: Vec<VennSet>,
+    /// Labelled overlaps of 2 or 3 distinct sets.
+    pub overlaps: Option<Vec<VennOverlap>>,
+    /// Title above the diagram.
+    pub title: Option<String>,
+}
+
+/// One `Venn` set.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[serde(deny_unknown_fields)]
+pub struct VennSet {
+    /// Unique within the diagram; referenced by overlaps.
+    pub id: String,
+    /// Set text; ≤ 80 characters.
+    pub label: String,
+    /// Size, shown after the label.
+    pub size: Option<f64>,
+}
+
+/// One `Venn` overlap.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[serde(deny_unknown_fields)]
+pub struct VennOverlap {
+    /// The intersecting set ids; 2 or 3, distinct.
+    pub sets: Vec<String>,
+    /// Text in the lens; ≤ 80 characters.
+    pub label: String,
+}
+
+/// `Loop` props (design doc 123 §4.2).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[serde(deny_unknown_fields)]
+pub struct LoopProps {
+    /// Steps clockwise from the top; 2 to 8.
+    pub steps: Vec<LoopStep>,
+    /// Text in the centre.
+    pub hub: Option<String>,
+    /// Title above the diagram.
+    pub title: Option<String>,
+}
+
+/// One `Loop` step.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[serde(deny_unknown_fields)]
+pub struct LoopStep {
+    /// Step text; ≤ 80 characters.
+    pub label: String,
+    /// Short remark under the label.
+    pub note: Option<String>,
+    /// Semantic state; default default.
+    pub state: Option<GraphState>,
+    /// Code this step runs: `path`, `path#L10` or `path#L10-L24` (root-relative), or `block:<id>`.
+    pub r#ref: Option<String>,
+}
+
+/// `Layers` props (design doc 123 §4.2).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[serde(deny_unknown_fields)]
+pub struct LayersProps {
+    /// Layers in reading order; ≤ 12, each ≤ 12 items.
+    pub layers: Vec<Layer>,
+    /// Which way the stack reads; default top-down.
+    pub direction: Option<LayersDirection>,
+    /// Title above the stack.
+    pub title: Option<String>,
+}
+
+/// One `Layers` layer.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[serde(deny_unknown_fields)]
+pub struct Layer {
+    /// Layer text; ≤ 80 characters.
+    pub label: String,
+    /// Items in the layer; ≤ 12.
+    pub items: Option<Vec<String>>,
+    /// Dim remark at the right.
+    pub note: Option<String>,
+    /// Semantic state; default default.
+    pub state: Option<GraphState>,
+    /// Code this layer is: `path`, `path#L10` or `path#L10-L24` (root-relative), or `block:<id>`.
+    pub r#ref: Option<String>,
+}
+
+/// `Layers.direction`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[serde(rename_all = "kebab-case")]
+pub enum LayersDirection {
+    /// First layer on top.
+    TopDown,
+    /// First layer at the bottom.
+    BottomUp,
+}
+
+/// `Journey` props (design doc 123 §4.2).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[serde(deny_unknown_fields)]
+pub struct JourneyProps {
+    /// Stages across the top; ≤ 8.
+    pub stages: Vec<String>,
+    /// Rows down the side; ≤ 4, each with `stages.len()` cells.
+    pub rows: Vec<JourneyRow>,
+    /// One mood per stage, −1 to 1.
+    pub mood: Option<Vec<f64>>,
+    /// Pain points under a stage.
+    pub pains: Option<Vec<JourneyPain>>,
+    /// Title above the map.
+    pub title: Option<String>,
+}
+
+/// One `Journey` row.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[serde(deny_unknown_fields)]
+pub struct JourneyRow {
+    /// Row title, e.g. Does, Thinks, Feels.
+    pub label: String,
+    /// One cell per stage.
+    pub cells: Vec<String>,
+}
+
+/// One `Journey` pain point.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[serde(deny_unknown_fields)]
+pub struct JourneyPain {
+    /// Stage index, 0-based.
+    pub stage: usize,
+    /// The pain; ≤ 80 characters.
+    pub text: String,
+}
+
+/// `Fishbone` props (design doc 123 §4.2).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[serde(deny_unknown_fields)]
+pub struct FishboneProps {
+    /// The effect at the head; ≤ 80 characters.
+    pub effect: String,
+    /// Cause categories on the bones; ≤ 8, each ≤ 6 items.
+    pub causes: Vec<FishboneCause>,
+    /// Title above the diagram.
+    pub title: Option<String>,
+}
+
+/// One `Fishbone` category.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[serde(deny_unknown_fields)]
+pub struct FishboneCause {
+    /// Bone title; ≤ 80 characters.
+    pub category: String,
+    /// Causes on the bone; ≤ 6.
+    pub items: Vec<String>,
 }

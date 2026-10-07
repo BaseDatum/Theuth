@@ -24,6 +24,7 @@ import {
   type ParseResult,
 } from "@openuidev/lang-core";
 import generated from "../generated/library.json";
+import { DIAGRAMS } from "./diagrams.ts";
 import type { GeneratedLibrary } from "./generated-types.ts";
 import type {
   Binding,
@@ -39,6 +40,16 @@ export const generatedLibrary = generated as GeneratedLibrary;
 export const libraryHash: string = generatedLibrary.hash;
 
 const ROOT_ID = "root";
+/**
+ * Positional index of `onSelect` per diagram component (123 §6): the wire props in catalog order, then
+ * `highlight`, then `onSelect`; `Graph` keeps 65's order (`nodes, edges, groups, direction, highlight, onSelect, …`).
+ */
+const SELECT_AT: Record<string, number> = {
+  Graph: 5,
+  ...Object.fromEntries(
+    Object.entries(DIAGRAMS).map(([name, d]) => [name, Object.keys(d.props.shape).length + 1]),
+  ),
+};
 /** Compiled once per process; the helper's startup cost, not a per-request cost. */
 const parser = createParser(generatedLibrary.schema, generatedLibrary.root);
 
@@ -268,12 +279,14 @@ function analyze(source: string, tools: ToolSnapshot[]): CheckResult {
   const stateIds = new Set(
     statements.filter((s) => s.kind === "state").map((s) => s.id),
   );
-  // `$value` is the pressed node id inside a Graph's `onSelect` action (65 §3.5; upstream's binding-scope name).
+  // `$value` is the pressed unit id inside a diagram's `onSelect` action (65 §3.5, 123 §6; upstream's binding-scope name).
   const valueScoped = new Set<ASTNode>();
   for (const s of statements)
     visit(s.expr, null, (n) => {
-      if (n.k !== "Comp" || n.name !== "Graph") return;
-      const onSelect = n.mappedProps?.onSelect ?? n.args[5];
+      if (n.k !== "Comp") return;
+      const at = SELECT_AT[n.name];
+      if (at === undefined) return;
+      const onSelect = n.mappedProps?.onSelect ?? n.args[at];
       if (onSelect) visit(onSelect, null, (m) => void valueScoped.add(m));
     });
   const callable = new Map<string, "query" | "mutation">();

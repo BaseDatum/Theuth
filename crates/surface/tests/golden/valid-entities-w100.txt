@@ -1,0 +1,26 @@
+Sessions schema
+
+users      │ table       │ 
+───────────┼─────────────┼───
+id         │ uuid        │ pk
+email      │ text        │ uk
+created_at │ timestamptz │ 
+
+sessions │ table │ 
+─────────┼───────┼─────
+id       │ uuid  │ pk
+user_id  │ uuid  │ fk
+title    │ text  │ null
+
+turns      │ table   │ 
+───────────┼─────────┼───
+id         │ uuid    │ pk
+session_id │ uuid    │ fk
+cost_usd   │ numeric │ 
+
+Runner │ interface │ 
+───────┼───────────┼─
+
+users ┼──< sessions  (one-many: id → user_id)
+sessions ┼──< turns  (one-many: id → session_id, has)
+turns ┄┄> Runner  (depends)

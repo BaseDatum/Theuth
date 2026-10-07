@@ -1,0 +1,49 @@
+{
+  "root": "l",
+  "elements": {
+    "l": {
+      "type": "Layers",
+      "props": {
+        "title": "theuth stack",
+        "direction": "top-down",
+        "layers": [
+          {
+            "label": "Surfaces",
+            "items": [
+              "desktop",
+              "TUI",
+              "Slack",
+              "Signal"
+            ]
+          },
+          {
+            "label": "Agent",
+            "items": [
+              "loop",
+              "tools",
+              "skills"
+            ],
+            "state": "active",
+            "ref": "crates/agent/src/lib.rs"
+          },
+          {
+            "label": "Surface crate",
+            "items": [
+              "parse",
+              "validate",
+              "render"
+            ],
+            "note": "one catalog"
+          },
+          {
+            "label": "Store",
+            "items": [
+              "sqlite",
+              "journal"
+            ]
+          }
+        ]
+      }
+    }
+  }
+}

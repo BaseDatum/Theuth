@@ -1,0 +1,81 @@
+{
+  "root": "g",
+  "elements": {
+    "g": {
+      "type": "Gantt",
+      "props": {
+        "title": "Wave 123",
+        "today": "2026-10-11",
+        "tasks": [
+          {
+            "id": "c",
+            "label": "Contract",
+            "start": "2026-10-07",
+            "end": "2026-10-08",
+            "group": "step 0",
+            "state": "done",
+            "progress": 1
+          },
+          {
+            "id": "w1",
+            "label": "ELK family",
+            "start": "2026-10-08",
+            "end": "2026-10-14",
+            "group": "workers",
+            "depends": [
+              "c"
+            ],
+            "state": "active",
+            "progress": 0.4
+          },
+          {
+            "id": "w2",
+            "label": "Charts",
+            "start": "2026-10-08",
+            "end": "2026-10-15",
+            "group": "workers",
+            "depends": [
+              "c"
+            ],
+            "state": "active",
+            "progress": 0.3
+          },
+          {
+            "id": "w3",
+            "label": "Part-of-whole",
+            "start": "2026-10-08",
+            "end": "2026-10-13",
+            "group": "workers",
+            "depends": [
+              "c"
+            ]
+          },
+          {
+            "id": "w4",
+            "label": "Skill",
+            "start": "2026-10-09",
+            "end": "2026-10-12",
+            "group": "workers",
+            "depends": [
+              "c"
+            ],
+            "ref": "crates/surface/visualize.md"
+          },
+          {
+            "id": "close",
+            "label": "Closer",
+            "start": "2026-10-15",
+            "end": "2026-10-17",
+            "group": "step 5",
+            "depends": [
+              "w1",
+              "w2",
+              "w3",
+              "w4"
+            ]
+          }
+        ]
+      }
+    }
+  }
+}

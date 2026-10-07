@@ -1,0 +1,10 @@
+Story map
+Onboard (3/2 ⚠)  Chat (3/2 ⚠)    Boards (1)
+▸ Must
+✓ Install        ✓ Ask
+✓ Sign in
+▸ Should
+                 ⊘ Draw a chart  • Open a board
+───────────────────────────────────────────────
+▸ Could
+• Tour           • Export

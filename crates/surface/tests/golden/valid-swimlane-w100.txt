@@ -1,0 +1,15 @@
+Pull request flow
+Developer
+  ▶ Push branch
+  ✗ Fix
+CI
+  • Build + test (just check) → Green?
+  ◇ Green?
+Reviewer
+  ◉ Review → Merge
+  ■ Merge
+
+Push branch → Build + test
+Green? ⇢ Fix  no
+Fix → Build + test
+Green? → Review  yes

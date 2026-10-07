@@ -119,7 +119,7 @@ const rust = rustComponents()
 
 test('same component names as the Rust catalog', () => {
   expect([...COMPONENT_NAMES].sort()).toEqual(Object.keys(rust).sort())
-  expect(COMPONENT_NAMES).toHaveLength(38)
+  expect(COMPONENT_NAMES).toHaveLength(57)
 })
 
 test.each(Object.keys(rust))('%s props match the Rust catalog', (name) => {

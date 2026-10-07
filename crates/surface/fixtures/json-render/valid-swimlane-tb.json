@@ -1,0 +1,26 @@
+{
+  "root": "s",
+  "elements": {
+    "s": {
+      "type": "Swimlane",
+      "props": {
+        "direction": "TB",
+        "lanes": [
+          { "id": "user", "label": "User" },
+          { "id": "app", "label": "App" }
+        ],
+        "steps": [
+          { "id": "open", "lane": "user", "label": "Open board", "kind": "start" },
+          { "id": "load", "lane": "app", "label": "Load blocks", "kind": "data", "sub": "board.md" },
+          { "id": "render", "lane": "app", "label": "Render" },
+          { "id": "read", "lane": "user", "label": "Read", "kind": "end" }
+        ],
+        "edges": [
+          { "from": "open", "to": "load" },
+          { "from": "load", "to": "render" },
+          { "from": "render", "to": "read" }
+        ]
+      }
+    }
+  }
+}
