@@ -505,6 +505,50 @@ test('live PTY set follows screen changes: idle or exit drops a job, a new scree
   expect(s.jobs.size).toBe(0)
 })
 
+test('LIVE-GLYPHS: reminders follow ReminderSet/Fired/Cancelled; an unknown id is a no-op returning the same slice', () => {
+  let s = empty(S)
+  expect(s.reminders.size).toBe(0)
+  const set = (id: string) => ({ type: 'ReminderSet', session: S, id, message: 'm', set_at: 1n, fires_at: 2n, seconds: 1n }) as const
+  s = apply(s, set('r1'), ctx())
+  s = apply(s, set('r2'), ctx())
+  expect([...s.reminders]).toEqual(['r1', 'r2'])
+  expect(apply(s, set('r1'), ctx())).toBe(s)
+  s = apply(s, { type: 'ReminderFired', session: S, id: 'r1' }, ctx())
+  expect([...s.reminders]).toEqual(['r2'])
+  s = apply(s, { type: 'ReminderCancelled', session: S, id: 'r2' }, ctx())
+  expect(s.reminders.size).toBe(0)
+  expect(apply(s, { type: 'ReminderFired', session: S, id: 'r9' }, ctx())).toBe(s)
+  expect(apply(s, { type: 'ReminderCancelled', session: S, id: 'r9' }, ctx())).toBe(s)
+  // No transcript row, no activity change: the fired card comes from the `<reminder>` input.
+  expect(s.entries).toEqual([])
+  expect(s.activity).toBe('idle')
+})
+
+test('LIVE-GLYPHS: seedLive installs the snapshot for a session with no slice and clears stale sets of sessions not in it', () => {
+  const st = useSessions.getState()
+  const stale = 'seed-stale'
+  const fresh = 'seed-fresh'
+  st.applyEvents([
+    { type: 'JobStarted', session: stale, id: 'j1', command: 'make', call_id: 'c1', log: '/l', name: null, pty: false },
+    { type: 'ReminderSet', session: stale, id: 'r1', message: 'm', set_at: 1n, fires_at: 2n, seconds: 1n },
+  ])
+  const before = useSessions.getState().sessions[stale]!
+  expect([...before.jobs]).toEqual(['j1'])
+  expect(useSessions.getState().sessions[fresh]).toBeUndefined()
+  st.seedLive([{ session: fresh, jobs: ['j7'], ptys: ['j8'], reminders: ['r3'] }])
+  const seeded = useSessions.getState().sessions[fresh]!
+  expect([...seeded.jobs]).toEqual(['j7'])
+  expect([...seeded.ptys]).toEqual(['j8'])
+  expect([...seeded.reminders]).toEqual(['r3'])
+  expect(seeded).toMatchObject({ loaded: false, entries: [] })
+  const cleared = useSessions.getState().sessions[stale]!
+  expect(cleared.jobs.size + cleared.ptys.size + cleared.reminders.size).toBe(0)
+  expect(cleared.entries).toBe(before.entries)
+  // A slice with nothing live and no row is left untouched.
+  st.seedLive([])
+  expect(useSessions.getState().sessions[stale]).toBe(cleared)
+})
+
 test('ScrapeProgress attaches inflight URLs to the crawl card by call id, dropped on finish', () => {
   let s = run([{ type: 'ToolCallStarted', session: S, turn: T, call_id: 'c1', name: 'crawl', args: { url: 'https://a.example' } }])
   s = apply(

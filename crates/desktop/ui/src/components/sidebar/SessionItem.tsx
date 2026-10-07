@@ -1,6 +1,6 @@
 import { useQueryClient } from '@tanstack/react-query'
 import { Link, useNavigate } from '@tanstack/react-router'
-import { Brain, Check, Cog, Eye, type LucideIcon, MoreHorizontal, Network, PencilLine, Shrink, Wrench } from 'lucide-react'
+import { Brain, Check, Cog, Eye, type LucideIcon, MoreHorizontal, Network, PencilLine, Shrink, Timer, Wrench } from 'lucide-react'
 import { type ComponentType, memo, useState } from 'react'
 import { toast } from 'sonner'
 import {
@@ -68,14 +68,18 @@ function SessionActivity({ id }: { id: string }) {
   )
 }
 
-/** Live-job glyphs: a cog per session with non-PTY background jobs still running, a terminal per session with a PTY whose screen is still changing. */
-function SessionJobs({ id }: { id: string }) {
+/** Pending-work glyphs, shown whether or not a turn runs: a cog per session with non-PTY background jobs still running, a terminal per
+ * session with a PTY whose screen is still changing, a timer (not pulsing: waiting, not working) per session with a reminder pending.
+ * LIVE-GLYPHS (2026-10-07): the sets are seeded by `list_live_counts` and kept by `JobEvent`/`ReminderEvent`. */
+function SessionPending({ id }: { id: string }) {
   const jobs = useSessionField(id, 'jobs')?.size ?? 0
   const ptys = useSessionField(id, 'ptys')?.size ?? 0
+  const reminders = useSessionField(id, 'reminders')?.size ?? 0
   return (
     <>
       {jobs > 0 && <Cog className="size-3.5 shrink-0 animate-pulse text-info" aria-label={`${jobs} background job${jobs === 1 ? '' : 's'}`} role="img" />}
       {ptys > 0 && <PtyIcon live className="size-3.5 shrink-0 text-info" aria-label={`${ptys} live terminal${ptys === 1 ? '' : 's'}`} role="img" />}
+      {reminders > 0 && <Timer className="size-3.5 shrink-0 text-info" aria-label={`${reminders} reminder${reminders === 1 ? '' : 's'} pending`} role="img" />}
     </>
   )
 }
@@ -298,7 +302,7 @@ export const SessionItem = memo(function SessionItem({
                 </span>
               )}
               <SessionActivity id={id} />
-              <SessionJobs id={id} />
+              <SessionPending id={id} />
               <SessionSubagents subagents={subagents} />
               <span className="truncate">{shown}</span>
               {!here && <EngineChip owner={owner} epoch={epoch} className="ml-auto" />}

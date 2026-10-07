@@ -104,6 +104,19 @@ function loadInfo(st: Stores, api: Api): Promise<void> {
 }
 
 /**
+ * LIVE-GLYPHS (2026-10-07): the sidebar's job/PTY/reminder sets are fed by live events only; after a (re)connect, a
+ * gap or an engine switch the engine's `list_live_counts` snapshot is the truth (an engine without the method warns).
+ */
+function seedLive(st: Stores): void {
+  const api = st.connection.getState().api
+  if (!api) return
+  api.list_live_counts().then(
+    (rows) => st.sessions.getState().seedLive(rows),
+    (e: unknown) => console.warn('[live] list_live_counts failed', e),
+  )
+}
+
+/**
  * 129 D3: `Lagged` is a resync, not a reset. The gap is lost, so every slice is labelled stale and the mounted
  * chats re-settle through their `contextStale → settle()` path; `loaded` stays, so nothing on screen empties.
  * The session list is the one query refetched (`TurnStarted`/`TurnFinished` may have been dropped).
@@ -113,6 +126,7 @@ function resync(st: Stores): void {
   sessions.resetLagged()
   sessions.markStale()
   void st.qc.invalidateQueries({ queryKey: queryKeys.sessions })
+  seedLive(st)
   if (useEngines.getState().active === st.id)
     window.dispatchEvent(new CustomEvent('theuth:reload-session', { detail: { settled: true } }))
 }
@@ -139,6 +153,7 @@ function reload(st: Stores): void {
   void st.qc.invalidateQueries({ queryKey: ['terminals'] })
   const api = st.connection.getState().api
   if (api) void loadInfo(st, api).catch(() => undefined)
+  seedLive(st)
   if (useEngines.getState().active === st.id)
     window.dispatchEvent(new Event('theuth:reload-session'))
 }
@@ -179,6 +194,8 @@ function attach(st: Stores): void {
   }
   watchLongTasks()
   st.attached = client.subscribe(null, null, (e) => {
+    // The stream's first item (also after a reconnect's re-issue): the subscription is up, seed the live sets.
+    if (e.type === 'PendingPrompts') seedLive(st)
     queue.push(e)
     if (frame) return
     frame = requestAnimationFrame(drain)
