@@ -559,8 +559,8 @@ cancelled `TurnFinished` interjects one line (19 §3.3 rule).
 
 Typing in a child thread steers the child (`Steer`/`SendInput` to that
 session; an `Awaiting` child gets its answer, 19 §2.3) — the thread map
-makes this free. Depth 2 works the same. Bounded by `max_concurrent` (8)
-per parent.
+makes this free. Depth 2 works the same. Bounded by the per-orchestrator
+child pools (01 §2.6).
 
 Rejected: child events inline in the parent thread, prefixed (streams
 interleave; a table from one child splits another's paragraph); a child
