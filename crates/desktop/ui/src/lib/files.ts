@@ -91,6 +91,15 @@ export function resolveFile(api: Api, path: string, active: string): string | Pr
 export const readBytes = (api: Api, path: string): Promise<Uint8Array> =>
   api.get_attachment(path).then((b64) => Uint8Array.from(atob(b64), (c) => c.charCodeAt(0)))
 
+/**
+ * 120 §9b: a URL a *document* frame can load — always the bytes over RPC in a typed `blob:` (`application/pdf`), on the
+ * local path too, never `convertFileSrc`. A blob of that type runs no script; the asset protocol sniffs HTML out of
+ * mis-named bytes and serves it at the shared `asset://localhost` origin. Images keep `resolveFile`. Uncached: the
+ * caller revokes the URL when its frame unmounts.
+ */
+export const resolveDocument = (api: Api, path: string): Promise<string> =>
+  readBytes(api, path).then((bytes) => URL.createObjectURL(new Blob([bytes], { type: 'application/pdf' })))
+
 const texts = new Map<string, Promise<string>>()
 
 /** UTF-8 text of an engine file via `get_attachment` (works locally and through the relay); cached, failures are not. */

@@ -52,6 +52,7 @@ import { type Entry, useSessions } from "@/store/sessions";
 import { ChatPicker } from "@/components/notes/ChatPicker";
 import { attachTo, toRef } from "@/lib/attach";
 import { Img } from "./Attachments";
+import { HtmlPage, capFromArgs } from "./HtmlPage";
 
 type Tool = Extract<Entry, { kind: "tool" }>;
 
@@ -113,6 +114,13 @@ export function metaLine(a: Artifact, rows?: number): string {
   if (a.pages != null) parts.push(`${a.pages} page${a.pages === 1 ? "" : "s"}`);
   if (rows != null) parts.push(`${rows} row${rows === 1 ? "" : "s"}`);
   parts.push(fmtBytes(a.bytes));
+  return parts.join(" · ");
+}
+
+/** The one line under an inline page (120 §3): `title · HTML · 12 KB · v2`. */
+export function captionLine(a: Artifact): string {
+  const parts = [a.title, a.kind.toUpperCase(), fmtBytes(a.bytes)];
+  if (a.version > 1) parts.push(`v${a.version}`);
   return parts.join(" · ");
 }
 
@@ -334,6 +342,36 @@ function Preview({ a, text }: { a: Artifact; text: string | null }) {
   );
 }
 
+/** Wrench + `<name>` header row: the tool trace reads the same whatever the body. */
+function Header({ name, busy }: { name: string; busy?: boolean }) {
+  return (
+    <div className="flex items-center gap-2 font-medium">
+      <Wrench className="size-3.5 shrink-0 text-fg-secondary" />
+      <span>{name}</span>
+      {busy && <ToolSpinner />}
+    </div>
+  );
+}
+
+function PanelButton({ onClick }: { onClick: () => void }) {
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <Button
+          variant="ghost"
+          size="icon-sm"
+          className="text-fg-secondary"
+          aria-label="Open in panel"
+          onClick={onClick}
+        >
+          <PanelRight className="size-4" />
+        </Button>
+      </TooltipTrigger>
+      <TooltipContent>Open in panel</TooltipContent>
+    </Tooltip>
+  );
+}
+
 /** The card frame — the same box as every other tool card (`MessageTool`): wrench + `<name>` header, then the preview
  * slot on the left and the body on the right; `onClick` opens the panel. */
 function Frame({
@@ -364,11 +402,7 @@ function Frame({
       )}
       onClick={click}
     >
-      <div className="flex items-center gap-2 font-medium">
-        <Wrench className="size-3.5 shrink-0 text-fg-secondary" />
-        <span>{name}</span>
-        {busy && <ToolSpinner />}
-      </div>
+      <Header name={name} busy={busy} />
       <div className="mt-2 flex min-w-0 gap-3">
         {slot}
         <div className="flex min-w-0 flex-1 flex-col gap-1">{children}</div>
@@ -404,14 +438,44 @@ export const ArtifactCard = memo(function ArtifactCard({
   const [errors, setErrors] = useState(false);
   // 104 A2: the card on screen in the open session is the user seeing the shown artifact.
   useMarkShown(artifact ? tool.callId : null);
-  const preview =
-    artifact && TEXT_KINDS[artifact.kind] && artifact.kind !== "html"
-      ? artifact.path
-      : null;
+  // Text kinds fetch their bytes: the 6-line preview slot, or the page itself for `html`.
+  const preview = artifact && TEXT_KINDS[artifact.kind] ? artifact.path : null;
   const text = useText(preview);
   const { result } = tool;
   const open = () =>
     useSessions.getState().setArtifactPanel(session, tool.callId);
+
+  if (artifact?.kind === "html") {
+    // 120 §3: the card is the page — borderless at reply width on the transcript background; header row kept, one
+    // caption line below, the controls in a hover/focus toolbar at the frame's top-right. The page owns its clicks.
+    return (
+      <div className="my-2 min-w-0 text-sm">
+        <Header name={tool.name} />
+        <HtmlPage
+          callId={tool.callId}
+          html={text}
+          title={artifact.title}
+          cap={capFromArgs(tool.args)}
+          className="mt-2"
+          toolbar={
+            <>
+              <RevealButton artifact={artifact} />
+              <PanelButton onClick={open} />
+              <PopoutButton artifact={artifact} />
+              <ArtifactMenu artifact={artifact} />
+            </>
+          }
+        />
+        <button
+          type="button"
+          className="mt-1 block max-w-full truncate text-xs text-fg-secondary hover:underline"
+          onClick={open}
+        >
+          {captionLine(artifact)}
+        </button>
+      </div>
+    );
+  }
 
   if (artifact) {
     const rows =
@@ -439,20 +503,7 @@ export const ArtifactCard = memo(function ArtifactCard({
         </div>
         <div className="mt-auto flex items-center justify-end gap-0.5">
           <RevealButton artifact={artifact} />
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <Button
-                variant="ghost"
-                size="icon-sm"
-                className="text-fg-secondary"
-                aria-label="Open in panel"
-                onClick={open}
-              >
-                <PanelRight className="size-4" />
-              </Button>
-            </TooltipTrigger>
-            <TooltipContent>Open in panel</TooltipContent>
-          </Tooltip>
+          <PanelButton onClick={open} />
           <PopoutButton artifact={artifact} />
           <ArtifactMenu artifact={artifact} />
         </div>
