@@ -60,7 +60,8 @@ internal sealed class VoiceRecorder
             {
                 return "no microphone";
             }
-            var mix = device.AudioClient.MixFormat;
+            WaveFormat mix;
+            using (var client = device.CreateAudioClient()) mix = client.MixFormat;
             string? directError = null;
             WasapiRecorder? rec = null;
             if (!PreferMixFormat)

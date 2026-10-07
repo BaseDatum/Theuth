@@ -25,7 +25,18 @@ internal static class MicProbe
             foreach (var d in all)
             {
                 string mix;
-                try { mix = d.State == DeviceState.Active ? VoiceRecorder.Describe(d.AudioClient.MixFormat) : "-"; }
+                try
+                {
+                    if (d.State == DeviceState.Active)
+                    {
+                        using var client = d.CreateAudioClient();
+                        mix = VoiceRecorder.Describe(client.MixFormat);
+                    }
+                    else
+                    {
+                        mix = "-";
+                    }
+                }
                 catch (Exception e) { mix = $"(mix format unavailable: {e.Message})"; }
                 AskLog.Write($"mic-probe endpoint {d.State} \"{d.FriendlyName}\" id={d.ID} mix={mix}");
             }
