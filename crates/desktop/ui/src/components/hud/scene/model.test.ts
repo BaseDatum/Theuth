@@ -466,7 +466,7 @@ test('outcomeMix counts today’s moves; running counts every doing task', () =>
 test('scene: footer numbers (IN FLIGHT counts the running routine) and the whole model from the fixture; empty data draws nothing but the chrome', () => {
   const s = scene(F, NOW)
   // SESSIONS LIVE: running first, 15-min recency as the fallback (chat-1/2/4, child-21/22/23, child-c1, desk-analyst, adv-1; arch-1 never).
-  expect(s.footer).toEqual({ sessionsLive: 9, agentsWorking: 2, needYou: 6, month: 31.2, outcomes: 9, inFlight: 3 + 1 + 2 })
+  expect(s.footer).toEqual({ sessionsLive: 9, agentsWorking: 2, needYou: 6, month: 4102, outcomes: 9, inFlight: 3 + 1 + 2 }) // Revision 3: month from the ledger
   expect(s.rings).toHaveLength(12)
   expect(s.needs).toHaveLength(6)
   expect(s.flows).toHaveLength(6 + 9 + 6 + 1) // needs, outcomes, running (3 tasks + nightly-digest + 2 roots), the due connector

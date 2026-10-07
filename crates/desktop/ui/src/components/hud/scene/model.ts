@@ -698,12 +698,13 @@ export function outcomeMix(tasks: readonly Task[], now: number): OutcomeMix {
 /** `needYou` is `null` while the inbox is still loading — the chrome shows `—`, not a false `00`. */
 export type Footer = { sessionsLive: number; agentsWorking: number; needYou: number | null; month: number; outcomes: number; inFlight: number }
 
-export function footer(agents: readonly AgentSummary[], sessions: readonly SessionSummary[], attention: readonly AttentionItem[] | undefined, outcomesToday: number, inFlight: number, now: number): Footer {
+export function footer(agents: readonly AgentSummary[], sessions: readonly SessionSummary[], attention: readonly AttentionItem[] | undefined, outcomesToday: number, inFlight: number, now: number, ledgerMonth?: number): Footer {
   return {
     sessionsLive: sessions.filter((s) => !s.archived && (s.running || now - Date.parse(s.updated_at) <= 15 * 60_000)).length,
     agentsWorking: agents.filter((a) => a.status === 'working').length,
     needYou: attention?.length ?? null,
-    month: agents.reduce((sum, a) => sum + a.spent_month, 0),
+    // Rev 3: the ledger's month when it has loaded; the roster's budget sum (capped agents only) until then.
+    month: ledgerMonth ?? agents.reduce((sum, a) => sum + a.spent_month, 0),
     outcomes: outcomesToday,
     inFlight,
   }
@@ -777,6 +778,8 @@ export type SceneModel = {
   punch: PunchCard
   mix: OutcomeMix
   footer: Footer
+  /** Rev 3: the SPEND panel (`spendPanel`). */
+  spend: SpendPanelModel
 }
 
 /** The whole picture from the data at field height `hv` (R4: the viewBox follows the window); missing queries draw nothing (the chrome stays). */
@@ -795,6 +798,7 @@ export function scene(data: SceneData, now: number, hv: number = FIELD_H): Scene
   const laid = layoutEnds([...needFlows(needs, rs, now), ...outs.flows, ...runs], g)
   const drawn = new Set(laid.flows.map((f) => f.id))
   const inFlight = tasks.filter((t) => t.state === 'doing').length + routines.filter((r) => r.running).length + sessionPresence(sessions, now).filter((r) => r.s.running).length
+  const spend = spendPanel(data.spend, agents, now)
   return {
     now,
     hv,
@@ -808,7 +812,8 @@ export function scene(data: SceneData, now: number, hv: number = FIELD_H): Scene
     hairlines: hairlines(today, sessionsToday(sessions, now), rs, drawn, now, g),
     punch: punchCard(data.activityWeek ?? [], now),
     mix: outcomeMix(tasks, now),
-    footer: footer(agents, sessions, data.attention, outs.total, inFlight, now),
+    footer: footer(agents, sessions, data.attention, outs.total, inFlight, now, data.spend?.month.usd),
+    spend,
   }
 }
 

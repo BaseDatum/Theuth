@@ -2,8 +2,8 @@ import { type ReactNode, useMemo } from 'react'
 import { age } from '@/components/tasks/helpers'
 import { useIsMobile } from '@/hooks/use-mobile'
 import { cn } from '@/lib/utils'
-import { C, type SceneData, type Target, ringColor, scene, truncate } from './model'
-import { footerSegments, linkFor, Panels, RingGlyph, Scene } from './Scene'
+import { C, fmtUsd, type SceneData, type Target, ringColor, scene, truncate } from './model'
+import { footerSegments, linkFor, ownerTarget, Panels, RingGlyph, Scene } from './Scene'
 
 /**
  * 128 HUD-SCENE under `md`: no flow field and no arc (they need width). Footer pills, the NEEDS YOU rows, the rings as
@@ -78,6 +78,17 @@ export function SceneCompact({ data, errors = [], now: fixed }: SceneProps) {
           </li>
         ))}
       </ul>
+      <div aria-label="Spend" className="flex flex-wrap items-baseline gap-x-3 px-1 text-[11px]">
+        <span style={{ color: C.primary }}>{fmtUsd(m.spend.month)} month</span>
+        <span style={{ color: C.info }}>{fmtUsd(m.spend.today)} today</span>
+        {m.spend.owners.slice(0, 2).map((o) => (
+          <Row key={`${o.kind}:${o.name}`} target={ownerTarget(o)} className="text-[11px]">
+            <span style={{ color: C.secondary }}>
+              {o.name} {fmtUsd(o.usd)}
+            </span>
+          </Row>
+        ))}
+      </div>
       <Panels data={data} m={m} now={now} stream="max-h-[40vh]" />
       {errors.length > 0 && (
         <p className="text-xs" style={{ color: C.danger }}>
