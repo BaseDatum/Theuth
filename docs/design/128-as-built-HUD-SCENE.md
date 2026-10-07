@@ -62,6 +62,30 @@ reads `window` at render — `lib/mobile.ts` keyboard inset — so the test stub
 header render for real); model.test asserts the three short-id branches on the fixture (`builder`, `001198`, `001188`,
 `ops-desk`, `001203`, `GITHUB_TOK`) and on synthetic items.
 
+R4 (Sky on the R2 screenshot at 1600×1100: "why isn't it actually filling the window?"; relayed 12:31). Cause: a fixed
+1920×812 viewBox scaled to width left the remaining window height empty. Folded in as `571cbb49`:
+- `/` (desktop) is a flex column: `Overview` header · the field (`flex-1 min-h-[420px]`) · the panel band (natural height) ·
+  the docked Composer. Below the minimum the page scrolls (the scroll area's child is `flex min-h-full flex-col`).
+- The field measures its box with a ResizeObserver (applied once per animation frame — `useFieldHeight`) and sets
+  `viewBox="0 0 1920 hv"`, `hv = fieldHeight(w, h) = clamp(round(1920 · h / w), 600, 1400)`; the canvas uses the same
+  `1920 × hv` space and resizes with it. Unmeasured (SSR, tests) `hv` is the mockup's 812.
+- Geometry is `geom(hv)` in model.ts, threaded as a trailing `g: Geom = geom()` through `theta`/`arcPoint`/`arc`, `rings`,
+  `needsYou`, `flowPath`, `layoutEnds`, `hairlines`, and `scene(data, now, hv)`; `SceneModel.hv` records it. Every y is the
+  mockup's y at 812 scaled by hv/812 so hv = 812 reproduces the mockup exactly: arc centre `cy = 420·k`, `θmax =
+  asin(sin 14° · k)` (the band keeps its ≈ 82 % share of the height), label band `[60·k, 775·k]`, hairline sources
+  `[250·k, 690·k]`, needs cascade from `262·k` in steps of `52·k` (= 0.064·hv) with the step shrunk when twelve dots would
+  cross the footer; the footer rule is at `hv − 34`, its text at `hv − 17`, the bottom corner marks at `hv − 54 / hv − 40`.
+  Rings are centred on `cy` (`y0 = cy − 53·(n−1)/2`) so nine fit at hv 600 — at 812 that puts the seven fixture rings at
+  261 + 53·i, four px above the mockup's 265: the one visible change at the reference height, accepted for the centring.
+  Deviations from the relayed numbers, all so that 812 stays the mockup: 0.44 → sin 14°·812/1390 = 0.414 in θmax; the
+  needs start 0.24·hv → 262/812 = 0.323·hv; label band [0.06, 0.95] → [0.0739, 0.9544]; hairline sources [0.23, 0.64] →
+  [0.308, 0.850]; ends [0.055, 0.95] → the label band.
+- Tests: model.test sweeps hv ∈ {600, 812, 1100, 1400}: `geom(812)` equals the mockup constants and 14°; `fieldHeight`
+  rounding and clamping; the arc band spans > 78 % of hv and stays between the top bar and the footer; nine rings centred on
+  `cy` inside the field; twelve needs-you dots above the footer; `layoutEnds` ends inside the band with ≥ 22 px per column;
+  hairline ends inside the band; `scene(...).hv`. Scene.test is unchanged (SSR renders hv 812). SceneCompact has no field
+  and is unaffected.
+
 ## Per-file
 
 | File | Change |
@@ -109,8 +133,11 @@ header render for real); model.test asserts the three short-id branches on the f
    - R1 rerun on `6fe0cfae`: exit 1, 357 s; `grep components/hud|styles` shows exactly those four lines, nothing in `scene/*`, `queries.ts` or `styles.css`.
    - R2 rerun on the R2 tree: exit 1, 109 s; the same four pre-existing lines, now at `Hud.tsx(136, 218, 241)` and `model.test.ts(44)` (the section removal moved them up 62 lines); nothing in `scene/*`, `queries.ts`, `styles.css` or `Hud.test.ts`.
    - R3 rerun on `1c07a9bf`+tests: exit 1, 15 s; the same four lines at `Hud.tsx(140, 222, 245)` and `model.test.ts(44)`; nothing else under `components/hud`.
+   - R4 rerun on `571cbb49`: exit 1, 3 s; the same four lines at `Hud.tsx(140, 222, 245)` and `model.test.ts(44)`; nothing else under `components/hud`.
    - Full pre-existing file list: `components/attention/{AskScreen,Bundle,Bundle.test,DecisionScreen,Pointers,ReviewScreen,Screen,model,model.test}`, `components/chat/{AskCard,MessageTool,surface/Graph,surface/diagrams/GraphDelta.test,surface/registry}`, `components/codemap/CodeMapPanel`, `components/hud/{Hud,model.test}` (above), `components/routines/{RoutineDetail,RoutinesView,helpers,helpers.test}`, `components/settings/{Channels,Channels.test,sandbox-queries}`, `dev/routines-fixture`, `lib/{graph-layout,page-preview,page-preview.test,speech}`, `rpc/{api,events}`, `store/{reduce,reduce.test,sessions}`.
 2. `BUILD_LABEL=128-hud /Users/Sky.Moore/.theuth/bin/build-lock bunx vitest run src/components/hud`
    - `Test Files 4 passed (4) · Tests 24 passed (24)` (lock acquired after 203 s; 15.5 s run). R1 rerun on `6fe0cfae`: `4 passed · Tests 25 passed (25)`, 20.2 s. R2 rerun: `4 passed · Tests 27 passed (27)`, 1.6 s (a first R2 run failed two `/new` href counts — expectation 2 vs the correct 3: ring, its AGENTS row, SESSIONS LIVE — fixed in the test). R3: a first run failed 8 (a stale-anchor edit had dropped `truncate` from model.ts — restored; the real `Composer` threw `window is not defined` in node — stubbed in Hud.test); rerun `4 passed · Tests 27 passed (27)`, 1.6 s.
+   - R4 rerun on `571cbb49`: `4 passed · Tests 28 passed (28)`, 1.9 s (first run).
 3. `BUILD_LABEL=128-hud /Users/Sky.Moore/.theuth/bin/build-lock bunx vite build`
    - `✓ 13980 modules transformed · ✓ built in 3.54s`; `dist/assets/Hud-DIaVyohp.js 31.80 kB │ gzip 9.39 kB`. Only the pre-existing > 500 kB chunk warnings. R1 rerun on `6fe0cfae`: `✓ built in 6.27s`, `Hud-CWF38TN6.js 31.84 kB │ gzip 9.41 kB`. R2 rerun: `✓ built in 6.92s`, `Hud-B1zoJ_XA.js 24.04 kB │ gzip 7.61 kB` (the retired sections left the chunk). R3 rerun: `✓ built in 8.10s`, `Hud-D-BtYC8C.js 24.25 kB │ gzip 7.68 kB` (the composer is a shared chunk, so its return barely moves Hud's).
+   - R4 rerun on `571cbb49`: `✓ built in 5.08s`, `Hud-DPKI8EJ2.js 24.67 kB │ gzip 7.82 kB`.
