@@ -538,6 +538,9 @@ web:                          # design doc 16 - built-in engines, fetch, tools
   degraded_is_error: false    # true: a degraded search is an error result (routines treat it as a failure)
   feature_max_chars: 600
   user_agent: "theuth/0.1 (+https://github.com/skymoore/theuth)"
+  accept_language: "en-US,en;q=0.9"   # 122 D4: `Accept-Language` on every page fetch (read_url, scrape_url, crawl)
+  impersonate: always         # 122 R1: `always` = Chrome-fingerprint wreq client first; `on_challenge` = honest reqwest, wreq after a diagnosed 403/503 challenge; `never` = reqwest + rustls with the honest UA only
+  header_ladder: true         # 122 R1: under `on_challenge`, escalate from reqwest to wreq on a challenge; ignored under `always` and `never`
 
 search_providers:             # design doc 16 §3 - external engines; each block's presence enables it
   firecrawl:                  # the one block present by default; inert without its secret

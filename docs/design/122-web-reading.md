@@ -1474,3 +1474,21 @@ pub client: client::ClientKind,          // serde default: Reqwest
 // WebConfig gains:
 pub impersonate: fetch::client::Impersonate,   // default Always
 ```
+
+## Integration notes (closer, 2026-10-07) — as built, where §7.2 differs
+
+Signatures the workers landed beside or instead of the frozen ones (see `122-as-built-{C,W1,W2,W4}.md`):
+
+| §7.2 statement | as built |
+|---|---|
+| `charset::decode(bytes: &[u8], content_type: Option<&str>) -> (Cow<str>, &'static str)` | `decode<'a>(bytes: &'a [u8], content_type: Option<&str>) -> (Cow<'a, str>, &'static str)` — the elided form is E0106 |
+| `Fetcher::new`/`new_with_timeouts` read `web.impersonate`/`header_ladder`/`accept_language` | constructors keep their signatures and apply `WebConfig::default()`; policy is `Fetcher::with_policy(impersonate, header_ladder, Option<&str>)`, called by `web` (`lib.rs`) and `scrape` (`lib.rs`) from the `web` section |
+| D6 `cut` window `[offset, offset + max_chars)` | the window ends after the last blank line inside the cap, so `s[offset..next_offset]` is exactly the kept text and windows chain without gap or overlap; marker numbers are plain digits |
+| `transform_html(opts) -> Result<String>` | unchanged; `transform_html_with_method(opts) -> Result<(String, Option<Method>)>` beside it exposes D8's `Method` (`main|article|scored|body`) |
+| D8 step 2 "the element with the highest score" | a candidate must score > 0 (an empty `<div id="__next">` is not a candidate; shells and walls are `body`) |
+| D12 depth guard (200 levels in `select_main`/`is_noise`) | also `collapse_wrapper_chains` before the markdown converter: html-to-markdown-rs 3.12 drops content below its 64-level default and the engine does not raise `max_depth` |
+| D11 `api_source` / `render` / `ApiSource` | + `sources::follow_up(&ApiSource) -> Option<Url>`: the Stack Overflow answers endpoint, fetched after the question and appended newline-separated before `render("stackoverflow", ..)`; `None` for every other kind. `render("reddit-old", _)` is `None` by design: the wiring runs the HTML page pipeline on `fetch_url` with `source_kind: "reddit-old"` |
+| `provider::Rendered { url, title, markdown, tier }` | + `issue: Option<PageIssue>` (serde default, skipped when `None`) so pages read through the `scrape` provider yield `search_web`'s `skipped: blocked|login|consent` too |
+| `ISSUE:` line rendered by `render::fetch_text` | `render::issue_line(&PageIssue, ClientKind) -> String` is `pub` and shared by `scrape`'s text; `excerpt::is_noise` is `pub` and is the render tier's `only_main_content` trim |
+| `ClientError::NotBuilt` | declared, never produced since W5: `client::build(WreqChrome, ..)` is real; a build failure is `Build(_)` and the `Reqwest` fallback with the `STEALTH_NOT_BUILT` note stays as code for an installation that disables `wreq` |
+| `ClientKind` for the render tier | the browser fetched the page; the enum has no third value, so the render tier reports `reqwest` (`engine.rs` `render_with`). A `browser` variant is an open item |
