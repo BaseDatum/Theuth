@@ -95,23 +95,23 @@ struct AskVoiceTests {
         #expect(m.state == .idle)
     }
 
-    @Test func holdRecordsThenTranscribesIntoTheField() {
+    @Test func holdStreamsThenTheDictatedTextLandsInTheField() {
         var m = AskVoiceMachine()
         _ = m.handle(.keyDown(t0))
         #expect(m.handle(.tick(t0.addingTimeInterval(0.249))) == [])
         #expect(m.handle(.tick(t0.addingTimeInterval(0.25))) == [.startRecording])
         #expect(m.isRecording)
         #expect(m.handle(.tick(t0.addingTimeInterval(3))) == [], "ticks while recording are quiet until the cap")
-        #expect(m.handle(.keyUp(t0.addingTimeInterval(4))) == [.stopAndTranscribe])
-        #expect(m.handle(.keyDown(t0.addingTimeInterval(4.1))) == [], "a press while transcribing is ignored")
-        #expect(m.handle(.transcript("  ship it \n")) == [.setText("ship it")])
+        #expect(m.handle(.keyUp(t0.addingTimeInterval(4))) == [.stopDictation])
+        #expect(m.handle(.keyDown(t0.addingTimeInterval(4.1))) == [], "a press while stopping is ignored")
+        #expect(m.handle(.dictated("  ship it \n")) == [.setText("ship it")])
         #expect(m.state == .idle)
     }
 
     @Test func emptyTranscriptAndErrorsFail() {
         var m = AskVoiceMachine()
         _ = m.handle(.keyDown(t0)); _ = m.handle(.tick(t0.addingTimeInterval(1))); _ = m.handle(.keyUp(t0.addingTimeInterval(2)))
-        #expect(m.handle(.transcript("  ")) == [.fail("Nothing recognized")])
+        #expect(m.handle(.dictated("  ")) == [.fail("Nothing recognized")])
         _ = m.handle(.keyDown(t0)); _ = m.handle(.tick(t0.addingTimeInterval(1)))
         #expect(m.handle(.failed("no microphone")) == [.fail("no microphone")])
         #expect(m.state == .idle)
@@ -121,18 +121,7 @@ struct AskVoiceTests {
     @Test func recordingStopsAtTheCap() {
         var m = AskVoiceMachine()
         _ = m.handle(.keyDown(t0)); _ = m.handle(.tick(t0.addingTimeInterval(1)))
-        #expect(m.handle(.tick(t0.addingTimeInterval(1 + AskVoiceMachine.maxDuration))) == [.stopAndTranscribe])
+        #expect(m.handle(.tick(t0.addingTimeInterval(1 + AskVoiceMachine.maxDuration))) == [.stopDictation])
         #expect(m.handle(.keyUp(t0.addingTimeInterval(70))) == [], "the release after an auto-stop does nothing")
-    }
-
-    @Test func wavHeaderIsCanonical() {
-        let d = WAV.encode(pcm16: [0, 1, -1])
-        #expect(d.count == 50)
-        #expect(String(decoding: d[0..<4], as: UTF8.self) == "RIFF")
-        #expect(String(decoding: d[8..<16], as: UTF8.self) == "WAVEfmt ")
-        #expect(d[20] == 1 && d[22] == 1, "PCM, mono")
-        #expect(d[24..<28].withUnsafeBytes { $0.load(as: UInt32.self).littleEndian } == 16_000)
-        #expect(d[40..<44].withUnsafeBytes { $0.load(as: UInt32.self).littleEndian } == 6)
-        #expect(Array(d[44...]) == [0, 0, 1, 0, 0xFF, 0xFF])
     }
 }

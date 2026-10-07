@@ -1,14 +1,19 @@
 import Foundation
 import TheuthKit
 
-/// A key event stripped of AppKit: the typed characters, the virtual key code and the ⌘ flag.
+/// A key event stripped of AppKit: the typed characters, the virtual key code and the modifiers.
 public struct KeyPress: Equatable, Sendable {
     public var chars: String
     public var keyCode: UInt16
-    public var command: Bool
+    public var modifiers: Chord.Modifiers
+    public var command: Bool { modifiers.contains(.command) }
     public init(chars: String, keyCode: UInt16 = 0, command: Bool = false) {
-        self.chars = chars; self.keyCode = keyCode; self.command = command
+        self.init(chars: chars, keyCode: keyCode, modifiers: command ? [.command] : [])
     }
+    public init(chars: String, keyCode: UInt16 = 0, modifiers: Chord.Modifiers) {
+        self.chars = chars; self.keyCode = keyCode; self.modifiers = modifiers
+    }
+    public var chord: Chord { Chord(chars: chars, keyCode: keyCode, modifiers: modifiers) }
 }
 
 /// What a keystroke means in the panel (130 §4.2 table). No side effects — the app maps intents to actions.
@@ -28,40 +33,20 @@ public enum Intent: Equatable, Sendable {
     case openDiff, openBoard, openSession
     /// R: reply in words (W3); ⌘L: jump to the Ask bar (W3).
     case reply, askBar
+    /// ⌘/ (W6): the shortcuts legend; ⌘,: Settings; ⏎ in the Ask bar: send.
+    case legend, settings, send
     case none
 }
 
 public enum KeyGrammar {
     public static let snoozeInterval: TimeInterval = 30 * 60
 
-    // Virtual key codes (Carbon HIToolbox).
-    static let kReturn: UInt16 = 36, kKeypadEnter: UInt16 = 76, kEscape: UInt16 = 53, kDown: UInt16 = 125, kUp: UInt16 = 126
-
-    public static func intent(for key: KeyPress) -> Intent {
-        switch key.keyCode {
-        case kReturn, kKeypadEnter: return .answerRecommended
-        case kEscape: return .escape
-        case kDown: return .next
-        case kUp: return .previous
-        default: break
-        }
-        switch (key.chars.lowercased(), key.command) {
-        case ("1", false): return .answer(1)
-        case ("2", false): return .answer(2)
-        case ("3", false): return .answer(3)
-        case ("\r", false), ("\n", false): return .answerRecommended
-        case ("\u{1b}", false): return .escape
-        case ("j", false): return .next
-        case ("k", false): return .previous
-        case ("s", false): return .snooze
-        case ("e", false): return .clear
-        case ("d", false): return .openDiff
-        case ("o", false): return .openBoard
-        case ("o", true): return .openSession
-        case ("r", false): return .reply
-        case ("l", true): return .askBar
-        default: return .none
-        }
+    /// The chord looked up in `table` for `scope` (W6: one data list, 130 R2). While a text field has focus
+    /// (the send-back note, the R field) single keys are typed, not actions: only ⎋ passes.
+    public static func intent(for key: KeyPress, scope: KeyScope = .panel, table: KeyTable = KeyTable(), textFieldFocused: Bool = false) -> Intent {
+        guard let action = table.action(for: key.chord, in: scope), let intent = action.intent else { return .none }
+        if textFieldFocused, intent != .escape { return .none }
+        return intent
     }
 }
 

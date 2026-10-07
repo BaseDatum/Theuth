@@ -13,11 +13,6 @@ extension Settings {
         : (UserDefaults(suiteName: suite) ?? .standard)
 
     /// `<data_dir>/companion.json`, read by the Tauri shell (R1-2).
-    /// Rail: collapse to a sliver after 8 s quiet (W1's default) unless switched off.
-    static var collapseWhenQuiet: Bool {
-        defaults.object(forKey: CompanionSettings.Key.railCollapse.rawValue) == nil || defaults.bool(forKey: CompanionSettings.Key.railCollapse.rawValue)
-    }
-
     static var loginItemFile: URL { EngineLocation.dataDir().appendingPathComponent("companion.json") }
 }
 
@@ -29,7 +24,17 @@ final class SettingsModel: ObservableObject {
         didSet {
             value.save(to: Settings.defaults)
             if value.launchAtLogin != oldValue.launchAtLogin { writeLoginItem() }
+            if value.keys != oldValue.keys { Hotkeys.apply(value.keys) }
         }
+    }
+    /// W6: "⌃⇧X is held by another app — using ⌃⇧Space"; shown in Settings › Keys and the legend, never a dialog.
+    @Published var hotkeyNotice: String?
+    /// W6: the recorder's verdict on the last chord typed into a row (collision, reserved, held by another app).
+    @Published var rowNotice: [KeyAction: RowNotice] = [:]
+
+    var keys: KeyTable {
+        get { value.keys }
+        set { value.keys = newValue }
     }
 
     private init() {
@@ -58,5 +63,5 @@ extension Flags {
         return TimeInterval(args[i + 1])
     }()
     /// Any probe: the surfaces must not take key, nothing may be answered.
-    static var anyProbe: Bool { probe != nil || probeNotify != nil }
+    static var anyProbe: Bool { probe != nil || probeNotify != nil || w6Probe }
 }

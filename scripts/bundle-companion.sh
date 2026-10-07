@@ -24,8 +24,11 @@ mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$BIN_DIR/$EXE" "$APP/Contents/MacOS/$EXE"
 chmod 755 "$APP/Contents/MacOS/$EXE"
 printf 'APPL????' > "$APP/Contents/PkgInfo"
-# SwiftPM resource bundles of dependencies (KeyboardShortcuts' localisations) live beside the binary; the
-# generated `Bundle.module` accessor also looks in the app's Resources.
+# SwiftPM resource bundles of dependencies (KeyboardShortcuts' localisations) go to Contents/Resources. The
+# generated `Bundle.module` accessor does NOT look there (only at the .app root and the absolute .build path baked
+# in at compile time — 130 W6 item 1), and a copy or symlink at the .app root fails `codesign --verify --strict`
+# ("unsealed contents present in the bundle root"), so the companion must never call an API that touches
+# `Bundle.module` (our own ShortcutRecorder replaces KeyboardShortcuts.Recorder).
 for b in "$BIN_DIR"/*.bundle; do [ -d "$b" ] && cp -R "$b" "$APP/Contents/Resources/"; done
 chmod -R u+w "$APP/Contents/Resources"
 

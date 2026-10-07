@@ -1372,8 +1372,73 @@ from main `eba311ed` and started 12:00–12:12 with briefs in `~/Develop/theuth-
 `theuth://` deep links, packaging); the one-line App.tsx wiring (suppress the webview's own notifications and tray badge
 while the companion is alive) is deferred to integration because wave 129 W2 is editing App.tsx.
 
+## Revision 2 (2026-10-07 evening) — four post-landing rulings from the first day of use
+
+Sky ran the packaged companion (v2.12.0, `/Applications/theuth.app/Contents/Library/LoginItems/Theuth Companion.app`) on a
+machine that did not build it and reported, at 18:31 and 18:36, in his words. Each item below amends the section it names;
+where this revision and the body disagree, this revision wins. Built as wave W6 (`feat/130-w6-fixes`, as-built
+`docs/design/130-as-built-W6.md`).
+
+### R2-1 Settings › Keys crash (amends D12, §4.6, §5.6) — no `Bundle.module` in the companion, ever
+> "when I open settings keys on this machine, the companion app crashes. doesn't happen on another machine."
+
+Cause: `KeyboardShortcuts.Recorder` reads its localisations through SwiftPM's generated `Bundle.module`, which looks only at
+the `.app` root and at the absolute `.build/…/release/` path baked in at compile time — never at `Contents/Resources`, where
+the bundle script puts resource bundles (and where strict codesign requires them: a root-level copy or symlink is "unsealed
+contents"). The build machine has the `.build` path, hence "doesn't happen on another machine". Ruling: the companion never
+calls an API that touches `Bundle.module`; the Settings recorder is our own `ShortcutRecorder` (AppKit, renders the chord
+itself), KeyboardShortcuts stays for the Carbon registration and the key-down/up hotkey events only. §6.3 gains the probe
+`--probe-settings <tab>`, run with `.build` moved away.
+
+### R2-2 Ask bar dictation is live (amends D7, §4.3, §5.4) — the engine's streaming dictation, not record-then-transcribe
+> "companion app when I do ask theuth should do live transcription like dictation into session input."
+
+While the hotkey is held the field shows the text as it is recognised (closed utterances in ink, the open one muted), the mic
+glyph pulses with `DictationLevel`; on release the text stays in the field and the same 3 s hold → send applies (⎋ keeps
+editing, typing cancels the hold and wins over late partials). Transport: `dictation_prewarm` once when the Ask bar first
+opens, `dictation_start(sample_rate: 16000)` (the companion streams its own mono i16 PCM — never `None`, which would open the
+engine's microphone), `dictation_audio` every ~100 ms, `dictation_stop` on release, text from `DictationText` events (design
+54 §8). `already dictating` → "dictating elsewhere" in the hint row; a model/voice error is shown verbatim. W3's
+`put_attachment` + `transcribe` path and the WAV encoder are removed. Hint row: "hold ⌃⇧Space · to talk · release to send in 3 s".
+
+### R2-3 Rail presence (amends D4, §4.1, §4.6) — "Always a sliver"
+> "even if something needs my attention, the indicator in the menu bar is sufficient, the left sidebar should have a setting
+> to allow it to always collapse to a sliver."
+
+Settings › Rail "Rail presence": **Expanded** · **Sliver when quiet** (W1's behaviour, the default; W2's "collapse when quiet"
+toggle migrates to it) · **Always a sliver** (new: 4 pt regardless of needs-you/working — the menu bar's gold ●N is the
+indicator; hovering the sliver expands it while the pointer is over it + 1 s; the hotkey and the panel are unchanged; a new
+needs-you item does not expand it). Side stays a separate setting (Sky's rail is on the left); the default side is unchanged.
+
+### R2-4 Keyboard shortcuts: a legend, every key rebindable, collisions (amends D5, D6, D12, §4.2, §4.3, §4.5, §4.6)
+> "in the companion app menu bar we need a little view that shows all the keyboard shortcuts for the companion app, settings
+> for companion app should allow setting any of them. what do we do when companion keyboard shortcuts collide?"
+
+- **One data list.** `KeyTable` (CompanionCore) — `[action, scope, label, default chord, override]` with scopes `anywhere`
+  (global: open panel ⌃⇧Space; open Ask bar, unbound by default), `panel` (1 2 3 ⏎ J K S E D O ⌘O R ⌘L ⌘/ ⌘, ⎋) and `askBar`
+  (⏎ send, ⌘O, ⌘/, ⎋; hold-to-talk is the global hotkey held). The panel grammar, the legend and Settings › Keys all read it;
+  defaults reproduce W1/W3 exactly; overrides persist as `keyOverrides` (`{actionId: chord | null}`) in the companion suite.
+  Fixed aliases (↓/↑, keypad ⏎, `?` for the legend) are shown but not rebindable; ⎋ is fixed (it cancels the recorder and
+  closes every surface).
+- **Legend.** Menu bar "Keyboard shortcuts… ⌘/" (also ⌘/ or `?` while the panel or Ask bar is key): a small non-activating
+  glass panel under the status item, the three scopes rendered from the table, footer "Change in Settings… ⌘,". ⎋ closes.
+- **Settings › Keys** rebinds any row with the R2-1 recorder (global rows also register through KeyboardShortcuts); reset per
+  row and for all.
+- **Collisions.** Same scope: the recorder refuses with "Already used by <label>" and offers **Use here instead** (the other
+  row goes unassigned, shown in the warning colour); never two actions on one chord in one scope (a test asserts it over the
+  persisted table); across scopes the same chord is allowed (panel J and Ask-bar J never coexist). Global vs macOS: chords in
+  `CopySymbolicHotKeys()` and modifier-less keys are refused as "Reserved by macOS". Global vs another app: there is no API
+  to see other apps' registrations — an exclusive `RegisterEventHotKey` probe catches holders that registered exclusively
+  (measured: plain registrations, KeyboardShortcuts' own included, are invisible); on failure the previous binding stays
+  and the row says "held by another app — pick another"; at launch a saved chord that fails falls back to ⌃⇧Space with a
+  one-line notice in Settings › Keys and the legend — never a dialog. Local keys fire only while the companion's surface is
+  key, so they cannot collide with other apps — the reason the global set stays at two rows (said in the legend footer).
+  Text input: while the Ask bar's field, the R field or the send-back note has focus, single keys are typed, not actions.
+
 ---
 
 Revision history: v0 2026-10-07 — written from the four recon reports and Sky's rulings of 11:29. · R1 2026-10-07 12:15 —
 spike findings SA/SB/SC folded in (build/bundle verified, lifecycle via SMAppService from the main app, Accessibility for
 ⌥⌥, time-sensitive needs a profile, `Decision` is Allow|Deny, screenshots need `--shareable`, waves W0/W1/W1S started).
+· R2 2026-10-07 evening — Sky's first-day rulings: no `Bundle.module` (own recorder), live dictation in the Ask bar, "Always
+a sliver" rail presence, one key table + legend + rebinding + the collision policy (wave W6).
