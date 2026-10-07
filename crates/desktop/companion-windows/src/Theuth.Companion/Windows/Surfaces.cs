@@ -1,6 +1,5 @@
 using System.ComponentModel;
 using Microsoft.UI.Dispatching;
-using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Input;
 using Microsoft.Windows.AppLifecycle;
 using Theuth.Companion.Core;
@@ -33,7 +32,7 @@ internal sealed class Surfaces : IDisposable
     private readonly AttentionPanelWindow panel;
     private readonly PeekCardWindow peek;
     private readonly LegendWindow legend;
-    private readonly TrayMenuWindow menu;
+    private readonly TrayMenu menu;
     private readonly List<DispatcherQueueTimer> timers = new();
     private bool disposed;
 
@@ -71,7 +70,7 @@ internal sealed class Surfaces : IDisposable
         rail.Polled += () => peek.Poll(rail.ScreenRect);
         panel = new AttentionPanelWindow(store) { ProbeMode = probe };
         legend = new LegendWindow(store);
-        menu = new TrayMenuWindow();
+        menu = new TrayMenu(host);
 
         store.PropertyChanged += OnStoreChanged;
         store.CloseRequested += () => panel.Close(returnFocus: true);
@@ -218,53 +217,30 @@ internal sealed class Surfaces : IDisposable
         panel.Close(returnFocus: false);
         legend.CloseLegend(returnFocus: false);
         peek.HideCard();
-        menu.Show(BuildMenu(), at, rail.LastUserApp);
+        menu.Show(BuildMenu(), at);
     }
 
     /// <summary>§4.5: Open theuth · Ask theuth… · Pause notifications ▸ · Launch at login ✓ · Keyboard shortcuts… Ctrl+/ · Settings… · Quit theuth.</summary>
-    private MenuFlyout BuildMenu()
+    private List<TrayMenu.Item> BuildMenu()
     {
-        var m = new MenuFlyout();
-        m.Items.Add(Item("Open theuth", "tray-open", Links.OpenTheuth));
-        m.Items.Add(Item("Ask theuth…", "tray-ask", () => store.Perform(Intent.AskBar)));
-        var pause = new MenuFlyoutSubItem { Text = "Pause notifications", IsEnabled = PauseRequested is not null };
-        Microsoft.UI.Xaml.Automation.AutomationProperties.SetAutomationId(pause, "tray-pause");
-        pause.Items.Add(Item("For 1 hour", "tray-pause-1h", () => PauseRequested?.Invoke("1h")));
-        pause.Items.Add(Item("Until tomorrow", "tray-pause-tomorrow", () => PauseRequested?.Invoke("tomorrow")));
-        pause.Items.Add(Item("Off", "tray-pause-off", () => PauseRequested?.Invoke("off")));
-        m.Items.Add(pause);
-        var login = new ToggleMenuFlyoutItem
+        bool login = LaunchAtLoginState?.Invoke() ?? false;
+        return new List<TrayMenu.Item>
         {
-            Text = "Launch at login", IsChecked = LaunchAtLoginState?.Invoke() ?? false, IsEnabled = LaunchAtLoginToggled is not null,
+            new("Open theuth", Links.OpenTheuth),
+            new("Ask theuth…", () => store.Perform(Intent.AskBar)),
+            new("Pause notifications", Enabled: PauseRequested is not null, Sub: new List<TrayMenu.Item>
+            {
+                new("For 1 hour", () => PauseRequested?.Invoke("1h")),
+                new("Until tomorrow", () => PauseRequested?.Invoke("tomorrow")),
+                new("Off", () => PauseRequested?.Invoke("off")),
+            }),
+            new("Launch at login", () => LaunchAtLoginToggled?.Invoke(!login), Enabled: LaunchAtLoginToggled is not null, Checked: login),
+            TrayMenu.Item.Separator,
+            new("Keyboard shortcuts…\tCtrl+/", () => ShowLegend(fromPanel: false)),
+            new("Settings…", () => store.Perform(Intent.Settings)),
+            TrayMenu.Item.Separator,
+            new("Quit theuth", () => quit(0)),
         };
-        Microsoft.UI.Xaml.Automation.AutomationProperties.SetAutomationId(login, "tray-login");
-        login.Click += (_, _) =>
-        {
-            menu.ActionTaken = false;
-            LaunchAtLoginToggled?.Invoke(login.IsChecked);
-        };
-        m.Items.Add(login);
-        m.Items.Add(new MenuFlyoutSeparator());
-        var shortcuts = Item("Keyboard shortcuts…", "tray-shortcuts", () => ShowLegend(fromPanel: false));
-        shortcuts.KeyboardAcceleratorTextOverride = "Ctrl+/";
-        m.Items.Add(shortcuts);
-        m.Items.Add(Item("Settings…", "tray-settings", () => store.Perform(Intent.Settings)));
-        m.Items.Add(new MenuFlyoutSeparator());
-        m.Items.Add(Item("Quit theuth", "tray-quit", () => quit(0)));
-        return m;
-    }
-
-    private MenuFlyoutItem Item(string text, string id, Action act)
-    {
-        var item = new MenuFlyoutItem { Text = text };
-        Microsoft.UI.Xaml.Automation.AutomationProperties.SetAutomationId(item, id);
-        item.Click += (_, _) =>
-        {
-            menu.ActionTaken = true;
-            Log.Write($"tray menu: {text}");
-            act();
-        };
-        return item;
     }
 
     private void OnMark(Mark m, RECT row)
@@ -378,7 +354,7 @@ internal sealed class Surfaces : IDisposable
         panel.Stop();
         Hotkeys.Dispose();
         tray.Dispose();
-        foreach (var w in new ToolWindow[] { menu, legend, peek, panel, rail })
+        foreach (var w in new ToolWindow[] { legend, peek, panel, rail })
         {
             try { w.CloseForGood(); }
             catch (Exception) { }

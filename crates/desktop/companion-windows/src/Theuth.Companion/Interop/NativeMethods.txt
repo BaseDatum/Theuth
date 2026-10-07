@@ -49,6 +49,12 @@ DestroyIcon
 GetSystemMetrics
 NOTIFYICON_VERSION_4
 NIN_SELECT
+// the tray's context menu (Win32 popup: the MenuFlyout host fail-fast the process on build-B)
+CreatePopupMenu
+AppendMenu
+TrackPopupMenuEx
+DestroyMenu
+WM_NULL
 // messages
 WM_ACTIVATE
 WM_CLOSE

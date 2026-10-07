@@ -79,7 +79,7 @@ internal sealed partial class PeekCardWindow : ToolWindow
         double s = Scale;
         root.Measure(new global::Windows.Foundation.Size(CardWidth, double.PositiveInfinity));
         int w = (int)Math.Round(CardWidth * s);
-        int h = (int)Math.Round(Math.Max(48, root.DesiredSize.Height) * s);
+        int h = (int)Math.Round((Math.Max(48, root.DesiredSize.Height) + 6) * s);
         var wa = DisplayArea.GetFromPoint(new PointInt32((markRow.left + markRow.right) / 2, (markRow.top + markRow.bottom) / 2), DisplayAreaFallback.Primary).WorkArea;
         int gap = (int)Math.Round(8 * s);
         int x = side == "left" ? rail.right + gap : rail.left - gap - w;
@@ -95,7 +95,7 @@ internal sealed partial class PeekCardWindow : ToolWindow
         {
             if (Showing != m) return;
             root.Measure(new global::Windows.Foundation.Size(CardWidth, double.PositiveInfinity));
-            int h2 = (int)Math.Round(Math.Max(48, root.DesiredSize.Height) * s);
+            int h2 = (int)Math.Round((Math.Max(48, root.DesiredSize.Height) + 6) * s);
             if (h2 > h) Place(new RectInt32(x, Math.Clamp(y - (h2 - h) / 2, wa.Y + gap, Math.Max(wa.Y + gap, wa.Y + wa.Height - h2 - gap)), w, h2));
         });
         Log.Write($"peek card: {m.Label} ({state}) at {Win32.Text(ScreenRect)}; foreground {Win32.Describe(PInvoke.GetForegroundWindow())}");
