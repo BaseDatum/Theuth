@@ -204,7 +204,11 @@ internal sealed partial class RailWindow : ToolWindow
         AutomationProperties.SetAutomationId(b, $"mark-{n}");
         AutomationProperties.SetName(b, m.Detail);
         ToolTipService.SetToolTip(b, m.Detail);
-        b.Click += (_, _) => MarkClicked?.Invoke(m, ScreenRectOf(b));
+        b.Click += (_, _) =>
+        {
+            if (OpensPanel(m)) CancelDeferredHandBack();
+            MarkClicked?.Invoke(m, ScreenRectOf(b));
+        };
         views.Add((m, b));
         return b;
     }
@@ -375,8 +379,35 @@ internal sealed partial class RailWindow : ToolWindow
 
     protected override void OnActivate(bool active, HWND other)
     {
-        if (!active) return;
+        if (!active)
+        {
+            deferred?.Stop();
+            deferred = null;
+            return;
+        }
         var c = Win32.Cursor();
+        if (!Win32.Contains(Win32.Inflate(ScreenRect, 2), c))
+        {
+            // Not a press inside the rail (UI Automation's SetFocus before an Invoke, the keyboard): the Click that may follow
+            // decides — a mark that opens the panel cancels this; anything else gets the foreground back in 150 ms.
+            var target = LastForeign;
+            deferred?.Stop();
+            var t = DispatcherQueue.CreateTimer();
+            t.Interval = TimeSpan.FromMilliseconds(150);
+            t.IsRepeating = false;
+            t.Tick += (_, _) =>
+            {
+                t.Stop();
+                if (deferred != t) return;
+                deferred = null;
+                if (!IsForeground) return;
+                bool done = Win32.Foreground(target);
+                Log.Write($"rail: activated without a press (automation/keyboard) — hand-back to {Win32.Describe(target)} -> {(done ? "true" : "false")}");
+            };
+            deferred = t;
+            t.Start();
+            return;
+        }
         var m = MarkAt(c);
         if (m is not null && OpensPanel(m))
         {
@@ -386,6 +417,15 @@ internal sealed partial class RailWindow : ToolWindow
         var back = LastForeign;
         bool ok = Win32.Foreground(back);
         Log.Write($"rail: activated by a press on {(m is null ? "nothing" : $"agent mark {m.Label}")} — hand-back to {Win32.Describe(back)} -> {(ok ? "true" : "false")}; foreground now {Win32.Describe(PInvoke.GetForegroundWindow())}");
+    }
+
+    private DispatcherQueueTimer? deferred;
+
+    /// <summary>A panel-opening mark was clicked: the pending automation hand-back must not take the foreground away.</summary>
+    private void CancelDeferredHandBack()
+    {
+        deferred?.Stop();
+        deferred = null;
     }
 
     /// <summary>The shell's WM_CLOSE goes to the host window (class <c>TheuthCompanionRail</c>); a close of the rail itself is ignored.</summary>

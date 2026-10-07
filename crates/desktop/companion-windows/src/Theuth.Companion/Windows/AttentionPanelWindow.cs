@@ -559,7 +559,7 @@ internal sealed partial class AttentionPanelWindow : ToolWindow
         };
         FlatButtons.Apply(b.Resources, Palette.Tint(Palette.Ink, theme, 0.06));
         AutomationProperties.SetAutomationId(b, $"line-{n}");
-        AutomationProperties.SetName(b, $"{item.Agent ?? item.Kind.RawValue}, {item.Title}, {RailModel.Ago(item.WaitingSince, store.Now)}");
+        AutomationProperties.SetName(b, $"{item.Agent ?? item.Kind.RawValue}, {item.Title}, {RailModel.Ago(item.WaitingSince, DateTimeOffset.Now)}");
         b.Click += (_, _) => store.FocusOn(item.Id);
         return b;
     }
@@ -614,7 +614,7 @@ internal sealed partial class AttentionPanelWindow : ToolWindow
             row.Children.Add(grid);
             if (focus == i) row.Children.Add(new Border { Width = 3, HorizontalAlignment = HorizontalAlignment.Left, Background = Palette.Brush(Palette.Malachite, theme) });
             AutomationProperties.SetAutomationId(row, $"done-{i + 1}");
-            AutomationProperties.SetName(row, $"{r.Who}, {r.Text}, {RailModel.Ago(r.At, store.Now)}");
+            AutomationProperties.SetName(row, $"{r.Who}, {r.Text}, {RailModel.Ago(r.At, DateTimeOffset.Now)}");
             content.Children.Add(row);
         }
         if (focus is not null)
@@ -628,19 +628,17 @@ internal sealed partial class AttentionPanelWindow : ToolWindow
 
     private FrameworkElement Footer(ElementTheme theme)
     {
-        var grid = new Grid { Padding = new Thickness(12, 7, 12, 7) };
-        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        // Two lines: Segoe UI at these sizes does not fit the hints and the hold sentence side by side in 372 epx.
+        var stack = new StackPanel { Padding = new Thickness(12, 7, 12, 7), Spacing = 4 };
         var hints = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 10 };
         hints.Children.Add(Hint("J K", "move", theme));
         hints.Children.Add(Hint("E", "clear", theme));
         hints.Children.Add(Hint("Esc", store.HeldNow is null ? "back to work" : "undo", theme));
-        grid.Children.Add(hints);
+        stack.Children.Add(hints);
         var wait = Small($"answers wait {(int)store.UndoDelay} s · Esc undoes", Palette.Sand, theme, default, 10.5);
-        wait.VerticalAlignment = VerticalAlignment.Center;
-        Grid.SetColumn(wait, 1);
-        grid.Children.Add(wait);
-        return grid;
+        AutomationProperties.SetAutomationId(wait, "panel-hold-hint");
+        stack.Children.Add(wait);
+        return stack;
     }
 
     private static FrameworkElement Hint(string key, string label, ElementTheme theme)

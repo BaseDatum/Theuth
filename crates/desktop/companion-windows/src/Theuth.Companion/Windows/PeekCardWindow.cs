@@ -54,7 +54,7 @@ internal sealed partial class PeekCardWindow : ToolWindow
         head.Children.Add(new TextBlock { Text = m.Label, FontSize = 12.5, FontWeight = Microsoft.UI.Text.FontWeights.SemiBold, Foreground = Palette.Brush(Palette.Ink, theme) });
         stack.Children.Add(head);
         var parts = m.Detail.Split(", ", 2);
-        string state = parts.Length > 1 ? parts[1] : m.State.Kind.ToString().ToLowerInvariant();
+        string state = (parts.Length > 1 ? parts[1] : m.State.Kind.ToString().ToLowerInvariant()).TrimEnd(',', ' ');
         stack.Children.Add(new TextBlock { Text = state, FontSize = 11.5, Foreground = Palette.Brush(Palette.Ink2, theme), TextWrapping = TextWrapping.Wrap });
         if (store.Agents.FirstOrDefault(a => $"agent:{a.File.Name}" == m.Id) is { } agent)
         {
@@ -90,6 +90,14 @@ internal sealed partial class PeekCardWindow : ToolWindow
         lastInside = DateTimeOffset.Now;
         buttonWasDown = true; // the click that opened it is still down
         ShowPassive();
+        // The first measure runs before the button's template exists: size again once the tree is live.
+        DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low, () =>
+        {
+            if (Showing != m) return;
+            root.Measure(new global::Windows.Foundation.Size(CardWidth, double.PositiveInfinity));
+            int h2 = (int)Math.Round(Math.Max(48, root.DesiredSize.Height) * s);
+            if (h2 > h) Place(new RectInt32(x, Math.Clamp(y - (h2 - h) / 2, wa.Y + gap, Math.Max(wa.Y + gap, wa.Y + wa.Height - h2 - gap)), w, h2));
+        });
         Log.Write($"peek card: {m.Label} ({state}) at {Win32.Text(ScreenRect)}; foreground {Win32.Describe(PInvoke.GetForegroundWindow())}");
     }
 
