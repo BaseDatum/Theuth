@@ -138,8 +138,14 @@ mod tests {
     #[test]
     fn record_names_and_blockers() {
         assert_eq!(record_name("ops", &RunsIn::Any), None);
-        assert_eq!(record_name("ops", &RunsIn::OwnVm).as_deref(), Some("vm-ops"));
-        assert_eq!(record_name("ops", &RunsIn::Vm("lab".into())).as_deref(), Some("lab"));
+        assert_eq!(
+            record_name("ops", &RunsIn::OwnVm).as_deref(),
+            Some("vm-ops")
+        );
+        assert_eq!(
+            record_name("ops", &RunsIn::Vm("lab".into())).as_deref(),
+            Some("lab")
+        );
         assert_eq!(blocked_on(&blocker("vm-ops")), Some("vm-ops"));
         assert_eq!(blocked_on("engine:lab"), None);
     }
@@ -148,12 +154,30 @@ mod tests {
     fn engine_name_needs_a_working_vm_with_a_known_engine() {
         use sandbox::SandboxState as S;
         let s = status();
-        assert_eq!(engine_name(&info(S::Ready, Some("vm1")), &s).as_deref(), Some("lab"));
-        assert_eq!(engine_name(&info(S::Running, Some("me")), &s).as_deref(), Some("mac"));
-        assert_eq!(engine_name(&info(S::Ready, Some("unknown")), &s), None, "not paired yet");
+        assert_eq!(
+            engine_name(&info(S::Ready, Some("vm1")), &s).as_deref(),
+            Some("lab")
+        );
+        assert_eq!(
+            engine_name(&info(S::Running, Some("me")), &s).as_deref(),
+            Some("mac")
+        );
+        assert_eq!(
+            engine_name(&info(S::Ready, Some("unknown")), &s),
+            None,
+            "not paired yet"
+        );
         assert_eq!(engine_name(&info(S::Ready, None), &s), None);
         assert_eq!(
-            engine_name(&info(S::Creating { step: "pair".into() }, Some("vm1")), &s),
+            engine_name(
+                &info(
+                    S::Creating {
+                        step: "pair".into()
+                    },
+                    Some("vm1")
+                ),
+                &s
+            ),
             None
         );
         assert_eq!(engine_name(&info(S::Stopped, Some("vm1")), &s), None);
