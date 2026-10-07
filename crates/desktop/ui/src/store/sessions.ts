@@ -378,11 +378,13 @@ export const createSessions = (): SessionsApi =>
           (mode === "prepend" && moved) ||
           // A newer snapshot already landed (or a reconnect will bring one): a superseded full page has nothing to add.
           (mode === "replace" && moved && cur.loaded) ||
+          // 129 D3: `cur.running` is not a refusal — after a gap (`Lagged`, reconnect, out of focus) the lost
+          // `TurnFinished` leaves it stale, and a settled page with `running: false` is what corrects it; a turn
+          // that raced the read moved `live`, a turn still running answers `settled: false`.
           (mode === "settled" &&
             (!fresh ||
               moved ||
               cur.live !== fresh.live ||
-              cur.running ||
               !loaded.settled ||
               loaded.running));
         if (refused) {

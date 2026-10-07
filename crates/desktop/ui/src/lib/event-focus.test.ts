@@ -107,6 +107,29 @@ test('markStale: Lagged / a session leaving focus keep `loaded` and the transcri
   expect(useSessions.getState().sessions['focus-never']).toMatchObject({ loaded: false, contextStale: false })
 })
 
+test('settled page after a gap: a `running` left true by a lost TurnFinished is corrected, not refused', () => {
+  const st = useSessions.getState()
+  const id = 'focus-gap'
+  st.loadHistory(id, page, 'replace')
+  st.applyEvents([
+    { type: 'TurnStarted', session: id, turn: 't', text: 'go', model: 'm', turn_seq: 2 },
+    { type: 'TextDelta', session: id, turn: 't', text: 'part' },
+  ])
+  st.markStale(id)
+  const s = useSessions.getState().sessions[id]!
+  expect(s).toMatchObject({ running: true, contextStale: true })
+  const after = { ...page, context_revision: '2', history: [...page.history, { role: 'user' as const, text: 'go', turn: 2 }, { role: 'assistant' as const, text: 'partial done', turn: 2 }] }
+  expect(st.loadHistory(id, after, 'settled', { gen: s.historyGeneration, live: s.live })).toBe(true)
+  expect(useSessions.getState().sessions[id]).toMatchObject({ running: false, contextStale: false, loaded: true })
+  expect(useSessions.getState().sessions[id]!.entries.map((e) => ('text' in e ? e.text : e.kind))).toEqual(['hi', 'go', 'partial done'])
+  // The engine still busy: refused, the stream's text stays.
+  st.applyEvents([{ type: 'TurnStarted', session: id, turn: 'u', text: 'more', model: 'm', turn_seq: 3 }])
+  st.markStale(id)
+  const r = useSessions.getState().sessions[id]!
+  expect(st.loadHistory(id, { ...after, settled: false, context_editable: false }, 'settled', { gen: r.historyGeneration, live: r.live })).toBe(false)
+  expect(useSessions.getState().sessions[id]).toMatchObject({ running: true, contextStale: true })
+})
+
 test('typeCounts: the per-drain histogram', () => {
   expect(typeCounts([{ type: 'TextDelta' }, { type: 'TextDelta' }, { type: 'ToolCallFinished' }])).toEqual({ TextDelta: 2, ToolCallFinished: 1 })
 })
