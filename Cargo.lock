@@ -5105,12 +5105,19 @@ checksum = "1aaf95b3e5c8f23aa320147307562d361db0ae0d51242340f558153b4eb2439b"
 name = "double"
 version = "2.9.2"
 dependencies = [
+ "agent",
  "anyhow",
  "async-trait",
  "chrono",
+ "decision",
+ "figment",
  "half",
+ "kameo",
+ "parking_lot",
  "replica",
+ "roster",
  "runtime",
+ "schedule",
  "schemars 1.2.2",
  "serde",
  "serde_json",
