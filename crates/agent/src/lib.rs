@@ -291,8 +291,23 @@ pub struct ForkSession {
     pub reply: Option<u32>,
 }
 
-/// `ask` → `()`. Abort the in-flight turn of `session` and of every running
-/// descendant (design doc 19 §2.3); each emits `TurnFinished { stop_reason: "cancelled" }`.
+/// How far a [`Cancel`] reaches (design doc 133 §2).
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema,
+)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[serde(rename_all = "lowercase")]
+pub enum CancelScope {
+    /// The target session only; its running descendants keep working. The default.
+    #[default]
+    Root,
+    /// The target and every running descendant (design doc 19 §2.3).
+    Tree,
+}
+
+/// `ask` → `()`. Abort the in-flight turn of `session` — and, with
+/// [`CancelScope::Tree`], of every running descendant (design doc 19 §2.3,
+/// 133 §2); each emits `TurnFinished { stop_reason: "cancelled" }`.
 ///
 /// `keep` (design doc 76 §7): plain text of the reply the user has already
 /// received (a spoken prefix). When the target session's cancel lands inside a
@@ -305,6 +320,9 @@ pub struct Cancel {
     pub session: SessionId,
     /// What the user already received of the in-flight reply; `None` = drop it.
     pub keep: Option<String>,
+    /// Root (default) or the whole running subtree (133 §2).
+    #[serde(default)]
+    pub scope: CancelScope,
 }
 
 /// Answer a pending `ask_user`: one answer per question, or
@@ -325,6 +343,7 @@ pub async fn answer_ask(
             .ask(Cancel {
                 session,
                 keep: None,
+                scope: CancelScope::Root,
             })
             .await?;
     }

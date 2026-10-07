@@ -633,7 +633,13 @@ impl Talk {
                 }
                 Action::Cancel(keep) => {
                     if let Some(a) = agents() {
-                        let _ = a.ask(agent::Cancel { session, keep }).await;
+                        let _ = a
+                            .ask(agent::Cancel {
+                                session,
+                                keep,
+                                scope: agent::CancelScope::Root,
+                            })
+                            .await;
                     }
                 }
                 Action::Trim { turn, keep } => {

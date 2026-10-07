@@ -81,20 +81,21 @@ use crate::user::{MessageUserTool, USER_ACTOR, UserChannels};
 use crate::{
     AGENT_ACTOR, AddAcp, AddProvider, AddSkill, AddSkillRepo, AgentConfig, AgentEvent, AgentInfo,
     AgentState, AncestorInfo, Ancestors, ArchiveSession, BroadcastOutcome, BroadcastReceipt,
-    BroadcastRequest, BroadcastRow, BroadcastTargets, Cancel, Compact, CompactStyle, ContextItems,
-    DeleteSession, Delivery, DeskSession, EditTurn, EscalateModel, ForkSession, GetCompactStyle,
-    GetDefaultEffort, GetDefaultModel, GetEscalateModel, GetMaxSalvages, GetMaxToolRounds,
-    GetStreamIdle, GetSubagentModel, GetSubagentTimeout, GetTitleModel, GetTodos, GetVisionModel,
-    Harvest, HistoryEntry, ListAcp, ListAgents, ListLogins, ListModels, ListProviders, ListQueued,
-    ListRegistry, ListSessions, ListSkills, LoadSession, LoadSkill, Loaded, Login, LoginFinished,
-    LoginInfo, Logout, MarkDesk, ModelInfo, NewRootSession, NewSession, PinSession, PinTitle,
-    ProviderInfo, QueuedInput, ReadSession, Redo, Regenerate, RemoveAcp, RemoveContext,
-    RemoveProvider, RemoveSkill, RemoveSkillRepo, RenameSession, ResetRuntime, SearchRefresh,
-    SearchSessionPage, SendInput, SessionActivity, SessionContextBreakdown, SessionRead,
-    SessionSummary, SetCompactStyle, SetCompaction, SetEffort, SetEscalateModel, SetMaxSalvages,
-    SetMaxToolRounds, SetModel, SetStreamIdle, SetSubagentModel, SetSubagentTimeout, SetTitleModel,
-    SetToolset, SetVisionModel, ShowPrompt, SideCall, SideReply, SkillBody, SkillMeta, Steer,
-    SyncSkills, TrimAssistant, Undo, UseSkill, Withdraw, effort_of,
+    BroadcastRequest, BroadcastRow, BroadcastTargets, Cancel, CancelScope, Compact, CompactStyle,
+    ContextItems, DeleteSession, Delivery, DeskSession, EditTurn, EscalateModel, ForkSession,
+    GetCompactStyle, GetDefaultEffort, GetDefaultModel, GetEscalateModel, GetMaxSalvages,
+    GetMaxToolRounds, GetStreamIdle, GetSubagentModel, GetSubagentTimeout, GetTitleModel, GetTodos,
+    GetVisionModel, Harvest, HistoryEntry, ListAcp, ListAgents, ListLogins, ListModels,
+    ListProviders, ListQueued, ListRegistry, ListSessions, ListSkills, LoadSession, LoadSkill,
+    Loaded, Login, LoginFinished, LoginInfo, Logout, MarkDesk, ModelInfo, NewRootSession,
+    NewSession, PinSession, PinTitle, ProviderInfo, QueuedInput, ReadSession, Redo, Regenerate,
+    RemoveAcp, RemoveContext, RemoveProvider, RemoveSkill, RemoveSkillRepo, RenameSession,
+    ResetRuntime, SearchRefresh, SearchSessionPage, SendInput, SessionActivity,
+    SessionContextBreakdown, SessionRead, SessionSummary, SetCompactStyle, SetCompaction,
+    SetEffort, SetEscalateModel, SetMaxSalvages, SetMaxToolRounds, SetModel, SetStreamIdle,
+    SetSubagentModel, SetSubagentTimeout, SetTitleModel, SetToolset, SetVisionModel, ShowPrompt,
+    SideCall, SideReply, SkillBody, SkillMeta, Steer, SyncSkills, TrimAssistant, Undo, UseSkill,
+    Withdraw, effort_of,
 };
 use crate::{
     AdvisorConfig, DurableStore, SessionCostQuery, SessionKind, SpendReportQuery, SubagentsConfig,
@@ -2963,12 +2964,17 @@ impl Message<Cancel> for Agents {
     type Reply = ();
 
     async fn handle(&mut self, mut m: Cancel, _: &mut Context<Self, Self::Reply>) {
-        // Every running descendant, not one level (design doc 19 §2.3).
-        let tree = self
-            .store_for(m.session)
-            .descendants(m.session)
-            .await
-            .unwrap_or_default();
+        // `Tree`: every running descendant, not one level (design doc 19 §2.3).
+        // `Root` (the default): the target alone; its children keep working and
+        // their later `TurnFinished` reaches the parent as when it is idle (133 §2).
+        let tree = match m.scope {
+            CancelScope::Root => Vec::new(),
+            CancelScope::Tree => self
+                .store_for(m.session)
+                .descendants(m.session)
+                .await
+                .unwrap_or_default(),
+        };
         let ids: Vec<SessionId> = std::iter::once(m.session)
             .chain(tree.into_iter().map(|(_, s)| s.id))
             .collect();
@@ -12520,6 +12526,7 @@ pub(crate) mod tests {
             .ask(Cancel {
                 session: y,
                 keep: None,
+                scope: CancelScope::Root,
             })
             .await
             .unwrap();
@@ -12550,6 +12557,67 @@ pub(crate) mod tests {
             .await
             .unwrap();
         assert_eq!((free, routed_y), (1, false), "the stale brief never ran");
+    }
+
+    /// 133 §2: a `Root` cancel of the parent leaves its running child alone
+    /// (ledger untouched, still running, actor alive); `Tree` stops both.
+    #[tokio::test]
+    async fn root_cancel_spares_running_children_tree_cancel_does_not() {
+        let a = agents().await;
+        let mut rx = tap(&a.rt).await;
+        let (agents, p) = rooted(a).await;
+        let (_, x, _) = agents.ask(spawn(p, "x", "first")).await.unwrap();
+        assert_eq!(next_turn(&mut rx, x).await, "first");
+        // No model here: the child's turn ends at once; wait for that, then mark it running by hand.
+        next_event(
+            &mut rx,
+            |e| matches!(e, AgentEvent::TurnFinished { session, .. } if *session == x),
+        )
+        .await;
+        let (ep, ex) = agents
+            .ask(With(move |a: &mut Agents| {
+                a.running.insert(x);
+                (a.ledger.epoch(p), a.ledger.epoch(x))
+            }))
+            .await
+            .unwrap();
+        agents
+            .ask(Cancel {
+                session: p,
+                keep: None,
+                scope: CancelScope::Root,
+            })
+            .await
+            .unwrap();
+        let (ep2, ex2, running, alive) = agents
+            .ask(With(move |a: &mut Agents| {
+                (
+                    a.ledger.epoch(p),
+                    a.ledger.epoch(x),
+                    a.running.contains(&x),
+                    a.sessions[&x].actor.is_alive(),
+                )
+            }))
+            .await
+            .unwrap();
+        assert!(ep2 > ep, "the parent is cancelled");
+        assert_eq!(ex2, ex, "the child's ledger is untouched");
+        assert!(running && alive, "the child keeps working");
+        agents
+            .ask(Cancel {
+                session: p,
+                keep: None,
+                scope: CancelScope::Tree,
+            })
+            .await
+            .unwrap();
+        let (ep3, ex3) = agents
+            .ask(With(move |a: &mut Agents| {
+                (a.ledger.epoch(p), a.ledger.epoch(x))
+            }))
+            .await
+            .unwrap();
+        assert!(ep3 > ep2 && ex3 > ex2, "tree: both cancelled");
     }
 
     /// T5: a human input into a queued child promotes it: the brief runs at

@@ -411,7 +411,7 @@ async fn serve(
         .on_receive_notification(
             async move |n: CancelNotification, _cx| {
                 let session = parse_session(&n.session_id)?;
-                api_cancel.cancel(session).await.map_err(rpc_error)
+                api_cancel.cancel(session, None).await.map_err(rpc_error)
             },
             agent_client_protocol::on_receive_notification!(),
         )

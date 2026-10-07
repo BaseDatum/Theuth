@@ -462,7 +462,8 @@ async fn export_bindings() {
         agent::SpendReport,
         agent::SpendDay,
         agent::SpendOwner,
-        agent::SpendOwnerKind
+        agent::SpendOwnerKind,
+        agent::CancelScope
     );
 
     use crate::ApiServer;

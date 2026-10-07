@@ -17,20 +17,21 @@ use agent::todo::TodoSnapshot;
 use agent::{
     AddAcp, AddProvider, AddSkill, AddSkillRepo, AgentInfo, Agents, AnswerPeerRequest,
     ArchiveSession, Broadcast, BroadcastOutcome, BroadcastReceipt, BroadcastRequest,
-    BroadcastTargets, Cancel, CommunicationState, Compact, CompactStyle, ContextBreakdown,
-    ContextItems, ContextRemoval, ContextSnapshot, ContextTarget, DeleteSession, Delivery,
-    EditTurn, EscalateModel, ForkSession, GetCommunication, GetCompactStyle, GetDefaultEffort,
-    GetDefaultModel, GetEscalateModel, GetMaxSalvages, GetMaxToolRounds, GetPeerMessage,
-    GetStreamIdle, GetSubagentModel, GetSubagentTimeout, GetTitleModel, GetTodos, GetVisionModel,
-    Harvest, ListAcp, ListActivity, ListAgents, ListLogins, ListModels, ListPeerMessages,
-    ListPeers, ListProviders, ListQueued, ListRegistry, ListSessions, ListSkills, LoadSession,
-    LoadSkill, Loaded, Login, LoginInfo, Logout, ModelInfo, NewRootSession, PeerMessagePage,
-    PeerPage, PeerReceipt, PeerRecord, PeerScope, PinSession, ProviderInfo, QueuedInput, Redo,
-    Regenerate, RemoveAcp, RemoveContext, RemoveProvider, RemoveSkill, RemoveSkillRepo,
-    RenameSession, SendInput, SessionContextBreakdown, SessionSummary, SetCommunication,
-    SetCompactStyle, SetEffort, SetEscalateModel, SetMaxSalvages, SetMaxToolRounds, SetModel,
-    SetPeerScope, SetStreamIdle, SetSubagentModel, SetSubagentTimeout, SetTitleModel,
-    SetVisionModel, ShowPrompt, SkillBody, SkillMeta, Steer, SyncSkills, Undo, UseSkill, Withdraw,
+    BroadcastTargets, Cancel, CancelScope, CommunicationState, Compact, CompactStyle,
+    ContextBreakdown, ContextItems, ContextRemoval, ContextSnapshot, ContextTarget, DeleteSession,
+    Delivery, EditTurn, EscalateModel, ForkSession, GetCommunication, GetCompactStyle,
+    GetDefaultEffort, GetDefaultModel, GetEscalateModel, GetMaxSalvages, GetMaxToolRounds,
+    GetPeerMessage, GetStreamIdle, GetSubagentModel, GetSubagentTimeout, GetTitleModel, GetTodos,
+    GetVisionModel, Harvest, ListAcp, ListActivity, ListAgents, ListLogins, ListModels,
+    ListPeerMessages, ListPeers, ListProviders, ListQueued, ListRegistry, ListSessions, ListSkills,
+    LoadSession, LoadSkill, Loaded, Login, LoginInfo, Logout, ModelInfo, NewRootSession,
+    PeerMessagePage, PeerPage, PeerReceipt, PeerRecord, PeerScope, PinSession, ProviderInfo,
+    QueuedInput, Redo, Regenerate, RemoveAcp, RemoveContext, RemoveProvider, RemoveSkill,
+    RemoveSkillRepo, RenameSession, SendInput, SessionContextBreakdown, SessionSummary,
+    SetCommunication, SetCompactStyle, SetEffort, SetEscalateModel, SetMaxSalvages,
+    SetMaxToolRounds, SetModel, SetPeerScope, SetStreamIdle, SetSubagentModel, SetSubagentTimeout,
+    SetTitleModel, SetVisionModel, ShowPrompt, SkillBody, SkillMeta, Steer, SyncSkills, Undo,
+    UseSkill, Withdraw,
 };
 use agent::{
     AdvisorDefaults, AdvisorStatus, AdvisorStatusOf, SetAdvisor, SetAdvisorDefaults, SyncBacklog,
@@ -249,9 +250,9 @@ pub trait Api {
     /// Messages waiting for the current tool batch to end.
     #[method(name = "list_queued", with_extensions)]
     async fn list_queued(&self, session: SessionId) -> RpcResult<Vec<QueuedInput>>;
-    /// Abort the in-flight turn.
+    /// Abort the in-flight turn; `scope` `tree` also stops every running descendant (133 §4; default `root`).
     #[method(name = "cancel", with_extensions)]
-    async fn cancel(&self, session: SessionId) -> RpcResult<()>;
+    async fn cancel(&self, session: SessionId, scope: Option<CancelScope>) -> RpcResult<()>;
     /// Background jobs of a session (14 §2): id, state, seconds, log path, tail.
     #[method(name = "list_jobs", with_extensions)]
     async fn list_jobs(&self, session: SessionId) -> RpcResult<Vec<JobView>>;
@@ -2766,9 +2767,14 @@ impl ApiServer for Server {
         ask::<Agents, _>(agent::AGENT_ACTOR, ListQueued { session }).await
     }
 
-    async fn cancel(&self, ext: &Extensions, session: SessionId) -> RpcResult<()> {
+    async fn cancel(
+        &self,
+        ext: &Extensions,
+        session: SessionId,
+        scope: Option<CancelScope>,
+    ) -> RpcResult<()> {
         self.authorize(ext, session).await?;
-        if let Some(r) = forward::route(ext, session, "cancel", (session,)).await? {
+        if let Some(r) = forward::route(ext, session, "cancel", (session, &scope)).await? {
             return Ok(r);
         }
         ask::<Agents, _>(
@@ -2776,6 +2782,7 @@ impl ApiServer for Server {
             Cancel {
                 session,
                 keep: None,
+                scope: scope.unwrap_or_default(),
             },
         )
         .await
