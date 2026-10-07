@@ -25,6 +25,7 @@ use runtime::{InputId, SessionId, TurnId};
 use serde::{Deserialize, Serialize};
 
 pub mod acp_child;
+pub mod advisor;
 pub mod attach;
 mod aws;
 mod backend;

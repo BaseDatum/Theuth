@@ -893,6 +893,8 @@ pub struct Policy {
     /// child → parent, persisted topology mirrored in.
     parents: HashMap<SessionId, SessionId>,
     opted_out: HashSet<SessionId>,
+    /// 125 §4.2: advisor sessions — never a route end in either direction.
+    hidden: HashSet<SessionId>,
     /// Barrier root: cancelled and replaced by every global change.
     epoch: CancellationToken,
     /// Per-session tokens, children of their parent's token (root: of `epoch`).
@@ -912,6 +914,7 @@ impl Policy {
             roots: HashMap::new(),
             parents: HashMap::new(),
             opted_out: HashSet::new(),
+            hidden: HashSet::new(),
             epoch: CancellationToken::new(),
             generations: HashMap::new(),
         }
@@ -928,6 +931,12 @@ impl Policy {
     }
 
     // --- topology -----------------------------------------------------------
+
+    /// 125 §4.2: mark `id` an advisor session — [`Self::route`] refuses it
+    /// as either end, whatever its lineage says.
+    pub fn record_hidden(&mut self, id: SessionId) {
+        self.hidden.insert(id);
+    }
 
     /// A trusted creator declares a root (§2.3). Re-recording an existing root
     /// keeps its scope and alias; a root with a recorded parent is an error.
@@ -1078,6 +1087,10 @@ impl Policy {
     pub fn route(&mut self, from: SessionId, to: SessionId) -> Result<Generation, PolicyError> {
         if from == to {
             return Err(PolicyError::SelfRoute(from));
+        }
+        // 125 §4.2: an advisor is never a peer; it is unknown to every route.
+        if let Some(&hidden) = [from, to].iter().find(|id| self.hidden.contains(id)) {
+            return Err(PolicyError::UnknownSession(hidden));
         }
         self.enabled(from)?;
         self.enabled(to)?;
