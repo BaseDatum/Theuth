@@ -265,6 +265,32 @@ impl Render<'_> {
             Component::FileList(_) => return Err(SlackBlocksError::Unsupported("FileList")),
             Component::Tree(_) => return Err(SlackBlocksError::Unsupported("Tree")),
             Component::Diff(_) => return Err(SlackBlocksError::Unsupported("Diff")),
+            // ---- 123 ELK family (W1) ----
+            Component::StateMachine(_) => {
+                return Err(SlackBlocksError::Unsupported("StateMachine"));
+            }
+            Component::Entities(_) => return Err(SlackBlocksError::Unsupported("Entities")),
+            Component::Swimlane(_) => return Err(SlackBlocksError::Unsupported("Swimlane")),
+            Component::GraphDelta(_) => return Err(SlackBlocksError::Unsupported("GraphDelta")),
+            // ---- 123 chart family (W2) ----
+            Component::BarChart(_) => return Err(SlackBlocksError::Unsupported("BarChart")),
+            Component::LineChart(_) => return Err(SlackBlocksError::Unsupported("LineChart")),
+            Component::ScatterChart(_) => {
+                return Err(SlackBlocksError::Unsupported("ScatterChart"));
+            }
+            Component::RadarChart(_) => return Err(SlackBlocksError::Unsupported("RadarChart")),
+            Component::Waterfall(_) => return Err(SlackBlocksError::Unsupported("Waterfall")),
+            Component::Funnel(_) => return Err(SlackBlocksError::Unsupported("Funnel")),
+            Component::Gantt(_) => return Err(SlackBlocksError::Unsupported("Gantt")),
+            Component::Quadrant(_) => return Err(SlackBlocksError::Unsupported("Quadrant")),
+            // ---- 123 part-of-whole + misc (W3) ----
+            Component::Treemap(_) => return Err(SlackBlocksError::Unsupported("Treemap")),
+            Component::Sankey(_) => return Err(SlackBlocksError::Unsupported("Sankey")),
+            Component::Venn(_) => return Err(SlackBlocksError::Unsupported("Venn")),
+            Component::Loop(_) => return Err(SlackBlocksError::Unsupported("Loop")),
+            Component::Layers(_) => return Err(SlackBlocksError::Unsupported("Layers")),
+            Component::Journey(_) => return Err(SlackBlocksError::Unsupported("Journey")),
+            Component::Fishbone(_) => return Err(SlackBlocksError::Unsupported("Fishbone")),
         }
         Ok(())
     }

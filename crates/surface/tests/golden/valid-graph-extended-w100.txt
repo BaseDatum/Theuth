@@ -1,0 +1,8 @@
+Cloud
+VPC
+  ◉ API → Postgres (SQL), Jobs
+  • Jobs
+DB subnet
+  • Postgres
+• CDN → API (HTTPS)
+○ Blue/green since v1.4

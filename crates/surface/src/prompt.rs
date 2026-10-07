@@ -12,7 +12,7 @@ const SKILL: &str = include_str!("../visualize.md");
 
 /// One minimal element per component, in catalog order; the `### Name` example in the skill.
 /// Containers reference children `a`/`b`, which the example leaves to the reader.
-const EXAMPLES: [(&str, &str); 38] = [
+const EXAMPLES: [(&str, &str); 57] = [
     (
         "Card",
         r#"{"type": "Card", "props": {"title": "Release readiness"}, "children": ["a", "b"]}"#,
@@ -161,6 +161,82 @@ const EXAMPLES: [(&str, &str); 38] = [
     (
         "Calendar",
         r#"{"type": "Calendar", "props": {"title": "Rollout week", "days": [{"day": "Mon 22", "label": "schema", "state": "done"}, {"day": "Wed 24", "label": "canary", "state": "active"}, {"day": "Fri 26", "label": "full", "state": "pending"}]}}"#,
+    ), // ---- 123 diagram grammars (Appendix A, verbatim) ----
+    (
+        "StateMachine",
+        r#"{"type": "StateMachine", "props": {"states": [{"id": "todo", "label": "Todo", "kind": "initial"}, {"id": "done", "label": "Done", "kind": "final"}], "transitions": [{"from": "todo", "to": "done", "label": "finish", "guard": "checks green"}]}}"#,
+    ),
+    (
+        "Entities",
+        r#"{"type": "Entities", "props": {"entities": [{"id": "user", "label": "User", "fields": [{"name": "id", "type": "uuid", "key": "pk"}]}, {"id": "session", "label": "Session", "fields": [{"name": "user_id", "type": "uuid", "key": "fk"}]}], "relations": [{"from": "user", "to": "session", "kind": "one-many", "from_field": "id", "to_field": "user_id"}], "detail": "schema"}}"#,
+    ),
+    (
+        "Swimlane",
+        r#"{"type": "Swimlane", "props": {"lanes": [{"id": "dev", "label": "Developer"}, {"id": "ci", "label": "CI"}], "steps": [{"id": "push", "lane": "dev", "label": "Push", "kind": "start"}, {"id": "test", "lane": "ci", "label": "Run tests"}], "edges": [{"from": "push", "to": "test"}]}}"#,
+    ),
+    (
+        "GraphDelta",
+        r#"{"type": "GraphDelta", "props": {"before": {"nodes": [{"id": "api", "label": "API"}, {"id": "db", "label": "Postgres"}], "edges": [{"from": "api", "to": "db"}]}, "after": {"nodes": [{"id": "api", "label": "API"}, {"id": "cache", "label": "Redis"}, {"id": "db", "label": "Postgres"}], "edges": [{"from": "api", "to": "cache"}, {"from": "cache", "to": "db"}]}}}"#,
+    ),
+    (
+        "BarChart",
+        r#"{"type": "BarChart", "props": {"labels": ["Mon", "Tue", "Wed"], "series": [{"name": "Tests", "values": [12, 18, 9]}, {"name": "Fails", "values": [1, 0, 2]}], "unit": "runs"}}"#,
+    ),
+    (
+        "LineChart",
+        r#"{"type": "LineChart", "props": {"labels": ["v1", "v2", "v3"], "series": [{"name": "p95 ms", "values": [410, 380, 290]}], "yLabel": "ms"}}"#,
+    ),
+    (
+        "ScatterChart",
+        r#"{"type": "ScatterChart", "props": {"points": [{"x": 2, "y": 40, "label": "api"}, {"x": 5, "y": 12, "label": "worker"}], "xLabel": "Effort", "yLabel": "Value"}}"#,
+    ),
+    (
+        "RadarChart",
+        r#"{"type": "RadarChart", "props": {"axes": ["Speed", "Cost", "Safety", "Coverage"], "series": [{"name": "Plan A", "values": [4, 2, 5, 3]}], "max": 5}}"#,
+    ),
+    (
+        "Waterfall",
+        r#"{"type": "Waterfall", "props": {"steps": [{"label": "Start", "value": 100, "kind": "total"}, {"label": "Hires", "value": 12}, {"label": "Leavers", "value": -5}, {"label": "End", "value": 107, "kind": "total"}], "unit": "people"}}"#,
+    ),
+    (
+        "Funnel",
+        r#"{"type": "Funnel", "props": {"stages": [{"label": "Visited", "value": 1200}, {"label": "Signed up", "value": 300}, {"label": "Paid", "value": 45}]}}"#,
+    ),
+    (
+        "Gantt",
+        r#"{"type": "Gantt", "props": {"tasks": [{"id": "a", "label": "Kernel", "start": "2026-10-08", "end": "2026-10-10"}, {"id": "b", "label": "Charts", "start": "2026-10-10", "end": "2026-10-14", "depends": ["a"], "state": "active"}], "today": "2026-10-11"}}"#,
+    ),
+    (
+        "Quadrant",
+        r#"{"type": "Quadrant", "props": {"xLabel": "Effort", "yLabel": "Impact", "items": [{"label": "Cache", "x": 0.2, "y": 0.8, "state": "active"}, {"label": "Rewrite", "x": 0.9, "y": 0.7}]}}"#,
+    ),
+    (
+        "Treemap",
+        r#"{"type": "Treemap", "props": {"items": [{"label": "agent", "value": 362, "group": "crates"}, {"label": "ui", "value": 210, "group": "desktop"}]}}"#,
+    ),
+    (
+        "Sankey",
+        r#"{"type": "Sankey", "props": {"nodes": [{"id": "opus", "label": "Opus", "stage": 0}, {"id": "s1", "label": "Session 1", "stage": 1}], "flows": [{"from": "opus", "to": "s1", "value": 12.5}], "unit": "USD"}}"#,
+    ),
+    (
+        "Venn",
+        r#"{"type": "Venn", "props": {"sets": [{"id": "a", "label": "Has tests"}, {"id": "b", "label": "Has docs"}], "overlaps": [{"sets": ["a", "b"], "label": "Release-ready"}]}}"#,
+    ),
+    (
+        "Loop",
+        r#"{"type": "Loop", "props": {"steps": [{"label": "Measure"}, {"label": "Decide"}, {"label": "Build"}, {"label": "Ship"}], "hub": "Learning"}}"#,
+    ),
+    (
+        "Layers",
+        r#"{"type": "Layers", "props": {"layers": [{"label": "Apps", "items": ["desktop", "TUI"]}, {"label": "Engine", "items": ["agent", "tools"]}, {"label": "Store", "items": ["sqlite"]}]}}"#,
+    ),
+    (
+        "Journey",
+        r#"{"type": "Journey", "props": {"stages": ["Install", "First chat"], "rows": [{"label": "Does", "cells": ["downloads", "asks"]}], "mood": [0.2, 0.8], "pains": [{"stage": 0, "text": "notarisation wait"}]}}"#,
+    ),
+    (
+        "Fishbone",
+        r#"{"type": "Fishbone", "props": {"effect": "Slow replies", "causes": [{"category": "Model", "items": ["long context"]}, {"category": "Tools", "items": ["cold ELK"]}]}}"#,
     ),
 ];
 
@@ -443,7 +519,7 @@ mod tests {
         for e in &catalog().entries {
             assert!(skill.contains(&format!("\n### {}\n", e.name)), "{}", e.name);
         }
-        assert!(skill.contains("### Timeline\nProps: items: {when: string, title: string, detail?: string, state?: done|active|pending (default pending)}[]\n"));
+        assert!(skill.contains("### Timeline\nProps: items: {when: string, title: string, detail?: string, id?: string, ref?: string, state?: done|active|pending (default pending), until?: string}[], scale?: list|time, title?: string\n"), "{skill}");
         assert!(
             skill.contains("### Heading\nProps: text: string, level?: integer 1..4 (default 2)\n")
         );

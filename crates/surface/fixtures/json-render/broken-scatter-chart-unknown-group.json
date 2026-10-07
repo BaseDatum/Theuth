@@ -1,0 +1,57 @@
+{
+  "root": "s",
+  "elements": {
+    "s": {
+      "type": "ScatterChart",
+      "props": {
+        "title": "Effort vs value",
+        "xLabel": "Effort (days)",
+        "yLabel": "Value",
+        "groups": [
+          {
+            "id": "ui",
+            "label": "Desktop"
+          },
+          {
+            "id": "core",
+            "label": "Core"
+          }
+        ],
+        "points": [
+          {
+            "x": 2,
+            "y": 40,
+            "label": "cache",
+            "group": "infra",
+            "state": "active"
+          },
+          {
+            "x": 5,
+            "y": 12,
+            "label": "worker",
+            "group": "core"
+          },
+          {
+            "x": 1,
+            "y": 30,
+            "label": "tooltip",
+            "group": "ui"
+          },
+          {
+            "x": 8,
+            "y": 55,
+            "label": "charts",
+            "group": "ui",
+            "size": 3
+          },
+          {
+            "x": 3,
+            "y": 20,
+            "label": "a11y",
+            "group": "ui"
+          }
+        ]
+      }
+    }
+  }
+}

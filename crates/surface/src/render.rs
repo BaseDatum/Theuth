@@ -904,7 +904,34 @@ fn element(spec: &Spec, id: &str, width: usize, text_only: bool) -> Vec<Line> {
             }
             out
         }
+        // ---- 123 ELK family (W1) ----
+        Component::StateMachine(p) => placeholder("StateMachine", p.states.len(), "states"),
+        Component::Entities(p) => placeholder("Entities", p.entities.len(), "entities"),
+        Component::Swimlane(p) => placeholder("Swimlane", p.steps.len(), "steps"),
+        Component::GraphDelta(p) => placeholder("GraphDelta", p.after.nodes.len(), "nodes"),
+        // ---- 123 chart family (W2) ----
+        Component::BarChart(p) => placeholder("BarChart", p.series.len(), "series"),
+        Component::LineChart(p) => placeholder("LineChart", p.series.len(), "series"),
+        Component::ScatterChart(p) => placeholder("ScatterChart", p.points.len(), "points"),
+        Component::RadarChart(p) => placeholder("RadarChart", p.series.len(), "series"),
+        Component::Waterfall(p) => placeholder("Waterfall", p.steps.len(), "steps"),
+        Component::Funnel(p) => placeholder("Funnel", p.stages.len(), "stages"),
+        Component::Gantt(p) => placeholder("Gantt", p.tasks.len(), "tasks"),
+        Component::Quadrant(p) => placeholder("Quadrant", p.items.len(), "items"),
+        // ---- 123 part-of-whole + misc (W3) ----
+        Component::Treemap(p) => placeholder("Treemap", p.items.len(), "items"),
+        Component::Sankey(p) => placeholder("Sankey", p.flows.len(), "flows"),
+        Component::Venn(p) => placeholder("Venn", p.sets.len(), "sets"),
+        Component::Loop(p) => placeholder("Loop", p.steps.len(), "steps"),
+        Component::Layers(p) => placeholder("Layers", p.layers.len(), "layers"),
+        Component::Journey(p) => placeholder("Journey", p.stages.len(), "stages"),
+        Component::Fishbone(p) => placeholder("Fishbone", p.causes.len(), "causes"),
     }
+}
+
+/// 123 step 0: one dim line `*Name: n units*` until the owning wave lands the §4.4 lowering.
+fn placeholder(name: &str, n: usize, units: &str) -> Vec<Line> {
+    vec![vec![span(format!("*{name}: {n} {units}*"), DIM)]]
 }
 
 #[cfg(test)]

@@ -1,0 +1,42 @@
+{
+  "root": "t",
+  "elements": {
+    "t": {
+      "type": "Timeline",
+      "props": {
+        "title": "Incident 2026-10-03",
+        "scale": "time",
+        "items": [
+          {
+            "id": "alert",
+            "when": "2026-10-03T09:12:00Z",
+            "title": "Pager fires",
+            "state": "done",
+            "ref": "ops/runbook.md#L4"
+          },
+          {
+            "id": "triage",
+            "when": "2026-10-03T09:20:00Z",
+            "until": "2026-10-03T10:05:00Z",
+            "title": "Triage",
+            "detail": "two engineers",
+            "state": "done"
+          },
+          {
+            "id": "fix",
+            "when": "2026-10-03T10:05:00Z",
+            "until": "2026-10-03T11:30:00Z",
+            "title": "Rollback + fix",
+            "state": "active"
+          },
+          {
+            "id": "review",
+            "when": "2026-10-06",
+            "title": "Postmortem",
+            "state": "pending"
+          }
+        ]
+      }
+    }
+  }
+}

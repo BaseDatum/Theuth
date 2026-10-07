@@ -1,0 +1,102 @@
+{
+  "root": "g",
+  "elements": {
+    "g": {
+      "type": "Graph",
+      "props": {
+        "title": "Deployment",
+        "direction": "LR",
+        "groups": [
+          {
+            "id": "cloud",
+            "label": "Cloud",
+            "kind": "boundary"
+          },
+          {
+            "id": "vpc",
+            "label": "VPC",
+            "parent": "region"
+          },
+          {
+            "id": "db-net",
+            "label": "DB subnet",
+            "parent": "vpc",
+            "kind": "zone"
+          }
+        ],
+        "nodes": [
+          {
+            "id": "cdn",
+            "label": "CDN",
+            "icon": "globe",
+            "kind": "hexagon"
+          },
+          {
+            "id": "api",
+            "label": "API",
+            "sub": ":8080",
+            "tag": "SERVICE",
+            "group": "vpc",
+            "icon": "server",
+            "state": "active"
+          },
+          {
+            "id": "pg",
+            "label": "Postgres",
+            "kind": "cylinder",
+            "tag": "DB",
+            "group": "db-net",
+            "icon": "database"
+          },
+          {
+            "id": "q",
+            "label": "Jobs",
+            "kind": "circle",
+            "group": "vpc",
+            "icon": "queue"
+          },
+          {
+            "id": "note",
+            "label": "Blue/green since v1.4",
+            "kind": "note",
+            "state": "muted"
+          }
+        ],
+        "edges": [
+          {
+            "from": "cdn",
+            "to": "api",
+            "label": "HTTPS"
+          },
+          {
+            "from": "api",
+            "to": "pg",
+            "arrow": "both",
+            "label": "SQL"
+          },
+          {
+            "from": "api",
+            "to": "q",
+            "style": "dashed",
+            "state": "danger",
+            "arrow": "none"
+          }
+        ],
+        "legend": [
+          {
+            "label": "Live",
+            "state": "active"
+          },
+          {
+            "label": "At risk",
+            "state": "danger"
+          },
+          {
+            "label": "Async",
+            "style": "dashed"
+          }
+        ]
+      }
+    }
+  }
+}

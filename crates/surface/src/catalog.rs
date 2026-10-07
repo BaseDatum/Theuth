@@ -110,8 +110,8 @@ fn fields(schema: &Value) -> String {
 mod tests {
     use super::*;
 
-    /// The contract's thirty-eight names, in catalog order.
-    const NAMES: [&str; 38] = [
+    /// The contract's fifty-seven names, in catalog order.
+    const NAMES: [&str; 57] = [
         "Card",
         "Stack",
         "Grid",
@@ -150,6 +150,25 @@ mod tests {
         "FileList",
         "Kanban",
         "Calendar",
+        "StateMachine",
+        "Entities",
+        "Swimlane",
+        "GraphDelta",
+        "BarChart",
+        "LineChart",
+        "ScatterChart",
+        "RadarChart",
+        "Waterfall",
+        "Funnel",
+        "Gantt",
+        "Quadrant",
+        "Treemap",
+        "Sankey",
+        "Venn",
+        "Loop",
+        "Layers",
+        "Journey",
+        "Fishbone",
     ];
 
     #[test]
@@ -167,7 +186,7 @@ mod tests {
     fn compact_lists_every_component_with_props() {
         let compact = catalog_compact();
         let parts: Vec<&str> = compact.split(" · ").collect();
-        assert_eq!(parts.len(), 38, "{compact}");
+        assert_eq!(parts.len(), 57, "{compact}");
         assert!(compact.starts_with("Card(description?, title?) · Stack(direction?, gap?) · Grid(columns) · Separator() · Heading(text, level?)"), "{compact}");
         assert!(
             compact.contains("KeyValueList(items[{key, value}])"),
@@ -179,7 +198,7 @@ mod tests {
         );
         assert!(compact.contains("Table(columns, rows)"), "{compact}");
         assert!(
-            compact.contains("Tabs(labels) · Accordion(titles) · Graph(nodes[{id, label, group?, kind?, ref?, state?}], edges[{from, to, label?, style?}], direction?, groups[{id, label}]?) · Sequence(actors[{id, label}], steps[{from, to, label, ref?, style?}], title?) · Steps(items[{title, detail?}]) · Callout(text, title?, variant?)"),
+            compact.contains("Tabs(labels) · Accordion(titles) · Graph(nodes[{id, label, group?, icon?, kind?, ref?, state?, sub?, tag?}], edges[{from, to, arrow?, label?, state?, style?}], direction?, groups[{id, label, kind?, parent?}]?, legend[{label, kind?, state?, style?}]?, title?) · Sequence(actors[{id, label}], steps[{from, to, label, note?, ref?, state?, style?}], fragments[{kind, from, to, else?, label?}]?, title?) · Steps(items[{title, detail?}]) · Callout(text, title?, variant?)"),
             "{compact}"
         );
         assert!(
@@ -187,7 +206,15 @@ mod tests {
             "{compact}"
         );
         assert!(
-            compact.ends_with("Kanban(columns[{title, cards[{title, detail?, tag?}]}]) · Calendar(days[{day, label?, state?}], title?)"),
+            compact.contains("Kanban(columns[{title, cards[{title, detail?, id?, ref?, row?, state?, tag?}], limit?}], cut?, rows?, title?) · Calendar(days[{day, label?, state?}], title?) · StateMachine(states[{id, label, kind?, ref?, state?, sub?}], transitions[{from, to, guard?, label?, state?, style?}], direction?, title?) · Entities("),
+            "{compact}"
+        );
+        assert!(
+            compact.contains("GraphDelta(before, after, direction?, title?) · BarChart(labels, series[{name, values, state?}], title?, unit?, variant?, xLabel?, yLabel?) · LineChart("),
+            "{compact}"
+        );
+        assert!(
+            compact.ends_with("Journey(stages, rows[{label, cells}], mood?, pains[{stage, text}]?, title?) · Fishbone(effect, causes[{category, items}], title?)"),
             "{compact}"
         );
     }

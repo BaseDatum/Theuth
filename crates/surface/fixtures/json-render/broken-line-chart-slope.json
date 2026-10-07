@@ -1,0 +1,48 @@
+{
+  "root": "l",
+  "elements": {
+    "l": {
+      "type": "LineChart",
+      "props": {
+        "title": "p95 latency by release",
+        "labels": [
+          "v1.0",
+          "v1.1",
+          "v1.2",
+          "v1.3",
+          "v1.4",
+          "v1.5"
+        ],
+        "series": [
+          {
+            "name": "chat",
+            "values": [
+              410,
+              380,
+              290,
+              310,
+              240,
+              220
+            ]
+          },
+          {
+            "name": "tools",
+            "values": [
+              120,
+              130,
+              110,
+              90,
+              95,
+              80
+            ],
+            "state": "muted"
+          }
+        ],
+        "variant": "slope",
+        "xLabel": "release",
+        "yLabel": "ms",
+        "unit": "ms"
+      }
+    }
+  }
+}

@@ -78,7 +78,9 @@ fn node_decl(id: &str, label: &str, kind: Option<GraphKind>) -> String {
         GraphKind::Pill => format!("{id}([{l}])"),
         GraphKind::Diamond => format!("{id}{{{l}}}"),
         GraphKind::Cylinder => format!("{id}[({l})]"),
-        GraphKind::Actor => format!("{id}(({l}))"),
+        GraphKind::Actor | GraphKind::Circle => format!("{id}(({l}))"),
+        GraphKind::Hexagon => format!("{id}{{{{{l}}}}}"),
+        GraphKind::Note => format!("{id}>{l}]"),
     }
 }
 
@@ -255,6 +257,9 @@ mod tests {
             group: group.map(Into::into),
             state: None,
             r#ref: None,
+            sub: None,
+            tag: None,
+            icon: None,
         }
     }
 
@@ -292,19 +297,27 @@ mod tests {
                     to: "db-main".into(),
                     label: Some("writes".into()),
                     style: Some(GraphEdgeStyle::Dashed),
+                    state: None,
+                    arrow: None,
                 },
                 GraphEdge {
                     from: "db_main".into(),
                     to: "db_main".into(),
                     label: None,
                     style: None,
+                    state: None,
+                    arrow: None,
                 },
             ],
             groups: Some(vec![GraphGroup {
                 id: "store".into(),
                 label: "Store".into(),
+                parent: None,
+                kind: None,
             }]),
             direction: Some(GraphDirection::TB),
+            legend: None,
+            title: None,
         };
         assert_eq!(
             to_mermaid(&p),

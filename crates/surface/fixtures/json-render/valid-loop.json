@@ -1,0 +1,33 @@
+{
+  "root": "l",
+  "elements": {
+    "l": {
+      "type": "Loop",
+      "props": {
+        "title": "Build loop",
+        "hub": "Learning",
+        "steps": [
+          {
+            "label": "Measure",
+            "note": "20 prompts"
+          },
+          {
+            "label": "Decide"
+          },
+          {
+            "label": "Build",
+            "state": "active",
+            "ref": "crates/surface/src/prompt.rs"
+          },
+          {
+            "label": "Ship"
+          },
+          {
+            "label": "Observe",
+            "state": "muted"
+          }
+        ]
+      }
+    }
+  }
+}

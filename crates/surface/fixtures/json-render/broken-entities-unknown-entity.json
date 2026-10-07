@@ -1,0 +1,120 @@
+{
+  "root": "e",
+  "elements": {
+    "e": {
+      "type": "Entities",
+      "props": {
+        "title": "Sessions schema",
+        "detail": "schema",
+        "entities": [
+          {
+            "id": "user",
+            "label": "users",
+            "kind": "table",
+            "fields": [
+              {
+                "name": "id",
+                "type": "uuid",
+                "key": "pk"
+              },
+              {
+                "name": "email",
+                "type": "text",
+                "key": "uk"
+              },
+              {
+                "name": "created_at",
+                "type": "timestamptz"
+              }
+            ],
+            "ref": "crates/store/src/schema.rs#L10-L20"
+          },
+          {
+            "id": "session",
+            "label": "sessions",
+            "kind": "table",
+            "fields": [
+              {
+                "name": "id",
+                "type": "uuid",
+                "key": "pk"
+              },
+              {
+                "name": "user_id",
+                "type": "uuid",
+                "key": "fk"
+              },
+              {
+                "name": "title",
+                "type": "text",
+                "nullable": true
+              }
+            ],
+            "state": "active"
+          },
+          {
+            "id": "turn",
+            "label": "turns",
+            "kind": "table",
+            "fields": [
+              {
+                "name": "id",
+                "type": "uuid",
+                "key": "pk"
+              },
+              {
+                "name": "session_id",
+                "type": "uuid",
+                "key": "fk"
+              },
+              {
+                "name": "cost_usd",
+                "type": "numeric",
+                "note": "per model"
+              }
+            ]
+          },
+          {
+            "id": "runner",
+            "label": "Runner",
+            "kind": "interface",
+            "fields": [],
+            "methods": [
+              {
+                "name": "run",
+                "sig": "(turn) -> Result"
+              }
+            ]
+          }
+        ],
+        "relations": [
+          {
+            "from": "user",
+            "to": "session",
+            "kind": "one-many",
+            "from_field": "id",
+            "to_field": "user_id"
+          },
+          {
+            "from": "session",
+            "to": "turn",
+            "kind": "one-many",
+            "from_field": "id",
+            "to_field": "session_id",
+            "label": "has"
+          },
+          {
+            "from": "turn",
+            "to": "runner",
+            "kind": "depends"
+          },
+          {
+            "from": "user",
+            "to": "order",
+            "kind": "one-many"
+          }
+        ]
+      }
+    }
+  }
+}

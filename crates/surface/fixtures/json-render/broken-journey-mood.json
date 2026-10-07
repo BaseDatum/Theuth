@@ -1,0 +1,53 @@
+{
+  "root": "j",
+  "elements": {
+    "j": {
+      "type": "Journey",
+      "props": {
+        "title": "First hour",
+        "stages": [
+          "Install",
+          "First chat",
+          "First diagram",
+          "First board"
+        ],
+        "rows": [
+          {
+            "label": "Does",
+            "cells": [
+              "downloads dmg",
+              "asks a question",
+              "asks for a plan",
+              "asks how X works"
+            ]
+          },
+          {
+            "label": "Thinks",
+            "cells": [
+              "is it safe?",
+              "fast enough?",
+              "oh, a chart",
+              "this is a doc"
+            ]
+          }
+        ],
+        "mood": [
+          0.2,
+          1.5,
+          0.9,
+          0.6
+        ],
+        "pains": [
+          {
+            "stage": 0,
+            "text": "notarisation wait"
+          },
+          {
+            "stage": 3,
+            "text": "board takes 40 s"
+          }
+        ]
+      }
+    }
+  }
+}

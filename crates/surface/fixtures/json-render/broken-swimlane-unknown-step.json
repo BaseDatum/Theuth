@@ -1,0 +1,98 @@
+{
+  "root": "s",
+  "elements": {
+    "s": {
+      "type": "Swimlane",
+      "props": {
+        "title": "Pull request flow",
+        "lanes": [
+          {
+            "id": "dev",
+            "label": "Developer"
+          },
+          {
+            "id": "ci",
+            "label": "CI"
+          },
+          {
+            "id": "rev",
+            "label": "Reviewer"
+          }
+        ],
+        "steps": [
+          {
+            "id": "push",
+            "lane": "dev",
+            "label": "Push branch",
+            "kind": "start"
+          },
+          {
+            "id": "build",
+            "lane": "ci",
+            "label": "Build + test",
+            "sub": "just check",
+            "ref": "justfile#L12-L30"
+          },
+          {
+            "id": "green",
+            "lane": "ci",
+            "label": "Green?",
+            "kind": "decision"
+          },
+          {
+            "id": "fix",
+            "lane": "dev",
+            "label": "Fix",
+            "state": "danger"
+          },
+          {
+            "id": "review",
+            "lane": "rev",
+            "label": "Review",
+            "state": "active"
+          },
+          {
+            "id": "merge",
+            "lane": "rev",
+            "label": "Merge",
+            "kind": "end",
+            "state": "done"
+          }
+        ],
+        "edges": [
+          {
+            "from": "push",
+            "to": "build"
+          },
+          {
+            "from": "build",
+            "to": "green"
+          },
+          {
+            "from": "green",
+            "to": "fix",
+            "label": "no",
+            "style": "dashed"
+          },
+          {
+            "from": "fix",
+            "to": "build"
+          },
+          {
+            "from": "green",
+            "to": "review",
+            "label": "yes"
+          },
+          {
+            "from": "review",
+            "to": "merge"
+          },
+          {
+            "from": "merge",
+            "to": "deploy"
+          }
+        ]
+      }
+    }
+  }
+}

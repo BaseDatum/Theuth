@@ -1,0 +1,79 @@
+{
+  "root": "s",
+  "elements": {
+    "s": {
+      "type": "Sequence",
+      "props": {
+        "title": "Fence correction round",
+        "actors": [
+          {
+            "id": "model",
+            "label": "Model"
+          },
+          {
+            "id": "loop",
+            "label": "Loop"
+          },
+          {
+            "id": "surface",
+            "label": "surface"
+          }
+        ],
+        "steps": [
+          {
+            "from": "model",
+            "to": "loop",
+            "label": "reply with fence"
+          },
+          {
+            "from": "loop",
+            "to": "surface",
+            "label": "check(text)",
+            "ref": "crates/surface/src/lib.rs#L154"
+          },
+          {
+            "from": "surface",
+            "to": "loop",
+            "label": "located errors",
+            "style": "return",
+            "state": "danger",
+            "note": "path + message"
+          },
+          {
+            "from": "loop",
+            "to": "model",
+            "label": "<surface_error>"
+          },
+          {
+            "from": "model",
+            "to": "loop",
+            "label": "corrected block",
+            "state": "done"
+          },
+          {
+            "from": "loop",
+            "to": "loop",
+            "label": "give up after 3",
+            "style": "async",
+            "note": "final=true"
+          }
+        ],
+        "fragments": [
+          {
+            "kind": "alt",
+            "from": 2,
+            "to": 4,
+            "label": "errors",
+            "else": 4
+          },
+          {
+            "kind": "loop",
+            "from": 5,
+            "to": 9,
+            "label": "≤ 3 rounds"
+          }
+        ]
+      }
+    }
+  }
+}

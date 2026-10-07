@@ -151,6 +151,8 @@ mod tests {
             label: label.into(),
             style,
             r#ref: r.map(Into::into),
+            note: None,
+            state: None,
         }
     }
 
@@ -176,6 +178,7 @@ mod tests {
                 step("a-b", "end", "ok", Some(SequenceStyle::Return), None),
                 step("end", "end", "flush", Some(SequenceStyle::Async), None),
             ],
+            fragments: None,
         };
         assert_eq!(
             to_mermaid(&p),
@@ -200,6 +203,7 @@ mod tests {
                 step("v", "p", "errors", Some(SequenceStyle::Return), None),
                 step("p", "p", "repair", Some(SequenceStyle::Async), Some("a.rs")),
             ],
+            fragments: None,
         };
         assert_eq!(
             plain_text(&steps_lines(&p, 0)),

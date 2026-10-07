@@ -426,6 +426,28 @@ fn type_name(c: &Component) -> &'static str {
         Component::FileList(_) => "FileList",
         Component::Kanban(_) => "Kanban",
         Component::Calendar(_) => "Calendar",
+        // ---- 123 ELK family (W1) ----
+        Component::StateMachine(_) => "StateMachine",
+        Component::Entities(_) => "Entities",
+        Component::Swimlane(_) => "Swimlane",
+        Component::GraphDelta(_) => "GraphDelta",
+        // ---- 123 chart family (W2) ----
+        Component::BarChart(_) => "BarChart",
+        Component::LineChart(_) => "LineChart",
+        Component::ScatterChart(_) => "ScatterChart",
+        Component::RadarChart(_) => "RadarChart",
+        Component::Waterfall(_) => "Waterfall",
+        Component::Funnel(_) => "Funnel",
+        Component::Gantt(_) => "Gantt",
+        Component::Quadrant(_) => "Quadrant",
+        // ---- 123 part-of-whole + misc (W3) ----
+        Component::Treemap(_) => "Treemap",
+        Component::Sankey(_) => "Sankey",
+        Component::Venn(_) => "Venn",
+        Component::Loop(_) => "Loop",
+        Component::Layers(_) => "Layers",
+        Component::Journey(_) => "Journey",
+        Component::Fishbone(_) => "Fishbone",
     }
 }
 

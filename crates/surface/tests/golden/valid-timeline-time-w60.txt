@@ -1,0 +1,5 @@
+● 2026-10-03T09:12:00Z  Pager fires
+● 2026-10-03T09:20:00Z  Triage
+│                       two engineers
+◉ 2026-10-03T10:05:00Z  Rollback + fix
+○ 2026-10-06  Postmortem
