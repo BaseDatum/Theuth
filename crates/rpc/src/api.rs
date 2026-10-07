@@ -6271,7 +6271,11 @@ mod tests {
                 let cap = Capture::spawn(Capture(tx));
                 rt.subscribe::<Capture, PagePreviewRequested>(&cap).await;
                 rt.subscribe::<Capture, PagePreviewResolved>(&cap).await;
-                Self { rt, methods, events }
+                Self {
+                    rt,
+                    methods,
+                    events,
+                }
             }
 
             /// Run the tool for `session` on its own task; the width defaults.
@@ -6350,7 +6354,10 @@ mod tests {
             assert!(h.answer(id, &started()).await);
             assert!(h.answer(id, &done(612)).await);
             assert!(!h.answer(id, &done(700)).await, "second Done is late");
-            assert!(!h.answer(id, &started()).await, "Started after Done is late");
+            assert!(
+                !h.answer(id, &started()).await,
+                "Started after Done is late"
+            );
             let out = call.await.unwrap();
             assert!(!out.is_error, "{}", out.content);
             assert!(out.content.starts_with(

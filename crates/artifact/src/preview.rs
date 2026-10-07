@@ -375,7 +375,10 @@ mod tests {
         assert_eq!(s["console"][1]["level"], "error");
 
         let out = done(400, 80, vec![], false, Client::Web);
-        assert!(out.content.starts_with("Previewed at 400 px: contentHeight 80, 0 errors."));
+        assert!(
+            out.content
+                .starts_with("Previewed at 400 px: contentHeight 80, 0 errors.")
+        );
         assert!(out.content.contains("did not finish loading"));
     }
 
@@ -383,9 +386,7 @@ mod tests {
     fn answer_without_a_pending_id_is_false() {
         assert!(!answer(
             PreviewId(uuid::Uuid::now_v7()),
-            PagePreviewAnswer::Failed {
-                reason: "x".into()
-            }
+            PagePreviewAnswer::Failed { reason: "x".into() }
         ));
     }
 
@@ -403,7 +404,13 @@ mod tests {
             "loaded": true, "client": "desktop"
         }))
         .unwrap();
-        assert!(matches!(d, PagePreviewAnswer::Done { content_height: 10, .. }));
+        assert!(matches!(
+            d,
+            PagePreviewAnswer::Done {
+                content_height: 10,
+                ..
+            }
+        ));
         let r = PagePreviewResolved {
             id: PreviewId(uuid::Uuid::nil()),
         };
