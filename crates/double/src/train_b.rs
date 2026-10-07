@@ -27,9 +27,8 @@ use candle_core::backprop::GradStore;
 use chrono::{DateTime, Utc};
 use decision::candle::inputs;
 use decision::candle::lora::{AdamW, Base, Lora, TRAIN_BUILD, weighted_nll_sum};
-use decision::engine::with_none;
 use decision::laya::{Sequence, collate, labels as option_labels};
-use decision::question::{Candidate, Question};
+use decision::question::Question;
 use serde::{Deserialize, Serialize};
 
 use crate::config::DoubleConfig;
@@ -144,7 +143,8 @@ pub struct TrainConfig {
     pub max_rows: usize,
     /// Rehearsal sampler: newest rows kept per class, and the fixed replay sample from the rest.
     pub rehearsal_per_class: usize,
-    /// Cumulative `running` time per run.
+    /// `running` time per call to [`TierB::train`] (the scheduler's per-night cap): the call
+    /// pauses at it and the next call, resuming from the checkpoint, gets a fresh cap.
     pub run_cap: Duration,
     /// Checkpoint every N optimiser steps (and at any pause).
     pub checkpoint_every: usize,
@@ -211,10 +211,19 @@ impl PauseSignal for Never {
 }
 
 /// Seconds since the owner's last keyboard / mouse event.
-// 126 I: bind to `platform::idle` (W2) — `impl IdleSeconds for platform::idle::Idle`.
 pub trait IdleSeconds: Send + Sync {
     /// Seconds of idleness so far.
     fn idle_seconds(&self) -> f64;
+}
+
+/// The engine's idle clock ([`platform::idle::idle_secs`]); a platform that cannot say
+/// reads as 0 s = owner active, so the local run pauses (W2's conservative rule).
+pub struct PlatformIdle;
+
+impl IdleSeconds for PlatformIdle {
+    fn idle_seconds(&self) -> f64 {
+        platform::idle::idle_secs().unwrap_or(0.0)
+    }
 }
 
 /// The local path's abort-on-activity detector (Revision 2 ruling 1): the owner touched the
@@ -381,23 +390,11 @@ struct Example {
     weight: f32,
 }
 
-/// The card as the model reads it: the class key as instructions, the options as candidate ids,
-/// `none` appended, the card text as state.
-// 126 I: must agree with W1's `predict.rs` rendering, else the adapter trains on a different
-// prompt than it predicts on.
+/// The card as the model reads it: the options as candidate ids, `none` appended, the card
+/// text as state.
+// parity: one rendering for training and inference (predict::question)
 pub fn question(row: &BundleRow) -> Question {
-    with_none(Question::Choice {
-        instructions: row.class.clone(),
-        candidates: row
-            .options
-            .iter()
-            .map(|o| Candidate {
-                id: o.clone(),
-                text: String::new(),
-            })
-            .collect(),
-        state: row.card_text.clone(),
-    })
+    crate::predict::question(&row.options, row.card_text.clone())
 }
 
 /// Render rows; a row whose label is no option, or whose markers fall past `seq`, is dropped
@@ -722,7 +719,7 @@ impl TierB {
             let mut order: Vec<usize> = (0..train.len()).collect();
             Rng::new(state.seed ^ (state.epoch as u64 + 1)).shuffle(&mut order);
             while state.cursor < train.len() {
-                if elapsed(&state) >= cfg.run_cap || hooks.pause.should_pause() {
+                if started.elapsed() >= cfg.run_cap || hooks.pause.should_pause() {
                     return pause_now(&mut state, &lora, &opt);
                 }
                 let end = (state.cursor + cfg.effective_batch).min(train.len());

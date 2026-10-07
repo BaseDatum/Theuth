@@ -55,13 +55,17 @@ pub struct Finished {
 }
 
 /// One tier's training procedure, cut into steps the scheduler can pause
-/// between. Tier A is one step; W3's Tier B returns one step per epoch.
+/// between. Tier A is one step; Tier B's steps are resume budgets
+/// (`crate::tier_b`).
 #[async_trait::async_trait]
 pub trait Trainer: Send {
     /// How many steps; the progress denominator.
     fn steps(&self) -> u32;
-    /// Run step `i` (0-based). `Ok(Some(_))` on the last step; `Ok(None)`
-    /// before it — or on the last step when there was nothing to train.
+    /// Called once before step 0 with the `runs.id` and venue string so a
+    /// trainer can publish its own `DoubleTrainingState` progress.
+    fn bind(&mut self, _run_id: &str, _venue: &str) {}
+    /// Run step `i` (0-based). `Ok(Some(_))` ends the run (any step);
+    /// `Ok(None)` = not done yet — or, on the last step, nothing to train on.
     async fn step(&mut self, i: u32) -> anyhow::Result<Option<Finished>>;
 }
 
@@ -136,6 +140,7 @@ pub async fn run_one(d: &Deps, run: &mut RunRow, trainer: &mut dyn Trainer) -> R
 async fn drive(d: &Deps, run: &mut RunRow, trainer: &mut dyn Trainer) -> anyhow::Result<RunState> {
     d.transition(run, RunState::Eligible, None, "trigger met")
         .await?;
+    trainer.bind(&run.id, &run.venue);
     wait_for_preconditions(d, run).await?;
 
     let needs_slot = run.tier != Tier::A;
@@ -195,7 +200,7 @@ async fn drive(d: &Deps, run: &mut RunRow, trainer: &mut dyn Trainer) -> anyhow:
         finished = trainer.step(i).await?;
         spent += started.elapsed();
 
-        if i + 1 == steps {
+        if finished.is_some() || i + 1 == steps {
             break;
         }
         // Step boundary: cap, then preconditions.
@@ -455,8 +460,20 @@ impl Scheduler {
             (Tier::A, _) => Resolved::Local,
             (_, r) => r,
         };
+        if tier == Tier::B
+            && resolved == Resolved::Local
+            && !crate::train_b::TierB::local_allowed(&self.config.lock().clone())
+        {
+            return Err(
+                "local tier b is off: set double.training.tiers.b.local: true, or add a GPU node to the mesh"
+                    .into(),
+            );
+        }
         let Some(mut trainer) = (self.factory)(tier, &resolved) else {
-            return Err(format!("tier {} is not available until W3", tier.as_str()));
+            return Err(format!(
+                "tier {} is not available on venue {resolved}",
+                tier.as_str()
+            ));
         };
         let mut run = RunRow {
             id: uuid::Uuid::now_v7().to_string(),

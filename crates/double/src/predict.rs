@@ -186,13 +186,13 @@ pub struct Prediction {
     pub explain: Explain,
 }
 
-/// The stacking hook. 126 W2: head — a per-class logistic regression over
-/// `[oracle ‖ memory ‖ prior ‖ one-hot requester ‖ one-hot risk]` with a fitted
-/// temperature replaces [`blend`] when a trained version is active; until
-/// then [`NoHead`] is the only implementation.
+/// The stacking hook: [`NoHead`] blends by hand; [`ArtifactsHead`] runs W2's
+/// Tier A per-class logistic regression (`train_a::Artifacts`) when a
+/// trained version is active.
 pub trait Head: Send + Sync {
-    /// Probabilities over the options plus `none`, from the parts.
-    fn blend(&self, f: &Features<'_>) -> Vec<f32>;
+    /// Probabilities over the options plus `none`, from the parts and the
+    /// oracle's pooled embedding (`None` when the oracle did not run).
+    fn blend(&self, f: &Features<'_>, embedding: Option<&[f32]>) -> Vec<f32>;
 }
 
 /// The head's inputs (§7.1 step 5), each over the card's options plus `none` last.
@@ -213,8 +213,34 @@ pub struct Features<'a> {
 pub struct NoHead;
 
 impl Head for NoHead {
-    fn blend(&self, f: &Features<'_>) -> Vec<f32> {
+    fn blend(&self, f: &Features<'_>, _: Option<&[f32]>) -> Vec<f32> {
         blend(f)
+    }
+}
+
+/// Tier A's head: the artefacts' own k-NN vote over `options` (the card's
+/// plus `none` last) feeds the class head at the fitted temperature.
+pub struct ArtifactsHead<'a> {
+    /// The active version's heads, k-NN index and temperatures.
+    pub art: &'a crate::train_a::Artifacts,
+    /// The class key.
+    pub class: &'a str,
+    /// The requester string (`root`, `desk:<agent>`, …).
+    pub requester: &'a str,
+    /// The card's options plus `none` last, like `Features::oracle`.
+    pub options: &'a [String],
+    /// The k-NN decay reference.
+    pub now: DateTime<Utc>,
+}
+
+impl Head for ArtifactsHead<'_> {
+    fn blend(&self, f: &Features<'_>, embedding: Option<&[f32]>) -> Vec<f32> {
+        // An empty embedding has cosine 0 with everything: the vote is the floor alone.
+        let knn = self
+            .art
+            .knn_vote(self.class, self.options, embedding.unwrap_or(&[]), self.now);
+        self.art
+            .predict(self.class, self.requester, self.options, f.oracle, &knn)
     }
 }
 
@@ -346,10 +372,33 @@ pub fn oracle_probs(options: &[String], d: &decision::Decision) -> Vec<f32> {
     out
 }
 
-/// Predict one card (§7.1 steps 1–5 without the head). `options` are the
-/// card's labels in card order; `memory` the class's remembered decisions.
+/// The card prompt. One rendering for inference and Tier B training
+/// (`train_b::question`): the options as candidate ids, `none` appended.
+pub const INSTRUCTIONS: &str =
+    "Which option will the owner choose for this card? Choose none to escalate to the owner.";
+
+/// The engine's question for a card: [`INSTRUCTIONS`], `options` as candidate
+/// ids (empty text), `none` appended, `state` as the state.
+pub fn question(options: &[String], state: String) -> Question {
+    decision::engine::with_none(Question::Choice {
+        instructions: INSTRUCTIONS.to_owned(),
+        candidates: options
+            .iter()
+            .map(|o| Candidate {
+                id: o.clone(),
+                text: String::new(),
+            })
+            .collect(),
+        state,
+    })
+}
+
+/// Predict one card (§7.1 steps 1–5). `options` are the card's labels in
+/// card order; `memory` the class's remembered decisions; `head` the stacker.
+#[allow(clippy::too_many_arguments)]
 pub async fn predict(
     oracle: &dyn Oracle,
+    head: &dyn Head,
     kind: CardKind,
     options: &[String],
     state: String,
@@ -359,19 +408,7 @@ pub async fn predict(
 ) -> Prediction {
     let ask = decision::Ask::new(
         format!("double.{}", kind.as_str()).as_str(),
-        Question::Choice {
-            instructions: "Which option will the owner choose for this card? Choose none to \
-                           escalate to the owner."
-                .to_owned(),
-            candidates: options
-                .iter()
-                .map(|o| Candidate {
-                    id: o.clone(),
-                    text: String::new(),
-                })
-                .collect(),
-            state,
-        },
+        question(options, state),
     );
     let decision = match oracle.decide(ask).await {
         Ok(d) => Some(d),
@@ -407,7 +444,7 @@ pub async fn predict(
         prior: &pri,
         n_eff,
     };
-    let probs = blend(&f);
+    let probs = head.blend(&f, embedding.as_deref());
     let top = probs
         .iter()
         .enumerate()
@@ -554,6 +591,7 @@ pub(crate) mod tests {
                 Question::Choice { candidates, .. } => candidates
                     .iter()
                     .map(|c| c.id.clone())
+                    .filter(|id| id != NONE)
                     .chain(std::iter::once(NONE.to_owned()))
                     .collect(),
                 Question::Bool { .. } => vec!["true".into(), "false".into()],
@@ -610,6 +648,7 @@ pub(crate) mod tests {
         let o = FakeOracle::new(vec![0.7, 0.2, 0.1], Some(vec![1.0, 0.0]));
         let p = predict(
             &o,
+            &NoHead,
             CardKind::Approval,
             &opts(),
             "s".into(),
@@ -630,6 +669,7 @@ pub(crate) mod tests {
         let o = FakeOracle::new(vec![0.2, 0.1, 0.7], None);
         let p = predict(
             &o,
+            &NoHead,
             CardKind::Ask,
             &opts(),
             "s".into(),
@@ -645,6 +685,7 @@ pub(crate) mod tests {
         let o = FakeOracle::new(vec![0.5, 0.4, 0.1], None);
         let p = predict(
             &o,
+            &NoHead,
             CardKind::Ask,
             &opts(),
             "s".into(),
@@ -664,6 +705,7 @@ pub(crate) mod tests {
         o.fail = true;
         let p = predict(
             &o,
+            &NoHead,
             CardKind::Approval,
             &opts(),
             "s".into(),
@@ -686,6 +728,7 @@ pub(crate) mod tests {
             .collect();
         let p = predict(
             &o,
+            &NoHead,
             CardKind::Approval,
             &opts(),
             "s".into(),
@@ -717,6 +760,7 @@ pub(crate) mod tests {
             .collect();
         let p = predict(
             &o,
+            &NoHead,
             CardKind::Approval,
             &opts(),
             "s".into(),
@@ -734,6 +778,7 @@ pub(crate) mod tests {
         m.extend((0..15).map(|_| mem(vec![0.0, 1.0], "Allow", 2)));
         let p = predict(
             &o,
+            &NoHead,
             CardKind::Approval,
             &opts(),
             "s".into(),

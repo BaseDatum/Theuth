@@ -15,6 +15,7 @@
 //! - [`train_a`]: Tier A — temperatures, k-NN index, logistic heads (§7.2).
 //! - [`sched`] + [`precond`]: the training cycle and its preconditions (§8.1–8.3).
 //! - [`venue`]: `auto | local | node:<name> | off` (§8.4).
+//! - [`tier_b`]: Tier B glued to the scheduler and the mesh (local / node trainers, the node runner).
 //! - [`versions`]: `models/<version>/`, the `active` pointer, rollback (§8.5).
 //!
 //! Wave C (this file's shape) is the contract; the behaviour lands in the
@@ -34,6 +35,7 @@ pub mod precond;
 pub mod predict;
 pub mod sched;
 pub mod store;
+pub mod tier_b;
 pub mod tool;
 pub mod train_a;
 pub mod train_b;
@@ -89,34 +91,71 @@ impl runtime::Plugin for DoublePlugin {
             }
         };
         let oracle = std::sync::Arc::new(predict::EngineOracle);
-        if let Err(e) = actor::start(rt, store.clone(), cfg.clone(), oracle).await {
-            tracing::warn!("double actor not started: {e:#}");
-        }
-        // 126 W2: the scheduler (Tier A locally; W3 wraps `tier_a_factory` to add
-        // Tier B) and the `theuth/double/1` node side (refusing until W3).
-        let factory = sched::tier_a_factory(
+        let handle = match actor::start(rt, store.clone(), cfg.clone(), oracle).await {
+            Ok(a) => Some(actor::Handle(a)),
+            Err(e) => {
+                tracing::warn!("double actor not started: {e:#}");
+                None
+            }
+        };
+        // 126 W2 + W3: the scheduler (Tier A locally, Tier B locally or on a mesh
+        // node) and the `theuth/double/1` node side.
+        let decision_cfg: decision::DecisionConfig = rt.section("decision").unwrap_or_default();
+        let ckpt = tier_b::checkpoint_dir(&decision_cfg, &rt.data_dir);
+        let base_hash = tier_b::base_hash(&ckpt).unwrap_or_else(|e| {
+            tracing::warn!(
+                "double: checkpoint hash unavailable ({e:#}); using the checkpoint name"
+            );
+            cfg.model.checkpoint.clone()
+        });
+        let factory = tier_b::factory(
+            rt.clone(),
             store.clone(),
             versions::models_dir(&rt.data_dir),
-            // ponytail: the checkpoint *name* stands in for its sha256 until W3
-            // (the decision crate owns the checkpoint path and its `.sha256` sidecar).
-            cfg.model.checkpoint.clone(),
+            cfg.clone(),
+            rt.data_dir.clone(),
+            decision_cfg.clone(),
+            base_hash,
         );
         if let Err(e) = sched::start(rt.clone(), store.clone(), cfg.clone(), factory) {
             tracing::warn!("double scheduler not started: {e:#}");
         }
-        tokio::spawn(mesh::serve(rt.clone(), std::sync::Arc::new(mesh::NotYet)));
-        // 126 W1: hand the actor's handle (`impl tool::Seams`) to `tool::register`
-        // in place of `tool::NotYet`.
-        let seams: std::sync::Arc<dyn tool::Seams> = std::sync::Arc::new(tool::NotYet(cfg));
-        let rt = rt.clone();
+        tokio::spawn(mesh::serve(
+            rt.clone(),
+            std::sync::Arc::new(tier_b::NodeRunner::new(
+                rt.data_dir.clone(),
+                cfg.clone(),
+                decision_cfg,
+            )),
+        ));
+        // The chat tools call the actor through `tool::Seams`; the roster inbox pulls
+        // the "answers in 14 s — take over" rows through `attention::Source`.
+        let seams: std::sync::Arc<dyn tool::Seams> = match &handle {
+            Some(h) => std::sync::Arc::new(h.clone()),
+            None => std::sync::Arc::new(tool::NotYet(cfg)),
+        };
+        let rt_tools = rt.clone();
         tokio::spawn(async move {
-            if let Some(reg) = rt
+            if let Some(reg) = rt_tools
                 .lookup_when::<tools::ToolRegistry>(tools::REGISTRY_ACTOR)
                 .await
             {
                 tool::register(&reg, seams).await;
             }
         });
+        if let Some(h) = handle {
+            let rt = rt.clone();
+            tokio::spawn(async move {
+                if let Some(inbox) = rt
+                    .lookup_when::<roster::attention::Attention>(roster::attention::ATTENTION_ACTOR)
+                    .await
+                {
+                    let _ = inbox
+                        .tell(roster::attention::RegisterSource(std::sync::Arc::new(h)))
+                        .await;
+                }
+            });
+        }
         Ok(())
     }
 }

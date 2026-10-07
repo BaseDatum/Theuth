@@ -29,7 +29,7 @@ use crate::config::DoubleConfig;
 use crate::events::{DoubleAnswered, DoublePredicted};
 use crate::labels::{self, Journal, Turns};
 use crate::ladder::{self, Scored};
-use crate::predict::{self, ClassStats, NONE, Oracle};
+use crate::predict::{self, ArtifactsHead, ClassStats, Head, NONE, NoHead, Oracle};
 use crate::store::{BASELINE, ClassRow, ExampleRow, PredictionRow, Store};
 use crate::types::{
     DoubleClass, DoubleClassDetail, DoubleExample, DoubleRun, DoubleStatus, ForgetTarget,
@@ -72,7 +72,8 @@ pub struct ClassDetail(pub String);
 #[derive(Clone, Copy, Debug)]
 pub struct Pause(pub bool);
 
-/// `ask` → `Result<u32, String>`: examples removed (`double_forget`).
+/// `ask` → `Result<u32, String>`: examples removed (`double_forget`); an
+/// `Examples` id matches `examples.id` or the card's `question_id`.
 #[derive(Clone, Debug)]
 pub struct Forget(pub ForgetTarget);
 
@@ -97,6 +98,11 @@ pub struct Republish;
 /// in the last [`ACTED_TTL`]. The roster's inbox merges them (hand-off).
 #[derive(Clone, Copy, Debug, Default)]
 pub struct ListAttention;
+
+/// `ask` → `()`: replace the live config (`double_settings_set` without the
+/// scheduler; the bus path is `sched::SettingsChanged`).
+#[derive(Clone, Debug)]
+pub struct SetConfig(pub DoubleConfig);
 
 /// Internal: the L2 grace ran out (or L3: at once).
 #[derive(Clone, Debug)]
@@ -153,6 +159,8 @@ pub struct Double {
     goals: HashMap<SessionId, String>,
     mcp: HashMap<String, bool>,
     requesters: HashMap<SessionId, Requester>,
+    /// The version predictions name (W2): reloaded on `DoubleVersionActivated`.
+    active: crate::versions::ActiveVersion,
 }
 
 impl kameo::Actor for Double {
@@ -182,6 +190,7 @@ pub async fn start(
             "double: sessions.sqlite has no `questions` table yet; labels from bus events only"
         );
     }
+    let active = load_active(&store, &rt.data_dir).await;
     let actor = Double::spawn_with_mailbox(
         Double {
             rt: rt.clone(),
@@ -200,6 +209,7 @@ pub async fn start(
             goals: HashMap::new(),
             mcp: HashMap::new(),
             requesters: HashMap::new(),
+            active,
         },
         runtime::subscriber_mailbox(),
     );
@@ -209,7 +219,22 @@ pub async fn start(
     rt.subscribe::<Double, AskRequested>(&actor).await;
     rt.subscribe::<Double, AskResolved>(&actor).await;
     rt.subscribe::<Double, AgentEvent>(&actor).await;
+    rt.subscribe::<Double, crate::sched::SettingsChanged>(&actor)
+        .await;
+    rt.subscribe::<Double, crate::events::DoubleVersionActivated>(&actor)
+        .await;
     Ok(actor)
+}
+
+/// The active version with its artefacts; `baseline` when the table or the
+/// files cannot be read (the zero-shot oracle alone, logged).
+async fn load_active(store: &Store, data_dir: &std::path::Path) -> crate::versions::ActiveVersion {
+    crate::versions::load_active(store, &crate::versions::models_dir(data_dir))
+        .await
+        .unwrap_or_else(|e| {
+            tracing::warn!("double: active version not loaded, using baseline: {e:#}");
+            crate::versions::ActiveVersion::baseline()
+        })
 }
 
 /// The option label of a `Decision`.
@@ -378,8 +403,25 @@ impl Double {
             self.goals.get(&session).map(String::as_str),
         );
         let memory = predict::memory(&self.store, &key).await?;
+        let labels: Vec<String> = options
+            .iter()
+            .cloned()
+            .chain(std::iter::once(NONE.to_owned()))
+            .collect();
+        let requester_s = requester.to_string();
+        let head: &dyn Head = match &self.active.artifacts {
+            Some(art) => &ArtifactsHead {
+                art,
+                class: &key,
+                requester: &requester_s,
+                options: &labels,
+                now,
+            },
+            None => &NoHead,
+        };
         let p = predict::predict(
             self.oracle.as_ref(),
+            head,
             kind,
             &options,
             state.clone(),
@@ -441,9 +483,10 @@ impl Double {
             3 => Some(now),
             _ => None,
         };
-        let version = match self.store.active_version().await? {
-            Some(v) => v.id,
-            None => V0.to_owned(),
+        let version = if self.active.artifacts.is_some() {
+            self.active.id.clone()
+        } else {
+            V0.to_owned()
         };
         // §7.1 step 6: both ledger rows BEFORE the chip.
         let baseline_top = p
@@ -815,23 +858,27 @@ impl Double {
                 ended_at: r.ended_at.map(|t| t.to_rfc3339()),
                 result: r.result,
             });
-        DoubleStatus {
+        let mut status = DoubleStatus {
             enabled: true,
             paused: self.paused,
-            active_version: self
-                .store
-                .active_version()
-                .await
-                .ok()
-                .flatten()
-                .map(|v| v.id),
+            active_version: self.active.row.as_ref().map(|v| v.id.clone()),
             last_run,
             next_window: None,
             venue: self.cfg.training.venue.clone(),
+            // 126 open: no per-session approvals count source in-process
+            // (`tools::GetApprovals` answers one session at a time).
             approvals_off_sessions: 0,
             kpis: ladder::kpis(&self.ledger(None, false).await, median),
             baseline: ladder::kpis(&self.ledger(None, true).await, median),
+        };
+        if let Ok(Some(sched)) = ActorRef::<crate::sched::Scheduler>::lookup(crate::sched::ACTOR)
+            && let Ok(s) = sched.ask(crate::sched::Status).await
+        {
+            status.last_run = s.last_run;
+            status.next_window = s.next_window;
+            status.venue = s.venue;
         }
+        status
     }
 
     /// Settle a pending card the owner answered: cancel the grace, label, reladder.
@@ -1123,6 +1170,35 @@ impl Message<Pause> for Double {
     }
 }
 
+impl Message<crate::sched::SettingsChanged> for Double {
+    type Reply = ();
+
+    async fn handle(&mut self, m: crate::sched::SettingsChanged, _: &mut Context<Self, ()>) {
+        self.cfg = m.0;
+    }
+}
+
+impl Message<SetConfig> for Double {
+    type Reply = ();
+
+    async fn handle(&mut self, m: SetConfig, _: &mut Context<Self, ()>) {
+        self.cfg = m.0;
+    }
+}
+
+impl Message<crate::events::DoubleVersionActivated> for Double {
+    type Reply = ();
+
+    async fn handle(
+        &mut self,
+        m: crate::events::DoubleVersionActivated,
+        _: &mut Context<Self, ()>,
+    ) {
+        self.active = load_active(&self.store, &self.rt.data_dir).await;
+        tracing::info!(version = %m.version, active = %self.active.id, "double: version activated");
+    }
+}
+
 impl Message<Classes> for Double {
     type Reply = Vec<DoubleClass>;
 
@@ -1220,7 +1296,8 @@ impl Message<Forget> for Double {
             ForgetTarget::Examples { ids } => {
                 let mut n = 0;
                 for id in ids {
-                    n += sqlx::query("DELETE FROM examples WHERE id = ?")
+                    n += sqlx::query("DELETE FROM examples WHERE id = ? OR question_id = ?")
+                        .bind(&id)
                         .bind(&id)
                         .execute(pool)
                         .await
@@ -1288,6 +1365,82 @@ impl Message<ListAttention> for Double {
             .collect();
         out.extend(self.acted.iter().rev().map(|a| a.item.clone()));
         out
+    }
+}
+
+// --- the handle other crates hold --------------------------------------
+
+/// The actor's handle as the chat tools (`tool::Seams`) and the roster inbox
+/// (`roster::attention::Source`) see it: every method is one `ask`, the
+/// training ones go to the scheduler (`sched::ACTOR`).
+#[derive(Clone)]
+pub struct Handle(pub ActorRef<Double>);
+
+fn sched_actor() -> anyhow::Result<ActorRef<crate::sched::Scheduler>> {
+    ActorRef::<crate::sched::Scheduler>::lookup(crate::sched::ACTOR)?
+        .ok_or_else(|| anyhow::anyhow!("double scheduler is not running"))
+}
+
+#[async_trait::async_trait]
+impl crate::tool::Seams for Handle {
+    async fn status(&self) -> anyhow::Result<DoubleStatus> {
+        Ok(self.0.ask(Status).await?)
+    }
+    async fn classes(&self) -> anyhow::Result<Vec<DoubleClass>> {
+        Ok(self.0.ask(Classes).await?)
+    }
+    async fn class(&self, key: &str) -> anyhow::Result<DoubleClassDetail> {
+        self.0
+            .ask(ClassDetail(key.to_owned()))
+            .await
+            .map_err(|e| anyhow::anyhow!("{e}"))
+    }
+    async fn train(
+        &self,
+        tier: crate::types::Tier,
+        venue: crate::types::Venue,
+    ) -> anyhow::Result<RunId> {
+        sched_actor()?
+            .ask(crate::sched::Train { tier, venue })
+            .await
+            .map_err(|e| anyhow::anyhow!("{e}"))
+    }
+    async fn pause(&self, on: bool) -> anyhow::Result<DoubleStatus> {
+        Ok(self.0.ask(Pause(on)).await?)
+    }
+    async fn forget(&self, target: ForgetTarget) -> anyhow::Result<u32> {
+        self.0
+            .ask(Forget(target))
+            .await
+            .map_err(|e| anyhow::anyhow!("{e}"))
+    }
+    async fn rollback(&self, version: &str) -> anyhow::Result<DoubleStatus> {
+        sched_actor()?
+            .ask(crate::sched::Rollback(version.to_owned()))
+            .await
+            .map_err(|e| anyhow::anyhow!("{e}"))
+    }
+    async fn set_cap(
+        &self,
+        class: &str,
+        rung: u8,
+        mutating_opt_in: bool,
+    ) -> anyhow::Result<DoubleClass> {
+        self.0
+            .ask(SetCap {
+                class: class.to_owned(),
+                rung,
+                mutating_opt_in,
+            })
+            .await
+            .map_err(|e| anyhow::anyhow!("{e}"))
+    }
+}
+
+#[async_trait::async_trait]
+impl roster::attention::Source for Handle {
+    async fn items(&self) -> Vec<AttentionItem> {
+        self.0.ask(ListAttention).await.unwrap_or_default()
     }
 }
 
