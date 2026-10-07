@@ -1121,7 +1121,7 @@ test('109 §8.2: the interrupted partial loads greyed and the regenerated reply\
       ],
       first_seq: 1,
       more: false,
-      resume: { turn: T, kind: 'interrupted', interrupted_at: at },
+      resume: { turn: T, kind: 'interrupted', interrupted_at: at, resumed: false },
     },
     'replace',
   )
@@ -1132,9 +1132,51 @@ test('109 §8.2: the interrupted partial loads greyed and the regenerated reply\
   expect(s.entries.map((e) => e.kind)).toEqual(['user', 'interrupted'])
   s = apply(s, { type: 'TextDelta', session: S, turn: T, text: 'half a reply' }, ctx())
   expect(s.entries.map((e) => e.kind)).toEqual(['user', 'assistant'])
-  // A live state already seen for the same turn outranks the row; another open turn replaces it; no row keeps what we have.
-  const row = { turn: T, kind: 'interrupted' as const, interrupted_at: at }
+  // A live state already seen for the same turn outranks the row; another open turn copies the row's flag; no row keeps what we have.
+  const row = { turn: T, kind: 'interrupted' as const, interrupted_at: at, resumed: false }
   expect(resumeFromLoaded(s.resume, row)).toBe(s.resume)
   expect(resumeFromLoaded(s.resume, { ...row, turn: 'other' })).toMatchObject({ turn: 'other', resumed: false })
+  expect(resumeFromLoaded(s.resume, { ...row, turn: 'other', resumed: true })).toMatchObject({ turn: 'other', resumed: true })
   expect(resumeFromLoaded(s.resume, undefined)).toBe(s.resume)
+})
+
+test('109 BANNER: a banner still "resuming…" flips to resumed when the row says so or the open turn is gone', () => {
+  const at = '2026-10-06T12:05:00Z'
+  const waiting = { turn: T, kind: 'interrupted' as const, at: Date.parse(at), resumed: false }
+  const row = { turn: T, kind: 'interrupted' as const, interrupted_at: at, resumed: false }
+  // Ask mode, still waiting: nothing changes.
+  expect(resumeFromLoaded(waiting, row)).toBe(waiting)
+  // The engine relaunched it before this client subscribed (the live TurnResumed was missed).
+  expect(resumeFromLoaded(waiting, { ...row, resumed: true })).toEqual({ ...waiting, resumed: true })
+  // The turn finished: no open turn in the row, so it ran.
+  expect(resumeFromLoaded(waiting, undefined)).toEqual({ ...waiting, resumed: true })
+  expect(resumeFromLoaded({ ...waiting, kind: 'suspended' }, undefined)).toEqual({ ...waiting, kind: 'suspended', resumed: true })
+  // Already resumed (with its report): kept as is until the next TurnStarted clears it.
+  const done = { ...waiting, resumed: true, report: { replayed: 1, skipped: [], lostJobs: 0 } }
+  expect(resumeFromLoaded(done, undefined)).toBe(done)
+  expect(resumeFromLoaded(done, row)).toBe(done)
+  expect(resumeFromLoaded(undefined, undefined)).toBeUndefined()
+})
+
+test('109 REPORT: a Loaded.resume row with a report fills the banner counts; a live report for the turn wins', () => {
+  const at = '2026-10-06T12:05:00Z'
+  const report = { replayed: [['c1', 'read_file'], ['c2', 'grep']] as [string, string][], interrupted: [['c3', 'git push']] as [string, string][], lost_jobs: ['j1'], children_restored: 0, children_handed_off: 0 }
+  const row = { turn: T, kind: 'interrupted' as const, interrupted_at: at, resumed: true, report }
+  const counts = { replayed: 2, skipped: ['git push'], lostJobs: 1 }
+  // A desktop that connected after the engine resumed: no banner yet, the row brings everything.
+  expect(resumeFromLoaded(undefined, row)).toEqual({ turn: T, kind: 'interrupted', at: Date.parse(at), resumed: true, report: counts })
+  // Still "resuming…" for the same turn: flips and takes the persisted counts.
+  const waiting = { turn: T, kind: 'interrupted' as const, at: Date.parse(at), resumed: false }
+  expect(resumeFromLoaded(waiting, row)).toEqual({ ...waiting, resumed: true, report: counts })
+  // A live report already held for the turn outranks the row's.
+  const live = { ...waiting, resumed: true, report: { replayed: 9, skipped: [], lostJobs: 0 } }
+  expect(resumeFromLoaded(live, row)).toBe(live)
+  // A row without a report keeps the live one.
+  expect(resumeFromLoaded(live, { ...row, report: undefined })).toBe(live)
+  // Another turn's row replaces banner and counts.
+  expect(resumeFromLoaded(live, { ...row, turn: 'other' })).toEqual({ turn: 'other', kind: 'interrupted', at: Date.parse(at), resumed: true, report: counts })
+  // The next turn still clears it.
+  const s = { ...empty(S), resume: resumeFromLoaded(undefined, row) }
+  expect(apply(s, { type: 'TurnStarted', session: S, turn: T, text: 'x', model: 'm', turn_seq: 1 }, ctx()).resume).toBe(s.resume)
+  expect(apply(s, { type: 'TurnStarted', session: S, turn: 'next', text: 'x', model: 'm', turn_seq: 2 }, ctx()).resume).toBeUndefined()
 })

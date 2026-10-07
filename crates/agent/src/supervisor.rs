@@ -6140,7 +6140,7 @@ impl Message<LoadSession> for Agents {
         self.mirror(m.session).await;
         let communication = self.communication.0.read().state(Some(m.session)).ok();
         // 109 W5 §10.3: the open turn's state and its partial, after everything stored.
-        let (resume, partial) = self.resume_state(m.session).await;
+        let (resume, partial) = self.resume_state(m.session, running).await;
         let mut history = history;
         history.extend(partial);
         Loaded {

@@ -463,20 +463,32 @@ function historyEntries(h: HistoryEntry): Entry[] {
   }
 }
 
-/** 109 §8.2: the banner from `Loaded.resume`; a live `TurnResumed`/`ResumeReport` already seen for the same turn
- * carries more than the row and wins. No open turn (or a different one) → the row's state, or nothing. */
+/** 109 §8.2: the banner's counts from a `ResumeReport` — the live event or the persisted row in `Loaded.resume`. */
+function reportCounts(r: { replayed: unknown[]; interrupted: [string, string][]; lost_jobs: unknown[] }): NonNullable<ResumeBanner["report"]> {
+  return { replayed: r.replayed.length, skipped: r.interrupted.map(([, name]) => name), lostJobs: r.lost_jobs.length };
+}
+
+/** 109 §8.2: the banner from `Loaded.resume`. No row while we show a turn still "resuming…" → the turn is no longer
+ * open, so it ran: flip `resumed` (the live `TurnResumed` was published before this client subscribed). Same turn →
+ * keep what we have, take the row's `resumed` if newer and its persisted report when we hold none (a live report for
+ * the turn wins). Another turn → the row's state and report. */
 export function resumeFromLoaded(
   cur: ResumeBanner | undefined,
   loaded: LoadedPage["resume"] | undefined,
 ): ResumeBanner | undefined {
-  if (!loaded) return cur;
-  if (cur?.turn === loaded.turn) return cur;
+  if (!loaded) return cur && !cur.resumed ? { ...cur, resumed: true } : cur;
+  const report = loaded.report ? reportCounts(loaded.report) : undefined;
+  if (cur?.turn === loaded.turn) {
+    const next = cur.resumed || !loaded.resumed ? cur : { ...cur, resumed: true };
+    return cur.report || !report ? next : { ...next, report };
+  }
   const at = Date.parse(loaded.interrupted_at);
   return {
     turn: loaded.turn,
     kind: loaded.kind,
     at: Number.isNaN(at) ? Date.now() : at,
-    resumed: false,
+    resumed: loaded.resumed,
+    report,
   };
 }
 
@@ -664,13 +676,7 @@ export function apply(
     }
     case "ResumeReport": {
       const base = slice.resume?.turn === e.turn ? slice.resume : { turn: e.turn, kind: "interrupted" as const, at: Date.now(), resumed: true };
-      return {
-        ...slice,
-        resume: {
-          ...base,
-          report: { replayed: e.replayed.length, skipped: e.interrupted.map(([, name]) => name), lostJobs: e.lost_jobs.length },
-        },
-      };
+      return { ...slice, resume: { ...base, report: reportCounts(e) } };
     }
     case "TurnSuspended":
       return { ...slice, resume: { turn: e.turn, kind: "suspended", at: Date.now(), resumed: false } };

@@ -161,7 +161,7 @@ export type ResumeBanner = {
   at: number;
   /** `TurnResumed` seen: the engine is replaying. */
   resumed: boolean;
-  /** `ResumeReport` counts; absent until it arrives. */
+  /** `ResumeReport` counts — live, or `Loaded.resume.report` persisted by the engine; absent until one arrives. */
   report?: { replayed: number; skipped: string[]; lostJobs: number };
 };
 

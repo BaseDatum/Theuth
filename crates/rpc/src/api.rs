@@ -6453,6 +6453,8 @@ mod tests {
                 turn,
                 kind: agent::durability::ResumeKind::Suspended,
                 interrupted_at: at,
+                resumed: false,
+                report: None,
             }),
             ..Default::default()
         };
