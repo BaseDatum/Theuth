@@ -105,6 +105,22 @@ only (`UndoQueueTests`, `KeyGrammarTests`, `CardModelTests`, `PanelModelTests`);
 (no error) but was not pressed; the glass backdrop renders (26.6.2) but was not inspected under Reduce
 Transparency.
 
+### 2.1 Signing on this machine (addendum A2)
+
+This Mac has no code-signing identity (spike SC): every local build is ad-hoc (`codesign --force --deep --sign -`).
+Observed here: the ad-hoc bundle **did** launch through LaunchServices — `open -g 'target/release/companion/Theuth
+Companion.app' --args --probe 15 --shareable` ran five times (12:51, 12:53, 12:56, 13:07, 13:35, 13:36) with no
+Gatekeeper refusal and no dialog (a locally built, never-quarantined bundle; `xattr -crs` runs before signing). No
+interactive work-around was needed or attempted. Fallbacks that were also exercised and keep the bundle context
+(`Bundle.main` resolves the `.app`, so the bundle id and `UNUserNotificationCenter` still work):
+`"target/release/companion/Theuth Companion.app/Contents/MacOS/Companion" --probe 5 --shareable` (12:50, exit 0,
+same log lines) and the bare debug/release executable `crates/desktop/companion/.build/release/Companion --probe 5
+--shareable` (13:14–13:30; bundle id `nil`, fine for the probe, not for notifications — W2 must test from the
+bundle). Release signing is the release Mac's job: `scripts/bundle-companion.sh` honours `THEUTH_SIGN_IDENTITY`
+(default `-`) and adds `--options runtime --timestamp` only when the identity is not `-`; the nested signing line,
+`just package-macos` + `just notarize-macos` and the App ID / provisioning steps are W1S's
+(`docs/design/130/spike-SC-entitlements-release.md` §Manual).
+
 ## 3. Deviations from the design and the brief
 
 - **No XCTest, no `swift test` without flags.** The Command Line Tools ship Swift Testing
