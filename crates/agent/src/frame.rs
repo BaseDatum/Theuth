@@ -330,6 +330,8 @@ pub fn strip_reasoning(m: &mut ChatMessage) {
 /// visually" sentence only when `attended`). Empty parts skipped, one blank
 /// line between the rest. A pure function of its inputs, so cache-stable for
 /// the session's lifetime.
+// Every argument is a distinct per-turn input; a struct would be built at the call sites alone.
+#[allow(clippy::too_many_arguments)]
 pub fn baseline(
     data_dir: &Path,
     identity: Option<&str>,
