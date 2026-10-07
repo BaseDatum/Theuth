@@ -1,12 +1,14 @@
-//! Glyphs the terminal draws and the strings the desktop shows as chrome carry no emoji: the TUI cannot
-//! draw them and the desktop draws lucide icons from kinds/enums (NO-EMOJI). Scans the crates that own such
-//! strings for emoji code points and names each offender as `file:line`. A line that legitimately needs one
-//! (a width fixture) ends with `// no-emoji: allow`.
+//! Strings the desktop shows as chrome carry no emoji: the desktop draws lucide icons from kinds/enums
+//! (NO-EMOJI; the desktop's own tree is scanned by `crates/desktop/ui/src/lib/no-emoji.test.ts`). Glyphs in
+//! terminal text — the TUI, and `surface`'s text lowerings for the TUI, Signal and export — are allowed
+//! (Sky, 2026-10-07: "glyphs in the tui are acceptable, just no emojis in desktop"), so only the crates whose
+//! strings reach the desktop as chrome are scanned: `agent` and `rpc`. Each offender is named as `file:line`;
+//! a line that legitimately needs one ends with `// no-emoji: allow`.
 
 use std::fs;
 use std::path::{Path, PathBuf};
 
-const CRATES: &[&str] = &["tui", "surface", "agent", "rpc"];
+const CRATES: &[&str] = &["agent", "rpc"];
 
 /// `Extended_Pictographic` ∪ `Emoji_Presentation` (Unicode 16) minus the arrows block and ™, which are
 /// typography; plus the emoji variation selector and the keycap combiner.
@@ -40,7 +42,7 @@ fn rs_files(dir: &Path, out: &mut Vec<PathBuf>) {
 }
 
 #[test]
-fn no_emoji_in_terminal_or_chrome_strings() {
+fn no_emoji_in_desktop_chrome_strings() {
     let crates = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
     let mut files = Vec::new();
     for c in CRATES {

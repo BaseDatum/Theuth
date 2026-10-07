@@ -8,6 +8,7 @@ use std::fmt::Display;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::LazyLock;
+use std::time::Duration;
 
 use ::search::SearchCategory;
 use a2a::{A2A_ACTOR, A2aActor, A2aStatus};
@@ -37,6 +38,7 @@ use agent::{
     SessionCost, SessionCostQuery, SessionOpen, SetProjectStyle, SetSessionProject,
 };
 use agent::{AwsProfiles, ListAwsProfiles, SetAwsProfile};
+use agent::{GetFavoriteModels, SetModelFavorite};
 use app::{
     AppDoc, AppToolResult, Apps, CallArgs, CallStatusOf, CallTool, CloseApp, GetApp, PublishFromUi,
 };
@@ -77,6 +79,7 @@ use signal::{Allow, Link, RemoveAllowed, SIGNAL_ACTOR, Signal, SignalStatus, Sta
 use slack::{SLACK_ACTOR, Slack, SlackStatus};
 use telegram::{PairingLink, TelegramStatus};
 use tokio::sync::broadcast;
+use tokio::time::Instant;
 use tools::git::SyncResult;
 use tools::{
     AddRepo, AddServer, Answer, Approval, ApprovalId, ApprovalRequested, ApprovalsState, AskId,
@@ -122,6 +125,10 @@ pub struct Info {
     /// `None` = the provider default. Absent from an older harness → `None`.
     #[serde(default)]
     pub default_effort: Option<String>,
+    /// `agent.favorite_models` (127 §1): starred model ids in starring order,
+    /// shown first in every picker. Absent from an older harness → empty.
+    #[serde(default)]
+    pub favorite_models: Vec<String>,
     /// The global approval switch (`tools.approvals`).
     pub approvals: ApprovalsState,
     /// `agent.compact_style`.
@@ -604,6 +611,11 @@ pub trait Api {
         model: String,
         manual: Option<bool>,
     ) -> RpcResult<ModelInfo>;
+    /// Star (`favorite: true`) or unstar `model` for every device on this engine (127 §2).
+    /// `model` resolves like `set_model` (unknown ids fail the same way). Returns the new
+    /// list in starring order; `FavoriteModelsChanged` follows on the stream when it changed.
+    #[method(name = "set_model_favorite")]
+    async fn set_model_favorite(&self, model: String, favorite: bool) -> RpcResult<Vec<String>>;
     /// Set (or clear with `None`) the reasoning effort for `session` from its next turn. Values
     /// come from the model's catalog entry (`ModelInfo.efforts`, or an integer token budget within
     /// `budget_min..budget_max`); `EffortChanged` follows on the stream. `manual` (default `true`):
@@ -1847,13 +1859,23 @@ pub trait Api {
     /// `answer_secret` from any engine.
     #[method(name = "secret_requests_list")]
     async fn secret_requests_list(&self) -> RpcResult<Vec<secrets::SecretRequest>>;
+    /// 129 §3.2: per-connection focus. Delta-class events (`TextDelta`, `ReasoningDelta`,
+    /// `ToolCallProgress`, `VisionProgress`) reach this connection's `subscribe_events` streams
+    /// only for `sessions`; every other event is unaffected. A connection that never calls this
+    /// receives everything. Replaces the previous set; `[]` means no deltas at all. The set dies
+    /// with the connection.
+    #[method(name = "set_event_focus", with_extensions)]
+    async fn set_event_focus(&self, sessions: Vec<SessionId>) -> RpcResult<()>;
     /// Stream every wire-visible event as `{"type": ..., ...}`, optionally
     /// only those carrying `session`. `descendants: true` (default `false`)
     /// also delivers events of every session in `session`'s subtree, plus
     /// `SubagentSpawned` whose `parent` is in it (19 §2.2). The first item is
     /// always a [`PendingPrompts`] snapshot; a client replaces its pending
     /// prompt set with it. A slow client sees `{"type":"Lagged","count":n}`
-    /// where `n` events were dropped, followed by a fresh snapshot.
+    /// where `n` non-delta events were dropped for it (129 §3.3), followed by
+    /// a fresh snapshot; delta-class events are merged while they wait and
+    /// are never lost that way. Deltas of sessions outside `set_event_focus`
+    /// are not delivered.
     #[subscription(name = "subscribe_events", unsubscribe = "unsubscribe_events", item = serde_json::Value, with_extensions)]
     async fn subscribe_events(
         &self,
@@ -1924,6 +1946,11 @@ pub type PrivateMap = Arc<RwLock<HashMap<SessionId, (SessionId, u64)>>>;
 
 static PRIVATE: LazyLock<PrivateMap> = LazyLock::new(Default::default);
 
+/// 129 §3.2: `connection id → sessions` whose delta-class events the connection
+/// wants, as the strings the serialized `session` field carries. No entry means
+/// everything; the entry is removed when the connection closes.
+pub type FocusMap = Arc<RwLock<HashMap<u64, Arc<HashSet<String>>>>>;
+
 /// Server state: the event feed and the runtime (for `shutdown`).
 pub struct Server {
     /// Feed from [`crate::bridge`].
@@ -1932,6 +1959,8 @@ pub struct Server {
     pub rt: Runtime,
     /// Private-tree membership for admission of events; see [`PrivateMap`].
     pub private: PrivateMap,
+    /// Per-connection delta focus; see [`FocusMap`].
+    pub focus: FocusMap,
 }
 
 impl Server {
@@ -1942,6 +1971,7 @@ impl Server {
             events: broadcast::channel(1).0,
             rt,
             private: PRIVATE.clone(),
+            focus: Default::default(),
         }
     }
 
@@ -2402,6 +2432,7 @@ impl ApiServer for Server {
         // 82 §3 / 83 §3: the supervisor's live defaults, not the config file read at startup.
         let default_model = ask::<Agents, _>(agent::AGENT_ACTOR, GetDefaultModel).await?;
         let default_effort = ask::<Agents, _>(agent::AGENT_ACTOR, GetDefaultEffort).await?;
+        let favorite_models = ask::<Agents, _>(agent::AGENT_ACTOR, GetFavoriteModels).await?;
         let approvals =
             ask::<ToolRegistry, _>(tools::REGISTRY_ACTOR, GetApprovals { session: None }).await?;
         let compact_style = ask::<Agents, _>(agent::AGENT_ACTOR, GetCompactStyle).await?;
@@ -2432,6 +2463,7 @@ impl ApiServer for Server {
             data_dir: self.rt.data_dir.display().to_string(),
             default_model,
             default_effort,
+            favorite_models,
             approvals,
             compact_style,
             subagent_timeout_secs,
@@ -3427,6 +3459,10 @@ impl ApiServer for Server {
             },
         )
         .await
+    }
+
+    async fn set_model_favorite(&self, model: String, favorite: bool) -> RpcResult<Vec<String>> {
+        ask::<Agents, _>(agent::AGENT_ACTOR, SetModelFavorite { model, favorite }).await
     }
 
     async fn set_effort(
@@ -5889,45 +5925,256 @@ impl ApiServer for Server {
         {
             return Ok(());
         }
-        tokio::spawn(async move {
-            let _follow = follow;
-            loop {
-                let msg = tokio::select! {
-                    _ = sink.closed() => return,
-                    r = rx.recv() => match r {
+        // 129 §3.1: the ring is read by one task and the sink written by
+        // another, joined by `Stream`: a client that stops reading never makes
+        // `rx.recv()` fall behind; what waits merges (deltas) or queues
+        // (`BACKLOG`, counted into `Lagged` on overflow).
+        let state = Arc::new(parking_lot::Mutex::new(Stream {
+            backlog: Backlog::default(),
+            tree,
+            closed: false,
+        }));
+        let notify = Arc::new(tokio::sync::Notify::new());
+        let focus = self.focus.clone();
+        let read = {
+            let (state, notify, session, private) = (
+                state.clone(),
+                notify.clone(),
+                session.clone(),
+                private.clone(),
+            );
+            async move {
+                loop {
+                    match rx.recv().await {
                         Ok(ev) => {
-                            if !wanted(&ev, session.as_deref(), tree.as_mut())
-                                || !admitted(&ev, peer, &private)
-                            {
+                            let pass = wanted(&ev, session.as_deref(), state.lock().tree.as_mut());
+                            if !pass || !admitted(&ev, peer, &private) {
                                 continue;
                             }
-                            serde_json::value::to_raw_value(&*ev)
+                            if is_delta(&ev) {
+                                let focus = focus.read().get(&peer).cloned();
+                                if let Some(set) = focus
+                                    && !ev
+                                        .get("session")
+                                        .and_then(|s| s.as_str())
+                                        .is_some_and(|s| set.contains(s))
+                                {
+                                    continue;
+                                }
+                            }
+                            let now = Instant::now();
+                            state.lock().backlog.push(ev, now);
                         }
                         Err(broadcast::error::RecvError::Lagged(n)) => {
-                            // Dropped events may include a `*Resolved`: the snapshot after
-                            // `Lagged` puts the client's pending set right again.
-                            let lagged = serde_json::json!({ "type": "Lagged", "count": n });
-                            if let Ok(raw) = serde_json::value::to_raw_value(&lagged)
-                                && sink.send(SubscriptionMessage::from(raw)).await.is_err()
-                            {
-                                return;
-                            }
-                            let snapshot = PendingPrompts::collect(|v| {
-                                wanted(v, session.as_deref(), tree.as_mut()) && admitted(v, peer, &private)
-                            })
-                            .await;
-                            serde_json::value::to_raw_value(&snapshot)
+                            state.lock().backlog.lost += n
                         }
-                        Err(broadcast::error::RecvError::Closed) => return,
-                    },
-                };
-                let Ok(raw) = msg else { continue };
-                if sink.send(SubscriptionMessage::from(raw)).await.is_err() {
-                    return;
+                        Err(broadcast::error::RecvError::Closed) => {
+                            state.lock().closed = true;
+                            notify.notify_one();
+                            return;
+                        }
+                    }
+                    notify.notify_one();
                 }
             }
+        };
+        let write = async move {
+            loop {
+                let now = Instant::now();
+                let next = state.lock().backlog.next(now);
+                match next {
+                    Next::Frame(ev) => {
+                        if let Ok(raw) = serde_json::value::to_raw_value(&*ev)
+                            && sink.send(SubscriptionMessage::from(raw)).await.is_err()
+                        {
+                            return;
+                        }
+                    }
+                    Next::Lagged(n) => {
+                        // Dropped events may include a `*Resolved`: the snapshot after
+                        // `Lagged` puts the client's pending set right again.
+                        let lagged = serde_json::json!({ "type": "Lagged", "count": n });
+                        if let Ok(raw) = serde_json::value::to_raw_value(&lagged)
+                            && sink.send(SubscriptionMessage::from(raw)).await.is_err()
+                        {
+                            return;
+                        }
+                        let snapshot = PendingPrompts::collect(|v| {
+                            let pass = wanted(v, session.as_deref(), state.lock().tree.as_mut());
+                            pass && admitted(v, peer, &private)
+                        })
+                        .await;
+                        if let Ok(raw) = serde_json::value::to_raw_value(&snapshot)
+                            && sink.send(SubscriptionMessage::from(raw)).await.is_err()
+                        {
+                            return;
+                        }
+                    }
+                    Next::Wait(at) => {
+                        let closed = state.lock().closed;
+                        if closed {
+                            return;
+                        }
+                        tokio::select! {
+                            _ = sink.closed() => return,
+                            _ = notify.notified() => {}
+                            _ = tokio::time::sleep_until(at.unwrap_or(now)), if at.is_some() => {}
+                        }
+                    }
+                }
+            }
+        };
+        tokio::spawn(async move {
+            let _follow = follow;
+            let reader = tokio::spawn(read);
+            write.await;
+            reader.abort();
         });
         Ok(())
+    }
+
+    async fn set_event_focus(&self, ext: &Extensions, sessions: Vec<SessionId>) -> RpcResult<()> {
+        let peer = peer(ext)?;
+        let set: Arc<HashSet<String>> =
+            Arc::new(sessions.iter().map(ToString::to_string).collect());
+        let fresh = self.focus.write().insert(peer.id(), set).is_none();
+        if fresh {
+            // The entry dies with the connection; a re-insert after that spawns
+            // another waiter on the already-cancelled token, which removes at once.
+            let focus = self.focus.clone();
+            tokio::spawn(async move {
+                peer.closed().await;
+                focus.write().remove(&peer.id());
+            });
+        }
+        Ok(())
+    }
+}
+
+/// 129 §3.1: the event types a connection's focus filters and a stream merges
+/// while they wait. Everything else passes untouched.
+fn is_delta(ev: &serde_json::Value) -> bool {
+    matches!(
+        ev.get("type").and_then(|t| t.as_str()),
+        Some("TextDelta" | "ReasoningDelta" | "ToolCallProgress" | "VisionProgress")
+    )
+}
+
+/// Pending deltas go out at least this often when the sink has room (129 §3.1).
+const FLUSH_MS: u64 = 40;
+
+/// Non-delta events one stream holds for a slow client; past this the oldest
+/// is dropped and counted into the next `Lagged` (129 §3.3).
+const BACKLOG: usize = 8192;
+
+/// What one `subscribe_events` stream shares between its ring reader and its
+/// sink writer; locked per statement, never across an await.
+struct Stream {
+    backlog: Backlog,
+    /// Descendants-mode tree; `wanted` enrols spawned children into it.
+    tree: Option<HashSet<String>>,
+    /// The ring is gone: the writer returns once the backlog is empty.
+    closed: bool,
+}
+
+/// Frames of one stream between the ring and the sink, in emit order (129 §3.1,
+/// §3.3). A delta merges into the latest frame of its key unless a non-delta
+/// event of its session came after that frame, so per-session order is exact;
+/// a delta batch waits up to `FLUSH_MS` unless a non-delta is queued behind it.
+#[derive(Default)]
+struct Backlog {
+    frames: std::collections::VecDeque<Event>,
+    /// Non-delta frames in `frames`, at most `BACKLOG`.
+    control: usize,
+    /// Delta frames in `frames`.
+    deltas: usize,
+    /// Delta frames of the batch currently going out.
+    due: usize,
+    /// When the pending delta batch is due.
+    flush_at: Option<Instant>,
+    /// Non-delta events dropped since the last `Lagged`.
+    lost: u64,
+}
+
+/// What the sink writer does next.
+enum Next {
+    Frame(Event),
+    Lagged(u64),
+    /// Nothing due: wake on the next push, or at the instant.
+    Wait(Option<Instant>),
+}
+
+impl Backlog {
+    fn push(&mut self, ev: Event, now: Instant) {
+        if !is_delta(&ev) {
+            if self.control == BACKLOG {
+                // ponytail: O(n) scan from the front; the oldest non-delta is near it.
+                if let Some(i) = self.frames.iter().position(|f| !is_delta(f)) {
+                    self.frames.remove(i);
+                }
+                self.control -= 1;
+                self.lost += 1;
+            }
+            self.control += 1;
+            self.frames.push_back(ev);
+            return;
+        }
+        let same = |a: &serde_json::Value, b: &serde_json::Value, k: &str| a.get(k) == b.get(k);
+        for f in self.frames.iter_mut().rev() {
+            if !same(f, &ev, "session") {
+                continue;
+            }
+            if !is_delta(f) {
+                break;
+            }
+            if same(f, &ev, "type") && same(f, &ev, "turn") && same(f, &ev, "call_id") {
+                // Text concatenates; `ToolCallProgress.args` and `VisionProgress`
+                // are cumulative, so the latest replaces.
+                if let Some(add) = ev.get("text").and_then(|t| t.as_str()) {
+                    if let Some(serde_json::Value::String(acc)) = Arc::make_mut(f).get_mut("text") {
+                        acc.push_str(add);
+                    }
+                } else {
+                    *f = ev;
+                }
+                return;
+            }
+        }
+        if self.deltas == 0 {
+            self.flush_at = Some(now + Duration::from_millis(FLUSH_MS));
+        }
+        self.deltas += 1;
+        self.frames.push_back(ev);
+    }
+
+    fn next(&mut self, now: Instant) -> Next {
+        if self.lost > 0 {
+            return Next::Lagged(std::mem::take(&mut self.lost));
+        }
+        let Some(delta) = self.frames.front().map(|f| is_delta(f)) else {
+            return Next::Wait(None);
+        };
+        if delta {
+            if self.due == 0 && self.control == 0 {
+                if let Some(at) = self.flush_at
+                    && at > now
+                {
+                    return Next::Wait(Some(at));
+                }
+                // The batch is due: everything pending goes; later arrivals
+                // start the next one.
+                self.due = self.deltas;
+                self.flush_at = Some(now + Duration::from_millis(FLUSH_MS));
+            }
+            self.deltas -= 1;
+            self.due = self.due.saturating_sub(1);
+            if self.deltas == 0 {
+                self.flush_at = None;
+            }
+        } else {
+            self.control -= 1;
+        }
+        Next::Frame(self.frames.pop_front().expect("front exists"))
     }
 }
 
@@ -6096,6 +6343,301 @@ mod tests {
         for peer in [7, 8] {
             assert!(admitted(&durable, peer, &private));
             assert!(admitted(&none, peer, &private));
+        }
+    }
+
+    /// 129 §3: focus filter, delta merging, bounded backlog, `Lagged`.
+    mod event_focus {
+        use super::*;
+        use jsonrpsee::core::server::Subscription;
+        use std::time::Duration;
+
+        fn delta(kind: &str, s: SessionId, turn: &str, text: &str) -> serde_json::Value {
+            serde_json::json!({ "type": kind, "session": s, "turn": turn, "text": text })
+        }
+
+        fn progress(s: SessionId, call: &str, args: &str) -> serde_json::Value {
+            serde_json::json!({ "type": "ToolCallProgress", "session": s, "turn": "t", "call_id": call, "args": args })
+        }
+
+        fn title(s: SessionId, title: impl Display) -> serde_json::Value {
+            serde_json::json!({ "type": "TitleChanged", "session": s, "title": title.to_string() })
+        }
+
+        /// Every frame until `Wait`, with the `Lagged` counts in place.
+        fn drain(b: &mut Backlog, now: Instant) -> Vec<serde_json::Value> {
+            let mut out = Vec::new();
+            loop {
+                match b.next(now) {
+                    Next::Frame(ev) => out.push(serde_json::Value::clone(&ev)),
+                    Next::Lagged(n) => {
+                        out.push(serde_json::json!({ "type": "Lagged", "count": n }))
+                    }
+                    Next::Wait(_) => return out,
+                }
+            }
+        }
+
+        /// (b) Ten `TextDelta`s of one turn become one event; the `ToolCallStarted`
+        /// behind them follows it; `ToolCallProgress` keeps the latest args; a
+        /// non-delta of the same session splits the merge so order stays exact,
+        /// while another session's deltas merge across it.
+        #[test]
+        fn backlog_merges_deltas_in_session_order() {
+            let now = Instant::now();
+            let (s, r) = (SessionId::new(), SessionId::new());
+            let mut b = Backlog::default();
+            for i in 0..10 {
+                b.push(Arc::new(delta("TextDelta", s, "t", &i.to_string())), now);
+            }
+            b.push(Arc::new(delta("ReasoningDelta", s, "t", "think")), now);
+            let started =
+                serde_json::json!({ "type": "ToolCallStarted", "session": s, "turn": "t" });
+            b.push(Arc::new(started.clone()), now);
+            b.push(Arc::new(progress(s, "c", "{\"a")), now);
+            b.push(Arc::new(progress(s, "c", "{\"a\":1}")), now);
+            b.push(Arc::new(progress(s, "d", "{}")), now);
+            b.push(Arc::new(delta("TextDelta", r, "u", "p")), now);
+            b.push(Arc::new(title(s, "x")), now);
+            b.push(Arc::new(delta("TextDelta", r, "u", "q")), now);
+            b.push(Arc::new(delta("TextDelta", s, "t", "z")), now);
+            let out = drain(&mut b, now);
+            assert_eq!(out[0], delta("TextDelta", s, "t", "0123456789"));
+            assert_eq!(out[1], delta("ReasoningDelta", s, "t", "think"));
+            assert_eq!(out[2], started);
+            assert_eq!(out[3], progress(s, "c", "{\"a\":1}"));
+            assert_eq!(out[4], progress(s, "d", "{}"));
+            assert_eq!(out[5], delta("TextDelta", r, "u", "pq"));
+            assert_eq!(out[6], title(s, "x"));
+            // Only deltas left and the batch is not due: they wait for `FLUSH_MS`.
+            assert_eq!(out.len(), 7, "{out:?}");
+            assert!(
+                matches!(b.next(now), Next::Wait(Some(at)) if at == now + Duration::from_millis(FLUSH_MS))
+            );
+            let later = now + Duration::from_millis(FLUSH_MS);
+            assert_eq!(drain(&mut b, later), [delta("TextDelta", s, "t", "z")]);
+            assert!(matches!(b.next(later), Next::Wait(None)));
+        }
+
+        /// (d) Past `BACKLOG` non-delta events the oldest go, counted into one
+        /// `Lagged` ahead of what is left; deltas never count.
+        #[test]
+        fn backlog_overflow_drops_oldest_and_counts() {
+            let now = Instant::now();
+            let s = SessionId::new();
+            let mut b = Backlog::default();
+            b.push(Arc::new(delta("TextDelta", s, "t", "a")), now);
+            for i in 0..BACKLOG + 5 {
+                b.push(Arc::new(title(s, i)), now);
+            }
+            for _ in 0..100 {
+                b.push(Arc::new(delta("TextDelta", s, "t", "b")), now);
+            }
+            // Past the flush deadline so the trailing delta batch goes too.
+            let out = drain(&mut b, now + Duration::from_millis(FLUSH_MS));
+            assert_eq!(out[0], serde_json::json!({ "type": "Lagged", "count": 5 }));
+            assert_eq!(out[1], delta("TextDelta", s, "t", "a"));
+            assert_eq!(out[2], title(s, 5));
+            assert_eq!(out[1 + BACKLOG], title(s, BACKLOG + 4));
+            assert_eq!(
+                out[2 + BACKLOG],
+                delta("TextDelta", s, "t", &"b".repeat(100))
+            );
+            assert_eq!(out.len(), 3 + BACKLOG);
+        }
+
+        struct Harness {
+            methods: jsonrpsee::Methods,
+            tx: broadcast::Sender<Event>,
+            focus: FocusMap,
+            peer: link::RpcPeer,
+            guard: Option<link::RpcPeerGuard>,
+        }
+
+        impl Harness {
+            /// A server whose feed is a ring of `ring` slots, every call authenticated as one peer.
+            fn new(ring: usize) -> Self {
+                let rt = Runtime::new(figment::Figment::new(), std::env::temp_dir());
+                let mut server = Server::new(rt);
+                let tx = broadcast::channel(ring).0;
+                server.events = tx.clone();
+                let focus = server.focus.clone();
+                let mut methods: jsonrpsee::Methods = server.into_rpc().into();
+                let (peer, guard) = link::RpcPeer::open();
+                methods.extensions_mut().insert(peer.clone());
+                Self {
+                    methods,
+                    tx,
+                    focus,
+                    peer,
+                    guard: Some(guard),
+                }
+            }
+
+            /// `subscribe_events(null, null)` with a sink buffer of `buf`; the snapshot is consumed.
+            async fn stream(&self, buf: usize) -> Subscription {
+                let mut sub = self
+                    .methods
+                    .subscribe(
+                        "subscribe_events",
+                        [serde_json::Value::Null, serde_json::Value::Null],
+                        buf,
+                    )
+                    .await
+                    .unwrap();
+                assert_eq!(next(&mut sub).await["type"], "PendingPrompts");
+                sub
+            }
+
+            async fn focus(&self, sessions: Vec<SessionId>) {
+                self.methods
+                    .call::<_, ()>("set_event_focus", (sessions,))
+                    .await
+                    .unwrap();
+            }
+
+            fn publish(&self, ev: serde_json::Value) {
+                self.tx.send(Arc::new(ev)).unwrap();
+            }
+        }
+
+        async fn next(sub: &mut Subscription) -> serde_json::Value {
+            tokio::time::timeout(Duration::from_secs(5), sub.next::<serde_json::Value>())
+                .await
+                .expect("an event in time")
+                .expect("stream open")
+                .expect("json")
+                .0
+        }
+
+        async fn quiet(sub: &mut Subscription) {
+            let r =
+                tokio::time::timeout(Duration::from_secs(1), sub.next::<serde_json::Value>()).await;
+            assert!(r.is_err(), "unexpected event: {r:?}");
+        }
+
+        /// (a) With a focus set, deltas of other sessions are dropped and their
+        /// non-delta events pass; `[]` drops every delta; a later call replaces
+        /// the set on a stream opened before it; no call passes everything.
+        #[tokio::test(start_paused = true)]
+        async fn focus_filters_deltas_only() {
+            let h = Harness::new(1024);
+            let mut sub = h.stream(1024).await;
+            let (a, b) = (SessionId::new(), SessionId::new());
+            h.focus(vec![a]).await;
+            h.publish(delta("TextDelta", a, "t", "x"));
+            h.publish(delta("TextDelta", b, "t", "y"));
+            h.publish(progress(b, "c", "{}"));
+            h.publish(title(b, "T"));
+            assert_eq!(next(&mut sub).await, delta("TextDelta", a, "t", "x"));
+            assert_eq!(next(&mut sub).await, title(b, "T"));
+            quiet(&mut sub).await;
+
+            h.focus(vec![b]).await;
+            h.publish(delta("TextDelta", a, "t", "x"));
+            h.publish(delta("ReasoningDelta", b, "t", "r"));
+            assert_eq!(next(&mut sub).await, delta("ReasoningDelta", b, "t", "r"));
+            quiet(&mut sub).await;
+
+            h.focus(vec![]).await;
+            h.publish(delta("TextDelta", b, "t", "x"));
+            h.publish(progress(b, "c", "{}"));
+            h.publish(title(a, "U"));
+            assert_eq!(next(&mut sub).await, title(a, "U"));
+            quiet(&mut sub).await;
+
+            let open = Harness::new(1024);
+            let mut sub = open.stream(1024).await;
+            open.publish(delta("TextDelta", a, "t", "x"));
+            open.publish(progress(b, "c", "{}"));
+            assert_eq!(next(&mut sub).await, delta("TextDelta", a, "t", "x"));
+            assert_eq!(next(&mut sub).await, progress(b, "c", "{}"));
+        }
+
+        /// (c) A client that stops reading while 10 000 deltas arrive through a
+        /// 1024-slot ring sees no `Lagged`: the ring is drained regardless, and
+        /// the text reaches it whole in a few frames.
+        #[tokio::test]
+        async fn stalled_sink_merges_deltas_without_lag() {
+            let h = Harness::new(1024);
+            let mut sub = h.stream(1).await;
+            let s = SessionId::new();
+            let mut want = String::new();
+            for i in 0..10_000 {
+                let piece = format!("{i} ");
+                want.push_str(&piece);
+                h.publish(delta("TextDelta", s, "t", &piece));
+                // The publisher's ring is read by the stream's own task.
+                tokio::task::yield_now().await;
+            }
+            h.publish(title(s, "end"));
+            let mut got = String::new();
+            let mut frames = 0;
+            loop {
+                let ev = next(&mut sub).await;
+                assert_ne!(ev["type"], "Lagged", "{ev}");
+                if ev["type"] == "TitleChanged" {
+                    break;
+                }
+                assert_eq!(ev["type"], "TextDelta");
+                got.push_str(ev["text"].as_str().unwrap());
+                frames += 1;
+            }
+            assert_eq!(got, want);
+            assert!(frames <= 3, "{frames} frames");
+        }
+
+        /// (d) end to end: a stalled sink past `BACKLOG` non-delta events gets one
+        /// `Lagged` whose count is exactly what is missing, then the snapshot,
+        /// then the rest in order.
+        #[tokio::test]
+        async fn backlog_overflow_lags_once_then_snapshots() {
+            let h = Harness::new(1 << 14);
+            let mut sub = h.stream(1).await;
+            let s = SessionId::new();
+            let n = BACKLOG + 3;
+            for i in 0..n {
+                h.publish(title(s, i));
+                tokio::task::yield_now().await;
+            }
+            let mut lagged = None;
+            let mut titles = Vec::new();
+            while titles.len() + lagged.unwrap_or(0) < n {
+                let ev = next(&mut sub).await;
+                match ev["type"].as_str().unwrap() {
+                    "Lagged" => {
+                        assert!(lagged.is_none(), "second Lagged");
+                        lagged = Some(ev["count"].as_u64().unwrap() as usize);
+                        assert_eq!(next(&mut sub).await["type"], "PendingPrompts");
+                    }
+                    "TitleChanged" => {
+                        titles.push(ev["title"].as_str().unwrap().parse::<usize>().unwrap())
+                    }
+                    other => panic!("{other}"),
+                }
+            }
+            let lost = lagged.expect("one Lagged");
+            assert!(lost >= 1, "{lost}");
+            assert!(titles.windows(2).all(|w| w[0] < w[1]));
+            assert_eq!(*titles.last().unwrap(), n - 1);
+        }
+
+        /// (e) The focus entry dies with its connection.
+        #[tokio::test]
+        async fn focus_dies_with_the_connection() {
+            let mut h = Harness::new(1024);
+            let id = h.peer.id();
+            h.focus(vec![SessionId::new()]).await;
+            h.focus(vec![]).await;
+            assert!(h.focus.read().get(&id).is_some_and(|set| set.is_empty()));
+            drop(h.guard.take());
+            for _ in 0..100 {
+                if !h.focus.read().contains_key(&id) {
+                    return;
+                }
+                tokio::task::yield_now().await;
+            }
+            panic!("focus entry outlived its connection");
         }
     }
 
