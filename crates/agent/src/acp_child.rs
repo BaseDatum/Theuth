@@ -890,16 +890,18 @@ impl AcpChild {
 
     /// 06 §3.5 (2026-09-24): the harness refused the prompt as busy. Keep the
     /// turn open and prompt again after the next [`RETRY`] step, unless the
-    /// request deadline has passed since the input was admitted: then the
-    /// refusal is the turn's error. `false` when the turn was not retried.
+    /// retry window — the request deadline, at most [`BUSY_RETRY`] (R2.5) —
+    /// has passed since the input was admitted: then the refusal is the
+    /// turn's error. `false` when the turn was not retried.
     async fn retry_busy(&mut self, error: &str, me: &ActorRef<Self>) -> bool {
+        let window = self.deadline.min(self.busy);
         let Some(turn) = &mut self.turn else {
             return false;
         };
         let Some((_, admitted)) = &turn.input else {
             return false;
         };
-        if turn.cancel.is_cancelled() || admitted.elapsed() >= self.deadline {
+        if turn.cancel.is_cancelled() || admitted.elapsed() >= window {
             return false;
         }
         let after = self.retry[turn.retries.min(self.retry.len() - 1)];
@@ -4053,6 +4055,52 @@ pub(crate) mod tests {
             rows.iter()
                 .any(|(r, t)| *r == ChatRole::User && t == "second"),
             "the queued input is in the transcript with its result: {rows:?}"
+        );
+    }
+
+    /// R2.5: the busy-retry window is capped by `BUSY_RETRY` even under a
+    /// long request deadline — after it the busy refusal is the turn's error.
+    #[tokio::test]
+    async fn busy_retries_stop_at_the_busy_cap_before_the_deadline() {
+        let mut rig = Rig::tuned(
+            Duration::from_secs(3600),
+            |c| c.busy = Duration::from_millis(400),
+            true,
+        )
+        .await;
+        let t0 = Instant::now();
+        rig.input("go").await;
+        let mut prompts = 0;
+        let events = loop {
+            tokio::select! {
+                m = rig.fake.next() => {
+                    assert_eq!(m["method"], "session/prompt", "{m}");
+                    prompts += 1;
+                    rig.fake.busy(&m["id"]);
+                }
+                e = rig.events.recv() => {
+                    if matches!(e.as_ref().unwrap(), AgentEvent::TurnFinished { .. }) {
+                        break e.unwrap();
+                    }
+                }
+            }
+        };
+        assert!(
+            t0.elapsed() < Duration::from_secs(5),
+            "failed at the cap, not the 3600 s deadline"
+        );
+        assert!(
+            (4..=6).contains(&prompts),
+            "{prompts} prompts in a 400 ms window"
+        );
+        assert!(
+            matches!(events, AgentEvent::TurnFinished { stop_reason, .. } if stop_reason == "error")
+        );
+        let rows = rig.rows().await;
+        assert_eq!(
+            rows[1],
+            (ChatRole::Assistant, OMP_BUSY.into()),
+            "the original busy error"
         );
     }
 }

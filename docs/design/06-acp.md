@@ -298,6 +298,17 @@ parent or resolves an `await_reply` waiter. What differs:
   dropped if stopped before it starts, like any child. `max_depth`: ACP
   children are leaves (`depth(child) = depth(parent)+1` from the store, and
   they have no `spawn_subagent`), so the existing check covers them.
+- **Robustness (R2, 2026-10-07).** `Harness::connect` is bounded by
+  `CONNECT_TIMEOUT` (120 s): a harness that never answers `initialize` /
+  `session/new` is a failed connect, which fails the queued inputs and ends
+  the spawn turn (freeing its permit). A busy refusal (§8.3) is retried for
+  at most `BUSY_RETRY` (600 s) whatever `max_runtime_secs` says, then the
+  busy error is the turn's error. The cancel kill timer (`CANCEL_GRACE`)
+  fails the inputs queued behind the killed turn like a harness close does,
+  so no ticket is dropped. Every ACP turn — a follow-up prompt included —
+  runs under the supervisor's `max_runtime_secs` timer, not only the spawn
+  turn. A harness closing is one `warn!` naming the session, harness and
+  whether a turn was open.
 
 ### 3.6 Store, events, UI
 
