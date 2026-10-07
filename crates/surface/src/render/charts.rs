@@ -184,7 +184,11 @@ pub(super) fn line_chart(p: &LineChartProps, width: usize) -> Vec<Line> {
             let rows = std::iter::once(head)
                 .chain(p.series.iter().map(|s| {
                     std::iter::once(cell(&s.name, PLAIN))
-                        .chain(s.values.iter().map(|v| cell(format!("#{}", num(*v)), PLAIN)))
+                        .chain(
+                            s.values
+                                .iter()
+                                .map(|v| cell(format!("#{}", num(*v)), PLAIN)),
+                        )
                         .collect()
                 }))
                 .collect();
@@ -242,7 +246,11 @@ pub(super) fn scatter_chart(p: &ScatterChartProps) -> Vec<Line> {
             .map(|g| g.label.clone())
             .unwrap_or_else(|| id.to_owned())
     };
-    let mut head = vec![cell("label", BOLD), cell(&p.x_label, BOLD), cell(&p.y_label, BOLD)];
+    let mut head = vec![
+        cell("label", BOLD),
+        cell(&p.x_label, BOLD),
+        cell(&p.y_label, BOLD),
+    ];
     if sized {
         head.push(cell("size", BOLD));
     }
@@ -319,10 +327,7 @@ pub(crate) fn running_total(steps: &[WaterfallStep]) -> Vec<f64> {
 }
 
 fn is_total(s: &WaterfallStep) -> bool {
-    matches!(
-        s.kind,
-        Some(WaterfallKind::Total | WaterfallKind::Subtotal)
-    )
+    matches!(s.kind, Some(WaterfallKind::Total | WaterfallKind::Subtotal))
 }
 
 /// Table `step  Δ  running total`, totals bold.
@@ -386,11 +391,7 @@ pub(super) fn funnel(p: &FunnelProps, width: usize) -> Vec<Line> {
         .map(|i| conversion(&p.stages, i).unwrap_or_default())
         .collect();
     let pw = pcts.iter().map(|v| v.width()).max().unwrap_or(0);
-    let max = p
-        .stages
-        .iter()
-        .filter_map(|s| s.value)
-        .fold(0.0, f64::max);
+    let max = p.stages.iter().filter_map(|s| s.value).fold(0.0, f64::max);
     let nw = p
         .stages
         .iter()
@@ -474,18 +475,18 @@ pub(super) fn gantt(p: &GanttProps, width: usize) -> Vec<Line> {
         "tasks",
     )];
     let starts: Vec<f64> = p.tasks.iter().filter_map(|t| day_of(&t.start)).collect();
-    let ends: Vec<f64> = p
-        .tasks
-        .iter()
-        .filter_map(|t| end_of(&t.end))
-        .collect();
+    let ends: Vec<f64> = p.tasks.iter().filter_map(|t| end_of(&t.end)).collect();
     let lo = starts.iter().copied().fold(f64::INFINITY, f64::min);
     let hi = ends.iter().copied().fold(f64::NEG_INFINITY, f64::max);
     let span_days = (hi - lo).max(1.0);
     let grouped = p.tasks.iter().any(|t| t.group.is_some());
     let indent = if grouped { 2 } else { 0 };
     let lw = p.tasks.iter().map(|t| t.label.width()).max().unwrap_or(0);
-    let dates: Vec<String> = p.tasks.iter().map(|t| date_span(&t.start, &t.end)).collect();
+    let dates: Vec<String> = p
+        .tasks
+        .iter()
+        .map(|t| date_span(&t.start, &t.end))
+        .collect();
     let dw = dates.iter().map(|d| d.width()).max().unwrap_or(0);
     let n = cells(width, indent + lw + dw + 6);
     let col = |day: f64| -> usize { (((day - lo) / span_days) * n as f64).floor() as usize };
@@ -505,9 +506,11 @@ pub(super) fn gantt(p: &GanttProps, width: usize) -> Vec<Line> {
         let from = col(s).min(n - 1);
         let to = col(e).clamp(from + 1, n);
         let len = to - from;
-        let fill = t
-            .progress
-            .unwrap_or(if t.state == Some(GraphState::Done) { 1.0 } else { 0.0 });
+        let fill = t.progress.unwrap_or(if t.state == Some(GraphState::Done) {
+            1.0
+        } else {
+            0.0
+        });
         let done = ((fill * len as f64).round() as usize).min(len);
         let mut cells: Vec<char> = vec![' '; n];
         for (i, c) in cells.iter_mut().enumerate().take(to).skip(from) {
@@ -685,7 +688,11 @@ pub(crate) fn markdown(c: &Component) -> Option<String> {
             let _ = writeln!(
                 out,
                 "| {} |",
-                cells.iter().map(|c| cell(c)).collect::<Vec<_>>().join(" | ")
+                cells
+                    .iter()
+                    .map(|c| cell(c))
+                    .collect::<Vec<_>>()
+                    .join(" | ")
             );
         };
         row(&columns, &mut out);
@@ -748,11 +755,7 @@ pub(crate) fn markdown(c: &Component) -> Option<String> {
                 .points
                 .iter()
                 .map(|pt| {
-                    let mut row = vec![
-                        pt.label.clone().unwrap_or_default(),
-                        num(pt.x),
-                        num(pt.y),
-                    ];
+                    let mut row = vec![pt.label.clone().unwrap_or_default(), num(pt.x), num(pt.y)];
                     if sized {
                         row.push(pt.size.map(num).unwrap_or_default());
                     }
@@ -808,7 +811,12 @@ pub(crate) fn markdown(c: &Component) -> Option<String> {
                 .collect();
             table(
                 p.title.as_deref(),
-                vec!["stage".into(), "value".into(), "conversion".into(), "note".into()],
+                vec![
+                    "stage".into(),
+                    "value".into(),
+                    "conversion".into(),
+                    "note".into(),
+                ],
                 rows,
             );
         }
@@ -917,7 +925,9 @@ mod tests {
             let lines = gantt(&p, width);
             let text = plain_text(&lines);
             assert!(
-                lines.iter().all(|l| l.iter().map(|s| s.text.width()).sum::<usize>() <= width),
+                lines
+                    .iter()
+                    .all(|l| l.iter().map(|s| s.text.width()).sum::<usize>() <= width),
                 "{text}"
             );
             assert!(text.contains("2026-10-07 → 10-08"), "{text}");
@@ -933,14 +943,20 @@ mod tests {
             panic!()
         };
         let text = plain_text(&quadrant(&p, 60));
-        assert!(text.contains("┌") && text.contains("┼") && text.contains("┘"), "{text}");
+        assert!(
+            text.contains("┌") && text.contains("┼") && text.contains("┘"),
+            "{text}"
+        );
         let top = text.lines().nth(2).unwrap();
         assert!(top.contains("Do first") && top.contains("Plan"), "{top}");
         assert_eq!(quadrant_of(0.2, 0.8), 0);
         assert_eq!(quadrant_of(0.5, 0.6), 1, "the midline is right / top");
         assert_eq!(quadrant_of(0.3, 0.3), 2);
         assert_eq!(quadrant_of(0.8, 0.2), 3);
-        assert!(text.ends_with("Effort: low → high · Impact: low → high"), "{text}");
+        assert!(
+            text.ends_with("Effort: low → high · Impact: low → high"),
+            "{text}"
+        );
     }
 
     #[test]
@@ -950,11 +966,18 @@ mod tests {
         };
         let lines = bar_chart(&p, 60);
         let text = plain_text(&lines);
-        assert!(text.starts_with("BarChart: CI runs per day — 2 series\n"), "{text}");
+        assert!(
+            text.starts_with("BarChart: CI runs per day — 2 series\n"),
+            "{text}"
+        );
         assert!(text.contains("Thu  ▓"), "{text}");
         assert!(text.contains("60 · 2 runs"), "{text}");
         assert_eq!(plain_text(&lines[lines.len() - 1..]), "▓ Passed  ▒ Failed");
-        assert!(lines.iter().all(|l| l.iter().map(|s| s.text.width()).sum::<usize>() <= 60));
+        assert!(
+            lines
+                .iter()
+                .all(|l| l.iter().map(|s| s.text.width()).sum::<usize>() <= 60)
+        );
     }
 
     #[test]
@@ -964,11 +987,23 @@ mod tests {
         assert_eq!(num(1.5), "1.5");
         assert_eq!(num_signed(-5.0), "-5");
         assert_eq!(date_span("2026-10-01", "2026-10-14"), "2026-10-01 → 10-14");
-        assert_eq!(date_span("2026-12-30T10:00:00Z", "2027-01-02"), "2026-12-30 → 2027-01-02");
-        assert_eq!(date_span("2026-10-08T09:00:00Z", "2026-10-08T10:00:00Z"), "2026-10-08 09:00 → 10:00");
-        assert_eq!(date_span("2026-10-08T16:00:00Z", "2026-10-09T09:00:00Z"), "2026-10-08 16:00 → 10-09 09:00");
+        assert_eq!(
+            date_span("2026-12-30T10:00:00Z", "2027-01-02"),
+            "2026-12-30 → 2027-01-02"
+        );
+        assert_eq!(
+            date_span("2026-10-08T09:00:00Z", "2026-10-08T10:00:00Z"),
+            "2026-10-08 09:00 → 10:00"
+        );
+        assert_eq!(
+            date_span("2026-10-08T16:00:00Z", "2026-10-09T09:00:00Z"),
+            "2026-10-08 16:00 → 10-09 09:00"
+        );
         assert_eq!(end_of("2026-10-08"), Some(days([2026, 10, 9, 0, 0, 0])));
-        assert_eq!(end_of("2026-10-08T10:00:00Z"), Some(days([2026, 10, 8, 10, 0, 0])));
+        assert_eq!(
+            end_of("2026-10-08T10:00:00Z"),
+            Some(days([2026, 10, 8, 10, 0, 0]))
+        );
         assert_eq!(days([1970, 1, 1, 0, 0, 0]), 0.0);
         assert_eq!(days([2026, 10, 8, 12, 0, 0]), 20734.5);
     }
@@ -976,7 +1011,10 @@ mod tests {
     #[test]
     fn markdown_forms_are_tables_with_a_title() {
         let md = markdown(&root(WATERFALL)).unwrap();
-        assert!(md.starts_with("**Headcount 2026**\n\n| step | Δ | total |"), "{md}");
+        assert!(
+            md.starts_with("**Headcount 2026**\n\n| step | Δ | total |"),
+            "{md}"
+        );
         assert!(md.contains("| **Jan** | = | 100 people |"), "{md}");
         assert!(md.contains("| Hires | +12 | 112 people |"), "{md}");
         let md = markdown(&root(QUADRANT)).unwrap();
