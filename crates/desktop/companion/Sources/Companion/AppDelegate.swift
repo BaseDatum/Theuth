@@ -4,11 +4,6 @@ import CompanionCore
 import KeyboardShortcuts
 import TheuthKit
 
-extension KeyboardShortcuts.Name {
-    /// `⌃⇧Space` (D6), rebindable; no double-tap ⌥ in this wave.
-    static let openPanel = Self("openPanel", default: .init(.space, modifiers: [.control, .shift]))
-}
-
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
     let store = Store()
@@ -16,6 +11,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var panel: PanelController!
     private var statusItem: NSStatusItem!
     var askBar: AskBarController! // W3 (AskBar/AskBarInstall.swift)
+    let legend = LegendController() // W6: the keyboard-shortcuts legend
     private var subs = Set<AnyCancellable>()
     private var probeLoggedPending = false
 
@@ -26,10 +22,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         panel = PanelController(store: store)
         rail.onMark = { [weak self] mark in self?.markClicked(mark) }
 
+        // W6: the saved global chords are probed against other apps' registrations before KeyboardShortcuts
+        // registers them (fallback to the default with a notice, never a dialog).
+        Hotkeys.start(SettingsModel.shared)
         KeyboardShortcuts.onKeyUp(for: .openPanel) { [weak self] in
             guard let self, Flags.probe == nil else { return }
             self.askBar.hotkeyUp() // W3: Attention panel when something needs you, else the Ask bar
         }
+        KeyboardShortcuts.onKeyUp(for: .openAskBar) { [weak self] in
+            guard let self, !AskFlags.automated else { return }
+            self.askBar.toggle()
+        }
+        store.onLegend = { [weak self] in self?.showLegend() }
+        store.onSettings = { NotificationsInstaller.shared?.settings.show(activate: true) }
+        legend.onSettings = { NotificationsInstaller.shared?.settings.show(activate: true) }
+        if Flags.probeLegend { legend.runProbe() }
 
         store.$rail.receive(on: RunLoop.main).sink { [weak self] r in MainActor.assumeIsolated { self?.updateStatusItem(r) } }.store(in: &subs)
         store.$connection.receive(on: RunLoop.main).sink { s in Log.write("connection: \(s)") }.store(in: &subs)
@@ -118,9 +125,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if e?.type == .rightMouseUp || e?.modifierFlags.contains(.option) == true {
             let menu = NSMenu()
             menu.addItem(withTitle: "Open theuth", action: #selector(openTheuth), keyEquivalent: "")
+            let shortcuts = menu.addItem(withTitle: "Keyboard shortcuts…", action: #selector(showLegend), keyEquivalent: "/") // W6
+            shortcuts.keyEquivalentModifierMask = .command
             menu.addItem(.separator())
             menu.addItem(withTitle: "Quit theuth Companion", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
-            menu.items.forEach { $0.target = $0.action == #selector(openTheuth) ? self : nil }
+            menu.items.forEach { $0.target = $0.action == #selector(openTheuth) || $0.action == #selector(showLegend) ? self : nil }
             askBar.addMenuItem(to: menu) // W3
             NotificationsInstaller.shared?.appendMenu(menu) // W2: Pause notifications ▸ · Launch at login · Settings…
             statusItem.menu = menu
@@ -132,6 +141,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc private func openTheuth() { NSWorkspace.shared.open(DeepLink.new) }
+
+    /// W6: the legend under the status item; from the panel/Ask bar (⌘/) it replaces that surface.
+    @objc func showLegend() {
+        guard Flags.probe == nil else { return }
+        panel.close(returnKey: false)
+        askBar.close(returnKey: false)
+        legend.toggle(anchor: statusItem.button?.window?.frame ?? .zero)
+    }
 
     private func markClicked(_ mark: Mark) {
         guard Flags.probe == nil else { return }

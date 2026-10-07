@@ -44,6 +44,45 @@ public struct Rail: Equatable, Sendable {
     public static let empty = Rail(needsYou: [], agents: [], overflow: 0, needsYouCount: 0, workingCount: 0)
 }
 
+/// Settings › Rail "Rail presence" (W6, R2-3). `sliverWhenQuiet` is W1's behaviour; `alwaysSliver` leaves the
+/// menu bar's gold ●N as the only indicator and the rail at 4 pt unless the pointer is over it.
+public enum RailPresence: String, CaseIterable, Codable, Sendable {
+    case expanded, sliverWhenQuiet, alwaysSliver
+
+    public var title: String {
+        switch self {
+        case .expanded: return "Expanded"
+        case .sliverWhenQuiet: return "Sliver when quiet"
+        case .alwaysSliver: return "Always a sliver"
+        }
+    }
+}
+
+/// The collapse rule the rail controller runs; pure so the three presences are testable.
+public enum RailCollapse {
+    public static let width: Double = 26
+    public static let sliverWidth: Double = 4
+    /// Quiet this long before the sliver (`sliverWhenQuiet`).
+    public static let quietDelay: TimeInterval = 8
+    /// The pointer left an `alwaysSliver` rail: it stays expanded this long.
+    public static let hoverLinger: TimeInterval = 1
+
+    /// `nil`: stay expanded. Else collapse after this many seconds (0 = now). `afterHover`: the pointer just left.
+    public static func collapseDelay(_ p: RailPresence, quiet: Bool, hovering: Bool, afterHover: Bool) -> TimeInterval? {
+        if hovering { return nil }
+        switch p {
+        case .expanded: return nil
+        case .sliverWhenQuiet: return quiet ? quietDelay : nil
+        case .alwaysSliver: return afterHover ? hoverLinger : 0
+        }
+    }
+
+    /// A collapsed rail expands when something needs you or works only in `sliverWhenQuiet`.
+    public static func expandsOnActivity(_ p: RailPresence) -> Bool { p == .sliverWhenQuiet }
+
+    public static func width(collapsed: Bool) -> Double { collapsed ? sliverWidth : width }
+}
+
 public enum RailModel {
     public static let maxMarks = 12
 

@@ -1,29 +1,12 @@
 import Foundation
 import TheuthKit
 
-/// `voice::Transcript` (`crates/voice/src/lib.rs:103-108`).
-public struct Transcript: Codable, Equatable, Sendable {
-    public var text: String
-    public var durationMs: UInt64
-    public init(text: String, durationMs: UInt64) { self.text = text; self.durationMs = durationMs }
-}
-
 // MARK: the Ask bar's calls (W3), positional, in `crates/rpc/src/api.rs` order
 
 public extension RpcClient {
     /// `steer(session, text, null, [], null)` → the input id (`api.rs:207-215`).
     func steer(session: String, text: String) async throws -> String {
         try await call("steer", [.init(session), .init(text), .init(String?.none), .init([String]()), .init(String?.none)])
-    }
-
-    /// `put_attachment(base64, ext)` → `<data_dir>/attachments/<sha>.<ext>` (`api.rs:1186-1191`).
-    func putAttachment(_ bytes: Data, ext: String) async throws -> String {
-        try await call("put_attachment", [.init(bytes.base64EncodedString()), .init(ext)])
-    }
-
-    /// `transcribe(path)` for a file `put_attachment` stored (`api.rs:1240-1244`).
-    func transcribe(path: String) async throws -> Transcript {
-        try await call("transcribe", [.init(path)])
     }
 
     func meshStatus() async throws -> MeshStatus { try await call("mesh_status") }
@@ -39,5 +22,28 @@ public extension RpcClient {
     /// `set_event_focus(sessions)`: delta-class events for these sessions only (129 §3.2; `api.rs:1862-1868`).
     func setEventFocus(_ sessions: [String]) async throws {
         let _: JSONValue = try await call("set_event_focus", [.init(sessions)])
+    }
+
+    // MARK: live dictation (W6; design 54 §8, `api.rs:1293-1325`)
+
+    /// Load the streaming model once after connect; never opens a microphone. The reply is the model state.
+    func dictationPrewarm() async throws {
+        let _: JSONValue = try await call("dictation_prewarm")
+    }
+
+    /// `dictation_start(Some(16000))`: the companion streams its own mono i16 PCM. `None` would open the ENGINE's mic.
+    func dictationStart(sampleRate: UInt32 = 16_000) async throws -> String {
+        try await call("dictation_start", [.init(sampleRate)])
+    }
+
+    /// ~100 ms of little-endian mono i16 samples, base64.
+    func dictationAudio(id: String, pcm16: [Int16]) async throws {
+        let bytes = pcm16.withUnsafeBufferPointer { Data(buffer: $0) } // macOS is little-endian
+        let _: JSONValue = try await call("dictation_audio", [.init(id), .init(bytes.base64EncodedString())])
+    }
+
+    /// Flushes the open utterance; `DictationFinished` follows as an event. Idempotent.
+    func dictationStop(id: String) async throws {
+        let _: JSONValue = try await call("dictation_stop", [.init(id)])
     }
 }
