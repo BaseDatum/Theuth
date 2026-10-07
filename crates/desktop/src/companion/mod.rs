@@ -20,7 +20,9 @@ pub use other::*;
 #[cfg(target_os = "macos")]
 pub mod login_item;
 
-/// `<main id>.companion` (D1); the Info.plist `scripts/bundle-companion.sh` writes.
+/// `<main id>.companion` (130 D1); the Info.plist `scripts/bundle-companion.sh` writes. macOS only — the
+/// Windows companion is found by its mutex, not an id.
+#[cfg(target_os = "macos")]
 pub const BUNDLE_ID: &str = "io.theuth.mac.companion";
 /// Event to every webview: `{ alive: bool }`, on every change and once at start.
 pub const ALIVE_EVENT: &str = "companion-alive";
