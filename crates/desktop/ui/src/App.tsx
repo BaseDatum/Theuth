@@ -1,4 +1,4 @@
-import { useQueryClient } from '@tanstack/react-query'
+import { QueryObserver, useQueryClient } from '@tanstack/react-query'
 import { RouterProvider, createMemoryHistory, createRouter } from '@tanstack/react-router'
 import { TrayIcon } from '@tauri-apps/api/tray'
 import { getCurrentWindow } from '@tauri-apps/api/window'
@@ -6,6 +6,7 @@ import { register, unregister } from '@tauri-apps/plugin-global-shortcut'
 import { useShortcuts } from '@/lib/shortcuts'
 import { useEffect, useRef, useState } from 'react'
 import { toast } from 'sonner'
+import { ATTENTION_KEY } from '@/components/hud/queries'
 import { StartupScreen } from '@/components/launch/StartupScreen'
 import { PairScreen } from '@/components/link/PairScreen'
 import { Toaster } from '@/components/ui/sonner'
@@ -45,6 +46,7 @@ import { LOCAL, applyMeshStatus, hasLocal, hydrateEngines, useEngines, useNeedsP
 import { autoPair, watchNodes } from '@/link/nodes'
 import { LinkTransport } from '@/link/transport'
 import { type Api, makeApi } from '@/rpc/api'
+import type { AttentionItem } from '@/rpc/bindings/AttentionItem'
 import type { SessionSummary } from '@/rpc/bindings/SessionSummary'
 import { RpcClient, RpcError } from '@/rpc/client'
 import type { WireEvent } from '@/rpc/events'
@@ -418,13 +420,15 @@ function useEventSideEffects(st: Stores): void {
     const toasts = new Throttle(() => toast('Events dropped, resyncing'), LAGGED_TOAST_MS, false)
     // 130 D8: while the macOS companion is alive it owns banners and the menu bar count, so the
     // webview posts no notifications and clears its tray `●N` title; both come back when it exits.
+    // 132 D7: the count is the attention inbox's length — the sidebar badge's number — read from the
+    // `attention_list` cache the sidebar keeps live; approvals are one kind among its items.
     let companion = false
     const badge = (n: number) =>
       void TrayIcon.getById('main').then((t) => t?.setTitle(n ? `●${n}` : null))
     const setCompanion = (alive: boolean) => {
       if (alive === companion) return
       companion = alive
-      if (isDesktop()) badge(alive ? 0 : st.approvals.getState().pending.length)
+      if (isDesktop()) badge(alive ? 0 : (qc.getQueryData<AttentionItem[]>(ATTENTION_KEY)?.length ?? 0))
     }
     void companionAlive().then(setCompanion)
     const offs = [
@@ -456,9 +460,10 @@ function useEventSideEffects(st: Stores): void {
         const to = usePanes.getState().close(e.session)
         if (to) router.history.push(`/c/${to}`)
       }),
-      st.approvals.subscribe((s, prev) => {
-        if (!isDesktop() || companion || s.pending.length === prev.pending.length) return
-        badge(s.pending.length)
+      // `enabled: false`: observe the cached list, never fetch it here (the sidebar's `useAttention` owns the fetch).
+      new QueryObserver<AttentionItem[]>(qc, { queryKey: ATTENTION_KEY, enabled: false }).subscribe((r) => {
+        if (!isDesktop() || companion || !r.data) return
+        badge(r.data.length)
       }),
     ]
     return () => {
