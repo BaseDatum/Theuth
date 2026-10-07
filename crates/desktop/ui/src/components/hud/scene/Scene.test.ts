@@ -65,7 +65,8 @@ test('Scene draws the fixture: rings, needs, flows, panels, links, tokens only',
   expect(html).toContain(`<text x="${root.x - 30}" y="${root.y - 1}"`)
   expect(count(html, /data-satellites="/g)).toBe(1) // the fold ring and every other ring draw none
   expect(html).toContain('href="/c/chat-1"')
-  expect(html).toContain('>2 running · 3 children · 40s · ctx 71 %<')
+  expect(html).toContain(`>${scene(F, NOW - (NOW % 60_000)).rings.find((r) => r.id === root.id)!.sub}<`) // the Scene clock is minute-floored: 21s here, 40s at NOW
+  expect(root.sub).toBe('2 running · 3 children · 40s · ctx 71 %')
   expect(html).toContain('>4 open · 1h · ctx 62 %<')
   expect(html).toContain('<title>ops-desk · 4 open · 1h · ctx 62 % · context ≈ 124k of 200k (62 %)</title>')
   // Links (R2: every destination the old sections offered): attention rows and header, task flows, agent rings, routine marks,

@@ -184,4 +184,81 @@ the routine group.
 ## Commits
 
 - `7194d58f` model/Scene/queries/Hud/fixtures/tests
-- (this section + the Revision 2 section) — see `DONE CONTEXT-RING <sha>`.
+- `cae4204c` this section + the Revision 2 section (`DONE CONTEXT-RING cae4204c`)
+
+# R4 as-built — SESSION-RINGS (same worktree, on top of the orchestrator's `c68de1a6`)
+
+Sky, 2026-10-07 15:47 "why aren't regular active sessions showing up on that hud?" · 15:49 "only root sessions should show up btw
+with context rings, and maybe an indicator for their subagents." Design: `docs/design/128-hud-scene.md` → `## Revision 4`.
+
+## Per-file changes
+
+### scene/model.ts
+- `Ring.children?: Child[]` (`{ id, title, running }`; only session rings set it), `SAT_R = 23`, `SAT_MAX = 8`, `satPoint(cx, cy, i)`
+  (40° steps from 3 o'clock, clockwise in SVG space).
+- `isChat` now also requires `kind !== 'advisor'`; `isActive(s, now)` = `running || updated_at within 30 min` (`ACTIVE_WINDOW_MS`).
+- `sessionPresence(sessions, now)` → `RootPresence[]` (`{ s, children, runningChildren }`): descendants via a parent → children map
+  (recursive, any depth), live = not archived and `isActive`; roots kept when active themselves or with ≥ 1 live descendant; sorted
+  running → has running children → `updated_at` desc.
+- `rings()`: after the routine group, the session group — `ring:session:<id>`, name `truncate(title, 22) || name || id.slice(0, 8)`,
+  sub `[k running, n child(ren), age] · ctx N %`, style `running ? live : idle`, `actor: null`, link `{ route: 'session', id }`,
+  `ctx = contexts.get(id)`, `children`. The two folds now share one `fold(group, slots, more)` helper; the sessions fold is
+  `ring:sessions:more` / `+N sessions` / `lapsed` / `link: null`. Column geometry: `y = y0 + 53·i + 20·gapsBefore(i)` with one gap per
+  non-empty later group; `y0` centres the whole span on `g.cy`.
+- Liveness (5): the theuth ring is live when any chat is `running` (then the 2-min recency, then theuth `working`); an agent ring is
+  live when its desk session is `running` (then `status === 'working'` as before); `footer.sessionsLive` counts `running` sessions
+  first, then the 15-min recency.
+- `ringBySession(rings, id)`. `needFlows`: `via = ringBySession(session) ?? ringByName(agent)`. `hairlines`: a session line starts
+  at `ringBySession(s.id) ?? ringByActor(desk/user)`. `running(tasks, routines, sessions, rings, now)` — new `sessions` parameter —
+  adds `running:session:<id>` per running root (via its ring, hour at `updated_at`, label `<title 28> · running`, link `/c/<id>`);
+  the combined list is still newest-first and capped at 8. `scene()` passes `sessions` and adds the running roots to `inFlight`.
+
+### scene/Scene.tsx
+- Per ring: `<g data-satellites={id}>` when `children.length > 0` — up to 8 `<circle r=2.2>` at `satPoint(i)` (running → `fill
+  C.info`; idle → `fill none stroke C.secondary`), each with a `<title>` `<name> · running|idle`; beyond 8 a 7 px `+N` text at the
+  ninth position. Labels move to `x − 30` when satellites exist (the 160°/200° dots would otherwise touch the text end at `x − 22`).
+  Gauge unchanged; it draws on roots too via `Ring.ctx`.
+
+### scene/SceneCompact.tsx
+- No change: the list maps `m.rings`; the session rows carry the same sub-label (`2 running · 3 children · 40s · ctx 71 %`).
+
+### hud/queries.ts
+- `useDeskContexts` → `useSessionContexts(sessions)`: the query set is `desks ∪ sessionPresence(sessions).roots`, sliced to
+  `CONTEXT_QUERIES_MAX = 24`; everything else (keys, staleTime 20 s, refetchInterval 30 s, the three invalidation events, `enabled:
+  !sim`, the stable `combine`) as in R2.
+
+### hud/Hud.tsx
+- Calls `useSessionContexts` (rename only).
+
+### scene/fixtures.ts
+- Sessions: `chat-1` running (3 live children `child-21` running / `child-22` running / `child-23` idle 10 min; 21 older children),
+  `chat-2` running alone, `chat-3` idle 50 min with running child `child-c1`, `chat-4` idle 12 min; `old-chat` (5 days), `adv-1`
+  (`kind: 'advisor'`, running), `arch-1` (archived) — never drawn. `secret:gh-token` now has `session: 'chat-1'`. Contexts add
+  `chat-1` 142k/200k and `chat-2` 38k/200k. At hv 812 the fixture has 12 rings: 6 agents, 4 routines, `chat-1`, `+3 sessions`.
+
+### Tests (model.test.ts 25, Scene.test.ts 4 — 40 in `src/components/hud`)
+- `sessionPresence`: the four roots in order with their child/running counts and child titles; a grandchild counts; a stale root is
+  active through a live descendant and not through an archived one; 31 min is inactive; `running` overrides age.
+- Session rings: ids, subs, styles, link, ctx (0.71 on `chat-1`, null on `chat-3`), children carried; label fallbacks title → name →
+  id-8; the hv 812 fold `+3 sessions` without a link; no slot → no group; liveness proxy for the theuth ring (running chat with nothing
+  moved in 10 min → live; none running → idle) and a running desk → live agent.
+- Column geometry with two gaps; sessions-only → one gap; routines-only unchanged; capacity test at hv 1400 now folds the sessions
+  (`23` rings, `+3 sessions` last).
+- `running()`: six lines newest-first (two roots first), the root line's id/via/link/time/title, no child lines, folded root → from the
+  arc. `needFlows`: `secret:gh-token` via `ring:session:chat-1`; session beats agent; ringless session falls back to the agent;
+  hairlines of a ringed session leave its ring (seeded). Scene: footer `sessionsLive 9`, `inFlight 6` (3 + 1 + 2), 12 rings, 22 flows;
+  without running roots `inFlight 4`.
+- Scene render: 12 `r="13"`, 4 gauges, `chat-1`'s satellites (3 dots: 2 faience filled, 1 hollow secondary; titles; first at
+  `x + 23, y`; labels at `x − 30`), only one `data-satellites` group at hv 812, `/c/chat-1` link, the sub-label, `6 IN FLIGHT`. A
+  second render with two roster agents shows all four roots: satellites on `chat-1` and `chat-3` only; ten live children → 8 dots and
+  `+2`. Compact: 12 rings, the session sub-label and link.
+
+## Gates (under `build-lock`, label `128b-hud`)
+
+See the final message for the three results; `bun run check` reports no error under `components/hud/**` (the stale-bindings set
+outside it is unchanged).
+
+## Commits
+
+- `5efd485b` model/Scene/queries/Hud/fixtures/tests
+- (this section + the Revision 4 section) — see `DONE SESSION-RINGS <sha>`.

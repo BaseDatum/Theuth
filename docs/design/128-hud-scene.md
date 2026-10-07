@@ -592,3 +592,40 @@ session's model (the harness's reported window first — the same precedence the
 whose breakdown has not arrived, has `ctx: null`: no track, no sweep, no `ctx` text. Absence means unknown.
 
 `gaugePath(cx, cy, r, fill)`: `''` at 0; one arc with the large-arc flag set when `fill > 0.5`; at ≥ 1 a full circle as two half arcs.
+
+## Revision 4 — root-session rings with subagent satellites (Sky, 2026-10-07 15:47/15:49)
+
+> 15:47 — "why aren't regular active sessions showing up on that hud?"
+>
+> 15:49 — "only root sessions should show up btw with context rings, and maybe an indicator for their subagents."
+
+(Revision 3 is the SPEND-LEDGER wave, documented separately.)
+
+**Why they were missing.** Rings existed for agents (desks) and routines only; every user chat folded into the theuth ring's
+`N chats` count, appeared as a hairline and was counted in SESSIONS LIVE — a running root session had no origin of its own.
+
+**Rules.**
+
+1. **Third ring group `sessions`**, under the routine group with the same 20 px group gap: one ring per ACTIVE ROOT session —
+   `parent === null`, `kind !== 'advisor'`, no `desk`, not `archived`; active = `running`, OR `updated_at` within 30 min, OR any
+   descendant (any depth, not archived) is running or updated within 30 min. Order: self-running first, then rings with running
+   descendants, then `updated_at` newest-first. Capacity as before (agents → routines → sessions); the overflow folds into one dashed
+   `+N sessions` ring (no link — there is no sessions-list route). Ring id `ring:session:<id>`, link → `/c/<id>`.
+2. **Label** the session `title` truncated to 22 (else `name`, else the 8-char id). **Sub**: the pieces that apply, ` · `-joined —
+   `<k> running` (running descendants), `<n> children` (live descendants), the age of `updated_at`, then the ctx suffix. **Style**
+   the root's own state: `live` when `running`, else `idle`. **Satellites**: one dot (r 2.2) per live descendant on a circle of radius
+   23 (outside the gauge track), 40° apart from 3 o'clock clockwise, filled faience when running, hollow secondary ink when idle,
+   titled with the child's name/title; at most 8, then a 7 px `+N` at the ninth position. Nothing when there are no live children.
+   A ring with satellites moves its labels from x − 22 to x − 30 so the 160°/200° dots clear the text.
+3. **Context gauge on roots too**: `useDeskContexts` became `useSessionContexts(sessions)` over desk sessions AND active roots (≤ 24
+   queries, same 20 s / 30 s, same `TurnFinished` / `Compacted` / `ContextUsed` invalidation, `enabled: !sim`); the map is keyed by
+   session id, so a root's `ctx` is `contexts.get(root.id)`.
+4. **Flows.** A needs-you item whose `AttentionItem.session` is a ringed root leaves that ring (session first, then the agent lookup
+   for desks). A session with a ring starts its hairline there. A `running` root gets a faience in-flight line from its ring to the
+   arc at `updated_at`, labelled `<title 28> · running`, counted in IN FLIGHT. Running children draw no lines — they are the
+   satellites.
+5. **Liveness proxy.** Wherever "updated within N min" stood for live (the theuth ring's 2 min, SESSIONS LIVE's 15 min), `running
+   === true` comes first and the recency stays as the fallback; a desk session that is `running` makes its agent ring live.
+6. **SceneCompact** lists the session rings with the same `k running · n children · age` sub-label; no satellites there.
+7. **Fixtures**: four active roots (running + 3 live children of which 2 running; running alone; idle with one running child;
+   idle-but-recent), one old root, one advisor, one archived chat — the last three never drawn; contexts for two roots.
