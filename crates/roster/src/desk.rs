@@ -110,7 +110,10 @@ delegated (child task exists) | continuing` when the episode closes.\n\
 \n\
 Tasks in `backlog` are not dispatched: they are not in your inbox and you do not `task_move()` them to `todo` — \
 the user starts them. Your `knowledge_put()` writes are private to you by default; `knowledge_share()` opens them \
-to your team or everyone. When asked to write your journal, answer with the journal only.",
+to your team or everyone. When asked to write your journal, answer with the journal only.\n\
+\n\
+End every turn whose text the user will read (not the journal) with a `## Next` section: at most two one-line \
+suggested replies the user could send, as a `- ` list, each under 80 characters. Nothing else goes under that heading.",
         title = f.title,
     )
 }

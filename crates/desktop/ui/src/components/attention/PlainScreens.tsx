@@ -178,3 +178,22 @@ export function ResumeScreen({ item }: { item: AttentionItem }) {
     </Plain>
   )
 }
+
+/** 130 E3: a finished turn — the summary line and the agent's `## Next` suggestions; Open session · Dismiss. */
+export function FinishedScreen({ item }: { item: AttentionItem }) {
+  const next = item.next_steps ?? []
+  return (
+    <Plain item={item} title={item.summary ?? item.title}>
+      {next.length > 0 && (
+        <Fact label="Next">
+          <ul className="list-disc space-y-1 pl-5">
+            {next.map((s) => (
+              <li key={s}>{s}</li>
+            ))}
+          </ul>
+        </Fact>
+      )}
+      <Fact label="Finished">{age(item.at_ms)}</Fact>
+    </Plain>
+  )
+}

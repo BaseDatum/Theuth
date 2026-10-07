@@ -40,6 +40,7 @@
     "positioner:default",
     "window-state:default",
     "dialog:allow-open",
-    "dialog:allow-save"
+    "dialog:allow-save",
+    "deep-link:default"
   ]
 }

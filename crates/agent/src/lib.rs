@@ -947,6 +947,10 @@ pub struct SessionActivity {
     pub asks: Option<u16>,
     /// Has an actor now (vs stored/cold).
     pub live: bool,
+    /// 130 E2: ms since epoch `state` entered `awaiting` / `approval`; `None` otherwise.
+    #[serde(default)]
+    #[cfg_attr(feature = "ts", ts(optional, type = "number | null"))]
+    pub waiting_since_ms: Option<u64>,
 }
 
 impl Default for SessionActivity {
@@ -960,6 +964,7 @@ impl Default for SessionActivity {
             children: 0,
             asks: None,
             live: false,
+            waiting_since_ms: None,
         }
     }
 }

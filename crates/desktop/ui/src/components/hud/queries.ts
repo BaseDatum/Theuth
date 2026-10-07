@@ -25,10 +25,14 @@ export const PACKET_KEY = ['packet'] as const
 export const SECRET_REQUESTS_KEY = ['secret-requests'] as const
 export const ACTIVITY_KEY = ['activity'] as const
 
-/** Anything that can add or resolve an inbox item; the list is cheap to re-derive (104 A10: asks and shows too). */
-const ATTENTION_EVENTS = ['ActivityAppended', 'ApprovalRequested', 'ApprovalResolved', 'ArtifactShown', 'AskRequested', 'AskResolved', 'NodeAdded', 'NodeOnline', 'NodeRemoved', 'NodeRevoked', 'SecretRequested', 'SecretResolved', 'Takeover'] as const satisfies readonly WireEvent['type'][]
+/**
+ * Anything that can add or resolve an inbox item; the list is cheap to re-derive (104 A10: asks and shows too).
+ * 130 E1: `AttentionChanged` is the engine's own answer (snooze expiry, budgets, finished turns); the 13 older kinds stay
+ * so the UI works against an engine that predates it.
+ */
+const ATTENTION_EVENTS = ['ActivityAppended', 'ApprovalRequested', 'ApprovalResolved', 'ArtifactShown', 'AskRequested', 'AskResolved', 'NodeAdded', 'NodeOnline', 'NodeRemoved', 'NodeRevoked', 'SecretRequested', 'SecretResolved', 'Takeover', 'AttentionChanged'] as const satisfies readonly WireEvent['type'][]
 
-/** `attention_list`, re-derived on every event that can change it. Polled slowly too: snoozes expire, budgets move. */
+/** `attention_list`, re-derived on every event that can change it (130 E1: no timer poll). */
 export function useAttention() {
   const api = useApi()
   const qc = useQueryClient()
@@ -44,7 +48,7 @@ export function useAttention() {
       for (const off of offs) off()
     }
   }, [qc])
-  return useQuery({ queryKey: ATTENTION_KEY, queryFn: () => (sim ? ATTENTION_SIM : api.attention_list()), refetchInterval: 60_000 })
+  return useQuery({ queryKey: ATTENTION_KEY, queryFn: () => (sim ? ATTENTION_SIM : api.attention_list()) })
 }
 
 /**

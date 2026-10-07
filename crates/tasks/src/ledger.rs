@@ -221,9 +221,14 @@ pub fn window_text(secs: u64) -> String {
     }
 }
 
+/// `user` or `user@<client>` (130 E4: the client the user acted from).
+fn is_user(actor: &str) -> bool {
+    actor == "user" || actor.starts_with("user@")
+}
+
 /// `actor` may act as `who`: the user (and the harness) may act as anyone.
 fn acts_for(actor: &str, who: &Owner) -> bool {
-    actor == "user" || actor == "system" || actor == who.to_string()
+    is_user(actor) || actor == "system" || actor == who.to_string()
 }
 
 fn short(id: &TaskId) -> &str {
@@ -1086,7 +1091,7 @@ impl Ledger {
             }
             return self.with_blocks(t).await;
         }
-        if actor == "user" {
+        if is_user(actor) {
             // A human touched the task: the back-off is over, like a human comment.
             t.no_progress_count = 0;
             t.next_wake_after_ms = None;
@@ -1159,7 +1164,7 @@ impl Ledger {
         // blocker stays and the refusal names it. One place for the board, the
         // Attention card and the chat tool.
         let mut blockers = None;
-        if actor == "user"
+        if is_user(actor)
             && t.state == TaskState::Blocked
             && matches!(to, TaskState::Todo | TaskState::Doing)
         {
@@ -1393,7 +1398,7 @@ impl Ledger {
             }
         } else {
             self.say(&t, actor, text).await;
-            if actor == "user" && (t.no_progress_count > 0 || t.next_wake_after_ms.is_some()) {
+            if is_user(actor) && (t.no_progress_count > 0 || t.next_wake_after_ms.is_some()) {
                 t.no_progress_count = 0;
                 t.next_wake_after_ms = None;
                 dirty = true;
@@ -4861,6 +4866,16 @@ pub(crate) mod tests {
         }
         assert_eq!(Owner::System.to_string(), "system");
         assert_eq!("system".parse::<Owner>(), Ok(Owner::System));
+    }
+
+    /// 130 E4: a client-stamped user (`user@companion`) is the user to the ledger.
+    #[test]
+    fn a_client_stamped_user_acts_for_anyone() {
+        let ops = Owner::Agent("ops".into());
+        assert!(acts_for("user@companion", &ops));
+        assert!(acts_for("user", &ops));
+        assert!(!acts_for("agent:lead", &ops));
+        assert!(!acts_for("userx", &ops));
     }
 
     // ---- escalate (67 §11) --------------------------------------------------------

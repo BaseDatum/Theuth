@@ -9,6 +9,8 @@
 //! and the generated iOS bridge both enter at [`run`].
 
 mod commands;
+#[cfg(desktop)]
+mod companion;
 #[cfg(target_os = "ios")]
 mod ios_windowing;
 #[cfg(desktop)]
@@ -49,7 +51,9 @@ pub fn run() {
     app.run(|app, event| {
         if let tauri::RunEvent::Exit = event {
             use tauri::Manager;
-            // 39 §3.3: stop the sidecar first, then swap the bundle it ran from.
+            // 39 §3.3: stop the sidecar first, then swap the bundle it ran from. 130 §5.8: the
+            // companion goes before the sidecar, after the webview's engine `shutdown`.
+            companion::terminate();
             app.state::<launch::Launch>().shutdown();
             update::install_pending(app);
         }
@@ -206,7 +210,7 @@ mod desktop {
     use tauri::{AppHandle, Builder, Emitter, Manager, WebviewWindow, WindowEvent, Wry};
     use tauri_plugin_positioner::{Position, WindowExt};
 
-    use crate::{commands, island, launch, models, point, update};
+    use crate::{commands, companion, island, launch, models, point, update};
 
     /// The webview acknowledges `quit-requested` with `quit_ack` (after RPC
     /// `shutdown` when it owns the daemon); this is the fallback.
@@ -272,8 +276,12 @@ mod desktop {
             .manage(update::Pending::default())
             .manage(Flags::default());
         // 58 §6.2: one island command set on every desktop OS; the `NSPanel` plugin is macOS's.
+        // 130 D10: `theuth://` too — Windows/Linux would need single-instance to not spawn a second
+        // process per link, and have no companion to open them (§5.9).
         #[cfg(target_os = "macos")]
-        let builder = builder.plugin(tauri_nspanel::init());
+        let builder = builder
+            .plugin(tauri_nspanel::init())
+            .plugin(tauri_plugin_deep_link::init());
         let builder = builder.invoke_handler(tauri::generate_handler![
             commands::connection,
             commands::launch_log,
@@ -297,6 +305,8 @@ mod desktop {
             point::overlay_ensure,
             crate::pages::page_put,
             crate::pages::page_drop,
+            companion::companion_alive,
+            companion::companion_login_item_status,
         ]);
         // The native menu bar is macOS's (⌘C/⌘V under Accessory policy); GTK would paint it inside the window.
         #[cfg(target_os = "macos")]
@@ -325,6 +335,9 @@ mod desktop {
                 setup(app.handle())?;
                 island::init(app.handle())?;
                 point::init(app.handle())?;
+                companion::init(app.handle())?;
+                #[cfg(target_os = "macos")]
+                deep_links(app.handle());
                 Ok(())
             })
     }
@@ -502,6 +515,36 @@ mod desktop {
         log_err(app.emit("navigate", route), "emit navigate");
     }
 
+    /// 130 D10: `theuth://attention/<id>` · `theuth://c/<session>` · `theuth://new` from the companion
+    /// (or anything else) → [`navigate`]; unknown shapes are logged and dropped.
+    #[cfg(target_os = "macos")]
+    fn deep_links(app: &AppHandle) {
+        use tauri_plugin_deep_link::DeepLinkExt;
+        let handle = app.clone();
+        app.deep_link().on_open_url(move |event| {
+            for url in event.urls() {
+                match deep_link_route(&url) {
+                    Some(route) => navigate(&handle, &route),
+                    None => tracing::info!("deep link ignored: {url}"),
+                }
+            }
+        });
+    }
+
+    /// The app route for a `theuth://` URL, or `None` for anything the companion does not send.
+    fn deep_link_route(url: &tauri::Url) -> Option<String> {
+        if url.scheme() != "theuth" {
+            return None;
+        }
+        let rest = url.path().trim_matches('/');
+        match (url.host_str()?, rest.is_empty()) {
+            ("attention", false) => Some(format!("/attention/{rest}")),
+            ("c", false) => Some(format!("/c/{rest}")),
+            ("new", true) => Some("/new".into()),
+            _ => None,
+        }
+    }
+
     /// 25 §3 `/quit`: ask the webview to run RPC `shutdown` (if it owns the daemon)
     /// and `quit_ack`; exit anyway after [`QUIT_ACK_TIMEOUT`]. The pty hang-up runs
     /// in `RunEvent::Exit` ([`crate::run`]).
@@ -523,6 +566,26 @@ mod desktop {
     fn log_err<T, E: std::fmt::Display>(r: Result<T, E>, what: &str) {
         if let Err(e) = r {
             tracing::warn!(error = %e, "{what}");
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::deep_link_route;
+
+        #[test]
+        fn deep_link_routes() {
+            let route = |s: &str| deep_link_route(&tauri::Url::parse(s).unwrap());
+            assert_eq!(
+                route("theuth://attention/ask:abc:1").as_deref(),
+                Some("/attention/ask:abc:1")
+            );
+            assert_eq!(route("theuth://c/s-42/").as_deref(), Some("/c/s-42"));
+            assert_eq!(route("theuth://new").as_deref(), Some("/new"));
+            assert_eq!(route("theuth://new/extra"), None);
+            assert_eq!(route("theuth://attention"), None);
+            assert_eq!(route("theuth://settings/general"), None);
+            assert_eq!(route("https://attention/x"), None);
         }
     }
 }
