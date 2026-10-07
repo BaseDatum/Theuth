@@ -662,10 +662,14 @@ export function apply(
       return interject({ ...slice, advisorModel: model }, { id: nextId(), kind: "info", text: `advisor → ${model ?? "off"}` });
     }
     // 109 §8.2: the banner changes state at once; the dropped partial stays until the first regenerated delta.
+    // 109 LIVE: a resumed turn is a running turn (no `TurnStarted` follows).
     case "TurnResumed": {
       const at = Date.parse(e.interrupted_at);
       return {
         ...slice,
+        running: true,
+        waiting: true,
+        activity: "thinking",
         resume: {
           turn: e.turn,
           kind: e.kind,
@@ -1142,6 +1146,8 @@ function trackRow(
   const now = () => new Date().toISOString();
   switch (e.type) {
     case "TurnStarted":
+    // 109 LIVE: a turn resumed after a restart runs without a `TurnStarted`.
+    case "TurnResumed":
       return {
         patch: (row) => ({
           ...row,
