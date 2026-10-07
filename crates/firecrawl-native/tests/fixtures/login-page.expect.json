@@ -1,0 +1,13 @@
+{
+  "issue": "login_required",
+  "tier_hint": "render",
+  "method": "body",
+  "min_words": 0,
+  "must_contain": [
+    "# Sign in",
+    "Use your work account"
+  ],
+  "must_not_contain": [
+    "Keep me signed in"
+  ]
+}

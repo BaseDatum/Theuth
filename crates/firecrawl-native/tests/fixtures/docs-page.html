@@ -56,7 +56,7 @@
 
         <h2 id="install">Install</h2>
         <p>Download the release archive for your platform, verify its checksum and unpack it onto your <code>PATH</code>. The archive contains one static binary and a sample configuration file.</p>
-        <pre><code class="language-bash">curl -LO https://releases.example.test/engine/1.4.2/engine-linux-x86_64.tar.gz
+        <pre class="highlight"><code class="sh">curl -LO https://releases.example.test/engine/1.4.2/engine-linux-x86_64.tar.gz
 sha256sum -c engine-linux-x86_64.tar.gz.sha256
 tar xzf engine-linux-x86_64.tar.gz -C /usr/local/bin engine
 engine --version</code></pre>
@@ -64,7 +64,7 @@ engine --version</code></pre>
 
         <h2 id="configure">Configure</h2>
         <p>The engine reads one YAML file. Every key has a default, so the smallest useful file names only the listen address and the data directory. Secrets never go in this file; they are read from the environment or the vault.</p>
-        <pre><code class="language-rust">use engine::Config;
+        <pre class="lang-rust"><code>use engine::Config;
 
 fn main() -> anyhow::Result&lt;()&gt; {
     let cfg = Config::load("/etc/engine/config.yaml")?;
