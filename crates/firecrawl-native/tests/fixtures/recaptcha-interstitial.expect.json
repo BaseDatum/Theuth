@@ -1,0 +1,12 @@
+{
+  "issue": "access_challenge",
+  "tier_hint": "render",
+  "method": "body",
+  "min_words": 0,
+  "must_contain": [
+    "One more step"
+  ],
+  "must_not_contain": [
+    "Continue"
+  ]
+}

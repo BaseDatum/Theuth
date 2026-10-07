@@ -1,0 +1,4 @@
+LineChart: Error rate per surface — 3 series
+chat    Q1  2.4 → 1.1 %  Q2
+tools   Q1  0.8 → 1.6 %  Q2
+export  Q1  0.5 → 0.5 %  Q2

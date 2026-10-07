@@ -318,6 +318,7 @@ impl Provider for Openserp {
             title: non_empty(e.title),
             markdown: e.markdown.unwrap_or_default(),
             tier: "render".into(),
+            issue: None,
         })
     }
 }

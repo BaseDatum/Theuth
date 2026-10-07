@@ -12,6 +12,7 @@
 
 pub mod anchor;
 mod catalog;
+mod elk_family;
 pub mod export;
 mod fences;
 mod flatten;
@@ -61,6 +62,79 @@ pub const SEQUENCE_STEPS: std::ops::RangeInclusive<usize> = 1..=40;
 pub const MAX_EXCERPT_LINES: usize = 120;
 /// Largest `Excerpt.text`, in bytes.
 pub const MAX_EXCERPT_BYTES: usize = 16 * 1024;
+// ---- 123 diagram grammars (§4.3 hard caps) ----
+/// Longest `sub` (mono second line), in characters.
+pub const MAX_SUB_CHARS: usize = 40;
+/// Longest `Graph` node `tag`, in characters.
+pub const MAX_TAG_CHARS: usize = 12;
+/// Deepest `Graph` group nesting through `parent` (a group with no parent is depth 1).
+pub const MAX_GRAPH_GROUP_DEPTH: usize = 3;
+/// Most `Graph.legend` entries.
+pub const MAX_GRAPH_LEGEND: usize = 5;
+/// Most `Sequence.fragments`.
+pub const MAX_SEQUENCE_FRAGMENTS: usize = 2;
+/// Most `Sequence` steps with a `note`.
+pub const MAX_SEQUENCE_NOTES: usize = 2;
+/// Most `StateMachine` states.
+pub const MAX_STATES: usize = 40;
+/// Most `StateMachine` transitions.
+pub const MAX_TRANSITIONS: usize = 80;
+/// Most `Entities` entities.
+pub const MAX_ENTITIES: usize = 24;
+/// Most fields on one entity.
+pub const MAX_ENTITY_FIELDS: usize = 32;
+/// Most `Entities` relations.
+pub const MAX_RELATIONS: usize = 48;
+/// Most `Swimlane` lanes.
+pub const MAX_LANES: usize = 8;
+/// Most `Swimlane` steps.
+pub const MAX_LANE_STEPS: usize = 40;
+/// Most `Swimlane` edges.
+pub const MAX_LANE_EDGES: usize = 80;
+/// Most `Gantt` tasks.
+pub const MAX_GANTT_TASKS: usize = 60;
+/// Most `Layers` layers, and most items per layer.
+pub const MAX_LAYERS: usize = 12;
+/// Most `Quadrant` items.
+pub const MAX_QUADRANT_ITEMS: usize = 40;
+/// Most `BarChart`/`LineChart` series.
+pub const MAX_CHART_SERIES: usize = 8;
+/// Most `BarChart` labels.
+pub const MAX_BAR_LABELS: usize = 40;
+/// Most `LineChart` labels.
+pub const MAX_LINE_LABELS: usize = 60;
+/// Most `ScatterChart` points.
+pub const MAX_SCATTER_POINTS: usize = 200;
+/// Most `ScatterChart` groups.
+pub const MAX_SCATTER_GROUPS: usize = 8;
+/// Fewest and most `RadarChart` axes.
+pub const RADAR_AXES: std::ops::RangeInclusive<usize> = 3..=8;
+/// Most `RadarChart` series.
+pub const MAX_RADAR_SERIES: usize = 5;
+/// Most `Funnel` stages.
+pub const MAX_FUNNEL_STAGES: usize = 10;
+/// Most `Treemap` cells.
+pub const MAX_TREEMAP_ITEMS: usize = 60;
+/// Most distinct `Treemap` groups.
+pub const MAX_TREEMAP_GROUPS: usize = 12;
+/// Most `Sankey` nodes.
+pub const MAX_SANKEY_NODES: usize = 24;
+/// Most `Sankey` flows.
+pub const MAX_SANKEY_FLOWS: usize = 48;
+/// Most `Waterfall` steps.
+pub const MAX_WATERFALL_STEPS: usize = 20;
+/// Fewest and most `Venn` sets.
+pub const VENN_SETS: std::ops::RangeInclusive<usize> = 2..=3;
+/// Fewest and most `Loop` steps.
+pub const LOOP_STEPS: std::ops::RangeInclusive<usize> = 2..=8;
+/// Most `Journey` stages.
+pub const MAX_JOURNEY_STAGES: usize = 8;
+/// Most `Journey` rows.
+pub const MAX_JOURNEY_ROWS: usize = 4;
+/// Most `Fishbone` categories.
+pub const MAX_FISHBONE_CAUSES: usize = 8;
+/// Most items on one `Fishbone` bone.
+pub const MAX_FISHBONE_ITEMS: usize = 6;
 
 /// One located validation failure; `path` is a JSON Pointer into the fence body
 /// (`""` = the whole body, `"/"` = the element graph as a whole).
@@ -205,6 +279,9 @@ pub fn to_mermaid(c: &Component) -> Option<String> {
     match c {
         Component::Graph(g) => Some(graph::to_mermaid(g)),
         Component::Sequence(s) => Some(sequence::to_mermaid(s)),
+        // ---- 123 ELK family (W1) ----
+        Component::StateMachine(p) => Some(elk_family::state_machine_mermaid(p)),
+        Component::Entities(p) => Some(elk_family::entities_mermaid(p)),
         _ => None,
     }
 }
@@ -229,7 +306,7 @@ mod tests {
         };
     }
 
-    const VALID: [(&str, &str); 34] = [
+    const VALID: [(&str, &str); 59] = [
         fixture!("valid-release-readiness"),
         fixture!("valid-status-board"),
         fixture!("valid-stack-text"),
@@ -264,6 +341,32 @@ mod tests {
         fixture!("valid-calendar"),
         fixture!("valid-excerpt"),
         fixture!("valid-sequence"),
+        // ---- 123 diagram grammars ----
+        fixture!("valid-state-machine"),
+        fixture!("valid-entities"),
+        fixture!("valid-swimlane"),
+        fixture!("valid-graph-delta"),
+        fixture!("valid-bar-chart"),
+        fixture!("valid-line-chart"),
+        fixture!("valid-scatter-chart"),
+        fixture!("valid-radar-chart"),
+        fixture!("valid-waterfall"),
+        fixture!("valid-funnel"),
+        fixture!("valid-gantt"),
+        fixture!("valid-quadrant"),
+        fixture!("valid-treemap"),
+        fixture!("valid-sankey"),
+        fixture!("valid-venn"),
+        fixture!("valid-loop"),
+        fixture!("valid-layers"),
+        fixture!("valid-journey"),
+        fixture!("valid-fishbone"),
+        fixture!("valid-graph-extended"),
+        fixture!("valid-sequence-fragments"),
+        fixture!("valid-timeline-time"),
+        fixture!("valid-tree-layouts"),
+        fixture!("valid-kanban-rows"),
+        fixture!("valid-heatmap-diverging"),
     ];
 
     const REPAIRABLE: [(&str, &str); 4] = [
@@ -275,7 +378,7 @@ mod tests {
 
     const TRUNCATED: (&str, &str) = fixture!("broken-truncated");
 
-    const LOCATED: [((&str, &str), &str); 14] = [
+    const LOCATED: [((&str, &str), &str); 61] = [
         (fixture!("broken-unknown-type"), "/elements/t/type"),
         (fixture!("broken-missing-child"), "/elements/r/children/1"),
         (fixture!("broken-shared-child"), "/"),
@@ -313,6 +416,177 @@ mod tests {
         (
             fixture!("broken-ref-scheme"),
             "/elements/s/props/steps/0/ref",
+        ),
+        // ---- 123 diagram grammars ----
+        (
+            fixture!("broken-state-machine-unknown-state"),
+            "/elements/s/props/transitions/7/to",
+        ),
+        (
+            fixture!("broken-state-machine-two-initial"),
+            "/elements/s/props/states/5/kind",
+        ),
+        (
+            fixture!("broken-state-machine-dup-id"),
+            "/elements/s/props/states/6/id",
+        ),
+        (
+            fixture!("broken-entities-unknown-field"),
+            "/elements/e/props/relations/0/to_field",
+        ),
+        (
+            fixture!("broken-entities-methods-on-table"),
+            "/elements/e/props/entities/0/methods",
+        ),
+        (
+            fixture!("broken-entities-unknown-entity"),
+            "/elements/e/props/relations/3/to",
+        ),
+        (
+            fixture!("broken-swimlane-unknown-lane"),
+            "/elements/s/props/steps/1/lane",
+        ),
+        (
+            fixture!("broken-swimlane-unknown-step"),
+            "/elements/s/props/edges/6/to",
+        ),
+        (
+            fixture!("broken-graph-delta-unknown-node"),
+            "/elements/d/props/after/edges/3/to",
+        ),
+        (
+            fixture!("broken-bar-chart-lengths"),
+            "/elements/b/props/series/1/values",
+        ),
+        (
+            fixture!("broken-bar-chart-dumbbell"),
+            "/elements/b/props/series",
+        ),
+        (
+            fixture!("broken-line-chart-slope"),
+            "/elements/l/props/labels",
+        ),
+        (
+            fixture!("broken-line-chart-bump-rank"),
+            "/elements/l/props/series/0/values/2",
+        ),
+        (
+            fixture!("broken-scatter-chart-bubble-size"),
+            "/elements/s/props/points/0/size",
+        ),
+        (
+            fixture!("broken-scatter-chart-unknown-group"),
+            "/elements/s/props/points/0/group",
+        ),
+        (
+            fixture!("broken-radar-chart-polar"),
+            "/elements/r/props/series",
+        ),
+        (
+            fixture!("broken-radar-chart-axes"),
+            "/elements/r/props/axes",
+        ),
+        (
+            fixture!("broken-funnel-partial-values"),
+            "/elements/f/props/stages/2/value",
+        ),
+        (
+            fixture!("broken-gantt-iso"),
+            "/elements/g/props/tasks/0/start",
+        ),
+        (
+            fixture!("broken-gantt-end-before-start"),
+            "/elements/g/props/tasks/1/end",
+        ),
+        (
+            fixture!("broken-gantt-self-depends"),
+            "/elements/g/props/tasks/1/depends/0",
+        ),
+        (
+            fixture!("broken-quadrant-quadrants"),
+            "/elements/q/props/quadrants",
+        ),
+        (
+            fixture!("broken-quadrant-range"),
+            "/elements/q/props/items/0/x",
+        ),
+        (
+            fixture!("broken-treemap-zero"),
+            "/elements/t/props/items/1/value",
+        ),
+        (fixture!("broken-sankey-cycle"), "/elements/s/props/flows/4"),
+        (
+            fixture!("broken-sankey-self-flow"),
+            "/elements/s/props/flows/4/to",
+        ),
+        (fixture!("broken-venn-four-sets"), "/elements/v/props/sets"),
+        (
+            fixture!("broken-venn-unknown-set"),
+            "/elements/v/props/overlaps/0/sets/1",
+        ),
+        (fixture!("broken-loop-one-step"), "/elements/l/props/steps"),
+        (
+            fixture!("broken-journey-cells"),
+            "/elements/j/props/rows/1/cells",
+        ),
+        (fixture!("broken-journey-mood"), "/elements/j/props/mood/1"),
+        (
+            fixture!("broken-journey-pain-stage"),
+            "/elements/j/props/pains/2/stage",
+        ),
+        (
+            fixture!("broken-layers-items-cap"),
+            "/elements/l/props/layers/0/items",
+        ),
+        (
+            fixture!("broken-fishbone-items-cap"),
+            "/elements/f/props/causes/0/items",
+        ),
+        (fixture!("broken-waterfall-cap"), "/elements/w/props/steps"),
+        (
+            fixture!("broken-graph-group-cycle"),
+            "/elements/g/props/groups/0/parent",
+        ),
+        (
+            fixture!("broken-graph-group-depth"),
+            "/elements/g/props/groups/3/parent",
+        ),
+        (
+            fixture!("broken-graph-group-unknown-parent"),
+            "/elements/g/props/groups/1/parent",
+        ),
+        (
+            fixture!("broken-graph-tag-length"),
+            "/elements/g/props/nodes/1/tag",
+        ),
+        (
+            fixture!("broken-graph-legend-cap"),
+            "/elements/g/props/legend",
+        ),
+        (
+            fixture!("broken-sequence-fragment-range"),
+            "/elements/s/props/fragments/1/to",
+        ),
+        (
+            fixture!("broken-sequence-fragment-overlap"),
+            "/elements/s/props/fragments/1",
+        ),
+        (
+            fixture!("broken-sequence-notes-cap"),
+            "/elements/s/props/steps/5/note",
+        ),
+        (
+            fixture!("broken-timeline-time-iso"),
+            "/elements/t/props/items/3/when",
+        ),
+        (
+            fixture!("broken-kanban-row"),
+            "/elements/k/props/columns/2/cards/0/row",
+        ),
+        (fixture!("broken-kanban-cut"), "/elements/k/props/cut"),
+        (
+            fixture!("broken-tree-dup-id"),
+            "/elements/nodes/props/items/3/id",
         ),
     ];
 

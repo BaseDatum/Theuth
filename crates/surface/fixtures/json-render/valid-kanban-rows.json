@@ -1,0 +1,76 @@
+{
+  "root": "k",
+  "elements": {
+    "k": {
+      "type": "Kanban",
+      "props": {
+        "title": "Story map",
+        "rows": [
+          "Must",
+          "Should",
+          "Could"
+        ],
+        "cut": 1,
+        "columns": [
+          {
+            "title": "Onboard",
+            "limit": 2,
+            "cards": [
+              {
+                "id": "install",
+                "title": "Install",
+                "row": 0,
+                "state": "done"
+              },
+              {
+                "id": "login",
+                "title": "Sign in",
+                "row": 0,
+                "state": "done"
+              },
+              {
+                "id": "tour",
+                "title": "Tour",
+                "row": 2
+              }
+            ]
+          },
+          {
+            "title": "Chat",
+            "limit": 2,
+            "cards": [
+              {
+                "id": "ask",
+                "title": "Ask",
+                "row": 0,
+                "state": "done"
+              },
+              {
+                "id": "draw",
+                "title": "Draw a chart",
+                "row": 1,
+                "state": "blocked",
+                "ref": "crates/surface/src/render.rs"
+              },
+              {
+                "id": "export",
+                "title": "Export",
+                "row": 2
+              }
+            ]
+          },
+          {
+            "title": "Boards",
+            "cards": [
+              {
+                "id": "board",
+                "title": "Open a board",
+                "row": 1
+              }
+            ]
+          }
+        ]
+      }
+    }
+  }
+}

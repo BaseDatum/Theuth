@@ -1,0 +1,22 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Sign in · Example Workspace</title>
+  <link rel="stylesheet" href="/assets/auth.css">
+</head>
+<body class="auth">
+  <h1>Sign in</h1>
+  <p>Use your work account to continue to Example Workspace. Your session will stay signed in on this device for fourteen days unless you sign out or your administrator ends it.</p>
+  <p>If your organisation uses single sign-on, enter your email address and you will be redirected to your identity provider. Two-step verification may be required by your workspace policy.</p>
+  <form class="login-form" method="post" action="/session">
+    <label for="email">Email</label>
+    <input id="email" name="email" type="email" autocomplete="username" required>
+    <label for="password">Password</label>
+    <input id="password" name="password" type="password" autocomplete="current-password" required>
+    <label><input type="checkbox" name="remember"> Keep me signed in</label>
+    <button type="submit">Sign in</button>
+  </form>
+  <p class="auth-links">Don't have an account? <a href="/signup">Create one</a> · <a href="/password/reset">Forgot your password?</a></p>
+</body>
+</html>

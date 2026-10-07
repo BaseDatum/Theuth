@@ -1,0 +1,43 @@
+{
+  "root": "w",
+  "elements": {
+    "w": {
+      "type": "Waterfall",
+      "props": {
+        "title": "Headcount 2026",
+        "unit": "people",
+        "steps": [
+          {
+            "label": "Jan",
+            "value": 100,
+            "kind": "total"
+          },
+          {
+            "label": "Hires",
+            "value": 12,
+            "state": "done"
+          },
+          {
+            "label": "Leavers",
+            "value": -5,
+            "state": "danger"
+          },
+          {
+            "label": "Q1",
+            "value": 107,
+            "kind": "subtotal"
+          },
+          {
+            "label": "Transfers in",
+            "value": 4
+          },
+          {
+            "label": "Dec",
+            "value": 111,
+            "kind": "total"
+          }
+        ]
+      }
+    }
+  }
+}

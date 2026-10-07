@@ -1,0 +1,11 @@
+{
+  "issue": null,
+  "tier_hint": "fetch",
+  "method": "scored",
+  "min_words": 300,
+  "must_contain": [
+    "# A paragraph at depth 260",
+    "When the tide tows the ferry, the painted pilot boat follows under the new bylaw."
+  ],
+  "must_not_contain": []
+}

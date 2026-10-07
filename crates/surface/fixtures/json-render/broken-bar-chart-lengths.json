@@ -1,0 +1,44 @@
+{
+  "root": "b",
+  "elements": {
+    "b": {
+      "type": "BarChart",
+      "props": {
+        "title": "CI runs per day",
+        "labels": [
+          "Mon",
+          "Tue",
+          "Wed",
+          "Thu",
+          "Fri"
+        ],
+        "series": [
+          {
+            "name": "Passed",
+            "values": [
+              42,
+              51,
+              38,
+              60,
+              47
+            ],
+            "state": "done"
+          },
+          {
+            "name": "Failed",
+            "values": [
+              3,
+              1,
+              6,
+              2
+            ],
+            "state": "danger"
+          }
+        ],
+        "variant": "stacked",
+        "yLabel": "runs",
+        "unit": "runs"
+      }
+    }
+  }
+}

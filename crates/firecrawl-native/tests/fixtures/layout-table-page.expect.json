@@ -1,0 +1,21 @@
+{
+  "issue": null,
+  "tier_hint": "fetch",
+  "method": "main",
+  "min_words": 150,
+  "must_contain": [
+    "# Harbour Pass plans",
+    "## Overview",
+    "## What you get",
+    "## Who it is for",
+    "## Compare plans",
+    "| Plan ",
+    "| Household |",
+    "| \u00a349 ",
+    "- Priority boarding on the night ferry."
+  ],
+  "must_not_contain": [
+    "Help",
+    "\u00a9 2026 Harbour Pass"
+  ]
+}

@@ -1,0 +1,17 @@
+{
+  "root": "l",
+  "elements": {
+    "l": {
+      "type": "Loop",
+      "props": {
+        "title": "Build loop",
+        "hub": "Learning",
+        "steps": [
+          {
+            "label": "Only"
+          }
+        ]
+      }
+    }
+  }
+}

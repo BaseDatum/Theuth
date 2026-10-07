@@ -1,0 +1,14 @@
+Fence correction round
+1. Model → Loop  reply with fence
+2. Loop → surface  check(text)   crates/surface/src/lib.rs#L154
+[alt: errors]
+  3. surface ⇢ Loop  ✗ located errors
+     · path + message
+  4. Loop → Model  <surface_error>
+[else]
+  5. Model → Loop  ● corrected block
+[end]
+[loop: ≤ 3 rounds]
+  6. Loop ⇾ Loop  give up after 3
+     · final=true
+[end]

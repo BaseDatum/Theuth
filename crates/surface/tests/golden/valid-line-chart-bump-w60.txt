@@ -1,0 +1,6 @@
+LineChart: Model ranking by week — 3 series
+       │ W1 │ W2 │ W3 │ W4
+───────┼────┼────┼────┼───
+opus   │ #1 │ #1 │ #2 │ #1
+sonnet │ #2 │ #3 │ #1 │ #2
+haiku  │ #3 │ #2 │ #3 │ #3

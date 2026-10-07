@@ -12,7 +12,7 @@ const SKILL: &str = include_str!("../visualize.md");
 
 /// One minimal element per component, in catalog order; the `### Name` example in the skill.
 /// Containers reference children `a`/`b`, which the example leaves to the reader.
-const EXAMPLES: [(&str, &str); 38] = [
+const EXAMPLES: [(&str, &str); 57] = [
     (
         "Card",
         r#"{"type": "Card", "props": {"title": "Release readiness"}, "children": ["a", "b"]}"#,
@@ -161,6 +161,82 @@ const EXAMPLES: [(&str, &str); 38] = [
     (
         "Calendar",
         r#"{"type": "Calendar", "props": {"title": "Rollout week", "days": [{"day": "Mon 22", "label": "schema", "state": "done"}, {"day": "Wed 24", "label": "canary", "state": "active"}, {"day": "Fri 26", "label": "full", "state": "pending"}]}}"#,
+    ), // ---- 123 diagram grammars (Appendix A, verbatim) ----
+    (
+        "StateMachine",
+        r#"{"type": "StateMachine", "props": {"states": [{"id": "todo", "label": "Todo", "kind": "initial"}, {"id": "done", "label": "Done", "kind": "final"}], "transitions": [{"from": "todo", "to": "done", "label": "finish", "guard": "checks green"}]}}"#,
+    ),
+    (
+        "Entities",
+        r#"{"type": "Entities", "props": {"entities": [{"id": "user", "label": "User", "fields": [{"name": "id", "type": "uuid", "key": "pk"}]}, {"id": "session", "label": "Session", "fields": [{"name": "user_id", "type": "uuid", "key": "fk"}]}], "relations": [{"from": "user", "to": "session", "kind": "one-many", "from_field": "id", "to_field": "user_id"}], "detail": "schema"}}"#,
+    ),
+    (
+        "Swimlane",
+        r#"{"type": "Swimlane", "props": {"lanes": [{"id": "dev", "label": "Developer"}, {"id": "ci", "label": "CI"}], "steps": [{"id": "push", "lane": "dev", "label": "Push", "kind": "start"}, {"id": "test", "lane": "ci", "label": "Run tests"}], "edges": [{"from": "push", "to": "test"}]}}"#,
+    ),
+    (
+        "GraphDelta",
+        r#"{"type": "GraphDelta", "props": {"before": {"nodes": [{"id": "api", "label": "API"}, {"id": "db", "label": "Postgres"}], "edges": [{"from": "api", "to": "db"}]}, "after": {"nodes": [{"id": "api", "label": "API"}, {"id": "cache", "label": "Redis"}, {"id": "db", "label": "Postgres"}], "edges": [{"from": "api", "to": "cache"}, {"from": "cache", "to": "db"}]}}}"#,
+    ),
+    (
+        "BarChart",
+        r#"{"type": "BarChart", "props": {"labels": ["Mon", "Tue", "Wed"], "series": [{"name": "Tests", "values": [12, 18, 9]}, {"name": "Fails", "values": [1, 0, 2]}], "unit": "runs"}}"#,
+    ),
+    (
+        "LineChart",
+        r#"{"type": "LineChart", "props": {"labels": ["v1", "v2", "v3"], "series": [{"name": "p95 ms", "values": [410, 380, 290]}], "yLabel": "ms"}}"#,
+    ),
+    (
+        "ScatterChart",
+        r#"{"type": "ScatterChart", "props": {"points": [{"x": 2, "y": 40, "label": "api"}, {"x": 5, "y": 12, "label": "worker"}], "xLabel": "Effort", "yLabel": "Value"}}"#,
+    ),
+    (
+        "RadarChart",
+        r#"{"type": "RadarChart", "props": {"axes": ["Speed", "Cost", "Safety", "Coverage"], "series": [{"name": "Plan A", "values": [4, 2, 5, 3]}], "max": 5}}"#,
+    ),
+    (
+        "Waterfall",
+        r#"{"type": "Waterfall", "props": {"steps": [{"label": "Start", "value": 100, "kind": "total"}, {"label": "Hires", "value": 12}, {"label": "Leavers", "value": -5}, {"label": "End", "value": 107, "kind": "total"}], "unit": "people"}}"#,
+    ),
+    (
+        "Funnel",
+        r#"{"type": "Funnel", "props": {"stages": [{"label": "Visited", "value": 1200}, {"label": "Signed up", "value": 300}, {"label": "Paid", "value": 45}]}}"#,
+    ),
+    (
+        "Gantt",
+        r#"{"type": "Gantt", "props": {"tasks": [{"id": "a", "label": "Kernel", "start": "2026-10-08", "end": "2026-10-10"}, {"id": "b", "label": "Charts", "start": "2026-10-10", "end": "2026-10-14", "depends": ["a"], "state": "active"}], "today": "2026-10-11"}}"#,
+    ),
+    (
+        "Quadrant",
+        r#"{"type": "Quadrant", "props": {"xLabel": "Effort", "yLabel": "Impact", "items": [{"label": "Cache", "x": 0.2, "y": 0.8, "state": "active"}, {"label": "Rewrite", "x": 0.9, "y": 0.7}]}}"#,
+    ),
+    (
+        "Treemap",
+        r#"{"type": "Treemap", "props": {"items": [{"label": "agent", "value": 362, "group": "crates"}, {"label": "ui", "value": 210, "group": "desktop"}]}}"#,
+    ),
+    (
+        "Sankey",
+        r#"{"type": "Sankey", "props": {"nodes": [{"id": "opus", "label": "Opus", "stage": 0}, {"id": "s1", "label": "Session 1", "stage": 1}], "flows": [{"from": "opus", "to": "s1", "value": 12.5}], "unit": "USD"}}"#,
+    ),
+    (
+        "Venn",
+        r#"{"type": "Venn", "props": {"sets": [{"id": "a", "label": "Has tests"}, {"id": "b", "label": "Has docs"}], "overlaps": [{"sets": ["a", "b"], "label": "Release-ready"}]}}"#,
+    ),
+    (
+        "Loop",
+        r#"{"type": "Loop", "props": {"steps": [{"label": "Measure"}, {"label": "Decide"}, {"label": "Build"}, {"label": "Ship"}], "hub": "Learning"}}"#,
+    ),
+    (
+        "Layers",
+        r#"{"type": "Layers", "props": {"layers": [{"label": "Apps", "items": ["desktop", "TUI"]}, {"label": "Engine", "items": ["agent", "tools"]}, {"label": "Store", "items": ["sqlite"]}]}}"#,
+    ),
+    (
+        "Journey",
+        r#"{"type": "Journey", "props": {"stages": ["Install", "First chat"], "rows": [{"label": "Does", "cells": ["downloads", "asks"]}], "mood": [0.2, 0.8], "pains": [{"stage": 0, "text": "notarisation wait"}]}}"#,
+    ),
+    (
+        "Fishbone",
+        r#"{"type": "Fishbone", "props": {"effect": "Slow replies", "causes": [{"category": "Model", "items": ["long context"]}, {"category": "Tools", "items": ["cold ELK"]}]}}"#,
     ),
 ];
 
@@ -181,7 +257,8 @@ Three fenced blocks render inline, merged into your reply with the same margins 
 /// Everything of the block after the catalog.
 const BLOCK_TAIL: &str = "\n\
 - ```openui: richer static components with local interaction, rendered inline exactly like json-render (not as an app card; the reader can open one as an app if they want): Steps/StepsItem, Tabs/TabItem, Callout, Card/CardHeader, Table/Col, BarChart/LineChart/Series, MetricIndicatorInline, ListBlock/ListItem, Tag, Accordion/AccordionItem, CodeBlock, Chips/ChipItem, OptionCards/OptionCard, Buttons/Button with @Set/@OpenUrl. No Query/Mutation/@ToAssistant in a fence — a live screen is the `app` tool.\n\
-- ```mermaid: sequenceDiagram, stateDiagram-v2, classDiagram, erDiagram, gantt, timeline, mindmap (flowchart only when you need mermaid syntax; boxes and arrows are otherwise a Graph).\n\
+- ```mermaid: sequenceDiagram (un-anchored sketches), mindmap (flowchart only when you need mermaid syntax; boxes and arrows are otherwise a Graph; state, class and ER pictures are StateMachine / Entities).\n\
+- A **page** (`show{content, name: \"x.html\"}`): one self-contained HTML document with its own `<style>`/`<script>`, CDN libraries allowed, rendered live inline in the theuth app in a sandboxed frame themed like the chat. Only for what no catalog component draws: a chart library's chart (Chart.js, ECharts, Plotly, D3), a map, 3D, a mockup, an image collage, an animation, a layout you must control pixel by pixel. Nothing comes back from a page — a button that should reach you is an `app`, not a page. Rules: fluid width, no horizontal padding on the outermost element, no outer card, border or banner title (the page is part of your reply); charts at fixed pixel heights; let content set the height, never `100vh` or `height:100%` on `html`/`body`; use the theme variables (`--background --foreground --muted --card --border --primary --accent --chart-1..6 --radius --font-sans --font-mono`, the same names as T3 Code) with fallbacks, e.g. `var(--foreground, #1a1612)`; local images by absolute path are inlined for you; pass `height` only to cap a long page. Check a scripted page with `page_preview` before you show it. The reader sees the page where the card is — do not announce or restate it; add only what it does not say.\n\
 \n\
 Pick by the shape of the answer:\n\
 | The answer is… | Draw |\n\
@@ -189,14 +266,22 @@ Pick by the shape of the answer:\n\
 | components, dependencies, data flow, pipeline, call graph | json-render Graph (state per node for health/progress) |\n\
 | how code in this repository works, or what a change did, in three or more parts | a board (see Boards) — not an inline fence |\n\
 | who calls whom in what order | mermaid sequenceDiagram |\n\
-| lifecycle, modes, retries, transitions | mermaid stateDiagram-v2 |\n\
-| schema, types, relationships | mermaid erDiagram / classDiagram |\n\
+| lifecycle, modes, retries, transitions | json-render StateMachine (kind: initial/final, guard per transition) |\n\
+| schema, types, classes, relationships | json-render Entities (detail: model / schema / class) |\n\
+| who does which step; handoffs | json-render Swimlane |\n\
+| what a change did to a topology | json-render GraphDelta (before / after share ids) |\n\
 | how-to or explanation in steps | json-render Steps, or openui Steps |\n\
 | options with trade-offs, alternatives | openui Tabs (one per option), or json-render Table on shared criteria |\n\
 | a comparison, before/after, a matrix | json-render Table (Badge for verdict cells); two versions of text or config: Diff; rows × columns of intensity: Heatmap |\n\
 | status of work, checks, tests, a rollout | json-render MetricGrid + Checklist (or Progress); work in stages: Kanban |\n\
-| what happened when: incident, history, plan | json-render Timeline (state per item); days of a week or month: Calendar |\n\
-| numbers, counts, durations, sizes | json-render MetricGrid / Bars; one value against a limit: Gauge; a trend without axes: Sparkline or Metric with spark; openui BarChart / LineChart for full charts |\n\
+| what happened when: incident, history | json-render Timeline (state per item; scale: time for real dates); days of a week or month: Calendar |\n\
+| tasks over dates; a plan with overlap | json-render Gantt (depends, group, today) |\n\
+| quantities by category or over time | json-render BarChart / LineChart (Bars for a quick list; Sparkline for a trend without axes) |\n\
+| numbers, counts, durations, sizes | json-render MetricGrid; one value against a limit: Gauge; a trend inline: Metric with spark |\n\
+| two variables; position; priority | json-render ScatterChart / Quadrant |\n\
+| where a quantity goes; what adds up | json-render Sankey / Waterfall / Treemap / Funnel |\n\
+| causes of one effect; a cycle; stacked levels | json-render Fishbone / Loop / Layers |\n\
+| an experience across stages; overlap of sets | json-render Journey / Venn |\n\
 | a warning, a blocker, the one thing to act on | json-render Alert (severity) |\n\
 | an aside: a tip, a note, a question, a must-know | json-render Callout or openui Callout |\n\
 | facts about one thing (config, host, PR) | json-render KeyValueList |\n\
@@ -206,19 +291,21 @@ Pick by the shape of the answer:\n\
 | labels, categories, a set of states | json-render Tags |\n\
 | references, further reading | json-render LinkList |\n\
 | a picture you have a URL for | json-render Image |\n\
+| a chart from a chart library, a map, 3D, a mockup, a collage, an animation | a page: `show{content, name: \"x.html\"}` (check with `page_preview`) — never for what a component above draws |\n\
 | who: an owner, a contact, a reviewer | json-render Person |\n\
 | something someone said, verbatim | json-render Quote |\n\
 \n\
 Shapes for the replies you write most:\n\
 - **Finished work / a subagent's result:** one sentence on the outcome → MetricGrid (files, tests, cost/time) + Checklist of what was done and verified → a short prose line per caveat or open item.\n\
-- **Investigation / root cause:** one-sentence verdict → Graph or sequenceDiagram marking where it breaks (state: \"error\") → Timeline if timing matters → prose for evidence you must quote exactly.\n\
-- **Plan or proposal:** Steps or Timeline (Calendar when dates matter) → Table of risks/choices → the question for the user in words.\n\
+- **Investigation / root cause:** one-sentence verdict → Graph or sequenceDiagram marking where it breaks (state: \"danger\") → Timeline if timing matters → prose for evidence you must quote exactly.\n\
+- **Plan or proposal:** Steps, or Gantt when tasks have dates (Calendar for days) → Table of risks/choices → the question for the user in words.\n\
 - **\"How does X work\":** Graph or sequenceDiagram first, then prose only for what the arrows don't say — unless X is code in this repository and the answer has three or more parts: that is a board (see Boards).\n\
 - **Status check / \"how's it going\":** MetricGrid + Checklist/Progress; prose only for what changed or is stuck.\n\
 \n\
 Before you send, scan your draft. Three or more parallel bullets, a pipe table of statuses or comparisons, numbers in a sentence, \"first… then… finally\", \"if X then Y state\", \"A vs B\": turn each into its block and delete the prose it replaces. Keep a markdown table or list only when the reader will copy it, or when it is plain reference data with no status, verdict or number to see.\n\
 \n\
 Rules: one picture per idea, and a reply may hold several ideas; up to ~12 nodes or ~15 rows per block (split beyond that); labels ≤ 4 words; the takeaway goes in one sentence before the block, and prose never narrates what the picture already shows. Do not draw a one-line answer, commands to run, or text the user asked to copy. In a voice-note reply, draw nothing.\n\
+Closed vocabularies — write them exactly: every diagram unit's `state` is default | active | done | muted | danger (danger marks the break; one or two `active` units at most); `direction` is LR | TB; Entities `key` is pk | fk | uk and `relations[].kind` is one-one | one-many | many-many | inherits | implements | composes | aggregates | depends | references; Callout `variant` is note | tip | question | important; Table cells are strings. Every prop sits inside `props`.\n\
 Mermaid styling: outline, never fill. Every classDef is `fill:none,stroke:<color>,stroke-width:2.5px` (add `stroke-dasharray:6 3` for a soft category); red #dc2626 gate/blocker, blue #2563eb mutation, amber #d97706 warning/non-gating, green #16a34a done, gray #6b7280 external; at most three classes; `rect rgba(0,0,0,0)` for sequence bands; put the category in the node text and end with a one-line legend. No `\"` or `;` inside labels, no parentheses inside `([...])`. Full guide: the visualize skill.\n\
 \n\
 Every block must be complete and closed. In json-render every `children` id must be an element, every `type` must be in the catalog, and the JSON must be strict (double quotes, no trailing commas, no comments). If a block fails to render you will receive a <surface_error> with the exact path of each error: answer with the corrected block only.\n\
@@ -397,6 +484,35 @@ mod tests {
         assert!(check(&block).is_empty(), "{:?}", check(&block));
     }
 
+    /// 120 §10.1: the page paragraph sits after the three fences and before the pick table,
+    /// and the table has the page row after `Image`.
+    #[test]
+    fn block_names_pages_after_the_fences() {
+        let block = prompt_block();
+        let mermaid = block.find("\n- ```mermaid: ").unwrap();
+        let page = block
+            .find("\n- A **page** (`show{content, name: \"x.html\"}`)")
+            .unwrap();
+        let pick = block.find("\nPick by the shape of the answer:").unwrap();
+        assert!(mermaid < page && page < pick);
+        assert!(block.contains("a button that should reach you is an `app`, not a page"));
+        assert!(block.contains("Check a scripted page with `page_preview` before you show it."));
+        let image = block
+            .find("| a picture you have a URL for | json-render Image |")
+            .unwrap();
+        let row = block
+            .find("| a chart from a chart library, a map, 3D, a mockup, a collage, an animation | a page: `show{content, name: \"x.html\"}` (check with `page_preview`) — never for what a component above draws |")
+            .unwrap();
+        let person = block
+            .find("| who: an owner, a contact, a reviewer |")
+            .unwrap();
+        assert!(image < row && row < person);
+        let skill = visualize_skill();
+        assert!(skill.contains("\n## Pages\n"));
+        assert!(skill.contains("| a chart library's chart, a map, 3D, a mockup, a collage, an animation | a page — show{content, name: \"x.html\"} after page_preview | a Code block of HTML, or an app that calls nothing back |\n| an explanation with three or more parts"));
+        assert!(skill.contains("```html\n<!doctype html>"));
+    }
+
     #[test]
     fn surface_error_lists_every_fence_and_path() {
         let e = |path: &str, message: &str| SpecError {
@@ -443,7 +559,7 @@ mod tests {
         for e in &catalog().entries {
             assert!(skill.contains(&format!("\n### {}\n", e.name)), "{}", e.name);
         }
-        assert!(skill.contains("### Timeline\nProps: items: {when: string, title: string, detail?: string, state?: done|active|pending (default pending)}[]\n"));
+        assert!(skill.contains("### Timeline\nProps: items: {when: string, title: string, detail?: string, id?: string, ref?: string, state?: done|active|pending (default pending), until?: string}[], scale?: list|time, title?: string\n"), "{skill}");
         assert!(
             skill.contains("### Heading\nProps: text: string, level?: integer 1..4 (default 2)\n")
         );
@@ -452,6 +568,97 @@ mod tests {
         // Every worked example in the skill validates; the catalog examples are checked below.
         let errs = check(&skill);
         assert!(errs.is_empty(), "{errs:?}");
+        // 123 §8.1: the skill loads on demand, the cap is discipline — over it, move prose to
+        // the design doc, never cut the routing table. 123 measured 48,036 B at its cap of 48 KiB;
+        // design 120's pages section (54fe3155) joined the same skill afterwards (51,350 B), so the
+        // cap is now 56 KiB.
+        assert!(skill.len() < 56 * 1024, "skill is {} bytes", skill.len());
+        // 123 §8.1 (g): the six grammar examples are real elements of their component, so a
+        // model copying one copies something the validator accepts.
+        let roots: Vec<String> = crate::fences::json_render_fences(&skill)
+            .map(|(_, body)| {
+                let v: Value = serde_json::from_str(body).unwrap();
+                v["elements"][v["root"].as_str().unwrap()]["type"]
+                    .as_str()
+                    .unwrap()
+                    .to_owned()
+            })
+            .collect();
+        for name in [
+            "StateMachine",
+            "Entities",
+            "Swimlane",
+            "Gantt",
+            "GraphDelta",
+            "Sankey",
+        ] {
+            assert!(
+                roots.iter().any(|r| r == name),
+                "no worked example for {name}: {roots:?}"
+            );
+        }
+    }
+
+    /// 123 §3: every one of the 44 taxonomy types routes somewhere in "Pick the diagram".
+    #[test]
+    fn skill_routes_every_taxonomy_type() {
+        let skill = visualize_skill();
+        let (_, rest) = skill.split_once("\n## Pick the diagram\n").unwrap();
+        let (table, _) = rest.split_once("\n## Behavioural triggers\n").unwrap();
+        let types = [
+            "Architecture:",
+            "Architecture delta",
+            "IT current-state",
+            "Flowchart",
+            "Sequence:",
+            "State machine",
+            "ER / data model",
+            "Timeline:",
+            "Swimlane:",
+            "Quadrant",
+            "Radar",
+            "Polar",
+            "Loop",
+            "Nested",
+            "Tree:",
+            "Org chart",
+            "Layer stack",
+            "Exploded axonometric",
+            "Axonometric plan",
+            "Venn",
+            "Pyramid / funnel",
+            "Bar / dumbbell",
+            "Waterfall",
+            "Treemap",
+            "Heatmap",
+            "Line / slopegraph / bump",
+            "Gantt",
+            "Scatter / bubble / beeswarm",
+            "High-level",
+            "Process",
+            "Medallion",
+            "Data flow",
+            "DP integration",
+            "DP security matrix",
+            "Sankey",
+            "Fishbone",
+            "Wardley map",
+            "Kanban",
+            "User journey",
+            "Deployment",
+            "Dependency graph",
+            "UML class",
+            "Story map",
+            "Database schema",
+        ];
+        assert_eq!(types.len(), 44);
+        for t in types {
+            assert!(table.contains(&format!("\n| {t}")), "{t}");
+        }
+        assert_eq!(table.matches("\n| ").count() - 1, 44, "header row excluded");
+        let (_, rest) = rest.split_once("\n## Behavioural triggers\n").unwrap();
+        let (triggers, _) = rest.split_once("\n## Budgets\n").unwrap();
+        assert_eq!(triggers.matches("\n| ").count() - 1, 9);
     }
 
     #[test]

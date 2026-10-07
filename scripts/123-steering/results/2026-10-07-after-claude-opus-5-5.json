@@ -1,0 +1,291 @@
+{
+  "model": "claude-opus-5-5",
+  "block_bytes": 11023,
+  "grammar": {
+    "right": 20,
+    "total": 20,
+    "by_group": {
+      "lifecycle": "5/5",
+      "schema": "5/5",
+      "plan": "2/2",
+      "handoff": "3/3",
+      "quantity": "5/5"
+    },
+    "bar": ">= 16/20"
+  },
+  "hold": {
+    "false_draws": 0,
+    "total": 10,
+    "bar": "<= 1/10"
+  },
+  "rows": [
+    {
+      "id": "life-order",
+      "group": "lifecycle",
+      "picks": [
+        "StateMachine"
+      ],
+      "ok": true
+    },
+    {
+      "id": "life-pr",
+      "group": "lifecycle",
+      "picks": [
+        "Stack",
+        "StateMachine",
+        "Callout"
+      ],
+      "ok": true
+    },
+    {
+      "id": "life-tcp",
+      "group": "lifecycle",
+      "picks": [
+        "Stack",
+        "StateMachine",
+        "mermaid:sequenceDiagram"
+      ],
+      "ok": true
+    },
+    {
+      "id": "life-job",
+      "group": "lifecycle",
+      "picks": [
+        "StateMachine"
+      ],
+      "ok": true
+    },
+    {
+      "id": "life-session",
+      "group": "lifecycle",
+      "picks": [
+        "StateMachine"
+      ],
+      "ok": true
+    },
+    {
+      "id": "schema-blog",
+      "group": "schema",
+      "picks": [
+        "Entities",
+        "Table"
+      ],
+      "ok": true
+    },
+    {
+      "id": "schema-orders",
+      "group": "schema",
+      "picks": [
+        "Entities",
+        "Table"
+      ],
+      "ok": true
+    },
+    {
+      "id": "schema-classes",
+      "group": "schema",
+      "picks": [
+        "Entities",
+        "Code"
+      ],
+      "ok": true
+    },
+    {
+      "id": "schema-sessions",
+      "group": "schema",
+      "picks": [
+        "Entities",
+        "Table"
+      ],
+      "ok": true
+    },
+    {
+      "id": "schema-library",
+      "group": "schema",
+      "picks": [
+        "Entities"
+      ],
+      "ok": true
+    },
+    {
+      "id": "plan-release",
+      "group": "plan",
+      "picks": [
+        "Gantt",
+        "Table"
+      ],
+      "ok": true
+    },
+    {
+      "id": "plan-migration",
+      "group": "plan",
+      "picks": [
+        "Stack",
+        "Gantt",
+        "Table"
+      ],
+      "ok": true
+    },
+    {
+      "id": "handoff-incident",
+      "group": "handoff",
+      "picks": [
+        "Swimlane",
+        "Table"
+      ],
+      "ok": true
+    },
+    {
+      "id": "handoff-deploy",
+      "group": "handoff",
+      "picks": [
+        "Swimlane"
+      ],
+      "ok": true
+    },
+    {
+      "id": "handoff-hiring",
+      "group": "handoff",
+      "picks": [
+        "Swimlane",
+        "Table"
+      ],
+      "ok": true
+    },
+    {
+      "id": "qty-spend",
+      "group": "quantity",
+      "picks": [
+        "Sankey"
+      ],
+      "ok": true
+    },
+    {
+      "id": "qty-latency",
+      "group": "quantity",
+      "picks": [
+        "Stack",
+        "MetricGrid",
+        "LineChart"
+      ],
+      "ok": true
+    },
+    {
+      "id": "qty-headcount",
+      "group": "quantity",
+      "picks": [
+        "Waterfall"
+      ],
+      "ok": true
+    },
+    {
+      "id": "qty-funnel",
+      "group": "quantity",
+      "picks": [
+        "Funnel",
+        "Table"
+      ],
+      "ok": true
+    },
+    {
+      "id": "qty-tests",
+      "group": "quantity",
+      "picks": [
+        "Stack",
+        "MetricGrid",
+        "BarChart"
+      ],
+      "ok": true
+    },
+    {
+      "id": "hold-fact",
+      "group": "hold",
+      "picks": [],
+      "ok": true
+    },
+    {
+      "id": "hold-command",
+      "group": "hold",
+      "picks": [],
+      "ok": true
+    },
+    {
+      "id": "hold-compare",
+      "group": "hold",
+      "picks": [
+        "Stack",
+        "Table",
+        "Callout"
+      ],
+      "ok": true
+    },
+    {
+      "id": "hold-arch",
+      "group": "hold",
+      "picks": [
+        "Stack",
+        "Graph",
+        "Table",
+        "Callout"
+      ],
+      "ok": true
+    },
+    {
+      "id": "hold-letconst",
+      "group": "hold",
+      "picks": [
+        "Stack",
+        "Table",
+        "Code",
+        "Callout"
+      ],
+      "ok": true
+    },
+    {
+      "id": "hold-regex",
+      "group": "hold",
+      "picks": [
+        "Table"
+      ],
+      "ok": true
+    },
+    {
+      "id": "hold-steps",
+      "group": "hold",
+      "picks": [
+        "Stack",
+        "Steps",
+        "Callout"
+      ],
+      "ok": true
+    },
+    {
+      "id": "hold-config",
+      "group": "hold",
+      "picks": [
+        "Table",
+        "Callout"
+      ],
+      "ok": true
+    },
+    {
+      "id": "hold-glossary",
+      "group": "hold",
+      "picks": [
+        "Glossary"
+      ],
+      "ok": true
+    },
+    {
+      "id": "hold-review",
+      "group": "hold",
+      "picks": [
+        "Stack",
+        "Checklist",
+        "Alert",
+        "Code"
+      ],
+      "ok": true
+    }
+  ]
+}

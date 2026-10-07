@@ -1,0 +1,14 @@
+{
+  "issue": null,
+  "tier_hint": "fetch",
+  "method": "scored",
+  "min_words": 330,
+  "must_contain": [
+    "# Why we moved the chandlery",
+    "flex items-center gap-4"
+  ],
+  "must_not_contain": [
+    "Archive",
+    "Made with care"
+  ]
+}

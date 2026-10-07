@@ -1,0 +1,30 @@
+{
+  "root": "d",
+  "elements": {
+    "d": {
+      "type": "GraphDelta",
+      "props": {
+        "direction": "TB",
+        "before": {
+          "nodes": [
+            { "id": "api", "label": "API" },
+            { "id": "db", "label": "Postgres" },
+            { "id": "legacy", "label": "Legacy worker", "kind": "pill" }
+          ],
+          "edges": [
+            { "from": "api", "to": "db" },
+            { "from": "api", "to": "legacy" }
+          ]
+        },
+        "after": {
+          "nodes": [
+            { "id": "db", "label": "Postgres", "kind": "cylinder", "group": "data" },
+            { "id": "api", "label": "API v2", "state": "active" }
+          ],
+          "edges": [{ "from": "api", "to": "db", "label": "reads", "state": "active" }],
+          "groups": [{ "id": "data", "label": "Data" }]
+        }
+      }
+    }
+  }
+}

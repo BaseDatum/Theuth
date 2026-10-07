@@ -11,6 +11,11 @@ import type * as Y from 'yjs'
 import { type Anchor, parseAnchor } from '@/components/chat/surface/anchor'
 import type { ExcerptProps } from '@/components/chat/surface/Excerpt'
 import { excerptLines, parseSpec } from '@/components/chat/surface/parse'
+import type { EntitiesData } from '@/components/chat/surface/diagrams/Entities'
+import type { GraphDeltaData } from '@/components/chat/surface/diagrams/GraphDelta'
+import type { StateMachineData } from '@/components/chat/surface/diagrams/StateMachine'
+import type { SwimlaneData } from '@/components/chat/surface/diagrams/Swimlane'
+import type { TreeData } from '@/components/chat/surface/diagrams/TreeDiagram'
 import type { SequenceData } from '@/components/chat/surface/Sequence'
 import type { GraphData } from '@/lib/graph-layout'
 import type { EngineProvider } from '@/lib/doc/provider'
@@ -68,13 +73,22 @@ export function excerptAnchor(p: ExcerptProps): Anchor & { kind: 'code'; lines: 
   return { kind: 'code', path: p.path, lines: [start, start + excerptLines(p.text).length - 1] }
 }
 
-/** A diagram with addressable units (71 §2.4): the parsed root props, so the reader mounts the view itself. */
-export type Diagram = { type: 'Graph'; props: GraphData } | { type: 'Sequence'; props: SequenceData }
+/** A diagram with addressable units (71 §2.4, 123 §7): the parsed root props, so the reader mounts the view itself. */
+export type Diagram =
+  | { type: 'Graph'; props: GraphData }
+  | { type: 'Sequence'; props: SequenceData }
+  | { type: 'StateMachine'; props: StateMachineData }
+  | { type: 'Entities'; props: EntitiesData }
+  | { type: 'Swimlane'; props: SwimlaneData }
+  | { type: 'GraphDelta'; props: GraphDeltaData }
+  | { type: 'Tree'; props: TreeData }
+/** Root types that are a board `Diagram` (`Tree` only when drawn as nodes/org/nested; the list form is prose-width). */
+const DIAGRAM_TYPES: Record<string, true> = { Graph: true, Sequence: true, StateMachine: true, Entities: true, Swimlane: true, GraphDelta: true, Tree: true }
 
 /** What a `codeBlock` is to the reader (71 §2.2 block mapping). */
 export type CodeKind =
   | { kind: 'excerpt'; props: ExcerptProps }
-  | { kind: 'diagram'; diagram: Diagram } // `Graph` / `Sequence` root: full column width
+  | { kind: 'diagram'; diagram: Diagram } // a `Diagram` root: full column width, units wired
   | { kind: 'surface'; code: string } // any other catalog root: prose width
   | { kind: 'invalid'; code: string; error: string }
   | { kind: 'mermaid'; code: string }
@@ -89,8 +103,10 @@ export function classifyCode(block: Extract<DocBlock, { type: 'codeBlock' }>): C
   if ('error' in parsed) return { kind: 'invalid', code: text, error: parsed.error }
   const root = parsed.spec.elements[parsed.spec.root]
   if (root?.type === 'Excerpt') return { kind: 'excerpt', props: root.props as ExcerptProps }
-  if (root?.type === 'Graph') return { kind: 'diagram', diagram: { type: 'Graph', props: root.props as GraphData } }
-  if (root?.type === 'Sequence') return { kind: 'diagram', diagram: { type: 'Sequence', props: root.props as SequenceData } }
+  if (root && DIAGRAM_TYPES[root.type] && !(root.type === 'Tree' && (!(root.props as TreeData).layout || (root.props as TreeData).layout === 'list'))) {
+    // `parseSpec` validated `props` against the catalog mirror of `root.type`
+    return { kind: 'diagram', diagram: { type: root.type, props: root.props } as Diagram }
+  }
   return { kind: 'surface', code: text }
 }
 

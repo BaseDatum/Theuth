@@ -1,0 +1,98 @@
+{
+  "root": "w",
+  "elements": {
+    "w": {
+      "type": "Waterfall",
+      "props": {
+        "title": "Headcount 2026",
+        "unit": "people",
+        "steps": [
+          {
+            "label": "s0",
+            "value": 1
+          },
+          {
+            "label": "s1",
+            "value": 1
+          },
+          {
+            "label": "s2",
+            "value": 1
+          },
+          {
+            "label": "s3",
+            "value": 1
+          },
+          {
+            "label": "s4",
+            "value": 1
+          },
+          {
+            "label": "s5",
+            "value": 1
+          },
+          {
+            "label": "s6",
+            "value": 1
+          },
+          {
+            "label": "s7",
+            "value": 1
+          },
+          {
+            "label": "s8",
+            "value": 1
+          },
+          {
+            "label": "s9",
+            "value": 1
+          },
+          {
+            "label": "s10",
+            "value": 1
+          },
+          {
+            "label": "s11",
+            "value": 1
+          },
+          {
+            "label": "s12",
+            "value": 1
+          },
+          {
+            "label": "s13",
+            "value": 1
+          },
+          {
+            "label": "s14",
+            "value": 1
+          },
+          {
+            "label": "s15",
+            "value": 1
+          },
+          {
+            "label": "s16",
+            "value": 1
+          },
+          {
+            "label": "s17",
+            "value": 1
+          },
+          {
+            "label": "s18",
+            "value": 1
+          },
+          {
+            "label": "s19",
+            "value": 1
+          },
+          {
+            "label": "s20",
+            "value": 1
+          }
+        ]
+      }
+    }
+  }
+}

@@ -1,0 +1,13 @@
+Fishbone: Why are replies slow? — 4 causes
+→ Slow replies
+├ Model
+│ · long context
+│ · cold cache
+├ Tools
+│ · cold ELK
+│ · serial calls
+├ Network
+│ · proxy
+│ · retries
+├ Prompt
+│ · 57-row table

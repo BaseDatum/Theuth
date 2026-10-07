@@ -1,0 +1,12 @@
+{
+  "issue": "access_challenge",
+  "tier_hint": "render",
+  "method": "body",
+  "min_words": 0,
+  "must_contain": [
+    "Checking your browser"
+  ],
+  "must_not_contain": [
+    "bazadebezolkohpepadr"
+  ]
+}

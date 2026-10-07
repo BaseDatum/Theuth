@@ -52,6 +52,21 @@ describe("curated library", () => {
       CheckBoxGroup: ["value"],
       Slider: ["value"],
       Graph: ["highlight"],
+      StateMachine: ["highlight"],
+      Entities: ["highlight"],
+      Swimlane: ["highlight"],
+      GraphDelta: ["highlight"],
+      Waterfall: ["highlight"],
+      Funnel: ["highlight"],
+      Gantt: ["highlight"],
+      Quadrant: ["highlight"],
+      Treemap: ["highlight"],
+      Sankey: ["highlight"],
+      Venn: ["highlight"],
+      Loop: ["highlight"],
+      Layers: ["highlight"],
+      Journey: ["highlight"],
+      Fishbone: ["highlight"],
     });
   });
 

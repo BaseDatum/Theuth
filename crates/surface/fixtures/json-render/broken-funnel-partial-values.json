@@ -1,0 +1,30 @@
+{
+  "root": "f",
+  "elements": {
+    "f": {
+      "type": "Funnel",
+      "props": {
+        "title": "Signup funnel",
+        "stages": [
+          {
+            "label": "Visited",
+            "value": 1200
+          },
+          {
+            "label": "Signed up",
+            "value": 300,
+            "note": "25%"
+          },
+          {
+            "label": "Activated",
+            "state": "active"
+          },
+          {
+            "label": "Paid",
+            "value": 45
+          }
+        ]
+      }
+    }
+  }
+}

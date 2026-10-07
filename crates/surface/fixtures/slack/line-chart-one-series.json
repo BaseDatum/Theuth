@@ -1,0 +1,34 @@
+{
+  "root": "l",
+  "elements": {
+    "l": {
+      "type": "LineChart",
+      "props": {
+        "labels": [
+          "00:00",
+          "04:00",
+          "08:00",
+          "12:00",
+          "16:00",
+          "20:00"
+        ],
+        "series": [
+          {
+            "name": "replicas",
+            "values": [
+              2,
+              2,
+              4,
+              6,
+              6,
+              3
+            ]
+          }
+        ],
+        "variant": "step",
+        "xLabel": "hour",
+        "yLabel": "count"
+      }
+    }
+  }
+}

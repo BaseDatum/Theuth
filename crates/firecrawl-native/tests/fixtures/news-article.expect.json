@@ -1,0 +1,20 @@
+{
+  "issue": null,
+  "tier_hint": "fetch",
+  "method": "article",
+  "min_words": 450,
+  "must_contain": [
+    "# Harbour council approves night ferry",
+    "By [Jane Doe]",
+    "img/ferry-1600.jpg",
+    "img/council-chamber.jpg"
+  ],
+  "must_not_contain": [
+    "Ferry fares to rise",
+    "Comments (3)",
+    "Subscribe",
+    "Privacy",
+    "img/ferry-480.jpg",
+    "pixel.gif"
+  ]
+}

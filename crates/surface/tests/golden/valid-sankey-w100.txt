@@ -1,0 +1,11 @@
+Sankey: Spend by model and session — 4 flows
+Opus  16.7 USD
+  → Design 123  12.5 USD
+  → Bug triage  4.2 USD
+Sonnet  3.5 USD
+  → Bug triage  1.1 USD
+  → Docs  2.4 USD  (drafts)
+
+Design 123  12.5 USD  ◉
+Bug triage  5.3 USD
+Docs  2.4 USD

@@ -167,10 +167,19 @@ the reader reconcile two. The routing extends the `visualize` skill's table:
 | The section's shape is… | Draw |
 |---|---|
 | participants interacting over time — a request, a tool call, a turn | `Sequence`, `ref` on every step (a return points at the line that returns) |
-| branches, retries, state transitions; components, dependencies, data flow; the map of a change | `Graph` (`direction: "LR"` for flow, `"TB"` for a hierarchy), `ref` on every node that is code; `state` for added / changed / removed |
-| a schema change | `Table` of the fields + a `Graph` of the relations |
+| components, dependencies, data flow; branches and decisions | `Graph` (`direction: "LR"` for flow, `"TB"` for a hierarchy), `ref` on every node that is code |
+| a lifecycle: states, transitions, retries, guards | `StateMachine`, `ref` on every state that is code (`kind: initial|final`, `guard` on the transition) |
+| a schema, the key types, a class shape | `Entities` (`detail: schema|model|class`), `ref` on every entity; a schema change: `Entities` with `state` per table, not a `Table` + `Graph` |
+| who does which step; a handoff between crates, processes or teams | `Swimlane` (lanes = owners), `ref` on every step |
+| the map of a change: what it added, removed, rewired | `GraphDelta` (`before`/`after` share ids; the ledger is derived), `ref` on every `after` node |
+| a plan with dates and dependencies | `Gantt`, `ref` on a task that is a file or an issue block |
 | a contract: the key types or signatures of a new/changed interface | `Excerpt` with `symbol`, one per type |
-| a lifecycle or class shape with nothing to point at | mermaid `stateDiagram-v2` / `classDiagram` (a picture; use only when no unit needs a `ref`) |
+| an un-anchored sketch with nothing to point at | mermaid (a picture; use only when no unit needs a `ref`) |
+
+Lifecycles are a `StateMachine`, schemas an `Entities`, handoffs a `Swimlane`, plans a `Gantt`, a
+change's topology a `GraphDelta` — every unit with `ref`, so prose, unit and code light each other
+(`data-unit` is how the board finds them). Mermaid stays for un-anchored sketches. One diagram per
+idea stands: pick the grammar that carries the section's shape and let it carry the section.
 
 Diagrams draw at full column width; one picture can carry a section.
 

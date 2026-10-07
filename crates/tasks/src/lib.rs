@@ -474,6 +474,18 @@ struct Dispatch;
 #[derive(Clone, Copy, Debug)]
 struct Sweep;
 
+/// Internal `tell`: a sweep's probe answers came back; apply them.
+struct SweepProbed {
+    reachable: Option<HashSet<String>>,
+    probed: std::collections::HashMap<TaskId, ledger::Probed>,
+}
+
+/// Internal `ask`: [`EpisodeClosing`] with the desk's children resolved.
+struct EpisodeSessionsClosing {
+    agent: String,
+    sessions: Vec<String>,
+}
+
 /// Internal `tell`: a delivery returned.
 struct Delivered {
     wake: Wake,
@@ -964,24 +976,59 @@ impl Message<NoteDisposition> for Tasks {
 }
 
 impl Message<EpisodeClosing> for Tasks {
+    type Reply = DelegatedReply<Result<Vec<TaskId>, String>>;
+
+    /// Off the mailbox: the agent actor asked here may be inside its own
+    /// `Identity` handler asking tasks `ListTasks` (`roster::Identities`);
+    /// holding this mailbox while asking it back deadlocks both. The children
+    /// are resolved in a task and the ledger work comes back as an `ask`.
+    async fn handle(
+        &mut self,
+        m: EpisodeClosing,
+        ctx: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        let (reply, tx) = ctx.reply_sender();
+        let me = ctx.actor_ref().clone();
+        tokio::spawn(async move {
+            // The desk's children (work sessions) go with it.
+            let mut sessions = vec![m.session.clone()];
+            if let Ok(id) = m.session.parse::<runtime::SessionId>()
+                && let Some(agents) = ActorRef::<agent::Agents>::lookup(agent::AGENT_ACTOR)
+                    .ok()
+                    .flatten()
+                && let Ok(kids) = agents.ask(agent::ListAgents { session: id }).await
+            {
+                sessions.extend(kids.into_iter().map(|k| k.id.to_string()));
+            }
+            let r = me
+                .ask(EpisodeSessionsClosing {
+                    agent: m.agent,
+                    sessions,
+                })
+                .await
+                .map_err(|e| format!("tasks: {e}"));
+            match tx {
+                Some(tx) => tx.send(r),
+                None => {
+                    if let Err(e) = r {
+                        tracing::error!("episode closing: {e}");
+                    }
+                }
+            }
+        });
+        reply
+    }
+}
+
+impl Message<EpisodeSessionsClosing> for Tasks {
     type Reply = Result<Vec<TaskId>, String>;
 
     async fn handle(
         &mut self,
-        m: EpisodeClosing,
+        m: EpisodeSessionsClosing,
         _: &mut Context<Self, Self::Reply>,
     ) -> Self::Reply {
-        // The desk's children (work sessions) go with it.
-        let mut sessions = vec![m.session.clone()];
-        if let Ok(id) = m.session.parse::<runtime::SessionId>()
-            && let Some(agents) = ActorRef::<agent::Agents>::lookup(agent::AGENT_ACTOR)
-                .ok()
-                .flatten()
-            && let Ok(kids) = agents.ask(agent::ListAgents { session: id }).await
-        {
-            sessions.extend(kids.into_iter().map(|k| k.id.to_string()));
-        }
-        self.ledger.episode_closing(&m.agent, &sessions).await
+        self.ledger.episode_closing(&m.agent, &m.sessions).await
     }
 }
 
@@ -1119,12 +1166,42 @@ impl Message<Delivered> for Tasks {
 impl Message<Sweep> for Tasks {
     type Reply = ();
 
-    async fn handle(&mut self, _: Sweep, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+    /// Off the mailbox: `reachable()` asks the mesh and the liveness probe
+    /// asks the agent actor, which may be asking tasks back (`ListTasks` from
+    /// `roster::Identities` inside its `Identity` handler). The answers
+    /// return as [`SweepProbed`] and are applied against the rows as they
+    /// are then.
+    async fn handle(&mut self, _: Sweep, ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
         if !self.dispatching {
             return;
         }
-        let reachable = Self::reachable().await;
-        match self.ledger.sweep(reachable.as_ref()).await {
+        let prober = self.ledger.prober();
+        let now = (self.ledger.clock)();
+        let me = ctx.actor_ref().clone();
+        tokio::spawn(async move {
+            let reachable = Self::reachable().await;
+            match prober.probe(now, reachable.as_ref()).await {
+                Ok(probed) => {
+                    let _ = me.tell(SweepProbed { reachable, probed }).await;
+                }
+                Err(e) => tracing::error!("orphan sweep: {e}"),
+            }
+        });
+    }
+}
+
+impl Message<SweepProbed> for Tasks {
+    type Reply = ();
+
+    async fn handle(&mut self, m: SweepProbed, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        if !self.dispatching {
+            return;
+        }
+        match self
+            .ledger
+            .sweep_apply(m.reachable.as_ref(), &m.probed)
+            .await
+        {
             Ok(ids) if !ids.is_empty() => tracing::info!(n = ids.len(), "checkouts orphaned"),
             Ok(_) => {}
             Err(e) => tracing::error!("orphan sweep: {e}"),
@@ -1517,5 +1594,108 @@ mod tests {
             .await
             .unwrap();
         assert!(actor.ask(GetTask(t.id)).await.is_ok(), "actor stopped");
+    }
+
+    /// A liveness probe shaped like the real one (`AgentProbe` asks the agent
+    /// actor, whose `Identity` handler asks tasks back): it asks the tasks
+    /// actor `ListTasks` before answering, then waits for `gate`.
+    struct AskingProbe {
+        tasks: std::sync::OnceLock<ActorRef<Tasks>>,
+        gate: tokio::sync::Notify,
+        asked: tokio::sync::Notify,
+    }
+
+    #[async_trait::async_trait]
+    impl ledger::LivenessProbe for AskingProbe {
+        async fn liveness(&self, _: &str) -> Option<ledger::Liveness> {
+            let tasks = self.tasks.get()?.clone();
+            tasks.ask(ListTasks(TaskFilter::default())).await.ok()?;
+            self.asked.notify_one();
+            self.gate.notified().await;
+            Some(ledger::Liveness {
+                active_now: false,
+                last_active_ms: None,
+            })
+        }
+    }
+
+    /// A stale `doing` checkout with a probe that asks back into the actor.
+    async fn asking_rig() -> (ActorRef<Tasks>, Arc<AskingProbe>, TaskId) {
+        let mut r = ledger::tests::rig().await;
+        let t = r.task("agent:ops").await;
+        r.ledger
+            .checkout(&t.id, "s-ops", "agent:ops")
+            .await
+            .unwrap();
+        r.tick(3_600_000);
+        let probe = Arc::new(AskingProbe {
+            tasks: Default::default(),
+            gate: Default::default(),
+            asked: Default::default(),
+        });
+        r.ledger.probe = probe.clone();
+        let actor = Tasks::spawn(Tasks {
+            ledger: r.ledger,
+            dispatching: true,
+            escalations: Default::default(),
+        });
+        probe.tasks.set(actor.clone()).ok().unwrap();
+        (actor, probe, t.id)
+    }
+
+    async fn orphaned(actor: &ActorRef<Tasks>, id: &TaskId) -> bool {
+        for _ in 0..500 {
+            let t = actor.ask(GetTask(id.clone())).await.unwrap();
+            if t.checkout.is_some_and(|c| c.orphaned) {
+                return true;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        false
+    }
+
+    /// Audit #1: the sweep's probe asks the agent actor, which asks tasks
+    /// back. With the probe on the mailbox neither ask ever answered; now
+    /// the probe runs off it, the inbound ask answers and the sweep applies.
+    #[tokio::test]
+    async fn sweep_probe_may_ask_tasks_back() {
+        let (actor, probe, id) = asking_rig().await;
+        probe.gate.notify_one();
+        actor.tell(Sweep).await.unwrap();
+        tokio::time::timeout(Duration::from_secs(5), probe.asked.notified())
+            .await
+            .expect("the probe's ask into tasks never answered");
+        tokio::time::timeout(
+            Duration::from_secs(5),
+            actor.ask(ListTasks(TaskFilter::default())),
+        )
+        .await
+        .expect("tasks mailbox held by the sweep")
+        .unwrap();
+        assert!(orphaned(&actor, &id).await, "the sweep did not apply");
+    }
+
+    /// Audit #1, the other edge: `EpisodeClosing` answers while a sweep's
+    /// probe is still out (its ask into tasks pending behind the gate).
+    #[tokio::test]
+    async fn episode_closing_answers_while_probe_is_out() {
+        let (actor, probe, id) = asking_rig().await;
+        actor.tell(Sweep).await.unwrap();
+        tokio::time::timeout(Duration::from_secs(5), probe.asked.notified())
+            .await
+            .expect("the probe's ask into tasks never answered");
+        let blocked = tokio::time::timeout(
+            Duration::from_secs(5),
+            actor.ask(EpisodeClosing {
+                agent: "lead".into(),
+                session: "s-lead".into(),
+            }),
+        )
+        .await
+        .expect("tasks mailbox held by the sweep")
+        .unwrap();
+        assert!(blocked.is_empty());
+        probe.gate.notify_one();
+        assert!(orphaned(&actor, &id).await, "the sweep did not apply");
     }
 }

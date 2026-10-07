@@ -1,0 +1,9 @@
+Add a cache
+Before: 3 nodes · After: 4 nodes
++ Redis
+
+Data
+• Web → API
+◉ API → Redis (reads)
+● Redis → Postgres (miss)
+• Postgres

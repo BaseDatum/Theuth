@@ -1,0 +1,7 @@
+ScatterChart: Crates by size — 4 points
+label    │ Files │ Tests │ size
+─────────┼───────┼───────┼──────
+surface  │ 12    │ 40    │ 8000
+agent    │ 30    │ 110   │ 24000
+markdown │ 6     │ 9     │ 2100
+desktop  │ 18    │ 22    │ 5400

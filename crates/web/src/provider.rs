@@ -213,6 +213,10 @@ pub struct Rendered {
     /// `render` (a browser). `search_web` shows it so the model knows when a
     /// thin page is worth `read_url {rendered: true}`.
     pub tier: String,
+    /// Why the page did not read as content (122 D1), when the provider
+    /// diagnosed one; `search_web` turns it into a `skipped` reason.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub issue: Option<crate::fetch::issue::PageIssue>,
 }
 
 /// Static facts about a provider; drives selection and the tool description.

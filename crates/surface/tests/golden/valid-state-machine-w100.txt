@@ -1,0 +1,8 @@
+Task lifecycle
+◉ Todo → Doing  start
+◉ Doing ⇢ Blocked  wait [dependency open]
+✗ Blocked → Doing  unblock
+◉ Doing → Review  submit
+• Review → Checks?  run checks
+◇ Checks? → Done  pass [all green]
+◇ Checks? ✗→ Doing  fail [any red]

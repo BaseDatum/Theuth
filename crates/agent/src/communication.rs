@@ -83,15 +83,17 @@ pub const DISCOVER_DEFAULT_LIMIT: u16 = 25;
 /// `discover_peers` / [`ListPeers`] maximum page size (§5.1).
 pub const DISCOVER_MAX_LIMIT: u16 = 100;
 /// Accepted, unconsumed peer inputs per recipient (§8); beyond it: busy.
-pub const PENDING_PER_RECIPIENT: usize = 32;
+pub const PENDING_PER_RECIPIENT: usize = 64;
 /// Accepted, unconsumed peer inputs per harness (§8).
-pub const PENDING_PER_HARNESS: usize = 256;
-/// Pending reply waits per session (§8).
-pub const WAITS_PER_SESSION: usize = 16;
-/// Pending reply waits per harness (§8).
-pub const WAITS_PER_HARNESS: usize = 128;
-/// Peer-triggered continuations per initiating request (§8).
-pub const CHAIN_MAX: u32 = 32;
+pub const PENDING_PER_HARNESS: usize = 1024;
+/// Pending reply waits per session (§8): an orchestrator awaiting its children.
+pub const WAITS_PER_SESSION: usize = 32;
+/// Pending reply waits per harness (§8): ~10 orchestrators × 20 children.
+pub const WAITS_PER_HARNESS: usize = 1024;
+/// Peer-triggered continuations per initiating request (§8). Every consumed
+/// child result counts, so an autonomous orchestrator needs room for all of
+/// its children's results and their follow-ups.
+pub const CHAIN_MAX: u32 = 256;
 /// Max chars of an owner-chosen root alias and of a remote `peer:` name.
 pub const ALIAS_MAX: usize = 64;
 

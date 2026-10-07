@@ -1,0 +1,14 @@
+{
+  "issue": null,
+  "tier_hint": "fetch",
+  "method": "main",
+  "min_words": 400,
+  "must_contain": [
+    "# Contact the harbour office",
+    "## Send a message"
+  ],
+  "must_not_contain": [
+    "Fees",
+    "\u00a9 2026 Harbour Office"
+  ]
+}

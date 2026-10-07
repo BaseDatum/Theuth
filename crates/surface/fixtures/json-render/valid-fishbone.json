@@ -1,0 +1,41 @@
+{
+  "root": "f",
+  "elements": {
+    "f": {
+      "type": "Fishbone",
+      "props": {
+        "title": "Why are replies slow?",
+        "effect": "Slow replies",
+        "causes": [
+          {
+            "category": "Model",
+            "items": [
+              "long context",
+              "cold cache"
+            ]
+          },
+          {
+            "category": "Tools",
+            "items": [
+              "cold ELK",
+              "serial calls"
+            ]
+          },
+          {
+            "category": "Network",
+            "items": [
+              "proxy",
+              "retries"
+            ]
+          },
+          {
+            "category": "Prompt",
+            "items": [
+              "57-row table"
+            ]
+          }
+        ]
+      }
+    }
+  }
+}

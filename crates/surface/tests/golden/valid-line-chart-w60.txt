@@ -1,0 +1,4 @@
+LineChart: p95 latency by release — 2 series
+chat   █▇▄▄▂▁  410 → 220 ms
+tools  ▇█▅▂▃▁  120 → 80 ms
+       v1.0 … v1.5

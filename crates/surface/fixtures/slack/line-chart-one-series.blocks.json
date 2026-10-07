@@ -1,0 +1,50 @@
+[
+  {
+    "type": "data_visualization",
+    "title": "replicas",
+    "chart": {
+      "type": "line",
+      "series": [
+        {
+          "name": "Value",
+          "data": [
+            {
+              "label": "00:00",
+              "value": 2.0
+            },
+            {
+              "label": "04:00",
+              "value": 2.0
+            },
+            {
+              "label": "08:00",
+              "value": 4.0
+            },
+            {
+              "label": "12:00",
+              "value": 6.0
+            },
+            {
+              "label": "16:00",
+              "value": 6.0
+            },
+            {
+              "label": "20:00",
+              "value": 3.0
+            }
+          ]
+        }
+      ],
+      "axis_config": {
+        "categories": [
+          "00:00",
+          "04:00",
+          "08:00",
+          "12:00",
+          "16:00",
+          "20:00"
+        ]
+      }
+    }
+  }
+]

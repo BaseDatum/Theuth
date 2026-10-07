@@ -1,0 +1,68 @@
+{
+  "root": "s",
+  "elements": {
+    "s": {
+      "type": "Sankey",
+      "props": {
+        "title": "Spend by model and session",
+        "unit": "USD",
+        "nodes": [
+          {
+            "id": "opus",
+            "label": "Opus",
+            "stage": 0
+          },
+          {
+            "id": "sonnet",
+            "label": "Sonnet",
+            "stage": 0
+          },
+          {
+            "id": "s1",
+            "label": "Design 123",
+            "stage": 1,
+            "state": "active"
+          },
+          {
+            "id": "s2",
+            "label": "Bug triage",
+            "stage": 1
+          },
+          {
+            "id": "s3",
+            "label": "Docs",
+            "stage": 1
+          }
+        ],
+        "flows": [
+          {
+            "from": "opus",
+            "to": "s1",
+            "value": 12.5
+          },
+          {
+            "from": "opus",
+            "to": "s2",
+            "value": 4.2
+          },
+          {
+            "from": "sonnet",
+            "to": "s2",
+            "value": 1.1
+          },
+          {
+            "from": "sonnet",
+            "to": "s3",
+            "value": 2.4,
+            "label": "drafts"
+          },
+          {
+            "from": "s3",
+            "to": "s3",
+            "value": 1
+          }
+        ]
+      }
+    }
+  }
+}

@@ -1,0 +1,91 @@
+{
+  "root": "s",
+  "elements": {
+    "s": {
+      "type": "StateMachine",
+      "props": {
+        "title": "Task lifecycle",
+        "states": [
+          {
+            "id": "todo",
+            "label": "Todo",
+            "kind": "initial"
+          },
+          {
+            "id": "doing",
+            "label": "Doing",
+            "sub": "owner set",
+            "state": "active",
+            "ref": "crates/agent/src/task.rs#L40-L72"
+          },
+          {
+            "id": "blocked",
+            "label": "Blocked",
+            "state": "danger"
+          },
+          {
+            "id": "review",
+            "label": "Review"
+          },
+          {
+            "id": "gate",
+            "label": "Checks?",
+            "kind": "choice"
+          },
+          {
+            "id": "done",
+            "label": "Done",
+            "kind": "final"
+          }
+        ],
+        "transitions": [
+          {
+            "from": "todo",
+            "to": "doing",
+            "label": "start"
+          },
+          {
+            "from": "doing",
+            "to": "blocked",
+            "label": "wait",
+            "guard": "dependency open",
+            "style": "dashed"
+          },
+          {
+            "from": "blocked",
+            "to": "doing",
+            "label": "unblock"
+          },
+          {
+            "from": "doing",
+            "to": "review",
+            "label": "submit"
+          },
+          {
+            "from": "review",
+            "to": "gate",
+            "label": "run checks"
+          },
+          {
+            "from": "gate",
+            "to": "done",
+            "label": "pass",
+            "guard": "all green",
+            "state": "done"
+          },
+          {
+            "from": "gate",
+            "to": "doing",
+            "label": "fail",
+            "guard": "any red",
+            "state": "danger"
+          },
+          {
+            "from": "todo",
+            "to": "archived"
+          }
+        ]
+      }
+    }
+  }
+}

@@ -1,0 +1,327 @@
+{
+  "model": "claude-opus-5-5",
+  "block_bytes": 11497,
+  "grammar": {
+    "right": 20,
+    "total": 20,
+    "by_group": {
+      "lifecycle": "5/5",
+      "schema": "5/5",
+      "plan": "2/2",
+      "handoff": "3/3",
+      "quantity": "5/5"
+    },
+    "bar": ">= 16/20"
+  },
+  "hold": {
+    "false_draws": 1,
+    "total": 10,
+    "bar": "<= 1/10"
+  },
+  "first_pass_valid": "29/30",
+  "rows": [
+    {
+      "id": "life-order",
+      "group": "lifecycle",
+      "picks": [
+        "StateMachine"
+      ],
+      "ok": true,
+      "errors": []
+    },
+    {
+      "id": "life-pr",
+      "group": "lifecycle",
+      "picks": [
+        "Stack",
+        "StateMachine",
+        "Table"
+      ],
+      "ok": true,
+      "errors": []
+    },
+    {
+      "id": "life-tcp",
+      "group": "lifecycle",
+      "picks": [
+        "StateMachine",
+        "mermaid:sequenceDiagram"
+      ],
+      "ok": true,
+      "errors": []
+    },
+    {
+      "id": "life-job",
+      "group": "lifecycle",
+      "picks": [
+        "StateMachine"
+      ],
+      "ok": true,
+      "errors": []
+    },
+    {
+      "id": "life-session",
+      "group": "lifecycle",
+      "picks": [
+        "Stack",
+        "StateMachine"
+      ],
+      "ok": true,
+      "errors": []
+    },
+    {
+      "id": "schema-blog",
+      "group": "schema",
+      "picks": [
+        "Entities",
+        "Table"
+      ],
+      "ok": true,
+      "errors": []
+    },
+    {
+      "id": "schema-orders",
+      "group": "schema",
+      "picks": [
+        "Stack",
+        "Entities",
+        "Table"
+      ],
+      "ok": true,
+      "errors": []
+    },
+    {
+      "id": "schema-classes",
+      "group": "schema",
+      "picks": [
+        "Entities",
+        "Code"
+      ],
+      "ok": true,
+      "errors": [
+        "fence 1 /elements/r/props/entities/0/kind: expected one of \"entity\", \"table\", \"class\", \"interface\", \"enum\""
+      ]
+    },
+    {
+      "id": "schema-sessions",
+      "group": "schema",
+      "picks": [
+        "Entities",
+        "Table"
+      ],
+      "ok": true,
+      "errors": []
+    },
+    {
+      "id": "schema-library",
+      "group": "schema",
+      "picks": [
+        "Entities"
+      ],
+      "ok": true,
+      "errors": []
+    },
+    {
+      "id": "plan-release",
+      "group": "plan",
+      "picks": [
+        "Gantt",
+        "Table",
+        "Table"
+      ],
+      "ok": true,
+      "errors": []
+    },
+    {
+      "id": "plan-migration",
+      "group": "plan",
+      "picks": [
+        "Gantt",
+        "Table"
+      ],
+      "ok": true,
+      "errors": []
+    },
+    {
+      "id": "handoff-incident",
+      "group": "handoff",
+      "picks": [
+        "Stack",
+        "KeyValueList",
+        "Swimlane"
+      ],
+      "ok": true,
+      "errors": []
+    },
+    {
+      "id": "handoff-deploy",
+      "group": "handoff",
+      "picks": [
+        "Swimlane"
+      ],
+      "ok": true,
+      "errors": []
+    },
+    {
+      "id": "handoff-hiring",
+      "group": "handoff",
+      "picks": [
+        "Swimlane",
+        "Table"
+      ],
+      "ok": true,
+      "errors": []
+    },
+    {
+      "id": "qty-spend",
+      "group": "quantity",
+      "picks": [
+        "Stack",
+        "MetricGrid",
+        "Sankey"
+      ],
+      "ok": true,
+      "errors": []
+    },
+    {
+      "id": "qty-latency",
+      "group": "quantity",
+      "picks": [
+        "Stack",
+        "LineChart",
+        "MetricGrid"
+      ],
+      "ok": true,
+      "errors": []
+    },
+    {
+      "id": "qty-headcount",
+      "group": "quantity",
+      "picks": [
+        "Waterfall"
+      ],
+      "ok": true,
+      "errors": []
+    },
+    {
+      "id": "qty-funnel",
+      "group": "quantity",
+      "picks": [
+        "Stack",
+        "Funnel",
+        "Table"
+      ],
+      "ok": true,
+      "errors": []
+    },
+    {
+      "id": "qty-tests",
+      "group": "quantity",
+      "picks": [
+        "Stack",
+        "MetricGrid",
+        "BarChart"
+      ],
+      "ok": true,
+      "errors": []
+    },
+    {
+      "id": "hold-fact",
+      "group": "hold",
+      "picks": [],
+      "ok": true,
+      "errors": []
+    },
+    {
+      "id": "hold-command",
+      "group": "hold",
+      "picks": [],
+      "ok": true,
+      "errors": []
+    },
+    {
+      "id": "hold-compare",
+      "group": "hold",
+      "picks": [
+        "Stack",
+        "Table",
+        "Quadrant"
+      ],
+      "ok": false,
+      "errors": []
+    },
+    {
+      "id": "hold-arch",
+      "group": "hold",
+      "picks": [
+        "Graph",
+        "mermaid:sequenceDiagram",
+        "Table"
+      ],
+      "ok": true,
+      "errors": []
+    },
+    {
+      "id": "hold-letconst",
+      "group": "hold",
+      "picks": [
+        "Table",
+        "Code",
+        "Callout"
+      ],
+      "ok": true,
+      "errors": []
+    },
+    {
+      "id": "hold-regex",
+      "group": "hold",
+      "picks": [
+        "Table",
+        "Callout"
+      ],
+      "ok": true,
+      "errors": []
+    },
+    {
+      "id": "hold-steps",
+      "group": "hold",
+      "picks": [
+        "Steps",
+        "Alert",
+        "Callout"
+      ],
+      "ok": true,
+      "errors": []
+    },
+    {
+      "id": "hold-config",
+      "group": "hold",
+      "picks": [
+        "Table",
+        "Alert"
+      ],
+      "ok": true,
+      "errors": []
+    },
+    {
+      "id": "hold-glossary",
+      "group": "hold",
+      "picks": [
+        "Glossary"
+      ],
+      "ok": true,
+      "errors": []
+    },
+    {
+      "id": "hold-review",
+      "group": "hold",
+      "picks": [
+        "Stack",
+        "Checklist",
+        "Callout"
+      ],
+      "ok": true,
+      "errors": []
+    }
+  ]
+}

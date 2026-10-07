@@ -833,7 +833,8 @@ agent:
   # subagents:
   #   model: null              # preferred subagent model when spawn_subagent omits `model`, named in the system prompt; default: agent.model. /subagent or Settings → Agent loop
   #   max_depth: 1
-  #   max_concurrent: 8
+  #   max_concurrent: 16       # native child spawn turns at once per orchestrator tree; further spawns queue and the parent is told
+  #   max_concurrent_external: 32  # external (ACP harness / mesh-node) child spawn turns at once per orchestrator tree; a separate pool
   #   max_runtime_secs: 600
   #   reply_timeout_secs: 120
   # knowledge:                # loop policy (design doc 10 §5); the store itself is `knowledge:` below

@@ -27,13 +27,15 @@
       "id": "api",
       "label": "API",
       "kind": "rounded",
-      "group": "core"
+      "group": "core",
+      "ref": "crates/rpc/src/api.rs#L1-L40"
     },
     {
       "id": "worker",
       "label": "Worker",
       "group": "core",
-      "state": "active"
+      "state": "active",
+      "ref": "crates/agent/src/loop_.rs"
     },
     {
       "id": "db",

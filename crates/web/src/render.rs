@@ -10,6 +10,8 @@ use std::fmt::Write as _;
 
 use crate::aggregate::SearchResponse;
 use crate::fetch::FetchResponse;
+use crate::fetch::client::ClientKind;
+use crate::fetch::issue::{Next, PageIssue};
 use crate::provider::{Feature, FeatureKind};
 
 /// Cut `s` to `max` chars, appending `…` when anything was dropped.
@@ -172,20 +174,88 @@ fn render_search(resp: &SearchResponse, feature_max_chars: usize, keep: usize) -
     s.trim_end().to_owned()
 }
 
-/// The `read_url` text: `# title`, the final URL, a blank line, the content,
-/// and a truncation marker when the page was cut.
+/// The `read_url` text (122 §4.1): an `ISSUE: <kind> (<detail>) — next: <rungs>`
+/// line when the page is a wall, `# title`, the page URL (` · via <api url>`
+/// for an API source), one `published … · by … · lang …` line when any is
+/// known, a blank line, then the content — which already ends with `cut`'s
+/// `[… N chars omitted; continue with offset=M]` marker when it was cut.
 #[must_use]
 pub fn fetch_text(r: &FetchResponse) -> String {
+    let stealth = r.client != ClientKind::Reqwest;
     let mut s = String::new();
+    if let Some(i) = &r.issue {
+        s.push_str(&issue_line(i, r.client));
+        s.push_str("\n\n");
+    }
     if let Some(t) = r.title.as_deref().filter(|t| !t.trim().is_empty()) {
         let _ = writeln!(s, "# {}", t.trim());
     }
-    let _ = writeln!(s, "{}\n", r.url);
+    s.push_str(&r.url);
+    if r.tier == "api"
+        && let Ok(u) = url::Url::parse(&r.url)
+        && let Some(src) = crate::sources::api_source(&u)
+    {
+        let _ = write!(s, " · via {}", src.fetch_url);
+    }
+    s.push('\n');
+    let mut meta: Vec<String> = Vec::new();
+    if let Some(p) = &r.meta.published {
+        meta.push(format!("published {p}"));
+    }
+    if let Some(a) = &r.meta.author {
+        meta.push(format!("by {a}"));
+    }
+    if let Some(l) = &r.meta.lang {
+        meta.push(format!("lang {l}"));
+    }
+    if r.ladder && stealth {
+        meta.push(format!("client: {}", snake(&r.client)));
+    }
+    if !meta.is_empty() {
+        let _ = writeln!(s, "{}", meta.join(" · "));
+    }
+    s.push('\n');
     s.push_str(r.content.trim_end());
-    if r.truncated {
-        let _ = write!(s, "\n[truncated at {} chars]", r.content.chars().count());
+    if r.truncated && r.next_offset.is_none() {
+        s.push_str("\n[body cut at max_fetch_bytes]");
     }
     s
+}
+
+/// `ISSUE: <kind> (<detail>) — next: <rungs>` (122 D1), `· client: wreq_chrome`
+/// appended when the stealth client fetched it (R1-D1). Shared by `read_url`
+/// and `scrape`'s text.
+#[must_use]
+pub fn issue_line(i: &PageIssue, client: ClientKind) -> String {
+    let rungs: Vec<String> = i
+        .next
+        .iter()
+        .map(|n| match n {
+            Next::Retry => i.retry_after.map_or_else(
+                || "retry".to_owned(),
+                |d| format!("retry in {}s", d.as_secs()),
+            ),
+            Next::Rendered => "rendered: true".to_owned(),
+            Next::ImportCookies => "browser_import_cookies".to_owned(),
+            Next::Handoff => "desktop_handoff".to_owned(),
+        })
+        .collect();
+    let mut s = format!("ISSUE: {} ({})", snake(&i.kind), i.detail);
+    if !rungs.is_empty() {
+        let _ = write!(s, " — next: {}", rungs.join(" | "));
+    }
+    if client != ClientKind::Reqwest {
+        let _ = write!(s, " · client: {}", snake(&client));
+    }
+    s
+}
+
+/// The `snake_case` wire name of a serde enum value.
+fn snake<T: serde::Serialize>(v: &T) -> String {
+    serde_json::to_value(v)
+        .ok()
+        .and_then(|v| v.as_str().map(str::to_owned))
+        .unwrap_or_default()
 }
 
 #[cfg(test)]
@@ -393,17 +463,61 @@ mod tests {
     }
 
     #[test]
-    fn fetch_text_marks_truncation() {
+    fn fetch_text_issue_meta_and_cut_shapes() {
+        use crate::fetch::issue::{IssueKind, PageIssue};
+        // Raw body cut at the byte cap without a content cut: one honest line.
         let r = FetchResponse {
             url: "https://a".into(),
             title: Some("T".into()),
             content: "abc".into(),
             truncated: true,
-            took_ms: 0,
+            ..FetchResponse::default()
         };
         assert_eq!(
             fetch_text(&r),
-            "# T\nhttps://a\n\nabc\n[truncated at 3 chars]"
+            "# T\nhttps://a\n\nabc\n[body cut at max_fetch_bytes]"
         );
+        // A wall: the ISSUE line first, then the page; a cut page carries cut's marker in content.
+        let r = FetchResponse {
+            url: "https://example-shop.test/catalog".into(),
+            title: Some("Just a moment…".into()),
+            content: "Enable JavaScript and cookies to continue.\n\n[… 9214 chars omitted; continue with offset=3986]".into(),
+            truncated: true,
+            next_offset: Some(3986),
+            issue: Some(PageIssue {
+                kind: IssueKind::AccessChallenge,
+                detail: "HTTP 403 · cloudflare".into(),
+                retry_after: None,
+                next: IssueKind::AccessChallenge.next(),
+            }),
+            meta: crate::fetch::meta::PageMeta {
+                published: Some("2026-09-30T08:00:00Z".into()),
+                author: Some("Jane Doe".into()),
+                lang: Some("en".into()),
+                ..Default::default()
+            },
+            ..FetchResponse::default()
+        };
+        assert_eq!(
+            fetch_text(&r),
+            "ISSUE: access_challenge (HTTP 403 · cloudflare) — next: rendered: true | browser_import_cookies | desktop_handoff\n\n\
+             # Just a moment…\nhttps://example-shop.test/catalog\npublished 2026-09-30T08:00:00Z · by Jane Doe · lang en\n\n\
+             Enable JavaScript and cookies to continue.\n\n[… 9214 chars omitted; continue with offset=3986]"
+        );
+        // Rate limit: `retry in <n>s`; stealth client named on the ISSUE line.
+        let r = FetchResponse {
+            url: "https://a".into(),
+            issue: Some(PageIssue {
+                kind: IssueKind::RateLimited,
+                detail: "HTTP 429".into(),
+                retry_after: Some(std::time::Duration::from_secs(120)),
+                next: vec![Next::Retry],
+            }),
+            client: ClientKind::WreqChrome,
+            ..FetchResponse::default()
+        };
+        assert!(fetch_text(&r).starts_with(
+            "ISSUE: rate_limited (HTTP 429) — next: retry in 120s · client: wreq_chrome\n\nhttps://a\n\n"
+        ));
     }
 }

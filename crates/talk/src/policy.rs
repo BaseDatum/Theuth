@@ -577,7 +577,7 @@ impl Policy {
         let start = self.turn_start.take().unwrap_or(now);
         let end = self.turn_end.take().unwrap_or(now);
         let secs = end.duration_since(start).as_millis().div_ceil(1000).max(1);
-        let body = self.pending.drain(..).collect::<Vec<_>>().join(" ");
+        let body = std::mem::take(&mut self.pending).join(" ");
         let interrupted = std::mem::take(&mut self.interrupted);
         let marker = if interrupted {
             format!("[spoken, {secs} s, interrupted] ")

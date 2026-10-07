@@ -56,13 +56,13 @@ agent:
   compact_style: summary               # summary | cut | snap
   compaction: {tail_tokens: 40000, image_tokens: 30000, target_tokens: 120000}  # post-compaction CEILINGS (70 COMPACT-SIZE, 81 COMPACT-FLOOR): verbatim tail, snap archive images, head+tail total; the effective tail/head budgets are 35 %/25 % of the headroom over the trigger, capped by these
   communication: false                 # model-to-model communication (50): spawn_subagent, discover_peers, send_message; off is a ceiling; `/communication on always` writes true
-  subagents: {model: null, effort: null, max_depth: 1, max_concurrent: 8, max_runtime_secs: 600, reply_timeout_secs: 120}
+  subagents: {model: null, effort: null, max_depth: 1, max_concurrent: 16, max_concurrent_external: 32, max_runtime_secs: 600, reply_timeout_secs: 120}  # the two caps are per orchestrator tree
   knowledge: {hint_limit: 5, hint_rounds: 4, harvest_every: 3, harvest_max: 8}
 tools:
   policy: {read_only: allow, mutating: ask, destructive: ask}   # allow | ask | deny per risk
   approvals: true                      # false: never prompt (`/approvals off always` writes this)
 rpc: {listen: 127.0.0.1:7777}
-web: {enabled: true, engines: [google, bing, brave, qwant, duckduckgo, wikipedia, arxiv, github], fetch_max_chars: 4000, read_top: 5}
+web: {enabled: true, engines: [google, bing, brave, qwant, duckduckgo, wikipedia, arxiv, github], fetch_max_chars: 4000, read_top: 5, accept_language: en-US,en;q=0.9, header_ladder: true, impersonate: always}
 search_providers: {firecrawl: {base_url: https://api.firecrawl.dev}}   # key = the `firecrawl` secret in the vault
 secrets: {key_store: auto, tools: true, request_timeout_secs: 1800}   # encrypted vault; key_store auto = OS keychain, else secrets.key; tools false = no secret_* tools and `{{secret:…}}` stays literal (37)
 knowledge: {enabled: true}
@@ -227,6 +227,15 @@ are rewritten on every start.
   needs their eyes, or before a long browse they may want to follow.
   `localhost` and private addresses are blocked unless
   `browser.allow_private_network` is set in config.
+- `read_url` tells you when a page is a wall: a result that starts with
+  `ISSUE:` names the kind and the next rung — `rendered: true`, then
+  `browser_import_cookies`, then `desktop_handoff`; do not quote the wall as
+  content. A cut result ends with `[… N chars omitted; continue with
+  offset=M]` and the omitted section names: call again with `offset=M` or ask
+  for the section. `scrape_url` and `crawl` cut the same way; `crawl` returns
+  `{pages, incomplete, reason, skipped, invalid_patterns}` — an `incomplete`
+  crawl is not the whole site. `map_site` rows say where each URL came from
+  (`sitemap`, `page`, `frontier`, `search`).
 - You can act as the signed-in user on the web. When `browser.import_cookies`
   is on, `browser_list_profiles` shows the user's local browser profiles and
   `browser_import_cookies{browser?, domains?, profile?}` loads their real

@@ -1,0 +1,45 @@
+{
+  "root": "t",
+  "elements": {
+    "t": {
+      "type": "Treemap",
+      "props": {
+        "title": "Lines by crate",
+        "items": [
+          {
+            "label": "agent",
+            "value": 36200,
+            "group": "crates",
+            "state": "active"
+          },
+          {
+            "label": "surface",
+            "value": 0,
+            "group": "crates"
+          },
+          {
+            "label": "document",
+            "value": 7400,
+            "group": "crates"
+          },
+          {
+            "label": "ui",
+            "value": 21000,
+            "group": "desktop"
+          },
+          {
+            "label": "tauri",
+            "value": 3100,
+            "group": "desktop"
+          },
+          {
+            "label": "apps",
+            "value": 5600,
+            "group": "packages",
+            "ref": "packages/apps/src/library.ts"
+          }
+        ]
+      }
+    }
+  }
+}

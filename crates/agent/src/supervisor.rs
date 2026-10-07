@@ -97,7 +97,7 @@ use crate::{
     TrimAssistant, Undo, UseSkill, Withdraw, effort_of,
 };
 use crate::{AwsProfiles, ListAwsProfiles, SetAwsProfile};
-use crate::{DurableStore, SessionCostQuery, UnloadSession};
+use crate::{DurableStore, SessionCostQuery, SubagentsConfig, UnloadSession};
 use crate::{ListProjectStyles, SetProjectStyle, SetSessionProject, project};
 use crate::{attach, clock, frame, repl, search, spill};
 use tools::{
@@ -178,11 +178,20 @@ pub struct Agents {
     /// Exchange ids handed to a runner in this process and not yet settled:
     /// a retried `request_id` must not queue the same row twice.
     enqueued: HashSet<Uuid>,
-    /// Concurrent child turns.
-    permits: Arc<Semaphore>,
+    /// Child-work permits per orchestrator tree, keyed by the tree's root
+    /// session (01 §2.6): created on demand, never shrunk. A session's own
+    /// loop takes peer-opened turns and Python cells from its tree's
+    /// `native` pool (50 §8).
+    pools: HashMap<SessionId, TreePools>,
     /// Every running child turn: `started_at` always; permit + runtime timer
     /// only for the spawn turn started by [`SpawnChild`].
     child_turns: HashMap<SessionId, ChildTurn>,
+    /// Children whose spawn turn waits for a pool permit (01 §2.6): the
+    /// brief and every input that arrived for them meanwhile, in memory only.
+    queued: HashMap<SessionId, QueuedSpawn>,
+    /// Child results a parent's intake refused (R2.7), by parent: offered
+    /// once more when that parent's next turn ends. In memory only.
+    undelivered: HashMap<SessionId, Vec<Undelivered>>,
     /// Children whose current turn was cancelled by the runtime cap.
     timed_out: HashSet<SessionId>,
     /// Children spawned with a `tools` ceiling ([`SpawnChild::cap`]), for
@@ -329,12 +338,105 @@ impl LiveActor {
 
 /// One child turn in flight (design doc 19 §2.1).
 struct ChildTurn {
-    /// Concurrency permit; `None` for a follow-up turn (human steer, peer message).
-    _permit: Option<OwnedSemaphorePermit>,
+    /// The pool permit the spawn turn holds; `None` for a follow-up turn
+    /// (human steer, peer message) and for a human-promoted spawn turn.
+    permit: Option<SpawnPermit>,
     /// `max_runtime_secs` timer; `None` for a follow-up turn.
     timer: Option<AbortHandle>,
     /// When the turn started (the picker's elapsed column).
     started_at: DateTime<Utc>,
+}
+
+/// One orchestrator tree's two child-work pools (01 §2.6).
+struct TreePools {
+    /// `subagents.max_concurrent`: children this engine's loop executes,
+    /// plus the tree's peer-opened bounded turns (50 §8).
+    native: Arc<Semaphore>,
+    /// `subagents.max_concurrent_external`: ACP harness and mesh-node children.
+    external: Arc<Semaphore>,
+}
+
+impl TreePools {
+    fn new(cfg: &SubagentsConfig) -> Self {
+        Self {
+            native: Arc::new(Semaphore::new(cfg.max_concurrent.max(1))),
+            external: Arc::new(Semaphore::new(cfg.max_concurrent_external.max(1))),
+        }
+    }
+
+    fn get(&self, pool: Pool) -> &Arc<Semaphore> {
+        match pool {
+            Pool::Native => &self.native,
+            Pool::External => &self.external,
+        }
+    }
+}
+
+/// A spawn turn's permit: from `pool` of the tree rooted at `root`.
+struct SpawnPermit {
+    pool: Pool,
+    root: SessionId,
+    /// Held, never read: dropping it frees the slot.
+    _permit: OwnedSemaphorePermit,
+}
+
+/// Which concurrency pool a child's spawn turn draws from (01 §2.6).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Pool {
+    /// Executed by this engine's loop.
+    Native,
+    /// Executed elsewhere: an ACP harness or a mesh node.
+    External,
+}
+
+impl Pool {
+    fn name(self) -> &'static str {
+        match self {
+            Self::Native => "native",
+            Self::External => "external",
+        }
+    }
+}
+
+/// A spawned child whose first turn waits for a pool permit (01 §2.6).
+struct QueuedSpawn {
+    /// The waiting `acquire_owned`; aborted when the child is dropped or promoted.
+    abort: AbortHandle,
+    /// The brief's ticket, admitted by [`SpawnChild`].
+    ticket: InputTicket,
+    /// The brief.
+    text: String,
+    pool: Pool,
+    /// The orchestrator tree whose pool it waits for.
+    root: SessionId,
+    since: Instant,
+    /// Inputs addressed to the child while it waited, in arrival order;
+    /// routed right after the brief so it is always the child's first input.
+    held: Vec<Held>,
+}
+
+/// An input held for a queued child (01 §2.6), with its original flags.
+enum Held {
+    /// A [`Agents::route`] input (a harness result, an injected text).
+    Routed {
+        id: Option<InputId>,
+        text: String,
+        files: Vec<PathBuf>,
+        ticket: InputTicket,
+        scope: Option<Uuid>,
+        defer: bool,
+    },
+    /// A peer exchange admitted by [`Agents::enqueue_peer`].
+    Peer(Box<PeerInput>),
+}
+
+/// A child's result its parent could not take yet (R2.7).
+struct Undelivered {
+    child: SessionId,
+    turn: TurnId,
+    /// Already capped and redacted, as `hand_off` prepared it.
+    text: String,
+    scope: Option<Uuid>,
 }
 
 /// The request scope a spawned child works for; `cancelled` once
@@ -344,8 +446,10 @@ struct OwnedChild {
     cancelled: bool,
 }
 
-/// `ask` → `Result<(name, child), String>`: create a child session and start
-/// it on `task` (queued behind the concurrency cap). Returns before the child
+/// `ask` → `Result<(name, child, queued), String>`: create a child session and
+/// start it on `task`. `queued` is the notice for the parent when every slot
+/// of the child's pool is busy (01 §2.6): the brief runs when one frees, and
+/// messages sent meanwhile are delivered after it. Returns before the child
 /// runs; its result reaches the parent as a peer message from `session:<child>`
 /// through the durable intake (50 §7), when the child→parent route is on.
 #[derive(Clone, Debug)]
@@ -530,13 +634,12 @@ pub struct ListActivity;
 #[derive(Clone, Debug)]
 pub struct ActivityOf(pub Vec<SessionId>);
 
-/// `tell` (internal): a permit was acquired; run the child's first turn.
+/// `tell` (internal): a queued child's permit was acquired; run its first
+/// turn from the [`QueuedSpawn`] entry (gone = dropped meanwhile: the permit
+/// is released untouched).
 struct StartChildTurn {
     child: SessionId,
-    permit: OwnedSemaphorePermit,
-    text: String,
-    /// Admitted by [`SpawnChild`] before the permit wait.
-    ticket: InputTicket,
+    permit: SpawnPermit,
 }
 
 /// `tell` (internal): a child turn hit `max_runtime_secs`.
@@ -695,7 +798,17 @@ impl Agents {
         // A private tree is never mirrored into the peer topology (51 §4.2);
         // `mirror` reads the durable store, so for a member this is a no-op.
         self.mirror(id).await;
-        let actor = Session::spawn(Session::new(
+        // 50 §8: a peer-opened bounded turn draws from the recipient's own
+        // orchestrator tree (01 §2.6) — resolved here for a new child and
+        // for a session loaded lazily after a restart alike.
+        let root = match &parent {
+            Some((p, _)) => store.root_of(*p).await?,
+            None => id,
+        };
+        let permits = self.tree_pools(root).native.clone();
+        // Unbounded (R2.6): `route` awaits `tell_input` inside a supervisor
+        // handler; a full bounded mailbox here would stall the engine.
+        let session = Session::new(
             id,
             depth,
             model,
@@ -713,9 +826,10 @@ impl Agents {
             self.rt.clone(),
             self.catalog.clone(),
             self.pool.clone(),
-            self.permits.clone(),
+            permits,
             resources,
-        ));
+        );
+        let actor = Session::spawn_with_mailbox(session, runtime::subscriber_mailbox());
         let actor = LiveActor::Native(actor);
         self.ledger
             .register(id, parent.as_ref().map(|p| p.0), resumed);
@@ -920,7 +1034,9 @@ impl Agents {
         self.inherit_approvals(id, parent.as_ref().map(|p| p.0))
             .await;
         self.mirror(id).await;
-        let actor = LiveActor::Acp(AcpChild::spawn(AcpChild::new(
+        // Unbounded (R2.6): the supervisor `tell`s into this mailbox from
+        // its own handlers and must never block on a chatty harness.
+        let child = AcpChild::new(
             id,
             name,
             transport,
@@ -935,7 +1051,11 @@ impl Agents {
             self.rt.clone(),
             materialised,
             mcp_servers,
-        )));
+        );
+        let actor = LiveActor::Acp(AcpChild::spawn_with_mailbox(
+            child,
+            runtime::subscriber_mailbox(),
+        ));
         if let LiveActor::Acp(a) = &actor {
             for n in notes {
                 let _ = a.tell(crate::acp_child::Note(n)).await;
@@ -984,7 +1104,12 @@ impl Agents {
     ) -> Result<(), String> {
         let ticket = self.ledger.admit(sid, origin, id);
         let defer = matches!(delivery, Delivery::NextTurn);
-        self.route(sid, id, text, files, ticket, None, defer).await
+        // A human reaches a queued child (01 §2.6): its brief runs now,
+        // permit-free, then this text, then whatever was held for it.
+        let held = self.promote(sid).await;
+        let r = self.route(sid, id, text, files, ticket, None, defer).await;
+        self.replay(sid, held).await;
+        r
     }
 
     /// [`Agents::input`] with a ticket admitted earlier (a queued child's first
@@ -1005,6 +1130,19 @@ impl Agents {
         scope: Option<Uuid>,
         defer: bool,
     ) -> Result<(), String> {
+        // The child's brief waits for a permit: nothing reaches its session
+        // before the brief (01 §2.6). Replayed by `replay`, flags intact.
+        if let Some(q) = self.queued.get_mut(&sid) {
+            q.held.push(Held::Routed {
+                id,
+                text,
+                files,
+                ticket,
+                scope,
+                defer,
+            });
+            return Ok(());
+        }
         let routed = match check_files(&files) {
             Ok(()) => self.session(Some(sid), None, None, (None, None)).await,
             Err(e) => Err(anyhow::anyhow!(e)),
@@ -1385,7 +1523,6 @@ impl Agents {
             ));
         }
         let actor = self.actor(to).await?;
-        let id = record.receipt.id;
         let scope = record.request_scope;
         let ticket = self.ledger.admit_chained(to, None, sender);
         if let Some(scope) = scope
@@ -1396,19 +1533,32 @@ impl Agents {
             self.ledger.release(to, ticket);
             return Err("canceled: the request scope is closed".into());
         }
+        let input = PeerInput {
+            record,
+            generation,
+            ticket,
+            request_scope: scope,
+            isolated,
+            reply_expected,
+        };
+        // The recipient's brief waits for a permit (01 §2.6): held, so the
+        // brief stays its first input and no bounded turn races the permit.
+        if let Some(q) = self.queued.get_mut(&to) {
+            q.held.push(Held::Peer(Box::new(input)));
+            return Ok(());
+        }
+        self.offer_peer(actor, to, input);
+        Ok(())
+    }
+
+    /// The `ask` half of [`Self::enqueue_peer`], off this mailbox; a refusal
+    /// comes back as [`PeerIntakeFailed`].
+    fn offer_peer(&self, actor: LiveActor, to: SessionId, input: PeerInput) {
+        let id = input.record.receipt.id;
+        let ticket = input.ticket;
         let me = ActorRef::<Agents>::lookup(AGENT_ACTOR).ok().flatten();
         tokio::spawn(async move {
-            let Err(reason) = actor
-                .ask_peer(PeerInput {
-                    record,
-                    generation,
-                    ticket,
-                    request_scope: scope,
-                    isolated,
-                    reply_expected,
-                })
-                .await
-            else {
+            let Err(reason) = actor.ask_peer(input).await else {
                 return;
             };
             match me {
@@ -1425,7 +1575,6 @@ impl Agents {
                 None => tracing::error!(session = %to, %id, "peer intake refused: {reason}"),
             }
         });
-        Ok(())
     }
 
     /// Cancel one request scope in `session` (50 §8): queued input of that
@@ -1462,6 +1611,7 @@ impl Agents {
                 .cancelled = true;
             // Stop control (47 §4.3): candidates admitted before this are stale.
             self.ledger.bump(child);
+            self.drop_queued(child).await;
             match self.live(child) {
                 // Its first turn runs under the inherited scope: the same
                 // exact signal, in flight or still queued.
@@ -1621,14 +1771,68 @@ impl Agents {
         {
             parent_answered |= requester == parent;
         }
+        let scope = owned.map(|o| o.scope);
+        let cancelled = owned.is_some_and(|o| o.cancelled);
+        if let Err(reason) = self
+            .deliver_result(
+                child,
+                turn,
+                parent,
+                &text,
+                scope,
+                cancelled,
+                parent_answered,
+                false,
+            )
+            .await
+        {
+            // R2.7: the parent hears about it, and the result is offered once
+            // more when the parent's current turn ends (it may free the quota).
+            self.result_refused(
+                parent,
+                &reason,
+                true,
+                Undelivered {
+                    child,
+                    turn,
+                    text,
+                    scope,
+                },
+            )
+            .await;
+        }
+    }
+
+    /// Hand `text` — `child`'s result for `turn` — to `parent` through the
+    /// durable intake (50 §7): one `result:<turn>` exchange (`:retry` on the
+    /// second offer), consumed directly when the parent already took it as
+    /// a reply, failed when the owning scope was cancelled. `Err(reason)`
+    /// when the intake refused it (quota, chain, no runner); an off route or
+    /// a duplicate is `Ok` — nothing is owed.
+    #[allow(clippy::too_many_arguments)]
+    async fn deliver_result(
+        &mut self,
+        child: SessionId,
+        turn: TurnId,
+        parent: SessionId,
+        text: &str,
+        scope: Option<Uuid>,
+        cancelled: bool,
+        parent_answered: bool,
+        retry: bool,
+    ) -> Result<(), String> {
         let generation = self.communication.0.write().route(child, parent);
         let Ok(generation) = generation else {
             tracing::info!(session = %child, %parent, "child result not delivered: communication off");
-            return;
+            return Ok(());
         };
         let (from_key, to_key) = (format!("session:{child}"), format!("session:{parent}"));
-        let request_id = format!("result:{turn}");
-        let receipt = match self
+        let request_id = if retry {
+            format!("result:{turn}:retry")
+        } else {
+            format!("result:{turn}")
+        };
+        let receipt = self
             .store
             .accept_exchange(&AcceptExchange {
                 sender: &from_key,
@@ -1637,24 +1841,18 @@ impl Agents {
                 recipient_session: Some(parent),
                 request_id: Some(&request_id),
                 reply_to: None,
-                request_scope: owned.map(|o| o.scope),
+                request_scope: scope,
                 generation: generation.revision() as i64,
-                body: &text,
+                body: text,
             })
             .await
-        {
-            Ok(r) => r,
-            Err(e) => {
-                tracing::error!(session = %child, "child result exchange: {}", comm_err(e));
-                return;
-            }
-        };
+            .map_err(comm_err)?;
         if receipt.state != PeerMessageState::Accepted || !self.enqueued.insert(receipt.id) {
             // Durable dedup: this turn's result was already accounted for.
-            return;
+            return Ok(());
         }
         self.peer_changed(&receipt).await;
-        if owned.is_some_and(|o| o.cancelled) {
+        if cancelled {
             // The scope was cancelled while the child ran: its result is
             // recorded, never a continuation of the cancelled request.
             self.enqueued.remove(&receipt.id);
@@ -1662,7 +1860,7 @@ impl Agents {
                 Ok(r) => self.peer_changed(&r).await,
                 Err(e) => tracing::error!(id = %receipt.id, "fail_exchange: {e:#}"),
             }
-            return;
+            return Ok(());
         }
         if parent_answered {
             // The parent already holds this result as the reply to its own
@@ -1677,23 +1875,87 @@ impl Agents {
                 self.peer_changed(&r).await;
             }
             self.enqueued.remove(&receipt.id);
-            return;
+            return Ok(());
         }
-        match self.store.peer_record(parent, receipt.id).await {
-            Ok(Some(record)) => {
-                if let Err(reason) = self.enqueue_peer(record, generation, false, false).await {
-                    self.enqueued.remove(&receipt.id);
-                    match self.store.fail_exchange(receipt.id, &reason).await {
-                        Ok(r) => self.peer_changed(&r).await,
-                        Err(e) => tracing::error!(id = %receipt.id, "fail_exchange: {e:#}"),
-                    }
-                    self.error(parent, format!("subagent result not delivered: {reason}"))
-                        .await;
-                }
+        let record = match self.store.peer_record(parent, receipt.id).await {
+            Ok(Some(record)) => record,
+            Ok(None) => {
+                tracing::error!(id = %receipt.id, "accepted child result has no record");
+                return Ok(());
             }
-            Ok(None) => tracing::error!(id = %receipt.id, "accepted child result has no record"),
-            Err(e) => tracing::error!(id = %receipt.id, "peer_record: {e:#}"),
+            Err(e) => {
+                tracing::error!(id = %receipt.id, "peer_record: {e:#}");
+                return Ok(());
+            }
+        };
+        if let Err(reason) = self.enqueue_peer(record, generation, false, false).await {
+            self.enqueued.remove(&receipt.id);
+            match self.store.fail_exchange(receipt.id, &reason).await {
+                Ok(r) => self.peer_changed(&r).await,
+                Err(e) => tracing::error!(id = %receipt.id, "fail_exchange: {e:#}"),
+            }
+            return Err(reason);
         }
+        Ok(())
+    }
+
+    /// A child's result the parent's intake refused (R2.7): an error on the
+    /// parent naming the child and the reason; with `retry`, the result is
+    /// kept for one more offer at the parent's next `TurnFinished`.
+    async fn result_refused(
+        &mut self,
+        parent: SessionId,
+        reason: &str,
+        retry: bool,
+        result: Undelivered,
+    ) {
+        let name = self
+            .sessions
+            .get(&result.child)
+            .and_then(|l| l.parent.as_ref())
+            .map_or_else(|| format!("session:{}", result.child), |(_, n)| n.clone());
+        tracing::error!(session = %result.child, %parent, retry, "child result not delivered: {reason}");
+        let again = if retry {
+            "; offered once more when this turn ends"
+        } else {
+            ""
+        };
+        self.error(
+            parent,
+            format!(
+                "result of {name} (session:{}) not delivered: {reason}; read it with session_read{again}",
+                result.child
+            ),
+        )
+        .await;
+        if retry {
+            self.undelivered.entry(parent).or_default().push(result);
+        }
+    }
+
+    /// `AgentEvent::TurnFinished` for `session`: the child-turn bookkeeping,
+    /// the hand-off of a child's result, and the one retry of results this
+    /// session refused earlier (R2.7).
+    async fn turn_finished(&mut self, session: SessionId, turn: TurnId, stop_reason: &str) {
+        self.running.remove(&session);
+        if let Some(timer) = self.child_turns.remove(&session).and_then(|ct| ct.timer) {
+            timer.abort();
+        }
+        self.last_stop
+            .insert(session, (stop_reason.to_owned(), Utc::now()));
+        self.search.invalidate();
+        self.child_finished(session, turn, stop_reason).await;
+        for u in self.undelivered.remove(&session).unwrap_or_default() {
+            if let Err(reason) = self
+                .deliver_result(
+                    u.child, u.turn, session, &u.text, u.scope, false, false, true,
+                )
+                .await
+            {
+                self.result_refused(session, &reason, false, u).await;
+            }
+        }
+        self.idle_check(session).await;
     }
 
     /// Answer the live waiter of `request` with `text` as `child`'s reply
@@ -1837,24 +2099,32 @@ impl LiveActor {
 impl Message<AgentEvent> for Agents {
     type Reply = ();
 
-    async fn handle(&mut self, ev: AgentEvent, _: &mut Context<Self, Self::Reply>) {
+    async fn handle(&mut self, ev: AgentEvent, ctx: &mut Context<Self, Self::Reply>) {
         match ev {
             AgentEvent::TurnStarted { session, .. } => {
                 self.running.insert(session);
-                // A follow-up turn (steer, peer message) has no permit or
-                // timer but still needs a start time for the picker.
-                if self
-                    .sessions
-                    .get(&session)
-                    .is_some_and(|l| l.parent.is_some())
+                // A follow-up turn (steer, peer message) has no permit but
+                // still needs a start time for the picker — and, on an ACP
+                // child, the runtime timer (R2.4): a `session/prompt` that
+                // never returns must not keep the child running forever.
+                let live = self.sessions.get(&session);
+                if live.is_some_and(|l| l.parent.is_some())
+                    && !self.child_turns.contains_key(&session)
                 {
-                    self.child_turns
-                        .entry(session)
-                        .or_insert_with(|| ChildTurn {
-                            _permit: None,
-                            timer: None,
+                    let timer = match live.map(|l| &l.actor) {
+                        Some(LiveActor::Acp(_)) => {
+                            Some(self.runtime_timer(session, ctx.actor_ref().clone()))
+                        }
+                        _ => None,
+                    };
+                    self.child_turns.insert(
+                        session,
+                        ChildTurn {
+                            permit: None,
+                            timer,
                             started_at: Utc::now(),
-                        });
+                        },
+                    );
                 }
             }
             AgentEvent::TurnFinished {
@@ -1862,17 +2132,7 @@ impl Message<AgentEvent> for Agents {
                 turn,
                 stop_reason,
                 ..
-            } => {
-                self.running.remove(&session);
-                if let Some(timer) = self.child_turns.remove(&session).and_then(|ct| ct.timer) {
-                    timer.abort();
-                }
-                self.last_stop
-                    .insert(session, (stop_reason.clone(), Utc::now()));
-                self.search.invalidate();
-                self.child_finished(session, turn, &stop_reason).await;
-                self.idle_check(session).await;
-            }
+            } => self.turn_finished(session, turn, &stop_reason).await,
             // Nested `python` calls (08 as-built): the only durable trace of
             // an inner call, since none enters the model's messages. The
             // repl publishes with a bus `tell`, so this write never sits on
@@ -2670,6 +2930,8 @@ impl Message<Cancel> for Agents {
         for &id in &ids {
             // Stop control (47 §4.3): candidates admitted before this are stale.
             self.ledger.bump(id);
+            // A queued spawn turn is this stop's work too (01 §2.6): it never starts.
+            self.drop_queued(id).await;
             if let Some(live) = self
                 .sessions
                 .get(&id)
@@ -3204,13 +3466,9 @@ impl Message<Harvest> for Agents {
 }
 
 impl Message<SpawnChild> for Agents {
-    type Reply = Result<(String, SessionId), String>;
+    type Reply = Result<(String, SessionId, Option<String>), String>;
 
-    async fn handle(
-        &mut self,
-        m: SpawnChild,
-        ctx: &mut Context<Self, Self::Reply>,
-    ) -> Result<(String, SessionId), String> {
+    async fn handle(&mut self, m: SpawnChild, ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
         let sub = &self.cfg.subagents;
         // 51 §4.1: nothing of a private tree leaves the process.
         if m.agent.is_some() && self.private_member.contains_key(&m.parent) {
@@ -3325,28 +3583,67 @@ impl Message<SpawnChild> for Agents {
         // wait: a child queued behind the cap already counts (47 §3.2), and
         // it opens the child's own reminder budget (`External`).
         let ticket = self.ledger.admit(id, InputOrigin::External, None);
-        let me = ctx.actor_ref().clone();
-        let permits = self.permits.clone();
         // Not enforceable on an external harness: the ceiling is the first
         // line of its brief instead (67 §8).
         let text = match m.cap.filter(|_| external) {
             Some(cap) => format!("Limits: tools {cap}\n{}", m.task),
             None => m.task,
         };
-        tokio::spawn(async move {
+        // 01 §2.6: the pool of the spawning tree — external for children
+        // another harness or engine executes, native for ours.
+        let pool = if external || node {
+            Pool::External
+        } else {
+            Pool::Native
+        };
+        let root = self
+            .store_for(m.parent)
+            .root_of(m.parent)
+            .await
+            .unwrap_or(m.parent);
+        let permits = self.tree_pools(root).get(pool).clone();
+        let me = ctx.actor_ref().clone();
+        if let Ok(permit) = permits.clone().try_acquire_owned() {
+            let permit = SpawnPermit {
+                pool,
+                root,
+                _permit: permit,
+            };
+            self.start_child_turn(id, Some(permit), text, ticket, Some(me))
+                .await;
+            return Ok((name, id, None));
+        }
+        // Every slot is busy: the brief waits, and the parent is told.
+        let notice = self.queued_notice(pool, root, &permits);
+        let abort = tokio::spawn(async move {
             let Ok(permit) = permits.acquire_owned().await else {
                 return;
             };
             let _ = me
                 .tell(StartChildTurn {
                     child: id,
-                    permit,
-                    text,
-                    ticket,
+                    permit: SpawnPermit {
+                        pool,
+                        root,
+                        _permit: permit,
+                    },
                 })
                 .await;
-        });
-        Ok((name, id))
+        })
+        .abort_handle();
+        self.queued.insert(
+            id,
+            QueuedSpawn {
+                abort,
+                ticket,
+                text,
+                pool,
+                root,
+                since: Instant::now(),
+                held: Vec::new(),
+            },
+        );
+        Ok((name, id, Some(notice)))
     }
 }
 
@@ -3355,27 +3652,235 @@ impl Message<StartChildTurn> for Agents {
 
     async fn handle(&mut self, m: StartChildTurn, ctx: &mut Context<Self, Self::Reply>) {
         let child = m.child;
-        let Ok(scope) = self.claim_child_turn(child, m.ticket).await else {
+        // Dropped meanwhile (stopped, closed, deleted; its ticket and work
+        // settled then): the permit goes back untouched.
+        let Some(q) = self.queued.remove(&child) else {
+            return;
+        };
+        let waited = q.since.elapsed().as_secs();
+        if waited > 300 {
+            tracing::warn!(child = %child, pool = q.pool.name(), root = %short_id(q.root), waited, "queued child started");
+        } else {
+            tracing::info!(child = %child, pool = q.pool.name(), root = %short_id(q.root), waited, "queued child started");
+        }
+        let me = ctx.actor_ref().clone();
+        self.start_child_turn(child, Some(m.permit), q.text, q.ticket, Some(me))
+            .await;
+        self.replay(child, q.held).await;
+    }
+}
+
+/// The first eight hex digits of a session id, as log lines name a tree.
+fn short_id(id: SessionId) -> String {
+    id.to_string()[..8].to_owned()
+}
+
+impl Agents {
+    /// The two child-work pools of the tree rooted at `root` (01 §2.6),
+    /// created at the configured sizes on first use.
+    fn tree_pools(&mut self, root: SessionId) -> &TreePools {
+        let cfg = &self.cfg.subagents;
+        self.pools
+            .entry(root)
+            .or_insert_with(|| TreePools::new(cfg))
+    }
+
+    /// The `spawn_subagent` line telling the parent its child waits (01 §2.6).
+    fn queued_notice(&self, pool: Pool, root: SessionId, permits: &Semaphore) -> String {
+        let cap = match pool {
+            Pool::Native => self.cfg.subagents.max_concurrent,
+            Pool::External => self.cfg.subagents.max_concurrent_external,
+        }
+        .max(1);
+        let held = cap.saturating_sub(permits.available_permits());
+        let mut running: Vec<(DateTime<Utc>, &str)> = self
+            .child_turns
+            .iter()
+            .filter(|(_, ct)| {
+                ct.permit
+                    .as_ref()
+                    .is_some_and(|p| p.pool == pool && p.root == root)
+            })
+            .filter_map(|(id, ct)| {
+                let (_, name) = self.sessions.get(id)?.parent.as_ref()?;
+                Some((ct.started_at, name.as_str()))
+            })
+            .collect();
+        running.sort();
+        let running = running
+            .iter()
+            .take(5)
+            .map(|(at, name)| format!("{name} since {}", at.format("%H:%M")))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let running = if running.is_empty() {
+            String::new()
+        } else {
+            format!(" (running: {running})")
+        };
+        tracing::info!(
+            pool = pool.name(),
+            root = %short_id(root),
+            held = %format!("{held}/{cap}"),
+            "child queued"
+        );
+        format!(
+            "Queued: all {cap} {} child slots of this orchestrator are busy{running}; it starts when one frees. Messages you send it are delivered after its brief.",
+            pool.name()
+        )
+    }
+
+    /// Route a child's brief as its first turn under `permit` (`None`: a
+    /// human promoted it, 01 §2.6) and start the `max_runtime_secs` timer.
+    /// A child closed meanwhile, or whose owning scope was cancelled
+    /// ([`Self::claim_child_turn`]), gets nothing: its ticket is released.
+    async fn start_child_turn(
+        &mut self,
+        child: SessionId,
+        permit: Option<SpawnPermit>,
+        text: String,
+        ticket: InputTicket,
+        me: Option<ActorRef<Agents>>,
+    ) {
+        if self.closing.contains(&child) {
+            self.ledger.release(child, ticket);
+            self.network_input_dropped(ticket).await;
+            return;
+        }
+        let Ok(scope) = self.claim_child_turn(child, ticket).await else {
             return;
         };
         let _ = self
-            .route(child, None, m.text, Vec::new(), m.ticket, scope, false)
+            .route(child, None, text, Vec::new(), ticket, scope, false)
             .await;
-        let me = ctx.actor_ref().clone();
-        let after = Duration::from_secs(self.cfg.subagents.max_runtime_secs);
-        let timer = tokio::spawn(async move {
-            tokio::time::sleep(after).await;
-            let _ = me.tell(ChildTimedOut(child)).await;
-        })
-        .abort_handle();
+        let me = me.or_else(|| ActorRef::<Agents>::lookup(AGENT_ACTOR).ok().flatten());
+        let timer = me.map(|me| self.runtime_timer(child, me));
         self.child_turns.insert(
             child,
             ChildTurn {
-                _permit: Some(m.permit),
-                timer: Some(timer),
+                permit,
+                timer,
                 started_at: Utc::now(),
             },
         );
+    }
+
+    /// The `max_runtime_secs` timer of one child turn: [`ChildTimedOut`]
+    /// unless aborted when the turn ends.
+    fn runtime_timer(&self, child: SessionId, me: ActorRef<Agents>) -> AbortHandle {
+        let after = Duration::from_secs(self.cfg.subagents.max_runtime_secs);
+        tokio::spawn(async move {
+            tokio::time::sleep(after).await;
+            let _ = me.tell(ChildTimedOut(child)).await;
+        })
+        .abort_handle()
+    }
+
+    /// A human input reaches a queued child (01 §2.6): the permit wait is
+    /// abandoned and the brief runs now, permit-free, as a human-opened
+    /// turn. Returns the inputs held for the child, for [`Self::replay`]
+    /// after the human's text.
+    async fn promote(&mut self, child: SessionId) -> Vec<Held> {
+        let Some(q) = self.queued.remove(&child) else {
+            return Vec::new();
+        };
+        q.abort.abort();
+        tracing::info!(child = %child, pool = q.pool.name(), root = %short_id(q.root), waited = q.since.elapsed().as_secs(), "queued child promoted by human input");
+        self.start_child_turn(child, None, q.text, q.ticket, None)
+            .await;
+        q.held
+    }
+
+    /// Route the inputs held for a once-queued child, in arrival order and
+    /// with their original flags, after its brief.
+    async fn replay(&mut self, child: SessionId, held: Vec<Held>) {
+        for h in held {
+            match h {
+                Held::Routed {
+                    id,
+                    text,
+                    files,
+                    ticket,
+                    scope,
+                    defer,
+                } => {
+                    let _ = self
+                        .route(child, id, text, files, ticket, scope, defer)
+                        .await;
+                }
+                Held::Peer(input) => match self.actor(child).await {
+                    Ok(actor) => self.offer_peer(actor, child, *input),
+                    Err(reason) => {
+                        self.peer_intake_failed(PeerIntakeFailed {
+                            session: child,
+                            id: input.record.receipt.id,
+                            ticket: input.ticket,
+                            reason,
+                        })
+                        .await;
+                    }
+                },
+            }
+        }
+    }
+
+    /// A queued child is stopped, closed, deleted or archived — or its
+    /// parent is — before its permit came (01 §2.6): the wait is aborted,
+    /// the brief's ticket released, its owning scope's `child:<id>` work
+    /// settled as [`Self::claim_child_turn`] does, and every held input
+    /// dropped. The child hears why as an `AgentEvent::Error`.
+    async fn drop_queued(&mut self, child: SessionId) {
+        let Some(q) = self.queued.remove(&child) else {
+            return;
+        };
+        q.abort.abort();
+        tracing::info!(child = %child, pool = q.pool.name(), root = %short_id(q.root), waited = q.since.elapsed().as_secs(), "queued child dropped");
+        self.ledger.release(child, q.ticket);
+        if let Some(OwnedChild { scope, .. }) = self.owned_children.remove(&child) {
+            self.network_settle_work(scope, &format!("child:{child}"))
+                .await;
+        }
+        const WHY: &str = "spawn cancelled before it started";
+        for h in q.held {
+            match h {
+                Held::Routed { ticket, .. } => {
+                    self.ledger.release(child, ticket);
+                    self.network_input_dropped(ticket).await;
+                }
+                Held::Peer(input) => {
+                    self.peer_intake_failed(PeerIntakeFailed {
+                        session: child,
+                        id: input.record.receipt.id,
+                        ticket: input.ticket,
+                        reason: WHY.into(),
+                    })
+                    .await;
+                }
+            }
+        }
+        self.error(child, WHY.into()).await;
+    }
+
+    /// [`PeerIntakeFailed`]'s body: the runner (or the supervisor, for an
+    /// input never offered) did not take the exchange.
+    async fn peer_intake_failed(&mut self, m: PeerIntakeFailed) {
+        tracing::info!(session = %m.session, id = %m.id, "peer intake failed: {}", m.reason);
+        self.enqueued.remove(&m.id);
+        self.ledger.release(m.session, m.ticket);
+        self.network_input_dropped(m.ticket).await;
+        match self.store.exchange_receipt(m.id).await {
+            Ok(Some(r)) if r.state == PeerMessageState::Accepted => {
+                // The runner did not settle the row itself (closed mailbox, refusal).
+                match self.store.fail_exchange(m.id, &m.reason).await {
+                    Ok(r) => self.peer_changed(&r).await,
+                    Err(e) => tracing::error!(id = %m.id, "fail_exchange: {e:#}"),
+                }
+            }
+            Ok(Some(r)) => self.peer_changed(&r).await,
+            Ok(None) => {}
+            Err(e) => tracing::error!(id = %m.id, "exchange_receipt: {e:#}"),
+        }
+        self.idle_check(m.session).await;
     }
 }
 
@@ -3840,23 +4345,7 @@ impl Message<PeerIntakeFailed> for Agents {
     type Reply = ();
 
     async fn handle(&mut self, m: PeerIntakeFailed, _: &mut Context<Self, Self::Reply>) {
-        tracing::info!(session = %m.session, id = %m.id, "peer intake failed: {}", m.reason);
-        self.enqueued.remove(&m.id);
-        self.ledger.release(m.session, m.ticket);
-        self.network_input_dropped(m.ticket).await;
-        match self.store.exchange_receipt(m.id).await {
-            Ok(Some(r)) if r.state == PeerMessageState::Accepted => {
-                // The runner did not settle the row itself (closed mailbox, refusal).
-                match self.store.fail_exchange(m.id, &m.reason).await {
-                    Ok(r) => self.peer_changed(&r).await,
-                    Err(e) => tracing::error!(id = %m.id, "fail_exchange: {e:#}"),
-                }
-            }
-            Ok(Some(r)) => self.peer_changed(&r).await,
-            Ok(None) => {}
-            Err(e) => tracing::error!(id = %m.id, "exchange_receipt: {e:#}"),
-        }
-        self.idle_check(m.session).await;
+        self.peer_intake_failed(m).await;
     }
 }
 
@@ -5250,6 +5739,7 @@ impl Message<UnloadSession> for Agents {
     async fn handle(&mut self, m: UnloadSession, _: &mut Context<Self, Self::Reply>) -> bool {
         // As `DeleteSession` stops an actor (68 §4.2): cancel the turn, kill,
         // forget the live entry; rows and peer state stay.
+        self.drop_queued(m.session).await;
         let Some(live) = self.sessions.remove(&m.session) else {
             return false;
         };
@@ -5970,6 +6460,10 @@ impl Message<ArchiveSession> for Agents {
             .set_archived(m.session, m.archived)
             .await
             .map_err(|e| e.to_string())?;
+        // An archived child's queued spawn turn never starts (01 §2.6).
+        if m.archived {
+            self.drop_queued(m.session).await;
+        }
         // Session hits carry the flag (49 §7): the next search rebuilds.
         self.search.invalidate();
         Ok(())
@@ -6014,6 +6508,7 @@ impl Message<DeleteSession> for Agents {
             ids.contains(&w.session) || PeerAddress::local(&w.to).is_some_and(|t| ids.contains(&t))
         });
         for id in &ids {
+            self.drop_queued(*id).await;
             self.ledger.forget(*id);
             self.bound.retain(|(s, _), _| s != id);
             self.delivered.retain(|(s, _), _| s != id);
@@ -7426,10 +7921,11 @@ pub async fn start(rt: &Runtime) -> anyhow::Result<()> {
         openrouter: Arc::new(cfg.openrouter.clone()),
     };
     auth.oauth.migrate_files().await;
-    // One worker per concurrent child turn plus the root session (design doc 08 §9).
+    // A harness-wide ceiling on Python workers (08 §9), decoupled from the
+    // per-tree child caps (01 §2.6); lazy, so idle trees cost nothing.
     // The worker is this binary (08 §9).
     let pool = match std::env::current_exe() {
-        Ok(exe) => repl::open_pool(&exe, cfg.subagents.max_concurrent.max(1) + 1).await,
+        Ok(exe) => repl::open_pool(&exe, repl::REPL_POOL_MAX).await,
         Err(e) => {
             tracing::warn!("cannot locate own executable ({e}); python runtime disabled");
             None
@@ -7526,8 +8022,10 @@ pub async fn start(rt: &Runtime) -> anyhow::Result<()> {
             turn_text: HashMap::new(),
             delivered: HashMap::new(),
             enqueued: HashSet::new(),
-            permits: Arc::new(Semaphore::new(cfg.subagents.max_concurrent.max(1))),
+            pools: HashMap::new(),
             child_turns: HashMap::new(),
+            queued: HashMap::new(),
+            undelivered: HashMap::new(),
             timed_out: HashSet::new(),
             caps: HashMap::new(),
             remote_parent: HashMap::new(),
@@ -7997,6 +8495,7 @@ impl Agents {
             self.private_member.remove(&id);
             // Stop control (47 §4.3), then forget: nothing of this tree continues.
             self.ledger.bump(id);
+            self.drop_queued(id).await;
             self.ledger.forget(id);
             self.running.remove(&id);
             self.approvals.remove(&id);
@@ -9179,7 +9678,11 @@ pub(crate) mod tests {
         communication: bool,
     ) -> Agents {
         std::fs::create_dir_all(&dir).unwrap();
-        let cfg = Arc::new(AgentConfig::default());
+        // One native and one external child slot per tree: a second spawn queues.
+        let mut cfg = AgentConfig::default();
+        cfg.subagents.max_concurrent = 1;
+        cfg.subagents.max_concurrent_external = 1;
+        let cfg = Arc::new(cfg);
         let engine = engine.map(|e| mesh::EngineId(e.to_owned()));
         Agents {
             rt: Runtime::new(figment::Figment::new(), dir.clone()),
@@ -9209,8 +9712,10 @@ pub(crate) mod tests {
             turn_text: HashMap::new(),
             delivered: HashMap::new(),
             enqueued: HashSet::new(),
-            permits: Arc::new(Semaphore::new(1)),
+            pools: HashMap::new(),
             child_turns: HashMap::new(),
+            queued: HashMap::new(),
+            undelivered: HashMap::new(),
             timed_out: HashSet::new(),
             caps: HashMap::new(),
             remote_parent: HashMap::new(),
@@ -11405,6 +11910,571 @@ pub(crate) mod tests {
         assert!(
             agents.ask(UnloadSession { session: child }).await.unwrap(),
             "exactly one new live entry for the session"
+        );
+    }
+
+    // ----- spawn permit queue (01 §2.6, spawnstall 2026-10-07) -----
+    //
+    // The `Agents` actor is deliberately NOT bus-subscribed in these tests:
+    // a native child's turn ends as `error` at once (no registry), so the
+    // test ends a spawn turn itself by telling `TurnFinished`, exactly as
+    // the bus would. Real time, no sleeps: every wait is on a channel.
+
+    /// `ask`: run `f` on the actor's state — test-only inspection.
+    struct With<F>(F);
+
+    impl<F, R> Message<With<F>> for Agents
+    where
+        F: FnOnce(&mut Agents) -> R + Send + 'static,
+        R: kameo::reply::Reply + Send + 'static,
+    {
+        type Reply = R;
+
+        async fn handle(&mut self, m: With<F>, _: &mut Context<Self, Self::Reply>) -> R {
+            (m.0)(self)
+        }
+    }
+
+    /// Every `AgentEvent` on the bus, as a stream.
+    #[derive(kameo::Actor)]
+    struct Tap(tokio::sync::mpsc::UnboundedSender<AgentEvent>);
+
+    impl Message<AgentEvent> for Tap {
+        type Reply = ();
+        async fn handle(&mut self, e: AgentEvent, _: &mut Context<Self, Self::Reply>) {
+            let _ = self.0.send(e);
+        }
+    }
+
+    /// A bus tap on `rt`.
+    async fn tap(rt: &Runtime) -> tokio::sync::mpsc::UnboundedReceiver<AgentEvent> {
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        let tap = Tap::spawn_with_mailbox(Tap(tx), runtime::subscriber_mailbox());
+        rt.subscribe::<Tap, AgentEvent>(&tap).await;
+        rx
+    }
+
+    /// The text of the next `TurnStarted` on `session`, within 10 s.
+    async fn next_turn(
+        rx: &mut tokio::sync::mpsc::UnboundedReceiver<AgentEvent>,
+        session: SessionId,
+    ) -> String {
+        tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                match rx.recv().await.expect("bus open") {
+                    AgentEvent::TurnStarted {
+                        session: s, text, ..
+                    } if s == session => {
+                        return text;
+                    }
+                    _ => {}
+                }
+            }
+        })
+        .await
+        .expect("a turn starts")
+    }
+
+    /// The next event on `session` matching `pick`, within 10 s.
+    async fn next_event(
+        rx: &mut tokio::sync::mpsc::UnboundedReceiver<AgentEvent>,
+        pick: impl Fn(&AgentEvent) -> bool,
+    ) -> AgentEvent {
+        tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                let e = rx.recv().await.expect("bus open");
+                if pick(&e) {
+                    return e;
+                }
+            }
+        })
+        .await
+        .expect("the event arrives")
+    }
+
+    /// A spawn of a child of `parent` named `name`, briefed `task`.
+    fn spawn(parent: SessionId, name: &str, task: &str) -> SpawnChild {
+        SpawnChild {
+            parent,
+            name: Some(name.into()),
+            task: task.into(),
+            agent: None,
+            cwd: None,
+            model: None,
+            effort: None,
+            cap: None,
+            skills: Vec::new(),
+        }
+    }
+
+    /// `session`'s turn ended, as the bus reports it.
+    fn finished(session: SessionId) -> AgentEvent {
+        AgentEvent::TurnFinished {
+            session,
+            turn: TurnId::new(),
+            stop_reason: "end_turn".into(),
+            usage: crate::Usage::default(),
+            context: 0,
+        }
+    }
+
+    /// A root session and the actor over `a`.
+    async fn rooted(mut a: Agents) -> (ActorRef<Agents>, SessionId) {
+        let (p, _) = a.session(None, None, None, (None, None)).await.unwrap();
+        (Agents::spawn(a), p)
+    }
+
+    /// Native permits free in `root`'s tree, and whether `child` is queued.
+    async fn pool_state(
+        agents: &ActorRef<Agents>,
+        root: SessionId,
+        child: SessionId,
+    ) -> (usize, bool) {
+        agents
+            .ask(With(move |a: &mut Agents| {
+                (
+                    a.pools[&root].native.available_permits(),
+                    a.queued.contains_key(&child),
+                )
+            }))
+            .await
+            .unwrap()
+    }
+
+    /// T1: with one native slot, the first spawn starts and the second is
+    /// queued — the parent's reply says so and names the running child —
+    /// with nothing routed into the queued child and no permit left.
+    #[tokio::test]
+    async fn second_spawn_queues_and_tells_the_parent() {
+        let (agents, p) = rooted(agents().await).await;
+        let (_, x, queued) = agents.ask(spawn(p, "x", "first")).await.unwrap();
+        assert!(queued.is_none(), "a free slot: started");
+        let (_, y, queued) = agents.ask(spawn(p, "y", "second")).await.unwrap();
+        let notice = queued.expect("no slot: queued");
+        assert!(
+            notice.starts_with(
+                "Queued: all 1 native child slots of this orchestrator are busy (running: x since "
+            ),
+            "{notice}"
+        );
+        assert!(
+            notice.ends_with("Messages you send it are delivered after its brief."),
+            "{notice}"
+        );
+        let (routed_x, routed_y) = agents
+            .ask(With(move |a: &mut Agents| {
+                (a.last_input.contains_key(&x), a.last_input.contains_key(&y))
+            }))
+            .await
+            .unwrap();
+        assert!(routed_x && !routed_y, "the brief waits with the permit");
+        assert_eq!(pool_state(&agents, p, y).await, (0, true));
+    }
+
+    /// T2: a peer message to a queued child is held, not routed; when the
+    /// running child's turn ends the queued child's first input is its
+    /// brief and the held message comes second, under exactly one permit,
+    /// which frees when its turn ends.
+    #[tokio::test]
+    async fn held_message_follows_the_brief() {
+        let a = agents_with(true).await;
+        let mut rx = tap(&a.rt).await;
+        let (agents, p) = rooted(a).await;
+        let (_, x, _) = agents.ask(spawn(p, "x", "first")).await.unwrap();
+        assert_eq!(next_turn(&mut rx, x).await, "first");
+        let (_, y, queued) = agents.ask(spawn(p, "y", "second")).await.unwrap();
+        assert!(queued.is_some());
+        agents
+            .ask(Deliver {
+                from: p,
+                to: format!("session:{y}"),
+                text: "hello y".into(),
+                await_reply: false,
+                reply_to: None,
+                request_id: None,
+                admitted: CancellationToken::new(),
+            })
+            .await
+            .unwrap();
+        let (held, routed) = agents
+            .ask(With(move |a: &mut Agents| {
+                (a.queued[&y].held.len(), a.last_input.contains_key(&y))
+            }))
+            .await
+            .unwrap();
+        assert_eq!((held, routed), (1, false), "held, nothing routed");
+
+        agents.tell(finished(x)).await.unwrap();
+        assert_eq!(next_turn(&mut rx, y).await, "second", "the brief is first");
+        let second = next_turn(&mut rx, y).await;
+        assert!(
+            second.contains("hello y"),
+            "the held message follows: {second}"
+        );
+        assert_eq!(
+            pool_state(&agents, p, y).await,
+            (0, false),
+            "y holds the one permit"
+        );
+        agents.tell(finished(y)).await.unwrap();
+        assert_eq!(
+            pool_state(&agents, p, y).await.0,
+            1,
+            "freed when y's turn ends"
+        );
+    }
+
+    /// T3: a queued child stopped by the user never gets its brief: the
+    /// wait is aborted, its ticket released, the error published; when the
+    /// slot frees it stays free.
+    #[tokio::test]
+    async fn stopped_queued_child_never_starts() {
+        let a = agents().await;
+        let mut rx = tap(&a.rt).await;
+        let (agents, p) = rooted(a).await;
+        let (_, x, _) = agents.ask(spawn(p, "x", "first")).await.unwrap();
+        let (_, y, _) = agents.ask(spawn(p, "y", "second")).await.unwrap();
+        agents
+            .ask(Cancel {
+                session: y,
+                keep: None,
+            })
+            .await
+            .unwrap();
+        let e = next_event(
+            &mut rx,
+            |e| matches!(e, AgentEvent::Error { session, .. } if *session == y),
+        )
+        .await;
+        assert!(
+            matches!(e, AgentEvent::Error { message, .. } if message == "spawn cancelled before it started")
+        );
+        let (queued, counted) = agents
+            .ask(With(move |a: &mut Agents| {
+                (a.queued.contains_key(&y), a.ledger.activity(y).is_some())
+            }))
+            .await
+            .unwrap();
+        assert!(!queued && !counted, "dropped and its ticket released");
+        agents.tell(finished(x)).await.unwrap();
+        // Anything y would have started is ordered before this round trip.
+        let (free, routed_y) = agents
+            .ask(With(move |a: &mut Agents| {
+                (
+                    a.pools[&p].native.available_permits(),
+                    a.last_input.contains_key(&y),
+                )
+            }))
+            .await
+            .unwrap();
+        assert_eq!((free, routed_y), (1, false), "the stale brief never ran");
+    }
+
+    /// T5: a human input into a queued child promotes it: the brief runs at
+    /// once, then the human text, with no permit taken and the running
+    /// sibling untouched.
+    #[tokio::test]
+    async fn human_input_promotes_a_queued_child() {
+        let a = agents().await;
+        let mut rx = tap(&a.rt).await;
+        let (agents, p) = rooted(a).await;
+        let (_, _x, _) = agents.ask(spawn(p, "x", "first")).await.unwrap();
+        let (_, y, queued) = agents.ask(spawn(p, "y", "second")).await.unwrap();
+        assert!(queued.is_some());
+        agents
+            .ask(SendInput {
+                session: Some(y),
+                text: "hurry".into(),
+                files: Vec::new(),
+                delivery: Delivery::Steer,
+                id: None,
+            })
+            .await
+            .unwrap();
+        assert_eq!(next_turn(&mut rx, y).await, "second", "the brief first");
+        assert_eq!(next_turn(&mut rx, y).await, "hurry", "then the human");
+        let (free, queued, permit_free) = agents
+            .ask(With(move |a: &mut Agents| {
+                (
+                    a.pools[&p].native.available_permits(),
+                    a.queued.contains_key(&y),
+                    a.child_turns[&y].permit.is_none(),
+                )
+            }))
+            .await
+            .unwrap();
+        assert_eq!(
+            (free, queued, permit_free),
+            (0, false, true),
+            "promoted permit-free"
+        );
+    }
+
+    /// A fake node `box` on `a`: the harness side of its one connection.
+    fn node(a: &Agents, name: &str) -> crate::acp_child::tests::Fake {
+        let (fake, dialer) = crate::acp_child::tests::Fake::new();
+        a.nodes
+            .write()
+            .unwrap_or_else(|p| p.into_inner())
+            .insert(name.into(), ("fake".into(), dialer));
+        fake
+    }
+
+    /// A spawn of a child of `parent` on node `node`.
+    fn spawn_on(parent: SessionId, node: &str, name: &str, task: &str) -> SpawnChild {
+        SpawnChild {
+            agent: Some(node.into()),
+            ..spawn(parent, name, task)
+        }
+    }
+
+    /// T4: the pools are separate — with the one native slot taken, a node
+    /// child starts at once from the external pool; with the one external
+    /// slot taken, a second node child queues while a native spawn still
+    /// starts.
+    #[tokio::test]
+    async fn native_and_external_pools_are_separate() {
+        let a = agents().await;
+        let mut fake = node(&a, "box");
+        let (agents, p) = rooted(a).await;
+        let (_, _x, _) = agents.ask(spawn(p, "x", "native")).await.unwrap();
+        let (_, _, queued) = agents
+            .ask(spawn_on(p, "box", "e1", "remote one"))
+            .await
+            .unwrap();
+        assert!(queued.is_none(), "the native pool being full is irrelevant");
+        fake.handshake(Vec::new(), None).await;
+        let (_, text) = fake.prompt().await;
+        assert_eq!(text, "remote one", "the brief reached the harness");
+        let (_, e2, queued) = agents
+            .ask(spawn_on(p, "box", "e2", "remote two"))
+            .await
+            .unwrap();
+        let notice = queued.expect("the one external slot is held");
+        assert!(notice.starts_with("Queued: all 1 external child slots of this orchestrator are busy (running: e1 since "), "{notice}");
+        let (ext_free, nat_free, e2_queued) = agents
+            .ask(With(move |a: &mut Agents| {
+                let pools = &a.pools[&p];
+                (
+                    pools.external.available_permits(),
+                    pools.native.available_permits(),
+                    a.queued.contains_key(&e2),
+                )
+            }))
+            .await
+            .unwrap();
+        assert_eq!((ext_free, nat_free, e2_queued), (0, 0, true));
+        // The native pool frees: a native spawn starts although external is full.
+        agents.tell(finished(_x)).await.unwrap();
+        let (_, _, queued) = agents.ask(spawn(p, "z", "native two")).await.unwrap();
+        assert!(
+            queued.is_none(),
+            "native spawns never wait on the external pool"
+        );
+    }
+
+    /// T6 (D6): a node harness that drops mid-prompt ends the spawn turn as
+    /// `error`, and the supervisor — bus-subscribed here, as in production —
+    /// releases the external permit with the turn.
+    #[tokio::test]
+    async fn harness_exit_releases_the_external_permit() {
+        let a = agents().await;
+        let mut fake = node(&a, "box");
+        let rt = a.rt.clone();
+        let (agents, p) = rooted(a).await;
+        // Subscribed first: the bus tells subscribers in registration order,
+        // so the supervisor has handled an event before the tap sees it.
+        rt.subscribe::<Agents, AgentEvent>(&agents).await;
+        let mut rx = tap(&rt).await;
+        let (_, e1, queued) = agents.ask(spawn_on(p, "box", "e1", "go")).await.unwrap();
+        assert!(queued.is_none());
+        fake.handshake(Vec::new(), None).await;
+        let (_, text) = fake.prompt().await;
+        assert_eq!(text, "go");
+        let held = agents
+            .ask(With(move |a: &mut Agents| {
+                a.pools[&p].external.available_permits()
+            }))
+            .await
+            .unwrap();
+        assert_eq!(held, 0, "the spawn turn holds the external permit");
+        // The harness goes away with the prompt in flight.
+        drop(fake);
+        let e = next_event(
+            &mut rx,
+            |e| matches!(e, AgentEvent::TurnFinished { session, .. } if *session == e1),
+        )
+        .await;
+        assert!(
+            matches!(e, AgentEvent::TurnFinished { stop_reason, .. } if stop_reason == "error")
+        );
+        // The bus delivered the same event to the supervisor before this ask.
+        let (free, turn) = agents
+            .ask(With(move |a: &mut Agents| {
+                (
+                    a.pools[&p].external.available_permits(),
+                    a.child_turns.contains_key(&e1),
+                )
+            }))
+            .await
+            .unwrap();
+        assert_eq!((free, turn), (1, false), "permit released with the turn");
+    }
+
+    /// T7: pools are per orchestrator tree — a queued child in tree A does
+    /// not delay a spawn in tree B, and a session in tree B draws its
+    /// bounded turns' permits from B's native pool, never A's.
+    #[tokio::test]
+    async fn pools_are_per_orchestrator_tree() {
+        let mut a = agents().await;
+        let (p1, _) = a.session(None, None, None, (None, None)).await.unwrap();
+        let (p2, _) = a.session(None, None, None, (None, None)).await.unwrap();
+        let agents = Agents::spawn(a);
+        let (_, _a1, _) = agents.ask(spawn(p1, "a1", "one")).await.unwrap();
+        let (_, a2, queued) = agents.ask(spawn(p1, "a2", "two")).await.unwrap();
+        assert!(queued.is_some(), "tree A is full");
+        let (_, b1, queued) = agents.ask(spawn(p2, "b1", "three")).await.unwrap();
+        assert!(queued.is_none(), "tree B has its own slot");
+        let (a_free, a2_queued, b_free, b1_permits) = agents
+            .ask(With(move |a: &mut Agents| {
+                let b1_actor = a.sessions[&b1].actor.native().unwrap().clone();
+                (
+                    a.pools[&p1].native.available_permits(),
+                    a.queued.contains_key(&a2),
+                    a.pools[&p2].native.available_permits(),
+                    (
+                        Arc::as_ptr(&a.pools[&p1].native) as usize,
+                        Arc::as_ptr(&a.pools[&p2].native) as usize,
+                        b1_actor,
+                    ),
+                )
+            }))
+            .await
+            .unwrap();
+        assert_eq!((a_free, a2_queued, b_free), (0, true, 0));
+        let (pool_a, pool_b, b1_actor) = b1_permits;
+        let draws_from = b1_actor.ask(crate::loop_::PermitsOf).await.unwrap();
+        assert_eq!(draws_from, pool_b, "b1's bounded turns take B's permit");
+        assert_ne!(draws_from, pool_a, "never A's");
+    }
+
+    // ----- R2: ACP robustness -----
+
+    /// R2.4: a follow-up turn on an ACP child (a human message after its
+    /// spawn turn ended) holds no permit but is timed like the spawn turn,
+    /// so a prompt that never returns cannot keep the child running forever.
+    #[tokio::test]
+    async fn follow_up_acp_turns_get_the_runtime_timer() {
+        let a = agents().await;
+        let mut fake = node(&a, "box");
+        let rt = a.rt.clone();
+        let (agents, p) = rooted(a).await;
+        rt.subscribe::<Agents, AgentEvent>(&agents).await;
+        let mut rx = tap(&rt).await;
+        let (_, e1, _) = agents.ask(spawn_on(p, "box", "e1", "go")).await.unwrap();
+        fake.handshake(Vec::new(), None).await;
+        let (id, _) = fake.prompt().await;
+        fake.end_turn(&id);
+        next_event(
+            &mut rx,
+            |e| matches!(e, AgentEvent::TurnFinished { session, .. } if *session == e1),
+        )
+        .await;
+        agents
+            .ask(SendInput {
+                session: Some(e1),
+                text: "more".into(),
+                files: Vec::new(),
+                delivery: Delivery::Steer,
+                id: None,
+            })
+            .await
+            .unwrap();
+        let (_, text) = fake.prompt().await;
+        assert_eq!(text, "more");
+        next_event(
+            &mut rx,
+            |e| matches!(e, AgentEvent::TurnStarted { session, .. } if *session == e1),
+        )
+        .await;
+        let (timed, permit_free) = agents
+            .ask(With(move |a: &mut Agents| {
+                let ct = &a.child_turns[&e1];
+                (ct.timer.is_some(), ct.permit.is_none())
+            }))
+            .await
+            .unwrap();
+        assert!(timed && permit_free, "timed, permit-free follow-up turn");
+    }
+
+    /// R2.7: a child result the parent's intake refuses (its pending quota
+    /// is full) is an error on the parent naming the child and the reason,
+    /// and is offered once more when the parent's next turn ends —
+    /// delivered then, once the quota has room.
+    #[tokio::test]
+    async fn refused_child_result_is_visible_and_retried_once() {
+        let mut a = agents_with(true).await;
+        let mut rx = tap(&a.rt).await;
+        let (p, _) = in_turn(&mut a).await;
+        let child = kid(&mut a, p, "worker").await;
+        // Fill the parent's pending quota.
+        let generation = a.communication.0.write().route(child, p).unwrap();
+        let (from, to) = (format!("session:{child}"), format!("session:{p}"));
+        let mut filler = Vec::new();
+        for i in 0..crate::communication::PENDING_PER_RECIPIENT {
+            let r = a
+                .store
+                .accept_exchange(&AcceptExchange {
+                    sender: &from,
+                    recipient: &to,
+                    sender_session: Some(child),
+                    recipient_session: Some(p),
+                    request_id: Some(&format!("fill-{i}")),
+                    reply_to: None,
+                    request_scope: None,
+                    generation: generation.revision() as i64,
+                    body: "x",
+                })
+                .await
+                .unwrap();
+            filler.push(r.id);
+        }
+        let ct = TurnId::new();
+        a.ledger.entered(TurnEntered {
+            session: child,
+            turn: Some(ct),
+        });
+        a.ledger.returned(TurnReturned {
+            session: child,
+            turn: Some(ct),
+        });
+        a.turn_text.insert((child, ct), "done".into());
+        a.child_finished(child, ct, "end_turn").await;
+        let e = next_event(
+            &mut rx,
+            |e| matches!(e, AgentEvent::Error { session, .. } if *session == p),
+        )
+        .await;
+        let AgentEvent::Error { message, .. } = e else {
+            unreachable!()
+        };
+        assert!(
+            message.starts_with(&format!(
+                "result of worker (session:{child}) not delivered: "
+            )) && message.contains("read it with session_read; offered once more"),
+            "{message}"
+        );
+        assert_eq!(a.undelivered[&p].len(), 1);
+        assert_eq!(a.ledger.activity(p), None, "nothing reached the parent");
+        // Room again before the parent's turn ends: the retry delivers.
+        for id in filler {
+            a.store.fail_exchange(id, "drained").await.unwrap();
+        }
+        a.turn_finished(p, TurnId::new(), "end_turn").await;
+        assert!(a.undelivered.is_empty(), "offered exactly once more");
+        assert!(
+            a.ledger.activity(p).is_some(),
+            "the result is pending input on the parent now"
         );
     }
 }

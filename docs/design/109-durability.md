@@ -44,11 +44,11 @@ Rulings (ask_user, 2026-10-06 11:54):
 | D1 | Where the journal lives | **`sessions.sqlite`, written inside the same `WriteTx` as every other store write** (`crates/agent/src/store.rs:164-266`); new tables `turn_steps`, `tool_calls`, `questions`, `waits`, `jobs`, `pty_screens` in migration `0033_durability.sql` (§3) | one commit = one `session_log` row, so 68 replicates the journal for free and a taken-over session can later resume elsewhere; no second file, no second fsync discipline |
 | D2 | Resume at boot | **Eager `ResumeTurn` for every session with an open turn**, most recently active first, `durability.resume_parallel` (4) at a time; every other session stays lazy (§4.6) | today boot only marks (`unresolved`, `failed: interrupted_by_restart`, `lost`) and "auto-runs nothing" (`docs/design/00-architecture.md:484-485`); routines and children must come back without a human |
 | D3 | Jobs and PTYs | **`jobs` + `pty_screens` tables for accounting and last-known state only; NO adoption; graceful shutdown keeps killing job groups exactly as today (`KillAll` after the drain window); at start, before any `ResumeTurn` runs, journaled pgids still alive (leaked by a SIGKILL) are killed and their rows settled `lost`, so a re-run never races a half-dead build; pipes stay as they are; behaviour identical on every OS** (§5) | reverses 14 §5's "no jobs table for v0" for accounting only; the model learns a job's fate instead of guessing |
-| D4 | Streaming checkpoints | **`assistant_partial` row per model call, updated at content-block boundaries and every `partial_checkpoint_ms` (1000)**; never per token; the UI shows it as interrupted, the model never sees it (§8.1) | a kill mid-stream loses the text today (`crates/agent/src/loop_.rs:4025-4043`); the re-issued call regenerates it from the identical frame, so the checkpoint is for the human, not the frame |
+| D4 | Streaming checkpoints | **`assistant_partial` row per model call, updated at content-block boundaries and every `partial_checkpoint_ms` (5000)**; never per token; the UI shows it as interrupted, the model never sees it (§8.1) | a kill mid-stream loses the text today (`crates/agent/src/loop_.rs:4025-4043`); the re-issued call regenerates it from the identical frame, so the checkpoint is for the human, not the frame |
 | D5 | ACP children | **Respawn with `session/load` when a parent's tool call waits on the child; on a failed load, prompt a fresh child with a composed delta handoff** (§7.3); theuth-subagent children are sessions with open turns and are covered by D2 | `session/load` already exists on demand (`crates/agent/src/supervisor.rs:887-911`, `crates/acp/src/harness.rs:478-483`); only the trigger and the fallback are new |
 | D6 | Graceful shutdown | **Drain up to `drain_secs` (10), checkpoint, mark open turns `suspended`, dump and release Monty, then `KillAll` the job groups as today (journaled `lost` first)**; SIGTERM, app close and `t update` converge on the same resume protocol (§9) | a planned stop should look like a crash to the resume code and only differ in wording |
 | D7 | UI | **One session banner, one Attention item (104) when a human is needed; `AgentEvent::TurnResumed` / `TurnSuspended` / `PartialDropped`** (§8) | engine-first; as-built UI docs follow |
-| D8 | Config | **`durability:` section** — `resume: auto \| ask \| off` (auto), `resume_parallel` 4, `drain_secs` 10, `partial_checkpoint_ms` 1000, `pty_snapshot_secs` 5 (§10); the job reaper has no key | `resume: ask` is the pause-and-ask behaviour as a setting, not the default |
+| D8 | Config | **`durability:` section** — `resume: auto \| ask \| off` (auto), `resume_parallel` 4, `drain_secs` 10, `partial_checkpoint_ms` 5000, `pty_snapshot_secs` 5 (§10); the job reaper has no key | `resume: ask` is the pause-and-ask behaviour as a setting, not the default |
 | D9 | Out of scope | detached job keeper (later), process-surviving jobs by adoption (rejected by Sky, D14), event-sourcing rewrite, cross-engine resume of an in-flight turn (follow-on), meeting live meters, replaying tool side effects | §14 |
 | D10 | Verification | **crash-injection harness** `THEUTH_CRASH_AT=<step>` aborting at every journal boundary; transcript equality with the uninterrupted run; job reaper and PTY snapshot tests; manual smoke (§11) | the invariant is testable only by killing |
 | D11 | Build order | **W1 journal + safe replay → W2 jobs → W3 questions/waits → W4 ACP → W5 drain + UI → W6 crash suite**, seams in §12; W2 ∥ W3 and W4 ∥ W5 | file ownership keeps two omp waves apart |
@@ -838,7 +838,7 @@ sandbox crate.
 call, keyed by `call_id`, **upserted** (never appended) when:
 
 - a content block closes (text block → tool-use block, reasoning → text), and
-- a timer fires: `durability.partial_checkpoint_ms` (1000) since the last upsert *and* the captured
+- a timer fires: `durability.partial_checkpoint_ms` (5000) since the last upsert *and* the captured
   content grew.
 
 Never per token. The payload is the same `MessageContent` JSON `persist` would write plus
@@ -965,7 +965,7 @@ durability:
   resume: auto              # auto | ask | off — what boot does with open turns (§4.6)
   resume_parallel: 4        # ResumeTurn concurrency; the rest queue, most recent first
   drain_secs: 10            # graceful-shutdown budget for in-flight tool calls (§9.2)
-  partial_checkpoint_ms: 1000   # assistant_partial cadence (§8.1); never per token
+  partial_checkpoint_ms: 5000   # assistant_partial cadence (§8.1); never per token (1000 until the scale pass: one write tx per second per streaming session was the hottest row on the single writer)
   pty_snapshot_secs: 5      # PTY screen snapshot timer (§5.3)
   journal_keep_days: 7      # finished-turn journal retention (§3.6)
   handoff_tokens: 4000      # ACP delta handoff budget (§7.3)

@@ -78,7 +78,9 @@ fn node_decl(id: &str, label: &str, kind: Option<GraphKind>) -> String {
         GraphKind::Pill => format!("{id}([{l}])"),
         GraphKind::Diamond => format!("{id}{{{l}}}"),
         GraphKind::Cylinder => format!("{id}[({l})]"),
-        GraphKind::Actor => format!("{id}(({l}))"),
+        GraphKind::Actor | GraphKind::Circle => format!("{id}(({l}))"),
+        GraphKind::Hexagon => format!("{id}{{{{{l}}}}}"),
+        GraphKind::Note => format!("{id}>{l}]"),
     }
 }
 
@@ -143,7 +145,7 @@ fn glyph(state: Option<GraphState>) -> &'static str {
 }
 
 /// `text` cut to `width` columns with a trailing `…` (0 = unbounded).
-fn truncate(text: String, width: usize) -> String {
+pub(crate) fn truncate(text: String, width: usize) -> String {
     if width == 0 || text.width() <= width {
         return text;
     }
@@ -161,10 +163,11 @@ fn truncate(text: String, width: usize) -> String {
     out
 }
 
-/// The graph as text: each group's label as a bold header over its indented members, ungrouped
-/// nodes after; one line per node — `◉ api → db (writes), queue` — the state glyph, the label,
-/// then the targets of its outgoing edges with any edge label in parentheses. Lines are cut to
-/// `width` with `…`.
+/// The graph as text: each group's label as a bold header over its indented members (a nested
+/// group indents one level deeper than its parent, 123 §4.4), ungrouped nodes after; one line
+/// per node — `◉ api (:8080) [SERVICE] → db (writes), ✗→ queue` — the state glyph, the label,
+/// `sub` in parentheses, `tag` in brackets, then the targets of its outgoing edges with any
+/// edge label in parentheses (`✗→` before a `danger` edge's target). Lines are cut to `width`.
 pub fn adjacency_lines(p: &GraphProps, width: usize) -> Vec<Line> {
     let label_of: BTreeMap<&str, &str> = p
         .nodes
@@ -178,13 +181,24 @@ pub fn adjacency_lines(p: &GraphProps, width: usize) -> Vec<Line> {
             .filter(|e| e.from == n.id)
             .map(|e| {
                 let to = label_of.get(e.to.as_str()).copied().unwrap_or(&e.to);
+                let danger = if e.state == Some(GraphState::Danger) {
+                    "✗→ "
+                } else {
+                    ""
+                };
                 match &e.label {
-                    Some(l) if !l.is_empty() => format!("{to} ({l})"),
-                    _ => to.to_owned(),
+                    Some(l) if !l.is_empty() => format!("{danger}{to} ({l})"),
+                    _ => format!("{danger}{to}"),
                 }
             })
             .collect();
         let mut text = format!("{}{} {}", " ".repeat(indent), glyph(n.state), n.label);
+        if let Some(sub) = n.sub.as_deref().filter(|s| !s.is_empty()) {
+            text.push_str(&format!(" ({sub})"));
+        }
+        if let Some(tag) = n.tag.as_deref().filter(|t| !t.is_empty()) {
+            text.push_str(&format!(" [{tag}]"));
+        }
         if !targets.is_empty() {
             text.push_str(" → ");
             text.push_str(&targets.join(", "));
@@ -192,18 +206,43 @@ pub fn adjacency_lines(p: &GraphProps, width: usize) -> Vec<Line> {
         vec![span(truncate(text, width), PLAIN)]
     };
     let groups = p.groups.as_deref().unwrap_or_default();
+    let known = |id: &str| groups.iter().any(|g| g.id == id);
     let mut out = Vec::new();
-    for g in groups {
-        out.push(vec![span(truncate(g.label.clone(), width), BOLD)]);
+    // Depth-first over the `parent` links so a nested group sits under its parent, one level in.
+    fn group_block(
+        g: &crate::spec::GraphGroup,
+        depth: usize,
+        p: &GraphProps,
+        groups: &[crate::spec::GraphGroup],
+        node_line: &dyn Fn(&crate::spec::GraphNode, usize) -> Line,
+        width: usize,
+        out: &mut Vec<Line>,
+    ) {
+        let indent = " ".repeat(2 * depth);
+        out.push(vec![span(
+            truncate(format!("{indent}{}", g.label), width),
+            BOLD,
+        )]);
         for n in p.nodes.iter().filter(|n| n.group.as_deref() == Some(&g.id)) {
-            out.push(node_line(n, 2));
+            out.push(node_line(n, 2 * depth + 2));
+        }
+        if depth < crate::MAX_GRAPH_GROUP_DEPTH {
+            for c in groups.iter().filter(|c| c.parent.as_deref() == Some(&g.id)) {
+                group_block(c, depth + 1, p, groups, node_line, width, out);
+            }
         }
     }
-    for n in p.nodes.iter().filter(|n| {
-        !n.group
-            .as_deref()
-            .is_some_and(|g| groups.iter().any(|x| x.id == g))
-    }) {
+    for g in groups
+        .iter()
+        .filter(|g| !g.parent.as_deref().is_some_and(known))
+    {
+        group_block(g, 0, p, groups, &node_line, width, &mut out);
+    }
+    for n in p
+        .nodes
+        .iter()
+        .filter(|n| !n.group.as_deref().is_some_and(known))
+    {
         out.push(node_line(n, 0));
     }
     if out.is_empty() {
@@ -255,6 +294,9 @@ mod tests {
             group: group.map(Into::into),
             state: None,
             r#ref: None,
+            sub: None,
+            tag: None,
+            icon: None,
         }
     }
 
@@ -292,19 +334,27 @@ mod tests {
                     to: "db-main".into(),
                     label: Some("writes".into()),
                     style: Some(GraphEdgeStyle::Dashed),
+                    state: None,
+                    arrow: None,
                 },
                 GraphEdge {
                     from: "db_main".into(),
                     to: "db_main".into(),
                     label: None,
                     style: None,
+                    state: None,
+                    arrow: None,
                 },
             ],
             groups: Some(vec![GraphGroup {
                 id: "store".into(),
                 label: "Store".into(),
+                parent: None,
+                kind: None,
             }]),
             direction: Some(GraphDirection::TB),
+            legend: None,
+            title: None,
         };
         assert_eq!(
             to_mermaid(&p),

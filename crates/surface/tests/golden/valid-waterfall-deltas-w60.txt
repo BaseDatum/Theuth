@@ -1,0 +1,8 @@
+Waterfall: Build time change — 5 steps
+step      │ Δ   │ total
+──────────┼─────┼──────
+baseline  │ =   │ 120 s
+cache     │ -35 │ 85 s
+new tests │ +12 │ 97 s
+lint      │ -4  │ 93 s
+after     │ =   │ 93 s

@@ -13,10 +13,17 @@
 #![allow(clippy::collapsible_if)]
 
 pub use crate::crawler::*;
+pub use crate::extract::{Method, SelectOptions, Selection, select_main};
 pub use crate::html::*;
+pub use crate::islands::extract_islands;
+pub use crate::noise::{CONSENT_PREFIXES, has_consent_prefix, is_noise, may_strip};
 
 mod crawler;
+// Design doc 122 (D8, D9): ours, not vendored.
+pub mod extract;
 mod html;
+pub mod islands;
+pub mod noise;
 
 pub use serde::{Deserialize, Serialize};
 

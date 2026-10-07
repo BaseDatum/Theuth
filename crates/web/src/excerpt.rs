@@ -165,7 +165,9 @@ fn clean_line(line: &str) -> String {
 
 /// Horizontal rules, image-only blocks, link lists without a sentence, and
 /// blocks that are mostly link targets (reference lists, affiliate rows).
-fn is_noise(block: &str) -> bool {
+/// Also the render tier's `only_main_content` trim in `scrape` (122 D8).
+#[must_use]
+pub fn is_noise(block: &str) -> bool {
     let rule = block
         .lines()
         .all(|l| l.len() >= 3 && l.chars().all(|c| matches!(c, '-' | '*' | '_' | ' ')));
