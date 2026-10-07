@@ -20,7 +20,7 @@
   pwsh -File crates\desktop\companion-windows\w3-gate.ps1 reg
 #>
 param(
-    [Parameter(Position = 0)] [ValidateSet('probe', 'launch', 'stop', 'log', 'reg', 'settings-get', 'settings-set', 'engine-stop', 'processes')]
+    [Parameter(Position = 0)] [ValidateSet('probe', 'launch', 'stop', 'log', 'reg', 'settings-get', 'settings-set', 'engine-stop', 'processes', 'crash')]
     [string] $Verb = 'log',
     [double] $Seconds = 12,
     [switch] $Stay,
@@ -132,6 +132,18 @@ switch ($Verb) {
         $obj | ConvertTo-Json -Depth 5 | Set-Content -Path $settingsFile -Encoding UTF8
         Write-Host "set $Key = $Value in $settingsFile"
         Get-Content $settingsFile | ForEach-Object { Write-Host $_ }
+    }
+    'crash' {
+        # The last crash records for Theuth.Companion.exe: .NET Runtime (1026: exception + stack), Application Error (1000), WER (1001).
+        $events = Get-WinEvent -FilterHashtable @{ LogName = 'Application'; Id = @(1000, 1001, 1026) } -MaxEvents 40 -ErrorAction SilentlyContinue |
+            Where-Object { $_.Message -match 'Theuth\.Companion' } | Select-Object -First 4
+        if (-not $events) { Write-Host 'no crash records for Theuth.Companion.exe in the Application log' }
+        foreach ($e in $events) {
+            Write-Host ("==== {0:HH:mm:ss} {1} id={2}" -f $e.TimeCreated, $e.ProviderName, $e.Id)
+            ($e.Message -split "`n" | Select-Object -First 40) | ForEach-Object { Write-Host $_ }
+        }
+        $crashes = Get-ChildItem (Join-Path $env:LOCALAPPDATA 'theuth\companion\logs') -Filter '*.crash.json' -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending | Select-Object -First 2
+        foreach ($c in $crashes) { Write-Host "---- $($c.FullName)"; Get-Content $c.FullName -TotalCount 60 | ForEach-Object { Write-Host $_ } }
     }
     'engine-stop' {
         $t = @(Get-Process -Name 't' -ErrorAction SilentlyContinue)
