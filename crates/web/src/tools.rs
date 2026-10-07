@@ -23,7 +23,7 @@ use crate::aggregate::{RankedResult, ReadPage, category_name};
 use crate::engines::BUILTIN;
 use crate::fetch::issue::IssueKind;
 use crate::fetch::{
-    FetchFormat, FetchResponse, Fetcher, PageOptions, check_url, finish, first_heading,
+    FetchFormat, FetchResponse, Fetcher, PageOptions, check_url, finish, take_title,
 };
 
 use crate::progress::{ProgressCx, report};
@@ -680,12 +680,13 @@ impl FetchTool {
                 Err(e) => body.notes.push(format!("{more}: {e}")),
             }
         }
-        let md = crate::sources::render(src.kind, &body.content)
+        let rendered = crate::sources::render(src.kind, &body.content)
             .ok_or_else(|| "body did not parse".to_owned())?;
-        let fin = finish(&md, format, opts);
+        let (title, md) = take_title(&rendered);
+        let fin = finish(md, format, opts);
         Ok(FetchResponse {
             url: src.fetch_url.to_string(),
-            title: first_heading(&md),
+            title,
             content: fin.content,
             truncated: fin.cut.truncated || body.truncated,
             took_ms: elapsed_ms(start),

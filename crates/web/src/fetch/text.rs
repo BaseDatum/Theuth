@@ -138,6 +138,22 @@ pub(crate) fn first_heading(md: &str) -> Option<String> {
         .filter(|t| !t.is_empty())
 }
 
+/// Split a leading `# title` line off `md` (API renderers put the title
+/// there; the text header prints it once): `(title, body)`. Without one,
+/// `(None, md)`.
+#[must_use]
+pub fn take_title(md: &str) -> (Option<String>, &str) {
+    let trimmed = md.trim_start();
+    if let Some(rest) = trimmed.strip_prefix("# ") {
+        let (line, body) = rest.split_once('\n').unwrap_or((rest, ""));
+        let title = collapse_ws(line);
+        if !title.is_empty() {
+            return (Some(title), body.trim_start_matches('\n'));
+        }
+    }
+    (None, md)
+}
+
 /// Collapse whitespace runs to single spaces and trim.
 #[must_use]
 pub fn collapse_ws(s: &str) -> String {
@@ -241,7 +257,8 @@ fn char_to_byte(s: &str, n: usize) -> usize {
     s.char_indices().nth(n).map_or(s.len(), |(i, _)| i)
 }
 
-/// `## Heading` → `Heading`; `None` for a non-heading line.
+/// `## Heading` → `Heading`; `None` for a non-heading line. Links are
+/// unwrapped and anchor glyphs (`§`, `#`) that docs sites put in headings dropped.
 fn heading_text(line: &str) -> Option<String> {
     let t = line.trim_start();
     let hashes = t.chars().take_while(|c| *c == '#').count();
@@ -249,13 +266,22 @@ fn heading_text(line: &str) -> Option<String> {
         return None;
     }
     let body = t[hashes..].strip_prefix(' ')?;
-    let body = collapse_ws(body.trim_end_matches('#'));
+    let body = unwrap_links(body.trim_end_matches('#'));
+    let body =
+        collapse_ws(body.trim_matches(|c: char| c.is_whitespace() || matches!(c, '§' | '#' | '¶')));
     (!body.is_empty()).then_some(body)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn take_title_splits_a_leading_h1_only() {
+        assert_eq!(take_title("# T\n\nbody"), (Some("T".into()), "body"));
+        assert_eq!(take_title("intro\n# T"), (None, "intro\n# T"));
+        assert_eq!(take_title("## Two\nx"), (None, "## Two\nx"));
+    }
 
     #[test]
     fn text_projection_strips_markup() {

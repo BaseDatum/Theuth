@@ -27,8 +27,7 @@ use url::Url;
 use client::{ClientConfig, ClientError, ClientKind, HttpClient, Impersonate};
 
 pub use ssrf::{check_url, is_blocked_hostname, is_blocked_ip};
-pub(crate) use text::first_heading;
-pub use text::{Cut, MAX_OMITTED_HEADINGS, collapse_ws, cut, hard_truncate};
+pub use text::{Cut, MAX_OMITTED_HEADINGS, collapse_ws, cut, hard_truncate, take_title};
 
 /// Whole-request timeout for one page fetch.
 pub const TIMEOUT: Duration = Duration::from_secs(8);

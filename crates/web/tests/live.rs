@@ -7,7 +7,8 @@
 //! ```
 //!
 //! `THEUTH_LIVE_IMPERSONATE` (`always` | `on_challenge` | `never`, default
-//! `always`) is the test-local switch for `web.impersonate`. Every row asserts
+//! `always`) is the test-local switch for `web.impersonate`; `THEUTH_LIVE_DUMP=1`
+//! prints the first 240 chars of each result. Every row asserts
 //! shape only (no panic, tier/charset/attempts present) and prints one line:
 //! `url · client · tier · issue · chars · compacted · took_ms`. Sites that are
 //! down or block both ways are recorded, not fixed.
@@ -30,7 +31,8 @@ const URLS: &[&str] = &[
     "https://en.wikipedia.org/wiki/Rust_(programming_language)",
     "https://httpbin.org/status/403",
     "https://httpbin.org/status/429",
-    "https://www.aozora.gr.jp/",
+    "https://www.jalan.net/",
+    "http://abehiroshi.la.coocan.jp/",
     "https://nowsecure.nl",
     "https://www.g2.com/",
     "https://www.reddit.com/r/rust/comments/1g0x9zl/announcing_rust_1820/",
@@ -122,7 +124,7 @@ fn row(url: &str, out: &tools::ToolOutput, took: u128) -> String {
         },
     );
     format!(
-        "{url} · {} · {} · {issue} · {} · {} · {took} · attempts={} ladder={} charset={} next_offset={} source_kind={}",
+        "{url} · {} · {} · {issue} · {} · {} · {took} · attempts={} ladder={} charset={} next_offset={} source_kind={} notes={}",
         s("client"),
         s("tier"),
         d["content"].as_str().map_or(0, |c| c.chars().count()),
@@ -132,6 +134,7 @@ fn row(url: &str, out: &tools::ToolOutput, took: u128) -> String {
         s("charset"),
         d["next_offset"],
         s("source_kind"),
+        d["notes"],
     )
 }
 
@@ -148,6 +151,12 @@ async fn read_url_matrix() {
         let t = Instant::now();
         let out = tool.call(args(url, None), cx()).await.expect("tool call");
         println!("{}", row(url, &out, t.elapsed().as_millis()));
+        if std::env::var("THEUTH_LIVE_DUMP").is_ok() {
+            println!(
+                "    {:?}",
+                out.content.chars().take(240).collect::<String>()
+            );
+        }
         if let Some(d) = &out.structured {
             assert!(
                 matches!(d["tier"].as_str(), Some("fetch" | "render" | "api")),

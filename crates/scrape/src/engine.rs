@@ -212,9 +212,10 @@ impl Scrape {
                 Err(e) => resp.notes.push(format!("{more}: {e}")),
             }
         }
-        let markdown = web::sources::render(api.kind, &resp.content)
+        let rendered = web::sources::render(api.kind, &resp.content)
             .ok_or_else(|| anyhow::anyhow!("body did not parse"))?;
-        let title = first_heading(&markdown);
+        let (title, markdown) = web::fetch::take_title(&rendered);
+        let markdown = markdown.to_owned();
         Ok(Fetched {
             url: page_url.to_string(),
             meta: PageMeta {
@@ -627,14 +628,6 @@ fn fill_meta(a: PageMeta, b: PageMeta) -> PageMeta {
     }
 }
 
-/// `# Title` of the first ATX heading.
-fn first_heading(md: &str) -> Option<String> {
-    md.lines().find_map(|l| {
-        let t = l.trim_start_matches('#');
-        (t.len() < l.len() && t.starts_with(' ')).then(|| t.trim().to_owned())
-    })
-}
-
 /// Drop leading and trailing noise blocks (nav, footer, "related" rows,
 /// image rows) from rendered markdown — `excerpt`'s link-noise rule, the
 /// honest minimum for `only_main_content` on a tier without a DOM (122 D8).
@@ -945,12 +938,6 @@ mod tests {
         assert_eq!(m.author.as_deref(), Some("Jane Doe"));
         assert_eq!(m.canonical.as_deref(), Some("https://e.com/canon"));
         assert_eq!(m.title.as_deref(), Some("Og Title"));
-    }
-
-    #[test]
-    fn first_heading_reads_atx_only() {
-        assert_eq!(first_heading("x\n## Two\n# One").as_deref(), Some("Two"));
-        assert_eq!(first_heading("#hashtag\ntext"), None);
     }
 }
 
