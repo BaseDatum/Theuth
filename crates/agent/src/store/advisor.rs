@@ -296,6 +296,60 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// 125 F1: the link is captured (68 §3), so a session moved to another
+    /// engine by replaying its log rows arrives with its advisor link intact.
+    #[tokio::test]
+    async fn link_survives_capture_and_apply_into_a_fresh_store() {
+        use std::ffi::{c_int, c_void};
+        unsafe extern "C" fn abort_on_conflict(
+            _ctx: *mut c_void,
+            _kind: c_int,
+            _it: *mut libsqlite3_sys::sqlite3_changeset_iter,
+        ) -> c_int {
+            libsqlite3_sys::SQLITE_CHANGESET_ABORT
+        }
+        let (store, id, dir) = fresh().await;
+        let advisor = advisor_of(&store, id).await;
+        let link = AdvisorLink {
+            session: id,
+            advisor,
+            model: "prov/adv".into(),
+            effort: Some("high".into()),
+            cursor: 7,
+            state: AdvisorState::Paused,
+        };
+        store.put_advisor_link(&link).await.unwrap();
+        let rows = store.log_after(0).await.unwrap();
+        assert!(
+            rows.iter().any(|r| r.session_id == id.to_string()),
+            "put_advisor_link left no log row for the advised session"
+        );
+
+        let other = Store::open(&dir.join("other.sqlite"), None).await.unwrap();
+        for row in &rows {
+            let mut tx = other.begin_apply().await.unwrap();
+            let rc = tx
+                .with_raw(|db| unsafe {
+                    libsqlite3_sys::sqlite3changeset_apply(
+                        db.as_ptr(),
+                        c_int::try_from(row.changeset.len()).unwrap(),
+                        row.changeset.as_ptr().cast::<c_void>().cast_mut(),
+                        None,
+                        Some(abort_on_conflict),
+                        std::ptr::null_mut(),
+                    )
+                })
+                .await
+                .unwrap();
+            assert_eq!(rc, libsqlite3_sys::SQLITE_OK, "apply of seq {}", row.seq);
+            tx.commit().await.unwrap();
+        }
+        assert_eq!(other.advisor_link(id).await.unwrap(), Some(link));
+        assert!(other.session(advisor).await.unwrap().is_some());
+        drop((store, other));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[tokio::test]
     async fn appended_advisory_opens_no_turn_and_renders_typed() {
         let (store, id, dir) = fresh().await;
