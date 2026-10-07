@@ -9,11 +9,11 @@ Contract: `122-as-built-C.md` "stealth client seam" addendum.
 |---|---|---|
 | `crates/web/src/fetch/client.rs` | 1-6 | module doc: `WreqChrome` is built |
 | | 140-149 | `build`: `ClientKind::WreqChrome => Ok(Arc::new(WreqChromeClient::new(cfg)?))` (the `Reqwest` arm untouched) |
-| | 212-249 | `WreqChromeClient` + `new(cfg)`: `wreq::Client` with `wreq_util::Emulation { profile: Chrome148, platform: MacOS }` (HTTP/2 and the profile headers on), `.timeout(read_timeout)` (whole request, as the `Reqwest` arm), `.connect_timeout`, `redirect::Policy::none()`, `.dns_resolver(GuardedWreqResolver)`, no cookie store (the `cookies` feature is off in the workspace pin; nothing to disable), `Accept-Language` from `cfg` applied through `default_headers` **after** `emulation(..)` so it replaces the profile's `en-US,en;q=0.9`; an empty `accept_language` keeps the profile's |
-| | 251-267 | `GuardedWreqResolver`: `wreq::dns::Resolve` over the crate's `ssrf::GuardedResolver` (the `reqwest::dns::Resolve` impl), route A |
-| | 269-281 | `ClientError::from_wreq`: walks the `wreq::Error` source chain for `FetchError::Rejected` → `ClientError::rejected`, else `Transport("HTTP request failed: …")` — same shape as `from_reqwest` |
-| | 283-311 | `impl HttpClient for WreqChromeClient`: `kind()`; `get` mirrors `ReqwestClient::get` (extra headers appended after the client's defaults, `final_url` = request URL, `bytes_stream()` boxed, no pre-cap: the `Fetcher`'s `read_capped` cuts at `max_body` as for `Reqwest`) |
-| | 317-343 | unit test renamed `rejected_round_trips_and_both_kinds_build`: `build(WreqChrome)` now asserted `Ok` with `kind() == WreqChrome` (it asserted `Err(NotBuilt)` before — the behaviour the brief changes) |
+| | 212-251 | `WreqChromeClient` + `new(cfg)`: `wreq::Client` with `wreq_util::Emulation { profile: Chrome148, platform: MacOS }` (HTTP/2 and the profile headers on), `.timeout(read_timeout)` (whole request, as the `Reqwest` arm), `.connect_timeout`, `redirect::Policy::none()`, `.dns_resolver(GuardedWreqResolver)`, no cookie store (the `cookies` feature is off in the workspace pin; nothing to disable), `Accept-Language` from `cfg` applied through `default_headers` **after** `emulation(..)` so it replaces the profile's `en-US,en;q=0.9`; an empty `accept_language` keeps the profile's |
+| | 253-269 | `GuardedWreqResolver`: `wreq::dns::Resolve` over the crate's `ssrf::GuardedResolver` (the `reqwest::dns::Resolve` impl), route A |
+| | 271-283 | `ClientError::from_wreq`: walks the `wreq::Error` source chain for `FetchError::Rejected` → `ClientError::rejected`, else `Transport("HTTP request failed: …")` — same shape as `from_reqwest` |
+| | 285-311 | `impl HttpClient for WreqChromeClient`: `kind()`; `get` mirrors `ReqwestClient::get` (extra headers appended after the client's defaults, `final_url` = request URL, `bytes_stream()` boxed, no pre-cap: the `Fetcher`'s `read_capped` cuts at `max_body` as for `Reqwest`) |
+| | 313-344 | unit test renamed `rejected_round_trips_and_both_kinds_build`: `build(WreqChrome)` now asserted `Ok` with `kind() == WreqChrome` (it asserted `Err(NotBuilt)` before — the behaviour the brief changes) |
 | `crates/web/tests/client_wreq.rs` | all | the seven integration tests below (wiremock on loopback, no network) |
 
 **Emulation profile:** `wreq_util::Profile::Chrome148` with `wreq_util::Platform::MacOS` — the newest
@@ -63,9 +63,19 @@ identically for both kinds.
 ```
 $ cargo fmt -p web
 $ build-lock cargo test -p web --no-fail-fast
-GATE_TEST_PLACEHOLDER
+EXIT=0
+test result: ok. 87 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.31s   (web lib; client::tests::rejected_round_trips_and_both_kinds_build)
+test result: ok. 17 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.09s   (aggregate)
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.32s    (client_wreq)
+test result: ok. 22 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s   (engines)
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s    (fetch_ssrf)
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.21s    (http_request)
+test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s   (request)
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s    (url)
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s    (doc-tests)
 $ build-lock cargo clippy -p web --tests -- -D warnings
-GATE_CLIPPY_PLACEHOLDER
+EXIT=0
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 2m 08s   (no warnings)
 $ cargo tree -p web -i wreq --depth 1
 wreq v6.0.0-rc.29
 ├── web v2.9.2 (/Users/Sky.Moore/Develop/theuth-122-w5/crates/web)
@@ -88,7 +98,7 @@ wreq-util v3.0.0-rc.12
 
 ## Pre-existing
 
-PREEXISTING_PLACEHOLDER
+None: every pre-existing `crates/web` test is green (see the gate).
 
 ## Open items
 
