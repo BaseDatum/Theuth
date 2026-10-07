@@ -11,7 +11,8 @@ import type { ModelInfo } from '@/rpc/bindings/ModelInfo'
 export const OTHER = 'other'
 
 export type Row =
-  | { kind: 'current'; value: string; id: string; name: string }
+  /** `provider` is set when the model is in the catalog (incl. `other` for `extra` ids). */
+  | { kind: 'current'; value: string; id: string; name: string; provider: string | undefined }
   | { kind: 'none'; value: 'none'; label: string; current: boolean }
   | { kind: 'back'; value: 'back' }
   | { kind: 'provider'; value: string; id: string; count: number; current: boolean }
@@ -38,7 +39,7 @@ export function viewFor(a: { models: ModelInfo[]; model: string | undefined; pro
   const models = withExtra(a.models, a.extra)
   const providers = providersOf(models)
   const current = a.model === undefined ? undefined : models.find((m) => m.id === a.model)
-  const currentRow: Row[] = a.model === undefined ? [] : [{ kind: 'current', value: `current:${a.model}`, id: a.model, name: current?.name ?? a.model }]
+  const currentRow: Row[] = a.model === undefined ? [] : [{ kind: 'current', value: `current:${a.model}`, id: a.model, name: current?.name ?? a.model, provider: current?.provider }]
   const search = searchTerms(a.query).length > 0
   if (search) {
     const results: Row[] = rankModels(models, a.query)
@@ -99,7 +100,8 @@ export function ModelPicker({ models, model, onSelect, effort, none, extra, clas
         return (
           <button key={row.value} type="button" className={LEAD_ROW} onClick={() => onSelect(row.id)}>
             <span className="truncate">{row.name}</span>
-            <Check className="ml-auto" />
+            {row.provider && <span className="ml-auto shrink-0 text-xs text-fg-tertiary">{row.provider}</span>}
+            <Check className={row.provider ? undefined : 'ml-auto'} />
           </button>
         )
       case 'none':

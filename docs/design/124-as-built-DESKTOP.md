@@ -46,6 +46,13 @@ $ build-lock bun run test
    Test Files  149 passed (149)
         Tests  861 passed (861)
      Duration  55.21s
+
+R1 (as-built alignment + provider on the Current row; check + scoped vitest only, per the orchestrator):
+$ build-lock bun run check            → tsc -b --noEmit: 0 errors (exit 0)
+$ build-lock bunx vitest run src/lib src/components/chat src/components/meeting src/components/routines src/components/agents src/components/settings
+   Test Files  96 passed (96)
+        Tests  602 passed (602)
+     Duration  30.35s
 ```
 
 ## Hand-offs

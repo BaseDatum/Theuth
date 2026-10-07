@@ -27,12 +27,12 @@ test('providers level: Current row, then providers A→Z with counts', () => {
   const v = viewFor({ models, model: 'openai/gpt-5.4', provider: null, query: '' })
   expect(v.mode).toBe('providers')
   expect(values(v)).toEqual(['current:openai/gpt-5.4', 'provider:anthropic', 'provider:openai'])
-  expect(v.rows[0]).toMatchObject({ kind: 'current', name: 'GPT-5.4' })
+  expect(v.rows[0]).toMatchObject({ kind: 'current', name: 'GPT-5.4', provider: 'openai' })
   expect(v.rows[1]).toMatchObject({ kind: 'provider', count: 2, current: false })
   expect(v.rows[2]).toMatchObject({ kind: 'provider', count: 2, current: true })
   // No current model: no Current row; an unknown current id shows its raw id.
   expect(values(viewFor({ models, model: undefined, provider: null, query: '' }))).toEqual(['provider:anthropic', 'provider:openai'])
-  expect(viewFor({ models, model: 'gone/x', provider: null, query: '' }).rows[0]).toMatchObject({ kind: 'current', name: 'gone/x' })
+  expect(viewFor({ models, model: 'gone/x', provider: null, query: '' }).rows[0]).toMatchObject({ kind: 'current', name: 'gone/x', provider: undefined })
 })
 
 test('models level: back row, the provider’s models by name, the current one checked', () => {
