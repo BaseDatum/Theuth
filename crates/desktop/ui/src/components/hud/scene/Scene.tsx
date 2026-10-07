@@ -270,7 +270,7 @@ export function footerSegments(m: SceneModel): { text: string; color: string; ta
   return [
     { text: `${f.sessionsLive} SESSIONS LIVE`, color: C.tertiary, target: null },
     { text: `${f.agentsWorking} AGENTS WORKING`, color: C.tertiary, target: { route: 'agents' } },
-    { text: `${pad2(f.needYou)} NEED YOU`, color: f.needYou > 0 ? C.accent : C.tertiary, target: { route: 'attention-list' } },
+    { text: `${f.needYou === null ? '—' : pad2(f.needYou)} NEED YOU`, color: f.needYou !== null && f.needYou > 0 ? C.accent : C.tertiary, target: { route: 'attention-list' } },
     { text: `$${f.month.toFixed(2)} THIS MONTH`, color: C.tertiary, target: { route: 'agents' } },
     { text: `${f.outcomes} OUTCOMES TODAY · ${f.inFlight} IN FLIGHT`, color: C.tertiary, target: { route: 'tasks-doing' } },
   ]
@@ -283,7 +283,8 @@ export function Scene({ data, errors = [], now: fixed }: { data: SceneData; erro
   const canvas = useRef<HTMLCanvasElement>(null)
   useField(canvas, m.hairlines)
   const f = m.footer
-  const summary = `${f.needYou} need you · ${f.agentsWorking} agents working · ${f.sessionsLive} sessions live · ${f.outcomes} outcomes today · ${f.inFlight} in flight · $${f.month.toFixed(2)} this month`
+  const need = f.needYou ?? 0
+  const summary = `${f.needYou ?? '—'} need you · ${f.agentsWorking} agents working · ${f.sessionsLive} sessions live · ${f.outcomes} outcomes today · ${f.inFlight} in flight · $${f.month.toFixed(2)} this month`
   const segs = footerSegments(m)
   const segX = [28, 190, 356, 470]
   return (
@@ -297,7 +298,7 @@ export function Scene({ data, errors = [], now: fixed }: { data: SceneData; erro
           {/* top bar */}
           <text x={24} y={18} fontSize={10} fill={C.accent} style={{ letterSpacing: 2 }}>T H E U T H</text>
           <line x1={1660} y1={14} x2={1840} y2={14} stroke={C.borderStrong} strokeDasharray="2 4" />
-          {f.needYou > 0 && <rect x={1852} y={9} width={3} height={10} fill={C.accent} />}
+          {need > 0 && <rect x={1852} y={9} width={3} height={10} fill={C.accent} />}
           <text x={1896} y={18} fontSize={10} fill={C.secondary} textAnchor="end">● {hhmmss(clock)}</text>
           {[
             [14, 54, 14, 40, 28, 40],
@@ -356,12 +357,12 @@ export function Scene({ data, errors = [], now: fixed }: { data: SceneData; erro
 
           {/* NEEDS YOU table */}
           <text x={28} y={60} fontSize={9} fill={C.tertiary} style={LS}>NEEDS YOU</text>
-          <text x={430} y={60} fontSize={9} fill={C.accent} textAnchor="end">{pad2(f.needYou)}</text>
+          <text x={430} y={60} fontSize={9} fill={need > 0 ? C.accent : C.tertiary} textAnchor="end">{f.needYou === null ? '—' : pad2(f.needYou)}</text>
           <line x1={28} y1={66} x2={430} y2={66} stroke={C.border} />
           {(['ID', 'KIND', 'AGE', 'TITLE'] as const).map((h, i) => (
             <text key={h} x={[28, 90, 160, 200][i]} y={82} fontSize={9} fill={C.tertiary}>{h}</text>
           ))}
-          {data.attention && f.needYou === 0 && <text x={28} y={100} fontSize={11} fill={C.tertiary}>Nothing needs you</text>}
+          {f.needYou === 0 && <text x={28} y={100} fontSize={11} fill={C.tertiary}>Nothing needs you</text>}
           {m.needs.slice(0, 6).map((n, i) => (
             <To key={n.item.id} target={n.link} title={`${n.item.kind} · ${n.item.title}${n.item.detail ? ` — ${n.item.detail}` : ''}`}>
               <text x={28} y={100 + 17 * i} fontSize={11} fill={C.accent}>{n.label}</text>
@@ -370,9 +371,9 @@ export function Scene({ data, errors = [], now: fixed }: { data: SceneData; erro
               <text x={200} y={100 + 17 * i} fontSize={11} fill={C.accent}>{truncate(n.item.title, 38)}</text>
             </To>
           ))}
-          {f.needYou > 6 && (
-            <To target={{ route: 'attention-list' }} title={`${f.needYou - 6} more in the inbox`}>
-              <text x={28} y={100 + 17 * 6} fontSize={11} fill={C.accent}>+{f.needYou - 6}</text>
+          {need > 6 && (
+            <To target={{ route: 'attention-list' }} title={`${need - 6} more in the inbox`}>
+              <text x={28} y={100 + 17 * 6} fontSize={11} fill={C.accent}>+{need - 6}</text>
             </To>
           )}
 

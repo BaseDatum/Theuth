@@ -1,9 +1,10 @@
 import { Link } from '@tanstack/react-router'
 import { type ReactNode, useMemo } from 'react'
 import { age } from '@/components/tasks/helpers'
+import { useIsMobile } from '@/hooks/use-mobile'
 import { cn } from '@/lib/utils'
 import { C, type SceneData, type Target, ringColor, scene, truncate } from './model'
-import { AgentsPanel, ArrivalsPanel, footerSegments, OutcomesPanel, RingGlyph, SpendPanel, StreamPanel } from './Scene'
+import { AgentsPanel, ArrivalsPanel, footerSegments, OutcomesPanel, RingGlyph, Scene, SpendPanel, StreamPanel } from './Scene'
 
 /**
  * 128 HUD-SCENE under `md`: no flow field and no arc (they need width). Footer pills, the NEEDS YOU rows, the rings as
@@ -27,7 +28,14 @@ function RingRow({ target, children }: { target: Target | null; children: ReactN
   return <div className={cls}>{children}</div>
 }
 
-export function SceneCompact({ data, errors = [], now: fixed }: { data: SceneData; errors?: string[]; now?: number }) {
+type SceneProps = { data: SceneData; errors?: string[]; now?: number }
+
+/** `Scene` from `md` up, `SceneCompact` below — the app's one breakpoint (`useIsMobile`, Tailwind's `md:` negated). */
+export function SceneSwitch(props: SceneProps) {
+  return useIsMobile() ? <SceneCompact {...props} /> : <Scene {...props} />
+}
+
+export function SceneCompact({ data, errors = [], now: fixed }: SceneProps) {
   const now = fixed ?? Date.now()
   const m = useMemo(() => scene(data, now), [data, now])
   const panel = (child: ReactNode) => (

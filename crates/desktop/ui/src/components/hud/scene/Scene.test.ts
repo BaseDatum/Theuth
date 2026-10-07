@@ -5,7 +5,7 @@ import type * as Router from '@tanstack/react-router'
 import { sceneFixture, T } from './fixtures'
 import { scene } from './model'
 import { Scene } from './Scene'
-import { SceneCompact } from './SceneCompact'
+import { SceneCompact, SceneSwitch } from './SceneCompact'
 
 // A `Link` needs a router; a plain anchor with the params substituted does not, and lets the hrefs be asserted.
 vi.mock('@tanstack/react-router', async (original) => ({
@@ -14,6 +14,9 @@ vi.mock('@tanstack/react-router', async (original) => ({
     createElement('a', { href: to.replace(/\$(\w+)/g, (_, k: string) => params?.[k] ?? '') }, children),
 }))
 
+// The app's one breakpoint; flipped per test to prove both branches of `SceneSwitch`.
+const mobile = vi.hoisted(() => ({ value: true }))
+vi.mock('@/hooks/use-mobile', () => ({ useIsMobile: () => mobile.value }))
 const NOW = new Date(2026, 9, 7, 19, 49, 19).getTime()
 const F = sceneFixture(NOW)
 const count = (html: string, re: RegExp) => (html.match(re) ?? []).length
@@ -56,23 +59,39 @@ test('Scene draws the fixture: rings, needs, flows, panels, links, tokens only',
   expect(html).toContain('6 need you · 2 agents working')
 })
 
-test('Scene with no data renders the chrome and nothing else; an empty inbox says so; errors name the query', () => {
+test('Scene while loading shows — not 00; a loaded empty inbox is quiet and tertiary; errors name the query', () => {
   const html = renderToStaticMarkup(createElement(Scene, { data: {}, now: NOW, errors: ['tasks'] }))
   expect(count(html, /data-flow="/g)).toBe(0)
   expect(count(html, /<circle[^>]*r="13"/g)).toBe(1) // theuth's ring is the chrome
-  expect(html).toContain('00 NEED YOU')
+  expect(html).toContain('— NEED YOU')
+  expect(html).not.toContain('00 NEED YOU')
   expect(html).not.toContain('Nothing needs you') // attention still loading
   expect(html).toContain('tasks failed to load')
   const quiet = renderToStaticMarkup(createElement(Scene, { data: { attention: [] }, now: NOW }))
-  expect(quiet).toContain('Nothing needs you')
+  expect(quiet).toMatch(/fill="var\(--fg-tertiary\)"[^>]*>Nothing needs you</)
+  expect(quiet).toMatch(/fill="var\(--fg-tertiary\)"[^>]*>00 NEED YOU</)
+  expect(quiet).toMatch(/<text x="430"[^>]*fill="var\(--fg-tertiary\)"[^>]*>00</)
   expect(quiet).not.toContain('<rect x="1852"')
 })
 
-test('SceneCompact: pills, needs rows, ring list, five panels', () => {
+test('SceneCompact: pills, needs rows, ring list, five panels; SceneSwitch picks it under md and Scene above', () => {
   const html = renderToStaticMarkup(createElement(SceneCompact, { data: F, now: NOW }))
   expect(html).toContain('06 NEED YOU')
   expect(count(html, /href="\/attention\//g)).toBe(6)
   expect(count(html, /<circle[^>]*r="13"/g)).toBe(7)
   expect(count(html, /viewBox="0 0 352 248"/g)).toBe(5)
   expect(html).not.toMatch(/(fill|stroke)="#/)
+  // Under md: the compact stack — no flow field, no arc band, no 1920×1080 scene.
+  mobile.value = true
+  const below = renderToStaticMarkup(createElement(SceneSwitch, { data: F, now: NOW }))
+  expect(below).toContain('Needs you')
+  expect(count(below, /viewBox="0 0 352 248"/g)).toBe(5)
+  expect(count(below, /data-flow="/g)).toBe(0)
+  expect(below).not.toContain('viewBox="0 0 1920 1080"')
+  expect(below).not.toContain('A 1408 1408')
+  // From md up: the full scene.
+  mobile.value = false
+  const above = renderToStaticMarkup(createElement(SceneSwitch, { data: F, now: NOW }))
+  expect(above).toContain('viewBox="0 0 1920 1080"')
+  expect(count(above, /data-flow="/g)).toBe(scene(F, NOW).flows.length)
 })

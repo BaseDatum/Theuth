@@ -1,6 +1,6 @@
 import { expect, test } from 'vitest'
 import { sceneFixture, T } from './fixtures'
-import { ARC, arc, arcPoint, C, END_X, flowPath, hairlines, HAIRLINES_MAX, hourOf, LABEL_GAP, layoutEnds, needsYou, outcomeMix, outcomes, punchCard, RING, rings, rng, running, scene, sessionsToday, shortId, startOfDay } from './model'
+import { ARC, arc, arcPoint, C, END_X, flowPath, hairlines, HAIRLINES_MAX, hourOf, LABEL_GAP, layoutEnds, needsYou, outcomeMix, outcomes, punchCard, RING, ringByActor, rings, rng, running, scene, sessionsToday, shortId, startOfDay } from './model'
 
 // A fixed local evening, as the mockup's clock reads.
 const NOW = new Date(2026, 9, 7, 19, 49, 19).getTime()
@@ -32,22 +32,33 @@ test('rings: theuth first, working → waiting → idle, routine, lapsed last; 7
   expect(rs.map((r) => r.name)).toEqual(['theuth', 'ops-desk', 'research', 'builder', 'analyst', 'docs-desk', 'routine · nightly-digest'])
   expect(rs.map((r) => r.style)).toEqual(['live', 'live', 'live', 'waiting', 'idle', 'lapsed', 'idle'])
   expect(rs[0]!.sub).toBe('2 chats · 40s')
-  expect(rs[1]!.sub).toBe('4 · 1h')
+  expect(rs[1]!.sub).toBe('4 open · 1h')
   expect(rs[5]!.sub).toBe('paused')
   expect(rs[6]!.sub).toBe('running · 18m')
   expect(rs.map((r) => [r.x, r.y])).toEqual(rs.map((_, i) => [RING.x, RING.y0 + RING.dy * i]))
   expect(rs[3]!.link).toEqual({ route: 'agent', name: 'builder' })
 })
 
-test('rings: blocked without an attention item is idle; unreachable is error; beyond 9 fold into "+N more"', () => {
+test('rings: blocked without an attention item is idle; unreachable is error; a desk-less agent is just "N open"; beyond 9 fold into "+N more"', () => {
   const agents = [...F.agents, { ...F.agents[3]!, file: { ...F.agents[3]!.file, name: 'lonely' }, status: 'blocked' as const }, { ...F.agents[3]!, file: { ...F.agents[3]!.file, name: 'gone' }, status: 'unreachable' as const }]
   const rs = rings(agents, F.sessions, F.routines, F.attention, NOW)
   expect(rs.find((r) => r.name === 'lonely')?.style).toBe('idle')
   expect(rs.find((r) => r.name === 'gone')).toMatchObject({ style: 'error', sub: 'unreachable' })
+  expect(rings([{ ...F.agents[3]!, desk: null }], [], [], [], NOW)[1]!.sub).toBe('1 open')
   const many = Array.from({ length: 12 }, (_, i) => ({ ...F.agents[3]!, file: { ...F.agents[3]!.file, name: `a${i}` } }))
   const folded = rings(many, [], [], [], NOW)
   expect(folded).toHaveLength(9)
   expect(folded[8]).toMatchObject({ name: '+5 more', style: 'lapsed' })
+})
+
+test('rings: the roster agent named theuth folds into the sessions ring — one label, its open count on the sub-label, its actor on the ring', () => {
+  const self = { ...F.agents[3]!, file: { ...F.agents[3]!.file, name: 'theuth' }, status: 'working' as const, open_tasks: 23 }
+  const rs = rings([...F.agents, self], F.sessions, F.routines, F.attention, NOW)
+  expect(rs.filter((r) => r.name === 'theuth')).toHaveLength(1)
+  expect(rs[0]).toMatchObject({ sub: '2 chats · 23 open · 40s', style: 'live', link: { route: 'agent', name: 'theuth' } })
+  expect(ringByActor(rs, 'agent:theuth')).toBe(rs[0])
+  // Without chats today the ring still names theuth's work; a working theuth is live even when no chat moved.
+  expect(rings([self], [], [], [], NOW)[0]).toMatchObject({ sub: 'no chats today · 23 open', style: 'live' })
 })
 
 test('needsYou: newest first, 12 drawn, jitter within ±6 and deterministic, short ids ≤ 10 chars', () => {
@@ -157,5 +168,5 @@ test('scene: footer numbers and the whole model from the fixture; empty data dra
   expect(empty.rings).toHaveLength(1)
   expect(empty.flows).toEqual([])
   expect(empty.hairlines).toEqual([])
-  expect(empty.footer.needYou).toBe(0)
+  expect(empty.footer.needYou).toBeNull() // the inbox has not loaded — not a false 0
 })

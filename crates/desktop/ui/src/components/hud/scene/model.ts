@@ -180,6 +180,9 @@ const LIVE_WINDOW_MS = 2 * 60_000
 
 const isChat = (s: SessionSummary) => s.parent === null && !s.desk && !s.archived
 const touchedToday = (s: SessionSummary, midnight: number) => Date.parse(s.updated_at) >= midnight
+/** The roster agent that is theuth itself folds into the sessions ring — never two rings with the same label. */
+const THEUTH = 'theuth'
+const ringActor = (actor: string): string => (actor === `agent:${THEUTH}` ? 'user' : actor)
 
 /**
  * The actors, top to bottom: `theuth` (today's chats), every roster agent (working · waiting · idle · lapsed/error),
@@ -191,22 +194,23 @@ export function rings(agents: readonly AgentSummary[], sessions: readonly Sessio
   const out: R0[] = []
   const chats = sessions.filter((s) => isChat(s) && touchedToday(s, midnight))
   const newest = Math.max(0, ...chats.map((s) => Date.parse(s.updated_at)))
+  const self = agents.find((a) => a.file.name === THEUTH)
   // No global streaming flag reaches this screen; a chat updated in the last 2 min is the proxy for "live".
   out.push({
     id: 'ring:theuth',
-    name: 'theuth',
-    sub: chats.length ? `${chats.length} chat${chats.length === 1 ? '' : 's'} · ${age(newest, now)}` : 'no chats today',
-    style: now - newest <= LIVE_WINDOW_MS ? 'live' : 'idle',
+    name: THEUTH,
+    sub: [chats.length ? `${chats.length} chat${chats.length === 1 ? '' : 's'}` : 'no chats today', self && `${self.open_tasks} open`, chats.length ? age(newest, now) : null].filter(Boolean).join(' · '),
+    style: now - newest <= LIVE_WINDOW_MS || self?.status === 'working' ? 'live' : 'idle',
     actor: 'user',
-    link: null,
+    link: self ? { route: 'agent', name: THEUTH } : null,
   })
   const waitingFor = new Set(attention.map((i) => i.agent).filter((a): a is string => a !== null))
   const agentRings: R0[] = agents
-    .filter((a) => a.status !== 'proposed')
+    .filter((a) => a.status !== 'proposed' && a.file.name !== THEUTH)
     .map((a): R0 => {
       const name = a.file.name
       const desk = a.desk === null ? undefined : sessions.find((s) => s.id === a.desk)
-      const open = `${a.open_tasks} · ${desk ? age(Date.parse(desk.updated_at), now) : 'no desk'}`
+      const open = `${a.open_tasks} open${desk ? ` · ${age(Date.parse(desk.updated_at), now)}` : ''}`
       const style: RingStyle = a.status === 'working' ? 'live' : a.status === 'blocked' && waitingFor.has(name) ? 'waiting' : a.status === 'paused' ? 'lapsed' : a.status === 'unreachable' || a.status === 'invalid' ? 'error' : 'idle'
       const sub = style === 'lapsed' ? 'paused' : style === 'error' ? a.status : open
       return { id: `ring:agent:${name}`, name, sub, style, actor: `agent:${name}`, link: { route: 'agent', name } }
@@ -225,7 +229,7 @@ export function rings(agents: readonly AgentSummary[], sessions: readonly Sessio
   return out.map((r, i) => ({ ...r, x: RING.x, y: RING.y0 + RING.dy * i }))
 }
 
-export const ringByActor = (rings: readonly Ring[], actor: string | null): Ring | null => (actor === null ? null : (rings.find((r) => r.actor === actor) ?? null))
+export const ringByActor = (rings: readonly Ring[], actor: string | null): Ring | null => (actor === null ? null : (rings.find((r) => r.actor === ringActor(actor)) ?? null))
 export const ringByName = (rings: readonly Ring[], name: string | null): Ring | null => (name === null ? null : (rings.find((r) => r.name === name) ?? null))
 
 // --------------------------------------------------------------------------------------------------------------- flows
@@ -455,13 +459,14 @@ export function outcomeMix(tasks: readonly Task[], now: number): OutcomeMix {
   return mix
 }
 
-export type Footer = { sessionsLive: number; agentsWorking: number; needYou: number; month: number; outcomes: number; inFlight: number }
+/** `needYou` is `null` while the inbox is still loading — the chrome shows `—`, not a false `00`. */
+export type Footer = { sessionsLive: number; agentsWorking: number; needYou: number | null; month: number; outcomes: number; inFlight: number }
 
-export function footer(agents: readonly AgentSummary[], sessions: readonly SessionSummary[], attention: readonly AttentionItem[], outcomesToday: number, inFlight: number, now: number): Footer {
+export function footer(agents: readonly AgentSummary[], sessions: readonly SessionSummary[], attention: readonly AttentionItem[] | undefined, outcomesToday: number, inFlight: number, now: number): Footer {
   return {
     sessionsLive: sessions.filter((s) => !s.archived && now - Date.parse(s.updated_at) <= 15 * 60_000).length,
     agentsWorking: agents.filter((a) => a.status === 'working').length,
-    needYou: attention.length,
+    needYou: attention?.length ?? null,
     month: agents.reduce((sum, a) => sum + a.spent_month, 0),
     outcomes: outcomesToday,
     inFlight,
@@ -476,7 +481,7 @@ export function ringDots(ring: Ring, activityToday: readonly ActivityEntry[]): D
   if (ring.actor === null) return []
   const dots: Dot[] = []
   for (const e of activityToday) {
-    if (e.actor !== ring.actor) continue
+    if (ringActor(e.actor) !== ring.actor) continue
     if (e.kind === 'task_done' || e.kind === 'child_returned') dots.push({ style: 'done', color: C.success })
     else if (e.kind === 'task_checked_out' || e.kind === 'child_spawned') dots.push({ style: 'open', color: C.info })
     else if (e.kind === 'escalation_raised') dots.push({ style: 'raised', color: C.accent })
@@ -551,6 +556,6 @@ export function scene(data: SceneData, now: number): SceneModel {
     hairlines: hairlines(today, sessionsToday(sessions, now), rs, drawn, now),
     punch: punchCard(data.activityWeek ?? [], now),
     mix: outcomeMix(tasks, now),
-    footer: footer(agents, sessions, attention, outs.total, inFlight, now),
+    footer: footer(agents, sessions, data.attention, outs.total, inFlight, now),
   }
 }

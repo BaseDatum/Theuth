@@ -6,7 +6,6 @@ import { Composer } from '@/components/chat/Composer'
 import { SecretRequestCard } from '@/components/chat/SecretRequestCard'
 import { simFlag, useSandboxes } from '@/components/settings/sandbox-queries'
 import { useRoutines } from '@/components/routines/queries'
-import { useIsMobile } from '@/hooks/use-mobile'
 import { SearchTrigger } from '@/components/sidebar/SearchTrigger'
 import { age } from '@/components/tasks/helpers'
 import { useAgents, useMesh, useTasks } from '@/components/tasks/queries'
@@ -27,8 +26,7 @@ import { boardPulse, inFlight, runningRoutines, snoozeUntil, spend } from './mod
 import { ATTENTION_KEY, SECRET_REQUESTS_KEY, useActivity, useActivityToday, useActivityWeek, useAttention, useAttentionActions, useSecretRequestRows, useSessionList } from './queries'
 import { sceneFixture } from './scene/fixtures'
 import type { SceneData } from './scene/model'
-import { Scene } from './scene/Scene'
-import { SceneCompact } from './scene/SceneCompact'
+import { SceneSwitch } from './scene/SceneCompact'
 
 /**
  * `/` — the THEUTH mark's overview (70 HUD, paperclip's dashboard + attention inbox), Sky's order top → bottom:
@@ -38,7 +36,6 @@ import { SceneCompact } from './scene/SceneCompact'
 export function Hud() {
   const sidebar = useSidebar()
   const mac = isMacDesktop()
-  const mobile = useIsMobile()
   const attention = useAttention()
   const tasks = useTasks()
   const agents = useAgents()
@@ -98,15 +95,9 @@ export function Hud() {
         <h2 className="min-w-0 flex-1 truncate text-sm font-semibold">Overview</h2>
       </header>
       <div className="min-h-0 flex-1 overflow-y-auto">
-        {mobile ? (
-          <div className="p-4">
-            <SceneCompact data={sceneData} errors={sceneErrors} />
-          </div>
-        ) : (
-          <div className="px-4 pt-4">
-            <Scene data={sceneData} errors={sceneErrors} />
-          </div>
-        )}
+        <div className="px-4 pt-4">
+          <SceneSwitch data={sceneData} errors={sceneErrors} />
+        </div>
         <div className="mx-auto flex w-full max-w-[880px] flex-col gap-5 p-4">
           <Section icon={<Bell className="size-3.5" />} title="Attention" count={attention.data?.length} pending={attention.isPending} error={attention.error}>
             <AttentionList items={attention.data} />
