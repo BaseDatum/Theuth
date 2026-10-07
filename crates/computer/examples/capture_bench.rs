@@ -1,17 +1,26 @@
-//! Spike 121 (docs/design/121-sck-capture-spike.md): `/usr/sbin/screencapture`
-//! shell-out vs in-process ScreenCaptureKit, per display.
+//! Capture backend bench: `/usr/sbin/screencapture` shell-out vs in-process
+//! ScreenCaptureKit, per display, plus the `capture(None, 1568)` composite under
+//! each backend. Parity check for `screen.rs`'s SCK-default policy (121).
 //!
 //! ```text
-//! cargo run -p computer --example capture_bench --release -- [--save <dir>]
-//! cargo run -p computer --example capture_bench --release -- --loop sck|sck-cg|sck-image|sck-rgba|sck-content|screencapture [--rounds N]   # for /usr/bin/time -l
+//! cargo run -p computer --example capture_bench [--release] -- [--save <dir>]
+//! cargo run -p computer --example capture_bench [--release] -- --loop <mode> [--rounds N] [--hold SECS]   # for /usr/bin/time -l
 //! ```
 //!
-//! Prints min / median / p95 wall-clock ms over 20 timed grabs (after 3
-//! warm-ups), image dimensions and raw byte count per backend and display; the
-//! cost of `SCShareableContent` enumeration (both getters) and of
-//! `SCScreenshotManager::capture_image` alone; a cross-backend pixel diff; and
-//! the `capture(None)` composite under each backend. `--save <dir>` writes
-//! `shot-<backend>-<n>.png` and `composite-<backend>.png` there.
+//! Default mode prints, per display and backend, min / median / p95 wall-clock
+//! ms over 20 timed grabs (after 3 warm-ups), image dimensions and raw byte
+//! count; the cost of the SCK pieces alone (`SCShareableContent` with both
+//! getters, `SCContentFilter`, `capture_image`, `rgba_data`, cached vs
+//! uncached filter); a cross-backend pixel diff (mean |ΔRGB| per channel —
+//! expect ≈ 0 on a still desktop, dimensions must be equal); and the composite
+//! time and PNG size per backend. `--save <dir>` writes `shot-<backend>-<n>.png`
+//! and `composite-<backend>.png` there for eyeballing (cursor absent, menu bar
+//! present).
+//!
+//! `--loop` modes, for RSS measurement: `sck` (production route), `sck-cg`
+//! (`capture_image` + `rgba_data`, the route rejected for its purgeable
+//! CoreGraphics cache, 121 §4.3), `screencapture`, and the SCK pieces alone
+//! `sck-image` / `sck-rgba` / `sck-content`.
 
 #[cfg(not(target_os = "macos"))]
 fn main() {
@@ -95,8 +104,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         (f, cfg)
     }
 
-    /// The spike's first `grab_sck`: `capture_image` + `CGImage::rgba_data`
-    /// (CoreGraphics render). Kept to reproduce the RSS growth of 121 §4.3.
+    /// The rejected route: `capture_image` + `CGImage::rgba_data` (CoreGraphics
+    /// render). Kept to reproduce the RSS growth of 121 §4.3.
     fn grab_sck_cg(d: &Display) -> RgbaImage {
         let (f, cfg) = sck_filter(d);
         let img = SCScreenshotManager::capture_image(&f, &cfg).expect("capture");
@@ -181,7 +190,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if !screen_recording_granted() {
         return Err("Screen Recording not granted to this terminal".into());
     }
-    let tmp = std::env::temp_dir().join("sck-spike-bench");
+    let tmp = std::env::temp_dir().join("capture-bench");
     let all = displays()?;
 
     // RSS mode: just the N-shot loop (default 20) over every display, for `/usr/bin/time -l`.
@@ -298,7 +307,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .expect("filter")
         });
         report("SCContentFilter build alone", ms_filter);
-        // The brief's first version: full `get()` every call, nothing cached.
+        // Full `get()` every call, nothing cached (the slowest SCK arrangement).
         let (ms_full, _) = timed(|| {
             let c = SCShareableContent::get().expect("get");
             let s = c
@@ -353,11 +362,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // Composite (`display: None`) under each backend, via the public `capture`.
+    // `default` = env unset = the production policy; its time should match `sck`.
     println!("\ncomposite capture(None, 1568):");
     let mut composites = Vec::new();
-    for backend in ["screencapture", "sck"] {
+    for backend in ["screencapture", "sck", "default"] {
         // SAFETY: single-threaded at this point; SCK's own threads never read the environment.
-        unsafe { std::env::set_var("THEUTH_CAPTURE_BACKEND", backend) };
+        unsafe {
+            if backend == "default" {
+                std::env::remove_var("THEUTH_CAPTURE_BACKEND");
+            } else {
+                std::env::set_var("THEUTH_CAPTURE_BACKEND", backend);
+            }
+        }
         let t = Instant::now();
         let shot = capture(None, 1568, &tmp)?;
         let ms = t.elapsed().as_secs_f64() * 1e3;
@@ -370,7 +386,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         );
         composites.push((backend, shot.png));
     }
-    unsafe { std::env::remove_var("THEUTH_CAPTURE_BACKEND") };
 
     if let Some(dir) = save {
         std::fs::create_dir_all(&dir)?;
