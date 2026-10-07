@@ -15,7 +15,7 @@ test('arc geometry matches the mockup: 00:00 tick, 12:00 label upright, band pat
   expect(a.labels[6]!.rot).toBeCloseTo(-14 + (28 * 12.55) / 24 + 90, 5)
   expect(a.band).toMatch(/^M 1066\.2 79\.4 A 1408 1408 0 0 1 1066\.2 760\.6 L 1031\.2 751\.9 A 1372 1372 0 0 0 1031\.2 88\.1 Z$/)
   // Fired today → filled; knowledge-sync is due later today → hollow; morning-brief's next is tomorrow → not marked twice.
-  expect(a.marks.filter((m) => m.filled).map((m) => m.name).sort()).toEqual(['lunch-digest', 'morning-brief', 'nightly-digest', 'standup-notes'])
+  expect(a.marks.filter((m) => m.filled).map((m) => m.name).sort()).toEqual(['morning-brief', 'nightly-digest', 'standup-notes'])
   expect(a.marks.filter((m) => !m.filled).map((m) => m.name)).toEqual(['knowledge-sync'])
   // NOW sits at 19:49 on the arc; its label is a little further along.
   expect(a.now.x1).toBeCloseTo(arcPoint(19 + 49 / 60 + 19 / 3600, ARC.R - 22)[0], 3)
@@ -147,12 +147,12 @@ test('rings: blocked without an attention item is idle; unreachable is error; a 
 
 test('rings: the roster agent named theuth folds into the sessions ring — one label, its open count on the sub-label, its actor on the ring', () => {
   const self = { ...F.agents[3]!, file: { ...F.agents[3]!.file, name: 'theuth' }, status: 'working' as const, open_tasks: 23 }
-  const rs = rings([...F.agents, self], F.sessions, F.routines, F.attention, NOW)
+  const rs = rings([...F.agents, self], F.sessions, F.routines, F.activityToday, F.attention, NOW)
   expect(rs.filter((r) => r.name === 'theuth')).toHaveLength(1)
   expect(rs[0]).toMatchObject({ sub: '2 chats · 23 open · 40s', style: 'live', link: { route: 'new' } }) // R2: the aggregate ring opens a new chat
   expect(ringByActor(rs, 'agent:theuth')).toBe(rs[0])
   // Without chats today the ring still names theuth's work; a working theuth is live even when no chat moved.
-  expect(rings([self], [], [], [], NOW)[0]).toMatchObject({ sub: 'no chats today · 23 open', style: 'live' })
+  expect(rings([self], [], [], [], [], NOW)[0]).toMatchObject({ sub: 'no chats today · 23 open', style: 'live' })
 })
 
 test('streamLink: a row opens its subject — tasks for task/child/escalation kinds, agents for agent/budget kinds, routines for fires, nothing otherwise', () => {
@@ -251,8 +251,8 @@ test('flowPath: dot → ring edge → arc → end as the mockup draws it', () =>
 })
 
 test('layoutEnds: ascending by time, ≥ 22 px apart per column, x cycles, overflow drops the oldest', () => {
-  const rs = rings(F.agents, F.sessions, F.routines, F.attention, NOW)
-  const all = [...outcomes(F.activityToday, F.routines, rs, NOW).flows, ...running(F.tasks, rs, NOW)]
+  const rs = rings(F.agents, F.sessions, F.routines, F.activityToday, F.attention, NOW)
+  const all = [...outcomes(F.activityToday, F.routines, rs, NOW).flows, ...running(F.tasks, F.routines, rs, NOW)]
   const { flows, more } = layoutEnds(all)
   expect(more).toBe(0)
   expect(flows).toHaveLength(all.length)

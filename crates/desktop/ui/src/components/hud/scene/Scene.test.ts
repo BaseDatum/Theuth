@@ -44,7 +44,7 @@ test('Scene draws the fixture: rings, needs, flows, panels, links, tokens only',
   expect(html).toContain('href="/agents/builder"')
   expect(html).toContain('href="/routines/morning-brief"')
   expect(html).toContain('href="/routines/standup-notes"') // the failed routine's ring: hollow carnelian, not dashed, sub "failed 09:00"
-  expect(html).toMatch(/<circle[^>]*r="13"[^>]*stroke="var\(--status-danger-fg\)"[^>]*stroke-width="1.2"\/>/)
+  expect(html).toMatch(/<circle[^>]*r="13"[^>]*stroke="var\(--status-danger-fg\)" stroke-width="1.2"><\/circle>/)
   expect(html).not.toMatch(/<circle[^>]*stroke="var\(--status-danger-fg\)"[^>]*stroke-dasharray/)
   expect(html).toContain('>failed 09:00<')
   expect(html).toContain('>ran 06:00<')
