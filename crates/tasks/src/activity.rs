@@ -68,6 +68,10 @@ pub enum ActivityKind {
     EscalationAnswered,
     /// 80 % or the cap crossed.
     BudgetThreshold,
+    /// 130 E4: the user answered (or dismissed) an `ask_user` card.
+    AskAnswered,
+    /// 130 E4: the user allowed / denied a tool approval.
+    ApprovalResolved,
 }
 
 impl ActivityKind {
@@ -96,7 +100,7 @@ pub struct ActivityEntry {
     pub ts_ms: u64,
     /// What.
     pub kind: ActivityKind,
-    /// `agent:<name>` | `user` | `system`.
+    /// `agent:<name>` | `user` | `user@<client>` (130 E4: `desktop | tui | ios | companion`) | `system`.
     pub actor: String,
     /// Task / agent / session / routine id.
     pub subject: String,

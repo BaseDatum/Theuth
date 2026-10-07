@@ -21,6 +21,7 @@ use link::LinkEvent;
 use meeting::{BriefEvent, MeetingEvent};
 use mesh::MeshEvent;
 use nodes::NodeEvent;
+use roster::attention::AttentionChanged;
 use runtime::Runtime;
 use sandbox::SandboxEvent;
 use schedule::ScheduleEvent;
@@ -131,7 +132,8 @@ forward!(
     ActivityAppended,
     CodeindexEvent,
     MeshEvent,
-    SandboxEvent
+    SandboxEvent,
+    AttentionChanged
 );
 
 /// The process-wide event feed. The first caller spawns the bridge,
@@ -187,5 +189,6 @@ pub async fn start(rt: &Runtime) -> broadcast::Sender<Event> {
     rt.subscribe::<Bridge, CodeindexEvent>(&actor).await;
     rt.subscribe::<Bridge, MeshEvent>(&actor).await;
     rt.subscribe::<Bridge, SandboxEvent>(&actor).await;
+    rt.subscribe::<Bridge, AttentionChanged>(&actor).await;
     tx
 }

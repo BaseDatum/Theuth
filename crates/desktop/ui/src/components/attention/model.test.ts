@@ -15,6 +15,10 @@ test('groupItems: Sky’s order, empty groups omitted, newest first inside, hand
   expect(groups[2]?.items.map((i) => i.id)).toEqual(['s', 'h'])
   // 109 §8.3: a resume that needs a human sits with the hand-offs.
   expect(groupItems([item('r', 'resume', 7)]).map((g) => g.key)).toEqual(['hand'])
+  // 130 E3: finished turns are the last group, "Done", newest first.
+  const done = groupItems([item('f1', 'finished', 3), item('d', 'decision', 1), item('f2', 'finished', 9)])
+  expect(done.map((g) => [g.key, g.label])).toEqual([['decisions', 'Decisions'], ['done', 'Done']])
+  expect(done[1]?.items.map((i) => i.id)).toEqual(['f2', 'f1'])
   expect(groupItems([])).toEqual([])
 })
 
