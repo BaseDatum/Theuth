@@ -1,6 +1,5 @@
-import { ChevronRight } from 'lucide-react'
+import { ChevronDown } from 'lucide-react'
 import { useEffect } from 'react'
-import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible'
 import { usePanes } from '@/lib/panes'
 import { cn } from '@/lib/utils'
 import type { Todo } from '@/rpc/bindings/Todo'
@@ -47,10 +46,16 @@ export function note(todos: TodoSnapshot | null, stale: boolean): string | null 
   return todos.items.length || !stale ? null : 'empty · Stale'
 }
 
+/** The grabber's name: hidden says what it would reveal (counts, or the note text when there is no list). */
+export function handleLabel(expanded: boolean, detail: string): string {
+  return expanded ? 'Hide to-do list' : `Show to-do list · ${detail}`
+}
+
 /**
  * The session's persistent plan (47 §6.2): chrome between transcript and composer, never a transcript row.
- * Collapsed by default; the user's choice lives in the session slice, so it survives snapshots and session
- * switches. Hidden only for an authoritative empty plan; a stale list stays visible and says so.
+ * Hidden by default behind a short thick line glued to the top of the composer (the grabber); the user's choice
+ * lives in the session slice, so it survives snapshots and session switches. Shown, the body opens above the
+ * grabber with its items listed. Nothing at all for an authoritative empty plan; a stale list stays reachable and says so.
  */
 export function TodoCard({ session }: { session: string }) {
   const { sessions: store } = useScope()
@@ -58,7 +63,7 @@ export function TodoCard({ session }: { session: string }) {
   const stale = useSessionField(session, 'todosStale') ?? false
   const expanded = useSessionField(session, 'todosExpanded') ?? false
 
-  // `/todos` toggles the disclosure without moving focus (the composer keeps it); only in the pane that typed it.
+  // `/todos` toggles the card without moving focus (the composer keeps it); only in the pane that typed it.
   const focused = usePanes((s) => s.focused === session)
   useEffect(() => {
     if (!focused) return
@@ -71,55 +76,71 @@ export function TodoCard({ session }: { session: string }) {
     return () => window.removeEventListener('theuth:open', on)
   }, [session, store, focused])
 
-  if (!todos?.items.length) {
-    const text = note(todos, stale)
-    if (!text) return null
-    return (
-      <div className="mx-auto w-full max-w-[768px] px-4 pb-2">
-        <p role="status" className="flex min-h-11 items-center gap-2 rounded-xl border bg-background px-3 py-2 text-sm">
-          <span className="font-medium">Todos</span>
-          <span className="text-fg-tertiary">· {text}</span>
-        </p>
-      </div>
-    )
-  }
-  const { counts, now } = summarize(todos.items)
-  const tags = [todos.source === 'acp' && 'External plan', stale && 'Stale'].filter(Boolean).join(' · ')
+  const items = todos?.items ?? []
+  const text = items.length ? null : note(todos, stale)
+  if (!items.length && !text) return null
+  const { counts, now } = summarize(items)
+  const bodyId = `todos-${session}`
+  const label = handleLabel(expanded, text ?? counts)
 
-  return (
-    <Collapsible
-      open={expanded}
-      onOpenChange={(open) => store.getState().setTodosExpanded(session, open)}
-      className="mx-auto w-full max-w-[768px] px-4 pb-2"
-    >
-      <div className="rounded-xl border bg-background text-sm">
-        <CollapsibleTrigger className="flex min-h-11 w-full items-center gap-2 rounded-xl px-3 py-2 text-left outline-none hover:bg-layer-2 focus-visible:ring-[3px] focus-visible:ring-ring/50">
-          <ChevronRight className={cn('size-4 shrink-0 text-fg-tertiary transition-transform', expanded && 'rotate-90')} />
+  let body = null
+  if (expanded && text) {
+    body = (
+      <p id={bodyId} role="status" className="flex min-h-11 items-center gap-2 rounded-xl border bg-background px-3 py-2 text-sm">
+        <span className="font-medium">Todos</span>
+        <span className="text-fg-tertiary">· {text}</span>
+      </p>
+    )
+  } else if (expanded) {
+    const tags = [todos?.source === 'acp' && 'External plan', stale && 'Stale'].filter(Boolean).join(' · ')
+    body = (
+      <div id={bodyId} className="rounded-xl border bg-background text-sm">
+        <button
+          type="button"
+          onClick={() => store.getState().setTodosExpanded(session, false)}
+          className="flex min-h-11 w-full items-center gap-2 rounded-xl px-3 py-2 text-left outline-none hover:bg-layer-2 focus-visible:ring-[3px] focus-visible:ring-ring/50"
+        >
+          <ChevronDown className="size-4 shrink-0 text-fg-tertiary" />
           <span className="shrink-0 font-medium">Todos</span>
           <span className="shrink-0 text-fg-secondary tabular-nums">· {counts}</span>
           {tags && <span className="shrink-0 text-xs text-fg-tertiary">· {tags}</span>}
-          {!expanded && now && <span className="min-w-0 flex-1 truncate text-fg-secondary">{now}</span>}
-        </CollapsibleTrigger>
+        </button>
         {/* Polite progress: counts and the current task, not the whole list. */}
         <p role="status" className="sr-only">
           Todos: {counts}.{now && ` ${now}.`}
         </p>
-        <CollapsibleContent>
-          {/* Bounded by the visible band (a third of it; the keyboard shrinks it further) and scrolls inside, never behind the composer. */}
-          <ul className="max-h-[calc(var(--visible-band,100dvh)/3)] overflow-y-auto border-t px-3 py-2 wrap-anywhere">
-            {/* Rows are not interactive; position is identity enough. */}
-            {todos.items.map((t, i) => (
-              <li key={i} className={cn('flex gap-3 py-1', (t.status === 'done' || t.status === 'dropped') && 'text-fg-tertiary')}>
-                <span className="w-20 shrink-0 pt-px text-xs text-fg-tertiary">[{LABEL[t.status]}]</span>
-                <span className="min-w-0 flex-1">
-                  {t.text}
-                  {t.reason && <span className="block text-fg-secondary">{t.reason}</span>}
-                </span>
-              </li>
-            ))}
-          </ul>
-        </CollapsibleContent>
+        {/* Bounded by the visible band (a third of it; the keyboard shrinks it further) and scrolls inside, never behind the composer. */}
+        <ul className="max-h-[calc(var(--visible-band,100dvh)/3)] overflow-y-auto border-t px-3 py-2 wrap-anywhere">
+          {/* Rows are not interactive; position is identity enough. */}
+          {items.map((t, i) => (
+            <li key={i} className={cn('flex gap-3 py-1', (t.status === 'done' || t.status === 'dropped') && 'text-fg-tertiary')}>
+              <span className="w-20 shrink-0 pt-px text-xs text-fg-tertiary">[{LABEL[t.status]}]</span>
+              <span className="min-w-0 flex-1">
+                {t.text}
+                {t.reason && <span className="block text-fg-secondary">{t.reason}</span>}
+              </span>
+            </li>
+          ))}
+        </ul>
       </div>
-    </Collapsible>
+    )
+  }
+
+  return (
+    <>
+      {body && <div className="mx-auto w-full max-w-[768px] px-4">{body}</div>}
+      {/* The grabber: a short thick line over a 64×20 hit area, always directly above the composer so the body opens above it and the target never moves. */}
+      <button
+        type="button"
+        aria-expanded={expanded}
+        aria-controls={bodyId}
+        aria-label={label}
+        title={label}
+        onClick={() => store.getState().setTodosExpanded(session, !expanded)}
+        className="group mx-auto flex h-5 w-16 shrink-0 cursor-pointer touch-manipulation select-none items-center justify-center rounded-md outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50"
+      >
+        <span className="h-1 w-9 rounded-full bg-fg-tertiary/40 transition-colors group-hover:bg-fg-secondary group-active:bg-fg-secondary" />
+      </button>
+    </>
   )
 }
