@@ -52,7 +52,7 @@ struct SettingsView: View {
     let doubleTap: DoubleTapSource
     @State private var axDenied = false
     /// The probe opens on the tab it is about.
-    @State private var tab = Flags.probeNotify != nil ? "notifications" : "rail"
+    @State private var tab = Flags.probeSettings ?? (Flags.probeNotify != nil ? "notifications" : "rail")
 
     var body: some View {
         TabView(selection: $tab) {

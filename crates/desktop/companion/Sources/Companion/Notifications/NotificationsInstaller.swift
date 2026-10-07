@@ -39,6 +39,7 @@ final class NotificationsInstaller: NSObject {
         if !FileManager.default.fileExists(atPath: Settings.loginItemFile.path) { SettingsModel.shared.writeLoginItem() }
         if Flags.requestNotifications { notifier.requestAuthorization() }
         if let s = Flags.probeNotify { runProbe(s) }
+        if let tab = Flags.probeSettings { runSettingsProbe(tab) }
     }
 
     // MARK: menu (D9): appended after W1's items
@@ -100,6 +101,23 @@ final class NotificationsInstaller: NSObject {
             notifier.probeLine("live items=\(s?.items.count ?? 0) [\(count(s?.items ?? [], by: { $0.kind.rawValue }))] classes=[\(count(s?.items ?? [], by: { NotificationPolicy.classify($0).rawValue }))] new-while-running→would-have-posted=\(notifier.probeCounts) flood=\(notifier.inFlood) held=\(notifier.heldCount) paused=\(notifier.pausedUntil != nil) connection=\(s.map { "\($0.connection)" } ?? "?")")
             replay(s?.items ?? [])
             notifier.probeLine("done after \(seconds) s active=\(NSApp.isActive) key=\(NSApp.keyWindow.map { "\($0.className)" } ?? "none") frontmost=\(NSWorkspace.shared.frontmostApplication?.localizedName ?? "?") — quitting")
+            NSApp.terminate(nil)
+        }
+    }
+
+    // MARK: --probe-settings <tab> (W6)
+
+    /// Show Settings on `tab` without activating for 3 s, log the window number (the shell screenshots it with
+    /// `screencapture -l`), quit 0. Item 1's crash reproduces here when the KeyboardShortcuts resource bundle
+    /// cannot be found.
+    private func runSettingsProbe(_ tab: String) {
+        Log.write("probe-settings start tab=\(tab) bundle=\(Bundle.main.bundleIdentifier ?? "nil") shareable=\(Flags.shareable)")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [self] in
+            settings.show(activate: false)
+            Log.write("probe-settings window shown tab=\(tab) frame=\(settings.frame) number=\(settings.windowNumber ?? 0) active=\(NSApp.isActive) key=\(NSApp.keyWindow.map { "\($0.className)" } ?? "none")")
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 4) {
+            Log.write("probe-settings done tab=\(tab) active=\(NSApp.isActive) frontmost=\(NSWorkspace.shared.frontmostApplication?.localizedName ?? "?") — quitting 0")
             NSApp.terminate(nil)
         }
     }

@@ -179,5 +179,5 @@ enum AskFlags {
         return TimeInterval(a[i + 1])
     }()
     /// Any automated run: no hotkey, no microphone, no sends.
-    static var automated: Bool { Flags.probe != nil || probe != nil }
+    static var automated: Bool { Flags.anyProbe || probe != nil }
 }
