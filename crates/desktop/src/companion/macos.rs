@@ -1,17 +1,14 @@
-//! macOS: launch the nested companion without activating it, follow it through `NSWorkspace`'s
-//! launch/terminate notifications, hand the menu bar over (D9), and stop it at quit (130 §5.8).
+//! macOS: launch the nested companion without activating it, follow it by bundle id, hand the menu
+//! bar over (D9), and stop it at quit (130 §5.8). Not `NSWorkspace.didLaunch/didTerminateApplication`
+//! as §5.8 planned: AppKit does not post those for `LSUIElement` apps (Apple, NSWorkspace docs; verified
+//! here against the spike bundle), so the companion is polled by bundle id instead.
 
 use std::path::PathBuf;
-use std::ptr::NonNull;
 use std::sync::atomic::{AtomicBool, Ordering::SeqCst};
 use std::time::{Duration, Instant};
 
-use objc2_app_kit::{
-    NSRunningApplication, NSWorkspace, NSWorkspaceApplicationKey,
-    NSWorkspaceDidLaunchApplicationNotification, NSWorkspaceDidTerminateApplicationNotification,
-    NSWorkspaceOpenConfiguration,
-};
-use objc2_foundation::{NSError, NSNotification, NSString, NSURL};
+use objc2_app_kit::{NSRunningApplication, NSWorkspace, NSWorkspaceOpenConfiguration};
+use objc2_foundation::{NSError, NSString, NSURL};
 use tauri::{AppHandle, Emitter};
 
 use super::{ALIVE_EVENT, Alive, BUNDLE_ID};
@@ -23,26 +20,28 @@ const NESTED: &str = "Library/LoginItems/Theuth Companion.app";
 const DEV_ENV: &str = "THEUTH_COMPANION_APP";
 /// `terminate()` is an Apple Event; the companion gets this long before `forceTerminate()`.
 const QUIT_GRACE: Duration = Duration::from_secs(2);
+/// How often [`watch`] asks LaunchServices; the bound on how long two menu bar icons can overlap after
+/// the companion starts or exits on its own (our own launch flips it immediately).
+const POLL: Duration = Duration::from_secs(2);
 
-/// Mirror of the last notification (plus the initial check); `companion_alive` reads it.
+/// Last observed state (initial check, our launch, or the poll); `companion_alive` reads it. The tray
+/// starts visible, matching `false`.
 static ALIVE: AtomicBool = AtomicBool::new(false);
 
-/// In `setup`, on the main thread: observe, take stock, launch if needed.
+/// In `setup`, on the main thread: take stock, launch if needed, keep watching.
 pub fn init(app: &AppHandle) -> anyhow::Result<()> {
-    watch(app);
     let running = !running().is_empty();
     set_alive(app, running);
     if running {
         tracing::info!("companion: already running");
-        return Ok(());
-    }
-    let Some(path) = locate() else {
+    } else if let Some(path) = locate() {
+        launch(app, &path);
+    } else {
         tracing::info!(
             "companion: no bundle at Contents/{NESTED} and ${DEV_ENV} unset; not launching"
         );
-        return Ok(());
-    };
-    launch(&path);
+    }
+    watch(app);
     Ok(())
 }
 
@@ -93,17 +92,22 @@ fn locate() -> Option<PathBuf> {
 }
 
 /// `openApplication(at:configuration:)` with `activates = false`: the rail must never take focus (D4).
-fn launch(path: &std::path::Path) {
+/// The completion handler (a concurrent queue) flips alive at once; everything it touches is `Send`.
+fn launch(app: &AppHandle, path: &std::path::Path) {
     let url = NSURL::fileURLWithPath(&NSString::from_str(&path.to_string_lossy()));
     let config = NSWorkspaceOpenConfiguration::configuration();
     config.setActivates(false);
     config.setAddsToRecentItems(false);
     let shown = path.display().to_string();
+    let app = app.clone();
     let done = block2::RcBlock::new(move |_: *mut NSRunningApplication, err: *mut NSError| {
         // SAFETY: AppKit hands a valid `NSError` or null.
         match unsafe { err.as_ref() } {
             Some(e) => tracing::warn!("companion: launch {shown}: {}", e.localizedDescription()),
-            None => tracing::info!("companion: launched {shown}"),
+            None => {
+                tracing::info!("companion: launched {shown}");
+                set_alive(&app, true);
+            }
         }
     });
     NSWorkspace::sharedWorkspace().openApplicationAtURL_configuration_completionHandler(
@@ -113,10 +117,15 @@ fn launch(path: &std::path::Path) {
     );
 }
 
-/// Store, announce, and swap the menu bar presence (D9: one theuth in the menu bar).
+/// On a change: store, announce, and swap the menu bar presence (D9: one theuth in the menu bar).
 fn set_alive(app: &AppHandle, alive: bool) {
-    ALIVE.store(alive, SeqCst);
-    tracing::info!("companion: alive={alive}; tray {}", if alive { "hidden" } else { "shown" });
+    if ALIVE.swap(alive, SeqCst) == alive {
+        return;
+    }
+    tracing::info!(
+        "companion: alive={alive}; tray {}",
+        if alive { "hidden" } else { "shown" }
+    );
     if let Err(e) = app.emit(ALIVE_EVENT, Alive { alive }) {
         tracing::warn!(error = %e, "emit {ALIVE_EVENT}");
     }
@@ -127,34 +136,20 @@ fn set_alive(app: &AppHandle, alive: bool) {
     }
 }
 
-/// `NSWorkspace.didLaunchApplicationNotification` / `didTerminateApplicationNotification` filtered to
-/// [`BUNDLE_ID`]. The workspace centre posts on the main thread; the observers live for the process.
+/// Poll `runningApplications(withBundleIdentifier:)` on the main thread every [`POLL`] and announce
+/// changes. ponytail: a 2 s poll; KVO on `NSWorkspace.runningApplications` (an observer class via
+/// `define_class!`) is the push upgrade if the overlap ever matters.
 fn watch(app: &AppHandle) {
-    let observe = |alive: bool, name: &'static objc2_foundation::NSNotificationName| {
-        let app = app.clone();
-        let block = block2::RcBlock::new(move |n: NonNull<NSNotification>| {
-            // SAFETY: AppKit hands a live notification for the duration of the block.
-            if unsafe { n.as_ref() }.userInfo().is_some_and(|info| {
-                // SAFETY: AppKit's static key.
-                info.objectForKey(unsafe { NSWorkspaceApplicationKey })
-                    .and_then(|o| o.downcast::<NSRunningApplication>().ok())
-                    .and_then(|a| a.bundleIdentifier())
-                    .is_some_and(|id| id.to_string() == BUNDLE_ID)
-            }) {
-                set_alive(&app, alive);
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        let mut tick = tokio::time::interval(POLL);
+        loop {
+            tick.tick().await;
+            let handle = app.clone();
+            let run = app.run_on_main_thread(move || set_alive(&handle, !running().is_empty()));
+            if run.is_err() {
+                return;
             }
-        });
-        // SAFETY: AppKit's static name; no object filter, no queue; the block owns only a `Send` `AppHandle`.
-        let token = unsafe {
-            NSWorkspace::sharedWorkspace()
-                .notificationCenter()
-                .addObserverForName_object_queue_usingBlock(Some(name), None, None, &block)
-        };
-        std::mem::forget(token);
-    };
-    // SAFETY: reading AppKit's static notification names.
-    unsafe {
-        observe(true, NSWorkspaceDidLaunchApplicationNotification);
-        observe(false, NSWorkspaceDidTerminateApplicationNotification);
-    }
+        }
+    });
 }
