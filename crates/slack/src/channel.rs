@@ -1699,8 +1699,12 @@ impl Channel {
                             else {
                                 return;
                             };
-                            let blocks =
-                                approvals::predicted_card(&body, ApprovalId(id), &p, Some(&context));
+                            let blocks = approvals::predicted_card(
+                                &body,
+                                ApprovalId(id),
+                                &p,
+                                Some(context.as_str()),
+                            );
                             if let Err(e) = self.api.update_blocks(dm, &ts, blocks).await {
                                 tracing::debug!(error = %e, "owner approval card double update failed");
                             }

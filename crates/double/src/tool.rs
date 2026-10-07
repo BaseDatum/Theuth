@@ -478,7 +478,6 @@ pub const DOUBLE_SKILL: &str = include_str!("../double.md");
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tools::ErasedTool;
 
     struct Fake;
 
@@ -550,15 +549,16 @@ mod tests {
     #[test]
     fn names_risks_and_schemas() {
         let s = seams();
+        let spec = |t: &dyn tools::ErasedTool| t.spec();
         let specs = [
-            StatusTool(s.clone()).spec(),
-            ClassesTool(s.clone()).spec(),
-            ClassTool(s.clone()).spec(),
-            TrainTool(s.clone()).spec(),
-            PauseTool(s.clone()).spec(),
-            ForgetTool(s.clone()).spec(),
-            RollbackTool(s.clone()).spec(),
-            CapTool(s).spec(),
+            spec(&StatusTool(s.clone())),
+            spec(&ClassesTool(s.clone())),
+            spec(&ClassTool(s.clone())),
+            spec(&TrainTool(s.clone())),
+            spec(&PauseTool(s.clone())),
+            spec(&ForgetTool(s.clone())),
+            spec(&RollbackTool(s.clone())),
+            spec(&CapTool(s)),
         ];
         let names: Vec<_> = specs.iter().map(|s| s.name.as_str()).collect();
         assert_eq!(
