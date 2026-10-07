@@ -24,6 +24,8 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
+# 120 §4.2: the `theuth-page` token is 128 random bits per put, on both containers.
+rand = { workspace = true }
 
 # Desktop only: the local daemon launcher (pty) and the menubar integrations.
 [target.'cfg(not(any(target_os = "ios", target_os = "android")))'.dependencies]
@@ -36,11 +38,10 @@ portable-pty = { workspace = true }
 anyhow = { workspace = true }
 serde_yaml = { workspace = true }
 dirs = { workspace = true }
-# 39 §3.3: background check + verify, install at quit; tokio for `sleep`, rand for the
+# 39 §3.3: background check + verify, install at quit; tokio for `sleep`, `rand` (above) for the
 # jitter, `platform::files::writable` to skip a bundle we cannot rename without a password prompt.
 tauri-plugin-updater = { workspace = true }
 tokio = { workspace = true }
-rand = { workspace = true }
 platform = { workspace = true }
 # Speech model files from the release bucket at start (crates/desktop/src/models.rs).
 reqwest = { workspace = true }
