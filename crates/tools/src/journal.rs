@@ -148,6 +148,38 @@ impl QuestionState {
     }
 }
 
+/// Who settled a question (126 §4.3): the owner, or the owner's double. Written to
+/// `questions.answered_by` as `human` | `double`; `None` on a row still pending or
+/// settled by a timeout. The `answer` JSON keeps its bare shape (109's replay reads it).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[serde(rename_all = "snake_case")]
+pub enum Answerer {
+    /// A person, through any frontend.
+    Human,
+    /// The `double` plugin acting at L2/L3.
+    Double,
+}
+
+impl Answerer {
+    /// The column spelling.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Human => "human",
+            Self::Double => "double",
+        }
+    }
+
+    /// Inverse of [`Self::as_str`].
+    pub fn parse(s: &str) -> Option<Self> {
+        Some(match s {
+            "human" => Self::Human,
+            "double" => Self::Double,
+            _ => return None,
+        })
+    }
+}
+
 /// One `questions` row (§3.1, §6.1).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct QuestionRow {
@@ -171,6 +203,9 @@ pub struct QuestionRow {
     pub answered_at: Option<DateTime<Utc>>,
     /// Decision / answers JSON / outcome.
     pub answer: Option<Value>,
+    /// Who answered (126 §4.3); `None` while pending or on a timeout.
+    #[serde(default)]
+    pub answered_by: Option<Answerer>,
 }
 
 /// `waits.kind` (§4.4).

@@ -13,6 +13,7 @@ use artifact::preview::{PagePreviewRequested, PagePreviewResolved};
 use browser::BrowserEvent;
 use codeindex::CodeindexEvent;
 use document::DocumentChanged;
+use double::{DoubleAnswered, DoublePredicted, DoubleTrainingState, DoubleVersionActivated};
 use kameo::Actor;
 use kameo::actor::{ActorRef, Spawn};
 use kameo::message::{Context, Message};
@@ -133,6 +134,10 @@ forward!(
     CodeindexEvent,
     MeshEvent,
     SandboxEvent,
+    DoublePredicted,
+    DoubleAnswered,
+    DoubleTrainingState,
+    DoubleVersionActivated,
     AttentionChanged
 );
 
@@ -189,6 +194,10 @@ pub async fn start(rt: &Runtime) -> broadcast::Sender<Event> {
     rt.subscribe::<Bridge, CodeindexEvent>(&actor).await;
     rt.subscribe::<Bridge, MeshEvent>(&actor).await;
     rt.subscribe::<Bridge, SandboxEvent>(&actor).await;
+    rt.subscribe::<Bridge, DoublePredicted>(&actor).await;
+    rt.subscribe::<Bridge, DoubleAnswered>(&actor).await;
+    rt.subscribe::<Bridge, DoubleTrainingState>(&actor).await;
+    rt.subscribe::<Bridge, DoubleVersionActivated>(&actor).await;
     rt.subscribe::<Bridge, AttentionChanged>(&actor).await;
     tx
 }

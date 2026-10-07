@@ -40,6 +40,10 @@ import type {
   VisionProgress,
 } from '@/rpc/extra'
 import type { CodeindexEvent } from '@/rpc/bindings/CodeindexEvent'
+import type { DoublePredicted } from '@/rpc/bindings/DoublePredicted'
+import type { DoubleAnswered } from '@/rpc/bindings/DoubleAnswered'
+import type { DoubleTrainingState } from '@/rpc/bindings/DoubleTrainingState'
+import type { DoubleVersionActivated } from '@/rpc/bindings/DoubleVersionActivated'
 import type { AttentionChanged } from '@/rpc/bindings/AttentionChanged'
 
 /**
@@ -107,6 +111,11 @@ export type WireEvent =
   | SandboxEvent
   /** 67 §4, bridged since 79: a peer changed or the hub lease moved; the Mesh page refetches on it. */
   | MeshEvent
+  /** 126 §13: the owner's double — a prediction per card, an L2/L3 answer, a training run's state, a version switch. */
+  | DoublePredicted
+  | DoubleAnswered
+  | DoubleTrainingState
+  | DoubleVersionActivated
   | Lagged
   /** 130 E1: the attention inbox's id set changed; `count` is the new badge. */
   | AttentionChanged

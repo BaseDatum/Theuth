@@ -971,6 +971,7 @@ mod tests {
                         probs,
                         temperature: 1.0,
                         act_p: 0.0,
+                        embedding: None,
                     }
                 })
                 .collect())

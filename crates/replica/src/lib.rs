@@ -53,6 +53,8 @@ pub const ALPN_RPC: &str = "theuth/rpc/1";
 pub const ALPN_ARTIFACTS: &str = "theuth/artifacts/1";
 /// Stream ALPN: a non-hub front door relays a client's document session to the hub (69 §5, `document::relay`).
 pub const ALPN_DOCS: &str = "theuth/docs/1";
+/// Stream ALPN: double training bundles to a GPU node and results back (126 §8.4, `double::mesh`).
+pub const ALPN_DOUBLE: &str = "theuth/double/1";
 
 /// `ask` → `()`: the mesh hands over its transport once the endpoint is up.
 /// Replaces any earlier one.

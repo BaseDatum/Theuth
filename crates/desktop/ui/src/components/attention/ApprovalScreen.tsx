@@ -1,3 +1,4 @@
+import { DoubleChip, preselect, useDoubleCard } from '@/components/chat/DoubleChip'
 import { useAttentionActions } from '@/components/hud/queries'
 import { Button } from '@/components/ui/button'
 import { describe } from '@/lib/describe'
@@ -24,6 +25,9 @@ export function ApprovalScreen({ item }: { item: AttentionItem }) {
   const command = typeof args?.command === 'string' ? args.command : item.detail
   const rest = args ? describe(tool, Object.fromEntries(Object.entries(args).filter(([k]) => k !== 'command'))) : []
   const busy = act.approve.isPending
+  // 126 §10: the double's chip under the heading; at L1 its pick is the filled button.
+  const double = useDoubleCard([item.approval])
+  const pick = preselect(double.prediction, ['Allow', 'Deny'])
   const decide = (allow: boolean) => {
     if (!item.approval) return
     void act.approve.mutateAsync({ id: item.approval, allow }).then(onResolved, () => undefined)
@@ -36,6 +40,7 @@ export function ApprovalScreen({ item }: { item: AttentionItem }) {
         <div className="flex flex-col gap-1">
           <h1 className="font-mono text-xl font-semibold leading-snug md:text-2xl">{tool}</h1>
           <p className="text-sm text-fg-secondary">wants to run{request ? ` · ${RISK[request.risk]}` : ''}</p>
+          <DoubleChip ids={[item.approval]} className="mt-1 w-fit" />
         </div>
         {command && (
           <div className="flex flex-col gap-1.5">
@@ -52,10 +57,10 @@ export function ApprovalScreen({ item }: { item: AttentionItem }) {
         {!request && <p className="text-xs text-fg-tertiary">{command ? 'Only the command reached this inbox; the full arguments are in the session.' : 'The arguments are in the session.'}</p>}
       </Body>
       <ActionBar>
-        <Button size="default" disabled={busy || !item.approval} onClick={() => decide(true)}>
+        <Button size="default" variant={pick === 1 ? 'outline' : 'default'} disabled={busy || !item.approval} onClick={() => decide(true)}>
           Allow
         </Button>
-        <Button size="default" variant="outline" disabled={busy || !item.approval} onClick={() => decide(false)}>
+        <Button size="default" variant={pick === 1 ? 'default' : 'outline'} disabled={busy || !item.approval} onClick={() => decide(false)}>
           Deny
         </Button>
         <Footer item={item} onResolved={onResolved} />

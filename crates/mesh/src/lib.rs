@@ -38,8 +38,8 @@ use tokio_util::sync::CancellationToken;
 pub use config::MeshConfig;
 pub use net::ALPN_MESH;
 pub use types::{
-    AlpnTraffic, EngineClass, EngineId, EngineStats, HubPref, LeaseState, MeshEvent, MeshStatus,
-    Peer, PeerEvent, PeerId,
+    Accelerator, AlpnTraffic, EngineClass, EngineId, EngineStats, HubPref, LeaseState, MeshEvent,
+    MeshStatus, Peer, PeerEvent, PeerId,
 };
 
 use crate::identity::now_ms;
@@ -722,6 +722,7 @@ impl runtime::Plugin for MeshPlugin {
                 repos: vec![],
                 display: false,
                 gpu: false,
+                accelerator: None,
             })
         };
         // Written after the attach (below): a row that lands before the replica

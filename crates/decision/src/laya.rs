@@ -356,6 +356,8 @@ pub struct RowOut {
     pub act_p: f32,
     /// Entropy-derived (choice/score) or `max(p, 1−p)` (noul).
     pub confidence: f32,
+    /// The pooled `[CLS]` state (126 §7.2); `Some` only when the caller asked for it.
+    pub embedding: Option<Vec<f32>>,
 }
 
 impl From<RowOut> for Scores {
@@ -366,6 +368,7 @@ impl From<RowOut> for Scores {
             logits: r.logits,
             temperature: r.temperature,
             act_p: r.act_p,
+            embedding: r.embedding,
         }
     }
 }
@@ -462,6 +465,7 @@ pub fn postprocess(row: &Sequence, logits: &[f32], act: &[f32], cfg: &LayaConfig
         temperature,
         act_p,
         confidence,
+        embedding: None,
     }
 }
 

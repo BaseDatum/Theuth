@@ -92,6 +92,10 @@ enum Event {
     Secret(secrets::SecretsEvent),
     /// 67 §4.4: the hub lease moved.
     Lease(mesh::LeaseState),
+    /// 126 §10: the double's prediction for a pending card.
+    Predicted(double::DoublePredicted),
+    /// 126 §10: the double answered a card at L2.
+    DoubleAnswered(double::DoubleAnswered),
 }
 
 /// Bus subscriber: forwards into the ordered event task.
@@ -118,6 +122,8 @@ forward!(AskRequested => Ask);
 forward!(AskResolved => AskDone);
 forward!(ArtifactShown => Artifact);
 forward!(secrets::SecretsEvent => Secret);
+forward!(double::DoublePredicted => Predicted);
+forward!(double::DoubleAnswered => DoubleAnswered);
 
 impl Message<mesh::MeshEvent> for Bus {
     type Reply = ();
@@ -443,6 +449,8 @@ async fn run(
     chan.rt.subscribe::<Bus, ArtifactShown>(&bus).await;
     chan.rt.subscribe::<Bus, secrets::SecretsEvent>(&bus).await;
     chan.rt.subscribe::<Bus, mesh::MeshEvent>(&bus).await;
+    chan.rt.subscribe::<Bus, double::DoublePredicted>(&bus).await;
+    chan.rt.subscribe::<Bus, double::DoubleAnswered>(&bus).await;
     if let Some(live) = &chan.live {
         let hook = Arc::clone(&chan);
         live.on_event(Arc::new(move |ev| {
@@ -2371,6 +2379,37 @@ impl Channel {
                 let Some(at) = card.at else { return };
                 let text = asks::closed(&card.req, card.current, res.dismissed, res.timed_out);
                 self.edit(at, &text, None).await;
+            }
+            // 126 §10: the double's line follows the card it is about, as its own
+            // message where that card went; only for a card this channel posted.
+            Event::Predicted(p) => {
+                let Ok(id) = uuid::Uuid::parse_str(&p.question_id) else {
+                    return;
+                };
+                let posted = {
+                    let s = self.lock();
+                    s.cards.get(&ApprovalId(id)).is_some_and(|c| c.at.is_some())
+                        || s.asks.get(&AskId(id)).is_some_and(|c| c.at.is_some())
+                };
+                let target = match p.session.filter(|_| posted) {
+                    Some(s) => self.card_target(s).await,
+                    None => None,
+                };
+                if let Some((to, _, _)) = target {
+                    let now = u64::try_from(chrono::Utc::now().timestamp_millis()).unwrap_or(0);
+                    self.note(&to, &format!("🤖 {}", double::chip::would(&p, now)))
+                        .await;
+                }
+            }
+            Event::DoubleAnswered(a) => {
+                let target = match a.session {
+                    Some(s) => self.card_target(s).await,
+                    None => None,
+                };
+                if let Some((to, _, _)) = target {
+                    self.note(&to, &format!("🤖 {}", double::chip::answered(&a)))
+                        .await;
+                }
             }
             Event::Artifact(m) => self.artifact(m).await,
             // 37 §7: the model asked the user for a secret; say where to enter

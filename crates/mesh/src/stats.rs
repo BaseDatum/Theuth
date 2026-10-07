@@ -4,7 +4,7 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::types::{EngineClass, EngineId, EngineStats};
+use crate::types::{Accelerator, EngineClass, EngineId, EngineStats};
 
 /// Probe everything. `workspaces` = `mesh.workspaces`; `data_dir` for
 /// `acp/agents.yaml`; `declared` = `mesh.class` (79 decision 9), which
@@ -27,6 +27,7 @@ pub fn probe(
         repos: repos(workspaces),
         display,
         gpu: has_gpu(),
+        accelerator: Some(accelerator()),
     }
 }
 
@@ -106,6 +107,18 @@ fn has_gpu() -> bool {
                     .any(|e| e.file_name().to_string_lossy().starts_with("renderD"))
             })
             .unwrap_or(false)
+}
+
+/// 126 §8.4, the cheap way: Apple silicon → Metal; an NVIDIA device → CUDA;
+/// else CPU (an iGPU render node is a GPU, not a training-grade one).
+fn accelerator() -> Accelerator {
+    if cfg!(all(target_os = "macos", target_arch = "aarch64")) {
+        Accelerator::Metal
+    } else if Path::new("/dev/nvidia0").exists() {
+        Accelerator::Cuda
+    } else {
+        Accelerator::Cpu
+    }
 }
 
 /// `native` plus every key of `<data_dir>/acp/agents.yaml`.

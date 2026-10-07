@@ -951,6 +951,7 @@ mod tests {
             repos: vec![],
             display: true,
             gpu: false,
+            accelerator: None,
         };
         assert_eq!(describe(&p, Some(&s)), "mesh · vm · harnesses: native, omp");
         assert_eq!(describe(&p, None), "mesh");

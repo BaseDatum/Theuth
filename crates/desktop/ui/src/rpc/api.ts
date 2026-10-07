@@ -66,6 +66,15 @@ import type { Mode } from '@/rpc/bindings/Mode'
 import type { FamilyStats } from '@/rpc/bindings/FamilyStats'
 import type { LoadedInfo } from '@/rpc/bindings/LoadedInfo'
 import type { TrainingInfo } from '@/rpc/bindings/TrainingInfo'
+import type { DoubleStatus } from '@/rpc/bindings/DoubleStatus'
+import type { DoubleClass } from '@/rpc/bindings/DoubleClass'
+import type { DoubleClassDetail } from '@/rpc/bindings/DoubleClassDetail'
+import type { DoubleConfig } from '@/rpc/bindings/DoubleConfig'
+import type { DoubleExport } from '@/rpc/bindings/DoubleExport'
+import type { ForgetTarget } from '@/rpc/bindings/ForgetTarget'
+import type { RunId } from '@/rpc/bindings/RunId'
+import type { Tier } from '@/rpc/bindings/Tier'
+import type { Venue } from '@/rpc/bindings/Venue'
 import type { MeetingTranscript } from '@/rpc/bindings/MeetingTranscript'
 import type { Permissions } from '@/rpc/bindings/Permissions'
 import type { AdvisorDefaults } from '@/rpc/bindings/AdvisorDefaults'
@@ -648,6 +657,33 @@ export interface Api {
   set_decision_share(prefix: string, on: boolean): Promise<TrainingInfo>
   /** 57 §7.1: remove `decisions/training/<prefix>/`; the switches stay. Answers the new counts. */
   delete_decision_training(prefix: string): Promise<TrainingInfo>
+  // 126 §13: the owner's double — status, classes, training and the ladder (`crates/rpc/src/api.rs` `double_*`).
+  /** Enabled / paused / active version / last run / next window / venue, plus the last-30-days numbers vs the frozen baseline. */
+  double_status(): Promise<DoubleStatus>
+  /** Every class row with its numbers (`[]` until the actor runs). */
+  double_classes(): Promise<DoubleClass[]>
+  /** One class: the row, its weekly curve, the last 50 scrubbed examples, the promotion hint. */
+  double_class(key: string): Promise<DoubleClassDetail>
+  /** Start a run; `c` is refused while `training.tiers.c.enabled` is off. */
+  double_train(tier: Tier, venue: Venue): Promise<RunId>
+  /** Pause / resume learning: predictions and rungs continue, labels stop accruing. */
+  double_pause(on: boolean): Promise<DoubleStatus>
+  /** Exclude a class or some examples from learning (`labels.source = excluded`); answers the count removed. */
+  double_forget(target: ForgetTarget): Promise<number>
+  /** Make `version` active again. */
+  double_rollback(version: string): Promise<DoubleStatus>
+  /** Set a class's max rung and its mutating opt-in. */
+  double_set_cap(class_: string, rung: number, mutating_opt_in: boolean): Promise<DoubleClass>
+  /** Write the scrubbed JSONL + embeddings archive under `<data_dir>/double/export/`. */
+  double_export(): Promise<DoubleExport>
+  /** Store, models and runs removed; config untouched. */
+  double_delete_all(): Promise<null>
+  /** Cancel an L2 grace (or undo during the undo window); the owner then answers through `resolve_approval` / `answer_ask`. `false` when nothing was pending. */
+  double_take_over(question_id: string): Promise<boolean>
+  /** The `double:` config section. */
+  double_settings_get(): Promise<DoubleConfig>
+  /** Persist and apply the `double:` section live (`enabled` and `model.*` take a restart). */
+  double_settings_set(settings: DoubleConfig): Promise<DoubleConfig>
   meeting_tap(topic: TopicId): Promise<null>
   meeting_topics(): Promise<Topic[]>
   /** `transcript.json` (04 §3). */
@@ -939,6 +975,19 @@ export const METHODS = [
   'doc_undo_agent',
   'doc_update',
   'documents_status',
+  'double_class',
+  'double_classes',
+  'double_delete_all',
+  'double_export',
+  'double_forget',
+  'double_pause',
+  'double_rollback',
+  'double_set_cap',
+  'double_settings_get',
+  'double_settings_set',
+  'double_status',
+  'double_take_over',
+  'double_train',
   'edit_turn',
   'enable_schedule',
   'escalate_model',
