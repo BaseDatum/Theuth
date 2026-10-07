@@ -1,4 +1,5 @@
 import { chatName } from '@/lib/attach'
+import { notAdvisor } from '@/lib/session-tree'
 import type { BroadcastReceipt } from '@/rpc/bindings/BroadcastReceipt'
 import type { SessionActivity } from '@/rpc/bindings/SessionActivity'
 import type { SessionSummary } from '@/rpc/bindings/SessionSummary'
@@ -67,7 +68,9 @@ export type Group = { root: AgentInfo; children: AgentInfo[] }
  * Roots in input order, each with every descendant present in `rows` (input order, own `depth` for
  * indentation). A row whose root is absent stands as its own group.
  */
-export function groupRows(rows: AgentInfo[]): Group[] {
+export function groupRows(all: AgentInfo[]): Group[] {
+  // 125 §8.5: an advisor is never a broadcast target.
+  const rows = all.filter(notAdvisor)
   const byId = new Map(rows.map((r) => [r.id, r]))
   const groups = new Map<string, Group>()
   for (const r of rows) if (isRoot(r)) groups.set(r.id, { root: r, children: [] })

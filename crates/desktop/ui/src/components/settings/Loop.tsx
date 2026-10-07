@@ -1,6 +1,6 @@
 import { useQuery } from '@tanstack/react-query'
 import { ModelCombobox } from '@/components/chat/ModelCombobox'
-import { Row, Section, refreshInfo, useAction } from '@/components/settings/shared'
+import { Row, Section, bounded, refreshInfo, useAction } from '@/components/settings/shared'
 import { Input } from '@/components/ui/input'
 import {
   Select,
@@ -21,14 +21,16 @@ const COMPACT: [CompactStyle, string][] = [
   ['snap', 'Snap'],
 ]
 
-/** A whole-number `Info` field edited on blur/Enter; values below `min` are ignored. */
-function Count({
+/** A whole-number `Info` field edited on blur/Enter; values outside `[min, max]` are ignored. Shared with Settings › Advisor. */
+export function Count({
   value,
   min,
+  max,
   action,
 }: {
   value: number | undefined
   min: number
+  max?: number
   action: { mutate: (n: number) => void; isPending: boolean }
 }) {
   return (
@@ -36,12 +38,13 @@ function Count({
       key={value}
       type="number"
       min={min}
+      max={max}
       defaultValue={value}
       disabled={value === undefined || action.isPending}
       className="w-28 text-right"
       onBlur={(e) => {
-        const n = Math.floor(Number(e.currentTarget.value))
-        if (n >= min && n !== value) action.mutate(n)
+        const n = bounded(e.currentTarget.value, min, max)
+        if (n !== undefined && n !== value) action.mutate(n)
       }}
       onKeyDown={(e) => {
         if (e.key === 'Enter') e.currentTarget.blur()

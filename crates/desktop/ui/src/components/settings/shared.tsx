@@ -88,6 +88,12 @@ export function Empty({ children }: { children: ReactNode }) {
   return <p className="py-4 text-sm text-fg-tertiary">{children}</p>
 }
 
+/** The whole number a count field accepts from `raw`: floored, within `[min, max]`; `undefined` otherwise (the field is left alone). */
+export function bounded(raw: string | number, min: number, max = Number.POSITIVE_INFINITY): number | undefined {
+  const n = Math.floor(Number(raw))
+  return Number.isFinite(n) && n >= min && n <= max ? n : undefined
+}
+
 /** The message of a thrown value, for toasts. */
 export function errorText(e: unknown): string {
   return e instanceof Error ? e.message : String(e)
