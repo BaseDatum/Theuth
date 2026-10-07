@@ -53,9 +53,9 @@ test('undo shows during the undo window only; a digest row (no DoubleAnswered) h
   expect(renderToStaticMarkup(createElement(DoubleUndo, { ids: doubleIds(item({ id: 'double:digest:2026-10-07' })) }))).toBe('')
 })
 
-test('double rows form their own rail group after Mesh, newest first', () => {
+test('double rows form their own rail group after Mesh, in the engine’s order (132 D4)', () => {
   const groups = groupItems([item({ at_ms: 1 }), item({ id: 'double:b', at_ms: 2 }), item({ id: 'node:1', kind: 'node', at_ms: 3 })])
   expect(groups.map((g) => g.key)).toEqual(['mesh', 'double'])
   expect(groups[1]?.label).toBe('Answered by double')
-  expect(groups[1]?.items.map((i) => i.id)).toEqual(['double:b', 'double:appr-1'])
+  expect(groups[1]?.items.map((i) => i.id)).toEqual(['double:appr-1', 'double:b'])
 })

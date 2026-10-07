@@ -4,22 +4,32 @@ import type { Pointer } from '@/rpc/bindings/Pointer'
 import type { HistoryEntry } from '@/rpc/extra'
 import { clampText, groupItems, lastAssistantBefore, nextAfter, parseCodeRef, pointerRoute, urlHost } from './model'
 
-const item = (id: string, kind: AttentionItem['kind'] = 'decision', at_ms = 1): AttentionItem => ({ id, kind, title: id, detail: null, at_ms, task: null, agent: null, session: null, approval: null, decision: null, packet: null, ask: null, turn: null })
+const item = (id: string, kind: AttentionItem['kind'] = 'decision', at_ms = 1, priority: AttentionItem['priority'] = null): AttentionItem => ({ id, kind, title: id, detail: null, at_ms, task: null, agent: null, session: null, approval: null, decision: null, packet: null, ask: null, turn: null, priority, rank: 5 })
 const ptr = (kind: Pointer['kind'], ref: string): Pointer => ({ kind, ref, title: ref, note: null, text: null, root: null })
 
-test('groupItems: Sky’s order, empty groups omitted, newest first inside, hand-offs and secrets share a group', () => {
+test('groupItems: Sky’s order, empty groups omitted, the engine’s order kept inside (132 D4: no at_ms re-sort), hand-offs and secrets share a group', () => {
   const groups = groupItems([item('h', 'handoff', 5), item('a1', 'ask', 10), item('s', 'secret', 50), item('a2', 'ask', 30), item('d', 'decision', 1), item('n', 'node', 2)])
   expect(groups.map((g) => g.key)).toEqual(['decisions', 'questions', 'hand', 'mesh'])
   expect(groups.map((g) => g.label)).toEqual(['Decisions', 'Questions', 'Needs a hand', 'Mesh'])
-  expect(groups[1]?.items.map((i) => i.id)).toEqual(['a2', 'a1'])
-  expect(groups[2]?.items.map((i) => i.id)).toEqual(['s', 'h'])
+  expect(groups[1]?.items.map((i) => i.id)).toEqual(['a1', 'a2'])
+  expect(groups[2]?.items.map((i) => i.id)).toEqual(['h', 's'])
   // 109 §8.3: a resume that needs a human sits with the hand-offs.
   expect(groupItems([item('r', 'resume', 7)]).map((g) => g.key)).toEqual(['hand'])
-  // 130 E3: finished turns are the last group, "Done", newest first.
+  // 130 E3: finished turns are the last group, "Done", in the engine's order.
   const done = groupItems([item('f1', 'finished', 3), item('d', 'decision', 1), item('f2', 'finished', 9)])
   expect(done.map((g) => [g.key, g.label])).toEqual([['decisions', 'Decisions'], ['done', 'Done']])
-  expect(done[1]?.items.map((i) => i.id)).toEqual(['f2', 'f1'])
+  expect(done[1]?.items.map((i) => i.id)).toEqual(['f1', 'f2'])
   expect(groupItems([])).toEqual([])
+})
+
+test('groupItems: 132 D4 — urgent items of every kind form the first group, leaving their kind groups; other priorities stay put', () => {
+  const groups = groupItems([item('d1', 'decision', 9, 'urgent'), item('r1', 'review', 8, 'high'), item('a1', 'ask', 7, 'urgent'), item('d2', 'decision', 6, 'low'), item('b1', 'budget', 5, 'urgent'), item('r2', 'review', 4)])
+  expect(groups.map((g) => [g.key, g.label])).toEqual([['urgent', 'Urgent'], ['decisions', 'Decisions'], ['reviews', 'Reviews']])
+  expect(groups[0]?.items.map((i) => i.id)).toEqual(['d1', 'a1', 'b1'])
+  expect(groups[1]?.items.map((i) => i.id)).toEqual(['d2'])
+  expect(groups[2]?.items.map((i) => i.id)).toEqual(['r1', 'r2'])
+  // Every urgent item → only the Urgent group.
+  expect(groupItems([item('x', 'ask', 1, 'urgent')]).map((g) => g.key)).toEqual(['urgent'])
 })
 
 test('clampText: short text verbatim, long text cut at a word boundary with an ellipsis within the limit', () => {
