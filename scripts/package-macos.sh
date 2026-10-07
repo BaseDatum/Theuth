@@ -9,6 +9,9 @@
 #   3. cargo tauri build --config tauri.bundle.conf.json  (app bundle only)
 #      + libonnxruntime.dylib (Microsoft's release, pinned) into Contents/Frameworks (45 §2.1)
 #      + theuth-app-parser-<hash> and theuth-documents-<version> into Contents/MacOS beside the sidecar
+#      + Theuth Companion.app (130 D11; scripts/bundle-companion.sh when crates/desktop/companion exists)
+#        into Contents/Library/LoginItems — by hand, not `bundle.macOS.files`: the bundler copies those
+#        but never signs them (spike SA §3), and this script's sign order is already manual
 #   4. codesign inside-out (hardened runtime): $THEUTH_SIGN_IDENTITY, else ad-hoc "-"
 #      both helpers get scripts/entitlements-app-parser.plist (Bun JIT); check_sidecar again on
 #      the signed sidecar (library validation must still load the system Swift runtime)
@@ -45,6 +48,11 @@ ORT_SHA256="$ORT_SHA256_OSX_ARM64"
 ORT_TGZ="target/onnxruntime-osx-arm64-${ORT_VERSION}.tgz"
 ENTITLEMENTS="crates/desktop/entitlements.plist"
 HELPER_ENTITLEMENTS="scripts/entitlements-app-parser.plist"
+# 130 D11: the SwiftPM product of scripts/bundle-companion.sh; absent until W1 lands, then nested as a
+# login item (SMAppService needs Contents/Library/LoginItems) and signed before the outer app.
+COMPANION_SRC="target/release/companion/Theuth Companion.app"
+COMPANION_DST="$APP/Contents/Library/LoginItems/Theuth Companion.app"
+COMPANION_ENTITLEMENTS="crates/desktop/companion.entitlements.plist"
 
 # check_sidecar <path>: the daemon links ScreenCaptureKit through Swift bridges (design 27
 # Revision 2026-10-07; spike 121 §6), so its Mach-O references @rpath/libswift_Concurrency.dylib
@@ -74,6 +82,13 @@ build_helper
 echo "==> [1/5] building $DOC_HELPER (bun build --compile)"
 build_doc_helper
 
+if [[ -f crates/desktop/companion/Package.swift ]]; then
+  echo "==> [1/5] building Theuth Companion.app (swift build + bundle)"
+  scripts/bundle-companion.sh
+else
+  echo "==> [1/5] no crates/desktop/companion/Package.swift; skipping the companion build"
+fi
+
 echo "==> [2/5] checking + staging sidecar"
 check_sidecar target/release/t
 mkdir -p crates/desktop/binaries
@@ -102,6 +117,15 @@ rm -f "$APP/Contents/MacOS"/theuth-app-parser-* "$APP/Contents/MacOS"/theuth-doc
 install -m 755 "$HELPER_SRC" "$APP/Contents/MacOS/$HELPER"
 install -m 755 "$DOC_HELPER_SRC" "$APP/Contents/MacOS/$DOC_HELPER"
 
+if [[ -d "$COMPANION_SRC" ]]; then
+  echo "==> [3/5] Theuth Companion.app → Contents/Library/LoginItems"
+  rm -rf "$COMPANION_DST"
+  mkdir -p "$(dirname "$COMPANION_DST")"
+  ditto "$COMPANION_SRC" "$COMPANION_DST"
+else
+  echo "==> [3/5] no $COMPANION_SRC; packaging without the companion"
+fi
+
 VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP/Contents/Info.plist")"
 DMG="$BUNDLE_DIR/theuth_${VERSION}_$(uname -m).dmg"
 
@@ -122,6 +146,13 @@ check_doc_helper "$APP/Contents/MacOS/$DOC_HELPER"
 codesign --force --options runtime $TIMESTAMP_FLAG --sign "$IDENTITY" \
   -i "${BUNDLE_ID}.t" \
   --entitlements "$ENTITLEMENTS" "$APP/Contents/MacOS/t"
+# The companion bundle: `codesign` on a bundle signs its CFBundleExecutable and seals Resources/Info.plist;
+# it has no nested code of its own. Hardened runtime + timestamp are what notarization requires of it.
+if [[ -d "$COMPANION_DST" ]]; then
+  codesign --force --options runtime $TIMESTAMP_FLAG --sign "$IDENTITY" \
+    -i "${BUNDLE_ID}.companion" \
+    --entitlements "$COMPANION_ENTITLEMENTS" "$COMPANION_DST"
+fi
 codesign --force --options runtime $TIMESTAMP_FLAG --sign "$IDENTITY" \
   --entitlements "$ENTITLEMENTS" "$APP"
 codesign --verify --deep --strict --verbose=2 "$APP"
@@ -145,6 +176,7 @@ echo "done:"
 echo "  app: $APP"
 echo "  helper: $APP/Contents/MacOS/$HELPER"
 echo "  documents helper: $APP/Contents/MacOS/$DOC_HELPER"
+[[ -d "$COMPANION_DST" ]] && echo "  companion: $COMPANION_DST"
 echo "  dmg: $DMG"
 if [[ "$IDENTITY" == "-" ]]; then
   echo "  signed: ad-hoc (set THEUTH_SIGN_IDENTITY for a Developer ID build," \
