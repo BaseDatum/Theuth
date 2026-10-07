@@ -54,7 +54,7 @@ observed live with a `QueryObserver(qc, { queryKey: ATTENTION_KEY, enabled: fals
 sidebar's `useAttention` owns the fetch. The `st.approvals.subscribe` badge is gone; companion handling as 130 D8.
 
 D10 Crowded world — `UI/components/settings/sandbox-queries.ts`, `hud/queries.ts`, `attention/queries.ts`
-- `sandbox-queries.ts:236 crowdedFlag()` — `?mock=crowded`. `:249 CROWD` — 60 `[kind, priority, title, detail, agent]`
+- `sandbox-queries.ts:237 crowdedFlag()` — `?mock=crowded`. `:249 CROWD` — 60 `[kind, priority, title, detail, agent]`
   rows: 15 decisions (questions as first lines, byline `who · task`), 12 reviews (outcomes, byline `“task” · by who`),
   6 asks, 5 approvals, 4 shows, 3 hand-offs, 3 secrets, 2 resumes, 2 hires, 2 budgets, 2 blocked, 1 node, 1 double,
   2 finished; every priority on every task-born kind, urgent across six kinds. `:316 ATTENTION_CROWDED` — ids
@@ -74,8 +74,22 @@ D10 Crowded world — `UI/components/settings/sandbox-queries.ts`, `hud/queries.
   New/changed: `model.test.ts` — engine order kept inside groups (`a1,a2`, `h,s`, `f1,f2`), Urgent group first across
   decision/ask/budget while high/low stay in their kinds, the crowded fixture (60 rows, 14 kinds, 4 priorities, Urgent
   group holds every urgent row and only those, nothing lost, ids unique); `double.test.ts` — double rows in engine order.
-- `bun run build` / `vite build`: see the gate line in the final message.
-- Screenshots (vite dev + Chrome): see the final message for paths or the skip note.
+- `bun run build`: the `tsc -b` step stops on the same six non-owned errors; `bunx vite build` alone (under build-lock)
+  succeeds (`✓ built in 3.12s`, the usual >500 kB chunk warning).
+- Smoke (`bunx vite --host 127.0.0.1 --port 5187` with `VITE_THEUTH_URL=ws://127.0.0.1:59231` / the token from
+  `~/.theuth/token`, so the app passes the pairing screen; `?mock=crowded`; the managed headless Chromium — Chrome's own
+  `--headless --screenshot` captured the Pair screen and then hung on exit, as 101 also found). Nothing was clicked that
+  mutates the daemon. Observed: the rail = `Urgent 6` (decision · review · ask · approval · budget · hand-off, each with
+  the `urgent` chip) then `Decisions 14` (a `high` chip visible) …; every row = kind chip · title (the question / the
+  outcome) · byline · `from … · agent · age`; the header count 60 = the sidebar badge 60. `review:crowded-1`: "Next move"
+  with three cards, the recommended one lit; bottom bar = `If wrong — Low — …` · **Approve → Publish the notes** · Send back
+  · `Priority urgent` · Open task · Snooze · Dismiss; tapping the lit card → **Approve → done**, tapping the second →
+  **Approve → Hold for finance**. `decision:crowded-0`: the `If wrong` line sits inside the form above the first option
+  card; the Priority select is in the footer. 390×844: the cards, the callout and the footer wrap; nothing overflows.
+- Screenshots (not committed) in `~/Develop/theuth-132-briefs/shots/`: `132-attention-crowded-1280.webp`
+  (`/attention?mock=crowded`, 1280×900), `132-review-next-moves-1280.webp` (the review scrolled to "Next move", with
+  the bottom bar), `132-review-next-moves-390.webp` (the same at 390×844). WebP because that is what the managed
+  browser's screenshot writes.
 
 ## Deviations from the design
 
