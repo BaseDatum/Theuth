@@ -4,8 +4,10 @@ import { renderToStaticMarkup } from 'react-dom/server'
 import { expect, test } from 'vitest'
 import type { DiagramTokens } from '@/lib/diagram-theme'
 import type { GraphData, Layout } from '@/lib/graph-layout'
-import { adjacencyText, GraphSvg } from './Graph'
+import { adjacencyText, edgeLabelAt, GraphSvg } from './Graph'
 import { parseSpec } from './parse'
+import { fixedLayout as elkFixed, toElk } from '@/lib/graph-layout'
+import { labelBox, LABEL_GAP, truncate } from '@/lib/diagram/label'
 
 const HERE = new URL('./__fixtures__/', import.meta.url)
 const RUST = new URL('../../../../../../surface/fixtures/json-render/', import.meta.url)
@@ -26,9 +28,9 @@ const TOKENS: DiagramTokens = {
   series: ['#b4531e', '#2f5d4a', '#3b5b8c', '#8a6d1f', '#7a3e7a', '#6b5e4f'],
 }
 
-/** The Graph element of a fixture body. */
-function graphOf(name: string): GraphData {
-  const spec = parseSpec(readFileSync(new URL(`${name}.json`, HERE), 'utf8'))
+/** The Graph element of a fixture body (`__fixtures__`, or the surface crate's when `rust`). */
+function graphOf(name: string, rust = false): GraphData {
+  const spec = parseSpec(readFileSync(new URL(`${name}.json`, rust ? RUST : HERE), 'utf8'))
   if ('error' in spec) throw new Error(`${name}: ${spec.error}`)
   const el = Object.values(spec.spec.elements).find((e) => e.type === 'Graph')!
   return el.props as unknown as GraphData
@@ -93,4 +95,70 @@ test('adjacencyText matches the surface crate list at unbounded width', () => {
   expect(adjacencyText(graphOf('graph-architecture'))).toBe(
     'Edge\n  • Browser → API (HTTPS), CDN\n  ○ CDN → API (origin)\nCore\n  • API → Worker (enqueue), Postgres (reads)\n  ◉ Worker → Postgres (writes), Mailer (notify)\n  • Postgres\n✗ Mailer',
   )
+})
+
+// ---- 123 §4.1 extensions (W1) ----
+
+test('valid-graph-extended draws nested groups, boundary dashes, sub/tag/icon, the new kinds, edge state/arrow and the legend', () => {
+  const g = graphOf('valid-graph-extended', true)
+  const html = renderToStaticMarkup(createElement(GraphSvg, { graph: g, layout: elkFixed(toElk(g)), tokens: TOKENS, markerId: 'm' }))
+  // Groups: three compound boxes, the `boundary` one dashed; nested order parent → child (draw order §5.4 #6).
+  expect(html.match(/data-group="/g)?.length).toBe(3)
+  expect(html.indexOf('data-group="cloud"')).toBeLessThan(html.indexOf('data-group="vpc"'))
+  expect(html.indexOf('data-group="vpc"')).toBeLessThan(html.indexOf('data-group="db-net"'))
+  expect(/data-group="cloud"><rect[^>]*stroke-dasharray="6 4"/.test(html)).toBe(true)
+  // Nodes: every unit carries `data-unit` beside `data-node`; `sub` mono, `tag` rx=2, icons inline (no foreignObject).
+  expect(html.match(/data-unit="/g)?.length).toBe(g.nodes.length + g.edges.length)
+  expect(html.match(/data-node="/g)?.length).toBe(g.nodes.length)
+  expect(html).toContain('>:8080</text>')
+  expect(/<g data-tag="SERVICE"><rect[^>]*rx="2"/.test(html)).toBe(true)
+  expect(html.match(/data-icon="/g)?.length).toBe(4)
+  expect(html).not.toContain('foreignObject')
+  // Kinds: hexagon and note are polygons/paths, circle a circle.
+  const node = (id: string) => html.slice(html.indexOf(`data-unit="${id}"`), html.indexOf(`data-unit="${id}"`) + 2000)
+  expect(node('cdn')).toMatch(/<polygon points="[^"]+" fill=/)
+  expect(node('q')).toMatch(/<circle cx=/)
+  expect(node('note')).toMatch(/<path d="M[^"]+Z M/)
+  // Edges: `state: danger` paints the danger colour and heads with its marker; `arrow: both` sets marker-start; `none` sets neither.
+  expect(html).toContain(`stroke="${TOKENS.danger}"`)
+  expect(html.match(/marker-start="url\(#m\)"/g)?.length).toBe(1)
+  expect(html.match(/marker-end="url\(#m\)"/g)?.length).toBe(2)
+  expect(html).not.toContain('marker-end="url(#m-danger)"')
+  // Legend: a bottom strip with one entry per legend item, below the drawing.
+  expect(html.match(/data-legend="/g)?.length).toBe(3)
+  expect(html.indexOf('data-legend=')).toBeGreaterThan(html.lastIndexOf('data-unit='))
+  // Draw order groups → edges → nodes.
+  expect(html.lastIndexOf('data-group=')).toBeLessThan(html.indexOf('marker-end='))
+  expect(html.lastIndexOf('marker-end=')).toBeLessThan(html.indexOf('data-node='))
+  // a11y: role img, title first, desc second.
+  expect(html).toMatch(/<svg[^>]*role="img"[^>]*aria-labelledby="m-title m-desc"/)
+  expect(html).toMatch(/<title id="m-title">Deployment<\/title><desc id="m-desc">Graph: Deployment — 5 nodes<\/desc>/)
+})
+
+test('edge labels sit on a mask off the stroke (§5.4 #2): mask ∩ stroke = ∅ for every labelled edge', () => {
+  const g = graphOf('valid-graph-extended', true)
+  const l = elkFixed(toElk(g))
+  for (const e of l.edges) {
+    const edge = g.edges[e.index]!
+    if (!edge.label) continue
+    const { at, along } = edgeLabelAt(e)
+    const box = labelBox(truncate(edge.label))
+    const cx = along === 'horizontal' ? at.x : at.x - (LABEL_GAP + box.w / 2)
+    const cy = along === 'horizontal' ? at.y - (LABEL_GAP + box.h / 2) : at.y
+    const mask = { x0: cx - box.w / 2, x1: cx + box.w / 2, y0: cy - box.h / 2, y1: cy + box.h / 2 }
+    for (const s of e.sections) {
+      const pts = [s.start, ...s.bends, s.end]
+      for (let i = 1; i < pts.length; i++) {
+        const a = pts[i - 1]!
+        const b = pts[i]!
+        const hits = Math.max(a.x, b.x) >= mask.x0 && Math.min(a.x, b.x) <= mask.x1 && Math.max(a.y, b.y) >= mask.y0 && Math.min(a.y, b.y) <= mask.y1
+        expect(hits, `edge ${e.index} segment ${i} crosses its label mask`).toBe(false)
+      }
+    }
+  }
+})
+
+test('adjacencyText prints sub, tag, nested groups and ✗→ like crates/surface::graph (the w100 golden)', () => {
+  const golden = readFileSync(new URL('../../../../../../surface/tests/golden/valid-graph-extended-w100.txt', import.meta.url), 'utf8')
+  expect(`${adjacencyText(graphOf('valid-graph-extended', true))}\n`).toBe(golden)
 })

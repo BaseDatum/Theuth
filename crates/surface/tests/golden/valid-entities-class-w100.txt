@@ -1,0 +1,37 @@
+Runner classes
+
+Runner              │ interface │ 
+────────────────────┼───────────┼─
+run(turn) -> Result │           │ 
+
+Worker              │ class │ 
+────────────────────┼───────┼─
+id                  │ Uuid  │ 
+queue               │ Queue │ 
+f3                  │ u8    │ 
+f4                  │ u8    │ 
+f5                  │ u8    │ 
+f6                  │ u8    │ 
+f7                  │ u8    │ 
+f8                  │ u8    │ 
+f9                  │ u8    │ 
+f10                 │ u8    │ 
+f11                 │ u8    │ 
+f12                 │ u8    │ 
++2 more             │       │ 
+run(turn) -> Result │       │ 
+stop()              │       │ 
+
+Queue │ class     │ 
+──────┼───────────┼─
+items │ Vec<Turn> │ 
+
+Mode    │ enum │ 
+────────┼──────┼─
+Fast    │      │ 
+Careful │      │ 
+
+Worker ──▷ Runner  (inherits)
+Worker ◆── Queue  (composes)
+Worker ┄┄> Mode  (depends)
+Queue ◇── Worker  (aggregates)

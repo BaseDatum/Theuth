@@ -1,0 +1,20 @@
+{
+  "root": "s",
+  "elements": {
+    "s": {
+      "type": "StateMachine",
+      "props": {
+        "direction": "TB",
+        "states": [
+          { "id": "idle", "label": "Idle", "kind": "initial" },
+          { "id": "poll", "label": "Polling", "sub": "every 5s" },
+          { "id": "stop", "label": "Stopped", "kind": "final" }
+        ],
+        "transitions": [
+          { "from": "idle", "to": "poll", "label": "start" },
+          { "from": "poll", "to": "poll", "label": "tick" }
+        ]
+      }
+    }
+  }
+}

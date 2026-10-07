@@ -1,0 +1,3 @@
+◉ Idle → Polling  start
+• Polling → Polling  tick
+◎ Stopped

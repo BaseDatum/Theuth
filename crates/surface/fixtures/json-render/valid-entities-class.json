@@ -1,0 +1,63 @@
+{
+  "root": "e",
+  "elements": {
+    "e": {
+      "type": "Entities",
+      "props": {
+        "title": "Runner classes",
+        "detail": "class",
+        "entities": [
+          {
+            "id": "runner",
+            "label": "Runner",
+            "kind": "interface",
+            "fields": [],
+            "methods": [{ "name": "run", "sig": "(turn) -> Result" }]
+          },
+          {
+            "id": "worker",
+            "label": "Worker",
+            "kind": "class",
+            "fields": [
+              { "name": "id", "type": "Uuid" },
+              { "name": "queue", "type": "Queue" },
+              { "name": "f3", "type": "u8" },
+              { "name": "f4", "type": "u8" },
+              { "name": "f5", "type": "u8" },
+              { "name": "f6", "type": "u8" },
+              { "name": "f7", "type": "u8" },
+              { "name": "f8", "type": "u8" },
+              { "name": "f9", "type": "u8" },
+              { "name": "f10", "type": "u8" },
+              { "name": "f11", "type": "u8" },
+              { "name": "f12", "type": "u8" },
+              { "name": "f13", "type": "u8" },
+              { "name": "f14", "type": "u8" }
+            ],
+            "methods": [{ "name": "run", "sig": "(turn) -> Result" }, { "name": "stop" }],
+            "state": "active",
+            "ref": "crates/agent/src/worker.rs#L1-L40"
+          },
+          {
+            "id": "queue",
+            "label": "Queue",
+            "kind": "class",
+            "fields": [{ "name": "items", "type": "Vec<Turn>" }]
+          },
+          {
+            "id": "mode",
+            "label": "Mode",
+            "kind": "enum",
+            "fields": [{ "name": "Fast" }, { "name": "Careful" }]
+          }
+        ],
+        "relations": [
+          { "from": "worker", "to": "runner", "kind": "inherits" },
+          { "from": "worker", "to": "queue", "kind": "composes", "from_field": "queue" },
+          { "from": "worker", "to": "mode", "kind": "depends" },
+          { "from": "queue", "to": "worker", "kind": "aggregates" }
+        ]
+      }
+    }
+  }
+}

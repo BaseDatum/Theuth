@@ -113,9 +113,10 @@ export class LayoutTimeout extends Error {
 }
 
 let ctx: CanvasRenderingContext2D | null = null
-/** Text width in the app font at `px` (canvas `measureText`, never `getBBox`). */
+/** Text width in the app font at `px` (canvas `measureText`, never `getBBox`); `0.6 em` per character without a DOM (tests). */
 export function textWidth(text: string, px = FONT_PX): number {
   if (!ctx) {
+    if (typeof document === 'undefined') return text.length * px * 0.6
     ctx = document.createElement('canvas').getContext('2d')
     if (!ctx) return text.length * px * 0.6
   }
