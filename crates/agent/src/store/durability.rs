@@ -1,10 +1,10 @@
 //! Design doc 109 §3: the durability journal on the session store —
 //! `turn_steps`, `tool_calls`, `questions`, `waits`, `jobs`, `pty_screens`
-//! (migration `0033_durability.sql`). Every write is one [`WriteTx`] or
-//! joins the caller's (`*_in`), so `session_log` gets its row (§3.5);
-//! `pty_screens` is the one table left out of `capture::ATTACHED`.
-//! `resume_plan` turns the newest step of an open turn into the
-//! [`ResumePlan`] §4.2 acts on.
+//! (migration `0033_durability.sql`) and `resume_reports` (0035, §8.2).
+//! Every write is one [`WriteTx`] or joins the caller's (`*_in`), so
+//! `session_log` gets its row (§3.5); `pty_screens` is the one table left
+//! out of `capture::ATTACHED`. `resume_plan` turns the newest step of an
+//! open turn into the [`ResumePlan`] §4.2 acts on.
 
 use std::path::PathBuf;
 
@@ -21,7 +21,8 @@ use tools::{
 use super::{InnerCall, Store, insert_in, put_todos};
 use crate::cost::{CallId, CallKind};
 use crate::durability::{
-    CallState, JournaledCall, LastStep, PartialContent, ResumeKind, ResumePlan, StepKind,
+    CallState, JournaledCall, LastStep, PartialContent, ResumeKind, ResumePlan, ResumeReportRow,
+    StepKind,
 };
 use crate::todo::{Todo, TodoSnapshot, TodoSource};
 
@@ -130,7 +131,14 @@ pub(crate) async fn delete_journal_in(
     conn: &mut SqliteConnection,
     sid: &str,
 ) -> anyhow::Result<()> {
-    for table in ["waits", "questions", "tool_calls", "turn_steps", "jobs"] {
+    for table in [
+        "waits",
+        "questions",
+        "tool_calls",
+        "turn_steps",
+        "jobs",
+        "resume_reports",
+    ] {
         // Names are this list's, never input.
         sqlx::query(sqlx::AssertSqlSafe(format!(
             "DELETE FROM {table} WHERE session_id = ?"
@@ -342,6 +350,40 @@ fn job_of(r: JobTuple) -> anyhow::Result<JobRow> {
 
 const JOB_COLS: &str =
     "session_id, id, kind, call_id, command, name, pgid, log, started_ms, state, exit, settled_ms";
+
+type ReportTuple = (
+    String,
+    String,
+    String,
+    String,
+    String,
+    String,
+    String,
+    i64,
+    i64,
+);
+
+fn report_of(session: SessionId, r: ReportTuple) -> anyhow::Result<ResumeReportRow> {
+    let (turn, kind, interrupted_at, at, replayed, interrupted, lost_jobs, restored, handed) = r;
+    Ok(ResumeReportRow {
+        session,
+        turn: parse_turn(&turn)?,
+        kind: ResumeKind::parse(&kind)
+            .ok_or_else(|| anyhow::anyhow!("resume_reports.kind {kind:?}"))?,
+        interrupted_at: parse_dt(&interrupted_at)?,
+        at: parse_dt(&at)?,
+        report: crate::ResumeReport {
+            replayed: serde_json::from_str(&replayed)?,
+            interrupted: serde_json::from_str(&interrupted)?,
+            lost_jobs: serde_json::from_str(&lost_jobs)?,
+            children_restored: u32::try_from(restored).unwrap_or(u32::MAX),
+            children_handed_off: u32::try_from(handed).unwrap_or(u32::MAX),
+        },
+    })
+}
+
+const REPORT_COLS: &str = "turn_id, kind, interrupted_at, at, replayed, interrupted, lost_jobs, \
+     children_restored, children_handed_off";
 
 /// The window that picks each turn's newest non-partial step and its last
 /// activity time (`last_at` includes partial rows).
@@ -1167,6 +1209,71 @@ impl Store {
         ))
     }
 
+    // ---- resume reports (§8.2) ---------------------------------------------
+
+    /// Upsert the `resume_reports` row of `(r.session, r.turn)`: the counts
+    /// the resumed step settled with. Written right before the live
+    /// `ResumeReport` event so a late desktop reads the same numbers.
+    pub async fn resume_report_put(&self, r: &ResumeReportRow) -> anyhow::Result<()> {
+        let mut tx = self.begin_write().await?;
+        sqlx::query(
+            "INSERT INTO resume_reports (session_id, turn_id, kind, interrupted_at, at, replayed, interrupted, \
+                 lost_jobs, children_restored, children_handed_off) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) \
+             ON CONFLICT(session_id, turn_id) DO UPDATE SET kind = excluded.kind, \
+                 interrupted_at = excluded.interrupted_at, at = excluded.at, replayed = excluded.replayed, \
+                 interrupted = excluded.interrupted, lost_jobs = excluded.lost_jobs, \
+                 children_restored = excluded.children_restored, children_handed_off = excluded.children_handed_off",
+        )
+        .bind(r.session.to_string())
+        .bind(r.turn.to_string())
+        .bind(r.kind.as_str())
+        .bind(r.interrupted_at.to_rfc3339())
+        .bind(r.at.to_rfc3339())
+        .bind(serde_json::to_string(&r.report.replayed)?)
+        .bind(serde_json::to_string(&r.report.interrupted)?)
+        .bind(serde_json::to_string(&r.report.lost_jobs)?)
+        .bind(i64::from(r.report.children_restored))
+        .bind(i64::from(r.report.children_handed_off))
+        .execute(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
+    /// The report of `turn`, if it was resumed.
+    pub async fn resume_report(
+        &self,
+        session: SessionId,
+        turn: TurnId,
+    ) -> anyhow::Result<Option<ResumeReportRow>> {
+        let row: Option<ReportTuple> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
+            "SELECT {REPORT_COLS} FROM resume_reports WHERE session_id = ? AND turn_id = ?"
+        )))
+        .bind(session.to_string())
+        .bind(turn.to_string())
+        .fetch_optional(&self.read)
+        .await?;
+        row.map(|r| report_of(session, r)).transpose()
+    }
+
+    /// The report of the session's newest turn (by its last journal
+    /// activity), or `None` when that turn was never resumed: the banner
+    /// a reload shows until the next turn starts.
+    pub async fn latest_resume_report(
+        &self,
+        session: SessionId,
+    ) -> anyhow::Result<Option<ResumeReportRow>> {
+        let row: Option<ReportTuple> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
+            "SELECT {REPORT_COLS} FROM resume_reports WHERE session_id = ?1 AND turn_id = \
+             (SELECT turn_id FROM ({NEWEST}) WHERE rn = 1 AND session_id = ?1 ORDER BY last_at DESC LIMIT 1)"
+        )))
+        .bind(session.to_string())
+        .fetch_optional(&self.read)
+        .await?;
+        row.map(|r| report_of(session, r)).transpose()
+    }
+
     // ---- retention (§3.6) ----------------------------------------------------
 
     /// Delete the journal of every **finished** turn whose last activity is
@@ -1187,12 +1294,15 @@ impl Store {
         .bind(&cutoff)
         .execute(&mut *tx)
         .await?;
-        sqlx::query(sqlx::AssertSqlSafe(format!(
-            "{fin} DELETE FROM tool_calls WHERE (session_id, turn_id) IN (SELECT session_id, turn_id FROM fin)"
-        )))
-        .bind(&cutoff)
-        .execute(&mut *tx)
-        .await?;
+        for table in ["tool_calls", "resume_reports"] {
+            // Names are this list's, never input.
+            sqlx::query(sqlx::AssertSqlSafe(format!(
+                "{fin} DELETE FROM {table} WHERE (session_id, turn_id) IN (SELECT session_id, turn_id FROM fin)"
+            )))
+            .bind(&cutoff)
+            .execute(&mut *tx)
+            .await?;
+        }
         let steps = sqlx::query(sqlx::AssertSqlSafe(format!(
             "{fin} DELETE FROM turn_steps WHERE (session_id, turn_id) IN (SELECT session_id, turn_id FROM fin)"
         )))
@@ -1713,6 +1823,79 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(store.log_after(0).await.unwrap().len(), after_job);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// `resume_reports`: round trip, upsert, `latest` follows the newest
+    /// turn, the row replicates, and prune / delete take it.
+    #[tokio::test]
+    async fn resume_reports_round_trip_latest_and_prune() {
+        let (store, s, dir) = fresh().await;
+        let t = batch_turn(&store, s).await;
+        assert!(store.resume_report(s, t).await.unwrap().is_none());
+        assert!(store.latest_resume_report(s).await.unwrap().is_none());
+        let now = Utc::now();
+        let row = ResumeReportRow {
+            session: s,
+            turn: t,
+            kind: ResumeKind::Suspended,
+            interrupted_at: now - chrono::Duration::seconds(5),
+            at: now,
+            report: crate::ResumeReport {
+                replayed: vec![("c1".into(), "read_file".into())],
+                interrupted: vec![("c2".into(), "write_file".into())],
+                lost_jobs: vec![JobId("j1".into())],
+                children_restored: 1,
+                children_handed_off: 2,
+            },
+        };
+        let before = store.log_after(0).await.unwrap().len();
+        store.resume_report_put(&row).await.unwrap();
+        assert_eq!(store.log_after(0).await.unwrap().len(), before + 1);
+        assert_eq!(store.resume_report(s, t).await.unwrap(), Some(row.clone()));
+        assert_eq!(
+            store.latest_resume_report(s).await.unwrap(),
+            Some(row.clone())
+        );
+        // A second resume of the same turn overwrites.
+        let again = ResumeReportRow {
+            kind: ResumeKind::Interrupted,
+            report: crate::ResumeReport::default(),
+            ..row
+        };
+        store.resume_report_put(&again).await.unwrap();
+        assert_eq!(
+            store.latest_resume_report(s).await.unwrap(),
+            Some(again.clone())
+        );
+        // A newer turn without a report hides it from `latest`, not from `resume_report`.
+        store.finish_turn(s, t, "end_turn").await.unwrap();
+        let t2 = TurnId::new();
+        store
+            .step(s, t2, StepKind::InputAccepted, None, &json!({}))
+            .await
+            .unwrap();
+        assert!(store.latest_resume_report(s).await.unwrap().is_none());
+        assert_eq!(
+            store.resume_report(s, t).await.unwrap(),
+            Some(again.clone())
+        );
+        // Pruning the finished turn takes its report; the open turn's journal stays.
+        assert!(store.journal_prune(0).await.unwrap() > 0);
+        assert!(store.resume_report(s, t).await.unwrap().is_none());
+        assert!(store.resume_plan(s, t2).await.is_ok());
+        // Deleting the session takes the open turn's report with the journal.
+        store
+            .resume_report_put(&ResumeReportRow { turn: t2, ..again })
+            .await
+            .unwrap();
+        assert!(store.latest_resume_report(s).await.unwrap().is_some());
+        store.delete_session(s).await.unwrap();
+        let n: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM resume_reports")
+            .fetch_one(&store.read)
+            .await
+            .unwrap();
+        assert_eq!(n, 0);
         std::fs::remove_dir_all(dir).unwrap();
     }
 }

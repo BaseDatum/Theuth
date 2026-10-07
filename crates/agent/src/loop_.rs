@@ -74,7 +74,8 @@ use crate::continuation::{
 };
 use crate::cost::{CallId, CallKind, CallStatus, CostObservation, Money};
 use crate::durability::{
-    CallState, JournaledCall, LastStep, ResumeKind, ResumePlan, StepKind, crash, crash_point,
+    CallState, JournaledCall, LastStep, ResumeKind, ResumePlan, ResumeReportRow, StepKind, crash,
+    crash_point,
 };
 use crate::frame::{self, Frame, Transport};
 use crate::peers::SpawnSubagentTool;
@@ -3286,7 +3287,7 @@ impl Turn {
         match &plan.last {
             // Row 1: the frame ends in the input; an ordinary round.
             LastStep::InputAccepted | LastStep::Finished => {
-                self.report(turn, Vec::new(), Vec::new()).await;
+                self.report(plan, Vec::new(), Vec::new()).await;
                 None
             }
             // Row 2: re-issue the lost call as `attempt + 1` of the same
@@ -3307,7 +3308,7 @@ impl Turn {
                     tracing::warn!(session = %session, "partial_delete: {e:#}");
                 }
                 *self.resume_call.lock() = Some((request_id.clone(), attempt + 1));
-                self.report(turn, Vec::new(), Vec::new()).await;
+                self.report(plan, Vec::new(), Vec::new()).await;
                 None
             }
             // Rows 3–4: the batch message is missing (the frame still ends in
@@ -3316,7 +3317,7 @@ impl Turn {
             LastStep::ToolBatch { .. } => {
                 let dangling = self.dangling_calls();
                 if dangling.is_empty() || !same_calls(&dangling, &plan.calls) {
-                    self.report(turn, Vec::new(), Vec::new()).await;
+                    self.report(plan, Vec::new(), Vec::new()).await;
                     return None;
                 }
                 Some(self.resume_batch(registry, turn, plan).await)
@@ -3366,7 +3367,7 @@ impl Turn {
         let r = self
             .run_batch(registry, turn, 0, calls, outputs, Some(note))
             .await;
-        self.report(turn, replayed, interrupted).await;
+        self.report(plan, replayed, interrupted).await;
         r
     }
 
@@ -3544,22 +3545,43 @@ impl Turn {
         }
     }
 
-    /// `ResumeReport` (109 §8.2) once the resumed step settled; the job and
+    /// `ResumeReport` (109 §8.2) once the resumed step settled: the row
+    /// first (`resume_reports`, so a desktop that connects later reads the
+    /// same counts from `Loaded.resume`), then the live event. The job and
     /// ACP counts are W2 / W4's.
     async fn report(
         &self,
-        turn: TurnId,
+        plan: &ResumePlan,
         replayed: Vec<(String, String)>,
         interrupted: Vec<(String, String)>,
     ) {
-        self.publish(AgentEvent::ResumeReport {
-            session: self.shared.id,
-            turn,
+        let session = self.shared.id;
+        let report = crate::ResumeReport {
             replayed,
             interrupted,
             lost_jobs: Vec::new(),
             children_restored: 0,
             children_handed_off: 0,
+        };
+        let row = ResumeReportRow {
+            session,
+            turn: plan.turn,
+            kind: plan.kind,
+            interrupted_at: plan.interrupted_at,
+            at: chrono::Utc::now(),
+            report,
+        };
+        if let Err(e) = self.shared.store.resume_report_put(&row).await {
+            tracing::warn!(session = %session, turn = %plan.turn, "resume_report_put: {e:#}");
+        }
+        self.publish(AgentEvent::ResumeReport {
+            session,
+            turn: plan.turn,
+            replayed: row.report.replayed,
+            interrupted: row.report.interrupted,
+            lost_jobs: row.report.lost_jobs,
+            children_restored: row.report.children_restored,
+            children_handed_off: row.report.children_handed_off,
         })
         .await;
     }

@@ -845,8 +845,9 @@ pub struct Loaded {
 }
 
 /// 109 §10.3: [`Loaded.resume`] — the session has an open turn (interrupted
-/// by a crash or suspended by a drain) that resume owns; the banner's state
-/// across a reload. The report rides the live `ResumeReport` event.
+/// by a crash or suspended by a drain) that resume owns, or the last resumed
+/// turn's report until the next turn starts; the banner's state across a
+/// reload.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct ResumeState {
@@ -861,6 +862,28 @@ pub struct ResumeState {
     /// (ask mode). Old engines omit it: `false` keeps "resuming…".
     #[serde(default)]
     pub resumed: bool,
+    /// The counts the resumed step settled with (`resume_reports`), once it
+    /// did; `None` while the resume is still running or for old engines.
+    #[serde(default)]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub report: Option<ResumeReport>,
+}
+
+/// 109 §8.2: what a resumed turn's step settled with — the live
+/// `ResumeReport` event's counts, persisted so a reload still shows them.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+pub struct ResumeReport {
+    /// `(call_id, name)` of calls run as a new attempt.
+    pub replayed: Vec<(String, String)>,
+    /// `(call_id, name)` of rows marked `interrupted`: effect unknown.
+    pub interrupted: Vec<(String, String)>,
+    /// Jobs that died with the engine (§5).
+    pub lost_jobs: Vec<tools::JobId>,
+    /// ACP children restored with `session/load` (§7.3).
+    pub children_restored: u32,
+    /// ACP children replaced by a fresh child with a handoff (§7.3).
+    pub children_handed_off: u32,
 }
 
 /// `ask` → `Vec<AgentInfo>`: the subtree under `session` (children,
