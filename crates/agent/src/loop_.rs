@@ -85,9 +85,11 @@ use crate::store::durability::BatchRow;
 use crate::supervisor::{Auth, PeerContext, Roster};
 use crate::title;
 use crate::vision::{self, VisionImage, VisionSource, VisionStatus};
+use crate::advisor::{self, ADVISORS_ACTOR, Advisors};
 use crate::{
-    AGENT_ACTOR, AgentConfig, AgentEvent, Agents, CompactStyle, QueuedInput, SurfaceConfig,
-    Toolset, Usage, VisionStage, attach, clock, compact, skills, spill, todo,
+    AGENT_ACTOR, AgentConfig, AgentEvent, Agents, AppendAdvisory, Advisory, CompactStyle,
+    QueuedInput, SessionKind, SetAdvisorOn, SurfaceConfig, Toolset, Usage, VisionStage, attach,
+    clock, compact, skills, spill, todo,
 };
 
 /// Characters of tool output shown in [`AgentEvent::ToolCallFinished`] (and
@@ -166,6 +168,13 @@ pub struct Input {
     pub peer: Option<PeerMeta>,
     /// See [`UserInput::defer`]; read only while queued.
     pub defer: bool,
+    /// 125 §4.10: the typed card this row carries (`messages.advisory`);
+    /// `None` for every ordinary input.
+    pub advisory: Option<Advisory>,
+    /// 125 §4.10: an aside/preserve — lands at the next batch boundary like a
+    /// steer but never opens a turn on its own (`next_batch` appends
+    /// passive-only leftovers without one).
+    pub passive: bool,
 }
 
 /// The durable exchange and admitted generation behind a peer input. Rides
@@ -694,6 +703,12 @@ struct Shared {
     /// 109 §9.2: set by [`Draining`] — no new model call opens in this
     /// session; the running turn stops `suspended` at its next round.
     draining: Arc<std::sync::atomic::AtomicBool>,
+    /// 125 §4.1: the session's kind — an advisor skips knowledge/todo rows
+    /// and compaction, gets `advise` and the advisor baseline.
+    kind: SessionKind,
+    /// 125 §4.1 item 4: an advisor is linked to this session; the two step
+    /// hooks cost one atomic load when it is not.
+    advisor: Arc<std::sync::atomic::AtomicBool>,
 }
 
 /// The model, what streams it (12 §6) and the resolution error of the
@@ -809,6 +824,8 @@ impl Session {
                 permit: Arc::default(),
                 keep: Arc::default(),
                 draining: Arc::default(),
+                kind: SessionKind::Chat,
+                advisor: Arc::default(),
                 catalog,
                 pool,
                 knowledge: None,
@@ -822,6 +839,19 @@ impl Session {
             scope: TurnScope::default(),
             gated: false,
         }
+    }
+
+    /// 125 §4.1: this session is the hidden advisor child (`kind = advisor`).
+    pub(crate) fn with_kind(mut self, kind: SessionKind) -> Self {
+        self.shared.kind = kind;
+        self
+    }
+
+    /// 125 §4.1 item 4: whether an advisor link exists for this session now;
+    /// [`SetAdvisorOn`] moves it later.
+    pub(crate) fn with_advisor(self, on: bool) -> Self {
+        self.shared.advisor.store(on, Ordering::Relaxed);
+        self
     }
 
     /// 47 §4.2: a task owns the state from here; tell the supervisor before
@@ -956,6 +986,29 @@ impl Session {
         // 48 §4.4: restored rows bring their masks back; old views must not act on them.
         self.publish_revision("rewind").await;
         Ok(text.lines().next().unwrap_or("").chars().take(80).collect())
+    }
+
+    /// 125 §4.10 passive channel, idle path: append the Advisory row to the
+    /// store and to the idle state's history without a turn, then announce
+    /// it. Callers check `idle()` first.
+    async fn append_advisory_idle(&mut self, advisory: Advisory, text: String) {
+        let id = self.shared.id;
+        match self.shared.store.append_advisory(id, &text, &advisory).await {
+            Ok(seq) => {
+                if let Some(state) = self.state.as_mut() {
+                    state.history.push((seq, ChatMessage::user(text)));
+                }
+                self.shared
+                    .rt
+                    .publish(AgentEvent::AdvisoryAdded {
+                        session: id,
+                        seq,
+                        advisory,
+                    })
+                    .await;
+            }
+            Err(e) => tracing::warn!(session = %id, "append_advisory: {e:#}"),
+        }
     }
 
     /// The next turn's inputs (50 §6.3): the oldest queued input and every
@@ -1190,6 +1243,8 @@ impl Message<UserInput> for Session {
             scope,
             peer: None,
             defer,
+            advisory: None,
+            passive: false,
         };
         if self.inflight.is_none() {
             let me = ctx.actor_ref().clone();
@@ -1273,6 +1328,8 @@ impl Message<PeerInput> for Session {
                 isolated: m.isolated,
             }),
             defer: false,
+            advisory: None,
+            passive: false,
         };
         if self.inflight.is_none() {
             let me = ctx.actor_ref().clone();
@@ -1706,6 +1763,8 @@ impl Message<RestartTurn> for Session {
                 scope: None,
                 peer: None,
                 defer: false,
+                advisory: None,
+                passive: false,
             },
             None => {
                 let opener = store
@@ -1722,6 +1781,8 @@ impl Message<RestartTurn> for Session {
                     scope: None,
                     peer: None,
                     defer: false,
+                    advisory: None,
+                    passive: false,
                 }
             }
         };
@@ -1743,7 +1804,125 @@ impl Message<CancelTurn> for Session {
         if let Some(c) = &self.inflight {
             *self.shared.keep.lock() = m.keep;
             c.cancel();
+            // 125 §4.10: the user's Stop preserves queued advisor steers as
+            // cards — they land passively, nothing auto-resumes (D4).
+            for (_, input) in self
+                .shared
+                .steer
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .iter_mut()
+            {
+                if input.advisory.is_some() {
+                    input.passive = true;
+                }
+            }
         }
+    }
+}
+
+impl Message<SetAdvisorOn> for Session {
+    type Reply = ();
+
+    async fn handle(&mut self, SetAdvisorOn(on): SetAdvisorOn, _: &mut Context<Self, Self::Reply>) {
+        self.shared.advisor.store(on, Ordering::Relaxed);
+    }
+}
+
+/// `tell` (125 §4.10): an advisor steer — a concern outside the immune
+/// window or a blocker. Busy: lands after the current tool batch. Idle: a
+/// blocker opens a turn now; a concern joins queued inputs when there are
+/// any, else it is preserved as a card only (the tail was a terminal answer).
+pub struct SteerAdvisory {
+    pub advisory: Advisory,
+    pub text: String,
+    /// The supervisor's admission for the turn this may open.
+    pub ticket: Option<InputTicket>,
+}
+
+impl Message<AppendAdvisory> for Session {
+    type Reply = ();
+
+    async fn handle(&mut self, m: AppendAdvisory, _: &mut Context<Self, Self::Reply>) {
+        if self.idle() {
+            self.append_advisory_idle(m.advisory, m.text).await;
+            return;
+        }
+        self.shared
+            .steer
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .push((None, advisory_input(m.advisory, m.text, None, true)));
+    }
+}
+
+impl Message<SteerAdvisory> for Session {
+    type Reply = ();
+
+    async fn handle(&mut self, m: SteerAdvisory, ctx: &mut Context<Self, Self::Reply>) {
+        let blocker = m
+            .advisory
+            .notes
+            .iter()
+            .any(|n| n.severity == crate::AdvisorSeverity::Blocker);
+        if self.inflight.is_some() {
+            self.shared
+                .steer
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .push((None, advisory_input(m.advisory, m.text, m.ticket, false)));
+            return;
+        }
+        let queued = !self
+            .shared
+            .steer
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .is_empty();
+        if blocker || queued {
+            let input = advisory_input(m.advisory, m.text, m.ticket, false);
+            if queued && !blocker {
+                // Joins the waiting inputs' turn (`next_batch` orders it with them).
+                self.shared
+                    .steer
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .push((None, input));
+                return;
+            }
+            let me = ctx.actor_ref().clone();
+            self.start_turn(vec![(None, input)], &me).await;
+            return;
+        }
+        // Preserve: card only; it enters the context with the next user input.
+        if let Some(ticket) = m.ticket {
+            continuation::notify(InputDropped {
+                session: self.shared.id,
+                ticket,
+            })
+            .await;
+        }
+        self.append_advisory_idle(m.advisory, m.text).await;
+    }
+}
+
+/// An [`Input`] carrying an Advisory card.
+fn advisory_input(
+    advisory: Advisory,
+    text: String,
+    ticket: Option<InputTicket>,
+    passive: bool,
+) -> Input {
+    Input {
+        text,
+        files: Vec::new(),
+        replay: None,
+        ticket,
+        scope: None,
+        peer: None,
+        defer: false,
+        advisory: Some(advisory),
+        passive,
     }
 }
 
@@ -1952,6 +2131,16 @@ impl Message<TurnDone> for Session {
                 self.publish_revision("settled").await;
                 return;
             };
+            // 125 §4.10: passive-only leftovers (asides, preserved steers)
+            // are appended without a turn; anything else starts the batch.
+            if batch.iter().all(|(_, i)| i.passive) {
+                for (_, input) in batch {
+                    if let Some(advisory) = input.advisory {
+                        self.append_advisory_idle(advisory, input.text).await;
+                    }
+                }
+                continue;
+            }
             if self.start_turn(batch, &me).await {
                 return;
             }
@@ -2730,6 +2919,54 @@ impl Turn {
         self.shared.rt.publish(event).await;
     }
 
+    /// 125 §4.1 item 4 / §4.12: tell the `Advisors` actor one agent-core step
+    /// landed. One atomic load when no advisor is linked. Mid-turn
+    /// (`will_continue`) is fire-and-forget; the terminal step `ask`s and
+    /// waits at most [`advisor::CATCH_UP_WAIT`] — the actor replies at once
+    /// unless `advisor.sync_backlog` parks it.
+    async fn advisor_step(&self, will_continue: bool) {
+        if self.shared.kind != SessionKind::Chat || !self.shared.advisor.load(Ordering::Relaxed)
+        {
+            return;
+        }
+        let Some(advisors) = ActorRef::<Advisors>::lookup(ADVISORS_ACTOR).ok().flatten() else {
+            return;
+        };
+        let step = advisor::AdvisorStep {
+            session: self.shared.id,
+            turn: self.first_seq,
+            will_continue,
+        };
+        if will_continue {
+            let _ = advisors.tell(step).await;
+        } else {
+            let _ = tokio::time::timeout(advisor::CATCH_UP_WAIT, advisors.ask(step)).await;
+        }
+    }
+
+    /// 125 §4.8: the loop-local `advise` tool of an advisor session; the ack
+    /// string comes from the guard inside `Advisors`.
+    async fn advise(&self, args: &serde_json::Value) -> ToolOutput {
+        let (note, severity) = match advisor::advise::parse(args) {
+            Ok(p) => p,
+            Err(e) => return ToolOutput::err(format!("advise: {e}")),
+        };
+        let Some(advisors) = ActorRef::<Advisors>::lookup(ADVISORS_ACTOR).ok().flatten() else {
+            return ToolOutput::err("advisor actor not running".into());
+        };
+        match advisors
+            .ask(advisor::Advise {
+                advisor: self.shared.id,
+                note,
+                severity,
+            })
+            .await
+        {
+            Ok(ack) => ToolOutput::ok(ack),
+            Err(e) => ToolOutput::err(format!("advise: {e}")),
+        }
+    }
+
     /// Surface a failure: durable first (history replaces live rows on
     /// reload), then the live event. A refused write only logs — never back
     /// through [`Turn::persist`], whose own failure lands here.
@@ -3394,20 +3631,28 @@ impl Turn {
             .unwrap_or_else(|p| p.into_inner())
             .as_ref()
             .map(|r| r.id.clone());
-        let mut baseline = frame::baseline(
-            &self.shared.rt.data_dir,
-            identity.as_deref(),
-            &peer_line,
-            &blocks,
-            claude_code,
-            subagent_model.as_deref(),
-            attended,
-        );
+        let advisor = self.shared.kind == SessionKind::Advisor;
+        // 125 §5.1: the advisor's prompt is its identity plus the header
+        // lines — no skills, peers, plugin blocks or guidance.
+        let mut baseline = if advisor {
+            frame::advisor_baseline(identity.as_deref().unwrap_or_default())
+        } else {
+            frame::baseline(
+                &self.shared.rt.data_dir,
+                identity.as_deref(),
+                &peer_line,
+                &blocks,
+                claude_code,
+                subagent_model.as_deref(),
+                attended,
+                self.shared.advisor.load(Ordering::Relaxed),
+            )
+        };
         // The index and the bridge set come from one filter over one `ListTools`:
         // a name hidden this turn (risk cap, communication off, flapping MCP) is
         // in neither.
         self.runtime_names.clear();
-        if self.shared.pool.is_some() && toolset.as_ref().is_none_or(|t| t.runtime) {
+        if !advisor && self.shared.pool.is_some() && toolset.as_ref().is_none_or(|t| t.runtime) {
             baseline.push_str("\n\n");
             baseline.push_str(&repl::prompt_block(&specs, self.shared.cfg.runtime_only));
             for s in repl::indexed(&specs, self.shared.cfg.runtime_only) {
@@ -3427,16 +3672,20 @@ impl Turn {
             }
             self.state.baseline = baseline;
         }
-        self.tools = direct_specs(
+        let mut specs = direct_specs(
             specs,
             self.shared.pool.is_some(),
             self.shared.cfg.runtime_only,
             self.shared.depth < self.shared.cfg.subagents.max_depth,
             toolset.as_ref(),
-        )
-        .into_iter()
-        .map(direct_tool)
-        .collect();
+        );
+        // 125 §4.1: the advisor gets `advise` and no `todo`.
+        if advisor {
+            specs.retain(|s| s.name != todo::NAME);
+            specs.push(advisor::advise::spec());
+            specs.sort_by(|a, b| a.name.cmp(&b.name));
+        }
+        self.tools = specs.into_iter().map(direct_tool).collect();
     }
 
     /// Cache marks for `current`'s provider; resolved once per model per turn (07 §3).
@@ -3818,8 +4067,11 @@ impl Turn {
         let ticket = input.ticket;
         let peer = input.peer.take();
         let replayed = input.replay.is_some();
+        let advisory = input.advisory.take();
         let msg = match input.replay.take() {
             Some(m) => m,
+            // 125 §5.4: an advisory row is the card text verbatim — no clock stamp.
+            None if advisory.is_some() => ChatMessage::user(std::mem::take(&mut input.text)),
             None => {
                 clock::prepend_due(
                     &mut input.text,
@@ -3834,8 +4086,38 @@ impl Turn {
         }
         // 109 §3.3 step 1: the user row and `input_accepted` in one
         // transaction; a mini-turn (`turn: None`) takes no input.
-        let stored = match self.turn {
-            Some(turn) => {
+        let stored = match (self.turn, advisory) {
+            // 125 §4.10: the row with its `messages.advisory` metadata, then
+            // the journal step; announced as an Advisory card, not a user echo.
+            (turn, Some(advisory)) => {
+                let text = text_of(&msg.content);
+                let r = self
+                    .shared
+                    .store
+                    .append_advisory(self.shared.id, &text, &advisory)
+                    .await;
+                if let (Ok(_), Some(turn)) = (&r, turn)
+                    && let Err(e) = self
+                        .shared
+                        .store
+                        .input_accepted(self.shared.id, turn, None, "advisory")
+                        .await
+                {
+                    tracing::warn!(session = %self.shared.id, "input_accepted: {e:#}");
+                }
+                let seq = r.as_ref().ok().copied();
+                let stored = self.record(msg, r).await;
+                if let Some(seq) = seq {
+                    self.publish(AgentEvent::AdvisoryAdded {
+                        session: self.shared.id,
+                        seq,
+                        advisory,
+                    })
+                    .await;
+                }
+                stored
+            }
+            (Some(turn), None) => {
                 crash_point(crash::INPUT_BEFORE_PERSIST);
                 let source = if replayed { "replay" } else { "user" };
                 let r = self
@@ -3847,7 +4129,7 @@ impl Turn {
                 crash_point(crash::INPUT_AFTER_PERSIST);
                 stored
             }
-            None => self.persist(msg).await,
+            (None, None) => self.persist(msg).await,
         };
         if let (Some(ticket), Some(turn)) = (ticket, self.turn)
             && stored
@@ -4118,6 +4400,9 @@ impl Turn {
                     match outcome {
                         Round::Tools => {
                             rounds += 1;
+                            // 125 §4.1 item 4: the mid-turn hook — the batch's rows
+                            // are in the store; never waits.
+                            self.advisor_step(true).await;
                             let max = self.shared.cfg.max_tool_rounds;
                             if rounds >= max {
                                 // 36 §5: land, don't crash — one more call, text expected.
@@ -4238,6 +4523,10 @@ impl Turn {
             }
             crash_point(crash::TURN_AFTER_FINISHED);
         }
+        // 125 §4.12: the terminal hook, with the optional catch-up wait,
+        // before `TurnFinished` so a late blocker opens a turn instead of
+        // racing the event.
+        self.advisor_step(false).await;
         // 50 §6.3/§7: the turn's own result, by TurnId — never "assistant text
         // since the latest user row" — after its final persist and before the
         // event one-shot clients exit on. Every model turn reports; the
@@ -4493,7 +4782,10 @@ impl Turn {
             .sum();
         let projected = self.state.used + appended;
         tracing::debug!(session = %self.shared.id, round, window, used = self.state.used, appended, projected, "trigger check");
-        if let Some(limit) = self.threshold(window) {
+        // 125 §4.1/§4.7: an advisor never compacts or gets harness rows — the
+        // `Advisors` actor re-primes it from its `ContextUsed` instead.
+        let chat = self.shared.kind == SessionKind::Chat;
+        if let Some(limit) = self.threshold(window).filter(|_| chat) {
             // Pressure is measured against the window (the configured fraction) or,
             // under a token override, against the override itself.
             let span = if self.override_tokens().is_some() {
@@ -4559,7 +4851,8 @@ impl Turn {
                 self.state.pressure_sent = true;
             }
         }
-        if todo::actionable(&self.state.todos)
+        if chat
+            && todo::actionable(&self.state.todos)
             && round - self.state.todo_touched_round >= todo::TODO_REMIND_ROUNDS
         {
             let list = todo::render(&self.state.todos);
@@ -4577,7 +4870,8 @@ impl Turn {
             .as_ref()
             .and_then(|t| t.hint_limit)
             .unwrap_or(cfg.hint_limit);
-        if hint_limit > 0
+        if chat
+            && hint_limit > 0
             && let Some(knowledge) = self.knowledge()
         {
             let query = if round == 0 {
@@ -4670,7 +4964,7 @@ impl Turn {
             }
             Err(Abort::Model(e)) => {
                 // 07 §8.5: one forced compaction per turn, then retry the round.
-                if compact::is_overflow(&e) && !self.overflowed {
+                if chat && compact::is_overflow(&e) && !self.overflowed {
                     self.overflowed = true;
                     // 36 §6.6: the overflowing projection bounds an unknown window.
                     if self.window(&current.model) == 0 {
@@ -4961,7 +5255,10 @@ impl Turn {
         // `## Runtime` index and guessed as a direct call is bridged into a
         // `python` cell under the same call_id - the repl's own policy path
         // (86 RUNTIME-BRIDGE); anything else is refused.
-        let local = |name: &str| name == todo::NAME || name == repl::NAME;
+        let advisor = self.shared.kind == SessionKind::Advisor;
+        let local = |name: &str| {
+            name == todo::NAME || name == repl::NAME || (advisor && name == advisor::advise::NAME)
+        };
         let mut bridged: Vec<Option<String>> = vec![None; calls.len()];
         for (i, c) in calls.iter_mut().enumerate() {
             if outputs[i].is_some() || self.tools.iter().any(|t| t.name.as_str() == c.fn_name) {
@@ -5026,7 +5323,9 @@ impl Turn {
             crash_point(&crash::call_point(i, crash::CALL_BEFORE_STARTED));
             self.journal_started(&call.call_id).await;
             crash_point(&crash::call_point(i, crash::CALL_AFTER_STARTED));
-            let out = if call.fn_name == todo::NAME {
+            let out = if advisor && call.fn_name == advisor::advise::NAME {
+                self.advise(&call.fn_arguments).await
+            } else if call.fn_name == todo::NAME {
                 self.state.todo_touched_round = round;
                 let work = plan.get_or_insert_with(|| self.state.todos.clone());
                 Self::todo(work, call.fn_arguments.clone())
@@ -7401,7 +7700,7 @@ mod tests {
         let data_dir = std::env::temp_dir().join(format!("theuth-prompt-{}", uuid::Uuid::new_v4()));
         let skills_dir = skills::dir(&data_dir);
         std::fs::create_dir_all(&skills_dir).unwrap();
-        let bare = frame::baseline(&data_dir, None, "", "", false, None, true);
+        let bare = frame::baseline(&data_dir, None, "", "", false, None, true, false);
         assert!(bare.starts_with("You are theuth, a meta-harness"));
         assert!(!bare.contains("## Skills"));
 
@@ -7420,6 +7719,7 @@ mod tests {
             false,
             None,
             true,
+            false,
         );
         std::fs::remove_dir_all(&data_dir).unwrap();
 
@@ -7469,6 +7769,8 @@ mod tests {
                 isolated,
             }),
             defer: false,
+            advisory: None,
+            passive: false,
         }
     }
 
@@ -7481,6 +7783,8 @@ mod tests {
             scope,
             peer: None,
             defer: false,
+            advisory: None,
+            passive: false,
         }
     }
 

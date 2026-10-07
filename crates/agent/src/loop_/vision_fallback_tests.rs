@@ -546,6 +546,8 @@ impl Harness {
             scope: None,
             peer: None,
             defer: false,
+            advisory: None,
+            passive: false,
         }
     }
 
