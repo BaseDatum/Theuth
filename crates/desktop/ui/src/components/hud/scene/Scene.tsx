@@ -1,10 +1,9 @@
 import { Link } from '@tanstack/react-router'
-import { type CSSProperties, type ReactNode, type RefObject, type SVGProps, useEffect, useMemo, useRef, useState } from 'react'
+import { type CSSProperties, Fragment, type ReactNode, type RefObject, type SVGProps, useEffect, useMemo, useRef, useState } from 'react'
 import { age } from '@/components/tasks/helpers'
 import { cn } from '@/lib/utils'
-import { C, type Color, FIELD_H, fieldHeight, type Flow, fmtUsd, hhmm, hhmmss, MIX_ORDER, type Hairline, type Need, type OutcomeMix, type PunchCard, type Ring, type SceneData, type SceneModel, type SpendOwnerRow, type SpendPanelModel, type Target, actorLabel, ctxTitle, GAUGE_R, gaugeEnd, gaugePath, ringColor, ringDashed, ringDots, SAT_MAX, satPoint, scene, streamColor, streamLink, truncate, W } from './model'
+import { type Board, C, type Color, FIELD_H, fieldHeight, type Flow, fmtUsd, hhmm, hhmmss, type Hairline, type Need, type PunchCard, type Ring, type SceneData, type SceneModel, type SpendOwnerRow, type SpendPanelModel, type Target, actorLabel, ctxTitle, GAUGE_R, gaugeEnd, gaugePath, projectLine, ringColor, ringDashed, ringDots, SAT_MAX, satPoint, scene, streamColor, streamLink, truncate, W, waffle, WAFFLE_CELLS } from './model'
 import type { ActivityEntry } from '@/rpc/bindings/ActivityEntry'
-import type { Task } from '@/rpc/bindings/Task'
 
 /**
  * 128 HUD-SCENE: the visual overview on `/` (≥ md). The flow field is one SVG over a canvas (the grey hairlines) that
@@ -140,6 +139,9 @@ export function linkFor(target: Target, children: ReactNode, className?: string,
     case 'tasks':
       // The Board-pulse chips' search; a `null` state is the bare board (the route recalls this device's last filters).
       return <Link to="/tasks" search={target.state === null ? {} : { state: target.state, project: '' }} {...p} />
+    case 'tasks-project':
+      // Revision 6: the BOARD panel's project line. The board has no "no project" filter (`project: ''` is all projects), so `unfiled` opens the bare board.
+      return <Link to="/tasks" search={target.project === null ? {} : { project: target.project }} {...p} />
     case 'attention-list':
       return <Link to="/attention" {...p} />
     case 'new':
@@ -249,41 +251,55 @@ export function ArrivalsPanel({ punch, now }: { punch: PunchCard; now: number })
   )
 }
 
-/** The waffle of today's moves; each legend row opens that board column, the dim line under it the backlog/todo columns, the big number the board. */
-export function OutcomesPanel({ mix, tasks }: { mix: OutcomeMix; tasks: readonly Task[] }) {
-  const total = MIX_ORDER.reduce((s, m) => s + mix[m.key], 0)
-  const scale = total > 60 ? 60 / total : 1
-  const fills: Color[] = []
-  for (const m of MIX_ORDER) for (let i = 0; i < Math.round(mix[m.key] * scale) && fills.length < 60; i++) fills.push(m.color)
-  const backlog = tasks.filter((t) => t.state === 'backlog').length
-  const todo = tasks.filter((t) => t.state === 'todo').length
+/**
+ * Revision 6: the whole board, every project. The waffle is one cell per task in board order (scaled by `waffle` past 60), the
+ * legend one row per state with its all-time count (each opens that column), the big number the board's size, the bottom line
+ * the projects by task count (each opens that project's board), and under the waffle today's movement.
+ */
+export function BoardPanel({ board }: { board: Board }) {
+  const fills: { color: Color; opacity?: number }[] = []
+  waffle(board.byState.map((s) => s.n)).forEach((n, i) => {
+    const s = board.byState[i]!
+    for (let k = 0; k < n; k++) fills.push(s)
+  })
+  const line = projectLine(board.projects)
   return (
-    <Panel title="OUTCOMES" meta={`OF ${total}`} big={String(total)} bigLink={{ route: 'tasks', state: null }}>
-      {Array.from({ length: 60 }, (_, i) => {
-        const fill = fills[i]
-        return <circle key={i} cx={20 + 14 * (i % 10)} cy={50 + 14 * Math.floor(i / 10)} r={3.2} fill={fill ?? 'none'} stroke={fill ? undefined : C.borderStrong} strokeWidth={1} />
+    <Panel title="BOARD" meta={`${board.projects.length} PROJECTS`} big={String(board.total)} bigLink={{ route: 'tasks', state: null }}>
+      {Array.from({ length: WAFFLE_CELLS }, (_, i) => {
+        const f = fills[i]
+        return <circle key={i} cx={20 + 14 * (i % 10)} cy={50 + 14 * Math.floor(i / 10)} r={3.2} fill={f?.color ?? 'none'} fillOpacity={f?.opacity} stroke={f ? undefined : C.borderStrong} strokeWidth={1} />
       })}
-      {MIX_ORDER.map((m, k) => (
-        <To key={m.key} target={{ route: 'tasks', state: m.state }} title={`${mix[m.key]} ${m.key} · open the board at ${m.state}`}>
-          <circle cx={186} cy={49 + 18 * k} r={2.5} fill={m.color} />
-          <text x={196} y={52 + 18 * k} fontSize={10} fill={C.secondary}>
-            {m.key}
+      {board.byState.map((s, k) => (
+        <To key={s.state} target={{ route: 'tasks', state: s.state }} title={`${s.n} ${s.state} · open the board at ${s.state}`}>
+          <circle cx={186} cy={49 + 14 * k} r={2.5} fill={s.color} fillOpacity={s.opacity} />
+          <text x={196} y={52 + 14 * k} fontSize={10} fill={C.secondary}>
+            {s.state}
           </text>
-          <text x={338} y={52 + 18 * k} fontSize={10} fill={C.primary} textAnchor="end">
-            {mix[m.key]}
+          <text x={338} y={52 + 14 * k} fontSize={10} fill={C.primary} textAnchor="end">
+            {s.n}
           </text>
         </To>
       ))}
-      <To target={{ route: 'tasks', state: 'backlog' }} title={`${backlog} in the backlog`}>
-        <text x={196} y={148} fontSize={9} fill={C.tertiary}>
-          {backlog} backlog
+      <To target={{ route: 'tasks', state: null }} title={`${board.movedToday} tasks changed since midnight · open the board`}>
+        <text x={20} y={136} fontSize={9} fill={C.tertiary}>
+          {board.movedToday} moved today
         </text>
       </To>
-      <To target={{ route: 'tasks', state: 'todo' }} title={`${todo} to do`}>
-        <text x={338} y={148} fontSize={9} fill={C.tertiary} textAnchor="end">
-          {todo} todo
-        </text>
-      </To>
+      <text x={20} y={148} fontSize={9} fill={C.tertiary} data-projects>
+        {line.shown.map((p, i) => (
+          <Fragment key={p.name ?? ''}>
+            {i > 0 && <tspan> · </tspan>}
+            {linkFor(
+              { route: 'tasks-project', project: p.name },
+              <>
+                <title>{p.name === null ? `${p.n} tasks in no project · open the board` : `${p.n} tasks · open the board at ${p.name}`}</title>
+                <tspan>{p.label}</tspan>
+              </>,
+            )}
+          </Fragment>
+        ))}
+        {line.more > 0 && <tspan> +{line.more}</tspan>}
+      </text>
     </Panel>
   )
 }
@@ -449,7 +465,7 @@ export function Panels({ data, m, now, stream }: { data: SceneData; m: SceneMode
         <ArrivalsPanel punch={m.punch} now={now} />
       </PanelSvg>
       <PanelSvg>
-        <OutcomesPanel mix={m.mix} tasks={data.tasks ?? []} />
+        <BoardPanel board={m.board} />
       </PanelSvg>
       <PanelSvg>
         <SpendPanel p={m.spend} />
