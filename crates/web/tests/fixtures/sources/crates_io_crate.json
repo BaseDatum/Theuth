@@ -1,0 +1,26 @@
+{
+  "crate": {
+    "id": "widgets",
+    "name": "widgets",
+    "updated_at": "2026-09-30T12:00:00.000000Z",
+    "created_at": "2024-01-01T00:00:00.000000Z",
+    "downloads": 1234567,
+    "recent_downloads": 45678,
+    "max_version": "0.9.0-rc.1",
+    "max_stable_version": "0.8.3",
+    "newest_version": "0.9.0-rc.1",
+    "description": "Widget pipelines for Rust.",
+    "homepage": "https://acme.test/widgets-rs",
+    "documentation": "https://docs.rs/widgets",
+    "repository": "https://github.com/acme/widgets-rs",
+    "keywords": ["widgets", "pipeline", "yaml"],
+    "categories": ["development-tools"]
+  },
+  "versions": [],
+  "keywords": [
+    { "id": "widgets", "keyword": "widgets", "crates_cnt": 12 },
+    { "id": "pipeline", "keyword": "pipeline", "crates_cnt": 300 },
+    { "id": "yaml", "keyword": "yaml", "crates_cnt": 150 }
+  ],
+  "categories": []
+}

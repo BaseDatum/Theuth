@@ -1,0 +1,24 @@
+{
+  "issue": null,
+  "tier_hint": "fetch",
+  "method": "main",
+  "min_words": 350,
+  "must_contain": [
+    "# Deploying the engine",
+    "## Prerequisites",
+    "## Install",
+    "## Configure",
+    "## Run as a service",
+    "## Troubleshooting",
+    "```bash",
+    "```rust",
+    "engine --version",
+    "Config::load(\"/etc/engine/config.yaml\")"
+  ],
+  "must_not_contain": [
+    "Quickstart",
+    "Search docs",
+    "Edit this page",
+    "Privacy"
+  ]
+}

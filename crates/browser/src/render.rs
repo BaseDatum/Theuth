@@ -125,6 +125,7 @@ impl Provider for ObscuraRender {
             title: title.map(str::to_owned),
             markdown,
             tier: "render".into(),
+            issue: None,
         })
     }
 }

@@ -1,14 +1,34 @@
-//! Fetch adapter and two-tier engine pick (38 §0.3, §3).
+//! Fetch adapter and the engine ladder `fetch → issue → island → render`
+//! (38 §0.3, §3; 122 D1 scrape side, D8 render tier, D9, D11 wiring).
 
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
 use kameo::actor::ActorRef;
+use reqwest::header::HeaderMap;
 use runtime::{Runtime, SessionId};
 use serde_json::{Value, json};
+use url::Url;
+use web::excerpt::{is_noise, prose_chars};
+use web::fetch::client::ClientKind;
+use web::fetch::issue::{IssueKind, Next, PageIssue};
+use web::fetch::meta::PageMeta;
 use web::fetch::{FetchError, Fetcher};
+use web::sources::ApiSource;
+use web::tools::Source;
 
 use crate::ScrapeConfig;
+
+/// Prose the island rung must recover before it replaces the render tier (122 D9).
+const ISLAND_MIN_PROSE: usize = 800;
+
+/// `web::fetch::issue::detect`'s shape; a test seam injects a constructed
+/// [`PageIssue`] because the contract stub answers `None`.
+pub type Detector = dyn Fn(u16, &HeaderMap, &Url, &str, usize) -> Option<PageIssue> + Send + Sync;
+
+/// `firecrawl_native::extract_islands`'s shape; the test seam injects island
+/// prose because the contract stub answers `None`.
+pub type Islands = dyn Fn(&str) -> Option<String> + Send + Sync;
 
 /// Body cap for crawl/scrape so tool-sized truncation does not apply.
 pub const PAGE_CHARS: usize = 500_000;
@@ -88,6 +108,10 @@ pub struct Scrape {
     slots: RenderSlots,
     /// Publishes [`crate::ScrapeProgress`]; `None` in unit tests.
     pub(crate) rt: Option<Runtime>,
+    /// Issue detector run on 2xx bodies and rendered markdown (122 D1).
+    detect: Arc<Detector>,
+    /// Data-island extractor for the D9 rung.
+    islands: Arc<Islands>,
 }
 
 impl Scrape {
@@ -100,6 +124,8 @@ impl Scrape {
             cfg,
             slots,
             rt: None,
+            detect: Arc::new(web::fetch::issue::detect),
+            islands: Arc::new(firecrawl_native::extract_islands),
         }
     }
 
@@ -110,87 +136,259 @@ impl Scrape {
         self
     }
 
-    /// Fetch `url`: HTTP first, obscura when `force_render` or the fetch is thin.
+    /// Test seam: replace the issue detector (the contract stub says `None`).
+    #[doc(hidden)]
+    #[must_use]
+    pub fn with_detector(
+        mut self,
+        detect: impl Fn(u16, &HeaderMap, &Url, &str, usize) -> Option<PageIssue> + Send + Sync + 'static,
+    ) -> Self {
+        self.detect = Arc::new(detect);
+        self
+    }
+
+    /// Test seam: replace the island extractor (the contract stub says `None`).
+    #[doc(hidden)]
+    #[must_use]
+    pub fn with_islands(
+        mut self,
+        islands: impl Fn(&str) -> Option<String> + Send + Sync + 'static,
+    ) -> Self {
+        self.islands = Arc::new(islands);
+        self
+    }
+
+    /// [`Self::fetch_page`] behind the D11 source switch: a known host's JSON
+    /// API under `auto`/`api` (never when the browser is forced), the page
+    /// otherwise. An API failure under `auto` falls back to the page with a note.
+    pub async fn fetch_source(
+        &self,
+        url: &Url,
+        force_render: bool,
+        only_main_content: bool,
+        source: Source,
+    ) -> anyhow::Result<Fetched> {
+        let api = match source {
+            Source::Page => None,
+            Source::Auto if force_render => None,
+            Source::Auto | Source::Api => web::sources::api_source(url),
+        };
+        let Some(api) = api else {
+            if source == Source::Api {
+                anyhow::bail!("no API source matches {url}");
+            }
+            return self.fetch_page(url, force_render, only_main_content).await;
+        };
+        match self.fetch_api(url, &api).await {
+            Ok(page) => Ok(page),
+            Err(e) if source == Source::Api => Err(e),
+            Err(e) => {
+                let mut page = self
+                    .fetch_page(url, force_render, only_main_content)
+                    .await?;
+                page.notes.push(format!(
+                    "api source {} failed: {e}; read the page",
+                    api.kind
+                ));
+                Ok(page)
+            }
+        }
+    }
+
+    /// `tier: "api"`: the JSON endpoint (plus `sources::follow_up`'s, Stack
+    /// Overflow answers) through the same fetcher, rendered by `web::sources::render`.
+    async fn fetch_api(&self, page_url: &Url, api: &ApiSource) -> anyhow::Result<Fetched> {
+        let mut resp = self
+            .fetcher
+            .fetch_html(api.fetch_url.as_str(), PAGE_CHARS)
+            .await
+            .map_err(|e| anyhow::anyhow!("{e}"))?;
+        if let Some(more) = web::sources::follow_up(api) {
+            match self.fetcher.fetch_html(more.as_str(), PAGE_CHARS).await {
+                Ok(extra) => {
+                    resp.content.push('\n');
+                    resp.content.push_str(&extra.content);
+                }
+                Err(e) => resp.notes.push(format!("{more}: {e}")),
+            }
+        }
+        let rendered = web::sources::render(api.kind, &resp.content)
+            .ok_or_else(|| anyhow::anyhow!("body did not parse"))?;
+        let (title, markdown) = web::fetch::take_title(&rendered);
+        let markdown = markdown.to_owned();
+        Ok(Fetched {
+            url: page_url.to_string(),
+            meta: PageMeta {
+                title: title.clone(),
+                ..PageMeta::default()
+            },
+            title,
+            html: String::new(),
+            links: links_from_markdown(&markdown),
+            markdown,
+            tier: "api",
+            issue: None,
+            charset: resp.charset,
+            client: resp.client,
+            source_kind: Some(api.kind),
+            via: Some(api.fetch_url.to_string()),
+            notes: resp.notes,
+        })
+    }
+
+    /// Fetch `url` up the ladder: HTTP, then — by the diagnosed issue or a
+    /// thin body — the data island, then obscura when `force_render`, the
+    /// issue's `next` says `rendered`, or the page is thin.
     pub async fn fetch_page(
         &self,
-        url: &url::Url,
+        url: &Url,
         force_render: bool,
         only_main_content: bool,
     ) -> anyhow::Result<Fetched> {
         if force_render {
-            return self.render(url).await;
+            return self.render(url, only_main_content).await;
         }
-        match self.fetch_http(url, only_main_content).await {
-            Ok(page) if !is_thin(&page.html, &page.markdown) => {
-                tracing::debug!(url = %url, tier = "fetch", "scrape engine");
-                Ok(page)
-            }
-            Ok(thin) => {
-                let Some(actor) = browser_actor() else {
-                    return Ok(thin);
-                };
-                tracing::debug!(url = %url, tier = "render", "fetch thin; trying obscura");
-                match self.render_with(&actor, url).await {
-                    Ok(page) => Ok(page),
-                    Err(e) => {
-                        tracing::debug!(error = %e, "render failed; keeping thin fetch");
-                        Ok(thin)
-                    }
-                }
-            }
+        let page = match self.fetch_http(url, only_main_content).await {
+            Ok(page) => page,
             Err(e) => {
+                let Some(actor) = browser_actor() else {
+                    return Err(e);
+                };
                 tracing::debug!(url = %url, error = %e, "fetch failed; trying obscura");
-                self.render(url).await
+                return self
+                    .render_with(&actor, url, only_main_content)
+                    .await
+                    .map_err(|re| anyhow::anyhow!("{e}; render: {re}"));
+            }
+        };
+        self.ladder(url, page, only_main_content).await
+    }
+
+    /// The rungs after a successful HTTP fetch (122 D1 "scrape engine ladder").
+    async fn ladder(
+        &self,
+        url: &Url,
+        mut page: Fetched,
+        only_main_content: bool,
+    ) -> anyhow::Result<Fetched> {
+        let thin = is_thin(&page.html, &page.markdown);
+        let kind = page.issue.as_ref().map(|i| i.kind);
+        let to_render = match kind {
+            None if !thin => {
+                tracing::debug!(url = %url, tier = "fetch", "scrape engine");
+                return Ok(page);
+            }
+            // Shell or interstitial over content: the island rung first.
+            None | Some(IssueKind::EmptyShell | IssueKind::ConsentWall) => {
+                if let Some(text) = (self.islands)(&page.html)
+                    && prose_chars(&text) >= ISLAND_MIN_PROSE
+                {
+                    tracing::debug!(url = %url, tier = "island", "scrape engine");
+                    page.markdown = firecrawl_native::post_process_markdown(text);
+                    page.tier = "island";
+                    if kind == Some(IssueKind::EmptyShell) {
+                        page.issue = None;
+                    }
+                    return Ok(page);
+                }
+                true
+            }
+            Some(_) => page
+                .issue
+                .as_ref()
+                .is_some_and(|i| i.next.contains(&Next::Rendered)),
+        };
+        if !to_render {
+            return Ok(page);
+        }
+        let Some(actor) = browser_actor() else {
+            return Ok(page);
+        };
+        tracing::debug!(url = %url, tier = "render", issue = ?kind, "trying obscura");
+        match self.render_with(&actor, url, only_main_content).await {
+            Ok(rendered) => Ok(rendered),
+            Err(e) => {
+                tracing::debug!(error = %e, "render failed; keeping fetch");
+                Ok(page)
             }
         }
     }
 
     /// Plain HTTP: HTML (or already-converted document markdown), then
-    /// `transform_html` → `html-to-markdown-rs` → `post_process_markdown`.
-    pub async fn fetch_http(
-        &self,
-        url: &url::Url,
-        only_main_content: bool,
-    ) -> anyhow::Result<Fetched> {
+    /// `transform_html` → `html-to-markdown-rs` → `post_process_markdown`;
+    /// metadata mapped (122 D5) and the issue detector run on the body (D1).
+    pub async fn fetch_http(&self, url: &Url, only_main_content: bool) -> anyhow::Result<Fetched> {
         let resp = self
             .fetcher
             .fetch_html(url.as_str(), PAGE_CHARS)
             .await
             .map_err(|e| anyhow::anyhow!("{e}"))?;
         let html = resp.content;
+        let final_url = Url::parse(&resp.url).unwrap_or_else(|_| url.clone());
         if !html_looks_like_html(&html) {
             let markdown = firecrawl_native::post_process_markdown(html);
             return Ok(Fetched {
                 url: resp.url,
+                meta: PageMeta {
+                    title: resp.meta.title.clone().or_else(|| resp.title.clone()),
+                    ..resp.meta
+                },
                 title: resp.title,
                 links: links_from_markdown(&markdown),
                 html: String::new(),
                 markdown,
                 tier: "fetch",
+                issue: resp.issue,
+                charset: resp.charset,
+                client: resp.client,
+                source_kind: None,
+                via: None,
+                notes: resp.notes,
             });
         }
         let markdown = to_markdown(&html, url.as_str(), only_main_content);
+        let meta = page_meta(&html, &final_url, resp.meta);
+        let issue = resp.issue.or_else(|| {
+            (self.detect)(
+                200,
+                &HeaderMap::new(),
+                &final_url,
+                &html,
+                prose_chars(&markdown),
+            )
+        });
         Ok(Fetched {
             url: resp.url,
-            title: resp.title.or_else(|| title_from_meta(&html)),
+            title: resp.title.or_else(|| meta.title.clone()),
             links: firecrawl_native::extract_links(Some(html.clone())).unwrap_or_default(),
             html,
             markdown,
             tier: "fetch",
+            issue,
+            meta,
+            charset: resp.charset,
+            client: resp.client,
+            source_kind: None,
+            via: None,
+            notes: resp.notes,
         })
     }
 
     /// `browser_navigate` → `browser_markdown` → `browser_close` on a free render slot.
-    pub async fn render(&self, url: &url::Url) -> anyhow::Result<Fetched> {
+    pub async fn render(&self, url: &Url, only_main_content: bool) -> anyhow::Result<Fetched> {
         let actor = browser_actor()
             .ok_or_else(|| anyhow::anyhow!("browser not available for rendered fetch"))?;
-        self.render_with(&actor, url).await
+        self.render_with(&actor, url, only_main_content).await
     }
 
+    /// The render tier has no DOM: `only_main_content` is the markdown-level
+    /// trim of leading/trailing link-only blocks (122 D8 render tier); the
+    /// issue is recomputed from the rendered markdown (status 200, no headers).
     async fn render_with(
         &self,
         actor: &ActorRef<browser::Browsers>,
-        url: &url::Url,
+        url: &Url,
+        only_main_content: bool,
     ) -> anyhow::Result<Fetched> {
         let slot = self.slots.acquire().await?;
         let session = slot.session;
@@ -210,22 +408,45 @@ impl Scrape {
         .await;
         let _ = call(actor, session, "browser_close", json!({})).await;
         drop(slot);
-        let markdown = firecrawl_native::post_process_markdown(strip_base64_images(markdown?));
+        let mut markdown = firecrawl_native::post_process_markdown(strip_base64_images(markdown?));
+        if only_main_content {
+            markdown = trim_link_blocks(&markdown);
+        }
         let (final_url, title) = parse_navigated(&navigated).unwrap_or((url.as_str(), None));
+        let final_url_parsed = Url::parse(final_url).unwrap_or_else(|_| url.clone());
+        let issue = (self.detect)(
+            200,
+            &HeaderMap::new(),
+            &final_url_parsed,
+            &markdown,
+            prose_chars(&markdown),
+        );
         let links = links_from_markdown(&markdown);
+        let title = title.map(str::to_owned);
         tracing::debug!(url = %url, tier = "render", "scrape engine");
         Ok(Fetched {
             url: final_url.to_owned(),
-            title: title.map(str::to_owned),
+            meta: PageMeta {
+                title: title.clone(),
+                ..PageMeta::default()
+            },
+            title,
             html: String::new(),
             markdown,
             links,
             tier: "render",
+            issue,
+            charset: "utf-8".to_owned(),
+            // The browser fetched this page, not an HTTP client; the enum has no third value.
+            client: ClientKind::default(),
+            source_kind: None,
+            via: None,
+            notes: Vec::new(),
         })
     }
 
     /// Raw body of `{origin}/robots.txt`, or empty if missing/rejected.
-    pub async fn robots_txt(&self, page: &url::Url) -> String {
+    pub async fn robots_txt(&self, page: &Url) -> String {
         let mut robots = page.clone();
         robots.set_path("/robots.txt");
         robots.set_query(None);
@@ -254,14 +475,28 @@ pub struct Fetched {
     pub url: String,
     /// Title when the converter found one.
     pub title: Option<String>,
-    /// Raw HTML on the fetch path; empty on render.
+    /// Raw HTML on the fetch path; empty on render, island keeps it.
     pub html: String,
     /// Post-processed markdown.
     pub markdown: String,
     /// Hrefs as they appeared (absolutized by the crawler).
     pub links: Vec<String>,
-    /// `fetch` or `render`.
+    /// `fetch`, `island`, `render` or `api`.
     pub tier: &'static str,
+    /// Why the page did not read as content, with the next rung (122 D1).
+    pub issue: Option<PageIssue>,
+    /// Page metadata (122 D5); `title` only on the render and api tiers.
+    pub meta: PageMeta,
+    /// Encoding label the fetcher used (122 D3).
+    pub charset: String,
+    /// Which HTTP client answered (122 R1).
+    pub client: ClientKind,
+    /// The API source used (`tier: "api"`, 122 D11).
+    pub source_kind: Option<&'static str>,
+    /// The API URL actually fetched (`· via …` on the text's URL line).
+    pub via: Option<String>,
+    /// Non-fatal remarks (an API source that failed).
+    pub notes: Vec<String>,
 }
 
 fn browser_actor() -> Option<ActorRef<browser::Browsers>> {
@@ -351,21 +586,69 @@ fn is_thin(html: &str, markdown: &str) -> bool {
     .any(|m| h.contains(m))
 }
 
-fn title_from_meta(html: &str) -> Option<String> {
-    firecrawl_native::extract_metadata(html)
-        .ok()
-        .and_then(|m| {
-            m.get("title")
-                .and_then(serde_json::Value::as_str)
-                .map(str::to_owned)
-        })
-        .filter(|s| !s.is_empty())
+/// `firecrawl_native::extract_metadata` mapped into [`PageMeta`] (122 D5);
+/// `web::fetch::meta::extract` (W1's scanner: author, canonical, JSON-LD)
+/// wins per field, then the fetcher's `meta`, then this mapping.
+fn page_meta(html: &str, base: &Url, from_fetch: PageMeta) -> PageMeta {
+    let fc = firecrawl_native::extract_metadata(html).unwrap_or_default();
+    let s = |k: &str| {
+        fc.get(k)
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+            .map(str::to_owned)
+    };
+    let mapped = PageMeta {
+        title: s("ogTitle").or_else(|| s("title")),
+        description: s("description").or_else(|| s("ogDescription")),
+        author: s("author").or_else(|| s("article:author")),
+        published: s("publishedTime")
+            .or_else(|| s("date"))
+            .and_then(|raw| web::date::normalize(&raw, chrono::Utc::now())),
+        lang: s("language").map(|l| l.to_lowercase()),
+        canonical: None,
+        site_name: s("ogSiteName"),
+    };
+    fill_meta(
+        web::fetch::meta::extract(html, base),
+        fill_meta(from_fetch, mapped),
+    )
 }
 
-/// `transform_html` (head/script/style off, hrefs absolutized, chrome off
-/// when `only_main_content`) → markdown → base64 images stripped →
-/// `post_process_markdown`. An empty main-content result falls back to the
-/// whole page, as upstream does.
+/// `a` with its empty fields taken from `b`.
+fn fill_meta(a: PageMeta, b: PageMeta) -> PageMeta {
+    PageMeta {
+        title: a.title.or(b.title),
+        description: a.description.or(b.description),
+        author: a.author.or(b.author),
+        published: a.published.or(b.published),
+        lang: a.lang.or(b.lang),
+        canonical: a.canonical.or(b.canonical),
+        site_name: a.site_name.or(b.site_name),
+    }
+}
+
+/// Drop leading and trailing noise blocks (nav, footer, "related" rows,
+/// image rows) from rendered markdown — `excerpt`'s link-noise rule, the
+/// honest minimum for `only_main_content` on a tier without a DOM (122 D8).
+fn trim_link_blocks(md: &str) -> String {
+    let blocks: Vec<&str> = md.split("\n\n").collect();
+    let start = blocks
+        .iter()
+        .position(|b| !is_noise(b))
+        .unwrap_or(blocks.len());
+    let end = blocks
+        .iter()
+        .rposition(|b| !is_noise(b))
+        .map_or(start, |i| i + 1);
+    blocks[start..end.max(start)].join("\n\n")
+}
+
+/// `transform_html` (head/script/style off, hrefs absolutized; under
+/// `only_main_content` the chrome strip and D8's `select_main`, whose two
+/// invariants make an empty real `<main>` stay empty and a thin scored
+/// result retry with `<body>`) → markdown → base64 images stripped →
+/// `post_process_markdown`.
 fn to_markdown(html: &str, url: &str, only_main_content: bool) -> String {
     let opts = firecrawl_native::TransformHtmlOptions {
         html: html.to_owned(),
@@ -376,14 +659,10 @@ fn to_markdown(html: &str, url: &str, only_main_content: bool) -> String {
         omce_signatures: None,
     };
     let transformed = firecrawl_native::transform_html(opts).unwrap_or_else(|_| html.to_owned());
-    let md = firecrawl_native::post_process_markdown(strip_base64_images(html_to_markdown(
+    firecrawl_native::post_process_markdown(strip_base64_images(html_to_markdown(
         &transformed,
         only_main_content,
-    )));
-    if only_main_content && md.trim().is_empty() && !html.trim().is_empty() {
-        return to_markdown(html, url, false);
-    }
-    md
+    )))
 }
 
 /// `strip_chrome` also lets the converter drop elements it recognises as
@@ -563,11 +842,15 @@ mod tests {
     }
 
     #[test]
-    fn empty_main_content_falls_back_to_whole_page() {
+    fn all_chrome_page_is_not_widened_under_only_main_content() {
+        // D8 invariant 1: the stripped page is returned as it is (the ladder's
+        // thin check takes it to the island/render rungs), never the whole page.
         let html =
             "<html><body><nav><p>Only chrome here, long enough to matter.</p></nav></body></html>";
         let md = to_markdown(html, "https://e.com/", true);
-        assert!(md.contains("Only chrome here"), "{md}");
+        assert!(md.trim().is_empty(), "{md}");
+        let full = to_markdown(html, "https://e.com/", false);
+        assert!(full.contains("Only chrome here"), "{full}");
     }
 
     /// Blank-line separated 240-char paragraphs totalling at least `n` prose
@@ -608,6 +891,53 @@ mod tests {
         assert!(html_looks_like_html("  <!DOCTYPE html><html></html>"));
         assert!(html_looks_like_html("garbage prefix here <HTML>"));
         assert!(!html_looks_like_html("# markdown\n\nplain text"));
+    }
+
+    #[test]
+    fn render_trim_drops_leading_and_trailing_link_blocks() {
+        let md = "- [Home](https://e.com/)\n- [Docs](https://e.com/docs)\n\n\
+                  # Article\n\nA real paragraph that ends with a sentence.\n\n\
+                  [See also](https://e.com/a) [More](https://e.com/b)\n\n\
+                  [Privacy](https://e.com/p)\n[Terms](https://e.com/t)";
+        assert_eq!(
+            trim_link_blocks(md),
+            "# Article\n\nA real paragraph that ends with a sentence."
+        );
+        // A link list with a sentence is content, not chrome.
+        let kept = "- [Read the guide](https://e.com/g). It explains everything.\n\nBody.";
+        assert_eq!(trim_link_blocks(kept), kept);
+        assert_eq!(trim_link_blocks("[a](https://e.com)"), "");
+        assert_eq!(trim_link_blocks(""), "");
+    }
+
+    #[test]
+    fn page_meta_maps_firecrawl_fields() {
+        let html = "<html lang=\"EN\"><head><title>Plain</title>\
+                    <meta property=\"og:title\" content=\"Og Title\">\
+                    <meta name=\"description\" content=\"Desc\">\
+                    <meta name=\"author\" content=\"Jane Doe\">\
+                    <meta property=\"article:published_time\" content=\"2026-09-30T08:00:00Z\">\
+                    <meta property=\"og:site_name\" content=\"Example\">\
+                    </head><body><p>x</p></body></html>";
+        let base = Url::parse("https://e.com/a").unwrap();
+        let m = page_meta(html, &base, PageMeta::default());
+        assert_eq!(m.title.as_deref(), Some("Og Title"));
+        assert_eq!(m.description.as_deref(), Some("Desc"));
+        assert_eq!(m.author.as_deref(), Some("Jane Doe"));
+        assert_eq!(m.published.as_deref(), Some("2026-09-30T08:00:00Z"));
+        assert_eq!(m.lang.as_deref(), Some("en"));
+        assert_eq!(m.site_name.as_deref(), Some("Example"));
+        // The page scanner (`web::fetch::meta::extract`) wins per field; the
+        // fetcher's meta fills what the page did not say.
+        let from_fetch = PageMeta {
+            author: Some("Fetcher Author".into()),
+            canonical: Some("https://e.com/canon".into()),
+            ..PageMeta::default()
+        };
+        let m = page_meta(html, &base, from_fetch);
+        assert_eq!(m.author.as_deref(), Some("Jane Doe"));
+        assert_eq!(m.canonical.as_deref(), Some("https://e.com/canon"));
+        assert_eq!(m.title.as_deref(), Some("Og Title"));
     }
 }
 

@@ -1,0 +1,13 @@
+{
+  "issue": null,
+  "tier_hint": "fetch",
+  "method": "scored",
+  "min_words": 1000,
+  "must_contain": [
+    "# The lighthouse keeper's ledger"
+  ],
+  "must_not_contain": [
+    "Ledgers",
+    "Quay Notes"
+  ]
+}

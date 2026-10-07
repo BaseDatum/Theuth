@@ -1,0 +1,15 @@
+{
+  "issue": null,
+  "tier_hint": "fetch",
+  "method": "article",
+  "min_words": 1400,
+  "must_contain": [
+    "# A year on the breakwater",
+    "By [John Roe]"
+  ],
+  "must_not_contain": [
+    "Leave a comment",
+    "Post comment",
+    "Subscribe"
+  ]
+}

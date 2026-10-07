@@ -1,0 +1,12 @@
+{
+  "items": [
+    { "owner": { "display_name": "lifetime_lou" }, "is_accepted": false, "score": 120, "answer_id": 1001, "question_id": 77001, "body": "<p><code>x</code> is dropped at the end of the inner block while <code>r</code> still refers to it.</p>" },
+    { "owner": { "display_name": "borrowck" }, "is_accepted": true, "score": 80, "answer_id": 1002, "question_id": 77001, "body": "<p>The reference outlives the value. Move <code>x</code> out of the block.</p>" },
+    { "owner": { "display_name": "third" }, "is_accepted": false, "score": 12, "answer_id": 1003, "question_id": 77001, "body": "<p>Use <code>Rc</code> if you really need shared ownership.</p>" },
+    { "owner": { "display_name": "fourth" }, "is_accepted": false, "score": 3, "answer_id": 1004, "question_id": 77001, "body": "<p>Fourth answer, should not appear.</p>" },
+    { "owner": { "display_name": "fifth" }, "is_accepted": false, "score": -2, "answer_id": 1005, "question_id": 77001, "body": "<p>Fifth answer, should not appear.</p>" }
+  ],
+  "has_more": false,
+  "quota_max": 300,
+  "quota_remaining": 298
+}

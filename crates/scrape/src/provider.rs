@@ -71,6 +71,7 @@ impl ScrapeProvider {
             title: page.title,
             markdown: page.markdown,
             tier: page.tier.to_owned(),
+            issue: page.issue,
         })
     }
 }

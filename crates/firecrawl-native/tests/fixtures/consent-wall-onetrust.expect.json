@@ -1,0 +1,16 @@
+{
+  "issue": null,
+  "tier_hint": "fetch",
+  "method": "scored",
+  "min_words": 380,
+  "must_contain": [
+    "# Dredging the inner harbour"
+  ],
+  "must_not_contain": [
+    "We value your privacy",
+    "Accept All",
+    "Reject All",
+    "Newsletter",
+    "Privacy"
+  ]
+}

@@ -1,0 +1,21 @@
+{
+  "_id": "@acme/widgets",
+  "name": "@acme/widgets",
+  "description": "Top-level description (older)",
+  "dist-tags": { "latest": "2.3.1", "next": "3.0.0-beta.1" },
+  "versions": {
+    "2.3.1": {
+      "name": "@acme/widgets",
+      "version": "2.3.1",
+      "description": "Build, test and ship widgets from one YAML file.",
+      "license": "MIT",
+      "homepage": "https://acme.test/widgets",
+      "repository": { "type": "git", "url": "git+https://github.com/acme/widgets.git" },
+      "dist": { "tarball": "https://registry.npmjs.org/@acme/widgets/-/widgets-2.3.1.tgz" }
+    },
+    "3.0.0-beta.1": { "name": "@acme/widgets", "version": "3.0.0-beta.1", "description": "beta" }
+  },
+  "readme": "# @acme/widgets\n\nInstall with `npm i @acme/widgets`.\n\n## Usage\n\n```js\nimport { ship } from '@acme/widgets';\nawait ship('widgets.yaml');\n```\n",
+  "time": { "created": "2024-01-01T00:00:00.000Z", "modified": "2026-09-30T12:00:00.000Z" },
+  "license": "ISC"
+}

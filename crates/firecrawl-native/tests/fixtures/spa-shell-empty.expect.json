@@ -1,0 +1,11 @@
+{
+  "issue": "empty_shell",
+  "tier_hint": "render",
+  "method": "body",
+  "min_words": 0,
+  "must_contain": [],
+  "must_not_contain": [
+    "prototype",
+    "function"
+  ]
+}
