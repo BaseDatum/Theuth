@@ -5102,6 +5102,30 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1aaf95b3e5c8f23aa320147307562d361db0ae0d51242340f558153b4eb2439b"
 
 [[package]]
+name = "double"
+version = "2.9.2"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "chrono",
+ "half",
+ "replica",
+ "runtime",
+ "schemars 1.2.2",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "sha2 0.10.9",
+ "sqlx 0.9.0",
+ "tempfile",
+ "tokio",
+ "tools",
+ "tracing",
+ "ts-rs",
+ "uuid",
+]
+
+[[package]]
 name = "downcast-rs"
 version = "1.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -17196,6 +17220,7 @@ dependencies = [
  "decision",
  "dirs 6.0.0",
  "document",
+ "double",
  "figment",
  "futures",
  "jsonrpsee",
@@ -21605,6 +21630,7 @@ dependencies = [
  "decision",
  "dirs 6.0.0",
  "document",
+ "double",
  "figment",
  "jsonrpsee",
  "knowledge",

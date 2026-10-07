@@ -430,6 +430,11 @@ impl DecisionConfig {
 /// `none`, state cut allowed. Shadow by default: `browser_run` decides but does not act.
 ///
 /// 92 §2: `tool` is the `decide` tool's family ([`FamilyGate::tool`]).
+///
+/// 126 §12: the `double.*` families ([`FamilyGate::double`]) — one per card kind plus the
+/// `double.correction` Bool ("is this message a correction of the assistant's previous
+/// action?", 126 §6). Active with `embed: true`; the ladder, not this gate, decides whether
+/// anything acts.
 fn default_families() -> BTreeMap<String, FamilyGate> {
     [
         ("meeting.kind", FamilyGate::shadow(0.60, 0.20)),
@@ -440,6 +445,12 @@ fn default_families() -> BTreeMap<String, FamilyGate> {
         ("browser.type_target", FamilyGate::browser(0.25)),
         ("agent.readable", FamilyGate::shadow(0.85, 0.40)),
         (TOOL_FAMILY, FamilyGate::tool()),
+        ("double.approval", FamilyGate::double()),
+        ("double.ask", FamilyGate::double()),
+        ("double.attention", FamilyGate::double()),
+        ("double.packet", FamilyGate::double()),
+        ("double.draft", FamilyGate::double()),
+        ("double.correction", FamilyGate::double()),
     ]
     .into_iter()
     .map(|(k, v)| (k.to_owned(), v))
@@ -463,6 +474,7 @@ struct FamilyPatch {
     none: Option<bool>,
     cut_ok: Option<bool>,
     temperature: Option<f32>,
+    embed: Option<bool>,
 }
 
 impl FamilyPatch {
@@ -503,6 +515,9 @@ impl FamilyPatch {
         }
         if let Some(t) = self.temperature {
             g.temperature = t;
+        }
+        if let Some(e) = self.embed {
+            g.embed = e;
         }
     }
 }

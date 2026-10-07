@@ -1,0 +1,34 @@
+[package]
+name = "double"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+description = "The owner's double: a local model of the owner's own decisions, with a per-class autonomy ladder (design doc 126)"
+
+[dependencies]
+runtime = { workspace = true }
+tools = { workspace = true }
+replica = { workspace = true }
+async-trait = { workspace = true }
+anyhow = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+schemars = { workspace = true }
+chrono = { workspace = true }
+tracing = { workspace = true }
+sqlx = { workspace = true }
+sha2 = { workspace = true }
+half = { workspace = true }
+uuid = { workspace = true }
+ts-rs = { workspace = true, optional = true }
+
+[dev-dependencies]
+tempfile = "3"
+tokio = { workspace = true }
+serde_yaml = { workspace = true }
+
+[features]
+ts = ["dep:ts-rs", "runtime/ts", "tools/ts"]
+
+[lints]
+workspace = true

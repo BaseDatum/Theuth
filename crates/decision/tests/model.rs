@@ -133,6 +133,36 @@ fn readme_questions_match_the_reference() {
     assert!((alone.probs[1] - outs[2].probs[1]).abs() < 0.005);
 }
 
+/// 126 §7.2: `run_with(rows, true)` returns the pooled `[CLS]` state per row, `(hidden,)` =
+/// 1024 for laya base, finite, and different for different questions; `run` leaves it `None`.
+#[test]
+fn pooled_embedding_is_hidden_sized_and_opt_in() {
+    let Some(dir) = model_dir() else {
+        return;
+    };
+    let metal = Device::Auto.metal();
+    let dtype = if metal { DType::F16 } else { DType::F32 };
+    let m = Loaded::open(&dir, if metal { Gpu::Metal } else { Gpu::None }, dtype).expect("open");
+    let rows: Vec<_> = readme().iter().map(|q| m.build(q).unwrap()).collect();
+    let plain = m.run(&rows).unwrap();
+    assert!(plain.iter().all(|r| r.embedding.is_none()));
+    let outs = m.run_with(&rows, true).unwrap();
+    assert_eq!(outs.len(), rows.len());
+    for (a, b) in outs.iter().zip(&plain) {
+        let e = a.embedding.as_ref().expect("embedding");
+        assert_eq!(e.len(), 1024);
+        assert!(e.iter().all(|v| v.is_finite()));
+        assert!(
+            a.probs.iter().zip(&b.probs).all(|(x, y)| (x - y).abs() < 1e-4),
+            "the embedding copy does not change the scores: {:?} vs {:?}",
+            a.probs,
+            b.probs
+        );
+    }
+    let (e0, e1) = (outs[0].embedding.as_ref().unwrap(), outs[1].embedding.as_ref().unwrap());
+    assert!(e0.iter().zip(e1).any(|(x, y)| (x - y).abs() > 1e-3));
+}
+
 #[tokio::test]
 async fn actor_end_to_end_with_report() {
     let Some(dir) = model_dir() else {

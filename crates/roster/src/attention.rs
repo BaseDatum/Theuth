@@ -63,6 +63,10 @@ pub enum AttentionKind {
     /// skipped a mutating call (effect unknown), an ACP child got a hand-off,
     /// or `durability.resume: ask` waits for the Resume button.
     Resume,
+    /// 126 §10: the double answered a card for the owner ("double answered
+    /// Allow for `git push` · undo 14 s"), or the daily L3 digest.
+    // 126 W1 produces items; W4 renders.
+    Double,
 }
 
 /// One inbox item. `id` is stable across derivations (dismiss / snooze key).

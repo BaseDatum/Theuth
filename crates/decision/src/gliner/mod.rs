@@ -105,6 +105,7 @@ pub fn scores(rows: &[&GlinerRow], logits: &[f32], n: usize) -> anyhow::Result<V
                 logits,
                 temperature: 1.0,
                 act_p: 0.0,
+                embedding: None,
             }
         })
         .collect())

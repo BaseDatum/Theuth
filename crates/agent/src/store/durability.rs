@@ -14,7 +14,7 @@ use runtime::{SessionId, TurnId};
 use serde_json::Value;
 use sqlx::SqliteConnection;
 use tools::{
-    JobExit, JobId, JobKind, JobRow, JobState, PtyScreenRow, QuestionKind, QuestionRow,
+    Answerer, JobExit, JobId, JobKind, JobRow, JobState, PtyScreenRow, QuestionKind, QuestionRow,
     QuestionState, Risk, ToolOutput, WaitKind, WaitRow,
 };
 
@@ -262,11 +262,23 @@ type QuestionTuple = (
     String,
     Option<String>,
     Option<String>,
+    Option<String>,
 );
 
 fn question_of(r: QuestionTuple) -> anyhow::Result<QuestionRow> {
-    let (id, session, tool_call_id, kind, payload, state, asked_at, deadline, answered_at, answer) =
-        r;
+    let (
+        id,
+        session,
+        tool_call_id,
+        kind,
+        payload,
+        state,
+        asked_at,
+        deadline,
+        answered_at,
+        answer,
+        answered_by,
+    ) = r;
     Ok(QuestionRow {
         id,
         session: parse_session(&session)?,
@@ -280,11 +292,12 @@ fn question_of(r: QuestionTuple) -> anyhow::Result<QuestionRow> {
         deadline: parse_dt(&deadline)?,
         answered_at: answered_at.as_deref().map(parse_dt).transpose()?,
         answer: answer.as_deref().map(json),
+        answered_by: answered_by.as_deref().and_then(Answerer::parse),
     })
 }
 
 const QUESTION_COLS: &str =
-    "id, session_id, tool_call_id, kind, payload, state, asked_at, deadline, answered_at, answer";
+    "id, session_id, tool_call_id, kind, payload, state, asked_at, deadline, answered_at, answer, answered_by";
 
 type WaitTuple = (String, String, String, String, Option<String>, String);
 
@@ -905,11 +918,12 @@ impl Store {
     pub async fn question_put(&self, q: &QuestionRow) -> anyhow::Result<()> {
         let mut tx = self.begin_write().await?;
         sqlx::query(
-            "INSERT INTO questions (id, session_id, tool_call_id, kind, payload, state, asked_at, deadline, answered_at, answer) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) \
+            "INSERT INTO questions (id, session_id, tool_call_id, kind, payload, state, asked_at, deadline, answered_at, answer, answered_by) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) \
              ON CONFLICT(id) DO UPDATE SET tool_call_id = excluded.tool_call_id, kind = excluded.kind, \
                  payload = excluded.payload, state = excluded.state, asked_at = excluded.asked_at, \
-                 deadline = excluded.deadline, answered_at = excluded.answered_at, answer = excluded.answer",
+                 deadline = excluded.deadline, answered_at = excluded.answered_at, answer = excluded.answer, \
+                 answered_by = excluded.answered_by",
         )
         .bind(&q.id)
         .bind(q.session.to_string())
@@ -921,6 +935,7 @@ impl Store {
         .bind(q.deadline.to_rfc3339())
         .bind(q.answered_at.map(|t| t.to_rfc3339()))
         .bind(q.answer.as_ref().map(Value::to_string))
+        .bind(q.answered_by.map(Answerer::as_str))
         .execute(&mut *tx)
         .await?;
         tx.commit().await?;
@@ -1534,6 +1549,7 @@ mod tests {
             deadline: asked + chrono::Duration::seconds(300),
             answered_at: None,
             answer: None,
+            answered_by: None,
         };
         store.question_put(&q).await.unwrap();
         store.question_put(&q).await.unwrap(); // re-publish: same row
@@ -1571,6 +1587,26 @@ mod tests {
             (state.as_str(), answer.as_deref()),
             ("answered", Some("\"allow\""))
         );
+
+        // 126 §4.3: `answered_by` round-trips through the upsert and the mapper;
+        // `question_resolve` left it NULL.
+        let settled = QuestionRow {
+            state: QuestionState::Answered,
+            answered_at: Some(asked),
+            answer: Some(json!("allow")),
+            answered_by: Some(Answerer::Double),
+            ..q.clone()
+        };
+        store.question_put(&settled).await.unwrap();
+        let rows = store.questions_of_call(s, "c2").await.unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].answered_by, Some(Answerer::Double));
+        let by: Option<String> =
+            sqlx::query_scalar("SELECT answered_by FROM questions WHERE id = 'q1'")
+                .fetch_one(&store.read)
+                .await
+                .unwrap();
+        assert_eq!(by.as_deref(), Some("double"));
 
         // Waits: put / list by turn / clear.
         let w = WaitRow {

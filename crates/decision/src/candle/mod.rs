@@ -257,6 +257,17 @@ impl Loaded {
     /// head's top-2 features need them), one [`RowOut`] per row. The head's logits come back
     /// raw (unused slots at −1e4) and go through our [`postprocess`]; nothing is calibrated twice.
     pub fn run<R: Borrow<Sequence>>(&self, rows: &[R]) -> anyhow::Result<Vec<RowOut>> {
+        self.run_with(rows, false)
+    }
+
+    /// [`Self::run`] that also copies the pooled `[CLS]` state into
+    /// `RowOut::embedding` when `embed` (126 §7.2): one `to_vec2` per batch,
+    /// no second forward; the families that do not ask pay nothing.
+    pub fn run_with<R: Borrow<Sequence>>(
+        &self,
+        rows: &[R],
+        embed: bool,
+    ) -> anyhow::Result<Vec<RowOut>> {
         if rows.is_empty() {
             return Ok(Vec::new());
         }
@@ -274,17 +285,26 @@ impl Loaded {
                 batch.k
             );
         }
+        let mut pooled: Vec<Vec<f32>> = if embed {
+            out.pooled.to_vec2()?
+        } else {
+            Vec::new()
+        };
         let (k, na) = (batch.k, act.len() / batch.b);
         Ok(rows
             .iter()
             .enumerate()
             .map(|(i, row)| {
-                postprocess(
+                let mut r = postprocess(
                     row.borrow(),
                     &logits[i * k..(i + 1) * k],
                     &act[i * na..(i + 1) * na],
                     &self.laya,
-                )
+                );
+                if embed {
+                    r.embedding = Some(std::mem::take(&mut pooled[i]));
+                }
+                r
             })
             .collect())
     }
@@ -298,6 +318,9 @@ impl Oracle for Loaded {
         Loaded::build(self, q).map(|s| Box::new(s) as Box<dyn Row>)
     }
     fn run(&mut self, rows: &[Box<dyn Row>]) -> anyhow::Result<Vec<Scores>> {
+        self.run_embed(rows, false)
+    }
+    fn run_embed(&mut self, rows: &[Box<dyn Row>], embed: bool) -> anyhow::Result<Vec<Scores>> {
         let seqs = rows
             .iter()
             .map(|r| {
@@ -306,7 +329,7 @@ impl Oracle for Loaded {
                     .ok_or_else(|| anyhow::anyhow!("laya oracle given a row it did not build"))
             })
             .collect::<anyhow::Result<Vec<&Sequence>>>()?;
-        Ok(Loaded::run(self, &seqs)?
+        Ok(Loaded::run_with(self, &seqs, embed)?
             .into_iter()
             .map(Scores::from)
             .collect())

@@ -96,6 +96,11 @@ pub struct FamilyGate {
     /// the probabilities are exactly what the oracle returned.
     #[serde(default = "one")]
     pub temperature: f32,
+    /// Return the pooled encoder state with each decision (126 §7.2): one extra
+    /// tensor copy per batch. `false` by default so the meeting and browser
+    /// families pay nothing; the `double.*` families set it.
+    #[serde(default)]
+    pub embed: bool,
 }
 
 const fn one() -> f32 {
@@ -144,6 +149,7 @@ impl FamilyGate {
             none: true,
             cut_ok: false,
             temperature: 1.0,
+            embed: false,
         }
     }
 
@@ -172,6 +178,20 @@ impl FamilyGate {
             none: false,
             cut_ok: true,
             ..FamilyGate::shadow(tau_top, 0.0)
+        }
+    }
+
+    /// A `double.*` family (126 §12): active — its output is a chip, not an
+    /// action; the action is the ladder's (126 §4.4) — `none` kept (= escalate
+    /// to the owner), state cut allowed (the 4 KB card state is right-cut),
+    /// no thresholds (the double's own head and temperature gate, 126 §7.1),
+    /// `embed` on, capture off (double keeps its own corpus).
+    pub const fn double() -> Self {
+        FamilyGate {
+            mode: Mode::Active,
+            cut_ok: true,
+            embed: true,
+            ..FamilyGate::shadow(0.0, 0.0)
         }
     }
 
@@ -263,6 +283,7 @@ mod tests {
         none: true,
         cut_ok: false,
         temperature: 1.0,
+        embed: false,
     };
 
     #[test]
@@ -333,6 +354,7 @@ mod tests {
             tier: 1,
             calibrated: true,
             truncated: false,
+            embedding: None,
         }
     }
 

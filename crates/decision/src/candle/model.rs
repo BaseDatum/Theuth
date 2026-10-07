@@ -502,13 +502,18 @@ pub struct DecisionModel {
     act_dtype: DType,
 }
 
-/// One forward pass: masked scoring logits and action probabilities' logits.
+/// One forward pass: masked scoring logits, action probabilities' logits and
+/// the pooled encoder state (126 §7.2).
 #[derive(Debug, Clone)]
 pub struct ModelOutput {
     /// `(batch, slots)` in f32, already masked to `-1e4` on unused slots.
     pub logits: Tensor,
     /// `(batch, act_classes)` in f32.
     pub action: Tensor,
+    /// `(batch, hidden)` in f32: the `[CLS]` position after the decision head —
+    /// the state the act head reads, without its four confidence features. The
+    /// double's embedding (126 §7.2); already computed, no second forward.
+    pub pooled: Tensor,
 }
 
 impl DecisionModel {
@@ -624,18 +629,23 @@ impl DecisionModel {
             D::Minus1,
         )?;
 
-        let pooled = Tensor::cat(&[xs.i((.., 0))?.to_dtype(DType::F32)?, features], D::Minus1)?;
+        let pooled = xs.i((.., 0))?.to_dtype(DType::F32)?;
+        let act_in = Tensor::cat(&[pooled.clone(), features], D::Minus1)?;
         let action = self
             .act_out
             .forward(
                 &self
                     .act_in
-                    .forward(&pooled.to_dtype(self.act_dtype)?)?
+                    .forward(&act_in.to_dtype(self.act_dtype)?)?
                     .gelu_erf()?,
             )?
             .to_dtype(DType::F32)?;
 
-        Ok(ModelOutput { logits, action })
+        Ok(ModelOutput {
+            logits,
+            action,
+            pooled,
+        })
     }
 }
 

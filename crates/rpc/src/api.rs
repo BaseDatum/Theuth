@@ -1416,6 +1416,56 @@ pub trait Api {
         prefix: String,
         mode: decision::Mode,
     ) -> RpcResult<decision::ModeInfo>;
+    /// 126 §13: the double's status — enabled, paused, active version, last run, next window,
+    /// venue, overall KPIs vs the frozen baseline.
+    #[method(name = "double_status")]
+    async fn double_status(&self) -> RpcResult<double::DoubleStatus>;
+    /// Every discovered class with its rung, cap and last-30-days numbers (126 §13).
+    #[method(name = "double_classes")]
+    async fn double_classes(&self) -> RpcResult<Vec<double::DoubleClass>>;
+    /// One class: the learning curve, the last 50 scrubbed examples, the promote hint (126 §13).
+    #[method(name = "double_class")]
+    async fn double_class(&self, key: String) -> RpcResult<double::DoubleClassDetail>;
+    /// Start a training run now (126 §8): `tier` a | b | c, `venue` auto | local | node | off.
+    /// Returns the run id; `DoubleTrainingState` events follow.
+    #[method(name = "double_train")]
+    async fn double_train(&self, tier: double::Tier, venue: double::Venue) -> RpcResult<double::RunId>;
+    /// Pause / resume learning (126 §9): predictions and rungs continue, labels stop accruing.
+    #[method(name = "double_pause")]
+    async fn double_pause(&self, on: bool) -> RpcResult<double::DoubleStatus>;
+    /// Forget a class's examples or specific examples (126 §14); returns the count removed.
+    #[method(name = "double_forget")]
+    async fn double_forget(&self, target: double::ForgetTarget) -> RpcResult<u32>;
+    /// Make `version` the active one (126 §8.5); the next prediction uses it.
+    #[method(name = "double_rollback")]
+    async fn double_rollback(&self, version: String) -> RpcResult<double::DoubleStatus>;
+    /// Set a class's cap and mutating opt-in (126 §9 caps); destructive stays ≤ 1.
+    #[method(name = "double_set_cap")]
+    async fn double_set_cap(
+        &self,
+        class: String,
+        rung: u8,
+        mutating_opt_in: bool,
+    ) -> RpcResult<double::DoubleClass>;
+    /// Write a scrubbed JSONL + embeddings archive under `<data_dir>/double/export/` (126 §14).
+    #[method(name = "double_export")]
+    async fn double_export(&self) -> RpcResult<double::DoubleExport>;
+    /// Remove the store, models and runs; config untouched (126 §14).
+    #[method(name = "double_delete_all")]
+    async fn double_delete_all(&self) -> RpcResult<()>;
+    /// Cancel an L2 grace so the owner answers through the ordinary `resolve_approval` /
+    /// `answer_ask` (126 §9); `true` when a grace was running.
+    #[method(name = "double_take_over")]
+    async fn double_take_over(&self, question_id: String) -> RpcResult<bool>;
+    /// The `double:` section as running (126 §12).
+    #[method(name = "double_settings_get")]
+    async fn double_settings_get(&self) -> RpcResult<double::DoubleConfig>;
+    /// Persist the `double:` section and apply it live; `enabled` and `model.*` take a restart.
+    #[method(name = "double_settings_set")]
+    async fn double_settings_set(
+        &self,
+        settings: double::DoubleConfig,
+    ) -> RpcResult<double::DoubleConfig>;
     /// Settings › Search (16 §8): the four external providers (enabled, base
     /// URL, secret name and whether it is set - never the value, timeout,
     /// priority, registered) plus the `web` read/budget defaults.
@@ -1945,6 +1995,22 @@ impl Server {
         }
     }
 
+    /// The `double:` section as read at start (126 §12); defaults when absent.
+    fn double_config(&self) -> double::DoubleConfig {
+        self.rt.section("double").unwrap_or_default()
+    }
+}
+
+/// 126: a `double_*` method whose behaviour wave `wave` lands; a JSON-RPC error, never a panic.
+fn double_not_yet(what: &str, wave: &str) -> ErrorObjectOwned {
+    ErrorObjectOwned::owned(
+        NOT_RUNNING,
+        format!("double: {what} is not available yet (126 {wave})"),
+        None::<()>,
+    )
+}
+
+impl Server {
     /// The one admission check (51 §4.2): the calling connection may act on
     /// `session`. Durable sessions admit any authenticated peer; a private
     /// one only its owner; unknown or closing ids fail closed.
@@ -4983,6 +5049,79 @@ impl ApiServer for Server {
     ) -> RpcResult<decision::ModeInfo> {
         ask::<decision::Engine, _>(decision::DECISION_ACTOR, decision::SetMode { prefix, mode })
             .await
+    }
+
+    // 126 W1 / W2: every `double_*` method below becomes an `ask::<double::actor::Double, _>(
+    // double::DOUBLE_ACTOR, …)`; until then the read methods answer with the config as read and
+    // typed empties, the mutating ones with `not yet` — never a panic.
+
+    async fn double_status(&self) -> RpcResult<double::DoubleStatus> {
+        let cfg = self.double_config();
+        Ok(double::DoubleStatus {
+            enabled: cfg.enabled,
+            venue: cfg.training.venue,
+            ..double::DoubleStatus::default()
+        })
+    }
+
+    async fn double_classes(&self) -> RpcResult<Vec<double::DoubleClass>> {
+        Ok(Vec::new())
+    }
+
+    async fn double_class(&self, key: String) -> RpcResult<double::DoubleClassDetail> {
+        Err(double_not_yet(&format!("class {key:?}"), "W1"))
+    }
+
+    async fn double_train(&self, tier: double::Tier, venue: double::Venue) -> RpcResult<double::RunId> {
+        Err(double_not_yet(
+            &format!("train tier {} on {}", tier.as_str(), venue.as_config()),
+            "W2",
+        ))
+    }
+
+    async fn double_pause(&self, _on: bool) -> RpcResult<double::DoubleStatus> {
+        Err(double_not_yet("pause", "W1"))
+    }
+
+    async fn double_forget(&self, _target: double::ForgetTarget) -> RpcResult<u32> {
+        Err(double_not_yet("forget", "W1"))
+    }
+
+    async fn double_rollback(&self, version: String) -> RpcResult<double::DoubleStatus> {
+        Err(double_not_yet(&format!("rollback to {version:?}"), "W2"))
+    }
+
+    async fn double_set_cap(
+        &self,
+        class: String,
+        _rung: u8,
+        _mutating_opt_in: bool,
+    ) -> RpcResult<double::DoubleClass> {
+        Err(double_not_yet(&format!("set cap on {class:?}"), "W1"))
+    }
+
+    async fn double_export(&self) -> RpcResult<double::DoubleExport> {
+        Err(double_not_yet("export", "W2"))
+    }
+
+    async fn double_delete_all(&self) -> RpcResult<()> {
+        Err(double_not_yet("delete all", "W2"))
+    }
+
+    async fn double_take_over(&self, _question_id: String) -> RpcResult<bool> {
+        // No grace can be running before the actor exists: nothing to cancel.
+        Ok(false)
+    }
+
+    async fn double_settings_get(&self) -> RpcResult<double::DoubleConfig> {
+        Ok(self.double_config())
+    }
+
+    async fn double_settings_set(
+        &self,
+        _settings: double::DoubleConfig,
+    ) -> RpcResult<double::DoubleConfig> {
+        Err(double_not_yet("settings set", "W1"))
     }
 
     async fn meeting_oracle_mode(&self) -> RpcResult<decision::ModeInfo> {

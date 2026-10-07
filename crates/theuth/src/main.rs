@@ -1090,6 +1090,9 @@ agent:
 #                            # secret-scrubbed, local only; `t --decision-export meeting` folds it into the phrasing-bench fixture shape.
 #                            # share: true (57 §7.1, default false) is consent to upload those rows to theuth; needs train (train: false
 #                            # clears it); recorded now, honoured by the uploader once the relay endpoint ships (step 11).
+#                            # embed: true (126 §7.2, default false) returns the pooled encoder state with each decision — one
+#                            # tensor copy per batch; the `double.*` families (double.approval/ask/attention/packet/draft/correction)
+#                            # ship active with it on; everything else pays nothing.
 #     meeting.kind:    { mode: shadow, tau_top: 0.60, tau_margin: 0.20 }  # small-talk Bool: skip at P ≥ 0.6 with no mentions (57 §3.5)
 #     meeting.brief:   { mode: shadow, tau_top: 0.60, tau_margin: 0.30 }  # ≤ 4 cached briefs: publish at P ≥ 0.6, margin ≥ 0.3
 #     meeting.subject: { mode: shadow, tau_top: 0.50, tau_margin: 0.00 }  # tier-2 subject extraction rows (cheap model, never the oracle)
@@ -1100,6 +1103,31 @@ agent:
 #                            # `browser_run` act; shadow decides and hands back; off hides the tool. none/cut_ok: the fine-tune
 #                            # learned a closed option list and right-cut states, so no `none` control and a cut state is not an error.
 #     agent.readable: { mode: shadow, tau_top: 0.85, tau_margin: 0.40 }
+
+# double:                    # the owner's double (design doc 126): predicts your answer to every approval / ask / packet
+#                            # card before you see it, learns from what you did next, and earns per-class autonomy
+#                            # (L0 observe → L1 suggest → L2 act after a grace). Settings › Double; `t --double-*`.
+#   enabled: false           # restart. true: the store under <data_dir>/double/, the chip on cards, the double_* tools
+#   capture: { approvals: true, asks: true, attention: true, packets: true, drafts: true }   # which cards it learns from
+#   ladder:
+#     grace_secs: 30         # L2 countdown before it answers (Revision 1); you can take any card over
+#     caps: { read_only: 2, mutating: 1, destructive: 1 }   # max rung by risk; destructive never passes L1
+#     mutating_opt_in: false # default for new classes: a mutating class needs an explicit opt-in to reach L2
+#   training:
+#     venue: auto            # auto | local | node:<name> | off — auto picks a non-laptop, non-VM mesh engine with a GPU
+#     window: \"02:00-06:00\"  # local hours Tier B (LoRA) may run; on AC power, user idle, no meeting, nominal thermals
+#     idle_min: 15
+#     run_cap_min: 90        # minutes of training per night; a run resumes the next night
+#     triggers: { labels: 200, days: 7 }   # Tier B eligibility, whichever first; Tier A runs every 25 labels or nightly
+#     share_data: true       # ship scrubbed bundles to your own GPU nodes (never a sandbox VM)
+#     tiers:
+#       a: { enabled: true }
+#       b: { enabled: true, rank: 8, batch: 8, epochs: 3, lr: 2.0e-4 }
+#       c: { enabled: false } # full fine-tune: owner action only (Settings › Rebuild)
+#   retention_days: 365      # rows older than this go, except golden rows and the last 1,000 per class
+#   model:
+#     checkpoint: default    # a `decision.checkpoints` name; restart
+#     adapter_rank: 8        # restart
 
 # a2a:                       # remote agents over A2A 1.0 (design doc 50 §6); peers/exports live in <data_dir>/a2a/peers.yaml, `/a2a reload` applies edits
 #   enabled: false           # false: no actor, listener, card fetch or credential load. Needs agent.communication too.
@@ -1617,6 +1645,8 @@ fn engine_plugins(headless: bool, serve: bool) -> Vec<Box<dyn Plugin>> {
         Box::new(voice::VoicePlugin),
         Box::new(talk::TalkPlugin),
         Box::new(decision::DecisionPlugin),
+        // 126: the owner's double; off unless `double.enabled: true` (a client of the bus, after decision).
+        Box::new(double::DoublePlugin),
     ];
     // 58 §6.1: capture backends per OS; `MeetingStatus.supported` says what this host can do.
     plugins.push(Box::new(meeting::MeetingPlugin));

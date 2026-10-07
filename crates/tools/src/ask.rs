@@ -20,7 +20,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::sync::oneshot;
 
-use crate::journal::{Journal, QuestionKind, QuestionRow, QuestionState, WaitKind, WaitRow};
+use crate::journal::{
+    Answerer, Journal, QuestionKind, QuestionRow, QuestionState, WaitKind, WaitRow,
+};
 use crate::{Risk, Tool, ToolCx, ToolOutput};
 
 /// Correlates a request with its answer.
@@ -105,13 +107,27 @@ pub struct AskResolved {
 }
 
 /// `ask` → `Option<SessionId>`: the owning session if the id was pending and
-/// is now resolved. `answers: None` means dismissed.
+/// is now resolved. `answers: None` means dismissed. A human answer; the
+/// double answers with [`AnswerAskBy`] (126 §4.3).
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct AnswerAsk {
     /// The request.
     pub id: AskId,
     /// One per question, in order; `None` dismisses the set.
     pub answers: Option<Vec<Answer>>,
+}
+
+/// [`AnswerAsk`] naming who answers (126 §4.3): the double's answer settles
+/// the row with `answered_by = double`. The double never dismisses
+/// (`answers: None` cancels the turn), so `answers` is required here.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct AnswerAskBy {
+    /// The request.
+    pub id: AskId,
+    /// One per question, in order.
+    pub answers: Vec<Answer>,
+    /// Who answers.
+    pub by: Answerer,
 }
 
 /// Tool → actor: publish [`AskRequested`] and wait. `ask` → the answers
@@ -169,14 +185,38 @@ impl AskUser {
 
     /// Journal a pending row's end (`answered` with the answers — `null`
     /// when dismissed — or `timed_out`) and clear the call's `waits` row.
-    async fn settle(&self, mut row: QuestionRow, state: QuestionState, answer: Option<Value>) {
+    /// `by` names who answered (126 §4.3); `None` on a timeout.
+    async fn settle(
+        &self,
+        mut row: QuestionRow,
+        state: QuestionState,
+        answer: Option<Value>,
+        by: Option<Answerer>,
+    ) {
         row.state = state;
         row.answered_at = Some(Utc::now());
         row.answer = answer;
+        row.answered_by = by;
         if let Some(call) = &row.tool_call_id {
             self.journal.wait(None, row.session, call).await;
         }
         self.journal.question(row).await;
+    }
+
+    /// Deliver `answers` to the parked call and settle the row; `None` when
+    /// `id` was not pending.
+    async fn answer(
+        &mut self,
+        id: AskId,
+        answers: Option<Vec<Answer>>,
+        by: Answerer,
+    ) -> Option<SessionId> {
+        let w = self.pending.remove(&id)?;
+        let answer = Some(serde_json::json!(answers));
+        let delivered = w.tx.send(answers).ok().map(|()| w.session);
+        self.settle(w.row, QuestionState::Answered, answer, Some(by))
+            .await;
+        delivered
     }
 
     /// Insert the waiter, journal the row (and the call's `waits(question)`
@@ -290,6 +330,7 @@ impl Message<Request> for AskUser {
             deadline: asked_at + self.timeout,
             answered_at: None,
             answer: None,
+            answered_by: None,
         };
         self.arm(ctx, row, m.questions, self.timeout).await
     }
@@ -313,7 +354,7 @@ impl Message<Republish> for AskUser {
         if left.is_zero() {
             // 109 §6.3: downtime counted against the wait; the tool's own timeout.
             let (reply, tx) = ctx.reply_sender();
-            self.settle(row, QuestionState::TimedOut, None).await;
+            self.settle(row, QuestionState::TimedOut, None, None).await;
             if let Some(tx) = tx {
                 tx.send(Outcome {
                     answers: None,
@@ -344,11 +385,15 @@ impl Message<AnswerAsk> for AskUser {
     type Reply = Option<SessionId>;
 
     async fn handle(&mut self, m: AnswerAsk, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
-        let w = self.pending.remove(&m.id)?;
-        let answer = Some(serde_json::json!(m.answers));
-        let delivered = w.tx.send(m.answers).ok().map(|()| w.session);
-        self.settle(w.row, QuestionState::Answered, answer).await;
-        delivered
+        self.answer(m.id, m.answers, Answerer::Human).await
+    }
+}
+
+impl Message<AnswerAskBy> for AskUser {
+    type Reply = Option<SessionId>;
+
+    async fn handle(&mut self, m: AnswerAskBy, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        self.answer(m.id, Some(m.answers), m.by).await
     }
 }
 
@@ -357,7 +402,7 @@ impl Message<Expire> for AskUser {
 
     async fn handle(&mut self, m: Expire, _: &mut Context<Self, Self::Reply>) {
         if let Some(w) = self.pending.remove(&m.0) {
-            self.settle(w.row, QuestionState::TimedOut, None).await;
+            self.settle(w.row, QuestionState::TimedOut, None, None).await;
         }
     }
 }
@@ -800,6 +845,7 @@ mod tests {
             deadline: asked_at + chrono::Duration::minutes(30),
             answered_at: None,
             answer: None,
+            answered_by: None,
         };
         crate::registry::republish(row.clone());
         let out = Tool::call(
