@@ -56,6 +56,52 @@ pub fn adapted_names(enc: &EncoderConfig) -> Vec<String> {
         .collect()
 }
 
+/// Deterministic xorshift64\*: the adapter init, the epoch order and the rehearsal sample must
+/// not depend on the device RNG (the CPU backend cannot be seeded), so every random draw in the
+/// trainer goes through this.
+#[derive(Clone, Debug)]
+pub struct Rng(u64);
+
+impl Rng {
+    pub fn new(seed: u64) -> Self {
+        Rng((seed ^ 0x9E37_79B9_7F4A_7C15).max(1))
+    }
+
+    /// FNV-1a of `s`, to fold a name into a seed.
+    pub fn hash(s: &str) -> u64 {
+        s.bytes().fold(0xCBF2_9CE4_8422_2325u64, |h, b| {
+            (h ^ u64::from(b)).wrapping_mul(0x0000_0100_0000_01B3)
+        })
+    }
+
+    pub fn next_u64(&mut self) -> u64 {
+        self.0 ^= self.0 << 13;
+        self.0 ^= self.0 >> 7;
+        self.0 ^= self.0 << 17;
+        self.0.wrapping_mul(0x2545_F491_4F6C_DD1D)
+    }
+
+    /// Uniform in `[0, 1)`.
+    pub fn uniform(&mut self) -> f32 {
+        (self.next_u64() >> 40) as f32 / (1u64 << 24) as f32
+    }
+
+    /// Standard normal (Box–Muller).
+    pub fn normal(&mut self) -> f32 {
+        let u1 = self.uniform().max(1e-7);
+        let u2 = self.uniform();
+        (-2. * u1.ln()).sqrt() * (std::f32::consts::TAU * u2).cos()
+    }
+
+    /// Fisher–Yates.
+    pub fn shuffle<T>(&mut self, v: &mut [T]) {
+        for i in (1..v.len()).rev() {
+            let j = (self.next_u64() % (i as u64 + 1)) as usize;
+            v.swap(i, j);
+        }
+    }
+}
+
 /// The frozen checkpoint on one device: configs, tokenizer and every tensor already uploaded
 /// in the model dtype (plain `Tensor`s, so frozen by construction — `backward()` only populates
 /// `Var`s). One `Base` serves any number of adapters and model rebuilds.
@@ -130,9 +176,10 @@ impl Base {
 
     /// The test fixture: a 2-layer, hidden-64, 4-head, vocab-128 model with random weights and
     /// a word-level tokenizer over [`SYNTHETIC_WORDS`], built in memory on `device` in f32 — no
-    /// checkpoint is read. Seeded through the device RNG so two calls agree.
+    /// checkpoint is read. The weights come from candle's own inits, which the CPU backend
+    /// cannot seed (`Device::set_seed` bails there): two calls give two different bases, one
+    /// base is consistent for its lifetime.
     pub fn synthetic(device: &Device) -> anyhow::Result<Base> {
-        device.set_seed(126)?;
         let enc = EncoderConfig {
             vocab_size: 128,
             hidden_size: 64,
@@ -298,9 +345,9 @@ pub struct Lora {
 }
 
 impl Lora {
-    /// Fresh adapter at `rank`, `A` drawn after `device.set_seed(seed)`.
+    /// Fresh adapter at `rank`: `A ~ N(0, 1/√in)` from [`Rng`] seeded by `seed` and the weight
+    /// name (so the init is identical on every device and run), `B = 0`.
     pub fn new(base: &Base, rank: usize, seed: u64) -> Result<Lora> {
-        base.device.set_seed(seed)?;
         let varmap = VarMap::new();
         let mut adapters = HashMap::new();
         for name in adapted_names(&base.enc) {
@@ -309,16 +356,15 @@ impl Lora {
                 .get(&name)
                 .ok_or_else(|| Error::CannotFindTensor { path: name.clone() })?;
             let (out, inp) = w.dims2()?;
-            let a = varmap.get(
-                (rank, inp),
-                &format!("{name}.lora_a"),
-                Init::Randn {
-                    mean: 0.,
-                    stdev: 1. / (inp as f64).sqrt(),
-                },
-                DType::F32,
-                &base.device,
-            )?;
+            let mut rng = Rng::new(seed ^ Rng::hash(&name));
+            let stdev = 1. / (inp as f32).sqrt();
+            let init: Vec<f32> = (0..rank * inp).map(|_| rng.normal() * stdev).collect();
+            let a = Var::from_tensor(&Tensor::from_vec(init, (rank, inp), &base.device)?)?;
+            let a = {
+                let ta = a.as_tensor().clone();
+                varmap.data().lock().unwrap().insert(format!("{name}.lora_a"), a);
+                ta
+            };
             let b = varmap.get(
                 (out, rank),
                 &format!("{name}.lora_b"),

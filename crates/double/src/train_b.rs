@@ -18,7 +18,7 @@
 //! graph silently and a run would "succeed" having trained nothing.
 
 use std::collections::HashMap;
-use std::hash::{Hash, Hasher};
+use decision::candle::lora::Rng;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
@@ -371,34 +371,6 @@ fn examples(base: &Base, rows: &[&BundleRow], seq: usize) -> anyhow::Result<Vec<
     Ok(out)
 }
 
-/// Deterministic xorshift.
-struct Rng(u64);
-
-impl Rng {
-    fn new(seed: u64) -> Self {
-        Rng(seed.max(1) ^ 0x9E37_79B9_7F4A_7C15)
-    }
-    fn next(&mut self) -> u64 {
-        self.0 ^= self.0 << 13;
-        self.0 ^= self.0 >> 7;
-        self.0 ^= self.0 << 17;
-        self.0
-    }
-    fn shuffle<T>(&mut self, v: &mut [T]) {
-        for i in (1..v.len()).rev() {
-            let j = (self.next() % (i as u64 + 1)) as usize;
-            v.swap(i, j);
-        }
-    }
-}
-
-fn class_seed(class: &str, seed: u64) -> u64 {
-    let mut h = std::collections::hash_map::DefaultHasher::new();
-    class.hash(&mut h);
-    seed.hash(&mut h);
-    h.finish()
-}
-
 /// The rehearsal sampler (§7.3 "On what"): per class the newest `per_class` rows plus a fixed
 /// (class-key-seeded) sample of `per_class` from the rest; then the whole capped at `max_rows`
 /// by a seeded subsample. Output is newest-first within the survivors' original order.
@@ -421,7 +393,7 @@ pub fn rehearsal<'a>(
         let (newest, rest) = rows.split_at(per_class.min(rows.len()));
         kept.extend_from_slice(newest);
         let mut rest = rest.to_vec();
-        Rng::new(class_seed(class, seed)).shuffle(&mut rest);
+        Rng::new(seed ^ Rng::hash(class)).shuffle(&mut rest);
         rest.truncate(per_class);
         kept.extend(rest);
     }
