@@ -737,11 +737,17 @@ mod tests {
     #[test]
     fn config_defaults_and_yaml() {
         let d = DecisionConfig::default();
-        assert_eq!(d.families.len(), 8);
+        // 8 of 57/92 plus the six `double.*` families of 126 §12.
+        assert_eq!(d.families.len(), 14);
+        // Active ships only for the `decide` tool and the double (whose output is a chip).
+        assert!(d.families.iter().all(|(k, g)| {
+            (g.mode == Mode::Active) == (k == TOOL_FAMILY || k.starts_with("double."))
+        }));
+        // `embed` is the double's alone (126 §7.2).
         assert!(
             d.families
                 .iter()
-                .all(|(k, g)| (g.mode == Mode::Active) == (k == TOOL_FAMILY))
+                .all(|(k, g)| g.embed == k.starts_with("double."))
         );
         assert!(d.families.values().all(|g| g.temperature == 1.0));
         // 92 §2: the `decide` tool's family — no thresholds, `none` kept, cut reported, gliner.
@@ -850,7 +856,7 @@ mod tests {
             "families:\n  tool: { checkpoint: default }\n  tool.mail: { train: true, temperature: 2.0 }\n  tool.files: { mode: off }\n  meeting.topic: { train: true }\n",
         )
         .unwrap();
-        assert_eq!(cfg.families.len(), 10);
+        assert_eq!(cfg.families.len(), 16);
         let mail = &cfg.families["tool.mail"];
         assert!(mail.train && mail.temperature == 2.0 && mail.mode == Mode::Active);
         assert_eq!(
@@ -981,7 +987,7 @@ mod tests {
             "families:\n  meeting.kind: { mode: active }\n  meeting: { mode: off }\n",
         )
         .unwrap();
-        assert_eq!(cfg.families.len(), 8);
+        assert_eq!(cfg.families.len(), 14);
         assert_eq!(cfg.families["meeting.kind"].mode, Mode::Off);
         assert_eq!(cfg.families["meeting.brief"].mode, Mode::Off);
         assert_eq!(cfg.families["meeting.subject"].mode, Mode::Off);
