@@ -1,0 +1,12 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- Port of SWIFT/TheuthKit (design 134 §5.2): engine discovery, the JSON-RPC client, the wire models and codec.
+       Plain net10.0: builds and tests on the Mac (test.sh) and on Windows. -->
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <RootNamespace>Theuth.Companion.Rpc</RootNamespace>
+    <AssemblyName>Theuth.Companion.Rpc</AssemblyName>
+  </PropertyGroup>
+  <ItemGroup>
+    <InternalsVisibleTo Include="Theuth.Companion.Rpc.Tests" />
+  </ItemGroup>
+</Project>
