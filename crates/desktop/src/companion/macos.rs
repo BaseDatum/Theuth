@@ -11,7 +11,7 @@ use objc2_app_kit::{NSRunningApplication, NSWorkspace, NSWorkspaceOpenConfigurat
 use objc2_foundation::{NSError, NSString, NSURL};
 use tauri::{AppHandle, Emitter};
 
-use super::{ALIVE_EVENT, Alive, BUNDLE_ID};
+use super::{ALIVE_EVENT, Alive, BUNDLE_ID, login_item};
 
 /// Where the bundler-free packaging step (`scripts/package-macos.sh`) puts the helper, relative to
 /// `Contents/`; TN2206's sanctioned login-item location, required by `SMAppService` (spike SA §4).
@@ -34,6 +34,8 @@ pub fn init(app: &AppHandle) -> anyhow::Result<()> {
     set_alive(app, running);
     if running {
         tracing::info!("companion: already running");
+    } else if login_item::sync() == login_item::LoginItemStatus::Enabled {
+        tracing::info!("companion: login item enabled; launchd starts it (130 R1-2)");
     } else if let Some(path) = locate() {
         launch(app, &path);
     } else {

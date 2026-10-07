@@ -12,6 +12,8 @@ pub use macos::*;
 mod other;
 #[cfg(not(target_os = "macos"))]
 pub use other::*;
+#[cfg(target_os = "macos")]
+pub mod login_item;
 
 /// `<main id>.companion` (D1); the Info.plist `scripts/bundle-companion.sh` writes.
 pub const BUNDLE_ID: &str = "io.theuth.mac.companion";
@@ -29,4 +31,18 @@ pub struct Alive {
 #[tauri::command]
 pub fn companion_alive() -> bool {
     alive()
+}
+
+/// 130 W2: the login item's `SMAppService` status (`not_registered` · `enabled` · `requires_approval` ·
+/// `not_found` · `unavailable`), for the main UI to show beside the companion's Launch-at-login toggle.
+#[tauri::command]
+pub fn companion_login_item_status() -> String {
+    #[cfg(target_os = "macos")]
+    {
+        login_item::status().as_str().into()
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        "unavailable".into()
+    }
 }

@@ -306,6 +306,7 @@ mod desktop {
             crate::pages::page_put,
             crate::pages::page_drop,
             companion::companion_alive,
+            companion::companion_login_item_status,
         ]);
         // The native menu bar is macOS's (⌘C/⌘V under Accessory policy); GTK would paint it inside the window.
         #[cfg(target_os = "macos")]
