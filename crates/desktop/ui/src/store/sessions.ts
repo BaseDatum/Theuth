@@ -241,6 +241,8 @@ export type SessionSlice = {
   lastInjected?: string;
   /** Opener seq of the running (or last) turn, from `TurnStarted`. */
   turnSeq?: number;
+  /** 125 §3: the advisor model the last `AdvisorChanged` named (`null` = off); the reducer prints `advisor → …` when it moves. */
+  advisorModel?: string | null;
   /** A `browser_*` tool ran in this session: the header shows the live-view globe. */
   browser: boolean;
   /** The live browser dialog is open (globe click or `BrowserShowLive`). */

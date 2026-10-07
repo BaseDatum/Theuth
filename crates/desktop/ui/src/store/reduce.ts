@@ -4,6 +4,7 @@ import { codeEdited, codeToolRan, emptyCodemap } from "@/lib/codemap/slice";
 import { classify, humanSecs, type Injected } from "@/lib/injected";
 import { pushChunk } from "@/lib/jobTail";
 import { splitTime } from "@/lib/time";
+import type { AdvisoryNote } from "@/rpc/bindings/AdvisoryNote";
 import type { ContextEntry } from "@/rpc/bindings/ContextEntry";
 import type { PeerOrigin } from "@/rpc/bindings/PeerOrigin";
 import type { TodoSnapshot } from "@/rpc/bindings/TodoSnapshot";
@@ -455,9 +456,9 @@ function historyEntries(h: HistoryEntry): Entry[] {
     // 109 §8.2: the open turn's streamed partial; greyed until the regenerated reply replaces it.
     case "interrupted":
       return [{ id: nextId(), kind: "interrupted", text: h.text }];
-    // 125 C placeholder: W3 maps this to the `advisory` Entry kind (125 §8.3); one info line per note until then.
+    // 125 §8.3: the typed card; `seq` is the stored row (the `AdvisoryAdded` idempotence key).
     case "advisory":
-      return h.advisory.notes.map((n) => ({ id: nextId(), kind: "info", text: `advisor [${n.severity}]: ${n.note}` }));
+      return [{ id: nextId(), kind: "advisory", notes: h.advisory.notes, seq: seqOf(context), context, at: h.advisory.at_ms }];
   }
 }
 
@@ -498,6 +499,8 @@ function signature(e: Entry): string {
     case "user":
     case "assistant":
       return `${e.kind[0]}${e.turn ?? ""}\n${e.text}`;
+    case "advisory":
+      return e.seq === undefined ? `a${notesKey(e.notes)}` : `a${e.seq}`;
     default:
       return `${e.kind}\n${e.text}`;
   }
@@ -635,6 +638,15 @@ export function apply(
         { ...slice, live: slice.live + 1 },
         peerEntry(e.origin, e.text, e.seq),
       );
+    // 125 §8.3: one Advisory card per stored row, whichever of the event, the wrapper echo or the reload lands first.
+    case "AdvisoryAdded":
+      return addAdvisory(slice, { id: nextId(), kind: "advisory", notes: e.advisory.notes, seq: e.seq, at: e.advisory.at_ms });
+    // 125 §3: one `advisor → <model | off>` line when the advisor's model changes; state ticks (reviewing/idle) print nothing.
+    case "AdvisorChanged": {
+      const model = e.status.state === "off" ? null : (e.status.model ?? null);
+      if ((slice.advisorModel ?? null) === model) return slice;
+      return interject({ ...slice, advisorModel: model }, { id: nextId(), kind: "info", text: `advisor → ${model ?? "off"}` });
+    }
     // 109 §8.2: the banner changes state at once; the dropped partial stays until the first regenerated delta.
     case "TurnResumed": {
       const at = Date.parse(e.interrupted_at);
