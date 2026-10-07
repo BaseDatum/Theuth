@@ -34,7 +34,7 @@ Tests: `kernel.test.ts` (pure functions). Node environment, no DOM — hooks and
 
 ## `label.tsx`
 - `<MaskedLabel text full? at={Point} along="horizontal" | "vertical" side?="before" | "after" tokens fill? />` — label on a `card` mask `LABEL_GAP` (8 px) off the stroke, ≤ 14 chars shown, full text in `<title>`.
-- `truncate(text, max = 14): string`, `labelBox(shown): Size`, `LABEL_PX = 12`, `LABEL_MAX_CHARS = 14`, `LABEL_GAP = 8`.
+- `truncate(text, max = 14): string`, `labelBox(shown): Size`, `maskRect(shown, at, along, side = 'before'): { x, y, w, h }` (the rect `MaskedLabel` draws — what the geometry tests measure; 123 I), `LABEL_PX = 12`, `LABEL_MAX_CHARS = 14`, `LABEL_GAP = 8`.
 
 ## `path.ts`
 - `orthogonalPath(points: readonly Point[], r = 8): string` — one `d`, interior bends rounded (radius shrinks on short segments); straight runs stay straight.

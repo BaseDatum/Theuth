@@ -926,11 +926,6 @@ fn element(spec: &Spec, id: &str, width: usize, text_only: bool) -> Vec<Line> {
     }
 }
 
-/// 123 step 0: one dim line `*Name: n units*` until the owning wave lands the §4.4 lowering.
-fn placeholder(name: &str, n: usize, units: &str) -> Vec<Line> {
-    vec![vec![span(format!("*{name}: {n} {units}*"), DIM)]]
-}
-
 // ---- 123 part-of-whole + misc (W3): the §4.4 lowerings ----
 
 /// `6 items` / `1 item` — the TS `countOf` twin (`lib/diagram/a11y.ts`).
@@ -1849,7 +1844,7 @@ mod tests {
         assert!(
             text("valid-kanban", 100)
                 .lines()
-                .nth(0)
+                .next()
                 .unwrap()
                 .contains(" (")
         );

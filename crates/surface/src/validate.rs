@@ -1304,7 +1304,7 @@ fn treemap(t: &TreemapProps, p: &str, errs: &mut Vec<SpecError>) {
         errs,
     );
     for (i, c) in t.items.iter().enumerate() {
-        if !(c.value > 0.0) {
+        if c.value.is_nan() || c.value <= 0.0 {
             errs.push(err(
                 &format!("{p}/items/{i}/value"),
                 format!("{} is not > 0", c.value),
@@ -1357,7 +1357,7 @@ fn sankey(s: &SankeyProps, p: &str, errs: &mut Vec<SpecError>) {
                 .or_default()
                 .push((i, f.to.as_str()));
         }
-        if !(f.value > 0.0) {
+        if f.value.is_nan() || f.value <= 0.0 {
             errs.push(err(
                 &format!("{p}/flows/{i}/value"),
                 format!("{} is not > 0", f.value),
