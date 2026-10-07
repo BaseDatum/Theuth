@@ -207,7 +207,11 @@ fn element(spec: &Spec, id: &str, out: &mut String, depth: usize) {
         }
         Component::Timeline(p) => {
             for i in &p.items {
-                let _ = write!(out, "- **{}** {}", i.when, i.title);
+                let _ = write!(out, "- **{}", i.when);
+                if let Some(u) = &i.until {
+                    let _ = write!(out, " → {u}");
+                }
+                let _ = write!(out, "** {}", i.title);
                 if let Some(d) = &i.detail {
                     let _ = write!(out, ": {d}");
                 }
@@ -227,6 +231,19 @@ fn element(spec: &Spec, id: &str, out: &mut String, depth: usize) {
                 metric(m, out);
             }
             out.push('\n');
+        }
+        // ---- 123 chart family (W2) ----
+        Component::BarChart(_)
+        | Component::LineChart(_)
+        | Component::ScatterChart(_)
+        | Component::RadarChart(_)
+        | Component::Waterfall(_)
+        | Component::Funnel(_)
+        | Component::Gantt(_)
+        | Component::Quadrant(_) => {
+            if let Some(md) = crate::render::charts::markdown(&e.component) {
+                out.push_str(&md);
+            }
         }
         c => {
             let _ = writeln!(out, "*{}*\n", type_name(c));

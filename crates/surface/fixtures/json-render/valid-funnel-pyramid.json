@@ -1,0 +1,26 @@
+{
+  "root": "f",
+  "elements": {
+    "f": {
+      "type": "Funnel",
+      "props": {
+        "title": "Test pyramid",
+        "variant": "pyramid",
+        "stages": [
+          {
+            "label": "End-to-end",
+            "note": "few, slow"
+          },
+          {
+            "label": "Integration"
+          },
+          {
+            "label": "Unit",
+            "note": "many, fast",
+            "state": "active"
+          }
+        ]
+      }
+    }
+  }
+}

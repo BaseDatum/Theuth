@@ -15,6 +15,9 @@ use crate::spec::{
 };
 use crate::{Spec, graph, mermaid_lines, parse, sequence};
 
+/// 123 W2: the chart family's lowering (`render/charts.rs`).
+pub(crate) mod charts;
+
 /// Render a spec to lines at `width` columns (0 = unbounded); `None` if any line would be
 /// wider than `width`, so the caller falls back to the source block.
 pub fn spec_lines(spec: &Spec, width: usize) -> Option<Vec<Line>> {
@@ -546,18 +549,19 @@ fn element(spec: &Spec, id: &str, width: usize, text_only: bool) -> Vec<Line> {
         }
         Component::Timeline(p) => {
             let mut out = Vec::new();
-            for i in &p.items {
+            for i in charts::timeline_order(p) {
                 let glyph = match i.state {
                     Some(TimelineState::Active) => "◉",
                     Some(TimelineState::Pending) => "○",
                     _ => "●",
                 };
+                let when = charts::when(i);
                 out.push(vec![
-                    span(format!("{glyph} {}  ", i.when), PLAIN),
+                    span(format!("{glyph} {when}  "), PLAIN),
                     span(&i.title, PLAIN),
                 ]);
                 if let Some(d) = &i.detail {
-                    let indent = 2 + i.when.width() + 2;
+                    let indent = 2 + when.width() + 2;
                     let prefix = format!("│{}", " ".repeat(indent - 1));
                     out.extend(
                         wrap(d, sub(width, indent))
@@ -910,14 +914,14 @@ fn element(spec: &Spec, id: &str, width: usize, text_only: bool) -> Vec<Line> {
         Component::Swimlane(p) => placeholder("Swimlane", p.steps.len(), "steps"),
         Component::GraphDelta(p) => placeholder("GraphDelta", p.after.nodes.len(), "nodes"),
         // ---- 123 chart family (W2) ----
-        Component::BarChart(p) => placeholder("BarChart", p.series.len(), "series"),
-        Component::LineChart(p) => placeholder("LineChart", p.series.len(), "series"),
-        Component::ScatterChart(p) => placeholder("ScatterChart", p.points.len(), "points"),
-        Component::RadarChart(p) => placeholder("RadarChart", p.series.len(), "series"),
-        Component::Waterfall(p) => placeholder("Waterfall", p.steps.len(), "steps"),
-        Component::Funnel(p) => placeholder("Funnel", p.stages.len(), "stages"),
-        Component::Gantt(p) => placeholder("Gantt", p.tasks.len(), "tasks"),
-        Component::Quadrant(p) => placeholder("Quadrant", p.items.len(), "items"),
+        Component::BarChart(p) => charts::bar_chart(p, width),
+        Component::LineChart(p) => charts::line_chart(p, width),
+        Component::ScatterChart(p) => charts::scatter_chart(p),
+        Component::RadarChart(p) => charts::radar_chart(p),
+        Component::Waterfall(p) => charts::waterfall(p),
+        Component::Funnel(p) => charts::funnel(p, width),
+        Component::Gantt(p) => charts::gantt(p, width),
+        Component::Quadrant(p) => charts::quadrant(p, width),
         // ---- 123 part-of-whole + misc (W3) ----
         Component::Treemap(p) => placeholder("Treemap", p.items.len(), "items"),
         Component::Sankey(p) => placeholder("Sankey", p.flows.len(), "flows"),

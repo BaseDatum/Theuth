@@ -1,0 +1,34 @@
+{
+  "root": "t",
+  "elements": {
+    "t": {
+      "type": "Timeline",
+      "props": {
+        "title": "Wave 123",
+        "scale": "time",
+        "items": [
+          {
+            "when": "2026-10-15",
+            "until": "2026-10-17",
+            "title": "Closer",
+            "state": "pending"
+          },
+          {
+            "when": "2026-10-07",
+            "title": "Contract",
+            "state": "done",
+            "id": "c"
+          },
+          {
+            "when": "2026-10-08",
+            "until": "2026-10-14",
+            "title": "Workers",
+            "detail": "four worktrees",
+            "state": "active",
+            "id": "w"
+          }
+        ]
+      }
+    }
+  }
+}

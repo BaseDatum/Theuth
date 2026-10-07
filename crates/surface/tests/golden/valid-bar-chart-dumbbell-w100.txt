@@ -1,0 +1,6 @@
+BarChart: Latency before and after — 2 series
+chat    410 → 220 ms  (-190)
+tools   120 → 80 ms  (-40)
+search  250 → 190 ms  (-60)
+export  90 → 95 ms  (+5)
+▓ Before  ▒ After

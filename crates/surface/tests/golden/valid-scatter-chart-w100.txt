@@ -1,1 +1,8 @@
-*ScatterChart: 5 points*
+ScatterChart: Effort vs value — 5 points
+label   │ Effort (days) │ Value │ size │ group
+────────┼───────────────┼───────┼──────┼────────
+cache   │ 2             │ 40    │      │ Core
+worker  │ 5             │ 12    │      │ Core
+tooltip │ 1             │ 30    │      │ Desktop
+charts  │ 8             │ 55    │ 3    │ Desktop
+a11y    │ 3             │ 20    │      │ Desktop

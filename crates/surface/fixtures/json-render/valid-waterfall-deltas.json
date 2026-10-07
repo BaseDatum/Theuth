@@ -1,0 +1,39 @@
+{
+  "root": "w",
+  "elements": {
+    "w": {
+      "type": "Waterfall",
+      "props": {
+        "title": "Build time change",
+        "unit": "s",
+        "steps": [
+          {
+            "label": "baseline",
+            "value": 120,
+            "kind": "total"
+          },
+          {
+            "label": "cache",
+            "value": -35,
+            "state": "done"
+          },
+          {
+            "label": "new tests",
+            "value": 12
+          },
+          {
+            "label": "lint",
+            "value": -4,
+            "state": "done"
+          },
+          {
+            "label": "after",
+            "value": 93,
+            "kind": "total",
+            "state": "active"
+          }
+        ]
+      }
+    }
+  }
+}

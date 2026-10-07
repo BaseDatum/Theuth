@@ -1,0 +1,42 @@
+{
+  "root": "s",
+  "elements": {
+    "s": {
+      "type": "ScatterChart",
+      "props": {
+        "title": "Crates by size",
+        "xLabel": "Files",
+        "yLabel": "Tests",
+        "variant": "bubble",
+        "points": [
+          {
+            "x": 12,
+            "y": 40,
+            "size": 8000,
+            "label": "surface"
+          },
+          {
+            "x": 30,
+            "y": 110,
+            "size": 24000,
+            "label": "agent",
+            "state": "active"
+          },
+          {
+            "x": 6,
+            "y": 9,
+            "size": 2100,
+            "label": "markdown"
+          },
+          {
+            "x": 18,
+            "y": 22,
+            "size": 5400,
+            "label": "desktop",
+            "state": "muted"
+          }
+        ]
+      }
+    }
+  }
+}
