@@ -105,6 +105,8 @@ impl RoutineDraft {
             cooldown: self.cooldown.clone(),
             mode: self.mode.clone(),
             memory: self.memory.clone(),
+            // 131: the draft UI has no runtime switch; the file default (`clear`).
+            runtime: None,
             expires: self.expires.clone(),
             timeout: self.timeout.clone(),
         }

@@ -620,12 +620,29 @@ with `skip_type_check` (logged at `info`, target `runtime`).
 ```
 <data_dir>/runtime/<session>.monty        Checkout::dump() bytes, written atomically (tmp + rename)
 <data_dir>/runtime/<session>.names.json   the tracked inventory (§6): [{name, kind, len, import?}]
+<data_dir>/runtime/<session>.lost         one `<runtime>` line a turn-end dump failure left for the next turn (131)
 ```
 
 - **After every completed cell**: `dump()` → write both files. A dump is a
   heap copy; for the data this runtime holds (JSON-shaped tool results,
   strings, small helper functions) it is KBs to a few MB and takes
   milliseconds. No debounce needed; add one if a transcript shows it.
+- **Invariant (131 D3/D5)**: `.monty` and `.names.json` are written
+  together or not at all, and the in-memory inventory always describes
+  the heap in the worker. `last_dump` is a snapshot — the bytes *and* the
+  inventory they were taken with — and every restore of it also resets
+  the inventory to that snapshot.
+- **Dump failure** (131 D3): the worker is dead or untrusted (a
+  `MemoryError` — the dump copy crossed `MAX_MEMORY` — kills it;
+  `Finished`/`Timeout`/protocol errors mean the same). The checkout is
+  dropped, `names.json` is *not* written, the inventory rolls back to
+  the last good dump's, and the next cell result opens with `<runtime>
+  the heap could not be saved after the previous cell (<err>); state is
+  as of the last successful save — names bound since then are gone: a, b`.
+  When the failing dump is the turn-end one there is no next cell: the
+  line goes to the `.lost` sidecar, which `Repl::open` reads once and
+  deletes. A `Finished` that follows a dump failure is reported with its
+  cause (`worker was lost earlier: <cause>; this call: <e>`, D7).
 - **Turn end**: dump, `finish()` the checkout (worker back to the pool)
   — `Repl::close`, called by `Turn::run` after the last round.
 - **First cell of a turn / resume / subagent lazy load**: `Repl::open`
@@ -635,18 +652,33 @@ with `skip_type_check` (logged at `info`, target `runtime`).
   corrupt file) → fresh checkout, file renamed `.stale`, inventory
   cleared, and the next cell result opens with `<runtime> saved state
   could not be restored (<err>); the runtime is empty. It held: <names>.`
+- **Restore cap** (131 D6): `Repl::open` checks the dump's metadata
+  length first; above `DUMP_HARD_BYTES` (64 MiB) it is not read but
+  renamed `.stale` and the first cell opens with `<runtime> saved state
+  (<N> MB) exceeds the restore cap (<M> MB) and was set aside as
+  <file>.stale; the runtime is empty. It held: <names>.` A successful
+  dump above `DUMP_SOFT_BYTES` (32 MiB) footers the cell once per turn:
+  `runtime heap is <N> MB saved (above <M> MB it is set aside at the next
+  turn): del the large bindings you no longer need, or write them to a
+  file first`.
 - **Crash / memory limit / timeout** (any `PoolError` other than
   `Runtime(non-MemoryError)` and `Typing`): the heap is untrusted; drop
   the checkout, `ensure_checkout` restores `last_dump` (state as of the
   previous cell) into a fresh worker, and the result is `RuntimeError:
   runtime crashed (<reason>); state restored to after the previous cell —
-  this cell's effects are lost` (or `state could not be restored`).
-  Verified by `kill -9` of the worker mid-session in
-  `repl::tests::capping_binds_out_name`.
+  this cell's effects are lost` (or `state could not be restored`), with
+  `; names bound since the last save are gone: …` appended when the
+  rollback dropped names. `ensure_checkout` never reuses a checkout whose
+  `worker_id()` is `None` (poisoned). Verified by `kill -9` of the worker
+  mid-session in `repl::tests::capping_binds_out_name`.
 - **Cancelled turn** while a cell runs: dropping the checkout future
   discards the worker (monty rule). The next turn restores the last dump.
-- **Deletion**: none in v0; the files are the session's. Add to a future
-  `/sessions rm`.
+- **Reset at a schedule fire** (131 D1/D2): a fire that clears the frame
+  also asks `agent::ResetRuntime { session }`, which removes the three
+  files above (never `.stale`, other sessions, or the spill dir) while
+  the session is idle. `runtime: keep` in the front matter opts out.
+- **Deletion**: none otherwise; the files are the session's. Add to a
+  future `/sessions rm`.
 
 Restores are byte-exact (monty serialises the heap, not pickles of it), so
 "the same runtime is ready when the session is resumed" is literally true,
