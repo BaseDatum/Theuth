@@ -6,11 +6,12 @@ import { registry } from './registry'
 
 /**
  * What a fence renderer knows about its place in the transcript (30 §8), set by `MessageAssistant`: whether the
- * session's turn still runs, whether a later assistant reply follows this message before the next human one, and the
- * session an `Open as app` may publish into (`undefined` outside a live transcript: artifact viewer, tool cards).
+ * session's turn still runs, whether a later assistant reply follows this message before the next human one, the
+ * session an `Open as app` may publish into (`undefined` outside a live transcript: artifact viewer, tool cards), and
+ * the assistant message id (135 §2: the first half of a surface's remembered-height key).
  * The default is the static, settled case.
  */
-export type FenceContext = { running: boolean; hasLaterAssistant: boolean; session?: string }
+export type FenceContext = { running: boolean; hasLaterAssistant: boolean; session?: string; entry?: string }
 export const FenceContext = createContext<FenceContext>({ running: false, hasLaterAssistant: false })
 
 /**
