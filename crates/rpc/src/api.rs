@@ -576,6 +576,15 @@ pub trait Api {
     /// dismiss the set, which also cancels the turn. `true` if it was still pending.
     #[method(name = "answer_ask")]
     async fn answer_ask(&self, id: AskId, answers: Option<Vec<Answer>>) -> RpcResult<bool>;
+    /// A client's answer to a `PagePreviewRequested` (120 §11.2): `Started`
+    /// extends the wait, the first `Done`/`Failed` resolves it. `true` if the
+    /// preview was still pending.
+    #[method(name = "answer_page_preview")]
+    async fn answer_page_preview(
+        &self,
+        id: artifact::preview::PreviewId,
+        answer: artifact::preview::PagePreviewAnswer,
+    ) -> RpcResult<bool>;
     /// Every catalog model whose provider is configured.
     #[method(name = "list_models")]
     async fn list_models(&self) -> RpcResult<Vec<ModelInfo>>;
@@ -3373,6 +3382,14 @@ impl ApiServer for Server {
         agent::answer_ask(id, answers)
             .await
             .map_err(|e| ErrorObjectOwned::owned(ASK_FAILED, e.to_string(), None::<()>))
+    }
+
+    async fn answer_page_preview(
+        &self,
+        id: artifact::preview::PreviewId,
+        answer: artifact::preview::PagePreviewAnswer,
+    ) -> RpcResult<bool> {
+        Ok(artifact::preview::answer(id, answer))
     }
 
     async fn list_models(&self) -> RpcResult<Vec<ModelInfo>> {
@@ -6204,5 +6221,207 @@ mod tests {
         assert_eq!(v["error"]["code"].as_i64(), Some(i64::from(NOT_RUNNING)));
         let v = remote_dictation_call("talk_status", "[]").await;
         assert_eq!(v["error"]["code"].as_i64(), Some(i64::from(NOT_RUNNING)));
+    }
+
+    /// 120 §13.1: `page_preview` driven against the real `answer_page_preview`
+    /// dispatch. Time is paused, so the 2 s / 15 s deadlines elapse at once.
+    mod page_preview {
+        use super::*;
+        use std::time::Duration;
+
+        use artifact::preview::{
+            Client, ConsoleLevel, ConsoleLine, PagePreviewAnswer, PagePreviewRequested,
+            PagePreviewResolved, PagePreviewTool, PreviewArgs, PreviewId,
+        };
+        use kameo::actor::Spawn;
+        use kameo::message::Context;
+        use tokio::sync::mpsc;
+        use tools::{Tool, ToolCx, ToolOutput};
+
+        /// Bus subscriber: the request ids and the resolved ids, in order.
+        #[derive(kameo::Actor)]
+        struct Capture(mpsc::UnboundedSender<(bool, PreviewId)>);
+
+        impl Message<PagePreviewRequested> for Capture {
+            type Reply = ();
+            async fn handle(&mut self, m: PagePreviewRequested, _: &mut Context<Self, ()>) {
+                assert_eq!(m.html, "<p>x</p>");
+                let _ = self.0.send((false, m.id));
+            }
+        }
+
+        impl Message<PagePreviewResolved> for Capture {
+            type Reply = ();
+            async fn handle(&mut self, m: PagePreviewResolved, _: &mut Context<Self, ()>) {
+                let _ = self.0.send((true, m.id));
+            }
+        }
+
+        struct Harness {
+            rt: Runtime,
+            methods: jsonrpsee::Methods,
+            events: mpsc::UnboundedReceiver<(bool, PreviewId)>,
+        }
+
+        impl Harness {
+            async fn new() -> Self {
+                let rt = Runtime::new(figment::Figment::new(), std::env::temp_dir());
+                let methods: jsonrpsee::Methods = Server::new(rt.clone()).into_rpc().into();
+                let (tx, events) = mpsc::unbounded_channel();
+                let cap = Capture::spawn(Capture(tx));
+                rt.subscribe::<Capture, PagePreviewRequested>(&cap).await;
+                rt.subscribe::<Capture, PagePreviewResolved>(&cap).await;
+                Self { rt, methods, events }
+            }
+
+            /// Run the tool for `session` on its own task; the width defaults.
+            fn call(&self, session: SessionId) -> tokio::task::JoinHandle<ToolOutput> {
+                let tool = PagePreviewTool {
+                    rt: self.rt.clone(),
+                };
+                let cx = ToolCx {
+                    session,
+                    call_id: "c".into(),
+                    quiet: false,
+                    resources: tools::SessionResources::durable_arc(&std::env::temp_dir()),
+                };
+                tokio::spawn(async move {
+                    Tool::call(
+                        &tool,
+                        PreviewArgs {
+                            html: "<p>x</p>".into(),
+                            ..Default::default()
+                        },
+                        cx,
+                    )
+                    .await
+                    .unwrap()
+                })
+            }
+
+            async fn requested(&mut self) -> PreviewId {
+                let (resolved, id) = self.events.recv().await.unwrap();
+                assert!(!resolved, "expected a request");
+                id
+            }
+
+            async fn resolved(&mut self) -> PreviewId {
+                let (resolved, id) = self.events.recv().await.unwrap();
+                assert!(resolved, "expected a resolution");
+                id
+            }
+
+            /// The raw `answer_page_preview` result.
+            async fn answer(&self, id: PreviewId, answer: &PagePreviewAnswer) -> bool {
+                let req = format!(
+                    r#"{{"jsonrpc":"2.0","method":"answer_page_preview","params":[{},{}],"id":1}}"#,
+                    serde_json::to_string(&id).unwrap(),
+                    serde_json::to_string(answer).unwrap()
+                );
+                let (resp, _) = self.methods.raw_json_request(&req, 1).await.unwrap();
+                let v: serde_json::Value = serde_json::from_str(resp.get()).unwrap();
+                v["result"].as_bool().unwrap_or_else(|| panic!("{v}"))
+            }
+        }
+
+        fn started() -> PagePreviewAnswer {
+            PagePreviewAnswer::Started {
+                client: Client::Desktop,
+            }
+        }
+
+        fn done(height: u32) -> PagePreviewAnswer {
+            PagePreviewAnswer::Done {
+                content_height: height,
+                console: vec![ConsoleLine {
+                    level: ConsoleLevel::Error,
+                    text: "boom".into(),
+                }],
+                loaded: true,
+                client: Client::Desktop,
+            }
+        }
+
+        #[tokio::test(start_paused = true)]
+        async fn answer_page_preview_first_done_wins() {
+            let mut h = Harness::new().await;
+            let call = h.call(SessionId::new());
+            let id = h.requested().await;
+            assert!(h.answer(id, &started()).await);
+            assert!(h.answer(id, &done(612)).await);
+            assert!(!h.answer(id, &done(700)).await, "second Done is late");
+            assert!(!h.answer(id, &started()).await, "Started after Done is late");
+            let out = call.await.unwrap();
+            assert!(!out.is_error, "{}", out.content);
+            assert!(out.content.starts_with(
+                "Previewed at 728 px: contentHeight 612, 1 error. Pass height: 612 to show"
+            ));
+            assert_eq!(out.structured.unwrap()["contentHeight"], 612);
+            assert_eq!(h.resolved().await, id);
+        }
+
+        #[tokio::test(start_paused = true)]
+        async fn started_extends_the_deadline() {
+            let mut h = Harness::new().await;
+            let call = h.call(SessionId::new());
+            let id = h.requested().await;
+            assert!(h.answer(id, &started()).await);
+            // Past the 2 s "no renderer" mark, inside the 15 s total.
+            tokio::time::sleep(Duration::from_secs(5)).await;
+            assert!(h.answer(id, &done(300)).await);
+            let out = call.await.unwrap();
+            assert!(!out.is_error, "{}", out.content);
+
+            // A `Started` with no `Done` runs out at 15 s.
+            let call = h.call(SessionId::new());
+            h.resolved().await;
+            let id = h.requested().await;
+            assert!(h.answer(id, &started()).await);
+            let out = call.await.unwrap();
+            assert!(out.is_error);
+            assert!(
+                out.content
+                    .starts_with("page_preview: preview timed out after 15 s"),
+                "{}",
+                out.content
+            );
+            assert!(!h.answer(id, &done(1)).await, "dead after the timeout");
+        }
+
+        #[tokio::test(start_paused = true)]
+        async fn no_started_in_two_seconds_is_no_renderer() {
+            let mut h = Harness::new().await;
+            let call = h.call(SessionId::new());
+            let id = h.requested().await;
+            let out = call.await.unwrap();
+            assert!(out.is_error);
+            assert!(
+                out.content
+                    .starts_with("page_preview: no renderer connected — open the theuth desktop"),
+                "{}",
+                out.content
+            );
+            assert_eq!(h.resolved().await, id);
+            assert!(!h.answer(id, &started()).await);
+        }
+
+        #[tokio::test(start_paused = true)]
+        async fn one_preview_per_session() {
+            let mut h = Harness::new().await;
+            let session = SessionId::new();
+            let first = h.call(session);
+            let id = h.requested().await;
+            let out = h.call(session).await.unwrap();
+            assert!(out.is_error);
+            assert_eq!(out.content, "page_preview: a preview is already running");
+            // Another session is not blocked.
+            let other = h.call(SessionId::new());
+            let other_id = h.requested().await;
+            assert_ne!(other_id, id);
+            assert!(h.answer(id, &done(100)).await);
+            assert!(h.answer(other_id, &done(200)).await);
+            assert!(!first.await.unwrap().is_error);
+            assert!(!other.await.unwrap().is_error);
+        }
     }
 }
