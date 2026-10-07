@@ -47,14 +47,18 @@ public partial class App : Application
         if (!createdNew) Log.Write($"another companion holds {AppInfo.AliveMutexName}");
 
         // W3: AppNotificationManager.Register() (Notifier) runs here — before any window (§4.4, C1).
-        logWindow = new LogWindow();
-        logWindow.Closed += (_, _) => Quit(ExitCode);
-        if (Flags.Probe is not null) logWindow.ShowWithoutActivating(); // a probe never takes the foreground
-        else logWindow.Activate();
+        // W2: the log window is the probe's only (the W1 gate reads AutomationId "log"); otherwise the surfaces are the UI.
+        if (Flags.Probe is not null)
+        {
+            logWindow = new LogWindow();
+            logWindow.Closed += (_, _) => Quit(ExitCode);
+            logWindow.ShowWithoutActivating(); // a probe never takes the foreground
+        }
         Store = Store.Create(dispatcher, EngineProbe.Locate);
         probe = new EngineProbe(Store, dispatcher, Flags.Probe, Quit);
         probe.Start();
         // W2: the rail, panel, tray and hotkeys bind to Store here (before Start, to see the first refetch).
+        Ui.Surfaces.Start(Store, dispatcher, Quit);
         Store.Start();
     }
 
@@ -65,6 +69,7 @@ public partial class App : Application
         quitting = true;
         ExitCode = code;
         probe?.Dispose();
+        Ui.Surfaces.Current?.Dispose(); // W2: tray icon removed, hotkeys released
         Store?.Close();
         Log.Write($"terminate (exit {code})");
         try { aliveMutex?.ReleaseMutex(); } catch (ApplicationException) { }
