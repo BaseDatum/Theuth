@@ -1,7 +1,6 @@
 using System.ComponentModel;
 using Microsoft.UI;
 using Microsoft.UI.Composition.SystemBackdrops;
-using Microsoft.UI.Dispatching;
 using Microsoft.UI.Input;
 using Microsoft.UI.Windowing;
 using Microsoft.UI.Xaml;
@@ -15,6 +14,8 @@ using Theuth.Companion.Voice;
 using Windows.Graphics;
 using Windows.System;
 using Windows.UI.Core;
+using DispatcherQueue = Microsoft.UI.Dispatching.DispatcherQueue;
+using DispatcherQueueTimer = Microsoft.UI.Dispatching.DispatcherQueueTimer;
 
 namespace Theuth.Companion.AskBar;
 
