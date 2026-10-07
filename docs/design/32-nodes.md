@@ -605,7 +605,7 @@ Names share one namespace with `agents.yaml` so the model has one field to
 fill; a clash is refused at `add_node` (§6.2). `cwd` is a path on the node.
 Everything else the model knows about subagents (01 §2, 19) holds: the
 child is a leaf, results arrive as `<subagent_result>`, `send_message` by
-name, `max_concurrent`/`max_runtime_secs`/`reply_timeout_secs` apply, a
+name, `max_concurrent_external` (the external pool, 01 §2.6)/`max_runtime_secs`/`reply_timeout_secs` apply, a
 result's text is untrusted content like any other child's (28). No remote
 `shell`: the subagent is the unit of remote work, by construction.
 
@@ -696,7 +696,7 @@ user's devices from it — they paired with it themselves; the copy says so.
 
 | what | value | why |
 |---|---|---|
-| conns per node from one parent | 1 control + 1 per live remote child ≤ `agent.subagents.max_concurrent` (8) | 31 §4.5's 64 leaves room for 16 devices |
+| conns per node from one parent | 1 control + 1 per live remote child ≤ 1 + `agent.subagents.max_concurrent_external` (32 per orchestrator tree, 01 §2.6) | fits 31 §4.5's 64 |
 | remote child event latency | ≤ 31 §11's phone number + one ACP translation (`Relay` → `AcpChild`), measured once on LAN | the only doubly serialised path |
 | control conn traffic | zero bytes at rest; `info` on connect, `link_pair` per invite, `link_revoke_device` per revoke | no polling, no event subscription |
 | `--install-service` to `paired:` | ≤ 30 s on a box that resolves the relay | 15 s port wait + one handshake |

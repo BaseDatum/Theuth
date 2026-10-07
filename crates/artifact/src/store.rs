@@ -553,9 +553,13 @@ impl State {
             .in_memory(true)
             .journal_mode(SqliteJournalMode::Memory)
             .pragma("temp_store", "MEMORY");
+        // One `:memory:` connection is the whole database: sqlx's default
+        // idle/lifetime reaper would replace it with an empty, unmigrated one.
         let pool = SqlitePoolOptions::new()
             .max_connections(1)
             .min_connections(1)
+            .idle_timeout(None)
+            .max_lifetime(None)
             .connect_with(opts)
             .await
             .context("open in-memory artifact index")?;

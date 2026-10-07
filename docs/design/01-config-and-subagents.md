@@ -56,7 +56,8 @@ agent:
   subagents:                   # §2.6
     model: null                # default: agent.model
     max_depth: 1
-    max_concurrent: 8
+    max_concurrent: 16         # native child spawn turns per orchestrator tree
+    max_concurrent_external: 32  # ACP harness / mesh-node child spawn turns per orchestrator tree
     max_runtime_secs: 600
     reply_timeout_secs: 120
 tools:
@@ -513,7 +514,8 @@ Children get no `yield` tool (oh-my-pi's) — our turn end *is* the yield.
 | Knob | Default | Enforcement |
 |---|---|---|
 | `max_depth` | 1 | `spawn_subagent` hidden from the model's tool list at depth ≥ max and rejected at call time; depth = parent chain length from the store |
-| `max_concurrent` | 8 | `tokio::sync::Semaphore` in the supervisor around the child turn started by `spawn_subagent`; a spawn beyond the cap starts when a permit frees, transparently (the parent is not told). Follow-up turns started by `send_message`/human input are not permit-gated |
+| `max_concurrent` | 16 | **Per orchestrator tree** (keyed by the root session of the spawning parent's tree): a `tokio::sync::Semaphore` in the supervisor around the spawn turn of every child *this engine's loop executes*. A spawn beyond the cap is **queued** and the parent is told (below). Follow-up turns started by `send_message`/human input are not permit-gated |
+| `max_concurrent_external` | 32 | Per orchestrator tree, a second semaphore for children executed elsewhere — an external ACP harness (`agent: omp`) or a mesh node (67 §8). Same timer, same `ChildTimedOut`; never a native permit, so an hours-long harness turn cannot starve a native spawn |
 | `max_runtime_secs` | 600 | per spawn turn (same scope as the permit); on expiry the turn is cancelled and the parent receives `<subagent_result stop="cancelled">` prefixed `[timed out after Ns]` |
 | `reply_timeout_secs` | 120 | `await_reply` bound |
 | `model` / `effort` | `null` | child defaults when `spawn_subagent` names none; fall back to `agent.model` / `agent.effort` |
@@ -536,6 +538,29 @@ pending inputs per recipient / 256 per harness, 16 pending waits per
 session / 128 per harness, 32 automatic peer-triggered continuations per
 initiating request (reset only by fresh external input). Exhaustion is a
 visible refusal, never a silent drop.
+
+*Amendment (spawnstall, 2026-10-07).* Two pools per orchestrator tree (the
+table above; the Python worker pool is a separate harness-wide ceiling, 08
+§9). `spawn_subagent` tries the pool first; when every slot is busy the
+child is **queued** and the tool result says so on its last line —
+`Queued: all 16 native child slots of this orchestrator are busy (running:
+<name> since HH:MM, …); it starts when one frees. Messages you send it are
+delivered after its brief.` — with INFO `child queued` / `queued child
+started waited=Ns` (WARN past 300 s) in the log. While a child is queued,
+**the brief is always its first input**: peer inputs addressed to it
+(`send_message`, results, A2A) are held in the supervisor, in memory only,
+and routed right after the brief with their original flags, so a
+peer-opened bounded turn (50 §8) can never wait for a second permit while
+the spawn turn holds one. A **human** input (send/steer into the child)
+**promotes** it: the permit wait is abandoned and the brief runs at once as
+a permit-free human-opened turn, then the human text, then the held inputs;
+the `max_runtime_secs` timer runs as for a spawn turn. **Stopping a queued
+child drops it**: a cancel (the user's stop, a cancelled request scope),
+unload, delete, archive, or its parent's stop/close/delete aborts the wait,
+releases the brief's ticket, settles its owning scope's `child:<id>` work,
+fails the held inputs and publishes `AgentEvent::Error` "spawn cancelled
+before it started" on the child — a stale brief never runs. Queued state
+and held inputs do not survive an engine restart.
 
 ### 2.7 Events, store, UI
 

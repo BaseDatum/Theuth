@@ -144,6 +144,11 @@ pub struct RunCx {
 // Pool
 // ---------------------------------------------------------------------------
 
+/// Python workers harness-wide (08 §9): a turn holds one from its first cell
+/// to its end, so this bounds concurrently *executing* turns, independent of
+/// the per-tree child caps (01 §2.6). Lazy: `min_processes` stays 1.
+pub const REPL_POOL_MAX: usize = 48;
+
 /// Start the worker pool on `worker`, spawned as `<worker> subprocess`. In
 /// production that is this binary (`t subprocess`, 08 §9), so nothing has
 /// to be installed. `None` (with one `warn!`) when the pool fails to start:
@@ -1057,7 +1062,7 @@ impl Repl {
         if self.checkout.is_some() {
             return Ok(());
         }
-        let mut c = self.pool.checkout(&self.cfg).await?;
+        let mut c = self.checkout_warning().await?;
         if let Some(bytes) = &self.last_dump {
             let mut quiet = on_print_sync(|_, _| {});
             if let Err(e) = c.restore(bytes.clone(), Vec::new(), &mut quiet).await {
@@ -1076,11 +1081,28 @@ impl Repl {
                 self.candidates.clear();
                 self.imports.clear();
                 drop(c);
-                c = self.pool.checkout(&self.cfg).await?;
+                c = self.checkout_warning().await?;
             }
         }
         self.checkout = Some(c);
         Ok(())
+    }
+
+    /// `Pool::checkout`, which waits without a timeout for a worker: after
+    /// 5 s one WARN names the ceiling (08 §9), then the wait goes on.
+    async fn checkout_warning(&mut self) -> Result<Checkout, PoolError> {
+        let checkout = self.pool.checkout(&self.cfg);
+        tokio::pin!(checkout);
+        tokio::select! {
+            c = &mut checkout => c,
+            () = tokio::time::sleep(Duration::from_secs(5)) => {
+                tracing::warn!(
+                    session = %self.cx.session,
+                    "python worker pool exhausted ({REPL_POOL_MAX} in use), waiting for a turn to end"
+                );
+                checkout.await
+            }
+        }
     }
 
     /// Stubs follow the live tool set (a server that connected since the

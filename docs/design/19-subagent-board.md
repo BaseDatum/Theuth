@@ -79,7 +79,7 @@ it for free; **derive, don't duplicate** — no new `AgentEvent` variant, the
 board is computed from `TurnStarted/Finished`, `ToolCallStarted/Finished`,
 `Error`, `SubagentSpawned`, and a late-attaching frontend asks for one
 snapshot (`list_agents`); **scale by rule, not by pane** — N is bounded by
-`max_concurrent` (8) per parent but unbounded over a session's life and over
+the per-orchestrator child pools (01 §2.6: 16 native + 32 external at once) but unbounded over a session's life and over
 depth, so the board shows what is live and caps rows, the picker shows
 everything.
 
