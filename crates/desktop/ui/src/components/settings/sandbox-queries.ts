@@ -12,6 +12,7 @@ import type { Mount } from '@/rpc/bindings/Mount'
 import type { Item } from '@/rpc/bindings/Item'
 import type { Packet } from '@/rpc/bindings/Packet'
 import type { Preflight } from '@/rpc/bindings/Preflight'
+import type { Priority } from '@/rpc/bindings/Priority'
 import type { ResourceChange } from '@/rpc/bindings/ResourceChange'
 import type { SandboxCreate } from '@/rpc/bindings/SandboxCreate'
 import type { SandboxInfo } from '@/rpc/bindings/SandboxInfo'
@@ -188,7 +189,7 @@ const SIM_SHOW_CALL = 'toolu_015AZQL17aTdoAMD49A3uZkD'
 
 /** The inbox as `attention_list` derives it from the fixtures (roster `attention.rs`: titles, `detail` = engine name or id; 101: the first line of the packet; 104: `ask`, `show`, `session` on every row). */
 export const ATTENTION_SIM: AttentionItem[] = [
-  { id: `decision:${SIM_TASK_DECISION}:decision:dns-9c21`, kind: 'decision', title: 'Portal DNS cut-over', detail: 'Approve the ten portal DNS changes for tonight?', at_ms: NOW - 8_000, task: SIM_TASK_DECISION, agent: 'manager', session: SIM_SESSION_OPS, approval: null, decision: 'decision:dns-9c21', packet: 'decision:dns-9c21', ask: null, turn: null },
+  { id: `decision:${SIM_TASK_DECISION}:decision:dns-9c21`, kind: 'decision', title: 'Portal DNS cut-over', detail: 'Approve the ten portal DNS changes for tonight?', at_ms: NOW - 8_000, task: SIM_TASK_DECISION, agent: 'manager', session: SIM_SESSION_OPS, approval: null, decision: 'decision:dns-9c21', packet: 'decision:dns-9c21', ask: null, turn: null, priority: 'high', rank: 7 },
   {
     id: 'ask:ask-sim-01',
     kind: 'ask',
@@ -220,15 +221,115 @@ export const ATTENTION_SIM: AttentionItem[] = [
       ],
     },
     turn: 14,
+    priority: null,
+    rank: 5,
   },
-  { id: `approval:apr-sim-01`, kind: 'approval', title: `${SIM_SESSION_DESK} wants to run shell`, detail: 'git push origin feat/release-notes --force-with-lease', at_ms: NOW - 12_000, task: null, agent: 'theuth', session: SIM_SESSION_DESK, approval: 'apr-sim-01', decision: null, packet: null, ask: null, turn: 14 },
-  { id: `show:${SIM_SHOW_CALL}`, kind: 'show', title: 'Proposed DR task division (not assigned)', detail: 'DIVISION.md · markdown · 4.4 KB', at_ms: NOW - 15_000, task: null, agent: 'theuth', session: SIM_SESSION_DESK, approval: null, decision: null, packet: null, ask: null, turn: 13 },
-  { id: `decision:${SIM_TASK_DECISION}:decision:apr-7f3a`, kind: 'decision', title: 'Rotate the Grafana API token', detail: 'Which rotation path for the Grafana token?', at_ms: NOW - 20_000, task: SIM_TASK_DECISION, agent: 'ops', session: SIM_SESSION_OPS, approval: null, decision: 'decision:apr-7f3a', packet: 'decision:apr-7f3a', ask: null, turn: null },
-  { id: 'secret:0199aaaa-0000-7000-8000-00000000sim2', kind: 'secret', title: '77aa11bb asks for a secret: Postgres login', detail: 'engine-host-0000', at_ms: NOW - 30_000, task: null, agent: null, session: 'sess-host-77aa11bb', approval: null, decision: null, packet: null, ask: null, turn: null },
-  { id: `review:${SIM_TASK_REVIEW}`, kind: 'review', title: 'Write the Q4 release notes', detail: 'Release notes for 2.4: three sections, one diagram, a diff of the changelog.', at_ms: NOW - 45_000, task: SIM_TASK_REVIEW, agent: 'writer', session: SIM_SESSION_OPS, approval: null, decision: null, packet: `review:${SIM_TASK_REVIEW}`, ask: null, turn: null },
-  { id: 'secret:0199aaaa-0000-7000-8000-00000000sim1', kind: 'secret', title: '01a0f02b asks for a secret: GITHUB_TOKEN', detail: 'lab', at_ms: NOW - 90_000, task: null, agent: null, session: 'sess-lab-01a0f02b', approval: null, decision: null, packet: null, ask: null, turn: null },
-  { id: 'handoff:h-sim-1', kind: 'handoff', title: 'researcher needs you: the login page wants a 2FA code', detail: 'lab', at_ms: NOW - 120_000, task: null, agent: 'researcher', session: 'sess-lab-01a0f02b', approval: null, decision: null, packet: null, ask: null, turn: null },
+  { id: `approval:apr-sim-01`, kind: 'approval', title: `${SIM_SESSION_DESK} wants to run shell`, detail: 'git push origin feat/release-notes --force-with-lease', at_ms: NOW - 12_000, task: null, agent: 'theuth', session: SIM_SESSION_DESK, approval: 'apr-sim-01', decision: null, packet: null, ask: null, turn: 14, priority: null, rank: 5 },
+  { id: `show:${SIM_SHOW_CALL}`, kind: 'show', title: 'Proposed DR task division (not assigned)', detail: 'DIVISION.md · markdown · 4.4 KB', at_ms: NOW - 15_000, task: null, agent: 'theuth', session: SIM_SESSION_DESK, approval: null, decision: null, packet: null, ask: null, turn: 13, priority: null, rank: 5 },
+  { id: `decision:${SIM_TASK_DECISION}:decision:apr-7f3a`, kind: 'decision', title: 'Rotate the Grafana API token', detail: 'Which rotation path for the Grafana token?', at_ms: NOW - 20_000, task: SIM_TASK_DECISION, agent: 'ops', session: SIM_SESSION_OPS, approval: null, decision: 'decision:apr-7f3a', packet: 'decision:apr-7f3a', ask: null, turn: null, priority: 'medium', rank: 5 },
+  { id: 'secret:0199aaaa-0000-7000-8000-00000000sim2', kind: 'secret', title: '77aa11bb asks for a secret: Postgres login', detail: 'engine-host-0000', at_ms: NOW - 30_000, task: null, agent: null, session: 'sess-host-77aa11bb', approval: null, decision: null, packet: null, ask: null, turn: null, priority: null, rank: 5 },
+  { id: `review:${SIM_TASK_REVIEW}`, kind: 'review', title: 'Write the Q4 release notes', detail: 'Release notes for 2.4: three sections, one diagram, a diff of the changelog.', at_ms: NOW - 45_000, task: SIM_TASK_REVIEW, agent: 'writer', session: SIM_SESSION_OPS, approval: null, decision: null, packet: `review:${SIM_TASK_REVIEW}`, ask: null, turn: null, priority: 'medium', rank: 5 },
+  { id: 'secret:0199aaaa-0000-7000-8000-00000000sim1', kind: 'secret', title: '01a0f02b asks for a secret: GITHUB_TOKEN', detail: 'lab', at_ms: NOW - 90_000, task: null, agent: null, session: 'sess-lab-01a0f02b', approval: null, decision: null, packet: null, ask: null, turn: null, priority: null, rank: 5 },
+  { id: 'handoff:h-sim-1', kind: 'handoff', title: 'researcher needs you: the login page wants a 2FA code', detail: 'lab', at_ms: NOW - 120_000, task: null, agent: 'researcher', session: 'sess-lab-01a0f02b', approval: null, decision: null, packet: null, ask: null, turn: null, priority: null, rank: 5 },
 ]
+
+/** 132 D10: `?mock=crowded` — the Attention surface with sixty rows, every kind and every priority. */
+export function crowdedFlag(search = typeof location === 'undefined' ? '' : location.search): boolean {
+  return new URLSearchParams(search).get('mock') === 'crowded'
+}
+
+const WEIGHT: Record<Priority, number> = { urgent: 9, high: 7, medium: 5, low: 2 }
+const CROWD_TASK = (n: number) => `0192c000-0000-7000-8000-${String(n).padStart(12, '0')}`
+/** The sim packets behind the crowded decisions and reviews, so their screens are full (served by `usePacket` under the flag too). */
+const CROWD_PACKETS: Record<string, string> = { decision: 'decision:apr-7f3a', review: `review:${SIM_TASK_REVIEW}` }
+
+type Crowd = [kind: AttentionItem['kind'], priority: Priority, title: string, detail: string | null, agent: string | null]
+
+// Rows as the engine composes them (132 D1): a decision leads with its question, a review with its outcome, the byline is `detail`.
+const CROWD: readonly Crowd[] = [
+  ['decision', 'urgent', 'Roll back the 2.4.1 release now or ship the hotfix in forty minutes?', 'ops · Ship 2.4.1', 'ops'],
+  ['review', 'urgent', 'The incident postmortem is written; three action items are assigned, one is yours.', '“Postmortem for the relay outage” · by ops', 'ops'],
+  ['ask', 'urgent', 'ops asks: Is the customer in the EU? It decides which data-processing addendum to send.', 'Is the customer in the EU?', 'ops'],
+  ['approval', 'urgent', 'ops wants to run shell', 'kubectl delete deployment relay-canary -n prod', 'ops'],
+  ['budget', 'urgent', 'research is over budget: $84 of $60 this month', 'paused until the cap is raised or the month turns', 'research'],
+  ['handoff', 'urgent', 'builder needs you: the signing key prompt wants your Touch ID', 'lab', 'builder'],
+  ['decision', 'high', 'Keep the pricing change in Highlights, or move it under Changes with a link to the pricing page?', 'writer · Write the Q4 release notes', 'writer'],
+  ['decision', 'high', 'Which rotation path for the Grafana token: in place, side by side for a day, or split alerting first?', 'ops · Rotate the Grafana API token', 'ops'],
+  ['decision', 'high', 'Should the migration run on Friday evening or wait for the Monday change window?', 'ops · Move the tasks store to 0008', 'ops'],
+  ['review', 'high', 'Dark-mode contrast fixed on every status wash; the sidebar badge now reads at 4.6:1.', '“Dark mode contrast pass” · by design-desk', 'design-desk'],
+  ['review', 'high', 'The relay now retries with jitter; the flaky integration test passed 200 of 200 runs.', '“Fix the relay reconnect storm” · by builder', 'builder'],
+  ['review', 'high', 'Draft of the board skill is ready: twelve rules, each with the thing to say back.', '“Rewrite the board skill” · by docs-desk', 'docs-desk'],
+  ['ask', 'high', 'research asks: Which three competitors should the comparison table cover?', 'Which three competitors?', 'research'],
+  ['ask', 'high', 'docs-desk asks: Do we keep the old CLI flags in the 2.5 docs or mark them removed?', 'Keep the old CLI flags in the docs?', 'docs-desk'],
+  ['approval', 'high', 'builder wants to run shell', 'git push origin feat/relay-jitter --force-with-lease', 'builder'],
+  ['approval', 'high', 'analyst wants to run browser', 'log in to stripe.com as sky@theuth.dev', 'analyst'],
+  ['secret', 'high', 'ops asks for a secret: CLOUDFLARE_API_TOKEN', 'engine-host-0000', null],
+  ['hire', 'high', 'ops proposes to hire reviewer-2', 'a second reviewer desk for the release week', 'ops'],
+  ['blocked', 'high', 'Ship 2.4.1 is blocked', 'waiting on decision:rollback and the canary result', 'ops'],
+  ['resume', 'high', 'research stopped mid-turn: resume?', 'the engine restarted with 3 tool calls in flight', 'research'],
+  ['decision', 'medium', 'Name the new agent "scout" or "recon"? The desk manual uses "scout" twice already.', 'manager · Add the recon desk', 'manager'],
+  ['decision', 'medium', 'Do we accept the vendor’s 30-day data retention, or ask for 7 days before signing?', 'analyst · Vendor DPA review', 'analyst'],
+  ['decision', 'medium', 'Should the weekly digest go out Monday 08:00 or Sunday evening?', 'docs-desk · Weekly digest routine', 'docs-desk'],
+  ['decision', 'medium', 'Pin the toolchain at 1.86 or follow stable? Two crates need 1.87 for let-chains.', 'builder · Toolchain bump', 'builder'],
+  ['decision', 'medium', 'Keep the three-section release-notes shape, or go to one flat list for 2.5?', 'writer · Release notes 2.5', 'writer'],
+  ['decision', 'medium', 'Which of the four candidate fonts for the HUD numerals: Inter Tabular, JetBrains Mono, or the system?', 'design-desk · HUD numerals', 'design-desk'],
+  ['review', 'medium', 'Four onboarding screens drafted; the pairing step now shows the QR and the code side by side.', '“Onboarding screens” · by design-desk', 'design-desk'],
+  ['review', 'medium', 'The competitor table covers six products across nine criteria; two cells are still unverified.', '“Competitor comparison” · by research', 'research'],
+  ['review', 'medium', 'Sync docs updated for the relay path; one diagram, two examples, the FAQ trimmed to five questions.', '“Sync docs for 2.5” · by docs-desk', 'docs-desk'],
+  ['review', 'medium', 'Cost report for September is in: $412, 38% on research, the rest on routines.', '“September cost report” · by analyst', 'analyst'],
+  ['review', 'medium', 'The migration is written and tested on a copy of the live store; 0008 adds the priority column.', '“Migration 0008” · by builder', 'builder'],
+  ['ask', 'medium', 'writer asks: Anything to leave out of the public notes?', 'Anything to leave out?', 'writer'],
+  ['ask', 'medium', 'analyst asks: Which currency for the cost report — USD or EUR?', 'Which currency?', 'analyst'],
+  ['approval', 'medium', 'docs-desk wants to run shell', 'bun run build && rsync -a dist/ sky@docs:/srv/docs/', 'docs-desk'],
+  ['approval', 'medium', 'research wants to run fetch', 'GET https://api.crunchbase.com/v4/… (200 requests)', 'research'],
+  ['show', 'medium', 'Competitor comparison (draft 3)', 'COMPARISON.md · markdown · 12.1 KB', 'research'],
+  ['show', 'medium', 'Relay reconnect timings', 'timings.svg · image · 44 KB', 'builder'],
+  ['handoff', 'medium', 'analyst needs you: Stripe wants a one-time code from your phone', 'lab', 'analyst'],
+  ['secret', 'medium', 'docs-desk asks for a secret: DOCS_DEPLOY_KEY', 'engine-lab-0001', null],
+  ['hire', 'medium', 'research proposes to hire summarizer', 'a cheap model for the reading pile', 'research'],
+  ['budget', 'medium', 'analyst is at 80% of budget: $48 of $60', 'the month has nine days left', 'analyst'],
+  ['blocked', 'medium', 'Vendor DPA review is blocked', 'waiting on decision:retention', 'analyst'],
+  ['node', 'medium', 'studio-mac is online again', 'last seen 3 days ago · 2 sandboxes', null],
+  ['double', 'medium', 'Your double answered for you: "Approve the bundle tonight"', 'undo for 4 more minutes', 'manager'],
+  ['decision', 'low', 'Archive the 2023 meeting notes or keep them searchable? Nobody opened them this year.', 'docs-desk · Library cleanup', 'docs-desk'],
+  ['decision', 'low', 'Rename "Needs a hand" to "Hand-offs" in the rail? The design calls it either.', 'design-desk · Attention rail polish', 'design-desk'],
+  ['decision', 'low', 'Should routines show their next run in the sidebar, or only on hover?', 'design-desk · Sidebar glyphs', 'design-desk'],
+  ['review', 'low', 'Typos fixed across the desk manuals; eleven files, no wording changes.', '“Manual typo pass” · by docs-desk', 'docs-desk'],
+  ['review', 'low', 'The README badges point at the new CI; the old workflow file is gone.', '“README badges” · by builder', 'builder'],
+  ['ask', 'low', 'design-desk asks: Is the gold-ochre chip too loud next to the kind chip?', 'Is the urgent chip too loud?', 'design-desk'],
+  ['show', 'low', 'Proposed DR task division (not assigned)', 'DIVISION.md · markdown · 4.4 KB', 'theuth'],
+  ['show', 'low', 'Sidebar glyph sheet', 'glyphs.png · image · 210 KB', 'design-desk'],
+  ['handoff', 'low', 'docs-desk needs you: the docs host wants a captcha solved', 'lab', 'docs-desk'],
+  ['secret', 'low', 'research asks for a secret: CRUNCHBASE_KEY', 'engine-lab-0001', null],
+  ['resume', 'low', 'docs-desk stopped mid-turn: resume?', 'the engine restarted with 1 tool call in flight', 'docs-desk'],
+  ['finished', 'low', 'research finished a turn', 'Read 14 sources, wrote the comparison draft, asked one question.', 'research'],
+  ['finished', 'low', 'builder finished a turn', 'Relay jitter landed; the flaky test is green.', 'builder'],
+  ['decision', 'low', 'Keep the 60 s poll for secret requests, or rely on events only now that replication carries them?', 'builder · Secret requests poll', 'builder'],
+  ['review', 'low', 'The talk-view sim script runs again after the store split; nothing user-visible changed.', '“Talk sim repair” · by builder', 'builder'],
+  ['decision', 'low', 'Which day for the monthly cost review: the 1st or the first Monday?', 'analyst · Cost review routine', 'analyst'],
+]
+
+/**
+ * 132 D10: sixty rows in the engine's order (rank desc, then newest). Every row carries a priority — task-born kinds
+ * through their task, the rest through a session that is a task checkout (`attention.rs`) — so the Urgent group spans kinds.
+ */
+export const ATTENTION_CROWDED: AttentionItem[] = CROWD.map(([kind, priority, title, detail, agent], i): AttentionItem => ({
+  id: `${kind}:crowded-${i}`,
+  kind,
+  title,
+  detail,
+  at_ms: NOW - (i + 1) * 97_000,
+  task: kind === 'decision' || kind === 'review' || kind === 'blocked' ? CROWD_TASK(i) : null,
+  agent,
+  session: agent ? SIM_SESSION_OPS : null,
+  approval: kind === 'approval' ? `apr-crowded-${i}` : null,
+  decision: kind === 'decision' ? `decision:crowded-${i}` : null,
+  packet: CROWD_PACKETS[kind] ?? null,
+  ask: null,
+  turn: null,
+  priority,
+  rank: WEIGHT[priority],
+})).sort((a, b) => b.rank - a.rank || b.at_ms - a.at_ms)
 
 /**
  * 104: the artifact behind the sim's `show` item, served by the Show screen under `?sim=` instead of `get_artifact`. The
@@ -295,6 +396,7 @@ Whichever path, the new value lands in the \`GRAFANA_TOKEN\` secret and the runb
       { label: 'Split alerting first', description: 'Give the alert rule its own token, then rotate the dashboards token in place. Two changes.' },
     ],
     recommended: 1,
+    if_wrong: 'Medium — a missed consumer means alerting goes blind until someone notices; revert is one token swap.',
     pointers: [
       { kind: 'url', ref: 'https://grafana.com/docs/grafana/latest/administration/service-accounts/', title: 'Grafana: service account tokens', note: 'Two tokens per service account are allowed, which the side-by-side path relies on.', text: null, root: null },
       {
@@ -334,6 +436,7 @@ Forwarded from the SRE desk's \`decision:dns-4b10\` — the desk's picks are pre
       { label: "Hold until Monday's change window", description: 'Nothing changes tonight; the old LB keeps serving.' },
     ],
     recommended: 0,
+    if_wrong: 'Low — TTLs are at 60 s, every record can be put back within a minute.',
     pointers: [],
     checks: [],
     board: SIM_BOARD_DECISION,
@@ -362,8 +465,14 @@ Forwarded from the SRE desk's \`decision:dns-4b10\` — the desk's picks are pre
     summary: `Release notes for 2.4: three sections (Highlights, Changes, Upgrade notes), one diagram of the new sync flow, and the changelog entry. I kept every item to one line and linked the design notes instead of restating them.
 
 Two things I was unsure about: whether the pricing change belongs in Highlights or Changes (it is in Highlights), and the exact wording of the upgrade warning for self-hosted installs.`,
-    options: [],
-    recommended: null,
+    // 132 D3: the next moves after approval, one recommended.
+    options: [
+      { label: 'Publish the notes', description: 'Push the site page and the CHANGELOG entry; announce in #releases.' },
+      { label: 'Hold for finance', description: 'Wait for the pricing-change review, then publish.' },
+      { label: 'Draft 2.5 notes next', description: 'Start the next cycle from this shape.' },
+    ],
+    recommended: 0,
+    if_wrong: 'Low — the notes page is one commit to revert; nothing ships to users until the announcement.',
     pointers: [
       {
         kind: 'diff',

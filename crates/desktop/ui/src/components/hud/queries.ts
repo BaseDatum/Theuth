@@ -1,7 +1,7 @@
 import { useQueries, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useEffect, useMemo, useRef } from 'react'
 import { useModels } from '@/components/agents/queries'
-import { ATTENTION_SIM, SECRET_REQUESTS_SIM, simFlag } from '@/components/settings/sandbox-queries'
+import { ATTENTION_CROWDED, ATTENTION_SIM, SECRET_REQUESTS_SIM, crowdedFlag, simFlag } from '@/components/settings/sandbox-queries'
 import { useAction } from '@/components/settings/shared'
 import { keys as taskKeys } from '@/components/tasks/queries'
 import { queryKeys, useApi } from '@/lib/rpc'
@@ -33,10 +33,11 @@ export const ACTIVITY_KEY = ['activity'] as const
  */
 const ATTENTION_EVENTS = ['ActivityAppended', 'ApprovalRequested', 'ApprovalResolved', 'ArtifactShown', 'AskRequested', 'AskResolved', 'NodeAdded', 'NodeOnline', 'NodeRemoved', 'NodeRevoked', 'SecretRequested', 'SecretResolved', 'Takeover', 'DoubleAnswered', 'AttentionChanged'] as const satisfies readonly WireEvent['type'][]
 
-/** `attention_list`, re-derived on every event that can change it (130 E1: no timer poll). */
+/** `attention_list`, re-derived on every event that can change it (130 E1: no timer poll). 132 D10: `?mock=crowded` serves the sixty-row fixture. */
 export function useAttention() {
   const api = useApi()
   const qc = useQueryClient()
+  const crowded = crowdedFlag()
   const sim = simFlag()
   useEffect(() => {
     const invalidate = () => {
@@ -49,7 +50,7 @@ export function useAttention() {
       for (const off of offs) off()
     }
   }, [qc])
-  return useQuery({ queryKey: ATTENTION_KEY, queryFn: () => (sim ? ATTENTION_SIM : api.attention_list()) })
+  return useQuery({ queryKey: ATTENTION_KEY, queryFn: () => (sim ? ATTENTION_SIM : crowded ? ATTENTION_CROWDED : api.attention_list()) })
 }
 
 /**

@@ -2,6 +2,7 @@ import { expect, test } from 'vitest'
 import type { AttentionItem } from '@/rpc/bindings/AttentionItem'
 import type { Pointer } from '@/rpc/bindings/Pointer'
 import type { HistoryEntry } from '@/rpc/extra'
+import { ATTENTION_CROWDED } from '@/components/settings/sandbox-queries'
 import { clampText, groupItems, lastAssistantBefore, nextAfter, parseCodeRef, pointerRoute, urlHost } from './model'
 
 const item = (id: string, kind: AttentionItem['kind'] = 'decision', at_ms = 1, priority: AttentionItem['priority'] = null): AttentionItem => ({ id, kind, title: id, detail: null, at_ms, task: null, agent: null, session: null, approval: null, decision: null, packet: null, ask: null, turn: null, priority, rank: 5 })
@@ -30,6 +31,18 @@ test('groupItems: 132 D4 — urgent items of every kind form the first group, le
   expect(groups[2]?.items.map((i) => i.id)).toEqual(['r1', 'r2'])
   // Every urgent item → only the Urgent group.
   expect(groupItems([item('x', 'ask', 1, 'urgent')]).map((g) => g.key)).toEqual(['urgent'])
+})
+
+test('groupItems: the ?mock=crowded world — 60 rows, every kind and every priority, Urgent first, nothing lost', () => {
+  expect(ATTENTION_CROWDED).toHaveLength(60)
+  expect(new Set(ATTENTION_CROWDED.map((i) => i.kind)).size).toBe(14)
+  expect(new Set(ATTENTION_CROWDED.map((i) => i.priority))).toEqual(new Set(['urgent', 'high', 'medium', 'low']))
+  const groups = groupItems(ATTENTION_CROWDED)
+  expect(groups[0]?.key).toBe('urgent')
+  expect(groups[0]?.items.every((i) => i.priority === 'urgent')).toBe(true)
+  expect(groups.slice(1).flatMap((g) => g.items).some((i) => i.priority === 'urgent')).toBe(false)
+  expect(groups.flatMap((g) => g.items).map((i) => i.id).sort()).toEqual(ATTENTION_CROWDED.map((i) => i.id).sort())
+  expect(new Set(ATTENTION_CROWDED.map((i) => i.id)).size).toBe(60)
 })
 
 test('clampText: short text verbatim, long text cut at a word boundary with an ellipsis within the limit', () => {
