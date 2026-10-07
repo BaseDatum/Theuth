@@ -27,7 +27,10 @@ pub mod types;
 
 pub use class::{Card, CardKind, DraftKind, Requester, class_key};
 pub use config::DoubleConfig;
-pub use events::{DoubleAnswered, DoublePredicted, DoubleTrainingState, DoubleVersionActivated};
+pub use events::{
+    DoubleAnswered, DoublePredicted, DoubleTrainingState, DoubleVersionActivated, Explain,
+    Neighbour, Parts,
+};
 pub use store::Store;
 pub use types::*;
 
