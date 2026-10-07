@@ -35,7 +35,7 @@ internal sealed class SettingsController
 
     public bool IsOpen => window is not null && window.Visible;
 
-    public void Show(bool activate, string? page = null)
+    public void Show(bool activate, string? page = null) => Guard.Run("settings window", () =>
     {
         if (window is null)
         {
@@ -46,7 +46,7 @@ internal sealed class SettingsController
         if (activate) window.Activate();
         else window.AppWindow.Show(false);
         Log.Write($"settings: window shown page={window.CurrentPage} activate={(activate ? "true" : "false")} hwnd=0x{window.Hwnd:X}");
-    }
+    });
 
     public void Close() => window?.Close();
 
@@ -111,7 +111,7 @@ internal sealed partial class SettingsWindow : Window
         refresh = DispatcherQueue.CreateTimer();
         refresh.Interval = TimeSpan.FromSeconds(2);
         refresh.IsRepeating = true;
-        refresh.Tick += (_, _) => { if (CurrentPage is "engine" or "login") ShowPage(CurrentPage); };
+        refresh.Tick += (_, _) => Guard.Run("settings refresh", () => { if (CurrentPage is "engine" or "login") ShowPage(CurrentPage); });
         refresh.Start();
         Closed += (_, _) =>
         {
@@ -163,15 +163,18 @@ internal sealed partial class SettingsWindow : Window
         CurrentPage = key;
         var page = new StackPanel { Spacing = 10, MaxWidth = 560, HorizontalAlignment = HorizontalAlignment.Left };
         AutomationProperties.SetAutomationId(page, $"settings-page-{key}");
-        switch (key)
+        Guard.Run($"settings page {key}", () =>
         {
-            case "rail": Rail(page); break;
-            case "keys": Keys(page); break;
-            case "notifications": Notifications(page); break;
-            case "undo": Undo(page); break;
-            case "login": Login(page); break;
-            default: Engine(page); break;
-        }
+            switch (key)
+            {
+                case "rail": Rail(page); break;
+                case "keys": Keys(page); break;
+                case "notifications": Notifications(page); break;
+                case "undo": Undo(page); break;
+                case "login": Login(page); break;
+                default: Engine(page); break;
+            }
+        });
         host.Content = page;
     }
 

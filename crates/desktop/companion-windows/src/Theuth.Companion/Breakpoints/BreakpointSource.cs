@@ -42,7 +42,7 @@ internal sealed class BreakpointSource : IDisposable
         timer = dispatcher.CreateTimer();
         timer.Interval = TimeSpan.FromSeconds(1);
         timer.IsRepeating = true;
-        timer.Tick += (_, _) =>
+        timer.Tick += (_, _) => Notifications.Guard.Run("breakpoint tick", () =>
         {
             double idle = W3Native.IdleSeconds();
             if (detector.Feed(new BreakpointDetector.Signal.Idle(idle)))
@@ -52,11 +52,14 @@ internal sealed class BreakpointSource : IDisposable
                 Breakpoint?.Invoke();
             }
             Tick?.Invoke(DateTimeOffset.Now);
-        };
+        });
         timer.Start();
     }
 
-    private void OnWinEvent(nint hWinEventHook, uint @event, nint hwnd, int idObject, int idChild, uint idEventThread, uint dwmsEventTime)
+    private void OnWinEvent(nint hWinEventHook, uint @event, nint hwnd, int idObject, int idChild, uint idEventThread, uint dwmsEventTime) =>
+        Notifications.Guard.Run("foreground hook", () => Foreground(@event, hwnd));
+
+    private void Foreground(uint @event, nint hwnd)
     {
         if (@event != W3Native.EVENT_SYSTEM_FOREGROUND || hwnd == 0) return;
         var id = W3Native.ProcessIdentity(hwnd);

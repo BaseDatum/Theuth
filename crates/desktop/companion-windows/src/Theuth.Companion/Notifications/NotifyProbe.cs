@@ -108,7 +108,7 @@ internal sealed class NotifyProbe
         var t = dispatcher.CreateTimer();
         t.Interval = TimeSpan.FromSeconds(seconds);
         t.IsRepeating = false;
-        t.Tick += (_, _) => action();
+        t.Tick += (_, _) => Guard.Run("probe-notify step", action);
         t.Start();
         keep.Add(t);
     }

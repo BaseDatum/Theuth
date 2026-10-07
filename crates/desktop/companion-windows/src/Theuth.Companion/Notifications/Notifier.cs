@@ -125,7 +125,7 @@ internal sealed class Notifier : IDisposable
             n = current;
             if (n is null) { Early.Add(args); return; }
         }
-        n.dispatcher.TryEnqueue(() => n.Invoked(args));
+        n.dispatcher.TryEnqueue(() => Guard.Run("toast activation", () => n.Invoked(args)));
     }
 
     // MARK: start
@@ -157,7 +157,9 @@ internal sealed class Notifier : IDisposable
     public static string Describe(NotificationPrefs p) =>
         $"(blocking: {p.Blocking.RawValue()}, deferrable: {p.Deferrable.RawValue()}, error: {p.Error.RawValue()}, soundOnErrors: {(p.SoundOnErrors ? "true" : "false")}, breakThroughDnd: {(p.TimeSensitiveAvailable ? "true" : "false")})";
 
-    private void OnStoreChanged(object? sender, PropertyChangedEventArgs e)
+    private void OnStoreChanged(object? sender, PropertyChangedEventArgs e) => Guard.Run($"notifier on {e.PropertyName}", () => StoreChanged(e));
+
+    private void StoreChanged(PropertyChangedEventArgs e)
     {
         switch (e.PropertyName)
         {
