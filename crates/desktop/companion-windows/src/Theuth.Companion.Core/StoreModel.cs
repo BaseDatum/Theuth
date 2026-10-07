@@ -150,7 +150,8 @@ public class StoreModel : INotifyPropertyChanged
         OnPropertyChanged(name);
     }
 
-    protected void Log(string line) => log(line);
+    /// <summary>The injected log (the app's <c>Log.Write</c>); named so it does not shadow the app's <c>Log</c> class in Store partials.</summary>
+    protected void LogLine(string line) => log(line);
 
     // MARK: connection and events
 
