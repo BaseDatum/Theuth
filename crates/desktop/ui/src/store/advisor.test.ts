@@ -59,7 +59,7 @@ test('a steer injected with advisory text shows one card, stamped by the event w
 })
 
 test('a history user row still carrying the wrapper (older engine) parses to one card without a seq', () => {
-  const entries = fromHistory({ role: 'user', text: `${WRAPPED}\n<advisory severity="nit" guidance="x">prefer \`let\`</advisory>`, turn: null, peer: null, context: null })
+  const entries = fromHistory({ role: 'user', text: `${WRAPPED}\n<advisory severity="nit" guidance="x">prefer \`let\`</advisory>`, turn: null })
   expect(entries).toHaveLength(1)
   expect(entries[0]).toMatchObject({ kind: 'advisory', notes: [concern, nit] })
 })

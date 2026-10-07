@@ -2,6 +2,7 @@
 // `export.rs`); transcribed serde-faithfully from `crates/agent/src/lib.rs`
 // and `crates/rpc`. Delete each once `bindings/` carries it.
 
+import type { AdvisorDefaults } from '@/rpc/bindings/AdvisorDefaults'
 import type { ApprovalsState } from '@/rpc/bindings/ApprovalsState'
 import type { CompactStyle } from '@/rpc/bindings/CompactStyle'
 import type { CommunicationState } from '@/rpc/bindings/CommunicationState'
@@ -44,6 +45,8 @@ export type Info = {
   communication: CommunicationState
   /** The app plugin is running (46 §9): apps render interactively; `false`/absent (older engine) → source view only. */
   app_enabled?: boolean
+  /** 125 §6.5: the advisor's remembered pick and tuning keys (`advisor:` section); absent on an older engine. */
+  advisor?: AdvisorDefaults
 }
 
 /** `load_session` reply with paging (`before`/`limit`). */
