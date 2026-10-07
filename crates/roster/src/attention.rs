@@ -1484,6 +1484,7 @@ mod tests {
             brief: String::new(),
             done_when: None,
             attachments: vec![],
+            priority: tasks::Priority::Medium,
             owner,
             state,
             reviewer,
@@ -1722,6 +1723,7 @@ mod tests {
             recommendation: None,
             items: vec![],
             to: None,
+            if_wrong: None,
         }
     }
 

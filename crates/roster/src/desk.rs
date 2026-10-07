@@ -829,6 +829,7 @@ mod tests {
                 title: "Cert runbook".into(),
                 meta: "updated Sep 24".into(),
             }],
+            priority: tasks::Priority::Medium,
         };
         let wake = tasks::Wake {
             id: "w1".into(),
@@ -987,6 +988,7 @@ Attached (read with the tool for the kind, see Attachments):\n\
             next_wake_after_ms: None,
             done_when: None,
             attachments: vec![],
+            priority: tasks::Priority::Medium,
         };
         let id = t.id.clone();
         let wake = move |reason| tasks::Wake {

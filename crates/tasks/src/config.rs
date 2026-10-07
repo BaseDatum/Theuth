@@ -23,6 +23,8 @@ pub struct TasksConfig {
     pub backoff_max_secs: u64,
     /// Engine names to prefer, in order, when placement policy leaves several candidates (67 §8).
     pub place_prefer: Vec<String>,
+    /// Projects whose tasks come first, in order (132 D4); one `rank()` orders the inbox and wake dispatch by it.
+    pub project_order: Vec<String>,
 }
 
 impl Default for TasksConfig {
@@ -36,6 +38,7 @@ impl Default for TasksConfig {
             backoff_min_secs: 120,
             backoff_max_secs: 1800,
             place_prefer: Vec::new(),
+            project_order: Vec::new(),
         }
     }
 }

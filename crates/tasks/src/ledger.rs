@@ -13,9 +13,10 @@ use crate::packet;
 use crate::store::Store;
 use crate::thread::Thread;
 use crate::types::{
-    Checkout, DoneBecause, Owner, Task, TaskCreate, TaskEvent, TaskFilter, TaskId, TaskPatch,
-    TaskState, Wake, WakeReason,
+    Checkout, DoneBecause, Owner, Priority, Task, TaskCreate, TaskEvent, TaskFilter, TaskId,
+    TaskPatch, TaskState, Wake, WakeReason,
 };
+use serde::{Deserialize, Serialize};
 
 /// ms since the epoch, injectable for tests.
 pub type Clock = Arc<dyn Fn() -> u64 + Send + Sync>;
@@ -28,6 +29,26 @@ pub const NO_CONTINUATION: &str = "no continuation";
 /// needs its answer and a task id (no colon) its task; those stay.
 pub fn system_blocker(b: &str) -> bool {
     b == NO_CONTINUATION || (b.contains(':') && !b.starts_with("decision:"))
+}
+
+/// 132 D5: one decision or review of the caller's line that waits on the user
+/// (`task_waiting_on_user`).
+#[derive(Clone, Debug, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+pub struct Waiting {
+    /// The task.
+    pub task: TaskId,
+    /// Its title.
+    pub title: String,
+    /// Decision or review.
+    pub kind: packet::PacketKind,
+    /// `decision:<id>` | `review:<task>`.
+    pub key: String,
+    /// When it was raised (ms since epoch).
+    #[cfg_attr(feature = "ts", ts(type = "number"))]
+    pub since_ms: u64,
+    /// The question (decision) or the outcome (review), sentence-clipped.
+    pub head: String,
 }
 
 /// Placeholder `claimed_by` between claim and a successful delivery when the
@@ -224,6 +245,19 @@ pub fn window_text(secs: u64) -> String {
 /// `user` or `user@<client>` (130 E4: the client the user acted from).
 fn is_user(actor: &str) -> bool {
     actor == "user" || actor.starts_with("user@")
+}
+
+/// 132 D4: `priority` from anyone but the user.
+pub const PRIORITY_IS_THE_USERS: &str =
+    "priority is the user's to set; say why in task_note and the user decides";
+
+/// 132 D5: the same actor's second escalation to the user on a task already waiting on one.
+pub fn already_waiting(decision: &str) -> String {
+    format!(
+        "{decision} is already waiting on the user for this task — add what you learned with `task_note` \
+         and go on with work the answer does not gate; a new escalation needs a new option, a fact that \
+         changes the decision, or a deadline"
+    )
 }
 
 /// `actor` may act as `who`: the user (and the harness) may act as anyone.
@@ -569,6 +603,9 @@ impl Ledger {
                 input.state.as_str()
             ));
         }
+        if input.priority.is_some() && !is_user(created_by) {
+            return Err(PRIORITY_IS_THE_USERS.into());
+        }
         let now = self.now();
         let parent = match &input.parent {
             Some(p) => Some(
@@ -609,6 +646,7 @@ impl Ledger {
                 .map(|d| d.trim().to_owned())
                 .filter(|d| !d.is_empty()),
             attachments: dedupe_attachments(input.attachments),
+            priority: input.priority.unwrap_or_default(),
             id,
         };
         t.thread = self
@@ -677,6 +715,7 @@ impl Ledger {
             external: vec![],
             done_when: None,
             attachments: vec![],
+            priority: None,
         };
         let mut t = self
             .create(input, "system", None, WakeReason::Schedule)
@@ -924,6 +963,9 @@ impl Ledger {
         self.charge(session, &t).await?;
         self.check_epoch(session, &t).await?;
         let before = t.clone();
+        if patch.priority.is_some() && !is_user(actor) {
+            return Err(PRIORITY_IS_THE_USERS.into());
+        }
 
         if let Some(b) = &patch.blockers
             && *b != t.blockers
@@ -1038,6 +1080,16 @@ impl Ledger {
             }
         }
         set!(done_when, "done_when");
+        if let Some(v) = patch.priority
+            && v != t.priority
+        {
+            changes.push((
+                "priority",
+                Some(t.priority.as_str().into()),
+                Some(v.as_str().into()),
+            ));
+            t.priority = v;
+        }
         if let Some(to) = patch.state
             && to != t.state
         {
@@ -1148,17 +1200,47 @@ impl Ledger {
     /// `task_move`: a state change on `actor`'s intent (backlog ↔ todo, → cancelled,
     /// review → done | todo, blocked → todo …). Refuses with the allowed list;
     /// `note` goes to the thread as a comment; `done_because` is the verdict a
-    /// move to `done` records (70 DESK-PROTOCOL).
+    /// move to `done` records (70 DESK-PROTOCOL). `next` (132 D3): with
+    /// `review → done` and a review packet that offered next moves, the pick —
+    /// `**next** (n) <label>` in the thread and the owner woken `answer`.
+    #[allow(clippy::too_many_arguments)]
     pub async fn move_to(
         &mut self,
         id: &TaskId,
         to: TaskState,
         note: Option<&str>,
         done_because: Option<DoneBecause>,
+        next: Option<u32>,
         actor: &str,
         session: Option<&str>,
     ) -> R<Task> {
         let mut t = self.load(id).await?;
+        let mut next_move = None;
+        if let Some(n) = next {
+            if !(to == TaskState::Done && t.state == TaskState::Review) {
+                return Err("`next` goes with `done` on a task in review".into());
+            }
+            let options = self
+                .store
+                .packet(&packet::review_key(id))
+                .await
+                .map_err(db)?
+                .map(|p| p.options)
+                .unwrap_or_default();
+            match options.get(n as usize) {
+                Some(o) if !options.is_empty() => next_move = Some((n, o.label.clone())),
+                _ if options.is_empty() => {
+                    return Err("`next`: this review offered no next moves; approve without it".into());
+                }
+                _ => {
+                    return Err(format!(
+                        "`next` is {n} but the review offers {} moves (0..{})",
+                        options.len(),
+                        options.len() - 1
+                    ));
+                }
+            }
+        }
         // A user's blocked → todo|doing is an unblock: the system-owned blockers go
         // first (`no continuation`, `engine:*`, `person:*`); a `decision:*` or a task
         // blocker stays and the refusal names it. One place for the board, the
@@ -1213,6 +1295,11 @@ impl Ledger {
             .await?;
         if let Some(n) = note.map(str::trim).filter(|n| !n.is_empty()) {
             self.comment(id, n, false, actor, session).await?;
+        }
+        if let Some((n, label)) = next_move {
+            self.say(&t, actor, &format!("**next** ({}) {label}", n + 1))
+                .await;
+            self.wake(&t, &t.owner, WakeReason::Answer, actor).await;
         }
         Ok(t)
     }
@@ -1538,11 +1625,16 @@ impl Ledger {
             .rev()
             .filter(|b| b.starts_with("decision:"))
         {
-            if let Some(p) = self.store.packet(b).await.map_err(db)?
-                && p.by != actor
-            {
+            let Some(p) = self.store.packet(b).await.map_err(db)? else {
+                continue;
+            };
+            if p.by == actor {
+                // 132 D5: dedupe before you file — nothing is written.
+                if p.to.as_deref() == Some("user") {
+                    return Err(already_waiting(&p.key));
+                }
+            } else if parent.is_none() {
                 parent = Some(p);
-                break;
             }
         }
         if let Some(par) = &parent {
@@ -1566,6 +1658,9 @@ impl Ledger {
             }
             if ask.items.is_empty() {
                 ask.items = par.items.clone();
+            }
+            if ask.if_wrong.as_deref().is_none_or(|w| w.trim().is_empty()) {
+                ask.if_wrong = par.if_wrong.clone();
             }
         }
         let decision = format!("decision:{}", uuid::Uuid::now_v7());
@@ -1591,6 +1686,10 @@ impl Ledger {
             recommendation: ask.recommendation,
             items: ask.items,
             to: Some(manager.to_string()),
+            if_wrong: ask
+                .if_wrong
+                .map(|w| w.trim().to_owned())
+                .filter(|w| !w.is_empty()),
         };
         if manager == Owner::User {
             packet::require_for_user(&p)?;
@@ -1650,36 +1749,31 @@ impl Ledger {
 
     /// A hand-over to review (101 D3): the `review:<task>` packet stored
     /// (the latest replaces) and its `**review requested**` block in the thread.
-    pub async fn review_packet(
-        &self,
-        id: &TaskId,
-        summary: String,
-        board: Option<String>,
-        pointers: Vec<packet::Pointer>,
-        checks: Vec<packet::Check>,
-        actor: &str,
-    ) -> R<packet::Packet> {
+    /// 132 D3: `options` are the next moves after approval (≤ 4, one `recommended`).
+    pub async fn review_packet(&self, m: crate::ReviewPacket) -> R<packet::Packet> {
+        let id = &m.id;
         let t = self.load(id).await?;
         let p = packet::Packet {
             key: packet::review_key(id),
             task: id.clone(),
             kind: packet::PacketKind::Review,
-            by: actor.to_owned(),
+            by: m.actor.clone(),
             at_ms: self.now(),
             question: None,
-            summary,
-            board,
-            options: vec![],
-            recommended: None,
-            pointers,
-            checks,
+            summary: m.summary,
+            board: m.board,
+            options: m.options,
+            recommended: m.recommended,
+            pointers: m.pointers,
+            checks: m.checks,
             recommendation: None,
             items: vec![],
             to: Some(self.effective_reviewer(&t, None).to_string()),
+            if_wrong: m.if_wrong,
         };
         packet::validate(&p)?;
         self.store.put_packet(&p).await.map_err(db)?;
-        self.say(&t, actor, &packet::thread_markdown(&p)).await;
+        self.say(&t, &m.actor, &packet::thread_markdown(&p)).await;
         Ok(p)
     }
 
@@ -1707,6 +1801,55 @@ impl Ledger {
     /// Every packet of `tasks`, newest first.
     pub async fn packets_for(&self, tasks: &[TaskId]) -> R<Vec<packet::Packet>> {
         self.store.packets_for(tasks).await.map_err(db)
+    }
+
+    /// 132 D5: decisions and reviews addressed to the user on tasks in
+    /// `actor`'s reporting line (every task for the user), oldest first. A
+    /// decision waits while its key is among the task's blockers; a review
+    /// while the task is in `review`.
+    pub async fn waiting_on_user(&mut self, actor: &str) -> R<Vec<Waiting>> {
+        let agent = actor.strip_prefix("agent:");
+        let mine: Vec<Task> = self
+            .store
+            .list(&TaskFilter::default())
+            .await
+            .map_err(db)?
+            .into_iter()
+            .filter(|t| !matches!(t.state, TaskState::Done | TaskState::Cancelled))
+            .filter(|t| agent.is_none_or(|a| self.in_line(a, &t.owner)))
+            .collect();
+        let ids: Vec<TaskId> = mine.iter().map(|t| t.id.clone()).collect();
+        let mut out = Vec::new();
+        for p in self.packets_for(&ids).await? {
+            if p.to.as_deref() != Some("user") {
+                continue;
+            }
+            let Some(t) = mine.iter().find(|t| t.id == p.task) else {
+                continue;
+            };
+            let (pending, head) = match p.kind {
+                packet::PacketKind::Decision => (
+                    t.blockers.contains(&p.key),
+                    packet::head_sentence(p.question.as_deref().unwrap_or_default(), packet::ROW_BUDGET),
+                ),
+                packet::PacketKind::Review => (
+                    t.state == TaskState::Review,
+                    packet::head_sentence(&p.summary, packet::ROW_BUDGET),
+                ),
+            };
+            if pending {
+                out.push(Waiting {
+                    task: t.id.clone(),
+                    title: t.title.clone(),
+                    kind: p.kind,
+                    key: p.key,
+                    since_ms: p.at_ms,
+                    head,
+                });
+            }
+        }
+        out.sort_by_key(|w| w.since_ms);
+        Ok(out)
     }
 
     /// `decide` (67 §11): the answer in the thread, the `decision:<id>` blocker
@@ -1759,13 +1902,14 @@ impl Ledger {
 
     // ---- wakes: dispatch, completion, back-off -------------------------------------
 
-    /// One dispatch pass (67 §7.3): per agent with nothing claimed, the
-    /// oldest unclaimed wake whose task is not in back-off is claimed by the
-    /// agent's desk and returned for delivery. A wake whose reason has no
-    /// purpose in its task's current state (STALE-WAKE-DESKS: a `review` wake
-    /// on a task already `done`) is dropped here with a thread line, not
-    /// dispatched — this is also the startup sweep over rows left by earlier
-    /// builds.
+    /// One dispatch pass (67 §7.3): per agent with nothing claimed, one
+    /// unclaimed wake whose task is not in back-off is claimed by the agent's
+    /// desk and returned for delivery — 132 D4: the highest
+    /// [`crate::rank::rank`] first, then `answer` / `blockers_resolved` before
+    /// the rest, then the oldest. A wake whose reason has no purpose in its
+    /// task's current state (STALE-WAKE-DESKS: a `review` wake on a task
+    /// already `done`) is dropped here with a thread line, not dispatched —
+    /// this is also the startup sweep over rows left by earlier builds.
     pub async fn dispatch(&mut self) -> R<Vec<Delivery>> {
         let now = self.now();
         let wakes = self.store.wakes().await.map_err(db)?;
@@ -1798,12 +1942,11 @@ impl Ledger {
             );
             self.reported_busy.insert(w.agent.clone(), w.id.clone());
         }
-        let mut picked: HashMap<String, Delivery> = HashMap::new();
+        // agent → ((rank, answer-class), delivery); wakes come oldest first, so a
+        // later wake replaces the pick only when its key is strictly higher.
+        let mut picked: HashMap<String, ((u32, bool), Delivery)> = HashMap::new();
         for w in &wakes {
-            if w.claimed_by.is_some()
-                || busy.contains(w.agent.as_str())
-                || picked.contains_key(&w.agent)
-            {
+            if w.claimed_by.is_some() || busy.contains(w.agent.as_str()) {
                 continue;
             }
             if self
@@ -1848,16 +1991,31 @@ impl Ledger {
             {
                 continue;
             }
+            let key = (
+                task.as_ref().map_or(Priority::Medium.weight(), |t| {
+                    crate::rank::rank(t.priority, t.project.as_deref(), &self.cfg.project_order)
+                }),
+                matches!(
+                    w.reason,
+                    WakeReason::Answer | WakeReason::BlockersResolved
+                ),
+            );
+            if picked.get(&w.agent).is_some_and(|(k, _)| *k >= key) {
+                continue;
+            }
             picked.insert(
                 w.agent.clone(),
-                Delivery {
-                    wake: w.clone(),
-                    task,
-                },
+                (
+                    key,
+                    Delivery {
+                        wake: w.clone(),
+                        task,
+                    },
+                ),
             );
         }
         let mut out = Vec::with_capacity(picked.len());
-        for (_, mut d) in picked {
+        for (_, (_, mut d)) in picked {
             let desk = self
                 .router
                 .as_ref()
@@ -2420,6 +2578,7 @@ pub(crate) mod tests {
                         external: vec![],
                         done_when: None,
                         attachments: vec![],
+                        priority: None,
                     },
                     "user",
                     None,
@@ -2513,6 +2672,68 @@ pub(crate) mod tests {
             Some(Owner::User),
             "no manager → the user reviews"
         );
+    }
+
+    /// 132 D4: `priority` is the user's; an agent's create or patch with it is refused, the user's lands and is logged.
+    #[tokio::test]
+    async fn priority_is_the_users_to_set() {
+        use crate::types::Priority;
+        let mut r = rig().await;
+        let t = r.task("agent:ops").await;
+        assert_eq!(t.priority, Priority::Medium);
+        let patch = |p| TaskPatch {
+            priority: Some(p),
+            ..Default::default()
+        };
+        let e = r
+            .ledger
+            .update(&t.id, patch(Priority::High), "agent:ops", None)
+            .await
+            .unwrap_err();
+        assert_eq!(e, PRIORITY_IS_THE_USERS);
+        let t = r
+            .ledger
+            .update(&t.id, patch(Priority::Urgent), "user@desktop", None)
+            .await
+            .unwrap();
+        assert_eq!(t.priority, Priority::Urgent);
+        assert_eq!(
+            r.ledger.get(&t.id).await.unwrap().priority,
+            Priority::Urgent,
+            "stored"
+        );
+        let ev = r.ledger.events(&t.id).await.unwrap();
+        assert!(ev.iter().any(|e| e.field == "priority" && e.after.as_deref() == Some("urgent")));
+        let mut input = TaskCreate {
+            state: TaskState::Todo,
+            title: "hot".into(),
+            brief: String::new(),
+            owner: Owner::Agent("ops".into()),
+            reviewer: None,
+            parent: None,
+            project: None,
+            where_: None,
+            harness: None,
+            external: vec![],
+            done_when: None,
+            attachments: vec![],
+            priority: Some(Priority::Low),
+        };
+        let e = r
+            .ledger
+            .create(input.clone(), "agent:ops", None, WakeReason::Assigned)
+            .await
+            .unwrap_err();
+        assert_eq!(e, PRIORITY_IS_THE_USERS);
+        input.priority = None;
+        assert!(r.ledger.create(input.clone(), "agent:ops", None, WakeReason::Assigned).await.is_ok());
+        input.priority = Some(Priority::Low);
+        let t = r
+            .ledger
+            .create(input, "user", None, WakeReason::Assigned)
+            .await
+            .unwrap();
+        assert_eq!(t.priority, Priority::Low);
     }
 
     #[tokio::test]
@@ -2669,6 +2890,7 @@ pub(crate) mod tests {
             external: vec![],
             done_when: None,
             attachments: vec![],
+            priority: None,
         };
         let t = r
             .ledger
@@ -2711,7 +2933,7 @@ pub(crate) mod tests {
         // task_move refusal names the allowed list
         let e = r
             .ledger
-            .move_to(&t.id, TaskState::Done, None, None, "user", None)
+            .move_to(&t.id, TaskState::Done, None, None, None, "user", None)
             .await
             .unwrap_err();
         assert!(
@@ -2724,7 +2946,7 @@ pub(crate) mod tests {
         // backlog → todo wakes the owner `assigned` (the note is a comment: its own wake); the note lands in the thread
         let t = r
             .ledger
-            .move_to(&t.id, TaskState::Todo, Some("go ahead"), None, "user", None)
+            .move_to(&t.id, TaskState::Todo, Some("go ahead"), None, None, "user", None)
             .await
             .unwrap();
         assert_eq!(t.state, TaskState::Todo);
@@ -2743,14 +2965,14 @@ pub(crate) mod tests {
         // todo → backlog pulls it back; review → todo is the reviewer's send-back
         assert_eq!(
             r.ledger
-                .move_to(&t.id, TaskState::Backlog, None, None, "user", None)
+                .move_to(&t.id, TaskState::Backlog, None, None, None, "user", None)
                 .await
                 .unwrap()
                 .state,
             TaskState::Backlog
         );
         r.ledger
-            .move_to(&t.id, TaskState::Todo, None, None, "user", None)
+            .move_to(&t.id, TaskState::Todo, None, None, None, "user", None)
             .await
             .unwrap();
         r.ledger
@@ -2762,14 +2984,14 @@ pub(crate) mod tests {
             .unwrap();
         assert!(
             r.ledger
-                .move_to(&t.id, TaskState::Todo, None, None, "agent:ops", None)
+                .move_to(&t.id, TaskState::Todo, None, None, None, "agent:ops", None)
                 .await
                 .unwrap_err()
                 .contains("reviewer")
         );
         assert_eq!(
             r.ledger
-                .move_to(&t.id, TaskState::Todo, None, None, "agent:lead", None)
+                .move_to(&t.id, TaskState::Todo, None, None, None, "agent:lead", None)
                 .await
                 .unwrap()
                 .state,
@@ -2941,6 +3163,7 @@ pub(crate) mod tests {
                 TaskState::Done,
                 Some("good enough"),
                 None,
+                None,
                 "user",
                 None,
             )
@@ -3034,6 +3257,7 @@ pub(crate) mod tests {
                             meta: String::new(),
                         },
                     ],
+                    priority: None,
                 },
                 "user",
                 None,
@@ -3130,6 +3354,7 @@ pub(crate) mod tests {
                         external: vec![],
                         done_when: None,
                         attachments: vec![],
+                        priority: None,
                     },
                     "agent:lead",
                     None,
@@ -3294,6 +3519,7 @@ pub(crate) mod tests {
                     external: vec![],
                     done_when: None,
                     attachments: vec![],
+                    priority: None,
                 },
                 "user",
                 None,
@@ -3317,6 +3543,7 @@ pub(crate) mod tests {
                     external: vec![],
                     done_when: None,
                     attachments: vec![],
+                    priority: None,
                 },
                 "user",
                 None,
@@ -4238,7 +4465,7 @@ pub(crate) mod tests {
         r.ledger.save(&backed).await.unwrap();
         let t = r
             .ledger
-            .move_to(&t.id, TaskState::Doing, None, None, "user", None)
+            .move_to(&t.id, TaskState::Doing, None, None, None, "user", None)
             .await
             .unwrap();
         assert_eq!(
@@ -4696,7 +4923,7 @@ pub(crate) mod tests {
         // an agent may not talk its way out
         assert!(
             r.ledger
-                .move_to(&t.id, TaskState::Todo, None, None, "agent:ops", None)
+                .move_to(&t.id, TaskState::Todo, None, None, None, "agent:ops", None)
                 .await
                 .unwrap_err()
                 .contains("still blocked")
@@ -4704,7 +4931,7 @@ pub(crate) mod tests {
         // the user's unblock clears both system blockers and lands in todo with a `resumed` wake
         let u = r
             .ledger
-            .move_to(&t.id, TaskState::Todo, Some("go again"), None, "user", None)
+            .move_to(&t.id, TaskState::Todo, Some("go again"), None, None, "user", None)
             .await
             .unwrap();
         assert_eq!(
@@ -4751,7 +4978,7 @@ pub(crate) mod tests {
             .unwrap();
         let err = r
             .ledger
-            .move_to(&t.id, TaskState::Todo, None, None, "user", None)
+            .move_to(&t.id, TaskState::Todo, None, None, None, "user", None)
             .await
             .unwrap_err();
         assert!(
@@ -4961,6 +5188,7 @@ pub(crate) mod tests {
         let ask = packet::Ask {
             summary: Some("Spend or save.".into()),
             board: Some("b1".into()),
+            if_wrong: Some("low, the budget line moves back".into()),
             ..packet::Ask::new("budget?")
         };
         let (_, manager) = r
@@ -5016,6 +5244,7 @@ pub(crate) mod tests {
         let with = |board: &str| packet::Ask {
             summary: Some("Spend or save.".into()),
             board: Some(board.into()),
+            if_wrong: Some("low, the budget line moves back".into()),
             ..packet::Ask::new("budget?")
         };
         let e = r
@@ -5104,6 +5333,7 @@ pub(crate) mod tests {
             ],
             recommended: Some(1),
             pointers: vec![code_pointer()],
+            if_wrong: Some("medium, a week of extra retries".into()),
             ..packet::Ask::new("retry policy?")
         };
         let e = r
@@ -5236,6 +5466,7 @@ pub(crate) mod tests {
                 }],
                 recommended: Some(0),
             }],
+            if_wrong: Some("high, autopay charges real cards".into()),
             ..packet::Ask::new("approve PR 42?")
         }
     }
@@ -5301,7 +5532,7 @@ pub(crate) mod tests {
             .expect("thread block");
         assert!(
             block.contains(&format!(
-                "**decision requested** (`{d2}`)\nforwarded from {d1} by agent:lead\n\nRecommendation: approve — Low risk; CI is green.\n\napprove PR 42?\n\nApprove the autopay PR.\n\nBoard: theuth://notes/b1\n\nOptions:\n- approve — ships today\n- hold (recommended)\n"
+                "**decision requested** (`{d2}`)\nforwarded from {d1} by agent:lead\n\nRecommendation: approve — Low risk; CI is green.\n\napprove PR 42?\n\nApprove the autopay PR.\n\nBoard: theuth://notes/b1\n\nIf wrong: high, autopay charges real cards\n\nOptions:\n- approve — ships today\n- hold (recommended)\n"
             )),
             "{block}"
         );
@@ -5547,16 +5778,20 @@ pub(crate) mod tests {
         let mine = r.task("user").await;
         assert_eq!(r.ledger.effective_reviewer(&mine, None), Owner::User);
 
+        let review = |summary: &str, board: Option<&str>, pointers, checks| crate::ReviewPacket {
+            id: t.id.clone(),
+            summary: summary.into(),
+            board: board.map(str::to_owned),
+            pointers,
+            checks,
+            options: vec![],
+            recommended: None,
+            if_wrong: None,
+            actor: "agent:ops".into(),
+        };
         let p1 = r
             .ledger
-            .review_packet(
-                &t.id,
-                "first".into(),
-                None,
-                vec![code_pointer()],
-                vec![],
-                "agent:ops",
-            )
+            .review_packet(review("first", None, vec![code_pointer()], vec![]))
             .await
             .unwrap();
         assert_eq!(p1.key, format!("review:{}", t.id));
@@ -5568,14 +5803,7 @@ pub(crate) mod tests {
         }];
         let p2 = r
             .ledger
-            .review_packet(
-                &t.id,
-                "second".into(),
-                Some("rb1".into()),
-                vec![code_pointer()],
-                checks,
-                "agent:ops",
-            )
+            .review_packet(review("second", Some("rb1"), vec![code_pointer()], checks))
             .await
             .unwrap();
         let all = r
@@ -5598,9 +5826,8 @@ pub(crate) mod tests {
         assert!(blocks.last().unwrap().contains("- [x] tests"));
         let e = r
             .ledger
-            .review_packet(
-                &t.id,
-                "x".into(),
+            .review_packet(review(
+                "x",
                 None,
                 vec![],
                 (0..13)
@@ -5610,8 +5837,7 @@ pub(crate) mod tests {
                         note: None,
                     })
                     .collect(),
-                "agent:ops",
-            )
+            ))
             .await;
         assert!(e.is_ok(), "checks are uncapped");
     }
@@ -5661,5 +5887,274 @@ pub(crate) mod tests {
                 .await
                 .unwrap()
         );
+    }
+
+    // ---- 132 ATTENTION-ROWS-AND-ORDER ---------------------------------------------
+
+    /// D5: the same actor's second escalation to the user on a task already waiting
+    /// on one is refused with nothing written; another actor's forward still lands.
+    #[tokio::test]
+    async fn escalate_refuses_the_same_actors_second_ask_to_the_user() {
+        let mut r = rig().await;
+        let t = r.task("agent:lead").await; // lead reports to the user
+        board(&r.thread, "b1", &packet::DECISION_SECTIONS);
+        let ask = || packet::Ask {
+            summary: Some("Spend or save.".into()),
+            board: Some("b1".into()),
+            if_wrong: Some("low".into()),
+            ..packet::Ask::new("budget?")
+        };
+        let (d1, _) = r
+            .ledger
+            .escalate(&t.id, ask(), "agent:lead", None)
+            .await
+            .unwrap();
+        let doc = t.thread.clone().unwrap();
+        let before = r.thread.0.lock().unwrap()[&doc].len();
+        let wakes = r.ledger.wakes().await.unwrap().len();
+        let e = r
+            .ledger
+            .escalate(&t.id, ask(), "agent:lead", None)
+            .await
+            .unwrap_err();
+        assert_eq!(e, already_waiting(&d1));
+        assert!(e.starts_with(&format!("{d1} is already waiting on the user")), "{e}");
+        assert_eq!(r.thread.0.lock().unwrap()[&doc].len(), before, "no thread line");
+        assert_eq!(r.ledger.wakes().await.unwrap().len(), wakes, "no wake");
+        assert_eq!(r.ledger.get(&t.id).await.unwrap().blockers, vec![d1.clone()]);
+        // answered → a new one is fine again
+        r.ledger
+            .answer_decision(&d1, "spend", "user", None)
+            .await
+            .unwrap();
+        assert!(r.ledger.escalate(&t.id, ask(), "agent:lead", None).await.is_ok());
+
+        // another actor's forward of ops's own packet is not a duplicate
+        let mut r = rig().await;
+        let t = r.task("agent:ops").await;
+        board(&r.thread, "b1", &packet::DECISION_SECTIONS);
+        let (d1, m) = r
+            .ledger
+            .escalate(&t.id, desk_ask(), "agent:ops", None)
+            .await
+            .unwrap();
+        assert_eq!(m, Owner::Agent("lead".into()));
+        let (d2, m) = r
+            .ledger
+            .escalate(&t.id, packet::Ask::new(""), "agent:lead", None)
+            .await
+            .unwrap();
+        assert_eq!(m, Owner::User);
+        assert_ne!(d1, d2);
+        let p = r.ledger.packet(&d2).await.unwrap().unwrap();
+        assert_eq!(
+            p.if_wrong.as_deref(),
+            Some("high, autopay charges real cards"),
+            "if_wrong is inherited on forward"
+        );
+        // the thread block mirrors it
+        let doc = t.thread.clone().unwrap();
+        let blocks = r.thread.0.lock().unwrap()[&doc].clone();
+        assert!(
+            blocks.iter().any(|b| b.contains("\n\nIf wrong: high, autopay charges real cards\n\nOptions:")),
+            "{blocks:?}"
+        );
+        // ops's own task is already waiting on the user through lead's forward:
+        // ops asking again is still the same actor on a new packet addressed to lead, not the user → allowed
+        // but lead asking again is refused.
+        let e = r
+            .ledger
+            .escalate(&t.id, packet::Ask::new(""), "agent:lead", None)
+            .await
+            .unwrap_err();
+        assert_eq!(e, already_waiting(&d2));
+        // D5 tool: what waits on the user, per line
+        let w = r.ledger.waiting_on_user("agent:lead").await.unwrap();
+        assert_eq!(w.len(), 1);
+        assert_eq!((w[0].key.as_str(), w[0].kind), (d2.as_str(), packet::PacketKind::Decision));
+        assert_eq!(w[0].head, "approve PR 42?");
+        assert_eq!(w[0].title, "fix deploy");
+        assert_eq!(r.ledger.waiting_on_user("agent:ops").await.unwrap().len(), 1, "ops owns it");
+        assert!(r.ledger.waiting_on_user("agent:other").await.unwrap().is_empty(), "not their line");
+        assert_eq!(r.ledger.waiting_on_user("user").await.unwrap().len(), 1);
+    }
+
+    /// D2: an over-cap `if_wrong` is refused before anything is written, for any audience.
+    #[tokio::test]
+    async fn escalate_refuses_an_over_cap_if_wrong_before_writing() {
+        let mut r = rig().await;
+        let t = r.task("agent:ops").await;
+        let doc = t.thread.clone().unwrap();
+        let before = r.thread.0.lock().unwrap()[&doc].len();
+        let e = r
+            .ledger
+            .escalate(
+                &t.id,
+                packet::Ask {
+                    if_wrong: Some("w".repeat(packet::IF_WRONG_MAX + 1)),
+                    ..packet::Ask::new("ship?")
+                },
+                "agent:ops",
+                None,
+            )
+            .await
+            .unwrap_err();
+        assert!(e.contains("`if_wrong`") && e.contains("200"), "{e}");
+        assert_eq!(r.thread.0.lock().unwrap()[&doc].len(), before);
+        assert!(r.ledger.get(&t.id).await.unwrap().blockers.is_empty());
+    }
+
+    /// D3: a review may offer ≤ 4 next moves; `task_move done next=i` writes
+    /// `**next** (i+1) <label>` and wakes the owner `answer`; out of range names the count.
+    #[tokio::test]
+    async fn review_options_and_task_move_next() {
+        let mut r = rig().await;
+        let t = r.task("agent:lead").await; // lead → the user reviews
+        r.ledger
+            .checkout(&t.id, "s-lead", "agent:lead")
+            .await
+            .unwrap();
+        let opts = |n: usize| -> Vec<packet::PacketOption> {
+            (0..n)
+                .map(|i| packet::PacketOption {
+                    label: ["Merge and continue to X", "Revise Y first", "Park it", "Ship", "Five"][i].into(),
+                    description: None,
+                })
+                .collect()
+        };
+        let review = |options: Vec<packet::PacketOption>| crate::ReviewPacket {
+            id: t.id.clone(),
+            summary: "Done: the cache is gone.".into(),
+            board: Some("rb".into()),
+            pointers: vec![],
+            checks: vec![],
+            options,
+            recommended: Some(0),
+            if_wrong: Some("low, revert is one commit".into()),
+            actor: "agent:lead".into(),
+        };
+        let e = r.ledger.review_packet(review(opts(5))).await.unwrap_err();
+        assert!(e.contains("4"), "{e}");
+        let p = r.ledger.review_packet(review(opts(3))).await.unwrap();
+        assert_eq!(p.options.len(), 3);
+        assert_eq!(p.recommended, Some(0));
+        assert_eq!(p.if_wrong.as_deref(), Some("low, revert is one commit"));
+        r.set_state(&t.id, TaskState::Review, "agent:lead")
+            .await
+            .unwrap();
+        // `next` only with done, and in range
+        let e = r
+            .ledger
+            .move_to(&t.id, TaskState::Todo, None, None, Some(1), "user", None)
+            .await
+            .unwrap_err();
+        assert!(e.contains("`next`"), "{e}");
+        let e = r
+            .ledger
+            .move_to(&t.id, TaskState::Done, None, None, Some(3), "user", None)
+            .await
+            .unwrap_err();
+        assert!(e.contains("3 moves") && e.contains("0..2"), "{e}");
+        assert_eq!(r.ledger.get(&t.id).await.unwrap().state, TaskState::Review, "nothing written");
+        let t2 = r
+            .ledger
+            .move_to(&t.id, TaskState::Done, None, None, Some(1), "user", None)
+            .await
+            .unwrap();
+        assert_eq!(t2.state, TaskState::Done);
+        let doc = t.thread.clone().unwrap();
+        let blocks = r.thread.0.lock().unwrap()[&doc].clone();
+        assert!(
+            blocks.iter().any(|b| b.ends_with("**next** (2) Revise Y first")),
+            "{blocks:?}"
+        );
+        let w = r.ledger.wakes().await.unwrap();
+        assert!(
+            w.iter().any(|w| w.agent == "lead" && w.reason == WakeReason::Answer && w.task.as_ref() == Some(&t.id)),
+            "{w:?}"
+        );
+        // no options → `next` is refused
+        let u = r.task("agent:lead").await;
+        r.ledger
+            .checkout(&u.id, "s-lead", "agent:lead")
+            .await
+            .unwrap();
+        r.set_state(&u.id, TaskState::Review, "agent:lead")
+            .await
+            .unwrap();
+        let e = r
+            .ledger
+            .move_to(&u.id, TaskState::Done, None, None, Some(0), "user", None)
+            .await
+            .unwrap_err();
+        assert!(e.contains("no next moves"), "{e}");
+    }
+
+    /// D4: dispatch picks the higher-ranked task's wake first; on equal rank an
+    /// `answer`-class wake beats an older `assigned`.
+    #[tokio::test]
+    async fn dispatch_picks_by_rank_then_answer_class_then_age() {
+        use crate::types::Priority;
+        let mut r = rig().await;
+        r.ledger.cfg.project_order = vec!["sre".into()];
+        let low = r.task("agent:ops").await; // medium, no project, oldest
+        r.tick(10);
+        let mut input = TaskCreate {
+            state: TaskState::Todo,
+            title: "ranked".into(),
+            brief: String::new(),
+            owner: Owner::Agent("ops".into()),
+            reviewer: None,
+            parent: None,
+            project: Some("sre".into()),
+            where_: None,
+            harness: None,
+            external: vec![],
+            done_when: None,
+            attachments: vec![],
+            priority: Some(Priority::Low),
+        };
+        let ranked = r
+            .ledger
+            .create(input.clone(), "user", None, WakeReason::Assigned)
+            .await
+            .unwrap();
+        let d = r.ledger.dispatch().await.unwrap();
+        assert_eq!(d.len(), 1);
+        assert_eq!(d[0].wake.task.as_ref(), Some(&ranked.id), "project order beats age and priority");
+        r.ledger.finish_wake(&d[0].wake).await.unwrap();
+        // equal rank: an `answer` wake on a newer task beats the older `assigned`
+        input.project = None;
+        input.priority = None;
+        input.title = "answered".into();
+        let answered = r
+            .ledger
+            .create(input, "user", None, WakeReason::Answer)
+            .await
+            .unwrap();
+        let d = r.ledger.dispatch().await.unwrap();
+        assert_eq!(d.len(), 1);
+        assert_eq!(d[0].wake.task.as_ref(), Some(&answered.id));
+        r.ledger.finish_wake(&d[0].wake).await.unwrap();
+        // urgent beats medium at equal project rank
+        r.ledger
+            .update(
+                &low.id,
+                TaskPatch {
+                    priority: Some(Priority::Urgent),
+                    ..Default::default()
+                },
+                "user",
+                None,
+            )
+            .await
+            .unwrap();
+        r.tick(10);
+        let plain = r.task("agent:ops").await;
+        let d = r.ledger.dispatch().await.unwrap();
+        assert_eq!(d[0].wake.task.as_ref(), Some(&low.id));
+        r.ledger.finish_wake(&d[0].wake).await.unwrap();
+        let d = r.ledger.dispatch().await.unwrap();
+        assert_eq!(d[0].wake.task.as_ref(), Some(&plain.id));
     }
 }

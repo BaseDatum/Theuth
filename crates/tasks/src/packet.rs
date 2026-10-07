@@ -28,6 +28,12 @@ pub const HEAD_MAX: usize = 140;
 pub const ITEMS_MAX: usize = 20;
 /// `recommendation.text` cap, bytes (103 F2).
 pub const RECOMMENDATION_MAX: usize = 1024;
+/// `if_wrong` cap, chars (132 D2).
+pub const IF_WRONG_MAX: usize = 200;
+/// An inbox row's title budget, chars (132 D1): [`head_sentence`].
+pub const ROW_BUDGET: usize = 112;
+/// A review's `options` cap (132 D3): the next moves after approval.
+pub const REVIEW_OPTIONS_MAX: usize = 4;
 
 /// D1 error: an escalation to the user without a `summary`.
 pub const NEEDS_SUMMARY: &str = "escalating to the user needs a `summary`: one short paragraph — the abstract the \
@@ -49,6 +55,9 @@ reviewer — `r = await doc_create(title=…, kind=\"board\", root=<absolute rep
 `## The picture` (one diagram with `ref` anchors), `## Against the criteria` (each `done_when` line with its \
 evidence anchor), `## Walk through` (Excerpts in reading order); then pass `board=r[\"doc\"]`. Short is good — one \
 block per section is enough.";
+/// 132 D2 error: an escalation to the user without `if_wrong`.
+pub const NEEDS_IF_WRONG: &str = "escalating to the user needs `if_wrong`: one honest line on the cost of a wrong \
+answer — \"low, one-line revert\" or \"high, real users get this email\"";
 
 /// R2: the `##` sections of a decision mini-board, in order (`Open questions` optional, unchecked).
 pub const DECISION_SECTIONS: [&str; 5] = [
@@ -231,6 +240,10 @@ pub struct Packet {
     /// `None` on rows written before 106.
     #[serde(default)]
     pub to: Option<String>,
+    /// 132 D2: one honest line on the cost of a wrong answer (≤ 200 chars);
+    /// required for a decision to the user, optional on a review, inherited on forward.
+    #[serde(default)]
+    pub if_wrong: Option<String>,
 }
 
 /// The `escalate` request as the ledger takes it (the packet before the key,
@@ -253,6 +266,8 @@ pub struct Ask {
     pub recommendation: Option<Recommendation>,
     /// A bundle (103 F3).
     pub items: Vec<Item>,
+    /// The cost of a wrong answer (132 D2); required when the user decides.
+    pub if_wrong: Option<String>,
 }
 
 impl Ask {
@@ -276,6 +291,20 @@ pub fn validate(p: &Packet) -> Result<(), String> {
         return Err(format!(
             "`summary` is {} bytes; the cap is {SUMMARY_MAX} bytes (16 KiB)",
             p.summary.len()
+        ));
+    }
+    if let Some(w) = &p.if_wrong {
+        let n = w.trim().chars().count();
+        if n > IF_WRONG_MAX {
+            return Err(format!(
+                "`if_wrong` is {n} chars; the cap is {IF_WRONG_MAX} — one honest line on the cost of a wrong answer"
+            ));
+        }
+    }
+    if p.kind == PacketKind::Review && p.options.len() > REVIEW_OPTIONS_MAX {
+        return Err(format!(
+            "`options` has {} entries; a review offers at most {REVIEW_OPTIONS_MAX} next moves",
+            p.options.len()
         ));
     }
     validate_options("", &p.options, p.recommended)?;
@@ -448,15 +477,18 @@ fn colon_form(r: &str) -> Option<(&str, String)> {
 }
 
 /// D1 (R1): with the user as the audience a packet needs a `summary` and a
-/// `board`, for both kinds. Call only when the audience is the user.
+/// `board`, for both kinds; a decision also needs `if_wrong` (132 D2). Call
+/// only when the audience is the user.
 pub fn require_for_user(p: &Packet) -> Result<(), String> {
     let board = p.board.as_deref().is_some_and(|b| !b.trim().is_empty());
     let summary = !p.summary.trim().is_empty();
+    let if_wrong = p.if_wrong.as_deref().is_some_and(|w| !w.trim().is_empty());
     match (p.kind, board, summary) {
         (PacketKind::Decision, false, _) => Err(NEEDS_BOARD_DECISION.into()),
         (PacketKind::Review, false, _) => Err(NEEDS_BOARD_REVIEW.into()),
         (PacketKind::Decision, true, false) => Err(NEEDS_SUMMARY.into()),
         (PacketKind::Review, true, false) => Err(NEEDS_REVIEW_SUMMARY.into()),
+        (PacketKind::Decision, true, true) if !if_wrong => Err(NEEDS_IF_WRONG.into()),
         (_, true, true) => Ok(()),
     }
 }
@@ -544,6 +576,10 @@ pub fn thread_markdown(p: &Packet) -> String {
     }
     if let Some(b) = p.board.as_deref().map(str::trim).filter(|b| !b.is_empty()) {
         s.push_str(&format!("\n\nBoard: theuth://notes/{b}"));
+    }
+    if let Some(w) = p.if_wrong.as_deref().map(str::trim).filter(|w| !w.is_empty()) {
+        s.push_str("\n\nIf wrong: ");
+        s.push_str(w);
     }
     if !p.options.is_empty() {
         s.push_str("\n\nOptions:\n");
@@ -659,6 +695,38 @@ pub fn head(text: &str) -> String {
     s
 }
 
+/// 132 D1: `text`'s first non-blank line (`#` stripped) cut to `budget` chars —
+/// on a sentence end (`. ` `? ` `! `) when one lies past char 40, else on the
+/// last space past char 40 with `…`; shorter text verbatim.
+pub fn head_sentence(text: &str, budget: usize) -> String {
+    const MIN: usize = 40;
+    let line = text
+        .lines()
+        .map(str::trim)
+        .find(|l| !l.is_empty())
+        .unwrap_or_default()
+        .trim_start_matches('#')
+        .trim();
+    let chars: Vec<char> = line.chars().collect();
+    if chars.len() <= budget {
+        return line.to_owned();
+    }
+    // A sentence end at char i: `.` `?` `!` followed by a space, i past MIN, within budget.
+    let sentence_end = (MIN..budget.min(chars.len() - 1))
+        .rev()
+        .find(|&i| matches!(chars[i], '.' | '?' | '!') && chars[i + 1] == ' ');
+    if let Some(i) = sentence_end {
+        return chars[..=i].iter().collect();
+    }
+    let cut = (MIN..budget)
+        .rev()
+        .find(|&i| chars[i] == ' ')
+        .unwrap_or(budget - 1);
+    let mut s: String = chars[..cut].iter().collect::<String>().trim_end().to_owned();
+    s.push('…');
+    s
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -683,6 +751,7 @@ mod tests {
             recommendation: None,
             items: vec![],
             to: None,
+            if_wrong: None,
         }
     }
 
@@ -998,6 +1067,11 @@ mod tests {
         d.board = Some(" ".into());
         assert_eq!(require_for_user(&d), Err(NEEDS_BOARD_DECISION.into()));
         d.board = Some("b1".into());
+        // 132 D2: board and summary first, then the cost of a wrong answer.
+        assert_eq!(require_for_user(&d), Err(NEEDS_IF_WRONG.into()));
+        d.if_wrong = Some("  ".into());
+        assert_eq!(require_for_user(&d), Err(NEEDS_IF_WRONG.into()));
+        d.if_wrong = Some("low, one-line revert".into());
         assert_eq!(require_for_user(&d), Ok(()));
         d.summary = " \n".into();
         assert_eq!(require_for_user(&d), Err(NEEDS_SUMMARY.into()));
@@ -1005,11 +1079,57 @@ mod tests {
         let mut r = packet(PacketKind::Review);
         assert_eq!(require_for_user(&r), Err(NEEDS_BOARD_REVIEW.into()));
         r.board = Some("b2".into());
-        assert_eq!(require_for_user(&r), Ok(()), "pointers are optional");
+        assert_eq!(require_for_user(&r), Ok(()), "pointers and if_wrong are optional");
         r.summary = String::new();
         assert_eq!(require_for_user(&r), Err(NEEDS_REVIEW_SUMMARY.into()));
         assert!(NEEDS_BOARD_DECISION.contains("`## What you're deciding`"));
         assert!(NEEDS_BOARD_REVIEW.contains("`## Against the criteria`"));
+    }
+
+    /// 132 D2/D3 caps: `if_wrong` ≤ 200 chars after trim; a review offers ≤ 4 next moves.
+    #[test]
+    fn if_wrong_cap_and_review_options_cap() {
+        let mut d = packet(PacketKind::Decision);
+        d.if_wrong = Some(format!(" {} ", "w".repeat(IF_WRONG_MAX)));
+        assert_eq!(validate(&d), Ok(()), "trimmed to the cap");
+        d.if_wrong = Some("w".repeat(IF_WRONG_MAX + 1));
+        let e = validate(&d).unwrap_err();
+        assert!(e.contains("`if_wrong`") && e.contains("200"), "{e}");
+        d.if_wrong = None;
+        d.options = (0..5).map(|i| opt(&format!("o{i}"))).collect();
+        assert_eq!(validate(&d), Ok(()), "a decision keeps the cap of 6");
+        let mut r = packet(PacketKind::Review);
+        r.options = (0..4).map(|i| opt(&format!("o{i}"))).collect();
+        r.recommended = Some(0);
+        assert_eq!(validate(&r), Ok(()));
+        r.options.push(opt("o4"));
+        let e = validate(&r).unwrap_err();
+        assert!(e.contains("`options`") && e.contains("4"), "{e}");
+    }
+
+    #[test]
+    fn head_sentence_clips_on_a_sentence_then_a_word() {
+        assert_eq!(head_sentence("\n\n# Ship it?\nmore", ROW_BUDGET), "Ship it?");
+        assert_eq!(head_sentence("", ROW_BUDGET), "");
+        let short = "Keep the old cache or drop it before the release?";
+        assert_eq!(head_sentence(short, ROW_BUDGET), short);
+        // A sentence end past char 40 inside the budget wins, even with words to spare.
+        let two = "Should we move the relay to the new host before Friday? The old one is paid until the end of the month and still works.";
+        assert_eq!(
+            head_sentence(two, ROW_BUDGET),
+            "Should we move the relay to the new host before Friday?"
+        );
+        // A sentence end before char 40 is ignored: the clip falls to the last space with `…`.
+        let early = "Ship it? The deploy window is tonight and the migration adds a column that nothing reads yet, so the risk is the lock.";
+        let h = head_sentence(early, ROW_BUDGET);
+        assert!(h.ends_with('…') && h.chars().count() <= ROW_BUDGET, "{h}");
+        assert!(h.starts_with("Ship it? The deploy window is tonight"), "{h}");
+        assert!(!h.ends_with(" …"), "no space before the ellipsis: {h}");
+        // No space at all: a hard cut at budget - 1 plus `…`.
+        let solid = "x".repeat(300);
+        let h = head_sentence(&solid, ROW_BUDGET);
+        assert_eq!(h.chars().count(), ROW_BUDGET);
+        assert!(h.ends_with('…'));
     }
 
     #[test]

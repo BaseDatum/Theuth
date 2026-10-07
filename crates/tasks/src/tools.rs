@@ -18,7 +18,8 @@ use crate::packet::{self, Check, Item, PacketOption, Pointer, Recommendation};
 use crate::place;
 use crate::thread::Thread;
 use crate::types::{
-    Disposition, DoneBecause, Owner, TaskCreate, TaskFilter, TaskId, TaskPatch, TaskState,
+    Disposition, DoneBecause, Owner, Priority, TaskCreate, TaskFilter, TaskId, TaskPatch,
+    TaskState,
 };
 use crate::{
     AnswerDecision, AwaitDecision, CheckBoard, CheckoutTask, CommentTask, CreateTask,
@@ -171,6 +172,10 @@ pub struct TaskCreateArgs {
     /// user's message when the task is drafted from it.
     #[serde(default)]
     pub attachments: Vec<AttachRef>,
+    /// `urgent` | `high` | `medium` | `low` (default medium). The user's to set — only when the user said so;
+    /// an agent's call with it is refused.
+    #[serde(default)]
+    pub priority: Option<Priority>,
 }
 
 /// `task_create`: a new task record; owner and reviewer default per the line.
@@ -223,6 +228,7 @@ impl Tool for TaskCreateTool {
             external: a.external,
             done_when: a.done_when,
             attachments: a.attachments,
+            priority: a.priority,
         };
         let r = flat(
             actor
@@ -466,6 +472,10 @@ pub struct TaskUpdateArgs {
     /// evident intention), or `follow_ups_filed {tasks}` (the work continues in those tasks).
     #[serde(default)]
     pub done_because: Option<DoneBecause>,
+    /// `urgent` | `high` | `medium` | `low`. The user's to set: pass it only when the user said so; otherwise
+    /// say why it should change in `task_note` and the user decides.
+    #[serde(default)]
+    pub priority: Option<Priority>,
     /// With `disposition: review`: the review packet's one-paragraph summary (≤ 16 KiB). Required when the
     /// reviewer is the user.
     #[serde(default)]
@@ -484,6 +494,17 @@ pub struct TaskUpdateArgs {
     /// With `disposition: review`: your status against each `done_when` line (`{text, done, note}`).
     #[serde(default)]
     pub checks: Option<Vec<Check>>,
+    /// With `disposition: review`: the next moves after approval (≤ 4, labels ≤ 80 chars) — e.g. "Merge and
+    /// continue to X" (recommended) / "Revise Y first" / "Park it". Never what the run already did; a thing read
+    /// or a question answered ends with none. The reviewer's pick is written to the thread as `**next** (n) <label>`.
+    #[serde(default)]
+    pub options: Vec<OptionArg>,
+    /// With `disposition: review`: index into `options` of the move you would make.
+    #[serde(default)]
+    pub recommended: Option<u32>,
+    /// With `disposition: review`: one honest line (≤ 200 chars) on the cost of approving wrongly; optional.
+    #[serde(default)]
+    pub if_wrong: Option<String>,
 }
 
 /// `task_update`: change fields and state; every change is a thread event.
@@ -535,6 +556,7 @@ impl Tool for TaskUpdateTool {
             done_when: a.done_when,
             attachments: a.attachments,
             done_because: a.done_because,
+            priority: a.priority,
             ..Default::default()
         };
         match a.state {
@@ -566,6 +588,9 @@ impl Tool for TaskUpdateTool {
                         a.board,
                         a.pointers,
                         a.checks,
+                        a.options,
+                        a.recommended,
+                        a.if_wrong,
                         &me,
                     )
                     .await
@@ -659,6 +684,19 @@ pub struct TaskMoveArgs {
     /// With `state: review`: your status against each `done_when` line.
     #[serde(default)]
     pub checks: Option<Vec<Check>>,
+    /// With `state: done` on a review that offered next moves: the index of the move the reviewer picks.
+    /// Written to the thread as `**next** (n) <label>`; the owner is woken with reason `answer`.
+    #[serde(default)]
+    pub next: Option<u32>,
+    /// With `state: review`: the next moves after approval (≤ 4; see `task_update`).
+    #[serde(default)]
+    pub options: Vec<OptionArg>,
+    /// With `state: review`: index into `options` of the move you would make.
+    #[serde(default)]
+    pub recommended: Option<u32>,
+    /// With `state: review`: one honest line on the cost of approving wrongly; optional.
+    #[serde(default)]
+    pub if_wrong: Option<String>,
 }
 
 /// `task_move`: a state change on the user's (or the caller's) intent.
@@ -690,7 +728,17 @@ impl Tool for TaskMoveTool {
         let me = caller(&actor, &cx).await;
         let packet = if a.state == TaskState::Review {
             match review_gate(
-                &actor, &a.task, None, a.summary, a.board, a.pointers, a.checks, &me,
+                &actor,
+                &a.task,
+                None,
+                a.summary,
+                a.board,
+                a.pointers,
+                a.checks,
+                a.options,
+                a.recommended,
+                a.if_wrong,
+                &me,
             )
             .await
             {
@@ -707,6 +755,7 @@ impl Tool for TaskMoveTool {
                     state: a.state,
                     note: a.note,
                     done_because: a.done_because,
+                    next: a.next,
                     actor: me,
                     session: Some(cx.session.to_string()),
                 })
@@ -748,6 +797,9 @@ async fn review_gate(
     board: Option<String>,
     pointers: Option<Vec<Pointer>>,
     checks: Option<Vec<Check>>,
+    options: Vec<OptionArg>,
+    recommended: Option<u32>,
+    if_wrong: Option<String>,
     me: &str,
 ) -> Result<Option<ReviewPacket>, String> {
     let who = flat(
@@ -758,7 +810,11 @@ async fn review_gate(
             })
             .await,
     )?;
-    let given = summary.is_some() || board.is_some() || pointers.is_some() || checks.is_some();
+    let given = summary.is_some()
+        || board.is_some()
+        || pointers.is_some()
+        || checks.is_some()
+        || !options.is_empty();
     let p = packet::Packet {
         key: packet::review_key(id),
         task: id.clone(),
@@ -768,13 +824,14 @@ async fn review_gate(
         question: None,
         summary: summary.unwrap_or_default(),
         board,
-        options: vec![],
-        recommended: None,
+        options: options.into_iter().map(Into::into).collect(),
+        recommended,
         pointers: pointers.unwrap_or_default(),
         checks: checks.unwrap_or_default(),
         recommendation: None,
         items: vec![],
         to: None,
+        if_wrong: if_wrong.map(|w| w.trim().to_owned()).filter(|w| !w.is_empty()),
     };
     if who == Owner::User {
         packet::require_for_user(&p)?;
@@ -794,6 +851,9 @@ async fn review_gate(
         board: p.board,
         pointers: p.pointers,
         checks: p.checks,
+        options: p.options,
+        recommended: p.recommended,
+        if_wrong: p.if_wrong,
         actor: me.to_owned(),
     }))
 }
@@ -1267,6 +1327,10 @@ pub struct EscalateArgs {
     /// `{label, description}` (≤ 6). The decider answers all at once (`1. <title>: <pick>` per line).
     #[serde(default)]
     pub items: Vec<Item>,
+    /// One honest line (≤ 200 chars) on the cost of a wrong answer — "low, one-line revert" or "high, real users
+    /// get this email". Required when your manager is the user; inherited on a forward.
+    #[serde(default)]
+    pub if_wrong: Option<String>,
 }
 
 /// `escalate`: a decision request up the reporting line (67 §11, decision 8).
@@ -1323,6 +1387,7 @@ impl Tool for EscalateTool {
                     pointers: a.pointers,
                     recommendation: a.recommendation,
                     items: a.items,
+                    if_wrong: a.if_wrong,
                     actor: me,
                     session: Some(cx.session.to_string()),
                 })
@@ -1466,7 +1531,7 @@ mod review_gate_tests {
         });
 
         // task_move {state: review}: the effective reviewer decides.
-        let e = review_gate(&actor, &lead.id, None, None, None, None, None, "agent:lead")
+        let e = review_gate(&actor, &lead.id, None, None, None, None, None, vec![], None, None, "agent:lead")
             .await
             .unwrap_err();
         assert!(e.contains("needs a `board`"), "{e}");
@@ -1485,6 +1550,9 @@ mod review_gate_tests {
             None,
             None,
             None,
+            vec![],
+            None,
+            None,
             "agent:lead",
         )
         .await
@@ -1494,7 +1562,7 @@ mod review_gate_tests {
             "summary alone is not enough: {e}"
         );
         assert!(
-            review_gate(&actor, &ops.id, None, None, None, None, None, "agent:ops")
+            review_gate(&actor, &ops.id, None, None, None, None, None, vec![], None, None, "agent:ops")
                 .await
                 .unwrap()
                 .is_none(),
@@ -1509,6 +1577,9 @@ mod review_gate_tests {
             None,
             None,
             None,
+            vec![],
+            None,
+            None,
             "agent:ops",
         )
         .await
@@ -1521,6 +1592,9 @@ mod review_gate_tests {
             None,
             Some("x".repeat(packet::SUMMARY_MAX + 1)),
             None,
+            None,
+            None,
+            vec![],
             None,
             None,
             "agent:ops",
@@ -1543,6 +1617,9 @@ mod review_gate_tests {
                 None,
                 Some("done".into()),
                 Some(b.into()),
+                None,
+                None,
+                vec![],
                 None,
                 None,
                 "agent:lead",
@@ -1571,6 +1648,9 @@ mod review_gate_tests {
                 Some("rb".into()),
                 Some(vec![code_pointer()]),
                 None,
+                vec![],
+                None,
+                None,
                 "agent:lead",
             )
             .await
@@ -1585,6 +1665,7 @@ mod review_gate_tests {
                             state: TaskState::Review,
                             note: None,
                             done_because: None,
+                            next: None,
                             actor: "agent:lead".into(),
                             session: Some("s-lead".into()),
                         })

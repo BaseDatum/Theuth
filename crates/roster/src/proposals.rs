@@ -37,6 +37,7 @@ pub fn hire_task(file: &AgentFile, proposed_by: &str, manager: tasks::Owner) -> 
         external: vec![],
         done_when: None,
         attachments: vec![],
+        priority: None,
     }
 }
 
