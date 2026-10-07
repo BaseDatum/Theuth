@@ -407,7 +407,12 @@ internal sealed class Notifier : IDisposable
 
     private void Handle(string action, string? bannerId, string? itemId, string? text, bool fromRelaunch)
     {
-        var ids = bannerId is not null && itemsOf.TryGetValue(bannerId, out var set) ? set : (itemId is not null ? ValueList.Of(itemId) : new ValueList<string>());
+        // The items a banner covers: the live map; else the toast's item argument; else the banner id itself (a single-item
+        // banner's id IS its item id — the replay and the relaunch path have no map).
+        var ids = bannerId is not null && itemsOf.TryGetValue(bannerId, out var set) ? set
+            : itemId is not null ? ValueList.Of(itemId)
+            : bannerId is not null && store.Items.Any(i => i.Id == bannerId) ? ValueList.Of(bannerId)
+            : new ValueList<string>();
         var item = ids.Count == 1 ? store.Items.FirstOrDefault(i => i.Id == ids[0]) : null;
         Log.Write($"notifications: action {action} banner={bannerId ?? "-"} items=[{string.Join(",", ids)}] text={(text is null ? "none" : $"{text.Length} chars")}{(fromRelaunch ? " (after relaunch)" : "")}");
         switch (action)

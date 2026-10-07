@@ -48,49 +48,55 @@ internal static class ToastBuilder
         if (b.ItemIds.Count == 1) builder.AddArgument(ArgItem, Safe(b.ItemIds[0]));
         if (!b.Sound) builder.MuteAudio();
         if (b.Level == BannerLevel.TimeSensitive && urgentSupported) builder.SetScenario(AppNotificationScenario.Urgent);
-        if (!receipt) AddButtons(builder, b, options);
+        if (!receipt) AddButtons(builder, b, options, b.ItemIds.Count == 1 ? b.ItemIds[0] : null);
         return builder.BuildNotification();
     }
 
     /// <summary>Swift's category table (Notifier.category), per toast: option buttons from the card, then the category's own actions.</summary>
-    private static void AddButtons(AppNotificationBuilder builder, Banner b, IReadOnlyList<string> options)
+    /// <summary>A button's arguments REPLACE the toast's launch arguments when it is pressed (they are not merged), so every
+    /// button repeats <c>banner</c> and <c>item</c>.</summary>
+    private static void AddButtons(AppNotificationBuilder builder, Banner b, IReadOnlyList<string> options, string? item)
     {
         int n = 0;
         foreach (var label in options.Take(3))
         {
-            builder.AddButton(Button(label, OptionActions[n], b.Id));
+            builder.AddButton(Button(label, OptionActions[n], b.Id, item));
             n++;
         }
         switch (b.Category)
         {
             case BannerCategory.Question:
                 builder.AddTextBox(InputText, "Your answer", "Reply");
-                builder.AddButton(Button("Reply", "reply", b.Id).SetInputId(InputText));
+                builder.AddButton(Button("Reply", "reply", b.Id, item).SetInputId(InputText));
                 break;
             case BannerCategory.Approval:
                 builder.AddTextBox(InputText, "Why not", "Deny with note");
-                builder.AddButton(Button("Deny with note", "deny-note", b.Id).SetInputId(InputText));
+                builder.AddButton(Button("Deny with note", "deny-note", b.Id, item).SetInputId(InputText));
                 break;
             case BannerCategory.Review:
                 builder.AddTextBox(InputText, "What to change", "Send back");
-                builder.AddButton(Button("Send back", "send-back", b.Id).SetInputId(InputText));
-                builder.AddButton(Button("Open", "open", b.Id));
+                builder.AddButton(Button("Send back", "send-back", b.Id, item).SetInputId(InputText));
+                builder.AddButton(Button("Open", "open", b.Id, item));
                 break;
             case BannerCategory.Finished:
-                builder.AddButton(Button("Clear", "clear", b.Id));
+                builder.AddButton(Button("Clear", "clear", b.Id, item));
                 break;
             case BannerCategory.Batch:
-                builder.AddButton(Button("Open panel", "open", b.Id));
-                builder.AddButton(Button("Later", "later", b.Id));
+                builder.AddButton(Button("Open panel", "open", b.Id, item));
+                builder.AddButton(Button("Later", "later", b.Id, item));
                 break;
             default: // Error
-                builder.AddButton(Button("Open", "open", b.Id));
+                builder.AddButton(Button("Open", "open", b.Id, item));
                 break;
         }
     }
 
-    private static AppNotificationButton Button(string label, string action, string bannerId) =>
-        new AppNotificationButton(label).AddArgument(ArgAction, action).AddArgument(ArgBanner, Safe(bannerId));
+    private static AppNotificationButton Button(string label, string action, string bannerId, string? item)
+    {
+        var button = new AppNotificationButton(label).AddArgument(ArgAction, action).AddArgument(ArgBanner, Safe(bannerId));
+        if (item is not null) button.AddArgument(ArgItem, Safe(item));
+        return button;
+    }
 
     /// <summary>Argument values cannot carry the separators <c>;</c> and <c>=</c>.</summary>
     private static string Safe(string s) => s.Replace(';', ',').Replace('=', ':');
