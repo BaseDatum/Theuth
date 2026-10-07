@@ -3,17 +3,8 @@ import { Bot, Check, ChevronDown, Cpu, RotateCcw } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 import { toast } from 'sonner'
 import { Button } from '@/components/ui/button'
-import {
-  Command,
-  CommandDialog,
-  CommandEmpty,
-  type CommandFilter,
-  CommandGroup,
-  CommandInput,
-  CommandItem,
-  CommandList,
-  CommandSeparator,
-} from '@/components/ui/command'
+import { Command, CommandDialog, CommandEmpty, type CommandFilter, CommandGroup, CommandInput, CommandItem, CommandList, CommandSeparator } from '@/components/ui/command'
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { defaultFilter } from 'cmdk'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { usePanes } from '@/lib/panes'
@@ -23,6 +14,7 @@ import { on, useSessionField } from '@/store/sessions'
 import type { ConfigOption } from '@/rpc/bindings/ConfigOption'
 import type { ModelInfo } from '@/rpc/bindings/ModelInfo'
 import { MenuRow } from './HeaderMenu'
+import { ModelPicker } from './ModelPicker'
 import { surfaceOf } from './slash'
 
 /** `harness_options(session)` (75 §8); refetched on `HarnessModelChanged` and at every turn end (a queued change lands then). */
@@ -43,11 +35,6 @@ export function harnessCurrent(option: ConfigOption | undefined, pending: string
   return option.options.find((v) => v.value === option.current)?.name ?? option.current
 }
 
-/** The cmdk value of a model row; `pinnedFilter` compares against it, so the two never drift. */
-export function modelItemValue(m: ModelInfo): string {
-  return `${m.name} ${m.id}`
-}
-
 /** The cmdk value of a harness option row (`HarnessGroup`); `pinnedFilter` compares against it. */
 export function harnessItemValue(heading: string, v: { name: string; value: string }): string {
   return `${heading} ${v.name} ${v.value}`
@@ -59,32 +46,12 @@ function pinFirst<T>(items: T[], is: (item: T) => boolean): T[] {
   return i <= 0 ? items : [...items.slice(i, i + 1), ...items.slice(0, i), ...items.slice(i + 1)]
 }
 
-/** The model whose `id === current` first, then the others in their given order; unchanged when `current` is unset or absent. */
-export function orderModels(models: ModelInfo[], current: string | undefined): ModelInfo[] {
-  return current === undefined ? models : pinFirst(models, (m) => m.id === current)
-}
-
 const norm = (s: string) => s.trim().toLowerCase()
 
 /** cmdk's `defaultFilter`, except the row whose value is `pinned` always scores 1: it stays first and no search hides it. */
 export function pinnedFilter(pinned: string | undefined): CommandFilter {
   const p = pinned === undefined ? undefined : norm(pinned)
   return (value, search, keywords) => (p !== undefined && norm(value) === p ? 1 : defaultFilter(value, search, keywords))
-}
-
-/** The cmdk group every model picker shows: name, provider, a check on the current one — which is always the first row and never filtered out. */
-export function ModelItems({ models, model, onSelect }: { models: ModelInfo[]; model: string | undefined; onSelect(id: string): void }) {
-  return (
-    <CommandGroup heading="Models">
-      {orderModels(models, model).map((m) => (
-        <CommandItem key={m.id} value={modelItemValue(m)} forceMount={m.id === model || undefined} onSelect={() => onSelect(m.id)}>
-          <span className="truncate">{m.name}</span>
-          <span className="ml-auto truncate text-xs text-fg-tertiary">{m.provider}</span>
-          {m.id === model && <Check className="size-4" />}
-        </CommandItem>
-      ))}
-    </CommandGroup>
-  )
 }
 
 type Props = {
@@ -244,14 +211,11 @@ function harnessLabel(m: Model): string {
   return current ? `${m.agent} · ${current}` : (m.agent ?? '')
 }
 
-/** The cmdk value `pinnedFilter` keeps on top: the current harness model option for an ACP child, else the session's/draft's current model. */
+/** The cmdk value `pinnedFilter` keeps on top: an ACP child's current harness model option. */
 function pinnedValue(m: Model): string | undefined {
-  if (m.agent) {
-    const { model } = harnessGroups(m.harness ?? [])
-    const current = model?.options.find((v) => v.value === model.current)
-    return current && harnessItemValue('Model', current)
-  }
-  return m.current && modelItemValue(m.current)
+  const { model } = harnessGroups(m.harness ?? [])
+  const current = model?.options.find((v) => v.value === model.current)
+  return current && harnessItemValue('Model', current)
 }
 
 /** `/model` opens the focused pane's picker (a draft pane counts as focused when it is the route's own). */
@@ -267,33 +231,16 @@ function useOpenOnSlash(session: string | null, open: () => void) {
   }, [focused])
 }
 
-/** The cmdk body: search, models, then the current model's effort levels. */
-function ModelCommand({ m }: { m: Model }) {
+/** The cmdk body: providers → models, word search, then the current model's effort levels (124 §3). */
+function ModelCommand({ m, className }: { m: Model; className?: string }) {
   return (
-    <>
-      <CommandInput placeholder="Search models" />
-      <CommandList className="max-h-96">
-        <CommandEmpty>No model matches.</CommandEmpty>
-        <ModelItems models={m.models} model={m.model} onSelect={(id) => void m.setModel(id)} />
-        {m.current && m.current.efforts.length > 0 && (
-          <>
-            <CommandSeparator />
-            <CommandGroup heading="Effort">
-              {m.current.efforts.map((lvl) => (
-                <CommandItem key={lvl} value={`effort ${lvl}`} onSelect={() => void m.setEffort(lvl)}>
-                  {lvl}
-                  {lvl === m.effort && <Check className="ml-auto size-4" />}
-                </CommandItem>
-              ))}
-              <CommandItem value="effort clear" onSelect={() => void m.setEffort(null)}>
-                clear
-                {!m.effort && <Check className="ml-auto size-4" />}
-              </CommandItem>
-            </CommandGroup>
-          </>
-        )}
-      </CommandList>
-    </>
+    <ModelPicker
+      models={m.models}
+      model={m.model}
+      onSelect={(id) => void m.setModel(id)}
+      effort={m.current && m.current.efforts.length > 0 ? { levels: m.current.efforts, current: m.effort, onSelect: (lvl) => void m.setEffort(lvl) } : undefined}
+      className={className}
+    />
   )
 }
 
@@ -335,7 +282,13 @@ export function ModelMenu(props: Props) {
           </Button>
         </PopoverTrigger>
         <PopoverContent align="start" className="w-80 p-0">
-          <Command filter={pinnedFilter(pinnedValue(m))}>{m.agent ? <HarnessCommand m={m} /> : <ModelCommand m={m} />}</Command>
+          {m.agent ? (
+            <Command filter={pinnedFilter(pinnedValue(m))}>
+              <HarnessCommand m={m} />
+            </Command>
+          ) : (
+            <ModelCommand m={m} />
+          )}
         </PopoverContent>
       </Popover>
       {resume}
@@ -360,9 +313,22 @@ export function ModelDialog({ open, onOpenChange, ...props }: Props & { open: bo
   const m = useModel(props, () => onOpenChange(false))
   useOpenOnSlash(props.session, () => onOpenChange(true))
   if (m.agent && !m.harness) return null
+  if (m.agent) {
+    return (
+      <CommandDialog open={open} onOpenChange={onOpenChange} filter={pinnedFilter(pinnedValue(m))} title="Harness" description="Pick from the harness's options" className="max-w-sm">
+        <HarnessCommand m={m} />
+      </CommandDialog>
+    )
+  }
   return (
-    <CommandDialog open={open} onOpenChange={onOpenChange} filter={pinnedFilter(pinnedValue(m))} title={m.agent ? 'Harness' : 'Model'} description={m.agent ? "Pick from the harness's options" : 'Pick the model and effort'} className="max-w-sm">
-      {m.agent ? <HarnessCommand m={m} /> : <ModelCommand m={m} />}
-    </CommandDialog>
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogHeader className="sr-only">
+        <DialogTitle>Model</DialogTitle>
+        <DialogDescription>Pick the model and effort</DialogDescription>
+      </DialogHeader>
+      <DialogContent className="max-w-sm overflow-hidden p-0">
+        <ModelCommand m={m} className="[&_[cmdk-input]]:h-12 **:data-[slot=command-input-wrapper]:h-12" />
+      </DialogContent>
+    </Dialog>
   )
 }

@@ -1641,14 +1641,16 @@ pub enum Menu {
         /// Highlighted match.
         cursor: usize,
     },
-    /// `/model` picker.
+    /// `/model` picker (124 §3): providers level, a provider's models, or word search.
     Models {
-        /// Everything `ListModels` returned.
+        /// Everything `ListModels` returned, in catalog order (provider, id).
         items: Vec<ModelInfo>,
-        /// Substring typed inline (matched on id and name).
+        /// Search text typed inline; non-empty means search mode over every model.
         filter: String,
-        /// Highlighted filtered row.
+        /// Highlighted row of `models_rows()`.
         cursor: usize,
+        /// The provider whose models are listed; `None` is the providers level.
+        provider: Option<String>,
     },
     /// `/effort` picker.
     Efforts {
@@ -4448,11 +4450,18 @@ impl Model {
                     self.entries
                         .push(Entry::Error("no models: no provider is configured".into()));
                 } else {
+                    // One provider only: skip the providers level (124 §3.5).
+                    let provider = match providers(&items).as_slice() {
+                        [(p, _)] => Some(p.clone()),
+                        _ => None,
+                    };
                     self.menu = Some(Menu::Models {
                         items,
                         filter: String::new(),
                         cursor: 0,
+                        provider,
                     });
+                    self.models_home();
                 }
             }
             UiEvent::PathComplete(generation, reply) => self.path.reply(generation, reply),
@@ -8165,11 +8174,50 @@ impl Model {
         }
     }
 
-    /// `/model` picker rows after the inline filter.
-    pub fn models_filtered(&self) -> Vec<&ModelInfo> {
-        match &self.menu {
-            Some(Menu::Models { items, filter, .. }) => filter_models(items, filter),
-            _ => Vec::new(),
+    /// `/model` picker rows (124 §3): the current model then one row per provider;
+    /// a provider's models by name; or, with a filter, the current model then the
+    /// ranked results over every model (the current one removed so it shows once).
+    pub fn models_rows(&self) -> Vec<ModelRow<'_>> {
+        let Some(Menu::Models {
+            items,
+            filter,
+            provider,
+            ..
+        }) = &self.menu
+        else {
+            return Vec::new();
+        };
+        let current = items.iter().find(|m| m.id == self.model_id);
+        let mut rows = Vec::new();
+        if !filter.is_empty() {
+            rows.extend(current.map(ModelRow::Current));
+            rows.extend(
+                rank_models(items, filter)
+                    .into_iter()
+                    .filter(|m| m.id != self.model_id)
+                    .map(ModelRow::Model),
+            );
+        } else if let Some(p) = provider {
+            rows.extend(provider_models(items, p).into_iter().map(ModelRow::Model));
+        } else {
+            rows.extend(current.map(ModelRow::Current));
+            let now = current.map(|c| c.provider.as_str());
+            rows.extend(providers(items).into_iter().map(|(id, count)| {
+                let current = now == Some(id.as_str());
+                ModelRow::Provider { id, count, current }
+            }));
+        }
+        rows
+    }
+
+    /// Put the `/model` cursor where a level starts: the first row after the
+    /// Current row (first provider, or best search hit) when there is one.
+    fn models_home(&mut self) {
+        let rows = self.models_rows();
+        let home =
+            usize::from(matches!(rows.first(), Some(ModelRow::Current(_))) && rows.len() > 1);
+        if let Some(Menu::Models { cursor, .. }) = &mut self.menu {
+            *cursor = home;
         }
     }
 
@@ -8269,32 +8317,66 @@ impl Model {
         MenuKey::Consumed
     }
 
+    /// `/model` (124 §3): ↑↓ move; typing searches every model; ⏎/→ on a
+    /// provider opens it; ←, or ⌫ on an empty filter, returns to the providers
+    /// level (no-op with one provider); ⏎ on a model sets it; Esc closes.
     fn models_key(&mut self, code: KeyCode, tx: &UnboundedSender<Command>) -> MenuKey {
+        let Some(Menu::Models { items, cursor, .. }) = &self.menu else {
+            return MenuKey::Consumed;
+        };
+        let rows = self.models_rows();
+        let len = rows.len();
+        let at = (*cursor).min(len.saturating_sub(1));
+        let picked = match rows.get(at) {
+            Some(ModelRow::Current(m) | ModelRow::Model(m)) => Some((false, m.id.clone())),
+            Some(ModelRow::Provider { id, .. }) => Some((true, id.clone())),
+            None => None,
+        };
+        let many = providers(items).len() > 1;
         let Some(Menu::Models {
-            items,
             filter,
             cursor,
+            provider,
+            ..
         }) = &mut self.menu
         else {
             return MenuKey::Consumed;
         };
-        let filtered = filter_models(items, filter);
-        *cursor = (*cursor).min(filtered.len().saturating_sub(1));
+        *cursor = at;
+        let mut home = false;
         match code {
             KeyCode::Up => *cursor = cursor.saturating_sub(1),
-            KeyCode::Down => *cursor = (*cursor + 1).min(filtered.len().saturating_sub(1)),
+            KeyCode::Down => *cursor = (*cursor + 1).min(len.saturating_sub(1)),
             KeyCode::Char(c) => {
                 filter.push(c);
-                *cursor = 0;
+                home = true;
             }
             KeyCode::Backspace => {
-                filter.pop();
-                *cursor = 0;
+                if filter.pop().is_some() {
+                    home = true;
+                } else if many && provider.is_some() {
+                    *provider = None;
+                    home = true;
+                }
             }
-            KeyCode::Esc => self.menu = None,
-            KeyCode::Enter => {
-                if let Some(m) = filtered.get(*cursor) {
-                    let model = m.id.clone();
+            KeyCode::Left => {
+                if filter.is_empty() && many && provider.is_some() {
+                    *provider = None;
+                    home = true;
+                }
+            }
+            KeyCode::Right => {
+                if let Some((true, p)) = picked {
+                    *provider = Some(p);
+                    *cursor = 0;
+                }
+            }
+            KeyCode::Enter => match picked {
+                Some((true, p)) => {
+                    *provider = Some(p);
+                    *cursor = 0;
+                }
+                Some((false, model)) => {
                     send(
                         tx,
                         Command::SetModel {
@@ -8304,8 +8386,13 @@ impl Model {
                     );
                     self.menu = None;
                 }
-            }
+                None => {}
+            },
+            KeyCode::Esc => self.menu = None,
             _ => {}
+        }
+        if home {
+            self.models_home();
         }
         MenuKey::Consumed
     }
@@ -9505,12 +9592,117 @@ pub fn mesh_device_line(d: &link::DeviceInfo, now: u64) -> String {
     )
 }
 
-fn filter_models<'a>(items: &'a [ModelInfo], filter: &str) -> Vec<&'a ModelInfo> {
-    let f = filter.to_lowercase();
-    items
+/// A `/model` picker row (124 §3).
+#[derive(Debug)]
+pub enum ModelRow<'a> {
+    /// The session's current model: always first, never filtered out.
+    Current(&'a ModelInfo),
+    /// A provider on the providers level; `current` marks the current model's.
+    Provider {
+        /// Provider id as it appears in `provider/model`.
+        id: String,
+        /// Models listed under it.
+        count: usize,
+        /// Whether the current model belongs to it.
+        current: bool,
+    },
+    /// A model on a provider's level or in the search results.
+    Model(&'a ModelInfo),
+}
+
+/// Search terms (124 §2.1): lowercased words of `query`; none means browse mode.
+fn search_terms(query: &str) -> Vec<String> {
+    query.split_whitespace().map(str::to_lowercase).collect()
+}
+
+/// Whether `t` occurs in `s` at the start of a word (124 §2.2): at index 0 or
+/// after a character outside `[a-z0-9]`.
+fn boundary_match(s: &str, t: &str) -> bool {
+    s.match_indices(t)
+        .any(|(i, _)| !s[..i].ends_with(|c: char| c.is_ascii_alphanumeric()))
+}
+
+/// Tier of one search term for one model (124 §2.2 table), before gating.
+fn term_tier(name: &str, id: &str, provider: &str, t: &str) -> u32 {
+    let tail = id.split_once('/').map_or(id, |(_, tail)| tail);
+    if name == t || tail == t {
+        100
+    } else if name.starts_with(t) {
+        90
+    } else if boundary_match(name, t) {
+        80
+    } else if provider == t {
+        70
+    } else if provider.starts_with(t) {
+        65
+    } else if boundary_match(tail, t) {
+        60
+    } else if name.contains(t) {
+        40
+    } else if id.contains(t) {
+        30
+    } else {
+        0
+    }
+}
+
+/// Word search over `items` (124 §2): every term must match; per term, plain
+/// substring hits (40/30) only count when nothing matches at a word boundary;
+/// score is the sum of tiers, ties keep catalog order. Browse mode (no terms)
+/// returns everything.
+pub fn rank_models<'a>(items: &'a [ModelInfo], query: &str) -> Vec<&'a ModelInfo> {
+    let lower: Vec<(String, String, String)> = items
         .iter()
-        .filter(|m| m.id.to_lowercase().contains(&f) || m.name.to_lowercase().contains(&f))
-        .collect()
+        .map(|m| {
+            (
+                m.name.to_lowercase(),
+                m.id.to_lowercase(),
+                m.provider.to_lowercase(),
+            )
+        })
+        .collect();
+    let mut scores = vec![Some(0u32); items.len()];
+    for t in search_terms(query) {
+        let tiers: Vec<u32> = lower
+            .iter()
+            .map(|(name, id, provider)| term_tier(name, id, provider, &t))
+            .collect();
+        let gate = tiers.iter().any(|&tier| tier >= 60);
+        for (score, &tier) in scores.iter_mut().zip(&tiers) {
+            match tier {
+                0 => *score = None,
+                1..60 if gate => *score = None,
+                _ => {
+                    if let Some(s) = score {
+                        *s += tier;
+                    }
+                }
+            }
+        }
+    }
+    let mut hits: Vec<(u32, &ModelInfo)> = scores
+        .iter()
+        .zip(items)
+        .filter_map(|(score, m)| score.map(|s| (s, m)))
+        .collect();
+    hits.sort_by_key(|h| std::cmp::Reverse(h.0));
+    hits.into_iter().map(|(_, m)| m).collect()
+}
+
+/// Distinct providers of `items` with their model counts, A→Z (124 §3.1).
+pub fn providers(items: &[ModelInfo]) -> Vec<(String, usize)> {
+    let mut counts = std::collections::BTreeMap::new();
+    for m in items {
+        *counts.entry(m.provider.as_str()).or_insert(0) += 1;
+    }
+    counts.into_iter().map(|(p, n)| (p.to_owned(), n)).collect()
+}
+
+/// The models of `provider`, by name (case-insensitive) then id (124 §3.2).
+pub fn provider_models<'a>(items: &'a [ModelInfo], provider: &str) -> Vec<&'a ModelInfo> {
+    let mut out: Vec<&ModelInfo> = items.iter().filter(|m| m.provider == provider).collect();
+    out.sort_by_cached_key(|m| (m.name.to_lowercase(), m.id.as_str()));
+    out
 }
 
 /// `/mcp add` argument that means "clone a repo": a `.git` URL or a known git host.
@@ -16812,5 +17004,310 @@ mod tests {
                 .iter()
                 .any(|e| matches!(e, Entry::Info(t) if t == PRIVATE_WARNING))
         );
+    }
+
+    /// The 124 §2.3 fixture catalog, in catalog order.
+    fn model_catalog() -> Vec<ModelInfo> {
+        [
+            (
+                "amazon-bedrock",
+                "amazon-bedrock/amazon.nova-pro-v1:0",
+                "Nova Pro",
+            ),
+            (
+                "amazon-bedrock",
+                "amazon-bedrock/anthropic.claude-sonnet-4-5-20250929-v1:0",
+                "Claude Sonnet 4.5",
+            ),
+            ("anthropic", "anthropic/claude-opus-4-1", "Claude Opus 4.1"),
+            (
+                "anthropic",
+                "anthropic/claude-sonnet-4-5",
+                "Claude Sonnet 4.5",
+            ),
+            ("cursor", "cursor/gpt-5.4", "GPT-5.4"),
+            (
+                "google",
+                "google/gemini-2.5-flash-thinking",
+                "Gemini 2.5 Flash Thinking",
+            ),
+            ("google", "google/gemini-2.5-pro", "Gemini 2.5 Pro"),
+            ("openai", "openai/gpt-5.4", "GPT-5.4"),
+            ("openai", "openai/gpt-5.4-mini", "GPT-5.4 mini"),
+            ("openai", "openai/o3-pro", "o3-pro"),
+        ]
+        .into_iter()
+        .map(|(provider, id, name)| ModelInfo {
+            id: id.into(),
+            name: name.into(),
+            provider: provider.into(),
+            context: 200_000,
+            reasoning: false,
+            image: false,
+            efforts: vec![],
+            budget_min: None,
+            budget_max: None,
+        })
+        .collect()
+    }
+
+    fn ids(rows: &[&ModelInfo]) -> Vec<String> {
+        rows.iter().map(|m| m.id.clone()).collect()
+    }
+
+    /// Design 124 §2.3: every row of the vector table against the fixture catalog.
+    #[test]
+    fn rank_models_matches_the_design_vectors() {
+        let items = model_catalog();
+        const NOVA: &str = "amazon-bedrock/amazon.nova-pro-v1:0";
+        const BEDROCK_SONNET: &str = "amazon-bedrock/anthropic.claude-sonnet-4-5-20250929-v1:0";
+        const OPUS: &str = "anthropic/claude-opus-4-1";
+        const SONNET: &str = "anthropic/claude-sonnet-4-5";
+        const CURSOR_GPT: &str = "cursor/gpt-5.4";
+        const GEMINI_PRO: &str = "google/gemini-2.5-pro";
+        const GPT: &str = "openai/gpt-5.4";
+        const GPT_MINI: &str = "openai/gpt-5.4-mini";
+        const O3: &str = "openai/o3-pro";
+        let vectors: [(&str, &[&str]); 13] = [
+            ("gpt", &[CURSOR_GPT, GPT, GPT_MINI]),
+            ("pro", &[NOVA, GEMINI_PRO, O3]),
+            ("anthropic sonnet", &[SONNET, BEDROCK_SONNET]),
+            ("sonnet 4.5", &[BEDROCK_SONNET, SONNET]),
+            ("claude", &[BEDROCK_SONNET, OPUS, SONNET]),
+            ("mini", &[GPT_MINI]),
+            ("aude", &[BEDROCK_SONNET, OPUS, SONNET]),
+            ("GPT-5.4", &[CURSOR_GPT, GPT, GPT_MINI]),
+            ("anth", &[OPUS, SONNET, BEDROCK_SONNET]),
+            ("openai mini", &[GPT_MINI]),
+            ("nova pro", &[NOVA]),
+            ("v1:0", &[NOVA, BEDROCK_SONNET]),
+            ("xyz", &[]),
+        ];
+        for (query, want) in vectors {
+            assert_eq!(ids(&rank_models(&items, query)), want, "query {query:?}");
+        }
+        // Browse mode: no terms, no scoring, the catalog as is.
+        assert!(search_terms("  ").is_empty());
+        assert_eq!(
+            ids(&rank_models(&items, "  ")),
+            ids(&items.iter().collect::<Vec<_>>())
+        );
+    }
+
+    #[test]
+    fn providers_count_a_to_z_and_provider_models_sort_by_name_then_id() {
+        let mut items = model_catalog();
+        items.push(ModelInfo {
+            id: "openai/aaa".into(),
+            name: "gpt-5.4".into(),
+            ..items[7].clone()
+        });
+        assert_eq!(
+            providers(&items),
+            vec![
+                ("amazon-bedrock".to_owned(), 2),
+                ("anthropic".to_owned(), 2),
+                ("cursor".to_owned(), 1),
+                ("google".to_owned(), 2),
+                ("openai".to_owned(), 4),
+            ]
+        );
+        // Case-insensitive name order; equal names fall back to id.
+        assert_eq!(
+            ids(&provider_models(&items, "openai")),
+            [
+                "openai/aaa",
+                "openai/gpt-5.4",
+                "openai/gpt-5.4-mini",
+                "openai/o3-pro"
+            ]
+        );
+    }
+
+    fn model_row_ids(m: &Model) -> Vec<String> {
+        m.models_rows()
+            .iter()
+            .map(|r| match r {
+                ModelRow::Current(i) => format!("●{}", i.id),
+                ModelRow::Provider { id, count, current } => {
+                    format!("{}{id}:{count}", if *current { "●" } else { "" })
+                }
+                ModelRow::Model(i) => i.id.clone(),
+            })
+            .collect()
+    }
+
+    fn models_cursor(m: &Model) -> usize {
+        match &m.menu {
+            Some(Menu::Models { cursor, .. }) => *cursor,
+            other => panic!("no models menu: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn models_picker_opens_on_providers_and_navigates_levels() {
+        let (tx, mut rx) = unbounded_channel();
+        let mut m = Model {
+            model_id: "openai/gpt-5.4".into(),
+            ..Model::default()
+        };
+        m.apply(UiEvent::Models(model_catalog()));
+        // Providers level: the current model first, its provider marked, cursor on the first provider.
+        assert_eq!(
+            model_row_ids(&m),
+            [
+                "●openai/gpt-5.4",
+                "amazon-bedrock:2",
+                "anthropic:2",
+                "cursor:1",
+                "google:2",
+                "●openai:3"
+            ]
+        );
+        assert_eq!(models_cursor(&m), 1);
+        // Up stops at the Current row; Down clamps at the last provider.
+        m.menu_key(KeyCode::Up, "", &tx);
+        m.menu_key(KeyCode::Up, "", &tx);
+        assert_eq!(models_cursor(&m), 0);
+        for _ in 0..9 {
+            m.menu_key(KeyCode::Down, "", &tx);
+        }
+        assert_eq!(models_cursor(&m), 5);
+        // Enter on a provider descends: its models by name, the current one still a Model row.
+        m.menu_key(KeyCode::Enter, "", &tx);
+        assert_eq!(
+            model_row_ids(&m),
+            ["openai/gpt-5.4", "openai/gpt-5.4-mini", "openai/o3-pro"]
+        );
+        assert_eq!(models_cursor(&m), 0);
+        assert!(rx.try_recv().is_err());
+        // Left ascends to the providers level with the cursor home again.
+        m.menu_key(KeyCode::Left, "", &tx);
+        assert_eq!(model_row_ids(&m)[1], "amazon-bedrock:2");
+        assert_eq!(models_cursor(&m), 1);
+        // Left on the providers level is a no-op; Right descends like Enter.
+        m.menu_key(KeyCode::Left, "", &tx);
+        m.menu_key(KeyCode::Down, "", &tx);
+        m.menu_key(KeyCode::Right, "", &tx);
+        assert_eq!(
+            model_row_ids(&m),
+            ["anthropic/claude-opus-4-1", "anthropic/claude-sonnet-4-5"]
+        );
+        // Backspace on an empty filter ascends.
+        m.menu_key(KeyCode::Backspace, "", &tx);
+        assert_eq!(model_row_ids(&m)[0], "●openai/gpt-5.4");
+        // Right on the Current row does nothing; Enter on a model row sets it and closes.
+        m.menu_key(KeyCode::Up, "", &tx);
+        m.menu_key(KeyCode::Right, "", &tx);
+        assert_eq!(models_cursor(&m), 0);
+        m.menu_key(KeyCode::Down, "", &tx);
+        m.menu_key(KeyCode::Down, "", &tx);
+        m.menu_key(KeyCode::Enter, "", &tx);
+        m.menu_key(KeyCode::Down, "", &tx);
+        m.menu_key(KeyCode::Enter, "", &tx);
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(Command::SetModel { session: None, model }) if model == "anthropic/claude-sonnet-4-5"
+        ));
+        assert!(m.menu.is_none());
+    }
+
+    #[test]
+    fn models_picker_search_covers_all_models_and_returns_to_the_level() {
+        let (tx, mut rx) = unbounded_channel();
+        let mut m = Model {
+            model_id: "openai/o3-pro".into(),
+            ..Model::default()
+        };
+        m.apply(UiEvent::Models(model_catalog()));
+        // Descend into google, then type: search runs over every model, the
+        // Current row stays on top even though it does not match, and the
+        // cursor lands on the best match.
+        m.menu_key(KeyCode::Down, "", &tx);
+        m.menu_key(KeyCode::Down, "", &tx);
+        m.menu_key(KeyCode::Down, "", &tx);
+        m.menu_key(KeyCode::Enter, "", &tx);
+        assert_eq!(
+            model_row_ids(&m),
+            ["google/gemini-2.5-flash-thinking", "google/gemini-2.5-pro"]
+        );
+        for c in "gpt".chars() {
+            m.menu_key(KeyCode::Char(c), "", &tx);
+        }
+        assert_eq!(
+            model_row_ids(&m),
+            [
+                "●openai/o3-pro",
+                "cursor/gpt-5.4",
+                "openai/gpt-5.4",
+                "openai/gpt-5.4-mini"
+            ]
+        );
+        assert_eq!(models_cursor(&m), 1);
+        // A query matching only the current model lists it once, as the Current
+        // row, and the Current row stays when nothing matches at all.
+        for _ in 0..3 {
+            m.menu_key(KeyCode::Backspace, "", &tx);
+        }
+        for c in "o3".chars() {
+            m.menu_key(KeyCode::Char(c), "", &tx);
+        }
+        assert_eq!(model_row_ids(&m), ["●openai/o3-pro"]);
+        assert_eq!(models_cursor(&m), 0);
+        m.menu_key(KeyCode::Char('x'), "", &tx);
+        assert_eq!(model_row_ids(&m), ["●openai/o3-pro"]);
+        // Clearing the filter returns to the remembered provider level.
+        for _ in 0..3 {
+            m.menu_key(KeyCode::Backspace, "", &tx);
+        }
+        assert_eq!(
+            model_row_ids(&m),
+            ["google/gemini-2.5-flash-thinking", "google/gemini-2.5-pro"]
+        );
+        assert_eq!(models_cursor(&m), 0);
+        // Enter in search mode picks the best match.
+        for c in "GPT-5.4".chars() {
+            m.menu_key(KeyCode::Char(c), "", &tx);
+        }
+        m.menu_key(KeyCode::Enter, "", &tx);
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(Command::SetModel { session: None, model }) if model == "cursor/gpt-5.4"
+        ));
+        assert!(m.menu.is_none());
+    }
+
+    #[test]
+    fn single_provider_catalog_opens_on_its_models_level_and_stays_there() {
+        let (tx, _rx) = unbounded_channel();
+        let mut m = Model {
+            model_id: "openai/gpt-5.4".into(),
+            ..Model::default()
+        };
+        let items: Vec<ModelInfo> = model_catalog()
+            .into_iter()
+            .filter(|i| i.provider == "openai")
+            .collect();
+        m.apply(UiEvent::Models(items));
+        let level = ["openai/gpt-5.4", "openai/gpt-5.4-mini", "openai/o3-pro"];
+        assert_eq!(model_row_ids(&m), level);
+        assert_eq!(models_cursor(&m), 0);
+        m.menu_key(KeyCode::Left, "", &tx);
+        m.menu_key(KeyCode::Backspace, "", &tx);
+        assert_eq!(model_row_ids(&m), level);
+        assert!(matches!(
+            &m.menu,
+            Some(Menu::Models { provider: Some(p), .. }) if p == "openai"
+        ));
+        // Search still works and clearing it comes back to the models level.
+        // `o`: o3-pro by name (90) beats the provider-prefix hits (65); the current model shows once.
+        m.menu_key(KeyCode::Char('o'), "", &tx);
+        assert_eq!(
+            model_row_ids(&m),
+            ["●openai/gpt-5.4", "openai/o3-pro", "openai/gpt-5.4-mini"]
+        );
+        assert_eq!(models_cursor(&m), 1);
+        m.menu_key(KeyCode::Backspace, "", &tx);
+        assert_eq!(model_row_ids(&m), level);
     }
 }
