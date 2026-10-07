@@ -1194,6 +1194,22 @@ pub struct Advisory {
     pub notes: Vec<AdvisoryNote>,
 }
 
+impl Advisory {
+    /// 125 §9: the one line a channel posts in the bound thread — the
+    /// card's highest-severity note, first line only — or `None` for a card
+    /// of nits (110 §3 rule 3: model input is not posted).
+    #[must_use]
+    pub fn channel_line(&self) -> Option<String> {
+        let top = self.notes.iter().max_by_key(|n| n.severity)?;
+        let word = match top.severity {
+            AdvisorSeverity::Nit => return None,
+            AdvisorSeverity::Concern => "concern",
+            AdvisorSeverity::Blocker => "blocker",
+        };
+        let line = top.note.lines().next().unwrap_or_default().trim();
+        Some(format!("advisor · {word} — {line}"))
+    }
+}
 
 /// Live state of one advisor link (125 §4.3).
 #[derive(
@@ -1362,6 +1378,12 @@ pub struct SetAdvisorDefaults {
     /// `advisor.sync_backlog`.
     pub sync_backlog: Option<SyncBacklog>,
 }
+
+/// `ask` → `AdvisorDefaults`: the live `advisor.*` defaults (the remembered
+/// pick and the three tuning keys) `Info.advisor` carries (125 §6.5) — the
+/// actor's copy, not the config file read at startup.
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
+pub struct GetAdvisorDefaults;
 
 /// Loop message (`impl Message<_> for Session`, 125 §4.1 item 4): set the
 /// session's "has an advisor" flag so its step hooks cost one atomic load.

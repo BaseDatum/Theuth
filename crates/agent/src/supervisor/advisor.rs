@@ -15,8 +15,8 @@ use crate::continuation::InputOrigin;
 use crate::loop_::{SetToolsetOverride, SteerAdvisory};
 use crate::{
     AdvisorDefaults, AdvisorLink, AdvisorState, AdvisorStatus, AdvisorStatusOf, AppendAdvisory,
-    SessionKind, SetAdvisor, SetAdvisorDefaults, SetAdvisorOn, SetEffort, SetModel, SyncBacklog,
-    Toolset,
+    GetAdvisorDefaults, SessionKind, SetAdvisor, SetAdvisorDefaults, SetAdvisorOn, SetEffort,
+    SetModel, SyncBacklog, Toolset,
 };
 
 /// D2: the advisor's fixed read-only direct toolset — no runtime, no hints.
@@ -286,6 +286,14 @@ impl Message<SetAdvisorDefaults> for Agents {
                 .await;
         }
         Ok(self.advisor_cfg.defaults())
+    }
+}
+
+impl Message<GetAdvisorDefaults> for Agents {
+    type Reply = AdvisorDefaults;
+
+    async fn handle(&mut self, _: GetAdvisorDefaults, _: &mut Context<Self, Self::Reply>) -> AdvisorDefaults {
+        self.advisor_cfg.defaults()
     }
 }
 

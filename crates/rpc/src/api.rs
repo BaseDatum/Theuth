@@ -33,8 +33,7 @@ use agent::{
     SetVisionModel, ShowPrompt, SkillBody, SkillMeta, Steer, SyncSkills, Undo, UseSkill, Withdraw,
 };
 use agent::{
-    AdvisorConfig, AdvisorDefaults, AdvisorStatus, AdvisorStatusOf, SetAdvisor, SetAdvisorDefaults,
-    SyncBacklog,
+    AdvisorDefaults, AdvisorStatus, AdvisorStatusOf, SetAdvisor, SetAdvisorDefaults, SyncBacklog,
 };
 use agent::{
     Authorize, Authorized, CloseResult, CreateSession, CreateSessionOptions, LeaveSession,
@@ -2511,11 +2510,8 @@ impl ApiServer for Server {
             name,
             communication,
             app_enabled: apps().is_ok(),
-            advisor: self
-                .rt
-                .section::<AdvisorConfig>("advisor")
-                .unwrap_or_default()
-                .defaults(),
+            // 125 §6.5: the supervisor's live advisor defaults (82 §3 rule).
+            advisor: ask::<Agents, _>(agent::AGENT_ACTOR, agent::GetAdvisorDefaults).await?,
         })
     }
 

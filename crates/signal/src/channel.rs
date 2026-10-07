@@ -1738,6 +1738,19 @@ impl Channel {
                     self.react(&to, "❌", author, *ts).await;
                 }
             }
+            // 125 §9: a concern or blocker is one plain line after what is
+            // buffered so far; nits post nothing.
+            AgentEvent::AdvisoryAdded {
+                session, advisory, ..
+            } => {
+                let Some(line) = advisory.channel_line() else {
+                    return;
+                };
+                let to = self.lock().threads.recipient_for(session);
+                let Some(to) = to else { return };
+                self.flush(&to, session).await;
+                self.send_chunks(&to, &line).await;
+            }
             _ => {}
         }
     }
@@ -2654,6 +2667,57 @@ mod tests {
             .await;
         assert_eq!(texts(&f.transport.sent()), ["Let me check.", "Done."]);
         assert!(!f.chan.lock().turns.contains_key(&session));
+    }
+
+    /// 125 §9: a blocker lands as one plain line after the buffered prose;
+    /// a nit sends nothing.
+    #[tokio::test]
+    async fn advisory_blocker_is_one_plain_line_after_the_prose() {
+        use agent::{Advisory, AdvisoryNote, AdvisorSeverity};
+        let f = fixture().await;
+        let session = f.stub.session;
+        let card = |severity: AdvisorSeverity, note: &str| {
+            Event::Agent(AgentEvent::AdvisoryAdded {
+                session,
+                seq: 9,
+                advisory: Advisory {
+                    advisor: SessionId::new(),
+                    step: 1,
+                    turn: None,
+                    at_ms: 0,
+                    notes: vec![AdvisoryNote {
+                        severity,
+                        note: note.into(),
+                    }],
+                },
+            })
+        };
+        let texts = |sent: &[SentItem]| {
+            sent.iter()
+                .filter_map(|s| match s {
+                    SentItem::Text { text, .. } => Some(text.clone()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        };
+        f.chan.handle_envelope(env(OWNER, 10, "hi")).await;
+        f.chan.handle_event(Event::Agent(started(session))).await;
+        f.chan
+            .handle_event(Event::Agent(AgentEvent::TextDelta {
+                session,
+                turn: runtime::TurnId(Uuid::nil()),
+                text: "On it.".into(),
+            }))
+            .await;
+        f.chan.handle_event(card(AdvisorSeverity::Nit, "nit")).await;
+        assert!(texts(&f.transport.sent()).is_empty());
+        f.chan
+            .handle_event(card(AdvisorSeverity::Blocker, "tests deleted\nmore"))
+            .await;
+        assert_eq!(
+            texts(&f.transport.sent()),
+            ["On it.", "advisor · blocker — tests deleted"]
+        );
     }
 
     /// 30 §9: a `json-render` fence arrives as a monospace block of its

@@ -158,7 +158,7 @@ impl Store {
             .collect()
     }
 
-    /// Rendered entries (`supervisor::render`) of `session` with seq >=
+    /// Rendered entries (`supervisor::render_with`) of `session` with seq >=
     /// `from_seq`, Advisory rows included as [`HistoryEntry::Advisory`].
     pub async fn rows_since(
         &self,
@@ -169,18 +169,11 @@ impl Store {
         // call so tool cards keep their call names; a seq-ranged read is the
         // upgrade if a measured session makes the advisor's step slow.
         let h = self.context_history(session).await?;
-        let mut advisories = self.advisories(session).await?;
-        let rows = crate::supervisor::render(&h.messages, &h.entries, &h.thinking);
-        Ok(rows
-            .into_iter()
-            .filter(|(seq, _)| *seq >= from_seq)
-            .map(|(seq, e)| match (e, advisories.remove(&seq)) {
-                (HistoryEntry::User { context, .. }, Some(advisory)) => {
-                    (seq, HistoryEntry::Advisory { advisory, context })
-                }
-                (e, _) => (seq, e),
-            })
-            .collect())
+        let advisories = self.advisories(session).await?;
+        let mut rows =
+            crate::supervisor::render_with(&h.messages, &h.entries, &h.thinking, &advisories);
+        rows.retain(|(seq, _)| *seq >= from_seq);
+        Ok(rows)
     }
 
     /// Append an advisory user row with its metadata in one transaction;
