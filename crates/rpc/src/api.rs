@@ -37,6 +37,7 @@ use agent::{
     SessionCost, SessionCostQuery, SessionOpen, SetProjectStyle, SetSessionProject,
 };
 use agent::{AwsProfiles, ListAwsProfiles, SetAwsProfile};
+use agent::{GetFavoriteModels, SetModelFavorite};
 use app::{
     AppDoc, AppToolResult, Apps, CallArgs, CallStatusOf, CallTool, CloseApp, GetApp, PublishFromUi,
 };
@@ -122,6 +123,10 @@ pub struct Info {
     /// `None` = the provider default. Absent from an older harness → `None`.
     #[serde(default)]
     pub default_effort: Option<String>,
+    /// `agent.favorite_models` (127 §1): starred model ids in starring order,
+    /// shown first in every picker. Absent from an older harness → empty.
+    #[serde(default)]
+    pub favorite_models: Vec<String>,
     /// The global approval switch (`tools.approvals`).
     pub approvals: ApprovalsState,
     /// `agent.compact_style`.
@@ -604,6 +609,11 @@ pub trait Api {
         model: String,
         manual: Option<bool>,
     ) -> RpcResult<ModelInfo>;
+    /// Star (`favorite: true`) or unstar `model` for every device on this engine (127 §2).
+    /// `model` resolves like `set_model` (unknown ids fail the same way). Returns the new
+    /// list in starring order; `FavoriteModelsChanged` follows on the stream when it changed.
+    #[method(name = "set_model_favorite")]
+    async fn set_model_favorite(&self, model: String, favorite: bool) -> RpcResult<Vec<String>>;
     /// Set (or clear with `None`) the reasoning effort for `session` from its next turn. Values
     /// come from the model's catalog entry (`ModelInfo.efforts`, or an integer token budget within
     /// `budget_min..budget_max`); `EffortChanged` follows on the stream. `manual` (default `true`):
@@ -2402,6 +2412,7 @@ impl ApiServer for Server {
         // 82 §3 / 83 §3: the supervisor's live defaults, not the config file read at startup.
         let default_model = ask::<Agents, _>(agent::AGENT_ACTOR, GetDefaultModel).await?;
         let default_effort = ask::<Agents, _>(agent::AGENT_ACTOR, GetDefaultEffort).await?;
+        let favorite_models = ask::<Agents, _>(agent::AGENT_ACTOR, GetFavoriteModels).await?;
         let approvals =
             ask::<ToolRegistry, _>(tools::REGISTRY_ACTOR, GetApprovals { session: None }).await?;
         let compact_style = ask::<Agents, _>(agent::AGENT_ACTOR, GetCompactStyle).await?;
@@ -2432,6 +2443,7 @@ impl ApiServer for Server {
             data_dir: self.rt.data_dir.display().to_string(),
             default_model,
             default_effort,
+            favorite_models,
             approvals,
             compact_style,
             subagent_timeout_secs,
@@ -3427,6 +3439,10 @@ impl ApiServer for Server {
             },
         )
         .await
+    }
+
+    async fn set_model_favorite(&self, model: String, favorite: bool) -> RpcResult<Vec<String>> {
+        ask::<Agents, _>(agent::AGENT_ACTOR, SetModelFavorite { model, favorite }).await
     }
 
     async fn set_effort(

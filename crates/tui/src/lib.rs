@@ -140,12 +140,12 @@ impl runtime::Plugin for TuiPlugin {
         let app_enabled = info.as_ref().is_some_and(|i| i.app_enabled);
         tokio::spawn(run_commands(api, commands_rx, events_tx));
 
-        let (default_model, default_effort) = info.map_or_else(
+        let (default_model, default_effort, favorite_models) = info.map_or_else(
             || {
                 let cfg = rt.section::<AgentConfig>("agent").unwrap_or_default();
-                (cfg.model, cfg.effort)
+                (cfg.model, cfg.effort, cfg.favorite_models)
             },
-            |i| (i.default_model, i.default_effort),
+            |i| (i.default_model, i.default_effort, i.favorite_models),
         );
         let approvals = rt
             .section::<tools::ToolsConfig>("tools")
@@ -162,6 +162,7 @@ impl runtime::Plugin for TuiPlugin {
                     commands: commands_tx,
                     default_model,
                     default_effort,
+                    favorite_models,
                     approvals,
                     app_enabled,
                     catalog,
@@ -638,6 +639,9 @@ async fn execute(api: &Engine, cmd: Command, tx: &UnboundedSender<UiEvent>) -> a
             // A pick in this TUI's picker or `/effort`: manual, so also the default (83 §2).
             msg(api.set_effort(session, effort.clone(), Some(true)).await)?;
             UiEvent::EffortSet(effort)
+        }
+        Command::SetModelFavorite { model, favorite } => {
+            UiEvent::FavoriteModels(msg(api.set_model_favorite(model, favorite).await)?)
         }
         Command::HarnessOptions(session) => {
             UiEvent::HarnessOptions(msg(api.harness_options(session).await)?)
@@ -1366,6 +1370,9 @@ fn print_event(out: &mut impl Write, model: &Model, ev: &UiEvent) {
         UiEvent::Agent(AgentEvent::DefaultModelChanged { model }) => {
             writeln!(out, "default model → {model}")
         }
+        UiEvent::Agent(AgentEvent::FavoriteModelsChanged { models }) => {
+            writeln!(out, "favorites → {} models", models.len())
+        }
         UiEvent::Agent(AgentEvent::DefaultEffortChanged { effort }) => {
             writeln!(
                 out,
@@ -1444,6 +1451,7 @@ fn print_event(out: &mut impl Write, model: &Model, ev: &UiEvent) {
         UiEvent::ModelSet(info) => writeln!(out, "model → {}", info.id),
         UiEvent::EffortSet(Some(e)) => writeln!(out, "effort: {e}"),
         UiEvent::EffortSet(None) => writeln!(out, "effort cleared"),
+        UiEvent::FavoriteModels(models) => writeln!(out, "favorites → {} models", models.len()),
         UiEvent::HarnessOptions(options) => model::harness_options_lines(options)
             .iter()
             .try_for_each(|l| writeln!(out, "{l}")),
