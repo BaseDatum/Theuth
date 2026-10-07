@@ -14,7 +14,7 @@ use libsqlite3_sys as ffi;
 /// `cost_owners.id`, which is the session id; `session_advisors` by the
 /// advised session, 125 §4.14). The 109 journal tables ride here too
 /// (§3.5), except `pty_screens`, which is engine-local.
-pub const ATTACHED: [(&str, &str); 15] = [
+pub const ATTACHED: [(&str, &str); 16] = [
     ("sessions", "id"),
     ("messages", "session_id"),
     ("epochs", "session_id"),
@@ -29,6 +29,7 @@ pub const ATTACHED: [(&str, &str); 15] = [
     ("questions", "session_id"),
     ("waits", "session_id"),
     ("jobs", "session_id"),
+    ("resume_reports", "session_id"),
     ("session_advisors", "session"),
 ];
 
