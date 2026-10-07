@@ -93,6 +93,27 @@ agent (if not hex-like) → first title word (if not hex-like) → the kind word
 001188 · ops-desk · 001203 · GITHUB_T`; model.test covers the hex fall-through to the kind, a hex agent with a readable
 title (`Which`), and a 5-hex name that is kept (`abc12`). Folded in as `97811683`.
 
+R6 (Sky, 12:58: "where does that chat input go, new session? … probably to theuth's desk"; relayed 13:00). The old `/`
+composer created a new session on send; now it talks to theuth's desk the way the voice key does (`lib/voice-key.ts`).
+Folded in as `c8404adb`:
+- `Hud.tsx` `DeskComposer`: the desk id is the sessions list's `desk: 'theuth'` row when present (no RPC), else
+  `api.desk_open('theuth')` on the first submit, cached for the mount; the composer stays enabled meanwhile and the send
+  awaits it. A known desk renders `<Composer session={desk} onSent=…>` so Composer's own steer/send_input path applies (a
+  running desk is steered, an idle one gets `send_input`); an unknown one renders `<Composer session={null}
+  resolveSession=…>`. Either way a successful send opens `/c/<desk>` so the reply is visible. Compact uses the same dock.
+- `components/chat/Composer.tsx` gained two optional props (the only change outside hud/ in this wave): `resolveSession`
+  — with `session` null, the first send goes to the session it resolves instead of `new_session`/`create_session`
+  (`markSent` → `send_input`, then the default `/c/$session` navigation; on failure the draft follows the target as it does
+  for a created session) — and `onSent(session)` — fired after a bound session took the message, which `DeskComposer` uses
+  to navigate. No other caller passes either; `draftCreate` behaviour is untouched.
+- Hud.test (Composer stubbed, now capturing its props; `useNavigate` and `desk_open` mocked): unknown desk → the stub is
+  unbound with a resolver, `desk_open` not called at render, the resolver returns the id and called `desk_open('theuth')`;
+  a `desk: 'theuth'` sessions row seeded in the QueryClient → bound to `desk-1`, no RPC, and `onSent` navigates to
+  `/c/$session` with that id. The unknown-desk navigation is Composer's existing created-session path (can't run in node).
+- Regenerated bindings (the orchestrator's integration gate) landed during R6: the four pre-existing `AttentionKind`/`packet`
+  errors are gone, and `fixtures.ts` was updated for the new required fields (`ScheduleInfo` sensor/for/cooldown/timeout/
+  model/run_timeout/created, `AttentionItem` packet/ask/turn).
+
 ## Per-file
 
 | File | Change |
@@ -142,12 +163,15 @@ title (`Which`), and a 5-hex name that is kept (`abc12`). Folded in as `97811683
    - R3 rerun on `1c07a9bf`+tests: exit 1, 15 s; the same four lines at `Hud.tsx(140, 222, 245)` and `model.test.ts(44)`; nothing else under `components/hud`.
    - R4 rerun on `571cbb49`: exit 1, 3 s; the same four lines at `Hud.tsx(140, 222, 245)` and `model.test.ts(44)`; nothing else under `components/hud`.
    - R5 rerun on `97811683`: exit 1, 12 s; the same four lines (the bindings snapshot had not yet been regenerated when it ran).
+   - R6, with the regenerated bindings in place: a first run showed only `fixtures.ts(75)` (`ScheduleInfo` sensor/for/cooldown/timeout/model/run_timeout/created) and `fixtures.ts(102)` (`AttentionItem` packet/ask/turn) — the fresh types, fixed in the fixture builders; the rerun (589 s lock wait) printed no error lines and no `exited with code 1`: `bun run check` is clean. The four `AttentionKind`/`packet` lines listed above are gone with the old snapshot.
    - Full pre-existing file list: `components/attention/{AskScreen,Bundle,Bundle.test,DecisionScreen,Pointers,ReviewScreen,Screen,model,model.test}`, `components/chat/{AskCard,MessageTool,surface/Graph,surface/diagrams/GraphDelta.test,surface/registry}`, `components/codemap/CodeMapPanel`, `components/hud/{Hud,model.test}` (above), `components/routines/{RoutineDetail,RoutinesView,helpers,helpers.test}`, `components/settings/{Channels,Channels.test,sandbox-queries}`, `dev/routines-fixture`, `lib/{graph-layout,page-preview,page-preview.test,speech}`, `rpc/{api,events}`, `store/{reduce,reduce.test,sessions}`.
 2. `BUILD_LABEL=128-hud /Users/Sky.Moore/.theuth/bin/build-lock bunx vitest run src/components/hud`
    - `Test Files 4 passed (4) · Tests 24 passed (24)` (lock acquired after 203 s; 15.5 s run). R1 rerun on `6fe0cfae`: `4 passed · Tests 25 passed (25)`, 20.2 s. R2 rerun: `4 passed · Tests 27 passed (27)`, 1.6 s (a first R2 run failed two `/new` href counts — expectation 2 vs the correct 3: ring, its AGENTS row, SESSIONS LIVE — fixed in the test). R3: a first run failed 8 (a stale-anchor edit had dropped `truncate` from model.ts — restored; the real `Composer` threw `window is not defined` in node — stubbed in Hud.test); rerun `4 passed · Tests 27 passed (27)`, 1.6 s.
    - R4 rerun on `571cbb49`: `4 passed · Tests 28 passed (28)`, 1.9 s (first run).
    - R5 rerun on `97811683`: `4 passed · Tests 28 passed (28)`, 1.6 s.
+   - R6: `4 passed · Tests 29 passed (29)` (the new desk-composer case), twice — before and after the fixture field update.
 3. `BUILD_LABEL=128-hud /Users/Sky.Moore/.theuth/bin/build-lock bunx vite build`
    - `✓ 13980 modules transformed · ✓ built in 3.54s`; `dist/assets/Hud-DIaVyohp.js 31.80 kB │ gzip 9.39 kB`. Only the pre-existing > 500 kB chunk warnings. R1 rerun on `6fe0cfae`: `✓ built in 6.27s`, `Hud-CWF38TN6.js 31.84 kB │ gzip 9.41 kB`. R2 rerun: `✓ built in 6.92s`, `Hud-B1zoJ_XA.js 24.04 kB │ gzip 7.61 kB` (the retired sections left the chunk). R3 rerun: `✓ built in 8.10s`, `Hud-D-BtYC8C.js 24.25 kB │ gzip 7.68 kB` (the composer is a shared chunk, so its return barely moves Hud's).
    - R4 rerun on `571cbb49`: `✓ built in 5.08s`, `Hud-DPKI8EJ2.js 24.67 kB │ gzip 7.82 kB`.
    - R5 rerun on `97811683`: `✓ built in 4.63s`, `Hud-QhHoFmFe.js 24.67 kB │ gzip 7.82 kB`.
+   - R6: `✓ built in 6.16s`, `Hud-CotBYPwd.js 24.98 kB │ gzip 7.92 kB`.

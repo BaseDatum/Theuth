@@ -92,10 +92,17 @@ const schedule = (name: string, next: number | null, last: number | null, runnin
   agent: null,
   project: null,
   when_sensor: null,
+  sensor: null,
   fire: null,
+  for: null,
+  cooldown: null,
   mode: null,
   memory: null,
   expires: null,
+  timeout: null,
+  model: null,
+  run_timeout: null,
+  created: null,
   last_check: null,
 })
 
@@ -110,6 +117,9 @@ const need = (id: string, kind: AttentionItem['kind'], title: string, at_ms: num
   session: null,
   approval: null,
   decision: null,
+  packet: null,
+  ask: null,
+  turn: null,
 })
 
 /** uuidv7-shaped task ids whose short id (last 6) reads like the mock's. */
