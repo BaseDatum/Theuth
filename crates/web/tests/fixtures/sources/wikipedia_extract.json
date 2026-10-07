@@ -1,0 +1,14 @@
+{
+  "batchcomplete": "",
+  "query": {
+    "normalized": [ { "from": "Rust_(programming_language)", "to": "Rust (programming language)" } ],
+    "pages": {
+      "29414838": {
+        "pageid": 29414838,
+        "ns": 0,
+        "title": "Rust (programming language)",
+        "extract": "Rust is a general-purpose programming language emphasizing performance, type safety and concurrency. It enforces memory safety without a garbage collector.\n\n\n== History ==\nThe language grew out of a personal project begun in 2006.\n\n\n== Syntax ==\nThe syntax of Rust is similar to that of C and C++.\n"
+      }
+    }
+  }
+}
