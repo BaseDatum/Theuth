@@ -7,7 +7,7 @@ import type { Task } from '@/rpc/bindings/Task'
 import { HOUR_MS, rng, type SceneData, startOfDay } from './model'
 
 /**
- * Synthetic data that reproduces the approved mockup: 6 needs-you items, 7 rings, 8 done, 3 running, ~230 field lines,
+ * Synthetic data that reproduces the approved mockup: 6 needs-you items, 6 agent rings + 4 routine rings, 9 done, 3 running tasks + 1 running routine, ~230 field lines,
  * a week of arrivals, spend rows and a stream. Timed relative to `now` so the arc reads right at any hour.
  */
 
@@ -161,12 +161,12 @@ export function sceneFixture(now: number): Required<SceneData> {
     task(T('1170'), 'old idea', 'user', 'cancelled', today(9.0)),
     task(T('1160'), 'backlog item', 'user', 'backlog', now - 3 * 24 * H),
   ]
+  // Revision 1: morning-brief fired and finished, standup-notes fired and failed, nightly-digest running, knowledge-sync due at 23:30.
   const routines = [
     schedule('morning-brief', midnight + 30 * H, today(6.0), false, 'ok'),
-    schedule('standup-notes', midnight + 33 * H, today(9.0), false, 'ok'),
-    schedule('lunch-digest', midnight + 36.5 * H, today(12.5), false, 'ok'),
+    schedule('standup-notes', midnight + 33 * H, today(9.0), false, 'error: no notes'),
     schedule('nightly-digest', midnight + 42 * H, now - 18 * M, true, 'ok'),
-    schedule('knowledge-sync', midnight + 23.5 * H, midnight - 0.5 * H, false, 'error: offline'),
+    schedule('knowledge-sync', midnight + 23.5 * H, midnight - 0.5 * H, false, 'ok'),
   ]
   const sessions: SessionSummary[] = [
     session('chat-1', 'HUD visual overhaul', now - 40_000),
@@ -190,8 +190,7 @@ export function sceneFixture(now: number): Required<SceneData> {
     row(now - 18 * M, 'routine_fired', 'system', 'nightly-digest', 'nightly-digest fired · running'),
     row(today(8.3), 'task_done', 'agent:analyst', T('1180'), 'mesh relay reachable'),
     row(today(6.0), 'routine_fired', 'system', 'morning-brief', 'morning-brief ran'),
-    row(today(9.0), 'routine_fired', 'system', 'standup-notes', 'standup-notes ran'),
-    row(today(12.5), 'routine_fired', 'system', 'lunch-digest', 'lunch-digest ran'),
+    row(today(9.0), 'routine_fired', 'system', 'standup-notes', 'standup-notes failed · no notes'),
     row(now - 12 * M, 'escalation_raised', 'agent:builder', 'approval:ap-4821', 'asks approval · cargo publish --dry-run'),
     row(now - 13 * M, 'task_checked_out', 'agent:ops-desk', T('1214'), 'took t-1214 · wire HUD scene'),
     row(now - 41 * M, 'task_checked_out', 'agent:research', T('1210'), 'took t-1210 · design 126 review'),

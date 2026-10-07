@@ -37,7 +37,8 @@ export const HV_MIN = 600
 export const HV_MAX = 1400
 export const fieldHeight = (w: number, h: number): number => (w > 0 ? Math.min(HV_MAX, Math.max(HV_MIN, Math.round((W * h) / w))) : FIELD_H)
 export const ARC = { cx: -300, R: 1390, band: 18 } as const
-export const RING = { x: 860, dy: 53, r: 13, max: 9 } as const
+/** `max`: the agent group's fold cap; `gap`: the extra space before the routine group; `cap(hv)`: the whole column's capacity (Revision 1). */
+export const RING = { x: 860, dy: 53, r: 13, max: 9, gap: 20, cap: (hv: number): number => Math.max(9, Math.floor((hv - 150) / 53)) } as const
 export const NEED = { x0: 610, dx: 60, max: 12 } as const
 
 /**
@@ -67,6 +68,7 @@ export type Target =
   | { route: 'task'; id: string }
   | { route: 'agent'; name: string }
   | { route: 'routine'; name: string }
+  | { route: 'routines' }
   | { route: 'session'; id: string }
   | { route: 'agents' }
   | { route: 'tasks'; state: TaskState | null }
@@ -165,12 +167,9 @@ export function arc(now: number, routines: readonly ScheduleInfo[], activityToda
   }
   const marks: ArcMark[] = []
   for (const e of activityToday) if (e.kind === 'routine_fired') marks.push(mark(hourOf(e.ts_ms, now), true, e.subject))
-  const dayEnd = startOfDay(now) + DAY_MS
   for (const s of routines) {
-    if (s.next === null) continue
-    const t = Date.parse(s.next)
-    if (Number.isNaN(t) || t < now || t >= dayEnd) continue
-    marks.push(mark(hourOf(t, now), false, s.name))
+    const t = dueAt(s, now)
+    if (t !== null) marks.push(mark(hourOf(t, now), false, s.name))
   }
   const nh = nowHour(now)
   const [nx1, ny1] = at(nh, R - 22)
@@ -181,7 +180,8 @@ export function arc(now: number, routines: readonly ScheduleInfo[], activityToda
 
 // --------------------------------------------------------------------------------------------------------------- rings
 
-export type RingStyle = 'live' | 'idle' | 'waiting' | 'lapsed' | 'error'
+/** `failed`: a routine that fired today and errored — hollow carnelian, not dashed (`error` is the dashed agent state). */
+export type RingStyle = 'live' | 'idle' | 'waiting' | 'lapsed' | 'error' | 'failed'
 export type Ring = {
   id: string
   name: string
@@ -194,10 +194,10 @@ export type Ring = {
   link: Target | null
 }
 
-export const ringColor = (style: RingStyle): Color => (style === 'waiting' ? C.accent : style === 'lapsed' ? C.tertiary : style === 'error' ? C.danger : C.info)
+export const ringColor = (style: RingStyle): Color => (style === 'waiting' ? C.accent : style === 'lapsed' ? C.tertiary : style === 'error' || style === 'failed' ? C.danger : C.info)
 export const ringDashed = (style: RingStyle): boolean => style === 'lapsed' || style === 'error'
 
-const RING_RANK: Record<RingStyle, number> = { live: 0, waiting: 1, idle: 2, lapsed: 3, error: 4 }
+const RING_RANK: Record<RingStyle, number> = { live: 0, waiting: 1, idle: 2, lapsed: 3, error: 4, failed: 5 }
 const LIVE_WINDOW_MS = 2 * 60_000
 
 const isChat = (s: SessionSummary) => s.parent === null && !s.desk && !s.archived
@@ -205,12 +205,47 @@ const touchedToday = (s: SessionSummary, midnight: number) => Date.parse(s.updat
 /** The roster agent that is theuth itself folds into the sessions ring — never two rings with the same label. */
 const THEUTH = 'theuth'
 const ringActor = (actor: string): string => (actor === `agent:${THEUTH}` ? 'user' : actor)
+const isError = (r: string | null) => r !== null && /^(error|fail)/i.test(r)
+
+/** `next` as ms when it falls in today's remaining window `[now, midnight + 24h)`; else `null`. The arc's hollow squares and the due connectors share it. */
+export function dueAt(s: ScheduleInfo, now: number): number | null {
+  if (s.next === null) return null
+  const t = Date.parse(s.next)
+  return Number.isNaN(t) || t < now || t >= startOfDay(now) + DAY_MS ? null : t
+}
+
+export type RoutinePresence = { running: ScheduleInfo[]; fired: { name: string; ts: number; result: string | null }[]; due: { s: ScheduleInfo; at: number }[] }
 
 /**
- * The actors, top to bottom: `theuth` (today's chats), every roster agent (working · waiting · idle · lapsed/error),
- * running routines; beyond 9 the rest fold into one `+N more` ring — never dropped silently.
+ * Revision 1: which routines have a presence today and in which group — running now; else fired today (a `routine_fired` row,
+ * newest first, keyed by its subject even when the schedule is gone); else due later today (soonest first). One group each.
  */
-export function rings(agents: readonly AgentSummary[], sessions: readonly SessionSummary[], routines: readonly ScheduleInfo[], attention: readonly AttentionItem[], now: number, g: Geom = geom()): Ring[] {
+export function routinePresence(routines: readonly ScheduleInfo[], activityToday: readonly ActivityEntry[], now: number): RoutinePresence {
+  const byName = new Map(routines.map((s) => [s.name, s]))
+  const firedAt = new Map<string, number>()
+  for (const e of activityToday) if (e.kind === 'routine_fired') firedAt.set(e.subject, Math.max(firedAt.get(e.subject) ?? 0, e.ts_ms))
+  const running = routines.filter((s) => s.running)
+  const fired = [...firedAt]
+    .filter(([name]) => !byName.get(name)?.running)
+    .map(([name, ts]) => ({ name, ts, result: byName.get(name)?.last_result ?? null }))
+    .sort((a, b) => b.ts - a.ts)
+  const due = routines
+    .filter((s) => !s.running && !firedAt.has(s.name))
+    .flatMap((s) => {
+      const at = dueAt(s, now)
+      return at === null ? [] : [{ s, at }]
+    })
+    .sort((a, b) => a.at - b.at)
+  return { running, fired, due }
+}
+
+/**
+ * The actors, top to bottom: `theuth` (today's chats), every roster agent (working · waiting · idle · lapsed/error); beyond 9
+ * the rest fold into one `+N more` ring — never dropped silently. Then, one gap below, the routine group (Revision 1): one
+ * ring per routine with a presence today — running · fired today (`ran`/`failed HH:MM`) · due later today (`next HH:MM`);
+ * beyond the column's capacity `RING.cap(hv)` the rest fold into one `+N routines` ring, so every shown ring is a distinct origin.
+ */
+export function rings(agents: readonly AgentSummary[], sessions: readonly SessionSummary[], routines: readonly ScheduleInfo[], activityToday: readonly ActivityEntry[], attention: readonly AttentionItem[], now: number, g: Geom = geom()): Ring[] {
   const midnight = startOfDay(now)
   type R0 = Omit<Ring, 'x' | 'y'>
   const out: R0[] = []
@@ -239,26 +274,42 @@ export function rings(agents: readonly AgentSummary[], sessions: readonly Sessio
     })
     .sort((a, b) => RING_RANK[a.style] - RING_RANK[b.style])
   out.push(...agentRings)
-  for (const s of routines) {
-    if (!s.running) continue
-    const last = s.last === null ? NaN : Date.parse(s.last)
-    out.push({ id: `ring:routine:${s.name}`, name: `routine · ${s.name}`, sub: `running · ${Number.isNaN(last) ? '—' : age(last, now)}`, style: 'idle', actor: null, link: { route: 'routine', name: s.name } })
-  }
   if (out.length > RING.max) {
     const rest = out.length - (RING.max - 1)
     out.splice(RING.max - 1, rest, { id: 'ring:more', name: `+${rest} more`, sub: '', style: 'lapsed', actor: null, link: { route: 'agents' } })
   }
-  // R4: the column is centred on the arc's centre line so it fits any field height.
-  const y0 = g.cy - (RING.dy * (out.length - 1)) / 2
-  return out.map((r, i) => ({ ...r, x: RING.x, y: y0 + RING.dy * i }))
+  const nAgents = out.length
+  const routineRing = (name: string, sub: string, style: RingStyle): R0 => ({ id: `ring:routine:${name}`, name: `routine · ${name}`, sub, style, actor: null, link: { route: 'routine', name } })
+  const p = routinePresence(routines, activityToday, now)
+  const rr: R0[] = [
+    ...p.running.map((s) => {
+      const last = s.last === null ? NaN : Date.parse(s.last)
+      return routineRing(s.name, `running · ${Number.isNaN(last) ? '—' : age(last, now)}`, 'live')
+    }),
+    ...p.fired.map((f) => (isError(f.result) ? routineRing(f.name, `failed ${hhmm(f.ts)}`, 'failed') : routineRing(f.name, `ran ${hhmm(f.ts)}`, 'idle'))),
+    ...p.due.map((d) => routineRing(d.s.name, `next ${hhmm(d.at)}`, 'lapsed')),
+  ]
+  const slots = RING.cap(g.hv) - nAgents
+  if (rr.length > slots) {
+    // ponytail: a full agent column (slots 0) hides the routine group entirely — the fold ring would cross the footer at hv 600.
+    const shown = Math.max(0, slots - 1)
+    rr.splice(shown, rr.length - shown, ...(slots >= 1 ? [{ id: 'ring:routines:more', name: `+${rr.length - shown} routines`, sub: '', style: 'lapsed' as const, actor: null, link: { route: 'routines' } as const }] : []))
+  }
+  out.push(...rr)
+  // R4: the column is centred on the arc's centre line so it fits any field height; the group gap is part of the span.
+  const gap = rr.length > 0 ? RING.gap : 0
+  const y0 = g.cy - (RING.dy * (out.length - 1) + gap) / 2
+  return out.map((r, i) => ({ ...r, x: RING.x, y: y0 + RING.dy * i + (i >= nAgents ? gap : 0) }))
 }
 
 export const ringByActor = (rings: readonly Ring[], actor: string | null): Ring | null => (actor === null ? null : (rings.find((r) => r.actor === ringActor(actor)) ?? null))
+export const ringByRoutine = (rings: readonly Ring[], name: string): Ring | null => rings.find((r) => r.id === `ring:routine:${name}`) ?? null
 export const ringByName = (rings: readonly Ring[], name: string | null): Ring | null => (name === null ? null : (rings.find((r) => r.name === name) ?? null))
 
 // --------------------------------------------------------------------------------------------------------------- flows
 
-export type FlowKind = 'need' | 'outcome' | 'running'
+/** `due`: Revision 1's faint connector from a due-later routine's ring to its hollow square — no label, no right-hand segment; `layoutEnds` never sees it. */
+export type FlowKind = 'need' | 'outcome' | 'running' | 'due'
 export type Flow = {
   id: string
   kind: FlowKind
@@ -324,10 +375,9 @@ export function needFlows(needs: readonly Need[], rings: readonly Ring[], now: n
 }
 
 const DONE_KINDS: Partial<Record<ActivityEntry['kind'], true>> = { task_done: true, child_returned: true, escalation_answered: true }
-const isError = (r: string | null) => r !== null && /^(error|fail)/i.test(r)
 const looksLikeTask = (s: string) => /^[0-9a-f-]{20,}$/i.test(s)
 
-/** Malachite: what landed today, newest first. `routine_fired` counts when its schedule's last result is not an error. */
+/** Malachite: what landed today, newest first. `routine_fired` counts when its schedule's last result is not an error, and leaves ITS routine's ring (Revision 1). */
 export function outcomes(activityToday: readonly ActivityEntry[], routines: readonly ScheduleInfo[], rings: readonly Ring[], now: number): { flows: Omit<Flow, 'end' | 'd'>[]; total: number; more: number } {
   const byName = new Map(routines.map((s) => [s.name, s]))
   const hits = activityToday
@@ -338,7 +388,7 @@ export function outcomes(activityToday: readonly ActivityEntry[], routines: read
     kind: 'outcome' as const,
     color: C.success,
     src: null,
-    via: ringByActor(rings, e.actor),
+    via: e.kind === 'routine_fired' ? ringByRoutine(rings, e.subject) : ringByActor(rings, e.actor),
     hour: hourOf(e.ts_ms, now, nowHour(now)),
     time: e.ts_ms,
     label: truncate(e.summary, 28) + (e.cost !== null ? ` · $${e.cost.toFixed(2)}` : ''),
@@ -348,25 +398,65 @@ export function outcomes(activityToday: readonly ActivityEntry[], routines: read
   return { flows, total: hits.length, more: hits.length - flows.length }
 }
 
-/** Faience: `doing` tasks via the owner's ring, timed at the checkout's last progress note. */
-export function running(tasks: readonly Task[], rings: readonly Ring[], now: number): Omit<Flow, 'end' | 'd'>[] {
-  return tasks
+/** Faience: `doing` tasks via the owner's ring, timed at the checkout's last progress note; running routines via their own ring, timed at `last` (else now). */
+export function running(tasks: readonly Task[], routines: readonly ScheduleInfo[], rings: readonly Ring[], now: number): Omit<Flow, 'end' | 'd'>[] {
+  const h = (time: number) => hourOf(time, now, nowHour(now))
+  const ts = tasks
     .filter((t) => t.state === 'doing')
-    .map((t) => ({ t, time: t.checkout?.progress_at_ms ?? t.updated_ms }))
-    .sort((a, b) => b.time - a.time)
-    .slice(0, RUNNING_MAX)
-    .map(({ t, time }) => ({
-      id: `running:${t.id}`,
-      kind: 'running' as const,
-      color: C.info,
-      src: null,
-      via: ringByActor(rings, t.owner.type === 'agent' ? `agent:${t.owner.name}` : t.owner.type === 'user' ? 'user' : null),
-      hour: hourOf(time, now, nowHour(now)),
-      time,
-      label: `${truncate(t.title, 24)} · running · ${age(time, now)}`,
-      title: `${t.title} · running · ${age(time, now)}`,
-      link: { route: 'task', id: t.id } as const,
-    }))
+    .map((t) => {
+      const time = t.checkout?.progress_at_ms ?? t.updated_ms
+      return {
+        id: `running:${t.id}`,
+        kind: 'running' as const,
+        color: C.info,
+        src: null,
+        via: ringByActor(rings, t.owner.type === 'agent' ? `agent:${t.owner.name}` : t.owner.type === 'user' ? 'user' : null),
+        hour: h(time),
+        time,
+        label: `${truncate(t.title, 24)} · running · ${age(time, now)}`,
+        title: `${t.title} · running · ${age(time, now)}`,
+        link: { route: 'task', id: t.id } as const,
+      }
+    })
+  const rs = routines
+    .filter((s) => s.running)
+    .map((s) => {
+      const last = s.last === null ? NaN : Date.parse(s.last)
+      const time = Number.isNaN(last) ? now : last
+      return {
+        id: `running:routine:${s.name}`,
+        kind: 'running' as const,
+        color: C.info,
+        src: null,
+        via: ringByRoutine(rings, s.name),
+        hour: h(time),
+        time,
+        label: `running · ${age(time, now)}`,
+        title: `${s.name} · running · ${age(time, now)}`,
+        link: { route: 'routine', name: s.name } as const,
+      }
+    })
+  return [...ts, ...rs].sort((a, b) => b.time - a.time).slice(0, RUNNING_MAX)
+}
+
+/** A cubic with horizontal tangents and both controls at half the span — every ring-to-arc and dot-to-ring segment. */
+const cubic = (x0: number, y0: number, x1: number, y1: number) => {
+  const mx = x0 + 0.5 * (x1 - x0)
+  return `C ${r1(mx)} ${r1(y0)}, ${r1(mx)} ${r1(y1)}, ${r1(x1)} ${r1(y1)}`
+}
+
+/**
+ * Revision 1: the due-later routines' connectors — from the ring's right edge to the exact point of the hollow square
+ * (`arc()`'s `R + 9` at `hourOf(next)`), dashed and faint in Scene.tsx. Complete flows (`end`, `d` set); no label.
+ */
+export function dueFlows(routines: readonly ScheduleInfo[], activityToday: readonly ActivityEntry[], rings: readonly Ring[], now: number, g: Geom = geom()): Flow[] {
+  return routinePresence(routines, activityToday, now).due.flatMap(({ s, at }) => {
+    const via = ringByRoutine(rings, s.name)
+    if (via === null) return []
+    const hour = hourOf(at, now)
+    const end = arcPoint(hour, ARC.R + 9, g)
+    return [{ id: `due:${s.name}`, kind: 'due' as const, color: C.tertiary, src: null, via, hour, time: at, label: '', title: `${s.name} · due ${hhmm(at)}`, link: { route: 'routine', name: s.name } as const, end, d: `M ${via.x + 14} ${r1(via.y)} ${cubic(via.x + 14, via.y, end[0], end[1])}` }]
+  })
 }
 
 /**
@@ -377,10 +467,6 @@ export function flowPath(src: Pt | null, via: Ring | null, hour: number, end: Pt
   const [ax, ay] = arcPoint(hour, ARC.R, g)
   const [ex, ey] = end
   const parts: string[] = []
-  const cubic = (x0: number, y0: number, x1: number, y1: number) => {
-    const mx = x0 + 0.5 * (x1 - x0)
-    return `C ${r1(mx)} ${r1(y0)}, ${r1(mx)} ${r1(y1)}, ${r1(x1)} ${r1(y1)}`
-  }
   if (via !== null) {
     if (src !== null) parts.push(`M ${r1(src[0])} ${r1(src[1])} ${cubic(src[0], src[1], via.x - 14, via.y)}`)
     parts.push(`M ${via.x + 14} ${r1(via.y)} ${cubic(via.x + 14, via.y, ax, ay)}`)
@@ -419,16 +505,16 @@ export type Hairline = { id: string; d: string; opacity: number }
 
 /**
  * The grey field: one line per activity entry today that is not a coloured flow, plus one per session touched today
- * (children included). 62 % leave a ring (the actor's when known, else a seeded one), 38 % a seeded left point; every
+ * (children included). 62 % leave a ring (the actor's when known — a `routine_fired` row's routine ring —, else a seeded one), 38 % a seeded left point; every
  * line passes the arc at its time and ends at a seeded point. Seeded by id → stable between renders. Capped at 600.
  * Deviation from the brief's signature: takes `rings` (the brief's text needs them, its signature omitted them).
  */
 export function hairlines(activityToday: readonly ActivityEntry[], sessionsToday: readonly SessionSummary[], rings: readonly Ring[], drawnIds: ReadonlySet<string>, now: number, g: Geom = geom()): Hairline[] {
   const out: Hairline[] = []
-  const line = (id: string, actor: string | null, time: number) => {
+  const line = (id: string, own: Ring | null, time: number) => {
     const r = rng(id)
     const fromRing = r() < 0.62
-    const ring = fromRing ? (ringByActor(rings, actor) ?? rings[Math.floor(r() * rings.length)]) : undefined
+    const ring = fromRing ? (own ?? rings[Math.floor(r() * rings.length)]) : undefined
     const src: Pt = ring ? [RING.x + 14, ring.y + lerp(-3, 3, r())] : [lerp(180, 640, r()), lerp(g.srcTop, g.srcBottom, r())]
     const end: Pt = [lerp(1380, 1900, r()), lerp(g.top, g.bottom, r())]
     out.push({ id, d: flowPath(src, null, hourOf(time, now, nowHour(now)), end, g), opacity: r1(lerp(0.07, 0.26, r()) * 100) / 100 })
@@ -436,11 +522,11 @@ export function hairlines(activityToday: readonly ActivityEntry[], sessionsToday
   for (const e of activityToday) {
     if (out.length >= HAIRLINES_MAX) break
     if (drawnIds.has(`outcome:${e.id}`)) continue
-    line(`hair:a:${e.id}`, e.actor, e.ts_ms)
+    line(`hair:a:${e.id}`, e.kind === 'routine_fired' ? ringByRoutine(rings, e.subject) : ringByActor(rings, e.actor), e.ts_ms)
   }
   for (const s of sessionsToday) {
     if (out.length >= HAIRLINES_MAX) break
-    line(`hair:s:${s.id}`, s.desk ? `agent:${s.desk}` : 'user', Date.parse(s.updated_at))
+    line(`hair:s:${s.id}`, ringByActor(rings, s.desk ? `agent:${s.desk}` : 'user'), Date.parse(s.updated_at))
   }
   return out
 }
@@ -581,10 +667,10 @@ export function scene(data: SceneData, now: number, hv: number = FIELD_H): Scene
   const routines = data.routines ?? []
   const sessions = data.sessions ?? []
   const today = data.activityToday ?? []
-  const rs = rings(agents, sessions, routines, attention, now, g)
+  const rs = rings(agents, sessions, routines, today, attention, now, g)
   const { needs, more: needsMore } = needsYou(attention, g)
   const outs = outcomes(today, routines, rs, now)
-  const runs = running(tasks, rs, now)
+  const runs = running(tasks, routines, rs, now)
   const laid = layoutEnds([...needFlows(needs, rs, now), ...outs.flows, ...runs], g)
   const drawn = new Set(laid.flows.map((f) => f.id))
   const inFlight = tasks.filter((t) => t.state === 'doing').length + routines.filter((r) => r.running).length
@@ -595,7 +681,7 @@ export function scene(data: SceneData, now: number, hv: number = FIELD_H): Scene
     rings: rs,
     needs,
     needsMore,
-    flows: laid.flows,
+    flows: [...laid.flows, ...dueFlows(routines, today, rs, now, g)],
     flowsMore: laid.more + outs.more,
     outcomesTotal: outs.total,
     hairlines: hairlines(today, sessionsToday(sessions, now), rs, drawn, now, g),

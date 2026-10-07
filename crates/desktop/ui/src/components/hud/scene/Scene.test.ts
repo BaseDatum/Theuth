@@ -30,8 +30,8 @@ test('Scene draws the fixture: rings, needs, flows, panels, links, tokens only',
   expect(html).not.toMatch(/(fill|stroke)="#/)
   expect(html).toContain('stroke="var(--fg-accent)"')
   expect(html).toContain('stroke="var(--status-success-fg)"')
-  // 7 rings (r=13), 6 needs-you dots (r=7), one flow per laid-out flow, each hover-keyed.
-  expect(count(html, /<circle[^>]*r="13"/g)).toBe(7)
+  // 10 rings (r=13: 6 agents + 4 routines), 6 needs-you dots (r=7), one flow per laid-out flow, each hover-keyed.
+  expect(count(html, /<circle[^>]*r="13"/g)).toBe(10)
   expect(count(html, /<circle[^>]*r="7"/g)).toBe(6)
   expect(count(html, /data-flow="/g)).toBe(m.flows.length)
   // Only live rings pulse; motion is a class (styles.css turns it off under prefers-reduced-motion), never inline.
@@ -43,10 +43,30 @@ test('Scene draws the fixture: rings, needs, flows, panels, links, tokens only',
   expect(html).toContain(`href="/tasks/${T('1212')}"`)
   expect(html).toContain('href="/agents/builder"')
   expect(html).toContain('href="/routines/morning-brief"')
+  expect(html).toContain('href="/routines/standup-notes"') // the failed routine's ring: hollow carnelian, not dashed, sub "failed 09:00"
+  expect(html).toMatch(/<circle[^>]*r="13"[^>]*stroke="var\(--status-danger-fg\)"[^>]*stroke-width="1.2"\/>/)
+  expect(html).not.toMatch(/<circle[^>]*stroke="var\(--status-danger-fg\)"[^>]*stroke-dasharray/)
+  expect(html).toContain('>failed 09:00<')
+  expect(html).toContain('>ran 06:00<')
+  expect(html).toContain('>next 23:30<')
+  expect(html).toContain('>running · 18m<')
+  // Revision 1: every routine_fired flow leaves its routine ring (`M <ring.x+14>`), the running routine has an in-flight line, the due routine
+  // a dashed faint connector with no label and no end dot.
+  for (const fl of m.flows) {
+    if (fl.link?.route !== 'routine') continue
+    expect(fl.via?.id).toBe(`ring:routine:${fl.link.name}`)
+    expect(fl.d.startsWith(`M ${fl.via!.x + 14} `)).toBe(true)
+  }
+  const due = m.flows.find((f) => f.kind === 'due')!
+  const dueG = new RegExp(`<g data-flow="${due.id}"[^>]*>(.*?)</g>`).exec(html)![1]!
+  expect(dueG).toMatch(/<path[^>]*stroke="var\(--fg-tertiary\)"[^>]*stroke-opacity="0.5"[^>]*stroke-dasharray="3 3"/)
+  expect(dueG).not.toContain('<text')
+  expect(dueG).not.toContain('<circle')
+  expect(html).toMatch(/<g data-flow="running:routine:nightly-digest"[^>]*>.*?<text[^>]*>running · 18m<\/text>/)
   expect(html).toMatch(/<a href="\/attention"><text x="28" y="60"/)
   expect(count(html, /href="\/new"/g)).toBe(3) // the theuth ring, its AGENTS row, SESSIONS LIVE
-  expect(html).toMatch(/href="\/tasks\?state=done&amp;project="><tspan>11 OUTCOMES TODAY<\/tspan>/)
-  expect(html).toMatch(/href="\/tasks\?state=doing&amp;project="><tspan>4 IN FLIGHT<\/tspan>/)
+  expect(html).toMatch(/href="\/tasks\?state=done&amp;project="><tspan>9 OUTCOMES TODAY<\/tspan>/)
+  expect(html).toMatch(/href="\/tasks\?state=doing&amp;project="><tspan>4 IN FLIGHT<\/tspan>/) // 3 doing tasks + the running routine
   for (const s of ['done', 'doing', 'review', 'blocked', 'cancelled', 'backlog', 'todo']) expect(html).toContain(`href="/tasks?state=${s}&amp;project="`)
   expect(html).toMatch(/<a href="\/tasks"><text x="340" y="236"/) // the OUTCOMES big number → the board
   expect(count(html, /<a href="\/agents"><text x="340" y="236"/g)).toBe(2) // AGENTS and SPEND big numbers
@@ -62,7 +82,7 @@ test('Scene draws the fixture: rings, needs, flows, panels, links, tokens only',
   expect(html).toContain('● 19:49:19')
   expect(html).toContain('>06<')
   expect(html).toContain('06 NEED YOU')
-  expect(html).toContain('>11 OUTCOMES TODAY<')
+  expect(html).toContain('>9 OUTCOMES TODAY<')
   expect(html).toContain('>4 IN FLIGHT<')
   expect(html).toContain('$31.20 THIS MONTH')
   for (const t of ['AGENTS', 'ARRIVALS', 'OUTCOMES', 'SPEND', 'STREAM']) expect(html).toContain(`>${t}<`)
@@ -93,7 +113,7 @@ test('SceneCompact: pills, needs rows, ring list, four SVG panels + the stream b
   expect(html).toContain('06 NEED YOU')
   expect(count(html, /href="\/attention\//g)).toBe(6)
   expect(html).toMatch(/<a href="\/attention"[^>]*><h3/) // the NEEDS YOU header opens the inbox
-  expect(count(html, /<circle[^>]*r="13"/g)).toBe(7)
+  expect(count(html, /<circle[^>]*r="13"/g)).toBe(10) // the routine rings are in the compact list too
   expect(count(html, /viewBox="0 0 352 248"/g)).toBe(4)
   expect(html).toMatch(/<section aria-label="Stream" class="[^"]*max-h-\[40vh\]/)
   expect(count(html, /<li title="/g)).toBe(F.activity.length)
@@ -102,6 +122,8 @@ test('SceneCompact: pills, needs rows, ring list, four SVG panels + the stream b
   expect(count(html, /href="\/new"/g)).toBe(3) // the theuth ring row, its AGENTS row, the SESSIONS LIVE pill
   expect(html).toContain('href="/agents/builder"')
   expect(html).toContain('href="/routines/nightly-digest"')
+  expect(html).toContain('href="/routines/knowledge-sync"')
+  expect(html).toContain('>next 23:30<')
   expect(html).toContain('href="/tasks?state=doing&amp;project="')
   expect(html).toContain('href="/tasks?state=backlog&amp;project="')
   // Under md: the compact stack — no flow field, no arc band, no 1920-wide scene.

@@ -1,6 +1,6 @@
 import { expect, test } from 'vitest'
 import { sceneFixture, T } from './fixtures'
-import { ARC, arc, arcPoint, C, END_X, FIELD_H, fieldHeight, flowPath, geom, hairlines, HAIRLINES_MAX, hourOf, LABEL_GAP, layoutEnds, needsYou, outcomeMix, outcomes, punchCard, RING, ringByActor, rings, rng, running, scene, sessionsToday, shortId, startOfDay, streamLink } from './model'
+import { ARC, arc, arcPoint, C, dueFlows, END_X, FIELD_H, fieldHeight, flowPath, geom, hairlines, HAIRLINES_MAX, hourOf, LABEL_GAP, layoutEnds, needsYou, outcomeMix, outcomes, punchCard, RING, ringByActor, ringByRoutine, rings, rng, running, scene, sessionsToday, shortId, startOfDay, streamLink } from './model'
 
 // A fixed local evening, as the mockup's clock reads.
 const NOW = new Date(2026, 9, 7, 19, 49, 19).getTime()
@@ -27,17 +27,56 @@ test('hourOf clamps to the window: yesterday sits at 00:00, the future at the ca
   expect(hourOf(startOfDay(NOW) + 6 * 3_600_000, NOW)).toBe(6)
 })
 
-test('rings: theuth first, working → waiting → idle, routine, lapsed last; 7 rings on the fixture; geometry', () => {
-  const rs = rings(F.agents, F.sessions, F.routines, F.attention, NOW)
-  expect(rs.map((r) => r.name)).toEqual(['theuth', 'ops-desk', 'research', 'builder', 'analyst', 'docs-desk', 'routine · nightly-digest'])
-  expect(rs.map((r) => r.style)).toEqual(['live', 'live', 'live', 'waiting', 'idle', 'lapsed', 'idle'])
+test('rings: theuth first, working → waiting → idle, lapsed last; then the routine group — running, fired newest-first, due; 10 rings on the fixture; geometry with the group gap', () => {
+  const rs = rings(F.agents, F.sessions, F.routines, F.activityToday, F.attention, NOW)
+  expect(rs.map((r) => r.name)).toEqual(['theuth', 'ops-desk', 'research', 'builder', 'analyst', 'docs-desk', 'routine · nightly-digest', 'routine · standup-notes', 'routine · morning-brief', 'routine · knowledge-sync'])
+  expect(rs.map((r) => r.style)).toEqual(['live', 'live', 'live', 'waiting', 'idle', 'lapsed', 'live', 'failed', 'idle', 'lapsed'])
   expect(rs[0]!.sub).toBe('2 chats · 40s')
   expect(rs[1]!.sub).toBe('4 open · 1h')
   expect(rs[5]!.sub).toBe('paused')
-  expect(rs[6]!.sub).toBe('running · 18m')
-  // R4: the column is centred on the arc's centre line (420 at hv 812): 7 rings → 261, 314, …
-  expect(rs.map((r) => [r.x, r.y])).toEqual(rs.map((_, i) => [RING.x, 420 - (RING.dy * 6) / 2 + RING.dy * i]))
+  expect(rs.slice(6).map((r) => r.sub)).toEqual(['running · 18m', 'failed 09:00', 'ran 06:00', 'next 23:30'])
+  expect(rs.slice(6).map((r) => r.id)).toEqual(['ring:routine:nightly-digest', 'ring:routine:standup-notes', 'ring:routine:morning-brief', 'ring:routine:knowledge-sync'])
+  // R4 + Revision 1: the column (9 steps + the 20 px group gap) is centred on the arc's centre line (420 at hv 812).
+  const y0 = 420 - (RING.dy * 9 + RING.gap) / 2
+  expect(rs.map((r) => [r.x, r.y])).toEqual(rs.map((_, i) => [RING.x, y0 + RING.dy * i + (i >= 6 ? RING.gap : 0)]))
   expect(rs[3]!.link).toEqual({ route: 'agent', name: 'builder' })
+  expect(rs[9]!.link).toEqual({ route: 'routine', name: 'knowledge-sync' })
+  expect(ringByRoutine(rs, 'morning-brief')?.id).toBe('ring:routine:morning-brief')
+  expect(ringByRoutine(rs, 'nope')).toBeNull()
+  // A routine that is both running and fired today is one ring (running); one with a fire today and a `next` later today is fired, not due.
+  const twice = F.routines.map((s) => (s.name === 'morning-brief' ? { ...s, next: new Date(NOW + 3_600_000).toISOString() } : s))
+  expect(rings(F.agents, F.sessions, twice, F.activityToday, F.attention, NOW).filter((r) => r.name.endsWith('morning-brief'))).toMatchObject([{ style: 'idle', sub: 'ran 06:00' }])
+  // Without routines there is no gap: 6 rings evenly centred.
+  const none = rings(F.agents, F.sessions, [], [], F.attention, NOW)
+  expect(none).toHaveLength(6)
+  expect(none.map((r) => r.y)).toEqual(none.map((_, i) => 420 - (RING.dy * 5) / 2 + RING.dy * i))
+})
+
+test('rings: capacity max(9, ⌊(hv − 150) / 53⌋) — agents first with their own fold, routines beyond fold into one "+N routines" ring → /routines', () => {
+  const many = Array.from({ length: 12 }, (_, i) => ({ ...F.routines[0]!, name: `r${i}`, running: true }))
+  expect(RING.cap(600)).toBe(9)
+  expect(RING.cap(812)).toBe(12)
+  expect(RING.cap(1400)).toBe(23)
+  const g600 = geom(600)
+  const at600 = rings(F.agents, F.sessions, many, F.activityToday, F.attention, NOW, g600)
+  expect(at600).toHaveLength(9)
+  expect(at600.slice(6).map((r) => r.name)).toEqual(['routine · r0', 'routine · r1', '+13 routines']) // 12 running + 3 fired today (the fixture's rows), 2 shown
+  expect(at600[8]).toMatchObject({ id: 'ring:routines:more', style: 'lapsed', link: { route: 'routines' } })
+  expect(at600[0]!.y - RING.r).toBeGreaterThan(40)
+  expect(at600[8]!.y + RING.r).toBeLessThan(g600.footer)
+  expect((at600[0]!.y + at600[8]!.y) / 2).toBeCloseTo(g600.cy, 6)
+  // At hv 1400 the same routines all fit (23 slots): no fold.
+  const tall = rings(F.agents, F.sessions, many, F.activityToday, F.attention, NOW, geom(1400))
+  expect(tall).toHaveLength(6 + 15)
+  expect(tall.some((r) => r.id === 'ring:routines:more')).toBe(false)
+  // The agent fold is unchanged and comes first: 12 agents + theuth → 9 agent rings, then the routines take the remaining slots.
+  const agents = Array.from({ length: 12 }, (_, i) => ({ ...F.agents[3]!, file: { ...F.agents[3]!.file, name: `a${i}` } }))
+  const both = rings(agents, [], many, [], [], NOW)
+  expect(both).toHaveLength(12)
+  expect(both[8]).toMatchObject({ name: '+5 more' })
+  expect(both.slice(9).map((r) => r.name)).toEqual(['routine · r0', 'routine · r1', '+10 routines'])
+  // A full agent column at hv 600 leaves no slot: the routine group is not drawn (the fold ring would cross the footer).
+  expect(rings(agents, [], many, [], [], NOW, g600)).toHaveLength(9)
 })
 
 test('R4 geometry: hv 812 is the mockup; at 600 / 1100 / 1400 the arc, rings, needs, label band and hairlines all scale and stay inside the field', () => {
@@ -64,7 +103,7 @@ test('R4 geometry: hv 812 is the mockup; at 600 / 1100 / 1400 the arc, rings, ne
     expect((bottomY - topY) / hv).toBeGreaterThan(0.78)
     expect(arcPoint(12, ARC.R, g)[0]).toBeCloseTo(1090, 6) // x at noon is the ring-to-arc span the flows are drawn for
     // Rings: nine of them centred on cy, all inside the field.
-    const rs = rings(nine, [], [], [], NOW, g)
+    const rs = rings(nine, [], [], [], [], NOW, g)
     expect((rs[0]!.y + rs[8]!.y) / 2).toBeCloseTo(g.cy, 6)
     expect(rs[0]!.y - RING.r).toBeGreaterThan(40)
     expect(rs[8]!.y + RING.r).toBeLessThan(g.footer)
@@ -74,7 +113,7 @@ test('R4 geometry: hv 812 is the mockup; at 600 / 1100 / 1400 the arc, rings, ne
     expect(needs[11]!.y).toBeLessThan(g.footer - 14)
     expect(needs[1]!.y - needs[0]!.y).toBeLessThanOrEqual(g.needDy + 12)
     // Label band: ends within [top, bottom], ≥ 22 apart per column.
-    const all = [...outcomes(F.activityToday, F.routines, rs, NOW).flows, ...running(F.tasks, rs, NOW)]
+    const all = [...outcomes(F.activityToday, F.routines, rs, NOW).flows, ...running(F.tasks, F.routines, rs, NOW)]
     const { flows } = layoutEnds(all, g)
     for (const f of flows) {
       expect(f.end[1]).toBeGreaterThanOrEqual(g.top - 1e-6)
@@ -96,12 +135,12 @@ test('R4 geometry: hv 812 is the mockup; at 600 / 1100 / 1400 the arc, rings, ne
 
 test('rings: blocked without an attention item is idle; unreachable is error; a desk-less agent is just "N open"; beyond 9 fold into "+N more"', () => {
   const agents = [...F.agents, { ...F.agents[3]!, file: { ...F.agents[3]!.file, name: 'lonely' }, status: 'blocked' as const }, { ...F.agents[3]!, file: { ...F.agents[3]!.file, name: 'gone' }, status: 'unreachable' as const }]
-  const rs = rings(agents, F.sessions, F.routines, F.attention, NOW)
+  const rs = rings(agents, F.sessions, F.routines, F.activityToday, F.attention, NOW)
   expect(rs.find((r) => r.name === 'lonely')?.style).toBe('idle')
   expect(rs.find((r) => r.name === 'gone')).toMatchObject({ style: 'error', sub: 'unreachable' })
-  expect(rings([{ ...F.agents[3]!, desk: null }], [], [], [], NOW)[1]!.sub).toBe('1 open')
+  expect(rings([{ ...F.agents[3]!, desk: null }], [], [], [], [], NOW)[1]!.sub).toBe('1 open')
   const many = Array.from({ length: 12 }, (_, i) => ({ ...F.agents[3]!, file: { ...F.agents[3]!.file, name: `a${i}` } }))
-  const folded = rings(many, [], [], [], NOW)
+  const folded = rings(many, [], [], [], [], NOW)
   expect(folded).toHaveLength(9)
   expect(folded[8]).toMatchObject({ name: '+5 more', style: 'lapsed' })
 })
@@ -147,26 +186,59 @@ test('needsYou: newest first, 12 drawn, jitter within ±6 and deterministic, sho
   expect(shortId({ ...F.attention[0]!, kind: 'handoff', task: null, agent: 'abc12', title: 'x' })).toBe('abc12') // five hex chars is a name, not a prefix
 })
 
-test('outcomes: done kinds + non-error routine fires, newest first, via the actor ring, cost on the label, links', () => {
-  const rs = rings(F.agents, F.sessions, F.routines, F.attention, NOW)
+test('outcomes: done kinds + non-error routine fires, newest first, via the actor ring — a routine fire via ITS routine ring —, cost on the label, links', () => {
+  const rs = rings(F.agents, F.sessions, F.routines, F.activityToday, F.attention, NOW)
   const o = outcomes(F.activityToday, F.routines, rs, NOW)
-  expect(o.total).toBe(11)
+  expect(o.total).toBe(9) // standup-notes failed → not an outcome
   expect(o.flows[0]!).toMatchObject({ color: C.success, label: 'finished t-1212 · 3 files, … · $0.42', link: { route: 'task', id: T('1212') } })
   expect(o.flows[0]!.via?.name).toBe('ops-desk')
-  expect(o.flows.find((f) => f.label.startsWith('nightly'))).toMatchObject({ link: { route: 'routine', name: 'nightly-digest' } })
-  expect(o.flows.find((f) => f.label.startsWith('nightly'))?.via).toBeNull()
+  expect(o.flows.find((f) => f.label.startsWith('nightly'))).toMatchObject({ link: { route: 'routine', name: 'nightly-digest' }, via: { id: 'ring:routine:nightly-digest' } })
+  expect(o.flows.find((f) => f.label.startsWith('morning'))?.via?.id).toBe('ring:routine:morning-brief')
   expect(o.flows.find((f) => f.label === 'knowledge +2')?.via?.name).toBe('theuth')
   for (let i = 1; i < o.flows.length; i++) expect(o.flows[i - 1]!.time).toBeGreaterThanOrEqual(o.flows[i]!.time)
   const failed = F.routines.map((s) => (s.name === 'morning-brief' ? { ...s, last_result: 'error: boom' } : s))
-  expect(outcomes(F.activityToday, failed, rs, NOW).total).toBe(10)
+  expect(outcomes(F.activityToday, failed, rs, NOW).total).toBe(8)
+  // Revision 1: every routine_fired flow's path starts at its ring's right edge, not at the arc.
+  const { flows } = layoutEnds(o.flows)
+  for (const f of flows.filter((f) => f.link?.route === 'routine')) expect(f.d.startsWith(`M ${f.via!.x + 14} `)).toBe(true)
+  // With the ring folded away the fire still draws, from the arc as before.
+  const noRing = outcomes(F.activityToday, F.routines, rs.slice(0, 6), NOW).flows.find((f) => f.label.startsWith('morning'))!
+  expect(noRing.via).toBeNull()
+  expect(layoutEnds([noRing]).flows[0]!.d.startsWith(`M ${Math.round(arcPoint(noRing.hour)[0] * 10) / 10} `)).toBe(true)
 })
 
-test('running: doing tasks via the owner ring at the progress note, label with elapsed', () => {
-  const rs = rings(F.agents, F.sessions, F.routines, F.attention, NOW)
-  const r = running(F.tasks, rs, NOW)
-  expect(r.map((f) => f.label)).toEqual(['wire HUD scene into / · running · 12m', 'design 126 review · running · 40m', 'punch card arrivals · running · 55m'])
+test('running: doing tasks via the owner ring at the progress note, running routines via their own ring at `last`, newest first, label with elapsed', () => {
+  const rs = rings(F.agents, F.sessions, F.routines, F.activityToday, F.attention, NOW)
+  const r = running(F.tasks, F.routines, rs, NOW)
+  expect(r.map((f) => f.label)).toEqual(['wire HUD scene into / · running · 12m', 'running · 18m', 'design 126 review · running · 40m', 'punch card arrivals · running · 55m'])
   expect(r[0]!.via?.name).toBe('ops-desk')
   expect(r[0]!.color).toBe(C.info)
+  expect(r[1]).toMatchObject({ id: 'running:routine:nightly-digest', color: C.info, via: { id: 'ring:routine:nightly-digest' }, link: { route: 'routine', name: 'nightly-digest' }, title: 'nightly-digest · running · 18m' })
+  expect(r[1]!.hour).toBeCloseTo(hourOf(NOW - 18 * 60_000, NOW), 9)
+  // No `last` yet → timed at now.
+  const fresh = running([], [{ ...F.routines[2]!, last: null }], rs, NOW)
+  expect(fresh[0]).toMatchObject({ time: NOW, label: 'running · 0s' })
+})
+
+test('dueFlows: one faint connector per due-later routine, from its ring to exactly the hollow square, no label; nothing for running/fired/ringless routines', () => {
+  const rs = rings(F.agents, F.sessions, F.routines, F.activityToday, F.attention, NOW)
+  const d = dueFlows(F.routines, F.activityToday, rs, NOW)
+  expect(d).toHaveLength(1)
+  const f = d[0]!
+  const ring = ringByRoutine(rs, 'knowledge-sync')!
+  expect(f).toMatchObject({ id: 'due:knowledge-sync', kind: 'due', color: C.tertiary, label: '', via: { id: ring.id }, link: { route: 'routine', name: 'knowledge-sync' } })
+  expect(f.d.startsWith(`M ${ring.x + 14} ${ring.y}`)).toBe(true)
+  expect(f.d).not.toContain('Q')
+  const square = arc(NOW, F.routines, F.activityToday).marks.find((k) => !k.filled)!
+  expect(f.end).toEqual([square.x, square.y])
+  expect(square.name).toBe('knowledge-sync')
+  // The connector follows the field height like the square does.
+  const g = geom(1100)
+  const tall = dueFlows(F.routines, F.activityToday, rings(F.agents, F.sessions, F.routines, F.activityToday, F.attention, NOW, g), NOW, g)[0]!
+  const tallSquare = arc(NOW, F.routines, F.activityToday, g).marks.find((k) => !k.filled)!
+  expect(tall.end).toEqual([tallSquare.x, tallSquare.y])
+  // Folded away → no connector.
+  expect(dueFlows(F.routines, F.activityToday, rs.slice(0, 6), NOW)).toEqual([])
 })
 
 test('flowPath: dot → ring edge → arc → end as the mockup draws it', () => {
@@ -197,7 +269,7 @@ test('layoutEnds: ascending by time, ≥ 22 px apart per column, x cycles, overf
 })
 
 test('hairlines: deterministic, skips drawn outcomes, one per session today, capped at 600', () => {
-  const rs = rings(F.agents, F.sessions, F.routines, F.attention, NOW)
+  const rs = rings(F.agents, F.sessions, F.routines, F.activityToday, F.attention, NOW)
   const drawn = new Set(outcomes(F.activityToday, F.routines, rs, NOW).flows.map((f) => f.id))
   const st = sessionsToday(F.sessions, NOW)
   const a = hairlines(F.activityToday, st, rs, drawn, NOW)
@@ -215,6 +287,21 @@ test('hairlines: deterministic, skips drawn outcomes, one per session today, cap
   expect(rng('a')()).not.toBe(rng('b')())
 })
 
+test('hairlines: a routine_fired row that is not an outcome leaves its routine ring when the seed says ring-sourced', () => {
+  const rs = rings(F.agents, F.sessions, F.routines, F.activityToday, F.attention, NOW)
+  const fail = F.activityToday.find((e) => e.kind === 'routine_fired' && e.subject === 'standup-notes')!
+  const ring = ringByRoutine(rs, 'standup-notes')!
+  // Find a seed that picks the ring branch (r() < 0.62) by trying ids; the first draw of the id's rng decides it.
+  const ids = Array.from({ length: 40 }, (_, i) => fail.id + 1000 * i).filter((id) => rng(`hair:a:${id}`)() < 0.62)
+  expect(ids.length).toBeGreaterThan(0)
+  for (const id of ids) {
+    const [h] = hairlines([{ ...fail, id }], [], rs, new Set(), NOW)
+    const y = Number(/^M [\d.]+ ([\d.]+)/.exec(h!.d)![1])
+    expect(h!.d.startsWith(`M ${RING.x + 14} `)).toBe(true)
+    expect(Math.abs(y - ring.y)).toBeLessThanOrEqual(3)
+  }
+})
+
 test('punchCard: 7×24 by local weekday (Mon = 0), now cell marked', () => {
   const p = punchCard(F.activityWeek, NOW)
   expect(p.cells).toHaveLength(7)
@@ -228,13 +315,16 @@ test('outcomeMix counts today’s moves; running counts every doing task', () =>
   expect(outcomeMix(F.tasks, NOW)).toEqual({ done: 7, running: 3, review: 1, blocked: 0, cancelled: 1 })
 })
 
-test('scene: footer numbers and the whole model from the fixture; empty data draws nothing but the chrome', () => {
+test('scene: footer numbers (IN FLIGHT counts the running routine) and the whole model from the fixture; empty data draws nothing but the chrome', () => {
   const s = scene(F, NOW)
-  expect(s.footer).toEqual({ sessionsLive: 3, agentsWorking: 2, needYou: 6, month: 31.2, outcomes: 11, inFlight: 4 })
-  expect(s.rings).toHaveLength(7)
+  expect(s.footer).toEqual({ sessionsLive: 3, agentsWorking: 2, needYou: 6, month: 31.2, outcomes: 9, inFlight: 3 + 1 })
+  expect(s.rings).toHaveLength(10)
   expect(s.needs).toHaveLength(6)
-  expect(s.flows).toHaveLength(6 + 11 + 3)
+  expect(s.flows).toHaveLength(6 + 9 + 4 + 1) // needs, outcomes, running (3 tasks + nightly-digest), the due connector
+  expect(s.flows.filter((f) => f.kind === 'due').map((f) => f.id)).toEqual(['due:knowledge-sync'])
+  expect(s.flows.find((f) => f.id === 'running:routine:nightly-digest')?.via?.id).toBe('ring:routine:nightly-digest')
   expect(s.hairlines.length).toBeGreaterThan(200)
+  expect(scene({ ...F, routines: F.routines.filter((r) => !r.running) }, NOW).footer.inFlight).toBe(3)
   const empty = scene({}, NOW)
   expect(empty.rings).toHaveLength(1)
   expect(empty.flows).toEqual([])

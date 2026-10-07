@@ -133,6 +133,8 @@ export function linkFor(target: Target, children: ReactNode, className?: string,
       return <Link to="/agents/$name" params={{ name: target.name }} {...p} />
     case 'routine':
       return <Link to="/routines/$name" params={{ name: target.name }} {...p} />
+    case 'routines':
+      return <Link to="/routines" {...p} />
     case 'session':
       return <Link to="/c/$session" params={{ session: target.id }} {...p} />
     case 'agents':
@@ -371,7 +373,7 @@ export function StreamPanel({ activity, className }: { activity: readonly Activi
 
 // ---------------------------------------------------------------------------------------------------------------- scene
 
-/** The ring glyph at (x, y): filled + pulsing when live, hollow when idle, gold when waiting, dashed when lapsed/error. */
+/** The ring glyph at (x, y): filled + pulsing when live, hollow when idle, gold when waiting, dashed when lapsed/error, hollow carnelian when a routine failed. */
 export function RingGlyph({ r, x, y }: { r: Ring; x: number; y: number }) {
   const color = ringColor(r.style)
   const live = r.style === 'live' || r.style === 'waiting'
@@ -481,6 +483,14 @@ export function Scene({ data, errors = [], now: fixed }: { data: SceneData; erro
 
           {/* (c) coloured flows, (d) their needs-you dots */}
           {m.flows.map((fl) => {
+            if (fl.kind === 'due') {
+              // Revision 1: a due-later routine's faint connector — ring → its hollow square, nothing else.
+              return (
+                <To key={fl.id} target={fl.link} title={fl.title} data-flow={fl.id} className="hud-flow-in">
+                  <path d={fl.d} stroke={fl.color} strokeOpacity={0.5} strokeWidth={1.1} strokeDasharray="3 3" fill="none" />
+                </To>
+              )
+            }
             const need = fl.kind === 'need' ? m.needs.find((n) => `need:${n.item.id}` === fl.id) : undefined
             return (
               <To key={fl.id} target={fl.link} title={fl.title} data-flow={fl.id} className="hud-flow-in">
