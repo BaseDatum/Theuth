@@ -1381,10 +1381,11 @@ fn print_event(out: &mut impl Write, model: &Model, ev: &UiEvent) {
         }
         UiEvent::Agent(AgentEvent::ModelChanged { model, .. }) => writeln!(out, "model → {model}"),
         UiEvent::Agent(AgentEvent::AdvisoryAdded { advisory, .. }) => {
-            writeln!(out, "{}", model::advisory_title(advisory))?;
-            model::advisory_lines(advisory)
-                .iter()
-                .try_for_each(|l| writeln!(out, "{l}"))
+            writeln!(out, "{}", model::advisory_title(advisory)).and_then(|()| {
+                model::advisory_lines(advisory)
+                    .iter()
+                    .try_for_each(|l| writeln!(out, "{l}"))
+            })
         }
         UiEvent::Agent(AgentEvent::AdvisorChanged { status, .. }) => {
             writeln!(out, "{}", model::advisor_changed_line(status))

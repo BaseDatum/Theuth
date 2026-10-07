@@ -12,13 +12,13 @@ use acp::registry::RegistryAgent;
 use agent::durability::ResumeKind;
 use agent::todo::{Status as TodoStatus, TodoSnapshot, TodoSource};
 use agent::{
-    AdvisorDefaults, AdvisorSeverity, AdvisorState, AdvisorStatus, Advisory, AgentEvent,
-    AgentInfo, AgentState, AwsProfiles, CommunicationChanged, CommunicationState, CompactStyle,
+    AdvisorDefaults, AdvisorSeverity, AdvisorState, AdvisorStatus, Advisory, AgentEvent, AgentInfo,
+    AgentState, AwsProfiles, CommunicationChanged, CommunicationState, CompactStyle,
     ContextAttachment, ContextEntry, ContextItem, ContextKind, ContextRemoval, ContextSnapshot,
     ContextTarget, HistoryEntry, Loaded, ModelInfo, PeerDelivered, PeerInfo, PeerMessageChanged,
     PeerMessagePage, PeerOrigin, PeerPage, PeerReceipt, PeerRecord, PeerScope, ProviderInfo,
-    QueuedInput, SessionKind, SessionSummary, SkillBody, SkillMeta, Usage, VisionNote,
-    VisionStage, VisionStatus,
+    QueuedInput, SessionKind, SessionSummary, SkillBody, SkillMeta, Usage, VisionNote, VisionStage,
+    VisionStatus,
 };
 use agent::{
     BroadcastReceipt, BroadcastRequest, BroadcastTargets, CleanupStatus, CloseResult, CostBucket,
@@ -14169,7 +14169,6 @@ mod tests {
             owner: "me".into(),
             epoch: 2,
             here: true,
-            kind: Default::default(),
         }));
         match &m.menu {
             Some(Menu::Sessions { items, .. }) => {
@@ -14899,7 +14898,7 @@ mod tests {
             Ok(Command::SetEffort { effort: None, .. })
         ));
         // Picker: levels then `clear`; Enter on `clear` unsets.
-        m.open_efforts(vec!["low".into(), "high".into()]);
+        m.open_efforts(vec!["low".into(), "high".into()], PickTarget::Session);
         m.menu_key(KeyCode::Down, "", &tx);
         m.menu_key(KeyCode::Down, "", &tx);
         m.menu_key(KeyCode::Down, "", &tx);
@@ -14914,7 +14913,7 @@ mod tests {
         assert_eq!(m.effort.as_deref(), Some("high"));
         assert!(matches!(m.entries.last(), Some(Entry::Info(t)) if t == "effort: high"));
         // No levels: a notice, no menu.
-        m.open_efforts(Vec::new());
+        m.open_efforts(Vec::new(), PickTarget::Session);
         assert!(m.menu.is_none());
         assert!(
             matches!(m.entries.last(), Some(Entry::Info(t)) if t.ends_with("no reasoning effort levels"))
@@ -17834,7 +17833,12 @@ mod tests {
         m.apply(UiEvent::Models(model_catalog()));
         assert_eq!(
             model_row_ids(&m)[..4],
-            ["off", "●anthropic/claude-opus-4-1", "amazon-bedrock:2", "●anthropic:2"]
+            [
+                "off",
+                "●anthropic/claude-opus-4-1",
+                "amazon-bedrock:2",
+                "●anthropic:2"
+            ]
         );
         assert_eq!(models_cursor(&m), 2);
         m.menu_key(KeyCode::Down, "", &tx);
@@ -17916,10 +17920,7 @@ mod tests {
             ..AdvisorStatus::default()
         }));
         assert_eq!(m.advisor_default.model.as_deref(), Some("openai/o3-pro"));
-        assert_eq!(
-            info_lines(&m),
-            ["advisor → openai/o3-pro", "advisor → off"]
-        );
+        assert_eq!(info_lines(&m), ["advisor → openai/o3-pro", "advisor → off"]);
     }
 
     /// 125 §7.3: the exact four lines; one line when off.
@@ -17937,7 +17938,10 @@ mod tests {
             session: s,
             ..AdvisorStatus::default()
         }));
-        assert_eq!(info_lines(&m), ["advisor: off  ·  /advisor to pick a model"]);
+        assert_eq!(
+            info_lines(&m),
+            ["advisor: off  ·  /advisor to pick a model"]
+        );
         m.entries.clear();
         m.submit("/advisor status", &tx);
         rx.try_recv().unwrap();
@@ -17970,7 +17974,8 @@ mod tests {
                 "advisor → anthropic/claude-opus-4-1",
                 "advisor: reviewing  ·  anthropic/claude-opus-4-1  ·  high",
                 "notes: 2 nit · 1 concern · 0 blocker  ·  step 14  ·  backlog 0",
-                "context: 38.2k / 200k (19%)  ·  in 120.4k · out 3.1k  ·  cost $0.412",
+                // `k()` drops the decimal from 100k up (`120k`, not the design's illustrative `120.4k`).
+                "context: 38.2k / 200k (19%)  ·  in 120k · out 3.1k  ·  cost $0.412",
                 "last: [concern] cite the loop_.rs line before claiming drain_steer runs after every batch",
             ]
         );
@@ -18007,7 +18012,9 @@ mod tests {
             text: "second".into(),
         });
         assert_eq!(m.entries.len(), 2, "one card, one assistant entry");
-        assert!(matches!(&m.entries[0], Entry::Advisory { advisory, expanded: false } if advisory.notes.len() == 1));
+        assert!(
+            matches!(&m.entries[0], Entry::Advisory { advisory, expanded: false } if advisory.notes.len() == 1)
+        );
         assert!(matches!(&m.entries[1], Entry::Assistant(t) if !t.is_done()));
         // The blocker that opened a turn: its row is the card already.
         m.apply_agent(AgentEvent::TurnStarted {
@@ -18021,7 +18028,8 @@ mod tests {
             session: s,
             turn: TurnId::new(),
             turn_seq: 9,
-            text: "<advisory severity=\"concern\" guidance=\"weigh\">not carded yet</advisory>".into(),
+            text: "<advisory severity=\"concern\" guidance=\"weigh\">not carded yet</advisory>"
+                .into(),
             model: "m".into(),
         });
         assert!(!m.entries.iter().any(|e| matches!(e, Entry::User { .. })));
@@ -18041,10 +18049,19 @@ mod tests {
         });
         assert_eq!(m.entries[0].height(80), 4 + 3 + 1);
         m.toggle_card();
-        assert!(matches!(&m.entries[0], Entry::Advisory { expanded: true, .. }));
+        assert!(matches!(
+            &m.entries[0],
+            Entry::Advisory { expanded: true, .. }
+        ));
         assert_eq!(m.entries[0].height(80), 4 + 5);
         m.toggle_card();
-        assert!(matches!(&m.entries[0], Entry::Advisory { expanded: false, .. }));
+        assert!(matches!(
+            &m.entries[0],
+            Entry::Advisory {
+                expanded: false,
+                ..
+            }
+        ));
         m.entries.push(Entry::Advisory {
             advisory: advisory(SessionId::new(), vec![note(AdvisorSeverity::Blocker, "x")]),
             expanded: false,
@@ -18052,7 +18069,13 @@ mod tests {
         assert_eq!(m.entries[1].height(80), 4 + 1);
         m.toggle_card();
         assert!(
-            matches!(&m.entries[1], Entry::Advisory { expanded: false, .. }),
+            matches!(
+                &m.entries[1],
+                Entry::Advisory {
+                    expanded: false,
+                    ..
+                }
+            ),
             "nothing to expand"
         );
         assert!(

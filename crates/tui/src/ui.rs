@@ -4,8 +4,8 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use agent::{AdvisorSeverity, AdvisorState, CompactStyle};
 use agent::todo::Status as TodoStatus;
+use agent::{AdvisorSeverity, AdvisorState, CompactStyle};
 use iocraft::prelude::*;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 use tools::{Decision, Risk};
@@ -13,13 +13,13 @@ use tools::{Decision, Risk};
 use crate::clip;
 use crate::dictation::{self, Dictating, Phase};
 use crate::model::{
+    ADVISORY_COLLAPSED, Grouped, ModelRow, PickTarget, advisory_severity, advisory_title,
+    providers, session_row, severity_name, terminal_row,
+};
+use crate::model::{
     APP_WHERE, AcpRow, CardKind, Command, Entry, Level, Menu, MenuKey, Model, Prompt, Row, Switch,
     TodoCard, TurnAction, UiEvent, action_name, agent_row, artifact_row, artifact_size, describe,
     gate_name, k, meta_line, now_ms, progress_line, result_line, short, slash_matches, window,
-};
-use crate::model::{
-    ADVISORY_COLLAPSED, Grouped, ModelRow, PickTarget, advisory_severity, advisory_title,
-    providers, session_row, severity_name, terminal_row,
 };
 use crate::pathac;
 use crate::search::{self, Focus, Preview};
@@ -2430,7 +2430,11 @@ mod tests {
                 let bottom = lines.iter().position(|l| l.starts_with('╰')).unwrap();
                 let body = 1 + rows + usize::from(more.is_some());
                 assert_eq!(bottom - top, body + 1, "width {width}:\n{frame}");
-                assert!(lines.iter().all(|l| l.chars().count() <= usize::from(width)));
+                assert!(
+                    lines
+                        .iter()
+                        .all(|l| l.chars().count() <= usize::from(width))
+                );
                 assert!(lines[top + 1].contains("◎ advisor ·"), "{frame}");
                 assert!(lines[top + 2].contains("[nit]") && lines[top + 3].contains("[concern]"));
                 if let Some(more) = more {
