@@ -563,6 +563,26 @@ Only Sky can decide these; each has the default the design assumes.
 8. **Bootstrapped examples in the k-NN memory from day one.** Default: yes (they are labelled data), weight 0.75, never in the curve.
 9. **The sidecar fallback.** If W0 fails on Metal, default: train Tier B on CPU/Accelerate at night (slower, inside the cap for small corpora) rather than add a Python dependency; a Python sidecar only on a node.
 
+## Revision 1 — Sky's rulings on the open questions (2026-10-07 08:40)
+
+Asked with explanations and answered by Sky on two ask_user cards (08:33–08:40). Where a ruling differs from the v0 default, the section it changes is named; the body text above is v0 and this section is binding.
+
+| # | Question | Ruling | Changes |
+|---|---|---|---|
+| 1 | Class merge/split in v1 | **No merge/split** (default) | — |
+| 2 | Share the adapter with the meeting / other families | **`double.*` only; per-family opt-in later** (default) | — |
+| 3 | Grace length at L2 | **30 s**, not 20 s | §9 and §10: `double.ladder.grace_secs` default 30; the countdown copy and the Slack/TUI lines read 30 s; §12 default value |
+| 4 | L3 in v1 | **L0–L2 only; L3 behind the cap defaulting to 2** (default) | — |
+| 5 | Sandbox VM as venue | **Never** (default) | — |
+| 6 | Retention | **365 days, golden rows and the last 1,000 per class exempt** (default) | — |
+| 7 | Whose cards | **The owner's cards only** (default) | — |
+| 8 | Pre-0033 history in the k-NN memory | **No — journal rows only** | §6.4 bootstrap is NOT built in v1: double starts cold when the 0033 engine ships; §6.5's volume estimate stays as sizing information only; W1 loses the bootstrap task; the §0 item 11 sentence "Pre-0033 history is bootstrapped from `messages` bodies" is superseded |
+| 9 | Sidecar fallback if W0 fails on Metal | **No fallback decided — "we'll need to do more research in that case"** | §7.3 / §15 W0: a W0 failure ends in a research note (what failed, the candle fix options, the sidecar options with their dependency cost) and a new ask to Sky, not in an automatic CPU/Accelerate or Python path; W3 is not briefed until that ruling exists |
+
+Sky's words on 9: "We'll need to do more research in that case."
+
 ## Revision log
 
-v0 · 2026-10-07 · written from the brief at ~/.theuth/briefs/2026-10-07/126/brief.md. Writer's limits: no `shell()` in the runtime (no sqlite volume queries, no `git log`; main sha read from `.git/refs/heads/main`); every `path:line` cite verified by `read_file` / `grep` on the working tree at f2225972; candle facts read from the cargo registry sources of the pinned 0.11.0 crates, nothing executed.
+- v0 · 2026-10-07 · written from the brief at ~/.theuth/briefs/2026-10-07/126/brief.md. Writer's limits: no `shell()` in the runtime (no sqlite volume queries, no `git log`; main sha read from `.git/refs/heads/main`); every `path:line` cite verified by `read_file` / `grep` on the working tree at f2225972; candle facts read from the cargo registry sources of the pinned 0.11.0 crates, nothing executed. Committed on main `e70471e6` (02:30).
+- Revision 1 · 2026-10-07 08:40 · Sky's nine rulings (table above); grace 30 s, no bootstrap, W0 failure → research, the other six defaults confirmed.
+
