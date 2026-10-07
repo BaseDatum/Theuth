@@ -48,6 +48,7 @@ in the reply, merged with the prose; an `openui` fence is not an app card.
 | an owner, a contact, a reviewer | `Person` | "talk to Ada (release owner, ada@…)" |
 | something someone said, verbatim | `Quote` | quotation marks inside a paragraph |
 | a topic map, a brainstorm | mermaid `mindmap` | nested bullets |
+| an interface you are designing or changing — a screen, dialog, form, dashboard, component | an HTML mock as a page — show{content, name: "mock.html"}: fake data, real layout, variants side by side (a clickable flow with live data is an app) | a prose description of the screen, or building it unseen |
 | a chart library's chart, a map, 3D, a mockup, a collage, an animation | a page — show{content, name: "x.html"} after page_preview | a Code block of HTML, or an app that calls nothing back |
 | an explanation with three or more parts, or one the reader will return to | a board (board.md) | a long reply of fences and prose |
 
@@ -367,6 +368,14 @@ Takeaway sentence, then:
 A page is the escape hatch, picked last: catalog → `openui`/`app` → page. Reach for it only
 for what no catalog component draws — a chart library's chart (Chart.js, ECharts, Plotly, D3),
 a map, 3D, a mockup, an image collage, an animation, a layout you must control pixel by pixel.
+
+**Interfaces are the standing case.** When the work is designing or changing a screen, a dialog,
+a form, a dashboard or a component — in theuth or in any product — mock it as a page before or
+while you build it: the reader sees the proposed screen in the chat and reacts to a picture, not a
+description. Fake data, real layout, the theme variables so it sits in the chat like a native screen,
+states or variants side by side (empty · loading · filled; phone · desktop) when the choice is
+between them. Iterate on the mock with the reader, then build. A clickable flow with live data is an
+`app`; the faithful look of a screen is a page.
 `show{content, name: "x.html", height?}` renders one self-contained HTML document — its own
 `<style>`/`<script>`, CDN libraries allowed — live inline in the theuth app (desktop, web,
 phone) in a sandboxed frame themed like the chat; Slack/Telegram/Signal get the file, the TUI
