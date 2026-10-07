@@ -375,6 +375,8 @@ export interface Api {
   session_orphans(session: SessionId): Promise<SessionOrphan[]>
   /** This engine's replication summary (68 §10): id, sessions owned here / elsewhere, log head, last snapshot. */
   sessions_status(): Promise<SessionsStatus>
+  /** 129 §3.2: per-connection focus. Delta-class events (`TextDelta`, `ReasoningDelta`, `ToolCallProgress`, `VisionProgress`) reach this connection's `subscribe_events` streams only for `sessions`; every other event is unaffected. Replaces the previous set; `[]` means no deltas at all; dies with the connection. -32601 on an engine from before 129. */
+  set_event_focus(sessions: SessionId[]): Promise<null>
   info(): Promise<Info>
   knowledge_delete(id: string): Promise<null>
   knowledge_get(id: string): Promise<Concept>
@@ -1095,6 +1097,7 @@ export const METHODS = [
   'set_decision_training',
   'set_effort',
   'set_escalate_model',
+  'set_event_focus',
   'set_harness_option',
   'set_max_salvages',
   'set_max_tool_rounds',

@@ -335,6 +335,10 @@ type SessionsStore = {
   /** A gap may hide a `TodoChanged`: label the list stale (one session, or every session) until a snapshot confirms it. */
   markTodosStale(id?: string): void;
   resetLagged(): void;
+  /** 129 D3: a gap (`Lagged`, reconnect) or a session leaving event focus may have dropped events: label the
+   * transcript and plan stale (one session, or every session) so the mounted views re-settle; `loaded` stays, so
+   * nothing on screen empties. */
+  markStale(id?: string): void;
   /** Forget that any transcript was loaded: the chat route refetches on its next mount. */
   unload(): void;
 };
@@ -601,6 +605,23 @@ export const createSessions = (): SessionsApi =>
       },
       resetLagged() {
         set({ lagged: 0 });
+      },
+      markStale(id) {
+        set((st) => ({
+          sessions: Object.fromEntries(
+            Object.entries(st.sessions).map(([k, s]) => [
+              k,
+              (id === undefined || k === id) && s.loaded
+                ? {
+                    ...s,
+                    contextStale: true,
+                    todosStale: true,
+                    historyGeneration: s.historyGeneration + 1,
+                  }
+                : s,
+            ]),
+          ),
+        }));
       },
       unload() {
         set((st) => ({
