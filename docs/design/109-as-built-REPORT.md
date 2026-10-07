@@ -55,10 +55,9 @@ all, because `Loaded.resume` only described an open turn.
 
 ## Deviations from the brief
 
-- Store API shape: `resume_report_put(&ResumeReportRow)` (row carries `session` and `turn`, like
-  `job_put(&JobRow)`) instead of `(session, turn, &row)`, because `latest_resume_report` must hand
-  the turn back for the no-open-turn `ResumeState`. `at` is set by the caller (`Utc::now()` in
-  `report()`), so the row round-trips byte-equal in tests.
+- Store API shape: `resume_report_put(&ResumeReportRow)` (row carries `session`, `turn`, `at`, like
+  `job_put(&JobRow)`) instead of `(session, turn, &row)`: `latest_resume_report` must hand the turn
+  back for the no-open-turn `ResumeState`; `at` from the caller lets the row round-trip in tests.
 - `ResumeReportRow` lives in `crate::durability` beside `ResumePlan` (loop and drain both use it).
 - `crates/rpc/src/api.rs` test literal gained `report: None` (compile fix, as BANNER did).
 
