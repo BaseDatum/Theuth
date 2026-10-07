@@ -35,4 +35,9 @@ public extension RpcClient {
     func activityList(_ filter: ActivityFilter) async throws -> [ActivityEntry] {
         try await call("activity_list", [.init(filter)])
     }
+
+    /// `set_event_focus(sessions)`: delta-class events for these sessions only (129 §3.2; `api.rs:1862-1868`).
+    func setEventFocus(_ sessions: [String]) async throws {
+        let _: JSONValue = try await call("set_event_focus", [.init(sessions)])
+    }
 }
