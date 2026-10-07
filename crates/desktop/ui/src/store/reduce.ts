@@ -462,20 +462,21 @@ function historyEntries(h: HistoryEntry): Entry[] {
   }
 }
 
-/** 109 §8.2: the banner from `Loaded.resume`; a live `TurnResumed`/`ResumeReport` already seen for the same turn
- * carries more than the row and wins. No open turn (or a different one) → the row's state, or nothing. */
+/** 109 §8.2: the banner from `Loaded.resume`. No row while we show a turn still "resuming…" → the turn is no longer
+ * open, so it ran: flip `resumed` (the live `TurnResumed` was published before this client subscribed). Same turn →
+ * keep what we have (its report) and take the row's `resumed` if newer. Another open turn → the row's state. */
 export function resumeFromLoaded(
   cur: ResumeBanner | undefined,
   loaded: LoadedPage["resume"] | undefined,
 ): ResumeBanner | undefined {
-  if (!loaded) return cur;
-  if (cur?.turn === loaded.turn) return cur;
+  if (!loaded) return cur && !cur.resumed ? { ...cur, resumed: true } : cur;
+  if (cur?.turn === loaded.turn) return cur.resumed || !loaded.resumed ? cur : { ...cur, resumed: true };
   const at = Date.parse(loaded.interrupted_at);
   return {
     turn: loaded.turn,
     kind: loaded.kind,
     at: Number.isNaN(at) ? Date.now() : at,
-    resumed: false,
+    resumed: loaded.resumed,
   };
 }
 
