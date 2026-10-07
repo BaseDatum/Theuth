@@ -25,7 +25,26 @@
     <TreatWarningsAsErrors>false</TreatWarningsAsErrors>
     <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
   </PropertyGroup>
-  <ItemGroup>
-    <PackageReference Include="Microsoft.WindowsAppSDK" Version="1.8.260317003" />
+  <!-- Windows App SDK line switch (addendum A1):
+         default / -p:WasdkLine=1 → 1.8.260317003 (1.8 servicing, March 2026)
+         -p:WasdkLine=2            → 2.5.1 (Current channel, latest stable on nuget.org on 2026-10-07)
+       Component switch:
+         -p:WasdkSplit=true        → reference only the WinUI component package (pulls Base, Foundation,
+                                     InteractiveExperiences, WebView2) instead of the meta package, which also drags in
+                                     ML (onnxruntime.dll 20.6 MB + DirectML.dll 17.7 MB), AI, Widgets, DWrite, Search. -->
+  <PropertyGroup>
+    <WasdkLine Condition="'$(WasdkLine)' == ''">1</WasdkLine>
+    <WasdkSplit Condition="'$(WasdkSplit)' == ''">false</WasdkSplit>
+    <WasdkMetaVersion Condition="'$(WasdkLine)' == '1'">1.8.260317003</WasdkMetaVersion>
+    <WasdkMetaVersion Condition="'$(WasdkLine)' == '2'">2.5.1</WasdkMetaVersion>
+    <WasdkWinUIVersion Condition="'$(WasdkLine)' == '1'">1.8.260224000</WasdkWinUIVersion>
+    <WasdkWinUIVersion Condition="'$(WasdkLine)' == '2'">2.3.9</WasdkWinUIVersion>
+    <DefineConstants Condition="'$(WasdkLine)' == '2'">$(DefineConstants);WASDK2</DefineConstants>
+  </PropertyGroup>
+  <ItemGroup Condition="'$(WasdkSplit)' != 'true'">
+    <PackageReference Include="Microsoft.WindowsAppSDK" Version="$(WasdkMetaVersion)" />
+  </ItemGroup>
+  <ItemGroup Condition="'$(WasdkSplit)' == 'true'">
+    <PackageReference Include="Microsoft.WindowsAppSDK.WinUI" Version="$(WasdkWinUIVersion)" />
   </ItemGroup>
 </Project>

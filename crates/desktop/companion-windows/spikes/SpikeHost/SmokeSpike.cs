@@ -36,6 +36,15 @@ internal sealed class SmokeSpike
 
         var hwnd = Ui.Hwnd(_win);
         SpikeLog.Append($"S0 window shown hwnd=0x{hwnd.ToInt64():X} dpi={Native.GetDpiForWindow(hwnd)} scale={Ui.Scale(hwnd):F2} rect={Ui.Rect(hwnd)} exstyle={Ui.ExStyleBits((long)Native.GetWindowLongPtr(hwnd, Native.GWL_EXSTYLE))}");
-        SpikeLog.Append($"WinAppSDK runtime: {typeof(Window).Assembly.GetName().Name} {typeof(Window).Assembly.GetName().Version}; .NET {Environment.Version}; AUMID={Native.ProcessAumid()}");
+        SpikeLog.Append($"WinAppSDK runtime: {typeof(Window).Assembly.GetName().Name} {typeof(Window).Assembly.GetName().Version}; WASDK line={Build.WasdkLine}; .NET {Environment.Version}; AUMID={Native.ProcessAumid()}");
+        try
+        {
+            var dir = System.IO.Path.GetDirectoryName(Environment.ProcessPath) ?? ".";
+            var files = Directory.GetFiles(dir, "*", SearchOption.AllDirectories);
+            long total = files.Sum(f => new FileInfo(f).Length);
+            var big = files.Select(f => new FileInfo(f)).OrderByDescending(f => f.Length).Take(6).Select(f => $"{f.Name} {f.Length / 1048576.0:F1}MB");
+            SpikeLog.Append($"output dir: {files.Length} files, {total / 1048576.0:F1} MB; largest: {string.Join(", ", big)}; ML present={File.Exists(System.IO.Path.Combine(dir, "onnxruntime.dll"))}");
+        }
+        catch (Exception ex) { SpikeLog.Append("output dir scan failed: " + ex.Message); }
     }
 }
