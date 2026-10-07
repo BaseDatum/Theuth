@@ -32,15 +32,55 @@ const INVISIBLE: &[char] = &['\u{200B}', '\u{200C}', '\u{200D}', '\u{00AD}', '\u
 
 /// Tailwind-like class prefixes (pass 2).
 const UTILITY_PREFIXES: &[&str] = &[
-    "text-", "bg-", "px-", "py-", "pt-", "pb-", "pl-", "pr-", "mt-", "mb-", "ml-", "mr-", "mx-",
-    "my-", "w-", "h-", "max-w-", "min-h-", "gap-", "rounded", "border-", "font-", "leading-",
-    "tracking-", "shadow", "hover:", "focus:", "sm:", "md:", "lg:", "xl:", "dark:",
+    "text-",
+    "bg-",
+    "px-",
+    "py-",
+    "pt-",
+    "pb-",
+    "pl-",
+    "pr-",
+    "mt-",
+    "mb-",
+    "ml-",
+    "mr-",
+    "mx-",
+    "my-",
+    "w-",
+    "h-",
+    "max-w-",
+    "min-h-",
+    "gap-",
+    "rounded",
+    "border-",
+    "font-",
+    "leading-",
+    "tracking-",
+    "shadow",
+    "hover:",
+    "focus:",
+    "sm:",
+    "md:",
+    "lg:",
+    "xl:",
+    "dark:",
 ];
 
 /// Whole-token utility classes (pass 2).
 const UTILITY_EXACT: &[&str] = &[
-    "flex", "grid", "hidden", "block", "inline", "relative", "absolute", "fixed", "sticky",
-    "container", "truncate", "uppercase", "italic",
+    "flex",
+    "grid",
+    "hidden",
+    "block",
+    "inline",
+    "relative",
+    "absolute",
+    "fixed",
+    "sticky",
+    "container",
+    "truncate",
+    "uppercase",
+    "italic",
 ];
 
 /// Screen-reader phrases (pass 4), lowercase; longer variants first.
@@ -131,7 +171,9 @@ fn split_fenced(md: &str) -> Vec<Line> {
     for raw in md.lines() {
         let fenced = match open {
             Some((ch, n)) => {
-                if fence_marker(raw).is_some_and(|(c, m, rest)| c == ch && m >= n && rest.trim().is_empty()) {
+                if fence_marker(raw)
+                    .is_some_and(|(c, m, rest)| c == ch && m >= n && rest.trim().is_empty())
+                {
                     open = None;
                 }
                 true
@@ -242,7 +284,8 @@ fn image_alt(line: &str) -> Option<&str> {
     let mid = body.find("](")?;
     let alt = &body[..mid];
     let rest = &body[mid + 2..];
-    (rest.ends_with(')') && !rest[..rest.len() - 1].contains(')') && !alt.contains(']')).then_some(alt)
+    (rest.ends_with(')') && !rest[..rest.len() - 1].contains(')') && !alt.contains(']'))
+        .then_some(alt)
 }
 
 fn fold_image_runs(lines: &mut Vec<Line>, keep_images: bool) {
@@ -338,7 +381,11 @@ fn dedup_blocks(lines: &mut Vec<Line>) {
         if full.is_empty() {
             continue;
         }
-        let prefix = full.split(' ').take(PREFIX_WORDS).collect::<Vec<_>>().join(" ");
+        let prefix = full
+            .split(' ')
+            .take(PREFIX_WORDS)
+            .collect::<Vec<_>>()
+            .join(" ");
         let dup_full = !seen_full.insert(full);
         let dup_prefix = !seen_prefix.insert(prefix);
         if dup_full || dup_prefix {
@@ -406,10 +453,13 @@ fn drop_empty_headings(lines: &mut Vec<Line>) {
         let Some(level) = heading_level(&lines[i].text) else {
             continue;
         };
-        let next = (i + 1..n).find(|&j| !drop[j] && (lines[j].fenced || !lines[j].text.trim().is_empty()));
+        let next =
+            (i + 1..n).find(|&j| !drop[j] && (lines[j].fenced || !lines[j].text.trim().is_empty()));
         let empty = match next {
             None => true,
-            Some(j) => !lines[j].fenced && heading_level(&lines[j].text).is_some_and(|l| l <= level),
+            Some(j) => {
+                !lines[j].fenced && heading_level(&lines[j].text).is_some_and(|l| l <= level)
+            }
         };
         if empty {
             drop[i] = true;
@@ -457,7 +507,10 @@ fn join_collapsed(lines: &[Line]) -> String {
 fn fold_links(lines: &mut Vec<Line>) {
     let mut seen = HashSet::new();
     let mut links: Vec<String> = Vec::new();
-    for l in lines.iter_mut().filter(|l| !l.fenced && l.text.contains("](")) {
+    for l in lines
+        .iter_mut()
+        .filter(|l| !l.fenced && l.text.contains("]("))
+    {
         l.text = unwrap_links(&l.text, &mut |label, href| {
             let lower = href.to_ascii_lowercase();
             if href.is_empty()
@@ -554,7 +607,10 @@ mod tests {
 
     #[test]
     fn fingerprint_is_lowercase_alphanumerics_with_single_spaces() {
-        assert_eq!(fingerprint("  Hello,   World-Wide! 42 "), "hello worldwide 42");
+        assert_eq!(
+            fingerprint("  Hello,   World-Wide! 42 "),
+            "hello worldwide 42"
+        );
         assert_eq!(fingerprint("---"), "");
     }
 
@@ -563,7 +619,10 @@ mod tests {
         let lines = split_fenced("a\n```rust\nb\n````\nc\n```\nd\n~~~\ne");
         let fenced: Vec<bool> = lines.iter().map(|l| l.fenced).collect();
         // ```` closes ``` (longer closer ok); `~~~` opens an unclosed fence to the end.
-        assert_eq!(fenced, [false, true, true, true, false, true, true, true, true]);
+        assert_eq!(
+            fenced,
+            [false, true, true, true, false, true, true, true, true]
+        );
     }
 
     #[test]

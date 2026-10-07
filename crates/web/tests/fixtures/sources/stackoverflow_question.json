@@ -1,0 +1,21 @@
+{
+  "items": [
+    {
+      "tags": ["rust", "lifetimes"],
+      "owner": { "reputation": 1234, "user_id": 42, "display_name": "asker &amp; co", "link": "https://stackoverflow.com/users/42/asker" },
+      "is_answered": true,
+      "view_count": 9876,
+      "accepted_answer_id": 1002,
+      "answer_count": 5,
+      "score": 57,
+      "creation_date": 1700000000,
+      "question_id": 77001,
+      "link": "https://stackoverflow.com/questions/77001/why-does-this-borrow-not-live-long-enough",
+      "title": "Why does this borrow &quot;not live long enough&quot;?",
+      "body": "<p>I get <code>E0597</code> on this snippet:</p>\n<pre><code>let r;\n{\n    let x = 5;\n    r = &amp;x;\n}\nprintln!(\"{r}\");\n</code></pre>\n<p>Why?</p>"
+    }
+  ],
+  "has_more": false,
+  "quota_max": 300,
+  "quota_remaining": 299
+}

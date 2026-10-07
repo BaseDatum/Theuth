@@ -26,7 +26,8 @@ fn fixture(name: &str) -> String {
 
 #[test]
 fn pass1_strips_invisible_chars_without_joining_words() {
-    let out = run("soft\u{200B}ware ship\u{AD}ping \u{FEFF}start\u{200C}\u{200D} two\u{200B} words");
+    let out =
+        run("soft\u{200B}ware ship\u{AD}ping \u{FEFF}start\u{200C}\u{200D} two\u{200B} words");
     assert_eq!(out.text, "software shipping start two words");
     assert_eq!(out.removed_chars, 6);
 }
@@ -42,7 +43,10 @@ fn pass1_decodes_leaked_entities() {
 #[test]
 fn pass2_drops_utility_class_lines_only_past_half() {
     let md = "Intro\n\nflex items-center px-4 py-2 bg-white\n\ntext-heavy pages load slowly\n\nflex grid two three";
-    assert_eq!(text(md), "Intro\n\ntext-heavy pages load slowly\n\nflex grid two three");
+    assert_eq!(
+        text(md),
+        "Intro\n\ntext-heavy pages load slowly\n\nflex grid two three"
+    );
 }
 
 #[test]
@@ -60,7 +64,10 @@ fn pass3_drops_remaining_images_without_keep_images() {
         keep_images: false,
     };
     let md = "![one](a.png)\n\ntext ![inline](b.png)\n\n![a](1.png)\n![b](2.png)\n![c](3.png)";
-    assert_eq!(compact(md, &opts).text, "text ![inline](b.png)\n\n[3 images: a]");
+    assert_eq!(
+        compact(md, &opts).text,
+        "text ![inline](b.png)\n\n[3 images: a]"
+    );
 }
 
 #[test]
@@ -117,7 +124,9 @@ fn fenced_code_is_untouched_by_every_pass() {
 
 #[test]
 fn fold_links_lists_deduped_capped_links() {
-    let mut md = String::from("See [docs](https://d.test/a) and [again](https://d.test/a) or [top](#top) or [js](javascript:void(0)) ![img](i.png) [](https://bare.test)\n\n");
+    let mut md = String::from(
+        "See [docs](https://d.test/a) and [again](https://d.test/a) or [top](#top) or [js](javascript:void(0)) ![img](i.png) [](https://bare.test)\n\n",
+    );
     for i in 0..70 {
         md.push_str(&format!("[link {i}](https://many.test/{i}) "));
     }
@@ -162,9 +171,18 @@ fn chrome_heavy_page_loses_at_least_15_percent() {
     assert!(!out.text.contains("px-4") && !out.text.contains("dark:bg-gray-800"));
     assert!(!out.text.contains("Skip to content") && !out.text.contains("opens in new tab"));
     assert_eq!(out.text.matches("[Home](https://acme.test/)").count(), 1);
-    assert!(out.text.contains("Tags: widgets, pipelines, yaml, automation, shipping"));
-    assert!(out.text.contains("software, shipping, and a BOM: start") && out.text.contains("Tom & Jerry"));
-    assert!(out.text.contains("```bash\nacme init\nacme init\nacme init\nacme ship --all\n```"));
+    assert!(
+        out.text
+            .contains("Tags: widgets, pipelines, yaml, automation, shipping")
+    );
+    assert!(
+        out.text.contains("software, shipping, and a BOM: start")
+            && out.text.contains("Tom & Jerry")
+    );
+    assert!(
+        out.text
+            .contains("```bash\nacme init\nacme init\nacme init\nacme ship --all\n```")
+    );
     assert!(!out.text.contains("### Company") && !out.text.contains("## Related"));
     assert!(out.text.contains("## Footer\n\n### Legal"));
     assert!(!out.text.contains("\n\n\n"));
