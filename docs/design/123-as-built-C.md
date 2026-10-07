@@ -20,7 +20,7 @@ Branch `feat/123-diagram-grammars`: `08f4ecce` (Rust wire), `2ab95414` (desktop 
 7. Desktop `parse.ts` structural checks not extended to the 19 (Rust `check()` is authoritative). `renderer.tsx` untouched (host resolved per component).
 
 ## Gates
-`cargo test -p surface`: 63 passed, 0 failed · `cargo check --workspace --all-targets`: clean (no match fixes needed outside `surface`) · `just ts-desktop`: 553 files · desktop `check` 0 errors, `test` 149 files / 903 tests passed (`mobile-zoom`, `pairing` flake under full-machine load, pass alone), `build` ✓ 1m 25s · apps `check` 0 errors, `test` 138 pass / 0 fail.
+`cargo test -p surface`: 63 passed, 0 failed · `cargo check --workspace --all-targets`: clean (no match fixes needed outside `surface`) · `just ts-desktop`: 553 files · desktop `check` 0 errors, `test` 149 files / 903 tests passed, `build` ✓ 1m 25s · apps `check` 0 errors, `test` 138 pass / 0 fail.
 
 ## Ownership (brief 123-C)
 - **W1**: `diagrams/{StateMachine,Entities,Swimlane,GraphDelta,TreeDiagram}.tsx`, `Graph.tsx` + extensions, `lib/graph-layout*.ts`, `lib/diagram/elk.ts` (additive), Rust arms + `to_mermaid()` for its four, its fixtures/goldens/tests, `packages/apps/test/` for its components.
