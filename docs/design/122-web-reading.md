@@ -1222,3 +1222,255 @@ merges, then the full gate list. Landing on `main` is Sky's `merge --no-ff` as i
    later addition.
 7. Whether `format: text` should fold links by default (D7 pass 10 does) or keep bare URLs — the
    token cost comparison 16 §12 asked for is still unmeasured.
+
+## Revision 1 (2026-10-07 00:45) — stealth fetch client
+
+Sky's words (2026-10-07 00:45, relayed from his design-123 session): *"I want the scraping fetching
+etc tools to be stealth as well."*
+
+This revision supersedes D4's "no TLS fingerprinting, no proxy pool" posture for the fetch tools,
+extends D1's vendor table, adds wave W5 and changes the C/W1 rows of §7. Everything else in the
+document stands; the "Supersedes" list at the end of this section names each replaced statement.
+
+### R1.0 Verified facts
+
+- The browser tier is already stealth: obscura's `stealth` feature is wreq/BoringSSL TLS fingerprint
+  emulation plus a tracker blocklist, enabled unconditionally in the workspace
+  (`Cargo.toml:275-278`), and `BrowserConfig.stealth` defaults to `true`
+  (`crates/browser/src/lib.rs:45-46`, `:78`).
+- `wreq 6.0.0-rc.29` and `wreq-util 3.0.0-rc.12` are already in `Cargo.lock` through obscura
+  (`Cargo.lock:25553-25555`, `:25618-25620`). The two-BoringSSL symbol collision with libsignal's
+  `boring-sys` is already solved by the `btls-sys` fork with `prefix-symbols` (`Cargo.toml:391-399`).
+  Adding `wreq` as a direct dependency of `crates/web` at exactly those versions adds no native code
+  and no second BoringSSL build; `cargo tree -p web -i wreq` must show one version (C records it).
+- Today every page fetch of `read_url`/`scrape_url`/`crawl`/`map_site` goes out as plain
+  `reqwest 0.13` + rustls (`Cargo.toml:169`; `crates/web/src/fetch/mod.rs:136-142`) — a non-browser
+  TLS/HTTP-2 fingerprint that Cloudflare-class vendors score as a bot regardless of headers. D4's
+  header ladder could therefore never pass a fingerprint-class block; it only helped header-varying
+  servers.
+- `antibot-rs` 0.3.4 (crates.io, MIT, created 2026-04-14, last release 2026-07-05, 481 downloads,
+  one maintainer) was vetted and **rejected** as a dependency: its `detect.rs` is ~7.6 KB of marker
+  matching, but the crate is an auto-managed Byparr/FlareSolverr client (`docker.rs` 20 KB,
+  `client.rs` 43 KB, tokio `process`, dashmap) and depends on `reqwest` with default features
+  (native-tls → openssl-sys), while this tree deliberately has no OpenSSL. Its vendor taxonomy
+  (Cloudflare, Turnstile, DataDome, PerimeterX, Akamai, Imperva, reCAPTCHA) is adopted into D1's
+  table (R1-D2) instead.
+
+### R1-D1 Stealth fetch client (supersedes D4's "no TLS fingerprinting"; D4's header rules otherwise stand)
+
+**Rationale.** The browser tier already presents a Chrome fingerprint; the plain fetch tools present
+rustls. Sky wants the fetch tools stealth as well. One seam — an `HttpClient` trait with two
+implementations — lets the `Fetcher` keep its redirect loop, guard, caps and retries unchanged and
+swap only the wire client.
+
+**Types** (`crates/web/src/fetch/client.rs`, *frozen*, landed by C as the contract addendum):
+
+```rust
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ClientKind { Reqwest, WreqChrome }
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Impersonate { Never, OnChallenge, #[default] Always }
+
+pub struct ClientConfig { pub user_agent: String, pub accept_language: String, pub connect_timeout: Duration, pub read_timeout: Duration, pub max_body: usize }
+
+pub enum ClientError { NotBuilt, Transport(String), Build(String) }
+
+pub struct ClientResponse { pub status: u16, pub headers: HeaderMap, pub final_url: url::Url, pub body: BoxStream<'static, Result<Bytes, ClientError>> }
+
+#[async_trait]
+pub trait HttpClient: Send + Sync {
+    fn kind(&self) -> ClientKind;
+    async fn get(&self, url: &url::Url, headers: &[(HeaderName, HeaderValue)]) -> Result<ClientResponse, ClientError>;
+}
+
+pub fn build(kind: ClientKind, cfg: &ClientConfig) -> Result<Arc<dyn HttpClient>, ClientError>;
+```
+
+- `Reqwest` = today's client behind the trait (C lands it real): `user_agent`, `connect_timeout`,
+  `read_timeout` as the whole-request timeout, `redirect::Policy::none()`, `ssrf::GuardedResolver`
+  (`fetch/mod.rs:136-142` moved behind `build`). Redirects are never followed by a client; the
+  `Fetcher` loop re-validates SSRF per hop exactly as today (`fetch/mod.rs:199-233`), so
+  `ClientResponse.final_url` is the requested URL.
+- `WreqChrome` = W5: a `wreq::Client` with `wreq_util` Chrome emulation — the newest desktop Chrome
+  profile that wreq-util 3.0.0-rc.12 offers, macOS platform (W5 names it in its as-built);
+  redirects **disabled**; the same SSRF-guarded DNS resolution — route A: wreq's resolver hook
+  carrying `ssrf::resolve_checked`; route B, if wreq cannot take a custom resolver: resolve first
+  with the guarded resolver and connect by IP with `Host`/SNI preserved — W5 picks the first route
+  that works and documents it; `connect_timeout`/`read_timeout` from `ClientConfig`; no cookie
+  store; HTTP/2 via the profile; `Accept-Language` from config appended after the profile headers;
+  UA = the profile's own Chrome UA (a Chrome fingerprint with a `theuth/…` UA is self-defeating; the
+  honest UA is sent only under `Impersonate::Never`). The body streams with the same post-inflate cap
+  semantics as the reqwest path (`read_capped`, `fetch/mod.rs:342-373`, now over `ClientResponse.body`).
+- `ClientConfig` is built from `WebConfig` (`user_agent`, `accept_language`, `CONNECT_TIMEOUT`,
+  `TIMEOUT`, `max_fetch_bytes`); the scrape crate builds its own with its 8 MiB cap and
+  `page_timeout_ms` as it does for the fetcher today (`crates/scrape/src/lib.rs:85-90`).
+
+**Config.** `web.impersonate: never | on_challenge | always`, default **`always`** (Sky's words).
+
+| value | behaviour |
+|---|---|
+| `always` | the first request of every page fetch uses `WreqChrome` |
+| `on_challenge` | `Reqwest` first; on a detected `AccessChallenge`, or `RateLimited` on 403/503 with a D1 marker, one `WreqChrome` attempt within the same `TOTAL_BUDGET` |
+| `never` | `Reqwest` only |
+
+`http_request` (the API tool) and the SERP engines keep `Reqwest` regardless — APIs do not
+fingerprint and the engines keep their own identity (`engines/mod.rs:64`). `search_web`'s page
+reads (the excerpt fetches through the `scrape` provider and the raw-fetch fallback,
+`tools.rs:220-295`) follow `web.impersonate` like `read_url`.
+
+**D4 collapses into this rung.** Under `always` the header set *is* the Chrome profile's; under
+`on_challenge` the second attempt is the `WreqChrome` attempt. There is no separate "Chrome headers
+on reqwest" attempt and no dated Chrome header constant — both are removed from D4. D4's remaining
+rules stand: `Accept`/`Accept-Language` always sent (on `Reqwest` as defaults, on `WreqChrome` as the
+profile's plus the configured `Accept-Language`), the versioned honest UA under `never`, no proxy
+pool, no cookies. `web.header_ladder` is kept as a config key and now means "escalate from `Reqwest`
+to `WreqChrome` on a challenge" — it is what `on_challenge` consults; `header_ladder: false` under
+`on_challenge` behaves as `never`. `(call)` Under `always` the key is ignored.
+
+**Response fields.** `FetchResponse.client: ClientKind` (default `reqwest`; C's addendum), also on
+`ScrapeResponse` and `CrawlPage`. `attempts` counts every request made, so an `on_challenge`
+escalation reads `attempts: 2`; `ladder: bool` keeps its meaning "a rung after the first succeeded".
+`(call)` When C's stub returns `ClientError::NotBuilt`, the `Fetcher` falls back to `Reqwest` and
+appends `notes: ["stealth client not built; fetched with reqwest"]` — W1's tests pass against the
+stub and the closer watches that note disappear once W5 lands.
+
+**What the model sees.** The text rendering adds nothing unless `client != reqwest` **and** an issue
+or a ladder occurred; then ` · client: wreq_chrome` is appended to the ISSUE line (issue) or to the
+meta line (ladder). `(call)` The structured field always carries `client`, so every fetch is auditable.
+
+**The escalation ladder as a whole:**
+
+1. `WreqChrome` fetch (or `Reqwest` first under `on_challenge`/`never`), retries and budget per D2;
+2. the data-island rung (D9) for thin pages;
+3. obscura stealth render (`rendered: true`, D1 `Next::Rendered`);
+4. `browser_import_cookies` — the user's own consented cookies (`Next::ImportCookies`);
+5. `desktop_handoff` (`Next::Handoff`); then stop honestly with the `PageIssue`.
+
+Policy line: **"escalate only on a detected challenge, never past a robots disallow, always report
+which client fetched the page."**
+
+**robots.txt.** `crawl`/`map_site` keep honouring robots.txt and `Crawl-delay` (`crawl.rs:19-20`,
+`:555-565`). Under `always` the robots file is fetched with the same client; `(call)` rules are
+matched for `*` **and** for `theuth` (`ROBOTS_UA`, `crawl.rs:20`) and a disallow from either applies
+— the Chrome UA token is not a bot token, and matching only `*` would silently loosen a site's
+explicit `theuth` rule. `read_url`/`scrape_url` single-page reads do not consult robots (unchanged;
+a browser visit does not either).
+
+**Tests for W5** (`crates/web/tests/client_wreq.rs`, wiremock over plain HTTP, no network): the
+`WreqChrome` client sends the profile's UA, `sec-ch-ua` and the configured `accept-language`; it does
+not follow a 302 (the response is returned with `status: 302`); a 5 MiB body is streamed and capped
+at `max_body` with the cap flagged; a private-IP target is refused through the guard (route A or B);
+`connect_timeout`/`read_timeout` are honoured against a sleeping mock; a unit test that
+`build(WreqChrome, &cfg)` succeeds; `cargo tree -p web -i wreq` shows one version (asserted in the
+as-built, not in a test). W1's dispatch tests (`fetch_retry.rs`): `always` → one request, `client ==
+wreq_chrome` (against C's stub: `reqwest` plus the `NotBuilt` note); `on_challenge` → a 403 with
+`cf-mitigated` then 200 → `attempts: 2`, `ladder: true`; `never` → `reqwest` and no second attempt.
+
+**Follow-ups (not built):** a FlareSolverr/Byparr solver behind a `web.solver_url` (needs its own
+security review — it ships page content to another process); proxy pools.
+
+### R1-D2 Detector vendor table extended (amends D1)
+
+Four vendor rows are added to D1's marker table, inserted after row 7 (Akamai) with the same size
+gating and false-positive discipline (exact substrings, size gates, title-only rows gated on prose):
+
+| # | kind | signal | gate |
+|---|---|---|---|
+| 7a | `AccessChallenge` | PerimeterX/HUMAN: `_pxhd`, or `px-captcha`, or `perimeterx` | body < 50 000 bytes |
+| 7b | `AccessChallenge` | Imperva/Incapsula: `_Incapsula_Resource`, or `incapsula`, or `visid_incap` | body < 50 000 bytes |
+| 7c | `AccessChallenge` | reCAPTCHA interstitial: `google.com/recaptcha/api.js` **and** `g-recaptcha` | body < 30 000 bytes **and** prose < 300 chars (50 words) — a normal form page embedding reCAPTCHA is not an issue |
+| 7d | `AccessChallenge` | Kasada: `kpsdk`, or `/ips.js` | body < 30 000 bytes |
+
+`detail` vocabulary (fixed; the part after `HTTP <n> · `): `cloudflare`, `cloudflare:turnstile`,
+`cloudflare:1020`, `akamai`, `datadome`, `aws-waf`, `hcaptcha`, `perimeterx`, `imperva`,
+`recaptcha`, `kasada`, `consent:<platform>` (`onetrust`, `cookiebot`, `trustarc`, … or `url`),
+`login`, `error-page`, `empty-shell`; row 8's antibot titles use the vendor when a vendor row also
+matched, else `antibot-title`. The D1 example `HTTP 403 · cloudflare challenge` becomes
+`HTTP 403 · cloudflare`.
+
+antibot-rs vetting, for the record: its taxonomy is what these rows adopt; the crate itself was
+rejected because it is a solver client with default-feature `reqwest` (OpenSSL) in a tree that has
+none, not because its markers are wrong.
+
+**Fixtures and tests.** W2 adds four synthesised fixtures to §6.1 — `px-block`, `incapsula-block`,
+`recaptcha-interstitial`, `kasada-block` (expected `issue: access_challenge`, `tier_hint: render`,
+`method: body`) — plus the benign twin `recaptcha-form-benign` (a 400-word contact page embedding
+reCAPTCHA → `issue: null`). W1 adds the matching `issue.rs` rows and the benign case.
+
+### R1-D3 Wave changes (supersedes the §7 table rows for C and W1; adds W5)
+
+| wave | change |
+|---|---|
+| **C addendum** (already requested of the running contract worker) | `crates/web/src/fetch/client.rs` with the `Reqwest` implementation real and `WreqChrome` → `Err(ClientError::NotBuilt)`; `FetchResponse.client` / `ScrapeResponse.client` / `CrawlPage.client` (serde default `reqwest`); `WebConfig.impersonate` (default `always`); `wreq = "=6.0.0-rc.29"` and `wreq-util = "=3.0.0-rc.12"` in the workspace table and `crates/web/Cargo.toml`; `cargo tree -p web -i wreq` output in `122-as-built-C.md` |
+| **W1 FETCH** | drops the dated Chrome header constant and the "Chrome headers on reqwest" attempt; implements the `Impersonate` dispatch in the `Fetcher` (`always`/`on_challenge`/`never`) against the `HttpClient` trait, treating `ClientError::NotBuilt` as "fall back to `Reqwest` with a note"; adds rows 7a–7d and the benign reCAPTCHA case to `issue.rs` and its tests; the `detail` vocabulary. **Must not touch `client.rs`.** Owns list otherwise unchanged |
+| **W5 STEALTH** (new) | owns `crates/web/src/fetch/client.rs` **only**, plus `crates/web/tests/client_wreq.rs`; builds the `WreqChrome` arm as R1-D1 specifies; must not touch any other file (dependencies are in place from C). Gate: `cargo test -p web --no-fail-fast`, `cargo clippy -p web --tests -- -D warnings`, `cargo fmt -p web`, `cargo tree -p web -i wreq` (one version). As-built `122-as-built-W5.md` names the emulation profile and the resolver route taken |
+| **W2 EXTRACT** | adds the four vendor fixtures and the benign twin (R1-D2) |
+| **W3 SCRAPE** | fills `ScrapeResponse.client`/`CrawlPage.client` from `FetchResponse.client`; robots fetch matched for `*` and `theuth` (R1-D1) |
+| **Closer** | merge order becomes **`W2 → W1 → W5 → W4 → W3`**; removes W1's `NotBuilt` fallback note once W5 is merged; runs the §6.3 live smoke under `impersonate: always` **and** `never` for the same URL list, recording `client` per row in the result matrix; 16 §6 config table gains `impersonate` |
+
+W5 runs in parallel with W1–W4 (disjoint files); it needs C's `client.rs` stub and the pinned
+dependencies, nothing from the other workers.
+
+### R1-D4 Security additions to §5
+
+- The `WreqChrome` client passes through the identical SSRF guard — guarded resolution (route A or
+  B) plus the per-hop re-check in the `Fetcher` loop (`fetch/mod.rs:200`) — the identical size and
+  time caps (`read_capped`, `TOTAL_BUDGET`), no cookies, no proxy.
+- Impersonation never bypasses `robots.txt` in `crawl`/`map_site`; a disallow for `*` or `theuth`
+  applies whichever client fetched the file.
+- `Impersonate::Never` remains available per installation; the posture is a config choice, not a
+  build choice.
+- The surfaced `client` field makes every fetch auditable: a transcript shows which identity went
+  out for each page.
+- The honest UA is still what `http_request`, the SERP engines and `never` send; `robots.txt` still
+  sees `theuth` rules honoured (R1-D1).
+
+### R1-D5 Config table (§4.7) addition
+
+| key | default | effect |
+|---|---|---|
+| `web.impersonate` | `always` | `never`: reqwest + rustls with the honest UA on every page fetch; `on_challenge`: honest first, Chrome-fingerprint `wreq` client on a detected challenge; `always`: Chrome-fingerprint client first |
+| `web.header_ladder` | `true` | restated: "escalate from `Reqwest` to `WreqChrome` on a challenge" — consulted only under `on_challenge`; ignored under `always` and `never` |
+
+Neither is exposed in Settings › Search; both are documented in 16 §6's table by the closer.
+
+### Supersedes
+
+| earlier statement | replaced by |
+|---|---|
+| D4: "No TLS fingerprinting, no proxy pool, no cookie jar"; the browser-realistic `LADDER_HEADERS` attempt on reqwest with a dated Chrome UA constant | R1-D1: the `WreqChrome` client behind the `HttpClient` trait; `web.impersonate` (`always` default); the ladder is the `on_challenge` escalation; no proxy pool and no cookie jar still hold |
+| D4 tests: "a 403 with `cf-mitigated` then 200 → `ladder == true`, the second request carries `sec-fetch-mode`" | R1-D1 W1 dispatch tests: `on_challenge` → `attempts: 2`, `ladder: true`, `client: wreq_chrome`; W5 header tests in `client_wreq.rs` |
+| D1 row 8 / example `detail` `HTTP 403 · cloudflare challenge` | R1-D2 `detail` vocabulary: `HTTP 403 · cloudflare` |
+| D1 marker table rows 1–17 | R1-D2 adds rows 7a–7d (PerimeterX, Imperva, reCAPTCHA interstitial, Kasada) |
+| §4.1 `ladder` description "The browser-realistic header attempt produced this response" | "A rung after the first attempt produced this response"; new field `client` |
+| §4.7 config table (`accept_language`, `header_ladder`) | R1-D5: `impersonate` added, `header_ladder` restated |
+| §5 "Header ladder constraints … TLS stays rustls with the platform verifier" | R1-D4: TLS is BoringSSL via `wreq` under `always`/`on_challenge`, rustls under `never`; same guard, caps, no cookies |
+| §6.1 corpus: 16 HTML rows | + `px-block`, `incapsula-block`, `recaptcha-interstitial`, `kasada-block`, `recaptcha-form-benign` (21 HTML rows) |
+| §7 table rows C and W1; merge order `W2 → W1 → W4 → W3` | R1-D3 rows; new W5; order `W2 → W1 → W5 → W4 → W3` |
+| §7.2 `FetchResponse`/`ScrapeResponse`/`CrawlPage` signature blocks | each gains `pub client: ClientKind`; `WebConfig` gains `pub impersonate: Impersonate` |
+| §8 first bullet "TLS fingerprinting (wreq/BoringSSL impersonation): rejected" | built as R1-D1 for the fetch tools; what stays rejected is importing webclaw's stack or a proxy pool |
+| §9 question 2 (the ladder's pinned Chrome UA) | moot: the UA is the wreq-util profile's |
+
+### Updated frozen signatures (addendum to §7.2)
+
+`crates/web/src/fetch/client.rs`
+```rust
+#[serde(rename_all = "snake_case")] pub enum ClientKind { Reqwest, WreqChrome }
+#[serde(rename_all = "snake_case")] pub enum Impersonate { Never, OnChallenge, #[default] Always }
+pub struct ClientConfig { pub user_agent: String, pub accept_language: String, pub connect_timeout: Duration, pub read_timeout: Duration, pub max_body: usize }
+pub enum ClientError { NotBuilt, Transport(String), Build(String) }
+pub struct ClientResponse { pub status: u16, pub headers: HeaderMap, pub final_url: url::Url, pub body: BoxStream<'static, Result<Bytes, ClientError>> }
+#[async_trait] pub trait HttpClient: Send + Sync { fn kind(&self) -> ClientKind; async fn get(&self, url: &url::Url, headers: &[(HeaderName, HeaderValue)]) -> Result<ClientResponse, ClientError>; }
+pub fn build(kind: ClientKind, cfg: &ClientConfig) -> Result<Arc<dyn HttpClient>, ClientError>;
+```
+
+`crates/web/src/fetch/mod.rs`, `crates/scrape/src/tools.rs`, `crates/web/src/lib.rs` (additions)
+```rust
+// FetchResponse, ScrapeResponse, CrawlPage each gain:
+pub client: client::ClientKind,          // serde default: Reqwest
+// WebConfig gains:
+pub impersonate: fetch::client::Impersonate,   // default Always
+```
