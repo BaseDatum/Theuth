@@ -437,6 +437,38 @@ body.voice-hold {
   }
 }
 
+/* 128 HUD-SCENE (`components/hud/scene/Scene.tsx`): live rings pulse their disc, a newly arrived flow fades in, hover raises one flow and dims the rest. */
+.hud-pulse {
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: hud-pulse 1.6s ease-in-out infinite;
+}
+.hud-flow-in {
+  animation: hud-flow-in 600ms ease-out both;
+}
+.hud-scene:has([data-flow]:hover) [data-flow] {
+  opacity: 0.5;
+}
+.hud-scene [data-flow]:hover {
+  opacity: 1;
+}
+@keyframes hud-pulse {
+  50% {
+    transform: scale(1.25);
+  }
+}
+@keyframes hud-flow-in {
+  from {
+    opacity: 0;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .hud-pulse,
+  .hud-flow-in {
+    animation: none;
+  }
+}
+
 /* Full-height shell: the layout viewport, or the band above the iOS keyboard (lib/viewport.ts). */
 @utility h-band {
   height: var(--visible-band, 100dvh);

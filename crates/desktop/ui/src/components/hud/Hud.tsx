@@ -1,11 +1,12 @@
 import { useQueryClient } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
 import { Activity as ActivityIcon, Bell, Bot, ListChecks, Network, PanelLeft, Wallet, Workflow } from 'lucide-react'
-import { type ReactNode, useEffect, useState } from 'react'
+import { type ReactNode, useEffect, useMemo, useState } from 'react'
 import { Composer } from '@/components/chat/Composer'
 import { SecretRequestCard } from '@/components/chat/SecretRequestCard'
-import { useSandboxes } from '@/components/settings/sandbox-queries'
+import { simFlag, useSandboxes } from '@/components/settings/sandbox-queries'
 import { useRoutines } from '@/components/routines/queries'
+import { useIsMobile } from '@/hooks/use-mobile'
 import { SearchTrigger } from '@/components/sidebar/SearchTrigger'
 import { age } from '@/components/tasks/helpers'
 import { useAgents, useMesh, useTasks } from '@/components/tasks/queries'
@@ -22,27 +23,64 @@ import type { AttentionItem } from '@/rpc/bindings/AttentionItem'
 import type { ScheduleInfo } from '@/rpc/bindings/ScheduleInfo'
 import type { Task } from '@/rpc/bindings/Task'
 import { useSecretRequests } from '@/store/approvals'
-import { boardPulse, headline, inFlight, runningRoutines, snoozeUntil, spend } from './model'
-import { ATTENTION_KEY, SECRET_REQUESTS_KEY, useActivity, useAttention, useAttentionActions, useSecretRequestRows } from './queries'
+import { boardPulse, inFlight, runningRoutines, snoozeUntil, spend } from './model'
+import { ATTENTION_KEY, SECRET_REQUESTS_KEY, useActivity, useActivityToday, useActivityWeek, useAttention, useAttentionActions, useSecretRequestRows, useSessionList } from './queries'
+import { sceneFixture } from './scene/fixtures'
+import type { SceneData } from './scene/model'
+import { Scene } from './scene/Scene'
+import { SceneCompact } from './scene/SceneCompact'
 
 /**
  * `/` — the THEUTH mark's overview (70 HUD, paperclip's dashboard + attention inbox), Sky's order top → bottom:
- * headline numbers · Attention (decisions inline) · In flight · Board pulse · Activity (live) · Spend + mesh · the
+ * the 128 scene (needs you · rings · the day arc · panels) · Attention (decisions inline) · In flight · Board pulse · Activity (live) · Spend + mesh · the
  * new-chat composer docked at the bottom. Every section has its own query, so they load in parallel behind skeletons.
  */
 export function Hud() {
   const sidebar = useSidebar()
   const mac = isMacDesktop()
+  const mobile = useIsMobile()
   const attention = useAttention()
   const tasks = useTasks()
   const agents = useAgents()
   const routines = useRoutines()
   const activity = useActivity()
+  const activityToday = useActivityToday()
+  const activityWeek = useActivityWeek()
+  const sessions = useSessionList()
   const mesh = useMesh()
   useEffect(() => {
     document.title = ''
   }, [])
-  const h = headline(agents.data ?? [], tasks.data ?? [], attention.data ?? [])
+  // 128: the scene is a pure function of the data; under `?sim=` every source is the fixture (the activity and session hooks already are).
+  const sim = simFlag()
+  const fixture = useMemo(() => (sim ? sceneFixture(Date.now()) : null), [sim])
+  const sceneData = useMemo<SceneData>(
+    () => ({
+      attention: fixture?.attention ?? attention.data,
+      agents: fixture?.agents ?? agents.data,
+      tasks: fixture?.tasks ?? tasks.data,
+      routines: fixture?.routines ?? routines.data,
+      sessions: sessions.data,
+      activityToday: activityToday.data,
+      activityWeek: activityWeek.data,
+      activity: fixture?.activity ?? activity.data,
+    }),
+    [fixture, attention.data, agents.data, tasks.data, routines.data, sessions.data, activityToday.data, activityWeek.data, activity.data],
+  )
+  const sceneErrors = (
+    [
+      ['attention', attention.error],
+      ['agents', agents.error],
+      ['tasks', tasks.error],
+      ['routines', routines.error],
+      ['sessions', sessions.error],
+      ['activity today', activityToday.error],
+      ['activity week', activityWeek.error],
+      ['activity', activity.error],
+    ] as const
+  )
+    .filter(([, e]) => e !== null)
+    .map(([name]) => name)
   return (
     <article className="flex min-h-0 min-w-0 flex-1 flex-col">
       <header
@@ -60,14 +98,16 @@ export function Hud() {
         <h2 className="min-w-0 flex-1 truncate text-sm font-semibold">Overview</h2>
       </header>
       <div className="min-h-0 flex-1 overflow-y-auto">
-        <div className="mx-auto flex w-full max-w-[880px] flex-col gap-5 p-4">
-          <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
-            <Metric label="Agents active" value={agents.data ? String(h.agentsActive) : null} to="/agents" />
-            <Metric label="Tasks in progress" value={tasks.data ? String(h.tasksInProgress) : null} to="/tasks" search={{ state: 'doing', project: '' }} />
-            <Metric label="Month spend" value={agents.data ? `$${h.monthSpend.toFixed(2)}` : null} />
-            <Metric label="Pending attention" value={attention.data ? String(h.pending) : null} tone={h.pending > 0 ? 'warning' : undefined} />
+        {mobile ? (
+          <div className="p-4">
+            <SceneCompact data={sceneData} errors={sceneErrors} />
           </div>
-
+        ) : (
+          <div className="px-4 pt-4">
+            <Scene data={sceneData} errors={sceneErrors} />
+          </div>
+        )}
+        <div className="mx-auto flex w-full max-w-[880px] flex-col gap-5 p-4">
           <Section icon={<Bell className="size-3.5" />} title="Attention" count={attention.data?.length} pending={attention.isPending} error={attention.error}>
             <AttentionList items={attention.data} />
           </Section>
@@ -128,19 +168,6 @@ export function Hud() {
       </div>
     </article>
   )
-}
-
-function Metric({ label, value, tone, to, search }: { label: string; value: string | null; tone?: 'warning'; to?: '/agents' | '/tasks'; search?: { state: 'doing'; project: '' } }) {
-  const body = (
-    <>
-      <span className="text-xs text-fg-tertiary">{label}</span>
-      {value === null ? <Skeleton className="mt-1 h-7 w-16" /> : <span className={cn('text-2xl font-semibold tabular-nums', tone === 'warning' && 'text-warning')}>{value}</span>}
-    </>
-  )
-  const cls = 'flex flex-col rounded-lg border border-border-subtle bg-layer-1 px-3 py-2'
-  if (to === '/tasks') return <Link to={to} search={search} className={cn(cls, 'hover:bg-accent')}>{body}</Link>
-  if (to === '/agents') return <Link to={to} className={cn(cls, 'hover:bg-accent')}>{body}</Link>
-  return <div className={cls}>{body}</div>
 }
 
 export function Section({ icon, title, count, pending, error, actions, children }: { icon: ReactNode; title: string; count?: number; pending: boolean; error: Error | null; actions?: ReactNode; children: ReactNode }) {

@@ -203,7 +203,7 @@ export function rings(agents: readonly AgentSummary[], sessions: readonly Sessio
   const waitingFor = new Set(attention.map((i) => i.agent).filter((a): a is string => a !== null))
   const agentRings: R0[] = agents
     .filter((a) => a.status !== 'proposed')
-    .map((a) => {
+    .map((a): R0 => {
       const name = a.file.name
       const desk = a.desk === null ? undefined : sessions.find((s) => s.id === a.desk)
       const open = `${a.open_tasks} · ${desk ? age(Date.parse(desk.updated_at), now) : 'no desk'}`
@@ -371,7 +371,7 @@ export function layoutEnds(flows: readonly Omit<Flow, 'end' | 'd'>[]): { flows: 
   return {
     more,
     flows: kept.map((f, i) => {
-      const end: Pt = [END_X[i % END_X.length], n > 1 ? FIELD.top + step * i : (FIELD.top + FIELD.bottom) / 2]
+      const end: Pt = [END_X[i % END_X.length] ?? END_X[0], n > 1 ? FIELD.top + step * i : (FIELD.top + FIELD.bottom) / 2]
       return { ...f, end, d: flowPath(f.src, f.via, f.hour, end) }
     }),
   }
@@ -392,13 +392,8 @@ export function hairlines(activityToday: readonly ActivityEntry[], sessionsToday
   const line = (id: string, actor: string | null, time: number) => {
     const r = rng(id)
     const fromRing = r() < 0.62
-    let src: Pt
-    if (fromRing && rings.length) {
-      const ring = ringByActor(rings, actor) ?? rings[Math.floor(r() * rings.length)]
-      src = [RING.x + 14, ring.y + lerp(-3, 3, r())]
-    } else {
-      src = [lerp(180, 640, r()), lerp(250, 690, r())]
-    }
+    const ring = fromRing ? (ringByActor(rings, actor) ?? rings[Math.floor(r() * rings.length)]) : undefined
+    const src: Pt = ring ? [RING.x + 14, ring.y + lerp(-3, 3, r())] : [lerp(180, 640, r()), lerp(250, 690, r())]
     const end: Pt = [lerp(1380, 1900, r()), lerp(FIELD.top, FIELD.bottom, r())]
     out.push({ id, d: flowPath(src, null, hourOf(time, now, nowHour(now)), end), opacity: r1(lerp(0.07, 0.26, r()) * 100) / 100 })
   }
@@ -433,7 +428,9 @@ export function punchCard(activityWeek: readonly ActivityEntry[], now: number): 
   let max = 0
   for (const e of activityWeek) {
     const [d, h] = cell(e.ts_ms)
-    max = Math.max(max, ++cells[d][h])
+    const row = cells[d] ?? []
+    row[h] = (row[h] ?? 0) + 1
+    max = Math.max(max, row[h] ?? 0)
   }
   return { cells, max, now: cell(now) }
 }

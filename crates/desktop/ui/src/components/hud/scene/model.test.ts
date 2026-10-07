@@ -12,7 +12,7 @@ test('arc geometry matches the mockup: 00:00 tick, 12:00 label upright, band pat
   const a = arc(NOW, F.routines, F.activityToday)
   expect(a.ticks).toHaveLength(25)
   expect(a.labels.map((l) => l.text)).toEqual(['00:00', '02:00', '04:00', '06:00', '08:00', '10:00', '12:00', '14:00', '16:00', '18:00', '20:00', '22:00'])
-  expect(a.labels[6].rot).toBeCloseTo(-14 + (28 * 12.55) / 24 + 90, 5)
+  expect(a.labels[6]!.rot).toBeCloseTo(-14 + (28 * 12.55) / 24 + 90, 5)
   expect(a.band).toMatch(/^M 1066\.2 79\.4 A 1408 1408 0 0 1 1066\.2 760\.6 L 1031\.2 751\.9 A 1372 1372 0 0 0 1031\.2 88\.1 Z$/)
   // Fired today → filled; knowledge-sync is due later today → hollow; morning-brief's next is tomorrow → not marked twice.
   expect(a.marks.filter((m) => m.filled).map((m) => m.name).sort()).toEqual(['lunch-digest', 'morning-brief', 'nightly-digest', 'standup-notes'])
@@ -31,20 +31,20 @@ test('rings: theuth first, working → waiting → idle, routine, lapsed last; 7
   const rs = rings(F.agents, F.sessions, F.routines, F.attention, NOW)
   expect(rs.map((r) => r.name)).toEqual(['theuth', 'ops-desk', 'research', 'builder', 'analyst', 'docs-desk', 'routine · nightly-digest'])
   expect(rs.map((r) => r.style)).toEqual(['live', 'live', 'live', 'waiting', 'idle', 'lapsed', 'idle'])
-  expect(rs[0].sub).toBe('2 chats · 40s')
-  expect(rs[1].sub).toBe('4 · 1h')
-  expect(rs[5].sub).toBe('paused')
-  expect(rs[6].sub).toBe('running · 18m')
+  expect(rs[0]!.sub).toBe('2 chats · 40s')
+  expect(rs[1]!.sub).toBe('4 · 1h')
+  expect(rs[5]!.sub).toBe('paused')
+  expect(rs[6]!.sub).toBe('running · 18m')
   expect(rs.map((r) => [r.x, r.y])).toEqual(rs.map((_, i) => [RING.x, RING.y0 + RING.dy * i]))
-  expect(rs[3].link).toEqual({ route: 'agent', name: 'builder' })
+  expect(rs[3]!.link).toEqual({ route: 'agent', name: 'builder' })
 })
 
 test('rings: blocked without an attention item is idle; unreachable is error; beyond 9 fold into "+N more"', () => {
-  const agents = [...F.agents, { ...F.agents[3], file: { ...F.agents[3].file, name: 'lonely' }, status: 'blocked' as const }, { ...F.agents[3], file: { ...F.agents[3].file, name: 'gone' }, status: 'unreachable' as const }]
+  const agents = [...F.agents, { ...F.agents[3]!, file: { ...F.agents[3]!.file, name: 'lonely' }, status: 'blocked' as const }, { ...F.agents[3]!, file: { ...F.agents[3]!.file, name: 'gone' }, status: 'unreachable' as const }]
   const rs = rings(agents, F.sessions, F.routines, F.attention, NOW)
   expect(rs.find((r) => r.name === 'lonely')?.style).toBe('idle')
   expect(rs.find((r) => r.name === 'gone')).toMatchObject({ style: 'error', sub: 'unreachable' })
-  const many = Array.from({ length: 12 }, (_, i) => ({ ...F.agents[3], file: { ...F.agents[3].file, name: `a${i}` } }))
+  const many = Array.from({ length: 12 }, (_, i) => ({ ...F.agents[3]!, file: { ...F.agents[3]!.file, name: `a${i}` } }))
   const folded = rings(many, [], [], [], NOW)
   expect(folded).toHaveLength(9)
   expect(folded[8]).toMatchObject({ name: '+5 more', style: 'lapsed' })
@@ -59,22 +59,22 @@ test('needsYou: newest first, 12 drawn, jitter within ±6 and deterministic, sho
     expect(Math.abs(n.y - (262 + 52 * i))).toBeLessThanOrEqual(6)
   }
   expect(needsYou(F.attention).needs.map((n) => n.y)).toEqual(needs.map((n) => n.y))
-  const many = Array.from({ length: 15 }, (_, i) => ({ ...F.attention[0], id: `approval:${i}`, at_ms: NOW - i * 1000 }))
+  const many = Array.from({ length: 15 }, (_, i) => ({ ...F.attention[0]!, id: `approval:${i}`, at_ms: NOW - i * 1000 }))
   expect(needsYou(many)).toMatchObject({ more: 3 })
-  expect(shortId({ ...F.attention[0], kind: 'handoff', task: null })).toBe('handoff')
-  expect(shortId({ ...F.attention[0], task: T('1234') })).toBe('001234')
+  expect(shortId({ ...F.attention[0]!, kind: 'handoff', task: null })).toBe('handoff')
+  expect(shortId({ ...F.attention[0]!, task: T('1234') })).toBe('001234')
 })
 
 test('outcomes: done kinds + non-error routine fires, newest first, via the actor ring, cost on the label, links', () => {
   const rs = rings(F.agents, F.sessions, F.routines, F.attention, NOW)
   const o = outcomes(F.activityToday, F.routines, rs, NOW)
   expect(o.total).toBe(11)
-  expect(o.flows[0]).toMatchObject({ color: C.success, label: 'finished t-1212 · 3 files, … · $0.42', link: { route: 'task', id: T('1212') } })
-  expect(o.flows[0].via?.name).toBe('ops-desk')
+  expect(o.flows[0]!).toMatchObject({ color: C.success, label: 'finished t-1212 · 3 files, … · $0.42', link: { route: 'task', id: T('1212') } })
+  expect(o.flows[0]!.via?.name).toBe('ops-desk')
   expect(o.flows.find((f) => f.label.startsWith('nightly'))).toMatchObject({ link: { route: 'routine', name: 'nightly-digest' } })
   expect(o.flows.find((f) => f.label.startsWith('nightly'))?.via).toBeNull()
   expect(o.flows.find((f) => f.label === 'knowledge +2')?.via?.name).toBe('theuth')
-  for (let i = 1; i < o.flows.length; i++) expect(o.flows[i - 1].time).toBeGreaterThanOrEqual(o.flows[i].time)
+  for (let i = 1; i < o.flows.length; i++) expect(o.flows[i - 1]!.time).toBeGreaterThanOrEqual(o.flows[i]!.time)
   const failed = F.routines.map((s) => (s.name === 'morning-brief' ? { ...s, last_result: 'error: boom' } : s))
   expect(outcomes(F.activityToday, failed, rs, NOW).total).toBe(10)
 })
@@ -83,8 +83,8 @@ test('running: doing tasks via the owner ring at the progress note, label with e
   const rs = rings(F.agents, F.sessions, F.routines, F.attention, NOW)
   const r = running(F.tasks, rs, NOW)
   expect(r.map((f) => f.label)).toEqual(['wire HUD scene into / · running · 12m', 'design 126 review · running · 40m', 'punch card arrivals · running · 55m'])
-  expect(r[0].via?.name).toBe('ops-desk')
-  expect(r[0].color).toBe(C.info)
+  expect(r[0]!.via?.name).toBe('ops-desk')
+  expect(r[0]!.color).toBe(C.info)
 })
 
 test('flowPath: dot → ring edge → arc → end as the mockup draws it', () => {
@@ -102,16 +102,16 @@ test('layoutEnds: ascending by time, ≥ 22 px apart per column, x cycles, overf
   const { flows, more } = layoutEnds(all)
   expect(more).toBe(0)
   expect(flows).toHaveLength(all.length)
-  for (let i = 1; i < flows.length; i++) expect(flows[i - 1].time).toBeLessThanOrEqual(flows[i].time)
+  for (let i = 1; i < flows.length; i++) expect(flows[i - 1]!.time).toBeLessThanOrEqual(flows[i]!.time)
   for (const x of END_X) {
     const ys = flows.filter((f) => f.end[0] === x).map((f) => f.end[1]).sort((a, b) => a - b)
-    for (let i = 1; i < ys.length; i++) expect(ys[i] - ys[i - 1]).toBeGreaterThanOrEqual(LABEL_GAP)
+    for (let i = 1; i < ys.length; i++) expect(ys[i]! - ys[i - 1]!).toBeGreaterThanOrEqual(LABEL_GAP)
   }
   expect(flows.map((f) => f.end[0]).slice(0, 5)).toEqual([1500, 1580, 1660, 1740, 1500])
-  const many = Array.from({ length: 40 }, (_, i) => ({ ...all[0], id: `f${i}`, time: NOW - i * 1000 }))
+  const many = Array.from({ length: 40 }, (_, i) => ({ ...all[0]!, id: `f${i}`, time: NOW - i * 1000 }))
   const over = layoutEnds(many)
   expect(over.more).toBe(7)
-  expect(over.flows[0].time).toBe(NOW - 32 * 1000)
+  expect(over.flows[0]!.time).toBe(NOW - 32 * 1000)
 })
 
 test('hairlines: deterministic, skips drawn outcomes, one per session today, capped at 600', () => {
@@ -127,7 +127,7 @@ test('hairlines: deterministic, skips drawn outcomes, one per session today, cap
     expect(h.opacity).toBeGreaterThanOrEqual(0.07)
     expect(h.opacity).toBeLessThanOrEqual(0.26)
   }
-  const flood = Array.from({ length: 700 }, (_, i) => ({ ...F.activityToday[20], id: 100_000 + i }))
+  const flood = Array.from({ length: 700 }, (_, i) => ({ ...F.activityToday[20]!, id: 100_000 + i }))
   expect(hairlines(flood, st, rs, new Set(), NOW)).toHaveLength(HAIRLINES_MAX)
   expect(rng('same')()).toBe(rng('same')())
   expect(rng('a')()).not.toBe(rng('b')())

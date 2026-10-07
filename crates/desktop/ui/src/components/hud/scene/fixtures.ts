@@ -12,6 +12,7 @@ import { HOUR_MS, rng, type SceneData, startOfDay } from './model'
  */
 
 const M = 60_000
+const pick = <T,>(arr: readonly T[], u: number): T => arr[Math.floor(u * arr.length)] as T
 const H = HOUR_MS
 
 const agent = (name: string, status: AgentSummary['status'], open_tasks: number, spent_month: number, cap: number | null, desk: string | null): AgentSummary => ({
@@ -193,7 +194,7 @@ export function sceneFixture(now: number): Required<SceneData> {
   const hoursSoFar = Math.max(0.5, (now - midnight) / H)
   for (let i = 0; i < 180; i++) {
     const h = Math.min(hoursSoFar - 0.01, 0.5 + r() * hoursSoFar)
-    activityToday.push(row(midnight + h * H, quiet[Math.floor(r() * quiet.length)], actors[Math.floor(r() * actors.length)], T('1150'), `note ${i}`))
+    activityToday.push(row(midnight + h * H, pick(quiet, r()), pick(actors, r()), T('1150'), `note ${i}`))
   }
   activityToday.sort((a, b) => b.ts_ms - a.ts_ms)
   // A week of arrivals, dense in working hours.
@@ -203,7 +204,7 @@ export function sceneFixture(now: number): Required<SceneData> {
     const back = rw() * 7 * 24 * H
     const ts = now - back
     const hour = new Date(ts).getHours()
-    if (hour < 8 || hour > 20 ? rw() < 0.15 : true) activityWeek.push(row(ts, 'task_commented', actors[Math.floor(rw() * actors.length)], T('1150'), `week ${i}`))
+    if (hour < 8 || hour > 20 ? rw() < 0.15 : true) activityWeek.push(row(ts, 'task_commented', pick(actors, rw()), T('1150'), `week ${i}`))
   }
   activityWeek.sort((a, b) => b.ts_ms - a.ts_ms)
   return { attention, agents, tasks, routines, sessions, activityToday, activityWeek, activity: activityToday.slice(0, 44) }
