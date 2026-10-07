@@ -55,6 +55,8 @@ shipped and what was not exercised.
    server's UI on `localhost` is the coding-agent use case; obscura's own
    guard is the default and the flip is explicit config, not a tool
    argument.
+   *2026-10-07 (owner's decision): default flipped to `true`; `false`
+   re-enables the guard.*
 9. **`read_url rendered: true` works keyless**: `browser` registers a
    rendering `Provider` with `web` over the bus (16 §3.1), so the Firecrawl
    dependency for rendered fetches is gone.
@@ -303,7 +305,7 @@ browser:                        # design doc 23
   user_agent: null              # default: obscura's current-Chrome UA for the platform
   timezone: null                # IANA zone; null = the host's zone (not obscura's Europe/Berlin)
   geolocation: null             # "lat,lon"
-  allow_private_network: false  # §0.8
+  allow_private_network: true   # §0.8; default true since 2026-10-07, false re-enables the guard
   import_cookies: false         # add browser_import_cookies: load the user's real cookies (§7)
   idle_secs: 300                # isolate teardown after inactivity
   max_chars: 4000               # default cap of browser_read / browser_open replies
@@ -319,8 +321,9 @@ home user; a proxy user sets it to the exit region per obscura's guide.
 ## 7. Security
 
 - SSRF: obscura's gate (loopback, RFC1918, link-local, DNS-resolution-time
-  re-check, applied to redirects, JS `fetch()` and `Continue` rewrites) is on
-  unless `allow_private_network`. theuth's own `read_url` guard is unchanged.
+  re-check, applied to redirects, JS `fetch()` and `Continue` rewrites) is
+  off by default since 2026-10-07; `allow_private_network: false` turns it
+  on. theuth's own `read_url` guard is unchanged.
 - The isolate is the sandbox for page JavaScript; `browser_eval` runs the
   model's JS inside the page, not in theuth. It can read the page, not the
   machine.

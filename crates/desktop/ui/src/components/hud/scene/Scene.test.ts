@@ -2,6 +2,7 @@ import { createElement, type ReactNode } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { expect, test, vi } from 'vitest'
 import type * as Router from '@tanstack/react-router'
+import type { Task } from '@/rpc/bindings/Task'
 import { sceneFixture, T } from './fixtures'
 import { scene } from './model'
 import { Scene } from './Scene'
@@ -70,7 +71,7 @@ test('Scene draws the fixture: rings, needs, flows, panels, links, tokens only',
   expect(html).toContain('>4 open · 1h · ctx 62 %<')
   expect(html).toContain('<title>ops-desk · 4 open · 1h · ctx 62 % · context ≈ 124k of 200k (62 %)</title>')
   // Links (R2: every destination the old sections offered): attention rows and header, task flows, agent rings, routine marks,
-  // the theuth ring and SESSIONS LIVE → /new, the footer's split right slot, the OUTCOMES legend/backlog/board, SPEND and AGENTS big numbers.
+  // the theuth ring and SESSIONS LIVE → /new, the footer's split right slot, the BOARD legend/projects/board, SPEND and AGENTS big numbers.
   expect(html).toContain('href="/attention/approval:ap-4821"')
   expect(html).toContain(`href="/tasks/${T('1212')}"`)
   expect(html).toContain('href="/agents/builder"')
@@ -100,7 +101,7 @@ test('Scene draws the fixture: rings, needs, flows, panels, links, tokens only',
   expect(html).toMatch(/href="\/tasks\?state=done&amp;project="><tspan>9 OUTCOMES TODAY<\/tspan>/)
   expect(html).toMatch(/href="\/tasks\?state=doing&amp;project="><tspan>6 IN FLIGHT<\/tspan>/) // 3 doing tasks + the running routine + 2 running roots
   for (const s of ['done', 'doing', 'review', 'blocked', 'cancelled', 'backlog', 'todo']) expect(html).toContain(`href="/tasks?state=${s}&amp;project="`)
-  expect(html).toMatch(/<a href="\/tasks"><text x="340" y="236"/) // the OUTCOMES big number → the board
+  expect(html).toMatch(/<a href="\/tasks"><text x="340" y="236"/) // the BOARD big number → the board
   expect(count(html, /<a href="\/agents"><text x="340" y="236"/g)).toBe(2) // AGENTS and SPEND big numbers
   expect(html).toContain('href="/agents/ops-desk"')
   // STREAM: an HTML box holding every feed row, each linked to its subject by kind.
@@ -118,12 +119,79 @@ test('Scene draws the fixture: rings, needs, flows, panels, links, tokens only',
   expect(html).toContain('>9 OUTCOMES TODAY<')
   expect(html).toContain('>6 IN FLIGHT<')
   expect(html).toContain('$4,102.00 THIS MONTH') // Revision 3: the ledger's month, not the roster's budget sum
-  for (const t of ['AGENTS', 'ARRIVALS', 'OUTCOMES', 'SPEND', 'STREAM']) expect(html).toContain(`>${t}<`)
+  for (const t of ['AGENTS', 'ARRIVALS', 'BOARD', 'SPEND', 'STREAM']) expect(html).toContain(`>${t}<`)
   expect(html).toContain('>19:49<')
   // Accessibility: the field is one image with a title and a summary; the band is HTML (four SVG panels + the stream box).
   expect(html).toMatch(/<svg[^>]*viewBox="0 0 1920 812"[^>]*role="img"[^>]*aria-labelledby="hud-scene-title hud-scene-desc"/)
   expect(count(html, /viewBox="0 0 352 248"/g)).toBe(4)
   expect(html).toContain('6 need you · 2 agents working')
+})
+
+test('Revision 6 — BOARD: every task in every project — a 60-cell waffle in board order, seven legend rows with all-time counts, the project line with links, total and project count', () => {
+  const html = renderToStaticMarkup(createElement(Scene, { data: F, now: NOW }))
+  const panel = /<text x="24" y="19"[^>]*>BOARD<\/text>(.*?)<\/g><\/svg>/.exec(html)![1]!
+  expect(panel).toContain('>3 PROJECTS<')
+  expect(panel).toMatch(/<a href="\/tasks"><text x="340" y="236"[^>]*>20<\/text>/)
+  // The waffle: 20 filled cells (one per task), 40 hollow; backlog first at 0.55, then todo, doing, review, blocked, done, cancelled.
+  const cells = [...panel.matchAll(/<circle cx="(\d+)" cy="(\d+)" r="3.2" fill="([^"]+)"( fill-opacity="([\d.]+)")?/g)]
+  expect(cells).toHaveLength(60)
+  const filled = cells.filter((c) => c[3] !== 'none')
+  expect(filled).toHaveLength(20)
+  expect(cells.filter((c) => c[3] === 'none')).toHaveLength(40)
+  expect(panel).toMatch(/<circle cx="146" cy="120" r="3.2" fill="none" stroke="var\(--border-strong\)"/)
+  const run = (fill: string, opacity?: string) => filled.filter((c) => c[3] === fill && c[5] === opacity).length
+  expect(run('var(--fg-tertiary)', '0.55')).toBe(4) // backlog
+  expect(run('var(--fg-secondary)')).toBe(2) // todo
+  expect(run('var(--status-info-fg)')).toBe(3) // doing
+  expect(run('var(--fg-primary)')).toBe(2) // review
+  expect(run('var(--fg-accent)')).toBe(1) // blocked
+  expect(run('var(--status-success-fg)')).toBe(7) // done
+  expect(run('var(--fg-tertiary)')).toBe(1) // cancelled, tertiary in full
+  expect(filled.slice(0, 4).every((c) => c[5] === '0.55')).toBe(true)
+  expect(filled[19]![3]).toBe('var(--fg-tertiary)')
+  expect(filled[19]![5]).toBeUndefined()
+  // Seven legend rows, 14 px apart from y 52, each the all-time count and a link to its column.
+  const rows = [...panel.matchAll(/<a href="\/tasks\?state=(\w+)&amp;project="><circle cx="186" cy="(\d+)" r="2.5"[^>]*><\/circle><text x="196" y="(\d+)"[^>]*>\w+<\/text><text x="338" y="\d+"[^>]*>(\d+)<\/text>/g)].map((r) => [r[1], Number(r[2]), Number(r[3]), Number(r[4])])
+  expect(rows).toEqual([
+    ['backlog', 49, 52, 4],
+    ['todo', 63, 66, 2],
+    ['doing', 77, 80, 3],
+    ['review', 91, 94, 2],
+    ['blocked', 105, 108, 1],
+    ['done', 119, 122, 7],
+    ['cancelled', 133, 136, 1],
+  ])
+  expect(panel).toContain('<title>4 backlog · open the board at backlog</title>')
+  // Today's movement, secondary, under the waffle; the project line at the bottom, each project a link, unfiled → the bare board.
+  expect(panel).toMatch(/<a href="\/tasks"><text x="20" y="136"[^>]*>12 moved today<\/text>/)
+  const line = /<text x="20" y="148"[^>]*data-projects="true">(.*?)<\/text>/.exec(panel)![1]!
+  expect(line.replace(/<[^>]+>/g, '')).toBe('9 tasks · open the board at hudhud 9 · 6 tasks in no project · open the boardunfiled 6 · 5 tasks · open the board at relayrelay 5')
+  expect(line).toContain('<a href="/tasks?project=hud"><title>9 tasks · open the board at hud</title><tspan>hud 9</tspan></a>')
+  expect(line).toContain('<a href="/tasks"><title>6 tasks in no project · open the board</title><tspan>unfiled 6</tspan></a>')
+  expect(line).toContain('<a href="/tasks?project=relay">')
+  expect(line).not.toContain('+')
+  // Sky's board (80 tasks, nothing moved today) is never zeros: 60 cells over five colours, 80 and 4 PROJECTS, 0 moved today.
+  const t0 = F.tasks[0]!
+  const old = new Date(2026, 9, 6, 18, 34).getTime()
+  const mk = (state: Task['state'], n: number, project: string | null) => Array.from({ length: n }, (_, i) => ({ ...t0, id: `${state}-${project}-${i}`, state, project, checkout: null, updated_ms: old }))
+  const sky = [...mk('review', 41, 'DR failover'), ...mk('backlog', 9, 'DR failover'), ...mk('backlog', 15, null), ...mk('blocked', 10, null), ...mk('cancelled', 2, null), ...mk('done', 1, 'sre-2379'), ...mk('cancelled', 1, 'sre-2379'), ...mk('done', 1, 'theuth')]
+  const h2 = renderToStaticMarkup(createElement(Scene, { data: { ...F, tasks: sky }, now: NOW }))
+  const p2 = /<text x="24" y="19"[^>]*>BOARD<\/text>(.*?)<\/g><\/svg>/.exec(h2)![1]!
+  expect(p2).toContain('>4 PROJECTS<')
+  expect(p2).toMatch(/<text x="340" y="236"[^>]*>80<\/text>/)
+  const c2 = [...p2.matchAll(/<circle cx="\d+" cy="\d+" r="3.2" fill="([^"]+)"/g)].map((c) => c[1])
+  expect(c2.filter((f) => f !== 'none')).toHaveLength(60)
+  expect(new Set(c2)).toEqual(new Set(['var(--fg-tertiary)', 'var(--fg-primary)', 'var(--fg-accent)', 'var(--status-success-fg)']))
+  expect(p2).toContain('>0 moved today<')
+  const l2 = /<text x="20" y="148"[^>]*data-projects="true">(.*?)<\/text>/.exec(p2)![1]!
+  expect(l2.replace(/<title>[^<]*<\/title>/g, '').replace(/<[^>]+>/g, '')).toBe('DR failover 50 · unfiled 27 · sre-2379 2 · theuth 1')
+  expect(l2).toContain('href="/tasks?project=DR+failover"')
+  // Many projects fold into +K and the line stays within the character budget.
+  const many = Array.from({ length: 12 }, (_, i) => mk('todo', 12 - i, `project-${String.fromCharCode(97 + i)}`)).flat()
+  const l3 = /<text x="20" y="148"[^>]*data-projects="true">(.*?)<\/text>/.exec(renderToStaticMarkup(createElement(Scene, { data: { ...F, tasks: many }, now: NOW })))![1]!
+  const text3 = l3.replace(/<title>[^<]*<\/title>/g, '').replace(/<[^>]+>/g, '')
+  expect(text3).toMatch(/ \+\d+$/)
+  expect(text3.length).toBeLessThanOrEqual(70)
 })
 
 test('Revision 3 — SPEND: month big number, TODAY meta, seven bars (today faience, $0 day a hairline), owner rows with glyphs and links, cap rows only for budgeted agents, no gold/carnelian', () => {
