@@ -42,7 +42,7 @@ export function DeskCard({ agent, charter, journal, manual }: Extract<Entry, { k
   )
 }
 
-export function WakeCard({ id, title, reason, count, state, owner, reviewer, thread, body, roster }: Extract<Entry, { kind: 'wake' }>) {
+export function WakeCard({ task, title, reason, count, state, owner, reviewer, thread, body, roster }: Extract<Entry, { kind: 'wake' }>) {
   return (
     <div className={SHELL}>
       <div className="flex flex-wrap items-center gap-1.5 text-xs text-fg-secondary">
@@ -50,14 +50,14 @@ export function WakeCard({ id, title, reason, count, state, owner, reviewer, thr
         <span className="font-medium">wake</span>
         <Badge variant="outline">{reason}</Badge>
         {count !== undefined && <Badge variant="outline">×{count}</Badge>}
-        {id === undefined ? (
+        {task === undefined ? (
           <span>no task</span>
         ) : (
           <Badge variant="secondary" className="max-w-full gap-1">
-            <Link to="/tasks/$id" params={{ id }} className="truncate hover:underline">
+            <Link to="/tasks/$id" params={{ id: task }} className="truncate hover:underline">
               {title ?? 'task'}
             </Link>
-            <span className="text-fg-tertiary">{shortId(id)}</span>
+            <span className="text-fg-tertiary">{shortId(task)}</span>
           </Badge>
         )}
         {state !== undefined && <Badge variant="secondary">{state}</Badge>}

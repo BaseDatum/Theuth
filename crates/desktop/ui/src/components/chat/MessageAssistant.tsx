@@ -2,7 +2,7 @@ import { code } from '@streamdown/code'
 import { useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from '@tanstack/react-router'
 import { Check, Copy, GitFork, type LucideIcon, RefreshCw, Square, Trash2, Volume2 } from 'lucide-react'
-import { memo, useMemo, useState } from 'react'
+import { type ComponentProps, memo, useContext, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { toast } from 'sonner'
 import { type Components, type PluginConfig, Streamdown } from 'streamdown'
 import { Button } from '@/components/ui/button'
@@ -15,6 +15,7 @@ import type { ContextTarget } from '@/rpc/bindings/ContextTarget'
 import { useSessionField, useSessions } from '@/store/sessions'
 import { openContextPicker } from './ContextPicker'
 import { MermaidFence } from './Mermaid'
+import { Reserve } from './Reserve'
 import { FenceContext, JsonRenderFence } from './surface/JsonRenderFence'
 import { OpenUIFence } from './surface/OpenUIFence'
 import { MarkdownTd } from './surface/registry'
@@ -32,9 +33,25 @@ export const plugins: PluginConfig = {
     { language: 'openui', component: OpenUIFence },
   ],
 }
+/** 135 §2: a markdown image has no intrinsic size until it loads; `Reserve` holds its last height meanwhile. */
+function Img({ node: _node, src, alt, ...rest }: ComponentProps<'img'> & { node?: unknown }) {
+  const { entry } = useContext(FenceContext)
+  const ref = useRef<HTMLImageElement>(null)
+  const [ready, setReady] = useState(false)
+  // A cached image may be complete before `onLoad` can fire.
+  useLayoutEffect(() => {
+    if (ref.current?.complete) setReady(true)
+  }, [])
+  const done = () => setReady(true)
+  return (
+    <Reserve id={entry && src ? `${entry}/${src}` : null} ready={ready} className="my-4">
+      <img ref={ref} src={src} alt={alt} className="max-w-full rounded-lg" onLoad={done} onError={done} {...rest} />
+    </Reserve>
+  )
+}
 // Markdown tables (`| a | b |`) take streamdown's `td` with the json-render `Table`'s wrapping rules; the table itself goes
 // natural-width via the `[&_table]` variants on the Streamdown className below, so streamdown's `overflow-x-auto` wrapper scrolls.
-export const markdownComponents: Components = { td: MarkdownTd }
+export const markdownComponents: Components = { td: MarkdownTd, img: Img }
 export const shikiTheme: ['github-light', 'github-dark'] = ['github-light', 'github-dark']
 
 /** `text` fenced with `language`; the fence outruns any backtick run inside. */
@@ -209,8 +226,8 @@ export const MessageAssistant = memo(function MessageAssistant({
     return false
   })
   const fence = useMemo<FenceContext>(
-    () => ({ running, hasLaterAssistant, session: readOnly ? undefined : session }),
-    [running, hasLaterAssistant, readOnly, session],
+    () => ({ running, hasLaterAssistant, session: readOnly ? undefined : session, entry: id }),
+    [running, hasLaterAssistant, readOnly, session, id],
   )
   const fork = useFork(session)
   const voice = speech.useVoice()
