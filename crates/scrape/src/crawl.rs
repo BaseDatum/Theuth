@@ -40,8 +40,18 @@ pub struct Page {
     pub html: String,
     /// Outbound hrefs (absolute).
     pub links: Vec<String>,
-    /// `fetch` or `render`.
+    /// `fetch`, `island`, `render` or `api`.
     pub tier: &'static str,
+    /// Why the page did not read as content, with the next rung (122 D1).
+    pub issue: Option<web::fetch::issue::PageIssue>,
+    /// Page metadata (122 D5).
+    pub meta: web::fetch::meta::PageMeta,
+    /// Encoding label used to decode the body (122 D3).
+    pub charset: String,
+    /// Whether `markdown` was cut at the per-page cap (122 D6).
+    pub truncated: bool,
+    /// Pass as `offset` to `scrape_url` to continue; `None` when nothing was omitted.
+    pub next_offset: Option<usize>,
 }
 
 /// Discovery hit for [`Scrape::map`](crate::Scrape::map).
@@ -51,6 +61,8 @@ pub struct MapHit {
     pub url: String,
     /// Title when a page was fetched.
     pub title: Option<String>,
+    /// Where the URL came from: `"search"`, `"sitemap"`, `"page"` or `"frontier"` (122 D10).
+    pub source: &'static str,
 }
 
 /// How sitemaps take part in a crawl.
@@ -587,6 +599,7 @@ fn push_hit(
             hits.push(MapHit {
                 url: url.to_string(),
                 title,
+                source: "page",
             });
         }
     }
@@ -600,6 +613,11 @@ fn page_from(f: crate::engine::Fetched) -> Page {
         html: f.html,
         links: f.links,
         tier: f.tier,
+        issue: None,
+        meta: web::fetch::meta::PageMeta::default(),
+        charset: "utf-8".to_owned(),
+        truncated: false,
+        next_offset: None,
     }
 }
 

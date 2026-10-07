@@ -483,6 +483,22 @@ pub fn compile_path_regex(pattern: &str) -> std::result::Result<PathRegex, regex
         .build()
 }
 
+/// Compile path patterns with the untrusted-input limits; returns the compiled set and the
+/// patterns that failed with their error text (`"<pattern>: <error>"`). Design doc 122 D10:
+/// `crawl` reports the bad ones instead of dropping them.
+#[must_use]
+pub fn compile_path_patterns(patterns: &[String]) -> (Vec<PathRegex>, Vec<String>) {
+    let mut compiled = Vec::with_capacity(patterns.len());
+    let mut invalid = Vec::new();
+    for pattern in patterns {
+        match compile_path_regex(pattern) {
+            Ok(re) => compiled.push(re),
+            Err(e) => invalid.push(format!("{pattern}: {e}")),
+        }
+    }
+    (compiled, invalid)
+}
+
 /// Validate regex patterns against the engine's regex flavor (the Rust `regex`
 /// crate), which is what link filtering compiles them with. Returns an entry for
 /// each pattern that fails to compile so callers can reject unsupported syntax
@@ -812,6 +828,23 @@ mod tests {
 
     fn scope_of(url: &str) -> CrawlScope {
         crawl_scope(&Url::parse(url).unwrap())
+    }
+
+    #[test]
+    fn compile_path_patterns_reports_invalid_and_keeps_rest() {
+        let patterns = [
+            "^/docs/".to_owned(),
+            "(unclosed".to_owned(),
+            "/blog/".to_owned(),
+        ];
+        let (compiled, invalid) = compile_path_patterns(&patterns);
+        assert_eq!(compiled.len(), 2);
+        assert!(compiled[0].is_match(b"/docs/x"));
+        assert!(compiled[1].is_match(b"/blog/y"));
+        assert_eq!(invalid.len(), 1);
+        assert!(invalid[0].starts_with("(unclosed: "), "{}", invalid[0]);
+        let (none, none_invalid) = compile_path_patterns(&[]);
+        assert!(none.is_empty() && none_invalid.is_empty());
     }
 
     #[test]

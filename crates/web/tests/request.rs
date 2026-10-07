@@ -232,7 +232,10 @@ async fn not_modified_is_a_response_not_a_redirect() {
         .request("GET", &format!("{}/moved", server.uri()), &[], None)
         .await
         .expect_err("a 301 without Location is still an error");
-    assert!(matches!(&e, FetchError::Failed(m) if m.contains("missing Location")), "{e}");
+    assert!(
+        matches!(&e, FetchError::Failed(m) if m.contains("missing Location")),
+        "{e}"
+    );
 }
 
 /// wiremock always sends `Content-Length`, which the fetcher refuses up front;

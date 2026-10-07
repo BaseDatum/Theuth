@@ -3,8 +3,12 @@
 //! the raw [`Fetcher::request`] used for route replay (44 §0.6).
 //!
 //! - `ssrf`: the mandatory guard; [`check_url`] for callers outside the fetcher.
-//! - `text`: one HTML parser for both [`FetchFormat`]s, plus truncation.
+//! - `text`: one HTML parser for both [`FetchFormat`]s, plus truncation and the pageable [`cut`].
+//! - `issue`, `charset`, `meta`: diagnosis, decoding and metadata (design doc 122 D1, D3, D5).
 
+pub mod charset;
+pub mod issue;
+pub mod meta;
 mod ssrf;
 mod text;
 
@@ -17,7 +21,7 @@ use serde::{Deserialize, Serialize};
 use url::Url;
 
 pub use ssrf::{check_url, is_blocked_hostname, is_blocked_ip};
-pub use text::{collapse_ws, hard_truncate};
+pub use text::{Cut, collapse_ws, cut, hard_truncate};
 
 /// Whole-request timeout for one page fetch.
 pub const TIMEOUT: Duration = Duration::from_secs(8);
@@ -35,7 +39,9 @@ pub enum FetchFormat {
     Markdown,
 }
 
-/// A fetched page (the `structured` half of `read_url`).
+/// A fetched page (the `structured` half of `read_url`). Every field added by
+/// design doc 122 (`issue` onward) has a serde default, so older callers and
+/// stored payloads keep working.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct FetchResponse {
     /// Final URL after redirects.
@@ -48,6 +54,74 @@ pub struct FetchResponse {
     pub truncated: bool,
     /// Wall time of the fetch in milliseconds.
     pub took_ms: u64,
+    /// Why the page did not read as content, with the next rung.
+    #[serde(default)]
+    pub issue: Option<issue::PageIssue>,
+    /// title, description, author, published (RFC 3339), lang, canonical, site_name.
+    #[serde(default)]
+    pub meta: meta::PageMeta,
+    /// HTTP attempts made (1 or 2).
+    #[serde(default = "default_attempts")]
+    pub attempts: u8,
+    /// The browser-realistic header attempt produced this response.
+    #[serde(default)]
+    pub ladder: bool,
+    /// Encoding label used to decode the body.
+    #[serde(default = "default_charset")]
+    pub charset: String,
+    /// Characters removed by compaction before the cap.
+    #[serde(default)]
+    pub compacted_chars: usize,
+    /// Pass as `offset` to continue; null when nothing was omitted.
+    #[serde(default)]
+    pub next_offset: Option<usize>,
+    /// Headings of the omitted tail (≤ 12).
+    #[serde(default)]
+    pub omitted_headings: Vec<String>,
+    /// `fetch`, `render` or `api`.
+    #[serde(default = "default_tier")]
+    pub tier: String,
+    /// The API source used (`hn-item`, `npm`, …).
+    #[serde(default)]
+    pub source_kind: Option<String>,
+    /// Non-fatal remarks (an API source that failed, a ladder attempt that did not help).
+    #[serde(default)]
+    pub notes: Vec<String>,
+}
+
+fn default_attempts() -> u8 {
+    1
+}
+
+fn default_charset() -> String {
+    "utf-8".to_owned()
+}
+
+fn default_tier() -> String {
+    "fetch".to_owned()
+}
+
+impl Default for FetchResponse {
+    fn default() -> Self {
+        Self {
+            url: String::new(),
+            title: None,
+            content: String::new(),
+            truncated: false,
+            took_ms: 0,
+            issue: None,
+            meta: meta::PageMeta::default(),
+            attempts: default_attempts(),
+            ladder: false,
+            charset: default_charset(),
+            compacted_chars: 0,
+            next_offset: None,
+            omitted_headings: Vec::new(),
+            tier: default_tier(),
+            source_kind: None,
+            notes: Vec::new(),
+        }
+    }
 }
 
 /// Raw reply of [`Fetcher::request`]; non-2xx is `Ok`, read `status`.
@@ -429,6 +503,7 @@ impl Fetcher {
                 content,
                 truncated: cut,
                 took_ms: u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
+                ..FetchResponse::default()
             });
         }
         let body = String::from_utf8_lossy(&raw);
@@ -457,6 +532,7 @@ impl Fetcher {
             content,
             truncated: cut || body_truncated,
             took_ms: u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
+            ..FetchResponse::default()
         })
     }
 }

@@ -21,5 +21,9 @@ texting_robots = "0.2.2"
 thiserror = { workspace = true }
 url = { workspace = true }
 
+[dev-dependencies]
+# 122 D13: `tests/corpus.rs` runs the same html → markdown conversion the scrape engine does.
+html-to-markdown-rs = { workspace = true }
+
 [lints]
 workspace = true

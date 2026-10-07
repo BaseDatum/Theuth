@@ -157,6 +157,39 @@ pub fn hard_truncate(s: &str, max_chars: usize) -> (String, bool) {
     (out, true)
 }
 
+/// A window of a long text (design doc 122 D6).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Cut {
+    /// The window, with the omission marker appended when `truncated`.
+    pub text: String,
+    /// Whether anything after the window was omitted.
+    pub truncated: bool,
+    /// Char offset to pass as `offset` for the next window; `None` when nothing was omitted.
+    pub next_offset: Option<usize>,
+    /// Up to `MAX_OMITTED_HEADINGS` (12) headings of the omitted tail, in order, `#` markers stripped.
+    pub omitted_headings: Vec<String>,
+}
+
+/// Window `s` from char `offset` to at most `max_chars` chars. When the window does not reach the
+/// end, the cut prefers the last blank line inside the final 15 % of the window; the marker
+/// `[… N chars omitted; continue with offset=M]` is appended to `text` (it does not count against
+/// `max_chars`), followed by `Omitted sections: a · b · c` when the tail has headings.
+///
+/// Contract stub (122 §7.1): [`hard_truncate`] semantics from `offset` — the window is exactly
+/// `max_chars` long with `…` as its last char when cut, `next_offset` is the first char not
+/// shown, no marker, no headings. W1 lands the block-boundary cut and the markers.
+#[must_use]
+pub fn cut(s: &str, offset: usize, max_chars: usize) -> Cut {
+    let rest: String = s.chars().skip(offset).collect();
+    let (text, truncated) = hard_truncate(&rest, max_chars);
+    Cut {
+        text,
+        truncated,
+        next_offset: truncated.then(|| offset + max_chars.saturating_sub(1)),
+        omitted_headings: Vec::new(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -179,5 +212,29 @@ mod tests {
         assert_eq!(html_title("<p>no title</p>"), None);
         assert_eq!(hard_truncate("abc", 2), ("a…".into(), true));
         assert_eq!(hard_truncate("abc", 3), ("abc".into(), false));
+        assert_eq!(
+            cut("abcdef", 0, 6),
+            Cut {
+                text: "abcdef".into(),
+                ..Cut::default()
+            }
+        );
+        assert_eq!(
+            cut("abcdef", 0, 3),
+            Cut {
+                text: "ab…".into(),
+                truncated: true,
+                next_offset: Some(2),
+                omitted_headings: vec![]
+            }
+        );
+        assert_eq!(
+            cut("abcdef", 2, 10),
+            Cut {
+                text: "cdef".into(),
+                ..Cut::default()
+            }
+        );
+        assert_eq!(cut("abc", 5, 10), Cut::default());
     }
 }

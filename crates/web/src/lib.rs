@@ -9,6 +9,7 @@
 
 pub mod actor;
 pub mod aggregate;
+pub mod compact;
 pub mod date;
 pub mod engines;
 pub mod excerpt;
@@ -20,6 +21,7 @@ pub mod provider;
 pub mod rank;
 pub mod render;
 pub mod settings;
+pub mod sources;
 pub mod tools;
 pub mod url;
 
@@ -77,6 +79,10 @@ pub struct WebConfig {
     pub max_redirects: usize,
     /// Sent on every request.
     pub user_agent: String,
+    /// `Accept-Language` sent on every page fetch (122 D4).
+    pub accept_language: String,
+    /// One browser-realistic header attempt after a diagnosed 403/503 challenge (122 D4).
+    pub header_ladder: bool,
 }
 
 impl Default for WebConfig {
@@ -101,6 +107,8 @@ impl Default for WebConfig {
             max_fetch_bytes: 2_097_152,
             max_redirects: 5,
             user_agent: "theuth/0.1 (+https://github.com/skymoore/theuth)".to_owned(),
+            accept_language: "en-US,en;q=0.9".to_owned(),
+            header_ladder: true,
         }
     }
 }

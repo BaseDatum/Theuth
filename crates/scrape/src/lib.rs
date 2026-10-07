@@ -18,6 +18,7 @@ mod tools;
 
 pub use crawl::{CrawlOpts, MapHit, Page, SitemapMode};
 pub use engine::Scrape;
+pub use tools::{CrawlPage, CrawlResult, ScrapeResponse, Skipped};
 
 /// `scrape:` config section (38 §6). Every field has a default; the section
 /// may be absent.

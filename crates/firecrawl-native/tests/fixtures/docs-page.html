@@ -1,0 +1,92 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Deploying the engine · Example Docs</title>
+  <meta name="description" content="How to install, configure and run the example engine as a service.">
+  <link rel="canonical" href="https://docs.example.test/deploy">
+  <link rel="stylesheet" href="/assets/site.css">
+  <script src="/assets/search.js" defer></script>
+</head>
+<body>
+  <header class="site-header">
+    <a class="logo" href="/">Example Docs</a>
+    <nav aria-label="Primary">
+      <ul>
+        <li><a href="/">Home</a></li>
+        <li><a href="/guide/">Guide</a></li>
+        <li><a href="/reference/">Reference</a></li>
+        <li><a href="https://github.com/example/engine">GitHub</a></li>
+      </ul>
+    </nav>
+    <form class="search" action="/search"><input type="search" name="q" placeholder="Search docs"></form>
+  </header>
+
+  <div class="layout">
+    <aside class="sidebar">
+      <nav aria-label="Section">
+        <p class="sidebar-title">Getting started</p>
+        <ul>
+          <li><a href="/install/">Install</a></li>
+          <li><a href="/quickstart/">Quickstart</a></li>
+          <li><a href="/deploy/" aria-current="page">Deploying the engine</a></li>
+          <li><a href="/upgrade/">Upgrading</a></li>
+        </ul>
+        <p class="sidebar-title">Reference</p>
+        <ul>
+          <li><a href="/reference/config/">Configuration</a></li>
+          <li><a href="/reference/cli/">CLI</a></li>
+          <li><a href="/reference/api/">HTTP API</a></li>
+        </ul>
+      </nav>
+    </aside>
+
+    <main id="content">
+      <article>
+        <h1>Deploying the engine</h1>
+        <p>This page walks through a production deployment of the example engine: installing the binary, writing a minimal configuration, and running it under a service manager so it restarts on failure and starts at boot.</p>
+
+        <h2 id="prerequisites">Prerequisites</h2>
+        <p>You need a 64-bit Linux or macOS host with at least 2 GB of memory, a user account that can write to <code>/etc/engine</code>, and outbound HTTPS access for the first start, when the engine fetches its model manifest. Windows is supported through WSL 2 with the same steps.</p>
+        <ul>
+          <li>Rust 1.80 or newer if you build from source; the release tarball needs no toolchain.</li>
+          <li>An open TCP port for the HTTP API (the default is 8080).</li>
+          <li>A writable data directory; the default is <code>~/.engine</code>.</li>
+        </ul>
+
+        <h2 id="install">Install</h2>
+        <p>Download the release archive for your platform, verify its checksum and unpack it onto your <code>PATH</code>. The archive contains one static binary and a sample configuration file.</p>
+        <pre><code class="language-bash">curl -LO https://releases.example.test/engine/1.4.2/engine-linux-x86_64.tar.gz
+sha256sum -c engine-linux-x86_64.tar.gz.sha256
+tar xzf engine-linux-x86_64.tar.gz -C /usr/local/bin engine
+engine --version</code></pre>
+        <p>Building from source is the alternative when no archive matches your platform. The build takes about four minutes on a laptop.</p>
+
+        <h2 id="configure">Configure</h2>
+        <p>The engine reads one YAML file. Every key has a default, so the smallest useful file names only the listen address and the data directory. Secrets never go in this file; they are read from the environment or the vault.</p>
+        <pre><code class="language-rust">use engine::Config;
+
+fn main() -> anyhow::Result&lt;()&gt; {
+    let cfg = Config::load("/etc/engine/config.yaml")?;
+    assert_eq!(cfg.listen, "127.0.0.1:8080");
+    println!("data dir: {}", cfg.data_dir.display());
+    Ok(())
+}</code></pre>
+        <p>Run <code>engine check</code> after every edit: it parses the file, resolves the data directory and reports the effective value of every key without starting the server.</p>
+
+        <h2 id="run-as-a-service">Run as a service</h2>
+        <p>On Linux, install the provided <code>engine.service</code> unit, enable it and start it. The unit runs the engine as its own user, restarts it on failure after five seconds, and limits open files to 65 536. On macOS the equivalent is a <code>launchd</code> agent that the installer writes for you.</p>
+        <p>Check the journal for the line <em>listening on 127.0.0.1:8080</em>; the first start takes longer because the model manifest is fetched and cached.</p>
+
+        <h2 id="troubleshooting">Troubleshooting</h2>
+        <p>If the service exits immediately, run the binary by hand with the same configuration to see the error on the terminal. The two common causes are a port already in use and a data directory the service user cannot write. Both are reported by <code>engine check</code>.</p>
+        <p>See <a href="/reference/config/">Configuration</a> for every key and <a href="/upgrade/">Upgrading</a> for moving between releases.</p>
+      </article>
+    </main>
+  </div>
+
+  <footer class="site-footer">
+    <p>© 2026 Example Project · <a href="/privacy/">Privacy</a> · <a href="/terms/">Terms</a> · <a href="https://github.com/example/engine/edit/main/docs/deploy.md">Edit this page</a></p>
+  </footer>
+</body>
+</html>

@@ -64,6 +64,19 @@ pub struct SearchArgs {
     pub read: Option<u8>,
 }
 
+/// Where `read_url`/`scrape_url` read a page from (design doc 122 D11).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum Source {
+    /// Known hosts are read from their JSON API; everything else is the HTML.
+    #[default]
+    Auto,
+    /// Always the HTML.
+    Page,
+    /// Fail if no API source matches.
+    Api,
+}
+
 /// Arguments for [`FetchTool`].
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 pub struct FetchArgs {
@@ -78,6 +91,15 @@ pub struct FetchArgs {
     /// Render through a browser-backed provider (JS-only pages). Needs one registered.
     #[serde(default)]
     pub rendered: Option<bool>,
+    /// Start at this character offset (default 0); use next_offset from a truncated result.
+    #[serde(default)]
+    pub offset: Option<u32>,
+    /// Remove repeated blocks, image runs, class leaks and invisible characters before the cap (default true).
+    #[serde(default)]
+    pub compact: Option<bool>,
+    /// auto (default): known hosts (HN, Reddit, npm, PyPI, crates.io, arXiv, Wikipedia, Stack Overflow) are read from their JSON API; page: always the HTML; api: fail if no API source matches.
+    #[serde(default)]
+    pub source: Option<Source>,
 }
 
 fn structured<T: Serialize>(text: String, data: &T, is_error: bool) -> ToolOutput {
@@ -531,6 +553,8 @@ impl Tool for FetchTool {
                 content,
                 truncated,
                 took_ms: u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX),
+                tier: "render".to_owned(),
+                ..FetchResponse::default()
             }
         } else {
             match self

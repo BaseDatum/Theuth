@@ -400,6 +400,7 @@ mod tests {
             content: "abc".into(),
             truncated: true,
             took_ms: 0,
+            ..FetchResponse::default()
         };
         assert_eq!(
             fetch_text(&r),

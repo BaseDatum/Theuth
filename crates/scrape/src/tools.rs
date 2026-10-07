@@ -91,6 +91,122 @@ pub struct ScrapeUrlArgs {
     /// fetch, browser only when the fetch comes back thin.
     #[serde(default)]
     pub rendered: Option<bool>,
+    /// Start at this character offset (default 0); use next_offset from a truncated result.
+    #[serde(default)]
+    pub offset: Option<u32>,
+    /// Remove repeated blocks, image runs, class leaks and invisible characters before the cap (default true).
+    #[serde(default)]
+    pub compact: Option<bool>,
+    /// auto (default): known hosts (HN, Reddit, npm, PyPI, crates.io, arXiv, Wikipedia, Stack Overflow) are read from their JSON API; page: always the HTML; api: fail if no API source matches.
+    #[serde(default)]
+    pub source: Option<web::tools::Source>,
+}
+
+/// `scrape_url`'s structured result (design doc 122 §4.3). Every field added
+/// by 122 (`issue` onward) has a serde default.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct ScrapeResponse {
+    /// Final URL.
+    pub url: String,
+    /// Title when known.
+    pub title: Option<String>,
+    /// `fetch`, `island`, `render` or `api`.
+    pub tier: String,
+    /// Markdown when asked for (default format).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub markdown: Option<String>,
+    /// Raw HTML when asked for.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub html: Option<String>,
+    /// Outbound links when asked for.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub links: Option<Vec<String>>,
+    /// Why the page did not read as content, with the next rung.
+    #[serde(default)]
+    pub issue: Option<web::fetch::issue::PageIssue>,
+    /// title, description, author, published (RFC 3339), lang, canonical, site_name.
+    #[serde(default)]
+    pub meta: web::fetch::meta::PageMeta,
+    /// Encoding label used to decode the body.
+    #[serde(default = "default_charset")]
+    pub charset: String,
+    /// Characters removed by compaction before the cap.
+    #[serde(default)]
+    pub compacted_chars: usize,
+    /// Whether the markdown (or html) was cut at `max_chars`.
+    #[serde(default)]
+    pub truncated: bool,
+    /// Pass as `offset` to continue; null when nothing was omitted.
+    #[serde(default)]
+    pub next_offset: Option<usize>,
+    /// Headings of the omitted tail (≤ 12).
+    #[serde(default)]
+    pub omitted_headings: Vec<String>,
+    /// The API source used (`hn-item`, `npm`, …).
+    #[serde(default)]
+    pub source_kind: Option<String>,
+    /// Non-fatal remarks.
+    #[serde(default)]
+    pub notes: Vec<String>,
+}
+
+fn default_charset() -> String {
+    "utf-8".to_owned()
+}
+
+/// A page `crawl` could not read (design doc 122 D10).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct Skipped {
+    /// The URL that was attempted.
+    pub url: String,
+    /// The fetch error text or `"timed out after Ns"`.
+    pub error: String,
+}
+
+/// One row of [`CrawlResult::pages`].
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct CrawlPage {
+    /// Final URL.
+    pub url: String,
+    /// Title when known.
+    pub title: Option<String>,
+    /// Post-processed markdown, cut at `max_chars_per_page`.
+    pub markdown: String,
+    /// `fetch`, `island`, `render` or `api`.
+    pub tier: String,
+    /// Why the page did not read as content, with the next rung.
+    #[serde(default)]
+    pub issue: Option<web::fetch::issue::PageIssue>,
+    /// Page metadata.
+    #[serde(default)]
+    pub meta: web::fetch::meta::PageMeta,
+    /// Whether `markdown` was cut.
+    #[serde(default)]
+    pub truncated: bool,
+    /// Pass as `offset` to `scrape_url` to continue; null when nothing was omitted.
+    #[serde(default)]
+    pub next_offset: Option<usize>,
+    /// Raw HTML when `format: html`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub html: Option<String>,
+}
+
+/// `crawl`'s structured result (design doc 122 D10): the pages plus what was missed.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, JsonSchema)]
+pub struct CrawlResult {
+    /// Pages read, in crawl order.
+    pub pages: Vec<CrawlPage>,
+    /// `true` when the frontier was non-empty when the loop ended.
+    pub incomplete: bool,
+    /// `"deadline"` | `"limit"` | `"cancelled"` when `incomplete`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<&'static str>,
+    /// Pages that failed or timed out (≤ 200 rows, then `… and N more`).
+    #[serde(default)]
+    pub skipped: Vec<Skipped>,
+    /// `include_paths`/`ignore_paths` entries that did not compile, as `"<pattern>: <error>"`.
+    #[serde(default)]
+    pub invalid_patterns: Vec<String>,
 }
 
 /// `scrape_url`: one page, fetch then optional render.
@@ -202,6 +318,9 @@ pub struct CrawlArgs {
     /// only; `html`: markdown plus raw html in the structured rows.
     #[serde(default)]
     pub format: Option<PageFormat>,
+    /// Per-page markdown cap (default 20000); a cut page carries next_offset for scrape_url.
+    #[serde(default)]
+    pub max_chars_per_page: Option<u32>,
 }
 
 /// `crawl`: bounded BFS over in-scope links.
