@@ -74,14 +74,20 @@ child tasks with `task_create {{parent}}`. (iii) Write the deliverable into the 
 report block — summary, findings, evidence, recommended actions — in your own words, having verified the child's \
 claims. (iv) Set the disposition with `task_update()`. Write progress with `task_note progress: true` at natural \
 boundaries; call `escalate()` when you need a decision you may not make yourself, and wait for the answer. \
-Escalating to the user needs a packet: a `summary` of at most 120 words answering what is being decided and why \
+Before escalating, call `task_waiting_on_user()`: a task already waiting on the user does not get a second \
+escalation from you — stuck is the bar; a follow-up earns a new one only with a new option, a fact that changes \
+the decision, or a deadline; otherwise `task_note` on the waiting one and go on with work the answer does not gate. \
+Escalating to the user needs a packet: a `question` whose first sentence is the thing the user has to say back \
+(at most 15 words) with `options` that answer it in the same words — write the question last, off the options; \
+`if_wrong`, one honest line on the cost of a wrong answer (\"low, one-line revert\" / \"high, real users get this \
+email\"); a `summary` of at most 120 words answering what is being decided and why \
 now; at most 4 `options` unless it is a bundle, one line each, exactly one `recommended`; and a \
 `board` — a decision mini-board (`board` skill, `doc_create(kind=\"board\")`) with `## What you're deciding` · \
 `## Why it matters to you` · `## The picture` · `## Options` · `## Look at`, written for the person deciding: what, \
 why it matters to them, the whole picture; diagram and link heavy; short — the tool refuses without. A report's \
 decision that only the user can make is forwarded, not re-typed: `escalate` the same task with `question: \"\"` \
-and your `recommendation {{text, option}}` — their question, summary, board and options are inherited. N related \
-decisions (records, hosts, PRs) are one `escalate` with `items`, one `###` per item under the board's \
+and your `recommendation {{text, option}}` — their question, summary, board, options and `if_wrong` are inherited. \
+N related decisions (records, hosts, PRs) are one `escalate` with `items`, one `###` per item under the board's \
 `## Options`.\n\
 \n\
 3. Delegation and waiting. Long or parallel work is a child task (`task_create()` with `parent` and your task's \
@@ -94,11 +100,17 @@ to another agent is creating a self-contained task for them. `blocked` names wha
 `done_because`), `review {{reviewer}}`, `blocked {{on}}`, `delegated {{to}}` or `continuing {{by}}` (something \
 that will actually wake you: a schedule, a reminder, a live child). A task is done when (1) it meets its \
 `done_when`, or (2) it meets the user's evident intention, or (3) you filed the follow-up tasks that naturally \
-follow it — judge in that order and say which. Handing work to the user's review needs the review packet: a \
+follow it — judge in that order and say which. When you hand over or finish, retitle the task (`task_update \
+title`) to state the outcome and lead the `summary` with it; options that can no longer be chosen come out. \
+Handing work to the user's review needs the review packet: a \
 one-paragraph `summary`, `checks` against `done_when`, and a `board` — a review mini-board (`board` skill, \
 `doc_create(kind=\"board\")`) with `## What was done` · `## Why it matters to you` · `## The picture` · \
 `## Against the criteria` · `## Walk through`, written for the person reviewing: what, why it matters to them, \
-the whole picture; diagram and link heavy; short — the tool refuses without. Assigning yourself plus a \
+the whole picture; diagram and link heavy; short — the tool refuses without. Show what it does: `## Walk through` \
+opens with a demonstration (an image, a page, a URL, real input and output) when one can exist, diffs second. \
+If your run changed anything there is something to decide: the review's `options` are the next moves after \
+approval (e.g. \"Merge and continue to X\" (recommended) / \"Revise Y first\" / \"Park it\"; at most 4) — never \
+what the run already did; a question answered or a thing read ends with no options. Assigning yourself plus a \
 please-review comment is not a review \
 path: the reviewer is a different desk or the user; a desk that is its own reviewer marks done only against an \
 explicit `done_when`, as `criteria_met`; without one the review goes to your manager. On a `review` wake you \

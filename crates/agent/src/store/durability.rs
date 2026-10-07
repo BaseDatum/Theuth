@@ -1022,6 +1022,17 @@ impl Store {
         rows.into_iter().map(question_of).collect()
     }
 
+    /// One `questions` row by id, any state (132 D6: a late answer finds its question).
+    pub async fn question_get(&self, id: &str) -> anyhow::Result<Option<QuestionRow>> {
+        let row: Option<QuestionTuple> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
+            "SELECT {QUESTION_COLS} FROM questions WHERE id = ?"
+        )))
+        .bind(id)
+        .fetch_optional(&self.read)
+        .await?;
+        row.map(question_of).transpose()
+    }
+
     /// 109 W3 (§6.2): every `questions` row of one tool call, newest first —
     /// the resume path reads the pending one to re-publish it and the
     /// `answered` one to honour it.

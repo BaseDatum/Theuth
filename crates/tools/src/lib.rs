@@ -53,7 +53,7 @@ pub use approval::{
 };
 pub use ask::{
     Answer, AnswerAsk, AnswerAskBy, AskId, AskRequested, AskResolved, AskUser, Choice, PendingAsks,
-    Question,
+    Question, late_answer_text,
 };
 pub use communication::{CommunicationAccess, Disabled};
 pub use jobs::CloseSessions;
