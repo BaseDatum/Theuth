@@ -174,6 +174,7 @@ impl State {
                 name: Some(format!("{}.{ext}", file_stem(&m.title))),
                 title: Some(m.title),
                 source: Some(Source::Markdown),
+                height: None,
             };
             let (session, call_id) = m
                 .record

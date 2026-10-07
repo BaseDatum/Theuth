@@ -9,14 +9,15 @@
 //! and the generated iOS bridge both enter at [`run`].
 
 mod commands;
-#[cfg(desktop)]
-mod island;
 #[cfg(target_os = "ios")]
 mod ios_windowing;
+#[cfg(desktop)]
+mod island;
 #[cfg(desktop)]
 mod launch;
 #[cfg(desktop)]
 mod models;
+mod pages;
 #[cfg(desktop)]
 mod point;
 #[cfg(desktop)]
@@ -31,7 +32,10 @@ pub fn run() {
     desktop::webkit_no_gpu_workaround();
     let builder = tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
-        .plugin(tauri_plugin_notification::init());
+        .plugin(tauri_plugin_notification::init())
+        // 120 §4.2: inline sandboxed pages, on both containers.
+        .register_uri_scheme_protocol(pages::SCHEME, pages::handler)
+        .manage(pages::Pages::default());
     #[cfg(desktop)]
     let builder = desktop::configure(builder);
     #[cfg(mobile)]
@@ -77,7 +81,11 @@ mod mobile {
             .plugin(tauri_plugin_barcode_scanner::init())
             .plugin(tauri_plugin_deep_link::init())
             .plugin(tauri_plugin_haptics::init())
-            .invoke_handler(tauri::generate_handler![commands::connection])
+            .invoke_handler(tauri::generate_handler![
+                commands::connection,
+                crate::pages::page_put,
+                crate::pages::page_drop
+            ])
             .setup(|app| {
                 let builder =
                     WebviewWindowBuilder::new(app, "main", WebviewUrl::App("index.html".into()))
@@ -119,12 +127,14 @@ mod mobile {
     pub(super) fn on_event(app: &AppHandle, event: RunEvent) {
         match event {
             RunEvent::SceneRequested { scene, .. } => crate::ios_windowing::dismiss(app, &scene),
-            RunEvent::WindowEvent { event: WindowEvent::Suspended | WindowEvent::Focused(false), .. } => {
-                background::hold()
-            }
-            RunEvent::WindowEvent { event: WindowEvent::Resumed | WindowEvent::Focused(true), .. } => {
-                background::release()
-            }
+            RunEvent::WindowEvent {
+                event: WindowEvent::Suspended | WindowEvent::Focused(false),
+                ..
+            } => background::hold(),
+            RunEvent::WindowEvent {
+                event: WindowEvent::Resumed | WindowEvent::Focused(true),
+                ..
+            } => background::release(),
             _ => {}
         }
     }
@@ -285,6 +295,8 @@ mod desktop {
             point::point_refuse,
             point::point_configure,
             point::overlay_ensure,
+            crate::pages::page_put,
+            crate::pages::page_drop,
         ]);
         // The native menu bar is macOS's (⌘C/⌘V under Accessory policy); GTK would paint it inside the window.
         #[cfg(target_os = "macos")]
@@ -317,12 +329,17 @@ mod desktop {
             })
     }
 
-    /// Asset scope, tray menu + click handler on the tray the config created;
-    /// first-show flag.
+    /// Asset scope (120 §9d: only the roots the UI loads as images — never `token`, the vault or
+    /// the databases), tray menu + click handler on the tray the config created; first-show flag.
     fn setup(app: &AppHandle) -> anyhow::Result<()> {
-        app.asset_protocol_scope()
-            .allow_directory(launch::data_dir(), true)
-            .context("allow THEUTH_DATA_DIR in asset protocol")?;
+        // `allow_directory` registers glob patterns and never stats: a root the engine creates later
+        // (`artifacts/` on the first `show`) is covered, a root that never appears matches nothing.
+        let data_dir = launch::data_dir();
+        for root in ["attachments", "browser", "computer", "artifacts", "spill"] {
+            app.asset_protocol_scope()
+                .allow_directory(data_dir.join(root), true)
+                .with_context(|| format!("allow {root}/ in asset protocol"))?;
+        }
         if let Some(win) = main_window(app) {
             paint_page_background(&win);
         }

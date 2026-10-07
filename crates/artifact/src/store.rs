@@ -27,6 +27,7 @@ use crate::{
     Artifact, ArtifactShown, ClaimInvocation, Commit, CompleteInvocation, Kind, MAX_BYTES,
     MarkInvocationUnknown, svg,
 };
+use crate::{inline, sniff};
 
 /// Directory under `data_dir`.
 pub const DIR: &str = "artifacts";
@@ -691,8 +692,16 @@ impl State {
             ));
         }
 
-        let kind = kind::of(&name);
-        let mut receipt = Receipt::default();
+        // 120 §9a: a compiled `.pdf` is sniffed by its compiler; everything else by its bytes.
+        let (kind, demoted) = match (kind::of(&name), &content) {
+            (Kind::Pdf, Some(_)) => (Kind::Pdf, None),
+            (k, _) => sniff::demote(k, &bytes),
+        };
+        let mut receipt = Receipt {
+            demoted,
+            height: args.height.map(|h| (h, h.clamp(80, 2000))),
+            ..Receipt::default()
+        };
         let mut source_file = None;
         let mut pages = None;
         let mut preview_png = None;
@@ -734,7 +743,26 @@ impl State {
                 preview_png = Some(r.png);
                 bytes
             }
-            (Kind::Markdown | Kind::Text | Kind::Html | Kind::Mermaid, _) => {
+            // 120 §8: local images travel inside the page; nothing is written on failure.
+            (Kind::Html, _) => {
+                let n = name.clone();
+                let (bytes, images) = tokio::task::spawn_blocking(move || {
+                    let r = inline::inline_images(
+                        &bytes,
+                        |p| std::fs::metadata(p).map(|m| m.len()),
+                        |p| std::fs::read(p),
+                    )
+                    .map_err(|e| format!("{n}: {e}"))?;
+                    let images = r.images;
+                    Ok::<_, String>((r.html.into_owned(), images))
+                })
+                .await
+                .map_err(|e| format!("{name}: {e}"))??;
+                receipt.images = Some(images);
+                receipt.lines = Some(count_lines(&bytes));
+                bytes
+            }
+            (Kind::Markdown | Kind::Text | Kind::Mermaid, _) => {
                 receipt.lines = Some(count_lines(&bytes));
                 bytes
             }
@@ -792,7 +820,14 @@ impl State {
         };
 
         let mut artifact = Artifact {
-            mime: kind::mime(kind, &name),
+            // An image's mime follows its bytes (120 §9a); the sniff made sure there is one.
+            // A demoted file's name lies about its type, so its mime says nothing.
+            mime: match kind {
+                Kind::Image => inline::raster_mime(&bytes)
+                    .map_or_else(|| kind::mime(kind, &name), str::to_owned),
+                Kind::File if demoted.is_some() => "application/octet-stream".to_owned(),
+                _ => kind::mime(kind, &name),
+            },
             id,
             session,
             call_id,
@@ -1739,22 +1774,159 @@ mod tests {
 
     fn content(name: &str, text: &str) -> ShowArgs {
         ShowArgs {
-            path: None,
             content: Some(text.to_owned()),
             name: Some(name.to_owned()),
-            title: None,
-            source: None,
+            ..ShowArgs::default()
         }
     }
 
     fn by_path(path: PathBuf) -> ShowArgs {
         ShowArgs {
             path: Some(path),
-            content: None,
-            name: None,
-            title: None,
-            source: None,
+            ..ShowArgs::default()
         }
+    }
+
+    const PNG: &[u8] = b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR";
+
+    #[tokio::test]
+    async fn html_show_inlines_and_counts_images() {
+        let (s, d) = open().await;
+        let png = d.path().join("chart.png");
+        std::fs::write(&png, PNG).unwrap();
+        let html = format!(
+            "<!doctype html><img src=\"{}\"><style>b{{background:url({})}}</style>\n",
+            png.display(),
+            png.display()
+        );
+        let shown = s
+            .show(SessionId::new(), "c1".into(), content("chart.html", &html))
+            .await
+            .unwrap();
+        assert_eq!(shown.artifact.kind, Kind::Html);
+        assert_eq!(shown.receipt.images, Some(2));
+        assert_eq!(shown.receipt.lines, Some(1));
+        let stored = std::fs::read_to_string(&shown.artifact.path).unwrap();
+        assert_eq!(stored.matches("data:image/png;base64,").count(), 2);
+        assert!(!stored.contains(&png.display().to_string()));
+        assert_eq!(shown.artifact.bytes as usize, stored.len());
+        let line = kind::receipt(&shown.artifact, &shown.receipt);
+        assert!(line.contains(" · 2 images inlined)"), "{line}");
+        assert!(line.ends_with("Check it with page_preview when it has scripts."));
+        // A page without local images is stored byte for byte.
+        let plain = s
+            .show(
+                SessionId::new(),
+                "c2".into(),
+                content("p.html", "<p>hi</p>"),
+            )
+            .await
+            .unwrap();
+        assert_eq!(plain.receipt.images, Some(0));
+        assert_eq!(std::fs::read(&plain.artifact.path).unwrap(), b"<p>hi</p>");
+        assert!(!kind::receipt(&plain.artifact, &plain.receipt).contains("inlined"));
+    }
+
+    #[tokio::test]
+    async fn html_show_fails_listing_missing_images() {
+        let (s, d) = open().await;
+        let missing = d.path().join("gone.png");
+        let secret = d.path().join("token.svg");
+        std::fs::write(&secret, b"ghp_notansvg").unwrap();
+        let html = format!(
+            "<img src=\"{m}\"><img src='{m}'><img src=\"{s}\">",
+            m = missing.display(),
+            s = secret.display()
+        );
+        let err = s
+            .show(SessionId::new(), "c1".into(), content("chart.html", &html))
+            .await
+            .unwrap_err();
+        assert_eq!(
+            err,
+            format!(
+                "chart.html: these local images could not be read: {} — use absolute paths to \
+                 existing image files, or remove them",
+                missing.display()
+            )
+        );
+        // Every path exists but one is not an image: listed once, nothing stored.
+        let html = format!("<img src=\"{s}\"><img src=\"{s}\">", s = secret.display());
+        let err = s
+            .show(SessionId::new(), "c2".into(), content("chart.html", &html))
+            .await
+            .unwrap_err();
+        assert!(
+            err.contains(&format!("could not be read: {} — ", secret.display())),
+            "{err}"
+        );
+        assert!(blobs(&s.dir).is_empty());
+    }
+
+    #[tokio::test]
+    async fn height_is_clamped_and_echoed() {
+        let (s, _d) = open().await;
+        let sess = SessionId::new();
+        let show = |call: &str, height| {
+            s.show(
+                sess,
+                call.into(),
+                ShowArgs {
+                    height,
+                    ..content("p.html", "<p>hi</p>")
+                },
+            )
+        };
+        let a = show("c1", Some(600)).await.unwrap();
+        assert_eq!(a.receipt.height, Some((600, 600)));
+        assert!(kind::receipt(&a.artifact, &a.receipt).contains(" · height 600)"));
+        let b = show("c2", Some(3000)).await.unwrap();
+        assert_eq!(b.receipt.height, Some((3000, 2000)));
+        assert!(kind::receipt(&b.artifact, &b.receipt).contains(" · height 3000 → 2000)"));
+        let c = show("c3", Some(10)).await.unwrap();
+        assert_eq!(c.receipt.height, Some((10, 80)));
+        let d = show("c4", None).await.unwrap();
+        assert_eq!(d.receipt.height, None);
+        assert!(!kind::receipt(&d.artifact, &d.receipt).contains("height"));
+    }
+
+    /// The S0 ingest half (120 §9): HTML under a `.pdf` name is a download, never a document.
+    #[tokio::test]
+    async fn pdf_named_html_bytes_is_a_file() {
+        let (s, d) = open().await;
+        let sess = SessionId::new();
+        let fake = d.path().join("report.pdf");
+        std::fs::write(
+            &fake,
+            b"<!DOCTYPE html><script>fetch('asset://localhost/x')</script>",
+        )
+        .unwrap();
+        let shown = s.show(sess, "c1".into(), by_path(fake)).await.unwrap();
+        assert_eq!(shown.artifact.kind, Kind::File);
+        assert_eq!(shown.artifact.mime, "application/octet-stream");
+        assert_eq!(
+            shown.receipt.demoted,
+            Some("bytes are not a PDF (no %PDF- header); shown as a downloadable file")
+        );
+        // A JPEG under a `.png` name stays an image; the mime follows the bytes.
+        let jpg = d.path().join("shot.png");
+        std::fs::write(&jpg, b"\xff\xd8\xff\xe0JFIF").unwrap();
+        let shown = s.show(sess, "c2".into(), by_path(jpg)).await.unwrap();
+        assert_eq!(shown.artifact.kind, Kind::Image);
+        assert_eq!(shown.artifact.mime, "image/jpeg");
+        assert_eq!(shown.receipt.demoted, None);
+        // Text under an `.svg` name never reaches the rasterizer.
+        let err_free = s
+            .show(sess, "c3".into(), content("x.svg", "<html/>"))
+            .await
+            .unwrap();
+        assert_eq!(err_free.artifact.kind, Kind::File);
+        // A compiled `.pdf` is never demoted: the markdown source is not the stored bytes.
+        let pdf = s
+            .show(sess, "c4".into(), content("r.pdf", "# Hi\n"))
+            .await
+            .unwrap();
+        assert_eq!(pdf.artifact.kind, Kind::Pdf);
     }
 
     fn blobs(dir: &Path) -> Vec<String> {
@@ -1872,7 +2044,7 @@ mod tests {
         assert_eq!(blobs(&s.dir), [format!("{}.csv", kept.artifact.id)]);
 
         let file = d.path().join("shot.png");
-        std::fs::write(&file, b"not really png").unwrap();
+        std::fs::write(&file, PNG).unwrap();
         let shot = s
             .show(sess, "c2".into(), by_path(file.clone()))
             .await

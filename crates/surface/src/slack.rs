@@ -174,7 +174,7 @@ impl Render<'_> {
                 p.items.iter().map(|i| {
                     let glyph = match i.state.unwrap_or(TimelineState::Pending) {
                         TimelineState::Done => "✓",
-                        TimelineState::Active => "▶",
+                        TimelineState::Active => "▶", // no-emoji: allow
                         TimelineState::Pending => "○",
                     };
                     let mut row = vec![text(&format!("{glyph} {} — ", i.when)), bold(&i.title)];

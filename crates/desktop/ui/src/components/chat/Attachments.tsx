@@ -1,7 +1,7 @@
 import { X } from 'lucide-react'
 import { memo, type ReactNode, useEffect, useState } from 'react'
 import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog'
-import { resolveFile } from '@/lib/files'
+import { resolveDocument, resolveFile } from '@/lib/files'
 import { useApi } from '@/lib/rpc'
 import { cn } from '@/lib/utils'
 import { useEngines } from '@/link/engines'
@@ -35,6 +35,30 @@ export function useFileUrl(path: string): string | null {
       live = false
     }
   }, [api, path, active])
+  return src
+}
+
+/** A typed `blob:` URL for a document (PDF) frame via `resolveDocument` (120 §9b): `null` until the bytes arrive, `''` on failure; revoked on unmount. */
+export function useDocumentUrl(path: string): string | null {
+  const api = useApi()
+  const [src, setSrc] = useState<string | null>(null)
+  useEffect(() => {
+    let live = true
+    let url = ''
+    setSrc(null)
+    resolveDocument(api, path).then(
+      (u) => {
+        if (!live) return URL.revokeObjectURL(u)
+        url = u
+        setSrc(u)
+      },
+      () => live && setSrc(''),
+    )
+    return () => {
+      live = false
+      if (url) URL.revokeObjectURL(url)
+    }
+  }, [api, path])
   return src
 }
 
@@ -106,10 +130,21 @@ function Thumb({ item, onOpen, control, chipControl }: { item: Item; onOpen: () 
 
 /** The lightbox body: the image, or the PDF in a frame (WKWebView's own viewer; iOS draws page 1 — ponytail: reuse the artifact panel's pdf.js pages if that matters). */
 function Original({ item }: { item: Item }) {
+  return item.image ? <OriginalImage item={item} /> : <OriginalDocument item={item} />
+}
+
+function OriginalImage({ item }: { item: Item }) {
   const src = useFileUrl(item.path ?? '')
   if (src === null) return <div className="h-64 w-96 animate-pulse rounded-xl bg-layer-2" />
   if (src === '') return <div className="rounded-xl bg-layer-1 px-4 py-3 text-sm text-fg-secondary">Preview unavailable: {item.name}</div>
-  if (item.image) return <img src={src} alt={item.name} className="max-h-[85vh] w-auto rounded-xl" />
+  return <img src={src} alt={item.name} className="max-h-[85vh] w-auto rounded-xl" />
+}
+
+/** 120 §9b: a document never loads from `asset:` — a typed `blob:` of the RPC bytes, locally too. */
+function OriginalDocument({ item }: { item: Item }) {
+  const src = useDocumentUrl(item.path ?? '')
+  if (src === null) return <div className="h-64 w-96 animate-pulse rounded-xl bg-layer-2" />
+  if (src === '') return <div className="rounded-xl bg-layer-1 px-4 py-3 text-sm text-fg-secondary">Preview unavailable: {item.name}</div>
   return <iframe src={src} title={item.name} className="h-[85vh] w-[90vw] rounded-xl border-0 bg-white" />
 }
 

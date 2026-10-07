@@ -18,7 +18,7 @@ use std::sync::OnceLock;
 
 use objc2::rc::Retained;
 use objc2::runtime::{AnyClass, AnyObject, AnyProtocol, Imp, Sel};
-use objc2::{ffi, sel, MainThreadMarker};
+use objc2::{MainThreadMarker, ffi, sel};
 use objc2_foundation::NSString;
 use objc2_ui_kit::{
     UIApplication, UIScene, UISceneConfiguration, UISceneSession, UISceneWindowingControlStyle,
@@ -52,7 +52,9 @@ pub fn install() {
     };
     // SAFETY: `scene_configuration` has the method's ObjC signature and, like the original, returns
     // an autoreleased configuration; both function types are a plain `IMP` underneath.
-    let tao = unsafe { method.set_implementation(transmute::<SceneConfiguration, Imp>(scene_configuration)) };
+    let tao = unsafe {
+        method.set_implementation(transmute::<SceneConfiguration, Imp>(scene_configuration))
+    };
     let _ = TAO.set(unsafe { transmute::<Imp, SceneConfiguration>(tao) });
 }
 
@@ -128,7 +130,8 @@ pub fn dismiss(app: &tauri::AppHandle, scene: &UIScene) {
     tauri::async_runtime::spawn(async move {
         let _ = app.run_on_main_thread(move || {
             // SAFETY: the pointer came from `Retained::into_raw` above and is consumed once.
-            let session = unsafe { Retained::from_raw(session.into_raw()) }.expect("retained session");
+            let session =
+                unsafe { Retained::from_raw(session.into_raw()) }.expect("retained session");
             let mtm = MainThreadMarker::new().expect("tauri main-thread task");
             UIApplication::sharedApplication(mtm)
                 .requestSceneSessionDestruction_options_errorHandler(&session, None, None);
