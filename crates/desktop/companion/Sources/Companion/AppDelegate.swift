@@ -44,6 +44,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if let seconds = Flags.probe { runProbe(seconds) }
     }
 
+    func applicationDidBecomeActive(_ note: Notification) {
+        Log.write("became active (key=\(NSApp.keyWindow.map { "\($0.className)" } ?? "none"), frontmost=\(NSWorkspace.shared.frontmostApplication?.localizedName ?? "?"))")
+    }
+
     /// Revision 1: a quit must exit 0 — launchd relaunches a login item that exits non-zero.
     func applicationWillTerminate(_ note: Notification) {
         Log.write("terminate")
@@ -127,8 +131,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             panel.showWithoutKey(anchor: .mouse)
             Log.write("probe rail frame=\(rail.panel.frame) visible=\(rail.panel.isVisible) level=\(rail.panel.level.rawValue) sharing=\(rail.panel.sharingType.rawValue); panel frame=\(panel.panel.frame) visible=\(panel.panel.isVisible) key=\(panel.panel.isKeyWindow) active=\(NSApp.isActive)")
         }
-        DispatchQueue.main.asyncAfter(deadline: .now() + seconds) {
-            Log.write("probe done after \(seconds) s — quitting (frontmost=\(NSWorkspace.shared.frontmostApplication?.localizedName ?? "?"), active=\(NSApp.isActive))")
+        DispatchQueue.main.asyncAfter(deadline: .now() + seconds) { [self] in
+            // Ground truth from the window server (top-left origin), as spike SA read it.
+            let wins = (CGWindowListCopyWindowInfo([.optionOnScreenOnly], kCGNullWindowID) as? [[String: Any]] ?? [])
+                .filter { ($0[kCGWindowOwnerPID as String] as? Int32) == getpid() }
+                .compactMap { $0[kCGWindowBounds as String] as? [String: Any] }
+                .map { "x=\($0["X"] ?? 0) y=\($0["Y"] ?? 0) w=\($0["Width"] ?? 0) h=\($0["Height"] ?? 0)" }
+            Log.write("probe windows (CGWindowList): \(wins)")
+            Log.write("probe done after \(seconds) s — quitting (rail=\(rail.panel.frame) panel=\(panel.panel.frame) frontmost=\(NSWorkspace.shared.frontmostApplication?.localizedName ?? "?"), active=\(NSApp.isActive), key=\(NSApp.keyWindow.map { "\($0.className)" } ?? "none"), panel key=\(panel.panel.isKeyWindow))")
             NSApp.terminate(nil)
         }
     }

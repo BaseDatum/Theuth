@@ -49,9 +49,10 @@ final class PanelController {
         panel.animationBehavior = .utilityWindow
 
         hosting = NSHostingView(rootView: PanelView(store: store))
-        hosting.translatesAutoresizingMaskIntoConstraints = false
+        // The window frame is set by `relayout` (≤ 560 pt): autoresizing only, no constraints that could grow it.
+        hosting.autoresizingMask = [.width, .height]
 
-        let container = NSView()
+        let container = NSView(frame: NSRect(x: 0, y: 0, width: Self.width, height: 200))
         container.wantsLayer = true
         container.layer?.cornerRadius = 12
         container.layer?.cornerCurve = .continuous
@@ -60,32 +61,25 @@ final class PanelController {
         container.layer?.borderColor = Palette.border.cgColor
 
         let backdrop: NSView
-        // Liquid Glass on 26+, the HUD material before; both honour Reduce Transparency through AppKit.
+        // Liquid Glass on 26+, the HUD material before; both honour Reduce Transparency through AppKit. The
+        // backdrop is a sibling under the hosting view (not its `contentView`), so no autolayout constraint can
+        // grow the window past `relayout`'s frame.
         if #available(macOS 26, *) {
             let glass = NSGlassEffectView()
             glass.cornerRadius = 12
-            glass.contentView = hosting
             backdrop = glass
         } else {
             let effect = NSVisualEffectView()
             effect.material = .hudWindow
             effect.blendingMode = .behindWindow
             effect.state = .active
-            effect.addSubview(hosting)
             backdrop = effect
         }
-        backdrop.translatesAutoresizingMaskIntoConstraints = false
+        backdrop.frame = container.bounds
+        backdrop.autoresizingMask = [.width, .height]
+        hosting.frame = container.bounds
         container.addSubview(backdrop)
-        NSLayoutConstraint.activate([
-            backdrop.leadingAnchor.constraint(equalTo: container.leadingAnchor),
-            backdrop.trailingAnchor.constraint(equalTo: container.trailingAnchor),
-            backdrop.topAnchor.constraint(equalTo: container.topAnchor),
-            backdrop.bottomAnchor.constraint(equalTo: container.bottomAnchor),
-            hosting.leadingAnchor.constraint(equalTo: backdrop.leadingAnchor),
-            hosting.trailingAnchor.constraint(equalTo: backdrop.trailingAnchor),
-            hosting.topAnchor.constraint(equalTo: backdrop.topAnchor),
-            hosting.bottomAnchor.constraint(equalTo: backdrop.bottomAnchor),
-        ])
+        container.addSubview(hosting)
         panel.contentView = container
 
         NotificationCenter.default.publisher(for: NSWindow.didResignKeyNotification, object: panel)
@@ -105,8 +99,9 @@ final class PanelController {
     func open(anchor: Anchor) {
         self.anchor = anchor
         previousApp = NSWorkspace.shared.frontmostApplication
-        relayout()
         isOpen = true
+        relayout(now: true)
+        panel.ignoresMouseEvents = false
         panel.makeKeyAndOrderFront(nil)
         if keyMonitor == nil {
             keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] e in
@@ -121,8 +116,9 @@ final class PanelController {
     /// Probe mode: on screen, not key, so nothing can lose focus.
     func showWithoutKey(anchor: Anchor) {
         self.anchor = anchor
-        relayout()
         isOpen = true
+        relayout(now: true)
+        panel.ignoresMouseEvents = true // a stray click must not make it key during the probe
         panel.orderFrontRegardless()
     }
 
@@ -153,16 +149,20 @@ final class PanelController {
         return true
     }
 
-    private func relayout() {
-        guard isOpen || panel.isVisible else { return }
-        DispatchQueue.main.async { [self] in
-            hosting.layoutSubtreeIfNeeded()
-            let fit = hosting.fittingSize
-            let h = min(Self.maxHeight, max(80, fit.height))
-            let size = NSSize(width: Self.width, height: h)
-            let origin = origin(for: size)
-            panel.setFrame(NSRect(origin: origin, size: size), display: true)
-        }
+    /// Size to the SwiftUI content (≤ 560 pt) and place it. `objectWillChange` fires before the change, so that
+    /// path defers one run-loop turn; opening measures at once.
+    private func relayout(now: Bool = false) {
+        guard isOpen else { return }
+        if now { return place() }
+        DispatchQueue.main.async { [self] in if isOpen { place() } }
+    }
+
+    private func place() {
+        hosting.layoutSubtreeIfNeeded()
+        let fit = hosting.fittingSize
+        let size = NSSize(width: Self.width, height: min(Self.maxHeight, max(80, fit.height)))
+        panel.setFrame(NSRect(origin: origin(for: size), size: size), display: true)
+        hosting.frame = panel.contentView?.bounds ?? .zero
     }
 
     private func origin(for size: NSSize) -> NSPoint {

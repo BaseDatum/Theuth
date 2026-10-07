@@ -29,6 +29,7 @@ printf 'APPL????' > "$APP/Contents/PkgInfo"
 # SwiftPM resource bundles of dependencies (KeyboardShortcuts' localisations) live beside the binary; the
 # generated `Bundle.module` accessor also looks in the app's Resources.
 for b in "$BIN_DIR"/*.bundle; do [ -d "$b" ] && cp -R "$b" "$APP/Contents/Resources/"; done
+chmod -R u+w "$APP/Contents/Resources"
 
 echo "== icon (iconutil)"
 ICON_KEY=""

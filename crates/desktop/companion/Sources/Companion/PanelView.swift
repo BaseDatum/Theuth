@@ -6,15 +6,24 @@ import TheuthKit
 struct PanelView: View {
     @ObservedObject var store: Store
 
+    static let maxLines = 6
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             header
             Divider().overlay(Color.rule.opacity(0.6))
             if let item = store.panel.focused {
                 CardView(card: store.card(for: item), store: store)
-                ForEach(store.panel.others) { other in
+                // ≤ 560 pt tall: the first lines around the focus; J/K still walk the whole list.
+                let others = store.panel.others
+                let shown = Array(others.prefix(Self.maxLines))
+                ForEach(shown) { other in
                     Divider().overlay(Color.rule.opacity(0.4))
                     LineView(item: other, now: store.now).onTapGesture { store.focus(id: other.id) }
+                }
+                if others.count > shown.count {
+                    Divider().overlay(Color.rule.opacity(0.4))
+                    Text("+\(others.count - shown.count) more · J to walk them")
+                        .font(.system(size: 11)).foregroundColor(.sand).padding(.horizontal, 12).padding(.vertical, 6)
                 }
             } else {
                 Text(store.connection == .open ? "Nothing needs you." : "Connecting to the engine…")
