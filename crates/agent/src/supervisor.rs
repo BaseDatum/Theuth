@@ -424,7 +424,7 @@ enum Held {
         defer: bool,
     },
     /// A peer exchange admitted by [`Agents::enqueue_peer`].
-    Peer(PeerInput),
+    Peer(Box<PeerInput>),
 }
 
 /// The request scope a spawned child works for; `cancelled` once
@@ -1523,7 +1523,7 @@ impl Agents {
         // The recipient's brief waits for a permit (01 §2.6): held, so the
         // brief stays its first input and no bounded turn races the permit.
         if let Some(q) = self.queued.get_mut(&to) {
-            q.held.push(Held::Peer(input));
+            q.held.push(Held::Peer(Box::new(input)));
             return Ok(());
         }
         self.offer_peer(actor, to, input);
@@ -3337,11 +3337,7 @@ impl Message<Harvest> for Agents {
 impl Message<SpawnChild> for Agents {
     type Reply = Result<(String, SessionId, Option<String>), String>;
 
-    async fn handle(
-        &mut self,
-        m: SpawnChild,
-        ctx: &mut Context<Self, Self::Reply>,
-    ) -> Self::Reply {
+    async fn handle(&mut self, m: SpawnChild, ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
         let sub = &self.cfg.subagents;
         // 51 §4.1: nothing of a private tree leaves the process.
         if m.agent.is_some() && self.private_member.contains_key(&m.parent) {
@@ -3477,7 +3473,11 @@ impl Message<SpawnChild> for Agents {
         let permits = self.tree_pools(root).get(pool).clone();
         let me = ctx.actor_ref().clone();
         if let Ok(permit) = permits.clone().try_acquire_owned() {
-            let permit = SpawnPermit { pool, root, _permit: permit };
+            let permit = SpawnPermit {
+                pool,
+                root,
+                _permit: permit,
+            };
             self.start_child_turn(id, Some(permit), text, ticket, Some(me))
                 .await;
             return Ok((name, id, None));
@@ -3491,7 +3491,11 @@ impl Message<SpawnChild> for Agents {
             let _ = me
                 .tell(StartChildTurn {
                     child: id,
-                    permit: SpawnPermit { pool, root, _permit: permit },
+                    permit: SpawnPermit {
+                        pool,
+                        root,
+                        _permit: permit,
+                    },
                 })
                 .await;
         })
@@ -3670,7 +3674,7 @@ impl Agents {
                         .await;
                 }
                 Held::Peer(input) => match self.actor(child).await {
-                    Ok(actor) => self.offer_peer(actor, child, input),
+                    Ok(actor) => self.offer_peer(actor, child, *input),
                     Err(reason) => {
                         self.peer_intake_failed(PeerIntakeFailed {
                             session: child,
@@ -11770,5 +11774,450 @@ pub(crate) mod tests {
             agents.ask(UnloadSession { session: child }).await.unwrap(),
             "exactly one new live entry for the session"
         );
+    }
+
+    // ----- spawn permit queue (01 §2.6, spawnstall 2026-10-07) -----
+    //
+    // The `Agents` actor is deliberately NOT bus-subscribed in these tests:
+    // a native child's turn ends as `error` at once (no registry), so the
+    // test ends a spawn turn itself by telling `TurnFinished`, exactly as
+    // the bus would. Real time, no sleeps: every wait is on a channel.
+
+    /// `ask`: run `f` on the actor's state — test-only inspection.
+    struct With<F>(F);
+
+    impl<F, R> Message<With<F>> for Agents
+    where
+        F: FnOnce(&mut Agents) -> R + Send + 'static,
+        R: kameo::reply::Reply + Send + 'static,
+    {
+        type Reply = R;
+
+        async fn handle(&mut self, m: With<F>, _: &mut Context<Self, Self::Reply>) -> R {
+            (m.0)(self)
+        }
+    }
+
+    /// Every `AgentEvent` on the bus, as a stream.
+    #[derive(kameo::Actor)]
+    struct Tap(tokio::sync::mpsc::UnboundedSender<AgentEvent>);
+
+    impl Message<AgentEvent> for Tap {
+        type Reply = ();
+        async fn handle(&mut self, e: AgentEvent, _: &mut Context<Self, Self::Reply>) {
+            let _ = self.0.send(e);
+        }
+    }
+
+    /// A bus tap on `rt`.
+    async fn tap(rt: &Runtime) -> tokio::sync::mpsc::UnboundedReceiver<AgentEvent> {
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        let tap = Tap::spawn_with_mailbox(Tap(tx), runtime::subscriber_mailbox());
+        rt.subscribe::<Tap, AgentEvent>(&tap).await;
+        rx
+    }
+
+    /// The text of the next `TurnStarted` on `session`, within 10 s.
+    async fn next_turn(
+        rx: &mut tokio::sync::mpsc::UnboundedReceiver<AgentEvent>,
+        session: SessionId,
+    ) -> String {
+        tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                match rx.recv().await.expect("bus open") {
+                    AgentEvent::TurnStarted {
+                        session: s, text, ..
+                    } if s == session => {
+                        return text;
+                    }
+                    _ => {}
+                }
+            }
+        })
+        .await
+        .expect("a turn starts")
+    }
+
+    /// The next event on `session` matching `pick`, within 10 s.
+    async fn next_event(
+        rx: &mut tokio::sync::mpsc::UnboundedReceiver<AgentEvent>,
+        pick: impl Fn(&AgentEvent) -> bool,
+    ) -> AgentEvent {
+        tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                let e = rx.recv().await.expect("bus open");
+                if pick(&e) {
+                    return e;
+                }
+            }
+        })
+        .await
+        .expect("the event arrives")
+    }
+
+    /// A spawn of a child of `parent` named `name`, briefed `task`.
+    fn spawn(parent: SessionId, name: &str, task: &str) -> SpawnChild {
+        SpawnChild {
+            parent,
+            name: Some(name.into()),
+            task: task.into(),
+            agent: None,
+            cwd: None,
+            model: None,
+            effort: None,
+            cap: None,
+            skills: Vec::new(),
+        }
+    }
+
+    /// `session`'s turn ended, as the bus reports it.
+    fn finished(session: SessionId) -> AgentEvent {
+        AgentEvent::TurnFinished {
+            session,
+            turn: TurnId::new(),
+            stop_reason: "end_turn".into(),
+            usage: crate::Usage::default(),
+            context: 0,
+        }
+    }
+
+    /// A root session and the actor over `a`.
+    async fn rooted(mut a: Agents) -> (ActorRef<Agents>, SessionId) {
+        let (p, _) = a.session(None, None, None, (None, None)).await.unwrap();
+        (Agents::spawn(a), p)
+    }
+
+    /// Native permits free in `root`'s tree, and whether `child` is queued.
+    async fn pool_state(
+        agents: &ActorRef<Agents>,
+        root: SessionId,
+        child: SessionId,
+    ) -> (usize, bool) {
+        agents
+            .ask(With(move |a: &mut Agents| {
+                (
+                    a.pools[&root].native.available_permits(),
+                    a.queued.contains_key(&child),
+                )
+            }))
+            .await
+            .unwrap()
+    }
+
+    /// T1: with one native slot, the first spawn starts and the second is
+    /// queued — the parent's reply says so and names the running child —
+    /// with nothing routed into the queued child and no permit left.
+    #[tokio::test]
+    async fn second_spawn_queues_and_tells_the_parent() {
+        let (agents, p) = rooted(agents().await).await;
+        let (_, x, queued) = agents.ask(spawn(p, "x", "first")).await.unwrap();
+        assert!(queued.is_none(), "a free slot: started");
+        let (_, y, queued) = agents.ask(spawn(p, "y", "second")).await.unwrap();
+        let notice = queued.expect("no slot: queued");
+        assert!(
+            notice.starts_with(
+                "Queued: all 1 native child slots of this orchestrator are busy (running: x since "
+            ),
+            "{notice}"
+        );
+        assert!(
+            notice.ends_with("Messages you send it are delivered after its brief."),
+            "{notice}"
+        );
+        let (routed_x, routed_y) = agents
+            .ask(With(move |a: &mut Agents| {
+                (a.last_input.contains_key(&x), a.last_input.contains_key(&y))
+            }))
+            .await
+            .unwrap();
+        assert!(routed_x && !routed_y, "the brief waits with the permit");
+        assert_eq!(pool_state(&agents, p, y).await, (0, true));
+    }
+
+    /// T2: a peer message to a queued child is held, not routed; when the
+    /// running child's turn ends the queued child's first input is its
+    /// brief and the held message comes second, under exactly one permit,
+    /// which frees when its turn ends.
+    #[tokio::test]
+    async fn held_message_follows_the_brief() {
+        let a = agents_with(true).await;
+        let mut rx = tap(&a.rt).await;
+        let (agents, p) = rooted(a).await;
+        let (_, x, _) = agents.ask(spawn(p, "x", "first")).await.unwrap();
+        assert_eq!(next_turn(&mut rx, x).await, "first");
+        let (_, y, queued) = agents.ask(spawn(p, "y", "second")).await.unwrap();
+        assert!(queued.is_some());
+        agents
+            .ask(Deliver {
+                from: p,
+                to: format!("session:{y}"),
+                text: "hello y".into(),
+                await_reply: false,
+                reply_to: None,
+                request_id: None,
+                admitted: CancellationToken::new(),
+            })
+            .await
+            .unwrap();
+        let (held, routed) = agents
+            .ask(With(move |a: &mut Agents| {
+                (a.queued[&y].held.len(), a.last_input.contains_key(&y))
+            }))
+            .await
+            .unwrap();
+        assert_eq!((held, routed), (1, false), "held, nothing routed");
+
+        agents.tell(finished(x)).await.unwrap();
+        assert_eq!(next_turn(&mut rx, y).await, "second", "the brief is first");
+        let second = next_turn(&mut rx, y).await;
+        assert!(
+            second.contains("hello y"),
+            "the held message follows: {second}"
+        );
+        assert_eq!(
+            pool_state(&agents, p, y).await,
+            (0, false),
+            "y holds the one permit"
+        );
+        agents.tell(finished(y)).await.unwrap();
+        assert_eq!(
+            pool_state(&agents, p, y).await.0,
+            1,
+            "freed when y's turn ends"
+        );
+    }
+
+    /// T3: a queued child stopped by the user never gets its brief: the
+    /// wait is aborted, its ticket released, the error published; when the
+    /// slot frees it stays free.
+    #[tokio::test]
+    async fn stopped_queued_child_never_starts() {
+        let a = agents().await;
+        let mut rx = tap(&a.rt).await;
+        let (agents, p) = rooted(a).await;
+        let (_, x, _) = agents.ask(spawn(p, "x", "first")).await.unwrap();
+        let (_, y, _) = agents.ask(spawn(p, "y", "second")).await.unwrap();
+        agents
+            .ask(Cancel {
+                session: y,
+                keep: None,
+            })
+            .await
+            .unwrap();
+        let e = next_event(
+            &mut rx,
+            |e| matches!(e, AgentEvent::Error { session, .. } if *session == y),
+        )
+        .await;
+        assert!(
+            matches!(e, AgentEvent::Error { message, .. } if message == "spawn cancelled before it started")
+        );
+        let (queued, counted) = agents
+            .ask(With(move |a: &mut Agents| {
+                (a.queued.contains_key(&y), a.ledger.activity(y).is_some())
+            }))
+            .await
+            .unwrap();
+        assert!(!queued && !counted, "dropped and its ticket released");
+        agents.tell(finished(x)).await.unwrap();
+        // Anything y would have started is ordered before this round trip.
+        let (free, routed_y) = agents
+            .ask(With(move |a: &mut Agents| {
+                (
+                    a.pools[&p].native.available_permits(),
+                    a.last_input.contains_key(&y),
+                )
+            }))
+            .await
+            .unwrap();
+        assert_eq!((free, routed_y), (1, false), "the stale brief never ran");
+    }
+
+    /// T5: a human input into a queued child promotes it: the brief runs at
+    /// once, then the human text, with no permit taken and the running
+    /// sibling untouched.
+    #[tokio::test]
+    async fn human_input_promotes_a_queued_child() {
+        let a = agents().await;
+        let mut rx = tap(&a.rt).await;
+        let (agents, p) = rooted(a).await;
+        let (_, _x, _) = agents.ask(spawn(p, "x", "first")).await.unwrap();
+        let (_, y, queued) = agents.ask(spawn(p, "y", "second")).await.unwrap();
+        assert!(queued.is_some());
+        agents
+            .ask(SendInput {
+                session: Some(y),
+                text: "hurry".into(),
+                files: Vec::new(),
+                delivery: Delivery::Steer,
+                id: None,
+            })
+            .await
+            .unwrap();
+        assert_eq!(next_turn(&mut rx, y).await, "second", "the brief first");
+        assert_eq!(next_turn(&mut rx, y).await, "hurry", "then the human");
+        let (free, queued, permit_free) = agents
+            .ask(With(move |a: &mut Agents| {
+                (
+                    a.pools[&p].native.available_permits(),
+                    a.queued.contains_key(&y),
+                    a.child_turns[&y].permit.is_none(),
+                )
+            }))
+            .await
+            .unwrap();
+        assert_eq!(
+            (free, queued, permit_free),
+            (0, false, true),
+            "promoted permit-free"
+        );
+    }
+
+    /// A fake node `box` on `a`: the harness side of its one connection.
+    fn node(a: &Agents, name: &str) -> crate::acp_child::tests::Fake {
+        let (fake, dialer) = crate::acp_child::tests::Fake::new();
+        a.nodes
+            .write()
+            .unwrap_or_else(|p| p.into_inner())
+            .insert(name.into(), ("fake".into(), dialer));
+        fake
+    }
+
+    /// A spawn of a child of `parent` on node `node`.
+    fn spawn_on(parent: SessionId, node: &str, name: &str, task: &str) -> SpawnChild {
+        SpawnChild {
+            agent: Some(node.into()),
+            ..spawn(parent, name, task)
+        }
+    }
+
+    /// T4: the pools are separate — with the one native slot taken, a node
+    /// child starts at once from the external pool; with the one external
+    /// slot taken, a second node child queues while a native spawn still
+    /// starts.
+    #[tokio::test]
+    async fn native_and_external_pools_are_separate() {
+        let a = agents().await;
+        let mut fake = node(&a, "box");
+        let (agents, p) = rooted(a).await;
+        let (_, _x, _) = agents.ask(spawn(p, "x", "native")).await.unwrap();
+        let (_, _, queued) = agents
+            .ask(spawn_on(p, "box", "e1", "remote one"))
+            .await
+            .unwrap();
+        assert!(queued.is_none(), "the native pool being full is irrelevant");
+        fake.handshake(Vec::new(), None).await;
+        let (_, text) = fake.prompt().await;
+        assert_eq!(text, "remote one", "the brief reached the harness");
+        let (_, e2, queued) = agents
+            .ask(spawn_on(p, "box", "e2", "remote two"))
+            .await
+            .unwrap();
+        let notice = queued.expect("the one external slot is held");
+        assert!(notice.starts_with("Queued: all 1 external child slots of this orchestrator are busy (running: e1 since "), "{notice}");
+        let (ext_free, nat_free, e2_queued) = agents
+            .ask(With(move |a: &mut Agents| {
+                let pools = &a.pools[&p];
+                (
+                    pools.external.available_permits(),
+                    pools.native.available_permits(),
+                    a.queued.contains_key(&e2),
+                )
+            }))
+            .await
+            .unwrap();
+        assert_eq!((ext_free, nat_free, e2_queued), (0, 0, true));
+        // The native pool frees: a native spawn starts although external is full.
+        agents.tell(finished(_x)).await.unwrap();
+        let (_, _, queued) = agents.ask(spawn(p, "z", "native two")).await.unwrap();
+        assert!(
+            queued.is_none(),
+            "native spawns never wait on the external pool"
+        );
+    }
+
+    /// T6 (D6): a node harness that drops mid-prompt ends the spawn turn as
+    /// `error`, and the supervisor — bus-subscribed here, as in production —
+    /// releases the external permit with the turn.
+    #[tokio::test]
+    async fn harness_exit_releases_the_external_permit() {
+        let a = agents().await;
+        let mut fake = node(&a, "box");
+        let rt = a.rt.clone();
+        let (agents, p) = rooted(a).await;
+        // Subscribed first: the bus tells subscribers in registration order,
+        // so the supervisor has handled an event before the tap sees it.
+        rt.subscribe::<Agents, AgentEvent>(&agents).await;
+        let mut rx = tap(&rt).await;
+        let (_, e1, queued) = agents.ask(spawn_on(p, "box", "e1", "go")).await.unwrap();
+        assert!(queued.is_none());
+        fake.handshake(Vec::new(), None).await;
+        let (_, text) = fake.prompt().await;
+        assert_eq!(text, "go");
+        let held = agents
+            .ask(With(move |a: &mut Agents| {
+                a.pools[&p].external.available_permits()
+            }))
+            .await
+            .unwrap();
+        assert_eq!(held, 0, "the spawn turn holds the external permit");
+        // The harness goes away with the prompt in flight.
+        drop(fake);
+        let e = next_event(
+            &mut rx,
+            |e| matches!(e, AgentEvent::TurnFinished { session, .. } if *session == e1),
+        )
+        .await;
+        assert!(
+            matches!(e, AgentEvent::TurnFinished { stop_reason, .. } if stop_reason == "error")
+        );
+        // The bus delivered the same event to the supervisor before this ask.
+        let (free, turn) = agents
+            .ask(With(move |a: &mut Agents| {
+                (
+                    a.pools[&p].external.available_permits(),
+                    a.child_turns.contains_key(&e1),
+                )
+            }))
+            .await
+            .unwrap();
+        assert_eq!((free, turn), (1, false), "permit released with the turn");
+    }
+
+    /// T7: pools are per orchestrator tree — a queued child in tree A does
+    /// not delay a spawn in tree B, and a session in tree B draws its
+    /// bounded turns' permits from B's native pool, never A's.
+    #[tokio::test]
+    async fn pools_are_per_orchestrator_tree() {
+        let mut a = agents().await;
+        let (p1, _) = a.session(None, None, None, (None, None)).await.unwrap();
+        let (p2, _) = a.session(None, None, None, (None, None)).await.unwrap();
+        let agents = Agents::spawn(a);
+        let (_, _a1, _) = agents.ask(spawn(p1, "a1", "one")).await.unwrap();
+        let (_, a2, queued) = agents.ask(spawn(p1, "a2", "two")).await.unwrap();
+        assert!(queued.is_some(), "tree A is full");
+        let (_, b1, queued) = agents.ask(spawn(p2, "b1", "three")).await.unwrap();
+        assert!(queued.is_none(), "tree B has its own slot");
+        let (a_free, a2_queued, b_free, b1_permits) = agents
+            .ask(With(move |a: &mut Agents| {
+                let b1_actor = a.sessions[&b1].actor.native().unwrap().clone();
+                (
+                    a.pools[&p1].native.available_permits(),
+                    a.queued.contains_key(&a2),
+                    a.pools[&p2].native.available_permits(),
+                    (
+                        Arc::as_ptr(&a.pools[&p1].native) as usize,
+                        Arc::as_ptr(&a.pools[&p2].native) as usize,
+                        b1_actor,
+                    ),
+                )
+            }))
+            .await
+            .unwrap();
+        assert_eq!((a_free, a2_queued, b_free), (0, true, 0));
+        let (pool_a, pool_b, b1_actor) = b1_permits;
+        let draws_from = b1_actor.ask(crate::loop_::PermitsOf).await.unwrap();
+        assert_eq!(draws_from, pool_b, "b1's bounded turns take B's permit");
+        assert_ne!(draws_from, pool_a, "never A's");
     }
 }

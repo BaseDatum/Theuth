@@ -506,6 +506,10 @@ pub fn inner_call_id(call_id: &str) -> Option<(&str, u32)> {
     Some((parent, n.parse().ok()?))
 }
 
+/// Most parent hops `Store::root_of` follows before it gives up on a
+/// corrupt (cyclic) chain; deeper trees than this do not exist.
+const ROOT_HOPS: usize = 32;
+
 impl Store {
     /// Open (creating) the database in WAL mode and run migrations. Two
     /// pools on one file (68 §3): `write` holds exactly one connection that
@@ -2404,16 +2408,23 @@ impl Store {
     }
 
     /// The top of `id`'s parent chain (`id` itself for a top-level or
-    /// unknown session): the orchestrator tree's key (01 §2.6).
+    /// unknown session): the orchestrator tree's key (01 §2.6). The walk
+    /// stops after [`ROOT_HOPS`] hops — a corrupt parent cycle warns once
+    /// and yields the id reached, never a hang.
     pub async fn root_of(&self, mut id: SessionId) -> anyhow::Result<SessionId> {
-        while let Some((Some(parent),)) =
-            sqlx::query_as::<_, (Option<String>,)>("SELECT parent FROM sessions WHERE id = ?")
-                .bind(id.to_string())
-                .fetch_optional(&self.read)
-                .await?
-        {
+        let start = id;
+        for _ in 0..ROOT_HOPS {
+            let Some((Some(parent),)) =
+                sqlx::query_as::<_, (Option<String>,)>("SELECT parent FROM sessions WHERE id = ?")
+                    .bind(id.to_string())
+                    .fetch_optional(&self.read)
+                    .await?
+            else {
+                return Ok(id);
+            };
             id = parent.parse().context("bad parent id")?;
         }
+        tracing::warn!(session = %start, "parent chain exceeds {ROOT_HOPS} hops; using {id} as the tree root");
         Ok(id)
     }
 
@@ -2965,6 +2976,46 @@ mod tests {
         for m in msgs {
             store.append(id, &m).await.unwrap();
         }
+    }
+
+    /// `root_of` walks to the top of a chain and, on a corrupt parent cycle,
+    /// stops after `ROOT_HOPS` with the id it reached instead of hanging.
+    #[tokio::test]
+    async fn root_of_tops_the_chain_and_survives_a_cycle() {
+        let (store, root, dir) = fresh().await;
+        let kid = SessionId::new();
+        let grandkid = SessionId::new();
+        store
+            .create_session(kid, "m", Some(root), Some("kid"), None)
+            .await
+            .unwrap();
+        store
+            .create_session(grandkid, "m", Some(kid), Some("grandkid"), None)
+            .await
+            .unwrap();
+        assert_eq!(store.root_of(grandkid).await.unwrap(), root);
+        assert_eq!(store.root_of(root).await.unwrap(), root);
+        let stranger = SessionId::new();
+        assert_eq!(
+            store.root_of(stranger).await.unwrap(),
+            stranger,
+            "unknown: itself"
+        );
+        // root → grandkid closes a cycle.
+        let mut tx = store.begin_write().await.unwrap();
+        sqlx::query("UPDATE sessions SET parent = ? WHERE id = ?")
+            .bind(grandkid.to_string())
+            .bind(root.to_string())
+            .execute(&mut *tx)
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+        let reached = tokio::time::timeout(std::time::Duration::from_secs(10), store.root_of(kid))
+            .await
+            .expect("bounded")
+            .unwrap();
+        assert!([root, kid, grandkid].contains(&reached));
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     fn texts(rows: &[(i64, ChatMessage)]) -> Vec<(i64, String)> {

@@ -1991,7 +1991,7 @@ impl Message<SetOption> for AcpChild {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use agent_client_protocol::schema::v1::{
         ContentBlock, ContentChunk, Cost, PlanEntry, PlanEntryPriority, ToolCall, ToolCallContent,
         ToolCallUpdate, ToolCallUpdateFields, ToolKind, UsageUpdate,
@@ -2538,13 +2538,13 @@ mod tests {
 
     /// The agent side of a [`LineDuplex`]: the test reads what the client
     /// sent (parsed) and writes raw JSON-RPC lines back.
-    struct Fake {
+    pub(crate) struct Fake {
         from_client: UnboundedReceiver<serde_json::Value>,
         to_client: UnboundedSender<String>,
     }
 
     /// Hands its one duplex to the first `dial`.
-    struct FakeDialer(
+    pub(crate) struct FakeDialer(
         Mutex<
             Option<(
                 UnboundedSender<serde_json::Value>,
@@ -2579,7 +2579,7 @@ mod tests {
     }
 
     impl Fake {
-        fn new() -> (Self, Arc<FakeDialer>) {
+        pub(crate) fn new() -> (Self, Arc<FakeDialer>) {
             let (ctx, crx) = unbounded_channel();
             let (atx, arx) = unbounded_channel();
             (
@@ -2596,7 +2596,7 @@ mod tests {
         }
 
         /// The client's next message, within 10 s (virtual under a paused clock).
-        async fn next(&mut self) -> serde_json::Value {
+        pub(crate) async fn next(&mut self) -> serde_json::Value {
             tokio::time::timeout(Duration::from_secs(10), self.from_client.recv())
                 .await
                 .expect("client message")
@@ -2610,7 +2610,7 @@ mod tests {
         /// `initialize` → `session/new` as omp answers them, announcing
         /// `options`; `agent` is the `agentInfo` to claim (06 §8.4). Checks
         /// the client capabilities theuth must and must not advertise.
-        async fn handshake(
+        pub(crate) async fn handshake(
             &mut self,
             options: Vec<SessionConfigOption>,
             agent: Option<agent_client_protocol::schema::v1::Implementation>,
@@ -2648,7 +2648,7 @@ mod tests {
         }
 
         /// The next `session/prompt`: `(id, text)`.
-        async fn prompt(&mut self) -> (serde_json::Value, String) {
+        pub(crate) async fn prompt(&mut self) -> (serde_json::Value, String) {
             let m = self.next().await;
             assert_eq!(m["method"], "session/prompt", "{m}");
             let text = m["params"]["prompt"][0]["text"]
@@ -2667,7 +2667,7 @@ mod tests {
             }}));
         }
 
-        fn end_turn(&self, id: &serde_json::Value) {
+        pub(crate) fn end_turn(&self, id: &serde_json::Value) {
             self.respond(id, PromptResponse::new(StopReason::EndTurn));
         }
 
