@@ -1,0 +1,47 @@
+{
+  "id": 41234567,
+  "created_at": "2026-10-01T14:02:11Z",
+  "created_at_i": 1790000000,
+  "type": "story",
+  "author": "throwaway_dev",
+  "title": "Show HN: A tiny Rust HTML compactor",
+  "url": "https://example.test/compactor",
+  "text": "<p>We built a small compactor that removes repeated blocks before the token cap.</p><p>Feedback welcome &amp; appreciated.</p>",
+  "points": 212,
+  "parent_id": null,
+  "story_id": null,
+  "children": [
+    {
+      "id": 41234601, "created_at": "2026-10-01T14:20:00Z", "type": "comment", "author": "alice",
+      "text": "<p>Does it keep code fences?</p>", "points": null, "parent_id": 41234567, "story_id": 41234567,
+      "children": [
+        {
+          "id": 41234650, "created_at": "2026-10-01T14:25:00Z", "type": "comment", "author": "throwaway_dev",
+          "text": "<p>Yes — fences pass through verbatim.</p>", "points": null, "parent_id": 41234601, "story_id": 41234567,
+          "children": [
+            {
+              "id": 41234700, "created_at": "2026-10-01T14:30:00Z", "type": "comment", "author": "bob",
+              "text": "<p>Even <code>~~~</code> fences?</p>", "points": null, "parent_id": 41234650, "story_id": 41234567,
+              "children": [
+                {
+                  "id": 41234750, "created_at": "2026-10-01T14:35:00Z", "type": "comment", "author": "throwaway_dev",
+                  "text": "<p>Depth four: both fence styles are tracked.</p>", "points": null, "parent_id": 41234700, "story_id": 41234567,
+                  "children": []
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": 41234800, "created_at": "2026-10-01T15:00:00Z", "type": "comment", "author": null,
+      "text": null, "points": null, "parent_id": 41234567, "story_id": 41234567, "children": []
+    },
+    {
+      "id": 41234900, "created_at": "2026-10-01T15:10:00Z", "type": "comment", "author": "carol",
+      "text": "<p>How does it compare to <a href=\"https://example.test/other\" rel=\"nofollow\">the other one</a>?</p>", "points": null, "parent_id": 41234567, "story_id": 41234567,
+      "children": []
+    }
+  ]
+}

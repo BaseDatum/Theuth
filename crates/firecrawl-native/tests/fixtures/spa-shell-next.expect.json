@@ -1,0 +1,10 @@
+{
+  "issue": "empty_shell",
+  "tier_hint": "island",
+  "method": "body",
+  "min_words": 0,
+  "must_contain": [],
+  "must_not_contain": [
+    "Why the night ferry"
+  ]
+}

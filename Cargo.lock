@@ -5857,6 +5857,7 @@ checksum = "3e0f1c7c3a72c66fd80abe965175f7523475c0489a87d3ff9d6e8c87d87a9d2d"
 name = "firecrawl-native"
 version = "2.9.2"
 dependencies = [
+ "html-to-markdown-rs",
  "kuchikiki",
  "psl",
  "regex",
@@ -18265,6 +18266,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "browser",
+ "chrono",
  "firecrawl-native",
  "futures",
  "html-to-markdown-rs",
@@ -24532,9 +24534,12 @@ version = "2.9.2"
 dependencies = [
  "anyhow",
  "async-trait",
+ "bytes",
  "chrono",
+ "encoding_rs",
  "figment",
  "flate2",
+ "futures",
  "html-to-markdown-rs",
  "kameo",
  "rand 0.9.5",
@@ -24551,6 +24556,8 @@ dependencies = [
  "ts-rs",
  "url",
  "wiremock",
+ "wreq",
+ "wreq-util",
 ]
 
 [[package]]

@@ -3,21 +3,31 @@
 //! the raw [`Fetcher::request`] used for route replay (44 §0.6).
 //!
 //! - `ssrf`: the mandatory guard; [`check_url`] for callers outside the fetcher.
-//! - `text`: one HTML parser for both [`FetchFormat`]s, plus truncation.
+//! - `text`: one HTML parser for both [`FetchFormat`]s, plus truncation and the pageable [`cut`].
+//! - `client`: the HTTP client seam (`reqwest` today, `wreq` Chrome emulation by W5).
 
+pub mod charset;
+pub mod client;
+pub mod issue;
+pub mod meta;
 mod ssrf;
 mod text;
 
 use std::io::Read;
 use std::net::SocketAddr;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use futures::stream::{BoxStream, StreamExt, TryStreamExt};
+use reqwest::header::{HeaderName, HeaderValue};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use url::Url;
 
+use client::{ClientConfig, ClientError, ClientKind, HttpClient, Impersonate};
+
 pub use ssrf::{check_url, is_blocked_hostname, is_blocked_ip};
-pub use text::{collapse_ws, hard_truncate};
+pub use text::{Cut, MAX_OMITTED_HEADINGS, collapse_ws, cut, hard_truncate, take_title};
 
 /// Whole-request timeout for one page fetch.
 pub const TIMEOUT: Duration = Duration::from_secs(8);
@@ -35,7 +45,9 @@ pub enum FetchFormat {
     Markdown,
 }
 
-/// A fetched page (the `structured` half of `read_url`).
+/// A fetched page (the `structured` half of `read_url`). Every field added by
+/// design doc 122 (`issue` onward) has a serde default, so older callers and
+/// stored payloads keep working.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct FetchResponse {
     /// Final URL after redirects.
@@ -48,6 +60,78 @@ pub struct FetchResponse {
     pub truncated: bool,
     /// Wall time of the fetch in milliseconds.
     pub took_ms: u64,
+    /// Why the page did not read as content, with the next rung.
+    #[serde(default)]
+    pub issue: Option<issue::PageIssue>,
+    /// title, description, author, published (RFC 3339), lang, canonical, site_name.
+    #[serde(default)]
+    pub meta: meta::PageMeta,
+    /// HTTP attempts made (every request of every rung).
+    #[serde(default = "default_attempts")]
+    pub attempts: u8,
+    /// A rung after the first attempt produced this response (122 R1-D1).
+    #[serde(default)]
+    pub ladder: bool,
+    /// Encoding label used to decode the body.
+    #[serde(default = "default_charset")]
+    pub charset: String,
+    /// Characters removed by compaction before the cap.
+    #[serde(default)]
+    pub compacted_chars: usize,
+    /// Pass as `offset` to continue; null when nothing was omitted.
+    #[serde(default)]
+    pub next_offset: Option<usize>,
+    /// Headings of the omitted tail (≤ 12).
+    #[serde(default)]
+    pub omitted_headings: Vec<String>,
+    /// `fetch`, `render` or `api`.
+    #[serde(default = "default_tier")]
+    pub tier: String,
+    /// The API source used (`hn-item`, `npm`, …).
+    #[serde(default)]
+    pub source_kind: Option<String>,
+    /// Non-fatal remarks (an API source that failed, a ladder attempt that did not help).
+    #[serde(default)]
+    pub notes: Vec<String>,
+    /// Which HTTP client answered (`reqwest` or `wreq_chrome`).
+    #[serde(default)]
+    pub client: ClientKind,
+}
+
+fn default_attempts() -> u8 {
+    1
+}
+
+fn default_charset() -> String {
+    "utf-8".to_owned()
+}
+
+fn default_tier() -> String {
+    "fetch".to_owned()
+}
+
+impl Default for FetchResponse {
+    fn default() -> Self {
+        Self {
+            url: String::new(),
+            title: None,
+            content: String::new(),
+            truncated: false,
+            took_ms: 0,
+            issue: None,
+            meta: meta::PageMeta::default(),
+            attempts: default_attempts(),
+            ladder: false,
+            charset: default_charset(),
+            compacted_chars: 0,
+            next_offset: None,
+            omitted_headings: Vec::new(),
+            tier: default_tier(),
+            source_kind: None,
+            notes: Vec::new(),
+            client: ClientKind::default(),
+        }
+    }
 }
 
 /// Raw reply of [`Fetcher::request`]; non-2xx is `Ok`, read `status`.
@@ -82,15 +166,108 @@ impl FetchError {
     /// Map a transport error, surfacing a guard refusal from the DNS
     /// resolver as [`FetchError::Rejected`].
     fn from_reqwest(e: &reqwest::Error) -> Self {
-        let mut source = std::error::Error::source(e);
-        while let Some(s) = source {
-            if let Some(f) = s.downcast_ref::<Self>() {
-                return f.clone();
-            }
-            source = s.source();
-        }
-        Self::Failed(format!("HTTP request failed: {e}"))
+        ClientError::from_reqwest(e).into()
     }
+}
+
+impl From<ClientError> for FetchError {
+    fn from(e: ClientError) -> Self {
+        match e.as_rejected() {
+            Some(m) => Self::Rejected(m.to_owned()),
+            None => Self::Failed(e.to_string()),
+        }
+    }
+}
+
+/// Most HTTP attempts per client rung (design doc 122 D2).
+pub const MAX_ATTEMPTS: u8 = 2;
+/// Sleep before attempt `n` (D2); a `Retry-After` replaces the second entry.
+const RETRY_DELAYS: [Duration; 2] = [Duration::ZERO, Duration::from_secs(1)];
+/// Statuses worth a second attempt.
+const RETRY_STATUSES: [u16; 9] = [429, 502, 503, 504, 520, 521, 522, 523, 524];
+/// `Accept` on every `Reqwest` page fetch (D4).
+pub const ACCEPT: &str = "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8";
+/// `notes` entry when the stealth client is configured but could not be built
+/// (122 R1-D1); an installation that disables `wreq` still reads pages.
+pub const STEALTH_NOT_BUILT: &str = "stealth client not built; fetched with reqwest";
+
+/// How a page window is produced (122 D6/D7): `cut` to `max_chars` from
+/// `offset`, after `compact::compact` when `compact` is set.
+#[derive(Clone, Copy, Debug)]
+pub struct PageOptions {
+    /// Content cap in chars.
+    pub max_chars: usize,
+    /// Char offset of the window.
+    pub offset: usize,
+    /// Run `compact` before the cut.
+    pub compact: bool,
+}
+
+impl PageOptions {
+    /// `max_chars` from the start, compaction on.
+    #[must_use]
+    pub fn new(max_chars: usize) -> Self {
+        Self {
+            max_chars,
+            offset: 0,
+            compact: true,
+        }
+    }
+}
+
+/// Markdown after compaction, projection and the cut (122 D6/D7).
+pub struct Finished {
+    /// The window in the requested format, marker included.
+    pub content: String,
+    /// `compact`'s `removed_chars`.
+    pub compacted_chars: usize,
+    /// The cut's fields.
+    pub cut: Cut,
+}
+
+/// `compact` (when asked) → `markdown_to_text` (for [`FetchFormat::Text`]) → [`cut`].
+#[must_use]
+pub fn finish(markdown: &str, format: FetchFormat, opts: &PageOptions) -> Finished {
+    let (md, compacted_chars) = if opts.compact {
+        let c = crate::compact::compact(
+            markdown,
+            &crate::compact::CompactOptions {
+                fold_links: format == FetchFormat::Text,
+                keep_images: false,
+            },
+        );
+        (c.text, c.removed_chars)
+    } else {
+        (markdown.to_owned(), 0)
+    };
+    let body = match format {
+        FetchFormat::Markdown => md,
+        FetchFormat::Text => text::markdown_to_text(&md),
+    };
+    let cut = cut(&body, opts.offset, opts.max_chars);
+    Finished {
+        content: cut.text.clone(),
+        compacted_chars,
+        cut,
+    }
+}
+
+/// One settled (non-redirect) response of an attempt, body already read.
+struct Hop {
+    status: u16,
+    headers: reqwest::header::HeaderMap,
+    url: Url,
+    raw: Vec<u8>,
+    truncated: bool,
+}
+
+/// What one attempt produced.
+enum Attempt {
+    Hop(Hop),
+    /// Guard refusal, binary refusal, oversize `Content-Length`: never retried.
+    Fatal(FetchError),
+    /// Transport, decode or budget error: retried while the budget allows.
+    Transient(FetchError),
 }
 
 /// HTTP page fetcher behind the SSRF guard.
@@ -99,8 +276,26 @@ impl FetchError {
 /// `Location` re-runs the guard; DNS goes through the guarded resolver in
 /// `ssrf`, so the client connects only to addresses that passed
 /// [`is_blocked_ip`] (closes the resolve/connect TOCTOU of 16 §10).
+///
+/// Page fetches (`fetch`/`fetch_html`) run the D2 retry loop under one total
+/// budget of `2 × timeout`, dispatch between the `Reqwest` and `WreqChrome`
+/// clients per [`Impersonate`] (122 R1-D1), and diagnose walls with
+/// [`issue::detect`]. [`Fetcher::request`] keeps one attempt and plain
+/// `reqwest`.
 pub struct Fetcher {
+    /// The honest client (122 §5): the only one `Impersonate::Never` uses.
+    reqwest: Arc<dyn HttpClient>,
+    /// The Chrome-emulating client; `None` when `impersonate` is `never` or
+    /// the build failed (then the `Reqwest` fallback carries [`STEALTH_NOT_BUILT`]).
+    stealth: Option<Arc<dyn HttpClient>>,
+    impersonate: Impersonate,
+    /// Under `OnChallenge`: escalate to `stealth` on a diagnosed 403/503 challenge.
+    header_ladder: bool,
+    accept_language: String,
+    /// `request` (route replay, arbitrary method and body) keeps a plain
+    /// `reqwest` client built from the same config: never stealth (122 §5).
     client: reqwest::Client,
+    cfg: ClientConfig,
     max_bytes: usize,
     max_redirects: usize,
     allow: Vec<SocketAddr>,
@@ -108,7 +303,9 @@ pub struct Fetcher {
 
 impl Fetcher {
     /// Build a fetcher: `redirect::Policy::none()`, 8 s total / 2 s connect,
-    /// `user_agent`, raw body capped at `max_bytes`, at most `max_redirects` hops.
+    /// `user_agent`, raw body capped at `max_bytes`, at most `max_redirects` hops;
+    /// `Impersonate::default()` and the default `Accept-Language` until
+    /// [`Self::with_policy`] applies the config.
     ///
     /// # Errors
     /// When the `reqwest` client cannot be built.
@@ -122,7 +319,8 @@ impl Fetcher {
         )
     }
 
-    /// Like [`Self::new`] with explicit whole-request and connect timeouts.
+    /// Like [`Self::new`] with explicit whole-request and connect timeouts;
+    /// the total page budget is `2 × timeout`.
     ///
     /// # Errors
     /// When the `reqwest` client cannot be built.
@@ -133,19 +331,62 @@ impl Fetcher {
         timeout: Duration,
         connect_timeout: Duration,
     ) -> anyhow::Result<Self> {
-        let client = reqwest::Client::builder()
-            .user_agent(user_agent)
-            .timeout(timeout)
-            .connect_timeout(connect_timeout)
-            .redirect(reqwest::redirect::Policy::none())
-            .dns_resolver(ssrf::GuardedResolver)
-            .build()?;
+        let defaults = crate::WebConfig::default();
+        let cfg = ClientConfig {
+            user_agent: user_agent.to_owned(),
+            accept_language: defaults.accept_language.clone(),
+            connect_timeout,
+            read_timeout: timeout,
+            max_body: max_bytes,
+        };
+        let reqwest = client::build(ClientKind::Reqwest, &cfg)?;
+        let client = client::reqwest_client(&cfg)?;
         Ok(Self {
+            reqwest,
+            stealth: None,
+            impersonate: Impersonate::Never,
+            header_ladder: defaults.header_ladder,
+            accept_language: defaults.accept_language,
             client,
+            cfg,
             max_bytes,
             max_redirects,
             allow: Vec::new(),
-        })
+        }
+        .with_policy(defaults.impersonate, defaults.header_ladder, None))
+    }
+
+    /// Apply the page policy (122 R1-D1, D4): which client goes first, whether
+    /// `on_challenge` escalates, and the `Accept-Language` sent. Builds the
+    /// `WreqChrome` client when `impersonate` can use it; a build failure
+    /// ([`ClientError::Build`]) leaves the `Reqwest` fallback with a note on
+    /// every response that wanted stealth.
+    #[must_use]
+    pub fn with_policy(
+        mut self,
+        impersonate: Impersonate,
+        header_ladder: bool,
+        accept_language: Option<&str>,
+    ) -> Self {
+        if let Some(lang) = accept_language {
+            self.accept_language = lang.to_owned();
+            self.cfg.accept_language = lang.to_owned();
+        }
+        self.impersonate = impersonate;
+        self.header_ladder = header_ladder;
+        self.stealth = match impersonate {
+            Impersonate::Never => None,
+            Impersonate::OnChallenge | Impersonate::Always => {
+                match client::build(ClientKind::WreqChrome, &self.cfg) {
+                    Ok(c) => Some(c),
+                    Err(e) => {
+                        tracing::debug!(error = %e, "stealth client unavailable; reqwest fallback");
+                        None
+                    }
+                }
+            }
+        };
+        self
     }
 
     /// Test hook: let these exact blocked `ip:port` literals through the guard
@@ -157,25 +398,46 @@ impl Fetcher {
         self
     }
 
+    /// Total budget of one page fetch: attempts, redirects and body (D2).
+    #[must_use]
+    pub fn total_budget(&self) -> Duration {
+        self.cfg.read_timeout * 2
+    }
+
     /// GET `url`, follow redirects under the guard, and return the body as
-    /// `format`, cut to `max_chars` scalars.
+    /// `format`, cut to `max_chars` scalars from the start, compaction on.
     ///
     /// # Errors
     /// [`FetchError::Rejected`] from the guard or too many redirects;
-    /// [`FetchError::Failed`] for transport errors, non-2xx, binary content
-    /// or an oversize `Content-Length`.
+    /// [`FetchError::Failed`] for transport errors, a non-2xx without a
+    /// diagnosed issue, binary content or an oversize `Content-Length`.
     pub async fn fetch(
         &self,
         url: &str,
         format: FetchFormat,
         max_chars: usize,
     ) -> Result<FetchResponse, FetchError> {
-        self.fetch_kind(url, Some(format), max_chars).await
+        self.fetch_page(url, format, PageOptions::new(max_chars))
+            .await
+    }
+
+    /// [`Self::fetch`] with an explicit window (`read_url`'s `offset`/`compact`).
+    ///
+    /// # Errors
+    /// Same as [`Self::fetch`].
+    pub async fn fetch_page(
+        &self,
+        url: &str,
+        format: FetchFormat,
+        opts: PageOptions,
+    ) -> Result<FetchResponse, FetchError> {
+        self.fetch_kind(url, Some(format), opts).await
     }
 
     /// GET `url` and return the decoded body without HTML→markdown conversion.
-    /// Tool-sized truncation is the caller's `max_chars`; pass a large value
-    /// for crawl/scrape.
+    /// Tool-sized truncation is the caller's `max_chars` (a hard cut, no
+    /// marker: the body is raw HTML or JSON); pass a large value for
+    /// crawl/scrape. `issue` and `meta` are still diagnosed on HTML bodies.
     ///
     /// # Errors
     /// Same as [`Self::fetch`].
@@ -184,52 +446,235 @@ impl Fetcher {
         url: &str,
         max_chars: usize,
     ) -> Result<FetchResponse, FetchError> {
-        self.fetch_kind(url, None, max_chars).await
+        self.fetch_kind(url, None, PageOptions::new(max_chars))
+            .await
+    }
+
+    /// The client rungs for this fetch (122 R1-D1): `always` → stealth;
+    /// `on_challenge` → reqwest, then stealth when `header_ladder`; `never` →
+    /// reqwest. A wanted-but-unbuilt stealth rung is the reqwest client with
+    /// [`STEALTH_NOT_BUILT`] noted once.
+    fn rungs(&self, notes: &mut Vec<String>) -> Vec<Arc<dyn HttpClient>> {
+        let mut stealth = || {
+            self.stealth.clone().unwrap_or_else(|| {
+                if !notes.iter().any(|n| n == STEALTH_NOT_BUILT) {
+                    notes.push(STEALTH_NOT_BUILT.to_owned());
+                }
+                Arc::clone(&self.reqwest)
+            })
+        };
+        match self.impersonate {
+            Impersonate::Always => vec![stealth()],
+            Impersonate::OnChallenge if self.header_ladder => {
+                vec![Arc::clone(&self.reqwest), stealth()]
+            }
+            Impersonate::OnChallenge | Impersonate::Never => vec![Arc::clone(&self.reqwest)],
+        }
+    }
+
+    /// Extra request headers per client kind: `Accept`/`Accept-Language` on
+    /// `Reqwest` (D4); the Chrome profile brings its own on `WreqChrome`.
+    fn headers(&self, http: &dyn HttpClient) -> Vec<(HeaderName, HeaderValue)> {
+        match http.kind() {
+            ClientKind::Reqwest => [
+                (reqwest::header::ACCEPT, ACCEPT),
+                (
+                    reqwest::header::ACCEPT_LANGUAGE,
+                    self.accept_language.as_str(),
+                ),
+            ]
+            .into_iter()
+            .filter_map(|(k, v)| Some((k, HeaderValue::from_str(v).ok()?)))
+            .collect(),
+            ClientKind::WreqChrome => Vec::new(),
+        }
     }
 
     async fn fetch_kind(
         &self,
         url: &str,
         format: Option<FetchFormat>,
-        max_chars: usize,
+        opts: PageOptions,
     ) -> Result<FetchResponse, FetchError> {
         let started = Instant::now();
-        let mut current = ssrf::parse_absolute(url)?;
+        let deadline = started + self.total_budget();
+        let start = ssrf::parse_absolute(url)?;
+        let mut notes = Vec::new();
+        let rungs = self.rungs(&mut notes);
+        let mut attempts = 0u8;
+        let mut first: Option<FetchResponse> = None;
+        for (rung, http) in rungs.iter().enumerate() {
+            // A failed escalation keeps the diagnosis of the first rung.
+            let settle = |first: Option<FetchResponse>, e: FetchError, attempts: u8| {
+                first.map_or(Err(e), |mut f| {
+                    f.attempts = attempts;
+                    Ok(f)
+                })
+            };
+            let hop = match self
+                .attempts(http.as_ref(), &start, deadline, &mut attempts)
+                .await
+            {
+                Ok(hop) => hop,
+                Err(e) => return settle(first, e, attempts),
+            };
+            let status = hop.status;
+            let mut resp = match self.read_body(hop, format, &opts, started).await {
+                Ok(r) => r,
+                Err(e) => return settle(first, e, attempts),
+            };
+            resp.attempts = attempts;
+            resp.client = http.kind();
+            resp.ladder = rung > 0;
+            resp.notes.extend(notes.iter().cloned());
+            let challenge = resp
+                .issue
+                .as_ref()
+                .is_some_and(|i| i.kind == issue::IssueKind::AccessChallenge)
+                && matches!(status, 403 | 503);
+            let can_escalate = rung + 1 < rungs.len()
+                && deadline.saturating_duration_since(Instant::now()) >= self.cfg.connect_timeout;
+            match first.take() {
+                // Rung 1 hit a challenge and a stealth rung is available: escalate.
+                None if challenge && can_escalate => first = Some(resp),
+                // Rung 2 is still a wall: the first diagnosis stands (attempts updated).
+                Some(mut f) if resp.issue.is_some() => {
+                    f.attempts = attempts;
+                    return Ok(f);
+                }
+                _ => return Ok(resp),
+            }
+        }
+        first.ok_or_else(|| FetchError::Failed("no client rung".into()))
+    }
+
+    /// The D2 loop on one client: up to [`MAX_ATTEMPTS`] attempts, the second
+    /// after [`RETRY_DELAYS`] or `Retry-After` when it fits, none when
+    /// `remaining < connect_timeout`. `Rejected` and other fatal errors return
+    /// at once; the last transient error or retryable status is returned when
+    /// the loop runs out.
+    async fn attempts(
+        &self,
+        http: &dyn HttpClient,
+        start: &Url,
+        deadline: Instant,
+        attempts: &mut u8,
+    ) -> Result<Hop, FetchError> {
+        let mut delay = RETRY_DELAYS[0];
+        let mut last: Option<Result<Hop, FetchError>> = None;
+        for n in 0..MAX_ATTEMPTS {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if n > 0 && delay + self.cfg.connect_timeout > remaining {
+                break;
+            }
+            tokio::time::sleep(delay).await;
+            *attempts += 1;
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            let attempt =
+                match tokio::time::timeout(remaining, self.attempt(http, start.clone())).await {
+                    Ok(a) => a,
+                    Err(_) => Attempt::Transient(FetchError::Failed(format!(
+                        "fetch budget of {:.1}s exceeded",
+                        self.total_budget().as_secs_f32()
+                    ))),
+                };
+            match attempt {
+                Attempt::Fatal(e) => return Err(e),
+                Attempt::Transient(e) => {
+                    delay = RETRY_DELAYS[1];
+                    last = Some(Err(e));
+                }
+                Attempt::Hop(hop) if RETRY_STATUSES.contains(&hop.status) => {
+                    delay = issue::retry_after(&hop.headers).unwrap_or(RETRY_DELAYS[1]);
+                    last = Some(Ok(hop));
+                }
+                Attempt::Hop(hop) => return Ok(hop),
+            }
+        }
+        last.unwrap_or_else(|| Err(FetchError::Failed("fetch budget exhausted".into())))
+    }
+
+    /// One attempt: the redirect loop under the guard, then the capped body.
+    async fn attempt(&self, http: &dyn HttpClient, mut current: Url) -> Attempt {
+        let headers = self.headers(http);
         let mut redirects = 0usize;
         loop {
-            ssrf::check_static(&current, &self.allow)?;
-            tracing::debug!(url = %current, redirects, "fetch hop");
-            let response = self
-                .client
-                .get(current.as_str())
-                .send()
-                .await
-                .map_err(|e| FetchError::from_reqwest(&e))?;
-            let status = response.status();
+            if let Err(e) = ssrf::check_static(&current, &self.allow) {
+                return Attempt::Fatal(e);
+            }
+            tracing::debug!(url = %current, redirects, client = ?http.kind(), "fetch hop");
+            let mut response = match http.get(&current, &headers).await {
+                Ok(r) => r,
+                Err(e) => {
+                    let e = FetchError::from(e);
+                    return match e {
+                        FetchError::Rejected(_) => Attempt::Fatal(e),
+                        FetchError::Failed(_) => Attempt::Transient(e),
+                    };
+                }
+            };
+            let Ok(status) = reqwest::StatusCode::from_u16(response.status) else {
+                return Attempt::Transient(FetchError::Failed(format!(
+                    "invalid status: {}",
+                    response.status
+                )));
+            };
             if Self::is_redirect(status) {
                 if redirects >= self.max_redirects {
-                    return Err(FetchError::Rejected(format!(
+                    return Attempt::Fatal(FetchError::Rejected(format!(
                         "too many redirects (max {})",
                         self.max_redirects
                     )));
                 }
-                let location = response
-                    .headers()
+                let Some(location) = response
+                    .headers
                     .get(reqwest::header::LOCATION)
                     .and_then(|v| v.to_str().ok())
-                    .ok_or_else(|| FetchError::Failed("redirect missing Location header".into()))?;
-                current = current
-                    .join(location)
-                    .map_err(|e| FetchError::Failed(format!("invalid redirect Location: {e}")))?;
+                else {
+                    return Attempt::Fatal(FetchError::Failed(
+                        "redirect missing Location header".into(),
+                    ));
+                };
+                current = match current.join(location) {
+                    Ok(u) => u,
+                    Err(e) => {
+                        return Attempt::Fatal(FetchError::Failed(format!(
+                            "invalid redirect Location: {e}"
+                        )));
+                    }
+                };
                 redirects += 1;
                 continue;
             }
-            if !status.is_success() {
-                return Err(FetchError::Failed(format!("HTTP {}", status.as_u16())));
+            // A binary type is refused before the body is downloaded, except the
+            // two container types the anydoc sniff may still recognise (§6.1 w2).
+            let ct = primary_type(&response.headers);
+            if status.is_success() && is_binary(ct.as_deref()) && !sniffable(ct.as_deref()) {
+                return Attempt::Fatal(unsupported(ct.as_deref()));
             }
-            return self
-                .read_body(response, current, format, max_chars, started)
-                .await;
+            let content_length = response
+                .headers
+                .get(reqwest::header::CONTENT_LENGTH)
+                .and_then(|v| v.to_str().ok()?.trim().parse::<u64>().ok());
+            let (raw, truncated) = if !status.is_success() && is_binary(ct.as_deref()) {
+                (Vec::new(), false)
+            } else {
+                match self.read_capped(content_length, &mut response.body).await {
+                    Ok(b) => b,
+                    Err(e @ FetchError::Rejected(_)) => return Attempt::Fatal(e),
+                    Err(FetchError::Failed(m)) if m.starts_with("body too large") => {
+                        return Attempt::Fatal(FetchError::Failed(m));
+                    }
+                    Err(e) => return Attempt::Transient(e),
+                }
+            };
+            return Attempt::Hop(Hop {
+                status: status.as_u16(),
+                headers: response.headers,
+                url: current,
+                raw,
+                truncated,
+            });
         }
     }
 
@@ -241,6 +686,7 @@ impl Fetcher {
     /// key can sit under any header name (`X-Api-Key`, an expanded secret
     /// placeholder) and the fetcher cannot classify them reliably.
     /// The body is raw bytes: no gzip inflate, no document or HTML conversion.
+    /// One attempt, no retries (`http_request` may be non-idempotent, 122 D2).
     ///
     /// # Errors
     /// [`FetchError::Rejected`] for an invalid method, the guard, too many
@@ -312,7 +758,12 @@ impl Fetcher {
                 .iter()
                 .filter_map(|(k, v)| Some((k.as_str().to_owned(), v.to_str().ok()?.to_owned())))
                 .collect();
-            let (body, truncated) = self.read_capped(response).await?;
+            let len = response.content_length();
+            let mut body_stream = response
+                .bytes_stream()
+                .map_err(|e| ClientError::from_reqwest(&e))
+                .boxed();
+            let (body, truncated) = self.read_capped(len, &mut body_stream).await?;
             return Ok(RawResponse {
                 url: current.to_string(),
                 status: status.as_u16(),
@@ -341,9 +792,10 @@ impl Fetcher {
     /// Refuse an oversize `Content-Length`, then read the body cut at `max_bytes`.
     async fn read_capped(
         &self,
-        mut response: reqwest::Response,
+        content_length: Option<u64>,
+        body: &mut BoxStream<'static, Result<bytes::Bytes, ClientError>>,
     ) -> Result<(Vec<u8>, bool), FetchError> {
-        if let Some(len) = response.content_length()
+        if let Some(len) = content_length
             && usize::try_from(len).is_ok_and(|len| len > self.max_bytes)
         {
             return Err(FetchError::Failed(format!(
@@ -353,11 +805,8 @@ impl Fetcher {
         }
         let mut raw = Vec::new();
         let mut truncated = false;
-        while let Some(chunk) = response
-            .chunk()
-            .await
-            .map_err(|e| FetchError::from_reqwest(&e))?
-        {
+        while let Some(chunk) = body.next().await {
+            let chunk = chunk?;
             raw.extend_from_slice(&chunk);
             if raw.len() > self.max_bytes {
                 raw.truncate(self.max_bytes);
@@ -372,93 +821,200 @@ impl Fetcher {
         Ok((raw, truncated))
     }
 
+    /// Inflate a gzip container (`sitemap.xml.gz`) capped post-inflate at
+    /// `max_bytes` (D12: the cap sets `truncated`); a failed decode keeps the
+    /// raw bytes.
+    fn inflate(&self, raw: Vec<u8>, truncated: &mut bool) -> Vec<u8> {
+        if !raw.starts_with(&[0x1f, 0x8b]) {
+            return raw;
+        }
+        let mut inflated = Vec::new();
+        let cap = u64::try_from(self.max_bytes).unwrap_or(u64::MAX);
+        if flate2::read::GzDecoder::new(raw.as_slice())
+            .take(cap.saturating_add(1))
+            .read_to_end(&mut inflated)
+            .is_err()
+        {
+            return raw;
+        }
+        if inflated.len() > self.max_bytes {
+            inflated.truncate(self.max_bytes);
+            *truncated = true;
+            tracing::warn!(
+                max = self.max_bytes,
+                "inflated body exceeded max_fetch_bytes; truncating"
+            );
+        }
+        inflated
+    }
+
+    /// Decode, convert and diagnose a settled hop. A 2xx document body goes
+    /// through anydoc; a 2xx `is_binary` body is refused (`Unsupported` is
+    /// the `Err`, 122 D1 row 17 as today's shape). A non-2xx body is read and
+    /// diagnosed: with an issue it is `Ok` (the model gets the `ISSUE:` line
+    /// and whatever prose the wall carried), without one it stays
+    /// `Err(Failed("HTTP n"))`.
     async fn read_body(
         &self,
-        response: reqwest::Response,
-        url: Url,
+        hop: Hop,
         format: Option<FetchFormat>,
-        max_chars: usize,
+        opts: &PageOptions,
         started: Instant,
     ) -> Result<FetchResponse, FetchError> {
-        let content_type = response
-            .headers()
+        let ok = (200..300).contains(&hop.status);
+        let ct_full = hop
+            .headers
             .get(reqwest::header::CONTENT_TYPE)
             .and_then(|v| v.to_str().ok())
-            .map(|ct| {
-                ct.split(';')
-                    .next()
-                    .unwrap_or(ct)
-                    .trim()
-                    .to_ascii_lowercase()
-            });
+            .map(str::to_owned);
+        let content_type = primary_type(&hop.headers);
         let ct = content_type.as_deref();
-        if is_binary(ct) {
-            return Err(FetchError::Failed(format!(
-                "unsupported content type: {}",
-                ct.unwrap_or("unknown")
-            )));
-        }
-        let (mut raw, body_truncated) = self.read_capped(response).await?;
-        // Gzip container (`sitemap.xml.gz`); a failed decode keeps the raw bytes.
-        if raw.starts_with(&[0x1f, 0x8b]) {
-            let mut inflated = Vec::new();
-            if flate2::read::GzDecoder::new(raw.as_slice())
-                .take(u64::try_from(self.max_bytes).unwrap_or(u64::MAX))
-                .read_to_end(&mut inflated)
-                .is_ok()
-            {
-                raw = inflated;
+        let mut body_truncated = hop.truncated;
+        let raw = self.inflate(hop.raw, &mut body_truncated);
+        let took = || u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
+        if ok {
+            // A document body (PDF, Office, …) is rendered with anydoc (20 §2.3);
+            // a truncated container is unparseable, so it is refused, not half-read.
+            // The sniff runs before `is_binary` for octet-stream/zip (§6.1 w2).
+            if let Some(fmt) = tools::doc::format(&raw) {
+                if body_truncated {
+                    return Err(FetchError::Failed(format!(
+                        "{fmt:?} larger than max_fetch_bytes ({}); not converted",
+                        self.max_bytes
+                    )));
+                }
+                let md = tools::doc::to_markdown(raw, fmt)
+                    .await
+                    .map_err(|e| FetchError::Failed(format!("{fmt:?}: {e}")))?;
+                let title = text::first_heading(&md);
+                let w = window(&md, &md, format, opts);
+                return Ok(FetchResponse {
+                    url: hop.url.to_string(),
+                    title,
+                    content: w.content,
+                    truncated: w.truncated,
+                    took_ms: took(),
+                    compacted_chars: w.compacted_chars,
+                    next_offset: w.next_offset,
+                    omitted_headings: w.omitted_headings,
+                    ..FetchResponse::default()
+                });
+            }
+            if is_binary(ct) {
+                return Err(unsupported(ct));
             }
         }
-        // A document body (PDF, Office, …) is rendered with anydoc (20 §2.3);
-        // a truncated container is unparseable, so it is refused, not half-read.
-        if let Some(fmt) = tools::doc::format(&raw) {
-            if body_truncated {
-                return Err(FetchError::Failed(format!(
-                    "{fmt:?} larger than max_fetch_bytes ({}); not converted",
-                    self.max_bytes
-                )));
-            }
-            let md = tools::doc::to_markdown(raw, fmt)
-                .await
-                .map_err(|e| FetchError::Failed(format!("{fmt:?}: {e}")))?;
-            let (content, cut) = hard_truncate(&md, max_chars);
-            return Ok(FetchResponse {
-                url: url.to_string(),
-                title: text::first_heading(&md),
-                content,
-                truncated: cut,
-                took_ms: u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
-            });
-        }
-        let body = String::from_utf8_lossy(&raw);
+        let (body, charset) = charset::decode(&raw, ct_full.as_deref());
         let is_html = is_html_type(ct) || (!is_plain_type(ct) && looks_like_html(&body));
-        let (title, content) = if is_html {
-            match format {
-                None => (text::html_title(&body), body.to_string()),
-                Some(FetchFormat::Markdown) => {
-                    let md = text::html_to_markdown(&body);
-                    let title = text::html_title(&body).or_else(|| text::first_heading(&md));
-                    (title, md)
-                }
-                Some(FetchFormat::Text) => {
-                    let md = text::html_to_markdown(&body);
-                    let title = text::html_title(&body).or_else(|| text::first_heading(&md));
-                    (title, text::markdown_to_text(&md))
-                }
-            }
+        // A raw fetch of an XML body (sitemaps up to 8 MiB) is not converted
+        // for diagnosis: it is not a page.
+        let diagnose = format.is_some() || !matches!(ct, Some("application/xml" | "text/xml"));
+        let (title, markdown, meta) = if is_html && diagnose {
+            let md = text::html_to_markdown(&body);
+            let title = text::html_title(&body).or_else(|| text::first_heading(&md));
+            (title, md, meta::extract(&body, &hop.url))
+        } else if is_html {
+            (
+                text::html_title(&body),
+                String::new(),
+                meta::PageMeta::default(),
+            )
         } else {
-            (None, body.trim().to_owned())
+            (None, body.trim().to_owned(), meta::PageMeta::default())
         };
-        let (content, cut) = hard_truncate(&content, max_chars);
+        let issue = diagnose
+            .then(|| {
+                issue::detect(
+                    hop.status,
+                    &hop.headers,
+                    &hop.url,
+                    &body,
+                    crate::excerpt::prose_chars(&markdown),
+                )
+            })
+            .flatten();
+        if !ok && issue.is_none() {
+            return Err(FetchError::Failed(format!("HTTP {}", hop.status)));
+        }
+        let raw_text: &str = if is_html { &body } else { &markdown };
+        let w = window(raw_text, &markdown, format, opts);
         Ok(FetchResponse {
-            url: url.to_string(),
+            url: hop.url.to_string(),
             title,
-            content,
-            truncated: cut || body_truncated,
-            took_ms: u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
+            content: w.content,
+            truncated: w.truncated || body_truncated,
+            took_ms: took(),
+            issue,
+            meta,
+            charset: charset.to_owned(),
+            compacted_chars: w.compacted_chars,
+            next_offset: w.next_offset,
+            omitted_headings: w.omitted_headings,
+            ..FetchResponse::default()
         })
     }
+}
+
+/// The content window of a response.
+struct Window {
+    content: String,
+    truncated: bool,
+    compacted_chars: usize,
+    next_offset: Option<usize>,
+    omitted_headings: Vec<String>,
+}
+
+/// `format: None` (raw body for scrape/crawl and API sources) is a hard cut
+/// of `raw` with no marker; a format runs [`finish`] on `markdown`.
+fn window(raw: &str, markdown: &str, format: Option<FetchFormat>, opts: &PageOptions) -> Window {
+    match format {
+        None => {
+            let (content, truncated) = hard_truncate(raw, opts.max_chars);
+            Window {
+                content,
+                truncated,
+                compacted_chars: 0,
+                next_offset: None,
+                omitted_headings: Vec::new(),
+            }
+        }
+        Some(f) => {
+            let fin = finish(markdown, f, opts);
+            Window {
+                content: fin.content,
+                truncated: fin.cut.truncated,
+                compacted_chars: fin.compacted_chars,
+                next_offset: fin.cut.next_offset,
+                omitted_headings: fin.cut.omitted_headings,
+            }
+        }
+    }
+}
+
+/// Lowercased primary media type (no parameters) of `Content-Type`, or `None` when absent.
+fn primary_type(headers: &reqwest::header::HeaderMap) -> Option<String> {
+    headers
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .map(|ct| {
+            ct.split(';')
+                .next()
+                .unwrap_or(ct)
+                .trim()
+                .to_ascii_lowercase()
+        })
+}
+
+/// Binary types whose bytes may still be a document container (§6.1 w2).
+fn sniffable(ct: Option<&str>) -> bool {
+    matches!(ct, Some("application/octet-stream" | "application/zip"))
+}
+
+fn unsupported(ct: Option<&str>) -> FetchError {
+    FetchError::Failed(format!(
+        "unsupported content type: {}",
+        ct.unwrap_or("unknown")
+    ))
 }
 
 /// `ct` is the lowercased primary media type (no parameters), or `None` when absent.
