@@ -203,7 +203,7 @@ export const AskCard = memo(function AskCard({ ask }: { ask: AskRequested }) {
       } else {
         // Answered elsewhere and the `AskResolved` was missed: the tool row's result is the answered state.
         useAsks.getState().resolve(ask.id)
-        toast.error('the question was already answered')
+        toast.error('That question had already closed — your answer went to the session as a message.')
       }
     } catch (e) {
       toast.error(e instanceof Error ? e.message : String(e))
