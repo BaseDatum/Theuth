@@ -1,0 +1,16 @@
+{
+  "key": "review:task-9",
+  "task": "task-9",
+  "kind": "review",
+  "by": "agent:ops-desk",
+  "at_ms": 1791448140000,
+  "question": null,
+  "summary": "Rewrote the nightly backup routine; dry-run passes.",
+  "options": [],
+  "recommended": null,
+  "pointers": [ { "kind": "diff", "ref": "main..feat/backup", "title": "the change", "note": null, "text": "--- a\n+++ b\n", "root": null } ],
+  "checks": [
+    { "text": "dry-run passes", "done": true, "note": "ran twice" },
+    { "text": "restores verified", "done": false, "note": "needs a staging bucket" }
+  ]
+}

@@ -1,0 +1,8 @@
+{
+  "type": "TurnFinished",
+  "session": "0192c5e0-7a1b-7c2d-9e3f-4a5b6c7d8e04",
+  "turn": "0192c5e0-aaaa-7c2d-9e3f-4a5b6c7d8e04",
+  "stop_reason": "end_turn",
+  "usage": { "input": 1200, "output": 300, "cache_read": 0, "cache_write": 0 },
+  "context": 1500
+}

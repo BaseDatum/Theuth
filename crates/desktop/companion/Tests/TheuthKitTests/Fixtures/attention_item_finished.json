@@ -1,0 +1,18 @@
+{
+  "id": "finished:0192c5e0-7a1b-7c2d-9e3f-4a5b6c7d8e04:turn-12",
+  "kind": "finished",
+  "title": "Auth refactor landed on feat/auth-tokens",
+  "detail": null,
+  "at_ms": 1791448440000,
+  "task": "task-3",
+  "agent": "w1",
+  "session": "0192c5e0-7a1b-7c2d-9e3f-4a5b6c7d8e04",
+  "approval": null,
+  "decision": null,
+  "packet": null,
+  "ask": null,
+  "turn": 12,
+  "waiting_since_ms": 1791448440000,
+  "summary": "Signed tokens replace the session cookie; 3 files, +212 −80. One open item: the CLI still reads the old cookie name.",
+  "next_steps": ["Open a PR against main", "Fix the CLI cookie name first, then PR"]
+}
