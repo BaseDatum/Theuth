@@ -9685,7 +9685,7 @@ pub fn rank_models<'a>(items: &'a [ModelInfo], query: &str) -> Vec<&'a ModelInfo
         .zip(items)
         .filter_map(|(score, m)| score.map(|s| (s, m)))
         .collect();
-    hits.sort_by(|a, b| b.0.cmp(&a.0));
+    hits.sort_by_key(|h| std::cmp::Reverse(h.0));
     hits.into_iter().map(|(_, m)| m).collect()
 }
 
@@ -17147,8 +17147,10 @@ mod tests {
     #[test]
     fn models_picker_opens_on_providers_and_navigates_levels() {
         let (tx, mut rx) = unbounded_channel();
-        let mut m = Model::default();
-        m.model_id = "openai/gpt-5.4".into();
+        let mut m = Model {
+            model_id: "openai/gpt-5.4".into(),
+            ..Model::default()
+        };
         m.apply(UiEvent::Models(model_catalog()));
         // Providers level: the current model first, its provider marked, cursor on the first provider.
         assert_eq!(
@@ -17213,8 +17215,10 @@ mod tests {
     #[test]
     fn models_picker_search_covers_all_models_and_returns_to_the_level() {
         let (tx, mut rx) = unbounded_channel();
-        let mut m = Model::default();
-        m.model_id = "openai/o3-pro".into();
+        let mut m = Model {
+            model_id: "openai/o3-pro".into(),
+            ..Model::default()
+        };
         m.apply(UiEvent::Models(model_catalog()));
         // Descend into google, then type: search runs over every model, the
         // Current row stays on top even though it does not match, and the
@@ -17276,8 +17280,10 @@ mod tests {
     #[test]
     fn single_provider_catalog_opens_on_its_models_level_and_stays_there() {
         let (tx, _rx) = unbounded_channel();
-        let mut m = Model::default();
-        m.model_id = "openai/gpt-5.4".into();
+        let mut m = Model {
+            model_id: "openai/gpt-5.4".into(),
+            ..Model::default()
+        };
         let items: Vec<ModelInfo> = model_catalog()
             .into_iter()
             .filter(|i| i.provider == "openai")
