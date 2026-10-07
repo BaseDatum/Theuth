@@ -86,6 +86,13 @@ R4 (Sky on the R2 screenshot at 1600×1100: "why isn't it actually filling the w
   hairline ends inside the band; `scene(...).hv`. Scene.test is unchanged (SSR renders hv 812). SceneCompact has no field
   and is unaffected.
 
+R5 (orchestrator, 12:57, from the final screenshots — desktop 1600×1100 and 1920×1080 fill the window, phone right, live
+data renders 28 items cleanly): `shortId` caps at 8 characters (`GITHUB_TOK` overran the ID column into KIND) and skips
+hex-like candidates (≥ 6 hex chars — the session prefix `show`/`ask` items carry as agent and title word): task short id →
+agent (if not hex-like) → first title word (if not hex-like) → the kind word. Fixture labels are now `builder · 001198 ·
+001188 · ops-desk · 001203 · GITHUB_T`; model.test covers the hex fall-through to the kind, a hex agent with a readable
+title (`Which`), and a 5-hex name that is kept (`abc12`). Folded in as `97811683`.
+
 ## Per-file
 
 | File | Change |
@@ -134,10 +141,13 @@ R4 (Sky on the R2 screenshot at 1600×1100: "why isn't it actually filling the w
    - R2 rerun on the R2 tree: exit 1, 109 s; the same four pre-existing lines, now at `Hud.tsx(136, 218, 241)` and `model.test.ts(44)` (the section removal moved them up 62 lines); nothing in `scene/*`, `queries.ts`, `styles.css` or `Hud.test.ts`.
    - R3 rerun on `1c07a9bf`+tests: exit 1, 15 s; the same four lines at `Hud.tsx(140, 222, 245)` and `model.test.ts(44)`; nothing else under `components/hud`.
    - R4 rerun on `571cbb49`: exit 1, 3 s; the same four lines at `Hud.tsx(140, 222, 245)` and `model.test.ts(44)`; nothing else under `components/hud`.
+   - R5 rerun on `97811683`: exit 1, 12 s; the same four lines (the bindings snapshot had not yet been regenerated when it ran).
    - Full pre-existing file list: `components/attention/{AskScreen,Bundle,Bundle.test,DecisionScreen,Pointers,ReviewScreen,Screen,model,model.test}`, `components/chat/{AskCard,MessageTool,surface/Graph,surface/diagrams/GraphDelta.test,surface/registry}`, `components/codemap/CodeMapPanel`, `components/hud/{Hud,model.test}` (above), `components/routines/{RoutineDetail,RoutinesView,helpers,helpers.test}`, `components/settings/{Channels,Channels.test,sandbox-queries}`, `dev/routines-fixture`, `lib/{graph-layout,page-preview,page-preview.test,speech}`, `rpc/{api,events}`, `store/{reduce,reduce.test,sessions}`.
 2. `BUILD_LABEL=128-hud /Users/Sky.Moore/.theuth/bin/build-lock bunx vitest run src/components/hud`
    - `Test Files 4 passed (4) · Tests 24 passed (24)` (lock acquired after 203 s; 15.5 s run). R1 rerun on `6fe0cfae`: `4 passed · Tests 25 passed (25)`, 20.2 s. R2 rerun: `4 passed · Tests 27 passed (27)`, 1.6 s (a first R2 run failed two `/new` href counts — expectation 2 vs the correct 3: ring, its AGENTS row, SESSIONS LIVE — fixed in the test). R3: a first run failed 8 (a stale-anchor edit had dropped `truncate` from model.ts — restored; the real `Composer` threw `window is not defined` in node — stubbed in Hud.test); rerun `4 passed · Tests 27 passed (27)`, 1.6 s.
    - R4 rerun on `571cbb49`: `4 passed · Tests 28 passed (28)`, 1.9 s (first run).
+   - R5 rerun on `97811683`: `4 passed · Tests 28 passed (28)`, 1.6 s.
 3. `BUILD_LABEL=128-hud /Users/Sky.Moore/.theuth/bin/build-lock bunx vite build`
    - `✓ 13980 modules transformed · ✓ built in 3.54s`; `dist/assets/Hud-DIaVyohp.js 31.80 kB │ gzip 9.39 kB`. Only the pre-existing > 500 kB chunk warnings. R1 rerun on `6fe0cfae`: `✓ built in 6.27s`, `Hud-CWF38TN6.js 31.84 kB │ gzip 9.41 kB`. R2 rerun: `✓ built in 6.92s`, `Hud-B1zoJ_XA.js 24.04 kB │ gzip 7.61 kB` (the retired sections left the chunk). R3 rerun: `✓ built in 8.10s`, `Hud-D-BtYC8C.js 24.25 kB │ gzip 7.68 kB` (the composer is a shared chunk, so its return barely moves Hud's).
    - R4 rerun on `571cbb49`: `✓ built in 5.08s`, `Hud-DPKI8EJ2.js 24.67 kB │ gzip 7.82 kB`.
+   - R5 rerun on `97811683`: `✓ built in 4.63s`, `Hud-QhHoFmFe.js 24.67 kB │ gzip 7.82 kB`.
