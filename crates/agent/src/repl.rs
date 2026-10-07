@@ -40,6 +40,15 @@ pub const NAME: &str = "python";
 pub const RUN_OUTPUT_CHARS: usize = 8_000;
 /// Sandbox heap limit (08 §4.5).
 pub const MAX_MEMORY: usize = 512 << 20;
+/// Restore cap (131 D6): a saved heap above this is set aside as `.stale` at
+/// the next open instead of restored. Dumping copies the heap, so a dump
+/// whose size nears `MAX_MEMORY / 2` kills the worker; the cap sits well
+/// below. Unmeasured default (the largest healthy dump seen was 46 MB, the
+/// failing one 168 MB).
+pub const DUMP_HARD_BYTES: u64 = 64 << 20;
+/// Early warning (131 D6): a dump above this adds a footer once per turn
+/// telling the model to `del` or spill the large bindings.
+pub const DUMP_SOFT_BYTES: u64 = DUMP_HARD_BYTES / 2;
 /// Pool-side hard deadline per protocol turn (08 §4.5).
 pub const REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
 /// Host calls the pool services per checkout (08 §4.5).
@@ -937,6 +946,14 @@ fn not_run(cx: &RunCx, c: &PendingCall) -> AgentEvent {
     }
 }
 
+/// A good dump and the inventory it was taken with (131 D5): restored
+/// together, so `names` always describes the heap in the worker.
+struct Snapshot {
+    bytes: Vec<u8>,
+    names: BTreeMap<String, Slot>,
+    imports: BTreeMap<String, String>,
+}
+
 /// One session's runtime for one turn (08 §4).
 pub struct Repl {
     pool: Arc<Pool>,
@@ -950,8 +967,11 @@ pub struct Repl {
     spill: PathBuf,
     dump_path: PathBuf,
     names_path: PathBuf,
+    /// `<session>.lost`: a `<runtime>` line the turn-end dump could not
+    /// deliver, read once by the next open (131 D3).
+    lost_path: PathBuf,
     /// Last good dump: restored into a fresh checkout after a crash.
-    last_dump: Option<Vec<u8>>,
+    last_dump: Option<Snapshot>,
     names: BTreeMap<String, Slot>,
     candidates: BTreeSet<String>,
     /// Bound name → the `import`/`from` line of a run cell that bound it;
@@ -960,6 +980,13 @@ pub struct Repl {
     out_seq: u32,
     /// `<runtime>` line prepended to the next cell result.
     lost: Option<String>,
+    /// Why the last worker was dropped after a failed dump (131 D7); cleared
+    /// by a fresh checkout.
+    dead_cause: Option<String>,
+    /// Dumps above this get the size footer ([`DUMP_SOFT_BYTES`]; tests lower it).
+    soft_bytes: u64,
+    /// The size footer went out this turn.
+    size_warned: bool,
     /// Inner calls the last `drive` finished as not run (created, never awaited).
     unawaited: usize,
     /// The reuse hint went out in a cell footer this turn (one `Repl` = one turn).
@@ -971,6 +998,19 @@ impl Repl {
     /// Never fails: a failed restore (or checkout) leaves a fresh/empty
     /// runtime and the first cell result says so.
     pub async fn open(pool: &Arc<Pool>, session: SessionId, data_dir: &Path, cx: RunCx) -> Repl {
+        Self::open_with(pool, session, data_dir, cx, MAX_MEMORY, DUMP_SOFT_BYTES).await
+    }
+
+    /// [`Repl::open`] with the worker heap limit and the soft dump cap as
+    /// parameters (tests cross them with small objects).
+    pub(crate) async fn open_with(
+        pool: &Arc<Pool>,
+        session: SessionId,
+        data_dir: &Path,
+        cx: RunCx,
+        max_memory: usize,
+        soft_bytes: u64,
+    ) -> Repl {
         let specs = cx
             .registry
             .ask(ListTools(Some(session)))
@@ -978,7 +1018,7 @@ impl Repl {
             .unwrap_or_default();
         let cfg = ReplConfig {
             limits: Some(ResourceLimits {
-                max_memory: Some(MAX_MEMORY),
+                max_memory: Some(max_memory),
                 max_suspensions: MAX_SUSPENSIONS,
                 max_total_sleep: Some(MAX_TOTAL_SLEEP),
                 ..ResourceLimits::default()
@@ -1007,7 +1047,40 @@ impl Repl {
         }
         let dump_path = dir.join(format!("{session}.monty"));
         let names_path = dir.join(format!("{session}.names.json"));
-        let (names, imports) = read_names(&names_path);
+        let lost_path = dir.join(format!("{session}.lost"));
+        let (mut names, mut imports) = read_names(&names_path);
+        // The turn-end dump failed last time: its line opens this turn (D3).
+        let mut lost = std::fs::read_to_string(&lost_path)
+            .ok()
+            .map(|s| s.trim_end().to_owned());
+        if lost.is_some() {
+            let _ = std::fs::remove_file(&lost_path);
+        }
+        // D6: metadata first — never read an oversize dump into memory.
+        let size = std::fs::metadata(&dump_path).map(|m| m.len()).unwrap_or(0);
+        let last_dump = if size > DUMP_HARD_BYTES {
+            let stale = dump_path.with_extension("stale");
+            let _ = std::fs::rename(&dump_path, &stale);
+            let held =
+                render_slots(names.iter()).map_or_else(String::new, |s| format!(" It held: {s}."));
+            let line = format!(
+                "<runtime> saved state ({} MB) exceeds the restore cap ({} MB) and was set aside as {}; the runtime is empty.{held}",
+                mb(size),
+                mb(DUMP_HARD_BYTES),
+                stale.display()
+            );
+            tracing::warn!(session = %session, "{line}");
+            note(&mut lost, line);
+            names.clear();
+            imports.clear();
+            None
+        } else {
+            std::fs::read(&dump_path).ok().map(|bytes| Snapshot {
+                bytes,
+                names: names.clone(),
+                imports: imports.clone(),
+            })
+        };
         let candidates = names.keys().cloned().collect();
         let mut mounts = Vec::with_capacity(2);
         let spill = cx.spill_dir.join(session.to_string());
@@ -1039,14 +1112,18 @@ impl Repl {
             checkout: None,
             mounts,
             spill,
-            last_dump: std::fs::read(&dump_path).ok(),
+            last_dump,
             dump_path,
             names_path,
+            lost_path,
             names,
             candidates,
             imports,
             out_seq: 0,
-            lost: None,
+            lost,
+            dead_cause: None,
+            soft_bytes,
+            size_warned: false,
             unawaited: 0,
             hinted: false,
         };
@@ -1058,14 +1135,22 @@ impl Repl {
 
     /// Take a worker if we have none; restore the last dump into it. A dump
     /// that will not restore is renamed `.stale` and reported via `lost`.
+    /// A checkout whose worker was taken (memory kill, crash, timeout:
+    /// `worker_id()` is `None` once poisoned) counts as absent (131 D4).
     async fn ensure_checkout(&mut self) -> Result<(), PoolError> {
-        if self.checkout.is_some() {
-            return Ok(());
+        match &self.checkout {
+            Some(c) if c.worker_id().is_some() => return Ok(()),
+            Some(_) => {
+                tracing::warn!(session = %self.cx.session, "runtime: dropping a dead checkout");
+                self.checkout = None;
+                self.roll_back();
+            }
+            None => {}
         }
         let mut c = self.checkout_warning().await?;
-        if let Some(bytes) = &self.last_dump {
+        if let Some(snap) = &self.last_dump {
             let mut quiet = on_print_sync(|_, _| {});
-            if let Err(e) = c.restore(bytes.clone(), Vec::new(), &mut quiet).await {
+            if let Err(e) = c.restore(snap.bytes.clone(), Vec::new(), &mut quiet).await {
                 tracing::warn!(
                     "runtime restore failed for {}: {e}",
                     self.dump_path.display()
@@ -1073,9 +1158,12 @@ impl Repl {
                 let _ = std::fs::rename(&self.dump_path, self.dump_path.with_extension("stale"));
                 let held = render_slots(self.names.iter())
                     .map_or_else(String::new, |s| format!(" It held: {s}."));
-                self.lost = Some(format!(
-                    "<runtime> saved state could not be restored ({e}); the runtime is empty.{held}"
-                ));
+                note(
+                    &mut self.lost,
+                    format!(
+                        "<runtime> saved state could not be restored ({e}); the runtime is empty.{held}"
+                    ),
+                );
                 self.last_dump = None;
                 self.names.clear();
                 self.candidates.clear();
@@ -1085,7 +1173,27 @@ impl Repl {
             }
         }
         self.checkout = Some(c);
+        self.dead_cause = None;
         Ok(())
+    }
+
+    /// D5: the inventory back to what `last_dump` was taken with (empty
+    /// without one); the names the rollback dropped, for the model.
+    fn roll_back(&mut self) -> Vec<String> {
+        let (names, imports) = match &self.last_dump {
+            Some(s) => (s.names.clone(), s.imports.clone()),
+            None => Default::default(),
+        };
+        let dropped = self
+            .names
+            .keys()
+            .filter(|n| !names.contains_key(*n))
+            .cloned()
+            .collect();
+        self.candidates = names.keys().cloned().collect();
+        self.names = names;
+        self.imports = imports;
+        dropped
     }
 
     /// `Pool::checkout`, which waits without a timeout for a worker: after
@@ -1253,13 +1361,28 @@ impl Repl {
             Err(e) => {
                 // Worker gone (crash, memory limit, timeout, protocol): the heap
                 // is untrusted; restore the previous dump into a fresh worker.
+                let cause = match (&e, self.dead_cause.take()) {
+                    (PoolError::Finished, Some(c)) => {
+                        format!("worker was lost earlier: {c}; this call: {e}")
+                    }
+                    _ => e.to_string(),
+                };
                 self.checkout = None;
+                let dropped = self.roll_back();
                 let restored = match self.ensure_checkout().await {
                     Ok(()) if self.lost.is_none() => "state restored to after the previous cell",
                     _ => "state could not be restored",
                 };
+                let gone = if dropped.is_empty() {
+                    String::new()
+                } else {
+                    format!(
+                        "; names bound since the last save are gone: {}",
+                        dropped.join(", ")
+                    )
+                };
                 return self.finish_output(
-                    format!("RuntimeError: runtime crashed ({e}); {restored} — this cell's effects are lost"),
+                    format!("RuntimeError: runtime crashed ({cause}); {restored} — this cell's effects are lost{gone}"),
                     true,
                     files,
                 );
@@ -1311,8 +1434,19 @@ impl Repl {
             }
             body.push_str(&line);
         }
-        self.dump().await;
-        self.finish_output(body, is_error, files)
+        // The result is sealed before the dump: a failed dump's `<runtime>`
+        // line belongs to the next cell ("after the previous cell"), and at
+        // turn end to the sidecar.
+        let mut out = self.finish_output(body, is_error, files);
+        if let Some(size) = self.dump().await
+            && size > self.soft_bytes
+            && !self.size_warned
+        {
+            self.size_warned = true;
+            out.content.push('\n');
+            out.content.push_str(&size_footer(size));
+        }
+        out
     }
 
     /// Prepend the pending `<runtime>` line, fill in `(no output)`, attach
@@ -1372,20 +1506,34 @@ impl Repl {
         }
     }
 
-    /// Dump the heap and the inventory (atomic rename).
-    async fn dump(&mut self) {
-        let Some(c) = self.checkout.as_mut() else {
-            return;
-        };
-        match c.dump().await {
-            Ok(bytes) => {
-                if let Err(e) = write_atomic(&self.dump_path, &bytes) {
-                    tracing::warn!("runtime dump {}: {e}", self.dump_path.display());
-                }
-                self.last_dump = Some(bytes);
+    /// Dump the heap and the inventory together (atomic renames) — or
+    /// neither (131 D3): a failed dump means the worker is dead or untrusted
+    /// (a MemoryError kills it), so the checkout is dropped, the inventory
+    /// rolls back to the last good dump's and the model hears what is gone.
+    /// `Some(size)` of the dump on success.
+    async fn dump(&mut self) -> Option<u64> {
+        let c = self.checkout.as_mut()?;
+        let bytes = match c.dump().await {
+            Ok(bytes) => bytes,
+            Err(e) => {
+                tracing::warn!(session = %self.cx.session, "runtime dump failed: {e}");
+                self.checkout = None;
+                let dropped = self.roll_back();
+                let gone = if dropped.is_empty() {
+                    String::new()
+                } else {
+                    format!(" — names bound since then are gone: {}", dropped.join(", "))
+                };
+                note(
+                    &mut self.lost,
+                    format!(
+                        "<runtime> the heap could not be saved after the previous cell ({e}); state is as of the last successful save{gone}"
+                    ),
+                );
+                self.dead_cause = Some(e.to_string());
+                return None;
             }
-            Err(e) => tracing::warn!("runtime dump failed: {e}"),
-        }
+        };
         let rows: Vec<Entry> = self
             .names
             .iter()
@@ -1396,16 +1544,35 @@ impl Repl {
                 import: self.imports.get(n).cloned(),
             })
             .collect();
-        if let Ok(json) = serde_json::to_vec(&rows)
-            && let Err(e) = write_atomic(&self.names_path, &json)
-        {
-            tracing::warn!("runtime names {}: {e}", self.names_path.display());
+        match write_atomic(&self.dump_path, &bytes) {
+            Err(e) => tracing::warn!("runtime dump {}: {e}", self.dump_path.display()),
+            Ok(()) => {
+                if let Ok(json) = serde_json::to_vec(&rows)
+                    && let Err(e) = write_atomic(&self.names_path, &json)
+                {
+                    tracing::warn!("runtime names {}: {e}", self.names_path.display());
+                }
+            }
         }
+        let size = bytes.len() as u64;
+        self.last_dump = Some(Snapshot {
+            bytes,
+            names: self.names.clone(),
+            imports: self.imports.clone(),
+        });
+        Some(size)
     }
 
-    /// Dump and hand the worker back to the pool (turn end).
+    /// Dump and hand the worker back to the pool (turn end). A `<runtime>`
+    /// line with no cell left to carry it goes to the `.lost` sidecar for
+    /// the next turn's first cell (131 D3).
     pub async fn close(mut self) {
         self.dump().await;
+        if let Some(line) = self.lost.take()
+            && let Err(e) = write_atomic(&self.lost_path, line.as_bytes())
+        {
+            tracing::warn!("runtime lost line {}: {e}", self.lost_path.display());
+        }
         if let Some(c) = self.checkout.take()
             && let Err(e) = c.finish().await
         {
@@ -1802,6 +1969,61 @@ fn render_capped(stdout: &str, name: &str, body: &str) -> String {
     join_out(&capped, rest)
 }
 
+/// Queue a `<runtime>` line for the next cell result, after any pending one.
+fn note(lost: &mut Option<String>, line: String) {
+    match lost {
+        Some(l) => {
+            l.push('\n');
+            l.push_str(&line);
+        }
+        None => *lost = Some(line),
+    }
+}
+
+/// Whole MiB, rounded up, for the model-facing size lines.
+fn mb(bytes: u64) -> u64 {
+    bytes.div_ceil(1 << 20)
+}
+
+/// 131 D6: the once-per-turn warning under a dump above [`DUMP_SOFT_BYTES`].
+fn size_footer(size: u64) -> String {
+    format!(
+        "runtime heap is {} MB saved (above {} MB it is set aside at the next turn): del the large bindings you no longer need, or write them to a file first",
+        mb(size),
+        mb(DUMP_HARD_BYTES)
+    )
+}
+
+/// What [`reset_session`] removed.
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
+pub struct ResetReport {
+    /// Size of the removed `.monty` dump (0 when there was none).
+    pub dump_bytes: u64,
+    /// Names the removed inventory held.
+    pub names: usize,
+}
+
+/// 131 D2: forget `session`'s saved runtime — its `.monty` dump, `.names.json`
+/// inventory and `.lost` sidecar. `.stale` files, other sessions and the spill
+/// dir are untouched. For an idle session only (no `Repl` open on it).
+pub fn reset_session(data_dir: &Path, session: SessionId) -> std::io::Result<ResetReport> {
+    let dir = data_dir.join("runtime");
+    let dump = dir.join(format!("{session}.monty"));
+    let names = dir.join(format!("{session}.names.json"));
+    let report = ResetReport {
+        dump_bytes: std::fs::metadata(&dump).map(|m| m.len()).unwrap_or(0),
+        names: read_names(&names).0.len(),
+    };
+    for p in [dump, names, dir.join(format!("{session}.lost"))] {
+        if let Err(e) = std::fs::remove_file(&p)
+            && e.kind() != std::io::ErrorKind::NotFound
+        {
+            return Err(e);
+        }
+    }
+    Ok(report)
+}
+
 fn write_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     let tmp = path.with_extension("tmp");
     std::fs::write(&tmp, bytes)?;
@@ -2071,16 +2293,23 @@ mod tests {
         assert_eq!(from_monty(d.as_ref()), serde_json::json!({"1": "a"}));
     }
 
-    /// A pool over the `monty` binary on `PATH` (the test runner is not a
-    /// worker); `None`, with a note, when absent so the test skips.
+    /// A pool over `$THEUTH_MONTY_WORKER` (any binary that serves
+    /// `<binary> subprocess`, e.g. a debug `t`), else the `monty` binary on
+    /// `PATH` (the test runner is not a worker); `None`, with a note, when
+    /// neither exists so the test skips.
     async fn monty_pool() -> Option<Arc<Pool>> {
-        let monty = std::env::var_os("PATH").and_then(|path| {
-            std::env::split_paths(&path)
-                .map(|d| d.join("monty"))
-                .find(|p| p.is_file())
-        });
+        let monty = std::env::var_os("THEUTH_MONTY_WORKER")
+            .map(PathBuf::from)
+            .filter(|p| p.is_file())
+            .or_else(|| {
+                std::env::var_os("PATH").and_then(|path| {
+                    std::env::split_paths(&path)
+                        .map(|d| d.join("monty"))
+                        .find(|p| p.is_file())
+                })
+            });
         let Some(monty) = monty else {
-            eprintln!("monty not on PATH; skipping");
+            eprintln!("no THEUTH_MONTY_WORKER and monty not on PATH; skipping");
             return None;
         };
         let pool = open_pool(&monty, 1).await;
@@ -2604,6 +2833,294 @@ mod tests {
             assert!(out.content.starts_with("→ True"), "{}", out.content);
             assert!(start.elapsed() >= Duration::from_millis(400));
             repl.close().await;
+        });
+    }
+
+    /// 131 D3/D5/D7: a dump that kills the worker (MemoryError) drops the
+    /// checkout, leaves `.monty`/`.names.json` at the last good save, rolls
+    /// the inventory back to it, and the next cell runs in a fresh worker
+    /// opening with the `<runtime>` line that names the cause and the lost
+    /// names. At turn end the line goes through the `.lost` sidecar.
+    #[test]
+    fn dump_failure_keeps_heap_and_inventory_in_step() {
+        crate::with_test_registry(async {
+            let Some(pool) = monty_pool().await else {
+                return;
+            };
+            let dir = tempdir();
+            let cx = run_cx(&dir).await;
+            let session = cx.session;
+            let runtime = dir.join("runtime");
+            let dump_path = runtime.join(format!("{session}.monty"));
+            let names_path = runtime.join(format!("{session}.names.json"));
+            let mut repl =
+                Repl::open_with(&pool, session, &dir, cx.clone(), 24 << 20, DUMP_SOFT_BYTES).await;
+            let out = repl.run("c1", "a = 1").await;
+            assert!(!out.is_error, "{}", out.content);
+            let good_dump = std::fs::read(&dump_path).unwrap();
+            let good_names = std::fs::read(&names_path).unwrap();
+            // fits the heap, but the dump's copy crosses the 24 MiB limit
+            let out = repl.run("c2", "b = bytes(18 << 20)").await;
+            assert!(!out.is_error, "{}", out.content);
+            assert!(repl.checkout.is_none(), "dead checkout kept");
+            let cause = repl.dead_cause.clone().expect("dead cause");
+            assert!(cause.contains("MemoryError"), "{cause}");
+            assert_eq!(
+                std::fs::read(&dump_path).unwrap(),
+                good_dump,
+                ".monty moved"
+            );
+            assert_eq!(
+                std::fs::read(&names_path).unwrap(),
+                good_names,
+                "names.json moved"
+            );
+            assert_eq!(repl.render_inventory().as_deref(), Some("a (int)"));
+
+            let out = repl.run("c3", "x = 1").await;
+            assert!(!out.is_error, "{}", out.content);
+            assert!(
+                out.content.starts_with(
+                    "<runtime> the heap could not be saved after the previous cell (MemoryError: "
+                ) && out.content.contains(
+                    "); state is as of the last successful save — names bound since then are gone: b\n"
+                ),
+                "{}",
+                out.content
+            );
+            let out = repl.run("c4", "bindings()").await;
+            assert_eq!(out.content, "→ ['a (int)', 'x (int)']", "{}", out.content);
+            assert_eq!(
+                repl.render_inventory().as_deref(),
+                Some("a (int) · x (int)")
+            );
+            assert_eq!(repl.run("c5", "a + x").await.content, "→ 2");
+
+            // the last cell of the turn loses its dump: no cell is left to carry
+            // the line, so `close` writes it to the sidecar for the next open
+            let out = repl.run("c6", "c = bytes(18 << 20)").await;
+            assert!(!out.is_error, "{}", out.content);
+            assert!(repl.checkout.is_none() && repl.lost.is_some());
+            let lost_path = runtime.join(format!("{session}.lost"));
+            repl.close().await;
+            let line = std::fs::read_to_string(&lost_path).unwrap();
+            assert!(
+                line.starts_with(
+                    "<runtime> the heap could not be saved after the previous cell (MemoryError: "
+                ) && line.ends_with("names bound since then are gone: c"),
+                "{line}"
+            );
+            let mut repl = Repl::open(&pool, session, &dir, cx.clone()).await;
+            let out = repl.run("c10", "a + x").await;
+            assert!(out.content.starts_with(&line), "{}", out.content);
+            assert!(out.content.ends_with("\n→ 2"), "{}", out.content);
+            assert!(!lost_path.exists(), "sidecar read once");
+            assert!(!repl.run("c11", "1").await.content.contains("<runtime>"));
+            repl.close().await;
+            pool.close().await;
+        });
+    }
+
+    /// 131 D6: a saved dump above the hard cap is not read; it is set aside
+    /// as `.stale`, the first cell says so with the held names, and the
+    /// runtime is empty.
+    #[test]
+    fn oversize_dump_is_set_aside_on_open() {
+        crate::with_test_registry(async {
+            let Some(pool) = monty_pool().await else {
+                return;
+            };
+            let dir = tempdir();
+            let cx = run_cx(&dir).await;
+            let session = cx.session;
+            let runtime = dir.join("runtime");
+            std::fs::create_dir_all(&runtime).unwrap();
+            let dump_path = runtime.join(format!("{session}.monty"));
+            std::fs::File::create(&dump_path)
+                .unwrap()
+                .set_len(DUMP_HARD_BYTES + 1)
+                .unwrap();
+            std::fs::write(
+                runtime.join(format!("{session}.names.json")),
+                r#"[{"name":"p","kind":"int","len":null},{"name":"q","kind":"str","len":3}]"#,
+            )
+            .unwrap();
+            let mut repl = Repl::open(&pool, session, &dir, cx.clone()).await;
+            let out = repl.run("c1", "1 + 1").await;
+            let stale = dump_path.with_extension("stale");
+            assert_eq!(
+                out.content,
+                format!(
+                    "<runtime> saved state (65 MB) exceeds the restore cap (64 MB) and was set aside as {}; the runtime is empty. It held: p (int) · q (str, 3).\n→ 2",
+                    stale.display()
+                )
+            );
+            assert!(
+                stale.exists() && dump_path.exists(),
+                "fresh small dump written"
+            );
+            assert!(std::fs::metadata(&dump_path).unwrap().len() < DUMP_HARD_BYTES);
+            assert_eq!(repl.run("c2", "bindings()").await.content, "→ []");
+            repl.close().await;
+            pool.close().await;
+        });
+    }
+
+    /// 131 D6: the soft-cap footer goes out once per turn.
+    #[test]
+    fn soft_cap_footer_once_per_turn() {
+        crate::with_test_registry(async {
+            let Some(pool) = monty_pool().await else {
+                return;
+            };
+            let dir = tempdir();
+            let cx = run_cx(&dir).await;
+            let mut repl =
+                Repl::open_with(&pool, cx.session, &dir, cx.clone(), MAX_MEMORY, 1).await;
+            let out = repl.run("c1", "a = 1").await;
+            let footer = out.content.lines().last().unwrap();
+            assert!(
+                footer.starts_with("runtime heap is ")
+                    && footer.contains(&format!(
+                        " MB saved (above {} MB it is set aside at the next turn): del the large bindings you no longer need, or write them to a file first",
+                        DUMP_HARD_BYTES >> 20
+                    )),
+                "{}",
+                out.content
+            );
+            let out = repl.run("c2", "b = 2").await;
+            assert!(!out.content.contains("runtime heap is"), "{}", out.content);
+            repl.close().await;
+            pool.close().await;
+        });
+    }
+
+    /// 131 D2: the reset removes exactly the session's dump, inventory and
+    /// sidecar; `.stale`, other sessions and the spill dir survive.
+    #[test]
+    fn reset_session_removes_dump_names_and_sidecar() {
+        let dir = tempdir();
+        let runtime = dir.join("runtime");
+        std::fs::create_dir_all(&runtime).unwrap();
+        let (s1, s2) = (SessionId::new(), SessionId::new());
+        std::fs::write(runtime.join(format!("{s1}.monty")), b"12345").unwrap();
+        std::fs::write(
+            runtime.join(format!("{s1}.names.json")),
+            r#"[{"name":"p","kind":"int","len":null},{"name":"q","kind":"str","len":3}]"#,
+        )
+        .unwrap();
+        std::fs::write(runtime.join(format!("{s1}.lost")), b"<runtime> x").unwrap();
+        std::fs::write(runtime.join(format!("{s1}.stale")), b"old").unwrap();
+        std::fs::write(runtime.join(format!("{s2}.monty")), b"other").unwrap();
+        std::fs::create_dir_all(dir.join("spill").join(s1.to_string())).unwrap();
+        std::fs::write(dir.join("spill").join(s1.to_string()).join("f"), b"spill").unwrap();
+
+        let r = reset_session(&dir, s1).unwrap();
+        assert_eq!((r.dump_bytes, r.names), (5, 2));
+        for suffix in ["monty", "names.json", "lost"] {
+            assert!(!runtime.join(format!("{s1}.{suffix}")).exists(), "{suffix}");
+        }
+        assert!(runtime.join(format!("{s1}.stale")).exists());
+        assert!(runtime.join(format!("{s2}.monty")).exists());
+        assert!(dir.join("spill").join(s1.to_string()).join("f").exists());
+        // idempotent: nothing to remove is not an error
+        let r = reset_session(&dir, s1).unwrap();
+        assert_eq!((r.dump_bytes, r.names), (0, 0));
+    }
+
+    /// 131 D3: a `.lost` sidecar opens the next turn's first cell result and
+    /// is consumed by that open.
+    #[test]
+    fn lost_sidecar_is_read_once_on_open() {
+        crate::with_test_registry(async {
+            let Some(pool) = monty_pool().await else {
+                return;
+            };
+            let dir = tempdir();
+            let cx = run_cx(&dir).await;
+            let runtime = dir.join("runtime");
+            std::fs::create_dir_all(&runtime).unwrap();
+            let lost_path = runtime.join(format!("{}.lost", cx.session));
+            std::fs::write(
+                &lost_path,
+                "<runtime> the heap could not be saved after the previous cell (x)\n",
+            )
+            .unwrap();
+            let mut repl = Repl::open(&pool, cx.session, &dir, cx.clone()).await;
+            assert!(!lost_path.exists());
+            let out = repl.run("c1", "1").await;
+            assert_eq!(
+                out.content,
+                "<runtime> the heap could not be saved after the previous cell (x)\n→ 1"
+            );
+            assert_eq!(repl.run("c2", "2").await.content, "→ 2");
+            repl.close().await;
+            let mut repl = Repl::open(&pool, cx.session, &dir, cx.clone()).await;
+            assert_eq!(repl.run("c3", "3").await.content, "→ 3");
+            repl.close().await;
+            pool.close().await;
+        });
+    }
+
+    /// 131 D6 calibration (`cargo test -p agent --lib repl::measure_dump_knee -- --ignored --nocapture`):
+    /// binds 8 MiB chunks under `$THEUTH_KNEE_LIMIT_MB` (default `MAX_MEMORY`)
+    /// and dumps after each until the dump kills the worker; prints the
+    /// largest dump that succeeded.
+    #[test]
+    #[ignore = "measurement, needs a worker binary"]
+    fn measure_dump_knee() {
+        crate::with_test_registry(async {
+            let Some(pool) = monty_pool().await else {
+                return;
+            };
+            let env_mb = |key: &str, default: usize| -> usize {
+                std::env::var(key)
+                    .ok()
+                    .and_then(|s| s.parse::<usize>().ok())
+                    .map_or(default, |mb| mb << 20)
+            };
+            let limit = env_mb("THEUTH_KNEE_LIMIT_MB", MAX_MEMORY);
+            let chunk = env_mb("THEUTH_KNEE_CHUNK_MB", 8 << 20);
+            let dir = tempdir();
+            let cx = run_cx(&dir).await;
+            let mut repl =
+                Repl::open_with(&pool, cx.session, &dir, cx.clone(), limit, u64::MAX).await;
+            let out = repl.run("c0", "chunks = []").await;
+            assert!(!out.is_error, "{}", out.content);
+            let mut best = 0u64;
+            for step in 1.. {
+                let out = repl
+                    .run(
+                        &format!("c{step}"),
+                        &format!("chunks.append(bytes({chunk}))\nlen(chunks)"),
+                    )
+                    .await;
+                if out.is_error || repl.checkout.is_none() {
+                    eprintln!(
+                        "step {step}: limit {} MiB, heap {} MiB: {} — largest dump {} MiB; cause: {:?}",
+                        limit >> 20,
+                        (step * chunk) >> 20,
+                        if out.is_error {
+                            "cell failed"
+                        } else {
+                            "dump failed"
+                        },
+                        best >> 20,
+                        repl.dead_cause
+                    );
+                    eprintln!("{}", out.content);
+                    break;
+                }
+                best = std::fs::metadata(dir.join("runtime").join(format!("{}.monty", cx.session)))
+                    .map(|m| m.len())
+                    .unwrap_or(0);
+                eprintln!(
+                    "step {step}: heap {} MiB, dump {} MiB ok",
+                    (step * chunk) >> 20,
+                    best >> 20
+                );
+            }
+            pool.close().await;
         });
     }
 }
