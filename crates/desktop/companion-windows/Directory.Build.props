@@ -38,4 +38,9 @@
     <!-- Download-only: the five deployment/insights files toasts need are extracted from its runtime MSIX (§2 C2b, §5.7). -->
     <WasdkRuntimeVersion>2.5.1</WasdkRuntimeVersion>
   </PropertyGroup>
+
+  <!-- W4: NAudio.Wasapi (D7, R2-4) — the microphone for the Ask bar's live dictation. -->
+  <PropertyGroup>
+    <NAudioWasapiVersion>3.1.0</NAudioWasapiVersion>
+  </PropertyGroup>
 </Project>
