@@ -51,7 +51,7 @@ Starting HEAD `6c7c64f1` = contract `d3c5b682` + W3 (`3d619c9c`) + W2 (`05039b26
 | W2 | `tests/no_emoji.rs` red (21 glyphs in `crates/surface`) | fixed on main by `2a507d72` (scope narrowed to `agent` + `rpc`, Sky 2026-10-07); green after the fold — no glyph edits needed |
 | W2 | engine stub `Err("advisor: not built")` | W1 replaced it; smoke (a) returns a real `AdvisorStatus` |
 | W3 (optional) | refetch `sessionCost` on `AdvisorChanged` if the advisor's calls do not bump the advised | not needed: `loop_::settle` publishes `ModelUsageChanged` for "the owner and every live ancestor the store bumped"; the advisor's parent is the advised session (smoke: 5 `ModelUsageChanged` on the advised stream while the advisor ran) |
-| C (optional) | `session_advisors` in `store::capture::ATTACHED` | not done (engine-local like `pty_screens`; design 68 moves are out of 125's scope) — open item |
+| C (optional) | `session_advisors` in `store::capture::ATTACHED` | done by 125 F1 (`fix/125-capture-attached`): keyed by `session` (the advised id), round-trip test `store::advisor::tests::link_survives_capture_and_apply_into_a_fresh_store` |
 | C | `125 C placeholder` arms | slack: replaced (above). telegram/signal matched `_` (nothing to replace). `session_read.rs` / `rpc/acp.rs` `Advisory` arms are real implementations (C's note calls them "125 C", not placeholders) and stay. |
 
 ## Gates (exact result lines)
@@ -125,8 +125,7 @@ engine minted on first run deleted.
   state, and a Slack-bound concern posting one `context` line (unit-tested here, not live — no channel was enabled).
 - A live advisory never fired in two scratch runs (silent reviews). Step 3 of §12 ("claim done without running the check") with a
   stronger model or a real check failure is the way to see `AdvisoryAdded` → card → channel line end to end.
-- `session_advisors` is not in `store::capture::ATTACHED` (C's optional hand-off): an advised session moved between engines (68) loses
-  its link; the advisor session row (a normal `sessions` row) does move.
+- `session_advisors` joined `store::capture::ATTACHED` in 125 F1, so a moved advised session (68) keeps its link.
 - Advisor transcripts are reachable only via the engine's own sqlite (`messages.body` by advisor id); `session_read` refuses them (W1).
 - The scratch engine's `secrets` plugin logged nothing fatal with an empty vault; a scratch run that needs vault secrets must set
   them with `t --secret-set` against the scratch data dir.
