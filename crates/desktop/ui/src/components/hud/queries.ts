@@ -1,9 +1,12 @@
-import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { useEffect, useRef } from 'react'
+import { useQueries, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useEffect, useMemo, useRef } from 'react'
+import { useModels } from '@/components/agents/queries'
 import { ATTENTION_SIM, SECRET_REQUESTS_SIM, simFlag } from '@/components/settings/sandbox-queries'
 import { useAction } from '@/components/settings/shared'
 import { keys as taskKeys } from '@/components/tasks/queries'
 import { queryKeys, useApi } from '@/lib/rpc'
+import type { ContextBreakdown } from '@/rpc/bindings/ContextBreakdown'
+import type { SessionSummary } from '@/rpc/bindings/SessionSummary'
 import type { ActivityEntry } from '@/rpc/bindings/ActivityEntry'
 import type { Answer } from '@/rpc/bindings/Answer'
 import type { ApprovalId } from '@/rpc/bindings/ApprovalId'
@@ -14,7 +17,7 @@ import { HANDOFFS_KEY } from '@/store/sandboxes'
 import { toast } from 'sonner'
 import { ACTIVITY_CAP, appendActivity } from './model'
 import { sceneFixture } from './scene/fixtures'
-import { DAY_MS, startOfDay } from './scene/model'
+import { type Ctx, contextFill, DAY_MS, sessionPresence, startOfDay } from './scene/model'
 
 export const ATTENTION_KEY = ['attention'] as const
 /** 101 D11: `packet_get` per key, invalidated with the inbox (a packet changes only when its item does). */
@@ -137,6 +140,47 @@ export function useSpendReport() {
   const sim = simFlag()
   useEffect(() => on('ModelUsageChanged', () => void qc.invalidateQueries({ queryKey: SPEND_KEY })), [qc])
   return useQuery({ queryKey: SPEND_KEY, queryFn: () => (sim ? sceneFixture(Date.now()).spend : api.spend_report(7)), staleTime: 20_000, refetchInterval: 60_000 })
+}
+
+/** Revision 2: the per-session events that change a desk's context — a turn ends, a compaction lands, the provider bills a frame. */
+const CONTEXT_EVENTS = ['TurnFinished', 'Compacted', 'ContextUsed'] as const satisfies readonly WireEvent['type'][]
+const contextKey = (session: string) => ['context', 'breakdown', session] as const
+const breakdowns = (rs: { data: ContextBreakdown | undefined }[]) => rs.map((r) => r.data)
+
+/** Revision 4: at most this many breakdown queries at once (desks first, then the active roots in ring order). */
+const CONTEXT_QUERIES_MAX = 24
+
+/**
+ * Revision 2/4: `session_context_breakdown` for every desk session AND every active root session in `sessions` (one query each,
+ * ≤ 24), refreshed every 30 s and on that session's turn/compaction/billing events; folded with `list_models` into
+ * `SceneData.contexts`, keyed by session id. A session whose window is unknown (no `context_size`, model not in the catalog) is
+ * simply absent — no gauge, never a fake value.
+ */
+export function useSessionContexts(sessions: readonly SessionSummary[] | undefined): ReadonlyMap<string, Ctx> {
+  const api = useApi()
+  const qc = useQueryClient()
+  const sim = simFlag()
+  const models = useModels()
+  const desks = useMemo(() => [...(sessions ?? []).filter((s) => s.desk && !s.archived), ...sessionPresence(sessions ?? [], Date.now()).map((r) => r.s)].slice(0, CONTEXT_QUERIES_MAX), [sessions])
+  useEffect(() => {
+    const offs = CONTEXT_EVENTS.map((t) => on(t, (e) => void qc.invalidateQueries({ queryKey: contextKey(e.session) })))
+    return () => {
+      for (const off of offs) off()
+    }
+  }, [qc])
+  const data = useQueries({
+    queries: desks.map((s) => ({ queryKey: contextKey(s.id), queryFn: () => api.session_context_breakdown(s.id), staleTime: 20_000, refetchInterval: 30_000, enabled: !sim })),
+    combine: breakdowns,
+  })
+  return useMemo(() => {
+    const out = new Map<string, Ctx>()
+    desks.forEach((s, i) => {
+      const b = data[i]
+      const c = b && contextFill(b, s, models.data)
+      if (c) out.set(s.id, c)
+    })
+    return out
+  }, [desks, data, models.data])
 }
 
 /** The inline decisions of an attention card; every one refetches the inbox and what it derives from. */

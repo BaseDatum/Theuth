@@ -230,9 +230,12 @@ pub async fn drain_engine(rt: &Runtime, reason: &'static str) -> DrainReport {
 impl Agents {
     /// §10.3: `Loaded.resume` and the `HistoryEntry::Interrupted` partial
     /// of `session`'s open turn; `(None, None)` when no turn is open.
+    /// `running` = the live actor's `IsRunning` (the same answer `Drain`
+    /// uses): an open turn on a running session is the relaunched one.
     pub(super) async fn resume_state(
         &self,
         session: SessionId,
+        running: bool,
     ) -> (Option<ResumeState>, Option<HistoryEntry>) {
         let open = match self.store.open_turns().await {
             Ok(open) => open,
@@ -250,6 +253,7 @@ impl Agents {
                     turn,
                     kind: plan.kind,
                     interrupted_at: plan.interrupted_at,
+                    resumed: running,
                 }),
                 plan.partial.map(|p| HistoryEntry::Interrupted {
                     text: crate::loop_::text_of(&p.content),
@@ -382,5 +386,39 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(again, DrainReport::default());
+    }
+
+    /// `Loaded.resume` copies the caller's `running`: the same open turn
+    /// reads `resumed: false` while ask mode waits and `true` once relaunched;
+    /// no open turn → `None` either way.
+    #[tokio::test]
+    async fn resume_state_reports_relaunched_turn() {
+        let a = agents_with(false).await;
+        let (sid, turn) = (SessionId::new(), TurnId::new());
+        a.store
+            .create_session(sid, "m", None, None, None)
+            .await
+            .unwrap();
+        assert!(a.resume_state(sid, true).await.0.is_none());
+        a.store
+            .step(
+                sid,
+                turn,
+                StepKind::InputAccepted,
+                None,
+                &serde_json::json!({}),
+            )
+            .await
+            .unwrap();
+        let waiting = a.resume_state(sid, false).await.0.unwrap();
+        assert!(waiting.turn == turn && !waiting.resumed);
+        let relaunched = a.resume_state(sid, true).await.0.unwrap();
+        assert_eq!(
+            relaunched,
+            ResumeState {
+                resumed: true,
+                ..waiting
+            }
+        );
     }
 }
