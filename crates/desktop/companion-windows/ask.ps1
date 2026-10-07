@@ -18,7 +18,7 @@
               so a model that was reported missing is looked for again.
 
   Flags (run): -AskProbe N → --ask-probe N · -Synthetic → --synthetic-dictation · -Speech "text" → --synthetic-speech
-  "text" · -MicProbe N → --mic-probe N · -MixFormat → --mic-mix-format · -Replay → --ask-replay · -Shareable → --shareable ·
+  "text" (underscores become spaces: the build service refuses spaces in args) · -MicProbe N → --mic-probe N · -MixFormat → --mic-mix-format · -Replay → --ask-replay · -Shareable → --shareable ·
   -Ask → --ask (open the bar at launch).
   The exe is the Debug build (`dotnet build -p:Platform=x64`) unless -From publish|release.
 
@@ -180,7 +180,7 @@ switch ($Command) {
         $secs = 10
         if ($AskProbe -ge 0) { $a += @('--ask-probe', $AskProbe.ToString($inv)); $secs = $AskProbe }
         if ($Synthetic) { $a += '--synthetic-dictation' }
-        if ($Speech) { $a += @('--synthetic-speech', $Speech) }
+        if ($Speech) { $a += @('--synthetic-speech', ($Speech -replace '_', ' ')) } # the build service refuses spaces in args: write_them_like_this
         if ($MicProbe -ge 0) { $a += @('--mic-probe', $MicProbe.ToString($inv)); $secs = $MicProbe }
         if ($MixFormat) { $a += '--mic-mix-format' }
         if ($Replay) { $a += '--ask-replay' }
