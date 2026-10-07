@@ -12,11 +12,9 @@ EXE=Companion
 BUNDLE_ID=io.theuth.mac.companion
 VERSION="$(grep -m1 '^version' "$ROOT/Cargo.toml" | sed -E 's/.*"([^"]+)".*/\1/')"
 IDENTITY="${THEUTH_SIGN_IDENTITY:--}"
-# The machine-wide build semaphore when present (shared build hosts); plain `swift` otherwise.
-if command -v build-lock >/dev/null 2>&1; then LOCK=(env "BUILD_LABEL=${BUILD_LABEL:-companion}" build-lock); else LOCK=(); fi
 
 echo "== build (swift build -c release)"
-( cd "$PKG" && "${LOCK[@]}" swift build -c release 2>&1 | grep -v '^\[build-lock\]' | tail -3 )
+( cd "$PKG" && swift build -c release )
 BIN_DIR="$PKG/.build/release"
 test -x "$BIN_DIR/$EXE"
 

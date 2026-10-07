@@ -266,6 +266,7 @@ final class Notifier: NSObject, ObservableObject, UNUserNotificationCenterDelega
         case .stale: body = "already answered elsewhere"
         case .failed(let e): body = "failed: \(e)"
         case .undone: return
+        case .reply: return // the Ask bar's streamed answer, not a tapped action's outcome
         }
         receiptFor = nil
         post(Banner(id: "receipt-\(UInt64(Date().timeIntervalSince1970 * 1000))", category: .batch, title: who,
