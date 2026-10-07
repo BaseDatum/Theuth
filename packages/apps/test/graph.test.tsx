@@ -61,9 +61,15 @@ describe("Graph schema parity with crates/surface", () => {
   test("highlight is the reactive prop; Graph closes every container child union", () => {
     expect(reactiveProps(library).Graph).toEqual(["highlight"]);
     expect(library.toSpec().components.Card!.signature).toContain("Graph");
-    expect(library.toSpec().components.Graph!.signature).toBe(
-      'Graph(nodes: {id: string, label: string, kind?: "box" | "rounded" | "pill" | "diamond" | "cylinder" | "actor", group?: string, state?: "default" | "active" | "done" | "muted" | "danger"}[], edges: {from: string, to: string, label?: string, style?: "solid" | "dashed"}[], groups?: {id: string, label: string}[], direction?: "LR" | "TB", highlight?: $binding<string[]>, onSelect?: ActionExpression)',
+    const sig = library.toSpec().components.Graph!.signature;
+    expect(sig).toStartWith(
+      'Graph(nodes: {id: string, label: string, kind?: "box" | "rounded" | "pill" | "diamond" | "cylinder" | "actor" | "hexagon" | "circle" | "note", group?: string, state?: "default" | "active" | "done" | "muted" | "danger", sub?: string, tag?: string, icon?: "server" |',
     );
+    expect(sig).toContain(
+      '}[], edges: {from: string, to: string, label?: string, style?: "solid" | "dashed", state?: "default" | "active" | "done" | "muted" | "danger", arrow?: "forward" | "both" | "none"}[], groups?: {id: string, label: string, parent?: string, kind?: "zone" | "boundary" | "cluster"}[], ',
+    );
+    expect(sig).toContain('direction?: "LR" | "TB", highlight?: $binding<string[]>, onSelect?: ActionExpression, legend?: {');
+    expect(sig).toEndWith(', title?: string)');
   });
 });
 

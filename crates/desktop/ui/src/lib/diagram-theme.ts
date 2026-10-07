@@ -14,6 +14,8 @@ export interface DiagramTokens {
   success: string
   danger: string
   font: string
+  /** 123 §5.1: six categorical series colours (`--chart-1..6` when the theme defines them), charts and legends. */
+  series: [string, string, string, string, string, string]
 }
 
 /** Current values of the CSS custom properties, resolved through their `var()` chains. */
@@ -32,6 +34,14 @@ export function diagramTokens(): DiagramTokens {
     success: v('--status-success-fg', '#2f5d4a'),
     danger: v('--status-danger-fg', '#9b2d1f'),
     font: v('--font-sans', 'ui-sans-serif, system-ui, sans-serif'),
+    series: [
+      v('--chart-1', '#b4531e'),
+      v('--chart-2', '#2f5d4a'),
+      v('--chart-3', '#3b5b8c'),
+      v('--chart-4', '#8a6d1f'),
+      v('--chart-5', '#7a3e7a'),
+      v('--chart-6', '#6b5e4f'),
+    ],
   }
 }
 

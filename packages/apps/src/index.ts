@@ -14,8 +14,11 @@ export {
   library,
   reactiveProps,
   setGraphRenderer,
+  setDiagramRenderer,
+  diagramRenderer,
 } from "./library.ts";
-export type { GraphHostProps, GraphValue } from "./library.ts";
+export type { DiagramHostProps, GraphHostProps, GraphValue } from "./library.ts";
+export { DIAGRAMS, diagramText } from "./diagrams.ts";
 export { check, generatedLibrary, libraryHash, mergeCheck } from "./check.ts";
 export type { GeneratedLibrary } from "./generated-types.ts";
 export type {

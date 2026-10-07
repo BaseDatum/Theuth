@@ -25,7 +25,7 @@ export function tickStep(lo: number, hi: number, count = 5): number {
   const raw = span / Math.max(1, count)
   const pow = 10 ** Math.floor(Math.log10(raw))
   const unit = raw / pow
-  const mult = unit >= 5 ? 10 : unit >= 2 ? 5 : unit >= 1 ? 2 : 1
+  const mult = unit >= Math.SQRT1_2 * 10 ? 10 : unit >= Math.sqrt(10) ? 5 : unit >= Math.SQRT2 ? 2 : 1
   return mult * pow
 }
 
@@ -96,7 +96,7 @@ const UNITS: TimeUnit[] = ['hour', 'day', 'week', 'month', 'year']
 
 /** The coarsest unit that still gives at least `count` ticks over `span` ms (falls back to `year`). */
 export function timeUnit(spanMs: number, count = 5): TimeUnit {
-  for (const u of UNITS) if (spanMs / MS[u] <= count * 1.5) return u
+  for (const u of UNITS) if (spanMs / MS[u] <= count * 2) return u
   return 'year'
 }
 

@@ -33,6 +33,7 @@ import {
 import { type ComponentType, createElement } from "react";
 import { z } from "zod/v4";
 import type * as core from "zod/v4/core";
+import { DIAGRAMS, diagramText, graphEdge, graphGroup, graphNode, graphRules } from "./diagrams.ts";
 
 /** Ordered component names; order is part of the compatibility hash. */
 export const CURATED_COMPONENTS = [
@@ -99,6 +100,26 @@ export const CURATED_COMPONENTS = [
   // forms (appended 2026-09-25; order is part of the hash)
   "OptionCards",
   "OptionCard",
+  // 123 diagram grammars (appended 2026-10-07; order is part of the hash). BarChart/LineChart/ScatterChart/RadarChart
+  // keep their upstream (recharts) definitions: the library is keyed by name.
+  // ---- 123 ELK family (W1) ----
+  "StateMachine",
+  "Entities",
+  "Swimlane",
+  "GraphDelta",
+  // ---- 123 chart family (W2) ----
+  "Waterfall",
+  "Funnel",
+  "Gantt",
+  "Quadrant",
+  // ---- 123 part-of-whole + misc (W3) ----
+  "Treemap",
+  "Sankey",
+  "Venn",
+  "Loop",
+  "Layers",
+  "Journey",
+  "Fishbone",
 ] as const;
 
 export type CuratedComponentName = (typeof CURATED_COMPONENTS)[number];
@@ -125,28 +146,10 @@ function withMeta<T extends AnyZod>(from: AnyZod, to: T): T {
   return meta ? ((to as unknown as z.ZodType).meta(meta) as unknown as T) : to;
 }
 
-// ── Graph (design 65 §3.5): zod mirror of `crates/surface` `GraphProps`, plus reactive `highlight` and `onSelect` ──
+// ── Graph (design 65 §3.5, 123 §4.1): zod mirror of `crates/surface` `GraphProps` (node/edge/group shapes in
+// `diagrams.ts`), plus reactive `highlight` and `onSelect` ──
 
 const graphStr = z.string();
-const graphNode = z.object({
-  id: graphStr.describe("unique node id"),
-  label: graphStr.describe("text in the shape, ≤ 80 chars"),
-  kind: z
-    .enum(["box", "rounded", "pill", "diamond", "cylinder", "actor"])
-    .optional(),
-  group: graphStr.optional().describe("id of a group"),
-  state: z.enum(["default", "active", "done", "muted", "danger"]).optional(),
-});
-const graphEdge = z.object({
-  from: graphStr,
-  to: graphStr,
-  label: graphStr.optional(),
-  style: z.enum(["solid", "dashed"]).optional(),
-});
-const graphGroup = z.object({ id: graphStr, label: graphStr });
-
-/** `crates/surface::MAX_GRAPH_*`. */
-const GRAPH_MAX = { nodes: 120, edges: 240, groups: 12, label: 80 };
 
 /** `Button.action`'s schema object itself, so the prompt renders `ActionExpression` for it too. */
 const buttonAction = def(openuiLibrary.components.Button!.props as AnyZod)
@@ -169,68 +172,65 @@ export const graphProps = z
     onSelect: (buttonAction as unknown as z.ZodType).describe(
       "runs when a node is pressed; $value is the node id",
     ),
+    // 123 §4.1 extensions AFTER highlight/onSelect: the positional order of 65's walkthrough apps and the `apps`
+    // skill (`Graph(nodes, edges, groups, direction, highlight, onSelect)`) keeps working.
+    legend: z
+      .array(
+        z.object({
+          label: graphStr,
+          state: graphNode.shape.state,
+          style: graphEdge.shape.style,
+          kind: graphNode.shape.kind,
+        }),
+      )
+      .optional(),
+    title: graphStr.optional(),
   })
-  .superRefine((g, ctx) => {
-    const bad = (path: (string | number)[], message: string) =>
-      ctx.addIssue({ code: "custom", path, message });
-    if (g.nodes.length > GRAPH_MAX.nodes)
-      bad(["nodes"], `${g.nodes.length} nodes, limit ${GRAPH_MAX.nodes}`);
-    if (g.edges.length > GRAPH_MAX.edges)
-      bad(["edges"], `${g.edges.length} edges, limit ${GRAPH_MAX.edges}`);
-    const groups = g.groups ?? [];
-    if (groups.length > GRAPH_MAX.groups)
-      bad(["groups"], `${groups.length} groups, limit ${GRAPH_MAX.groups}`);
-    const gids = new Set<string>();
-    groups.forEach((grp, i) => {
-      if (gids.has(grp.id))
-        bad(["groups", i, "id"], `duplicate group id ${JSON.stringify(grp.id)}`);
-      gids.add(grp.id);
-      if ([...grp.label].length > GRAPH_MAX.label)
-        bad(["groups", i, "label"], `over ${GRAPH_MAX.label} characters`);
-    });
-    const nids = new Set<string>();
-    g.nodes.forEach((n, i) => {
-      if (nids.has(n.id))
-        bad(["nodes", i, "id"], `duplicate node id ${JSON.stringify(n.id)}`);
-      nids.add(n.id);
-      if (n.group !== undefined && !gids.has(n.group))
-        bad(["nodes", i, "group"], `unknown group ${JSON.stringify(n.group)}`);
-      if ([...n.label].length > GRAPH_MAX.label)
-        bad(["nodes", i, "label"], `over ${GRAPH_MAX.label} characters`);
-    });
-    g.edges.forEach((e, i) => {
-      for (const end of ["from", "to"] as const)
-        if (!nids.has(e[end]))
-          bad(["edges", i, end], `unknown node ${JSON.stringify(e[end])}`);
-      if (e.label !== undefined && [...e.label].length > GRAPH_MAX.label)
-        bad(["edges", i, "label"], `over ${GRAPH_MAX.label} characters`);
-    });
-  });
+  .superRefine((g, ctx) => graphRules(g, ctx));
 
 export type GraphPropsValue = z.infer<typeof graphProps>;
 /** The graph as the host renderer draws it: the wire props without the app-only `highlight`/`onSelect`. */
 export type GraphValue = Omit<GraphPropsValue, "highlight" | "onSelect">;
 
-/** What the host's Graph renderer receives. */
-export interface GraphHostProps {
-  props: GraphValue;
-  /** Node ids to draw `active` (a node's own `danger`/`done` wins). */
+/** What a host diagram renderer receives (123 §6): the wire props and the apps' reactive `highlight` / `onSelect`. */
+export interface DiagramHostProps<P = Record<string, unknown>> {
+  props: P;
+  /** Unit ids to draw `active` (a unit's own `danger`/`done` wins). */
   highlight?: readonly string[];
-  /** A node was pressed. */
+  /** A unit was pressed. */
   onSelect?: (id: string) => void;
 }
 
-let graphHost: ComponentType<GraphHostProps> | null = null;
+/** What the host's Graph renderer receives. */
+export type GraphHostProps = DiagramHostProps<GraphValue>;
+
+const hosts = new Map<string, ComponentType<DiagramHostProps<never>>>();
 
 /**
- * Install the host's Graph renderer (the desktop's `GraphView`, `crates/desktop/ui`). This package has no
- * renderer of its own: until one is installed the component shows the adjacency text, which is also what
- * the headless helper and the tests see.
+ * Install the host's renderer for diagram `name` (the desktop's `<NameView>`, `crates/desktop/ui`). This package
+ * has no renderer of its own: until one is installed the component shows its text form (`graphText` for Graph,
+ * `<Name>: n <units>` otherwise), which is also what the headless helper and the tests see.
  */
+export function setDiagramRenderer<P>(
+  name: string,
+  component: ComponentType<DiagramHostProps<P>> | null,
+): void {
+  if (component) hosts.set(name, component as ComponentType<DiagramHostProps<never>>);
+  else hosts.delete(name);
+}
+
+/** The installed renderer for `name`, if any. */
+export function diagramRenderer(
+  name: string,
+): ComponentType<DiagramHostProps<never>> | null {
+  return hosts.get(name) ?? null;
+}
+
+/** `setDiagramRenderer("Graph", …)`. */
 export function setGraphRenderer(
   component: ComponentType<GraphHostProps> | null,
 ): void {
-  graphHost = component;
+  setDiagramRenderer("Graph", component);
 }
 
 /** `crates/surface::graph::adjacency_lines` in one string: what renders without a host. */
@@ -299,35 +299,76 @@ interface Plan {
   steps: Array<{ valueAST?: ASTNode } & Record<string, unknown>>;
 }
 
+/** The `onSelect` plan as a function of the pressed unit id, or `undefined` without a plan. */
+function selectOf(
+  trigger: ReturnType<typeof useTriggerAction>,
+  onSelect: unknown,
+): ((id: string) => void) | undefined {
+  const plan = onSelect as Plan | undefined;
+  return plan && Array.isArray(plan.steps)
+    ? (id: string) =>
+        trigger(id, undefined, {
+          ...plan,
+          steps: plan.steps.map((s) =>
+            s.valueAST ? { ...s, valueAST: bindValue(s.valueAST, id) } : s,
+          ),
+        } as never)
+    : undefined;
+}
+
+/** The reactive `highlight` field as a string array, or `undefined`. */
+function highlightOf(value: unknown): string[] | undefined {
+  return Array.isArray(value)
+    ? value.filter((s): s is string => typeof s === "string")
+    : undefined;
+}
+
 const Graph = defineReactComponent({
   name: "Graph",
   props: graphProps,
   description:
-    "Typed boxes and arrows: nodes (id, label, kind?, group?, state?), directed edges (from, to, label?, style?), optional groups. `highlight` marks node ids active; `onSelect` runs an Action when a node is pressed, with `$value` bound to the node id (`@Set($selected, $value)`).",
+    "Typed boxes and arrows: nodes (id, label, kind?, group?, state?, sub?, tag?, icon?), directed edges (from, to, label?, style?, state?, arrow?), optional groups (nested by parent) and legend. `highlight` marks node ids active; `onSelect` runs an Action when a node is pressed, with `$value` bound to the node id (`@Set($selected, $value)`).",
   component: ({ props }: { props: GraphPropsValue }) => {
     const field = useStateField("highlight", props.highlight);
     const trigger = useTriggerAction();
     const { highlight: _highlight, onSelect, ...graph } = props;
-    const highlight = Array.isArray(field.value)
-      ? field.value.filter((s): s is string => typeof s === "string")
-      : undefined;
-    const plan = onSelect as Plan | undefined;
-    const select =
-      plan && Array.isArray(plan.steps)
-        ? (id: string) =>
-            trigger(id, undefined, {
-              ...plan,
-              steps: plan.steps.map((s) =>
-                s.valueAST ? { ...s, valueAST: bindValue(s.valueAST, id) } : s,
-              ),
-            } as never)
-        : undefined;
-    const Host = graphHost;
+    const Host = diagramRenderer("Graph") as ComponentType<GraphHostProps> | null;
     return Host
-      ? createElement(Host, { props: graph, highlight, onSelect: select })
+      ? createElement(Host, { props: graph, highlight: highlightOf(field.value), onSelect: selectOf(trigger, onSelect) })
       : createElement("pre", { "data-graph": "" }, graphText(graph));
   },
 });
+
+/**
+ * One 123 diagram component (design 123 §6): the wire schema of `diagrams.ts` plus reactive `highlight` and
+ * `onSelect` exactly as `Graph`; mounted through the host renderer installed by `setDiagramRenderer(name)`, else
+ * its text form.
+ */
+function defineDiagram(name: string): DefinedComponent {
+  const def = DIAGRAMS[name]!;
+  const props = def.props.extend({
+    highlight: reactive(
+      z.array(graphStr).optional().describe("unit ids drawn active"),
+    ),
+    onSelect: (buttonAction as unknown as z.ZodType).describe(
+      "runs when a unit is pressed; $value is the unit id",
+    ),
+  });
+  return defineReactComponent({
+    name,
+    props,
+    description: def.description,
+    component: ({ props }: { props: Record<string, unknown> }) => {
+      const field = useStateField("highlight", props.highlight);
+      const trigger = useTriggerAction();
+      const { highlight: _highlight, onSelect, ...wire } = props;
+      const Host = diagramRenderer(name) as ComponentType<DiagramHostProps> | null;
+      return Host
+        ? createElement(Host, { props: wire, highlight: highlightOf(field.value), onSelect: selectOf(trigger, onSelect) })
+        : createElement("pre", { "data-diagram": name }, diagramText(name, wire));
+    },
+  }) as unknown as DefinedComponent;
+}
 
 /**
  * Components defined here, not upstream; they join `keep` by name like the upstream ones. The widening drops
@@ -335,6 +376,7 @@ const Graph = defineReactComponent({
  */
 const LOCAL_COMPONENTS: Record<string, DefinedComponent> = {
   Graph: Graph as unknown as DefinedComponent,
+  ...Object.fromEntries(Object.keys(DIAGRAMS).map((name) => [name, defineDiagram(name)])),
 };
 
 /**

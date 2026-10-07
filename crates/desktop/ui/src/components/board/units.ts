@@ -93,7 +93,10 @@ export function unitBy(blockId: string, unitId: string): string {
   return `unit:${blockId}:${unitId}`
 }
 
-/** Focus the element `by` names: a `data-anchor-id` (spans, excerpts, buttons) or a unit's `<g data-node|data-step>`. */
+/**
+ * Focus the element `by` names: a `data-anchor-id` (spans, excerpts, buttons) or a unit's `<g data-unit>` (123 §5.3 —
+ * the one attribute every diagram renderer carries; `data-node` / `data-step` stay as aliases one release).
+ */
 export function focusBy(root: ParentNode | null, by: string): void {
   if (!root || !by) return
   let el = root.querySelector<HTMLElement>(`[data-anchor-id="${CSS.escape(by)}"]`)
@@ -102,16 +105,16 @@ export function focusBy(root: ParentNode | null, by: string): void {
     if (sep > 0) {
       const block = CSS.escape(by.slice('unit:'.length, sep))
       const unit = CSS.escape(by.slice(sep + 1))
-      el = root.querySelector<HTMLElement>(`[data-block="${block}"] :is([data-node="${unit}"], [data-step="${unit}"])`)
+      el = root.querySelector<HTMLElement>(`[data-block="${block}"] :is([data-unit="${unit}"], [data-node="${unit}"], [data-step="${unit}"])`)
     }
   }
   el?.focus()
 }
 
-/** The unit element under an event target, if any. */
+/** The unit element under an event target, if any (`data-unit`, or the legacy `data-node` / `data-step`). */
 function unitOf(target: EventTarget | null): string | null {
-  const g = (target as Element | null)?.closest?.<HTMLElement>('[data-node], [data-step]')
-  return g ? (g.dataset.node ?? g.dataset.step ?? null) : null
+  const g = (target as Element | null)?.closest?.<HTMLElement>('[data-unit], [data-node], [data-step]')
+  return g ? (g.dataset.unit ?? g.dataset.node ?? g.dataset.step ?? null) : null
 }
 
 /**

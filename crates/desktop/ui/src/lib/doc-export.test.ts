@@ -14,6 +14,7 @@ const DARK: DiagramTokens = {
   success: '#7fb59a',
   danger: '#e0705f',
   font: 'ui-sans-serif',
+  series: ['#d8763a', '#7fb59a', '#7f9fd0', '#c8ae5a', '#b088b0', '#a89880'],
 }
 // Light foreground equals dark primary's hue family but not its value; background/foreground cross over on purpose.
 const LIGHT: DiagramTokens = { ...DARK, background: '#f3eadf', foreground: '#1a1612', primary: '#1a1612', card: '#ffffff', border: '#d4c4a8' }

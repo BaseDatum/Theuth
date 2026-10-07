@@ -18,6 +18,7 @@ const TOKENS: DiagramTokens = {
   success: '#2f5d4a',
   danger: '#9b2d1f',
   font: 'sans-serif',
+  series: ['#b4531e', '#2f5d4a', '#3b5b8c', '#8a6d1f', '#7a3e7a', '#6b5e4f'],
 }
 
 const change = fixture as unknown as ChangeLens
