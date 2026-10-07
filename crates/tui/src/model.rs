@@ -6911,7 +6911,8 @@ impl Model {
         let Some(session) = self.session.filter(|_| self.streaming || self.compacting) else {
             return;
         };
-        self.esc_taps.retain(|t| now.duration_since(*t) < ESC_TAPS_WINDOW);
+        self.esc_taps
+            .retain(|t| now.duration_since(*t) < ESC_TAPS_WINDOW);
         self.esc_taps.push(now);
         if self.esc_taps.len() < 3 {
             send(tx, Command::Cancel(session));

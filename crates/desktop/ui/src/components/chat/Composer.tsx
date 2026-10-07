@@ -21,6 +21,7 @@ import {
   type KeyboardEvent,
   type SyntheticEvent,
   useEffect,
+  useMemo,
   useRef,
   useState,
 } from 'react'
@@ -51,6 +52,9 @@ import { useShortcuts } from '@/lib/shortcuts'
 import { cn } from '@/lib/utils'
 import { noteText } from '@/lib/voice-note'
 import { MIN_NOTE_MS } from '@/lib/hold'
+import { stripRows } from '@/lib/session-tree'
+import { type Act as StopAct, IDLE as STOP_IDLE, type Stop as StopState, progress as stopProgress, step as stepStop } from '@/lib/stop-gesture'
+import type { CancelScope } from '@/rpc/bindings/CancelScope'
 import { LOCAL, useEngines } from '@/link/engines'
 import { useConnection } from '@/store/connection'
 import { useSessionField, useSessions } from '@/store/sessions'
@@ -61,6 +65,7 @@ import { CommunicationNotice, useCommunication } from './CommunicationNotice'
 import { openBroadcastDialog } from './BroadcastDialog'
 import { ContextPicker } from './ContextPicker'
 import { MicButton } from './MicButton'
+import { StopButton } from './StopButton'
 import { CancelHint, DeleteNote, RecordingMeta, type Stage } from './VoiceHold'
 import { HeldStrip } from './HeldStrip'
 import { OwnerOfflineCard } from './OwnerOfflineCard'
@@ -809,6 +814,52 @@ export function Composer({
     () => gesture('interrupt'),
   )
 
+  // 133 §4: a stop is scoped. Tap / Esc → the root turn; the button held and slid up, Esc held 700 ms, or
+  // Esc ×3 → the root and every running descendant. N comes from the session tree the store already holds.
+  const children = useSessionField(session ?? '', 'children')
+  const descendants = useMemo(() => {
+    const { shown, more } = stripRows(children ?? {})
+    return shown.length + more
+  }, [children])
+  const stop = (scope: CancelScope) => {
+    if (!session) return
+    void api.cancel(session, scope)
+    if (scope === 'tree') toast(`Stopped ${descendants} agent${descendants === 1 ? '' : 's'}`)
+  }
+  const escState = useRef<StopState>(STOP_IDLE)
+  /** The key of the Esc chord while it is down (`null` between presses). */
+  const [escKey, setEscKey] = useState<string | null>(null)
+  const [ring, setRing] = useState(0)
+  const escAct = (a: StopAct) => {
+    const [next, verb] = stepStop(escState.current, a)
+    escState.current = next
+    if (verb) stop(verb)
+    setRing(stopProgress(next, a.t))
+  }
+  // While Esc is down: a tick for the ring (and the 700 ms stop when the OS sends no key repeats); keyup or blur ends it.
+  useEffect(() => {
+    if (escKey === null) return
+    const tick = window.setInterval(() => escAct({ type: 'tick', t: performance.now() }), 50)
+    const end = () => {
+      setEscKey(null)
+      escAct({ type: 'up', t: performance.now() })
+    }
+    const onUp = (e: globalThis.KeyboardEvent) => e.key === escKey && end()
+    window.addEventListener('keyup', onUp)
+    window.addEventListener('blur', end)
+    return () => {
+      clearInterval(tick)
+      window.removeEventListener('keyup', onUp)
+      window.removeEventListener('blur', end)
+    }
+  }, [escKey])
+  useEffect(() => {
+    if (running) return
+    escState.current = STOP_IDLE
+    setEscKey(null)
+    setRing(0)
+  }, [running])
+
   // Mic (45 §7.2): click to record, click again to upload → `transcribe` → send as `[voice note, N s] …`; Escape discards.
   const stopRecording = (discard: boolean) => {
     const r = recorder.current
@@ -949,7 +1000,8 @@ export function Composer({
     const k = e.nativeEvent
     if (session && running && chord(keys.stop, k)) {
       e.preventDefault()
-      void api.cancel(session)
+      if (!k.repeat) setEscKey(k.key)
+      escAct({ type: 'down', t: performance.now(), repeat: k.repeat })
       return
     }
     if (session && queued?.length && chord(keys.withdraw, k)) {
@@ -1257,13 +1309,7 @@ export function Composer({
                     </TooltipContent>
                   </Tooltip>
                 )}
-                <Button
-                  className="size-9 shrink-0 rounded-full bg-danger text-primary-foreground hover:bg-danger/90"
-                  aria-label="Stop"
-                  onClick={() => void api.cancel(session)}
-                >
-                  <Square className="size-4 fill-current" />
-                </Button>
+                <StopButton count={descendants} ring={ring} onStop={stop} />
               </>
             ) : (
               <Button
