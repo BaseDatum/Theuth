@@ -2403,6 +2403,20 @@ impl Store {
         Ok(depth)
     }
 
+    /// The top of `id`'s parent chain (`id` itself for a top-level or
+    /// unknown session): the orchestrator tree's key (01 §2.6).
+    pub async fn root_of(&self, mut id: SessionId) -> anyhow::Result<SessionId> {
+        while let Some((Some(parent),)) =
+            sqlx::query_as::<_, (Option<String>,)>("SELECT parent FROM sessions WHERE id = ?")
+                .bind(id.to_string())
+                .fetch_optional(&self.read)
+                .await?
+        {
+            id = parent.parse().context("bad parent id")?;
+        }
+        Ok(id)
+    }
+
     /// Assistant text after the last user message, joined by newlines: the
     /// "final answer" of the most recent turn. Vision notes are not user
     /// messages here: a maintenance note after a reply does not erase it.
