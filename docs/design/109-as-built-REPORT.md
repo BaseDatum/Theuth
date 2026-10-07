@@ -59,8 +59,7 @@ all, because `Loaded.resume` only described an open turn.
   `job_put(&JobRow)`) instead of `(session, turn, &row)`, because `latest_resume_report` must hand
   the turn back for the no-open-turn `ResumeState`. `at` is set by the caller (`Utc::now()` in
   `report()`), so the row round-trips byte-equal in tests.
-- `ResumeReportRow` lives in `crate::durability` beside `ResumePlan` (the loop and drain both use
-  it); the store file imports it as it does the other plan types.
+- `ResumeReportRow` lives in `crate::durability` beside `ResumePlan` (loop and drain both use it).
 - `crates/rpc/src/api.rs` test literal gained `report: None` (compile fix, as BANNER did).
 
 ## Out of scope (recorded, not built)
@@ -68,5 +67,5 @@ all, because `Loaded.resume` only described an open turn.
 - `report()` still hard-codes `lost_jobs: Vec::new(), children_restored: 0, children_handed_off: 0`;
   the W2/W4 counts were never wired into the event, so the row persists the same zeros.
 - The roster's "resumed with gaps" attention items are rebuilt from memory only.
-- `cut_journal_in` does not touch `resume_reports` (no `at_seq`); an orphan row for a cut turn is
-  unreachable (`latest_resume_report` keys on the newest journaled turn) and goes with the session.
+- `cut_journal_in` skips `resume_reports` (no `at_seq`); a cut turn's orphan row is unreachable
+  (`latest_resume_report` keys on the newest journaled turn) and goes with the session.
