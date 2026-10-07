@@ -57,8 +57,9 @@ final class Store: ObservableObject {
     /// W3: ⌘L from the Attention panel.
     var onAskBar: (() -> Void)?
 
-    func start(location: EngineLocation) {
-        client = RpcClient(location: location,
+    /// `locate` runs before every dial, so the engine is found whenever (and wherever) it comes up.
+    func start(locate: @escaping @Sendable () -> EngineLocation?) {
+        client = RpcClient(locate: locate,
                            onState: { s in Task { @MainActor in self.connection = s } },
                            onEvent: { d in Task { @MainActor in self.handle(d) } })
         Task {

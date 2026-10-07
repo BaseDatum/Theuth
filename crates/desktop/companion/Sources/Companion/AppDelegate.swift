@@ -34,13 +34,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         store.$rail.receive(on: RunLoop.main).sink { [weak self] r in MainActor.assumeIsolated { self?.updateStatusItem(r) } }.store(in: &subs)
         store.$connection.receive(on: RunLoop.main).sink { s in Log.write("connection: \(s)") }.store(in: &subs)
 
-        do {
-            let loc = try EngineLocation.discover()
-            Log.write("engine \(loc.url.absoluteString) (token \(loc.token.count) chars)")
-            store.start(location: loc)
-        } catch {
-            Log.write("engine discovery failed: \(error) — will show the rail disconnected")
-        }
+        // Re-discovered before every dial: at login the companion can start before the engine has written
+        // `engine.json` (it would otherwise pin the 127.0.0.1:7777 fallback forever), and a restarted engine
+        // listens on a new port.
+        store.start(locate: {
+            do {
+                let loc = try EngineLocation.discover()
+                Log.write("engine \(loc.url.absoluteString) (token \(loc.token.count) chars)")
+                return loc
+            } catch {
+                Log.write("engine discovery failed: \(error) — retrying")
+                return nil
+            }
+        })
 
         if let seconds = Flags.probe { runProbe(seconds) }
         installAskBar(attention: panel) // W3: panel, key-down half of the hotkey, --ask / --ask-probe

@@ -4,6 +4,8 @@ import Foundation
 /// positional params, numeric ids, `subscribe_events` items as notifications keyed by `params.subscription`.
 /// Lost sockets are redialled with capped exponential backoff (1 s → 30 s) and the event subscription is
 /// re-issued on every open, so the first item (`PendingPrompts`) arrives again — callers resync on it.
+/// The engine is located afresh on every dial (`locate`), so a companion launched before the engine has
+/// written `engine.json`, or an engine restarted on a new port, is found on the next attempt.
 public actor RpcClient {
     public enum State: Equatable, Sendable { case connecting, open, reconnecting, closed }
 
@@ -21,7 +23,7 @@ public actor RpcClient {
         let params: [AnyEncodable]
     }
 
-    private let request: URLRequest
+    private let locate: @Sendable () -> EngineLocation?
     private let session = URLSession(configuration: .ephemeral)
     private let onState: @Sendable (State) -> Void
     private let onEvent: @Sendable (Data) -> Void
@@ -34,14 +36,25 @@ public actor RpcClient {
     private var wantsEvents = false
     private var subscriptionId: String?
 
+    /// A fixed location (tests, probes).
     public init(location: EngineLocation, onState: @escaping @Sendable (State) -> Void,
                 onEvent: @escaping @Sendable (Data) -> Void) {
+        self.init(locate: { location }, onState: onState, onEvent: onEvent)
+    }
+
+    /// `locate` runs before every dial; nil (no token yet) waits and retries like a lost socket.
+    public init(locate: @escaping @Sendable () -> EngineLocation?, onState: @escaping @Sendable (State) -> Void,
+                onEvent: @escaping @Sendable (Data) -> Void) {
+        self.locate = locate
+        self.onState = onState
+        self.onEvent = onEvent
+    }
+
+    private static func request(for location: EngineLocation) -> URLRequest {
         var r = URLRequest(url: location.url)
         r.setValue("Bearer \(location.token)", forHTTPHeaderField: "Authorization")
         r.setValue("companion", forHTTPHeaderField: "X-Theuth-Client")
-        request = r
-        self.onState = onState
-        self.onEvent = onEvent
+        return r
     }
 
     // MARK: lifecycle
@@ -71,7 +84,8 @@ public actor RpcClient {
     private func connect() {
         guard !closed else { return }
         onState(attempt == 0 ? .connecting : .reconnecting)
-        let t = session.webSocketTask(with: request)
+        guard let location = locate() else { return retryLater() }
+        let t = session.webSocketTask(with: Self.request(for: location))
         task = t
         t.resume()
         // No delegate: the first successful ping proves the upgrade.
@@ -120,6 +134,11 @@ public actor RpcClient {
         t.cancel(with: .abnormalClosure, reason: nil)
         failPending(RpcError(code: -32300, message: "connection closed"))
         guard !closed else { return }
+        retryLater()
+    }
+
+    /// Capped exponential backoff (1 s → 30 s), then dial again (re-locating the engine).
+    private func retryLater() {
         onState(.reconnecting)
         let delay = min(30.0, pow(2.0, Double(attempt)))
         attempt += 1
