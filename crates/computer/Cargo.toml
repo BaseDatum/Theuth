@@ -25,6 +25,8 @@ ts-rs = { workspace = true, optional = true }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2-core-graphics = { workspace = true }
+# 121: ScreenCaptureKit screenshots, the default macOS capture path (`screen.rs`).
+screencapturekit = { workspace = true }
 # 96: accessibility reader (`ax.rs`).
 objc2-application-services = { workspace = true }
 objc2-core-foundation = { workspace = true, features = ["CFURL", "CFNumber", "CFArray"] }

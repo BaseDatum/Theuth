@@ -374,8 +374,10 @@ impl Store {
         model: Option<&str>,
     ) -> anyhow::Result<CallId> {
         let mut tx = self.begin_write().await?;
-        let call =
-            reserve_call_in(&mut tx, owner, request_id, attempt, turn, kind, provider, model).await?;
+        let call = reserve_call_in(
+            &mut tx, owner, request_id, attempt, turn, kind, provider, model,
+        )
+        .await?;
         tx.commit().await?;
         Ok(call)
     }

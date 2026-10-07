@@ -1194,6 +1194,7 @@ pub struct Advisory {
     pub notes: Vec<AdvisoryNote>,
 }
 
+
 /// Live state of one advisor link (125 §4.3).
 #[derive(
     Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema,
@@ -1376,6 +1377,26 @@ pub struct AppendAdvisory {
     pub advisory: Advisory,
     /// The model-facing text of the row.
     pub text: String,
+}
+
+/// `ask` → `Vec<String>`: the favorite model ids (`agent.favorite_models`,
+/// 127 §1) in the order they were starred — the live list, not the config
+/// file read at startup.
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
+pub struct GetFavoriteModels;
+
+/// `ask` → `Result<Vec<String>, String>`: star or unstar a model (127 §1).
+/// `model` is resolved through the catalog like [`SetModel`] (aliases
+/// normalised, unknown ids rejected with the same error). A no-op when the
+/// model is already in the requested state; otherwise `agent.favorite_models`
+/// in `<data_dir>/config.yaml` is rewritten and
+/// [`AgentEvent::FavoriteModelsChanged`] follows. The reply is the new list.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct SetModelFavorite {
+    /// `provider/model`, or a bare model id resolved against configured providers.
+    pub model: String,
+    /// `true` stars, `false` unstars.
+    pub favorite: bool,
 }
 
 /// One selectable model.
@@ -2178,6 +2199,13 @@ pub enum AgentEvent {
         /// Canonical model id.
         model: String,
     },
+    /// The favorite model list changed (127 §1): a [`SetModelFavorite`]
+    /// starred or unstarred a model. Global, no session; `models` is the
+    /// whole new list in favorites order.
+    FavoriteModelsChanged {
+        /// Canonical model ids, in the order they were starred.
+        models: Vec<String>,
+    },
     /// An external harness (ACP child, design doc 06 §8.2) reported the LLM
     /// model its session runs on — at connect, or when it switched
     /// mid-session. `TurnStarted.model` stays the harness name.
@@ -2495,7 +2523,9 @@ impl AgentEvent {
             | Self::AdvisorChanged { session, .. }
             | Self::AdvisoryAdded { session, .. } => Some(*session),
             Self::SubagentSpawned { child, .. } => Some(*child),
-            Self::DefaultModelChanged { .. } | Self::DefaultEffortChanged { .. } => None,
+            Self::DefaultModelChanged { .. }
+            | Self::DefaultEffortChanged { .. }
+            | Self::FavoriteModelsChanged { .. } => None,
         }
     }
 }
@@ -2525,6 +2555,10 @@ pub struct AgentConfig {
     /// Reasoning effort for new sessions (`low`, `high`, `off`, a token
     /// budget, …; what the model accepts); unset = provider default.
     pub effort: Option<String>,
+    /// Models starred in a picker (127 §1), `provider/model` ids in the order
+    /// they were starred; every device attached to this engine shows them
+    /// first. Written back as a one-line flow sequence by [`SetModelFavorite`].
+    pub favorite_models: Vec<String>,
     /// Harness-wide Bedrock inference profile; unset uses the AWS default credential chain.
     pub aws_profile: Option<String>,
     /// Max tool-call rounds per turn before the loop stops itself.
@@ -2592,6 +2626,7 @@ impl Default for AgentConfig {
         Self {
             model: "anthropic/claude-sonnet-4-5".into(),
             effort: None,
+            favorite_models: Vec::new(),
             aws_profile: None,
             max_tool_rounds: 32,
             stream_idle_secs: 120,

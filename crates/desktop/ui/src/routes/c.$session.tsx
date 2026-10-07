@@ -205,8 +205,9 @@ export function useSessionLoad(session: string): void {
     void (async () => {
       for (let tries = 0; tries < SETTLE_TRIES; tries++) {
         const s = store.getState().sessions[session]
-        // Nothing to reconcile, or a turn runs: its `TurnDone` publishes the `ContextChanged` that comes back here.
-        if (!s?.contextStale || s.running) break
+        // Nothing to reconcile. A running turn is the engine's call, not this slice's `running` (stale after a gap,
+        // 129 D3): a busy actor answers `settled: false` and its `TurnDone` publishes the `ContextChanged` that comes back here.
+        if (!s?.contextStale) break
         const fresh = freshness(s)
         try {
           const page = await api.load_session(session, null, PAGE, true)
@@ -239,8 +240,8 @@ export function useSessionLoad(session: string): void {
     }
   }, [api, session, load, settle, store, refreshTodos])
 
-  // Reconnect / `Lagged` (bare event): everything between is lost, so the visible session is re-fetched in full.
-  // A context edit (`ContextChanged`, or the picker's `settled` event) goes through the settled path instead.
+  // Reconnect (bare event): everything between is lost, so the visible session is re-fetched in full. A context
+  // edit (`ContextChanged`, or the picker's `settled` event) and 129's `Lagged` resync go through the settled path instead.
   useEffect(() => {
     const reload = (ev: Event) => {
       const detail: ReloadDetail | undefined = ev instanceof CustomEvent ? ev.detail : undefined

@@ -1,0 +1,344 @@
+<!doctype html><html><head><meta charset='utf-8'>
+<style>
+  :root { --font-sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", Inter, system-ui, sans-serif; --font-mono: "SF Mono", ui-monospace, Menlo, monospace; }
+  * { box-sizing: border-box; }
+  body { margin: 0; font-family: var(--font-sans); color: var(--foreground, #1a1612); background: transparent; font-size: 14px; line-height: 1.45; }
+  h2 { font-size: 15px; font-weight: 600; margin: 28px 0 6px; letter-spacing: .01em; }
+  h2 small { font-weight: 400; color: var(--muted-foreground, #6b5e4f); margin-left: 8px; }
+  p.lede { margin: 0 0 12px; color: var(--muted-foreground, #6b5e4f); max-width: 70ch; }
+  .row { display: flex; gap: 16px; flex-wrap: wrap; align-items: flex-start; }
+  .cap { font-size: 12px; color: var(--muted-foreground, #6b5e4f); margin: 6px 2px 0; }
+  kbd { font-family: var(--font-mono); font-size: 10.5px; padding: 1px 5px; border-radius: 4px; border: 1px solid var(--t-border-strong); background: var(--t-bg2); color: var(--t-fg2); line-height: 1.4; }
+
+  /* theuth palettes, verbatim from crates/desktop/ui/src/styles.css */
+  .soot { --t-bg: #12100e; --t-bg1: #1c1915; --t-bg2: #2a241c; --t-bg3: #3a3228; --t-fg: #e8dcc8; --t-fg2: #c9b89a; --t-fg3: #9a8b72; --t-accent: #c47a2c; --t-border: #2a241c; --t-border-strong: #3a3228; --t-ok: #4a8a6e; --t-info: #5b8f8a; --t-err: #c45a48; --t-ok-bg: #4a8a6e26; --t-info-bg: #5b8f8a26; --t-err-bg: #c45a4826; --t-acc-bg: #c47a2c26; }
+  .bone { --t-bg: #e8dcc8; --t-bg1: #f3eadf; --t-bg2: #d4c4a8; --t-bg3: #c9b48a; --t-fg: #1a1612; --t-fg2: #6b5e4f; --t-fg3: #8f7f6a; --t-accent: #b4531e; --t-border: #d4c4a8; --t-border-strong: #c9b48a; --t-ok: #2f5d4a; --t-info: #3d6b66; --t-err: #9b2d1f; --t-ok-bg: #2f5d4a1f; --t-info-bg: #3d6b661f; --t-err-bg: #9b2d1f1f; --t-acc-bg: #b4531e1f; }
+
+  /* ---------- desktop composite ---------- */
+  .desk { position: relative; width: 100%; max-width: 1180px; aspect-ratio: 16/9.6; border-radius: 12px; overflow: hidden; background: linear-gradient(160deg, #3b2f2a 0%, #1b1a22 45%, #0f1a20 100%); box-shadow: 0 10px 40px rgba(0,0,0,.35); font-size: 12px; }
+  .menubar { position: absolute; left: 0; right: 0; top: 0; height: 26px; background: rgba(20,18,16,.55); backdrop-filter: blur(20px); color: #e8dcc8; display: flex; align-items: center; padding: 0 12px; gap: 16px; font-size: 12px; }
+  .menubar .app { font-weight: 600; }
+  .menubar .right { margin-left: auto; display: flex; gap: 14px; align-items: center; }
+  .mbx { display: inline-flex; align-items: center; gap: 5px; padding: 2px 7px; border-radius: 5px; background: rgba(232,220,200,.10); }
+  .mbx .ib { width: 11px; height: 11px; border-radius: 50%; border: 1.5px solid #e8dcc8; position: relative; }
+  .mbx .ib::after { content: ""; position: absolute; width: 5px; height: 5px; border-radius: 50%; background: #c47a2c; right: -3px; top: -3px; }
+  .mbx b { color: #c47a2c; font-weight: 600; }
+  .win { position: absolute; border-radius: 10px; background: #1e1e1e; box-shadow: 0 8px 30px rgba(0,0,0,.45); overflow: hidden; border: 1px solid rgba(255,255,255,.06); }
+  .win .tb { height: 30px; background: #262626; display: flex; align-items: center; padding: 0 10px; gap: 6px; color: #9a9a9a; font-size: 11px; }
+  .win .tb i { width: 11px; height: 11px; border-radius: 50%; display: inline-block; background: #4a4a4a; }
+  .win .tb i:nth-child(1) { background: #ff5f57; } .win .tb i:nth-child(2) { background: #febc2e; } .win .tb i:nth-child(3) { background: #28c840; }
+  .win .tb span { margin-left: 10px; }
+  .code { padding: 10px 14px; font-family: var(--font-mono); font-size: 11px; color: #cfcfcf; line-height: 1.6; white-space: pre; }
+  .code .k { color: #c586c0; } .code .f { color: #dcdcaa; } .code .s { color: #ce9178; } .code .c { color: #6a9955; } .code .cur { background: #3a3a3a; }
+
+  /* rail */
+  .rail { position: absolute; right: 0; top: 50%; transform: translateY(-50%); width: 26px; padding: 10px 0; border-radius: 10px 0 0 10px; background: rgba(28,25,21,.82); backdrop-filter: blur(16px); display: flex; flex-direction: column; align-items: center; gap: 9px; border: 1px solid rgba(58,50,40,.9); border-right: 0; }
+  .rail .wm { width: 12px; height: 12px; border-radius: 3px; background: #c47a2c; margin-bottom: 4px; position: relative; }
+  .rail .wm::before { content: ""; position: absolute; inset: 3px; border-radius: 1px; background: #1c1915; }
+  .rail .sep { width: 12px; height: 1px; background: rgba(232,220,200,.18); }
+  .m { width: 10px; height: 10px; border-radius: 50%; }
+  .m.need { background: #c47a2c; box-shadow: 0 0 0 2px rgba(196,122,44,.25); }
+  .m.work { background: #5b8f8a; }
+  .m.idle { border: 1.5px solid #5b8f8a; }
+  .m.done { background: #4a8a6e; }
+  .m.err { background: #c45a48; }
+  .m.lapsed { border: 1.5px dashed #9a8b72; }
+  .m.focus { outline: 1.5px solid #e8dcc8; outline-offset: 2px; }
+  .rail .n { font-size: 9px; color: #c47a2c; font-weight: 600; font-family: var(--font-mono); }
+
+  /* panel */
+  .panel { width: 372px; border-radius: 12px; background: var(--t-bg1); color: var(--t-fg); border: 1px solid var(--t-border-strong); box-shadow: 0 18px 50px rgba(0,0,0,.45), 0 0 0 .5px rgba(0,0,0,.2); font-size: 12.5px; overflow: hidden; }
+  .panel.abs { position: absolute; }
+  .ph { display: flex; align-items: center; gap: 8px; padding: 9px 12px; border-bottom: 1px solid var(--t-border); color: var(--t-fg2); font-size: 11.5px; }
+  .ph b { color: var(--t-accent); font-weight: 600; }
+  .ph .dot { width: 7px; height: 7px; border-radius: 50%; display: inline-block; margin-right: 4px; }
+  .ph .sp { margin-left: auto; color: var(--t-fg3); }
+  .card { padding: 11px 12px 10px; border-bottom: 1px solid var(--t-border); }
+  .card.focus { background: var(--t-bg); box-shadow: inset 3px 0 0 var(--t-accent); }
+  .who { display: flex; align-items: center; gap: 7px; color: var(--t-fg2); font-size: 11.5px; margin-bottom: 5px; }
+  .who .m { width: 8px; height: 8px; }
+  .who b { color: var(--t-fg); font-weight: 600; }
+  .who .age { margin-left: auto; color: var(--t-fg3); font-variant-numeric: tabular-nums; }
+  .q { font-size: 13.5px; font-weight: 600; line-height: 1.3; margin: 2px 0 7px; }
+  .why { color: var(--t-fg2); font-size: 11.5px; margin: 0 0 8px; }
+  .opt { display: flex; align-items: center; gap: 9px; padding: 6px 8px; border-radius: 7px; border: 1px solid var(--t-border); margin: 4px 0; background: var(--t-bg1); }
+  .opt .key { font-family: var(--font-mono); font-size: 10.5px; min-width: 18px; height: 18px; border-radius: 4px; display: inline-flex; align-items: center; justify-content: center; background: var(--t-bg2); color: var(--t-fg2); border: 1px solid var(--t-border-strong); }
+  .opt.rec { border-color: var(--t-accent); background: var(--t-acc-bg); }
+  .opt.rec .key { background: var(--t-accent); color: var(--t-bg); border-color: var(--t-accent); }
+  .opt .tag { margin-left: auto; font-size: 10px; color: var(--t-accent); }
+  .opt .d { color: var(--t-fg3); font-size: 11px; margin-left: 4px; }
+  .acts { display: flex; gap: 10px; color: var(--t-fg3); font-size: 10.5px; margin-top: 8px; flex-wrap: wrap; }
+  .acts span { display: inline-flex; gap: 4px; align-items: center; }
+  .line { display: flex; align-items: center; gap: 8px; padding: 7px 12px; border-bottom: 1px solid var(--t-border); color: var(--t-fg2); font-size: 12px; }
+  .line .m { width: 8px; height: 8px; flex: none; }
+  .line b { color: var(--t-fg); font-weight: 500; }
+  .line .t { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .line .age { margin-left: auto; color: var(--t-fg3); flex: none; font-variant-numeric: tabular-nums; }
+  .pf { display: flex; gap: 10px; padding: 7px 12px; color: var(--t-fg3); font-size: 10.5px; align-items: center; }
+  .pf .r { margin-left: auto; }
+  .receipt { display: flex; align-items: center; gap: 8px; padding: 8px 12px; background: var(--t-ok-bg); color: var(--t-fg); font-size: 12px; border-top: 1px solid var(--t-border); position: relative; }
+  .receipt .bar { position: absolute; left: 0; bottom: 0; height: 2px; width: 62%; background: var(--t-ok); }
+  .receipt .u { margin-left: auto; color: var(--t-fg2); }
+  .summary { color: var(--t-fg2); font-size: 12px; margin: 0 0 8px; }
+  .chips { display: flex; gap: 6px; flex-wrap: wrap; margin: 0 0 8px; }
+  .chip { font-size: 10.5px; padding: 2px 7px; border-radius: 999px; border: 1px solid var(--t-border-strong); color: var(--t-fg2); background: var(--t-bg1); }
+  .chip.ok { color: var(--t-ok); border-color: var(--t-ok); background: var(--t-ok-bg); }
+  .chip.err { color: var(--t-err); border-color: var(--t-err); background: var(--t-err-bg); }
+  .empty { padding: 26px 14px; text-align: center; color: var(--t-fg3); }
+  .empty .m { display: inline-block; margin-bottom: 8px; }
+
+  /* dispatch palette */
+  .pal { width: 520px; border-radius: 14px; background: var(--t-bg1); border: 1px solid var(--t-border-strong); color: var(--t-fg); box-shadow: 0 24px 70px rgba(0,0,0,.5); overflow: hidden; }
+  .pal .in { display: flex; align-items: center; gap: 10px; padding: 14px 16px; font-size: 17px; color: var(--t-fg); border-bottom: 1px solid var(--t-border); }
+  .pal .in .ph2 { color: var(--t-fg3); flex: 1; }
+  .pal .in .mic { width: 22px; height: 22px; border-radius: 50%; border: 1.5px solid var(--t-fg3); position: relative; }
+  .pal .in .mic::after { content: ""; position: absolute; left: 7px; top: 4px; width: 6px; height: 9px; border-radius: 3px; background: var(--t-fg3); }
+  .pal .in .caret { width: 1.5px; height: 20px; background: var(--t-accent); }
+  .route { display: flex; align-items: center; gap: 10px; padding: 8px 16px; font-size: 12.5px; color: var(--t-fg2); border-bottom: 1px solid var(--t-border); }
+  .route.sel { background: var(--t-bg); color: var(--t-fg); box-shadow: inset 3px 0 0 var(--t-accent); }
+  .route .key { font-family: var(--font-mono); font-size: 10.5px; min-width: 26px; height: 18px; border-radius: 4px; display: inline-flex; align-items: center; justify-content: center; background: var(--t-bg2); color: var(--t-fg2); border: 1px solid var(--t-border-strong); }
+  .route .m { width: 8px; height: 8px; }
+  .route .sub { color: var(--t-fg3); margin-left: 4px; }
+  .route .r { margin-left: auto; color: var(--t-fg3); font-size: 11px; }
+  .pal .hint { padding: 8px 16px; color: var(--t-fg3); font-size: 10.5px; display: flex; gap: 14px; }
+
+  /* notification */
+  .notif { width: 360px; border-radius: 14px; background: rgba(44,40,36,.86); backdrop-filter: blur(24px); color: #e8dcc8; padding: 10px 12px 10px; box-shadow: 0 10px 30px rgba(0,0,0,.4); border: 1px solid rgba(255,255,255,.08); font-size: 12px; }
+  .notif.light { background: rgba(243,234,223,.88); color: #1a1612; border-color: rgba(0,0,0,.08); }
+  .notif .h { display: flex; align-items: center; gap: 8px; font-size: 11px; opacity: .8; margin-bottom: 4px; }
+  .notif .h .ic { width: 14px; height: 14px; border-radius: 4px; background: #c47a2c; }
+  .notif .h .t { margin-left: auto; }
+  .notif .title { font-weight: 600; font-size: 12.5px; }
+  .notif .body { opacity: .85; margin-top: 1px; }
+  .notif .btns { display: flex; gap: 6px; margin-top: 8px; }
+  .notif .btn { flex: 1; text-align: center; padding: 5px 8px; border-radius: 7px; background: rgba(232,220,200,.12); font-size: 11.5px; }
+  .notif.light .btn { background: rgba(26,22,18,.08); }
+  .notif .btn.rec { outline: 1px solid #c47a2c; }
+
+  /* legend grid */
+  .legend { display: grid; grid-template-columns: 24px 1fr 1fr; gap: 6px 12px; align-items: center; padding: 12px 14px; border-radius: 10px; background: var(--t-bg1); color: var(--t-fg); border: 1px solid var(--t-border); font-size: 12px; min-width: 300px; }
+  .legend .m { justify-self: center; }
+  .legend .k { color: var(--t-fg2); }
+  .legend .v { color: var(--t-fg3); font-size: 11.5px; }
+  table.keys { border-collapse: collapse; font-size: 12.5px; width: 100%; max-width: 720px; }
+  table.keys td { padding: 5px 10px 5px 0; border-bottom: 1px solid var(--border, #d4c4a8); vertical-align: top; }
+  table.keys td:first-child { white-space: nowrap; width: 150px; }
+  .frame { padding: 18px; border-radius: 14px; background: var(--t-bg); border: 1px solid var(--t-border); }
+  .frame.pad { display: flex; gap: 16px; flex-wrap: wrap; align-items: flex-start; }
+  .frame .lbl { width: 100%; font-size: 11px; color: var(--t-fg3); text-transform: uppercase; letter-spacing: .08em; margin-bottom: 4px; }
+
+  /* round 2: native (Swift) chrome — glass panels, SF type, capsule controls */
+  .glass { background: rgba(28,25,21,.74); -webkit-backdrop-filter: blur(30px) saturate(1.35); backdrop-filter: blur(30px) saturate(1.35); border: 0; box-shadow: 0 22px 60px rgba(0,0,0,.45), inset 0 0 0 .5px rgba(232,220,200,.14), inset 0 1px 0 rgba(232,220,200,.10); border-radius: 16px; }
+  .glass.light { background: rgba(243,234,223,.78); box-shadow: 0 22px 60px rgba(0,0,0,.22), inset 0 0 0 .5px rgba(26,22,18,.12), inset 0 1px 0 rgba(255,255,255,.55); }
+  .panel.glass .ph, .panel.glass .card, .panel.glass .line, .panel.glass .receipt { border-color: rgba(232,220,200,.10); }
+  .panel.glass.light .ph, .panel.glass.light .card, .panel.glass.light .line, .panel.glass.light .receipt { border-color: rgba(26,22,18,.10); }
+  .panel.glass .card.focus { background: rgba(232,220,200,.045); }
+  .panel.glass.light .card.focus { background: rgba(26,22,18,.035); }
+  .panel.glass .opt { background: rgba(232,220,200,.06); border-color: rgba(232,220,200,.10); border-radius: 9px; }
+  .panel.glass.light .opt { background: rgba(26,22,18,.04); border-color: rgba(26,22,18,.10); }
+  .panel.glass .opt.rec { background: var(--t-acc-bg); border-color: var(--t-accent); }
+  .pal.glass .in { border-color: rgba(232,220,200,.10); }
+  .mbar-item { display: inline-flex; align-items: center; gap: 5px; padding: 0 8px; height: 22px; border-radius: 5px; background: rgba(232,220,200,.16); color: #e8dcc8; font-size: 12px; }
+  .mbar-item .glyph { width: 13px; height: 13px; border: 1.5px solid #e8dcc8; border-radius: 4px; position: relative; }
+  .mbar-item .glyph::after { content: ""; position: absolute; inset: 3px; background: #e8dcc8; border-radius: 1px; }
+  .mbar-item b { color: #c47a2c; font-weight: 600; }
+  .mbar-item .gd { width: 6px; height: 6px; border-radius: 50%; background: #c47a2c; }
+  .sliver { position: absolute; right: 0; top: 50%; transform: translateY(-50%); width: 4px; height: 120px; border-radius: 3px 0 0 3px; background: rgba(154,139,114,.35); }
+  .peek { width: 300px; padding: 10px 12px; color: var(--t-fg); font-size: 12.5px; }
+  .peek .who { margin-bottom: 6px; }
+  .peek .st { color: var(--t-fg2); margin: 0 0 6px; }
+  .peek .meta { display: flex; gap: 10px; color: var(--t-fg3); font-size: 11px; font-variant-numeric: tabular-nums; }
+  .peek .meta b { color: var(--t-fg2); font-weight: 500; }
+  .menu { width: 230px; padding: 5px; color: var(--t-fg); font-size: 13px; }
+  .menu div { padding: 5px 10px; border-radius: 6px; display: flex; justify-content: space-between; }
+  .menu div.sel { background: var(--t-accent); color: var(--t-bg); }
+  .menu hr { border: 0; border-top: 1px solid rgba(232,220,200,.12); margin: 4px 8px; }
+  .menu span { color: var(--t-fg3); }
+  .menu div.sel span { color: inherit; opacity: .8; }
+  .settings { width: 420px; padding: 14px 16px; color: var(--t-fg); font-size: 12.5px; }
+  .settings h4 { margin: 8px 0 6px; font-size: 11px; text-transform: uppercase; letter-spacing: .08em; color: var(--t-fg3); font-weight: 600; }
+  .settings .r { display: flex; align-items: center; justify-content: space-between; padding: 6px 0; border-bottom: 1px solid rgba(232,220,200,.08); }
+  .settings .r span:last-child { color: var(--t-fg2); }
+  .seg { display: inline-flex; border-radius: 6px; overflow: hidden; border: 1px solid rgba(232,220,200,.18); font-size: 11px; }
+  .seg i { font-style: normal; padding: 2px 8px; color: var(--t-fg3); }
+  .seg i.on { background: rgba(232,220,200,.16); color: var(--t-fg); }
+  .toggle { width: 30px; height: 18px; border-radius: 9px; background: var(--t-ok); position: relative; display: inline-block; }
+  .toggle::after { content: ""; position: absolute; right: 2px; top: 2px; width: 14px; height: 14px; border-radius: 50%; background: #fff; }
+  .toggle.off { background: rgba(232,220,200,.2); } .toggle.off::after { right: auto; left: 2px; }
+  .flow { display: grid; grid-template-columns: repeat(5, 1fr); gap: 8px; align-items: stretch; }
+  .flow .st { border-radius: 10px; padding: 10px 12px; background: var(--t-bg1); border: 1px solid var(--t-border); color: var(--t-fg); font-size: 12px; min-height: 92px; }
+  .flow .st b { display: block; font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--t-fg3); margin-bottom: 4px; }
+  .flow .st.gold { border-color: var(--t-accent); box-shadow: inset 0 0 0 1px var(--t-accent); }
+  .flow .st.ok { border-color: var(--t-ok); }
+</style>
+</head><body><p class="lede">Round 2 — the ruled shape, drawn as a native macOS companion: Liquid-Glass panels, SF type, system notifications. Two-zone rail; the Attention panel answered by keystroke with a 3 s take-back; the Ask bar that always goes to theuth's desk; notifications by kind. Gold = needs you · faience = in flight · malachite = done · carnelian = error only.</p>
+<h2>1 · The loop <small>from glance to answer without leaving your app</small></h2>
+<div class="flow soot">
+  <div class="st"><b>1 · glance</b>Gold on the rail or a count in the menu bar: something needs you. No gold, nothing does.</div>
+  <div class="st gold"><b>2 · ⌃⇧Space</b>The panel opens over your app, key but non-activating; the oldest needs-you card is focused.</div>
+  <div class="st gold"><b>3 · 1 / 2 / 3 · ⏎</b>One keystroke picks an option. The receipt row counts down 3 s.</div>
+  <div class="st"><b>4 · ⎋ or wait</b>⎋ takes it back. Otherwise the answer is sent; the item becomes a receipt; focus is already back in your app.</div>
+  <div class="st ok"><b>5 · later</b>Finished work arrives at your next breakpoint with two ready replies; E clears it.</div>
+</div>
+<h2>2 · At a glance <small>panel opened from the menu bar item (macOS 27 expanded interface; manual placement on 15–26)</small></h2>
+<div class="desk soot">
+  <div class="menubar"><span></span><span class="app">Zed</span><span>File</span><span>Edit</span><span>View</span><span>Go</span>
+    <div class="right"><span class="mbar-item"><span class="glyph"></span><span class="gd"></span><b>3</b></span><span>Wed 10:42</span></div></div>
+  <div class="win" style="left:36px;top:46px;width:60%;height:78%">
+    <div class="tb"><i></i><i></i><i></i><span>crates/roster/src/attention.rs — theuth</span></div>
+    <div class="code"><span class="k">pub fn</span> <span class="f">derive</span>(inputs: &amp;Inputs, states: &amp;States, now_ms: u64) -&gt; Vec&lt;AttentionItem&gt; {
+    <span class="k">let mut</span> out = approvals(inputs, now_ms);
+    out.extend(asks(inputs));            <span class="c">// 105: skip decision:* asks</span>
+    <span class="cur">out.extend(finished(inputs, now_ms)); // 130 E3: finished:&lt;session&gt;:&lt;turn&gt;</span>
+    out.sort_by_key(|i| std::cmp::Reverse(i.at_ms));
+    out
+}</div>
+  </div>
+  <div class="win" style="left:28%;top:62%;width:36%;height:32%;background:#141414">
+    <div class="tb"><i></i><i></i><i></i><span>zsh — ~/Develop/theuth</span></div>
+    <div class="code" style="color:#9fd3a7">$ cargo test -p roster attention
+     Running 61 tests … ok</div>
+  </div>
+  <div class="rail"><span class="wm"></span><span class="n">3</span>
+    <span class="m need focus"></span><span class="m need"></span><span class="m need"></span><span class="sep"></span>
+    <span class="m work"></span><span class="m work"></span><span class="m work"></span><span class="m idle"></span><span class="m idle"></span><span class="m done"></span><span class="m done"></span></div>
+
+<div class="panel soot glass abs" style="right:14px;top:34px;transform:scale(.9);transform-origin:top right">
+  <div class="ph"><span class="dot" style="background:var(--t-accent)"></span><b>3 need you</b> · <span class="dot" style="background:var(--t-info)"></span>5 working · <span class="dot" style="background:var(--t-ok)"></span>2 done <span class="sp">1 of 3 · ⌘L ask</span></div>
+  <div class="card focus">
+    <div class="who"><span class="m need"></span><b>w2</b> · claude-fable · migration for billing <span class="age">waiting 4 m</span></div>
+    <div class="q">Which layout for the pricing page?</div>
+    <div class="why">Blocks the Stripe checkout task behind it; the other two agents are not waiting on this.</div>
+    <div class="opt rec"><span class="key">1</span>Three tiers <span class="d">— matches the current marketing copy</span><span class="tag">recommended · ⏎</span></div>
+    <div class="opt"><span class="key">2</span>One plan</div>
+    <div class="opt"><span class="key">3</span>A comparison table</div>
+    <div class="acts"><span><kbd>R</kbd> reply</span><span><kbd>S</kbd> snooze 30 m</span><span><kbd>O</kbd> board</span><span><kbd>⌘O</kbd> session</span></div>
+  </div>
+  <div class="line"><span class="m need"></span><b>w3</b><span class="t">Approve <code>git push origin v2.10.1</code> — mutating</span><span class="age">40 s</span></div>
+  <div class="line"><span class="m need"></span><b>ops-desk</b><span class="t">Review: nightly backup routine rewrite</span><span class="age">11 m</span></div>
+  <div class="line"><span class="m done"></span><b>w1</b><span class="t">Finished: auth refactor · 48/48 tests</span><span class="age">6 m</span></div>
+  <div class="pf"><span><kbd>J</kbd><kbd>K</kbd> move</span><span><kbd>E</kbd> clear</span><span><kbd>⎋</kbd> back to work</span><span class="r">answers wait 3 s · ⎋ undoes</span></div>
+</div>
+</div>
+<h2>3 · A quiet afternoon <small>nothing needs you and nothing is running: the rail is a 4 pt sliver, the menu bar glyph has no dot</small></h2>
+<div class="desk soot" style="aspect-ratio:16/6">
+  <div class="menubar"><span></span><span class="app">Zed</span><span>File</span><span>Edit</span>
+    <div class="right"><span class="mbar-item"><span class="glyph"></span></span><span>Wed 14:05</span></div></div>
+  <div class="win" style="left:36px;top:46px;width:70%;height:70%"><div class="tb"><i></i><i></i><i></i><span>notes.md</span></div><div class="code" style="color:#cfcfcf">Nothing needs you. Two desks idle, next routine 14:30.</div></div>
+  <span class="sliver"></span>
+</div>
+<h2>4 · Panel states <small>dark appearance</small></h2>
+<div class="frame pad soot"><div class="lbl">question (decision packet) · approval with an answer in its 3 s hold</div>
+<div class="panel soot glass">
+  <div class="ph"><span class="dot" style="background:var(--t-accent)"></span><b>3 need you</b> · <span class="dot" style="background:var(--t-info)"></span>5 working · <span class="dot" style="background:var(--t-ok)"></span>2 done <span class="sp">1 of 3 · ⌘L ask</span></div>
+  <div class="card focus">
+    <div class="who"><span class="m need"></span><b>w2</b> · claude-fable · migration for billing <span class="age">waiting 4 m</span></div>
+    <div class="q">Which layout for the pricing page?</div>
+    <div class="why">Blocks the Stripe checkout task behind it; the other two agents are not waiting on this.</div>
+    <div class="opt rec"><span class="key">1</span>Three tiers <span class="d">— matches the current marketing copy</span><span class="tag">recommended · ⏎</span></div>
+    <div class="opt"><span class="key">2</span>One plan</div>
+    <div class="opt"><span class="key">3</span>A comparison table</div>
+    <div class="acts"><span><kbd>R</kbd> reply</span><span><kbd>S</kbd> snooze 30 m</span><span><kbd>O</kbd> board</span><span><kbd>⌘O</kbd> session</span></div>
+  </div>
+  <div class="line"><span class="m need"></span><b>w3</b><span class="t">Approve <code>git push origin v2.10.1</code> — mutating</span><span class="age">40 s</span></div>
+  <div class="line"><span class="m need"></span><b>ops-desk</b><span class="t">Review: nightly backup routine rewrite</span><span class="age">11 m</span></div>
+  <div class="line"><span class="m done"></span><b>w1</b><span class="t">Finished: auth refactor · 48/48 tests</span><span class="age">6 m</span></div>
+  <div class="pf"><span><kbd>J</kbd><kbd>K</kbd> move</span><span><kbd>E</kbd> clear</span><span><kbd>⎋</kbd> back to work</span><span class="r">answers wait 3 s · ⎋ undoes</span></div>
+</div>
+<div class="panel soot glass">
+  <div class="ph"><span class="dot" style="background:var(--t-accent)"></span><b>2 need you</b> · <span class="dot" style="background:var(--t-info)"></span>5 working <span class="sp">1 of 2</span></div>
+  <div class="card focus">
+    <div class="who"><span class="m need"></span><b>w3</b> · omp · release 2.10.1 <span class="age">waiting 40 s</span></div>
+    <div class="q">Run <code>git push origin v2.10.1</code>?</div>
+    <div class="why">Mutating · pushes one tag to the public remote · release notes are in the thread.</div>
+    <div class="opt rec"><span class="key">1</span>Allow once<span class="tag">⏎</span></div>
+    <div class="opt"><span class="key">2</span>Allow for this session</div>
+    <div class="opt"><span class="key">3</span>Deny <span class="d">— R adds a note the agent reads</span></div>
+    <div class="acts"><span><kbd>R</kbd> deny with a note</span><span><kbd>⌘O</kbd> session</span></div>
+  </div>
+  <div class="line"><span class="m need"></span><b>ops-desk</b><span class="t">Review: nightly backup routine rewrite</span><span class="age">11 m</span></div>
+  <div class="receipt"><span class="m done"></span>w2 · <b>Three tiers</b> — sending<span class="u">⎋ undo · 2</span><span class="bar"></span></div>
+</div></div>
+<div class="frame pad soot" style="margin-top:14px"><div class="lbl">ask bar after sending · peek card for a working agent (click its mark)</div>
+<div class="pal soot glass" style="width:480px">
+  <div class="in"><span class="mic"></span><span>Fix the flaky rpc test and tell w2 to wait for it</span><span class="caret"></span></div>
+  <div class="hint" style="border-bottom:1px solid rgba(232,220,200,.10)"><span>⏎ send to theuth · it routes</span><span>hold <kbd>⌃⇧Space</kbd> to talk</span><span style="margin-left:auto">⎋ cancel</span></div>
+  <div class="receipt" style="background:var(--t-ok-bg)"><span class="m done"></span><span><b>theuth</b> · handed to w3 — it owns crates/rpc; told w2 to wait for the fix</span><span class="u">Open ⌘O</span></div>
+</div>
+<div class="panel soot glass peek">
+  <div class="who"><span class="m work"></span><b>w3</b> · omp · release 2.10.1 <span class="age">running 12 m</span></div>
+  <div class="st">Running <code>cargo test -p rpc</code> under build-lock · last tool 20 s ago</div>
+  <div class="meta"><span><b>$0.31</b> today</span><span><b>3</b> tasks</span><span><b>2</b> subagents</span><span style="margin-left:auto">⌘O session</span></div>
+</div></div>
+<h2>5 · Light appearance <small>the companion follows the system appearance; the same tokens, light variants</small></h2>
+<div class="frame pad bone"><div class="lbl">question · finished work with two next steps</div>
+<div class="panel bone glass light">
+  <div class="ph"><span class="dot" style="background:var(--t-accent)"></span><b>3 need you</b> · <span class="dot" style="background:var(--t-info)"></span>5 working · <span class="dot" style="background:var(--t-ok)"></span>2 done <span class="sp">1 of 3 · ⌘L ask</span></div>
+  <div class="card focus">
+    <div class="who"><span class="m need"></span><b>w2</b> · claude-fable · migration for billing <span class="age">waiting 4 m</span></div>
+    <div class="q">Which layout for the pricing page?</div>
+    <div class="why">Blocks the Stripe checkout task behind it; the other two agents are not waiting on this.</div>
+    <div class="opt rec"><span class="key">1</span>Three tiers <span class="d">— matches the current marketing copy</span><span class="tag">recommended · ⏎</span></div>
+    <div class="opt"><span class="key">2</span>One plan</div>
+    <div class="opt"><span class="key">3</span>A comparison table</div>
+    <div class="acts"><span><kbd>R</kbd> reply</span><span><kbd>S</kbd> snooze 30 m</span><span><kbd>O</kbd> board</span><span><kbd>⌘O</kbd> session</span></div>
+  </div>
+  <div class="line"><span class="m need"></span><b>w3</b><span class="t">Approve <code>git push origin v2.10.1</code> — mutating</span><span class="age">40 s</span></div>
+  <div class="line"><span class="m need"></span><b>ops-desk</b><span class="t">Review: nightly backup routine rewrite</span><span class="age">11 m</span></div>
+  <div class="line"><span class="m done"></span><b>w1</b><span class="t">Finished: auth refactor · 48/48 tests</span><span class="age">6 m</span></div>
+  <div class="pf"><span><kbd>J</kbd><kbd>K</kbd> move</span><span><kbd>E</kbd> clear</span><span><kbd>⎋</kbd> back to work</span><span class="r">answers wait 3 s · ⎋ undoes</span></div>
+</div>
+<div class="panel bone glass light">
+  <div class="ph"><span class="dot" style="background:var(--t-ok)"></span><b style="color:var(--t-ok)">2 done</b> · <span class="dot" style="background:var(--t-info)"></span>4 working <span class="sp">nothing waits on you</span></div>
+  <div class="card focus" style="box-shadow: inset 3px 0 0 var(--t-ok)">
+    <div class="who"><span class="m done"></span><b>w1</b> · claude-fable · auth refactor <span class="age">finished 6 m ago · 38 m · $0.42</span></div>
+    <div class="q">Auth refactor landed on feat/auth-tokens</div>
+    <div class="summary">Signed tokens replace the session cookie; 3 files, +212 −80. One open item: the CLI still reads the old cookie name.</div>
+    <div class="chips"><span class="chip ok">tests 48/48</span><span class="chip ok">clippy</span><span class="chip">+212 −80 · 3 files</span><span class="chip">1 open item</span></div>
+    <div class="opt rec"><span class="key">1</span>Open a PR against main<span class="tag">next step · ⏎</span></div>
+    <div class="opt"><span class="key">2</span>Fix the CLI cookie name first, then PR</div>
+    <div class="acts"><span><kbd>D</kbd> diff</span><span><kbd>R</kbd> reply</span><span><kbd>E</kbd> clear</span><span><kbd>⌘O</kbd> session</span></div>
+  </div>
+  <div class="line"><span class="m done"></span><b>rss routine</b><span class="t">Ran 08:00 · 3 new items filed to knowledge</span><span class="age">2 h</span></div>
+  <div class="pf"><span><kbd>J</kbd><kbd>K</kbd> move</span><span><kbd>E</kbd> clear</span><span class="r">receipts stay 24 h</span></div>
+</div></div>
+<h2>6 · Notifications by kind <small>UNUserNotificationCenter with actions · grouped per agent</small></h2>
+<div class="row"><div class="notif"><div class="h"><span class="ic"></span>theuth · w2<span class="t">now</span></div><div class="title">w2 needs you · Which layout for the pricing page?</div><div class="body">Blocks the Stripe checkout task. Quiet banner — no sound.</div><div class="btns"><span class="btn rec">1 Three tiers</span><span class="btn">2 One plan</span><span class="btn">Reply…</span></div></div><div class="notif"><div class="h"><span class="ic"></span>theuth<span class="t">at your break · 10:42</span></div><div class="title">2 for later · 1 finished</div><div class="body">ops-desk review · hire request for a docs desk · w1 finished the auth refactor.</div><div class="btns"><span class="btn rec">Open panel</span><span class="btn">Later</span></div></div><div class="notif light"><div class="h"><span class="ic" style="background:#c45a48"></span>theuth<span class="t">now · sound</span></div><div class="title">ops-desk paused · budget reached</div><div class="body">$40.00 of $40.00 this month. Its two open tasks are waiting.</div><div class="btns"><span class="btn rec">Raise to $60</span><span class="btn">Keep paused</span><span class="btn">Open</span></div></div></div>
+<p class="cap">Blocking questions and approvals: a quiet banner now (no sound). Reviews, hires and finished work: held until you switch apps, pause typing for 20 s, or 2 minutes pass — then one banner for all of them. Errors: now, with sound. Tapping a button answers at once; tapping the body opens the panel on that item.</p>
+<h2>7 · Menu bar menu and settings <small>right-click the item · one small native window</small></h2>
+<div class="frame pad soot">
+<div class="panel soot glass menu">
+  <div>Open theuth<span>⌘⇧O</span></div>
+  <div class="sel">Ask theuth…<span>⌃⇧Space</span></div>
+  <hr>
+  <div>Pause notifications<span>▸</span></div>
+  <div>Launch at login<span>✓</span></div>
+  <hr>
+  <div>Settings…<span>⌘,</span></div>
+  <div>Quit theuth<span>⌘Q</span></div>
+</div>
+<div class="panel soot glass settings">
+  <h4>Rail</h4>
+  <div class="r"><span>Side</span><span class="seg"><i>Left</i><i class="on">Right</i></span></div>
+  <div class="r"><span>Display</span><span>Built-in · <span style="color:var(--t-fg3)">change…</span></span></div>
+  <div class="r"><span>Collapse when quiet</span><span class="toggle"></span></div>
+  <h4>Keys</h4>
+  <div class="r"><span>Open panel / Ask theuth</span><span><kbd>⌃⇧Space</kbd></span></div>
+  <div class="r"><span>Double-tap ⌥ as well <span style="color:var(--t-fg3)">(asks for Accessibility)</span></span><span class="toggle off"></span></div>
+  <div class="r"><span>Answers wait before sending</span><span class="seg"><i>0 s</i><i>2 s</i><i class="on">3 s</i><i>5 s</i></span></div>
+  <h4>Notifications</h4>
+  <div class="r"><span>Questions · approvals</span><span class="seg"><i class="on">Now, quiet</i><i>At a break</i><i>Off</i></span></div>
+  <div class="r"><span>Reviews · hires · finished work</span><span class="seg"><i>Now</i><i class="on">At a break</i><i>Off</i></span></div>
+  <div class="r"><span>Errors</span><span class="seg"><i class="on">Now, with sound</i><i>Now</i><i>Off</i></span></div>
+</div></div>
+<h2>8 · Keyboard grammar</h2>
+<table class="keys">
+<tr><td><kbd>⌃⇧Space</kbd> (rebindable) · <kbd>⌥</kbd><kbd>⌥</kbd> opt-in</td><td>Open the panel on the oldest needs-you item; if nothing needs you, open the Ask bar. Hold to dictate.</td></tr>
+<tr><td><kbd>1</kbd> <kbd>2</kbd> <kbd>3</kbd> · <kbd>⏎</kbd></td><td>Answer the focused card; Enter takes the recommended option. The answer waits 3 s (0–5 s in Settings).</td></tr>
+<tr><td><kbd>⎋</kbd></td><td>During the hold: take it back. Otherwise: close the panel; your app never lost focus.</td></tr>
+<tr><td><kbd>J</kbd> <kbd>K</kbd> · <kbd>↓</kbd> <kbd>↑</kbd></td><td>Move between items — needs-you oldest first, then finished work.</td></tr>
+<tr><td><kbd>R</kbd></td><td>Reply in words (also deny-with-a-note, send-back-with-a-note).</td></tr>
+<tr><td><kbd>S</kbd> · <kbd>E</kbd></td><td>Snooze 30 m · clear a finished receipt (never cancels anything).</td></tr>
+<tr><td><kbd>D</kbd> · <kbd>O</kbd> · <kbd>⌘O</kbd></td><td>Open the diff · the mini-board · the session — in the main theuth window (progressive disclosure).</td></tr>
+<tr><td><kbd>⌘L</kbd></td><td>Jump to the Ask bar — whatever you type goes to theuth's desk, which routes it.</td></tr>
+</table></body></html>

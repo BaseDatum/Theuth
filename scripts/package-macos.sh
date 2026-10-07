@@ -4,12 +4,14 @@
 #   1. cargo build --release -p theuth  (daemon sidecar, host arch)
 #      + packages/apps: bun build --compile → theuth-app-parser (46 §2.1; scripts/app-parser-env.sh)
 #      + packages/documents: bun build --compile → theuth-documents (59 §3.2; same env script)
-#   2. stage sidecar as binaries/t-<host-triple>
+#   2. check_sidecar (LC_RPATH /usr/lib/swift + `t --version`; 27 Revision 2026-10-07) and
+#      stage sidecar as binaries/t-<host-triple>
 #   3. cargo tauri build --config tauri.bundle.conf.json  (app bundle only)
 #      + libonnxruntime.dylib (Microsoft's release, pinned) into Contents/Frameworks (45 §2.1)
 #      + theuth-app-parser-<hash> and theuth-documents-<version> into Contents/MacOS beside the sidecar
 #   4. codesign inside-out (hardened runtime): $THEUTH_SIGN_IDENTITY, else ad-hoc "-"
-#      both helpers get scripts/entitlements-app-parser.plist (Bun JIT)
+#      both helpers get scripts/entitlements-app-parser.plist (Bun JIT); check_sidecar again on
+#      the signed sidecar (library validation must still load the system Swift runtime)
 #   5. hdiutil DMG (after signing — Tauri's dmg target would snapshot pre-signature)
 #
 # Arm64-only: built on/for the host. Universal binaries are out of scope.
@@ -44,6 +46,22 @@ ORT_TGZ="target/onnxruntime-osx-arm64-${ORT_VERSION}.tgz"
 ENTITLEMENTS="crates/desktop/entitlements.plist"
 HELPER_ENTITLEMENTS="scripts/entitlements-app-parser.plist"
 
+# check_sidecar <path>: the daemon links ScreenCaptureKit through Swift bridges (design 27
+# Revision 2026-10-07; spike 121 §6), so its Mach-O references @rpath/libswift_Concurrency.dylib
+# and must carry LC_RPATH /usr/lib/swift (emitted by crates/theuth/build.rs) or dyld aborts it at
+# launch: `Library not loaded: @rpath/libswift_Concurrency.dylib … no LC_RPATH's found`. Checked on
+# the plain build and again after codesign, where the hardened runtime's library validation must
+# still accept the system Swift dylibs.
+check_sidecar() {
+  local out
+  if otool -L "$1" | grep -q 'libswift'; then
+    otool -l "$1" | grep -A2 LC_RPATH | grep -q '/usr/lib/swift' \
+      || { echo "error: $1 links the Swift runtime but carries no LC_RPATH /usr/lib/swift (crates/theuth/build.rs missing or not applied?)" >&2; exit 1; }
+  fi
+  out="$("$1" --version 2>&1)" || { echo "error: $1 --version failed: $out" >&2; exit 1; }
+  [[ "$out" == t\ * ]] || { echo "error: $1 --version printed '$out', expected 't <version>'" >&2; exit 1; }
+}
+
 echo "==> [1/5] TypeScript bindings"
 just ts-desktop
 
@@ -56,7 +74,8 @@ build_helper
 echo "==> [1/5] building $DOC_HELPER (bun build --compile)"
 build_doc_helper
 
-echo "==> [2/5] staging sidecar"
+echo "==> [2/5] checking + staging sidecar"
+check_sidecar target/release/t
 mkdir -p crates/desktop/binaries
 cp target/release/t "crates/desktop/binaries/t-$HOST_TRIPLE"
 
@@ -106,6 +125,7 @@ codesign --force --options runtime $TIMESTAMP_FLAG --sign "$IDENTITY" \
 codesign --force --options runtime $TIMESTAMP_FLAG --sign "$IDENTITY" \
   --entitlements "$ENTITLEMENTS" "$APP"
 codesign --verify --deep --strict --verbose=2 "$APP"
+check_sidecar "$APP/Contents/MacOS/t"
 echo "--- spctl assessment (fails until notarized — expected for ad-hoc):"
 spctl --assess --type execute -vv "$APP" || true
 

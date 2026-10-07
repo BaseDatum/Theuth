@@ -140,12 +140,24 @@ impl runtime::Plugin for TuiPlugin {
         let app_enabled = info.as_ref().is_some_and(|i| i.app_enabled);
         tokio::spawn(run_commands(api, commands_rx, events_tx));
 
-        let (default_model, default_effort, advisor) = info.map_or_else(
+        let (default_model, default_effort, advisor, favorite_models) = info.map_or_else(
             || {
                 let cfg = rt.section::<AgentConfig>("agent").unwrap_or_default();
-                (cfg.model, cfg.effort, Default::default())
+                (
+                    cfg.model,
+                    cfg.effort,
+                    Default::default(),
+                    cfg.favorite_models,
+                )
             },
-            |i| (i.default_model, i.default_effort, i.advisor),
+            |i| {
+                (
+                    i.default_model,
+                    i.default_effort,
+                    i.advisor,
+                    i.favorite_models,
+                )
+            },
         );
         let approvals = rt
             .section::<tools::ToolsConfig>("tools")
@@ -163,6 +175,7 @@ impl runtime::Plugin for TuiPlugin {
                     default_model,
                     default_effort,
                     advisor,
+                    favorite_models,
                     approvals,
                     app_enabled,
                     catalog,
@@ -648,6 +661,9 @@ async fn execute(api: &Engine, cmd: Command, tx: &UnboundedSender<UiEvent>) -> a
         } => UiEvent::AdvisorStatus(msg(api.set_advisor(session, model, effort).await)?),
         Command::AdvisorStatus(session) => {
             UiEvent::AdvisorStatus(msg(api.advisor_status(session).await)?)
+        }
+        Command::SetModelFavorite { model, favorite } => {
+            UiEvent::FavoriteModels(msg(api.set_model_favorite(model, favorite).await)?)
         }
         Command::HarnessOptions(session) => {
             UiEvent::HarnessOptions(msg(api.harness_options(session).await)?)
@@ -1393,6 +1409,9 @@ fn print_event(out: &mut impl Write, model: &Model, ev: &UiEvent) {
         UiEvent::Agent(AgentEvent::DefaultModelChanged { model }) => {
             writeln!(out, "default model → {model}")
         }
+        UiEvent::Agent(AgentEvent::FavoriteModelsChanged { models }) => {
+            writeln!(out, "favorites → {} models", models.len())
+        }
         UiEvent::Agent(AgentEvent::DefaultEffortChanged { effort }) => {
             writeln!(
                 out,
@@ -1474,6 +1493,7 @@ fn print_event(out: &mut impl Write, model: &Model, ev: &UiEvent) {
         UiEvent::AdvisorStatus(s) => model::advisor_status_lines(s)
             .iter()
             .try_for_each(|l| writeln!(out, "{l}")),
+        UiEvent::FavoriteModels(models) => writeln!(out, "favorites → {} models", models.len()),
         UiEvent::HarnessOptions(options) => model::harness_options_lines(options)
             .iter()
             .try_for_each(|l| writeln!(out, "{l}")),

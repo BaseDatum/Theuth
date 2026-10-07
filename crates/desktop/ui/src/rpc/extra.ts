@@ -25,6 +25,8 @@ export type Info = {
   default_model: string
   /** `agent.effort` new chats start on (live, 83 §3); `null` = provider default. Absent on an older engine. */
   default_effort?: string | null
+  /** `agent.favorite_models` (127 §2): canonical ids in starred order, shared by every device on this engine. Absent on an older engine. */
+  favorite_models?: string[]
   approvals: ApprovalsState
   compact_style: CompactStyle
   subagent_timeout_secs: number

@@ -32,6 +32,11 @@ default_model: string,
  */
 default_effort: string | null, 
 /**
+ * `agent.favorite_models` (127 §1): starred model ids in starring order,
+ * shown first in every picker. Absent from an older harness → empty.
+ */
+favorite_models: Array<string>, 
+/**
  * The global approval switch (`tools.approvals`).
  */
 approvals: ApprovalsState, 

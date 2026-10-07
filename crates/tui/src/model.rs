@@ -107,6 +107,8 @@ pub enum UiEvent {
     EffortSet(Option<String>),
     /// Reply to [`Command::SetAdvisor`] / [`Command::AdvisorStatus`] (125 §7.1).
     AdvisorStatus(AdvisorStatus),
+    /// Reply to [`Command::SetModelFavorite`]: the engine's favorite list now (127 §3).
+    FavoriteModels(Vec<String>),
     /// Reply to [`Command::HarnessOptions`] (75 §8): the harness's option list.
     HarnessOptions(Vec<acp::ConfigOption>),
     /// Reply to [`Command::SetHarnessOption`]: the option key asked for, the value, and the result.
@@ -532,6 +534,13 @@ pub enum Command {
     },
     /// `advisor_status` (125 §7.3).
     AdvisorStatus(SessionId),
+    /// `set_model_favorite` (127 §3): star (`true`) or unstar `model` on the engine.
+    SetModelFavorite {
+        /// `provider/model` id.
+        model: String,
+        /// `true` stars, `false` unstars.
+        favorite: bool,
+    },
     /// `harness_options` on an ACP session (75 §8).
     HarnessOptions(SessionId),
     /// `set_harness_option` on an ACP session (75 §8): `config_id` is an
@@ -3291,6 +3300,10 @@ pub struct Model {
     /// The engine's default for new sessions (`Info.default_model`, then
     /// `DefaultModelChanged`, 82 §3): what the header shows after `/new`.
     pub default_model: String,
+    /// The engine's starred models (`Info.favorite_models`, then
+    /// `FavoriteModelsChanged` / the `set_model_favorite` reply, 127 §3), in
+    /// starring order; `/model` lists them first.
+    pub favorite_models: Vec<String>,
     /// The LLM an ACP child's harness reports (06 §8.2); the header shows
     /// `model_id · harness_model`. `None` for native sessions.
     pub harness_model: Option<String>,
@@ -4666,6 +4679,7 @@ impl Model {
                     self.open_efforts(info.efforts, PickTarget::Session);
                 }
             }
+            UiEvent::FavoriteModels(models) => self.set_favorites(models),
             UiEvent::EffortSet(effort) => {
                 self.awaiting_effort = false;
                 self.entries.push(Entry::Info(match &effort {
@@ -5711,6 +5725,11 @@ impl Model {
                 self.default_model = model;
                 return;
             }
+            // 127 §3: global; an open `/model` picker re-renders from it.
+            AgentEvent::FavoriteModelsChanged { models } => {
+                self.set_favorites(models);
+                return;
+            }
             // 83 §3: global; the draft header (no session open) follows it.
             AgentEvent::DefaultEffortChanged { effort } => {
                 if self.session.is_none() {
@@ -6178,7 +6197,8 @@ impl Model {
             | AgentEvent::ContextChanged { .. }
             | AgentEvent::TodoChanged { .. }
             | AgentEvent::DefaultModelChanged { .. }
-            | AgentEvent::DefaultEffortChanged { .. } => {}
+            | AgentEvent::DefaultEffortChanged { .. }
+            | AgentEvent::FavoriteModelsChanged { .. } => {}
             AgentEvent::Harvesting { .. } => self.harvesting = true,
             AgentEvent::Harvested { added, updated, .. } => {
                 self.harvesting = false;
@@ -8543,9 +8563,11 @@ impl Model {
         }
     }
 
-    /// `/model` picker rows (124 §3): the current model then one row per provider;
-    /// a provider's models by name; or, with a filter, the current model then the
-    /// ranked results over every model (the current one removed so it shows once).
+    /// `/model` picker rows (124 §3, 127 §3): the favorites present in the
+    /// catalog, the current model unless it is one of them, then one row per
+    /// provider; a provider's models by name; or, with a filter, the current
+    /// model then the ranked results over every model (the current one
+    /// removed so it shows once).
     pub fn models_rows(&self) -> Vec<ModelRow<'_>> {
         let Some(Menu::Models {
             items,
@@ -8578,7 +8600,15 @@ impl Model {
         } else if let Some(p) = provider {
             rows.extend(provider_models(items, p).into_iter().map(ModelRow::Model));
         } else {
-            rows.extend(current.map(ModelRow::Current));
+            rows.extend(
+                self.favorite_models
+                    .iter()
+                    .filter_map(|f| items.iter().find(|m| m.id == *f))
+                    .map(ModelRow::Favorite),
+            );
+            if !self.favorite_models.contains(&self.model_id) {
+                rows.extend(current.map(ModelRow::Current));
+            }
             let now = current.map(|c| c.provider.as_str());
             rows.extend(providers(items).into_iter().map(|(id, count)| {
                 let current = now == Some(id.as_str());
@@ -8600,8 +8630,19 @@ impl Model {
         }
     }
 
+    /// Apply the engine's favorite list (127 §3); an open `/model` picker's
+    /// cursor is clamped to the rows it now has.
+    fn set_favorites(&mut self, models: Vec<String>) {
+        self.favorite_models = models;
+        let len = self.models_rows().len();
+        if let Some(Menu::Models { cursor, .. }) = &mut self.menu {
+            *cursor = (*cursor).min(len.saturating_sub(1));
+        }
+    }
+
     /// Put the `/model` cursor where a level starts: the first row after the
-    /// Off and Current rows (first provider, or best search hit) when there is one.
+    /// Off and Current rows (first favorite, first provider, or best search hit)
+    /// when there is one.
     fn models_home(&mut self) {
         let rows = self.models_rows();
         let lead = rows
@@ -8710,9 +8751,10 @@ impl Model {
         MenuKey::Consumed
     }
 
-    /// `/model` (124 §3): ↑↓ move; typing searches every model; ⏎/→ on a
-    /// provider opens it; ←, or ⌫ on an empty filter, returns to the providers
-    /// level (no-op with one provider); ⏎ on a model sets it; Esc closes.
+    /// `/model` (124 §3, 127 §3): ↑↓ move; typing searches every model; ⏎/→
+    /// on a provider opens it; ←, or ⌫ on an empty filter, returns to the
+    /// providers level (no-op with one provider); ⏎ on a model sets it; ⇥ on
+    /// a model stars or unstars it (the menu stays open); Esc closes.
     fn models_key(&mut self, code: KeyCode, tx: &UnboundedSender<Command>) -> MenuKey {
         let Some(Menu::Models {
             items,
@@ -8730,7 +8772,9 @@ impl Model {
         // `(true, id)` opens provider `id`; `(false, Some(id))` picks model `id`;
         // `(false, None)` is the advisor's `Off` row.
         let picked = match rows.get(at) {
-            Some(ModelRow::Current(m) | ModelRow::Model(m)) => Some((false, Some(m.id.clone()))),
+            Some(ModelRow::Current(m) | ModelRow::Favorite(m) | ModelRow::Model(m)) => {
+                Some((false, Some(m.id.clone())))
+            }
             Some(ModelRow::Provider { id, .. }) => Some((true, Some(id.clone()))),
             Some(ModelRow::Off { .. }) => Some((false, None)),
             None => None,
@@ -8802,6 +8846,12 @@ impl Model {
                 _ => {}
             },
             KeyCode::Esc => self.menu = None,
+            KeyCode::Tab => {
+                if let Some((false, Some(model))) = picked {
+                    let favorite = !self.favorite_models.contains(&model);
+                    send(tx, Command::SetModelFavorite { model, favorite });
+                }
+            }
             _ => {}
         }
         if home {
@@ -10048,6 +10098,8 @@ pub enum ModelRow<'a> {
         /// Whether the current model belongs to it.
         current: bool,
     },
+    /// A starred model on the providers level (127 §3), in favorites order.
+    Favorite(&'a ModelInfo),
     /// A model on a provider's level or in the search results.
     Model(&'a ModelInfo),
 }
@@ -17583,6 +17635,7 @@ mod tests {
                 ModelRow::Provider { id, count, current } => {
                     format!("{}{id}:{count}", if *current { "●" } else { "" })
                 }
+                ModelRow::Favorite(i) => format!("★{}", i.id),
                 ModelRow::Model(i) => i.id.clone(),
             })
             .collect()
@@ -17760,6 +17813,114 @@ mod tests {
         assert_eq!(models_cursor(&m), 1);
         m.menu_key(KeyCode::Backspace, "", &tx);
         assert_eq!(model_row_ids(&m), level);
+    }
+
+    /// 127 §3: favorites lead the providers level in starring order (only
+    /// those in the catalog), the Current row shows only when the current
+    /// model is not one of them, the cursor starts on the first favorite,
+    /// and Tab stars/unstars the highlighted model without closing.
+    #[test]
+    fn models_picker_lists_favorites_first_and_tab_toggles_them() {
+        let (tx, mut rx) = unbounded_channel();
+        let mut m = Model {
+            model_id: "openai/gpt-5.4".into(),
+            favorite_models: vec![
+                "google/gemini-2.5-pro".into(),
+                "gone/provider-unkeyed".into(),
+                "anthropic/claude-opus-4-1".into(),
+            ],
+            ..Model::default()
+        };
+        m.apply(UiEvent::Models(model_catalog()));
+        assert_eq!(
+            model_row_ids(&m),
+            [
+                "★google/gemini-2.5-pro",
+                "★anthropic/claude-opus-4-1",
+                "●openai/gpt-5.4",
+                "amazon-bedrock:2",
+                "anthropic:2",
+                "cursor:1",
+                "google:2",
+                "●openai:3"
+            ]
+        );
+        assert_eq!(models_cursor(&m), 0);
+        // Tab on a favorite asks to unstar it; the menu stays open.
+        m.menu_key(KeyCode::Tab, "", &tx);
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(Command::SetModelFavorite { model, favorite: false }) if model == "google/gemini-2.5-pro"
+        ));
+        assert!(m.menu.is_some());
+        // Tab on the Current row asks to star it.
+        m.menu_key(KeyCode::Down, "", &tx);
+        m.menu_key(KeyCode::Down, "", &tx);
+        m.menu_key(KeyCode::Tab, "", &tx);
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(Command::SetModelFavorite { model, favorite: true }) if model == "openai/gpt-5.4"
+        ));
+        // Tab on a provider row does nothing.
+        m.menu_key(KeyCode::Down, "", &tx);
+        m.menu_key(KeyCode::Tab, "", &tx);
+        assert!(rx.try_recv().is_err());
+        // The engine answers: the current model is now a favorite and shows once, as a favorite.
+        m.apply(UiEvent::Agent(AgentEvent::FavoriteModelsChanged {
+            models: vec!["anthropic/claude-opus-4-1".into(), "openai/gpt-5.4".into()],
+        }));
+        assert_eq!(
+            model_row_ids(&m),
+            [
+                "★anthropic/claude-opus-4-1",
+                "★openai/gpt-5.4",
+                "amazon-bedrock:2",
+                "anthropic:2",
+                "cursor:1",
+                "google:2",
+                "●openai:3"
+            ]
+        );
+        // Enter on a favorite sets it like any model row.
+        m.menu_key(KeyCode::Up, "", &tx);
+        m.menu_key(KeyCode::Up, "", &tx);
+        m.menu_key(KeyCode::Up, "", &tx);
+        m.menu_key(KeyCode::Enter, "", &tx);
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(Command::SetModel { session: None, model }) if model == "anthropic/claude-opus-4-1"
+        ));
+        assert!(m.menu.is_none());
+        // The command reply applies the list too, and a shrinking list clamps an open cursor.
+        m.apply(UiEvent::Models(model_catalog()));
+        for _ in 0..9 {
+            m.menu_key(KeyCode::Down, "", &tx);
+        }
+        assert_eq!(models_cursor(&m), 6);
+        m.apply(UiEvent::FavoriteModels(vec![]));
+        assert!(m.favorite_models.is_empty());
+        assert_eq!(model_row_ids(&m)[0], "●openai/gpt-5.4");
+        assert_eq!(models_cursor(&m), 5);
+        // Tab on a provider's models level and in search results toggles the highlighted model.
+        m.menu_key(KeyCode::Enter, "", &tx);
+        assert_eq!(model_row_ids(&m)[0], "openai/gpt-5.4");
+        m.menu_key(KeyCode::Down, "", &tx);
+        m.menu_key(KeyCode::Tab, "", &tx);
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(Command::SetModelFavorite { model, favorite: true }) if model == "openai/gpt-5.4-mini"
+        ));
+        m.menu_key(KeyCode::Char('n'), "", &tx);
+        m.menu_key(KeyCode::Char('o'), "", &tx);
+        m.menu_key(KeyCode::Char('v'), "", &tx);
+        m.menu_key(KeyCode::Char('a'), "", &tx);
+        m.menu_key(KeyCode::Tab, "", &tx);
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(Command::SetModelFavorite { model, favorite: true })
+                if model == "amazon-bedrock/amazon.nova-pro-v1:0"
+        ));
+        assert!(m.menu.is_some());
     }
 
     fn note(severity: AdvisorSeverity, text: &str) -> agent::AdvisoryNote {

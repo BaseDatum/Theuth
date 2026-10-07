@@ -38,6 +38,8 @@ pub struct Links {
     pub default_effort: Option<String>,
     /// `Info.advisor` (125 §6.5): the remembered advisor pick `/advisor on` re-uses.
     pub advisor: agent::AdvisorDefaults,
+    /// `Info.favorite_models` (config as fallback, 127 §3): starred models, shown first in `/model`.
+    pub favorite_models: Vec<String>,
     /// `tools.approvals` from config.
     pub approvals: bool,
     /// `Info.app_enabled`: offer `/apps`.
@@ -118,6 +120,7 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
     let default_model = links.default_model.clone();
     let default_effort = links.default_effort.clone();
     let advisor = links.advisor.clone();
+    let favorite_models = links.favorite_models.clone();
     let approvals = links.approvals;
     let app_enabled = links.app_enabled;
     let catalog = links.catalog.clone();
@@ -128,6 +131,7 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
             m.effort = default_effort.clone();
             m.default_effort = default_effort;
             m.advisor_default = advisor;
+            m.favorite_models = favorite_models;
             m.app_enabled = app_enabled;
             m.catalog = Some(catalog);
             m.entries.push(Entry::Info(
@@ -1027,7 +1031,7 @@ fn menu(m: &Model, input: &str, width: u16, height: u16) -> Option<AnyElement<'s
             let title = if !filter.is_empty() {
                 let none = rows.iter().all(|r| matches!(r, ModelRow::Current(_)));
                 format!(
-                    "{noun}  search: {filter}▏  ⏎ set  esc close{}",
+                    "{noun}  search: {filter}▏  ⏎ set  ⇥ ★ favorite  esc close{}",
                     if none { "  no match" } else { "" }
                 )
             } else if let Some(p) = provider {
@@ -1037,15 +1041,22 @@ fn menu(m: &Model, input: &str, width: u16, height: u16) -> Option<AnyElement<'s
                     ""
                 };
                 let models = rows.iter().filter(|r| !matches!(r, ModelRow::Off { .. })).count();
-                format!("{noun} › {p} ({models})  ⏎ set  {back}esc close")
+                format!("{noun} › {p} ({models})  ⏎ set  ⇥ ★ favorite  {back}esc close")
             } else {
-                format!("{noun}  ⏎ open provider  type to search all models  esc close")
+                format!("{noun}  ⏎ open provider  ⇥ ★ favorite  type to search all models  esc close")
             };
-            let mark = |on: bool| if on { "●" } else { " " };
+            // Two-char marker column (127 §3): `●` current, `★` favorite.
+            let marks = |on: bool, fav: bool| {
+                format!(
+                    "{}{}",
+                    if on { "●" } else { " " },
+                    if fav { "★" } else { " " }
+                )
+            };
             let model_row = |on: bool, i: &agent::ModelInfo| {
                 format!(
                     "{} {:<44} {:<32} {}{}",
-                    mark(on),
+                    marks(on, m.favorite_models.contains(&i.id)),
                     i.id,
                     i.name,
                     k(i.context),
@@ -1057,12 +1068,14 @@ fn menu(m: &Model, input: &str, width: u16, height: u16) -> Option<AnyElement<'s
                 .iter()
                 .map(|r| match r {
                     ModelRow::Off { current } => {
-                        format!("{} {:<44} no advisor", mark(*current), "Off")
+                        format!("{} {:<44} no advisor", marks(*current, false), "Off")
                     }
                     ModelRow::Current(i) => model_row(true, i),
-                    ModelRow::Model(i) => model_row(Some(i.id.as_str()) == picked, i),
+                    ModelRow::Favorite(i) | ModelRow::Model(i) => {
+                        model_row(Some(i.id.as_str()) == picked, i)
+                    }
                     ModelRow::Provider { id, count, current } => {
-                        format!("{} {id:<24} {count:>4} models", mark(*current))
+                        format!("{} {id:<24} {count:>4} models", marks(*current, false))
                     }
                 })
                 .collect();
@@ -2337,7 +2350,9 @@ mod tests {
     }
 
     /// Long rows used to make the box taller than its rows (empty space under
-    /// the list) at some widths; the box must be title + rows + border.
+    /// the list) at some widths; the box must be title + rows + border. The
+    /// title (69 cells since 127's `⇥ ★ favorite`) wraps below width 74, so
+    /// the ten rows are counted from the bottom border instead of the whole box.
     #[test]
     fn menu_box_is_tight_at_any_width() {
         let mut m = Model::default();
@@ -2375,7 +2390,20 @@ mod tests {
             let lines: Vec<&str> = frame.lines().collect();
             let top = lines.iter().position(|l| l.starts_with('╭')).unwrap();
             let bottom = lines.iter().position(|l| l.starts_with('╰')).unwrap();
-            assert_eq!(bottom - top, 12, "width {width}: box spans {top}..{bottom}");
+            let inner = &lines[top + 1..bottom];
+            let is_row = |l: &str| l.contains("amazon-bedrock/us.");
+            assert_eq!(
+                inner.iter().filter(|l| is_row(l)).count(),
+                10,
+                "width {width}"
+            );
+            assert!(
+                inner.iter().rev().take(10).all(|l| is_row(l)),
+                "width {width}: empty space under the list in {top}..{bottom}"
+            );
+            if width >= 74 {
+                assert_eq!(bottom - top, 12, "width {width}: box spans {top}..{bottom}");
+            }
             assert!(
                 lines
                     .iter()
@@ -2442,6 +2470,68 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// 127 §3: the two-char marker column — `●` current, `★` favorite — on
+    /// every level, and the `⇥ ★ favorite` hint in each title.
+    #[test]
+    fn model_rows_carry_current_and_favorite_markers() {
+        let model = |id: &str, name: &str, provider: &str| ModelInfo {
+            id: id.into(),
+            name: name.into(),
+            provider: provider.into(),
+            context: 200_000,
+            reasoning: false,
+            image: false,
+            efforts: Vec::new(),
+            budget_min: None,
+            budget_max: None,
+        };
+        let items = vec![
+            model("google/gemini-2.5-pro", "Gemini 2.5 Pro", "google"),
+            model("openai/gpt-5.4", "GPT-5.4", "openai"),
+            model("openai/gpt-5.4-mini", "GPT-5.4 mini", "openai"),
+        ];
+        let mut m = Model::new("openai/gpt-5.4".into(), false);
+        m.favorite_models = vec!["openai/gpt-5.4".into(), "google/gemini-2.5-pro".into()];
+        let render = |m: &Model| menu(m, "", 120, 30).unwrap().to_string();
+        // Providers level: favorites with their markers, the current one `●★`; the current provider `● `.
+        m.menu = Some(Menu::Models {
+            items: items.clone(),
+            filter: String::new(),
+            cursor: 0,
+            provider: None,
+            target: PickTarget::Session,
+        });
+        let frame = render(&m);
+        assert!(frame.contains("⏎ open provider  ⇥ ★ favorite"), "{frame}");
+        assert!(frame.contains("●★ openai/gpt-5.4 "), "{frame}");
+        assert!(frame.contains(" ★ google/gemini-2.5-pro "), "{frame}");
+        assert!(frame.contains("●  openai "), "{frame}");
+        // Models level: `●★` on the current favorite, blanks on a plain model.
+        m.menu = Some(Menu::Models {
+            items: items.clone(),
+            filter: String::new(),
+            cursor: 0,
+            provider: Some("openai".into()),
+            target: PickTarget::Session,
+        });
+        let frame = render(&m);
+        assert!(frame.contains("⏎ set  ⇥ ★ favorite  ←/⌫ back"), "{frame}");
+        assert!(frame.contains("●★ openai/gpt-5.4 "), "{frame}");
+        assert!(frame.contains("   openai/gpt-5.4-mini "), "{frame}");
+        // Search: the Current row then a favorite hit.
+        m.menu = Some(Menu::Models {
+            items,
+            filter: "gemini".into(),
+            cursor: 1,
+            provider: None,
+            target: PickTarget::Session,
+        });
+        let frame = render(&m);
+        assert!(frame.contains("⏎ set  ⇥ ★ favorite  esc close"), "{frame}");
+        assert!(frame.contains("●★ openai/gpt-5.4 "), "{frame}");
+        assert!(frame.contains(" ★ google/gemini-2.5-pro "), "{frame}");
     }
 
     /// Eight live children: six rows, one fold line, and no row wider than

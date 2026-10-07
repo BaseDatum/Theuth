@@ -100,6 +100,7 @@ use crate::{
     AdvisorConfig, DurableStore, SessionCostQuery, SessionKind, SubagentsConfig, UnloadSession,
 };
 use crate::{AwsProfiles, ListAwsProfiles, SetAwsProfile};
+use crate::{GetFavoriteModels, SetModelFavorite};
 use crate::{ListProjectStyles, SetProjectStyle, SetSessionProject, project};
 use crate::{attach, clock, frame, repl, search, spill};
 use tools::{
@@ -126,6 +127,8 @@ pub struct Agents {
     default_model: String,
     /// `cfg.effort` as last set by [`SetEffort`]; new sessions start on it.
     default_effort: Option<String>,
+    /// `cfg.favorite_models` as last set by [`SetModelFavorite`] (127 §1), in starring order.
+    favorite_models: Vec<String>,
     /// Live default compaction style; cloned into each session so [`SetCompactStyle`] is in-process.
     compact_style: Arc<RwLock<CompactStyle>>,
     /// Live title model (07 §15); `None` = each session's own model. Shared with every session.
@@ -6725,6 +6728,66 @@ impl Message<GetDefaultModel> for Agents {
     }
 }
 
+impl Message<GetFavoriteModels> for Agents {
+    type Reply = Vec<String>;
+
+    async fn handle(
+        &mut self,
+        _: GetFavoriteModels,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Vec<String> {
+        self.favorite_models.clone()
+    }
+}
+
+impl Message<SetModelFavorite> for Agents {
+    type Reply = Result<Vec<String>, String>;
+
+    async fn handle(
+        &mut self,
+        m: SetModelFavorite,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Result<Vec<String>, String> {
+        self.set_model_favorite(m).await
+    }
+}
+
+impl Agents {
+    /// 127 §1: star or unstar `m.model` (resolved like [`Self::set_model`]);
+    /// when the list changes it is written to `agent.favorite_models` as one
+    /// flow-sequence line and announced as `FavoriteModelsChanged`.
+    async fn set_model_favorite(&mut self, m: SetModelFavorite) -> Result<Vec<String>, String> {
+        let id = self.catalog.resolve(&m.model, &*self.configured)?.id;
+        let at = self.favorite_models.iter().position(|f| *f == id);
+        match (at, m.favorite) {
+            (None, true) => self.favorite_models.push(id),
+            (Some(i), false) => {
+                self.favorite_models.remove(i);
+            }
+            _ => return Ok(self.favorite_models.clone()),
+        }
+        // JSON array syntax is valid YAML and survives ids with `:` / `.`.
+        let value = format!(
+            "[{}]",
+            self.favorite_models
+                .iter()
+                .map(|f| format!("\"{f}\""))
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+        let path = self.rt.data_dir.join("config.yaml");
+        if let Err(e) = runtime::write_config_value(&path, "agent", "favorite_models", &value) {
+            tracing::warn!("config.yaml: {e}");
+        }
+        self.rt
+            .publish(AgentEvent::FavoriteModelsChanged {
+                models: self.favorite_models.clone(),
+            })
+            .await;
+        Ok(self.favorite_models.clone())
+    }
+}
+
 impl Agents {
     /// 82 §2: switch `m.session` now; only a manual pick also becomes the
     /// default for new sessions (`agent.model` in config.yaml, announced as
@@ -8090,6 +8153,7 @@ pub async fn start(rt: &Runtime) -> anyhow::Result<()> {
             cfg: cfg.clone(),
             default_model: cfg.model.clone(),
             default_effort: cfg.effort.clone(),
+            favorite_models: cfg.favorite_models.clone(),
             compact_style: Arc::new(RwLock::new(cfg.compact_style)),
             title_model: Arc::new(RwLock::new(title_model)),
             subagent_model: Arc::new(RwLock::new(subagent_model)),
@@ -9807,6 +9871,7 @@ pub(crate) mod tests {
             rt: Runtime::new(figment::Figment::new(), dir.clone()),
             default_model: cfg.model.clone(),
             default_effort: None,
+            favorite_models: Vec::new(),
             cfg,
             compact_style: Arc::default(),
             title_model: Arc::default(),
@@ -10222,6 +10287,112 @@ pub(crate) mod tests {
         assert_eq!(
             agents.ask(GetDefaultEffort).await.unwrap(),
             Some("high".to_owned())
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// The `agent:` section of a written config.yaml, as the engine would load it.
+    fn agent_section(yaml: &str) -> AgentConfig {
+        let file: serde_yaml::Value = serde_yaml::from_str(yaml).unwrap();
+        serde_yaml::from_value(file["agent"].clone()).unwrap()
+    }
+
+    /// 127 §1: starring resolves through the catalog, keeps starring order,
+    /// never duplicates, is a no-op in the requested state, persists one
+    /// flow-sequence line that `AgentConfig` reads back, and announces the
+    /// new list; an id the resolver rejects (like `set_model`: an ambiguous
+    /// bare id — `provider/model` passes through) leaves the file alone.
+    #[tokio::test]
+    async fn favorites_persist_as_one_flow_sequence_line() {
+        let mut a = agents().await;
+        let dir = a.rt.data_dir.clone();
+        a.catalog = Arc::new(vision_catalog(&dir));
+        a.configured = Arc::new(|ns: &str| ns == "testvis");
+        let yaml = dir.join("config.yaml");
+        let seen = Arc::new(parking_lot::Mutex::new(Vec::new()));
+        let sink = Sink::spawn_with_mailbox(Sink(Arc::clone(&seen)), runtime::subscriber_mailbox());
+        a.rt.subscribe::<Sink, AgentEvent>(&sink).await;
+        let star = |model: &str, favorite| SetModelFavorite {
+            model: model.into(),
+            favorite,
+        };
+
+        // A bare id canonicalises; order is starring order; twice is once.
+        assert_eq!(
+            a.set_model_favorite(star("eyes", true)).await.unwrap(),
+            ["testvis/eyes"]
+        );
+        assert_eq!(
+            a.set_model_favorite(star("testvis/blind", true))
+                .await
+                .unwrap(),
+            ["testvis/eyes", "testvis/blind"]
+        );
+        assert_eq!(
+            a.set_model_favorite(star("testvis/eyes", true))
+                .await
+                .unwrap(),
+            ["testvis/eyes", "testvis/blind"]
+        );
+        let written = std::fs::read_to_string(&yaml).unwrap();
+        assert!(
+            written.contains("  favorite_models: [\"testvis/eyes\", \"testvis/blind\"]\n"),
+            "{written}"
+        );
+        let cfg = agent_section(&written);
+        assert_eq!(cfg.favorite_models, ["testvis/eyes", "testvis/blind"]);
+
+        // Rejected like `set_model` (the resolver's only error: a bare id in
+        // two configured providers); nothing written or announced.
+        a.configured = Arc::new(|_: &str| true);
+        let err = a.set_model_favorite(star("eyes", true)).await.unwrap_err();
+        assert!(err.starts_with("ambiguous model `eyes`"), "{err}");
+        a.configured = Arc::new(|ns: &str| ns == "testvis");
+        assert_eq!(std::fs::read_to_string(&yaml).unwrap(), written);
+
+        // Unstar to empty: `[]`, and the config still reads back.
+        assert_eq!(
+            a.set_model_favorite(star("eyes", false)).await.unwrap(),
+            ["testvis/blind"]
+        );
+        assert_eq!(
+            a.set_model_favorite(star("blind", false)).await.unwrap(),
+            Vec::<String>::new()
+        );
+        // Already unstarred: a no-op reply, no third write.
+        assert_eq!(
+            a.set_model_favorite(star("blind", false)).await.unwrap(),
+            Vec::<String>::new()
+        );
+        let written = std::fs::read_to_string(&yaml).unwrap();
+        assert!(written.contains("  favorite_models: []\n"), "{written}");
+        assert!(agent_section(&written).favorite_models.is_empty());
+        assert!(a.favorite_models.is_empty());
+
+        // Every change was announced with the whole list; no-ops were not.
+        let _ = sink
+            .ask(AgentEvent::TitleChanged {
+                session: SessionId::new(),
+                title: String::new(),
+                tags: Vec::new(),
+            })
+            .await;
+        let lists: Vec<Vec<String>> = seen
+            .lock()
+            .iter()
+            .filter_map(|e| match e {
+                AgentEvent::FavoriteModelsChanged { models } => Some(models.clone()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            lists,
+            [
+                vec!["testvis/eyes".to_owned()],
+                vec!["testvis/eyes".to_owned(), "testvis/blind".to_owned()],
+                vec!["testvis/blind".to_owned()],
+                vec![],
+            ]
         );
         std::fs::remove_dir_all(&dir).unwrap();
     }

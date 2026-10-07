@@ -46,6 +46,8 @@ pub type Event = Arc<serde_json::Value>;
 pub const BRIDGE_ACTOR: &str = "rpc.events";
 
 /// Receivers that fall more than this many events behind see a `Lagged`.
+/// Since 129 every subscription drains its receiver on a task of its own, so
+/// a slow client no longer lags the ring; only a stalled drain does.
 const CAPACITY: usize = 1024;
 
 /// `ask` → a clone of the bridge's `broadcast::Sender`, for a second plugin

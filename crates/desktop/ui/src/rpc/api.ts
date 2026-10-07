@@ -380,6 +380,8 @@ export interface Api {
   session_orphans(session: SessionId): Promise<SessionOrphan[]>
   /** This engine's replication summary (68 §10): id, sessions owned here / elsewhere, log head, last snapshot. */
   sessions_status(): Promise<SessionsStatus>
+  /** 129 §3.2: per-connection focus. Delta-class events (`TextDelta`, `ReasoningDelta`, `ToolCallProgress`, `VisionProgress`) reach this connection's `subscribe_events` streams only for `sessions`; every other event is unaffected. Replaces the previous set; `[]` means no deltas at all; dies with the connection. -32601 on an engine from before 129. */
+  set_event_focus(sessions: SessionId[]): Promise<null>
   info(): Promise<Info>
   knowledge_delete(id: string): Promise<null>
   knowledge_get(id: string): Promise<Concept>
@@ -764,6 +766,8 @@ export interface Api {
   set_advisor_notes_per_update(n: number): Promise<AdvisorDefaults>
   /** Persist `advisor.sync_backlog` (`off` | `1` | `3` | `5`). */
   set_advisor_sync_backlog(v: SyncBacklog): Promise<AdvisorDefaults>
+  /** Star or unstar a catalog model (127 §2); returns the new favorites list, `FavoriteModelsChanged` follows on the stream. */
+  set_model_favorite(model: string, favorite: boolean): Promise<string[]>
   /** Set one harness config option on an ACP child (75 §8): `configId` is the option id or `model` / `effort`; `value` one of its `options[].value`. Mid-turn → `pending: true`, applied at turn end. */
   set_harness_option(session: SessionId, configId: string, value: string): Promise<SetOptionResult>
   /** Resume a stopped ACP child in its prior harness context (75 §10): new process, `session/load` on the stored id, no prompt; a live process is killed first. Rejects a native session, a remote node's session, or one with no stored harness session id. */
@@ -1116,6 +1120,7 @@ export const METHODS = [
   'set_decision_training',
   'set_effort',
   'set_escalate_model',
+  'set_event_focus',
   'set_harness_option',
   'set_max_salvages',
   'set_max_tool_rounds',
@@ -1124,6 +1129,7 @@ export const METHODS = [
   'set_meeting_live_diarization',
   'set_meeting_oracle_mode',
   'set_model',
+  'set_model_favorite',
   'set_peer_scope',
   'set_project_style',
   'set_pty_idle',

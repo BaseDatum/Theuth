@@ -342,6 +342,10 @@ type SessionsStore = {
   /** A gap may hide a `TodoChanged`: label the list stale (one session, or every session) until a snapshot confirms it. */
   markTodosStale(id?: string): void;
   resetLagged(): void;
+  /** 129 D3: a gap (`Lagged`, reconnect) or a session leaving event focus may have dropped events: label the
+   * transcript and plan stale (one session, or every session) so the mounted views re-settle; `loaded` stays, so
+   * nothing on screen empties. */
+  markStale(id?: string): void;
   /** Forget that any transcript was loaded: the chat route refetches on its next mount. */
   unload(): void;
 };
@@ -381,11 +385,13 @@ export const createSessions = (): SessionsApi =>
           (mode === "prepend" && moved) ||
           // A newer snapshot already landed (or a reconnect will bring one): a superseded full page has nothing to add.
           (mode === "replace" && moved && cur.loaded) ||
+          // 129 D3: `cur.running` is not a refusal — after a gap (`Lagged`, reconnect, out of focus) the lost
+          // `TurnFinished` leaves it stale, and a settled page with `running: false` is what corrects it; a turn
+          // that raced the read moved `live`, a turn still running answers `settled: false`.
           (mode === "settled" &&
             (!fresh ||
               moved ||
               cur.live !== fresh.live ||
-              cur.running ||
               !loaded.settled ||
               loaded.running));
         if (refused) {
@@ -610,6 +616,23 @@ export const createSessions = (): SessionsApi =>
       resetLagged() {
         set({ lagged: 0 });
       },
+      markStale(id) {
+        set((st) => ({
+          sessions: Object.fromEntries(
+            Object.entries(st.sessions).map(([k, s]) => [
+              k,
+              (id === undefined || k === id) && s.loaded
+                ? {
+                    ...s,
+                    contextStale: true,
+                    todosStale: true,
+                    historyGeneration: s.historyGeneration + 1,
+                  }
+                : s,
+            ]),
+          ),
+        }));
+      },
       unload() {
         set((st) => ({
           sessions: Object.fromEntries(
@@ -707,6 +730,9 @@ export function dispatch(events: WireEvent[], st: Stores = active()): void {
     } else if (e.type === "DefaultEffortChanged") {
       const conn = st.connection.getState();
       if (conn.info) conn.setInfo({ ...conn.info, default_effort: e.effort });
+    } else if (e.type === "FavoriteModelsChanged") {
+      const conn = st.connection.getState();
+      if (conn.info) conn.setInfo({ ...conn.info, favorite_models: e.models });
     }
     if (live) listeners.get(e.type)?.forEach((cb) => cb(e));
   }

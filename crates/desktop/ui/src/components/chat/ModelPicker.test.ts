@@ -1,6 +1,6 @@
 import { expect, test } from 'vitest'
 import type { ModelInfo } from '@/rpc/bindings/ModelInfo'
-import { contextLabel, type View, viewFor } from './ModelPicker'
+import { contextLabel, favoriteTarget, type View, viewFor } from './ModelPicker'
 
 const model = (provider: string, id: string, name: string, extra: Partial<ModelInfo> = {}): ModelInfo => ({
   id,
@@ -79,6 +79,36 @@ test('forms: the none row sits under Current and is checked when nothing is set;
   expect(set.rows[1]).toMatchObject({ kind: 'none', current: false })
   // Search ranks the extra ids too.
   expect(values(viewFor({ models, model: undefined, provider: null, query: 'legacy', extra: ['legacy/x'] }))).toEqual(['model:legacy/x'])
+})
+
+test('127 favorites: first, in starred order, catalog-only; the Current row only when it is not a favorite', () => {
+  const favorites = ['openai/gpt-5.4-mini', 'gone/x', 'anthropic/claude-opus-4-1']
+  // Current is a favorite: it shows once, as its favorite row (checked), no Current lead row.
+  const inFav = viewFor({ models, model: 'anthropic/claude-opus-4-1', provider: null, query: '', favorites })
+  expect(values(inFav)).toEqual(['fav:openai/gpt-5.4-mini', 'fav:anthropic/claude-opus-4-1', 'provider:anthropic', 'provider:openai'])
+  expect(inFav.rows[0]).toMatchObject({ kind: 'favorite', current: false, m: { name: 'GPT-5.4 mini' } })
+  expect(inFav.rows[1]).toMatchObject({ kind: 'favorite', current: true })
+  // Current is not a favorite: the Current row follows the favorites, before `none` and the providers.
+  const notFav = viewFor({ models, model: 'openai/gpt-5.4', provider: null, query: '', favorites, none: { label: 'Off' } })
+  expect(values(notFav)).toEqual(['fav:openai/gpt-5.4-mini', 'fav:anthropic/claude-opus-4-1', 'current:openai/gpt-5.4', 'none', 'provider:anthropic', 'provider:openai'])
+  // No favorites / none in the catalog: 124's layout.
+  expect(values(viewFor({ models, model: 'openai/gpt-5.4', provider: null, query: '', favorites: ['gone/x'] }))).toEqual(['current:openai/gpt-5.4', 'provider:anthropic', 'provider:openai'])
+  // Models level and search rows are marked, never re-ranked; no favorite rows there.
+  const level = viewFor({ models, model: undefined, provider: 'openai', query: '', favorites })
+  expect(level.rows.map((r) => (r.kind === 'model' ? r.favorite : r.kind))).toEqual(['back', false, true])
+  const search = viewFor({ models, model: undefined, provider: null, query: 'claude', favorites })
+  expect(search.rows.map((r) => (r.kind === 'model' ? [r.m.id, r.favorite] : r.kind))).toEqual([
+    ['anthropic/claude-opus-4-1', true],
+    ['anthropic/claude-sonnet-4-5', false],
+  ])
+})
+
+test('favoriteTarget: Alt+Enter toggles model and favorite rows only', () => {
+  expect(favoriteTarget('model:openai/gpt-5.4')).toBe('openai/gpt-5.4')
+  expect(favoriteTarget('fav:anthropic/claude-opus-4-1')).toBe('anthropic/claude-opus-4-1')
+  expect(favoriteTarget('provider:openai')).toBeNull()
+  expect(favoriteTarget('effort:high')).toBeNull()
+  expect(favoriteTarget('')).toBeNull()
 })
 
 test('contextLabel: thousands, empty when unknown', () => {
