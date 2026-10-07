@@ -169,7 +169,7 @@ struct KeyGrammarTests {
             (KeyPress(chars: "", keyCode: 125), .next), (KeyPress(chars: "", keyCode: 126), .previous),
             (KeyPress(chars: "s"), .snooze), (KeyPress(chars: "e"), .clear),
             (KeyPress(chars: "d"), .openDiff), (KeyPress(chars: "o"), .openBoard), (KeyPress(chars: "o", command: true), .openSession),
-            (KeyPress(chars: "1", command: true), .none), (KeyPress(chars: "r"), .none),
+            (KeyPress(chars: "1", command: true), .none), (KeyPress(chars: "r"), .reply), (KeyPress(chars: "l", command: true), .askBar),
         ]
         for (k, want) in cases { #expect(KeyGrammar.intent(for: k) == want, "\(k)") }
         #expect(KeyGrammar.snoozeInterval == 1800)

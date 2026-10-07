@@ -20,6 +20,8 @@ final class Store: ObservableObject {
         case undone
         case stale
         case failed(String)
+        /// W3: the desk's streamed answer in the receipt row ("theuth · handed to w3 — …" · Open ⌘O).
+        case reply(who: String, text: String, session: String?)
     }
 
     @Published private(set) var items: [AttentionItem] = []
@@ -34,9 +36,11 @@ final class Store: ObservableObject {
     @Published private(set) var now = Date()
     /// A review "Send back…" is collecting its note for this task.
     @Published var noteFor: String?
+    /// W3: Ask bar routing, the Done zone's receipts, the R field (Store+Ask.swift).
+    @Published var ask = AskModel()
 
     private(set) var undo = UndoQueue<Held>(delay: Settings.undoDelay)
-    private var client: RpcClient!
+    private(set) var client: RpcClient!
     private var refetchTimer: Timer?
     private var tickTimer: Timer?
     private var receiptTimer: Timer?
@@ -50,6 +54,8 @@ final class Store: ObservableObject {
     var onPendingPrompts: ((PendingPrompts) -> Void)?
     /// Probe hook: a full refetch landed.
     var onRefetched: (() -> Void)?
+    /// W3: ⌘L from the Attention panel.
+    var onAskBar: (() -> Void)?
 
     func start(location: EngineLocation) {
         client = RpcClient(location: location,
@@ -83,6 +89,7 @@ final class Store: ObservableObject {
         case .other(let t):
             if WireEvent.attentionTriggers.contains(t) || t == "TurnStarted" || t == "SubagentSpawned" { scheduleRefetch() }
         }
+        askObserve(data)
     }
 
     /// Debounced 250 ms (130 §5.2); never on a timer.
@@ -121,6 +128,7 @@ final class Store: ObservableObject {
         rail = RailModel.derive(items: items, agents: agents, activity: activity, now: Date())
         panel.workingCount = rail.workingCount
         panel.update(items: items)
+        askRefetchReceipts()
     }
 
     /// `packet_get` for every decision/review in the list that has none cached yet.
@@ -146,6 +154,7 @@ final class Store: ObservableObject {
     // MARK: keys → actions
 
     func perform(_ intent: Intent) {
+        if performAsk(intent) { return }
         switch intent {
         case .answer(let n):
             guard let c = focusedCard, let o = c.options.first(where: { $0.key == n }) else { return }
@@ -172,6 +181,7 @@ final class Store: ObservableObject {
             guard let url = focusedCard?.sessionURL else { return }
             onOpenURL?(url)
         case .none: break
+        case .reply, .askBar: break // W3: handled in performAsk
         }
     }
 
@@ -191,7 +201,7 @@ final class Store: ObservableObject {
         hold(Held(itemId: c.item.id, who: c.who, label: "sent back", action: .reviewSendBackNote(task: task, note: text)))
     }
 
-    private func hold(_ h: Held) {
+    func hold(_ h: Held) {
         undo = UndoQueue(delay: Settings.undoDelay)
         if let displaced = undo.hold(h, now: Date()) { commit(displaced) }
         receipt = .holding(h)
@@ -220,6 +230,7 @@ final class Store: ObservableObject {
     /// E5: re-read, then send; the engine's `false` is "already answered elsewhere", never retried.
     private func commit(_ h: Held) {
         Task {
+            if case .askTheuth(let text) = h.action { return await commitAsk(text) }
             do {
                 let latest = try await client.attentionList()
                 guard StaleGuard.allows(id: h.itemId, latest: latest) else {
@@ -242,6 +253,10 @@ final class Store: ObservableObject {
                 case .snooze(let id):
                     let until = UInt64((Date().timeIntervalSince1970 + KeyGrammar.snoozeInterval) * 1000)
                     try await client.attentionSnooze(id: id, untilMs: until)
+                case .denyWithNote(let id, let session, let note):
+                    ok = try await client.resolveApproval(id: id, decision: .deny)
+                    if ok, let session { _ = try await client.steer(session: session, text: note) }
+                case .askTheuth: return
                 }
                 receipt = ok ? .sent("\(h.who) · \(h.label)") : .stale
                 Log.write("committed \(h.action) ok=\(ok)")
@@ -254,7 +269,7 @@ final class Store: ObservableObject {
         }
     }
 
-    private func expireReceipt(after s: TimeInterval) {
+    func expireReceipt(after s: TimeInterval) {
         receiptTimer?.invalidate()
         receiptTimer = Timer.scheduledTimer(withTimeInterval: s, repeats: false) { [weak self] _ in
             Task { @MainActor in
@@ -263,4 +278,8 @@ final class Store: ObservableObject {
             }
         }
     }
+
+    /// W3: the Ask bar's receipts share this row.
+    func setReceipt(_ r: Receipt?) { receipt = r }
+    func setReceiptCount(_ n: Int) { panel.receiptCount = n }
 }

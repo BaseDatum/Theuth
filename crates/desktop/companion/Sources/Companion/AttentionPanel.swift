@@ -131,6 +131,7 @@ final class PanelController {
         isOpen = false
         if let m = keyMonitor { NSEvent.removeMonitor(m); keyMonitor = nil }
         store.noteFor = nil
+        store.ask.replyFor = nil // W3
         panel.orderOut(nil)
         if returnKey, let app = previousApp, app != .current { app.activate() }
         previousApp = nil
@@ -144,6 +145,7 @@ final class PanelController {
         if store.noteFor != nil {
             guard intent == .escape else { return false }
         }
+        if store.ask.replyFor != nil, intent != .escape { return false } // W3: the R field takes the keys
         guard intent != .none else { return false }
         store.perform(intent)
         return true

@@ -15,6 +15,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var rail: RailController!
     private var panel: PanelController!
     private var statusItem: NSStatusItem!
+    var askBar: AskBarController! // W3 (AskBar/AskBarInstall.swift)
     private var subs = Set<AnyCancellable>()
     private var probeLoggedPending = false
 
@@ -27,7 +28,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         KeyboardShortcuts.onKeyUp(for: .openPanel) { [weak self] in
             guard let self, Flags.probe == nil else { return }
-            self.panel.toggle(anchor: .mouse)
+            self.askBar.hotkeyUp() // W3: Attention panel when something needs you, else the Ask bar
         }
 
         store.$rail.receive(on: RunLoop.main).sink { [weak self] r in MainActor.assumeIsolated { self?.updateStatusItem(r) } }.store(in: &subs)
@@ -42,6 +43,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         if let seconds = Flags.probe { runProbe(seconds) }
+        installAskBar(attention: panel) // W3: panel, key-down half of the hotkey, --ask / --ask-probe
     }
 
     func applicationDidBecomeActive(_ note: Notification) {
@@ -112,6 +114,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             menu.addItem(.separator())
             menu.addItem(withTitle: "Quit theuth Companion", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
             menu.items.forEach { $0.target = $0.action == #selector(openTheuth) ? self : nil }
+            askBar.addMenuItem(to: menu) // W3
             statusItem.menu = menu
             sender.performClick(nil)
             statusItem.menu = nil

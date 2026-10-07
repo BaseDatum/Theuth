@@ -6,6 +6,8 @@ public struct PanelModel: Equatable, Sendable {
     public private(set) var items: [AttentionItem]
     public private(set) var focus: Int
     public var workingCount: Int
+    /// W3: the Done zone's rows follow the items; J/K walk into them, `focused` is nil there.
+    public var receiptCount: Int = 0
 
     public init(items: [AttentionItem], workingCount: Int = 0) {
         self.items = Self.order(items)
@@ -20,15 +22,18 @@ public struct PanelModel: Equatable, Sendable {
     }
 
     public var focused: AttentionItem? { items.indices.contains(focus) ? items[focus] : nil }
-    /// Every other item as a line, in panel order.
+    /// Index into the Done zone when the focus has walked past the items.
+    public var receiptFocus: Int? { focus >= items.count && focus < items.count + receiptCount ? focus - items.count : nil }
+    /// Every other item as a line, in panel order (all of them while a receipt is focused).
     public var others: [AttentionItem] { items.enumerated().filter { $0.offset != focus }.map(\.element) }
     public var needsYouCount: Int { items.filter { $0.kind.needsYou }.count }
     public var doneCount: Int { items.filter { $0.kind == .finished }.count }
 
     /// J/K · ↓/↑: clamped, never wraps.
     public mutating func move(_ delta: Int) {
-        guard !items.isEmpty else { focus = 0; return }
-        focus = min(items.count - 1, max(0, focus + delta))
+        let total = items.count + receiptCount
+        guard total > 0 else { focus = 0; return }
+        focus = min(total - 1, max(0, focus + delta))
     }
 
     public mutating func focus(id: String) {
@@ -40,7 +45,7 @@ public struct PanelModel: Equatable, Sendable {
         let keep = focused?.id
         items = Self.order(new)
         if let keep, let i = items.firstIndex(where: { $0.id == keep }) { focus = i }
-        else { focus = min(max(0, items.count - 1), focus) }
+        else { focus = min(max(0, items.count + receiptCount - 1), focus) }
     }
 
     /// "3 need you · 5 working · 2 done"; "Nothing needs you" when nothing does and nothing works.
@@ -55,5 +60,5 @@ public struct PanelModel: Equatable, Sendable {
     }
 
     /// "1 of 3"; empty when there is nothing to count.
-    public var position: String { items.isEmpty ? "" : "\(focus + 1) of \(items.count)" }
+    public var position: String { items.isEmpty ? "" : "\(min(focus, items.count - 1) + 1) of \(items.count)" }
 }
