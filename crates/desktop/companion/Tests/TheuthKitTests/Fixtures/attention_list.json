@@ -1,0 +1,109 @@
+[
+  {
+    "id": "approval:3f6c1a2e-9b1d-4e0a-8c4b-5d2a7f1e9c01",
+    "kind": "approval",
+    "title": "Approve git push origin v2.10.1",
+    "detail": "shell · mutating",
+    "at_ms": 1791448800000,
+    "task": null,
+    "agent": "w3",
+    "session": "0192c5e0-7a1b-7c2d-9e3f-4a5b6c7d8e01",
+    "approval": "3f6c1a2e-9b1d-4e0a-8c4b-5d2a7f1e9c01",
+    "decision": null,
+    "packet": null,
+    "ask": null,
+    "turn": null
+  },
+  {
+    "id": "decision:task-7:dec-2",
+    "kind": "decision",
+    "title": "Which layout for the pricing page?",
+    "detail": "blocks task-7",
+    "at_ms": 1791448560000,
+    "task": "task-7",
+    "agent": "w2",
+    "session": "0192c5e0-7a1b-7c2d-9e3f-4a5b6c7d8e02",
+    "approval": null,
+    "decision": "decision:dec-2",
+    "packet": "decision:dec-2",
+    "ask": null,
+    "turn": null
+  },
+  {
+    "id": "ask:a1b2c3d4-0000-4000-8000-000000000001",
+    "kind": "ask",
+    "title": "Deploy now or after the migration?",
+    "detail": null,
+    "at_ms": 1791448700000,
+    "task": null,
+    "agent": null,
+    "session": "0192c5e0-7a1b-7c2d-9e3f-4a5b6c7d8e03",
+    "approval": null,
+    "decision": null,
+    "packet": null,
+    "ask": {
+      "type": "AskRequested",
+      "id": "a1b2c3d4-0000-4000-8000-000000000001",
+      "session": "0192c5e0-7a1b-7c2d-9e3f-4a5b6c7d8e03",
+      "questions": [
+        {
+          "id": "when",
+          "question": "Deploy now or after the migration?",
+          "options": [
+            { "label": "Now" },
+            { "label": "After the migration", "description": "safer; ~20 min later" },
+            { "label": "Tomorrow" },
+            { "label": "Never" }
+          ],
+          "recommended": 1
+        }
+      ]
+    },
+    "turn": null
+  },
+  {
+    "id": "review:task-9",
+    "kind": "review",
+    "title": "Review: nightly backup routine rewrite",
+    "detail": "ops-desk → you",
+    "at_ms": 1791448140000,
+    "task": "task-9",
+    "agent": "ops-desk",
+    "session": null,
+    "approval": null,
+    "decision": null,
+    "packet": "review:task-9",
+    "ask": null,
+    "turn": null
+  },
+  {
+    "id": "hire:docs-desk",
+    "kind": "hire",
+    "title": "Hire docs-desk?",
+    "detail": "proposed by agent:theuth",
+    "at_ms": 1791448000000,
+    "task": null,
+    "agent": "docs-desk",
+    "session": null,
+    "approval": null,
+    "decision": null,
+    "packet": null,
+    "ask": null,
+    "turn": null
+  },
+  {
+    "id": "show:call-77",
+    "kind": "show",
+    "title": "chart.png",
+    "detail": "image/png · 12 KiB",
+    "at_ms": 1791448300000,
+    "task": null,
+    "agent": null,
+    "session": "0192c5e0-7a1b-7c2d-9e3f-4a5b6c7d8e02",
+    "approval": null,
+    "decision": null,
+    "packet": null,
+    "ask": null,
+    "turn": null
+  }
+]

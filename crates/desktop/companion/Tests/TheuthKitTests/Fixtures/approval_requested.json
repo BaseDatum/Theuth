@@ -1,0 +1,8 @@
+{
+  "type": "ApprovalRequested",
+  "id": "3f6c1a2e-9b1d-4e0a-8c4b-5d2a7f1e9c01",
+  "session": "0192c5e0-7a1b-7c2d-9e3f-4a5b6c7d8e01",
+  "tool": "shell",
+  "args": { "command": "git push origin v2.10.1", "cwd": "/Users/sky/Develop/theuth" },
+  "risk": "mutating"
+}

@@ -1,0 +1,24 @@
+{
+  "key": "decision:dec-2",
+  "task": "task-7",
+  "kind": "decision",
+  "by": "agent:w2",
+  "at_ms": 1791448560000,
+  "question": "Which layout for the pricing page?",
+  "summary": "Blocks the Stripe checkout task behind it; the other two agents are not waiting on this.",
+  "board": "doc-board-1",
+  "options": [
+    { "label": "Three tiers", "description": "matches the current marketing copy" },
+    { "label": "One plan", "description": null },
+    { "label": "A comparison table", "description": null },
+    { "label": "Ask marketing", "description": "a week" }
+  ],
+  "recommended": 0,
+  "pointers": [
+    { "kind": "code", "ref": "src/pricing.tsx#L10-L24", "title": "current tiers", "note": null, "text": "export const tiers = [...]", "root": "/Users/sky/shop" }
+  ],
+  "checks": [],
+  "recommendation": { "text": "Three tiers keeps the copy as is.", "option": 2 },
+  "items": [],
+  "to": "user"
+}

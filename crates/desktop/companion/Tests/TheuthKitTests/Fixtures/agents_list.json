@@ -1,0 +1,67 @@
+[
+  {
+    "file": {
+      "name": "w2",
+      "title": "w2",
+      "reports_to": "theuth",
+      "model": "claude-fable",
+      "effort": null,
+      "tools": "mutating",
+      "mcp": null,
+      "budget": { "type": "monthly", "amount": 40.0, "currency": "USD" },
+      "capabilities": null,
+      "paused": false,
+      "proposed_by": null,
+      "runs_in": "any",
+      "body": "# w2\n"
+    },
+    "status": "working",
+    "desk": "0192c5e0-7a1b-7c2d-9e3f-4a5b6c7d8e02",
+    "open_tasks": 3,
+    "spent_month": 12.5
+  },
+  {
+    "file": {
+      "name": "ops-desk",
+      "title": "Ops desk",
+      "reports_to": "theuth",
+      "model": null,
+      "effort": null,
+      "tools": null,
+      "mcp": null,
+      "budget": { "type": "none" },
+      "capabilities": null,
+      "paused": true,
+      "proposed_by": null,
+      "runs_in": "any",
+      "body": ""
+    },
+    "status": "paused",
+    "desk": null,
+    "open_tasks": 0,
+    "spent_month": 0.0,
+    "error": null
+  },
+  {
+    "file": {
+      "name": "broken",
+      "title": "broken",
+      "reports_to": "theuth",
+      "model": null,
+      "effort": null,
+      "tools": null,
+      "mcp": null,
+      "budget": { "type": "none" },
+      "capabilities": null,
+      "paused": false,
+      "proposed_by": null,
+      "runs_in": "any",
+      "body": ""
+    },
+    "status": "invalid",
+    "desk": null,
+    "open_tasks": 0,
+    "spent_month": 0.0,
+    "error": "front matter: budget: expected `<amount> <CUR>/month`"
+  }
+]
