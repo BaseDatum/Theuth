@@ -80,57 +80,51 @@ export type ModelPickerProps = {
   className?: string
 }
 
+/** The `CommandItem` look for the rows cmdk does not own (`leadRow`). */
+const LEAD_ROW = 'flex w-full cursor-default items-center gap-2 rounded-sm px-2 py-1.5 text-sm outline-hidden select-none hover:bg-accent hover:text-accent-foreground focus-visible:bg-accent focus-visible:text-accent-foreground [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg]:size-4 [&_svg:not([class*=text-])]:text-muted-foreground'
+
 export function ModelPicker({ models, model, onSelect, effort, none, extra, className }: ModelPickerProps) {
   const [query, setQuery] = useState('')
   const [provider, setProvider] = useState<string | null>(null)
   const view = viewFor({ models, model, provider, query, none, extra })
   const canGoBack = view.rows.some((r) => r.kind === 'back')
-  // cmdk highlights the first DOM item after every search change, mount, and level switch; the §3 start
-  // row (first provider / first model / first result) is therefore first in the DOM, and the Current, none
-  // and back rows that display above it come last in the DOM with `order-first`. Arrow keys follow the DOM.
-  const lead = (row: Row) => row.kind === 'current' || row.kind === 'none' || row.kind === 'back'
-  const pick = (row: Row) => {
+  // cmdk 1.1.1 always moves the highlight to the first `[cmdk-item]` in the DOM after a search change
+  // (and a controlled `value` cannot veto that: it reports the move through `onValueChange` and keeps
+  // it until the prop changes). The §3 start row — first provider / first model / first result — must
+  // therefore be the first cmdk item, so the Current, none and back rows above it are plain buttons:
+  // clickable and Tab-reachable, outside ↑/↓/Enter. Picking Current is a no-op anyway; back has Backspace.
+  const leadRow = (row: Row) => {
     switch (row.kind) {
       case 'current':
-        return onSelect(row.id)
+        return (
+          <button key={row.value} type="button" className={LEAD_ROW} onClick={() => onSelect(row.id)}>
+            <span className="truncate">{row.name}</span>
+            <Check className="ml-auto" />
+          </button>
+        )
       case 'none':
-        return onSelect(none!.value)
+        return (
+          <button key={row.value} type="button" className={LEAD_ROW} onClick={() => onSelect(none!.value)}>
+            <span className="truncate">{row.label}</span>
+            {row.current && <Check className="ml-auto" />}
+          </button>
+        )
       case 'back':
-        return setProvider(null)
-      case 'provider':
-        return setProvider(row.id)
-      case 'model':
-        return onSelect(row.m.id)
-      case 'empty':
-        return
+        return (
+          <button key={row.value} type="button" className={LEAD_ROW} onClick={() => setProvider(null)}>
+            <ChevronLeft />
+            All providers
+          </button>
+        )
+      default:
+        return null
     }
   }
   const item = (row: Row) => {
     switch (row.kind) {
-      case 'current':
-        return (
-          <CommandItem key={row.value} value={row.value} className="order-first" onSelect={() => pick(row)}>
-            <span className="truncate">{row.name}</span>
-            <Check className="ml-auto size-4" />
-          </CommandItem>
-        )
-      case 'none':
-        return (
-          <CommandItem key={row.value} value={row.value} className="order-first" onSelect={() => pick(row)}>
-            <span className="truncate">{row.label}</span>
-            {row.current && <Check className="ml-auto size-4" />}
-          </CommandItem>
-        )
-      case 'back':
-        return (
-          <CommandItem key={row.value} value={row.value} className="order-first" onSelect={() => pick(row)}>
-            <ChevronLeft className="size-4" />
-            All providers
-          </CommandItem>
-        )
       case 'provider':
         return (
-          <CommandItem key={row.value} value={row.value} onSelect={() => pick(row)}>
+          <CommandItem key={row.value} value={row.value} onSelect={() => setProvider(row.id)}>
             <span className="truncate">{row.id}</span>
             <span className="ml-auto shrink-0 text-xs text-fg-tertiary">{row.count} models</span>
             {row.current && <Check className="size-4" />}
@@ -139,7 +133,7 @@ export function ModelPicker({ models, model, onSelect, effort, none, extra, clas
         )
       case 'model':
         return (
-          <CommandItem key={row.value} value={row.value} onSelect={() => pick(row)}>
+          <CommandItem key={row.value} value={row.value} onSelect={() => onSelect(row.m.id)}>
             <span className="truncate">{row.m.name}</span>
             <span className="ml-auto shrink-0 text-xs text-fg-tertiary">
               {view.mode === 'search' ? row.m.provider : [contextLabel(row.m.context), row.m.image ? 'vision' : ''].filter(Boolean).join(' · ')}
@@ -149,10 +143,12 @@ export function ModelPicker({ models, model, onSelect, effort, none, extra, clas
         )
       case 'empty':
         return (
-          <CommandItem key={row.value} value={row.value} disabled className="justify-center text-fg-tertiary">
+          <div key={row.value} className="py-6 text-center text-sm text-fg-tertiary">
             No model matches.
-          </CommandItem>
+          </div>
         )
+      default:
+        return null
     }
   }
   const grouped = (kind: Row['kind'], heading: string) => {
@@ -173,9 +169,9 @@ export function ModelPicker({ models, model, onSelect, effort, none, extra, clas
           }
         }}
       />
-      <CommandList className="max-h-96 [&_[cmdk-list-sizer]]:flex [&_[cmdk-list-sizer]]:flex-col">
-        {view.mode === 'models' ? grouped('model', `${view.provider} · ${view.rows.filter((r) => r.kind === 'model').length} models`) : view.mode === 'search' ? view.rows.filter((r) => r.kind !== 'current').map(item) : grouped('provider', 'Providers')}
-        {view.rows.filter(lead).map(item)}
+      <CommandList className="max-h-96">
+        <div className="p-1 empty:hidden">{view.rows.map(leadRow)}</div>
+        {view.mode === 'models' ? grouped('model', `${view.provider} · ${view.rows.filter((r) => r.kind === 'model').length} models`) : view.mode === 'search' ? view.rows.map(item) : grouped('provider', 'Providers')}
         {view.mode === 'providers' && effort && effort.levels.length > 0 && (
           <>
             <CommandSeparator />
