@@ -17,6 +17,9 @@ public partial class App : Application
     private DispatcherQueue? dispatcher;
     private LogWindow? logWindow;
     private EngineProbe? probe;
+
+    /// <summary>The engine state every surface renders (design 134 §5.4); created in <see cref="OnLaunched"/>, UI thread only.</summary>
+    public Store? Store { get; private set; }
     private Mutex? aliveMutex;
     private bool quitting;
 
@@ -48,10 +51,11 @@ public partial class App : Application
         logWindow.Closed += (_, _) => Quit(ExitCode);
         if (Flags.Probe is not null) logWindow.ShowWithoutActivating(); // a probe never takes the foreground
         else logWindow.Activate();
-        // W2: the Store, rail, panel, tray and hotkeys start here.
-
-        probe = new EngineProbe(dispatcher, Flags.Probe, Quit);
+        Store = Store.Create(dispatcher, EngineProbe.Locate);
+        probe = new EngineProbe(Store, dispatcher, Flags.Probe, Quit);
         probe.Start();
+        // W2: the rail, panel, tray and hotkeys bind to Store here (before Start, to see the first refetch).
+        Store.Start();
     }
 
     /// <summary>Ends the process with <paramref name="code"/> (on the UI thread).</summary>
@@ -61,6 +65,7 @@ public partial class App : Application
         quitting = true;
         ExitCode = code;
         probe?.Dispose();
+        Store?.Close();
         Log.Write($"terminate (exit {code})");
         try { aliveMutex?.ReleaseMutex(); } catch (ApplicationException) { }
         aliveMutex?.Dispose();
