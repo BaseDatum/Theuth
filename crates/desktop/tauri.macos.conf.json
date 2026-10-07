@@ -40,5 +40,12 @@
     "macOS": {
       "minimumSystemVersion": "15.0"
     }
+  },
+  "plugins": {
+    "deep-link": {
+      "desktop": {
+        "schemes": ["theuth"]
+      }
+    }
   }
 }
