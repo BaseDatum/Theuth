@@ -126,10 +126,10 @@ test('streamLink: a row opens its subject — tasks for task/child/escalation ki
   expect(e('routine_fired', 'morning-brief')).toEqual({ route: 'routine', name: 'morning-brief' })
 })
 
-test('needsYou: newest first, 12 drawn, jitter within ±6 and deterministic, short ids ≤ 10 chars and never the kind', () => {
+test('needsYou: newest first, 12 drawn, jitter within ±6 and deterministic, short ids ≤ 8 chars, hex prefixes skipped, never a bare repeat of the kind', () => {
   const { needs, more } = needsYou(F.attention)
-  // R3: task-born → the task's short id; else the agent named; else the title's first word, cut to 10.
-  expect(needs.map((n) => n.label)).toEqual(['builder', '001198', '001188', 'ops-desk', '001203', 'GITHUB_TOK'])
+  // R3/R5: task-born → the task's short id; else the agent named; else the title's first word; hex-like candidates skipped; cut to 8.
+  expect(needs.map((n) => n.label)).toEqual(['builder', '001198', '001188', 'ops-desk', '001203', 'GITHUB_T'])
   expect(more).toBe(0)
   for (const [i, n] of needs.entries()) {
     expect(n.x).toBe(610 - 60 * i)
@@ -138,9 +138,13 @@ test('needsYou: newest first, 12 drawn, jitter within ±6 and deterministic, sho
   expect(needsYou(F.attention).needs.map((n) => n.y)).toEqual(needs.map((n) => n.y))
   const many = Array.from({ length: 15 }, (_, i) => ({ ...F.attention[0]!, id: `approval:${i}`, at_ms: NOW - i * 1000 }))
   expect(needsYou(many)).toMatchObject({ more: 3 })
-  expect(shortId({ ...F.attention[0]!, kind: 'handoff', task: null, agent: null, title: 'macbook-pro hand-off' })).toBe('macbook-pr')
+  expect(shortId({ ...F.attention[0]!, kind: 'handoff', task: null, agent: null, title: 'macbook-pro hand-off' })).toBe('macbook-')
   expect(shortId({ ...F.attention[0]!, kind: 'handoff', task: null, agent: 'ops-desk' })).toBe('ops-desk')
   expect(shortId({ ...F.attention[0]!, task: T('1234') })).toBe('001234')
+  // A show/ask-style item carries a session prefix as its agent and title word: both are hex-like, so the kind word stands.
+  expect(shortId({ ...F.attention[0]!, kind: 'handoff', task: null, agent: '01a115f9', title: '01a115f9 showed a chart' })).toBe('handoff')
+  expect(shortId({ ...F.attention[0]!, kind: 'handoff', task: null, agent: 'deadbeef', title: 'Which region?' })).toBe('Which')
+  expect(shortId({ ...F.attention[0]!, kind: 'handoff', task: null, agent: 'abc12', title: 'x' })).toBe('abc12') // five hex chars is a name, not a prefix
 })
 
 test('outcomes: done kinds + non-error routine fires, newest first, via the actor ring, cost on the label, links', () => {

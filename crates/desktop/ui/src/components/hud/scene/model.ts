@@ -275,10 +275,17 @@ export type Flow = {
   d: string
 }
 
-/** The item's short id, ≤ 10 chars: the task's short id for task-born items, else the agent it names, else the first word of its title (R3 — never the kind repeated). */
+/** A session/uuid prefix (≥ 6 hex chars) says nothing as a label; `shortId` skips such candidates (R5). */
+const hexLike = (s: string | null | undefined): boolean => s !== null && s !== undefined && /^[0-9a-f]{6,}$/i.test(s)
+
+/**
+ * The item's short id, ≤ 8 chars: the task's short id for task-born items; else the agent it names, else the first word of
+ * its title — each skipped when it is a hex-like session/uuid prefix — and finally the kind word (R3/R5).
+ */
 export function shortId(item: AttentionItem): string {
-  const s = item.task !== null ? shortTaskId(item.task) : (item.agent ?? item.title.split(/\s+/)[0] ?? item.kind)
-  return s.length > 10 ? s.slice(0, 10) : s
+  const word = item.title.split(/\s+/)[0]
+  const s = item.task !== null ? shortTaskId(item.task) : !hexLike(item.agent) && item.agent ? item.agent : word && !hexLike(word) ? word : item.kind
+  return s.length > 8 ? s.slice(0, 8) : s
 }
 
 export const truncate = (s: string, n: number): string => (s.length > n ? `${s.slice(0, n - 1)}…` : s)
