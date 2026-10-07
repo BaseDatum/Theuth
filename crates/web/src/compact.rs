@@ -334,8 +334,13 @@ fn strip_a11y_chrome(lines: &mut Vec<Line>) {
         let mut text = l.text.clone();
         for phrase in A11Y_CHROME {
             while let Some(at) = lower.find(phrase) {
-                text.replace_range(at..at + phrase.len(), "");
-                lower.replace_range(at..at + phrase.len(), "");
+                let mut range = at..at + phrase.len();
+                // `(opens in new tab)` → drop the parens the phrase sat in.
+                if lower[..range.start].ends_with('(') && lower[range.end..].starts_with(')') {
+                    range = range.start - 1..range.end + 1;
+                }
+                text.replace_range(range.clone(), "");
+                lower.replace_range(range, "");
             }
         }
         let text = remove_empty_links(&text);
