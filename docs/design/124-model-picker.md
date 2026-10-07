@@ -103,6 +103,10 @@ Any non-empty search text, on either level: the list becomes the flat §2 result
 
 `/model <id>` (TUI) and `set_model` semantics, the manual-pick-sets-the-default rule (82 §2), `/model` on an ACP session (harness options, 75 §8) and the desktop `HarnessCommand`/`HarnessGroup` picker for ACP children are untouched.
 
+### 3.5 One provider only
+
+When the listed models come from a single provider, the providers level is skipped: the picker opens on that provider's models level with no `← All providers` row (desktop) and no `←` hint (TUI); search mode works as usual.
+
 ## 4. Desktop components
 
 `crates/desktop/ui/src/lib/model-search.ts` (pure, tested): `searchTerms(query)`, `scoreModel(m, terms)`, `rankModels(models, query)`, `providersOf(models) → {id, count}[]`, `modelsOfProvider(models, id)` (name-sorted).
