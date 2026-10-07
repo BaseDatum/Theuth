@@ -1,8 +1,10 @@
-import { useVirtualizer } from '@tanstack/react-virtual'
+import { type VirtualItem, type Virtualizer, useVirtualizer } from '@tanstack/react-virtual'
 import { ArrowDown, ChevronDown, ChevronUp } from 'lucide-react'
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState } from 'react'
+import { flushSync } from 'react-dom'
 import { Button } from '@/components/ui/button'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
+import { bucket, estimateRow, MeasuredContext, persist, recall, remember } from '@/lib/measured'
 import { useNudges } from '@/lib/nudges'
 import { useApi } from '@/lib/rpc'
 import { useToolRuns } from '@/lib/tool-runs'
@@ -19,6 +21,7 @@ import {
 import { Message, PromptCard } from './Message'
 import { ActivityIndicator } from './Indicators'
 import { type Row, buildRows } from './rows'
+import { type Anchor, step } from './scroll-anchor'
 import { ToolRunCard } from './ToolRunCard'
 
 const PAGE = 60
@@ -26,6 +29,44 @@ const PAGE = 60
 const STICK = 80
 /** Distance from the top (px) at which the previous page loads. */
 const TOP = 200
+/** Ms without a scroll event (and after `touchend`) before the scroller counts as at rest (135 §3.3). */
+const REST = 200
+/** Upper bound of the slack (px). */
+const SLACK_MAX = 40_000
+/** Content width (px) assumed before the column is measured: the `md:max-w-[768px]` column minus `px-4`. */
+const DEFAULT_WIDTH = 736
+
+type Scroller = Virtualizer<HTMLDivElement, Element>
+
+/**
+ * The anchor element: inside `root` (the anchor row's element), the deepest descendant whose box straddles the
+ * scroller's top `edge` (depth ≤ 8, zero-height nodes skipped) — what the reader is actually looking at.
+ */
+function anchorElement(root: Element, edge: number): Element {
+  let node = root
+  for (let depth = 0; depth < 8; depth++) {
+    let next: Element | null = null
+    for (const child of node.children) {
+      const r = child.getBoundingClientRect()
+      if (r.height > 0 && r.top <= edge && r.bottom > edge) {
+        next = child
+        break
+      }
+    }
+    if (!next) break
+    node = next
+  }
+  return node
+}
+
+/** `paddingStart := px` applied now, with the positions recomputed in full (not from the row that just resized). */
+function setSlack(v: Scroller, px: number): void {
+  // `getMeasurements` is incremental from the lowest resized row: drain a pending partial pass at the old padding,
+  // change it, then force the full pass so every row's start carries the new padding. Both reads are memoised.
+  v.getTotalSize()
+  v.setOptions({ ...v.options, paddingStart: px })
+  v.getTotalSize()
+}
 
 const WORD: Record<Activity, string> = {
   idle: '',
@@ -129,18 +170,89 @@ export function Transcript({ session, compact = false }: { session: string; comp
   const [unstuck, setUnstuck] = useState(false)
   /** Row at the viewport's midpoint: the ruler's active turn while scrolled up. */
   const [at, setAt] = useState(0)
+  const [, bump] = useReducer((x: number) => x + 1, 0)
+
+  // 135 §2: the content column's width bucket; heights are remembered and recalled per session at this bucket.
+  const column = useRef<HTMLDivElement>(null)
+  const [width, setWidth] = useState(0)
+  const widthRef = useRef(0)
+  /** Row keys resized since the last remember pass (every size change passes through the predicate). */
+  const fresh = useRef(new Set<string>())
+
+  // 135 §3: the slack is the virtualizer's `paddingStart`; a ref so the hook's and the predicate's `setOptions` agree.
+  const slack = useRef(0)
+  const anchor = useRef<(Anchor & { key: string }) | null>(null)
+  const anchorEl = useRef<Element | null>(null)
+  const restTimer = useRef(0)
+  const touching = useRef(false)
+  const touchEnd = useRef(0)
+  /** `scrollTop` delta owed to the next commit: the compensated half of a rest write. */
+  const pendingWrite = useRef(0)
+  const stats = useRef({ absorbed: 0, wrote: 0 })
 
   const collapse = useToolRuns((s) => s.collapse)
   const rows = useMemo(() => buildRows(entries, pending, session, children, collapse), [entries, pending, session, children, collapse])
+  const estimateSize = (i: number): number => {
+    const row = rows[i]
+    if (!row) return 96
+    return (width ? recall(session, width, row.key) : undefined) ?? estimateRow(row, (width || DEFAULT_WIDTH) - 32)
+  }
+
+  // Rows may move (prepend, a gap row, a loose prompt): the anchor follows its key.
+  const a = anchor.current
+  if (a && rows[a.index]?.key !== a.key) {
+    const i = rows.findIndex((r) => r.key === a.key)
+    if (i >= 0) a.index = i
+    else anchor.current = null
+  }
+  // Prepend (§3.3): the new leading rows land in the slack, so the rows the reader sees keep their starts and the
+  // same `setOptions` below carries the new count and the reduced `paddingStart`.
+  const firstKey = useRef<string | null>(null)
+  const first = rows[0]?.key ?? null
+  if (firstKey.current !== null && first !== firstKey.current) {
+    const k = rows.findIndex((r) => r.key === firstKey.current)
+    if (k > 0) {
+      let estimated = 0
+      for (let i = 0; i < k; i++) estimated += estimateSize(i)
+      slack.current = step({ slack: slack.current, target: 0, anchor: null }, { kind: 'prepend', estimated })[0].slack
+    }
+  }
+  firstKey.current = first
+
+  /** §3.3: every size change comes here before the library decides whether to write `scrollTop`. */
+  const predicate = (item: VirtualItem, delta: number, inst: Scroller): boolean => {
+    fresh.current.add(String(item.key))
+    const a = anchor.current
+    let moved = 0
+    const el = ref.current
+    if (a && item.index === a.index && anchorEl.current?.isConnected && el) {
+      moved = anchorEl.current.getBoundingClientRect().top - el.getBoundingClientRect().top - a.offset
+    }
+    const [s, e] = step({ slack: slack.current, target: 0, anchor: a }, { kind: 'grow', index: item.index, delta, moved })
+    if (a && s.anchor && s.anchor.offset !== a.offset) a.offset = s.anchor.offset
+    if (e.slack !== slack.current) {
+      if (import.meta.env.DEV) stats.current.absorbed += Math.abs(slack.current - e.slack)
+      slack.current = e.slack
+      setSlack(inst, e.slack)
+      // Commit before paint: the library's own notify is an async re-render; a microtask after this ResizeObserver
+      // callback (or after React's commit, on the `measureElement` ref path) still runs before the frame paints.
+      queueMicrotask(() => flushSync(bump))
+    }
+    return e.library
+  }
+
   const v = useVirtualizer({
     count: rows.length,
     getScrollElement: () => ref.current,
-    estimateSize: () => 96,
+    estimateSize,
     overscan: 4,
     getItemKey: (i) => rows[i]?.key ?? i,
     // Keeps the row at the fold in place when a page is prepended above it.
     anchorTo: 'end',
+    paddingStart: slack.current,
   })
+  // An instance field, not an option (3.17.11): reassigned every render so it closes over the current rows and anchor.
+  v.shouldAdjustScrollPositionOnItemSizeChange = predicate
 
   // Pinned: whenever the content grows (deltas, measurements) the view lands at the bottom.
   // Scroll-only renders leave it alone so a small upward scroll is not undone.
@@ -150,6 +262,97 @@ export function Transcript({ session, compact = false }: { session: string; comp
     height.current = el.scrollHeight
     if (stuck.current) el.scrollTop = el.scrollHeight
   })
+  // The compensated half of a rest write, in the same commit as the moved positions. Pinned, the effect above owns
+  // the position (the bottom moved by the same amount).
+  useLayoutEffect(() => {
+    const el = ref.current
+    if (!el || pendingWrite.current === 0) return
+    if (!stuck.current) el.scrollTop += pendingWrite.current
+    pendingWrite.current = 0
+  })
+
+  /** §3.3 rest: remember what was measured, then rebase the slack toward its target with one compensated write. */
+  const rest = () => {
+    const el = ref.current
+    if (!el) return
+    if (v.isScrolling || touching.current || Date.now() - touchEnd.current < 100) return armRest()
+    if (width) for (const key of fresh.current) {
+      const h = v.itemSizeCache.get(key)
+      if (h !== undefined) remember(session, width, key, h)
+    }
+    fresh.current.clear()
+    persist(session)
+    const content = v.getTotalSize() - slack.current
+    // §3.1: a page's worth of average rows, at least two viewports, only while there is more to load and it scrolls.
+    const target = more && rows.length && content > el.clientHeight ? Math.min(SLACK_MAX, Math.max(2 * el.clientHeight, (PAGE * content) / rows.length)) : 0
+    const [s, e] = step({ slack: slack.current, target, anchor: anchor.current }, { kind: 'rest', scrollTop: el.scrollTop })
+    if (import.meta.env.DEV && (stats.current.absorbed || e.write)) {
+      stats.current.wrote += Math.abs(e.write)
+      console.debug(`steady-scroll: absorbed ${Math.round(stats.current.absorbed)} px / wrote ${Math.round(stats.current.wrote)}`)
+    }
+    if (e.write === 0 && s.slack === slack.current) return
+    slack.current = s.slack
+    setSlack(v, s.slack)
+    pendingWrite.current += e.write
+    flushSync(bump)
+  }
+  const latest = useRef(rest)
+  latest.current = rest
+  const armRest = () => {
+    clearTimeout(restTimer.current)
+    restTimer.current = window.setTimeout(() => latest.current(), REST)
+  }
+
+  // Column width (bucketed) and viewport size: a new bucket forgets what was measured at the old one; both re-arm rest.
+  // The first bucket arrives after the first measurement pass: `measure()` redoes it with the remembered heights.
+  useLayoutEffect(() => {
+    const col = column.current
+    if (!col) return
+    const measure = () => {
+      const b = bucket(col.clientWidth)
+      if (b !== widthRef.current) {
+        if (widthRef.current === 0 && b) v.measure()
+        widthRef.current = b
+        fresh.current.clear()
+        setWidth(b)
+      }
+      armRest()
+    }
+    measure()
+    const ro = new ResizeObserver(measure)
+    ro.observe(col)
+    return () => ro.disconnect()
+  }, [])
+  // Touch state for the rest check; `armRest` after a touch ends so a fling that stops without a last scroll event still rebases.
+  useEffect(() => {
+    const el = ref.current
+    if (!el) return
+    const start = () => {
+      touching.current = true
+    }
+    const end = () => {
+      touching.current = false
+      touchEnd.current = Date.now()
+      armRest()
+    }
+    el.addEventListener('touchstart', start, { passive: true })
+    el.addEventListener('touchend', end, { passive: true })
+    el.addEventListener('touchcancel', end, { passive: true })
+    return () => {
+      el.removeEventListener('touchstart', start)
+      el.removeEventListener('touchend', end)
+      el.removeEventListener('touchcancel', end)
+    }
+  }, [])
+  // `more` flipping and a prepend landing both change the target; persist on unmount.
+  useEffect(armRest, [more, first])
+  useEffect(
+    () => () => {
+      clearTimeout(restTimer.current)
+      persist(session)
+    },
+    [session],
+  )
 
   // Guarded by the slice's freshness at request time (48 §5): a page read before a context edit
   // (or before a snapshot replaced the transcript) is dropped rather than reintroducing removed rows.
@@ -169,8 +372,27 @@ export function Transcript({ session, compact = false }: { session: string; comp
   // A first page shorter than the viewport never scrolls: fetch until it does or history ends.
   useEffect(() => {
     const el = ref.current
-    if (el && more && el.scrollHeight <= el.clientHeight) void page()
+    if (el && more && el.scrollHeight - slack.current <= el.clientHeight) void page()
   })
+
+  /** §3.3 anchor: the row under the viewport's top edge and the deepest element straddling it, once per frame. */
+  const tracking = useRef(0)
+  const track = () => {
+    tracking.current = 0
+    const el = ref.current
+    if (!el) return
+    const item = v.getVirtualItemForOffset(el.scrollTop)
+    if (!item) {
+      anchor.current = null
+      anchorEl.current = null
+      return
+    }
+    const edge = el.getBoundingClientRect().top
+    const row = v.elementsCache.get(item.key)
+    const node = row ? anchorElement(row, edge) : null
+    anchorEl.current = node
+    anchor.current = { index: item.index, key: String(item.key), offset: node ? node.getBoundingClientRect().top - edge : 0 }
+  }
 
   const onScroll = () => {
     const el = ref.current
@@ -179,7 +401,9 @@ export function Transcript({ session, compact = false }: { session: string; comp
     stuck.current = gap <= STICK
     setUnstuck(!stuck.current)
     setAt(v.getVirtualItemForOffset(el.scrollTop + el.clientHeight / 2)?.index ?? 0)
-    if (el.scrollTop < TOP) void page()
+    if (!tracking.current) tracking.current = requestAnimationFrame(track)
+    armRest()
+    if (el.scrollTop < slack.current + TOP) void page()
   }
 
   const ticks = useMemo(() => ticksOf(rows), [rows])
@@ -191,43 +415,47 @@ export function Transcript({ session, compact = false }: { session: string; comp
   }
 
   const items = v.getVirtualItems()
+  const measured = useMemo(() => (width ? { session, width } : null), [session, width])
   return (
     <div className="relative min-h-0 flex-1">
       {/* Never a page-wide horizontal scroll: long words wrap (inherited; `pre` and `nowrap` cells keep scrolling inside their own boxes). */}
       <div ref={ref} onScroll={onScroll} className="h-full overflow-x-hidden overflow-y-auto wrap-anywhere">
         <div
+          ref={column}
           className={cn('relative w-full', compact ? 'px-2' : 'mx-auto md:max-w-[768px] px-4')}
           style={{ height: v.getTotalSize() }}
         >
-          <div className="relative h-full w-full">
-            {items.map((item) => {
-              const row = rows[item.index]
-              if (!row) return null
-              return (
-                <div
-                  key={item.key}
-                  data-index={item.index}
-                  ref={v.measureElement}
-                  className="absolute top-0 left-0 w-full"
-                  style={{ transform: `translateY(${item.start}px)` }}
-                >
-                  {'entry' in row ? (
-                    <Message entry={row.entry} prompts={row.prompts} session={session} />
-                  ) : 'run' in row ? (
-                    <ToolRunCard run={row.run} prompts={row.prompts} session={session} />
-                  ) : 'gap' in row ? (
-                    <div className="flex items-center gap-3 py-2 text-xs text-fg-tertiary">
-                      <span className="h-px flex-1 bg-border-subtle" />
-                      <span className="tabular-nums">{row.gap}</span>
-                      <span className="h-px flex-1 bg-border-subtle" />
-                    </div>
-                  ) : (
-                    <PromptCard prompt={row.prompt} from={row.from} />
-                  )}
-                </div>
-              )
-            })}
-          </div>
+          <MeasuredContext value={measured}>
+            <div className="relative h-full w-full">
+              {items.map((item) => {
+                const row = rows[item.index]
+                if (!row) return null
+                return (
+                  <div
+                    key={item.key}
+                    data-index={item.index}
+                    ref={v.measureElement}
+                    className="absolute top-0 left-0 w-full"
+                    style={{ transform: `translateY(${item.start}px)` }}
+                  >
+                    {'entry' in row ? (
+                      <Message entry={row.entry} prompts={row.prompts} session={session} />
+                    ) : 'run' in row ? (
+                      <ToolRunCard run={row.run} prompts={row.prompts} session={session} />
+                    ) : 'gap' in row ? (
+                      <div className="flex items-center gap-3 py-2 text-xs text-fg-tertiary">
+                        <span className="h-px flex-1 bg-border-subtle" />
+                        <span className="tabular-nums">{row.gap}</span>
+                        <span className="h-px flex-1 bg-border-subtle" />
+                      </div>
+                    ) : (
+                      <PromptCard prompt={row.prompt} from={row.from} />
+                    )}
+                  </div>
+                )
+              })}
+            </div>
+          </MeasuredContext>
         </div>
         {(running || activity !== 'idle') && (
           <div className={cn('flex w-full items-center gap-2 py-3 text-sm text-fg-secondary', compact ? 'px-4' : 'mx-auto md:max-w-[768px] px-8')}>
