@@ -7499,15 +7499,7 @@ impl From<&Resolved> for ModelInfo {
 /// tool card its response row's, narrowed to that response's images; a
 /// call still running has no stored response and so no target. `thinking`
 /// is the per-row thinking time (91) the `Reasoning` entry carries.
-pub(crate) fn render(
-    messages: &[(i64, ChatMessage)],
-    entries: &BTreeMap<i64, ContextEntry>,
-    thinking: &BTreeMap<i64, u64>,
-) -> Vec<(i64, HistoryEntry)> {
-    render_with(messages, entries, thinking, &BTreeMap::new())
-}
-
-/// [`render`] with the session's Advisory metadata (125 §5.4,
+/// `advisories` is the session's Advisory metadata (125 §5.4,
 /// `Store::advisories`): such a user row becomes [`HistoryEntry::Advisory`]
 /// and, like a vision note, never opens a turn.
 pub(crate) fn render_with(
@@ -7648,6 +7640,16 @@ pub(crate) fn render_with(
         )
     }));
     out
+}
+
+/// [`render_with`] without Advisory metadata (test fixtures).
+#[cfg(test)]
+pub(crate) fn render(
+    messages: &[(i64, ChatMessage)],
+    entries: &BTreeMap<i64, ContextEntry>,
+    thinking: &BTreeMap<i64, u64>,
+) -> Vec<(i64, HistoryEntry)> {
+    render_with(messages, entries, thinking, &BTreeMap::new())
 }
 
 /// The UI divider for one epoch: the head text without its

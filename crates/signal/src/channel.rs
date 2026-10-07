@@ -2673,7 +2673,7 @@ mod tests {
     /// a nit sends nothing.
     #[tokio::test]
     async fn advisory_blocker_is_one_plain_line_after_the_prose() {
-        use agent::{Advisory, AdvisoryNote, AdvisorSeverity};
+        use agent::{AdvisorSeverity, Advisory, AdvisoryNote};
         let f = fixture().await;
         let session = f.stub.session;
         let card = |severity: AdvisorSeverity, note: &str| {

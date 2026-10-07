@@ -292,7 +292,11 @@ impl Message<SetAdvisorDefaults> for Agents {
 impl Message<GetAdvisorDefaults> for Agents {
     type Reply = AdvisorDefaults;
 
-    async fn handle(&mut self, _: GetAdvisorDefaults, _: &mut Context<Self, Self::Reply>) -> AdvisorDefaults {
+    async fn handle(
+        &mut self,
+        _: GetAdvisorDefaults,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> AdvisorDefaults {
         self.advisor_cfg.defaults()
     }
 }

@@ -1269,7 +1269,7 @@ mod tests {
     /// 125 §9: a concern is one footer-styled line (its first line); a nit posts nothing.
     #[tokio::test(start_paused = true)]
     async fn advisory_concern_is_one_footer_line_and_nit_is_silent() {
-        use agent::{Advisory, AdvisoryNote, AdvisorSeverity};
+        use agent::{AdvisorSeverity, Advisory, AdvisoryNote};
         let mut r = rig(10, None, ALL, None);
         r.start().await;
         let session = r.session();
@@ -1289,8 +1289,11 @@ mod tests {
         };
         r.ev(card(AdvisorSeverity::Nit, "nit: rename x")).await;
         assert!(sends(&r.api.calls()).is_empty());
-        r.ev(card(AdvisorSeverity::Concern, "claims done\nbut no check ran"))
-            .await;
+        r.ev(card(
+            AdvisorSeverity::Concern,
+            "claims done\nbut no check ran",
+        ))
+        .await;
         assert_eq!(
             sends(&r.api.calls()),
             vec!["<footer>advisor · concern — claims done</footer>".to_owned()]
