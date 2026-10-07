@@ -1,5 +1,6 @@
 import { Link } from '@tanstack/react-router'
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
+import { DoubleChip, preselect } from '@/components/chat/DoubleChip'
 import { useAttentionActions } from '@/components/hud/queries'
 import { useTask } from '@/components/tasks/queries'
 import { age } from '@/components/tasks/helpers'
@@ -13,6 +14,7 @@ import { PacketBoard } from './PacketBoard'
 import { PacketMarkdown } from './PacketMarkdown'
 import { Pointers } from './Pointers'
 import { Bundle, type Pick, allAnswered, allRecommended, bundleAnswer } from './Bundle'
+import { usePrediction } from '@/store/double'
 import { usePacket } from './queries'
 import { Body, Chip, Footer, SectionTitle, useResolved } from './shared'
 
@@ -34,6 +36,12 @@ export function DecisionScreen({ item }: { item: AttentionItem }) {
   const [bundle, setBundle] = useState<Pick[] | undefined>(undefined)
   const p = packet.data ?? null
   const options = p?.options ?? []
+  // 126 §9.2: at L1 the double's option is the pick until the owner touches the card; the packet's `recommended` badge stays.
+  const prediction = usePrediction(item.packet, item.decision, item.id)
+  const doublePick = preselect(prediction, options.map((o) => o.label))
+  useEffect(() => {
+    if (doublePick !== null) setPicked((cur) => (cur === undefined ? doublePick : cur))
+  }, [doublePick])
   const items = p?.items ?? []
   const picks = bundle ?? items.map((it) => it.recommended)
   const choice = picked === undefined ? (p?.recommendation?.option ?? p?.recommended ?? null) : picked
@@ -62,6 +70,7 @@ export function DecisionScreen({ item }: { item: AttentionItem }) {
           <span className="ml-auto tabular-nums">{age(item.at_ms)}</span>
         </div>
         <h1 className="text-xl font-semibold leading-snug md:text-2xl">{p?.question ?? item.title}</h1>
+        <DoubleChip ids={[item.packet, item.decision, item.id]} recommended={recommendedLabel ?? (p?.recommended !== null && p?.recommended !== undefined ? options[p.recommended]?.label : undefined)} className="w-fit" />
       </div>
 
       {rec && (
