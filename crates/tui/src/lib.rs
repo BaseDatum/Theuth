@@ -1297,6 +1297,11 @@ fn print_history(out: &mut impl Write, loaded: &agent::Loaded) -> std::io::Resul
         agent::HistoryEntry::Interrupted { text, .. } => {
             writeln!(out, "── interrupted — resuming ──\n{text}")
         }
+        // 125 C placeholder: W2 decides the headless rendering (125 §7.4).
+        agent::HistoryEntry::Advisory { advisory, .. } => advisory
+            .notes
+            .iter()
+            .try_for_each(|n| writeln!(out, "advisor [{:?}]: {}", n.severity, n.note)),
     })
 }
 

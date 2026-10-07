@@ -5528,6 +5528,7 @@ impl Model {
                             retention: agent::Retention::Durable,
                             activity: Default::default(),
                             cap: *cap,
+                            kind: Default::default(),
                         }),
                     );
                 }
@@ -5955,7 +5956,10 @@ impl Model {
             | AgentEvent::ModelUsageChanged { .. }
             | AgentEvent::SessionOwnerChanged { .. }
             | AgentEvent::SessionClosing { .. }
-            | AgentEvent::PartialDropped { .. } => {}
+            | AgentEvent::PartialDropped { .. }
+            // 125 C placeholder: W2 wires the pill/status line (125 §7.5) and the live card.
+            | AgentEvent::AdvisorChanged { .. }
+            | AgentEvent::AdvisoryAdded { .. } => {}
             // 109 §10.3: the divider and the status-line note.
             AgentEvent::TurnResumed {
                 kind,
@@ -9880,6 +9884,13 @@ fn from_history(h: HistoryEntry, opts: &markdown::Options) -> Vec<Entry> {
             Entry::Divider("interrupted — resuming".to_owned()),
             Entry::Info(text),
         ],
+        // 125 C placeholder: W2 draws `Entry::Advisory` (125 §7.4); until then the
+        // notes are one info line each so nothing the agent saw is silently dropped.
+        HistoryEntry::Advisory { advisory, .. } => advisory
+            .notes
+            .into_iter()
+            .map(|n| Entry::Info(format!("advisor [{:?}]: {}", n.severity, n.note)))
+            .collect(),
     }
 }
 
@@ -12325,6 +12336,7 @@ mod tests {
                     ..SessionActivity::default()
                 },
                 cap: None,
+                kind: Default::default(),
             }
         };
         let busy = info("busy", None, AgentState::Running, 0);
@@ -12446,6 +12458,7 @@ mod tests {
             retention: agent::Retention::Durable,
             activity: Default::default(),
             cap: None,
+            kind: Default::default(),
         };
         let list = vec![
             info("old", AgentState::Idle, Some(600)),
@@ -12516,6 +12529,7 @@ mod tests {
                 child,
                 name: name.into(),
                 cap: None,
+                kind: Default::default(),
             });
         }
         assert!(m.animating() && m.board().len() == 2 && !m.status().contains("agents:"));
@@ -13720,6 +13734,7 @@ mod tests {
             owner: "me".into(),
             epoch: 2,
             here: true,
+            kind: Default::default(),
         }));
         match &m.menu {
             Some(Menu::Sessions { items, .. }) => {
@@ -16613,6 +16628,7 @@ mod tests {
             owner: String::new(),
             epoch: 1,
             here: true,
+            kind: Default::default(),
         }
     }
 
@@ -16963,6 +16979,7 @@ mod tests {
             child,
             name: "worker".into(),
             cap: None,
+            kind: Default::default(),
         }));
         while rx.try_recv().is_ok() {}
         // Root → child → parent: no leave.

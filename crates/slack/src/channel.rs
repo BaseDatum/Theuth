@@ -2556,7 +2556,10 @@ impl Worker {
             | AgentEvent::TurnResumed { .. }
             | AgentEvent::ResumeReport { .. }
             | AgentEvent::TurnSuspended { .. }
-            | AgentEvent::PartialDropped { .. } => {}
+            | AgentEvent::PartialDropped { .. }
+            // 125 C placeholder: the closer posts a concern/blocker line (125 §9).
+            | AgentEvent::AdvisorChanged { .. }
+            | AgentEvent::AdvisoryAdded { .. } => {}
         }
     }
 

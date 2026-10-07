@@ -422,6 +422,9 @@ function historyEntries(h: HistoryEntry): Entry[] {
     // 109 §8.2: the open turn's streamed partial; greyed until the regenerated reply replaces it.
     case "interrupted":
       return [{ id: nextId(), kind: "interrupted", text: h.text }];
+    // 125 C placeholder: W3 maps this to the `advisory` Entry kind (125 §8.3); one info line per note until then.
+    case "advisory":
+      return h.advisory.notes.map((n) => ({ id: nextId(), kind: "info", text: `advisor [${n.severity}]: ${n.note}` }));
   }
 }
 

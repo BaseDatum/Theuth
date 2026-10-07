@@ -241,7 +241,8 @@ fn outline_line(s: &mut String, n: usize, turn: &[HistoryEntry]) {
             }
             HistoryEntry::Error { .. }
             | HistoryEntry::Reasoning { .. }
-            | HistoryEntry::Interrupted { .. } => {}
+            | HistoryEntry::Interrupted { .. }
+            | HistoryEntry::Advisory { .. } => {}
         }
     }
     if let Some(a) = assistant {
@@ -303,6 +304,17 @@ fn turn_text(s: &mut String, n: usize, turn: &[HistoryEntry], with_tools: bool) 
             HistoryEntry::Error { text, .. } => {
                 let _ = writeln!(s, "#{n} error: {}", first_line(text, LINE));
             }
+            // 125 C: the advisor's notes are part of what the advised agent saw.
+            HistoryEntry::Advisory { advisory, .. } => {
+                for note in &advisory.notes {
+                    let _ = writeln!(
+                        s,
+                        "#{n} advisory [{:?}]: {}",
+                        note.severity,
+                        first_line(&note.note, LINE)
+                    );
+                }
+            }
             // Thinking is the model's scratch work, not part of the transcript another session reads;
             // an interrupted partial (109) is for the human only.
             HistoryEntry::Reasoning { .. } | HistoryEntry::Interrupted { .. } => {}
@@ -362,6 +374,7 @@ mod tests {
             owner: String::new(),
             epoch: 1,
             here: true,
+            kind: Default::default(),
         }
     }
 

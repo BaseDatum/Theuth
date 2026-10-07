@@ -1462,6 +1462,7 @@ pub(crate) mod testing {
             owner: String::new(),
             epoch: 1,
             here: true,
+            kind: Default::default(),
         }
     }
 
@@ -1685,6 +1686,7 @@ mod tests {
             retention: tools::Retention::Durable,
             activity: Default::default(),
             cap: None,
+            kind: Default::default(),
         };
         info.activity.state = agent::AgentState::Running;
         let port = FakePort {

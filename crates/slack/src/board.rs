@@ -434,6 +434,7 @@ mod tests {
             retention: agent::Retention::Durable,
             activity: Default::default(),
             cap: None,
+            kind: Default::default(),
         };
         r.seed(&info);
         assert_eq!(

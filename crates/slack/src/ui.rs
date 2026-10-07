@@ -794,6 +794,7 @@ mod tests {
             owner: String::new(),
             epoch: 1,
             here: true,
+            kind: Default::default(),
         }
     }
 
@@ -840,6 +841,7 @@ mod tests {
             retention: agent::Retention::Durable,
             activity: Default::default(),
             cap: None,
+            kind: Default::default(),
         }];
         let models_rows = vec![
             ModelInfo {
