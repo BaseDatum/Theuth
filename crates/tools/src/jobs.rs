@@ -365,6 +365,26 @@ pub struct ListJobs(pub SessionId);
 #[derive(Clone, Debug)]
 pub struct JobCounts(pub Vec<SessionId>);
 
+/// `ask` → `Vec<LiveCountsRow>`: every session with a running job, a live
+/// PTY or a pending reminder (the desktop's sidebar snapshot; live
+/// `JobEvent`s / `ReminderEvent`s keep it current afterwards).
+#[derive(Clone, Copy, Debug)]
+pub struct LiveCounts;
+
+/// One row of [`LiveCounts`]; at least one list is non-empty.
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema, kameo::Reply)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+pub struct LiveCountsRow {
+    /// Owning session.
+    pub session: SessionId,
+    /// Running non-PTY jobs.
+    pub jobs: Vec<JobId>,
+    /// Running PTY jobs.
+    pub ptys: Vec<JobId>,
+    /// Pending reminder ids (`r<n>`).
+    pub reminders: Vec<String>,
+}
+
 /// `ask` → `Result<(), String>`: SIGKILL a running job's process groups.
 /// Err `no such job` | `j3 already finished`.
 #[derive(Clone, Debug)]
@@ -1024,6 +1044,41 @@ impl Message<JobCounts> for Jobs {
                 (jobs + ptys > 0).then_some((id, (jobs, ptys)))
             })
             .collect()
+    }
+}
+
+impl Message<LiveCounts> for Jobs {
+    type Reply = Vec<LiveCountsRow>;
+
+    async fn handle(&mut self, _: LiveCounts, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        fn row(
+            rows: &mut HashMap<SessionId, LiveCountsRow>,
+            session: SessionId,
+        ) -> &mut LiveCountsRow {
+            rows.entry(session).or_insert_with(|| LiveCountsRow {
+                session,
+                jobs: Vec::new(),
+                ptys: Vec::new(),
+                reminders: Vec::new(),
+            })
+        }
+        let mut rows: HashMap<SessionId, LiveCountsRow> = HashMap::new();
+        for (session, s) in &self.sessions {
+            for j in s.jobs.iter().filter(|j| j.exit.is_none()) {
+                let r = row(&mut rows, *session);
+                if j.on_pty {
+                    r.ptys.push(j.id.clone());
+                } else {
+                    r.jobs.push(j.id.clone());
+                }
+            }
+        }
+        for (session, sr) in &self.reminders {
+            for r in &sr.pending {
+                row(&mut rows, *session).reminders.push(r.id.clone());
+            }
+        }
+        rows.into_values().collect()
     }
 }
 
@@ -1871,6 +1926,8 @@ pub(crate) mod tests {
         pub(crate) dir: PathBuf,
         /// Every [`JobEvent`] published on this fixture's bus.
         pub(crate) events: Arc<Mutex<Vec<JobEvent>>>,
+        /// Every [`crate::ReminderEvent`] published on this fixture's bus.
+        pub(crate) reminder_events: Arc<Mutex<Vec<crate::ReminderEvent>>>,
     }
 
     #[derive(kameo::Actor)]
@@ -1879,6 +1936,16 @@ pub(crate) mod tests {
     impl Message<JobEvent> for Recorder {
         type Reply = ();
         async fn handle(&mut self, e: JobEvent, _: &mut Context<Self, Self::Reply>) {
+            lock(&self.0).push(e);
+        }
+    }
+
+    #[derive(kameo::Actor)]
+    struct ReminderRecorder(Arc<Mutex<Vec<crate::ReminderEvent>>>);
+
+    impl Message<crate::ReminderEvent> for ReminderRecorder {
+        type Reply = ();
+        async fn handle(&mut self, e: crate::ReminderEvent, _: &mut Context<Self, Self::Reply>) {
             lock(&self.0).push(e);
         }
     }
@@ -1893,6 +1960,13 @@ pub(crate) mod tests {
             runtime::subscriber_mailbox(),
         );
         rt.subscribe::<Recorder, JobEvent>(&rec).await;
+        let reminder_events = Arc::new(Mutex::new(Vec::new()));
+        let rrec = ReminderRecorder::spawn_with_mailbox(
+            ReminderRecorder(Arc::clone(&reminder_events)),
+            runtime::subscriber_mailbox(),
+        );
+        rt.subscribe::<ReminderRecorder, crate::ReminderEvent>(&rrec)
+            .await;
         let jobs =
             Jobs::spawn_with_mailbox(Jobs::new(rt, grace, timeout), runtime::subscriber_mailbox());
         Fx {
@@ -1900,6 +1974,7 @@ pub(crate) mod tests {
             session: SessionId::new(),
             dir,
             events,
+            reminder_events,
         }
     }
 
@@ -2365,6 +2440,49 @@ pub(crate) mod tests {
             finished(&fx).await,
             (JobExit::Killed, "killed by cancel_job".to_owned(), true)
         );
+    }
+
+    /// LIVE-GLYPHS A3: a running job and a pending reminder make one row;
+    /// once the job has exited and nothing else is live, no row.
+    #[tokio::test]
+    async fn live_counts_rows_running_jobs_and_pending_reminders() {
+        let fx = fixture(Duration::from_millis(100), Duration::from_secs(60)).await;
+        let StartReply::Running { id, .. } = spawn_job(&fx, "sleep 30").await else {
+            panic!("expected Running");
+        };
+        let r = fx
+            .jobs
+            .ask(crate::SetReminder {
+                session: fx.session,
+                message: "x".into(),
+                seconds: 600,
+                activity: None,
+            })
+            .await
+            .unwrap();
+        let rows = fx.jobs.ask(LiveCounts).await.unwrap();
+        assert_eq!(rows.len(), 1, "{rows:?}");
+        assert_eq!(rows[0].session, fx.session);
+        assert_eq!(rows[0].jobs, std::slice::from_ref(&id));
+        assert!(rows[0].ptys.is_empty());
+        assert_eq!(rows[0].reminders, std::slice::from_ref(&r.id));
+        fx.jobs
+            .ask(CancelJob {
+                session: fx.session,
+                id,
+                origin: CancelOrigin::Ui,
+            })
+            .await
+            .unwrap();
+        assert_eq!(settled(&fx, Duration::from_secs(1)).await.state, "killed");
+        fx.jobs
+            .ask(crate::CancelReminder {
+                session: fx.session,
+                id: r.id,
+            })
+            .await
+            .unwrap();
+        assert!(fx.jobs.ask(LiveCounts).await.unwrap().is_empty());
     }
 
     #[tokio::test]

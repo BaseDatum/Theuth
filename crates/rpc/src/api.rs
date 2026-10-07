@@ -95,6 +95,7 @@ use tools::{
     Key, ListTerminals, PtyAttach, PtyChunk, PtyInput, PtyOut, PtyResize, PtyScreen,
     PtyScreenReply, PtyViewport, Retention, TerminalSummary,
 };
+use tools::{LiveCounts, LiveCountsRow};
 use uuid::Uuid;
 use voice::{SpeechId, VoiceStatus};
 
@@ -253,6 +254,10 @@ pub trait Api {
     /// Background jobs of a session (14 §2): id, state, seconds, log path, tail.
     #[method(name = "list_jobs", with_extensions)]
     async fn list_jobs(&self, session: SessionId) -> RpcResult<Vec<JobView>>;
+    /// Every session with a running job, a live PTY or a pending reminder
+    /// (ids only): the desktop's sidebar snapshot after connect / resync.
+    #[method(name = "list_live_counts")]
+    async fn list_live_counts(&self) -> RpcResult<Vec<LiveCountsRow>>;
     /// Kill a running job; `Err` when unknown or already finished.
     #[method(name = "cancel_job", with_extensions)]
     async fn cancel_job(&self, session: SessionId, id: JobId) -> RpcResult<()>;
@@ -2715,6 +2720,10 @@ impl ApiServer for Server {
     async fn list_jobs(&self, ext: &Extensions, session: SessionId) -> RpcResult<Vec<JobView>> {
         self.authorize(ext, session).await?;
         ask::<Jobs, _>(JOBS_ACTOR, ListJobs(session)).await
+    }
+
+    async fn list_live_counts(&self) -> RpcResult<Vec<LiveCountsRow>> {
+        ask::<Jobs, _>(JOBS_ACTOR, LiveCounts).await
     }
 
     /// Every RPC caller is a human surface (TUI `/jobs kill`, the desktop
@@ -6504,6 +6513,24 @@ mod tests {
             serde_json::to_value(roster::attention::AttentionKind::Finished).unwrap(),
             "finished"
         );
+    }
+
+    /// LIVE-GLYPHS A2: the fired reminder reaches the desktop as a tagged
+    /// object; a global subscriber sees it like `JobStarted`.
+    #[test]
+    fn reminder_fired_wire_shape() {
+        let s = SessionId::new();
+        let v = serde_json::to_value(tools::ReminderEvent::Fired {
+            session: s,
+            id: "r1".into(),
+        })
+        .unwrap();
+        assert_eq!(
+            v,
+            serde_json::json!({ "type": "ReminderFired", "session": s, "id": "r1" })
+        );
+        assert!(wanted(&v, None, None));
+        assert!(!is_delta(&v));
     }
 
     /// Private events reach their owner only (51 §4.2): a member's event is
