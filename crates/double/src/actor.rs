@@ -1244,3 +1244,582 @@ impl Message<ListAttention> for Double {
         out
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use parking_lot::Mutex;
+    use tools::{Approval, ApprovalId, RequestApproval, Resolve};
+
+    use super::*;
+    use crate::predict::tests::FakeOracle;
+
+    /// kameo's registry is process-global: the actor tests run one at a time.
+    static SERIAL: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+    /// Collects every `DoublePredicted` / `DoubleAnswered` / `ApprovalResolved` on the bus.
+    #[derive(Default)]
+    struct Probe {
+        predicted: Mutex<Vec<DoublePredicted>>,
+        answered: Mutex<Vec<DoubleAnswered>>,
+        resolved: Mutex<Vec<ApprovalResolved>>,
+    }
+
+    struct ProbeActor(Arc<Probe>);
+
+    impl kameo::Actor for ProbeActor {
+        type Args = Self;
+        type Error = std::convert::Infallible;
+        async fn on_start(a: Self, _: ActorRef<Self>) -> Result<Self, Self::Error> {
+            Ok(a)
+        }
+    }
+
+    impl Message<DoublePredicted> for ProbeActor {
+        type Reply = ();
+        async fn handle(&mut self, m: DoublePredicted, _: &mut Context<Self, ()>) {
+            self.0.predicted.lock().push(m);
+        }
+    }
+
+    impl Message<DoubleAnswered> for ProbeActor {
+        type Reply = ();
+        async fn handle(&mut self, m: DoubleAnswered, _: &mut Context<Self, ()>) {
+            self.0.answered.lock().push(m);
+        }
+    }
+
+    impl Message<ApprovalResolved> for ProbeActor {
+        type Reply = ();
+        async fn handle(&mut self, m: ApprovalResolved, _: &mut Context<Self, ()>) {
+            self.0.resolved.lock().push(m);
+        }
+    }
+
+    struct Harness {
+        rt: Runtime,
+        store: Store,
+        double: ActorRef<Double>,
+        approval: ActorRef<Approval>,
+        probe: Arc<Probe>,
+        _probe_actor: ActorRef<ProbeActor>,
+        _dir: tempfile::TempDir,
+        _guard: tokio::sync::MutexGuard<'static, ()>,
+    }
+
+    impl Harness {
+        async fn new(oracle: Arc<FakeOracle>, grace_secs: u32) -> Self {
+            let guard = SERIAL.lock().await;
+            let dir = tempfile::tempdir().unwrap();
+            let rt = Runtime::new(figment::Figment::new(), dir.path().to_path_buf());
+            let store = Store::open(&crate::store::path(dir.path())).await.unwrap();
+            let cfg = DoubleConfig {
+                enabled: true,
+                ladder: crate::config::Ladder {
+                    grace_secs,
+                    ..Default::default()
+                },
+                ..Default::default()
+            };
+            let approval = Approval::spawn(Approval::new(rt.clone(), Duration::from_secs(30)));
+            approval.register(tools::APPROVAL_ACTOR).unwrap();
+            let probe = Arc::new(Probe::default());
+            let pa = ProbeActor::spawn(ProbeActor(probe.clone()));
+            rt.subscribe::<ProbeActor, DoublePredicted>(&pa).await;
+            rt.subscribe::<ProbeActor, DoubleAnswered>(&pa).await;
+            rt.subscribe::<ProbeActor, ApprovalResolved>(&pa).await;
+            let double = start(&rt, store.clone(), cfg, oracle).await.unwrap();
+            Self {
+                rt,
+                store,
+                double,
+                approval,
+                probe,
+                _probe_actor: pa,
+                _dir: dir,
+                _guard: guard,
+            }
+        }
+
+        /// Seed a class at `rung` (cap 2) so the ladder acts on the next card.
+        async fn seed(&self, key: &str, rung: u8) {
+            self.store
+                .put_class(&ClassRow {
+                    key: key.into(),
+                    kind: CardKind::Approval,
+                    rung,
+                    cap: 2,
+                    mutating_opt_in: false,
+                    n: 0,
+                    stats: serde_json::json!({}),
+                    updated_at: Utc::now(),
+                })
+                .await
+                .unwrap();
+        }
+
+        /// Raise a real approval through the approval actor; returns its id once predicted.
+        async fn raise(&self, session: SessionId, tool: &str, args: serde_json::Value) -> ApprovalId {
+            let before = self.probe.predicted.lock().len();
+            let _reply = self
+                .approval
+                .ask(RequestApproval {
+                    session,
+                    tool: tool.into(),
+                    args,
+                    risk: if tool == "read_file" { Risk::ReadOnly } else { Risk::Mutating },
+                    call_id: None,
+                })
+                .await;
+            // The reply is delegated (it resolves with the decision); the card is on the bus now.
+            let id = wait_for(|| {
+                let p = self.probe.predicted.lock();
+                (p.len() > before).then(|| p[before].question_id.clone())
+            })
+            .await;
+            ApprovalId(uuid::Uuid::parse_str(&id).unwrap())
+        }
+
+        async fn stop(self) {
+            self.double.stop_gracefully().await.unwrap();
+            self.double.wait_for_shutdown().await;
+            self.approval.kill();
+            self.approval.wait_for_shutdown().await;
+        }
+    }
+
+    async fn wait_for<T>(mut f: impl FnMut() -> Option<T>) -> T {
+        for _ in 0..200 {
+            if let Some(v) = f() {
+                return v;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        panic!("condition not met in 5 s");
+    }
+
+    fn oracle(allow: f32) -> Arc<FakeOracle> {
+        Arc::new(FakeOracle::new(vec![allow, 1.0 - allow - 0.05, 0.05], Some(vec![1.0, 0.0, 0.0])))
+    }
+
+    /// L0: a card is predicted (both ledger rows before the chip), the owner answers, the
+    /// label lands as `direct`, the outcome is scored, the class statistics move.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn predicts_then_labels_from_the_bus() {
+        let h = Harness::new(oracle(0.8), 30).await;
+        let s = SessionId::new();
+        let id = h.raise(s, "shell", serde_json::json!({"command": "git push"})).await;
+        let ev = h.probe.predicted.lock()[0].clone();
+        assert_eq!(ev.class, "approval:shell:mutating:git push:root");
+        assert_eq!(ev.choice, ALLOW);
+        assert_eq!(ev.rung, 0);
+        assert_eq!(ev.version, V0);
+        assert!(ev.will_act_at.is_none());
+        let ex = h.store.example_for_question(&id.0.to_string()).await.unwrap().unwrap();
+        assert!(ex.card_text.starts_with("git push\nclass: approval:shell:mutating:git push:root\nrequester: root"));
+        assert_eq!(ex.embedding, Some(vec![1.0, 0.0, 0.0]));
+        let preds = h.store.predictions(&ex.id).await.unwrap();
+        assert_eq!(preds.len(), 2);
+        assert!(preds.iter().any(|p| p.version == BASELINE));
+        assert!(preds.iter().all(|p| p.outcome == Outcome::Unlabelled && !p.acted));
+        // The owner denies: a wrong direct label.
+        assert!(h.approval.ask(Resolve { id, decision: Decision::Deny }).await.unwrap());
+        wait_for(|| (!h.probe.resolved.lock().is_empty()).then_some(())).await;
+        let labels = labels_when(&h.store, &ex.id, 1).await;
+        assert_eq!(labels[0].source, LabelSource::Direct);
+        assert_eq!(labels[0].choice, DENY);
+        assert_eq!(labels[0].weight, 1.0);
+        let preds = h.store.predictions(&ex.id).await.unwrap();
+        assert!(preds.iter().all(|p| p.outcome == Outcome::Wrong));
+        let class = h.store.class(&ev.class).await.unwrap().unwrap();
+        assert_eq!(class.n, 1);
+        let stats = ClassStats::from_json(&class.stats);
+        assert_eq!(stats.histogram.get(DENY), Some(&1));
+        assert_eq!(stats.last_30d.as_ref().unwrap().n, 1);
+        // Status and classes read the same rows.
+        let st = h.double.ask(Status).await.unwrap();
+        assert_eq!(st.kpis.n, 1);
+        assert_eq!(st.baseline.n, 1);
+        assert_eq!(st.kpis.accuracy, 0.0);
+        let cs = h.double.ask(Classes).await.unwrap();
+        assert_eq!(cs.len(), 1);
+        assert_eq!(cs[0].cap_reason.as_deref(), Some("mutating — opt in to allow L2"));
+        let d = h.double.ask(ClassDetail(ev.class.clone())).await.unwrap().unwrap();
+        assert_eq!(d.examples.len(), 1);
+        assert_eq!(d.examples[0].chose.as_deref(), Some(DENY));
+        assert_eq!(d.examples[0].outcome, Outcome::Wrong);
+        assert_eq!(d.curve.len(), 1);
+        h.stop().await;
+    }
+
+    /// The example's labels once at least `n` exist.
+    async fn labels_when(store: &Store, example_id: &str, n: usize) -> Vec<crate::store::LabelRow> {
+        for _ in 0..200 {
+            let l = store.labels(example_id).await.unwrap_or_default();
+            if l.len() >= n {
+                return l;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        panic!("labels for {example_id} not written in 5 s");
+    }
+
+    /// The example row for a card once it exists.
+    async fn example_when(store: &Store, question_id: &str) -> ExampleRow {
+        for _ in 0..200 {
+            if let Ok(Some(e)) = store.example_for_question(question_id).await {
+                return e;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        panic!("example for {question_id} not written in 5 s");
+    }
+
+    /// L2 on a read-only class: the grace runs, expires, the double answers through
+    /// `ResolveBy { by: Double }`; the ledger row is `acted` and was written first.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn acts_at_l2_after_grace() {
+        let h = Harness::new(oracle(0.9), 1).await;
+        h.seed("approval:read_file:read_only:root", 2).await;
+        let s = SessionId::new();
+        let id = h.raise(s, "read_file", serde_json::json!({"path": "/tmp/x"})).await;
+        let ev = h.probe.predicted.lock()[0].clone();
+        assert_eq!(ev.rung, 2);
+        assert!(ev.will_act_at.is_some());
+        // In grace: the inbox shows a take-over row.
+        let items = h.double.ask(ListAttention).await.unwrap();
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].kind, AttentionKind::Double);
+        assert_eq!(items[0].approval, Some(id));
+        assert!(items[0].title.contains("take over"), "{}", items[0].title);
+        wait_for(|| (!h.probe.answered.lock().is_empty()).then_some(())).await;
+        let a = h.probe.answered.lock()[0].clone();
+        assert_eq!(a.question_id, id.0.to_string());
+        assert_eq!(a.choice, ALLOW);
+        wait_for(|| (!h.probe.resolved.lock().is_empty()).then_some(())).await;
+        let r = h.probe.resolved.lock()[0].clone();
+        assert_eq!(r.decision, Decision::Allow);
+        assert!(!r.timed_out);
+        let ex = h.store.example_for_question(&id.0.to_string()).await.unwrap().unwrap();
+        let preds = h.store.predictions(&ex.id).await.unwrap();
+        let live = preds.iter().find(|p| p.version == V0).unwrap();
+        assert!(live.acted);
+        assert!(live.grace_until.is_some());
+        // No direct label: the double's own answer is not the owner's.
+        assert!(h.store.labels(&ex.id).await.unwrap().is_empty());
+        // The inbox now shows "answered for you".
+        let items = h.double.ask(ListAttention).await.unwrap();
+        assert_eq!(items.len(), 1);
+        assert!(items[0].title.starts_with("double answered Allow"), "{}", items[0].title);
+        // Taking over an already-answered card is a no-op.
+        assert!(!h.double.ask(TakeOver(id.0.to_string())).await.unwrap());
+        h.stop().await;
+    }
+
+    /// The invariant (§14): with the prediction row gone, the grace expires and the double
+    /// does NOT act — no acted answer without its prior prediction row.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn never_acts_without_a_prediction_row() {
+        let h = Harness::new(oracle(0.9), 1).await;
+        h.seed("approval:read_file:read_only:root", 2).await;
+        let s = SessionId::new();
+        let id = h.raise(s, "read_file", serde_json::json!({"path": "/tmp/x"})).await;
+        let ex = h.store.example_for_question(&id.0.to_string()).await.unwrap().unwrap();
+        sqlx::query("DELETE FROM predictions WHERE example_id = ?")
+            .bind(&ex.id)
+            .execute(h.store.pool())
+            .await
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(1_600)).await;
+        assert!(h.probe.answered.lock().is_empty());
+        assert!(h.probe.resolved.lock().is_empty());
+        // The card is still the owner's.
+        assert!(h.approval.ask(Resolve { id, decision: Decision::Allow }).await.unwrap());
+        h.stop().await;
+    }
+
+    /// `double_take_over` cancels the grace; the owner's different answer is an override
+    /// (weight 3) and demotes the class one rung at once.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn take_over_cancels_grace_and_override_demotes() {
+        let h = Harness::new(oracle(0.9), 1).await;
+        h.seed("approval:read_file:read_only:root", 2).await;
+        let s = SessionId::new();
+        let id = h.raise(s, "read_file", serde_json::json!({"path": "/tmp/x"})).await;
+        assert!(h.double.ask(TakeOver(id.0.to_string())).await.unwrap());
+        assert!(!h.double.ask(TakeOver(id.0.to_string())).await.unwrap());
+        assert!(!h.double.ask(TakeOver("nope".into())).await.unwrap());
+        tokio::time::sleep(Duration::from_millis(1_300)).await;
+        assert!(h.probe.answered.lock().is_empty(), "the double acted after a take-over");
+        assert!(h.approval.ask(Resolve { id, decision: Decision::Deny }).await.unwrap());
+        let ex = h.store.example_for_question(&id.0.to_string()).await.unwrap().unwrap();
+        let labels = labels_when(&h.store, &ex.id, 1).await;
+        assert_eq!(labels[0].source, LabelSource::Override);
+        assert_eq!(labels[0].weight, 3.0);
+        let class = h.store.class("approval:read_file:read_only:root").await.unwrap().unwrap();
+        assert_eq!(class.rung, 1, "override demotes one rung");
+        let st = h.double.ask(Status).await.unwrap();
+        assert_eq!(st.kpis.undo_rate_per_100, 0.0);
+        // Agreeing after a take-over is a plain direct label and no demotion.
+        let id2 = h.raise(s, "read_file", serde_json::json!({"path": "/tmp/y"})).await;
+        let ev = h.probe.predicted.lock()[1].clone();
+        assert_eq!(ev.rung, 1);
+        assert!(ev.will_act_at.is_none());
+        assert!(h.approval.ask(Resolve { id: id2, decision: Decision::Allow }).await.unwrap());
+        let ex2 = h.store.example_for_question(&id2.0.to_string()).await.unwrap().unwrap();
+        let labels = labels_when(&h.store, &ex2.id, 1).await;
+        assert_eq!(labels[0].source, LabelSource::Direct);
+        h.stop().await;
+    }
+
+    /// Hard caps hold on the live path: a destructive class seeded at L2 behaves as L1; `none`
+    /// winning on an L2 class is L0 behaviour (no grace); a timed-out card gets a timeout label.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn caps_none_and_timeout() {
+        let h = Harness::new(oracle(0.9), 1).await;
+        h.seed("approval:shell:destructive:rm -rf:root", 2).await;
+        let s = SessionId::new();
+        let id = h.raise(s, "shell", serde_json::json!({"command": "rm -rf /tmp/x"})).await;
+        let ev = h.probe.predicted.lock()[0].clone();
+        assert_eq!(ev.class, "approval:shell:destructive:rm -rf:root");
+        assert_eq!(ev.rung, 1);
+        assert!(ev.will_act_at.is_none());
+        let class = h.store.class(&ev.class).await.unwrap().unwrap();
+        assert_eq!((class.cap, class.rung), (1, 1));
+        // `none` on top: a read-only L2 class still does not act.
+        *h.probe.predicted.lock() = Vec::new();
+        h.seed("approval:read_file:read_only:root", 2).await;
+        let id2 = h.raise(s, "read_file", serde_json::json!({"path": "/tmp/x"})).await;
+        let ev2 = h.probe.predicted.lock()[0].clone();
+        assert_eq!(ev2.rung, 2);
+        assert!(ev2.will_act_at.is_some(), "confident → grace");
+        assert!(h.double.ask(TakeOver(id2.0.to_string())).await.unwrap());
+        // Timeout: resolve the first card by its deadline → a weak `timeout` label, outcome unlabelled.
+        h.rt.publish(ApprovalResolved {
+            id,
+            decision: Decision::Deny,
+            timed_out: true,
+        })
+        .await;
+        let ex = h.store.example_for_question(&id.0.to_string()).await.unwrap().unwrap();
+        let labels = labels_when(&h.store, &ex.id, 1).await;
+        assert_eq!(labels[0].source, LabelSource::Timeout);
+        assert_eq!(labels[0].weight, 0.25);
+        let preds = h.store.predictions(&ex.id).await.unwrap();
+        assert!(preds.iter().all(|p| p.outcome == Outcome::Unlabelled));
+        h.stop().await;
+    }
+
+    /// `none` winning at L2 → L0 behaviour (muted chip, no grace).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn none_is_l0_behaviour() {
+        let o = Arc::new(FakeOracle::new(vec![0.1, 0.1, 0.8], None));
+        let h = Harness::new(o, 1).await;
+        h.seed("approval:read_file:read_only:root", 2).await;
+        let s = SessionId::new();
+        let _id = h.raise(s, "read_file", serde_json::json!({"path": "/tmp/x"})).await;
+        let ev = h.probe.predicted.lock()[0].clone();
+        assert_eq!(ev.choice, NONE);
+        assert_eq!(ev.rung, 2, "the chip reports the class's rung");
+        assert!(ev.will_act_at.is_none(), "but nothing acts");
+        tokio::time::sleep(Duration::from_millis(1_300)).await;
+        assert!(h.probe.answered.lock().is_empty());
+        h.stop().await;
+    }
+
+    /// Asks: the owner's choice is read from the `ask_user` tool output when no `questions`
+    /// table exists; a freeform ask is observed only; a multi-question set is observed only.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn ask_labels_from_events_alone() {
+        let h = Harness::new(oracle(0.7), 30).await;
+        let s = SessionId::new();
+        let q = |labels: &[&str]| Question {
+            id: "mode".into(),
+            question: "What now?".into(),
+            options: labels
+                .iter()
+                .map(|l| tools::Choice {
+                    label: (*l).into(),
+                    description: None,
+                })
+                .collect(),
+            recommended: None,
+        };
+        let ask_id = tools::AskId(uuid::Uuid::now_v7());
+        h.rt.publish(AgentEvent::ToolCallStarted {
+            session: s,
+            turn: runtime::TurnId::new(),
+            call_id: "call-1".into(),
+            name: "ask_user".into(),
+            args: serde_json::json!({}),
+        })
+        .await;
+        h.rt.publish(AskRequested {
+            id: ask_id,
+            session: s,
+            questions: vec![q(&["Add to backlog", "Start now", "Discard"])],
+        })
+        .await;
+        let ev = wait_for(|| h.probe.predicted.lock().first().cloned()).await;
+        assert_eq!(ev.class, "ask:b9474647c6a4:root");
+        assert_eq!(ev.kind, CardKind::Ask);
+        assert_eq!(ev.choice, "Add to backlog");
+        assert_eq!(ev.index, Some(0));
+        h.rt.publish(AskResolved {
+            id: ask_id,
+            dismissed: false,
+            timed_out: false,
+        })
+        .await;
+        h.rt.publish(AgentEvent::ToolCallFinished {
+            session: s,
+            turn: runtime::TurnId::new(),
+            call_id: "call-1".into(),
+            output: "mode: Start now\n{\"mode\":\"Start now\"}".into(),
+            is_error: false,
+            files: Vec::new(),
+        })
+        .await;
+        let ex = h.store.example_for_question(&ask_id.0.to_string()).await.unwrap().unwrap();
+        let labels = labels_when(&h.store, &ex.id, 1).await;
+        assert_eq!(labels[0].choice, "Start now");
+        assert_eq!(labels[0].source, LabelSource::Direct);
+        // Freeform: example + no prediction.
+        let free = tools::AskId(uuid::Uuid::now_v7());
+        h.rt.publish(AskRequested {
+            id: free,
+            session: s,
+            questions: vec![q(&[])],
+        })
+        .await;
+        let ex = example_when(&h.store, &free.0.to_string()).await;
+        assert_eq!(ex.class, "ask:freeform:root");
+        assert!(h.store.predictions(&ex.id).await.unwrap().is_empty());
+        assert_eq!(h.probe.predicted.lock().len(), 1);
+        h.stop().await;
+    }
+
+    /// Hindsight: a rewind after the owner's `Allow` adds a 0.5 negative on that choice; a
+    /// cancelled turn within 30 s adds a 0.25 one; neither touches an overridden decision.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn hindsight_negatives() {
+        let h = Harness::new(oracle(0.8), 30).await;
+        let s = SessionId::new();
+        h.rt.publish(AgentEvent::TurnStarted {
+            session: s,
+            turn: runtime::TurnId::new(),
+            text: "push it".into(),
+            model: "m".into(),
+            turn_seq: 1,
+        })
+        .await;
+        let id = h.raise(s, "shell", serde_json::json!({"command": "git push"})).await;
+        assert!(h.approval.ask(Resolve { id, decision: Decision::Allow }).await.unwrap());
+        let ex = h.store.example_for_question(&id.0.to_string()).await.unwrap().unwrap();
+        labels_when(&h.store, &ex.id, 1).await;
+        h.rt.publish(AgentEvent::ContextChanged {
+            session: s,
+            revision: "2".into(),
+            reason: "rewind".into(),
+        })
+        .await;
+        let labels = labels_when(&h.store, &ex.id, 2).await;
+        let hs = labels.iter().find(|l| l.source == LabelSource::HindsightRewind).unwrap();
+        assert_eq!((hs.choice.as_str(), hs.weight), (ALLOW, 0.5));
+        // The memory nets Allow to +0.5 (direct 1.0 − rewind 0.5).
+        let mem = predict::memory(&h.store, "approval:shell:mutating:git push:root").await.unwrap();
+        assert_eq!(mem.len(), 1);
+        assert_eq!(mem[0].votes, vec![(ALLOW.to_owned(), 0.5)]);
+        // Interrupt on a second card.
+        let id2 = h.raise(s, "shell", serde_json::json!({"command": "git push"})).await;
+        assert!(h.approval.ask(Resolve { id: id2, decision: Decision::Allow }).await.unwrap());
+        let ex2 = h.store.example_for_question(&id2.0.to_string()).await.unwrap().unwrap();
+        labels_when(&h.store, &ex2.id, 1).await;
+        h.rt.publish(AgentEvent::TurnFinished {
+            session: s,
+            turn: runtime::TurnId::new(),
+            stop_reason: "cancelled".into(),
+            usage: Default::default(),
+            context: 0,
+        })
+        .await;
+        let labels = labels_when(&h.store, &ex2.id, 2).await;
+        let hi = labels.iter().find(|l| l.source == LabelSource::HindsightInterrupt).unwrap();
+        assert_eq!(hi.weight, 0.25);
+        h.stop().await;
+    }
+
+    /// `pause` stops labels, not predictions; `forget` removes a class's rows; `set_cap`
+    /// clamps to the hard cap.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn pause_forget_set_cap() {
+        let h = Harness::new(oracle(0.8), 30).await;
+        let s = SessionId::new();
+        let st = h.double.ask(Pause(true)).await.unwrap();
+        assert!(st.paused);
+        let id = h.raise(s, "shell", serde_json::json!({"command": "git push"})).await;
+        assert!(h.approval.ask(Resolve { id, decision: Decision::Allow }).await.unwrap());
+        wait_for(|| (!h.probe.resolved.lock().is_empty()).then_some(())).await;
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let ex = h.store.example_for_question(&id.0.to_string()).await.unwrap().unwrap();
+        assert!(h.store.labels(&ex.id).await.unwrap().is_empty(), "paused: no label");
+        let key = "approval:shell:mutating:git push:root";
+        let c = h
+            .double
+            .ask(SetCap {
+                class: key.into(),
+                rung: 3,
+                mutating_opt_in: false,
+            })
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(c.cap, 1, "mutating without opt-in is capped at L1");
+        let c = h
+            .double
+            .ask(SetCap {
+                class: key.into(),
+                rung: 3,
+                mutating_opt_in: true,
+            })
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(c.cap, 2, "opted in: the configured read_only cap (2 in v1)");
+        assert!(c.mutating_opt_in);
+        let n = h
+            .double
+            .ask(Forget(ForgetTarget::Class { key: key.into() }))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(n, 1);
+        assert!(h.store.example(&ex.id).await.unwrap().is_none());
+        let class = h.store.class(key).await.unwrap().unwrap();
+        assert_eq!((class.n, class.rung), (0, 0));
+        assert!(h.double.ask(ClassDetail("nope".into())).await.unwrap().is_err());
+        assert!(h.double.ask(Forget(ForgetTarget::Examples { ids: vec!["x".into()] })).await.unwrap().unwrap() == 0);
+        h.stop().await;
+    }
+
+    /// Republish re-sends `DoublePredicted` for the pending cards only.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn republish_pending() {
+        let h = Harness::new(oracle(0.8), 30).await;
+        let s = SessionId::new();
+        let id = h.raise(s, "shell", serde_json::json!({"command": "git push"})).await;
+        let _id2 = h.raise(s, "shell", serde_json::json!({"command": "git status"})).await;
+        assert!(h.approval.ask(Resolve { id, decision: Decision::Allow }).await.unwrap());
+        wait_for(|| (!h.probe.resolved.lock().is_empty()).then_some(())).await;
+        let before = h.probe.predicted.lock().len();
+        h.double.tell(Republish).await.unwrap();
+        let ev = wait_for(|| {
+            let p = h.probe.predicted.lock();
+            (p.len() == before + 1).then(|| p[before].clone())
+        })
+        .await;
+        assert_eq!(ev.class, "approval:shell:mutating:git status:root");
+        h.stop().await;
+    }
+}
