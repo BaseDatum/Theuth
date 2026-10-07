@@ -350,7 +350,7 @@ pub const CHECKPOINT_DIR: &str = "checkpoint";
 #[derive(Debug)]
 pub enum TrainOutcome {
     /// The candidate dir is populated.
-    Finished(CandidateVersion),
+    Finished(Box<CandidateVersion>),
     /// The pause signal fired or the run cap was hit: the adapter and optimiser state are in
     /// `checkpoint`; the next call with the same `out` dir resumes at `step`.
     Paused {
@@ -433,7 +433,7 @@ pub fn rehearsal<'a>(
 ) -> Vec<&'a BundleRow> {
     let mut by_class: HashMap<&str, Vec<&BundleRow>> = HashMap::new();
     let mut sorted: Vec<&BundleRow> = rows.to_vec();
-    sorted.sort_by(|a, b| b.asked_at.cmp(&a.asked_at));
+    sorted.sort_by_key(|r| std::cmp::Reverse(r.asked_at));
     for r in sorted {
         by_class.entry(r.class.as_str()).or_default().push(r);
     }
@@ -454,7 +454,7 @@ pub fn rehearsal<'a>(
         Rng::new(seed).shuffle(&mut kept);
         kept.truncate(max_rows);
     }
-    kept.sort_by(|a, b| b.asked_at.cmp(&a.asked_at));
+    kept.sort_by_key(|r| std::cmp::Reverse(r.asked_at));
     kept
 }
 
@@ -468,7 +468,7 @@ fn split<'a>(
         return (rows.to_vec(), Vec::new());
     }
     let mut sorted = rows.to_vec();
-    sorted.sort_by(|a, b| b.asked_at.cmp(&a.asked_at));
+    sorted.sort_by_key(|r| std::cmp::Reverse(r.asked_at));
     let cutoff = sorted[0].asked_at - chrono::Duration::days(holdout_days);
     let cap = sorted.len() / 5;
     let n = sorted
@@ -799,11 +799,11 @@ impl TierB {
         if ckpt.is_dir() {
             std::fs::remove_dir_all(&ckpt)?;
         }
-        Ok(TrainOutcome::Finished(CandidateVersion {
+        Ok(TrainOutcome::Finished(Box::new(CandidateVersion {
             id: format!("b-{}", trained_at.format("%Y%m%dT%H%M%SZ")),
             dir: out.to_path_buf(),
             manifest,
-        }))
+        })))
     }
 }
 
@@ -1183,7 +1183,7 @@ mod tests {
             // The ten newest of the class are all there.
             let newest: Vec<&BundleRow> = {
                 let mut v: Vec<&BundleRow> = all.iter().filter(|r| r.class == class).collect();
-                v.sort_by(|a, b| b.asked_at.cmp(&a.asked_at));
+                v.sort_by_key(|r| std::cmp::Reverse(r.asked_at));
                 v.truncate(10);
                 v
             };

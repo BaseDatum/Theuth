@@ -654,7 +654,6 @@ mod tests {
     #[cfg(feature = "train")]
     #[test]
     fn gradient_reaches_every_third_of_wqkv_at_both_ends() {
-        assert!(TRAIN_BUILD);
         for layer in [0, 1] {
             let [q, k, v] = qkv_grad_norms(layer);
             assert!(

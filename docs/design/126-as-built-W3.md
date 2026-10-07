@@ -31,13 +31,13 @@ Branch `feat/126-w3` (C's contract `5cdcbfde` + the four W0 spike commits, base 
 
 | test | what it proves | numbers |
 |---|---|---|
-| `train_b::tests::accumulation_matches_one_full_batch` | 8 micro-batches of 2 (rows of different lengths, so padding differs) give the same loss and the same gradient on every adapter `Var` as one batch of 16 | GATE_ACC |
-| `train_b::tests::pauses_within_one_micro_batch_and_resumes_exactly` | a fake idle clock flips to "active" at the 6th poll (= step 2's second micro-batch): the run returns `Paused { step: 1 }` having called `on_progress` once, the checkpoint holds `adapter.safetensors` + `optim.safetensors` + `state.json`; the resume with `Never` emits steps 2..=8 and finishes at 8 steps; the final adapter equals the uninterrupted run's | GATE_PAUSE |
+| `train_b::tests::accumulation_matches_one_full_batch` | 8 micro-batches of 2 (rows of different lengths, so padding differs) give the same loss and the same gradient on every adapter `Var` as one batch of 16 | loss 1.189217 vs 1.1892169; max relative gradient difference **1.17e-6** (tolerance 1e-4; every var's reference gradient scale > 1e-4, asserted) |
+| `train_b::tests::pauses_within_one_micro_batch_and_resumes_exactly` | a fake idle clock flips to "active" at the 6th poll (= step 2's second micro-batch): the run returns `Paused { step: 1 }` having called `on_progress` once, the checkpoint holds `adapter.safetensors` + `optim.safetensors` + `state.json`; the resume with `Never` emits steps 2..=8 and finishes at 8 steps; the final adapter equals the uninterrupted run's | `Paused { step: 1 }`, `on_progress` seen `[1]`; resume emitted steps 2..=8, `manifest.steps = 8`; max \|Δ adapter\| between resumed and uninterrupted = **0.0** (tolerance 1e-5) |
 | `train_b::tests::owner_activity_fires_on_the_first_poll_after_activity` | `OwnerActivity` returns pause on the first poll after the idle clock drops below 2 s | latency = 1 poll = 1 micro-batch |
-| `train_b::tests::loss_falls_and_manifest_carries_the_gate_metrics` | 40 rows (4 golden) through an on-disk bundle: 29 train / 7 hold-out / 0 unlabelled, 24 steps over 3 epochs, the mean loss of the last 3 steps is below the first 3; manifest round-trips; `rescore_golden` scores the 4 golden rows | GATE_LOSS |
+| `train_b::tests::loss_falls_and_manifest_carries_the_gate_metrics` | 40 rows (4 golden) through an on-disk bundle: 29 train / 7 hold-out / 0 unlabelled, 24 steps over 3 epochs, the mean loss of the last 3 steps is below the first 3; manifest round-trips; `rescore_golden` scores the 4 golden rows | mean loss of steps 1–3 **0.9869 → 0.0022** for steps 22–24; manifest: `train_loss 0.0140, holdout_log_loss 0.2112, accuracy 0.857 (6/7), ece 0.127, temperature 1.62, n_holdout 7`; `rescore_golden` n = 4 |
 | `train_b::tests::rehearsal_caps_per_class_and_total` | 100 rows / 2 classes, per-class 10 → 40 kept with every class's 10 newest; same seed same pick, other seed other pick; total cap 25 → 25 | — |
 | `train_b::tests::local_tier_b_is_off_by_default` | `TierB::local_allowed(DoubleConfig::default()) == false`; `tiers.b.local: true` turns it on | — |
-| `candle::lora::tests::gradient_reaches_every_third_of_wqkv_at_both_ends` (`--features train`) | q, k (through rope) and v of `Wqkv.lora_b` receive gradient at layers 0 and 1 | GATE_GRAD |
+| `candle::lora::tests::gradient_reaches_every_third_of_wqkv_at_both_ends` (`--features train`) | q, k (through rope) and v of `Wqkv.lora_b` receive gradient at layers 0 and 1 | all six norms > 0 (assertion); the default-build twin sees `[0, 0, 0]` |
 | `candle::lora::tests::default_build_cuts_the_graph_silently` (default) | the same forward without `train`: `backward()` is `Ok`, no `Var` has a gradient | — |
 | `candle::lora::tests::adapter_round_trips_through_safetensors`, `adamw_state_round_trips` | save/load of adapter and optimiser state | — |
 
@@ -48,7 +48,7 @@ Branch `feat/126-w3` (C's contract `5cdcbfde` + the four W0 spike commits, base 
    cargo build --release -p theuth --features decision/cuda,decision/train
    ```
    (`nvcc` on `PATH`; the resulting `t` also runs the engine, with the slower `rope_slow` forward — a node is a trainer, not the owner's predictor.)
-2. **Fetch the checkpoint** the bundle names: `t --data-dir <dir>` with `decision.checkpoints.default` (the models downloader writes `<data_dir>/models/decision/{model.safetensors, encoder/config.json, rl_agent_config.json, tokenizer/tokenizer.json}` and the `.sha256` sidecar that `Base::open` reads through `platform::sha256::cached`). `bundle/manifest.json`'s `base_hash` must equal that sha256, else `train-b` refuses (`bundle base_hash … ≠ checkpoint sha …`).
+2. **Put the checkpoint on the node.** The models downloader is the desktop app's (`crates/desktop/src/models.rs`: it walks `models.json` on the release bucket, `https://s3.rwx.dev/theuth/releases/models/models.json`, and writes `<file>.sha256` sidecars); a headless node has no desktop, so either `rsync -a ~/.theuth/models/decision/ node:<data_dir>/models/decision/` from the laptop (sidecars included) or fetch the manifest's `decision/*` entries with `curl` (`model.safetensors`, `encoder/config.json`, `rl_agent_config.json`, `tokenizer/tokenizer.json` — `decision::engine::model_files(Kind::Laya)`). `Base::open` hashes `model.safetensors` through `platform::sha256::cached` (reads the sidecar, else computes once, ~2 s). `bundle/manifest.json`'s `base_hash` must equal that hex, else `train-b` refuses (`bundle base_hash … ≠ checkpoint sha …`).
 3. **Ship the bundle** — `manifest.json` `{ "base_hash", "run_id" }` + `rows.jsonl` (one `BundleRow` per line: `question_id, class, card_text, options[], choice, source, weight, asked_at, golden`) — to the node (W2's `ALPN_DOUBLE` stream, or `scp` for a manual run).
 4. **Run:**
    ```sh
@@ -67,7 +67,7 @@ In-process on the node (W2's `mesh::train_on`): the same `TierB::train(&bundle, 
 
 1. `lora.rs` is not feature-gated (above). The `train` feature gates only the differentiable forward; `TRAIN_BUILD` + the trainer's refusal make the default build safe.
 2. Merged-at-load inference instead of unmerged (above; `model.rs` is not W3's).
-3. `TierB::train` returns `TrainOutcome` (`Finished(CandidateVersion) | Paused { step, checkpoint }`), not `CandidateVersion`: a pause is a normal outcome that must carry the checkpoint path.
+3. `TierB::train` returns `TrainOutcome` (`Finished(Box<CandidateVersion>) | Paused { step, checkpoint }`; boxed for clippy's `large_enum_variant`), not `CandidateVersion`: a pause is a normal outcome that must carry the checkpoint path.
 4. `TierB.batch` is the *effective* batch (default 16, was 8) and `lr` defaults to 1e-4 (was 2e-4); `TierB.local` added. C's config struct gained one field — a `#[serde(default)]` addition, TS-exported, so W4's hand-written `DoubleConfig.ts` needs `local: boolean` on `TierB` (integrator: `just ts-desktop`).
 5. Design §8.1's checkpoint path `~/.theuth/double/runs/<id>/epoch-<n>.safetensors` → `<out>/checkpoint/{adapter.safetensors, optim.safetensors, state.json}` (one checkpoint, overwritten every `checkpoint_every` = 25 steps and at any pause; the run id is the caller's `out` dir). W2's scheduler picks `out`.
 6. The hold-out comes out of the training set (brief said "held-out", design §7.3 scored the candidate on rows it had trained on).
@@ -78,7 +78,16 @@ In-process on the node (W2's `mesh::train_on`): the same `TierB::train(&bundle, 
 
 All through `BUILD_LABEL=126-W3 /Users/Sky.Moore/.theuth/bin/build-lock`, `CARGO_BUILD_JOBS=4`, `CARGO_INCREMENTAL=0`, target `/Users/Sky.Moore/Develop/theuth-126-w3-target`, foreground, no `--release`, no example run, `DECISION_EMBED_TEST` unset.
 
-GATE_TABLE
+| # | command | result |
+|---|---|---|
+| 1 | `cargo test -p double` (dev-dep turns on `decision/train`) | **17 passed, 0 failed** (11 of C's + 6 new), 0 doc-tests, 0 warnings; 0.9 s of test time |
+| 2 | `cargo test -p decision --features train --lib -- --skip parity_ --skip metal` | **88 passed, 0 failed, 4 filtered** (the GLiNER parity tests and the Metal mask test load a checkpoint / create a Metal device — skipped by the machine rule); 0 warnings |
+| 2' | `cargo test -p decision --lib lora` (default features) | 3 passed (`default_build_cuts_the_graph_silently`, the two round-trips) |
+| 3 | `cargo clippy -p decision --features train -p double --all-targets -- -D warnings` | clean (after `large_enum_variant` → `Finished(Box<CandidateVersion>)`, three `sort_by_key`, one constant assert); `--all-targets` covers `examples/lora_step` |
+| 4 | `cargo check -p theuth` | Finished, 0 warnings (`t double train-b` compiles; the default `t` has `TRAIN_BUILD = false` and refuses with exit 2) |
+| — | `cargo fmt -p decision -p double` | run; `theuth` untouched by fmt |
+
+Not run (by the hard rule): the decision crate's integration tests (`tests/model.rs` opens the real checkpoint; `tests/gliner.rs` / `tests/decide.rs` were not run either — `--lib` only), any `--example`, any `--release`, anything on Metal.
 
 ## Open items / hand-offs
 
