@@ -46,3 +46,17 @@ Session `01a116a6-6631-7293-ae91-066d18e9e318` (reads 2/5 done at shoot time; on
 
 - Hover/active colour and the focus ring: Tailwind classes per D1, not screenshotted (headless, no pointer hover).
 - Real Tauri phone build: emulated viewport + touch only.
+
+## Revision 1 (20:55)
+
+Sky: "you didn't get it quite right. clicking or tapping the line should show or hide the collapsed todo block, not display it expanded. clicking on the todo block itself when it's shown expands it like before. small tweak." Branch `fix/todo-handle-r1` (from main d5f76242).
+
+Two per-session flags. `todosShown` (new, default false) is the grabber's state: hidden → only the grabber; shown → the pre-d7b22af0 Collapsible block above the grabber (header `ChevronRight` rotating 90° · Todos · counts · tags · truncated `Now: …` when collapsed; `CollapsibleContent` with the bounded list). `todosExpanded` (unchanged) is the block's disclosure, toggled only by its header (`data-testid="todos-header"`); the header never hides the block. `/todos` toggles `todosShown` (keyboard twin of the grabber), never `todosExpanded`, so re-showing restores the previous expand state. Labels: `handleLabel(shown, detail)` → "Show to-dos · 2/5 done" / "Show to-dos · loading…" / "Hide to-dos"; `aria-expanded={shown}`, `aria-controls` → `todos-<session>` (the Collapsible root, or the note `<p role="status">`).
+
+- `store/sessions.ts:287` field, `:348` action decl, `:616–628` `setTodosShown` (no-op when unchanged); `store/reduce.ts:65` `empty()` default.
+- `components/chat/TodoCard.tsx:51–53` `handleLabel`; `:69–81` `/todos` listener; `:90–135` block (note row / Collapsible); `:139–151` container + grabber.
+- Tests: `TodoCard.test.ts:29–33` label texts; `store/reduce.test.ts:1041–1056` `setTodosShown` per session, `empty().todosShown === false`, repeated value returns the same state object.
+
+Gates (`~/.theuth/bin/build-lock`): `bun run check` 0 errors; `bunx vitest run src/components/chat src/store` 51 files / 557 tests green; `bun run build` ok (5.1 s). Setup's tsc-baseline passed (packages/apps/node_modules cloned, stray nested node_modules removed by the script).
+
+Visual proof (vite :1434 against the live engine 127.0.0.1:53287, read-only, session `01a116a6-…`, 1/4 done at shoot time): `/tmp/todo-handle-r1/{desktop,phone}-{hidden,shown-collapsed,shown-expanded}.png` (1600×1000; 430×932 @2 touch). Hidden: no "Todos" text. Collapsed: one-line row `› Todos · 1/4 done  Now: R1 worktree + bindings setup`, 0 list items. Expanded: chevron rotated, 4 items, `Now:` gone from the header. Grabber rect identical in all three states: desktop `[898,916,64,20]`, phone `[183,848,64,20]`.

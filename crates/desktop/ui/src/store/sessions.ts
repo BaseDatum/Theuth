@@ -283,6 +283,8 @@ export type SessionSlice = {
   todosStale: boolean;
   /** The todo card is expanded (47 §6.1); survives snapshots and session switches within this client. */
   todosExpanded: boolean;
+  /** The todo block is shown above the composer (TODO-HANDLE R1); the grabber and `/todos` toggle it. Default hidden. */
+  todosShown: boolean;
   /** 109 §8.2: the interruption banner above the composer; cleared by the next turn that is not the resumed one. */
   resume?: ResumeBanner;
 };
@@ -342,6 +344,8 @@ type SessionsStore = {
   setTodos(id: string, snapshot: TodoSnapshot | null): void;
   /** Expand or collapse the todo card. */
   setTodosExpanded(id: string, expanded: boolean): void;
+  /** Show or hide the todo block (the grabber's state); independent of `todosExpanded`. */
+  setTodosShown(id: string, shown: boolean): void;
   /** A gap may hide a `TodoChanged`: label the list stale (one session, or every session) until a snapshot confirms it. */
   markTodosStale(id?: string): void;
   resetLagged(): void;
@@ -605,6 +609,19 @@ export const createSessions = (): SessionsApi =>
                 sessions: {
                   ...st.sessions,
                   [id]: { ...cur, todosExpanded: expanded },
+                },
+              };
+        });
+      },
+      setTodosShown(id, shown) {
+        set((st) => {
+          const cur = st.sessions[id] ?? empty(id);
+          return cur.todosShown === shown
+            ? st
+            : {
+                sessions: {
+                  ...st.sessions,
+                  [id]: { ...cur, todosShown: shown },
                 },
               };
         });

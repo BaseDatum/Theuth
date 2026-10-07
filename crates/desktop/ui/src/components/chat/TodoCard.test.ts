@@ -27,7 +27,7 @@ test('no list: unknown says loading or unavailable, a stale empty says so; only 
 })
 
 test('grabber label: hidden names what it reveals (counts or the note), shown just hides', () => {
-  expect(handleLabel(false, '2/5 done · 1 blocked')).toBe('Show to-do list · 2/5 done · 1 blocked')
-  expect(handleLabel(false, note(null, false) as string)).toBe('Show to-do list · loading…')
-  expect(handleLabel(true, '2/5 done')).toBe('Hide to-do list')
+  expect(handleLabel(false, '2/5 done · 1 blocked')).toBe('Show to-dos · 2/5 done · 1 blocked')
+  expect(handleLabel(false, note(null, false) as string)).toBe('Show to-dos · loading…')
+  expect(handleLabel(true, '2/5 done')).toBe('Hide to-dos')
 })
