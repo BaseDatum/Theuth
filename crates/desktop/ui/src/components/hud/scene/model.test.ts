@@ -1,6 +1,6 @@
 import { expect, test } from 'vitest'
 import { sceneFixture, T } from './fixtures'
-import { ARC, arc, arcPoint, C, contextFill, ctxTitle, dueFlows, END_X, FIELD_H, fieldHeight, flowPath, fmtUsd, gaugeEnd, gaugePath, geom, hairlines, HAIRLINES_MAX, hourOf, kTokens, LABEL_GAP, layoutEnds, localDay, needFlows, needsYou, outcomeMix, outcomes, punchCard, RING, ringByActor, ringByRoutine, ringBySession, rings, rng, running, scene, sessionPresence, sessionsToday, shortId, spendPanel, startOfDay, streamLink } from './model'
+import { ARC, arc, arcPoint, C, contextFill, ctxTitle, dueFlows, EARLIER_H, END_X, FIELD_H, fieldHeight, flowPath, fmtUsd, gaugeEnd, gaugePath, geom, hairlines, HAIRLINES_MAX, hourOf, kTokens, LABEL_GAP, layoutEnds, localDay, needFlows, needsYou, outcomeMix, outcomes, punchCard, RING, ringByActor, ringByRoutine, ringBySession, rings, rng, running, scene, sessionPresence, sessionsToday, shortId, spendPanel, staleFan, startOfDay, streamLink } from './model'
 
 // A fixed local evening, as the mockup's clock reads.
 const NOW = new Date(2026, 9, 7, 19, 49, 19).getTime()
@@ -25,6 +25,32 @@ test('hourOf clamps to the window: yesterday sits at 00:00, the future at the ca
   expect(hourOf(NOW - 48 * 3_600_000, NOW)).toBe(0)
   expect(hourOf(NOW + 10 * 3_600_000, NOW, 19.5)).toBe(19.5)
   expect(hourOf(startOfDay(NOW) + 6 * 3_600_000, NOW)).toBe(6)
+})
+
+test('R5 — staleFan: items before midnight fan over −0.3 … 0 oldest furthest, deterministic, in-window hours untouched; the arc labels "earlier" only then', () => {
+  const midnight = startOfDay(NOW)
+  const f = (id: string, time: number) => ({ id, time, hour: hourOf(time, NOW) })
+  const fanned = staleFan([f('a', midnight + 3600e3), f('b', NOW - 26 * 3600e3), f('c', NOW - 50 * 3600e3), f('d', midnight - 1), f('e', midnight)], NOW)
+  const by = Object.fromEntries(fanned.map((x) => [x.id, x.hour]))
+  expect(by.a).toBe(1)
+  expect(by.e).toBe(0)
+  // three stale: c (oldest) → −0.3, b → −0.2, d (newest, 1 ms before midnight) → −0.1; all strictly inside [−EARLIER_H, 0).
+  expect([by.c, by.b, by.d].map((h) => Math.round(h! * 1000) / 1000)).toEqual([-0.3, -0.2, -0.1])
+  for (const h of [by.c, by.b, by.d]) expect(h! >= -EARLIER_H && h! < 0).toBe(true)
+  expect(fanned.map((x) => x.id)).toEqual(['a', 'b', 'c', 'd', 'e']) // order preserved; only hours change
+  expect(staleFan([f('z', midnight - 5), f('y', midnight - 5)], NOW).map((x) => x.hour)).toEqual([-0.15, -0.3]) // ties by id
+  // The scene: the fixture's two stale needs (−26 h, −50 h) separate, the "earlier" label appears; without them it does not.
+  const m = scene(F, NOW)
+  const stale = m.flows.filter((x) => x.time < midnight)
+  expect(stale.map((x) => [x.id, x.hour])).toEqual([
+    ['need:secret:gh-token', -0.3],
+    [`need:blocked:${T('1203')}`, -0.15],
+  ]) // laid out by time ascending: the 50 h-old item first and furthest out
+  expect(new Set(stale.map((x) => x.d)).size).toBe(2)
+  expect(m.arc.earlier).not.toBeNull()
+  expect(m.arc.earlier!.x).toBeLessThan(arcPoint(0, ARC.R - 4)[0])
+  expect(scene({ ...F, attention: F.attention.filter((a) => a.at_ms >= midnight) }, NOW).arc.earlier).toBeNull()
+  expect(arc(NOW, F.routines, F.activityToday).earlier).toBeNull()
 })
 
 test('rings: theuth first, working → waiting → idle, lapsed last; the routine group; the session group (Revision 4); 12 rings on the fixture at hv 812; geometry with two group gaps', () => {

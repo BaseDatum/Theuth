@@ -88,10 +88,26 @@ export const startOfDay = (now: number): number => {
   return d.getTime()
 }
 
-/** Local hours since midnight, fractional; clamped to today's window so older items sit at the arc's 00:00 end. */
+/** Local hours since midnight, fractional; clamped to today's window so older items sit at the arc's 00:00 end (R5: `staleFan` then spreads them before it). */
 export function hourOf(ms: number, now: number, max = 24): number {
   const h = (ms - startOfDay(now)) / HOUR_MS
   return Math.min(max, Math.max(0, h))
+}
+
+/** R5: the "earlier" band — stale items (before today's midnight) fan over the 18 arc-minutes before 00:00 (hours −0.3 … 0). */
+export const EARLIER_H = 0.3
+
+/**
+ * R5: items older than today no longer pile on the 00:00 point. The stale ones (`time < midnight`) are ranked oldest first
+ * (ties by id) and the k-th of n lands at hour −0.3 · (n − k) / n — the oldest furthest out, never 0 itself — so their paths
+ * separate and each is hoverable. Everything else keeps its hour.
+ */
+export function staleFan<F extends { id: string; time: number; hour: number }>(flows: readonly F[], now: number): F[] {
+  const midnight = startOfDay(now)
+  const stale = flows.filter((f) => f.time < midnight).sort((a, b) => a.time - b.time || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))
+  if (stale.length === 0) return [...flows]
+  const hour = new Map(stale.map((f, i) => [f.id, (-EARLIER_H * (stale.length - i)) / stale.length]))
+  return flows.map((f) => (hour.has(f.id) ? { ...f, hour: hour.get(f.id)! } : f))
 }
 
 export const nowHour = (now: number): number => (now - startOfDay(now)) / HOUR_MS
@@ -135,6 +151,8 @@ export type ArcModel = {
   labels: { x: number; y: number; rot: number; text: string }[]
   marks: ArcMark[]
   now: { x1: number; y1: number; x2: number; y2: number; lx: number; ly: number; lrot: number }
+  /** R5: the faint `earlier` label before the band's 00:00 start; `null` unless a stale item is drawn there. */
+  earlier: { x: number; y: number; rot: number } | null
 }
 
 const pad2 = (n: number) => String(n).padStart(2, '0')
@@ -144,8 +162,8 @@ export const hhmm = (ms: number): string => {
 }
 export const hhmmss = (ms: number): string => `${hhmm(ms)}:${pad2(new Date(ms).getSeconds())}`
 
-/** The day band (R ± 18), hour ticks, 2-hourly labels, routine squares (filled = fired today, hollow = due later today) and the NOW marker. */
-export function arc(now: number, routines: readonly ScheduleInfo[], activityToday: readonly ActivityEntry[], g: Geom = geom()): ArcModel {
+/** The day band (R ± 18), hour ticks, 2-hourly labels, routine squares (filled = fired today, hollow = due later today), the NOW marker and (R5) the `earlier` label when `stale`. */
+export function arc(now: number, routines: readonly ScheduleInfo[], activityToday: readonly ActivityEntry[], g: Geom = geom(), stale = false): ArcModel {
   const { R, band } = ARC
   const at = (hour: number, r: number) => arcPoint(hour, r, g)
   const deg = (hour: number) => thetaDeg(hour, g)
@@ -180,7 +198,8 @@ export function arc(now: number, routines: readonly ScheduleInfo[], activityToda
   const [nx1, ny1] = at(nh, R - 22)
   const [nx2, ny2] = at(nh, R + 22)
   const [lx, ly] = at(nh + 0.9, R + 30)
-  return { band: bandPath, ticks, labels, marks, now: { x1: nx1, y1: ny1, x2: nx2, y2: ny2, lx, ly, lrot: deg(nh + 0.9) + 90 } }
+  const [ex, ey] = at(-EARLIER_H - 0.45, R - 4)
+  return { band: bandPath, ticks, labels, marks, now: { x1: nx1, y1: ny1, x2: nx2, y2: ny2, lx, ly, lrot: deg(nh + 0.9) + 90 }, earlier: stale ? { x: ex, y: ey, rot: deg(-EARLIER_H - 0.45) + 90 } : null }
 }
 
 // --------------------------------------------------------------------------------------------------------------- rings
@@ -795,14 +814,15 @@ export function scene(data: SceneData, now: number, hv: number = FIELD_H): Scene
   const { needs, more: needsMore } = needsYou(attention, g)
   const outs = outcomes(today, routines, rs, now)
   const runs = running(tasks, routines, sessions, rs, now)
-  const laid = layoutEnds([...needFlows(needs, rs, now), ...outs.flows, ...runs], g)
+  const fanned = staleFan([...needFlows(needs, rs, now), ...outs.flows, ...runs], now)
+  const laid = layoutEnds(fanned, g)
   const drawn = new Set(laid.flows.map((f) => f.id))
   const inFlight = tasks.filter((t) => t.state === 'doing').length + routines.filter((r) => r.running).length + sessionPresence(sessions, now).filter((r) => r.s.running).length
   const spend = spendPanel(data.spend, agents, now)
   return {
     now,
     hv,
-    arc: arc(now, routines, today, g),
+    arc: arc(now, routines, today, g, fanned.some((f) => f.hour < 0)),
     rings: rs,
     needs,
     needsMore,

@@ -2,7 +2,7 @@ import { Link } from '@tanstack/react-router'
 import { type CSSProperties, type ReactNode, type RefObject, type SVGProps, useEffect, useMemo, useRef, useState } from 'react'
 import { age } from '@/components/tasks/helpers'
 import { cn } from '@/lib/utils'
-import { C, type Color, FIELD_H, fieldHeight, fmtUsd, hhmm, hhmmss, MIX_ORDER, type Hairline, type OutcomeMix, type PunchCard, type Ring, type SceneData, type SceneModel, type SpendOwnerRow, type SpendPanelModel, type Target, actorLabel, ctxTitle, GAUGE_R, gaugeEnd, gaugePath, ringColor, ringDashed, ringDots, SAT_MAX, satPoint, scene, streamColor, streamLink, truncate, W } from './model'
+import { C, type Color, FIELD_H, fieldHeight, type Flow, fmtUsd, hhmm, hhmmss, MIX_ORDER, type Hairline, type Need, type OutcomeMix, type PunchCard, type Ring, type SceneData, type SceneModel, type SpendOwnerRow, type SpendPanelModel, type Target, actorLabel, ctxTitle, GAUGE_R, gaugeEnd, gaugePath, ringColor, ringDashed, ringDots, SAT_MAX, satPoint, scene, streamColor, streamLink, truncate, W } from './model'
 import type { ActivityEntry } from '@/rpc/bindings/ActivityEntry'
 import type { Task } from '@/rpc/bindings/Task'
 
@@ -413,13 +413,13 @@ export function StreamPanel({ activity, className }: { activity: readonly Activi
 
 // ---------------------------------------------------------------------------------------------------------------- scene
 
-/** The ring glyph at (x, y): filled + pulsing when live, hollow when idle, gold when waiting, dashed when lapsed/error, hollow carnelian when a routine failed. */
-export function RingGlyph({ r, x, y }: { r: Ring; x: number; y: number }) {
+/** The ring glyph at (x, y): filled + pulsing when live, hollow when idle, gold when waiting, dashed when lapsed/error, hollow carnelian when a routine failed; `on` (R5) widens the stroke to 2. */
+export function RingGlyph({ r, x, y, on = false }: { r: Ring; x: number; y: number; on?: boolean }) {
   const color = ringColor(r.style)
   const live = r.style === 'live' || r.style === 'waiting'
   return (
     <>
-      <circle cx={x} cy={y} r={13} fill={C.page} stroke={color} strokeWidth={live ? 1.6 : 1.2} strokeDasharray={ringDashed(r.style) ? '3 3' : undefined} />
+      <circle cx={x} cy={y} r={13} fill={C.page} stroke={color} strokeWidth={on ? 2 : live ? 1.6 : 1.2} strokeDasharray={ringDashed(r.style) ? '3 3' : undefined} />
       {live && <circle cx={x} cy={y} r={5} fill={color} className={r.style === 'live' ? 'hud-pulse' : undefined} />}
     </>
   )
@@ -459,7 +459,40 @@ export function Panels({ data, m, now, stream }: { data: SceneData; m: SceneMode
   )
 }
 
-export function Scene({ data, errors = [], now: fixed }: { data: SceneData; errors?: string[]; now?: number }) {
+const needOf = (m: SceneModel, fl: Flow): Need | undefined => (fl.kind === 'need' ? m.needs.find((n) => `need:${n.item.id}` === fl.id) : undefined)
+
+/** One flow's visible marks: the stroke (inert — the hit path takes the pointer), end dot, label, and for a need its dot; `on` = the R5 hovered look. */
+function FlowBody({ fl, need, on }: { fl: Flow; need: Need | undefined; on: boolean }) {
+  if (fl.kind === 'due') {
+    // Revision 1: a due-later routine's faint connector — ring → its hollow square, nothing else.
+    return <path d={fl.d} stroke={fl.color} strokeOpacity={on ? 1 : 0.5} strokeWidth={on ? 1.8 : 1.1} strokeDasharray="3 3" fill="none" pointerEvents="none" />
+  }
+  return (
+    <>
+      <path d={fl.d} stroke={fl.color} strokeOpacity={on ? 1 : 0.95} strokeWidth={on ? 1.8 : 1.1} fill="none" pointerEvents="none" />
+      <circle cx={fl.end[0]} cy={fl.end[1]} r={on ? 2.6 : 1.8} fill={fl.color} />
+      <text x={fl.end[0] + 9} y={fl.end[1] + 3.5} fontSize={10} fill={on ? C.primary : fl.color} fontWeight={on ? 500 : undefined}>
+        {fl.label}
+      </text>
+      {need && (
+        <>
+          <circle cx={need.x} cy={need.y} r={7} fill={C.page} stroke={C.accent} strokeWidth={on ? 2 : 1.2} />
+          <circle cx={need.x} cy={need.y} r={1.6} fill={C.accent} />
+          <text x={need.x - 13} y={need.y + 4} fontSize={10} fill={on ? C.primary : C.accent} fontWeight={on ? 500 : undefined} textAnchor="end">
+            {need.label}
+          </text>
+        </>
+      )}
+    </>
+  )
+}
+
+/**
+ * R5: the hovered (or focused) flow is state, not CSS — it is drawn last (on top), widened, with both its ends emphasised
+ * (the need dot / the via ring on the left, the label on the right) while every other flow dims to 0.35. `hot` seeds the
+ * state for tests and screenshots, as `now` does for the clock.
+ */
+export function Scene({ data, errors = [], now: fixed, hot: seed = null }: { data: SceneData; errors?: string[]; now?: number; hot?: string | null }) {
   const clock = useClock(fixed)
   const minute = clock - (clock % 60_000)
   const field = useRef<HTMLDivElement>(null)
@@ -467,6 +500,9 @@ export function Scene({ data, errors = [], now: fixed }: { data: SceneData; erro
   const m = useMemo(() => scene(data, minute, hv), [data, minute, hv])
   const canvas = useRef<HTMLCanvasElement>(null)
   useField(canvas, m.hairlines, hv)
+  const [hot, setHot] = useState<string | null>(seed)
+  const hotFlow = hot === null ? undefined : m.flows.find((fl) => fl.id === hot)
+  const hotRing = hotFlow?.via?.id ?? null
   const f = m.footer
   const need = f.needYou ?? 0
   const summary = `${f.needYou ?? '—'} need you · ${f.agentsWorking} agents working · ${f.sessionsLive} sessions live · ${f.outcomes} outcomes today · ${f.inFlight} in flight · $${f.month.toFixed(2)} this month`
@@ -485,9 +521,8 @@ export function Scene({ data, errors = [], now: fixed }: { data: SceneData; erro
             T H E U T H
           </text>
           <line x1={1660} y1={14} x2={1840} y2={14} stroke={C.borderStrong} strokeDasharray="2 4" />
-          {need > 0 && <rect x={1852} y={9} width={3} height={10} fill={C.accent} />}
           <text x={1896} y={18} fontSize={10} fill={C.secondary} textAnchor="end">
-            ● {hhmmss(clock)}
+            <tspan fill={need > 0 ? C.accent : C.secondary}>●</tspan> {hhmmss(clock)}
           </text>
           {[
             [14, 54, 14, 40, 28, 40],
@@ -508,6 +543,11 @@ export function Scene({ data, errors = [], now: fixed }: { data: SceneData; erro
               {l.text}
             </text>
           ))}
+          {m.arc.earlier && (
+            <text x={m.arc.earlier.x} y={m.arc.earlier.y} fontSize={8} fill={C.tertiary} textAnchor="middle" transform={`rotate(${m.arc.earlier.rot.toFixed(1)} ${m.arc.earlier.x.toFixed(1)} ${m.arc.earlier.y.toFixed(1)})`}>
+              earlier
+            </text>
+          )}
           {m.arc.marks.map((k, i) => (
             <To key={`${k.name}:${i}`} target={k.link} title={`${k.name} · ${k.filled ? 'fired today' : 'due later today'}`}>
               <rect x={k.x - 2.5} y={k.y - 2.5} width={5} height={5} fill={k.filled ? C.primary : 'none'} stroke={C.primary} strokeWidth={0.8} transform={`rotate(${k.rot.toFixed(1)} ${k.x.toFixed(1)} ${k.y.toFixed(1)})`} />
@@ -521,36 +561,31 @@ export function Scene({ data, errors = [], now: fixed }: { data: SceneData; erro
             now
           </text>
 
-          {/* (c) coloured flows, (d) their needs-you dots */}
-          {m.flows.map((fl) => {
-            if (fl.kind === 'due') {
-              // Revision 1: a due-later routine's faint connector — ring → its hollow square, nothing else.
-              return (
-                <To key={fl.id} target={fl.link} title={fl.title} data-flow={fl.id} className="hud-flow-in">
-                  <path d={fl.d} stroke={fl.color} strokeOpacity={0.5} strokeWidth={1.1} strokeDasharray="3 3" fill="none" />
-                </To>
-              )
-            }
-            const need = fl.kind === 'need' ? m.needs.find((n) => `need:${n.item.id}` === fl.id) : undefined
-            return (
-              <To key={fl.id} target={fl.link} title={fl.title} data-flow={fl.id} className="hud-flow-in">
-                <path d={fl.d} stroke={fl.color} strokeOpacity={0.95} strokeWidth={1.1} fill="none" />
-                <circle cx={fl.end[0]} cy={fl.end[1]} r={1.8} fill={fl.color} />
-                <text x={fl.end[0] + 9} y={fl.end[1] + 3.5} fontSize={10} fill={fl.color}>
-                  {fl.label}
-                </text>
-                {need && (
-                  <>
-                    <circle cx={need.x} cy={need.y} r={7} fill={C.page} stroke={C.accent} strokeWidth={1.2} />
-                    <circle cx={need.x} cy={need.y} r={1.6} fill={C.accent} />
-                    <text x={need.x - 13} y={need.y + 4} fontSize={10} fill={C.accent} textAnchor="end">
-                      {need.label}
-                    </text>
-                  </>
-                )}
-              </To>
-            )
-          })}
+          {/* (c) coloured flows, (d) their needs-you dots. R5: an invisible 8 px hit stroke first in each group (1 px lines are hoverable), the
+              visible stroke on top and inert; hover/focus set `hot` — the rest dim to 0.35 and that flow is drawn AGAIN after them (`FlowBody`
+              below), widened with both ends emphasised. A copy, not a reorder: moving the node would restart its `hud-flow-in` fade. */}
+          {m.flows.map((fl) => (
+            <To
+              key={fl.id}
+              target={fl.link}
+              title={fl.title}
+              data-flow={fl.id}
+              className="hud-flow-in"
+              style={hotFlow && fl !== hotFlow ? { opacity: 0.35 } : undefined}
+              onPointerEnter={() => setHot(fl.id)}
+              onPointerLeave={() => setHot(null)}
+              onFocus={() => setHot(fl.id)}
+              onBlur={() => setHot(null)}
+            >
+              <path d={fl.d} stroke="transparent" strokeWidth={8} fill="none" pointerEvents="stroke" />
+              <FlowBody fl={fl} need={needOf(m, fl)} on={false} />
+            </To>
+          ))}
+          {hotFlow && (
+            <g data-hot={hotFlow.id} pointerEvents="none">
+              <FlowBody fl={hotFlow} need={needOf(m, hotFlow)} on />
+            </g>
+          )}
           {m.flowsMore > 0 && (
             <text x={1500} y={52} fontSize={9} fill={C.tertiary}>
               +{m.flowsMore} more
@@ -558,12 +593,13 @@ export function Scene({ data, errors = [], now: fixed }: { data: SceneData; erro
           )}
 
           {/* (e) rings, (f) their labels, (g) Revision 2: the desk's context gauge on the outer track — length-coded only, faience when live, else the secondary ink;
-              (h) Revision 4: a root session's live subagents as satellites on r 23 from 3 o'clock clockwise, 8 then `+N` */}
+              (h) Revision 4: a root session's live subagents as satellites on r 23 from 3 o'clock clockwise, 8 then `+N`; R5: the hovered flow's via ring (`data-ring`) is emphasised — stroke 2, labels 500. */}
           {m.rings.map((r) => {
             const sats = r.children ?? []
             const lx = r.x - (sats.length > 0 ? 30 : 22)
+            const on = r.id === hotRing
             return (
-              <To key={r.id} target={r.link} title={`${r.name} · ${r.sub || r.style}${r.ctx ? ` · ${ctxTitle(r.ctx)}` : ''}`}>
+              <To key={r.id} target={r.link} title={`${r.name} · ${r.sub || r.style}${r.ctx ? ` · ${ctxTitle(r.ctx)}` : ''}`} data-ring={r.id}>
                 {r.ctx && (
                   <g data-gauge={r.id}>
                     <circle cx={r.x} cy={r.y} r={GAUGE_R} fill="none" stroke={C.border} strokeWidth={1} />
@@ -588,11 +624,11 @@ export function Scene({ data, errors = [], now: fixed }: { data: SceneData; erro
                     )}
                   </g>
                 )}
-                <RingGlyph r={r} x={r.x} y={r.y} />
-                <text x={lx} y={r.y - 1} fontSize={11} fill={r.style === 'lapsed' ? C.tertiary : C.primary} textAnchor="end">
+                <RingGlyph r={r} x={r.x} y={r.y} on={on} />
+                <text x={lx} y={r.y - 1} fontSize={11} fill={r.style === 'lapsed' && !on ? C.tertiary : C.primary} fontWeight={on ? 500 : undefined} textAnchor="end">
                   {r.name}
                 </text>
-                <text x={lx} y={r.y + 12} fontSize={9} fill={ringColor(r.style)} textAnchor="end">
+                <text x={lx} y={r.y + 12} fontSize={9} fill={ringColor(r.style)} fontWeight={on ? 500 : undefined} textAnchor="end">
                   {r.sub}
                 </text>
               </To>

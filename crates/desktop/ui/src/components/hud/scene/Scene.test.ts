@@ -111,7 +111,8 @@ test('Scene draws the fixture: rings, needs, flows, panels, links, tokens only',
   expect(html).toContain(`>${F.activity.length}/50<`)
   // Text: the top bar, the clock, the NEEDS YOU table, footer numbers, panel titles.
   expect(html).toContain('T H E U T H')
-  expect(html).toContain('● 19:49:19')
+  expect(html).toContain('<tspan fill="var(--fg-accent)">●</tspan> 19:49:19') // R5: the dot is gold while something needs you; no tick behind the digits
+  expect(html).not.toContain('<rect x="1852"')
   expect(html).toContain('>06<')
   expect(html).toContain('06 NEED YOU')
   expect(html).toContain('>9 OUTCOMES TODAY<')
@@ -195,7 +196,63 @@ test('Scene while loading shows — not 00; a loaded empty inbox is quiet and te
   expect(quiet).toMatch(/fill="var\(--fg-tertiary\)"[^>]*>Nothing needs you</)
   expect(quiet).toMatch(/fill="var\(--fg-tertiary\)"[^>]*>00 NEED YOU</)
   expect(quiet).toMatch(/<text x="430"[^>]*fill="var\(--fg-tertiary\)"[^>]*>00</)
+  expect(quiet).toContain('<tspan fill="var(--fg-secondary)">●</tspan> 19:49:19') // R5: nothing needs you → the dot is the clock's own ink
   expect(quiet).not.toContain('<rect x="1852"')
+})
+
+test('R5 — hover: every flow (due too) starts with an 8 px transparent hit stroke and an inert visible stroke; nothing is hot by default', () => {
+  const html = renderToStaticMarkup(createElement(Scene, { data: F, now: NOW }))
+  const m = scene(F, NOW)
+  const groups = [...html.matchAll(/<g data-flow="([^"]+)"[^>]*>(.*?)<\/g>/g)]
+  expect(groups).toHaveLength(m.flows.length)
+  for (const [, , body] of groups) {
+    expect(body).toMatch(/^<title>[^<]*<\/title>(<a href="[^"]*">)?<path d="[^"]+" stroke="transparent" stroke-width="8" fill="none" pointer-events="stroke"><\/path><path d="[^"]+" stroke="var\(--[^"]+\)" stroke-opacity="0\.(95|5)" stroke-width="1.1"[^>]*pointer-events="none">/)
+  }
+  expect(html).not.toContain('data-hot=')
+  expect(html).not.toContain('opacity:0.35')
+  expect(html).not.toContain('stroke-width="1.8"')
+})
+
+test('R5 — hover: the hot flow is drawn again after every flow — stroke 1.8 at opacity 1, end dot 2.6, label primary 500, its need dot ring 2 and id brightened —, its via ring is emphasised, every other flow dims to 0.35; a hot outcome emphasises its ring, not a dot', () => {
+  const m = scene(F, NOW)
+  const need = m.flows.find((f) => f.id === 'need:approval:ap-4821')!
+  const html = renderToStaticMarkup(createElement(Scene, { data: F, now: NOW, hot: need.id }))
+  // All flows still in model order, each keyed once; the copy is the last flow-shaped group and takes no pointer.
+  expect([...html.matchAll(/<g data-flow="([^"]+)"/g)].map((x) => x[1])).toEqual(m.flows.map((f) => f.id))
+  const hotAt = html.indexOf(`<g data-hot="${need.id}" pointer-events="none">`)
+  expect(hotAt).toBeGreaterThan(html.lastIndexOf('<g data-flow="'))
+  const hot = /<g data-hot="[^"]+" pointer-events="none">(.*?)<\/g>/.exec(html)![1]!
+  expect(hot).toMatch(/^<path d="[^"]+" stroke="var\(--fg-accent\)" stroke-opacity="1" stroke-width="1.8" fill="none" pointer-events="none"><\/path>/)
+  expect(hot).toContain(`<circle cx="${need.end[0]}" cy="${need.end[1]}" r="2.6" fill="var(--fg-accent)">`)
+  expect(hot).toMatch(new RegExp(`<text x="${need.end[0] + 9}"[^>]*fill="var\\(--fg-primary\\)" font-weight="500">${need.label}</text>`))
+  expect(hot).toMatch(/<circle[^>]*r="7" fill="var\(--bg-page\)" stroke="var\(--fg-accent\)" stroke-width="2">/)
+  expect(hot).toMatch(/<text[^>]*fill="var\(--fg-primary\)" font-weight="500" text-anchor="end">builder<\/text>/)
+  expect(hot).not.toContain('stroke="transparent"')
+  // The original stays untouched under the copy (its hit path keeps the pointer); every other flow is dimmed inline.
+  const own = new RegExp(`<g data-flow="${need.id.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}"([^>]*)>`).exec(html)![1]!
+  expect(own).not.toContain('opacity')
+  expect(count(html, /<g data-flow="[^"]+" class="hud-flow-in" style="opacity:0.35">/g)).toBe(m.flows.length - 1)
+  // The left end: builder's ring (the item's `via`) gets stroke 2 and 500-weight labels; no other ring does.
+  expect(need.via?.id).toBe('ring:agent:builder')
+  const ring = (id: string) => new RegExp(`<g data-ring="${id}">(.*?)</a></g>`).exec(html)![1]!
+  expect(ring('ring:agent:builder')).toMatch(/<circle[^>]*r="13" fill="var\(--bg-page\)" stroke="var\(--fg-accent\)" stroke-width="2">/)
+  expect(ring('ring:agent:builder')).toMatch(/font-weight="500" text-anchor="end">builder<\/text>/)
+  expect(ring('ring:agent:ops-desk')).not.toContain('font-weight')
+  expect(count(html, /font-weight="500"/g)).toBe(4) // hot label, hot need id, builder's name and sub
+  // A hot outcome: ring emphasis, no need dot in the copy; a hot due connector: dashed, 1.8 at opacity 1.
+  const out = m.flows.find((f) => f.kind === 'outcome' && f.via !== null)!
+  const h2 = renderToStaticMarkup(createElement(Scene, { data: F, now: NOW, hot: out.id }))
+  const hot2 = /<g data-hot="[^"]+" pointer-events="none">(.*?)<\/g>/.exec(h2)![1]!
+  expect(hot2).not.toContain('r="7"')
+  expect(hot2).toContain('stroke="var(--status-success-fg)" stroke-opacity="1" stroke-width="1.8"')
+  expect(new RegExp(`<g data-ring="${out.via!.id}">(.*?)</a></g>`).exec(h2)![1]).toContain('stroke-width="2"')
+  const due = m.flows.find((f) => f.kind === 'due')!
+  const h3 = renderToStaticMarkup(createElement(Scene, { data: F, now: NOW, hot: due.id }))
+  expect(/<g data-hot="[^"]+" pointer-events="none">(.*?)<\/g>/.exec(h3)![1]).toMatch(/^<path d="[^"]+" stroke="var\(--fg-tertiary\)" stroke-opacity="1" stroke-width="1.8" stroke-dasharray="3 3" fill="none" pointer-events="none"><\/path>$/)
+  // Unknown id: nothing is hot, nothing dims.
+  const h4 = renderToStaticMarkup(createElement(Scene, { data: F, now: NOW, hot: 'need:gone' }))
+  expect(h4).not.toContain('data-hot=')
+  expect(h4).not.toContain('opacity:0.35')
 })
 
 test('SceneCompact: pills, needs rows, ring list, four SVG panels + the stream box; SceneSwitch picks it under md and Scene above', () => {
