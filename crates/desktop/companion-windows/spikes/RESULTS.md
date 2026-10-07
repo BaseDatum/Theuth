@@ -224,3 +224,26 @@ processes; the hook callback already arrives on the hooking thread's message loo
 - **Recommendation**: build on 1.8 (toasts verified, no 2.x-only API needed by the spikes); treat 2.5.1 as a
   drop-in that compiles but needs the same five-file fix for toasts and a re-test against WindowsAppSDK#6821 on
   the target OS build.
+
+## Addendum A2 — toasts on Windows App SDK 2.5.1 with the five runtime-MSIX files (decides the 2.x question)
+
+Both 2.5.1 builds re-run on build-B at 21:21–21:22 after the five files (`Microsoft.WindowsAppRuntime.Insights.Resource.dll`,
+`WindowsAppRuntime.DeploymentExtensions.OneCore.dll`, `WindowsAppRuntime.png`,
+`WindowsAppSdk.AppxDeploymentExtensions.Desktop.dll`, `…Desktop-EventLog-Instrumentation.dll`) were extracted from
+**2.5.1's own** `microsoft.windowsappsdk.runtime\2.5.1\tools\MSIX\win10-x64\Microsoft.WindowsAppRuntime.2.msix`
+into the output directory:
+
+| build | Register() | toasts on screen | Approve → NotificationInvoked |
+|---|---|---|---|
+| (a) full 2.5.1 meta (`-p:WasdkLine=2`, bin-wasdk2, 519 files / 229 MB) | `Register() ok`, `Setting = Enabled` | both visible (normal + urgent with the "!" badge; urgent consent toast raised) — `Show(normal) ok id=63`, `Show(urgent) ok id=64` | `NotificationInvoked thread=3 argument='action=approve;spike=s2-normal' {action=approve, spike=s2-normal}` |
+| (b) trimmed 2.5.1 (`-p:WasdkLine=2 -p:WasdkSplit=true`, bin-split2, 452 files / 169.6 MB, no onnxruntime/DirectML; Base 2.0.4 + Foundation 2.3.12 + WinUI 2.3.9 + InteractiveExperiences 2.1.9, NU1603 warning for 2.1.8) | `Register() ok`, `Setting = Enabled` | both visible — `Show(normal) ok id=73`, `Show(urgent) ok id=74` | `NotificationInvoked thread=3 argument='action=approve;spike=s2-normal' {action=approve, spike=s2-normal}` |
+
+So microsoft/WindowsAppSDK#6821 ("2.x unpackaged toasts never display") did **not** reproduce on this box with
+either 2.5.1 build once the five files were present; the only 2.x defect found is the missing payload copy for
+self-contained output (also missing for any component-only reference on 1.8). Every API the spikes use compiled
+unchanged on 2.5.1 (`PreferredMinimumWidth/Height`, `AppNotification*`, `AppInstance`, `OverlappedPresenter`,
+`DisplayArea`, `AppWindow.Show(bool)`), and S0 ran. **Verdict for the design**: 2.5.1 is usable for the companion
+provided the build adds a step that extracts those five entries from the runtime MSIX (`tools\MSIX\win10-x64\…msix`
+is a zip) into the output — the same step the trimmed package set needs on either line; without it toasts fail with
+0x8007007E. Side observation: each distinct exe path registers a new AUMID and the urgent scenario asks the user
+once per AUMID ("Important Notification Request"), so keep the install path stable.
