@@ -24,6 +24,8 @@
     <PublishTrimmed>false</PublishTrimmed>
     <TreatWarningsAsErrors>false</TreatWarningsAsErrors>
     <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
+    <!-- Variant builds use -p:BaseOutputPath=bin-x\ -p:BaseIntermediateOutputPath=obj-x\; keep every tree out of the globs. -->
+    <DefaultItemExcludes>$(DefaultItemExcludes);bin/**;obj/**;bin-*/**;obj-*/**</DefaultItemExcludes>
   </PropertyGroup>
   <!-- Windows App SDK line switch (addendum A1):
          default / -p:WasdkLine=1 → 1.8.260317003 (1.8 servicing, March 2026)
