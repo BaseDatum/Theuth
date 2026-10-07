@@ -9,14 +9,15 @@
 //! and the generated iOS bridge both enter at [`run`].
 
 mod commands;
-#[cfg(desktop)]
-mod island;
 #[cfg(target_os = "ios")]
 mod ios_windowing;
+#[cfg(desktop)]
+mod island;
 #[cfg(desktop)]
 mod launch;
 #[cfg(desktop)]
 mod models;
+mod pages;
 #[cfg(desktop)]
 mod point;
 #[cfg(desktop)]
@@ -31,7 +32,10 @@ pub fn run() {
     desktop::webkit_no_gpu_workaround();
     let builder = tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
-        .plugin(tauri_plugin_notification::init());
+        .plugin(tauri_plugin_notification::init())
+        // 120 §4.2: inline sandboxed pages, on both containers.
+        .register_uri_scheme_protocol(pages::SCHEME, pages::handler)
+        .manage(pages::Pages::default());
     #[cfg(desktop)]
     let builder = desktop::configure(builder);
     #[cfg(mobile)]
@@ -77,7 +81,11 @@ mod mobile {
             .plugin(tauri_plugin_barcode_scanner::init())
             .plugin(tauri_plugin_deep_link::init())
             .plugin(tauri_plugin_haptics::init())
-            .invoke_handler(tauri::generate_handler![commands::connection])
+            .invoke_handler(tauri::generate_handler![
+                commands::connection,
+                crate::pages::page_put,
+                crate::pages::page_drop
+            ])
             .setup(|app| {
                 let builder =
                     WebviewWindowBuilder::new(app, "main", WebviewUrl::App("index.html".into()))
@@ -119,12 +127,14 @@ mod mobile {
     pub(super) fn on_event(app: &AppHandle, event: RunEvent) {
         match event {
             RunEvent::SceneRequested { scene, .. } => crate::ios_windowing::dismiss(app, &scene),
-            RunEvent::WindowEvent { event: WindowEvent::Suspended | WindowEvent::Focused(false), .. } => {
-                background::hold()
-            }
-            RunEvent::WindowEvent { event: WindowEvent::Resumed | WindowEvent::Focused(true), .. } => {
-                background::release()
-            }
+            RunEvent::WindowEvent {
+                event: WindowEvent::Suspended | WindowEvent::Focused(false),
+                ..
+            } => background::hold(),
+            RunEvent::WindowEvent {
+                event: WindowEvent::Resumed | WindowEvent::Focused(true),
+                ..
+            } => background::release(),
             _ => {}
         }
     }
@@ -285,6 +295,8 @@ mod desktop {
             point::point_refuse,
             point::point_configure,
             point::overlay_ensure,
+            crate::pages::page_put,
+            crate::pages::page_drop,
         ]);
         // The native menu bar is macOS's (⌘C/⌘V under Accessory policy); GTK would paint it inside the window.
         #[cfg(target_os = "macos")]
