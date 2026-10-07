@@ -215,7 +215,7 @@ pub struct Agents {
     // ponytail: process-local, lost on restart; persist beside the row if retries must survive engine restarts.
     seen: HashMap<InputId, (SessionId, Instant)>,
     /// Unanswered approvals per session: `(id, tool)` (design doc 19 §2.1).
-    approvals: HashMap<SessionId, (ApprovalId, String)>,
+    approvals: HashMap<SessionId, (ApprovalId, String, u64)>,
     /// Session search index (design doc 26), rebuilt after the rows change.
     search: Arc<search::Cache>,
     /// Registered nodes (32 §6.5); shared with the `spawn_subagent` tool's description.
@@ -266,6 +266,8 @@ struct Wait {
     tx: oneshot::Sender<PeerReceipt>,
     /// The route's generation at admission; a revoked one expires the wait.
     generation: Generation,
+    /// 130 E2: ms since epoch the wait began (`SessionActivity.waiting_since_ms`).
+    since_ms: u64,
 }
 
 /// A live session actor plus its peer identity.
@@ -1400,6 +1402,7 @@ impl Agents {
                 to,
                 tx,
                 generation,
+                since_ms: Utc::now().timestamp_millis().max(0) as u64,
             },
         );
         Ok(rx)
@@ -2188,7 +2191,10 @@ impl Message<ApprovalRequested> for Agents {
 
     async fn handle(&mut self, ev: ApprovalRequested, _: &mut Context<Self, Self::Reply>) {
         let session = ev.session;
-        self.approvals.insert(session, (ev.id, ev.tool));
+        self.approvals.insert(
+            session,
+            (ev.id, ev.tool, Utc::now().timestamp_millis().max(0) as u64),
+        );
         self.network_approval(session, true).await;
     }
 }
@@ -2200,10 +2206,10 @@ impl Message<ApprovalResolved> for Agents {
         let sessions: Vec<SessionId> = self
             .approvals
             .iter()
-            .filter(|(_, (id, _))| *id == ev.id)
+            .filter(|(_, (id, ..))| *id == ev.id)
             .map(|(s, _)| *s)
             .collect();
-        self.approvals.retain(|_, (id, _)| *id != ev.id);
+        self.approvals.retain(|_, (id, ..)| *id != ev.id);
         for s in sessions {
             self.network_approval(s, false).await;
         }
@@ -5227,10 +5233,21 @@ impl Agents {
                     .map(|s| s.updated_at);
             }
             let (jobs, ptys) = counts.get(&id).copied().unwrap_or_default();
+            let state = self.state_of(id, parent, &names);
+            // 130 E2: how long the user (or a peer) has been waited on.
+            let waiting_since_ms = match &state {
+                AgentState::Approval { .. } => self.approvals.get(&id).map(|(.., at)| *at),
+                AgentState::Awaiting { .. } => self
+                    .waits
+                    .values()
+                    .find(|w| w.session == id)
+                    .map(|w| w.since_ms),
+                _ => None,
+            };
             out.insert(
                 id,
                 SessionActivity {
-                    state: self.state_of(id, parent, &names),
+                    state,
                     last_active,
                     turn_started_at,
                     jobs,
@@ -5238,6 +5255,7 @@ impl Agents {
                     children: children.get(&id).copied().unwrap_or_default(),
                     asks: None,
                     live: self.live(id).is_some(),
+                    waiting_since_ms,
                 },
             );
         }
@@ -5265,7 +5283,7 @@ impl Agents {
         parent: Option<SessionId>,
         names: &HashMap<SessionId, &str>,
     ) -> AgentState {
-        if let Some((_, tool)) = self.approvals.get(&id) {
+        if let Some((_, tool, _)) = self.approvals.get(&id) {
             AgentState::Approval { tool: tool.clone() }
         } else if let Some(w) = self.waits.values().find(|w| w.session == id) {
             // The awaited peer by its convenience name when it has one.
@@ -10925,6 +10943,40 @@ pub(crate) mod tests {
             "a cold row falls back to `updated_at`"
         );
         assert!(act.turn_started_at.is_none());
+    }
+
+    /// 130 E2: `waiting_since_ms` is the approval's arrival while the state is
+    /// `approval`, gone once it resolves, and on the wire as a plain number.
+    #[tokio::test]
+    async fn activity_waiting_since_follows_the_pending_approval() {
+        let mut a = agents().await;
+        let (root, _) = a.session(None, None, None, (None, None)).await.unwrap();
+        a.approvals.insert(
+            root,
+            (ApprovalId(uuid::Uuid::now_v7()), "bash".into(), 4_200),
+        );
+        let act = a.assemble_activity(&[root], &HashMap::new()).await;
+        assert_eq!(
+            act[&root].state,
+            AgentState::Approval {
+                tool: "bash".into()
+            }
+        );
+        assert_eq!(act[&root].waiting_since_ms, Some(4_200));
+        let v = serde_json::to_value(&act[&root]).unwrap();
+        assert_eq!(v["waiting_since_ms"], 4_200);
+        a.approvals.clear();
+        let act = a.assemble_activity(&[root], &HashMap::new()).await;
+        assert_eq!(
+            act[&root].waiting_since_ms, None,
+            "cleared when the state leaves"
+        );
+        let pre130: SessionActivity =
+            serde_json::from_value(serde_json::json!({ "state": { "state": "idle" }, "last_active": null, "turn_started_at": null, "jobs": 0, "ptys": 0, "children": 0, "asks": null, "live": false })).unwrap();
+        assert_eq!(
+            pre130.waiting_since_ms, None,
+            "an older engine's row still parses"
+        );
     }
 
     /// WAKE-LIVE-CHILD D4: `ActivityOf` answers exactly the asked ids — a cold
