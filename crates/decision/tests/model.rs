@@ -135,8 +135,15 @@ fn readme_questions_match_the_reference() {
 
 /// 126 §7.2: `run_with(rows, true)` returns the pooled `[CLS]` state per row, `(hidden,)` =
 /// 1024 for laya base, finite, and different for different questions; `run` leaves it `None`.
+/// Loads the real checkpoint: off unless `DECISION_EMBED_TEST=1` (a shared laptop cannot
+/// afford a Metal load per gate; the per-family gating is covered without a model by
+/// `engine::tests::embedding_follows_the_family_gate`).
 #[test]
 fn pooled_embedding_is_hidden_sized_and_opt_in() {
+    if std::env::var_os("DECISION_EMBED_TEST").is_none() {
+        eprintln!("skipped: set DECISION_EMBED_TEST=1 to load the checkpoint");
+        return;
+    }
     let Some(dir) = model_dir() else {
         return;
     };

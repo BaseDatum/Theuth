@@ -825,7 +825,7 @@ mod tests {
         assert_eq!(cfg.device, Device::Cpu);
         assert!(!cfg.device.metal());
         // A listed family patches its default row; a fully specified new one is added.
-        assert_eq!(cfg.families.len(), 9);
+        assert_eq!(cfg.families.len(), 15);
         assert_eq!(cfg.families["meeting.kind"].mode, Mode::Active);
         assert_eq!(cfg.families["meeting.kind"].tau_top, 0.7);
         assert_eq!(cfg.families["meeting.kind"].budget, Duration::from_secs(1));
@@ -1004,7 +1004,7 @@ mod tests {
         // A partial unknown family is neither inserted nor an error.
         let cfg: DecisionConfig =
             serde_yaml::from_str("families:\n  nobody: { mode: active }\n").unwrap();
-        assert_eq!(cfg.families.len(), 8);
+        assert_eq!(cfg.families.len(), 14);
         // 57 §11: `train` patches like `mode`, default false everywhere.
         assert!(cfg.families.values().all(|g| !g.train));
         let train: DecisionConfig =
