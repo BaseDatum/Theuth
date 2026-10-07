@@ -56,7 +56,7 @@ agent:
   compact_style: summary               # summary | cut | snap
   compaction: {tail_tokens: 40000, image_tokens: 30000, target_tokens: 120000}  # post-compaction CEILINGS (70 COMPACT-SIZE, 81 COMPACT-FLOOR): verbatim tail, snap archive images, head+tail total; the effective tail/head budgets are 35 %/25 % of the headroom over the trigger, capped by these
   communication: false                 # model-to-model communication (50): spawn_subagent, discover_peers, send_message; off is a ceiling; `/communication on always` writes true
-  subagents: {model: null, effort: null, max_depth: 1, max_concurrent: 8, max_runtime_secs: 600, reply_timeout_secs: 120}
+  subagents: {model: null, effort: null, max_depth: 1, max_concurrent: 16, max_concurrent_external: 32, max_runtime_secs: 600, reply_timeout_secs: 120}  # the two caps are per orchestrator tree
   knowledge: {hint_limit: 5, hint_rounds: 4, harvest_every: 3, harvest_max: 8}
 tools:
   policy: {read_only: allow, mutating: ask, destructive: ask}   # allow | ask | deny per risk

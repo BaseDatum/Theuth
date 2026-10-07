@@ -553,10 +553,13 @@ not run), and `max_total_sleep = 600 s` per checkout (per turn, like
 `max_suspensions`) rejects the sleep that would cross it (§15).
 
 Pool: `PoolConfig::subprocess(&monty_bin)` with `min_processes 1`,
-`max_processes = subagents.max_concurrent + 1`, `request_timeout Some(60
-s)`, `max_checkouts_per_worker Some(100)`; `Pool::new(cfg).await` in
+`max_processes = repl::REPL_POOL_MAX` (48, a harness-wide ceiling decoupled
+from the per-tree child caps of 01 §2.6 since 2026-10-07), `request_timeout
+Some(60 s)`, `max_checkouts_per_worker Some(100)`; `Pool::new(cfg).await` in
 `repl::open_pool`, called from `AgentPlugin::start`. Sessions without a
-running turn hold no worker.
+running turn hold no worker. A checkout waits without a timeout; after 5 s
+`Repl::checkout_warning` logs one WARN `python worker pool exhausted (48 in
+use), session=… waiting for a turn to end` and keeps waiting.
 
 ### 4.6 Type checking with generated stubs
 
@@ -815,7 +818,7 @@ agent:
 
 One config key. Everything else is a constant with its reason in this doc.
 The `Pool` is created once by `AgentPlugin::start` (or not, §9) with
-`max_processes = subagents.max_concurrent + 1` and shared by sessions via
+`max_processes = repl::REPL_POOL_MAX` (48; §4.5) and shared by sessions via
 `Shared.pool`. Store: no schema change — the runtime files are keyed by
 session id; `Loaded`/`ListSessions` are untouched.
 

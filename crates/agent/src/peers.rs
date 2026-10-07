@@ -259,8 +259,9 @@ impl Tool for SpawnSubagentTool {
                 })
                 .await
             {
-                Ok((name, id)) => ToolOutput::ok(format!(
-                    "Spawned `{name}` (session:{id}). Its result will arrive as a <message from=\"session:{id}\"> when it finishes; message it with send_message to `{name}` or `session:{id}`."
+                Ok((name, id, queued)) => ToolOutput::ok(format!(
+                    "Spawned `{name}` (session:{id}). Its result will arrive as a <message from=\"session:{id}\"> when it finishes; message it with send_message to `{name}` or `session:{id}`.{}",
+                    queued.map_or(String::new(), |q| format!("\n{q}"))
                 )),
                 Err(SendError::HandlerError(e)) => ToolOutput::err(e),
                 Err(e) => ToolOutput::err(format!("agent supervisor: {e}")),

@@ -1375,7 +1375,10 @@ impl Message<Launch<StartPty>> for Jobs {
         // exited terminals go first, oldest across every session.
         self.make_room(RESERVE);
         if self.pty_bytes + RESERVE > jobs::PTY_BUDGET {
-            return Err("terminal capacity exhausted (64 MiB retained-terminal budget)".into());
+            return Err(format!(
+                "terminal capacity exhausted ({} MiB retained-terminal budget)",
+                jobs::PTY_BUDGET >> 20
+            ));
         }
         let s = spawn(&dir, &log_path, &m.args, &m.cwd, m.pty_shell.as_deref())
             .map_err(|e| format!("{e:#}"))?;

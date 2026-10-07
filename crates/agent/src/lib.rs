@@ -2438,8 +2438,14 @@ pub struct SubagentsConfig {
     pub effort: Option<String>,
     /// Sessions at depth ≥ this cannot spawn.
     pub max_depth: u8,
-    /// Concurrent child turns; further spawns queue.
+    /// Concurrent native child spawn turns per orchestrator tree (children
+    /// this engine's loop executes); further spawns queue and the parent
+    /// is told (01 §2.6).
     pub max_concurrent: usize,
+    /// Concurrent external child spawn turns per orchestrator tree (ACP
+    /// harness and mesh-node children) — a separate pool, so a long
+    /// harness turn never starves a native spawn.
+    pub max_concurrent_external: usize,
     /// Wall clock per child turn; on expiry the turn is cancelled.
     pub max_runtime_secs: u64,
     /// How long `send_message{await_reply}` waits.
@@ -2452,7 +2458,8 @@ impl Default for SubagentsConfig {
             model: None,
             effort: None,
             max_depth: 1,
-            max_concurrent: 8,
+            max_concurrent: 16,
+            max_concurrent_external: 32,
             max_runtime_secs: 600,
             reply_timeout_secs: 120,
         }

@@ -2038,6 +2038,12 @@ pub struct Identities {
     max_rounds: u32,
 }
 
+/// How long [`Identities::identity`] waits on the tasks actor. The agent
+/// actor asks this from its `Identity` handler; the tasks actor's own asks
+/// into the agent actor run off its mailbox, so an answer is normally
+/// immediate — the bound keeps a regression from freezing every turn start.
+const IDENTITY_TASKS_TIMEOUT: Duration = Duration::from_secs(2);
+
 #[async_trait::async_trait]
 impl agent::IdentitySource for Identities {
     async fn identity(&self, lineage: &[runtime::SessionId]) -> Option<String> {
@@ -2052,21 +2058,34 @@ impl agent::IdentitySource for Identities {
         }
         let desk = lineage.last().map(|s| s.to_string());
         let task = match tasks::actor() {
-            Some(t) => t
-                .ask(tasks::ListTasks(tasks::TaskFilter {
+            Some(t) => {
+                let asked = t.ask(tasks::ListTasks(tasks::TaskFilter {
                     owner: Some(f.name.peer()),
                     state: Some(vec![tasks::TaskState::Doing]),
                     ..Default::default()
-                }))
-                .await
-                .ok()
+                }));
+                match tokio::time::timeout(IDENTITY_TASKS_TIMEOUT, asked).await {
+                    Ok(r) => r.ok(),
+                    Err(_) => {
+                        static WARNED: std::sync::Once = std::sync::Once::new();
+                        WARNED.call_once(|| {
+                            tracing::warn!(
+                                agent = %agent,
+                                "tasks did not answer ListTasks in {IDENTITY_TASKS_TIMEOUT:?}; \
+                                 child identity without its task"
+                            )
+                        });
+                        None
+                    }
+                }
                 .and_then(|v| {
                     v.into_iter().find(|t| {
                         t.checkout
                             .as_ref()
                             .is_some_and(|c| Some(&c.session) == desk.as_ref())
                     })
-                }),
+                })
+            }
             None => None,
         };
         Some(desk::child_identity(&f, task.as_ref()))

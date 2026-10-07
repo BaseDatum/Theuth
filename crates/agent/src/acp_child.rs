@@ -51,6 +51,13 @@ use crate::{AGENT_ACTOR, AgentEvent, Agents, HarnessCommand, Usage, attach};
 
 /// Grace after `session/cancel` before the process is killed (06 §3.5).
 const CANCEL_GRACE: Duration = Duration::from_secs(5);
+/// Longest a harness may take to connect — `initialize` + `session/new` or
+/// `session/load` — before the child errors (R2.1); a hung `omp acp` must not
+/// hold its permit forever.
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(120);
+/// Longest a busy-refused prompt keeps retrying (R2.5), whatever the request
+/// deadline: after this the busy refusal is the turn's error.
+const BUSY_RETRY: Duration = Duration::from_secs(600);
 /// Stored result of a tool call the harness never reported finished (06 §3.6).
 const NOT_FINISHED: &str =
     "ERROR: not finished: the turn ended before the harness reported this call";
@@ -97,11 +104,16 @@ pub struct AcpChild {
     queue: VecDeque<Queued>,
     /// The `session/prompt` in flight, or a continuation turn (06 §3.5).
     turn: Option<Turn>,
-    /// `Agents::request_deadline`: how long a busy-refused prompt keeps retrying.
+    /// `Agents::request_deadline`: how long a busy-refused prompt keeps retrying,
+    /// capped by `busy` ([`BUSY_RETRY`]).
     deadline: Duration,
-    /// [`RETRY`] and [`CONTINUATION_QUIET`]; tests shorten them.
+    /// [`RETRY`], [`CONTINUATION_QUIET`], [`BUSY_RETRY`], [`CONNECT_TIMEOUT`]
+    /// and [`CANCEL_GRACE`]; tests shorten them.
     retry: [Duration; 4],
     quiet: Duration,
+    busy: Duration,
+    connect_timeout: Duration,
+    grace: Duration,
     /// Cancelled when the harness connection ends: permission asks outside a
     /// live turn wait on this, not on a turn.
     alive: CancellationToken,
@@ -442,6 +454,9 @@ impl AcpChild {
             deadline,
             retry: RETRY,
             quiet: CONTINUATION_QUIET,
+            busy: BUSY_RETRY,
+            connect_timeout: CONNECT_TIMEOUT,
+            grace: CANCEL_GRACE,
             alive: CancellationToken::new(),
             titled: false,
             meter_warned: false,
@@ -875,16 +890,18 @@ impl AcpChild {
 
     /// 06 §3.5 (2026-09-24): the harness refused the prompt as busy. Keep the
     /// turn open and prompt again after the next [`RETRY`] step, unless the
-    /// request deadline has passed since the input was admitted: then the
-    /// refusal is the turn's error. `false` when the turn was not retried.
+    /// retry window — the request deadline, at most [`BUSY_RETRY`] (R2.5) —
+    /// has passed since the input was admitted: then the refusal is the
+    /// turn's error. `false` when the turn was not retried.
     async fn retry_busy(&mut self, error: &str, me: &ActorRef<Self>) -> bool {
+        let window = self.deadline.min(self.busy);
         let Some(turn) = &mut self.turn else {
             return false;
         };
         let Some((_, admitted)) = &turn.input else {
             return false;
         };
-        if turn.cancel.is_cancelled() || admitted.elapsed() >= self.deadline {
+        if turn.cancel.is_cancelled() || admitted.elapsed() >= window {
             return false;
         }
         let after = self.retry[turn.retries.min(self.retry.len() - 1)];
@@ -1146,6 +1163,7 @@ impl AcpChild {
     /// unknown first ([`Self::lose`], 47 §4.2 rule 6). The next
     /// `send_message` respawns the child from the store row either way (06 §3.2).
     async fn closed(&mut self, why: String, ctx: &mut Context<Self, ()>) {
+        tracing::warn!(session = %self.id, harness = %self.name, in_turn = self.turn.is_some(), "harness closed: {why}");
         self.close_harness();
         if self.remote && self.worked {
             self.lose(why, ctx).await;
@@ -1504,8 +1522,18 @@ impl Actor for AcpChild {
                     }
                 }
             });
+            let connect_timeout = child.connect_timeout;
             tokio::spawn(async move {
-                let r = Harness::connect(c, tx).await;
+                // R2.1: a harness that never answers `initialize` /
+                // `session/new` errors out like any failed connect, which
+                // drains the queue and frees the child's permit.
+                let r = match tokio::time::timeout(connect_timeout, Harness::connect(c, tx)).await {
+                    Ok(r) => r,
+                    Err(_) => Err(format!(
+                        "harness did not connect within {}s",
+                        connect_timeout.as_secs()
+                    )),
+                };
                 let _ = me.tell(Connected(r)).await;
             });
         }
@@ -1840,7 +1868,7 @@ impl Message<CancelTurn> for AcpChild {
             return;
         }
         let me = ctx.actor_ref().clone();
-        turn.kill = Some(Self::timer(&me, CANCEL_GRACE, KillTimer(turn.id)));
+        turn.kill = Some(Self::timer(&me, self.grace, KillTimer(turn.id)));
     }
 }
 
@@ -1859,6 +1887,9 @@ impl Message<KillTimer> for AcpChild {
             return;
         }
         self.finish("cancelled", None).await;
+        // As `closed()`: the inputs queued behind the killed turn get their
+        // error result and release their tickets (R2.2), not a silent drop.
+        self.drain("cancelled").await;
         ctx.stop();
     }
 }
@@ -1991,7 +2022,7 @@ impl Message<SetOption> for AcpChild {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use agent_client_protocol::schema::v1::{
         ContentBlock, ContentChunk, Cost, PlanEntry, PlanEntryPriority, ToolCall, ToolCallContent,
         ToolCallUpdate, ToolCallUpdateFields, ToolKind, UsageUpdate,
@@ -2538,13 +2569,13 @@ mod tests {
 
     /// The agent side of a [`LineDuplex`]: the test reads what the client
     /// sent (parsed) and writes raw JSON-RPC lines back.
-    struct Fake {
+    pub(crate) struct Fake {
         from_client: UnboundedReceiver<serde_json::Value>,
         to_client: UnboundedSender<String>,
     }
 
     /// Hands its one duplex to the first `dial`.
-    struct FakeDialer(
+    pub(crate) struct FakeDialer(
         Mutex<
             Option<(
                 UnboundedSender<serde_json::Value>,
@@ -2579,7 +2610,7 @@ mod tests {
     }
 
     impl Fake {
-        fn new() -> (Self, Arc<FakeDialer>) {
+        pub(crate) fn new() -> (Self, Arc<FakeDialer>) {
             let (ctx, crx) = unbounded_channel();
             let (atx, arx) = unbounded_channel();
             (
@@ -2596,7 +2627,7 @@ mod tests {
         }
 
         /// The client's next message, within 10 s (virtual under a paused clock).
-        async fn next(&mut self) -> serde_json::Value {
+        pub(crate) async fn next(&mut self) -> serde_json::Value {
             tokio::time::timeout(Duration::from_secs(10), self.from_client.recv())
                 .await
                 .expect("client message")
@@ -2610,7 +2641,7 @@ mod tests {
         /// `initialize` → `session/new` as omp answers them, announcing
         /// `options`; `agent` is the `agentInfo` to claim (06 §8.4). Checks
         /// the client capabilities theuth must and must not advertise.
-        async fn handshake(
+        pub(crate) async fn handshake(
             &mut self,
             options: Vec<SessionConfigOption>,
             agent: Option<agent_client_protocol::schema::v1::Implementation>,
@@ -2648,7 +2679,7 @@ mod tests {
         }
 
         /// The next `session/prompt`: `(id, text)`.
-        async fn prompt(&mut self) -> (serde_json::Value, String) {
+        pub(crate) async fn prompt(&mut self) -> (serde_json::Value, String) {
             let m = self.next().await;
             assert_eq!(m["method"], "session/prompt", "{m}");
             let text = m["params"]["prompt"][0]["text"]
@@ -2667,7 +2698,7 @@ mod tests {
             }}));
         }
 
-        fn end_turn(&self, id: &serde_json::Value) {
+        pub(crate) fn end_turn(&self, id: &serde_json::Value) {
             self.respond(id, PromptResponse::new(StopReason::EndTurn));
         }
 
@@ -2746,6 +2777,26 @@ mod tests {
             options: Vec<SessionConfigOption>,
             agent: Option<agent_client_protocol::schema::v1::Implementation>,
         ) -> Self {
+            Self::build(deadline, options, agent, |_| {}, true).await
+        }
+
+        /// A rig with `tune` applied to the child before it spawns (R2
+        /// knobs); `handshake: false` leaves the harness silent.
+        async fn tuned(
+            deadline: Duration,
+            tune: impl FnOnce(&mut AcpChild),
+            handshake: bool,
+        ) -> Self {
+            Self::build(deadline, Vec::new(), None, tune, handshake).await
+        }
+
+        async fn build(
+            deadline: Duration,
+            options: Vec<SessionConfigOption>,
+            agent: Option<agent_client_protocol::schema::v1::Implementation>,
+            tune: impl FnOnce(&mut AcpChild),
+            handshake: bool,
+        ) -> Self {
             let dir = std::env::temp_dir().join(format!("theuth-acp-rig-{}", Uuid::now_v7()));
             std::fs::create_dir_all(&dir).unwrap();
             let rt = Runtime::new(figment::Figment::new(), dir.clone());
@@ -2788,8 +2839,11 @@ mod tests {
             // Real time, scaled: 5/10/20/30 s → 50/100/200/300 ms, 120 s → 300 ms.
             child.retry = FAST_RETRY;
             child.quiet = FAST_QUIET;
+            tune(&mut child);
             let actor = AcpChild::spawn(child);
-            fake.handshake(options, agent).await;
+            if handshake {
+                fake.handshake(options, agent).await;
+            }
             Self {
                 actor,
                 fake,
@@ -3292,6 +3346,32 @@ mod tests {
         let rows = rig.rows().await;
         assert_eq!(rows[0], (ChatRole::User, "go".into()));
         assert_eq!(rows[1], (ChatRole::Assistant, OMP_BUSY.into()));
+    }
+
+    /// R2.1: a harness that never answers `initialize` is a failed connect
+    /// after `connect_timeout`: the queued input ends as an `error` turn
+    /// naming the timeout and the actor stops.
+    #[tokio::test]
+    async fn silent_harness_times_out_on_connect() {
+        let mut rig = Rig::tuned(
+            Duration::from_secs(60),
+            |c| c.connect_timeout = Duration::from_millis(300),
+            false,
+        )
+        .await;
+        rig.input("go").await;
+        // `initialize` arrives and is never answered.
+        let m = rig.fake.next().await;
+        assert_eq!(m["method"], "initialize", "{m}");
+        let events = rig.until_finished().await;
+        assert_eq!(stop_reasons(&events), ["error"], "{events:?}");
+        assert!(
+            errors(&events)
+                .iter()
+                .any(|e| e.contains("did not connect within 0s")),
+            "{events:?}"
+        );
+        rig.actor.wait_for_shutdown().await;
     }
 
     /// 06 §8.3: updates after the prompt returned open a continuation turn
@@ -3943,5 +4023,84 @@ mod tests {
                 _ => {}
             }
         }
+    }
+
+    /// R2.2: a cancel the harness never acknowledges hits the kill timer:
+    /// the open turn ends `cancelled` and the input queued behind it gets
+    /// its error result too (its ticket is not dropped), then the actor stops.
+    #[tokio::test]
+    async fn kill_timer_drains_the_queue() {
+        let mut rig = Rig::tuned(
+            Duration::from_secs(60),
+            |c| c.grace = Duration::from_millis(200),
+            true,
+        )
+        .await;
+        rig.input("first").await;
+        rig.input("second").await;
+        let (_, text) = rig.fake.prompt().await;
+        assert_eq!(text, "first");
+        rig.actor.tell(CancelTurn { keep: None }).await.unwrap();
+        let m = rig.fake.next().await;
+        assert_eq!(m["method"], "session/cancel", "{m}");
+        // No PromptResponse ever comes.
+        let first = rig.until_finished().await;
+        assert_eq!(stop_reasons(&first), ["cancelled"], "{first:?}");
+        let second = rig.until_finished().await;
+        assert_eq!(stop_reasons(&second), ["error"], "{second:?}");
+        assert!(errors(&second).contains(&"cancelled"), "{second:?}");
+        rig.actor.wait_for_shutdown().await;
+        let rows = rig.rows().await;
+        assert!(
+            rows.iter()
+                .any(|(r, t)| *r == ChatRole::User && t == "second"),
+            "the queued input is in the transcript with its result: {rows:?}"
+        );
+    }
+
+    /// R2.5: the busy-retry window is capped by `BUSY_RETRY` even under a
+    /// long request deadline — after it the busy refusal is the turn's error.
+    #[tokio::test]
+    async fn busy_retries_stop_at_the_busy_cap_before_the_deadline() {
+        let mut rig = Rig::tuned(
+            Duration::from_secs(3600),
+            |c| c.busy = Duration::from_millis(400),
+            true,
+        )
+        .await;
+        let t0 = Instant::now();
+        rig.input("go").await;
+        let mut prompts = 0;
+        let events = loop {
+            tokio::select! {
+                m = rig.fake.next() => {
+                    assert_eq!(m["method"], "session/prompt", "{m}");
+                    prompts += 1;
+                    rig.fake.busy(&m["id"]);
+                }
+                e = rig.events.recv() => {
+                    if matches!(e.as_ref().unwrap(), AgentEvent::TurnFinished { .. }) {
+                        break e.unwrap();
+                    }
+                }
+            }
+        };
+        assert!(
+            t0.elapsed() < Duration::from_secs(5),
+            "failed at the cap, not the 3600 s deadline"
+        );
+        assert!(
+            (4..=6).contains(&prompts),
+            "{prompts} prompts in a 400 ms window"
+        );
+        assert!(
+            matches!(events, AgentEvent::TurnFinished { stop_reason, .. } if stop_reason == "error")
+        );
+        let rows = rig.rows().await;
+        assert_eq!(
+            rows[1],
+            (ChatRole::Assistant, OMP_BUSY.into()),
+            "the original busy error"
+        );
     }
 }

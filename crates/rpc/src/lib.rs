@@ -15,7 +15,8 @@ use futures::future::{self, Either, Ready, ready};
 use jsonrpsee::Methods;
 use jsonrpsee::core::BoxError;
 use jsonrpsee::server::{
-    HttpBody, HttpRequest, HttpResponse, ServerBuilder, serve_with_graceful_shutdown, stop_channel,
+    HttpBody, HttpRequest, HttpResponse, ServerBuilder, ServerConfig, serve_with_graceful_shutdown,
+    stop_channel,
 };
 use runtime::Runtime;
 use serde::{Deserialize, Serialize};
@@ -175,7 +176,10 @@ async fn accept(
     shutdown: impl Future<Output = ()>,
 ) {
     let (stop_handle, server) = stop_channel();
-    let services = ServerBuilder::new().to_service_builder();
+    // One WebSocket per ACP child's MCP shim plus every UI and `t` CLI call:
+    // jsonrpsee's default 100 refuses the ~95th child with 429, silently.
+    let config = ServerConfig::builder().max_connections(4096).build();
+    let services = ServerBuilder::new().set_config(config).to_service_builder();
     tokio::pin!(shutdown);
     loop {
         let sock = tokio::select! {
