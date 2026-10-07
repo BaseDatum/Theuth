@@ -203,8 +203,16 @@ async fn max_chars_truncation_sets_flag() {
         .await
         .expect("ok");
     assert!(resp.truncated);
-    assert_eq!(resp.content.chars().count(), 30);
-    assert!(resp.content.ends_with('…'));
+    // 122 D6: the window is at most 30 chars; the marker after it does not count.
+    let (window, marker) = resp.content.split_once("\n\n[… ").expect("marker");
+    assert!(window.chars().count() <= 30, "{window:?}");
+    assert!(
+        marker.ends_with(&format!(
+            "continue with offset={}]",
+            resp.next_offset.unwrap()
+        )),
+        "{marker}"
+    );
 }
 
 #[tokio::test]

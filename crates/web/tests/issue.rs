@@ -106,9 +106,10 @@ fn rows_4_to_7_vendor_markers() {
         r#"<script src="https://js.hcaptcha.com/1/api.js"></script><div class="h-captcha"></div>"#,
     );
     assert_eq!(d(200, &h, 0).unwrap().detail, "hcaptcha");
+    // Over 50 KB the vendor row is gated; what remains is a big script shell (row 15), not a wall.
     assert_eq!(
-        d(200, &format!("{h}{}", pad(50_000)), 0),
-        None,
+        kind(&d(200, &format!("{h}{}", pad(50_000)), 0)),
+        Some(IssueKind::EmptyShell),
         "hcaptcha size gate"
     );
 
@@ -162,9 +163,9 @@ fn rows_4_to_7_vendor_markers() {
     let akamai = page("x", "<script>bazadebezolkohpepadr=1</script>");
     assert_eq!(d(403, &akamai, 0).unwrap().detail, "HTTP 403 · akamai");
     assert_eq!(
-        d(200, &format!("{akamai}{}", pad(5_000)), 0),
-        None,
-        "akamai token size gate"
+        kind(&d(200, &format!("{akamai}{}", pad(5_000)), 0)),
+        Some(IssueKind::EmptyShell),
+        "akamai token size gate (a 5 KB script shell is row 15)"
     );
 }
 
@@ -215,8 +216,8 @@ fn rows_7a_to_7d_revision_1_vendors() {
     let form = page("Contact us", &format!("{}{recaptcha}", prose(400)));
     assert_eq!(d(200, &form, 400 * CHARS_PER_WORD), None);
     assert_eq!(
-        d(200, &format!("{recaptcha}{}", pad(30_000)), 0),
-        None,
+        kind(&d(200, &format!("{recaptcha}{}", pad(30_000)), 0)),
+        Some(IssueKind::EmptyShell),
         "recaptcha size gate"
     );
 
@@ -514,7 +515,7 @@ async fn forbidden_with_cf_mitigated_through_the_fetcher() {
         )
         .await
         .expect("a diagnosed wall is Ok");
-    let issue = r.issue.expect("issue");
+    let issue = r.issue.as_ref().expect("issue");
     assert_eq!(issue.kind, IssueKind::AccessChallenge);
     assert_eq!(issue.detail, "HTTP 403 · cloudflare");
     assert_eq!(r.title.as_deref(), Some("Just a moment…"));

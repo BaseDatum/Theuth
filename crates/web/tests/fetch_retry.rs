@@ -208,7 +208,7 @@ async fn retry_after_beyond_the_budget_is_surfaced_not_waited() {
     assert!(start.elapsed() < Duration::from_secs(2));
     assert_eq!(r.attempts, 1);
     assert_eq!(calls.load(Ordering::SeqCst), 1);
-    let issue = r.issue.expect("issue");
+    let issue = r.issue.as_ref().expect("issue");
     assert_eq!(issue.kind, IssueKind::RateLimited);
     assert_eq!(issue.retry_after, Some(Duration::from_secs(120)));
     assert_eq!(issue.detail, "HTTP 429");
@@ -272,22 +272,42 @@ async fn budget_is_twice_the_timeout_and_a_sleeping_server_times_out_inside_it()
     );
 }
 
+/// Exact single-value header match (wiremock's `header()` splits values on
+/// commas, which breaks `Accept`/`Accept-Language` comparisons).
+struct Exact(&'static str, &'static str);
+
+impl wiremock::Match for Exact {
+    fn matches(&self, request: &Request) -> bool {
+        let values: Vec<_> = request.headers.get_all(self.0).iter().collect();
+        values.len() == 1 && values[0].to_str().is_ok_and(|v| v == self.1)
+    }
+}
+
 #[tokio::test]
 async fn default_headers_on_the_reqwest_path() {
     let server = MockServer::start().await;
     Mock::given(method("GET"))
         .and(path("/h"))
-        .and(header("accept", ACCEPT))
-        .and(header("accept-language", "de-DE,de;q=0.8"))
+        .and(Exact("accept", ACCEPT))
+        .and(Exact("accept-language", "de-DE,de;q=0.8"))
         .and(header("user-agent", "theuth-test"))
         .respond_with(html_200())
         .expect(1)
         .mount(&server)
         .await;
-    let r = fetcher(&server)
+    let r = match fetcher(&server)
         .fetch(&format!("{}/h", server.uri()), FetchFormat::Markdown, 4000)
         .await
-        .expect("matched headers");
+    {
+        Ok(r) => r,
+        Err(e) => panic!(
+            "{e}; received: {:#?}",
+            server
+                .received_requests()
+                .await
+                .map(|v| v.into_iter().map(|r| r.headers).collect::<Vec<_>>())
+        ),
+    };
     assert_eq!(r.client, ClientKind::Reqwest);
     assert!(r.notes.is_empty(), "{:?}", r.notes);
 }
@@ -543,6 +563,11 @@ async fn offset_and_compact_window_through_fetch_page() {
         first.omitted_headings.len().min(12),
         first.omitted_headings.len()
     );
+    let full = f
+        .fetch_page(&url, FetchFormat::Markdown, PageOptions::new(16000))
+        .await
+        .expect("ok");
+    assert!(!full.truncated);
     let second = f
         .fetch_page(
             &url,
@@ -555,9 +580,11 @@ async fn offset_and_compact_window_through_fetch_page() {
         )
         .await
         .expect("ok");
+    // The second window continues exactly where the first stopped.
+    let expected: String = full.content.chars().skip(next).take(60).collect();
     assert!(
-        second.content.starts_with("## Part") || second.content.starts_with("lorem ipsum"),
-        "a window starts at a block: {}",
+        second.content.starts_with(&expected),
+        "{expected:?} vs {:?}",
         second.content
     );
     assert_eq!(second.compacted_chars, 0);
