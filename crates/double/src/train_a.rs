@@ -1108,6 +1108,103 @@ mod tests {
             .collect()
     }
 
+    /// `run()` over a real store: load, golden, fit, gate; idempotent on the data range.
+    #[tokio::test]
+    async fn run_fits_a_store_marks_golden_and_is_idempotent() {
+        use crate::store::{ClassRow, ExampleRow, LabelRow, PredictionRow};
+        use crate::types::Outcome;
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(&dir.path().join("double.sqlite"))
+            .await
+            .unwrap();
+        let class = "approval:shell:mutating:git push:root";
+        store
+            .put_class(&ClassRow {
+                key: class.into(),
+                kind: crate::class::CardKind::Approval,
+                rung: 0,
+                cap: 1,
+                mutating_opt_in: false,
+                n: 0,
+                stats: serde_json::json!({}),
+                updated_at: t0(),
+            })
+            .await
+            .unwrap();
+        for e in corpus(class, 30, 0) {
+            store
+                .put_example(&ExampleRow {
+                    id: e.id.clone(),
+                    class: class.into(),
+                    question_id: format!("q-{}", e.id),
+                    session_id: None,
+                    requester: "root".into(),
+                    card_text: "git push".into(),
+                    options: vec!["Allow".into(), "Deny".into()],
+                    embedding: Some(e.embedding.clone()),
+                    asked_at: e.asked_at,
+                })
+                .await
+                .unwrap();
+            let choice = if e.target[0] > 0.0 { "Allow" } else { "Deny" };
+            store
+                .put_label(&LabelRow {
+                    example_id: e.id.clone(),
+                    source: LabelSource::Direct,
+                    choice: choice.into(),
+                    weight: 1.0,
+                    at: e.labelled_at,
+                })
+                .await
+                .unwrap();
+            store
+                .put_prediction(&PredictionRow {
+                    example_id: e.id.clone(),
+                    version: BASELINE.into(),
+                    choice: "Allow".into(),
+                    probs: vec![
+                        ("Allow".into(), 0.4),
+                        ("Deny".into(), 0.35),
+                        (NONE.into(), 0.25),
+                    ],
+                    p_top: 0.4,
+                    rung_at_time: 0,
+                    acted: false,
+                    grace_until: None,
+                    outcome: Outcome::Unlabelled,
+                    at: e.asked_at,
+                })
+                .await
+                .unwrap();
+        }
+        let now = t0() + Duration::days(2);
+        let c = run(&store, None, "ckpt", now)
+            .await
+            .unwrap()
+            .expect("a candidate");
+        assert_eq!(store.golden().await.unwrap().len(), 5, "first 10 %, min 5");
+        assert_eq!(c.trained_rows, 25);
+        assert!(c.version.id.starts_with("a-"));
+        assert_eq!(c.version.tier, Tier::A);
+        assert_eq!(c.version.metrics["golden"]["n"], 5);
+        assert_eq!(
+            c.version.metrics["verdict"],
+            match &c.verdict {
+                Ok(()) => "promoted".to_owned(),
+                Err(e) => e.clone(),
+            }
+        );
+        // The same corpus again → same id; once the row exists, nothing new to train.
+        let again = run(&store, None, "ckpt", now).await.unwrap().unwrap();
+        assert_eq!(again.version.id, c.version.id);
+        assert_eq!(
+            again.artifacts.heads_json().unwrap(),
+            c.artifacts.heads_json().unwrap()
+        );
+        store.put_version(&c.version).await.unwrap();
+        assert!(run(&store, None, "ckpt", now).await.unwrap().is_none());
+    }
+
     #[test]
     fn fit_is_deterministic_and_beats_the_oracle() {
         let ex = corpus("approval:shell:mutating:git push:root", 40, 4);
