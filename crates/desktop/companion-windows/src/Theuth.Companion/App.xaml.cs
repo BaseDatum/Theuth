@@ -17,6 +17,7 @@ public partial class App : Application
     private DispatcherQueue? dispatcher;
     private LogWindow? logWindow;
     private EngineProbe? probe;
+    private AskBar.AskBarInstall? askBar; // W4
 
     /// <summary>The engine state every surface renders (design 134 §5.4); created in <see cref="OnLaunched"/>, UI thread only.</summary>
     public Store? Store { get; private set; }
@@ -55,6 +56,8 @@ public partial class App : Application
         probe = new EngineProbe(Store, dispatcher, Flags.Probe, Quit);
         probe.Start();
         // W2: the rail, panel, tray and hotkeys bind to Store here (before Start, to see the first refetch).
+        // W4: the Ask bar (AskBar/AskBarInstall) binds to Store here; --ask-probe N / --mic-probe N / --ask-replay / --ask run through it.
+        askBar = AskBar.AskBarInstall.Install(Store, dispatcher, Quit);
         Store.Start();
     }
 

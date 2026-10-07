@@ -12,9 +12,14 @@
   log         the tail of today's companion log and of logs\ask-probe.log.
   engine-log  the tail of the engine's newest log, filtered by -Pattern.
   kill        stop Theuth.Companion.
+  model-link  give the scratch engine the dictation model: junctions <data_dir>\models\{nemotron-streaming-en,onnxruntime}
+              to the September data dir's copies (%USERPROFILE%\.theuth-old-2026-09\models) when they are missing;
+              model-unlink removes exactly those junctions again. engine-restart stops t.exe (its loop restarts it in ~5 s)
+              so a model that was reported missing is looked for again.
 
   Flags (run): -AskProbe N → --ask-probe N · -Synthetic → --synthetic-dictation · -Speech "text" → --synthetic-speech
-  "text" · -MicProbe N → --mic-probe N · -MixFormat → --mic-mix-format · -Replay → --ask-replay · -Shareable → --shareable.
+  "text" · -MicProbe N → --mic-probe N · -MixFormat → --mic-mix-format · -Replay → --ask-replay · -Shareable → --shareable ·
+  -Ask → --ask (open the bar at launch).
   The exe is the Debug build (`dotnet build -p:Platform=x64`) unless -From publish|release.
 
 .EXAMPLE
@@ -23,7 +28,7 @@
   pwsh -File crates\desktop\companion-windows\ask.ps1 run -MicProbe 6
 #>
 param(
-    [Parameter(Position = 0)] [ValidateSet('env', 'run', 'log', 'engine-log', 'kill')] [string] $Command = 'env',
+    [Parameter(Position = 0)] [ValidateSet('env', 'run', 'log', 'engine-log', 'kill', 'model-link', 'model-unlink', 'engine-restart')] [string] $Command = 'env',
     [ValidateSet('publish', 'debug', 'release')] [string] $From = 'debug',
     [double] $AskProbe = -1,
     [switch] $Synthetic,
@@ -32,6 +37,7 @@ param(
     [switch] $MixFormat,
     [switch] $Replay,
     [switch] $Shareable,
+    [switch] $Ask,
     [string] $Pattern = 'dictation|voice|desk|send_input|turn|provider|model|error|warn',
     [int] $Tail = 60
 )
@@ -111,6 +117,45 @@ switch ($Command) {
         Write-Host "killed $($p.Count) Theuth.Companion process(es)"
         exit 0
     }
+    'model-link' {
+        $models = Join-Path $dataDir 'models'
+        $old = Join-Path $env:USERPROFILE '.theuth-old-2026-09\models'
+        New-Item -ItemType Directory -Force -Path $models | Out-Null
+        foreach ($name in @('nemotron-streaming-en', 'onnxruntime')) {
+            $target = Join-Path $old $name
+            $link = Join-Path $models $name
+            if (Test-Path $link) { Write-Host "  exists  $link"; continue }
+            if (-not (Test-Path $target)) { Write-Host "  no source $target"; continue }
+            New-Item -ItemType Junction -Path $link -Target $target | Out-Null
+            Write-Host "  linked  $link -> $target"
+        }
+        Show-Dir $models
+        exit 0
+    }
+    'model-unlink' {
+        $models = Join-Path $dataDir 'models'
+        foreach ($name in @('nemotron-streaming-en', 'onnxruntime')) {
+            $link = Join-Path $models $name
+            $item = Get-Item $link -ErrorAction SilentlyContinue
+            if ($item -and $item.LinkType -eq 'Junction') { $item.Delete(); Write-Host "  removed junction $link" }
+            elseif ($item) { Write-Host "  kept (not a junction) $link" }
+            else { Write-Host "  absent $link" }
+        }
+        exit 0
+    }
+    'engine-restart' {
+        $p = @(Get-Process -Name 't' -ErrorAction SilentlyContinue)
+        $p | Stop-Process -Force
+        Write-Host "stopped $($p.Count) t.exe process(es); the engine-run loop restarts it in ~5 s"
+        Start-Sleep -Seconds 8
+        $engineJson = Join-Path $dataDir 'engine.json'
+        if (Test-Path $engineJson) {
+            $e = Get-Content $engineJson -Raw | ConvertFrom-Json
+            $alive = if ($e.pid -and (Get-Process -Id $e.pid -ErrorAction SilentlyContinue)) { 'alive' } else { 'not running' }
+            Write-Host "  engine.json: listen=$($e.listen) pid=$($e.pid) ($alive) version=$($e.version)"
+        }
+        exit 0
+    }
     'log' {
         $daily = Join-Path $logs ("companion-{0:yyyy-MM-dd}.log" -f (Get-Date))
         foreach ($f in @($daily, (Join-Path $logs 'ask-probe.log'))) {
@@ -140,6 +185,7 @@ switch ($Command) {
         if ($MixFormat) { $a += '--mic-mix-format' }
         if ($Replay) { $a += '--ask-replay' }
         if ($Shareable) { $a += '--shareable' }
+        if ($Ask) { $a += '--ask' }
         if ($a.Count -eq 0) { throw 'run needs -AskProbe N or -MicProbe N' }
         Get-Process -Name 'Theuth.Companion' -ErrorAction SilentlyContinue | Stop-Process -Force
         $err = New-TemporaryFile
