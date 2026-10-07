@@ -100,7 +100,8 @@ fn is_diagram(c: &Component) -> bool {
 
 /// The line under a diagram image: `Name: n units[, m links]` (`*StateMachine: 6 states, 9 transitions*`).
 fn caption(c: &Component) -> Option<String> {
-    let two = |name: &str, n: usize, a: &str, m: usize, b: &str| format!("{name}: {n} {a}, {m} {b}");
+    let two =
+        |name: &str, n: usize, a: &str, m: usize, b: &str| format!("{name}: {n} {a}, {m} {b}");
     let one = |name: &str, n: usize, a: &str| format!("{name}: {n} {a}");
     Some(match c {
         Component::Graph(g) => two("Graph", g.nodes.len(), "nodes", g.edges.len(), "edges"),
@@ -128,10 +129,24 @@ fn caption(c: &Component) -> Option<String> {
             p.before.nodes.len(),
             p.after.nodes.len()
         ),
-        Component::BarChart(p) => two("BarChart", p.labels.len(), "labels", p.series.len(), "series"),
-        Component::LineChart(p) => two("LineChart", p.labels.len(), "points", p.series.len(), "series"),
+        Component::BarChart(p) => two(
+            "BarChart",
+            p.labels.len(),
+            "labels",
+            p.series.len(),
+            "series",
+        ),
+        Component::LineChart(p) => two(
+            "LineChart",
+            p.labels.len(),
+            "points",
+            p.series.len(),
+            "series",
+        ),
         Component::ScatterChart(p) => one("ScatterChart", p.points.len(), "points"),
-        Component::RadarChart(p) => two("RadarChart", p.axes.len(), "axes", p.series.len(), "series"),
+        Component::RadarChart(p) => {
+            two("RadarChart", p.axes.len(), "axes", p.series.len(), "series")
+        }
         Component::Waterfall(p) => one("Waterfall", p.steps.len(), "steps"),
         Component::Funnel(p) => one("Funnel", p.stages.len(), "stages"),
         Component::Gantt(p) => one("Gantt", p.tasks.len(), "tasks"),
@@ -1184,13 +1199,18 @@ mod tests {
             if !name.starts_with("valid-") || !name.ends_with(".json") {
                 continue;
             }
-            let spec = parse(&std::fs::read_to_string(&path).unwrap()).unwrap().spec;
+            let spec = parse(&std::fs::read_to_string(&path).unwrap())
+                .unwrap()
+                .spec;
             let md = lower(&spec);
             for e in spec.elements.values() {
                 let c = &e.component;
                 let t = type_name(c);
                 if is_diagram(c) || matches!(c, Component::Kanban(_) | Component::Heatmap(_)) {
-                    assert!(!md.contains(&format!("*{t}*\n")), "{name}: {t} fell through:\n{md}");
+                    assert!(
+                        !md.contains(&format!("*{t}*\n")),
+                        "{name}: {t} fell through:\n{md}"
+                    );
                 }
                 if is_diagram(c) {
                     let cap = caption(c).unwrap_or_else(|| panic!("{name}: {t} has no caption"));
@@ -1201,8 +1221,14 @@ mod tests {
         }
         assert_eq!(seen.len(), 23, "{seen:?}");
         assert_eq!(
-            caption(&parse(fixture!("valid-state-machine")).unwrap().spec.elements["s"].component)
-                .as_deref(),
+            caption(
+                &parse(fixture!("valid-state-machine"))
+                    .unwrap()
+                    .spec
+                    .elements["s"]
+                    .component
+            )
+            .as_deref(),
             Some("StateMachine: 6 states, 7 transitions")
         );
     }

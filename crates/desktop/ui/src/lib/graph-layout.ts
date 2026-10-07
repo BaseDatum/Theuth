@@ -147,8 +147,9 @@ export function useElkLayout<T>(hash: string, build: () => ElkNode, map: (root: 
 
 /**
  * A deterministic stand-in for the worker: `root`'s children on a diagonal grid (groups around their members),
- * every edge one orthogonal section between its ends' centres (an elbow at the target's x), labels beside the
- * first run. Component tests render the pure `<NameSvg>` with it, so snapshots never depend on ELK.
+ * every edge one orthogonal section between its ends' centres (an elbow at the target's x), labels before the
+ * longest run's midpoint (where `edgeLabelAt` puts them without ELK). Component tests render the pure `<NameSvg>`
+ * with it, so snapshots never depend on ELK.
  */
 export function fixedLayout(root: ElkNode): Layout {
   const out: Layout = { nodes: [], edges: [], groups: [], width: 0, height: 0 }
@@ -184,7 +185,17 @@ export function fixedLayout(root: ElkNode): Layout {
     const self = e.sources[0] === e.targets[0]
     const bends = self ? [{ x: start.x + 24, y: start.y }, { x: start.x + 24, y: a.y - 16 }, { x: end.x, y: a.y - 16 }] : [{ x: end.x, y: start.y }]
     const l = e.labels?.[0]
-    out.edges.push({ index: Number(e.id.slice(2)), sections: [{ start, bends, end }], ...(l ? { label: { x: start.x + 8, y: start.y - 20, w: l.width ?? 40, h: l.height ?? 18 } } : {}) })
+    const pts = [start, ...bends, end]
+    let run = { a: start, b: end, len: -1 }
+    for (let k = 1; k < pts.length; k++) {
+      const len = Math.hypot(pts[k]!.x - pts[k - 1]!.x, pts[k]!.y - pts[k - 1]!.y)
+      if (len > run.len) run = { a: pts[k - 1]!, b: pts[k]!, len }
+    }
+    const mid = { x: (run.a.x + run.b.x) / 2, y: (run.a.y + run.b.y) / 2 }
+    const w = l?.width ?? 40
+    const h = l?.height ?? 18
+    const label = Math.abs(run.b.x - run.a.x) >= Math.abs(run.b.y - run.a.y) ? { x: mid.x - w / 2, y: mid.y - 8 - h, w, h } : { x: mid.x - 8 - w, y: mid.y - h / 2, w, h }
+    out.edges.push({ index: Number(e.id.slice(2)), sections: [{ start, bends, end }], ...(l ? { label } : {}) })
   }
   out.width = Math.max(0, ...out.nodes.map((n) => n.x + n.w)) + 40
   out.height = Math.max(0, ...out.nodes.map((n) => n.y + n.h)) + 40

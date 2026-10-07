@@ -240,7 +240,7 @@ export function EntitiesSvg({ props: p, layout: l, tokens: t, markerId, units, r
             <g key={e.index} opacity={pt.opacity} data-unit={edgeUnit(e.index)} data-relation={r.kind} {...(units ? units.unit(edgeUnit(e.index), `${name(r.from)} → ${name(r.to)}: ${r.kind}${r.label ? `, ${r.label}` : ''}`) : {})}>
               <path d={d} fill="none" stroke="transparent" strokeWidth={18} />
               <path d={d} fill="none" stroke={pt.stroke} strokeWidth={st === 'active' ? 2 : 1.25} strokeDasharray={marks.dashed ? '6 4' : undefined} markerStart={marks.start ? `url(#${markerId}-${marks.start})` : undefined} markerEnd={marks.end ? `url(#${markerId}-${marks.end})` : undefined} />
-              {at && r.label && <MaskedLabel text={r.label} at={at.at} along={at.along} tokens={t} />}
+              {at && r.label && <MaskedLabel text={r.label} at={at.at} along={at.along} side={at.side} tokens={t} />}
             </g>
           )
         })}

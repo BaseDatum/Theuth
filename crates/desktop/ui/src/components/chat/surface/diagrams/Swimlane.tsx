@@ -128,7 +128,8 @@ export function swimlaneText(p: SwimlaneData): string {
     lane[s.id] = s.lane
     name[s.id] = s.label
   }
-  const mark = (s: Step) => ({ decision: '◇', start: '▶', end: '■', data: '▱', step: '' })[s.kind ?? 'step'] || { active: '◉', done: '●', muted: '○', danger: '✗', default: '•' }[s.state ?? 'default']
+  // the Rust `swimlane_lines` glyphs verbatim (the time-out twin must equal the w100 golden)
+  const mark = (s: Step) => ({ decision: '◇', start: '▶', end: '■', data: '▱', step: '' })[s.kind ?? 'step'] || { active: '◉', done: '●', muted: '○', danger: '✗', default: '•' }[s.state ?? 'default'] // no-emoji: allow
   const out: string[] = []
   if (p.title) out.push(p.title)
   for (const l of p.lanes) {

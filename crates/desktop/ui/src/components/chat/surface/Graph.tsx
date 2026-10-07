@@ -177,25 +177,40 @@ export function markerFor(markerId: string | null, state: UnitState): string | n
   return markerId === null ? null : state === 'default' ? markerId : `${markerId}-${state}`
 }
 
-/** The points of an edge's sections, the longest straight run's midpoint and orientation (where its label sits). */
-export function edgeLabelAt(e: Pick<LayoutEdge, 'sections'>): { at: Point; along: 'horizontal' | 'vertical' } {
-  let best: { a: Point; b: Point; len: number } | null = null
+/**
+ * Where an edge's label sits: on the run ELK reserved room beside (`e.label`, its placed box — the segment nearest
+ * that box's centre, the mask on the box's side of the stroke), else the longest straight run's midpoint, before it.
+ * Either way the mask is `LABEL_GAP` off the stroke (§5.4 #2); ELK's side keeps it off the nodes (§5.4 #5).
+ */
+export function edgeLabelAt(e: Pick<LayoutEdge, 'sections' | 'label'>): { at: Point; along: 'horizontal' | 'vertical'; side: 'before' | 'after' } {
+  const c = e.label ? { x: e.label.x + e.label.w / 2, y: e.label.y + e.label.h / 2 } : null
+  let best: { a: Point; b: Point; score: number } | null = null
   for (const s of e.sections) {
     const pts = [s.start, ...s.bends, s.end]
     for (let i = 1; i < pts.length; i++) {
-      const len = Math.hypot(pts[i]!.x - pts[i - 1]!.x, pts[i]!.y - pts[i - 1]!.y)
-      if (!best || len > best.len) best = { a: pts[i - 1]!, b: pts[i]!, len }
+      const a = pts[i - 1]!
+      const b = pts[i]!
+      // with an ELK box: the segment closest to its centre (negative distance); without: the longest one
+      const score = c ? -Math.hypot(c.x - Math.min(Math.max(c.x, Math.min(a.x, b.x)), Math.max(a.x, b.x)), c.y - Math.min(Math.max(c.y, Math.min(a.y, b.y)), Math.max(a.y, b.y))) : Math.hypot(b.x - a.x, b.y - a.y)
+      if (!best || score > best.score) best = { a, b, score }
     }
   }
-  if (!best) return { at: { x: 0, y: 0 }, along: 'horizontal' }
-  return { at: pointAt([best.a, best.b], 0.5), along: Math.abs(best.b.x - best.a.x) >= Math.abs(best.b.y - best.a.y) ? 'horizontal' : 'vertical' }
+  if (!best) return { at: { x: 0, y: 0 }, along: 'horizontal', side: 'before' }
+  const along = Math.abs(best.b.x - best.a.x) >= Math.abs(best.b.y - best.a.y) ? 'horizontal' : 'vertical'
+  if (!c) return { at: pointAt([best.a, best.b], 0.5), along, side: 'before' }
+  const lo = along === 'horizontal' ? Math.min(best.a.x, best.b.x) : Math.min(best.a.y, best.b.y)
+  const hi = along === 'horizontal' ? Math.max(best.a.x, best.b.x) : Math.max(best.a.y, best.b.y)
+  const t = Math.min(Math.max(along === 'horizontal' ? c.x : c.y, lo), hi)
+  const at = along === 'horizontal' ? { x: t, y: best.a.y } : { x: best.a.x, y: t }
+  const side = (along === 'horizontal' ? c.y > at.y : c.x > at.x) ? 'after' : 'before'
+  return { at, along, side }
 }
 
 /**
  * One connector (§5.4 #1–#2): the ELK sections as a single r=8 path, dashed by `style`, coloured and headed by
  * `state`/`arrow`, its label on a `card` mask off the longest run; a transparent 18 px stroke is the hit area.
  */
-export function EdgePath({ edge: e, state, style, arrow, markerId, tokens: t, label, full, labelFill }: { edge: Pick<LayoutEdge, 'sections'>; state: UnitState; style?: 'solid' | 'dashed' | null; arrow?: Arrow | null; markerId: string | null; tokens: DiagramTokens; label?: string | null; full?: string; labelFill?: string }) {
+export function EdgePath({ edge: e, state, style, arrow, markerId, tokens: t, label, full, labelFill }: { edge: Pick<LayoutEdge, 'sections' | 'label'>; state: UnitState; style?: 'solid' | 'dashed' | null; arrow?: Arrow | null; markerId: string | null; tokens: DiagramTokens; label?: string | null; full?: string; labelFill?: string }) {
   const d = sectionsPath(e.sections)
   const p = paint(state, t)
   const m = markers(arrow, markerFor(markerId, state))
@@ -204,7 +219,7 @@ export function EdgePath({ edge: e, state, style, arrow, markerId, tokens: t, la
     <>
       <path d={d} fill="none" stroke="transparent" strokeWidth={18} />
       <path d={d} fill="none" stroke={p.stroke} strokeWidth={state === 'active' ? 2 : 1.25} strokeDasharray={style === 'dashed' ? '6 4' : undefined} {...m} />
-      {l && label && <MaskedLabel text={label} full={full} at={l.at} along={l.along} tokens={t} fill={labelFill ?? p.stroke} />}
+      {l && label && <MaskedLabel text={label} full={full} at={l.at} along={l.along} side={l.side} tokens={t} fill={labelFill ?? p.stroke} />}
     </>
   )
 }

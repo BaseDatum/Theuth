@@ -33,7 +33,7 @@ test('story map: three labelled bands, the release cut after Should, n/limit hea
   expect(cut).toBeGreaterThan(h.indexOf('data-band="Should"'))
   expect(cut).toBeLessThan(h.indexOf('data-band="Could"'))
   expect(h).toMatch(/role="separator" aria-label="release cut"/)
-  // both limited columns hold 3 cards over a limit of 2 → `3/2 ⚠`; Boards has no limit → a bare count
+  // both limited columns hold 3 cards over a limit of 2 → `3/2` + warning icon; Boards has no limit → a bare count
   expect(h.match(/>3\/2</g)).toHaveLength(2)
   expect(h.match(/aria-label="over limit"/g)).toHaveLength(2)
   expect(h).toContain('>1</span>')
@@ -47,11 +47,11 @@ test('story map: three labelled bands, the release cut after Should, n/limit hea
   expect(h).toContain('grid-template-columns:repeat(3, minmax(12rem, 1fr))')
 })
 
-test('over limit: n/limit turns to 2/1 with an ⚠ marker', () => {
+test('over limit: n/limit turns to 2/1 with a warning icon', () => {
   const h = html({ columns: [{ title: 'Doing', limit: 1, cards: [{ title: 'a' }, { title: 'b' }] }] })
   expect(h).toContain('>2/1<')
   expect(h).toContain('aria-label="over limit"')
-  expect(h).toContain('⚠')
+  expect(h).toContain('lucide-triangle-alert')
   expect(kanbanUnits({ columns: [{ title: 'Doing', cards: [{ title: 'a' }, { title: 'b', id: 'x' }] }] })).toEqual(['0:0', 'x'])
 })
 

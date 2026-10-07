@@ -1,6 +1,7 @@
-// 123 §4.1 / §5.2 (W3): the `Kanban` renderer stays HTML. Adds `limit` (`n/limit`, `⚠` over), card `state`
+// 123 §4.1 / §5.2 (W3): the `Kanban` renderer stays HTML. Adds `limit` (`n/limit`, a warning icon over), card `state`
 // (`⊘` blocked, `✓` done), `rows`/`row`/`cut` (story-map swimlanes on one CSS grid, a release line after `cut`),
 // `title`, and the §5.3 unit contract on cards. `registry.tsx` mounts the exported `Kanban` by name.
+import { TriangleAlert } from 'lucide-react'
 import { type CSSProperties, Fragment, type ReactNode, useMemo } from 'react'
 import type { z } from 'zod'
 import { unitLabel } from '@/lib/diagram/a11y'
@@ -62,11 +63,7 @@ function Header({ col }: { col: KanbanData['columns'][number] }) {
       <span className="font-medium">{col.title}</span>
       <span className="text-xs text-fg-tertiary tabular-nums" style={over ? { color: DANGER } : undefined}>
         {col.limit === undefined ? n : `${n}/${col.limit}`}
-        {over && (
-          <span aria-label="over limit" className="ml-1">
-            ⚠
-          </span>
-        )}
+        {over && <TriangleAlert aria-label="over limit" className="ml-1 inline size-3 align-[-1px]" />}
       </span>
     </div>
   )

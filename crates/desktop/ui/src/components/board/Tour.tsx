@@ -9,6 +9,11 @@ import { type CSSProperties, useCallback, useEffect, useMemo, useRef, useState }
 import { createPortal } from 'react-dom'
 import { useStore } from 'zustand'
 import { Excerpt } from '@/components/chat/surface/Excerpt'
+import { EntitiesView } from '@/components/chat/surface/diagrams/Entities'
+import { GraphDeltaView } from '@/components/chat/surface/diagrams/GraphDelta'
+import { StateMachineView } from '@/components/chat/surface/diagrams/StateMachine'
+import { SwimlaneView } from '@/components/chat/surface/diagrams/Swimlane'
+import { TreeDiagramView } from '@/components/chat/surface/diagrams/TreeDiagram'
 import { GraphView } from '@/components/chat/surface/Graph'
 import { SequenceView } from '@/components/chat/surface/Sequence'
 import { Button } from '@/components/ui/button'
@@ -61,11 +66,25 @@ function clampPane(w: number): number {
 
 const reducedMotion = () => matchMedia('(prefers-reduced-motion: reduce)').matches
 
-/** A `Graph` or `Sequence` with `highlight` by unit id (a step's id is its index). */
+/** A board `Diagram` with `highlight` by unit id (a Sequence step's id is its index). */
 export function DiagramView({ diagram, highlight, onSelect }: { diagram: Diagram; highlight: readonly string[]; onSelect?: (id: string) => void }) {
   const steps = useMemo(() => highlight.map(Number), [highlight])
-  if (diagram.type === 'Graph') return <GraphView props={diagram.props} highlight={highlight} onSelect={onSelect} />
-  return <SequenceView props={diagram.props} highlight={steps} onSelect={onSelect && ((i) => onSelect(String(i)))} />
+  switch (diagram.type) {
+    case 'Graph':
+      return <GraphView props={diagram.props} highlight={highlight} onSelect={onSelect} />
+    case 'StateMachine':
+      return <StateMachineView props={diagram.props} highlight={highlight} onSelect={onSelect} />
+    case 'Entities':
+      return <EntitiesView props={diagram.props} highlight={highlight} onSelect={onSelect} />
+    case 'Swimlane':
+      return <SwimlaneView props={diagram.props} highlight={highlight} onSelect={onSelect} />
+    case 'GraphDelta':
+      return <GraphDeltaView props={diagram.props} highlight={highlight} onSelect={onSelect} />
+    case 'Tree':
+      return <TreeDiagramView props={diagram.props} highlight={highlight} onSelect={onSelect} />
+    case 'Sequence':
+      return <SequenceView props={diagram.props} highlight={steps} onSelect={onSelect && ((i) => onSelect(String(i)))} />
+  }
 }
 
 /** In flow (M14): the wide diagram block with its units anchored, and **Tour** when at least one unit has a `ref`; a fresh block rises and staggers (M7). */

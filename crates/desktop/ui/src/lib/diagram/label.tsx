@@ -22,6 +22,15 @@ export function labelBox(shown: string): { w: number; h: number } {
   return { w: Math.ceil(shown.length * CHAR_W + 2 * PAD_X), h: LABEL_PX + 2 * PAD_Y }
 }
 
+/** The mask rect for `shown` centred at `at`, `LABEL_GAP` off a `horizontal`/`vertical` stroke on `side` (what `MaskedLabel` draws; the geometry tests measure it). */
+export function maskRect(shown: string, at: Point, along: 'horizontal' | 'vertical', side: 'before' | 'after' = 'before'): { x: number; y: number; w: number; h: number } {
+  const box = labelBox(shown)
+  const k = side === 'before' ? -1 : 1
+  const cx = along === 'horizontal' ? at.x : at.x + k * (LABEL_GAP + box.w / 2)
+  const cy = along === 'horizontal' ? at.y + k * (LABEL_GAP + box.h / 2) : at.y
+  return { x: cx - box.w / 2, y: cy - box.h / 2, w: box.w, h: box.h }
+}
+
 /**
  * The label centred at `at`, offset `LABEL_GAP` perpendicular to a `horizontal`/`vertical` stroke (`above`/`beside`
  * pick the side), on a `card`-filled mask. `full` (defaults to `text`) is the `<title>` for the hover.
@@ -29,15 +38,12 @@ export function labelBox(shown: string): { w: number; h: number } {
 export function MaskedLabel({ text, full, at, along, side = 'before', tokens: t, fill }: { text: string; full?: string; at: Point; along: 'horizontal' | 'vertical'; side?: 'before' | 'after'; tokens: DiagramTokens; fill?: string }) {
   const shown = truncate(text)
   if (!shown) return null
-  const box = labelBox(shown)
-  const k = side === 'before' ? -1 : 1
-  const cx = along === 'horizontal' ? at.x : at.x + k * (LABEL_GAP + box.w / 2)
-  const cy = along === 'horizontal' ? at.y + k * (LABEL_GAP + box.h / 2) : at.y
+  const r = maskRect(shown, at, along, side)
   return (
     <g>
       <title>{full ?? text}</title>
-      <rect x={cx - box.w / 2} y={cy - box.h / 2} width={box.w} height={box.h} rx={3} fill={t.card} />
-      <text x={cx} y={cy} dy="0.32em" textAnchor="middle" fontFamily={t.font} fontSize={LABEL_PX} fill={fill ?? t.mutedForeground}>
+      <rect x={r.x} y={r.y} width={r.w} height={r.h} rx={3} fill={t.card} />
+      <text x={r.x + r.w / 2} y={r.y + r.h / 2} dy="0.32em" textAnchor="middle" fontFamily={t.font} fontSize={LABEL_PX} fill={fill ?? t.mutedForeground}>
         {shown}
       </text>
     </g>
