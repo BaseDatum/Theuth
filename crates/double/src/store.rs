@@ -543,8 +543,10 @@ pub fn encode_f16(v: &[f32]) -> Vec<u8> {
 
 /// Inverse of [`encode_f16`]; a trailing odd byte is dropped.
 pub fn decode_f16(b: &[u8]) -> Vec<f32> {
-    b.chunks_exact(2)
-        .map(|c| f16::from_le_bytes([c[0], c[1]]).to_f32())
+    b.as_chunks::<2>()
+        .0
+        .iter()
+        .map(|c| f16::from_le_bytes(*c).to_f32())
         .collect()
 }
 

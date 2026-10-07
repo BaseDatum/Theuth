@@ -168,6 +168,7 @@ impl Port for LivePort {
             agents()?.ask(Cancel {
                 session,
                 keep: None,
+                scope: agent::CancelScope::Root,
             }),
         )
         .await

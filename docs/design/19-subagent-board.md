@@ -185,6 +185,10 @@ entry. A peer message never takes the human-answer path. `cancel(session)`
 still fans out to running descendants; A2A request scopes are cancelled by
 scope, not by cancelling the whole session (50 §8).
 
+*Revision (133 §2, 2026-10-07).* The fan-out is now opt-in: `cancel(session)` and every plain stop (tap, Esc, chat
+"stop") reach the root alone; `cancel(session, "tree")` — the stop button held and slid up, Esc held or tapped three
+times — is the cascade described above. Running children a root stop leaves alone report to their parent as usual.
+
 ### 2.4 Not added
 
 No server-side "current agent" (a frontend concern; Signal has none); no

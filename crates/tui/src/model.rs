@@ -864,6 +864,8 @@ pub enum Command {
     TalkStart(Option<SessionId>),
     /// `talk_stop(id)`; `TalkFinished` follows on the bus.
     TalkStop(talk::TalkId),
+    /// `cancel(session, "tree")`: the turn and every running descendant (133 §5).
+    CancelTree(SessionId),
 }
 
 /// One row of the `/login` picker.
@@ -1637,7 +1639,11 @@ pub const COMMANDS: &[(&str, &str, &str)] = &[
         "[status|off|pause [off]|train [a|b] [venue]|rollback <version>|cap <class> <rung> [opt-in]]",
         "the owner's double (126): its numbers, learning on/off, a training run, caps",
     ),
-    ("/cancel", "", "abort the in-flight turn"),
+    (
+        "/cancel",
+        "",
+        "abort the in-flight turn (Esc; Esc x3 within 1 s stops its subagents too)",
+    ),
     (
         "/compact",
         "[summary|cut|snap|style …]",
@@ -3292,6 +3298,9 @@ pub struct Window {
     pub top: usize,
 }
 
+/// Three Escs inside this window stop the running subtree as well as the root (133 §5).
+pub const ESC_TAPS_WINDOW: std::time::Duration = std::time::Duration::from_secs(1);
+
 /// Body rows the open todo card shows at most (47 §6.3).
 pub const TODO_ROWS: usize = 6;
 /// Columns of a todo row's status column: `[in progress] `.
@@ -3661,6 +3670,8 @@ pub struct Model {
     talk_pending: bool,
     /// A `/attach` pick this frame: the token the editor prepends to its text.
     pub attach_token: Option<String>,
+    /// When Esc last cancelled (133 §5): three within [`ESC_TAPS_WINDOW`] stop the subtree too.
+    esc_taps: Vec<std::time::Instant>,
 }
 
 impl Model {
@@ -6888,11 +6899,36 @@ impl Model {
         send(tx, Command::ListAgents(id));
     }
 
-    /// Cancel the current session's in-flight turn or `/compact`, if any.
-    pub fn cancel(&self, tx: &UnboundedSender<Command>) {
-        if let (Some(session), true) = (self.session, self.streaming || self.compacting) {
+    /// Esc: cancel the current session's in-flight turn or `/compact`, if any
+    /// (the root only); the third Esc within [`ESC_TAPS_WINDOW`] stops its
+    /// running subagents too (133 §5).
+    pub fn cancel(&mut self, tx: &UnboundedSender<Command>) {
+        self.cancel_at(std::time::Instant::now(), tx);
+    }
+
+    /// [`Self::cancel`] with the clock injected.
+    pub fn cancel_at(&mut self, now: std::time::Instant, tx: &UnboundedSender<Command>) {
+        let Some(session) = self.session.filter(|_| self.streaming || self.compacting) else {
+            return;
+        };
+        self.esc_taps
+            .retain(|t| now.duration_since(*t) < ESC_TAPS_WINDOW);
+        self.esc_taps.push(now);
+        if self.esc_taps.len() < 3 {
             send(tx, Command::Cancel(session));
+            return;
         }
+        self.esc_taps.clear();
+        let n = self
+            .agents
+            .values()
+            .filter(|r| r.info.id != session && r.live())
+            .count();
+        self.entries.push(Entry::Info(format!(
+            "stopped {n} agent{}",
+            if n == 1 { "" } else { "s" }
+        )));
+        send(tx, Command::CancelTree(session));
     }
 
     /// Alt+Up: take the newest queued steer back into the editor. Only into
@@ -14516,6 +14552,59 @@ mod tests {
         );
         let row = lines.next().unwrap();
         assert!(row.ends_with(&format!(" · {}…", "x".repeat(59))), "{row}");
+    }
+
+    /// 133 §5: Esc cancels the root; the third Esc within a second cancels the
+    /// tree and says how many subagents went with it. Spaced taps never do.
+    #[test]
+    fn triple_esc_cancels_the_tree() {
+        let (tx, mut rx) = unbounded_channel();
+        let mut m = Model::default();
+        let root = SessionId::new();
+        m.session = Some(root);
+        m.streaming = true;
+        let info = |state: AgentState| AgentInfo {
+            id: SessionId::new(),
+            name: "w".into(),
+            parent: root,
+            depth: 1,
+            agent: None,
+            model: "m".into(),
+            state,
+            started_at: None,
+            finished_at: None,
+            last: String::new(),
+            project: None,
+            retention: agent::Retention::Durable,
+            activity: Default::default(),
+            cap: None,
+            kind: Default::default(),
+        };
+        for state in [AgentState::Running, AgentState::Running, AgentState::Idle] {
+            let i = info(state);
+            m.agents.insert(i.id, AgentRow::new(i));
+        }
+        let t0 = std::time::Instant::now();
+        let ms = |n: u64| t0 + std::time::Duration::from_millis(n);
+        m.cancel_at(ms(0), &tx);
+        m.cancel_at(ms(300), &tx);
+        m.cancel_at(ms(600), &tx);
+        assert!(matches!(rx.try_recv(), Ok(Command::Cancel(s)) if s == root));
+        assert!(matches!(rx.try_recv(), Ok(Command::Cancel(s)) if s == root));
+        assert!(matches!(rx.try_recv(), Ok(Command::CancelTree(s)) if s == root));
+        assert!(matches!(m.entries.last(), Some(Entry::Info(t)) if t == "stopped 2 agents"));
+        // The taps were spent: three more are needed, and spaced ones never add up.
+        m.cancel_at(ms(700), &tx);
+        m.cancel_at(ms(1800), &tx);
+        m.cancel_at(ms(2900), &tx);
+        for _ in 0..3 {
+            assert!(matches!(rx.try_recv(), Ok(Command::Cancel(_))));
+        }
+        assert!(rx.try_recv().is_err());
+        // Nothing in flight: Esc is not a cancel at all.
+        m.streaming = false;
+        m.cancel_at(ms(3000), &tx);
+        assert!(rx.try_recv().is_err());
     }
 
     #[test]

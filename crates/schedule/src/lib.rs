@@ -1632,16 +1632,19 @@ async fn cancel_tree(
             .ask(agent::Cancel {
                 session: child,
                 keep: None,
+                scope: agent::CancelScope::Root,
             })
             .await
         {
             tracing::warn!(%name, %child, "cancel of subagent failed: {e}");
         }
     }
+    // 133 §3: the root cancel reaches every running descendant, any depth.
     agents
         .ask(agent::Cancel {
             session,
             keep: None,
+            scope: agent::CancelScope::Tree,
         })
         .await
         .map_err(|e| e.to_string())

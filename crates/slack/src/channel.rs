@@ -188,6 +188,7 @@ impl Port for Actors {
             .ask(Cancel {
                 session,
                 keep: None,
+                scope: agent::CancelScope::Root,
             })
             .await
             .map_err(|e| e.to_string())

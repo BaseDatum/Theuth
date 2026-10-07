@@ -495,6 +495,7 @@ impl Advisors {
                 self.tell_agents(crate::Cancel {
                     session: advisor,
                     keep: None,
+                    scope: crate::CancelScope::Root,
                 })
                 .await;
             } else {
@@ -846,6 +847,7 @@ impl Message<Detach> for Advisors {
             self.tell_agents(crate::Cancel {
                 session: link.row.advisor,
                 keep: None,
+                scope: crate::CancelScope::Root,
             })
             .await;
         }
@@ -1125,6 +1127,7 @@ impl Message<AgentEvent> for Advisors {
                         self.tell_agents(crate::Cancel {
                             session,
                             keep: None,
+                            scope: crate::CancelScope::Root,
                         })
                         .await;
                     }
@@ -1167,6 +1170,7 @@ impl Message<AgentEvent> for Advisors {
                     self.tell_agents(crate::Cancel {
                         session: advisor,
                         keep: None,
+                        scope: crate::CancelScope::Root,
                     })
                     .await;
                 }

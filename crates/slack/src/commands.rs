@@ -398,6 +398,7 @@ async fn run(cmd: Cmd, cx: &CommandCx<'_>) -> anyhow::Result<Outcome> {
                 .ask(agent::Cancel {
                     session,
                     keep: None,
+                    scope: agent::CancelScope::Root,
                 })
                 .await
                 .map_err(err)?;
