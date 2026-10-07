@@ -10179,7 +10179,8 @@ pub(crate) mod tests {
     /// 127 §1: starring resolves through the catalog, keeps starring order,
     /// never duplicates, is a no-op in the requested state, persists one
     /// flow-sequence line that `AgentConfig` reads back, and announces the
-    /// new list; an unknown id is rejected and leaves the file alone.
+    /// new list; an id the resolver rejects (like `set_model`: an ambiguous
+    /// bare id — `provider/model` passes through) leaves the file alone.
     #[tokio::test]
     async fn favorites_persist_as_one_flow_sequence_line() {
         let mut a = agents().await;
@@ -10220,8 +10221,12 @@ pub(crate) mod tests {
         let cfg = agent_section(&written);
         assert_eq!(cfg.favorite_models, ["testvis/eyes", "testvis/blind"]);
 
-        // Unknown id: rejected like `set_model`, nothing written or announced.
-        assert!(a.set_model_favorite(star("nope/none", true)).await.is_err());
+        // Rejected like `set_model` (the resolver's only error: a bare id in
+        // two configured providers); nothing written or announced.
+        a.configured = Arc::new(|_: &str| true);
+        let err = a.set_model_favorite(star("eyes", true)).await.unwrap_err();
+        assert!(err.starts_with("ambiguous model `eyes`"), "{err}");
+        a.configured = Arc::new(|ns: &str| ns == "testvis");
         assert_eq!(std::fs::read_to_string(&yaml).unwrap(), written);
 
         // Unstar to empty: `[]`, and the config still reads back.

@@ -2268,7 +2268,9 @@ mod tests {
     }
 
     /// Long rows used to make the box taller than its rows (empty space under
-    /// the list) at some widths; the box must be title + rows + border.
+    /// the list) at some widths; the box must be title + rows + border. The
+    /// title (69 cells since 127's `⇥ ★ favorite`) wraps below width 74, so
+    /// the ten rows are counted from the bottom border instead of the whole box.
     #[test]
     fn menu_box_is_tight_at_any_width() {
         let mut m = Model::default();
@@ -2305,7 +2307,20 @@ mod tests {
             let lines: Vec<&str> = frame.lines().collect();
             let top = lines.iter().position(|l| l.starts_with('╭')).unwrap();
             let bottom = lines.iter().position(|l| l.starts_with('╰')).unwrap();
-            assert_eq!(bottom - top, 12, "width {width}: box spans {top}..{bottom}");
+            let inner = &lines[top + 1..bottom];
+            let is_row = |l: &str| l.contains("amazon-bedrock/us.");
+            assert_eq!(
+                inner.iter().filter(|l| is_row(l)).count(),
+                10,
+                "width {width}"
+            );
+            assert!(
+                inner.iter().rev().take(10).all(|l| is_row(l)),
+                "width {width}: empty space under the list in {top}..{bottom}"
+            );
+            if width >= 74 {
+                assert_eq!(bottom - top, 12, "width {width}: box spans {top}..{bottom}");
+            }
             assert!(
                 lines
                     .iter()
