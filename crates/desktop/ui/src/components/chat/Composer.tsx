@@ -43,6 +43,7 @@ import { EMPTY, useDrafts, useSkillDraft } from '@/lib/drafts'
 import { DEBOUNCE_MS as PATH_DEBOUNCE_MS, type PathPopup, accept as acceptPath, pathKey, pathTrigger, step as stepPath } from '@/lib/path-complete'
 import { useIsMobile } from '@/hooks/use-mobile'
 import { interrupt, phase, press } from '@/lib/composer-state'
+import { shouldRefocus } from '@/lib/composer-focus'
 import * as speech from '@/lib/speech'
 import * as talk from '@/lib/talk'
 import { label as chordLabel, matches as chord } from '@/lib/chord'
@@ -355,6 +356,18 @@ export function Composer({
     const focus = () => ref.current?.focus()
     window.addEventListener('theuth:focus-composer', focus)
     return () => window.removeEventListener('theuth:focus-composer', focus)
+  }, [focused])
+
+  /** COMPOSER-FOCUS (2026-10-07): the caret comes back after a send on desktop so Esc (`keys.stop`) cancels the turn;
+   * never on touch, never away from a dialog or another input (`lib/composer-focus`). */
+  const refocus = () => {
+    if (shouldRefocus(document.activeElement, box.current, touch())) ref.current?.focus()
+  }
+  // A new chat's send navigates to `/c/$session`, whose composer mounts fresh: it takes the caret like the one that sent.
+  // Keyed on `focused`, not mount: the route's `usePanes.show(session)` runs after this child's effects, so on mount
+  // this pane is not the focused one yet. The guard keeps a click into another input or a dialog where it is.
+  useEffect(() => {
+    if (focused) refocus()
   }, [focused])
 
   // Dictation (54 §7): Ctrl+D / the Mic button toggles; we own the caret. The local daemon owns the mic; on a
@@ -756,6 +769,7 @@ export function Composer({
       else toast.error(e instanceof Error ? e.message : String(e))
     } finally {
       setBusy(false)
+      refocus()
     }
   }
 
@@ -778,6 +792,7 @@ export function Composer({
       toast.error(e instanceof Error ? e.message : String(e))
     } finally {
       setBusy(false)
+      refocus()
     }
   }
 

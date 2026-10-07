@@ -8,6 +8,7 @@ import type { CompactStyle } from "@/rpc/bindings/CompactStyle";
 import type { ContextEntry } from "@/rpc/bindings/ContextEntry";
 import type { HarnessCommand } from "@/rpc/bindings/HarnessCommand";
 import type { JobExit } from "@/rpc/bindings/JobExit";
+import type { LiveCountsRow } from "@/rpc/bindings/LiveCountsRow";
 import type { PeerOrigin } from "@/rpc/bindings/PeerOrigin";
 import type { QueuedInput } from "@/rpc/bindings/QueuedInput";
 import type { TodoSnapshot } from "@/rpc/bindings/TodoSnapshot";
@@ -253,6 +254,8 @@ export type SessionSlice = {
   ptys: Set<string>;
   /** Non-PTY background jobs still running (`JobStarted` until `JobFinished`). The sidebar's background-job glyph. */
   jobs: Set<string>;
+  /** Pending reminders (`ReminderSet` until `ReminderFired`/`ReminderCancelled`). The sidebar's reminder glyph. */
+  reminders: Set<string>;
   /** Artifacts by `call_id` of the `show` call that made them (35 §7.3); fed by `ArtifactShown` and `list_artifacts`. */
   artifacts: Map<string, Artifact>;
   /** Tool calls whose arguments are still streaming (`ToolCallProgress`), by `call_id`; cleared on `ToolCallStarted`.
@@ -348,6 +351,9 @@ type SessionsStore = {
   markStale(id?: string): void;
   /** Forget that any transcript was loaded: the chat route refetches on its next mount. */
   unload(): void;
+  /** Install the `list_live_counts` snapshot: every row's session gets exactly its `jobs`/`ptys`/`reminders`; every
+   * other slice with a non-empty set is emptied (the snapshot is the truth). Touches nothing else. */
+  seedLive(rows: LiveCountsRow[]): void;
 };
 
 export type SessionsApi = StoreApi<SessionsStore>;
@@ -648,6 +654,26 @@ export const createSessions = (): SessionsApi =>
             ]),
           ),
         }));
+      },
+      seedLive(rows) {
+        set((st) => {
+          const sessions = { ...st.sessions };
+          const seen = new Set<string>();
+          for (const r of rows) {
+            seen.add(r.session);
+            sessions[r.session] = {
+              ...(sessions[r.session] ?? empty(r.session)),
+              jobs: new Set(r.jobs),
+              ptys: new Set(r.ptys),
+              reminders: new Set(r.reminders),
+            };
+          }
+          for (const [id, s] of Object.entries(sessions)) {
+            if (seen.has(id) || !(s.jobs.size || s.ptys.size || s.reminders.size)) continue;
+            sessions[id] = { ...s, jobs: new Set(), ptys: new Set(), reminders: new Set() };
+          }
+          return { sessions };
+        });
       },
     })),
   );

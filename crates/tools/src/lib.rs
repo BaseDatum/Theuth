@@ -59,7 +59,7 @@ pub use communication::{CommunicationAccess, Disabled};
 pub use jobs::CloseSessions;
 pub use jobs::{
     CancelJob, CancelOrigin, InstallActivity, JOBS_ACTOR, JobCounts, JobEvent, JobExit, JobId,
-    JobView, Jobs, ListJobs,
+    JobView, Jobs, ListJobs, LiveCounts, LiveCountsRow,
 };
 pub use journal::{
     Answerer, InstallJournal, JobKind, JobRow, JobState, Journal, NoopJournal, PtyScreenRow,

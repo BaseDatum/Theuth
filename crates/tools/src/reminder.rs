@@ -32,6 +32,7 @@ pub const MAX_MESSAGE_CHARS: usize = 2000;
 
 /// Bus events, observation only (the model is woken through the guard).
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 #[serde(tag = "type")]
 pub enum ReminderEvent {
     /// A reminder was armed by the model (not re-armed from the store).
@@ -53,6 +54,15 @@ pub enum ReminderEvent {
     /// Retired without delivery (`cancel_reminder` or the session closed).
     #[serde(rename = "ReminderCancelled")]
     Cancelled {
+        /// Owning session.
+        session: SessionId,
+        /// `r<n>`.
+        id: String,
+    },
+    /// Delivered: the row left `pending` and its guard settled
+    /// `Settle::Reminder`. The desktop clears its sidebar glyph on this.
+    #[serde(rename = "ReminderFired")]
+    Fired {
         /// Owning session.
         session: SessionId,
         /// `r<n>`.
@@ -131,7 +141,7 @@ struct Fired {
 }
 
 pub(crate) struct Reminder {
-    id: String,
+    pub(crate) id: String,
     op: OperationId,
     message: String,
     set_at: i64,
@@ -144,7 +154,7 @@ pub(crate) struct Reminder {
 #[derive(Default)]
 pub(crate) struct SessionReminders {
     next: u32,
-    pending: Vec<Reminder>,
+    pub(crate) pending: Vec<Reminder>,
 }
 
 fn now() -> i64 {
@@ -346,8 +356,14 @@ impl Message<Fired> for Jobs {
         // The actor's clone carries the payload; whichever clone drops last
         // settles `Settle::Reminder` (47 §4.1).
         if let Some(activity) = self.live.remove(&r.op) {
-            activity.set_reminder(r.id, r.message, r.set_at, r.seconds, r.late);
+            activity.set_reminder(r.id.clone(), r.message, r.set_at, r.seconds, r.late);
         }
+        self.rt
+            .publish(ReminderEvent::Fired {
+                session: m.session,
+                id: r.id,
+            })
+            .await;
     }
 }
 
@@ -570,6 +586,97 @@ mod tests {
             matches!(seen.as_slice(), [Seen::Admitted(op), Seen::Finished(f)] if op.id == *f),
             "{seen:?}"
         );
+    }
+
+    /// Wire tags as the bus publishes them, in order.
+    fn tags(fx: &crate::jobs::tests::Fx) -> Vec<(String, String)> {
+        crate::jobs::lock(&fx.reminder_events)
+            .iter()
+            .map(|e| {
+                let v = serde_json::to_value(e).unwrap();
+                (
+                    v["type"].as_str().unwrap().into(),
+                    v["id"].as_str().unwrap().into(),
+                )
+            })
+            .collect()
+    }
+
+    /// LIVE-GLYPHS A1: a fired reminder publishes `ReminderFired` with its id;
+    /// a cancelled one publishes `ReminderCancelled` and never `ReminderFired`.
+    #[tokio::test]
+    async fn fired_and_cancelled_publish_their_events() {
+        let fx = fixture(Duration::ZERO, Duration::from_secs(30)).await;
+        set(&fx, 1, "fires").await.unwrap();
+        set(&fx, 600, "cancelled").await.unwrap();
+        fx.jobs
+            .ask(CancelReminder {
+                session: fx.session,
+                id: "r2".into(),
+            })
+            .await
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(1500)).await;
+        let r1 = serde_json::to_value(ReminderEvent::Fired {
+            session: fx.session,
+            id: "r1".into(),
+        })
+        .unwrap();
+        assert_eq!(
+            r1,
+            serde_json::json!({"type": "ReminderFired", "session": fx.session, "id": "r1"})
+        );
+        assert_eq!(
+            tags(&fx),
+            [
+                ("ReminderSet".to_owned(), "r1".to_owned()),
+                ("ReminderSet".to_owned(), "r2".to_owned()),
+                ("ReminderCancelled".to_owned(), "r2".to_owned()),
+                ("ReminderFired".to_owned(), "r1".to_owned()),
+            ]
+        );
+        // Fired rows leave `pending`: nothing left to cancel.
+        let err = fx
+            .jobs
+            .ask(CancelReminder {
+                session: fx.session,
+                id: "r1".into(),
+            })
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("no such reminder r1"), "{err}");
+    }
+
+    /// LIVE-GLYPHS A3: the snapshot lists pending reminder ids per session
+    /// and omits sessions with nothing live.
+    #[tokio::test]
+    async fn live_counts_lists_pending_reminders_only() {
+        let fx = fixture(Duration::ZERO, Duration::from_secs(30)).await;
+        set(&fx, 600, "x").await.unwrap();
+        set(&fx, 600, "y").await.unwrap();
+        let other = SessionId::new();
+        let v = fx
+            .jobs
+            .ask(SetReminder {
+                session: other,
+                message: "z".into(),
+                seconds: 600,
+                activity: None,
+            })
+            .await
+            .unwrap();
+        fx.jobs
+            .ask(CancelReminder {
+                session: other,
+                id: v.id,
+            })
+            .await
+            .unwrap();
+        let rows = fx.jobs.ask(crate::jobs::LiveCounts).await.unwrap();
+        assert_eq!(rows.len(), 1, "{rows:?}");
+        assert_eq!(rows[0].session, fx.session);
+        assert_eq!(rows[0].reminders, ["r1", "r2"]);
+        assert!(rows[0].jobs.is_empty() && rows[0].ptys.is_empty());
     }
 
     #[tokio::test]

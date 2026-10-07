@@ -2341,6 +2341,8 @@ impl Message<ReminderEvent> for Agents {
             ReminderEvent::Cancelled { session, id } => {
                 self.store_for(session).delete_reminder(session, &id).await
             }
+            // The fired row is already deleted with its `Settle::Reminder`.
+            ReminderEvent::Fired { .. } => Ok(()),
         };
         if let Err(e) = r {
             tracing::warn!("reminder row not written: {e:#}");
