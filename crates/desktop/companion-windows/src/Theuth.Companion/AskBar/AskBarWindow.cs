@@ -113,7 +113,10 @@ internal sealed partial class AskBarWindow : ToolWindow, IAskBarSurface
         AutomationProperties.SetHelpText(field, "Enter sends to theuth's desk, which routes it");
         field.TextChanged += (_, _) =>
         {
-            if (!settingText) model?.FieldEdited(field.Text);
+            // TextChanged is raised asynchronously after a programmatic set, so the flag alone is not enough: a text equal to
+            // the model's is ours, not the user's (seen live: a dictation partial echoed back as an edit grew the field 5×).
+            if (settingText || model is null || field.Text == model.FieldText) return;
+            model.FieldEdited(field.Text);
         };
         Grid.SetColumn(field, 1);
         mic = new FontIcon { Glyph = "\uE720", FontSize = 14, Foreground = ink2, VerticalAlignment = VerticalAlignment.Center, RenderTransform = micScale };
