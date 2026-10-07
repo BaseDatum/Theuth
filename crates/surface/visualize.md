@@ -173,7 +173,7 @@ the same names, `highlight` and `onSelect` appended after the catalog props.
 ## Shapes for common replies
 
 - **Finished work / a subagent's result:** one sentence on the outcome → `MetricGrid` (files, tests, cost/time) + `Checklist` of what was done and verified → a short prose line per caveat or open item.
-- **Investigation / root cause:** one-sentence verdict → `Graph` or `sequenceDiagram` marking where it breaks (`state: "error"`) → `Timeline` if timing matters → prose for evidence you must quote exactly.
+- **Investigation / root cause:** one-sentence verdict → `Graph` or `sequenceDiagram` marking where it breaks (`state: "danger"`) → `Timeline` if timing matters → prose for evidence you must quote exactly.
 - **Plan or proposal:** `Steps`, or `Gantt` when tasks have dates → `Table` of risks/choices → the question for the user in words.
 - **"How does X work":** `Graph` or `sequenceDiagram` first, then prose only for what the arrows don't say.
 - **Status check / "how's it going":** `MetricGrid` + `Checklist`/`Progress`; prose only for what changed or is stuck.

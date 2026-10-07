@@ -1,0 +1,288 @@
+{
+  "model": "claude-opus-5-5",
+  "block_bytes": 10263,
+  "grammar": {
+    "right": 10,
+    "total": 20,
+    "by_group": {
+      "lifecycle": "0/5",
+      "schema": "0/5",
+      "plan": "2/2",
+      "handoff": "3/3",
+      "quantity": "5/5"
+    },
+    "bar": ">= 16/20"
+  },
+  "hold": {
+    "false_draws": 0,
+    "total": 10,
+    "bar": "<= 1/10"
+  },
+  "rows": [
+    {
+      "id": "life-order",
+      "group": "lifecycle",
+      "picks": [
+        "mermaid:stateDiagram-v2"
+      ],
+      "ok": false
+    },
+    {
+      "id": "life-pr",
+      "group": "lifecycle",
+      "picks": [
+        "mermaid:stateDiagram-v2"
+      ],
+      "ok": false
+    },
+    {
+      "id": "life-tcp",
+      "group": "lifecycle",
+      "picks": [
+        "mermaid:stateDiagram-v2",
+        "mermaid:sequenceDiagram"
+      ],
+      "ok": false
+    },
+    {
+      "id": "life-job",
+      "group": "lifecycle",
+      "picks": [
+        "mermaid:stateDiagram-v2"
+      ],
+      "ok": false
+    },
+    {
+      "id": "life-session",
+      "group": "lifecycle",
+      "picks": [
+        "mermaid:stateDiagram-v2",
+        "Table"
+      ],
+      "ok": false
+    },
+    {
+      "id": "schema-blog",
+      "group": "schema",
+      "picks": [
+        "mermaid:erDiagram",
+        "Table"
+      ],
+      "ok": false
+    },
+    {
+      "id": "schema-orders",
+      "group": "schema",
+      "picks": [
+        "mermaid:erDiagram"
+      ],
+      "ok": false
+    },
+    {
+      "id": "schema-classes",
+      "group": "schema",
+      "picks": [
+        "mermaid:classDiagram",
+        "Code"
+      ],
+      "ok": false
+    },
+    {
+      "id": "schema-sessions",
+      "group": "schema",
+      "picks": [
+        "mermaid:erDiagram",
+        "Table"
+      ],
+      "ok": false
+    },
+    {
+      "id": "schema-library",
+      "group": "schema",
+      "picks": [
+        "mermaid:erDiagram"
+      ],
+      "ok": false
+    },
+    {
+      "id": "plan-release",
+      "group": "plan",
+      "picks": [
+        "Gantt",
+        "Table"
+      ],
+      "ok": true
+    },
+    {
+      "id": "plan-migration",
+      "group": "plan",
+      "picks": [
+        "Stack",
+        "Gantt",
+        "KeyValueList",
+        "Table"
+      ],
+      "ok": true
+    },
+    {
+      "id": "handoff-incident",
+      "group": "handoff",
+      "picks": [
+        "Swimlane",
+        "Table"
+      ],
+      "ok": true
+    },
+    {
+      "id": "handoff-deploy",
+      "group": "handoff",
+      "picks": [
+        "Swimlane"
+      ],
+      "ok": true
+    },
+    {
+      "id": "handoff-hiring",
+      "group": "handoff",
+      "picks": [
+        "Swimlane",
+        "Table"
+      ],
+      "ok": true
+    },
+    {
+      "id": "qty-spend",
+      "group": "quantity",
+      "picks": [
+        "Stack",
+        "MetricGrid",
+        "Sankey"
+      ],
+      "ok": true
+    },
+    {
+      "id": "qty-latency",
+      "group": "quantity",
+      "picks": [
+        "Stack",
+        "MetricGrid",
+        "LineChart"
+      ],
+      "ok": true
+    },
+    {
+      "id": "qty-headcount",
+      "group": "quantity",
+      "picks": [
+        "Waterfall"
+      ],
+      "ok": true
+    },
+    {
+      "id": "qty-funnel",
+      "group": "quantity",
+      "picks": [
+        "Stack",
+        "Funnel",
+        "MetricGrid"
+      ],
+      "ok": true
+    },
+    {
+      "id": "qty-tests",
+      "group": "quantity",
+      "picks": [
+        "Stack",
+        "MetricGrid",
+        "BarChart",
+        "Bars"
+      ],
+      "ok": true
+    },
+    {
+      "id": "hold-fact",
+      "group": "hold",
+      "picks": [],
+      "ok": true
+    },
+    {
+      "id": "hold-command",
+      "group": "hold",
+      "picks": [],
+      "ok": true
+    },
+    {
+      "id": "hold-compare",
+      "group": "hold",
+      "picks": [
+        "Stack",
+        "Table",
+        "Tags"
+      ],
+      "ok": true
+    },
+    {
+      "id": "hold-arch",
+      "group": "hold",
+      "picks": [
+        "Graph",
+        "mermaid:sequenceDiagram"
+      ],
+      "ok": true
+    },
+    {
+      "id": "hold-letconst",
+      "group": "hold",
+      "picks": [
+        "Table",
+        "Code",
+        "Callout"
+      ],
+      "ok": true
+    },
+    {
+      "id": "hold-regex",
+      "group": "hold",
+      "picks": [
+        "Table"
+      ],
+      "ok": true
+    },
+    {
+      "id": "hold-steps",
+      "group": "hold",
+      "picks": [
+        "Steps",
+        "Callout"
+      ],
+      "ok": true
+    },
+    {
+      "id": "hold-config",
+      "group": "hold",
+      "picks": [
+        "Table",
+        "Callout"
+      ],
+      "ok": true
+    },
+    {
+      "id": "hold-glossary",
+      "group": "hold",
+      "picks": [
+        "Glossary"
+      ],
+      "ok": true
+    },
+    {
+      "id": "hold-review",
+      "group": "hold",
+      "picks": [
+        "Stack",
+        "Checklist",
+        "Alert"
+      ],
+      "ok": true
+    }
+  ]
+}

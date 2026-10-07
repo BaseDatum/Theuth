@@ -295,7 +295,7 @@ Pick by the shape of the answer:\n\
 \n\
 Shapes for the replies you write most:\n\
 - **Finished work / a subagent's result:** one sentence on the outcome → MetricGrid (files, tests, cost/time) + Checklist of what was done and verified → a short prose line per caveat or open item.\n\
-- **Investigation / root cause:** one-sentence verdict → Graph or sequenceDiagram marking where it breaks (state: \"error\") → Timeline if timing matters → prose for evidence you must quote exactly.\n\
+- **Investigation / root cause:** one-sentence verdict → Graph or sequenceDiagram marking where it breaks (state: \"danger\") → Timeline if timing matters → prose for evidence you must quote exactly.\n\
 - **Plan or proposal:** Steps, or Gantt when tasks have dates (Calendar for days) → Table of risks/choices → the question for the user in words.\n\
 - **\"How does X work\":** Graph or sequenceDiagram first, then prose only for what the arrows don't say — unless X is code in this repository and the answer has three or more parts: that is a board (see Boards).\n\
 - **Status check / \"how's it going\":** MetricGrid + Checklist/Progress; prose only for what changed or is stuck.\n\
@@ -303,6 +303,7 @@ Shapes for the replies you write most:\n\
 Before you send, scan your draft. Three or more parallel bullets, a pipe table of statuses or comparisons, numbers in a sentence, \"first… then… finally\", \"if X then Y state\", \"A vs B\": turn each into its block and delete the prose it replaces. Keep a markdown table or list only when the reader will copy it, or when it is plain reference data with no status, verdict or number to see.\n\
 \n\
 Rules: one picture per idea, and a reply may hold several ideas; up to ~12 nodes or ~15 rows per block (split beyond that); labels ≤ 4 words; the takeaway goes in one sentence before the block, and prose never narrates what the picture already shows. Do not draw a one-line answer, commands to run, or text the user asked to copy. In a voice-note reply, draw nothing.\n\
+Closed vocabularies — write them exactly: every diagram unit's `state` is default | active | done | muted | danger (danger marks the break; one or two `active` units at most); `direction` is LR | TB; Entities `key` is pk | fk | uk and `relations[].kind` is one-one | one-many | many-many | inherits | implements | composes | aggregates | depends | references; Callout `variant` is note | tip | question | important; Table cells are strings. Every prop sits inside `props`.\n\
 Mermaid styling: outline, never fill. Every classDef is `fill:none,stroke:<color>,stroke-width:2.5px` (add `stroke-dasharray:6 3` for a soft category); red #dc2626 gate/blocker, blue #2563eb mutation, amber #d97706 warning/non-gating, green #16a34a done, gray #6b7280 external; at most three classes; `rect rgba(0,0,0,0)` for sequence bands; put the category in the node text and end with a one-line legend. No `\"` or `;` inside labels, no parentheses inside `([...])`. Full guide: the visualize skill.\n\
 \n\
 Every block must be complete and closed. In json-render every `children` id must be an element, every `type` must be in the catalog, and the JSON must be strict (double quotes, no trailing commas, no comments). If a block fails to render you will receive a <surface_error> with the exact path of each error: answer with the corrected block only.\n\
@@ -544,11 +545,24 @@ mod tests {
         let roots: Vec<String> = crate::fences::json_render_fences(&skill)
             .map(|(_, body)| {
                 let v: Value = serde_json::from_str(body).unwrap();
-                v["elements"][v["root"].as_str().unwrap()]["type"].as_str().unwrap().to_owned()
+                v["elements"][v["root"].as_str().unwrap()]["type"]
+                    .as_str()
+                    .unwrap()
+                    .to_owned()
             })
             .collect();
-        for name in ["StateMachine", "Entities", "Swimlane", "Gantt", "GraphDelta", "Sankey"] {
-            assert!(roots.iter().any(|r| r == name), "no worked example for {name}: {roots:?}");
+        for name in [
+            "StateMachine",
+            "Entities",
+            "Swimlane",
+            "Gantt",
+            "GraphDelta",
+            "Sankey",
+        ] {
+            assert!(
+                roots.iter().any(|r| r == name),
+                "no worked example for {name}: {roots:?}"
+            );
         }
     }
 
@@ -559,14 +573,50 @@ mod tests {
         let (_, rest) = skill.split_once("\n## Pick the diagram\n").unwrap();
         let (table, _) = rest.split_once("\n## Behavioural triggers\n").unwrap();
         let types = [
-            "Architecture:", "Architecture delta", "IT current-state", "Flowchart", "Sequence:",
-            "State machine", "ER / data model", "Timeline:", "Swimlane:", "Quadrant", "Radar",
-            "Polar", "Loop", "Nested", "Tree:", "Org chart", "Layer stack", "Exploded axonometric",
-            "Axonometric plan", "Venn", "Pyramid / funnel", "Bar / dumbbell", "Waterfall",
-            "Treemap", "Heatmap", "Line / slopegraph / bump", "Gantt", "Scatter / bubble / beeswarm",
-            "High-level", "Process", "Medallion", "Data flow", "DP integration",
-            "DP security matrix", "Sankey", "Fishbone", "Wardley map", "Kanban", "User journey",
-            "Deployment", "Dependency graph", "UML class", "Story map", "Database schema",
+            "Architecture:",
+            "Architecture delta",
+            "IT current-state",
+            "Flowchart",
+            "Sequence:",
+            "State machine",
+            "ER / data model",
+            "Timeline:",
+            "Swimlane:",
+            "Quadrant",
+            "Radar",
+            "Polar",
+            "Loop",
+            "Nested",
+            "Tree:",
+            "Org chart",
+            "Layer stack",
+            "Exploded axonometric",
+            "Axonometric plan",
+            "Venn",
+            "Pyramid / funnel",
+            "Bar / dumbbell",
+            "Waterfall",
+            "Treemap",
+            "Heatmap",
+            "Line / slopegraph / bump",
+            "Gantt",
+            "Scatter / bubble / beeswarm",
+            "High-level",
+            "Process",
+            "Medallion",
+            "Data flow",
+            "DP integration",
+            "DP security matrix",
+            "Sankey",
+            "Fishbone",
+            "Wardley map",
+            "Kanban",
+            "User journey",
+            "Deployment",
+            "Dependency graph",
+            "UML class",
+            "Story map",
+            "Database schema",
         ];
         assert_eq!(types.len(), 44);
         for t in types {
