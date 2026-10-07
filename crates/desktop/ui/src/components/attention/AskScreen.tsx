@@ -1,10 +1,12 @@
 import { Link } from '@tanstack/react-router'
-import { useState } from 'react'
-import { type Draft, QuestionBlock, allAnswered, draftsFor, toAnswer } from '@/components/chat/AskCard'
+import { useEffect, useState } from 'react'
+import { type Draft, QuestionBlock, allAnswered, draftsFor, recommendedLabel, toAnswer, withDoublePick } from '@/components/chat/AskCard'
+import { DoubleChip } from '@/components/chat/DoubleChip'
 import { useAttentionActions } from '@/components/hud/queries'
 import { Button } from '@/components/ui/button'
 import * as speech from '@/lib/speech'
 import type { AttentionItem } from '@/rpc/bindings/AttentionItem'
+import { usePrediction } from '@/store/double'
 import { Body, useResolved } from './shared'
 import { ActionBar, ContextLine, SnoozeButton, Source } from './source'
 
@@ -19,6 +21,11 @@ export function AskScreen({ item }: { item: AttentionItem }) {
   const onResolved = useResolved(item)
   const voice = speech.useVoice()
   const [drafts, setDrafts] = useState<Draft[]>(() => draftsFor(ask?.questions ?? []))
+  // 126 §9.2: the double's L1 pick pre-selects; the model's `recommended` badge stays, so a disagreement shows both.
+  const prediction = usePrediction(ask?.id)
+  useEffect(() => {
+    if (ask) setDrafts((ds) => withDoublePick(ds, ask.questions, prediction))
+  }, [prediction, ask])
   const answered = allAnswered(drafts)
   const busy = act.ask.isPending
   const send = (answers: Draft[] | null) => {
@@ -33,6 +40,7 @@ export function AskScreen({ item }: { item: AttentionItem }) {
         {ask ? (
           <>
             <h1 className="text-xl font-semibold leading-snug md:text-2xl">{ask.questions.length === 1 ? 'The agent has a question' : `The agent has ${ask.questions.length} questions`}</h1>
+            <DoubleChip ids={[ask.id]} recommended={recommendedLabel(ask.questions)} className="w-fit" />
             <div className="flex flex-col gap-5 text-sm">
               {ask.questions.map((q, i) => (
                 <QuestionBlock key={q.id} q={q} draft={drafts[i] ?? null} onChange={(d) => setDrafts((ds) => ds.map((x, j) => (j === i ? d : x)))} session={ask.session} entryKey={`${ask.id}/${q.id}`} voice={voice} />

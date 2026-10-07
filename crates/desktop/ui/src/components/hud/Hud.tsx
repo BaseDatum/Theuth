@@ -3,6 +3,7 @@ import { Link } from '@tanstack/react-router'
 import { Activity as ActivityIcon, Bell, Bot, ListChecks, Network, PanelLeft, Wallet, Workflow } from 'lucide-react'
 import { type ReactNode, useEffect, useState } from 'react'
 import { Composer } from '@/components/chat/Composer'
+import { DoubleChip, DoubleUndo } from '@/components/chat/DoubleChip'
 import { SecretRequestCard } from '@/components/chat/SecretRequestCard'
 import { useSandboxes } from '@/components/settings/sandbox-queries'
 import { useRoutines } from '@/components/routines/queries'
@@ -180,6 +181,7 @@ export const KIND_LABEL: Record<AttentionItem['kind'], string> = {
   ask: 'question',
   show: 'shown',
   resume: 'resume',
+  double: 'double',
 }
 
 /** The inbox's empty state; `/attention`'s rail says the same (101, 104). */
@@ -230,6 +232,7 @@ function AttentionCard({ item }: { item: AttentionItem }) {
       <div className="min-w-0 flex-1">
         <div className="flex items-center gap-2">
           <span className="rounded-full bg-layer-2 px-2 py-0.5 text-[11px] uppercase tracking-wide text-fg-secondary">{KIND_LABEL[item.kind]}</span>
+          <DoubleChip ids={doubleIds(item)} />
           {/* 104 A8: every title opens its screen on the attention surface (101 D12 did this for decisions and reviews). */}
           <Link to="/attention/$id" params={{ id: item.id }} className="truncate font-medium hover:underline">
             {item.title}
@@ -242,6 +245,9 @@ function AttentionCard({ item }: { item: AttentionItem }) {
     </li>
   )
 }
+
+/** 126: every id the double may have keyed this item's card by — the approval, the ask, the packet, or the `double:<question_id>` item itself. */
+export const doubleIds = (item: AttentionItem): (string | null | undefined)[] => [item.approval, item.ask?.id, item.packet, item.decision, item.kind === 'double' ? item.id.replace(/^double:/, '') : null]
 
 /**
  * The per-kind buttons of an inbox item — the card's inline block and the plain screen's action row (101 D7) share it.
@@ -259,6 +265,8 @@ export function KindActions({ item, size = 'xs', onResolved }: { item: Attention
   const then = (p: Promise<unknown>) => void p.then(() => onResolved?.(), () => undefined)
   return (
     <div className="flex shrink-0 flex-wrap items-center gap-1.5">
+      {/* 126 §10: "answered for you" — undo while the grace runs (`double_take_over`); the digest row only dismisses. */}
+      {item.kind === 'double' && <DoubleUndo ids={doubleIds(item)} size={size} />}
       {(item.kind === 'ask' || item.kind === 'show') && (
         // 104: the questions and the artifact need the screen; the card only points there.
         <Button asChild size={size} variant="outline">

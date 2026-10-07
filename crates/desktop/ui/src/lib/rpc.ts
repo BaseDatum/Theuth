@@ -114,6 +114,13 @@ export const queryKeys = {
   decisionStats: ['decision-stats'] as const,
   /** `decision_loaded()` (57 §2.1): the Labs header's "Decision models loaded now" line. */
   decisionLoaded: ['decision-loaded'] as const,
+  // 126 §10: Settings › Double — `double_status()`, `double_classes()`, `double_class(key)`, `double_settings_get()`.
+  doubleStatus: ['double', 'status'] as const,
+  doubleClasses: ['double', 'classes'] as const,
+  doubleClass: (key: string) => ['double', 'class', key] as const,
+  doubleSettings: ['double', 'settings'] as const,
+  /** Prefix of every double query; a `DoubleTrainingState` / `DoubleVersionActivated` invalidates all of it. */
+  doubleAll: ['double'] as const,
   // 53 (05 §7): the brief cache — `briefs` prefixes every list/search page; a `BriefChanged` invalidates all of it.
   briefs: ['briefs'] as const,
   briefsList: (tag: string | null) => ['briefs', 'list', tag] as const,

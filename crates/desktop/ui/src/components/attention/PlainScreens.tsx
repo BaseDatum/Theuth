@@ -2,7 +2,7 @@
 import { useQueryClient } from '@tanstack/react-query'
 import type { ReactNode } from 'react'
 import { SecretRequestCard } from '@/components/chat/SecretRequestCard'
-import { KindActions } from '@/components/hud/Hud'
+import { KindActions, doubleIds } from '@/components/hud/Hud'
 import { ATTENTION_KEY, SECRET_REQUESTS_KEY, useSecretRequestRows } from '@/components/hud/queries'
 import { useHandoffs, useSandboxes } from '@/components/settings/sandbox-queries'
 import { age } from '@/components/tasks/helpers'
@@ -10,6 +10,7 @@ import { useAgents, useMesh, useTask } from '@/components/tasks/queries'
 import { cn } from '@/lib/utils'
 import type { AttentionItem } from '@/rpc/bindings/AttentionItem'
 import { useSecretRequests } from '@/store/approvals'
+import { useAnswered } from '@/store/double'
 import { Body, SectionTitle, useResolved } from './shared'
 import { ActionBar, Source } from './source'
 
@@ -174,6 +175,29 @@ export function ResumeScreen({ item }: { item: AttentionItem }) {
           {item.detail ?? 'The turn is open; Resume replays it from its journal.'}
         </Fact>
         <Fact label="Interrupted">{age(item.at_ms)}</Fact>
+      </div>
+    </Plain>
+  )
+}
+
+/**
+ * 126 §10: the double answered a card for the owner ("double answered Allow for `git push`"), or the L3 daily digest.
+ * The row's title and detail laid out large; what the double chose and the undo window come from the `DoubleAnswered`
+ * event when this client saw it; Undo (`double_take_over`) · Snooze · Dismiss in the bar (`KindActions`).
+ */
+export function DoubleScreen({ item }: { item: AttentionItem }) {
+  const answered = useAnswered(...doubleIds(item))
+  return (
+    <Plain item={item}>
+      <div className="grid gap-4 sm:grid-cols-2">
+        {answered && <Fact label="Double chose">{answered.choice}</Fact>}
+        {answered && (
+          <Fact label="Class">
+            <span className="break-all font-mono text-xs">{answered.class}</span>
+          </Fact>
+        )}
+        {item.detail && <Fact label={answered ? 'Card' : 'Detail'}>{item.detail}</Fact>}
+        <Fact label="Answered">{age(item.at_ms)} ago</Fact>
       </div>
     </Plain>
   )

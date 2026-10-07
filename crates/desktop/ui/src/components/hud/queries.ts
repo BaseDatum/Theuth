@@ -20,8 +20,8 @@ export const PACKET_KEY = ['packet'] as const
 export const SECRET_REQUESTS_KEY = ['secret-requests'] as const
 export const ACTIVITY_KEY = ['activity'] as const
 
-/** Anything that can add or resolve an inbox item; the list is cheap to re-derive (104 A10: asks and shows too). */
-const ATTENTION_EVENTS = ['ActivityAppended', 'ApprovalRequested', 'ApprovalResolved', 'ArtifactShown', 'AskRequested', 'AskResolved', 'NodeAdded', 'NodeOnline', 'NodeRemoved', 'NodeRevoked', 'SecretRequested', 'SecretResolved', 'Takeover'] as const satisfies readonly WireEvent['type'][]
+/** Anything that can add or resolve an inbox item; the list is cheap to re-derive (104 A10: asks and shows too; 126: a double answer adds its row). */
+const ATTENTION_EVENTS = ['ActivityAppended', 'ApprovalRequested', 'ApprovalResolved', 'ArtifactShown', 'AskRequested', 'AskResolved', 'NodeAdded', 'NodeOnline', 'NodeRemoved', 'NodeRevoked', 'SecretRequested', 'SecretResolved', 'Takeover', 'DoubleAnswered'] as const satisfies readonly WireEvent['type'][]
 
 /** `attention_list`, re-derived on every event that can change it. Polled slowly too: snoozes expire, budgets move. */
 export function useAttention() {

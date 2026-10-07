@@ -1,6 +1,6 @@
 import { Link } from '@tanstack/react-router'
 import { Square, Volume2 } from 'lucide-react'
-import { memo, useCallback, useState } from 'react'
+import { memo, useCallback, useEffect, useState } from 'react'
 import { toast } from 'sonner'
 import { head } from '@/components/attention/Bundle'
 import { usePacket } from '@/components/attention/queries'
@@ -16,6 +16,9 @@ import type { Packet } from '@/rpc/bindings/Packet'
 import type { Question } from '@/rpc/bindings/Question'
 import { useAsks } from '@/store/approvals'
 import { ActionButton } from './MessageAssistant'
+import { DoubleCard, DoubleChip, preselect } from './DoubleChip'
+import type { DoublePredicted } from '@/rpc/bindings/DoublePredicted'
+import { usePrediction } from '@/store/double'
 
 /** Draft answer per question: an option, typed text, an explicit skip, or nothing yet. */
 export type Draft = Answer | null
@@ -25,6 +28,29 @@ export const draftsFor = (questions: readonly Question[]): Draft[] => questions.
 
 /** Every question has an option, non-blank text, or an explicit skip. */
 export const allAnswered = (drafts: readonly Draft[]): boolean => drafts.every((d) => d !== null && !(d.kind === 'text' && d.text.trim() === ''))
+
+/**
+ * 126 §9.2: the double's L1 pre-selection on a one-question ask — `drafts` with question 0 set to the double's option
+ * when the owner has not touched it (it still holds the model's starting draft); the same array otherwise. The model's
+ * `recommended` stays as rendered, so a disagreement shows both.
+ */
+export function withDoublePick(drafts: readonly Draft[], questions: readonly Question[], p: DoublePredicted | undefined): Draft[] {
+  const q = questions.length === 1 ? questions[0] : undefined
+  if (!q) return drafts as Draft[]
+  const i = preselect(p, q.options.map((o) => o.label))
+  if (i === null) return drafts as Draft[]
+  const start = draftsFor(questions)[0] ?? null
+  const cur = drafts[0] ?? null
+  const untouched = cur === null ? start === null : start !== null && cur.kind === 'choice' && start.kind === 'choice' && cur.index === start.index
+  if (!untouched || (cur?.kind === 'choice' && cur.index === i)) return drafts as Draft[]
+  return [{ kind: 'choice', index: i }, ...drafts.slice(1)]
+}
+
+/** The model's `recommended` label of a one-question ask, for the chip's disagreement badge. */
+export function recommendedLabel(questions: readonly Question[]): string | undefined {
+  const q = questions.length === 1 ? questions[0] : undefined
+  return q?.recommended === undefined ? undefined : q.options[q.recommended]?.label
+}
 
 export function toAnswer(d: Draft): Answer {
   if (!d) return { kind: 'skipped' }
@@ -164,6 +190,10 @@ export const AskCard = memo(function AskCard({ ask }: { ask: AskRequested }) {
   const [busy, setBusy] = useState(false)
   const [sent, setSent] = useState(false)
   const [drafts, setDrafts] = useState<Draft[]>(() => draftsFor(ask.questions))
+  const prediction = usePrediction(ask.id)
+  useEffect(() => {
+    if (!sent) setDrafts((ds) => withDoublePick(ds, ask.questions, prediction))
+  }, [prediction, ask.questions, sent])
   const answered = allAnswered(drafts)
   const send = async (answers: Answer[] | null) => {
     setBusy(true)
@@ -181,11 +211,14 @@ export const AskCard = memo(function AskCard({ ask }: { ask: AskRequested }) {
       setBusy(false)
     }
   }
-  if (packet && !expanded && !sent) return <RelayCard packet={packet} onExpand={() => setExpanded(true)} />
+  if (packet && !expanded && !sent) return <RelayCard packet={packet} askId={ask.id} onExpand={() => setExpanded(true)} />
   return (
-    <div className={FRAME}>
-      <div className="font-medium text-info">
-        {ask.questions.length === 1 ? 'The agent has a question' : `The agent has ${ask.questions.length} questions`}
+    <DoubleCard ids={[ask.id]} className={FRAME}>
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+        <div className="font-medium text-info">
+          {ask.questions.length === 1 ? 'The agent has a question' : `The agent has ${ask.questions.length} questions`}
+        </div>
+        <DoubleChip ids={[ask.id]} recommended={recommendedLabel(ask.questions)} />
       </div>
       {ask.questions.map((q, i) => (
         <QuestionBlock
@@ -212,19 +245,24 @@ export const AskCard = memo(function AskCard({ ask }: { ask: AskRequested }) {
           {!answered && <span className="self-center text-xs text-fg-tertiary">answer or skip every question</span>}
         </div>
       )}
-    </div>
+    </DoubleCard>
   )
 })
 
-/** The compact relay: who asks · the question · `head(summary)` · the backed option · Open in Attention · expand. */
-function RelayCard({ packet, onExpand }: { packet: Packet; onExpand: () => void }) {
+/** The compact relay: who asks · the question · `head(summary)` · the backed option · Open in Attention · expand.
+ * 126: the double's chip (keyed by the ask or the packet) sits under the title; an L2 grace makes the relay the take-over target. */
+function RelayCard({ packet, askId, onExpand }: { packet: Packet; askId: string; onExpand: () => void }) {
   const rec = packet.recommendation
   const index = rec?.option ?? packet.recommended
   const label = index === null ? undefined : packet.options[index]?.label
   const by = packet.by.replace(/^agent:/, '')
+  const ids = [askId, packet.key, `decision:${packet.task}:${packet.key}`]
   return (
-    <div className={FRAME}>
-      <div className="font-medium text-info">{by} asks for a decision</div>
+    <DoubleCard ids={ids} className={FRAME}>
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+        <div className="font-medium text-info">{by} asks for a decision</div>
+        <DoubleChip ids={ids} recommended={label} />
+      </div>
       {packet.question && <div className="font-medium">{packet.question}</div>}
       <div className="text-fg-secondary">{head(packet.summary)}</div>
       {(label || rec) && (
@@ -250,7 +288,7 @@ function RelayCard({ packet, onExpand }: { packet: Packet; onExpand: () => void 
           Answer here
         </Button>
       </div>
-    </div>
+    </DoubleCard>
   )
 }
 

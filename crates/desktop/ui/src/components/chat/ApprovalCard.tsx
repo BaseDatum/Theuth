@@ -18,6 +18,7 @@ import type { Decision } from '@/rpc/bindings/Decision'
 import type { Risk } from '@/rpc/bindings/Risk'
 import type { SessionSummary } from '@/rpc/bindings/SessionSummary'
 import { useApprovals } from '@/store/approvals'
+import { DoubleCard, DoubleChip, preselect, useDoubleCard } from './DoubleChip'
 
 const RISK: Record<Risk, string> = {
   read_only: 'read-only',
@@ -25,7 +26,8 @@ const RISK: Record<Risk, string> = {
   destructive: 'destructive',
 }
 
-/** `approval: tool (risk)`, the described arguments, Allow / Deny. Rendered at the tool row or at the transcript's end. */
+/** `approval: tool (risk)`, the described arguments, Allow / Deny. Rendered at the tool row or at the transcript's end.
+ * 126 §10: the double's chip beside the title; at L1 its choice is the filled button; at L2 the whole card takes over. */
 export const ApprovalCard = memo(function ApprovalCard({
   approval,
 }: {
@@ -33,6 +35,9 @@ export const ApprovalCard = memo(function ApprovalCard({
 }) {
   const api = useApi()
   const [busy, setBusy] = useState(false)
+  const double = useDoubleCard([approval.id])
+  // L1+: the double's pick is the filled button (the model has no `recommended` on an approval).
+  const pick = preselect(double.prediction, ['Allow', 'Deny'])
   const decide = async (decision: Decision) => {
     setBusy(true)
     try {
@@ -48,15 +53,19 @@ export const ApprovalCard = memo(function ApprovalCard({
     }
   }
   return (
-    <div className="my-2 rounded-xl border border-warning-border bg-warning-bg px-4 py-3 text-sm">
-      <div className="font-medium text-warning">
-        approval: {approval.tool} ({RISK[approval.risk]})
+    <DoubleCard ids={[approval.id]} className="my-2 rounded-xl border border-warning-border bg-warning-bg px-4 py-3 text-sm">
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+        <div className="font-medium text-warning">
+          approval: {approval.tool} ({RISK[approval.risk]})
+        </div>
+        <DoubleChip ids={[approval.id]} />
       </div>
       <pre className="mt-1 max-w-full overflow-x-auto font-mono text-xs leading-5 text-fg-secondary whitespace-pre-wrap">
         {describe(approval.tool, approval.args).join('\n')}
       </pre>
       <div className="mt-3 flex gap-2">
         <Button
+          variant={pick === 1 ? 'outline' : 'default'}
           size="sm"
           className="pointer-coarse:h-11 pointer-coarse:flex-1"
           disabled={busy}
@@ -66,7 +75,7 @@ export const ApprovalCard = memo(function ApprovalCard({
         </Button>
         <Button
           size="sm"
-          variant="outline"
+          variant={pick === 1 ? 'default' : 'outline'}
           className="pointer-coarse:h-11 pointer-coarse:flex-1"
           disabled={busy}
           onClick={() => decide('deny')}
@@ -74,7 +83,7 @@ export const ApprovalCard = memo(function ApprovalCard({
           Deny
         </Button>
       </div>
-    </div>
+    </DoubleCard>
   )
 })
 
