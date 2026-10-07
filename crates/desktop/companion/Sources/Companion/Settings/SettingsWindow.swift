@@ -26,7 +26,7 @@ final class SettingsWindowController {
             w.title = "theuth Companion"
             w.styleMask = [.titled, .closable]
             w.isReleasedWhenClosed = false
-            w.setContentSize(NSSize(width: 460, height: 360))
+            w.setContentSize(NSSize(width: 500, height: 400))
             w.center()
             w.sharingType = Flags.shareable ? .readOnly : .none
             window = w
@@ -51,16 +51,18 @@ struct SettingsView: View {
     @ObservedObject var store: Store
     let doubleTap: DoubleTapSource
     @State private var axDenied = false
+    /// The probe opens on the tab it is about.
+    @State private var tab = Flags.probeNotify != nil ? "notifications" : "rail"
 
     var body: some View {
-        TabView {
-            rail.tabItem { Label("Rail", systemImage: "sidebar.right") }
-            keys.tabItem { Label("Keys", systemImage: "keyboard") }
-            notifications.tabItem { Label("Notifications", systemImage: "bell") }
-            engine.tabItem { Label("Engine", systemImage: "network") }
+        TabView(selection: $tab) {
+            rail.tabItem { Label("Rail", systemImage: "sidebar.right") }.tag("rail")
+            keys.tabItem { Label("Keys", systemImage: "keyboard") }.tag("keys")
+            notifications.tabItem { Label("Notifications", systemImage: "bell") }.tag("notifications")
+            engine.tabItem { Label("Engine", systemImage: "network") }.tag("engine")
         }
         .padding(16)
-        .frame(width: 460, height: 360)
+        .frame(width: 500, height: 400)
     }
 
     private var rail: some View {
@@ -124,8 +126,8 @@ struct SettingsView: View {
                 Text(authText).font(.caption).foregroundStyle(.secondary)
             }
             if notifier.authorization == .notDetermined {
-                Text("Banners carry the agent's own buttons — Allow · Deny, the question's options, Reply… — so you answer without opening anything. Blocking questions arrive at once; reviews and finished work wait for a break in your typing or an app switch. Nothing is sent until you press a button.")
-                    .font(.caption).foregroundStyle(.secondary)
+                Text("Banners carry the agent's own buttons — Allow · Deny, the question's options, Reply… — so you answer without opening anything. Questions arrive at once; reviews and finished work wait for a pause in your typing or an app switch. Nothing is sent until you press a button.")
+                    .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
             if let until = notifier.pausedUntil {
                 Text("Paused until \(until.formatted(date: .omitted, time: .shortened)) — the rail stays live.")

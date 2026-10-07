@@ -81,29 +81,53 @@ final class NotificationsInstaller: NSObject {
 
     // MARK: --probe-notify N
 
-    /// Dry-run the policy against the live engine for N s (nothing posted, no authorization), show Settings
-    /// for the last 3 s without activating, screenshot it, quit. Log: `/tmp/130-w2-probe.log`.
+    /// Dry-run the policy against the live engine for N s (nothing posted, no authorization), replay the live
+    /// items through a fresh policy so the log shows every class, the batch and the cap even on a quiet engine,
+    /// show Settings for the last 3 s without activating, quit. The screenshot is the shell's job
+    /// (`screencapture` from inside the app would need Screen Recording). Log: `/tmp/130-w2-probe.log`.
     private func runProbe(_ seconds: TimeInterval) {
         try? FileManager.default.removeItem(at: Notifier.probeLog)
         notifier.probeLine("start probe-notify \(seconds) s bundle=\(Bundle.main.bundleIdentifier ?? "nil") prefs=\(SettingsModel.shared.value.notify) authorization=not requested")
-        let shot = "/tmp/130-w2-settings.png"
         DispatchQueue.main.asyncAfter(deadline: .now() + max(1, seconds - 3)) { [self] in
             settings.show(activate: false)
-            notifier.probeLine("settings window shown frame=\(settings.frame) active=\(NSApp.isActive) key=\(NSApp.keyWindow.map { "\($0.className)" } ?? "none")")
-            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [self] in
-                if let n = settings.windowNumber {
-                    let p = Process()
-                    p.executableURL = URL(fileURLWithPath: "/usr/sbin/screencapture")
-                    p.arguments = ["-x", "-o", "-l", "\(n)", shot]
-                    try? p.run(); p.waitUntilExit()
-                    notifier.probeLine("screenshot \(shot) exit=\(p.terminationStatus)")
-                }
-            }
+            notifier.probeLine("settings window shown frame=\(settings.frame) number=\(settings.windowNumber ?? 0) active=\(NSApp.isActive) key=\(NSApp.keyWindow.map { "\($0.className)" } ?? "none")")
         }
         DispatchQueue.main.asyncAfter(deadline: .now() + seconds) { [self] in
             let s = app?.store
-            notifier.probeLine("done items=\(s?.items.count ?? 0) [\(s.map { Dictionary(grouping: $0.items, by: { $0.kind.rawValue }).map { "\($0.key)×\($0.value.count)" }.sorted().joined(separator: " ") } ?? "")] classes=[\(s.map { Dictionary(grouping: $0.items, by: { NotificationPolicy.classify($0).rawValue }).map { "\($0.key)×\($0.value.count)" }.sorted().joined(separator: " ") } ?? "")] would-have-posted=\(notifier.probeCounts) flood=\(notifier.inFlood) held=\(notifier.heldCount) paused=\(notifier.pausedUntil != nil) connection=\(s.map { "\($0.connection)" } ?? "?") active=\(NSApp.isActive) frontmost=\(NSWorkspace.shared.frontmostApplication?.localizedName ?? "?") — quitting")
+            func count<T>(_ xs: [T], by key: (T) -> String) -> String {
+                Dictionary(grouping: xs, by: key).map { "\($0.key)×\($0.value.count)" }.sorted().joined(separator: " ")
+            }
+            notifier.probeLine("live items=\(s?.items.count ?? 0) [\(count(s?.items ?? [], by: { $0.kind.rawValue }))] classes=[\(count(s?.items ?? [], by: { NotificationPolicy.classify($0).rawValue }))] new-while-running→would-have-posted=\(notifier.probeCounts) flood=\(notifier.inFlood) held=\(notifier.heldCount) paused=\(notifier.pausedUntil != nil) connection=\(s.map { "\($0.connection)" } ?? "?")")
+            replay(s?.items ?? [])
+            notifier.probeLine("done after \(seconds) s active=\(NSApp.isActive) key=\(NSApp.keyWindow.map { "\($0.className)" } ?? "none") frontmost=\(NSWorkspace.shared.frontmostApplication?.localizedName ?? "?") — quitting")
             NSApp.terminate(nil)
         }
+    }
+
+    /// The live items as if they had just arrived: once as a whole (flood when > 10), then the first ≤ 10
+    /// one at a time (per-class verdicts, the held batch at a breakpoint, the 2-minute cap, withdrawal).
+    private func replay(_ items: [AttentionItem]) {
+        let t0 = Date()
+        let prefs = SettingsModel.shared.value.notify
+        func log(_ label: String, _ out: PolicyOutput) {
+            notifier.probeLine("replay \(label): post=[\(out.post.map { "\($0.category.rawValue):\($0.id) \($0.level.rawValue)\($0.sound ? " sound" : "")" }.joined(separator: ", "))] withdraw=\(out.withdraw)")
+        }
+        var whole = NotificationPolicy(prefs: prefs)
+        _ = whole.update(items: [], now: t0)
+        log("all \(items.count) at once", whole.update(items: items, now: t0))
+        var one = NotificationPolicy(prefs: prefs)
+        _ = one.update(items: [], now: t0)
+        let few = Array(items.prefix(NotificationPolicy.floodThreshold))
+        for (i, item) in few.enumerated() {
+            log("item \(i + 1) \(item.kind.rawValue) (\(NotificationPolicy.classify(item).rawValue))",
+                one.update(items: Array(few.prefix(i + 1)), now: t0.addingTimeInterval(Double(i))))
+        }
+        log("tick +60 s (cap not elapsed, held=\(one.heldCount))", one.tick(now: t0.addingTimeInterval(60)))
+        log("breakpoint +61 s (held=\(one.heldCount))", one.breakpoint(now: t0.addingTimeInterval(61)))
+        _ = one.update(items: Array(few.prefix(1)), now: t0.addingTimeInterval(65))
+        log("items re-added +70 s (held=\(one.heldCount))", one.update(items: few, now: t0.addingTimeInterval(70)))
+        log("breakpoint +80 s inside the 2-min rate window (held=\(one.heldCount))", one.breakpoint(now: t0.addingTimeInterval(80)))
+        log("tick +181 s (rate window passed)", one.tick(now: t0.addingTimeInterval(181)))
+        log("answered elsewhere (all gone)", one.update(items: [], now: t0.addingTimeInterval(182)))
     }
 }
