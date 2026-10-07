@@ -5,6 +5,7 @@
 import type { Mermaid, MermaidConfig } from 'mermaid'
 import { useEffect, useRef, useState, useSyncExternalStore } from 'react'
 import type { CustomRendererProps } from 'streamdown'
+import { fnv, LruCache } from '@/lib/diagram/elk'
 import { diagramName } from '@/lib/diagram-export'
 import { diagramTokens } from '@/lib/diagram-theme'
 import { createRenderQueue, type RenderQueue } from '@/lib/render-queue'
@@ -66,17 +67,22 @@ export function loadMermaid(): Promise<Mermaid> {
 
 type Request = { chart: string; incomplete: boolean }
 
+/** 135 §2: closed charts' svg by `fnv(chart):epoch`, so a remounted chart paints synchronously at its real height. */
+export const svgCache = new LruCache<string>(64)
+export const svgKey = (chart: string): string => `${fnv(chart)}:${epoch}`
+
 /** The chart's svg (the last one that rendered, kept through a broken mid-stream state) and the closed fence's error. */
 function useRender(chart: string, incomplete: boolean): { svg: string | null; error: string | null } {
-  const [svg, setSvg] = useState<string | null>(null)
+  const [svg, setSvg] = useState<string | null>(() => svgCache.get(svgKey(chart)) ?? null)
   const [error, setError] = useState<string | null>(null)
-  const theme = useSyncExternalStore(subscribeEpoch, () => epoch)
+  const theme = useSyncExternalStore(subscribeEpoch, () => epoch, () => epoch)
   const queue = useRef<RenderQueue<Request> | null>(null)
   useEffect(() => {
     const q = createRenderQueue<Request>(async (req, isCurrent) => {
       try {
         const m = await loadMermaid()
         const r = await m.render(`mermaid-${Math.random().toString(36).slice(2)}`, req.chart)
+        if (!req.incomplete) svgCache.set(svgKey(req.chart), r.svg)
         if (!isCurrent()) return
         setSvg(r.svg)
         setError(null)
@@ -88,7 +94,11 @@ function useRender(chart: string, incomplete: boolean): { svg: string | null; er
     return () => q.dispose()
   }, [])
   useEffect(() => {
-    queue.current?.request({ chart, incomplete })
+    const hit = svgCache.get(svgKey(chart))
+    if (hit) {
+      setSvg(hit)
+      setError(null)
+    } else queue.current?.request({ chart, incomplete })
   }, [chart, incomplete, theme])
   return { svg, error }
 }
