@@ -143,7 +143,7 @@ export function sceneFixture(now: number): Required<SceneData> {
     need(`review:${T('1188')}`, 'review', 'research · design 126 draft ready', now - 1 * H, 'research', T('1188')),
     need('hire:analyst-2', 'hire', 'ops-desk proposes an analyst desk', now - 3 * H, 'ops-desk', null),
     need(`blocked:${T('1203')}`, 'blocked', 'windows build host unreachable', now - 26 * H, 'builder', T('1203')),
-    need('secret:gh-token', 'secret', 'GITHUB_TOKEN rotation requested', now - 50 * H, null, null),
+    { ...need('secret:gh-token', 'secret', 'GITHUB_TOKEN rotation requested', now - 50 * H, null, null), session: 'chat-1' }, // Revision 4: via the root's ring
   ]
   const tasks: Task[] = [
     task(T('1214'), 'wire HUD scene into /', 'ops-desk', 'doing', now - 12 * M, now - 12 * M),
@@ -168,15 +168,25 @@ export function sceneFixture(now: number): Required<SceneData> {
     schedule('nightly-digest', midnight + 42 * H, now - 18 * M, true, 'ok'),
     schedule('knowledge-sync', midnight + 23.5 * H, midnight - 0.5 * H, false, 'ok'),
   ]
+  // Revision 4: four active roots — chat-1 running with 3 live children (2 running), chat-2 running alone, chat-3 idle with one
+  // running child, chat-4 idle but recent — plus the not-shown kinds: an old root, an advisor, an archived chat.
   const sessions: SessionSummary[] = [
-    session('chat-1', 'HUD visual overhaul', now - 40_000),
-    session('chat-2', 'release notes format', now - 6 * M),
+    session('chat-1', 'HUD visual overhaul', now - 40_000, { running: true }),
+    session('chat-2', 'release notes format', now - 6 * M, { running: true }),
+    session('chat-3', 'onboarding doc', now - 50 * M),
+    session('chat-4', 'quick question', now - 12 * M),
     session('desk-ops', 'ops-desk', now - 65 * M, { desk: 'ops-desk' }),
     session('desk-research', 'research', now - 58 * M, { desk: 'research' }),
     session('desk-builder', 'builder', now - 40 * M, { desk: 'builder' }),
     session('desk-analyst', 'analyst', now - 6 * M, { desk: 'analyst' }),
-    ...Array.from({ length: 24 }, (_, i) => session(`child-${i}`, `subagent ${i}`, today(1 + i * 0.75), { parent: 'chat-1', name: `w${i}` })),
+    ...Array.from({ length: 21 }, (_, i) => session(`child-${i}`, `subagent ${i}`, today(1 + i * 0.75), { parent: 'chat-1', name: `w${i}` })),
+    session('child-21', 'subagent 21', now - 20_000, { parent: 'chat-1', name: 'w21', running: true }),
+    session('child-22', 'subagent 22', now - 2 * M, { parent: 'chat-1', name: 'w22', running: true }),
+    session('child-23', 'subagent 23', now - 10 * M, { parent: 'chat-1', name: 'w23' }),
+    session('child-c1', 'onboarding research', now - 1 * M, { parent: 'chat-3', name: 'c1', running: true }),
     session('old-chat', 'last week', now - 5 * 24 * H),
+    session('adv-1', 'advisor', now - 1 * M, { kind: 'advisor', running: true }),
+    session('arch-1', 'archived chat', now - 1 * M, { archived: true }),
   ]
   let id = 9000
   const row = (ts_ms: number, kind: ActivityEntry['kind'], actor: string, subject: string, summary: string, cost: number | null = null): ActivityEntry => ({ id: id++, ts_ms, kind, actor, subject, summary, cost })
@@ -216,12 +226,14 @@ export function sceneFixture(now: number): Required<SceneData> {
     if (hour < 8 || hour > 20 ? rw() < 0.15 : true) activityWeek.push(row(ts, 'task_commented', pick(actors, rw()), T('1150'), `week ${i}`))
   }
   activityWeek.sort((a, b) => b.ts_ms - a.ts_ms)
-  // Revision 2: the desks' context gauges (session id → fill); analyst's desk has no breakdown yet → no gauge.
+  // Revision 2/4: context gauges (session id → fill) for three desks and two roots; analyst's desk, chat-3 and chat-4 have none yet.
   const ctx = (used: number, window: number, live: boolean) => ({ fill: used / window, used, window, live })
   const contexts = new Map([
     ['desk-ops', ctx(124_000, 200_000, true)],
     ['desk-research', ctx(62_000, 200_000, true)],
     ['desk-builder', ctx(176_000, 200_000, false)],
+    ['chat-1', ctx(142_000, 200_000, true)],
+    ['chat-2', ctx(38_000, 200_000, true)],
   ])
   return { attention, agents, tasks, routines, sessions, activityToday, activityWeek, activity: activityToday.slice(0, 44), contexts }
 }

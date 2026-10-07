@@ -17,7 +17,7 @@ import { HANDOFFS_KEY } from '@/store/sandboxes'
 import { toast } from 'sonner'
 import { ACTIVITY_CAP, appendActivity } from './model'
 import { sceneFixture } from './scene/fixtures'
-import { type Ctx, contextFill, DAY_MS, startOfDay } from './scene/model'
+import { type Ctx, contextFill, DAY_MS, sessionPresence, startOfDay } from './scene/model'
 
 export const ATTENTION_KEY = ['attention'] as const
 /** 101 D11: `packet_get` per key, invalidated with the inbox (a packet changes only when its item does). */
@@ -137,17 +137,21 @@ const CONTEXT_EVENTS = ['TurnFinished', 'Compacted', 'ContextUsed'] as const sat
 const contextKey = (session: string) => ['context', 'breakdown', session] as const
 const breakdowns = (rs: { data: ContextBreakdown | undefined }[]) => rs.map((r) => r.data)
 
+/** Revision 4: at most this many breakdown queries at once (desks first, then the active roots in ring order). */
+const CONTEXT_QUERIES_MAX = 24
+
 /**
- * Revision 2: `session_context_breakdown` for every desk session in `sessions` (one query each, ≤ the ring count), refreshed every
- * 30 s and on that session's turn/compaction/billing events; folded with `list_models` into `SceneData.contexts`. A desk whose
- * window is unknown (no `context_size`, model not in the catalog) is simply absent — no gauge, never a fake value.
+ * Revision 2/4: `session_context_breakdown` for every desk session AND every active root session in `sessions` (one query each,
+ * ≤ 24), refreshed every 30 s and on that session's turn/compaction/billing events; folded with `list_models` into
+ * `SceneData.contexts`, keyed by session id. A session whose window is unknown (no `context_size`, model not in the catalog) is
+ * simply absent — no gauge, never a fake value.
  */
-export function useDeskContexts(sessions: readonly SessionSummary[] | undefined): ReadonlyMap<string, Ctx> {
+export function useSessionContexts(sessions: readonly SessionSummary[] | undefined): ReadonlyMap<string, Ctx> {
   const api = useApi()
   const qc = useQueryClient()
   const sim = simFlag()
   const models = useModels()
-  const desks = useMemo(() => (sessions ?? []).filter((s) => s.desk && !s.archived), [sessions])
+  const desks = useMemo(() => [...(sessions ?? []).filter((s) => s.desk && !s.archived), ...sessionPresence(sessions ?? [], Date.now()).map((r) => r.s)].slice(0, CONTEXT_QUERIES_MAX), [sessions])
   useEffect(() => {
     const offs = CONTEXT_EVENTS.map((t) => on(t, (e) => void qc.invalidateQueries({ queryKey: contextKey(e.session) })))
     return () => {

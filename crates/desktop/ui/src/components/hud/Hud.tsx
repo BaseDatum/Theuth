@@ -20,7 +20,7 @@ import { cn } from '@/lib/utils'
 import type { AttentionItem } from '@/rpc/bindings/AttentionItem'
 import { useSecretRequests } from '@/store/approvals'
 import { snoozeUntil } from './model'
-import { ATTENTION_KEY, SECRET_REQUESTS_KEY, useActivity, useActivityToday, useActivityWeek, useAttention, useAttentionActions, useDeskContexts, useSecretRequestRows, useSessionList } from './queries'
+import { ATTENTION_KEY, SECRET_REQUESTS_KEY, useActivity, useActivityToday, useActivityWeek, useAttention, useAttentionActions, useSessionContexts, useSecretRequestRows, useSessionList } from './queries'
 import { sceneFixture } from './scene/fixtures'
 import type { SceneData } from './scene/model'
 import { SceneSwitch } from './scene/SceneCompact'
@@ -43,7 +43,7 @@ export function Hud() {
   const activityToday = useActivityToday()
   const activityWeek = useActivityWeek()
   const sessions = useSessionList()
-  const contexts = useDeskContexts(sessions.data)
+  const contexts = useSessionContexts(sessions.data)
   useEffect(() => {
     document.title = ''
   }, [])

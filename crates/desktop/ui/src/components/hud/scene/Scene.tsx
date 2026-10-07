@@ -3,7 +3,7 @@ import { type CSSProperties, type ReactNode, type RefObject, type SVGProps, useE
 import { age } from '@/components/tasks/helpers'
 import { cn } from '@/lib/utils'
 import { spend } from '../model'
-import { C, type Color, FIELD_H, fieldHeight, hhmm, hhmmss, MIX_ORDER, type Hairline, type OutcomeMix, type PunchCard, type Ring, type SceneData, type SceneModel, type Target, actorLabel, ctxTitle, GAUGE_R, gaugeEnd, gaugePath, ringColor, ringDashed, ringDots, scene, streamColor, streamLink, truncate, W } from './model'
+import { C, type Color, FIELD_H, fieldHeight, hhmm, hhmmss, MIX_ORDER, type Hairline, type OutcomeMix, type PunchCard, type Ring, type SceneData, type SceneModel, type Target, actorLabel, ctxTitle, GAUGE_R, gaugeEnd, gaugePath, ringColor, ringDashed, ringDots, SAT_MAX, satPoint, scene, streamColor, streamLink, truncate, W } from './model'
 import type { ActivityEntry } from '@/rpc/bindings/ActivityEntry'
 import type { AgentSummary } from '@/rpc/bindings/AgentSummary'
 import type { Task } from '@/rpc/bindings/Task'
@@ -517,25 +517,47 @@ export function Scene({ data, errors = [], now: fixed }: { data: SceneData; erro
             </text>
           )}
 
-          {/* (e) rings, (f) their labels, (g) Revision 2: the desk's context gauge on the outer track — length-coded only, faience when live, else the secondary ink */}
-          {m.rings.map((r) => (
-            <To key={r.id} target={r.link} title={`${r.name} · ${r.sub || r.style}${r.ctx ? ` · ${ctxTitle(r.ctx)}` : ''}`}>
-              {r.ctx && (
-                <g data-gauge={r.id}>
-                  <circle cx={r.x} cy={r.y} r={GAUGE_R} fill="none" stroke={C.border} strokeWidth={1} />
-                  {r.ctx.fill > 0 && <path d={gaugePath(r.x, r.y, GAUGE_R, r.ctx.fill)} fill="none" stroke={r.style === 'live' ? C.info : C.secondary} strokeWidth={2} strokeLinecap="round" />}
-                  <circle cx={gaugeEnd(r.x, r.y, GAUGE_R, r.ctx.fill)[0]} cy={gaugeEnd(r.x, r.y, GAUGE_R, r.ctx.fill)[1]} r={1.6} fill={r.style === 'live' ? C.info : C.secondary} />
-                </g>
-              )}
-              <RingGlyph r={r} x={r.x} y={r.y} />
-              <text x={r.x - 22} y={r.y - 1} fontSize={11} fill={r.style === 'lapsed' ? C.tertiary : C.primary} textAnchor="end">
-                {r.name}
-              </text>
-              <text x={r.x - 22} y={r.y + 12} fontSize={9} fill={ringColor(r.style)} textAnchor="end">
-                {r.sub}
-              </text>
-            </To>
-          ))}
+          {/* (e) rings, (f) their labels, (g) Revision 2: the desk's context gauge on the outer track — length-coded only, faience when live, else the secondary ink;
+              (h) Revision 4: a root session's live subagents as satellites on r 23 from 3 o'clock clockwise, 8 then `+N` */}
+          {m.rings.map((r) => {
+            const sats = r.children ?? []
+            const lx = r.x - (sats.length > 0 ? 30 : 22)
+            return (
+              <To key={r.id} target={r.link} title={`${r.name} · ${r.sub || r.style}${r.ctx ? ` · ${ctxTitle(r.ctx)}` : ''}`}>
+                {r.ctx && (
+                  <g data-gauge={r.id}>
+                    <circle cx={r.x} cy={r.y} r={GAUGE_R} fill="none" stroke={C.border} strokeWidth={1} />
+                    {r.ctx.fill > 0 && <path d={gaugePath(r.x, r.y, GAUGE_R, r.ctx.fill)} fill="none" stroke={r.style === 'live' ? C.info : C.secondary} strokeWidth={2} strokeLinecap="round" />}
+                    <circle cx={gaugeEnd(r.x, r.y, GAUGE_R, r.ctx.fill)[0]} cy={gaugeEnd(r.x, r.y, GAUGE_R, r.ctx.fill)[1]} r={1.6} fill={r.style === 'live' ? C.info : C.secondary} />
+                  </g>
+                )}
+                {sats.length > 0 && (
+                  <g data-satellites={r.id}>
+                    {sats.slice(0, SAT_MAX).map((c, i) => {
+                      const [sx, sy] = satPoint(r.x, r.y, i)
+                      return (
+                        <circle key={c.id} cx={sx} cy={sy} r={2.2} fill={c.running ? C.info : 'none'} stroke={c.running ? undefined : C.secondary} strokeWidth={1}>
+                          <title>{`${c.title} · ${c.running ? 'running' : 'idle'}`}</title>
+                        </circle>
+                      )
+                    })}
+                    {sats.length > SAT_MAX && (
+                      <text x={satPoint(r.x, r.y, SAT_MAX)[0]} y={satPoint(r.x, r.y, SAT_MAX)[1] + 2.5} fontSize={7} fill={C.secondary} textAnchor="middle">
+                        +{sats.length - SAT_MAX}
+                      </text>
+                    )}
+                  </g>
+                )}
+                <RingGlyph r={r} x={r.x} y={r.y} />
+                <text x={lx} y={r.y - 1} fontSize={11} fill={r.style === 'lapsed' ? C.tertiary : C.primary} textAnchor="end">
+                  {r.name}
+                </text>
+                <text x={lx} y={r.y + 12} fontSize={9} fill={ringColor(r.style)} textAnchor="end">
+                  {r.sub}
+                </text>
+              </To>
+            )
+          })}
 
           {/* NEEDS YOU table — the header opens the inbox, every row its item */}
           <To target={{ route: 'attention-list' }} title="Open the inbox">
