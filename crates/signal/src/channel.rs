@@ -398,6 +398,10 @@ enum Event {
     Secret(secrets::SecretsEvent),
     /// 67 §4.7: the hub lease moved; answering follows it.
     Lease(mesh::LeaseState),
+    /// 126 §10: the double's prediction for a pending card.
+    Predicted(double::DoublePredicted),
+    /// 126 §10: the double answered a card at L2.
+    DoubleAnswered(double::DoubleAnswered),
 }
 
 /// Bus subscriber: forwards into the ordered event worker.
@@ -454,6 +458,20 @@ impl Message<ArtifactShown> for Bus {
     type Reply = ();
     async fn handle(&mut self, m: ArtifactShown, _: &mut Context<Self, ()>) {
         let _ = self.tx.send(Event::Artifact(m));
+    }
+}
+
+impl Message<double::DoublePredicted> for Bus {
+    type Reply = ();
+    async fn handle(&mut self, m: double::DoublePredicted, _: &mut Context<Self, ()>) {
+        let _ = self.tx.send(Event::Predicted(m));
+    }
+}
+
+impl Message<double::DoubleAnswered> for Bus {
+    type Reply = ();
+    async fn handle(&mut self, m: double::DoubleAnswered, _: &mut Context<Self, ()>) {
+        let _ = self.tx.send(Event::DoubleAnswered(m));
     }
 }
 
@@ -626,6 +644,8 @@ async fn run(chan: Arc<Channel>, mut ctrl: mpsc::UnboundedReceiver<Control>) {
     chan.rt.subscribe::<Bus, ArtifactShown>(&bus).await;
     chan.rt.subscribe::<Bus, secrets::SecretsEvent>(&bus).await;
     chan.rt.subscribe::<Bus, mesh::MeshEvent>(&bus).await;
+    chan.rt.subscribe::<Bus, double::DoublePredicted>(&bus).await;
+    chan.rt.subscribe::<Bus, double::DoubleAnswered>(&bus).await;
     // 67 §4.7: who "we" are, once the mesh is up; the follower re-reads the
     // last lease it saw against that id.
     let identity = {
@@ -1579,6 +1599,33 @@ impl Channel {
                 if let Some(req) = next {
                     self.send_chunks(&to, &asks::question_text(&req, 0)).await;
                 }
+            }
+            // 126 §10: the double's line follows the card it is about, as its own text
+            // (Signal messages are not edited); only for the card on the phone now.
+            Event::Predicted(p) => {
+                let to = p.session.and_then(|s| self.lock().threads.recipient_for(s));
+                let Some(to) = to else { return };
+                let shown = match p.kind {
+                    double::CardKind::Approval => true,
+                    double::CardKind::Ask => self
+                        .asks
+                        .lock()
+                        .await
+                        .answerable(&to.number)
+                        .is_some_and(|e| e.req.id.0.to_string() == p.question_id),
+                    _ => false,
+                };
+                if shown {
+                    let now = u64::try_from(chrono::Utc::now().timestamp_millis()).unwrap_or(0);
+                    self.send_chunks(&to, &format!("🤖 {}", double::chip::would(&p, now)))
+                        .await;
+                }
+            }
+            Event::DoubleAnswered(a) => {
+                let to = a.session.and_then(|s| self.lock().threads.recipient_for(s));
+                let Some(to) = to else { return };
+                self.send_chunks(&to, &format!("🤖 {}", double::chip::answered(&a)))
+                    .await;
             }
             // 35 §8: the session's number, else the nearest bound ancestor's. An
             // app (46 §8.2) is its `.openui` source, captioned with where it runs.

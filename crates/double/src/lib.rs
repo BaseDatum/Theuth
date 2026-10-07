@@ -18,11 +18,13 @@
 
 use runtime::Runtime;
 
+pub mod chip;
 pub mod class;
 pub mod config;
 pub mod events;
 pub mod mesh;
 pub mod store;
+pub mod tool;
 pub mod types;
 
 pub use class::{Card, CardKind, DraftKind, Requester, class_key};
@@ -44,8 +46,8 @@ pub const DOUBLE_ACTOR: &str = "double";
 // 126 W2: `pub mod train_a;`, `pub mod sched;`, `pub mod precond;`,
 // `pub mod venue;`, `pub mod versions;`.
 // 126 W3: `pub mod train_b;`.
-// 126 W5: `pub mod tool;` (the `double_*` chat runtime functions), the
-// `double` skill and the `## Double` prompt paragraph.
+// 126 W5: `tool` (the `double_*` chat runtime functions, the `## Double`
+// prompt paragraph and the `double` skill) and `chip` (the surfaces' text).
 
 /// The plugin. Reads `double:`, and when enabled opens the store under
 /// `<data_dir>/double/`; the actor, scheduler and tools are added at the
@@ -74,12 +76,23 @@ impl runtime::Plugin for DoublePlugin {
                 return Ok(());
             }
         };
-        let _ = (store, cfg);
+        let _ = store;
         // 126 W1: spawn `actor::Double` with `runtime::subscriber_mailbox()`,
         // `register(DOUBLE_ACTOR)`, `rt.subscribe::<_, tools::ApprovalRequested>`,
         // `ApprovalResolved`, `AskRequested`, `AskResolved`, `agent::AgentEvent`.
         // 126 W2: `sched::start(store, cfg.training, rt.clone())`.
-        // 126 W5: register `tool::*` once `rt.lookup_when::<ToolRegistry>` answers.
+        // 126 W1: hand the actor's handle (`impl tool::Seams`) to `tool::register`
+        // in place of `tool::NotYet`.
+        let seams: std::sync::Arc<dyn tool::Seams> = std::sync::Arc::new(tool::NotYet(cfg));
+        let rt = rt.clone();
+        tokio::spawn(async move {
+            if let Some(reg) = rt
+                .lookup_when::<tools::ToolRegistry>(tools::REGISTRY_ACTOR)
+                .await
+            {
+                tool::register(&reg, seams).await;
+            }
+        });
         Ok(())
     }
 }

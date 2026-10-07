@@ -10,6 +10,7 @@ runtime = { workspace = true }
 agent = { workspace = true }
 a2a = { workspace = true }
 tools = { workspace = true }
+double = { workspace = true }
 artifact = { workspace = true }
 secrets = { workspace = true }
 figment = { workspace = true }

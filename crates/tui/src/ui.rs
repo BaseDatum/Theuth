@@ -647,10 +647,12 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
             .peer_name(req.session)
             .map_or_else(String::new, |n| format!("  [agent: {n}]"));
         let open = if Some(req.session) == m.session { "" } else { "  [o] open" };
+        let chip = m.double_chip();
         element! {
             View(border_style: BorderStyle::Double, border_color: OCHRE, flex_direction: FlexDirection::Column, padding_left: 1, padding_right: 1) {
                 Text(content: format!("approval: {}  ({}){agent}", req.tool, risk_name(req.risk)), weight: Weight::Bold)
                 #(describe(&req.tool, &req.args).into_iter().map(|l| element!(Text(content: l, color: FAIENCE, wrap: TextWrap::Wrap))))
+                #(chip.map(|c| element!(Text(content: c, color: SAND, italic: true))))
                 Text(content: format!("[y] allow  [n/esc] deny{open}"), color: OCHRE)
             }
         }
@@ -963,6 +965,7 @@ fn ask_box(m: &Model) -> Option<AnyElement<'static>> {
         };
         format!("[↑↓] move  {pick}[s] skip  [esc] dismiss (ends the turn)")
     };
+    let chip = m.double_chip();
     Some(
         element! {
             View(border_style: BorderStyle::Double, border_color: FAIENCE, flex_direction: FlexDirection::Column, padding_left: 1, padding_right: 1) {
@@ -970,6 +973,7 @@ fn ask_box(m: &Model) -> Option<AnyElement<'static>> {
                 Text(content: q.question.clone(), color: FAIENCE, wrap: TextWrap::Wrap)
                 #(rows)
                 Text(content: own, color: if a.cursor == n || a.typing { BONE } else { BONE_DIM }, weight: if a.cursor == n || a.typing { Weight::Bold } else { Weight::Normal })
+                #(chip.map(|c| element!(Text(content: c, color: SAND, italic: true))))
                 #((!keys.is_empty()).then(|| element!(Text(content: keys, color: FAIENCE))))
             }
         }
