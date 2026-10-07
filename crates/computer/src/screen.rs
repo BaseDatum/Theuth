@@ -167,11 +167,27 @@ pub(crate) fn capture_display_native(
     grab(d, monitor, d.index as usize, tmp_dir)
 }
 
-/// `screencapture -x -R x,y,w,h <tmp>/<pid>-<n>.png` with a 5 s deadline, decoded with `image`.
+/// Spike 121: `THEUTH_CAPTURE_BACKEND=sck` → [`grab_sck`]; anything else → [`grab_screencapture`].
 #[cfg(target_os = "macos")]
 fn grab(
     d: &Display,
     _monitor: &xcap::Monitor,
+    n: usize,
+    tmp_dir: &Path,
+) -> Result<RgbaImage, CaptureError> {
+    if std::env::var_os("THEUTH_CAPTURE_BACKEND").is_some_and(|v| v == "sck") {
+        grab_sck(d)
+    } else {
+        grab_screencapture(d, n, tmp_dir)
+    }
+}
+
+/// `screencapture -x -R x,y,w,h <tmp>/<pid>-<n>.png` with a 5 s deadline, decoded with `image`.
+/// `pub` + hidden only so `examples/capture_bench.rs` (spike 121) can time it.
+#[cfg(target_os = "macos")]
+#[doc(hidden)]
+pub fn grab_screencapture(
+    d: &Display,
     n: usize,
     tmp_dir: &Path,
 ) -> Result<RgbaImage, CaptureError> {
@@ -213,6 +229,102 @@ fn grab(
     let img = image::open(&path).map(DynamicImage::into_rgba8);
     let _ = std::fs::remove_file(&path);
     img.map_err(other)
+}
+
+/// Spike 121 (docs/design/121-sck-capture-spike.md): one display via
+/// ScreenCaptureKit's `SCScreenshotManager`, in-process, no temp file. Physical
+/// pixels (`width*scale × height*scale`), cursor hidden, menu bar included —
+/// the same frame `screencapture -R` of the whole display gives. Works from any
+/// thread (the bridge awaits on Swift's global executor, not a run loop).
+#[cfg(target_os = "macos")]
+#[doc(hidden)]
+pub fn grab_sck(d: &Display) -> Result<RgbaImage, CaptureError> {
+    use screencapturekit::screenshot_manager::{CGImageExt, SCScreenshotManager};
+    use screencapturekit::stream::configuration::SCStreamConfiguration;
+    use screencapturekit::stream::content_filter::SCContentFilter;
+
+    let sck = |e: screencapturekit::error::SCError| {
+        if screen_recording_granted() {
+            other(e)
+        } else {
+            CaptureError::NoScreenRecording
+        }
+    };
+    let content = sck_shareable_content().map_err(sck)?;
+    let disp = content
+        .displays()
+        .into_iter()
+        .find(|s| s.display_id() == d.id)
+        .ok_or_else(|| {
+            other(anyhow::anyhow!(
+                "display id {} not in SCShareableContent",
+                d.id
+            ))
+        })?;
+    let filter = SCContentFilter::create()
+        .with_display(&disp)
+        .with_excluding_windows(&[])
+        .build()
+        .map_err(sck)?;
+    let (w, h) = sck_pixel_size(d);
+    let config = SCStreamConfiguration::new()
+        .with_width(w)
+        .with_height(h)
+        .with_shows_cursor(false);
+    let img = SCScreenshotManager::capture_image(&filter, &config).map_err(sck)?;
+    let (iw, ih) = (img.width() as u32, img.height() as u32);
+    // `rgba_data` renders through CoreGraphics into a tightly packed
+    // `width*4`-stride buffer, so no row copy is needed.
+    let data = img.rgba_data().map_err(sck)?;
+    RgbaImage::from_raw(iw, ih, data).ok_or_else(|| {
+        other(anyhow::anyhow!(
+            "CGImage {iw}x{ih} RGBA buffer has the wrong length"
+        ))
+    })
+}
+
+/// The display list SCK needs for a display filter. `SCShareableContent::get()`
+/// also enumerates every window; the on-screen-only variant is what the bench
+/// (`examples/capture_bench.rs`) measured as cheaper.
+#[cfg(target_os = "macos")]
+pub(crate) fn sck_shareable_content()
+-> Result<screencapturekit::shareable_content::SCShareableContent, screencapturekit::error::SCError>
+{
+    screencapturekit::shareable_content::SCShareableContent::create()
+        .with_on_screen_windows_only(true)
+        .with_exclude_desktop_windows(true)
+        .get()
+}
+
+/// Physical pixel size of `d`: what `screencapture -R` of the full display writes.
+#[cfg(target_os = "macos")]
+pub(crate) fn sck_pixel_size(d: &Display) -> (u32, u32) {
+    (
+        (d.width as f32 * d.scale).round() as u32,
+        (d.height as f32 * d.scale).round() as u32,
+    )
+}
+
+#[cfg(all(test, target_os = "macos"))]
+mod sck_tests {
+    use super::*;
+
+    /// Spike 121 thread check: SCK from a plain `std::thread` with no run loop.
+    /// Skips (prints) when Screen Recording is not granted, so CI stays green.
+    #[test]
+    fn grab_sck_works_off_main_thread() {
+        if !screen_recording_granted() {
+            eprintln!("skipped: Screen Recording not granted");
+            return;
+        }
+        let d = displays().unwrap().into_iter().next().unwrap();
+        let want = sck_pixel_size(&d);
+        let img = std::thread::spawn(move || grab_sck(&d))
+            .join()
+            .unwrap()
+            .unwrap();
+        assert_eq!(img.dimensions(), want);
+    }
 }
 
 /// xcap's own capture; `tmp_dir` is unused off macOS.
