@@ -1,6 +1,7 @@
 import { expect, test } from 'vitest'
 import type { ContextEntry } from '@/rpc/bindings/ContextEntry'
 import type { Usage } from '@/rpc/bindings/Usage'
+import type { SessionSummary } from '@/rpc/bindings/SessionSummary'
 import type { TodoSnapshot } from '@/rpc/bindings/TodoSnapshot'
 import type { WireEvent } from '@/rpc/events'
 import type { LoadedPage, VisionNote, VisionSource } from '@/rpc/extra'
@@ -8,6 +9,7 @@ import { adopt, apply, empty, fromHistory, resumeFromLoaded, route, settleCompac
 import { type Freshness, type SessionSlice, browserBusy, freshness, shownActivity, useSessions } from './sessions'
 import type { CodeToolRan } from '@/lib/codemap/types'
 import codemapEvents from '@/components/codemap/__fixtures__/events.json'
+import { runningSubagents } from '@/components/sidebar/SessionItem'
 
 const S = 'sess'
 const T = 'turn'
@@ -1123,6 +1125,26 @@ test('109 §8.2: the banner follows TurnResumed → ResumeReport, the next turn 
   j = apply(j, { type: 'JobFinished', session: S, id: 'j1', command: 'make', exit: 'lost', secs: 4n, output: '', inline: false, pty: false }, ctx())
   expect(j.entries[0]).toMatchObject({ job: { exit: { exit: 'lost', secs: 4 } } })
   expect(j.jobs.size).toBe(0)
+})
+
+test('109 LIVE: a child\u2019s TurnResumed shows it running (own slice and the parent\u2019s row, no chat line) until TurnFinished', () => {
+  const at = '2026-10-06T12:05:00Z'
+  const draft: Record<string, SessionSlice> = { [S]: empty(S) }
+  route(draft, { type: 'SubagentSpawned', parent: S, child: 'kid', name: 'Scout' }, ctx())
+  route(draft, { type: 'TurnFinished', session: 'kid', turn: 'old', stop_reason: 'stop', usage, context: 1 }, ctx())
+  expect(draft[S]?.children.kid).toMatchObject({ state: { state: 'idle' }, started_at: null })
+  const lines = draft[S]?.entries.length
+  expect(route(draft, { type: 'TurnResumed', session: 'kid', turn: T, kind: 'interrupted', interrupted_at: at, resumed_at: at, partial_dropped: false }, ctx())).toBe(true)
+  expect(draft[S]?.children.kid?.state).toEqual({ state: 'running' })
+  expect(draft[S]?.children.kid?.started_at).toEqual(expect.any(String))
+  expect(draft[S]?.entries.length).toBe(lines)
+  expect(draft.kid).toMatchObject({ running: true, waiting: true, activity: 'thinking' })
+  const kid = { id: 'kid', running: false } as SessionSummary
+  expect(runningSubagents([kid], draft)).toBe(1)
+  route(draft, { type: 'TurnFinished', session: 'kid', turn: T, stop_reason: 'stop', usage, context: 1 }, ctx())
+  expect(draft[S]?.children.kid).toMatchObject({ state: { state: 'idle' }, started_at: null })
+  expect(draft.kid?.running).toBe(false)
+  expect(runningSubagents([kid], draft)).toBe(0)
 })
 
 test('109 §8.2: the interrupted partial loads greyed and the regenerated reply\u2019s first delta replaces it', () => {

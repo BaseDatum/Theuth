@@ -2142,7 +2142,10 @@ impl Message<AgentEvent> for Agents {
 
     async fn handle(&mut self, ev: AgentEvent, ctx: &mut Context<Self, Self::Reply>) {
         match ev {
-            AgentEvent::TurnStarted { session, .. } => {
+            // 109 LIVE: a turn resumed after a restart (`Turn::resume`)
+            // publishes `TurnResumed`, never `TurnStarted`; for liveness it is
+            // the start of a turn all the same.
+            AgentEvent::TurnStarted { session, .. } | AgentEvent::TurnResumed { session, .. } => {
                 self.running.insert(session);
                 // A follow-up turn (steer, peer message) has no permit but
                 // still needs a start time for the picker — and, on an ACP
@@ -2759,9 +2762,15 @@ impl Message<crate::LateAnswer> for Agents {
         if text.is_empty() {
             return Ok(());
         }
-        self.human_input(Some(row.session), None, text, Vec::new(), Delivery::default())
-            .await
-            .map(|_| ())
+        self.human_input(
+            Some(row.session),
+            None,
+            text,
+            Vec::new(),
+            Delivery::default(),
+        )
+        .await
+        .map(|_| ())
     }
 }
 
@@ -12885,6 +12894,113 @@ pub(crate) mod tests {
             .await
             .unwrap();
         assert!(timed && permit_free, "timed, permit-free follow-up turn");
+    }
+
+    /// 109 LIVE: a child whose open turn is resumed after a restart
+    /// publishes `TurnResumed`, never `TurnStarted`; the roster still shows it
+    /// `Running` (with a start time) until its `TurnFinished`.
+    #[tokio::test]
+    async fn resumed_child_turn_counts_as_running() {
+        let mut a = agents().await;
+        let rt = a.rt.clone();
+        let (root, _) = a.session(None, None, None, (None, None)).await.unwrap();
+        let child = kid(&mut a, root, "kid").await;
+        let agents = Agents::spawn(a);
+        rt.subscribe::<Agents, AgentEvent>(&agents).await;
+        let mut rx = tap(&rt).await;
+        let state = |agents: &ActorRef<Agents>| {
+            let agents = agents.clone();
+            async move {
+                let rows = agents.ask(ListAgents { session: root }).await.unwrap();
+                let row = rows.into_iter().find(|r| r.id == child).unwrap();
+                (row.state, row.started_at.is_some())
+            }
+        };
+        assert_eq!(state(&agents).await, (AgentState::Idle, false));
+
+        let now = Utc::now();
+        rt.publish(AgentEvent::TurnResumed {
+            session: child,
+            turn: TurnId::new(),
+            kind: crate::durability::ResumeKind::Interrupted,
+            interrupted_at: now,
+            resumed_at: now,
+            partial_dropped: false,
+        })
+        .await;
+        next_event(&mut rx, |e| matches!(e, AgentEvent::TurnResumed { .. })).await;
+        assert_eq!(state(&agents).await, (AgentState::Running, true));
+
+        rt.publish(finished(child)).await;
+        next_event(&mut rx, |e| matches!(e, AgentEvent::TurnFinished { .. })).await;
+        assert_eq!(state(&agents).await, (AgentState::Idle, false));
+    }
+
+    /// 109 LIVE: a respawned ACP child counts as running from the moment its
+    /// handoff prompt is on the wire. `Respawn` goes through the ordinary
+    /// `start` → `open` path, whose `TurnStarted` the supervisor already
+    /// reads — so the child is `Running`, timed like a follow-up turn, and
+    /// `Idle` again when the prompt returns. (The boot trigger's own gate is
+    /// `acp_resume::tests::respawn_decision_table`; it only accepts a local
+    /// harness, which no test can dial, so the actor is told directly here.)
+    #[tokio::test]
+    async fn respawned_acp_child_counts_as_running() {
+        let a = agents().await;
+        let mut fake = node(&a, "box");
+        let rt = a.rt.clone();
+        let (agents, p) = rooted(a).await;
+        rt.subscribe::<Agents, AgentEvent>(&agents).await;
+        let mut rx = tap(&rt).await;
+        let (_, e1, _) = agents.ask(spawn_on(p, "box", "e1", "go")).await.unwrap();
+        fake.handshake(Vec::new(), None).await;
+        let (id, _) = fake.prompt().await;
+        fake.end_turn(&id);
+        next_event(
+            &mut rx,
+            |e| matches!(e, AgentEvent::TurnFinished { session, .. } if *session == e1),
+        )
+        .await;
+        let state = |agents: &ActorRef<Agents>| {
+            let agents = agents.clone();
+            async move {
+                let rows = agents.ask(ListAgents { session: p }).await.unwrap();
+                let row = rows.into_iter().find(|r| r.id == e1).unwrap();
+                (row.state, row.started_at.is_some())
+            }
+        };
+        assert_eq!(state(&agents).await, (AgentState::Idle, false));
+
+        let actor = agents
+            .ask(With(move |a: &mut Agents| match &a.sessions[&e1].actor {
+                LiveActor::Acp(a) => a.clone(),
+                LiveActor::Native(_) => unreachable!(),
+            }))
+            .await
+            .unwrap();
+        actor.tell(crate::acp_child::Respawn(4000)).await.unwrap();
+        let (id, text) = fake.prompt().await;
+        assert!(text.starts_with("<resume_handoff>\n"), "{text}");
+        next_event(
+            &mut rx,
+            |e| matches!(e, AgentEvent::TurnStarted { session, .. } if *session == e1),
+        )
+        .await;
+        assert_eq!(state(&agents).await, (AgentState::Running, true));
+        let timed = agents
+            .ask(With(move |a: &mut Agents| {
+                a.child_turns[&e1].timer.is_some()
+            }))
+            .await
+            .unwrap();
+        assert!(timed, "timed like any follow-up ACP turn");
+
+        fake.end_turn(&id);
+        next_event(
+            &mut rx,
+            |e| matches!(e, AgentEvent::TurnFinished { session, .. } if *session == e1),
+        )
+        .await;
+        assert_eq!(state(&agents).await, (AgentState::Idle, false));
     }
 
     /// R2.7: a child result the parent's intake refuses (its pending quota
