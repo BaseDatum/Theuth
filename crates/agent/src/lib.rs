@@ -850,6 +850,11 @@ pub struct ResumeState {
     pub kind: durability::ResumeKind,
     /// Newest journal row's time.
     pub interrupted_at: chrono::DateTime<chrono::Utc>,
+    /// true when the supervisor has already relaunched this turn
+    /// (durability.resume = auto); false while it waits for `resume_turn`
+    /// (ask mode). Old engines omit it: `false` keeps "resuming…".
+    #[serde(default)]
+    pub resumed: bool,
 }
 
 /// `ask` → `Vec<AgentInfo>`: the subtree under `session` (children,
