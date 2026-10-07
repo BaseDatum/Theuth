@@ -1,0 +1,13 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- Seeding tool for UI tests on a scratch engine (design 134 W1b): real attention items through the engine's own RPCs.
+       Not part of the app; on build-B run it through seed.ps1 (dotnet run, arguments after the separator). -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <RootNamespace>Theuth.Companion.Seed</RootNamespace>
+    <AssemblyName>Theuth.Companion.Seed</AssemblyName>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\Theuth.Companion.Rpc\Theuth.Companion.Rpc.csproj" />
+  </ItemGroup>
+</Project>

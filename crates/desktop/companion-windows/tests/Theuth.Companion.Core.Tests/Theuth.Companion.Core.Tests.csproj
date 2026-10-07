@@ -1,0 +1,25 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- Port of Tests/CompanionCoreTests (design 134 §5.2): the CompanionCore suites one-for-one, Windows form where the
+       design says so (D6: ⌘ → Ctrl, Win32 virtual-key codes, Win chords refused; §3: double-tap Alt; D12: settings.json). -->
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <IsPackable>false</IsPackable>
+    <IsTestProject>true</IsTestProject>
+    <RootNamespace>Theuth.Companion.Core.Tests</RootNamespace>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.14.1" />
+    <PackageReference Include="xunit" Version="2.9.3" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="3.1.4">
+      <PrivateAssets>all</PrivateAssets>
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+    </PackageReference>
+  </ItemGroup>
+  <ItemGroup>
+    <Using Include="Xunit" />
+    <Using Include="Theuth.Companion.Rpc" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\Theuth.Companion.Core\Theuth.Companion.Core.csproj" />
+  </ItemGroup>
+</Project>

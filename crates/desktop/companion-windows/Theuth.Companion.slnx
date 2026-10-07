@@ -1,0 +1,24 @@
+<Solution>
+  <!-- Design 134 §5.2 (D11). The WinUI app needs Windows (net10.0-windows10.0.22621.0, x64 only, build-B); the Mac builds
+       and tests the portable projects through Theuth.Companion.Portable.slnf (test.sh, `just companion-windows-test`). -->
+  <Configurations>
+    <BuildType Name="Debug" />
+    <BuildType Name="Release" />
+    <Platform Name="Any CPU" />
+    <Platform Name="x64" />
+  </Configurations>
+  <Folder Name="/src/">
+    <Project Path="src/Theuth.Companion.Rpc/Theuth.Companion.Rpc.csproj" />
+    <Project Path="src/Theuth.Companion.Core/Theuth.Companion.Core.csproj" />
+    <Project Path="src/Theuth.Companion/Theuth.Companion.csproj">
+      <Platform Project="x64" />
+    </Project>
+  </Folder>
+  <Folder Name="/tools/">
+    <Project Path="tools/Theuth.Companion.Seed/Theuth.Companion.Seed.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/Theuth.Companion.Rpc.Tests/Theuth.Companion.Rpc.Tests.csproj" />
+    <Project Path="tests/Theuth.Companion.Core.Tests/Theuth.Companion.Core.Tests.csproj" />
+  </Folder>
+</Solution>

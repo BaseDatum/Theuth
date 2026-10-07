@@ -1,0 +1,15 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- Port of SWIFT/CompanionCore (design 134 §5.2): every pure type the surfaces render, file for file, test for test.
+       Plain net10.0: builds and tests on the Mac (test.sh) and on Windows. W3 also owns PolicySettings.cs. -->
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <RootNamespace>Theuth.Companion.Core</RootNamespace>
+    <AssemblyName>Theuth.Companion.Core</AssemblyName>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\Theuth.Companion.Rpc\Theuth.Companion.Rpc.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <InternalsVisibleTo Include="Theuth.Companion.Core.Tests" />
+  </ItemGroup>
+</Project>
