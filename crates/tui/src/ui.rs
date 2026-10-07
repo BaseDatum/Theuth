@@ -4,7 +4,7 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use agent::CompactStyle;
+use agent::{AdvisorSeverity, AdvisorState, CompactStyle};
 use agent::todo::Status as TodoStatus;
 use iocraft::prelude::*;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
@@ -17,7 +17,10 @@ use crate::model::{
     TodoCard, TurnAction, UiEvent, action_name, agent_row, artifact_row, artifact_size, describe,
     gate_name, k, meta_line, now_ms, progress_line, result_line, short, slash_matches, window,
 };
-use crate::model::{Grouped, ModelRow, providers, session_row, terminal_row};
+use crate::model::{
+    ADVISORY_COLLAPSED, Grouped, ModelRow, PickTarget, advisory_severity, advisory_title,
+    providers, session_row, severity_name, terminal_row,
+};
 use crate::pathac;
 use crate::search::{self, Focus, Preview};
 use crate::talk::{self, Look, Talking};
@@ -33,6 +36,8 @@ pub struct Links {
     pub default_model: String,
     /// `Info.default_effort` (config as fallback, 83 §3): the draft header's effort.
     pub default_effort: Option<String>,
+    /// `Info.advisor` (125 §6.5): the remembered advisor pick `/advisor on` re-uses.
+    pub advisor: agent::AdvisorDefaults,
     /// `tools.approvals` from config.
     pub approvals: bool,
     /// `Info.app_enabled`: offer `/apps`.
@@ -112,6 +117,7 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
     let mut links = hooks.use_context_mut::<Links>();
     let default_model = links.default_model.clone();
     let default_effort = links.default_effort.clone();
+    let advisor = links.advisor.clone();
     let approvals = links.approvals;
     let app_enabled = links.app_enabled;
     let catalog = links.catalog.clone();
@@ -121,6 +127,7 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
             let mut m = Model::new(default_model, approvals);
             m.effort = default_effort.clone();
             m.default_effort = default_effort;
+            m.advisor_default = advisor;
             m.app_enabled = app_enabled;
             m.catalog = Some(catalog);
             m.entries.push(Entry::Info(
@@ -281,6 +288,12 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
                     && let Some(session) = m.session
                 {
                     let _ = commands.send(Command::SessionCost(session));
+                }
+                // 125 §3: the link survives a restart; re-read it with every load.
+                if std::mem::take(&mut m.refresh_advisor)
+                    && let Some(session) = m.session
+                {
+                    let _ = commands.send(Command::AdvisorStatus(session));
                 }
                 // Root metadata moved while a grouped picker is open (51 §3): re-list it.
                 if std::mem::take(&mut m.refresh_grouping) {
@@ -789,7 +802,10 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
             }
             #(path_box(&m, width))
             View(height: 1, padding_left: 1, padding_right: 1, justify_content: JustifyContent::SpaceBetween) {
-                Text(content: m.status(), color: SAND)
+                View() {
+                    Text(content: m.status(), color: SAND)
+                    #(m.advisor_segment().map(|(text, state)| element!(Text(content: text, color: advisor_color(state)))))
+                }
                 Text(content: m.mcp_status(), color: SAND)
             }
         }
@@ -1000,12 +1016,18 @@ fn menu(m: &Model, input: &str, width: u16, height: u16) -> Option<AnyElement<'s
             filter,
             cursor,
             provider,
+            target,
         } => {
+            // 125 §7.2: the same picker, titled for whose model it sets.
+            let noun = match target {
+                PickTarget::Session => "model",
+                PickTarget::Advisor => "advisor",
+            };
             let rows = m.models_rows();
             let title = if !filter.is_empty() {
                 let none = rows.iter().all(|r| matches!(r, ModelRow::Current(_)));
                 format!(
-                    "model  search: {filter}▏  ⏎ set  esc close{}",
+                    "{noun}  search: {filter}▏  ⏎ set  esc close{}",
                     if none { "  no match" } else { "" }
                 )
             } else if let Some(p) = provider {
@@ -1014,9 +1036,9 @@ fn menu(m: &Model, input: &str, width: u16, height: u16) -> Option<AnyElement<'s
                 } else {
                     ""
                 };
-                format!("model › {p} ({})  ⏎ set  {back}esc close", rows.len())
+                format!("{noun} › {p} ({})  ⏎ set  {back}esc close", rows.len())
             } else {
-                "model  ⏎ open provider  type to search all models  esc close".to_owned()
+                format!("{noun}  ⏎ open provider  type to search all models  esc close")
             };
             let mark = |on: bool| if on { "●" } else { " " };
             let model_row = |on: bool, i: &agent::ModelInfo| {
@@ -1029,11 +1051,15 @@ fn menu(m: &Model, input: &str, width: u16, height: u16) -> Option<AnyElement<'s
                     if i.image { " · vision" } else { "" }
                 )
             };
+            let picked = m.pick_current();
             let rows = rows
                 .iter()
                 .map(|r| match r {
+                    ModelRow::Off { current } => {
+                        format!("{} {:<44} no advisor", mark(*current), "Off")
+                    }
                     ModelRow::Current(i) => model_row(true, i),
-                    ModelRow::Model(i) => model_row(i.id == m.model_id, i),
+                    ModelRow::Model(i) => model_row(Some(i.id.as_str()) == picked, i),
                     ModelRow::Provider { id, count, current } => {
                         format!("{} {id:<24} {count:>4} models", mark(*current))
                     }
@@ -1041,7 +1067,7 @@ fn menu(m: &Model, input: &str, width: u16, height: u16) -> Option<AnyElement<'s
                 .collect();
             (title, rows, *cursor)
         }
-        Menu::Efforts { items, cursor } => (
+        Menu::Efforts { items, cursor, .. } => (
             "effort  ⏎ set  esc close".to_owned(),
             items.clone(),
             *cursor,
@@ -2034,6 +2060,42 @@ fn entry(e: &Entry, spinner: &str, skip: usize, width: u16) -> AnyElement<'stati
             }
             .into_any()
         }
+        // 125 §7.4: the Round card in its worst severity's colour; one row per
+        // note, badge coloured, text plain; three rows until Ctrl+O.
+        Entry::Advisory { advisory, expanded } => {
+            let color = severity_color(advisory_severity(advisory));
+            let n = advisory.notes.len();
+            let shown = if *expanded { n } else { n.min(ADVISORY_COLLAPSED) };
+            let title = advisory_title(advisory);
+            let header = if n <= ADVISORY_COLLAPSED {
+                title
+            } else if *expanded {
+                format!("{title}   ctrl+o collapses")
+            } else {
+                format!("{title}   ctrl+o expands")
+            };
+            let rows: Vec<AnyElement<'static>> = advisory
+                .notes
+                .iter()
+                .take(shown)
+                .map(|note| {
+                    element!(MixedText(contents: vec![
+                        MixedTextContent::new(format!("[{}]", severity_name(note.severity))).color(severity_color(note.severity)),
+                        MixedTextContent::new(format!(" {}", note.note)),
+                    ], wrap: TextWrap::Wrap))
+                    .into_any()
+                })
+                .collect();
+            let more = (n > shown).then(|| format!("… +{} more notes", n - shown));
+            element! {
+                View(flex_direction: FlexDirection::Column, border_style: BorderStyle::Round, border_color: color, padding_left: 1, padding_right: 1, margin_top: 1) {
+                    Text(content: header, color, weight: Weight::Bold)
+                    #(rows)
+                    #(more.map(|m| element!(Text(content: m, color: SAND))))
+                }
+            }
+            .into_any()
+        }
         Entry::Divider(label) => element! {
             View(border_style: BorderStyle::Round, border_color: PROMPT, padding_left: 1, padding_right: 1, margin_top: 1) {
                 Text(content: format!("── {label} ──"), color: PROMPT, weight: Weight::Bold)
@@ -2042,6 +2104,27 @@ fn entry(e: &Entry, spinner: &str, skip: usize, width: u16) -> AnyElement<'stati
         .into_any(),
         Entry::Info(t) => plain(t, TextWrap::Wrap, |c| c.color(SAND)),
         Entry::Error(t) => plain(t, TextWrap::Wrap, |c| c.color(CARNELIAN)),
+    }
+}
+
+/// The advisor palette (125 §7.4): nit SAND (muted), concern OCHRE (warning),
+/// blocker CARNELIAN (danger).
+fn severity_color(s: AdvisorSeverity) -> Color {
+    match s {
+        AdvisorSeverity::Nit => SAND,
+        AdvisorSeverity::Concern => OCHRE,
+        AdvisorSeverity::Blocker => CARNELIAN,
+    }
+}
+
+/// The status segment's colour by advisor state (125 §7.5): idle SAND,
+/// reviewing FAIENCE, paused OCHRE, halted CARNELIAN.
+fn advisor_color(s: AdvisorState) -> Color {
+    match s {
+        AdvisorState::Off | AdvisorState::Idle => SAND,
+        AdvisorState::Reviewing => FAIENCE,
+        AdvisorState::Paused => OCHRE,
+        AdvisorState::Halted => CARNELIAN,
     }
 }
 
@@ -2276,6 +2359,7 @@ mod tests {
             filter: String::new(),
             cursor: 0,
             provider: Some("amazon-bedrock".into()),
+            target: PickTarget::Session,
         });
         for width in 60..=120u16 {
             let modal = menu(&m, "", width, 30).unwrap();

@@ -1146,6 +1146,24 @@ pub fn advisory_title(a: &Advisory) -> String {
     )
 }
 
+/// `[concern] note text`: one line per note (the headless printer; the
+/// renderer colours the badge itself).
+pub fn advisory_lines(a: &Advisory) -> Vec<String> {
+    a.notes
+        .iter()
+        .map(|n| format!("[{}] {}", severity_name(n.severity), n.note))
+        .collect()
+}
+
+/// `advisor → anthropic/claude-opus-4-1` / `advisor → off`: the one info
+/// line on `AdvisorChanged` (125 §7.5, the `model → …` shape).
+pub fn advisor_changed_line(s: &AdvisorStatus) -> String {
+    match (&s.state, &s.model) {
+        (AdvisorState::Off, _) | (_, None) => "advisor → off".to_owned(),
+        (_, Some(m)) => format!("advisor → {m}"),
+    }
+}
+
 /// `off` / `idle` / `reviewing` / `paused` / `halted`.
 pub fn advisor_state_name(s: AdvisorState) -> &'static str {
     match s {
@@ -5704,6 +5722,35 @@ impl Model {
         };
         // Roster bookkeeping for the subtree, independent of what is shown.
         match &ev {
+            // 125 §7.5: the advisor is session chrome (status segment, header
+            // tag), never a transcript row — it must not finish a streaming
+            // tail below. `set_advisor_status` prints the one change line.
+            AgentEvent::AdvisorChanged { session, status } => {
+                if self.session == Some(*session) {
+                    self.set_advisor_status(status.clone());
+                }
+                return;
+            }
+            // 125 §7.4: the card goes above a streaming tail; a steer's row
+            // may also open a turn, whose `TurnStarted` must not echo it.
+            AgentEvent::AdvisoryAdded {
+                session,
+                seq,
+                advisory,
+            } => {
+                if self.session == Some(*session) && self.advisory_seqs.insert(*seq) {
+                    self.interject(Entry::Advisory {
+                        advisory: advisory.clone(),
+                        expanded: false,
+                    });
+                }
+                return;
+            }
+            // 125 §7.5: the hidden advisor child never reaches the board (the
+            // event carries no `kind`; the link's id is the guard).
+            AgentEvent::SubagentSpawned { child, .. } if self.advisor.advisor == Some(*child) => {
+                return;
+            }
             AgentEvent::SubagentSpawned {
                 parent,
                 child,
@@ -5919,7 +5966,9 @@ impl Model {
             } => {
                 self.model_id = model;
                 self.turn_seq = Some(turn_seq);
-                if injected(&text).is_some() {
+                // 125 §7.4: a steer's row is already its card (by seq, or by
+                // the `<advisory>` wrapper when the card has not landed yet).
+                if self.advisory_seqs.contains(&turn_seq) || injected(&text).is_some() {
                     return;
                 }
                 let shown = self.last_injected_turn.take() == Some(turn)
@@ -6161,10 +6210,9 @@ impl Model {
             | AgentEvent::ModelUsageChanged { .. }
             | AgentEvent::SessionOwnerChanged { .. }
             | AgentEvent::SessionClosing { .. }
-            | AgentEvent::PartialDropped { .. }
-            // 125 C placeholder: W2 wires the pill/status line (125 §7.5) and the live card.
-            | AgentEvent::AdvisorChanged { .. }
-            | AgentEvent::AdvisoryAdded { .. } => {}
+            | AgentEvent::PartialDropped { .. } => {}
+            // 125: handled before the streaming-tail bookkeeping above.
+            AgentEvent::AdvisorChanged { .. } | AgentEvent::AdvisoryAdded { .. } => {}
             // 109 §10.3: the divider and the status-line note.
             AgentEvent::TurnResumed {
                 kind,
@@ -6415,7 +6463,7 @@ impl Model {
                     .and_then(|c| c.closest(&self.model_id))
                     .map(|m| m.efforts())
                     .unwrap_or_default();
-                self.open_efforts(items);
+                self.open_efforts(items, PickTarget::Session);
             }
             "/effort" => self.set_effort((arg != "clear").then(|| arg.to_owned()), tx),
             "/aws" if arg.is_empty() => send(tx, Command::ListAwsProfiles),
@@ -6424,6 +6472,7 @@ impl Model {
                 Command::SetAwsProfile((arg != "clear").then(|| arg.to_owned())),
             ),
             "/approvals" => self.approvals_cmd(arg, tx),
+            "/advisor" => self.advisor_cmd(arg, tx),
             "/communication" => self.communication_cmd(arg, tx),
             "/peers" => self.peers_cmd(arg, tx),
             "/a2a" if arg.is_empty() => send(tx, Command::A2aStatus),
@@ -7049,9 +7098,10 @@ impl Model {
                 };
                 (
                     format!(
-                        "{model}{effort}  ·  ctx {used} / {} ({pct}%){cache}{}{}{}{}{}{}",
+                        "{model}{effort}  ·  ctx {used} / {} ({pct}%){cache}{}{}{}{}{}{}{}",
                         k(limit),
                         self.cost_tag(),
+                        self.advisor_tag(),
                         self.approvals_tag(),
                         self.communication_tag(),
                         self.link_tag(),
@@ -7063,8 +7113,9 @@ impl Model {
             }
             _ => (
                 format!(
-                    "{model}{effort}  ·  ctx {used}{cache}{}{}{}{}{}{}",
+                    "{model}{effort}  ·  ctx {used}{cache}{}{}{}{}{}{}{}",
                     self.cost_tag(),
+                    self.advisor_tag(),
                     self.approvals_tag(),
                     self.communication_tag(),
                     self.link_tag(),
@@ -7074,6 +7125,28 @@ impl Model {
                 Level::Normal,
             ),
         }
+    }
+
+    /// `  ·  advisor $0.012` (125 §7.5): the advisor session's spend from the
+    /// last `AdvisorStatus`; empty while off or before it was priced.
+    fn advisor_tag(&self) -> String {
+        match (&self.advisor.state, &self.advisor.cost) {
+            (AdvisorState::Off, _) | (_, None) => String::new(),
+            (_, Some(c)) => format!("  ·  advisor {}", cost_short(c)),
+        }
+    }
+
+    /// The status line's advisor segment (125 §7.5): `  ·  ◎ advisor: idle` /
+    /// `⠋ reviewing…` / `paused` / `halted` with the state that colours it;
+    /// `None` while off.
+    pub fn advisor_segment(&self) -> Option<(String, AdvisorState)> {
+        let state = self.advisor.state;
+        let word = match state {
+            AdvisorState::Off => return None,
+            AdvisorState::Reviewing => format!("{} reviewing…", self.spinner()),
+            s => advisor_state_name(s).to_owned(),
+        };
+        Some((format!("  ·  {ADVISOR_GLYPH} advisor: {word}"), state))
     }
 
     fn approvals_tag(&self) -> &'static str {
@@ -7129,16 +7202,102 @@ impl Model {
     }
 
     /// Open the `/effort` picker over `items` plus a `clear` row; no levels → a notice.
-    fn open_efforts(&mut self, mut items: Vec<String>) {
+    /// `target` says whose effort the pick sets (125 §7.2).
+    fn open_efforts(&mut self, mut items: Vec<String>, target: PickTarget) {
         if items.is_empty() {
+            let model = match target {
+                PickTarget::Session => self.model_id.as_str(),
+                PickTarget::Advisor => self.advisor.model.as_deref().unwrap_or("advisor"),
+            };
             self.entries.push(Entry::Info(format!(
-                "{} has no reasoning effort levels",
-                self.model_id
+                "{model} has no reasoning effort levels"
             )));
             return;
         }
         items.push("clear".into());
-        self.menu = Some(Menu::Efforts { items, cursor: 0 });
+        self.menu = Some(Menu::Efforts {
+            items,
+            cursor: 0,
+            target,
+        });
+    }
+
+    /// `/advisor [off|on|status|<provider/model>]` (125 §7.1): bare opens the
+    /// `/model` picker targeted at the advisor; `on` re-uses the remembered
+    /// model; anything else is a `provider/model` id. Not on an ACP child:
+    /// the advisor reads theuth's transcript rows, which a harness does not produce.
+    fn advisor_cmd(&mut self, arg: &str, tx: &UnboundedSender<Command>) {
+        if self.agent.is_some() {
+            self.entries.push(Entry::Error(
+                "/advisor: not available for an external harness session".into(),
+            ));
+            return;
+        }
+        if arg.is_empty() {
+            self.pick_target = PickTarget::Advisor;
+            send(tx, Command::ListModels);
+            return;
+        }
+        let Some(session) = self.session else {
+            self.entries
+                .push(Entry::Error("no session yet: send a message first".into()));
+            return;
+        };
+        let (model, effort) = match arg {
+            "status" => {
+                self.advisor_reply = Some(AdvisorReply::Status);
+                send(tx, Command::AdvisorStatus(session));
+                return;
+            }
+            "off" => (None, None),
+            "on" => match self.advisor_default.model.clone() {
+                Some(m) => (Some(m), self.advisor_default.effort.clone()),
+                None => {
+                    self.entries.push(Entry::Error(
+                        "/advisor on: no remembered advisor model — pick one with /advisor".into(),
+                    ));
+                    return;
+                }
+            },
+            id => (Some(id.to_owned()), None),
+        };
+        self.set_advisor(session, model, effort, tx);
+    }
+
+    /// `SetAdvisor` for `session`; a pick (`Some` model) chains into the
+    /// advisor's effort picker when the reply names a model with levels.
+    fn set_advisor(
+        &mut self,
+        session: SessionId,
+        model: Option<String>,
+        effort: Option<String>,
+        tx: &UnboundedSender<Command>,
+    ) {
+        self.advisor_reply = (model.is_some() && effort.is_none()).then_some(AdvisorReply::Pick);
+        send(
+            tx,
+            Command::SetAdvisor {
+                session,
+                model,
+                effort,
+            },
+        );
+    }
+
+    /// Install the shown session's advisor status (a reply or `AdvisorChanged`,
+    /// whichever lands first): one `advisor → …` line when the model or the
+    /// off state changed (125 §7.5); a model remembers itself as the `/advisor on` default.
+    fn set_advisor_status(&mut self, status: AdvisorStatus) {
+        let off = |s: &AdvisorStatus| s.state == AdvisorState::Off || s.model.is_none();
+        let changed = status.model != self.advisor.model || off(&status) != off(&self.advisor);
+        if status.model.is_some() {
+            self.advisor_default.model.clone_from(&status.model);
+            self.advisor_default.effort.clone_from(&status.effort);
+        }
+        self.advisor = status;
+        if changed {
+            self.interject(Entry::Info(advisor_changed_line(&self.advisor)));
+        }
     }
 
     /// `SetEffort` for the root session (and the default); the reply announces it.
@@ -8391,24 +8550,32 @@ impl Model {
             items,
             filter,
             provider,
+            target,
             ..
         }) = &self.menu
         else {
             return Vec::new();
         };
-        let current = items.iter().find(|m| m.id == self.model_id);
+        let picked = self.pick_current();
+        let current = items.iter().find(|m| Some(m.id.as_str()) == picked);
         let mut rows = Vec::new();
         if !filter.is_empty() {
             rows.extend(current.map(ModelRow::Current));
             rows.extend(
                 rank_models(items, filter)
                     .into_iter()
-                    .filter(|m| m.id != self.model_id)
+                    .filter(|m| Some(m.id.as_str()) != picked)
                     .map(ModelRow::Model),
             );
         } else if let Some(p) = provider {
             rows.extend(provider_models(items, p).into_iter().map(ModelRow::Model));
         } else {
+            // 125 §7.2: the advisor's picker leads with `Off`, marked while there is none.
+            if *target == PickTarget::Advisor {
+                rows.push(ModelRow::Off {
+                    current: picked.is_none(),
+                });
+            }
             rows.extend(current.map(ModelRow::Current));
             let now = current.map(|c| c.provider.as_str());
             rows.extend(providers(items).into_iter().map(|(id, count)| {
@@ -8419,12 +8586,27 @@ impl Model {
         rows
     }
 
+    /// The model the open `/model` picker marks `●`: the session's, or the
+    /// advisor's (`None` while off) when the picker targets it (125 §7.2).
+    pub fn pick_current(&self) -> Option<&str> {
+        match &self.menu {
+            Some(Menu::Models {
+                target: PickTarget::Advisor,
+                ..
+            }) => self.advisor.model.as_deref(),
+            _ => Some(self.model_id.as_str()),
+        }
+    }
+
     /// Put the `/model` cursor where a level starts: the first row after the
-    /// Current row (first provider, or best search hit) when there is one.
+    /// Off and Current rows (first provider, or best search hit) when there is one.
     fn models_home(&mut self) {
         let rows = self.models_rows();
-        let home =
-            usize::from(matches!(rows.first(), Some(ModelRow::Current(_))) && rows.len() > 1);
+        let lead = rows
+            .iter()
+            .take_while(|r| matches!(r, ModelRow::Off { .. } | ModelRow::Current(_)))
+            .count();
+        let home = if rows.len() > lead { lead } else { 0 };
         if let Some(Menu::Models { cursor, .. }) = &mut self.menu {
             *cursor = home;
         }
@@ -8530,15 +8712,25 @@ impl Model {
     /// provider opens it; ←, or ⌫ on an empty filter, returns to the providers
     /// level (no-op with one provider); ⏎ on a model sets it; Esc closes.
     fn models_key(&mut self, code: KeyCode, tx: &UnboundedSender<Command>) -> MenuKey {
-        let Some(Menu::Models { items, cursor, .. }) = &self.menu else {
+        let Some(Menu::Models {
+            items,
+            cursor,
+            target,
+            ..
+        }) = &self.menu
+        else {
             return MenuKey::Consumed;
         };
+        let target = *target;
         let rows = self.models_rows();
         let len = rows.len();
         let at = (*cursor).min(len.saturating_sub(1));
+        // `(true, id)` opens provider `id`; `(false, Some(id))` picks model `id`;
+        // `(false, None)` is the advisor's `Off` row.
         let picked = match rows.get(at) {
-            Some(ModelRow::Current(m) | ModelRow::Model(m)) => Some((false, m.id.clone())),
-            Some(ModelRow::Provider { id, .. }) => Some((true, id.clone())),
+            Some(ModelRow::Current(m) | ModelRow::Model(m)) => Some((false, Some(m.id.clone()))),
+            Some(ModelRow::Provider { id, .. }) => Some((true, Some(id.clone()))),
+            Some(ModelRow::Off { .. }) => Some((false, None)),
             None => None,
         };
         let many = providers(items).len() > 1;
@@ -8575,17 +8767,17 @@ impl Model {
                 }
             }
             KeyCode::Right => {
-                if let Some((true, p)) = picked {
+                if let Some((true, Some(p))) = picked {
                     *provider = Some(p);
                     *cursor = 0;
                 }
             }
-            KeyCode::Enter => match picked {
-                Some((true, p)) => {
+            KeyCode::Enter => match (picked, target) {
+                (Some((true, Some(p))), _) => {
                     *provider = Some(p);
                     *cursor = 0;
                 }
-                Some((false, model)) => {
+                (Some((false, Some(model))), PickTarget::Session) => {
                     send(
                         tx,
                         Command::SetModel {
@@ -8595,7 +8787,17 @@ impl Model {
                     );
                     self.menu = None;
                 }
-                None => {}
+                // 125 §7.2: a model or `Off` goes to `set_advisor`.
+                (Some((false, model)), PickTarget::Advisor) => {
+                    self.menu = None;
+                    match self.session {
+                        Some(s) => self.set_advisor(s, model, None, tx),
+                        None => self
+                            .entries
+                            .push(Entry::Error("no session yet: send a message first".into())),
+                    }
+                }
+                _ => {}
             },
             KeyCode::Esc => self.menu = None,
             _ => {}
@@ -8606,9 +8808,15 @@ impl Model {
         MenuKey::Consumed
     }
 
-    /// `/effort`: Enter sets the highlighted level (`clear` unsets) from the next turn.
+    /// `/effort`: Enter sets the highlighted level (`clear` unsets) from the next
+    /// turn; targeted at the advisor (125 §7.2) it re-sends its model with the effort.
     fn efforts_key(&mut self, code: KeyCode, tx: &UnboundedSender<Command>) -> MenuKey {
-        let Some(Menu::Efforts { items, cursor }) = &mut self.menu else {
+        let Some(Menu::Efforts {
+            items,
+            cursor,
+            target,
+        }) = &mut self.menu
+        else {
             return MenuKey::Consumed;
         };
         match code {
@@ -8617,9 +8825,27 @@ impl Model {
             KeyCode::Esc => self.menu = None,
             KeyCode::Enter => {
                 let picked = items.get(*cursor).cloned();
+                let target = *target;
                 self.menu = None;
-                if let Some(v) = picked {
-                    self.set_effort((v != "clear").then_some(v), tx);
+                let Some(v) = picked else {
+                    return MenuKey::Consumed;
+                };
+                let effort = (v != "clear").then_some(v);
+                match (target, self.session, self.advisor.model.clone()) {
+                    (PickTarget::Session, ..) => self.set_effort(effort, tx),
+                    (PickTarget::Advisor, Some(session), model @ Some(_)) => {
+                        self.advisor_reply = None;
+                        send(
+                            tx,
+                            Command::SetAdvisor {
+                                session,
+                                model,
+                                effort,
+                            },
+                        );
+                    }
+                    // The advisor went off while the picker was open: nothing to set.
+                    (PickTarget::Advisor, ..) => {}
                 }
             }
             _ => {}
@@ -9804,6 +10030,11 @@ pub fn mesh_device_line(d: &link::DeviceInfo, now: u64) -> String {
 /// A `/model` picker row (124 §3).
 #[derive(Debug)]
 pub enum ModelRow<'a> {
+    /// 125 §7.2: the advisor picker's lead row; `current` while no advisor is set.
+    Off {
+        /// Whether the advisor is off now.
+        current: bool,
+    },
     /// The session's current model: always first, never filtered out.
     Current(&'a ModelInfo),
     /// A provider on the providers level; `current` marks the current model's.
@@ -10089,13 +10320,11 @@ fn from_history(h: HistoryEntry, opts: &markdown::Options) -> Vec<Entry> {
             Entry::Divider("interrupted — resuming".to_owned()),
             Entry::Info(text),
         ],
-        // 125 C placeholder: W2 draws `Entry::Advisory` (125 §7.4); until then the
-        // notes are one info line each so nothing the agent saw is silently dropped.
-        HistoryEntry::Advisory { advisory, .. } => advisory
-            .notes
-            .into_iter()
-            .map(|n| Entry::Info(format!("advisor [{:?}]: {}", n.severity, n.note)))
-            .collect(),
+        // 125 §7.4: one card per Advisory row, three notes until Ctrl+O.
+        HistoryEntry::Advisory { advisory, .. } => vec![Entry::Advisory {
+            advisory,
+            expanded: false,
+        }],
     }
 }
 
