@@ -354,6 +354,14 @@ public sealed class AskBarModelTests
     }
 
     [Fact]
+    public void SetEventFocusSendsTheSessionsAsOnePositionalList()
+    {
+        Assert.Equal("""[["desk-1"]]""", AskRpc.SetEventFocusParams(new[] { "desk-1" }));
+        Assert.Equal("""[["a","b"]]""", AskRpc.SetEventFocusParams(new[] { "a", "b" }));
+        Assert.Equal("[[]]", AskRpc.SetEventFocusParams(Array.Empty<string>()));
+    }
+
+    [Fact]
     public void CtrlLInThePanelOpensTheBar()
     {
         store.Perform(Intent.AskBar);

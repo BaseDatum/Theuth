@@ -180,7 +180,7 @@ switch ($Command) {
         $secs = 10
         if ($AskProbe -ge 0) { $a += @('--ask-probe', $AskProbe.ToString($inv)); $secs = $AskProbe }
         if ($Synthetic) { $a += '--synthetic-dictation' }
-        if ($Speech) { $a += @('--synthetic-speech', ($Speech -replace '_', ' ')) } # the build service refuses spaces in args: write_them_like_this
+        if ($Speech) { $a += @('--synthetic-speech', ('"' + ($Speech -replace '_', ' ') + '"')) } # the build service refuses spaces in args: write_them_like_this; quoted for Start-Process
         if ($MicProbe -ge 0) { $a += @('--mic-probe', $MicProbe.ToString($inv)); $secs = $MicProbe }
         if ($MixFormat) { $a += '--mic-mix-format' }
         if ($Replay) { $a += '--ask-replay' }

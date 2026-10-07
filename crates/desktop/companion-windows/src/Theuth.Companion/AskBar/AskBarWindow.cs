@@ -6,6 +6,7 @@ using Microsoft.UI.Windowing;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Automation;
 using Microsoft.UI.Xaml.Controls;
+using Microsoft.UI.Xaml.Documents;
 using Microsoft.UI.Xaml.Input;
 using Microsoft.UI.Xaml.Media;
 using Microsoft.UI.Xaml.Shapes;
@@ -41,8 +42,8 @@ internal sealed partial class AskBarWindow : Window, IAskBarSurface
     private readonly TextBox field;
     private readonly FontIcon mic;
     private readonly ScaleTransform micScale = new() { CenterX = 8, CenterY = 8 };
-    private readonly StackPanel escHint;
-    private readonly StackPanel holdHint;
+    private readonly Run escWords;
+    private readonly Run holdKey;
     private readonly TextBlock status;
     private readonly HyperlinkButton privacyLink;
     private readonly Border receiptRow;
@@ -121,32 +122,32 @@ internal sealed partial class AskBarWindow : Window, IAskBarSurface
         fieldRow.Children.Add(mic);
         Grid.SetRow(fieldRow, 0);
 
-        // Row 1: hints · status
+        // Row 1: hints · status — one wrapping line of runs (Ctrl+Shift+Space is longer than ⌃⇧Space; 480 epx holds it on two lines)
         var hints = new Grid { Padding = new Thickness(14, 0, 14, 9), ColumnSpacing = 12 };
-        hints.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-        hints.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-        hints.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         hints.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         hints.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-        AutomationProperties.SetAutomationId(hints, "ask-hints");
-        var sendHint = Hint("⏎", "send to theuth · it routes");
-        Grid.SetColumn(sendHint, 0);
-        holdHint = Hint("hold Ctrl+Shift+Space", "to talk · release to send in 3 s");
-        Grid.SetColumn(holdHint, 1);
-        escHint = Hint("Esc", "cancel");
-        Grid.SetColumn(escHint, 2);
+        var hintText = new TextBlock { FontSize = 10.5, Foreground = sand, TextWrapping = TextWrapping.Wrap, MaxLines = 2, VerticalAlignment = VerticalAlignment.Center };
+        AutomationProperties.SetAutomationId(hintText, "ask-hints");
+        AutomationProperties.SetName(hintText, "Ask bar hints");
+        holdKey = Key("hold Ctrl+Shift+Space");
+        escWords = Words(" cancel");
+        hintText.Inlines.Add(Key("⏎"));
+        hintText.Inlines.Add(Words(" send to theuth · it routes    "));
+        hintText.Inlines.Add(holdKey);
+        hintText.Inlines.Add(Words(" to talk · release to send in 3 s    "));
+        hintText.Inlines.Add(Key("Esc"));
+        hintText.Inlines.Add(escWords);
+        Grid.SetColumn(hintText, 0);
         var statusPanel = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6, VerticalAlignment = VerticalAlignment.Center };
-        status = new TextBlock { FontSize = 10.5, Foreground = sand, TextTrimming = TextTrimming.CharacterEllipsis, MaxLines = 1, VerticalAlignment = VerticalAlignment.Center };
+        status = new TextBlock { FontSize = 10.5, Foreground = sand, TextTrimming = TextTrimming.CharacterEllipsis, MaxLines = 1, MaxWidth = 200, VerticalAlignment = VerticalAlignment.Center };
         AutomationProperties.SetAutomationId(status, "ask-status");
         AutomationProperties.SetName(status, "Ask bar status");
         privacyLink = new HyperlinkButton { Content = "Settings › Privacy", FontSize = 10.5, Padding = new Thickness(2, 0, 2, 0), Visibility = Visibility.Collapsed, NavigateUri = new Uri(VoiceRecorder.PrivacySettingsUri) };
         AutomationProperties.SetAutomationId(privacyLink, "ask-privacy-link");
         statusPanel.Children.Add(status);
         statusPanel.Children.Add(privacyLink);
-        Grid.SetColumn(statusPanel, 4);
-        hints.Children.Add(sendHint);
-        hints.Children.Add(holdHint);
-        hints.Children.Add(escHint);
+        Grid.SetColumn(statusPanel, 1);
+        hints.Children.Add(hintText);
         hints.Children.Add(statusPanel);
         Grid.SetRow(hints, 1);
 
@@ -394,16 +395,17 @@ internal sealed partial class AskBarWindow : Window, IAskBarSurface
         micScale.ScaleX = scale;
         micScale.ScaleY = scale;
         AutomationProperties.SetName(mic, model.Recording ? "Listening" : "Hold the hotkey to dictate");
-        ((TextBlock)holdHint.Children[0]).Text = model.HoldHint;
+        holdKey.Text = model.HoldHint;
         status.Text = model.Status ?? "";
         status.Foreground = model.Recording ? carnelian : sand;
         privacyLink.Visibility = model.Status == VoiceRecorder.BlockedStatus ? Visibility.Visible : Visibility.Collapsed;
         RenderReceipt();
+        Fit();
     }
 
     private void RenderReceipt()
     {
-        ((TextBlock)escHint.Children[1]).Text = store.HeldNow is null ? "cancel" : "undo";
+        escWords.Text = store.HeldNow is null ? " cancel" : " undo";
         var lines = AskBarModel.ReceiptLines(store.Receipt, store.HoldRemaining);
         if (lines is not { } l)
         {
@@ -434,11 +436,8 @@ internal sealed partial class AskBarWindow : Window, IAskBarSurface
             holdBar.Visibility = Visibility.Collapsed;
         }
         AutomationProperties.SetName(receiptText, $"Receipt: {l.Text}");
-        if (receiptRow.Visibility != Visibility.Visible)
-        {
-            receiptRow.Visibility = Visibility.Visible;
-            Fit();
-        }
+        receiptRow.Visibility = Visibility.Visible;
+        Fit(); // the row grows to two lines as the reply streams
     }
 
     // MARK: placement (top-centre of the display under the mouse, ≈ 20 % down, like the Attention panel's `.mouse`)
@@ -475,11 +474,7 @@ internal sealed partial class AskBarWindow : Window, IAskBarSurface
 
     private static SolidColorBrush Translucent(uint rgb, double opacity) => new(ColorHelper.FromArgb((byte)(opacity * 255), (byte)(rgb >> 16), (byte)(rgb >> 8), (byte)rgb));
 
-    private StackPanel Hint(string key, string words)
-    {
-        var panel = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 4, VerticalAlignment = VerticalAlignment.Center };
-        panel.Children.Add(new TextBlock { Text = key, FontSize = 10.5, FontFamily = new FontFamily("Consolas"), Foreground = ink2 });
-        panel.Children.Add(new TextBlock { Text = words, FontSize = 10.5, Foreground = sand });
-        return panel;
-    }
+    private Run Key(string text) => new() { Text = text, FontFamily = new FontFamily("Consolas"), Foreground = ink2 };
+
+    private Run Words(string text) => new() { Text = text, Foreground = sand };
 }
