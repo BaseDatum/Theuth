@@ -255,13 +255,11 @@ export type Flow = {
   d: string
 }
 
-/** The item's short id, ≤ 10 chars: the task's short id for task-born items, else the kind. */
+/** The item's short id, ≤ 10 chars: the task's short id for task-born items, else the agent it names, else the first word of its title (R3 — never the kind repeated). */
 export function shortId(item: AttentionItem): string {
-  const s = item.task !== null ? shortTaskId(item.task) : item.kind
+  const s = item.task !== null ? shortTaskId(item.task) : (item.agent ?? item.title.split(/\s+/)[0] ?? item.kind)
   return s.length > 10 ? s.slice(0, 10) : s
 }
-
-export const truncate = (s: string, n: number): string => (s.length > n ? `${s.slice(0, n - 1)}…` : s)
 
 export type Need = { item: AttentionItem; x: number; y: number; label: string; link: Target }
 

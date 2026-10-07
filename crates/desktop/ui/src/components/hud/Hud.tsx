@@ -2,6 +2,7 @@ import { useQueryClient } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
 import { PanelLeft } from 'lucide-react'
 import { type ReactNode, useEffect, useMemo, useState } from 'react'
+import { Composer } from '@/components/chat/Composer'
 import { SecretRequestCard } from '@/components/chat/SecretRequestCard'
 import { simFlag, useSandboxes } from '@/components/settings/sandbox-queries'
 import { useRoutines } from '@/components/routines/queries'
@@ -94,6 +95,9 @@ export function Hud() {
         <div className="px-4 pt-4 pb-4">
           <SceneSwitch data={sceneData} errors={sceneErrors} />
         </div>
+      </div>
+      <div className="shrink-0 border-t border-border-subtle px-4 pt-3">
+        <Composer session={null} draftCreate={{ private: false, project: null }} compact />
       </div>
     </article>
   )

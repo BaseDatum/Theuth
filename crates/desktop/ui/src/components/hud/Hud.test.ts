@@ -27,7 +27,7 @@ vi.mock('@/components/ui/sidebar', async (original) => ({
   useSidebar: () => ({ open: true, isMobile: false, toggleSidebar: () => undefined }),
 }))
 vi.mock('@/hooks/use-mobile', () => ({ useIsMobile: () => false }))
-vi.mock('@/lib/hotkeys', async (original) => ({ ...(await original<typeof Hotkeys>()), isMacDesktop: () => false }))
+vi.mock('@/lib/hotkeys', async (original) => ({ ...(await original<typeof Hotkeys>()), isMacDesktop: () => false, touch: () => false }))
 
 async function render(): Promise<string> {
   const qc = new QueryClient({ defaultOptions: { queries: { staleTime: Infinity, retry: false } } })
@@ -54,13 +54,13 @@ test('secret inbox items render the secret_requests row: title, one masked input
   expect(html).not.toContain('answer it in the session')
 })
 
-test('R2: `/` is the Overview header and the scene — none of the retired sections (Attention cards, In flight, Board pulse, Activity, Spend) or the composer', () => {
+test('R2/R3: `/` is the Overview header, the scene and the docked composer — none of the retired sections (Attention cards, In flight, Board pulse, Activity, Spend)', () => {
   const qc = new QueryClient({ defaultOptions: { queries: { staleTime: Infinity, retry: false } } })
   const html = renderToStaticMarkup(createElement(QueryClientProvider, { client: qc, children: createElement(Hud) as ReactNode }))
   expect(html).toContain('>Overview<')
   expect(html).toMatch(/<svg[^>]*viewBox="0 0 1920 812"/)
   for (const title of ['Attention', 'In flight', 'Board pulse', 'Activity', 'Spend']) expect(html).not.toContain(`<section aria-label="${title}"`)
-  expect(html).not.toContain('textarea')
+  expect(html).toMatch(/<textarea[^>]*placeholder="Ask anything"/) // the docked new-chat composer (R3 restored it)
   // Queries are still loading on the first paint: the chrome shows, the inbox count is a dash, nothing is a false zero.
   expect(html).toContain('— NEED YOU')
 })
