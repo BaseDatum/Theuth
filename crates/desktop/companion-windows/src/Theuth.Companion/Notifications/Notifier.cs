@@ -5,6 +5,7 @@ using Microsoft.Windows.AppNotifications;
 using Microsoft.Windows.AppNotifications.Builder;
 using Theuth.Companion.Core;
 using Theuth.Companion.Rpc;
+using Theuth.Companion.Settings;
 
 namespace Theuth.Companion.Notifications;
 

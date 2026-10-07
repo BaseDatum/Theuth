@@ -1,4 +1,5 @@
 using Microsoft.UI.Dispatching;
+using Theuth.Companion.Breakpoints;
 using Theuth.Companion.Core;
 using Theuth.Companion.Rpc;
 using Theuth.Companion.Settings;
