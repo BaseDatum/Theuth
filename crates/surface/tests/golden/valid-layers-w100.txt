@@ -1,1 +1,10 @@
-*Layers: 4 layers*
+Layers: theuth stack — 4 layers
+┌──────────────────────────────────────────────────────┐
+│ Surfaces       desktop, TUI, Slack, Signal           │
+├──────────────────────────────────────────────────────┤
+│ Agent          loop, tools, skills  ◉                │
+├──────────────────────────────────────────────────────┤
+│ Surface crate  parse, validate, render · one catalog │
+├──────────────────────────────────────────────────────┤
+│ Store          sqlite, journal                       │
+└──────────────────────────────────────────────────────┘

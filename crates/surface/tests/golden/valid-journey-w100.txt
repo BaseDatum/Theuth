@@ -1,1 +1,8 @@
-*Journey: 4 stages*
+Journey: First hour — 4 stages
+       │ Install       │ First chat      │ First diagram   │ First board
+───────┼───────────────┼─────────────────┼─────────────────┼─────────────────
+Does   │ downloads dmg │ asks a question │ asks for a plan │ asks how X works
+Thinks │ is it safe?   │ fast enough?    │ oh, a chart     │ this is a doc
+Mood   │ ○             │ ☺               │ ☺               │ ☺
+▲ Install: notarisation wait
+▲ First board: board takes 40 s

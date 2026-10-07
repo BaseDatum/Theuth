@@ -1,1 +1,15 @@
-*Journey: 4 stages*
+Journey: First hour — 4 stages
+Install  ○
+  Does: downloads dmg
+  Thinks: is it safe?
+First chat  ☺
+  Does: asks a question
+  Thinks: fast enough?
+First diagram  ☺
+  Does: asks for a plan
+  Thinks: oh, a chart
+First board  ☺
+  Does: asks how X works
+  Thinks: this is a doc
+▲ Install: notarisation wait
+▲ First board: board takes 40 s

@@ -1,1 +1,7 @@
-*Venn: 3 sets*
+Venn: Release gates — 3 sets
+● Has tests (41)
+● Has docs (28)
+● Reviewed (35)
+Has tests ∩ Has docs: Documented + tested
+Has tests ∩ Reviewed: Ship candidates
+Has tests ∩ Has docs ∩ Reviewed: Release-ready
