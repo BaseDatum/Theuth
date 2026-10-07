@@ -186,7 +186,7 @@ impl FamilyGate {
     /// to the owner), state cut allowed (the 4 KB card state is right-cut),
     /// no thresholds (the double's own head and temperature gate, 126 §7.1),
     /// `embed` on, capture off (double keeps its own corpus).
-    pub const fn double() -> Self {
+    pub fn double() -> Self {
         FamilyGate {
             mode: Mode::Active,
             cut_ok: true,
