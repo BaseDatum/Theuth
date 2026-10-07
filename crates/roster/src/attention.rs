@@ -172,6 +172,18 @@ pub struct SnoozeAttention {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct DismissAttention(pub String);
 
+/// 126: another plugin's inbox items, pulled on every `ListAttention` (the
+/// double's "answers Allow in 14 s — take over" rows). Items are shaped by the
+/// source; dismiss / snooze apply to their ids like any other.
+#[async_trait::async_trait]
+pub trait Source: Send + Sync {
+    /// The source's current items.
+    async fn items(&self) -> Vec<AttentionItem>;
+}
+
+/// `tell`: add a [`Source`] the inbox pulls from.
+pub struct RegisterSource(pub std::sync::Arc<dyn Source>);
+
 /// What `derive` needs; the actor gathers it, tests build it by hand.
 #[derive(Default)]
 pub struct Inputs {
@@ -201,6 +213,8 @@ pub struct Inputs {
     pub task_sessions: HashMap<String, String>,
     /// 109 §8.3: resumes that need a human.
     pub resumes: Vec<ResumeNeed>,
+    /// Items from registered [`Source`]s (126), already shaped.
+    pub external: Vec<AttentionItem>,
 }
 
 /// Dismissed / snoozed state per item id.
@@ -583,6 +597,7 @@ pub fn derive(inputs: &Inputs, states: &HashMap<String, State>, now_ms: u64) -> 
             )
         });
     }
+    out.extend(inputs.external.iter().cloned());
 
     out.retain(|i| {
         !states
@@ -628,6 +643,8 @@ pub struct Attention {
     reports: HashMap<String, ResumeNeed>,
     /// `durability.resume: ask`: every open turn is an item with a Resume button.
     resume_ask: bool,
+    /// 126: other plugins' item sources, pulled on every list.
+    sources: Vec<std::sync::Arc<dyn Source>>,
 }
 
 impl Attention {
@@ -643,6 +660,7 @@ impl Attention {
                 pending: HashMap::new(),
                 reports: HashMap::new(),
                 resume_ask,
+                sources: Vec::new(),
             },
             runtime::subscriber_mailbox(),
         );
@@ -778,6 +796,13 @@ impl Attention {
             desks,
             task_sessions,
             resumes,
+            external: {
+                let mut v = Vec::new();
+                for s in &self.sources {
+                    v.extend(s.items().await);
+                }
+                v
+            },
         }
     }
 }
@@ -1061,6 +1086,14 @@ impl Message<DismissAttention> for Attention {
         set_state(&self.pool, &m.0, None, now_ms())
             .await
             .map_err(|e| e.to_string())
+    }
+}
+
+impl Message<RegisterSource> for Attention {
+    type Reply = ();
+
+    async fn handle(&mut self, m: RegisterSource, _: &mut Context<Self, ()>) {
+        self.sources.push(m.0);
     }
 }
 
