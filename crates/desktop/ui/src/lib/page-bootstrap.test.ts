@@ -118,7 +118,8 @@ function boot(theme = hostContext(THEME), hash = '') {
     },
     URL,
   }
-  const con = { log: () => {}, info: () => {}, warn: () => {}, error: () => {} } as Record<string, (...a: unknown[]) => void>
+  type Fn = (...a: unknown[]) => void
+  const con: { log: Fn; info: Fn; warn: Fn; error: Fn } = { log: () => {}, info: () => {}, warn: () => {}, error: () => {} }
   new Function('window', 'document', 'console', 'THEME', BOOTSTRAP_JS)(win, doc, con, theme)
   const fire = (key: string, ev: unknown) => listeners[key]?.forEach((cb) => cb(ev))
   const flush = () => timers.splice(0).forEach((cb) => cb?.())

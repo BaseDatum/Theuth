@@ -88,7 +88,7 @@ export function resolveFile(api: Api, path: string, active: string): string | Pr
 }
 
 /** Bytes of an engine file via `get_attachment`; uncached (pdf.js transfers the buffer to its worker). */
-export const readBytes = (api: Api, path: string): Promise<Uint8Array> =>
+export const readBytes = (api: Api, path: string): Promise<Uint8Array<ArrayBuffer>> =>
   api.get_attachment(path).then((b64) => Uint8Array.from(atob(b64), (c) => c.charCodeAt(0)))
 
 /**
