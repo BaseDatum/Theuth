@@ -67,15 +67,15 @@ D10 Crowded world — `UI/components/settings/sandbox-queries.ts`, `hud/queries.
 
 ## What was verified and how
 
-- `bun run check` (tsc, under build-lock): 0 errors in every owned file; 6 errors remain in four files outside this
-  worker's ownership, all caused by the contract's two REQUIRED fields (`Task.priority`, `AttentionItem.rank`) on
-  literals that predate them — see Open items. The same six will appear on the merged tree with the real bindings.
-- `bunx vitest run src/components/attention src/components/hud src/rpc`: 10 files, 68 passed, 1 skipped (pre-existing).
+- `bun run check` (tsc, under build-lock): 0 errors. (Mid-run it showed 6 errors in four files outside the brief's
+  ownership — the contract's two REQUIRED fields `Task.priority` / `AttentionItem.rank` missing from pre-existing
+  literals; the orchestrator granted the one-token edits, see Deviations.)
+- `bunx vitest run src/components/attention src/components/hud src/rpc`: 10 files, 68 passed, 1 skipped (pre-existing);
+  with `src/components/tasks src/components/chat/AskCard` added after the granted edits: 13 files, 88 passed, 1 skipped.
   New/changed: `model.test.ts` — engine order kept inside groups (`a1,a2`, `h,s`, `f1,f2`), Urgent group first across
   decision/ask/budget while high/low stay in their kinds, the crowded fixture (60 rows, 14 kinds, 4 priorities, Urgent
   group holds every urgent row and only those, nothing lost, ids unique); `double.test.ts` — double rows in engine order.
-- `bun run build`: the `tsc -b` step stops on the same six non-owned errors; `bunx vite build` alone (under build-lock)
-  succeeds (`✓ built in 3.12s`, the usual >500 kB chunk warning).
+- `bun run build` (tsc -b + vite build, under build-lock): ✓ built in 4.45s (the usual >500 kB chunk warning).
 - Smoke (`bunx vite --host 127.0.0.1 --port 5187` with `VITE_THEUTH_URL=ws://127.0.0.1:59231` / the token from
   `~/.theuth/token`, so the app passes the pairing screen; `?mock=crowded`; the managed headless Chromium — Chrome's own
   `--headless --screenshot` captured the Pair screen and then hung on exit, as 101 also found). Nothing was clicked that
@@ -107,15 +107,14 @@ D10 Crowded world — `UI/components/settings/sandbox-queries.ts`, `hud/queries.
   row under the header — the brief allowed either.
 - Crowded fixture: every row carries a priority (session rows via "a session that is a task checkout", §2.2), so the
   Urgent group demonstrably spans six kinds; the real engine fills `null` for session rows outside a checkout.
+- Orchestrator's grants (message 01a11788, after the tsc report): `hud/model.test.ts:24,44`, `hud/scene/fixtures.ts:51,124`,
+  `tasks/helpers.test.ts:9`, `tasks/mock.ts:41` gained only `priority: 'medium'` (Task literals) / `rank: 5`
+  (AttentionItem literals) — commit `679a1174`; `chat/AskCard.tsx:206` — the chat card's own `answer_ask` toast — got the
+  D6 string and nothing else (commit `4cc47e5b`). The contract stays as written (both fields required).
 
 ## Open items
 
-- tsc on the merged tree: add `priority: 'medium'` to the `Task` literal builders in `UI/components/tasks/mock.ts:22`
-  and `UI/components/tasks/helpers.test.ts:6`, `UI/components/hud/scene/fixtures.ts:27`, `UI/components/hud/model.test.ts:17`;
-  add `rank: 5` to the `AttentionItem` builders in `UI/components/hud/scene/fixtures.ts:110` and
-  `UI/components/hud/model.test.ts:44`. Four files outside this worker's ownership (one of them the 128 scene); six
-  one-token edits. Reported to the orchestrator during the run.
-- `UI/components/chat/AskCard.tsx:206` carries a second late-answer toast ("the question was already answered", the chat
-  card's own path). Outside ownership; the D6 wording should land there too.
 - `packages/apps` had no `node_modules` in this worktree; `bun install --frozen-lockfile` there was needed before tsc
   could resolve `@openuidev/*` (no file changes).
+- `hud/queries.ts:207` (the Attention Ask screen's Dismiss path) keeps "That question was already answered" for a late
+  `answer_ask(id, null)` — nothing is delivered for `None`; confirm with ENG if the engine ever forwards a dismiss.
