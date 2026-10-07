@@ -39,6 +39,9 @@ internal sealed class RailSpike
     private int _wfpLogs;
     private IntPtr _lastWfp;
     private readonly bool _capturable;
+    private readonly bool _restore;   // on WM_ACTIVATE(activated) hand the foreground straight back to the previous window
+    private readonly bool _noHit;     // XAML root IsHitTestVisible=false; marks detected by cursor poll + GetAsyncKeyState
+    private bool _lbuttonWas;
     private readonly HashSet<long> _seenMsgs = new();
     private int _targetW, _targetH;
 
@@ -57,6 +60,9 @@ internal sealed class RailSpike
         // The rail.
         _rail = new Window { Title = "SpikeHost S1 rail" };
         _capturable = argv.Contains("capturable");
+        _restore = argv.Contains("restore");
+        _noHit = argv.Contains("nohit");
+        SpikeLog.Append($"S1 options: capturable={_capturable} restore={_restore} nohit={_noHit}");
         // Vivid background so the rail is unmistakable in a screen capture (the desktop behind it is black).
         _root = new Grid { Background = new SolidColorBrush(Windows.UI.Color.FromArgb(255, 255, 140, 0)) };
         var stack = new StackPanel { HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center, Spacing = 48 };
@@ -71,6 +77,7 @@ internal sealed class RailSpike
             stack.Children.Add(b);
         }
         _root.Children.Add(stack);
+        if (_noHit) _root.IsHitTestVisible = false;
         _root.Loaded += (s, e) => OnRootLoaded();
         _rail.Content = _root;
 
@@ -231,6 +238,15 @@ internal sealed class RailSpike
             Marshal.StructureToPtr(mmi, lParam, false);
             return res;
         }
+        if (uMsg == Native.WM_ACTIVATE && hWnd == _hwnd && _restore && (wParam.ToInt64() & 0xFFFF) != 0)
+        {
+            var prev = _lastForeignFg;
+            var res = Native.DefSubclassProc(hWnd, uMsg, wParam, lParam);
+            bool ok = Native.SetForegroundWindow(prev);
+            var fgNow = Native.GetForegroundWindow();
+            SpikeLog.Append($"restore: WM_ACTIVATE(wParam=0x{wParam.ToInt64():X}) -> SetForegroundWindow(prev {Ui.Describe(prev)}) = {ok}; foreground now {Ui.Describe(fgNow)} restored={fgNow == prev}");
+            return res;
+        }
         if (uMsg == Native.WM_MOUSEACTIVATE)
         {
             // Belt and braces for WS_EX_NOACTIVATE: tell the system a click must not activate this window.
@@ -270,6 +286,21 @@ internal sealed class RailSpike
                 _wfpLogs++;
                 SpikeLog.Append($"cursor ({c.X},{c.Y}) inside rail, overMark={OverMark(c.X, c.Y)}: WindowFromPoint = {Ui.Describe(wfp)} isRailOrChild={wfp == _hwnd || _subclassed.Contains(wfp)}");
             }
+        }
+        if (_noHit)
+        {
+            bool down = (Native.GetAsyncKeyState(Native.VK_LBUTTON) & 0x8000) != 0;
+            if (down && !_lbuttonWas && inside)
+            {
+                for (int i = 0; i < _markRects.Count; i++)
+                {
+                    var p = new Native.POINT { X = c.X, Y = c.Y };
+                    Native.ScreenToClient(_hwnd, ref p);
+                    var r = _markRects[i];
+                    if (p.X >= r.Left && p.X < r.Right && p.Y >= r.Top && p.Y < r.Bottom) { SpikeLog.Append($"nohit: button down over mark {i + 1} (poll)"); OnMark(i + 1); }
+                }
+            }
+            _lbuttonWas = down;
         }
         if (_variant != "layered" && _variant != "all") return;
 

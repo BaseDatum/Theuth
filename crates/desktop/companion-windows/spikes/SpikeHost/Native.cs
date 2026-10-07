@@ -45,6 +45,7 @@ internal static class Native
 
     public const uint MOD_ALT = 0x1, MOD_CONTROL = 0x2, MOD_SHIFT = 0x4, MOD_WIN = 0x8, MOD_NOREPEAT = 0x4000;
     public const uint VK_SPACE = 0x20;
+    public const int VK_LBUTTON = 0x01;
     public const byte VK_MENU = 0x12;
     public const uint KEYEVENTF_KEYUP = 0x2;
 
@@ -131,6 +132,7 @@ internal static class Native
     [DllImport("user32.dll")] public static extern IntPtr WindowFromPoint(POINT p);
     [DllImport("user32.dll")] public static extern bool AllowSetForegroundWindow(uint dwProcessId);
     [DllImport("user32.dll", SetLastError = true)] public static extern int SetWindowRgn(IntPtr hWnd, IntPtr hRgn, bool bRedraw);
+    [DllImport("user32.dll")] public static extern short GetAsyncKeyState(int vKey);
     [DllImport("user32.dll")] public static extern bool AttachThreadInput(uint idAttach, uint idAttachTo, bool fAttach);
 
     // gdi32
