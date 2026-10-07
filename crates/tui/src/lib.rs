@@ -140,12 +140,24 @@ impl runtime::Plugin for TuiPlugin {
         let app_enabled = info.as_ref().is_some_and(|i| i.app_enabled);
         tokio::spawn(run_commands(api, commands_rx, events_tx));
 
-        let (default_model, default_effort, favorite_models) = info.map_or_else(
+        let (default_model, default_effort, advisor, favorite_models) = info.map_or_else(
             || {
                 let cfg = rt.section::<AgentConfig>("agent").unwrap_or_default();
-                (cfg.model, cfg.effort, cfg.favorite_models)
+                (
+                    cfg.model,
+                    cfg.effort,
+                    Default::default(),
+                    cfg.favorite_models,
+                )
             },
-            |i| (i.default_model, i.default_effort, i.favorite_models),
+            |i| {
+                (
+                    i.default_model,
+                    i.default_effort,
+                    i.advisor,
+                    i.favorite_models,
+                )
+            },
         );
         let approvals = rt
             .section::<tools::ToolsConfig>("tools")
@@ -162,6 +174,7 @@ impl runtime::Plugin for TuiPlugin {
                     commands: commands_tx,
                     default_model,
                     default_effort,
+                    advisor,
                     favorite_models,
                     approvals,
                     app_enabled,
@@ -639,6 +652,15 @@ async fn execute(api: &Engine, cmd: Command, tx: &UnboundedSender<UiEvent>) -> a
             // A pick in this TUI's picker or `/effort`: manual, so also the default (83 §2).
             msg(api.set_effort(session, effort.clone(), Some(true)).await)?;
             UiEvent::EffortSet(effort)
+        }
+        // 125 §7.1: `None` model = off; both replies carry the same status.
+        Command::SetAdvisor {
+            session,
+            model,
+            effort,
+        } => UiEvent::AdvisorStatus(msg(api.set_advisor(session, model, effort).await)?),
+        Command::AdvisorStatus(session) => {
+            UiEvent::AdvisorStatus(msg(api.advisor_status(session).await)?)
         }
         Command::SetModelFavorite { model, favorite } => {
             UiEvent::FavoriteModels(msg(api.set_model_favorite(model, favorite).await)?)
@@ -1301,6 +1323,13 @@ fn print_history(out: &mut impl Write, loaded: &agent::Loaded) -> std::io::Resul
         agent::HistoryEntry::Interrupted { text, .. } => {
             writeln!(out, "── interrupted — resuming ──\n{text}")
         }
+        // 125 §7.4: one line per note, the card's title first.
+        agent::HistoryEntry::Advisory { advisory, .. } => {
+            writeln!(out, "{}", model::advisory_title(advisory))?;
+            model::advisory_lines(advisory)
+                .iter()
+                .try_for_each(|l| writeln!(out, "{l}"))
+        }
     })
 }
 
@@ -1367,6 +1396,16 @@ fn print_event(out: &mut impl Write, model: &Model, ev: &UiEvent) {
             )
         }
         UiEvent::Agent(AgentEvent::ModelChanged { model, .. }) => writeln!(out, "model → {model}"),
+        UiEvent::Agent(AgentEvent::AdvisoryAdded { advisory, .. }) => {
+            writeln!(out, "{}", model::advisory_title(advisory)).and_then(|()| {
+                model::advisory_lines(advisory)
+                    .iter()
+                    .try_for_each(|l| writeln!(out, "{l}"))
+            })
+        }
+        UiEvent::Agent(AgentEvent::AdvisorChanged { status, .. }) => {
+            writeln!(out, "{}", model::advisor_changed_line(status))
+        }
         UiEvent::Agent(AgentEvent::DefaultModelChanged { model }) => {
             writeln!(out, "default model → {model}")
         }
@@ -1451,6 +1490,9 @@ fn print_event(out: &mut impl Write, model: &Model, ev: &UiEvent) {
         UiEvent::ModelSet(info) => writeln!(out, "model → {}", info.id),
         UiEvent::EffortSet(Some(e)) => writeln!(out, "effort: {e}"),
         UiEvent::EffortSet(None) => writeln!(out, "effort cleared"),
+        UiEvent::AdvisorStatus(s) => model::advisor_status_lines(s)
+            .iter()
+            .try_for_each(|l| writeln!(out, "{l}")),
         UiEvent::FavoriteModels(models) => writeln!(out, "favorites → {} models", models.len()),
         UiEvent::HarnessOptions(options) => model::harness_options_lines(options)
             .iter()

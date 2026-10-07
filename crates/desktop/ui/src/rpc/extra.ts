@@ -2,6 +2,7 @@
 // `export.rs`); transcribed serde-faithfully from `crates/agent/src/lib.rs`
 // and `crates/rpc`. Delete each once `bindings/` carries it.
 
+import type { AdvisorDefaults } from '@/rpc/bindings/AdvisorDefaults'
 import type { ApprovalsState } from '@/rpc/bindings/ApprovalsState'
 import type { CompactStyle } from '@/rpc/bindings/CompactStyle'
 import type { CommunicationState } from '@/rpc/bindings/CommunicationState'
@@ -10,6 +11,7 @@ import type { Loaded } from '@/rpc/bindings/Loaded'
 import type { Retention } from '@/rpc/bindings/Retention'
 import type { Risk } from '@/rpc/bindings/Risk'
 import type { SessionId } from '@/rpc/bindings/SessionId'
+import type { SessionKind } from '@/rpc/bindings/SessionKind'
 import type { SessionActivity } from '@/rpc/bindings/SessionActivity'
 import type { HistoryEntry as BoundHistory } from '@/rpc/bindings/HistoryEntry'
 import type { TurnId } from '@/rpc/bindings/TurnId'
@@ -45,6 +47,8 @@ export type Info = {
   communication: CommunicationState
   /** The app plugin is running (46 §9): apps render interactively; `false`/absent (older engine) → source view only. */
   app_enabled?: boolean
+  /** 125 §6.5: the advisor's remembered pick and tuning keys (`advisor:` section); absent on an older engine. */
+  advisor?: AdvisorDefaults
 }
 
 /** `load_session` reply with paging (`before`/`limit`). */
@@ -110,6 +114,8 @@ export type AgentInfo = {
   activity?: SessionActivity
   /** `spawn_subagent(tools=…)` risk ceiling (12 §5); `#[serde(default)]`, absent when uncapped. */
   cap?: Risk | null
+  /** 125 §6.2: `chat` (default) or `advisor` — the hidden child the UI never lists; `#[serde(default)]`. */
+  kind?: SessionKind
   /** client clock (ms) of this subagent's last streaming event — UI only, never on the wire (93) */
   beat?: number
 }

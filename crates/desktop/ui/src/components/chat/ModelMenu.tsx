@@ -1,5 +1,5 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { Bot, Check, ChevronDown, Cpu, RotateCcw } from 'lucide-react'
+import { Bot, Check, ChevronDown, ChevronLeft, ChevronRight, Cpu, Eye, RotateCcw } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 import { toast } from 'sonner'
 import { Button } from '@/components/ui/button'
@@ -15,6 +15,7 @@ import { useConnection } from '@/store/connection'
 import { on, useSessionField } from '@/store/sessions'
 import type { ConfigOption } from '@/rpc/bindings/ConfigOption'
 import type { ModelInfo } from '@/rpc/bindings/ModelInfo'
+import { useAdvisor, useSetAdvisor } from './advisor'
 import { MenuRow } from './HeaderMenu'
 import { ModelPicker } from './ModelPicker'
 import { surfaceOf } from './slash'
@@ -113,6 +114,8 @@ type Model = {
   setHarnessOption(configId: string, value: string): Promise<void>
   /** `resume_child` (75 §10): set on an idle ACP child; restarts its harness in the stored session context. */
   resume: (() => Promise<void>) | null
+  /** Closes whichever surface showed the picker (the `useModel` argument), for picks made outside `setModel`/`setEffort`. */
+  done(): void
 }
 
 /** `done` runs after a choice (closes whichever surface showed the picker). */
@@ -208,6 +211,7 @@ function useModel({ session }: Props, done: () => void): Model {
     pending,
     setHarnessOption,
     resume: acp && !running ? resume : null,
+    done,
   }
 }
 
@@ -270,19 +274,91 @@ function useOpenOnSlash(session: string | null, open: () => void) {
   }, [focused])
 }
 
-/** The cmdk body: providers → models, word search, then the current model's effort levels (124 §3). */
-function ModelCommand({ m, className, listClassName }: { m: Model; className?: string; listClassName?: string }) {
+/** 125 §8.2: the pill's `Change model…` opens this session's picker on the Advisor level. */
+export const openAdvisorPicker = (session: string) => window.dispatchEvent(new CustomEvent('theuth:open-advisor', { detail: { session } }))
+
+function useOpenAdvisor(session: string | null, open: () => void) {
+  const latest = useRef(open)
+  latest.current = open
+  useEffect(() => {
+    if (!session) return
+    const on = (e: Event) => (e as CustomEvent<{ session: string }>).detail.session === session && latest.current()
+    window.addEventListener('theuth:open-advisor', on)
+    return () => window.removeEventListener('theuth:open-advisor', on)
+  }, [session])
+}
+
+/** The plain-button look of 124's lead rows, for the rows outside the picker's own `Command`. */
+const LEAD_ROW = 'flex w-full cursor-default items-center gap-2 px-3 py-2 text-sm outline-hidden select-none hover:bg-accent hover:text-accent-foreground focus-visible:bg-accent'
+
+/**
+ * 125 §8.1: the Advisor level — 124's picker over the same catalog with `Off` as the lead row and the advisor model's
+ * effort levels; a pick calls `set_advisor` (never `set_model`, so the session's own default is untouched).
+ */
+function AdvisorCommand({ session, m, onBack, className, listClassName }: { session: string; m: Model; onBack(): void; className?: string; listClassName?: string }) {
+  const status = useAdvisor(session)
+  const set = useSetAdvisor(session)
+  const model = status && status.state !== 'off' ? (status.model ?? undefined) : undefined
+  const current = m.models.find((x) => x.id === model)
+  const pick = (vars: { model: string | null; effort: string | null }) => {
+    m.done()
+    set.mutate(vars)
+  }
   return (
-    <ModelPicker
-      models={m.models}
-      model={m.model}
-      onSelect={(id) => void m.setModel(id)}
-      effort={m.current && m.current.efforts.length > 0 ? { levels: m.current.efforts, current: m.effort, onSelect: (lvl) => void m.setEffort(lvl) } : undefined}
-      favorites={m.favorites}
-      onToggleFavorite={(id) => void m.toggleFavorite(id)}
-      className={className}
-      listClassName={listClassName}
-    />
+    <div className="flex min-h-0 flex-col">
+      <button type="button" className={`${LEAD_ROW} border-b border-border-subtle`} onClick={onBack}>
+        <ChevronLeft className="size-4 opacity-70" />
+        Back
+        <span className="ml-auto text-xs text-fg-tertiary">Advisor</span>
+      </button>
+      <ModelPicker
+        models={m.models}
+        model={model}
+        none={{ value: 'off', label: 'Off' }}
+        extra={model && !current ? [model] : undefined}
+        onSelect={(id) => pick({ model: id === 'off' ? null : id, effort: status?.effort ?? null })}
+        effort={current && current.efforts.length > 0 ? { levels: current.efforts, current: status?.effort, onSelect: (lvl) => pick({ model: model ?? null, effort: lvl }) } : undefined}
+        favorites={m.favorites}
+        onToggleFavorite={(id) => void m.toggleFavorite(id)}
+        className={className}
+        listClassName={listClassName}
+      />
+    </div>
+  )
+}
+
+/** `Advisor · <model name | Off> ›` under the picker; nothing for the draft (a new chat starts with no advisor, 125 ruling 2). */
+function AdvisorRow({ session, models, onOpen }: { session: string; models: ModelInfo[]; onOpen(): void }) {
+  const status = useAdvisor(session)
+  if (!status) return null
+  const name = status.state === 'off' || !status.model ? 'Off' : (models.find((x) => x.id === status.model)?.name ?? status.model)
+  return (
+    <button type="button" className={`${LEAD_ROW} border-t border-border-subtle`} onClick={onOpen}>
+      <Eye className="size-4 opacity-70" />
+      <span className="truncate">Advisor · {name}</span>
+      <ChevronRight className="ml-auto size-4 opacity-70" />
+    </button>
+  )
+}
+
+/** The cmdk body: providers → models, word search, then the current model's effort levels (124 §3); the Advisor row below (125 §8.1). */
+function ModelCommand({ m, session, advisor, className, listClassName }: { m: Model; session: string | null; advisor: boolean; className?: string; listClassName?: string }) {
+  const [level, setLevel] = useState<'model' | 'advisor'>(advisor ? 'advisor' : 'model')
+  if (level === 'advisor' && session) return <AdvisorCommand session={session} m={m} onBack={() => setLevel('model')} className={className} listClassName={listClassName} />
+  return (
+    <>
+      <ModelPicker
+        models={m.models}
+        model={m.model}
+        onSelect={(id) => void m.setModel(id)}
+        effort={m.current && m.current.efforts.length > 0 ? { levels: m.current.efforts, current: m.effort, onSelect: (lvl) => void m.setEffort(lvl) } : undefined}
+        favorites={m.favorites}
+        onToggleFavorite={(id) => void m.toggleFavorite(id)}
+        className={className}
+        listClassName={listClassName}
+      />
+      {session && <AdvisorRow session={session} models={m.models} onOpen={() => setLevel('advisor')} />}
+    </>
   )
 }
 
@@ -296,8 +372,11 @@ function ModelCommand({ m, className, listClassName }: { m: Model; className?: s
  */
 export function ModelMenu(props: Props) {
   const [open, setOpen] = useState(false)
+  // 125 §8.2: opened from the pill → the Advisor level first; a normal open starts on the models level.
+  const [advisor, setAdvisor] = useState(false)
   const m = useModel(props, () => setOpen(false))
   useOpenOnSlash(props.session, () => setOpen(true))
+  useOpenAdvisor(props.session, () => (setAdvisor(true), setOpen(true)))
   const resume = m.resume && (
     <Button variant="ghost" size="sm" className="h-7 shrink-0 gap-1 px-2 text-xs text-fg-tertiary" title="restart the harness process in this session's stored context (session/load)" onClick={() => void m.resume?.()}>
       <RotateCcw className="size-3.5" /> Resume
@@ -315,7 +394,7 @@ export function ModelMenu(props: Props) {
   const effortLabel = m.agent ? harnessCurrent(harnessEffort, harnessEffort && m.pending[harnessEffort.id]) : m.effort
   return (
     <>
-      <Popover open={open} onOpenChange={setOpen}>
+      <Popover open={open} onOpenChange={(o) => (setOpen(o), !o && setAdvisor(false))}>
         <PopoverTrigger asChild>
           <Button variant="ghost" className="h-9 max-w-full gap-1 rounded-lg px-2.5 text-lg font-medium text-fg-secondary">
             <span className="min-w-0 truncate">{m.agent ? harnessLabel(m) : m.name}</span>
@@ -329,7 +408,7 @@ export function ModelMenu(props: Props) {
               <HarnessCommand m={m} />
             </Command>
           ) : (
-            <ModelCommand m={m} />
+            <ModelCommand m={m} session={props.session} advisor={advisor} />
           )}
         </PopoverContent>
       </Popover>
@@ -352,8 +431,10 @@ export function ModelRow({ onOpen, ...props }: Props & { onOpen(): void }) {
 
 /** The same picker as a dialog: the compact header has no model button to anchor a popover to. */
 export function ModelDialog({ open, onOpenChange, ...props }: Props & { open: boolean; onOpenChange(o: boolean): void }) {
+  const [advisor, setAdvisor] = useState(false)
   const m = useModel(props, () => onOpenChange(false))
   useOpenOnSlash(props.session, () => onOpenChange(true))
+  useOpenAdvisor(props.session, () => (setAdvisor(true), onOpenChange(true)))
   if (m.agent && !m.harness) return null
   const place = dialogPlacement(touch())
   if (m.agent) {
@@ -364,13 +445,13 @@ export function ModelDialog({ open, onOpenChange, ...props }: Props & { open: bo
     )
   }
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
+    <Dialog open={open} onOpenChange={(o) => (onOpenChange(o), !o && setAdvisor(false))}>
       <DialogHeader className="sr-only">
         <DialogTitle>Model</DialogTitle>
         <DialogDescription>Pick the model and effort</DialogDescription>
       </DialogHeader>
       <DialogContent className={cn('max-w-sm overflow-hidden p-0', place.content)}>
-        <ModelCommand m={m} className="[&_[cmdk-input]]:h-12 **:data-[slot=command-input-wrapper]:h-12" listClassName={place.list} />
+        <ModelCommand m={m} session={props.session} advisor={advisor} className="[&_[cmdk-input]]:h-12 **:data-[slot=command-input-wrapper]:h-12" listClassName={place.list} />
       </DialogContent>
     </Dialog>
   )

@@ -1102,6 +1102,7 @@ Attached (read with the tool for the kind, see Attachments):\n\
             retention: Default::default(),
             activity: Default::default(),
             cap: None,
+            kind: Default::default(),
         };
         let mine = SessionId::new();
         let other = SessionId::new();

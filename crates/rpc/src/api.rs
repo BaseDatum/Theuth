@@ -33,6 +33,9 @@ use agent::{
     SetVisionModel, ShowPrompt, SkillBody, SkillMeta, Steer, SyncSkills, Undo, UseSkill, Withdraw,
 };
 use agent::{
+    AdvisorDefaults, AdvisorStatus, AdvisorStatusOf, SetAdvisor, SetAdvisorDefaults, SyncBacklog,
+};
+use agent::{
     Authorize, Authorized, CloseResult, CreateSession, CreateSessionOptions, LeaveSession,
     ListProjectStyles, PeerDeliver, PeerEnvelope, PrivateTrees, ProjectStyle, ResumePrivate,
     SessionCost, SessionCostQuery, SessionOpen, SetProjectStyle, SetSessionProject,
@@ -159,6 +162,10 @@ pub struct Info {
     /// readable as source only. Absent from an older harness → `false`.
     #[serde(default)]
     pub app_enabled: bool,
+    /// 125 §6.5: the advisor's remembered pick and tuning keys (`advisor:` section).
+    /// Absent from an older harness → defaults.
+    #[serde(default)]
+    pub advisor: AdvisorDefaults,
 }
 
 /// The wire API. `#[rpc(server, client)]` generates `ApiServer` (+
@@ -628,6 +635,34 @@ pub trait Api {
         effort: Option<String>,
         manual: Option<bool>,
     ) -> RpcResult<()>;
+    /// 125 §6.3: turn the advisor of `session` on with `model` (`provider/model`; creates the
+    /// hidden advisor child or re-picks its model) or off with `None`. The pick is remembered as
+    /// `advisor.model` / `advisor.effort`; `AdvisorChanged` follows on the stream.
+    #[method(name = "set_advisor", with_extensions)]
+    async fn set_advisor(
+        &self,
+        session: SessionId,
+        model: Option<String>,
+        effort: Option<String>,
+    ) -> RpcResult<AdvisorStatus>;
+    /// 125 §6.3: the advisor status of `session` (`state: off` when it has none).
+    #[method(name = "advisor_status", with_extensions)]
+    async fn advisor_status(&self, session: SessionId) -> RpcResult<AdvisorStatus>;
+    /// Persist `advisor.effort` (`None` clears); the remembered pick's effort (125 §6.5).
+    #[method(name = "set_advisor_default_effort")]
+    async fn set_advisor_default_effort(
+        &self,
+        effort: Option<String>,
+    ) -> RpcResult<AdvisorDefaults>;
+    /// Persist `advisor.max_notes_per_update` (1–32).
+    #[method(name = "set_advisor_notes_per_update")]
+    async fn set_advisor_notes_per_update(&self, n: u8) -> RpcResult<AdvisorDefaults>;
+    /// Persist `advisor.immune_turns` (0–10; 0 disables the window).
+    #[method(name = "set_advisor_immune_turns")]
+    async fn set_advisor_immune_turns(&self, n: u8) -> RpcResult<AdvisorDefaults>;
+    /// Persist `advisor.sync_backlog` (`off` | `1` | `3` | `5`).
+    #[method(name = "set_advisor_sync_backlog")]
+    async fn set_advisor_sync_backlog(&self, v: SyncBacklog) -> RpcResult<AdvisorDefaults>;
     /// An ACP child's harness config options (75 §8): model, effort/thinking,
     /// mode … as the harness lists them, with current values. Errors when the
     /// session is not an external harness or its process is gone.
@@ -2475,6 +2510,8 @@ impl ApiServer for Server {
             name,
             communication,
             app_enabled: apps().is_ok(),
+            // 125 §6.5: the supervisor's live advisor defaults (82 §3 rule).
+            advisor: ask::<Agents, _>(agent::AGENT_ACTOR, agent::GetAdvisorDefaults).await?,
         })
     }
 
@@ -3528,6 +3565,81 @@ impl ApiServer for Server {
                 session,
                 effort,
                 manual,
+            },
+        )
+        .await
+    }
+
+    async fn set_advisor(
+        &self,
+        ext: &Extensions,
+        session: SessionId,
+        model: Option<String>,
+        effort: Option<String>,
+    ) -> RpcResult<AdvisorStatus> {
+        self.authorize(ext, session).await?;
+        ask::<Agents, _>(
+            agent::AGENT_ACTOR,
+            SetAdvisor {
+                session,
+                model,
+                effort,
+            },
+        )
+        .await
+    }
+
+    async fn advisor_status(
+        &self,
+        ext: &Extensions,
+        session: SessionId,
+    ) -> RpcResult<AdvisorStatus> {
+        self.authorize(ext, session).await?;
+        ask::<Agents, _>(agent::AGENT_ACTOR, AdvisorStatusOf { session }).await
+    }
+
+    async fn set_advisor_default_effort(
+        &self,
+        effort: Option<String>,
+    ) -> RpcResult<AdvisorDefaults> {
+        ask::<Agents, _>(
+            agent::AGENT_ACTOR,
+            SetAdvisorDefaults {
+                effort: Some(effort),
+                ..SetAdvisorDefaults::default()
+            },
+        )
+        .await
+    }
+
+    async fn set_advisor_notes_per_update(&self, n: u8) -> RpcResult<AdvisorDefaults> {
+        ask::<Agents, _>(
+            agent::AGENT_ACTOR,
+            SetAdvisorDefaults {
+                max_notes_per_update: Some(n),
+                ..SetAdvisorDefaults::default()
+            },
+        )
+        .await
+    }
+
+    async fn set_advisor_immune_turns(&self, n: u8) -> RpcResult<AdvisorDefaults> {
+        ask::<Agents, _>(
+            agent::AGENT_ACTOR,
+            SetAdvisorDefaults {
+                immune_turns: Some(n),
+                ..SetAdvisorDefaults::default()
+            },
+        )
+        .await
+    }
+
+    async fn set_advisor_sync_backlog(&self, v: SyncBacklog) -> RpcResult<AdvisorDefaults> {
+        ask::<Agents, _>(
+            agent::AGENT_ACTOR,
+            SetAdvisorDefaults {
+                sync_backlog: Some(v),
+                ..SetAdvisorDefaults::default()
             },
         )
         .await

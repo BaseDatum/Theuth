@@ -551,6 +551,12 @@ impl Worker {
                 let md = format!("⟵ **{from}**\n\n{}", clip(&text, DELIVERED_MAX));
                 let _ = send_rich_or_plain(ctx, &brand(ctx, &md)).await;
             }
+            // 125 §9: a concern or blocker is one footer-styled line; nits post nothing.
+            AgentEvent::AdvisoryAdded { advisory, .. } => {
+                if let Some(line) = advisory.channel_line() {
+                    let _ = send_rich_or_plain(ctx, &brand(ctx, &footer(&line))).await;
+                }
+            }
             AgentEvent::Compacted { epoch, folded, .. } => {
                 let md = format!("⟲ compacted → epoch {epoch} ({folded} messages folded)");
                 let _ = send_rich_or_plain(ctx, &brand(ctx, &md)).await;
@@ -1258,6 +1264,40 @@ mod tests {
             vec!["⟵ **grep-logs**\n\nfound it".to_owned()]
         );
         assert_eq!(drafts(&r.api.calls()).len(), 1, "the draft is untouched");
+    }
+
+    /// 125 §9: a concern is one footer-styled line (its first line); a nit posts nothing.
+    #[tokio::test(start_paused = true)]
+    async fn advisory_concern_is_one_footer_line_and_nit_is_silent() {
+        use agent::{AdvisorSeverity, Advisory, AdvisoryNote};
+        let mut r = rig(10, None, ALL, None);
+        r.start().await;
+        let session = r.session();
+        let card = |severity: AdvisorSeverity, note: &str| AgentEvent::AdvisoryAdded {
+            session,
+            seq: 5,
+            advisory: Advisory {
+                advisor: SessionId::new(),
+                step: 2,
+                turn: None,
+                at_ms: 0,
+                notes: vec![AdvisoryNote {
+                    severity,
+                    note: note.into(),
+                }],
+            },
+        };
+        r.ev(card(AdvisorSeverity::Nit, "nit: rename x")).await;
+        assert!(sends(&r.api.calls()).is_empty());
+        r.ev(card(
+            AdvisorSeverity::Concern,
+            "claims done\nbut no check ran",
+        ))
+        .await;
+        assert_eq!(
+            sends(&r.api.calls()),
+            vec!["<footer>advisor · concern — claims done</footer>".to_owned()]
+        );
     }
 
     #[tokio::test(start_paused = true)]

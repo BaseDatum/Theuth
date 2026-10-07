@@ -218,6 +218,8 @@ export function Composer({
   pinned,
   sessionTitle,
   onCreated,
+  resolveSession,
+  onSent,
   compact = false,
   readOnly = false,
 }: {
@@ -229,8 +231,11 @@ export function Composer({
   pinned?: AttachRef
   /** Title of the session the first message creates (a note's chat: the note title). */
   sessionTitle?: string
-  /** The first message created `session`; the host keeps it instead of the default navigation to `/c/$session`. */
   onCreated?: (session: string) => void
+  /** 128 R6: with `session` null, the first send goes to the session this resolves (theuth's desk) instead of a new one; the default navigation to `/c/$session` follows. */
+  resolveSession?: () => Promise<string>
+  /** A bound `session` took the message (steer or send_input): the host may follow it. */
+  onSent?: (session: string) => void
   /** Tighter box for a panel. */
   compact?: boolean
   /** 76 §0.12: the talk view's transcript — the box shows but takes nothing; speech is the input. */
@@ -684,6 +689,13 @@ export function Composer({
         markSent(session, body, files)
         mode(session)
         await deadline(api.send_input(session, body, files, null, clientId))
+      } else if (resolveSession) {
+        // 128 R6: the HUD's composer — the first send goes to an existing session named on demand (theuth's desk), not a new one.
+        const id = await resolveSession()
+        target = id
+        markSent(id, body, files)
+        mode(id)
+        await deadline(api.send_input(id, body, files, null, clientId))
       } else {
         let id: string
         if (draftCreate?.private || draftCreate?.project) {
@@ -724,7 +736,7 @@ export function Composer({
       if (target && !session) {
         if (onCreated) onCreated(target)
         else await navigate({ to: '/c/$session', params: { session: target } })
-      }
+      } else if (session) onSent?.(session)
     } catch (e) {
       // The row shown at once comes back off; the text is still in the box, flagged `unsent` for the banner.
       const st = useSessions.getState()

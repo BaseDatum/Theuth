@@ -21,7 +21,7 @@ import { SidebarMenuAction } from '@/components/ui/sidebar'
 import { openNewChat } from '@/components/chat/NewChatPane'
 import { leaves, usePanes } from '@/lib/panes'
 import { queryKeys, useApi } from '@/lib/rpc'
-import { rootOf, subtrees } from '@/lib/session-tree'
+import { notAdvisor, rootOf, subtrees } from '@/lib/session-tree'
 import { nextSelection, type SelectMode } from '@/lib/selection'
 import type { SessionSummary } from '@/rpc/bindings/SessionSummary'
 import { AgentTree } from './AgentTree'
@@ -119,8 +119,8 @@ export function buildRows(
     rows.push({ key: s.id, session: s })
     if (roots.has(s.id)) rows.push({ key: `t:${s.id}`, tree: s.id })
   }
-  // A roster desk (`desk` set) is never a chat row — pinned, archived or in a project; the Desks group is its place.
-  const all = sessions.filter((s) => s.parent === null && s.desk == null).sort((a, b) => b.updated_at.localeCompare(a.updated_at))
+  // A roster desk (`desk` set) is never a chat row — pinned, archived or in a project; the Desks group is its place. Nor is an advisor (125 §8.5).
+  const all = sessions.filter((s) => s.parent === null && s.desk == null && notAdvisor(s)).sort((a, b) => b.updated_at.localeCompare(a.updated_at))
   const top = all.filter((s) => !s.archived)
   const pinned = top.filter((s) => s.pinned)
   if (pinned.length) {

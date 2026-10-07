@@ -51,9 +51,10 @@ use crate::context::{
 use crate::loop_::text_of;
 use crate::todo::{Todo, TodoSnapshot, TodoSource};
 use crate::vision::{VisionImage, VisionNote};
-use crate::{ProjectStyle, SessionSummary};
+use crate::{ProjectStyle, SessionKind, SessionSummary};
 
 pub mod accounting;
+pub mod advisor;
 mod capture;
 pub mod communication;
 pub mod durability;
@@ -365,6 +366,8 @@ struct Row {
     at: Option<String>,
     /// Raw `messages.thinking_ms` (91); `None` before 91 or when no reasoning streamed.
     thinking_ms: Option<i64>,
+    /// Raw `messages.advisory` (125 §5.4); `Some` marks an Advisory row.
+    advisory: Option<String>,
 }
 
 /// Raw `sessions` row; ids and timestamps are TEXT and parsed on the way out.
@@ -389,6 +392,7 @@ struct SessionRow {
     project: Option<String>,
     owner: String,
     epoch: i64,
+    kind: String,
 }
 
 /// Scalar subquery: column `$col` of the root above the outer `sessions` row
@@ -421,7 +425,7 @@ macro_rules! session_cols {
             root_col!("archived"),
             " AS archived, ",
             root_col!("project"),
-            " AS project, sessions.owner, sessions.epoch"
+            " AS project, sessions.owner, sessions.epoch, sessions.kind"
         )
     };
 }
@@ -464,6 +468,7 @@ impl SessionRow {
             here: r.owner.is_empty() || r.owner == me,
             owner: r.owner,
             epoch: u32::try_from(r.epoch).context("bad epoch")?,
+            kind: advisor::kind_of(&r.kind),
         })
     }
 }
@@ -958,7 +963,8 @@ impl Store {
 
     /// Insert a session row and its accounting owner in one transaction.
     /// `title` starts empty; `name` is the peer name of a subagent; `project`
-    /// is stored on roots only (a child's is its root's, 51 §3).
+    /// is stored on roots only (a child's is its root's, 51 §3). The row is
+    /// a `chat`; [`Store::create_session_kind`] for an advisor.
     pub async fn create_session(
         &self,
         id: SessionId,
@@ -967,11 +973,25 @@ impl Store {
         name: Option<&str>,
         project: Option<&str>,
     ) -> anyhow::Result<()> {
+        self.create_session_kind(id, model, parent, name, project, SessionKind::Chat)
+            .await
+    }
+
+    /// [`Store::create_session`] with an explicit `sessions.kind` (125 §6.1).
+    pub async fn create_session_kind(
+        &self,
+        id: SessionId,
+        model: &str,
+        parent: Option<SessionId>,
+        name: Option<&str>,
+        project: Option<&str>,
+        kind: SessionKind,
+    ) -> anyhow::Result<()> {
         let now = chrono::Utc::now().to_rfc3339();
         let mut tx = self.begin_write().await?;
         sqlx::query(
-            "INSERT INTO sessions (id, created_at, updated_at, title, model, parent, name, project, owner, epoch) \
-             VALUES (?, ?, ?, '', ?, ?, ?, ?, ?, 1)",
+            "INSERT INTO sessions (id, created_at, updated_at, title, model, parent, name, project, owner, epoch, kind) \
+             VALUES (?, ?, ?, '', ?, ?, ?, ?, ?, 1, ?)",
         )
         .bind(id.to_string())
         .bind(&now)
@@ -981,6 +1001,7 @@ impl Store {
         .bind(name)
         .bind(parent.is_none().then_some(project).flatten())
         .bind(&*self.me)
+        .bind(advisor::kind_str(kind))
         .execute(&mut *tx)
         .await?;
         accounting::ensure_owner_in(&mut tx, id, parent).await?;
@@ -1522,7 +1543,7 @@ impl Store {
     /// Rows hidden by undo (`seq >= cut_at`); empty when `cut_at` is NULL.
     async fn hidden(&self, id: SessionId) -> anyhow::Result<Vec<Row>> {
         let rows = sqlx::query_as(
-            "SELECT seq, body, excluded, vision, at, thinking_ms FROM messages WHERE session_id = ?1 \
+            "SELECT seq, body, excluded, vision, at, thinking_ms, advisory FROM messages WHERE session_id = ?1 \
              AND seq >= (SELECT cut_at FROM sessions WHERE id = ?1) ORDER BY seq",
         )
         .bind(id.to_string())
@@ -1533,13 +1554,14 @@ impl Store {
 
     /// `(id, title, created_at, updated_at, archived)` of every session, for the search
     /// index (26 §2); `archived` is the root's (49 §7: hits mark archived chats).
+    /// Advisor rows are excluded (125 §4.2).
     pub async fn search_titles(
         &self,
     ) -> anyhow::Result<Vec<(SessionId, String, String, String, bool)>> {
         let rows: Vec<(String, String, String, String, bool)> = sqlx::query_as(concat!(
             "SELECT id, title, created_at, updated_at, ",
             root_col!("archived"),
-            " FROM sessions"
+            " FROM sessions WHERE kind != 'advisor'"
         ))
         .fetch_all(&self.read)
         .await?;
@@ -1560,6 +1582,7 @@ impl Store {
              COALESCE(json_extract(m.excluded, '$.whole'), 0) \
              FROM messages m JOIN sessions s ON s.id = m.session_id \
              WHERE m.seq < COALESCE(s.cut_at, 9223372036854775807) \
+             AND s.kind != 'advisor' \
              AND json_extract(m.body, '$.role') IN ('User', 'Assistant') \
              ORDER BY m.session_id, m.seq",
         )
@@ -1737,7 +1760,7 @@ impl Store {
             .unwrap_or(visible.len());
         let assistants: Vec<i64> = visible[at..end]
             .iter()
-            .filter(|r| r.message.role == ChatRole::Assistant && r.vision.is_none())
+            .filter(|r| r.message.role == ChatRole::Assistant && !r.is_note())
             .map(|r| r.seq)
             .collect();
         let Some(&seq) = assistants.last() else {
@@ -1875,8 +1898,8 @@ impl Store {
         }
         accounting::ensure_owner_in(&mut tx, id, None).await?;
         sqlx::query(
-            "INSERT INTO messages (session_id, seq, body, excluded, vision, at) \
-             SELECT ?1, seq, body, excluded, vision, at FROM messages WHERE session_id = ?2 AND seq < ?3 \
+            "INSERT INTO messages (session_id, seq, body, excluded, vision, at, advisory) \
+             SELECT ?1, seq, body, excluded, vision, at, advisory FROM messages WHERE session_id = ?2 AND seq < ?3 \
              AND seq < COALESCE((SELECT cut_at FROM sessions WHERE id = ?2), 9223372036854775807)",
         )
         .bind(&new)
@@ -2281,13 +2304,25 @@ impl Store {
         row.map(|r| r.summary(&self.me)).transpose()
     }
 
-    /// Every session, pinned first, then most recently active first.
+    /// Every session, pinned first, then most recently active first; advisor
+    /// rows (125 §4.2) hidden.
     pub async fn list_sessions(&self) -> anyhow::Result<Vec<SessionSummary>> {
+        self.list_sessions_incl(false).await
+    }
+
+    /// [`Store::list_sessions`] with `kind = advisor` rows included when
+    /// `include_advisors` (the Advisors actor and cost readers).
+    pub async fn list_sessions_incl(
+        &self,
+        include_advisors: bool,
+    ) -> anyhow::Result<Vec<SessionSummary>> {
         let rows: Vec<SessionRow> = sqlx::query_as(concat!(
             "SELECT ",
             session_cols!(),
-            " FROM sessions ORDER BY pinned DESC, updated_at DESC, id DESC"
+            " FROM sessions WHERE (? OR sessions.kind != 'advisor') \
+             ORDER BY pinned DESC, updated_at DESC, id DESC"
         ))
+        .bind(include_advisors)
         .fetch_all(&self.read)
         .await?;
         rows.into_iter().map(|r| r.summary(&self.me)).collect()
@@ -2295,8 +2330,19 @@ impl Store {
 
     /// The subtree under `root` (children, grandchildren, …) with each row's
     /// depth (1 = direct child), in pre-order: a parent right before its
-    /// children, siblings oldest first (design doc 19 §2.1).
+    /// children, siblings oldest first (design doc 19 §2.1); advisor rows
+    /// (125 §4.2) hidden.
     pub async fn descendants(&self, root: SessionId) -> anyhow::Result<Vec<(u8, SessionSummary)>> {
+        self.descendants_incl(root, false).await
+    }
+
+    /// [`Store::descendants`] with `kind = advisor` rows included when
+    /// `include_advisors` (subtree deletion, the Advisors actor, cost).
+    pub async fn descendants_incl(
+        &self,
+        root: SessionId,
+        include_advisors: bool,
+    ) -> anyhow::Result<Vec<(u8, SessionSummary)>> {
         #[derive(FromRow)]
         struct TreeRow {
             #[sqlx(flatten)]
@@ -2313,9 +2359,11 @@ impl Store {
                  FROM sessions s JOIN tree t ON s.parent = t.id) \
              SELECT ",
             session_cols!(),
-            ", t.depth FROM sessions JOIN tree t ON sessions.id = t.id ORDER BY t.path"
+            ", t.depth FROM sessions JOIN tree t ON sessions.id = t.id \
+             WHERE (? OR sessions.kind != 'advisor') ORDER BY t.path"
         ))
         .bind(root.to_string())
+        .bind(include_advisors)
         .fetch_all(&self.read)
         .await?;
         rows.into_iter()
@@ -2335,7 +2383,7 @@ impl Store {
     /// Returns the removed ids, children before parents.
     pub async fn delete_session(&self, root: SessionId) -> anyhow::Result<Vec<SessionId>> {
         let mut ids: Vec<SessionId> = self
-            .descendants(root)
+            .descendants_incl(root, true)
             .await?
             .into_iter()
             .rev() // reverse pre-order: every child precedes its parent
@@ -2448,7 +2496,7 @@ impl Store {
         let rows = rows_in(&mut conn, id, 0).await?;
         let start = rows
             .iter()
-            .rposition(|r| r.message.role == ChatRole::User && r.vision.is_none())
+            .rposition(|r| r.message.role == ChatRole::User && !r.is_note())
             .map_or(0, |i| i + 1);
         Ok(rows[start..]
             .iter()
@@ -2658,10 +2706,11 @@ pub(crate) fn is_turn_start(prev: Option<&ChatMessage>, m: &ChatMessage) -> bool
     m.role == ChatRole::User && prev.is_none_or(|p| p.role == ChatRole::Assistant)
 }
 
-/// Indices of turn starts among `(message, is_vision_note)` rows, in order.
-/// A typed vision note never opens a turn and is skipped when locating the
-/// preceding role (52 §6): a note appended after an assistant reply is no
-/// phantom turn, and the real user message after it still opens one.
+/// Indices of turn starts among `(message, is_note)` rows, in order.
+/// A typed note (vision, 52 §6; advisory, 125 §5.4) never opens a turn and
+/// is skipped when locating the preceding role: a note appended after an
+/// assistant reply is no phantom turn, and the real user message after it
+/// still opens one.
 fn openers<'a>(rows: impl Iterator<Item = (&'a ChatMessage, bool)>) -> Vec<usize> {
     let mut prev: Option<&ChatMessage> = None;
     let mut out = Vec::new();
@@ -2679,13 +2728,13 @@ fn openers<'a>(rows: impl Iterator<Item = (&'a ChatMessage, bool)>) -> Vec<usize
 
 /// Indices of turn starts within `rows`.
 fn turn_starts(rows: &[Row]) -> Vec<usize> {
-    openers(rows.iter().map(|r| (&r.message, r.vision.is_some())))
+    openers(rows.iter().map(|r| (&r.message, r.is_note())))
 }
 
 /// Seqs opening a turn in raw `(seq, message)` rows, for readers outside the
 /// store (history turn handles). `note(seq)` says whether the row is a typed
-/// vision note, e.g. `entries[seq].vision.is_some()` from
-/// [`Store::context_history`].
+/// note, e.g. `entries[seq].vision.is_some() || entries[seq].advisory.is_some()`
+/// from [`Store::context_history`].
 pub(crate) fn turn_openers(rows: &[(i64, ChatMessage)], note: impl Fn(i64) -> bool) -> Vec<i64> {
     openers(rows.iter().map(|(seq, m)| (m, note(*seq))))
         .into_iter()
@@ -2705,7 +2754,7 @@ fn decode_rows(id: SessionId, rows: Vec<(i64, String)>) -> Vec<(i64, ChatMessage
         .collect()
 }
 
-/// One `messages` row as selected: `(seq, body, excluded, vision, at, thinking_ms)`.
+/// One `messages` row as selected: `(seq, body, excluded, vision, at, thinking_ms, advisory)`.
 type RawRow = (
     i64,
     String,
@@ -2713,6 +2762,7 @@ type RawRow = (
     Option<String>,
     Option<String>,
     Option<i64>,
+    Option<String>,
 );
 
 /// [`RawRow`]s to [`Row`]s: undecodable bodies are skipped (warned); an
@@ -2720,7 +2770,7 @@ type RawRow = (
 /// the one wrong answer.
 fn decode_masked(id: SessionId, rows: Vec<RawRow>) -> anyhow::Result<Vec<Row>> {
     let mut out = Vec::with_capacity(rows.len());
-    for (seq, body, excluded, vision, at, thinking_ms) in rows {
+    for (seq, body, excluded, vision, at, thinking_ms, advisory) in rows {
         let mask =
             Mask::decode(excluded.as_deref()).with_context(|| format!("message {seq} of {id}"))?;
         if let Some((seq, message)) = decode_rows(id, vec![(seq, body)]).pop() {
@@ -2731,6 +2781,7 @@ fn decode_masked(id: SessionId, rows: Vec<RawRow>) -> anyhow::Result<Vec<Row>> {
                 vision,
                 at,
                 thinking_ms,
+                advisory,
             });
         }
     }
@@ -2747,6 +2798,12 @@ fn note_of(id: SessionId, seq: i64, raw: &str) -> anyhow::Result<VisionNote> {
 impl Row {
     fn into_active(self) -> (i64, ChatMessage, Mask) {
         (self.seq, self.message, self.mask)
+    }
+
+    /// A typed note (vision consultation or advisory, 52 §6 / 125 §5.4):
+    /// never opens a turn, transparent to turn readers.
+    fn is_note(&self) -> bool {
+        self.vision.is_some() || self.advisory.is_some()
     }
 }
 
@@ -2830,15 +2887,15 @@ async fn revision_in(conn: &mut SqliteConnection, sid: &str) -> anyhow::Result<i
         .ok_or_else(|| anyhow::anyhow!("no such session"))
 }
 
-/// Visible rows from `from` with their masks and raw vision metadata, seq
-/// ascending (see [`decode_masked`] for the decoding rules).
+/// Visible rows from `from` with their masks and raw vision/advisory
+/// metadata, seq ascending (see [`decode_masked`] for the decoding rules).
 async fn rows_in(
     conn: &mut SqliteConnection,
     id: SessionId,
     from: i64,
 ) -> anyhow::Result<Vec<Row>> {
     let rows = sqlx::query_as(
-        "SELECT seq, body, excluded, vision, at, thinking_ms FROM messages \
+        "SELECT seq, body, excluded, vision, at, thinking_ms, advisory FROM messages \
          WHERE session_id = ?1 AND seq >= ?2 \
          AND seq < COALESCE((SELECT cut_at FROM sessions WHERE id = ?1), 9223372036854775807) \
          ORDER BY seq",

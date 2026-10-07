@@ -3,7 +3,7 @@ import { useEffect, useRef } from 'react'
 import { ATTENTION_SIM, SECRET_REQUESTS_SIM, simFlag } from '@/components/settings/sandbox-queries'
 import { useAction } from '@/components/settings/shared'
 import { keys as taskKeys } from '@/components/tasks/queries'
-import { useApi } from '@/lib/rpc'
+import { queryKeys, useApi } from '@/lib/rpc'
 import type { ActivityEntry } from '@/rpc/bindings/ActivityEntry'
 import type { Answer } from '@/rpc/bindings/Answer'
 import type { ApprovalId } from '@/rpc/bindings/ApprovalId'
@@ -13,6 +13,8 @@ import { on } from '@/store/sessions'
 import { HANDOFFS_KEY } from '@/store/sandboxes'
 import { toast } from 'sonner'
 import { ACTIVITY_CAP, appendActivity } from './model'
+import { sceneFixture } from './scene/fixtures'
+import { DAY_MS, startOfDay } from './scene/model'
 
 export const ATTENTION_KEY = ['attention'] as const
 /** 101 D11: `packet_get` per key, invalidated with the inbox (a packet changes only when its item does). */
@@ -96,6 +98,35 @@ export function useActivity() {
     [qc],
   )
   return useQuery({ queryKey: ACTIVITY_KEY, queryFn: () => api.activity_list({ since_ms: null, kinds: null, limit: ACTIVITY_CAP }) })
+}
+
+/** 128: the scene's windows over the feed — `['activity', 'today']` since local midnight, `['activity', 'week']` since now − 7 d, 500 rows each. */
+export const ACTIVITY_TODAY_KEY = ['activity', 'today'] as const
+export const ACTIVITY_WEEK_KEY = ['activity', 'week'] as const
+const SCENE_ACTIVITY_CAP = 500
+
+function useActivityWindow(key: typeof ACTIVITY_TODAY_KEY | typeof ACTIVITY_WEEK_KEY, since: () => number, refetchInterval: number) {
+  const api = useApi()
+  const qc = useQueryClient()
+  const sim = simFlag()
+  useEffect(() => on('ActivityAppended', (e) => qc.setQueryData<ActivityEntry[]>(key, (old) => (old ? appendActivity(old, e.entry, SCENE_ACTIVITY_CAP) : old))), [qc, key])
+  return useQuery({
+    queryKey: key,
+    queryFn: () => (sim ? (key === ACTIVITY_TODAY_KEY ? sceneFixture(Date.now()).activityToday : sceneFixture(Date.now()).activityWeek) : api.activity_list({ since_ms: since(), kinds: null, limit: SCENE_ACTIVITY_CAP })),
+    refetchInterval,
+  })
+}
+
+/** Today's feed (since local midnight), live like `useActivity`; refetched each minute so the day boundary moves. */
+export const useActivityToday = () => useActivityWindow(ACTIVITY_TODAY_KEY, () => startOfDay(Date.now()), 60_000)
+/** The week's feed for the ARRIVALS punch card. */
+export const useActivityWeek = () => useActivityWindow(ACTIVITY_WEEK_KEY, () => Date.now() - 7 * DAY_MS, 5 * 60_000)
+
+/** The sidebar's session list (`queryKeys.sessions`): the same key, so the HUD shares its fetch. */
+export function useSessionList() {
+  const api = useApi()
+  const sim = simFlag()
+  return useQuery({ queryKey: queryKeys.sessions, queryFn: () => (sim ? sceneFixture(Date.now()).sessions : api.list_sessions()) })
 }
 
 /** The inline decisions of an attention card; every one refetches the inbox and what it derives from. */
