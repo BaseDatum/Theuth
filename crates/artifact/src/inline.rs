@@ -377,29 +377,36 @@ mod tests {
 
     const PNG: &[u8] = b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR";
 
-    fn disk(
-        files: &[(&str, &[u8])],
-    ) -> (
-        impl Fn(&Path) -> io::Result<u64> + use<>,
-        impl Fn(&Path) -> io::Result<Vec<u8>> + use<>,
-    ) {
-        let map: HashMap<PathBuf, Vec<u8>> = files
-            .iter()
-            .map(|(p, b)| (PathBuf::from(p), b.to_vec()))
-            .collect();
-        let m2 = map.clone();
-        (
-            move |p: &Path| {
-                map.get(p)
+    /// An in-memory disk: `stat`/`read` closures over a path → bytes map.
+    struct Disk(HashMap<PathBuf, Vec<u8>>);
+
+    impl Disk {
+        fn new(files: &[(&str, &[u8])]) -> Self {
+            Self(
+                files
+                    .iter()
+                    .map(|(p, b)| (PathBuf::from(p), b.to_vec()))
+                    .collect(),
+            )
+        }
+
+        fn stat(&self) -> impl Fn(&Path) -> io::Result<u64> + '_ {
+            |p| {
+                self.0
+                    .get(p)
                     .map(|b| b.len() as u64)
                     .ok_or_else(|| io::Error::from(io::ErrorKind::NotFound))
-            },
-            move |p: &Path| {
-                m2.get(p)
+            }
+        }
+
+        fn read(&self) -> impl Fn(&Path) -> io::Result<Vec<u8>> + '_ {
+            |p| {
+                self.0
+                    .get(p)
                     .cloned()
                     .ok_or_else(|| io::Error::from(io::ErrorKind::NotFound))
-            },
-        )
+            }
+        }
     }
 
     fn paths(html: &str) -> Vec<String> {
@@ -474,8 +481,8 @@ mod tests {
 
     #[test]
     fn renamed_secret_is_not_an_image() {
-        let (stat, read) = disk(&[("/tmp/token.png", b"ghp_secretsecret\n" as &[u8])]);
-        let err = inline_images(br#"<img src="/tmp/token.png">"#, stat, read).unwrap_err();
+        let d = Disk::new(&[("/tmp/token.png", b"ghp_secretsecret\n" as &[u8])]);
+        let err = inline_images(br#"<img src="/tmp/token.png">"#, d.stat(), d.read()).unwrap_err();
         assert_eq!(err, InlineError::Unreadable(vec!["/tmp/token.png".into()]));
         assert!(err.to_string().starts_with(
             "these local images could not be read: /tmp/token.png — use absolute paths"
@@ -534,9 +541,9 @@ mod tests {
 
     #[test]
     fn missing_file_lists_every_path_once() {
-        let (stat, read) = disk(&[("/ok.png", PNG)]);
+        let d = Disk::new(&[("/ok.png", PNG)]);
         let html = br#"<img src="/ok.png"><img src="/a.png"><img src='/b.svg'><img src="/a.png">"#;
-        let err = inline_images(html, stat, read).unwrap_err();
+        let err = inline_images(html, d.stat(), d.read()).unwrap_err();
         assert_eq!(
             err,
             InlineError::Unreadable(vec!["/a.png".into(), "/b.svg".into()])
@@ -551,10 +558,10 @@ mod tests {
     #[test]
     fn offsets_splice_in_original_text() {
         let svg: &[u8] = b"<?xml version=\"1.0\"?><svg xmlns=\"http://www.w3.org/2000/svg\"/>";
-        let (stat, read) = disk(&[("/a.png", PNG), ("/b.svg", svg)]);
+        let d = Disk::new(&[("/a.png", PNG), ("/b.svg", svg)]);
         let html = "<!doctype html><img src=\"/a.png\" alt=\"x\"><style>i{background:url(/b.svg)}</style>\n\
                     <script>const s = `/a.png`; const t = 'https://x/a.png';</script>";
-        let out = inline_images(html.as_bytes(), stat, read).unwrap();
+        let out = inline_images(html.as_bytes(), d.stat(), d.read()).unwrap();
         assert_eq!(out.images, 3);
         let png = format!(
             "data:image/png;base64,{}",
@@ -570,8 +577,8 @@ mod tests {
         );
         assert_eq!(std::str::from_utf8(&out.html).unwrap(), want);
         // Nothing to inline: the bytes are borrowed, untouched.
-        let (stat, read) = disk(&[]);
-        let same = inline_images(b"<p>hi</p>", stat, read).unwrap();
+        let d = Disk::new(&[]);
+        let same = inline_images(b"<p>hi</p>", d.stat(), d.read()).unwrap();
         assert!(matches!(same.html, Cow::Borrowed(_)) && same.images == 0);
     }
 }
