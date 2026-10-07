@@ -40,6 +40,7 @@ import type {
   VisionProgress,
 } from '@/rpc/extra'
 import type { CodeindexEvent } from '@/rpc/bindings/CodeindexEvent'
+import type { AttentionChanged } from '@/rpc/bindings/AttentionChanged'
 
 /**
  * `AgentEvent` with the 25 §7 additions the bindings do not carry yet:
@@ -107,3 +108,5 @@ export type WireEvent =
   /** 67 §4, bridged since 79: a peer changed or the hub lease moved; the Mesh page refetches on it. */
   | MeshEvent
   | Lagged
+  /** 130 E1: the attention inbox's id set changed; `count` is the new badge. */
+  | AttentionChanged

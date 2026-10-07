@@ -18,6 +18,8 @@ export const GROUPS: readonly { key: string; label: string; kinds: readonly Kind
   { key: 'agents', label: 'Agents', kinds: ['hire', 'budget'] },
   { key: 'blocked', label: 'Blocked', kinds: ['blocked'] },
   { key: 'mesh', label: 'Mesh', kinds: ['node'] },
+  /** 130 E3: finished turns — receipts, nothing to decide. */
+  { key: 'done', label: 'Done', kinds: ['finished'] },
 ]
 
 export type Group = { key: string; label: string; items: AttentionItem[] }
