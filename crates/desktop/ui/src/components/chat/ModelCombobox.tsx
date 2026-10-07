@@ -7,6 +7,7 @@ import { Button } from '@/components/ui/button'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { cn } from '@/lib/utils'
 import type { ModelInfo } from '@/rpc/bindings/ModelInfo'
+import { useFavorites } from './ModelMenu'
 import { ModelPicker } from './ModelPicker'
 
 const NONE = '__none__'
@@ -35,6 +36,7 @@ export function ModelCombobox({
 }) {
   const [open, setOpen] = useState(false)
   const current = value ? models.find((m) => m.id === value) : undefined
+  const { favorites, toggleFavorite } = useFavorites()
   return (
     <Popover open={open} onOpenChange={setOpen}>
       <PopoverTrigger asChild>
@@ -49,6 +51,9 @@ export function ModelCombobox({
           model={value ?? undefined}
           extra={value && !current ? [value] : undefined}
           none={none && { value: NONE, label: none.label }}
+          favorites={favorites}
+          onToggleFavorite={(id) => void toggleFavorite(id)}
+          listClassName="max-h-[min(24rem,calc(var(--visible-band)-6rem))]"
           onSelect={(id) => {
             setOpen(false)
             onChange(id === NONE ? null : id)

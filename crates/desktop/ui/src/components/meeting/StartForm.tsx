@@ -9,6 +9,7 @@ import { openUrl } from '@tauri-apps/plugin-opener'
 import { Check, ChevronDown, LoaderCircle, RefreshCw, X } from 'lucide-react'
 import { useState } from 'react'
 import { toast } from 'sonner'
+import { useFavorites } from '@/components/chat/ModelMenu'
 import { ModelPicker } from '@/components/chat/ModelPicker'
 import { Empty, Row, Section, errorText, useAction } from '@/components/settings/shared'
 import { Button } from '@/components/ui/button'
@@ -44,6 +45,7 @@ export function StartForm() {
   const model = saved ?? info?.default_model
   const [pickModel, setPickModel] = useState(false)
   const current = models.data?.find((m) => m.id === model)
+  const { favorites, toggleFavorite } = useFavorites()
 
   const start = useAction(
     (_: void) =>
@@ -112,6 +114,9 @@ export function StartForm() {
               <ModelPicker
                 models={models.data ?? []}
                 model={model}
+                favorites={favorites}
+                onToggleFavorite={(id) => void toggleFavorite(id)}
+                listClassName="max-h-[min(24rem,calc(var(--visible-band)-6rem))]"
                 onSelect={(id) => {
                   useMeetingSettings.getState().setModel(id)
                   setPickModel(false)

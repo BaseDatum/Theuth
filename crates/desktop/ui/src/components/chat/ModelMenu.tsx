@@ -8,6 +8,8 @@ import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } f
 import { defaultFilter } from 'cmdk'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { usePanes } from '@/lib/panes'
+import { touch } from '@/lib/platform'
+import { cn } from '@/lib/utils'
 import { queryKeys, useApi } from '@/lib/rpc'
 import { useConnection } from '@/store/connection'
 import { on, useSessionField } from '@/store/sessions'
@@ -54,6 +56,37 @@ export function pinnedFilter(pinned: string | undefined): CommandFilter {
   return (value, search, keywords) => (p !== undefined && norm(value) === p ? 1 : defaultFilter(value, search, keywords))
 }
 
+/**
+ * 127 §6: a phone's keyboard hides the lower half of a centred dialog (the search input focuses on open), so on
+ * touch the dialog hugs the top of the visible band and its list fills the rest; the `--visible-band` variable is
+ * the visual-viewport height `lib/viewport.ts` maintains (page scroll undone, so a top-anchored `fixed` element sits
+ * at the top of the band). Desktop / iPad with a hardware keyboard stay centred.
+ */
+export function dialogPlacement(touch: boolean): { content: string; list: string } {
+  if (!touch) return { content: '', list: '' }
+  return {
+    content: 'top-[max(0.5rem,env(safe-area-inset-top))] translate-y-0 flex max-h-[calc(var(--visible-band)-1rem)] flex-col',
+    list: 'max-h-none min-h-0 flex-1',
+  }
+}
+
+/** 127 §4: the engine-wide favorites and the toggle every picker surface shares (header, dialog, forms). */
+export function useFavorites(): { favorites: string[]; toggleFavorite(id: string): Promise<void> } {
+  const api = useApi()
+  const info = useConnection((s) => s.info)
+  const favorites = info?.favorite_models ?? []
+  const toggleFavorite = async (id: string) => {
+    try {
+      const models = await api.set_model_favorite(id, !favorites.includes(id))
+      const conn = useConnection.getState()
+      if (conn.info) conn.setInfo({ ...conn.info, favorite_models: models })
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : String(e))
+    }
+  }
+  return { favorites, toggleFavorite }
+}
+
 type Props = {
   session: string | null
 }
@@ -70,6 +103,9 @@ type Model = {
   name: string
   setModel(id: string): Promise<void>
   setEffort(level: string | null): Promise<void>
+  favorites: string[]
+  /** Star / unstar `id` (127); the menu stays open, the list re-renders from the reply and the event. */
+  toggleFavorite(id: string): Promise<void>
   /** An ACP child's harness options (75 §8); `undefined` until loaded, `null` when the process is gone. */
   harness: ConfigOption[] | null | undefined
   /** Option id → value queued for the turn's end (`set_harness_option` answered `pending`). */
@@ -155,7 +191,10 @@ function useModel({ session }: Props, done: () => void): Model {
       toast.error(e instanceof Error ? e.message : String(e))
     }
   }
+  const { favorites, toggleFavorite } = useFavorites()
   return {
+    favorites,
+    toggleFavorite,
     agent,
     harnessModel,
     model,
@@ -189,12 +228,12 @@ function HarnessGroup({ heading, option, pending, pin, onSelect }: { heading: st
 }
 
 /** The cmdk body for an ACP child: the harness's model and effort/thinking options (75 §8). */
-function HarnessCommand({ m }: { m: Model }) {
+function HarnessCommand({ m, listClassName }: { m: Model; listClassName?: string }) {
   const { model, effort } = harnessGroups(m.harness ?? [])
   return (
     <>
       <CommandInput placeholder="Search harness options" />
-      <CommandList className="max-h-96">
+      <CommandList className={cn('max-h-96', listClassName)}>
         <CommandEmpty>No option matches.</CommandEmpty>
         {model && <HarnessGroup heading="Model" option={model} pending={m.pending[model.id]} pin onSelect={(v) => void m.setHarnessOption(model.id, v)} />}
         {model && effort && <CommandSeparator />}
@@ -232,14 +271,17 @@ function useOpenOnSlash(session: string | null, open: () => void) {
 }
 
 /** The cmdk body: providers → models, word search, then the current model's effort levels (124 §3). */
-function ModelCommand({ m, className }: { m: Model; className?: string }) {
+function ModelCommand({ m, className, listClassName }: { m: Model; className?: string; listClassName?: string }) {
   return (
     <ModelPicker
       models={m.models}
       model={m.model}
       onSelect={(id) => void m.setModel(id)}
       effort={m.current && m.current.efforts.length > 0 ? { levels: m.current.efforts, current: m.effort, onSelect: (lvl) => void m.setEffort(lvl) } : undefined}
+      favorites={m.favorites}
+      onToggleFavorite={(id) => void m.toggleFavorite(id)}
       className={className}
+      listClassName={listClassName}
     />
   )
 }
@@ -313,10 +355,11 @@ export function ModelDialog({ open, onOpenChange, ...props }: Props & { open: bo
   const m = useModel(props, () => onOpenChange(false))
   useOpenOnSlash(props.session, () => onOpenChange(true))
   if (m.agent && !m.harness) return null
+  const place = dialogPlacement(touch())
   if (m.agent) {
     return (
-      <CommandDialog open={open} onOpenChange={onOpenChange} filter={pinnedFilter(pinnedValue(m))} title="Harness" description="Pick from the harness's options" className="max-w-sm">
-        <HarnessCommand m={m} />
+      <CommandDialog open={open} onOpenChange={onOpenChange} filter={pinnedFilter(pinnedValue(m))} title="Harness" description="Pick from the harness's options" className={cn('max-w-sm', place.content)}>
+        <HarnessCommand m={m} listClassName={place.list} />
       </CommandDialog>
     )
   }
@@ -326,8 +369,8 @@ export function ModelDialog({ open, onOpenChange, ...props }: Props & { open: bo
         <DialogTitle>Model</DialogTitle>
         <DialogDescription>Pick the model and effort</DialogDescription>
       </DialogHeader>
-      <DialogContent className="max-w-sm overflow-hidden p-0">
-        <ModelCommand m={m} className="[&_[cmdk-input]]:h-12 **:data-[slot=command-input-wrapper]:h-12" />
+      <DialogContent className={cn('max-w-sm overflow-hidden p-0', place.content)}>
+        <ModelCommand m={m} className="[&_[cmdk-input]]:h-12 **:data-[slot=command-input-wrapper]:h-12" listClassName={place.list} />
       </DialogContent>
     </Dialog>
   )
