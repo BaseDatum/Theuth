@@ -1,6 +1,6 @@
 import { expect, test } from 'vitest'
 import { sceneFixture, T } from './fixtures'
-import { ARC, arc, arcPoint, C, END_X, flowPath, hairlines, HAIRLINES_MAX, hourOf, LABEL_GAP, layoutEnds, needsYou, outcomeMix, outcomes, punchCard, RING, ringByActor, rings, rng, running, scene, sessionsToday, shortId, startOfDay, streamLink } from './model'
+import { ARC, arc, arcPoint, C, END_X, FIELD_H, fieldHeight, flowPath, geom, hairlines, HAIRLINES_MAX, hourOf, LABEL_GAP, layoutEnds, needsYou, outcomeMix, outcomes, punchCard, RING, ringByActor, rings, rng, running, scene, sessionsToday, shortId, startOfDay, streamLink } from './model'
 
 // A fixed local evening, as the mockup's clock reads.
 const NOW = new Date(2026, 9, 7, 19, 49, 19).getTime()
@@ -35,8 +35,63 @@ test('rings: theuth first, working → waiting → idle, routine, lapsed last; 7
   expect(rs[1]!.sub).toBe('4 open · 1h')
   expect(rs[5]!.sub).toBe('paused')
   expect(rs[6]!.sub).toBe('running · 18m')
-  expect(rs.map((r) => [r.x, r.y])).toEqual(rs.map((_, i) => [RING.x, RING.y0 + RING.dy * i]))
+  // R4: the column is centred on the arc's centre line (420 at hv 812): 7 rings → 261, 314, …
+  expect(rs.map((r) => [r.x, r.y])).toEqual(rs.map((_, i) => [RING.x, 420 - (RING.dy * 6) / 2 + RING.dy * i]))
   expect(rs[3]!.link).toEqual({ route: 'agent', name: 'builder' })
+})
+
+test('R4 geometry: hv 812 is the mockup; at 600 / 1100 / 1400 the arc, rings, needs, label band and hairlines all scale and stay inside the field', () => {
+  const g812 = geom(FIELD_H)
+  expect(g812).toMatchObject({ cy: 420, top: 60, bottom: 775, srcTop: 250, srcBottom: 690, needY0: 262, needDy: 52, footer: 778 })
+  expect((g812.thetaMax * 180) / Math.PI).toBeCloseTo(14, 9)
+  expect(scene(F, NOW, FIELD_H)).toEqual(scene(F, NOW)) // the default is the mockup
+  // The viewBox rule: 1920 · h / w, clamped to 600–1400; an unmeasured box is the mockup's 812.
+  expect(fieldHeight(1600, 700)).toBe(840)
+  expect(fieldHeight(1600, 100)).toBe(600)
+  expect(fieldHeight(1000, 1000)).toBe(1400)
+  expect(fieldHeight(0, 500)).toBe(FIELD_H)
+  const twelve = Array.from({ length: 12 }, (_, i) => ({ ...F.attention[0]!, id: `n${i}`, at_ms: NOW - i * 60_000 }))
+  const nine = Array.from({ length: 12 }, (_, i) => ({ ...F.agents[3]!, file: { ...F.agents[3]!.file, name: `a${i}` } }))
+  for (const hv of [600, 812, 1100, 1400]) {
+    const g = geom(hv)
+    const k = hv / FIELD_H
+    // Arc: centre scales, the band spans the same share of the height (≈ 82 %) and stays clear of the top bar and footer.
+    expect(g.cy).toBeCloseTo(420 * k, 6)
+    const [, topY] = arcPoint(0, ARC.R - ARC.band, g)
+    const [, bottomY] = arcPoint(24, ARC.R + ARC.band, g)
+    expect(topY).toBeGreaterThan(40)
+    expect(bottomY).toBeLessThan(g.footer)
+    expect((bottomY - topY) / hv).toBeGreaterThan(0.78)
+    expect(arcPoint(12, ARC.R, g)[0]).toBeCloseTo(1090, 6) // x at noon is the ring-to-arc span the flows are drawn for
+    // Rings: nine of them centred on cy, all inside the field.
+    const rs = rings(nine, [], [], [], NOW, g)
+    expect((rs[0]!.y + rs[8]!.y) / 2).toBeCloseTo(g.cy, 6)
+    expect(rs[0]!.y - RING.r).toBeGreaterThan(40)
+    expect(rs[8]!.y + RING.r).toBeLessThan(g.footer)
+    // Needs-you: twelve dots cascade from 0.3227·hv in steps ≤ 0.064·hv; the lowest stays above the footer.
+    const { needs } = needsYou(twelve, g)
+    expect(needs[0]!.y).toBeGreaterThanOrEqual(g.needY0 - 6)
+    expect(needs[11]!.y).toBeLessThan(g.footer - 14)
+    expect(needs[1]!.y - needs[0]!.y).toBeLessThanOrEqual(g.needDy + 12)
+    // Label band: ends within [top, bottom], ≥ 22 apart per column.
+    const all = [...outcomes(F.activityToday, F.routines, rs, NOW).flows, ...running(F.tasks, rs, NOW)]
+    const { flows } = layoutEnds(all, g)
+    for (const f of flows) {
+      expect(f.end[1]).toBeGreaterThanOrEqual(g.top - 1e-6)
+      expect(f.end[1]).toBeLessThanOrEqual(g.bottom + 1e-6)
+    }
+    for (const x of END_X) {
+      const ys = flows.filter((f) => f.end[0] === x).map((f) => f.end[1]).sort((a, b) => a - b)
+      for (let i = 1; i < ys.length; i++) expect(ys[i]! - ys[i - 1]!).toBeGreaterThanOrEqual(LABEL_GAP)
+    }
+    // Hairlines end inside the same band.
+    for (const h of hairlines(F.activityToday, sessionsToday(F.sessions, NOW), rs, new Set(), NOW, g)) {
+      const ey = Number(/ ([\d.]+)$/.exec(h.d)![1])
+      expect(ey).toBeGreaterThanOrEqual(g.top - 0.05)
+      expect(ey).toBeLessThanOrEqual(g.bottom + 0.05)
+    }
+    expect(scene(F, NOW, hv).hv).toBe(hv)
+  }
 })
 
 test('rings: blocked without an attention item is idle; unreachable is error; a desk-less agent is just "N open"; beyond 9 fold into "+N more"', () => {

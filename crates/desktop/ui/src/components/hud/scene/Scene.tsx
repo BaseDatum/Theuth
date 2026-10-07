@@ -3,16 +3,17 @@ import { type CSSProperties, type ReactNode, type RefObject, type SVGProps, useE
 import { age } from '@/components/tasks/helpers'
 import { cn } from '@/lib/utils'
 import { spend } from '../model'
-import { C, type Color, FIELD_H, hhmm, hhmmss, MIX_ORDER, type Hairline, type OutcomeMix, type PunchCard, type Ring, type SceneData, type SceneModel, type Target, actorLabel, ringColor, ringDashed, ringDots, scene, streamColor, streamLink, truncate, W } from './model'
+import { C, type Color, FIELD_H, fieldHeight, hhmm, hhmmss, MIX_ORDER, type Hairline, type OutcomeMix, type PunchCard, type Ring, type SceneData, type SceneModel, type Target, actorLabel, ringColor, ringDashed, ringDots, scene, streamColor, streamLink, truncate, W } from './model'
 import type { ActivityEntry } from '@/rpc/bindings/ActivityEntry'
 import type { AgentSummary } from '@/rpc/bindings/AgentSummary'
 import type { Task } from '@/rpc/bindings/Task'
 
 /**
- * 128 HUD-SCENE: the visual overview on `/` (≥ md). One 1920×812 SVG (the flow field) scaled to its container over a
- * canvas that carries the grey hairline field, then the bottom band — five 352×248 panels in an HTML grid, four of them
- * SVG and the STREAM an HTML box so its 50 rows scroll. Every coloured mark decodes to a fact and links to its screen;
- * R2 (Sky): the old sections below are gone, so everything they reached is one click from here.
+ * 128 HUD-SCENE: the visual overview on `/` (≥ md). The flow field is one SVG over a canvas (the grey hairlines) that
+ * fills the height it is given: its viewBox is `0 0 1920 hv` with `hv = clamp(round(1920 · h / w), 600, 1400)` from the
+ * measured box (R4), and every y in the model is a function of `hv` (`geom`). Below it the band — five 352×248 panels in
+ * an HTML grid, four SVG and the STREAM an HTML box so its 50 rows scroll. Every coloured mark decodes to a fact and links
+ * to its screen; R2 (Sky): the old sections below are gone, so everything they reached is one click from here.
  */
 
 const LS = { letterSpacing: 1.5 } as const
@@ -46,8 +47,35 @@ function useClock(fixed: number | undefined): number {
   return t
 }
 
-/** The hairline field on a canvas under the SVG: redrawn on data change and at most once a second; the colour is read once per theme change. */
-function useField(ref: RefObject<HTMLCanvasElement | null>, lines: readonly Hairline[]) {
+/**
+ * R4: the field's viewBox height follows its box — `clamp(round(1920 · h / w), 600, 1400)`, re-measured by a
+ * ResizeObserver and applied once per animation frame. Unmeasured (SSR, tests) it is the mockup's 812.
+ */
+function useFieldHeight(ref: RefObject<HTMLDivElement | null>): number {
+  const [hv, setHv] = useState(FIELD_H)
+  useEffect(() => {
+    const el = ref.current
+    if (!el || typeof ResizeObserver === 'undefined') return
+    let frame = 0
+    const measure = () => {
+      frame = 0
+      setHv(fieldHeight(el.clientWidth, el.clientHeight))
+    }
+    const ro = new ResizeObserver(() => {
+      if (frame === 0) frame = requestAnimationFrame(measure)
+    })
+    ro.observe(el)
+    measure()
+    return () => {
+      ro.disconnect()
+      if (frame !== 0) cancelAnimationFrame(frame)
+    }
+  }, [ref])
+  return hv
+}
+
+/** The hairline field on a canvas under the SVG (same `1920 × hv` space): redrawn on data change and at most once a second; the colour is read once per theme change. */
+function useField(ref: RefObject<HTMLCanvasElement | null>, lines: readonly Hairline[], hv: number) {
   const color = useRef('')
   const last = useRef(0)
   const [theme, setTheme] = useState(0)
@@ -68,12 +96,12 @@ function useField(ref: RefObject<HTMLCanvasElement | null>, lines: readonly Hair
       const ctx = c?.getContext('2d')
       if (!c || !ctx) return
       const dpr = window.devicePixelRatio || 1
-      if (c.width !== W * dpr) {
+      if (c.width !== W * dpr || c.height !== hv * dpr) {
         c.width = W * dpr
-        c.height = FIELD_H * dpr
+        c.height = hv * dpr
       }
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
-      ctx.clearRect(0, 0, W, FIELD_H)
+      ctx.clearRect(0, 0, W, hv)
       ctx.strokeStyle = color.current
       ctx.lineWidth = 0.6
       for (const h of lines) {
@@ -392,19 +420,21 @@ export function Panels({ data, m, now, stream }: { data: SceneData; m: SceneMode
 export function Scene({ data, errors = [], now: fixed }: { data: SceneData; errors?: string[]; now?: number }) {
   const clock = useClock(fixed)
   const minute = clock - (clock % 60_000)
-  const m = useMemo(() => scene(data, minute), [data, minute])
+  const field = useRef<HTMLDivElement>(null)
+  const hv = useFieldHeight(field)
+  const m = useMemo(() => scene(data, minute, hv), [data, minute, hv])
   const canvas = useRef<HTMLCanvasElement>(null)
-  useField(canvas, m.hairlines)
+  useField(canvas, m.hairlines, hv)
   const f = m.footer
   const need = f.needYou ?? 0
   const summary = `${f.needYou ?? '—'} need you · ${f.agentsWorking} agents working · ${f.sessionsLive} sessions live · ${f.outcomes} outcomes today · ${f.inFlight} in flight · $${f.month.toFixed(2)} this month`
   const segs = footerSegments(m)
   const segX = [28, 190, 356, 470]
   return (
-    <div className="hud-scene">
-      <div className="relative w-full" style={{ aspectRatio: `${W} / ${FIELD_H}`, minHeight: 406 }}>
-        <canvas ref={canvas} width={W} height={FIELD_H} aria-hidden className="absolute inset-0 h-full w-full object-contain" />
-        <svg viewBox={`0 0 ${W} ${FIELD_H}`} className="relative block h-full w-full font-mono" role="img" aria-labelledby="hud-scene-title hud-scene-desc">
+    <div className="hud-scene flex flex-1 flex-col">
+      <div ref={field} className="relative min-h-[420px] flex-1">
+        <canvas ref={canvas} width={W} height={hv} aria-hidden className="absolute inset-0 h-full w-full object-contain" />
+        <svg viewBox={`0 0 ${W} ${hv}`} className="absolute inset-0 block h-full w-full font-mono" role="img" aria-labelledby="hud-scene-title hud-scene-desc">
           <title id="hud-scene-title">Overview</title>
           <desc id="hud-scene-desc">{summary}</desc>
 
@@ -420,8 +450,8 @@ export function Scene({ data, errors = [], now: fixed }: { data: SceneData; erro
           {[
             [14, 54, 14, 40, 28, 40],
             [1906, 54, 1906, 40, 1892, 40],
-            [14, 758, 14, 772, 28, 772],
-            [1906, 758, 1906, 772, 1892, 772],
+            [14, hv - 54, 14, hv - 40, 28, hv - 40],
+            [1906, hv - 54, 1906, hv - 40, 1892, hv - 40],
           ].map((p, i) => (
             <path key={i} d={`M ${p[0]} ${p[1]} L ${p[2]} ${p[3]} L ${p[4]} ${p[5]}`} stroke={C.borderStrong} fill="none" />
           ))}
@@ -535,15 +565,15 @@ export function Scene({ data, errors = [], now: fixed }: { data: SceneData; erro
           )}
 
           {/* footer: four segments from the left, the last two sharing the right-aligned slot */}
-          <line x1={24} y1={778} x2={1896} y2={778} stroke={C.border} />
+          <line x1={24} y1={hv - 34} x2={1896} y2={hv - 34} stroke={C.border} />
           {segs.slice(0, 4).map((s, i) => (
             <To key={s.text} target={s.target} title={s.text}>
-              <text x={segX[i]} y={795} fontSize={9} fill={s.color} style={LS}>
+              <text x={segX[i]} y={hv - 17} fontSize={9} fill={s.color} style={LS}>
                 {s.text}
               </text>
             </To>
           ))}
-          <text x={1896} y={795} fontSize={9} fill={C.tertiary} textAnchor="end" style={LS}>
+          <text x={1896} y={hv - 17} fontSize={9} fill={C.tertiary} textAnchor="end" style={LS}>
             {linkFor(segs[4]!.target, <tspan>{segs[4]!.text}</tspan>)}
             <tspan> · </tspan>
             {linkFor(segs[5]!.target, <tspan>{segs[5]!.text}</tspan>)}

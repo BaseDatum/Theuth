@@ -30,12 +30,27 @@ export type Color = (typeof C)[keyof typeof C]
 
 export const W = 1920
 export const H = 1080
-/** The SVG flow field's height: the mockup's top 812 px; the five panels below it are an HTML band (R2). */
+/** The mockup's field height; every proportional rule in `geom` is calibrated so `geom(FIELD_H)` reproduces the mockup exactly. */
 export const FIELD_H = 812
-export const ARC = { cx: -300, cy: 420, R: 1390, band: 18 } as const
-export const RING = { x: 860, y0: 265, dy: 53, r: 13, max: 9 } as const
-export const NEED = { x0: 610, dx: 60, y0: 262, dy: 52, max: 12 } as const
-export const FIELD = { top: 60, bottom: 775 } as const
+/** R4: the live viewBox height follows the window — `clamp(round(1920 · h / w), HV_MIN, HV_MAX)`. */
+export const HV_MIN = 600
+export const HV_MAX = 1400
+export const fieldHeight = (w: number, h: number): number => (w > 0 ? Math.min(HV_MAX, Math.max(HV_MIN, Math.round((W * h) / w))) : FIELD_H)
+export const ARC = { cx: -300, R: 1390, band: 18 } as const
+export const RING = { x: 860, dy: 53, r: 13, max: 9 } as const
+export const NEED = { x0: 610, dx: 60, max: 12 } as const
+
+/**
+ * R4: the field's vertical geometry as a function of its viewBox height `hv`. Each value is the mockup's y at 812 scaled by
+ * hv / 812 (so hv = 812 is the mockup): arc centre 420, label band 60–775, hairline sources 250–690, needs-you cascade from
+ * 262 in steps of 52; θmax = asin(sin 14° · hv / 812) keeps the band at the same share of the height. The footer rule sits
+ * 34 px above the bottom edge.
+ */
+export type Geom = { hv: number; cy: number; thetaMax: number; top: number; bottom: number; srcTop: number; srcBottom: number; needY0: number; needDy: number; footer: number }
+export function geom(hv: number = FIELD_H): Geom {
+  const k = hv / FIELD_H
+  return { hv, cy: 420 * k, thetaMax: Math.asin(Math.sin((14 * Math.PI) / 180) * k), top: 60 * k, bottom: 775 * k, srcTop: 250 * k, srcBottom: 690 * k, needY0: 262 * k, needDy: 52 * k, footer: hv - 34 }
+}
 export const END_X = [1500, 1580, 1660, 1740] as const
 export const OUTCOMES_MAX = 16
 export const RUNNING_MAX = 8
@@ -97,12 +112,13 @@ const r1 = (n: number) => Math.round(n * 10) / 10
 
 // ----------------------------------------------------------------------------------------------------------------- arc
 
-export const theta = (hour: number): number => ((-14 + (28 * hour) / 24) * Math.PI) / 180
-export const thetaDeg = (hour: number): number => -14 + (28 * hour) / 24
+/** Hour → angle on the day arc: −θmax at 00:00, +θmax at 24:00 (θmax = 14° at hv 812, growing with the field; `geom`). */
+export const theta = (hour: number, g: Geom = geom()): number => -g.thetaMax + (2 * g.thetaMax * hour) / 24
+export const thetaDeg = (hour: number, g: Geom = geom()): number => (theta(hour, g) * 180) / Math.PI
 
-export function arcPoint(hour: number, r: number = ARC.R): Pt {
-  const t = theta(hour)
-  return [ARC.cx + r * Math.cos(t), ARC.cy + r * Math.sin(t)]
+export function arcPoint(hour: number, r: number = ARC.R, g: Geom = geom()): Pt {
+  const t = theta(hour, g)
+  return [ARC.cx + r * Math.cos(t), g.cy + r * Math.sin(t)]
 }
 
 export type ArcMark = { x: number; y: number; rot: number; filled: boolean; name: string; lx: number; ly: number; lrot: number; link: Target }
@@ -122,28 +138,30 @@ export const hhmm = (ms: number): string => {
 export const hhmmss = (ms: number): string => `${hhmm(ms)}:${pad2(new Date(ms).getSeconds())}`
 
 /** The day band (R ± 18), hour ticks, 2-hourly labels, routine squares (filled = fired today, hollow = due later today) and the NOW marker. */
-export function arc(now: number, routines: readonly ScheduleInfo[], activityToday: readonly ActivityEntry[]): ArcModel {
+export function arc(now: number, routines: readonly ScheduleInfo[], activityToday: readonly ActivityEntry[], g: Geom = geom()): ArcModel {
   const { R, band } = ARC
-  const [ox0, oy0] = arcPoint(0, R + band)
-  const [ox1, oy1] = arcPoint(24, R + band)
-  const [ix0, iy0] = arcPoint(0, R - band)
-  const [ix1, iy1] = arcPoint(24, R - band)
+  const at = (hour: number, r: number) => arcPoint(hour, r, g)
+  const deg = (hour: number) => thetaDeg(hour, g)
+  const [ox0, oy0] = at(0, R + band)
+  const [ox1, oy1] = at(24, R + band)
+  const [ix0, iy0] = at(0, R - band)
+  const [ix1, iy1] = at(24, R - band)
   const bandPath = `M ${r1(ox0)} ${r1(oy0)} A ${R + band} ${R + band} 0 0 1 ${r1(ox1)} ${r1(oy1)} L ${r1(ix1)} ${r1(iy1)} A ${R - band} ${R - band} 0 0 0 ${r1(ix0)} ${r1(iy0)} Z`
   const ticks: ArcModel['ticks'] = []
   const labels: ArcModel['labels'] = []
   for (let h = 0; h <= 24; h++) {
-    const [x1, y1] = arcPoint(h, R - 18)
-    const [x2, y2] = arcPoint(h, R - 12)
+    const [x1, y1] = at(h, R - 18)
+    const [x2, y2] = at(h, R - 12)
     ticks.push({ x1, y1, x2, y2 })
     if (h % 2 === 0 && h < 24) {
-      const [x, y] = arcPoint(h + 0.55, R - 4)
-      labels.push({ x, y, rot: thetaDeg(h + 0.55) + 90, text: `${pad2(h)}:00` })
+      const [x, y] = at(h + 0.55, R - 4)
+      labels.push({ x, y, rot: deg(h + 0.55) + 90, text: `${pad2(h)}:00` })
     }
   }
   const mark = (hour: number, filled: boolean, name: string): ArcMark => {
-    const [x, y] = arcPoint(hour, R + 9)
-    const [lx, ly] = arcPoint(hour + 1.1, R + 10)
-    return { x, y, rot: thetaDeg(hour), filled, name, lx, ly, lrot: thetaDeg(hour + 1.1) + 90, link: { route: 'routine', name } }
+    const [x, y] = at(hour, R + 9)
+    const [lx, ly] = at(hour + 1.1, R + 10)
+    return { x, y, rot: deg(hour), filled, name, lx, ly, lrot: deg(hour + 1.1) + 90, link: { route: 'routine', name } }
   }
   const marks: ArcMark[] = []
   for (const e of activityToday) if (e.kind === 'routine_fired') marks.push(mark(hourOf(e.ts_ms, now), true, e.subject))
@@ -155,10 +173,10 @@ export function arc(now: number, routines: readonly ScheduleInfo[], activityToda
     marks.push(mark(hourOf(t, now), false, s.name))
   }
   const nh = nowHour(now)
-  const [nx1, ny1] = arcPoint(nh, R - 22)
-  const [nx2, ny2] = arcPoint(nh, R + 22)
-  const [lx, ly] = arcPoint(nh + 0.9, R + 30)
-  return { band: bandPath, ticks, labels, marks, now: { x1: nx1, y1: ny1, x2: nx2, y2: ny2, lx, ly, lrot: thetaDeg(nh + 0.9) + 90 } }
+  const [nx1, ny1] = at(nh, R - 22)
+  const [nx2, ny2] = at(nh, R + 22)
+  const [lx, ly] = at(nh + 0.9, R + 30)
+  return { band: bandPath, ticks, labels, marks, now: { x1: nx1, y1: ny1, x2: nx2, y2: ny2, lx, ly, lrot: deg(nh + 0.9) + 90 } }
 }
 
 // --------------------------------------------------------------------------------------------------------------- rings
@@ -192,7 +210,7 @@ const ringActor = (actor: string): string => (actor === `agent:${THEUTH}` ? 'use
  * The actors, top to bottom: `theuth` (today's chats), every roster agent (working · waiting · idle · lapsed/error),
  * running routines; beyond 9 the rest fold into one `+N more` ring — never dropped silently.
  */
-export function rings(agents: readonly AgentSummary[], sessions: readonly SessionSummary[], routines: readonly ScheduleInfo[], attention: readonly AttentionItem[], now: number): Ring[] {
+export function rings(agents: readonly AgentSummary[], sessions: readonly SessionSummary[], routines: readonly ScheduleInfo[], attention: readonly AttentionItem[], now: number, g: Geom = geom()): Ring[] {
   const midnight = startOfDay(now)
   type R0 = Omit<Ring, 'x' | 'y'>
   const out: R0[] = []
@@ -230,7 +248,9 @@ export function rings(agents: readonly AgentSummary[], sessions: readonly Sessio
     const rest = out.length - (RING.max - 1)
     out.splice(RING.max - 1, rest, { id: 'ring:more', name: `+${rest} more`, sub: '', style: 'lapsed', actor: null, link: { route: 'agents' } })
   }
-  return out.map((r, i) => ({ ...r, x: RING.x, y: RING.y0 + RING.dy * i }))
+  // R4: the column is centred on the arc's centre line so it fits any field height.
+  const y0 = g.cy - (RING.dy * (out.length - 1)) / 2
+  return out.map((r, i) => ({ ...r, x: RING.x, y: y0 + RING.dy * i }))
 }
 
 export const ringByActor = (rings: readonly Ring[], actor: string | null): Ring | null => (actor === null ? null : (rings.find((r) => r.actor === ringActor(actor)) ?? null))
@@ -265,14 +285,15 @@ export const truncate = (s: string, n: number): string => (s.length > n ? `${s.s
 
 export type Need = { item: AttentionItem; x: number; y: number; label: string; link: Target }
 
-/** Newest first; dot i steps down-left with a seeded ±6 px jitter. */
-export function needsYou(attention: readonly AttentionItem[]): { needs: Need[]; more: number } {
+/** Newest first; dot i steps down-left with a seeded ±6 px jitter; the step shrinks so the lowest dot stays above the footer. */
+export function needsYou(attention: readonly AttentionItem[], g: Geom = geom()): { needs: Need[]; more: number } {
   const sorted = [...attention].sort((a, b) => b.at_ms - a.at_ms)
   const drawn = sorted.slice(0, NEED.max)
+  const dy = drawn.length > 1 ? Math.min(g.needDy, (g.footer - 26 - g.needY0) / (drawn.length - 1)) : g.needDy
   const needs = drawn.map((item, i) => ({
     item,
     x: NEED.x0 - NEED.dx * i,
-    y: NEED.y0 + NEED.dy * i + lerp(-6, 6, rng(item.id)()),
+    y: g.needY0 + dy * i + lerp(-6, 6, rng(item.id)()),
     label: shortId(item),
     link: { route: 'attention', id: item.id } as const,
   }))
@@ -345,8 +366,8 @@ export function running(tasks: readonly Task[], rings: readonly Ring[], now: num
  * `d` of one flow: src → the ring's left edge (cubic, horizontal tangents, control x at half the span), the ring's right
  * edge → the arc point (same), then a quadratic to the end with its control at 42 % / 30 % of the way.
  */
-export function flowPath(src: Pt | null, via: Ring | null, hour: number, end: Pt): string {
-  const [ax, ay] = arcPoint(hour)
+export function flowPath(src: Pt | null, via: Ring | null, hour: number, end: Pt, g: Geom = geom()): string {
+  const [ax, ay] = arcPoint(hour, ARC.R, g)
   const [ex, ey] = end
   const parts: string[] = []
   const cubic = (x0: number, y0: number, x1: number, y1: number) => {
@@ -366,21 +387,21 @@ export function flowPath(src: Pt | null, via: Ring | null, hour: number, end: Pt
 }
 
 /**
- * End points: oldest at the top, evenly over 60–775 with ≥ 22 px between labels; x cycles through four columns so
- * neighbours stagger. More flows than slots → the oldest beyond the cap are dropped and counted in `more`.
+ * End points: oldest at the top, evenly over the field's label band (60–775 at hv 812) with ≥ 22 px between labels; x cycles
+ * through four columns so neighbours stagger. More flows than slots → the oldest beyond the cap are dropped and counted in `more`.
  */
-export function layoutEnds(flows: readonly Omit<Flow, 'end' | 'd'>[]): { flows: Flow[]; more: number } {
-  const slots = Math.floor((FIELD.bottom - FIELD.top) / LABEL_GAP) + 1
+export function layoutEnds(flows: readonly Omit<Flow, 'end' | 'd'>[], g: Geom = geom()): { flows: Flow[]; more: number } {
+  const slots = Math.floor((g.bottom - g.top) / LABEL_GAP) + 1
   const sorted = [...flows].sort((a, b) => a.time - b.time)
   const more = Math.max(0, sorted.length - slots)
   const kept = sorted.slice(more)
   const n = kept.length
-  const step = n > 1 ? (FIELD.bottom - FIELD.top) / (n - 1) : 0
+  const step = n > 1 ? (g.bottom - g.top) / (n - 1) : 0
   return {
     more,
     flows: kept.map((f, i) => {
-      const end: Pt = [END_X[i % END_X.length] ?? END_X[0], n > 1 ? FIELD.top + step * i : (FIELD.top + FIELD.bottom) / 2]
-      return { ...f, end, d: flowPath(f.src, f.via, f.hour, end) }
+      const end: Pt = [END_X[i % END_X.length] ?? END_X[0], n > 1 ? g.top + step * i : (g.top + g.bottom) / 2]
+      return { ...f, end, d: flowPath(f.src, f.via, f.hour, end, g) }
     }),
   }
 }
@@ -395,15 +416,15 @@ export type Hairline = { id: string; d: string; opacity: number }
  * line passes the arc at its time and ends at a seeded point. Seeded by id → stable between renders. Capped at 600.
  * Deviation from the brief's signature: takes `rings` (the brief's text needs them, its signature omitted them).
  */
-export function hairlines(activityToday: readonly ActivityEntry[], sessionsToday: readonly SessionSummary[], rings: readonly Ring[], drawnIds: ReadonlySet<string>, now: number): Hairline[] {
+export function hairlines(activityToday: readonly ActivityEntry[], sessionsToday: readonly SessionSummary[], rings: readonly Ring[], drawnIds: ReadonlySet<string>, now: number, g: Geom = geom()): Hairline[] {
   const out: Hairline[] = []
   const line = (id: string, actor: string | null, time: number) => {
     const r = rng(id)
     const fromRing = r() < 0.62
     const ring = fromRing ? (ringByActor(rings, actor) ?? rings[Math.floor(r() * rings.length)]) : undefined
-    const src: Pt = ring ? [RING.x + 14, ring.y + lerp(-3, 3, r())] : [lerp(180, 640, r()), lerp(250, 690, r())]
-    const end: Pt = [lerp(1380, 1900, r()), lerp(FIELD.top, FIELD.bottom, r())]
-    out.push({ id, d: flowPath(src, null, hourOf(time, now, nowHour(now)), end), opacity: r1(lerp(0.07, 0.26, r()) * 100) / 100 })
+    const src: Pt = ring ? [RING.x + 14, ring.y + lerp(-3, 3, r())] : [lerp(180, 640, r()), lerp(g.srcTop, g.srcBottom, r())]
+    const end: Pt = [lerp(1380, 1900, r()), lerp(g.top, g.bottom, r())]
+    out.push({ id, d: flowPath(src, null, hourOf(time, now, nowHour(now)), end, g), opacity: r1(lerp(0.07, 0.26, r()) * 100) / 100 })
   }
   for (const e of activityToday) {
     if (out.length >= HAIRLINES_MAX) break
@@ -529,6 +550,8 @@ export type SceneData = {
 
 export type SceneModel = {
   now: number
+  /** The field height the model was laid out for (viewBox `0 0 1920 hv`). */
+  hv: number
   arc: ArcModel
   rings: Ring[]
   needs: Need[]
@@ -542,31 +565,33 @@ export type SceneModel = {
   footer: Footer
 }
 
-/** The whole picture from the data; missing queries draw nothing (the chrome stays). */
-export function scene(data: SceneData, now: number): SceneModel {
+/** The whole picture from the data at field height `hv` (R4: the viewBox follows the window); missing queries draw nothing (the chrome stays). */
+export function scene(data: SceneData, now: number, hv: number = FIELD_H): SceneModel {
+  const g = geom(hv)
   const attention = data.attention ?? []
   const agents = data.agents ?? []
   const tasks = data.tasks ?? []
   const routines = data.routines ?? []
   const sessions = data.sessions ?? []
   const today = data.activityToday ?? []
-  const rs = rings(agents, sessions, routines, attention, now)
-  const { needs, more: needsMore } = needsYou(attention)
+  const rs = rings(agents, sessions, routines, attention, now, g)
+  const { needs, more: needsMore } = needsYou(attention, g)
   const outs = outcomes(today, routines, rs, now)
   const runs = running(tasks, rs, now)
-  const laid = layoutEnds([...needFlows(needs, rs, now), ...outs.flows, ...runs])
+  const laid = layoutEnds([...needFlows(needs, rs, now), ...outs.flows, ...runs], g)
   const drawn = new Set(laid.flows.map((f) => f.id))
   const inFlight = tasks.filter((t) => t.state === 'doing').length + routines.filter((r) => r.running).length
   return {
     now,
-    arc: arc(now, routines, today),
+    hv,
+    arc: arc(now, routines, today, g),
     rings: rs,
     needs,
     needsMore,
     flows: laid.flows,
     flowsMore: laid.more + outs.more,
     outcomesTotal: outs.total,
-    hairlines: hairlines(today, sessionsToday(sessions, now), rs, drawn, now),
+    hairlines: hairlines(today, sessionsToday(sessions, now), rs, drawn, now, g),
     punch: punchCard(data.activityWeek ?? [], now),
     mix: outcomeMix(tasks, now),
     footer: footer(agents, sessions, data.attention, outs.total, inFlight, now),

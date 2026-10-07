@@ -92,7 +92,7 @@ export function Hud() {
         <h2 className="min-w-0 flex-1 truncate text-sm font-semibold">Overview</h2>
       </header>
       <div className="min-h-0 flex-1 overflow-y-auto">
-        <div className="px-4 pt-4 pb-4">
+        <div className="flex min-h-full flex-col px-4 pt-4 pb-4">
           <SceneSwitch data={sceneData} errors={sceneErrors} />
         </div>
       </div>
