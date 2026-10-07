@@ -142,8 +142,14 @@ the working full-1.8 dir: both failing builds lack the same five deployment/insi
 `Microsoft.WindowsAppRuntime.Insights.Resource.dll` (~343 KB), `WindowsAppRuntime.DeploymentExtensions.OneCore.dll`,
 `WindowsAppRuntime.png`, `WindowsAppSdk.AppxDeploymentExtensions.Desktop.dll`,
 `WindowsAppSdk.AppxDeploymentExtensions.Desktop-EventLog-Instrumentation.dll`. None of them exists as a loose
-file anywhere in the NuGet cache: the self-contained targets extract them from a packaged payload that only the
-1.8 meta/Runtime package set carries (2.5.1's output instead adds 18 AI/Search files).
+file anywhere in the NuGet cache: they ship **inside the runtime MSIX** of `Microsoft.WindowsAppSDK.Runtime`
+(`tools\MSIX\win10-x64\Microsoft.WindowsAppRuntime.1.8.msix`, 290 entries, and `…Runtime.2.msix` for 2.5.1,
+302 entries — both lines contain all five). The self-contained payload step of the full 1.8 meta build copies
+them out; the 2.5.1 meta build and the 1.8 split build do not (2.5.1's output instead adds 18 AI/Search files).
+**Confirmed fix**: copying the five files from the full-1.8 output into the split output made `Register() ok`,
+`Show(normal) ok id=60`, `Show(urgent) ok id=61` and the toasts appeared (new AUMID → the urgent consent prompt
+again). So a slim deployment = component packages + a build step that extracts those five entries from the
+runtime MSIX (or ships them as content).
 
 **Implication**: toasts with action buttons from an unpackaged self-contained exe are viable today on WASDK 1.8
 (full package). For 2.x or a slimmed package set, either ship `Microsoft.WindowsAppRuntime.Insights.Resource.dll`
@@ -212,5 +218,9 @@ processes; the hook callback already arrives on the hooking thread's message loo
 - The `onnxruntime.dll` + `DirectML.dll` (38 MB) come from `Microsoft.WindowsAppSDK.ML` (which depends on
   `Microsoft.Windows.AI.MachineLearning`), pulled only by the meta package. Excluding it = reference component
   packages instead of the meta package: `Microsoft.WindowsAppSDK.WinUI` (+ `Microsoft.WindowsAppSDK.Foundation`
-  explicitly if you want its version pinned). Measured: 165.1 MB vs 229.2 MB (Debug dirs). Caveat above: find the
-  package that ships `Microsoft.WindowsAppRuntime.Insights.Resource.dll` and add it, or toasts break.
+  explicitly if you want its version pinned). Measured: 165.1 MB vs 229.2 MB (Debug dirs). Caveat: add the five
+  deployment/insights files from the runtime MSIX (see S2) or `AppNotificationManager.Register()` fails — verified
+  that with those five files copied in, toasts work on the split build.
+- **Recommendation**: build on 1.8 (toasts verified, no 2.x-only API needed by the spikes); treat 2.5.1 as a
+  drop-in that compiles but needs the same five-file fix for toasts and a re-test against WindowsAppSDK#6821 on
+  the target OS build.
