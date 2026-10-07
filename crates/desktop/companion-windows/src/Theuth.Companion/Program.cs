@@ -15,11 +15,11 @@ public static class Program
         WinRT.ComWrappersSupport.InitializeComWrappers();
         // W2: single instance goes here, before any XAML — AppInstance.FindOrRegisterForKey("io.theuth.companion"); when it
         // is not current, RedirectActivationToAsync(AppInstance.GetCurrent().GetActivatedEventArgs()) and return 0 (§5.5, A9).
-        Application.Start(_ =>
+        Application.Start(p =>
         {
             var context = new DispatcherQueueSynchronizationContext(DispatcherQueue.GetForCurrentThread());
             SynchronizationContext.SetSynchronizationContext(context);
-            _ = new App();
+            new App();
         });
         return App.ExitCode;
     }
