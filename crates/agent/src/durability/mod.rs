@@ -43,7 +43,7 @@ impl Default for DurabilityConfig {
             resume: ResumeMode::Auto,
             resume_parallel: 4,
             drain_secs: 10,
-            partial_checkpoint_ms: 1000,
+            partial_checkpoint_ms: 5000,
             pty_snapshot_secs: 5,
             journal_keep_days: 7,
             handoff_tokens: 4000,

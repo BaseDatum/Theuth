@@ -100,6 +100,67 @@ pub trait LivenessProbe: Send + Sync {
     async fn liveness(&self, session: &str) -> Option<Liveness>;
 }
 
+/// One checkout's probe answer, pinned to the checkout it was asked for so
+/// [`Ledger::sweep_apply`] can tell a checkout that moved on meanwhile.
+#[derive(Clone, Debug)]
+pub struct Probed {
+    /// `Checkout::session` when probed.
+    pub session: String,
+    /// `Checkout::epoch` when probed.
+    pub epoch: u32,
+    /// The probe's answer.
+    pub live: Option<Liveness>,
+}
+
+/// The asking half of the orphan sweep ([`Ledger::prober`]). It runs off the
+/// tasks mailbox: the probe asks the agent actor, which may be asking tasks
+/// back at that moment (`Identities::identity` → `ListTasks`).
+#[derive(Clone)]
+pub struct SweepProber {
+    store: Store,
+    probe: Arc<dyn LivenessProbe>,
+    stale_ms: u64,
+}
+
+impl SweepProber {
+    /// Probes every `doing` checkout on a reachable (or unknown) engine
+    /// whose progress note is already stale at `now`; the rest need no answer.
+    pub async fn probe(
+        &self,
+        now: u64,
+        reachable: Option<&HashSet<String>>,
+    ) -> R<HashMap<TaskId, Probed>> {
+        let doing = self
+            .store
+            .list(&TaskFilter {
+                state: Some(vec![TaskState::Doing]),
+                ..Default::default()
+            })
+            .await
+            .map_err(db)?;
+        let mut out = HashMap::new();
+        for t in doing {
+            let Some(c) = t.checkout else { continue };
+            if c.orphaned
+                || reachable.is_some_and(|r| !r.contains(&c.engine))
+                || now.saturating_sub(c.progress_at_ms) < self.stale_ms
+            {
+                continue;
+            }
+            let live = self.probe.liveness(&c.session).await;
+            out.insert(
+                t.id,
+                Probed {
+                    session: c.session,
+                    epoch: c.epoch,
+                    live,
+                },
+            );
+        }
+        Ok(out)
+    }
+}
+
 /// One claimed wake the actor must deliver off the mailbox.
 pub struct Delivery {
     /// The wake, `claimed_by` set.
@@ -1899,6 +1960,29 @@ impl Ledger {
     /// is kept, marked, `epoch + 1`; the owner is woken with `resume`. Wakes
     /// claimed by a desk that is no longer the agent's are un-claimed.
     pub async fn sweep(&mut self, reachable: Option<&HashSet<String>>) -> R<Vec<TaskId>> {
+        let probed = self.prober().probe(self.now(), reachable).await?;
+        self.sweep_apply(reachable, &probed).await
+    }
+
+    /// The sweep's asking half, cheap to clone off the actor: the pieces
+    /// [`SweepProber::probe`] needs and nothing the apply half mutates.
+    pub fn prober(&self) -> SweepProber {
+        SweepProber {
+            store: self.store.clone(),
+            probe: self.probe.clone(),
+            stale_ms: self.cfg.stale_secs * 1000,
+        }
+    }
+
+    /// The sweep's applying half: [`sweep`](Self::sweep) with the probe
+    /// answers already in hand. A checkout that needs an answer but has none
+    /// in `probed` — or whose session or epoch changed since it was probed —
+    /// is left alone until the next sweep.
+    pub async fn sweep_apply(
+        &mut self,
+        reachable: Option<&HashSet<String>>,
+        probed: &HashMap<TaskId, Probed>,
+    ) -> R<Vec<TaskId>> {
         let now = self.now();
         if let Some(r) = reachable {
             self.unreachable_since.retain(|e, _| !r.contains(e));
@@ -1930,14 +2014,19 @@ impl Ledger {
                 }
                 _ => {
                     let stale_ms = self.cfg.stale_secs * 1000;
-                    // The probe is asked only once the notes alone look stale.
-                    now.saturating_sub(c.progress_at_ms) >= stale_ms && {
-                        let live = self.probe.liveness(&c.session).await;
-                        last_active_ms = live.and_then(|l| l.last_active_ms);
-                        !live.is_some_and(|l| l.active_now)
-                            && now.saturating_sub(c.progress_at_ms.max(last_active_ms.unwrap_or(0)))
-                                >= stale_ms
+                    if now.saturating_sub(c.progress_at_ms) < stale_ms {
+                        continue;
                     }
+                    let Some(p) = probed
+                        .get(&t.id)
+                        .filter(|p| p.session == c.session && p.epoch == c.epoch)
+                    else {
+                        continue;
+                    };
+                    last_active_ms = p.live.and_then(|l| l.last_active_ms);
+                    !p.live.is_some_and(|l| l.active_now)
+                        && now.saturating_sub(c.progress_at_ms.max(last_active_ms.unwrap_or(0)))
+                            >= stale_ms
                 }
             };
             if !lost {

@@ -58,7 +58,8 @@ pub(crate) const KILL_WAIT: Duration = Duration::from_secs(2);
 pub(crate) const GROUP_POLL: Duration = Duration::from_millis(50);
 /// Retained-terminal budget across every session (51 §7.4); each PTY is
 /// charged [`crate::pty::RESERVE`] at `start` until its handle is evicted.
-pub(crate) const PTY_BUDGET: usize = 64 << 20;
+/// 512 MiB ≈ 80 live PTYs engine-wide (the estimate, not measured RSS).
+pub(crate) const PTY_BUDGET: usize = 512 << 20;
 
 /// `j{n}`, `n` per session starting at 1.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]

@@ -720,7 +720,7 @@ Copy/selection copies the redacted representation and exposes incomplete status.
 ### 7.3 Bounded retention and backpressure
 
 Keep the existing bounded reader channel and coalesced hints (at most one per
-500 ms per job). Add one global Jobs-owned byte budget: default 64 MiB for
+500 ms per job). Add one global Jobs-owned byte budget: default 512 MiB for
 retained snapshot/history payloads across all PTYs, including run metadata.
 The existing 32 retained job rows per session is not a daemon memory bound:
 sessions are unbounded and each PTY may approach roughly 2 MiB. The global byte
@@ -1091,7 +1091,7 @@ and live ancestors; genai fork `e65f7e3` carries
 `cost`; ACP cumulative meter with known-zero baseline at connect and imported
 baseline otherwise; outbound ACP cost only when complete single-currency;
 startup unresolve). §7 (vt100 scrollback 512, styled runs, cross-wrap/style
-redaction spans with `redaction_complete`, 64 MiB Jobs budget evicting exited
+redaction spans with `redaction_complete`, 512 MiB Jobs budget evicting exited
 PTYs first then rejecting, 4-permit snapshot semaphore, 256 KiB page cap,
 `JobView.session`, `Started{name,pty}`, `list_terminals`/`pty_screen`; TUI
 observer and desktop `TerminalViewer` with 500 ms polling, one in flight,
