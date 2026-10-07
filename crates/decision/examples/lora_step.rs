@@ -54,7 +54,11 @@ impl LoraBackend {
             .get(name)
             .ok_or_else(|| Error::CannotFindTensor { path: name.into() })?;
         match self.adapters.get(name) {
-            Some((a, b)) => base + (b.matmul(a)? * self.scale)?.to_dtype(dtype)?,
+            // Cast the (tiny) factors first so the weight-sized delta and its gradient are
+            // in the model dtype (f16 on Metal); scale folds into B.
+            Some((a, b)) => {
+                base + (b * self.scale)?.to_dtype(dtype)?.matmul(&a.to_dtype(dtype)?)?
+            }
             None => Ok(base.clone()),
         }
     }
