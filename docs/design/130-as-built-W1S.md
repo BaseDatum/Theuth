@@ -122,6 +122,39 @@ Gates: `cargo fmt -p desktop` · `cargo clippy -p desktop -- -D warnings` clean 
 `TrayIcon.getById('main').setTitle(...)` (`:386-391`) while `alive` (D8: the companion owns banners and the menu
 bar count while it runs). Windows/Linux never receive `alive = true`, so nothing changes there.
 
+## Signing on this Mac vs the release Mac (addendum A2)
+
+This Mac has no code-signing identity (spike SC §Surprises); every local build is ad-hoc. Observed here: an
+**unsigned** stand-in bundle is refused by `openApplication(at:)` with `The application “Theuth Companion” could not be
+launched because a miscellaneous error occurred.`; the same bundle **ad-hoc signed** (`codesign --force --sign - …`)
+launches and runs the whole hand-over (smoke above) — no Gatekeeper dialog, nothing to click through. If a future
+local build is still refused, run the companion in debug mode by its path inside the bundle
+(`"…/Theuth Companion.app/Contents/MacOS/<exe>"`, keeps `NSBundle.main` and the bundle id) and set
+`THEUTH_COMPANION_APP` to the bundle so the shell's locate/alive/quit paths still run against it.
+
+`package-macos.sh` honours `THEUTH_SIGN_IDENTITY` for the companion exactly like the existing lines: identity `-` by
+default; `--timestamp` only for a real identity (`--timestamp=none` for ad-hoc); `--options runtime` on every line,
+ad-hoc included, as the sidecar and helpers already do (the spike ran the ad-hoc companion with hardened runtime
+without issue, and it keeps the ad-hoc artefact structurally identical to the release one).
+
+Release Mac sequence (Developer ID, team `8H548FVL95`):
+
+1. Once: Certificates, Identifiers & Profiles → Identifiers → explicit App ID `io.theuth.mac.companion`; enable **Time
+   Sensitive Notifications** if W2 ships the entitlement (managed capability → "Request" from the Account Holder);
+   Profiles → Developer ID (macOS) profile for that App ID → commit as
+   `crates/desktop/companion/Theuth_Companion.provisionprofile`; `bundle-companion.sh` copies it to
+   `Contents/embedded.provisionprofile`. Check: `security cms -D -i <profile> | plutil -p -` shows
+   `com.apple.developer.usernotifications.time-sensitive = 1` and `ProvisionsAllDevices = 1`. When that entitlement
+   lands, add it to `crates/desktop/companion.entitlements.plist` (W2; it is empty today on purpose).
+2. `THEUTH_SIGN_IDENTITY="Developer ID Application: …" just package-macos` (or the identity in `.env.signing`,
+   `scripts/load-signing-env.sh`). Then `codesign -d --entitlements - --xml "target/release/bundle/macos/theuth.app/Contents/Library/LoginItems/Theuth Companion.app"`
+   and `/usr/libexec/PlistBuddy -c 'Print :CFBundleURLTypes' target/release/bundle/macos/theuth.app/Contents/Info.plist`
+   (expect `theuth`); launch the app once and confirm the companion stays up
+   (`log stream --predicate 'subsystem == "com.apple.securityd" OR process == "amfid"'` names the reason if not).
+3. `just notarize-macos`; in `xcrun notarytool log <id>` the companion appears as its own path with no issues.
+4. `just package-update-macos` → `just release-s3` → tag, unchanged (`justfile:198-203`); `release-s3.sh:188-198` gates
+   `Authority=Developer ID` and `spctl --assess` on the outer app, which now covers the nested companion.
+
 ## Open
 
 - `theuth://` end-to-end and `CFBundleURLTypes` in the generated `Info.plist`: check on the first `just package-macos`
