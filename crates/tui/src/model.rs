@@ -1599,10 +1599,29 @@ impl DoubleCmd {
     /// The usage line.
     pub const USAGE: &'static str = "usage: /double [status|off|pause [off]|train [a|b] [auto|local|node:<name>]|rollback <version>|cap <class> <rung> [opt-in]]";
 
-    /// Parse the text after `/double`; `None` is a usage error.
+    /// Parse the text after `/double`; `None` is a usage error. A class key may
+    /// contain spaces (`approval:shell:mutating:git push:root`), so `cap` reads
+    /// its trailing `<rung> [opt-in]` first and the rest is the key.
     pub fn parse(arg: &str) -> Option<Self> {
         let mut w = arg.split_whitespace();
-        Some(match (w.next().unwrap_or("status"), w.next(), w.next(), w.next()) {
+        let head = w.next().unwrap_or("status");
+        if head == "cap" {
+            let mut rest: Vec<&str> = w.collect();
+            let opt_in = rest.last() == Some(&"opt-in");
+            if opt_in {
+                rest.pop();
+            }
+            let rung: u8 = rest.pop()?.parse().ok().filter(|r| *r <= 3)?;
+            if rest.is_empty() {
+                return None;
+            }
+            return Some(Self::Cap {
+                class: rest.join(" "),
+                rung,
+                opt_in,
+            });
+        }
+        Some(match (head, w.next(), w.next(), w.next()) {
             ("status", None, ..) => Self::Status,
             ("off", None, ..) => Self::Off,
             ("pause", None, ..) => Self::Pause(true),
@@ -1619,15 +1638,6 @@ impl DoubleCmd {
                 },
             },
             ("rollback", Some(v), None, _) => Self::Rollback(v.to_owned()),
-            ("cap", Some(class), Some(rung), opt) => Self::Cap {
-                class: class.to_owned(),
-                rung: rung.parse().ok().filter(|r| *r <= 3)?,
-                opt_in: match opt {
-                    None => false,
-                    Some("opt-in") => true,
-                    Some(_) => return None,
-                },
-            },
             _ => return None,
         })
     }
@@ -17468,7 +17478,7 @@ mod tests {
             })
         );
         assert_eq!(DoubleCmd::parse("rollback v3"), Some(DoubleCmd::Rollback("v3".into())));
-        for bad in ["train c", "train a off", "cap k 4", "cap k", "pause maybe", "rollback", "x"] {
+        for bad in ["train c", "train a off", "cap k 4", "cap k", "cap 2", "pause maybe", "rollback", "x"] {
             assert_eq!(DoubleCmd::parse(bad), None, "{bad}");
         }
     }

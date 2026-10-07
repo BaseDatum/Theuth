@@ -100,12 +100,16 @@ pub async fn register(reg: &ActorRef<ToolRegistry>, seams: Arc<dyn Seams>) {
         .await;
     let s = &seams;
     let _ = reg.ask(RegisterTool(Arc::new(StatusTool(s.clone())))).await;
-    let _ = reg.ask(RegisterTool(Arc::new(ClassesTool(s.clone())))).await;
+    let _ = reg
+        .ask(RegisterTool(Arc::new(ClassesTool(s.clone()))))
+        .await;
     let _ = reg.ask(RegisterTool(Arc::new(ClassTool(s.clone())))).await;
     let _ = reg.ask(RegisterTool(Arc::new(TrainTool(s.clone())))).await;
     let _ = reg.ask(RegisterTool(Arc::new(PauseTool(s.clone())))).await;
     let _ = reg.ask(RegisterTool(Arc::new(ForgetTool(s.clone())))).await;
-    let _ = reg.ask(RegisterTool(Arc::new(RollbackTool(s.clone())))).await;
+    let _ = reg
+        .ask(RegisterTool(Arc::new(RollbackTool(s.clone()))))
+        .await;
     let _ = reg.ask(RegisterTool(Arc::new(CapTool(seams)))).await;
 }
 
@@ -164,7 +168,10 @@ fn class_line(c: &DoubleClass) -> String {
         c.key,
         c.rung,
         c.cap,
-        c.cap_reason.as_deref().map(|r| format!(": {r}")).unwrap_or_default(),
+        c.cap_reason
+            .as_deref()
+            .map(|r| format!(": {r}"))
+            .unwrap_or_default(),
         c.n,
         pct(c.kpis.accuracy),
         c.kpis.ece,
@@ -592,7 +599,12 @@ mod tests {
             assert_eq!(s.schema["type"], "object", "{}", s.name);
             assert!(!s.description.is_empty());
         }
-        let req = |i: usize| specs[i].schema["required"].as_array().cloned().unwrap_or_default();
+        let req = |i: usize| {
+            specs[i].schema["required"]
+                .as_array()
+                .cloned()
+                .unwrap_or_default()
+        };
         assert_eq!(req(2), vec!["key"]);
         assert_eq!(req(3), vec!["tier"]);
         assert_eq!(req(7), vec!["class", "rung"]);
@@ -604,7 +616,10 @@ mod tests {
     async fn calls_route_and_validate() {
         let s = seams();
         let o = StatusTool(s.clone()).call(NoArgs {}, cx()).await.unwrap();
-        assert!(o.content.starts_with("double: enabled, learning paused; version baseline; venue local"));
+        assert!(
+            o.content
+                .starts_with("double: enabled, learning paused; version baseline; venue local")
+        );
         assert_eq!(o.structured.as_ref().unwrap()["paused"], true);
 
         let o = ClassTool(s.clone())
@@ -615,31 +630,69 @@ mod tests {
 
         let t = TrainTool(s.clone());
         let o = t
-            .call(TrainArgs { tier: Tier::A, venue: Some("node:gpu".into()) }, cx())
+            .call(
+                TrainArgs {
+                    tier: Tier::A,
+                    venue: Some("node:gpu".into()),
+                },
+                cx(),
+            )
             .await
             .unwrap();
         assert_eq!(o.content, "double: training run a@node:gpu started");
-        for (tier, venue) in [(Tier::C, None), (Tier::A, Some("off".into())), (Tier::A, Some("mars".into()))] {
-            assert!(t.call(TrainArgs { tier, venue }, cx()).await.unwrap().is_error);
+        for (tier, venue) in [
+            (Tier::C, None),
+            (Tier::A, Some("off".into())),
+            (Tier::A, Some("mars".into())),
+        ] {
+            assert!(
+                t.call(TrainArgs { tier, venue }, cx())
+                    .await
+                    .unwrap()
+                    .is_error
+            );
         }
 
         let f = ForgetTool(s.clone());
-        let both = ForgetArgs { class: Some("k".into()), example_ids: vec!["1".into()] };
+        let both = ForgetArgs {
+            class: Some("k".into()),
+            example_ids: vec!["1".into()],
+        };
         assert!(f.call(both, cx()).await.unwrap().is_error);
-        let none = ForgetArgs { class: None, example_ids: vec![] };
+        let none = ForgetArgs {
+            class: None,
+            example_ids: vec![],
+        };
         assert!(f.call(none, cx()).await.unwrap().is_error);
         let o = f
-            .call(ForgetArgs { class: Some("k".into()), example_ids: vec![] }, cx())
+            .call(
+                ForgetArgs {
+                    class: Some("k".into()),
+                    example_ids: vec![],
+                },
+                cx(),
+            )
             .await
             .unwrap();
         assert_eq!(o.content, "double: forgot 7 example(s)");
         assert_eq!(o.structured.unwrap(), 7);
 
         let c = CapTool(s);
-        let bad = CapArgs { class: "k".into(), rung: 4, mutating_opt_in: false };
+        let bad = CapArgs {
+            class: "k".into(),
+            rung: 4,
+            mutating_opt_in: false,
+        };
         assert!(c.call(bad, cx()).await.unwrap().is_error);
         let o = c
-            .call(CapArgs { class: "k".into(), rung: 2, mutating_opt_in: true }, cx())
+            .call(
+                CapArgs {
+                    class: "k".into(),
+                    rung: 2,
+                    mutating_opt_in: true,
+                },
+                cx(),
+            )
             .await
             .unwrap();
         assert!(o.content.starts_with("k  L0 (cap 2)"), "{}", o.content);

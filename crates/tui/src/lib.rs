@@ -1638,6 +1638,10 @@ fn print_event(out: &mut impl Write, model: &Model, ev: &UiEvent) {
             model::describe(&req.tool, &req.args).join("\n")
         ),
         UiEvent::Resolved(_) => Ok(()),
+        UiEvent::DoublePredicted(p) => {
+            writeln!(out, "{}", model::double_chip(p, model::now_ms()))
+        }
+        UiEvent::DoubleAnswered(a) => writeln!(out, "{}", double::chip::answered(a)),
         UiEvent::Ask(req) => req.questions.iter().try_for_each(|q| {
             let opts = q.options.iter().enumerate().map(|(i, c)| {
                 let rec = if q.recommended == Some(i) {
