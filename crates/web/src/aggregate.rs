@@ -62,7 +62,9 @@ pub struct ReadPage {
     /// Why the page could not be read.
     pub error: Option<String>,
     /// Why the page was not read: `not-relevant`, `budget`, `error: <text>`
-    /// (bad URL); `None` when it was read or the read failed (see `error`).
+    /// (bad URL), or a diagnosed wall (122 D1): `blocked: <detail>` (bot
+    /// challenge, rate limit, error page), `login`, `consent`; `None` when it
+    /// was read or the read failed (see `error`).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub skipped: Option<String>,
     /// Wall time of the read in milliseconds.

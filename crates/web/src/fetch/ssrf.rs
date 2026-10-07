@@ -112,18 +112,29 @@ impl reqwest::dns::Resolve for GuardedResolver {
     }
 }
 
+/// Internal-network suffixes (also blocked as the bare label).
+const INTERNAL_SUFFIXES: &[&str] = &[
+    ".localhost",
+    ".local",
+    ".internal",
+    ".lan",
+    ".home.arpa",
+    ".intranet",
+    ".corp",
+];
+
 /// Whether a hostname is clearly non-global without DNS: `localhost`,
-/// `*.localhost`, `*.local` (mDNS), and common cloud metadata aliases.
+/// `*.localhost`, `*.local` (mDNS), `*.internal`, `*.lan`, `*.home.arpa`,
+/// `*.intranet`, `*.corp` (and each as a bare label), and common cloud
+/// metadata aliases.
 #[must_use]
 pub fn is_blocked_hostname(host: &str) -> bool {
     let h = host.trim().trim_end_matches('.').to_ascii_lowercase();
-    // `.local` is an mDNS label, not a file extension (already lowercased).
-    #[allow(clippy::case_sensitive_file_extension_comparisons)]
-    let mdns = h == "local" || h.ends_with(".local");
     h.is_empty()
         || h == "localhost"
-        || h.ends_with(".localhost")
-        || mdns
+        || INTERNAL_SUFFIXES
+            .iter()
+            .any(|s| h.ends_with(s) || h == &s[1..])
         || matches!(
             h.as_str(),
             "metadata.google.internal"
@@ -137,8 +148,9 @@ pub fn is_blocked_hostname(host: &str) -> bool {
 /// Whether an IP must not be contacted.
 ///
 /// Loopback, RFC 1918, link-local (incl. `169.254.169.254`), CGNAT, multicast,
-/// unspecified, documentation and benchmarking ranges, IPv6 ULA / link-local,
-/// and IPv4-mapped or -compatible IPv6 (classified as the embedded v4).
+/// unspecified, documentation and benchmarking ranges, reserved `240.0.0.0/4`,
+/// IPv6 ULA / link-local, and IPv4-mapped, -compatible or NAT64
+/// (`64:ff9b::/96`) IPv6 (classified as the embedded v4).
 #[must_use]
 pub fn is_blocked_ip(ip: IpAddr) -> bool {
     match ip {
@@ -159,6 +171,7 @@ fn is_blocked_ipv4(ip: Ipv4Addr) -> bool {
         || (o[0] == 100 && (64..128).contains(&o[1])) // CGNAT 100.64.0.0/10
         || matches!((o[0], o[1], o[2]), (192, 0, 2) | (198, 51, 100) | (203, 0, 113)) // TEST-NET
         || (o[0] == 198 && (18..20).contains(&o[1])) // benchmarking 198.18.0.0/15
+        || o[0] >= 240 // reserved 240.0.0.0/4 (incl. broadcast)
 }
 
 fn is_blocked_ipv6(ip: Ipv6Addr) -> bool {
@@ -173,6 +186,12 @@ fn is_blocked_ipv6(ip: Ipv6Addr) -> bool {
         return is_blocked_ipv4(v4);
     }
     let seg = ip.segments();
+    // NAT64 well-known prefix 64:ff9b::/96 carries an IPv4 address in the low 32 bits.
+    if seg[..6] == [0x64, 0xff9b, 0, 0, 0, 0] {
+        return is_blocked_ipv4(Ipv4Addr::from(
+            (u32::from(seg[6]) << 16) | u32::from(seg[7]),
+        ));
+    }
     ip.is_unspecified()
         || ip.is_loopback()
         || ip.is_multicast()

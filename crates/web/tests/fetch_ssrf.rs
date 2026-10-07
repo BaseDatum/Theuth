@@ -60,6 +60,56 @@ async fn allows_public_ip_literal() {
 }
 
 #[tokio::test]
+async fn internal_suffixes_nat64_and_reserved_v4_are_refused() {
+    for h in [
+        "intranet.corp",
+        "corp",
+        "git.internal",
+        "internal",
+        "printer.lan",
+        "lan",
+        "nas.home.arpa",
+        "home.arpa",
+        "wiki.intranet",
+        "intranet",
+        "Build.CORP.",
+    ] {
+        assert!(is_blocked_hostname(h), "{h}");
+    }
+    for h in [
+        "corporate.example.com",
+        "lanstuff.example.com",
+        "internal-tools.example.org",
+        "example.corp.com",
+    ] {
+        assert!(!is_blocked_hostname(h), "{h}");
+    }
+    // NAT64 carries the embedded IPv4: loopback refused, a public address not.
+    assert!(is_blocked_ip("64:ff9b::7f00:1".parse().unwrap()));
+    assert!(is_blocked_ip("64:ff9b::a00:1".parse().unwrap()), "10.0.0.1");
+    assert!(
+        !is_blocked_ip("64:ff9b::808:808".parse().unwrap()),
+        "8.8.8.8"
+    );
+    // 240.0.0.0/4 reserved.
+    assert!(is_blocked_ip("240.0.0.1".parse().unwrap()));
+    assert!(is_blocked_ip("250.1.2.3".parse().unwrap()));
+    assert!(
+        !is_blocked_ip("223.255.255.254".parse().unwrap()),
+        "just below 240/4"
+    );
+    for s in [
+        "http://[64:ff9b::7f00:1]/",
+        "http://240.0.0.1/",
+        "http://git.internal/",
+        "http://nas.home.arpa/",
+    ] {
+        let err = check_url(s).await.expect_err(s);
+        assert!(matches!(err, FetchError::Rejected(_)), "{s}: {err}");
+    }
+}
+
+#[tokio::test]
 async fn fetcher_rejects_loopback_and_metadata_without_allowlist() {
     let fetcher = Fetcher::new("theuth-test", 2_097_152, 5).expect("client");
     for s in [

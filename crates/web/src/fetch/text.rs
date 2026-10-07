@@ -14,7 +14,7 @@ const EXCLUDE: &[&str] = &[
 
 /// HTML → markdown with page chrome removed and images skipped.
 #[must_use]
-pub(super) fn html_to_markdown(html: &str) -> String {
+pub(crate) fn html_to_markdown(html: &str) -> String {
     let options = ConversionOptions {
         extract_metadata: false,
         skip_images: true,
@@ -42,7 +42,7 @@ pub(super) fn html_to_markdown(html: &str) -> String {
 /// ponytail: line-local heuristics, no markdown parser; upgrade to a real
 /// parser if code blocks containing `[`/`*` turn out to matter.
 #[must_use]
-pub(super) fn markdown_to_text(md: &str) -> String {
+pub(crate) fn markdown_to_text(md: &str) -> String {
     let mut out = String::with_capacity(md.len());
     let mut blank = true; // suppress leading and repeated blank lines
     for raw in md.lines() {
@@ -131,7 +131,7 @@ pub(super) fn html_title(html: &str) -> Option<String> {
 
 /// First `# heading` line of `md`, sans marker.
 #[must_use]
-pub(super) fn first_heading(md: &str) -> Option<String> {
+pub(crate) fn first_heading(md: &str) -> Option<String> {
     md.lines()
         .find_map(|l| l.trim_start().strip_prefix("# "))
         .map(collapse_ws)
@@ -170,24 +170,87 @@ pub struct Cut {
     pub omitted_headings: Vec<String>,
 }
 
+/// Most headings of the omitted tail that `cut` lists.
+pub const MAX_OMITTED_HEADINGS: usize = 12;
+
+/// The last share of the window (percent) in which a blank line is preferred as the cut point.
+const BOUNDARY_PERCENT: usize = 15;
+
 /// Window `s` from char `offset` to at most `max_chars` chars. When the window does not reach the
 /// end, the cut prefers the last blank line inside the final 15 % of the window; the marker
 /// `[… N chars omitted; continue with offset=M]` is appended to `text` (it does not count against
 /// `max_chars`), followed by `Omitted sections: a · b · c` when the tail has headings.
 ///
-/// Contract stub (122 §7.1): [`hard_truncate`] semantics from `offset` — the window is exactly
-/// `max_chars` long with `…` as its last char when cut, `next_offset` is the first char not
-/// shown, no marker, no headings. W1 lands the block-boundary cut and the markers.
+/// `offset ≥ len` (and `len > 0`) → `text` is `[offset M is past the end (N chars)]`, not
+/// truncated. Fenced code is not special-cased: a window may end inside a fence; the marker
+/// makes that visible. Windows chain exactly: `s[offset..next_offset]` is the kept text.
 #[must_use]
 pub fn cut(s: &str, offset: usize, max_chars: usize) -> Cut {
-    let rest: String = s.chars().skip(offset).collect();
-    let (text, truncated) = hard_truncate(&rest, max_chars);
+    let total = s.chars().count();
+    if offset >= total {
+        let text = if total == 0 {
+            String::new()
+        } else {
+            format!("[offset {offset} is past the end ({total} chars)]")
+        };
+        return Cut {
+            text,
+            ..Cut::default()
+        };
+    }
+    let rest = &s[char_to_byte(s, offset)..];
+    if total - offset <= max_chars {
+        return Cut {
+            text: rest.to_owned(),
+            ..Cut::default()
+        };
+    }
+    let max_chars = max_chars.max(1);
+    let window = &rest[..char_to_byte(rest, max_chars)];
+    // Prefer the last blank line in the final 15 % of the window; the cut lands after it.
+    let floor = char_to_byte(window, max_chars * (100 - BOUNDARY_PERCENT) / 100);
+    let cut_at = window[floor..]
+        .rfind("\n\n")
+        .map_or(window.len(), |i| floor + i + 2);
+    let kept = &window[..cut_at];
+    let next = offset + kept.chars().count();
+    let omitted = total - next;
+    let omitted_headings: Vec<String> = rest[cut_at..]
+        .lines()
+        .filter_map(heading_text)
+        .take(MAX_OMITTED_HEADINGS)
+        .collect();
+    let mut text = kept.trim_end().to_owned();
+    text.push_str(&format!(
+        "\n\n[… {omitted} chars omitted; continue with offset={next}]"
+    ));
+    if !omitted_headings.is_empty() {
+        text.push_str("\nOmitted sections: ");
+        text.push_str(&omitted_headings.join(" · "));
+    }
     Cut {
         text,
-        truncated,
-        next_offset: truncated.then(|| offset + max_chars.saturating_sub(1)),
-        omitted_headings: Vec::new(),
+        truncated: true,
+        next_offset: Some(next),
+        omitted_headings,
     }
+}
+
+/// Byte index of char `n` in `s` (`s.len()` when `n ≥ chars`).
+fn char_to_byte(s: &str, n: usize) -> usize {
+    s.char_indices().nth(n).map_or(s.len(), |(i, _)| i)
+}
+
+/// `## Heading` → `Heading`; `None` for a non-heading line.
+fn heading_text(line: &str) -> Option<String> {
+    let t = line.trim_start();
+    let hashes = t.chars().take_while(|c| *c == '#').count();
+    if hashes == 0 || hashes > 6 {
+        return None;
+    }
+    let body = t[hashes..].strip_prefix(' ')?;
+    let body = collapse_ws(body.trim_end_matches('#'));
+    (!body.is_empty()).then_some(body)
 }
 
 #[cfg(test)]
@@ -213,28 +276,10 @@ mod tests {
         assert_eq!(hard_truncate("abc", 2), ("a…".into(), true));
         assert_eq!(hard_truncate("abc", 3), ("abc".into(), false));
         assert_eq!(
-            cut("abcdef", 0, 6),
-            Cut {
-                text: "abcdef".into(),
-                ..Cut::default()
-            }
+            heading_text("##  Two words ##").as_deref(),
+            Some("Two words")
         );
-        assert_eq!(
-            cut("abcdef", 0, 3),
-            Cut {
-                text: "ab…".into(),
-                truncated: true,
-                next_offset: Some(2),
-                omitted_headings: vec![]
-            }
-        );
-        assert_eq!(
-            cut("abcdef", 2, 10),
-            Cut {
-                text: "cdef".into(),
-                ..Cut::default()
-            }
-        );
-        assert_eq!(cut("abc", 5, 10), Cut::default());
+        assert_eq!(heading_text("#hashtag"), None);
+        assert_eq!(heading_text("####### seven"), None);
     }
 }
