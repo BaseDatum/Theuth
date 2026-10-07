@@ -12,6 +12,7 @@
 
 pub mod anchor;
 mod catalog;
+mod elk_family;
 pub mod export;
 mod fences;
 mod flatten;
@@ -278,6 +279,9 @@ pub fn to_mermaid(c: &Component) -> Option<String> {
     match c {
         Component::Graph(g) => Some(graph::to_mermaid(g)),
         Component::Sequence(s) => Some(sequence::to_mermaid(s)),
+        // ---- 123 ELK family (W1) ----
+        Component::StateMachine(p) => Some(elk_family::state_machine_mermaid(p)),
+        Component::Entities(p) => Some(elk_family::entities_mermaid(p)),
         _ => None,
     }
 }

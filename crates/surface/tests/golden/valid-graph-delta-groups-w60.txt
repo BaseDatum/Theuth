@@ -1,0 +1,8 @@
+Before: 3 nodes · After: 2 nodes
+− Legacy worker
+~ Postgres (kind, group)
+~ API v2 (label)
+
+Data
+  • Postgres
+◉ API v2 → Postgres (reads)

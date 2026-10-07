@@ -13,7 +13,7 @@ use crate::spec::{
     AlertType, BadgeVariant, CalloutVariant, Component, Direction, Gap, MetricProps, TextVariant,
     TimelineState, Trend,
 };
-use crate::{Spec, graph, mermaid_lines, parse, sequence};
+use crate::{Spec, elk_family, graph, mermaid_lines, parse, sequence};
 
 /// Render a spec to lines at `width` columns (0 = unbounded); `None` if any line would be
 /// wider than `width`, so the caller falls back to the source block.
@@ -905,10 +905,10 @@ fn element(spec: &Spec, id: &str, width: usize, text_only: bool) -> Vec<Line> {
             out
         }
         // ---- 123 ELK family (W1) ----
-        Component::StateMachine(p) => placeholder("StateMachine", p.states.len(), "states"),
-        Component::Entities(p) => placeholder("Entities", p.entities.len(), "entities"),
-        Component::Swimlane(p) => placeholder("Swimlane", p.steps.len(), "steps"),
-        Component::GraphDelta(p) => placeholder("GraphDelta", p.after.nodes.len(), "nodes"),
+        Component::StateMachine(p) => elk_family::state_machine_lines(p, width),
+        Component::Entities(p) => elk_family::entities_lines(p, width),
+        Component::Swimlane(p) => elk_family::swimlane_lines(p, width),
+        Component::GraphDelta(p) => elk_family::graph_delta_lines(p, width),
         // ---- 123 chart family (W2) ----
         Component::BarChart(p) => placeholder("BarChart", p.series.len(), "series"),
         Component::LineChart(p) => placeholder("LineChart", p.series.len(), "series"),

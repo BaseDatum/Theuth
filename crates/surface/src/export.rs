@@ -228,6 +228,17 @@ fn element(spec: &Spec, id: &str, out: &mut String, depth: usize) {
             }
             out.push('\n');
         }
+        // ---- 123 ELK family (W1) ----
+        Component::StateMachine(p) => crate::elk_family::state_machine_md(p, out),
+        Component::Entities(p) => crate::elk_family::entities_md(p, out),
+        Component::Swimlane(p) => crate::elk_family::swimlane_md(p, out),
+        Component::GraphDelta(p) => {
+            crate::elk_family::graph_delta_md(p, out);
+            graph(
+                &crate::elk_family::side_as_graph(&p.after, p.direction),
+                out,
+            );
+        }
         c => {
             let _ = writeln!(out, "*{}*\n", type_name(c));
         }
@@ -532,6 +543,46 @@ mod tests {
     fn unknown_components_lower_to_their_type_name() {
         assert_eq!(lowered(fixture!("valid-gauge")).trim(), "*Gauge*");
         assert!(lowered(fixture!("valid-tabs")).contains("**"));
+    }
+
+    /// 123 §4.5 (W1): the four ELK-family components have GFM arms, never the `*TypeName*` fallthrough.
+    #[test]
+    fn elk_family_lowers_to_gfm() {
+        let sm = lowered(fixture!("valid-state-machine"));
+        assert!(
+            sm.contains("- **Doing** → Blocked: wait [dependency open]"),
+            "{sm}"
+        );
+        let en = lowered(fixture!("valid-entities"));
+        assert!(
+            en.contains("| field | type | key |") && en.contains("| user_id | uuid | fk |"),
+            "{en}"
+        );
+        assert!(
+            en.contains("- users → sessions (one-many: id → user_id)"),
+            "{en}"
+        );
+        let sw = lowered(fixture!("valid-swimlane"));
+        assert!(
+            sw.contains("**CI**\n\n- Build + test (just check)")
+                && sw.contains("- Green? → Fix: no"),
+            "{sw}"
+        );
+        let gd = lowered(fixture!("valid-graph-delta"));
+        assert!(
+            gd.contains(
+                "Before: 3 nodes · After: 4 nodes\n\n- **+** Redis\n\nDiagram: 4 nodes, 3 edges"
+            ),
+            "{gd}"
+        );
+        for md in [sm, en, sw, gd] {
+            assert!(
+                !md.contains("*StateMachine*")
+                    && !md.contains("*Entities*")
+                    && !md.contains("*Swimlane*")
+                    && !md.contains("*GraphDelta*")
+            );
+        }
     }
 
     #[test]
