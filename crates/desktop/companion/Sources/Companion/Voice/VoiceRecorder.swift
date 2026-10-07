@@ -1,13 +1,18 @@
 import AVFoundation
 import CompanionCore
 
-/// Microphone → 16 kHz mono Int16 PCM (what `transcribe` demuxes as `.wav`). The permission prompt happens
-/// only here, on a user's hold; probes never reach `start()` (`AskFlags.automated`).
+/// Microphone → 16 kHz mono Int16 PCM in ~100 ms chunks (`onChunk`, main thread) for `dictation_audio`.
+/// The permission prompt happens only here, on a user's hold; probes never reach `start()` (`AskFlags.automated`).
 @MainActor
 final class VoiceRecorder {
+    static let sampleRate: Double = 16_000
+    /// 100 ms at 16 kHz: what `dictation_audio` wants per call.
+    static let chunk = 1600
+
     private var engine: AVAudioEngine?
-    private var samples: [Int16] = []
+    private var pending: [Int16] = []
     private let lock = NSLock()
+    var onChunk: (([Int16]) -> Void)?
 
     /// `nil` on success, else why it did not start (shown in the Ask bar's status).
     func start() async -> String? {
@@ -24,9 +29,9 @@ final class VoiceRecorder {
         let input = engine.inputNode
         let inFormat = input.outputFormat(forBus: 0)
         guard inFormat.sampleRate > 0, inFormat.channelCount > 0 else { return "no microphone" }
-        guard let outFormat = AVAudioFormat(commonFormat: .pcmFormatInt16, sampleRate: Double(WAV.sampleRate), channels: 1, interleaved: true),
+        guard let outFormat = AVAudioFormat(commonFormat: .pcmFormatInt16, sampleRate: Self.sampleRate, channels: 1, interleaved: true),
               let converter = AVAudioConverter(from: inFormat, to: outFormat) else { return "audio format unsupported" }
-        samples = []
+        pending = []
         input.installTap(onBus: 0, bufferSize: 4096, format: inFormat) { [weak self] buffer, _ in
             guard let self else { return }
             let ratio = outFormat.sampleRate / inFormat.sampleRate
@@ -41,8 +46,17 @@ final class VoiceRecorder {
                 return buffer
             }
             guard err == nil, let p = out.int16ChannelData?[0] else { return }
-            let chunk = Array(UnsafeBufferPointer(start: p, count: Int(out.frameLength)))
-            self.lock.lock(); self.samples.append(contentsOf: chunk); self.lock.unlock()
+            // Audio thread: accumulate, hand out whole chunks on the main thread.
+            self.lock.lock()
+            self.pending.append(contentsOf: UnsafeBufferPointer(start: p, count: Int(out.frameLength)))
+            var chunks: [[Int16]] = []
+            while self.pending.count >= Self.chunk {
+                chunks.append(Array(self.pending.prefix(Self.chunk)))
+                self.pending.removeFirst(Self.chunk)
+            }
+            self.lock.unlock()
+            guard !chunks.isEmpty else { return }
+            Task { @MainActor in for c in chunks { self.onChunk?(c) } }
         }
         do {
             try engine.start()
@@ -54,16 +68,16 @@ final class VoiceRecorder {
         return nil
     }
 
-    /// Stop and return the WAV; empty `Data` when nothing (or under 0.2 s) was captured.
-    func stop() -> Data {
+    /// Stop; the tail under one chunk goes out too.
+    func stop() {
         tearDown()
-        lock.lock(); let s = samples; samples = []; lock.unlock()
-        return s.count < Int(WAV.sampleRate) / 5 ? Data() : WAV.encode(pcm16: s)
+        lock.lock(); let tail = pending; pending = []; lock.unlock()
+        if !tail.isEmpty { onChunk?(tail) }
     }
 
     func cancel() {
         tearDown()
-        lock.lock(); samples = []; lock.unlock()
+        lock.lock(); pending = []; lock.unlock()
     }
 
     private func tearDown() {

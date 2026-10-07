@@ -5,12 +5,11 @@ import SwiftUI
 import TheuthKit
 
 /// The rail (D4): a never-ordered-out `NSPanel` at the edge of the main display, 26 pt wide, mouse-transparent
-/// except while the pointer is over it, a 4 pt sliver after 8 s of quiet.
+/// except while the pointer is over it, a 4 pt sliver after 8 s of quiet — or always (W6, Settings › Rail presence).
 @MainActor
 final class RailController {
-    static let width: CGFloat = 26
-    static let sliver: CGFloat = 4
-    static let quietDelay: TimeInterval = 8
+    static let width = CGFloat(RailCollapse.width)
+    static let sliver = CGFloat(RailCollapse.sliverWidth)
 
     let panel: NSPanel
     private let store: Store
@@ -46,22 +45,39 @@ final class RailController {
         mouseMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.mouseMoved, .leftMouseDragged]) { [weak self] _ in
             Task { @MainActor in self?.mouseMoved() }
         }
+        SettingsModel.shared.$value.map(\.railPresence).removeDuplicates().dropFirst().receive(on: RunLoop.main)
+            .sink { [weak self] _ in MainActor.assumeIsolated { self?.presenceChanged() } }.store(in: &subs)
         layout()
+        scheduleCollapse(afterHover: false) // `alwaysSliver`: a sliver from the first frame
         panel.orderFrontRegardless()
     }
 
+    private var presence: RailPresence { SettingsModel.shared.value.railPresence }
+
     private func railChanged(_ rail: Rail) {
-        if rail.quiet {
-            if quietTimer == nil && !collapsed && Settings.collapseWhenQuiet { // W2: Settings › Rail
-                quietTimer = Timer.scheduledTimer(withTimeInterval: Self.quietDelay, repeats: false) { [weak self] _ in
-                    Task { @MainActor in self?.setCollapsed(true) }
-                }
-            }
-        } else {
-            quietTimer?.invalidate()
-            quietTimer = nil
-            if collapsed { setCollapsed(false) }
+        if !rail.quiet, collapsed, RailCollapse.expandsOnActivity(presence) { setCollapsed(false) }
+        scheduleCollapse(afterHover: false)
+        layout()
+    }
+
+    /// W6: `RailCollapse.collapseDelay` decides; a running quiet timer is left alone (W1: one 8 s window per
+    /// quiet spell, not restarted by every refetch) unless the pointer just left.
+    private func scheduleCollapse(afterHover: Bool) {
+        guard !collapsed else { return }
+        if quietTimer != nil, !afterHover { return }
+        quietTimer?.invalidate(); quietTimer = nil
+        guard let delay = RailCollapse.collapseDelay(presence, quiet: store.rail.quiet, hovering: hovering, afterHover: afterHover) else { return }
+        if delay == 0 { return setCollapsed(true) }
+        quietTimer = Timer.scheduledTimer(withTimeInterval: delay, repeats: false) { [weak self] _ in
+            Task { @MainActor in self?.setCollapsed(true) }
         }
+    }
+
+    /// Settings › Rail changed: apply live.
+    private func presenceChanged() {
+        quietTimer?.invalidate(); quietTimer = nil
+        if collapsed, presence == .expanded || (presence == .sliverWhenQuiet && !store.rail.quiet) { setCollapsed(false) }
+        scheduleCollapse(afterHover: false)
         layout()
     }
 
@@ -78,8 +94,12 @@ final class RailController {
         if inside != hovering {
             hovering = inside
             panel.ignoresMouseEvents = !inside
-            if inside && collapsed { setCollapsed(false) }
-            if !inside && store.rail.quiet && !collapsed { railChanged(store.rail) }
+            if inside {
+                quietTimer?.invalidate(); quietTimer = nil
+                if collapsed { setCollapsed(false) }
+            } else {
+                scheduleCollapse(afterHover: true)
+            }
         }
     }
 

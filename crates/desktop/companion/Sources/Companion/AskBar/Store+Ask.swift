@@ -113,10 +113,12 @@ extension Store {
         }
     }
 
-    /// Every event, raw: `TextDelta`/`TurnFinished` on the desk feed the reply while one is being collected.
+    /// Every event, raw: `TextDelta`/`TurnFinished` on the desk feed the reply while one is being collected;
+    /// `Dictation*` (W6) feed the live dictation.
     func askObserve(_ data: Data) {
         guard let d = try? TheuthJSON.decoder.decode(Delta.self, from: data) else { return }
         if d.type == "PendingPrompts" { return focusDeltas() }
+        if d.type.hasPrefix("Dictation") { return dictationObserve(data) }
         guard let r = ask.router.reply, !r.finished, let session = d.session else { return }
         let event: ReplyEvent
         switch d.type {
@@ -130,6 +132,35 @@ extension Store {
         if let id = ask.current { ask.receipts.update(id: id, text: text) }
         setReceipt(.reply(who: "theuth", text: text.isEmpty ? "…" : text, session: reply.session))
         if reply.finished { expireReceipt(after: 12) }
+    }
+
+    // MARK: live dictation (W6; design 54 §8)
+
+    private struct DictationWire: Decodable {
+        struct Reason: Decodable { let reason: String; let message: String? }
+        let type: String
+        let id: String?
+        let utterance: Int?
+        let text: String?
+        let isFinal: Bool?
+        let levels: [Float]?
+        let reason: Reason?
+        enum CodingKeys: String, CodingKey { case type, id, utterance, text, isFinal = "final", levels, reason }
+    }
+
+    /// Reduce one `Dictation*` event; `onDictation(dictation, takeText)` lets the Ask bar update its field.
+    private func dictationObserve(_ data: Data) {
+        onDictationWire?(String(decoding: data, as: UTF8.self))
+        guard let w = try? TheuthJSON.decoder.decode(DictationWire.self, from: data), let id = w.id else { return }
+        let take: Bool
+        switch w.type {
+        case "DictationStarted": take = ask.dictation.handle(.started(id: id))
+        case "DictationText": take = ask.dictation.handle(.text(id: id, utterance: w.utterance ?? 0, text: w.text ?? "", final: w.isFinal ?? false))
+        case "DictationLevel": take = ask.dictation.handle(.level(id: id, levels: w.levels ?? []))
+        case "DictationFinished": take = ask.dictation.handle(.finished(id: id, error: w.reason?.reason == "error" ? (w.reason?.message ?? "dictation failed") : nil))
+        default: return
+        }
+        onDictation?(ask.dictation, take)
     }
 
     /// The last 24 h of `user@companion` activity (E4) → the Done zone; runs after every refetch.
@@ -178,6 +209,8 @@ enum AskFlags {
         guard let i = a.firstIndex(of: "--ask-probe"), i + 1 < a.count else { return nil }
         return TimeInterval(a[i + 1])
     }()
+    /// W6: with `--ask-probe`, stream a synthetic tone through the live dictation path.
+    static let syntheticDictation = CommandLine.arguments.contains("--synthetic-dictation")
     /// Any automated run: no hotkey, no microphone, no sends.
-    static var automated: Bool { Flags.probe != nil || probe != nil }
+    static var automated: Bool { Flags.anyProbe || probe != nil }
 }

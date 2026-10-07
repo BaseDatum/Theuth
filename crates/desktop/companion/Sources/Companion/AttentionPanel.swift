@@ -137,15 +137,10 @@ final class PanelController {
         previousApp = nil
     }
 
-    /// The grammar; while the send-back note field is up only ⎋ and ⏎ are ours.
+    /// The grammar (W6: the table, panel scope); while the send-back note field or the R field is up only ⎋ is ours.
     private func handle(_ e: NSEvent) -> Bool {
-        let key = KeyPress(chars: e.charactersIgnoringModifiers ?? "", keyCode: e.keyCode,
-                           command: e.modifierFlags.contains(.command))
-        let intent = KeyGrammar.intent(for: key)
-        if store.noteFor != nil {
-            guard intent == .escape else { return false }
-        }
-        if store.ask.replyFor != nil, intent != .escape { return false } // W3: the R field takes the keys
+        let intent = KeyGrammar.intent(for: LegendController.press(e), scope: .panel, table: SettingsModel.shared.keys,
+                                       textFieldFocused: store.noteFor != nil || store.ask.replyFor != nil)
         guard intent != .none else { return false }
         store.perform(intent)
         return true

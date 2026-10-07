@@ -46,15 +46,18 @@ extension Color {
     static let rule = Color(nsColor: Palette.border)
 }
 
-/// stderr plus `/tmp/130-w1-probe.log` (`open` gives the app no stdout).
+/// stderr plus `/tmp/130-w1-probe.log` during `--probe` and `/tmp/130-w6-probe.log` during a W6 probe (`open`
+/// gives the app no stdout).
 enum Log {
     static let file = URL(fileURLWithPath: "/tmp/130-w1-probe.log")
+    static let w6File = URL(fileURLWithPath: "/tmp/130-w6-probe.log")
     private static let f: DateFormatter = { let f = DateFormatter(); f.dateFormat = "HH:mm:ss.SSS"; return f }()
 
     static func write(_ s: String) {
         let line = "[companion \(f.string(from: Date())) pid \(getpid())] \(s)\n"
         FileHandle.standardError.write(Data(line.utf8))
-        guard Flags.probe != nil else { return }
+        let file: URL
+        if Flags.probe != nil { file = Self.file } else if Flags.w6Probe { file = w6File } else { return }
         if let h = try? FileHandle(forWritingTo: file) {
             h.seekToEndOfFile(); h.write(Data(line.utf8)); try? h.close()
         } else {
@@ -65,6 +68,8 @@ enum Log {
 
 /// Command-line switches. `--probe N`: connect, log counts, show the surfaces for N s, quit; never activates,
 /// never answers. `--shareable`: `sharingType = .readOnly` so `screencapture` can see the panels (spike SA).
+/// W6: `--probe-settings <tab>` shows Settings on that tab (not key) for 3 s and quits 0; `--probe-legend` the
+/// keyboard-shortcuts legend likewise. Both log to `/tmp/130-w6-probe.log` (the screenshot is the shell's job).
 enum Flags {
     static let args = CommandLine.arguments
     static let shareable = args.contains("--shareable")
@@ -72,6 +77,12 @@ enum Flags {
         guard let i = args.firstIndex(of: "--probe"), i + 1 < args.count else { return nil }
         return TimeInterval(args[i + 1])
     }()
+    static let probeSettings: String? = {
+        guard let i = args.firstIndex(of: "--probe-settings"), i + 1 < args.count else { return nil }
+        return args[i + 1]
+    }()
+    static let probeLegend = args.contains("--probe-legend")
+    static var w6Probe: Bool { probeSettings != nil || probeLegend }
 }
 
 /// UserDefaults-backed settings for this wave (D12 window is W2).
