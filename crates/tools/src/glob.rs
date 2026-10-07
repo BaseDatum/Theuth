@@ -278,4 +278,23 @@ mod tests {
             .to_string();
         assert!(err.contains("not a directory"), "{err}");
     }
+
+    /// Benchmark harness (D7): `GLOB_BENCH_ROOT=<dir> [GLOB_BENCH_PATTERN=*.zzz_none]
+    /// cargo test -p tools --lib -- glob::tests::bench_walk --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn bench_walk() {
+        let root = PathBuf::from(std::env::var("GLOB_BENCH_ROOT").expect("GLOB_BENCH_ROOT"));
+        let pattern = std::env::var("GLOB_BENCH_PATTERN").unwrap_or_else(|_| "*.zzz_none".into());
+        for i in 1..=3 {
+            let t = std::time::Instant::now();
+            let (files, truncated) = glob(&root, &pattern, GLOB_LIMIT as usize, false).unwrap();
+            println!(
+                "bench_walk run {i}: {} ms, {} files found (truncated={truncated}) pattern={pattern} root={}",
+                t.elapsed().as_millis(),
+                files.len(),
+                root.display()
+            );
+        }
+    }
 }
