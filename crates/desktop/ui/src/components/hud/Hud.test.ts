@@ -27,7 +27,9 @@ vi.mock('@/components/ui/sidebar', async (original) => ({
   useSidebar: () => ({ open: true, isMobile: false, toggleSidebar: () => undefined }),
 }))
 vi.mock('@/hooks/use-mobile', () => ({ useIsMobile: () => false }))
-vi.mock('@/lib/hotkeys', async (original) => ({ ...(await original<typeof Hotkeys>()), isMacDesktop: () => false, touch: () => false }))
+vi.mock('@/lib/hotkeys', async (original) => ({ ...(await original<typeof Hotkeys>()), isMacDesktop: () => false }))
+// The real composer reads `window` (keyboard inset, touch) at render and cannot paint in node; a marker stands in so the dock is asserted.
+vi.mock('@/components/chat/Composer', () => ({ Composer: ({ session }: { session: string | null }) => createElement('textarea', { 'data-composer': session ?? 'new' }) }))
 
 async function render(): Promise<string> {
   const qc = new QueryClient({ defaultOptions: { queries: { staleTime: Infinity, retry: false } } })
@@ -60,7 +62,9 @@ test('R2/R3: `/` is the Overview header, the scene and the docked composer — n
   expect(html).toContain('>Overview<')
   expect(html).toMatch(/<svg[^>]*viewBox="0 0 1920 812"/)
   for (const title of ['Attention', 'In flight', 'Board pulse', 'Activity', 'Spend']) expect(html).not.toContain(`<section aria-label="${title}"`)
-  expect(html).toMatch(/<textarea[^>]*placeholder="Ask anything"/) // the docked new-chat composer (R3 restored it)
+  // The docked new-chat composer (R3 restored it) sits below the scrolling scene, not inside it.
+  expect(html).toContain('data-composer="new"')
+  expect(html.indexOf('viewBox="0 0 1920 812"')).toBeLessThan(html.indexOf('data-composer'))
   // Queries are still loading on the first paint: the chrome shows, the inbox count is a dash, nothing is a false zero.
   expect(html).toContain('— NEED YOU')
 })

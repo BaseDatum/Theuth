@@ -261,6 +261,8 @@ export function shortId(item: AttentionItem): string {
   return s.length > 10 ? s.slice(0, 10) : s
 }
 
+export const truncate = (s: string, n: number): string => (s.length > n ? `${s.slice(0, n - 1)}…` : s)
+
 export type Need = { item: AttentionItem; x: number; y: number; label: string; link: Target }
 
 /** Newest first; dot i steps down-left with a seeded ±6 px jitter. */
