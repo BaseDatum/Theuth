@@ -154,10 +154,13 @@ public sealed class CompanionSettings : IEquatable<CompanionSettings>
         public const string NotifyBlocking = "notifyBlocking", NotifyDeferrable = "notifyDeferrable", NotifyError = "notifyError";
         public const string SoundOnErrors = "soundOnErrors", LaunchAtLogin = "launchAtLogin", KeyOverrides = "keyOverrides";
 
+        /// <summary>Windows only (design 134 D8, R2): Settings › Notifications "Errors break through Do not disturb" → <see cref="NotificationPrefs.TimeSensitiveAvailable"/>.</summary>
+        public const string ErrorsBreakThroughDnd = "errorsBreakThroughDnd";
+
         public static readonly IReadOnlyList<string> All = new[]
         {
             RailSide, RailDisplay, RailCollapse, RailPresence, DoubleTapAlt, UndoDelay,
-            NotifyBlocking, NotifyDeferrable, NotifyError, SoundOnErrors, LaunchAtLogin, KeyOverrides,
+            NotifyBlocking, NotifyDeferrable, NotifyError, SoundOnErrors, LaunchAtLogin, KeyOverrides, ErrorsBreakThroughDnd,
         };
     }
 
@@ -176,6 +179,7 @@ public sealed class CompanionSettings : IEquatable<CompanionSettings>
         n.Deferrable = NotifyModeText.FromRaw(d.String(Key.NotifyDeferrable)) ?? n.Deferrable;
         n.Error = NotifyModeText.FromRaw(d.String(Key.NotifyError)) ?? n.Error;
         if (d.Object(Key.SoundOnErrors) is not null) n.SoundOnErrors = d.Bool(Key.SoundOnErrors);
+        n.TimeSensitiveAvailable = d.Bool(Key.ErrorsBreakThroughDnd); // off by default (R2, Sky)
         s.Notify = n;
         s.LaunchAtLogin = d.Bool(Key.LaunchAtLogin);
         if (d.String(Key.KeyOverrides) is { } j) s.Keys = new KeyTable(j);
@@ -194,6 +198,7 @@ public sealed class CompanionSettings : IEquatable<CompanionSettings>
         d.Set(Key.NotifyDeferrable, Notify.Deferrable.RawValue());
         d.Set(Key.NotifyError, Notify.Error.RawValue());
         d.Set(Key.SoundOnErrors, Notify.SoundOnErrors);
+        d.Set(Key.ErrorsBreakThroughDnd, Notify.TimeSensitiveAvailable);
         d.Set(Key.LaunchAtLogin, LaunchAtLogin);
         d.Set(Key.KeyOverrides, Keys.Json);
         d.Flush();

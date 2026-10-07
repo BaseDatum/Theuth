@@ -93,3 +93,20 @@ public sealed class LoginItemRegistrationTests
         Assert.Equal("{ \"launch_at_login\": false }\n", new CompanionSettings().LoginItemJson); // what the shell reads
     }
 }
+
+public sealed class DndOptInSettingTests
+{
+    [Fact]
+    public void TheBreakThroughSwitchPersistsAndIsOffByDefault()
+    {
+        // Design 134 D8 (R2, Sky): the companion respects Do not disturb unless the user opts in; the opt-in is a settings.json key.
+        var d = new SettingsStore();
+        Assert.False(CompanionSettings.Load(d).Notify.TimeSensitiveAvailable);
+        var s = new CompanionSettings();
+        s.Notify = s.Notify with { TimeSensitiveAvailable = true };
+        s.Save(d);
+        Assert.True(d.Bool("errorsBreakThroughDnd"));
+        Assert.True(CompanionSettings.Load(d).Notify.TimeSensitiveAvailable);
+        Assert.Contains("errorsBreakThroughDnd", CompanionSettings.Key.All);
+    }
+}
