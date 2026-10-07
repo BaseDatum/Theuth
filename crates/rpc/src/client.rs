@@ -287,6 +287,7 @@ async fn publish(rt: &Runtime, v: &serde_json::Value) {
         meeting::BriefEvent,
         app::AppCallChanged,
         codeindex::CodeindexEvent,
+        roster::attention::AttentionChanged,
     );
     tracing::debug!(
         tag = v["type"].as_str().unwrap_or("?"),
