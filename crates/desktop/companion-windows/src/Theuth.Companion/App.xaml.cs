@@ -17,6 +17,7 @@ public partial class App : Application
     private DispatcherQueue? dispatcher;
     private LogWindow? logWindow;
     private EngineProbe? probe;
+    private Notifications.NotificationsInstaller? w3; // W3
 
     /// <summary>The engine state every surface renders (design 134 §5.4); created in <see cref="OnLaunched"/>, UI thread only.</summary>
     public Store? Store { get; private set; }
@@ -47,6 +48,7 @@ public partial class App : Application
         if (!createdNew) Log.Write($"another companion holds {AppInfo.AliveMutexName}");
 
         // W3: AppNotificationManager.Register() (Notifier) runs here — before any window (§4.4, C1).
+        Notifications.NotificationsInstaller.RegisterNotifications(); // W3
         // W2: the log window is the probe's only (the W1 gate reads AutomationId "log"); otherwise the surfaces are the UI.
         if (Flags.Probe is not null)
         {
@@ -59,6 +61,9 @@ public partial class App : Application
         probe.Start();
         // W2: the rail, panel, tray and hotkeys bind to Store here (before Start, to see the first refetch).
         Ui.Surfaces.Start(Store, dispatcher, Quit);
+        // W3: notifier (policy on the Store's items), breakpoint sources, Settings window, Run key, --probe-notify — after the
+        // surfaces (it wires into Ui.Surfaces.Current's hooks), before Start (to see the first refetch).
+        w3 = Notifications.NotificationsInstaller.Install(this, Store, dispatcher); // W3
         Store.Start();
     }
 
@@ -69,6 +74,7 @@ public partial class App : Application
         quitting = true;
         ExitCode = code;
         probe?.Dispose();
+        w3?.Dispose(); // W3: hooks off, AppNotificationManager.Unregister()
         Ui.Surfaces.Current?.Dispose(); // W2: tray icon removed, hotkeys released
         Store?.Close();
         Log.Write($"terminate (exit {code})");

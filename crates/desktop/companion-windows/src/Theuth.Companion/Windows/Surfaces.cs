@@ -146,6 +146,27 @@ internal sealed class Surfaces : IDisposable
         rail.Apply(s.RailPresence, s.RailSide);
     }
 
+    /// <summary>
+    /// W3 (integration): a toast body or its Open button — the panel on <paramref name="itemId"/> (null: the oldest needs-you
+    /// item, e.g. a batch or flood summary), anchored at the mouse; the click on the toast granted us the foreground.
+    /// </summary>
+    public void OpenPanelOn(string? itemId)
+    {
+        if (probe) return;
+        legend.CloseLegend(returnFocus: false);
+        peek.HideCard();
+        if (itemId is not null) store.FocusOn(itemId); else store.FocusOldest();
+        if (panel.IsOpen)
+        {
+            panel.ShowActive();
+            return;
+        }
+        panel.Open(PanelAnchor.Mouse, PreviousFor(PInvoke.GetForegroundWindow()));
+    }
+
+    /// <summary>W3 (integration): double-tap Alt — the same as the Open-the-panel hotkey (130 §4.2, D6).</summary>
+    public void TogglePanel() => OnHotkey(KeyAction.OpenPanel);
+
     private void OnStoreChanged(object? sender, PropertyChangedEventArgs e)
     {
         switch (e.PropertyName)
