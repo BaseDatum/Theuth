@@ -114,6 +114,12 @@ pub struct ListTasks(pub TaskFilter);
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct GetTask(pub TaskId);
 
+/// `ask` → `Result<Vec<ledger::Waiting>, String>`: 132 D5 — decisions and
+/// reviews addressed to the user on tasks in the actor's reporting line
+/// (every task for the user), oldest first.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct WaitingOnUser(pub String);
+
 /// `ask` → `Result<Vec<TaskId>, String>`: tasks whose `blockers` name this one.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct TaskBlocks(pub TaskId);
@@ -594,6 +600,14 @@ impl Message<ListTasks> for Tasks {
 
     async fn handle(&mut self, m: ListTasks, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
         self.ledger.list(&m.0).await
+    }
+}
+
+impl Message<WaitingOnUser> for Tasks {
+    type Reply = Result<Vec<ledger::Waiting>, String>;
+
+    async fn handle(&mut self, m: WaitingOnUser, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        self.ledger.waiting_on_user(&m.0).await
     }
 }
 

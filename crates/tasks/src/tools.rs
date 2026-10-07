@@ -58,10 +58,11 @@ says why (`done_because`: criteria met, intent met, or follow-ups filed). Your o
 task is `task_checkout()`; finishing it is `task_update()` with a disposition; handing it to the agent whose \
 capabilities fit it better is `task_reassign()`.";
 
-/// Register the ten tools on `reg`.
+/// Register the eleven tools on `reg`.
 pub async fn register(reg: &ActorRef<ToolRegistry>) {
     let _ = reg.ask(RegisterTool(Arc::new(TaskCreateTool))).await;
     let _ = reg.ask(RegisterTool(Arc::new(TaskInboxTool))).await;
+    let _ = reg.ask(RegisterTool(Arc::new(TaskWaitingOnUserTool))).await;
     let _ = reg.ask(RegisterTool(Arc::new(TaskCheckoutTool))).await;
     let _ = reg.ask(RegisterTool(Arc::new(TaskUpdateTool))).await;
     let _ = reg.ask(RegisterTool(Arc::new(TaskMoveTool))).await;
@@ -371,6 +372,77 @@ impl Tool for TaskInboxTool {
             ));
         }
         Ok(ToolOutput::ok(text))
+    }
+}
+
+/// Arguments for [`TaskWaitingOnUserTool`].
+#[derive(Debug, Default, Serialize, Deserialize, JsonSchema)]
+pub struct TaskWaitingOnUserArgs {
+    /// Only tasks in this project; default: every project.
+    #[serde(default)]
+    pub project: Option<String>,
+}
+
+/// `task_waiting_on_user` (132 D5): what of the caller's line already waits on the user.
+pub struct TaskWaitingOnUserTool;
+
+/// `3 d` | `5 h` | `12 min` | `40 s` since `then_ms`.
+fn age(now_ms: u64, then_ms: u64) -> String {
+    let s = now_ms.saturating_sub(then_ms) / 1000;
+    match s {
+        0..=59 => format!("{s} s"),
+        60..=3599 => format!("{} min", s / 60),
+        3600..=86_399 => format!("{} h", s / 3600),
+        _ => format!("{} d", s / 86_400),
+    }
+}
+
+#[async_trait::async_trait]
+impl Tool for TaskWaitingOnUserTool {
+    const NAME: &'static str = "task_waiting_on_user";
+    const RISK: Risk = Risk::ReadOnly;
+    type Args = TaskWaitingOnUserArgs;
+
+    fn description(&self) -> String {
+        "The decisions and reviews of your reporting line that already wait on the user, oldest first — one \
+         line each: kind, key, task title, how long it has waited, the question or outcome. Call it before \
+         `escalate`: a task already waiting on the user does not get a second escalation from you (the tool \
+         refuses with `ALREADY_WAITING`). Stuck is the bar for a new one; a follow-up earns its own escalation \
+         only with a new option, a fact that changes the decision, or a deadline — otherwise add what you \
+         learned with `task_note` on the waiting one and go on with work the answer does not gate."
+            .into()
+    }
+
+    async fn call(&self, a: TaskWaitingOnUserArgs, cx: ToolCx) -> anyhow::Result<ToolOutput> {
+        let actor = actor()?;
+        let me = caller(&actor, &cx).await;
+        let rows = match flat(actor.ask(crate::WaitingOnUser(me)).await) {
+            Ok(r) => r,
+            Err(e) => return Ok(ToolOutput::err(e)),
+        };
+        let now = now_ms();
+        let mut lines = Vec::new();
+        for w in rows {
+            if let Some(p) = &a.project
+                && !flat(actor.ask(GetTask(w.task.clone())).await)
+                    .is_ok_and(|t| t.project.as_deref() == Some(p))
+            {
+                continue;
+            }
+            lines.push(format!(
+                "{} {} · {} · waiting {} · {}",
+                w.kind.as_str(),
+                w.key,
+                w.title,
+                age(now, w.since_ms),
+                w.head
+            ));
+        }
+        Ok(ToolOutput::ok(if lines.is_empty() {
+            "nothing of yours is waiting on the user".to_owned()
+        } else {
+            lines.join("\n")
+        }))
     }
 }
 
