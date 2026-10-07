@@ -543,6 +543,7 @@ impl decision::Oracle for Scripted {
                     probs,
                     temperature: 1.0,
                     act_p: 0.5,
+                    embedding: None,
                 })
             })
             .collect()

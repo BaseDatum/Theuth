@@ -382,14 +382,14 @@ function Training({ s, settings }: { s: DoubleStatus | undefined; settings: Doub
         </div>
       </Row>
       <Row label="Roll back" description="Make an earlier version active; every prediction row names its version, so the curve shows the switch as a step.">
-        <Input value={version} onChange={(e) => setVersion(e.target.value)} placeholder="version id" className="h-8 w-40 font-mono text-xs" aria-label="version to roll back to" />
+        <Input value={version} onChange={(e) => setVersion(e.target.value)} placeholder="version id" className="h-8 w-40 font-mono md:text-xs" aria-label="version to roll back to" />
         <Button size="sm" variant="outline" disabled={busy || off || !version.trim()} onClick={() => rollback.mutate(version.trim())}>
           Roll back
         </Button>
       </Row>
       <Row label="Window and venue" description="Local hours Tier B may run (HH:MM-HH:MM) and where: auto · local · node:<name> · off. Applied live.">
-        <Input value={win} onChange={(e) => setDraft({ window: e.target.value, venue })} placeholder="02:00-06:00" className="h-8 w-32 font-mono text-xs" aria-label="training window" disabled={!settings} />
-        <Input value={venue} onChange={(e) => setDraft({ window: win, venue: e.target.value })} placeholder="auto" className="h-8 w-32 font-mono text-xs" aria-label="training venue" disabled={!settings} />
+        <Input value={win} onChange={(e) => setDraft({ window: e.target.value, venue })} placeholder="02:00-06:00" className="h-8 w-32 font-mono md:text-xs" aria-label="training window" disabled={!settings} />
+        <Input value={venue} onChange={(e) => setDraft({ window: win, venue: e.target.value })} placeholder="auto" className="h-8 w-32 font-mono md:text-xs" aria-label="training venue" disabled={!settings} />
         <Button size="sm" variant="outline" disabled={busy || !draft || !settings} onClick={() => patch((c) => ({ ...c, training: { ...c.training, window: win.trim(), venue: venue.trim() } }))}>
           Save
         </Button>

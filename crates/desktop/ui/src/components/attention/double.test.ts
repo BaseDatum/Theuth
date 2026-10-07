@@ -26,8 +26,10 @@ const item = (over: Partial<AttentionItem> = {}): AttentionItem => ({
   approval: null,
   decision: null,
   packet: null,
+  ask: null,
+  turn: null,
   ...over,
-})
+}) as AttentionItem
 
 test('a double item is keyed by its question id (the `double:` prefix stripped), beside any approval / ask / packet ids', () => {
   expect(doubleIds(item())).toEqual([null, undefined, null, null, 'appr-1'])
