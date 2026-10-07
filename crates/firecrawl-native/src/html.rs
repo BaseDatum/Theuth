@@ -394,7 +394,7 @@ pub fn extract_metadata(html: &str) -> crate::Result<HashMap<String, Value>> {
     Ok(out)
 }
 
-const EXCLUDE_NON_MAIN_TAGS: [&str; 42] = [
+pub(crate) const EXCLUDE_NON_MAIN_TAGS: [&str; 42] = [
     "header",
     "footer",
     "nav",
@@ -474,6 +474,14 @@ struct ImageSource {
 }
 
 pub fn transform_html(opts: TransformHtmlOptions) -> crate::Result<String> {
+    transform_html_with_method(opts).map(|(html, _)| html)
+}
+
+/// [`transform_html`] plus how the main region was chosen (design doc 122 D8): `None` unless
+/// `only_main_content`.
+pub fn transform_html_with_method(
+    opts: TransformHtmlOptions,
+) -> crate::Result<(String, Option<crate::extract::Method>)> {
     let mut document = parse_html().one(opts.html.as_ref());
     let url = Url::parse(&extract_base_href_from_document(
         &document,
@@ -565,6 +573,7 @@ pub fn transform_html(opts: TransformHtmlOptions) -> crate::Result<String> {
         }
     }
 
+    let mut method = None;
     if opts.only_main_content {
         for x in EXCLUDE_NON_MAIN_TAGS.iter() {
             let x: Vec<_> = document
@@ -572,16 +581,64 @@ pub fn transform_html(opts: TransformHtmlOptions) -> crate::Result<String> {
                 .map_err(|_| "Failed to select tags")?
                 .collect();
             for tag in x {
-                if !FORCE_INCLUDE_MAIN_TAGS.iter().any(|x| {
-                    tag.as_node()
-                        .select(x)
-                        .is_ok_and(|mut x| x.next().is_some())
-                }) {
-                    tag.as_node().detach();
+                let node = tag.as_node();
+                let forced = FORCE_INCLUDE_MAIN_TAGS
+                    .iter()
+                    .any(|x| node.select(x).is_ok_and(|mut x| x.next().is_some()));
+                // 122 D8 safety valves: text valve, <form> rule, structural ids.
+                if !forced && crate::noise::may_strip(node) {
+                    node.detach();
                 }
             }
         }
+
+        // 122 D8: consent platforms by id/class prefix (a table, not more selectors).
+        let consent: Vec<NodeRef> = document
+            .inclusive_descendants()
+            .filter(crate::noise::has_consent_prefix)
+            .collect();
+        for node in consent {
+            if crate::noise::may_strip(&node) {
+                node.detach();
+            }
+        }
+
+        // 122 D8 <form> rule, made to hold end to end: a noise form goes, a content form
+        // becomes a <div> so the markdown converter's form removal cannot eat the page.
+        let forms: Vec<NodeRef> = document
+            .select("form")
+            .map_err(|_| "Failed to select forms")?
+            .map(|f| f.as_node().clone())
+            .collect();
+        for form in forms {
+            if crate::noise::is_noise(&form) {
+                form.detach();
+            } else {
+                let div = new_element("div")?;
+                while let Some(child) = form.first_child() {
+                    div.append(child);
+                }
+                form.insert_before(div);
+                form.detach();
+            }
+        }
+
+        // 122 D8: main-content selection on the stripped document, against the untouched page.
+        let selection = crate::extract::select_main(
+            &document.to_string(),
+            &opts.html,
+            &crate::extract::SelectOptions {
+                explicit_scope: !opts.include_tags.is_empty(),
+                only_main_content: true,
+            },
+        );
+        method = Some(selection.method);
+        document = parse_html().one(selection.html);
     }
+
+    // 122 D12 rails before the markdown converter.
+    unwrap_layout_tables(&document)?;
+    normalise_code_languages(&document)?;
 
     // Resolve images, including lazy-loaded ones. Many sites ship a tiny
     // placeholder in `src` and keep the real image in `data-srcset` / `data-src`,
@@ -710,7 +767,171 @@ pub fn transform_html(opts: TransformHtmlOptions) -> crate::Result<String> {
         }
     }
 
-    Ok(document.to_string())
+    Ok((document.to_string(), method))
+}
+
+/// A fresh `<tag>` element; kuchikiki exposes no `QualName` constructor without html5ever.
+fn new_element(tag: &str) -> crate::Result<NodeRef> {
+    let doc = parse_html().one(format!("<{tag}></{tag}>"));
+    let node = doc
+        .select_first(tag)
+        .map_err(|_| format!("Failed to create <{tag}>"))?
+        .as_node()
+        .clone();
+    node.detach();
+    Ok(node)
+}
+
+/// Block-level content that makes a table cell a layout cell, not data.
+const LAYOUT_CELL_BLOCKS: &str = "p, div, ul, ol, h1, h2, h3, h4, h5, h6, table, blockquote";
+
+/// 122 D12 layout-table pre-pass: a `<table>` with any own cell holding block content becomes one
+/// `<section>` per cell, in cell order, where the table stood. Data tables are untouched.
+fn unwrap_layout_tables(document: &NodeRef) -> crate::Result<()> {
+    let tables: Vec<NodeRef> = document
+        .select("table")
+        .map_err(|_| "Failed to select tables")?
+        .map(|t| t.as_node().clone())
+        .collect();
+    for table in tables {
+        let cells: Vec<NodeRef> = table
+            .select("td, th")
+            .map_err(|_| "Failed to select cells")?
+            .map(|c| c.as_node().clone())
+            .filter(|c| {
+                c.ancestors()
+                    .find(|a| a.as_element().is_some_and(|e| &*e.name.local == "table"))
+                    .is_some_and(|t| t == table)
+            })
+            .collect();
+        let layout = cells.iter().any(|c| {
+            c.select(LAYOUT_CELL_BLOCKS)
+                .is_ok_and(|mut it| it.next().is_some())
+        });
+        if !layout {
+            continue;
+        }
+        for cell in cells {
+            let section = new_element("section")?;
+            while let Some(child) = cell.first_child() {
+                section.append(child);
+            }
+            table.insert_before(section);
+        }
+        table.detach();
+    }
+    Ok(())
+}
+
+const LANG_PREFIXES: [&str; 4] = ["language-", "lang-", "highlight-", "sp-"];
+const BARE_LANGS: [&str; 44] = [
+    "bash",
+    "c",
+    "cpp",
+    "cs",
+    "csharp",
+    "css",
+    "diff",
+    "dockerfile",
+    "go",
+    "haskell",
+    "html",
+    "ini",
+    "java",
+    "javascript",
+    "js",
+    "json",
+    "kotlin",
+    "lua",
+    "makefile",
+    "markdown",
+    "md",
+    "perl",
+    "php",
+    "plaintext",
+    "powershell",
+    "py",
+    "python",
+    "r",
+    "ruby",
+    "rust",
+    "scala",
+    "sh",
+    "shell",
+    "sql",
+    "swift",
+    "text",
+    "toml",
+    "ts",
+    "typescript",
+    "xml",
+    "yaml",
+    "yml",
+    "zsh",
+    "zig",
+];
+
+fn normalise_lang(name: &str) -> String {
+    let lower = name.to_ascii_lowercase();
+    match lower.as_str() {
+        "py" => "python".to_owned(),
+        "sh" | "zsh" | "shell" => "bash".to_owned(),
+        "yml" => "yaml".to_owned(),
+        "ts" => "typescript".to_owned(),
+        _ => lower,
+    }
+}
+
+/// The code language named by a class list: `language-X`, `lang-X`, `highlight-X`, `sp-X` or a
+/// bare known name, normalised (`py` → `python`, `sh|zsh|shell` → `bash`, `yml` → `yaml`,
+/// `ts` → `typescript`).
+pub fn code_language(classes: &str) -> Option<String> {
+    for tok in classes.split_whitespace() {
+        for p in LANG_PREFIXES {
+            if let Some(rest) = tok.strip_prefix(p) {
+                if !rest.is_empty() {
+                    return Some(normalise_lang(rest));
+                }
+            }
+        }
+        if BARE_LANGS.contains(&tok.to_ascii_lowercase().as_str()) {
+            return Some(normalise_lang(tok));
+        }
+    }
+    None
+}
+
+/// 122 D12: html-to-markdown-rs 3.12 reads only `language-X`/`lang-X` from `<pre>` then its first
+/// `<code>` child, unnormalised; this rewrites every `<pre>` that names a language (by any of the
+/// forms `code_language` knows, on the `<pre>` or its first `<code>`) to `class="language-<norm>"`.
+fn normalise_code_languages(document: &NodeRef) -> crate::Result<()> {
+    let pres: Vec<_> = document
+        .select("pre")
+        .map_err(|_| "Failed to select pre")?
+        .collect();
+    for pre in pres {
+        let lang = pre
+            .attributes
+            .borrow()
+            .get("class")
+            .and_then(code_language)
+            .or_else(|| {
+                pre.as_node()
+                    .children()
+                    .find_map(|c| {
+                        let el = c.as_element()?;
+                        (&*el.name.local == "code")
+                            .then(|| el.attributes.borrow().get("class").and_then(code_language))
+                    })
+                    .flatten()
+            });
+        if let Some(lang) = lang {
+            pre.attributes
+                .borrow_mut()
+                .insert("class", format!("language-{lang}"));
+        }
+    }
+    Ok(())
 }
 
 pub fn get_inner_json(html: &str) -> crate::Result<String> {
@@ -1017,4 +1238,107 @@ fn remove_skip_to_content_links(input: &str) -> String {
     }
 
     out
+}
+
+#[cfg(test)]
+mod tests_122 {
+    //! Design doc 122 D8/D12: the hook and the rails in `transform_html`.
+    use super::*;
+
+    fn transform(html: &str, only_main_content: bool) -> (String, Option<crate::extract::Method>) {
+        transform_html_with_method(TransformHtmlOptions {
+            html: html.to_owned(),
+            url: "https://example.test/".to_owned(),
+            include_tags: Vec::new(),
+            exclude_tags: Vec::new(),
+            only_main_content,
+            omce_signatures: None,
+        })
+        .expect("transform")
+    }
+
+    #[test]
+    fn code_language_table() {
+        assert_eq!(code_language("language-rust").as_deref(), Some("rust"));
+        assert_eq!(code_language("lang-py").as_deref(), Some("python"));
+        assert_eq!(code_language("highlight-Sh").as_deref(), Some("bash"));
+        assert_eq!(code_language("sp-yml").as_deref(), Some("yaml"));
+        assert_eq!(code_language("hljs ts").as_deref(), Some("typescript"));
+        assert_eq!(code_language("highlight zsh").as_deref(), Some("bash"));
+        assert_eq!(code_language("js").as_deref(), Some("js"));
+        assert_eq!(code_language("highlight codeblock"), None);
+        assert_eq!(code_language("language-"), None);
+    }
+
+    #[test]
+    fn pre_classes_are_rewritten_for_the_converter() {
+        let html = r#"<body><pre class="highlight"><code class="sh">ls</code></pre><pre class="lang-rust"><code>fn</code></pre><pre><code class="language-py">x</code></pre><pre><code>plain</code></pre></body>"#;
+        let (out, _) = transform(html, false);
+        assert!(out.contains(r#"<pre class="language-bash"><code class="sh">ls</code></pre>"#));
+        assert!(out.contains(r#"<pre class="language-rust"><code>fn</code></pre>"#));
+        assert!(
+            out.contains(
+                r#"<pre class="language-python"><code class="language-py">x</code></pre>"#
+            )
+        );
+        assert!(out.contains("<pre><code>plain</code></pre>"));
+    }
+
+    #[test]
+    fn layout_tables_become_sections_data_tables_stay() {
+        let html = r#"<body><table><tr><td><p>left</p></td><td><ul><li>a</li></ul></td></tr></table><table><tr><th>k</th><th>v</th></tr><tr><td>1</td><td>2</td></tr></table></body>"#;
+        let (out, _) = transform(html, false);
+        assert!(
+            out.contains("<section><p>left</p></section><section><ul><li>a</li></ul></section>")
+        );
+        assert_eq!(out.matches("<table>").count(), 1);
+        assert!(out.contains("<th>k</th>"));
+    }
+
+    #[test]
+    fn nested_layout_table_keeps_inner_data_table() {
+        let html = r#"<body><table><tr><td><table><tr><td>1</td><td>2</td></tr></table></td><td><p>side</p></td></tr></table></body>"#;
+        let (out, _) = transform(html, false);
+        assert_eq!(out.matches("<table>").count(), 1);
+        assert!(out.contains("<section><table>"));
+        assert!(out.contains("<section><p>side</p></section>"));
+    }
+
+    #[test]
+    fn forms_follow_the_form_rule_only_when_only_main_content() {
+        let long = "word ".repeat(130);
+        let html = format!(
+            r#"<body><form id="aspnetForm"><div class="content"><h1>T</h1><p>{long}</p></div></form><form class="login-form"><input name="u"></form></body>"#
+        );
+        let (out, method) = transform(&html, true);
+        assert!(!out.contains("<form"));
+        assert!(out.contains("<h1>T</h1>"));
+        assert_eq!(method, Some(crate::extract::Method::Scored));
+        let (out, method) = transform(&html, false);
+        assert_eq!(out.matches("<form").count(), 2);
+        assert_eq!(method, None);
+    }
+
+    #[test]
+    fn consent_overlays_stripped_and_valves_hold() {
+        let long = "word ".repeat(1_100);
+        let html = format!(
+            r#"<body><div id="onetrust-consent-sdk"><p>We value your privacy</p></div><div class="cc-window">cookies</div><div class="header"><nav><a href="/">x</a></nav><div class="post"><h1>T</h1><p>{long}</p></div></div></body>"#
+        );
+        let (out, method) = transform(&html, true);
+        assert!(!out.contains("We value your privacy"));
+        assert!(!out.contains("cookies"));
+        assert!(!out.contains("<nav>"));
+        assert!(out.contains("<h1>T</h1>"));
+        assert_eq!(method, Some(crate::extract::Method::Scored));
+    }
+
+    #[test]
+    fn main_wins_and_srcset_largest_is_chosen() {
+        let html = r#"<body><aside>side</aside><main><p>text</p><img srcset="/a-480.jpg 480w, /a-1600.jpg 1600w, /a-960.jpg 960w" alt="a"></main></body>"#;
+        let (out, method) = transform(html, true);
+        assert_eq!(method, Some(crate::extract::Method::Main));
+        assert!(!out.contains("side"));
+        assert!(out.contains(r#"src="https://example.test/a-1600.jpg""#));
+    }
 }
