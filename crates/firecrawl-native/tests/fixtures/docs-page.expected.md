@@ -14,7 +14,7 @@ You need a 64-bit Linux or macOS host with at least 2 GB of memory, a user accou
 
 Download the release archive for your platform, verify its checksum and unpack it onto your `PATH`. The archive contains one static binary and a sample configuration file.
 
-```
+```bash
 curl -LO https://releases.example.test/engine/1.4.2/engine-linux-x86_64.tar.gz
 sha256sum -c engine-linux-x86_64.tar.gz.sha256
 tar xzf engine-linux-x86_64.tar.gz -C /usr/local/bin engine
