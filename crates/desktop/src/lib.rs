@@ -329,12 +329,17 @@ mod desktop {
             })
     }
 
-    /// Asset scope, tray menu + click handler on the tray the config created;
-    /// first-show flag.
+    /// Asset scope (120 §9d: only the roots the UI loads as images — never `token`, the vault or
+    /// the databases), tray menu + click handler on the tray the config created; first-show flag.
     fn setup(app: &AppHandle) -> anyhow::Result<()> {
-        app.asset_protocol_scope()
-            .allow_directory(launch::data_dir(), true)
-            .context("allow THEUTH_DATA_DIR in asset protocol")?;
+        // `allow_directory` registers glob patterns and never stats: a root the engine creates later
+        // (`artifacts/` on the first `show`) is covered, a root that never appears matches nothing.
+        let data_dir = launch::data_dir();
+        for root in ["attachments", "browser", "computer", "artifacts", "spill"] {
+            app.asset_protocol_scope()
+                .allow_directory(data_dir.join(root), true)
+                .with_context(|| format!("allow {root}/ in asset protocol"))?;
+        }
         if let Some(win) = main_window(app) {
             paint_page_background(&win);
         }
