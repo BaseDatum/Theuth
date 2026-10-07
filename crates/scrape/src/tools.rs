@@ -12,7 +12,6 @@ use url::Url;
 use crate::ProgressCx;
 use crate::crawl::{COMPACT, CrawlOpts, Crawled, MapHit, PAGE_CAP, Page, SitemapMode};
 use crate::engine::Scrape;
-use web::fetch::issue::{Next, PageIssue};
 use web::fetch::meta::PageMeta;
 
 /// Plugin prompt block: when to reach for scrape vs `read_url`. Runtime
@@ -316,7 +315,7 @@ fn scrape_response(
 fn scrape_text(r: &ScrapeResponse, via: Option<&str>) -> String {
     let mut text = String::new();
     if let Some(issue) = &r.issue {
-        text.push_str(&issue_line(issue, r.client));
+        text.push_str(&web::render::issue_line(issue, r.client));
         text.push_str("\n\n");
     }
     if let Some(t) = &r.title {
@@ -339,42 +338,6 @@ fn scrape_text(r: &ScrapeResponse, via: Option<&str>) -> String {
         text.push_str(md);
     }
     text
-}
-
-/// `ISSUE: <kind> (<detail>) — next: <rungs>` (122 D1), `· client: wreq_chrome`
-/// appended when the stealth client fetched it (R1-D1).
-fn issue_line(issue: &PageIssue, client: web::fetch::client::ClientKind) -> String {
-    let kind = serde_json::to_value(issue.kind)
-        .ok()
-        .and_then(|v| v.as_str().map(str::to_owned))
-        .unwrap_or_default();
-    let rungs: Vec<String> = issue
-        .next
-        .iter()
-        .map(|n| match n {
-            Next::Retry => issue.retry_after.map_or_else(
-                || "retry".to_owned(),
-                |d| format!("retry in {}s", d.as_secs()),
-            ),
-            Next::Rendered => "rendered: true".to_owned(),
-            Next::ImportCookies => "browser_import_cookies".to_owned(),
-            Next::Handoff => "desktop_handoff".to_owned(),
-        })
-        .collect();
-    let mut line = format!("ISSUE: {kind} ({})", issue.detail);
-    if !rungs.is_empty() {
-        line.push_str(" — next: ");
-        line.push_str(&rungs.join(" | "));
-    }
-    if client != web::fetch::client::ClientKind::Reqwest {
-        let c = serde_json::to_value(client)
-            .ok()
-            .and_then(|v| v.as_str().map(str::to_owned))
-            .unwrap_or_default();
-        line.push_str(" · client: ");
-        line.push_str(&c);
-    }
-    line
 }
 
 /// `published … · by … · lang …` (122 D5); `None` when every field is empty.
@@ -549,7 +512,7 @@ fn crawl_text(r: &CrawlResult, format: PageFormat) -> String {
             text.push('\n');
         }
         if let Some(issue) = &p.issue {
-            text.push_str(&issue_line(issue, p.client));
+            text.push_str(&web::render::issue_line(issue, p.client));
             text.push('\n');
         }
         text.push_str(&p.markdown);
@@ -653,7 +616,7 @@ const _: () = {
 mod tests {
     use super::*;
     use web::fetch::client::ClientKind;
-    use web::fetch::issue::IssueKind;
+    use web::fetch::issue::{IssueKind, Next, PageIssue};
 
     fn page(markdown: &str) -> Page {
         Page {
@@ -774,17 +737,6 @@ mod tests {
 
         let plain = scrape_response(page("Body."), &[PageFormat::Links], 1000, 0, true);
         assert_eq!(scrape_text(&plain, None), "# Title\nhttps://e.com/a\n");
-
-        let retry = PageIssue {
-            kind: IssueKind::RateLimited,
-            detail: "HTTP 429".into(),
-            retry_after: Some(std::time::Duration::from_secs(120)),
-            next: vec![Next::Retry],
-        };
-        assert_eq!(
-            issue_line(&retry, ClientKind::Reqwest),
-            "ISSUE: rate_limited (HTTP 429) — next: retry in 120s"
-        );
     }
 
     #[test]

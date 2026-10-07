@@ -11,7 +11,7 @@ use std::fmt::Write as _;
 use crate::aggregate::SearchResponse;
 use crate::fetch::FetchResponse;
 use crate::fetch::client::ClientKind;
-use crate::fetch::issue::Next;
+use crate::fetch::issue::{Next, PageIssue};
 use crate::provider::{Feature, FeatureKind};
 
 /// Cut `s` to `max` chars, appending `…` when anything was dropped.
@@ -184,29 +184,7 @@ pub fn fetch_text(r: &FetchResponse) -> String {
     let stealth = r.client != ClientKind::Reqwest;
     let mut s = String::new();
     if let Some(i) = &r.issue {
-        let rungs: Vec<String> = i
-            .next
-            .iter()
-            .map(|n| match n {
-                Next::Retry => i.retry_after.map_or_else(
-                    || "retry".to_owned(),
-                    |d| format!("retry in {}s", d.as_secs()),
-                ),
-                Next::Rendered => "rendered: true".to_owned(),
-                Next::ImportCookies => "browser_import_cookies".to_owned(),
-                Next::Handoff => "desktop_handoff".to_owned(),
-            })
-            .collect();
-        let _ = write!(
-            s,
-            "ISSUE: {} ({}) — next: {}",
-            snake(&i.kind),
-            i.detail,
-            rungs.join(" | ")
-        );
-        if stealth {
-            let _ = write!(s, " · client: {}", snake(&r.client));
-        }
+        s.push_str(&issue_line(i, r.client));
         s.push_str("\n\n");
     }
     if let Some(t) = r.title.as_deref().filter(|t| !t.trim().is_empty()) {
@@ -240,6 +218,34 @@ pub fn fetch_text(r: &FetchResponse) -> String {
     s.push_str(r.content.trim_end());
     if r.truncated && r.next_offset.is_none() {
         s.push_str("\n[body cut at max_fetch_bytes]");
+    }
+    s
+}
+
+/// `ISSUE: <kind> (<detail>) — next: <rungs>` (122 D1), `· client: wreq_chrome`
+/// appended when the stealth client fetched it (R1-D1). Shared by `read_url`
+/// and `scrape`'s text.
+#[must_use]
+pub fn issue_line(i: &PageIssue, client: ClientKind) -> String {
+    let rungs: Vec<String> = i
+        .next
+        .iter()
+        .map(|n| match n {
+            Next::Retry => i.retry_after.map_or_else(
+                || "retry".to_owned(),
+                |d| format!("retry in {}s", d.as_secs()),
+            ),
+            Next::Rendered => "rendered: true".to_owned(),
+            Next::ImportCookies => "browser_import_cookies".to_owned(),
+            Next::Handoff => "desktop_handoff".to_owned(),
+        })
+        .collect();
+    let mut s = format!("ISSUE: {} ({})", snake(&i.kind), i.detail);
+    if !rungs.is_empty() {
+        let _ = write!(s, " — next: {}", rungs.join(" | "));
+    }
+    if client != ClientKind::Reqwest {
+        let _ = write!(s, " · client: {}", snake(&client));
     }
     s
 }

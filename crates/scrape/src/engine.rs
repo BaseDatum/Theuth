@@ -9,7 +9,7 @@ use reqwest::header::HeaderMap;
 use runtime::{Runtime, SessionId};
 use serde_json::{Value, json};
 use url::Url;
-use web::excerpt::prose_chars;
+use web::excerpt::{is_noise, prose_chars};
 use web::fetch::client::ClientKind;
 use web::fetch::issue::{IssueKind, Next, PageIssue};
 use web::fetch::meta::PageMeta;
@@ -195,14 +195,23 @@ impl Scrape {
         }
     }
 
-    /// `tier: "api"`: the JSON endpoint through the same fetcher, rendered by
-    /// `web::sources::render`.
+    /// `tier: "api"`: the JSON endpoint (plus `sources::follow_up`'s, Stack
+    /// Overflow answers) through the same fetcher, rendered by `web::sources::render`.
     async fn fetch_api(&self, page_url: &Url, api: &ApiSource) -> anyhow::Result<Fetched> {
-        let resp = self
+        let mut resp = self
             .fetcher
             .fetch_html(api.fetch_url.as_str(), PAGE_CHARS)
             .await
             .map_err(|e| anyhow::anyhow!("{e}"))?;
+        if let Some(more) = web::sources::follow_up(api) {
+            match self.fetcher.fetch_html(more.as_str(), PAGE_CHARS).await {
+                Ok(extra) => {
+                    resp.content.push('\n');
+                    resp.content.push_str(&extra.content);
+                }
+                Err(e) => resp.notes.push(format!("{more}: {e}")),
+            }
+        }
         let markdown = web::sources::render(api.kind, &resp.content)
             .ok_or_else(|| anyhow::anyhow!("body did not parse"))?;
         let title = first_heading(&markdown);
@@ -222,7 +231,7 @@ impl Scrape {
             client: resp.client,
             source_kind: Some(api.kind),
             via: Some(api.fetch_url.to_string()),
-            notes: Vec::new(),
+            notes: resp.notes,
         })
     }
 
@@ -333,7 +342,7 @@ impl Scrape {
                 client: resp.client,
                 source_kind: None,
                 via: None,
-                notes: Vec::new(),
+                notes: resp.notes,
             });
         }
         let markdown = to_markdown(&html, url.as_str(), only_main_content);
@@ -360,7 +369,7 @@ impl Scrape {
             client: resp.client,
             source_kind: None,
             via: None,
-            notes: Vec::new(),
+            notes: resp.notes,
         })
     }
 
@@ -626,67 +635,27 @@ fn first_heading(md: &str) -> Option<String> {
     })
 }
 
-/// Drop leading and trailing link-only blocks (nav, footer, "related" rows)
-/// from rendered markdown — `excerpt`'s link-noise rule, the honest minimum
-/// for `only_main_content` on a tier without a DOM (122 D8).
+/// Drop leading and trailing noise blocks (nav, footer, "related" rows,
+/// image rows) from rendered markdown — `excerpt`'s link-noise rule, the
+/// honest minimum for `only_main_content` on a tier without a DOM (122 D8).
 fn trim_link_blocks(md: &str) -> String {
     let blocks: Vec<&str> = md.split("\n\n").collect();
     let start = blocks
         .iter()
-        .position(|b| !is_link_block(b))
+        .position(|b| !is_noise(b))
         .unwrap_or(blocks.len());
     let end = blocks
         .iter()
-        .rposition(|b| !is_link_block(b))
+        .rposition(|b| !is_noise(b))
         .map_or(start, |i| i + 1);
     blocks[start..end.max(start)].join("\n\n")
 }
 
-/// Blank, a link list without a sentence, or mostly link targets.
-fn is_link_block(block: &str) -> bool {
-    let mut lines = block
-        .lines()
-        .map(str::trim)
-        .filter(|l| !l.is_empty())
-        .peekable();
-    if lines.peek().is_none() {
-        return true;
-    }
-    let list = lines.all(|l| l.starts_with("- [") || l.starts_with("* [") || l.starts_with('['));
-    (list && !has_sentence_end(block)) || link_density(block) > 0.5
-}
-
-/// Share of `block`'s chars inside `](…)` link targets.
-fn link_density(block: &str) -> f64 {
-    let mut inside = 0usize;
-    let mut rest = block;
-    while let Some(i) = rest.find("](") {
-        rest = &rest[i + 2..];
-        let Some(close) = rest.find(')') else { break };
-        inside += rest[..close].chars().count();
-        rest = &rest[close..];
-    }
-    #[allow(clippy::cast_precision_loss)] // char counts, far below 2^52
-    let density = inside as f64 / block.chars().count().max(1) as f64;
-    density
-}
-
-/// `.`, `!` or `?` followed by whitespace or the end of the text.
-fn has_sentence_end(s: &str) -> bool {
-    let mut it = s.chars().peekable();
-    while let Some(c) = it.next() {
-        if matches!(c, '.' | '!' | '?') && it.peek().is_none_or(|n| n.is_whitespace()) {
-            return true;
-        }
-    }
-    false
-}
-
-/// `transform_html` (head/script/style off, hrefs absolutized, chrome off
-/// when `only_main_content`) → `select_main` (122 D8; identity until W2's
-/// scorer lands) → markdown → base64 images stripped →
-/// `post_process_markdown`. An empty main-content result falls back to the
-/// whole page, as upstream does (D8 invariant 2 replaces this once real).
+/// `transform_html` (head/script/style off, hrefs absolutized; under
+/// `only_main_content` the chrome strip and D8's `select_main`, whose two
+/// invariants make an empty real `<main>` stay empty and a thin scored
+/// result retry with `<body>`) → markdown → base64 images stripped →
+/// `post_process_markdown`.
 fn to_markdown(html: &str, url: &str, only_main_content: bool) -> String {
     let opts = firecrawl_native::TransformHtmlOptions {
         html: html.to_owned(),
@@ -697,22 +666,10 @@ fn to_markdown(html: &str, url: &str, only_main_content: bool) -> String {
         omce_signatures: None,
     };
     let transformed = firecrawl_native::transform_html(opts).unwrap_or_else(|_| html.to_owned());
-    let selected = firecrawl_native::select_main(
+    firecrawl_native::post_process_markdown(strip_base64_images(html_to_markdown(
         &transformed,
-        html,
-        &firecrawl_native::SelectOptions {
-            explicit_scope: false,
-            only_main_content,
-        },
-    );
-    let md = firecrawl_native::post_process_markdown(strip_base64_images(html_to_markdown(
-        &selected.html,
         only_main_content,
-    )));
-    if only_main_content && md.trim().is_empty() && !html.trim().is_empty() {
-        return to_markdown(html, url, false);
-    }
-    md
+    )))
 }
 
 /// `strip_chrome` also lets the converter drop elements it recognises as

@@ -188,7 +188,8 @@ const RETRY_DELAYS: [Duration; 2] = [Duration::ZERO, Duration::from_secs(1)];
 const RETRY_STATUSES: [u16; 9] = [429, 502, 503, 504, 520, 521, 522, 523, 524];
 /// `Accept` on every `Reqwest` page fetch (D4).
 pub const ACCEPT: &str = "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8";
-/// `notes` entry when the stealth client is configured but not built (122 R1-D1).
+/// `notes` entry when the stealth client is configured but could not be built
+/// (122 R1-D1); an installation that disables `wreq` still reads pages.
 pub const STEALTH_NOT_BUILT: &str = "stealth client not built; fetched with reqwest";
 
 /// How a page window is produced (122 D6/D7): `cut` to `max_chars` from
@@ -285,8 +286,8 @@ enum Attempt {
 pub struct Fetcher {
     /// The honest client (122 §5): the only one `Impersonate::Never` uses.
     reqwest: Arc<dyn HttpClient>,
-    /// The Chrome-emulating client; `None` until W5 builds it (then the
-    /// `Reqwest` fallback carries [`STEALTH_NOT_BUILT`]).
+    /// The Chrome-emulating client; `None` when `impersonate` is `never` or
+    /// the build failed (then the `Reqwest` fallback carries [`STEALTH_NOT_BUILT`]).
     stealth: Option<Arc<dyn HttpClient>>,
     impersonate: Impersonate,
     /// Under `OnChallenge`: escalate to `stealth` on a diagnosed 403/503 challenge.
@@ -359,8 +360,8 @@ impl Fetcher {
     /// Apply the page policy (122 R1-D1, D4): which client goes first, whether
     /// `on_challenge` escalates, and the `Accept-Language` sent. Builds the
     /// `WreqChrome` client when `impersonate` can use it; a build failure
-    /// (W5 not landed: [`ClientError::NotBuilt`]) leaves the `Reqwest`
-    /// fallback with a note on every response that wanted stealth.
+    /// ([`ClientError::Build`]) leaves the `Reqwest` fallback with a note on
+    /// every response that wanted stealth.
     #[must_use]
     pub fn with_policy(
         mut self,

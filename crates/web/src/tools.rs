@@ -270,7 +270,7 @@ async fn read_page(
         )
         .await
         {
-            Ok(Ok(r)) => Ok((r.title, r.markdown, r.tier, None)),
+            Ok(Ok(r)) => Ok((r.title, r.markdown, r.tier, r.issue)),
             Err(_) => Err(format!(
                 "render cap of {:.1}s exceeded (JavaScript page); read_url with rendered: true waits for it",
                 render_cap.as_secs_f32()
@@ -655,7 +655,9 @@ impl FetchTool {
         Ok(r)
     }
 
-    /// Fetch `src.fetch_url` (same guard, caps and retries), render it, then
+    /// Fetch `src.fetch_url` (same guard, caps and retries) plus the
+    /// `sources::follow_up` endpoint when there is one (Stack Overflow answers;
+    /// a failed second fetch leaves the question alone, noted), render it, then
     /// compact and cut like a page.
     async fn read_api(
         &self,
@@ -664,11 +666,20 @@ impl FetchTool {
         opts: &PageOptions,
     ) -> Result<FetchResponse, String> {
         let start = Instant::now();
-        let body = self
+        let mut body = self
             .fetcher
             .fetch_html(src.fetch_url.as_str(), usize::MAX)
             .await
             .map_err(|e| e.to_string())?;
+        if let Some(more) = crate::sources::follow_up(src) {
+            match self.fetcher.fetch_html(more.as_str(), usize::MAX).await {
+                Ok(extra) => {
+                    body.content.push('\n');
+                    body.content.push_str(&extra.content);
+                }
+                Err(e) => body.notes.push(format!("{more}: {e}")),
+            }
+        }
         let md = crate::sources::render(src.kind, &body.content)
             .ok_or_else(|| "body did not parse".to_owned())?;
         let fin = finish(&md, format, opts);

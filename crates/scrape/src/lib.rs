@@ -82,14 +82,21 @@ impl runtime::Plugin for ScrapePlugin {
             tracing::info!("scrape disabled by config");
             return Ok(());
         }
-        let web_defaults = web::WebConfig::default();
+        // Page policy (122 R1-D1/D4) is the `web` section's: same client
+        // choice, escalation and `Accept-Language` as `read_url`.
+        let web_cfg: web::WebConfig = rt.section("web").unwrap_or_default();
         let fetcher = Fetcher::new_with_timeouts(
-            web::engines::USER_AGENT,
-            web_defaults.max_fetch_bytes.max(8 * 1024 * 1024),
-            web_defaults.max_redirects,
+            &web_cfg.user_agent,
+            web_cfg.max_fetch_bytes.max(8 * 1024 * 1024),
+            web_cfg.max_redirects,
             Duration::from_millis(cfg.page_timeout_ms.max(1)),
             web::fetch::CONNECT_TIMEOUT,
-        )?;
+        )?
+        .with_policy(
+            web_cfg.impersonate,
+            web_cfg.header_ladder,
+            Some(&web_cfg.accept_language),
+        );
         let scrape = Arc::new(Scrape::new(fetcher, cfg).with_runtime(rt.clone()));
         let rt = rt.clone();
         tokio::spawn(async move {

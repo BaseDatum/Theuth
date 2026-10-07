@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 
 use web::fetch::client::{ClientKind, Impersonate};
 use web::fetch::issue::IssueKind;
-use web::fetch::{ACCEPT, FetchError, FetchFormat, Fetcher, PageOptions, STEALTH_NOT_BUILT};
+use web::fetch::{ACCEPT, FetchError, FetchFormat, Fetcher, PageOptions};
 use wiremock::matchers::{header, method, path};
 use wiremock::{Mock, MockServer, Request, Respond, ResponseTemplate};
 
@@ -313,7 +313,7 @@ async fn default_headers_on_the_reqwest_path() {
 }
 
 #[tokio::test]
-async fn impersonate_always_falls_back_to_reqwest_with_a_note_until_w5_lands() {
+async fn impersonate_always_uses_the_wreq_chrome_client_without_a_note() {
     let server = MockServer::start().await;
     let calls = sequence(&server, "/p", html_200(), html_200()).await;
     let r = Fetcher::new("theuth-test", 2_097_152, 5)
@@ -325,10 +325,8 @@ async fn impersonate_always_falls_back_to_reqwest_with_a_note_until_w5_lands() {
         .expect("ok");
     assert_eq!(calls.load(Ordering::SeqCst), 1);
     assert_eq!(r.attempts, 1);
-    // Against C's stub: reqwest answered and said so. With W5 merged this
-    // becomes `WreqChrome` and the note vanishes (closer checks).
-    assert_eq!(r.client, ClientKind::Reqwest);
-    assert_eq!(r.notes, vec![STEALTH_NOT_BUILT.to_owned()]);
+    assert_eq!(r.client, ClientKind::WreqChrome);
+    assert!(r.notes.is_empty(), "{:?}", r.notes);
 }
 
 #[tokio::test]
@@ -347,7 +345,8 @@ async fn on_challenge_escalates_once_on_a_diagnosed_403() {
     assert!(r.ladder);
     assert!(r.issue.is_none());
     assert!(r.content.contains("Hello fetch world"));
-    assert!(r.notes.contains(&STEALTH_NOT_BUILT.to_owned()));
+    assert_eq!(r.client, ClientKind::WreqChrome);
+    assert!(r.notes.is_empty(), "{:?}", r.notes);
 
     // Still a wall on the second rung: the first diagnosis is returned, attempts counted.
     let calls = sequence(&server, "/wall", wall_403(), wall_403()).await;

@@ -274,6 +274,7 @@ impl Provider for Firecrawl {
             title: non_empty(data.metadata.title),
             markdown: data.markdown.unwrap_or_default(),
             tier: "render".into(),
+            issue: None,
         })
     }
 }
