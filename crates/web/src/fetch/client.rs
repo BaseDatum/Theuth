@@ -1,8 +1,9 @@
 //! The HTTP client seam under [`Fetcher`](super::Fetcher) (design doc 122
 //! revision 1): one trait, two kinds. [`ClientKind::Reqwest`] is today's
 //! client — redirects off, the SSRF-guarded resolver, the same timeouts, a
-//! streamed body. [`ClientKind::WreqChrome`] (a Chrome TLS/HTTP fingerprint
-//! through `wreq`) is W5's; `build` says [`ClientError::NotBuilt`] until then.
+//! streamed body. [`ClientKind::WreqChrome`] is the same contract over
+//! `wreq` with wreq-util's Chrome 148 / macOS emulation profile (TLS + HTTP/2
+//! fingerprint, the profile's own UA and `sec-ch-ua*` headers).
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -139,12 +140,11 @@ pub trait HttpClient: Send + Sync {
 /// Build a client of `kind`.
 ///
 /// # Errors
-/// [`ClientError::Build`] when `reqwest` refuses the configuration;
-/// [`ClientError::NotBuilt`] for [`ClientKind::WreqChrome`] until W5 lands it.
+/// [`ClientError::Build`] when `reqwest` / `wreq` refuses the configuration.
 pub fn build(kind: ClientKind, cfg: &ClientConfig) -> Result<Arc<dyn HttpClient>, ClientError> {
     match kind {
         ClientKind::Reqwest => Ok(Arc::new(ReqwestClient::new(cfg)?)),
-        ClientKind::WreqChrome => Err(ClientError::NotBuilt),
+        ClientKind::WreqChrome => Ok(Arc::new(WreqChromeClient::new(cfg)?)),
     }
 }
 
@@ -209,12 +209,113 @@ impl HttpClient for ReqwestClient {
     }
 }
 
+/// [`ClientKind::WreqChrome`]: `wreq` with wreq-util's newest desktop Chrome
+/// profile (`Chrome148`, `Platform::MacOS`), redirects off, the same
+/// [`GuardedResolver`] behind `wreq`'s resolver hook, `connect_timeout` /
+/// whole-request `read_timeout`, no cookie store, the profile's UA and
+/// `Accept-Language` from `cfg` when set.
+pub struct WreqChromeClient {
+    client: wreq::Client,
+}
+
+impl WreqChromeClient {
+    /// Build from `cfg`.
+    ///
+    /// # Errors
+    /// [`ClientError::Build`] when `wreq` refuses the configuration.
+    pub fn new(cfg: &ClientConfig) -> Result<Self, ClientError> {
+        let emulation = wreq_util::Emulation::builder()
+            .profile(wreq_util::Profile::Chrome148)
+            .platform(wreq_util::Platform::MacOS)
+            .build();
+        let mut builder = wreq::Client::builder()
+            .emulation(emulation)
+            .timeout(cfg.read_timeout)
+            .connect_timeout(cfg.connect_timeout)
+            .redirect(wreq::redirect::Policy::none())
+            .dns_resolver(GuardedWreqResolver);
+        if !cfg.accept_language.is_empty() {
+            let value = HeaderValue::from_str(&cfg.accept_language)
+                .map_err(|e| ClientError::Build(format!("accept_language: {e}")))?;
+            let mut headers = HeaderMap::new();
+            headers.insert(reqwest::header::ACCEPT_LANGUAGE, value);
+            // Applied after `emulation`, so it replaces the profile's `en-US,en;q=0.9`.
+            builder = builder.default_headers(headers);
+        }
+        Ok(Self {
+            client: builder
+                .build()
+                .map_err(|e| ClientError::Build(e.to_string()))?,
+        })
+    }
+}
+
+/// `wreq` resolver hook over the crate's [`GuardedResolver`] (route A of
+/// R1-D1): every hostname resolves through the same guard as the `reqwest`
+/// kind; a refusal surfaces as [`FetchError::Rejected`] in the error chain.
+struct GuardedWreqResolver;
+
+impl wreq::dns::Resolve for GuardedWreqResolver {
+    fn resolve(&self, name: wreq::dns::Name) -> wreq::dns::Resolving {
+        let parsed = name.as_str().parse::<reqwest::dns::Name>();
+        Box::pin(async move {
+            let name = parsed.map_err(|e| {
+                Box::new(FetchError::Rejected(format!("invalid hostname: {e}")))
+                    as Box<dyn std::error::Error + Send + Sync>
+            })?;
+            reqwest::dns::Resolve::resolve(&GuardedResolver, name).await
+        })
+    }
+}
+
+impl ClientError {
+    /// Map a `wreq` error, surfacing a guard refusal from the resolver.
+    fn from_wreq(e: &wreq::Error) -> Self {
+        let mut source = std::error::Error::source(e);
+        while let Some(s) = source {
+            if let Some(FetchError::Rejected(m)) = s.downcast_ref::<FetchError>() {
+                return Self::rejected(m);
+            }
+            source = s.source();
+        }
+        Self::Transport(format!("HTTP request failed: {e}"))
+    }
+}
+
+#[async_trait::async_trait]
+impl HttpClient for WreqChromeClient {
+    fn kind(&self) -> ClientKind {
+        ClientKind::WreqChrome
+    }
+
+    async fn get(
+        &self,
+        url: &Url,
+        headers: &[(HeaderName, HeaderValue)],
+    ) -> Result<ClientResponse, ClientError> {
+        let mut req = self.client.get(url.as_str());
+        for (name, value) in headers {
+            req = req.header(name.clone(), value.clone());
+        }
+        let response = req.send().await.map_err(|e| ClientError::from_wreq(&e))?;
+        Ok(ClientResponse {
+            status: response.status().as_u16(),
+            headers: response.headers().clone(),
+            final_url: url.clone(),
+            body: response
+                .bytes_stream()
+                .map_err(|e| ClientError::from_wreq(&e))
+                .boxed(),
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn rejected_round_trips_and_wreq_is_not_built() {
+    fn rejected_round_trips_and_both_kinds_build() {
         let e = ClientError::rejected("private address 10.0.0.1");
         assert_eq!(e.as_rejected(), Some("private address 10.0.0.1"));
         assert_eq!(e.to_string(), "rejected: private address 10.0.0.1");
@@ -226,10 +327,10 @@ mod tests {
             read_timeout: Duration::from_secs(1),
             max_body: 1,
         };
-        assert!(matches!(
-            build(ClientKind::WreqChrome, &cfg),
-            Err(ClientError::NotBuilt)
-        ));
+        assert_eq!(
+            build(ClientKind::WreqChrome, &cfg).unwrap().kind(),
+            ClientKind::WreqChrome
+        );
         assert_eq!(
             build(ClientKind::Reqwest, &cfg).unwrap().kind(),
             ClientKind::Reqwest
