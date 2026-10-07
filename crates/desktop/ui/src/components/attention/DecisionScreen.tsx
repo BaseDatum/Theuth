@@ -4,7 +4,6 @@ import { DoubleChip, preselect } from '@/components/chat/DoubleChip'
 import { useAttentionActions } from '@/components/hud/queries'
 import { useTask } from '@/components/tasks/queries'
 import { age } from '@/components/tasks/helpers'
-import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Skeleton } from '@/components/ui/skeleton'
@@ -16,7 +15,7 @@ import { Pointers } from './Pointers'
 import { Bundle, type Pick, allAnswered, allRecommended, bundleAnswer } from './Bundle'
 import { usePrediction } from '@/store/double'
 import { usePacket } from './queries'
-import { Body, Chip, Footer, SectionTitle, useResolved } from './shared'
+import { Body, Chip, Footer, IfWrong, OptionCards, PrioritySelect, SectionTitle, useResolved } from './shared'
 
 /**
  * 101 D8: who asks · the task · age → the question → the forwarding manager's recommendation (103 F2) → the agent's
@@ -120,34 +119,17 @@ export function DecisionScreen({ item }: { item: AttentionItem }) {
           </>
         )}
         {options.length > 0 && <SectionTitle>{items.length > 0 ? 'Overall' : 'Options'}</SectionTitle>}
-        {options.map((c, i) => {
-          const on = !typed && choice === i
-          return (
-            <button
-              key={c.label}
-              type="button"
-              aria-pressed={on}
-              onClick={() => {
-                setPicked(i)
-                setOwn('')
-              }}
-              className={cn('flex w-full items-start gap-2 rounded-md border px-3 py-2 text-left text-sm transition-colors', on ? 'border-fg-accent bg-accent' : 'border-border-subtle hover:bg-accent/60')}
-            >
-              <span className="mt-0.5 text-xs text-fg-tertiary">{on ? '●' : '○'}</span>
-              <span className="flex min-w-0 flex-1 flex-col">
-                <span className="flex items-center gap-2">
-                  {c.label}
-                  {p?.recommended === i && (
-                    <Badge variant="secondary" className="px-1.5 py-0 text-[10px]">
-                      recommended
-                    </Badge>
-                  )}
-                </span>
-                {c.description && <span className="text-xs text-fg-secondary">{c.description}</span>}
-              </span>
-            </button>
-          )
-        })}
+        {/* 132 D2: the cost of a wrong answer, directly above the option cards. */}
+        <IfWrong text={p?.if_wrong} />
+        <OptionCards
+          options={options}
+          picked={typed ? null : choice}
+          recommended={p?.recommended}
+          onPick={(i) => {
+            setPicked(i)
+            setOwn('')
+          }}
+        />
         <Input
           value={own}
           onChange={(e) => {
@@ -170,7 +152,9 @@ export function DecisionScreen({ item }: { item: AttentionItem }) {
         </div>
       </form>
 
-      <Footer item={item} onResolved={onResolved} />
+      <Footer item={item} onResolved={onResolved}>
+        <PrioritySelect item={item} />
+      </Footer>
     </Body>
   )
 }
