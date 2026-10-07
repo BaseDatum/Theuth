@@ -268,10 +268,13 @@ pub fn decay(asked_at: DateTime<Utc>, now: DateTime<Utc>) -> f32 {
     0.5f32.powf(days / HALF_LIFE_DAYS)
 }
 
-/// The k-NN vote (§7.1 step 3) over `options`: the `K` nearest memories by
-/// cosine, each weighted `max(sim, 0) × decay × net label weight`, Laplace
-/// floor per option. Returns the probabilities (options order, no `none`),
-/// `n_eff` and the ≤ 3 nearest as neighbours.
+/// The k-NN vote (§7.1 step 3) over `options`: the `K` memories with the
+/// highest `max(cos, 0) × decay` — ranking by the decayed similarity, not the
+/// raw one, is what keeps a 500-card burst from a month ago from filling the
+/// whole neighbourhood of this week's cards (§15.1) — each weighted by that
+/// and its net label weight, Laplace floor per option. Returns the
+/// probabilities (options order, no `none`), `n_eff` and the ≤ 3 nearest as
+/// neighbours.
 pub fn knn(
     embedding: &[f32],
     options: &[String],
@@ -280,14 +283,19 @@ pub fn knn(
 ) -> (Vec<f32>, f32, Vec<Neighbour>) {
     let mut scored: Vec<(f32, &Memory)> = memory
         .iter()
-        .map(|m| (cosine(embedding, &m.embedding), m))
+        .map(|m| {
+            (
+                cosine(embedding, &m.embedding).max(0.0) * decay(m.asked_at, now),
+                m,
+            )
+        })
         .collect();
     scored.sort_by(|a, b| b.0.total_cmp(&a.0));
     scored.truncate(K);
     let mut votes = vec![LAPLACE; options.len()];
     let mut n_eff = 0.0f32;
-    for (sim, m) in &scored {
-        let w = sim.max(0.0) * decay(m.asked_at, now);
+    for (w, m) in &scored {
+        let w = *w;
         if w <= 0.0 {
             continue;
         }
@@ -453,7 +461,7 @@ pub async fn memory(store: &Store, class: &str) -> anyhow::Result<Vec<Memory>> {
     let mut out: Vec<Memory> = Vec::new();
     let mut last_id: Option<String> = None;
     let mut votes: BTreeMap<String, f32> = BTreeMap::new();
-    let mut flush = |out: &mut Vec<Memory>, votes: &mut BTreeMap<String, f32>| {
+    let flush = |out: &mut Vec<Memory>, votes: &mut BTreeMap<String, f32>| {
         let positive: Vec<(String, f32)> = votes
             .iter()
             .filter(|(_, w)| **w > 0.0)
@@ -659,9 +667,9 @@ pub(crate) mod tests {
         let p = predict(&o, CardKind::Approval, &opts(), "s".into(), &a, &ClassStats::default(), Utc::now()).await;
         assert_eq!(p.choice, "Allow");
         assert!(!p.escalated);
-        // Within one class: 500 Deny rows from 60 days ago vs 15 Allow rows from this week —
-        // the k nearest are drawn by similarity, so make the burst equally near; decay
-        // (0.5^(60/30) = 0.25) and k = 15 keep this week's answers on top.
+        // Within one class: 500 Deny rows from 60 days ago vs 15 Allow rows from this week,
+        // all equally near — ranking by decayed similarity (0.5^(60/30) = 0.25 for the
+        // burst) keeps this week's answers in the k = 15 neighbourhood.
         let mut m: Vec<Memory> = (0..500).map(|_| mem(vec![0.0, 1.0], "Deny", 60)).collect();
         m.extend((0..15).map(|_| mem(vec![0.0, 1.0], "Allow", 2)));
         let p = predict(&o, CardKind::Approval, &opts(), "s".into(), &m, &ClassStats::default(), Utc::now()).await;

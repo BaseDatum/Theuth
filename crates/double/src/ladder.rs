@@ -534,11 +534,11 @@ mod tests {
         r.extend(rows(2, 2, 0.5));
         let l: Vec<&Scored> = r.iter().collect();
         assert!((coverage(&l) - 1.0).abs() < 1e-6);
-        // 3 wrong of 100 at low p: the prefix stops where 3/100 > 2 % → 99 %.
+        // 3 wrong of 100 at low p: 1/98 ≈ 1 % still covers, 2/99 ≈ 2.02 % does not → 98 %.
         let mut r = rows(97, 0, 0.9);
         r.extend(rows(3, 3, 0.5));
         let l: Vec<&Scored> = r.iter().collect();
-        assert!((coverage(&l) - 0.99).abs() < 1e-6);
+        assert!((coverage(&l) - 0.98).abs() < 1e-6);
         let k = kpis(&r, 2_000);
         assert_eq!(k.n, 100);
         assert_eq!(k.asks_avoided, 0);
@@ -548,7 +548,8 @@ mod tests {
     #[test]
     fn hints() {
         assert_eq!(promote_hint(0, 2, &rows(5, 0, 0.9)), "15 more labelled decisions (n ≥ 20)");
-        assert_eq!(promote_hint(0, 2, &rows(20, 4, 0.9)), "4 more correct in a row (acc ≥ 0.90)");
+        // 16/20 right: 16 + k ≥ 0.9 (20 + k) → k = 20.
+        assert_eq!(promote_hint(0, 2, &rows(20, 4, 0.9)), "20 more correct in a row (acc ≥ 0.90)");
         assert_eq!(promote_hint(1, 1, &rows(60, 0, 0.9)), "at its cap (L1)");
     }
 

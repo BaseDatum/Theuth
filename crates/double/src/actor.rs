@@ -114,7 +114,6 @@ struct PendingCard {
     class: String,
     session: SessionId,
     example_id: String,
-    options: Vec<String>,
     /// Only for a single-question ask: the `ask_user` call id, to pair the tool output.
     call_id: Option<String>,
     payload: Payload,
@@ -297,7 +296,7 @@ impl Double {
         }
         let mut m = tool.contains("__");
         if let Ok(Some(reg)) = ActorRef::<tools::ToolRegistry>::lookup(tools::REGISTRY_ACTOR)
-            && let Ok(Ok(ins)) = reg
+            && let Ok(ins) = reg
                 .ask(tools::InspectTool {
                     session,
                     name: tool.to_owned(),
@@ -416,7 +415,6 @@ impl Double {
                     class: key,
                     session,
                     example_id,
-                    options,
                     call_id,
                     payload,
                     predicted: None,
@@ -513,7 +511,6 @@ impl Double {
                 class: key,
                 session,
                 example_id,
-                options,
                 call_id,
                 payload,
                 predicted: Some(predicted.clone()),
@@ -922,7 +919,7 @@ impl Message<AskRequested> for Double {
                 m.id.0.to_string(),
                 m.session,
                 card,
-                options,
+                options.clone(),
                 text,
                 single,
                 call_id,
@@ -1064,19 +1061,19 @@ impl Message<TakeOver> for Double {
 }
 
 impl Message<Status> for Double {
-    type Reply = DoubleStatus;
+    type Reply = Result<DoubleStatus, std::convert::Infallible>;
 
     async fn handle(&mut self, _: Status, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
-        self.status().await
+        Ok(self.status().await)
     }
 }
 
 impl Message<Pause> for Double {
-    type Reply = DoubleStatus;
+    type Reply = Result<DoubleStatus, std::convert::Infallible>;
 
     async fn handle(&mut self, m: Pause, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
         self.paused = m.0;
-        self.status().await
+        Ok(self.status().await)
     }
 }
 
@@ -1249,7 +1246,8 @@ mod tests {
     use std::sync::Arc;
 
     use parking_lot::Mutex;
-    use tools::{Approval, ApprovalId, RequestApproval, Resolve, Risk};
+    use tools::approval::RequestApproval;
+    use tools::{Approval, ApprovalId, Resolve, Risk};
 
     use super::*;
     use crate::predict::tests::FakeOracle;
@@ -1321,6 +1319,15 @@ mod tests {
                 },
                 ..Default::default()
             };
+            // A test that panicked before `stop` leaves its actors registered: clear them.
+            if let Ok(Some(stale)) = ActorRef::<Approval>::lookup(tools::APPROVAL_ACTOR) {
+                stale.kill();
+                stale.wait_for_shutdown().await;
+            }
+            if let Ok(Some(stale)) = ActorRef::<Double>::lookup(DOUBLE_ACTOR) {
+                stale.kill();
+                stale.wait_for_shutdown().await;
+            }
             let approval = Approval::spawn(Approval::new(rt.clone(), Duration::from_secs(30)));
             approval.register(tools::APPROVAL_ACTOR).unwrap();
             let probe = Arc::new(Probe::default());
@@ -1359,15 +1366,23 @@ mod tests {
         }
 
         /// Raise a real approval through the approval actor; returns its id once predicted.
+        /// Risk: `read_file` read-only, `rm -rf` destructive, else mutating.
         async fn raise(&self, session: SessionId, tool: &str, args: serde_json::Value) -> ApprovalId {
             let before = self.probe.predicted.lock().len();
+            let risk = if tool == "read_file" {
+                Risk::ReadOnly
+            } else if args["command"].as_str().is_some_and(|c| c.starts_with("rm -rf")) {
+                Risk::Destructive
+            } else {
+                Risk::Mutating
+            };
             // `tell`: the reply is delegated to the resolution, which the test drives later.
             self.approval
                 .tell(RequestApproval {
                     session,
                     tool: tool.into(),
                     args,
-                    risk: if tool == "read_file" { Risk::ReadOnly } else { Risk::Mutating },
+                    risk,
                     call_id: None,
                 })
                 .await
@@ -1444,7 +1459,7 @@ mod tests {
         let cs = h.double.ask(Classes).await.unwrap();
         assert_eq!(cs.len(), 1);
         assert_eq!(cs[0].cap_reason.as_deref(), Some("mutating — opt in to allow L2"));
-        let d = h.double.ask(ClassDetail(ev.class.clone())).await.unwrap().unwrap();
+        let d = h.double.ask(ClassDetail(ev.class.clone())).await.unwrap();
         assert_eq!(d.examples.len(), 1);
         assert_eq!(d.examples[0].chose.as_deref(), Some(DENY));
         assert_eq!(d.examples[0].outcome, Outcome::Wrong);
@@ -1772,7 +1787,6 @@ mod tests {
                 mutating_opt_in: false,
             })
             .await
-            .unwrap()
             .unwrap();
         assert_eq!(c.cap, 1, "mutating without opt-in is capped at L1");
         let c = h
@@ -1783,7 +1797,6 @@ mod tests {
                 mutating_opt_in: true,
             })
             .await
-            .unwrap()
             .unwrap();
         assert_eq!(c.cap, 2, "opted in: the configured read_only cap (2 in v1)");
         assert!(c.mutating_opt_in);
@@ -1791,14 +1804,13 @@ mod tests {
             .double
             .ask(Forget(ForgetTarget::Class { key: key.into() }))
             .await
-            .unwrap()
             .unwrap();
         assert_eq!(n, 1);
         assert!(h.store.example(&ex.id).await.unwrap().is_none());
         let class = h.store.class(key).await.unwrap().unwrap();
         assert_eq!((class.n, class.rung), (0, 0));
-        assert!(h.double.ask(ClassDetail("nope".into())).await.unwrap().is_err());
-        assert!(h.double.ask(Forget(ForgetTarget::Examples { ids: vec!["x".into()] })).await.unwrap().unwrap() == 0);
+        assert!(h.double.ask(ClassDetail("nope".into())).await.is_err());
+        assert_eq!(h.double.ask(Forget(ForgetTarget::Examples { ids: vec!["x".into()] })).await.unwrap(), 0);
         h.stop().await;
     }
 

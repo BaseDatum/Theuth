@@ -5076,9 +5076,7 @@ impl ApiServer for Server {
     }
 
     async fn double_class(&self, key: String) -> RpcResult<double::DoubleClassDetail> {
-        ask::<double::actor::Double, _>(double::DOUBLE_ACTOR, double::actor::ClassDetail(key))
-            .await?
-            .map_err(failed)
+        ask::<double::actor::Double, _>(double::DOUBLE_ACTOR, double::actor::ClassDetail(key)).await
     }
 
     async fn double_train(&self, tier: double::Tier, venue: double::Venue) -> RpcResult<double::RunId> {
@@ -5093,9 +5091,7 @@ impl ApiServer for Server {
     }
 
     async fn double_forget(&self, target: double::ForgetTarget) -> RpcResult<u32> {
-        ask::<double::actor::Double, _>(double::DOUBLE_ACTOR, double::actor::Forget(target))
-            .await?
-            .map_err(failed)
+        ask::<double::actor::Double, _>(double::DOUBLE_ACTOR, double::actor::Forget(target)).await
     }
 
     async fn double_rollback(&self, version: String) -> RpcResult<double::DoubleStatus> {
@@ -5116,8 +5112,7 @@ impl ApiServer for Server {
                 mutating_opt_in,
             },
         )
-        .await?
-        .map_err(failed)
+        .await
     }
 
     async fn double_export(&self) -> RpcResult<double::DoubleExport> {
