@@ -38,6 +38,11 @@ const DEFAULT_WIDTH = 736
 
 type Scroller = Virtualizer<HTMLDivElement, Element>
 
+/** What a row is anchored by across re-keying: its (first) entry id; a prompt or gap row has only its key. */
+const rowEntry = (row: Row): string => ('entry' in row ? row.entry.id : 'run' in row ? (row.run[0]?.id ?? row.key) : row.key)
+const rowHas = (row: Row | undefined, id: string): boolean =>
+  row !== undefined && ('run' in row ? row.run.some((e) => e.id === id) : rowEntry(row) === id)
+
 /**
  * The anchor element: inside `root` (the anchor row's element), the deepest descendant whose box straddles the
  * scroller's top `edge` (depth ≤ 8, zero-height nodes skipped) — what the reader is actually looking at.
@@ -181,7 +186,9 @@ export function Transcript({ session, compact = false }: { session: string; comp
 
   // 135 §3: the slack is the virtualizer's `paddingStart`; a ref so the hook's and the predicate's `setOptions` agree.
   const slack = useRef(0)
-  const anchor = useRef<(Anchor & { key: string }) | null>(null)
+  const anchor = useRef<(Anchor & { entry: string }) | null>(null)
+  /** The instance of the previous render, for the prepend arithmetic that runs before the hook. */
+  const vRef = useRef<Scroller | null>(null)
   const anchorEl = useRef<Element | null>(null)
   const restTimer = useRef(0)
   const touching = useRef(false)
@@ -198,26 +205,31 @@ export function Transcript({ session, compact = false }: { session: string; comp
     return (width ? recall(session, width, row.key) : undefined) ?? estimateRow(row, (width || DEFAULT_WIDTH) - 32)
   }
 
-  // Rows may move (prepend, a gap row, a loose prompt): the anchor follows its key.
+  // Rows may move or be re-keyed (a prepend, a gap row, a loose prompt, a run refolded with the page before it):
+  // the anchor follows the entry it was on.
   const a = anchor.current
-  if (a && rows[a.index]?.key !== a.key) {
-    const i = rows.findIndex((r) => r.key === a.key)
+  if (a && !rowHas(rows[a.index], a.entry)) {
+    const i = rows.findIndex((r) => rowHas(r, a.entry))
     if (i >= 0) a.index = i
     else anchor.current = null
   }
   // Prepend (§3.3): the new leading rows land in the slack, so the rows the reader sees keep their starts and the
-  // same `setOptions` below carries the new count and the reduced `paddingStart`.
-  const firstKey = useRef<string | null>(null)
-  const first = rows[0]?.key ?? null
-  if (firstKey.current !== null && first !== firstKey.current) {
-    const k = rows.findIndex((r) => r.key === firstKey.current)
+  // same `setOptions` below carries the new count and the reduced `paddingStart`. Tracked by the first entry (row keys
+  // change when the page's last tool calls fold into the first row's run); a refolded first row counts as grown by
+  // its new estimate over its old measured size.
+  const firstEntry = useRef<{ id: string; key: string } | null>(null)
+  const head = rows[0] ? { id: rowEntry(rows[0]), key: rows[0].key } : null
+  const prev = firstEntry.current
+  if (prev && head && head.id !== prev.id) {
+    const k = rows.findIndex((r) => rowHas(r, prev.id))
     if (k > 0) {
       let estimated = 0
       for (let i = 0; i < k; i++) estimated += estimateSize(i)
+      if (rows[k]!.key !== prev.key) estimated += estimateSize(k) - (vRef.current?.itemSizeCache.get(prev.key) ?? estimateSize(k))
       slack.current = step({ slack: slack.current, target: 0, anchor: null }, { kind: 'prepend', estimated })[0].slack
     }
   }
-  firstKey.current = first
+  firstEntry.current = head
 
   /** §3.3: every size change comes here before the library decides whether to write `scrollTop`. */
   const predicate = (item: VirtualItem, delta: number, inst: Scroller): boolean => {
@@ -251,6 +263,7 @@ export function Transcript({ session, compact = false }: { session: string; comp
     anchorTo: 'end',
     paddingStart: slack.current,
   })
+  vRef.current = v
   // An instance field, not an option (3.17.11): reassigned every render so it closes over the current rows and anchor.
   v.shouldAdjustScrollPositionOnItemSizeChange = predicate
 
@@ -345,7 +358,7 @@ export function Transcript({ session, compact = false }: { session: string; comp
     }
   }, [])
   // `more` flipping and a prepend landing both change the target; persist on unmount.
-  useEffect(armRest, [more, first])
+  useEffect(armRest, [more, head?.id])
   useEffect(
     () => () => {
       clearTimeout(restTimer.current)
@@ -382,16 +395,17 @@ export function Transcript({ session, compact = false }: { session: string; comp
     const el = ref.current
     if (!el) return
     const item = v.getVirtualItemForOffset(el.scrollTop)
-    if (!item) {
+    const row = item && rows[item.index]
+    if (!item || !row) {
       anchor.current = null
       anchorEl.current = null
       return
     }
     const edge = el.getBoundingClientRect().top
-    const row = v.elementsCache.get(item.key)
-    const node = row ? anchorElement(row, edge) : null
+    const rowEl = v.elementsCache.get(item.key)
+    const node = rowEl ? anchorElement(rowEl, edge) : null
     anchorEl.current = node
-    anchor.current = { index: item.index, key: String(item.key), offset: node ? node.getBoundingClientRect().top - edge : 0 }
+    anchor.current = { index: item.index, entry: rowEntry(row), offset: node ? node.getBoundingClientRect().top - edge : 0 }
   }
 
   const onScroll = () => {
