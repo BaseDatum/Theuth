@@ -437,7 +437,8 @@ body.voice-hold {
   }
 }
 
-/* 128 HUD-SCENE (`components/hud/scene/Scene.tsx`): live rings pulse their disc, a newly arrived flow fades in, hover raises one flow and dims the rest. */
+/* 128 HUD-SCENE (`components/hud/scene/Scene.tsx`): live rings pulse their disc, a newly arrived flow fades in. Hover is React state (R5: the
+   hovered flow is redrawn on top with both ends emphasised, the rest at 0.35); the two `[data-flow]` rules are the no-JS fallback at the same dim. */
 .hud-pulse {
   transform-box: fill-box;
   transform-origin: center;
@@ -447,7 +448,7 @@ body.voice-hold {
   animation: hud-flow-in 600ms ease-out both;
 }
 .hud-scene:has([data-flow]:hover) [data-flow] {
-  opacity: 0.5;
+  opacity: 0.35;
 }
 .hud-scene [data-flow]:hover {
   opacity: 1;
