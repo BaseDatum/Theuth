@@ -6425,7 +6425,7 @@ mod tests {
             assert_eq!(out[1 + BACKLOG], title(s, BACKLOG + 4));
             assert_eq!(
                 out[2 + BACKLOG],
-                delta("TextDelta", s, "t", "b".repeat(100))
+                delta("TextDelta", s, "t", &"b".repeat(100))
             );
             assert_eq!(out.len(), 3 + BACKLOG);
         }
