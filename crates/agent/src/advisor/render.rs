@@ -49,7 +49,10 @@ pub struct UpdateOpts<'a> {
 /// Rows the cursor counts and fingerprints: everything but Advisory and
 /// UI-only rows.
 pub fn counted(e: &HistoryEntry) -> bool {
-    !matches!(e, HistoryEntry::Advisory { .. } | HistoryEntry::Error { .. })
+    !matches!(
+        e,
+        HistoryEntry::Advisory { .. } | HistoryEntry::Error { .. }
+    )
 }
 
 /// `DefaultHasher` over the variant tag and the content fields a rewrite
@@ -204,7 +207,7 @@ struct Piece {
 pub fn render_update(rows: &[(i64, HistoryEntry)], opts: UpdateOpts<'_>) -> String {
     let mut pieces: Vec<Piece> = Vec::new();
     let mut role = Role::None;
-    let mut marker = |want: Role, role: &mut Role, out: &mut String| {
+    let marker = |want: Role, role: &mut Role, out: &mut String| {
         if *role != want {
             *role = want;
             out.push_str(match want {
@@ -271,10 +274,8 @@ pub fn render_update(rows: &[(i64, HistoryEntry)], opts: UpdateOpts<'_>) -> Stri
                     Some((out, false)) => {
                         text.push_str(&format!(" ⇒ ok · {} lines", out.lines().count()));
                         if !out.trim().is_empty() {
-                            result = Some(format!(
-                                "Tool result:\n```text\n{}\n```",
-                                cap_result(out)
-                            ));
+                            result =
+                                Some(format!("Tool result:\n```text\n{}\n```", cap_result(out)));
                         }
                     }
                 }
@@ -405,8 +406,14 @@ mod tests {
                     Some(("ERROR: could not compile\nmore", true)),
                 ),
             ),
-            (6, user("<reminder id=\"r1\" from=\"jobs\">\nx\ny\n</reminder>")),
-            (6, user("<message from=\"peer\" id=\"1\">\nhello there\nmore\n</message>")),
+            (
+                6,
+                user("<reminder id=\"r1\" from=\"jobs\">\nx\ny\n</reminder>"),
+            ),
+            (
+                6,
+                user("<message from=\"peer\" id=\"1\">\nhello there\nmore\n</message>"),
+            ),
         ];
         let s = render_update(
             &rows,
@@ -431,13 +438,25 @@ mod tests {
 
     #[test]
     fn caps_results_and_whole_update() {
-        let long = (0..200).map(|i| format!("l{i}")).collect::<Vec<_>>().join("\n");
+        let long = (0..200)
+            .map(|i| format!("l{i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
         let capped = cap_result(&long);
         assert!(capped.lines().count() <= RESULT_LINES + 1);
         assert!(capped.contains(ELIDED));
         let big = "x".repeat(7 * 1024);
         let rows: Vec<(i64, HistoryEntry)> = (0..12)
-            .map(|i| (i, tool("read_file", serde_json::json!({"p": "f"}), Some((&big, false)))))
+            .map(|i| {
+                (
+                    i,
+                    tool(
+                        "read_file",
+                        serde_json::json!({"p": "f"}),
+                        Some((&big, false)),
+                    ),
+                )
+            })
             .collect();
         let s = render_update(&rows, UpdateOpts::default());
         assert!(s.len() <= UPDATE_BYTES, "{}", s.len());

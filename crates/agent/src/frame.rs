@@ -774,7 +774,16 @@ mod tests {
             )
         };
         let attended = baseline(&data_dir, None, "", &blocks(true), false, None, true, false);
-        let unattended = baseline(&data_dir, None, "", &blocks(false), false, None, false, false);
+        let unattended = baseline(
+            &data_dir,
+            None,
+            "",
+            &blocks(false),
+            false,
+            None,
+            false,
+            false,
+        );
         std::fs::remove_dir_all(&data_dir).unwrap();
 
         assert!(attended.contains("## Show first, then tell\n"));
@@ -833,11 +842,14 @@ mod tests {
 
     #[test]
     fn advised_paragraph_sits_before_guidance_and_advisor_baseline_is_bare() {
-        let data_dir = std::env::temp_dir().join(format!("theuth-frame-adv-{}", uuid::Uuid::now_v7()));
+        let data_dir =
+            std::env::temp_dir().join(format!("theuth-frame-adv-{}", uuid::Uuid::now_v7()));
         std::fs::create_dir_all(&data_dir).unwrap();
         let p = baseline(&data_dir, None, "", "## Tools\nT", false, None, false, true);
         std::fs::remove_dir_all(&data_dir).unwrap();
-        assert!(p.contains(&format!("## Tools\nT\n\n{ADVISORY_PARAGRAPH}\n\n## Guidance")));
+        assert!(p.contains(&format!(
+            "## Tools\nT\n\n{ADVISORY_PARAGRAPH}\n\n## Guidance"
+        )));
         let a = advisor_baseline("You are the advisor.\n");
         assert!(a.starts_with("You are the advisor.\n\nWorking directory: "));
         assert!(a.contains("\nDate: ") && !a.contains("## Guidance"));

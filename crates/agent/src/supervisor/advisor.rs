@@ -8,7 +8,9 @@ use kameo::message::{Context, Message};
 use tools::{REGISTRY_ACTOR, Risk, SetApprovals, ToolRegistry};
 
 use super::Agents;
-use crate::advisor::{ADVISORS_ACTOR, AdvisorInput, Advisors, Attach, DeliverAdvisory, Detach, StatusOf};
+use crate::advisor::{
+    ADVISORS_ACTOR, AdvisorInput, Advisors, Attach, DeliverAdvisory, Detach, StatusOf,
+};
 use crate::continuation::InputOrigin;
 use crate::loop_::{SetToolsetOverride, SteerAdvisory};
 use crate::{
@@ -148,7 +150,9 @@ impl Agents {
         self.write_advisor_key("model", &resolved.id);
         self.write_advisor_key(
             "effort",
-            &effort.as_deref().map_or("~".to_owned(), |e| format!("\"{e}\"")),
+            &effort
+                .as_deref()
+                .map_or("~".to_owned(), |e| format!("\"{e}\"")),
         );
         let context_limit = resolved.model.as_ref().map_or(0, |m| m.limit.context);
         let status = advisors()?
@@ -222,10 +226,13 @@ impl Message<AdvisorStatusOf> for Agents {
         _: &mut Context<Self, Self::Reply>,
     ) -> AdvisorStatus {
         match advisors() {
-            Ok(a) => a.ask(StatusOf(m.session)).await.unwrap_or_else(|_| AdvisorStatus {
-                session: m.session,
-                ..AdvisorStatus::default()
-            }),
+            Ok(a) => a
+                .ask(StatusOf(m.session))
+                .await
+                .unwrap_or_else(|_| AdvisorStatus {
+                    session: m.session,
+                    ..AdvisorStatus::default()
+                }),
             Err(_) => AdvisorStatus {
                 session: m.session,
                 ..AdvisorStatus::default()
@@ -255,7 +262,9 @@ impl Message<SetAdvisorDefaults> for Agents {
         if let Some(effort) = m.effort {
             self.write_advisor_key(
                 "effort",
-                &effort.as_deref().map_or("~".to_owned(), |e| format!("\"{e}\"")),
+                &effort
+                    .as_deref()
+                    .map_or("~".to_owned(), |e| format!("\"{e}\"")),
             );
             self.advisor_cfg.effort = effort;
         }
@@ -302,7 +311,10 @@ impl Message<DeliverAdvisory> for Agents {
     type Reply = ();
 
     async fn handle(&mut self, m: DeliverAdvisory, _: &mut Context<Self, Self::Reply>) {
-        let actor = match self.session(Some(m.session), None, None, (None, None)).await {
+        let actor = match self
+            .session(Some(m.session), None, None, (None, None))
+            .await
+        {
             Ok((_, actor)) => actor,
             Err(e) => {
                 tracing::warn!(session = %m.session, "advisory delivery: {e:#}");
@@ -321,6 +333,7 @@ impl Message<DeliverAdvisory> for Agents {
                     ticket: Some(ticket),
                 })
                 .await
+                .map_err(|e| e.to_string())
         } else {
             native
                 .tell(AppendAdvisory {
@@ -328,6 +341,7 @@ impl Message<DeliverAdvisory> for Agents {
                     text: m.text,
                 })
                 .await
+                .map_err(|e| e.to_string())
         };
         if let Err(e) = r {
             tracing::warn!(session = %m.session, "advisory delivery: {e}");

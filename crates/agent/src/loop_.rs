@@ -60,6 +60,7 @@ use tools::{
 };
 use uuid::Uuid;
 
+use crate::advisor::{self, ADVISORS_ACTOR, Advisors};
 use crate::backend::{Backend, natural_stop};
 use crate::communication::{
     Generation, PeerConsumed, PeerIntakeFailed, PeerRecord, PeerTurnFinished,
@@ -85,9 +86,8 @@ use crate::store::durability::BatchRow;
 use crate::supervisor::{Auth, PeerContext, Roster};
 use crate::title;
 use crate::vision::{self, VisionImage, VisionSource, VisionStatus};
-use crate::advisor::{self, ADVISORS_ACTOR, Advisors};
 use crate::{
-    AGENT_ACTOR, AgentConfig, AgentEvent, Agents, AppendAdvisory, Advisory, CompactStyle,
+    AGENT_ACTOR, Advisory, AgentConfig, AgentEvent, Agents, AppendAdvisory, CompactStyle,
     QueuedInput, SessionKind, SetAdvisorOn, SurfaceConfig, Toolset, Usage, VisionStage, attach,
     clock, compact, skills, spill, todo,
 };
@@ -993,7 +993,12 @@ impl Session {
     /// it. Callers check `idle()` first.
     async fn append_advisory_idle(&mut self, advisory: Advisory, text: String) {
         let id = self.shared.id;
-        match self.shared.store.append_advisory(id, &text, &advisory).await {
+        match self
+            .shared
+            .store
+            .append_advisory(id, &text, &advisory)
+            .await
+        {
             Ok(seq) => {
                 if let Some(state) = self.state.as_mut() {
                     state.history.push((seq, ChatMessage::user(text)));
@@ -1834,7 +1839,9 @@ impl Message<SetAdvisorOn> for Session {
 /// blocker opens a turn now; a concern joins queued inputs when there are
 /// any, else it is preserved as a card only (the tail was a terminal answer).
 pub struct SteerAdvisory {
+    /// The typed card.
     pub advisory: Advisory,
+    /// Its model-facing text.
     pub text: String,
     /// The supervisor's admission for the turn this may open.
     pub ticket: Option<InputTicket>,
@@ -2925,8 +2932,7 @@ impl Turn {
     /// waits at most [`advisor::CATCH_UP_WAIT`] — the actor replies at once
     /// unless `advisor.sync_backlog` parks it.
     async fn advisor_step(&self, will_continue: bool) {
-        if self.shared.kind != SessionKind::Chat || !self.shared.advisor.load(Ordering::Relaxed)
-        {
+        if self.shared.kind != SessionKind::Chat || !self.shared.advisor.load(Ordering::Relaxed) {
             return;
         }
         let Some(advisors) = ActorRef::<Advisors>::lookup(ADVISORS_ACTOR).ok().flatten() else {
@@ -2952,7 +2958,7 @@ impl Turn {
             Err(e) => return ToolOutput::err(format!("advise: {e}")),
         };
         let Some(advisors) = ActorRef::<Advisors>::lookup(ADVISORS_ACTOR).ok().flatten() else {
-            return ToolOutput::err("advisor actor not running".into());
+            return ToolOutput::err("advisor actor not running".to_owned());
         };
         match advisors
             .ask(advisor::Advise {

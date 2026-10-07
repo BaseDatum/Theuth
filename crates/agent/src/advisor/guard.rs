@@ -56,19 +56,31 @@ const SEEN_MAX: usize = 4096;
 pub enum Verdict {
     /// Record it; `displaced` is the index into the caller's pending slots
     /// that this note pushed out, if any.
-    Accept { displaced: Option<usize> },
+    Accept {
+        /// Pending slot displaced by this higher-rank note.
+        displaced: Option<usize>,
+    },
+    /// Nothing after normalisation.
     Empty,
+    /// A content-free phrase.
     Noise,
+    /// Already raised at this rank or higher.
     Duplicate,
+    /// No non-blocker slot left this update and nothing lower to displace.
     BudgetSpent,
 }
 
-/// 125 §4.8 acknowledgement strings (omp's wording).
+/// 125 §4.8 ack: accepted.
 pub const ACK_ACCEPTED: &str = "Accepted for delivery.";
+/// 125 §4.8 ack: a nit (or immune-window concern) held for the next boundary.
 pub const ACK_DEFERRED: &str = "Deferred — the agent is mid-turn; this note is queued for delivery at the next step boundary unless a higher-severity note from this review displaces it. Do not re-raise the same point.";
+/// 125 §4.8 ack: empty.
 pub const ACK_EMPTY: &str = "Not recorded — empty note.";
+/// 125 §4.8 ack: noise.
 pub const ACK_NOISE: &str = "Not recorded — the note carries no concrete, actionable content.";
+/// 125 §4.8 ack: duplicate.
 pub const ACK_DUPLICATE: &str = "Duplicate advice ignored — this point was already raised.";
+/// 125 §4.8 ack: budget spent.
 pub const ACK_BUDGET: &str =
     "Not recorded — this update's non-blocker advice budget is spent; the note was dropped.";
 
@@ -116,6 +128,7 @@ pub struct Guard {
 }
 
 impl Guard {
+    /// A guard with `max_notes` (clamped 1–32) non-blocker slots per update.
     pub fn new(max_notes: u8) -> Self {
         Self {
             seen: HashMap::new(),
@@ -166,8 +179,8 @@ impl Guard {
                 let lowest = pending
                     .iter()
                     .enumerate()
-                    .filter(|(_, &p)| p < r)
-                    .min_by_key(|(_, &p)| p)
+                    .filter(|&(_, &p)| p < r)
+                    .min_by_key(|&(_, &p)| p)
                     .map(|(i, _)| i);
                 match lowest {
                     Some(i) => displaced = Some(i),
@@ -227,7 +240,10 @@ mod tests {
             Verdict::Accept { displaced: Some(0) }
         );
         // Blockers never take a slot.
-        assert_eq!(g.admit("stop the deploy", AdvisorSeverity::Blocker, &[2, 2]), a);
+        assert_eq!(
+            g.admit("stop the deploy", AdvisorSeverity::Blocker, &[2, 2]),
+            a
+        );
         g.begin_update();
         assert_eq!(g.admit("fresh nit", AdvisorSeverity::Nit, &[]), a);
     }

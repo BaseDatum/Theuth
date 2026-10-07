@@ -20,21 +20,20 @@ pub mod render;
 mod tests;
 
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 use std::time::Duration;
 
-use kameo::actor::ActorRef;
+use kameo::actor::{ActorRef, Spawn};
 use kameo::message::{Context, Message};
 use kameo::reply::{DelegatedReply, ReplySender};
 use regex::Regex;
 use runtime::{Runtime, SessionId};
-use std::sync::LazyLock;
 
 use crate::store::Store;
-use crate::supervisor::{AGENT_ACTOR, Agents};
+use crate::supervisor::Agents;
 use crate::{
-    AdvisorConfig, AdvisorLink, AdvisorNoteCounts, AdvisorSeverity, AdvisorState, AdvisorStatus,
-    Advisory, AdvisoryNote, AgentEvent, SyncBacklog,
+    AGENT_ACTOR, AdvisorConfig, AdvisorLink, AdvisorNoteCounts, AdvisorSeverity, AdvisorState,
+    AdvisorStatus, Advisory, AdvisoryNote, AgentEvent, SyncBacklog,
 };
 use guard::{Guard, Verdict};
 use render::{UpdateOpts, counted, fingerprint, render_update};
@@ -65,11 +64,11 @@ static QUOTA: LazyLock<Regex> = LazyLock::new(|| {
 static OVERRIDE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"(?i)ignore (all )?(prior|previous|earlier) (user )?instructions").unwrap()
 });
-static DESTRUCTIVE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"\brm\b[^\n]*(-[a-zA-Z]*r[a-zA-Z]*f|-[a-zA-Z]*f[a-zA-Z]*r)").unwrap());
-static DENIAL: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?i)deny (this|it|the request) if (asked|questioned)").unwrap()
+static DESTRUCTIVE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"\brm\b[^\n]*(-[a-zA-Z]*r[a-zA-Z]*f|-[a-zA-Z]*f[a-zA-Z]*r)").unwrap()
 });
+static DENIAL: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?i)deny (this|it|the request) if (asked|questioned)").unwrap());
 
 /// A quarantine pattern in `text` that the update it answers does not contain.
 pub fn injected_pattern(text: &str, update: &str) -> bool {
@@ -87,6 +86,7 @@ const UNKNOWN_TOOL: &str = "is not available in this session";
 /// (the advisor session exists); seed the cursor at the current transcript
 /// length (D1: no replay) and persist.
 pub struct Attach {
+    /// The link as `Agents` wrote it (cursor and state are seeded here).
     pub link: AdvisorLink,
     /// The advisor model's context window, 0 when unknown.
     pub context_limit: u32,
@@ -108,16 +108,21 @@ pub struct SetDefaults(pub AdvisorConfig);
 /// (`will_continue: false`) is parked while the backlog is at or above
 /// `advisor.sync_backlog`, at most [`CATCH_UP_WAIT`] (the caller's timeout).
 pub struct AdvisorStep {
+    /// The advised session.
     pub session: SessionId,
     /// Opener seq of the advised turn under review.
     pub turn: Option<i64>,
+    /// More tool steps follow in the advised turn.
     pub will_continue: bool,
 }
 
 /// `ask` → ack string: the advisor session called `advise`.
 pub struct Advise {
+    /// The advisor session calling.
     pub advisor: SessionId,
+    /// The note text.
     pub note: String,
+    /// Its severity (omitted at the tool = nit).
     pub severity: AdvisorSeverity,
 }
 
@@ -128,16 +133,22 @@ struct Retry(SessionId);
 
 /// `tell`: route one update into the advisor session as an automatic input.
 pub struct AdvisorInput {
+    /// The advisor session.
     pub advisor: SessionId,
+    /// The rendered update.
     pub text: String,
 }
 
 /// `tell`: hand a card to the advised session's actor — `steer` lands it as
 /// a steer (opens a turn when idle), else passively (125 §4.10).
 pub struct DeliverAdvisory {
+    /// The advised session.
     pub session: SessionId,
+    /// The typed card.
     pub advisory: Advisory,
+    /// Its model-facing text (`advise::card_text`).
     pub text: String,
+    /// Steer (concern outside the immune window, blocker) vs aside/preserve.
     pub steer: bool,
 }
 
@@ -489,7 +500,9 @@ impl Advisors {
             self.publish(session).await;
             return;
         }
-        let count = usize::try_from(link.row.cursor).unwrap_or(0).min(rows.len());
+        let count = usize::try_from(link.row.cursor)
+            .unwrap_or(0)
+            .min(rows.len());
         let fresh = &rows[count..];
         if fresh.is_empty() {
             link.backlog = 0;
@@ -506,7 +519,8 @@ impl Advisors {
                 reasoning: link.reasoning,
             },
         ));
-        link.prefix.extend(fresh.iter().map(|(_, e)| fingerprint(e)));
+        link.prefix
+            .extend(fresh.iter().map(|(_, e)| fingerprint(e)));
         link.row.cursor = rows.len() as i64;
         link.row.state = AdvisorState::Reviewing;
         link.guard.begin_update();
@@ -666,8 +680,14 @@ impl Advisors {
         };
         match act {
             Act::Restart(text) => self.restart_with(session, text).await,
-            Act::Halt(detail) => self.set_state(session, AdvisorState::Halted, Some(detail)).await,
-            Act::Pause(detail) => self.set_state(session, AdvisorState::Paused, Some(detail)).await,
+            Act::Halt(detail) => {
+                self.set_state(session, AdvisorState::Halted, Some(detail))
+                    .await
+            }
+            Act::Pause(detail) => {
+                self.set_state(session, AdvisorState::Paused, Some(detail))
+                    .await
+            }
             Act::RetryLater(advisor) => {
                 let me = ActorRef::<Self>::lookup(ADVISORS_ACTOR).ok().flatten();
                 tokio::spawn(async move {
@@ -678,7 +698,8 @@ impl Advisors {
                 });
             }
             Act::Dropped(detail) => {
-                self.set_state(session, AdvisorState::Idle, Some(detail)).await;
+                self.set_state(session, AdvisorState::Idle, Some(detail))
+                    .await;
                 self.maybe_next(session).await;
             }
             Act::Quarantine { warn, text } => {
@@ -825,7 +846,11 @@ impl Message<Detach> for Advisors {
 impl Message<StatusOf> for Advisors {
     type Reply = AdvisorStatus;
 
-    async fn handle(&mut self, StatusOf(session): StatusOf, _: &mut Context<Self, Self::Reply>) -> AdvisorStatus {
+    async fn handle(
+        &mut self,
+        StatusOf(session): StatusOf,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> AdvisorStatus {
         match self.links.get(&session) {
             Some(link) => {
                 let cost = self
@@ -866,7 +891,11 @@ impl Message<SetDefaults> for Advisors {
 impl Message<AdvisorStep> for Advisors {
     type Reply = DelegatedReply<()>;
 
-    async fn handle(&mut self, m: AdvisorStep, ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
+    async fn handle(
+        &mut self,
+        m: AdvisorStep,
+        ctx: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
         let (reply, tx) = ctx.reply_sender();
         let threshold = self.threshold();
         let Some(link) = self.links.get_mut(&m.session) else {
@@ -881,10 +910,8 @@ impl Message<AdvisorStep> for Advisors {
         link.pending_continue = m.will_continue;
         let busy = link.reviewing.is_some();
         let active = matches!(link.row.state, AdvisorState::Idle | AdvisorState::Reviewing);
-        let park = !m.will_continue
-            && busy
-            && active
-            && threshold.is_some_and(|t| link.backlog >= t);
+        let park =
+            !m.will_continue && busy && active && threshold.is_some_and(|t| link.backlog >= t);
         match tx {
             Some(tx) if park => link.waiters.push(tx),
             Some(tx) => tx.send(()),
@@ -907,16 +934,21 @@ impl Message<Advise> for Advisors {
             return guard::ACK_NOISE.to_owned();
         };
         let link = self.links.get_mut(&session).unwrap();
-        let mut review = link.reviewing.take().unwrap_or_else(|| {
-            Review::new(link.steps, link.pending_turn, link.pending_continue)
-        });
+        let mut review = link
+            .reviewing
+            .take()
+            .unwrap_or_else(|| Review::new(link.steps, link.pending_turn, link.pending_continue));
         review.advised = true;
         if injected_pattern(&m.note, &link.last_update) {
             review.tainted = true;
             link.reviewing = Some(review);
             return guard::ACK_NOISE.to_owned();
         }
-        let pending: Vec<u8> = review.held.iter().map(|n| guard::rank(n.severity)).collect();
+        let pending: Vec<u8> = review
+            .held
+            .iter()
+            .map(|n| guard::rank(n.severity))
+            .collect();
         let verdict = link.guard.admit(&m.note, m.severity, &pending);
         let displaced = match verdict {
             Verdict::Accept { displaced } => displaced,
@@ -1019,7 +1051,10 @@ impl Message<AgentEvent> for Advisors {
                     }
                 }
                 AgentEvent::TextDelta { text, .. } => {
-                    if let Some(r) = self.links.get_mut(&advised).and_then(|l| l.reviewing.as_mut())
+                    if let Some(r) = self
+                        .links
+                        .get_mut(&advised)
+                        .and_then(|l| l.reviewing.as_mut())
                         && r.text.len() < TEXT_CAP
                     {
                         r.text.push_str(&text);
@@ -1030,8 +1065,10 @@ impl Message<AgentEvent> for Advisors {
                 } => {
                     if is_error
                         && output.contains(UNKNOWN_TOOL)
-                        && let Some(r) =
-                            self.links.get_mut(&advised).and_then(|l| l.reviewing.as_mut())
+                        && let Some(r) = self
+                            .links
+                            .get_mut(&advised)
+                            .and_then(|l| l.reviewing.as_mut())
                     {
                         r.unknown_tool = true;
                     }
@@ -1096,7 +1133,11 @@ impl Message<AgentEvent> for Advisors {
                     l.backlog = 0;
                     l.release_waiters();
                     let held = l.reviewing.as_mut().map(|r| std::mem::take(&mut r.held));
-                    (l.row.advisor, held.unwrap_or_default(), l.reviewing.is_some())
+                    (
+                        l.row.advisor,
+                        held.unwrap_or_default(),
+                        l.reviewing.is_some(),
+                    )
                 };
                 if reviewing {
                     self.tell_agents(crate::Cancel {

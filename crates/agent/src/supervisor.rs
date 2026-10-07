@@ -96,8 +96,10 @@ use crate::{
     SetVisionModel, ShowPrompt, SideCall, SideReply, SkillBody, SkillMeta, Steer, SyncSkills,
     TrimAssistant, Undo, UseSkill, Withdraw, effort_of,
 };
+use crate::{
+    AdvisorConfig, DurableStore, SessionCostQuery, SessionKind, SubagentsConfig, UnloadSession,
+};
 use crate::{AwsProfiles, ListAwsProfiles, SetAwsProfile};
-use crate::{AdvisorConfig, DurableStore, SessionCostQuery, SessionKind, SubagentsConfig, UnloadSession};
 use crate::{ListProjectStyles, SetProjectStyle, SetSessionProject, project};
 use crate::{attach, clock, frame, repl, search, spill};
 use tools::{
@@ -5656,6 +5658,17 @@ impl Message<ShowPrompt> for Agents {
             Some(s) => self.identity_of(s).await,
             None => None,
         };
+        // 125 §5.4: the paragraph shows while a link exists.
+        let mut advised = false;
+        if let Some(s) = m.session {
+            advised = self
+                .store_for(s)
+                .advisor_link(s)
+                .await
+                .ok()
+                .flatten()
+                .is_some();
+        }
         let mut prompt = frame::baseline(
             &self.rt.data_dir,
             identity.as_deref(),
@@ -5664,6 +5677,7 @@ impl Message<ShowPrompt> for Agents {
             self.claude_code(&model),
             subagent_model.as_deref(),
             attended,
+            advised,
         );
         if self.pool.is_some()
             && toolset.as_ref().is_none_or(|t| t.runtime)
@@ -8126,8 +8140,14 @@ pub async fn start(rt: &Runtime) -> anyhow::Result<()> {
         runtime::subscriber_mailbox(),
     );
     agents.register(AGENT_ACTOR)?;
-    crate::advisor::Advisors::start(advisor_store, rt.clone(), cfg.advisor.clone(), cfg.compact_at, redact)
-        .await?;
+    crate::advisor::Advisors::start(
+        advisor_store,
+        rt.clone(),
+        cfg.advisor.clone(),
+        cfg.compact_at,
+        redact,
+    )
+    .await?;
     UserChannels::spawn(UserChannels::default()).register(USER_ACTOR)?;
     rt.subscribe::<Agents, AgentEvent>(&agents).await;
     // Finished jobs reach the model through `Settle::FinishedWithResult`
