@@ -1,6 +1,6 @@
 import { expect, test } from 'vitest'
 import { sceneFixture, T } from './fixtures'
-import { ARC, arc, arcPoint, C, contextFill, ctxTitle, dueFlows, EARLIER_H, END_X, FIELD_H, fieldHeight, flowPath, fmtUsd, gaugeEnd, gaugePath, geom, hairlines, HAIRLINES_MAX, hourOf, kTokens, LABEL_GAP, layoutEnds, localDay, needFlows, needsYou, outcomeMix, outcomes, punchCard, RING, ringByActor, ringByRoutine, ringBySession, rings, rng, running, scene, sessionPresence, sessionsToday, shortId, spendPanel, staleFan, startOfDay, streamLink } from './model'
+import { ARC, arc, arcPoint, BOARD_ORDER, boardSummary, C, contextFill, ctxTitle, dueFlows, EARLIER_H, END_X, FIELD_H, fieldHeight, flowPath, fmtUsd, gaugeEnd, gaugePath, geom, hairlines, HAIRLINES_MAX, hourOf, kTokens, LABEL_GAP, layoutEnds, localDay, needFlows, needsYou, outcomes, projectLine, punchCard, RING, ringByActor, ringByRoutine, ringBySession, rings, rng, running, scene, sessionPresence, sessionsToday, shortId, spendPanel, staleFan, startOfDay, streamLink, waffle } from './model'
 
 // A fixed local evening, as the mockup's clock reads.
 const NOW = new Date(2026, 9, 7, 19, 49, 19).getTime()
@@ -485,8 +485,64 @@ test('punchCard: 7×24 by local weekday (Mon = 0), now cell marked', () => {
   expect(p.max).toBe(Math.max(...p.cells.flat()))
 })
 
-test('outcomeMix counts today’s moves; running counts every doing task', () => {
-  expect(outcomeMix(F.tasks, NOW)).toEqual({ done: 7, running: 3, review: 1, blocked: 0, cancelled: 1 })
+test('R6 — boardSummary: the whole board by state in board order, projects largest first with null → unfiled, movedToday since midnight', () => {
+  const b = boardSummary(F.tasks, NOW)
+  expect(b.total).toBe(F.tasks.length)
+  expect(b.byState.map((s) => [s.state, s.n])).toEqual([
+    ['backlog', 4],
+    ['todo', 2],
+    ['doing', 3],
+    ['review', 2],
+    ['blocked', 1],
+    ['done', 7],
+    ['cancelled', 1],
+  ])
+  expect(b.byState.map((s) => s.color)).toEqual(BOARD_ORDER.map((o) => o.color))
+  expect(b.byState[0]).toMatchObject({ state: 'backlog', color: C.tertiary, opacity: 0.55 }) // the quiet one; cancelled is tertiary in full
+  expect(b.byState[6]).toEqual({ state: 'cancelled', n: 1, color: C.tertiary })
+  expect(b.projects).toEqual([
+    { name: 'hud', n: 9 },
+    { name: null, n: 6 },
+    { name: 'relay', n: 5 },
+  ])
+  expect(b.movedToday).toBe(12) // 3 doing, 7 done, the fresh review, the cancelled one; nothing older than midnight
+  // Ties by display name, `unfiled` sorting as a word; an empty board is all zeros and no projects.
+  const tie = boardSummary([{ ...F.tasks[0]!, project: 'zeta' }, { ...F.tasks[1]!, project: null }, { ...F.tasks[2]!, project: 'alpha' }], NOW)
+  expect(tie.projects.map((p) => p.name)).toEqual(['alpha', null, 'zeta'])
+  expect(boardSummary([], NOW)).toEqual({ total: 0, byState: BOARD_ORDER.map((o) => ({ ...o, n: 0 })), projects: [], movedToday: 0 })
+})
+
+test('R6 — waffle: one cell per task up to 60; beyond, largest-remainder shares that sum to 60 and keep every non-zero state', () => {
+  expect(waffle([4, 2, 3, 2, 1, 7, 1])).toEqual([4, 2, 3, 2, 1, 7, 1])
+  expect(waffle([0, 0, 0, 0, 0, 60, 0])).toEqual([0, 0, 0, 0, 0, 60, 0])
+  // Sky's board on 2026-10-07: review 41 · backlog 24 · blocked 10 · cancelled 3 · done 2.
+  const cells = waffle([24, 0, 0, 41, 10, 2, 3])
+  expect(cells.reduce((s, n) => s + n, 0)).toBe(60)
+  expect(cells.filter((n) => n > 0)).toHaveLength(5)
+  expect(cells).toEqual([18, 0, 0, 30, 8, 2, 2])
+  // A thousand in one column never erases the six single tasks beside it.
+  const skew = waffle([1000, 1, 1, 1, 1, 1, 1])
+  expect(skew.reduce((s, n) => s + n, 0)).toBe(60)
+  expect(skew.slice(1)).toEqual([1, 1, 1, 1, 1, 1])
+  expect(waffle([7, 7], 10)).toEqual([5, 5])
+})
+
+test('R6 — projectLine: `name N` entries while they fit, null → unfiled, long names ellipsised, the rest folded into +K, at least one shown', () => {
+  expect(projectLine(boardSummary(F.tasks, NOW).projects)).toEqual({
+    shown: [
+      { name: 'hud', n: 9, label: 'hud 9' },
+      { name: null, n: 6, label: 'unfiled 6' },
+      { name: 'relay', n: 5, label: 'relay 5' },
+    ],
+    more: 0,
+  })
+  const many = Array.from({ length: 12 }, (_, i) => ({ name: `project-${String.fromCharCode(97 + i)}`, n: 12 - i }))
+  const l = projectLine(many)
+  expect(l.shown.length + l.more).toBe(12)
+  expect(l.more).toBeGreaterThan(0)
+  expect(l.shown.map((p) => p.label).join(' · ').length + ` +${l.more}`.length).toBeLessThanOrEqual(70)
+  expect(projectLine([{ name: 'a-very-long-project-name-indeed', n: 1 }], 10)).toEqual({ shown: [{ name: 'a-very-long-project-name-indeed', n: 1, label: 'a-very-long-p… 1' }], more: 0 })
+  expect(projectLine([])).toEqual({ shown: [], more: 0 })
 })
 
 test('scene: footer numbers (IN FLIGHT counts the running routine) and the whole model from the fixture; empty data draws nothing but the chrome', () => {

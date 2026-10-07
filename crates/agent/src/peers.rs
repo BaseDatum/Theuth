@@ -198,7 +198,8 @@ impl Tool for SpawnSubagentTool {
              Returns immediately with its name and address; its final message arrives later as a <message from=\"session:<id>\"> input (when communication is on), so do not poll. \
              Several calls in one message run concurrently. Message it with send_message. \
              For a theuth subagent, omit `model` to use the user's preferred subagent model; set `model`/`effort` only when the task clearly needs a different capability. \
-             `tools: read_only` (or `mutating`) caps what the subagent and its descendants may run at that risk (`destructive` = no cap); an investigation that must not change anything gets `read_only`.",
+             `tools: read_only` (or `mutating`) caps what the subagent and its descendants may run at that risk (`destructive` = no cap); an investigation that must not change anything gets `read_only`. \
+             A child that will compile, run a large test suite or otherwise load the machine gets the resource rules you are under in its brief - lock or job cap, scope, target directory - because an external harness cannot discover peers (see Guidance: Share the machine).",
         );
         let line = acp::describe(&harnesses(&self.data_dir));
         if !line.is_empty() {

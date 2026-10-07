@@ -1,6 +1,6 @@
 import { revealItemInDir } from '@tauri-apps/plugin-opener'
 import { Copy, FileDown, ImageDown, type LucideIcon, Maximize2, RotateCcw, X } from 'lucide-react'
-import { type PointerEvent as ReactPointerEvent, type ReactNode, useEffect, useRef, useState } from 'react'
+import { type PointerEvent as ReactPointerEvent, type ReactNode, useContext, useEffect, useRef, useState } from 'react'
 import { toast } from 'sonner'
 import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog'
@@ -12,6 +12,8 @@ import { useApi } from '@/lib/rpc'
 import { cn } from '@/lib/utils'
 import { useEngines } from '@/link/engines'
 import type { Api } from '@/rpc/api'
+import { Reserve } from './Reserve'
+import { FenceContext } from './surface/JsonRenderFence'
 
 // Design 30 §8.3, 65 §3.4: the frame every diagram card shares — pan/zoom surface, hover toolbar (Copy PNG · Save PNG… ·
 // Save SVG… · Fullscreen) and the fullscreen dialog. The content is either an svg markup string (mermaid, injected
@@ -237,7 +239,9 @@ function Fullscreen({ content, markup, name, onClose }: { content: Content; mark
 /**
  * The diagram card: `label` in the header, the content behind pan/zoom, the toolbar on hover, fullscreen on demand.
  * `svg` is mermaid's markup (`null` while the first render is pending); `children` is a React-rendered `<svg>`
- * (Graph). `name` is the export file stem; `title` is the card's tooltip (a mid-stream error, "JSON repaired").
+ * (Graph). `name` is the export file stem — a content hash in every caller, so with the fence's entry id it is also the
+ * card's remembered-height key (135 §2): the placeholder takes the last measured height while the content renders.
+ * `title` is the card's tooltip (a mid-stream error, "JSON repaired").
  * `fill` (the `.mmd` artifact view, 35 §3.2) sizes the card and the diagram to the parent instead of inline height.
  */
 export function DiagramFrame({
@@ -260,6 +264,7 @@ export function DiagramFrame({
   const [view, setView] = useState(HOME)
   const [full, setFull] = useState(false)
   const inline = useRef<HTMLDivElement>(null)
+  const { entry } = useContext(FenceContext)
   const content: Content | null = svg ? { svg } : children ? { children } : null
   /** The markup to export: mermaid's string, or the mounted `<svg>` of the React content. */
   const markup = () => svg ?? inline.current?.querySelector('svg')?.outerHTML ?? ''
@@ -271,13 +276,13 @@ export function DiagramFrame({
           <Tools markup={markup} name={name} extra={<Tool icon={Maximize2} label="Fullscreen" onClick={() => setFull(true)} />} />
         </div>
       )}
-      <div className={cn('rounded-md border bg-background', fill && 'min-h-0 flex-1')}>
+      <Reserve id={entry && !fill ? `${entry}/${name}` : null} ready={content !== null} className={cn('rounded-md border bg-background', fill && 'min-h-0 flex-1')}>
         {content ? (
           <Surface content={content} view={view} onView={setView} fill={fill} contentRef={inline} />
         ) : (
           <div className="flex min-h-28 items-center justify-center text-xs text-fg-tertiary">Rendering diagram…</div>
         )}
-      </div>
+      </Reserve>
       {full && content && <Fullscreen content={content} markup={markup} name={name} onClose={() => setFull(false)} />}
     </div>
   )
