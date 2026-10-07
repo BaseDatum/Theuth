@@ -295,7 +295,7 @@ test('dueFlows: one faint connector per due-later routine, from its ring to exac
 })
 
 test('flowPath: dot → ring edge → arc → end as the mockup draws it', () => {
-  const via = { id: 'x', name: 'builder', sub: '', style: 'waiting' as const, x: 860, y: 424, actor: null, link: null }
+  const via = { id: 'x', name: 'builder', sub: '', style: 'waiting' as const, x: 860, y: 424, actor: null, link: null, ctx: null }
   const d = flowPath([618, 259.6], via, 19.5, [1620, 82])
   expect(d).toMatch(/^M 618 259\.6 C 732 259\.6, 732 424, 846 424 M 874 424 C [\d.]+ 424, [\d.]+ [\d.]+, [\d.]+ [\d.]+ Q [\d.]+ [\d.]+ 1620 82$/)
   // Without a via the single cubic runs straight to the arc; without a source the line starts at the arc.

@@ -111,4 +111,77 @@ the hollow square at 23:30.
 
 - `3ca7fd24` model/Scene/fixtures + first test pass
 - `2ac23bd8` tests
-- (this file + the Revision 1 section) — see the final `DONE` sha.
+- `9b6af537` this file + the Revision 1 section (`DONE ROUTINE-ORIGINS 9b6af537`)
+
+# R2 as-built — CONTEXT-RING (same worktree, follow-up commits)
+
+Sky, 2026-10-07 15:05 — "can we make the desk icons outer ring on the hud be a context window indicator of the desk session?"
+Design: `docs/design/128-hud-scene.md` → `## Revision 2 — context gauge on the desk rings`.
+
+## Per-file changes
+
+### scene/model.ts
+- `Ctx = { fill, used, window, live }`; `Ring.ctx: Ctx | null` (set on agent rings — the theuth ring included when its roster row has
+  a desk — whose desk session has an entry in `SceneData.contexts`; `null` otherwise and on routine/fold rings).
+- `contextFill(breakdown, session, models)` → `Ctx | null`: `used = last_provider_context ?? total_estimate`; `window =
+  session.context_size ?? models.find(id === session.model)?.context`; `window ≤ 0` → null; `fill` clamped to [0, 1].
+  Precedence note: the addendum named the catalog first and `context_size` as the fallback; the chat's `ContextMeter` trusts the
+  harness's reported `context_size` first, and this follows the house rule. The two differ only when both exist and disagree.
+- `kTokens(n)` (`8.2k` under 10k, `118k` above), `ctxTitle(ctx)` → `context ≈ 118k of 200k (59 %)`.
+- `GAUGE_R = 17`. `gaugeEnd(cx, cy, r, fill)` → the sweep's end point; `gaugePath(cx, cy, r, fill)` → `''` at ≤ 0, one `A r r 0 L 1`
+  arc with `L = fill > 0.5 ? 1 : 0`, two half arcs at ≥ 1.
+- `rings(…, g, contexts = NO_CONTEXTS)` — trailing optional `ReadonlyMap<SessionId, Ctx>`. The desk session = `sessions.find(id ===
+  a.desk) ?? sessions.find(desk === name)`. Sub-label gets ` · ctx N %` (rounded) when `ctx` is set.
+- `SceneData.contexts?: ReadonlyMap<string, Ctx>`; `scene()` passes it through.
+
+### scene/Scene.tsx
+- Each ring with `ctx`: `<g data-gauge={ring.id}>` holding the track `<circle r=17 fill=none stroke=C.border stroke-width=1>`, the
+  sweep `<path d=gaugePath(x, y, 17, fill) stroke-width=2 stroke-linecap=round>` (omitted at fill 0) and the 1.6 px end dot — sweep
+  and dot in `C.info` when the ring is `live`, `C.secondary` otherwise (never `C.accent`, never `C.danger`). Tooltip appends
+  ` · ${ctxTitle(ctx)}`. Flow anchors unchanged (±14). Spacing: 53 − 34 = 19 px between tracks, so r 17 stands.
+
+### scene/SceneCompact.tsx
+- No change: the row's sub-label already carries ` · ctx N %`; no gauge in the compact list (the 32 px glyph box has no room).
+
+### hud/queries.ts
+- `useDeskContexts(sessions)`: `useQueries` over `sessions.filter(desk && !archived)` — `queryKey ['context', 'breakdown', id]`,
+  `api.session_context_breakdown(id)`, `staleTime 20_000`, `refetchInterval 30_000`, `enabled: !sim`; a module-level `combine`
+  (`rs.map(r => r.data)`) keeps the result referentially stable between unrelated renders. One `on(...)` subscription each for
+  `TurnFinished`, `Compacted`, `ContextUsed` (all carry `session`) invalidating that session's key. Folds with `useModels()`
+  (`components/agents/queries.ts`, `queryKeys.models`) through `contextFill` into a `Map<SessionId, Ctx>` (memoised on desks, data,
+  models).
+
+### hud/Hud.tsx
+- `const contexts = useDeskContexts(sessions.data)`; `sceneData.contexts = fixture?.contexts ?? contexts` (+ dependency).
+
+### scene/fixtures.ts
+- `contexts`: `desk-ops` 124k/200k live, `desk-research` 62k/200k live, `desk-builder` 176k/200k not live; `desk-analyst` absent
+  (a desk with no breakdown → no gauge). `sceneFixture` stays `Required<SceneData>`.
+
+### Tests (model.test.ts 22, Scene.test.ts 3 — 35 in `src/components/hud`)
+- gaugePath at 0 / −0.2 / 0.25 / 0.5 / 0.75 / 1 / 1.4 (exact strings; flag flips above 0.5; full circle at ≥ 1); `gaugeEnd` at 0,
+  0.25, 1.
+- contextFill: last bill over estimate; `context_size` over the catalog and usable without models; clamp to 1; null without models,
+  with an unknown model, with `context: 0`. `kTokens`, `ctxTitle`.
+- ring.ctx: ops-desk `{0.62 …}` and sub `4 open · 1h · ctx 62 %`; builder 0.88; analyst (desk, no entry) null and plain sub;
+  docs-desk (no desk) null; theuth null; every routine ring null; no map → all null, labels as before; desk found by
+  `SessionSummary.desk === name` when the roster row has no desk id; the `+N more` fold ring null; `scene(F).rings` with ctx =
+  ops-desk, research, builder.
+- Scene render: exactly 3 `data-gauge` groups / 3 `r="17"` tracks; ops-desk's group has the border-token track, a large-arc faience
+  sweep (width 2, round cap) and a faience end dot; builder's sweep is `--fg-secondary` with no `--fg-accent`; no gauge for analyst,
+  nightly-digest, theuth; sub-label and tooltip text. Compact: the `ctx 62 %` text and zero `r="17"` circles.
+
+## Gates (as before, under `build-lock`, label `128b-hud`)
+
+1. `bun run check` — 0 errors outside the pre-existing stale-bindings set described above (same 73 lines; nothing in `hud/**`).
+2. `bunx vitest run src/components/hud` — 4 files, **35 passed**.
+3. `bunx vite build` — **built in 7.98 s**.
+
+Visual smoke (static render of the fixture `Scene` with the `.dark` tokens, as for R1): faience sweeps on ops-desk (62 %) and
+research (31 %), builder's 88 % sweep in the secondary ink around its gold waiting ring, nothing on analyst / docs-desk / theuth /
+the routine group.
+
+## Commits
+
+- `7194d58f` model/Scene/queries/Hud/fixtures/tests
+- (this section + the Revision 2 section) — see `DONE CONTEXT-RING <sha>`.

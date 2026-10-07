@@ -565,3 +565,30 @@ were never the origin of their firings.
 7. Fixtures: 2 fired-today routines (one with an error result), 1 running, 1 due later today; tests in `model.test.ts` and
    `Scene.test.ts` cover the ring set and order, `via.id === 'ring:routine:<name>'` and `d` starting at `M <via.x+14>` for every
    routine fire, the dashed label-less due connector landing on the square, the capacity fold at hv 600, and the IN FLIGHT count.
+
+## Revision 2 — context gauge on the desk rings (Sky, 2026-10-07 15:05)
+
+> "can we make the desk icons outer ring on the hud be a context window indicator of the desk session?"
+
+**What.** Every agent ring (a desk) carries an outer gauge: a faint full track (r 17, `--border-default`, width 1) and a sweep from
+12 o'clock clockwise over `fill` of the circle (width 2, round cap, 1.6 px dot at its end). The sweep is purely length-coded; its
+colour is the ring's state ink — faience when the ring is live, the secondary ink otherwise — never gold (needs-you) and never
+carnelian (errors). Routine, overflow and desk-less rings draw nothing. The ring's sub-label appends ` · ctx 62 %`; its tooltip
+adds `context ≈ 118k of 200k (59 %)` (k = thousands, one decimal under 10k). The compact list shows the same sub-label text and no
+gauge. Flow anchors stay at ±14; a line may cross the track. 53 − 2·17 = 19 px stays between neighbouring tracks.
+
+**Data path** (no engine change). The desk session of agent `<name>` is the roster row's `desk` session id, else the sessions-list
+row with `SessionSummary.desk === '<name>'`. `useDeskContexts(sessions)` (`hud/queries.ts`) runs `useQueries` over the desk sessions
+(`['context', 'breakdown', id]`, `session_context_breakdown`, staleTime 20 s, refetchInterval 30 s) and invalidates a session's key on
+its `TurnFinished`, `Compacted` and `ContextUsed` events; it folds each breakdown with `list_models` (`useModels`, `queryKeys.models`)
+through the pure `contextFill` into `SceneData.contexts: Map<SessionId, { fill, used, window, live }>`. `rings()` attaches the entry of
+the desk session as `Ring.ctx`. Everything works without the map (`ctx: null` everywhere).
+
+**Fill.** `used = last_provider_context ?? total_estimate`; `window = SessionSummary.context_size ?? ModelInfo.context` for the
+session's model (the harness's reported window first — the same precedence the chat's ContextMeter uses — the catalog otherwise);
+`fill = clamp(used / window, 0, 1)`.
+
+**No fake value.** A desk whose window is unknown (no `context_size` and a model missing from the catalog or with `context: 0`), or
+whose breakdown has not arrived, has `ctx: null`: no track, no sweep, no `ctx` text. Absence means unknown.
+
+`gaugePath(cx, cy, r, fill)`: `''` at 0; one arc with the large-arc flag set when `fill > 0.5`; at ≥ 1 a full circle as two half arcs.
