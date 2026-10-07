@@ -26,7 +26,7 @@ Branch `feat/123-w2-charts`. Two workers: the original W2 (commits `3402e7a8`, `
 
 ## Gates (verbatim counts)
 
-- `cargo test -p surface`: `test result: ok. 69 passed; 0 failed`.
+- `cargo test -p surface`: `ok. 69 passed; 0 failed`.
 - `crates/desktop/ui`: `bun run check` clean; `bunx vitest run src/components/chat/surface src/lib/diagram`: `Test Files 2 failed | 9 passed (11)`, `Tests 13 failed | 210 passed (223)` → after the snapshot refresh `charts.test.ts` is `77 passed (77)`; the remaining 9 failures are all `stubs.test.ts` (Open items). `bun run build`: `✓ 13718 modules transformed … ✓ built in 40.15s`.
 - `packages/apps`: `bun run check` clean; `bun test`: `177 pass, 0 fail, 857 expect() calls, 12 files`.
 
