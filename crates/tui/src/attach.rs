@@ -276,6 +276,7 @@ mod tests {
             owner: String::new(),
             epoch: 1,
             here: true,
+            kind: Default::default(),
         };
         let r = from_session(&s);
         assert_eq!(r.kind, Kind::Session);

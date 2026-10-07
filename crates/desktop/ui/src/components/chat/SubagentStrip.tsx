@@ -1,5 +1,5 @@
 import { Link } from '@tanstack/react-router'
-import { useMemo } from 'react'
+import { type ReactNode, useMemo } from 'react'
 import { useSessionDrag } from '@/components/chat/Panes'
 import { stripRows } from '@/lib/session-tree'
 import { cn } from '@/lib/utils'
@@ -10,20 +10,25 @@ import { useSessionField } from '@/store/sessions'
  * 93: `● ● ●` centred above the to-do card, else directly above the composer (no label — Sky, 2026-10-04; above the
  * to-do — Sky, 2026-10-06, 112 §1) — one dot per live subagent (any depth) of the open session, in spawn order,
  * blinking on that subagent's streaming events (`AgentInfo.beat`, stamped by the reducer). Nothing when the subtree
- * is quiet; one row, never more, `+N` past `STRIP_CAP`.
+ * is quiet; one row, never more, `+N` past `STRIP_CAP`. `trailing` (125 §8.2: the advisor pill) rides the same row after
+ * the dots and keeps it rendered on its own when no subagent is live.
  */
-export function SubagentStrip({ session }: { session: string }) {
+export function SubagentStrip({ session, trailing }: { session: string; trailing?: ReactNode }) {
   const children = useSessionField(session, 'children')
   const { shown, more } = useMemo(() => stripRows(children ?? {}), [children])
-  if (shown.length === 0) return null
+  if (shown.length === 0 && !trailing) return null
+  const n = shown.length + more
   return (
-    <div className="mx-auto flex h-7 w-full shrink-0 select-none items-center justify-center px-4 text-xs text-fg-tertiary md:max-w-[768px]" aria-label={`${shown.length + more} subagent${shown.length + more === 1 ? '' : 's'} running`}>
-      <div className="flex items-center gap-1.5 overflow-hidden whitespace-nowrap">
-        {shown.map((row) => (
-          <SubagentDot key={row.id} row={row} />
-        ))}
-        {more > 0 && <span className="tabular-nums">+{more}</span>}
-      </div>
+    <div className="mx-auto flex h-7 w-full shrink-0 select-none items-center justify-center gap-3 px-4 text-xs text-fg-tertiary md:max-w-[768px]">
+      {shown.length > 0 && (
+        <div className="flex items-center gap-1.5 overflow-hidden whitespace-nowrap" aria-label={`${n} subagent${n === 1 ? '' : 's'} running`}>
+          {shown.map((row) => (
+            <SubagentDot key={row.id} row={row} />
+          ))}
+          {more > 0 && <span className="tabular-nums">+{more}</span>}
+        </div>
+      )}
+      {trailing}
     </div>
   )
 }

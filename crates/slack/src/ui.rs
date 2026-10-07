@@ -531,6 +531,12 @@ pub fn alert_error(text: &str) -> Value {
     json!([{ "type": "alert", "text": plain_text(&clip(line, ALERT_MAX)), "level": "error" }])
 }
 
+/// 125 §9: one `context` block for an advisor concern/blocker line.
+#[must_use]
+pub fn advisory_line(text: &str) -> Value {
+    json!([context(text)])
+}
+
 /// 110 §6: one collapsed `container` (title, subtitle = the body's first
 /// line). Slack allows no `markdown` child (§14.5 spike), so the body goes
 /// through [`markdown::plain`] into `plain_text` `section`s of
@@ -794,6 +800,7 @@ mod tests {
             owner: String::new(),
             epoch: 1,
             here: true,
+            kind: Default::default(),
         }
     }
 
@@ -840,6 +847,7 @@ mod tests {
             retention: agent::Retention::Durable,
             activity: Default::default(),
             cap: None,
+            kind: Default::default(),
         }];
         let models_rows = vec![
             ModelInfo {

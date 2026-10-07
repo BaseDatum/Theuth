@@ -3,6 +3,7 @@ import { subscribeWithSelector } from "zustand/middleware";
 import type { Injected } from '@/lib/injected';
 import { codeFromHistory } from '@/lib/codemap/slice';
 import type { CodemapSlice } from '@/lib/codemap/types';
+import type { AdvisoryNote } from "@/rpc/bindings/AdvisoryNote";
 import type { CompactStyle } from "@/rpc/bindings/CompactStyle";
 import type { ContextEntry } from "@/rpc/bindings/ContextEntry";
 import type { HarnessCommand } from "@/rpc/bindings/HarnessCommand";
@@ -139,6 +140,10 @@ export type Entry = { id: string; context?: ContextEntry; at?: number } & (
       seq?: number;
       failed?: boolean;
     }
+  /** 125 §8.3: one Advisory card — every note the advisor raised at one step boundary (or one steer). From the
+   * `advisory` history row or `AdvisoryAdded` live (`seq` is the stored row, the idempotence key); parsed from the
+   * `<advisory>` wrapper text when a row arrives as plain user input (no `seq` then). Never a `you` bubble. */
+  | { kind: "advisory"; notes: AdvisoryNote[]; seq?: number }
   | { kind: "info"; text: string }
   | { kind: "error"; text: string }
   | { kind: "compacted"; epoch: number; style: CompactStyle; summary?: string }
@@ -236,6 +241,8 @@ export type SessionSlice = {
   lastInjected?: string;
   /** Opener seq of the running (or last) turn, from `TurnStarted`. */
   turnSeq?: number;
+  /** 125 §3: the advisor model the last `AdvisorChanged` named (`null` = off); the reducer prints `advisor → …` when it moves. */
+  advisorModel?: string | null;
   /** A `browser_*` tool ran in this session: the header shows the live-view globe. */
   browser: boolean;
   /** The live browser dialog is open (globe click or `BrowserShowLive`). */
@@ -518,7 +525,8 @@ export const createSessions = (): SessionsApi =>
       setChildren(id, agents) {
         set((st) => {
           const cur = st.sessions[id] ?? empty(id);
-          const children = Object.fromEntries(agents.map((a) => [a.id, a]));
+          // 125 §8.5: an advisor child is never a tree row, a strip dot or a live session; the engine hides it, this is the belt.
+          const children = Object.fromEntries(agents.filter((a) => a.kind !== "advisor").map((a) => [a.id, a]));
           return { sessions: { ...st.sessions, [id]: { ...cur, children } } };
         });
       },

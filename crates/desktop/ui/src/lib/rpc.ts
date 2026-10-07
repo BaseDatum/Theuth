@@ -46,6 +46,8 @@ export const queryKeys = {
   agents: (id: string) => ['agents', id] as const,
   /** `session_cost(id)` (51 §6.5); invalidated by `ModelUsageChanged`. */
   sessionCost: (id: string) => ['session-cost', id] as const,
+  /** `advisor_status(id)` (125 §8.1); patched in place by `AdvisorChanged`. */
+  advisorStatus: (id: string) => ['advisor-status', id] as const,
   terminals: (id: string) => ['terminals', id] as const,
   jobs: (id: string) => ['jobs', id] as const,
   prompt: (id: string) => ['prompt', id] as const,
@@ -227,6 +229,8 @@ export function useInvalidateOn(): void {
         void qc.invalidateQueries({ queryKey: ['communication'] })
         void qc.invalidateQueries({ queryKey: ['peers'] })
       }),
+      // 125 §8.1: the event carries the whole status — written into the query, no refetch.
+      on('AdvisorChanged', (e) => qc.setQueryData(queryKeys.advisorStatus(e.session), e.status)),
       // 53 (03 §3): the list and the current status follow the state machine; a title lands at `Summarized`.
       on('Started', (e) => {
         void qc.invalidateQueries({ queryKey: queryKeys.meetings })

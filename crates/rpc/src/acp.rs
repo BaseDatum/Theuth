@@ -599,6 +599,18 @@ fn replay(i: usize, entry: HistoryEntry) -> SessionUpdate {
         HistoryEntry::Interrupted { text, .. } => SessionUpdate::AgentMessageChunk(
             ContentChunk::new(format!("[interrupted — resuming] {text}").into()),
         ),
+        // 125 C: the advisor's notes replay as one user-side chunk per card.
+        HistoryEntry::Advisory { advisory, .. } => {
+            SessionUpdate::UserMessageChunk(ContentChunk::new(
+                advisory
+                    .notes
+                    .iter()
+                    .map(|n| format!("[advisor {:?}] {}", n.severity, n.note))
+                    .collect::<Vec<_>>()
+                    .join("\n")
+                    .into(),
+            ))
+        }
     }
 }
 

@@ -1,3 +1,4 @@
+import type { SessionKind } from '@/rpc/bindings/SessionKind'
 import type { SessionSummary } from '@/rpc/bindings/SessionSummary'
 import type { AgentInfo, AgentState } from '@/rpc/extra'
 
@@ -6,6 +7,9 @@ export const TREE_CAP = 5
 
 /** A subagent that still wants eyes: running, waiting on a peer, or blocked on an approval. Finished rows (idle, cancelled, error) are not. */
 export const live = (state: AgentState['state']): boolean => state === 'running' || state === 'awaiting' || state === 'approval'
+
+/** 125 §8.5: the hidden advisor child is never a tree row, a strip dot or a live session — the engine hides it; this is the belt. */
+export const notAdvisor = (r: { kind?: SessionKind }): boolean => r.kind !== 'advisor'
 
 /** What every subagent list sorts by: live rows first, then most recent activity, then newest created. */
 export type Rank = { live: boolean; at: number; created: number }
@@ -55,7 +59,7 @@ export function cappedTree(
 /** Subtree rows keyed by their parent, so each parent's list is ranked and capped on its own. */
 export function childrenOf(rows: readonly AgentInfo[]): Map<string, AgentInfo[]> {
   const out = new Map<string, AgentInfo[]>()
-  for (const r of rows) {
+  for (const r of rows.filter(notAdvisor)) {
     const list = out.get(r.parent)
     if (list) list.push(r)
     else out.set(r.parent, [r])
@@ -73,7 +77,7 @@ const bySpawn = (a: AgentInfo, b: AgentInfo): number => spawn(a) - spawn(b) || a
 /** The subagent strip's rows (93): the live rows of a subtree in spawn order, the first `limit` shown, the rest counted. */
 export function stripRows(children: Readonly<Record<string, AgentInfo>>, limit = STRIP_CAP): { shown: AgentInfo[]; more: number } {
   const rows = Object.values(children)
-    .filter((r) => live(r.state.state))
+    .filter((r) => notAdvisor(r) && live(r.state.state))
     .sort(bySpawn)
   return { shown: rows.slice(0, limit), more: Math.max(0, rows.length - limit) }
 }
@@ -102,7 +106,7 @@ export function rootOf(sessions: readonly SessionSummary[], id: string | undefin
 export function subtrees(sessions: readonly SessionSummary[]): Map<string, SessionSummary[]> {
   const out = new Map<string, SessionSummary[]>()
   for (const s of sessions) {
-    if (s.parent === null) continue
+    if (s.parent === null || !notAdvisor(s)) continue
     const root = rootOf(sessions, s.id)
     if (root === undefined) continue
     const list = out.get(root)
