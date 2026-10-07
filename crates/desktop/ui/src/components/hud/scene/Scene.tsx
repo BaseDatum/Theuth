@@ -3,7 +3,7 @@ import { type CSSProperties, type ReactNode, type RefObject, type SVGProps, useE
 import { age } from '@/components/tasks/helpers'
 import { cn } from '@/lib/utils'
 import { spend } from '../model'
-import { C, type Color, FIELD_H, fieldHeight, hhmm, hhmmss, MIX_ORDER, type Hairline, type OutcomeMix, type PunchCard, type Ring, type SceneData, type SceneModel, type Target, actorLabel, ringColor, ringDashed, ringDots, scene, streamColor, streamLink, truncate, W } from './model'
+import { C, type Color, FIELD_H, fieldHeight, hhmm, hhmmss, MIX_ORDER, type Hairline, type OutcomeMix, type PunchCard, type Ring, type SceneData, type SceneModel, type Target, actorLabel, ctxTitle, GAUGE_R, gaugeEnd, gaugePath, ringColor, ringDashed, ringDots, scene, streamColor, streamLink, truncate, W } from './model'
 import type { ActivityEntry } from '@/rpc/bindings/ActivityEntry'
 import type { AgentSummary } from '@/rpc/bindings/AgentSummary'
 import type { Task } from '@/rpc/bindings/Task'
@@ -517,9 +517,16 @@ export function Scene({ data, errors = [], now: fixed }: { data: SceneData; erro
             </text>
           )}
 
-          {/* (e) rings, (f) their labels */}
+          {/* (e) rings, (f) their labels, (g) Revision 2: the desk's context gauge on the outer track — length-coded only, faience when live, else the secondary ink */}
           {m.rings.map((r) => (
-            <To key={r.id} target={r.link} title={`${r.name} · ${r.sub || r.style}`}>
+            <To key={r.id} target={r.link} title={`${r.name} · ${r.sub || r.style}${r.ctx ? ` · ${ctxTitle(r.ctx)}` : ''}`}>
+              {r.ctx && (
+                <g data-gauge={r.id}>
+                  <circle cx={r.x} cy={r.y} r={GAUGE_R} fill="none" stroke={C.border} strokeWidth={1} />
+                  {r.ctx.fill > 0 && <path d={gaugePath(r.x, r.y, GAUGE_R, r.ctx.fill)} fill="none" stroke={r.style === 'live' ? C.info : C.secondary} strokeWidth={2} strokeLinecap="round" />}
+                  <circle cx={gaugeEnd(r.x, r.y, GAUGE_R, r.ctx.fill)[0]} cy={gaugeEnd(r.x, r.y, GAUGE_R, r.ctx.fill)[1]} r={1.6} fill={r.style === 'live' ? C.info : C.secondary} />
+                </g>
+              )}
               <RingGlyph r={r} x={r.x} y={r.y} />
               <text x={r.x - 22} y={r.y - 1} fontSize={11} fill={r.style === 'lapsed' ? C.tertiary : C.primary} textAnchor="end">
                 {r.name}

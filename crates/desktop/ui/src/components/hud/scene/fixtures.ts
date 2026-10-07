@@ -216,5 +216,12 @@ export function sceneFixture(now: number): Required<SceneData> {
     if (hour < 8 || hour > 20 ? rw() < 0.15 : true) activityWeek.push(row(ts, 'task_commented', pick(actors, rw()), T('1150'), `week ${i}`))
   }
   activityWeek.sort((a, b) => b.ts_ms - a.ts_ms)
-  return { attention, agents, tasks, routines, sessions, activityToday, activityWeek, activity: activityToday.slice(0, 44) }
+  // Revision 2: the desks' context gauges (session id → fill); analyst's desk has no breakdown yet → no gauge.
+  const ctx = (used: number, window: number, live: boolean) => ({ fill: used / window, used, window, live })
+  const contexts = new Map([
+    ['desk-ops', ctx(124_000, 200_000, true)],
+    ['desk-research', ctx(62_000, 200_000, true)],
+    ['desk-builder', ctx(176_000, 200_000, false)],
+  ])
+  return { attention, agents, tasks, routines, sessions, activityToday, activityWeek, activity: activityToday.slice(0, 44), contexts }
 }

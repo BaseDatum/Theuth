@@ -37,6 +37,23 @@ test('Scene draws the fixture: rings, needs, flows, panels, links, tokens only',
   // Only live rings pulse; motion is a class (styles.css turns it off under prefers-reduced-motion), never inline.
   expect(count(html, /class="hud-pulse"/g)).toBe(m.rings.filter((r) => r.style === 'live').length)
   expect(html).not.toContain('animation')
+  // Revision 2: a desk ring with a breakdown gets a track (r=17, border token) + a sweep (width 2, round cap, faience when live, secondary otherwise)
+  // + an end dot; rings without ctx (analyst, docs-desk, theuth, every routine) get nothing. Never gold, never carnelian.
+  expect(count(html, /data-gauge="/g)).toBe(3)
+  expect(count(html, /<circle[^>]*r="17"/g)).toBe(3)
+  const gauge = (id: string) => new RegExp(`<g data-gauge="${id}">(.*?)</g>`).exec(html)?.[1]
+  const ops = gauge('ring:agent:ops-desk')!
+  expect(ops).toMatch(/<circle[^>]*r="17" fill="none" stroke="var\(--border-default\)" stroke-width="1">/)
+  expect(ops).toMatch(/<path d="M 860 [\d.]+ A 17 17 0 1 1 [\d.]+ [\d.]+" fill="none" stroke="var\(--status-info-fg\)" stroke-width="2" stroke-linecap="round">/) // 62 % → large arc, live → faience
+  expect(ops).toMatch(/<circle[^>]*r="1.6" fill="var\(--status-info-fg\)">/)
+  const builder = gauge('ring:agent:builder')!
+  expect(builder).toContain('stroke="var(--fg-secondary)"') // waiting (gold ring) → the gauge stays secondary
+  expect(builder).not.toContain('var(--fg-accent)')
+  expect(gauge('ring:agent:analyst')).toBeUndefined()
+  expect(gauge('ring:routine:nightly-digest')).toBeUndefined()
+  expect(gauge('ring:theuth')).toBeUndefined()
+  expect(html).toContain('>4 open · 1h · ctx 62 %<')
+  expect(html).toContain('<title>ops-desk · 4 open · 1h · ctx 62 % · context ≈ 124k of 200k (62 %)</title>')
   // Links (R2: every destination the old sections offered): attention rows and header, task flows, agent rings, routine marks,
   // the theuth ring and SESSIONS LIVE → /new, the footer's split right slot, the OUTCOMES legend/backlog/board, SPEND and AGENTS big numbers.
   expect(html).toContain('href="/attention/approval:ap-4821"')
@@ -124,6 +141,8 @@ test('SceneCompact: pills, needs rows, ring list, four SVG panels + the stream b
   expect(html).toContain('href="/routines/nightly-digest"')
   expect(html).toContain('href="/routines/knowledge-sync"')
   expect(html).toContain('>next 23:30<')
+  expect(html).toContain('>4 open · 1h · ctx 62 %<') // Revision 2: the ctx share as text; no gauge track in the compact list
+  expect(count(html, /<circle[^>]*r="17"/g)).toBe(0)
   expect(html).toContain('href="/tasks?state=doing&amp;project="')
   expect(html).toContain('href="/tasks?state=backlog&amp;project="')
   // Under md: the compact stack — no flow field, no arc band, no 1920-wide scene.

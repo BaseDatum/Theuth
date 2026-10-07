@@ -1,6 +1,6 @@
 import { expect, test } from 'vitest'
 import { sceneFixture, T } from './fixtures'
-import { ARC, arc, arcPoint, C, dueFlows, END_X, FIELD_H, fieldHeight, flowPath, geom, hairlines, HAIRLINES_MAX, hourOf, LABEL_GAP, layoutEnds, needsYou, outcomeMix, outcomes, punchCard, RING, ringByActor, ringByRoutine, rings, rng, running, scene, sessionsToday, shortId, startOfDay, streamLink } from './model'
+import { ARC, arc, arcPoint, C, contextFill, ctxTitle, dueFlows, END_X, FIELD_H, fieldHeight, flowPath, gaugeEnd, gaugePath, geom, hairlines, HAIRLINES_MAX, hourOf, kTokens, LABEL_GAP, layoutEnds, needsYou, outcomeMix, outcomes, punchCard, RING, ringByActor, ringByRoutine, rings, rng, running, scene, sessionsToday, shortId, startOfDay, streamLink } from './model'
 
 // A fixed local evening, as the mockup's clock reads.
 const NOW = new Date(2026, 9, 7, 19, 49, 19).getTime()
@@ -153,6 +153,59 @@ test('rings: the roster agent named theuth folds into the sessions ring — one 
   expect(ringByActor(rs, 'agent:theuth')).toBe(rs[0])
   // Without chats today the ring still names theuth's work; a working theuth is live even when no chat moved.
   expect(rings([self], [], [], [], [], NOW)[0]).toMatchObject({ sub: 'no chats today · 23 open', style: 'live' })
+})
+
+test('Revision 2 — gaugePath: empty at 0, one arc with the large-arc flag flipping above 0.5, two half arcs at 1; the end point walks clockwise from 12 o’clock', () => {
+  expect(gaugePath(100, 50, 17, 0)).toBe('')
+  expect(gaugePath(100, 50, 17, -0.2)).toBe('')
+  expect(gaugePath(100, 50, 17, 0.25)).toBe('M 100 33 A 17 17 0 0 1 117 50')
+  expect(gaugePath(100, 50, 17, 0.5)).toBe('M 100 33 A 17 17 0 0 1 100 67')
+  expect(gaugePath(100, 50, 17, 0.75)).toBe('M 100 33 A 17 17 0 1 1 83 50')
+  expect(gaugePath(100, 50, 17, 1)).toBe('M 100 33 A 17 17 0 1 1 100 67 A 17 17 0 1 1 100 33')
+  expect(gaugePath(100, 50, 17, 1.4)).toBe(gaugePath(100, 50, 17, 1))
+  expect(gaugeEnd(100, 50, 17, 0)).toEqual([100, 33])
+  expect(gaugeEnd(100, 50, 17, 0.25)[0]).toBeCloseTo(117, 9)
+  expect(gaugeEnd(100, 50, 17, 1)[1]).toBeCloseTo(33, 9)
+})
+
+test('Revision 2 — contextFill: the provider’s last bill over the estimate, context_size over the catalog window, clamped; unknown window → null (no gauge, no fake value)', () => {
+  const b = { head_images_tokens: 0, head_text_tokens: 0, tail_messages: 0, tail_tokens: 0, system_tokens: 0, total_estimate: 90_000, last_provider_context: 118_000, calibration: 1, live: true }
+  const s = F.sessions.find((x) => x.id === 'desk-ops')!
+  const models = [{ id: s.model, name: 'm', provider: 'p', context: 200_000, reasoning: false, image: false, efforts: [], budget_min: null, budget_max: null }]
+  expect(contextFill(b, s, models)).toEqual({ fill: 0.59, used: 118_000, window: 200_000, live: true })
+  expect(contextFill({ ...b, last_provider_context: null }, s, models)).toMatchObject({ fill: 0.45, used: 90_000 })
+  expect(contextFill(b, { ...s, context_size: 128_000 }, models)).toMatchObject({ fill: 118 / 128, window: 128_000 })
+  expect(contextFill(b, { ...s, context_size: 128_000 }, undefined)).toMatchObject({ window: 128_000 })
+  expect(contextFill({ ...b, last_provider_context: 250_000 }, s, models)!.fill).toBe(1)
+  expect(contextFill(b, s, undefined)).toBeNull()
+  expect(contextFill(b, { ...s, model: 'unknown/model' }, models)).toBeNull()
+  expect(contextFill(b, s, [{ ...models[0]!, context: 0 }])).toBeNull()
+  expect(kTokens(8_240)).toBe('8.2k')
+  expect(kTokens(118_400)).toBe('118k')
+  expect(ctxTitle({ fill: 0.59, used: 118_000, window: 200_000, live: true })).toBe('context ≈ 118k of 200k (59 %)')
+})
+
+test('Revision 2 — ring.ctx: set from the desk session’s entry, null without a desk session or an entry, null on routine/fold rings; the sub-label appends "· ctx N %"', () => {
+  const rs = rings(F.agents, F.sessions, F.routines, F.activityToday, F.attention, NOW, geom(), F.contexts)
+  const by = (name: string) => rs.find((r) => r.name === name)!
+  expect(by('ops-desk')).toMatchObject({ ctx: { fill: 0.62, used: 124_000, window: 200_000, live: true }, sub: '4 open · 1h · ctx 62 %' })
+  expect(by('builder').ctx?.fill).toBe(0.88)
+  expect(by('analyst').ctx).toBeNull() // a desk, but no breakdown in the map
+  expect(by('analyst').sub).toBe('1 open · 6m')
+  expect(by('docs-desk').ctx).toBeNull() // no desk at all
+  expect(by('theuth').ctx).toBeNull()
+  for (const r of rs.filter((r) => r.id.startsWith('ring:routine'))) expect(r.ctx).toBeNull()
+  // Without the map every ring is ctx-less and the labels are as before.
+  const plain = rings(F.agents, F.sessions, F.routines, F.activityToday, F.attention, NOW)
+  expect(plain.every((r) => r.ctx === null)).toBe(true)
+  expect(plain.find((r) => r.name === 'ops-desk')!.sub).toBe('4 open · 1h')
+  // The desk is found by `SessionSummary.desk === name` when the roster row has no desk id.
+  const noId = F.agents.map((a) => (a.file.name === 'ops-desk' ? { ...a, desk: null } : a))
+  expect(rings(noId, F.sessions, F.routines, F.activityToday, F.attention, NOW, geom(), F.contexts).find((r) => r.name === 'ops-desk')!.ctx?.fill).toBe(0.62)
+  // The fold ring carries no gauge.
+  const many = Array.from({ length: 12 }, (_, i) => ({ ...F.agents[3]!, file: { ...F.agents[3]!.file, name: `a${i}` } }))
+  expect(rings(many, [], [], [], [], NOW, geom(), F.contexts)[8]!.ctx).toBeNull()
+  expect(scene(F, NOW).rings.filter((r) => r.ctx).map((r) => r.name)).toEqual(['ops-desk', 'research', 'builder'])
 })
 
 test('streamLink: a row opens its subject — tasks for task/child/escalation kinds, agents for agent/budget kinds, routines for fires, nothing otherwise', () => {

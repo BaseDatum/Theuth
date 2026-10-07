@@ -20,7 +20,7 @@ import { cn } from '@/lib/utils'
 import type { AttentionItem } from '@/rpc/bindings/AttentionItem'
 import { useSecretRequests } from '@/store/approvals'
 import { snoozeUntil } from './model'
-import { ATTENTION_KEY, SECRET_REQUESTS_KEY, useActivity, useActivityToday, useActivityWeek, useAttention, useAttentionActions, useSecretRequestRows, useSessionList } from './queries'
+import { ATTENTION_KEY, SECRET_REQUESTS_KEY, useActivity, useActivityToday, useActivityWeek, useAttention, useAttentionActions, useDeskContexts, useSecretRequestRows, useSessionList } from './queries'
 import { sceneFixture } from './scene/fixtures'
 import type { SceneData } from './scene/model'
 import { SceneSwitch } from './scene/SceneCompact'
@@ -43,6 +43,7 @@ export function Hud() {
   const activityToday = useActivityToday()
   const activityWeek = useActivityWeek()
   const sessions = useSessionList()
+  const contexts = useDeskContexts(sessions.data)
   useEffect(() => {
     document.title = ''
   }, [])
@@ -59,8 +60,9 @@ export function Hud() {
       activityToday: activityToday.data,
       activityWeek: activityWeek.data,
       activity: fixture?.activity ?? activity.data,
+      contexts: fixture?.contexts ?? contexts,
     }),
-    [fixture, attention.data, agents.data, tasks.data, routines.data, sessions.data, activityToday.data, activityWeek.data, activity.data],
+    [fixture, attention.data, agents.data, tasks.data, routines.data, sessions.data, activityToday.data, activityWeek.data, activity.data, contexts],
   )
   const sceneErrors = (
     [
