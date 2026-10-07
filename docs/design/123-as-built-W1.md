@@ -14,10 +14,10 @@ Branch `feat/123-w1-elk`: `39d8b79e` (Rust), `661d8aa0` (desktop + apps), then t
 2. Draw order per brief (groups → edges → nodes → labels on nodes); edge labels are drawn with their edge (before nodes) so a mask never covers a later node (§5.4 #5).
 3. `<desc>` uses C's `describe()` (`StateMachine: Task lifecycle — 6 states`), as every stub/wave does, not the lowering's literal first line.
 4. Tree `nodes|org` connectors are drawn here (parent bottom → child top, r=8) rather than from mrtree's sections. `mrtree` ships in elkjs 0.9.3 (`org.eclipse.elk.mrtree` options present).
-5. Graph legend is static (state swatches / style lines); toggling states locally was not asked and §5.3 #5 names series.
-6. Edge units share the node tab order (`edge:<i>` after nodes); GraphDelta repeats a node's `data-unit` in both panels (selection lights both; `focusUnit`/tooltip take the first).
-7. No `bridge()` at crossings — the kernel exports none (README).
-8. `graph.rs` edited (not listed as mine, not forbidden): the §4.4 Graph ext. lowering had no owner.
+5. Graph legend is static (state swatches / style lines); §5.3 #5's toggle names series.
+6. Edge units follow the nodes in tab order (`edge:<i>`); GraphDelta repeats a node's `data-unit` in both panels (selection lights both; focus/tooltip take the first).
+7. No `bridge()` at crossings — the kernel exports none.
+8. `graph.rs` edited (unlisted, not forbidden): the §4.4 Graph ext. lowering had no owner.
 
 ## Gates
 `cargo test -p surface`: 70 passed, 0 failed · desktop `bun run check`: 0 errors · scoped vitest (`surface`, `lib/diagram`, `graph-layout`, `codemap`, `board`): 25 files, 206 tests — 201 pass, 5 fail in `stubs.test.ts` (expected: `data-stub` gone for my five, see Open items) · `bun run build` ✓ 39.67 s · apps `bun run check` 0 errors, `bun test` 146 pass / 0 fail.
