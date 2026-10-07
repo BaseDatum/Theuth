@@ -11,6 +11,7 @@ import { PairScreen } from '@/components/link/PairScreen'
 import { Toaster } from '@/components/ui/sonner'
 import { describe } from '@/lib/describe'
 import { installDictationListeners, refreshStatus, setModel } from '@/lib/dictation'
+import { FocusTracker, Throttle, deriveFocus, typeCounts } from '@/lib/event-focus'
 import { useMeetingHotkeys } from '@/lib/meeting-hotkeys'
 import { useMeetingSettings } from '@/lib/meeting-settings'
 import { notifyIfHidden, primeNotifications } from '@/lib/notify'
@@ -102,16 +103,30 @@ function loadInfo(st: Stores, api: Api): Promise<void> {
 }
 
 /**
- * After a reconnect or `Lagged`: the gap is lost, so refetch what the screen shows (25 §4.3).
- * The chat route takes the event when mounted; `unload` covers a route that mounts later
- * (a local reconnect shows the startup screen meanwhile). Communication state, peer directories and
- * request lists (50 §10) may have missed their change events too; a foreground return with a live
+ * 129 D3: `Lagged` is a resync, not a reset. The gap is lost, so every slice is labelled stale and the mounted
+ * chats re-settle through their `contextStale → settle()` path; `loaded` stays, so nothing on screen empties.
+ * The session list is the one query refetched (`TurnStarted`/`TurnFinished` may have been dropped).
+ */
+function resync(st: Stores): void {
+  const sessions = st.sessions.getState()
+  sessions.resetLagged()
+  sessions.markStale()
+  void st.qc.invalidateQueries({ queryKey: queryKeys.sessions })
+  if (useEngines.getState().active === st.id)
+    window.dispatchEvent(new CustomEvent('theuth:reload-session', { detail: { settled: true } }))
+}
+
+/**
+ * After a reconnect: the gap is lost, so refetch what the screen shows (25 §4.3) — a full page for the mounted
+ * chats (the bare event; `running` may be wrong after a long gap and only a full page corrects it), the stale
+ * mark for the rest (they settle on mount). Never `unload()` (129 D3). Communication state, peer directories
+ * and request lists (50 §10) may have missed their change events too; a foreground return with a live
  * socket needs none of this (events kept flowing; stale queries refetch on focus).
  */
 function reload(st: Stores): void {
   const sessions = st.sessions.getState()
   sessions.resetLagged()
-  sessions.unload()
+  sessions.markStale()
   void st.qc.invalidateQueries({ queryKey: queryKeys.sessions })
   void st.qc.invalidateQueries({ queryKey: queryKeys.knowledge })
   void st.qc.invalidateQueries({ queryKey: ['communication'] })
@@ -125,6 +140,19 @@ function reload(st: Stores): void {
   if (api) void loadInfo(st, api).catch(() => undefined)
   if (useEngines.getState().active === st.id)
     window.dispatchEvent(new Event('theuth:reload-session'))
+}
+
+/** 129 D4: a drain past this names the event types in its batch, so the next heavy event type names itself. */
+const SLOW_DRAIN_MS = 50
+
+/** `longtask` is Chromium-only (WKWebView has no such entry type): installed once, when the platform has it. */
+let longTasksWatched = false
+function watchLongTasks(): void {
+  if (longTasksWatched || typeof PerformanceObserver === 'undefined' || !PerformanceObserver.supportedEntryTypes?.includes('longtask')) return
+  longTasksWatched = true
+  new PerformanceObserver((list) => {
+    for (const e of list.getEntries()) console.warn('[events] long task', { ms: Math.round(e.duration) })
+  }).observe({ entryTypes: ['longtask'] })
 }
 
 /**
@@ -142,8 +170,13 @@ function attach(st: Stores): void {
     cancelAnimationFrame(frame)
     clearTimeout(timer)
     frame = timer = 0
-    dispatch(queue.splice(0), st)
+    const batch = queue.splice(0)
+    const t0 = performance.now()
+    dispatch(batch, st)
+    const ms = performance.now() - t0
+    if (ms > SLOW_DRAIN_MS) console.warn('[events] slow drain', { ms: Math.round(ms), events: batch.length, types: typeCounts(batch) })
   }
+  watchLongTasks()
   st.attached = client.subscribe(null, null, (e) => {
     queue.push(e)
     if (frame) return
@@ -344,24 +377,31 @@ function visible(session: string): boolean {
   return root !== null && leaves(root).includes(session)
 }
 
-/** 25 §4.5 notifications, the `Lagged` reload and the tray badge; per active engine. The island only reloads; a popout also closes with its chat, PTY's session or meeting. */
+/** 129 D3: one resync per 5 s (later `Lagged`s in the window coalesce into one trailing run); the toast once a minute. */
+const RESYNC_MS = 5_000
+const LAGGED_TOAST_MS = 60_000
+
+/** 25 §4.5 notifications, the `Lagged` resync and the tray badge; per active engine. The island only resyncs; a popout also closes with its chat, PTY's session or meeting. */
 function useEventSideEffects(st: Stores): void {
   const qc = useQueryClient()
   useEffect(() => {
+    const resyncs = new Throttle(() => resync(st), RESYNC_MS, true)
     if (AUX) {
-      const offs = [on('Lagged', () => reload(st))]
+      const offs = [on('Lagged', () => resyncs.call())]
       const session = popoutSession(POPOUT)
       if (session !== null) offs.push(on('SessionDeleted', (e) => e.session === session && closePopout()))
       const meeting = popoutMeeting(POPOUT)
       if (meeting !== null) offs.push(on('Deleted', (e) => e.meeting === meeting && closePopout()))
       return () => {
+        resyncs.cancel()
         for (const off of offs) off()
       }
     }
+    const toasts = new Throttle(() => toast('Events dropped, resyncing'), LAGGED_TOAST_MS, false)
     const offs = [
       on('Lagged', () => {
-        reload(st)
-        toast('Events dropped, reloaded')
+        resyncs.call()
+        toasts.call()
       }),
       on(
         'ApprovalRequested',
@@ -391,9 +431,60 @@ function useEventSideEffects(st: Stores): void {
       }),
     ]
     return () => {
+      resyncs.cancel()
       for (const off of offs) off()
     }
   }, [st, qc])
+}
+
+/** 129 §3.4: the focus call waits this long after a route, pane, popout or desk change. */
+const FOCUS_DEBOUNCE_MS = 100
+
+/**
+ * 129 §3.4: tell the engine which sessions this window renders live text for (`deriveFocus`); deltas for the
+ * rest stay on the server. Sent on every `open` (server state is per connection) and when the set changes;
+ * a session leaving the set is marked stale (its deltas are skipped from here), one entering re-settles through
+ * the chat route's `contextStale → settle()`. An engine from before 129 answers -32601: ignored.
+ */
+function useEventFocus(st: Stores): void {
+  useEffect(() => {
+    const tracker = new FocusTracker()
+    let timer = 0
+    const send = () => {
+      timer = 0
+      const { api, state } = st.connection.getState()
+      if (!api || state !== 'open') return
+      const { root } = usePanes.getState()
+      const next = deriveFocus({
+        pathname: router.state.location.pathname,
+        leaves: root ? leaves(root) : [],
+        popout: popoutSession(POPOUT),
+        desk: voiceKey.useVoiceKey.getState().desk,
+      })
+      const { send: changed, left } = tracker.update(next)
+      if (!changed) return
+      for (const s of left) st.sessions.getState().markStale(s)
+      api.set_event_focus(next).catch(() => undefined)
+    }
+    const schedule = () => {
+      if (!timer) timer = window.setTimeout(send, FOCUS_DEBOUNCE_MS)
+    }
+    const offs = [
+      router.subscribe('onResolved', schedule),
+      usePanes.subscribe((s, prev) => s.root !== prev.root && schedule()),
+      voiceKey.useVoiceKey.subscribe((s, prev) => s.desk !== prev.desk && schedule()),
+      st.connection.subscribe((s, prev) => {
+        if (s.state !== 'open' || prev.state === 'open') return
+        tracker.reset()
+        send()
+      }),
+    ]
+    send()
+    return () => {
+      clearTimeout(timer)
+      for (const off of offs) off()
+    }
+  }, [st])
 }
 
 /**
@@ -409,6 +500,7 @@ function Shell({ engine, onRelaunch }: { engine: string; onRelaunch(): void }) {
   )
   useInvalidateOn()
   useEventSideEffects(scope(engine))
+  useEventFocus(scope(engine))
   return ready ? (
     <RouterProvider router={router} />
   ) : (
@@ -516,7 +608,7 @@ function Main() {
 
   useTauri()
   useMeetingHotkeys()
-  // 51 §8.3: one router-level owner; `reload()`'s `unload()` marks slices only, the private record (memory-only) survives a reconnect.
+  // 51 §8.3: one router-level owner; `reload()` marks slices stale only, the private record (memory-only) survives a reconnect.
   usePrivateOwner(router)
 
   return (
