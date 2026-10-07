@@ -36,7 +36,12 @@ $five = @(
     'WindowsAppRuntime.png'
 )
 
-Get-Process -Name 'Theuth.Companion' -ErrorAction SilentlyContinue | Stop-Process -Force
+# Stop only companions started from this worktree or from the output dir (they lock files we are about to replace);
+# other worktrees' test instances (parallel waves, build-service slots) must survive this build.
+$mine = @(($repo.TrimEnd('\') + '\'), ([IO.Path]::GetFullPath($Output).TrimEnd('\') + '\'))
+Get-Process -Name 'Theuth.Companion' -ErrorAction SilentlyContinue |
+    Where-Object { $p = $_.Path; $p -and ($mine | Where-Object { $p.StartsWith($_, [StringComparison]::OrdinalIgnoreCase) }) } |
+    Stop-Process -Force
 if ($Clean -and (Test-Path $Output)) { Remove-Item -Recurse -Force $Output }
 
 Write-Host "[1/4] dotnet publish $Configuration -> $Output"

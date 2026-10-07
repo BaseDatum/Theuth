@@ -13,8 +13,9 @@ public static class Program
     public static int Main(string[] args)
     {
         WinRT.ComWrappersSupport.InitializeComWrappers();
-        // W2: single instance goes here, before any XAML — AppInstance.FindOrRegisterForKey("io.theuth.companion"); when it
-        // is not current, RedirectActivationToAsync(AppInstance.GetCurrent().GetActivatedEventArgs()) and return 0 (§5.5, A9).
+        // W2: single instance, before any XAML (§5.5, A9) — a second launch redirects its activation to the running companion,
+        // lets it take the foreground and exits 0 (Ui/SingleInstance.cs).
+        if (!Ui.SingleInstance.Claim(args)) return 0;
         Application.Start(p =>
         {
             var context = new DispatcherQueueSynchronizationContext(DispatcherQueue.GetForCurrentThread());

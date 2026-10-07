@@ -1,0 +1,73 @@
+// Design 134 W2 (tray, rail, panel, hotkeys): the Win32 surface the companion calls. CsWin32 generates PInvoke.* and
+// the types; nothing here is hand-declared. Keep it sorted by area.
+// windows and focus
+GetForegroundWindow
+SetForegroundWindow
+AllowSetForegroundWindow
+ASFW_ANY
+IsWindow
+IsWindowVisible
+GetWindowThreadProcessId
+GetClassName
+GetWindowText
+GetWindowRect
+GetCursorPos
+EnumWindows
+// styles, layering, capture exclusion, DPI
+GetWindowLongPtr
+SetWindowLongPtr
+SetWindowPos
+SetLayeredWindowAttributes
+SetWindowDisplayAffinity
+GetWindowDisplayAffinity
+GetDpiForWindow
+// subclassing WinUI windows (comctl32)
+SetWindowSubclass
+DefSubclassProc
+RemoveWindowSubclass
+MINMAXINFO
+// the hidden host window (class TheuthCompanionRail): tray callback, WM_HOTKEY, WM_CLOSE from the shell
+RegisterClassEx
+CreateWindowEx
+DefWindowProc
+DestroyWindow
+PostMessage
+RegisterWindowMessage
+GetModuleHandle
+// hotkeys and keys
+RegisterHotKey
+UnregisterHotKey
+GetKeyState
+GetAsyncKeyState
+GetKeyboardLayout
+ToUnicodeEx
+// tray
+Shell_NotifyIcon
+Shell_NotifyIconGetRect
+LoadImage
+DestroyIcon
+GetSystemMetrics
+NOTIFYICON_VERSION_4
+NIN_SELECT
+// the tray's context menu (Win32 popup: the MenuFlyout host fail-fast the process on build-B)
+CreatePopupMenu
+AppendMenu
+TrackPopupMenuEx
+DestroyMenu
+WM_NULL
+// messages
+WM_ACTIVATE
+WM_CLOSE
+WM_CONTEXTMENU
+WM_DESTROY
+WM_DISPLAYCHANGE
+WM_GETMINMAXINFO
+WM_HOTKEY
+WM_LBUTTONUP
+WM_MOUSEACTIVATE
+WM_MOUSEMOVE
+WM_RBUTTONUP
+WM_SETTINGCHANGE
+WM_APP
+MA_NOACTIVATE
+WA_INACTIVE

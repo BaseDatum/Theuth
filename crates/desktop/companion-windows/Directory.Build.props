@@ -38,4 +38,9 @@
     <!-- Download-only: the five deployment/insights files toasts need are extracted from its runtime MSIX (§2 C2b, §5.7). -->
     <WasdkRuntimeVersion>2.5.1</WasdkRuntimeVersion>
   </PropertyGroup>
+
+  <!-- W2: Win32 interop source generator (tray, rail styles, hotkeys) for src/Theuth.Companion. -->
+  <PropertyGroup>
+    <CsWin32Version>0.3.358</CsWin32Version>
+  </PropertyGroup>
 </Project>

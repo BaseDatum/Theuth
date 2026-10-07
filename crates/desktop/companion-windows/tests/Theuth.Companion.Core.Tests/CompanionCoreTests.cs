@@ -341,7 +341,7 @@ public sealed class CardModelTests
         Assert.Equal(new[] { "Open a PR", "Fix the CLI" }, c.Options.Select(o => o.Label));
         Assert.Equal(new CardAction.SendNextStep("s4", "Open a PR"), c.Recommended?.Action);
         var hire = Card.Make(CoreFx.Item("hire:x", AttentionKind.Hire, agent: "x"));
-        Assert.Empty(hire.Options);
+        Assert.Equal(new[] { "Hire", "Decline" }, hire.Options.Select(o => o.Label)); // 134 W2: 130 §4.2's per-kind set (W2Tests)
         Assert.False(hire.Clearable);
         Assert.Equal("theuth://attention/hire:x", hire.AttentionUrl.OriginalString);
         Assert.True(Card.Make(CoreFx.Item("show:1", AttentionKind.Show)).Clearable);

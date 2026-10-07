@@ -21,6 +21,12 @@ public interface IStoreEngine
     Task<string> DeskOpenAsync(string name);
     Task SetEventFocusAsync(IReadOnlyList<string> sessions);
     Task<ValueList<ActivityEntry>> ActivityListAsync(ActivityFilter filter);
+
+    /// <summary>134 W2 — Hire: <c>agent_approve(name)</c>. Default members so engines written before W2 (tests, W3/W4) still compile.</summary>
+    Task AgentApproveAsync(string name) => Task.FromException(new NotSupportedException("agent_approve"));
+
+    /// <summary>134 W2 — Decline a hire: <c>agent_remove(name, note)</c>.</summary>
+    Task AgentRemoveAsync(string name, string? note) => Task.FromException(new NotSupportedException("agent_remove"));
 }
 
 /// <summary>Timers on the Store's owner thread (the app: <c>DispatcherQueueTimer</c>; tests: virtual time). Dispose cancels.</summary>
@@ -51,4 +57,6 @@ public sealed class RpcStoreEngine(RpcClient client) : IStoreEngine
     public Task<string> DeskOpenAsync(string name) => Client.DeskOpenAsync(name);
     public Task SetEventFocusAsync(IReadOnlyList<string> sessions) => Client.SetEventFocusAsync(sessions);
     public Task<ValueList<ActivityEntry>> ActivityListAsync(ActivityFilter filter) => Client.ActivityListAsync(filter);
+    public Task AgentApproveAsync(string name) => Client.CallRawAsync("agent_approve", name);
+    public Task AgentRemoveAsync(string name, string? note) => Client.CallRawAsync("agent_remove", name, note);
 }
