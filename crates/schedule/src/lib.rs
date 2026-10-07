@@ -1038,6 +1038,7 @@ impl Schedule {
         );
         let (agent, project) = (spec.agent.clone(), spec.project.clone());
         let (memory, sensor_file) = (spec.memory, spec.sensor.as_ref().map(|s| s.file.clone()));
+        let reset_runtime = resets_runtime(spec);
         let run_timeout = spec.run_timeout;
         let one_shot = matches!(spec.when, file::When::At(_));
         let is_loop = until.is_some() || max_runs.is_some();
@@ -1200,6 +1201,13 @@ impl Schedule {
                         .await
                     {
                         tracing::debug!(%name, "clear before fire: {e}");
+                    }
+                    // 131 D1: the python runtime goes with the frame unless
+                    // `runtime: keep`; a failure never blocks the fire.
+                    if reset_runtime
+                        && let Err(e) = agents.ask(agent::ResetRuntime { session: s }).await
+                    {
+                        tracing::debug!(%name, "runtime reset before fire: {e}");
                     }
                 }
                 s
@@ -1560,6 +1568,14 @@ fn deliver(session: Option<SessionId>, name: String, text: String) {
             Err(e) => tracing::info!(%name, "not delivered: {e}"),
         }
     });
+}
+
+/// 131 D1: a fire that clears the frame (every clock-only file; a watcher
+/// with `memory: clear`) also resets the python runtime, unless the file says
+/// `runtime: keep`. A watcher with `memory: continue` clears neither.
+fn resets_runtime(spec: &file::Spec) -> bool {
+    (spec.sensor.is_none() || spec.memory == file::Memory::Clear)
+        && spec.runtime == file::Runtime::Clear
 }
 
 /// 34 §4 step 2, shared by [`Schedule::fire`] and `BindSession` (40 §1.12):
@@ -2886,6 +2902,39 @@ mod fire_tests {
         assert_eq!(actor.ask(GetRunTimeout).await.unwrap(), 90);
         let cfg = std::fs::read_to_string(dir.path().join("config.yaml")).unwrap();
         assert_eq!(cfg, "schedule:\n  run_timeout_secs: 90\n");
+    }
+
+    /// 131 D1: the runtime is reset exactly when the fire clears the frame
+    /// and the file does not say `runtime: keep`.
+    #[tokio::test]
+    async fn resets_runtime_follows_the_clear_and_the_key() {
+        let dir = tempfile::tempdir().unwrap();
+        let (s, _) = actor(
+            dir.path(),
+            &[
+                ("plain", "---\nevery: 1h\n---\ngo\n"),
+                ("keep", "---\nevery: 1h\nruntime: keep\n---\ngo\n"),
+                (
+                    "watch",
+                    "---\nevery: 60s\nwhen: a.py\nmax_runs: 1\n---\ngo\n",
+                ),
+                (
+                    "watch-clear",
+                    "---\nevery: 60s\nwhen: a.py\nmax_runs: 1\nmemory: clear\n---\ngo\n",
+                ),
+                (
+                    "watch-clear-keep",
+                    "---\nevery: 60s\nwhen: a.py\nmax_runs: 1\nmemory: clear\nruntime: keep\n---\ngo\n",
+                ),
+            ],
+        )
+        .await;
+        let resets = |name: &str| resets_runtime(s.entries[name].spec.as_ref().unwrap());
+        assert!(resets("plain"));
+        assert!(!resets("keep"));
+        assert!(!resets("watch"), "memory: continue keeps frame and runtime");
+        assert!(resets("watch-clear"));
+        assert!(!resets("watch-clear-keep"));
     }
 }
 

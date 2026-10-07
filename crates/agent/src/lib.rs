@@ -365,6 +365,16 @@ pub struct Compact {
     pub head: Option<String>,
 }
 
+/// `ask` → `Result<repl::ResetReport, String>`: forget `session`'s saved
+/// python runtime (dump, inventory, lost-line sidecar; 131 D2). Refused
+/// while a turn is running. The schedule runner asks this after the
+/// `Compact { style: Clear }` of a fire whose spec says `runtime: clear`.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+pub struct ResetRuntime {
+    /// Session whose runtime is reset.
+    pub session: SessionId,
+}
+
 /// `ask` → `Result<(), String>`: persist `agent.compact_style` and update live sessions.
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 pub struct SetCompactStyle {

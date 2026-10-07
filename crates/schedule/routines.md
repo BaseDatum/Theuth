@@ -19,7 +19,7 @@ Every key belongs to exactly one part. The UI, this skill and the sentence use t
 |---|---|---|
 | **Trigger** | what wakes it | `cron` / `every` / `at`; with `every`: `when` (sensor + args) and the gate keys `fire`, `for`, `cooldown`, `timeout`; `missed` (cron only) |
 | **Stop** | when it is over | `until`, `max_runs`, `expires` (watchers); an `at:` file stops by firing |
-| **Run** | what the turn is like | prompt, `model`, `cwd`, `approvals`, `quiet`, `run_timeout`, `agent` + `project` (a task instead of a session), `memory` (watchers: keep the session between fires) |
+| **Run** | what the turn is like | prompt, `model`, `cwd`, `approvals`, `quiet`, `run_timeout`, `agent` + `project` (a task instead of a session), `memory` (watchers: keep the session between fires), `runtime` (keep the python globals between runs) |
 | **Concurrency** | what happens if it is due while running | watchers: `mode` (`skip` / `queue` / `restart`); clock and loop files: deferred to the first tick after the run ends, forced runs `skipped: busy` |
 
 Changing one part never requires touching another. A watcher with `until` and `quiet` is a
@@ -49,6 +49,7 @@ trigger *and* a stop *and* a run choice — say it as composition, not as a "typ
 | Run | `run_timeout` | duration ≥ `30s` (`45m`) | default: Settings › Agent loop › Routines |
 | Run | `agent` + `project` | roster agent name; project label | each fire creates a task owned by the agent instead of running in the routine's session |
 | Run | `memory` | `continue` (default) / `clear` | watchers: keep the session between fires or start fresh |
+| Run | `runtime` | `clear` (default) / `keep` | reset the python globals before each run, or keep them; a watcher with `memory: continue` keeps them either way |
 | Concurrency | `mode` | `skip` (default) / `queue` / `restart` | watchers: a fire while a run is going is `skipped: busy` / queued into one pending payload / cancels the run and starts over |
 
 **Recommendations.** Clock (`cron` / `every`) when the *time* is the trigger. Watcher (`every` +
@@ -64,7 +65,7 @@ Ask **at most two questions**, and only when the answer changes the file:
 - the **directory** for a loop or a `cwd`-dependent sensor (`fs_exists.py`), when none is implied;
 - **which agent**, when the user named a team but not a person.
 
-Never ask about `mode`, `memory`, `for`, `cooldown`, `timeout`, `model`, `run_timeout`, `missed`:
+Never ask about `mode`, `memory`, `runtime`, `for`, `cooldown`, `timeout`, `model`, `run_timeout`, `missed`:
 pick the default (or the obvious value) and let the sentence say it; the user changes it in the
 form. Never ask for a secret *value* — secrets are vault names (`token=gh_token`); if the vault
 lacks one, `secret_request` it. Never ask the user to write or edit a file.
@@ -127,7 +128,7 @@ cooldown` · `queues while running` / `restarts the run` · `fresh context each 
 clause (a one-shot's `Once at` already says it).
 
 **RUN** (defaults silent — `quiet: false`, `approvals: true`, engine model, no cwd, default
-`run_timeout`): `quietly` · `as agent <name>` (+ ` in project <p>`) · `no approvals` · `with
+`run_timeout`, `runtime: clear`): `quietly` · `as agent <name>` (+ ` in project <p>`) · `no approvals` · `with
 <model>` · `in <cwd>` (as written, `~` kept) · `<run_timeout> per run`. Then, after a final ` · `,
 the **prompt gist**: the first line of the body, trimmed to 60 chars with `…` — only in the detail
 page's sentence, never in the list row (the row has the name).

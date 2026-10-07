@@ -62,7 +62,7 @@ use crate::lifecycle::{
 use crate::loop_::{
     CancelPeerScope, CancelTurn, CompactNow, CompactionOverride, ContextBreakdownNow,
     ContextHistoryNow, ContextItemsNow, GetToolset, HarvestNow, IsRunning, PEER_INTAKE, PeerInput,
-    QueuedInputs, RedoTurn, RemoveContextNow, RestartTurn, Session, SessionState,
+    QueuedInputs, RedoTurn, RemoveContextNow, ResetRuntimeNow, RestartTurn, Session, SessionState,
     SetCompactionOverride, SetPendingEffort, SetTitlePin, SetToolsetOverride, SuppressPeerInputs,
     SwitchModel, TrimTurn, UndoTurn, UserInput, WithdrawInput, prompt_blocks, text_of,
 };
@@ -89,12 +89,12 @@ use crate::{
     ListRegistry, ListSessions, ListSkills, LoadSession, LoadSkill, Loaded, Login, LoginFinished,
     LoginInfo, Logout, MarkDesk, ModelInfo, NewRootSession, NewSession, PinSession, PinTitle,
     ProviderInfo, QueuedInput, ReadSession, Redo, Regenerate, RemoveAcp, RemoveContext,
-    RemoveProvider, RemoveSkill, RemoveSkillRepo, RenameSession, SearchRefresh, SearchSessionPage,
-    SendInput, SessionActivity, SessionContextBreakdown, SessionRead, SessionSummary,
-    SetCompactStyle, SetCompaction, SetEffort, SetEscalateModel, SetMaxSalvages, SetMaxToolRounds,
-    SetModel, SetStreamIdle, SetSubagentModel, SetSubagentTimeout, SetTitleModel, SetToolset,
-    SetVisionModel, ShowPrompt, SideCall, SideReply, SkillBody, SkillMeta, Steer, SyncSkills,
-    TrimAssistant, Undo, UseSkill, Withdraw, effort_of,
+    RemoveProvider, RemoveSkill, RemoveSkillRepo, RenameSession, ResetRuntime, SearchRefresh,
+    SearchSessionPage, SendInput, SessionActivity, SessionContextBreakdown, SessionRead,
+    SessionSummary, SetCompactStyle, SetCompaction, SetEffort, SetEscalateModel, SetMaxSalvages,
+    SetMaxToolRounds, SetModel, SetStreamIdle, SetSubagentModel, SetSubagentTimeout, SetTitleModel,
+    SetToolset, SetVisionModel, ShowPrompt, SideCall, SideReply, SkillBody, SkillMeta, Steer,
+    SyncSkills, TrimAssistant, Undo, UseSkill, Withdraw, effort_of,
 };
 use crate::{
     AdvisorConfig, DurableStore, SessionCostQuery, SessionKind, SubagentsConfig, UnloadSession,
@@ -3071,6 +3071,23 @@ impl Message<SetCompaction> for Agents {
                 hint: m.hint,
                 head: m.head,
             }))
+            .await
+            .map_err(|e| e.to_string())
+    }
+}
+
+impl Message<ResetRuntime> for Agents {
+    type Reply = Result<repl::ResetReport, String>;
+
+    async fn handle(
+        &mut self,
+        m: ResetRuntime,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Result<repl::ResetReport, String> {
+        self.actor(m.session)
+            .await?
+            .native()?
+            .ask(ResetRuntimeNow)
             .await
             .map_err(|e| e.to_string())
     }

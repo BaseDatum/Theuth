@@ -352,6 +352,11 @@ pub struct SetPendingEffort(pub Option<ReasoningEffort>);
 /// read by the running turn at its next trigger check, so it applies mid-turn.
 pub struct SetCompactionOverride(pub CompactionOverride);
 
+/// `ask` → `Result<repl::ResetReport, String>`: [`crate::ResetRuntime`] on the
+/// session actor — remove the saved python runtime while idle (131 D2). A
+/// `Repl` only exists inside a running turn, so "idle" is the whole guard.
+pub struct ResetRuntimeNow;
+
 /// Per-session compaction override (`meetings/02-live.md` §0.2); all `None` = configured behaviour.
 #[derive(Clone, Debug, Default)]
 pub struct CompactionOverride {
@@ -2013,6 +2018,29 @@ impl Message<SetCompactionOverride> for Session {
         _: &mut Context<Self, Self::Reply>,
     ) {
         *self.shared.compaction.write() = o;
+    }
+}
+
+impl Message<ResetRuntimeNow> for Session {
+    type Reply = Result<repl::ResetReport, String>;
+
+    async fn handle(
+        &mut self,
+        _: ResetRuntimeNow,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Result<repl::ResetReport, String> {
+        if self.inflight.is_some() || self.state.is_none() {
+            return Err("a turn is running".into());
+        }
+        let report = repl::reset_session(&self.shared.resources.root, self.shared.id)
+            .map_err(|e| e.to_string())?;
+        tracing::info!(
+            session = %self.shared.id,
+            "runtime reset: removed a {} MB dump holding {} names",
+            report.dump_bytes.div_ceil(1 << 20),
+            report.names
+        );
+        Ok(report)
     }
 }
 
