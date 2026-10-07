@@ -8,9 +8,11 @@ use std::path::PathBuf;
 
 use chrono::{DateTime, Utc};
 use genai::chat::MessageContent;
-use runtime::TurnId;
+use runtime::{SessionId, TurnId};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+
+use crate::ResumeReport;
 
 pub mod handoff;
 pub mod jobs;
@@ -212,6 +214,25 @@ pub enum ResumeKind {
     Suspended,
 }
 
+impl ResumeKind {
+    /// The `resume_reports.kind` spelling.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Interrupted => "interrupted",
+            Self::Suspended => "suspended",
+        }
+    }
+
+    /// Inverse of [`Self::as_str`].
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "interrupted" => Some(Self::Interrupted),
+            "suspended" => Some(Self::Suspended),
+            _ => None,
+        }
+    }
+}
+
 /// The `assistant_partial` of an open model call (§8.1).
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct PartialContent {
@@ -242,6 +263,25 @@ pub struct ResumePlan {
     pub calls: Vec<JournaledCall>,
     /// The open model call's partial, for the UI (§8.1).
     pub partial: Option<PartialContent>,
+}
+
+/// One `resume_reports` row (§8.2, migration 0035): the [`ResumeReport`] a
+/// resumed turn settled with, plus the plan it ran under, so the banner's
+/// counts survive a reload. One row per turn; a second resume overwrites.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ResumeReportRow {
+    /// Session.
+    pub session: SessionId,
+    /// The resumed turn.
+    pub turn: TurnId,
+    /// The plan's crash-or-drain.
+    pub kind: ResumeKind,
+    /// The plan's newest journal row time.
+    pub interrupted_at: DateTime<Utc>,
+    /// When the resumed step settled.
+    pub at: DateTime<Utc>,
+    /// The counts.
+    pub report: ResumeReport,
 }
 
 /// Crash-injection step names (§11.1), shared by the loop (W1) and the
