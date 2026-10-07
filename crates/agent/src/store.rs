@@ -39,7 +39,9 @@ use anyhow::Context as _;
 use genai::chat::{ChatMessage, ChatRole, ContentPart, MessageContent};
 use parking_lot::Mutex;
 use runtime::SessionId;
-use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePool, SqlitePoolOptions};
+use sqlx::sqlite::{
+    SqliteConnectOptions, SqliteJournalMode, SqlitePool, SqlitePoolOptions, SqliteSynchronous,
+};
 use sqlx::{FromRow, Sqlite, SqliteConnection, Transaction};
 
 use crate::context::{
@@ -510,7 +512,13 @@ impl Store {
     /// Open (creating) the database in WAL mode and run migrations. Two
     /// pools on one file (68 §3): `write` holds exactly one connection that
     /// never expires, with a `sqlite3session` attached to the transcript
-    /// tables; `read` holds four. `engine` is this engine's mesh id: rows
+    /// tables; `read` holds four, warm and never recycled (sqlx's defaults
+    /// would reap idle connections every 10 min and churn a worker thread
+    /// per reconnect). The writer runs `synchronous=NORMAL`: in WAL mode a
+    /// committed transaction is in the WAL file before `COMMIT` returns, so
+    /// an engine kill loses nothing; only an OS crash or power loss can
+    /// drop the last commits, against ~5 fsyncs saved per model call.
+    /// `engine` is this engine's mesh id: rows
     /// still owned by `''` (pre-68, or created while unknown) are backfilled
     /// to it; `None` keeps `''` and treats it as self.
     pub async fn open(path: &Path, engine: Option<mesh::EngineId>) -> anyhow::Result<Self> {
@@ -523,6 +531,9 @@ impl Store {
         // DDL on an attached table would leave the session unusable.
         let read = SqlitePoolOptions::new()
             .max_connections(4)
+            .min_connections(4)
+            .idle_timeout(None)
+            .max_lifetime(None)
             .connect_with(opts.clone())
             .await
             .with_context(|| format!("open {}", path.display()))?;
@@ -562,7 +573,7 @@ impl Store {
                     Ok(())
                 })
             })
-            .connect_with(opts)
+            .connect_with(opts.synchronous(SqliteSynchronous::Normal))
             .await
             .with_context(|| format!("open {} (writer)", path.display()))?;
         let tables = table_meta(&read).await?;
@@ -603,6 +614,8 @@ impl Store {
         let pool = SqlitePoolOptions::new()
             .max_connections(1)
             .min_connections(1)
+            .idle_timeout(None)
+            .max_lifetime(None)
             .connect_with(opts)
             .await
             .context("open in-memory store")?;
@@ -2945,6 +2958,21 @@ mod tests {
             .await
             .unwrap();
         (store, id, dir)
+    }
+
+    /// The writer commits with `synchronous=NORMAL` (1): WAL mode keeps a
+    /// committed transaction durable against an engine kill without an
+    /// fsync per commit. The readers never fsync, so only the writer counts.
+    #[tokio::test]
+    async fn write_connection_is_synchronous_normal() {
+        let (store, _, dir) = fresh().await;
+        let (sync,): (i64,) = sqlx::query_as("PRAGMA synchronous")
+            .fetch_one(&store.write)
+            .await
+            .unwrap();
+        assert_eq!(sync, 1, "PRAGMA synchronous on the write connection");
+        drop(store);
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     async fn append_all(store: &Store, id: SessionId, msgs: impl IntoIterator<Item = ChatMessage>) {
