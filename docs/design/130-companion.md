@@ -1437,8 +1437,28 @@ needs-you item does not expand it). Side stays a separate setting (Sky's rail is
 
 ---
 
+## Revision 3 (2026-10-07 21:00) — two menu rulings after the first evening of use
+
+Sky: "the macos companion app right click menu needs an additional option quit theuth so I don't have to quit twice to
+actually quit it. and 2 when I right click and do open theuth, it should show me the view that I had open last, not
+always take me to the new chat view."
+
+- **Quit theuth** (new menu item, ⌘Q while the menu is open): finds the running main app by bundle id `io.theuth.mac`
+  (`MainApp.running()`) and calls `NSRunningApplication.terminate()`; theuth.app's own quit handshake (W1S) then terminates
+  the companion with its 2 s grace and stops the sidecar — one quit for everything. When the main app is not running the
+  item quits the companion itself. "Quit theuth Companion" stays as the second item (no key equivalent now).
+- **Open theuth** no longer follows `theuth://new`: it unhides and activates the running main app so the window shows the
+  view the user left (`NSRunningApplication.unhide()` + `activate()`); when theuth.app is not running it is launched plainly
+  (`NSWorkspace.openApplication(at:)` on the outer bundle — four levels up from the nested companion, else Launch Services'
+  answer for the id) so the app starts on its own default; the deep link is the last resort only when the bundle cannot be
+  found. `theuth://attention/<id>` and `theuth://c/<session>` from cards and receipts are unchanged (D10).
+- Files: `Sources/Companion/MainApp.swift` (new), `AppDelegate.swift` (`statusClicked` menu, `openTheuth`, `quitTheuth`).
+  Verified: test.sh 81/18, bundle `codesign --deep --strict`. Not verified live: the quit handshake end-to-end from the
+  menu item (W1S's smoke covered the Tauri-side path).
+
 Revision history: v0 2026-10-07 — written from the four recon reports and Sky's rulings of 11:29. · R1 2026-10-07 12:15 —
 spike findings SA/SB/SC folded in (build/bundle verified, lifecycle via SMAppService from the main app, Accessibility for
 ⌥⌥, time-sensitive needs a profile, `Decision` is Allow|Deny, screenshots need `--shareable`, waves W0/W1/W1S started).
 · R2 2026-10-07 evening — Sky's first-day rulings: no `Bundle.module` (own recorder), live dictation in the Ask bar, "Always
-a sliver" rail presence, one key table + legend + rebinding + the collision policy (wave W6).
+a sliver" rail presence, one key table + legend + rebinding + the collision policy (wave W6). · R3 2026-10-07 21:00 — menu:
+"Quit theuth" quits the whole app in one go; "Open theuth" activates the last view instead of `theuth://new` (W7).
