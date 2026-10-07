@@ -1,8 +1,7 @@
 import { defaultFilter } from 'cmdk'
 import { expect, test } from 'vitest'
 import type { ConfigOption } from '@/rpc/bindings/ConfigOption'
-import type { ModelInfo } from '@/rpc/bindings/ModelInfo'
-import { harnessCurrent, harnessGroups, harnessItemValue, modelItemValue, orderModels, pinnedFilter } from './ModelMenu'
+import { harnessCurrent, harnessGroups, harnessItemValue, pinnedFilter } from './ModelMenu'
 
 const opt = (id: string, category: string | null, current: string, values: [string, string][]): ConfigOption => ({
   id,
@@ -32,18 +31,6 @@ test('harness picker groups the model select and the thought_level option; a que
   expect(harnessCurrent(undefined, undefined)).toBeUndefined()
 })
 
-const model = (id: string, name = id): ModelInfo => ({ id, name, provider: 'p', context: 0, reasoning: false, image: false, efforts: [], budget_min: null, budget_max: null })
-
-test('orderModels puts the current model first and leaves everything else alone', () => {
-  const models = [model('a'), model('b'), model('c')]
-  expect(orderModels(models, 'c').map((m) => m.id)).toEqual(['c', 'a', 'b'])
-  expect(orderModels(models, 'a')).toBe(models)
-  expect(orderModels(models, undefined)).toBe(models)
-  expect(orderModels(models, 'zz')).toBe(models)
-  expect(orderModels(models, 'b').map((m) => m.id)).toEqual(['b', 'a', 'c'])
-  expect(orderModels([], 'a')).toEqual([])
-})
-
 test('pinnedFilter keeps the pinned value at 1 and defers to defaultFilter otherwise', () => {
   const f = pinnedFilter('Claude Opus 4.8 anthropic/claude-opus-4-8')
   expect(f('Claude Opus 4.8 anthropic/claude-opus-4-8', 'gpt')).toBe(1)
@@ -62,7 +49,6 @@ test('pinnedFilter keeps the pinned value at 1 and defers to defaultFilter other
   }
 })
 
-test('item values are the exact cmdk strings', () => {
-  expect(modelItemValue(model('anthropic/claude-opus-4-8', 'Claude Opus 4.8'))).toBe('Claude Opus 4.8 anthropic/claude-opus-4-8')
+test('harness item values are the exact cmdk strings', () => {
   expect(harnessItemValue('Model', { name: 'GPT-5.4', value: 'openai/gpt-5.4' })).toBe('Model GPT-5.4 openai/gpt-5.4')
 })

@@ -1,4 +1,5 @@
 import { useQuery } from '@tanstack/react-query'
+import { ModelCombobox } from '@/components/chat/ModelCombobox'
 import { Row, Section, refreshInfo, useAction } from '@/components/settings/shared'
 import { Input } from '@/components/ui/input'
 import {
@@ -190,45 +191,29 @@ export function Loop() {
       </Section>
       <Section title="Helper models">
         <Row label="Title model" description="Names new chats after the first exchange.">
-          <Select
-            value={titleModel.data ? titleModel.data.id : 'off'}
+          <ModelCombobox
+            aria-label="Title model"
+            className="max-w-64"
+            models={models.data ?? []}
+            value={titleModel.data?.id}
+            none={{ label: 'Off' }}
             disabled={titleModel.isPending || setTitleModel.isPending}
-            onValueChange={(v) => setTitleModel.mutate(v)}
-          >
-            <SelectTrigger className="max-w-64">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="off">Off</SelectItem>
-              {models.data?.map((m) => (
-                <SelectItem key={m.id} value={m.id}>
-                  {m.id}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
+            onChange={(v) => setTitleModel.mutate(v ?? 'off')}
+          />
         </Row>
         <Row
           label="Subagent model"
           description="What spawn_subagent uses when the agent does not name a model. The agent is told your choice in its system prompt. Off = the session's model."
         >
-          <Select
-            value={subagentModel.data ? subagentModel.data.id : 'off'}
+          <ModelCombobox
+            aria-label="Subagent model"
+            className="max-w-64"
+            models={models.data ?? []}
+            value={subagentModel.data?.id}
+            none={{ label: 'Off' }}
             disabled={subagentModel.isPending || setSubagentModel.isPending}
-            onValueChange={(v) => setSubagentModel.mutate(v)}
-          >
-            <SelectTrigger aria-label="Subagent model" className="max-w-64">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="off">Off</SelectItem>
-              {models.data?.map((m) => (
-                <SelectItem key={m.id} value={m.id}>
-                  {m.id}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
+            onChange={(v) => setSubagentModel.mutate(v ?? 'off')}
+          />
         </Row>
         <Row
           label="Vision fallback model"
@@ -240,24 +225,15 @@ export function Loop() {
                 : 'Used only when the main model cannot view images. It receives the image and a question written by the main model. Images may go to a different configured provider, and each new image batch costs a question call and a vision call; text redaction cannot remove secrets shown in pixels.'
           }
         >
-          <Select
-            value={vision ? vision.id : 'off'}
+          <ModelCombobox
+            aria-label="Vision fallback model"
+            className="max-w-64"
+            models={visionModels}
+            value={vision?.id}
+            none={{ label: 'Off' }}
             disabled={!visionModel.isSuccess || setVisionModel.isPending}
-            onValueChange={(v) => setVisionModel.mutate(v)}
-          >
-            <SelectTrigger aria-label="Vision fallback model" className="max-w-64">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="off">Off</SelectItem>
-              {visionModels.map((m) => (
-                <SelectItem key={m.id} value={m.id}>
-                  {m.id}
-                </SelectItem>
-              ))}
-              {unavailable && <SelectItem value={unavailable}>{unavailable} (unavailable)</SelectItem>}
-            </SelectContent>
-          </Select>
+            onChange={(v) => setVisionModel.mutate(v ?? 'off')}
+          />
         </Row>
         <Row
           label="Escalation model"
@@ -271,27 +247,15 @@ export function Loop() {
                 }.`
           }
         >
-          <Select
-            value={escalateModel.data?.model ? escalateModel.data.model.id : 'off'}
+          <ModelCombobox
+            aria-label="Escalation model"
+            className="max-w-64"
+            models={models.data ?? []}
+            value={escalateModel.data?.model?.id}
+            none={{ label: escalateModel.data?.effective ? `Off (inherits title model ${escalateModel.data.effective.id})` : 'Off (inherits title model)' }}
             disabled={!escalateModel.isSuccess || setEscalateModel.isPending}
-            onValueChange={(v) => setEscalateModel.mutate(v)}
-          >
-            <SelectTrigger aria-label="Escalation model" className="max-w-64">
-              <SelectValue placeholder="inherits title model" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="off">
-                {escalateModel.data?.effective
-                  ? `Off (inherits title model ${escalateModel.data.effective.id})`
-                  : 'Off (inherits title model)'}
-              </SelectItem>
-              {models.data?.map((m) => (
-                <SelectItem key={m.id} value={m.id}>
-                  {m.id}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
+            onChange={(v) => setEscalateModel.mutate(v ?? 'off')}
+          />
         </Row>
       </Section>
     </>
