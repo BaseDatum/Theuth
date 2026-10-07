@@ -21,7 +21,11 @@ use crate::SharedConfig;
 use crate::actor::{ProviderMetas, Read, Render, Search, WebActor};
 use crate::aggregate::{RankedResult, ReadPage, category_name};
 use crate::engines::BUILTIN;
-use crate::fetch::{FetchFormat, FetchResponse, Fetcher, check_url};
+use crate::fetch::issue::IssueKind;
+use crate::fetch::{
+    FetchFormat, FetchResponse, Fetcher, PageOptions, check_url, finish, first_heading,
+};
+
 use crate::progress::{ProgressCx, report};
 use crate::provider::{Category, FeatureKind, ProviderMeta, Query, Recency};
 use crate::render;
@@ -128,7 +132,7 @@ pub fn search_description(all: &[ProviderMeta]) -> String {
          with the passages of each read page most relevant to the query, then any SERP features. \
          Use it whenever the answer needs current or external information; set read: 0 for a \
          cheaper SERP-only pass. site= and recent= filter the returned rows; the top hits are read \
-         in rank order and every unread row says why (not-relevant, budget). A result that starts \
+         in rank order and every unread row says why (not-relevant, budget, blocked, login, consent). A result that starts \
          with `WARNING: degraded search` (degraded: true) came from too few engines: say so rather \
          than answering from it.",
     );
@@ -180,7 +184,12 @@ pub fn search_description(all: &[ProviderMeta]) -> String {
 pub fn fetch_description(metas: &[ProviderMeta]) -> String {
     let mut s = String::from(
         "Fetch one http(s) page and return its readable content as markdown (default) or plain \
-         text, capped at max_chars. Private, loopback and link-local destinations are refused.",
+         text, capped at max_chars; offset pages through a long page and a cut result names the \
+         omitted sections. A page behind a bot wall, login or consent screen starts with `ISSUE:` \
+         and names the next rung (rendered: true, browser_import_cookies, desktop_handoff). Known \
+         hosts (HN, Reddit, npm, PyPI, crates.io, arXiv, Wikipedia, Stack Overflow) are read from \
+         their JSON API unless source: page. Private, loopback and link-local destinations are \
+         refused.",
     );
     match metas.iter().find(|m| m.renders) {
         Some(m) => {
@@ -261,7 +270,7 @@ async fn read_page(
         )
         .await
         {
-            Ok(Ok(r)) => Ok((r.title, r.markdown, r.tier)),
+            Ok(Ok(r)) => Ok((r.title, r.markdown, r.tier, None)),
             Err(_) => Err(format!(
                 "render cap of {:.1}s exceeded (JavaScript page); read_url with rendered: true waits for it",
                 render_cap.as_secs_f32()
@@ -275,7 +284,7 @@ async fn read_page(
                 )
                 .await
                 {
-                    Ok(Ok(f)) => Ok((f.title, f.content, "fetch".to_owned())),
+                    Ok(Ok(f)) => Ok((f.title, f.content, "fetch".to_owned(), f.issue)),
                     Ok(Err(e)) => Err(e.to_string()),
                     Err(_) => Err(format!(
                         "read budget of {:.1}s exceeded",
@@ -286,16 +295,33 @@ async fn read_page(
         },
     };
     match page {
-        Ok((_, markdown, tier)) if crate::excerpt::prose_chars(&markdown) < MIN_PROSE => ReadPage {
-            url,
-            title: None,
-            excerpts: Vec::new(),
-            error: Some("no readable text (JavaScript-only page or bot wall)".into()),
-            skipped: None,
-            took_ms: elapsed_ms(start),
-            tier,
-        },
-        Ok((title, markdown, tier)) => ReadPage {
+        // D1: a diagnosed wall is a skip reason, not an excerpt (an empty shell
+        // keeps today's error: the page needs the browser).
+        Ok((_, _, _, Some(issue))) if issue.kind != IssueKind::EmptyShell => {
+            let why = match issue.kind {
+                IssueKind::LoginRequired => "login".to_owned(),
+                IssueKind::ConsentWall => "consent".to_owned(),
+                _ => format!("blocked: {}", issue.detail),
+            };
+            ReadPage {
+                took_ms: elapsed_ms(start),
+                ..skipped(&url, why)
+            }
+        }
+        Ok((_, markdown, tier, issue))
+            if issue.is_some() || crate::excerpt::prose_chars(&markdown) < MIN_PROSE =>
+        {
+            ReadPage {
+                url,
+                title: None,
+                excerpts: Vec::new(),
+                error: Some("no readable text (JavaScript-only page or bot wall)".into()),
+                skipped: None,
+                took_ms: elapsed_ms(start),
+                tier,
+            }
+        }
+        Ok((title, markdown, tier, _)) => ReadPage {
             url,
             title: title.filter(|t| !t.trim().is_empty()),
             excerpts: crate::excerpt::best_passages(&markdown, &query, chars),
@@ -530,6 +556,14 @@ impl Tool for FetchTool {
                 )));
             }
         };
+        let opts = PageOptions {
+            max_chars,
+            offset: a
+                .offset
+                .map_or(0, |o| usize::try_from(o).unwrap_or(usize::MAX)),
+            compact: a.compact.unwrap_or(true),
+        };
+        let format = a.format.unwrap_or_default();
         let resp = if a.rendered.unwrap_or(false) {
             let url = match check_url(&a.url).await {
                 Ok(u) => u,
@@ -541,32 +575,120 @@ impl Tool for FetchTool {
                 Err(kameo::error::SendError::HandlerError(e)) => return Ok(ToolOutput::err(e)),
                 Err(e) => anyhow::bail!("web actor unavailable: {e}"),
             };
-            let truncated = r.markdown.chars().count() > max_chars;
-            let content = if truncated {
-                r.markdown.chars().take(max_chars).collect()
-            } else {
-                r.markdown
-            };
+            let fin = finish(&r.markdown, FetchFormat::Markdown, &opts);
             FetchResponse {
                 url: r.url,
                 title: r.title,
-                content,
-                truncated,
-                took_ms: u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX),
+                content: fin.content,
+                truncated: fin.cut.truncated,
+                took_ms: elapsed_ms(start),
+                compacted_chars: fin.compacted_chars,
+                next_offset: fin.cut.next_offset,
+                omitted_headings: fin.cut.omitted_headings,
                 tier: "render".to_owned(),
                 ..FetchResponse::default()
             }
         } else {
-            match self
-                .fetcher
-                .fetch(&a.url, a.format.unwrap_or_default(), max_chars)
-                .await
-            {
+            match self.read_page_or_api(&a, format, opts).await {
                 Ok(r) => r,
-                Err(e) => return Ok(ToolOutput::err(e.to_string())),
+                Err(e) => return Ok(ToolOutput::err(e)),
             }
         };
         Ok(structured(render::fetch_text(&resp), &resp, false))
+    }
+}
+
+impl FetchTool {
+    /// The D11 dispatch: under `source: auto|api` a known host is read from
+    /// its JSON API (`sources::api_source` → `fetch_html` → `sources::render`),
+    /// `tier: "api"`; `reddit-old` is a URL rewrite through the page pipeline.
+    /// An API failure under `auto` falls back to the page with a note; under
+    /// `api` it is the error.
+    async fn read_page_or_api(
+        &self,
+        a: &FetchArgs,
+        format: FetchFormat,
+        opts: PageOptions,
+    ) -> Result<FetchResponse, String> {
+        let source = a.source.unwrap_or_default();
+        let api = (source != Source::Page)
+            .then(|| url::Url::parse(a.url.trim()).ok())
+            .flatten()
+            .and_then(|u| crate::sources::api_source(&u));
+        let mut notes = Vec::new();
+        let mut page_url = a.url.as_str();
+        let mut source_kind = None;
+        if let Some(src) = &api {
+            if src.kind == "reddit-old" {
+                page_url = src.fetch_url.as_str();
+                source_kind = Some(src.kind.to_owned());
+            } else {
+                match self.read_api(src, format, &opts).await {
+                    Ok(mut r) => {
+                        r.url = a.url.clone();
+                        return Ok(r);
+                    }
+                    Err(e) if source == Source::Api => {
+                        return Err(format!("api source {}: {e}", src.kind));
+                    }
+                    Err(e) => notes.push(format!(
+                        "api source {} failed: {e}; read the page",
+                        src.kind
+                    )),
+                }
+            }
+        } else if source == Source::Api {
+            return Err(format!("no API source matches {}", a.url));
+        }
+        let start = Instant::now();
+        let mut r = self
+            .fetcher
+            .fetch_page(page_url, format, opts)
+            .await
+            .map_err(|e| e.to_string())?;
+        r.took_ms = elapsed_ms(start);
+        r.notes.extend(notes);
+        if source_kind.is_some() {
+            r.source_kind = source_kind;
+            r.url = a.url.clone();
+        }
+        Ok(r)
+    }
+
+    /// Fetch `src.fetch_url` (same guard, caps and retries), render it, then
+    /// compact and cut like a page.
+    async fn read_api(
+        &self,
+        src: &crate::sources::ApiSource,
+        format: FetchFormat,
+        opts: &PageOptions,
+    ) -> Result<FetchResponse, String> {
+        let start = Instant::now();
+        let body = self
+            .fetcher
+            .fetch_html(src.fetch_url.as_str(), usize::MAX)
+            .await
+            .map_err(|e| e.to_string())?;
+        let md = crate::sources::render(src.kind, &body.content)
+            .ok_or_else(|| "body did not parse".to_owned())?;
+        let fin = finish(&md, format, opts);
+        Ok(FetchResponse {
+            url: src.fetch_url.to_string(),
+            title: first_heading(&md),
+            content: fin.content,
+            truncated: fin.cut.truncated || body.truncated,
+            took_ms: elapsed_ms(start),
+            attempts: body.attempts,
+            charset: body.charset,
+            compacted_chars: fin.compacted_chars,
+            next_offset: fin.cut.next_offset,
+            omitted_headings: fin.cut.omitted_headings,
+            tier: "api".to_owned(),
+            source_kind: Some(src.kind.to_owned()),
+            notes: body.notes,
+            client: body.client,
+            ..FetchResponse::default()
+        })
     }
 }
 
@@ -823,5 +945,96 @@ mod tests {
         let err = page.error.expect("capped read is an error");
         assert!(err.starts_with("render cap of 0.3s exceeded"), "{err}");
         assert!(page.excerpts.is_empty() && page.skipped.is_none());
+    }
+
+    fn cx() -> ToolCx {
+        ToolCx {
+            session: runtime::SessionId::new(),
+            call_id: "c".into(),
+            quiet: false,
+            resources: tools::SessionResources::durable_arc(&std::env::temp_dir()),
+        }
+    }
+
+    #[tokio::test]
+    async fn read_url_pages_with_offset_and_reports_source_api_without_a_match() {
+        use kameo::actor::Spawn as _;
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+        let server = MockServer::start().await;
+        let long = format!(
+            "<html><head><title>Long</title><meta name=\"author\" content=\"Jane\"></head><body><main>{}</main></body></html>",
+            (1..=12)
+                .map(|i| format!(
+                    "<h2>Part {i}</h2><p>{}</p>",
+                    "lorem ipsum dolor ".repeat(15)
+                ))
+                .collect::<String>()
+        );
+        Mock::given(method("GET"))
+            .and(path("/long"))
+            .respond_with(ResponseTemplate::new(200).set_body_raw(long.into_bytes(), "text/html"))
+            .mount(&server)
+            .await;
+        let actor = WebActor::spawn(WebActor::with_config(
+            crate::WebConfig::default(),
+            reqwest::Client::new(),
+            vec![],
+            ProviderMetas::default(),
+        ));
+        let tool = FetchTool {
+            actor,
+            fetcher: Arc::new(
+                Fetcher::new("test", 2_097_152, 5)
+                    .unwrap()
+                    .allowing(vec![*server.address()]),
+            ),
+            providers: ProviderMetas::default(),
+            cfg: Arc::new(std::sync::RwLock::new(crate::WebConfig::default())),
+        };
+        let url = format!("{}/long", server.uri());
+        let args = |offset: Option<u32>, source: Option<Source>| FetchArgs {
+            url: url.clone(),
+            max_chars: Some(600),
+            format: None,
+            rendered: None,
+            offset,
+            compact: None,
+            source,
+        };
+        let out = tool.call(args(None, None), cx()).await.unwrap();
+        assert!(!out.is_error, "{}", out.content);
+        assert!(out.content.starts_with("# Long\n"), "{}", out.content);
+        assert!(out.content.contains("\nby Jane\n\n"), "{}", out.content);
+        let data = out.structured.expect("structured");
+        let next = data["next_offset"].as_u64().expect("cut") as u32;
+        assert!(
+            out.content
+                .contains(&format!("continue with offset={next}]"))
+        );
+        assert!(!data["omitted_headings"].as_array().unwrap().is_empty());
+        assert_eq!(data["tier"], "fetch");
+
+        let out = tool.call(args(Some(next), None), cx()).await.unwrap();
+        let data = out.structured.expect("structured");
+        assert!(data["content"].as_str().unwrap().contains("## Part"));
+        assert_ne!(data["next_offset"], serde_json::Value::Null);
+
+        // `source: api` with no matching host is an error; `page` reads the HTML.
+        let out = tool
+            .call(args(None, Some(Source::Api)), cx())
+            .await
+            .unwrap();
+        assert!(out.is_error);
+        assert!(
+            out.content.starts_with("no API source matches"),
+            "{}",
+            out.content
+        );
+        let out = tool
+            .call(args(None, Some(Source::Page)), cx())
+            .await
+            .unwrap();
+        assert!(!out.is_error);
     }
 }

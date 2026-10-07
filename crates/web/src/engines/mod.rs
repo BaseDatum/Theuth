@@ -60,8 +60,13 @@ pub const DEFAULT_ENGINES: &[&str] = &[
 /// (Wikipedia, arXiv and GitHub are indexes of one kind of thing).
 pub const KEYLESS_GENERAL: &[&str] = &["google", "bing", "brave", "qwant", "duckduckgo"];
 
-/// Identifiable user agent for APIs that require one (Wikimedia, GitHub).
-pub const USER_AGENT: &str = "theuth/0.1 (+https://github.com/skymoore/theuth)";
+/// Identifiable user agent for APIs that require one (Wikimedia, GitHub) and
+/// the honest page-fetch identity under `impersonate: never` (122 D4).
+pub const USER_AGENT: &str = concat!(
+    "theuth/",
+    env!("CARGO_PKG_VERSION"),
+    " (+https://github.com/skymoore/theuth)"
+);
 
 /// Construct a built-in engine by name; `github` reads the optional
 /// `github` credential. `None` for an unknown name.
