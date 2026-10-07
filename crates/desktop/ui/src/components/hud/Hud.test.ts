@@ -4,8 +4,10 @@ import { renderToStaticMarkup } from 'react-dom/server'
 import { expect, test, vi } from 'vitest'
 import { ATTENTION_SIM, SANDBOXES_SIM, SECRET_REQUESTS_SIM } from '@/components/settings/sandbox-queries'
 import type * as Router from '@tanstack/react-router'
+import type * as Hotkeys from '@/lib/hotkeys'
 import type * as Rpc from '@/lib/rpc'
-import { AttentionList } from './Hud'
+import type * as Sidebar from '@/components/ui/sidebar'
+import { AttentionList, Hud } from './Hud'
 
 vi.mock('@/lib/rpc', async (original) => ({
   ...(await original<typeof Rpc>()),
@@ -19,6 +21,13 @@ vi.mock('@tanstack/react-router', async (original) => ({
   ...(await original<typeof Router>()),
   Link: ({ children }: { children: ReactNode }) => createElement('a', null, children),
 }))
+// The shell: a sidebar context (open, desktop) and a browser-width viewport, so `Hud` paints the desktop scene.
+vi.mock('@/components/ui/sidebar', async (original) => ({
+  ...(await original<typeof Sidebar>()),
+  useSidebar: () => ({ open: true, isMobile: false, toggleSidebar: () => undefined }),
+}))
+vi.mock('@/hooks/use-mobile', () => ({ useIsMobile: () => false }))
+vi.mock('@/lib/hotkeys', async (original) => ({ ...(await original<typeof Hotkeys>()), isMacDesktop: () => false }))
 
 async function render(): Promise<string> {
   const qc = new QueryClient({ defaultOptions: { queries: { staleTime: Infinity, retry: false } } })
@@ -43,4 +52,15 @@ test('secret inbox items render the secret_requests row: title, one masked input
   expect(html).toContain('adds v2')
   // No card falls back to "answer it in the session".
   expect(html).not.toContain('answer it in the session')
+})
+
+test('R2: `/` is the Overview header and the scene — none of the retired sections (Attention cards, In flight, Board pulse, Activity, Spend) or the composer', () => {
+  const qc = new QueryClient({ defaultOptions: { queries: { staleTime: Infinity, retry: false } } })
+  const html = renderToStaticMarkup(createElement(QueryClientProvider, { client: qc, children: createElement(Hud) as ReactNode }))
+  expect(html).toContain('>Overview<')
+  expect(html).toMatch(/<svg[^>]*viewBox="0 0 1920 812"/)
+  for (const title of ['Attention', 'In flight', 'Board pulse', 'Activity', 'Spend']) expect(html).not.toContain(`<section aria-label="${title}"`)
+  expect(html).not.toContain('textarea')
+  // Queries are still loading on the first paint: the chrome shows, the inbox count is a dash, nothing is a false zero.
+  expect(html).toContain('— NEED YOU')
 })

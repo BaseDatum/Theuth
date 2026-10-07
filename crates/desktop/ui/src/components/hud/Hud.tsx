@@ -1,14 +1,13 @@
 import { useQueryClient } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
-import { Activity as ActivityIcon, Bell, Bot, ListChecks, Network, PanelLeft, Wallet, Workflow } from 'lucide-react'
+import { PanelLeft } from 'lucide-react'
 import { type ReactNode, useEffect, useMemo, useState } from 'react'
-import { Composer } from '@/components/chat/Composer'
 import { SecretRequestCard } from '@/components/chat/SecretRequestCard'
 import { simFlag, useSandboxes } from '@/components/settings/sandbox-queries'
 import { useRoutines } from '@/components/routines/queries'
 import { SearchTrigger } from '@/components/sidebar/SearchTrigger'
 import { age } from '@/components/tasks/helpers'
-import { useAgents, useMesh, useTasks } from '@/components/tasks/queries'
+import { useAgents, useTasks } from '@/components/tasks/queries'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { useSidebar } from '@/components/ui/sidebar'
@@ -16,22 +15,20 @@ import { Skeleton } from '@/components/ui/skeleton'
 import { isMacDesktop } from '@/lib/hotkeys'
 import { canPopout, openPopout } from '@/lib/popout'
 import { cn } from '@/lib/utils'
-import type { ActivityEntry } from '@/rpc/bindings/ActivityEntry'
-import type { AgentSummary } from '@/rpc/bindings/AgentSummary'
 import type { AttentionItem } from '@/rpc/bindings/AttentionItem'
-import type { ScheduleInfo } from '@/rpc/bindings/ScheduleInfo'
-import type { Task } from '@/rpc/bindings/Task'
 import { useSecretRequests } from '@/store/approvals'
-import { boardPulse, inFlight, runningRoutines, snoozeUntil, spend } from './model'
+import { snoozeUntil } from './model'
 import { ATTENTION_KEY, SECRET_REQUESTS_KEY, useActivity, useActivityToday, useActivityWeek, useAttention, useAttentionActions, useSecretRequestRows, useSessionList } from './queries'
 import { sceneFixture } from './scene/fixtures'
 import type { SceneData } from './scene/model'
 import { SceneSwitch } from './scene/SceneCompact'
 
 /**
- * `/` — the THEUTH mark's overview (70 HUD, paperclip's dashboard + attention inbox), Sky's order top → bottom:
- * the 128 scene (needs you · rings · the day arc · panels) · Attention (decisions inline) · In flight · Board pulse · Activity (live) · Spend + mesh · the
- * new-chat composer docked at the bottom. Every section has its own query, so they load in parallel behind skeletons.
+ * `/` — the THEUTH mark's overview: the `Overview` header row (sidebar toggle) and the 128 scene, nothing else. Sky's
+ * R2 ruling retired the sections that used to sit below it (Attention cards, In flight, Board pulse, Activity, Spend,
+ * the docked composer): everything they reached is one click from the scene — /attention/$id, /agents/$name,
+ * /tasks/$id, /tasks?state=…, /routines/$name, /new. `Section`, `KIND_LABEL`, `ATTENTION_EMPTY`, `AttentionList` and
+ * `KindActions` stay exported for components/attention/*.
  */
 export function Hud() {
   const sidebar = useSidebar()
@@ -44,7 +41,6 @@ export function Hud() {
   const activityToday = useActivityToday()
   const activityWeek = useActivityWeek()
   const sessions = useSessionList()
-  const mesh = useMesh()
   useEffect(() => {
     document.title = ''
   }, [])
@@ -95,67 +91,9 @@ export function Hud() {
         <h2 className="min-w-0 flex-1 truncate text-sm font-semibold">Overview</h2>
       </header>
       <div className="min-h-0 flex-1 overflow-y-auto">
-        <div className="px-4 pt-4">
+        <div className="px-4 pt-4 pb-4">
           <SceneSwitch data={sceneData} errors={sceneErrors} />
         </div>
-        <div className="mx-auto flex w-full max-w-[880px] flex-col gap-5 p-4">
-          <Section icon={<Bell className="size-3.5" />} title="Attention" count={attention.data?.length} pending={attention.isPending} error={attention.error}>
-            <AttentionList items={attention.data} />
-          </Section>
-
-          <Section icon={<Workflow className="size-3.5" />} title="In flight" pending={tasks.isPending || routines.isPending} error={tasks.error ?? routines.error}>
-            <InFlightList tasks={tasks.data} routines={routines.data} />
-          </Section>
-
-          <Section icon={<ListChecks className="size-3.5" />} title="Board pulse" pending={tasks.isPending} error={tasks.error}>
-            {tasks.data && (
-              <div className="flex flex-wrap gap-2">
-                {boardPulse(tasks.data).map(({ state, n }) => (
-                  <Link
-                    key={state}
-                    to="/tasks"
-                    search={{ state, project: '' }}
-                    className={cn('flex items-center gap-2 rounded-full border border-border-subtle px-3 py-1 text-[13px] hover:bg-accent', n === 0 && 'text-fg-tertiary')}
-                  >
-                    <span className="tabular-nums font-semibold">{n}</span> {state}
-                  </Link>
-                ))}
-                {tasks.data.length === 0 && <EmptyNote>No tasks yet. Counts per column appear as tasks are created; each chip opens the board filtered to that state.</EmptyNote>}
-              </div>
-            )}
-          </Section>
-
-          <Section icon={<ActivityIcon className="size-3.5" />} title="Activity" count={activity.data?.length} pending={activity.isPending} error={activity.error}>
-            {activity.data?.length === 0 && <EmptyNote>Quiet so far. Task moves, comments, check-outs, hires, routine fires and escalations stream in here as they happen (last 50).</EmptyNote>}
-            {activity.data && activity.data.length > 0 && (
-              <ul className="divide-y divide-border-subtle rounded-lg border border-border-subtle">
-                {activity.data.map((e) => (
-                  <ActivityRow key={e.id} entry={e} />
-                ))}
-              </ul>
-            )}
-          </Section>
-
-          <Section
-            icon={<Wallet className="size-3.5" />}
-            title="Spend"
-            pending={agents.isPending}
-            error={agents.error}
-            actions={
-              mesh.data && (
-                <Link to="/settings/$tab" params={{ tab: 'mesh' }} className="flex items-center gap-1.5 rounded-full border border-border-subtle px-2.5 py-0.5 text-xs text-fg-secondary hover:bg-accent">
-                  <Network className="size-3" /> {mesh.data.peers.filter((p) => p.reachable).length + 1}/{mesh.data.peers.length + 1} nodes
-                  {mesh.data.lease.holder !== null && <span className="text-fg-tertiary">· hub {mesh.data.lease.holder === mesh.data.self_id ? 'here' : (mesh.data.peers.find((p) => p.id === mesh.data.lease.holder)?.name ?? 'elsewhere')}</span>}
-                </Link>
-              )
-            }
-          >
-            <SpendList agents={agents.data} />
-          </Section>
-        </div>
-      </div>
-      <div className="shrink-0 border-t border-border-subtle px-4 pt-3">
-        <Composer session={null} draftCreate={{ private: false, project: null }} compact />
       </div>
     </article>
   )
@@ -375,98 +313,5 @@ export function KindActions({ item, size = 'xs', onResolved }: { item: Attention
         Dismiss
       </Button>
     </div>
-  )
-}
-
-function InFlightList({ tasks, routines }: { tasks: Task[] | undefined; routines: ScheduleInfo[] | undefined }) {
-  const rows = inFlight(tasks ?? [])
-  const running = runningRoutines(routines ?? [])
-  if (rows.length === 0 && running.length === 0) {
-    return <EmptyNote>Nothing is running. Desks at work show here as agent · task · session · elapsed, with any routine mid-run.</EmptyNote>
-  }
-  return (
-    <ul className="divide-y divide-border-subtle rounded-lg border border-border-subtle">
-      {rows.map((r) => (
-        <li key={r.task.id} className="flex items-center gap-3 px-3 py-2 text-[13px]">
-          <Bot className="size-3.5 shrink-0 text-fg-tertiary" />
-          <span className="shrink-0 font-medium">{r.agent}</span>
-          <Link to="/tasks/$id" params={{ id: r.task.id }} className="min-w-0 flex-1 truncate hover:underline">
-            {r.task.title}
-          </Link>
-          {r.session && (
-            <Link to="/c/$session" params={{ session: r.session }} className="shrink-0 font-mono text-xs text-fg-secondary hover:underline">
-              {r.session.slice(-6)}
-              {r.engine ? ` @ ${r.engine}` : ''}
-            </Link>
-          )}
-          <span className="shrink-0 text-xs text-fg-tertiary tabular-nums">{age(r.sinceMs)}</span>
-        </li>
-      ))}
-      {running.map((s) => (
-        <li key={`routine:${s.name}`} className="flex items-center gap-3 px-3 py-2 text-[13px]">
-          <Workflow className="size-3.5 shrink-0 text-fg-tertiary" />
-          <span className="shrink-0 font-medium">routine</span>
-          <Link to="/routines/$name" params={{ name: s.name }} className="min-w-0 flex-1 truncate hover:underline">
-            {s.name}
-          </Link>
-          {s.session && (
-            <Link to="/c/$session" params={{ session: s.session }} className="shrink-0 font-mono text-xs text-fg-secondary hover:underline">
-              {s.session.slice(-6)}
-            </Link>
-          )}
-          <span className="shrink-0 text-xs text-fg-tertiary">running</span>
-        </li>
-      ))}
-    </ul>
-  )
-}
-
-function ActivityRow({ entry }: { entry: ActivityEntry }) {
-  const kind = entry.kind.replace(/_/g, ' ')
-  const isTask = entry.kind.startsWith('task_') || entry.kind.startsWith('child_') || entry.kind.startsWith('escalation_')
-  return (
-    <li className="flex items-center gap-3 px-3 py-1.5 text-[13px]">
-      <span className="w-28 shrink-0 truncate text-xs text-fg-tertiary">{kind}</span>
-      <span className="shrink-0 font-medium">{entry.actor.replace(/^agent:/, '')}</span>
-      {isTask ? (
-        <Link to="/tasks/$id" params={{ id: entry.subject }} className="min-w-0 flex-1 truncate hover:underline">
-          {entry.summary}
-        </Link>
-      ) : (
-        <span className="min-w-0 flex-1 truncate">{entry.summary}</span>
-      )}
-      {entry.cost !== null && <span className="shrink-0 text-xs text-fg-tertiary tabular-nums">${entry.cost.toFixed(2)}</span>}
-      <span className="shrink-0 text-xs text-fg-tertiary tabular-nums">{age(entry.ts_ms)}</span>
-    </li>
-  )
-}
-
-function SpendList({ agents }: { agents: AgentSummary[] | undefined }) {
-  const rows = spend(agents ?? [])
-  if (rows.length === 0) return <EmptyNote>No spend this month. Each agent's month total appears here against its budget line once its sessions cost something.</EmptyNote>
-  return (
-    <ul className="divide-y divide-border-subtle rounded-lg border border-border-subtle">
-      {rows.map((r) => (
-        <li key={r.name} className="flex items-center gap-3 px-3 py-2 text-[13px]">
-          <Link to="/agents/$name/$tab" params={{ name: r.name, tab: 'overview' }} className="w-28 shrink-0 truncate font-medium hover:underline">
-            {r.name}
-          </Link>
-          <div className="min-w-0 flex-1">
-            {r.share !== null ? (
-              <div className="h-1.5 w-full overflow-hidden rounded-full bg-layer-2" role="progressbar" aria-valuenow={Math.round(r.share * 100)} aria-valuemin={0} aria-valuemax={100}>
-                <div className={cn('h-full rounded-full', r.share >= 1 ? 'bg-danger' : r.share >= 0.8 ? 'bg-warning' : 'bg-primary')} style={{ width: `${Math.round(r.share * 100)}%` }} />
-              </div>
-            ) : (
-              <span className="text-xs text-fg-tertiary">no budget</span>
-            )}
-          </div>
-          <span className="shrink-0 text-xs tabular-nums text-fg-secondary">
-            {r.spent.toFixed(2)}
-            {r.cap !== null ? ` / ${r.cap.toFixed(2)}` : ''} {r.currency}
-            {r.paused ? ' · paused' : ''}
-          </span>
-        </li>
-      ))}
-    </ul>
   )
 }

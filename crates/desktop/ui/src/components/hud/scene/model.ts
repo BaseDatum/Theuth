@@ -5,6 +5,7 @@ import type { AttentionItem } from '@/rpc/bindings/AttentionItem'
 import type { ScheduleInfo } from '@/rpc/bindings/ScheduleInfo'
 import type { SessionSummary } from '@/rpc/bindings/SessionSummary'
 import type { Task } from '@/rpc/bindings/Task'
+import type { TaskState } from '@/rpc/bindings/TaskState'
 
 /**
  * 128 HUD-SCENE: everything the `/` scene draws is a pure function of (data, now) in the 1920×1080 viewBox of the
@@ -29,6 +30,8 @@ export type Color = (typeof C)[keyof typeof C]
 
 export const W = 1920
 export const H = 1080
+/** The SVG flow field's height: the mockup's top 812 px; the five panels below it are an HTML band (R2). */
+export const FIELD_H = 812
 export const ARC = { cx: -300, cy: 420, R: 1390, band: 18 } as const
 export const RING = { x: 860, y0: 265, dy: 53, r: 13, max: 9 } as const
 export const NEED = { x0: 610, dx: 60, y0: 262, dy: 52, max: 12 } as const
@@ -43,7 +46,7 @@ export const HOUR_MS = 3_600_000
 
 export type Pt = readonly [number, number]
 
-/** Where a mark goes on click; the Scene maps each to a typed TanStack `Link`. */
+/** Where a mark goes on click; `linkFor` in Scene.tsx maps each to a typed TanStack `Link`. `tasks` with `state: null` is the board as last left. */
 export type Target =
   | { route: 'attention'; id: string }
   | { route: 'task'; id: string }
@@ -51,8 +54,9 @@ export type Target =
   | { route: 'routine'; name: string }
   | { route: 'session'; id: string }
   | { route: 'agents' }
-  | { route: 'tasks-doing' }
+  | { route: 'tasks'; state: TaskState | null }
   | { route: 'attention-list' }
+  | { route: 'new' }
 
 // ---------------------------------------------------------------------------------------------------------------- time
 
@@ -202,7 +206,7 @@ export function rings(agents: readonly AgentSummary[], sessions: readonly Sessio
     sub: [chats.length ? `${chats.length} chat${chats.length === 1 ? '' : 's'}` : 'no chats today', self && `${self.open_tasks} open`, chats.length ? age(newest, now) : null].filter(Boolean).join(' · '),
     style: now - newest <= LIVE_WINDOW_MS || self?.status === 'working' ? 'live' : 'idle',
     actor: 'user',
-    link: self ? { route: 'agent', name: THEUTH } : null,
+    link: { route: 'new' },
   })
   const waitingFor = new Set(attention.map((i) => i.agent).filter((a): a is string => a !== null))
   const agentRings: R0[] = agents
@@ -440,12 +444,13 @@ export function punchCard(activityWeek: readonly ActivityEntry[], now: number): 
 }
 
 export type OutcomeMix = { done: number; running: number; review: number; blocked: number; cancelled: number }
-export const MIX_ORDER: readonly { key: keyof OutcomeMix; color: Color }[] = [
-  { key: 'done', color: C.success },
-  { key: 'running', color: C.info },
-  { key: 'review', color: C.primary },
-  { key: 'blocked', color: C.accent },
-  { key: 'cancelled', color: C.tertiary },
+/** Legend order of the OUTCOMES waffle; `state` is the board column each row opens. */
+export const MIX_ORDER: readonly { key: keyof OutcomeMix; color: Color; state: TaskState }[] = [
+  { key: 'done', color: C.success, state: 'done' },
+  { key: 'running', color: C.info, state: 'doing' },
+  { key: 'review', color: C.primary, state: 'review' },
+  { key: 'blocked', color: C.accent, state: 'blocked' },
+  { key: 'cancelled', color: C.tertiary, state: 'cancelled' },
 ]
 
 /** Tasks that moved today by state; `running` = every `doing` task regardless of date. */
@@ -496,6 +501,14 @@ export function streamColor(kind: ActivityEntry['kind']): Color {
   if (kind === 'escalation_raised') return C.accent
   if (kind === 'task_checked_out' || kind === 'child_spawned' || kind === 'routine_fired') return C.info
   return C.secondary
+}
+
+/** The STREAM row's destination: its subject is a task, an agent or a routine by kind (R2 — the old feed's rows, now one click from the scene). */
+export function streamLink(e: ActivityEntry): Target | null {
+  if (e.kind.startsWith('task_') || e.kind.startsWith('child_') || e.kind.startsWith('escalation_')) return { route: 'task', id: e.subject }
+  if (e.kind.startsWith('agent_') || e.kind === 'budget_threshold') return { route: 'agent', name: e.subject }
+  if (e.kind === 'routine_fired') return { route: 'routine', name: e.subject }
+  return null
 }
 
 export const actorLabel = (actor: string): string => (actor.startsWith('agent:') ? actor.slice(6) : actor === 'user' ? 'theuth' : actor)

@@ -1,6 +1,6 @@
 import { expect, test } from 'vitest'
 import { sceneFixture, T } from './fixtures'
-import { ARC, arc, arcPoint, C, END_X, flowPath, hairlines, HAIRLINES_MAX, hourOf, LABEL_GAP, layoutEnds, needsYou, outcomeMix, outcomes, punchCard, RING, ringByActor, rings, rng, running, scene, sessionsToday, shortId, startOfDay } from './model'
+import { ARC, arc, arcPoint, C, END_X, flowPath, hairlines, HAIRLINES_MAX, hourOf, LABEL_GAP, layoutEnds, needsYou, outcomeMix, outcomes, punchCard, RING, ringByActor, rings, rng, running, scene, sessionsToday, shortId, startOfDay, streamLink } from './model'
 
 // A fixed local evening, as the mockup's clock reads.
 const NOW = new Date(2026, 9, 7, 19, 49, 19).getTime()
@@ -55,10 +55,20 @@ test('rings: the roster agent named theuth folds into the sessions ring — one 
   const self = { ...F.agents[3]!, file: { ...F.agents[3]!.file, name: 'theuth' }, status: 'working' as const, open_tasks: 23 }
   const rs = rings([...F.agents, self], F.sessions, F.routines, F.attention, NOW)
   expect(rs.filter((r) => r.name === 'theuth')).toHaveLength(1)
-  expect(rs[0]).toMatchObject({ sub: '2 chats · 23 open · 40s', style: 'live', link: { route: 'agent', name: 'theuth' } })
+  expect(rs[0]).toMatchObject({ sub: '2 chats · 23 open · 40s', style: 'live', link: { route: 'new' } }) // R2: the aggregate ring opens a new chat
   expect(ringByActor(rs, 'agent:theuth')).toBe(rs[0])
   // Without chats today the ring still names theuth's work; a working theuth is live even when no chat moved.
   expect(rings([self], [], [], [], NOW)[0]).toMatchObject({ sub: 'no chats today · 23 open', style: 'live' })
+})
+
+test('streamLink: a row opens its subject — tasks for task/child/escalation kinds, agents for agent/budget kinds, routines for fires, nothing otherwise', () => {
+  const e = (kind: Parameters<typeof streamLink>[0]['kind'], subject: string) => streamLink({ id: 1, ts_ms: NOW, kind, actor: 'system', subject, summary: '', cost: null })
+  expect(e('task_done', T('1212'))).toEqual({ route: 'task', id: T('1212') })
+  expect(e('child_spawned', T('1300'))).toEqual({ route: 'task', id: T('1300') })
+  expect(e('escalation_raised', T('1301'))).toEqual({ route: 'task', id: T('1301') })
+  expect(e('agent_hired', 'builder')).toEqual({ route: 'agent', name: 'builder' })
+  expect(e('budget_threshold', 'ops-desk')).toEqual({ route: 'agent', name: 'ops-desk' })
+  expect(e('routine_fired', 'morning-brief')).toEqual({ route: 'routine', name: 'morning-brief' })
 })
 
 test('needsYou: newest first, 12 drawn, jitter within ±6 and deterministic, short ids ≤ 10 chars', () => {
