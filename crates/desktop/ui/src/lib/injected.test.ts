@@ -127,7 +127,7 @@ test('wake carries the task header and record', () => {
   expect(classify(`${WAKE_HEAD}\n\n${WAKE_TASK}`)).toEqual([
     {
       kind: 'wake',
-      id: '12',
+      task: '12',
       title: 'Rotate the relay certificate',
       reason: 'comment',
       count: 2,
@@ -141,14 +141,14 @@ test('wake carries the task header and record', () => {
 })
 
 test('wake without a loaded task keeps the id or names no task', () => {
-  expect(classify('Wake: task 7. Reason: schedule. Do not switch to another task until this wake is handled.')).toEqual([{ kind: 'wake', id: '7', reason: 'schedule' }])
+  expect(classify('Wake: task 7. Reason: schedule. Do not switch to another task until this wake is handled.')).toEqual([{ kind: 'wake', task: '7', reason: 'schedule' }])
   expect(classify('Wake: no task. Reason: manual. Do not switch to another task until this wake is handled.')).toEqual([{ kind: 'wake', reason: 'manual' }])
 })
 
 test('wake accepts every reason (70 DESK-PROTOCOL ones carry underscores) and a title with periods', () => {
   for (const reason of ['assigned', 'reassigned', 'comment', 'mention', 'schedule', 'answer', 'review', 'resume', 'resumed', 'manual', 'blockers_resolved', 'children_completed']) {
     expect(classify(`Wake: task a1 — Ship v2.1. Really. Reason: ${reason}. Do not switch to another task until this wake is handled.`)).toEqual([
-      { kind: 'wake', id: 'a1', title: 'Ship v2.1. Really', reason },
+      { kind: 'wake', task: 'a1', title: 'Ship v2.1. Really', reason },
     ])
   }
 })
@@ -157,8 +157,8 @@ const ROSTER = '<roster>\nFit check: hand the task over with `task_reassign` if 
 
 test('an assigned wake carries the roster fit check, with or without a task record', () => {
   const head = 'Wake: task 12 — Rotate the relay certificate. Reason: assigned. Do not switch to another task until this wake is handled.'
-  expect(classify(`${head}\n\n${WAKE_TASK}\n\n${ROSTER}`)).toMatchObject([{ kind: 'wake', id: '12', reason: 'assigned', state: 'todo', roster: ROSTER.slice('<roster>\n'.length, -'\n</roster>'.length) }])
-  expect(classify(`${head}\n\n${ROSTER}`)).toMatchObject([{ kind: 'wake', id: '12', reason: 'assigned', roster: expect.stringContaining('Fit check') }])
+  expect(classify(`${head}\n\n${WAKE_TASK}\n\n${ROSTER}`)).toMatchObject([{ kind: 'wake', task: '12', reason: 'assigned', state: 'todo', roster: ROSTER.slice('<roster>\n'.length, -'\n</roster>'.length) }])
+  expect(classify(`${head}\n\n${ROSTER}`)).toMatchObject([{ kind: 'wake', task: '12', reason: 'assigned', roster: expect.stringContaining('Fit check') }])
   expect(classify(`${head}\n\n${WAKE_TASK}`)?.[0]).not.toHaveProperty('roster')
 })
 
@@ -177,7 +177,7 @@ test('desk opening followed by a wake is two cards', () => {
 test('task attributes are taken verbatim and the record body may hold tags and quotes', () => {
   const body = 'Say "hi" to <everyone> & log it.'
   expect(classify(`Wake: task x. Reason: review. Do not switch to another task until this wake is handled.\n\n<task id="x" state="review" owner="user" thread="a &amp; b">\n${body}\n</task>`)).toEqual([
-    { kind: 'wake', id: 'x', reason: 'review', state: 'review', owner: 'user', thread: 'a &amp; b', body },
+    { kind: 'wake', task: 'x', reason: 'review', state: 'review', owner: 'user', thread: 'a &amp; b', body },
   ])
 })
 
