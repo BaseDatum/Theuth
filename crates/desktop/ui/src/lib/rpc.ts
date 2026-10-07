@@ -149,8 +149,10 @@ export function useInvalidateOn(): void {
     }
     const search = () => void qc.invalidateQueries({ queryKey: queryKeys.searchAll })
     // The model inventory and both model settings depend on configured providers (52 §3.2): refetch
-    // after an auth change and after a reconnect/`Lagged` reload (`App.reload`), whose gap may have hidden one.
-    const models = () => {
+    // after an auth change and after a reconnect reload (`App.reload`), whose gap may have hidden one. A
+    // settled resync (a context edit, 129's `Lagged`) touches one transcript only — nothing here.
+    const models = (ev?: Event) => {
+      if (ev instanceof CustomEvent && (ev.detail as { settled?: boolean } | null)?.settled) return
       void qc.invalidateQueries({ queryKey: queryKeys.models })
       void qc.invalidateQueries({ queryKey: queryKeys.titleModel })
       void qc.invalidateQueries({ queryKey: queryKeys.subagentModel })
