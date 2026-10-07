@@ -134,7 +134,7 @@ pub fn is_blocked_hostname(host: &str) -> bool {
         || h == "localhost"
         || INTERNAL_SUFFIXES
             .iter()
-            .any(|s| h.ends_with(s) || h == &s[1..])
+            .any(|s| h.ends_with(s) || h == s[1..])
         || matches!(
             h.as_str(),
             "metadata.google.internal"

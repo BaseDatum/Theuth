@@ -95,7 +95,7 @@ fn meta_charset(head: &[u8]) -> Option<String> {
         let tag = &tag[..end];
         if let Some(i) = tag.find("charset=") {
             let label: String = tag[i + "charset=".len()..]
-                .trim_start_matches(|c| c == '"' || c == '\'' || c == ' ')
+                .trim_start_matches(['"', '\'', ' '])
                 .chars()
                 .take_while(|c| !matches!(c, '"' | '\'' | ';' | ' ' | '/' | '>'))
                 .collect();

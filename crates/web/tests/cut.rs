@@ -16,7 +16,7 @@ fn fits_without_a_cut() {
         }
     );
     assert_eq!(cut("abcdef", 2, 10).text, "cdef");
-    assert_eq!(cut("abcdef", 0, 6).truncated, false);
+    assert!(!cut("abcdef", 0, 6).truncated);
     assert_eq!(cut("", 0, 10), Cut::default());
 }
 

@@ -79,10 +79,8 @@ pub fn extract(html: &str, base: &url::Url) -> PageMeta {
                     canonical = Some(abs.to_string());
                 }
             }
-            "html" => {
-                if lang.is_none() {
-                    lang = attr(&attrs, "lang").map(|l| l.trim().to_ascii_lowercase());
-                }
+            "html" if lang.is_none() => {
+                lang = attr(&attrs, "lang").map(|l| l.trim().to_ascii_lowercase());
             }
             _ => {}
         }
