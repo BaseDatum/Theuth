@@ -587,7 +587,7 @@ impl Tool for Grep {
     type Args = GrepArgs;
 
     fn description(&self) -> String {
-        "Search file contents with a regex. Respects .gitignore, skips hidden and binary files. Returns `path:line: text` per match, sorted by path, up to `limit` (default 200). `path` is a file or directory (default: cwd); `glob` filters files, e.g. `*.rs`.".into()
+        "Search file contents with a regex. Respects .gitignore, skips hidden and binary files. Returns `path:line: text` per match, sorted by path, up to `limit` (default 200). `path` is a file or directory (default: cwd); `glob` filters files, e.g. `*.rs`. When an ancestor .gitignore would hide `path` itself, the walk ignores ancestor rules and says so in a header line.".into()
     }
 
     async fn call(&self, a: GrepArgs, _: ToolCx) -> anyhow::Result<ToolOutput> {
@@ -608,57 +608,113 @@ const GREP_LIMIT: u32 = 200;
 /// Longest match line echoed back; longer lines are cut with `…`.
 const GREP_LINE_CHARS: usize = 400;
 
-/// Walk `root` (gitignore, hidden and binary files skipped) and collect
-/// `path:line: text` matches for `pattern`, sorted by path, up to `limit`.
+/// Walk `root` in parallel (gitignore, hidden and binary files skipped) and
+/// collect `path:line: text` matches for `pattern`, sorted by path then line,
+/// up to `limit`. Which matches survive the cap depends on thread timing.
 fn grep(root: &Path, pattern: &str, glob: Option<&str>, limit: usize) -> anyhow::Result<String> {
+    use std::sync::Mutex;
+    use std::sync::atomic::{AtomicUsize, Ordering::Relaxed};
+
     use grep_searcher::{BinaryDetection, SearcherBuilder, sinks::UTF8};
+    use ignore::WalkState::{Continue, Quit};
 
     let matcher = grep_regex::RegexMatcher::new(pattern)?;
-    let mut searcher = SearcherBuilder::new()
-        .line_number(true)
-        .binary_detection(BinaryDetection::quit(b'\x00'))
-        .build();
-    let mut walk = ignore::WalkBuilder::new(root);
-    walk.sort_by_file_path(|a, b| a.cmp(b));
-    if let Some(glob) = glob {
-        let mut ov = ignore::overrides::OverrideBuilder::new(root);
-        ov.add(glob)?;
-        walk.overrides(ov.build()?);
-    }
+    let overrides = match glob {
+        Some(glob) => {
+            let mut ov = ignore::overrides::OverrideBuilder::new(root);
+            ov.add(glob)?;
+            Some(ov.build()?)
+        }
+        None => None,
+    };
     let is_dir = root.is_dir();
-    let mut out = Vec::new();
-    for entry in walk.build() {
-        let Ok(entry) = entry else { continue };
-        if !entry.file_type().is_some_and(|t| t.is_file()) {
-            continue;
+    // One walk; returns (path, line, text) hits and the number of entries
+    // yielded below the root.
+    let walk = |parents: bool| {
+        let mut walk = ignore::WalkBuilder::new(root);
+        walk.parents(parents).threads(crate::glob::walk_threads());
+        if let Some(ov) = &overrides {
+            walk.overrides(ov.clone());
         }
-        let path = entry.path();
-        let shown = if is_dir {
-            path.strip_prefix(root).unwrap_or(path)
-        } else {
-            path
-        };
-        let shown = shown.display().to_string();
-        // Read errors on one file (permissions, vanished) skip it, not the search.
-        let _ = searcher.search_path(
-            &matcher,
-            path,
-            UTF8(|line, text| {
-                let text = text.trim_end();
-                match text.char_indices().nth(GREP_LINE_CHARS) {
-                    Some((i, _)) => out.push(format!("{shown}:{line}: {}…", &text[..i])),
-                    None => out.push(format!("{shown}:{line}: {text}")),
+        let hits: Mutex<Vec<(String, u64, String)>> = Mutex::new(Vec::new());
+        let count = AtomicUsize::new(0);
+        let visited = AtomicUsize::new(0);
+        walk.build_parallel().run(|| {
+            let mut searcher = SearcherBuilder::new()
+                .line_number(true)
+                .binary_detection(BinaryDetection::quit(b'\x00'))
+                .build();
+            let (matcher, hits, count, visited) = (&matcher, &hits, &count, &visited);
+            Box::new(move |entry| {
+                let Ok(entry) = entry else { return Continue };
+                if entry.depth() > 0 {
+                    visited.fetch_add(1, Relaxed);
                 }
-                Ok(out.len() < limit)
-            }),
-        );
-        if out.len() >= limit {
-            out.push(format!("[… limit {limit} reached]"));
-            break;
+                if count.load(Relaxed) >= limit {
+                    return Quit;
+                }
+                if !entry.file_type().is_some_and(|t| t.is_file()) {
+                    return Continue;
+                }
+                let path = entry.path();
+                let shown = if is_dir {
+                    path.strip_prefix(root).unwrap_or(path)
+                } else {
+                    path
+                };
+                let shown = shown.display().to_string();
+                // Read errors on one file (permissions, vanished) skip it, not the search.
+                let _ = searcher.search_path(
+                    matcher,
+                    path,
+                    UTF8(|line, text| {
+                        let n = count.fetch_add(1, Relaxed);
+                        if n >= limit {
+                            return Ok(false);
+                        }
+                        let text = text.trim_end();
+                        let text = match text.char_indices().nth(GREP_LINE_CHARS) {
+                            Some((i, _)) => format!("{}…", &text[..i]),
+                            None => text.to_owned(),
+                        };
+                        hits.lock().unwrap().push((shown.clone(), line, text));
+                        Ok(n + 1 < limit)
+                    }),
+                );
+                if count.load(Relaxed) >= limit {
+                    return Quit;
+                }
+                Continue
+            })
+        });
+        (hits.into_inner().unwrap(), visited.into_inner())
+    };
+    let (mut hits, visited) = walk(true);
+    let mut out = Vec::new();
+    if is_dir && crate::glob::hidden_by_ancestor(root, visited) {
+        let (retry, visited) = walk(false);
+        if visited > 0 {
+            hits = retry;
+            out.push(format!(
+                "[grep: an ancestor .gitignore hides {}; walked without ancestor ignore rules]",
+                root.display()
+            ));
         }
     }
-    if out.is_empty() {
-        return Ok("no matches".into());
+    if hits.is_empty() {
+        out.push("no matches".into());
+        return Ok(out.join("\n"));
+    }
+    // The parallel walker yields in arbitrary order; the tool promises path
+    // order (component-wise, as the serial `sort_by_file_path` gave).
+    hits.sort_by(|a, b| Path::new(&a.0).cmp(Path::new(&b.0)).then(a.1.cmp(&b.1)));
+    let capped = hits.len() >= limit;
+    out.extend(
+        hits.into_iter()
+            .map(|(path, line, text)| format!("{path}:{line}: {text}")),
+    );
+    if capped {
+        out.push(format!("[… limit {limit} reached]"));
     }
     Ok(out.join("\n"))
 }
@@ -1178,5 +1234,56 @@ mod tests {
         assert_eq!(std::fs::read_to_string(&p).unwrap(), "old");
         assert!(no_tmp_left(&p));
         std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+    }
+
+    /// Temp tree with a `.git` marker so `.gitignore` files are honoured.
+    fn grep_tree(files: &[(&str, &str)]) -> PathBuf {
+        let root = std::env::temp_dir().join(format!("theuth-grep-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(root.join(".git")).unwrap();
+        for (f, content) in files {
+            let p = root.join(f);
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(&p, content).unwrap();
+        }
+        root
+    }
+
+    #[test]
+    fn grep_sorts_by_path_then_line_and_marks_the_cap() {
+        let root = grep_tree(&[
+            ("b/z.rs", "hit\nmiss\nhit\n"),
+            ("a.rs", "hit\n"),
+            ("b/y.rs", "hit\n"),
+        ]);
+        let out = grep(&root, "hit", None, 200).unwrap();
+        assert_eq!(
+            out,
+            "a.rs:1: hit\nb/y.rs:1: hit\nb/z.rs:1: hit\nb/z.rs:3: hit"
+        );
+        let out = grep(&root, "hit", Some("*.rs"), 2).unwrap();
+        let lines: Vec<&str> = out.lines().collect();
+        assert_eq!(lines.len(), 3, "{out}");
+        assert_eq!(lines[2], "[… limit 2 reached]");
+        assert!(lines[0] < lines[1], "{out}");
+        assert_eq!(
+            grep(&root, "nothing_here", None, 200).unwrap(),
+            "no matches"
+        );
+    }
+
+    #[test]
+    fn grep_bypasses_an_ancestor_gitignore_that_hides_the_root() {
+        let outer = grep_tree(&[(".gitignore", "*\n"), ("inner/a.rs", "needle\n")]);
+        let inner = outer.join("inner");
+        let out = grep(&inner, "needle", None, 200).unwrap();
+        assert_eq!(
+            out,
+            format!(
+                "[grep: an ancestor .gitignore hides {}; walked without ancestor ignore rules]\na.rs:1: needle",
+                inner.display()
+            )
+        );
+        // The root's own .gitignore is not an ancestor rule: plain no-match.
+        assert_eq!(grep(&outer, "needle", None, 200).unwrap(), "no matches");
     }
 }
