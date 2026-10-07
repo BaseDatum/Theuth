@@ -258,6 +258,7 @@ Three fenced blocks render inline, merged into your reply with the same margins 
 const BLOCK_TAIL: &str = "\n\
 - ```openui: richer static components with local interaction, rendered inline exactly like json-render (not as an app card; the reader can open one as an app if they want): Steps/StepsItem, Tabs/TabItem, Callout, Card/CardHeader, Table/Col, BarChart/LineChart/Series, MetricIndicatorInline, ListBlock/ListItem, Tag, Accordion/AccordionItem, CodeBlock, Chips/ChipItem, OptionCards/OptionCard, Buttons/Button with @Set/@OpenUrl. No Query/Mutation/@ToAssistant in a fence — a live screen is the `app` tool.\n\
 - ```mermaid: sequenceDiagram (un-anchored sketches), mindmap (flowchart only when you need mermaid syntax; boxes and arrows are otherwise a Graph; state, class and ER pictures are StateMachine / Entities).\n\
+- A **page** (`show{content, name: \"x.html\"}`): one self-contained HTML document with its own `<style>`/`<script>`, CDN libraries allowed, rendered live inline in the theuth app in a sandboxed frame themed like the chat. Only for what no catalog component draws: a chart library's chart (Chart.js, ECharts, Plotly, D3), a map, 3D, a mockup, an image collage, an animation, a layout you must control pixel by pixel. Nothing comes back from a page — a button that should reach you is an `app`, not a page. Rules: fluid width, no horizontal padding on the outermost element, no outer card, border or banner title (the page is part of your reply); charts at fixed pixel heights; let content set the height, never `100vh` or `height:100%` on `html`/`body`; use the theme variables (`--background --foreground --muted --card --border --primary --accent --chart-1..6 --radius --font-sans --font-mono`, the same names as T3 Code) with fallbacks, e.g. `var(--foreground, #1a1612)`; local images by absolute path are inlined for you; pass `height` only to cap a long page. Check a scripted page with `page_preview` before you show it. The reader sees the page where the card is — do not announce or restate it; add only what it does not say.\n\
 \n\
 Pick by the shape of the answer:\n\
 | The answer is… | Draw |\n\
@@ -290,6 +291,7 @@ Pick by the shape of the answer:\n\
 | labels, categories, a set of states | json-render Tags |\n\
 | references, further reading | json-render LinkList |\n\
 | a picture you have a URL for | json-render Image |\n\
+| a chart from a chart library, a map, 3D, a mockup, a collage, an animation | a page: `show{content, name: \"x.html\"}` (check with `page_preview`) — never for what a component above draws |\n\
 | who: an owner, a contact, a reviewer | json-render Person |\n\
 | something someone said, verbatim | json-render Quote |\n\
 \n\
@@ -480,6 +482,35 @@ mod tests {
         assert_eq!(json["elements"]["c"]["type"], "Checklist");
         parse(body).unwrap_or_else(|e| panic!("{e:?}"));
         assert!(check(&block).is_empty(), "{:?}", check(&block));
+    }
+
+    /// 120 §10.1: the page paragraph sits after the three fences and before the pick table,
+    /// and the table has the page row after `Image`.
+    #[test]
+    fn block_names_pages_after_the_fences() {
+        let block = prompt_block();
+        let mermaid = block.find("\n- ```mermaid: ").unwrap();
+        let page = block
+            .find("\n- A **page** (`show{content, name: \"x.html\"}`)")
+            .unwrap();
+        let pick = block.find("\nPick by the shape of the answer:").unwrap();
+        assert!(mermaid < page && page < pick);
+        assert!(block.contains("a button that should reach you is an `app`, not a page"));
+        assert!(block.contains("Check a scripted page with `page_preview` before you show it."));
+        let image = block
+            .find("| a picture you have a URL for | json-render Image |")
+            .unwrap();
+        let row = block
+            .find("| a chart from a chart library, a map, 3D, a mockup, a collage, an animation | a page: `show{content, name: \"x.html\"}` (check with `page_preview`) — never for what a component above draws |")
+            .unwrap();
+        let person = block
+            .find("| who: an owner, a contact, a reviewer |")
+            .unwrap();
+        assert!(image < row && row < person);
+        let skill = visualize_skill();
+        assert!(skill.contains("\n## Pages\n"));
+        assert!(skill.contains("| a chart library's chart, a map, 3D, a mockup, a collage, an animation | a page — show{content, name: \"x.html\"} after page_preview | a Code block of HTML, or an app that calls nothing back |\n| an explanation with three or more parts"));
+        assert!(skill.contains("```html\n<!doctype html>"));
     }
 
     #[test]

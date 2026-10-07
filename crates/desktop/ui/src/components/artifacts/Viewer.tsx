@@ -10,13 +10,15 @@ import { ArchiveView } from '@/components/artifacts/ArchiveView'
 import { sessionLabel, useArtifactList } from '@/components/artifacts/List'
 import { MermaidView } from '@/components/artifacts/MermaidView'
 import { ArtifactMenu, PopoutButton, RevealButton, TEXT_KINDS, metaLine, saveAs, useText } from '@/components/chat/ArtifactCard'
-import { Img, useFileUrl } from '@/components/chat/Attachments'
+import { Img, useDocumentUrl } from '@/components/chat/Attachments'
+import { HtmlPage } from '@/components/chat/HtmlPage'
 import { fenced, plugins, shikiTheme } from '@/components/chat/MessageAssistant'
 import { SectionRow } from '@/components/nav/SectionRow'
 import { SearchReturn } from '@/components/sidebar/SearchReturn'
 import { SearchTrigger } from '@/components/sidebar/SearchTrigger'
 import { Button } from '@/components/ui/button'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
+import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { useIsMobile } from '@/hooks/use-mobile'
@@ -34,7 +36,7 @@ import type { MatchRange } from '@/rpc/bindings/MatchRange'
 import type { Artifact } from '@/rpc/extra'
 import type { PDFDocumentLoadingTask, PDFPageProxy, RenderTask } from 'pdfjs-dist'
 
-/** HTML artifacts allow web images; CSP blocks scripts/fetch/fonts/frames, and the iframe sandbox blocks forms and same-origin access (35 §9). */
+/** Non-page HTML-ish bytes (unreachable for `html`, which is a live page now — 120 §3): web images only; CSP blocks scripts/fetch/fonts/frames, the sandbox blocks forms and same-origin access (35 §9). */
 const CSP = '<meta http-equiv="Content-Security-Policy" content="default-src \'none\'; style-src \'unsafe-inline\'; img-src data: https: http:">'
 
 const MD_CLASS =
@@ -267,10 +269,11 @@ function PdfPages({ path }: { path: string }) {
   )
 }
 
-/** `<iframe src={url}>` of the blob — WKWebView's own PDF viewer — where a mouse drives it. */
+/** `<iframe src={url}>` of the blob — WKWebView's own PDF viewer — where a mouse drives it. 120 §9b: a typed `blob:`, never `asset:`. */
 function PdfFrame({ a }: { a: Artifact }) {
-  const url = useFileUrl(a.path)
-  if (!url) return <div className="m-6 h-64 animate-pulse rounded-xl bg-layer-2" />
+  const url = useDocumentUrl(a.path)
+  if (url === null) return <div className="m-6 h-64 animate-pulse rounded-xl bg-layer-2" />
+  if (url === '') return <div className="p-6 text-sm text-danger">could not load {a.name}</div>
   return <iframe src={url} title={a.name} className="h-full w-full border-0" />
 }
 
@@ -282,6 +285,41 @@ export function ArtifactView({ artifact, className }: { artifact: Artifact; clas
   return (
     <div className={className}>
       <Body a={artifact} />
+    </div>
+  )
+}
+
+/** The stored bytes fenced for Streamdown: the `text` kind's view, and a page's `Source`. */
+const Fenced = ({ text, lang }: { text: string; lang: string }) => (
+  <div className="p-4 [&_pre]:text-xs">
+    <Streamdown mode="static" plugins={plugins} shikiTheme={shikiTheme}>
+      {fenced(text, lang)}
+    </Streamdown>
+  </div>
+)
+
+/** 120 §3: the live page at the pane's full size, uncapped, with the `Page | Source` toggle; Source is the pristine bytes fenced. */
+function HtmlBody({ a, text }: { a: Artifact; text: string | null }) {
+  const [view, setView] = useState<'page' | 'source'>('page')
+  return (
+    <div className="flex flex-col">
+      <ToggleGroup type="single" size="sm" variant="outline" value={view} onValueChange={(v) => v && setView(v as 'page' | 'source')} className="m-2 self-end" aria-label="View">
+        <ToggleGroupItem value="page" className="h-7 text-xs">
+          Page
+        </ToggleGroupItem>
+        <ToggleGroupItem value="source" className="h-7 text-xs">
+          Source
+        </ToggleGroupItem>
+      </ToggleGroup>
+      {view === 'page' ? (
+        <HtmlPage callId={a.call_id} html={text} title={a.title} cap="none" />
+      ) : text === null ? (
+        <div className="m-6 h-64 animate-pulse rounded-xl bg-layer-2" />
+      ) : text === '' ? (
+        <div className="p-6 text-sm text-danger">could not load {a.name}</div>
+      ) : (
+        <Fenced text={text} lang="html" />
+      )}
     </div>
   )
 }
@@ -304,6 +342,7 @@ function Body({ a }: { a: Artifact }) {
     )
   }
   if (a.kind === 'pdf') return <Pdf a={a} />
+  if (a.kind === 'html') return <HtmlBody a={a} text={text} />
   if (a.kind === 'archive') return <ArchiveView a={a} />
   if (a.kind === 'file') {
     return (
@@ -324,13 +363,7 @@ function Body({ a }: { a: Artifact }) {
     case 'mermaid':
       return <MermaidView text={text} />
     case 'text':
-      return (
-        <div className="p-4 [&_pre]:text-xs">
-          <Streamdown mode="static" plugins={plugins} shikiTheme={shikiTheme}>
-            {fenced(text, extOf(a.name))}
-          </Streamdown>
-        </div>
-      )
+      return <Fenced text={text} lang={extOf(a.name)} />
     case 'csv':
       return <Csv text={text} tsv={extOf(a.name) === 'tsv'} />
     default:

@@ -9,6 +9,7 @@ use a2a::A2aChanged;
 use agent::{AgentEvent, CommunicationChanged, LoginFinished, PeerDelivered, PeerMessageChanged};
 use app::AppCallChanged;
 use artifact::ArtifactShown;
+use artifact::preview::{PagePreviewRequested, PagePreviewResolved};
 use browser::BrowserEvent;
 use codeindex::CodeindexEvent;
 use document::DocumentChanged;
@@ -115,6 +116,8 @@ forward!(
     NodeEvent,
     ScheduleEvent,
     ArtifactShown,
+    PagePreviewRequested,
+    PagePreviewResolved,
     SecretsEvent,
     ScrapeProgress,
     UpdateReady,
@@ -140,6 +143,8 @@ pub async fn start(rt: &Runtime) -> broadcast::Sender<Event> {
         return tx;
     }
     let (tx, _) = broadcast::channel(CAPACITY);
+    // 120 §11.4: `page_preview` short-circuits to "no renderer" when nobody subscribes.
+    artifact::preview::watch_feed(tx.clone());
     let actor = Bridge::spawn_with_mailbox(tx.clone(), runtime::subscriber_mailbox());
     if let Err(e) = actor.register(BRIDGE_ACTOR) {
         tracing::warn!(error = %e, "rpc.events already registered; two bridges");
@@ -166,6 +171,8 @@ pub async fn start(rt: &Runtime) -> broadcast::Sender<Event> {
     rt.subscribe::<Bridge, NodeEvent>(&actor).await;
     rt.subscribe::<Bridge, ScheduleEvent>(&actor).await;
     rt.subscribe::<Bridge, ArtifactShown>(&actor).await;
+    rt.subscribe::<Bridge, PagePreviewRequested>(&actor).await;
+    rt.subscribe::<Bridge, PagePreviewResolved>(&actor).await;
     rt.subscribe::<Bridge, SecretsEvent>(&actor).await;
     rt.subscribe::<Bridge, ScrapeProgress>(&actor).await;
     rt.subscribe::<Bridge, UpdateReady>(&actor).await;
