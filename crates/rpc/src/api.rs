@@ -5051,25 +5051,34 @@ impl ApiServer for Server {
             .await
     }
 
-    // 126 W1 / W2: every `double_*` method below becomes an `ask::<double::actor::Double, _>(
-    // double::DOUBLE_ACTOR, …)`; until then the read methods answer with the config as read and
-    // typed empties, the mutating ones with `not yet` — never a panic.
+    // 126: the read / ladder methods ask the double actor (W1); `double_train`, `double_rollback`,
+    // `double_export`, `double_delete_all` and `double_settings_set` land with W2 — until then they
+    // answer `not yet`, never a panic.
 
     async fn double_status(&self) -> RpcResult<double::DoubleStatus> {
-        let cfg = self.double_config();
-        Ok(double::DoubleStatus {
-            enabled: cfg.enabled,
-            venue: cfg.training.venue,
-            ..double::DoubleStatus::default()
-        })
+        match ask::<double::actor::Double, _>(double::DOUBLE_ACTOR, double::actor::Status).await {
+            Ok(s) => Ok(s),
+            // Disabled: the plugin registered nothing; report the section as read.
+            Err(e) if e.code() == NOT_RUNNING => {
+                let cfg = self.double_config();
+                Ok(double::DoubleStatus {
+                    enabled: cfg.enabled,
+                    venue: cfg.training.venue,
+                    ..double::DoubleStatus::default()
+                })
+            }
+            Err(e) => Err(e),
+        }
     }
 
     async fn double_classes(&self) -> RpcResult<Vec<double::DoubleClass>> {
-        Ok(Vec::new())
+        ask::<double::actor::Double, _>(double::DOUBLE_ACTOR, double::actor::Classes).await
     }
 
     async fn double_class(&self, key: String) -> RpcResult<double::DoubleClassDetail> {
-        Err(double_not_yet(&format!("class {key:?}"), "W1"))
+        ask::<double::actor::Double, _>(double::DOUBLE_ACTOR, double::actor::ClassDetail(key))
+            .await?
+            .map_err(failed)
     }
 
     async fn double_train(&self, tier: double::Tier, venue: double::Venue) -> RpcResult<double::RunId> {
@@ -5079,12 +5088,14 @@ impl ApiServer for Server {
         ))
     }
 
-    async fn double_pause(&self, _on: bool) -> RpcResult<double::DoubleStatus> {
-        Err(double_not_yet("pause", "W1"))
+    async fn double_pause(&self, on: bool) -> RpcResult<double::DoubleStatus> {
+        ask::<double::actor::Double, _>(double::DOUBLE_ACTOR, double::actor::Pause(on)).await
     }
 
-    async fn double_forget(&self, _target: double::ForgetTarget) -> RpcResult<u32> {
-        Err(double_not_yet("forget", "W1"))
+    async fn double_forget(&self, target: double::ForgetTarget) -> RpcResult<u32> {
+        ask::<double::actor::Double, _>(double::DOUBLE_ACTOR, double::actor::Forget(target))
+            .await?
+            .map_err(failed)
     }
 
     async fn double_rollback(&self, version: String) -> RpcResult<double::DoubleStatus> {
@@ -5094,10 +5105,19 @@ impl ApiServer for Server {
     async fn double_set_cap(
         &self,
         class: String,
-        _rung: u8,
-        _mutating_opt_in: bool,
+        rung: u8,
+        mutating_opt_in: bool,
     ) -> RpcResult<double::DoubleClass> {
-        Err(double_not_yet(&format!("set cap on {class:?}"), "W1"))
+        ask::<double::actor::Double, _>(
+            double::DOUBLE_ACTOR,
+            double::actor::SetCap {
+                class,
+                rung,
+                mutating_opt_in,
+            },
+        )
+        .await?
+        .map_err(failed)
     }
 
     async fn double_export(&self) -> RpcResult<double::DoubleExport> {
@@ -5108,9 +5128,18 @@ impl ApiServer for Server {
         Err(double_not_yet("delete all", "W2"))
     }
 
-    async fn double_take_over(&self, _question_id: String) -> RpcResult<bool> {
-        // No grace can be running before the actor exists: nothing to cancel.
-        Ok(false)
+    async fn double_take_over(&self, question_id: String) -> RpcResult<bool> {
+        match ask::<double::actor::Double, _>(
+            double::DOUBLE_ACTOR,
+            double::actor::TakeOver(question_id),
+        )
+        .await
+        {
+            Ok(b) => Ok(b),
+            // No actor: no grace can be running; nothing to cancel.
+            Err(e) if e.code() == NOT_RUNNING => Ok(false),
+            Err(e) => Err(e),
+        }
     }
 
     async fn double_settings_get(&self) -> RpcResult<double::DoubleConfig> {
@@ -5121,7 +5150,7 @@ impl ApiServer for Server {
         &self,
         _settings: double::DoubleConfig,
     ) -> RpcResult<double::DoubleConfig> {
-        Err(double_not_yet("settings set", "W1"))
+        Err(double_not_yet("settings set", "W2"))
     }
 
     async fn meeting_oracle_mode(&self) -> RpcResult<decision::ModeInfo> {
@@ -6027,6 +6056,10 @@ impl ApiServer for Server {
             && sink.send(SubscriptionMessage::from(raw)).await.is_err()
         {
             return Ok(());
+        }
+        // 126 §4.4: the chips and countdowns of pending cards follow the snapshot.
+        if let Ok(Some(d)) = ActorRef::<double::actor::Double>::lookup(double::DOUBLE_ACTOR) {
+            let _ = d.tell(double::actor::Republish).await;
         }
         tokio::spawn(async move {
             let _follow = follow;

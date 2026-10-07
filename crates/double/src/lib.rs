@@ -18,10 +18,14 @@
 
 use runtime::Runtime;
 
+pub mod actor;
 pub mod class;
 pub mod config;
 pub mod events;
+pub mod labels;
+pub mod ladder;
 pub mod mesh;
+pub mod predict;
 pub mod store;
 pub mod types;
 
@@ -37,10 +41,8 @@ pub use types::*;
 /// Registry name of the double actor (`DOUBLE_ACTOR`, §4).
 pub const DOUBLE_ACTOR: &str = "double";
 
-// 126 W1: `pub mod actor;` (the `Double` kameo actor: subscriptions, predict,
-// grace timers, `TakeOver`), `pub mod labels;`, `pub mod predict;`,
-// `pub mod ladder;` — and the RPC stubs in crates/rpc/src/api.rs become
-// `ask::<actor::Double, _>(DOUBLE_ACTOR, …)` calls.
+// 126 W1: `actor`, `labels`, `predict`, `ladder` above; the RPC methods in
+// crates/rpc/src/api.rs are `ask::<actor::Double, _>(DOUBLE_ACTOR, …)` calls.
 // 126 W2: `pub mod train_a;`, `pub mod sched;`, `pub mod precond;`,
 // `pub mod venue;`, `pub mod versions;`.
 // 126 W3: `pub mod train_b;`.
@@ -74,10 +76,10 @@ impl runtime::Plugin for DoublePlugin {
                 return Ok(());
             }
         };
-        let _ = (store, cfg);
-        // 126 W1: spawn `actor::Double` with `runtime::subscriber_mailbox()`,
-        // `register(DOUBLE_ACTOR)`, `rt.subscribe::<_, tools::ApprovalRequested>`,
-        // `ApprovalResolved`, `AskRequested`, `AskResolved`, `agent::AgentEvent`.
+        let oracle = std::sync::Arc::new(predict::EngineOracle);
+        if let Err(e) = actor::start(rt, store.clone(), cfg.clone(), oracle).await {
+            tracing::warn!("double actor not started: {e:#}");
+        }
         // 126 W2: `sched::start(store, cfg.training, rt.clone())`.
         // 126 W5: register `tool::*` once `rt.lookup_when::<ToolRegistry>` answers.
         Ok(())

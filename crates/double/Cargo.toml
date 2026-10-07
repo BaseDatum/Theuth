@@ -9,6 +9,12 @@ description = "The owner's double: a local model of the owner's own decisions, w
 runtime = { workspace = true }
 tools = { workspace = true }
 replica = { workspace = true }
+decision = { workspace = true }
+agent = { workspace = true }
+roster = { workspace = true }
+schedule = { workspace = true }
+kameo = { workspace = true }
+tokio = { workspace = true }
 async-trait = { workspace = true }
 anyhow = { workspace = true }
 serde = { workspace = true }
@@ -24,11 +30,11 @@ ts-rs = { workspace = true, optional = true }
 
 [dev-dependencies]
 tempfile = "3"
-tokio = { workspace = true }
 serde_yaml = { workspace = true }
+parking_lot = { workspace = true }
 
 [features]
-ts = ["dep:ts-rs", "runtime/ts", "tools/ts"]
+ts = ["dep:ts-rs", "runtime/ts", "tools/ts", "roster/ts"]
 
 [lints]
 workspace = true
