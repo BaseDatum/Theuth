@@ -6136,7 +6136,10 @@ mod tests {
             v,
             serde_json::json!({ "type": "AttentionChanged", "count": 2, "ids_added": ["finished:s1:t9"], "ids_removed": ["ask:a1"], "at_ms": 1_700_000_000_000u64 })
         );
-        assert!(wanted(&v, None, None), "session-less: every global subscriber");
+        assert!(
+            wanted(&v, None, None),
+            "session-less: every global subscriber"
+        );
         assert!(wanted(&v, Some("other"), None));
         assert_eq!(
             serde_json::to_value(roster::attention::AttentionKind::Finished).unwrap(),

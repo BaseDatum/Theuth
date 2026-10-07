@@ -113,7 +113,7 @@ pub struct AttentionItem {
     pub summary: Option<String>,
     /// 130 E3: the agent's `## Next` list, ≤ 2 items of ≤ 80 chars (Finished items).
     #[serde(default)]
-    #[cfg_attr(feature = "ts", ts(optional))]
+    #[cfg_attr(feature = "ts", ts(as = "Option<Vec<String>>", optional))]
     pub next_steps: Vec<String>,
 }
 

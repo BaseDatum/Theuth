@@ -943,7 +943,7 @@ pub struct SessionActivity {
     pub live: bool,
     /// 130 E2: ms since epoch `state` entered `awaiting` / `approval`; `None` otherwise.
     #[serde(default)]
-    #[cfg_attr(feature = "ts", ts(type = "number | null"))]
+    #[cfg_attr(feature = "ts", ts(optional, type = "number | null"))]
     pub waiting_since_ms: Option<u64>,
 }
 
