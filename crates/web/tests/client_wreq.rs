@@ -171,7 +171,11 @@ async fn blocked_hostname_is_refused_by_the_guard_before_connecting() {
     // `localhost` reaches the resolver (an IP literal would not) and resolves
     // to loopback, which the guard refuses; wiremock sees nothing.
     let target = Url::parse(&format!("http://localhost:{}/", server.address().port())).unwrap();
-    let err = client(&cfg()).get(&target, &[]).await.unwrap_err();
+    let err = client(&cfg())
+        .get(&target, &[])
+        .await
+        .err()
+        .expect("must fail");
     let detail = err
         .as_rejected()
         .unwrap_or_else(|| panic!("not a guard refusal: {err}"));
@@ -191,7 +195,11 @@ async fn read_timeout_fires_against_a_sleeping_mock() {
         ..cfg()
     };
     let started = Instant::now();
-    let err = client(&cfg).get(&url(&server, "/"), &[]).await.unwrap_err();
+    let err = client(&cfg)
+        .get(&url(&server, "/"), &[])
+        .await
+        .err()
+        .expect("must fail");
     assert!(
         started.elapsed() < Duration::from_secs(4),
         "{:?}",
@@ -215,7 +223,11 @@ async fn connect_timeout_fires() {
         connect_timeout: Duration::from_nanos(1),
         ..cfg()
     };
-    let err = client(&cfg).get(&url(&server, "/"), &[]).await.unwrap_err();
+    let err = client(&cfg)
+        .get(&url(&server, "/"), &[])
+        .await
+        .err()
+        .expect("must fail");
     assert!(matches!(err, ClientError::Transport(_)), "{err}");
     assert!(err.as_rejected().is_none());
 }
