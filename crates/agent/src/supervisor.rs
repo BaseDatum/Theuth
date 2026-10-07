@@ -189,6 +189,9 @@ pub struct Agents {
     /// Children whose spawn turn waits for a pool permit (01 §2.6): the
     /// brief and every input that arrived for them meanwhile, in memory only.
     queued: HashMap<SessionId, QueuedSpawn>,
+    /// Child results a parent's intake refused (R2.7), by parent: offered
+    /// once more when that parent's next turn ends. In memory only.
+    undelivered: HashMap<SessionId, Vec<Undelivered>>,
     /// Children whose current turn was cancelled by the runtime cap.
     timed_out: HashSet<SessionId>,
     /// Children spawned with a `tools` ceiling ([`SpawnChild::cap`]), for
@@ -425,6 +428,15 @@ enum Held {
     },
     /// A peer exchange admitted by [`Agents::enqueue_peer`].
     Peer(Box<PeerInput>),
+}
+
+/// A child's result its parent could not take yet (R2.7).
+struct Undelivered {
+    child: SessionId,
+    turn: TurnId,
+    /// Already capped and redacted, as `hand_off` prepared it.
+    text: String,
+    scope: Option<Uuid>,
 }
 
 /// The request scope a spawned child works for; `cancelled` once
@@ -1759,14 +1771,68 @@ impl Agents {
         {
             parent_answered |= requester == parent;
         }
+        let scope = owned.map(|o| o.scope);
+        let cancelled = owned.is_some_and(|o| o.cancelled);
+        if let Err(reason) = self
+            .deliver_result(
+                child,
+                turn,
+                parent,
+                &text,
+                scope,
+                cancelled,
+                parent_answered,
+                false,
+            )
+            .await
+        {
+            // R2.7: the parent hears about it, and the result is offered once
+            // more when the parent's current turn ends (it may free the quota).
+            self.result_refused(
+                parent,
+                &reason,
+                true,
+                Undelivered {
+                    child,
+                    turn,
+                    text,
+                    scope,
+                },
+            )
+            .await;
+        }
+    }
+
+    /// Hand `text` — `child`'s result for `turn` — to `parent` through the
+    /// durable intake (50 §7): one `result:<turn>` exchange (`:retry` on the
+    /// second offer), consumed directly when the parent already took it as
+    /// a reply, failed when the owning scope was cancelled. `Err(reason)`
+    /// when the intake refused it (quota, chain, no runner); an off route or
+    /// a duplicate is `Ok` — nothing is owed.
+    #[allow(clippy::too_many_arguments)]
+    async fn deliver_result(
+        &mut self,
+        child: SessionId,
+        turn: TurnId,
+        parent: SessionId,
+        text: &str,
+        scope: Option<Uuid>,
+        cancelled: bool,
+        parent_answered: bool,
+        retry: bool,
+    ) -> Result<(), String> {
         let generation = self.communication.0.write().route(child, parent);
         let Ok(generation) = generation else {
             tracing::info!(session = %child, %parent, "child result not delivered: communication off");
-            return;
+            return Ok(());
         };
         let (from_key, to_key) = (format!("session:{child}"), format!("session:{parent}"));
-        let request_id = format!("result:{turn}");
-        let receipt = match self
+        let request_id = if retry {
+            format!("result:{turn}:retry")
+        } else {
+            format!("result:{turn}")
+        };
+        let receipt = self
             .store
             .accept_exchange(&AcceptExchange {
                 sender: &from_key,
@@ -1775,24 +1841,18 @@ impl Agents {
                 recipient_session: Some(parent),
                 request_id: Some(&request_id),
                 reply_to: None,
-                request_scope: owned.map(|o| o.scope),
+                request_scope: scope,
                 generation: generation.revision() as i64,
-                body: &text,
+                body: text,
             })
             .await
-        {
-            Ok(r) => r,
-            Err(e) => {
-                tracing::error!(session = %child, "child result exchange: {}", comm_err(e));
-                return;
-            }
-        };
+            .map_err(comm_err)?;
         if receipt.state != PeerMessageState::Accepted || !self.enqueued.insert(receipt.id) {
             // Durable dedup: this turn's result was already accounted for.
-            return;
+            return Ok(());
         }
         self.peer_changed(&receipt).await;
-        if owned.is_some_and(|o| o.cancelled) {
+        if cancelled {
             // The scope was cancelled while the child ran: its result is
             // recorded, never a continuation of the cancelled request.
             self.enqueued.remove(&receipt.id);
@@ -1800,7 +1860,7 @@ impl Agents {
                 Ok(r) => self.peer_changed(&r).await,
                 Err(e) => tracing::error!(id = %receipt.id, "fail_exchange: {e:#}"),
             }
-            return;
+            return Ok(());
         }
         if parent_answered {
             // The parent already holds this result as the reply to its own
@@ -1815,23 +1875,87 @@ impl Agents {
                 self.peer_changed(&r).await;
             }
             self.enqueued.remove(&receipt.id);
-            return;
+            return Ok(());
         }
-        match self.store.peer_record(parent, receipt.id).await {
-            Ok(Some(record)) => {
-                if let Err(reason) = self.enqueue_peer(record, generation, false, false).await {
-                    self.enqueued.remove(&receipt.id);
-                    match self.store.fail_exchange(receipt.id, &reason).await {
-                        Ok(r) => self.peer_changed(&r).await,
-                        Err(e) => tracing::error!(id = %receipt.id, "fail_exchange: {e:#}"),
-                    }
-                    self.error(parent, format!("subagent result not delivered: {reason}"))
-                        .await;
-                }
+        let record = match self.store.peer_record(parent, receipt.id).await {
+            Ok(Some(record)) => record,
+            Ok(None) => {
+                tracing::error!(id = %receipt.id, "accepted child result has no record");
+                return Ok(());
             }
-            Ok(None) => tracing::error!(id = %receipt.id, "accepted child result has no record"),
-            Err(e) => tracing::error!(id = %receipt.id, "peer_record: {e:#}"),
+            Err(e) => {
+                tracing::error!(id = %receipt.id, "peer_record: {e:#}");
+                return Ok(());
+            }
+        };
+        if let Err(reason) = self.enqueue_peer(record, generation, false, false).await {
+            self.enqueued.remove(&receipt.id);
+            match self.store.fail_exchange(receipt.id, &reason).await {
+                Ok(r) => self.peer_changed(&r).await,
+                Err(e) => tracing::error!(id = %receipt.id, "fail_exchange: {e:#}"),
+            }
+            return Err(reason);
         }
+        Ok(())
+    }
+
+    /// A child's result the parent's intake refused (R2.7): an error on the
+    /// parent naming the child and the reason; with `retry`, the result is
+    /// kept for one more offer at the parent's next `TurnFinished`.
+    async fn result_refused(
+        &mut self,
+        parent: SessionId,
+        reason: &str,
+        retry: bool,
+        result: Undelivered,
+    ) {
+        let name = self
+            .sessions
+            .get(&result.child)
+            .and_then(|l| l.parent.as_ref())
+            .map_or_else(|| format!("session:{}", result.child), |(_, n)| n.clone());
+        tracing::error!(session = %result.child, %parent, retry, "child result not delivered: {reason}");
+        let again = if retry {
+            "; offered once more when this turn ends"
+        } else {
+            ""
+        };
+        self.error(
+            parent,
+            format!(
+                "result of {name} (session:{}) not delivered: {reason}; read it with session_read{again}",
+                result.child
+            ),
+        )
+        .await;
+        if retry {
+            self.undelivered.entry(parent).or_default().push(result);
+        }
+    }
+
+    /// `AgentEvent::TurnFinished` for `session`: the child-turn bookkeeping,
+    /// the hand-off of a child's result, and the one retry of results this
+    /// session refused earlier (R2.7).
+    async fn turn_finished(&mut self, session: SessionId, turn: TurnId, stop_reason: &str) {
+        self.running.remove(&session);
+        if let Some(timer) = self.child_turns.remove(&session).and_then(|ct| ct.timer) {
+            timer.abort();
+        }
+        self.last_stop
+            .insert(session, (stop_reason.to_owned(), Utc::now()));
+        self.search.invalidate();
+        self.child_finished(session, turn, stop_reason).await;
+        for u in self.undelivered.remove(&session).unwrap_or_default() {
+            if let Err(reason) = self
+                .deliver_result(
+                    u.child, u.turn, session, &u.text, u.scope, false, false, true,
+                )
+                .await
+            {
+                self.result_refused(session, &reason, false, u).await;
+            }
+        }
+        self.idle_check(session).await;
     }
 
     /// Answer the live waiter of `request` with `text` as `child`'s reply
@@ -2008,17 +2132,7 @@ impl Message<AgentEvent> for Agents {
                 turn,
                 stop_reason,
                 ..
-            } => {
-                self.running.remove(&session);
-                if let Some(timer) = self.child_turns.remove(&session).and_then(|ct| ct.timer) {
-                    timer.abort();
-                }
-                self.last_stop
-                    .insert(session, (stop_reason.clone(), Utc::now()));
-                self.search.invalidate();
-                self.child_finished(session, turn, &stop_reason).await;
-                self.idle_check(session).await;
-            }
+            } => self.turn_finished(session, turn, &stop_reason).await,
             // Nested `python` calls (08 as-built): the only durable trace of
             // an inner call, since none enters the model's messages. The
             // repl publishes with a bus `tell`, so this write never sits on
@@ -7911,6 +8025,7 @@ pub async fn start(rt: &Runtime) -> anyhow::Result<()> {
             pools: HashMap::new(),
             child_turns: HashMap::new(),
             queued: HashMap::new(),
+            undelivered: HashMap::new(),
             timed_out: HashSet::new(),
             caps: HashMap::new(),
             remote_parent: HashMap::new(),
@@ -9600,6 +9715,7 @@ pub(crate) mod tests {
             pools: HashMap::new(),
             child_turns: HashMap::new(),
             queued: HashMap::new(),
+            undelivered: HashMap::new(),
             timed_out: HashSet::new(),
             caps: HashMap::new(),
             remote_parent: HashMap::new(),
@@ -12291,4 +12407,74 @@ pub(crate) mod tests {
         assert!(timed && permit_free, "timed, permit-free follow-up turn");
     }
 
+    /// R2.7: a child result the parent's intake refuses (its pending quota
+    /// is full) is an error on the parent naming the child and the reason,
+    /// and is offered once more when the parent's next turn ends —
+    /// delivered then, once the quota has room.
+    #[tokio::test]
+    async fn refused_child_result_is_visible_and_retried_once() {
+        let mut a = agents_with(true).await;
+        let mut rx = tap(&a.rt).await;
+        let (p, _) = in_turn(&mut a).await;
+        let child = kid(&mut a, p, "worker").await;
+        // Fill the parent's pending quota.
+        let generation = a.communication.0.write().route(child, p).unwrap();
+        let (from, to) = (format!("session:{child}"), format!("session:{p}"));
+        let mut filler = Vec::new();
+        for i in 0..crate::communication::PENDING_PER_RECIPIENT {
+            let r = a
+                .store
+                .accept_exchange(&AcceptExchange {
+                    sender: &from,
+                    recipient: &to,
+                    sender_session: Some(child),
+                    recipient_session: Some(p),
+                    request_id: Some(&format!("fill-{i}")),
+                    reply_to: None,
+                    request_scope: None,
+                    generation: generation.revision() as i64,
+                    body: "x",
+                })
+                .await
+                .unwrap();
+            filler.push(r.id);
+        }
+        let ct = TurnId::new();
+        a.ledger.entered(TurnEntered {
+            session: child,
+            turn: Some(ct),
+        });
+        a.ledger.returned(TurnReturned {
+            session: child,
+            turn: Some(ct),
+        });
+        a.turn_text.insert((child, ct), "done".into());
+        a.child_finished(child, ct, "end_turn").await;
+        let e = next_event(
+            &mut rx,
+            |e| matches!(e, AgentEvent::Error { session, .. } if *session == p),
+        )
+        .await;
+        let AgentEvent::Error { message, .. } = e else {
+            unreachable!()
+        };
+        assert!(
+            message.starts_with(&format!(
+                "result of worker (session:{child}) not delivered: "
+            )) && message.contains("read it with session_read; offered once more"),
+            "{message}"
+        );
+        assert_eq!(a.undelivered[&p].len(), 1);
+        assert_eq!(a.ledger.activity(p), None, "nothing reached the parent");
+        // Room again before the parent's turn ends: the retry delivers.
+        for id in filler {
+            a.store.fail_exchange(id, "drained").await.unwrap();
+        }
+        a.turn_finished(p, TurnId::new(), "end_turn").await;
+        assert!(a.undelivered.is_empty(), "offered exactly once more");
+        assert!(
+            a.ledger.activity(p).is_some(),
+            "the result is pending input on the parent now"
+        );
+    }
 }

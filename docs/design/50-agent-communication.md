@@ -955,7 +955,14 @@ parent)` and use the same intake path. If an explicitly bound request already
 received that result through its waiter, mark the parent notification consumed;
 do not inject it again. Extract results by the associated turn/request, not
 “assistant text since the latest user row.” A sibling request does not steal
-or redirect the child's separate parent result.
+or redirect the child's separate parent result. A result the parent's intake
+refuses (pending quota, chain limit, no runner) is not silent (R2.7,
+2026-10-07): the parent gets `AgentEvent::Error` "result of <name>
+(session:<id>) not delivered: <reason>; read it with session_read", and the
+supervisor offers the result once more — as `result:<turn>:retry` — when the
+parent's current turn ends, which is when a consumed batch frees quota; a
+second refusal is reported the same way and that is the end of it (the
+transcript keeps the result). Kept in memory only.
 
 Restart policy follows 01: **do not auto-run interrupted agent work**.
 Unconsumed accepted work becomes `failed: interrupted_by_restart`; running
