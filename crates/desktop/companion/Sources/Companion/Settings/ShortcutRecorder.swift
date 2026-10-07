@@ -36,11 +36,16 @@ final class ShortcutRecorderView: NSView {
     @available(*, unavailable) required init?(coder: NSCoder) { fatalError() }
 
     override var intrinsicContentSize: NSSize { NSSize(width: 150, height: 24) }
-    override var acceptsFirstResponder: Bool { true }
+    /// Only a click arms the recorder: the window must not hand it first responder on its own (initial key view).
+    private var clicked = false
+    override var acceptsFirstResponder: Bool { clicked || recording }
     override var focusRingType: NSFocusRingType { get { .none } set {} }
 
     override func mouseDown(with event: NSEvent) {
-        if recording { window?.makeFirstResponder(nil) } else { window?.makeFirstResponder(self) }
+        if recording { window?.makeFirstResponder(nil); return }
+        clicked = true
+        window?.makeFirstResponder(self)
+        clicked = false
     }
 
     override func becomeFirstResponder() -> Bool {
@@ -76,7 +81,8 @@ final class ShortcutRecorderView: NSView {
         end()
     }
 
-    private func record(_ chord: Chord) {
+    /// The recorded chord through the collision policy; internal so `--probe-settings keys` can drive it without key events.
+    func record(_ chord: Chord) {
         let scope = KeyTable.scope(of: action)
         let table = model.keys
         switch table.check(chord, for: action, reserved: scope == .anywhere ? Hotkeys.reserved : []) {
@@ -112,7 +118,7 @@ final class ShortcutRecorderView: NSView {
         let color: NSColor
         if recording { text = "Type a shortcut…"; color = .secondaryLabelColor }
         else if let chord { text = chord.symbol; color = .labelColor }
-        else { text = "unassigned"; color = Palette.carnelian }
+        else { text = "unassigned"; color = model.keys.binding(action).defaultChord == nil ? .secondaryLabelColor : Palette.carnelian } // lost to a move: warning colour
         let attrs: [NSAttributedString.Key: Any] = [.font: NSFont.systemFont(ofSize: 12, weight: .medium), .foregroundColor: color]
         let s = NSAttributedString(string: text, attributes: attrs)
         let size = s.size()

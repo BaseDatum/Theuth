@@ -80,7 +80,7 @@ final class LegendController {
 
     private func place() {
         hosting.layoutSubtreeIfNeeded()
-        let size = NSSize(width: Self.width, height: min(560, max(200, hosting.fittingSize.height)))
+        let size = NSSize(width: Self.width, height: min(760, max(200, hosting.fittingSize.height)))
         let screen: NSScreen
         var p: NSPoint
         if anchor != .zero {
@@ -130,9 +130,9 @@ struct LegendView: View {
             .padding(.horizontal, 14).padding(.top, 12).padding(.bottom, 8)
             ForEach(KeyScope.allCases, id: \.self) { scope in
                 Text(scope.title.uppercased()).font(.system(size: 10, weight: .semibold)).foregroundColor(.sand).tracking(0.6)
-                    .padding(.horizontal, 14).padding(.top, 8).padding(.bottom, 3)
+                    .padding(.horizontal, 14).padding(.top, 7).padding(.bottom, 2)
                 ForEach(model.keys.bindings(in: scope)) { b in
-                    row(b.label, chord(b))
+                    row(b.label, chord(b), lost: b.chord == nil && b.defaultChord != nil)
                 }
                 if scope == .askBar, let hold = model.keys.chord(for: .openPanel) {
                     row("Hold to talk · release to send in 3 s", "hold \(hold.symbol)")
@@ -161,13 +161,13 @@ struct LegendView: View {
         return ([c.symbol] + aliases).joined(separator: " · ")
     }
 
-    private func row(_ label: String, _ chord: String) -> some View {
+    private func row(_ label: String, _ chord: String, lost: Bool = false) -> some View {
         HStack {
-            Text(label).font(.system(size: 12))
+            Text(label).font(.system(size: 11.5))
             Spacer()
-            Text(chord).font(.system(size: 12, weight: .medium, design: .rounded)).foregroundColor(chord == "unassigned" ? .carnelian : .ink2)
+            Text(chord).font(.system(size: 11.5, weight: .medium, design: .rounded)).foregroundColor(lost ? .carnelian : chord == "unassigned" ? .sand : .ink2)
         }
-        .padding(.horizontal, 14).padding(.vertical, 2.5)
+        .padding(.horizontal, 14).padding(.vertical, 1.5)
         .accessibilityElement(children: .combine)
     }
 }

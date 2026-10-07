@@ -116,9 +116,35 @@ final class NotificationsInstaller: NSObject {
             settings.show(activate: false)
             Log.write("probe-settings window shown tab=\(tab) frame=\(settings.frame) number=\(settings.windowNumber ?? 0) active=\(NSApp.isActive) key=\(NSApp.keyWindow.map { "\($0.className)" } ?? "none")")
         }
+        if tab == "keys" { recordProbe() }
         DispatchQueue.main.asyncAfter(deadline: .now() + 4) {
             Log.write("probe-settings done tab=\(tab) active=\(NSApp.isActive) frontmost=\(NSWorkspace.shared.frontmostApplication?.localizedName ?? "?") — quitting 0")
             NSApp.terminate(nil)
+        }
+    }
+
+    /// Keys tab: drive our recorder without key events — record ⌃⌥K for Open the panel (persisted to the suite and
+    /// to KeyboardShortcuts), then the same chord for Open the Ask bar (refused: already used), then ⌘Space
+    /// (refused: reserved by macOS when Spotlight holds it); read everything back; restore the user's binding.
+    private func recordProbe() {
+        let model = SettingsModel.shared
+        let d = Settings.defaults
+        let before = model.keys.overrides[.openPanel]
+        let k = Chord(chars: "k", keyCode: 40, modifiers: [.control, .option])
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+            ShortcutRecorderView(action: .openPanel, model: model).record(k)
+            Log.write("probe-settings recorded \(k.symbol) for openPanel → table=\(model.keys.chord(for: .openPanel)?.symbol ?? "nil") notice=\(model.rowNotice[.openPanel]?.text ?? "none") | defaults keyOverrides=\(d.string(forKey: "keyOverrides") ?? "nil") KeyboardShortcuts_openPanel=\(d.string(forKey: "KeyboardShortcuts_openPanel") ?? "nil")")
+            ShortcutRecorderView(action: .openAskBar, model: model).record(k)
+            Log.write("probe-settings recorded \(k.symbol) for openAskBar → table=\(model.keys.chord(for: .openAskBar)?.symbol ?? "nil") notice=\(model.rowNotice[.openAskBar]?.text ?? "none") moveOffered=\(model.rowNotice[.openAskBar]?.moveChord != nil)")
+            let spot = Chord(chars: " ", keyCode: 49, modifiers: .command)
+            ShortcutRecorderView(action: .openAskBar, model: model).record(spot)
+            Log.write("probe-settings recorded \(spot.symbol) for openAskBar → table=\(model.keys.chord(for: .openAskBar)?.symbol ?? "nil") notice=\(model.rowNotice[.openAskBar]?.text ?? "none") reserved-list=\(Hotkeys.reserved.count) chords")
+            Log.write("probe-settings table unique-per-scope=\(model.keys.isUniquePerScope) overrides=\(model.keys.json)")
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 3.5) {
+            if let b = before { model.keys.overrides[.openPanel] = b } else { model.keys.reset(.openPanel) }
+            model.rowNotice = [:]
+            Log.write("probe-settings restored openPanel → \(model.keys.chord(for: .openPanel)?.symbol ?? "nil") KeyboardShortcuts_openPanel=\(d.string(forKey: "KeyboardShortcuts_openPanel") ?? "nil") keyOverrides=\(d.string(forKey: "keyOverrides") ?? "nil")")
         }
     }
 
