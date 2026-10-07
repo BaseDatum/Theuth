@@ -67,6 +67,8 @@ pub struct FetchResponse {
     pub source_kind: Option<String>,
     #[serde(default)]
     pub notes: Vec<String>,
+    #[serde(default)]                        // ClientKind::Reqwest (addendum)
+    pub client: client::ClientKind,
 }
 impl Default for FetchResponse { /* the serde defaults above; everything else empty/false/0 */ }
 ```
@@ -131,6 +133,7 @@ pub struct ScrapeResponse {
     #[serde(default)] pub omitted_headings: Vec<String>,
     #[serde(default)] pub source_kind: Option<String>,
     #[serde(default)] pub notes: Vec<String>,
+    #[serde(default)] pub client: web::fetch::client::ClientKind,   // addendum
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -147,6 +150,7 @@ pub struct CrawlPage {
     #[serde(default)] pub truncated: bool,
     #[serde(default)] pub next_offset: Option<usize>,
     #[serde(default, skip_serializing_if = "Option::is_none")] pub html: Option<String>,
+    #[serde(default)] pub client: web::fetch::client::ClientKind,   // addendum
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, JsonSchema)]
@@ -259,6 +263,125 @@ error: could not compile `nodes` (lib test) due to 1 previous error
   `compact(md, &CompactOptions::default())` is the call shape W1/W3 will use.
 - **Closer** — `charset::decode`'s explicit lifetime (Decision 1) should be reflected in §7.2 when the design is
   updated; `nodes` pre-existing red above.
+
+## Addendum: stealth client seam (design 122 revision 1)
+
+Commit `631db50f` + the gate/as-built commit. Sky's call: page fetches should be stealth like the browser;
+C lands the client seam and the dependency pins so W5 can fill `WreqChrome` without touching any
+`Cargo.toml`.
+
+### What was built
+
+| file | what |
+|---|---|
+| `crates/web/src/fetch/client.rs` | new: `ClientKind`, `Impersonate`, `ClientConfig`, `ClientError`, `ClientResponse`, `HttpClient`, `build`; `ReqwestClient` (real: today's client construction) ; `reqwest_client(cfg)` shared builder; one unit test |
+| `crates/web/src/fetch/mod.rs` | `pub mod client;` `Fetcher { http: Arc<dyn HttpClient>, client: reqwest::Client, … }` — `fetch`/`fetch_html` go through `http.get()`; `request` keeps the plain reqwest client (never stealth, §5). `read_capped(content_length, &mut BoxStream)` drains the seam's stream; `read_body(ClientResponse, …)`. `FetchResponse.client: ClientKind` (`#[serde(default)]` → `Reqwest`), set from `self.http.kind()` at both construction sites. `FetchError::from_reqwest` delegates to `ClientError::from_reqwest`; `impl From<ClientError> for FetchError` |
+| `crates/web/src/lib.rs` | `WebConfig.impersonate: Impersonate` (default `Always`) after `header_ladder` |
+| `crates/scrape/src/tools.rs` | `ScrapeResponse.client`, `CrawlPage.client` (`#[serde(default)]`) |
+| `crates/web/Cargo.toml` | `futures`, `bytes` (workspace entries, already in the graph), `wreq`, `wreq-util` |
+| `Cargo.toml` | `wreq = { version = "=6.0.0-rc.29", default-features = false, features = ["webpki-roots", "tokio-rt", "stream", "gzip", "brotli", "deflate", "zstd"] }`, `wreq-util = { version = "=3.0.0-rc.12", default-features = false, features = ["emulation", "emulation-compression"] }` — obscura-net's lists minus `socks`; `cookies` off |
+| `Cargo.lock` | four new edges on `web` (`bytes`, `futures`, `wreq`, `wreq-util`); no new package |
+
+```
+$ cargo tree --workspace -i wreq --depth 1
+wreq v6.0.0-rc.29
+├── obscura-net v0.1.0 (https://github.com/skymoore/obscura?branch=main#d5aed2b4)
+├── web v2.9.2 (/Users/Sky.Moore/Develop/theuth-122-web/crates/web)
+└── wreq-util v3.0.0-rc.12
+$ cargo tree -p web -i wreq-util --depth 1
+wreq-util v3.0.0-rc.12
+└── web v2.9.2 (/Users/Sky.Moore/Develop/theuth-122-web/crates/web)
+```
+
+### The seam as landed (verbatim)
+
+```rust
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ClientKind { Reqwest, WreqChrome }
+impl Default for ClientKind { fn default() -> Self { Self::Reqwest } }   // added beside: the response structs derive Default
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum Impersonate { Never, OnChallenge, #[default] Always }
+
+#[derive(Debug, Clone)]
+pub struct ClientConfig { pub user_agent: String, pub accept_language: String, pub connect_timeout: Duration, pub read_timeout: Duration, pub max_body: usize }
+
+#[derive(Debug, thiserror::Error)]
+pub enum ClientError {
+    #[error("stealth client not built")] NotBuilt,
+    #[error("{0}")] Transport(String),
+    #[error("{0}")] Build(String),
+}
+impl ClientError {
+    pub fn rejected(detail: &str) -> Self;          // Transport("rejected: <detail>") — a guard refusal
+    pub fn as_rejected(&self) -> Option<&str>;      // the Fetcher maps it back to FetchError::Rejected
+}
+
+pub struct ClientResponse { pub status: u16, pub headers: HeaderMap, pub final_url: Url, pub body: BoxStream<'static, Result<Bytes, ClientError>> }
+
+#[async_trait::async_trait]
+pub trait HttpClient: Send + Sync {
+    fn kind(&self) -> ClientKind;
+    /// One request, redirects NOT followed (the Fetcher's loop re-checks SSRF per hop), extra headers appended after the client's defaults.
+    async fn get(&self, url: &Url, headers: &[(HeaderName, HeaderValue)]) -> Result<ClientResponse, ClientError>;
+}
+
+pub fn build(kind: ClientKind, cfg: &ClientConfig) -> Result<Arc<dyn HttpClient>, ClientError>;   // WreqChrome → Err(NotBuilt)
+pub struct ReqwestClient { .. }  impl ReqwestClient { pub fn new(cfg: &ClientConfig) -> Result<Self, ClientError> }
+```
+
+`BoxStream` is `futures::stream::BoxStream` — the same type as `futures_core::stream::BoxStream` (the
+`futures` facade re-exports it); `web` already needed no `futures-core` line of its own.
+
+### Decisions
+
+1. **`ClientError` has no `Rejected` variant** (frozen), yet a guard refusal from the resolver must stay
+   `FetchError::Rejected`. Convention: `ClientError::rejected(detail)` = `Transport("rejected: <detail>")`,
+   `as_rejected()` reads it back; `ReqwestClient::get` applies it by walking the reqwest error's source chain
+   (what `FetchError::from_reqwest` did). **W5 MUST use `ClientError::rejected` for refusals from its resolver.**
+2. **Two clients in `Fetcher`**: page GETs through `Arc<dyn HttpClient>`; `request()` (route replay / `http_request`,
+   arbitrary method + body, the trait has `get` only) through a plain `reqwest::Client` from the same
+   `reqwest_client(cfg)` builder. §5 says those never impersonate, so this is the right split, at the cost of two
+   connection pools.
+3. **`ClientConfig.read_timeout` is the whole-request timeout** (`.timeout()`), reproducing today's 8 s exactly;
+   `accept_language` and `max_body` are carried, not yet used by the `Reqwest` kind (W1 sends the header; the
+   fetcher caps bodies itself). `Fetcher::new_with_timeouts` passes `accept_language: String::new()` until W1
+   threads `WebConfig.accept_language` in.
+4. **`ClientKind: Default`** added as a manual impl beside the frozen derive list (`ScrapeResponse`/`CrawlPage` derive
+   `Default`).
+5. **`FetchResponse.client` is set from `http.kind()`** at both construction sites, so once W5's client is
+   selected the field is already truthful.
+
+### Hand-offs (addendum)
+
+- **W5** — fill `ClientKind::WreqChrome` in `client.rs::build` (an `HttpClient` over `wreq` + `wreq_util`
+  emulation): redirects off, a resolver that applies `ssrf::resolve_checked` (`ssrf.rs:85`, `pub(super)` — widen
+  as needed inside `fetch`), `connect_timeout`/`read_timeout`, streamed body, no cookie store;
+  `ClientError::rejected` for refusals. `Fetcher::new_with_timeouts` (`fetch/mod.rs:229-245`) is where the kind is
+  chosen — today hard-wired `ClientKind::Reqwest`; `WebConfig.impersonate` is unread.
+- **W1** — `Fetcher::new*` do not yet take `accept_language`/`impersonate`; `HttpClient::get`'s `headers`
+  argument is where the D4 ladder headers go (the Fetcher passes `&[]` today, `fetch/mod.rs:298`).
+- **Closer** — `WebConfig.impersonate` default `Always` means the wreq path is on by default once W5 lands;
+  document in 16 §6 with `accept_language`/`header_ladder`.
+
+### Gate (addendum)
+
+```
+$ cargo fmt -p web -p scrape -p firecrawl-native                       (exit 0)
+$ cargo test -p web -p scrape -p firecrawl-native --no-fail-fast
+test result: ok. 23 passed … (firecrawl-native lib)   test result: ok. 1 passed … (corpus)
+test result: ok. 87 passed … (web lib, +1: client::tests::rejected_round_trips_and_wreq_is_not_built)
+test result: ok. 17 / 22 / 7 / 7 / 10 / 7 passed … (web integration: fetch_ssrf, request, http_request, … all green)
+TEST_EXIT=0
+$ cargo clippy -p web -p scrape -p firecrawl-native --tests -- -D warnings
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 1m 57s   (exit 0)
+$ cargo check --workspace --tests --keep-going
+error: couldn't read `crates/nodes/src/../../../bindings/methods.json`: No such file or directory (os error 2)
+error: could not compile `nodes` (lib test) due to 1 previous error
+(pre-existing, see above; every other crate finishes `Checking`)
+```
 
 ## Open items
 
