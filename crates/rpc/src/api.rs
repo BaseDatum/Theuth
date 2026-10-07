@@ -2001,15 +2001,6 @@ impl Server {
     }
 }
 
-/// 126: a `double_*` method whose behaviour wave `wave` lands; a JSON-RPC error, never a panic.
-fn double_not_yet(what: &str, wave: &str) -> ErrorObjectOwned {
-    ErrorObjectOwned::owned(
-        NOT_RUNNING,
-        format!("double: {what} is not available yet (126 {wave})"),
-        None::<()>,
-    )
-}
-
 impl Server {
     /// The one admission check (51 §4.2): the calling connection may act on
     /// `session`. Durable sessions admit any authenticated peer; a private
@@ -5052,8 +5043,8 @@ impl ApiServer for Server {
     }
 
     // 126: the read / ladder methods ask the double actor (W1); `double_train`, `double_rollback`,
-    // `double_export`, `double_delete_all` and `double_settings_set` land with W2 — until then they
-    // answer `not yet`, never a panic.
+    // `double_export`, `double_delete_all` and `double_settings_set` ask the scheduler (W2). With
+    // `double.enabled: false` neither actor exists and `lookup` answers `NOT_RUNNING`, never a panic.
 
     async fn double_status(&self) -> RpcResult<double::DoubleStatus> {
         match ask::<double::actor::Double, _>(double::DOUBLE_ACTOR, double::actor::Status).await {
@@ -5080,10 +5071,8 @@ impl ApiServer for Server {
     }
 
     async fn double_train(&self, tier: double::Tier, venue: double::Venue) -> RpcResult<double::RunId> {
-        Err(double_not_yet(
-            &format!("train tier {} on {}", tier.as_str(), venue.as_config()),
-            "W2",
-        ))
+        ask::<double::sched::Scheduler, _>(double::sched::ACTOR, double::sched::Train { tier, venue })
+            .await
     }
 
     async fn double_pause(&self, on: bool) -> RpcResult<double::DoubleStatus> {
@@ -5095,7 +5084,8 @@ impl ApiServer for Server {
     }
 
     async fn double_rollback(&self, version: String) -> RpcResult<double::DoubleStatus> {
-        Err(double_not_yet(&format!("rollback to {version:?}"), "W2"))
+        ask::<double::sched::Scheduler, _>(double::sched::ACTOR, double::sched::Rollback(version))
+            .await
     }
 
     async fn double_set_cap(
@@ -5116,11 +5106,11 @@ impl ApiServer for Server {
     }
 
     async fn double_export(&self) -> RpcResult<double::DoubleExport> {
-        Err(double_not_yet("export", "W2"))
+        ask::<double::sched::Scheduler, _>(double::sched::ACTOR, double::sched::Export).await
     }
 
     async fn double_delete_all(&self) -> RpcResult<()> {
-        Err(double_not_yet("delete all", "W2"))
+        ask::<double::sched::Scheduler, _>(double::sched::ACTOR, double::sched::DeleteAll).await
     }
 
     async fn double_take_over(&self, question_id: String) -> RpcResult<bool> {
@@ -5143,9 +5133,13 @@ impl ApiServer for Server {
 
     async fn double_settings_set(
         &self,
-        _settings: double::DoubleConfig,
+        settings: double::DoubleConfig,
     ) -> RpcResult<double::DoubleConfig> {
-        Err(double_not_yet("settings set", "W2"))
+        ask::<double::sched::Scheduler, _>(
+            double::sched::ACTOR,
+            double::sched::SetSettings(settings),
+        )
+        .await
     }
 
     async fn meeting_oracle_mode(&self) -> RpcResult<decision::ModeInfo> {
