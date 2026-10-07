@@ -638,13 +638,13 @@ mod tests {
         }
     }
 
+    /// Thirty sections whose paragraphs all differ (compaction would drop
+    /// repeated blocks and the window would never need a cut).
     fn long_markdown() -> String {
         (0..30)
             .map(|i| {
-                format!(
-                    "## Section {i}\n\n{}\n\n",
-                    "Words of prose here. ".repeat(8)
-                )
+                let words = format!("Words of prose number {i} follow. ").repeat(4);
+                format!("## Section {i}\n\nParagraph {i} opens here. {words}\n\n")
             })
             .collect()
     }

@@ -1304,12 +1304,11 @@ mod tests {
     #[tokio::test]
     async fn crawl_pages_are_compacted_and_cut_per_page() {
         let server = MockServer::start().await;
+        // Paragraphs differ per section so compaction keeps them all.
         let body: String = (0..40)
             .map(|i| {
-                format!(
-                    "<h2>Section {i}</h2><p>{}</p>",
-                    "Prose that runs on. ".repeat(10)
-                )
+                let prose = format!("Prose of section {i} that runs on. ").repeat(6);
+                format!("<h2>Section {i}</h2><p>{prose}</p>")
             })
             .collect();
         mount(&server, "/", page(&body), "text/html").await;

@@ -530,13 +530,14 @@ async fn pdf_served_as_octet_stream_is_converted() {
 #[tokio::test]
 async fn offset_and_compact_window_through_fetch_page() {
     let server = MockServer::start().await;
+    // Paragraphs differ per part so compaction removes nothing and the cap bites.
     let long = format!(
         "<html><head><title>Long</title></head><body><main>{}</main></body></html>",
         (1..=30)
-            .map(|i| format!(
-                "<h2>Part {i}</h2><p>{}</p>",
-                "lorem ipsum dolor ".repeat(20)
-            ))
+            .map(|i| {
+                let prose = format!("lorem ipsum dolor part {i} ").repeat(12);
+                format!("<h2>Part {i}</h2><p>{prose}</p>")
+            })
             .collect::<String>()
     );
     Mock::given(method("GET"))

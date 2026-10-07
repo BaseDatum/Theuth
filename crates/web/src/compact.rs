@@ -133,6 +133,14 @@ pub fn compact(markdown: &str, opts: &CompactOptions) -> Compacted {
         fold_links(&mut lines);
     }
     let mut text = join_collapsed(&lines);
+    if text.is_empty() && !markdown.trim().is_empty() {
+        // A page that is only headings (a two-line PDF, a table of contents)
+        // compacts to nothing under pass 8; nothing is worse than the page.
+        return Compacted {
+            text: markdown.to_owned(),
+            removed_chars: 0,
+        };
+    }
     if markdown.ends_with('\n') && !text.is_empty() {
         text.push('\n');
     }

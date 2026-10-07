@@ -211,3 +211,12 @@ fn compaction_is_idempotent() {
     let once = compact(&fixture("chrome-heavy"), &folded);
     assert_eq!(compact(&once.text, &folded).text, once.text);
 }
+
+#[test]
+fn headings_only_document_is_kept_rather_than_emptied() {
+    // Pass 8 alone would drop both headings (a two-line PDF rendered by anydoc).
+    let md = "## Page one\n\n## Page two\n";
+    let out = run(md);
+    assert_eq!(out.text, md);
+    assert_eq!(out.removed_chars, 0);
+}

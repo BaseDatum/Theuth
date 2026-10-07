@@ -976,10 +976,10 @@ mod tests {
         let long = format!(
             "<html><head><title>Long</title><meta name=\"author\" content=\"Jane\"></head><body><main>{}</main></body></html>",
             (1..=12)
-                .map(|i| format!(
-                    "<h2>Part {i}</h2><p>{}</p>",
-                    "lorem ipsum dolor ".repeat(15)
-                ))
+                .map(|i| {
+                    let prose = format!("lorem ipsum dolor part {i} ").repeat(10);
+                    format!("<h2>Part {i}</h2><p>{prose}</p>")
+                })
                 .collect::<String>()
         );
         Mock::given(method("GET"))

@@ -849,11 +849,15 @@ mod tests {
     }
 
     #[test]
-    fn empty_main_content_falls_back_to_whole_page() {
+    fn all_chrome_page_is_not_widened_under_only_main_content() {
+        // D8 invariant 1: the stripped page is returned as it is (the ladder's
+        // thin check takes it to the island/render rungs), never the whole page.
         let html =
             "<html><body><nav><p>Only chrome here, long enough to matter.</p></nav></body></html>";
         let md = to_markdown(html, "https://e.com/", true);
-        assert!(md.contains("Only chrome here"), "{md}");
+        assert!(md.trim().is_empty(), "{md}");
+        let full = to_markdown(html, "https://e.com/", false);
+        assert!(full.contains("Only chrome here"), "{full}");
     }
 
     /// Blank-line separated 240-char paragraphs totalling at least `n` prose
@@ -930,13 +934,16 @@ mod tests {
         assert_eq!(m.published.as_deref(), Some("2026-09-30T08:00:00Z"));
         assert_eq!(m.lang.as_deref(), Some("en"));
         assert_eq!(m.site_name.as_deref(), Some("Example"));
-        // The fetcher's meta wins over the mapping.
+        // The page scanner (`web::fetch::meta::extract`) wins per field; the
+        // fetcher's meta fills what the page did not say.
         let from_fetch = PageMeta {
             author: Some("Fetcher Author".into()),
+            canonical: Some("https://e.com/canon".into()),
             ..PageMeta::default()
         };
         let m = page_meta(html, &base, from_fetch);
-        assert_eq!(m.author.as_deref(), Some("Fetcher Author"));
+        assert_eq!(m.author.as_deref(), Some("Jane Doe"));
+        assert_eq!(m.canonical.as_deref(), Some("https://e.com/canon"));
         assert_eq!(m.title.as_deref(), Some("Og Title"));
     }
 

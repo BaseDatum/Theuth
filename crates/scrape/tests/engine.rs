@@ -1,9 +1,9 @@
 //! The engine ladder `fetch → issue → island → render` (design doc 122 D1
-//! scrape side, D9) against wiremock. The contract stubs for `detect` and
-//! `extract_islands` answer `None`, so each test injects what the real
-//! functions will return through the engine's test seams; nothing here
-//! passes *because* a stub is empty. No browser actor is registered, so the
-//! render rung is the "not registered → surface/keep" branch.
+//! scrape side, D9) against wiremock. The detector and island seams inject
+//! issues for paths the real functions would not diagnose; where the real
+//! fetcher diagnoses the page itself (`cf-mitigated`), its issue wins. No
+//! browser actor is registered, so the render rung is the "not registered →
+//! surface/keep" branch.
 
 use std::time::Duration;
 
@@ -54,8 +54,9 @@ fn prose(n: usize) -> String {
 #[tokio::test]
 async fn access_challenge_is_surfaced_when_no_browser_is_registered() {
     let server = MockServer::start().await;
-    // `cf-mitigated` is conclusive at any status (D1 row 1); the real fetcher
-    // sets `issue` from it, the stub does not — the seam supplies the same value.
+    // `cf-mitigated` is conclusive at any status (D1 row 1): the real fetcher
+    // sets `issue` from it (detail `cloudflare`, no HTTP prefix on a 2xx) and
+    // the engine keeps the fetcher's diagnosis over the seam's.
     Mock::given(method("GET"))
         .and(path("/wall"))
         .respond_with(
@@ -80,7 +81,7 @@ async fn access_challenge_is_surfaced_when_no_browser_is_registered() {
     assert_eq!(page.tier, "fetch");
     let issue = page.issue.expect("issue carried from the fetch");
     assert_eq!(issue.kind, IssueKind::AccessChallenge);
-    assert_eq!(issue.detail, "HTTP 403 · cloudflare");
+    assert_eq!(issue.detail, "cloudflare");
     assert!(issue.next.contains(&Next::Rendered));
     assert!(
         page.markdown.contains("Enable JavaScript"),
@@ -266,6 +267,7 @@ async fn crawl_rows_carry_issue_and_client() {
         wall.issue.as_ref().map(|i| i.kind),
         Some(IssueKind::AccessChallenge)
     );
-    assert_eq!(wall.client, web::fetch::client::ClientKind::Reqwest);
+    // The default policy is `impersonate: always`: the Chrome client fetched it.
+    assert_eq!(wall.client, web::fetch::client::ClientKind::WreqChrome);
     assert!(!c.incomplete);
 }
