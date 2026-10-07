@@ -51,6 +51,13 @@ use crate::{AGENT_ACTOR, AgentEvent, Agents, HarnessCommand, Usage, attach};
 
 /// Grace after `session/cancel` before the process is killed (06 §3.5).
 const CANCEL_GRACE: Duration = Duration::from_secs(5);
+/// Longest a harness may take to connect — `initialize` + `session/new` or
+/// `session/load` — before the child errors (R2.1); a hung `omp acp` must not
+/// hold its permit forever.
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(120);
+/// Longest a busy-refused prompt keeps retrying (R2.5), whatever the request
+/// deadline: after this the busy refusal is the turn's error.
+const BUSY_RETRY: Duration = Duration::from_secs(600);
 /// Stored result of a tool call the harness never reported finished (06 §3.6).
 const NOT_FINISHED: &str =
     "ERROR: not finished: the turn ended before the harness reported this call";
@@ -97,11 +104,16 @@ pub struct AcpChild {
     queue: VecDeque<Queued>,
     /// The `session/prompt` in flight, or a continuation turn (06 §3.5).
     turn: Option<Turn>,
-    /// `Agents::request_deadline`: how long a busy-refused prompt keeps retrying.
+    /// `Agents::request_deadline`: how long a busy-refused prompt keeps retrying,
+    /// capped by `busy` ([`BUSY_RETRY`]).
     deadline: Duration,
-    /// [`RETRY`] and [`CONTINUATION_QUIET`]; tests shorten them.
+    /// [`RETRY`], [`CONTINUATION_QUIET`], [`BUSY_RETRY`], [`CONNECT_TIMEOUT`]
+    /// and [`CANCEL_GRACE`]; tests shorten them.
     retry: [Duration; 4],
     quiet: Duration,
+    busy: Duration,
+    connect_timeout: Duration,
+    grace: Duration,
     /// Cancelled when the harness connection ends: permission asks outside a
     /// live turn wait on this, not on a turn.
     alive: CancellationToken,
@@ -442,6 +454,9 @@ impl AcpChild {
             deadline,
             retry: RETRY,
             quiet: CONTINUATION_QUIET,
+            busy: BUSY_RETRY,
+            connect_timeout: CONNECT_TIMEOUT,
+            grace: CANCEL_GRACE,
             alive: CancellationToken::new(),
             titled: false,
             meter_warned: false,
@@ -1504,8 +1519,18 @@ impl Actor for AcpChild {
                     }
                 }
             });
+            let connect_timeout = child.connect_timeout;
             tokio::spawn(async move {
-                let r = Harness::connect(c, tx).await;
+                // R2.1: a harness that never answers `initialize` /
+                // `session/new` errors out like any failed connect, which
+                // drains the queue and frees the child's permit.
+                let r = match tokio::time::timeout(connect_timeout, Harness::connect(c, tx)).await {
+                    Ok(r) => r,
+                    Err(_) => Err(format!(
+                        "harness did not connect within {}s",
+                        connect_timeout.as_secs()
+                    )),
+                };
                 let _ = me.tell(Connected(r)).await;
             });
         }
@@ -2746,6 +2771,26 @@ pub(crate) mod tests {
             options: Vec<SessionConfigOption>,
             agent: Option<agent_client_protocol::schema::v1::Implementation>,
         ) -> Self {
+            Self::build(deadline, options, agent, |_| {}, true).await
+        }
+
+        /// A rig with `tune` applied to the child before it spawns (R2
+        /// knobs); `handshake: false` leaves the harness silent.
+        async fn tuned(
+            deadline: Duration,
+            tune: impl FnOnce(&mut AcpChild),
+            handshake: bool,
+        ) -> Self {
+            Self::build(deadline, Vec::new(), None, tune, handshake).await
+        }
+
+        async fn build(
+            deadline: Duration,
+            options: Vec<SessionConfigOption>,
+            agent: Option<agent_client_protocol::schema::v1::Implementation>,
+            tune: impl FnOnce(&mut AcpChild),
+            handshake: bool,
+        ) -> Self {
             let dir = std::env::temp_dir().join(format!("theuth-acp-rig-{}", Uuid::now_v7()));
             std::fs::create_dir_all(&dir).unwrap();
             let rt = Runtime::new(figment::Figment::new(), dir.clone());
@@ -2788,8 +2833,11 @@ pub(crate) mod tests {
             // Real time, scaled: 5/10/20/30 s → 50/100/200/300 ms, 120 s → 300 ms.
             child.retry = FAST_RETRY;
             child.quiet = FAST_QUIET;
+            tune(&mut child);
             let actor = AcpChild::spawn(child);
-            fake.handshake(options, agent).await;
+            if handshake {
+                fake.handshake(options, agent).await;
+            }
             Self {
                 actor,
                 fake,
@@ -3292,6 +3340,32 @@ pub(crate) mod tests {
         let rows = rig.rows().await;
         assert_eq!(rows[0], (ChatRole::User, "go".into()));
         assert_eq!(rows[1], (ChatRole::Assistant, OMP_BUSY.into()));
+    }
+
+    /// R2.1: a harness that never answers `initialize` is a failed connect
+    /// after `connect_timeout`: the queued input ends as an `error` turn
+    /// naming the timeout and the actor stops.
+    #[tokio::test]
+    async fn silent_harness_times_out_on_connect() {
+        let mut rig = Rig::tuned(
+            Duration::from_secs(60),
+            |c| c.connect_timeout = Duration::from_millis(300),
+            false,
+        )
+        .await;
+        rig.input("go").await;
+        // `initialize` arrives and is never answered.
+        let m = rig.fake.next().await;
+        assert_eq!(m["method"], "initialize", "{m}");
+        let events = rig.until_finished().await;
+        assert_eq!(stop_reasons(&events), ["error"], "{events:?}");
+        assert!(
+            errors(&events)
+                .iter()
+                .any(|e| e.contains("did not connect within 0s")),
+            "{events:?}"
+        );
+        rig.actor.wait_for_shutdown().await;
     }
 
     /// 06 §8.3: updates after the prompt returned open a continuation turn
