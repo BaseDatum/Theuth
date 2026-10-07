@@ -105,11 +105,20 @@ fn probe(device: &Device) -> Result<()> {
     type Case<'a> = (&'a str, Box<dyn Fn(&Tensor) -> Result<Tensor> + 'a>);
     let cases: Vec<Case> = vec![
         ("rope", Box::new(|t| rotary_emb::rope(t, &cos, &sin))),
-        ("rope_slow", Box::new(|t| rotary_emb::rope_slow(t, &cos, &sin))),
+        (
+            "rope_slow",
+            Box::new(|t| rotary_emb::rope_slow(t, &cos, &sin)),
+        ),
         ("softmax_last_dim", Box::new(ops::softmax_last_dim)),
-        ("softmax(D::Minus1)", Box::new(|t| ops::softmax(t, candle_core::D::Minus1))),
+        (
+            "softmax(D::Minus1)",
+            Box::new(|t| ops::softmax(t, candle_core::D::Minus1)),
+        ),
         ("LayerNorm(bias).forward", Box::new(|t| biased.forward(t))),
-        ("layer_norm_slow", Box::new(|t| ops::layer_norm_slow(t, &w, &b, 1e-5))),
+        (
+            "layer_norm_slow",
+            Box::new(|t| ops::layer_norm_slow(t, &w, &b, 1e-5)),
+        ),
     ];
     for (name, f) in cases {
         let y = f(x.as_tensor())?;
@@ -142,7 +151,10 @@ fn main() -> anyhow::Result<()> {
         probe(&device)?;
         return Ok(());
     }
-    anyhow::ensure!(TRAIN_BUILD, "built without the `train` feature: the graph is cut");
+    anyhow::ensure!(
+        TRAIN_BUILD,
+        "built without the `train` feature: the graph is cut"
+    );
     // Same dtype rule as `candle::Gpu::dtype`: f16 on Metal, f32 on CPU.
     let dtype = if device.is_metal() {
         DType::F16
@@ -170,7 +182,9 @@ fn main() -> anyhow::Result<()> {
     // ---- one fixed synthetic batch: random ids, no padding, 4 marker slots, Choice qtype 0
     let (b, s, k) = (args.batch, args.seq, 4usize);
     let mut rng = Rng(0x126_0007);
-    let ids: Vec<u32> = (0..b * s).map(|_| rng.below(base.enc.vocab_size) as u32).collect();
+    let ids: Vec<u32> = (0..b * s)
+        .map(|_| rng.below(base.enc.vocab_size) as u32)
+        .collect();
     let mut pos = Vec::with_capacity(b * k);
     for _ in 0..b {
         let mut row: Vec<i64> = (0..k).map(|_| rng.below(s - 1) as i64 + 1).collect();
@@ -197,7 +211,13 @@ fn main() -> anyhow::Result<()> {
         let model = base.model(Some(&lora), true)?;
         device.synchronize()?;
         let t_load = t0.elapsed();
-        let out = model.forward(&input_ids, &attention_mask, &marker_pos, &marker_mask, &qtype)?;
+        let out = model.forward(
+            &input_ids,
+            &attention_mask,
+            &marker_pos,
+            &marker_mask,
+            &qtype,
+        )?;
         let loss = weighted_nll_sum(&out.logits, &labels, &weights)?;
         let loss_v = loss.to_scalar::<f32>()?;
         let t_fwd = t0.elapsed() - t_load;

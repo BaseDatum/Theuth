@@ -17,13 +17,13 @@
 //! ([`decision::candle::lora::TRAIN_BUILD`]): there the forward's fused kernels cut the autograd
 //! graph silently and a run would "succeed" having trained nothing.
 
-use std::collections::HashMap;
 use decision::candle::lora::Rng;
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use candle_core::backprop::GradStore;
 use candle_core::Tensor;
+use candle_core::backprop::GradStore;
 use chrono::{DateTime, Utc};
 use decision::candle::inputs;
 use decision::candle::lora::{AdamW, Base, Lora, TRAIN_BUILD, weighted_nll_sum};
@@ -48,18 +48,23 @@ pub const BUNDLE_MANIFEST: &str = "manifest.json";
 // embedding is not needed by Tier B (it trains the encoder) and is not carried.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct BundleRow {
+    /// The card id as text (`examples.question_id`).
     pub question_id: String,
     /// The §3 class key.
     pub class: String,
+    /// Scrubbed card text (`examples.card_text`).
     pub card_text: String,
     /// Option labels in card order (without `none`; the trainer appends it).
     pub options: Vec<String>,
     /// The label: an option label or `none`.
     pub choice: String,
+    /// Where the label came from (`labels.source`).
     pub source: LabelSource,
     /// §6 weight.
     pub weight: f32,
+    /// When the card was raised.
     pub asked_at: DateTime<Utc>,
+    /// In the `golden` table: never trained on, re-scored by every candidate (§7.4).
     #[serde(default)]
     pub golden: bool,
 }
@@ -78,11 +83,14 @@ pub struct BundleManifest {
 /// A training bundle on disk: `manifest.json` + `rows.jsonl`.
 #[derive(Clone, Debug)]
 pub struct Bundle {
+    /// `manifest.json`.
     pub manifest: BundleManifest,
+    /// `rows.jsonl`, in file order.
     pub rows: Vec<BundleRow>,
 }
 
 impl Bundle {
+    /// Read `dir/manifest.json` + `dir/rows.jsonl`; a bad line is named by number.
     pub fn read(dir: &Path) -> anyhow::Result<Bundle> {
         let manifest = serde_json::from_slice(&std::fs::read(dir.join(BUNDLE_MANIFEST))?)?;
         let text = std::fs::read_to_string(dir.join(ROWS_FILE))?;
@@ -97,6 +105,7 @@ impl Bundle {
         Ok(Bundle { manifest, rows })
     }
 
+    /// Write both files (W2's bundle writer and the tests).
     pub fn write(&self, dir: &Path) -> anyhow::Result<()> {
         std::fs::create_dir_all(dir)?;
         std::fs::write(
@@ -119,6 +128,7 @@ impl Bundle {
 /// 2,000-row corpus, 90-minute cap).
 #[derive(Clone, Debug, PartialEq)]
 pub struct TrainConfig {
+    /// LoRA rank.
     pub rank: usize,
     /// Rows per forward/backward.
     pub micro_batch: usize,
@@ -126,7 +136,9 @@ pub struct TrainConfig {
     pub seq: usize,
     /// Rows per optimiser step, accumulated over `micro_batch`-row pieces.
     pub effective_batch: usize,
+    /// AdamW learning rate.
     pub lr: f64,
+    /// Passes over the (rehearsal-capped) corpus.
     pub epochs: usize,
     /// Rehearsal sampler: the corpus cap after the per-class rule.
     pub max_rows: usize,
@@ -185,6 +197,7 @@ impl TrainConfig {
 
 /// Polled before every micro-batch: `true` = checkpoint at the last completed step and stop.
 pub trait PauseSignal {
+    /// Stop now?
     fn should_pause(&self) -> bool;
 }
 
@@ -200,6 +213,7 @@ impl PauseSignal for Never {
 /// Seconds since the owner's last keyboard / mouse event.
 // 126 I: bind to `platform::idle` (W2) — `impl IdleSeconds for platform::idle::Idle`.
 pub trait IdleSeconds: Send + Sync {
+    /// Seconds of idleness so far.
     fn idle_seconds(&self) -> f64;
 }
 
@@ -207,11 +221,14 @@ pub trait IdleSeconds: Send + Sync {
 /// machine when the idle clock drops below `threshold_secs` (default 2, i.e. within the last
 /// micro-batch).
 pub struct OwnerActivity {
+    /// The idle clock.
     pub idle: Box<dyn IdleSeconds>,
+    /// Idle below this = activity.
     pub threshold_secs: f64,
 }
 
 impl OwnerActivity {
+    /// Threshold 2 s.
     pub fn new(idle: Box<dyn IdleSeconds>) -> Self {
         Self {
             idle,
@@ -231,10 +248,13 @@ impl PauseSignal for OwnerActivity {
 /// One optimiser step done.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Progress {
+    /// Optimiser steps done, across resumes.
     pub step: usize,
+    /// Steps the run will take (`epochs × ⌈rows / effective_batch⌉`).
     pub total_steps: usize,
     /// 1-based.
     pub epoch: usize,
+    /// Epochs the run will take.
     pub epochs: usize,
     /// Weighted mean Choice cross-entropy over the step's effective batch.
     pub loss: f32,
@@ -244,7 +264,9 @@ pub struct Progress {
 
 /// Per-step hooks.
 pub struct Hooks<'a> {
+    /// Polled before every micro-batch.
     pub pause: &'a dyn PauseSignal,
+    /// Called after every optimiser step.
     pub on_progress: &'a mut dyn FnMut(&Progress),
 }
 
@@ -255,9 +277,11 @@ pub struct Metrics {
     pub train_loss: f32,
     /// Mean −log p(label) on the held-out rows at `temperature`.
     pub holdout_log_loss: f32,
+    /// Top-1 accuracy on the held-out rows.
     pub accuracy: f32,
     /// Expected calibration error, 10 equal-width bins of p_top, at `temperature`.
     pub ece: f32,
+    /// Held-out rows scored.
     pub n_holdout: usize,
     /// The 1-D NLL-minimising temperature fitted on the hold-out.
     pub temperature: f32,
@@ -266,25 +290,41 @@ pub struct Metrics {
 /// `manifest.json` of a candidate version (§8.5).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Manifest {
+    /// `b`.
     pub tier: String,
+    /// sha256 of the base checkpoint.
     pub base_hash: String,
     /// `[oldest, newest]` `asked_at` of the rows trained on.
     pub data_range: [DateTime<Utc>; 2],
+    /// `local` | `node:<name>`.
     pub venue: String,
+    /// `TrainConfig::seed`.
     pub seed: u64,
+    /// LoRA rank.
     pub rank: usize,
+    /// Learning rate.
     pub lr: f64,
+    /// Rows per forward/backward.
     pub micro_batch: usize,
+    /// Rows per optimiser step.
     pub effective_batch: usize,
+    /// Token cap per row.
     pub seq: usize,
+    /// Rows trained on after the rehearsal cap.
     pub rows_train: usize,
+    /// Rows held out.
     pub rows_holdout: usize,
     /// Rows the bundle had whose label matched no option (skipped).
     pub rows_unlabelled: usize,
+    /// Optimiser steps taken.
     pub steps: usize,
+    /// Epochs run.
     pub epochs: usize,
+    /// Cumulative running time, across resumes.
     pub duration_s: u64,
+    /// When the run finished.
     pub trained_at: DateTime<Utc>,
+    /// What the gate reads.
     pub metrics: Metrics,
 }
 
@@ -293,7 +333,9 @@ pub struct Manifest {
 pub struct CandidateVersion {
     /// `b-<trained_at>`; W2's `versions.rs` may rename on activation.
     pub id: String,
+    /// Holds `adapter.safetensors` + `manifest.json`.
     pub dir: PathBuf,
+    /// The parsed `manifest.json`.
     pub manifest: Manifest,
 }
 
@@ -307,17 +349,26 @@ pub const CHECKPOINT_DIR: &str = "checkpoint";
 /// How a call to [`TierB::train`] ended.
 #[derive(Debug)]
 pub enum TrainOutcome {
+    /// The candidate dir is populated.
     Finished(CandidateVersion),
     /// The pause signal fired or the run cap was hit: the adapter and optimiser state are in
     /// `checkpoint`; the next call with the same `out` dir resumes at `step`.
-    Paused { step: usize, checkpoint: PathBuf },
+    Paused {
+        /// Optimiser steps completed.
+        step: usize,
+        /// `<out>/checkpoint`.
+        checkpoint: PathBuf,
+    },
 }
 
 /// Golden-set re-score (§7.4's forgetting detector).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct GoldenMetrics {
+    /// Golden rows scored (rows whose label matched no option are skipped).
     pub n: usize,
+    /// Top-1 accuracy.
     pub accuracy: f32,
+    /// Mean −log p(label) at the candidate's temperature.
     pub log_loss: f32,
 }
 
@@ -409,7 +460,10 @@ pub fn rehearsal<'a>(
 
 /// Train / hold-out split: rows newer than `newest − holdout_days`, capped at 20 % of the
 /// trainable rows (newest first), are held out.
-fn split<'a>(rows: &[&'a BundleRow], holdout_days: i64) -> (Vec<&'a BundleRow>, Vec<&'a BundleRow>) {
+fn split<'a>(
+    rows: &[&'a BundleRow],
+    holdout_days: i64,
+) -> (Vec<&'a BundleRow>, Vec<&'a BundleRow>) {
     if holdout_days <= 0 || rows.is_empty() {
         return (rows.to_vec(), Vec::new());
     }
@@ -476,7 +530,12 @@ fn accumulate(
 
 /// Per-row log-probabilities over the row's own K options (natural log, temperature 1), plus
 /// the label — no graph.
-fn score(base: &Base, lora: Option<&Lora>, rows: &[Example], micro: usize) -> anyhow::Result<Vec<(Vec<f32>, u32)>> {
+fn score(
+    base: &Base,
+    lora: Option<&Lora>,
+    rows: &[Example],
+    micro: usize,
+) -> anyhow::Result<Vec<(Vec<f32>, u32)>> {
     let model = base.model(lora, false)?;
     let mut out = Vec::with_capacity(rows.len());
     for piece in rows.chunks(micro.max(1)) {
@@ -529,10 +588,11 @@ fn holdout_metrics(scored: &[(Vec<f32>, u32)]) -> (f32, f32, f32, f32) {
     let mut bins = [(0usize, 0f32, 0f32); 10];
     for (l, y) in scored {
         let p: Vec<f32> = log_softmax(l, t).iter().map(|v| v.exp()).collect();
-        let (top, p_top) = p
-            .iter()
-            .enumerate()
-            .fold((0, f32::NEG_INFINITY), |m, (i, &v)| if v > m.1 { (i, v) } else { m });
+        let (top, p_top) =
+            p.iter().enumerate().fold(
+                (0, f32::NEG_INFINITY),
+                |m, (i, &v)| if v > m.1 { (i, v) } else { m },
+            );
         let hit = top == *y as usize;
         correct += usize::from(hit);
         let b = ((p_top * 10.) as usize).min(9);
@@ -572,6 +632,7 @@ fn checkpoint(dir: &Path, lora: &Lora, opt: &AdamW, state: &State) -> anyhow::Re
 
 // ------------------------------------------------------------------ TierB
 
+/// The Tier B trainer (functions only; the state is on disk under `out`).
 pub struct TierB;
 
 impl TierB {
@@ -590,7 +651,7 @@ impl TierB {
         cfg: &TrainConfig,
         base: &Base,
         out: &Path,
-        mut hooks: Hooks<'_>,
+        hooks: Hooks<'_>,
     ) -> anyhow::Result<TrainOutcome> {
         anyhow::ensure!(
             TRAIN_BUILD,
@@ -644,15 +705,17 @@ impl TierB {
             lora = Lora::new(base, cfg.rank, cfg.seed)?;
             opt = AdamW::new(lora.varmap(), cfg.lr)?;
         }
-        let elapsed = |state: &State| Duration::from_secs_f64(state.elapsed_secs) + started.elapsed();
-        let pause_now = |state: &mut State, lora: &Lora, opt: &AdamW| -> anyhow::Result<TrainOutcome> {
-            state.elapsed_secs = elapsed(state).as_secs_f64();
-            checkpoint(&ckpt, lora, opt, state)?;
-            Ok(TrainOutcome::Paused {
-                step: state.step,
-                checkpoint: ckpt.clone(),
-            })
-        };
+        let elapsed =
+            |state: &State| Duration::from_secs_f64(state.elapsed_secs) + started.elapsed();
+        let pause_now =
+            |state: &mut State, lora: &Lora, opt: &AdamW| -> anyhow::Result<TrainOutcome> {
+                state.elapsed_secs = elapsed(state).as_secs_f64();
+                checkpoint(&ckpt, lora, opt, state)?;
+                Ok(TrainOutcome::Paused {
+                    step: state.step,
+                    checkpoint: ckpt.clone(),
+                })
+            };
 
         let mut last_epoch_loss = state.epoch_loss;
         while state.epoch < cfg.epochs {
@@ -663,8 +726,13 @@ impl TierB {
                     return pause_now(&mut state, &lora, &opt);
                 }
                 let end = (state.cursor + cfg.effective_batch).min(train.len());
-                let rows: Vec<&Example> = order[state.cursor..end].iter().map(|&i| &train[i]).collect();
-                let Some((grads, loss)) = accumulate(base, &lora, &rows, cfg.micro_batch, Some(hooks.pause))? else {
+                let rows: Vec<&Example> = order[state.cursor..end]
+                    .iter()
+                    .map(|&i| &train[i])
+                    .collect();
+                let Some((grads, loss)) =
+                    accumulate(base, &lora, &rows, cfg.micro_batch, Some(hooks.pause))?
+                else {
                     return pause_now(&mut state, &lora, &opt);
                 };
                 opt.step(&grads)?;
@@ -724,7 +792,10 @@ impl TierB {
         };
         std::fs::create_dir_all(out)?;
         lora.save(&out.join(ADAPTER_FILE))?;
-        std::fs::write(out.join(MANIFEST_FILE), serde_json::to_vec_pretty(&manifest)?)?;
+        std::fs::write(
+            out.join(MANIFEST_FILE),
+            serde_json::to_vec_pretty(&manifest)?,
+        )?;
         if ckpt.is_dir() {
             std::fs::remove_dir_all(&ckpt)?;
         }
@@ -753,14 +824,21 @@ pub fn rescore_golden(
         .filter(|(l, y)| {
             l.iter()
                 .enumerate()
-                .fold((0, f32::NEG_INFINITY), |m, (i, &v)| if v > m.1 { (i, v) } else { m })
+                .fold(
+                    (0, f32::NEG_INFINITY),
+                    |m, (i, &v)| if v > m.1 { (i, v) } else { m },
+                )
                 .0
                 == *y as usize
         })
         .count();
     Ok(GoldenMetrics {
         n: scored.len(),
-        accuracy: if scored.is_empty() { f32::NAN } else { correct as f32 / scored.len() as f32 },
+        accuracy: if scored.is_empty() {
+            f32::NAN
+        } else {
+            correct as f32 / scored.len() as f32
+        },
         log_loss: mean_nll(&scored, t),
     })
 }
@@ -780,11 +858,22 @@ mod tests {
         (0..n)
             .map(|i| {
                 let push = i % 2 == 0;
-                let text: Vec<&str> = (0..6).map(|j| words[(i * 7 + j * 3) % words.len()]).collect();
+                let text: Vec<&str> = (0..3 + i % 5)
+                    .map(|j| words[(i * 7 + j * 3) % words.len()])
+                    .collect();
                 BundleRow {
                     question_id: format!("q{i}"),
-                    class: if push { "approval:shell:mutating:git push:root" } else { "approval:shell:read_only:cargo test:root" }.into(),
-                    card_text: format!("{} {}", if push { "git push" } else { "cargo test" }, text.join(" ")),
+                    class: if push {
+                        "approval:shell:mutating:git push:root"
+                    } else {
+                        "approval:shell:read_only:cargo test:root"
+                    }
+                    .into(),
+                    card_text: format!(
+                        "{} {}",
+                        if push { "git push" } else { "cargo test" },
+                        text.join(" ")
+                    ),
                     options: vec!["allow".into(), "deny".into()],
                     choice: if push { "allow" } else { "deny" }.into(),
                     source: LabelSource::Direct,
@@ -839,26 +928,57 @@ mod tests {
         let refs: Vec<&BundleRow> = bundle.rows.iter().collect();
         let ex = examples(&base, &refs, 64).unwrap();
         assert_eq!(ex.len(), 16);
-        let lens: std::collections::HashSet<usize> = ex.iter().map(|e| e.seq.input_ids.len()).collect();
-        assert!(lens.len() > 1, "rows must differ in length for the test to mean anything");
+        let lens: std::collections::HashSet<usize> =
+            ex.iter().map(|e| e.seq.input_ids.len()).collect();
+        assert!(
+            lens.len() > 1,
+            "rows must differ in length for the test to mean anything"
+        );
         let rows: Vec<&Example> = ex.iter().collect();
         let lora = Lora::new(&base, 4, 1).unwrap();
-        // Non-zero B so every factor gets a gradient.
+        // Random non-zero B so every factor gets a real gradient (a constant B makes ∂/∂A of
+        // the `Wo` adapters vanish: LayerNorm downstream kills the mean of the residual grad).
+        let mut rng = Rng::new(9);
         for v in lora.vars() {
-            v.set(&(v.as_tensor() + 0.05).unwrap()).unwrap();
+            let n = v.elem_count();
+            let noise: Vec<f32> = (0..n).map(|_| 0.05 * rng.normal()).collect();
+            let noise = Tensor::from_vec(noise, v.shape(), &Device::Cpu).unwrap();
+            v.set(&(v.as_tensor() + noise).unwrap()).unwrap();
         }
         let (micro, l_micro) = accumulate(&base, &lora, &rows, 2, None).unwrap().unwrap();
         let (full, l_full) = accumulate(&base, &lora, &rows, 16, None).unwrap().unwrap();
-        assert!((l_micro - l_full).abs() <= 1e-4 * l_full.abs().max(1.), "{l_micro} vs {l_full}");
+        assert!(
+            (l_micro - l_full).abs() <= 1e-4 * l_full.abs().max(1.),
+            "{l_micro} vs {l_full}"
+        );
         let mut worst = 0f32;
         for v in lora.vars() {
-            let a: Vec<f32> = micro.get(v.as_tensor()).unwrap().flatten_all().unwrap().to_vec1().unwrap();
-            let b: Vec<f32> = full.get(v.as_tensor()).unwrap().flatten_all().unwrap().to_vec1().unwrap();
-            let scale = b.iter().map(|x| x.abs()).fold(0f32, f32::max).max(1e-6);
+            let a: Vec<f32> = micro
+                .get(v.as_tensor())
+                .unwrap()
+                .flatten_all()
+                .unwrap()
+                .to_vec1()
+                .unwrap();
+            let b: Vec<f32> = full
+                .get(v.as_tensor())
+                .unwrap()
+                .flatten_all()
+                .unwrap()
+                .to_vec1()
+                .unwrap();
+            let scale = b.iter().map(|x| x.abs()).fold(0f32, f32::max);
+            assert!(
+                scale > 1e-4,
+                "a vanishing gradient would make the comparison vacuous"
+            );
             for (x, y) in a.iter().zip(&b) {
                 worst = worst.max((x - y).abs() / scale);
             }
         }
+        eprintln!(
+            "accumulation: loss {l_micro} vs {l_full}, max relative gradient diff {worst:.3e}"
+        );
         assert!(worst < 1e-4, "max relative gradient difference {worst}");
     }
 
@@ -892,7 +1012,10 @@ mod tests {
             &cfg,
             &base,
             &dir.path().join("ref"),
-            Hooks { pause: &Never, on_progress: &mut |p| ref_steps.push(p.step) },
+            Hooks {
+                pause: &Never,
+                on_progress: &mut |p| ref_steps.push(p.step),
+            },
         )
         .unwrap() else {
             panic!("reference run paused")
@@ -903,7 +1026,10 @@ mod tests {
         // Interrupted: each step polls once before it and once per micro-batch (two), so step k
         // polls 3k−2 … 3k. The owner moves the mouse at poll 6 = step 2's last micro-batch: that
         // step is abandoned and the checkpoint holds step 1.
-        let idle = FakeIdle { polls: AtomicUsize::new(0), active_after: 5 };
+        let idle = FakeIdle {
+            polls: AtomicUsize::new(0),
+            active_after: 5,
+        };
         let pause = OwnerActivity::new(Box::new(idle));
         let out = dir.path().join("run");
         let mut steps = Vec::new();
@@ -912,7 +1038,10 @@ mod tests {
             &cfg,
             &base,
             &out,
-            Hooks { pause: &pause, on_progress: &mut |p| steps.push(p.step) },
+            Hooks {
+                pause: &pause,
+                on_progress: &mut |p| steps.push(p.step),
+            },
         )
         .unwrap();
         let TrainOutcome::Paused { step, checkpoint } = paused else {
@@ -930,14 +1059,20 @@ mod tests {
             &cfg,
             &base,
             &out,
-            Hooks { pause: &Never, on_progress: &mut |p| steps.push(p.step) },
+            Hooks {
+                pause: &Never,
+                on_progress: &mut |p| steps.push(p.step),
+            },
         )
         .unwrap() else {
             panic!("resume paused")
         };
         assert_eq!(steps, (2..=8).collect::<Vec<_>>());
         assert_eq!(resumed.manifest.steps, 8);
-        assert!(!out.join(CHECKPOINT_DIR).exists(), "checkpoint removed after finish");
+        assert!(
+            !out.join(CHECKPOINT_DIR).exists(),
+            "checkpoint removed after finish"
+        );
         let a = adapter_values(&reference.dir.join(ADAPTER_FILE));
         let b = adapter_values(&resumed.dir.join(ADAPTER_FILE));
         assert_eq!(a.len(), b.len());
@@ -948,13 +1083,23 @@ mod tests {
                 worst = worst.max((x - y).abs());
             }
         }
-        assert!(worst < 1e-5, "resumed adapter differs from the uninterrupted one by {worst}");
+        eprintln!(
+            "resume: paused at step {step}, finished at {}, max |Δ adapter| {worst:.3e}",
+            resumed.manifest.steps
+        );
+        assert!(
+            worst < 1e-5,
+            "resumed adapter differs from the uninterrupted one by {worst}"
+        );
     }
 
     /// The pause signal fires on the first poll after activity (latency = one micro-batch).
     #[test]
     fn owner_activity_fires_on_the_first_poll_after_activity() {
-        let pause = OwnerActivity::new(Box::new(FakeIdle { polls: AtomicUsize::new(0), active_after: 2 }));
+        let pause = OwnerActivity::new(Box::new(FakeIdle {
+            polls: AtomicUsize::new(0),
+            active_after: 2,
+        }));
         assert!(!pause.should_pause());
         assert!(!pause.should_pause());
         assert!(pause.should_pause());
@@ -972,24 +1117,38 @@ mod tests {
         bundle(40, 4).write(&dir.path().join("bundle")).unwrap();
         let bundle = Bundle::read(&dir.path().join("bundle")).unwrap();
         assert_eq!(bundle.rows.len(), 40);
-        let cfg = TrainConfig { epochs: 3, holdout_days: 7, ..tiny_cfg() };
+        let cfg = TrainConfig {
+            epochs: 3,
+            holdout_days: 7,
+            ..tiny_cfg()
+        };
         let mut losses = Vec::new();
         let TrainOutcome::Finished(c) = TierB::train(
             &bundle,
             &cfg,
             &base,
             &dir.path().join("out"),
-            Hooks { pause: &Never, on_progress: &mut |p| losses.push(p.loss) },
+            Hooks {
+                pause: &Never,
+                on_progress: &mut |p| losses.push(p.loss),
+            },
         )
         .unwrap() else {
             panic!("paused")
         };
         let m = &c.manifest;
-        assert_eq!((m.rows_train, m.rows_holdout, m.rows_unlabelled), (29, 7, 0));
+        assert_eq!(
+            (m.rows_train, m.rows_holdout, m.rows_unlabelled),
+            (29, 7, 0)
+        );
         assert_eq!(m.steps, 3 * 29usize.div_ceil(4));
         assert_eq!(losses.len(), m.steps);
         let first: f32 = losses[..3].iter().sum::<f32>() / 3.;
         let last: f32 = losses[losses.len() - 3..].iter().sum::<f32>() / 3.;
+        eprintln!(
+            "loss first-3 {first:.4} -> last-3 {last:.4}; metrics {:?}",
+            m.metrics
+        );
         assert!(last < first, "loss did not fall: {first} -> {last}");
         assert!(m.metrics.holdout_log_loss.is_finite());
         assert!((0. ..=1.).contains(&m.metrics.accuracy));
@@ -997,7 +1156,8 @@ mod tests {
         assert!(m.metrics.temperature > 0.);
         assert_eq!(m.metrics.n_holdout, 7);
         assert!(c.dir.join(ADAPTER_FILE).is_file() && c.dir.join(MANIFEST_FILE).is_file());
-        let back: Manifest = serde_json::from_slice(&std::fs::read(c.dir.join(MANIFEST_FILE)).unwrap()).unwrap();
+        let back: Manifest =
+            serde_json::from_slice(&std::fs::read(c.dir.join(MANIFEST_FILE)).unwrap()).unwrap();
         assert_eq!(&back, m);
 
         let golden: Vec<BundleRow> = bundle.rows.iter().filter(|r| r.golden).cloned().collect();
@@ -1014,7 +1174,10 @@ mod tests {
         let refs: Vec<&BundleRow> = all.iter().collect();
         let kept = rehearsal(&refs, 10, 1000, 1);
         assert_eq!(kept.len(), 40);
-        for class in ["approval:shell:mutating:git push:root", "approval:shell:read_only:cargo test:root"] {
+        for class in [
+            "approval:shell:mutating:git push:root",
+            "approval:shell:read_only:cargo test:root",
+        ] {
             let of_class: Vec<&&BundleRow> = kept.iter().filter(|r| r.class == class).collect();
             assert_eq!(of_class.len(), 20);
             // The ten newest of the class are all there.
@@ -1024,7 +1187,11 @@ mod tests {
                 v.truncate(10);
                 v
             };
-            assert!(newest.iter().all(|n| of_class.iter().any(|k| k.question_id == n.question_id)));
+            assert!(
+                newest
+                    .iter()
+                    .all(|n| of_class.iter().any(|k| k.question_id == n.question_id))
+            );
         }
         let again = rehearsal(&refs, 10, 1000, 1);
         assert_eq!(kept, again);
@@ -1037,7 +1204,8 @@ mod tests {
     fn local_tier_b_is_off_by_default() {
         let cfg = DoubleConfig::default();
         assert!(!TierB::local_allowed(&cfg));
-        let on: DoubleConfig = serde_yaml::from_str("training: { tiers: { b: { local: true } } }").unwrap();
+        let on: DoubleConfig =
+            serde_yaml::from_str("training: { tiers: { b: { local: true } } }").unwrap();
         assert!(TierB::local_allowed(&on));
     }
 }

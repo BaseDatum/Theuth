@@ -20,12 +20,12 @@
 //!    in f16 loses precision at long positions.
 
 use candle_core::{D, DType, Device, IndexOp, Result, Tensor};
+#[cfg(not(feature = "train"))]
+use candle_nn::ops::softmax_last_dim;
 use candle_nn::{
     Embedding, LayerNorm, LayerNormConfig, Linear, Module, VarBuilder, embedding, layer_norm,
     layer_norm_no_bias, linear, linear_no_bias,
 };
-#[cfg(not(feature = "train"))]
-use candle_nn::ops::softmax_last_dim;
 use std::sync::Arc;
 
 use super::config::{AgentConfig, EncoderConfig, FULL_ATTENTION};

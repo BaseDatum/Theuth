@@ -160,13 +160,19 @@ fn pooled_embedding_is_hidden_sized_and_opt_in() {
         assert_eq!(e.len(), 1024);
         assert!(e.iter().all(|v| v.is_finite()));
         assert!(
-            a.probs.iter().zip(&b.probs).all(|(x, y)| (x - y).abs() < 1e-4),
+            a.probs
+                .iter()
+                .zip(&b.probs)
+                .all(|(x, y)| (x - y).abs() < 1e-4),
             "the embedding copy does not change the scores: {:?} vs {:?}",
             a.probs,
             b.probs
         );
     }
-    let (e0, e1) = (outs[0].embedding.as_ref().unwrap(), outs[1].embedding.as_ref().unwrap());
+    let (e0, e1) = (
+        outs[0].embedding.as_ref().unwrap(),
+        outs[1].embedding.as_ref().unwrap(),
+    );
     assert!(e0.iter().zip(e1).any(|(x, y)| (x - y).abs() > 1e-3));
 }
 

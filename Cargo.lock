@@ -5107,7 +5107,9 @@ version = "2.9.2"
 dependencies = [
  "anyhow",
  "async-trait",
+ "candle-core",
  "chrono",
+ "decision",
  "half",
  "replica",
  "runtime",

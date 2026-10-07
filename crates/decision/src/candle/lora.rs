@@ -63,6 +63,7 @@ pub fn adapted_names(enc: &EncoderConfig) -> Vec<String> {
 pub struct Rng(u64);
 
 impl Rng {
+    /// Seeded; a zero seed is nudged (xorshift's fixed point).
     pub fn new(seed: u64) -> Self {
         Rng((seed ^ 0x9E37_79B9_7F4A_7C15).max(1))
     }
@@ -74,6 +75,7 @@ impl Rng {
         })
     }
 
+    /// The next 64 random bits.
     pub fn next_u64(&mut self) -> u64 {
         self.0 ^= self.0 << 13;
         self.0 ^= self.0 >> 7;
@@ -106,14 +108,19 @@ impl Rng {
 /// in the model dtype (plain `Tensor`s, so frozen by construction — `backward()` only populates
 /// `Var`s). One `Base` serves any number of adapters and model rebuilds.
 pub struct Base {
+    /// `encoder/config.json`.
     pub enc: EncoderConfig,
+    /// `rl_agent_config.json`.
     pub agent: AgentConfig,
     /// Budgets, temperatures and the tokenizer's special ids, as `Loaded` reads them.
     pub laya: LayaConfig,
+    /// `tokenizer/tokenizer.json`.
     pub tokenizer: Tokenizer,
     /// Sanitized name → tensor on `device` in `dtype`.
     pub tensors: Arc<HashMap<String, Tensor>>,
+    /// The model dtype every tensor was uploaded in (f16 on Metal, f32 elsewhere).
     pub dtype: DType,
+    /// Where the tensors live; every rebuild and every adapter uses it.
     pub device: Device,
     /// sha256 hex of `model.safetensors` (`synthetic` for the test fixture): the manifest's
     /// `base_hash`.
@@ -270,7 +277,11 @@ impl Base {
 
     /// [`build_sequence`] with this checkpoint's tokenizer and budgets, the state cut to
     /// `max_len` tokens (the trainer's sequence cap; `None` = the checkpoint's own).
-    pub fn sequence(&self, q: &Question, max_len: Option<usize>) -> std::result::Result<Sequence, String> {
+    pub fn sequence(
+        &self,
+        q: &Question,
+        max_len: Option<usize>,
+    ) -> std::result::Result<Sequence, String> {
         let mut cfg = self.laya.clone();
         if let Some(m) = max_len {
             cfg.max_len = m.min(cfg.max_len);
@@ -309,7 +320,9 @@ impl LoraBackend {
                 } else {
                     (a.detach(), b.detach())
                 };
-                base + (b * self.scale)?.to_dtype(dtype)?.matmul(&a.to_dtype(dtype)?)?
+                base + (b * self.scale)?
+                    .to_dtype(dtype)?
+                    .matmul(&a.to_dtype(dtype)?)?
             }
             None => Ok(base.clone()),
         }
@@ -338,7 +351,9 @@ impl SimpleBackend for LoraBackend {
 /// [`adapted_names`] entry, named `<weight>.lora_a` / `<weight>.lora_b` in a `VarMap`, scale
 /// α/r = 2 (α = 2r). Saved and loaded as safetensors under those names.
 pub struct Lora {
+    /// `r`.
     pub rank: usize,
+    /// α/r, folded into `B` at merge time.
     pub scale: f64,
     varmap: VarMap,
     adapters: HashMap<String, (Tensor, Tensor)>,
@@ -362,7 +377,11 @@ impl Lora {
             let a = Var::from_tensor(&Tensor::from_vec(init, (rank, inp), &base.device)?)?;
             let a = {
                 let ta = a.as_tensor().clone();
-                varmap.data().lock().unwrap().insert(format!("{name}.lora_a"), a);
+                varmap
+                    .data()
+                    .lock()
+                    .unwrap()
+                    .insert(format!("{name}.lora_a"), a);
                 ta
             };
             let b = varmap.get(
@@ -420,10 +439,12 @@ impl Lora {
         self.varmap.save(path)
     }
 
+    /// The adapter's `Var`s by name (`AdamW::new` reads it).
     pub fn varmap(&self) -> &VarMap {
         &self.varmap
     }
 
+    /// Every adapter `Var`.
     pub fn vars(&self) -> Vec<Var> {
         self.varmap.all_vars()
     }
@@ -456,10 +477,15 @@ pub struct AdamW {
     slots: Vec<(Var, Var, Var)>,
     state: VarMap,
     t: usize,
+    /// Learning rate.
     pub lr: f64,
+    /// First-moment decay.
     pub beta1: f64,
+    /// Second-moment decay.
     pub beta2: f64,
+    /// Denominator floor.
     pub eps: f64,
+    /// Decoupled weight decay (`θ ← θ(1 − lr·wd)` before the Adam step).
     pub weight_decay: f64,
 }
 
@@ -478,10 +504,20 @@ impl AdamW {
         let mut slots = Vec::with_capacity(names.len());
         for (name, p) in names {
             let (shape, dtype, dev) = (p.shape().clone(), p.dtype(), p.device().clone());
-            state.get(shape.clone(), &format!("{name}.m"), Init::Const(0.), dtype, &dev)?;
+            state.get(
+                shape.clone(),
+                &format!("{name}.m"),
+                Init::Const(0.),
+                dtype,
+                &dev,
+            )?;
             state.get(shape, &format!("{name}.v"), Init::Const(0.), dtype, &dev)?;
             let data = state.data().lock().unwrap();
-            slots.push((p, data[&format!("{name}.m")].clone(), data[&format!("{name}.v")].clone()));
+            slots.push((
+                p,
+                data[&format!("{name}.m")].clone(),
+                data[&format!("{name}.v")].clone(),
+            ));
         }
         Ok(AdamW {
             slots,
@@ -544,7 +580,9 @@ impl AdamW {
         let mut tensors = candle_core::safetensors::load(path, &dev)?;
         let t = tensors
             .remove("adamw.t")
-            .ok_or_else(|| Error::CannotFindTensor { path: "adamw.t".into() })?;
+            .ok_or_else(|| Error::CannotFindTensor {
+                path: "adamw.t".into(),
+            })?;
         self.t = t.to_vec1::<f32>()?[0] as usize;
         self.state.set(tensors.iter())?;
         Ok(())
@@ -579,7 +617,8 @@ mod tests {
         let lora = Lora::new(&base, 4, 7).unwrap();
         let model = base.model(Some(&lora), true).unwrap();
         let rows = [
-            base.sequence(&card("cargo test in develop theuth"), None).unwrap(),
+            base.sequence(&card("cargo test in develop theuth"), None)
+                .unwrap(),
             base.sequence(&card("rm the home path"), None).unwrap(),
         ];
         let batch = collate(&rows, Some((0, 2)), base.laya.special.pad);
@@ -618,7 +657,10 @@ mod tests {
         assert!(TRAIN_BUILD);
         for layer in [0, 1] {
             let [q, k, v] = qkv_grad_norms(layer);
-            assert!(q > 0. && k > 0. && v > 0., "layer {layer}: q {q} k {k} v {v}");
+            assert!(
+                q > 0. && k > 0. && v > 0.,
+                "layer {layer}: q {q} k {k} v {v}"
+            );
         }
     }
 
@@ -654,9 +696,30 @@ mod tests {
         let a = base.model(Some(&lora), false).unwrap();
         let b = base.model(Some(&back), false).unwrap();
         let plain = base.model(None, false).unwrap();
-        let la: Vec<f32> = a.forward(&ids, &attn, &pos, &mask, &qtype).unwrap().logits.flatten_all().unwrap().to_vec1().unwrap();
-        let lb: Vec<f32> = b.forward(&ids, &attn, &pos, &mask, &qtype).unwrap().logits.flatten_all().unwrap().to_vec1().unwrap();
-        let lp: Vec<f32> = plain.forward(&ids, &attn, &pos, &mask, &qtype).unwrap().logits.flatten_all().unwrap().to_vec1().unwrap();
+        let la: Vec<f32> = a
+            .forward(&ids, &attn, &pos, &mask, &qtype)
+            .unwrap()
+            .logits
+            .flatten_all()
+            .unwrap()
+            .to_vec1()
+            .unwrap();
+        let lb: Vec<f32> = b
+            .forward(&ids, &attn, &pos, &mask, &qtype)
+            .unwrap()
+            .logits
+            .flatten_all()
+            .unwrap()
+            .to_vec1()
+            .unwrap();
+        let lp: Vec<f32> = plain
+            .forward(&ids, &attn, &pos, &mask, &qtype)
+            .unwrap()
+            .logits
+            .flatten_all()
+            .unwrap()
+            .to_vec1()
+            .unwrap();
         assert_eq!(la, lb);
         assert_ne!(la, lp, "the adapter must change the logits");
     }
@@ -675,11 +738,17 @@ mod tests {
         let grad = |vm: &VarMap| {
             let mut g = GradStore::default();
             let w = vm.data().lock().unwrap()["w"].clone();
-            g.insert(w.as_tensor(), Tensor::new(&[0.5f32, -1., 2.], &dev).unwrap());
+            g.insert(
+                w.as_tensor(),
+                Tensor::new(&[0.5f32, -1., 2.], &dev).unwrap(),
+            );
             g
         };
         let (vm_a, vm_b) = (make(), make());
-        let (mut a, mut b) = (AdamW::new(&vm_a, 1e-2).unwrap(), AdamW::new(&vm_b, 1e-2).unwrap());
+        let (mut a, mut b) = (
+            AdamW::new(&vm_a, 1e-2).unwrap(),
+            AdamW::new(&vm_b, 1e-2).unwrap(),
+        );
         a.step(&grad(&vm_a)).unwrap();
         a.step(&grad(&vm_a)).unwrap();
         let p = dir.path().join("optim.safetensors");
@@ -690,8 +759,14 @@ mod tests {
         assert_eq!(b.steps(), 2);
         a.step(&grad(&vm_a)).unwrap();
         b.step(&grad(&vm_b)).unwrap();
-        let wa: Vec<f32> = vm_a.data().lock().unwrap()["w"].as_tensor().to_vec1().unwrap();
-        let wb: Vec<f32> = vm_b.data().lock().unwrap()["w"].as_tensor().to_vec1().unwrap();
+        let wa: Vec<f32> = vm_a.data().lock().unwrap()["w"]
+            .as_tensor()
+            .to_vec1()
+            .unwrap();
+        let wb: Vec<f32> = vm_b.data().lock().unwrap()["w"]
+            .as_tensor()
+            .to_vec1()
+            .unwrap();
         assert_eq!(wa, wb);
         assert_ne!(wa, vec![1., 1., 1.]);
     }
