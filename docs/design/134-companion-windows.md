@@ -11,14 +11,16 @@ they are; no engine change is proposed (§5.3). Target: full parity with the mac
 Notation: `DESK/` = `crates/desktop/src/`, `SWIFT/` = `crates/desktop/companion/Sources/`, `WIN/` =
 `crates/desktop/companion-windows/`. "Sky" marks a decision he made on 2026-10-07 (quoted where he gave words);
 "rec." marks the orchestrator's recommendation he has not yet ruled on. **UNVERIFIED** marks a platform claim that no
-primary source or spike has confirmed yet; §7's spikes S1–S4 close them.
+primary source or spike has confirmed yet; §7's spikes S0–S4 closed most of them (Revision R1, end of document).
 
 ## 0. Decisions in one screen
 
-1. **D1 Substrate (Sky).** C# on .NET 10 with WinUI 3 (Windows App SDK 2.x, Current channel 2.5.1 as of
-   2026-09-16; 1.8 is in Maintenance). Not C++/WinRT, not Rust. An **unpackaged, self-contained** desktop app
-   (`WindowsPackageType=None`, `WindowsAppSDKSelfContained=true`) so the NSIS installer carries it with no runtime
-   prerequisite and no package identity. Mirrors 130 D1 (a native helper beside the shell) with the Windows
+1. **D1 Substrate (Sky; package line R1, rec.).** C# on .NET 10 with WinUI 3. Not C++/WinRT, not Rust. An
+   **unpackaged, self-contained** desktop app (`WindowsPackageType=None`, `WindowsAppSDKSelfContained=true`) so
+   the NSIS installer carries it with no runtime prerequisite and no package identity. **R1:** Windows App SDK
+   **1.8** (1.8.260317003) as the WinUI-component-only split plus a build step that extracts the five
+   runtime-MSIX files toasts need (§2 C2b) — 165 MB, toasts verified; 2.5.1 compiles unchanged behind a
+   `-p:WasdkLine=2` switch and is re-tested at W5 (microsoft/WindowsAppSDK#6821). §9 Q1. Mirrors 130 D1 (a native helper beside the shell) with the Windows
    analogue of `LSUIElement`: no taskbar button, no Alt-Tab entry, a tray icon.
 2. **D2 Engine connection (unchanged from 130 D2).** One `ClientWebSocket` to the engine found through
    `%USERPROFILE%\.theuth\engine.json` (`THEUTH_DATA_DIR` overrides) with the bearer token at `<data_dir>\token`
@@ -30,18 +32,21 @@ primary source or spike has confirmed yet; §7's spikes S1–S4 close them.
 4. **D4 The rail (inherits 130 D4 + R2-3).** A borderless WinUI 3 window sized exactly to its marks, 26 effective
    px wide at the right (or left) edge of the primary display, `WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE |
    WS_EX_TOPMOST`, `AppWindow.IsShownInSwitchers = false`, shown with `AppWindow.Show(false)`, excluded from
-   capture with `SetWindowDisplayAffinity(WDA_EXCLUDEFROMCAPTURE)` — exactly the style set theuth's island already
-   uses on Windows (`DESK/island/windows.rs:1-19`). Sized to content, so no click-through window styles are needed
-   (rec.; S1 proves it). "Rail presence" setting (Expanded · Sliver when quiet · Always a sliver) as R2-3.
+   capture with `SetWindowDisplayAffinity(WDA_EXCLUDEFROMCAPTURE)` — the style set theuth's island already uses on
+   Windows (`DESK/island/windows.rs:1-19`). **R1:** S1 showed the WinUI island **activates on every press despite
+   `WS_EX_NOACTIVATE`**; 130's bar is a rail that never takes focus, so the rail's substrate is **open (§9 Q2)** —
+   rec. a plain Win32 HWND drawn with `Microsoft.UI.Composition` (XAML only for the panels), pass-through by the
+   verified `WS_EX_LAYERED|WS_EX_TRANSPARENT` cursor-poll toggle. The 136 px `SM_CXMINTRACK` clamp needs the
+   `WM_GETMINMAXINFO` answer either way. "Rail presence" (Expanded · Sliver when quiet · Always a sliver) as R2-3.
 5. **D5 The Attention panel (inherits 130 D5 + R1-5).** A second borderless window, 372 × ≤ 560 effective px,
    Mica/Acrylic backdrop (opaque when `IsSupported()` is false or transparency is off), `IsShownInSwitchers =
    false`, topmost. Hidden until summoned; when summoned it **is activated** (foreground) — the WM_HOTKEY grant
-   makes that legitimate — and on Esc it hands foreground back to the window it took it from
-   (`SetForegroundWindow(prev)`, allowed because we are the foreground process at that moment). Anchors: above
+   makes that legitimate (**R1: verified** — `SetForegroundWindow -> True` first try, `TextBox` focused) — and on
+   Esc it hands foreground back to the window it took it from (`SetForegroundWindow(prev)`, **verified**). Anchors: above
    the tray icon, beside the rail mark, or top-centre of the display under the mouse. Same card anatomy, per-kind
    options and `Decision = Allow | Deny` as 130 §4.2 / R1-5.
 6. **D6 Keyboard grammar (inherits 130 D6 + R2-4).** `RegisterHotKey` with `MOD_CONTROL | MOD_SHIFT | MOD_NOREPEAT`
-   + `VK_SPACE` (Ctrl+Shift+Space; Win-key chords are reserved for the OS and are refused by Settings); failure
+   + `VK_SPACE` (Ctrl+Shift+Space, **R1: verified**; Win-key chords are reserved for the OS and refused by Settings); failure
    to register is detected (the call returns 0 when another app holds the chord) and falls back exactly as the
    Mac's `resolveGlobal` does. The panel grammar (1/2/3 ⏎ Esc J/K ↓/↑ R S E D O Ctrl+O Ctrl+L Tab) and the
    one `KeyTable` with scopes, legend (`Ctrl+/` or `?`), per-row rebinding and collision policy port verbatim;
@@ -55,12 +60,15 @@ primary source or spike has confirmed yet; §7's spikes S1–S4 close them.
    `Register()` sets up COM activation itself); buttons carry the card's ≤ 3 option labels, `AddTextBox` for
    Reply / Deny-with-note / Send-back, `SetGroup(agent)` + `SetTag(item)` for per-agent stacking, blocking kinds
    immediate and silent (`MuteAudio`), deferrable kinds held by the same `NotificationPolicy` until a breakpoint,
-   errors immediate with sound; the "time-sensitive" analogue is `AppNotificationScenario.Reminder`, which Windows'
-   Do-not-disturb lets through only when the user allows reminders (documented, **UNVERIFIED** for third-party
-   apps; S2). Elevated processes cannot post notifications — the companion must never run elevated.
+   errors immediate with sound. **R1:** the "time-sensitive" analogue is `AppNotificationScenario.Urgent` — verified
+   to render with a red "!" and to make Windows ask the user once ("Important Notification Request … when do not
+   disturb is on"); `NotificationInvoked` arrives on a **background thread**; a relaunch-by-click reports
+   `Kind = Launch`; self-contained builds must carry the five runtime-MSIX files or `Register()` fails (§2 C2b).
+   Elevated processes cannot post notifications — the companion must never run elevated.
 9. **D9 Tray presence (translates 130 D9).** One notification-area icon (the companion's; the Tauri shell hides its
-   own while the companion is alive) via `Shell_NotifyIcon` P/Invoke (rec.; H.NotifyIcon.WinUI, MIT, is §8's
-   alternative). Left click → the panel above the icon; right click → Open theuth · Ask theuth… · Pause
+   own while the companion is alive) via `Shell_NotifyIcon` P/Invoke — **R1: decided**, verified in S3 with no
+   library (H.NotifyIcon.WinUI stays §8's fallback); the icon lands in the overflow by default, so first run
+   explains pinning. Left click → the panel above the icon; right click → Open theuth · Ask theuth… · Pause
    notifications ▸ · Launch at login · Keyboard shortcuts… · Settings… · Quit theuth. Gold `●N` overlay on the
    icon when needs-you > 0 (the tray has no title text, unlike the Mac menu bar).
 10. **D10 Tauri shell changes on Windows (translates 130 D10; all in `DESK/`).** A `companion/windows.rs` backend
@@ -72,8 +80,10 @@ primary source or spike has confirmed yet; §7's spikes S1–S4 close them.
     route parser `deep_link_route` (`DESK/lib.rs:535-548`) is reused; `deep_links()` loses its macOS gate.
 11. **D11 Build, bundle, sign.** `WIN/Theuth.Companion.slnx`: `Theuth.Companion.Rpc` and `Theuth.Companion.Core`
     are plain `net10.0` class libraries with xUnit tests that build and run on the Mac with `~/.dotnet/dotnet`;
-    only `Theuth.Companion` (WinUI, `net10.0-windows10.0.26100.0`) needs Windows and is built on build-B with
-    `dotnet publish -r win-x64 --self-contained` (unsigned, like every other Windows artifact today). The output
+    only `Theuth.Companion` (WinUI, `net10.0-windows10.0.22621.0`, min 10.0.19041 — the TFM S0 built; hand-written
+    csproj, no templates on build-B) needs Windows and is built on build-B with `dotnet publish -r win-x64
+    --self-contained` in 12–20 s (unsigned, like every other Windows artifact today); **R1:** 165 MB with the
+    component split, 215 MB with the 1.8 meta package. The output
     folder becomes a Tauri resource directory `companion/` in the rendered bundle config of
     `scripts/package-windows.ps1` (step [4/6], `:183-187`) so NSIS installs it under `%LOCALAPPDATA%\theuth\companion\`.
     The same 15 JSON fixtures the Swift contract test uses (`crates/desktop/companion/Tests/TheuthKitTests/Fixtures/`)
@@ -86,13 +96,13 @@ primary source or spike has confirmed yet; §7's spikes S1–S4 close them.
 13. **D13 Cognitive-load read-back (inherits 130 D13).** The C1–C14 checklist (§6) is unchanged except C12
     (Narrator instead of VoiceOver; UIA names also drive the `windows-build-b` test harness) and C13 (Windows'
     "Animation effects" and "Transparency effects" switches instead of Reduce Motion / Reduce Transparency).
-14. **D14 Spikes and waves (Sky: "this design first, then waves").** Four spikes S1–S4 are running on build-B now
-    (§7, results TBD). Then W1 skeleton + RPC + Core port + tests on the Mac → W2 tray + panel + hotkey + rail →
+14. **D14 Spikes and waves (Sky: "this design first, then waves").** Spikes S0–S4 + A1 **ran on build-B 2026-10-07
+    (R1: results in §7, all "works" except the rail's activation caveat)**. Then W1 skeleton + RPC + Core port + tests on the Mac → W2 tray + panel + hotkey + rail →
     W3 notifications + policy + breakpoints + Settings + launch at login → W4 Ask bar + voice + receipts →
     W5 Tauri shell on Windows + bundling + NSIS. One `134-as-built-<W>.md` per wave.
 15. **D15 Rejected (one line each in §8).** C++/WinRT and Rust (Sky); a Tauri in-process WebView2 panel; packaged
-    MSIX / sparse package; framework-dependent runtime; Win-key hotkeys; `WS_EX_TRANSPARENT` click-through as the
-    primary rail mechanism; a second tray icon; WPF or WinForms; Avalonia/Uno; Windows widgets as live state;
+    MSIX / sparse package; framework-dependent runtime; Win-key hotkeys; `HTTRANSPARENT` click-through (same
+    thread only, R1); a second tray icon; H.NotifyIcon as a dependency (R1); WPF or WinForms; Avalonia/Uno; Windows widgets as live state;
     immediate banners for everything; a window that stays activated.
 
 ## 1. Why (short; 130 §1 is the argument)
@@ -107,8 +117,8 @@ project.
 ## 2. Facts relied on
 
 Every platform fact below was read on 2026-10-07 from the primary source named; theuth facts carry `path:line` at
-main `d5f76242`. Where a fact is a documented *claim* that no spike has exercised, it is marked UNVERIFIED and
-assigned to a spike.
+main `d5f76242`. Where a fact is a documented *claim* that no spike has exercised, it is marked UNVERIFIED; rows marked
+"(R1, verified)" cite `spikes/RESULTS.md` at `de515979`.
 
 ### 2.1 Windows App SDK, WinUI 3, .NET
 
@@ -117,12 +127,13 @@ assigned to a spike.
 | A1 | Windows App SDK **2.0** was released 2026-04-29; latest patch **2.5.1** (2026-09-16), support level *Current* until 2027-04-29. **1.8** (2025-09-09, patch 1.8.260921001) is *Maintenance*; 1.7 and earlier are out of support. 2.0 Preview 2 preceded it on 2026-03-31. | [Release channels — servicing table](https://learn.microsoft.com/en-us/windows/apps/windows-app-sdk/release-channels) |
 | A2 | Windows App SDK APIs "run on Windows 11 and earlier versions starting from Windows 10, version 1809"; the per-version support matrix lists 2.0 on Win11 26H2 → Win10 1809 and Server 2019/2022. | [Overview](https://learn.microsoft.com/en-us/windows/apps/windows-app-sdk/), [Supported releases](https://learn.microsoft.com/en-us/windows/apps/windows-app-sdk/support) |
 | A3 | An **unpackaged** app sets `<WindowsPackageType>None</WindowsPackageType>`; the generated auto-initializer calls the Bootstrapper so the runtime is found. **Self-contained** adds `<WindowsAppSDKSelfContained>true</WindowsAppSDKSelfContained>` and bundles the runtime into the output folder — "significantly larger", no prerequisite on the machine. Unpackaged apps have **no package identity**: no manifest-based features (StartupTask, background tasks, file associations), but "installer-written registry entries and shortcuts still work". `PublishSingleFile` works only for unpackaged self-contained apps (1.5+) and extracts to a temp dir at first launch; `dotnet publish` cannot single-file the native runtime otherwise. | [Distribute an unpackaged WinUI 3 app](https://learn.microsoft.com/en-us/windows/apps/package-and-deploy/unpackage-winui-app), [Use the runtime](https://learn.microsoft.com/en-us/windows/apps/windows-app-sdk/use-windows-app-sdk-run-time), [Self-contained deploy](https://learn.microsoft.com/en-us/windows/apps/package-and-deploy/self-contained-deploy/deploy-self-contained-apps) |
-| A4 | Self-contained output **size**: not stated on Learn. **UNVERIFIED** — S1 measures the publish folder (expect tens of MB for the WinAppSDK runtime + .NET runtime). Relevant because the installer carries it (§5.7). | — |
-| A5 | .NET 10 with Windows App SDK 2.x: build-B has .NET SDK 10.0.201 and VS 2026 18.4 with the WinUI workload and the `Microsoft.WindowsAppSDK.Cs.Dev17 2.0` templates; the Mac has a user-local .NET SDK 10.0.201 at `~/.dotnet` (not on PATH). The exact TFM (`net10.0-windows10.0.26100.0`) and the WinAppSDK NuGet's .NET 10 support are **UNVERIFIED** until S1 builds the template app on build-B. | knowledge `hosts/build-b-windows-11-winui-dev-box-2026-10-07`, `facts/sky-mac-dotnet-10-sdk-user-local-2026-10-07` |
-| A6 | `OverlappedPresenter.IsAlwaysOnTop` (topmost), `IsResizable`, `SetBorderAndTitleBar(hasBorder, hasTitleBar)`; `AppWindow.IsShownInSwitchers` ("`true` if this window will appear in … ALT+TAB and taskbar"); `AppWindow.Show(bool activateWindow)` shows without activating when `false`. | [OverlappedPresenter](https://learn.microsoft.com/en-us/windows/windows-app-sdk/api/winrt/microsoft.ui.windowing.overlappedpresenter), [IsShownInSwitchers](https://learn.microsoft.com/en-us/windows/windows-app-sdk/api/winrt/microsoft.ui.windowing.appwindow.isshowninswitchers), [Show(Boolean)](https://learn.microsoft.com/en-us/windows/windows-app-sdk/api/winrt/microsoft.ui.windowing.appwindow.show) |
+| A4 | Self-contained output **size** (R1, measured): 1.8 meta package Release publish 508 files / **214.8 MB** (of which `onnxruntime.dll` 20.7 MB + `DirectML.dll` 17.8 MB come from `Microsoft.WindowsAppSDK.ML`, which only the meta package pulls); 2.5.1 meta Debug 519 / 229.2 MB; 1.8 **WinUI-component-only** (`Microsoft.WindowsAppSDK.WinUI` → Base + Foundation + InteractiveExperiences + WebView2) 452 / **165.1 MB**. Largest remaining: `Microsoft.Windows.SDK.NET.dll` 24.9, `System.Private.CoreLib.dll` 15.3, `Microsoft.ui.xaml.dll` 14.6 MB. The installer carries it (§5.7). | RESULTS.md §Project facts, §A1 |
+| A5 | .NET 10 with Windows App SDK (R1, verified): a **hand-written csproj** (`net10.0-windows10.0.22621.0`, `TargetPlatformMinVersion 10.0.19041.0`, `UseWinUI`, `WindowsPackageType=None`, `WindowsAppSDKSelfContained=true`, `SelfContained=true`, `RuntimeIdentifier win-x64`, `Platforms x64`, `app.manifest` PerMonitorV2) builds in 12–20 s with **0 warnings on both 1.8.260317003 and 2.5.1** and on the 1.8 WinUI-only split, no source change; runtime `Microsoft.WinUI 3.0.0.0; .NET 10.0.5`; build-B has **no `dotnet new` WinUI templates** (VS 2026 18.4 + WinUI workload, .NET SDK 10.0.201); the Mac's `~/.dotnet` (10.0.201) is not on PATH. Trap: variant output dirs (`-p:BaseOutputPath=bin-x\`) need `<DefaultItemExcludes>…;bin-*/**;obj-*/**</DefaultItemExcludes>` or `obj\` leaks into the `Compile` glob; a running exe locks the output (MSB3021). | RESULTS.md §Project facts, §A1; knowledge `hosts/build-b-…`, `facts/sky-mac-dotnet-10-sdk-user-local-2026-10-07` |
+| A6 | `OverlappedPresenter.IsAlwaysOnTop` (topmost), `IsResizable`, `SetBorderAndTitleBar(hasBorder, hasTitleBar)`, `PreferredMinimumWidth/Height`; `AppWindow.IsShownInSwitchers` ("`true` if this window will appear in … ALT+TAB and taskbar"); `AppWindow.Show(bool activateWindow)` shows without activating when `false`; `AppWindow.MoveAndResize` takes **physical** pixels. (R1) A frameless top-level is clamped to `SM_CXMINTRACK` = **136 px** by the default `WM_GETMINMAXINFO` answer: a 26 px rail needs `PreferredMinimumWidth/Height` **plus** a `WM_GETMINMAXINFO` subclass handler installed before `SetPresenter`/`MoveAndResize` (`got … 26x400px`). WinUI draws rounded corners on a frameless window by itself. | [OverlappedPresenter](https://learn.microsoft.com/en-us/windows/windows-app-sdk/api/winrt/microsoft.ui.windowing.overlappedpresenter), [IsShownInSwitchers](https://learn.microsoft.com/en-us/windows/windows-app-sdk/api/winrt/microsoft.ui.windowing.appwindow.isshowninswitchers), [Show(Boolean)](https://learn.microsoft.com/en-us/windows/windows-app-sdk/api/winrt/microsoft.ui.windowing.appwindow.show) |
 | A7 | Backdrops: `MicaController` / `DesktopAcrylicController` (`IsSupported()` gates; `Kind` Base/BaseAlt, Base/Thin), attached with `AddSystemBackdropTarget` + `SetSystemBackdropConfiguration`. The controller's fallback is driven by `SystemBackdropConfiguration.IsInputActive` — "whether the system backdrop should consider the current window as having input focus" — which **the app sets** (the sample wires it to `Window.Activated`). So a never-activated rail keeps its material by setting `IsInputActive = true` itself; `FallbackColor` covers unsupported systems and "Transparency effects" off. | [Apply Mica or Acrylic](https://learn.microsoft.com/en-us/windows/apps/windows-app-sdk/system-backdrop-controller), [IsInputActive](https://learn.microsoft.com/en-us/windows/windows-app-sdk/api/winrt/microsoft.ui.composition.systembackdrops.systembackdropconfiguration.isinputactive) |
 | A8 | DPI: WinUI 3 lays out in effective pixels; `XamlRoot.RasterizationScale` is "the number of raw (physical) pixels for each view pixel". `DisplayArea` gives `WorkArea`, `OuterBounds`, `IsPrimary`, `Primary`, `GetFromPoint(point, fallback)` in screen coordinates — the rail and panel are placed with these (physical px, divided by the scale for layout). | [RasterizationScale](https://learn.microsoft.com/en-us/windows/windows-app-sdk/api/winrt/microsoft.ui.xaml.xamlroot.rasterizationscale), [DisplayArea](https://learn.microsoft.com/en-us/windows/windows-app-sdk/api/winrt/microsoft.ui.windowing.displayarea) |
 | A9 | Single instance: `AppInstance.FindOrRegisterForKey(key)` returns the instance that already holds the key; `IsCurrent` false → `RedirectActivationToAsync(args)` and exit. Unpackaged apps are "multi-instanced by default". | [App instancing](https://learn.microsoft.com/en-us/windows/apps/windows-app-sdk/applifecycle/applifecycle-instancing) |
+| A11 | (R1) Test-harness facts: an **elevated** foreground window (auto-elevated Task Manager) silently discards injected input from a Medium-integrity process (UIPI) — `SendInput` "succeeds" but nothing moves, `SetForegroundWindow` from the tool fails, `Window.Activate()` of a freshly launched Medium app does not take the foreground; UIA *reads* keep working. `windows-build-b`'s `window_management list` ignores its `processName` filter (filter client-side; a blanket close once killed the gateway's own console); hidden/`NOACTIVATE` tool windows are not reliably closable with `window_management close` — kill by process. | RESULTS.md §Project facts |
 | A10 | Accessibility: `AutomationProperties.Name` is the accessible name UIA exposes (Narrator reads it; "button button" repetition is the anti-pattern to validate against). `AutomationProperties.AutomationId` is the stable test id. The UIA tree has raw/control/content views; `windows-build-b`'s `ui_find`/`ui_snapshot` read it. | [Basic accessibility information](https://learn.microsoft.com/en-us/windows/apps/design/accessibility/basic-accessibility-information); knowledge `facts/windows-mcp-remote-via-supergateway-build-b-2026-10-07` |
 
 ### 2.2 Win32 window behaviour
@@ -134,23 +145,24 @@ assigned to a spike.
 | B3 | theuth already applies `WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_TOPMOST` to the island HWND and shows with `SW_SHOWNOACTIVATE`, re-asserting `HWND_TOPMOST` because "a `SetWindowLongPtr` style change alone does not" — the same recipe for the rail. | `DESK/island/windows.rs:1-19`, `:34-36` |
 | B4 | Capture exclusion: `SetWindowDisplayAffinity(hwnd, WDA_EXCLUDEFROMCAPTURE)` (0x11) — "displayed only on a monitor. Everywhere else, the window does not appear at all"; Windows 10 2004+; top-level windows only; works only while DWM composes; explicitly "no guarantee" (not DRM). theuth calls it through Tauri's `set_content_protected` for the point overlays (`DESK/point/mod.rs:612`). The analogue of 130's `sharingType = .none`; keep a `--shareable` flag for screenshot-based checks (130 R1-6). | [SetWindowDisplayAffinity](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-setwindowdisplayaffinity) |
 | B5 | Foreground rules: a process may `SetForegroundWindow` only if it is a desktop app, no menu is active and `LockSetForegroundWindow` was not called, **and** one of: foreground lock timeout expired · it is the foreground process · it was started by the foreground process · no foreground window · **it received the last input event** · a debugger is attached. Otherwise the taskbar button flashes. | [SetForegroundWindow](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-setforegroundwindow) |
-| B6 | Hotkey grant: "windows with registered hotkeys *do* get the foreground love … If you call `SetForegroundWindow` from inside your hotkey handler, the foreground window will change according to your instructions." Combined with B5's "calling process is the foreground process", the panel can also give focus **back** to the previous window on Esc. | [Raymond Chen, 2009-02-26](https://devblogs.microsoft.com/oldnewthing/20090226-00/?p=19013) |
-| B7 | `RegisterHotKey(hWnd, id, fsModifiers, vk)`: `MOD_NOREPEAT` (0x4000) suppresses auto-repeat; `MOD_WIN` chords "are reserved for use by the operating system"; a hot key with the same `hWnd`/`id` is replaced; returns 0 on failure (a chord already held by another app — the collision detection macOS lacks). `WM_HOTKEY` is posted "at the top of the message queue" of the registering thread. | [RegisterHotKey](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-registerhotkey), [WM_HOTKEY](https://learn.microsoft.com/en-us/windows/win32/inputdev/wm-hotkey) |
-| B8 | Breakpoint signals: `SetWinEventHook(EVENT_SYSTEM_FOREGROUND … WINEVENT_OUTOFCONTEXT)` with `idProcess = 0` receives foreground changes from all processes without a DLL; `GetLastInputInfo` returns the tick of the last input in *this session* (not guaranteed monotonic; `SendInput` supplies its own tick — the same "theuth drives the mouse" caveat as the Mac's HIDIdleTime). Neither needs a permission. **UNVERIFIED** that the hook fires for the companion's own non-activating windows (S4 measures). | [SetWinEventHook](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-setwineventhook), [GetLastInputInfo](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-getlastinputinfo) |
-| B9 | Transparent WinUI 3 windows (per-pixel alpha over the desktop) are **UNVERIFIED**; the design does not need them — the rail and panel are opaque-with-backdrop surfaces with rounded corners (`DwmSetWindowAttribute(DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_ROUND)`, Windows 11). S1 records what a borderless WinUI window looks like at 26 px. | — |
+| B6 | Hotkey grant: "windows with registered hotkeys *do* get the foreground love … If you call `SetForegroundWindow` from inside your hotkey handler, the foreground window will change according to your instructions." Combined with B5's "calling process is the foreground process", the panel can also give focus **back** to the previous window on Esc. (R1, verified) From the `WM_HOTKEY` handler `AppWindow.Show(true)` + `SetForegroundWindow(panel) -> True` with another process in front, the panel `TextBox` got keyboard focus and typed text; Esc → `Hide()` + `SetForegroundWindow(prev) -> True`. No `AttachThreadInput`/ALT-tap fallback needed. Not tested with an **elevated** foreground window (UIPI would block the injected test input anyway, A11). | [Raymond Chen, 2009-02-26](https://devblogs.microsoft.com/oldnewthing/20090226-00/?p=19013) |
+| B7 | `RegisterHotKey(hWnd, id, fsModifiers, vk)`: `MOD_NOREPEAT` (0x4000) suppresses auto-repeat; `MOD_WIN` chords "are reserved for use by the operating system"; a hot key with the same `hWnd`/`id` is replaced; returns 0 on failure (a chord already held by another app — the collision detection macOS lacks). `WM_HOTKEY` is posted "at the top of the message queue" of the registering thread. (R1, verified) `RegisterHotKey(hwnd, id, MOD_CONTROL\|MOD_SHIFT\|MOD_NOREPEAT, VK_SPACE) -> True err=0` from a WinUI app; `WM_HOTKEY` arrived with another process foreground. | [RegisterHotKey](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-registerhotkey), [WM_HOTKEY](https://learn.microsoft.com/en-us/windows/win32/inputdev/wm-hotkey) |
+| B8 | Breakpoint signals (R1, verified): `SetWinEventHook(EVENT_SYSTEM_FOREGROUND … WINEVENT_OUTOFCONTEXT)` with `idProcess = 0` fires once per cross-process foreground change **on the hooking UI thread** (no DLL, no permission, works in RDP); `GetLastInputInfo` climbs 1 s/s, is reset by real **and injected** input (`SendInput`, so `windows-build-b` clicks count — the Mac's HIDIdleTime caveat) and is **not** reset by `SetForegroundWindow` activations. The hook also fires when the WinUI rail itself activates (S1) — another reason for a plain-HWND rail (D4). | [SetWinEventHook](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-setwineventhook), [GetLastInputInfo](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-getlastinputinfo) |
+| B9 | (R1) **The WinUI island does not honour `WS_EX_NOACTIVATE`**: every pointer press on a XAML window activates it (`WM_NCACTIVATE`/`WM_ACTIVATE wParam=1`, `WM_SETFOCUS` on `InputSiteWindowClass`), `WM_MOUSEACTIVATE` and `WM_LBUTTONDOWN`/`WM_POINTER*` never reach any of the four window procedures (the WinAppSDK input stack takes pointer input before `DispatchMessage`), `IsHitTestVisible=false` does not help. Mitigation verified: on `WM_ACTIVATE` (active) call `DefSubclassProc` then `SetForegroundWindow(previousForeground)` — the other process keeps the foreground as seen from outside but receives a deactivate/activate pair (focus flicker). A **plain Win32 HWND** (`WS_EX_NOACTIVATE\|TOOLWINDOW\|TOPMOST\|LAYERED`, drawn with Direct2D/GDI or a `Microsoft.UI.Composition` `DesktopWindowTarget`) is the robust non-activating rail — the Tauri island's shape. A layered WinUI window (`WS_EX_LAYERED`, `LWA_ALPHA 255`) renders normally. | RESULTS.md §S1 |
 
 ### 2.3 Notifications, tray, startup, audio
 
 | # | Fact | Source |
 |---|---|---|
-| C1 | `AppNotificationManager.Default.Register()` — "For unpackaged apps, `Register()` automatically sets up the COM server registration that allows Windows to launch your app when a notification is clicked. You don't need to configure COM activation or an AUMID manually." The `NotificationInvoked` handler must be attached **before** `Register()`, and `Register()` before `AppInstance.GetCurrent().GetActivatedEventArgs()`; `Unregister()` on exit. A click on a notification while the app is not running launches it with `ExtendedActivationKind.AppNotification`. The spec adds: the current `.exe` is the COM server; WinAppSDK derives DisplayName and icon for unpackaged apps. | [App notifications with a .NET app](https://learn.microsoft.com/en-us/windows/apps/develop/notifications/app-notifications/app-notifications-dotnet), [Quickstart](https://learn.microsoft.com/en-us/windows/apps/develop/notifications/app-notifications/app-notifications-quickstart), [spec](https://github.com/microsoft/WindowsAppSDK/blob/main/specs/AppNotifications/AppNotifications-spec.md) |
+| C1 | `AppNotificationManager.Default.Register()` — "For unpackaged apps, `Register()` automatically sets up the COM server registration that allows Windows to launch your app when a notification is clicked. You don't need to configure COM activation or an AUMID manually." The `NotificationInvoked` handler must be attached **before** `Register()`, and `Register()` before `AppInstance.GetCurrent().GetActivatedEventArgs()`; `Unregister()` on exit. The spec adds: the current `.exe` is the COM server; WinAppSDK derives DisplayName and icon for unpackaged apps. (R1, verified) `Register()` writes the AUMID/CLSID under `HKCU\Software\Classes` pointing at this exe with `----AppNotificationActivated:`; display name = exe name (`Register(displayName, iconUri)` exists for a custom one); `GetActivatedEventArgs().Kind` read **`Launch`**, not `AppNotification` — the relaunch-by-click path arrives as a plain launch whose arguments come through `NotificationInvoked` after `Register()`; **`NotificationInvoked` runs on a background thread** (`thread=3`) — marshal to the `DispatcherQueue`. `GetCurrentProcessExplicitAppUserModelID` stays unset even after `Register()`. | [App notifications with a .NET app](https://learn.microsoft.com/en-us/windows/apps/develop/notifications/app-notifications/app-notifications-dotnet), [Quickstart](https://learn.microsoft.com/en-us/windows/apps/develop/notifications/app-notifications/app-notifications-quickstart), [spec](https://github.com/microsoft/WindowsAppSDK/blob/main/specs/AppNotifications/AppNotifications-spec.md) |
 | C2 | "App notifications are not supported when your app is running with administrator privileges (elevated). `Show` will fail silently." | Quickstart, Overview (Limitations) |
+| C2b | (R1) **Self-contained toasts depend on five files that live only inside the runtime MSIX** (`microsoft.windowsappsdk.runtime/<ver>/tools/MSIX/win10-x64/Microsoft.WindowsAppRuntime.{1.8,2}.msix`, present in both lines): `Microsoft.WindowsAppRuntime.Insights.Resource.dll` (~343 KB), `WindowsAppRuntime.DeploymentExtensions.OneCore.dll`, `WindowsAppSdk.AppxDeploymentExtensions.Desktop.dll`, its `-EventLog-Instrumentation.dll`, `WindowsAppRuntime.png`. The self-contained payload step copies them out **only for the full 1.8 meta package**; on 2.5.1 and on the 1.8 WinUI-only split `Register()` throws `0x8007007E` ("Unable to load resource dll") while `Setting` still reads `Enabled` and nothing is shown. Copying the five files into the split output made `Register()`/`Show` work. Separately, microsoft/WindowsAppSDK#6821 (2026-09-29, same OS build 26200.9457, WASDK 2.4/2.5.1 official unpackaged sample): Register/Show succeed, nothing displayed — not reproduced on 1.8. | RESULTS.md §S2, §A1 |
 | C3 | Content: `AppNotificationBuilder.AddText/AddButton(AppNotificationButton.AddArgument)/AddTextBox/SetAudioUri/MuteAudio/SetGroup/SetTag/SetScenario`; **up to 5 buttons** including context-menu items; buttons appear in the expanded part; arguments come back as `action=…&id=…` strings. | [App notification content](https://learn.microsoft.com/en-us/windows/apps/develop/notifications/app-notifications/app-notifications-content) |
-| C4 | `AppNotificationScenario` = Default · Reminder · Alarm · IncomingCall · Urgent; Urgent "only supported on Windows 10 Build 19041 and later" (`IsUrgentScenarioSupported`). | [AppNotificationScenario](https://learn.microsoft.com/en-us/windows/windows-app-sdk/api/winrt/microsoft.windows.appnotifications.builder.appnotificationscenario?view=windows-app-sdk-2.0) |
-| C5 | Do not disturb: "you will only receive banners for alarms, reminders, and apps of your choice. Other notifications are sent directly to the notification center"; priority settings let the user allow calls/reminders and named apps; per-app priority Top/High/Normal orders the centre. So a `Reminder`-scenario error banner is the closest analogue to macOS time-sensitive, **UNVERIFIED** for third-party apps (S2). | [Notifications and do not disturb](https://support.microsoft.com/en-gb/windows/experience/notifications-and-do-not-disturb-in-windows) |
-| C6 | Tray: `Shell_NotifyIcon` is Win32 (P/Invoke, no dependency). `H.NotifyIcon.WinUI` (HavenDV, **MIT**, 768★, NuGet) wraps it for WinUI with context menus, Efficiency Mode and trimming/NativeAOT support. | [H.NotifyIcon](https://github.com/HavenDV/H.NotifyIcon) |
+| C4 | `AppNotificationScenario` = Default · Reminder · Alarm · IncomingCall · Urgent; Urgent "only supported on Windows 10 Build 19041 and later" (`IsUrgentScenarioSupported`). (R1, verified) `IsUrgentScenarioSupported()=True` on 26200; an urgent toast renders with a red "!" **and Windows posts a one-time consent toast** *"Important Notification Request — Allow important notifications from <app>? You will get important notifications … when do not disturb is on"* (Allow / Not Now); a new AUMID re-prompts. Banners stay ~6 s; toasts live in `ShellExperienceHost` (not a top-level window to `windows-build-b` — click by coordinates). | [AppNotificationScenario](https://learn.microsoft.com/en-us/windows/windows-app-sdk/api/winrt/microsoft.windows.appnotifications.builder.appnotificationscenario?view=windows-app-sdk-2.0) |
+| C5 | Do not disturb: "you will only receive banners for alarms, reminders, and apps of your choice. Other notifications are sent directly to the notification center"; priority settings let the user allow calls/reminders and named apps; per-app priority Top/High/Normal orders the centre. (R1) The **Urgent** scenario is the sanctioned breakthrough: Windows asks the user once (C4) and then lets urgent toasts through DND — the closest analogue to macOS time-sensitive, with the consent the Mac's entitlement lacks. Whether a third-party `Reminder` scenario also passes DND remains **UNVERIFIED** (not needed if Urgent is used). | [Notifications and do not disturb](https://support.microsoft.com/en-gb/windows/experience/notifications-and-do-not-disturb-in-windows) |
+| C6 | Tray: `Shell_NotifyIcon` is Win32 (P/Invoke, no dependency). (R1, verified) `Shell_NotifyIconW` with a 976-byte `NOTIFYICONDATAW`, `NIF_MESSAGE\|ICON\|TIP\|SHOWTIP`, `NIM_ADD` → True, `NIM_SETVERSION 4` → True, callback `WM_APP+1` on a subclassed HWND, cleanup `NIM_DELETE` on `Window.Closed`; the icon landed in the taskbar **overflow** by default, so the left-click path is **UNVERIFIED** (driving the shell's overflow UI was out of bounds). `H.NotifyIcon.WinUI` (HavenDV, **MIT**, 768★) remains available if a richer menu/icon pipeline is wanted. | [H.NotifyIcon](https://github.com/HavenDV/H.NotifyIcon) |
 | C7 | Launch at login: `desktop:StartupTask` lives in the appx manifest → needs package identity (A3 rules it out). The classic path is `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` (per-user, runs at every logon of that user; the user can disable it in Settings › Apps › Startup). | [StartupTask element](https://learn.microsoft.com/en-us/uwp/schemas/appxpackage/uapmanifestschema/element-desktop-startuptask), [Run and RunOnce keys](https://learn.microsoft.com/en-us/windows/win32/setupapi/run-and-runonce-registry-keys) |
-| C8 | Audio: NAudio (**MIT**, 6.2k★) v3 split into packages; `NAudio.Wasapi` = "WASAPI playback, capture and loopback; Media Foundation codecs" (Windows), minimum TFM **net9.0**, Native-AOT compatible core. No permission dialog for an unpackaged desktop app; Windows' Settings › Privacy › Microphone "Let desktop apps access your microphone" governs it (**UNVERIFIED** on build-B: WASAPI was silent over SSH there, so the test must run in the RDP session). | [NAudio](https://github.com/naudio/NAudio); knowledge `facts/theuth-windows-host-issues-inventory-2026-09-23` |
+| C8 | Audio: NAudio (**MIT**, 6.2k★) v3 split into packages; `NAudio.Wasapi` = "WASAPI playback, capture and loopback; Media Foundation codecs" (Windows), minimum TFM **net9.0**, Native-AOT compatible core. No permission dialog for an unpackaged desktop app; Windows' Settings › Privacy › Microphone "Let desktop apps access your microphone" governs it (**UNVERIFIED** on build-B — not a spike; WASAPI was silent over SSH there, so W4's test must run in the RDP session). | [NAudio](https://github.com/naudio/NAudio); knowledge `facts/theuth-windows-host-issues-inventory-2026-09-23` |
 | C9 | Deep links: on Windows the NSIS template writes `SHCTX\Software\Classes\<protocol>` (`URL Protocol`, `DefaultIcon`, `shell\open\command "<app>.exe" "%1"`) for every `deep_link_protocols` entry and deletes them on uninstall; `SHCTX` is HKCU for a `currentUser` install. Tauri: "On Linux and Windows deep links are delivered as a command line argument to a new app process. The deep link plugin has integration with the single instance plugin" (feature `deep-link`, registered first). | [installer.nsi:671-677, 806-812](https://github.com/tauri-apps/tauri/blob/dev/crates/tauri-bundler/src/bundle/windows/nsis/installer.nsi), [Tauri deep linking](https://v2.tauri.app/plugin/deep-linking/) |
 | C10 | The UI-automation harness: sbroenne/mcp-windows 1.3.27 (**MIT**) — "Uses the Windows UI Automation API to find UI elements reliably, regardless of DPI, theme, resolution"; served to the Mac as `windows-build-b` (18 tools: `ui_find/ui_click/ui_type/ui_read/ui_snapshot/ui_wait/ui_batch`, `app`, `window_management`, `keyboard_control`, `mouse_control`, `screenshot_control`, …). Must run in the interactive RDP session; Windows Terminal's buffer is not readable through UIA (read build output from the ssh PTY). | [mcp-windows](https://github.com/sbroenne/mcp-windows); knowledge `facts/windows-mcp-remote-via-supergateway-build-b-2026-10-07` |
 
@@ -183,6 +195,7 @@ declared once as `ResourceDictionary` theme brushes; gold stays reserved for the
 marks (C7).
 
 ### 4.1 The rail (D4)
+As specified for the WinUI shape (b); shape (a) keeps every size, style and behaviour and swaps the renderer (§9 Q2).
 A `Window` whose `AppWindow` has an `OverlappedPresenter` with `SetBorderAndTitleBar(false, false)`,
 `IsResizable = false`, `IsAlwaysOnTop = true`; `IsShownInSwitchers = false`; HWND ex-style `WS_EX_TOOLWINDOW |
 WS_EX_NOACTIVATE | WS_EX_TOPMOST` (B1, B3); shown with `Show(false)`; `WDA_EXCLUDEFROMCAPTURE` unless
@@ -192,14 +205,23 @@ overlaps the taskbar because `WorkArea` excludes it. Rounded 10 epx inner corner
 (B9). Backdrop: `DesktopAcrylicController` Thin with `IsInputActive = true` held constant (A7), `FallbackColor`
 = the panel surface when unsupported or transparency effects are off. Zones, states, glyphs, ≤ 12 marks + `+N`,
 the 380 ms working beat (static when `UISettings.AnimationsEnabled` is false), hover tooltips and peek cards —
-all as 130 §4.1 / W1. Clicks: the rail is `NOACTIVATE`, so a click on a mark never takes foreground from the
-user's app; it opens the panel (which then activates — 4.2). Because the window is sized to its marks, nothing
-outside the marks exists to click through (B2); the quiet state is a 4 epx × 120 epx sliver window, hover
-expands. "Rail presence" (R2-3): Expanded · Sliver when quiet · Always a sliver — the tray `●N` is the indicator.
+all as 130 §4.1 / W1. Clicks: a click on a mark must never take foreground from the user's app; it opens the
+panel (which then activates — 4.2). **R1 — the substrate question (§9 Q2).** S1 proved that a WinUI/XAML window
+*cannot* be that rail: the island activates the window on every press whatever `WS_EX_NOACTIVATE` says (B9).
+Two verified shapes: **(a)** the rail is a plain Win32 HWND (`WS_EX_NOACTIVATE|TOOLWINDOW|TOPMOST|LAYERED`)
+drawn through `Microsoft.UI.Composition` (`DesktopWindowTarget`, sprite visuals for ≤ 12 marks + glyphs; or
+Direct2D) — truly non-activating, the Tauri island's shape, XAML kept for the panels; **(b)** a WinUI rail with
+the `restore` mitigation (on `WM_ACTIVATE` → `SetForegroundWindow(previousForeground)`), which leaves the user's
+app with a deactivate/activate pair on every rail click. Pass-through for the sliver's hover-expand and for any
+slack around the marks: `WS_EX_LAYERED|WS_EX_TRANSPARENT` toggled by a 40 ms cursor poll against the mark
+rects (verified), or `SetWindowRgn` to the mark rects (verified, no poll, shape = marks only). Either way the
+`WM_GETMINMAXINFO` subclass goes in before `SetPresenter`/`MoveAndResize` (A6). The quiet state is a 4 epx ×
+120 epx sliver, hover expands. "Rail presence" (R2-3): Expanded · Sliver when quiet · Always a sliver — the
+tray `●N` is the indicator.
 
 Windows difference from macOS: the rail may collide with the taskbar when the taskbar is on the right (rare;
-`WorkArea` handles it) and with Windows 11 widgets/snap flyouts at the screen edge; S1 records what happens when
-Snap Assist's edge zone and the rail overlap, and Settings can move the rail to the left edge.
+`WorkArea` handles it) and with Windows 11 widgets/snap flyouts at the screen edge (not exercised by S1; W2
+records it), and Settings can move the rail to the left edge.
 
 ### 4.2 The Attention panel (D5)
 A second borderless, topmost, `IsShownInSwitchers = false` window, 372 epx × ≤ 560 epx, Mica (Base) backdrop with
@@ -209,8 +231,9 @@ B6; from the tray or a rail click the companion *received the last input event* 
 hides and calls `SetForegroundWindow(prev)`; if the previous window is gone, nothing. Keyboard input needs
 activation on Windows — a `WS_EX_NOACTIVATE` window cannot hold a focused `TextBox` — so unlike the Mac, the panel
 does *not* carry `NOACTIVATE`; it carries `TOOLWINDOW | TOPMOST` only. Anchors: above the tray icon (the
-`Shell_NotifyIcon` rect from `Shell_NotifyIconGetRect`, clamped to the work area), beside the rail mark, or
-top-centre of `DisplayArea.GetFromPoint(cursor)` ≈ 20 % down. Content order, card anatomy, per-kind options, RPC
+`Shell_NotifyIcon` rect from `Shell_NotifyIconGetRect`, clamped to the work area — when the icon is in the
+overflow the rect is the chevron's, R1), beside the rail mark, or top-centre of `DisplayArea.GetFromPoint(cursor)`
+≈ 20 % down. **R1:** the hotkey → activate → type → Esc → restore cycle is verified end to end (S3). Content order, card anatomy, per-kind options, RPC
 on commit, deep content through `theuth://` — 130 §4.2 tables unchanged (R1-5: Approval = `1 Allow · 2 Deny · R
 deny with a note`). Every option is a `Button` with `AutomationProperties.Name = "<label>, key <n>"` and
 `AutomationId = "option-<n>"` (A10) — the same names the `windows-build-b` harness clicks in the wave gates.
@@ -238,12 +261,17 @@ Tauri process. Windows difference: no system microphone prompt; the first failur
 Blocking kinds → `Show` now, `MuteAudio()`; deferrable → held by `NotificationPolicy` (ported verbatim, 26 tests)
 until a breakpoint — `EVENT_SYSTEM_FOREGROUND` to another process, `GetLastInputInfo` idle ≥ 20 s, or the 2-minute
 cap (B8) — then one `batch` toast "theuth at your break · N for later · M finished"; errors → `Show` with the
-default sound and `SetScenario(Reminder)` **only if** S2 shows a third-party Reminder breaks DND (C5), else
-Default. Flood (> 10) → one summary toast. Button taps answer **immediately** (no hold) and a `.passive`
-receipt toast follows; the body tap opens the panel on the item (activation args). Elevated = no toasts (C2):
+default sound and **`SetScenario(Urgent)`** (R1: verified — red "!", and Windows' one-time "Important Notification
+Request" consent, which the first-run screen explains before the first error toast can trigger it; §9 Q5). Flood (> 10) → one summary toast. Button taps answer **immediately** (no hold) and a `.passive`
+receipt toast follows; the body tap opens the panel on the item (activation args). **R1:** `NotificationInvoked`
+runs on a background thread → `DispatcherQueue.TryEnqueue` before touching the Store; when the companion is not
+running a click relaunches it with `Kind = Launch` and the arguments arrive through `NotificationInvoked` once
+`Register()` has run — so `Register()` happens before any window is created. Elevated = no toasts (C2):
 the shell never launches the companion elevated, and the companion logs a warning if `IsElevated`.
 Windows difference: toasts live in the notification centre until dismissed, so `RemoveByTag` on answered-elsewhere
-matters more than on macOS; ≤ 5 buttons (we use ≤ 4: three options + Reply/Open).
+matters more than on macOS; ≤ 5 buttons (we use ≤ 4: three options + Reply/Open). Deployment (R1, C2b): the
+build extracts the five deployment/insights files from the runtime MSIX into the publish folder, and W3's gate
+asserts `Register()` succeeds on the *packaged* layout, not only on the dev build.
 
 ### 4.5 Tray (D9)
 `Shell_NotifyIcon` with `NOTIFYICON_VERSION_4`, icon = `crates/desktop/icons/tray-windows.png` rendered to an
@@ -293,7 +321,8 @@ flowchart LR
 ```
 crates/desktop/companion-windows/
   Theuth.Companion.slnx
-  Directory.Build.props                — LangVersion, Nullable, TreatWarningsAsErrors, version from workspace Cargo.toml
+  Directory.Build.props                — LangVersion, Nullable, TreatWarningsAsErrors, version from workspace Cargo.toml,
+                                          WasdkLine (1.8 | 2) + WasdkSplit switches (R1), DefaultItemExcludes for bin-*/obj-*
   src/Theuth.Companion.Rpc/            — net10.0: Discovery, RpcClient (ClientWebSocket, JSON-RPC 2.0), Models, Json
   src/Theuth.Companion.Core/           — net10.0: RailModel, PanelModel, UndoQueue, KeyGrammar, KeyBindings, CardModel,
                                           Policy, Breakpoint, PolicySettings, AskRouter, ReceiptModel, AskVoice/AskDictation
@@ -303,7 +332,8 @@ crates/desktop/companion-windows/
                                           Interop/ (CsWin32-generated P/Invoke), Assets/
   tests/Theuth.Companion.Rpc.Tests/    — xUnit: FixtureTests over ../../../companion/Tests/TheuthKitTests/Fixtures/*.json
   tests/Theuth.Companion.Core.Tests/   — xUnit: the CompanionCore suites ported one-for-one
-  build.ps1                            — dotnet publish → target/release/companion-windows/ (used by package-windows.ps1)
+  build.ps1                            — dotnet publish → target/release/companion-windows/ + extraction of the five
+                                          runtime-MSIX files (R1, §2 C2b) + a Register() smoke; used by package-windows.ps1
   test.sh                              — ~/.dotnet/dotnet test on the two net10.0 test projects (Mac)
 ```
 Namespaces follow the folders (`Theuth.Companion.Core.Policy` …). Win32 calls come from the `Microsoft.Windows.CsWin32`
@@ -381,9 +411,17 @@ All in `DESK/`, Windows-gated, additive, mirroring `macos.rs`:
   `dotnet build` of the filter never touches Windows-only TFMs.
 - **build-B** (ssh PTY, orchestrator-driven, PSReadLine removed): `git pull` of the pushed branch, `build.ps1` =
   `dotnet publish src/Theuth.Companion -c Release -r win-x64 --self-contained -p:Platform=x64 -o
-  target/release/companion-windows/`; artefact size logged (A4). UI checks run from the Mac through
+  target/release/companion-windows/` (12–20 s; kill a running exe first — it locks the output, MSB3021), then the
+  five-file extraction from `microsoft.windowsappsdk.runtime/<ver>/tools/MSIX/win10-x64/*.msix` (a zip; R1) and a
+  `--probe-notify` `Register()` smoke; artefact size logged (A4). UI checks run from the Mac through
   `windows-build-b` (`app` to launch the published exe with `--probe`, `ui_find` by `AutomationId`, `ui_click`,
-  `screenshot_control` with `--shareable`).
+  `screenshot_control` with `--shareable`). **Harness rules (R1, A11):** keep an *un-elevated* window in front —
+  an elevated foreground window (Task Manager) makes every injected click/keystroke a silent no-op (UIPI) while
+  UIA reads still succeed, so a "nothing happened" result is first a UIPI check; `window_management list` ignores
+  `processName` — filter client-side and close only handles whose process is the app under test (a blanket close
+  once killed the MCP gateway's console); hidden/`NOACTIVATE` tool windows are closed by killing the process;
+  toasts live in `ShellExperienceHost` and are clicked by coordinates, not UIA; build-B has no `dotnet new`
+  WinUI templates — the csproj is hand-written (S0's is the seed).
 - **Packaging** (W5): `scripts/package-windows.ps1` gains step "[3b/6] companion" (runs `build.ps1` when
   `crates/desktop/companion-windows/Theuth.Companion.slnx` exists, else a skip line, like the Mac's step 1) and
   adds `resources["../../target/release/companion-windows/"] = "companion/"` to the rendered bundle config
@@ -413,16 +451,19 @@ Metrics (130 §6.2) are collected by the same local log fields; nothing Windows-
 
 ## 7. Spikes and waves (D14)
 
-Spikes run on build-B now (another worker), read-only on the repo, as throwaway WinUI projects under
-`C:\Users\user\spikes\134\`; each writes a short note to `docs/design/134/spike-S<n>.md` in a later commit. **Result
-lines are TBD until the worker reports.**
+Spikes ran on build-B 2026-10-07 20:41–21:07 (Windows 11 Pro 25H2 26200.9457, Sky's RDP session, 2016×1300 at
+96 dpi) as the `SpikeHost` app on branch `spike/134-windows` (`de515979`, `crates/desktop/companion-windows/spikes/`,
+report `spikes/RESULTS.md`), driven through `windows-build-b`. **Result** lines below are R1's fold-in; "Original
+question" keeps what was asked.
 
 | Id | Question | Done when | Result |
 |---|---|---|---|
-| S1 | Rail window styles: a borderless WinUI 3 window with `TOOLWINDOW\|NOACTIVATE\|TOPMOST`, `IsShownInSwitchers=false`, `Show(false)`, sized 26 × 300 epx, Acrylic Thin with `IsInputActive=true`, DWM round corners, `WDA_EXCLUDEFROMCAPTURE`; does a click on it keep Notepad foreground; is it absent from Alt-Tab/taskbar; is it absent from `screenshot_control`; does Snap Assist's edge zone fight it; **publish folder size** (A4); the exact TFM/NuGet versions that build with .NET 10 (A5) | Numbers and a screenshot in the note; the csproj that built | **TBD** |
-| S2 | Unpackaged self-contained `AppNotificationManager`: `Register()` without a manifest; a toast with 3 buttons + a text box; activation while running and while not running (COM relaunch); `SetGroup/SetTag/RemoveByTag`; `Scenario.Reminder` under Do-not-disturb with "reminders" allowed (C5); what the attribution line shows for an unpackaged exe | Each behaviour recorded yes/no with the toast XML | **TBD** |
-| S3 | `RegisterHotKey(Ctrl+Shift+Space)` from a WinUI app: `WM_HOTKEY` received (via `WindowMessageMonitor`/subclass), `SetForegroundWindow(panel)` succeeds from the handler (B6), `SetForegroundWindow(prev)` succeeds on Esc, failure when another app holds the chord; `Shell_NotifyIcon` left/right click and `Shell_NotifyIconGetRect`; hold detection (release) by `GetAsyncKeyState` vs `WH_KEYBOARD_LL` | Foreground before/after logged for 10 cycles; the chosen release mechanism | **TBD** |
-| S4 | Breakpoint signals: `SetWinEventHook(EVENT_SYSTEM_FOREGROUND)` fires for other processes and not for the companion's own non-activating rail; `GetLastInputInfo` idle climbs 1.00 s/s and resets on real input but not on `windows-build-b`'s `ui_click` (`SendInput`?) | A 60 s trace with app switches and typing | **TBD** |
+| S0 | Smoke: hand-written csproj (no `dotnet new` WinUI templates on build-B), unpackaged self-contained WinUI 3 on .NET 10, driven by `windows-build-b` | A button clicked over UIA | **Result (R1): works** on WASDK 1.8.260317003, 2.5.1 and the 1.8 WinUI-only split; `Microsoft.WinUI 3.0.0.0; .NET 10.0.5`; builds 12–20 s; `AppWindow.MoveAndResize` is physical px; `WorkArea` 2016×1252 (RESULTS.md §S0, §Project facts) |
+| A1 | Package line and size: 1.8 vs 2.5.1 vs 1.8 component-only | Sizes and a toast on each | **Result (R1):** both lines compile unchanged (`-p:WasdkLine=2`, `-p:WasdkSplit=true`, 0 warnings); 1.8 full Release publish **508 files / 214.8 MB** (incl. `onnxruntime.dll` 20.7 + `DirectML.dll` 17.8 MB from the ML component the meta package drags in); 2.5.1 Debug 519 / 229.2 MB; 1.8 WinUI-only split 452 / **165.1 MB**; toasts work only where the five runtime-MSIX files are present (RESULTS.md §A1) |
+| S1 | **Result (R1): works with caveats** — styles stick (`exstyle after=0x08000188 [TOPMOST\|TOOLWINDOW\|NOACTIVATE]`), absent from taskbar/Alt-Tab, `WDA_EXCLUDEFROMCAPTURE` verified (region capture black; control run shows the strip), 26×400 px achieved only after fixing the `SM_CXMINTRACK` 136 px clamp (`PreferredMinimumWidth/Height` + a `WM_GETMINMAXINFO` subclass before `SetPresenter`); pass-through verified by `WS_EX_LAYERED\|WS_EX_TRANSPARENT` toggled from a 40 ms cursor poll and by `SetWindowRgn`, **not** by `HTTRANSPARENT`; **`WS_EX_NOACTIVATE` is not honoured by the WinUI island** — every press activates the rail (`WM_MOUSEACTIVATE` never reaches a wndproc; `IsHitTestVisible=false` no help); `SetForegroundWindow(prev)` on `WM_ACTIVATE` restores it with a focus flicker (RESULTS.md §S1, `de515979`). Original question: Rail window styles: a borderless WinUI 3 window with `TOOLWINDOW\|NOACTIVATE\|TOPMOST`, `IsShownInSwitchers=false`, `Show(false)`, sized 26 × 300 epx, Acrylic Thin with `IsInputActive=true`, DWM round corners, `WDA_EXCLUDEFROMCAPTURE`; does a click on it keep Notepad foreground; is it absent from Alt-Tab/taskbar; is it absent from `screenshot_control`; does Snap Assist's edge zone fight it; **publish folder size** (A4); the exact TFM/NuGet versions that build with .NET 10 (A5) | Numbers and a screenshot in the note; the csproj that built | **TBD** |
+| S2 | **Result (R1): works on the full 1.8 meta package; fails on 2.5.1 and on the 1.8 WinUI-only split** — `Register()` needs nothing else for an unpackaged exe (it writes the AUMID/CLSID under `HKCU\Software\Classes`); normal and urgent toasts with Approve/Deny rendered; urgent triggered Windows' one-time *"Important Notification Request"* consent; `NotificationInvoked` arrived **on a background thread** with `action=approve;spike=s2-urgent`; `GetActivatedEventArgs().Kind = Launch` (relaunch path); on 2.5.1 and the split `Register()` → `0x8007007E` missing `Microsoft.WindowsAppRuntime.Insights.Resource.dll` — five files live only inside the runtime MSIX; copying them in made toasts work on the split (RESULTS.md §S2, §A1). Not tested: relaunch-by-toast after exit, text-box input, Reminder under DND. Original question: Unpackaged self-contained `AppNotificationManager`: `Register()` without a manifest; a toast with 3 buttons + a text box; activation while running and while not running (COM relaunch); `SetGroup/SetTag/RemoveByTag`; `Scenario.Reminder` under Do-not-disturb with "reminders" allowed (C5); what the attribution line shows for an unpackaged exe | Each behaviour recorded yes/no with the toast XML | **TBD** |
+| S3 | **Result (R1): works** — `RegisterHotKey(MOD_CONTROL\|MOD_SHIFT\|MOD_NOREPEAT, VK_SPACE) -> True`, `WM_HOTKEY` received with another process foreground, `AppWindow.Show(true)` + `SetForegroundWindow -> True` first try (no AttachThreadInput/ALT-tap fallback), panel `TextBox.Focus()=True FocusState=Keyboard`, typed text read back over UIA, Esc → `Hide()` + `SetForegroundWindow(prev) -> True`; `Shell_NotifyIconW` P/Invoke (`NIM_ADD`, `NIM_SETVERSION 4`) works with no library. Not tested: tray left-click (icon sat in the overflow), hotkey with an elevated window foreground (RESULTS.md §S3). Original question: `RegisterHotKey(Ctrl+Shift+Space)` from a WinUI app: `WM_HOTKEY` received (via `WindowMessageMonitor`/subclass), `SetForegroundWindow(panel)` succeeds from the handler (B6), `SetForegroundWindow(prev)` succeeds on Esc, failure when another app holds the chord; `Shell_NotifyIcon` left/right click and `Shell_NotifyIconGetRect`; hold detection (release) by `GetAsyncKeyState` vs `WH_KEYBOARD_LL` | Foreground before/after logged for 10 cycles; the chosen release mechanism | **TBD** |
+| S4 | **Result (R1): works** — `SetWinEventHook(EVENT_SYSTEM_FOREGROUND, WINEVENT_OUTOFCONTEXT)` gave one callback per cross-process switch **on the hooking UI thread**; `GetLastInputInfo` climbed 2.0 s per tick, reset by real/injected input, **not** by `SetForegroundWindow` activations (RESULTS.md §S4). Own non-activating rail: see S1 — the island activates, so the hook will fire for it until the rail is a plain HWND. Original question: Breakpoint signals: `SetWinEventHook(EVENT_SYSTEM_FOREGROUND)` fires for other processes and not for the companion's own non-activating rail; `GetLastInputInfo` idle climbs 1.00 s/s and resets on real input but not on `windows-build-b`'s `ui_click` (`SendInput`?) | A 60 s trace with app switches and typing | **TBD** |
 
 Waves. Each has owner seams (files only that wave touches), gates (Mac / build-B / MCP) and a done-when; each ends
 with `docs/design/134-as-built-W<n>.md`. W1 lands before W2–W4 are cut; W2, W3 and W4 can run as parallel worktrees
@@ -448,14 +489,18 @@ on the same ownership rule 130 used (shared types stubbed by W1 with frozen sign
 - **Framework-dependent Windows App SDK runtime** — a prerequisite installer in NSIS and a version the engine
   does not control; self-contained costs disk only (A3).
 - **Win-key hotkeys** — reserved for the OS (B7).
-- **`WS_EX_TRANSPARENT|LAYERED` click-through as the rail's primary mechanism** — size-to-content makes it
-  unnecessary (B2); kept as S1's fallback if a WinUI window cannot be 26 epx wide.
-- **`WM_NCHITTEST` → `HTTRANSPARENT`** — same thread only (B2).
+- **`WM_NCHITTEST` → `HTTRANSPARENT`** — same thread only (B2); S1 confirmed the click still lands on the rail.
+- **A WinUI/XAML rail with no mitigation** — the island activates on every press (S1); either the plain-HWND rail
+  or the `restore` mitigation (§9 Q2).
 - **A `NOACTIVATE` Attention panel** — Windows cannot focus a `TextBox` in a never-activated window; the panel
   activates on summon and returns focus (B5/B6), which is the Spotlight pattern expressed in Win32 terms.
-- **H.NotifyIcon.WinUI as the tray** — fine library (MIT), but `Shell_NotifyIcon` is ~80 lines through CsWin32 and
-  one fewer dependency with its own release cadence; revisit if the icon overlay or context-menu placement costs
-  more than that.
+- **H.NotifyIcon.WinUI as the tray** — fine library (MIT), but `Shell_NotifyIcon` is ~80 lines through CsWin32 (S3
+  ran it with no library) and one fewer dependency; revisit only if the icon overlay or menu placement costs > 1 day.
+- **Windows App SDK 2.5.1 as the W1 baseline** (R1) — compiles unchanged, but self-contained toasts fail without the
+  five runtime-MSIX files and #6821 reports blank toasts on this OS build; it stays a `-p:WasdkLine=2` flip re-tested
+  at W5.
+- **The 1.8 meta package** (R1) — toasts work out of the box but it drags `Microsoft.WindowsAppSDK.ML`
+  (`onnxruntime.dll` + `DirectML.dll`, 38 MB the companion never calls) into every install.
 - **`Windows.Media.Audio.AudioGraph` / `MediaCapture` for the mic** — WinRT, works unpackaged, but NAudio's WASAPI
   path gives a plain PCM pull with explicit resampling and no `MediaCapture` initialisation dance; swap if NAudio's
   net9.0 floor or AOT story bites.
@@ -465,21 +510,33 @@ on the same ownership rule 130 used (shared types stubbed by W1 with frozen sign
 - **Immediate toasts for everything; deferring blocking approvals; a window that stays activated** — 130 §8.
 - **Two tray icons** — one presence; the shell hides its tray while the companion is alive.
 
-## 9. Open questions for Sky
+## 9. Open questions for Sky (R1)
 
-1. **Windows App SDK line.** 2.x (2.5.1, Current; what VS 2026's templates target; 1.8 is Maintenance) · 1.8 (one
-   more year of runtime familiarity on build-B, out of servicing per the table). **Rec.: 2.x.**
-2. **Tray library.** `Shell_NotifyIcon` via CsWin32 · H.NotifyIcon.WinUI (MIT). **Rec.: Shell_NotifyIcon**, with
-   H.NotifyIcon as the fallback if the icon overlay or menu placement costs > 1 day in W2.
-3. **Who owns the Run key.** The companion writes `HKCU\…\Run` itself (simplest; mirrored to `companion.json`) ·
-   the shell writes it from `companion.json` like the Mac's `SMAppService` rule · the NSIS installer offers a
-   "start with Windows" checkbox. **Rec.: the companion**, with the NSIS uninstall hook removing it.
-4. **Microphone stack.** NAudio.Wasapi (MIT, net9.0+) · Windows.Media.Audio AudioGraph (no dependency) ·
-   flexaudio-style raw WASAPI via CsWin32 (most code). **Rec.: NAudio.Wasapi.**
-5. **Error-class breakthrough under Do-not-disturb.** `Scenario.Reminder` if S2 proves a third-party Reminder
-   breaks through when the user allows reminders · `Scenario.Urgent` (19041+, may still be filtered) · Default +
-   sound only (the user adds theuth to DND's priority apps by hand). **Rec.: decide on S2's result; default to
-   Default + sound** so nothing depends on an unverified behaviour.
+1. **Windows App SDK line.** (a) **1.8 WinUI-component split + the five-file extraction** — 165 MB, toasts verified
+   with the files copied in, every API the spikes used compiles; but 1.8 is *Maintenance* on Microsoft's table ·
+   (b) 1.8 full meta package — toasts work out of the box, 215 MB incl. 38 MB of ML we never call · (c) 2.5.1 —
+   *Current* and supported to 2027-04, compiles unchanged, but `Register()` fails without the same five files and
+   WindowsAppSDK#6821 reports blank toasts for 2.4/2.5.1 unpackaged on this very OS build. **Rec.: (a) now**, with
+   `-p:WasdkLine=2` kept green in CI-by-hand and a W5 gate that re-runs S2 on 2.5.1 — switch the day toasts display.
+   Why: the only verified toast path today is 1.8; the five-file step is needed for the slim build on *either* line,
+   so it is not a 1.8-specific hack; the ML payload is pure waste.
+2. **Rail substrate (new, R1).** (a) **plain Win32 HWND drawn with `Microsoft.UI.Composition`** — truly
+   non-activating like 130's `NSPanel` and the Tauri island; ~12 sprite visuals, a 40 ms hover poll for pass-through
+   or `SetWindowRgn`; one more rendering path in the codebase · (b) WinUI rail + `restore` on `WM_ACTIVATE` —
+   one codebase, but the user's editor sees a deactivate/activate pair on every rail click (focus flicker, caret
+   blink reset, IME commit in some apps) · (c) WinUI rail, no mitigation — the rail takes focus; rejected. **Rec.:
+   (a).** 130's bar is "the rail never takes key"; (b) fails it in a way the user feels in exactly the moment the
+   design protects.
+3. **Who owns the Run key.** (a) **the companion writes `HKCU\…\Run` itself**, mirrored to `companion.json` · (b)
+   the shell writes it from `companion.json` as the Mac does · (c) an NSIS "start with Windows" checkbox. **Rec.:
+   (a)**, with the NSIS uninstall hook removing it (hook macros still UNVERIFIED in the pinned tauri-cli — W5).
+4. **Microphone stack.** (a) **NAudio.Wasapi** (MIT, net9.0+) · (b) `Windows.Media.Audio.AudioGraph` (no
+   dependency) · (c) raw WASAPI via CsWin32. **Rec.: (a)**; W4 verifies capture in the RDP session (C8).
+5. **Error-class breakthrough under Do-not-disturb.** (a) **`Scenario.Urgent`** — verified to render and to trigger
+   Windows' one-time "Important Notification Request" consent (the user decides, once) · (b) `Scenario.Reminder` —
+   breakthrough only if the user allows reminders, UNVERIFIED for third-party apps · (c) Default + sound only.
+   **Rec.: (a)**, with the consent explained on the first-run screen so the prompt is expected, and a Settings row
+   to turn urgent off (falls back to (c)).
 
 ## 10. Sources
 
@@ -493,3 +550,32 @@ concepts read: `decisions/windows-companion-dev-env-build-b-2026-10-07`, `hosts/
 `facts/windows-mcp-remote-via-supergateway-build-b-2026-10-07`, `facts/theuth-release-artifact-contract-windows-linux-2026-09-23`,
 `facts/theuth-windows-host-issues-inventory-2026-09-23`, `facts/sky-mac-dotnet-10-sdk-user-local-2026-10-07`, and the
 130 spike/as-built facts (`facts/macos-companion-*`, `facts/theuth-companion-*`).
+
+## Revision R1 (2026-10-07 21:11) — spike results folded in
+
+Source: `crates/desktop/companion-windows/spikes/RESULTS.md` on `spike/134-windows` (`de515979`), run on build-B
+20:41–21:07 through `windows-build-b`. Where this revision and the body disagree, this revision wins.
+
+- **§7**: S0, S1–S4 and A1 carry Result lines (verdict + deciding evidence). All work; S1's caveat is the one design
+  change below.
+- **§2 resolved**: A4 publish sizes (214.8 / 229.2 / 165.1 MB); A5 .NET 10 builds unchanged on 1.8.260317003 and
+  2.5.1 (hand-written csproj, 12–20 s, no templates on build-B); A6 the 136 px `SM_CXMINTRACK` clamp and its
+  `WM_GETMINMAXINFO` + `PreferredMinimumWidth` fix; B7/B6 hotkey → `SetForegroundWindow` → `TextBox` focus → Esc
+  restore verified; B8 the foreground hook fires on the UI thread for cross-process switches and `GetLastInputInfo`
+  ignores activations; B9 the WinUI island activates despite `WS_EX_NOACTIVATE`, `restore` mitigation verified, plain
+  HWND is the robust rail; C1 `Register()` needs nothing else unpackaged, `NotificationInvoked` on a background
+  thread, relaunch reports `Kind = Launch`; new C2b the five runtime-MSIX files toasts need and #6821; C4 urgent
+  toasts trigger a one-time consent; C6 `Shell_NotifyIcon` by P/Invoke verified; new A11 harness facts (UIPI,
+  `processName` filter, overflow icon).
+- **Still UNVERIFIED**: tray left-click (icon sat in the overflow); `Reminder` under DND beyond the consent prompt;
+  hotkey with an elevated window foreground; relaunch-by-toast after exit; text-box toast input; mic capture in the
+  RDP session; Tauri NSIS `installerHooks` macros; Snap Assist vs the rail.
+- **Decisions changed in place (marked R1)**: D1 package line → 1.8 WinUI-component split + five-file extraction,
+  2.5.1 behind a switch (was 2.x); D4 rail substrate → open question Q2 with plain-HWND recommended (was "WinUI,
+  size-to-content"); D5/D6 focus cycle and hotkey marked verified; D8 breakthrough → `Urgent` with consent (was
+  `Reminder` if S2…); D9 `Shell_NotifyIcon` decided; D11 TFM `net10.0-windows10.0.22621.0` and sizes; D14 spikes
+  done; D15 wording.
+- **§9** rewritten: Q1 re-decided on the evidence, Q2 (rail substrate) added, the tray-library question dropped
+  (decided), Q5 re-based on the verified urgent consent. Five questions, each with options and a recommendation.
+- **§4.1/4.2/4.4, §5.2, §5.7, §8** amended accordingly (rail shapes, overflow anchor, background-thread invoke,
+  five-file build step, harness rules, two new rejected alternatives).
