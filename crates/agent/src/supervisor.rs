@@ -97,8 +97,8 @@ use crate::{
     TrimAssistant, Undo, UseSkill, Withdraw, effort_of,
 };
 use crate::{AwsProfiles, ListAwsProfiles, SetAwsProfile};
-use crate::{GetFavoriteModels, SetModelFavorite};
 use crate::{DurableStore, SessionCostQuery, SubagentsConfig, UnloadSession};
+use crate::{GetFavoriteModels, SetModelFavorite};
 use crate::{ListProjectStyles, SetProjectStyle, SetSessionProject, project};
 use crate::{attach, clock, frame, repl, search, spill};
 use tools::{
@@ -10196,7 +10196,10 @@ pub(crate) mod tests {
         };
 
         // A bare id canonicalises; order is starring order; twice is once.
-        assert_eq!(a.set_model_favorite(star("eyes", true)).await.unwrap(), ["testvis/eyes"]);
+        assert_eq!(
+            a.set_model_favorite(star("eyes", true)).await.unwrap(),
+            ["testvis/eyes"]
+        );
         assert_eq!(
             a.set_model_favorite(star("testvis/blind", true))
                 .await
