@@ -314,7 +314,7 @@ mod tests {
                 d.journal_keep_days,
                 d.handoff_tokens
             ),
-            (4, 10, 1000, 5, 7, 4000)
+            (4, 10, 5000, 5, 7, 4000)
         );
         // A partial section keeps the other defaults.
         let c: DurabilityConfig = serde_yaml::from_str("resume: ask\ndrain_secs: 3\n").unwrap();

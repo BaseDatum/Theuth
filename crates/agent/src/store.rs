@@ -516,7 +516,7 @@ impl Store {
     /// Open (creating) the database in WAL mode and run migrations. Two
     /// pools on one file (68 §3): `write` holds exactly one connection that
     /// never expires, with a `sqlite3session` attached to the transcript
-    /// tables; `read` holds four, warm and never recycled (sqlx's defaults
+    /// tables; `read` holds four, opened on demand and never recycled (sqlx's defaults
     /// would reap idle connections every 10 min and churn a worker thread
     /// per reconnect). The writer runs `synchronous=NORMAL`: in WAL mode a
     /// committed transaction is in the WAL file before `COMMIT` returns, so
@@ -535,7 +535,6 @@ impl Store {
         // DDL on an attached table would leave the session unusable.
         let read = SqlitePoolOptions::new()
             .max_connections(4)
-            .min_connections(4)
             .idle_timeout(None)
             .max_lifetime(None)
             .connect_with(opts.clone())
