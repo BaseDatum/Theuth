@@ -20,7 +20,7 @@
   pwsh -File crates\desktop\companion-windows\w3-gate.ps1 reg
 #>
 param(
-    [Parameter(Position = 0)] [ValidateSet('probe', 'launch', 'stop', 'log', 'reg', 'settings-get', 'settings-set', 'engine-stop', 'processes', 'crash')]
+    [Parameter(Position = 0)] [ValidateSet('probe', 'launch', 'stop', 'log', 'reg', 'settings-get', 'settings-set', 'engine-stop', 'processes', 'crash', 'sendkeys')]
     [string] $Verb = 'log',
     [double] $Seconds = 12,
     [switch] $Stay,
@@ -29,7 +29,8 @@ param(
     [int] $Tail = 80,
     [string] $Match = '',
     [string] $Key = '',
-    [string] $Value = ''
+    [string] $Value = '',
+    [string] $Text = ''
 )
 [Console]::OutputEncoding = [Text.Encoding]::UTF8
 $ErrorActionPreference = 'Stop'
@@ -144,6 +145,13 @@ switch ($Verb) {
         }
         $crashes = Get-ChildItem (Join-Path $env:LOCALAPPDATA 'theuth\companion\logs') -Filter '*.crash.json' -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending | Select-Object -First 2
         foreach ($c in $crashes) { Write-Host "---- $($c.FullName)"; Get-Content $c.FullName -TotalCount 60 | ForEach-Object { Write-Host $_ } }
+    }
+    'sendkeys' {
+        # Keys to whatever has the keyboard focus in this session (a toast's text box lives in ShellExperienceHost, which
+        # windows-mcp cannot target). SendKeys syntax: {ENTER}, {TAB}, +(shift) …
+        Add-Type -AssemblyName System.Windows.Forms
+        [System.Windows.Forms.SendKeys]::SendWait($Text)
+        Write-Host "sent keys: $Text"
     }
     'engine-stop' {
         $t = @(Get-Process -Name 't' -ErrorAction SilentlyContinue)
