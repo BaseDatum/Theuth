@@ -48,6 +48,7 @@ const task = (id: string, title: string, owner: string, state: Task['state'], up
   next_wake_after_ms: null,
   done_when: null,
   attachments: [],
+  priority: 'medium',
 })
 
 const session = (id: string, title: string, updated: number, extra: Partial<SessionSummary> = {}): SessionSummary => ({
@@ -121,6 +122,7 @@ const need = (id: string, kind: AttentionItem['kind'], title: string, at_ms: num
   packet: null,
   ask: null,
   turn: null,
+  rank: 5,
 })
 
 /** uuidv7-shaped task ids whose short id (last 6) reads like the mock's. */
