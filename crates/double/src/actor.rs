@@ -803,6 +803,9 @@ impl Double {
             packet: None,
             ask,
             turn: None,
+            waiting_since_ms: None,
+            summary: None,
+            next_steps: Vec::new(),
         })
     }
 
