@@ -403,10 +403,11 @@ internal sealed partial class SettingsWindow : Window
     private static IEnumerable<(string Device, string Title)> Displays()
     {
         var result = new List<(string, string)>();
-        int n = 0;
-        foreach (var area in DisplayArea.FindAll())
+        // Indexed, not foreach: CsWinRT cannot QI this WinRT vector for IIterable ("ClassFactory cannot supply requested class").
+        var all = DisplayArea.FindAll();
+        for (int n = 1; n <= all.Count; n++)
         {
-            n++;
+            var area = all[n - 1];
             string device = $"display-{n}";
             try
             {
