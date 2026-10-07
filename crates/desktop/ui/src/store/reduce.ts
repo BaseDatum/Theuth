@@ -238,7 +238,12 @@ function userEntries(
   const flag = injected ? { injected } : {};
   if (cls === null)
     return [{ id: nextId(), kind: "user", text, turn, context, ...flag }];
-  return cls.map((c): Entry => {
+  // 125 §8.3: every `<advisory>` element of one row is one card; its seq is the row's when the row is stored.
+  const notes = cls.filter((c): c is Extract<Injected, { kind: "advisory" }> => c.kind === "advisory");
+  const card: Entry[] = notes.length
+    ? [{ id: nextId(), kind: "advisory", notes: notes.map((n) => ({ severity: n.severity, note: n.text })), seq: seqOf(context), context }]
+    : [];
+  return cls.filter((c): c is Exclude<Injected, { kind: "advisory" }> => c.kind !== "advisory").map((c): Entry => {
     switch (c.kind) {
       case "skill":
         return {
@@ -305,7 +310,35 @@ function userEntries(
       case "wake":
         return { id: nextId(), ...c, context };
     }
-  });
+  }).concat(card);
+}
+
+/** The stored row a context entry points at, when it is a message. */
+const seqOf = (context: ContextEntry | undefined): number | undefined =>
+  context?.target.kind === "message" ? context.target.seq : undefined;
+
+/** The notes of a card as one comparable string. */
+const notesKey = (notes: readonly AdvisoryNote[]): string => notes.map((n) => `${n.severity}\n${n.note}`).join("\0");
+
+type Advisory = Extract<Entry, { kind: "advisory" }>;
+
+/**
+ * 125 §8.3: show one Advisory card once. `AdvisoryAdded`, the `<advisory>` wrapper of a `TurnStarted`/`InputInjected`
+ * and the settled reload all describe the same stored row: a card with the same `seq` is already there; a card parsed
+ * from the wrapper text has no `seq` yet, so it is matched by its notes and stamped. New cards go above a streaming tail.
+ */
+function addAdvisory(s: SessionSlice, entry: Advisory): SessionSlice {
+  const key = notesKey(entry.notes);
+  const at = s.entries.findLastIndex(
+    (x): x is Advisory =>
+      x.kind === "advisory" &&
+      (x.seq !== undefined && entry.seq !== undefined ? x.seq === entry.seq : notesKey(x.notes) === key),
+  );
+  if (at < 0) return interject({ ...s, live: s.live + 1 }, entry);
+  const cur = s.entries[at] as Advisory;
+  return cur.seq === undefined && entry.seq !== undefined
+    ? { ...s, entries: replaceAt(s.entries, at, { ...cur, seq: entry.seq }) }
+    : s;
 }
 
 /** The newest `you` row stamped with the turn it opened: an own send or an injected steer whose `TurnStarted` echo was skipped. */
