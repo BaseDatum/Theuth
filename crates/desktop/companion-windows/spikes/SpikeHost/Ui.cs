@@ -29,7 +29,7 @@ internal static class Ui
     }
 
     /// <summary>Grid with an optional header row and the log box below.</summary>
-    public static Grid LogGrid(UIElement? header)
+    public static Grid LogGrid(FrameworkElement? header)
     {
         var grid = new Grid();
         grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
