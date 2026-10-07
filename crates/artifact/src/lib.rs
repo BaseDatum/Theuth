@@ -14,11 +14,13 @@
 
 pub mod archive;
 pub mod export;
+pub mod inline;
 pub mod kind;
 pub mod mesh;
 pub mod pdf;
 pub mod preview;
 pub mod search;
+pub mod sniff;
 pub mod store;
 pub mod svg;
 pub mod tools;

@@ -105,6 +105,12 @@ pub struct Receipt {
     pub files: Option<u64>,
     /// Typst compile warnings.
     pub warnings: Vec<String>,
+    /// Local images inlined into an `.html` page (120 §8).
+    pub images: Option<usize>,
+    /// `show{height}` as `(asked, used)` after the 80–2000 clamp (120 §6).
+    pub height: Option<(u32, u32)>,
+    /// Why the kind was demoted to [`Kind::File`] by the ingest sniff (120 §9a).
+    pub demoted: Option<&'static str>,
 }
 
 /// `1024 B` → `1 KB`, `212 MB`.
@@ -118,7 +124,8 @@ pub fn human(bytes: u64) -> String {
 }
 
 /// `shown report.pdf (v1 · 3 pages · 84 KB) · source report.md`;
-/// `shown archive.zip (v1 · 42 files · 3 MB)`; `shown flow.mmd (v1 · mermaid · 12 lines · 1 KB)`.
+/// `shown archive.zip (v1 · 42 files · 3 MB)`; `shown flow.mmd (v1 · mermaid · 12 lines · 1 KB)`;
+/// `shown chart.html (v1 · 212 lines · 48 KB · 2 images inlined · height 600)` + the audience line.
 pub fn receipt(a: &Artifact, x: &Receipt) -> String {
     let mut parts = vec![format!("v{}", a.version)];
     if a.kind == Kind::Mermaid {
@@ -140,6 +147,17 @@ pub fn receipt(a: &Artifact, x: &Receipt) -> String {
         Some((w, h)) => parts.push(format!("{w}×{h}")),
         None => parts.push(human(a.bytes)),
     }
+    if let Some(n) = x.images.filter(|n| *n > 0) {
+        parts.push(format!(
+            "{n} image{} inlined",
+            if n == 1 { "" } else { "s" }
+        ));
+    }
+    match x.height {
+        Some((asked, used)) if asked != used => parts.push(format!("height {asked} → {used}")),
+        Some((_, used)) => parts.push(format!("height {used}")),
+        None => {}
+    }
     let mut out = format!("shown {} ({})", a.name, parts.join(" · "));
     if let Some(name) = a.source.as_deref().and_then(Path::file_name) {
         out.push_str(&format!(" · source {}", name.to_string_lossy()));
@@ -149,6 +167,12 @@ pub fn receipt(a: &Artifact, x: &Receipt) -> String {
             " · warnings: {} (first: {first})",
             x.warnings.len()
         ));
+    }
+    if a.kind == Kind::Html {
+        out.push_str(
+            "\nlive page in the theuth app (desktop, web, phone); Slack/Telegram/Signal get the \
+             file; TUI the source. Check it with page_preview when it has scripts.",
+        );
     }
     out
 }
@@ -244,6 +268,27 @@ mod tests {
             receipt(&record("notes.txt", Kind::Text, 200), &x),
             "shown notes.txt (v1 · 12 lines · 200 B)"
         );
+        let x = Receipt {
+            lines: Some(212),
+            images: Some(2),
+            height: Some((600, 600)),
+            ..Receipt::default()
+        };
+        assert_eq!(
+            receipt(&record("chart.html", Kind::Html, 48 * 1024), &x),
+            "shown chart.html (v1 · 212 lines · 48 KB · 2 images inlined · height 600)\n\
+             live page in the theuth app (desktop, web, phone); Slack/Telegram/Signal get the \
+             file; TUI the source. Check it with page_preview when it has scripts."
+        );
+        let x = Receipt {
+            lines: Some(1),
+            images: Some(1),
+            height: Some((3000, 2000)),
+            ..Receipt::default()
+        };
+        assert!(receipt(&record("p.html", Kind::Html, 10), &x).starts_with(
+            "shown p.html (v1 · 1 lines · 10 B · 1 image inlined · height 3000 → 2000)\n"
+        ));
     }
 
     #[test]
