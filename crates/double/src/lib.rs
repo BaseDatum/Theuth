@@ -23,6 +23,7 @@
 use runtime::Runtime;
 
 pub mod actor;
+pub mod chip;
 pub mod class;
 pub mod config;
 pub mod events;
@@ -33,6 +34,7 @@ pub mod precond;
 pub mod predict;
 pub mod sched;
 pub mod store;
+pub mod tool;
 pub mod train_a;
 pub mod types;
 pub mod venue;
@@ -55,8 +57,8 @@ pub const DOUBLE_ACTOR: &str = "double";
 // crates/rpc/src/api.rs are `ask::<actor::Double, _>(DOUBLE_ACTOR, …)` calls.
 // 126 W2 (built): `train_a`, `sched`, `precond`, `venue`, `versions`.
 // 126 W3: `pub mod train_b;`.
-// 126 W5: `pub mod tool;` (the `double_*` chat runtime functions), the
-// `double` skill and the `## Double` prompt paragraph.
+// 126 W5: `tool` (the `double_*` chat runtime functions, the `## Double`
+// prompt paragraph and the `double` skill) and `chip` (the surfaces' text).
 
 /// The plugin. Reads `double:`, and when enabled opens the store under
 /// `<data_dir>/double/`; the actor, scheduler and tools are added at the
@@ -102,8 +104,18 @@ impl runtime::Plugin for DoublePlugin {
             tracing::warn!("double scheduler not started: {e:#}");
         }
         tokio::spawn(mesh::serve(rt.clone(), std::sync::Arc::new(mesh::NotYet)));
-        let _ = (store, cfg);
-        // 126 W5: register `tool::*` once `rt.lookup_when::<ToolRegistry>` answers.
+        // 126 W1: hand the actor's handle (`impl tool::Seams`) to `tool::register`
+        // in place of `tool::NotYet`.
+        let seams: std::sync::Arc<dyn tool::Seams> = std::sync::Arc::new(tool::NotYet(cfg));
+        let rt = rt.clone();
+        tokio::spawn(async move {
+            if let Some(reg) = rt
+                .lookup_when::<tools::ToolRegistry>(tools::REGISTRY_ACTOR)
+                .await
+            {
+                tool::register(&reg, seams).await;
+            }
+        });
         Ok(())
     }
 }

@@ -234,6 +234,10 @@ enum Event {
     Lease(mesh::LeaseState),
     /// 110 §6: a child's or peer's result reached a session.
     Peer(PeerDelivered),
+    /// 126 §10: the double's prediction for a pending card.
+    Predicted(double::DoublePredicted),
+    /// 126 §10: the double answered a card at L2.
+    DoubleAnswered(double::DoubleAnswered),
 }
 
 /// Bus subscriber: forwards into the ordered router.
@@ -298,6 +302,20 @@ impl Message<PeerDelivered> for Bus {
     }
 }
 
+impl Message<double::DoublePredicted> for Bus {
+    type Reply = ();
+    async fn handle(&mut self, m: double::DoublePredicted, _: &mut Context<Self, ()>) {
+        let _ = self.tx.send(Event::Predicted(m));
+    }
+}
+
+impl Message<double::DoubleAnswered> for Bus {
+    type Reply = ();
+    async fn handle(&mut self, m: double::DoubleAnswered, _: &mut Context<Self, ()>) {
+        let _ = self.tx.send(Event::DoubleAnswered(m));
+    }
+}
+
 impl Message<mesh::MeshEvent> for Bus {
     type Reply = ();
     async fn handle(&mut self, m: mesh::MeshEvent, _: &mut Context<Self, ()>) {
@@ -325,6 +343,8 @@ enum Out {
     Approval(Box<ApprovalRequested>),
     /// The card for this id was answered: replace it with the outcome; `by` = the clicker.
     Resolved(ApprovalResolved, Option<String>),
+    /// 126 §10: the double predicted this thread's approval card: add its context line.
+    Predicted(Box<double::DoublePredicted>),
     /// Question `i` of an `ask_user` for this thread's session: post its card.
     Ask(Box<AskRequested>, usize),
     /// A `show` artifact for this thread's session or a descendant (35 §8): upload it.
@@ -361,8 +381,8 @@ struct Card {
     thread_user: Option<String>,
     /// Who clicked, once a click was accepted.
     by: Option<String>,
-    /// Owner-DM cards only: `(ts, body)`.
-    dm: Option<(String, String)>,
+    /// Owner-DM cards only: `(ts, body, session context line)`.
+    dm: Option<(String, String, String)>,
 }
 
 /// A pending `ask_user`: one message per question, the current one replaced
@@ -536,6 +556,8 @@ async fn run(
     chan.rt.subscribe::<Bus, secrets::SecretsEvent>(&bus).await;
     chan.rt.subscribe::<Bus, mesh::MeshEvent>(&bus).await;
     chan.rt.subscribe::<Bus, PeerDelivered>(&bus).await;
+    chan.rt.subscribe::<Bus, double::DoublePredicted>(&bus).await;
+    chan.rt.subscribe::<Bus, double::DoubleAnswered>(&bus).await;
     // 67 §4.7: learn our engine id once the mesh is up; the lease resolves then.
     let me = {
         let chan = Arc::clone(&chan);
@@ -1591,7 +1613,7 @@ impl Channel {
                         .send(Out::ChildApproval(card.session, None));
                 }
                 match (card.dm, self.bound(card.session)) {
-                    (Some((ts, body)), _) => {
+                    (Some((ts, body, _)), _) => {
                         let Some(dm) = self.identity.get().and_then(|i| i.owner_dm.as_deref())
                         else {
                             return;
@@ -1656,6 +1678,78 @@ impl Channel {
                     .await
                 {
                     tracing::debug!(error = %e, "ask card update failed");
+                }
+            }
+            // 126 §10: the chip lands after the card — the card is rebuilt with the
+            // double's context line. Owner-DM approval cards and every ask card are
+            // updated here; a thread approval card by the worker that holds its ts.
+            Event::Predicted(p) => {
+                let Ok(id) = uuid::Uuid::parse_str(&p.question_id) else {
+                    return;
+                };
+                let approval = self
+                    .lock()
+                    .cards
+                    .get(&ApprovalId(id))
+                    .map(|c| (c.session, c.dm.clone()));
+                if let Some((session, dm)) = approval {
+                    match (dm, self.bound(session)) {
+                        (Some((ts, body, context)), _) => {
+                            let Some(dm) = self.identity.get().and_then(|i| i.owner_dm.as_deref())
+                            else {
+                                return;
+                            };
+                            let blocks = approvals::predicted_card(
+                                &body,
+                                ApprovalId(id),
+                                &p,
+                                Some(context.as_str()),
+                            );
+                            if let Err(e) = self.api.update_blocks(dm, &ts, blocks).await {
+                                tracing::debug!(error = %e, "owner approval card double update failed");
+                            }
+                        }
+                        (None, Some((key, thread))) => {
+                            let _ = self.worker(&key, &thread).send(Out::Predicted(Box::new(p)));
+                        }
+                        (None, None) => {}
+                    }
+                    return;
+                }
+                let ask = self.lock().asks.get(&AskId(id)).filter(|c| !c.ts.is_empty()).map(|c| {
+                    (
+                        c.channel.clone(),
+                        c.ts.clone(),
+                        asks::question_card(&c.req, c.current, c.context.as_deref()),
+                    )
+                });
+                if let Some((channel, ts, blocks)) = ask
+                    && let Err(e) = self
+                        .api
+                        .update_blocks(&channel, &ts, approvals::with_double(blocks, &p))
+                        .await
+                {
+                    tracing::debug!(error = %e, "ask card double update failed");
+                }
+            }
+            // 126 §10: one line where the card is — the session's thread, else the owner DM.
+            Event::DoubleAnswered(a) => {
+                match a.session.and_then(|s| self.bound(s)) {
+                    Some((key, thread)) => {
+                        let _ = self
+                            .worker(&key, &thread)
+                            .send(Out::Note(approvals::answered_text(&a)));
+                    }
+                    None => {
+                        let Some(dm) = self.identity.get().and_then(|i| i.owner_dm.as_deref())
+                        else {
+                            return;
+                        };
+                        let blocks = approvals::answered_blocks(&a);
+                        if let Err(e) = self.api.post_blocks(dm, None, blocks).await {
+                            tracing::debug!(error = %e, "owner double answered line failed");
+                        }
+                    }
                 }
             }
             // 35 §8: the session's own thread, else the nearest bound ancestor's.
@@ -1771,7 +1865,7 @@ impl Channel {
                         session: req.session,
                         thread_user: None,
                         by: None,
-                        dm: Some((ts, body)),
+                        dm: Some((ts, body, context)),
                     },
                 );
             }
@@ -2024,6 +2118,7 @@ impl Worker {
                     Some(Out::Agent(ev)) => self.apply(ev).await,
                     Some(Out::Approval(req)) => self.approval(*req).await,
                     Some(Out::Resolved(res, by)) => self.resolved(res, by.as_deref()).await,
+                    Some(Out::Predicted(p)) => self.predicted(&p).await,
                     Some(Out::Ask(req, i)) => self.ask(*req, i).await,
                     Some(Out::Spawned { child, name, link, depth }) => self.spawned(child, name, link, depth),
                     Some(Out::Child(session, ev)) => self.child(session, &ev).await,
@@ -2272,6 +2367,20 @@ impl Worker {
             .await
         {
             tracing::debug!(error = %e, "approval card update failed");
+        }
+    }
+
+    /// 126 §10: rebuild the pending card with the double's context line.
+    async fn predicted(&self, p: &double::DoublePredicted) {
+        let Some(id) = uuid::Uuid::parse_str(&p.question_id).ok().map(ApprovalId) else {
+            return;
+        };
+        let Some((ts, body)) = self.approvals.get(&id) else {
+            return;
+        };
+        let blocks = approvals::predicted_card(body, id, p, None);
+        if let Err(e) = self.chan.api.update_blocks(&self.channel, ts, blocks).await {
+            tracing::debug!(error = %e, "approval card double update failed");
         }
     }
 

@@ -15,6 +15,7 @@ uuid = { workspace = true }
 search = { workspace = true }
 knowledge = { workspace = true }
 rpc = { workspace = true }
+double = { workspace = true }
 acp = { workspace = true }
 computer = { workspace = true }
 link = { workspace = true }
