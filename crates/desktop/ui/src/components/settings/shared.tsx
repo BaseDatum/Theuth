@@ -88,6 +88,38 @@ export function Empty({ children }: { children: ReactNode }) {
   return <p className="py-4 text-sm text-fg-tertiary">{children}</p>
 }
 
+/** A whole-number `Info` field edited on blur/Enter (Agent loop, Advisor); values outside `[min, max]` are ignored. */
+export function Count({
+  value,
+  min,
+  max,
+  action,
+}: {
+  value: number | undefined
+  min: number
+  max?: number
+  action: { mutate: (n: number) => void; isPending: boolean }
+}) {
+  return (
+    <Input
+      key={value}
+      type="number"
+      min={min}
+      max={max}
+      defaultValue={value}
+      disabled={value === undefined || action.isPending}
+      className="w-28 text-right"
+      onBlur={(e) => {
+        const n = bounded(e.currentTarget.value, min, max)
+        if (n !== undefined && n !== value) action.mutate(n)
+      }}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter') e.currentTarget.blur()
+      }}
+    />
+  )
+}
+
 /** The whole number a count field accepts from `raw`: floored, within `[min, max]`; `undefined` otherwise (the field is left alone). */
 export function bounded(raw: string | number, min: number, max = Number.POSITIVE_INFINITY): number | undefined {
   const n = Math.floor(Number(raw))

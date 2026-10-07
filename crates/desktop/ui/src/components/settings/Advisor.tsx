@@ -1,6 +1,5 @@
 import { EFFORTS } from '@/components/agents/wizard'
-import { Count } from '@/components/settings/Loop'
-import { Row, Section, refreshInfo, useAction } from '@/components/settings/shared'
+import { Count, Row, Section, refreshInfo, useAction } from '@/components/settings/shared'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { useApi } from '@/lib/rpc'
 import type { SyncBacklog } from '@/rpc/bindings/SyncBacklog'

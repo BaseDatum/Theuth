@@ -20,6 +20,7 @@ built against C's as-built (`125-as-built-C.md`). Everything under `crates/deskt
   `cardTitle`, `NOTES_SHOWN = 3`, `pillLabel`, `noteCount`, `STATE_FG`, `contextLine`, `tokensLine`, `detailLine`.
 - `components/chat/advisor.ts` — new: `useAdvisor(session)` (`advisor_status` under `queryKeys.advisorStatus`, `retry: false`)
   and `useSetAdvisor(session)` (`set_advisor`; the reply is written into the query; errors toast).
+- `rpc/extra.ts` — `Info.advisor?: AdvisorDefaults` (the hand-written `Info` the connection store carries).
 - `lib/rpc.ts` — `queryKeys.advisorStatus(id)`; `useInvalidateOn` writes every `AdvisorChanged.status` into that query
   (`setQueryData`, no refetch).
 - `components/chat/AdvisorNoteCard.tsx` — new: the `EngineNotice` shell tinted by the worst severity, header
@@ -42,8 +43,8 @@ built against C's as-built (`125-as-built-C.md`). Everything under `crates/deskt
   last note · `Change model…` · `Turn advisor off`.
 - `components/settings/Advisor.tsx` — new tab `advisor` **Advisor** after Agent loop (`SettingsDialog.tsx`): Default effort
   (`Select` Default + `EFFORTS`), Notes per update (`Count` 1–32), Immune turns (`Count` 0–10), Catch-up (`Select` Off · 1
-  · 3 · 5) over `Info.advisor` with `refreshInfo` after each `set_advisor_*`. `components/settings/Loop.tsx` — `Count` is
-  exported and gains `max`; `components/settings/shared.tsx` — `bounded(raw, min, max)`.
+  · 3 · 5) over `Info.advisor` with `refreshInfo` after each `set_advisor_*`. `components/settings/shared.tsx` — `Count` (moved
+  from `Loop.tsx`, gains `max`) and `bounded(raw, min, max)`; `Loop.tsx` imports `Count` from there.
 - Exclusions (§8.5): `lib/session-tree.ts` `notAdvisor` used by `stripRows`, `childrenOf`, `subtrees`;
   `components/sidebar/SessionList.buildRows` roots; `components/chat/broadcast.groupRows`; `rpc/extra.ts` `AgentInfo.kind?`.
 - Tests: `store/advisor.test.ts` (7), `lib/advisor-format.test.ts` (4), `components/chat/AdvisorNoteCard.test.ts` (2),
@@ -51,7 +52,16 @@ built against C's as-built (`125-as-built-C.md`). Everything under `crates/deskt
 
 ## Gates (exact result lines)
 
-GATES_PLACEHOLDER
+- `cd crates/desktop/ui && BUILD_LABEL=125-W3 build-lock nice -n 10 bun run check` → `$ tsc -b --noEmit`, exit 0.
+- `cd crates/desktop/ui && BUILD_LABEL=125-W3 build-lock nice -n 10 bunx vitest run --maxWorkers=2 src/store src/lib src/components/chat src/components/settings src/components/sidebar src/rpc`
+  → `Test Files  124 passed (124)` / `Tests  991 passed (991)` (the 16 new tests included; `rpc/api.test.ts` green against
+  the copied `bindings/methods.json`).
+- Bindings: copied from the integration tree (`theuth-125-advisor`, C's regeneration at `d3c5b682`) per Sky's 11:xx note
+  instead of `just ts-desktop`; no cargo was run by this wave. Both binding dirs are gitignored and uncommitted.
+- First `tsc` run was red on two points, both mine: `Info.advisor` missing from the hand-written `rpc/extra.ts` `Info`
+  (the bindings' `Info.ts` has it; the UI reads `extra.ts`'s) and a test fixture typing nit. First vitest run failed one
+  suite: `Advisor.test.ts` imported `Count` from `Loop.tsx`, whose `lib/nudges` import touches `localStorage` at module
+  init under node — `Count` moved to `settings/shared.tsx` (where `bounded` lives), `Loop.tsx` imports it from there.
 
 ## Deviations from the design (and why)
 
