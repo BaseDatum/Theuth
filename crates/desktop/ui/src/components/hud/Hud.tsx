@@ -56,7 +56,7 @@ export function Hud() {
       agents: fixture?.agents ?? agents.data,
       tasks: fixture?.tasks ?? tasks.data,
       routines: fixture?.routines ?? routines.data,
-      sessions: sessions.data,
+      sessions: fixture?.sessions ?? sessions.data,
       activityToday: activityToday.data,
       activityWeek: activityWeek.data,
       activity: fixture?.activity ?? activity.data,
