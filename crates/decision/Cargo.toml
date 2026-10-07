@@ -13,6 +13,9 @@ ts = ["dep:ts-rs", "runtime/ts"]
 # GLINER-3 spike only: the GLiNER2.5-Decide ONNX export through ONNX Runtime (`gliner::onnx`) as a
 # bench/parity control for the candle port. Off by default so `decision` ships ORT-free.
 gliner-onnx = ["dep:ort"]
+# 126 W0 spike: differentiable rope (`rope_slow`) in the encoder so `backward()` works through it.
+# Off by default; the shipped forward is unchanged. Only `examples/lora_step` uses it.
+train = []
 
 [dependencies]
 runtime = { workspace = true }
@@ -49,6 +52,10 @@ ort = { workspace = true, optional = true }  # `gliner-onnx` spike only
 candle-core = { workspace = true, features = ["metal", "accelerate"] }
 candle-nn = { workspace = true, features = ["metal", "accelerate"] }
 candle-transformers = { workspace = true, features = ["metal", "accelerate"] }
+
+[[example]]
+name = "lora_step"
+required-features = ["train"]
 
 [dev-dependencies]
 tempfile = "3"
