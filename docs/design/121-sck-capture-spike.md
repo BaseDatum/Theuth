@@ -217,7 +217,7 @@ Readings (`/tmp/sck-spike/rss-scaling*.txt`, `rss-pieces.txt`, `rss-cv.txt`):
 | Static libs produced under `target/debug/build/*/out/` | `libAppleCFBridge.a` 900 896 B · `libAppleMetalSwiftBridge.a` 2 078 792 B · `libScreenCaptureKitBridge.a` 1 788 176 B (4.77 MB) |
 | Warm incremental rebuild of `computer` after a `screen.rs` edit | 3.4–4.4 s (bridges cached in `OUT_DIR`) |
 | `cargo build -p theuth --release`, cold workspace | 18 m 48 s (this machine, loaded); not attributable to SCK |
-| `t` binary size, release: baseline (dep stashed) vs with SCK | 735 431 456 B → 736 497 520 B = **+1 066 064 B (+0.14 %)**; `__TEXT` +311 KB; 0 → 23 `/usr/lib/swift/libswift*.dylib` load commands (all system, 14 weak) |
+| `t` binary size, release: baseline (dep stashed) vs with SCK | 735 431 456 B → 736 497 520 B = **+1 066 064 B (+0.14 %)**; `__TEXT` +311 KB; 0 → 23 `/usr/lib/swift/libswift*.dylib` load commands (all system, 14 weak). Both release builds (with SCK 00:57, baseline 01:08) had finished before the request to skip this measurement arrived (R2); no workspace-wide cargo command was run after it, and none is needed to reproduce the rest of this report — the Swift static-lib sizes above are the per-crate cost. |
 
 ### 4.5 Pixel diff (back-to-back shots, still desktop)
 
