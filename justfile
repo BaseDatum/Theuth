@@ -362,3 +362,9 @@ vm-image-dev:
 # under target/release/companion/ (scripts/bundle-companion.sh; no Xcode needed).
 companion:
     scripts/bundle-companion.sh
+
+# 134 W1: the Windows companion's portable half — Theuth.Companion.Rpc + Theuth.Companion.Core and their xUnit suites
+# (`dotnet test` through crates/desktop/companion-windows/test.sh; .NET 10 SDK from ~/.dotnet or PATH). The WinUI app
+# itself builds on Windows only (crates/desktop/companion-windows/build.ps1 on build-B).
+companion-windows-test *args:
+    crates/desktop/companion-windows/test.sh {{args}}
