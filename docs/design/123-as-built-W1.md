@@ -1,6 +1,6 @@
 # 123 — as built, W1 (ELK family + Graph extensions)
 
-Branch `feat/123-w1-elk`: `39d8b79e` (Rust), `661d8aa0` (desktop + apps), then this note.
+Branch `feat/123-w1-elk`: `39d8b79e` Rust, `661d8aa0` desktop + apps, then this note.
 
 ## Built where
 - `crates/surface/src/elk_family.rs` (new): `state_machine_lines/_mermaid` (`stateDiagram-v2`), `entities_lines/_mermaid` (`erDiagram`; `classDiagram` for `class`), `swimlane_lines`, `ledger()` + `graph_delta_lines`, GFM twins `*_md`, `SHOWN_FIELDS = 12`; 6 tests. `lib.rs`: `mod elk_family`, two `to_mermaid()` arms. `render.rs`: the four W1 arms. `export.rs`: four arms (GraphDelta appends the `after` graph via `graph()`), test `elk_family_lowers_to_gfm`. `graph.rs`: §4.4 Graph ext. lowering — `sub` `(…)`, `tag` `[…]`, nested groups one indent deeper (depth ≤ `MAX_GRAPH_GROUP_DEPTH`), `✗→` before a `danger` edge's target; `truncate` now `pub(crate)`. Fixtures: `valid-state-machine-self-loop`, `valid-entities-class` (14 fields → `+2 more`, methods, UML kinds), `valid-swimlane-tb` (`data`), `valid-graph-delta-groups` (removed + changed), `valid-tree-nodes`; goldens: 10 changed, 10 new.
