@@ -1,7 +1,8 @@
 // 126 §10: what the owner's double said about each pending card, keyed by `question_id` — the `DoublePredicted` /
 // `DoubleAnswered` events of the live engine (`on`, `store/sessions`). The engine re-publishes a prediction for every
 // pending card on (re)subscribe (§4.4), so a reload is whole again after the first frame. Nothing is persisted.
-import { create } from 'zustand'
+import { useSyncExternalStore } from 'react'
+import { createStore } from 'zustand'
 import type { DoubleAnswered } from '@/rpc/bindings/DoubleAnswered'
 import type { DoublePredicted } from '@/rpc/bindings/DoublePredicted'
 import { on } from './sessions'
@@ -16,7 +17,7 @@ type DoubleStore = {
   takeOver(id: string): void
 }
 
-export const useDouble = create<DoubleStore>()((set) => ({
+export const doubleStore = createStore<DoubleStore>()((set) => ({
   predicted: {},
   answered: {},
   takenOver: {},
@@ -25,8 +26,14 @@ export const useDouble = create<DoubleStore>()((set) => ({
   takeOver: (id) => set((s) => ({ takenOver: { ...s.takenOver, [id]: true } })),
 }))
 
-on('DoublePredicted', (e) => useDouble.getState().predict(e))
-on('DoubleAnswered', (e) => useDouble.getState().answer(e))
+on('DoublePredicted', (e) => doubleStore.getState().predict(e))
+on('DoubleAnswered', (e) => doubleStore.getState().answer(e))
+
+/** One slice of the store; the same snapshot on the server render, so a static render sees the live state (tests). */
+export function useDouble<T>(selector: (s: DoubleStore) => T): T {
+  const read = () => selector(doubleStore.getState())
+  return useSyncExternalStore(doubleStore.subscribe, read, read)
+}
 
 /** The first id the double knows about: cards carry several candidate keys (approval id, ask id, packet key). */
 export function usePrediction(...ids: (string | null | undefined)[]): DoublePredicted | undefined {

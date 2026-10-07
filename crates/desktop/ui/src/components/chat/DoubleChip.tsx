@@ -13,7 +13,7 @@ import { useApi } from '@/lib/rpc'
 import { formatAt } from '@/lib/time'
 import type { Api } from '@/rpc/api'
 import type { DoublePredicted } from '@/rpc/bindings/DoublePredicted'
-import { useAnswered, useDouble, usePrediction } from '@/store/double'
+import { doubleStore, useAnswered, useDouble, usePrediction } from '@/store/double'
 
 /** ○ L0 · ◐ L1 · ● L2 · ●● L3 (§10). */
 export const rungGlyph = (rung: number): string => (rung <= 0 ? '○' : rung === 1 ? '◐' : rung === 2 ? '●' : '●●')
@@ -56,7 +56,7 @@ export const disagrees = (p: Pick<DoublePredicted, 'rung' | 'choice'> | undefine
 export async function takeOver(api: Pick<Api, 'double_take_over'>, id: string): Promise<boolean> {
   try {
     const ok = await api.double_take_over(id)
-    if (ok) useDouble.getState().takeOver(id)
+    if (ok) doubleStore.getState().takeOver(id)
     else toast.message('double had already answered')
     return ok
   } catch (e) {

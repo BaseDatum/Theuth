@@ -82,7 +82,8 @@ export function mergeCurves(details: readonly DoubleClassDetail[]): WeekPoint[] 
 export function chartProps(points: readonly WeekPoint[]) {
   const label = (iso: string) => {
     const d = new Date(iso)
-    return Number.isNaN(d.getTime()) ? iso : `${d.getDate()} ${['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'][d.getMonth()]}`
+    // `week` is a bare RFC 3339 date (the Monday): UTC getters, so the label never slips a day west of Greenwich.
+    return Number.isNaN(d.getTime()) ? iso : `${d.getUTCDate()} ${['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'][d.getUTCMonth()]}`
   }
   const r = (x: number) => Math.round(x * 1000) / 10
   return {
