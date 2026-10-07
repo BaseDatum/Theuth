@@ -39,8 +39,9 @@ final class AskBarController: NSObject {
         container.addSubview(hosting)
         super.init()
 
-        state.onSubmit = { [weak self] text in self?.submit(text) }
         state.onTyped = { [weak self] text in self?.typedDuringVoiceHold(text) }
+        recorder.onChunk = { [weak self] c in self?.feed(c) }
+        store.onDictation = { [weak self] d, take in self?.dictationChanged(d, takeText: take) }
         NotificationCenter.default.publisher(for: NSWindow.didResignKeyNotification, object: panel)
             .sink { [weak self] _ in MainActor.assumeIsolated { self?.close(returnKey: false) } }
             .store(in: &subs)
@@ -68,6 +69,7 @@ final class AskBarController: NSObject {
         panel.ignoresMouseEvents = false
         panel.makeKeyAndOrderFront(nil)
         state.focusField()
+        prewarm()
         if keyMonitor == nil {
             keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] e in
                 MainActor.assumeIsolated {
@@ -101,10 +103,15 @@ final class AskBarController: NSObject {
 
     // MARK: keys
 
-    /// Only ⎋ and ⌘O are ours; the field takes the rest (⏎ through `onSubmit`).
+    /// The table's Ask-bar scope: ⏎ sends, ⎋, ⌘O, ⌘/; the field takes the rest.
     private func handle(_ e: NSEvent) -> Bool {
-        let key = KeyPress(chars: e.charactersIgnoringModifiers ?? "", keyCode: e.keyCode, command: e.modifierFlags.contains(.command))
-        switch KeyGrammar.intent(for: key) {
+        switch KeyGrammar.intent(for: LegendController.press(e), scope: .askBar, table: SettingsModel.shared.keys) {
+        case .send:
+            submit(state.text)
+            return true
+        case .legend:
+            store.onLegend?()
+            return true
         case .escape:
             if store.undo.held != nil { store.perform(.escape); return true } // undo: the text is still in the field
             close(returnKey: true)
@@ -124,10 +131,11 @@ final class AskBarController: NSObject {
         store.submitAsk(text)
     }
 
-    /// Typing during a voice hold keeps editing instead of sending (§4.3).
+    /// Typing during a voice hold keeps editing instead of sending (§4.3); typed edits win over late partials.
     private func typedDuringVoiceHold(_ text: String) {
         guard let v = state.voiceText, text != v else { return }
         state.voiceText = nil
+        _ = store.ask.dictation.handle(.typed)
         if store.undo.held != nil { store.perform(.escape) }
     }
 
@@ -154,7 +162,8 @@ final class AskBarController: NSObject {
         if attention.isOpen { attention.close(returnKey: true) } else if isOpen { close(returnKey: true) }
     }
 
-    // MARK: voice (D7): hold → AVAudioEngine → release → put_attachment → transcribe → field → the hold
+    // MARK: voice (D7, W6 live): hold → AVAudioEngine → dictation_audio every 100 ms → release → dictation_stop
+    // → DictationFinished → the text stays in the field → the hold
 
     private func voiceEvent(_ e: AskVoiceMachine.Event) {
         apply(voice.handle(e))
@@ -181,36 +190,141 @@ final class AskBarController: NSObject {
             case .startRecording:
                 state.recording = true
                 state.status = "listening…"
+                beginDictation()
                 Task { [weak self] in
                     guard let self else { return }
                     if let why = await self.recorder.start() { self.voiceEvent(.failed(why)) }
                 }
-            case .stopAndTranscribe:
+            case .stopDictation:
                 state.recording = false
-                state.status = "transcribing…"
-                Task { [weak self] in
-                    guard let self else { return }
-                    do {
-                        let wav = self.recorder.stop()
-                        guard !wav.isEmpty else { return self.voiceEvent(.failed("Nothing recorded")) }
-                        let path = try await self.store.client.putAttachment(wav, ext: "wav")
-                        let t = try await self.store.client.transcribe(path: path)
-                        AskLog.write("transcribe \(t.durationMs) ms → \(t.text.count) chars")
-                        self.voiceEvent(.transcript(t.text))
-                    } catch {
-                        self.voiceEvent(.failed("\(error)"))
-                    }
-                }
+                state.status = "finishing…"
+                recorder.stop() // flushes the tail chunk through `onChunk`
+                endDictation()
             case .setText(let text):
                 state.status = nil
+                state.live = false
                 state.voiceText = text
                 state.text = text
                 store.submitAsk(text) // the same 3 s hold; typing or ⎋ keeps editing
             case .fail(let why):
                 state.recording = false
+                state.live = false
                 recorder.cancel()
+                if let id = store.ask.dictation.id { enqueue { [store] in try await store.client.dictationStop(id: id) } }
                 state.status = why
                 AskLog.write("voice: \(why)")
+            }
+        }
+    }
+
+    // MARK: the engine's dictation (design 54 §8): one id per hold; audio in order; the reducer in `store.ask`
+
+    private var sendTask: Task<Void, Never>?
+    private var prewarmed = false
+    private var pendingChunks: [[Int16]] = []
+    /// The release came before `dictation_start` replied.
+    private var stopWanted = false
+
+    /// Calls run strictly in order (audio chunks, then the stop).
+    private func enqueue(_ op: @escaping () async throws -> Void) {
+        let prev = sendTask
+        sendTask = Task {
+            await prev?.value
+            do { try await op() } catch { AskLog.write("dictation call failed: \(error)") }
+        }
+    }
+
+    /// `dictation_prewarm` once, when the Ask bar first opens (not at launch).
+    private func prewarm() {
+        guard !prewarmed else { return }
+        prewarmed = true
+        Task { [store] in
+            do { try await store.client.dictationPrewarm(); AskLog.write("dictation_prewarm ok") }
+            catch { AskLog.write("dictation_prewarm failed: \(error)") }
+        }
+    }
+
+    /// `dictation_start(16000)`; chunks that arrive before the id are held and flushed in order.
+    func beginDictation() {
+        _ = store.ask.dictation.handle(.start)
+        state.live = true
+        state.partial = ""
+        pendingChunks = []
+        enqueue { [weak self, store] in
+            do {
+                let id = try await store.client.dictationStart()
+                AskLog.write("dictation_start → \(id)")
+                guard let self else { return }
+                _ = store.ask.dictation.handle(.started(id: id))
+                for c in self.pendingChunks { self.send(c, id: id) }
+                self.pendingChunks = []
+                if self.stopWanted { self.stopWanted = false; self.endDictation() } // released before the start came back
+            } catch {
+                guard let self else { return }
+                _ = store.ask.dictation.handle(.startFailed("\(error)"))
+                let why = store.ask.dictation.error ?? "\(error)"
+                AskLog.write("dictation_start failed: \(error)")
+                self.voiceEvent(.failed(why))
+                self.probeFailed?(why)
+            }
+        }
+    }
+
+    /// One ~100 ms chunk from the microphone (or the probe's synthesizer).
+    func feed(_ chunk: [Int16]) {
+        if let id = store.ask.dictation.id { send(chunk, id: id) } else if store.ask.dictation.phase == .starting { pendingChunks.append(chunk) }
+    }
+
+    private func send(_ chunk: [Int16], id: String) {
+        enqueue { [store] in try await store.client.dictationAudio(id: id, pcm16: chunk) }
+    }
+
+    /// `dictation_stop` after every queued chunk; the text is final once `DictationFinished` arrives.
+    func endDictation() {
+        guard let id = store.ask.dictation.id else { stopWanted = store.ask.dictation.phase == .starting; return }
+        _ = store.ask.dictation.handle(.stop)
+        enqueue { [store] in try await store.client.dictationStop(id: id); AskLog.write("dictation_stop(\(id)) ok") }
+        // ponytail: a 5 s cap on "finishing…" if the engine never sends DictationFinished; the text so far lands.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 5) { [weak self] in
+            guard let self, case .stopping = self.voice.state else { return }
+            self.voiceEvent(.dictated(self.store.ask.dictation.liveText))
+        }
+    }
+
+    /// The Store reduced a `Dictation*` event: show the live text, pulse the mic, finish the machine.
+    private func dictationChanged(_ d: AskDictation, takeText: Bool) {
+        if takeText, state.live {
+            state.text = d.finalText
+            state.partial = d.partialText
+        }
+        state.level = d.levels.max() ?? 0
+        if !d.isActive {
+            if case .stopping = voice.state { voiceEvent(d.error.map { .failed($0) } ?? .dictated(d.liveText)) }
+            else if let e = d.error, state.live { apply([.fail(e)]) } // Error finish while still recording
+        }
+    }
+
+    // MARK: --synthetic-dictation (probe): 2 s of a 440 Hz tone through the same path, no microphone, no send
+
+    var probeFailed: ((String) -> Void)?
+
+    func probeDictation(seconds: TimeInterval, done: @escaping () -> Void) {
+        prewarm()
+        var sent = 0
+        let total = Int(seconds * 10)
+        beginDictation()
+        Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] t in
+            Task { @MainActor in
+                guard let self else { return t.invalidate() }
+                if sent < total {
+                    let start = sent * VoiceRecorder.chunk
+                    self.feed((0..<VoiceRecorder.chunk).map { i in Int16(sin(2 * .pi * 440 * Double(start + i) / VoiceRecorder.sampleRate) * 0.3 * 32767) })
+                    sent += 1
+                } else {
+                    t.invalidate()
+                    self.endDictation()
+                    done()
+                }
             }
         }
     }

@@ -56,6 +56,12 @@ final class Store: ObservableObject {
     var onRefetched: (() -> Void)?
     /// W3: ⌘L from the Attention panel.
     var onAskBar: (() -> Void)?
+    /// W6: ⌘/ and ⌘, from the panel or the Ask bar.
+    var onLegend: (() -> Void)?
+    var onSettings: (() -> Void)?
+    /// W6: a `Dictation*` event was reduced (`takeText`: the field should show `liveText`); the raw line, for the probe.
+    var onDictation: ((AskDictation, Bool) -> Void)?
+    var onDictationWire: ((String) -> Void)?
 
     /// `locate` runs before every dial, so the engine is found whenever (and wherever) it comes up.
     func start(locate: @escaping @Sendable () -> EngineLocation?) {
@@ -181,7 +187,9 @@ final class Store: ObservableObject {
         case .openSession:
             guard let url = focusedCard?.sessionURL else { return }
             onOpenURL?(url)
-        case .none: break
+        case .legend: onLegend?()
+        case .settings: onSettings?()
+        case .none, .send: break
         case .reply, .askBar: break // W3: handled in performAsk
         }
     }

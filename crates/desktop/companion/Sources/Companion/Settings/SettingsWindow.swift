@@ -1,6 +1,5 @@
 import AppKit
 import CompanionCore
-import KeyboardShortcuts
 import SwiftUI
 import TheuthKit
 import UserNotifications
@@ -76,40 +75,63 @@ struct SettingsView: View {
                 Text("Main").tag("")
                 ForEach(NSScreen.screens.map(\.localizedName), id: \.self) { Text($0).tag($0) }
             }
-            Toggle("Collapse to a sliver when nothing needs you", isOn: $model.value.collapseWhenQuiet)
+            Picker("Rail presence", selection: $model.value.railPresence) {
+                ForEach(RailPresence.allCases, id: \.self) { Text($0.title).tag($0) }
+            }
+            Text(model.value.railPresence == .alwaysSliver
+                 ? "The rail stays a 4 pt sliver; the menu bar's gold ●N is the indicator. Hover the sliver to see it."
+                 : "Sliver when quiet: 4 pt after 8 s with nothing needing you and nothing working; hover reveals it.")
+                .font(.caption).foregroundStyle(.secondary)
             Text("Side and display apply on the next layout; the rail never takes focus.")
                 .font(.caption).foregroundStyle(.secondary)
         }
     }
 
+    /// W6: every row from the table, grouped by scope; the recorder is ours (item 1); the notices never dialog.
     private var keys: some View {
-        Form {
-            KeyboardShortcuts.Recorder("Open the panel", name: .openPanel)
-            Toggle("Double-tap ⌥ as well", isOn: Binding(
-                get: { model.value.doubleTapOption },
-                set: { on in
-                    if on {
-                        // R1-3: the one Accessibility prompt, user-initiated. Not trusted yet → the toggle stays off.
-                        let ok = doubleTap.enable(prompt: true)
-                        axDenied = !ok
-                        model.value.doubleTapOption = ok
-                    } else {
-                        doubleTap.uninstall()
-                        axDenied = false
-                        model.value.doubleTapOption = false
-                    }
-                }))
-            Text(axDenied
-                 ? "macOS asked for Accessibility. Allow theuth Companion in System Settings › Privacy & Security › Accessibility, then turn this on again."
-                 : "Needs Accessibility: a global modifier monitor is how macOS lets an app see ⌥ pressed in other apps. Nothing else is read.")
-                .font(.caption).foregroundStyle(axDenied ? .orange : .secondary)
-            HStack {
-                Text("Undo delay")
-                Slider(value: $model.value.undoDelay, in: 0...5, step: 0.5)
-                Text(String(format: "%.1f s", model.value.undoDelay)).monospacedDigit().frame(width: 40, alignment: .trailing)
+        ScrollView {
+            VStack(alignment: .leading, spacing: 10) {
+                if let n = model.hotkeyNotice {
+                    Text(n).font(.caption).foregroundStyle(.orange)
+                }
+                ForEach(KeyScope.allCases, id: \.self) { scope in
+                    Text(scope.title).font(.caption.weight(.semibold)).foregroundStyle(.secondary).padding(.top, 4)
+                    ForEach(model.keys.bindings(in: scope)) { b in KeyRow(binding: b, model: model) }
+                }
+                Text("Global keys need a modifier and are refused when macOS or another app holds them; panel and Ask bar keys fire only while that surface is key, so they cannot collide with other apps.")
+                    .font(.caption).foregroundStyle(.secondary)
+                HStack {
+                    Button("Reset all to defaults") { model.keys.resetAll(); model.rowNotice = [:] }.disabled(model.keys.overrides.isEmpty)
+                    Spacer()
+                }
+                Divider()
+                Toggle("Double-tap ⌥ as well", isOn: Binding(
+                    get: { model.value.doubleTapOption },
+                    set: { on in
+                        if on {
+                            // R1-3: the one Accessibility prompt, user-initiated. Not trusted yet → the toggle stays off.
+                            let ok = doubleTap.enable(prompt: true)
+                            axDenied = !ok
+                            model.value.doubleTapOption = ok
+                        } else {
+                            doubleTap.uninstall()
+                            axDenied = false
+                            model.value.doubleTapOption = false
+                        }
+                    }))
+                Text(axDenied
+                     ? "macOS asked for Accessibility. Allow theuth Companion in System Settings › Privacy & Security › Accessibility, then turn this on again."
+                     : "Needs Accessibility: a global modifier monitor is how macOS lets an app see ⌥ pressed in other apps. Nothing else is read.")
+                    .font(.caption).foregroundStyle(axDenied ? .orange : .secondary)
+                HStack {
+                    Text("Undo delay")
+                    Slider(value: $model.value.undoDelay, in: 0...5, step: 0.5)
+                    Text(String(format: "%.1f s", model.value.undoDelay)).monospacedDigit().frame(width: 40, alignment: .trailing)
+                }
+                Text("Answers wait this long before they are sent; ⎋ undoes. 0 s sends at once.")
+                    .font(.caption).foregroundStyle(.secondary)
             }
-            Text("Answers wait this long before they are sent; ⎋ undoes. 0 s sends at once.")
-                .font(.caption).foregroundStyle(.secondary)
+            .padding(.trailing, 8)
         }
     }
 

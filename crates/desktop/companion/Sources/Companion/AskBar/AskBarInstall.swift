@@ -40,6 +40,7 @@ enum AskProbe {
                         AskLog.write("ask-probe desk unresolved: \(error)")
                     }
                 }
+                if AskFlags.syntheticDictation { runDictation(store: store, askBar: askBar) }
             }
         }.store(in: &subs)
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
@@ -54,6 +55,31 @@ enum AskProbe {
             AskLog.write("ask-probe windows (CGWindowList): \(wins)")
             AskLog.write("ask-probe done after \(seconds) s — quitting without sending (receipts=\(store.ask.receipts.count) frontmost=\(NSWorkspace.shared.frontmostApplication?.localizedName ?? "?") active=\(NSApp.isActive) key=\(NSApp.keyWindow.map { "\($0.className)" } ?? "none") askbar key=\(askBar.panel.isKeyWindow))")
             NSApp.terminate(nil)
+        }
+    }
+
+    // MARK: --synthetic-dictation (W6): 2 s of a 440 Hz tone through dictation_start/audio/stop, every event logged
+
+    static let dictationLog = URL(fileURLWithPath: "/tmp/130-w6-dictation.log")
+
+    private static func dlog(_ s: String) {
+        AskLog.write(s)
+        let line = "[companion \(Date()) pid \(getpid())] \(s)\n"
+        if let h = try? FileHandle(forWritingTo: dictationLog) { h.seekToEndOfFile(); h.write(Data(line.utf8)); try? h.close() }
+        else { try? Data(line.utf8).write(to: dictationLog) }
+    }
+
+    private static func runDictation(store: Store, askBar: AskBarController) {
+        try? FileManager.default.removeItem(at: dictationLog)
+        dlog("synthetic-dictation start: 2 s of 440 Hz at 16 kHz, 100 ms chunks, microphone untouched, nothing sent")
+        store.onDictationWire = { line in dlog("event \(line)") }
+        askBar.probeFailed = { why in dlog("dictation_start refused: \(why) → state error=\(store.ask.dictation.error ?? "nil") phase=\(store.ask.dictation.phase)") }
+        askBar.probeDictation(seconds: 2) {
+            dlog("stop sent; waiting for DictationFinished")
+            DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
+                let d = store.ask.dictation
+                dlog("after stop: phase=\(d.phase) utterances=\(d.utterances) liveText=\"\(d.liveText)\" error=\(d.error ?? "nil")")
+            }
         }
     }
 }

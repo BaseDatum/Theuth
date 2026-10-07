@@ -238,7 +238,8 @@ struct SettingsPersistenceTests {
         defer { d.removePersistentDomain(forName: suite) }
         #expect(CompanionSettings.load(from: d) == CompanionSettings(), "empty defaults = the design's defaults")
         var s = CompanionSettings()
-        s.railSide = "left"; s.collapseWhenQuiet = false; s.doubleTapOption = true; s.undoDelay = 7
+        s.railSide = "left"; s.railPresence = .alwaysSliver; s.doubleTapOption = true; s.undoDelay = 7
+        s.keys.set(Chord(chars: "n", keyCode: 45), for: .next)
         s.notify.blocking = .atBreak; s.notify.deferrable = .off; s.notify.soundOnErrors = false; s.launchAtLogin = true
         s.save(to: d)
         var back = CompanionSettings.load(from: d)
@@ -248,5 +249,17 @@ struct SettingsPersistenceTests {
         // W1's keys are the ones the Store and the rail already read.
         #expect(d.string(forKey: "railSide") == "left" && d.double(forKey: "undoDelay") == 5)
         #expect(String(decoding: s.loginItemJSON, as: UTF8.self) == "{ \"launch_at_login\": true }\n")
+    }
+
+    @Test func w2CollapseToggleMigratesToPresence() throws {
+        let suite = "io.theuth.mac.companion.tests.\(UUID().uuidString)"
+        let d = try #require(UserDefaults(suiteName: suite))
+        defer { d.removePersistentDomain(forName: suite) }
+        d.set(false, forKey: "railCollapse")
+        #expect(CompanionSettings.load(from: d).railPresence == .expanded)
+        d.set(true, forKey: "railCollapse")
+        #expect(CompanionSettings.load(from: d).railPresence == .sliverWhenQuiet)
+        d.set("alwaysSliver", forKey: "railPresence")
+        #expect(CompanionSettings.load(from: d).railPresence == .alwaysSliver, "the new key wins")
     }
 }

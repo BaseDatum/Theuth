@@ -119,6 +119,8 @@ public struct AskModel: Equatable, Sendable {
     public var replyFor: String?
     /// The receipt of the ask in flight; its text follows the desk's stream.
     public var current: String?
+    /// W6: the live dictation feeding the Ask bar's field.
+    public var dictation = AskDictation()
     public init() {}
 }
 
