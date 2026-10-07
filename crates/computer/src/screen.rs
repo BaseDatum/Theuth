@@ -236,10 +236,17 @@ pub fn grab_screencapture(
 /// pixels (`width*scale × height*scale`), cursor hidden, menu bar included —
 /// the same frame `screencapture -R` of the whole display gives. Works from any
 /// thread (the bridge awaits on Swift's global executor, not a run loop).
+///
+/// Pixels come from `capture_sample_buffer` → `CVPixelBuffer` (BGRA) → one row
+/// copy with a BGRA→RGBA swizzle, not from `CGImage::rgba_data`: rendering the
+/// `CGImage` through CoreGraphics leaves one 14.7 MB decode cache per shot in
+/// the purgeable malloc zone (volatile; counted in RSS, not in footprint), and
+/// neither dropping the image nor an autorelease pool releases it (121 §4.3).
 #[cfg(target_os = "macos")]
 #[doc(hidden)]
 pub fn grab_sck(d: &Display) -> Result<RgbaImage, CaptureError> {
-    use screencapturekit::screenshot_manager::{CGImageExt, SCScreenshotManager};
+    use screencapturekit::cm::CMSampleBufferExt;
+    use screencapturekit::screenshot_manager::SCScreenshotManager;
     use screencapturekit::stream::configuration::SCStreamConfiguration;
     use screencapturekit::stream::content_filter::SCContentFilter;
 
@@ -271,14 +278,47 @@ pub fn grab_sck(d: &Display) -> Result<RgbaImage, CaptureError> {
         .with_width(w)
         .with_height(h)
         .with_shows_cursor(false);
-    let img = SCScreenshotManager::capture_image(&filter, &config).map_err(sck)?;
-    let (iw, ih) = (img.width() as u32, img.height() as u32);
-    // `rgba_data` renders through CoreGraphics into a tightly packed
-    // `width*4`-stride buffer, so no row copy is needed.
-    let data = img.rgba_data().map_err(sck)?;
-    RgbaImage::from_raw(iw, ih, data).ok_or_else(|| {
+    let sb = SCScreenshotManager::capture_sample_buffer(&filter, &config).map_err(sck)?;
+    let pb = sb.pixel_buffer().ok_or_else(|| {
         other(anyhow::anyhow!(
-            "CGImage {iw}x{ih} RGBA buffer has the wrong length"
+            "screenshot sample buffer has no pixel buffer"
+        ))
+    })?;
+    if pb.pixel_format() != u32::from_be_bytes(*b"BGRA") {
+        return Err(other(anyhow::anyhow!(
+            "screenshot pixel format {:#x} is not BGRA",
+            pb.pixel_format()
+        )));
+    }
+    let lock = pb.lock_read_only().map_err(|status| {
+        other(anyhow::anyhow!(
+            "CVPixelBufferLockBaseAddress failed: {status}"
+        ))
+    })?;
+    let (pw, ph, stride) = (lock.width(), lock.height(), lock.bytes_per_row());
+    let row_len = pw * 4;
+    if stride < row_len || lock.data_size() < stride * ph {
+        return Err(other(anyhow::anyhow!(
+            "pixel buffer {pw}x{ph} stride {stride} / size {} too small",
+            lock.data_size()
+        )));
+    }
+    let base = lock.base_address();
+    let mut out = vec![0u8; row_len * ph];
+    for (y, dst_row) in out.chunks_exact_mut(row_len).enumerate() {
+        // SAFETY: the lock keeps the mapping valid; `y < ph` and `stride >= row_len`
+        // with `stride * ph <= data_size`, checked above.
+        let src_row = unsafe { std::slice::from_raw_parts(base.add(y * stride), row_len) };
+        let (dst_px, _) = dst_row.as_chunks_mut::<4>();
+        let (src_px, _) = src_row.as_chunks::<4>();
+        for (dst, &[b, g, r, a]) in dst_px.iter_mut().zip(src_px) {
+            *dst = [r, g, b, a];
+        }
+    }
+    drop(lock);
+    RgbaImage::from_raw(pw as u32, ph as u32, out).ok_or_else(|| {
+        other(anyhow::anyhow!(
+            "pixel buffer {pw}x{ph} RGBA length mismatch"
         ))
     })
 }

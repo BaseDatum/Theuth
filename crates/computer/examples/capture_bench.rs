@@ -3,7 +3,7 @@
 //!
 //! ```text
 //! cargo run -p computer --example capture_bench --release -- [--save <dir>]
-//! cargo run -p computer --example capture_bench --release -- --loop sck|screencapture   # for /usr/bin/time -l
+//! cargo run -p computer --example capture_bench --release -- --loop sck|sck-cg|sck-image|sck-rgba|sck-content|screencapture [--rounds N]   # for /usr/bin/time -l
 //! ```
 //!
 //! Prints min / median / p95 wall-clock ms over 20 timed grabs (after 3
@@ -71,22 +71,110 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         sum as f64 / (u64::from(a.width()) * u64::from(a.height()) * 3) as f64
     }
 
+    /// Display filter + config for `d`, as `grab_sck` builds them.
+    fn sck_filter(d: &Display) -> (SCContentFilter, SCStreamConfiguration) {
+        let c = SCShareableContent::create()
+            .with_on_screen_windows_only(true)
+            .with_exclude_desktop_windows(true)
+            .get()
+            .expect("content");
+        let s = c
+            .displays()
+            .into_iter()
+            .find(|s| s.display_id() == d.id)
+            .expect("display");
+        let f = SCContentFilter::create()
+            .with_display(&s)
+            .with_excluding_windows(&[])
+            .build()
+            .expect("filter");
+        let cfg = SCStreamConfiguration::new()
+            .with_width((d.width as f32 * d.scale).round() as u32)
+            .with_height((d.height as f32 * d.scale).round() as u32)
+            .with_shows_cursor(false);
+        (f, cfg)
+    }
+
+    /// The spike's first `grab_sck`: `capture_image` + `CGImage::rgba_data`
+    /// (CoreGraphics render). Kept to reproduce the RSS growth of 121 §4.3.
+    fn grab_sck_cg(d: &Display) -> RgbaImage {
+        let (f, cfg) = sck_filter(d);
+        let img = SCScreenshotManager::capture_image(&f, &cfg).expect("capture");
+        let (iw, ih) = (img.width() as u32, img.height() as u32);
+        RgbaImage::from_raw(iw, ih, img.rgba_data().expect("rgba")).expect("size")
+    }
+
     fn grab(backend: &str, d: &Display, n: usize, tmp: &std::path::Path) -> RgbaImage {
         match backend {
             "sck" => grab_sck(d).expect("sck grab"),
+            "sck-cg" => grab_sck_cg(d),
             _ => grab_screencapture(d, n, tmp).expect("screencapture grab"),
         }
+    }
+
+    /// Which SCK object retains memory (121 §4.3): `sck-image` = `capture_image`
+    /// only, `CGImage` dropped per round, no RGBA; `sck-rgba` = one `CGImage`,
+    /// `rgba_data` per round; `sck-content` = `SCShareableContent` only.
+    fn sck_piece(mode: &str, d: &Display, rounds: usize) -> usize {
+        let c = SCShareableContent::create()
+            .with_on_screen_windows_only(true)
+            .with_exclude_desktop_windows(true)
+            .get()
+            .expect("content");
+        let s = c
+            .displays()
+            .into_iter()
+            .find(|s| s.display_id() == d.id)
+            .expect("display");
+        let f = SCContentFilter::create()
+            .with_display(&s)
+            .with_excluding_windows(&[])
+            .build()
+            .expect("filter");
+        let cfg = SCStreamConfiguration::new()
+            .with_width((d.width as f32 * d.scale).round() as u32)
+            .with_height((d.height as f32 * d.scale).round() as u32)
+            .with_shows_cursor(false);
+        let mut bytes = 0;
+        match mode {
+            "sck-image" => {
+                for _ in 0..rounds {
+                    let img = SCScreenshotManager::capture_image(&f, &cfg).expect("capture");
+                    bytes += img.width() * img.height() * 4;
+                }
+            }
+            "sck-rgba" => {
+                let img = SCScreenshotManager::capture_image(&f, &cfg).expect("capture");
+                for _ in 0..rounds {
+                    bytes += img.rgba_data().expect("rgba").len();
+                }
+            }
+            _ => {
+                for _ in 0..rounds {
+                    bytes += SCShareableContent::create()
+                        .with_on_screen_windows_only(true)
+                        .with_exclude_desktop_windows(true)
+                        .get()
+                        .expect("content")
+                        .displays()
+                        .len();
+                }
+            }
+        }
+        bytes
     }
 
     let mut args = std::env::args().skip(1);
     let mut save: Option<PathBuf> = None;
     let mut loop_backend: Option<String> = None;
     let mut rounds = RUNS;
+    let mut hold_secs = 0u64;
     while let Some(a) = args.next() {
         match a.as_str() {
             "--save" => save = args.next().map(PathBuf::from),
             "--loop" => loop_backend = args.next(),
             "--rounds" => rounds = args.next().ok_or("--rounds N")?.parse()?,
+            "--hold" => hold_secs = args.next().ok_or("--hold SECS")?.parse()?,
             other => return Err(format!("unknown arg {other}").into()),
         }
     }
@@ -97,17 +185,29 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let all = displays()?;
 
     // RSS mode: just the N-shot loop (default 20) over every display, for `/usr/bin/time -l`.
+    // `--hold SECS` sleeps afterwards so `vmmap -summary <pid>` can look at the process.
     if let Some(backend) = loop_backend {
+        let piece = matches!(backend.as_str(), "sck-image" | "sck-rgba" | "sck-content");
         let mut bytes = 0usize;
-        for _ in 0..rounds {
-            for (n, d) in all.iter().enumerate() {
-                bytes += grab(&backend, d, n, &tmp).len();
+        if piece {
+            for d in &all {
+                bytes += sck_piece(&backend, d, rounds);
+            }
+        } else {
+            for _ in 0..rounds {
+                for (n, d) in all.iter().enumerate() {
+                    bytes += grab(&backend, d, n, &tmp).len();
+                }
             }
         }
         println!(
-            "{backend}: {rounds} rounds × {} displays, {bytes} raw bytes total",
-            all.len()
+            "{backend}: {rounds} rounds × {} displays, {bytes} raw bytes total, pid {}",
+            all.len(),
+            std::process::id()
         );
+        if hold_secs > 0 {
+            std::thread::sleep(std::time::Duration::from_secs(hold_secs));
+        }
         return Ok(());
     }
 
@@ -120,7 +220,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // Per display, per backend.
-    let mut shots: Vec<(RgbaImage, RgbaImage)> = Vec::new();
+    let mut shots: Vec<(RgbaImage, RgbaImage, RgbaImage)> = Vec::new();
     for (n, d) in all.iter().enumerate() {
         println!(
             "\ndisplay #{} ({}x{} logical, scale {}):",
@@ -135,12 +235,25 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             img_sc.len()
         );
         let (ms_sck, img_sck) = timed(|| grab("sck", d, n, &tmp));
-        report("sck (SCShareableContent + capture + RGBA)", ms_sck);
+        report("sck (content + capture_sample_buffer + copy)", ms_sck);
         println!(
             "    {}x{} px, {} raw bytes",
             img_sck.width(),
             img_sck.height(),
             img_sck.len()
+        );
+        let (ms_cg, img_cg) = timed(|| grab("sck-cg", d, n, &tmp));
+        report("sck-cg (content + capture_image + rgba_data)", ms_cg);
+        println!(
+            "    {}x{} px, {} raw bytes; mean |ΔRGB| vs sck = {:.3}",
+            img_cg.width(),
+            img_cg.height(),
+            img_cg.len(),
+            if img_cg.dimensions() == img_sck.dimensions() {
+                rgb_diff(&img_cg, &img_sck)
+            } else {
+                f64::NAN
+            }
         );
 
         // SCK pieces alone.
@@ -216,23 +329,27 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         // Cross-backend comparison, back to back on a still desktop.
         let a = grab("screencapture", d, n, &tmp);
         let b = grab("sck", d, n, &tmp);
-        if a.dimensions() == b.dimensions() {
+        let c = grab("sck-cg", d, n, &tmp);
+        if a.dimensions() == b.dimensions() && a.dimensions() == c.dimensions() {
             println!(
-                "  dimensions equal ({}x{}); mean |ΔRGB| per channel = {:.3}",
+                "  dimensions equal ({}x{}); mean |ΔRGB| per channel: sck vs screencapture {:.3}, sck-cg vs screencapture {:.3}",
                 a.width(),
                 a.height(),
-                rgb_diff(&a, &b)
+                rgb_diff(&a, &b),
+                rgb_diff(&a, &c)
             );
         } else {
             println!(
-                "  DIMENSIONS DIFFER: screencapture {}x{} vs sck {}x{}",
+                "  DIMENSIONS DIFFER: screencapture {}x{} vs sck {}x{} vs sck-cg {}x{}",
                 a.width(),
                 a.height(),
                 b.width(),
-                b.height()
+                b.height(),
+                c.width(),
+                c.height()
             );
         }
-        shots.push((a, b));
+        shots.push((a, b, c));
     }
 
     // Composite (`display: None`) under each backend, via the public `capture`.
@@ -257,10 +374,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     if let Some(dir) = save {
         std::fs::create_dir_all(&dir)?;
-        for (i, (a, b)) in shots.iter().enumerate() {
+        for (i, (a, b, c)) in shots.iter().enumerate() {
             let n = i + 1;
             a.save(dir.join(format!("shot-screencapture-{n}.png")))?;
             b.save(dir.join(format!("shot-sck-{n}.png")))?;
+            c.save(dir.join(format!("shot-sck-cg-{n}.png")))?;
         }
         for (backend, png) in &composites {
             std::fs::write(dir.join(format!("composite-{backend}.png")), png)?;
