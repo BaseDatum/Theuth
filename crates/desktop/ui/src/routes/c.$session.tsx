@@ -3,6 +3,8 @@ import { createFileRoute, useNavigate } from '@tanstack/react-router'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { toast } from 'sonner'
 import { Badge } from '@/components/ui/badge'
+import { AdvisorPill } from '@/components/chat/AdvisorPill'
+import { useAdvisor } from '@/components/chat/advisor'
 import { CodeMapPane } from '@/components/codemap/CodeMapHost'
 import { Composer } from '@/components/chat/Composer'
 import { Header } from '@/components/chat/Header'
@@ -96,6 +98,9 @@ export function LiveSession({ session, first }: { session: string; first: boolea
     if (import.meta.env.DEV && import.meta.env.VITE_CODEMAP_MOCK === '1') void import('@/dev/codemap-fixture').then((m) => m.play(session))
   }, [session])
   useSessionLoad(session)
+  // 125 §8.2: the pill joins the strip's row only while an advisor exists, so the row stays absent when all is quiet.
+  const advisorState = useAdvisor(session)?.state
+  const advised = advisorState !== undefined && advisorState !== 'off'
 
   // ⇧⌘C / ⇧⌘; address the focused pane only.
   useEffect(() => {
@@ -137,7 +142,7 @@ export function LiveSession({ session, first }: { session: string; first: boolea
         </div>
       )}
       <Transcript key={`t:${session}`} session={session} />
-      <SubagentStrip session={session} />
+      <SubagentStrip session={session} trailing={advised ? <AdvisorPill session={session} /> : undefined} />
       <TodoCard key={`d:${session}`} session={session} />
       <Composer key={`c:${session}`} session={session} />
     </>
@@ -200,8 +205,9 @@ export function useSessionLoad(session: string): void {
     void (async () => {
       for (let tries = 0; tries < SETTLE_TRIES; tries++) {
         const s = store.getState().sessions[session]
-        // Nothing to reconcile, or a turn runs: its `TurnDone` publishes the `ContextChanged` that comes back here.
-        if (!s?.contextStale || s.running) break
+        // Nothing to reconcile. A running turn is the engine's call, not this slice's `running` (stale after a gap,
+        // 129 D3): a busy actor answers `settled: false` and its `TurnDone` publishes the `ContextChanged` that comes back here.
+        if (!s?.contextStale) break
         const fresh = freshness(s)
         try {
           const page = await api.load_session(session, null, PAGE, true)
@@ -234,8 +240,8 @@ export function useSessionLoad(session: string): void {
     }
   }, [api, session, load, settle, store, refreshTodos])
 
-  // Reconnect / `Lagged` (bare event): everything between is lost, so the visible session is re-fetched in full.
-  // A context edit (`ContextChanged`, or the picker's `settled` event) goes through the settled path instead.
+  // Reconnect (bare event): everything between is lost, so the visible session is re-fetched in full. A context
+  // edit (`ContextChanged`, or the picker's `settled` event) and 129's `Lagged` resync go through the settled path instead.
   useEffect(() => {
     const reload = (ev: Event) => {
       const detail: ReloadDetail | undefined = ev instanceof CustomEvent ? ev.detail : undefined

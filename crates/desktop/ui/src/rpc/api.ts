@@ -77,6 +77,9 @@ import type { Tier } from '@/rpc/bindings/Tier'
 import type { Venue } from '@/rpc/bindings/Venue'
 import type { MeetingTranscript } from '@/rpc/bindings/MeetingTranscript'
 import type { Permissions } from '@/rpc/bindings/Permissions'
+import type { AdvisorDefaults } from '@/rpc/bindings/AdvisorDefaults'
+import type { AdvisorStatus } from '@/rpc/bindings/AdvisorStatus'
+import type { SyncBacklog } from '@/rpc/bindings/SyncBacklog'
 import type { ProcessInfo } from '@/rpc/bindings/ProcessInfo'
 import type { Profile } from '@/rpc/bindings/Profile'
 import type { ProfileId } from '@/rpc/bindings/ProfileId'
@@ -238,6 +241,8 @@ export interface Api {
   add_provider(name: string, base_url: string, key: string): Promise<ProviderInfo>
   add_skill(name: string, description: string, body: string, always: boolean): Promise<SkillMeta>
   add_skill_repo(url: string, name: string | null): Promise<SkillMeta[]>
+  /** 125 §6.3: the advisor status of `session` (`state: 'off'` when it has none). */
+  advisor_status(session: SessionId): Promise<AdvisorStatus>
   /** One message to many sessions (62 §0.1): server-side selector, one outcome row per session; `dry_run: true` previews. */
   broadcast(req: BroadcastRequest): Promise<BroadcastReceipt>
   /** PNG (base64) of the session's browser page; `null` when it has no isolate or no open page. */
@@ -384,6 +389,8 @@ export interface Api {
   session_orphans(session: SessionId): Promise<SessionOrphan[]>
   /** This engine's replication summary (68 §10): id, sessions owned here / elsewhere, log head, last snapshot. */
   sessions_status(): Promise<SessionsStatus>
+  /** 129 §3.2: per-connection focus. Delta-class events (`TextDelta`, `ReasoningDelta`, `ToolCallProgress`, `VisionProgress`) reach this connection's `subscribe_events` streams only for `sessions`; every other event is unaffected. Replaces the previous set; `[]` means no deltas at all; dies with the connection. -32601 on an engine from before 129. */
+  set_event_focus(sessions: SessionId[]): Promise<null>
   info(): Promise<Info>
   knowledge_delete(id: string): Promise<null>
   knowledge_get(id: string): Promise<Concept>
@@ -785,6 +792,18 @@ export interface Api {
   set_compact_style(style: CompactStyle): Promise<null>
   /** Set or clear `session`'s effort; `manual` (a person picked it) also makes it the default for new chats (83 §2). */
   set_effort(session: SessionId | null, effort: string | null, manual: boolean): Promise<null>
+  /** 125 §6.3: turn `session`'s advisor on with `model` (`provider/model`; creates the hidden advisor child or re-picks its model) or off with `null`; the pick is remembered as `advisor.model` / `advisor.effort`. `AdvisorChanged` follows on the stream. */
+  set_advisor(session: SessionId, model: string | null, effort: string | null): Promise<AdvisorStatus>
+  /** Persist `advisor.effort` (`null` clears): the remembered pick's effort (125 §6.5). */
+  set_advisor_default_effort(effort: string | null): Promise<AdvisorDefaults>
+  /** Persist `advisor.immune_turns` (0–10; 0 disables the window after a steer). */
+  set_advisor_immune_turns(n: number): Promise<AdvisorDefaults>
+  /** Persist `advisor.max_notes_per_update` (1–32). */
+  set_advisor_notes_per_update(n: number): Promise<AdvisorDefaults>
+  /** Persist `advisor.sync_backlog` (`off` | `1` | `3` | `5`). */
+  set_advisor_sync_backlog(v: SyncBacklog): Promise<AdvisorDefaults>
+  /** Star or unstar a catalog model (127 §2); returns the new favorites list, `FavoriteModelsChanged` follows on the stream. */
+  set_model_favorite(model: string, favorite: boolean): Promise<string[]>
   /** Set one harness config option on an ACP child (75 §8): `configId` is the option id or `model` / `effort`; `value` one of its `options[].value`. Mid-turn → `pending: true`, applied at turn end. */
   set_harness_option(session: SessionId, configId: string, value: string): Promise<SetOptionResult>
   /** Resume a stopped ACP child in its prior harness context (75 §10): new process, `session/load` on the stored id, no prompt; a live process is killed first. Rejects a native session, a remote node's session, or one with no stored harness session id. */
@@ -872,6 +891,7 @@ export const METHODS = [
   'add_provider',
   'add_skill',
   'add_skill_repo',
+  'advisor_status',
   'agent_approve',
   'agent_get',
   'agent_pause',
@@ -1135,6 +1155,11 @@ export const METHODS = [
   'session_owner',
   'session_take',
   'sessions_status',
+  'set_advisor',
+  'set_advisor_default_effort',
+  'set_advisor_immune_turns',
+  'set_advisor_notes_per_update',
+  'set_advisor_sync_backlog',
   'set_approvals',
   'set_aws_profile',
   'set_communication',
@@ -1144,6 +1169,7 @@ export const METHODS = [
   'set_decision_training',
   'set_effort',
   'set_escalate_model',
+  'set_event_focus',
   'set_harness_option',
   'set_max_salvages',
   'set_max_tool_rounds',
@@ -1152,6 +1178,7 @@ export const METHODS = [
   'set_meeting_live_diarization',
   'set_meeting_oracle_mode',
   'set_model',
+  'set_model_favorite',
   'set_peer_scope',
   'set_project_style',
   'set_pty_idle',

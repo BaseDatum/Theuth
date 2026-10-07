@@ -2646,6 +2646,7 @@ impl Worker {
             | AgentEvent::HarnessModelChanged { .. }
             | AgentEvent::EffortChanged { .. }
             | AgentEvent::DefaultEffortChanged { .. }
+            | AgentEvent::FavoriteModelsChanged { .. }
             | AgentEvent::Compacting { .. }
             | AgentEvent::Harvesting { .. }
             | AgentEvent::Harvested { .. }
@@ -2665,7 +2666,16 @@ impl Worker {
             | AgentEvent::TurnResumed { .. }
             | AgentEvent::ResumeReport { .. }
             | AgentEvent::TurnSuspended { .. }
-            | AgentEvent::PartialDropped { .. } => {}
+            | AgentEvent::PartialDropped { .. }
+            // 125 §9: the pill is the TUI's and the app's; the thread sees nothing.
+            | AgentEvent::AdvisorChanged { .. } => {}
+            // 125 §9: a concern or blocker is one quiet line; nits post nothing.
+            AgentEvent::AdvisoryAdded { advisory, .. } => {
+                if let Some(line) = advisory.channel_line() {
+                    self.post_blocks_or_markdown(ui::advisory_line(&line), &line)
+                        .await;
+                }
+            }
         }
     }
 
@@ -4196,6 +4206,60 @@ pub(crate) mod tests {
             f.api.calls()
         );
         assert_eq!(f.chan.status().hidden_deliveries, 3);
+    }
+
+    fn advisory(session: SessionId, notes: &[(agent::AdvisorSeverity, &str)]) -> AgentEvent {
+        AgentEvent::AdvisoryAdded {
+            session,
+            seq: 7,
+            advisory: agent::Advisory {
+                advisor: SessionId::new(),
+                step: 3,
+                turn: None,
+                at_ms: 0,
+                notes: notes
+                    .iter()
+                    .map(|(severity, note)| agent::AdvisoryNote {
+                        severity: *severity,
+                        note: (*note).into(),
+                    })
+                    .collect(),
+            },
+        }
+    }
+
+    /// 125 §9: a concern/blocker card is one `context` line (its top note's
+    /// first line); a card of nits posts nothing.
+    #[tokio::test(start_paused = true)]
+    async fn advisory_posts_one_context_line_for_concerns_only() {
+        use agent::AdvisorSeverity::{Blocker, Concern, Nit};
+        let f = fixture();
+        f.bind(OWNER);
+        f.chan
+            .route(Event::Agent(advisory(
+                f.stub.session,
+                &[(Nit, "typo in the docstring")],
+            )))
+            .await;
+        f.chan
+            .route(Event::Agent(advisory(
+                f.stub.session,
+                &[
+                    (Concern, "claims done\nbut the check never ran"),
+                    (Blocker, "the test file was deleted\ndetails"),
+                ],
+            )))
+            .await;
+        let want = format!("post_blocks {DM} 100.1 1 blocks");
+        f.until(|calls| calls.contains(&want)).await;
+        let blocks = f.api.blocks();
+        assert_eq!(blocks.len(), 1, "{blocks:?}");
+        assert_eq!(blocks[0][0]["type"], "context");
+        assert_eq!(
+            blocks[0][0]["elements"][0]["text"],
+            "advisor · blocker — the test file was deleted"
+        );
+        assert!(!f.api.calls().iter().any(|c| c.starts_with("post_markdown")));
     }
 
     fn compacted(session: SessionId, epoch: u32) -> AgentEvent {

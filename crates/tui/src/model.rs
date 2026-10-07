@@ -12,12 +12,13 @@ use acp::registry::RegistryAgent;
 use agent::durability::ResumeKind;
 use agent::todo::{Status as TodoStatus, TodoSnapshot, TodoSource};
 use agent::{
-    AgentEvent, AgentInfo, AgentState, AwsProfiles, CommunicationChanged, CommunicationState,
-    CompactStyle, ContextAttachment, ContextEntry, ContextItem, ContextKind, ContextRemoval,
-    ContextSnapshot, ContextTarget, HistoryEntry, Loaded, ModelInfo, PeerDelivered, PeerInfo,
-    PeerMessageChanged, PeerMessagePage, PeerOrigin, PeerPage, PeerReceipt, PeerRecord, PeerScope,
-    ProviderInfo, QueuedInput, SessionSummary, SkillBody, SkillMeta, Usage, VisionNote,
-    VisionStage, VisionStatus,
+    AdvisorDefaults, AdvisorSeverity, AdvisorState, AdvisorStatus, Advisory, AgentEvent, AgentInfo,
+    AgentState, AwsProfiles, CommunicationChanged, CommunicationState, CompactStyle,
+    ContextAttachment, ContextEntry, ContextItem, ContextKind, ContextRemoval, ContextSnapshot,
+    ContextTarget, HistoryEntry, Loaded, ModelInfo, PeerDelivered, PeerInfo, PeerMessageChanged,
+    PeerMessagePage, PeerOrigin, PeerPage, PeerReceipt, PeerRecord, PeerScope, ProviderInfo,
+    QueuedInput, SessionKind, SessionSummary, SkillBody, SkillMeta, Usage, VisionNote, VisionStage,
+    VisionStatus,
 };
 use agent::{
     BroadcastReceipt, BroadcastRequest, BroadcastTargets, CleanupStatus, CloseResult, CostBucket,
@@ -109,6 +110,10 @@ pub enum UiEvent {
     ModelSet(ModelInfo),
     /// Reply to [`Command::SetEffort`]: the value now in force.
     EffortSet(Option<String>),
+    /// Reply to [`Command::SetAdvisor`] / [`Command::AdvisorStatus`] (125 §7.1).
+    AdvisorStatus(AdvisorStatus),
+    /// Reply to [`Command::SetModelFavorite`]: the engine's favorite list now (127 §3).
+    FavoriteModels(Vec<String>),
     /// Reply to [`Command::HarnessOptions`] (75 §8): the harness's option list.
     HarnessOptions(Vec<acp::ConfigOption>),
     /// Reply to [`Command::SetHarnessOption`]: the option key asked for, the value, and the result.
@@ -522,6 +527,24 @@ pub enum Command {
         session: Option<SessionId>,
         /// Effort keyword or token budget; `None` clears it (provider default).
         effort: Option<String>,
+    },
+    /// `set_advisor` (125 §7.1): `model: None` turns the advisor off.
+    SetAdvisor {
+        /// The advised session.
+        session: SessionId,
+        /// `provider/model` of the advisor; `None` = off.
+        model: Option<String>,
+        /// Its effort.
+        effort: Option<String>,
+    },
+    /// `advisor_status` (125 §7.3).
+    AdvisorStatus(SessionId),
+    /// `set_model_favorite` (127 §3): star (`true`) or unstar `model` on the engine.
+    SetModelFavorite {
+        /// `provider/model` id.
+        model: String,
+        /// `true` stars, `false` unstars.
+        favorite: bool,
     },
     /// `harness_options` on an ACP session (75 §8).
     HarnessOptions(SessionId),
@@ -1039,6 +1062,14 @@ pub enum Entry {
     /// 109 §10.3: a plain divider in the `Compacted` shape (`── resumed after
     /// restart ──`); nothing to expand.
     Divider(String),
+    /// 125 §7.4: one Advisory card — every note the advisor raised at one
+    /// step boundary. Three notes until Ctrl+O (`ADVISORY_COLLAPSED`).
+    Advisory {
+        /// The typed metadata of the row.
+        advisory: Advisory,
+        /// Show every note.
+        expanded: bool,
+    },
     /// Informational line (session lists, notices).
     Info(String),
     /// Error line.
@@ -1099,6 +1130,114 @@ fn card(kind: CardKind, title: String, text: &str) -> Entry {
     }
 }
 
+/// Notes an [`Entry::Advisory`] shows before Ctrl+O (125 §7.4).
+pub const ADVISORY_COLLAPSED: usize = 3;
+/// The advisor glyph (U+25CE; outside `tests/no_emoji.rs`' ranges, `◉` is Vision).
+pub const ADVISOR_GLYPH: &str = "◎";
+
+/// `nit` / `concern` / `blocker`: the badge word.
+pub fn severity_name(s: AdvisorSeverity) -> &'static str {
+    match s {
+        AdvisorSeverity::Nit => "nit",
+        AdvisorSeverity::Concern => "concern",
+        AdvisorSeverity::Blocker => "blocker",
+    }
+}
+
+/// The card's severity: the worst of its notes (`Nit` for an empty list).
+pub fn advisory_severity(a: &Advisory) -> AdvisorSeverity {
+    a.notes
+        .iter()
+        .map(|n| n.severity)
+        .max()
+        .unwrap_or(AdvisorSeverity::Nit)
+}
+
+/// `◎ advisor · 2 notes`: the card title.
+pub fn advisory_title(a: &Advisory) -> String {
+    let n = a.notes.len();
+    format!(
+        "{ADVISOR_GLYPH} advisor · {n} note{}",
+        if n == 1 { "" } else { "s" }
+    )
+}
+
+/// `[concern] note text`: one line per note (the headless printer; the
+/// renderer colours the badge itself).
+pub fn advisory_lines(a: &Advisory) -> Vec<String> {
+    a.notes
+        .iter()
+        .map(|n| format!("[{}] {}", severity_name(n.severity), n.note))
+        .collect()
+}
+
+/// `advisor → anthropic/claude-opus-4-1` / `advisor → off`: the one info
+/// line on `AdvisorChanged` (125 §7.5, the `model → …` shape).
+pub fn advisor_changed_line(s: &AdvisorStatus) -> String {
+    match (&s.state, &s.model) {
+        (AdvisorState::Off, _) | (_, None) => "advisor → off".to_owned(),
+        (_, Some(m)) => format!("advisor → {m}"),
+    }
+}
+
+/// `off` / `idle` / `reviewing` / `paused` / `halted`.
+pub fn advisor_state_name(s: AdvisorState) -> &'static str {
+    match s {
+        AdvisorState::Off => "off",
+        AdvisorState::Idle => "idle",
+        AdvisorState::Reviewing => "reviewing",
+        AdvisorState::Paused => "paused",
+        AdvisorState::Halted => "halted",
+    }
+}
+
+/// `/advisor status` (125 §7.3): the four lines, `—` for unknowns; one
+/// line when off.
+pub fn advisor_status_lines(s: &AdvisorStatus) -> Vec<String> {
+    if s.state == AdvisorState::Off {
+        return vec!["advisor: off  ·  /advisor to pick a model".to_owned()];
+    }
+    let dash = || "—".to_owned();
+    // Why paused / halted rides on the state line.
+    let detail = s
+        .detail
+        .as_deref()
+        .map_or_else(String::new, |d| format!("  ·  {d}"));
+    let mut out = vec![
+        format!(
+            "advisor: {}  ·  {}  ·  {}{detail}",
+            advisor_state_name(s.state),
+            s.model.clone().unwrap_or_else(dash),
+            s.effort.clone().unwrap_or_else(dash)
+        ),
+        format!(
+            "notes: {} nit · {} concern · {} blocker  ·  step {}  ·  backlog {}",
+            s.notes.nit, s.notes.concern, s.notes.blocker, s.step, s.backlog
+        ),
+    ];
+    let context = if s.context_limit > 0 {
+        format!(
+            "{} / {} ({}%)",
+            k(s.context_used),
+            k(s.context_limit),
+            u64::from(s.context_used) * 100 / u64::from(s.context_limit)
+        )
+    } else {
+        k(s.context_used)
+    };
+    out.push(format!(
+        "context: {context}  ·  in {} · out {}  ·  cost {}",
+        k(u32::try_from(s.tokens_in).unwrap_or(u32::MAX)),
+        k(u32::try_from(s.tokens_out).unwrap_or(u32::MAX)),
+        s.cost.as_ref().map_or_else(dash, cost_short)
+    ));
+    out.push(match &s.last_note {
+        Some(n) => format!("last: [{}] {}", severity_name(n.severity), n.note),
+        None => "last: —".to_owned(),
+    });
+    out
+}
+
 /// Rows a string of `chars` occupies at `width` columns (at least one).
 fn rows(chars: usize, width: usize) -> usize {
     chars.div_ceil(width.max(1)).max(1)
@@ -1133,6 +1272,15 @@ impl Entry {
             // width, so they count one row per line like everything else.
             Entry::Assistant(t) => md(t, width),
             Entry::Card { text, expanded, .. } => 4 + if *expanded { md(text, inner) } else { 0 },
+            // 125 §7.4: border + title + margin, one row per note shown, the `… +N more` row.
+            Entry::Advisory { advisory, expanded } => {
+                let n = advisory.notes.len();
+                if *expanded {
+                    4 + n
+                } else {
+                    4 + n.min(ADVISORY_COLLAPSED) + usize::from(n > ADVISORY_COLLAPSED)
+                }
+            }
             Entry::Reasoning { done: true, .. } => 1,
             Entry::Reasoning { text, .. } | Entry::Info(text) | Entry::Error(text) => {
                 text_rows(text, width)
@@ -1240,6 +1388,8 @@ pub fn injected(text: &str) -> Option<Vec<(CardKind, String, String)>> {
             "knowledge" => (None, "</knowledge>"),
             "nudge" => (None, "</nudge>"),
             "journal" => (None, "</journal>"),
+            // 125 §7.4: an advisory steer's row is carded by `AdvisoryAdded`, never echoed.
+            "advisory" => (None, "</advisory>"),
             _ => return None,
         };
         let (body, tail) = after.split_once(close)?;
@@ -1335,6 +1485,11 @@ pub const COMMANDS: &[(&str, &str, &str)] = &[
         "/effort",
         "[level|clear]",
         "reasoning effort (picker without arg)",
+    ),
+    (
+        "/advisor",
+        "[off|on|status|<provider/model>]",
+        "a second model that reviews this session (picker without argument)",
     ),
     (
         "/aws",
@@ -1733,6 +1888,25 @@ pub fn window(len: usize, cursor: usize, max: usize) -> Range<usize> {
     start..len.min(start + max)
 }
 
+/// Where a `/model` / `/effort` pick goes (125 §7.2).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum PickTarget {
+    /// `set_model` / `set_effort`: the shown session (and the default).
+    #[default]
+    Session,
+    /// `set_advisor`: the shown session's advisor.
+    Advisor,
+}
+
+/// Why a `set_advisor` / `advisor_status` call was made (125 §7.1).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum AdvisorReply {
+    /// `/advisor status`: print the lines of §7.3.
+    Status,
+    /// A model pick: chain into the advisor's effort picker when it has levels.
+    Pick,
+}
+
 /// An open menu; modal except `Slash`, which rides on the input box.
 #[derive(Debug)]
 pub enum Menu {
@@ -1751,6 +1925,8 @@ pub enum Menu {
         cursor: usize,
         /// The provider whose models are listed; `None` is the providers level.
         provider: Option<String>,
+        /// Whose model a pick sets (125 §7.2): the session's or its advisor's.
+        target: PickTarget,
     },
     /// `/effort` picker.
     Efforts {
@@ -1758,6 +1934,8 @@ pub enum Menu {
         items: Vec<String>,
         /// Highlighted row.
         cursor: usize,
+        /// Whose effort a pick sets.
+        target: PickTarget,
     },
     /// `/aws` picker.
     AwsProfiles {
@@ -3222,6 +3400,10 @@ pub struct Model {
     /// The engine's default for new sessions (`Info.default_model`, then
     /// `DefaultModelChanged`, 82 §3): what the header shows after `/new`.
     pub default_model: String,
+    /// The engine's starred models (`Info.favorite_models`, then
+    /// `FavoriteModelsChanged` / the `set_model_favorite` reply, 127 §3), in
+    /// starring order; `/model` lists them first.
+    pub favorite_models: Vec<String>,
     /// The LLM an ACP child's harness reports (06 §8.2); the header shows
     /// `model_id · harness_model`. `None` for native sessions.
     pub harness_model: Option<String>,
@@ -3435,6 +3617,21 @@ pub struct Model {
     /// The ledger of the shown session (or an ancestor) changed: the event
     /// loop re-asks `session_cost`.
     pub refresh_cost: bool,
+    /// The shown session's advisor (125 §7.5): the status segment, the
+    /// header tag, the picker's `●`. `state: Off` until a reply or event says otherwise.
+    pub advisor: AdvisorStatus,
+    /// `Info.advisor` (125 §6.5): the last remembered pick, served by `/advisor on`;
+    /// follows every `AdvisorChanged` with a model.
+    pub advisor_default: AdvisorDefaults,
+    /// Where the next `UiEvent::Models` picker sends its pick.
+    pick_target: PickTarget,
+    /// What the next `UiEvent::AdvisorStatus` reply is for; `None` installs it silently.
+    advisor_reply: Option<AdvisorReply>,
+    /// Seqs of the Advisory rows `AdvisoryAdded` carded: a `TurnStarted`
+    /// opened by one is not echoed as `◆ you`.
+    advisory_seqs: BTreeSet<i64>,
+    /// A transcript was loaded: the event loop re-asks `advisor_status`.
+    pub refresh_advisor: bool,
     /// Effective project of the shown session's root (`Loaded.project`).
     pub project: Option<String>,
     /// A `/sessions` or `/artifacts` menu is open and session metadata
@@ -3494,6 +3691,7 @@ impl Model {
             // (the global default after `/new`).
             refresh_communication: true,
             app_enabled: self.app_enabled,
+            advisor_default: std::mem::take(&mut self.advisor_default),
             vision_model: self.vision_model.take(),
             search: std::mem::take(&mut self.search),
             private: self.private.take(),
@@ -3553,6 +3751,8 @@ impl Model {
         self.project = loaded.project;
         // The header's cost tag is the owner's summary, re-read on every load (51 §6.2).
         self.refresh_cost = true;
+        // The link survives a restart (125 §3): re-read it with the transcript.
+        self.refresh_advisor = true;
         if let Some(n) = loaded.context_estimate {
             self.context = n;
             self.context_estimated = true;
@@ -4191,12 +4391,14 @@ impl Model {
                         summary: Some(_),
                         ..
                     }
-            )
+            ) || matches!(e, Entry::Advisory { advisory, .. } if advisory.notes.len() > ADVISORY_COLLAPSED)
         }) else {
             return;
         };
         match e {
-            Entry::Card { expanded, .. } | Entry::Compacted { expanded, .. } => {
+            Entry::Card { expanded, .. }
+            | Entry::Compacted { expanded, .. }
+            | Entry::Advisory { expanded, .. } => {
                 *expanded = !*expanded;
             }
             Entry::Tool {
@@ -4279,6 +4481,7 @@ impl Model {
             || self.compacting
             || self.harvesting
             || self.vision.is_some()
+            || self.advisor.state == AdvisorState::Reviewing
             || self.agents.values().any(AgentRow::live)
             || self.pairing.is_some()
             || self.double_counting_down()
@@ -4497,6 +4700,8 @@ impl Model {
                 let mut old = std::mem::take(&mut self.agents);
                 self.agents = list
                     .into_iter()
+                    // 125 §7.5: the hidden advisor child is never a board row.
+                    .filter(|info| info.kind != SessionKind::Advisor)
                     .map(|info| {
                         let row = match old.remove(&info.id) {
                             Some(mut row) => {
@@ -4585,6 +4790,7 @@ impl Model {
                 }
             }
             UiEvent::Models(items) => {
+                let target = std::mem::take(&mut self.pick_target);
                 if items.is_empty() {
                     self.entries
                         .push(Entry::Error("no models: no provider is configured".into()));
@@ -4599,6 +4805,7 @@ impl Model {
                         filter: String::new(),
                         cursor: 0,
                         provider,
+                        target,
                     });
                     self.models_home();
                 }
@@ -4608,9 +4815,10 @@ impl Model {
             UiEvent::ModelSet(info) => {
                 self.model_id = info.id;
                 if !info.efforts.is_empty() {
-                    self.open_efforts(info.efforts);
+                    self.open_efforts(info.efforts, PickTarget::Session);
                 }
             }
+            UiEvent::FavoriteModels(models) => self.set_favorites(models),
             UiEvent::EffortSet(effort) => {
                 self.awaiting_effort = false;
                 self.entries.push(Entry::Info(match &effort {
@@ -4618,6 +4826,36 @@ impl Model {
                     None => "effort cleared".to_owned(),
                 }));
                 self.effort = effort;
+            }
+            // The reply of `/advisor …` or a load's refresh (125 §7.1): installed
+            // silently; `status` prints its lines; a pick chains into the effort picker.
+            UiEvent::AdvisorStatus(status) => {
+                if status.session != self.session.unwrap_or(status.session) {
+                    return;
+                }
+                let why = self.advisor_reply.take();
+                self.set_advisor_status(status);
+                match why {
+                    Some(AdvisorReply::Status) => {
+                        for line in advisor_status_lines(&self.advisor) {
+                            self.entries.push(Entry::Info(line));
+                        }
+                    }
+                    Some(AdvisorReply::Pick) => {
+                        let levels = self
+                            .advisor
+                            .model
+                            .as_deref()
+                            .zip(self.catalog.as_ref())
+                            .and_then(|(id, c)| c.closest(id))
+                            .map(|m| m.efforts())
+                            .unwrap_or_default();
+                        if !levels.is_empty() {
+                            self.open_efforts(levels, PickTarget::Advisor);
+                        }
+                    }
+                    None => {}
+                }
             }
             UiEvent::HarnessOptions(options) => {
                 for line in harness_options_lines(&options) {
@@ -5626,6 +5864,11 @@ impl Model {
                 self.default_model = model;
                 return;
             }
+            // 127 §3: global; an open `/model` picker re-renders from it.
+            AgentEvent::FavoriteModelsChanged { models } => {
+                self.set_favorites(models);
+                return;
+            }
             // 83 §3: global; the draft header (no session open) follows it.
             AgentEvent::DefaultEffortChanged { effort } => {
                 if self.session.is_none() {
@@ -5638,6 +5881,35 @@ impl Model {
         };
         // Roster bookkeeping for the subtree, independent of what is shown.
         match &ev {
+            // 125 §7.5: the advisor is session chrome (status segment, header
+            // tag), never a transcript row — it must not finish a streaming
+            // tail below. `set_advisor_status` prints the one change line.
+            AgentEvent::AdvisorChanged { session, status } => {
+                if self.session == Some(*session) {
+                    self.set_advisor_status(status.clone());
+                }
+                return;
+            }
+            // 125 §7.4: the card goes above a streaming tail; a steer's row
+            // may also open a turn, whose `TurnStarted` must not echo it.
+            AgentEvent::AdvisoryAdded {
+                session,
+                seq,
+                advisory,
+            } => {
+                if self.session == Some(*session) && self.advisory_seqs.insert(*seq) {
+                    self.interject(Entry::Advisory {
+                        advisory: advisory.clone(),
+                        expanded: false,
+                    });
+                }
+                return;
+            }
+            // 125 §7.5: the hidden advisor child never reaches the board (the
+            // event carries no `kind`; the link's id is the guard).
+            AgentEvent::SubagentSpawned { child, .. } if self.advisor.advisor == Some(*child) => {
+                return;
+            }
             AgentEvent::SubagentSpawned {
                 parent,
                 child,
@@ -5667,6 +5939,7 @@ impl Model {
                             retention: agent::Retention::Durable,
                             activity: Default::default(),
                             cap: *cap,
+                            kind: Default::default(),
                         }),
                     );
                 }
@@ -5852,7 +6125,9 @@ impl Model {
             } => {
                 self.model_id = model;
                 self.turn_seq = Some(turn_seq);
-                if injected(&text).is_some() {
+                // 125 §7.4: a steer's row is already its card (by seq, or by
+                // the `<advisory>` wrapper when the card has not landed yet).
+                if self.advisory_seqs.contains(&turn_seq) || injected(&text).is_some() {
                     return;
                 }
                 let shown = self.last_injected_turn.take() == Some(turn)
@@ -6061,7 +6336,8 @@ impl Model {
             | AgentEvent::ContextChanged { .. }
             | AgentEvent::TodoChanged { .. }
             | AgentEvent::DefaultModelChanged { .. }
-            | AgentEvent::DefaultEffortChanged { .. } => {}
+            | AgentEvent::DefaultEffortChanged { .. }
+            | AgentEvent::FavoriteModelsChanged { .. } => {}
             AgentEvent::Harvesting { .. } => self.harvesting = true,
             AgentEvent::Harvested { added, updated, .. } => {
                 self.harvesting = false;
@@ -6095,6 +6371,8 @@ impl Model {
             | AgentEvent::SessionOwnerChanged { .. }
             | AgentEvent::SessionClosing { .. }
             | AgentEvent::PartialDropped { .. } => {}
+            // 125: handled before the streaming-tail bookkeeping above.
+            AgentEvent::AdvisorChanged { .. } | AgentEvent::AdvisoryAdded { .. } => {}
             // 109 §10.3: the divider and the status-line note.
             AgentEvent::TurnResumed {
                 kind,
@@ -6345,7 +6623,7 @@ impl Model {
                     .and_then(|c| c.closest(&self.model_id))
                     .map(|m| m.efforts())
                     .unwrap_or_default();
-                self.open_efforts(items);
+                self.open_efforts(items, PickTarget::Session);
             }
             "/effort" => self.set_effort((arg != "clear").then(|| arg.to_owned()), tx),
             "/aws" if arg.is_empty() => send(tx, Command::ListAwsProfiles),
@@ -6354,6 +6632,7 @@ impl Model {
                 Command::SetAwsProfile((arg != "clear").then(|| arg.to_owned())),
             ),
             "/approvals" => self.approvals_cmd(arg, tx),
+            "/advisor" => self.advisor_cmd(arg, tx),
             "/communication" => self.communication_cmd(arg, tx),
             "/peers" => self.peers_cmd(arg, tx),
             "/a2a" if arg.is_empty() => send(tx, Command::A2aStatus),
@@ -6983,9 +7262,10 @@ impl Model {
                 };
                 (
                     format!(
-                        "{model}{effort}  ·  ctx {used} / {} ({pct}%){cache}{}{}{}{}{}{}",
+                        "{model}{effort}  ·  ctx {used} / {} ({pct}%){cache}{}{}{}{}{}{}{}",
                         k(limit),
                         self.cost_tag(),
+                        self.advisor_tag(),
                         self.approvals_tag(),
                         self.communication_tag(),
                         self.link_tag(),
@@ -6997,8 +7277,9 @@ impl Model {
             }
             _ => (
                 format!(
-                    "{model}{effort}  ·  ctx {used}{cache}{}{}{}{}{}{}",
+                    "{model}{effort}  ·  ctx {used}{cache}{}{}{}{}{}{}{}",
                     self.cost_tag(),
+                    self.advisor_tag(),
                     self.approvals_tag(),
                     self.communication_tag(),
                     self.link_tag(),
@@ -7008,6 +7289,28 @@ impl Model {
                 Level::Normal,
             ),
         }
+    }
+
+    /// `  ·  advisor $0.012` (125 §7.5): the advisor session's spend from the
+    /// last `AdvisorStatus`; empty while off or before it was priced.
+    fn advisor_tag(&self) -> String {
+        match (&self.advisor.state, &self.advisor.cost) {
+            (AdvisorState::Off, _) | (_, None) => String::new(),
+            (_, Some(c)) => format!("  ·  advisor {}", cost_short(c)),
+        }
+    }
+
+    /// The status line's advisor segment (125 §7.5): `  ·  ◎ advisor: idle` /
+    /// `⠋ reviewing…` / `paused` / `halted` with the state that colours it;
+    /// `None` while off.
+    pub fn advisor_segment(&self) -> Option<(String, AdvisorState)> {
+        let state = self.advisor.state;
+        let word = match state {
+            AdvisorState::Off => return None,
+            AdvisorState::Reviewing => format!("{} reviewing…", self.spinner()),
+            s => advisor_state_name(s).to_owned(),
+        };
+        Some((format!("  ·  {ADVISOR_GLYPH} advisor: {word}"), state))
     }
 
     fn approvals_tag(&self) -> &'static str {
@@ -7063,16 +7366,102 @@ impl Model {
     }
 
     /// Open the `/effort` picker over `items` plus a `clear` row; no levels → a notice.
-    fn open_efforts(&mut self, mut items: Vec<String>) {
+    /// `target` says whose effort the pick sets (125 §7.2).
+    fn open_efforts(&mut self, mut items: Vec<String>, target: PickTarget) {
         if items.is_empty() {
+            let model = match target {
+                PickTarget::Session => self.model_id.as_str(),
+                PickTarget::Advisor => self.advisor.model.as_deref().unwrap_or("advisor"),
+            };
             self.entries.push(Entry::Info(format!(
-                "{} has no reasoning effort levels",
-                self.model_id
+                "{model} has no reasoning effort levels"
             )));
             return;
         }
         items.push("clear".into());
-        self.menu = Some(Menu::Efforts { items, cursor: 0 });
+        self.menu = Some(Menu::Efforts {
+            items,
+            cursor: 0,
+            target,
+        });
+    }
+
+    /// `/advisor [off|on|status|<provider/model>]` (125 §7.1): bare opens the
+    /// `/model` picker targeted at the advisor; `on` re-uses the remembered
+    /// model; anything else is a `provider/model` id. Not on an ACP child:
+    /// the advisor reads theuth's transcript rows, which a harness does not produce.
+    fn advisor_cmd(&mut self, arg: &str, tx: &UnboundedSender<Command>) {
+        if self.agent.is_some() {
+            self.entries.push(Entry::Error(
+                "/advisor: not available for an external harness session".into(),
+            ));
+            return;
+        }
+        if arg.is_empty() {
+            self.pick_target = PickTarget::Advisor;
+            send(tx, Command::ListModels);
+            return;
+        }
+        let Some(session) = self.session else {
+            self.entries
+                .push(Entry::Error("no session yet: send a message first".into()));
+            return;
+        };
+        let (model, effort) = match arg {
+            "status" => {
+                self.advisor_reply = Some(AdvisorReply::Status);
+                send(tx, Command::AdvisorStatus(session));
+                return;
+            }
+            "off" => (None, None),
+            "on" => match self.advisor_default.model.clone() {
+                Some(m) => (Some(m), self.advisor_default.effort.clone()),
+                None => {
+                    self.entries.push(Entry::Error(
+                        "/advisor on: no remembered advisor model — pick one with /advisor".into(),
+                    ));
+                    return;
+                }
+            },
+            id => (Some(id.to_owned()), None),
+        };
+        self.set_advisor(session, model, effort, tx);
+    }
+
+    /// `SetAdvisor` for `session`; a pick (`Some` model) chains into the
+    /// advisor's effort picker when the reply names a model with levels.
+    fn set_advisor(
+        &mut self,
+        session: SessionId,
+        model: Option<String>,
+        effort: Option<String>,
+        tx: &UnboundedSender<Command>,
+    ) {
+        self.advisor_reply = (model.is_some() && effort.is_none()).then_some(AdvisorReply::Pick);
+        send(
+            tx,
+            Command::SetAdvisor {
+                session,
+                model,
+                effort,
+            },
+        );
+    }
+
+    /// Install the shown session's advisor status (a reply or `AdvisorChanged`,
+    /// whichever lands first): one `advisor → …` line when the model or the
+    /// off state changed (125 §7.5); a model remembers itself as the `/advisor on` default.
+    fn set_advisor_status(&mut self, status: AdvisorStatus) {
+        let off = |s: &AdvisorStatus| s.state == AdvisorState::Off || s.model.is_none();
+        let changed = status.model != self.advisor.model || off(&status) != off(&self.advisor);
+        if status.model.is_some() {
+            self.advisor_default.model.clone_from(&status.model);
+            self.advisor_default.effort.clone_from(&status.effort);
+        }
+        self.advisor = status;
+        if changed {
+            self.interject(Entry::Info(advisor_changed_line(&self.advisor)));
+        }
     }
 
     /// `SetEffort` for the root session (and the default); the reply announces it.
@@ -8317,33 +8706,52 @@ impl Model {
         }
     }
 
-    /// `/model` picker rows (124 §3): the current model then one row per provider;
-    /// a provider's models by name; or, with a filter, the current model then the
-    /// ranked results over every model (the current one removed so it shows once).
+    /// `/model` picker rows (124 §3, 127 §3): the favorites present in the
+    /// catalog, the current model unless it is one of them, then one row per
+    /// provider; a provider's models by name; or, with a filter, the current
+    /// model then the ranked results over every model (the current one
+    /// removed so it shows once).
     pub fn models_rows(&self) -> Vec<ModelRow<'_>> {
         let Some(Menu::Models {
             items,
             filter,
             provider,
+            target,
             ..
         }) = &self.menu
         else {
             return Vec::new();
         };
-        let current = items.iter().find(|m| m.id == self.model_id);
+        let picked = self.pick_current();
+        let current = items.iter().find(|m| Some(m.id.as_str()) == picked);
         let mut rows = Vec::new();
+        // 125 §7.2: the advisor's picker leads with `Off` while browsing (either
+        // level — a single provider skips the providers one), marked while there is none.
+        if filter.is_empty() && *target == PickTarget::Advisor {
+            rows.push(ModelRow::Off {
+                current: picked.is_none(),
+            });
+        }
         if !filter.is_empty() {
             rows.extend(current.map(ModelRow::Current));
             rows.extend(
                 rank_models(items, filter)
                     .into_iter()
-                    .filter(|m| m.id != self.model_id)
+                    .filter(|m| Some(m.id.as_str()) != picked)
                     .map(ModelRow::Model),
             );
         } else if let Some(p) = provider {
             rows.extend(provider_models(items, p).into_iter().map(ModelRow::Model));
         } else {
-            rows.extend(current.map(ModelRow::Current));
+            rows.extend(
+                self.favorite_models
+                    .iter()
+                    .filter_map(|f| items.iter().find(|m| m.id == *f))
+                    .map(ModelRow::Favorite),
+            );
+            if !self.favorite_models.contains(&self.model_id) {
+                rows.extend(current.map(ModelRow::Current));
+            }
             let now = current.map(|c| c.provider.as_str());
             rows.extend(providers(items).into_iter().map(|(id, count)| {
                 let current = now == Some(id.as_str());
@@ -8353,12 +8761,38 @@ impl Model {
         rows
     }
 
+    /// The model the open `/model` picker marks `●`: the session's, or the
+    /// advisor's (`None` while off) when the picker targets it (125 §7.2).
+    pub fn pick_current(&self) -> Option<&str> {
+        match &self.menu {
+            Some(Menu::Models {
+                target: PickTarget::Advisor,
+                ..
+            }) => self.advisor.model.as_deref(),
+            _ => Some(self.model_id.as_str()),
+        }
+    }
+
+    /// Apply the engine's favorite list (127 §3); an open `/model` picker's
+    /// cursor is clamped to the rows it now has.
+    fn set_favorites(&mut self, models: Vec<String>) {
+        self.favorite_models = models;
+        let len = self.models_rows().len();
+        if let Some(Menu::Models { cursor, .. }) = &mut self.menu {
+            *cursor = (*cursor).min(len.saturating_sub(1));
+        }
+    }
+
     /// Put the `/model` cursor where a level starts: the first row after the
-    /// Current row (first provider, or best search hit) when there is one.
+    /// Off and Current rows (first favorite, first provider, or best search hit)
+    /// when there is one.
     fn models_home(&mut self) {
         let rows = self.models_rows();
-        let home =
-            usize::from(matches!(rows.first(), Some(ModelRow::Current(_))) && rows.len() > 1);
+        let lead = rows
+            .iter()
+            .take_while(|r| matches!(r, ModelRow::Off { .. } | ModelRow::Current(_)))
+            .count();
+        let home = if rows.len() > lead { lead } else { 0 };
         if let Some(Menu::Models { cursor, .. }) = &mut self.menu {
             *cursor = home;
         }
@@ -8460,19 +8894,32 @@ impl Model {
         MenuKey::Consumed
     }
 
-    /// `/model` (124 §3): ↑↓ move; typing searches every model; ⏎/→ on a
-    /// provider opens it; ←, or ⌫ on an empty filter, returns to the providers
-    /// level (no-op with one provider); ⏎ on a model sets it; Esc closes.
+    /// `/model` (124 §3, 127 §3): ↑↓ move; typing searches every model; ⏎/→
+    /// on a provider opens it; ←, or ⌫ on an empty filter, returns to the
+    /// providers level (no-op with one provider); ⏎ on a model sets it; ⇥ on
+    /// a model stars or unstars it (the menu stays open); Esc closes.
     fn models_key(&mut self, code: KeyCode, tx: &UnboundedSender<Command>) -> MenuKey {
-        let Some(Menu::Models { items, cursor, .. }) = &self.menu else {
+        let Some(Menu::Models {
+            items,
+            cursor,
+            target,
+            ..
+        }) = &self.menu
+        else {
             return MenuKey::Consumed;
         };
+        let target = *target;
         let rows = self.models_rows();
         let len = rows.len();
         let at = (*cursor).min(len.saturating_sub(1));
+        // `(true, id)` opens provider `id`; `(false, Some(id))` picks model `id`;
+        // `(false, None)` is the advisor's `Off` row.
         let picked = match rows.get(at) {
-            Some(ModelRow::Current(m) | ModelRow::Model(m)) => Some((false, m.id.clone())),
-            Some(ModelRow::Provider { id, .. }) => Some((true, id.clone())),
+            Some(ModelRow::Current(m) | ModelRow::Favorite(m) | ModelRow::Model(m)) => {
+                Some((false, Some(m.id.clone())))
+            }
+            Some(ModelRow::Provider { id, .. }) => Some((true, Some(id.clone()))),
+            Some(ModelRow::Off { .. }) => Some((false, None)),
             None => None,
         };
         let many = providers(items).len() > 1;
@@ -8509,17 +8956,17 @@ impl Model {
                 }
             }
             KeyCode::Right => {
-                if let Some((true, p)) = picked {
+                if let Some((true, Some(p))) = picked {
                     *provider = Some(p);
-                    *cursor = 0;
+                    home = true;
                 }
             }
-            KeyCode::Enter => match picked {
-                Some((true, p)) => {
+            KeyCode::Enter => match (picked, target) {
+                (Some((true, Some(p))), _) => {
                     *provider = Some(p);
-                    *cursor = 0;
+                    home = true;
                 }
-                Some((false, model)) => {
+                (Some((false, Some(model))), PickTarget::Session) => {
                     send(
                         tx,
                         Command::SetModel {
@@ -8529,9 +8976,25 @@ impl Model {
                     );
                     self.menu = None;
                 }
-                None => {}
+                // 125 §7.2: a model or `Off` goes to `set_advisor`.
+                (Some((false, model)), PickTarget::Advisor) => {
+                    self.menu = None;
+                    match self.session {
+                        Some(s) => self.set_advisor(s, model, None, tx),
+                        None => self
+                            .entries
+                            .push(Entry::Error("no session yet: send a message first".into())),
+                    }
+                }
+                _ => {}
             },
             KeyCode::Esc => self.menu = None,
+            KeyCode::Tab => {
+                if let Some((false, Some(model))) = picked {
+                    let favorite = !self.favorite_models.contains(&model);
+                    send(tx, Command::SetModelFavorite { model, favorite });
+                }
+            }
             _ => {}
         }
         if home {
@@ -8540,9 +9003,15 @@ impl Model {
         MenuKey::Consumed
     }
 
-    /// `/effort`: Enter sets the highlighted level (`clear` unsets) from the next turn.
+    /// `/effort`: Enter sets the highlighted level (`clear` unsets) from the next
+    /// turn; targeted at the advisor (125 §7.2) it re-sends its model with the effort.
     fn efforts_key(&mut self, code: KeyCode, tx: &UnboundedSender<Command>) -> MenuKey {
-        let Some(Menu::Efforts { items, cursor }) = &mut self.menu else {
+        let Some(Menu::Efforts {
+            items,
+            cursor,
+            target,
+        }) = &mut self.menu
+        else {
             return MenuKey::Consumed;
         };
         match code {
@@ -8551,9 +9020,27 @@ impl Model {
             KeyCode::Esc => self.menu = None,
             KeyCode::Enter => {
                 let picked = items.get(*cursor).cloned();
+                let target = *target;
                 self.menu = None;
-                if let Some(v) = picked {
-                    self.set_effort((v != "clear").then_some(v), tx);
+                let Some(v) = picked else {
+                    return MenuKey::Consumed;
+                };
+                let effort = (v != "clear").then_some(v);
+                match (target, self.session, self.advisor.model.clone()) {
+                    (PickTarget::Session, ..) => self.set_effort(effort, tx),
+                    (PickTarget::Advisor, Some(session), model @ Some(_)) => {
+                        self.advisor_reply = None;
+                        send(
+                            tx,
+                            Command::SetAdvisor {
+                                session,
+                                model,
+                                effort,
+                            },
+                        );
+                    }
+                    // The advisor went off while the picker was open: nothing to set.
+                    (PickTarget::Advisor, ..) => {}
                 }
             }
             _ => {}
@@ -9738,6 +10225,11 @@ pub fn mesh_device_line(d: &link::DeviceInfo, now: u64) -> String {
 /// A `/model` picker row (124 §3).
 #[derive(Debug)]
 pub enum ModelRow<'a> {
+    /// 125 §7.2: the advisor picker's lead row; `current` while no advisor is set.
+    Off {
+        /// Whether the advisor is off now.
+        current: bool,
+    },
     /// The session's current model: always first, never filtered out.
     Current(&'a ModelInfo),
     /// A provider on the providers level; `current` marks the current model's.
@@ -9749,6 +10241,8 @@ pub enum ModelRow<'a> {
         /// Whether the current model belongs to it.
         current: bool,
     },
+    /// A starred model on the providers level (127 §3), in favorites order.
+    Favorite(&'a ModelInfo),
     /// A model on a provider's level or in the search results.
     Model(&'a ModelInfo),
 }
@@ -10023,6 +10517,11 @@ fn from_history(h: HistoryEntry, opts: &markdown::Options) -> Vec<Entry> {
             Entry::Divider("interrupted — resuming".to_owned()),
             Entry::Info(text),
         ],
+        // 125 §7.4: one card per Advisory row, three notes until Ctrl+O.
+        HistoryEntry::Advisory { advisory, .. } => vec![Entry::Advisory {
+            advisory,
+            expanded: false,
+        }],
     }
 }
 
@@ -12468,6 +12967,7 @@ mod tests {
                     ..SessionActivity::default()
                 },
                 cap: None,
+                kind: Default::default(),
             }
         };
         let busy = info("busy", None, AgentState::Running, 0);
@@ -12589,6 +13089,7 @@ mod tests {
             retention: agent::Retention::Durable,
             activity: Default::default(),
             cap: None,
+            kind: Default::default(),
         };
         let list = vec![
             info("old", AgentState::Idle, Some(600)),
@@ -14592,7 +15093,7 @@ mod tests {
             Ok(Command::SetEffort { effort: None, .. })
         ));
         // Picker: levels then `clear`; Enter on `clear` unsets.
-        m.open_efforts(vec!["low".into(), "high".into()]);
+        m.open_efforts(vec!["low".into(), "high".into()], PickTarget::Session);
         m.menu_key(KeyCode::Down, "", &tx);
         m.menu_key(KeyCode::Down, "", &tx);
         m.menu_key(KeyCode::Down, "", &tx);
@@ -14607,7 +15108,7 @@ mod tests {
         assert_eq!(m.effort.as_deref(), Some("high"));
         assert!(matches!(m.entries.last(), Some(Entry::Info(t)) if t == "effort: high"));
         // No levels: a notice, no menu.
-        m.open_efforts(Vec::new());
+        m.open_efforts(Vec::new(), PickTarget::Session);
         assert!(m.menu.is_none());
         assert!(
             matches!(m.entries.last(), Some(Entry::Info(t)) if t.ends_with("no reasoning effort levels"))
@@ -16756,6 +17257,7 @@ mod tests {
             owner: String::new(),
             epoch: 1,
             here: true,
+            kind: Default::default(),
         }
     }
 
@@ -17271,10 +17773,12 @@ mod tests {
         m.models_rows()
             .iter()
             .map(|r| match r {
+                ModelRow::Off { current } => format!("{}off", if *current { "●" } else { "" }),
                 ModelRow::Current(i) => format!("●{}", i.id),
                 ModelRow::Provider { id, count, current } => {
                     format!("{}{id}:{count}", if *current { "●" } else { "" })
                 }
+                ModelRow::Favorite(i) => format!("★{}", i.id),
                 ModelRow::Model(i) => i.id.clone(),
             })
             .collect()
@@ -17540,5 +18044,582 @@ mod tests {
             m.entries.last(),
             Some(Entry::Info(t)) if t == "double answered Allow (approval:shell:mutating:git push:root)"
         ));
+    }
+    /// 127 §3: favorites lead the providers level in starring order (only
+    /// those in the catalog), the Current row shows only when the current
+    /// model is not one of them, the cursor starts on the first favorite,
+    /// and Tab stars/unstars the highlighted model without closing.
+    #[test]
+    fn models_picker_lists_favorites_first_and_tab_toggles_them() {
+        let (tx, mut rx) = unbounded_channel();
+        let mut m = Model {
+            model_id: "openai/gpt-5.4".into(),
+            favorite_models: vec![
+                "google/gemini-2.5-pro".into(),
+                "gone/provider-unkeyed".into(),
+                "anthropic/claude-opus-4-1".into(),
+            ],
+            ..Model::default()
+        };
+        m.apply(UiEvent::Models(model_catalog()));
+        assert_eq!(
+            model_row_ids(&m),
+            [
+                "★google/gemini-2.5-pro",
+                "★anthropic/claude-opus-4-1",
+                "●openai/gpt-5.4",
+                "amazon-bedrock:2",
+                "anthropic:2",
+                "cursor:1",
+                "google:2",
+                "●openai:3"
+            ]
+        );
+        assert_eq!(models_cursor(&m), 0);
+        // Tab on a favorite asks to unstar it; the menu stays open.
+        m.menu_key(KeyCode::Tab, "", &tx);
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(Command::SetModelFavorite { model, favorite: false }) if model == "google/gemini-2.5-pro"
+        ));
+        assert!(m.menu.is_some());
+        // Tab on the Current row asks to star it.
+        m.menu_key(KeyCode::Down, "", &tx);
+        m.menu_key(KeyCode::Down, "", &tx);
+        m.menu_key(KeyCode::Tab, "", &tx);
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(Command::SetModelFavorite { model, favorite: true }) if model == "openai/gpt-5.4"
+        ));
+        // Tab on a provider row does nothing.
+        m.menu_key(KeyCode::Down, "", &tx);
+        m.menu_key(KeyCode::Tab, "", &tx);
+        assert!(rx.try_recv().is_err());
+        // The engine answers: the current model is now a favorite and shows once, as a favorite.
+        m.apply(UiEvent::Agent(AgentEvent::FavoriteModelsChanged {
+            models: vec!["anthropic/claude-opus-4-1".into(), "openai/gpt-5.4".into()],
+        }));
+        assert_eq!(
+            model_row_ids(&m),
+            [
+                "★anthropic/claude-opus-4-1",
+                "★openai/gpt-5.4",
+                "amazon-bedrock:2",
+                "anthropic:2",
+                "cursor:1",
+                "google:2",
+                "●openai:3"
+            ]
+        );
+        // Enter on a favorite sets it like any model row.
+        m.menu_key(KeyCode::Up, "", &tx);
+        m.menu_key(KeyCode::Up, "", &tx);
+        m.menu_key(KeyCode::Up, "", &tx);
+        m.menu_key(KeyCode::Enter, "", &tx);
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(Command::SetModel { session: None, model }) if model == "anthropic/claude-opus-4-1"
+        ));
+        assert!(m.menu.is_none());
+        // The command reply applies the list too, and a shrinking list clamps an open cursor.
+        m.apply(UiEvent::Models(model_catalog()));
+        for _ in 0..9 {
+            m.menu_key(KeyCode::Down, "", &tx);
+        }
+        assert_eq!(models_cursor(&m), 6);
+        m.apply(UiEvent::FavoriteModels(vec![]));
+        assert!(m.favorite_models.is_empty());
+        assert_eq!(model_row_ids(&m)[0], "●openai/gpt-5.4");
+        assert_eq!(models_cursor(&m), 5);
+        // Tab on a provider's models level and in search results toggles the highlighted model.
+        m.menu_key(KeyCode::Enter, "", &tx);
+        assert_eq!(model_row_ids(&m)[0], "openai/gpt-5.4");
+        m.menu_key(KeyCode::Down, "", &tx);
+        m.menu_key(KeyCode::Tab, "", &tx);
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(Command::SetModelFavorite { model, favorite: true }) if model == "openai/gpt-5.4-mini"
+        ));
+        m.menu_key(KeyCode::Char('n'), "", &tx);
+        m.menu_key(KeyCode::Char('o'), "", &tx);
+        m.menu_key(KeyCode::Char('v'), "", &tx);
+        m.menu_key(KeyCode::Char('a'), "", &tx);
+        m.menu_key(KeyCode::Tab, "", &tx);
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(Command::SetModelFavorite { model, favorite: true })
+                if model == "amazon-bedrock/amazon.nova-pro-v1:0"
+        ));
+        assert!(m.menu.is_some());
+    }
+
+    fn note(severity: AdvisorSeverity, text: &str) -> agent::AdvisoryNote {
+        agent::AdvisoryNote {
+            severity,
+            note: text.into(),
+        }
+    }
+
+    fn advisory(advisor: SessionId, notes: Vec<agent::AdvisoryNote>) -> Advisory {
+        Advisory {
+            advisor,
+            step: 14,
+            turn: None,
+            at_ms: 0,
+            notes,
+        }
+    }
+
+    fn advisor_status(session: SessionId, state: AdvisorState, model: &str) -> AdvisorStatus {
+        AdvisorStatus {
+            session,
+            advisor: Some(SessionId::new()),
+            state,
+            model: Some(model.into()),
+            effort: Some("high".into()),
+            ..AdvisorStatus::default()
+        }
+    }
+
+    fn info_lines(m: &Model) -> Vec<&str> {
+        m.entries
+            .iter()
+            .filter_map(|e| match e {
+                Entry::Info(t) => Some(t.as_str()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// 125 §7.2: bare `/advisor` opens the `/model` picker targeted at the
+    /// advisor — `Off` leads (marked while there is none), the current advisor
+    /// is the `●` row instead of the session's model, ⏎ on `Off` sends `None`.
+    #[test]
+    fn advisor_cmd_bare_opens_picker_with_off_row() {
+        let (tx, mut rx) = unbounded_channel();
+        let s = SessionId::new();
+        let mut m = Model {
+            session: Some(s),
+            model_id: "openai/gpt-5.4".into(),
+            ..Model::default()
+        };
+        m.submit("/advisor", &tx);
+        assert!(matches!(rx.try_recv(), Ok(Command::ListModels)));
+        m.apply(UiEvent::Models(model_catalog()));
+        assert_eq!(model_row_ids(&m)[..2], ["●off", "amazon-bedrock:2"]);
+        assert_eq!(models_cursor(&m), 1, "home skips the Off row");
+        assert!(!model_row_ids(&m).iter().any(|r| r == "●openai/gpt-5.4"));
+        m.menu_key(KeyCode::Up, "", &tx);
+        m.menu_key(KeyCode::Enter, "", &tx);
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(Command::SetAdvisor { session, model: None, effort: None }) if session == s
+        ));
+        assert!(m.menu.is_none());
+        // With an advisor set: `Off` unmarked, the advisor's model is the Current row,
+        // ⏎ on a model goes to `set_advisor`, and `/model` has no Off row at all.
+        m.advisor = advisor_status(s, AdvisorState::Idle, "anthropic/claude-opus-4-1");
+        m.submit("/advisor", &tx);
+        rx.try_recv().unwrap();
+        m.apply(UiEvent::Models(model_catalog()));
+        assert_eq!(
+            model_row_ids(&m)[..4],
+            [
+                "off",
+                "●anthropic/claude-opus-4-1",
+                "amazon-bedrock:2",
+                "●anthropic:2"
+            ]
+        );
+        assert_eq!(models_cursor(&m), 2);
+        m.menu_key(KeyCode::Down, "", &tx);
+        m.menu_key(KeyCode::Enter, "", &tx);
+        m.menu_key(KeyCode::Down, "", &tx);
+        m.menu_key(KeyCode::Enter, "", &tx);
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(Command::SetAdvisor { session, model: Some(model), effort: None })
+                if session == s && model == "anthropic/claude-sonnet-4-5"
+        ));
+        m.submit("/model", &tx);
+        rx.try_recv().unwrap();
+        m.apply(UiEvent::Models(model_catalog()));
+        assert_eq!(model_row_ids(&m)[0], "●openai/gpt-5.4");
+    }
+
+    /// 125 §7.1: `/advisor off` is `set_advisor(session, None)`; a direct id is a pick;
+    /// an ACP child refuses.
+    #[test]
+    fn advisor_cmd_off_sends_none() {
+        let (tx, mut rx) = unbounded_channel();
+        let s = SessionId::new();
+        let mut m = Model {
+            session: Some(s),
+            ..Model::default()
+        };
+        m.submit("/advisor off", &tx);
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(Command::SetAdvisor { session, model: None, effort: None }) if session == s
+        ));
+        m.submit("/advisor openai/o3-pro", &tx);
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(Command::SetAdvisor { model: Some(model), effort: None, .. }) if model == "openai/o3-pro"
+        ));
+        m.agent = Some("omp".into());
+        m.submit("/advisor off", &tx);
+        assert!(rx.try_recv().is_err());
+        assert!(matches!(
+            m.entries.last(),
+            Some(Entry::Error(t)) if t == "/advisor: not available for an external harness session"
+        ));
+    }
+
+    /// 125 §7.1: `/advisor on` re-uses `Info.advisor` (or the last status
+    /// that named a model); with nothing remembered it says so.
+    #[test]
+    fn advisor_cmd_on_uses_remembered_model_or_errors() {
+        let (tx, mut rx) = unbounded_channel();
+        let s = SessionId::new();
+        let mut m = Model {
+            session: Some(s),
+            ..Model::default()
+        };
+        m.submit("/advisor on", &tx);
+        assert!(rx.try_recv().is_err());
+        assert!(matches!(
+            m.entries.last(),
+            Some(Entry::Error(t)) if t == "/advisor on: no remembered advisor model — pick one with /advisor"
+        ));
+        m.advisor_default.model = Some("anthropic/claude-opus-4-1".into());
+        m.advisor_default.effort = Some("high".into());
+        m.submit("/advisor on", &tx);
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(Command::SetAdvisor { session, model: Some(model), effort: Some(effort) })
+                if session == s && model == "anthropic/claude-opus-4-1" && effort == "high"
+        ));
+        // A status naming a model becomes the remembered pick; going off keeps it.
+        m.apply(UiEvent::AdvisorStatus(advisor_status(
+            s,
+            AdvisorState::Idle,
+            "openai/o3-pro",
+        )));
+        m.apply(UiEvent::AdvisorStatus(AdvisorStatus {
+            session: s,
+            ..AdvisorStatus::default()
+        }));
+        assert_eq!(m.advisor_default.model.as_deref(), Some("openai/o3-pro"));
+        assert_eq!(info_lines(&m), ["advisor → openai/o3-pro", "advisor → off"]);
+    }
+
+    /// 125 §7.3: the exact four lines; one line when off.
+    #[test]
+    fn advisor_status_prints_four_lines() {
+        let (tx, mut rx) = unbounded_channel();
+        let s = SessionId::new();
+        let mut m = Model {
+            session: Some(s),
+            ..Model::default()
+        };
+        m.submit("/advisor status", &tx);
+        assert!(matches!(rx.try_recv(), Ok(Command::AdvisorStatus(id)) if id == s));
+        m.apply(UiEvent::AdvisorStatus(AdvisorStatus {
+            session: s,
+            ..AdvisorStatus::default()
+        }));
+        assert_eq!(
+            info_lines(&m),
+            ["advisor: off  ·  /advisor to pick a model"]
+        );
+        m.entries.clear();
+        m.submit("/advisor status", &tx);
+        rx.try_recv().unwrap();
+        let mut status = advisor_status(s, AdvisorState::Reviewing, "anthropic/claude-opus-4-1");
+        status.notes = agent::AdvisorNoteCounts {
+            nit: 2,
+            concern: 1,
+            blocker: 0,
+        };
+        status.step = 14;
+        status.context_used = 38_200;
+        status.context_limit = 200_000;
+        status.tokens_in = 120_400;
+        status.tokens_out = 3_100;
+        status.cost = Some(CostBucket {
+            returned: vec![Money {
+                currency: "USD".into(),
+                nanos: 412_000_000,
+            }],
+            ..CostBucket::default()
+        });
+        status.last_note = Some(note(
+            AdvisorSeverity::Concern,
+            "cite the loop_.rs line before claiming drain_steer runs after every batch",
+        ));
+        m.apply(UiEvent::AdvisorStatus(status));
+        assert_eq!(
+            info_lines(&m),
+            [
+                "advisor → anthropic/claude-opus-4-1",
+                "advisor: reviewing  ·  anthropic/claude-opus-4-1  ·  high",
+                "notes: 2 nit · 1 concern · 0 blocker  ·  step 14  ·  backlog 0",
+                // `k()` drops the decimal from 100k up (`120k`, not the design's illustrative `120.4k`).
+                "context: 38.2k / 200k (19%)  ·  in 120k · out 3.1k  ·  cost $0.412",
+                "last: [concern] cite the loop_.rs line before claiming drain_steer runs after every batch",
+            ]
+        );
+    }
+
+    /// 125 §7.4: the live card lands above a streaming tail (the reply keeps
+    /// one `markdown::Text`), once per seq; the steer's `TurnStarted` is not a `◆ you`.
+    #[test]
+    fn advisory_added_interjects_card_above_streaming_tail() {
+        let s = SessionId::new();
+        let mut m = Model {
+            session: Some(s),
+            ..Model::default()
+        };
+        let turn = TurnId::new();
+        m.apply_agent(AgentEvent::TextDelta {
+            session: s,
+            turn,
+            text: "first ".into(),
+        });
+        let added = AgentEvent::AdvisoryAdded {
+            session: s,
+            seq: 7,
+            advisory: advisory(
+                SessionId::new(),
+                vec![note(AdvisorSeverity::Concern, "check the lock order")],
+            ),
+        };
+        m.apply_agent(added.clone());
+        m.apply_agent(added);
+        m.apply_agent(AgentEvent::TextDelta {
+            session: s,
+            turn,
+            text: "second".into(),
+        });
+        assert_eq!(m.entries.len(), 2, "one card, one assistant entry");
+        assert!(
+            matches!(&m.entries[0], Entry::Advisory { advisory, expanded: false } if advisory.notes.len() == 1)
+        );
+        assert!(matches!(&m.entries[1], Entry::Assistant(t) if !t.is_done()));
+        // The blocker that opened a turn: its row is the card already.
+        m.apply_agent(AgentEvent::TurnStarted {
+            session: s,
+            turn: TurnId::new(),
+            turn_seq: 7,
+            text: "<advisory severity=\"blocker\" guidance=\"weigh\">stop</advisory>".into(),
+            model: "m".into(),
+        });
+        m.apply_agent(AgentEvent::TurnStarted {
+            session: s,
+            turn: TurnId::new(),
+            turn_seq: 9,
+            text: "<advisory severity=\"concern\" guidance=\"weigh\">not carded yet</advisory>"
+                .into(),
+            model: "m".into(),
+        });
+        assert!(!m.entries.iter().any(|e| matches!(e, Entry::User { .. })));
+    }
+
+    /// 125 §7.4: three notes collapsed, `… +N more notes`; Ctrl+O expands the
+    /// newest expandable card and skips one with nothing hidden.
+    #[test]
+    fn advisory_card_collapses_to_three_notes() {
+        let mut m = Model::default();
+        let five = (0..5)
+            .map(|i| note(AdvisorSeverity::Nit, &format!("note {i}")))
+            .collect();
+        m.entries.push(Entry::Advisory {
+            advisory: advisory(SessionId::new(), five),
+            expanded: false,
+        });
+        assert_eq!(m.entries[0].height(80), 4 + 3 + 1);
+        m.toggle_card();
+        assert!(matches!(
+            &m.entries[0],
+            Entry::Advisory { expanded: true, .. }
+        ));
+        assert_eq!(m.entries[0].height(80), 4 + 5);
+        m.toggle_card();
+        assert!(matches!(
+            &m.entries[0],
+            Entry::Advisory {
+                expanded: false,
+                ..
+            }
+        ));
+        m.entries.push(Entry::Advisory {
+            advisory: advisory(SessionId::new(), vec![note(AdvisorSeverity::Blocker, "x")]),
+            expanded: false,
+        });
+        assert_eq!(m.entries[1].height(80), 4 + 1);
+        m.toggle_card();
+        assert!(
+            matches!(
+                &m.entries[1],
+                Entry::Advisory {
+                    expanded: false,
+                    ..
+                }
+            ),
+            "nothing to expand"
+        );
+        assert!(
+            matches!(&m.entries[0], Entry::Advisory { expanded: true, .. }),
+            "the newest card with hidden notes toggles"
+        );
+    }
+
+    /// 125 §7.4: a history `advisory` row is a card, never a `◆ you`; the
+    /// wrapper alone (an older engine's `User` row) yields no bubble either.
+    #[test]
+    fn history_advisory_row_renders_card_not_user_bubble() {
+        let opts = markdown::Options::default();
+        let entries = from_history(
+            HistoryEntry::Advisory {
+                advisory: advisory(
+                    SessionId::new(),
+                    vec![
+                        note(AdvisorSeverity::Nit, "a"),
+                        note(AdvisorSeverity::Blocker, "b"),
+                    ],
+                ),
+                context: None,
+            },
+            &opts,
+        );
+        assert_eq!(entries.len(), 1);
+        let Entry::Advisory {
+            advisory,
+            expanded: false,
+        } = &entries[0]
+        else {
+            panic!("not a card: {entries:?}");
+        };
+        assert_eq!(advisory_severity(advisory), AdvisorSeverity::Blocker);
+        assert_eq!(advisory_title(advisory), "◎ advisor · 2 notes");
+        assert!(
+            user_entries(
+                "<advisory severity=\"nit\" guidance=\"weigh\">a</advisory>".into(),
+                Some(3)
+            )
+            .is_empty()
+        );
+    }
+
+    /// 125 §7.5: `AdvisorChanged` drives the header tag, the status segment,
+    /// the spinner and one `advisor → …` line per model change.
+    #[test]
+    fn advisor_changed_updates_header_cost_and_status() {
+        let s = SessionId::new();
+        let mut m = Model {
+            session: Some(s),
+            ..Model::default()
+        };
+        let catalog = Catalog::load(
+            std::env::temp_dir()
+                .join("theuth-tui-no-user-file")
+                .as_path(),
+        );
+        assert!(m.advisor_segment().is_none() && !m.animating());
+        let mut status = advisor_status(s, AdvisorState::Reviewing, "anthropic/claude-opus-4-1");
+        status.cost = Some(CostBucket {
+            returned: vec![Money {
+                currency: "USD".into(),
+                nanos: 12_000_000,
+            }],
+            ..CostBucket::default()
+        });
+        m.apply_agent(AgentEvent::AdvisorChanged {
+            session: s,
+            status: status.clone(),
+        });
+        assert!(m.header(&catalog).0.contains("  ·  advisor $0.012"));
+        let (segment, state) = m.advisor_segment().unwrap();
+        assert!(segment.starts_with("  ·  ◎ advisor: ") && segment.ends_with(" reviewing…"));
+        assert_eq!(state, AdvisorState::Reviewing);
+        assert!(m.animating());
+        // Counters move without a new line; idle stops the spinner.
+        status.state = AdvisorState::Idle;
+        status.step = 3;
+        m.apply_agent(AgentEvent::AdvisorChanged {
+            session: s,
+            status: status.clone(),
+        });
+        assert_eq!(
+            m.advisor_segment().map(|(t, _)| t).as_deref(),
+            Some("  ·  ◎ advisor: idle")
+        );
+        assert!(!m.animating());
+        // Another session's advisor is not ours.
+        m.apply_agent(AgentEvent::AdvisorChanged {
+            session: SessionId::new(),
+            status: advisor_status(SessionId::new(), AdvisorState::Halted, "x/y"),
+        });
+        assert_eq!(m.advisor.state, AdvisorState::Idle);
+        m.apply_agent(AgentEvent::AdvisorChanged {
+            session: s,
+            status: AdvisorStatus {
+                session: s,
+                ..AdvisorStatus::default()
+            },
+        });
+        assert!(m.advisor_segment().is_none());
+        assert!(!m.header(&catalog).0.contains("advisor"));
+        assert_eq!(
+            info_lines(&m),
+            ["advisor → anthropic/claude-opus-4-1", "advisor → off"]
+        );
+    }
+
+    /// 125 §7.5: the hidden advisor child is never a board row — by kind in
+    /// `list_agents`, by the link's id on `SubagentSpawned` — and spawns no line.
+    #[test]
+    fn spawned_advisor_never_reaches_board() {
+        let s = SessionId::new();
+        let mut m = Model {
+            session: Some(s),
+            ..Model::default()
+        };
+        let advisor = SessionId::new();
+        let mut status = advisor_status(s, AdvisorState::Idle, "openai/o3-pro");
+        status.advisor = Some(advisor);
+        m.apply_agent(AgentEvent::AdvisorChanged { session: s, status });
+        m.apply_agent(AgentEvent::SubagentSpawned {
+            parent: s,
+            child: advisor,
+            name: "advisor".into(),
+            cap: None,
+        });
+        assert!(m.agents.is_empty() && m.board().is_empty());
+        assert!(!info_lines(&m).iter().any(|l| l.starts_with("↳ spawned")));
+        let info = |id: SessionId, kind: SessionKind| AgentInfo {
+            id,
+            name: "x".into(),
+            parent: s,
+            depth: 1,
+            agent: None,
+            model: "m".into(),
+            state: AgentState::Running,
+            started_at: None,
+            finished_at: None,
+            last: String::new(),
+            project: None,
+            retention: agent::Retention::Durable,
+            activity: Default::default(),
+            cap: None,
+            kind,
+        };
+        let worker = SessionId::new();
+        m.apply(UiEvent::Agents(vec![
+            info(advisor, SessionKind::Advisor),
+            info(worker, SessionKind::Chat),
+        ]));
+        assert_eq!(m.agents.keys().copied().collect::<Vec<_>>(), [worker]);
     }
 }

@@ -3,6 +3,7 @@ import { subscribeWithSelector } from "zustand/middleware";
 import type { Injected } from '@/lib/injected';
 import { codeFromHistory } from '@/lib/codemap/slice';
 import type { CodemapSlice } from '@/lib/codemap/types';
+import type { AdvisoryNote } from "@/rpc/bindings/AdvisoryNote";
 import type { CompactStyle } from "@/rpc/bindings/CompactStyle";
 import type { ContextEntry } from "@/rpc/bindings/ContextEntry";
 import type { HarnessCommand } from "@/rpc/bindings/HarnessCommand";
@@ -139,6 +140,10 @@ export type Entry = { id: string; context?: ContextEntry; at?: number } & (
       seq?: number;
       failed?: boolean;
     }
+  /** 125 §8.3: one Advisory card — every note the advisor raised at one step boundary (or one steer). From the
+   * `advisory` history row or `AdvisoryAdded` live (`seq` is the stored row, the idempotence key); parsed from the
+   * `<advisory>` wrapper text when a row arrives as plain user input (no `seq` then). Never a `you` bubble. */
+  | { kind: "advisory"; notes: AdvisoryNote[]; seq?: number }
   | { kind: "info"; text: string }
   | { kind: "error"; text: string }
   | { kind: "compacted"; epoch: number; style: CompactStyle; summary?: string }
@@ -236,6 +241,8 @@ export type SessionSlice = {
   lastInjected?: string;
   /** Opener seq of the running (or last) turn, from `TurnStarted`. */
   turnSeq?: number;
+  /** 125 §3: the advisor model the last `AdvisorChanged` named (`null` = off); the reducer prints `advisor → …` when it moves. */
+  advisorModel?: string | null;
   /** A `browser_*` tool ran in this session: the header shows the live-view globe. */
   browser: boolean;
   /** The live browser dialog is open (globe click or `BrowserShowLive`). */
@@ -335,6 +342,10 @@ type SessionsStore = {
   /** A gap may hide a `TodoChanged`: label the list stale (one session, or every session) until a snapshot confirms it. */
   markTodosStale(id?: string): void;
   resetLagged(): void;
+  /** 129 D3: a gap (`Lagged`, reconnect) or a session leaving event focus may have dropped events: label the
+   * transcript and plan stale (one session, or every session) so the mounted views re-settle; `loaded` stays, so
+   * nothing on screen empties. */
+  markStale(id?: string): void;
   /** Forget that any transcript was loaded: the chat route refetches on its next mount. */
   unload(): void;
 };
@@ -374,11 +385,13 @@ export const createSessions = (): SessionsApi =>
           (mode === "prepend" && moved) ||
           // A newer snapshot already landed (or a reconnect will bring one): a superseded full page has nothing to add.
           (mode === "replace" && moved && cur.loaded) ||
+          // 129 D3: `cur.running` is not a refusal — after a gap (`Lagged`, reconnect, out of focus) the lost
+          // `TurnFinished` leaves it stale, and a settled page with `running: false` is what corrects it; a turn
+          // that raced the read moved `live`, a turn still running answers `settled: false`.
           (mode === "settled" &&
             (!fresh ||
               moved ||
               cur.live !== fresh.live ||
-              cur.running ||
               !loaded.settled ||
               loaded.running));
         if (refused) {
@@ -512,7 +525,8 @@ export const createSessions = (): SessionsApi =>
       setChildren(id, agents) {
         set((st) => {
           const cur = st.sessions[id] ?? empty(id);
-          const children = Object.fromEntries(agents.map((a) => [a.id, a]));
+          // 125 §8.5: an advisor child is never a tree row, a strip dot or a live session; the engine hides it, this is the belt.
+          const children = Object.fromEntries(agents.filter((a) => a.kind !== "advisor").map((a) => [a.id, a]));
           return { sessions: { ...st.sessions, [id]: { ...cur, children } } };
         });
       },
@@ -601,6 +615,23 @@ export const createSessions = (): SessionsApi =>
       },
       resetLagged() {
         set({ lagged: 0 });
+      },
+      markStale(id) {
+        set((st) => ({
+          sessions: Object.fromEntries(
+            Object.entries(st.sessions).map(([k, s]) => [
+              k,
+              (id === undefined || k === id) && s.loaded
+                ? {
+                    ...s,
+                    contextStale: true,
+                    todosStale: true,
+                    historyGeneration: s.historyGeneration + 1,
+                  }
+                : s,
+            ]),
+          ),
+        }));
       },
       unload() {
         set((st) => ({
@@ -699,6 +730,9 @@ export function dispatch(events: WireEvent[], st: Stores = active()): void {
     } else if (e.type === "DefaultEffortChanged") {
       const conn = st.connection.getState();
       if (conn.info) conn.setInfo({ ...conn.info, default_effort: e.effort });
+    } else if (e.type === "FavoriteModelsChanged") {
+      const conn = st.connection.getState();
+      if (conn.info) conn.setInfo({ ...conn.info, favorite_models: e.models });
     }
     if (live) listeners.get(e.type)?.forEach((cb) => cb(e));
   }

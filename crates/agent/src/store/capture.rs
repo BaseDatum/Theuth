@@ -11,9 +11,10 @@ use libsqlite3_sys as ffi;
 
 /// Every replicated table with the column that names its session
 /// (`sessions` itself by its primary key; the accounting tables by their
-/// `cost_owners.id`, which is the session id). The 109 journal tables ride
-/// here too (§3.5), except `pty_screens`, which is engine-local.
-pub const ATTACHED: [(&str, &str); 14] = [
+/// `cost_owners.id`, which is the session id; `session_advisors` by the
+/// advised session, 125 §4.14). The 109 journal tables ride here too
+/// (§3.5), except `pty_screens`, which is engine-local.
+pub const ATTACHED: [(&str, &str); 15] = [
     ("sessions", "id"),
     ("messages", "session_id"),
     ("epochs", "session_id"),
@@ -28,6 +29,7 @@ pub const ATTACHED: [(&str, &str); 14] = [
     ("questions", "session_id"),
     ("waits", "session_id"),
     ("jobs", "session_id"),
+    ("session_advisors", "session"),
 ];
 
 /// One `sqlite3_session` on one database handle. `Send` because the store

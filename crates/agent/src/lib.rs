@@ -25,6 +25,7 @@ use runtime::{InputId, SessionId, TurnId};
 use serde::{Deserialize, Serialize};
 
 pub mod acp_child;
+pub mod advisor;
 pub mod attach;
 mod aws;
 mod backend;
@@ -936,6 +937,11 @@ pub struct AgentInfo {
     #[serde(default)]
     #[cfg_attr(feature = "ts", ts(optional))]
     pub cap: Option<tools::Risk>,
+    /// Row kind (125 §6.2); an advisor is never listed, but the field is
+    /// carried so clients can filter defensively. `chat` from an older harness.
+    #[serde(default)]
+    #[cfg_attr(feature = "ts", ts(optional = nullable))]
+    pub kind: SessionKind,
 }
 
 /// Live facts about one session, computed on `Agents` (62 §0.5, §3.2).
@@ -1159,6 +1165,278 @@ pub struct SetEffort {
 /// config file read at startup (83 §3).
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
 pub struct GetDefaultEffort;
+
+/// Severity of one advisor note (125 §4.8); ordered so a card's severity is
+/// the max of its notes.
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, schemars::JsonSchema,
+)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[serde(rename_all = "snake_case")]
+pub enum AdvisorSeverity {
+    /// Batched into one card at the next step boundary.
+    Nit,
+    /// Steered into the running turn; preserved as a card after a terminal answer.
+    Concern,
+    /// Steered; opens a turn when the session is idle.
+    Blocker,
+}
+
+/// One note the advisor emitted.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+pub struct AdvisoryNote {
+    /// Severity.
+    pub severity: AdvisorSeverity,
+    /// The note text, normalised by the emission guard.
+    pub note: String,
+}
+
+/// One Advisory card: every note the advisor emitted for one step boundary
+/// (nits batched), or one steer (125 §6.2).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+pub struct Advisory {
+    /// The advisor session (never shown to the model).
+    pub advisor: SessionId,
+    /// `AdvisorStep` count of the link when the notes were raised.
+    pub step: u32,
+    /// Opener seq of the advised turn under review; `None` when idle.
+    #[cfg_attr(feature = "ts", ts(type = "number | null"))]
+    pub turn: Option<i64>,
+    /// Unix milliseconds when the card was raised.
+    #[cfg_attr(feature = "ts", ts(type = "number"))]
+    pub at_ms: i64,
+    /// At least one; the card's severity is the max.
+    pub notes: Vec<AdvisoryNote>,
+}
+
+impl Advisory {
+    /// 125 §9: the one line a channel posts in the bound thread — the
+    /// card's highest-severity note, first line only — or `None` for a card
+    /// of nits (110 §3 rule 3: model input is not posted).
+    #[must_use]
+    pub fn channel_line(&self) -> Option<String> {
+        let top = self.notes.iter().max_by_key(|n| n.severity)?;
+        let word = match top.severity {
+            AdvisorSeverity::Nit => return None,
+            AdvisorSeverity::Concern => "concern",
+            AdvisorSeverity::Blocker => "blocker",
+        };
+        let line = top.note.lines().next().unwrap_or_default().trim();
+        Some(format!("advisor · {word} — {line}"))
+    }
+}
+
+/// Live state of one advisor link (125 §4.3).
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema,
+)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[serde(rename_all = "snake_case")]
+pub enum AdvisorState {
+    /// No advisor for this session.
+    #[default]
+    Off,
+    /// Linked, waiting for the next step.
+    Idle,
+    /// The advisor session is running a review turn.
+    Reviewing,
+    /// Paused on a usage limit; the batch is retained.
+    Paused,
+    /// Halted after repeated failures or a permanent rejection.
+    Halted,
+}
+
+/// Notes emitted so far, by severity.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+pub struct AdvisorNoteCounts {
+    /// Nits.
+    pub nit: u32,
+    /// Concerns.
+    pub concern: u32,
+    /// Blockers.
+    pub blocker: u32,
+}
+
+/// Everything a UI shows about one session's advisor (125 §6.2): the pill,
+/// the popover and `/advisor status`. `state: Off` with everything else
+/// default when the session has none.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, schemars::JsonSchema, kameo::Reply)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+pub struct AdvisorStatus {
+    /// The advised session.
+    pub session: SessionId,
+    /// The advisor session, when linked.
+    pub advisor: Option<SessionId>,
+    /// Live state.
+    pub state: AdvisorState,
+    /// `provider/model` of the advisor.
+    pub model: Option<String>,
+    /// Effort of the advisor.
+    pub effort: Option<String>,
+    /// Notes emitted so far.
+    pub notes: AdvisorNoteCounts,
+    /// Tokens of the advisor's context in use.
+    pub context_used: u32,
+    /// Its model's context window.
+    pub context_limit: u32,
+    /// Prompt tokens spent by the advisor.
+    #[cfg_attr(feature = "ts", ts(type = "number"))]
+    pub tokens_in: u64,
+    /// Completion tokens spent by the advisor.
+    #[cfg_attr(feature = "ts", ts(type = "number"))]
+    pub tokens_out: u64,
+    /// `session_cost(advisor).total`.
+    pub cost: Option<cost::CostBucket>,
+    /// `AdvisorStep`s seen by the link.
+    pub step: u32,
+    /// Deltas waiting while the advisor is busy (125 §4.6).
+    pub backlog: u32,
+    /// The most recent note.
+    pub last_note: Option<AdvisoryNote>,
+    /// Why paused/halted, first line.
+    pub detail: Option<String>,
+}
+
+/// One `session_advisors` row (125 §6.1): the durable link between an
+/// advised session and its advisor.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+pub struct AdvisorLink {
+    /// The advised session.
+    pub session: SessionId,
+    /// The advisor session.
+    pub advisor: SessionId,
+    /// `provider/model` of the advisor.
+    pub model: String,
+    /// Effort of the advisor.
+    pub effort: Option<String>,
+    /// Rendered-entry count already delivered to the advisor (125 §4.4).
+    #[cfg_attr(feature = "ts", ts(type = "number"))]
+    pub cursor: i64,
+    /// Persisted state.
+    pub state: AdvisorState,
+}
+
+/// `advisor.sync_backlog` (125 §4.12): how many pending deltas the advised
+/// loop waits for at turn end; `off` never waits.
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema,
+)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[serde(rename_all = "snake_case")]
+pub enum SyncBacklog {
+    /// Never wait.
+    #[default]
+    Off,
+    /// Wait for one delta.
+    #[serde(rename = "1")]
+    One,
+    /// Wait for up to three.
+    #[serde(rename = "3")]
+    Three,
+    /// Wait for up to five.
+    #[serde(rename = "5")]
+    Five,
+}
+
+/// Live advisor defaults carried by `Info` beside `default_model` /
+/// `default_effort` (125 §6.5): the remembered pick and the three tuning keys.
+#[derive(
+    Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema, kameo::Reply,
+)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+pub struct AdvisorDefaults {
+    /// `advisor.model`: the last manual pick; pins the picker and serves `/advisor on`.
+    pub model: Option<String>,
+    /// `advisor.effort`: the same pick's effort.
+    pub effort: Option<String>,
+    /// `advisor.max_notes_per_update` (1–32, default 4).
+    pub max_notes_per_update: u8,
+    /// `advisor.immune_turns` (0–10, default 3).
+    pub immune_turns: u8,
+    /// `advisor.sync_backlog` (default `off`).
+    pub sync_backlog: SyncBacklog,
+}
+
+/// `ask` → `Result<AdvisorStatus, String>`: turn the advisor of `session` on
+/// (`Some(model)`: create the hidden child or re-pick its model) or off
+/// (`None`; the advisor row and its notes stay, 125 §4.1).
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct SetAdvisor {
+    /// The advised session.
+    pub session: SessionId,
+    /// `provider/model`; `None` = Off.
+    pub model: Option<String>,
+    /// Effort for the advisor; `None` = provider default.
+    pub effort: Option<String>,
+}
+
+/// `ask` → `AdvisorStatus` of `session` (`state: Off` when it has none).
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+pub struct AdvisorStatusOf {
+    /// The advised session.
+    pub session: SessionId,
+}
+
+/// `ask` → `AdvisorDefaults`: persist the given `advisor.*` keys
+/// (`write_config_value`) and return the live defaults (125 §6.5). Every
+/// `None` leaves its key alone; `effort: Some(None)` clears it.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct SetAdvisorDefaults {
+    /// `advisor.effort`.
+    pub effort: Option<Option<String>>,
+    /// `advisor.max_notes_per_update`.
+    pub max_notes_per_update: Option<u8>,
+    /// `advisor.immune_turns`.
+    pub immune_turns: Option<u8>,
+    /// `advisor.sync_backlog`.
+    pub sync_backlog: Option<SyncBacklog>,
+}
+
+/// `ask` → `AdvisorDefaults`: the live `advisor.*` defaults (the remembered
+/// pick and the three tuning keys) `Info.advisor` carries (125 §6.5) — the
+/// actor's copy, not the config file read at startup.
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
+pub struct GetAdvisorDefaults;
+
+/// Loop message (`impl Message<_> for Session`, 125 §4.1 item 4): set the
+/// session's "has an advisor" flag so its step hooks cost one atomic load.
+#[derive(Clone, Copy, Debug)]
+pub struct SetAdvisorOn(pub bool);
+
+/// Loop message (125 §4.10): append an Advisory row passively — stored with
+/// its metadata, shown to the model at the next batch boundary, never
+/// opening a turn.
+#[derive(Clone, Debug)]
+pub struct AppendAdvisory {
+    /// The typed card.
+    pub advisory: Advisory,
+    /// The model-facing text of the row.
+    pub text: String,
+}
+
+/// `ask` → `Vec<String>`: the favorite model ids (`agent.favorite_models`,
+/// 127 §1) in the order they were starred — the live list, not the config
+/// file read at startup.
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
+pub struct GetFavoriteModels;
+
+/// `ask` → `Result<Vec<String>, String>`: star or unstar a model (127 §1).
+/// `model` is resolved through the catalog like [`SetModel`] (aliases
+/// normalised, unknown ids rejected with the same error). A no-op when the
+/// model is already in the requested state; otherwise `agent.favorite_models`
+/// in `<data_dir>/config.yaml` is rewritten and
+/// [`AgentEvent::FavoriteModelsChanged`] follows. The reply is the new list.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct SetModelFavorite {
+    /// `provider/model`, or a bare model id resolved against configured providers.
+    pub model: String,
+    /// `true` stars, `false` unstars.
+    pub favorite: bool,
+}
 
 /// One selectable model.
 #[derive(Clone, Debug, Serialize, Deserialize, schemars::JsonSchema)]
@@ -1448,6 +1726,22 @@ pub struct SkillBody {
     pub files: Vec<String>,
 }
 
+/// What a `sessions` row is (125 §6.2): an ordinary chat, or the hidden
+/// `advisor` child that reviews its parent's transcript (ruling 1). Stored
+/// as `sessions.kind`; readers hide advisors unless asked.
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema,
+)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[serde(rename_all = "snake_case")]
+pub enum SessionKind {
+    /// A conversation (default).
+    #[default]
+    Chat,
+    /// The hidden advisor session of its parent (125 §4).
+    Advisor,
+}
+
 /// One row of the session list.
 #[derive(Clone, Debug, Serialize, Deserialize, schemars::JsonSchema)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
@@ -1517,6 +1811,10 @@ pub struct SessionSummary {
     /// The owner is this engine: writes are served locally, not forwarded.
     #[serde(default = "yes")]
     pub here: bool,
+    /// Row kind (125 §6.2); `chat` from an older harness.
+    #[serde(default)]
+    #[cfg_attr(feature = "ts", ts(optional = nullable))]
+    pub kind: SessionKind,
 }
 
 fn one() -> u32 {
@@ -1690,6 +1988,18 @@ pub enum HistoryEntry {
         #[cfg_attr(feature = "ts", ts(optional))]
         context: Option<ContextEntry>,
     },
+    /// 125 §5.4: an advisor's notes for one step boundary, stored as a
+    /// user row with typed `messages.advisory` metadata (the vision
+    /// pattern); never opens a turn. The row's text is the model-facing
+    /// rendering, the card renders from `advisory`.
+    Advisory {
+        /// The typed card.
+        advisory: Advisory,
+        /// Context membership of the stored row.
+        #[serde(default)]
+        #[cfg_attr(feature = "ts", ts(optional))]
+        context: Option<ContextEntry>,
+    },
 }
 
 impl HistoryEntry {
@@ -1702,7 +2012,8 @@ impl HistoryEntry {
             | Self::Tool { context, .. }
             | Self::Compacted { context, .. }
             | Self::Error { context, .. }
-            | Self::Interrupted { context, .. } => context.as_ref(),
+            | Self::Interrupted { context, .. }
+            | Self::Advisory { context, .. } => context.as_ref(),
         }
     }
 
@@ -1715,7 +2026,8 @@ impl HistoryEntry {
             | Self::Tool { context, .. }
             | Self::Compacted { context, .. }
             | Self::Error { context, .. }
-            | Self::Interrupted { context, .. } => context.as_mut(),
+            | Self::Interrupted { context, .. }
+            | Self::Advisory { context, .. } => context.as_mut(),
         }
     }
 }
@@ -1925,6 +2237,13 @@ pub enum AgentEvent {
     DefaultModelChanged {
         /// Canonical model id.
         model: String,
+    },
+    /// The favorite model list changed (127 §1): a [`SetModelFavorite`]
+    /// starred or unstarred a model. Global, no session; `models` is the
+    /// whole new list in favorites order.
+    FavoriteModelsChanged {
+        /// Canonical model ids, in the order they were starred.
+        models: Vec<String>,
     },
     /// An external harness (ACP child, design doc 06 §8.2) reported the LLM
     /// model its session runs on — at connect, or when it switched
@@ -2179,6 +2498,24 @@ pub enum AgentEvent {
         /// The model call whose `assistant_partial` was dropped.
         call_id: String,
     },
+    /// 125 §6.2: the advisor of `session` changed state, model, counters or cost.
+    AdvisorChanged {
+        /// The advised session.
+        session: SessionId,
+        /// Its advisor's full status.
+        status: AdvisorStatus,
+    },
+    /// 125 §6.2: an Advisory row was appended to `session` (steer or aside);
+    /// `seq` is its row.
+    AdvisoryAdded {
+        /// The advised session.
+        session: SessionId,
+        /// Seq of the stored user row carrying the advisory.
+        #[cfg_attr(feature = "ts", ts(type = "number"))]
+        seq: i64,
+        /// The typed card.
+        advisory: Advisory,
+    },
 }
 
 impl AgentEvent {
@@ -2221,9 +2558,13 @@ impl AgentEvent {
             | Self::TurnResumed { session, .. }
             | Self::ResumeReport { session, .. }
             | Self::TurnSuspended { session, .. }
-            | Self::PartialDropped { session, .. } => Some(*session),
+            | Self::PartialDropped { session, .. }
+            | Self::AdvisorChanged { session, .. }
+            | Self::AdvisoryAdded { session, .. } => Some(*session),
             Self::SubagentSpawned { child, .. } => Some(*child),
-            Self::DefaultModelChanged { .. } | Self::DefaultEffortChanged { .. } => None,
+            Self::DefaultModelChanged { .. }
+            | Self::DefaultEffortChanged { .. }
+            | Self::FavoriteModelsChanged { .. } => None,
         }
     }
 }
@@ -2253,6 +2594,10 @@ pub struct AgentConfig {
     /// Reasoning effort for new sessions (`low`, `high`, `off`, a token
     /// budget, …; what the model accepts); unset = provider default.
     pub effort: Option<String>,
+    /// Models starred in a picker (127 §1), `provider/model` ids in the order
+    /// they were starred; every device attached to this engine shows them
+    /// first. Written back as a one-line flow sequence by [`SetModelFavorite`].
+    pub favorite_models: Vec<String>,
     /// Harness-wide Bedrock inference profile; unset uses the AWS default credential chain.
     pub aws_profile: Option<String>,
     /// Max tool-call rounds per turn before the loop stops itself.
@@ -2309,6 +2654,10 @@ pub struct AgentConfig {
     /// `supervisor::start` the way `surface` is — not part of `agent:`.
     #[serde(skip)]
     pub durability: durability::DurabilityConfig,
+    /// The top-level `advisor:` section (125 §6.5), filled by
+    /// `supervisor::start` the way `surface` is — not part of `agent:`.
+    #[serde(skip)]
+    pub advisor: AdvisorConfig,
 }
 
 impl Default for AgentConfig {
@@ -2316,6 +2665,7 @@ impl Default for AgentConfig {
         Self {
             model: "anthropic/claude-sonnet-4-5".into(),
             effort: None,
+            favorite_models: Vec::new(),
             aws_profile: None,
             max_tool_rounds: 32,
             stream_idle_secs: 120,
@@ -2335,6 +2685,7 @@ impl Default for AgentConfig {
             openrouter: OpenRouterConfig::default(),
             surface: SurfaceConfig::default(),
             durability: durability::DurabilityConfig::default(),
+            advisor: AdvisorConfig::default(),
         }
     }
 }
@@ -2441,6 +2792,49 @@ impl Default for SurfaceConfig {
             enabled: true,
             correct: true,
             correct_rounds: 3,
+        }
+    }
+}
+
+/// The top-level `advisor:` config section (125 §6.5): the remembered pick
+/// and the three tuning keys. No `enabled` exists (ruling 2): an advisor
+/// exists only for the sessions a user turned it on for.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AdvisorConfig {
+    /// Last manual pick (`provider/model`); pins the picker, serves `/advisor on`.
+    pub model: Option<String>,
+    /// The same pick's effort.
+    pub effort: Option<String>,
+    /// Non-blocker notes accepted per update (1–32).
+    pub max_notes_per_update: u8,
+    /// Agent steps after a steer during which a concern is an aside (0–10; 0 disables).
+    pub immune_turns: u8,
+    /// How many pending deltas the advised loop waits for at turn end.
+    pub sync_backlog: SyncBacklog,
+}
+
+impl Default for AdvisorConfig {
+    fn default() -> Self {
+        Self {
+            model: None,
+            effort: None,
+            max_notes_per_update: 4,
+            immune_turns: 3,
+            sync_backlog: SyncBacklog::Off,
+        }
+    }
+}
+
+impl AdvisorConfig {
+    /// The wire form `Info.advisor` carries.
+    pub fn defaults(&self) -> AdvisorDefaults {
+        AdvisorDefaults {
+            model: self.model.clone(),
+            effort: self.effort.clone(),
+            max_notes_per_update: self.max_notes_per_update,
+            immune_turns: self.immune_turns,
+            sync_backlog: self.sync_backlog,
         }
     }
 }

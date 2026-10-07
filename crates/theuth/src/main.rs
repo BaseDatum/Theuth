@@ -893,6 +893,14 @@ agent:
 #   correct: true            # <surface_error> fix-up rounds when a json-render/mermaid/openui block is invalid
 #   correct_rounds: 3        # rounds per turn before the model is told to move on
 
+# advisor:                   # a second model that reviews one session's transcript (design doc 125); never on by default —
+#                            # the user turns it on per session with the model picker (/advisor, Advisor row). The pick is remembered here:
+#   model: anthropic/claude-haiku-4-5   # written by the picker; pins it and serves `/advisor on`. Settings → Advisor
+#   effort: null             # the pick's effort
+#   max_notes_per_update: 4  # non-blocker notes accepted per update (1–32)
+#   immune_turns: 3          # agent steps after a steer during which a concern is only an aside (0–10; 0 = off)
+#   sync_backlog: off        # off | 1 | 3 | 5: pending reviews the turn end waits for (≤ 30 s), never while the advisor is failing
+
 # web:                       # search_web / read_url (design doc 16); Settings > Search edits the read/budget keys live
 #   enabled: true
 #   engines: [google, brave, qwant, duckduckgo, wikipedia, arxiv, github]   # keyless built-ins; `bing` is opt-in (serves flagged clients empty pages)

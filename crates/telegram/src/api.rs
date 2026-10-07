@@ -1711,7 +1711,6 @@ mod tests {
         assert!(is_not_modified(&api(
             "Bad Request: message is not modified: specified new message content and reply markup are exactly the same"
         )));
-        assert!(!is_not_modified(&api("Bad Request: message is not modifiedx")) || true);
         assert!(api(CONFLICT).is(CONFLICT));
         assert!(!api("Conflict: terminated by other getUpdates request").is(CONFLICT));
         assert!(ApiError::TooBig.description().is_none());

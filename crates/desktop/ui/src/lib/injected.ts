@@ -1,3 +1,5 @@
+import type { AdvisorSeverity } from '@/rpc/bindings/AdvisorSeverity'
+
 /** Mid-turn engine notes share one transcript presentation; context summaries already have their own card. */
 export const ENGINE_NOTICES = {
   todo_continue: { title: 'Nudge', description: 'theuth asked the model to continue unfinished todos.' },
@@ -31,10 +33,12 @@ export type Injected =
    * `<task>` record that follows when the task was loaded; `count` when the wake was raised more than once;
    * `roster` is the fit-check block an assigned/reassigned wake carries (70 DESK-PROTOCOL). */
   | { kind: 'wake'; id?: string; title?: string; reason: string; count?: number; state?: string; owner?: string; reviewer?: string; thread?: string; body?: string; roster?: string }
+  /** 125 §5.4: one `<advisory severity="…">` element of an advisor row — a card, never a `you` bubble. */
+  | { kind: 'advisory'; severity: AdvisorSeverity; text: string }
   | { kind: 'engine'; notice: keyof typeof ENGINE_NOTICES; text: string }
 
 /** Wrappers that render a card, with the attribute naming the sender, and wrappers that render nothing. */
-const CARD: Record<string, string> = { subagent_result: 'name="', message: 'from="', job_result: 'id="', job_idle: 'id="', schedule: 'name="', desk: 'agent="' }
+const CARD: Record<string, string> = { subagent_result: 'name="', message: 'from="', job_result: 'id="', job_idle: 'id="', schedule: 'name="', desk: 'agent="', advisory: 'severity="' }
 // `surface_error` (30 §8): the correction round is quiet on the desktop — the fence shows its own failure state — so the
 // `<surface_error>` / `<surface_error final="true">` notes render nothing; the notice entry above stays for other clients.
 const HIDDEN: Record<string, true> = { context_summary: true, runtime: true, surface_error: true }
@@ -190,6 +194,8 @@ export function classify(text: string): Injected[] | null {
         out.push({ kind: 'reminder', id: from, after: attr(open, 'after="') ?? '', late: attr(open, 'late="') === 'true', text: body })
       } else if (name === 'message') {
         out.push({ kind: 'peer', from, text: body })
+      } else if (name === 'advisory') {
+        out.push({ kind: 'advisory', severity: from === 'concern' || from === 'blocker' ? from : 'nit', text: unescape(body.trim()) })
       } else if (name === 'desk') {
         const j = body.indexOf('</journal>')
         out.push({ kind: 'desk', agent: from, charter: inner(body, 'charter'), journal: inner(body, 'journal'), manual: j < 0 ? '' : body.slice(j + '</journal>'.length).trim() })

@@ -96,8 +96,11 @@ use crate::{
     SetVisionModel, ShowPrompt, SideCall, SideReply, SkillBody, SkillMeta, Steer, SyncSkills,
     TrimAssistant, Undo, UseSkill, Withdraw, effort_of,
 };
+use crate::{
+    AdvisorConfig, DurableStore, SessionCostQuery, SessionKind, SubagentsConfig, UnloadSession,
+};
 use crate::{AwsProfiles, ListAwsProfiles, SetAwsProfile};
-use crate::{DurableStore, SessionCostQuery, SubagentsConfig, UnloadSession};
+use crate::{GetFavoriteModels, SetModelFavorite};
 use crate::{ListProjectStyles, SetProjectStyle, SetSessionProject, project};
 use crate::{attach, clock, frame, repl, search, spill};
 use tools::{
@@ -106,6 +109,7 @@ use tools::{
 
 // 109: handler bodies in their own files so the waves do not collide.
 mod acp_resume; // 109 W4
+mod advisor; // 125 W1
 mod drain;
 mod resume;
 mod waits;
@@ -123,6 +127,8 @@ pub struct Agents {
     default_model: String,
     /// `cfg.effort` as last set by [`SetEffort`]; new sessions start on it.
     default_effort: Option<String>,
+    /// `cfg.favorite_models` as last set by [`SetModelFavorite`] (127 §1), in starring order.
+    favorite_models: Vec<String>,
     /// Live default compaction style; cloned into each session so [`SetCompactStyle`] is in-process.
     compact_style: Arc<RwLock<CompactStyle>>,
     /// Live title model (07 §15); `None` = each session's own model. Shared with every session.
@@ -253,6 +259,12 @@ pub struct Agents {
     /// roster installs it with [`InstallIdentitySource`]. `None`: every
     /// session is theuth's.
     identity: Option<Arc<dyn IdentitySource>>,
+    /// 125 §4.2: ids of advisor sessions seen by this process — never a
+    /// peer, told nothing about peers, speaking as the advisor.
+    pub(crate) advisors: HashSet<SessionId>,
+    /// 125 §6.5: the live `advisor:` section (the remembered pick and the
+    /// three tuning keys), rewritten by the pickers and the setters.
+    pub(crate) advisor_cfg: AdvisorConfig,
 }
 
 /// One pending `send_message{await_reply}` (50 §5.3).
@@ -573,8 +585,15 @@ impl Message<Identity> for Agents {
 
 impl Agents {
     /// [`IdentitySource::identity`] over `session`'s lineage; `None` without a
-    /// source or for a session of theuth's.
+    /// source or for a session of theuth's. 125 §5.1: an advisor session
+    /// speaks as the advisor, whatever the roster says.
     async fn identity_of(&self, session: SessionId) -> Option<String> {
+        if self.advisors.contains(&session) {
+            return Some(crate::advisor::identity::identity(
+                &self.rt.data_dir,
+                self.advisor_cfg.max_notes_per_update,
+            ));
+        }
         let source = self.identity.as_ref()?;
         let mut lineage = vec![session];
         let mut cur = session;
@@ -707,6 +726,14 @@ impl Agents {
             .and_then(|r| self.private.get(&r))
             .map_or_else(|| self.durable_resources.clone(), |p| p.resources.clone());
         let row = store.session(id).await?;
+        // 125 §4.1/§4.2: the hidden advisor child is never a peer; the
+        // advised session's loop hooks switch on when a link exists.
+        let kind = row.as_ref().map(|r| r.kind).unwrap_or_default();
+        let advised = kind == SessionKind::Chat && store.advisor_link(id).await?.is_some();
+        if kind == SessionKind::Advisor {
+            self.advisors.insert(id);
+            self.communication.0.write().record_hidden(id);
+        }
         let harness = acp
             .as_ref()
             .map(|a| a.0.clone())
@@ -828,7 +855,9 @@ impl Agents {
             self.pool.clone(),
             permits,
             resources,
-        );
+        )
+        .with_kind(kind)
+        .with_advisor(advised);
         let actor = Session::spawn_with_mailbox(session, runtime::subscriber_mailbox());
         let actor = LiveActor::Native(actor);
         self.ledger
@@ -1307,6 +1336,10 @@ impl Agents {
             PeerAddress::Remote(name) => Ok(Target::Remote(name)),
             PeerAddress::Session(id) => {
                 match self.store.session(id).await.map_err(|e| e.to_string())? {
+                    // 125 §4.2: the hidden advisor child is never a peer.
+                    Some(row) if row.kind == SessionKind::Advisor => {
+                        Err(format!("`{to}` is not a peer"))
+                    }
                     Some(_) => {
                         self.mirror(id).await;
                         Ok(Target::Local(id))
@@ -1510,6 +1543,9 @@ impl Agents {
             .await
             .map_err(|e| e.to_string())?
             .ok_or_else(|| format!("unknown peer `session:{to}`"))?;
+        if row.kind == SessionKind::Advisor {
+            return Err(format!("`session:{to}` is not a peer"));
+        }
         if isolated && row.agent.is_some() {
             return Err("an external harness cannot own an A2A task scope".into());
         }
@@ -5098,6 +5134,10 @@ impl Agents {
     /// Identity lines of a subagent (design doc 07 §10), or of a root a
     /// remote theuth opened (67 §8); `""` for any other root session.
     fn peer_context(&self, session: SessionId) -> String {
+        // 125 §4.2: the advisor is told nothing about peers and has no `send_message`.
+        if self.advisors.contains(&session) {
+            return String::new();
+        }
         if let Some(p) = self.remote_parent.get(&session) {
             let engine = p.engine.as_deref().unwrap_or("another engine");
             return format!(
@@ -5321,6 +5361,7 @@ impl Agents {
             retention: self.retention_of(id),
             activity,
             cap: self.caps.get(&id).copied(),
+            kind: row.kind,
         }
     }
 
@@ -5620,6 +5661,17 @@ impl Message<ShowPrompt> for Agents {
             Some(s) => self.identity_of(s).await,
             None => None,
         };
+        // 125 §5.4: the paragraph shows while a link exists.
+        let mut advised = false;
+        if let Some(s) = m.session {
+            advised = self
+                .store_for(s)
+                .advisor_link(s)
+                .await
+                .ok()
+                .flatten()
+                .is_some();
+        }
         let mut prompt = frame::baseline(
             &self.rt.data_dir,
             identity.as_deref(),
@@ -5628,6 +5680,7 @@ impl Message<ShowPrompt> for Agents {
             self.claude_code(&model),
             subagent_model.as_deref(),
             attended,
+            advised,
         );
         if self.pool.is_some()
             && toolset.as_ref().is_none_or(|t| t.runtime)
@@ -5829,12 +5882,17 @@ impl Message<ReadSession> for Agents {
             .await
             .map_err(|e| format!("{e:#}"))?
             .ok_or_else(|| format!("session {} not found", m.session))?;
+        // 125 §4.2: an advisor's transcript is readable by nobody else.
+        if summary.kind == SessionKind::Advisor {
+            return Err(format!("session {} is not a peer", m.session));
+        }
         summary.retention = self.retention_of(m.session);
         let h = store
             .context_history(m.session)
             .await
             .map_err(|e| format!("{e:#}"))?;
-        let mut out = render(&h.messages, &h.entries, &h.thinking);
+        let advisories = store.advisories(m.session).await.unwrap_or_default();
+        let mut out = render_with(&h.messages, &h.entries, &h.thinking, &advisories);
         // Peer provenance (50 §9), as `load_session` marks it.
         if let Ok(rows) = store.consumed_exchanges(m.session).await {
             let peers: HashMap<i64, PeerOrigin> = rows
@@ -5930,7 +5988,9 @@ impl Message<LoadSession> for Agents {
                 // before `at_seq`, i.e. before the first entry past it.
                 let mut dividers = epochs.iter().peekable();
                 let mut out = Vec::new();
-                for (seq, entry) in render(&messages, &entries, &thinking) {
+                // 125 §5.4: Advisory rows render as typed cards (`role: "advisory"`).
+                let advisories = store.advisories(m.session).await.unwrap_or_default();
+                for (seq, entry) in render_with(&messages, &entries, &thinking, &advisories) {
                     while let Some(e) = dividers.next_if(|e| e.at_seq < seq) {
                         out.push((e.at_seq, compacted(e, heads.get(&e.n).cloned())));
                     }
@@ -6668,6 +6728,66 @@ impl Message<GetDefaultModel> for Agents {
     }
 }
 
+impl Message<GetFavoriteModels> for Agents {
+    type Reply = Vec<String>;
+
+    async fn handle(
+        &mut self,
+        _: GetFavoriteModels,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Vec<String> {
+        self.favorite_models.clone()
+    }
+}
+
+impl Message<SetModelFavorite> for Agents {
+    type Reply = Result<Vec<String>, String>;
+
+    async fn handle(
+        &mut self,
+        m: SetModelFavorite,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Result<Vec<String>, String> {
+        self.set_model_favorite(m).await
+    }
+}
+
+impl Agents {
+    /// 127 §1: star or unstar `m.model` (resolved like [`Self::set_model`]);
+    /// when the list changes it is written to `agent.favorite_models` as one
+    /// flow-sequence line and announced as `FavoriteModelsChanged`.
+    async fn set_model_favorite(&mut self, m: SetModelFavorite) -> Result<Vec<String>, String> {
+        let id = self.catalog.resolve(&m.model, &*self.configured)?.id;
+        let at = self.favorite_models.iter().position(|f| *f == id);
+        match (at, m.favorite) {
+            (None, true) => self.favorite_models.push(id),
+            (Some(i), false) => {
+                self.favorite_models.remove(i);
+            }
+            _ => return Ok(self.favorite_models.clone()),
+        }
+        // JSON array syntax is valid YAML and survives ids with `:` / `.`.
+        let value = format!(
+            "[{}]",
+            self.favorite_models
+                .iter()
+                .map(|f| format!("\"{f}\""))
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+        let path = self.rt.data_dir.join("config.yaml");
+        if let Err(e) = runtime::write_config_value(&path, "agent", "favorite_models", &value) {
+            tracing::warn!("config.yaml: {e}");
+        }
+        self.rt
+            .publish(AgentEvent::FavoriteModelsChanged {
+                models: self.favorite_models.clone(),
+            })
+            .await;
+        Ok(self.favorite_models.clone())
+    }
+}
+
 impl Agents {
     /// 82 §2: switch `m.session` now; only a manual pick also becomes the
     /// default for new sessions (`agent.model` in config.yaml, announced as
@@ -7379,10 +7499,14 @@ impl From<&Resolved> for ModelInfo {
 /// tool card its response row's, narrowed to that response's images; a
 /// call still running has no stored response and so no target. `thinking`
 /// is the per-row thinking time (91) the `Reasoning` entry carries.
-pub(crate) fn render(
+/// `advisories` is the session's Advisory metadata (125 §5.4,
+/// `Store::advisories`): such a user row becomes [`HistoryEntry::Advisory`]
+/// and, like a vision note, never opens a turn.
+pub(crate) fn render_with(
     messages: &[(i64, ChatMessage)],
     entries: &BTreeMap<i64, ContextEntry>,
     thinking: &BTreeMap<i64, u64>,
+    advisories: &BTreeMap<i64, crate::Advisory>,
 ) -> Vec<(i64, HistoryEntry)> {
     let mut out = Vec::new();
     // ponytail: linear scan; one round's calls, never more than a handful.
@@ -7391,7 +7515,7 @@ pub(crate) fn render(
     // 52 §6: a typed vision note neither opens a turn nor hides the next
     // real user message's handle; the store decides from the metadata.
     let openers = store::turn_openers(messages, |s| {
-        entries.get(&s).is_some_and(|e| e.vision.is_some())
+        entries.get(&s).is_some_and(|e| e.vision.is_some()) || advisories.contains_key(&s)
     });
     for (seq, m) in messages {
         let opens = openers.contains(seq);
@@ -7400,6 +7524,13 @@ pub(crate) fn render(
         }
         let context = entries.get(seq);
         match m.role {
+            ChatRole::User if advisories.contains_key(seq) => out.push((
+                *seq,
+                HistoryEntry::Advisory {
+                    advisory: advisories[seq].clone(),
+                    context: context.cloned(),
+                },
+            )),
             ChatRole::User => out.push((
                 *seq,
                 HistoryEntry::User {
@@ -7509,6 +7640,16 @@ pub(crate) fn render(
         )
     }));
     out
+}
+
+/// [`render_with`] without Advisory metadata (test fixtures).
+#[cfg(test)]
+pub(crate) fn render(
+    messages: &[(i64, ChatMessage)],
+    entries: &BTreeMap<i64, ContextEntry>,
+    thinking: &BTreeMap<i64, u64>,
+) -> Vec<(i64, HistoryEntry)> {
+    render_with(messages, entries, thinking, &BTreeMap::new())
 }
 
 /// The UI divider for one epoch: the head text without its
@@ -7857,6 +7998,10 @@ pub async fn start(rt: &Runtime) -> anyhow::Result<()> {
     if rt.config.contains("durability") {
         cfg.durability = rt.section("durability")?;
     }
+    // 125 §6.5: the top-level `advisor:` section (the `surface:` pattern).
+    if rt.config.contains("advisor") {
+        cfg.advisor = rt.section("advisor")?;
+    }
     let cfg = Arc::new(cfg);
     // 68 §2: `sessions.owner` is this engine's mesh id. The mesh plugin
     // starts after us, so read (or create) the identity file directly.
@@ -7995,12 +8140,22 @@ pub async fn start(rt: &Runtime) -> anyhow::Result<()> {
         Ok(_) => {}
         Err(e) => tracing::error!("communication restart accounting: {e:#}"),
     }
+    // 125 §4.14: the Advisors actor loads every link before `resume_scan`
+    // (which the activity registration triggers later).
+    let advisor_store = store.clone();
+    let vault = auth.vault.clone();
+    let redact: Arc<dyn Fn(&str) -> String + Send + Sync> = Arc::new(move |text: &str| {
+        vault
+            .as_deref()
+            .map_or_else(|| text.to_owned(), |v| v.redact(text).into_owned())
+    });
     let agents = Agents::spawn_with_mailbox(
         Agents {
             rt: rt.clone(),
             cfg: cfg.clone(),
             default_model: cfg.model.clone(),
             default_effort: cfg.effort.clone(),
+            favorite_models: cfg.favorite_models.clone(),
             compact_style: Arc::new(RwLock::new(cfg.compact_style)),
             title_model: Arc::new(RwLock::new(title_model)),
             subagent_model: Arc::new(RwLock::new(subagent_model)),
@@ -8045,10 +8200,20 @@ pub async fn start(rt: &Runtime) -> anyhow::Result<()> {
             private_grace: PRIVATE_GRACE,
             transport: None,
             identity: None,
+            advisors: HashSet::new(),
+            advisor_cfg: cfg.advisor.clone(),
         },
         runtime::subscriber_mailbox(),
     );
     agents.register(AGENT_ACTOR)?;
+    crate::advisor::Advisors::start(
+        advisor_store,
+        rt.clone(),
+        cfg.advisor.clone(),
+        cfg.compact_at,
+        redact,
+    )
+    .await?;
     UserChannels::spawn(UserChannels::default()).register(USER_ACTOR)?;
     rt.subscribe::<Agents, AgentEvent>(&agents).await;
     // Finished jobs reach the model through `Settle::FinishedWithResult`
@@ -8192,7 +8357,19 @@ async fn load_topology(store: &Store, communication: &SharedPolicy) {
             return;
         }
     };
+    // 125 §4.2: advisor children are absent from `list_sessions`; the policy
+    // learns them as hidden so no route ever reaches one.
+    let hidden: Vec<SessionId> = match store.advisor_links().await {
+        Ok(links) => links.into_iter().map(|l| l.advisor).collect(),
+        Err(e) => {
+            tracing::warn!("advisor links not loaded: {e:#}");
+            Vec::new()
+        }
+    };
     let mut p = communication.0.write();
+    for id in hidden {
+        p.record_hidden(id);
+    }
     for (id, scope, alias) in roots {
         if let Err(e) = p.record_root(id, scope) {
             tracing::error!(session = %id, "record_root: {e}");
@@ -8902,6 +9079,14 @@ impl Message<SessionCostQuery> for Agents {
             .session_cost(m.0)
             .await
             .map_err(|e| format!("{e:#}"))
+    }
+}
+
+#[cfg(test)]
+impl Agents {
+    /// The credential bundle sessions stream with (tests point a gateway at a fake provider).
+    pub(crate) fn test_auth(&self) -> &Auth {
+        &self.auth
     }
 }
 
@@ -9688,6 +9873,7 @@ pub(crate) mod tests {
             rt: Runtime::new(figment::Figment::new(), dir.clone()),
             default_model: cfg.model.clone(),
             default_effort: None,
+            favorite_models: Vec::new(),
             cfg,
             compact_style: Arc::default(),
             title_model: Arc::default(),
@@ -9736,6 +9922,8 @@ pub(crate) mod tests {
             private_grace: Duration::from_millis(200),
             transport: None,
             identity: None,
+            advisors: HashSet::new(),
+            advisor_cfg: AdvisorConfig::default(),
         }
     }
 
@@ -10101,6 +10289,112 @@ pub(crate) mod tests {
         assert_eq!(
             agents.ask(GetDefaultEffort).await.unwrap(),
             Some("high".to_owned())
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// The `agent:` section of a written config.yaml, as the engine would load it.
+    fn agent_section(yaml: &str) -> AgentConfig {
+        let file: serde_yaml::Value = serde_yaml::from_str(yaml).unwrap();
+        serde_yaml::from_value(file["agent"].clone()).unwrap()
+    }
+
+    /// 127 §1: starring resolves through the catalog, keeps starring order,
+    /// never duplicates, is a no-op in the requested state, persists one
+    /// flow-sequence line that `AgentConfig` reads back, and announces the
+    /// new list; an id the resolver rejects (like `set_model`: an ambiguous
+    /// bare id — `provider/model` passes through) leaves the file alone.
+    #[tokio::test]
+    async fn favorites_persist_as_one_flow_sequence_line() {
+        let mut a = agents().await;
+        let dir = a.rt.data_dir.clone();
+        a.catalog = Arc::new(vision_catalog(&dir));
+        a.configured = Arc::new(|ns: &str| ns == "testvis");
+        let yaml = dir.join("config.yaml");
+        let seen = Arc::new(parking_lot::Mutex::new(Vec::new()));
+        let sink = Sink::spawn_with_mailbox(Sink(Arc::clone(&seen)), runtime::subscriber_mailbox());
+        a.rt.subscribe::<Sink, AgentEvent>(&sink).await;
+        let star = |model: &str, favorite| SetModelFavorite {
+            model: model.into(),
+            favorite,
+        };
+
+        // A bare id canonicalises; order is starring order; twice is once.
+        assert_eq!(
+            a.set_model_favorite(star("eyes", true)).await.unwrap(),
+            ["testvis/eyes"]
+        );
+        assert_eq!(
+            a.set_model_favorite(star("testvis/blind", true))
+                .await
+                .unwrap(),
+            ["testvis/eyes", "testvis/blind"]
+        );
+        assert_eq!(
+            a.set_model_favorite(star("testvis/eyes", true))
+                .await
+                .unwrap(),
+            ["testvis/eyes", "testvis/blind"]
+        );
+        let written = std::fs::read_to_string(&yaml).unwrap();
+        assert!(
+            written.contains("  favorite_models: [\"testvis/eyes\", \"testvis/blind\"]\n"),
+            "{written}"
+        );
+        let cfg = agent_section(&written);
+        assert_eq!(cfg.favorite_models, ["testvis/eyes", "testvis/blind"]);
+
+        // Rejected like `set_model` (the resolver's only error: a bare id in
+        // two configured providers); nothing written or announced.
+        a.configured = Arc::new(|_: &str| true);
+        let err = a.set_model_favorite(star("eyes", true)).await.unwrap_err();
+        assert!(err.starts_with("ambiguous model `eyes`"), "{err}");
+        a.configured = Arc::new(|ns: &str| ns == "testvis");
+        assert_eq!(std::fs::read_to_string(&yaml).unwrap(), written);
+
+        // Unstar to empty: `[]`, and the config still reads back.
+        assert_eq!(
+            a.set_model_favorite(star("eyes", false)).await.unwrap(),
+            ["testvis/blind"]
+        );
+        assert_eq!(
+            a.set_model_favorite(star("blind", false)).await.unwrap(),
+            Vec::<String>::new()
+        );
+        // Already unstarred: a no-op reply, no third write.
+        assert_eq!(
+            a.set_model_favorite(star("blind", false)).await.unwrap(),
+            Vec::<String>::new()
+        );
+        let written = std::fs::read_to_string(&yaml).unwrap();
+        assert!(written.contains("  favorite_models: []\n"), "{written}");
+        assert!(agent_section(&written).favorite_models.is_empty());
+        assert!(a.favorite_models.is_empty());
+
+        // Every change was announced with the whole list; no-ops were not.
+        let _ = sink
+            .ask(AgentEvent::TitleChanged {
+                session: SessionId::new(),
+                title: String::new(),
+                tags: Vec::new(),
+            })
+            .await;
+        let lists: Vec<Vec<String>> = seen
+            .lock()
+            .iter()
+            .filter_map(|e| match e {
+                AgentEvent::FavoriteModelsChanged { models } => Some(models.clone()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            lists,
+            [
+                vec!["testvis/eyes".to_owned()],
+                vec!["testvis/eyes".to_owned(), "testvis/blind".to_owned()],
+                vec!["testvis/blind".to_owned()],
+                vec![],
+            ]
         );
         std::fs::remove_dir_all(&dir).unwrap();
     }

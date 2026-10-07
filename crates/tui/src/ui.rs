@@ -4,8 +4,8 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use agent::CompactStyle;
 use agent::todo::Status as TodoStatus;
+use agent::{AdvisorSeverity, AdvisorState, CompactStyle};
 use iocraft::prelude::*;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 use tools::{Decision, Risk};
@@ -13,11 +13,14 @@ use tools::{Decision, Risk};
 use crate::clip;
 use crate::dictation::{self, Dictating, Phase};
 use crate::model::{
+    ADVISORY_COLLAPSED, Grouped, ModelRow, PickTarget, advisory_severity, advisory_title,
+    providers, session_row, severity_name, terminal_row,
+};
+use crate::model::{
     APP_WHERE, AcpRow, CardKind, Command, Entry, Level, Menu, MenuKey, Model, Prompt, Row, Switch,
     TodoCard, TurnAction, UiEvent, action_name, agent_row, artifact_row, artifact_size, describe,
     gate_name, k, meta_line, now_ms, progress_line, result_line, short, slash_matches, window,
 };
-use crate::model::{Grouped, ModelRow, providers, session_row, terminal_row};
 use crate::pathac;
 use crate::search::{self, Focus, Preview};
 use crate::talk::{self, Look, Talking};
@@ -33,6 +36,10 @@ pub struct Links {
     pub default_model: String,
     /// `Info.default_effort` (config as fallback, 83 §3): the draft header's effort.
     pub default_effort: Option<String>,
+    /// `Info.advisor` (125 §6.5): the remembered advisor pick `/advisor on` re-uses.
+    pub advisor: agent::AdvisorDefaults,
+    /// `Info.favorite_models` (config as fallback, 127 §3): starred models, shown first in `/model`.
+    pub favorite_models: Vec<String>,
     /// `tools.approvals` from config.
     pub approvals: bool,
     /// `Info.app_enabled`: offer `/apps`.
@@ -112,6 +119,8 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
     let mut links = hooks.use_context_mut::<Links>();
     let default_model = links.default_model.clone();
     let default_effort = links.default_effort.clone();
+    let advisor = links.advisor.clone();
+    let favorite_models = links.favorite_models.clone();
     let approvals = links.approvals;
     let app_enabled = links.app_enabled;
     let catalog = links.catalog.clone();
@@ -121,6 +130,8 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
             let mut m = Model::new(default_model, approvals);
             m.effort = default_effort.clone();
             m.default_effort = default_effort;
+            m.advisor_default = advisor;
+            m.favorite_models = favorite_models;
             m.app_enabled = app_enabled;
             m.catalog = Some(catalog);
             m.entries.push(Entry::Info(
@@ -281,6 +292,12 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
                     && let Some(session) = m.session
                 {
                     let _ = commands.send(Command::SessionCost(session));
+                }
+                // 125 §3: the link survives a restart; re-read it with every load.
+                if std::mem::take(&mut m.refresh_advisor)
+                    && let Some(session) = m.session
+                {
+                    let _ = commands.send(Command::AdvisorStatus(session));
                 }
                 // Root metadata moved while a grouped picker is open (51 §3): re-list it.
                 if std::mem::take(&mut m.refresh_grouping) {
@@ -791,7 +808,10 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
             }
             #(path_box(&m, width))
             View(height: 1, padding_left: 1, padding_right: 1, justify_content: JustifyContent::SpaceBetween) {
-                Text(content: m.status(), color: SAND)
+                View() {
+                    Text(content: m.status(), color: SAND)
+                    #(m.advisor_segment().map(|(text, state)| element!(Text(content: text, color: advisor_color(state)))))
+                }
                 Text(content: m.mcp_status(), color: SAND)
             }
         }
@@ -1004,12 +1024,18 @@ fn menu(m: &Model, input: &str, width: u16, height: u16) -> Option<AnyElement<'s
             filter,
             cursor,
             provider,
+            target,
         } => {
+            // 125 §7.2: the same picker, titled for whose model it sets.
+            let noun = match target {
+                PickTarget::Session => "model",
+                PickTarget::Advisor => "advisor",
+            };
             let rows = m.models_rows();
             let title = if !filter.is_empty() {
                 let none = rows.iter().all(|r| matches!(r, ModelRow::Current(_)));
                 format!(
-                    "model  search: {filter}▏  ⏎ set  esc close{}",
+                    "{noun}  search: {filter}▏  ⏎ set  ⇥ ★ favorite  esc close{}",
                     if none { "  no match" } else { "" }
                 )
             } else if let Some(p) = provider {
@@ -1018,34 +1044,48 @@ fn menu(m: &Model, input: &str, width: u16, height: u16) -> Option<AnyElement<'s
                 } else {
                     ""
                 };
-                format!("model › {p} ({})  ⏎ set  {back}esc close", rows.len())
+                let models = rows.iter().filter(|r| !matches!(r, ModelRow::Off { .. })).count();
+                format!("{noun} › {p} ({models})  ⏎ set  ⇥ ★ favorite  {back}esc close")
             } else {
-                "model  ⏎ open provider  type to search all models  esc close".to_owned()
+                format!("{noun}  ⏎ open provider  ⇥ ★ favorite  type to search all models  esc close")
             };
-            let mark = |on: bool| if on { "●" } else { " " };
+            // Two-char marker column (127 §3): `●` current, `★` favorite.
+            let marks = |on: bool, fav: bool| {
+                format!(
+                    "{}{}",
+                    if on { "●" } else { " " },
+                    if fav { "★" } else { " " }
+                )
+            };
             let model_row = |on: bool, i: &agent::ModelInfo| {
                 format!(
                     "{} {:<44} {:<32} {}{}",
-                    mark(on),
+                    marks(on, m.favorite_models.contains(&i.id)),
                     i.id,
                     i.name,
                     k(i.context),
                     if i.image { " · vision" } else { "" }
                 )
             };
+            let picked = m.pick_current();
             let rows = rows
                 .iter()
                 .map(|r| match r {
+                    ModelRow::Off { current } => {
+                        format!("{} {:<44} no advisor", marks(*current, false), "Off")
+                    }
                     ModelRow::Current(i) => model_row(true, i),
-                    ModelRow::Model(i) => model_row(i.id == m.model_id, i),
+                    ModelRow::Favorite(i) | ModelRow::Model(i) => {
+                        model_row(Some(i.id.as_str()) == picked, i)
+                    }
                     ModelRow::Provider { id, count, current } => {
-                        format!("{} {id:<24} {count:>4} models", mark(*current))
+                        format!("{} {id:<24} {count:>4} models", marks(*current, false))
                     }
                 })
                 .collect();
             (title, rows, *cursor)
         }
-        Menu::Efforts { items, cursor } => (
+        Menu::Efforts { items, cursor, .. } => (
             "effort  ⏎ set  esc close".to_owned(),
             items.clone(),
             *cursor,
@@ -2038,6 +2078,42 @@ fn entry(e: &Entry, spinner: &str, skip: usize, width: u16) -> AnyElement<'stati
             }
             .into_any()
         }
+        // 125 §7.4: the Round card in its worst severity's colour; one row per
+        // note, badge coloured, text plain; three rows until Ctrl+O.
+        Entry::Advisory { advisory, expanded } => {
+            let color = severity_color(advisory_severity(advisory));
+            let n = advisory.notes.len();
+            let shown = if *expanded { n } else { n.min(ADVISORY_COLLAPSED) };
+            let title = advisory_title(advisory);
+            let header = if n <= ADVISORY_COLLAPSED {
+                title
+            } else if *expanded {
+                format!("{title}   ctrl+o collapses")
+            } else {
+                format!("{title}   ctrl+o expands")
+            };
+            let rows: Vec<AnyElement<'static>> = advisory
+                .notes
+                .iter()
+                .take(shown)
+                .map(|note| {
+                    element!(MixedText(contents: vec![
+                        MixedTextContent::new(format!("[{}]", severity_name(note.severity))).color(severity_color(note.severity)),
+                        MixedTextContent::new(format!(" {}", note.note)),
+                    ], wrap: TextWrap::Wrap))
+                    .into_any()
+                })
+                .collect();
+            let more = (n > shown).then(|| format!("… +{} more notes", n - shown));
+            element! {
+                View(flex_direction: FlexDirection::Column, border_style: BorderStyle::Round, border_color: color, padding_left: 1, padding_right: 1, margin_top: 1) {
+                    Text(content: header, color, weight: Weight::Bold)
+                    #(rows)
+                    #(more.map(|m| element!(Text(content: m, color: SAND))))
+                }
+            }
+            .into_any()
+        }
         Entry::Divider(label) => element! {
             View(border_style: BorderStyle::Round, border_color: PROMPT, padding_left: 1, padding_right: 1, margin_top: 1) {
                 Text(content: format!("── {label} ──"), color: PROMPT, weight: Weight::Bold)
@@ -2046,6 +2122,27 @@ fn entry(e: &Entry, spinner: &str, skip: usize, width: u16) -> AnyElement<'stati
         .into_any(),
         Entry::Info(t) => plain(t, TextWrap::Wrap, |c| c.color(SAND)),
         Entry::Error(t) => plain(t, TextWrap::Wrap, |c| c.color(CARNELIAN)),
+    }
+}
+
+/// The advisor palette (125 §7.4): nit SAND (muted), concern OCHRE (warning),
+/// blocker CARNELIAN (danger).
+fn severity_color(s: AdvisorSeverity) -> Color {
+    match s {
+        AdvisorSeverity::Nit => SAND,
+        AdvisorSeverity::Concern => OCHRE,
+        AdvisorSeverity::Blocker => CARNELIAN,
+    }
+}
+
+/// The status segment's colour by advisor state (125 §7.5): idle SAND,
+/// reviewing FAIENCE, paused OCHRE, halted CARNELIAN.
+fn advisor_color(s: AdvisorState) -> Color {
+    match s {
+        AdvisorState::Off | AdvisorState::Idle => SAND,
+        AdvisorState::Reviewing => FAIENCE,
+        AdvisorState::Paused => OCHRE,
+        AdvisorState::Halted => CARNELIAN,
     }
 }
 
@@ -2257,7 +2354,9 @@ mod tests {
     }
 
     /// Long rows used to make the box taller than its rows (empty space under
-    /// the list) at some widths; the box must be title + rows + border.
+    /// the list) at some widths; the box must be title + rows + border. The
+    /// title (69 cells since 127's `⇥ ★ favorite`) wraps below width 74, so
+    /// the ten rows are counted from the bottom border instead of the whole box.
     #[test]
     fn menu_box_is_tight_at_any_width() {
         let mut m = Model::default();
@@ -2280,6 +2379,7 @@ mod tests {
             filter: String::new(),
             cursor: 0,
             provider: Some("amazon-bedrock".into()),
+            target: PickTarget::Session,
         });
         for width in 60..=120u16 {
             let modal = menu(&m, "", width, 30).unwrap();
@@ -2294,7 +2394,20 @@ mod tests {
             let lines: Vec<&str> = frame.lines().collect();
             let top = lines.iter().position(|l| l.starts_with('╭')).unwrap();
             let bottom = lines.iter().position(|l| l.starts_with('╰')).unwrap();
-            assert_eq!(bottom - top, 12, "width {width}: box spans {top}..{bottom}");
+            let inner = &lines[top + 1..bottom];
+            let is_row = |l: &str| l.contains("amazon-bedrock/us.");
+            assert_eq!(
+                inner.iter().filter(|l| is_row(l)).count(),
+                10,
+                "width {width}"
+            );
+            assert!(
+                inner.iter().rev().take(10).all(|l| is_row(l)),
+                "width {width}: empty space under the list in {top}..{bottom}"
+            );
+            if width >= 74 {
+                assert_eq!(bottom - top, 12, "width {width}: box spans {top}..{bottom}");
+            }
             assert!(
                 lines
                     .iter()
@@ -2302,6 +2415,127 @@ mod tests {
                 "width {width}: a row overflows"
             );
         }
+    }
+
+    /// 125 §7.4: the card is border + title + one row per shown note (+ the
+    /// `… +N more` row collapsed), its badges in the rows, nothing wider than
+    /// the terminal (`Entry::height` counts the same rows; `model.rs` tests it).
+    #[test]
+    fn advisory_card_is_tight_at_any_width() {
+        use agent::{Advisory, AdvisoryNote};
+        let notes = |n: usize| -> Vec<AdvisoryNote> {
+            (0..n)
+                .map(|i| AdvisoryNote {
+                    severity: match i % 3 {
+                        0 => AdvisorSeverity::Nit,
+                        1 => AdvisorSeverity::Concern,
+                        _ => AdvisorSeverity::Blocker,
+                    },
+                    note: format!("note {i} stays short so it never wraps"),
+                })
+                .collect()
+        };
+        let card = |n: usize, expanded: bool| Entry::Advisory {
+            advisory: Advisory {
+                advisor: runtime::SessionId::new(),
+                step: 1,
+                turn: None,
+                at_ms: 0,
+                notes: notes(n),
+            },
+            expanded,
+        };
+        for width in 60..=120u16 {
+            for (e, rows, more) in [
+                (card(5, false), 3, Some("… +2 more notes")),
+                (card(5, true), 5, None),
+                (card(2, false), 2, None),
+            ] {
+                let frame = element! {
+                    View(flex_direction: FlexDirection::Column, width, height: 20u16) {
+                        #(Some(entry(&e, "⠋", 0, width)))
+                    }
+                }
+                .to_string();
+                let lines: Vec<&str> = frame.lines().collect();
+                let top = lines.iter().position(|l| l.starts_with('╭')).unwrap();
+                let bottom = lines.iter().position(|l| l.starts_with('╰')).unwrap();
+                let body = 1 + rows + usize::from(more.is_some());
+                assert_eq!(bottom - top, body + 1, "width {width}:\n{frame}");
+                assert!(
+                    lines
+                        .iter()
+                        .all(|l| l.chars().count() <= usize::from(width))
+                );
+                assert!(lines[top + 1].contains("◎ advisor ·"), "{frame}");
+                assert!(lines[top + 2].contains("[nit]") && lines[top + 3].contains("[concern]"));
+                if let Some(more) = more {
+                    assert!(lines[top + body].contains(more), "{frame}");
+                }
+            }
+        }
+    }
+
+    /// 127 §3: the two-char marker column — `●` current, `★` favorite — on
+    /// every level, and the `⇥ ★ favorite` hint in each title.
+    #[test]
+    fn model_rows_carry_current_and_favorite_markers() {
+        let model = |id: &str, name: &str, provider: &str| ModelInfo {
+            id: id.into(),
+            name: name.into(),
+            provider: provider.into(),
+            context: 200_000,
+            reasoning: false,
+            image: false,
+            efforts: Vec::new(),
+            budget_min: None,
+            budget_max: None,
+        };
+        let items = vec![
+            model("google/gemini-2.5-pro", "Gemini 2.5 Pro", "google"),
+            model("openai/gpt-5.4", "GPT-5.4", "openai"),
+            model("openai/gpt-5.4-mini", "GPT-5.4 mini", "openai"),
+        ];
+        let mut m = Model::new("openai/gpt-5.4".into(), false);
+        m.favorite_models = vec!["openai/gpt-5.4".into(), "google/gemini-2.5-pro".into()];
+        let render = |m: &Model| menu(m, "", 120, 30).unwrap().to_string();
+        // Providers level: favorites with their markers, the current one `●★`; the current provider `● `.
+        m.menu = Some(Menu::Models {
+            items: items.clone(),
+            filter: String::new(),
+            cursor: 0,
+            provider: None,
+            target: PickTarget::Session,
+        });
+        let frame = render(&m);
+        assert!(frame.contains("⏎ open provider  ⇥ ★ favorite"), "{frame}");
+        assert!(frame.contains("●★ openai/gpt-5.4 "), "{frame}");
+        assert!(frame.contains(" ★ google/gemini-2.5-pro "), "{frame}");
+        assert!(frame.contains("●  openai "), "{frame}");
+        // Models level: `●★` on the current favorite, blanks on a plain model.
+        m.menu = Some(Menu::Models {
+            items: items.clone(),
+            filter: String::new(),
+            cursor: 0,
+            provider: Some("openai".into()),
+            target: PickTarget::Session,
+        });
+        let frame = render(&m);
+        assert!(frame.contains("⏎ set  ⇥ ★ favorite  ←/⌫ back"), "{frame}");
+        assert!(frame.contains("●★ openai/gpt-5.4 "), "{frame}");
+        assert!(frame.contains("   openai/gpt-5.4-mini "), "{frame}");
+        // Search: the Current row then a favorite hit.
+        m.menu = Some(Menu::Models {
+            items,
+            filter: "gemini".into(),
+            cursor: 1,
+            provider: None,
+            target: PickTarget::Session,
+        });
+        let frame = render(&m);
+        assert!(frame.contains("⏎ set  ⇥ ★ favorite  esc close"), "{frame}");
+        assert!(frame.contains("●★ openai/gpt-5.4 "), "{frame}");
+        assert!(frame.contains(" ★ google/gemini-2.5-pro "), "{frame}");
     }
 
     /// Eight live children: six rows, one fold line, and no row wider than

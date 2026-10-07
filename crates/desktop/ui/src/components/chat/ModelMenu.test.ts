@@ -1,7 +1,7 @@
 import { defaultFilter } from 'cmdk'
 import { expect, test } from 'vitest'
 import type { ConfigOption } from '@/rpc/bindings/ConfigOption'
-import { harnessCurrent, harnessGroups, harnessItemValue, pinnedFilter } from './ModelMenu'
+import { dialogPlacement, harnessCurrent, harnessGroups, harnessItemValue, pinnedFilter } from './ModelMenu'
 
 const opt = (id: string, category: string | null, current: string, values: [string, string][]): ConfigOption => ({
   id,
@@ -51,4 +51,12 @@ test('pinnedFilter keeps the pinned value at 1 and defers to defaultFilter other
 
 test('harness item values are the exact cmdk strings', () => {
   expect(harnessItemValue('Model', { name: 'GPT-5.4', value: 'openai/gpt-5.4' })).toBe('Model GPT-5.4 openai/gpt-5.4')
+})
+
+test('127 §6 dialogPlacement: touch anchors the dialog to the top of the visible band and lets the list fill it; else centred', () => {
+  expect(dialogPlacement(false)).toEqual({ content: '', list: '' })
+  const phone = dialogPlacement(true)
+  expect(phone.content.split(' ')).toEqual(expect.arrayContaining(['top-[max(0.5rem,env(safe-area-inset-top))]', 'translate-y-0', 'flex', 'flex-col', 'max-h-[calc(var(--visible-band)-1rem)]']))
+  expect(phone.content).not.toMatch(/translate-x|left-/)
+  expect(phone.list.split(' ')).toEqual(expect.arrayContaining(['max-h-none', 'min-h-0', 'flex-1']))
 })

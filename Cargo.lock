@@ -4,7 +4,7 @@ version = 4
 
 [[package]]
 name = "a2a"
-version = "2.9.2"
+version = "2.10.0"
 dependencies = [
  "a2a-client-lf",
  "a2a-lf",
@@ -141,7 +141,7 @@ checksum = "415ed64958754dbe991900f3940677e6a7eefb4d7367afd70d642677b0c7d19d"
 
 [[package]]
 name = "acp"
-version = "2.9.2"
+version = "2.10.0"
 dependencies = [
  "agent-client-protocol",
  "anyhow",
@@ -273,7 +273,7 @@ dependencies = [
 
 [[package]]
 name = "agent"
-version = "2.9.2"
+version = "2.10.0"
 dependencies = [
  "a2a-lf",
  "acp",
@@ -547,7 +547,7 @@ checksum = "330a5ed07fa54e4702c9d6c4174f74427fc0ef6e214bbd677ae50a5099946470"
 
 [[package]]
 name = "app"
-version = "2.9.2"
+version = "2.10.0"
 dependencies = [
  "agent",
  "anyhow",
@@ -573,6 +573,25 @@ dependencies = [
  "tracing-subscriber",
  "ts-rs",
  "uuid",
+]
+
+[[package]]
+name = "apple-cf"
+version = "0.11.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "acc8e8f378f5bbd99f5850a95e55cbfd20e14db63d1eee16a060528cf960876e"
+dependencies = [
+ "doom-fish-utils",
+]
+
+[[package]]
+name = "apple-metal"
+version = "0.10.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "00a23f6df783ca6a2def6201afc6bd54c1d41454e35552309166432155b544fc"
+dependencies = [
+ "doom-fish-utils",
+ "libc",
 ]
 
 [[package]]
@@ -857,7 +876,7 @@ dependencies = [
 
 [[package]]
 name = "artifact"
-version = "2.9.2"
+version = "2.10.0"
 dependencies = [
  "agent",
  "anyhow",
@@ -2395,7 +2414,7 @@ dependencies = [
 
 [[package]]
 name = "browser"
-version = "2.9.2"
+version = "2.10.0"
 dependencies = [
  "agent",
  "anyhow",
@@ -3339,7 +3358,7 @@ dependencies = [
 
 [[package]]
 name = "codeindex"
-version = "2.9.2"
+version = "2.10.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3532,7 +3551,7 @@ checksum = "6e8ccc4ea9f6acc32d102c0f6d471d11d913ad15f20c04de743374861fa1d414"
 
 [[package]]
 name = "computer"
-version = "2.9.2"
+version = "2.10.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3548,6 +3567,7 @@ dependencies = [
  "platform",
  "runtime",
  "schemars 1.2.2",
+ "screencapturekit",
  "serde",
  "serde_json",
  "sha2 0.10.9",
@@ -4220,7 +4240,7 @@ dependencies = [
 
 [[package]]
 name = "cursor"
-version = "2.9.2"
+version = "2.10.0"
 dependencies = [
  "bytes",
  "futures",
@@ -4491,7 +4511,7 @@ dependencies = [
 
 [[package]]
 name = "decision"
-version = "2.9.2"
+version = "2.10.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -4817,7 +4837,7 @@ dependencies = [
 
 [[package]]
 name = "desktop"
-version = "2.9.2"
+version = "2.10.0"
 dependencies = [
  "anyhow",
  "block2",
@@ -5033,7 +5053,7 @@ dependencies = [
 
 [[package]]
 name = "document"
-version = "2.9.2"
+version = "2.10.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -5096,6 +5116,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "doom-fish-utils"
+version = "0.4.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "32707dcbfc8b3fd80d134a6d9e63f4f73ab6eece78192f0f213a192f08900c79"
+dependencies = [
+ "crossbeam-queue",
+ "futures-util",
+]
+
+[[package]]
 name = "dotenvy"
 version = "0.15.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5103,7 +5133,7 @@ checksum = "1aaf95b3e5c8f23aa320147307562d361db0ae0d51242340f558153b4eb2439b"
 
 [[package]]
 name = "double"
-version = "2.9.2"
+version = "2.10.0"
 dependencies = [
  "agent",
  "anyhow",
@@ -5896,7 +5926,7 @@ checksum = "3e0f1c7c3a72c66fd80abe965175f7523475c0489a87d3ff9d6e8c87d87a9d2d"
 
 [[package]]
 name = "firecrawl-native"
-version = "2.9.2"
+version = "2.10.0"
 dependencies = [
  "html-to-markdown-rs",
  "kuchikiki",
@@ -10358,7 +10388,7 @@ dependencies = [
 
 [[package]]
 name = "knowledge"
-version = "2.9.2"
+version = "2.10.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -11158,7 +11188,7 @@ checksum = "d4a5ff6bcca6c4867b1c4fd4ef63e4db7436ef363e0ad7531d1558856bae64f4"
 
 [[package]]
 name = "link"
-version = "2.9.2"
+version = "2.10.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -11541,7 +11571,7 @@ dependencies = [
 
 [[package]]
 name = "markdown"
-version = "2.9.2"
+version = "2.10.0"
 dependencies = [
  "mdstream",
  "pulldown-cmark",
@@ -11661,7 +11691,7 @@ checksum = "f3327364edd79c4f66b36db667c0a28e078389351b0855e5f95ed4f22d778821"
 
 [[package]]
 name = "meeting"
-version = "2.9.2"
+version = "2.10.0"
 dependencies = [
  "agent",
  "anyhow",
@@ -11783,7 +11813,7 @@ dependencies = [
 
 [[package]]
 name = "mesh"
-version = "2.9.2"
+version = "2.10.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -12250,7 +12280,7 @@ dependencies = [
 
 [[package]]
 name = "models"
-version = "2.9.2"
+version = "2.10.0"
 dependencies = [
  "ort",
  "platform",
@@ -13121,7 +13151,7 @@ checksum = "a5eb86a92577833b75522336f210c49d9ebd7dd55a44d80a92e68c668a75f27c"
 
 [[package]]
 name = "nodes"
-version = "2.9.2"
+version = "2.10.0"
 dependencies = [
  "acp",
  "agent",
@@ -13485,7 +13515,7 @@ dependencies = [
 
 [[package]]
 name = "oauth"
-version = "2.9.2"
+version = "2.10.0"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -15421,7 +15451,7 @@ checksum = "b4596b6d070b27117e987119b4dac604f3c58cfb0b191112e24771b2faeac1a6"
 
 [[package]]
 name = "platform"
-version = "2.9.2"
+version = "2.10.0"
 dependencies = [
  "anyhow",
  "dirs 6.0.0",
@@ -16842,7 +16872,7 @@ checksum = "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
 
 [[package]]
 name = "relay"
-version = "2.9.2"
+version = "2.10.0"
 dependencies = [
  "anyhow",
  "axum",
@@ -16868,7 +16898,7 @@ dependencies = [
 
 [[package]]
 name = "replica"
-version = "2.9.2"
+version = "2.10.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -17131,7 +17161,7 @@ checksum = "c85cd47a33a4510b1424fe796498e174c6a9cf94e606460ef022a19f3e4ff85e"
 
 [[package]]
 name = "roster"
-version = "2.9.2"
+version = "2.10.0"
 dependencies = [
  "agent",
  "anyhow",
@@ -17171,7 +17201,7 @@ checksum = "afab94fb28594581f62d981211a9a4d53cc8130bbcbbb89a0440d9b8e81a7746"
 
 [[package]]
 name = "routes"
-version = "2.9.2"
+version = "2.10.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -17221,7 +17251,7 @@ dependencies = [
 
 [[package]]
 name = "rpc"
-version = "2.9.2"
+version = "2.10.0"
 dependencies = [
  "a2a",
  "acp",
@@ -17671,7 +17701,7 @@ dependencies = [
 
 [[package]]
 name = "runtime"
-version = "2.9.2"
+version = "2.10.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -18148,7 +18178,7 @@ dependencies = [
 
 [[package]]
 name = "sandbox"
-version = "2.9.2"
+version = "2.10.0"
 dependencies = [
  "agent",
  "anyhow",
@@ -18196,7 +18226,7 @@ dependencies = [
 
 [[package]]
 name = "schedule"
-version = "2.9.2"
+version = "2.10.0"
 dependencies = [
  "agent",
  "anyhow",
@@ -18305,7 +18335,7 @@ checksum = "94143f37725109f92c262ed2cf5e59bce7498c01bcc1502d7b9afe439a4e9f49"
 
 [[package]]
 name = "scrape"
-version = "2.9.2"
+version = "2.10.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -18327,6 +18357,16 @@ dependencies = [
  "uuid",
  "web",
  "wiremock",
+]
+
+[[package]]
+name = "screencapturekit"
+version = "11.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fe1b2061926d42d24cf1736407c9d7bc3e7d45dbba841e5ac8807c662998967e"
+dependencies = [
+ "apple-cf",
+ "apple-metal",
 ]
 
 [[package]]
@@ -18515,7 +18555,7 @@ dependencies = [
 
 [[package]]
 name = "search"
-version = "2.9.2"
+version = "2.10.0"
 dependencies = [
  "nucleo",
  "schemars 1.2.2",
@@ -18525,7 +18565,7 @@ dependencies = [
 
 [[package]]
 name = "search-providers"
-version = "2.9.2"
+version = "2.10.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -18564,7 +18604,7 @@ dependencies = [
 
 [[package]]
 name = "secrets"
-version = "2.9.2"
+version = "2.10.0"
 dependencies = [
  "aho-corasick",
  "anyhow",
@@ -19063,7 +19103,7 @@ dependencies = [
 
 [[package]]
 name = "sessionsync"
-version = "2.9.2"
+version = "2.10.0"
 dependencies = [
  "agent",
  "anyhow",
@@ -19232,7 +19272,7 @@ checksum = "f8fadd59c855ef2080decdef8ff161eb6661b86933c9d82e5ba29dc602a55aba"
 
 [[package]]
 name = "signal"
-version = "2.9.2"
+version = "2.10.0"
 dependencies = [
  "a2a",
  "agent",
@@ -19475,7 +19515,7 @@ checksum = "0c790de23124f9ab44544d7ac05d60440adc586479ce501c1d6d7da3cd8c9cf5"
 
 [[package]]
 name = "slack"
-version = "2.9.2"
+version = "2.10.0"
 dependencies = [
  "a2a",
  "agent",
@@ -20465,7 +20505,7 @@ checksum = "e396b6523b11ccb83120b115a0b7366de372751aa6edf19844dfb13a6af97e91"
 
 [[package]]
 name = "surface"
-version = "2.9.2"
+version = "2.10.0"
 dependencies = [
  "jsonrepair-rs",
  "markdown",
@@ -20868,7 +20908,7 @@ dependencies = [
 
 [[package]]
 name = "talk"
-version = "2.9.2"
+version = "2.10.0"
 dependencies = [
  "agent",
  "anyhow",
@@ -20970,7 +21010,7 @@ checksum = "adb6935a6f5c20170eeceb1a3835a49e12e19d792f6dd344ccc76a985ca5a6ca"
 
 [[package]]
 name = "tasks"
-version = "2.9.2"
+version = "2.10.0"
 dependencies = [
  "agent",
  "anyhow",
@@ -21481,7 +21521,7 @@ dependencies = [
 
 [[package]]
 name = "telegram"
-version = "2.9.2"
+version = "2.10.0"
 dependencies = [
  "agent",
  "anyhow",
@@ -21636,7 +21676,7 @@ dependencies = [
 
 [[package]]
 name = "theuth"
-version = "2.9.2"
+version = "2.10.0"
 dependencies = [
  "a2a",
  "agent",
@@ -22301,7 +22341,7 @@ dependencies = [
 
 [[package]]
 name = "tools"
-version = "2.9.2"
+version = "2.10.0"
 dependencies = [
  "anydoc",
  "anyhow",
@@ -22670,7 +22710,7 @@ dependencies = [
 
 [[package]]
 name = "tui"
-version = "2.9.2"
+version = "2.10.0"
 dependencies = [
  "a2a",
  "acp",
@@ -23782,7 +23822,7 @@ checksum = "6d49784317cd0d1ee7ec5c716dd598ec5b4483ea832a2dced265471cc0f690ae"
 
 [[package]]
 name = "update"
-version = "2.9.2"
+version = "2.10.0"
 dependencies = [
  "agent",
  "anyhow",
@@ -24193,7 +24233,7 @@ dependencies = [
 
 [[package]]
 name = "voice"
-version = "2.9.2"
+version = "2.10.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -24579,7 +24619,7 @@ dependencies = [
 
 [[package]]
 name = "web"
-version = "2.9.2"
+version = "2.10.0"
 dependencies = [
  "anyhow",
  "async-trait",

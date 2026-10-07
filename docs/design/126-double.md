@@ -586,3 +586,27 @@ Sky's words on 9: "We'll need to do more research in that case."
 - v0 · 2026-10-07 · written from the brief at ~/.theuth/briefs/2026-10-07/126/brief.md. Writer's limits: no `shell()` in the runtime (no sqlite volume queries, no `git log`; main sha read from `.git/refs/heads/main`); every `path:line` cite verified by `read_file` / `grep` on the working tree at f2225972; candle facts read from the cargo registry sources of the pinned 0.11.0 crates, nothing executed. Committed on main `e70471e6` (02:30).
 - Revision 1 · 2026-10-07 08:40 · Sky's nine rulings (table above); grace 30 s, no bootstrap, W0 failure → research, the other six defaults confirmed.
 
+## Revision 2 — the W0 spike's findings and Sky's Tier B venue ruling (2026-10-07 12:40)
+
+Source: `docs/design/126-as-built-W0.md` (spike `spike/126-w0-lora`, commit 3519322c; cherry-picked onto `feat/126-w3` as c72e428d…74977c67). Sky's rulings on two ask_user cards at 12:40 after reading the spike's open items 1–2. Binding over §7.3, §7.6, §8.2 and §15 W3 where they differ.
+
+### What the spike measured (Mac15,8, M3 Max class, 64 GB, candle 0.11, Metal f16, release)
+
+- **The blocker was mis-described in §7.3/§7.6.** `candle_nn::rotary_emb::rope`, `ops::softmax_last_dim` and the biased `LayerNorm` path are applied with `apply_op*_no_bwd`: `backward()` returns `Ok` and the gradient is **silently dropped** (graph cut; loss flat) — there is no `BackwardNotSupported` error. Under a `train` cargo feature (off by default, default forward byte-identical) the three are swapped for their differentiable siblings (`rope_slow`, `softmax(D::Minus1)`, `layer_norm_slow`); after all three swaps the gradient crosses all 28 encoder layers (q/k through rope and v all receive gradient at layers 0 and 27).
+- **Mechanics: SUCCESS.** Rank-8 LoRA on 112 matrices (3,598,336 trainable f32 params, 14.4 MB), base frozen f16: at batch **2 × 256**, lr 1e-4, **1,089 ms/step** steady (fwd ≈ 170 / bwd ≈ 750 / opt ≈ 85 ms), **12.2 GB physical footprint** (RSS 1.9 GB — Metal buffers count in phys_footprint; candle's Metal allocator never frees within a step), loss 1.4660 → 0.0012 (step 25) → 0.0001 (step 50) monotone; adapter saved via `VarMap::save` (14,417,560 bytes).
+- **The design's batch does not exist here.** 8 × 512 OOMs in debug (`kIOGPUCommandBufferCallbackErrorOutOfMemory`) and in release did not finish step 1 in 9.5 min (no activation checkpointing in candle; attention scores 8 × 16 × 512 × 512 f16 = 64 MB per layer per tensor × 28 layers kept in the graph). §7.3's "5,000-row epoch ≈ 25 min at 8 × 512" is replaced by **≈ 45 min at 2 × 256** (0.54 s/row).
+- **Interactivity.** Even the one-minute 2 × 256 run made the owner's Mac unusable; Sky stopped it at 11:17 ("the lora training that's happening right now is making my machine unusable, stop it"). Metal command buffers cannot be throttled. A decision-crate test run that loads the checkpoint (laya on Metal) had the same effect and was killed at 11:19.
+- CPU/Accelerate: **unmeasured** (pre-empted by the stop). Not a fallback decision — Revision 1 ruling 9 stands.
+
+### Rulings (Sky, 12:40)
+
+1. **Tier B venue: node-first, local behind an off-by-default flag.** `double.training.venue: auto` resolves Tier B to a mesh GPU node (`EngineStats { gpu: true, accelerator: Some(Cuda), class ∉ {Laptop, Vm} }`); with no node, Tier B is inactive and the k-NN memory + Tier A carry the feature and the curve. A new key `double.training.tiers.b.local` (default `false`) enables local Tier B; when enabled it runs only inside the window (default 02:00–06:00), on AC, with the owner idle ≥ 15 min at start, holding a `BUILD_SLOTS=1` build slot, **and aborts within one step on any keyboard/mouse activity** (checkpoint the adapter and optimiser state, resume in the next window) — an abort-on-activity detector, not only a start gate. §8.2's preconditions are necessary, not courtesy.
+2. **Batch.** Micro-batch 2 × 256 with gradient accumulation to a configurable effective batch (default 16); the rehearsal sampler caps the corpus (default 2,000 rows ≈ 18 min at the measured rate); run cap 90 min per night stands.
+3. **W3 is briefed now**, in parallel with W1/W2/W4/W5, on `feat/126-w3` (C's contract + the four spike commits): the trainer, the node job entry, fixture-level tests on a tiny model config, and a documented node run recipe — **no training run and no checkpoint load on the owner's machine during the build**.
+4. **Operational rule for the waves (Sky, 11:17–11:19):** no test, example or job that loads a model checkpoint or trains runs on the owner's machine while he uses it; the decision crate's checkpoint tests stay gated (`DECISION_EMBED_TEST=1`, off).
+
+### Revision log (continued)
+
+- Revision 2 · 2026-10-07 12:40 · W0 findings (silent graph cut, 2 × 256 numbers, 8 × 512 unreachable, machine unusable) and the Tier B venue/batch rulings; W3 briefed.
+
+

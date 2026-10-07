@@ -922,6 +922,7 @@ mod tests {
             retention: tools::Retention::Durable,
             activity: Default::default(),
             cap: None,
+            kind: Default::default(),
         };
         let rows = vec![
             mk("grep", AgentState::Running),
