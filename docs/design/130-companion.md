@@ -1277,6 +1277,103 @@ directly are repeated here.
 - Feng, McDonald & Zhang 2025 (levels of autonomy): https://arxiv.org/abs/2506.12469
 - NASA-TLX: https://doi.org/10.1016/S0166-4115(08)62386-9
 
+## Revision 1 (2026-10-07 12:15) — spike findings SA / SB / SC folded in
+
+Three spikes ran as theuth subagents on `/tmp/130-spikes` between 11:47 and 12:07 (no permission dialog triggered;
+repository untouched). Reports: `docs/design/130/spike-SA-bundle-notify.md`, `spike-SB-input-breakpoints.md`,
+`spike-SC-entitlements-release.md`. Every item below amends the section it names; where this revision and the body
+disagree, this revision wins.
+
+### R1-1 Build and bundle (amends D11, §5.6, §7 row S1) — SwiftPM alone is enough for W1–W3: **verified**
+- `swift build -c release` with Command Line Tools only (Swift 6.3.2) built a one-file SwiftUI + AppKit menu-bar app
+  with a non-activating rail in 67 s cold / 3 s warm; 155 KB arm64 binary; nothing needed Xcode (SF Symbols, a
+  hand-written `Info.plist`, an `.icns` from `iconutil`). The manifest must be `// swift-tools-version: 6.0` (`.macOS(.v15)`
+  does not exist in 5.9) with `swiftSettings: [.swiftLanguageMode(.v5)]` per target (SA §1).
+- The bundle built by script passed `codesign --verify --deep --strict` and ran five times via `open -g` with the status
+  item and the 26×200 pt rail on screen, no dialog, no focus change (SA §2).
+- **The Tauri bundler never signs `bundle.macOS.files`** (tauri-bundler 2.9.4 `app.rs:183-209` copies, `sign_paths` is
+  frameworks + binaries + the .app only; `--deep` appears nowhere) and theuth does not use the bundler's signing at all —
+  `scripts/package-macos.sh:108-128` signs inside-out by hand. Therefore the companion is NOT declared in
+  `bundle.macOS.files`; `scripts/package-macos.sh` gains a step that `ditto`s `target/release/companion/Theuth Companion.app`
+  into `Contents/Library/LoginItems/` and signs it (hardened runtime, `--timestamp`, `-i io.theuth.mac.companion`) before the
+  outer app (W1S). `Contents/Library/LoginItems` is a sanctioned nested-code location (TN2206); same Developer ID for both.
+- **This Mac has zero code-signing identities** (`security find-identity -v -p codesigning` → 0; SC §1). Releases are
+  built by hand with `just release` on the release Mac (team `8H548FVL95`, `scripts/package-ios.sh:33`); there is no CI
+  (`.github` absent). Every local companion build is therefore ad-hoc signed; a notarized companion ships only from the
+  release Mac (SC §2).
+- Universal binaries: SwiftPM builds the host arch; a fat companion needs `swift build --arch arm64 --arch x86_64` —
+  unverified, deferred (the Tauri app ships arm64 + x86_64 per `tauri.macos.conf.json`; decide at W2).
+
+### R1-2 Lifecycle (amends D1, D10, D12) — launch today by the Tauri shell, login item later from the MAIN app
+- `SMAppService.loginItem(identifier:)` takes the HELPER's bundle id, the helper must live at `Contents/Library/LoginItems`,
+  and `register()` "starts the helper immediately and on subsequent logins" and relaunches it on a crash or non-zero exit;
+  a second `register()` returns `kSMErrorAlreadyRegistered` (treat as success); status `.requiresApproval` means the user
+  must flip the switch in System Settings › Login Items (`openSystemSettingsLoginItems()`); the registration call must come
+  from the MAIN app's process (SA §4). Amendment: D1's "the companion registers itself" becomes **the Tauri shell registers
+  the login item** (Rust via objc2 `ServiceManagement`) when "Launch at login" is on, and launches the helper with
+  `NSWorkspace.openApplication` (`activates = false`) otherwise — W1S builds the launch path; the registration path is W2.
+- The companion exits 0 when a second instance of its bundle id is already running and exits 0 when the main app tells it to
+  quit (a non-zero exit would make launchd relaunch it); `unregister()` is the only way to stop a registered helper for good.
+
+### R1-3 Hotkey and permissions (amends D6, §5.7) — double-tap ⌥ needs Accessibility: **documented, not tested**
+- Apple's `addGlobalMonitorForEvents` text ("key-related events may only be monitored if accessibility is enabled"),
+  Apple DTS answers and two shipping samples all say an `NSEvent` global monitor needs Accessibility trust; no readable
+  source supports the "`flagsChanged` is exempt" folklore; One's support page asks for Accessibility for the same gesture
+  (SB §3). The decisive untrusted run (press ⌥ twice under a launchd-spawned test) is the one manual step the spike left,
+  because it may show the dialog. D6 stands: chord by default, ⌥⌥ opt-in behind the Accessibility prompt.
+- TCC trusts the RESPONSIBLE process: a binary spawned by theuth's shell inherited the engine's trust, the same binary under
+  launchd did not. A LoginItem helper (ppid 1) therefore needs its OWN Accessibility row — the opt-in prompt is the companion's,
+  never inherited from theuth.app (SB §2, surprise a).
+- Permission-free breakpoint signals **verified**: `CGEventSource.secondsSinceLastEventType`, IOKit `HIDIdleTime` and
+  `NSWorkspace` activate/deactivate observers all ran under an untrusted launchd job with no dialog and sane 1.00 s/s values
+  (SB §4–§5). Prefer `HIDIdleTime` (hardware input only) over the CG counter when theuth itself drives the mouse; use a
+  `.common`-mode `Timer` (exact 1 s ticks) rather than `asyncAfter` (10 % leeway, 4.5 s late at 90 s).
+- A pure `DoubleTapDetector` passed 10/10 synthetic sequences (SB §1); it is the W2 implementation seed.
+
+### R1-4 Notifications (amends D8, §4.4) — native path confirmed; time-sensitive needs a provisioning profile
+- From an ad-hoc-signed SwiftPM bundle, `UNUserNotificationCenter.current()` worked, a `question` category with three actions
+  and a text-input action registered, `getNotificationSettings` returned `.notDetermined` with no prompt; the bare executable
+  crashed (`bundleProxyForCurrentProcess is nil`) — always run from the bundle (SA §5). Categories read back empty before
+  authorization: register them on every launch, never assert on the read-back.
+- The Tauri notification plugin is title/body only on desktop (`register_action_types` mobile-only; permission a constant
+  `Granted`) — the companion is the only route to actionable notifications (SA §6), as D8 assumed.
+- Time Sensitive Notifications is ✓ for Developer ID in Apple's "Supported capabilities (macOS)" table but is a RESTRICTED
+  entitlement: it needs an App ID `io.theuth.mac.companion` with the capability enabled, a Developer ID provisioning profile
+  embedded at `Theuth Companion.app/Contents/embedded.provisionprofile`, and the entitlement in the companion's signing
+  entitlements (SC §3). Until Sky registers the App ID and commits the profile (manual steps, SC §Manual), W2 ships errors as
+  `.active` with sound and no time-sensitive level.
+
+### R1-5 Approval card (amends D5, §4.2) — `Decision` is `Allow | Deny` only
+`crates/tools/src/approval.rs:30-35` offers no per-session allow. The approval card is `1 Allow` (recommended) · `2 Deny`
+· `R` deny with a note (the note goes to the session as `steer`/`send_input` text); "Allow for this session" is removed from
+the card and from mock round 2 frame 4 until the engine offers a scoped decision (open question added to §9).
+
+### R1-6 Screenshots and self-checks (amends §6.3)
+`NSWindow.sharingType = .none` makes the rail invisible to `screencapture` and to theuth's own `computer_screenshot` on
+macOS 26.6.2 while CGWindowList still reports it on screen (SA §2). Keep `.none` for the product; every screenshot-based
+check runs with a `--shareable` debug flag (`.readOnly`). `isFloatingPanel = true` silently resets `level` to `.floating` —
+set the level last or never set `isFloatingPanel`.
+
+### R1-7 Platform statement (amends Status, §2.3)
+Public macOS on 2026-10-07 is 27.0.1 (Golden Gate); the latest Tahoe is 26.7.1; this Mac runs 26.6.2 with CLT 26.5 (SC §6).
+The design assumes macOS 26 SDK APIs, floor 15.0 (`crates/desktop/tauri.macos.conf.json`), and gates 27-only APIs
+(`NSStatusItem.expandedInterfaceDelegate`, interactive glass) behind `#available`.
+
+### R1-8 W4 confirmed Xcode-only (amends §7 row W4)
+No documented path produces an `.appex` without Xcode; SwiftPM products are library/executable/plugin only (SC §5).
+WidgetKit's budget is "40 to 70 refreshes … every 15 to 60 minutes" and `reloadTimelines` counts against it except the
+listed exemptions — the widget stays a summary, never live.
+
+### R1-9 Waves started (record)
+W0 engine (omp, `~/Develop/theuth-130-w0`, `feat/130-w0-engine`), W1 Swift companion core (omp, `~/Develop/theuth-130-w1`,
+`feat/130-w1-companion`) and W1S Tauri shell + packaging (omp, `~/Develop/theuth-130-w1s`, `feat/130-w1s-shell`) were cut
+from main `eba311ed` and started 12:00–12:12 with briefs in `~/Develop/theuth-130-briefs/brief-W0-engine.md`,
+`brief-W1-companion.md`, `brief-W1S-shell.md`. W1S owns D10 (launch, alive detection, tray hand-over, quit handshake,
+`theuth://` deep links, packaging); the one-line App.tsx wiring (suppress the webview's own notifications and tray badge
+while the companion is alive) is deferred to integration because wave 129 W2 is editing App.tsx.
+
 ---
 
-Revision history: v0 2026-10-07 — written from the four recon reports and Sky's rulings of 11:29.
+Revision history: v0 2026-10-07 — written from the four recon reports and Sky's rulings of 11:29. · R1 2026-10-07 12:15 —
+spike findings SA/SB/SC folded in (build/bundle verified, lifecycle via SMAppService from the main app, Accessibility for
+⌥⌥, time-sensitive needs a profile, `Decision` is Allow|Deny, screenshots need `--shareable`, waves W0/W1/W1S started).
