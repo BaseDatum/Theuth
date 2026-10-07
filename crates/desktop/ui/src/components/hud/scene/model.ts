@@ -77,6 +77,8 @@ export type Target =
   | { route: 'session'; id: string }
   | { route: 'agents' }
   | { route: 'tasks'; state: TaskState | null }
+  /** Revision 6: the board filtered to one project; `null` (unfiled) is the bare board — the board has no "no project" filter. */
+  | { route: 'tasks-project'; project: string | null }
   | { route: 'attention-list' }
   | { route: 'new' }
 
@@ -693,25 +695,76 @@ export function punchCard(activityWeek: readonly ActivityEntry[], now: number): 
   return { cells, max, now: cell(now) }
 }
 
-export type OutcomeMix = { done: number; running: number; review: number; blocked: number; cancelled: number }
-/** Legend order of the OUTCOMES waffle; `state` is the board column each row opens. */
-export const MIX_ORDER: readonly { key: keyof OutcomeMix; color: Color; state: TaskState }[] = [
-  { key: 'done', color: C.success, state: 'done' },
-  { key: 'running', color: C.info, state: 'doing' },
-  { key: 'review', color: C.primary, state: 'review' },
-  { key: 'blocked', color: C.accent, state: 'blocked' },
-  { key: 'cancelled', color: C.tertiary, state: 'cancelled' },
+/** Revision 6: the BOARD panel's states in board order with their colours; `backlog` is the quietest (tertiary at 0.55), `cancelled` tertiary in full. */
+export const BOARD_ORDER: readonly { state: TaskState; color: Color; opacity?: number }[] = [
+  { state: 'backlog', color: C.tertiary, opacity: 0.55 },
+  { state: 'todo', color: C.secondary },
+  { state: 'doing', color: C.info },
+  { state: 'review', color: C.primary },
+  { state: 'blocked', color: C.accent },
+  { state: 'done', color: C.success },
+  { state: 'cancelled', color: C.tertiary },
 ]
 
-/** Tasks that moved today by state; `running` = every `doing` task regardless of date. */
-export function outcomeMix(tasks: readonly Task[], now: number): OutcomeMix {
+export type BoardState = { state: TaskState; n: number; color: Color; opacity?: number }
+export type BoardProject = { name: string | null; n: number }
+export type Board = { total: number; byState: BoardState[]; projects: BoardProject[]; movedToday: number }
+
+/** Revision 6: the whole board — every task in every project — by state (board order) and by project (largest first, ties by name; `null` = unfiled); `movedToday` = tasks with `updated_ms` since local midnight. */
+export function boardSummary(tasks: readonly Task[], now: number): Board {
   const midnight = startOfDay(now)
-  const mix: OutcomeMix = { done: 0, running: 0, review: 0, blocked: 0, cancelled: 0 }
+  const byProject = new Map<string | null, number>()
+  let movedToday = 0
   for (const t of tasks) {
-    if (t.state === 'doing') mix.running++
-    else if (t.updated_ms >= midnight && (t.state === 'done' || t.state === 'review' || t.state === 'blocked' || t.state === 'cancelled')) mix[t.state]++
+    byProject.set(t.project, (byProject.get(t.project) ?? 0) + 1)
+    if (t.updated_ms >= midnight) movedToday++
   }
-  return mix
+  return {
+    total: tasks.length,
+    byState: BOARD_ORDER.map((o) => ({ ...o, n: tasks.filter((t) => t.state === o.state).length })),
+    projects: [...byProject].map(([name, n]) => ({ name, n })).sort((a, b) => b.n - a.n || projectName(a.name).localeCompare(projectName(b.name))),
+    movedToday,
+  }
+}
+
+export const WAFFLE_CELLS = 60
+
+/**
+ * Cells per state for the waffle: one per task when they all fit; else each non-zero state keeps one cell and the remaining
+ * `cells − nonZero` are shared over the tasks beyond that first one by largest remainder — the result sums to exactly
+ * `min(total, cells)` and no state with a task disappears.
+ */
+export function waffle(counts: readonly number[], cells = WAFFLE_CELLS): number[] {
+  const total = counts.reduce((s, n) => s + n, 0)
+  if (total <= cells) return [...counts]
+  const nonZero = counts.filter((n) => n > 0).length
+  const rest = cells - nonZero
+  const share = counts.map((n) => (n > 0 ? ((n - 1) * rest) / (total - nonZero) : 0))
+  const out = share.map((s) => Math.floor(s))
+  let left = rest - out.reduce((s, n) => s + n, 0)
+  for (const i of share.map((_, i) => i).sort((a, b) => share[b]! - out[b]! - (share[a]! - out[a]!))) {
+    if (left-- <= 0) break
+    out[i]!++
+  }
+  return out.map((n, i) => (counts[i]! > 0 ? n + 1 : 0))
+}
+
+export const projectName = (name: string | null): string => (name === null ? 'unfiled' : truncate(name, 14))
+
+/** The PROJECT line: `name N` entries in order while they fit a `budget` of characters (` · ` between, room for the ` +K` tail); at least one. */
+export function projectLine(projects: readonly BoardProject[], budget = 70): { shown: (BoardProject & { label: string })[]; more: number } {
+  const shown: (BoardProject & { label: string })[] = []
+  let len = 0
+  for (let i = 0; i < projects.length; i++) {
+    const p = projects[i]!
+    const label = `${projectName(p.name)} ${p.n}`
+    const next = len + (shown.length > 0 ? 3 : 0) + label.length
+    const tail = i < projects.length - 1 ? ` +${projects.length - i - 1}`.length : 0
+    if (shown.length > 0 && next + tail > budget) break
+    shown.push({ ...p, label })
+    len = next
+  }
+  return { shown, more: projects.length - shown.length }
 }
 
 /** `needYou` is `null` while the inbox is still loading — the chrome shows `—`, not a false `00`. */
@@ -795,7 +848,8 @@ export type SceneModel = {
   outcomesTotal: number
   hairlines: Hairline[]
   punch: PunchCard
-  mix: OutcomeMix
+  /** Revision 6: the BOARD panel (`boardSummary`). */
+  board: Board
   footer: Footer
   /** Rev 3: the SPEND panel (`spendPanel`). */
   spend: SpendPanelModel
@@ -831,7 +885,7 @@ export function scene(data: SceneData, now: number, hv: number = FIELD_H): Scene
     outcomesTotal: outs.total,
     hairlines: hairlines(today, sessionsToday(sessions, now), rs, drawn, now, g),
     punch: punchCard(data.activityWeek ?? [], now),
-    mix: outcomeMix(tasks, now),
+    board: boardSummary(tasks, now),
     footer: footer(agents, sessions, data.attention, outs.total, inFlight, now, data.spend?.month.usd),
     spend,
   }

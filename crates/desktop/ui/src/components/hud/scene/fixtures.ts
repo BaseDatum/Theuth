@@ -24,7 +24,7 @@ const agent = (name: string, status: AgentSummary['status'], open_tasks: number,
   spent_month,
 })
 
-const task = (id: string, title: string, owner: string, state: Task['state'], updated_ms: number, progress_at_ms: number | null = null): Task => ({
+const task = (id: string, title: string, owner: string, state: Task['state'], updated_ms: number, progress_at_ms: number | null = null, project: string | null = null): Task => ({
   id,
   title,
   brief: '',
@@ -34,7 +34,7 @@ const task = (id: string, title: string, owner: string, state: Task['state'], up
   blockers: [],
   blocks: [],
   parent: null,
-  project: null,
+  project,
   where: null,
   harness: null,
   external: [],
@@ -148,21 +148,28 @@ export function sceneFixture(now: number): Required<SceneData> {
     need(`blocked:${T('1203')}`, 'blocked', 'windows build host unreachable', now - 26 * H, 'builder', T('1203')),
     { ...need('secret:gh-token', 'secret', 'GITHUB_TOKEN rotation requested', now - 50 * H, null, null), session: 'chat-1' }, // Revision 4: via the root's ring
   ]
+  // Revision 6: the BOARD panel reads every task in every project — `hud` (9), `relay` (5), unfiled (6); every state present (doing 3, done 7, review 2, blocked 1, cancelled 1, backlog 4, todo 2).
   const tasks: Task[] = [
-    task(T('1214'), 'wire HUD scene into /', 'ops-desk', 'doing', now - 12 * M, now - 12 * M),
-    task(T('1210'), 'design 126 review', 'research', 'doing', now - 40 * M, now - 40 * M),
-    task(T('1213'), 'punch card arrivals', 'builder', 'doing', now - 55 * M, now - 55 * M),
+    task(T('1214'), 'wire HUD scene into /', 'ops-desk', 'doing', now - 12 * M, now - 12 * M, 'hud'),
+    task(T('1210'), 'design 126 review', 'research', 'doing', now - 40 * M, now - 40 * M, 'hud'),
+    task(T('1213'), 'punch card arrivals', 'builder', 'doing', now - 55 * M, now - 55 * M, 'hud'),
     task(T('1212'), 'release notes 2.4', 'ops-desk', 'done', today(19.8)),
-    task(T('1207'), 'relay cert rotation', 'ops-desk', 'done', today(18.5)),
-    task(T('1201'), 'landed main', 'research', 'done', today(17.2)),
+    task(T('1207'), 'relay cert rotation', 'ops-desk', 'done', today(18.5), null, 'relay'),
+    task(T('1201'), 'landed main', 'research', 'done', today(17.2), null, 'hud'),
     task(T('1199'), 'artifact report.pdf', 'research', 'done', today(14.1)),
     task(T('1195'), 'sandbox image', 'builder', 'done', today(12.4)),
     task(T('1190'), 'knowledge +2', 'user', 'done', today(10.0)),
-    task(T('1180'), 'mesh relay', 'analyst', 'done', today(8.3)),
-    task(T('1188'), 'design 126 draft', 'research', 'review', now - 1 * H),
-    task(T('1203'), 'windows build host', 'builder', 'blocked', now - 26 * H),
+    task(T('1180'), 'mesh relay', 'analyst', 'done', today(8.3), null, 'relay'),
+    task(T('1188'), 'design 126 draft', 'research', 'review', now - 1 * H, null, 'hud'),
+    task(T('1187'), 'relay failover runbook', 'ops-desk', 'review', now - 30 * H, null, 'relay'),
+    task(T('1203'), 'windows build host', 'builder', 'blocked', now - 26 * H, null, 'hud'),
     task(T('1170'), 'old idea', 'user', 'cancelled', today(9.0)),
     task(T('1160'), 'backlog item', 'user', 'backlog', now - 3 * 24 * H),
+    task(T('1158'), 'compact scene polish', 'user', 'backlog', now - 4 * 24 * H, null, 'hud'),
+    task(T('1157'), 'relay metrics', 'analyst', 'backlog', now - 5 * 24 * H, null, 'relay'),
+    task(T('1156'), 'arc labels at 1400', 'user', 'backlog', now - 6 * 24 * H, null, 'hud'),
+    task(T('1172'), 'spend panel caps', 'builder', 'todo', now - 20 * H, null, 'hud'),
+    task(T('1171'), 'relay cert alarm', 'ops-desk', 'todo', now - 28 * H, null, 'relay'),
   ]
   // Revision 1: morning-brief fired and finished, standup-notes fired and failed, nightly-digest running, knowledge-sync due at 23:30.
   const routines = [
