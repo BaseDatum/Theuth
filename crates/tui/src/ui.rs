@@ -17,7 +17,7 @@ use crate::model::{
     TodoCard, TurnAction, UiEvent, action_name, agent_row, artifact_row, artifact_size, describe,
     gate_name, k, meta_line, now_ms, progress_line, result_line, short, slash_matches, window,
 };
-use crate::model::{Grouped, session_row, terminal_row};
+use crate::model::{Grouped, ModelRow, providers, session_row, terminal_row};
 use crate::pathac;
 use crate::search::{self, Focus, Preview};
 use crate::talk::{self, Look, Talking};
@@ -995,22 +995,52 @@ fn menu(m: &Model, input: &str, width: u16, height: u16) -> Option<AnyElement<'s
                 *cursor,
             )
         }
-        Menu::Models { filter, cursor, .. } => (
-            format!("model  filter: {filter}▏"),
-            m.models_filtered()
+        Menu::Models {
+            items,
+            filter,
+            cursor,
+            provider,
+        } => {
+            let rows = m.models_rows();
+            let title = if !filter.is_empty() {
+                let none = rows.iter().all(|r| matches!(r, ModelRow::Current(_)));
+                format!(
+                    "model  search: {filter}▏  ⏎ set  esc close{}",
+                    if none { "  no match" } else { "" }
+                )
+            } else if let Some(p) = provider {
+                let back = if providers(items).len() > 1 {
+                    "←/⌫ back  "
+                } else {
+                    ""
+                };
+                format!("model › {p} ({})  ⏎ set  {back}esc close", rows.len())
+            } else {
+                "model  ⏎ open provider  type to search all models  esc close".to_owned()
+            };
+            let mark = |on: bool| if on { "●" } else { " " };
+            let model_row = |on: bool, i: &agent::ModelInfo| {
+                format!(
+                    "{} {:<44} {:<32} {}{}",
+                    mark(on),
+                    i.id,
+                    i.name,
+                    k(i.context),
+                    if i.image { " · vision" } else { "" }
+                )
+            };
+            let rows = rows
                 .iter()
-                .map(|i| {
-                    format!(
-                        "{:<44} {:<32} {}{}",
-                        i.id,
-                        i.name,
-                        k(i.context),
-                        if i.image { " · vision" } else { "" }
-                    )
+                .map(|r| match r {
+                    ModelRow::Current(i) => model_row(true, i),
+                    ModelRow::Model(i) => model_row(i.id == m.model_id, i),
+                    ModelRow::Provider { id, count, current } => {
+                        format!("{} {id:<24} {count:>4} models", mark(*current))
+                    }
                 })
-                .collect(),
-            *cursor,
-        ),
+                .collect();
+            (title, rows, *cursor)
+        }
         Menu::Efforts { items, cursor } => (
             "effort  ⏎ set  esc close".to_owned(),
             items.clone(),
@@ -2240,10 +2270,12 @@ mod tests {
                 budget_max: None,
             })
             .collect();
+        // The provider's models level lists all ten rows (124 §3.2).
         m.menu = Some(Menu::Models {
             items,
             filter: String::new(),
             cursor: 0,
+            provider: Some("amazon-bedrock".into()),
         });
         for width in 60..=120u16 {
             let modal = menu(&m, "", width, 30).unwrap();

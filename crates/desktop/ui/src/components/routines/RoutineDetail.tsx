@@ -5,6 +5,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { toast } from 'sonner'
 import { useModels } from '@/components/agents/queries'
 import { Field } from '@/components/agents/RuntimeAccessFields'
+import { ModelCombobox } from '@/components/chat/ModelCombobox'
 import { Divider } from '@/components/chat/Panes'
 import { Pulse } from '@/components/chat/Pulse'
 import { SectionBand } from '@/components/nav/SectionBand'
@@ -27,7 +28,6 @@ import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible'
 import { Input } from '@/components/ui/input'
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Sheet, SheetContent, SheetTitle } from '@/components/ui/sheet'
 import { Switch } from '@/components/ui/switch'
 import { Textarea } from '@/components/ui/textarea'
@@ -46,9 +46,6 @@ import { KindBadge, RESULT_CLASS, RoutineChips, sensorArgs } from './RoutinesVie
 import { type Draft, NEW, draftToFile, fileText, latestDraft } from './draft'
 import { type Kind, SECTIONS, type Section, cronWords, fromFile, fromInfo, kindOf, lastCheckText, parseWhen, plainError, relative, resultKind, resultLabel, runCount, sentence, took, verdictText } from './helpers'
 import { KEY, useNotHub, useRoutineFile, useRoutineHistory, useRoutines, useRoutinesApi, useSensors } from './queries'
-
-// Radix Select refuses '' as a value.
-const NONE = '__none'
 
 /** Seconds as a short humantime: whole hours → `2h`, whole minutes → `30m`, else `90s`; unknown/0 → `30m`. */
 function shortDuration(secs: number | undefined): string {
@@ -651,20 +648,7 @@ function Editor({
                   </datalist>
                 </Field>
                 <Field label="Model" id="rt-model" hint="the run's session; default = the engine's default model">
-                  <Select value={f.model ?? NONE} onValueChange={(v) => set('model', v === NONE ? null : v)}>
-                    <SelectTrigger id="rt-model" size="sm" className="w-full">
-                      <SelectValue placeholder="Engine default" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value={NONE}>Engine default</SelectItem>
-                      {models.data?.map((m) => (
-                        <SelectItem key={m.id} value={m.id}>
-                          {m.name} <span className="text-fg-tertiary">{m.provider}</span>
-                        </SelectItem>
-                      ))}
-                      {f.model && !models.data?.some((m) => m.id === f.model) && <SelectItem value={f.model}>{f.model}</SelectItem>}
-                    </SelectContent>
-                  </Select>
+                  <ModelCombobox id="rt-model" size="sm" className="w-full" models={models.data ?? []} value={f.model} none={{ label: 'Engine default' }} onChange={(v) => set('model', v)} />
                 </Field>
                 <Field label="Directory" id="rt-cwd" hint="where until runs and the run starts" error={errAt('cwd')}>
                   <Input id="rt-cwd" className="font-mono" value={f.cwd ?? ''} placeholder="~/src/app" onChange={(e) => set('cwd', str(e.target.value))} />
