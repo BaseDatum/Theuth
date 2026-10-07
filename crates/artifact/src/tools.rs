@@ -27,11 +27,14 @@ pub struct ShowArgs {
     pub title: Option<String>,
     /// Source language of `content` when `name` ends in `.pdf`: `markdown` (default) or `typst`.
     pub source: Option<Source>,
+    /// Cap on the inline frame of an `.html` page, CSS px, 80–2000; content taller scrolls inside.
+    pub height: Option<u32>,
 }
 
 /// Prompt block registered as `RegisterPrompt { plugin: "artifact" }` (35 §5).
 pub const PROMPT: &str = "## Hand over files, don't paste them\n\
-`show` puts a file in front of the user as a card in this chat — rendered, openable, savable. Use it whenever the deliverable is a file: a report, a summary longer than a screen, a table over ~8 rows, a document you were asked to write, an image or screenshot they should look at, a PDF. `show{path}` shows a file that exists (never read a file and then repeat its content in your reply — show it). `show{content, name}` writes and shows a new one; a `.pdf` name turns markdown into a real PDF (front matter `title`, `author`, `toc: true` for a title block and contents) and the result includes a picture of page 1 — look at it; `.zip`/`.tar.gz` shows the archive with a browsable listing (build it with `tar`/`zip` in `shell()` first). A diagram the user should keep or open on its own: `show{content, name: 'x.mmd'}`; a diagram that explains this reply: a ```mermaid fence in your text. Same name again = a new version. One sentence of takeaway in your reply, then the card carries the content. `message_user` is still how you reach the user *outside* this chat.";
+`show` puts a file in front of the user as a card in this chat — rendered, openable, savable. Use it whenever the deliverable is a file: a report, a summary longer than a screen, a table over ~8 rows, a document you were asked to write, an image or screenshot they should look at, a PDF. `show{path}` shows a file that exists (never read a file and then repeat its content in your reply — show it). `show{content, name}` writes and shows a new one; a `.pdf` name turns markdown into a real PDF (front matter `title`, `author`, `toc: true` for a title block and contents) and the result includes a picture of page 1 — look at it; `.zip`/`.tar.gz` shows the archive with a browsable listing (build it with `tar`/`zip` in `shell()` first). A diagram the user should keep or open on its own: `show{content, name: 'x.mmd'}`; a diagram that explains this reply: a ```mermaid fence in your text. Same name again = a new version. One sentence of takeaway in your reply, then the card carries the content. `message_user` is still how you reach the user *outside* this chat.\n\
+`show{content, name: \"x.html\", height?}` renders a live sandboxed page inline in the theuth app (desktop, web, phone; Slack/Telegram/Signal get the file). One self-contained document; absolute local image paths are inlined; `height` caps the frame (80–2000) and the rest scrolls inside. Preview a scripted page with `page_preview` first.";
 
 /// `show`: snapshot a file (or write `content`) under the harness and show it
 /// as a card. Calls [`crate::store::State::show`] directly — the tool already
@@ -53,10 +56,12 @@ impl Tool for ShowTool {
     fn description(&self) -> String {
         "Show a file to the user in the chat, as a card they can read, open and save: markdown, \
          text and code render inline; images and SVGs show as pictures; CSV as a table; `.pdf` \
-         names compile the markdown (or Typst) in `content` into a real PDF. Pass `path` for a \
-         file that exists, or `content` + `name` to write one under the harness first. The result \
-         tells you the version and, for PDFs and SVGs, includes a picture of the result. Use this \
-         instead of pasting a file's content into your reply."
+         names compile the markdown (or Typst) in `content` into a real PDF; `.html` names \
+         render as live pages (scripts, CDN libraries) inline, and the optional `height` caps \
+         the inline frame. Pass `path` for a file that exists, or `content` + `name` to write \
+         one under the harness first. The result tells you the version and, for PDFs and SVGs, \
+         includes a picture of the result. Use this instead of pasting a file's content into \
+         your reply."
             .into()
     }
 
@@ -77,7 +82,13 @@ impl Tool for ShowTool {
         };
         let mut content = kind::receipt(&shown.artifact, &shown.receipt);
         if shown.artifact.kind == Kind::File {
-            content.push_str("\nnote: unknown kind; shown as a downloadable file");
+            content.push_str("\nnote: ");
+            content.push_str(
+                shown
+                    .receipt
+                    .demoted
+                    .unwrap_or("unknown kind; shown as a downloadable file"),
+            );
         }
         Ok(ToolOutput {
             structured: serde_json::to_value(&shown.artifact).ok(),

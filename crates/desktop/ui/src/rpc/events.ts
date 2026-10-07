@@ -16,6 +16,8 @@ import type { MeetingEvent } from '@/rpc/bindings/MeetingEvent'
 import type { NodeEvent } from '@/rpc/bindings/NodeEvent'
 import type { PeerDelivered } from '@/rpc/bindings/PeerDelivered'
 import type { PendingPrompts } from '@/rpc/bindings/PendingPrompts'
+import type { PagePreviewRequested } from '@/rpc/bindings/PagePreviewRequested'
+import type { PagePreviewResolved } from '@/rpc/bindings/PagePreviewResolved'
 import type { PeerMessageChanged } from '@/rpc/bindings/PeerMessageChanged'
 import type { ScheduleEvent } from '@/rpc/bindings/ScheduleEvent'
 import type { ActivityAppended } from '@/rpc/bindings/ActivityAppended'
@@ -79,6 +81,9 @@ export type WireEvent =
   | ScheduleEvent
   | SecretsEvent
   | ArtifactShown
+  /** 120 §11: a `page_preview` call wants the main window to render a page hidden; `Resolved` tears a late frame down. */
+  | PagePreviewRequested
+  | PagePreviewResolved
   | ScrapeProgress
   | VoiceEvent
   /** 76 §4.9: the live talk — state, subtitles, the remote sink's `Flush`. */

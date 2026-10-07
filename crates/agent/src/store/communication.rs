@@ -34,9 +34,9 @@ use crate::communication::{
 };
 
 /// Pending intake payload budget per recipient (50 §8).
-pub const PENDING_BYTES_PER_RECIPIENT: i64 = 1 << 20;
+pub const PENDING_BYTES_PER_RECIPIENT: i64 = 2 << 20;
 /// Pending intake payload budget across the harness (50 §8).
-pub const PENDING_BYTES_PER_HARNESS: i64 = 8 << 20;
+pub const PENDING_BYTES_PER_HARNESS: i64 = 32 << 20;
 /// Bound on external identifiers (request ids, task/context ids, principal
 /// and endpoint keys): opaque strings, never paths or UUID-checked.
 pub const EXTERNAL_ID_MAX: usize = 256;

@@ -39,7 +39,9 @@ use anyhow::Context as _;
 use genai::chat::{ChatMessage, ChatRole, ContentPart, MessageContent};
 use parking_lot::Mutex;
 use runtime::SessionId;
-use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePool, SqlitePoolOptions};
+use sqlx::sqlite::{
+    SqliteConnectOptions, SqliteJournalMode, SqlitePool, SqlitePoolOptions, SqliteSynchronous,
+};
 use sqlx::{FromRow, Sqlite, SqliteConnection, Transaction};
 
 use crate::context::{
@@ -506,11 +508,21 @@ pub fn inner_call_id(call_id: &str) -> Option<(&str, u32)> {
     Some((parent, n.parse().ok()?))
 }
 
+/// Most parent hops `Store::root_of` follows before it gives up on a
+/// corrupt (cyclic) chain; deeper trees than this do not exist.
+const ROOT_HOPS: usize = 32;
+
 impl Store {
     /// Open (creating) the database in WAL mode and run migrations. Two
     /// pools on one file (68 §3): `write` holds exactly one connection that
     /// never expires, with a `sqlite3session` attached to the transcript
-    /// tables; `read` holds four. `engine` is this engine's mesh id: rows
+    /// tables; `read` holds four, opened on demand and never recycled (sqlx's defaults
+    /// would reap idle connections every 10 min and churn a worker thread
+    /// per reconnect). The writer runs `synchronous=NORMAL`: in WAL mode a
+    /// committed transaction is in the WAL file before `COMMIT` returns, so
+    /// an engine kill loses nothing; only an OS crash or power loss can
+    /// drop the last commits, against ~5 fsyncs saved per model call.
+    /// `engine` is this engine's mesh id: rows
     /// still owned by `''` (pre-68, or created while unknown) are backfilled
     /// to it; `None` keeps `''` and treats it as self.
     pub async fn open(path: &Path, engine: Option<mesh::EngineId>) -> anyhow::Result<Self> {
@@ -523,6 +535,8 @@ impl Store {
         // DDL on an attached table would leave the session unusable.
         let read = SqlitePoolOptions::new()
             .max_connections(4)
+            .idle_timeout(None)
+            .max_lifetime(None)
             .connect_with(opts.clone())
             .await
             .with_context(|| format!("open {}", path.display()))?;
@@ -562,7 +576,7 @@ impl Store {
                     Ok(())
                 })
             })
-            .connect_with(opts)
+            .connect_with(opts.synchronous(SqliteSynchronous::Normal))
             .await
             .with_context(|| format!("open {} (writer)", path.display()))?;
         let tables = table_meta(&read).await?;
@@ -603,6 +617,8 @@ impl Store {
         let pool = SqlitePoolOptions::new()
             .max_connections(1)
             .min_connections(1)
+            .idle_timeout(None)
+            .max_lifetime(None)
             .connect_with(opts)
             .await
             .context("open in-memory store")?;
@@ -2403,6 +2419,27 @@ impl Store {
         Ok(depth)
     }
 
+    /// The top of `id`'s parent chain (`id` itself for a top-level or
+    /// unknown session): the orchestrator tree's key (01 §2.6). The walk
+    /// stops after [`ROOT_HOPS`] hops — a corrupt parent cycle warns once
+    /// and yields the id reached, never a hang.
+    pub async fn root_of(&self, mut id: SessionId) -> anyhow::Result<SessionId> {
+        let start = id;
+        for _ in 0..ROOT_HOPS {
+            let Some((Some(parent),)) =
+                sqlx::query_as::<_, (Option<String>,)>("SELECT parent FROM sessions WHERE id = ?")
+                    .bind(id.to_string())
+                    .fetch_optional(&self.read)
+                    .await?
+            else {
+                return Ok(id);
+            };
+            id = parent.parse().context("bad parent id")?;
+        }
+        tracing::warn!(session = %start, "parent chain exceeds {ROOT_HOPS} hops; using {id} as the tree root");
+        Ok(id)
+    }
+
     /// Assistant text after the last user message, joined by newlines: the
     /// "final answer" of the most recent turn. Vision notes are not user
     /// messages here: a maintenance note after a reply does not erase it.
@@ -2947,10 +2984,65 @@ mod tests {
         (store, id, dir)
     }
 
+    /// The writer commits with `synchronous=NORMAL` (1): WAL mode keeps a
+    /// committed transaction durable against an engine kill without an
+    /// fsync per commit. The readers never fsync, so only the writer counts.
+    #[tokio::test]
+    async fn write_connection_is_synchronous_normal() {
+        let (store, _, dir) = fresh().await;
+        let (sync,): (i64,) = sqlx::query_as("PRAGMA synchronous")
+            .fetch_one(&store.write)
+            .await
+            .unwrap();
+        assert_eq!(sync, 1, "PRAGMA synchronous on the write connection");
+        drop(store);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
     async fn append_all(store: &Store, id: SessionId, msgs: impl IntoIterator<Item = ChatMessage>) {
         for m in msgs {
             store.append(id, &m).await.unwrap();
         }
+    }
+
+    /// `root_of` walks to the top of a chain and, on a corrupt parent cycle,
+    /// stops after `ROOT_HOPS` with the id it reached instead of hanging.
+    #[tokio::test]
+    async fn root_of_tops_the_chain_and_survives_a_cycle() {
+        let (store, root, dir) = fresh().await;
+        let kid = SessionId::new();
+        let grandkid = SessionId::new();
+        store
+            .create_session(kid, "m", Some(root), Some("kid"), None)
+            .await
+            .unwrap();
+        store
+            .create_session(grandkid, "m", Some(kid), Some("grandkid"), None)
+            .await
+            .unwrap();
+        assert_eq!(store.root_of(grandkid).await.unwrap(), root);
+        assert_eq!(store.root_of(root).await.unwrap(), root);
+        let stranger = SessionId::new();
+        assert_eq!(
+            store.root_of(stranger).await.unwrap(),
+            stranger,
+            "unknown: itself"
+        );
+        // root → grandkid closes a cycle.
+        let mut tx = store.begin_write().await.unwrap();
+        sqlx::query("UPDATE sessions SET parent = ? WHERE id = ?")
+            .bind(grandkid.to_string())
+            .bind(root.to_string())
+            .execute(&mut *tx)
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+        let reached = tokio::time::timeout(std::time::Duration::from_secs(10), store.root_of(kid))
+            .await
+            .expect("bounded")
+            .unwrap();
+        assert!([root, kid, grandkid].contains(&reached));
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     fn texts(rows: &[(i64, ChatMessage)]) -> Vec<(i64, String)> {

@@ -40,6 +40,7 @@ in the reply, merged with the prose; an `openui` fence is not an app card.
 | an owner, a contact, a reviewer | `Person` | "talk to Ada (release owner, ada@…)" |
 | something someone said, verbatim | `Quote` | quotation marks inside a paragraph |
 | a schedule, a chronology, a topic map | mermaid `gantt`, `timeline`, `mindmap` | dated bullets |
+| a chart library's chart, a map, 3D, a mockup, a collage, an animation | a page — show{content, name: "x.html"} after page_preview | a Code block of HTML, or an app that calls nothing back |
 | an explanation with three or more parts, or one the reader will return to | a board (board.md) | a long reply of fences and prose |
 
 Boxes and arrows — architecture, dependencies, data flow, a pipeline — are a `Graph` in a
@@ -179,4 +180,55 @@ stateDiagram-v2
     {"label":"Error rate","value":"0.4%","trend":"down","delta":"-0.2 pt"},
     {"label":"p99","value":"180 ms","trend":"flat"},
     {"label":"Hosts","value":"12"}]}} } }
+```
+
+## Pages
+
+A page is the escape hatch, picked last: catalog → `openui`/`app` → page. Reach for it only
+for what no catalog component draws — a chart library's chart (Chart.js, ECharts, Plotly, D3),
+a map, 3D, a mockup, an image collage, an animation, a layout you must control pixel by pixel.
+`show{content, name: "x.html", height?}` renders one self-contained HTML document — its own
+`<style>`/`<script>`, CDN libraries allowed — live inline in the theuth app (desktop, web,
+phone) in a sandboxed frame themed like the chat; Slack/Telegram/Signal get the file, the TUI
+the source. Nothing comes back from a page: a button that should reach you is an `app`, not a
+page.
+
+Rules:
+- Fluid width; no horizontal padding on the outermost element; no outer card, border or banner
+  title — the page is part of your reply.
+- Charts at fixed pixel heights. Let content set the height; never `100vh` or `height:100%` on
+  `html`/`body`. Pass `height` only to cap a long page (80–2000; the rest scrolls inside).
+- Local images by absolute path (`<img src="/tmp/shot.png">`) are inlined for you, ≤ 10 MiB
+  each, ≤ 25 MiB per page; a missing or non-image file fails the `show`.
+- Use the theme variables with fallbacks (`var(--foreground, #1a1612)`) or set your own `:root`
+  defaults: the stored file has no theme when opened outside theuth.
+- Check a scripted page with `page_preview` before you show it; it returns the content height
+  and the console. The reader sees the page where the card is — do not announce or restate it;
+  add only what it does not say.
+
+Theme variables (the same names as T3 Code; every value is a resolved colour):
+`--background --foreground --muted --muted-foreground --card --card-foreground --popover
+--popover-foreground --secondary --secondary-foreground --border --input --ring --primary
+--primary-foreground --accent --accent-foreground --accent-surface --accent-surface-foreground
+--destructive --destructive-foreground --destructive-surface --warning --warning-foreground
+--warning-surface --success --success-foreground --info --info-foreground --code-background
+--code-foreground --chart-1 --chart-2 --chart-3 --chart-4 --chart-5 --chart-6 --radius
+--font-sans --font-mono`.
+
+Example — a Chart.js bar chart from the CDN, no outer card, fallbacks for every variable used:
+```html
+<!doctype html>
+<meta charset="utf-8">
+<style>
+  :root { --foreground: #1a1612; --muted-foreground: #6b6560; --chart-1: #b8860b; --font-sans: system-ui, sans-serif; }
+  body { margin: 0; color: var(--foreground); font: 14px/1.5 var(--font-sans); }
+</style>
+<canvas id="c" height="320"></canvas>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
+<script>
+  const css = (v, d) => getComputedStyle(document.documentElement).getPropertyValue(v).trim() || d;
+  new Chart(document.getElementById("c"), { type: "bar",
+    data: { labels: ["Q1", "Q2", "Q3"], datasets: [{ label: "Revenue", data: [12, 19, 7], backgroundColor: css("--chart-1", "#b8860b") }] },
+    options: { responsive: true, maintainAspectRatio: false, color: css("--muted-foreground", "#6b6560") } });
+</script>
 ```

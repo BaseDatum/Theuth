@@ -1153,6 +1153,20 @@ impl Session {
     }
 }
 
+/// `ask` → the address of the child-work semaphore this session's bounded
+/// turns draw from (its orchestrator tree's native pool, 01 §2.6). Test only.
+#[cfg(test)]
+pub(crate) struct PermitsOf;
+
+#[cfg(test)]
+impl Message<PermitsOf> for Session {
+    type Reply = usize;
+
+    async fn handle(&mut self, _: PermitsOf, _: &mut Context<Self, Self::Reply>) -> usize {
+        Arc::as_ptr(&self.shared.permits) as usize
+    }
+}
+
 impl Message<UserInput> for Session {
     type Reply = ();
 

@@ -43,7 +43,7 @@ impl Default for DurabilityConfig {
             resume: ResumeMode::Auto,
             resume_parallel: 4,
             drain_secs: 10,
-            partial_checkpoint_ms: 1000,
+            partial_checkpoint_ms: 5000,
             pty_snapshot_secs: 5,
             journal_keep_days: 7,
             handoff_tokens: 4000,
@@ -314,7 +314,7 @@ mod tests {
                 d.journal_keep_days,
                 d.handoff_tokens
             ),
-            (4, 10, 1000, 5, 7, 4000)
+            (4, 10, 5000, 5, 7, 4000)
         );
         // A partial section keeps the other defaults.
         let c: DurabilityConfig = serde_yaml::from_str("resume: ask\ndrain_secs: 3\n").unwrap();

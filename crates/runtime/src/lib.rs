@@ -33,9 +33,15 @@ pub struct Runtime {
 }
 
 impl Runtime {
-    /// Build a runtime with a `Guaranteed` bus (design doc §3).
+    /// Build a runtime with a `Guaranteed` bus (design doc §3). The bus takes
+    /// the same unbounded mailbox as its subscribers: `publish` is awaited on
+    /// every streaming chunk, and kameo's default bounded(64) would park the
+    /// publisher behind a slow fan-out.
     pub fn new(config: figment::Figment, data_dir: PathBuf) -> Self {
-        let bus = kameo::actor::Spawn::spawn(MessageBus::new(DeliveryStrategy::Guaranteed));
+        let bus = kameo::actor::Spawn::spawn_with_mailbox(
+            MessageBus::new(DeliveryStrategy::Guaranteed),
+            subscriber_mailbox(),
+        );
         Self {
             bus,
             config,
