@@ -147,8 +147,11 @@ pub struct EngineStats {
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 #[serde(rename_all = "snake_case")]
 pub enum Accelerator {
+    /// Apple silicon (candle Metal).
     Metal,
+    /// An NVIDIA device (`/dev/nvidia0`; candle CUDA with the `decision/cuda` build).
     Cuda,
+    /// No training-grade GPU.
     Cpu,
 }
 
