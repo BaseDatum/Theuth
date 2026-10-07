@@ -1975,24 +1975,32 @@ impl LiveActor {
 impl Message<AgentEvent> for Agents {
     type Reply = ();
 
-    async fn handle(&mut self, ev: AgentEvent, _: &mut Context<Self, Self::Reply>) {
+    async fn handle(&mut self, ev: AgentEvent, ctx: &mut Context<Self, Self::Reply>) {
         match ev {
             AgentEvent::TurnStarted { session, .. } => {
                 self.running.insert(session);
-                // A follow-up turn (steer, peer message) has no permit or
-                // timer but still needs a start time for the picker.
-                if self
-                    .sessions
-                    .get(&session)
-                    .is_some_and(|l| l.parent.is_some())
+                // A follow-up turn (steer, peer message) has no permit but
+                // still needs a start time for the picker — and, on an ACP
+                // child, the runtime timer (R2.4): a `session/prompt` that
+                // never returns must not keep the child running forever.
+                let live = self.sessions.get(&session);
+                if live.is_some_and(|l| l.parent.is_some())
+                    && !self.child_turns.contains_key(&session)
                 {
-                    self.child_turns
-                        .entry(session)
-                        .or_insert_with(|| ChildTurn {
+                    let timer = match live.map(|l| &l.actor) {
+                        Some(LiveActor::Acp(_)) => {
+                            Some(self.runtime_timer(session, ctx.actor_ref().clone()))
+                        }
+                        _ => None,
+                    };
+                    self.child_turns.insert(
+                        session,
+                        ChildTurn {
                             permit: None,
-                            timer: None,
+                            timer,
                             started_at: Utc::now(),
-                        });
+                        },
+                    );
                 }
             }
             AgentEvent::TurnFinished {
@@ -3632,14 +3640,7 @@ impl Agents {
             .route(child, None, text, Vec::new(), ticket, scope, false)
             .await;
         let me = me.or_else(|| ActorRef::<Agents>::lookup(AGENT_ACTOR).ok().flatten());
-        let after = Duration::from_secs(self.cfg.subagents.max_runtime_secs);
-        let timer = me.map(|me| {
-            tokio::spawn(async move {
-                tokio::time::sleep(after).await;
-                let _ = me.tell(ChildTimedOut(child)).await;
-            })
-            .abort_handle()
-        });
+        let timer = me.map(|me| self.runtime_timer(child, me));
         self.child_turns.insert(
             child,
             ChildTurn {
@@ -3648,6 +3649,17 @@ impl Agents {
                 started_at: Utc::now(),
             },
         );
+    }
+
+    /// The `max_runtime_secs` timer of one child turn: [`ChildTimedOut`]
+    /// unless aborted when the turn ends.
+    fn runtime_timer(&self, child: SessionId, me: ActorRef<Agents>) -> AbortHandle {
+        let after = Duration::from_secs(self.cfg.subagents.max_runtime_secs);
+        tokio::spawn(async move {
+            tokio::time::sleep(after).await;
+            let _ = me.tell(ChildTimedOut(child)).await;
+        })
+        .abort_handle()
     }
 
     /// A human input reaches a queued child (01 §2.6): the permit wait is
@@ -12229,4 +12241,54 @@ pub(crate) mod tests {
         assert_eq!(draws_from, pool_b, "b1's bounded turns take B's permit");
         assert_ne!(draws_from, pool_a, "never A's");
     }
+
+    // ----- R2: ACP robustness -----
+
+    /// R2.4: a follow-up turn on an ACP child (a human message after its
+    /// spawn turn ended) holds no permit but is timed like the spawn turn,
+    /// so a prompt that never returns cannot keep the child running forever.
+    #[tokio::test]
+    async fn follow_up_acp_turns_get_the_runtime_timer() {
+        let a = agents().await;
+        let mut fake = node(&a, "box");
+        let rt = a.rt.clone();
+        let (agents, p) = rooted(a).await;
+        rt.subscribe::<Agents, AgentEvent>(&agents).await;
+        let mut rx = tap(&rt).await;
+        let (_, e1, _) = agents.ask(spawn_on(p, "box", "e1", "go")).await.unwrap();
+        fake.handshake(Vec::new(), None).await;
+        let (id, _) = fake.prompt().await;
+        fake.end_turn(&id);
+        next_event(
+            &mut rx,
+            |e| matches!(e, AgentEvent::TurnFinished { session, .. } if *session == e1),
+        )
+        .await;
+        agents
+            .ask(SendInput {
+                session: Some(e1),
+                text: "more".into(),
+                files: Vec::new(),
+                delivery: Delivery::Steer,
+                id: None,
+            })
+            .await
+            .unwrap();
+        let (_, text) = fake.prompt().await;
+        assert_eq!(text, "more");
+        next_event(
+            &mut rx,
+            |e| matches!(e, AgentEvent::TurnStarted { session, .. } if *session == e1),
+        )
+        .await;
+        let (timed, permit_free) = agents
+            .ask(With(move |a: &mut Agents| {
+                let ct = &a.child_turns[&e1];
+                (ct.timer.is_some(), ct.permit.is_none())
+            }))
+            .await
+            .unwrap();
+        assert!(timed && permit_free, "timed, permit-free follow-up turn");
+    }
+
 }
