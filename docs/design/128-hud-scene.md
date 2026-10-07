@@ -527,3 +527,41 @@ four lines (§1.1); D8–D12 are the brief's calls that follow from them.
 - Colin Ware, *Information Visualization: Perception for Design* (1st ed. 2000): preattentive processing — why one hue can mean one thing before reading (§2.2 (1)).
 - The FUI lineage: Territory Studio (screen graphics for *Blade Runner 2049*, *The Martian*, *Ex Machina*) and GMUNK (Bradley G. Munkowitz; *TRON: Legacy*, *Oblivion*) — the aesthetic the reference belongs to (§2.1); techniques and look only, no assets.
 - A 2020 controlled study on node-link readability cited by 73 (Yoghourdjian et al., arXiv:2008.07944, `docs/design/73-codemap.md:79`) is the evidence behind the caps in §5.2.
+
+## Revision 1 — routine origins (Sky, 2026-10-07 14:37/14:40)
+
+> 14:37 — "why aren't routines drawing lines to their starting points on the ruler?"
+>
+> 14:40 — "each routine should have its own origin. don't lump them all together."
+
+**Cause.** `outcomes()` set `via: ringByActor(rings, e.actor)`; a `routine_fired` row's actor is `system`, so `via` and `src` were
+both null and `flowPath` took its last branch — the line started AT the arc (`M ax ay`): a square on the ruler and a right-hand
+segment, nothing leading in. `rings()` made a ring only for running schedules (`routine · <name>`, `actor: null`), so even those
+were never the origin of their firings.
+
+**Rules** (as built in `hud/scene/model.ts`; as-built: `docs/design/128-as-built-ROUTINE-ORIGINS.md`):
+
+1. **One ring per routine with a presence today**, in a second group under the agent rings, one extra 20 px gap before the group,
+   each linking to `/routines/$name`. Presence today = fired today (a `routine_fired` row in `activityToday`, subject = schedule
+   name) OR running now (`ScheduleInfo.running`) OR due later today (`ScheduleInfo.next` within today's window). Order: running
+   first, then fired today newest-first, then due soonest-first. Label `routine · <name>`. Styles keep the grammar: running → live
+   (filled faience), sub `running · <elapsed since last>`; fired today and finished → hollow faience, sub `ran HH:MM`, or hollow
+   carnelian (`failed`, not dashed) with sub `failed HH:MM` when the schedule's `last_result` is an error (`isError`); due later today →
+   dashed `--fg-tertiary` ring, sub `next HH:MM`.
+2. **Flows.** Every `routine_fired` outcome's `via` is ITS routine's ring (`ring:routine:<name>`), so the line runs ring → the square on
+   the arc at the fire hour → the outcome label. A running routine also gets a faience in-flight line from its ring to the arc at its
+   start time (`last`, else now) with label `running · <elapsed>` (in `running()`; counted in the footer's IN FLIGHT as before). A
+   due-later routine gets a faint connector only: dashed (3 3) `--fg-tertiary` at opacity 0.5 from its ring to its hollow square, no
+   right-hand segment, no label (a `kind: 'due'` flow that `layoutEnds` never sees).
+3. **The connector ends exactly where the square sits**: the same `hourOf(ts)` / `arcPoint(·, R + 9)` as `arc()`'s marks (fired →
+   `e.ts_ms`, due → `next`, both through `dueAt`). Marks are unchanged.
+4. **Capacity.** The ring column holds `max(9, ⌊(hv − 150) / 53⌋)` rings (`RING.cap`): agent rings first (their `+N more` fold rule
+   unchanged), then routine rings; routines beyond the capacity fold into ONE dashed `+N routines` ring → `/routines` — the shown ones
+   are always distinct origins (Sky's rule). Rings stay centred vertically, the group gap included. Known ceiling: a full agent
+   column (9 agent rings at hv 600) leaves no slot and the routine group is not drawn there.
+5. `ringByActor` keeps working for agents; `ringByRoutine(rings, name)` added. Hairlines sourced from `routine_fired` rows start at
+   that routine's ring too (the 62 % ring-sourced rule otherwise unchanged).
+6. `SceneCompact`'s rings list shows the routine rings as well (same model). Scene: nothing else changes.
+7. Fixtures: 2 fired-today routines (one with an error result), 1 running, 1 due later today; tests in `model.test.ts` and
+   `Scene.test.ts` cover the ring set and order, `via.id === 'ring:routine:<name>'` and `d` starting at `M <via.x+14>` for every
+   routine fire, the dashed label-less due connector landing on the square, the capacity fold at hv 600, and the IN FLIGHT count.
