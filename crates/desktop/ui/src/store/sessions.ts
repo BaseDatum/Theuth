@@ -699,6 +699,9 @@ export function dispatch(events: WireEvent[], st: Stores = active()): void {
     } else if (e.type === "DefaultEffortChanged") {
       const conn = st.connection.getState();
       if (conn.info) conn.setInfo({ ...conn.info, default_effort: e.effort });
+    } else if (e.type === "FavoriteModelsChanged") {
+      const conn = st.connection.getState();
+      if (conn.info) conn.setInfo({ ...conn.info, favorite_models: e.models });
     }
     if (live) listeners.get(e.type)?.forEach((cb) => cb(e));
   }
