@@ -48,6 +48,15 @@ test('foldRuns: a deliverable never joins a run — it splits one; a board creat
   expect(foldRuns([a, b, c, d])).toEqual([[a, b, c, d]])
 })
 
+test('foldRuns: an answered ask_user is a deliverable — it splits a run and a lone one between text rows stays a plain entry', () => {
+  const [a, b, c, d] = [tool(1), tool(2), tool(3), tool(4)]
+  const ask = tool(9, { name: 'ask_user', args: { questions: [{ id: 'q', text: 'Which?' }] }, result: { output: 'answered', isError: false, files: [] } })
+  expect(isDeliverable(ask)).toBe(true)
+  expect(foldRuns([a, b, ask, c, d])).toEqual([[a, b], ask, [c, d]])
+  expect(foldRuns([text('x'), ask, text('y')])).toEqual([text('x'), ask, text('y')])
+  for (const name of ['secret_request', 'desktop_handoff']) expect(isDeliverable(tool(8, { name }))).toBe(false)
+})
+
 test('summarize: live status names the current call and its position; the ending summary counts, times and names failures', () => {
   const live = summarize([tool(1, { startedAt: 1000, finishedAt: 1400 }), tool(2, { result: undefined }), tool(3, { pending: true, result: undefined })])
   expect(live).toMatchObject({ text: 'running `t2` · 2 of 3', running: true, failed: false, hint: '✓ out 1  (+1 lines)' })
