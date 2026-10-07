@@ -351,7 +351,17 @@ fn job_of(r: JobTuple) -> anyhow::Result<JobRow> {
 const JOB_COLS: &str =
     "session_id, id, kind, call_id, command, name, pgid, log, started_ms, state, exit, settled_ms";
 
-type ReportTuple = (String, String, String, String, String, String, String, i64, i64);
+type ReportTuple = (
+    String,
+    String,
+    String,
+    String,
+    String,
+    String,
+    String,
+    i64,
+    i64,
+);
 
 fn report_of(session: SessionId, r: ReportTuple) -> anyhow::Result<ResumeReportRow> {
     let (turn, kind, interrupted_at, at, replayed, interrupted, lost_jobs, restored, handed) = r;
@@ -1843,7 +1853,10 @@ mod tests {
         store.resume_report_put(&row).await.unwrap();
         assert_eq!(store.log_after(0).await.unwrap().len(), before + 1);
         assert_eq!(store.resume_report(s, t).await.unwrap(), Some(row.clone()));
-        assert_eq!(store.latest_resume_report(s).await.unwrap(), Some(row.clone()));
+        assert_eq!(
+            store.latest_resume_report(s).await.unwrap(),
+            Some(row.clone())
+        );
         // A second resume of the same turn overwrites.
         let again = ResumeReportRow {
             kind: ResumeKind::Interrupted,
@@ -1851,7 +1864,10 @@ mod tests {
             ..row
         };
         store.resume_report_put(&again).await.unwrap();
-        assert_eq!(store.latest_resume_report(s).await.unwrap(), Some(again.clone()));
+        assert_eq!(
+            store.latest_resume_report(s).await.unwrap(),
+            Some(again.clone())
+        );
         // A newer turn without a report hides it from `latest`, not from `resume_report`.
         store.finish_turn(s, t, "end_turn").await.unwrap();
         let t2 = TurnId::new();
