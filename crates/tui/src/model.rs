@@ -12963,7 +12963,6 @@ mod tests {
                 child,
                 name: name.into(),
                 cap: None,
-                kind: Default::default(),
             });
         }
         assert!(m.animating() && m.board().len() == 2 && !m.status().contains("agents:"));
@@ -17413,7 +17412,6 @@ mod tests {
             child,
             name: "worker".into(),
             cap: None,
-            kind: Default::default(),
         }));
         while rx.try_recv().is_ok() {}
         // Root → child → parent: no leave.
@@ -17579,6 +17577,7 @@ mod tests {
         m.models_rows()
             .iter()
             .map(|r| match r {
+                ModelRow::Off { current } => format!("{}off", if *current { "●" } else { "" }),
                 ModelRow::Current(i) => format!("●{}", i.id),
                 ModelRow::Provider { id, count, current } => {
                     format!("{}{id}:{count}", if *current { "●" } else { "" })
@@ -17760,5 +17759,451 @@ mod tests {
         assert_eq!(models_cursor(&m), 1);
         m.menu_key(KeyCode::Backspace, "", &tx);
         assert_eq!(model_row_ids(&m), level);
+    }
+
+    fn note(severity: AdvisorSeverity, text: &str) -> agent::AdvisoryNote {
+        agent::AdvisoryNote {
+            severity,
+            note: text.into(),
+        }
+    }
+
+    fn advisory(advisor: SessionId, notes: Vec<agent::AdvisoryNote>) -> Advisory {
+        Advisory {
+            advisor,
+            step: 14,
+            turn: None,
+            at_ms: 0,
+            notes,
+        }
+    }
+
+    fn advisor_status(session: SessionId, state: AdvisorState, model: &str) -> AdvisorStatus {
+        AdvisorStatus {
+            session,
+            advisor: Some(SessionId::new()),
+            state,
+            model: Some(model.into()),
+            effort: Some("high".into()),
+            ..AdvisorStatus::default()
+        }
+    }
+
+    fn info_lines(m: &Model) -> Vec<&str> {
+        m.entries
+            .iter()
+            .filter_map(|e| match e {
+                Entry::Info(t) => Some(t.as_str()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// 125 §7.2: bare `/advisor` opens the `/model` picker targeted at the
+    /// advisor — `Off` leads (marked while there is none), the current advisor
+    /// is the `●` row instead of the session's model, ⏎ on `Off` sends `None`.
+    #[test]
+    fn advisor_cmd_bare_opens_picker_with_off_row() {
+        let (tx, mut rx) = unbounded_channel();
+        let s = SessionId::new();
+        let mut m = Model {
+            session: Some(s),
+            model_id: "openai/gpt-5.4".into(),
+            ..Model::default()
+        };
+        m.submit("/advisor", &tx);
+        assert!(matches!(rx.try_recv(), Ok(Command::ListModels)));
+        m.apply(UiEvent::Models(model_catalog()));
+        assert_eq!(model_row_ids(&m)[..2], ["●off", "amazon-bedrock:2"]);
+        assert_eq!(models_cursor(&m), 1, "home skips the Off row");
+        assert!(!model_row_ids(&m).iter().any(|r| r == "●openai/gpt-5.4"));
+        m.menu_key(KeyCode::Up, "", &tx);
+        m.menu_key(KeyCode::Enter, "", &tx);
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(Command::SetAdvisor { session, model: None, effort: None }) if session == s
+        ));
+        assert!(m.menu.is_none());
+        // With an advisor set: `Off` unmarked, the advisor's model is the Current row,
+        // ⏎ on a model goes to `set_advisor`, and `/model` has no Off row at all.
+        m.advisor = advisor_status(s, AdvisorState::Idle, "anthropic/claude-opus-4-1");
+        m.submit("/advisor", &tx);
+        rx.try_recv().unwrap();
+        m.apply(UiEvent::Models(model_catalog()));
+        assert_eq!(
+            model_row_ids(&m)[..4],
+            ["off", "●anthropic/claude-opus-4-1", "amazon-bedrock:2", "●anthropic:2"]
+        );
+        assert_eq!(models_cursor(&m), 2);
+        m.menu_key(KeyCode::Down, "", &tx);
+        m.menu_key(KeyCode::Enter, "", &tx);
+        m.menu_key(KeyCode::Down, "", &tx);
+        m.menu_key(KeyCode::Enter, "", &tx);
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(Command::SetAdvisor { session, model: Some(model), effort: None })
+                if session == s && model == "anthropic/claude-sonnet-4-5"
+        ));
+        m.submit("/model", &tx);
+        rx.try_recv().unwrap();
+        m.apply(UiEvent::Models(model_catalog()));
+        assert_eq!(model_row_ids(&m)[0], "●openai/gpt-5.4");
+    }
+
+    /// 125 §7.1: `/advisor off` is `set_advisor(session, None)`; a direct id is a pick;
+    /// an ACP child refuses.
+    #[test]
+    fn advisor_cmd_off_sends_none() {
+        let (tx, mut rx) = unbounded_channel();
+        let s = SessionId::new();
+        let mut m = Model {
+            session: Some(s),
+            ..Model::default()
+        };
+        m.submit("/advisor off", &tx);
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(Command::SetAdvisor { session, model: None, effort: None }) if session == s
+        ));
+        m.submit("/advisor openai/o3-pro", &tx);
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(Command::SetAdvisor { model: Some(model), effort: None, .. }) if model == "openai/o3-pro"
+        ));
+        m.agent = Some("omp".into());
+        m.submit("/advisor off", &tx);
+        assert!(rx.try_recv().is_err());
+        assert!(matches!(
+            m.entries.last(),
+            Some(Entry::Error(t)) if t == "/advisor: not available for an external harness session"
+        ));
+    }
+
+    /// 125 §7.1: `/advisor on` re-uses `Info.advisor` (or the last status
+    /// that named a model); with nothing remembered it says so.
+    #[test]
+    fn advisor_cmd_on_uses_remembered_model_or_errors() {
+        let (tx, mut rx) = unbounded_channel();
+        let s = SessionId::new();
+        let mut m = Model {
+            session: Some(s),
+            ..Model::default()
+        };
+        m.submit("/advisor on", &tx);
+        assert!(rx.try_recv().is_err());
+        assert!(matches!(
+            m.entries.last(),
+            Some(Entry::Error(t)) if t == "/advisor on: no remembered advisor model — pick one with /advisor"
+        ));
+        m.advisor_default.model = Some("anthropic/claude-opus-4-1".into());
+        m.advisor_default.effort = Some("high".into());
+        m.submit("/advisor on", &tx);
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(Command::SetAdvisor { session, model: Some(model), effort: Some(effort) })
+                if session == s && model == "anthropic/claude-opus-4-1" && effort == "high"
+        ));
+        // A status naming a model becomes the remembered pick; going off keeps it.
+        m.apply(UiEvent::AdvisorStatus(advisor_status(
+            s,
+            AdvisorState::Idle,
+            "openai/o3-pro",
+        )));
+        m.apply(UiEvent::AdvisorStatus(AdvisorStatus {
+            session: s,
+            ..AdvisorStatus::default()
+        }));
+        assert_eq!(m.advisor_default.model.as_deref(), Some("openai/o3-pro"));
+        assert_eq!(
+            info_lines(&m),
+            ["advisor → openai/o3-pro", "advisor → off"]
+        );
+    }
+
+    /// 125 §7.3: the exact four lines; one line when off.
+    #[test]
+    fn advisor_status_prints_four_lines() {
+        let (tx, mut rx) = unbounded_channel();
+        let s = SessionId::new();
+        let mut m = Model {
+            session: Some(s),
+            ..Model::default()
+        };
+        m.submit("/advisor status", &tx);
+        assert!(matches!(rx.try_recv(), Ok(Command::AdvisorStatus(id)) if id == s));
+        m.apply(UiEvent::AdvisorStatus(AdvisorStatus {
+            session: s,
+            ..AdvisorStatus::default()
+        }));
+        assert_eq!(info_lines(&m), ["advisor: off  ·  /advisor to pick a model"]);
+        m.entries.clear();
+        m.submit("/advisor status", &tx);
+        rx.try_recv().unwrap();
+        let mut status = advisor_status(s, AdvisorState::Reviewing, "anthropic/claude-opus-4-1");
+        status.notes = agent::AdvisorNoteCounts {
+            nit: 2,
+            concern: 1,
+            blocker: 0,
+        };
+        status.step = 14;
+        status.context_used = 38_200;
+        status.context_limit = 200_000;
+        status.tokens_in = 120_400;
+        status.tokens_out = 3_100;
+        status.cost = Some(CostBucket {
+            returned: vec![Money {
+                currency: "USD".into(),
+                nanos: 412_000_000,
+            }],
+            ..CostBucket::default()
+        });
+        status.last_note = Some(note(
+            AdvisorSeverity::Concern,
+            "cite the loop_.rs line before claiming drain_steer runs after every batch",
+        ));
+        m.apply(UiEvent::AdvisorStatus(status));
+        assert_eq!(
+            info_lines(&m),
+            [
+                "advisor → anthropic/claude-opus-4-1",
+                "advisor: reviewing  ·  anthropic/claude-opus-4-1  ·  high",
+                "notes: 2 nit · 1 concern · 0 blocker  ·  step 14  ·  backlog 0",
+                "context: 38.2k / 200k (19%)  ·  in 120.4k · out 3.1k  ·  cost $0.412",
+                "last: [concern] cite the loop_.rs line before claiming drain_steer runs after every batch",
+            ]
+        );
+    }
+
+    /// 125 §7.4: the live card lands above a streaming tail (the reply keeps
+    /// one `markdown::Text`), once per seq; the steer's `TurnStarted` is not a `◆ you`.
+    #[test]
+    fn advisory_added_interjects_card_above_streaming_tail() {
+        let s = SessionId::new();
+        let mut m = Model {
+            session: Some(s),
+            ..Model::default()
+        };
+        let turn = TurnId::new();
+        m.apply_agent(AgentEvent::TextDelta {
+            session: s,
+            turn,
+            text: "first ".into(),
+        });
+        let added = AgentEvent::AdvisoryAdded {
+            session: s,
+            seq: 7,
+            advisory: advisory(
+                SessionId::new(),
+                vec![note(AdvisorSeverity::Concern, "check the lock order")],
+            ),
+        };
+        m.apply_agent(added.clone());
+        m.apply_agent(added);
+        m.apply_agent(AgentEvent::TextDelta {
+            session: s,
+            turn,
+            text: "second".into(),
+        });
+        assert_eq!(m.entries.len(), 2, "one card, one assistant entry");
+        assert!(matches!(&m.entries[0], Entry::Advisory { advisory, expanded: false } if advisory.notes.len() == 1));
+        assert!(matches!(&m.entries[1], Entry::Assistant(t) if !t.is_done()));
+        // The blocker that opened a turn: its row is the card already.
+        m.apply_agent(AgentEvent::TurnStarted {
+            session: s,
+            turn: TurnId::new(),
+            turn_seq: 7,
+            text: "<advisory severity=\"blocker\" guidance=\"weigh\">stop</advisory>".into(),
+            model: "m".into(),
+        });
+        m.apply_agent(AgentEvent::TurnStarted {
+            session: s,
+            turn: TurnId::new(),
+            turn_seq: 9,
+            text: "<advisory severity=\"concern\" guidance=\"weigh\">not carded yet</advisory>".into(),
+            model: "m".into(),
+        });
+        assert!(!m.entries.iter().any(|e| matches!(e, Entry::User { .. })));
+    }
+
+    /// 125 §7.4: three notes collapsed, `… +N more notes`; Ctrl+O expands the
+    /// newest expandable card and skips one with nothing hidden.
+    #[test]
+    fn advisory_card_collapses_to_three_notes() {
+        let mut m = Model::default();
+        let five = (0..5)
+            .map(|i| note(AdvisorSeverity::Nit, &format!("note {i}")))
+            .collect();
+        m.entries.push(Entry::Advisory {
+            advisory: advisory(SessionId::new(), five),
+            expanded: false,
+        });
+        assert_eq!(m.entries[0].height(80), 4 + 3 + 1);
+        m.toggle_card();
+        assert!(matches!(&m.entries[0], Entry::Advisory { expanded: true, .. }));
+        assert_eq!(m.entries[0].height(80), 4 + 5);
+        m.toggle_card();
+        assert!(matches!(&m.entries[0], Entry::Advisory { expanded: false, .. }));
+        m.entries.push(Entry::Advisory {
+            advisory: advisory(SessionId::new(), vec![note(AdvisorSeverity::Blocker, "x")]),
+            expanded: false,
+        });
+        assert_eq!(m.entries[1].height(80), 4 + 1);
+        m.toggle_card();
+        assert!(
+            matches!(&m.entries[1], Entry::Advisory { expanded: false, .. }),
+            "nothing to expand"
+        );
+        assert!(
+            matches!(&m.entries[0], Entry::Advisory { expanded: true, .. }),
+            "the newest card with hidden notes toggles"
+        );
+    }
+
+    /// 125 §7.4: a history `advisory` row is a card, never a `◆ you`; the
+    /// wrapper alone (an older engine's `User` row) yields no bubble either.
+    #[test]
+    fn history_advisory_row_renders_card_not_user_bubble() {
+        let opts = markdown::Options::default();
+        let entries = from_history(
+            HistoryEntry::Advisory {
+                advisory: advisory(
+                    SessionId::new(),
+                    vec![
+                        note(AdvisorSeverity::Nit, "a"),
+                        note(AdvisorSeverity::Blocker, "b"),
+                    ],
+                ),
+                context: None,
+            },
+            &opts,
+        );
+        assert_eq!(entries.len(), 1);
+        let Entry::Advisory {
+            advisory,
+            expanded: false,
+        } = &entries[0]
+        else {
+            panic!("not a card: {entries:?}");
+        };
+        assert_eq!(advisory_severity(advisory), AdvisorSeverity::Blocker);
+        assert_eq!(advisory_title(advisory), "◎ advisor · 2 notes");
+        assert!(
+            user_entries(
+                "<advisory severity=\"nit\" guidance=\"weigh\">a</advisory>".into(),
+                Some(3)
+            )
+            .is_empty()
+        );
+    }
+
+    /// 125 §7.5: `AdvisorChanged` drives the header tag, the status segment,
+    /// the spinner and one `advisor → …` line per model change.
+    #[test]
+    fn advisor_changed_updates_header_cost_and_status() {
+        let s = SessionId::new();
+        let mut m = Model {
+            session: Some(s),
+            ..Model::default()
+        };
+        let catalog = Catalog::load(
+            std::env::temp_dir()
+                .join("theuth-tui-no-user-file")
+                .as_path(),
+        );
+        assert!(m.advisor_segment().is_none() && !m.animating());
+        let mut status = advisor_status(s, AdvisorState::Reviewing, "anthropic/claude-opus-4-1");
+        status.cost = Some(CostBucket {
+            returned: vec![Money {
+                currency: "USD".into(),
+                nanos: 12_000_000,
+            }],
+            ..CostBucket::default()
+        });
+        m.apply_agent(AgentEvent::AdvisorChanged {
+            session: s,
+            status: status.clone(),
+        });
+        assert!(m.header(&catalog).0.contains("  ·  advisor $0.012"));
+        let (segment, state) = m.advisor_segment().unwrap();
+        assert!(segment.starts_with("  ·  ◎ advisor: ") && segment.ends_with(" reviewing…"));
+        assert_eq!(state, AdvisorState::Reviewing);
+        assert!(m.animating());
+        // Counters move without a new line; idle stops the spinner.
+        status.state = AdvisorState::Idle;
+        status.step = 3;
+        m.apply_agent(AgentEvent::AdvisorChanged {
+            session: s,
+            status: status.clone(),
+        });
+        assert_eq!(
+            m.advisor_segment().map(|(t, _)| t).as_deref(),
+            Some("  ·  ◎ advisor: idle")
+        );
+        assert!(!m.animating());
+        // Another session's advisor is not ours.
+        m.apply_agent(AgentEvent::AdvisorChanged {
+            session: SessionId::new(),
+            status: advisor_status(SessionId::new(), AdvisorState::Halted, "x/y"),
+        });
+        assert_eq!(m.advisor.state, AdvisorState::Idle);
+        m.apply_agent(AgentEvent::AdvisorChanged {
+            session: s,
+            status: AdvisorStatus {
+                session: s,
+                ..AdvisorStatus::default()
+            },
+        });
+        assert!(m.advisor_segment().is_none());
+        assert!(!m.header(&catalog).0.contains("advisor"));
+        assert_eq!(
+            info_lines(&m),
+            ["advisor → anthropic/claude-opus-4-1", "advisor → off"]
+        );
+    }
+
+    /// 125 §7.5: the hidden advisor child is never a board row — by kind in
+    /// `list_agents`, by the link's id on `SubagentSpawned` — and spawns no line.
+    #[test]
+    fn spawned_advisor_never_reaches_board() {
+        let s = SessionId::new();
+        let mut m = Model {
+            session: Some(s),
+            ..Model::default()
+        };
+        let advisor = SessionId::new();
+        let mut status = advisor_status(s, AdvisorState::Idle, "openai/o3-pro");
+        status.advisor = Some(advisor);
+        m.apply_agent(AgentEvent::AdvisorChanged { session: s, status });
+        m.apply_agent(AgentEvent::SubagentSpawned {
+            parent: s,
+            child: advisor,
+            name: "advisor".into(),
+            cap: None,
+        });
+        assert!(m.agents.is_empty() && m.board().is_empty());
+        assert!(!info_lines(&m).iter().any(|l| l.starts_with("↳ spawned")));
+        let info = |id: SessionId, kind: SessionKind| AgentInfo {
+            id,
+            name: "x".into(),
+            parent: s,
+            depth: 1,
+            agent: None,
+            model: "m".into(),
+            state: AgentState::Running,
+            started_at: None,
+            finished_at: None,
+            last: String::new(),
+            project: None,
+            retention: agent::Retention::Durable,
+            activity: Default::default(),
+            cap: None,
+            kind,
+        };
+        let worker = SessionId::new();
+        m.apply(UiEvent::Agents(vec![
+            info(advisor, SessionKind::Advisor),
+            info(worker, SessionKind::Chat),
+        ]));
+        assert_eq!(m.agents.keys().copied().collect::<Vec<_>>(), [worker]);
     }
 }

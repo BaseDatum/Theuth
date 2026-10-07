@@ -2384,6 +2384,61 @@ mod tests {
         }
     }
 
+    /// 125 §7.4: the card is border + title + one row per shown note (+ the
+    /// `… +N more` row collapsed), its badges in the rows, nothing wider than
+    /// the terminal (`Entry::height` counts the same rows; `model.rs` tests it).
+    #[test]
+    fn advisory_card_is_tight_at_any_width() {
+        use agent::{Advisory, AdvisoryNote};
+        let notes = |n: usize| -> Vec<AdvisoryNote> {
+            (0..n)
+                .map(|i| AdvisoryNote {
+                    severity: match i % 3 {
+                        0 => AdvisorSeverity::Nit,
+                        1 => AdvisorSeverity::Concern,
+                        _ => AdvisorSeverity::Blocker,
+                    },
+                    note: format!("note {i} stays short so it never wraps"),
+                })
+                .collect()
+        };
+        let card = |n: usize, expanded: bool| Entry::Advisory {
+            advisory: Advisory {
+                advisor: runtime::SessionId::new(),
+                step: 1,
+                turn: None,
+                at_ms: 0,
+                notes: notes(n),
+            },
+            expanded,
+        };
+        for width in 60..=120u16 {
+            for (e, rows, more) in [
+                (card(5, false), 3, Some("… +2 more notes")),
+                (card(5, true), 5, None),
+                (card(2, false), 2, None),
+            ] {
+                let frame = element! {
+                    View(flex_direction: FlexDirection::Column, width, height: 20u16) {
+                        #(Some(entry(&e, "⠋", 0, width)))
+                    }
+                }
+                .to_string();
+                let lines: Vec<&str> = frame.lines().collect();
+                let top = lines.iter().position(|l| l.starts_with('╭')).unwrap();
+                let bottom = lines.iter().position(|l| l.starts_with('╰')).unwrap();
+                let body = 1 + rows + usize::from(more.is_some());
+                assert_eq!(bottom - top, body + 1, "width {width}:\n{frame}");
+                assert!(lines.iter().all(|l| l.chars().count() <= usize::from(width)));
+                assert!(lines[top + 1].contains("◎ advisor ·"), "{frame}");
+                assert!(lines[top + 2].contains("[nit]") && lines[top + 3].contains("[concern]"));
+                if let Some(more) = more {
+                    assert!(lines[top + body].contains(more), "{frame}");
+                }
+            }
+        }
+    }
+
     /// Eight live children: six rows, one fold line, and no row wider than
     /// the terminal (the rows are `NoWrap` texts in a row view).
     #[test]
