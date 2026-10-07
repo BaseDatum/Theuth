@@ -4,6 +4,7 @@ import {
   AudioLines,
   ChevronLeft,
   ChevronRight,
+  Eye,
   FlaskConical,
   KeyRound,
   Keyboard,
@@ -22,6 +23,7 @@ import {
   X,
 } from 'lucide-react'
 import { useState } from 'react'
+import { Advisor } from '@/components/settings/Advisor'
 import { Agents } from '@/components/settings/Agents'
 import { Approvals } from '@/components/settings/Approvals'
 import { Channels } from '@/components/settings/Channels'
@@ -46,6 +48,7 @@ const TABS = [
   ['general', 'General', Settings2],
   ['chat', 'Chat', MessageCircle],
   ['loop', 'Agent loop', RefreshCw],
+  ['advisor', 'Advisor', Eye],
   ['approvals', 'Approvals', ShieldCheck],
   ['communication', 'Communication', Radio],
   ['computer', 'Computer', Monitor],
@@ -83,6 +86,7 @@ function Pane({ tab, session, peer, onClose }: Omit<Props, 'onTab'>) {
       {tab === 'general' && <General />}
       {tab === 'chat' && <Chat />}
       {tab === 'loop' && <Loop />}
+      {tab === 'advisor' && <Advisor />}
       {tab === 'approvals' && <Approvals session={session} onClose={onClose} />}
       {tab === 'communication' && <Communication session={session} focus={peer} />}
       {tab === 'computer' && <Computer />}

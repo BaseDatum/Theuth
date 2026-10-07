@@ -7,6 +7,7 @@ import { parseMeetingLine } from '@/lib/meeting-line'
 import type { AgentInfo } from '@/rpc/extra'
 import type { Prompt } from '@/store/approvals'
 import type { Entry } from '@/store/sessions'
+import { AdvisorNoteCard } from './AdvisorNoteCard'
 import { ApprovalCard } from './ApprovalCard'
 import { AskCard } from './AskCard'
 import { BroadcastCard, DeskCard, WakeCard } from './HarnessCards'
@@ -60,6 +61,8 @@ function body(entry: Entry, session: string, readOnly?: boolean) {
       return <MessageCompacted epoch={entry.epoch} style={entry.style} summary={entry.summary} />
     case 'interrupted':
       return <MessageInterrupted text={entry.text} />
+    case 'advisory':
+      return <AdvisorNoteCard notes={entry.notes} at={entry.at} />
   }
 }
 
@@ -136,6 +139,8 @@ function describe(entry: Entry): string {
       return 'summary'
     case 'vision':
       return `vision observation · ${entry.model}`
+    case 'advisory':
+      return 'advisor note'
     default:
       return 'message'
   }
@@ -236,7 +241,7 @@ export const Message = memo(function Message({
   const card =
     entry.context?.removed ? (
       <Tombstone entry={entry} session={session} readOnly={readOnly} reveal={reveal} />
-    ) : !readOnly && (entry.kind === 'tool' || entry.kind === 'peer' || entry.kind === 'engine' || entry.kind === 'vision' || entry.kind === 'desk' || entry.kind === 'wake') ? (
+    ) : !readOnly && (entry.kind === 'tool' || entry.kind === 'peer' || entry.kind === 'engine' || entry.kind === 'vision' || entry.kind === 'desk' || entry.kind === 'wake' || entry.kind === 'advisory') ? (
       <Card entry={entry} session={session}>
         {body(entry, session)}
       </Card>

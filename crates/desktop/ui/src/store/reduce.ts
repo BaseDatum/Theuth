@@ -4,6 +4,7 @@ import { codeEdited, codeToolRan, emptyCodemap } from "@/lib/codemap/slice";
 import { classify, humanSecs, type Injected } from "@/lib/injected";
 import { pushChunk } from "@/lib/jobTail";
 import { splitTime } from "@/lib/time";
+import type { AdvisoryNote } from "@/rpc/bindings/AdvisoryNote";
 import type { ContextEntry } from "@/rpc/bindings/ContextEntry";
 import type { PeerOrigin } from "@/rpc/bindings/PeerOrigin";
 import type { TodoSnapshot } from "@/rpc/bindings/TodoSnapshot";
@@ -238,7 +239,12 @@ function userEntries(
   const flag = injected ? { injected } : {};
   if (cls === null)
     return [{ id: nextId(), kind: "user", text, turn, context, ...flag }];
-  return cls.map((c): Entry => {
+  // 125 §8.3: every `<advisory>` element of one row is one card; its seq is the row's when the row is stored.
+  const notes = cls.filter((c): c is Extract<Injected, { kind: "advisory" }> => c.kind === "advisory");
+  const card: Entry[] = notes.length
+    ? [{ id: nextId(), kind: "advisory", notes: notes.map((n) => ({ severity: n.severity, note: n.text })), seq: seqOf(context), context }]
+    : [];
+  return cls.filter((c): c is Exclude<Injected, { kind: "advisory" }> => c.kind !== "advisory").map((c): Entry => {
     switch (c.kind) {
       case "skill":
         return {
@@ -305,7 +311,35 @@ function userEntries(
       case "wake":
         return { id: nextId(), ...c, context };
     }
-  });
+  }).concat(card);
+}
+
+/** The stored row a context entry points at, when it is a message. */
+const seqOf = (context: ContextEntry | undefined): number | undefined =>
+  context?.target.kind === "message" ? context.target.seq : undefined;
+
+/** The notes of a card as one comparable string. */
+const notesKey = (notes: readonly AdvisoryNote[]): string => notes.map((n) => `${n.severity}\n${n.note}`).join("\0");
+
+type Advisory = Extract<Entry, { kind: "advisory" }>;
+
+/**
+ * 125 §8.3: show one Advisory card once. `AdvisoryAdded`, the `<advisory>` wrapper of a `TurnStarted`/`InputInjected`
+ * and the settled reload all describe the same stored row: a card with the same `seq` is already there; a card parsed
+ * from the wrapper text has no `seq` yet, so it is matched by its notes and stamped. New cards go above a streaming tail.
+ */
+function addAdvisory(s: SessionSlice, entry: Advisory): SessionSlice {
+  const key = notesKey(entry.notes);
+  const at = s.entries.findLastIndex(
+    (x): x is Advisory =>
+      x.kind === "advisory" &&
+      (x.seq !== undefined && entry.seq !== undefined ? x.seq === entry.seq : notesKey(x.notes) === key),
+  );
+  if (at < 0) return interject({ ...s, live: s.live + 1 }, entry);
+  const cur = s.entries[at] as Advisory;
+  return cur.seq === undefined && entry.seq !== undefined
+    ? { ...s, entries: replaceAt(s.entries, at, { ...cur, seq: entry.seq }) }
+    : s;
 }
 
 /** The newest `you` row stamped with the turn it opened: an own send or an injected steer whose `TurnStarted` echo was skipped. */
@@ -422,9 +456,9 @@ function historyEntries(h: HistoryEntry): Entry[] {
     // 109 §8.2: the open turn's streamed partial; greyed until the regenerated reply replaces it.
     case "interrupted":
       return [{ id: nextId(), kind: "interrupted", text: h.text }];
-    // 125 C placeholder: W3 maps this to the `advisory` Entry kind (125 §8.3); one info line per note until then.
+    // 125 §8.3: the typed card; `seq` is the stored row (the `AdvisoryAdded` idempotence key).
     case "advisory":
-      return h.advisory.notes.map((n) => ({ id: nextId(), kind: "info", text: `advisor [${n.severity}]: ${n.note}` }));
+      return [{ id: nextId(), kind: "advisory", notes: h.advisory.notes, seq: seqOf(context), context, at: h.advisory.at_ms }];
   }
 }
 
@@ -465,6 +499,8 @@ function signature(e: Entry): string {
     case "user":
     case "assistant":
       return `${e.kind[0]}${e.turn ?? ""}\n${e.text}`;
+    case "advisory":
+      return e.seq === undefined ? `a${notesKey(e.notes)}` : `a${e.seq}`;
     default:
       return `${e.kind}\n${e.text}`;
   }
@@ -602,6 +638,15 @@ export function apply(
         { ...slice, live: slice.live + 1 },
         peerEntry(e.origin, e.text, e.seq),
       );
+    // 125 §8.3: one Advisory card per stored row, whichever of the event, the wrapper echo or the reload lands first.
+    case "AdvisoryAdded":
+      return addAdvisory(slice, { id: nextId(), kind: "advisory", notes: e.advisory.notes, seq: e.seq, at: e.advisory.at_ms });
+    // 125 §3: one `advisor → <model | off>` line when the advisor's model changes; state ticks (reviewing/idle) print nothing.
+    case "AdvisorChanged": {
+      const model = e.status.state === "off" ? null : (e.status.model ?? null);
+      if ((slice.advisorModel ?? null) === model) return slice;
+      return interject({ ...slice, advisorModel: model }, { id: nextId(), kind: "info", text: `advisor → ${model ?? "off"}` });
+    }
     // 109 §8.2: the banner changes state at once; the dropped partial stays until the first regenerated delta.
     case "TurnResumed": {
       const at = Date.parse(e.interrupted_at);
