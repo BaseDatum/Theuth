@@ -1,0 +1,15 @@
+{
+  "root": "b",
+  "elements": {
+    "b": {
+      "type": "BarChart",
+      "props": {
+        "title": "Spend by model",
+        "labels": ["opus", "sonnet", "haiku"],
+        "series": [{ "name": "USD", "values": [412.5, 96, 8.25] }],
+        "variant": "horizontal",
+        "unit": "USD"
+      }
+    }
+  }
+}

@@ -141,6 +141,14 @@ describe("walkthrough app", () => {
       [],
     );
     expect(stray.diagnostics.map((d) => d.code)).toEqual(["state-undeclared"]);
+    // 123 §6: every diagram's positional `onSelect` (last argument) scopes `$value`; one argument earlier it does not.
+    const gantt = (at: string) =>
+      check(
+        `root = Gantt([{id: "a", label: "A", start: "2026-10-08", end: "2026-10-10"}], null, "Plan", ${at})\n$pick = ""`,
+        [],
+      ).diagnostics.map((d) => d.code);
+    expect(gantt(`null, Action([@Set($pick, $value)])`)).toEqual([]);
+    expect(gantt(`[$value], null`)).toEqual(["state-undeclared"]);
   });
 
   test("steps through three highlight states and a node press reaches @Set and @ToAssistant", async () => {

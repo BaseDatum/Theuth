@@ -66,24 +66,87 @@ fn is_heading(line: &str) -> bool {
     (1..=6).contains(&hashes) && t[hashes..].starts_with([' ', '\t'])
 }
 
+/// 123 §4.5: the SVG family — a desktop asset stands in for the lowering. `Tree` and `Timeline` only in
+/// their drawn layouts (`list` rows and free-text timelines are HTML); `Kanban`/`Heatmap` stay HTML (§5.2).
 fn is_diagram(c: &Component) -> bool {
-    matches!(c, Component::Graph(_) | Component::Sequence(_))
+    use crate::spec::{TimelineScale, TreeLayout};
+    match c {
+        Component::Graph(_)
+        | Component::Sequence(_)
+        | Component::StateMachine(_)
+        | Component::Entities(_)
+        | Component::Swimlane(_)
+        | Component::GraphDelta(_)
+        | Component::BarChart(_)
+        | Component::LineChart(_)
+        | Component::ScatterChart(_)
+        | Component::RadarChart(_)
+        | Component::Waterfall(_)
+        | Component::Funnel(_)
+        | Component::Gantt(_)
+        | Component::Quadrant(_)
+        | Component::Treemap(_)
+        | Component::Sankey(_)
+        | Component::Venn(_)
+        | Component::Loop(_)
+        | Component::Layers(_)
+        | Component::Journey(_)
+        | Component::Fishbone(_) => true,
+        Component::Tree(t) => t.layout.is_some_and(|l| l != TreeLayout::List),
+        Component::Timeline(t) => t.scale == Some(TimelineScale::Time),
+        _ => false,
+    }
 }
 
-/// The line under a diagram image.
+/// The line under a diagram image: `Name: n units[, m links]` (`*StateMachine: 6 states, 9 transitions*`).
 fn caption(c: &Component) -> Option<String> {
-    match c {
-        Component::Graph(g) => Some(format!(
-            "Graph: {} nodes, {} edges",
-            g.nodes.len(),
-            g.edges.len()
-        )),
-        Component::Sequence(s) => Some(match &s.title {
+    let two = |name: &str, n: usize, a: &str, m: usize, b: &str| format!("{name}: {n} {a}, {m} {b}");
+    let one = |name: &str, n: usize, a: &str| format!("{name}: {n} {a}");
+    Some(match c {
+        Component::Graph(g) => two("Graph", g.nodes.len(), "nodes", g.edges.len(), "edges"),
+        Component::Sequence(s) => match &s.title {
             Some(t) if !t.is_empty() => format!("Sequence: {t}"),
-            _ => format!("Sequence: {} steps", s.steps.len()),
-        }),
-        _ => None,
-    }
+            _ => one("Sequence", s.steps.len(), "steps"),
+        },
+        Component::StateMachine(p) => two(
+            "StateMachine",
+            p.states.len(),
+            "states",
+            p.transitions.len(),
+            "transitions",
+        ),
+        Component::Entities(p) => two(
+            "Entities",
+            p.entities.len(),
+            "entities",
+            p.relations.len(),
+            "relations",
+        ),
+        Component::Swimlane(p) => two("Swimlane", p.lanes.len(), "lanes", p.steps.len(), "steps"),
+        Component::GraphDelta(p) => format!(
+            "GraphDelta: {} → {} nodes",
+            p.before.nodes.len(),
+            p.after.nodes.len()
+        ),
+        Component::BarChart(p) => two("BarChart", p.labels.len(), "labels", p.series.len(), "series"),
+        Component::LineChart(p) => two("LineChart", p.labels.len(), "points", p.series.len(), "series"),
+        Component::ScatterChart(p) => one("ScatterChart", p.points.len(), "points"),
+        Component::RadarChart(p) => two("RadarChart", p.axes.len(), "axes", p.series.len(), "series"),
+        Component::Waterfall(p) => one("Waterfall", p.steps.len(), "steps"),
+        Component::Funnel(p) => one("Funnel", p.stages.len(), "stages"),
+        Component::Gantt(p) => one("Gantt", p.tasks.len(), "tasks"),
+        Component::Quadrant(p) => one("Quadrant", p.items.len(), "items"),
+        Component::Treemap(p) => one("Treemap", p.items.len(), "cells"),
+        Component::Sankey(p) => two("Sankey", p.nodes.len(), "nodes", p.flows.len(), "flows"),
+        Component::Venn(p) => one("Venn", p.sets.len(), "sets"),
+        Component::Loop(p) => one("Loop", p.steps.len(), "steps"),
+        Component::Layers(p) => one("Layers", p.layers.len(), "layers"),
+        Component::Journey(p) => two("Journey", p.stages.len(), "stages", p.rows.len(), "rows"),
+        Component::Fishbone(p) => one("Fishbone", p.causes.len(), "causes"),
+        Component::Tree(p) => one("Tree", p.items.len(), "items"),
+        Component::Timeline(p) => one("Timeline", p.items.len(), "items"),
+        _ => return None,
+    })
 }
 
 /// The block id of the last `<!-- id -->` annotation in `prose` when nothing but blank lines
@@ -215,6 +278,19 @@ fn element(spec: &Spec, id: &str, out: &mut String, depth: usize) {
                 let _ = write!(out, "** {}", i.title);
                 if let Some(d) = &i.detail {
                     let _ = write!(out, ": {d}");
+                }
+                out.push('\n');
+            }
+            out.push('\n');
+        }
+        // 123 closer (I): the tree as a nested list, `detail` after an em dash (`*Tree*` was the fallthrough).
+        Component::Tree(p) => {
+            title(p.title.as_deref(), out);
+            for i in &p.items {
+                let depth = usize::from(i.depth.unwrap_or(0));
+                let _ = write!(out, "{}- {}", "  ".repeat(depth), i.label);
+                if let Some(d) = &i.detail {
+                    let _ = write!(out, " — {d}");
                 }
                 out.push('\n');
             }
@@ -1091,6 +1167,44 @@ mod tests {
             let md = lowered(&std::fs::read_to_string(&path).unwrap());
             assert!(!md.trim().is_empty(), "{name}");
         }
+    }
+
+    // ---- 123 closer (I) ----
+
+    /// §4.5: across every valid fixture, no diagram component (`is_diagram`, plus the HTML
+    /// Kanban/Heatmap) lowers to the bare `*TypeName*` fallthrough; every diagram has a caption.
+    #[test]
+    fn no_diagram_fixture_lowers_to_its_type_name_and_every_diagram_has_a_caption() {
+        let mut seen = std::collections::BTreeSet::new();
+        for entry in
+            std::fs::read_dir(concat!(env!("CARGO_MANIFEST_DIR"), "/fixtures/json-render")).unwrap()
+        {
+            let path = entry.unwrap().path();
+            let name = path.file_name().unwrap().to_string_lossy().into_owned();
+            if !name.starts_with("valid-") || !name.ends_with(".json") {
+                continue;
+            }
+            let spec = parse(&std::fs::read_to_string(&path).unwrap()).unwrap().spec;
+            let md = lower(&spec);
+            for e in spec.elements.values() {
+                let c = &e.component;
+                let t = type_name(c);
+                if is_diagram(c) || matches!(c, Component::Kanban(_) | Component::Heatmap(_)) {
+                    assert!(!md.contains(&format!("*{t}*\n")), "{name}: {t} fell through:\n{md}");
+                }
+                if is_diagram(c) {
+                    let cap = caption(c).unwrap_or_else(|| panic!("{name}: {t} has no caption"));
+                    assert!(cap.starts_with(&format!("{t}: ")), "{cap}");
+                    seen.insert(t);
+                }
+            }
+        }
+        assert_eq!(seen.len(), 23, "{seen:?}");
+        assert_eq!(
+            caption(&parse(fixture!("valid-state-machine")).unwrap().spec.elements["s"].component)
+                .as_deref(),
+            Some("StateMachine: 6 states, 7 transitions")
+        );
     }
 
     const DOC: &str = "\

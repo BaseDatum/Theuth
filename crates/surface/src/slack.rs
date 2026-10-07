@@ -273,6 +273,17 @@ impl Render<'_> {
             Component::Swimlane(_) => return Err(SlackBlocksError::Unsupported("Swimlane")),
             Component::GraphDelta(_) => return Err(SlackBlocksError::Unsupported("GraphDelta")),
             // ---- 123 chart family (W2) ----
+            // 123 §4.5: one series reuses the native chart as `Bars`/`Sparkline` do; more series flatten.
+            Component::BarChart(p) if p.series.len() == 1 => {
+                let s = &p.series[0];
+                let points = p.labels.iter().cloned().zip(s.values.iter().copied()).collect();
+                out.push(self.chart(nested, "bar", p.title.as_deref().unwrap_or(&s.name), points));
+            }
+            Component::LineChart(p) if p.series.len() == 1 => {
+                let s = &p.series[0];
+                let points = p.labels.iter().cloned().zip(s.values.iter().copied()).collect();
+                out.push(self.chart(nested, "line", p.title.as_deref().unwrap_or(&s.name), points));
+            }
             Component::BarChart(_) => return Err(SlackBlocksError::Unsupported("BarChart")),
             Component::LineChart(_) => return Err(SlackBlocksError::Unsupported("LineChart")),
             Component::ScatterChart(_) => {
