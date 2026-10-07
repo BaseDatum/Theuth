@@ -83,6 +83,9 @@ pub struct WebConfig {
     pub accept_language: String,
     /// One browser-realistic header attempt after a diagnosed 403/503 challenge (122 D4).
     pub header_ladder: bool,
+    /// When page fetches use the Chrome-emulating `wreq` client: `always`
+    /// (default), `on_challenge`, `never` (122 revision 1).
+    pub impersonate: fetch::client::Impersonate,
 }
 
 impl Default for WebConfig {
@@ -109,6 +112,7 @@ impl Default for WebConfig {
             user_agent: "theuth/0.1 (+https://github.com/skymoore/theuth)".to_owned(),
             accept_language: "en-US,en;q=0.9".to_owned(),
             header_ladder: true,
+            impersonate: fetch::client::Impersonate::default(),
         }
     }
 }

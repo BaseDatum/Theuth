@@ -148,6 +148,9 @@ pub struct ScrapeResponse {
     /// Non-fatal remarks.
     #[serde(default)]
     pub notes: Vec<String>,
+    /// Which HTTP client answered (`reqwest` or `wreq_chrome`).
+    #[serde(default)]
+    pub client: web::fetch::client::ClientKind,
 }
 
 fn default_charset() -> String {
@@ -189,6 +192,9 @@ pub struct CrawlPage {
     /// Raw HTML when `format: html`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub html: Option<String>,
+    /// Which HTTP client answered (`reqwest` or `wreq_chrome`).
+    #[serde(default)]
+    pub client: web::fetch::client::ClientKind,
 }
 
 /// `crawl`'s structured result (design doc 122 D10): the pages plus what was missed.

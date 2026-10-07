@@ -24532,10 +24532,12 @@ version = "2.9.2"
 dependencies = [
  "anyhow",
  "async-trait",
+ "bytes",
  "chrono",
  "encoding_rs",
  "figment",
  "flate2",
+ "futures",
  "html-to-markdown-rs",
  "kameo",
  "rand 0.9.5",
@@ -24552,6 +24554,8 @@ dependencies = [
  "ts-rs",
  "url",
  "wiremock",
+ "wreq",
+ "wreq-util",
 ]
 
 [[package]]

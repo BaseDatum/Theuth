@@ -4,9 +4,10 @@
 //!
 //! - `ssrf`: the mandatory guard; [`check_url`] for callers outside the fetcher.
 //! - `text`: one HTML parser for both [`FetchFormat`]s, plus truncation and the pageable [`cut`].
-//! - `issue`, `charset`, `meta`: diagnosis, decoding and metadata (design doc 122 D1, D3, D5).
+//! - `client`: the HTTP client seam (`reqwest` today, `wreq` Chrome emulation by W5).
 
 pub mod charset;
+pub mod client;
 pub mod issue;
 pub mod meta;
 mod ssrf;
@@ -14,11 +15,15 @@ mod text;
 
 use std::io::Read;
 use std::net::SocketAddr;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use futures::stream::{BoxStream, StreamExt, TryStreamExt};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use url::Url;
+
+use client::{ClientConfig, ClientError, ClientKind, ClientResponse, HttpClient};
 
 pub use ssrf::{check_url, is_blocked_hostname, is_blocked_ip};
 pub use text::{Cut, collapse_ws, cut, hard_truncate};
@@ -87,6 +92,9 @@ pub struct FetchResponse {
     /// Non-fatal remarks (an API source that failed, a ladder attempt that did not help).
     #[serde(default)]
     pub notes: Vec<String>,
+    /// Which HTTP client answered (`reqwest` or `wreq_chrome`).
+    #[serde(default)]
+    pub client: ClientKind,
 }
 
 fn default_attempts() -> u8 {
@@ -120,6 +128,7 @@ impl Default for FetchResponse {
             tier: default_tier(),
             source_kind: None,
             notes: Vec::new(),
+            client: ClientKind::default(),
         }
     }
 }
@@ -156,14 +165,16 @@ impl FetchError {
     /// Map a transport error, surfacing a guard refusal from the DNS
     /// resolver as [`FetchError::Rejected`].
     fn from_reqwest(e: &reqwest::Error) -> Self {
-        let mut source = std::error::Error::source(e);
-        while let Some(s) = source {
-            if let Some(f) = s.downcast_ref::<Self>() {
-                return f.clone();
-            }
-            source = s.source();
+        ClientError::from_reqwest(e).into()
+    }
+}
+
+impl From<ClientError> for FetchError {
+    fn from(e: ClientError) -> Self {
+        match e.as_rejected() {
+            Some(m) => Self::Rejected(m.to_owned()),
+            None => Self::Failed(e.to_string()),
         }
-        Self::Failed(format!("HTTP request failed: {e}"))
     }
 }
 
@@ -174,6 +185,10 @@ impl FetchError {
 /// `ssrf`, so the client connects only to addresses that passed
 /// [`is_blocked_ip`] (closes the resolve/connect TOCTOU of 16 §10).
 pub struct Fetcher {
+    /// Page fetches (`fetch`/`fetch_html`) go through the client seam.
+    http: Arc<dyn HttpClient>,
+    /// `request` (route replay, arbitrary method and body) keeps a plain
+    /// `reqwest` client built from the same config: never stealth (122 §5).
     client: reqwest::Client,
     max_bytes: usize,
     max_redirects: usize,
@@ -207,14 +222,17 @@ impl Fetcher {
         timeout: Duration,
         connect_timeout: Duration,
     ) -> anyhow::Result<Self> {
-        let client = reqwest::Client::builder()
-            .user_agent(user_agent)
-            .timeout(timeout)
-            .connect_timeout(connect_timeout)
-            .redirect(reqwest::redirect::Policy::none())
-            .dns_resolver(ssrf::GuardedResolver)
-            .build()?;
+        let cfg = ClientConfig {
+            user_agent: user_agent.to_owned(),
+            accept_language: String::new(),
+            connect_timeout,
+            read_timeout: timeout,
+            max_body: max_bytes,
+        };
+        let http = client::build(ClientKind::Reqwest, &cfg)?;
+        let client = client::reqwest_client(&cfg)?;
         Ok(Self {
+            http,
             client,
             max_bytes,
             max_redirects,
@@ -273,13 +291,9 @@ impl Fetcher {
         loop {
             ssrf::check_static(&current, &self.allow)?;
             tracing::debug!(url = %current, redirects, "fetch hop");
-            let response = self
-                .client
-                .get(current.as_str())
-                .send()
-                .await
-                .map_err(|e| FetchError::from_reqwest(&e))?;
-            let status = response.status();
+            let response = self.http.get(&current, &[]).await?;
+            let status = reqwest::StatusCode::from_u16(response.status)
+                .map_err(|e| FetchError::Failed(format!("invalid status: {e}")))?;
             if Self::is_redirect(status) {
                 if redirects >= self.max_redirects {
                     return Err(FetchError::Rejected(format!(
@@ -288,7 +302,7 @@ impl Fetcher {
                     )));
                 }
                 let location = response
-                    .headers()
+                    .headers
                     .get(reqwest::header::LOCATION)
                     .and_then(|v| v.to_str().ok())
                     .ok_or_else(|| FetchError::Failed("redirect missing Location header".into()))?;
@@ -386,7 +400,12 @@ impl Fetcher {
                 .iter()
                 .filter_map(|(k, v)| Some((k.as_str().to_owned(), v.to_str().ok()?.to_owned())))
                 .collect();
-            let (body, truncated) = self.read_capped(response).await?;
+            let len = response.content_length();
+            let mut body_stream = response
+                .bytes_stream()
+                .map_err(|e| ClientError::from_reqwest(&e))
+                .boxed();
+            let (body, truncated) = self.read_capped(len, &mut body_stream).await?;
             return Ok(RawResponse {
                 url: current.to_string(),
                 status: status.as_u16(),
@@ -415,9 +434,10 @@ impl Fetcher {
     /// Refuse an oversize `Content-Length`, then read the body cut at `max_bytes`.
     async fn read_capped(
         &self,
-        mut response: reqwest::Response,
+        content_length: Option<u64>,
+        body: &mut BoxStream<'static, Result<bytes::Bytes, ClientError>>,
     ) -> Result<(Vec<u8>, bool), FetchError> {
-        if let Some(len) = response.content_length()
+        if let Some(len) = content_length
             && usize::try_from(len).is_ok_and(|len| len > self.max_bytes)
         {
             return Err(FetchError::Failed(format!(
@@ -427,11 +447,8 @@ impl Fetcher {
         }
         let mut raw = Vec::new();
         let mut truncated = false;
-        while let Some(chunk) = response
-            .chunk()
-            .await
-            .map_err(|e| FetchError::from_reqwest(&e))?
-        {
+        while let Some(chunk) = body.next().await {
+            let chunk = chunk?;
             raw.extend_from_slice(&chunk);
             if raw.len() > self.max_bytes {
                 raw.truncate(self.max_bytes);
@@ -448,14 +465,14 @@ impl Fetcher {
 
     async fn read_body(
         &self,
-        response: reqwest::Response,
+        mut response: ClientResponse,
         url: Url,
         format: Option<FetchFormat>,
         max_chars: usize,
         started: Instant,
     ) -> Result<FetchResponse, FetchError> {
         let content_type = response
-            .headers()
+            .headers
             .get(reqwest::header::CONTENT_TYPE)
             .and_then(|v| v.to_str().ok())
             .map(|ct| {
@@ -472,7 +489,12 @@ impl Fetcher {
                 ct.unwrap_or("unknown")
             )));
         }
-        let (mut raw, body_truncated) = self.read_capped(response).await?;
+        let content_length = response
+            .headers
+            .get(reqwest::header::CONTENT_LENGTH)
+            .and_then(|v| v.to_str().ok()?.trim().parse::<u64>().ok());
+        let (mut raw, body_truncated) =
+            self.read_capped(content_length, &mut response.body).await?;
         // Gzip container (`sitemap.xml.gz`); a failed decode keeps the raw bytes.
         if raw.starts_with(&[0x1f, 0x8b]) {
             let mut inflated = Vec::new();
@@ -503,6 +525,7 @@ impl Fetcher {
                 content,
                 truncated: cut,
                 took_ms: u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
+                client: self.http.kind(),
                 ..FetchResponse::default()
             });
         }
@@ -532,6 +555,7 @@ impl Fetcher {
             content,
             truncated: cut || body_truncated,
             took_ms: u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
+            client: self.http.kind(),
             ..FetchResponse::default()
         })
     }

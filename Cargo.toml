@@ -277,6 +277,13 @@ mime_guess = "2"
 # layout/paint for `browser_screenshot`. obscura-js only for the main-thread warmup.
 obscura-mcp = { git = "https://github.com/skymoore/obscura", branch = "main", features = ["stealth", "render"] }
 obscura-js = { git = "https://github.com/skymoore/obscura", branch = "main", features = ["stealth", "render"] }
+# Stealth page fetches (design doc 122 revision 1, `crates/web/src/fetch/client.rs`): the exact wreq/wreq-util
+# pins obscura's `stealth` feature uses, so the graph holds ONE wreq (and one BoringSSL build). Features mirror
+# obscura-net's minus `socks`: streamed bodies, the decompressors Chrome's `Accept-Encoding` invites, the
+# default roots/runtime (`default-features = false` so the list is explicit), wreq-util's emulation profiles.
+# No `cookies` (122 §5). `prefix-symbols` stays obscura's Linux-only concern (features union).
+wreq = { version = "=6.0.0-rc.29", default-features = false, features = ["webpki-roots", "tokio-rt", "stream", "gzip", "brotli", "deflate", "zstd"] }
+wreq-util = { version = "=3.0.0-rc.12", default-features = false, features = ["emulation", "emulation-compression"] }
 iana-time-zone = "0.1"
 psl = "2"  # routes (44): registrable domain
 # unjar (design doc 23 §7): read the user's real cookies from local browser

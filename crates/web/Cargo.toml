@@ -25,6 +25,11 @@ html-to-markdown-rs = { workspace = true }
 rand = { workspace = true }
 flate2 = { workspace = true }
 encoding_rs = { workspace = true }
+futures = { workspace = true }
+bytes = { workspace = true }
+# 122 revision 1: the stealth client (W5). Declared here so the dependency graph is fixed by the contract.
+wreq = { workspace = true }
+wreq-util = { workspace = true }
 ts-rs = { workspace = true, optional = true }
 
 [dev-dependencies]
