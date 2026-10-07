@@ -58,6 +58,7 @@ pub enum RunState {
     Waiting,
     /// Taking the venue and the build slot.
     Acquiring,
+    /// Training steps are executing.
     Running,
     /// A precondition broke mid-run; checkpointed at a step boundary.
     Paused,
@@ -111,11 +112,17 @@ impl RunState {
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 #[serde(rename_all = "snake_case")]
 pub enum LabelSource {
+    /// The owner's answer, weight 1.0.
     Direct,
+    /// A rewind of the turn, weight 0.5.
     HindsightRewind,
+    /// The next message judged a correction, 0.5 × P(true).
     HindsightCorrection,
+    /// The turn was cancelled within 30 s, weight 0.25.
     HindsightInterrupt,
+    /// The owner took over or reversed an L2/L3 answer, weight 3.0.
     Override,
+    /// Nobody answered; the card's default, weight 0.25.
     Timeout,
     /// "don't learn from this one": weight 0, keeps the example count honest.
     Excluded,
@@ -155,8 +162,11 @@ impl LabelSource {
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 #[serde(rename_all = "snake_case")]
 pub enum Outcome {
+    /// `choice` equals the direct / override label.
     Correct,
+    /// It does not.
     Wrong,
+    /// No label yet.
     Unlabelled,
 }
 
@@ -195,7 +205,9 @@ pub struct Kpis {
     pub n: u32,
     /// Prequential accuracy, 0..=1.
     pub accuracy: f32,
+    /// Mean squared error of `probs` against the one-hot label.
     pub brier: f32,
+    /// Expected calibration error over 10 bins of `p_top`.
     pub ece: f32,
     /// Share of decisions answerable at ≤ 2 % error with the current gate.
     pub coverage_2pct: f32,
@@ -203,7 +215,9 @@ pub struct Kpis {
     pub asks_avoided: u32,
     /// Σ median_answer_ms over acted rows + 30 s interruption cost each.
     pub minutes_saved: f32,
+    /// Overrides per 100 acted rows.
     pub overrides_per_100: f32,
+    /// Undos during grace per 100 acted rows.
     pub undo_rate_per_100: f32,
 }
 
@@ -241,13 +255,19 @@ pub struct DoubleStatus {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct DoubleRun {
+    /// `runs.id`.
     pub id: RunId,
+    /// Which tier.
     pub tier: Tier,
+    /// `local` | `node:<name>`.
     pub venue: String,
+    /// Where in the state machine.
     pub state: RunState,
+    /// RFC 3339.
     pub started_at: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[cfg_attr(feature = "ts", ts(optional))]
+    /// RFC 3339, when finished.
     pub ended_at: Option<String>,
     /// `promoted` / `rejected: <gate>` / an error.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -261,6 +281,7 @@ pub struct DoubleRun {
 pub struct DoubleClass {
     /// The §3 key.
     pub key: String,
+    /// The key's kind prefix.
     pub kind: CardKind,
     /// Examples seen.
     pub n: u32,
@@ -272,6 +293,7 @@ pub struct DoubleClass {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[cfg_attr(feature = "ts", ts(optional))]
     pub cap_reason: Option<String>,
+    /// Per-class opt-in for L2 on a mutating class.
     pub mutating_opt_in: bool,
     /// Owner's median time-to-answer for this class.
     pub median_answer_ms: u32,
@@ -291,7 +313,9 @@ pub struct DoubleClass {
 pub struct CurvePoint {
     /// RFC 3339 date of the week's Monday.
     pub week: String,
+    /// The active version.
     pub current: Kpis,
+    /// The frozen zero-shot oracle on the same rows.
     pub baseline: Kpis,
 }
 
@@ -299,8 +323,11 @@ pub struct CurvePoint {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct DoubleExample {
+    /// `examples.id`.
     pub id: String,
+    /// The card id as text.
     pub question_id: String,
+    /// RFC 3339.
     pub asked_at: String,
     /// ≤ 160 chars of the scrubbed card text.
     pub card_excerpt: String,
@@ -314,6 +341,7 @@ pub struct DoubleExample {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[cfg_attr(feature = "ts", ts(optional))]
     pub predicted: Option<String>,
+    /// How the active version's prediction scored.
     pub outcome: Outcome,
 }
 
@@ -321,7 +349,9 @@ pub struct DoubleExample {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct DoubleClassDetail {
+    /// The class row.
     pub class: DoubleClass,
+    /// Weekly points, oldest first.
     pub curve: Vec<CurvePoint>,
     /// The last 50, newest first, scrubbed.
     pub examples: Vec<DoubleExample>,
@@ -335,9 +365,15 @@ pub struct DoubleClassDetail {
 #[serde(rename_all = "snake_case", tag = "target")]
 pub enum ForgetTarget {
     /// Every example, label and prediction of one class; the class row stays at L0.
-    Class { key: String },
+    Class {
+        /// The §3 key.
+        key: String,
+    },
     /// Specific examples by id.
-    Examples { ids: Vec<String> },
+    Examples {
+        /// `examples.id`s.
+        ids: Vec<String>,
+    },
 }
 
 /// `double_train(tier, venue)`: where to run (§8.4).
@@ -347,6 +383,7 @@ pub enum ForgetTarget {
 pub enum Venue {
     /// The configured chooser.
     Auto,
+    /// This engine.
     Local,
     /// A named mesh engine.
     Node(String),
@@ -382,7 +419,9 @@ impl Venue {
 pub struct DoubleExport {
     /// Absolute path of the scrubbed JSONL + embeddings archive.
     pub path: String,
+    /// Rows written.
     pub examples: u32,
+    /// Archive size.
     pub bytes: u64,
 }
 

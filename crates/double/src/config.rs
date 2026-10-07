@@ -16,8 +16,11 @@ use serde::{Deserialize, Serialize};
 pub struct DoubleConfig {
     /// `false` (default): no actor, no tools, no prompt paragraph. Restart to change.
     pub enabled: bool,
+    /// Which card kinds are predicted and learned from.
     pub capture: Capture,
+    /// Grace, caps, opt-in default.
     pub ladder: Ladder,
+    /// Venue, window, triggers, tiers.
     pub training: Training,
     /// `examples` / `labels` / `predictions` older than this are deleted,
     /// except golden rows and the last 1,000 per class (§5).
@@ -31,10 +34,15 @@ pub struct DoubleConfig {
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 #[serde(default)]
 pub struct Capture {
+    /// Tool-call approvals.
     pub approvals: bool,
+    /// `ask_user` sets.
     pub asks: bool,
+    /// Attention-inbox items.
     pub attention: bool,
+    /// Decision / review packets.
     pub packets: bool,
+    /// Task / agent / routine drafts.
     pub drafts: bool,
 }
 
@@ -45,6 +53,7 @@ pub struct Capture {
 pub struct Ladder {
     /// L2 countdown; 30 s (Revision 1 ruling 3). Clamped to `deadline − 2 s`.
     pub grace_secs: u32,
+    /// Max rung by risk.
     pub caps: Caps,
     /// Default `classes.mutating_opt_in` for new classes.
     pub mutating_opt_in: bool,
@@ -57,6 +66,7 @@ pub struct Ladder {
 pub struct Caps {
     /// 2 in the first release: L3 stays behind this cap (Revision 1 ruling 4).
     pub read_only: u8,
+    /// Mutating approvals; 3 only with the per-class opt-in.
     pub mutating: u8,
     /// Always 1: destructive never climbs past L1 (§0 item 4).
     pub destructive: u8,
@@ -75,9 +85,11 @@ pub struct Training {
     pub idle_min: u32,
     /// Cumulative `running` minutes per night per run.
     pub run_cap_min: u32,
+    /// When Tier B becomes eligible.
     pub triggers: Triggers,
     /// Ship scrubbed bundles to the owner's own GPU nodes (never a `Vm`).
     pub share_data: bool,
+    /// Per-tier switches.
     pub tiers: Tiers,
 }
 
@@ -87,44 +99,57 @@ pub struct Training {
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 #[serde(default)]
 pub struct Triggers {
+    /// New labels since the active version's `data_range` end.
     pub labels: u32,
+    /// Days since the active version was trained.
     pub days: u32,
 }
 
 /// Per-tier switches (§7.3).
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 #[serde(default)]
 pub struct Tiers {
+    /// Temperatures, k-NN, heads.
     pub a: TierA,
+    /// LoRA adapter.
     pub b: TierB,
+    /// Full fine-tune.
     pub c: TierC,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 #[serde(default)]
+/// Tier A: in-process, deterministic, every 25 labels or nightly.
 pub struct TierA {
+    /// Off: no Tier A runs.
     pub enabled: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 #[serde(default)]
+/// Tier B: the LoRA adapter, data-triggered, gate-promoted.
 pub struct TierB {
+    /// Off: no Tier B runs.
     pub enabled: bool,
     /// LoRA rank.
     pub rank: u32,
+    /// Rows per step.
     pub batch: u32,
+    /// Passes over the corpus per run.
     pub epochs: u32,
+    /// Learning rate.
     pub lr: f32,
 }
 
 /// Owner action only; never scheduled.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 #[serde(default)]
 pub struct TierC {
+    /// Off (default): `double_train(c, …)` is refused.
     pub enabled: bool,
 }
 
@@ -135,6 +160,7 @@ pub struct TierC {
 pub struct Model {
     /// A `decision.checkpoints` name.
     pub checkpoint: String,
+    /// LoRA rank of Tier B adapters.
     pub adapter_rank: u32,
 }
 
@@ -206,16 +232,6 @@ impl Default for Triggers {
     }
 }
 
-impl Default for Tiers {
-    fn default() -> Self {
-        Self {
-            a: TierA::default(),
-            b: TierB::default(),
-            c: TierC::default(),
-        }
-    }
-}
-
 impl Default for TierA {
     fn default() -> Self {
         Self { enabled: true }
@@ -231,12 +247,6 @@ impl Default for TierB {
             epochs: 3,
             lr: 2.0e-4,
         }
-    }
-}
-
-impl Default for TierC {
-    fn default() -> Self {
-        Self { enabled: false }
     }
 }
 
@@ -272,19 +282,33 @@ mod tests {
         let d = DoubleConfig::default();
         assert!(!d.enabled);
         assert_eq!(d.ladder.grace_secs, 30);
-        assert_eq!((d.ladder.caps.read_only, d.ladder.caps.mutating, d.ladder.caps.destructive), (2, 1, 1));
+        assert_eq!(
+            (
+                d.ladder.caps.read_only,
+                d.ladder.caps.mutating,
+                d.ladder.caps.destructive
+            ),
+            (2, 1, 1)
+        );
         assert_eq!(d.training.venue, "auto");
         assert_eq!(d.training.window, "02:00-06:00");
-        assert_eq!((d.training.triggers.labels, d.training.triggers.days), (200, 7));
+        assert_eq!(
+            (d.training.triggers.labels, d.training.triggers.days),
+            (200, 7)
+        );
         assert_eq!(d.retention_days, 365);
         assert_eq!(d.model.checkpoint, "default");
 
-        let yaml = "enabled: true\nladder:\n  grace_secs: 10\ntraining:\n  tiers:\n    b: { rank: 16 }\n";
+        let yaml =
+            "enabled: true\nladder:\n  grace_secs: 10\ntraining:\n  tiers:\n    b: { rank: 16 }\n";
         let c: DoubleConfig = serde_yaml::from_str(yaml).unwrap();
         assert!(c.enabled);
         assert_eq!(c.ladder.grace_secs, 10);
         assert_eq!(c.ladder.caps, Caps::default());
-        assert_eq!((c.training.tiers.b.rank, c.training.tiers.b.epochs), (16, 3));
+        assert_eq!(
+            (c.training.tiers.b.rank, c.training.tiers.b.epochs),
+            (16, 3)
+        );
         // Destructive is capped at 1 whatever the file says (§0 item 4).
         let c: DoubleConfig = serde_yaml::from_str("ladder: { caps: { destructive: 3 } }").unwrap();
         assert_eq!(c.ladder.caps.for_risk(Some(tools::Risk::Destructive)), 1);

@@ -23,6 +23,7 @@ pub struct DoublePredicted {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[cfg_attr(feature = "ts", ts(optional))]
     pub session: Option<SessionId>,
+    /// Which card kind.
     pub kind: CardKind,
     /// The §3 key.
     pub class: String,
@@ -44,6 +45,7 @@ pub struct DoublePredicted {
     pub will_act_at: Option<String>,
     /// `versions.id` the prediction names.
     pub version: String,
+    /// Why.
     pub explain: Explain,
 }
 
@@ -53,6 +55,7 @@ pub struct DoublePredicted {
 pub struct Explain {
     /// The ≤ 3 nearest past decisions.
     pub neighbours: Vec<Neighbour>,
+    /// What each part of the head contributed to the top choice.
     pub parts: Parts,
     /// What would promote the class ("12 more correct in a row").
     pub promote_hint: String,
@@ -74,8 +77,11 @@ pub struct Neighbour {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct Parts {
+    /// Zero-shot oracle.
     pub oracle: f32,
+    /// k-NN memory.
     pub memory: f32,
+    /// Class prior.
     pub prior: f32,
 }
 
@@ -84,12 +90,17 @@ pub struct Parts {
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 #[serde(tag = "type")]
 pub struct DoubleAnswered {
+    /// The card answered.
     pub question_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[cfg_attr(feature = "ts", ts(optional))]
+    /// The card's session, when it has one.
     pub session: Option<SessionId>,
+    /// The §3 key.
     pub class: String,
+    /// The option label sent.
     pub choice: String,
+    /// The version that predicted it.
     pub version: String,
     /// RFC 3339 end of the undo window, when there is one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -102,15 +113,19 @@ pub struct DoubleAnswered {
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 #[serde(tag = "type")]
 pub struct DoubleTrainingState {
+    /// `runs.id`.
     pub run_id: String,
+    /// Which tier runs.
     pub tier: Tier,
     /// `local` | `node:<name>`.
     pub venue: String,
+    /// Where in the state machine.
     pub state: RunState,
     /// 0..=1 while running.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[cfg_attr(feature = "ts", ts(optional))]
     pub progress: Option<f32>,
+    /// One human-readable line (`epoch 2/3`, `rejected: golden`).
     pub message: String,
 }
 
@@ -119,9 +134,11 @@ pub struct DoubleTrainingState {
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 #[serde(tag = "type")]
 pub struct DoubleVersionActivated {
+    /// The now-active `versions.id`.
     pub version: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[cfg_attr(feature = "ts", ts(optional))]
+    /// The version it replaced.
     pub previous: Option<String>,
     /// The version's `metrics` JSON.
     pub metrics: serde_json::Value,
@@ -143,7 +160,11 @@ mod tests {
             choice: "Allow".into(),
             index: None,
             p: 0.91,
-            probs: vec![("Allow".into(), 0.91), ("Deny".into(), 0.05), ("none".into(), 0.04)],
+            probs: vec![
+                ("Allow".into(), 0.91),
+                ("Deny".into(), 0.05),
+                ("none".into(), 0.04),
+            ],
             rung: 2,
             will_act_at: Some("2026-10-07T02:00:30+00:00".into()),
             version: "baseline".into(),
@@ -163,6 +184,9 @@ mod tests {
             message: "epoch 2/3".into(),
         })
         .unwrap();
-        assert_eq!((t["type"].as_str(), t["tier"].as_str(), t["state"].as_str()), (Some("DoubleTrainingState"), Some("b"), Some("running")));
+        assert_eq!(
+            (t["type"].as_str(), t["tier"].as_str(), t["state"].as_str()),
+            (Some("DoubleTrainingState"), Some("b"), Some("running"))
+        );
     }
 }

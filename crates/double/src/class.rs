@@ -45,12 +45,16 @@ impl CardKind {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum DraftKind {
+    /// A task draft (`task_draft`).
     Task,
+    /// An agent draft (`agent_draft`).
     Agent,
+    /// A routine draft (`routine_draft`).
     Routine,
 }
 
 impl DraftKind {
+    /// The key spelling.
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Task => "task",
@@ -93,19 +97,33 @@ pub enum Card<'a> {
     /// MCP bridge registered (`<server>__<tool>`, or a bare remote name): the
     /// registry knows, the payload does not, so the subscriber passes it.
     Approval {
+        /// Tool name as the registry knows it.
         tool: &'a str,
+        /// Raw arguments (`shell` reads `command`; `edit` / `write_file` read `path`).
         args: &'a serde_json::Value,
+        /// Risk class that triggered the ask.
         risk: Risk,
+        /// The tool came from the MCP bridge.
         mcp: bool,
     },
-    /// Every option label of the set, in card order; empty = freeform.
-    Ask { options: &'a [String] },
-    /// `AttentionKind` in snake_case (`serde` name). `approval` / `ask` items
-    /// are the registry's own cards and are keyed by those rules instead;
-    /// `handoff` / `secret` are never predicted — callers do not key them.
-    Attention { kind: &'a str },
-    /// `PacketKind::as_str`: `decision` | `review`.
-    Packet { kind: &'a str },
+    /// An `ask_user` set.
+    Ask {
+        /// Every option label of the set, in card order; empty = freeform.
+        options: &'a [String],
+    },
+    /// An attention-inbox item. `approval` / `ask` items are the registry's
+    /// own cards and are keyed by those rules instead; `handoff` / `secret`
+    /// are never predicted — callers do not key them.
+    Attention {
+        /// `AttentionKind` in snake_case (the `serde` name).
+        kind: &'a str,
+    },
+    /// A decision / review packet.
+    Packet {
+        /// `PacketKind::as_str`: `decision` | `review`.
+        kind: &'a str,
+    },
+    /// A draft card set.
     Draft(DraftKind),
 }
 
@@ -236,10 +254,11 @@ pub fn path_shape(path: &str) -> String {
     let Some(first) = parts.next() else {
         return String::new();
     };
-    if under_home && !first.starts_with('.') {
-        if let Some(second) = parts.next() {
-            return format!("{first}/{second}");
-        }
+    if under_home
+        && !first.starts_with('.')
+        && let Some(second) = parts.next()
+    {
+        return format!("{first}/{second}");
     }
     first.to_owned()
 }
@@ -269,7 +288,13 @@ mod tests {
     use super::*;
     use serde_json::json;
 
-    fn approval(tool: &str, args: serde_json::Value, risk: Risk, mcp: bool, req: Requester) -> String {
+    fn approval(
+        tool: &str,
+        args: serde_json::Value,
+        risk: Risk,
+        mcp: bool,
+        req: Requester,
+    ) -> String {
         class_key(
             &Card::Approval {
                 tool,
@@ -285,13 +310,18 @@ mod tests {
     /// task-draft trio (the design's `3f9a1c2b7d0e` was written without a shell).
     #[test]
     fn ten_example_keys() {
-        let sh = |cmd: &str, risk, req| approval("shell", json!({ "command": cmd }), risk, false, req);
+        let sh =
+            |cmd: &str, risk, req| approval("shell", json!({ "command": cmd }), risk, false, req);
         assert_eq!(
             sh("git push origin main", Risk::Mutating, Requester::Root),
             "approval:shell:mutating:git push:root"
         );
         assert_eq!(
-            sh("git worktree add ../x feat/x", Risk::Mutating, Requester::Root),
+            sh(
+                "git worktree add ../x feat/x",
+                Risk::Mutating,
+                Requester::Root
+            ),
             "approval:shell:mutating:git worktree:root"
         );
         assert_eq!(
@@ -338,10 +368,20 @@ mod tests {
             "approval:create_pull_request:mutating:base,body,head,owner,repo,title:root"
         );
         assert_eq!(
-            approval("knowledge_put", json!({ "id": "x", "body": "y" }), Risk::Mutating, false, Requester::Root),
+            approval(
+                "knowledge_put",
+                json!({ "id": "x", "body": "y" }),
+                Risk::Mutating,
+                false,
+                Requester::Root
+            ),
             "approval:knowledge_put:mutating:root"
         );
-        let trio = ["Add to backlog".to_owned(), "Start now".to_owned(), "Discard".to_owned()];
+        let trio = [
+            "Add to backlog".to_owned(),
+            "Start now".to_owned(),
+            "Discard".to_owned(),
+        ];
         assert_eq!(
             class_key(&Card::Ask { options: &trio }, &Requester::Root),
             "ask:b9474647c6a4:root"
@@ -355,16 +395,30 @@ mod tests {
     /// The ask hash ignores case, whitespace and order, and the question text.
     #[test]
     fn ask_hash_normalises() {
-        let a = ["Start now".to_owned(), "Discard".to_owned(), "Add to backlog".to_owned()];
-        let b = ["discard".to_owned(), "  add  to\tbacklog ".to_owned(), "START NOW".to_owned()];
+        let a = [
+            "Start now".to_owned(),
+            "Discard".to_owned(),
+            "Add to backlog".to_owned(),
+        ];
+        let b = [
+            "discard".to_owned(),
+            "  add  to\tbacklog ".to_owned(),
+            "START NOW".to_owned(),
+        ];
         assert_eq!(ask_hash(&a), ask_hash(&b));
         assert_ne!(ask_hash(&a), ask_hash(&a[..2]));
-        assert_eq!(class_key(&Card::Ask { options: &[] }, &Requester::Root), "ask:freeform:root");
+        assert_eq!(
+            class_key(&Card::Ask { options: &[] }, &Requester::Root),
+            "ask:freeform:root"
+        );
     }
 
     #[test]
     fn shell_prefixes_are_stripped() {
-        assert_eq!(shell_shape("nohup nice -n 15 env FOO=1 /usr/bin/git push"), "git push");
+        assert_eq!(
+            shell_shape("nohup nice -n 15 env FOO=1 /usr/bin/git push"),
+            "git push"
+        );
         assert_eq!(shell_shape("nice -5 cargo build --release"), "cargo build");
         assert_eq!(shell_shape("cd \"/a b\" && cd c && ls"), "ls");
         assert_eq!(shell_shape("cd /tmp"), "");
@@ -380,12 +434,21 @@ mod tests {
             "attention:review:desk:reviewer"
         );
         assert_eq!(
-            class_key(&Card::Packet { kind: "decision" }, &Requester::Routine("nightly".into())),
+            class_key(
+                &Card::Packet { kind: "decision" },
+                &Requester::Routine("nightly".into())
+            ),
             "packet:decision:routine:nightly"
         );
         // MCP by name shape, without the flag.
         assert_eq!(
-            approval("gh__list_issues", json!({ "repo": "r", "owner": "o" }), Risk::ReadOnly, false, Requester::Root),
+            approval(
+                "gh__list_issues",
+                json!({ "repo": "r", "owner": "o" }),
+                Risk::ReadOnly,
+                false,
+                Requester::Root
+            ),
             "approval:gh__list_issues:read_only:owner,repo:root"
         );
         assert_eq!(path_shape("/tmp/x/y"), "tmp");

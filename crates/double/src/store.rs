@@ -41,14 +41,21 @@ pub struct Store {
 /// One `classes` row.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ClassRow {
+    /// The §3 key.
     pub key: String,
+    /// The key's kind prefix.
     pub kind: CardKind,
+    /// Current rung, 0..=3.
     pub rung: u8,
+    /// Max rung for this class.
     pub cap: u8,
+    /// Per-class opt-in for L2 on a mutating class.
     pub mutating_opt_in: bool,
+    /// Examples seen.
     pub n: u32,
     /// JSON: answer histogram, `median_answer_ms`, `last_30d {n, acc, ece, overrides}`.
     pub stats: serde_json::Value,
+    /// Last write.
     pub updated_at: DateTime<Utc>,
 }
 
@@ -57,9 +64,13 @@ pub struct ClassRow {
 pub struct ExampleRow {
     /// uuid v7.
     pub id: String,
+    /// The class key.
     pub class: String,
+    /// The card id as text.
     pub question_id: String,
+    /// The card's session, when it has one.
     pub session_id: Option<String>,
+    /// `root` | `subagent` | `desk:<agent>` | `routine:<name>`.
     pub requester: String,
     /// Scrubbed and cut to [`CARD_TEXT_MAX`] at write.
     pub card_text: String,
@@ -67,62 +78,97 @@ pub struct ExampleRow {
     pub options: Vec<String>,
     /// Pooled encoder state; stored as f16 little-endian.
     pub embedding: Option<Vec<f32>>,
+    /// When the card was raised.
     pub asked_at: DateTime<Utc>,
 }
 
 /// One `labels` row.
 #[derive(Clone, Debug, PartialEq)]
 pub struct LabelRow {
+    /// The example labelled.
     pub example_id: String,
+    /// Where the label came from.
     pub source: LabelSource,
+    /// The option label chosen (scrubbed at write).
     pub choice: String,
+    /// §6 weight.
     pub weight: f32,
+    /// When the label landed.
     pub at: DateTime<Utc>,
 }
 
 /// One `predictions` row — the prequential ledger.
 #[derive(Clone, Debug, PartialEq)]
 pub struct PredictionRow {
+    /// The example predicted.
     pub example_id: String,
+    /// `versions.id`.
     pub version: String,
+    /// Predicted option label.
     pub choice: String,
     /// Every option incl. `none`.
     pub probs: Vec<(String, f32)>,
+    /// Top-1 probability.
     pub p_top: f32,
+    /// The class's rung when predicted.
     pub rung_at_time: u8,
+    /// The double answered the card (L2/L3).
     pub acted: bool,
+    /// L2 grace end.
     pub grace_until: Option<DateTime<Utc>>,
+    /// How it scored once labelled.
     pub outcome: Outcome,
+    /// When written — before the owner saw the card.
     pub at: DateTime<Utc>,
 }
 
 /// One `versions` row.
 #[derive(Clone, Debug, PartialEq)]
 pub struct VersionRow {
+    /// Version id; `baseline` for the zero-shot oracle.
     pub id: String,
+    /// Which tier produced it.
     pub tier: Tier,
+    /// Hash of the base checkpoint it was trained against.
     pub base_hash: String,
+    /// `adapter.safetensors` (Tier B/C).
     pub adapter_path: Option<String>,
+    /// `heads.json`.
     pub head_path: Option<String>,
+    /// `knn.bin`.
     pub knn_path: Option<String>,
+    /// JSON metrics from the gate.
     pub metrics: serde_json::Value,
+    /// The labelled corpus range it was trained on.
     pub data_range: String,
+    /// When training finished.
     pub trained_at: DateTime<Utc>,
+    /// `local` | `node:<name>`.
     pub venue: String,
+    /// Wall-clock seconds of training.
     pub duration_s: u32,
+    /// The one version predictions use.
     pub active: bool,
 }
 
 /// One `runs` row.
 #[derive(Clone, Debug, PartialEq)]
 pub struct RunRow {
+    /// Run id.
     pub id: String,
+    /// Which tier.
     pub tier: Tier,
+    /// `local` | `node:<name>`.
     pub venue: String,
+    /// Where in the state machine.
     pub state: RunState,
+    /// First transition.
     pub started_at: DateTime<Utc>,
+    /// Terminal transition, when reached.
     pub ended_at: Option<DateTime<Utc>>,
+    /// `promoted` / `rejected: <gate>` / an error.
     pub result: Option<String>,
+    /// The run's log file, when kept.
     pub log_path: Option<String>,
 }
 
@@ -240,7 +286,10 @@ impl Store {
     }
 
     /// One example by the card it came from.
-    pub async fn example_for_question(&self, question_id: &str) -> anyhow::Result<Option<ExampleRow>> {
+    pub async fn example_for_question(
+        &self,
+        question_id: &str,
+    ) -> anyhow::Result<Option<ExampleRow>> {
         let row = sqlx::query("SELECT * FROM examples WHERE question_id = ?")
             .bind(question_id)
             .fetch_optional(&self.pool)
@@ -249,15 +298,21 @@ impl Store {
     }
 
     /// A class's examples, newest first, at most `limit`.
-    pub async fn examples_of_class(&self, class: &str, limit: u32) -> anyhow::Result<Vec<ExampleRow>> {
-        sqlx::query("SELECT * FROM examples WHERE class = ? ORDER BY asked_at DESC, id DESC LIMIT ?")
-            .bind(class)
-            .bind(i64::from(limit))
-            .fetch_all(&self.pool)
-            .await?
-            .into_iter()
-            .map(example_of)
-            .collect()
+    pub async fn examples_of_class(
+        &self,
+        class: &str,
+        limit: u32,
+    ) -> anyhow::Result<Vec<ExampleRow>> {
+        sqlx::query(
+            "SELECT * FROM examples WHERE class = ? ORDER BY asked_at DESC, id DESC LIMIT ?",
+        )
+        .bind(class)
+        .bind(i64::from(limit))
+        .fetch_all(&self.pool)
+        .await?
+        .into_iter()
+        .map(example_of)
+        .collect()
     }
 
     // --- labels ---------------------------------------------------------
@@ -335,14 +390,16 @@ impl Store {
         version: &str,
         since: DateTime<Utc>,
     ) -> anyhow::Result<Vec<PredictionRow>> {
-        sqlx::query("SELECT * FROM predictions WHERE version = ? AND at >= ? ORDER BY at, example_id")
-            .bind(version)
-            .bind(since.to_rfc3339())
-            .fetch_all(&self.pool)
-            .await?
-            .into_iter()
-            .map(prediction_of)
-            .collect()
+        sqlx::query(
+            "SELECT * FROM predictions WHERE version = ? AND at >= ? ORDER BY at, example_id",
+        )
+        .bind(version)
+        .bind(since.to_rfc3339())
+        .fetch_all(&self.pool)
+        .await?
+        .into_iter()
+        .map(prediction_of)
+        .collect()
     }
 
     // --- versions -------------------------------------------------------
@@ -457,9 +514,11 @@ impl Store {
 
     /// Every golden example id.
     pub async fn golden(&self) -> anyhow::Result<Vec<String>> {
-        Ok(sqlx::query_scalar("SELECT example_id FROM golden ORDER BY example_id")
-            .fetch_all(&self.pool)
-            .await?)
+        Ok(
+            sqlx::query_scalar("SELECT example_id FROM golden ORDER BY example_id")
+                .fetch_all(&self.pool)
+                .await?,
+        )
     }
 }
 
@@ -626,7 +685,14 @@ mod tests {
         let (s, _dir) = fresh().await;
         let versions = s.versions().await.unwrap();
         assert_eq!(versions.len(), 1);
-        assert_eq!((versions[0].id.as_str(), versions[0].tier, versions[0].active), (BASELINE, Tier::Baseline, false));
+        assert_eq!(
+            (
+                versions[0].id.as_str(),
+                versions[0].tier,
+                versions[0].active
+            ),
+            (BASELINE, Tier::Baseline, false)
+        );
         assert!(s.active_version().await.unwrap().is_none());
 
         let key = "approval:shell:mutating:git push:root";
@@ -658,10 +724,20 @@ mod tests {
         let got_emb = got.embedding.unwrap();
         assert_eq!(got_emb.len(), 1024);
         assert!(got_emb.iter().zip(&emb).all(|(a, b)| (a - b).abs() < 1e-3));
-        assert_eq!(s.example_for_question("q-1").await.unwrap().map(|e| e.id), Some(e.id.clone()));
+        assert_eq!(
+            s.example_for_question("q-1").await.unwrap().map(|e| e.id),
+            Some(e.id.clone())
+        );
         assert_eq!(s.examples_of_class(key, 50).await.unwrap().len(), 1);
         // The question id is unique: the same card never makes two examples.
-        assert!(s.put_example(&ExampleRow { id: "other".into(), ..e.clone() }).await.is_err());
+        assert!(
+            s.put_example(&ExampleRow {
+                id: "other".into(),
+                ..e.clone()
+            })
+            .await
+            .is_err()
+        );
 
         let l = LabelRow {
             example_id: e.id.clone(),
@@ -671,9 +747,14 @@ mod tests {
             at: now(),
         };
         s.put_label(&l).await.unwrap();
-        s.put_label(&LabelRow { source: LabelSource::Override, choice: "Deny".into(), weight: 3.0, ..l.clone() })
-            .await
-            .unwrap();
+        s.put_label(&LabelRow {
+            source: LabelSource::Override,
+            choice: "Deny".into(),
+            weight: 3.0,
+            ..l.clone()
+        })
+        .await
+        .unwrap();
         let labels = s.labels(&e.id).await.unwrap();
         assert_eq!(labels.len(), 2);
         assert_eq!(labels[0], l);
@@ -682,7 +763,11 @@ mod tests {
             example_id: e.id.clone(),
             version: BASELINE.into(),
             choice: "Allow".into(),
-            probs: vec![("Allow".into(), 0.7), ("Deny".into(), 0.2), ("none".into(), 0.1)],
+            probs: vec![
+                ("Allow".into(), 0.7),
+                ("Deny".into(), 0.2),
+                ("none".into(), 0.1),
+            ],
             p_top: 0.7,
             rung_at_time: 0,
             acted: false,
@@ -691,11 +776,17 @@ mod tests {
             at: now(),
         };
         s.put_prediction(&p).await.unwrap();
-        let settled = PredictionRow { outcome: Outcome::Correct, grace_until: Some(now()), ..p.clone() };
+        let settled = PredictionRow {
+            outcome: Outcome::Correct,
+            grace_until: Some(now()),
+            ..p.clone()
+        };
         s.put_prediction(&settled).await.unwrap();
         assert_eq!(s.predictions(&e.id).await.unwrap(), vec![settled.clone()]);
         assert_eq!(
-            s.predictions_of_version(BASELINE, now() - chrono::Duration::hours(1)).await.unwrap(),
+            s.predictions_of_version(BASELINE, now() - chrono::Duration::hours(1))
+                .await
+                .unwrap(),
             vec![settled]
         );
 
@@ -715,9 +806,16 @@ mod tests {
         };
         s.put_version(&v).await.unwrap();
         s.activate_version(&v.id).await.unwrap();
-        assert_eq!(s.active_version().await.unwrap().map(|v| v.id), Some(v.id.clone()));
+        assert_eq!(
+            s.active_version().await.unwrap().map(|v| v.id),
+            Some(v.id.clone())
+        );
         assert!(s.activate_version("missing").await.is_err());
-        assert_eq!(s.active_version().await.unwrap().map(|v| v.id), Some(v.id.clone()), "a failed activate keeps the old one");
+        assert_eq!(
+            s.active_version().await.unwrap().map(|v| v.id),
+            Some(v.id.clone()),
+            "a failed activate keeps the old one"
+        );
 
         let r = RunRow {
             id: "run-1".into(),
@@ -730,7 +828,12 @@ mod tests {
             log_path: None,
         };
         s.put_run(&r).await.unwrap();
-        let done = RunRow { state: RunState::Promoted, ended_at: Some(now()), result: Some("promoted".into()), ..r };
+        let done = RunRow {
+            state: RunState::Promoted,
+            ended_at: Some(now()),
+            result: Some("promoted".into()),
+            ..r
+        };
         s.put_run(&done).await.unwrap();
         assert_eq!(s.runs(10).await.unwrap(), vec![done]);
 
@@ -767,10 +870,15 @@ mod tests {
 
     #[test]
     fn f16_round_trip() {
-        let v = [0.0f32, 1.0, -0.5, 3.14159, 65504.0];
+        let v = [0.0f32, 1.0, -0.5, 2.71875, 65504.0];
         let back = decode_f16(&encode_f16(&v));
         assert_eq!(back.len(), v.len());
-        assert!(back.iter().zip(&v).all(|(a, b)| (a - b).abs() <= b.abs() * 1e-3 + 1e-6), "{back:?}");
+        assert!(
+            back.iter()
+                .zip(&v)
+                .all(|(a, b)| (a - b).abs() <= b.abs() * 1e-3 + 1e-6),
+            "{back:?}"
+        );
         assert!(decode_f16(&[1, 2, 3]).len() == 1);
     }
 }
