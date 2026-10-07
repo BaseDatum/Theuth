@@ -49,6 +49,7 @@ import type { FitLens } from '@/rpc/bindings/FitLens'
 import type { ChangeLens } from '@/rpc/bindings/ChangeLens'
 import type { LensMeta } from '@/rpc/bindings/LensMeta'
 import type { JobView } from '@/rpc/bindings/JobView'
+import type { LiveCountsRow } from '@/rpc/bindings/LiveCountsRow'
 import type { McpProgress } from '@/rpc/bindings/McpProgress'
 import type { McpServer } from '@/rpc/bindings/McpServer'
 import type { Brief } from '@/rpc/bindings/Brief'
@@ -420,6 +421,8 @@ export interface Api {
   /** Artifacts newest first: one session's (`descendants` widens to its subtree) or, with `null`, every session's (35 §3.5). */
   list_artifacts(session: SessionId | null, descendants?: boolean | null): Promise<Artifact[]>
   list_jobs(session: SessionId): Promise<JobView[]>
+  /** Every session with a running job, live PTY or pending reminder (ids only): the sidebar glyph snapshot. */
+  list_live_counts(): Promise<LiveCountsRow[]>
   /** Permitted peer directory of `session` (50 §5.1), paged by the opaque `cursor`; `query` narrows by name/address. */
   list_peers(session: SessionId, query: string | null, cursor: string | null, limit: number | null): Promise<PeerPage>
   /** `session`'s own sent/received records newest first plus the exact ids it can answer or resolve; `pending_only` keeps only those (50 §5.3). */
@@ -1034,6 +1037,7 @@ export const METHODS = [
   'list_artifacts',
   'list_aws_profiles',
   'list_jobs',
+  'list_live_counts',
   'list_logins',
   'list_mcp',
   'list_models',

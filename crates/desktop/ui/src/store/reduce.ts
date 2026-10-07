@@ -44,6 +44,7 @@ export function empty(id: string): SessionSlice {
     terminal: false,
     ptys: new Set(),
     jobs: new Set(),
+    reminders: new Set(),
     artifacts: new Map(),
     progress: new Map(),
     scrape: new Map(),
@@ -601,8 +602,8 @@ function patchJob(
   );
 }
 
-/** Drop job `id` from `key` (`ptys`: screen went quiet or exited; `jobs`: exited); a no-op when absent. */
-function jobGone(s: SessionSlice, key: "ptys" | "jobs", id: string): SessionSlice {
+/** Drop `id` from `key` (`ptys`: screen went quiet or exited; `jobs`: exited; `reminders`: fired or cancelled); a no-op when absent. */
+function jobGone(s: SessionSlice, key: "ptys" | "jobs" | "reminders", id: string): SessionSlice {
   if (!s[key].has(id)) return s;
   const set = new Set(s[key]);
   set.delete(id);
@@ -723,6 +724,12 @@ export function apply(
       );
       return jobGone(jobGone(next, "ptys", e.id), "jobs", e.id);
     }
+    // LIVE-GLYPHS (2026-10-07): the sidebar's timer glyph only; the fired card still comes from the `<reminder>` input.
+    case "ReminderSet":
+      return slice.reminders.has(e.id) ? slice : { ...slice, reminders: new Set(slice.reminders).add(e.id) };
+    case "ReminderFired":
+    case "ReminderCancelled":
+      return jobGone(slice, "reminders", e.id);
     case "BrowserShowLive":
       return { ...slice, browser: true, browserLive: true };
     case "CodeToolRan":

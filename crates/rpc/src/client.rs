@@ -260,6 +260,7 @@ async fn publish(rt: &Runtime, v: &serde_json::Value) {
     republish!(
         agent::AgentEvent,
         tools::JobEvent,
+        tools::ReminderEvent,
         tools::McpProgress,
         web::progress::ScrapeProgress,
         tools::ApprovalRequested,

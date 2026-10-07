@@ -45,6 +45,7 @@ import type { DoubleAnswered } from '@/rpc/bindings/DoubleAnswered'
 import type { DoubleTrainingState } from '@/rpc/bindings/DoubleTrainingState'
 import type { DoubleVersionActivated } from '@/rpc/bindings/DoubleVersionActivated'
 import type { AttentionChanged } from '@/rpc/bindings/AttentionChanged'
+import type { ReminderEvent } from '@/rpc/bindings/ReminderEvent'
 
 /**
  * `AgentEvent` with the 25 §7 additions the bindings do not carry yet:
@@ -119,3 +120,5 @@ export type WireEvent =
   | Lagged
   /** 130 E1: the attention inbox's id set changed; `count` is the new badge. */
   | AttentionChanged
+  /** LIVE-GLYPHS (2026-10-07): a reminder was set, fired or cancelled; the sidebar's timer glyph. */
+  | ReminderEvent

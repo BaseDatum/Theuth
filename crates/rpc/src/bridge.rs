@@ -36,6 +36,7 @@ use telegram::TelegramEvent;
 use tokio::sync::broadcast;
 use tools::{
     ApprovalRequested, ApprovalResolved, AskRequested, AskResolved, JobEvent, McpProgress,
+    ReminderEvent,
 };
 use update::UpdateReady;
 use voice::VoiceEvent;
@@ -138,7 +139,8 @@ forward!(
     DoubleAnswered,
     DoubleTrainingState,
     DoubleVersionActivated,
-    AttentionChanged
+    AttentionChanged,
+    ReminderEvent
 );
 
 /// The process-wide event feed. The first caller spawns the bridge,
@@ -199,5 +201,6 @@ pub async fn start(rt: &Runtime) -> broadcast::Sender<Event> {
     rt.subscribe::<Bridge, DoubleTrainingState>(&actor).await;
     rt.subscribe::<Bridge, DoubleVersionActivated>(&actor).await;
     rt.subscribe::<Bridge, AttentionChanged>(&actor).await;
+    rt.subscribe::<Bridge, ReminderEvent>(&actor).await;
     tx
 }

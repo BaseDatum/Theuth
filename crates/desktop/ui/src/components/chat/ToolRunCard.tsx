@@ -15,8 +15,10 @@ export type Run = Entry[]
 
 /** Deliverable tools (Sky, 2026-10-06): "Show tool cards are never folded in with the collapsed sequential tools. They
  * are always shown in the transcript; they need to be easy for the user to find." A board create (71 §2.11) and the
- * full-width artifact cards `MessageTool` draws. `routine_draft` is named ahead of its tool so that wave needs no change here. */
-const DELIVERABLE_TOOLS: Record<string, true> = { show: true, app: true, agent_draft: true, task_draft: true, routine_draft: true }
+ * full-width artifact cards `MessageTool` draws. `routine_draft` is named ahead of its tool so that wave needs no change here.
+ * `ask_user` (Sky, 2026-10-07): "answered questions shouldn't be folded in collapsed tool cards, they should always be
+ * visible, like show tool calls." Only `ask_user` — not `secret_request`, `desktop_handoff` or approvals. */
+const DELIVERABLE_TOOLS: Record<string, true> = { show: true, app: true, agent_draft: true, task_draft: true, routine_draft: true, ask_user: true }
 export function isDeliverable(tool: Tool): boolean {
   return DELIVERABLE_TOOLS[tool.name] === true || isBoardCreate(tool)
 }
