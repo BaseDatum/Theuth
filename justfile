@@ -357,3 +357,8 @@ vm-image-dev:
     docker build --platform linux/$(arch) --target desktop -t theuth-vm:desktop deploy/vm
     docker build --platform linux/$(arch) -f deploy/vm/Dockerfile.dev -t theuth-vm:dev deploy/vm
     docker save theuth-vm:dev | msb load
+
+# 130 W1: the macOS companion — `swift build -c release` + a hand-assembled, signed `Theuth Companion.app`
+# under target/release/companion/ (scripts/bundle-companion.sh; no Xcode needed).
+companion:
+    scripts/bundle-companion.sh

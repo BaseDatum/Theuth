@@ -25,6 +25,8 @@ export function Row({ item, active, sessions }: { item: AttentionItem; active: b
           <DoubleChip ids={doubleIds(item)} />
         </span>
         <p className="line-clamp-2 font-medium">{item.title}</p>
+        {/* 130 E3: a finished turn's one-line summary. */}
+        {item.summary && <p className="truncate text-xs text-fg-secondary">{item.summary}</p>}
         <p className="truncate text-xs text-fg-tertiary tabular-nums">
           {[from && `from ${from}`, item.agent, age(item.at_ms)].filter(Boolean).join(' · ')}
         </p>

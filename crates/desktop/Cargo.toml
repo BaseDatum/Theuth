@@ -46,6 +46,8 @@ platform = { workspace = true }
 # Speech model files from the release bucket at start (crates/desktop/src/models.rs).
 reqwest = { workspace = true }
 sha2 = { workspace = true }
+# 130 D10: `theuth://` on the desktop (registered on macOS only, `lib.rs`); same crate the mobile table pins.
+tauri-plugin-deep-link = "2"
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["net"] }
@@ -65,8 +67,11 @@ tauri-plugin-haptics = "2"
 tauri-nspanel = { workspace = true }
 objc2 = "0.6"
 block2 = "0.6"
-objc2-app-kit = { workspace = true }
-objc2-foundation = { workspace = true }
+# 130 D10 (`companion/macos.rs`): `NSWorkspace` launch and `NSRunningApplication` queries on top of the
+# workspace feature set; `libc` for `kill(pid, 0)` in the quit handshake.
+objc2-app-kit = { workspace = true, features = ["NSWorkspace", "NSRunningApplication", "block2", "libc"] }
+objc2-foundation = { workspace = true, features = ["NSURL", "NSError"] }
+libc = { workspace = true }
 
 # Windows only: the island's Win32 styles on the `HWND` `raw_window_handle` yields (58 §6.2). Same
 # `windows-sys` line as `crates/platform`.

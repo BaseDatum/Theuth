@@ -15,9 +15,9 @@
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
-	<string>2.10.0</string>
+	<string>2.11.0</string>
 	<key>CFBundleVersion</key>
-	<string>2.10.0.1849</string>
+	<string>2.11.0.1946</string>
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
 	<key>UILaunchStoryboardName</key>
@@ -61,5 +61,7 @@
 		<key>UISceneConfigurations</key>
 		<dict/>
 	</dict>
+	<key>NSScreenCaptureUsageDescription</key>
+	<string>theuth takes screenshots of your displays when you ask it to look at or drive your screen.</string>
 </dict>
 </plist>

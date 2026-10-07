@@ -1,0 +1,9 @@
+{
+  "type": "AskRequested",
+  "id": "a1b2c3d4-0000-4000-8000-000000000001",
+  "session": "0192c5e0-7a1b-7c2d-9e3f-4a5b6c7d8e03",
+  "questions": [
+    { "id": "q1", "question": "Which layout?", "options": [{ "label": "Three tiers" }, { "label": "One plan" }, { "label": "A comparison table" }], "recommended": 0 },
+    { "id": "q2", "question": "Anything else?" }
+  ]
+}

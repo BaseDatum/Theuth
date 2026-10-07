@@ -76,7 +76,12 @@ pub struct PauseAgent {
 /// `proposed_by`, sets `paused: false`, drops the `proposals` row.
 /// `Err("no such agent" | "not a proposal")`.
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct ApproveAgent(pub String);
+pub struct ApproveAgent {
+    /// The proposal.
+    pub name: String,
+    /// 130 E4: who approved — `user` | `user@<client>`; the activity row's actor.
+    pub actor: String,
+}
 
 /// `ask` → `Result<(), String>`: delete `agents/<name>.md` (67 §6.5 refusal,
 /// the Agents view's remove). A pending proposal's row goes too and its hire
@@ -1703,14 +1708,14 @@ impl Message<ApproveAgent> for Roster {
         m: ApproveAgent,
         ctx: &mut Context<Self, Self::Reply>,
     ) -> Self::Reply {
-        if m.0 == AgentName::DEFAULT {
+        if m.name == AgentName::DEFAULT {
             return Err("not a proposal".into());
         }
-        let text = self.read_text(&m.0)?;
-        let f = self.shared.file(&m.0);
+        let text = self.read_text(&m.name)?;
+        let f = self.shared.file(&m.name);
         let approval = self
             .store
-            .delete_proposal(&m.0)
+            .delete_proposal(&m.name)
             .await
             .map_err(|e| e.to_string())?;
         if approval.is_none() && f.is_none_or(|f| f.proposed_by.is_none()) {
@@ -1718,19 +1723,19 @@ impl Message<ApproveAgent> for Roster {
         }
         let text = file::set_key(&text, "paused", None);
         let text = file::set_key(&text, "proposed_by", None);
-        self.write_text(&m.0, &text).await?;
+        self.write_text(&m.name, &text).await?;
         let _ = ctx.actor_ref().tell(Reconcile).await;
         tasks::activity::record(
             &self.rt,
             tasks::activity::ActivityKind::AgentHired,
-            "user",
-            &m.0,
-            format!("hired {}", m.0),
+            &m.actor,
+            &m.name,
+            format!("hired {}", m.name),
         )
         .await;
         // 67 §6.5: the hire task was the approval; close it.
         if let Some(id) = approval {
-            close_hire_task(&m.0, id, "approved").await;
+            close_hire_task(&m.name, id, "approved").await;
         }
         Ok(())
     }

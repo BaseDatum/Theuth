@@ -44,6 +44,7 @@ import type { DoublePredicted } from '@/rpc/bindings/DoublePredicted'
 import type { DoubleAnswered } from '@/rpc/bindings/DoubleAnswered'
 import type { DoubleTrainingState } from '@/rpc/bindings/DoubleTrainingState'
 import type { DoubleVersionActivated } from '@/rpc/bindings/DoubleVersionActivated'
+import type { AttentionChanged } from '@/rpc/bindings/AttentionChanged'
 
 /**
  * `AgentEvent` with the 25 §7 additions the bindings do not carry yet:
@@ -116,3 +117,5 @@ export type WireEvent =
   | DoubleTrainingState
   | DoubleVersionActivated
   | Lagged
+  /** 130 E1: the attention inbox's id set changed; `count` is the new badge. */
+  | AttentionChanged

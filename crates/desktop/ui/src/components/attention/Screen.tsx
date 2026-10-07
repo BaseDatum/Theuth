@@ -8,7 +8,7 @@ import type { AttentionItem } from '@/rpc/bindings/AttentionItem'
 import { ApprovalScreen } from './ApprovalScreen'
 import { AskScreen } from './AskScreen'
 import { DecisionScreen } from './DecisionScreen'
-import { BlockedScreen, BudgetScreen, DoubleScreen, HandoffScreen, HireScreen, NodeScreen, ResumeScreen, SecretScreen } from './PlainScreens'
+import { BlockedScreen, BudgetScreen, DoubleScreen, FinishedScreen, HandoffScreen, HireScreen, NodeScreen, ResumeScreen, SecretScreen } from './PlainScreens'
 import { ReviewScreen } from './ReviewScreen'
 import { ShowScreen } from './ShowScreen'
 
@@ -29,6 +29,7 @@ const SCREEN: Record<AttentionItem['kind'], ComponentType<{ item: AttentionItem 
   blocked: BlockedScreen,
   resume: ResumeScreen,
   double: DoubleScreen,
+  finished: FinishedScreen,
 }
 
 /** The selected item's screen (101 D7, 104 A6): every kind has one. Under `md` a 52 px header with the back chevron. */

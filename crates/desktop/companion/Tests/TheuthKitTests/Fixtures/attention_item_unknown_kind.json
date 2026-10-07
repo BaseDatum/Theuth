@@ -1,0 +1,13 @@
+{
+  "id": "weather:1",
+  "kind": "weather",
+  "title": "A kind this build does not know",
+  "detail": null,
+  "at_ms": 1791448440000,
+  "task": null,
+  "agent": null,
+  "session": null,
+  "approval": null,
+  "decision": null,
+  "packet": null
+}

@@ -286,6 +286,7 @@ async fn export_bindings() {
         roster::attention::AttentionKind,
         roster::attention::AttentionItem,
         roster::attention::Handoff,
+        roster::attention::AttentionChanged,
         secrets::SecretRequestField,
         secrets::SecretRequest,
         sandbox::VmStatus,

@@ -289,6 +289,7 @@ async fn publish(rt: &Runtime, v: &serde_json::Value) {
         codeindex::CodeindexEvent,
         double::DoublePredicted,
         double::DoubleAnswered,
+        roster::attention::AttentionChanged,
     );
     tracing::debug!(
         tag = v["type"].as_str().unwrap_or("?"),
