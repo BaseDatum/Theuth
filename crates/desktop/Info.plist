@@ -8,5 +8,8 @@
   <!-- 53 §0.4 / 03 §1: the Core Audio process tap on the meeting app (System Audio Recording Only). -->
   <key>NSAudioCaptureUsageDescription</key>
   <string>theuth records the audio of the meeting app you choose while a meeting is recording.</string>
+  <!-- 121 (W2 LINK): ScreenCaptureKit screenshots in `computer`; Apple lists this key at https://developer.apple.com/documentation/screencapturekit. -->
+  <key>NSScreenCaptureUsageDescription</key>
+  <string>theuth takes screenshots of your displays when you ask it to look at or drive your screen.</string>
 </dict>
 </plist>

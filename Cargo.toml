@@ -3,7 +3,7 @@ resolver = "3"
 members = ["crates/*"]
 
 [workspace.package]
-version = "2.9.2"
+version = "2.10.0"
 edition = "2024"
 publish = false
 
@@ -299,6 +299,10 @@ xcap = { version = "0.9", default-features = false }
 enigo = "0.6"
 image = { version = "0.25", default-features = false, features = ["png"] }
 objc2-core-graphics = { version = "0.3", features = ["CGWindow"] }
+# Spike 121: in-process macOS screenshots via SCScreenshotManager. Pulls apple-cf +
+# apple-metal and compiles a Swift bridge in build.rs (needs `swift` + macOS SDK on
+# every macOS build host). `macos_15_0` = the desktop app's floor; `macos_14_0` would do.
+screencapturekit = { version = "11", default-features = false, features = ["macos_15_0"] }
 # 96: the accessibility reader behind `screen_context` (AXUIElement hit-test + attributes);
 # objc2's ApplicationServices bindings, same family and versions as the entries above.
 objc2-application-services = { version = "0.3", default-features = false, features = ["std", "HIServices", "AXUIElement", "AXError", "libc"] }  # 96

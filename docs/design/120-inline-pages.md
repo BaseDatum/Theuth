@@ -905,3 +905,33 @@ headlessChrome}.ts` and `HtmlRender.test.ts`; `apps/web/src/components/files/Bro
 `facts/theuth-design-120-spikes-asset-exposure-page-origin-engine-route-2026-10-07`;
 `decisions/theuth-t3-visual-replies-next-steps-rulings-2026-10-06`. Brief and gap analysis:
 `~/Develop/theuth-120-briefs/{brief-design-120,gap-analysis}.md`.
+
+
+## Revision 1 (2026-10-07 09:47) — interfaces are mocked as pages
+
+Sky: "make sure that we have prompt in place in the skill or wherever that lets the agent know that when
+we're building interfaces, html mocks is a great way to visualize that in the session."
+
+§10 as built listed "a mockup" as one of the exceptional page uses behind "the escape hatch, picked last";
+nothing told the model to reach for a mock *when the work is an interface*. This revision makes that the
+standing case, in the three places §10 names:
+
+- `surface::prompt_block` (`crates/surface/src/prompt.rs`, `BLOCK_TAIL`): the page paragraph gains
+  "Interfaces are the standing case: when the work is designing or changing a screen, dialog, form,
+  dashboard or component — in theuth or in any product — mock it as a page (`show{content, name:
+  "mock.html"}`) before or while you build it, so the reader sees the proposed screen in the chat and
+  reacts to a picture, not a description: fake data, real layout, the theme variables, states or variants
+  side by side. A clickable flow with live data is an `app`; the faithful look of a screen is a page."
+  The pick table gains the row "an interface you are designing or changing — a screen, dialog, form,
+  dashboard, component → an HTML mock as a page" directly after `Image`; the test
+  `block_names_pages_after_the_fences` asserts both.
+- The visualize skill (`crates/surface/visualize.md`): the same row before the chart-library row in
+  "Choose the block", and an "Interfaces are the standing case" paragraph under `## Pages` (states and
+  variants side by side — empty · loading · filled; phone · desktop — iterate on the mock, then build).
+- The `show` prompt block (`crates/artifact/src/tools.rs` `PROMPT`): "Designing or changing an interface
+  — a screen, dialog, form, dashboard, component? Mock it as a page (`mock.html`, fake data, real layout)
+  so the user sees the screen in the chat before you build it."
+
+Routing rule restated: a *clickable flow with live data* is an `app` (OpenUI, §2 of 46); the *faithful look*
+of a screen — including theuth's own screens, which OpenUI cannot draw pixel-faithfully — is a page. No
+engine or UI code changes; the running engine shows the new text after its next rebuild.
