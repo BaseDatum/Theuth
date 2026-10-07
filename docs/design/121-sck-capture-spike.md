@@ -1,36 +1,46 @@
 # 121 — In-process macOS screenshots via ScreenCaptureKit (spike report)
 
-Status: prototype spike, 2026-10-07, branch `spike/121-sck-capture` (cut from
-main ebac3603). Nothing merged. The branch carries a working
-`THEUTH_CAPTURE_BACKEND=sck` path in `crates/computer/src/screen.rs`, a bench
-example, and this report; default behaviour is unchanged. Every external fact
-below has a source; claims marked **(unverified)** were not checked against
-source, docs or a run during this spike. All measurements are from one machine
-(Apple Silicon, 16 cores, macOS 26.6.2, CLT 26.5, Swift 6.3.2, one 2560×1440
-display at scale 1, Screen Recording granted to the terminal).
+Status: prototype spike, 2026-10-07 (R1 same day: memory finding resolved,
+pixel path changed), branch `spike/121-sck-capture` (cut from main ebac3603).
+Nothing merged. The branch carries a working `THEUTH_CAPTURE_BACKEND=sck` path
+in `crates/computer/src/screen.rs`, a bench example, and this report; default
+behaviour is unchanged. Every external fact below has a source; claims marked
+**(unverified)** were not checked against source, docs or a run during this
+spike. All measurements are from one machine (Apple Silicon, 16 cores, macOS
+26.6.2, CLT 26.5, Swift 6.3.2, **one 2560×1440 display at scale 1 — no Retina
+display was attached**, Screen Recording granted to the terminal).
 
 ## 0. Answer
 
-**Adopt with conditions.** In-process `SCScreenshotManager` halves the per-display
-grab: **57.6 ms median vs 136.2 ms** for the `/usr/sbin/screencapture` shell-out
-on a quiet machine (2.4× at median, 2.8× at p95; the ratio held at 2.0–4.0× in
-two further runs under heavy external load), it needs no temp file, and the
-`capture(None)` composite went **83 ms vs 163 ms**. It works from a plain
+**Adopt with conditions.** In-process ScreenCaptureKit cuts the per-display grab
+to **49.4 ms median vs 162.7 ms** for the `/usr/sbin/screencapture` shell-out
+(3.3×; 57.6 vs 136.2 = 2.4× in the quietest run of the first version; the ratio
+held at 2.0–4.0× across six runs under varying external load), it needs no temp
+file, the pixels are **byte-identical to `screencapture`'s** (mean |ΔRGB|
+0.004–0.005) when read from the `CVPixelBuffer` instead of a `CGImage`, and the
+`capture(None)` composite went **97 ms vs 211 ms**. It works from a plain
 `std::thread` with no run loop (the bridge awaits on Swift's global executor), so
-the `spawn_blocking` call site stays as is. The conditions are the build chain,
-not the API: (1) the crate stack adds **~63–76 s** of Swift bridge compilation to
-every cold `cargo build` *and* `cargo check` of `computer`, on every macOS build
-host, and needs `swift` + a ≥13.0 SDK there; (2) as published, the three Swift
-bridges **do not link on a Command Line Tools-only Mac** (`apple-metal` 0.10
-hard-codes the full-Xcode toolchain path) and the resulting `t` binary **aborts
-at launch** (`Library not loaded: @rpath/libswift_Concurrency.dylib`, "no
-LC_RPATH's found") because Cargo never propagates the bridges' rpath link-arg to
-dependents — both are fixed by a 25-line `build.rs` in `computer` plus one
-rpath flag in `theuth`, and both should be filed upstream before landing;
-(3) peak RSS of the 20-shot loop is **345 MB vs 31 MB** (phys footprint 36 MB vs
-19 MB), growing sub-linearly with shot count. Binary size delta is +1.07 MB
-(+0.14 %). If the build-chain cost is not acceptable on CI, do not adopt: the
-shell-out is correct and 136 ms is not the bottleneck of a model turn.
+the `spawn_blocking` call site stays as is. Memory is flat: **49 MB max RSS /
+20.5 MB footprint at 1, 5, 20 and 60 shots** (screencapture 31 MB / 19 MB). The
+conditions are the build chain, not the API: (1) the crate stack adds
+**~63–76 s** of Swift bridge compilation to every cold `cargo build` *and*
+`cargo check` of `computer`, on every macOS build host, and needs `swift` + a
+≥13.0 SDK there; (2) as published, the three Swift bridges **do not link on a
+Command Line Tools-only Mac** (`apple-metal` 0.10 hard-codes the full-Xcode
+toolchain path) and the resulting `t` binary **aborts at launch** (`Library not
+loaded: @rpath/libswift_Concurrency.dylib`, "no LC_RPATH's found") because Cargo
+never propagates the bridges' rpath link-arg to dependents — both are fixed by a
+25-line `build.rs` in `computer` plus one rpath flag in `theuth`, and both
+should be filed upstream before landing; (3) the pixel path **must stay on
+`capture_sample_buffer`**: the crate's documented `capture_image` +
+`CGImageExt::rgba_data` route leaves one 14.1 MB CoreGraphics decode cache per
+shot in the purgeable malloc zone (max RSS 63 → 123 → 345 → 522 MB at 1/5/20/60
+shots; volatile and reclaimed by the kernel, so phys footprint stays ~36 MB, but
+an autorelease pool does not release it and a long-lived `spawn_blocking`
+thread would carry it; §4.3). Binary size delta is +1.07 MB (+0.14 %). The
+Retina/physical-pixel match is **(unverified)** on this machine. If the
+build-chain cost is not acceptable on CI, do not adopt: the shell-out is
+correct and 160 ms is not the bottleneck of a model turn.
 
 ## 1. The seams today (read from the tree)
 
@@ -64,7 +74,7 @@ Read 2026-10-07 from the crates.io API, the GitHub API and the fetched source
 | Bridge deployment target | screencapturekit bridge 13.0 (`Package.swift` `.macOS(.v13)`, triple pinned); apple-cf bridge 13.0; **apple-metal bridge 11.0** (`.macOS(.v11)`, triple `arm64-apple-macosx` without a version) — that is what drags in the Swift back-deployment compatibility libraries (§6) | the three `swift-bridge/Package.swift` and `build.rs` files |
 | Features | Cumulative `macos_13_0 … macos_26_0`; `macos_14_0` enables `SCScreenshotManager`; `macos_15_2` adds `capture_image_in_rect`; `macos_26_0` adds `SCScreenshotConfiguration` (HDR). This spike uses `macos_15_0` (the app's floor); **`macos_14_0` would suffice** for screenshots | `Cargo.toml` `[features]`; `src/screenshot_manager.rs` cfgs |
 | Sync API | `SCScreenshotManager::capture_image(&filter, &config) -> Result<CGImage, SCError>` blocks on a `SyncCompletion` with a **30 s default timeout** (`SCREENCAPTUREKIT_COMPLETION_TIMEOUT_SECS` overrides, `0` disables); the Swift side runs `Task { try await SCScreenshotManager.captureImage(...) }` — no run loop, no main thread | `src/screenshot_manager.rs:570-587`, `src/utils/completion.rs:21-48`, `swift-bridge/.../ScreenshotManager.swift:11-40` |
-| Pixel access | `CGImageExt::rgba_data()` renders through CoreGraphics into a tightly packed `w*4` buffer (`required_byte_size = w*h*4`), so there is no stride to handle; `rgba_data_into_strided` exists if we ever want our own buffer | `src/screenshot_manager.rs:430-530` |
+| Pixel access | Two routes. (a) `CGImageExt::rgba_data()` on the `CGImage` from `capture_image`: renders through CoreGraphics into a tightly packed `w*4` buffer (`required_byte_size = w*h*4`); converts to sRGB and leaves a purgeable decode cache per image (§4.3). (b) `capture_sample_buffer` → `CMSampleBufferExt::pixel_buffer()` → `CVPixelBuffer::lock_read_only()` → `base_address()/bytes_per_row()/pixel_format()`: the raw BGRA frame, stride-aware copy on our side, no CoreGraphics. The spike ships (b). | `src/screenshot_manager.rs:430-530, 601-618`; `apple-cf-0.11.0/src/cv/pixel_buffer.rs:547-690`; `src/cm/sample_buffer.rs:370, 460` |
 | Content enumeration | `SCShareableContent::get()` (all windows) and `SCShareableContent::create().with_on_screen_windows_only(true).with_exclude_desktop_windows(true).get()`; `SCShareableContent::current_process()` (14.4+) is TCC-free but returns only our own windows, useless for a display grab | `src/shareable_content/mod.rs:164-186, 362-409, 466-513` |
 | Error surface | `SCError::NoShareableContent(String)` / `ScreenshotError(String)` carry the bridge's `"Content unavailable: …"` / `"Screenshot error: …"` + `error.localizedDescription`; `SCError::PermissionDenied` exists but the screenshot path never produces it — denial arrives as text | `src/utils/error.rs:95-239`, `swift-bridge/.../Core.swift:108-140` |
 | Linting profile | Crate denies nothing but warns pedantic/nursery/cargo; our workspace `clippy::all = deny` passed with it as a dependency | `Cargo.toml` `[lints]` |
@@ -81,75 +91,121 @@ tests) and `cargo clippy -p computer --all-targets -- -D warnings` green.
 | `crates/computer/Cargo.toml` | 28-29 | `screencapturekit = { workspace = true }` under the macOS target table. |
 | `crates/computer/build.rs` | 1-41 (new) | **Needed to link and to run on this machine** (§6): resolves `xcrun --find swift` → `<toolchain>/usr/lib/swift/macosx` and emits it as `rustc-link-search` (the static `libswiftCompatibility*.a` live there on a CLT-only host), and emits `-Wl,-rpath,/usr/lib/swift` so the crate's tests and examples launch. The rpath only reaches `computer`'s own binaries; see §6 for `theuth`. |
 | `crates/computer/src/screen.rs` | 170-183 | `grab()` dispatch: `THEUTH_CAPTURE_BACKEND=sck` → `grab_sck`, else `grab_screencapture` (the unchanged shell-out, renamed, `#[doc(hidden)] pub` so the bench can call it). |
-| | 241-284 | `grab_sck(d)`: on-screen-only `SCShareableContent`, `SCDisplay` by `display_id == d.id`, `SCContentFilter::create().with_display(..).with_excluding_windows(&[])`, `SCStreamConfiguration` with `width/height = round(logical × scale)` and `shows_cursor(false)`, `capture_image`, `rgba_data` → `RgbaImage::from_raw`. Errors → `CaptureError::Other`, or `NoScreenRecording` when `screen_recording_granted()` is false. No caching across calls. |
-| | 290-297, 301-306 | `sck_shareable_content()` (the cheaper getter, chosen after measuring both, §4.2) and `sck_pixel_size()`. |
-| | 308-328 | `sck_tests::grab_sck_works_off_main_thread`: runs `grab_sck` on a `std::thread::spawn` thread and asserts the physical dimensions; skips with a message when Screen Recording is not granted. **Passes: 0.19 s.** |
-| `crates/computer/examples/capture_bench.rs` | 1-272 (new) | macOS-only (stub `main` elsewhere). Per display and backend: 3 warm-ups + 20 timed grabs → min/median/p95, dimensions, raw bytes; `SCShareableContent::get()` vs on-screen-only getter; `capture_image` alone; `rgba_data` alone; filter build alone; the uncached-`get()` composition; the cached-filter composition; back-to-back cross-backend diff (equal dimensions? mean |ΔRGB| per channel); `capture(None, 1568)` under each backend; `--save <dir>` writes `shot-<backend>-<n>.png` + `composite-<backend>.png`; `--loop <backend> [--rounds N]` for `/usr/bin/time -l`. |
+| | 247-324 | `grab_sck(d)`: on-screen-only `SCShareableContent`, `SCDisplay` by `display_id == d.id`, `SCContentFilter::create().with_display(..).with_excluding_windows(&[])`, `SCStreamConfiguration` with `width/height = round(logical × scale)` and `shows_cursor(false)`, **`capture_sample_buffer` → `CVPixelBuffer` (asserted `BGRA`) → read-only lock → per-row copy with a BGRA→RGBA swizzle** (stride and data-size checked) → `RgbaImage::from_raw`. Errors → `CaptureError::Other`, or `NoScreenRecording` when `screen_recording_granted()` is false. No caching across calls. R1 replaced the first version's `capture_image` + `rgba_data` (now the bench's `sck-cg`) because of §4.3; an `objc2::rc::autoreleasepool` wrap was tried first and reverted (no effect). |
+| | 330-337, 341-346 | `sck_shareable_content()` (the cheaper getter, chosen after measuring both, §4.2) and `sck_pixel_size()`. |
+| | 348-368 | `sck_tests::grab_sck_works_off_main_thread`: runs `grab_sck` on a `std::thread::spawn` thread and asserts the physical dimensions; skips with a message when Screen Recording is not granted. **Passes: 0.19 s.** |
+| `crates/computer/examples/capture_bench.rs` | 1-390 (new) | macOS-only (stub `main` elsewhere). Per display: 3 warm-ups + 20 timed grabs → min/median/p95, dimensions, raw bytes for `screencapture`, `sck` (production path) and `sck-cg` (the `CGImage` route); `SCShareableContent::get()` vs on-screen-only getter; `capture_image` alone; `rgba_data` alone; filter build alone; the uncached-`get()` composition; the cached-filter composition; back-to-back diff of both SCK routes against `screencapture` (equal dimensions? mean |ΔRGB| per channel); `capture(None, 1568)` under each backend; `--save <dir>` writes `shot-<backend>-<n>.png` + `composite-<backend>.png`; `--loop <mode> [--rounds N] [--hold SECS]` for `/usr/bin/time -l` and `vmmap`, where `<mode>` is also `sck-image` (`capture_image` only), `sck-rgba` (one image, repeated `rgba_data`) or `sck-content` (enumeration only) to isolate what retains memory. |
 
 Not built: nothing from the brief was skipped. The HDR path (`macos_26_0`)
 and `capture_image_in_rect` (`macos_15_2`) were read but not exercised.
 
 ## 4. Measurements
 
-Release build of the example (`cargo build -p computer --example capture_bench --release`),
-one display 2560×1440 @ scale 1 (the machine has no Retina panel attached, so
-"physical = logical" here; `sck_pixel_size` multiplies by `scale` and the
+Release build of the example (`cargo build -p computer --example capture_bench --release`).
+**The only display attached is 2560×1440 at scale 1 — no Retina display**, so
+physical = logical here; `sck_pixel_size` multiplies by `scale`, and the
 screencapture path was checked to return 2560×1440 for the `-R` of the full
-display — both backends agree on dimensions). 3 warm-ups, 20 timed runs. Saved
-PNGs: `/tmp/sck-spike/shot-sck-1.png`, `shot-screencapture-1.png`,
+display, so both backends agree on dimensions at scale 1. **The physical-pixel
+match on a Retina (scale 2) display is (unverified).** 3 warm-ups, 20 timed
+runs. Saved PNGs: `/tmp/sck-spike/shot-sck-1.png` (production path),
+`shot-sck-cg-1.png` (`CGImage` route), `shot-screencapture-1.png`,
 `composite-sck.png`, `composite-screencapture.png`.
+
+Two SCK pixel routes appear below: **`sck`** = the shipped `grab_sck`
+(`capture_sample_buffer` → `CVPixelBuffer` copy, R1) and **`sck-cg`** = the
+first version (`capture_image` → `CGImageExt::rgba_data`). Runs 1–3 predate R1
+and their `sck` row is the `sck-cg` route; runs 5–6 have both.
 
 ### 4.1 Latency per backend per display (wall-clock ms)
 
-Three runs. Run 1 was the quietest; during runs 2 and 3 other sessions were
-compiling in parallel worktrees (load average 25–50 on 16 cores), which is why
-every row moved. The ratio is the stable number.
+Other sessions were compiling in parallel worktrees during most runs (load
+average 25–50 on 16 cores), which is why every row moves between runs; runs 1
+and 5 were the quietest. The ratio is the stable number.
 
-| Display #1, 2560×1440, 14 745 600 raw bytes | Run 1 min / median / p95 | Run 2 | Run 3 (load avg 25–50) |
-|---|---|---|---|
-| **screencapture** (spawn + wait + PNG decode + unlink) | **120.1 / 136.2 / 174.5** | 146.0 / 159.1 / 171.9 | 235.8 / 407.6 / 582.4 |
-| **sck** (`grab_sck`: on-screen-only content + filter + capture + RGBA) | **53.2 / 57.6 / 61.5** | 67.7 / 81.0 / 94.6 | 91.3 / 103.0 / 140.5 |
-| ratio screencapture ÷ sck at median | **2.4×** | 2.0× | 4.0× |
-| `capture(None, 1568)` composite, one shot | 163.1 vs **83.2** | 227.9 vs 142.0 | 430.3 vs 183.1 |
+| Display #1, 2560×1440, 14 745 600 raw bytes | Run 1 min / median / p95 | Run 2 | Run 3 (load 25–50) | **Run 5 (R1)** | Run 6 (R1, loaded) |
+|---|---|---|---|---|---|
+| **screencapture** (spawn + wait + PNG decode + unlink) | **120.1 / 136.2 / 174.5** | 146.0 / 159.1 / 171.9 | 235.8 / 407.6 / 582.4 | **130.0 / 162.7 / 216.3** | 225.7 / 245.1 / 324.0 |
+| **sck** (shipped: content + `capture_sample_buffer` + row copy) | — | — | — | **43.2 / 49.4 / 58.5** | 71.4 / 84.7 / 103.7 |
+| sck-cg (content + `capture_image` + `rgba_data`) | **53.2 / 57.6 / 61.5** | 67.7 / 81.0 / 94.6 | 91.3 / 103.0 / 140.5 | 53.8 / 68.6 / 84.8 | 84.1 / 99.3 / 117.2 |
+| ratio screencapture ÷ sck at median | 2.4× (cg) | 2.0× (cg) | 4.0× (cg) | **3.3×** (2.4× cg) | 2.9× (2.5× cg) |
+| `capture(None, 1568)` composite, one shot | 163.1 vs **83.2** (cg) | 227.9 vs 142.0 (cg) | 430.3 vs 183.1 (cg) | **211.3 vs 96.6** | 279.8 vs 121.5 |
 
-PNG of the composite: 361 792 B (screencapture) vs 344 477 B (sck), same
-1568×882 frame.
+PNG of the composite (run 5): 346 825 B (screencapture) vs 346 870 B (sck) —
+same 1568×882 frame and, with the `CVPixelBuffer` route, the same bytes to
+within the still-desktop noise (§4.5). With the `CGImage` route the sck PNG was
+~5 % smaller (344 477 vs 361 792 B in run 1), a side effect of its sRGB
+conversion.
 
-### 4.2 Where SCK's time goes (ms, same runs)
+### 4.2 Where SCK's time goes (ms, same runs; all rows use the `CGImage` route except where noted)
 
-| Piece | Run 1 | Run 2 | Run 3 |
-|---|---|---|---|
-| `SCShareableContent::get()` (displays + every window + apps) | 26.3 / 27.8 / 28.8 | 27.9 / 31.8 / 36.9 | 44.1 / 51.5 / 61.2 |
-| on-screen-only, exclude-desktop getter (what `grab_sck` uses) | 12.8 / 13.8 / 15.4 | 15.8 / 16.7 / 17.2 | 20.3 / 24.2 / 26.1 |
-| `SCContentFilter` build | — | 0.0 | 0.0 |
-| `SCScreenshotManager::capture_image` alone (filter + config prebuilt) | 26.3 / 29.1 / 30.9 | 34.0 / 41.3 / 42.7 | 48.9 / 56.0 / 62.4 |
-| `CGImage → RGBA` (`rgba_data`, 14.7 MB) | 0.2 / 0.2 / 0.2 | 0.3 / 0.3 / 0.4 | 0.4 / 0.4 / 0.6 |
-| composed: full `get()` every call (the brief's uncached v1) | — | 65.8 / 81.9 / 94.2 | 135.2 / 155.9 / 200.5 |
-| composed: cached `SCDisplay`/filter, capture + RGBA only | — | 40.0 / 42.7 / 45.9 | 63.0 / 90.5 / 141.1 |
+| Piece | Run 1 | Run 2 | Run 3 | Run 5 |
+|---|---|---|---|---|
+| `SCShareableContent::get()` (displays + every window + apps) | 26.3 / 27.8 / 28.8 | 27.9 / 31.8 / 36.9 | 44.1 / 51.5 / 61.2 | 21.9 / 25.4 / 29.5 |
+| on-screen-only, exclude-desktop getter (what `grab_sck` uses) | 12.8 / 13.8 / 15.4 | 15.8 / 16.7 / 17.2 | 20.3 / 24.2 / 26.1 | 11.1 / 12.7 / 14.3 |
+| `SCContentFilter` build | — | 0.0 | 0.0 | 0.0 |
+| `SCScreenshotManager::capture_image` alone (filter + config prebuilt) | 26.3 / 29.1 / 30.9 | 34.0 / 41.3 / 42.7 | 48.9 / 56.0 / 62.4 | 33.8 / 44.6 / 58.0 |
+| `CGImage → RGBA` (`rgba_data`, 14.7 MB) | 0.2 / 0.2 / 0.2 | 0.3 / 0.3 / 0.4 | 0.4 / 0.4 / 0.6 | 0.3 / 0.3 / 0.8 |
+| composed: full `get()` every call (the brief's uncached v1) | — | 65.8 / 81.9 / 94.2 | 135.2 / 155.9 / 200.5 | 83.8 / 101.3 / 142.8 |
+| composed: cached `SCDisplay`/filter, capture + RGBA only | — | 40.0 / 42.7 / 45.9 | 63.0 / 90.5 / 141.1 | 49.4 / 60.2 / 68.8 |
+| shipped `grab_sck` (on-screen getter + `capture_sample_buffer` + row copy) | — | — | — | **43.2 / 49.4 / 58.5** |
 
 Reading: enumeration is 25–50 % of the SCK grab. The on-screen-only getter is
 half the cost of `get()`, so `grab_sck` uses it (both numbers reported as the
 brief asked). Caching the `SCDisplay`/filter for the process lifetime would
-remove the remaining 14–24 ms per call at the price of a refresh-on-miss path
-when displays change; not done in the spike. `rgba_data` is effectively a
-memcpy (0.2–0.4 ms for 14.7 MB), so the "stride" concern in the brief does not
-arise: the bridge renders into our tightly packed buffer.
+remove the remaining 11–24 ms per call at the price of a refresh-on-miss path
+when displays change; not done in the spike. The shipped route's BGRA→RGBA row
+copy (14.7 MB, stride-aware) is not separately timed; the whole `grab_sck` is
+faster than the `CGImage` route by 15–20 ms in runs 5–6, so the copy costs less
+than the CoreGraphics render + cache it replaces. The brief's "mind the row
+stride" applies to this route and is handled (`bytes_per_row` per row; the
+actual stride was not logged).
 
-### 4.3 Peak memory of the 20-shot loop (`/usr/bin/time -l`, release)
+### 4.3 Peak memory (`/usr/bin/time -l`, release) — before / after
 
-| Backend | wall | maximum resident set size | peak memory footprint |
-|---|---|---|---|
-| screencapture | 2.99–8.59 s | **31.0 MB** | 19.3 MB |
-| sck | 1.38–2.83 s | **345 MB** | 36.5 MB |
+The first version grew by one raw frame per shot. Isolation runs, the fix, and
+the mechanism:
 
-Scaling check (`--rounds`): sck RSS 63.6 MB (1 shot) → 123 MB (5) → 345 MB (20)
-→ 522 MB (60) while the footprint stays 35.2–36.8 MB; screencapture stays at
-31 MB / 18.6–19.0 MB throughout. The RSS growth is sub-linear and the footprint
-flat, so the pages are freed-but-still-mapped (IOSurface/CoreGraphics backing
-of the released `CGImage`s, or allocator retention) rather than a per-shot leak
-**(cause unverified; it is what `/usr/bin/time` reports)**. The daemon takes one
-or two shots per model turn, not 20 in 3 s, but a long session should be checked
-with `footprint`/`leaks` before landing.
+| `--loop` mode, rounds → | 1 | 5 | 20 | 60 | footprint (peak, all rounds) |
+|---|---|---|---|---|---|
+| screencapture (max RSS) | 31.0 MB | 31.0 MB | 31.0 MB | 31.2 MB | 18.6–19.7 MB |
+| **sck-cg, first version** (`capture_image` + `rgba_data`), no pool | 63.7 MB | 123.2 MB | 345.1 MB | 522.4 MB | 35.3–37.0 MB |
+| sck-cg wrapped in `objc2::rc::autoreleasepool` (tried, reverted) | 63.7 MB | 123.3 MB | 344.9 MB | 522.4 MB | 35.3–37.0 MB |
+| `sck-image`: `capture_image` only, `CGImage` dropped per round, no render | 18.7 MB | — | 19.1 MB | 19.1 MB | 5.2–5.5 MB |
+| `sck-rgba`: one `CGImage`, `rgba_data` per round | 63.8 MB | — | 63.8 MB | 63.8 MB | 35.3–35.4 MB |
+| `sck-content`: `SCShareableContent` per round only | 16.5 MB | — | 16.8 MB | 16.6 MB | 4.2–4.5 MB |
+| **sck, shipped** (`capture_sample_buffer` → `CVPixelBuffer` copy) | **48.5 MB** | **48.8 MB** | **49.0 MB** | **49.0 MB** | **20.1–20.6 MB** |
+
+Readings (`/tmp/sck-spike/rss-scaling*.txt`, `rss-pieces.txt`, `rss-cv.txt`):
+
+- The autorelease pool changes nothing (every number within 0.1 MB), so this is
+  not autoreleased Objective-C objects on the `spawn_blocking` thread.
+- Neither the `CGImage` nor the `SCShareableContent` retains anything on its
+  own (`sck-image`, `sck-content` flat), and rendering the *same* `CGImage`
+  repeatedly is flat too (`sck-rgba`). The growth needs a *new* `CGImage`
+  rendered through CoreGraphics each time: it is **CoreGraphics' per-image
+  decode cache**, kept after the `CGImage` is released.
+- `vmmap -summary` on the first-version process after 60 rounds
+  (`vmmap-sck-60.txt`): `MALLOC_LARGE` 451.0 MB virtual in
+  **`DefaultPurgeableMallocZone`**, 32 allocations of ~14.1 MB, **0 K resident,
+  0 K dirty, 451.0 MB in the EMPTY column**; physical footprint 20.6 MB (peak
+  35.3 MB). So the cache lives in purgeable (volatile) memory: while a shot is
+  being rendered the pages are resident and count towards max RSS, the kernel
+  purges them freely (by the time `vmmap` ran, idle, all 451 MB had been
+  emptied), and `phys_footprint` never includes them. Not a leak, not memory
+  pressure — but a long-lived `spawn_blocking` thread would show hundreds of MB
+  of RSS in Activity Monitor, and the cache size is CoreGraphics' choice, not
+  ours (it stopped at 32 entries here).
+- Dropping the `CGImage` explicitly makes no difference (it is dropped at the
+  end of `grab_sck` already; `sck-image` proves the image itself is not the
+  holder).
+- **Fix: do not render.** `capture_sample_buffer` hands back the BGRA frame as a
+  `CVPixelBuffer`; one locked row copy with a swizzle gives RGBA with no
+  CoreGraphics involvement. Max RSS is flat at 49 MB (process base ~34 MB + one
+  14.7 MB frame in flight), footprint 20.5 MB — within 1.5 MB of the
+  shell-out's footprint. `vmmap` of this path after 60 rounds
+  (`vmmap-sck-cv-60.txt`): no purgeable zone at all, 49.0 MB virtual malloc in
+  total, physical footprint 19.5 MB. It is also faster (49.4 vs 68.6 ms median
+  in run 5) and byte-identical to `screencapture` (§4.5).
 
 ### 4.4 Build cost
 
@@ -165,26 +221,39 @@ with `footprint`/`leaks` before landing.
 
 ### 4.5 Pixel diff (back-to-back shots, still desktop)
 
-Dimensions equal (2560×1440) in every run. Mean |ΔRGB| per channel:
-**1.468** (run 1), 1.484, 1.486. Breakdown of run 1 (`uv run --with pillow --with numpy`):
+Dimensions equal (2560×1440) in every run. Mean |ΔRGB| per channel against
+`screencapture`:
+
+| Route | Run 1 | Run 2 | Run 3 | Run 5 | Run 6 |
+|---|---|---|---|---|---|
+| **sck (shipped, `CVPixelBuffer`)** | — | — | — | **0.004** | **0.005** |
+| sck-cg (`CGImage` → `rgba_data`) | 1.468 | 1.484 | 1.486 | 1.483 | 1.485 |
+| sck-cg vs sck | — | — | — | 1.519 | — |
+
+The `CVPixelBuffer` route returns the same bytes `screencapture` writes: 0.004
+is a few changed pixels on a live desktop (clock, cursor-less terminal output),
+not a systematic shift. Everything below therefore describes the **`CGImage`
+route only** (breakdown of run 1, `uv run --with pillow --with numpy`):
 
 - 99.9 % of pixels differ somewhere; histogram of channel deltas: 0 → 6.95 M,
   1 → 3.56 M, 2 → 169 k, ≥ 3 → the rest. Body of the screen excluding the menu
   bar and a 2-pixel border: **1.09**. This is colour management: `screencapture`
-  writes the display's profile (`sips -g profile raw.png` → "LG ULTRAGEAR+") and
-  `image::open` keeps those bytes; SCK's `CGImage` is rendered into an sRGB
-  context by the bridge **(sRGB target inferred from the ±1 pattern, not read
-  from the Swift source)**.
+  writes the display's profile (`sips -g profile raw.png` → "LG ULTRAGEAR+"),
+  the `CVPixelBuffer` carries the same display-referred BGRA (hence 0.004), and
+  `CGImageExt::rgba_data` renders the `CGImage` into an sRGB CoreGraphics
+  context — confirmed by the 0.004 vs 1.48 split, not by reading the Swift.
 - Menu bar rows 0–40: **13.5**. Both backends include the menu bar; the
-  translucent bar's blur/tint renders lighter in SCK (crop
+  translucent bar's blur/tint renders lighter through CoreGraphics (crop
   `/tmp/sck-spike/crop-menubar-right.png`). Glyphs and the clock are identical.
+  Absent on the `CVPixelBuffer` route.
 - Outer 2-pixel border: rows 1-2 ≈ 7, rows 1437-1438 ≈ 25, columns 1-2 and
-  2557-2558 ≈ 17–18. The frontmost window's edge highlight is a 1-px grey line
-  in `screencapture` and a bright white line in SCK, and the wallpaper strip
-  outside it reads (9,21,42) vs (1,44,91) (`crop-bottom-right.png`): SCK
-  composites window layers itself while `screencapture` reads the final
-  framebuffer, so edge effects of the window server differ **(mechanism
-  unverified)**.
+  2557-2558 ≈ 17–18; the frontmost window's edge highlight is a 1-px grey line
+  in `screencapture` and a bright white line in the CG render, the wallpaper
+  strip reads (9,21,42) vs (1,44,91) (`crop-bottom-right.png`). Since the
+  `CVPixelBuffer` route matches `screencapture`, these are artefacts of the
+  CoreGraphics render (colour conversion of saturated blues and of the
+  translucency), not of SCK's compositing — the earlier "SCK composites window
+  layers itself" reading was wrong.
 - One text line in a scrolling terminal changed between the two shots (real
   content change, visible in `diff-x16.png`).
 
@@ -193,14 +262,15 @@ Dimensions equal (2560×1440) in every run. Mean |ΔRGB| per channel:
 | Topic | screencapture path | SCK path (observed unless marked) |
 |---|---|---|
 | Cursor | Absent (`-C` not passed) | Absent: `with_shows_cursor(false)`; SCK's default is `true` (`captured_elements.rs:31`), so the flag matters. |
-| Menu bar | Included for `-R` of the whole display | Included. Apple's default for display-including filters is `includeMenuBar = false` per the crate docs (`content_filter.rs:594-596`), yet the shots show it — the display+excludingWindows filter is a display-*excluding* constructor in Apple's terms, default `true`. Rendered with a visibly different translucency (§4.5). `with_include_menu_bar(false)` is available (macOS 14.2+) if we ever want it out. |
+| Menu bar | Included for `-R` of the whole display | Included. Apple's default for display-including filters is `includeMenuBar = false` per the crate docs (`content_filter.rs:594-596`), yet the shots show it — the display+excludingWindows filter is a display-*excluding* constructor in Apple's terms, default `true`. Identical bytes to `screencapture` on the shipped route; the `CGImage` route rendered its translucency differently (§4.5). `with_include_menu_bar(false)` is available (macOS 14.2+) if we ever want it out. |
 | Notch | Not testable here (no notched display). `screencapture` of a notched display returns the full panel incl. the notch area; SCK returns the display's `frame` at `width × height` points, which on notched Macs also covers the full panel **(unverified)**. | |
 | Windows with `sharingType = .none` | Hidden by the window server from both paths. Apple now documents `NSWindowSharingNone` as a legacy constant macOS no longer uses and says not to rely on it ([AppKit docs](https://developer.apple.com/documentation/appkit/nswindow/sharingtype-swift.enum/none)); a 2026 forum thread reports SCK display captures that first omitted and then included such an app ([forums thread 808016](https://developer.apple.com/forums/thread/808016), FB21115847). Not exercised. |
 | HDR displays | 8-bit SDR PNG | `capture_image` returns an SDR `CGImage`; HDR needs `SCScreenshotConfiguration` + `capture_screenshot` behind `macos_26_0` ([Apple: SCScreenshotManager](https://developer.apple.com/documentation/screencapturekit/scscreenshotmanager)). Our model input is SDR anyway. Not exercised (no HDR panel). |
 | Multiple displays | One `screencapture` process per display, sequential | One `SCShareableContent` + one `capture_image` per display, sequential; the content list could be fetched once per `capture()` call (not done). `capture(None)` composite produced the same 1568×882 frame under both backends. Only one display was attached, so the multi-display path is exercised only through the same code with `n = 1`. |
 | Screen Recording denied | `screencapture` exits non-zero → `NoScreenRecording` (27 §0.4) | Not revoked in this spike. From source: `SCShareableContent` fails with `SCStreamErrorUserDeclined` (-3801, "the user didn't grant Screen Recording permission" — [Apple error constants](https://developer.apple.com/documentation/screencapturekit/scstreamerror/code/userdeclined)); the bridge formats it as `"Content unavailable: <localizedDescription>"` → `SCError::NoShareableContent`; `grab_sck` maps any `SCError` to `NoScreenRecording` when `CGPreflightScreenCaptureAccess` is false, else `Other`. **Exact text unobserved.** The 30 s completion timeout (§2) is the worst case if the framework never calls back; the shell-out's is 5 s. Worth setting `SCREENCAPTUREKIT_COMPLETION_TIMEOUT_SECS=5` or wrapping in our own deadline before landing. |
 | Temp files | Writes + deletes `<tmp>/<pid>-<n>.png` | None. |
-| Colour | Display profile bytes, untagged after re-encode | sRGB-rendered (§4.5). For a model input this is a wash; for pixel-exact comparisons it is a 1-level shift. |
+| Colour | Display profile bytes, untagged after re-encode | Shipped route: the same display-referred BGRA bytes as `screencapture` (mean |ΔRGB| 0.004). `CGImage` route: sRGB-rendered, a 1-level shift (§4.5). |
+| Memory | Child process; 31 MB max RSS flat | Shipped route: 49 MB max RSS / 20.5 MB footprint, flat over 60 shots. The `capture_image` + `rgba_data` route documented by the crate leaves one ~14.1 MB CoreGraphics decode cache per distinct `CGImage` in `DefaultPurgeableMallocZone` (volatile; purged by the kernel; invisible to `phys_footprint`, visible as max RSS and in Activity Monitor), bounded at 32 entries here; an autorelease pool and dropping the image do not release it (§4.3). Mechanism attribution (CG image decode cache) is from the isolation runs and `vmmap`, not from Apple documentation **(unverified beyond that)**. |
 | Threading | Child process | Any thread; proven by `grab_sck_works_off_main_thread` and by the bench running on the main thread of a plain binary without a run loop. |
 
 ## 6. Build-chain and distribution risks
@@ -280,8 +350,11 @@ Dimensions equal (2560×1440) in every run. Mean |ΔRGB| per channel:
    so the worst case matches today's.
 4. Fetch `SCShareableContent` once per `capture()` call (not per display), and
    decide on caching the `SCDisplay` list with refresh-on-miss (§4.2, saves
-   14–24 ms per shot).
-5. A long-session memory check (`footprint`, `leaks`) for the RSS growth in §4.3.
+   11–24 ms per shot).
+5. Keep the `CVPixelBuffer` route; add a `debug_assert!`/test that the pixel
+   format is `BGRA` on a Retina and on an HDR display (SCK may hand back a
+   different format there — `SCStreamConfiguration::with_pixel_format` can pin
+   it). A 10-minute session check with `footprint` is still cheap insurance.
 6. Test on a Retina + notched display and a two-display setup; compare
    `screen_context`'s native grab (`capture_display_native`) dimensions.
 7. Add `swift` + CLT/Xcode to the macOS CI image notes; budget ~70 s per cold
@@ -315,14 +388,15 @@ Dimensions equal (2560×1440) in every run. Mean |ΔRGB| per channel:
   it unconditionally for its Metal texture paths; a feature to drop it would
   remove one bridge, the macOS 11 back-deployment libs, and the CLT link bug.
   Worth asking upstream.
-- The RSS behaviour (§4.3): allocator retention or an IOSurface cache? Decide
-  with `leaks` on a 10-minute session before defaulting.
 - Should the menu bar be excluded now that there is a switch (`with_include_menu_bar(false)`)? Today's shell-out includes it, and the model
   uses the clock/status area occasionally; keep it unless it misleads.
-- Colour: should we tag the PNG as sRGB (SCK) rather than leave it untagged?
-  Irrelevant to the model; relevant if screenshots are ever diffed.
+- Is the `CVPixelBuffer` from `capture_sample_buffer` always BGRA and
+  non-planar? It was here (scale 1, SDR); `grab_sck` errors out otherwise
+  rather than guessing. Pinning `with_pixel_format(BGRA)` would make it a
+  contract instead of an observation.
 - A Retina/notch run is still owed; the physical-pixel assumption
-  (`round(logical × scale)`) is checked only at scale 1 here.
+  (`round(logical × scale)`) is checked only at scale 1 here **(unverified at
+  scale 2)**.
 
 ## 9. Sources
 
@@ -330,4 +404,4 @@ Dimensions equal (2560×1440) in every run. Mean |ΔRGB| per channel:
 - Fetched source read: `~/.cargo/registry/src/*/screencapturekit-11.0.0/{build.rs,Cargo.toml,CHANGELOG.md,src/screenshot_manager.rs,src/shareable_content/mod.rs,src/stream/content_filter.rs,src/stream/configuration/*.rs,src/utils/{completion,error}.rs,swift-bridge/Package.swift,swift-bridge/Sources/ScreenCaptureKitBridge/{ScreenshotManager,Core}.swift}`; `apple-metal-0.10.0/{build.rs,swift-bridge/Package.swift}`; `apple-cf-0.11.0/{build.rs,swift-bridge/Package.swift}`.
 - Apple: https://developer.apple.com/documentation/screencapturekit/scscreenshotmanager · https://developer.apple.com/documentation/screencapturekit/scstreamerror/code/userdeclined · https://developer.apple.com/documentation/appkit/nswindow/sharingtype-swift.enum/none · https://developer.apple.com/forums/thread/808016 · https://developer.apple.com/documentation/ScreenCaptureKit (usage-description key) · `man screencapture` (26.6.2).
 - Tree: `crates/computer/src/{screen,frame,tools}.rs`, `crates/computer/Cargo.toml`, `/Cargo.toml`, `docs/design/27-computer.md`, `docs/design/78-aec-spike.md`, `crates/desktop/{tauri.macos.conf.json,entitlements.plist}`, `scripts/package-macos.sh`, `.cargo/config.toml`.
-- Raw outputs: `/tmp/sck-spike/bench-release.txt` (run 2), `bench-release-run3.txt`, `rss.txt`, `rss-scaling.txt`, `swift-*.log`, the PNGs and crops listed in §4.5; run 1 numbers are in this document only (its stdout was captured before the bench grew the two composed rows).
+- Raw outputs under `/tmp/sck-spike/`: `bench-release.txt` (run 2), `bench-release-run3.txt`, `-run4.txt` (sck-cv trial), `-run5.txt` (R1, quiet), `rss.txt`, `rss-scaling.txt` (first version), `rss-scaling-pool.txt` (autorelease pool A/B), `rss-pieces.txt` (`sck-image` / `sck-rgba` / `sck-content`), `rss-cv.txt`, `rss-scaling-final.txt` (sck-cg / sck / screencapture at 1/5/20/60), `vmmap-sck-60.txt` + `vmmap-sck-60-full.txt` (first version, 60 rounds, held), `vmmap-sck-cv-60.txt` (shipped route), `swift-*.log`, the PNGs and crops listed in §4.5; run 1 and run 6 numbers are in this document only (run 1's stdout was captured before the bench grew its composed rows; run 6 was a gate re-run).
