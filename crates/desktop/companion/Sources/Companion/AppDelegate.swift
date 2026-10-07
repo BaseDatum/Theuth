@@ -42,6 +42,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         if let seconds = Flags.probe { runProbe(seconds) }
+        NotificationsInstaller.install(into: self) // W2: notifications · breakpoints · Settings · menu items
     }
 
     func applicationDidBecomeActive(_ note: Notification) {
@@ -112,6 +113,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             menu.addItem(.separator())
             menu.addItem(withTitle: "Quit theuth Companion", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
             menu.items.forEach { $0.target = $0.action == #selector(openTheuth) ? self : nil }
+            NotificationsInstaller.shared?.appendMenu(menu) // W2: Pause notifications ▸ · Launch at login · Settings…
             statusItem.menu = menu
             sender.performClick(nil)
             statusItem.menu = nil
@@ -161,4 +163,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             NSApp.terminate(nil)
         }
     }
+
+    // MARK: W2 hooks (notification body tap · double-tap ⌥)
+
+    /// Open the panel on an item (a notification body tap); `nil` = just the panel.
+    func openPanel(on id: String?) {
+        guard Flags.anyProbe == false else { return }
+        if let id { store.focus(id: id) }
+        panel.open(anchor: .statusItem(statusItem.button?.window?.frame ?? .zero))
+    }
+
+    func togglePanel() { panel.toggle(anchor: .mouse) }
 }

@@ -50,6 +50,11 @@ public struct Banner: Equatable, Sendable {
     /// The items it covers (one, or the batch); withdrawn when they are all gone.
     public var itemIds: [String]
 
+    public init(id: String, category: Category, title: String, body: String, thread: String, level: Level, sound: Bool, itemIds: [String]) {
+        self.id = id; self.category = category; self.title = title; self.body = body; self.thread = thread
+        self.level = level; self.sound = sound; self.itemIds = itemIds
+    }
+
     public static let floodId = "flood"
     public static let engineId = "engine"
 }
