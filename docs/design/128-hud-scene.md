@@ -527,3 +527,105 @@ four lines (§1.1); D8–D12 are the brief's calls that follow from them.
 - Colin Ware, *Information Visualization: Perception for Design* (1st ed. 2000): preattentive processing — why one hue can mean one thing before reading (§2.2 (1)).
 - The FUI lineage: Territory Studio (screen graphics for *Blade Runner 2049*, *The Martian*, *Ex Machina*) and GMUNK (Bradley G. Munkowitz; *TRON: Legacy*, *Oblivion*) — the aesthetic the reference belongs to (§2.1); techniques and look only, no assets.
 - A 2020 controlled study on node-link readability cited by 73 (Yoghourdjian et al., arXiv:2008.07944, `docs/design/73-codemap.md:79`) is the evidence behind the caps in §5.2.
+
+## Revision 1 — routine origins (Sky, 2026-10-07 14:37/14:40)
+
+> 14:37 — "why aren't routines drawing lines to their starting points on the ruler?"
+>
+> 14:40 — "each routine should have its own origin. don't lump them all together."
+
+**Cause.** `outcomes()` set `via: ringByActor(rings, e.actor)`; a `routine_fired` row's actor is `system`, so `via` and `src` were
+both null and `flowPath` took its last branch — the line started AT the arc (`M ax ay`): a square on the ruler and a right-hand
+segment, nothing leading in. `rings()` made a ring only for running schedules (`routine · <name>`, `actor: null`), so even those
+were never the origin of their firings.
+
+**Rules** (as built in `hud/scene/model.ts`; as-built: `docs/design/128-as-built-ROUTINE-ORIGINS.md`):
+
+1. **One ring per routine with a presence today**, in a second group under the agent rings, one extra 20 px gap before the group,
+   each linking to `/routines/$name`. Presence today = fired today (a `routine_fired` row in `activityToday`, subject = schedule
+   name) OR running now (`ScheduleInfo.running`) OR due later today (`ScheduleInfo.next` within today's window). Order: running
+   first, then fired today newest-first, then due soonest-first. Label `routine · <name>`. Styles keep the grammar: running → live
+   (filled faience), sub `running · <elapsed since last>`; fired today and finished → hollow faience, sub `ran HH:MM`, or hollow
+   carnelian (`failed`, not dashed) with sub `failed HH:MM` when the schedule's `last_result` is an error (`isError`); due later today →
+   dashed `--fg-tertiary` ring, sub `next HH:MM`.
+2. **Flows.** Every `routine_fired` outcome's `via` is ITS routine's ring (`ring:routine:<name>`), so the line runs ring → the square on
+   the arc at the fire hour → the outcome label. A running routine also gets a faience in-flight line from its ring to the arc at its
+   start time (`last`, else now) with label `running · <elapsed>` (in `running()`; counted in the footer's IN FLIGHT as before). A
+   due-later routine gets a faint connector only: dashed (3 3) `--fg-tertiary` at opacity 0.5 from its ring to its hollow square, no
+   right-hand segment, no label (a `kind: 'due'` flow that `layoutEnds` never sees).
+3. **The connector ends exactly where the square sits**: the same `hourOf(ts)` / `arcPoint(·, R + 9)` as `arc()`'s marks (fired →
+   `e.ts_ms`, due → `next`, both through `dueAt`). Marks are unchanged.
+4. **Capacity.** The ring column holds `max(9, ⌊(hv − 150) / 53⌋)` rings (`RING.cap`): agent rings first (their `+N more` fold rule
+   unchanged), then routine rings; routines beyond the capacity fold into ONE dashed `+N routines` ring → `/routines` — the shown ones
+   are always distinct origins (Sky's rule). Rings stay centred vertically, the group gap included. Known ceiling: a full agent
+   column (9 agent rings at hv 600) leaves no slot and the routine group is not drawn there.
+5. `ringByActor` keeps working for agents; `ringByRoutine(rings, name)` added. Hairlines sourced from `routine_fired` rows start at
+   that routine's ring too (the 62 % ring-sourced rule otherwise unchanged).
+6. `SceneCompact`'s rings list shows the routine rings as well (same model). Scene: nothing else changes.
+7. Fixtures: 2 fired-today routines (one with an error result), 1 running, 1 due later today; tests in `model.test.ts` and
+   `Scene.test.ts` cover the ring set and order, `via.id === 'ring:routine:<name>'` and `d` starting at `M <via.x+14>` for every
+   routine fire, the dashed label-less due connector landing on the square, the capacity fold at hv 600, and the IN FLIGHT count.
+
+## Revision 2 — context gauge on the desk rings (Sky, 2026-10-07 15:05)
+
+> "can we make the desk icons outer ring on the hud be a context window indicator of the desk session?"
+
+**What.** Every agent ring (a desk) carries an outer gauge: a faint full track (r 17, `--border-default`, width 1) and a sweep from
+12 o'clock clockwise over `fill` of the circle (width 2, round cap, 1.6 px dot at its end). The sweep is purely length-coded; its
+colour is the ring's state ink — faience when the ring is live, the secondary ink otherwise — never gold (needs-you) and never
+carnelian (errors). Routine, overflow and desk-less rings draw nothing. The ring's sub-label appends ` · ctx 62 %`; its tooltip
+adds `context ≈ 118k of 200k (59 %)` (k = thousands, one decimal under 10k). The compact list shows the same sub-label text and no
+gauge. Flow anchors stay at ±14; a line may cross the track. 53 − 2·17 = 19 px stays between neighbouring tracks.
+
+**Data path** (no engine change). The desk session of agent `<name>` is the roster row's `desk` session id, else the sessions-list
+row with `SessionSummary.desk === '<name>'`. `useDeskContexts(sessions)` (`hud/queries.ts`) runs `useQueries` over the desk sessions
+(`['context', 'breakdown', id]`, `session_context_breakdown`, staleTime 20 s, refetchInterval 30 s) and invalidates a session's key on
+its `TurnFinished`, `Compacted` and `ContextUsed` events; it folds each breakdown with `list_models` (`useModels`, `queryKeys.models`)
+through the pure `contextFill` into `SceneData.contexts: Map<SessionId, { fill, used, window, live }>`. `rings()` attaches the entry of
+the desk session as `Ring.ctx`. Everything works without the map (`ctx: null` everywhere).
+
+**Fill.** `used = last_provider_context ?? total_estimate`; `window = SessionSummary.context_size ?? ModelInfo.context` for the
+session's model (the harness's reported window first — the same precedence the chat's ContextMeter uses — the catalog otherwise);
+`fill = clamp(used / window, 0, 1)`.
+
+**No fake value.** A desk whose window is unknown (no `context_size` and a model missing from the catalog or with `context: 0`), or
+whose breakdown has not arrived, has `ctx: null`: no track, no sweep, no `ctx` text. Absence means unknown.
+
+`gaugePath(cx, cy, r, fill)`: `''` at 0; one arc with the large-arc flag set when `fill > 0.5`; at ≥ 1 a full circle as two half arcs.
+
+## Revision 4 — root-session rings with subagent satellites (Sky, 2026-10-07 15:47/15:49)
+
+> 15:47 — "why aren't regular active sessions showing up on that hud?"
+>
+> 15:49 — "only root sessions should show up btw with context rings, and maybe an indicator for their subagents."
+
+(Revision 3 is the SPEND-LEDGER wave, documented separately.)
+
+**Why they were missing.** Rings existed for agents (desks) and routines only; every user chat folded into the theuth ring's
+`N chats` count, appeared as a hairline and was counted in SESSIONS LIVE — a running root session had no origin of its own.
+
+**Rules.**
+
+1. **Third ring group `sessions`**, under the routine group with the same 20 px group gap: one ring per ACTIVE ROOT session —
+   `parent === null`, `kind !== 'advisor'`, no `desk`, not `archived`; active = `running`, OR `updated_at` within 30 min, OR any
+   descendant (any depth, not archived) is running or updated within 30 min. Order: self-running first, then rings with running
+   descendants, then `updated_at` newest-first. Capacity as before (agents → routines → sessions); the overflow folds into one dashed
+   `+N sessions` ring (no link — there is no sessions-list route). Ring id `ring:session:<id>`, link → `/c/<id>`.
+2. **Label** the session `title` truncated to 22 (else `name`, else the 8-char id). **Sub**: the pieces that apply, ` · `-joined —
+   `<k> running` (running descendants), `<n> children` (live descendants), the age of `updated_at`, then the ctx suffix. **Style**
+   the root's own state: `live` when `running`, else `idle`. **Satellites**: one dot (r 2.2) per live descendant on a circle of radius
+   23 (outside the gauge track), 40° apart from 3 o'clock clockwise, filled faience when running, hollow secondary ink when idle,
+   titled with the child's name/title; at most 8, then a 7 px `+N` at the ninth position. Nothing when there are no live children.
+   A ring with satellites moves its labels from x − 22 to x − 30 so the 160°/200° dots clear the text.
+3. **Context gauge on roots too**: `useDeskContexts` became `useSessionContexts(sessions)` over desk sessions AND active roots (≤ 24
+   queries, same 20 s / 30 s, same `TurnFinished` / `Compacted` / `ContextUsed` invalidation, `enabled: !sim`); the map is keyed by
+   session id, so a root's `ctx` is `contexts.get(root.id)`.
+4. **Flows.** A needs-you item whose `AttentionItem.session` is a ringed root leaves that ring (session first, then the agent lookup
+   for desks). A session with a ring starts its hairline there. A `running` root gets a faience in-flight line from its ring to the
+   arc at `updated_at`, labelled `<title 28> · running`, counted in IN FLIGHT. Running children draw no lines — they are the
+   satellites.
+5. **Liveness proxy.** Wherever "updated within N min" stood for live (the theuth ring's 2 min, SESSIONS LIVE's 15 min), `running
+   === true` comes first and the recency stays as the fallback; a desk session that is `running` makes its agent ring live.
+6. **SceneCompact** lists the session rings with the same `k running · n children · age` sub-label; no satellites there.
+7. **Fixtures**: four active roots (running + 3 live children of which 2 running; running alone; idle with one running child;
+   idle-but-recent), one old root, one advisor, one archived chat — the last three never drawn; contexts for two roots.

@@ -229,9 +229,12 @@ pub async fn drain_engine(rt: &Runtime, reason: &'static str) -> DrainReport {
 
 impl Agents {
     /// §10.3: `Loaded.resume` and the `HistoryEntry::Interrupted` partial
-    /// of `session`'s open turn; `(None, None)` when no turn is open.
-    /// `running` = the live actor's `IsRunning` (the same answer `Drain`
-    /// uses): an open turn on a running session is the relaunched one.
+    /// of `session`'s open turn; `(None, None)` when no turn is open and the
+    /// newest turn was never resumed. `running` = the live actor's
+    /// `IsRunning` (the same answer `Drain` uses): an open turn on a running
+    /// session is the relaunched one. With no open turn, the newest turn's
+    /// `resume_reports` row (§8.2) keeps the banner's counts until the next
+    /// turn starts.
     pub(super) async fn resume_state(
         &self,
         session: SessionId,
@@ -245,7 +248,30 @@ impl Agents {
             }
         };
         let Some((_, turn, _)) = open.into_iter().find(|(s, _, _)| *s == session) else {
-            return (None, None);
+            return match self.store.latest_resume_report(session).await {
+                Ok(Some(row)) => (
+                    Some(ResumeState {
+                        turn: row.turn,
+                        kind: row.kind,
+                        interrupted_at: row.interrupted_at,
+                        resumed: true,
+                        report: Some(row.report),
+                    }),
+                    None,
+                ),
+                Ok(None) => (None, None),
+                Err(e) => {
+                    tracing::error!(%session, "109: latest_resume_report: {e:#}");
+                    (None, None)
+                }
+            };
+        };
+        let report = match self.store.resume_report(session, turn).await {
+            Ok(row) => row.map(|r| r.report),
+            Err(e) => {
+                tracing::error!(%session, %turn, "109: resume_report: {e:#}");
+                None
+            }
         };
         match self.store.resume_plan(session, turn).await {
             Ok(plan) => (
@@ -254,6 +280,7 @@ impl Agents {
                     kind: plan.kind,
                     interrupted_at: plan.interrupted_at,
                     resumed: running,
+                    report,
                 }),
                 plan.partial.map(|p| HistoryEntry::Interrupted {
                     text: crate::loop_::text_of(&p.content),
@@ -390,7 +417,9 @@ mod tests {
 
     /// `Loaded.resume` copies the caller's `running`: the same open turn
     /// reads `resumed: false` while ask mode waits and `true` once relaunched;
-    /// no open turn → `None` either way.
+    /// no open turn → `None` either way. Once the resume settled, its
+    /// `resume_reports` row rides along — while the turn is open and, after
+    /// it finished, as the newest turn's state — until a newer turn starts.
     #[tokio::test]
     async fn resume_state_reports_relaunched_turn() {
         let a = agents_with(false).await;
@@ -420,5 +449,53 @@ mod tests {
                 ..waiting
             }
         );
+        assert!(relaunched.report.is_none());
+        // The resumed step settled: the report rides the open turn's state…
+        let row = crate::durability::ResumeReportRow {
+            session: sid,
+            turn,
+            kind: relaunched.kind,
+            interrupted_at: relaunched.interrupted_at,
+            at: chrono::Utc::now(),
+            report: crate::ResumeReport {
+                replayed: vec![("c1".into(), "read".into())],
+                interrupted: vec![("c2".into(), "write".into())],
+                ..Default::default()
+            },
+        };
+        a.store.resume_report_put(&row).await.unwrap();
+        let settled = a.resume_state(sid, true).await.0.unwrap();
+        assert_eq!(
+            settled,
+            ResumeState {
+                report: Some(row.report.clone()),
+                ..relaunched.clone()
+            }
+        );
+        // …and, once the turn finished, as the newest turn's state (not running).
+        a.store.finish_turn(sid, turn, "end_turn").await.unwrap();
+        let (finished, partial) = a.resume_state(sid, false).await;
+        assert!(partial.is_none());
+        assert_eq!(
+            finished.unwrap(),
+            ResumeState {
+                resumed: true,
+                report: Some(row.report),
+                ..relaunched
+            }
+        );
+        // A newer turn clears it.
+        a.store
+            .step(
+                sid,
+                TurnId::new(),
+                StepKind::InputAccepted,
+                None,
+                &serde_json::json!({}),
+            )
+            .await
+            .unwrap();
+        let next = a.resume_state(sid, true).await.0.unwrap();
+        assert!(next.turn != turn && next.report.is_none());
     }
 }

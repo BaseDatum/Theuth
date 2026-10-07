@@ -1113,3 +1113,26 @@ test('109 BANNER: a banner still "resuming…" flips to resumed when the row say
   expect(resumeFromLoaded(done, row)).toBe(done)
   expect(resumeFromLoaded(undefined, undefined)).toBeUndefined()
 })
+
+test('109 REPORT: a Loaded.resume row with a report fills the banner counts; a live report for the turn wins', () => {
+  const at = '2026-10-06T12:05:00Z'
+  const report = { replayed: [['c1', 'read_file'], ['c2', 'grep']] as [string, string][], interrupted: [['c3', 'git push']] as [string, string][], lost_jobs: ['j1'], children_restored: 0, children_handed_off: 0 }
+  const row = { turn: T, kind: 'interrupted' as const, interrupted_at: at, resumed: true, report }
+  const counts = { replayed: 2, skipped: ['git push'], lostJobs: 1 }
+  // A desktop that connected after the engine resumed: no banner yet, the row brings everything.
+  expect(resumeFromLoaded(undefined, row)).toEqual({ turn: T, kind: 'interrupted', at: Date.parse(at), resumed: true, report: counts })
+  // Still "resuming…" for the same turn: flips and takes the persisted counts.
+  const waiting = { turn: T, kind: 'interrupted' as const, at: Date.parse(at), resumed: false }
+  expect(resumeFromLoaded(waiting, row)).toEqual({ ...waiting, resumed: true, report: counts })
+  // A live report already held for the turn outranks the row's.
+  const live = { ...waiting, resumed: true, report: { replayed: 9, skipped: [], lostJobs: 0 } }
+  expect(resumeFromLoaded(live, row)).toBe(live)
+  // A row without a report keeps the live one.
+  expect(resumeFromLoaded(live, { ...row, report: undefined })).toBe(live)
+  // Another turn's row replaces banner and counts.
+  expect(resumeFromLoaded(live, { ...row, turn: 'other' })).toEqual({ turn: 'other', kind: 'interrupted', at: Date.parse(at), resumed: true, report: counts })
+  // The next turn still clears it.
+  const s = { ...empty(S), resume: resumeFromLoaded(undefined, row) }
+  expect(apply(s, { type: 'TurnStarted', session: S, turn: T, text: 'x', model: 'm', turn_seq: 1 }, ctx()).resume).toBe(s.resume)
+  expect(apply(s, { type: 'TurnStarted', session: S, turn: 'next', text: 'x', model: 'm', turn_seq: 2 }, ctx()).resume).toBeUndefined()
+})

@@ -2,6 +2,8 @@ import { age, shortId as shortTaskId } from '@/components/tasks/helpers'
 import type { ActivityEntry } from '@/rpc/bindings/ActivityEntry'
 import type { AgentSummary } from '@/rpc/bindings/AgentSummary'
 import type { AttentionItem } from '@/rpc/bindings/AttentionItem'
+import type { ContextBreakdown } from '@/rpc/bindings/ContextBreakdown'
+import type { ModelInfo } from '@/rpc/bindings/ModelInfo'
 import type { ScheduleInfo } from '@/rpc/bindings/ScheduleInfo'
 import type { SessionSummary } from '@/rpc/bindings/SessionSummary'
 import type { Task } from '@/rpc/bindings/Task'
@@ -37,7 +39,8 @@ export const HV_MIN = 600
 export const HV_MAX = 1400
 export const fieldHeight = (w: number, h: number): number => (w > 0 ? Math.min(HV_MAX, Math.max(HV_MIN, Math.round((W * h) / w))) : FIELD_H)
 export const ARC = { cx: -300, R: 1390, band: 18 } as const
-export const RING = { x: 860, dy: 53, r: 13, max: 9 } as const
+/** `max`: the agent group's fold cap; `gap`: the extra space before the routine group; `cap(hv)`: the whole column's capacity (Revision 1). */
+export const RING = { x: 860, dy: 53, r: 13, max: 9, gap: 20, cap: (hv: number): number => Math.max(9, Math.floor((hv - 150) / 53)) } as const
 export const NEED = { x0: 610, dx: 60, max: 12 } as const
 
 /**
@@ -67,6 +70,7 @@ export type Target =
   | { route: 'task'; id: string }
   | { route: 'agent'; name: string }
   | { route: 'routine'; name: string }
+  | { route: 'routines' }
   | { route: 'session'; id: string }
   | { route: 'agents' }
   | { route: 'tasks'; state: TaskState | null }
@@ -165,12 +169,9 @@ export function arc(now: number, routines: readonly ScheduleInfo[], activityToda
   }
   const marks: ArcMark[] = []
   for (const e of activityToday) if (e.kind === 'routine_fired') marks.push(mark(hourOf(e.ts_ms, now), true, e.subject))
-  const dayEnd = startOfDay(now) + DAY_MS
   for (const s of routines) {
-    if (s.next === null) continue
-    const t = Date.parse(s.next)
-    if (Number.isNaN(t) || t < now || t >= dayEnd) continue
-    marks.push(mark(hourOf(t, now), false, s.name))
+    const t = dueAt(s, now)
+    if (t !== null) marks.push(mark(hourOf(t, now), false, s.name))
   }
   const nh = nowHour(now)
   const [nx1, ny1] = at(nh, R - 22)
@@ -181,7 +182,8 @@ export function arc(now: number, routines: readonly ScheduleInfo[], activityToda
 
 // --------------------------------------------------------------------------------------------------------------- rings
 
-export type RingStyle = 'live' | 'idle' | 'waiting' | 'lapsed' | 'error'
+/** `failed`: a routine that fired today and errored — hollow carnelian, not dashed (`error` is the dashed agent state). */
+export type RingStyle = 'live' | 'idle' | 'waiting' | 'lapsed' | 'error' | 'failed'
 export type Ring = {
   id: string
   name: string
@@ -192,39 +194,154 @@ export type Ring = {
   /** `agent:<name>` | `user` — which activity actor this ring stands for; `null` for routine and overflow rings. */
   actor: string | null
   link: Target | null
+  /** Revision 2: how full the desk session's context window is; `null` = no desk session or no breakdown yet (nothing drawn — never a fake value). */
+  ctx: Ctx | null
+  /** Revision 4: a root session's live descendants (running or touched in 30 min), drawn as satellites; only session rings set it. */
+  children?: readonly Child[]
 }
 
-export const ringColor = (style: RingStyle): Color => (style === 'waiting' ? C.accent : style === 'lapsed' ? C.tertiary : style === 'error' ? C.danger : C.info)
+export type Child = { id: string; title: string; running: boolean }
+/** Revision 4: satellites sit on this radius (outside the gauge track), 40° apart from 3 o'clock clockwise; 8 drawn, then `+N`. */
+export const SAT_R = 23
+export const SAT_MAX = 8
+export const satPoint = (cx: number, cy: number, i: number): Pt => [cx + SAT_R * Math.cos((i * 2 * Math.PI) / 9), cy + SAT_R * Math.sin((i * 2 * Math.PI) / 9)]
+
+export type Ctx = { fill: number; used: number; window: number; live: boolean }
+/** Revision 2: the gauge track's radius around a ring (r 13); 53 − 2·17 leaves 19 px between neighbouring tracks. */
+export const GAUGE_R = 17
+
+/**
+ * Revision 2: the gauge value from a session's `ContextBreakdown`. `used` = the provider's last bill when it has one, else the
+ * engine's estimate; `window` = the harness's reported `context_size` (what the ContextMeter trusts first), else the catalog's
+ * `ModelInfo.context` for the session's model; neither → `null`, no gauge. `fill` clamped to [0, 1].
+ */
+export function contextFill(b: ContextBreakdown, s: SessionSummary, models: readonly ModelInfo[] | undefined): Ctx | null {
+  const window = s.context_size ?? models?.find((m) => m.id === s.model)?.context ?? 0
+  if (window <= 0) return null
+  const used = b.last_provider_context ?? b.total_estimate
+  return { fill: Math.min(1, Math.max(0, used / window)), used, window, live: b.live }
+}
+
+/** Thousands of tokens: one decimal under 10k (`8.2k`), rounded above (`118k`). */
+export const kTokens = (n: number): string => (n < 10_000 ? `${(n / 1000).toFixed(1)}k` : `${Math.round(n / 1000)}k`)
+export const ctxTitle = (c: Ctx): string => `context ≈ ${kTokens(c.used)} of ${kTokens(c.window)} (${Math.round(c.fill * 100)} %)`
+
+/** The point `fill` of the way round the gauge from 12 o'clock, clockwise. */
+export function gaugeEnd(cx: number, cy: number, r: number, fill: number): Pt {
+  const a = 2 * Math.PI * Math.min(1, Math.max(0, fill))
+  return [cx + r * Math.sin(a), cy - r * Math.cos(a)]
+}
+
+/** SVG arc from 12 o'clock clockwise over `fill` of the circle: `''` at 0, two half arcs at ≥ 1, else one arc (large-arc flag from fill > 0.5). */
+export function gaugePath(cx: number, cy: number, r: number, fill: number): string {
+  if (fill <= 0) return ''
+  const top = `${r1(cx)} ${r1(cy - r)}`
+  if (fill >= 1) return `M ${top} A ${r} ${r} 0 1 1 ${r1(cx)} ${r1(cy + r)} A ${r} ${r} 0 1 1 ${top}`
+  const [x, y] = gaugeEnd(cx, cy, r, fill)
+  return `M ${top} A ${r} ${r} 0 ${fill > 0.5 ? 1 : 0} 1 ${r1(x)} ${r1(y)}`
+}
+
+export const ringColor = (style: RingStyle): Color => (style === 'waiting' ? C.accent : style === 'lapsed' ? C.tertiary : style === 'error' || style === 'failed' ? C.danger : C.info)
 export const ringDashed = (style: RingStyle): boolean => style === 'lapsed' || style === 'error'
 
-const RING_RANK: Record<RingStyle, number> = { live: 0, waiting: 1, idle: 2, lapsed: 3, error: 4 }
+const RING_RANK: Record<RingStyle, number> = { live: 0, waiting: 1, idle: 2, lapsed: 3, error: 4, failed: 5 }
 const LIVE_WINDOW_MS = 2 * 60_000
+/** Revision 4: a session (or a descendant) counts as active when it is running or moved in the last 30 min. */
+const ACTIVE_WINDOW_MS = 30 * 60_000
+const NO_CONTEXTS: ReadonlyMap<string, Ctx> = new Map()
 
-const isChat = (s: SessionSummary) => s.parent === null && !s.desk && !s.archived
+/** A root chat: no parent, not an advisor, not a desk, not archived (Revision 4 adds the advisor rule). */
+const isChat = (s: SessionSummary) => s.parent === null && s.kind !== 'advisor' && !s.desk && !s.archived
+const isActive = (s: SessionSummary, now: number) => s.running || now - Date.parse(s.updated_at) <= ACTIVE_WINDOW_MS
+
+export type RootPresence = { s: SessionSummary; children: Child[]; runningChildren: number }
+
+/**
+ * Revision 4: the active root sessions — `isChat` and (running, or touched in 30 min, or any descendant at any depth is) — each
+ * with its live descendants (not archived, running or touched in 30 min). Order: self-running first, then rings with running
+ * descendants, then `updated_at` newest-first.
+ */
+export function sessionPresence(sessions: readonly SessionSummary[], now: number): RootPresence[] {
+  const byParent = new Map<string, SessionSummary[]>()
+  for (const s of sessions) if (s.parent !== null) byParent.set(s.parent, [...(byParent.get(s.parent) ?? []), s])
+  const descendants = (id: string): SessionSummary[] => (byParent.get(id) ?? []).flatMap((c) => [c, ...descendants(c.id)])
+  return sessions
+    .filter(isChat)
+    .map((s): RootPresence => {
+      const live = descendants(s.id).filter((d) => !d.archived && isActive(d, now))
+      return { s, children: live.map((d) => ({ id: d.id, title: d.name ?? d.title, running: d.running })), runningChildren: live.filter((d) => d.running).length }
+    })
+    .filter((r) => isActive(r.s, now) || r.children.length > 0)
+    .sort((a, b) => Number(b.s.running) - Number(a.s.running) || Number(b.runningChildren > 0) - Number(a.runningChildren > 0) || Date.parse(b.s.updated_at) - Date.parse(a.s.updated_at))
+}
+
 const touchedToday = (s: SessionSummary, midnight: number) => Date.parse(s.updated_at) >= midnight
 /** The roster agent that is theuth itself folds into the sessions ring — never two rings with the same label. */
 const THEUTH = 'theuth'
 const ringActor = (actor: string): string => (actor === `agent:${THEUTH}` ? 'user' : actor)
+const isError = (r: string | null) => r !== null && /^(error|fail)/i.test(r)
+
+/** `next` as ms when it falls in today's remaining window `[now, midnight + 24h)`; else `null`. The arc's hollow squares and the due connectors share it. */
+export function dueAt(s: ScheduleInfo, now: number): number | null {
+  if (s.next === null) return null
+  const t = Date.parse(s.next)
+  return Number.isNaN(t) || t < now || t >= startOfDay(now) + DAY_MS ? null : t
+}
+
+export type RoutinePresence = { running: ScheduleInfo[]; fired: { name: string; ts: number; result: string | null }[]; due: { s: ScheduleInfo; at: number }[] }
 
 /**
- * The actors, top to bottom: `theuth` (today's chats), every roster agent (working · waiting · idle · lapsed/error),
- * running routines; beyond 9 the rest fold into one `+N more` ring — never dropped silently.
+ * Revision 1: which routines have a presence today and in which group — running now; else fired today (a `routine_fired` row,
+ * newest first, keyed by its subject even when the schedule is gone); else due later today (soonest first). One group each.
  */
-export function rings(agents: readonly AgentSummary[], sessions: readonly SessionSummary[], routines: readonly ScheduleInfo[], attention: readonly AttentionItem[], now: number, g: Geom = geom()): Ring[] {
+export function routinePresence(routines: readonly ScheduleInfo[], activityToday: readonly ActivityEntry[], now: number): RoutinePresence {
+  const byName = new Map(routines.map((s) => [s.name, s]))
+  const firedAt = new Map<string, number>()
+  for (const e of activityToday) if (e.kind === 'routine_fired') firedAt.set(e.subject, Math.max(firedAt.get(e.subject) ?? 0, e.ts_ms))
+  const running = routines.filter((s) => s.running)
+  const fired = [...firedAt]
+    .filter(([name]) => !byName.get(name)?.running)
+    .map(([name, ts]) => ({ name, ts, result: byName.get(name)?.last_result ?? null }))
+    .sort((a, b) => b.ts - a.ts)
+  const due = routines
+    .filter((s) => !s.running && !firedAt.has(s.name))
+    .flatMap((s) => {
+      const at = dueAt(s, now)
+      return at === null ? [] : [{ s, at }]
+    })
+    .sort((a, b) => a.at - b.at)
+  return { running, fired, due }
+}
+
+/**
+ * The actors, top to bottom: `theuth` (today's chats), every roster agent (working · waiting · idle · lapsed/error); beyond 9
+ * the rest fold into one `+N more` ring — never dropped silently. Then, one gap below, the routine group (Revision 1): one
+ * ring per routine with a presence today — running · fired today (`ran`/`failed HH:MM`) · due later today (`next HH:MM`);
+ * beyond the column's capacity `RING.cap(hv)` the rest fold into one `+N routines` ring, so every shown ring is a distinct origin.
+ */
+export function rings(agents: readonly AgentSummary[], sessions: readonly SessionSummary[], routines: readonly ScheduleInfo[], activityToday: readonly ActivityEntry[], attention: readonly AttentionItem[], now: number, g: Geom = geom(), contexts: ReadonlyMap<string, Ctx> = NO_CONTEXTS): Ring[] {
   const midnight = startOfDay(now)
   type R0 = Omit<Ring, 'x' | 'y'>
   const out: R0[] = []
   const chats = sessions.filter((s) => isChat(s) && touchedToday(s, midnight))
   const newest = Math.max(0, ...chats.map((s) => Date.parse(s.updated_at)))
   const self = agents.find((a) => a.file.name === THEUTH)
-  // No global streaming flag reaches this screen; a chat updated in the last 2 min is the proxy for "live".
+  // Revision 2: the desk session's context gauge rides on the sub-label and the ring's outer track.
+  const ctxOf = (deskId: string | null | undefined, name: string): Ctx | null => {
+    const desk = sessions.find((s) => s.id === deskId) ?? sessions.find((s) => s.desk === name)
+    return desk ? (contexts.get(desk.id) ?? null) : null
+  }
+  const withCtx = (sub: string, ctx: Ctx | null) => (ctx ? `${sub} · ctx ${Math.round(ctx.fill * 100)} %` : sub)
+  const selfCtx = ctxOf(self?.desk, THEUTH)
+  // Revision 4 (5): `running` first, the 2-min recency as the fallback; theuth's own `working` status too.
   out.push({
     id: 'ring:theuth',
     name: THEUTH,
-    sub: [chats.length ? `${chats.length} chat${chats.length === 1 ? '' : 's'}` : 'no chats today', self && `${self.open_tasks} open`, chats.length ? age(newest, now) : null].filter(Boolean).join(' · '),
-    style: now - newest <= LIVE_WINDOW_MS || self?.status === 'working' ? 'live' : 'idle',
+    sub: withCtx([chats.length ? `${chats.length} chat${chats.length === 1 ? '' : 's'}` : 'no chats today', self && `${self.open_tasks} open`, chats.length ? age(newest, now) : null].filter(Boolean).join(' · '), selfCtx),
+    style: chats.some((s) => s.running) || now - newest <= LIVE_WINDOW_MS || self?.status === 'working' ? 'live' : 'idle',
     actor: 'user',
     link: { route: 'new' },
+    ctx: selfCtx,
   })
   const waitingFor = new Set(attention.map((i) => i.agent).filter((a): a is string => a !== null))
   const agentRings: R0[] = agents
@@ -233,32 +350,59 @@ export function rings(agents: readonly AgentSummary[], sessions: readonly Sessio
       const name = a.file.name
       const desk = a.desk === null ? undefined : sessions.find((s) => s.id === a.desk)
       const open = `${a.open_tasks} open${desk ? ` · ${age(Date.parse(desk.updated_at), now)}` : ''}`
-      const style: RingStyle = a.status === 'working' ? 'live' : a.status === 'blocked' && waitingFor.has(name) ? 'waiting' : a.status === 'paused' ? 'lapsed' : a.status === 'unreachable' || a.status === 'invalid' ? 'error' : 'idle'
+      const style: RingStyle = a.status === 'working' || desk?.running ? 'live' : a.status === 'blocked' && waitingFor.has(name) ? 'waiting' : a.status === 'paused' ? 'lapsed' : a.status === 'unreachable' || a.status === 'invalid' ? 'error' : 'idle'
       const sub = style === 'lapsed' ? 'paused' : style === 'error' ? a.status : open
-      return { id: `ring:agent:${name}`, name, sub, style, actor: `agent:${name}`, link: { route: 'agent', name } }
+      const ctx = ctxOf(a.desk, name)
+      return { id: `ring:agent:${name}`, name, sub: withCtx(sub, ctx), style, actor: `agent:${name}`, link: { route: 'agent', name }, ctx }
     })
     .sort((a, b) => RING_RANK[a.style] - RING_RANK[b.style])
   out.push(...agentRings)
-  for (const s of routines) {
-    if (!s.running) continue
-    const last = s.last === null ? NaN : Date.parse(s.last)
-    out.push({ id: `ring:routine:${s.name}`, name: `routine · ${s.name}`, sub: `running · ${Number.isNaN(last) ? '—' : age(last, now)}`, style: 'idle', actor: null, link: { route: 'routine', name: s.name } })
-  }
   if (out.length > RING.max) {
     const rest = out.length - (RING.max - 1)
-    out.splice(RING.max - 1, rest, { id: 'ring:more', name: `+${rest} more`, sub: '', style: 'lapsed', actor: null, link: { route: 'agents' } })
+    out.splice(RING.max - 1, rest, { id: 'ring:more', name: `+${rest} more`, sub: '', style: 'lapsed', actor: null, link: { route: 'agents' }, ctx: null })
   }
-  // R4: the column is centred on the arc's centre line so it fits any field height.
-  const y0 = g.cy - (RING.dy * (out.length - 1)) / 2
-  return out.map((r, i) => ({ ...r, x: RING.x, y: y0 + RING.dy * i }))
+  const nAgents = out.length
+  const routineRing = (name: string, sub: string, style: RingStyle): R0 => ({ id: `ring:routine:${name}`, name: `routine · ${name}`, sub, style, actor: null, link: { route: 'routine', name }, ctx: null })
+  const p = routinePresence(routines, activityToday, now)
+  const rr: R0[] = [
+    ...p.running.map((s) => {
+      const last = s.last === null ? NaN : Date.parse(s.last)
+      return routineRing(s.name, `running · ${Number.isNaN(last) ? '—' : age(last, now)}`, 'live')
+    }),
+    ...p.fired.map((f) => (isError(f.result) ? routineRing(f.name, `failed ${hhmm(f.ts)}`, 'failed') : routineRing(f.name, `ran ${hhmm(f.ts)}`, 'idle'))),
+    ...p.due.map((d) => routineRing(d.s.name, `next ${hhmm(d.at)}`, 'lapsed')),
+  ]
+  const fold = (group: R0[], slots: number, more: (n: number) => R0) => {
+    if (group.length <= slots) return
+    // ponytail: a full column (slots 0) hides the group entirely — the fold ring alone would cross the footer at hv 600.
+    const shown = Math.max(0, slots - 1)
+    group.splice(shown, group.length - shown, ...(slots >= 1 ? [more(group.length - shown)] : []))
+  }
+  fold(rr, RING.cap(g.hv) - nAgents, (n) => ({ id: 'ring:routines:more', name: `+${n} routines`, sub: '', style: 'lapsed', actor: null, link: { route: 'routines' }, ctx: null }))
+  out.push(...rr)
+  // Revision 4: the third group — active root sessions, each the origin of its own lines, its live subagents as satellites.
+  const ss: R0[] = sessionPresence(sessions, now).map(({ s, children, runningChildren }) => {
+    const ctx = contexts.get(s.id) ?? null
+    const sub = [runningChildren > 0 ? `${runningChildren} running` : null, children.length > 0 ? `${children.length} child${children.length === 1 ? '' : 'ren'}` : null, age(Date.parse(s.updated_at), now)].filter(Boolean).join(' · ')
+    return { id: `ring:session:${s.id}`, name: s.title ? truncate(s.title, 22) : (s.name ?? s.id.slice(0, 8)), sub: withCtx(sub, ctx), style: s.running ? 'live' : 'idle', actor: null, link: { route: 'session', id: s.id }, ctx, children }
+  })
+  fold(ss, RING.cap(g.hv) - out.length, (n) => ({ id: 'ring:sessions:more', name: `+${n} sessions`, sub: '', style: 'lapsed', actor: null, link: null, ctx: null }))
+  out.push(...ss)
+  // R4: the column is centred on the arc's centre line so it fits any field height; each group gap is part of the span.
+  const gapsBefore = (i: number) => (rr.length > 0 && i >= nAgents ? 1 : 0) + (ss.length > 0 && i >= nAgents + rr.length ? 1 : 0)
+  const y0 = g.cy - (RING.dy * (out.length - 1) + RING.gap * gapsBefore(out.length - 1)) / 2
+  return out.map((r, i) => ({ ...r, x: RING.x, y: y0 + RING.dy * i + RING.gap * gapsBefore(i) }))
 }
 
 export const ringByActor = (rings: readonly Ring[], actor: string | null): Ring | null => (actor === null ? null : (rings.find((r) => r.actor === ringActor(actor)) ?? null))
+export const ringByRoutine = (rings: readonly Ring[], name: string): Ring | null => rings.find((r) => r.id === `ring:routine:${name}`) ?? null
+export const ringBySession = (rings: readonly Ring[], id: string | null): Ring | null => (id === null ? null : (rings.find((r) => r.id === `ring:session:${id}`) ?? null))
 export const ringByName = (rings: readonly Ring[], name: string | null): Ring | null => (name === null ? null : (rings.find((r) => r.name === name) ?? null))
 
 // --------------------------------------------------------------------------------------------------------------- flows
 
-export type FlowKind = 'need' | 'outcome' | 'running'
+/** `due`: Revision 1's faint connector from a due-later routine's ring to its hollow square — no label, no right-hand segment; `layoutEnds` never sees it. */
+export type FlowKind = 'need' | 'outcome' | 'running' | 'due'
 export type Flow = {
   id: string
   kind: FlowKind
@@ -314,7 +458,7 @@ export function needFlows(needs: readonly Need[], rings: readonly Ring[], now: n
     kind: 'need',
     color: C.accent,
     src: [n.x + 8, n.y] as const,
-    via: ringByName(rings, n.item.agent),
+    via: ringBySession(rings, n.item.session) ?? ringByName(rings, n.item.agent),
     hour: hourOf(n.item.at_ms, now, nowHour(now)),
     time: n.item.at_ms,
     label: `${n.label} · ${age(n.item.at_ms, now)}`,
@@ -324,10 +468,9 @@ export function needFlows(needs: readonly Need[], rings: readonly Ring[], now: n
 }
 
 const DONE_KINDS: Partial<Record<ActivityEntry['kind'], true>> = { task_done: true, child_returned: true, escalation_answered: true }
-const isError = (r: string | null) => r !== null && /^(error|fail)/i.test(r)
 const looksLikeTask = (s: string) => /^[0-9a-f-]{20,}$/i.test(s)
 
-/** Malachite: what landed today, newest first. `routine_fired` counts when its schedule's last result is not an error. */
+/** Malachite: what landed today, newest first. `routine_fired` counts when its schedule's last result is not an error, and leaves ITS routine's ring (Revision 1). */
 export function outcomes(activityToday: readonly ActivityEntry[], routines: readonly ScheduleInfo[], rings: readonly Ring[], now: number): { flows: Omit<Flow, 'end' | 'd'>[]; total: number; more: number } {
   const byName = new Map(routines.map((s) => [s.name, s]))
   const hits = activityToday
@@ -338,7 +481,7 @@ export function outcomes(activityToday: readonly ActivityEntry[], routines: read
     kind: 'outcome' as const,
     color: C.success,
     src: null,
-    via: ringByActor(rings, e.actor),
+    via: e.kind === 'routine_fired' ? ringByRoutine(rings, e.subject) : ringByActor(rings, e.actor),
     hour: hourOf(e.ts_ms, now, nowHour(now)),
     time: e.ts_ms,
     label: truncate(e.summary, 28) + (e.cost !== null ? ` · $${e.cost.toFixed(2)}` : ''),
@@ -348,25 +491,86 @@ export function outcomes(activityToday: readonly ActivityEntry[], routines: read
   return { flows, total: hits.length, more: hits.length - flows.length }
 }
 
-/** Faience: `doing` tasks via the owner's ring, timed at the checkout's last progress note. */
-export function running(tasks: readonly Task[], rings: readonly Ring[], now: number): Omit<Flow, 'end' | 'd'>[] {
-  return tasks
+/**
+ * Faience: `doing` tasks via the owner's ring, timed at the checkout's last progress note; running routines via their own ring,
+ * timed at `last` (else now); running root sessions (Revision 4) via their ring, timed at `updated_at` — their running children
+ * draw no line (they are the ring's satellites).
+ */
+export function running(tasks: readonly Task[], routines: readonly ScheduleInfo[], sessions: readonly SessionSummary[], rings: readonly Ring[], now: number): Omit<Flow, 'end' | 'd'>[] {
+  const h = (time: number) => hourOf(time, now, nowHour(now))
+  const ts = tasks
     .filter((t) => t.state === 'doing')
-    .map((t) => ({ t, time: t.checkout?.progress_at_ms ?? t.updated_ms }))
-    .sort((a, b) => b.time - a.time)
-    .slice(0, RUNNING_MAX)
-    .map(({ t, time }) => ({
-      id: `running:${t.id}`,
-      kind: 'running' as const,
-      color: C.info,
-      src: null,
-      via: ringByActor(rings, t.owner.type === 'agent' ? `agent:${t.owner.name}` : t.owner.type === 'user' ? 'user' : null),
-      hour: hourOf(time, now, nowHour(now)),
-      time,
-      label: `${truncate(t.title, 24)} · running · ${age(time, now)}`,
-      title: `${t.title} · running · ${age(time, now)}`,
-      link: { route: 'task', id: t.id } as const,
-    }))
+    .map((t) => {
+      const time = t.checkout?.progress_at_ms ?? t.updated_ms
+      return {
+        id: `running:${t.id}`,
+        kind: 'running' as const,
+        color: C.info,
+        src: null,
+        via: ringByActor(rings, t.owner.type === 'agent' ? `agent:${t.owner.name}` : t.owner.type === 'user' ? 'user' : null),
+        hour: h(time),
+        time,
+        label: `${truncate(t.title, 24)} · running · ${age(time, now)}`,
+        title: `${t.title} · running · ${age(time, now)}`,
+        link: { route: 'task', id: t.id } as const,
+      }
+    })
+  const rs = routines
+    .filter((s) => s.running)
+    .map((s) => {
+      const last = s.last === null ? NaN : Date.parse(s.last)
+      const time = Number.isNaN(last) ? now : last
+      return {
+        id: `running:routine:${s.name}`,
+        kind: 'running' as const,
+        color: C.info,
+        src: null,
+        via: ringByRoutine(rings, s.name),
+        hour: h(time),
+        time,
+        label: `running · ${age(time, now)}`,
+        title: `${s.name} · running · ${age(time, now)}`,
+        link: { route: 'routine', name: s.name } as const,
+      }
+    })
+  const roots = sessionPresence(sessions, now)
+    .filter((r) => r.s.running)
+    .map(({ s }) => {
+      const time = Date.parse(s.updated_at)
+      return {
+        id: `running:session:${s.id}`,
+        kind: 'running' as const,
+        color: C.info,
+        src: null,
+        via: ringBySession(rings, s.id),
+        hour: h(time),
+        time,
+        label: `${truncate(s.title, 28)} · running`,
+        title: `${s.title} · running · ${age(time, now)}`,
+        link: { route: 'session', id: s.id } as const,
+      }
+    })
+  return [...ts, ...rs, ...roots].sort((a, b) => b.time - a.time).slice(0, RUNNING_MAX)
+}
+
+/** A cubic with horizontal tangents and both controls at half the span — every ring-to-arc and dot-to-ring segment. */
+const cubic = (x0: number, y0: number, x1: number, y1: number) => {
+  const mx = x0 + 0.5 * (x1 - x0)
+  return `C ${r1(mx)} ${r1(y0)}, ${r1(mx)} ${r1(y1)}, ${r1(x1)} ${r1(y1)}`
+}
+
+/**
+ * Revision 1: the due-later routines' connectors — from the ring's right edge to the exact point of the hollow square
+ * (`arc()`'s `R + 9` at `hourOf(next)`), dashed and faint in Scene.tsx. Complete flows (`end`, `d` set); no label.
+ */
+export function dueFlows(routines: readonly ScheduleInfo[], activityToday: readonly ActivityEntry[], rings: readonly Ring[], now: number, g: Geom = geom()): Flow[] {
+  return routinePresence(routines, activityToday, now).due.flatMap(({ s, at }) => {
+    const via = ringByRoutine(rings, s.name)
+    if (via === null) return []
+    const hour = hourOf(at, now)
+    const end = arcPoint(hour, ARC.R + 9, g)
+    return [{ id: `due:${s.name}`, kind: 'due' as const, color: C.tertiary, src: null, via, hour, time: at, label: '', title: `${s.name} · due ${hhmm(at)}`, link: { route: 'routine', name: s.name } as const, end, d: `M ${via.x + 14} ${r1(via.y)} ${cubic(via.x + 14, via.y, end[0], end[1])}` }]
+  })
 }
 
 /**
@@ -377,10 +581,6 @@ export function flowPath(src: Pt | null, via: Ring | null, hour: number, end: Pt
   const [ax, ay] = arcPoint(hour, ARC.R, g)
   const [ex, ey] = end
   const parts: string[] = []
-  const cubic = (x0: number, y0: number, x1: number, y1: number) => {
-    const mx = x0 + 0.5 * (x1 - x0)
-    return `C ${r1(mx)} ${r1(y0)}, ${r1(mx)} ${r1(y1)}, ${r1(x1)} ${r1(y1)}`
-  }
   if (via !== null) {
     if (src !== null) parts.push(`M ${r1(src[0])} ${r1(src[1])} ${cubic(src[0], src[1], via.x - 14, via.y)}`)
     parts.push(`M ${via.x + 14} ${r1(via.y)} ${cubic(via.x + 14, via.y, ax, ay)}`)
@@ -419,16 +619,16 @@ export type Hairline = { id: string; d: string; opacity: number }
 
 /**
  * The grey field: one line per activity entry today that is not a coloured flow, plus one per session touched today
- * (children included). 62 % leave a ring (the actor's when known, else a seeded one), 38 % a seeded left point; every
+ * (children included). 62 % leave a ring (the actor's when known — a `routine_fired` row's routine ring —, else a seeded one), 38 % a seeded left point; every
  * line passes the arc at its time and ends at a seeded point. Seeded by id → stable between renders. Capped at 600.
  * Deviation from the brief's signature: takes `rings` (the brief's text needs them, its signature omitted them).
  */
 export function hairlines(activityToday: readonly ActivityEntry[], sessionsToday: readonly SessionSummary[], rings: readonly Ring[], drawnIds: ReadonlySet<string>, now: number, g: Geom = geom()): Hairline[] {
   const out: Hairline[] = []
-  const line = (id: string, actor: string | null, time: number) => {
+  const line = (id: string, own: Ring | null, time: number) => {
     const r = rng(id)
     const fromRing = r() < 0.62
-    const ring = fromRing ? (ringByActor(rings, actor) ?? rings[Math.floor(r() * rings.length)]) : undefined
+    const ring = fromRing ? (own ?? rings[Math.floor(r() * rings.length)]) : undefined
     const src: Pt = ring ? [RING.x + 14, ring.y + lerp(-3, 3, r())] : [lerp(180, 640, r()), lerp(g.srcTop, g.srcBottom, r())]
     const end: Pt = [lerp(1380, 1900, r()), lerp(g.top, g.bottom, r())]
     out.push({ id, d: flowPath(src, null, hourOf(time, now, nowHour(now)), end, g), opacity: r1(lerp(0.07, 0.26, r()) * 100) / 100 })
@@ -436,11 +636,11 @@ export function hairlines(activityToday: readonly ActivityEntry[], sessionsToday
   for (const e of activityToday) {
     if (out.length >= HAIRLINES_MAX) break
     if (drawnIds.has(`outcome:${e.id}`)) continue
-    line(`hair:a:${e.id}`, e.actor, e.ts_ms)
+    line(`hair:a:${e.id}`, e.kind === 'routine_fired' ? ringByRoutine(rings, e.subject) : ringByActor(rings, e.actor), e.ts_ms)
   }
   for (const s of sessionsToday) {
     if (out.length >= HAIRLINES_MAX) break
-    line(`hair:s:${s.id}`, s.desk ? `agent:${s.desk}` : 'user', Date.parse(s.updated_at))
+    line(`hair:s:${s.id}`, ringBySession(rings, s.id) ?? ringByActor(rings, s.desk ? `agent:${s.desk}` : 'user'), Date.parse(s.updated_at))
   }
   return out
 }
@@ -497,7 +697,7 @@ export type Footer = { sessionsLive: number; agentsWorking: number; needYou: num
 
 export function footer(agents: readonly AgentSummary[], sessions: readonly SessionSummary[], attention: readonly AttentionItem[] | undefined, outcomesToday: number, inFlight: number, now: number): Footer {
   return {
-    sessionsLive: sessions.filter((s) => !s.archived && now - Date.parse(s.updated_at) <= 15 * 60_000).length,
+    sessionsLive: sessions.filter((s) => !s.archived && (s.running || now - Date.parse(s.updated_at) <= 15 * 60_000)).length,
     agentsWorking: agents.filter((a) => a.status === 'working').length,
     needYou: attention?.length ?? null,
     month: agents.reduce((sum, a) => sum + a.spent_month, 0),
@@ -553,6 +753,8 @@ export type SceneData = {
   activityWeek?: readonly ActivityEntry[]
   /** The last 50 rows (`useActivity`), for STREAM. */
   activity?: readonly ActivityEntry[]
+  /** Revision 2: desk session id → context gauge (`useDeskContexts`); absent or missing a session → no gauge on that ring. */
+  contexts?: ReadonlyMap<string, Ctx>
 }
 
 export type SceneModel = {
@@ -581,13 +783,13 @@ export function scene(data: SceneData, now: number, hv: number = FIELD_H): Scene
   const routines = data.routines ?? []
   const sessions = data.sessions ?? []
   const today = data.activityToday ?? []
-  const rs = rings(agents, sessions, routines, attention, now, g)
+  const rs = rings(agents, sessions, routines, today, attention, now, g, data.contexts)
   const { needs, more: needsMore } = needsYou(attention, g)
   const outs = outcomes(today, routines, rs, now)
-  const runs = running(tasks, rs, now)
+  const runs = running(tasks, routines, sessions, rs, now)
   const laid = layoutEnds([...needFlows(needs, rs, now), ...outs.flows, ...runs], g)
   const drawn = new Set(laid.flows.map((f) => f.id))
-  const inFlight = tasks.filter((t) => t.state === 'doing').length + routines.filter((r) => r.running).length
+  const inFlight = tasks.filter((t) => t.state === 'doing').length + routines.filter((r) => r.running).length + sessionPresence(sessions, now).filter((r) => r.s.running).length
   return {
     now,
     hv,
@@ -595,7 +797,7 @@ export function scene(data: SceneData, now: number, hv: number = FIELD_H): Scene
     rings: rs,
     needs,
     needsMore,
-    flows: laid.flows,
+    flows: [...laid.flows, ...dueFlows(routines, today, rs, now, g)],
     flowsMore: laid.more + outs.more,
     outcomesTotal: outs.total,
     hairlines: hairlines(today, sessionsToday(sessions, now), rs, drawn, now, g),
