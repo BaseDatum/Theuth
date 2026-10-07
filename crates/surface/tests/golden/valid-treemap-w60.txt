@@ -1,1 +1,10 @@
-*Treemap: 6 items*
+Treemap: Lines by crate — 6 items
+crates  53400 · 64%
+  agent     36200  44%  ◉
+  surface    9800  12%
+  document   7400   9%
+desktop  24100 · 29%
+  ui     21000  25%
+  tauri   3100   4%
+packages  5600 · 7%
+  apps  5600  7%

@@ -1,1 +1,5 @@
-*Loop: 5 steps*
+Loop: Build loop — 5 steps
+1. Measure → 2. Decide → 3. ◉ Build → 4. Ship → 5. ○ Observe
+   → ↺ 1.
+⟳ Learning
+1. · 20 prompts

@@ -10,6 +10,7 @@ use std::path::Path;
 
 use crate::fences::fences;
 use crate::parse;
+use crate::render::num;
 use crate::spec::*;
 
 /// `text` is the annotated markdown of a document (`<!-- id -->` before each top-level block);
@@ -228,6 +229,16 @@ fn element(spec: &Spec, id: &str, out: &mut String, depth: usize) {
             }
             out.push('\n');
         }
+        // ---- 123 part-of-whole + misc (W3) ----
+        Component::Kanban(p) => kanban(p, out),
+        Component::Heatmap(p) => heatmap(p, out),
+        Component::Treemap(p) => treemap(p, out),
+        Component::Sankey(p) => sankey(p, out),
+        Component::Venn(p) => venn(p, out),
+        Component::Loop(p) => loop_(p, out),
+        Component::Layers(p) => layers(p, out),
+        Component::Journey(p) => journey(p, out),
+        Component::Fishbone(p) => fishbone(p, out),
         c => {
             let _ = writeln!(out, "*{}*\n", type_name(c));
         }
@@ -332,7 +343,8 @@ fn graph(p: &GraphProps, out: &mut String) {
     out.push('\n');
 }
 
-/// Numbered `from → to: label` steps.
+/// Numbered `from → to: label` steps; 123 §4.4 (W3): `*[alt: label]*` / `*[else]*` / `*[end]*`
+/// lines around a fragment's steps, `· note` indented under its step, state glyphs.
 fn sequence(p: &SequenceProps, out: &mut String) {
     let label_of: BTreeMap<&str, &str> = p
         .actors
@@ -340,18 +352,384 @@ fn sequence(p: &SequenceProps, out: &mut String) {
         .map(|a| (a.id.as_str(), a.label.as_str()))
         .collect();
     let name = |id: &'_ str| -> String { label_of.get(id).copied().unwrap_or(id).to_owned() };
+    let fragments = p.fragments.as_deref().unwrap_or_default();
     if let Some(t) = &p.title {
         let _ = writeln!(out, "**{t}**\n");
     }
     for (i, s) in p.steps.iter().enumerate() {
+        for f in fragments {
+            if f.from == i {
+                let kind = format!("{:?}", f.kind).to_lowercase();
+                match f.label.as_deref().filter(|l| !l.is_empty()) {
+                    Some(l) => {
+                        let _ = writeln!(out, "*[{kind}: {l}]*");
+                    }
+                    None => {
+                        let _ = writeln!(out, "*[{kind}]*");
+                    }
+                }
+            }
+            if f.r#else == Some(i) && f.from < i && i <= f.to {
+                let _ = writeln!(out, "*[else]*");
+            }
+        }
         let _ = writeln!(
             out,
-            "{}. {} → {}: {}",
+            "{}. {} → {}: {}{}",
             i + 1,
             name(&s.from),
             name(&s.to),
+            glyph(s.state),
             s.label
         );
+        if let Some(n) = s.note.as_deref().filter(|n| !n.is_empty()) {
+            let _ = writeln!(out, "   · {n}");
+        }
+        if fragments.iter().any(|f| f.to == i) {
+            let _ = writeln!(out, "*[end]*");
+        }
+    }
+    out.push('\n');
+}
+
+// ---- 123 part-of-whole + misc (W3): GFM mirrors of the §4.4 lowerings ----
+
+/// `✗ ` / `● ` / `◉ ` / `○ ` before a unit label with a non-default state; nothing otherwise.
+fn glyph(state: Option<GraphState>) -> &'static str {
+    match state {
+        Some(GraphState::Danger) => "✗ ",
+        Some(GraphState::Done) => "● ",
+        Some(GraphState::Active) => "◉ ",
+        Some(GraphState::Muted) => "○ ",
+        _ => "",
+    }
+}
+
+/// `**Title**` paragraph when the component has one.
+fn title(t: Option<&str>, out: &mut String) {
+    if let Some(t) = t.filter(|t| !t.is_empty()) {
+        let _ = writeln!(out, "**{t}**\n");
+    }
+}
+
+/// Kanban: `**Column (n/limit ⚠)**` headers with `- ⊘ card` / `- ✓ card` lines; a story map
+/// lists `**Row**` sub-headers with `Column: card` lines and a `---` after row `cut`.
+fn kanban(p: &KanbanProps, out: &mut String) {
+    title(p.title.as_deref(), out);
+    let head = |c: &KanbanColumn| -> String {
+        let n = c.cards.len();
+        match c.limit {
+            Some(l) if n > l => format!("{} ({n}/{l} ⚠)", c.title),
+            Some(l) => format!("{} ({n}/{l})", c.title),
+            None => format!("{} ({n})", c.title),
+        }
+    };
+    let card = |c: &KanbanCard| -> String {
+        let mark = match c.state {
+            Some(KanbanState::Blocked) => "⊘ ",
+            Some(KanbanState::Done) => "✓ ",
+            _ => "",
+        };
+        let mut s = format!("{mark}{}", c.title);
+        if let Some(t) = &c.tag {
+            let _ = write!(s, " `{t}`");
+        }
+        if let Some(d) = &c.detail {
+            let _ = write!(s, " — {d}");
+        }
+        s
+    };
+    match p.rows.as_deref() {
+        None => {
+            for c in &p.columns {
+                let _ = writeln!(out, "**{}**\n", head(c));
+                for k in &c.cards {
+                    let _ = writeln!(out, "- {}", card(k));
+                }
+                out.push('\n');
+            }
+        }
+        Some(rows) => {
+            let _ = writeln!(
+                out,
+                "{}\n",
+                p.columns.iter().map(head).collect::<Vec<_>>().join(" · ")
+            );
+            for r in 0..=rows.len() {
+                let cards: Vec<(&KanbanColumn, &KanbanCard)> = p
+                    .columns
+                    .iter()
+                    .flat_map(|c| c.cards.iter().map(move |k| (c, k)))
+                    .filter(|(_, k)| k.row.map_or(rows.len(), |i| i.min(rows.len())) == r)
+                    .collect();
+                if cards.is_empty() {
+                    continue;
+                }
+                let _ = writeln!(
+                    out,
+                    "**{}**\n",
+                    rows.get(r).map_or("(no row)", String::as_str)
+                );
+                for (c, k) in cards {
+                    let _ = writeln!(out, "- {}: {}", c.title, card(k));
+                }
+                out.push('\n');
+                if p.cut == Some(r) {
+                    out.push_str("---\n\n");
+                }
+            }
+        }
+    }
+}
+
+/// Heatmap: a GFM table of the values; `diverging` prints them signed.
+fn heatmap(p: &HeatmapProps, out: &mut String) {
+    title(p.title.as_deref(), out);
+    let diverging = p.palette == Some(HeatmapPalette::Diverging);
+    let columns: Vec<String> = std::iter::once(String::new())
+        .chain(p.cols.iter().cloned())
+        .collect();
+    let rows: Vec<Vec<String>> = p
+        .rows
+        .iter()
+        .zip(&p.cells)
+        .map(|(r, cs)| {
+            std::iter::once(format!("**{r}**"))
+                .chain(cs.iter().map(|v| {
+                    if diverging && *v > 0.0 {
+                        format!("+{}", num(*v))
+                    } else {
+                        num(*v)
+                    }
+                }))
+                .collect()
+        })
+        .collect();
+    table(&columns, &rows, out);
+}
+
+/// Treemap: `| Cell | Value | Share |` descending, the group as a `**Group**` row when any.
+fn treemap(p: &TreemapProps, out: &mut String) {
+    title(p.title.as_deref(), out);
+    let total: f64 = p.items.iter().map(|c| c.value).sum();
+    let share = |v: f64| {
+        if total > 0.0 {
+            format!("{}%", (v / total * 100.0).round() as i64)
+        } else {
+            "–".to_owned()
+        }
+    };
+    let mut groups: Vec<(Option<&str>, Vec<&TreemapCell>)> = Vec::new();
+    for c in &p.items {
+        let key = c.group.as_deref();
+        match groups.iter_mut().find(|(k, _)| *k == key) {
+            Some((_, cells)) => cells.push(c),
+            None => groups.push((key, vec![c])),
+        }
+    }
+    let sum = |cells: &[&TreemapCell]| cells.iter().map(|c| c.value).sum::<f64>();
+    groups.sort_by(|a, b| {
+        b.0.is_some()
+            .cmp(&a.0.is_some())
+            .then(sum(&b.1).total_cmp(&sum(&a.1)))
+    });
+    let headed = groups.iter().any(|(k, _)| k.is_some());
+    let mut rows = Vec::new();
+    for (key, mut cells) in groups {
+        cells.sort_by(|a, b| b.value.total_cmp(&a.value));
+        if headed {
+            let t = sum(&cells);
+            rows.push(vec![
+                format!("**{}**", key.unwrap_or("(ungrouped)")),
+                num(t),
+                share(t),
+            ]);
+        }
+        for c in cells {
+            let indent = if headed { "· " } else { "" };
+            rows.push(vec![
+                format!("{indent}{}{}", glyph(c.state), c.label),
+                num(c.value),
+                share(c.value),
+            ]);
+        }
+    }
+    table(
+        &["Cell".to_owned(), "Value".to_owned(), "Share".to_owned()],
+        &rows,
+        out,
+    );
+}
+
+/// Sankey: `- **Node** (total unit)` per node in authored order with `  - → To: value` lines.
+fn sankey(p: &SankeyProps, out: &mut String) {
+    title(p.title.as_deref(), out);
+    let unit = p
+        .unit
+        .as_deref()
+        .map(|u| format!(" {u}"))
+        .unwrap_or_default();
+    let label = |id: &str| -> String {
+        p.nodes
+            .iter()
+            .find(|n| n.id == id)
+            .map(|n| n.label.clone())
+            .unwrap_or_else(|| id.to_owned())
+    };
+    for n in &p.nodes {
+        let inflow: f64 = p
+            .flows
+            .iter()
+            .filter(|f| f.to == n.id)
+            .map(|f| f.value)
+            .sum();
+        let outflow: f64 = p
+            .flows
+            .iter()
+            .filter(|f| f.from == n.id)
+            .map(|f| f.value)
+            .sum();
+        let _ = writeln!(
+            out,
+            "- **{}{}** ({}{unit})",
+            glyph(n.state),
+            n.label,
+            num(inflow.max(outflow))
+        );
+        for f in p.flows.iter().filter(|f| f.from == n.id) {
+            let _ = write!(out, "  - → {}: {}{unit}", label(&f.to), num(f.value));
+            if let Some(l) = f.label.as_deref().filter(|l| !l.is_empty()) {
+                let _ = write!(out, " ({l})");
+            }
+            out.push('\n');
+        }
+    }
+    out.push('\n');
+}
+
+/// Venn: `- **Set** (size)` per set, then `- A ∩ B: label` per overlap.
+fn venn(p: &VennProps, out: &mut String) {
+    title(p.title.as_deref(), out);
+    let label = |id: &str| -> String {
+        p.sets
+            .iter()
+            .find(|s| s.id == id)
+            .map(|s| s.label.clone())
+            .unwrap_or_else(|| id.to_owned())
+    };
+    for s in &p.sets {
+        let _ = write!(out, "- **{}**", s.label);
+        if let Some(n) = s.size {
+            let _ = write!(out, " ({})", num(n));
+        }
+        out.push('\n');
+    }
+    for o in p.overlaps.as_deref().unwrap_or_default() {
+        let names: Vec<String> = o.sets.iter().map(|id| label(id)).collect();
+        let _ = writeln!(out, "- {}: {}", names.join(" ∩ "), o.label);
+    }
+    out.push('\n');
+}
+
+/// Loop: `1. a → 2. b → … ↺ 1.` on one line, the hub in italics, notes as a list.
+fn loop_(p: &LoopProps, out: &mut String) {
+    title(p.title.as_deref(), out);
+    let chain: Vec<String> = p
+        .steps
+        .iter()
+        .enumerate()
+        .map(|(i, s)| format!("{}. {}{}", i + 1, glyph(s.state), s.label))
+        .collect();
+    if !chain.is_empty() {
+        let _ = writeln!(out, "{} → ↺ 1.\n", chain.join(" → "));
+    }
+    if let Some(h) = p.hub.as_deref().filter(|h| !h.is_empty()) {
+        let _ = writeln!(out, "*⟳ {h}*\n");
+    }
+    let notes: Vec<String> = p
+        .steps
+        .iter()
+        .enumerate()
+        .filter_map(|(i, s)| s.note.as_deref().map(|n| format!("- {}. {n}", i + 1)))
+        .collect();
+    if !notes.is_empty() {
+        let _ = writeln!(out, "{}\n", notes.join("\n"));
+    }
+}
+
+/// Layers: `- **Layer**: items — *note*` in reading order (`bottom-up` reversed).
+fn layers(p: &LayersProps, out: &mut String) {
+    title(p.title.as_deref(), out);
+    let mut layers: Vec<&Layer> = p.layers.iter().collect();
+    if p.direction == Some(LayersDirection::BottomUp) {
+        layers.reverse();
+    }
+    for l in layers {
+        let _ = write!(out, "- **{}{}**", glyph(l.state), l.label);
+        let items = l.items.as_deref().unwrap_or_default();
+        if !items.is_empty() {
+            let _ = write!(out, ": {}", items.join(", "));
+        }
+        if let Some(n) = l.note.as_deref().filter(|n| !n.is_empty()) {
+            let _ = write!(out, " — *{n}*");
+        }
+        out.push('\n');
+    }
+    out.push('\n');
+}
+
+/// Journey: a stage × row GFM table with a `Mood` row (`☹ ○ ☺`), pains as `- ▲ stage: text`.
+fn journey(p: &JourneyProps, out: &mut String) {
+    title(p.title.as_deref(), out);
+    let columns: Vec<String> = std::iter::once(String::new())
+        .chain(p.stages.iter().cloned())
+        .collect();
+    let mut rows: Vec<Vec<String>> = p
+        .rows
+        .iter()
+        .map(|r| {
+            std::iter::once(format!("**{}**", r.label))
+                .chain((0..p.stages.len()).map(|i| r.cells.get(i).cloned().unwrap_or_default()))
+                .collect()
+        })
+        .collect();
+    if let Some(m) = &p.mood {
+        rows.push(
+            std::iter::once("**Mood**".to_owned())
+                .chain((0..p.stages.len()).map(|i| {
+                    m.get(i)
+                        .map(|v| {
+                            if *v < -1.0 / 3.0 {
+                                "☹"
+                            } else if *v > 1.0 / 3.0 {
+                                "☺"
+                            } else {
+                                "○"
+                            }
+                        })
+                        .unwrap_or("")
+                        .to_owned()
+                }))
+                .collect(),
+        );
+    }
+    table(&columns, &rows, out);
+    let pains = p.pains.as_deref().unwrap_or_default();
+    for pain in pains {
+        let stage = p.stages.get(pain.stage).map_or("?", String::as_str);
+        let _ = writeln!(out, "- ▲ {stage}: {}", pain.text);
+    }
+    if !pains.is_empty() {
+        out.push('\n');
+    }
+}
+
+/// Fishbone: `**→ effect**`, then `- **Category**: items`.
+fn fishbone(p: &FishboneProps, out: &mut String) {
+    title(p.title.as_deref(), out);
+    let _ = writeln!(out, "**→ {}**\n", p.effect);
+    for c in &p.causes {
+        let _ = writeln!(out, "- **{}**: {}", c.category, c.items.join(", "));
     }
     out.push('\n');
 }
@@ -532,6 +910,103 @@ mod tests {
     fn unknown_components_lower_to_their_type_name() {
         assert_eq!(lowered(fixture!("valid-gauge")).trim(), "*Gauge*");
         assert!(lowered(fixture!("valid-tabs")).contains("**"));
+    }
+
+    // ---- 123 part-of-whole + misc (W3) ----
+
+    /// §4.5: no W3 diagram fixture falls through to the `*TypeName*` arm.
+    #[test]
+    fn w3_fixtures_lower_to_gfm_not_their_type_name() {
+        for (name, md) in [
+            ("Treemap", lowered(fixture!("valid-treemap"))),
+            ("Sankey", lowered(fixture!("valid-sankey"))),
+            ("Venn", lowered(fixture!("valid-venn"))),
+            ("Loop", lowered(fixture!("valid-loop"))),
+            ("Layers", lowered(fixture!("valid-layers"))),
+            ("Journey", lowered(fixture!("valid-journey"))),
+            ("Fishbone", lowered(fixture!("valid-fishbone"))),
+            ("Kanban", lowered(fixture!("valid-kanban-rows"))),
+            ("Heatmap", lowered(fixture!("valid-heatmap-diverging"))),
+        ] {
+            assert!(!md.contains(&format!("*{name}*")), "{name}:\n{md}");
+            assert!(md.starts_with("**"), "{name} opens with its title:\n{md}");
+        }
+        let treemap = lowered(fixture!("valid-treemap"));
+        assert!(treemap.contains("| Cell | Value | Share |\n| --- | --- | --- |\n| **crates** | 53400 | 64% |\n| · ◉ agent | 36200 | 44% |"), "{treemap}");
+        let sankey = lowered(fixture!("valid-sankey"));
+        assert!(
+            sankey.contains("- **Opus** (16.7 USD)\n  - → Design 123: 12.5 USD\n"),
+            "{sankey}"
+        );
+        assert!(sankey.contains("- → Docs: 2.4 USD (drafts)"), "{sankey}");
+        let venn = lowered(fixture!("valid-venn"));
+        assert!(
+            venn.contains("- **Has tests** (41)\n")
+                && venn.contains("- Has tests ∩ Has docs: Documented + tested\n"),
+            "{venn}"
+        );
+        let lp = lowered(fixture!("valid-loop"));
+        assert!(lp.contains("1. Measure → 2. Decide → 3. ◉ Build → 4. Ship → 5. ○ Observe → ↺ 1.\n\n*⟳ Learning*\n\n- 1. 20 prompts"), "{lp}");
+        let layers = lowered(fixture!("valid-layers"));
+        assert!(layers.contains("- **Surfaces**: desktop, TUI, Slack, Signal\n- **◉ Agent**: loop, tools, skills\n- **Surface crate**: parse, validate, render — *one catalog*\n"), "{layers}");
+        let journey = lowered(fixture!("valid-journey"));
+        assert!(
+            journey.contains("|  | Install | First chat | First diagram | First board |\n"),
+            "{journey}"
+        );
+        assert!(
+            journey.contains("| **Mood** | ○ | ☺ | ☺ | ☺ |\n\n- ▲ Install: notarisation wait\n"),
+            "{journey}"
+        );
+        let fish = lowered(fixture!("valid-fishbone"));
+        assert!(
+            fish.contains("**→ Slow replies**\n\n- **Model**: long context, cold cache\n"),
+            "{fish}"
+        );
+        let kanban = lowered(fixture!("valid-kanban-rows"));
+        assert!(
+            kanban.contains(
+                "Onboard (3/2 ⚠) · Chat (3/2 ⚠) · Boards (1)\n\n**Must**\n\n- Onboard: ✓ Install\n"
+            ),
+            "{kanban}"
+        );
+        assert!(
+            kanban.contains("- Chat: ⊘ Draw a chart\n- Boards: Open a board\n\n---\n\n**Could**"),
+            "{kanban}"
+        );
+        let plain = lowered(fixture!("valid-kanban"));
+        assert!(plain.starts_with("**") && plain.contains("- "), "{plain}");
+        let heat = lowered(fixture!("valid-heatmap-diverging"));
+        assert!(heat.contains("| **chat** | -12 | -4 | +3 | +8 |"), "{heat}");
+        assert!(!lowered(fixture!("valid-heatmap")).contains('+'));
+    }
+
+    /// §4.4 Sequence ext.: fragment frames, notes and state glyphs in the GFM form.
+    #[test]
+    fn sequence_fragments_lower_to_framed_steps() {
+        let md = lowered(fixture!("valid-sequence-fragments"));
+        assert!(md.contains("*[alt: errors]*\n3. surface → Loop: ✗ located errors\n   · path + message\n4. Loop → Model: <surface_error>\n*[else]*\n5. Model → Loop: ● corrected block\n*[end]*\n*[loop: ≤ 3 rounds]*\n6. Loop → Loop: give up after 3\n   · final=true\n*[end]*"), "{md}");
+    }
+
+    /// The Sankey validator refuses cycles and self-flows before any lowering (d3-sankey on the
+    /// desktop would throw on a circular link; the Rust check is the one that names it).
+    #[test]
+    fn sankey_cycle_and_self_flow_fixtures_are_refused() {
+        let cycle = parse(fixture!("broken-sankey-cycle")).expect_err("cycle refused");
+        assert!(
+            cycle
+                .iter()
+                .any(|e| e.path == "/elements/s/props/flows/4"
+                    && e.message.starts_with("circular flow")),
+            "{cycle:?}"
+        );
+        let self_flow = parse(fixture!("broken-sankey-self-flow")).expect_err("self flow refused");
+        assert!(
+            self_flow
+                .iter()
+                .any(|e| e.path == "/elements/s/props/flows/4/to"),
+            "{self_flow:?}"
+        );
     }
 
     #[test]

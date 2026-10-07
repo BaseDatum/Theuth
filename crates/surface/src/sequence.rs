@@ -9,7 +9,7 @@ use unicode_width::UnicodeWidthStr;
 
 use crate::graph::mermaid_ids;
 use crate::render::{BOLD, DIM, PLAIN, span};
-use crate::spec::{SequenceProps, SequenceStyle};
+use crate::spec::{GraphState, SequenceProps, SequenceStyle};
 
 /// A participant label or message text on one mermaid line: no line breaks, and `;` (a
 /// statement separator in sequence diagrams) as `,`.
@@ -67,7 +67,11 @@ fn arrow(style: Option<SequenceStyle>) -> &'static str {
 /// The sequence as text: the bold title, then one numbered line per step —
 /// `1. parser → validator  check(spec)   crates/surface/src/validate.rs:12-40` — the actor
 /// labels joined by the style's arrow, two spaces, the step label, then the dim `ref`. When the
-/// `ref` would push the line past `width` it moves to its own indented line.
+/// `ref` would push the line past `width` it moves to its own indented line. 123 §4.4 (W3):
+/// `[alt: label]` … `[else]` … `[end]` dim lines frame the steps of a fragment (the framed
+/// steps indent two columns), a step's `note` follows it as an indented `· note`, and a
+/// non-default `state` puts its glyph before the label (`✗` danger, `● ` done, `◉` active,
+/// `○` muted).
 pub fn steps_lines(p: &SequenceProps, width: usize) -> Vec<Line> {
     let label_of: BTreeMap<&str, &str> = p
         .actors
@@ -75,18 +79,41 @@ pub fn steps_lines(p: &SequenceProps, width: usize) -> Vec<Line> {
         .map(|a| (a.id.as_str(), a.label.as_str()))
         .collect();
     let name = |id: &'_ str| -> String { label_of.get(id).copied().unwrap_or(id).to_owned() };
+    let fragments = p.fragments.as_deref().unwrap_or_default();
     let mut out = Vec::new();
     if let Some(t) = &p.title {
         out.push(vec![span(t, BOLD)]);
     }
     let digits = p.steps.len().to_string().len();
     for (i, s) in p.steps.iter().enumerate() {
-        let head = format!("{:>digits$}. ", i + 1);
+        for f in fragments {
+            if f.from == i {
+                let kind = format!("{:?}", f.kind).to_lowercase();
+                let text = match f.label.as_deref().filter(|l| !l.is_empty()) {
+                    Some(l) => format!("[{kind}: {l}]"),
+                    None => format!("[{kind}]"),
+                };
+                out.push(vec![span(text, DIM)]);
+            }
+            if f.r#else == Some(i) && f.from < i && i <= f.to {
+                out.push(vec![span("[else]", DIM)]);
+            }
+        }
+        let framed = fragments.iter().any(|f| f.from <= i && i <= f.to);
+        let indent = if framed { "  " } else { "" };
+        let head = format!("{indent}{:>digits$}. ", i + 1);
+        let glyph = match s.state {
+            Some(GraphState::Danger) => "✗ ",
+            Some(GraphState::Done) => "● ",
+            Some(GraphState::Active) => "◉ ",
+            Some(GraphState::Muted) => "○ ",
+            _ => "",
+        };
         let mut line = vec![
             span(&head, DIM),
             span(
                 format!(
-                    "{} {} {}  {}",
+                    "{} {} {}  {glyph}{}",
                     name(&s.from),
                     arrow(s.style),
                     name(&s.to),
@@ -95,17 +122,27 @@ pub fn steps_lines(p: &SequenceProps, width: usize) -> Vec<Line> {
                 PLAIN,
             ),
         ];
-        let Some(r) = s.r#ref.as_deref().filter(|r| !r.is_empty()) else {
-            out.push(line);
-            continue;
-        };
-        let used: usize = line.iter().map(|sp| sp.text.width()).sum();
-        if width == 0 || used + 3 + r.width() <= width {
-            line.push(span(format!("   {r}"), DIM));
-            out.push(line);
-        } else {
-            out.push(line);
-            out.push(vec![span(format!("{}{r}", " ".repeat(head.width())), DIM)]);
+        match s.r#ref.as_deref().filter(|r| !r.is_empty()) {
+            None => out.push(line),
+            Some(r) => {
+                let used: usize = line.iter().map(|sp| sp.text.width()).sum();
+                if width == 0 || used + 3 + r.width() <= width {
+                    line.push(span(format!("   {r}"), DIM));
+                    out.push(line);
+                } else {
+                    out.push(line);
+                    out.push(vec![span(format!("{}{r}", " ".repeat(head.width())), DIM)]);
+                }
+            }
+        }
+        if let Some(n) = s.note.as_deref().filter(|n| !n.is_empty()) {
+            out.push(vec![span(
+                format!("{}· {n}", " ".repeat(head.width())),
+                DIM,
+            )]);
+        }
+        if fragments.iter().any(|f| f.to == i) {
+            out.push(vec![span("[end]", DIM)]);
         }
     }
     out
@@ -215,5 +252,30 @@ mod tests {
             "1. parser → validator  check(spec)\n   crates/surface/src/validate.rs:12-40\n2. validator ⇢ parser  errors\n3. parser ⇾ parser  repair   a.rs"
         );
         assert!(narrow[1][0].style.dim && !narrow[0][1].style.dim);
+    }
+
+    /// 123 §4.4 (W3): fragments frame their steps, notes indent under theirs, states glyph.
+    #[test]
+    fn fragments_notes_and_states_lower_around_the_steps() {
+        const FRAGMENTS: &str =
+            include_str!("../fixtures/json-render/valid-sequence-fragments.json");
+        let lines = steps_lines(&sequence(FRAGMENTS), 0);
+        let text = plain_text(&lines);
+        assert!(
+            text.contains("check(text)   crates/surface/src/lib.rs#L154\n[alt: errors]\n  3. surface ⇢ Loop  ✗ located errors\n"),
+            "{text}"
+        );
+        assert!(text.contains("\n     · path + message\n  4. Loop → Model  <surface_error>\n[else]\n  5. Model → Loop  ● corrected block\n[end]\n[loop: ≤ 3 rounds]\n  6. Loop ⇾ Loop  give up after 3\n     · final=true\n[end]"), "{text}");
+        assert!(
+            text.contains("\n1. Model → Loop  reply with fence\n2. Loop →"),
+            "unframed steps stay flush:\n{text}"
+        );
+        assert!(
+            lines
+                .iter()
+                .flatten()
+                .filter(|s| s.text.starts_with('['))
+                .all(|s| s.style.dim)
+        );
     }
 }
