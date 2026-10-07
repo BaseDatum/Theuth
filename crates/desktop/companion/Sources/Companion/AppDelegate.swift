@@ -128,8 +128,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let shortcuts = menu.addItem(withTitle: "Keyboard shortcuts…", action: #selector(showLegend), keyEquivalent: "/") // W6
             shortcuts.keyEquivalentModifierMask = .command
             menu.addItem(.separator())
-            menu.addItem(withTitle: "Quit theuth Companion", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
-            menu.items.forEach { $0.target = $0.action == #selector(openTheuth) || $0.action == #selector(showLegend) ? self : nil }
+            menu.addItem(withTitle: "Quit theuth", action: #selector(quitTheuth), keyEquivalent: "q") // W7: the whole app, one quit
+            menu.addItem(withTitle: "Quit theuth Companion", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "")
+            menu.items.forEach { $0.target = $0.action == #selector(openTheuth) || $0.action == #selector(showLegend) || $0.action == #selector(quitTheuth) ? self : nil }
             askBar.addMenuItem(to: menu) // W3
             NotificationsInstaller.shared?.appendMenu(menu) // W2: Pause notifications ▸ · Launch at login · Settings…
             statusItem.menu = menu
@@ -140,7 +141,36 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         panel.toggle(anchor: .statusItem(sender.window?.frame ?? .zero))
     }
 
-    @objc private func openTheuth() { NSWorkspace.shared.open(DeepLink.new) }
+    /// W7 (Sky, 2026-10-07 21:00): "Open theuth" shows the view the user had open last — activate the running
+    /// main app without a route; launch it plainly when it is not running; the `theuth://new` link only as the
+    /// last resort when the outer bundle cannot be found.
+    @objc private func openTheuth() {
+        if let app = MainApp.running() {
+            app.unhide()
+            app.activate()
+            return
+        }
+        if let url = MainApp.bundleURL() {
+            let cfg = NSWorkspace.OpenConfiguration()
+            cfg.activates = true
+            NSWorkspace.shared.openApplication(at: url, configuration: cfg) { _, err in
+                if let err { Log.write("open theuth failed: \(err.localizedDescription)") }
+            }
+            return
+        }
+        NSWorkspace.shared.open(DeepLink.new)
+    }
+
+    /// W7: quit the main app (its quit handshake terminates this companion and the sidecar — W1S); when it is
+    /// not running, quit the companion itself.
+    @objc private func quitTheuth() {
+        if let app = MainApp.running() {
+            Log.write("quit theuth requested → terminate \(app.processIdentifier)")
+            if !app.terminate() { Log.write("terminate refused; forcing"); _ = app.forceTerminate() }
+            return
+        }
+        NSApp.terminate(nil)
+    }
 
     /// W6: the legend under the status item; from the panel/Ask bar (⌘/) it replaces that surface.
     @objc func showLegend() {
