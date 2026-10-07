@@ -1,0 +1,12 @@
+{
+  "solution": {
+    "path": "Theuth.Companion.slnx",
+    "projects": [
+      "src\\Theuth.Companion.Rpc\\Theuth.Companion.Rpc.csproj",
+      "src\\Theuth.Companion.Core\\Theuth.Companion.Core.csproj",
+      "tools\\Theuth.Companion.Seed\\Theuth.Companion.Seed.csproj",
+      "tests\\Theuth.Companion.Rpc.Tests\\Theuth.Companion.Rpc.Tests.csproj",
+      "tests\\Theuth.Companion.Core.Tests\\Theuth.Companion.Core.Tests.csproj"
+    ]
+  }
+}

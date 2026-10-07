@@ -52,7 +52,9 @@ pub struct BrowserConfig {
     pub timezone: Option<String>,
     /// `"lat,lon"`.
     pub geolocation: Option<String>,
-    /// Let pages reach loopback / RFC1918 / link-local (23 §0.8).
+    /// Let pages reach loopback / RFC1918 / link-local (23 §0.8). On by
+    /// default (dev servers on `localhost` are the coding-agent case);
+    /// `false` turns obscura's SSRF guard back on.
     pub allow_private_network: bool,
     /// Let `browser_import_cookies` copy the user's real browser cookies into
     /// a session so the agent acts as the signed-in user (23 §7). Off by
@@ -80,7 +82,7 @@ impl Default for BrowserConfig {
             user_agent: None,
             timezone: None,
             geolocation: None,
-            allow_private_network: false,
+            allow_private_network: true,
             import_cookies: false,
             idle_secs: 300,
             max_chars: 4000,
@@ -512,5 +514,15 @@ impl runtime::Plugin for BrowserPlugin {
             }
         });
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::BrowserConfig;
+
+    #[test]
+    fn private_network_allowed_by_default() {
+        assert!(BrowserConfig::default().allow_private_network);
     }
 }

@@ -1,0 +1,54 @@
+<Project>
+  <!--
+    ExtractRuntimeMsixPayload — design 134 §2 C2b, §5.7 (D1, R2).
+
+    An unpackaged, self-contained app on the trimmed Windows App SDK 2.5.1 component set (WinUI + Foundation + Base +
+    InteractiveExperiences, never the meta package) gets no copy of five deployment/insights files that ship only inside
+    the runtime MSIX. Without them AppNotificationManager.Register() throws 0x8007007E ("Unable to load resource dll.
+    Microsoft.WindowsAppRuntime.Insights.Resource.dll") and no toast is shown (spikes S2, A1, A2 on build-B). The
+    download-only PackageReference to Microsoft.WindowsAppSDK.Runtime (ExcludeAssets="all", GeneratePathProperty="true")
+    puts the MSIX in the NuGet cache; an MSIX is a zip, so the five entries are unpacked once into obj\ and copied into
+    every build output ($(OutDir), after Build) and publish output ($(PublishDir), after Publish).
+  -->
+  <PropertyGroup>
+    <TheuthMsixArch Condition="'$(TheuthMsixArch)' == ''">x64</TheuthMsixArch>
+    <TheuthRuntimeMsix>$(PkgMicrosoft_WindowsAppSDK_Runtime)\tools\MSIX\win10-$(TheuthMsixArch)\Microsoft.WindowsAppRuntime.2.msix</TheuthRuntimeMsix>
+    <TheuthRuntimeMsixPayloadDir>$(IntermediateOutputPath)runtime-msix-payload\</TheuthRuntimeMsixPayloadDir>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <TheuthRuntimeMsixEntry Include="Microsoft.WindowsAppRuntime.Insights.Resource.dll" />
+    <TheuthRuntimeMsixEntry Include="WindowsAppRuntime.DeploymentExtensions.OneCore.dll" />
+    <TheuthRuntimeMsixEntry Include="WindowsAppSdk.AppxDeploymentExtensions.Desktop.dll" />
+    <TheuthRuntimeMsixEntry Include="WindowsAppSdk.AppxDeploymentExtensions.Desktop-EventLog-Instrumentation.dll" />
+    <TheuthRuntimeMsixEntry Include="WindowsAppRuntime.png" />
+  </ItemGroup>
+
+  <!-- Unpack the five entries from the runtime MSIX into obj\ (skipped when unchanged). -->
+  <Target Name="_TheuthUnpackRuntimeMsixPayload">
+    <Error Condition="'$(PkgMicrosoft_WindowsAppSDK_Runtime)' == ''"
+           Text="ExtractRuntimeMsixPayload: no PkgMicrosoft_WindowsAppSDK_Runtime — the download-only Microsoft.WindowsAppSDK.Runtime PackageReference (GeneratePathProperty) is missing or not restored." />
+    <Error Condition="!Exists('$(TheuthRuntimeMsix)')" Text="ExtractRuntimeMsixPayload: runtime MSIX not found: $(TheuthRuntimeMsix)" />
+    <Unzip SourceFiles="$(TheuthRuntimeMsix)" DestinationFolder="$(TheuthRuntimeMsixPayloadDir)"
+           Include="@(TheuthRuntimeMsixEntry)" SkipUnchangedFiles="true" OverwriteReadOnlyFiles="true" />
+    <ItemGroup>
+      <_TheuthRuntimeMsixPayload Include="@(TheuthRuntimeMsixEntry->'$(TheuthRuntimeMsixPayloadDir)%(Identity)')" />
+    </ItemGroup>
+    <Error Condition="!Exists('%(_TheuthRuntimeMsixPayload.FullPath)')"
+           Text="ExtractRuntimeMsixPayload: %(_TheuthRuntimeMsixPayload.Filename)%(_TheuthRuntimeMsixPayload.Extension) is not in $(TheuthRuntimeMsix)" />
+  </Target>
+
+  <!-- Every build output: the exe's folder. -->
+  <Target Name="ExtractRuntimeMsixPayload" AfterTargets="Build" DependsOnTargets="_TheuthUnpackRuntimeMsixPayload">
+    <Copy SourceFiles="@(_TheuthRuntimeMsixPayload)" DestinationFolder="$(OutDir)" SkipUnchangedFiles="true">
+      <Output TaskParameter="CopiedFiles" ItemName="FileWrites" />
+    </Copy>
+    <Message Importance="high" Text="ExtractRuntimeMsixPayload: @(TheuthRuntimeMsixEntry->Count()) runtime-MSIX files -> $(OutDir)" />
+  </Target>
+
+  <!-- Every publish output (build.ps1: target\release\companion-windows\). -->
+  <Target Name="ExtractRuntimeMsixPayloadToPublishDir" AfterTargets="Publish" DependsOnTargets="_TheuthUnpackRuntimeMsixPayload">
+    <Copy SourceFiles="@(_TheuthRuntimeMsixPayload)" DestinationFolder="$(PublishDir)" SkipUnchangedFiles="true" />
+    <Message Importance="high" Text="ExtractRuntimeMsixPayload: @(TheuthRuntimeMsixEntry->Count()) runtime-MSIX files -> $(PublishDir)" />
+  </Target>
+</Project>

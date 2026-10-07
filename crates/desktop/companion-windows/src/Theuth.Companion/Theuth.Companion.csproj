@@ -1,0 +1,58 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- The WinUI 3 companion (design 134 D1, D11, §5.2, §5.7): unpackaged, self-contained, Windows App SDK 2.5.1 as the
+       trimmed component set. Windows only — the Mac never builds this project (Theuth.Companion.Portable.slnf leaves it
+       out). On build-B: `dotnet build -c Debug -p:Platform=x64` (12–20 s) or build.ps1 (publish to
+       target\release\companion-windows\ + checks + Register() smoke). Hand-written: build-B has no WinUI templates; the
+       seed is spike/134-windows SpikeHost.csproj. Waves add their own folders (W2 Windows/ Tray.cs Hotkeys.cs Store.cs
+       Interop/ Assets/, W3 Notifications/ Breakpoints/ Settings/, W4 AskBar/ Voice/) and their package references below. -->
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0-windows10.0.22621.0</TargetFramework>
+    <TargetPlatformMinVersion>10.0.19041.0</TargetPlatformMinVersion>
+    <RootNamespace>Theuth.Companion</RootNamespace>
+    <AssemblyName>Theuth.Companion</AssemblyName>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <Platforms>x64</Platforms>
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <UseWinUI>true</UseWinUI>
+    <!-- Unpackaged + self-contained: no MSIX, no package identity, no Windows App Runtime install; the runtime sits beside the exe. -->
+    <WindowsPackageType>None</WindowsPackageType>
+    <WindowsAppSDKSelfContained>true</WindowsAppSDKSelfContained>
+    <SelfContained>true</SelfContained>
+    <EnableMsixTooling>true</EnableMsixTooling>
+    <PublishReadyToRun>false</PublishReadyToRun>
+    <PublishTrimmed>false</PublishTrimmed>
+    <!-- Program.cs owns Main (W2 puts the AppInstance single-instance redirect there, before any XAML). -->
+    <DefineConstants>$(DefineConstants);DISABLE_XAML_GENERATED_MAIN</DefineConstants>
+  </PropertyGroup>
+
+  <!-- Windows App SDK 2.5.1, trimmed component set (versions pinned in Directory.Build.props). WinUI pulls Foundation, Base,
+       InteractiveExperiences and WebView2; the explicit references pin them (IE 2.1.9: WinUI asks for 2.1.8, never published). -->
+  <ItemGroup>
+    <PackageReference Include="Microsoft.WindowsAppSDK.WinUI" Version="$(WasdkWinUIVersion)" />
+    <PackageReference Include="Microsoft.WindowsAppSDK.Foundation" Version="$(WasdkFoundationVersion)" />
+    <PackageReference Include="Microsoft.WindowsAppSDK.Base" Version="$(WasdkBaseVersion)" />
+    <PackageReference Include="Microsoft.WindowsAppSDK.InteractiveExperiences" Version="$(WasdkInteractiveExperiencesVersion)" />
+    <!-- Download-only: nothing of it is referenced or copied; ExtractRuntimeMsixPayload reads its runtime MSIX (§2 C2b). -->
+    <PackageReference Include="Microsoft.WindowsAppSDK.Runtime" Version="$(WasdkRuntimeVersion)" ExcludeAssets="all" PrivateAssets="all" GeneratePathProperty="true" />
+  </ItemGroup>
+
+  <!-- W2 (tray · rail · panel · hotkeys): CsWin32 generates the Win32 surface listed in Interop\NativeMethods.txt (its code
+       uses pointers, hence AllowUnsafeBlocks); the tray sprites ship beside the exe under Assets\tray\. -->
+  <PropertyGroup>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Windows.CsWin32" Version="$(CsWin32Version)" PrivateAssets="all" />
+    <AdditionalFiles Include="Interop\NativeMethods.txt" />
+    <Content Include="Assets\tray\*.ico" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+    <None Remove="Assets\tray\make-tray-sprites.swift" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Theuth.Companion.Rpc\Theuth.Companion.Rpc.csproj" />
+    <ProjectReference Include="..\Theuth.Companion.Core\Theuth.Companion.Core.csproj" />
+  </ItemGroup>
+
+  <Import Project="RuntimeMsixPayload.targets" />
+</Project>

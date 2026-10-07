@@ -1,0 +1,46 @@
+<Project>
+  <!-- Design 134 §5.2 / D11: shared by every project under crates/desktop/companion-windows.
+       Rpc, Core and their tests are plain net10.0 (Mac + Windows); only src/Theuth.Companion needs Windows. -->
+  <PropertyGroup>
+    <LangVersion>latest</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <!-- Feed / audit state is not this code's: keep those NuGet warnings visible but not fatal. -->
+    <WarningsNotAsErrors>$(WarningsNotAsErrors);NU1603;NU1900;NU1901;NU1902;NU1903;NU1904</WarningsNotAsErrors>
+    <Deterministic>true</Deterministic>
+    <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
+    <InvariantGlobalization>false</InvariantGlobalization>
+    <!-- Spike trap (RESULTS.md, project facts): variant builds with -p:BaseOutputPath=bin-x\ -p:BaseIntermediateOutputPath=obj-x\
+         must never pull generated sources from the default obj\ (or another variant) into the Compile glob. -->
+    <DefaultItemExcludes>$(DefaultItemExcludes);bin/**;obj/**;bin-*/**;obj-*/**</DefaultItemExcludes>
+    <Company>theuth</Company>
+    <Product>theuth companion for Windows</Product>
+    <Copyright>theuth</Copyright>
+  </PropertyGroup>
+
+  <!-- The version is the workspace's: [workspace.package] version in the repo's Cargo.toml (2.12.1 when W1 was cut). -->
+  <PropertyGroup>
+    <TheuthCargoToml>$([MSBuild]::NormalizePath('$(MSBuildThisFileDirectory)..\..\..\Cargo.toml'))</TheuthCargoToml>
+    <TheuthVersion Condition="Exists('$(TheuthCargoToml)')">$([System.Text.RegularExpressions.Regex]::Match($([System.IO.File]::ReadAllText('$(TheuthCargoToml)')), '(?&lt;=\[workspace\.package\][^\[]*?\bversion\s*=\s*")[0-9][^"]*').Value)</TheuthVersion>
+    <TheuthVersion Condition="'$(TheuthVersion)' == ''">0.0.0</TheuthVersion>
+    <Version>$(TheuthVersion)</Version>
+  </PropertyGroup>
+
+  <!-- Windows App SDK 2.5.1 as the trimmed component set (D1, R2 — never the Microsoft.WindowsAppSDK meta package,
+       which drags ~38 MB of ML: onnxruntime.dll + DirectML.dll). Pinned here so every wave builds the same bits.
+       InteractiveExperiences is pinned at 2.1.9 because WinUI 2.3.9 asks for >= 2.1.8, which nuget.org never had (NU1603 in A2). -->
+  <PropertyGroup>
+    <WasdkWinUIVersion>2.3.9</WasdkWinUIVersion>
+    <WasdkFoundationVersion>2.3.12</WasdkFoundationVersion>
+    <WasdkBaseVersion>2.0.4</WasdkBaseVersion>
+    <WasdkInteractiveExperiencesVersion>2.1.9</WasdkInteractiveExperiencesVersion>
+    <!-- Download-only: the five deployment/insights files toasts need are extracted from its runtime MSIX (§2 C2b, §5.7). -->
+    <WasdkRuntimeVersion>2.5.1</WasdkRuntimeVersion>
+  </PropertyGroup>
+
+  <!-- W2: Win32 interop source generator (tray, rail styles, hotkeys) for src/Theuth.Companion. -->
+  <PropertyGroup>
+    <CsWin32Version>0.3.358</CsWin32Version>
+  </PropertyGroup>
+</Project>
