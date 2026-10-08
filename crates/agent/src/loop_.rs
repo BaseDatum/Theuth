@@ -155,6 +155,10 @@ pub struct UserInput {
 pub struct Input {
     /// User text.
     pub text: String,
+    /// 137 R1-D1: text blocks persisted as their own parts before `text`
+    /// (a native child's opener carries its endless parent's view); not part
+    /// of `TurnStarted.text` or the title.
+    pub context: Vec<String>,
     /// Image files, one `Binary` part each.
     pub files: Vec<PathBuf>,
     /// Persist this message instead of building one from `text`/`files`
@@ -178,6 +182,11 @@ pub struct Input {
     /// passive-only leftovers without one).
     pub passive: bool,
 }
+
+/// `tell` (137 R1-D1): the blocks the next opener of this session carries
+/// before its text — the supervisor sets a child's parent view right before
+/// routing the brief. Consumed by the first input that starts a turn.
+pub struct OpenerContext(pub Vec<String>);
 
 /// The durable exchange and admitted generation behind a peer input. Rides
 /// beside the text, never inside it: the provider sees a `<message>` wrapper,
@@ -644,6 +653,8 @@ pub struct Session {
     scope: TurnScope,
     /// This session's slot is published to [`PermitGate`] (50 §8).
     gated: bool,
+    /// 137 R1-D1: blocks the next opener carries before its text ([`OpenerContext`]).
+    opener_context: Vec<String>,
 }
 
 impl Actor for Session {
@@ -876,6 +887,7 @@ impl Session {
             pending_effort: None,
             scope: TurnScope::default(),
             gated: false,
+            opener_context: Vec::new(),
         }
     }
 
@@ -1279,6 +1291,14 @@ impl Message<PermitsOf> for Session {
     }
 }
 
+impl Message<OpenerContext> for Session {
+    type Reply = ();
+
+    async fn handle(&mut self, m: OpenerContext, _: &mut Context<Self, Self::Reply>) {
+        self.opener_context = m.0;
+    }
+}
+
 impl Message<UserInput> for Session {
     type Reply = ();
 
@@ -1297,6 +1317,7 @@ impl Message<UserInput> for Session {
         let input = Input {
             text,
             files,
+            context: std::mem::take(&mut self.opener_context),
             replay: None,
             ticket,
             scope,
@@ -1378,6 +1399,7 @@ impl Message<PeerInput> for Session {
         let input = Input {
             text: peer_wrapper(&m.record, m.reply_expected, chrono::Local::now()),
             files: Vec::new(),
+            context: Vec::new(),
             replay: None,
             ticket: Some(m.ticket),
             scope: m.request_scope,
@@ -1817,6 +1839,7 @@ impl Message<RestartTurn> for Session {
             Some((text, files)) => Input {
                 text,
                 files,
+                context: Vec::new(),
                 replay: None,
                 ticket: m.ticket,
                 scope: None,
@@ -1835,6 +1858,7 @@ impl Message<RestartTurn> for Session {
                 Input {
                     text: clock::strip_owned(text_of(&opener.content)),
                     files: vec![],
+                    context: Vec::new(),
                     replay: Some(opener),
                     ticket: m.ticket,
                     scope: None,
@@ -1977,6 +2001,7 @@ fn advisory_input(
     Input {
         text,
         files: Vec::new(),
+        context: Vec::new(),
         replay: None,
         ticket,
         scope: None,
@@ -7227,11 +7252,20 @@ fn aux_conversation(session: SessionId) -> SessionId {
 /// The user message for one input: text, then one `Binary` part per file
 /// (17 §3.2; a PDF rides as a native document part, 20 §2.5). A file that
 /// vanished since `check_files` becomes a placeholder rather than aborting the turn.
-fn user_message(Input { text, files, .. }: Input) -> ChatMessage {
-    if files.is_empty() {
+fn user_message(
+    Input {
+        text,
+        context,
+        files,
+        ..
+    }: Input,
+) -> ChatMessage {
+    if files.is_empty() && context.is_empty() {
         return ChatMessage::user(text);
     }
-    let mut parts = Vec::with_capacity(files.len() + 1);
+    let mut parts = Vec::with_capacity(context.len() + files.len() + 1);
+    // 137 R1-D1: a parent's view blocks ride as their own parts before the text.
+    parts.extend(context.into_iter().map(ContentPart::Text));
     parts.push(ContentPart::Text(text));
     for f in files {
         parts.push(match Binary::from_file(&f) {
@@ -8188,6 +8222,7 @@ mod tests {
         Input {
             text: "<message>hello</message>".into(),
             files: Vec::new(),
+            context: Vec::new(),
             replay: None,
             ticket: None,
             scope,
@@ -8206,6 +8241,7 @@ mod tests {
         Input {
             text: "hi".into(),
             files: Vec::new(),
+            context: Vec::new(),
             replay: None,
             ticket: None,
             scope,

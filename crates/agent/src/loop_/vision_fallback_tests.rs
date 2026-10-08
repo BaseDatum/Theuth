@@ -541,6 +541,7 @@ impl Harness {
         Input {
             text: text.into(),
             files,
+            context: Vec::new(),
             replay: None,
             ticket: None,
             scope: None,

@@ -848,14 +848,11 @@ impl Agents {
         let permits = self.tree_pools(root).native.clone();
         // 137: register with the endless service — the pump starts when
         // `sessions.memory` is `endless`; a private tree hands over its own
-        // store. A native child of an endless parent gets the R1-D1 note.
-        let parent_view = match &parent {
-            Some((p, _)) => store
-                .session_memory(*p)
-                .await
-                .is_ok_and(|m| m == MemoryMode::Endless),
-            None => false,
-        };
+        // store. A native child of a parent running the endless frame gets
+        // the R1-D1 note (its opener carries the view, `start_child_turn`).
+        let parent_view = parent
+            .as_ref()
+            .is_some_and(|(p, _)| self.endless.active(*p));
         let attached = Attached {
             model: model.0.clone(),
             effort: effort.as_deref().and_then(effort_of),
@@ -3887,6 +3884,24 @@ impl Agents {
         let Ok(scope) = self.claim_child_turn(child, ticket).await else {
             return;
         };
+        // 137 R1-D1: a native child of an endless parent opens with the
+        // parent's view before its brief (its prompt says so, R1-D1 note).
+        if let Some(Live {
+            actor: LiveActor::Native(actor),
+            parent: Some((parent, _)),
+        }) = self.sessions.get(&child)
+            && self.endless.active(*parent)
+        {
+            let (actor, parent) = (actor.clone(), *parent);
+            let blocks = crate::endless_ext::render_snapshot(&self.endless, parent).await;
+            if !blocks.is_empty() {
+                let _ = actor
+                    .tell(crate::loop_::OpenerContext(
+                        blocks.into_iter().map(|b| b.text).collect(),
+                    ))
+                    .await;
+            }
+        }
         let _ = self
             .route(child, None, text, Vec::new(), ticket, scope, false)
             .await;
