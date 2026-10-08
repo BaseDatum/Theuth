@@ -423,8 +423,12 @@ function useEventSideEffects(st: Stores): void {
     // 132 D7: the count is the attention inbox's length — the sidebar badge's number — read from the
     // `attention_list` cache the sidebar keeps live; approvals are one kind among its items.
     let companion = false
+    // 134 W6: Windows shows no tray title, so the count also goes into the tooltip, worded like the companion's.
     const badge = (n: number) =>
-      void TrayIcon.getById('main').then((t) => t?.setTitle(n ? `●${n}` : null))
+      void TrayIcon.getById('main').then((t) => {
+        void t?.setTitle(n ? `●${n}` : null)
+        void t?.setTooltip(n === 0 ? 'theuth · nothing needs you' : n === 1 ? 'theuth · 1 needs you' : `theuth · ${n} need you`)
+      })
     const setCompanion = (alive: boolean) => {
       if (alive === companion) return
       companion = alive

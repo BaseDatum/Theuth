@@ -15,6 +15,11 @@
     uninstall       run the installed uninstall.exe /S, wait for the files to go, list what is left
     engine-start    start the scratch engine task (theuth-test-engine) again
     restore-clone   put the release clone back on main and pop the pkg-gate stash (refuses while theuth-pkg runs)
+    pkg-start SHA   W6: package SHA without an ssh PTY — refuse while theuth-pkg runs; stash main's regenerated files (or
+                    discard a detached build's), fetch, detach the release clone at SHA, start the theuth-pkg task;
+                    follow it with `status`
+    launch-task     W6: start the installed theuth-desktop.exe through a one-shot interactive scheduled task — no output
+                    redirection, so nothing inherits this job's handles (`launch` redirects and blocks the service's job)
 #>
 param(
     [Parameter(Position = 0)] [string] $Action = 'help',
@@ -30,7 +35,7 @@ $dataDir = if ($env:THEUTH_DATA_DIR) { $env:THEUTH_DATA_DIR } else { Join-Path $
 function Say([string] $s) { Write-Output "G5: $s" }
 function Clip([string] $s, [int] $n = 200) { if ($null -eq $s) { return '' }; $s = $s -replace "`e\[[0-9;]*m", ''; return $s.Substring(0, [math]::Min($n, $s.Length)) }
 function Procs {
-    foreach ($n in 'theuth-desktop', 'Theuth.Companion', 't') {
+    foreach ($n in 'theuth-desktop', 'Theuth.Companion', 't', 'theuth-documents-*') {
         Get-Process -Name $n -ErrorAction SilentlyContinue | ForEach-Object { Say "proc $($_.ProcessName) pid=$($_.Id) start=$($_.StartTime.ToString('HH:mm:ss')) path=$($_.Path)" }
     }
 }
@@ -109,6 +114,39 @@ switch ($Action) {
         Procs
     }
     'engine-start' { Start-ScheduledTask -TaskName 'theuth-test-engine'; Start-Sleep 10; Procs }
+    'pkg-start' {
+        $sha = if ($Rest.Count -gt 0) { $Rest[0] } else { '' }
+        if ($sha -notmatch '^[0-9a-f]{7,40}$') { Say 'usage: pkg-start <sha>'; break }
+        if ((Get-ScheduledTask -TaskName 'theuth-pkg').State -eq 'Running') { Say 'theuth-pkg is running; refusing'; break }
+        $dirty = @(git -C $clone status --porcelain --untracked-files=no)
+        if ($dirty.Count -gt 0) {
+            if ((git -C $clone branch --show-current) -eq 'main') {
+                git -C $clone stash push -q -m "pkg-gate-134-w6: regenerated files of $(git -C $clone rev-parse --short HEAD)"
+                Say "stashed $($dirty.Count) regenerated files of main (restore-clone pops it)"
+            } else {
+                git -C $clone checkout -q -- .
+                Say "discarded $($dirty.Count) regenerated files of the detached build"
+            }
+        }
+        git -C $clone fetch -q origin 2>&1 | ForEach-Object { Say "fetch: $_" }
+        git -C $clone checkout -q --detach $sha 2>&1 | ForEach-Object { Say "checkout: $_" }
+        $head = git -C $clone rev-parse --short HEAD
+        Say "release clone at $head"
+        if (-not $sha.StartsWith($head) -and -not $head.StartsWith($sha)) { Say "head $head is not $sha; not starting"; break }
+        Remove-Item (Join-Path $pkg 'last-exit.txt') -ErrorAction SilentlyContinue
+        Start-ScheduledTask -TaskName 'theuth-pkg'
+        Start-Sleep 6
+        Say "theuth-pkg $((Get-ScheduledTask -TaskName 'theuth-pkg').State) log=$(Get-Content (Join-Path $pkg 'current-log.txt') -ErrorAction SilentlyContinue)"
+    }
+    'launch-task' {
+        $exe = Join-Path $app 'theuth-desktop.exe'
+        if (-not (Test-Path $exe)) { Say "no $exe"; break }
+        schtasks /create /tn theuth-app-once /tr $exe /sc once /st 23:59 /it /f 2>&1 | ForEach-Object { Say "schtasks: $_" }
+        schtasks /run /tn theuth-app-once 2>&1 | ForEach-Object { Say "schtasks: $_" }
+        Start-Sleep 20
+        schtasks /delete /tn theuth-app-once /f 2>&1 | Out-Null
+        Procs
+    }
     'restore-clone' {
         if ((Get-ScheduledTask -TaskName 'theuth-pkg' -ErrorAction SilentlyContinue).State -eq 'Running') { Say 'restore-clone: theuth-pkg is still running; refusing'; exit 1 }
         Push-Location $clone
