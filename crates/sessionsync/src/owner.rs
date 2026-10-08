@@ -971,8 +971,14 @@ mod tests {
                     resume_policy(true, reason, by_user, ResumeMode::Auto),
                     Resume(ResumeCause::Transfer)
                 );
-                assert_eq!(resume_policy(true, reason, by_user, ResumeMode::Ask), Pending);
-                assert_eq!(resume_policy(true, reason, by_user, ResumeMode::Off), Nothing);
+                assert_eq!(
+                    resume_policy(true, reason, by_user, ResumeMode::Ask),
+                    Pending
+                );
+                assert_eq!(
+                    resume_policy(true, reason, by_user, ResumeMode::Off),
+                    Nothing
+                );
             }
         }
         for mode in [ResumeMode::Auto, ResumeMode::Ask, ResumeMode::Off] {
@@ -980,14 +986,23 @@ mod tests {
                 resume_policy(false, TakeReason::User, false, mode),
                 Resume(ResumeCause::Takeover)
             );
-            assert_eq!(resume_policy(false, TakeReason::Write, false, mode), Pending);
+            assert_eq!(
+                resume_policy(false, TakeReason::Write, false, mode),
+                Pending
+            );
             // Q10: the front door's take for a typing client is the user's.
             assert_eq!(
                 resume_policy(false, TakeReason::Write, true, mode),
                 Resume(ResumeCause::Takeover)
             );
-            assert_eq!(resume_policy(false, TakeReason::Orphan, false, mode), Pending);
-            assert_eq!(resume_policy(false, TakeReason::Orphan, true, mode), Pending);
+            assert_eq!(
+                resume_policy(false, TakeReason::Orphan, false, mode),
+                Pending
+            );
+            assert_eq!(
+                resume_policy(false, TakeReason::Orphan, true, mode),
+                Pending
+            );
         }
     }
 
