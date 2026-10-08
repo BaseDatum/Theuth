@@ -7,6 +7,7 @@ import { Sheet, SheetContent, SheetDescription, SheetFooter, SheetHeader, SheetT
 import { Skeleton } from '@/components/ui/skeleton'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { fmtBytes } from '@/lib/files'
+import { EARLIER_HISTORY } from '@/lib/endless'
 import { queryKeys, useApi } from '@/lib/rpc'
 import { cn } from '@/lib/utils'
 import type { SessionSummary } from '@/rpc/bindings/SessionSummary'
@@ -221,10 +222,14 @@ function LineNode({ line, prefix, depth, kids, open, cursorKey, query, onToggle 
   )
 }
 
-/** Determinate bar for settle (`built / lines`) or backfill (`done / total`, with the ETA). */
+/** `~4 min` / `~40 s` for the backfill's ETA. */
+const eta = (secs: number): string => (secs >= 90 ? `~${Math.round(secs / 60)} min` : `~${Math.round(secs)} s`)
+
+/** Determinate bar for settle (`built / lines`) or backfill (R1-D4: `done / total`, the ETA and the projected cost). */
 function Progress({ m }: { m: SessionMemory }) {
-  const [label, done, total] = m.backfill
-    ? [`Backfilling ${m.backfill.done} of ${m.backfill.total}${m.backfill.eta_secs !== null ? ` · ~${Math.ceil(m.backfill.eta_secs / 60)} min left` : ''}`, m.backfill.done, m.backfill.total]
+  const b = m.backfill
+  const [label, done, total] = b
+    ? [`Building memory · ${b.done}/${b.total}${b.eta_secs !== null ? ` · ${eta(b.eta_secs)}` : ''} · ≈ $${b.usd_estimate < 1 ? b.usd_estimate.toFixed(3) : b.usd_estimate.toFixed(2)}`, b.done, b.total]
     : [`Settling ${m.unbuilt} line${m.unbuilt === 1 ? '' : 's'}`, m.view.length - m.unbuilt, m.view.length]
   const pct = total > 0 ? Math.round((done / total) * 100) : 0
   return (
@@ -258,7 +263,9 @@ export function MemoryPanel({ session, open, onOpenChange }: { session: string; 
   const search = useRef<HTMLInputElement>(null)
   const treeEl = useRef<HTMLDivElement>(null)
 
-  const view = memory.data?.view
+  // R1-D4: a capped backfill leads the view with the `(earlier history …)` sentinel — a note, not a zoomable band line.
+  const earlier = memory.data?.view[0]?.text === EARLIER_HISTORY ? memory.data.view[0] : undefined
+  const view = useMemo(() => (earlier ? memory.data?.view.slice(1) : memory.data?.view), [memory.data, earlier])
   const rows = useMemo(() => [...(hits ? flatten(hits.lines, kids, opened, HIT) : []), ...(view ? flatten(view, kids, opened) : [])], [hits, view, kids, opened])
   const cursorKey = rows[cursor]?.key
 
@@ -390,6 +397,14 @@ export function MemoryPanel({ session, open, onOpenChange }: { session: string; 
               {hits.lines.length === 0 && !searching && <p className="px-2 py-1 text-sm text-fg-tertiary">Nothing matched.</p>}
               {hits.lines.map((l) => node(l, HIT))}
             </section>
+          )}
+          {earlier && (
+            <p role="note" className="mb-1 flex gap-2 px-2 py-1 text-xs text-fg-tertiary italic">
+              <span className="w-16 shrink-0 text-right font-mono text-[11px] not-italic tabular-nums">
+                {earlier.id}+{earlier.n}
+              </span>
+              {earlier.text}
+            </p>
           )}
           {view?.map((line, i) => (
             <Fragment key={lineKey(line)}>

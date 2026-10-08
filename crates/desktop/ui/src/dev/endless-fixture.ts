@@ -5,8 +5,9 @@
 import type { Api } from '@/rpc/api'
 import type { EndlessConfig, SessionMemory, ViewLine } from '@/rpc/endless-stubs'
 
-export const endlessFixtureOn = (): boolean =>
-  import.meta.env.DEV && (import.meta.env.VITE_ENDLESS_FIXTURE === '1' || globalThis.localStorage?.getItem('endless-fixture') === '1')
+/** `"1"` turns the fixture on; `"backfill"` also serves the R1-D4 capped-backfill memory. `null` = off. */
+const flag = (): string | null => (import.meta.env.DEV ? globalThis.localStorage?.getItem('endless-fixture') || import.meta.env.VITE_ENDLESS_FIXTURE || null : null)
+export const endlessFixtureOn = (): boolean => !!flag()
 
 const line = (id: number, n: number, text: string, built = true): ViewLine => ({ id, n, text, built, level: Math.log2(n) })
 
@@ -66,10 +67,21 @@ const memory: SessionMemory = {
   backfill: null,
 }
 
+/** `localStorage.endless-fixture = "backfill"`: the R1-D4 capped-backfill shape — sentinel first line, projected cost in the footer. */
+const backfilling: SessionMemory = {
+  ...memory,
+  settling: false,
+  unbuilt: 0,
+  view: [line(0, 2_412, '(earlier history, not summarized; recall searches it)', false), ...view.map((l) => ({ ...l, id: l.id + 2_412 }))],
+  backfill: { done: 812, total: 2_000, eta_secs: 3_540, usd_estimate: 2.9 },
+}
+
 let settings: EndlessConfig = {
   default_chat: false,
-  default_desk: false,
-  view_bytes: 64_000,
+  default_desk: true,
+  default_meeting: false,
+  view_bytes: 128_000,
+  meeting_view_bytes: 32_000,
   node_bytes: 512,
   slack: 0.125,
   settle_secs: 45,
@@ -77,6 +89,7 @@ let settings: EndlessConfig = {
   tries: 5,
   retry_secs: 10,
   cap_chars: 30_000,
+  backfill_max_units: 2_000,
   model: null,
 }
 
@@ -95,7 +108,7 @@ export function endlessFixture(api: Api): Api {
         let left = 2
         return rows.map((r) => (r.parent === null && !r.archived && !r.desk && left-- > 0 ? { ...r, memory: 'endless' as const } : r))
       }),
-    session_memory: () => Promise.resolve(memory),
+    session_memory: () => Promise.resolve(flag() === 'backfill' ? backfilling : memory),
     endless_zoom: (_s, id, n) => Promise.resolve(children(id, n)),
     endless_recall: (_s, query) => {
       const q = query.toLowerCase()

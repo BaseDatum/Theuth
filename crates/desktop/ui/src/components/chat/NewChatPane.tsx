@@ -9,6 +9,7 @@ import { Label } from '@/components/ui/label'
 import { Switch } from '@/components/ui/switch'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { draftProject, usePanes } from '@/lib/panes'
+import { useCompactorLabel } from '@/lib/endless'
 import { usePrivate } from '@/lib/private'
 import { queryKeys, useApi } from '@/lib/rpc'
 import type { EndlessConfig } from '@/rpc/endless-stubs'
@@ -124,6 +125,7 @@ export function CreateOptions({
   const acknowledge = usePrivate((s) => s.acknowledge)
   // Two draft panes may be open at once; label ids must not collide.
   const pid = useId()
+  const compactor = useCompactorLabel(settings?.model)
   return (
     <div className="mx-auto mt-1 w-full max-w-[768px] px-4 text-sm">
       <div className="flex flex-wrap items-center gap-x-6 gap-y-2">
@@ -158,7 +160,7 @@ export function CreateOptions({
             <li>A background summariser keeps the view fresh; the first answer after a long turn may wait a few seconds for it.</li>
             <li>zoom and recall bring any past message back word for word.</li>
           </ul>
-          <p className="mt-2 text-xs text-fg-tertiary">Compactor: {settings?.model ?? 'same as the session'}</p>
+          <p className="mt-2 text-xs text-fg-tertiary">Compactor: {compactor}</p>
         </div>
       )}
       {priv && (

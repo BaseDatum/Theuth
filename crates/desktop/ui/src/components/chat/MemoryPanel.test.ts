@@ -74,7 +74,7 @@ test('the badge tooltip names size, line count and settle state', () => {
   expect(badgeTip(memory)).toMatch(/^Endless memory · view \d+ B · 3 lines · up to date$/)
   expect(badgeTip({ ...memory, settling: true, unbuilt: 3 })).toContain('· settling 3 lines')
   expect(badgeTip({ ...memory, settling: true, unbuilt: 1 })).toContain('· settling 1 line')
-  expect(badgeTip({ ...memory, backfill: { done: 12, total: 80, eta_secs: 300 } })).toContain('· backfill 12/80')
+  expect(badgeTip({ ...memory, backfill: { done: 12, total: 80, eta_secs: 300, usd_estimate: 0.4 } })).toContain('· backfill 12/80')
 })
 
 const render = (summaryRow: SessionSummary, data: SessionMemory) => {

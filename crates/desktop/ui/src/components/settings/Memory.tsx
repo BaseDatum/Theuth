@@ -3,6 +3,7 @@ import { useState } from 'react'
 import { ModelCombobox } from '@/components/chat/ModelCombobox'
 import { Count, Row, Section, useAction } from '@/components/settings/shared'
 import { Switch } from '@/components/ui/switch'
+import { useCompactorLabel } from '@/lib/endless'
 import { queryKeys, useApi } from '@/lib/rpc'
 import type { EndlessConfig } from '@/rpc/endless-stubs'
 
@@ -40,8 +41,10 @@ export function Memory() {
   // Live preview while the slider moves: the label and the token estimate follow the thumb before the write.
   const [viewKb, setViewKb] = useState<number | null>(null)
   const [slackPct, setSlackPct] = useState<number | null>(null)
-  const kb = viewKb ?? (s ? s.view_bytes / 1000 : 64)
+  const kb = viewKb ?? (s ? s.view_bytes / 1000 : 128)
   const pct = slackPct ?? (s ? s.slack * 100 : 12.5)
+  // R1-D3: `null` resolves to the title model when one is set; the picker's first row names what that is right now.
+  const resolved = useCompactorLabel(null)
 
   return (
     <>
@@ -49,8 +52,11 @@ export function Memory() {
         <Row label="New chats start endless" description="The ∞ switch on the New chat view starts on; each draft can still turn it off.">
           <Switch aria-label="New chats start endless" checked={s?.default_chat ?? false} disabled={busy} onCheckedChange={(v) => patch({ default_chat: v })} />
         </Row>
-        <Row label="Desks start endless" description="Desks whose agents file has no memory: field open their session in endless mode.">
+        <Row label="Desks start endless" description="Desks whose agents file has no memory: field open their session in endless mode; a desk already running switches at its next idle moment and backfills its history.">
           <Switch aria-label="Desks start endless" checked={s?.default_desk ?? false} disabled={busy} onCheckedChange={(v) => patch({ default_desk: v })} />
+        </Row>
+        <Row label="Meetings start endless" description="The ∞ switch on the meeting start form starts on: the meeting keeps a compressed memory of the whole call behind the live transcript.">
+          <Switch aria-label="Meetings start endless" checked={s?.default_meeting ?? false} disabled={busy} onCheckedChange={(v) => patch({ default_meeting: v })} />
         </Row>
       </Section>
       <Section title="View">
@@ -107,13 +113,13 @@ export function Memory() {
         </Row>
       </Section>
       <Section title="Compactor">
-        <Row label="Compactor model" description="Writes the one-line summaries in the background. Same as the session = whichever model answers the chat, at its effort.">
+        <Row label="Compactor model" description="Writes the one-line summaries in the background. Unset, it follows the title model (your cheap side-call choice) when one is set, else the session's own model.">
           <ModelCombobox
             aria-label="Compactor model"
             className="max-w-64"
             models={models.data ?? []}
             value={s?.model}
-            none={{ label: 'Same as the session' }}
+            none={{ label: resolved }}
             disabled={busy}
             onChange={(id) => patch({ model: id })}
           />

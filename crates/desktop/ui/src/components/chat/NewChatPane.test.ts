@@ -9,7 +9,7 @@ import { CreateOptions } from './NewChatPane'
 
 vi.mock('@/lib/rpc', async (original) => ({
   ...(await original<typeof Rpc>()),
-  useApi: () => ({ list_sessions: async () => [] }),
+  useApi: () => ({ list_sessions: async () => [], title_model: async () => null }),
 }))
 
 const render = (props: Partial<Parameters<typeof CreateOptions>[0]>) =>
@@ -47,10 +47,10 @@ test('on: the neutral notice with the three sentences and the compactor line; th
   expect(html).toContain('Every turn starts from a compressed view of the whole chat; nothing is deleted, the distant past just gets coarser.')
   expect(html).toContain('A background summariser keeps the view fresh; the first answer after a long turn may wait a few seconds for it.')
   expect(html).toContain('zoom and recall bring any past message back word for word.')
-  expect(html).toContain('Compactor: same as the session')
+  expect(html).toContain('Compactor: Same as the session')
   const named = render({
     endless: true,
-    settings: { default_chat: true, default_desk: false, view_bytes: 64000, node_bytes: 512, slack: 0.125, settle_secs: 45, jobs: 8, tries: 5, retry_secs: 10, cap_chars: 30000, model: 'anthropic/claude-haiku-4-5' },
+    settings: { default_chat: true, default_desk: true, default_meeting: false, view_bytes: 128000, meeting_view_bytes: 32000, node_bytes: 512, slack: 0.125, settle_secs: 45, jobs: 8, tries: 5, retry_secs: 10, cap_chars: 30000, backfill_max_units: 2000, model: 'anthropic/claude-haiku-4-5' },
   })
   expect(named).toContain('Compactor: anthropic/claude-haiku-4-5')
 })

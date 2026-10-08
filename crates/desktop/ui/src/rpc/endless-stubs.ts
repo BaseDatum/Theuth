@@ -12,6 +12,7 @@
 import type { CreateSessionOptions } from '@/rpc/bindings/CreateSessionOptions'
 import type { SessionId } from '@/rpc/bindings/SessionId'
 import type { SessionSummary } from '@/rpc/bindings/SessionSummary'
+import type { StartMeeting } from '@/rpc/bindings/StartMeeting'
 import type { RpcClient } from '@/rpc/client'
 
 /** `sessions.memory` (137 D1): the 07/11 epoch machinery, or the summary-tree view. */
@@ -40,8 +41,8 @@ export type EndlessStats = {
   usd_estimate: number
 }
 
-/** 137 D14: the tree being built over existing history; absent when not backfilling. */
-export type Backfill = { done: number; total: number; eta_secs: number | null }
+/** 137 D14 / R1-D4: the tree being built over existing history; absent when not backfilling. `usd_estimate` is the projected cost. */
+export type Backfill = { done: number; total: number; eta_secs: number | null; usd_estimate: number }
 
 /** `session_memory` reply (137 §11.2). On an `epochs` session: `mode: 'epochs'`, empty `view`. */
 export type SessionMemory = {
@@ -66,11 +67,13 @@ export type EndlessProgress = {
   error: string | null
 }
 
-/** `agent.endless` (137 §11.1 / §13 `EndlessConfig`); `model: null` = the session's own model. */
+/** `agent.endless` (137 §11.1 / §13 `EndlessConfig`, R1-D2/D3/D4/D6/D7); `model: null` = the title model, else the session's own. */
 export type EndlessConfig = {
   default_chat: boolean
   default_desk: boolean
+  default_meeting: boolean
   view_bytes: number
+  meeting_view_bytes: number
   node_bytes: number
   slack: number
   settle_secs: number
@@ -78,11 +81,15 @@ export type EndlessConfig = {
   tries: number
   retry_secs: number
   cap_chars: number
+  backfill_max_units: number
   model: string | null
 }
 
 /** `CreateSessionOptions` with 137's `memory` (absent/`null` = the configured default). */
 export type CreateSessionOptionsEndless = CreateSessionOptions & { memory?: MemoryMode | null }
+
+/** `StartMeeting` with R1-D6's `memory` (absent/`null` = `agent.endless.default_meeting`). */
+export type StartMeetingEndless = StartMeeting & { memory?: MemoryMode | null }
 
 /** `SessionSummary.memory` until the bindings carry it; a row without the field is an `epochs` session. */
 export const memoryOf = (s: SessionSummary): MemoryMode => (s as SessionSummary & { memory?: MemoryMode }).memory ?? 'epochs'
