@@ -18,6 +18,7 @@ use kameo::message::{Context, Message};
 use kameo::reply::DelegatedReply;
 use runtime::{Runtime, SessionId};
 use serde::{Deserialize, Serialize};
+use tokio_util::sync::CancellationToken;
 
 use crate::activity::{self, Activity, ActivitySink, Kind, OperationId};
 use crate::approval::{Approval, Decision, RequestApproval};
@@ -1617,6 +1618,8 @@ async fn invoke(
         call_id: call.id,
         quiet: call.quiet,
         resources,
+        cancel: CancellationToken::new(),
+        promote_after: None,
     };
     // A tool whose whole body is a human wait executes nothing bounded; the
     // suspension ends with the body (the next call in the batch, or the
