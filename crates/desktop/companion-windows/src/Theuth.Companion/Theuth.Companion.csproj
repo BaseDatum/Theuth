@@ -49,6 +49,11 @@
     <None Remove="Assets\tray\make-tray-sprites.swift" />
   </ItemGroup>
 
+  <!-- W4 (Ask bar · dictation): WASAPI capture through NAudio.Wasapi (D7, R2-4; MIT, net9.0+; pulls NAudio.Core). -->
+  <ItemGroup>
+    <PackageReference Include="NAudio.Wasapi" Version="$(NAudioWasapiVersion)" />
+  </ItemGroup>
+
   <ItemGroup>
     <ProjectReference Include="..\Theuth.Companion.Rpc\Theuth.Companion.Rpc.csproj" />
     <ProjectReference Include="..\Theuth.Companion.Core\Theuth.Companion.Core.csproj" />

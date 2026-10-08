@@ -20,7 +20,10 @@ public static class AskRpc
 
     /// <summary><c>set_event_focus(sessions)</c>: delta-class events for these sessions only (129 §3.2); pre-129 engines answer -32601.</summary>
     public static Task SetEventFocusAsync(this RpcClient c, IReadOnlyList<string> sessions) =>
-        c.CallRawAsync("set_event_focus", sessions.ToArray());
+        c.CallRawAsync("set_event_focus", new object?[] { sessions.ToArray() }); // one positional param: the list (a bare string[] would spread into N params — the engine answered -32602 Invalid params)
+
+    /// <summary>The wire params of <see cref="SetEventFocusAsync"/>: <c>[["s1","s2"]]</c>, one positional list (W4 found the spread bug live).</summary>
+    public static string SetEventFocusParams(IReadOnlyList<string> sessions) => TheuthJson.EncodeParams(new object?[] { sessions.ToArray() });
 
     // MARK: live dictation (W6; design 54 §8)
 
