@@ -237,3 +237,86 @@ public sealed class PauseMenuTests
         Assert.Equal("Pause notifications (until 05:23)", PauseMenu.Title(Now.AddHours(1), Now));
     }
 }
+
+// Design 134 W6 item 10: the "theuth engine unreachable" toast waits out NotificationPolicy.EngineGrace — the shell's quit
+// handshake stops the engine ~60 ms before WM_CLOSE reaches the companion, and every whole-app quit/update left that toast in
+// Notification Center. A loss that lasts still notifies exactly as before.
+public sealed class EngineLossGraceTests
+{
+    private static readonly DateTimeOffset T0 = new(2026, 10, 8, 6, 49, 56, TimeSpan.FromHours(1));
+    private static readonly TimeSpan G = NotificationPolicy.EngineGrace;
+
+    private static NotificationPolicy Fresh(NotificationPrefs? prefs = null)
+    {
+        var p = new NotificationPolicy(prefs ?? new NotificationPrefs());
+        _ = p.Update(Array.Empty<AttentionItem>(), T0);
+        return p;
+    }
+
+    [Fact]
+    public void QuitInitiatedLossNeverPosts()
+    {
+        var p = Fresh();
+        p.Quitting(); // the companion sent theuth://quit itself
+        Assert.True(p.Engine(false, T0.AddMilliseconds(60)).IsEmpty);
+        Assert.False(p.EngineLossPending);
+        Assert.True(p.Tick(T0.AddSeconds(30)).IsEmpty);
+    }
+
+    [Fact]
+    public void ALossIsHeldAndNothingPostsBeforeTheGrace()
+    {
+        // The packaged shape: engine gone at .562, WM_CLOSE at .596 — the process is gone before any tick inside the grace.
+        var p = Fresh();
+        Assert.True(p.Engine(false, T0).IsEmpty);
+        Assert.True(p.EngineLossPending);
+        Assert.True(p.Tick(T0.AddSeconds(1)).IsEmpty);
+        Assert.True(p.Tick(T0 + G - TimeSpan.FromMilliseconds(1)).IsEmpty);
+        Assert.True(p.Engine(false, T0.AddSeconds(2)).IsEmpty); // repeated drops do not restart the clock
+    }
+
+    [Fact]
+    public void RecoveryInsideTheGraceIsSilent()
+    {
+        var p = Fresh();
+        _ = p.Engine(false, T0);
+        var back = p.Engine(true, T0.AddSeconds(3));
+        Assert.True(back.IsEmpty); // nothing was posted, so nothing to withdraw
+        Assert.False(p.EngineLossPending);
+        Assert.True(p.Tick(T0.AddSeconds(30)).IsEmpty);
+        // A later real loss starts a fresh grace.
+        _ = p.Engine(false, T0.AddSeconds(40));
+        Assert.Single(p.Tick(T0.AddSeconds(40) + G).Post);
+    }
+
+    [Fact]
+    public void ALastingLossPostsOnceAfterTheGraceAndWithdrawsOnReconnect()
+    {
+        var p = Fresh();
+        _ = p.Engine(false, T0);
+        var due = p.Tick(T0 + G);
+        var b = Assert.Single(due.Post);
+        Assert.Equal((Banner.EngineId, BannerCategory.Error, "theuth engine unreachable", BannerLevel.Active, true), (b.Id, b.Category, b.Title, b.Level, b.Sound));
+        Assert.False(p.EngineLossPending);
+        Assert.True(p.Tick(T0 + G + TimeSpan.FromSeconds(1)).IsEmpty); // once
+        Assert.True(p.Engine(false, T0 + G + TimeSpan.FromSeconds(2)).IsEmpty);
+        Assert.Equal(new[] { Banner.EngineId }, p.Engine(true, T0.AddSeconds(60)).Withdraw);
+        Assert.Equal(5, (int)G.TotalSeconds);
+    }
+
+    [Fact]
+    public void PausedOrOffStaySilentAtTheDueTime()
+    {
+        var paused = Fresh();
+        paused.Pause(T0.AddHours(1));
+        _ = paused.Engine(false, T0);
+        Assert.True(paused.Tick(T0 + G).IsEmpty);
+        var off = Fresh(new NotificationPrefs { Error = NotifyMode.Off });
+        _ = off.Engine(false, T0);
+        Assert.True(off.Tick(T0 + G).IsEmpty);
+        // The replay still shows exactly one error banner in its engine segment (C6 reading).
+        var steps = NotificationReplay.Run(new[] { PolicyFx.It("decision:1", AttentionKind.Decision, agent: "d1") }, new NotificationPrefs(), PolicyFx.T0);
+        var engine = Assert.Single(steps, s => s.Segment == NotificationReplay.SegmentEngine);
+        Assert.Single(engine.Output.Post);
+    }
+}

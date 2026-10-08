@@ -120,6 +120,9 @@ internal sealed class Surfaces : IDisposable
     /// <summary>W6 item 9: when notifications are paused until (null = not paused) — the submenu's check marks and the row's "(until HH:mm)".</summary>
     public Func<DateTimeOffset?>? PausedUntil { get; set; }
 
+    /// <summary>W6 item 10: the companion is quitting on purpose (tray › Quit theuth / Quit theuth Companion) — the engine going away is expected.</summary>
+    public event Action? QuitRequested;
+
     /// <summary>W3: the Launch at login row was toggled to this value (the Run key + companion.json are W3's).</summary>
     public event Action<bool>? LaunchAtLoginToggled;
 
@@ -281,7 +284,7 @@ internal sealed class Surfaces : IDisposable
             new("Settings…", () => store.Perform(Intent.Settings)),
             TrayMenu.Item.Separator,
             new("Quit theuth", QuitTheuth),
-            new("Quit theuth Companion", () => quit(0)),
+            new("Quit theuth Companion", () => { QuitRequested?.Invoke(); quit(0); }),
         };
     }
 
@@ -291,6 +294,7 @@ internal sealed class Surfaces : IDisposable
     /// </summary>
     private void QuitTheuth()
     {
+        QuitRequested?.Invoke(); // before theuth://quit: the shell stops the engine ~60 ms before it closes us (item 10)
         if (!Links.QuitTheuth())
         {
             quit(0);
