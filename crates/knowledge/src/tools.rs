@@ -646,29 +646,64 @@ pub struct VerifyArgs {
     /// What was checked, or what changed.
     #[serde(default)]
     pub note: Option<String>,
-    /// What the check read: a path (absolute or relative to the data dir), an
-    /// http(s) URL, or a `session:<uuid>` / `meeting:<id>` id. At least one
-    /// must name a real source; all are added to the concept's `evidence`.
+    /// What the check read: a path (absolute or relative to the data dir) or
+    /// an http(s) URL. `ok` needs at least one of those; a `session:<uuid>` /
+    /// `meeting:<id>` id counts only in addition and only when the concept's
+    /// own `evidence` already cites it. `stale` accepts any one of the three.
+    /// All are added to the concept's `evidence`.
     #[serde(default)]
     pub evidence: Vec<String>,
 }
 
-/// 136 P gap 2: does `e` name something a read tool could have read?
-fn is_evidence(e: &str, data_dir: &std::path::Path) -> bool {
+/// 136 P gap 2: a path a read tool could have read, or an http(s) URL.
+fn is_read_source(e: &str, data_dir: &std::path::Path) -> bool {
     let e = e.trim();
-    if e.is_empty() {
-        return false;
-    }
-    if e.starts_with("http://") || e.starts_with("https://") {
-        return true;
-    }
+    !e.is_empty()
+        && (e.starts_with("http://") || e.starts_with("https://") || data_dir.join(e).exists())
+}
+
+/// A well-formed `session:<uuid>` / `meeting:<id>` reference.
+fn is_ref(e: &str) -> bool {
+    let e = e.trim();
     if let Some(s) = e.strip_prefix("session:") {
         return s.parse::<runtime::SessionId>().is_ok();
     }
-    if let Some(m) = e.strip_prefix("meeting:") {
-        return !m.is_empty();
+    e.strip_prefix("meeting:").is_some_and(|m| !m.is_empty())
+}
+
+/// 136 P2 D2: the evidence rule. `ok` must rest on a read (path or URL);
+/// a `session:`/`meeting:` id is accepted only alongside one and only when
+/// `cited` (the concept's own `evidence`) already names it — otherwise any
+/// session id would stamp `verified:` without a read. `stale` keeps the
+/// looser rule: one item of any kind.
+fn check_evidence(
+    outcome: crate::types::VerifyOutcome,
+    evidence: &[String],
+    cited: &[String],
+    data_dir: &std::path::Path,
+) -> anyhow::Result<()> {
+    let read = evidence.iter().any(|e| is_read_source(e, data_dir));
+    match outcome {
+        crate::types::VerifyOutcome::Ok => {
+            anyhow::ensure!(
+                read,
+                "verify ok needs a read: evidence must include a path that exists or an http(s) URL \
+                 (a session:/meeting: id counts only in addition, and only one the concept already cites)"
+            );
+            for e in evidence.iter().filter(|e| is_ref(e)) {
+                anyhow::ensure!(
+                    cited.iter().any(|c| c == e.trim()),
+                    "verify ok: `{e}` is not in the concept's evidence — a session:/meeting: id counts \
+                     only when the concept already cites it; cite the path or URL you read"
+                );
+            }
+        }
+        crate::types::VerifyOutcome::Stale => anyhow::ensure!(
+            read || evidence.iter().any(|e| is_ref(e)),
+            "verify needs evidence from a read: pass evidence with a path that exists, an http(s) URL, or a session:/meeting: id"
+        ),
     }
-    data_dir.join(e).exists()
+    Ok(())
 }
 
 /// `knowledge_verify` (136 §2.1): record a read-tool check's verdict.
@@ -683,18 +718,15 @@ impl Tool for VerifyTool {
     fn description(&self) -> String {
         "Dreaming only: record the outcome of checking a knowledge concept against the world with read tools: \
          `ok` sets `verified: <today>`, `stale` sets `status: stale` and keeps the note. Never a model's opinion: \
-         `evidence` must name what was read (an existing path, an http(s) URL, or a session:/meeting: id)."
+         `ok` needs `evidence` with the path or http(s) URL you read this turn (a session:/meeting: id counts \
+         only in addition, and only when the concept already cites it); `stale` takes any of the three."
             .into()
     }
 
     async fn call(&self, a: VerifyArgs, cx: ToolCx) -> anyhow::Result<ToolOutput> {
         consolidating(&self.0, Self::NAME, &cx).await?;
-        anyhow::ensure!(
-            a.evidence
-                .iter()
-                .any(|e| is_evidence(e, &cx.resources.root)),
-            "verify needs evidence from a read: pass evidence with a path that exists, an http(s) URL, or a session:/meeting: id"
-        );
+        let cited = self.0.get(&a.id).await?.meta.evidence;
+        check_evidence(a.outcome, &a.evidence, &cited, &cx.resources.root)?;
         let r = self
             .0
             .verify(&a.id, a.outcome, a.note.as_deref(), &a.evidence)
@@ -1029,17 +1061,29 @@ mod tests {
         assert_eq!(out.structured.unwrap()[0]["opened"], 2);
     }
 
-    /// 136 P gap 2: `knowledge_verify` refuses without evidence a read tool
-    /// could have produced; a path that exists (relative to the data dir),
-    /// an http(s) URL or a `session:`/`meeting:` id passes and is recorded.
+    /// 136 P gap 2 + P2 D2: `knowledge_verify ok` refuses without a read
+    /// (a path that exists, relative to the data dir or absolute, or an
+    /// http(s) URL); a `session:`/`meeting:` id never carries `ok` alone and
+    /// counts only when the concept already cites it. `stale` takes any one
+    /// of the three kinds.
     #[tokio::test]
     async fn verify_needs_evidence_from_a_read() {
+        use crate::types::VerifyOutcome::{Ok as VOk, Stale};
         let dir = std::env::temp_dir().join(format!("theuth-ktools-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(dir.join("conf")).unwrap();
         std::fs::write(dir.join("conf/pg.toml"), "port = 5432\n").unwrap();
         let rt = runtime::Runtime::new(figment::Figment::new(), dir.clone());
         let k = Knowledge::open(&dir, rt).await.unwrap();
-        k.put(put(), Source::Model).await.unwrap();
+        let cited = runtime::SessionId::new();
+        k.put(
+            Put {
+                evidence: vec![format!("session:{cited}")],
+                ..put()
+            },
+            Source::Model,
+        )
+        .await
+        .unwrap();
         let night = ToolCx {
             resources: Arc::new(tools::SessionResources {
                 root: dir.clone(),
@@ -1050,18 +1094,21 @@ mod tests {
         };
         k.register_consolidating_session(night.session);
         let tool = VerifyTool(k.clone());
-        let verify = |evidence: Vec<&str>| {
+        let verify = |outcome, evidence: Vec<&str>| {
             tool.call(
                 VerifyArgs {
                     id: "facts/x".into(),
-                    outcome: crate::types::VerifyOutcome::Ok,
+                    outcome,
                     note: None,
                     evidence: evidence.into_iter().map(str::to_owned).collect(),
                 },
                 night.clone(),
             )
         };
-        let refused = "verify needs evidence from a read: pass evidence with a path that exists, an http(s) URL, or a session:/meeting: id";
+        let other = runtime::SessionId::new();
+        let cited_s = format!("session:{cited}");
+        let other_s = format!("session:{other}");
+        // No read at all: refused, whatever the ids say.
         for bad in [
             vec![],
             vec!["I checked it"],
@@ -1069,28 +1116,44 @@ mod tests {
             vec!["session:not-a-uuid"],
             vec!["meeting:"],
             vec!["ftp://x"],
+            vec![cited_s.as_str()],
+            vec![other_s.as_str(), "meeting:06"],
         ] {
-            let e = verify(bad.clone()).await.unwrap_err().to_string();
-            assert_eq!(e, refused, "{bad:?}");
+            let e = verify(VOk, bad.clone()).await.unwrap_err().to_string();
+            assert!(e.starts_with("verify ok needs a read:"), "{bad:?}: {e}");
         }
+        // A read plus an id the concept does not cite: refused, naming the id.
+        let e = verify(VOk, vec!["conf/pg.toml", other_s.as_str()])
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(
+            e.starts_with(&format!("verify ok: `{other_s}` is not in the concept's evidence")),
+            "{e}"
+        );
         assert!(k.get("facts/x").await.unwrap().meta.verified.is_none());
         // One real source admits the call; every item is recorded (evidence
         // items are whitespace-free tokens: the index column is space-joined).
-        verify(vec!["conf/pg.toml", "pg_isready"]).await.unwrap();
+        verify(VOk, vec!["conf/pg.toml", "pg_isready"]).await.unwrap();
         let m = k.get("facts/x").await.unwrap().meta;
         assert!(m.verified.is_some());
-        assert_eq!(m.evidence, ["conf/pg.toml", "pg_isready"]);
-        let s = runtime::SessionId::new();
+        assert_eq!(m.evidence, [cited_s.as_str(), "conf/pg.toml", "pg_isready"]);
         for good in [
-            dir.join("conf/pg.toml").to_string_lossy().into_owned(),
-            "https://example.com/doc".into(),
-            format!("session:{s}"),
-            "meeting:06".into(),
+            vec![dir.join("conf/pg.toml").to_string_lossy().into_owned()],
+            vec!["https://example.com/doc".into()],
+            vec!["https://example.com/doc".into(), cited_s.clone()],
         ] {
-            verify(vec![good.as_str()]).await.unwrap();
+            verify(VOk, good.iter().map(String::as_str).collect())
+                .await
+                .unwrap();
         }
+        // `stale` keeps the one-of-three rule: a bare id is enough, nothing is not.
+        let e = verify(Stale, vec!["ftp://x"]).await.unwrap_err().to_string();
+        assert!(e.starts_with("verify needs evidence from a read:"), "{e}");
+        verify(Stale, vec!["meeting:06"]).await.unwrap();
         let m = k.get("facts/x").await.unwrap().meta;
         assert_eq!(m.evidence.len(), 6, "{:?}", m.evidence);
         assert_eq!(m.evidence[5], "meeting:06");
+        assert_eq!(m.status, crate::types::Status::Stale);
     }
 }
