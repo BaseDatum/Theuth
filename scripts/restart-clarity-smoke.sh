@@ -4,7 +4,7 @@
 # harness and the 139 fake OpenAI provider as the parent's model. Never touches
 # ~/.theuth. Not CI; evidence goes to the design file's as-built section.
 #
-#   scripts/restart-clarity-smoke.sh [P1 P4 P5 P6]      # default: every proof
+#   scripts/restart-clarity-smoke.sh [P1 P4 P7 P5 P6]   # default: every proof
 #
 # Env: T_BIN (default target/debug/t; built when missing), SMOKE_DIR (default
 # /tmp/146-smoke, wiped), SMOKE_PORT (7961; +1 mesh bind, +5 the P5 second

@@ -98,8 +98,10 @@ impl runtime::Plugin for TuiPlugin {
         rt.subscribe::<Bridge, ApprovalResolved>(&bridge).await;
         rt.subscribe::<Bridge, AskRequested>(&bridge).await;
         rt.subscribe::<Bridge, AskResolved>(&bridge).await;
-        rt.subscribe::<Bridge, double::DoublePredicted>(&bridge).await;
-        rt.subscribe::<Bridge, double::DoubleAnswered>(&bridge).await;
+        rt.subscribe::<Bridge, double::DoublePredicted>(&bridge)
+            .await;
+        rt.subscribe::<Bridge, double::DoubleAnswered>(&bridge)
+            .await;
         rt.subscribe::<Bridge, McpProgress>(&bridge).await;
         rt.subscribe::<Bridge, LoginFinished>(&bridge).await;
         rt.subscribe::<Bridge, JobEvent>(&bridge).await;
@@ -593,9 +595,9 @@ async fn execute(api: &Engine, cmd: Command, tx: &UnboundedSender<UiEvent>) -> a
                 let m = msg(api.set_session_memory(session, mode).await)?;
                 UiEvent::Info(agent::endless_ext::reply(mode, &m))
             }
-            None => UiEvent::Info(agent::endless_ext::status(
-                &msg(api.session_memory(session).await)?,
-            )),
+            None => UiEvent::Info(agent::endless_ext::status(&msg(api
+                .session_memory(session)
+                .await)?)),
         },
         Command::GetCompactStyle => UiEvent::CompactStyle(msg(api.compact_style().await)?),
         Command::SetCompactStyle(style) => {
@@ -696,10 +698,16 @@ async fn execute(api: &Engine, cmd: Command, tx: &UnboundedSender<UiEvent>) -> a
             UiEvent::HarnessOptionSet(config_id, value, r)
         }
         Command::ResumeChild(session) => {
-            msg(api.resume_child(session).await)?;
-            UiEvent::Info(
-                "harness resumed in its previous context; send a message to continue".into(),
-            )
+            // 146 D8: a child that died mid-prompt continues its task.
+            let text = match msg(api.resume_child(session).await)? {
+                agent::supervisor::ChildResumed::Prompted => {
+                    "harness resumed; resuming the interrupted task"
+                }
+                agent::supervisor::ChildResumed::Idle => {
+                    "harness reconnected in its previous context; it was idle, nothing to continue — send a message"
+                }
+            };
+            UiEvent::Info(text.into())
         }
         Command::ListMcp(session) => UiEvent::Mcp(msg(api.list_mcp(session).await)?),
         Command::McpStatus => UiEvent::McpProgress(msg(api.mcp_status().await)?),
@@ -754,17 +762,26 @@ async fn execute(api: &Engine, cmd: Command, tx: &UnboundedSender<UiEvent>) -> a
                 tier.as_str(),
                 venue.as_config()
             ),
-            DoubleCmd::Rollback(v) => {
-                double_status_line(&msg(api.double_rollback(v).await)?)
-            }
-            DoubleCmd::Cap { class, rung, opt_in } => {
+            DoubleCmd::Rollback(v) => double_status_line(&msg(api.double_rollback(v).await)?),
+            DoubleCmd::Cap {
+                class,
+                rung,
+                opt_in,
+            } => {
                 let c = msg(api.double_set_cap(class, rung, opt_in).await)?;
                 format!(
                     "double: {} cap L{}{}{}",
                     c.key,
                     c.cap,
-                    c.cap_reason.as_deref().map(|r| format!(" ({r})")).unwrap_or_default(),
-                    if c.mutating_opt_in { " · mutating opt-in" } else { "" }
+                    c.cap_reason
+                        .as_deref()
+                        .map(|r| format!(" ({r})"))
+                        .unwrap_or_default(),
+                    if c.mutating_opt_in {
+                        " · mutating opt-in"
+                    } else {
+                        ""
+                    }
                 )
             }
         }),
@@ -1208,7 +1225,10 @@ fn double_status_line(s: &double::DoubleStatus) -> String {
         s.kpis.ece,
         s.kpis.asks_avoided,
         s.kpis.minutes_saved,
-        s.next_window.as_deref().map(|w| format!(" · next window {w}")).unwrap_or_default()
+        s.next_window
+            .as_deref()
+            .map(|w| format!(" · next window {w}"))
+            .unwrap_or_default()
     )
 }
 

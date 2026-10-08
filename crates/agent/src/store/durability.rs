@@ -459,6 +459,15 @@ const NEWEST: &str = "SELECT session_id, turn_id, kind, \
      MAX(at) OVER (PARTITION BY session_id, turn_id) AS last_at \
      FROM turn_steps";
 
+/// 146 D1/D8: the mid-prompt predicate over `m`, a `messages` row (the
+/// session's last): a prompt the harness never answered (`User`), a
+/// `ToolCall` without its `Tool` response, or a `Tool` response the model
+/// never answered. An idle child ends on `Assistant` text; a lost one on a
+/// `System` note.
+const MIDPROMPT: &str = "(json_extract(m.body, '$.role') IN ('User', 'Tool') \
+     OR (json_extract(m.body, '$.role') = 'Assistant' AND EXISTS \
+         (SELECT 1 FROM json_each(m.body, '$.content') WHERE json_type(value, '$.ToolCall') IS NOT NULL)))";
+
 impl Store {
     /// [`step_in`] in its own transaction: the `suspended` row (§9), tests,
     /// and any step not piggy-backed on an existing write.
@@ -1312,27 +1321,23 @@ impl Store {
         rows.into_iter().map(wait_of).collect()
     }
 
-    /// 146 D1: ACP children here that were mid-prompt when the engine died —
-    /// their last `messages` row is a prompt (`User`), a `ToolCall` without
-    /// its `Tool` response, or a `Tool` response the model never answered —
-    /// with their parent, newest first; bounded to rows updated after
-    /// `since`. A harness-made `System` note (the lost note, `append_local_note`)
-    /// ends the match, so a child marked lost is not scanned again.
+    /// 146 D1: ACP children here that were mid-prompt when the engine died
+    /// ([`MIDPROMPT`] over their last `messages` row) with their parent,
+    /// newest first; bounded to rows updated after `since`. A harness-made
+    /// `System` note (the lost note, `append_local_note`) ends the match, so
+    /// a child marked lost is not scanned again.
     pub async fn midprompt_acp_children(
         &self,
         since: DateTime<Utc>,
     ) -> anyhow::Result<Vec<(SessionId, SessionId)>> {
-        let rows: Vec<(String, String)> = sqlx::query_as(
+        let rows: Vec<(String, String)> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
             "SELECT c.id, c.parent FROM sessions c \
              JOIN messages m ON m.session_id = c.id \
                AND m.seq = (SELECT MAX(seq) FROM messages WHERE session_id = c.id) \
              WHERE c.agent IS NOT NULL AND c.parent IS NOT NULL AND c.kind != 'advisor' \
-               AND (c.owner = '' OR c.owner = ?1) AND c.updated_at > ?2 \
-               AND (json_extract(m.body, '$.role') IN ('User', 'Tool') \
-                    OR (json_extract(m.body, '$.role') = 'Assistant' AND EXISTS \
-                        (SELECT 1 FROM json_each(m.body, '$.content') WHERE json_type(value, '$.ToolCall') IS NOT NULL))) \
-             ORDER BY c.updated_at DESC",
-        )
+               AND (c.owner = '' OR c.owner = ?1) AND c.updated_at > ?2 AND {MIDPROMPT} \
+             ORDER BY c.updated_at DESC"
+        )))
         .bind(&*self.me)
         .bind(since.to_rfc3339())
         .fetch_all(&self.read)
@@ -1340,6 +1345,20 @@ impl Store {
         rows.into_iter()
             .map(|(c, p)| Ok((parse_session(&c)?, parse_session(&p)?)))
             .collect()
+    }
+
+    /// 146 D8: whether one session's last `messages` row is mid-prompt
+    /// ([`MIDPROMPT`]) — the Resume button's "is there work to continue".
+    /// A session with no rows is not.
+    pub async fn midprompt(&self, session: SessionId) -> anyhow::Result<bool> {
+        let row: Option<(i64,)> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
+            "SELECT 1 FROM messages m WHERE m.session_id = ?1 \
+             AND m.seq = (SELECT MAX(seq) FROM messages WHERE session_id = ?1) AND {MIDPROMPT}"
+        )))
+        .bind(session.to_string())
+        .fetch_optional(&self.read)
+        .await?;
+        Ok(row.is_some())
     }
 
     /// The session's job rows, oldest first (`jobs()` after a restart, §5.1).

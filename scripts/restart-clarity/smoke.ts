@@ -4,7 +4,7 @@
 // (`scripts/durability-mesh/fake-openai.ts`) as the parent's model. Not CI.
 // Driven by `scripts/restart-clarity-smoke.sh` / `just restart-clarity`.
 //
-//   bun smoke.ts [P1 P4 P5 P6 …]      (default: every proof; P2/P3 ride on P1)
+//   bun smoke.ts [P1 P4 P7 P5 P6 …]   (default: every proof; P2/P3 ride on P1)
 //
 // Never touches ~/.theuth: everything lives under SMOKE_DIR (default
 // /tmp/146-smoke, wiped). P6 needs BACKUP_DB (a `.backup` copy of a real
@@ -68,7 +68,8 @@ class Engine {
     return this.proc?.pid ?? 0;
   }
 
-  writeConfig() {
+  /// `windowDays`: `durability.acp_respawn_window_days` (P7 sets 0 so the boot pass skips the child).
+  writeConfig(windowDays = 7) {
     mkdirSync(`${DIR}/acp`, { recursive: true });
     writeFileSync(
       `${DIR}/config.yaml`,
@@ -94,11 +95,18 @@ class Engine {
         "  login_path: false",
         "durability:",
         "  resume: auto",
+        `  acp_respawn_window_days: ${windowDays}`,
         "",
       ].join("\n"),
     );
     // The real harness: whatever `omp` is on PATH (or OMP_BIN).
     writeFileSync(`${DIR}/acp/agents.yaml`, `omp:\n  command: ${OMP_BIN}\n  args: [acp]\n  env: {}\n  description: omp ACP server over stdio (146 smoke)\n`);
+  }
+
+  /// Rewrite `durability.acp_respawn_window_days` in place (the engine reads config at boot).
+  setWindow(days: number) {
+    const path = `${DIR}/config.yaml`;
+    writeFileSync(path, readFileSync(path, "utf8").replace(/acp_respawn_window_days: \d+/, `acp_respawn_window_days: ${days}`));
   }
 
   async start() {
@@ -361,6 +369,49 @@ async function P4(e: Engine) {
   check("attention item is dismissable (carries a session)", typeof att.session === "string", String(att.session));
 }
 
+/// P7 (D8): the header's Resume button on a child the boot pass skipped
+/// (`acp_respawn_window_days: 0`): `resume_child` reconnects AND re-prompts a
+/// mid-prompt child — the omp process is back, a new prompt row follows the
+/// dangling `ToolCall`, `list_sessions` shows it running, the RPC answers
+/// `prompted`; a second press on the now-idle child answers `idle`.
+async function P7(e: Engine) {
+  const parent = await newParent(e);
+  const child = await spawnChild(e, parent, "w146c");
+  await waitFor("parent turn finished", () => e.events.find((x) => x.ev.type === "TurnFinished" && x.ev.session === parent) ?? null, 60_000);
+  const oldPids = await waitMidPrompt(e, child);
+  const rowsBefore = e.one<{ n: number }>("SELECT count(*) AS n FROM messages WHERE session_id = ?", child)?.n ?? 0;
+  {
+    const db = new Database(`${DIR}/sessions.sqlite`);
+    db.run("PRAGMA busy_timeout = 5000");
+    db.run("DELETE FROM waits WHERE kind = 'child_result' AND target = ?", [child]);
+    db.close();
+  }
+  e.setWindow(0);
+  await e.crash();
+  await e.start();
+  const t0 = e.startedAt;
+  const pass = await waitBootPass(e, () => true, 60_000);
+  check("boot pass skipped the child (window 0)", field(pass, "waiting") === "0" && field(pass, "respawned") === "0" && field(pass, "lost") === "0", pass.slice(-160));
+  check("child idle after the boot (nothing respawned it)", e.ompPids().length === 0, `pids ${e.ompPids().join(",") || "none"}`);
+  const r = await e.rpc("resume_child", [child]);
+  check("resume_child answers `prompted`", r === "prompted", JSON.stringify(r));
+  const back = await waitFor("new omp acp process", () => (e.ompPids().some((p) => !oldPids.includes(p)) ? e.ompPids() : null), 30_000, 250);
+  check("omp process back after the button", true, `pids ${back.join(",")} after ${((now() - t0) / 1000).toFixed(1)} s`);
+  const prompt = await waitFor("a new prompt row on the child", () => {
+    const n = e.one<{ n: number }>("SELECT count(*) AS n FROM messages WHERE session_id = ?", child)?.n ?? 0;
+    if (n <= rowsBefore) return null;
+    return e.one<{ role: string; body: string }>("SELECT json_extract(body,'$.role') AS role, substr(body,1,160) AS body FROM messages WHERE session_id = ? AND seq >= ? ORDER BY seq LIMIT 1", child, rowsBefore) ?? null;
+  }, 60_000, 500);
+  check("the child was prompted to continue (<resume_handoff> row)", prompt.role === "User" && prompt.body.includes("<resume_handoff>"), prompt.body);
+  const running = await waitFor("list_sessions running", async () => {
+    const list = await e.rpc("list_sessions", []);
+    const s = Array.isArray(list) ? list.find((x) => isObj(x) && x.id === child) : undefined;
+    return isObj(s) && s.running === true ? s : null;
+  }, 30_000, 250);
+  check("list_sessions shows the child running after the button", running.running === true, JSON.stringify({ running: running.running, name: running.name }));
+  e.setWindow(7);
+}
+
 /// P5: a second `t --headless` on the same data dir names the holder and exits 0 within 1 s; the first is unaffected.
 async function P5(e: Engine) {
   const t0 = now();
@@ -408,7 +459,7 @@ async function P6() {
 // ---- main -------------------------------------------------------------------
 
 async function main() {
-  const wanted = Bun.argv.slice(2).length ? Bun.argv.slice(2) : ["P1", "P4", "P5", "P6"];
+  const wanted = Bun.argv.slice(2).length ? Bun.argv.slice(2) : ["P1", "P4", "P7", "P5", "P6"];
   rmSync(ROOT, { recursive: true, force: true });
   mkdirSync(WT, { recursive: true });
   Bun.spawnSync(["git", "init", "-q", WT]);
@@ -424,7 +475,7 @@ async function main() {
     e.writeConfig();
     await e.start();
     log(`add_provider → ${JSON.stringify(await e.rpc("add_provider", ["fake", FAKE_URL, "smoke-key"]))}`);
-    const proofs: Record<string, () => Promise<void>> = { P1: () => P1(e), P4: () => P4(e), P5: () => P5(e), P6 };
+    const proofs: Record<string, () => Promise<void>> = { P1: () => P1(e), P4: () => P4(e), P7: () => P7(e), P5: () => P5(e), P6 };
     for (const name of wanted) {
       const p = proofs[name];
       if (!p) {

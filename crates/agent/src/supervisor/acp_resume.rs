@@ -202,7 +202,10 @@ impl Agents {
 
     /// D3: a note on the child and a `<child_lost>` input to the parent
     /// (`inject` forwards it when the parent lives on another engine, 139
-    /// R2; a parent that no longer exists is told nothing).
+    /// R2; a parent that no longer exists is told nothing). The parent's
+    /// `child_result` wait on it is cleared: the note is the child's last
+    /// row (the mid-prompt scan skips it) and no wait row re-raises it, so a
+    /// lost child is reported once, not on every boot.
     async fn lose(
         &mut self,
         boot: &mut Boot,
@@ -217,6 +220,7 @@ impl Agents {
         if let Err(e) = self.store.append_local_note(child, &note).await {
             tracing::warn!(session = %child, "146: lost note not written: {e:#}");
         }
+        super::child_waits::child_result_delivered(self, parent, child).await;
         if !why.ends_with("no longer exists") {
             let body = format!(
                 "{name} was mid-prompt when the engine restarted at {at} and was not respawned: {why}. \
@@ -318,20 +322,61 @@ impl Agents {
             tracing::info!(session = %child, %parent, "109: child result already spared; not respawned");
             return Ok(Outcome::Skipped);
         }
-        self.running.remove(&child);
-        let actor = match self.session(Some(child), None, None, (None, None)).await {
-            Ok((_, actor)) => actor,
+        match self.relaunch_acp_child(child, Continue::Prompt).await {
+            Ok(_) => Ok(Outcome::Spawned),
             Err(e) => {
-                let message = format!("{agent}: respawn after restart failed: {e:#}");
+                let message = format!("{agent}: respawn after restart failed: {e}");
                 self.error(child, message.clone()).await;
-                return Err(message);
+                Err(message)
             }
-        };
-        if let LiveActor::Acp(a) = &actor {
-            let _ = a.tell(Respawn(self.cfg.durability.handoff_tokens)).await;
         }
-        Ok(Outcome::Spawned)
     }
+
+    /// The one path a stopped ACP child comes back through — the boot pass
+    /// and the header's Resume button (D8): a fresh actor from the row
+    /// (`session/load` on the stored harness id when there is one), then
+    /// what its first input is: [`Respawn`] (the restored note or the delta
+    /// handoff → a prompt → `TurnStarted`), the 75 §10 [`CANCELLED_NOTE`]
+    /// for a turn the user cancelled, or nothing (idle, the next
+    /// `send_message` prompts it). Any live actor must be gone already.
+    pub(super) async fn relaunch_acp_child(
+        &mut self,
+        child: SessionId,
+        first: Continue,
+    ) -> Result<LiveActor, String> {
+        self.running.remove(&child);
+        let (_, actor) = self
+            .session(Some(child), None, None, (None, None))
+            .await
+            .map_err(|e| format!("{e:#}"))?;
+        if let LiveActor::Acp(a) = &actor {
+            match first {
+                Continue::Prompt => {
+                    let _ = a.tell(Respawn(self.cfg.durability.handoff_tokens)).await;
+                }
+                Continue::Cancelled => {
+                    let _ = a
+                        .tell(crate::acp_child::Note(
+                            crate::acp_child::CANCELLED_NOTE.to_owned(),
+                        ))
+                        .await;
+                }
+                Continue::Idle => {}
+            }
+        }
+        Ok(actor)
+    }
+}
+
+/// What a relaunched child is told first ([`Agents::relaunch_acp_child`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Continue {
+    /// Mid-prompt when it died: the respawn prompt continues the work.
+    Prompt,
+    /// Its last turn was cancelled: a note not to pick the replay up (75 §10).
+    Cancelled,
+    /// Idle: reconnect only.
+    Idle,
 }
 
 #[cfg(test)]
@@ -653,6 +698,26 @@ mod tests {
         })
         .await;
         assert!(b.boot.is_none(), "settled");
+        // A lost child's wait row is gone (reported once); the others stay.
+        let left: Vec<String> = store
+            .child_waits(Scope::Here)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|w| w.target)
+            .collect();
+        for lost in [taken, bad_cwd, acp_child] {
+            assert!(
+                !left.contains(&lost.to_string()),
+                "{lost} still waited on: {left:?}"
+            );
+        }
+        for kept in [native, node, spared, ghost] {
+            assert!(
+                left.contains(&kept.to_string()),
+                "{kept} wait dropped: {left:?}"
+            );
+        }
 
         let _ = sink
             .ask(AgentEvent::TitleChanged {

@@ -112,6 +112,7 @@ async fn export_bindings() {
         acp::ConfigOption,
         acp::ConfigValue,
         acp::SetOptionResult,
+        agent::supervisor::ChildResumed,
         acp::registry::RegistryAgent,
         knowledge::Meta,
         knowledge::Concept,
