@@ -199,8 +199,9 @@ internal sealed class Notifier : IDisposable
             case nameof(Store.Connection):
                 var s = store.Connection;
                 if (s == RpcClient.State.Connecting) return;
+                var wasPending = policy.EngineLossPending;
                 Run(p => p.Engine(s == RpcClient.State.Open, DateTimeOffset.Now));
-                if (s != RpcClient.State.Open && policy.EngineLossPending) Log.Write($"notifications: engine lost — held for {(int)NotificationPolicy.EngineGrace.TotalSeconds} s before the error toast (item 10)");
+                if (!wasPending && policy.EngineLossPending) Log.Write($"notifications: engine lost — held for {(int)NotificationPolicy.EngineGrace.TotalSeconds} s before the error toast (item 10)");
                 break;
             case nameof(Store.Receipt):
                 Receipt(store.Receipt);
