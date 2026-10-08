@@ -96,10 +96,11 @@ use crate::{
     RemoveAcp, RemoveContext, RemoveProvider, RemoveSkill, RemoveSkillRepo, RenameSession,
     ResetRuntime, SearchRefresh, SearchSessionPage, SendInput, SessionActivity,
     SessionContextBreakdown, SessionRead, SessionSummary, SetCompactStyle, SetCompaction,
-    SetEffort, SetEscalateModel, SetMaxSalvages, SetMaxToolRounds, SetModel, SetStreamIdle,
-    SetSubagentModel, SetSubagentTimeout, SetTalk, SetTitleModel, SetToolset, SetVisionModel,
-    ShowPrompt, SideCall, SideReply, SkillBody, SkillMeta, Steer, SyncSkills, TALK_COALESCE_MS,
-    TALK_PARK_CAP_MS, TalkLive, TrimAssistant, Undo, UseSkill, Withdraw, effort_of,
+    SetDeskModel, SetEffort, SetEscalateModel, SetMaxSalvages, SetMaxToolRounds, SetModel,
+    SetStreamIdle, SetSubagentModel, SetSubagentTimeout, SetTalk, SetTitleModel, SetToolset,
+    SetVisionModel, ShowPrompt, SideCall, SideReply, SkillBody, SkillMeta, Steer, SyncSkills,
+    TALK_COALESCE_MS, TALK_PARK_CAP_MS, TalkLive, TrimAssistant, Undo, UseSkill, Withdraw,
+    effort_of,
 };
 use crate::{
     AdvisorConfig, DurableStore, ObservedState, SessionCostQuery, SessionKind, SpendReportQuery,
@@ -149,6 +150,10 @@ pub struct Agents {
     /// Live preferred subagent model (`agent.subagents.model`); `None` = `agent.model`.
     /// Children spawned without `model` use it; the system prompt names it. Shared with every session.
     subagent_model: Arc<RwLock<Option<Resolved>>>,
+    /// 148 E2: desk session → its agent's configured model ([`SetDeskModel`]);
+    /// `None` = the agent has none. A native child of a desk starts on it
+    /// before `subagent_model` and `default_model`.
+    desk_models: HashMap<SessionId, Option<String>>,
     /// Live vision fallback model (52 §3.1); `None` = no fallback. Shared with
     /// every native session once the loop consults it; snapshot, never hold
     /// the lock across an await.
@@ -888,9 +893,15 @@ impl Agents {
                     .unwrap_or_else(|p| p.into_inner())
                     .as_ref()
                     .map(|r| r.id.clone());
+                let desk_model = parent
+                    .and_then(|(p, _)| self.desk_models.get(&p))
+                    .and_then(|m| m.as_deref());
                 let (model, effort) = match parent {
+                    // 148 E2: an explicit pick, then the desk agent's model
+                    // when the parent is a desk, then the subagent default.
                     Some(_) => (
                         pick.0
+                            .or(desk_model)
                             .or(preferred.as_deref())
                             .unwrap_or(&self.default_model),
                         pick.1
@@ -7444,6 +7455,14 @@ impl Message<MarkDesk> for Agents {
     }
 }
 
+impl Message<SetDeskModel> for Agents {
+    type Reply = ();
+
+    async fn handle(&mut self, m: SetDeskModel, _: &mut Context<Self, Self::Reply>) {
+        self.desk_models.insert(m.session, m.model);
+    }
+}
+
 impl Message<DeskSession> for Agents {
     type Reply = Option<SessionId>;
 
@@ -7741,10 +7760,11 @@ impl Agents {
 }
 
 impl Agents {
-    /// 82 §2: switch `m.session` now; only a manual pick also becomes the
-    /// default for new sessions (`agent.model` in config.yaml, announced as
-    /// `DefaultModelChanged`). A programmatic switch with no session is a
-    /// no-op beyond resolving the id.
+    /// 148 R1: with a session, switch that session only — whatever `manual`
+    /// says, the default for new sessions is untouched. With no session, a
+    /// manual pick sets the default (`agent.model` in config.yaml, announced as
+    /// `DefaultModelChanged`): the Settings path. A programmatic call with no
+    /// session is a no-op beyond resolving the id.
     async fn set_model(&mut self, m: SetModel) -> Result<ModelInfo, String> {
         let resolved = self.catalog.resolve(&m.model, &*self.configured)?;
         if let Some(id) = m.session {
@@ -7780,7 +7800,7 @@ impl Agents {
                 self.apply_effort(id, &actor, None).await;
             }
         }
-        if m.manual {
+        if m.session.is_none() && m.manual {
             self.default_model = resolved.id.clone();
             // ponytail: writes <data_dir>/config.yaml; a `--config <other>` file is not written back.
             let path = self.rt.data_dir.join("config.yaml");
@@ -7840,10 +7860,11 @@ impl Message<GetDefaultEffort> for Agents {
 }
 
 impl Agents {
-    /// 83 §2: switch `m.session` now; only a manual pick also becomes the
-    /// default for new sessions (`agent.effort` in config.yaml, announced as
-    /// `DefaultEffortChanged`). A programmatic change with no session is a
-    /// no-op beyond validating the value.
+    /// 148 R1: with a session, switch that session only — whatever `manual`
+    /// says. With no session, a manual change sets the default
+    /// (`agent.effort` in config.yaml, announced as `DefaultEffortChanged`):
+    /// the Settings path. A programmatic change with no session is a no-op
+    /// beyond validating the value.
     async fn set_effort(&mut self, m: SetEffort) -> Result<(), String> {
         let target = match m.session {
             Some(id) => {
@@ -7872,7 +7893,7 @@ impl Agents {
             let actor = self.actor(id).await?.native()?.clone();
             self.apply_effort(id, &actor, m.effort.clone()).await;
         }
-        if m.manual {
+        if m.session.is_none() && m.manual {
             self.default_effort = m.effort.clone();
             // Quoted so a bare budget (`"8000"`) stays a YAML string; `~` clears.
             let value = m
@@ -9182,6 +9203,7 @@ pub async fn start(rt: &Runtime) -> anyhow::Result<()> {
             compact_style: Arc::new(RwLock::new(cfg.compact_style)),
             title_model: Arc::new(RwLock::new(title_model)),
             subagent_model: Arc::new(RwLock::new(subagent_model)),
+            desk_models: HashMap::new(),
             vision_model: Arc::new(RwLock::new(vision_model)),
             escalate_model: Arc::new(RwLock::new(escalate_model)),
             vision_error,
@@ -11003,6 +11025,7 @@ pub(crate) mod tests {
             auth,
             endless,
             sessions: HashMap::new(),
+            desk_models: HashMap::new(),
             running: HashSet::new(),
             draining_sessions: HashMap::new(),
             pending_takeovers: HashMap::new(),
@@ -11228,13 +11251,15 @@ pub(crate) mod tests {
         assert_eq!(cfg.escalate_model, None);
     }
 
-    /// 82 §2: only a manual pick becomes the default (`default_model`,
-    /// `agent.model` in config.yaml, `DefaultModelChanged`); a programmatic
-    /// switch changes the named session alone, and with no session nothing.
-    /// A new session without a model of its own starts on the default; one
-    /// opened with `CreateSessionOptions.model` (a meeting) leaves it alone.
+    /// 148 R1: a pick with a session switches that session alone, manual or
+    /// not — `default_model`, `agent.model` in config.yaml and
+    /// `DefaultModelChanged` stay put. Only a manual pick with no session (the
+    /// Settings path) sets the default; a programmatic one with no session
+    /// resolves and nothing else. A new session without a model of its own
+    /// starts on the default; one opened with `CreateSessionOptions.model`
+    /// (a meeting, a draft pick) leaves it alone.
     #[tokio::test]
-    async fn only_a_manual_pick_becomes_the_default() {
+    async fn only_a_settings_pick_becomes_the_default() {
         let mut a = agents().await;
         let dir = a.rt.data_dir.clone();
         a.catalog = Arc::new(vision_catalog(&dir));
@@ -11263,7 +11288,7 @@ pub(crate) mod tests {
         assert_eq!(a.default_model, at_start);
         assert!(!yaml.exists());
 
-        // The picker: the session and the default move together, announced.
+        // (a) The in-chat picker: the session moves, the default does not.
         let seen = Arc::new(parking_lot::Mutex::new(Vec::new()));
         let sink = Sink::spawn_with_mailbox(Sink(Arc::clone(&seen)), runtime::subscriber_mailbox());
         a.rt.subscribe::<Sink, AgentEvent>(&sink).await;
@@ -11276,10 +11301,36 @@ pub(crate) mod tests {
         .unwrap();
         let row = a.store.session(root).await.unwrap().unwrap();
         assert_eq!(row.model, "testvis/eyes");
+        assert_eq!(a.default_model, at_start);
+        assert!(!yaml.exists());
+        // The bus is a `tell`; a round trip through the sink orders us after it.
+        let _ = sink
+            .ask(AgentEvent::TitleChanged {
+                session: root,
+                title: String::new(),
+                tags: Vec::new(),
+            })
+            .await;
+        assert!(
+            !seen
+                .lock()
+                .iter()
+                .any(|e| matches!(e, AgentEvent::DefaultModelChanged { .. })),
+            "{:?}",
+            seen.lock()
+        );
+
+        // (b) Settings: no session, manual — the default, config.yaml, the event.
+        a.set_model(SetModel {
+            session: None,
+            model: "testvis/eyes".into(),
+            manual: true,
+        })
+        .await
+        .unwrap();
         assert_eq!(a.default_model, "testvis/eyes");
         let written = std::fs::read_to_string(&yaml).unwrap();
         assert!(written.contains("  model: testvis/eyes\n"), "{written}");
-        // The bus is a `tell`; a round trip through the sink orders us after it.
         let _ = sink
             .ask(AgentEvent::TitleChanged {
                 session: root,
@@ -11327,12 +11378,12 @@ pub(crate) mod tests {
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
-    /// 83 §2: only a manual pick becomes the default effort (`default_effort`,
-    /// `agent.effort` in config.yaml, `DefaultEffortChanged`); a programmatic
-    /// change sets the named session's row alone, and with no session nothing.
-    /// A new session starts on the default.
+    /// 148 R1: an effort pick with a session changes that session's row
+    /// alone, manual or not; only a manual change with no session (Settings)
+    /// sets `default_effort`, `agent.effort` in config.yaml and announces
+    /// `DefaultEffortChanged`. A new session starts on the default.
     #[tokio::test]
-    async fn only_a_manual_effort_becomes_the_default() {
+    async fn only_a_settings_effort_becomes_the_default() {
         let mut a = agents().await;
         let dir = a.rt.data_dir.clone();
         let yaml = dir.join("config.yaml");
@@ -11359,16 +11410,29 @@ pub(crate) mod tests {
         assert_eq!(a.default_effort, None);
         assert!(!yaml.exists());
 
-        // The picker: the session and the default move together, announced.
+        // (a) The in-chat picker: the session moves, the default does not.
         a.set_effort(SetEffort {
             session: Some(root),
+            effort: Some("medium".into()),
+            manual: true,
+        })
+        .await
+        .unwrap();
+        let row = a.store.session(root).await.unwrap().unwrap();
+        assert_eq!(row.effort.as_deref(), Some("medium"));
+        assert_eq!(a.default_effort, None);
+        assert!(!yaml.exists());
+
+        // (b) Settings: no session, manual — the default, config.yaml, the event.
+        a.set_effort(SetEffort {
+            session: None,
             effort: Some("high".into()),
             manual: true,
         })
         .await
         .unwrap();
         let row = a.store.session(root).await.unwrap().unwrap();
-        assert_eq!(row.effort.as_deref(), Some("high"));
+        assert_eq!(row.effort.as_deref(), Some("medium"));
         assert_eq!(a.default_effort.as_deref(), Some("high"));
         let written = std::fs::read_to_string(&yaml).unwrap();
         assert!(written.contains("  effort: \"high\"\n"), "{written}");
@@ -11406,6 +11470,47 @@ pub(crate) mod tests {
             agents.ask(GetDefaultEffort).await.unwrap(),
             Some("high".to_owned())
         );
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// 148 E2: a native child of a desk starts on the desk agent's configured
+    /// model ([`SetDeskModel`]) unless the spawn names one; a desk without a
+    /// model, and any non-desk parent, fall through to `agent.subagents.model`
+    /// and then the default.
+    #[tokio::test]
+    async fn a_desk_child_starts_on_the_desk_agents_model() {
+        let mut a = agents().await;
+        let dir = a.rt.data_dir.clone();
+        a.catalog = Arc::new(vision_catalog(&dir));
+        a.configured = Arc::new(|ns: &str| ns == "testvis");
+        let default = a.default_model.clone();
+        async fn child_of(a: &mut Agents, parent: SessionId, pick: Option<&str>) -> String {
+            let child = SessionId::new();
+            a.session(Some(child), Some((parent, "kid")), None, (pick, None))
+                .await
+                .unwrap();
+            a.store.session(child).await.unwrap().unwrap().model
+        }
+
+        let (desk, _) = a.session(None, None, None, (None, None)).await.unwrap();
+        a.desk_models.insert(desk, Some("testvis/eyes".into()));
+        assert_eq!(child_of(&mut a, desk, None).await, "testvis/eyes");
+        // An explicit pick wins.
+        assert_eq!(
+            child_of(&mut a, desk, Some("testvis/blind")).await,
+            "testvis/blind"
+        );
+
+        // A desk without a model: the subagent default, then the default.
+        let (bare, _) = a.session(None, None, None, (None, None)).await.unwrap();
+        a.desk_models.insert(bare, None);
+        assert_eq!(child_of(&mut a, bare, None).await, default);
+        let blind = a.catalog.resolve("testvis/blind", &*a.configured).unwrap();
+        *a.subagent_model.write().unwrap_or_else(|p| p.into_inner()) = Some(blind);
+        assert_eq!(child_of(&mut a, bare, None).await, "testvis/blind");
+        // A non-desk parent never sees a desk model.
+        let (plain, _) = a.session(None, None, None, (None, None)).await.unwrap();
+        assert_eq!(child_of(&mut a, plain, None).await, "testvis/blind");
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

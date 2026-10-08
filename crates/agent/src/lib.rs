@@ -808,6 +808,20 @@ pub struct MarkDesk {
     pub agent: Option<String>,
 }
 
+/// `ask` → `()`: the configured model of a desk session's agent (148 E2) — a
+/// hired agent's file `model:`, or `roster.theuth_model` for theuth; `None`
+/// when the agent has none. Kept in memory: a native child of the desk whose
+/// spawn names no `model` starts on it before `agent.subagents.model` and
+/// `agent.model`. The roster sends it whenever it opens a desk or the agent's
+/// model changes.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct SetDeskModel {
+    /// The desk session.
+    pub session: SessionId,
+    /// Configured model id, or `None` to follow the defaults.
+    pub model: Option<String>,
+}
+
 /// `ask` → `Option<SessionId>`: the session marked as the bare-named agent's
 /// desk on this engine (STALE-WAKE-DESKS: one desk per agent, reused across
 /// episodes and restarts; `sessions_desk_owner` keeps it unique).
@@ -1431,19 +1445,20 @@ impl AgentState {
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
 pub struct ListModels;
 
-/// `ask` → `Result<ModelInfo, String>`. Resolves `model` (design doc 02 §1)
-/// and switches `session` (if given) for its next model call. With `manual`
-/// the id also becomes the default for new sessions (82 §2: a human picked it
-/// in a session's model picker): `agent.model` in `<data_dir>/config.yaml`
-/// is rewritten and [`AgentEvent::DefaultModelChanged`] follows. Programmatic
-/// switches (schedules, bots) pass `manual: false` and never touch the default.
+/// `ask` → `Result<ModelInfo, String>`. Resolves `model` (design doc 02 §1).
+/// With `session`, switches that session for its next model call and nothing
+/// else (148 R1: a pick inside a chat applies to that chat only, whatever
+/// `manual` says). With no session and `manual`, the id becomes the default
+/// for new sessions: `agent.model` in `<data_dir>/config.yaml` is rewritten
+/// and [`AgentEvent::DefaultModelChanged`] follows (the Settings path). With
+/// no session and `manual: false` it only resolves and reports the id.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SetModel {
-    /// Session to switch; `None` changes only the default (needs `manual`).
+    /// Session to switch (that session only); `None` targets the default (needs `manual`).
     pub session: Option<SessionId>,
     /// `provider/model`, or a bare model id resolved against configured providers.
     pub model: String,
-    /// A person chose this in a model picker: make it the default too.
+    /// With no session: a person set the default in Settings.
     /// Defaults to `true` so older frontends keep their behaviour.
     #[serde(default = "yes")]
     pub manual: bool,
@@ -1458,18 +1473,18 @@ pub struct GetDefaultModel;
 /// `ask` → `Result<(), String>`: set (or clear with `None`) the reasoning
 /// effort. Validated against the session's current model via the catalog
 /// (unknown/passthrough models accept any genai keyword or integer budget).
-/// Like [`SetModel`]: switches `session` (from its next turn); with `manual`
-/// the value also becomes the default for new sessions (83 §2: a human
-/// picked it in an effort picker): `agent.effort` in `<data_dir>/config.yaml`
-/// is rewritten and [`AgentEvent::DefaultEffortChanged`] follows.
-/// Programmatic changes pass `manual: false` and never touch the default.
+/// Like [`SetModel`]: with `session`, switches that session from its next
+/// turn and nothing else (148 R1); with no session and `manual` the value
+/// becomes the default for new sessions: `agent.effort` in
+/// `<data_dir>/config.yaml` is rewritten and
+/// [`AgentEvent::DefaultEffortChanged`] follows.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SetEffort {
-    /// Session to switch; `None` changes only the default (needs `manual`).
+    /// Session to switch (that session only); `None` targets the default (needs `manual`).
     pub session: Option<SessionId>,
     /// Effort keyword or token budget; `None` clears.
     pub effort: Option<String>,
-    /// A person chose this in an effort picker: make it the default too.
+    /// With no session: a person set the default in Settings.
     /// Defaults to `true` so older frontends keep their behaviour.
     #[serde(default = "yes")]
     pub manual: bool,
