@@ -353,9 +353,11 @@ mod tests {
     }
 
     async fn study(store: &Store, slug: &str, state: StudyState, parallel: u8) -> StudyRecord {
-        let mut spec = crate::types::StudySpec::default();
-        spec.slug = slug.into();
-        spec.parallel = parallel;
+        let spec = crate::types::StudySpec {
+            slug: slug.into(),
+            parallel,
+            ..Default::default()
+        };
         let mut s = StudyRecord::new(spec, None);
         s.state = state;
         s.session = Some(runtime::SessionId::new());

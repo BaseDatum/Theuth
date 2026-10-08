@@ -35,7 +35,7 @@ Fixer 140-F2, branch `feat/140-f2` from 78411fb3. Owns `crates/autoresearch/src/
 | R-22 | BUG | fixed — runner EOF handling; test `redirected_output_still_times_out` |
 | R-23 | BUG | fixed (runner side) — role in the log name; test `role_logs_and_root_relative_paths` |
 | R-24 | RISK | fixed — pairwise-difference robust σ; test `robust_sigma_is_consistent_for_small_trees` |
-| R-25 | RISK | partly — comment corrected; the `n_i < 2` confirm clause stays (harmless once R-2 samples the incumbent tree). Handed off → F1: re-measure the incumbent once at the Begin after a fast keep (fixes z₁ too); F3: amend §5.2 |
+| R-25 | RISK | fixed (gate side) — incumbent-first `Confirm { more: 0, incumbent_sample: true }` after a fast keep; no one-sample discard while `n_i < 3`; comment cites the as-built numbers. Handed off → F1: `run_env` honours `more == 0` (drop `more.max(1)`, actor.rs:2053); F3: §5.2 text |
 | R-27 | RISK | fixed — `Group` guard |
 | R-29 | RISK | fixed |
 | R-30 | RISK | fixed — first-sample suspicion carried; test `suspicion_from_the_first_sample_survives_confirm` |
@@ -65,16 +65,25 @@ Fixer 140-F2, branch `feat/140-f2` from 78411fb3. Owns `crates/autoresearch/src/
 
 ## Hand-offs (summary)
 
-- **F1**: R-7, R-9, R-25 (Begin re-measure), R-33, R-41, R-46 (`pause()` no-op; `hours_running_live` callers), R-51, R-62 (delete the second record write), R-106 (`run_with`), R-115 (actor asks), and `on_fired` should use a column-scoped `Store::set_study_session(slug, session)` once R-4's setters exist (today it rewrites the record). `binding::on_turn_finished` now takes `stop_reason: &str` — the two calls in `actor/tests.rs` (874, 895) pass `"end_turn"` (edited here, mechanical).
+- **F1**: R-7, R-9, R-25 (`more == 0` in the gate loop), R-33, R-41, R-46 (`pause()` no-op; `hours_running_live` callers), R-51, R-62 (delete the second record write), R-106 (`run_with`), R-115 (actor asks), and `on_fired` should use a column-scoped `Store::set_study_session(slug, session)` once R-4's setters exist (today it rewrites the record). `binding::on_turn_finished` now takes `stop_reason: &str` — the two calls in `actor/tests.rs` (874, 895) pass `"end_turn"` (edited here, mechanical). `crash_streak_pauses_with_attention_and_resume_counts_paused_time` pinned the R-57 bug (its own comment said "does not re-pause until two more crashes" while asserting a re-pause after one); it now asserts Running after one crash and Paused after two.
 - **F3**: §5.2 text for R-24 (pairwise robust σ) and R-25; §8.2 (`Fired` is published before the prompt; the toolset is applied by the schedule); a per-guard `direction` in the draft card (optional).
 - **agent crate (nobody's this round)**: deterministic confinement of wave children needs `SpawnChild` to copy the parent's toolset onto the child before its first turn (`supervisor.rs` after `self.session(...)`, before `SubagentSpawned`); until then a child's first round can start before `SetToolset` lands. Not changed here: an `agent` edit rebuilds every dependent crate in the shared target for all three fixers.
 
 ## Deviations
 
 - §5.2 step 1 says "1.4826 × pooled MAD"; built as the scaled median of within-tree pairwise differences (same robustness goal, no small-tree bias). Numbers: for σ = 1 normal noise in trees of 2/3/4 the estimate is within 5 % of 1 (test), where the MAD-around-median read 0.71 for pairs.
+- **§15 power acceptance.** With the unbiased σ the gate's defaults (`z` 2.0 / `z_fast` 3.5 / `z_discard` 1.0 / `confirm_runs` 2) give, in W1's simulation (σ = 1 % of the metric, `min_effect` 0.5 %, 200 studies × 50 experiments): **true 3σ keep rate 83.6 % (8361 / 10 000)**, **null false-keep rate 0.39 % (39 / 10 000)**. W1's 89.7 % / 0.93 % were both products of the σ that read 30–50 % low past 12 samples (every z inflated ≈ 1.4×). The ≥ 85 % line in §15 therefore needs Sky's call: raise power through the `gate:` defaults (e.g. `z_discard` 1.0 → 0.8 cuts one-sample discards of true gains; the null budget has room: 0.39 % of 1 %) or amend §15. The test floor is 80 % with this note; the null test stays at ≤ 1 %.
+- **R-25 in the gate.** After a fast keep the incumbent has one sample (the lucky one). `step` now returns `Confirm { more: 0, incumbent_sample: true }` on the next experiment's first sample — measure the incumbent once more (on its own tree, R-2) before judging — and does not one-sample-discard a positive Δ while the incumbent has fewer than 3 samples (confirm on means instead). The actor's loop reads `more.max(1)` (actor.rs:2053): until F1 drops the `max(1)` the incumbent-first step also costs one candidate sample; handed off.
 - R-5's fix is a schedule-crate registry rather than publishing `Fired` first alone: `publish` is a `tell` into a bus actor, so a subscriber's `SetToolset` could never be ordered before `SendInput`; the schedule applying it on the same ask path is the only deterministic order.
 - R-59 without a schedule change: the `busy` fallback reports the session of the run the tick started.
+- Shared `./target` hazard for the closer: cargo's fingerprint for `autoresearch`'s test binary records the *last builder's* source paths, so a sibling's build makes `cargo test` in another worktree report "fresh" and run the sibling's binary (observed: 117-test binaries with F3's `brief::` tests and the old 89.65 % sim number). Every gate below ran as `cargo clean -p autoresearch -p schedule && cargo test …` inside one build-lock slot; the closer should do the same or use a private target.
 
 ## Gates
 
-(filled below)
+All through `BUILD_LABEL=140-F2 build-lock`, stable rustc 1.96.1, `CARGO_BUILD_JOBS=4`, after `cargo clean -p autoresearch -p schedule` in the same slot.
+
+- `cargo test -p autoresearch`: **122 passed, 0 failed** (+14 new: binding 3, schedule_file 1, gate 3, runner 3, custody 1, stop 1, git 1, plus the schedule crate's 1).
+- `cargo test -p schedule`: **76 passed, 0 failed**.
+- `cargo clippy -p autoresearch -p schedule --all-targets -- -D warnings`: **0 findings** (`Finished`, same slot as the clean).
+- `rustfmt --edition 2024` on the twelve F2 files (no `rustfmt.toml`; `cargo fmt -p` would touch F1/F3 files).
+- Simulation (gate defaults): null 0.39 % (39 / 10 000); true 3σ 83.6 % (8361 / 10 000); robust σ̂ within 5 % of 1 for trees of 2/3/4 (4 000 trees each).
