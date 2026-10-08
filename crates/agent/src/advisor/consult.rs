@@ -47,8 +47,9 @@ pub fn spec() -> ToolSpec {
 pub const ERR_OFF: &str = "consult: advisor off";
 /// `consult: timed out after 90 s`: no answer within [`super::CONSULT_TIMEOUT`].
 pub const ERR_TIMEOUT: &str = "consult: timed out after 90 s";
-/// Argument bound violations (R1.3 errors table).
+/// `question` empty or over [`QUESTION_CHARS`] (R1.3 errors table).
 pub const ERR_QUESTION: &str = "consult: question must be 1-2000 chars";
+/// `context` over [`CONTEXT_CHARS`].
 pub const ERR_CONTEXT: &str = "consult: context must be at most 4000 chars";
 
 /// `consult: cap reached (6/6 this turn)`.

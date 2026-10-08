@@ -601,7 +601,7 @@ mod tests {
         );
         let h = store.context_history(id).await.unwrap();
         assert!(h.entries[&seq].removed);
-        assert_eq!(store.effective_message(id, seq).await.unwrap(), None);
+        assert!(store.effective_message(id, seq).await.unwrap().is_none());
         let rows = store.rows_since(id, seq).await.unwrap();
         match &rows[0].1 {
             HistoryEntry::Advisory { advisory, context } => {
