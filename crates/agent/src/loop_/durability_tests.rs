@@ -1606,14 +1606,14 @@ async fn wait_mid_batch(h: &Harness, tid: TurnId, held: &str, done: &str) {
 }
 
 /// Poll until the session has an open turn.
-async fn wait_open_turn(h: &Harness) -> TurnId {
+async fn wait_open_turn(h: &Harness, what: &str) -> TurnId {
     for _ in 0..200 {
         if let Some((t, _)) = h.store.open_turn(h.id).await.unwrap() {
             return t;
         }
         tokio::time::sleep(Duration::from_millis(25)).await;
     }
-    panic!("no turn opened");
+    panic!("{what}: no turn opened");
 }
 
 /// 139 I3: `DrainSession` over a live actor leaves exactly one of two
@@ -1633,7 +1633,7 @@ async fn release_drain_writes_suspended_or_finished(
     journal(registry, &h.store).await;
     holds.1.store(true, Ordering::SeqCst);
     let actor = start_turn(&h, "go").await;
-    let tid = wait_open_turn(&h).await;
+    let tid = wait_open_turn(&h, "a").await;
     wait_mid_batch(&h, tid, C2, C1).await;
     let live = crate::supervisor::LiveActor::Native(actor.clone());
     let report = drain_session(
@@ -1663,9 +1663,9 @@ async fn release_drain_writes_suspended_or_finished(
         e,
         AgentEvent::TurnSuspended { turn, reason, .. } if *turn == tid && reason == "release"
     )));
-    holds.1.store(false, Ordering::SeqCst);
     // The cancelled turn task (detached from the actor) returns as a
-    // suspension: it writes no `turn_finished`.
+    // suspension: it writes no `turn_finished`; `poke` is still `started`
+    // (the hold is released only after the plan is read).
     tokio::time::sleep(Duration::from_millis(500)).await;
     assert_eq!(
         kinds(&h.store, h.id, tid).await,
@@ -1680,12 +1680,13 @@ async fn release_drain_writes_suspended_or_finished(
             all_finished: false
         }
     );
+    holds.1.store(false, Ordering::SeqCst);
 
     // (b) finished inside the window.
     let mut h = Harness::new(SlowFinal).await;
     journal(registry, &h.store).await;
     let actor = start_turn(&h, TALK).await;
-    let tid = wait_open_turn(&h).await;
+    let tid = wait_open_turn(&h, "b").await;
     // The final call must be in flight (`model_call` reserved) before the
     // drain, or the first round would stop on `draining` instead.
     for _ in 0..200 {
@@ -1810,14 +1811,16 @@ async fn cancel_while_draining_is_a_suspension(
 
 /// 139 D19: `tell(CancelTurn)` + `stop_gracefully` + `wait_for_shutdown`
 /// lands the cancel every time (`kill()` could drop it with the mailbox):
-/// a hundred live turns, each held in `poke`, each ends `cancelled`.
+/// a hundred live turns, each held in `poke`, each ends `cancelled`. A
+/// fresh session each time — the cancelled batch leaves a tool message the
+/// fake answers [`FINAL`] to, so a second turn there would open no batch.
 async fn unload_always_lands_the_cancel(registry: &ActorRef<ToolRegistry>, holds: &Holds) {
-    let mut h = Harness::new(BatchFake).await;
-    journal(registry, &h.store).await;
     for i in 0..100 {
+        let mut h = Harness::new(BatchFake).await;
+        journal(registry, &h.store).await;
         holds.1.store(true, Ordering::SeqCst);
         let actor = start_turn(&h, "go").await;
-        let tid = wait_open_turn(&h).await;
+        let tid = wait_open_turn(&h, &format!("unload #{i}")).await;
         wait_mid_batch(&h, tid, C2, C1).await;
         crate::supervisor::transfer::stop_actor(&actor).await;
         assert!(!actor.is_alive(), "#{i}: stopped");
@@ -1830,6 +1833,6 @@ async fn unload_always_lands_the_cancel(registry: &ActorRef<ToolRegistry>, holds
             "#{i}: the cancel landed: {events:?}"
         );
         holds.1.store(false, Ordering::SeqCst);
+        assert!(h.store.open_turns(Scope::Here).await.unwrap().is_empty());
     }
-    assert!(h.store.open_turns(Scope::Here).await.unwrap().is_empty());
 }

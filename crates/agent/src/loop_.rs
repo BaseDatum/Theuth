@@ -2955,6 +2955,17 @@ impl Turn {
         }
     }
 
+    /// A cancel landing now is a suspension, not a stop (109 §9.2, 139
+    /// §6.1): the process is shutting down or this session is draining for
+    /// a release.
+    fn suspending(&self) -> bool {
+        self.shared.rt.shutdown.is_cancelled()
+            || self
+                .shared
+                .draining
+                .load(std::sync::atomic::Ordering::SeqCst)
+    }
+
     /// The store when the knowledge plugin is up (12 §9.2) and the tree is
     /// durable: a private session neither harvests nor hints (51 §4.5), so
     /// every knowledge path — `run`'s trigger, `compact`'s pre-harvest,
@@ -4549,13 +4560,7 @@ impl Turn {
         // journal and the next start resumes it; nothing below closes it.
         // 139 §6.1: so is one that arrives while this session is draining
         // for a release — the `suspended{release}` row written first stands.
-        if stop_reason == "cancelled"
-            && (self.shared.rt.shutdown.is_cancelled()
-                || self
-                    .shared
-                    .draining
-                    .load(std::sync::atomic::Ordering::SeqCst))
-        {
+        if stop_reason == "cancelled" && self.suspending() {
             stop_reason = SUSPENDED.into();
         }
         let suspended = stop_reason == SUSPENDED;
@@ -5438,10 +5443,11 @@ impl Turn {
             crash_point(&crash::call_point(i, crash::CALL_AFTER_FINISHED));
             outputs[i] = Some(out);
         }
-        // 109 §9.2 step 3: a batch cut by the shutdown token (a drain's
-        // deadline) is left as the journal has it — `started` rows resume by
-        // the per-call rule, `planned` ones run then; no batch message.
-        if cancelled && self.shared.rt.shutdown.is_cancelled() {
+        // 109 §9.2 step 3 / 139 §6.1 step 4: a batch cut by the shutdown
+        // token or by the release drain's deadline is left as the journal
+        // has it — `started` rows resume by the per-call rule, `planned`
+        // ones run then; no batch message, no "cancelled by user" rows.
+        if cancelled && self.suspending() {
             return Round::Stop(SUSPENDED.into());
         }
         self.finish_batch(turn, calls, outputs, cancelled, plan, restart)
