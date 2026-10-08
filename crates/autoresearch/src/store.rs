@@ -596,6 +596,8 @@ struct SampleRaw {
     lost: i64,
     log_path: Option<String>,
     at: String,
+    slot_holders: String,
+    failure: Option<String>,
 }
 
 impl From<SampleRaw> for Sample {
@@ -616,6 +618,8 @@ impl From<SampleRaw> for Sample {
             lost: r.lost != 0,
             log_path: r.log_path,
             at: r.at,
+            slot_holders: serde_json::from_str(&r.slot_holders).unwrap_or_default(),
+            failure: r.failure,
         }
     }
 }
@@ -697,7 +701,7 @@ const EXPERIMENT_COLS: &str = "slug, n, wave, slot, segment, parent_sha, state, 
     description, learned, next, decision, justification, deviations, delta, delta_pct, z, n_samples, metric, \
     commit_sha, patch_path, patch_hash, review, line, cost_nanos, started_at, finished_at";
 
-const SAMPLE_COLS: &str = "n, k, tree_sha, role, value, secondaries, cases, asi, exit, wall_ms, load, noisy, lost, log_path, at";
+const SAMPLE_COLS: &str = "n, k, tree_sha, role, value, secondaries, cases, asi, exit, wall_ms, load, noisy, lost, log_path, at, slot_holders, failure";
 
 type Q = sqlx::QueryBuilder<sqlx::Sqlite>;
 
@@ -1217,7 +1221,8 @@ impl Store {
     pub async fn insert_sample(&self, slug: &str, s: &Sample) -> Result<i64> {
         let r = sqlx::query(
             "INSERT INTO samples (slug, n, k, tree_sha, role, value, secondaries, cases, asi, exit, wall_ms, load, \
-             noisy, lost, log_path, at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
+             noisy, lost, log_path, at, slot_holders, failure) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)",
         )
         .bind(slug)
         .bind(i64::from(s.n))
@@ -1235,6 +1240,8 @@ impl Store {
         .bind(i64::from(s.lost))
         .bind(&s.log_path)
         .bind(&s.at)
+        .bind(to_json(&s.slot_holders))
+        .bind(&s.failure)
         .execute(&self.pool)
         .await?;
         Ok(r.last_insert_rowid())
@@ -1244,7 +1251,8 @@ impl Store {
     pub async fn update_sample(&self, id: i64, s: &Sample) -> Result<()> {
         sqlx::query(
             "UPDATE samples SET tree_sha = ?2, role = ?3, value = ?4, secondaries = ?5, cases = ?6, asi = ?7, \
-             exit = ?8, wall_ms = ?9, load = ?10, noisy = ?11, lost = ?12, log_path = ?13, at = ?14 WHERE id = ?1",
+             exit = ?8, wall_ms = ?9, load = ?10, noisy = ?11, lost = ?12, log_path = ?13, at = ?14, \
+             slot_holders = ?15, failure = ?16 WHERE id = ?1",
         )
         .bind(id)
         .bind(&s.tree_sha)
@@ -1260,6 +1268,8 @@ impl Store {
         .bind(i64::from(s.lost))
         .bind(&s.log_path)
         .bind(&s.at)
+        .bind(to_json(&s.slot_holders))
+        .bind(&s.failure)
         .execute(&self.pool)
         .await?;
         Ok(())
@@ -1460,7 +1470,7 @@ mod tests {
             .fetch_one(s.pool())
             .await
             .unwrap();
-        assert_eq!(n, 1);
+        assert_eq!(n, 2, "0001_init + 0002_sample_detail");
         drop(s);
         let s = Store::open(dir.path()).await.unwrap();
         let fts: i64 = sqlx::query_scalar("SELECT count(*) FROM experiments_fts")

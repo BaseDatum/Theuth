@@ -96,13 +96,21 @@ pub async fn on_fired(a: &mut Studies, name: &str, session: runtime::SessionId) 
     let Some(slug) = slug_of(name) else {
         return Ok(());
     };
-    let Some(mut study) = a.store.get_study(slug).await? else {
+    let Some(study) = a.store.get_study(slug).await? else {
         tracing::warn!(%name, "fired for an unknown study");
         return Ok(());
     };
     if study.session != Some(session) {
-        study.session = Some(session);
-        a.store.update_study(&study).await?;
+        // Column-scoped (R-4): a Pause / Run write-back in flight is not reverted.
+        a.store
+            .patch_study(
+                slug,
+                &crate::store::StudyPatch {
+                    session: Some(Some(session)),
+                    ..Default::default()
+                },
+            )
+            .await?;
     }
     Ok(())
 }

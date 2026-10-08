@@ -553,6 +553,11 @@ wire! {
         pub log_path: Option<String>,
         /// RFC 3339.
         pub at: String,
+        /// Owners of the machine's build slots at start (`pid label epoch argv` lines; §5.5).
+        pub slot_holders: Vec<String>,
+        /// Why there is no value: the runner's reason (`exit 1`, `bad number time_ms=nan`,
+        /// `no METRIC time_ms line`, `killed`).
+        pub failure: Option<String>,
     }
 }
 
