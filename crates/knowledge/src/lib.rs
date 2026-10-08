@@ -59,7 +59,8 @@ pub const BODY_MAX: usize = 16 * 1024;
 pub const HINT_DESCRIPTION_CHARS: usize = 120;
 
 /// `knowledge:` config section (12 §9.2). Loop policy (`hint_limit`, harvest
-/// cadence) lives in `agent.knowledge`; this section only switches the plugin.
+/// cadence) lives in `agent.knowledge`; this section switches the plugin and
+/// carries the type lifetimes of 136 §5.2.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default)]
 pub struct KnowledgeConfig {
@@ -68,6 +69,9 @@ pub struct KnowledgeConfig {
     /// Seconds between bundle syncs with every connected engine (67 §5.2);
     /// a sync also runs on each connect.
     pub sync_secs: u64,
+    /// `knowledge.lifetimes` (136 §5.2, days). The rank reads these; dreaming's
+    /// `lifetimes` mirror is for its archive/verify sampling only.
+    pub lifetimes: Lifetimes,
 }
 
 impl Default for KnowledgeConfig {
@@ -75,6 +79,32 @@ impl Default for KnowledgeConfig {
         Self {
             enabled: true,
             sync_secs: 300,
+            lifetimes: Lifetimes::default(),
+        }
+    }
+}
+
+/// Days a type stays on the hint shelf by age (136 §5.2).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Lifetimes {
+    /// `type: record` ranks 0 past this age.
+    pub record: u32,
+    /// Verify sample: facts whose `verified` is older than this.
+    pub fact: u32,
+    /// Procedures unopened this long are archive candidates.
+    pub procedure: u32,
+    /// Entities / hosts / projects unopened this long are archive candidates.
+    pub entity: u32,
+}
+
+impl Default for Lifetimes {
+    fn default() -> Self {
+        Self {
+            record: 14,
+            fact: 30,
+            procedure: 90,
+            entity: 60,
         }
     }
 }

@@ -49,6 +49,8 @@ pub struct CommitChanges {
 
 /// Committer identity; the user's git config is never read.
 pub const SIGNATURE: (&str, &str) = ("theuth", "theuth@localhost");
+/// Author of dreaming's consolidation commits (136 §3.1 item 4).
+pub const DREAMING_SIGNATURE: (&str, &str) = ("dreaming", "dreaming@localhost");
 
 /// A normal `.git` at the bundle root, loose objects only.
 pub struct Repo {
@@ -106,17 +108,28 @@ impl Repo {
         if tree == base_tree(&repo, head.as_ref())? {
             return Ok(None);
         }
-        commit(&repo, tree, head.map(|c| c.id), "reconcile").map(Some)
+        commit(&repo, tree, head.map(|c| c.id), "reconcile", SIGNATURE).map(Some)
     }
 
     /// Commit `written` (read from disk) and `removed` (root-relative paths)
-    /// on top of HEAD's tree; returns the abbreviated commit id. An unborn
-    /// HEAD starts from the empty tree.
+    /// on top of HEAD's tree as [`SIGNATURE`]; returns the abbreviated commit
+    /// id. An unborn HEAD starts from the empty tree.
     pub fn commit(
         &self,
         written: &[PathBuf],
         removed: &[PathBuf],
         message: &str,
+    ) -> anyhow::Result<String> {
+        self.commit_as(written, removed, message, SIGNATURE)
+    }
+
+    /// [`Self::commit`] with an explicit `(name, email)` author/committer.
+    pub fn commit_as(
+        &self,
+        written: &[PathBuf],
+        removed: &[PathBuf],
+        message: &str,
+        author: (&str, &str),
     ) -> anyhow::Result<String> {
         let repo = self.inner.to_thread_local();
         let head = head_commit(&repo)?;
@@ -135,7 +148,7 @@ impl Repo {
         {
             return Ok(abbrev(&head.id));
         }
-        commit(&repo, tree, head.map(|c| c.id), message)
+        commit(&repo, tree, head.map(|c| c.id), message, author)
     }
 
     /// Commits that changed `path` (root-relative; `None` = every commit),
@@ -274,6 +287,14 @@ impl Repo {
 
 #[cfg(test)]
 impl Repo {
+    /// Test probe: `(name, email)` of `commit`'s author (abbreviated or full id).
+    pub(crate) fn author(&self, commit: &str) -> anyhow::Result<(String, String)> {
+        let repo = self.inner.to_thread_local();
+        let c = repo.rev_parse_single(commit)?.object()?.into_commit();
+        let a = c.author()?;
+        Ok((a.name.to_string(), a.email.to_string()))
+    }
+
     /// Test fixture: commit `written` on top of `parents[0]`'s tree with the
     /// given parents, advancing `reference` (`HEAD` or `refs/heads/<name>`).
     pub(crate) fn commit_on(
@@ -429,17 +450,18 @@ fn base_tree(repo: &Repository, head: Option<&Commit<'_>>) -> anyhow::Result<Obj
     })
 }
 
-/// Write a commit as `theuth <theuth@localhost>` and advance HEAD; returns the abbreviated id.
+/// Write a commit as `author` and advance HEAD; returns the abbreviated id.
 fn commit(
     repo: &Repository,
     tree: ObjectId,
     parent: Option<ObjectId>,
     message: &str,
+    author: (&str, &str),
 ) -> anyhow::Result<String> {
     let time = gix::date::Time::now_local_or_utc().format(gix::date::time::Format::Raw)?;
     let sig = gix::actor::SignatureRef {
-        name: SIGNATURE.0.into(),
-        email: SIGNATURE.1.into(),
+        name: author.0.into(),
+        email: author.1.into(),
         time: &time,
     };
     let id = repo.commit_as(sig, sig, "HEAD", message, tree, parent)?;
