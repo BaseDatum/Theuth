@@ -148,8 +148,9 @@ export type Entry = { id: string; context?: ContextEntry; at?: number } & (
     }
   /** 125 §8.3: one Advisory card — every note the advisor raised at one step boundary (or one steer). From the
    * `advisory` history row or `AdvisoryAdded` live (`seq` is the stored row, the idempotence key); parsed from the
-   * `<advisory>` wrapper text when a row arrives as plain user input (no `seq` then). Never a `you` bubble. */
-  | { kind: "advisory"; notes: AdvisoryNote[]; seq?: number }
+   * `<advisory>` wrapper text when a row arrives as plain user input (no `seq` then). Never a `you` bubble.
+   * R1: a consultation card carries its `question`; `notes` is then the one `advice` answer. */
+  | { kind: "advisory"; notes: AdvisoryNote[]; seq?: number; question?: string }
   | { kind: "info"; text: string }
   | { kind: "error"; text: string }
   | { kind: "compacted"; epoch: number; style: CompactStyle; summary?: string }

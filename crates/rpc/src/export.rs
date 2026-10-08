@@ -51,6 +51,8 @@ async fn export_bindings() {
         agent::Advisory,
         agent::AdvisorState,
         agent::AdvisorNoteCounts,
+        agent::AdvisoryKind,
+        agent::AdvisorConsultCounts,
         agent::AdvisorStatus,
         agent::AdvisorLink,
         agent::SyncBacklog,

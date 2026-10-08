@@ -1,7 +1,9 @@
+import { createElement } from 'react'
+import { renderToStaticMarkup } from 'react-dom/server'
 import { expect, test } from 'vitest'
 import type { AdvisoryNote } from '@/rpc/bindings/AdvisoryNote'
 import type { Entry } from '@/store/sessions'
-import { collapseNotes } from './AdvisorNoteCard'
+import { AdvisorNoteCard, collapseNotes } from './AdvisorNoteCard'
 import { foldRuns } from './ToolRunCard'
 
 const notes: AdvisoryNote[] = ['a', 'b', 'c', 'd', 'e'].map((note, i) => ({ severity: i === 3 ? 'blocker' : 'nit', note }))
@@ -17,4 +19,17 @@ test('an advisory card splits a tool run and never folds into one', () => {
   const card: Entry = { id: 'adv', kind: 'advisory', notes: notes.slice(0, 1), seq: 3 }
   const folded = foldRuns([tool('a'), tool('b'), card, tool('c'), tool('d')])
   expect(folded.map((x) => (Array.isArray(x) ? x.map((e) => e.id) : x.id))).toEqual([['a', 'b'], 'adv', ['c', 'd']])
+})
+
+test('R1: a consultation card titles by its question, wears a Consulted badge and bodies the answer without a severity chip', () => {
+  const html = renderToStaticMarkup(createElement(AdvisorNoteCard, { notes: [{ severity: 'advice', note: 'No: the column is gone.' }], question: 'Retry the migration?', at: 1_700_000_000_000 }))
+  expect(html).toContain('>Consulted</span>')
+  expect(html).toContain('>Retry the migration?</span>')
+  expect(html).not.toContain('Advisor · 1 note')
+  expect(html).not.toContain('>advice</span>')
+  expect(html).toMatch(/<li[^>]*><span[^>]*>No: the column is gone\.<\/span><\/li>/)
+  const review = renderToStaticMarkup(createElement(AdvisorNoteCard, { notes: [{ severity: 'nit', note: 'prefer let' }] }))
+  expect(review).toContain('Advisor · 1 note')
+  expect(review).not.toContain('Consulted')
+  expect(review).toContain('>nit</span>')
 })

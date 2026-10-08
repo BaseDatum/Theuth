@@ -2363,7 +2363,7 @@ impl Channel {
                 }
                 self.child_row(session, |c| c.apply(&ev)).await;
                 if let Some(b) = self.bound(session) {
-                    let _ = self.worker(&b).send(WorkerMsg::Agent(ev));
+                    let _ = self.worker(&b).send(WorkerMsg::Agent(Box::new(ev)));
                 }
             }
             Event::Requested(req) => {

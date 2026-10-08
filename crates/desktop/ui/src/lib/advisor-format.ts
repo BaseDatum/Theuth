@@ -1,14 +1,16 @@
 // 125 §8: the pure half of the advisor UI — severity tones, the pill's label by state, note counts and the
 // popover's context/tokens lines — so the components stay thin and the logic is vitest-able.
 
+import type { AdvisorConsultCounts } from '@/rpc/bindings/AdvisorConsultCounts'
 import type { AdvisorSeverity } from '@/rpc/bindings/AdvisorSeverity'
 import type { AdvisorState } from '@/rpc/bindings/AdvisorState'
 import type { AdvisorStatus } from '@/rpc/bindings/AdvisorStatus'
+import type { Advisory } from '@/rpc/bindings/Advisory'
 import type { AdvisoryNote } from '@/rpc/bindings/AdvisoryNote'
 import { k } from '@/components/chat/CostPill'
 
-/** Severity order for the card's worst-of pick. */
-const RANK: Record<AdvisorSeverity, number> = { nit: 0, concern: 1, blocker: 2 }
+/** Severity order for the card's worst-of pick; `advice` (a consultation's answer, 125 R1) never wins. */
+const RANK: Record<AdvisorSeverity, number> = { advice: 0, nit: 1, concern: 2, blocker: 3 }
 
 /** The severity a card is tinted by: the worst of its notes (`nit` for none). */
 export function worstSeverity(notes: readonly AdvisoryNote[]): AdvisorSeverity {
@@ -17,15 +19,19 @@ export function worstSeverity(notes: readonly AdvisoryNote[]): AdvisorSeverity {
   return worst
 }
 
-/** The status tokens of `styles.css` by severity (§8.3): nit → info, concern → warning, blocker → danger. */
+/** The status tokens of `styles.css` by severity (§8.3): advice/nit → info, concern → warning, blocker → danger. */
 export const TONE: Record<AdvisorSeverity, { shell: string; fg: string; border: string }> = {
+  advice: { shell: 'border-info-border/30 bg-info-bg/40', fg: 'text-info', border: 'border-info-border/20' },
   nit: { shell: 'border-info-border/30 bg-info-bg/40', fg: 'text-info', border: 'border-info-border/20' },
   concern: { shell: 'border-warning-border/30 bg-warning-bg/40', fg: 'text-warning', border: 'border-warning-border/20' },
   blocker: { shell: 'border-danger-border/30 bg-danger-bg/40', fg: 'text-danger', border: 'border-danger-border/20' },
 }
 
-/** `Advisor · 2 notes` (§8.6). */
-export const cardTitle = (count: number): string => `Advisor · ${count} note${count === 1 ? '' : 's'}`
+/** `Advisor · 2 notes` (§8.6); a consultation (R1.2) is titled by its question. */
+export const cardTitle = (count: number, question?: string): string => question ?? `Advisor · ${count} note${count === 1 ? '' : 's'}`
+
+/** R1.7: the flattened `kind` tag narrows an `Advisory` to the consultation member (its `question` sits at the top level). */
+export const isConsultation = (a: Advisory): a is Advisory & { kind: 'consultation'; question: string } => a.kind === 'consultation'
 
 /** How many notes a card shows collapsed (§8.3). */
 export const NOTES_SHOWN = 3
@@ -50,6 +56,9 @@ export function pillLabel(s: Pick<AdvisorStatus, 'state' | 'notes'>): string {
 
 /** Every note the advisor emitted for this link. */
 export const noteCount = (c: AdvisorStatus['notes']): number => c.nit + c.concern + c.blocker
+
+/** The popover's `Consults` row (R1.2): `2/6 · 9 total`; `off` when the cap is 0 (the tool is absent). */
+export const consultsLine = (c: AdvisorConsultCounts): string => (c.cap === 0 ? 'off' : `${c.turn}/${c.cap}${c.total ? ` · ${c.total} total` : ''}`)
 
 /** The pill's colour by state (§8.2). */
 export const STATE_FG: Record<AdvisorState, string> = {

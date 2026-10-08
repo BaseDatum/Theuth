@@ -722,6 +722,11 @@ async fn execute(api: &Engine, cmd: Command, tx: &UnboundedSender<UiEvent>) -> a
         Command::AdvisorStatus(session) => {
             UiEvent::AdvisorStatus(msg(api.advisor_status(session).await)?)
         }
+        // R1.2: `advisor consults → n`; the live status follows on `AdvisorChanged`.
+        Command::SetAdvisorMaxConsults(n) => {
+            let d = msg(api.set_advisor_max_consults(n).await)?;
+            UiEvent::Info(format!("advisor consults → {}", d.max_consults))
+        }
         Command::SetModelFavorite { model, favorite } => {
             UiEvent::FavoriteModels(msg(api.set_model_favorite(model, favorite).await)?)
         }

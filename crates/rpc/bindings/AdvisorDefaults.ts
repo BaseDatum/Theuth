@@ -25,4 +25,8 @@ immune_turns: number,
 /**
  * `advisor.sync_backlog` (default `off`).
  */
-sync_backlog: SyncBacklog, };
+sync_backlog: SyncBacklog, 
+/**
+ * `advisor.max_consults` (0–32, default 6; 0 removes the tool).
+ */
+max_consults: number, };

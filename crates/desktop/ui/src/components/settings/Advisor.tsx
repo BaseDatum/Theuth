@@ -16,6 +16,14 @@ export const backlogLabel = (v: SyncBacklog): string => (v === 'off' ? 'Off' : v
 /** `s` as a `SyncBacklog`; `undefined` for anything the engine would refuse. */
 export const asBacklog = (s: string): SyncBacklog | undefined => BACKLOGS.find((v) => v === s)
 
+/** The `Consults per turn` choices (R1.2): `advisor.max_consults`, `0` labelled `Off`. */
+export const CONSULTS = [0, 2, 6, 12] as const
+export const consultsLabel = (n: number): string => (n === 0 ? 'Off' : String(n))
+/** The select's options: the four choices plus the live value when a hand-edited config sits outside them. */
+export const consultOptions = (cur: number | undefined): number[] => (cur === undefined || CONSULTS.some((v) => v === cur) ? [...CONSULTS] : [...CONSULTS, cur].sort((a, b) => a - b))
+/** `s` as a cap (0–32); `undefined` for anything the engine would refuse. */
+export const asConsults = (s: string): number | undefined => (/^\d+$/.test(s) && Number(s) <= 32 ? Number(s) : undefined)
+
 /** Radix `Select` refuses `''`: the Default row's value. */
 const DEFAULT = '__default'
 
@@ -27,6 +35,7 @@ export function Advisor() {
   const setNotes = useAction((n: number) => api.set_advisor_notes_per_update(n).then(() => refreshInfo(api)))
   const setImmune = useAction((n: number) => api.set_advisor_immune_turns(n).then(() => refreshInfo(api)))
   const setBacklog = useAction((v: SyncBacklog) => api.set_advisor_sync_backlog(v).then(() => refreshInfo(api)))
+  const setConsults = useAction((n: number) => api.set_advisor_max_consults(n).then(() => refreshInfo(api)))
   return (
     <Section title="Advisor">
       <Row label="Default effort" description="Thinking effort the advisor starts with when you pick a model.">
@@ -66,6 +75,30 @@ export function Advisor() {
             {BACKLOGS.map((v) => (
               <SelectItem key={v} value={v}>
                 {backlogLabel(v)}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      </Row>
+      <Row
+        label="Consults per turn"
+        description="How often the model may ask the advisor a question per turn through the consult tool (Off removes the tool). An advisor priced below the session's model is flagged in its pill."
+      >
+        <Select
+          value={advisor ? String(advisor.max_consults) : undefined}
+          disabled={!advisor || setConsults.isPending}
+          onValueChange={(v) => {
+            const n = asConsults(v)
+            if (n !== undefined) setConsults.mutate(n)
+          }}
+        >
+          <SelectTrigger className="w-40" aria-label="Consults per turn">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            {consultOptions(advisor?.max_consults).map((v) => (
+              <SelectItem key={v} value={String(v)}>
+                {consultsLabel(v)}
               </SelectItem>
             ))}
           </SelectContent>

@@ -62,7 +62,7 @@ function body(entry: Entry, session: string, readOnly?: boolean) {
     case 'interrupted':
       return <MessageInterrupted text={entry.text} />
     case 'advisory':
-      return <AdvisorNoteCard notes={entry.notes} at={entry.at} />
+      return <AdvisorNoteCard notes={entry.notes} at={entry.at} question={entry.question} />
   }
 }
 
@@ -140,7 +140,7 @@ function describe(entry: Entry): string {
     case 'vision':
       return `vision observation · ${entry.model}`
     case 'advisory':
-      return 'advisor note'
+      return entry.question === undefined ? 'advisor note' : 'consultation'
     default:
       return 'message'
   }

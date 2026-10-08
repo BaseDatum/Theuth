@@ -838,6 +838,8 @@ export interface Api {
   set_advisor_default_effort(effort: string | null): Promise<AdvisorDefaults>
   /** Persist `advisor.immune_turns` (0–10; 0 disables the window after a steer). */
   set_advisor_immune_turns(n: number): Promise<AdvisorDefaults>
+  /** Persist `advisor.max_consults` (0–32; 0 removes the `consult` tool) (125 R1). */
+  set_advisor_max_consults(n: number): Promise<AdvisorDefaults>
   /** Persist `advisor.max_notes_per_update` (1–32). */
   set_advisor_notes_per_update(n: number): Promise<AdvisorDefaults>
   /** Persist `advisor.sync_backlog` (`off` | `1` | `3` | `5`). */
@@ -1263,6 +1265,7 @@ export const METHODS = [
   'set_advisor',
   'set_advisor_default_effort',
   'set_advisor_immune_turns',
+  'set_advisor_max_consults',
   'set_advisor_notes_per_update',
   'set_advisor_sync_backlog',
   'set_approvals',

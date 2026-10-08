@@ -1489,6 +1489,10 @@ pub struct GetDefaultEffort;
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 #[serde(rename_all = "snake_case")]
 pub enum AdvisorSeverity {
+    /// The answer to a consultation (125 R1); never emitted by `advise`,
+    /// never steered, never posted. First: it ranks below `Nit`, so a
+    /// worst-of pick never promotes a card to `Advice`.
+    Advice,
     /// Batched into one card at the next step boundary.
     Nit,
     /// Steered into the running turn; preserved as a card after a terminal answer.
@@ -1507,8 +1511,51 @@ pub struct AdvisoryNote {
     pub note: String,
 }
 
+/// What an Advisory row is (125 R1 D-R1.6): the watchdog's notes or the
+/// answer to a `consult` call. Flattened into [`Advisory`] under the `kind`
+/// tag; rows written before R1 have no `kind` key and read as `Review`.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum AdvisoryKind {
+    /// The watchdog's notes (every row written before R1).
+    #[default]
+    Review,
+    /// The answer to a `consult` call; `notes` holds exactly one `Advice` note.
+    Consultation {
+        /// The question the agent asked.
+        question: String,
+    },
+}
+
+impl AdvisoryKind {
+    /// Flattened deserialiser: a row without a `kind` key is a `Review`
+    /// (serde ignores `default` on flattened fields, so the tolerance lives here).
+    fn or_review<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        use serde::de::Error as _;
+        #[derive(Deserialize)]
+        struct Raw {
+            kind: Option<String>,
+            question: Option<String>,
+        }
+        let raw = Raw::deserialize(d)?;
+        match raw.kind.as_deref() {
+            None | Some("review") => Ok(Self::Review),
+            Some("consultation") => Ok(Self::Consultation {
+                question: raw
+                    .question
+                    .ok_or_else(|| D::Error::missing_field("question"))?,
+            }),
+            Some(other) => Err(D::Error::unknown_variant(
+                other,
+                &["review", "consultation"],
+            )),
+        }
+    }
+}
+
 /// One Advisory card: every note the advisor emitted for one step boundary
-/// (nits batched), or one steer (125 §6.2).
+/// (nits batched), one steer (125 §6.2), or one consultation's answer (R1).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct Advisory {
@@ -1524,6 +1571,9 @@ pub struct Advisory {
     pub at_ms: i64,
     /// At least one; the card's severity is the max.
     pub notes: Vec<AdvisoryNote>,
+    /// Review or consultation; 0034 rows have no `kind` key -> `Review`.
+    #[serde(default, flatten, deserialize_with = "AdvisoryKind::or_review")]
+    pub kind: AdvisoryKind,
 }
 
 impl Advisory {
@@ -1534,7 +1584,7 @@ impl Advisory {
     pub fn channel_line(&self) -> Option<String> {
         let top = self.notes.iter().max_by_key(|n| n.severity)?;
         let word = match top.severity {
-            AdvisorSeverity::Nit => return None,
+            AdvisorSeverity::Advice | AdvisorSeverity::Nit => return None,
             AdvisorSeverity::Concern => "concern",
             AdvisorSeverity::Blocker => "blocker",
         };
@@ -1575,6 +1625,18 @@ pub struct AdvisorNoteCounts {
     pub blocker: u32,
 }
 
+/// `consult` calls answered for one link (125 R1 D-R1.7).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+pub struct AdvisorConsultCounts {
+    /// Consults in the advised session's current user turn (its own; subagents not folded in).
+    pub turn: u32,
+    /// Consults answered for this link since it was created: the root's and its subagents'.
+    pub total: u32,
+    /// The live `advisor.max_consults` (0 = tool absent).
+    pub cap: u8,
+}
+
 /// Everything a UI shows about one session's advisor (125 §6.2): the pill,
 /// the popover and `/advisor status`. `state: Off` with everything else
 /// default when the session has none.
@@ -1613,6 +1675,14 @@ pub struct AdvisorStatus {
     pub last_note: Option<AdvisoryNote>,
     /// Why paused/halted, first line.
     pub detail: Option<String>,
+    /// `consult` counts (R1).
+    #[serde(default)]
+    pub consults: AdvisorConsultCounts,
+    /// D-R1.5 pairing warning, set once at attach/re-pick when the advisor's
+    /// catalog output price is below the advised session's model's; `None`
+    /// when either price is unknown or the order is fine.
+    #[serde(default)]
+    pub warning: Option<String>,
 }
 
 /// One `session_advisors` row (125 §6.1): the durable link between an
@@ -1674,6 +1744,13 @@ pub struct AdvisorDefaults {
     pub immune_turns: u8,
     /// `advisor.sync_backlog` (default `off`).
     pub sync_backlog: SyncBacklog,
+    /// `advisor.max_consults` (0–32, default 6; 0 removes the tool).
+    #[serde(default = "six")]
+    pub max_consults: u8,
+}
+
+fn six() -> u8 {
+    6
 }
 
 /// `ask` → `Result<AdvisorStatus, String>`: turn the advisor of `session` on
@@ -1709,6 +1786,8 @@ pub struct SetAdvisorDefaults {
     pub immune_turns: Option<u8>,
     /// `advisor.sync_backlog`.
     pub sync_backlog: Option<SyncBacklog>,
+    /// `advisor.max_consults` (0–32).
+    pub max_consults: Option<u8>,
 }
 
 /// `ask` → `AdvisorDefaults`: the live `advisor.*` defaults (the remembered
@@ -1731,6 +1810,9 @@ pub struct AppendAdvisory {
     pub advisory: Advisory,
     /// The model-facing text of the row.
     pub text: String,
+    /// `false` only for consultations (R1): the row is also masked
+    /// (`excluded.whole`), a card for the UIs and never model context.
+    pub model_visible: bool,
 }
 
 /// `ask` → `Vec<String>`: the favorite model ids (`agent.favorite_models`,
@@ -3269,6 +3351,8 @@ pub struct AdvisorConfig {
     pub immune_turns: u8,
     /// How many pending deltas the advised loop waits for at turn end.
     pub sync_backlog: SyncBacklog,
+    /// `consult` calls per user turn of the asking session (0–32; 0 removes the tool).
+    pub max_consults: u8,
 }
 
 impl Default for AdvisorConfig {
@@ -3279,6 +3363,7 @@ impl Default for AdvisorConfig {
             max_notes_per_update: 4,
             immune_turns: 3,
             sync_backlog: SyncBacklog::Off,
+            max_consults: 6,
         }
     }
 }
@@ -3292,6 +3377,7 @@ impl AdvisorConfig {
             max_notes_per_update: self.max_notes_per_update,
             immune_turns: self.immune_turns,
             sync_backlog: self.sync_backlog,
+            max_consults: self.max_consults,
         }
     }
 }
@@ -3345,5 +3431,92 @@ impl runtime::Plugin for AgentPlugin {
 
     async fn start(self: Box<Self>, rt: &runtime::Runtime) -> anyhow::Result<()> {
         supervisor::start(rt).await
+    }
+}
+
+/// 125 R1.9 (C): the wire shapes of the consultation types.
+#[cfg(test)]
+mod advisor_wire_tests {
+    use super::*;
+
+    fn card(kind: AdvisoryKind, severity: AdvisorSeverity) -> Advisory {
+        Advisory {
+            advisor: SessionId::new(),
+            step: 1,
+            turn: None,
+            at_ms: 0,
+            notes: vec![AdvisoryNote {
+                severity,
+                note: "answer\nmore".into(),
+            }],
+            kind,
+        }
+    }
+
+    #[test]
+    fn advisory_without_kind_is_a_review_and_consultation_round_trips() {
+        let review = card(AdvisoryKind::Review, AdvisorSeverity::Nit);
+        let mut json = serde_json::to_value(&review).unwrap();
+        assert_eq!(json["kind"], "review");
+        json.as_object_mut().unwrap().remove("kind");
+        assert_eq!(serde_json::from_value::<Advisory>(json).unwrap(), review);
+
+        let consultation = card(
+            AdvisoryKind::Consultation {
+                question: "which first?".into(),
+            },
+            AdvisorSeverity::Advice,
+        );
+        let json = serde_json::to_value(&consultation).unwrap();
+        assert_eq!(json["kind"], "consultation");
+        assert_eq!(json["question"], "which first?");
+        assert_eq!(
+            serde_json::from_value::<Advisory>(json).unwrap(),
+            consultation
+        );
+        assert!(
+            serde_json::from_str::<Advisory>(
+                r#"{"advisor":"00000000-0000-0000-0000-000000000000","step":1,"turn":null,"at_ms":0,"notes":[],"kind":"consultation"}"#
+            )
+            .is_err(),
+            "a consultation needs its question"
+        );
+    }
+
+    #[test]
+    fn advisor_status_and_defaults_parse_without_the_r1_fields() {
+        let s: AdvisorStatus = serde_json::from_str(
+            r#"{"session":"00000000-0000-0000-0000-000000000000","advisor":null,"state":"off","model":null,"effort":null,"notes":{"nit":0,"concern":0,"blocker":0},"context_used":0,"context_limit":0,"tokens_in":0,"tokens_out":0,"cost":null,"step":0,"backlog":0,"last_note":null,"detail":null}"#,
+        )
+        .unwrap();
+        assert_eq!(s.consults, AdvisorConsultCounts::default());
+        assert_eq!(s.warning, None);
+        let d: AdvisorDefaults = serde_json::from_str(
+            r#"{"model":null,"effort":null,"max_notes_per_update":4,"immune_turns":3,"sync_backlog":"off"}"#,
+        )
+        .unwrap();
+        assert_eq!(d.max_consults, 6);
+        assert_eq!(AdvisorConfig::default().defaults().max_consults, 6);
+    }
+
+    #[test]
+    fn advice_ranks_lowest_and_is_never_posted() {
+        assert!(AdvisorSeverity::Advice < AdvisorSeverity::Nit);
+        assert!(AdvisorSeverity::Nit < AdvisorSeverity::Concern);
+        assert!(AdvisorSeverity::Concern < AdvisorSeverity::Blocker);
+        assert_eq!(
+            serde_json::to_value(AdvisorSeverity::Advice).unwrap(),
+            "advice"
+        );
+        assert_eq!(
+            card(AdvisoryKind::Review, AdvisorSeverity::Advice).channel_line(),
+            None
+        );
+        assert_eq!(
+            card(AdvisoryKind::Review, AdvisorSeverity::Concern)
+                .channel_line()
+                .as_deref(),
+            Some("advisor · concern — answer")
+        );
     }
 }

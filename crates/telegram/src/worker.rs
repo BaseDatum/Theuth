@@ -86,8 +86,8 @@ pub struct WorkerCtx {
 /// Channel → worker.
 #[derive(Debug)]
 pub enum WorkerMsg {
-    /// One of this session's events.
-    Agent(AgentEvent),
+    /// One of this session's events (boxed: `AgentEvent` dwarfs the other variants).
+    Agent(Box<AgentEvent>),
     /// The user's message that started or steered the turn (👀 now, the terminal mark later).
     Mark {
         /// Its id.
@@ -343,7 +343,7 @@ impl Worker {
     /// One mailbox message; `false` = exit.
     async fn apply(&mut self, msg: WorkerMsg) -> bool {
         match msg {
-            WorkerMsg::Agent(ev) => self.event(ev).await,
+            WorkerMsg::Agent(ev) => self.event(*ev).await,
             WorkerMsg::Mark { message_id, voice } => {
                 self.marks.push(message_id);
                 self.voice = voice;
@@ -1285,6 +1285,7 @@ mod tests {
                     severity,
                     note: note.into(),
                 }],
+                kind: Default::default(),
             },
         };
         r.ev(card(AdvisorSeverity::Nit, "nit: rename x")).await;
