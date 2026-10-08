@@ -161,6 +161,21 @@ switch ($Action) {
         $ps | ForEach-Object { Say "kill-mine: pid=$($_.Id) path=$($_.Path)"; Stop-Process -Id $_.Id -Force }
         Say "kill-mine: stopped $($ps.Count)"
     }
+    'toast-reg' {
+        # The AppNotificationManager.Register() footprint of an unpackaged app: AUMID → CustomActivator CLSID → LocalServer32 exe.
+        Get-ChildItem 'HKCU:\Software\Classes\AppUserModelId' -ErrorAction SilentlyContinue | ForEach-Object {
+            $v = Get-ItemProperty $_.PSPath
+            if ($_.PSChildName -like '*Theuth*' -or $v.CustomActivator) {
+                $clsid = $v.CustomActivator
+                $srv = if ($clsid) { (Get-ItemProperty "HKCU:\Software\Classes\CLSID\$clsid\LocalServer32" -ErrorAction SilentlyContinue).'(default)' } else { '' }
+                if ($_.PSChildName -like '*Theuth*' -or $srv -like '*Theuth.Companion*') { Say "toast-reg aumid=$($_.PSChildName) DisplayName=$($v.DisplayName) CustomActivator=$clsid LocalServer32=$srv" }
+            }
+        }
+        $ev = Get-WinEvent -LogName Application -MaxEvents 40 -ErrorAction SilentlyContinue | Where-Object { $_.Message -like '*Theuth.Companion*' -or $_.ProviderName -like '*.NET Runtime*' } | Select-Object -First 5
+        foreach ($e in $ev) { Say "event $($e.TimeCreated.ToString('HH:mm:ss')) $($e.ProviderName) id=$($e.Id): $((Clip ($e.Message -replace "`r?`n", ' ') 300))" }
+        $crash = Get-ChildItem (Join-Path $env:LOCALAPPDATA 'theuth\companion\logs') -Filter '*.crash.json' -ErrorAction SilentlyContinue | Sort-Object LastWriteTime | Select-Object -Last 3
+        foreach ($c in $crash) { Say "crash $($c.Name) $($c.LastWriteTime.ToString('HH:mm:ss'))"; Get-Content $c.FullName -TotalCount 12 | ForEach-Object { Say ('  ' + (Clip $_ 200)) } }
+    }
     'tray-reg' {
         $root = 'HKCU:\Control Panel\NotifyIconSettings'
         $n = 0
