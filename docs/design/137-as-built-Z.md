@@ -12,6 +12,7 @@ Branch `feat/137-endless`, worktree `~/Develop/theuth-137`, 2026-10-08 05:00–0
 | W4 `feat/137-w4` 8a30d072 | `4a5fc8d4` | clean (W4 had merged W1's final head) |
 | W3 `feat/137-w3` b44e7160 | `5ce5540c` | clean (UI tree only) |
 | `origin/main` 7d6832ba | `508e29de` | clean; main had moved by 134 W5 (Windows shell/packaging) and the 139 MESH-DURABILITY design doc; 136 DREAMING and 138 had **not** landed — a second fold at landing is expected and should be cheap (no shared files touched by 137 except `crates/agent/src/{lib,loop_,supervisor}.rs`, `crates/rpc/src/api.rs`) |
+| `origin/main` **4606b76e** (second fold, after the orchestrator's 05:07 note) | merge commit after `8fcf3a22` | clean; 138 UI-FIXES landed (UI tree + three 138 as-builts, no Rust). UI gates re-run on the folded tree: tsc `TSC-EXIT=0`; vitest `Test Files 197 passed (197)` · `Tests 1360 passed (1360)`; `bun run build ✓ built in 5.70s`. Rust gates unchanged (no Rust files in the fold). 136 DREAMING still pending — the orchestrator folds it at landing. |
 
 `cargo check -p agent -p rpc -p meeting -p roster` on the merged tree before wiring: 4 errors, all W2's `endless_ext` adapters against W1's final signatures (expected per the brief's addendum).
 
@@ -51,7 +52,7 @@ Branch `feat/137-endless`, worktree `~/Develop/theuth-137`, 2026-10-08 05:00–0
 | `cargo clippy -p agent -p rpc -p meeting -p roster --no-deps -- -D warnings` | `Finished \`dev\` profile [unoptimized + debuginfo] target(s) in 53.60s` (exit 0, final tree) |
 | `cargo fmt -p agent -p rpc -p meeting -p roster -- --check` | clean (exit 0) |
 | `cd crates/desktop/ui && bunx tsc --noEmit -p .` | no output, `TSC-EXIT=0` |
-| `bunx vitest run` (full suite, once) | `Test Files  194 passed (194)` · `Tests  1331 passed (1331)` |
+| `bunx vitest run` (full suite) | `Test Files  194 passed (194)` · `Tests  1331 passed (1331)`; after the 138 fold `197 passed (197)` · `1360 passed (1360)` |
 | `bun run build` | `✓ built in 3.76s`, `BUILD-EXIT=0` (the pre-existing chunk-size warning only) |
 | `BUILD_SLOTS=1 … cargo check --workspace --tests` (mkdir lock) | `Finished \`dev\` profile [unoptimized + debuginfo] target(s) in 5m 15s`, re-run on the final tree `Finished … in 1m 07s` (exit 0 both; the only warning is the pre-existing `block v0.1.6` future-incompat notice) |
 | `cargo test -p tui --no-fail-fast` (outside the gate set; the `/endless` command and `tests/no_emoji.rs`) | lib `test result: ok. 144 passed; 0 failed` · `tests/no_emoji.rs` `ok. 1 passed` |
