@@ -121,6 +121,15 @@ pub struct RearmReminder {
     pub seconds: u64,
 }
 
+/// `tell`: the session moved to another engine (139 Revision 2 D4) — its
+/// timers stop here, its rows stay: the new owner arms them from its copy.
+/// Nothing is published (a `ReminderCancelled` would delete the rows).
+#[derive(Clone, Copy, Debug)]
+pub struct CancelReminders {
+    /// The session that left.
+    pub session: SessionId,
+}
+
 /// Second hop after admission (as `Launch`): spawn the timer under the actor.
 struct Arm {
     session: SessionId,
@@ -193,18 +202,29 @@ impl Jobs {
         });
     }
 
-    /// Retire every pending reminder of a closing session (no delivery).
+    /// Retire every pending reminder of a closing session (no delivery);
+    /// the store rows go with the `ReminderCancelled` events.
     pub(crate) async fn close_reminders(&mut self, session: SessionId) {
-        let Some(sr) = self.reminders.remove(&session) else {
-            return;
-        };
-        for r in sr.pending {
-            r.task.abort();
-            self.live.remove(&r.op);
+        for id in self.drop_reminders(session) {
             self.rt
-                .publish(ReminderEvent::Cancelled { session, id: r.id })
+                .publish(ReminderEvent::Cancelled { session, id })
                 .await;
         }
+    }
+
+    /// Abort the timers and guards of `session`'s pending reminders; their ids.
+    fn drop_reminders(&mut self, session: SessionId) -> Vec<String> {
+        let Some(sr) = self.reminders.remove(&session) else {
+            return Vec::new();
+        };
+        sr.pending
+            .into_iter()
+            .map(|r| {
+                r.task.abort();
+                self.live.remove(&r.op);
+                r.id
+            })
+            .collect()
     }
 }
 
@@ -395,6 +415,17 @@ impl Message<CancelReminder> for Jobs {
             })
             .await;
         Ok(())
+    }
+}
+
+impl Message<CancelReminders> for Jobs {
+    type Reply = ();
+
+    async fn handle(&mut self, m: CancelReminders, _: &mut Context<Self, Self::Reply>) {
+        let n = self.drop_reminders(m.session).len();
+        if n > 0 {
+            tracing::info!(session = %m.session, "139: {n} reminder timer(s) stopped; the session moved");
+        }
     }
 }
 
@@ -636,6 +667,47 @@ mod tests {
             ]
         );
         // Fired rows leave `pending`: nothing left to cancel.
+        let err = fx
+            .jobs
+            .ask(CancelReminder {
+                session: fx.session,
+                id: "r1".into(),
+            })
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("no such reminder r1"), "{err}");
+    }
+
+    /// 139 R2 D4: the session moved — its timers stop, nothing fires, and no
+    /// `ReminderCancelled` goes out (the rows stay for the new owner).
+    #[tokio::test]
+    async fn cancel_reminders_stops_the_timers_and_keeps_the_rows() {
+        let fx = fixture(Duration::ZERO, Duration::from_secs(30)).await;
+        let (ledger, sink, seen) = spawn(None);
+        fx.jobs.ask(InstallActivity(sink)).await.unwrap();
+        set(&fx, 1, "moved").await.unwrap();
+        set(&fx, 1, "moved too").await.unwrap();
+        fx.jobs
+            .tell(CancelReminders {
+                session: fx.session,
+            })
+            .await
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(1500)).await;
+        assert_eq!(
+            tags(&fx),
+            [
+                ("ReminderSet".to_owned(), "r1".to_owned()),
+                ("ReminderSet".to_owned(), "r2".to_owned()),
+            ],
+            "no ReminderCancelled, no ReminderFired"
+        );
+        let seen = drained(&ledger, &seen).await;
+        assert!(
+            !seen.iter().any(|s| matches!(s, Seen::Reminder(..))),
+            "{seen:?}"
+        );
+        // The ids are free again on this engine only through a rearm.
         let err = fx
             .jobs
             .ask(CancelReminder {

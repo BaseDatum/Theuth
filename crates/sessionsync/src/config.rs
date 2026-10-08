@@ -14,6 +14,9 @@ pub struct SessionsConfig {
     pub release_wait_secs: u64,
     /// How long a demoted owner keeps undelivered (orphaned) turns for viewing (68 §4.3).
     pub orphan_keep_days: u64,
+    /// How long a harness-made input for a session owned elsewhere waits in
+    /// the outbox before it is dropped with a local note (139 Revision 2).
+    pub harness_outbox_ttl_secs: u64,
 }
 
 impl Default for SessionsConfig {
@@ -22,6 +25,7 @@ impl Default for SessionsConfig {
             takeover_secs: 300,
             release_wait_secs: 10,
             orphan_keep_days: 7,
+            harness_outbox_ttl_secs: 7 * 24 * 3600,
         }
     }
 }

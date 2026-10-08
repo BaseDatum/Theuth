@@ -30,7 +30,11 @@ pub struct Shipper {
 impl Shipper {
     /// Start over `store`; events go to `rt` when given. Starts the prune timer.
     pub fn new(store: Store, rt: Option<Runtime>, config: &SessionsConfig) -> Arc<Self> {
-        let node = Node::new(store, rt);
+        let node = Node::new(
+            store,
+            rt,
+            Duration::from_secs(config.harness_outbox_ttl_secs),
+        );
         let prune = crate::prune::start(node.clone(), config.orphan_keep_days);
         Arc::new(Self {
             node,

@@ -19,14 +19,17 @@ import { on } from '@/store/sessions'
 /** The orb's three looks (§0.12). */
 export type OrbState = 'idle' | 'thinking' | 'speaking'
 
-/** `TalkState` → orb: `Holding` keeps the speaking look (paused, not stopped); `Interrupted` drops to idle. */
+/**
+ * `TalkState` → orb: `Working` (a tool call runs, 145 §0.8) keeps the thinking look; `Holding` keeps the speaking
+ * look (paused, not stopped); `Interrupted` drops to idle.
+ */
 export const orbState = (s: State): OrbState =>
-  s === 'thinking' ? 'thinking' : s === 'speaking' || s === 'holding' ? 'speaking' : 'idle'
+  s === 'thinking' || s === 'working' ? 'thinking' : s === 'speaking' || s === 'holding' ? 'speaking' : 'idle'
 
 /**
  * TALK-UI-A A2: the muted line above the orb, mirroring the talk state. `Thinking…` = the turn started, no speech
- * yet; `Working…` = a tool call is running (the session's `activity`, since the talk state does not distinguish it)
- * while the model thinks, or between spoken sentences; `Holding` (a paused barge-in) keeps `Speaking` — nothing new.
+ * yet; `Working…` = a tool call is running — from the state (`working`, 145 §0.8) or, while `thinking`/between
+ * spoken sentences, from the session's `activity`; `Holding` (a paused barge-in) keeps `Speaking` — nothing new.
  */
 export function phaseLine(s: State, tool: boolean, saying: boolean): string {
   switch (s) {
@@ -34,6 +37,8 @@ export function phaseLine(s: State, tool: boolean, saying: boolean): string {
       return 'Listening'
     case 'thinking':
       return tool ? 'Working…' : 'Thinking…'
+    case 'working':
+      return 'Working…'
     case 'speaking':
       return tool && !saying ? 'Working…' : 'Speaking'
     case 'holding':
@@ -43,7 +48,10 @@ export function phaseLine(s: State, tool: boolean, saying: boolean): string {
   }
 }
 
-/** TALK-UI-A A4: the muted hint under the orb — what a tap does now (`idle` also = no talk on this session). */
+/**
+ * TALK-UI-A A4: the muted hint under the orb — what a tap does now (`idle` also = no talk on this session). While
+ * `working` a tap stops the work (145 §2.4).
+ */
 export function orbHint(s: State): string {
   return s === 'idle' ? 'Tap the orb to speak' : s === 'listening' || s === 'interrupted' ? 'Tap the orb to stop listening' : 'Tap the orb to stop'
 }
@@ -99,6 +107,9 @@ export function applySubtitles(s: Subtitles, e: SubEvent): Subtitles {
       // The text for the sentence already playing (its first packet beat the `Saying`).
       return s.speech === e.speech ? { ...s, said, agent: e.text } : { ...s, said }
     }
+    case 'Announced':
+      // 145 §0.6: harness speech (an approval announce) on the agent line; its `Saying` follows with the speech id.
+      return s.frozen ? s : { ...s, agent: e.text, cut: false }
     case 'Playing':
       if (s.frozen) return { ...s, plays: true }
       if (e.speech === null) return e.cut ? { ...s, plays: true, speech: null, cut: true } : { ...s, plays: true, agent: '', speech: null, cut: false }

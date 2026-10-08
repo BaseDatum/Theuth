@@ -162,6 +162,12 @@ impl Take {
                 here: true,
             })
             .await;
+        // 139 R2 D4: the session's reminder rows (replicated here) fire here now.
+        if let Ok(Some(agents)) = ActorRef::<agent::Agents>::lookup(agent::AGENT_ACTOR) {
+            let _ = agents
+                .tell(agent::supervisor::RearmReminders { session: id })
+                .await;
+        }
         let resumed = self.resume_on_take(id, &owner, transferred, reason).await;
         Ok(((me, next), resumed))
     }

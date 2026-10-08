@@ -1,0 +1,1 @@
+Saved outputs (`crates/artifact/`, 43 files / 14,770 lines): the `show` card, PDF compilation through typst, archives, CSV, image handling, and the `artifact_read` tool. Built on `document` for markdown artifacts and on `replica` for sync.

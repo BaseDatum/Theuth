@@ -16,6 +16,8 @@ export class RpcError extends Error {
 }
 
 const TRANSPORT = -32300
+/** A call the socket never carried (`not connected`, `connection closed`): worth retrying once the client is `open` again. */
+export const isTransportError = (e: unknown): e is RpcError => e instanceof RpcError && e.code === TRANSPORT
 /** Redial delay after `attempt` failed sockets in a row: 500 ms doubling to 10 s. `link-status` shows it. */
 export const backoff = (attempt: number): number => Math.min(10_000, 500 * 2 ** attempt)
 /** A foreground probe unanswered for this long means the socket died while the phone slept. */

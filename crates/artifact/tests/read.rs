@@ -21,6 +21,8 @@ fn cx() -> ToolCx {
             retention: tools::Retention::Durable,
             generation: 1,
         }),
+        cancel: tools::CancellationToken::new(),
+        promote_after: None,
     }
 }
 

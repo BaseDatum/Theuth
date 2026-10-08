@@ -88,6 +88,8 @@ pub enum State {
     Listening,
     /// A turn was submitted; no audio yet.
     Thinking,
+    /// 145 §0.2: a tool call of the turn runs; nothing queued or playing.
+    Working,
     /// The agent is being heard.
     Speaking,
     /// Stage 1 of a barge-in: playback paused, queue kept, decision pending.
@@ -155,6 +157,8 @@ pub struct TalkConfig {
     pub aec: AecMode,
     /// End-of-turn model.
     pub turn_model: TurnModel,
+    /// 145 §0.4: inline tool calls promote to a job after this long; 0 = never.
+    pub promote_after_ms: u64,
 }
 
 impl Default for TalkConfig {
@@ -177,6 +181,7 @@ impl Default for TalkConfig {
             echo_ratio: 0.8,
             aec: AecMode::Prefer,
             turn_model: TurnModel::None,
+            promote_after_ms: 5000,
         }
     }
 }
@@ -393,6 +398,13 @@ pub enum TalkEvent {
         /// Why.
         reason: EndReason,
     },
+    /// 145 §0.6: a harness sentence the talk spoke (approval announce).
+    Announced {
+        /// Talk.
+        id: TalkId,
+        /// The sentence, spoken form.
+        text: String,
+    },
 }
 
 /// Prompt block registered as `RegisterPrompt { plugin: "talk" }` (76 §0.11).
@@ -413,7 +425,17 @@ do — that sentence is what the user hears while the tools run, and their chanc
 The user can cut you off at any time. When that happens, your history keeps only the sentences \
 they actually heard — your own message is truncated to them — and the next user message starts \
 with `[spoken, N s, interrupted]`; carry on from what they heard, do not repeat the rest. Keep \
-this spoken style while the messages carry the `[spoken …]` marker.";
+this spoken style while the messages carry the `[spoken …]` marker.\n\
+Aloud, one or two sentences; if there is more, say the rest is on screen. Never say tag names or \
+tool identifiers aloud — no angle-bracket tags, no snake_case names; say what happened in plain \
+words. A result that arrives while you talk (a job result, a reminder, a message from another \
+agent) gets one sentence aloud and an offer of the detail; several results in one message get one \
+sentence for all of them. A tool result that says it was promoted to a job means the work goes on \
+in the background: say one short sentence such as \"I'll tell you when it's done\", then stop — \
+never wait for it or poll. Progress on running work is visual; speak it only when it matters, at \
+most one sentence per minute per job — silence is fine. A remark that arrives while you are \
+working joins the running turn: acknowledge it in one clause and continue, unless it tells you to \
+stop.";
 
 /// Chunks per [`TalkEvent::TalkLevel`] (160 ms).
 const LEVELS: usize = 8;
@@ -441,6 +463,8 @@ struct Live {
     ending: Option<EndReason>,
     /// The last `TurnStarted`, for the first-sentence latency log (76 §4.8).
     turn_started: Option<Instant>,
+    /// Tool calls of the live session's turn still running (145 §0.2).
+    tools: u32,
 }
 
 /// The actor's end of a client talk's audio: pushed PCM rechunked into 20 ms
@@ -562,7 +586,9 @@ impl Talk {
                         .await;
                 }
                 Action::Speak { index, text } => {
-                    if index == 0 && let Some(t) = live.turn_started {
+                    if index == 0
+                        && let Some(t) = live.turn_started
+                    {
                         tracing::info!(target: "talk", "talk: first sentence spoken after {} ms (turn started → first Speak)", t.elapsed().as_millis());
                     }
                     let spoke = match voice() {
@@ -587,7 +613,8 @@ impl Talk {
                     }
                 }
                 Action::Saying { speech, text } => {
-                    if let (Some(t), Some(first)) = (live.turn_started, live.policy.ledger.sentences.first())
+                    if let (Some(t), Some(first)) =
+                        (live.turn_started, live.policy.ledger.sentences.first())
                         && first.speech == Some(speech)
                     {
                         tracing::info!(target: "talk", "talk: first audio after {} ms", t.elapsed().as_millis());
@@ -734,6 +761,29 @@ impl Talk {
                         });
                     }
                 }
+                Action::Steer(text) => {
+                    let sent = match agents() {
+                        Some(a) => a
+                            .ask(agent::Steer {
+                                session,
+                                id: runtime::InputId::new(),
+                                text,
+                                files: Vec::new(),
+                                delivery: agent::Delivery::Steer,
+                            })
+                            .await
+                            .map_err(|e| e.to_string()),
+                        None => Err("agent is not running".into()),
+                    };
+                    if let Err(e) = sent {
+                        tracing::warn!("talk: steer failed: {e}");
+                    }
+                }
+                Action::Window(open) => self.set_talk(session, Some(open)).await,
+                Action::Announced(text) => {
+                    tracing::info!(target: "talk", %text, "announced");
+                    self.rt.publish(TalkEvent::Announced { id, text }).await;
+                }
             }
         }
     }
@@ -752,16 +802,33 @@ impl Talk {
         for g in &mut live.timers {
             *g += 1;
         }
-        let id = live.id;
+        let (id, session) = (live.id, live.session);
         if let Some(v) = voice() {
             let _ = v.ask(voice::Stop { id: None }).await;
         }
+        self.set_talk(session, None).await;
         self.rt
             .publish(TalkEvent::TalkState {
                 id,
                 state: State::Idle,
             })
             .await;
+    }
+
+    /// 145 §0.3–0.4: tell the agent the talk's spoken window (`Some(open)`)
+    /// or that the talk ended (`None`).
+    async fn set_talk(&self, session: SessionId, open: Option<bool>) {
+        let live = open.map(|open| agent::TalkLive {
+            open,
+            promote_after_ms: (self.cfg.promote_after_ms > 0).then_some(self.cfg.promote_after_ms),
+        });
+        let Some(a) = agents() else {
+            tracing::warn!("talk: set_talk skipped: agent is not running");
+            return;
+        };
+        if let Err(e) = a.ask(agent::SetTalk { session, live }).await {
+            tracing::warn!("talk: set_talk failed: {e}");
+        }
     }
 }
 
@@ -861,6 +928,7 @@ impl Message<StartTalk> for Talk {
             paused: false,
             ending: None,
             turn_started: None,
+            tools: 0,
         });
         self.rt
             .publish(TalkEvent::TalkStarted {
@@ -885,6 +953,13 @@ impl Message<StartTalk> for Talk {
                 state: State::Listening,
             })
             .await;
+        let opened = self
+            .active
+            .as_mut()
+            .map(|l| l.policy.start())
+            .unwrap_or_default();
+        let me = ctx.actor_ref().clone();
+        self.run(&me, opened).await;
         Ok(id)
     }
 }
@@ -983,7 +1058,11 @@ impl Message<Report> for Talk {
                 )
                 .await;
             }
-            Progress::Level(rms) => self.rt.publish(TalkEvent::TalkLevel { id: m.id, rms }).await,
+            Progress::Level(rms) => {
+                self.rt
+                    .publish(TalkEvent::TalkLevel { id: m.id, rms })
+                    .await
+            }
             Progress::Finished { reason, engine } => {
                 let live = self.active.take().expect("checked");
 
@@ -1033,22 +1112,71 @@ impl Message<AgentEvent> for Talk {
             AgentEvent::ToolCallPending { session, .. } if session == live.session => {
                 Input::BlockEnd
             }
+            // 145 §0.2: outstanding calls of the turn, as a running count — a
+            // `Finished` for a call that began before the talk cannot go below 0.
+            AgentEvent::ToolCallStarted { session, .. } if session == live.session => {
+                live.tools += 1;
+                Input::Tools(live.tools)
+            }
+            AgentEvent::ToolCallFinished { session, .. } if session == live.session => {
+                live.tools = live.tools.saturating_sub(1);
+                Input::Tools(live.tools)
+            }
             AgentEvent::TurnStarted {
                 session, turn_seq, ..
             } if session == live.session => {
                 live.turn_started = Some(Instant::now());
+                live.tools = 0;
                 Input::TurnStarted(turn_seq)
             }
             AgentEvent::TurnFinished {
                 session,
                 stop_reason,
                 ..
-            } if session == live.session => Input::TurnFinished(stop_reason),
+            } if session == live.session => {
+                live.tools = 0;
+                Input::TurnFinished(stop_reason)
+            }
             _ => return,
         };
         let me = ctx.actor_ref().clone();
         self.step(&me, input).await;
     }
+}
+
+/// 145 §0.6: an approval on the talk's session is announced, not answered.
+/// The sentence names the tool and, for `shell`, the command cut to 80 chars,
+/// after the secret scrubber.
+impl Message<tools::ApprovalRequested> for Talk {
+    type Reply = ();
+    async fn handle(&mut self, m: tools::ApprovalRequested, ctx: &mut Context<Self, Self::Reply>) {
+        if !self
+            .active
+            .as_ref()
+            .is_some_and(|l| l.ending.is_none() && l.session == m.session)
+        {
+            return;
+        }
+        let me = ctx.actor_ref().clone();
+        self.step(&me, Input::Approval(approval_summary(&m.tool, &m.args)))
+            .await;
+    }
+}
+
+/// `"{tool}"`, plus `": {command}"` for `shell` (≤ 80 chars), secrets redacted.
+fn approval_summary(tool: &str, args: &serde_json::Value) -> String {
+    let mut s = tool.to_owned();
+    if tool == "shell"
+        && let Some(cmd) = args.get("command").and_then(|c| c.as_str())
+    {
+        let cmd = cmd.split_whitespace().collect::<Vec<_>>().join(" ");
+        let mut cut: String = cmd.chars().take(80).collect();
+        if cut.len() < cmd.len() {
+            cut.push('…');
+        }
+        s = format!("{s}: {cut}");
+    }
+    tools::secrets::redact(&s).into_owned()
 }
 
 impl Message<VoiceEvent> for Talk {
@@ -1230,6 +1358,7 @@ impl runtime::Plugin for TalkPlugin {
         actor.register(TALK_ACTOR)?;
         rt.subscribe::<Talk, AgentEvent>(&actor).await;
         rt.subscribe::<Talk, VoiceEvent>(&actor).await;
+        rt.subscribe::<Talk, tools::ApprovalRequested>(&actor).await;
         let rt = rt.clone();
         tokio::spawn(async move {
             if let Some(reg) = rt
@@ -1296,6 +1425,15 @@ mod tests {
         assert_eq!(serde_json::to_value(Aec::None).unwrap(), "none");
         assert_eq!(serde_json::to_value(Aec::Vpio).unwrap(), "vpio");
         assert_eq!(id.to_string().parse::<TalkId>().unwrap(), id);
+        // 145 §2.3.
+        assert_eq!(serde_json::to_value(State::Working).unwrap(), "working");
+        let v = serde_json::to_value(TalkEvent::Announced {
+            id,
+            text: "Waiting.".into(),
+        })
+        .unwrap();
+        assert_eq!(v["type"], "Announced");
+        assert_eq!(v["text"], "Waiting.");
     }
 
     /// Every §4.10 enum key deserializes and the defaults are the doc's.
@@ -1313,6 +1451,7 @@ mod tests {
         assert_eq!(cfg.barge_in_vad, 0.7);
         assert_eq!(cfg.backchannels.len(), 15);
         assert!(cfg.enabled);
+        assert_eq!(cfg.promote_after_ms, 5000);
     }
 
     /// FIX-1: the model is a voice in the room — it says things, it does not
@@ -1322,5 +1461,39 @@ mod tests {
         assert!(PROMPT.starts_with("## Live talk\n"));
         assert!(PROMPT.contains("aloud"));
         assert!(PROMPT.contains("Do not send messages"));
+        // 145 §0.7–0.9 and the prompt lines of §0.2–0.4.
+        for rule in [
+            "the rest is on screen",
+            "Never say tag names or tool identifiers aloud",
+            "one sentence for all of them",
+            "promoted to a job",
+            "never wait for it or poll",
+            "one sentence per minute per job",
+            "joins the running turn",
+        ] {
+            assert!(PROMPT.contains(rule), "{rule}");
+        }
+    }
+
+    /// 145 §0.6: the announce names the tool and, for `shell`, the command
+    /// cut to 80 chars with whitespace collapsed; other tools' args stay private.
+    #[test]
+    fn approval_summary_names_tool_and_short_command() {
+        assert_eq!(
+            approval_summary("write_file", &serde_json::json!({"path": "/etc/x"})),
+            "write_file"
+        );
+        assert_eq!(
+            approval_summary(
+                "shell",
+                &serde_json::json!({"command": "git  push\n origin main"})
+            ),
+            "shell: git push origin main"
+        );
+        let long = "x".repeat(100);
+        let s = approval_summary("shell", &serde_json::json!({ "command": long }));
+        assert_eq!(s.chars().count(), "shell: ".len() + 81);
+        assert!(s.ends_with('…'));
+        assert_eq!(approval_summary("shell", &serde_json::json!({})), "shell");
     }
 }

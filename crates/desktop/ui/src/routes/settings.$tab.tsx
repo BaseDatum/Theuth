@@ -13,7 +13,7 @@ export const Route = createFileRoute('/settings/$tab')({
     ...(typeof s.peer === 'string' && { peer: s.peer }),
   }),
   beforeLoad: ({ params, search }) => {
-    // Skills, Tools and Secrets became Library pages and Schedules became Routines; old links and `/settings/<tab>` bookmarks follow.
+    // Skills and Tools became Agents pages, Secrets a Library page, and Schedules became Routines; old links and `/settings/<tab>` bookmarks follow.
     const moved = movedTab(params.tab) ?? movedSettingsTab(params.tab)
     if (moved) throw redirect({ to: moved, replace: true, search: search.session ? { session: search.session } : {} })
     if (!isTab(params.tab))

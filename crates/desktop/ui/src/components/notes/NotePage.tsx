@@ -115,8 +115,8 @@ function Note({ id, isNew }: { id: string; isNew: boolean }) {
   }
   // A deleted note's page: the provider reports `closed · deleted` in the status line; say it plainly too.
   const deleted = live.status.kind === 'closed' && live.status.reason === 'deleted'
-  // Popped (`lib/popout.ts`): the editor alone — no chat panel, no second "new window"; the document is the one the
-  // main window edits, so both editors follow each other through the document actor like two devices.
+  // Popped (`lib/popout.ts`): no second "new window"; the document is the one the main window edits, so both editors
+  // follow each other through the document actor like two devices. The chat panel is there too (143 D8).
   const popped = isPopout()
   // 71 §2.2: a board opens in its own read mode; **Edit** toggles to BlockNote (a board is still a note). Until
   // `meta` lands with `doc_open` the kind is unknown, so the page shows nothing rather than an editor that flips.
@@ -152,13 +152,13 @@ function Note({ id, isNew }: { id: string; isNew: boolean }) {
           <UndoAgentAction provider={live.provider} />
           {!popped && canPopout() && <Action label="Open in new window" icon={AppWindow} onClick={() => void openPopout({ kind: 'note', doc: id })} disabled={deleted} />}
           <Action label="Delete" icon={Trash2} onClick={() => del.mutate()} disabled={del.isPending || deleted} />
-          {!popped && <Action label="Chat" icon={MessageSquare} onClick={() => setChat(id, { open: !chat.open })} pressed={chat.open} />}
+          <Action label="Chat" icon={MessageSquare} onClick={() => setChat(id, { open: !chat.open })} pressed={chat.open} />
         </>
       }
       live={deleted ? { ...live, error: new Error('This note was deleted.') } : live}
       fallback={fallback}
       onAsk={ask}
-      below={chat.open && !deleted && !popped ? <NoteChat note={id} doc={doc} /> : null}
+      below={chat.open && !deleted ? <NoteChat note={id} doc={doc} /> : null}
     >
       <ChatPicker open={attaching} onOpenChange={setAttaching} item={doc} />
       <Snapshots id={id} open={snapshots} onOpenChange={setSnapshots} />

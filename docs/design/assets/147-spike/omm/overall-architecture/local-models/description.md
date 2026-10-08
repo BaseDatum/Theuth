@@ -1,0 +1,1 @@
+Everything that runs a model on this machine (99 files / 107,615 lines). `models` resolves ORT model files; `decision` is the local classifier (`decide_many`, candle/ort); `voice` is STT/TTS (parakeet-rs, ptts, VAD); `meeting` captures and diarises audio; `talk` is the live spoken conversation mode. `meeting` and `talk` drive agent sessions directly (Cargo deps on `agent`).

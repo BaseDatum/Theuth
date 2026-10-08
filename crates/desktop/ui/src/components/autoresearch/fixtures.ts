@@ -65,7 +65,7 @@ const spec = (over: Partial<StudySpec> & { slug: string }): StudySpec => ({
   repo: '/Users/Sky.Moore/Develop/liquid',
   base: 'HEAD',
   metric: { name: 'time_ms', unit: 'ms', direction: 'lower', min_effect: '0.5%' },
-  secondary_guards: [{ name: 'alloc_mb', max_regression: '5%' }],
+  secondary_guards: [{ name: 'alloc_mb', max_regression: '5%', direction: 'lower' }],
   bench: { command: 'bench.sh', timeout: '600s', repeats: 3, exclusive: true, smoke: null },
   checks: { command: 'bundle exec rake test', timeout: '300s' },
   holdout: { command: 'bench-holdout.sh', every: 5, repeats: null },
@@ -77,6 +77,7 @@ const spec = (over: Partial<StudySpec> & { slug: string }): StudySpec => ({
   parallel: 1,
   models: { executor: null, review: null, advisor: null },
   window: null,
+  include_dirty: false,
   ...over,
 })
 
@@ -210,8 +211,10 @@ function build(slug: string, p: Plan): Built {
             lost: false,
             log_path: `runs/${n}/sample-${k + 1}.log`,
             at: new Date(Date.parse(startedAt) + (k + 1) * 50_000).toISOString(),
+            slot_holders: [],
+            failure: null,
           }))
-    if (st === 'crashed') sampleRows.push({ n, k: 1, tree_sha: 'deadbee', role: 'candidate', value: null, secondaries: {}, cases: {}, asi: {}, exit: 1, wall_ms: 3_200, load: 0.3, noisy: false, lost: false, log_path: `runs/${n}/sample-1.log`, at: startedAt })
+    if (st === 'crashed') sampleRows.push({ n, k: 1, tree_sha: 'deadbee', role: 'candidate', value: null, secondaries: {}, cases: {}, asi: {}, exit: 1, wall_ms: 3_200, load: 0.3, noisy: false, lost: false, log_path: `runs/${n}/sample-1.log`, at: startedAt, slot_holders: [], failure: 'exit 1' })
     details.set(n, {
       row,
       hypothesis: `${row.idea} should cut the hot path's allocations, which the profiler put at 18 % of render time.`,

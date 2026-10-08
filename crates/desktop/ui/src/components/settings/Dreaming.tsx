@@ -150,7 +150,7 @@ export function Dreaming() {
             inputMode="decimal"
             min={0.01}
             max={MAX_BUDGET_USD}
-            step="0.5"
+            step="any"
             aria-label="Budget per night in USD"
             aria-invalid={budgetProblem !== null}
             className="w-28 text-right"
@@ -337,7 +337,7 @@ function DreamNow({ blocker, defaultBudget }: { blocker: string | null; defaultB
                 <Label htmlFor="dream-budget">Budget</Label>
                 <div className="flex items-center gap-2">
                   <span className="text-sm text-fg-secondary">{USD_SYMBOL}</span>
-                  <Input id="dream-budget" type="number" dictate={false} inputMode="decimal" min={0.01} max={MAX_BUDGET_USD} step="0.5" autoFocus className="w-32 text-right" value={budget} aria-invalid={!ok} onChange={(e) => setBudget(e.target.value)} />
+                  <Input id="dream-budget" type="number" dictate={false} inputMode="decimal" min={0.01} max={MAX_BUDGET_USD} step="any" autoFocus className="w-32 text-right" value={budget} aria-invalid={!ok} onChange={(e) => setBudget(e.target.value)} />
                 </div>
               </div>
               <div className="grid gap-2">

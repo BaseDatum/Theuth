@@ -104,6 +104,35 @@ pub enum Msg {
         /// Highest seq applied.
         seq: u64,
     },
+    /// Sender → owner (139 Revision 2): a harness-made input for a session
+    /// the receiver owns — a settled job's `<job_result>`, a fired
+    /// `<reminder>`, a lost child's result. Answered by [`Msg::HarnessAck`].
+    Harness {
+        /// The session.
+        session: String,
+        /// The `from` label `Agents::inject` carries (`job j3`, `reminder r1`, `session:<child>`).
+        kind: String,
+        /// The engine that minted the envelope.
+        origin: PeerId,
+        /// Sender-minted UUID; the receiver dedups on it.
+        id: String,
+        /// The bare body.
+        text: String,
+        /// The body as the model reads it.
+        wrapped: String,
+        /// The sender's request scope (50 §8), if the work had one.
+        scope: Option<String>,
+        /// Unix ms when the sender queued it.
+        at: i64,
+    },
+    /// Owner → sender: `id` was handed to the supervisor here (or seen
+    /// before); `error` when it was refused and the sender should keep it.
+    HarnessAck {
+        /// The envelope.
+        id: String,
+        /// Why it was refused, if it was.
+        error: Option<String>,
+    },
 }
 
 impl Msg {
@@ -119,6 +148,8 @@ impl Msg {
             Self::Event { .. } => 6,
             Self::Fetch { .. } => 7,
             Self::Ack { .. } => 8,
+            Self::Harness { .. } => 9,
+            Self::HarnessAck { .. } => 10,
         }
     }
 
@@ -164,6 +195,26 @@ mod tests {
         let mut bad = f.to_vec();
         bad[0] = 0;
         assert!(Msg::decode(&bad).is_err());
+        let h = Msg::Harness {
+            session: "s".into(),
+            kind: "job j1".into(),
+            origin: PeerId("a".into()),
+            id: "u".into(),
+            text: "done".into(),
+            wrapped: "<job_result>done</job_result>".into(),
+            scope: None,
+            at: 7,
+        };
+        let f = h.encode().unwrap();
+        assert_eq!(f[0], 9);
+        assert_eq!(Msg::decode(&f).unwrap(), h);
+        let ack = Msg::HarnessAck {
+            id: "u".into(),
+            error: Some("unknown session".into()),
+        };
+        let f = ack.encode().unwrap();
+        assert_eq!(f[0], 10);
+        assert_eq!(Msg::decode(&f).unwrap(), ack);
     }
 }
 
