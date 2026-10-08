@@ -36,6 +36,7 @@ export const NIGHT: NightSummary = {
   spend_usd: 4.1,
   mode: 'backlog',
   undone: false,
+  judge_same_model: true,
 }
 export const UNDONE_NIGHT: NightSummary = {
   night: day(1),
@@ -45,10 +46,11 @@ export const UNDONE_NIGHT: NightSummary = {
   spend_usd: 0.93,
   mode: 'pass',
   undone: true,
+  judge_same_model: false,
 }
-export const QUIET_NIGHT: NightSummary = { night: day(2), started_at: ago(2 * D + 5 * H), finished_at: ago(2 * D + 5 * H + 60_000), counts: zero, spend_usd: 0, mode: 'pass', undone: false }
+export const QUIET_NIGHT: NightSummary = { night: day(2), started_at: ago(2 * D + 5 * H), finished_at: ago(2 * D + 5 * H + 60_000), counts: zero, spend_usd: 0, mode: 'pass', undone: false, judge_same_model: false }
 /** A night in flight: `finished_at: null`, partial counts, the routine row `running`. */
-export const RUNNING_NIGHT: NightSummary = { night: day(0), started_at: ago(12 * 60_000), finished_at: null, counts: { ...zero, triaged: 90n, retitled: 40n }, spend_usd: 0.27, mode: 'pass', undone: false }
+export const RUNNING_NIGHT: NightSummary = { night: day(0), started_at: ago(12 * 60_000), finished_at: null, counts: { ...zero, triaged: 90n, retitled: 40n }, spend_usd: 0.27, mode: 'pass', undone: false, judge_same_model: false }
 
 export const PROPOSALS: Proposal[] = [
   {

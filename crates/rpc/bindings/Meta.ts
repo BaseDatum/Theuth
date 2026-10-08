@@ -74,4 +74,10 @@ superseded_by: string | null,
 /**
  * Frontmatter `merged_into`: the canonical's id, on a redirect stub.
  */
-merged_into: string | null, };
+merged_into: string | null, 
+/**
+ * Frontmatter `consolidated_at` (136 D5): RFC 3339 of dreaming's last
+ * write. Identity (`source`, `timestamp`) is never restamped by dreaming;
+ * this is the only trace of its touch. Serialised only when set.
+ */
+consolidated_at?: string, };
