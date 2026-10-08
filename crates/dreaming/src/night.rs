@@ -475,6 +475,8 @@ pub struct Night {
     pub active: Option<NightId>,
     /// The knowledge store, resolved on first use.
     knowledge: Option<Arc<knowledge::Knowledge>>,
+    /// [`ENDED_GRACE`]; tests shorten it.
+    pub ended_grace: std::time::Duration,
 }
 
 impl Night {
@@ -487,6 +489,7 @@ impl Night {
             engine: engine.to_owned(),
             active: None,
             knowledge: None,
+            ended_grace: ENDED_GRACE,
         }
     }
 
@@ -1387,14 +1390,28 @@ impl Message<MetricsOver> for Night {
     }
 }
 
+/// Settling grace before an ended night is closed: the agent's ledger settles
+/// the last model call shortly after `TurnFinished` (live: a `$0.00 of $0.05`
+/// receipt when closed inline).
+pub const ENDED_GRACE: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// `tell` (self, after [`ENDED_GRACE`]): close `night` if `session`'s turn
+/// ended and nothing journaled since.
+#[derive(Clone, Debug)]
+pub struct CloseEnded {
+    night: NightId,
+    session: SessionId,
+    stop_reason: String,
+}
+
 /// The dreaming session's turn ended while its night is still open — the
 /// budget guard ended it (`Abort::Budget` → `end_turn`, the `<budget>` note
 /// waits for a next turn a routine never has), an error or a timeout: close
-/// the night here so the record, `state.json` and the journal say so.
+/// the night (after the grace) so the record, `state.json` and the journal say so.
 impl Message<agent::AgentEvent> for Night {
     type Reply = ();
 
-    async fn handle(&mut self, e: agent::AgentEvent, _: &mut Context<Self, Self::Reply>) {
+    async fn handle(&mut self, e: agent::AgentEvent, ctx: &mut Context<Self, Self::Reply>) {
         let agent::AgentEvent::TurnFinished {
             session,
             stop_reason,
@@ -1406,19 +1423,45 @@ impl Message<agent::AgentEvent> for Night {
         let Some(night) = self.active.clone() else {
             return;
         };
-        let Some(mut r) = read_record(&self.data_dir, &night) else {
+        let Some(r) = read_record(&self.data_dir, &night) else {
             return;
         };
         if r.session != Some(session) || r.summary.finished_at.is_some() {
             return;
         }
+        let me = ctx.actor_ref().clone();
+        let grace = self.ended_grace;
+        tokio::spawn(async move {
+            tokio::time::sleep(grace).await;
+            let _ = me
+                .tell(CloseEnded {
+                    night,
+                    session,
+                    stop_reason,
+                })
+                .await;
+        });
+    }
+}
+
+impl Message<CloseEnded> for Night {
+    type Reply = ();
+
+    async fn handle(&mut self, m: CloseEnded, _: &mut Context<Self, Self::Reply>) {
+        let Some(mut r) = read_record(&self.data_dir, &m.night) else {
+            return;
+        };
+        if r.session != Some(m.session) || r.summary.finished_at.is_some() {
+            return;
+        }
         let line = format!(
-            "- turn ended (`{stop_reason}`) before the journal: the budget guard refused a call, or the turn errored or timed out; what was written stands and is in the receipt"
+            "- turn ended (`{}`) before the journal: the budget guard refused a call, or the turn errored or timed out; what was written stands and is in the receipt",
+            m.stop_reason
         );
-        if let Err(err) = journal::append(&self.data_dir, &night, "Ended", &line).await {
+        if let Err(err) = journal::append(&self.data_dir, &m.night, "Ended", &line).await {
             tracing::warn!("dreaming: ended line not written: {err}");
         }
-        r.phases.push(format!("ended: {stop_reason}"));
+        r.phases.push(format!("ended: {}", m.stop_reason));
         if let Err(err) = self.finish(r).await {
             tracing::warn!("dreaming: night not closed after the turn ended: {err}");
         }
@@ -1846,7 +1889,9 @@ mod tests {
     async fn turn_end_without_a_journal_closes_the_open_night() {
         let dir = tempfile::tempdir().unwrap();
         let rt = Runtime::new(figment::Figment::new(), dir.path().to_owned());
-        let actor = Night::spawn(Night::new(&rt, DreamConfig::default(), "e"));
+        let mut night = Night::new(&rt, DreamConfig::default(), "e");
+        night.ended_grace = std::time::Duration::from_millis(50);
+        let actor = Night::spawn(night);
         let mine = SessionId::new();
         let mut state = read_state(dir.path());
         state.run_request = Some(RunRequest {
@@ -1881,6 +1926,16 @@ mod tests {
             "another session's turn"
         );
         actor.tell(finished(mine)).await.unwrap();
+        actor.ask(Status).await.unwrap();
+        assert!(
+            read_record(dir.path(), "2026-10-08")
+                .unwrap()
+                .summary
+                .finished_at
+                .is_none(),
+            "closes after the settling grace, not inline"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
         actor.ask(Status).await.unwrap();
         let r = read_record(dir.path(), "2026-10-08").unwrap();
         assert!(r.summary.finished_at.is_some());
