@@ -5,6 +5,7 @@ import { classify, humanSecs, type Injected } from "@/lib/injected";
 import { pushChunk } from "@/lib/jobTail";
 import { splitTime } from "@/lib/time";
 import { live, observedState } from "@/lib/session-tree";
+import type { Advisory as AdvisoryRow } from "@/rpc/bindings/Advisory";
 import type { AdvisoryNote } from "@/rpc/bindings/AdvisoryNote";
 import type { ContextEntry } from "@/rpc/bindings/ContextEntry";
 import type { PeerOrigin } from "@/rpc/bindings/PeerOrigin";
@@ -326,6 +327,9 @@ const notesKey = (notes: readonly AdvisoryNote[]): string => notes.map((n) => `$
 
 type Advisory = Extract<Entry, { kind: "advisory" }>;
 
+/** R1.7: the consultation's question (the flattened `kind` tag), `undefined` for a review. */
+const questionOf = (a: AdvisoryRow): string | undefined => (a.kind === "consultation" ? a.question : undefined);
+
 /**
  * 125 §8.3: show one Advisory card once. `AdvisoryAdded`, the `<advisory>` wrapper of a `TurnStarted`/`InputInjected`
  * and the settled reload all describe the same stored row: a card with the same `seq` is already there; a card parsed
@@ -461,7 +465,7 @@ function historyEntries(h: HistoryEntry): Entry[] {
       return [{ id: nextId(), kind: "interrupted", text: h.text }];
     // 125 §8.3: the typed card; `seq` is the stored row (the `AdvisoryAdded` idempotence key).
     case "advisory":
-      return [{ id: nextId(), kind: "advisory", notes: h.advisory.notes, seq: seqOf(context), context, at: h.advisory.at_ms }];
+      return [{ id: nextId(), kind: "advisory", notes: h.advisory.notes, seq: seqOf(context), context, at: h.advisory.at_ms, question: questionOf(h.advisory) }];
   }
 }
 
@@ -666,7 +670,7 @@ export function apply(
       );
     // 125 §8.3: one Advisory card per stored row, whichever of the event, the wrapper echo or the reload lands first.
     case "AdvisoryAdded":
-      return addAdvisory(slice, { id: nextId(), kind: "advisory", notes: e.advisory.notes, seq: e.seq, at: e.advisory.at_ms });
+      return addAdvisory(slice, { id: nextId(), kind: "advisory", notes: e.advisory.notes, seq: e.seq, at: e.advisory.at_ms, question: questionOf(e.advisory) });
     // 125 §3: one `advisor → <model | off>` line when the advisor's model changes; state ticks (reviewing/idle) print nothing.
     case "AdvisorChanged": {
       const model = e.status.state === "off" ? null : (e.status.model ?? null);

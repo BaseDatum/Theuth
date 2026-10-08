@@ -119,7 +119,7 @@ use tools::{
 
 // 109: handler bodies in their own files so the waves do not collide.
 mod acp_resume; // 109 W4
-mod advisor; // 125 W1
+pub(crate) mod advisor; // 125 W1
 pub mod child_waits; // 139 W3
 mod drain;
 mod resume;
@@ -6398,6 +6398,8 @@ impl Message<ShowPrompt> for Agents {
             subagent_model.as_deref(),
             attended,
             advised,
+            // 125 R1.6: the root's `consult` paragraph while the cap allows the tool.
+            advised && self.advisor_cfg.max_consults > 0,
         );
         if self.pool.is_some()
             && toolset.as_ref().is_none_or(|t| t.runtime)

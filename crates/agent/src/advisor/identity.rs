@@ -16,10 +16,23 @@ pub const ATTENTION_FILE: &str = "advisor.md";
 
 /// The advisor identity for a session whose data dir is `data_dir`.
 pub fn identity(data_dir: &Path, max_notes: u8) -> String {
-    let mut out = SYSTEM.trim_end().replace(
-        "{{max_notes_per_update}}",
-        &max_notes.clamp(1, 32).to_string(),
-    );
+    with_context(
+        data_dir,
+        SYSTEM.trim_end().replace(
+            "{{max_notes_per_update}}",
+            &max_notes.clamp(1, 32).to_string(),
+        ),
+    )
+}
+
+/// R1.6: the system prompt of a subagent's one-shot consultation — the
+/// tool-less variant with the same standing instructions appended.
+pub fn one_shot(data_dir: &Path) -> String {
+    with_context(data_dir, super::consult::ONE_SHOT_SYSTEM.to_owned())
+}
+
+/// `body` plus the live `<project-context>` and optional `<attention>` blocks.
+fn with_context(data_dir: &Path, mut out: String) -> String {
     let prompt = std::fs::read_to_string(data_dir.join("prompt.md")).unwrap_or_default();
     let prompt = if prompt.len() > PROJECT_BYTES {
         let mut cut = PROJECT_BYTES;
@@ -64,9 +77,15 @@ mod tests {
         std::fs::write(dir.join(ATTENTION_FILE), "Watch the deploys.\n").unwrap();
         let with = identity(&dir, 40);
         assert!(with.contains("at most 32 non-blockers"));
+        assert!(with.contains("<consultation>"));
         assert!(with.ends_with(
             "Especially pay attention to:\n<attention>\nWatch the deploys.\n</attention>"
         ));
+        // R1.6: the one-shot has no tools, no `advise`, the same standing blocks.
+        let one = one_shot(&dir);
+        assert!(one.contains("There is no `advise` tool") && one.contains("<consultation>"));
+        assert!(!one.contains("read_file, grep"));
+        assert!(one.contains("Always run the check.") && one.ends_with("</attention>"));
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }

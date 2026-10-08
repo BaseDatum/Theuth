@@ -708,6 +708,9 @@ pub trait Api {
     /// Persist `advisor.sync_backlog` (`off` | `1` | `3` | `5`).
     #[method(name = "set_advisor_sync_backlog")]
     async fn set_advisor_sync_backlog(&self, v: SyncBacklog) -> RpcResult<AdvisorDefaults>;
+    /// Persist `advisor.max_consults` (0–32; 0 removes the `consult` tool) (125 R1).
+    #[method(name = "set_advisor_max_consults")]
+    async fn set_advisor_max_consults(&self, n: u8) -> RpcResult<AdvisorDefaults>;
     /// An ACP child's harness config options (75 §8): model, effort/thinking,
     /// mode … as the harness lists them, with current values. Errors when the
     /// session is not an external harness or its process is gone.
@@ -4016,6 +4019,17 @@ impl ApiServer for Server {
             agent::AGENT_ACTOR,
             SetAdvisorDefaults {
                 sync_backlog: Some(v),
+                ..SetAdvisorDefaults::default()
+            },
+        )
+        .await
+    }
+
+    async fn set_advisor_max_consults(&self, n: u8) -> RpcResult<AdvisorDefaults> {
+        ask::<Agents, _>(
+            agent::AGENT_ACTOR,
+            SetAdvisorDefaults {
+                max_consults: Some(n),
                 ..SetAdvisorDefaults::default()
             },
         )

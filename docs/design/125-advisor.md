@@ -1988,3 +1988,13 @@ Section ownership: R1.3-R1.6 W1 · R1.2 TUI column W2 · R1.2 desktop column W3 
 
 - Design (2026-10-07): the push watchdog — hidden `advisor` session kind, `advise`, steers and asides, TUI and desktop surfaces, channels (§1-§13). Landed as merge `1098ae72`.
 - Revision 1 (2026-10-08): CONSULT — a pull-style `consult` tool for the main model and native subagents, carried by the session's advisor (main session through the advisor child, subagents by a stateless one-shot `SideCall`), Anthropic-style cadence paragraph + `advisor.max_consults` cap (default 6 per user turn), consultations stored as masked `Advisory { kind: Consultation }` rows with the new `Advice` severity, counts in `AdvisorStatus.consults`, pairing warning, silent channels (R1.0-R1.11).
+  - As built (closer, 2026-10-08): R1.7 plus two fields the engine wave needed — `ConsultSourceInfo.cap: u8` (the live
+    `max_consults`, so the loop decides the spec list from one `ConsultSource` ask per rebase) and `Attach.warning:
+    Option<String>` (the D-R1.5 pairing warning, computed supervisor-side where the catalog and the advised row's model
+    are). `ConsultSource` replies `Option<ConsultSourceInfo>`; `Advisory.kind` carries `deserialize_with =
+    "AdvisoryKind::or_review"` beside `default, flatten` (serde ignores `default` on a flattened field);
+    `CancelConsult` replies `Err("cancelled")`; a quarantined consultation's replay strips the `### Consultation` block;
+    R1.11 #6 stands (`SideCall` has no effort — a subagent's one-shot runs at the provider's default). Surfaces: the
+    TUI collapses a consultation card by answer lines and `/advisor consults <n>` needs no session; the desktop
+    `consultsLine` reads `N/cap · M total` and `off` at cap 0. Details per wave in `125-as-built-R1-{C,W1,W2,W3}.md`
+    and `125-as-built-R1.md`.

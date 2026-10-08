@@ -6,7 +6,7 @@ import { formatAt, fullAt } from '@/lib/time'
 import type { AdvisorSeverity } from '@/rpc/bindings/AdvisorSeverity'
 import type { AdvisoryNote } from '@/rpc/bindings/AdvisoryNote'
 
-const ICON: Record<AdvisorSeverity, typeof Info> = { nit: Info, concern: TriangleAlert, blocker: CircleX }
+const ICON: Record<AdvisorSeverity, typeof Info> = { advice: Info, nit: Info, concern: TriangleAlert, blocker: CircleX }
 
 /** The notes a card lists: all of them when `expanded`, else the first `NOTES_SHOWN`; `hidden` is what `Show more (N)` reveals. */
 export function collapseNotes(notes: readonly AdvisoryNote[], expanded: boolean): { shown: AdvisoryNote[]; hidden: number } {
@@ -18,8 +18,9 @@ export function collapseNotes(notes: readonly AdvisoryNote[], expanded: boolean)
  * 125 §8.3: one Advisory — every note the advisor raised at one step boundary — as the `EngineNotice` shell tinted by
  * the worst severity (nit → info, concern → warning, blocker → danger). Collapsed: the header line; open: one row per
  * note with its lower-case severity chip, three at a time behind `Show more (N)`.
+ * R1.2 consultation variant (`question` set): a `Consulted` badge and the question as the title, the answer in the body.
  */
-export function AdvisorNoteCard({ notes, at }: { notes: AdvisoryNote[]; at?: number }) {
+export function AdvisorNoteCard({ notes, at, question }: { notes: AdvisoryNote[]; at?: number; question?: string }) {
   const [expanded, setExpanded] = useState(false)
   const worst = worstSeverity(notes)
   const tone = TONE[worst]
@@ -30,7 +31,14 @@ export function AdvisorNoteCard({ notes, at }: { notes: AdvisoryNote[]; at?: num
       <summary className="flex min-h-11 cursor-pointer list-none items-center gap-3 rounded-sm focus-visible:outline-2 [&::-webkit-details-marker]:hidden">
         <Icon className={`size-4 shrink-0 ${tone.fg}`} aria-hidden="true" />
         <span className="min-w-0 flex-1">
-          <span className={`block font-medium ${tone.fg}`}>{cardTitle(notes.length)}</span>
+          <span className={`flex items-center gap-2 font-medium ${tone.fg}`}>
+            {question !== undefined && (
+              <Badge variant="outline" className={`shrink-0 ${tone.fg}`}>
+                Consulted
+              </Badge>
+            )}
+            <span className="min-w-0 truncate">{cardTitle(notes.length, question)}</span>
+          </span>
           <span className="block truncate text-xs text-fg-secondary">{notes[0]?.note}</span>
         </span>
         {at !== undefined && (
@@ -43,9 +51,11 @@ export function AdvisorNoteCard({ notes, at }: { notes: AdvisoryNote[]; at?: num
       <ul className={`mt-3 flex flex-col gap-2 border-t pt-3 leading-6 ${tone.border}`}>
         {shown.map((n, i) => (
           <li key={i} className="flex min-w-0 items-start gap-2">
-            <Badge variant="outline" className={`mt-1 shrink-0 ${TONE[n.severity].fg}`}>
-              {n.severity}
-            </Badge>
+            {question === undefined && (
+              <Badge variant="outline" className={`mt-1 shrink-0 ${TONE[n.severity].fg}`}>
+                {n.severity}
+              </Badge>
+            )}
             <span className="min-w-0 wrap-anywhere whitespace-pre-wrap text-fg-secondary">{n.note}</span>
           </li>
         ))}

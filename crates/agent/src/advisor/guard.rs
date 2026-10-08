@@ -105,9 +105,10 @@ pub fn normalise(note: &str) -> String {
     out
 }
 
-/// Rank of a severity: `nit 1 < concern 2 < blocker 3`.
+/// Rank of a severity: `advice 0 < nit 1 < concern 2 < blocker 3`.
 pub fn rank(s: AdvisorSeverity) -> u8 {
     match s {
+        AdvisorSeverity::Advice => 0,
         AdvisorSeverity::Nit => 1,
         AdvisorSeverity::Concern => 2,
         AdvisorSeverity::Blocker => 3,
