@@ -1180,10 +1180,23 @@ impl Jobs {
             content.push_str(n);
             content.push('\n');
         }
+        let (gone, on) = match &lost.reason {
+            crate::jobs::LostReason::Restart => (
+                format!("the engine restarted at {}", hhmmss(&lost.restarted_at)),
+                String::new(),
+            ),
+            // 139 §7.2: the page is the previous owner's, replicated.
+            crate::jobs::LostReason::OwnerChanged { engine } => (
+                format!(
+                    "the session moved from {engine} at {}",
+                    hhmmss(&lost.restarted_at)
+                ),
+                format!(" on {engine}"),
+            ),
+        };
         let _ = writeln!(
             content,
-            "[process gone — the engine restarted at {}; this is the last screen captured at {captured} (revision {})]",
-            hhmmss(&lost.restarted_at),
+            "[process gone — {gone}; this is the last screen captured{on} at {captured} (revision {})]",
             screen.revision
         );
         content.push_str(&screen_block(&rows, cursor));
@@ -1479,13 +1492,18 @@ impl Message<SendInput> for Jobs {
         let Some(tx) = tx else { return reply };
         // 109 §5.3: typing into a terminal a previous engine lost.
         if let Some(out) = self.lost(m.session, &m.args.id).and_then(|j| {
-            let at = j.lost.as_ref().map(|l| hhmmss(&l.restarted_at))?;
+            let lost = j.lost.as_ref()?;
+            let at = hhmmss(&lost.restarted_at);
+            let why = match &lost.reason {
+                crate::jobs::LostReason::Restart => format!("engine restarted at {at}"),
+                crate::jobs::LostReason::OwnerChanged { engine } => {
+                    format!("session moved from {engine} at {at}")
+                }
+            };
             self.lost_page(
                 m.session,
                 &m.args.id,
-                Some(&format!(
-                    "the terminal is gone (engine restarted at {at}); last screen follows"
-                )),
+                Some(&format!("the terminal is gone ({why}); last screen follows")),
             )
         }) {
             tx.send(Ok(out));
@@ -4181,5 +4199,73 @@ mod tests {
         assert_eq!(views[0].state, "lost");
         assert_eq!(views[0].tail, ">>> 1+1\n2\n>>>");
         assert!(views[0].pty);
+    }
+
+    /// 139 §7.2: a PTY lost to a transfer serves the replicated page under
+    /// the moved-from banner, in `screen` and in `send`'s refusal.
+    #[tokio::test]
+    async fn screen_after_transfer_names_the_previous_owner() {
+        use crate::jobs::{LostJob, LostReason, Reaped};
+        let fx = fixture(Duration::ZERO, Duration::from_secs(60)).await;
+        let (_, send, screen, _) = tools(&fx);
+        let restarted_at = chrono::Utc::now();
+        let row = JobRow {
+            session: fx.session,
+            id: JobId("j3".into()),
+            kind: JobKind::Pty,
+            call_id: "c3".into(),
+            command: "bash -l".into(),
+            name: None,
+            pgid: None,
+            log: None,
+            started_ms: 0,
+            state: JobState::Lost,
+            exit: Some(JobExit::Lost),
+            settled_ms: Some(7_000),
+            engine: "a".into(),
+        };
+        let stored = PtyScreenRow {
+            session: fx.session,
+            job_id: JobId("j3".into()),
+            revision: 9,
+            rows: 40,
+            cols: 120,
+            cursor_row: 0,
+            cursor_col: 2,
+            text: "$ ".into(),
+            at_ms: 1_700_000_000_000,
+        };
+        fx.jobs
+            .tell(Reaped {
+                restarted_at,
+                jobs: vec![LostJob {
+                    row,
+                    screen: Some(stored.clone()),
+                    tail: String::new(),
+                    deliver: None,
+                    reason: LostReason::OwnerChanged { engine: "a".into() },
+                }],
+            })
+            .await
+            .unwrap();
+        let out = Tool::call(&screen, ScreenArgs { id: "j3".into() }, cx(&fx))
+            .await
+            .unwrap();
+        let at = hhmmss(&restarted_at);
+        let captured = hhmmss(&chrono::DateTime::from_timestamp_millis(stored.at_ms).unwrap());
+        assert_eq!(
+            out.content,
+            format!(
+                "job j3 · lost · 7s\n[process gone — the session moved from a at {at}; this is the last screen captured on a at {captured} (revision 9)]\nscreen:\n$ \ncursor: row 1 col 3"
+            )
+        );
+        let out = Tool::call(&send, send_args("j3"), cx(&fx)).await.unwrap();
+        assert!(
+            out.content.contains(&format!(
+                "the terminal is gone (session moved from a at {at}); last screen follows\n[process gone"
+            )),
+            "{}",
+            out.content
+        );
     }
 }
