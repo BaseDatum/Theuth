@@ -2536,8 +2536,8 @@ pub(crate) mod tests {
     /// authoritative empty list, not a missing one.
     #[tokio::test]
     async fn stored_acp_plan_keeps_source_status_and_reopens() {
-        let dir = std::env::temp_dir().join(format!("theuth-acp-{}", uuid::Uuid::now_v7()));
-        std::fs::create_dir_all(&dir).unwrap();
+        let scratch = Scratch::new("acp-plan");
+        let dir = scratch.0.clone();
         let store = Store::open(&dir.join("sessions.sqlite"), None)
             .await
             .unwrap();
@@ -2588,7 +2588,6 @@ pub(crate) mod tests {
         assert_eq!((snap.version, snap.source), (3, TodoSource::Acp));
         assert!(snap.items.is_empty());
         assert_eq!(store.todos(id).await.unwrap(), snap);
-        std::fs::remove_dir_all(dir).ok();
     }
 
     #[test]
@@ -2831,6 +2830,47 @@ pub(crate) mod tests {
 
     /// One spawned `AcpChild` on a fresh runtime and store, connected to a
     /// [`Fake`] whose handshake is done.
+    /// A test scratch directory under `$TMPDIR`, removed on drop — on a
+    /// passing test and on a panic alike (141 R3 T15: 1 529 leaked
+    /// `theuth-acp-rig-*` dirs filled the shared machine's disk).
+    pub(crate) struct Scratch(pub(crate) std::path::PathBuf);
+
+    impl Scratch {
+        pub(crate) fn new(tag: &str) -> Self {
+            let dir = std::env::temp_dir().join(format!("theuth-{tag}-{}", Uuid::now_v7()));
+            std::fs::create_dir_all(&dir).unwrap();
+            Self(dir)
+        }
+    }
+
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    /// 141 R3 T15: the guard deletes its dir on drop — also mid-panic, since
+    /// unwinding drops the test's locals.
+    #[test]
+    fn scratch_is_removed_on_drop() {
+        let path = {
+            let s = Scratch::new("acp-scratch-check");
+            std::fs::write(s.0.join("x"), b"x").unwrap();
+            assert!(s.0.is_dir());
+            s.0.clone()
+        };
+        assert!(!path.exists(), "{path:?}");
+        let path = std::panic::catch_unwind(|| {
+            let s = Scratch::new("acp-scratch-panic");
+            let p = s.0.clone();
+            std::panic::panic_any(p);
+        })
+        .unwrap_err()
+        .downcast::<std::path::PathBuf>()
+        .unwrap();
+        assert!(!path.exists(), "{path:?}");
+    }
+
     struct Rig {
         actor: ActorRef<AcpChild>,
         fake: Fake,
@@ -2839,6 +2879,8 @@ pub(crate) mod tests {
         rt: Runtime,
         events: UnboundedReceiver<AgentEvent>,
         approvals: UnboundedReceiver<ApprovalRequested>,
+        /// The runtime's data dir; deleted with the rig.
+        _dir: Scratch,
     }
 
     impl Rig {
@@ -2877,8 +2919,8 @@ pub(crate) mod tests {
             tune: impl FnOnce(&mut AcpChild),
             handshake: bool,
         ) -> Self {
-            let dir = std::env::temp_dir().join(format!("theuth-acp-rig-{}", Uuid::now_v7()));
-            std::fs::create_dir_all(&dir).unwrap();
+            let scratch = Scratch::new("acp-rig");
+            let dir = scratch.0.clone();
             let rt = Runtime::new(figment::Figment::new(), dir.clone());
             let (etx, events) = unbounded_channel();
             let (atx, approvals) = unbounded_channel();
@@ -2932,6 +2974,7 @@ pub(crate) mod tests {
                 rt,
                 events,
                 approvals,
+                _dir: scratch,
             }
         }
 
@@ -5223,9 +5266,9 @@ pub(crate) mod tests {
 
     /// A throwaway omp home for the `Fake`'s session `s1` (141 §6.4 feed 2
     /// layout): `(home, artifacts dir)`; the parent transcript is empty.
-    fn omp_home() -> (std::path::PathBuf, std::path::PathBuf) {
-        let home = std::env::temp_dir().join(format!("theuth-acp-omp-{}", Uuid::now_v7()));
-        let cwd = home.join(".omp/agent/sessions/--tmp-x--");
+    fn omp_home() -> (Scratch, std::path::PathBuf) {
+        let home = Scratch::new("acp-omp");
+        let cwd = home.0.join(".omp/agent/sessions/--tmp-x--");
         let art = cwd.join("2026-10-08T16-00-00-000Z_s1");
         std::fs::create_dir_all(&art).unwrap();
         std::fs::write(cwd.join("2026-10-08T16-00-00-000Z_s1.jsonl"), "").unwrap();
@@ -5296,7 +5339,7 @@ pub(crate) mod tests {
             v["params"]["sessionId"] = json!("s1");
             v
         };
-        let h = home.clone();
+        let h = home.0.clone();
         let mut rig = Rig::build(
             Duration::from_secs(3600),
             Vec::new(),
@@ -5412,7 +5455,6 @@ pub(crate) mod tests {
             .observed
             .unwrap();
         assert_eq!(o.detail["toolCount"], 2, "{:?}", o.detail);
-        let _ = std::fs::remove_dir_all(home);
     }
 
     /// 141 R1 T5: the engine restarts while an omp child is mid-tool; omp
@@ -5425,7 +5467,7 @@ pub(crate) mod tests {
     async fn aborted_omp_child_is_cancelled_not_completed_after_a_restart() {
         use agent_client_protocol::schema::v1::Implementation;
         let (home, art) = omp_home();
-        let h = home.clone();
+        let h = home.0.clone();
         let mut rig = Rig::build(
             Duration::from_secs(3600),
             Vec::new(),
@@ -5483,7 +5525,7 @@ pub(crate) mod tests {
             Vec::new(),
         );
         child.remote = false;
-        child.omp_home = home.clone();
+        child.omp_home = home.0.clone();
         let actor = AcpChild::spawn(child);
         fake.handshake(Vec::new(), Some(Implementation::new("oh-my-pi", "18.3.1")))
             .await;
@@ -5522,6 +5564,5 @@ pub(crate) mod tests {
             Some(std::fs::metadata(art.join("SlowA.jsonl")).unwrap().len())
         );
         actor.tell(Shutdown).await.unwrap();
-        let _ = std::fs::remove_dir_all(home);
     }
 }
