@@ -124,7 +124,30 @@ bash/eval→Execute; web_fetch→Fetch; else Other (drives `acp::risk`).
 
 ## 5. Gate output
 
-(filled in below)
+`BUILD_LABEL=141-W5 build-lock cargo test -p acp -- omp::` (stable toolchain,
+`CARGO_BUILD_JOBS=4`, `CARGO_INCREMENTAL=0`, `CARGO_TARGET_DIR=$PWD/target`):
+
+```
+running 10 tests
+test omp::progress::tests::nested_ids_name_their_parent ... ok
+test omp::progress::tests::other_frames_are_not_task_frames ... ok
+test omp::progress::tests::sync_spawns_are_inside_parent_and_states_map ... ok
+test omp::progress::tests::newer_fields_surface_when_present_and_rosters_are_capped ... ok
+test omp::progress::tests::task_frames_are_recognised_regardless_of_call_status ... ok
+test omp::progress::tests::latest_snapshot_wins_per_id ... ok
+test omp::tail::tests::locate_finds_the_parent_file_and_names_child_paths ... ok
+test omp::tail::tests::read_a_transcript_replays_as_session_updates ... ok
+test omp::tail::tests::cursor_stops_at_a_partial_line_and_resets_on_truncation ... ok
+test omp::tail::tests::sidecar_and_async_result_settle_children ... ok
+test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 23 filtered out
+```
+
+`build-lock cargo clippy -p acp --tests` → `Finished`, no warnings.
+
+Machine notes: `./target/.ready` never appeared (20 min wait, 25→31 G
+cloned, then no writes); built on the partial clone after `cargo clean -p
+indexmap` fixed one "crate `indexmap` required in rlib format but not found"
+left by the incomplete copy. No other crate was cleaned.
 
 ## 6. For the Closer
 

@@ -75,7 +75,7 @@ impl Tailer {
     /// unread; a missing file reads as nothing).
     pub fn read(&self, id: &str, cursor: u64) -> io::Result<(Vec<Entry>, u64)> {
         let (lines, cursor) = lines_from(&self.child_path(id), cursor)?;
-        Ok((lines.iter().map(|v| Entry::parse(v)).collect(), cursor))
+        Ok((lines.iter().map(Entry::parse).collect(), cursor))
     }
 
     /// `<id>.md` exists: the child finished and omp wrote its final output.
