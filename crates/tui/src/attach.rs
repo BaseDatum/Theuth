@@ -277,6 +277,7 @@ mod tests {
             epoch: 1,
             here: true,
             kind: Default::default(),
+            memory: Default::default(),
         };
         let r = from_session(&s);
         assert_eq!(r.kind, Kind::Session);

@@ -44,6 +44,7 @@ use agent::{
 };
 use agent::{AwsProfiles, ListAwsProfiles, SetAwsProfile};
 use agent::{GetFavoriteModels, SetModelFavorite};
+use agent::{MemoryMode, SessionMemory, ViewLine};
 use app::{
     AppDoc, AppToolResult, Apps, CallArgs, CallStatusOf, CallTool, CloseApp, GetApp, PublishFromUi,
 };
@@ -358,6 +359,29 @@ pub trait Api {
     /// Live figures from an idle actor; the stored frame otherwise.
     #[method(name = "session_context_breakdown", with_extensions)]
     async fn session_context_breakdown(&self, session: SessionId) -> RpcResult<ContextBreakdown>;
+    /// 137 §11.2: the session's memory mode, its view, settle state,
+    /// compactor stats and backfill progress; `mode: epochs` + an empty view
+    /// for an epochs session.
+    #[method(name = "session_memory", with_extensions)]
+    async fn session_memory(&self, session: SessionId) -> RpcResult<SessionMemory>;
+    /// 137 §9 `zoom`: the two children of line `id+n` (`n == 1`: the whole message).
+    #[method(name = "endless_zoom", with_extensions)]
+    async fn endless_zoom(&self, session: SessionId, id: u64, n: u64) -> RpcResult<Vec<ViewLine>>;
+    /// 137 §9 `recall`: FTS over the level-0 lines (raw fallback under 2 hits); `limit` default 8.
+    #[method(name = "endless_recall", with_extensions)]
+    async fn endless_recall(
+        &self,
+        session: SessionId,
+        query: String,
+        limit: Option<u8>,
+    ) -> RpcResult<Vec<ViewLine>>;
+    /// 137 8.6 `/endless on|off` over RPC; idle sessions only (error `busy`).
+    #[method(name = "set_session_memory", with_extensions)]
+    async fn set_session_memory(
+        &self,
+        session: SessionId,
+        mode: MemoryMode,
+    ) -> RpcResult<SessionMemory>;
     /// Remove `targets` from the active context at `expected_revision`
     /// (design doc 48 §3.2). Atomic: stale revision, unknown targets or an
     /// incomplete protocol group refuse and write nothing. Refused while a
@@ -1489,7 +1513,11 @@ pub trait Api {
     /// Start a training run now (126 §8): `tier` a | b | c, `venue` auto | local | node | off.
     /// Returns the run id; `DoubleTrainingState` events follow.
     #[method(name = "double_train")]
-    async fn double_train(&self, tier: double::Tier, venue: double::Venue) -> RpcResult<double::RunId>;
+    async fn double_train(
+        &self,
+        tier: double::Tier,
+        venue: double::Venue,
+    ) -> RpcResult<double::RunId>;
     /// Pause / resume learning (126 §9): predictions and rungs continue, labels stop accruing.
     #[method(name = "double_pause")]
     async fn double_pause(&self, on: bool) -> RpcResult<double::DoubleStatus>;
@@ -3049,6 +3077,48 @@ impl ApiServer for Server {
     ) -> RpcResult<ContextBreakdown> {
         self.authorize(ext, session).await?;
         ask::<Agents, _>(agent::AGENT_ACTOR, SessionContextBreakdown { session }).await
+    }
+
+    // 137: W1 stubs — W2 replaces the bodies (137-contract.md §3).
+    async fn session_memory(
+        &self,
+        ext: &Extensions,
+        session: SessionId,
+    ) -> RpcResult<SessionMemory> {
+        self.authorize(ext, session).await?;
+        Err(ErrorObjectOwned::owned(ASK_FAILED, "not yet", None::<()>))
+    }
+
+    async fn endless_zoom(
+        &self,
+        ext: &Extensions,
+        session: SessionId,
+        _id: u64,
+        _n: u64,
+    ) -> RpcResult<Vec<ViewLine>> {
+        self.authorize(ext, session).await?;
+        Err(ErrorObjectOwned::owned(ASK_FAILED, "not yet", None::<()>))
+    }
+
+    async fn endless_recall(
+        &self,
+        ext: &Extensions,
+        session: SessionId,
+        _query: String,
+        _limit: Option<u8>,
+    ) -> RpcResult<Vec<ViewLine>> {
+        self.authorize(ext, session).await?;
+        Err(ErrorObjectOwned::owned(ASK_FAILED, "not yet", None::<()>))
+    }
+
+    async fn set_session_memory(
+        &self,
+        ext: &Extensions,
+        session: SessionId,
+        _mode: MemoryMode,
+    ) -> RpcResult<SessionMemory> {
+        self.authorize(ext, session).await?;
+        Err(ErrorObjectOwned::owned(ASK_FAILED, "not yet", None::<()>))
     }
 
     async fn remove_context(
@@ -5290,9 +5360,16 @@ impl ApiServer for Server {
         ask::<double::actor::Double, _>(double::DOUBLE_ACTOR, double::actor::ClassDetail(key)).await
     }
 
-    async fn double_train(&self, tier: double::Tier, venue: double::Venue) -> RpcResult<double::RunId> {
-        ask::<double::sched::Scheduler, _>(double::sched::ACTOR, double::sched::Train { tier, venue })
-            .await
+    async fn double_train(
+        &self,
+        tier: double::Tier,
+        venue: double::Venue,
+    ) -> RpcResult<double::RunId> {
+        ask::<double::sched::Scheduler, _>(
+            double::sched::ACTOR,
+            double::sched::Train { tier, venue },
+        )
+        .await
     }
 
     async fn double_pause(&self, on: bool) -> RpcResult<double::DoubleStatus> {

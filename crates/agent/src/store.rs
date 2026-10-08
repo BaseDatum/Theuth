@@ -58,6 +58,7 @@ pub mod advisor;
 mod capture;
 pub mod communication;
 pub mod durability;
+pub mod endless;
 pub mod turn_usage;
 pub use capture::ATTACHED;
 
@@ -393,6 +394,7 @@ struct SessionRow {
     owner: String,
     epoch: i64,
     kind: String,
+    memory: String,
 }
 
 /// Scalar subquery: column `$col` of the root above the outer `sessions` row
@@ -425,7 +427,7 @@ macro_rules! session_cols {
             root_col!("archived"),
             " AS archived, ",
             root_col!("project"),
-            " AS project, sessions.owner, sessions.epoch, sessions.kind"
+            " AS project, sessions.owner, sessions.epoch, sessions.kind, sessions.memory"
         )
     };
 }
@@ -469,6 +471,7 @@ impl SessionRow {
             owner: r.owner,
             epoch: u32::try_from(r.epoch).context("bad epoch")?,
             kind: advisor::kind_of(&r.kind),
+            memory: r.memory.parse().unwrap_or_default(),
         })
     }
 }
@@ -2427,6 +2430,7 @@ impl Store {
                 .execute(&mut *tx)
                 .await?;
             durability::delete_journal_in(&mut tx, &sid).await?;
+            endless::delete_endless_in(&mut tx, &sid).await?;
             sqlx::query("DELETE FROM sessions WHERE id = ?")
                 .bind(&sid)
                 .execute(&mut *tx)
