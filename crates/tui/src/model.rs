@@ -13,19 +13,19 @@ use agent::durability::{ResumeCause, ResumeKind};
 use agent::todo::{Status as TodoStatus, TodoSnapshot, TodoSource};
 use agent::{
     AdvisorDefaults, AdvisorSeverity, AdvisorState, AdvisorStatus, Advisory, AdvisoryKind,
-    AgentEvent, AgentInfo,
-    AgentState, AwsProfiles, CommunicationChanged, CommunicationState, CompactStyle,
-    ContextAttachment, ContextEntry, ContextItem, ContextKind, ContextRemoval, ContextSnapshot,
-    ContextTarget, HistoryEntry, Loaded, ModelInfo, PeerDelivered, PeerInfo, PeerMessageChanged,
-    PeerMessagePage, PeerOrigin, PeerPage, PeerReceipt, PeerRecord, PeerScope, ProviderInfo,
-    QueuedInput, SessionKind, SessionSummary, SkillBody, SkillMeta, Usage, VisionNote, VisionStage,
-    VisionStatus,
+    AgentEvent, AgentInfo, AgentState, AwsProfiles, CommunicationChanged, CommunicationState,
+    CompactStyle, ContextAttachment, ContextEntry, ContextItem, ContextKind, ContextRemoval,
+    ContextSnapshot, ContextTarget, HistoryEntry, Loaded, ModelInfo, PeerDelivered, PeerInfo,
+    PeerMessageChanged, PeerMessagePage, PeerOrigin, PeerPage, PeerReceipt, PeerRecord, PeerScope,
+    ProviderInfo, QueuedInput, SessionKind, SessionSummary, SkillBody, SkillMeta, Usage,
+    VisionNote, VisionStage, VisionStatus,
 };
 use agent::{
     BroadcastReceipt, BroadcastRequest, BroadcastTargets, CleanupStatus, CloseResult, CostBucket,
     CostScope, Coverage, CreateSessionOptions, MemoryMode, Money, Retention, SessionCost,
     SessionOpen,
 };
+use double::{DoubleAnswered, DoublePredicted};
 use iocraft::{KeyCode, KeyModifiers};
 use knowledge::{Change, ChangeStatus, HarvestResult, History, Meta, Revision};
 use models::Catalog;
@@ -39,7 +39,6 @@ use tools::{
 };
 use tools::{JobId, Key, PtyPage, PtyScreenReply, PtyViewport, TerminalSummary};
 use uuid::Uuid;
-use double::{DoubleAnswered, DoublePredicted};
 
 use crate::broadcast::{Broadcast, BroadcastStage};
 use crate::clip::Image;
@@ -3964,7 +3963,8 @@ impl Model {
 
     /// The shown card is in an L2 grace: frames are needed for the countdown.
     fn double_counting_down(&self) -> bool {
-        self.shown_prediction().is_some_and(|p| p.will_act_at.is_some())
+        self.shown_prediction()
+            .is_some_and(|p| p.will_act_at.is_some())
     }
 
     /// The `secret_request` currently shown, if any.
@@ -18337,11 +18337,17 @@ mod tests {
         assert_eq!(DoubleCmd::parse("pause off"), Some(DoubleCmd::Pause(false)));
         assert_eq!(
             DoubleCmd::parse("train"),
-            Some(DoubleCmd::Train { tier: Tier::A, venue: Venue::Auto })
+            Some(DoubleCmd::Train {
+                tier: Tier::A,
+                venue: Venue::Auto
+            })
         );
         assert_eq!(
             DoubleCmd::parse("train b node:gpu"),
-            Some(DoubleCmd::Train { tier: Tier::B, venue: Venue::Node("gpu".into()) })
+            Some(DoubleCmd::Train {
+                tier: Tier::B,
+                venue: Venue::Node("gpu".into())
+            })
         );
         assert_eq!(
             DoubleCmd::parse("cap approval:shell:mutating:git push:root 2 opt-in"),
@@ -18351,8 +18357,20 @@ mod tests {
                 opt_in: true
             })
         );
-        assert_eq!(DoubleCmd::parse("rollback v3"), Some(DoubleCmd::Rollback("v3".into())));
-        for bad in ["train c", "train a off", "cap k 4", "cap k", "cap 2", "pause maybe", "rollback", "x"] {
+        assert_eq!(
+            DoubleCmd::parse("rollback v3"),
+            Some(DoubleCmd::Rollback("v3".into()))
+        );
+        for bad in [
+            "train c",
+            "train a off",
+            "cap k 4",
+            "cap k",
+            "cap 2",
+            "pause maybe",
+            "rollback",
+            "x",
+        ] {
             assert_eq!(DoubleCmd::parse(bad), None, "{bad}");
         }
     }
@@ -18399,7 +18417,11 @@ mod tests {
         m.apply(UiEvent::DoublePredicted(p));
         assert!(m.animating());
         // Resolution drops it; a later answer line names the choice.
-        m.apply(UiEvent::Resolved(ApprovalResolved { id, decision: Decision::Allow, timed_out: false }));
+        m.apply(UiEvent::Resolved(ApprovalResolved {
+            id,
+            decision: Decision::Allow,
+            timed_out: false,
+        }));
         assert_eq!(m.double_chip(), None);
         assert!(m.double.is_empty());
         m.apply(UiEvent::DoubleAnswered(double::DoubleAnswered {
@@ -18765,7 +18787,11 @@ mod tests {
             rx.try_recv(),
             Ok(Command::SetAdvisorMaxConsults(0))
         ));
-        for bad in ["/advisor consults 33", "/advisor consults", "/advisor consults six"] {
+        for bad in [
+            "/advisor consults 33",
+            "/advisor consults",
+            "/advisor consults six",
+        ] {
             m.submit(bad, &tx);
             assert!(rx.try_recv().is_err(), "{bad}");
         }
@@ -18793,7 +18819,10 @@ mod tests {
     /// the answer's, unbadged.
     #[test]
     fn consultation_card_titles_with_question() {
-        let a = consultation("read justfile\n  or README first?", "justfile\nit names the gates");
+        let a = consultation(
+            "read justfile\n  or README first?",
+            "justfile\nit names the gates",
+        );
         assert_eq!(
             advisory_title(&a),
             "◎ consulted: read justfile or README first?"
@@ -18830,7 +18859,13 @@ mod tests {
         assert_eq!(m.entries[1].height(80), 4 + 2);
         m.toggle_card();
         assert!(
-            matches!(&m.entries[1], Entry::Advisory { expanded: false, .. }),
+            matches!(
+                &m.entries[1],
+                Entry::Advisory {
+                    expanded: false,
+                    ..
+                }
+            ),
             "nothing to expand"
         );
     }

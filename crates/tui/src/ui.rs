@@ -2507,7 +2507,7 @@ mod tests {
                     note: answer.clone(),
                 }],
                 kind: AdvisoryKind::Consultation {
-                    question: "read justfile\nor README first?".into(),
+                    question: "justfile\nor README?".into(),
                 },
             },
             expanded,
@@ -2535,7 +2535,7 @@ mod tests {
                         .all(|l| l.chars().count() <= usize::from(width))
                 );
                 assert!(
-                    lines[top + 1].contains("◎ consulted: read justfile or README first?"),
+                    lines[top + 1].contains("◎ consulted: justfile or README?"),
                     "{frame}"
                 );
                 assert!(lines[top + 2].contains("answer line 0") && !frame.contains("[advice]"));
