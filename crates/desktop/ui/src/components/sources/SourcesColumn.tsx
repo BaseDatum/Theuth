@@ -16,11 +16,11 @@ export function SourcesColumn({ notebook }: { notebook: string }) {
           <AddSourceMenu notebook={notebook} />
         </span>
       </header>
-      <div className="flex shrink-0 items-center gap-1.5 border-b border-border-subtle px-3 py-1.5 text-[11px] text-fg-tertiary">
+      <div className="flex shrink-0 items-center gap-1.5 whitespace-nowrap border-b border-border-subtle px-3 py-1.5 text-[11px] text-fg-tertiary">
         all sources:
-        <div role="group" aria-disabled="true" title="wave 2" className="inline-flex overflow-hidden rounded-md border border-border-subtle">
+        <div role="group" aria-disabled="true" title="wave 2" className="inline-flex overflow-hidden rounded-md border border-border-subtle text-[10px]">
           {LEVELS.map((l) => (
-            <button key={l} type="button" disabled className="border-l border-border-subtle px-1.5 py-0.5 first:border-l-0">
+            <button key={l} type="button" disabled className="border-l border-border-subtle px-1 py-0.5 first:border-l-0">
               {l}
             </button>
           ))}

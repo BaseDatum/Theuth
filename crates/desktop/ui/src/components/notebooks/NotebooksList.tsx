@@ -1,10 +1,10 @@
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { Link, getRouteApi, useNavigate } from '@tanstack/react-router'
 import { Archive, ArchiveRestore, MoreHorizontal, Notebook as NotebookIcon, Pencil, Plus, Trash2 } from 'lucide-react'
 import { type KeyboardEvent, useState } from 'react'
 import { toast } from 'sonner'
 import { Column, Page } from '@/components/library/Page'
-import { firstLine } from '@/components/notebooks/useNotebook'
+import { firstLine, useDescription } from '@/components/notebooks/useNotebook'
 import { useCreateNotebook, useNotebooks } from '@/components/notebooks/useNotebooks'
 import { ago } from '@/components/sidebar/AgentTree'
 import {
@@ -22,7 +22,6 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigge
 import { Skeleton } from '@/components/ui/skeleton'
 import type { Notebook } from '@/lib/notebooks-types'
 import { type NotebookDeletePreview, notebookKeys, useNotebooksApi } from '@/lib/notebooks-rpc'
-import { useApi } from '@/lib/rpc'
 
 const route = getRouteApi('/notebooks')
 
@@ -71,12 +70,11 @@ export function NotebooksList() {
 }
 
 function Row({ notebook: n, archived }: { notebook: Notebook; archived: boolean }) {
-  const api = useApi()
   const nb = useNotebooksApi()
   const qc = useQueryClient()
   const id = n.doc.id
   const title = n.doc.title || 'Untitled'
-  const description = useQuery({ queryKey: notebookKeys.description(id), queryFn: () => api.doc_markdown(id) })
+  const description = useDescription(id)
   const invalidate = () => void qc.invalidateQueries({ queryKey: notebookKeys.all })
   const [renaming, setRenaming] = useState<string | null>(null)
   const rename = useMutation({

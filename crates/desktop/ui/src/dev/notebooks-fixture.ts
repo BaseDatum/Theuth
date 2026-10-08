@@ -74,20 +74,20 @@ const sources: Source[] = [
 const sourceNotebook: Record<string, string> = Object.fromEntries(sources.map((s) => [s.doc.id, s.doc.id.startsWith('fx-s-onb') ? NB2_ID : NB_ID]))
 
 let items: NotebookItem[] = sources.map((s) => ({ notebook: sourceNotebook[s.doc.id]!, kind: 'source', item: s.doc.id, added_ms: ms(3), added_by: 'owner', removed_ms: null }))
-let notesSeeded = false
+let seeded: Promise<void> | null = null
 
 const chats: SessionSummary[] = []
 
 /** The notebook RPCs from memory; `api` is the engine's (read-only here: `doc_list` for real note ids, `list_sessions` for chats). */
 export function notebooksFixture(api: Api): NotebooksApi {
-  const seedNotes = async () => {
-    if (notesSeeded) return
-    notesSeeded = true
-    const notes = await api.doc_list('note', 6).catch(() => [] as DocSummary[])
-    notes.forEach((n, i) => items.push({ notebook: i < 3 ? NB_ID : NB2_ID, kind: 'note', item: n.id, added_ms: ms(i), added_by: 'owner', removed_ms: null }))
-    const sessions = await api.list_sessions().catch(() => [] as SessionSummary[])
-    chats.push(...sessions.filter((s) => s.parent === null).slice(0, 3))
-  }
+  // One seeding shared by every caller: `notebook_chats` and `notebook_items_list` race on first paint.
+  const seedNotes = () =>
+    (seeded ??= (async () => {
+      const notes = await Promise.all([api.doc_list('note', 6), api.doc_list('board', 6)]).then((r) => r.flat().slice(0, 6), () => [] as DocSummary[])
+      notes.forEach((n, i) => items.push({ notebook: i < 3 ? NB_ID : NB2_ID, kind: 'note', item: n.id, added_ms: ms(i), added_by: 'owner', removed_ms: null }))
+      const sessions = await api.list_sessions().catch(() => [] as SessionSummary[])
+      chats.push(...sessions.filter((s) => s.parent === null).slice(0, 3))
+    })())
   const find = (id: string) => notebooks.find((n) => n.doc.id === id) ?? Promise.reject(new Error(`no notebook ${id}`))
   const ok = () => Promise.resolve(null)
   return {

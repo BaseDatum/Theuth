@@ -112,7 +112,7 @@ export function ChatColumn({ notebook, title, notes, composerOnly = false }: { n
   return (
     <section className="flex min-h-0 min-w-0 flex-1 flex-col" aria-label="Chat about this notebook">
       <header className={HEADER}>
-        <span>
+        <span className="min-w-0 truncate whitespace-nowrap">
           Chat <span className="font-normal text-fg-tertiary">· this notebook</span>
         </span>
         <DropdownMenu>
