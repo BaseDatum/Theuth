@@ -87,11 +87,37 @@ Worker 144-W2, branch `feat/144-w2`, cut from the contract skeleton `13bd3cc3`. 
 
 ## Proof
 
-(gates below; timings in Gates)
+- `vec0` loads statically through `sqlite3_auto_extension` on the vendored SQLCipher build: `index::db::tests::vec0_loads_and_answers_knn`
+  (KNN order, dims change → table rebuilt, state model cleared) — no `load_extension`, no dylib.
+- The pipeline end to end on the tiny checkpoint (written by the test, 2 layers / 64 dims): `cargo test -p document --test
+  index_search` 3 passed with the compiled helper (`THEUTH_DOCUMENTS_HELPER=…/packages/documents/dist/theuth-documents`,
+  59.5) — a note's block comes back with its outline id, nearest heading, highlighted snippet and
+  `theuth://notes/<id>#<block>?s=<sha8>`; the query equal to a block's text (vector distance 0 + bm25 top) outranks the
+  lexical-only sibling; a notebook scope holding nothing finds nothing; `nb_index_state.model = "tiny"`.
+- FTS5-only path: the `notes` category pages a title hit (`block = ""`), a body block hit, drops the deleted note after
+  `on_document_changed(deleted)`, `has_more`; `nb_index_state.model IS NULL`, `nb_vec` empty, nothing crashed.
+- §7.5: vectors appear once the model is installed (FTS5 rows untouched); a different checkpoint name re-embeds every chunk
+  (`state.model = "tiny2"`, same row count); an edit + `DocumentChanged` finds the new text and no longer the old.
+- Embed actor: `Info`/`Tokens` without loading weights, 33 texts across the batch boundary (unit norm, same text ⇒ same
+  vector, different text ⇒ different), idle release after `with_idle(150 ms)`, missing directory ⇒ `None` / `Err("… not
+  installed …")`, the D9 name rule.
+- Cost (brief item 6), tiny model (2 layers, 64 dims) on the CPU in f32, debug build: **23.1 ms per 400-token chunk** (batch
+  of 8, `cargo test -p decision --test embed_actor -- --nocapture`). The real gte-modernbert-base is not on this machine;
+  §7.5's 150–300 ms CPU / 15–30 ms Metal-f16 estimate stands unmeasured.
 
 ## Gates
 
-(filled after the runs)
+All through `BUILD_LABEL=144-W2 nice -n 10 build-lock`, `CARGO_TARGET_DIR=…/theuth-144-target/W2`, stable 1.96.1:
+- `cargo fmt -p document -p decision` clean.
+- `cargo clippy -p document -p search --tests -- -D warnings` clean; `cargo clippy -p decision --lib --test embed_actor -- -D
+  warnings` clean. `cargo clippy -p decision --tests` fails on a **pre-existing** lint outside this brief:
+  `crates/decision/src/candle/lora.rs:672 assert!(!TRAIN_BUILD)` (`clippy::assertions_on_constants`, rustc 1.96) — hand-off below.
+- `cargo test -p decision -p document -p search --tests`: decision lib 93 passed (incl. `candle::embed::tests`), `decide` 2,
+  `embed_actor` 3, `gliner` 3, `model` 4; document lib 52 passed (incl. `index::chunk::tests` 2, `index::db::tests` 2,
+  `index::tests` 2), `tests/actor.rs` 11 passed (untouched), `tests/index_search.rs` 3 passed; search lib 6 passed.
+- `cargo check -p rpc -p tui --tests` clean (the `NoteSearchHit` consumers).
+- Sharing/realtime (rule 11): `cargo test -p document` green; `tests/actor.rs` untouched; `-p link -p rpc` not run here
+  (workspace-sized link) — the closer's gate.
 
 ## Deviations
 
@@ -114,7 +140,7 @@ Worker 144-W2, branch `feat/144-w2`, cut from the contract skeleton `13bd3cc3`. 
 
 ## Hand-offs
 
-- **C / closer — `crates/document/src/lib.rs` plugin start** (two hunks, after `actor.register(DOCUMENT_ACTOR)?`):
+- **C / closer — `crates/document/src/lib.rs` plugin start** (one hunk, after `actor.register(DOCUMENT_ACTOR)?`):
   ```rust
   // 144 §7.1: the block index — first run / model change in the background.
   let a = actor.clone();
@@ -139,3 +165,6 @@ Worker 144-W2, branch `feat/144-w2`, cut from the contract skeleton `13bd3cc3`. 
 - **Closer — the real checkpoint**: `<data_dir>/models/embed-gte-modernbert-base/{config.json, model.safetensors,
   tokenizer.json}` from `Alibaba-NLP/gte-modernbert-base`; nothing downloads it. Verify the safetensors key prefix on first
   load (`embed: … loaded (768 dims)` in the log; a load error names the missing tensor).
+- **Closer / 126 owner — `crates/decision/src/candle/lora.rs:672`**: `assert!(!TRAIN_BUILD)` trips
+  `clippy::assertions_on_constants` on rustc 1.96 (pre-existing, not a 144 file); `const { assert!(!TRAIN_BUILD) };` or an
+  `#[allow]` on the test makes `cargo clippy -p decision --tests` clean.
