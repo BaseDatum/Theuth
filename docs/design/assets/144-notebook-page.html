@@ -1,0 +1,170 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>144 — Notebook page mock</title>
+<style>
+:root{--bg:var(--background,#f6f3ee);--fg:var(--foreground,#1a1612);--muted:var(--muted,#6b645c);--card:var(--card,#fffdf9);--border:var(--border,#e2dcd2);--primary:var(--primary,#2f5d4a);--accent:var(--accent,#efe9df);--c1:var(--chart-1,#2f5d4a);--c2:var(--chart-2,#b4532a);--c3:var(--chart-3,#3b5b8a);--r:var(--radius,10px);--sans:var(--font-sans,ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif);--mono:var(--font-mono,ui-monospace,Menlo,monospace)}
+*{box-sizing:border-box}body{margin:0;font-family:var(--sans);color:var(--fg);background:transparent;font-size:13px;line-height:1.4}
+h1,h2,h3{margin:0;font-weight:600}.muted{color:var(--muted)}.mono{font-family:var(--mono)}
+.caption{margin:14px 0 8px;font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:.06em}
+.shell{border:1px solid var(--border);border-radius:var(--r);background:var(--bg);overflow:hidden}
+.top{display:flex;align-items:center;gap:12px;padding:10px 14px;border-bottom:1px solid var(--border);background:var(--card)}
+.top h1{font-size:16px}.top .desc{color:var(--muted);font-size:12px;max-width:520px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.chip{display:inline-flex;align-items:center;gap:5px;padding:2px 8px;border:1px solid var(--border);border-radius:999px;font-size:11px;background:var(--card);white-space:nowrap}
+.chip.green{border-color:color-mix(in srgb,var(--c1) 50%,transparent);color:var(--c1)}.chip.blue{border-color:color-mix(in srgb,var(--c3) 50%,transparent);color:var(--c3)}.chip.rust{border-color:color-mix(in srgb,var(--c2) 50%,transparent);color:var(--c2)}
+.btn{display:inline-flex;align-items:center;gap:6px;padding:5px 10px;border:1px solid var(--border);border-radius:8px;background:var(--card);font-size:12px;cursor:default}
+.btn.primary{background:var(--primary);color:#fff;border-color:var(--primary)}
+.grow{flex:1}
+.cols{display:grid;grid-template-columns:320px 1fr 320px;min-height:640px}
+.col{display:flex;flex-direction:column;min-width:0}.col+.col{border-left:1px solid var(--border)}
+.colhead{display:flex;align-items:center;gap:8px;padding:8px 12px;border-bottom:1px solid var(--border);font-size:12px;font-weight:600}
+.colhead .muted{font-weight:400}
+.list{padding:8px;display:flex;flex-direction:column;gap:6px;overflow:auto}
+.src{border:1px solid var(--border);border-radius:8px;background:var(--card);padding:8px 10px}
+.src .t{display:flex;align-items:center;gap:8px;font-weight:600;font-size:12.5px}
+.src .o{display:flex;gap:6px;align-items:center;color:var(--muted);font-size:11px;margin-top:2px;flex-wrap:wrap}
+.ico{width:18px;height:18px;border-radius:4px;display:inline-flex;align-items:center;justify-content:center;font-size:10px;font-weight:700;color:#fff;background:var(--c3);flex:none}
+.ico.pdf{background:var(--c2)}.ico.web{background:var(--c3)}.ico.mtg{background:var(--c1)}.ico.jira{background:#2f6fb7}.ico.yt{background:#b32020}.ico.ses{background:#6b645c}.ico.aud{background:#7a4ea8}
+.dial{display:grid;width:100%;grid-template-columns:repeat(4,minmax(0,1fr));border:1px solid var(--border);border-radius:6px;overflow:hidden;margin-top:7px;font-size:10.5px}
+.dial span{padding:2px 1px;text-align:center;color:var(--muted);background:var(--card);font-size:10px;white-space:nowrap;overflow:hidden;min-width:0}
+.dial span.on{background:var(--primary);color:#fff;font-weight:600}
+.dial span+span{border-left:1px solid var(--border)}
+.status{font-size:10.5px}.status.run::before{content:"● ";color:var(--c3)}.status.ok::before{content:"● ";color:var(--c1)}.status.fail::before{content:"● ";color:var(--c2)}
+.bulk{display:flex;gap:6px;padding:6px 12px;border-bottom:1px solid var(--border);font-size:11px;color:var(--muted);align-items:center}
+.bulk .seg{display:inline-flex;border:1px solid var(--border);border-radius:6px;overflow:hidden}.bulk .seg span{padding:2px 7px;background:var(--card)}.bulk .seg span+span{border-left:1px solid var(--border)}
+/* chat */
+.chat{display:flex;flex-direction:column;flex:1}
+.turns{flex:1;padding:14px 18px;display:flex;flex-direction:column;gap:12px;overflow:auto}
+.turn{max-width:92%}.turn.me{align-self:flex-end;background:var(--accent);padding:8px 12px;border-radius:12px 12px 2px 12px}
+.turn.ai{align-self:flex-start}
+.turn p{margin:0 0 6px}
+.cite{display:inline-flex;align-items:center;justify-content:center;min-width:16px;height:16px;padding:0 4px;border-radius:999px;background:var(--primary);color:#fff;font-size:10px;font-weight:700;vertical-align:1px;margin:0 1px}
+.cite.src{background:var(--c3)}.cite.dead{background:var(--muted);text-decoration:line-through}
+.refs{margin-top:8px;padding-top:6px;border-top:1px dashed var(--border);font-size:11px;color:var(--muted)}
+.refs div{display:flex;gap:6px;align-items:baseline;margin:2px 0}
+.acts{display:flex;gap:6px;margin-top:8px}.acts .btn{padding:3px 8px;font-size:11px}
+.composer{border-top:1px solid var(--border);background:var(--card);padding:8px 12px}
+.ctx{display:flex;align-items:center;gap:8px;font-size:11px;color:var(--muted);margin-bottom:6px}
+.ctx .bar{flex:1;height:4px;border-radius:2px;background:var(--accent);position:relative}.ctx .bar i{position:absolute;left:0;top:0;bottom:0;width:34%;background:var(--primary);border-radius:2px}
+.input{display:flex;align-items:center;gap:8px;border:1px solid var(--border);border-radius:10px;padding:8px 10px;background:var(--bg);color:var(--muted)}
+/* notes */
+.note{display:flex;gap:10px;align-items:center;padding:8px 10px;border:1px solid var(--border);border-radius:8px;background:var(--card)}
+.paper{width:22px;height:30px;border:1px solid var(--border);border-radius:2px;background:#fff;position:relative;flex:none}
+.paper::after{content:"";position:absolute;left:4px;right:4px;top:5px;height:2px;background:var(--border);box-shadow:0 5px 0 var(--border),0 10px 0 var(--border),0 15px 0 var(--border)}
+.note .t{font-weight:600;font-size:12.5px}.note .m{font-size:11px;color:var(--muted)}
+.ov{display:flex;gap:10px;align-items:center;padding:8px 10px;border:1px dashed var(--border);border-radius:8px}
+.ov .k{width:22px;height:22px;border-radius:6px;background:var(--accent);display:inline-flex;align-items:center;justify-content:center;font-size:11px;flex:none}
+.sub{font-size:11px;color:var(--muted)}
+/* phone */
+.phone{width:390px;border:1px solid var(--border);border-radius:28px;background:var(--bg);overflow:hidden;margin:0 auto}
+.tabs{display:grid;grid-template-columns:repeat(3,1fr);border-bottom:1px solid var(--border);background:var(--card)}
+.tabs span{padding:10px 0;text-align:center;font-size:12px;color:var(--muted)}.tabs span.on{color:var(--fg);font-weight:600;box-shadow:inset 0 -2px 0 var(--primary)}
+.row2{display:grid;grid-template-columns:1fr 1fr;gap:18px;align-items:start}
+@media (max-width:980px){.cols{grid-template-columns:260px 1fr}.cols .col:last-child{display:none}.row2{grid-template-columns:1fr}}
+</style></head><body>
+
+<div class="caption">Desktop · /notebooks/$id · three columns (sources | chat | notes); chat column = 143's bar → mini session panel</div>
+<div class="shell">
+  <div class="top">
+    <h1>DR verification — ICD portal</h1>
+    <span class="desc">“Prove the DR path for the ICD portal end to end; every claim cited to a runbook, a meeting or a ticket.” <span class="muted">· sent to the agent as the notebook’s brief</span></span>
+    <span class="grow"></span>
+    <span class="chip blue">project · dr-2026</span>
+    <span class="chip green">shared · 2 members · live</span>
+    <span class="btn">Ask across notebooks</span>
+    <span class="btn">Overviews ▾</span>
+    <span class="btn">Share</span>
+  </div>
+  <div class="cols">
+    <!-- sources -->
+    <div class="col">
+      <div class="colhead">Sources <span class="muted">· 7</span><span class="grow"></span><span class="btn">+ Add ▾</span></div>
+      <div class="bulk">all sources: <span class="seg"><span>off</span><span>mention</span><span>summary</span><span>full</span></span><span class="grow"></span><span>~12.4k tokens</span></div>
+      <div class="list">
+        <div class="src"><div class="t"><span class="ico pdf">PDF</span>ICD portal DR runbook v7<span class="grow"></span><span class="status ok">ready</span></div>
+          <div class="o">file · 48 pages · fetched 3 d ago · <span class="chip">1 insight</span></div>
+          <div class="dial"><span>off</span><span>mention</span><span class="on">summary</span><span>full</span></div></div>
+        <div class="src"><div class="t"><span class="ico web">WEB</span>AWS Route 53 failover docs<span class="grow"></span><span class="status ok">ready</span></div>
+          <div class="o">url · fetched 9 d ago · <span class="chip rust">changed since · re-fetch</span></div>
+          <div class="dial"><span>off</span><span class="on">mention</span><span>summary</span><span>full</span></div></div>
+        <div class="src"><div class="t"><span class="ico mtg">MTG</span>DR review with platform team<span class="grow"></span><span class="status ok">ready</span></div>
+          <div class="o">meeting · 2026-10-02 · 54 min · transcript + summary note</div>
+          <div class="dial"><span>off</span><span>mention</span><span class="on">summary</span><span>full</span></div></div>
+        <div class="src"><div class="t"><span class="ico jira">JIRA</span>DR-412 Failover drill results<span class="grow"></span><span class="status ok">ready</span></div>
+          <div class="o">jira · updated yesterday · 14 comments</div>
+          <div class="dial"><span>off</span><span>mention</span><span>summary</span><span class="on">full</span></div></div>
+        <div class="src"><div class="t"><span class="ico yt">YT</span>re:Invent — multi-region failover<span class="grow"></span><span class="status run">transcribing 62 %</span></div>
+          <div class="o">youtube · 41 min · transcript route: audio → local STT</div>
+          <div class="dial"><span>off</span><span class="on">mention</span><span>summary</span><span>full</span></div></div>
+        <div class="src"><div class="t"><span class="ico ses">CHAT</span>Session: “why did RDS promote late”<span class="grow"></span><span class="status ok">ready</span></div>
+          <div class="o">past session · 2026-09-30 · 38 turns</div>
+          <div class="dial"><span class="on">off</span><span>mention</span><span>summary</span><span>full</span></div></div>
+        <div class="src"><div class="t"><span class="ico aud">AUD</span>voice memo — post-drill notes.m4a<span class="grow"></span><span class="status fail">failed · retry</span></div>
+          <div class="o">audio · 6 min · <span class="chip rust">unsupported codec (415)</span></div>
+          <div class="dial"><span class="on">off</span><span>mention</span><span>summary</span><span>full</span></div></div>
+      </div>
+    </div>
+    <!-- chat -->
+    <div class="col chat">
+      <div class="colhead">Chat <span class="muted">· this notebook</span><span class="grow"></span><span class="chip">Chats · 3 ▾</span><span class="btn">New chat</span></div>
+      <div class="turns">
+        <div class="turn me">What does the runbook say about the RTO for the portal, and did the drill meet it?</div>
+        <div class="turn ai">
+          <p>The runbook sets a 30-minute RTO for the portal tier and 60 minutes for the reporting database <span class="cite src">1</span>. The 2 October drill measured 41 minutes to a healthy portal because the RDS promotion waited on a stale replica <span class="cite src">2</span> <span class="cite">3</span>; the team agreed to pre-warm the standby and re-run in November <span class="cite src">4</span>. One earlier reference to “DR-398” no longer resolves <span class="cite dead">5</span>.</p>
+          <div class="refs">
+            <div><span class="cite src">1</span> ICD portal DR runbook v7 · §4.2 Recovery objectives · <span class="mono">theuth://sources/…#b12</span></div>
+            <div><span class="cite src">2</span> DR-412 Failover drill results · comment by Noel · <span class="mono">#c9</span></div>
+            <div><span class="cite">3</span> Note: Drill timeline · block “RDS promotion” · <span class="mono">theuth://notes/…#b7</span> <span class="chip">moved</span></div>
+            <div><span class="cite src">4</span> DR review with platform team · <span class="mono">@41:12</span></div>
+            <div><span class="cite dead">5</span> unavailable — source removed from this notebook</div>
+          </div>
+          <div class="acts"><span class="btn">Save answer as note</span><span class="btn">Promote into “Drill timeline” ▾</span><span class="btn">Open in chat ↗</span></div>
+        </div>
+      </div>
+      <div class="composer">
+        <div class="ctx"><span>in context: <b>4 sources</b> (2 summary · 1 full · 1 mention) · <b>2 notes</b> · ~12.4k of 40k tokens</span><span class="bar"><i></i></span><span class="chip">1 omitted</span></div>
+        <div class="input"><span>Ask theuth about this notebook — the agent sees the dial above</span><span class="grow"></span><span class="mono">⏎</span></div>
+      </div>
+    </div>
+    <!-- notes -->
+    <div class="col">
+      <div class="colhead">Notes <span class="muted">· 4</span><span class="grow"></span><span class="btn">+ New note</span></div>
+      <div class="list">
+        <div class="note"><span class="paper"></span><div><div class="t">Drill timeline</div><div class="m">you · edited 2 h ago · Noel editing now</div></div></div>
+        <div class="note"><span class="paper"></span><div><div class="t">Open questions for platform</div><div class="m">you · yesterday</div></div></div>
+        <div class="note"><span class="paper"></span><div><div class="t">RTO vs measured — answer saved</div><div class="m"><span class="chip green">AI</span> from chat · 2 citations kept</div></div></div>
+        <div class="note"><span class="paper"></span><div><div class="t">DR review with platform team — summary</div><div class="m">meeting note · 2026-10-02</div></div></div>
+        <div class="caption" style="margin:10px 2px 4px">Overviews</div>
+        <div class="ov"><span class="k">§</span><div><div class="t">Briefing <span class="sub">v2 · regenerate</span></div><div class="sub">from 7 sources, 4 notes · 2026-10-07</div></div></div>
+        <div class="ov"><span class="k">⟶</span><div><div class="t">Timeline <span class="sub">v1</span></div><div class="sub">json-render Timeline · 12 events</div></div></div>
+        <div class="ov"><span class="k">▶</span><div><div class="t">Audio overview <span class="sub">6:12 · two voices</span></div><div class="sub">outline → script → TTS · regenerate</div></div></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="row2" style="margin-top:22px">
+  <div>
+    <div class="caption">Phone · stacked, tabs · Sources tab shown</div>
+    <div class="phone">
+      <div class="top" style="padding:12px 14px"><h1 style="font-size:15px">DR verification — ICD portal</h1><span class="grow"></span><span class="chip green">shared</span></div>
+      <div class="tabs"><span class="on">Sources · 7</span><span>Chat</span><span>Notes · 4</span></div>
+      <div class="list">
+        <div class="src"><div class="t"><span class="ico pdf">PDF</span>ICD portal DR runbook v7</div><div class="o">file · 48 pages · 1 insight</div><div class="dial"><span>off</span><span>mention</span><span class="on">summary</span><span>full</span></div></div>
+        <div class="src"><div class="t"><span class="ico web">WEB</span>AWS Route 53 failover docs</div><div class="o">url · <span class="chip rust">changed since</span></div><div class="dial"><span>off</span><span class="on">mention</span><span>summary</span><span>full</span></div></div>
+        <div class="src"><div class="t"><span class="ico yt">YT</span>re:Invent — multi-region failover</div><div class="o"><span class="status run">transcribing 62 %</span></div><div class="dial"><span>off</span><span class="on">mention</span><span>summary</span><span>full</span></div></div>
+      </div>
+      <div class="composer"><div class="ctx"><span>4 sources · 2 notes · ~12.4k tokens</span></div><div class="input"><span>Ask about this notebook</span></div></div>
+    </div>
+  </div>
+  <div>
+    <div class="caption">Guest view via /d link · same three columns, no composer (owner-only chat, D13)</div>
+    <div class="shell" style="min-height:0">
+      <div class="top"><h1 style="font-size:14px">DR verification — ICD portal</h1><span class="grow"></span><span class="chip">you are a guest · editor</span></div>
+      <div class="cols" style="min-height:300px;grid-template-columns:1fr 1fr 1fr">
+        <div class="col"><div class="colhead">Sources · 7</div><div class="list"><div class="src"><div class="t"><span class="ico pdf">PDF</span>ICD portal DR runbook v7</div><div class="o">read-only · open</div></div><div class="src"><div class="t"><span class="ico mtg">MTG</span>DR review with platform team</div><div class="o">summary note</div></div></div></div>
+        <div class="col"><div class="colhead">Answers the owner promoted</div><div class="list"><div class="note"><span class="paper"></span><div><div class="t">RTO vs measured</div><div class="m"><span class="chip green">AI</span> 2 citations</div></div></div><div class="sub" style="padding:6px 4px">No composer here — ask the owner, or edit the notes.</div></div></div>
+        <div class="col"><div class="colhead">Notes · 4</div><div class="list"><div class="note"><span class="paper"></span><div><div class="t">Drill timeline</div><div class="m">live · you may edit</div></div></div><div class="note"><span class="paper"></span><div><div class="t">Open questions for platform</div><div class="m">live</div></div></div></div></div>
+      </div>
+    </div>
+  </div>
+</div>
+</body></html>

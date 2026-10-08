@@ -62,12 +62,16 @@ export function pinnedFilter(pinned: string | undefined): CommandFilter {
  * touch the dialog hugs the top of the visible band and its list fills the rest; the `--visible-band` variable is
  * the visual-viewport height `lib/viewport.ts` maintains (page scroll undone, so a top-anchored `fixed` element sits
  * at the top of the band). Desktop / iPad with a hardware keyboard stay centred.
+ * 125 F2: the `Command` root is `h-full`, which inside the band-capped column claimed the whole band and pushed the
+ * Advisor row under the keyboard; `picker` lets it shrink and `footer` pins the row as the band's last row.
  */
-export function dialogPlacement(touch: boolean): { content: string; list: string } {
-  if (!touch) return { content: '', list: '' }
+export function dialogPlacement(touch: boolean): { content: string; list: string; picker: string; footer: string } {
+  if (!touch) return { content: '', list: '', picker: '', footer: '' }
   return {
     content: 'top-[max(0.5rem,env(safe-area-inset-top))] translate-y-0 flex max-h-[calc(var(--visible-band)-1rem)] flex-col',
     list: 'max-h-none min-h-0 flex-1',
+    picker: 'h-auto min-h-0 flex-1',
+    footer: 'shrink-0',
   }
 }
 
@@ -328,12 +332,12 @@ function AdvisorCommand({ session, m, onBack, className, listClassName }: { sess
 }
 
 /** `Advisor · <model name | Off> ›` under the picker; nothing for the draft (a new chat starts with no advisor, 125 ruling 2). */
-function AdvisorRow({ session, models, onOpen }: { session: string; models: ModelInfo[]; onOpen(): void }) {
+function AdvisorRow({ session, models, onOpen, className }: { session: string; models: ModelInfo[]; onOpen(): void; className?: string }) {
   const status = useAdvisor(session)
   if (!status) return null
   const name = status.state === 'off' || !status.model ? 'Off' : (models.find((x) => x.id === status.model)?.name ?? status.model)
   return (
-    <button type="button" className={`${LEAD_ROW} border-t border-border-subtle`} onClick={onOpen}>
+    <button type="button" className={cn(LEAD_ROW, 'border-t border-border-subtle', className)} onClick={onOpen}>
       <Eye className="size-4 opacity-70" />
       <span className="truncate">Advisor · {name}</span>
       <ChevronRight className="ml-auto size-4 opacity-70" />
@@ -342,7 +346,7 @@ function AdvisorRow({ session, models, onOpen }: { session: string; models: Mode
 }
 
 /** The cmdk body: providers → models, word search, then the current model's effort levels (124 §3); the Advisor row below (125 §8.1). */
-function ModelCommand({ m, session, advisor, className, listClassName }: { m: Model; session: string | null; advisor: boolean; className?: string; listClassName?: string }) {
+function ModelCommand({ m, session, advisor, className, listClassName, footerClassName }: { m: Model; session: string | null; advisor: boolean; className?: string; listClassName?: string; footerClassName?: string }) {
   const [level, setLevel] = useState<'model' | 'advisor'>(advisor ? 'advisor' : 'model')
   if (level === 'advisor' && session) return <AdvisorCommand session={session} m={m} onBack={() => setLevel('model')} className={className} listClassName={listClassName} />
   return (
@@ -357,7 +361,7 @@ function ModelCommand({ m, session, advisor, className, listClassName }: { m: Mo
         className={className}
         listClassName={listClassName}
       />
-      {session && <AdvisorRow session={session} models={m.models} onOpen={() => setLevel('advisor')} />}
+      {session && <AdvisorRow session={session} models={m.models} onOpen={() => setLevel('advisor')} className={footerClassName} />}
     </>
   )
 }
@@ -451,7 +455,7 @@ export function ModelDialog({ open, onOpenChange, ...props }: Props & { open: bo
         <DialogDescription>Pick the model and effort</DialogDescription>
       </DialogHeader>
       <DialogContent className={cn('max-w-sm overflow-hidden p-0', place.content)}>
-        <ModelCommand m={m} session={props.session} advisor={advisor} className="[&_[cmdk-input]]:h-12 **:data-[slot=command-input-wrapper]:h-12" listClassName={place.list} />
+        <ModelCommand m={m} session={props.session} advisor={advisor} className={cn('[&_[cmdk-input]]:h-12 **:data-[slot=command-input-wrapper]:h-12', place.picker)} listClassName={place.list} footerClassName={place.footer} />
       </DialogContent>
     </Dialog>
   )

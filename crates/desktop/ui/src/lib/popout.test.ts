@@ -1,5 +1,5 @@
 import { afterEach, expect, test, vi } from 'vitest'
-import { canPopout, popoutLabel, popoutMeeting, popoutSession, popoutTarget, popoutUrl } from './popout'
+import { canPopout, noteOpenMode, popoutLabel, popoutMeeting, popoutSession, popoutTarget, popoutUrl } from './popout'
 
 afterEach(() => vi.unstubAllGlobals())
 
@@ -35,6 +35,23 @@ test('a note or a meeting pops out too; `?pane=note` on a meeting is its note ed
   expect(popoutMeeting({ kind: 'meeting-note', meeting: 'm1' })).toBe('m1')
   expect(popoutMeeting({ kind: 'chat', session: 'm1' })).toBeNull()
   expect(popoutMeeting(null)).toBeNull()
+})
+
+test('143 D4: a fresh note pops out with ?new=true ahead of window=; the flag never reaches the label or the parsed target', () => {
+  expect(popoutUrl({ kind: 'note', doc: 'd1', fresh: true })).toBe('/notes/d1?new=true&window=popout-note-d1')
+  expect(popoutUrl({ kind: 'note', doc: 'd1' })).toBe('/notes/d1?window=popout-note-d1')
+  // Same label with or without `fresh`, so focus-if-open still finds the window.
+  expect(popoutLabel({ kind: 'note', doc: 'd1', fresh: true })).toBe('popout-note-d1')
+  expect(popoutTarget('tauri://localhost/notes/d1?new=true&window=popout-note-d1')).toEqual({ kind: 'note', doc: 'd1' })
+  // The meeting-note url is unchanged by the general `&` rule.
+  expect(popoutUrl({ kind: 'meeting-note', meeting: 'm1' })).toBe('/meetings/m1?pane=note&window=popout-meeting-note-m1')
+})
+
+test('143 D3: a new note opens in its own window only on a desktop or browser that can; a phone or iOS navigates', () => {
+  expect(noteOpenMode(false, true)).toBe('popout')
+  expect(noteOpenMode(true, true)).toBe('navigate')
+  expect(noteOpenMode(false, false)).toBe('navigate')
+  expect(noteOpenMode(true, false)).toBe('navigate')
 })
 
 test('a PTY pops out at /pty/$session/$job; its label names both ids and its session closes it', () => {

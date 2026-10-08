@@ -9,6 +9,7 @@ import { type ReactNode, useState } from 'react'
 import { dragSource } from '@/components/chat/AttachChip'
 import { SectionBand } from '@/components/nav/SectionBand'
 import { SectionRow } from '@/components/nav/SectionRow'
+import { Column } from '@/components/library/Page'
 import { ChatPicker } from '@/components/notes/ChatPicker'
 import { Empty, errorText, useAction } from '@/components/settings/shared'
 import { Button } from '@/components/ui/button'
@@ -100,7 +101,8 @@ export function MeetingList() {
           </Button>
         )}
       </MeetingHeader>
-      <div className="min-h-0 flex-1 overflow-y-auto px-6 pb-10">
+      {/* 143 D5: the same centred column as Tools/Secrets/Notes. */}
+      <Column>
         {list.isError && <Empty>{errorText(list.error)}</Empty>}
         {list.data?.length === 0 && <Empty>No meetings yet.</Empty>}
         <ul className="divide-y divide-border-subtle">
@@ -108,7 +110,7 @@ export function MeetingList() {
             <Row key={m.id} m={m} onAttach={() => setAttaching(toRef({ kind: 'meeting', meeting: m }))} />
           ))}
         </ul>
-      </div>
+      </Column>
     </div>
   )
 }
@@ -121,7 +123,8 @@ export async function deleteMeeting(api: Pick<Api, 'meeting_delete'>, id: string
   return true
 }
 
-/** One meeting: click opens it; hover shows attach · note in new window · delete; right-click (or ⋯ on touch) the same as a menu. No "new window" where `canPopout()` is false. */
+/** One meeting: click opens it; hover shows attach · note in new window · delete; right-click (or ⋯ on touch) the same as a menu. No "new window" where `canPopout()` is false.
+ * Under `md` the row is two lines (title · `date · process · duration · state`) and only the ⋯ renders, so the icons never sit on the text in a phone-width column. */
 function Row({ m, onAttach }: { m: MeetingSummary; onAttach: () => void }) {
   const api = useApi()
   const navigate = useNavigate()
@@ -133,15 +136,15 @@ function Row({ m, onAttach }: { m: MeetingSummary; onAttach: () => void }) {
   return (
     <li className="group/row relative">
       <div className="absolute top-1/2 right-0 flex -translate-y-1/2 items-center">
-        <Button variant="ghost" size="icon-sm" aria-label="Attach to chat…" className={hover} onClick={onAttach}>
+        <Button variant="ghost" size="icon-sm" aria-label="Attach to chat…" className={`hidden md:inline-flex ${hover}`} onClick={onAttach}>
           <Paperclip />
         </Button>
         {popout && (
-          <Button variant="ghost" size="icon-sm" aria-label="Open note in new window" className={hover} onClick={note}>
+          <Button variant="ghost" size="icon-sm" aria-label="Open note in new window" className={`hidden md:inline-flex ${hover}`} onClick={note}>
             <AppWindow />
           </Button>
         )}
-        <Button variant="ghost" size="icon-sm" aria-label="Delete meeting" className={hover} disabled={del.isPending} onClick={() => del.mutate()}>
+        <Button variant="ghost" size="icon-sm" aria-label="Delete meeting" className={`hidden md:inline-flex ${hover}`} disabled={del.isPending} onClick={() => del.mutate()}>
           <Trash2 />
         </Button>
         <DropdownMenu open={menu} onOpenChange={setMenu}>
@@ -167,7 +170,7 @@ function Row({ m, onAttach }: { m: MeetingSummary; onAttach: () => void }) {
       </div>
       <button
         type="button"
-        className="flex w-full items-center gap-4 py-3 pr-32 text-left text-sm hover:bg-accent/50"
+        className="flex w-full flex-col gap-0.5 py-3 pr-12 text-left text-sm hover:bg-accent/50 md:flex-row md:items-center md:gap-4 md:pr-32"
         onClick={() => void navigate({ to: '/meetings/$id', params: { id: m.id } })}
         onContextMenu={(e) => {
           if (touch()) return
@@ -176,13 +179,18 @@ function Row({ m, onAttach }: { m: MeetingSummary; onAttach: () => void }) {
         }}
         {...dragSource(() => toRef({ kind: 'meeting', meeting: m }))}
       >
-        <span className="w-36 shrink-0 text-fg-secondary tabular-nums">{new Date(m.started_at).toLocaleString()}</span>
+        <span className="hidden w-36 shrink-0 text-fg-secondary tabular-nums md:inline">{new Date(m.started_at).toLocaleString()}</span>
         <span className="min-w-0 flex-1 truncate">{m.title ?? `Meeting with ${m.process_name}`}</span>
-        <span className="shrink-0 text-fg-tertiary">{m.process_name}</span>
-        <span className="w-20 shrink-0 text-right text-fg-secondary tabular-nums">
+        <span className="truncate text-xs text-fg-tertiary md:hidden">
+          {[new Date(m.started_at).toLocaleString(), m.process_name, m.duration_ms === null ? null : duration(Number(m.duration_ms)), stateLabel(m.state)]
+            .filter((s) => s !== null)
+            .join(' · ')}
+        </span>
+        <span className="hidden shrink-0 text-fg-tertiary md:inline">{m.process_name}</span>
+        <span className="hidden w-20 shrink-0 text-right text-fg-secondary tabular-nums md:inline">
           {m.duration_ms === null ? '—' : duration(Number(m.duration_ms))}
         </span>
-        <span className="w-24 shrink-0 text-right text-fg-tertiary">{stateLabel(m.state)}</span>
+        <span className="hidden w-24 shrink-0 text-right text-fg-tertiary md:inline">{stateLabel(m.state)}</span>
       </button>
     </li>
   )

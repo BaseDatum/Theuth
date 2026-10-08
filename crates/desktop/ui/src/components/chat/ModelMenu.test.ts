@@ -54,9 +54,12 @@ test('harness item values are the exact cmdk strings', () => {
 })
 
 test('127 §6 dialogPlacement: touch anchors the dialog to the top of the visible band and lets the list fill it; else centred', () => {
-  expect(dialogPlacement(false)).toEqual({ content: '', list: '' })
+  expect(dialogPlacement(false)).toEqual({ content: '', list: '', picker: '', footer: '' })
   const phone = dialogPlacement(true)
   expect(phone.content.split(' ')).toEqual(expect.arrayContaining(['top-[max(0.5rem,env(safe-area-inset-top))]', 'translate-y-0', 'flex', 'flex-col', 'max-h-[calc(var(--visible-band)-1rem)]']))
   expect(phone.content).not.toMatch(/translate-x|left-/)
   expect(phone.list.split(' ')).toEqual(expect.arrayContaining(['max-h-none', 'min-h-0', 'flex-1']))
+  // 125 F2: the Command root stops claiming the whole band (`h-full`) so the Advisor row stays a visible footer.
+  expect(phone.picker.split(' ')).toEqual(expect.arrayContaining(['h-auto', 'min-h-0', 'flex-1']))
+  expect(phone.footer.split(' ')).toContain('shrink-0')
 })

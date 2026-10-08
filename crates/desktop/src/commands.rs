@@ -16,6 +16,8 @@ pub const POPOUT_PREFIX: &str = "popout-";
 
 /// Open `url` (an app route with `?window=<label>`) in its own window, or focus the window already showing it.
 /// Size and position come back per label from `tauri-plugin-window-state` once the window was closed once.
+/// Notes (and a meeting's note pane) open portrait, 880×1000 — the 800 px sheet plus the canvas padding, and a
+/// height most laptop screens still fit; everything else opens 960×720.
 #[cfg(desktop)]
 #[tauri::command]
 pub fn open_window(app: AppHandle, label: String, url: String) -> Result<(), String> {
@@ -34,10 +36,16 @@ pub fn open_window(app: AppHandle, label: String, url: String) -> Result<(), Str
         .get_webview_window("main")
         .and_then(|w| w.theme().ok())
         .is_some_and(|t| t == tauri::Theme::Dark);
+    let (w, h): (f64, f64) =
+        if label.starts_with("popout-note-") || label.starts_with("popout-meeting-note-") {
+            (880.0, 1000.0)
+        } else {
+            (960.0, 720.0)
+        };
     WebviewWindowBuilder::new(&app, &label, WebviewUrl::App(url.into()))
         .background_color(crate::page_background(dark))
         .disable_drag_drop_handler()
-        .inner_size(960.0, 720.0)
+        .inner_size(w, h)
         .min_inner_size(480.0, 360.0)
         .on_document_title_changed(|win, title| {
             let _ = win.set_title(&title);

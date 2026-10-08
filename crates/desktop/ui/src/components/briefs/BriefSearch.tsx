@@ -7,6 +7,7 @@ import { Plus, Search } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import { BriefCard } from '@/components/briefs/BriefCard'
 import { BriefEditor } from '@/components/briefs/BriefEditor'
+import { Column } from '@/components/library/Page'
 import { MeetingHeader, MeetingTabs } from '@/components/meeting/MeetingList'
 import { Empty, errorText, useAction } from '@/components/settings/shared'
 import { Badge } from '@/components/ui/badge'
@@ -89,7 +90,8 @@ export function BriefSearch({ initial, focus }: { initial: string; focus: string
           ))}
         </div>
       )}
-      <div className="min-h-0 flex-1 overflow-y-auto px-6 pb-10">
+      {/* 143 D5: the same centred column as Tools/Secrets/Notes. */}
+      <Column>
         {shown.isError && <Empty>{errorText(shown.error)}</Empty>}
         {shown.data && rows.length === 0 && <Empty>{searching ? 'No matches' : 'No cached briefs yet. A meeting fills this, or ask a chat to prepare briefs for one.'}</Empty>}
         <div className="grid gap-2 md:grid-cols-2">
@@ -108,7 +110,7 @@ export function BriefSearch({ initial, focus }: { initial: string; focus: string
             />
           ))}
         </div>
-      </div>
+      </Column>
       <BriefEditor target={editing} onClose={() => setEditing(null)} />
     </div>
   )
