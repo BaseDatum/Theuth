@@ -81,10 +81,10 @@ function HostWindowOf([string] $exePath) {
     while ($true) {
         $h = [W6Native]::FindWindowExW([IntPtr]::Zero, $h, 'TheuthCompanionRail', $null)
         if ($h -eq [IntPtr]::Zero) { return $null }
-        $pid = 0
-        [void][W6Native]::GetWindowThreadProcessId($h, [ref]$pid)
-        $p = Get-Process -Id $pid -ErrorAction SilentlyContinue
-        if ($p -and $p.Path -ieq $exePath) { return @{ Hwnd = $h; Pid = $pid } }
+        $wpid = [uint32]0
+        [void][W6Native]::GetWindowThreadProcessId($h, [ref]$wpid)
+        $p = Get-Process -Id $wpid -ErrorAction SilentlyContinue
+        if ($p -and $p.Path -ieq $exePath) { return @{ Hwnd = $h; Pid = $wpid } }
     }
 }
 
