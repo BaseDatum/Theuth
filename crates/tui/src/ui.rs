@@ -18,8 +18,8 @@ use crate::model::{
 };
 use crate::model::{
     APP_WHERE, AcpRow, CardKind, Command, Entry, Level, Menu, MenuKey, Model, Prompt, Row, Switch,
-    TodoCard, TurnAction, UiEvent, action_name, agent_row, artifact_row, artifact_size, describe,
-    gate_name, k, meta_line, now_ms, progress_line, result_line, short, window,
+    TodoCard, TurnAction, UiEvent, action_name, artifact_row, artifact_size, describe, gate_name,
+    k, meta_line, now_ms, progress_line, result_line, short, window,
 };
 use crate::pathac;
 use crate::search::{self, Focus, Preview};
@@ -1162,7 +1162,7 @@ fn menu(m: &Model, input: &str, width: u16, height: u16) -> Option<AnyElement<'s
             "agents  ⏎ open  esc close  (the one you leave keeps running)".to_owned(),
             items
                 .iter()
-                .map(|a| format!("{}{}", agent_row(a, m.spinner(), width), m.child_cost_tag(a.info.id)))
+                .map(|a| m.board_row(a, width))
                 .collect(),
             *cursor,
         ),
@@ -1820,7 +1820,7 @@ fn board(m: &Model, width: u16) -> Option<AnyElement<'static>> {
             View(border_style: BorderStyle::Round, border_color: SAND, flex_direction: FlexDirection::Column, padding_left: 1, padding_right: 1) {
                 Text(content: "agents", color: SAND)
                 #(rows.iter().take(BOARD_ROWS).map(|r| {
-                    let row = agent_row(r, m.spinner(), width);
+                    let row = m.board_row(r, width);
                     let (glyph, rest) = split_chars(&row, 2);
                     let (name, rest) = split_chars(rest, 15);
                     element! {

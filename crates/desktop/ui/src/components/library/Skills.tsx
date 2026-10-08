@@ -2,7 +2,7 @@ import { useQuery } from '@tanstack/react-query'
 import { Link, useNavigate } from '@tanstack/react-router'
 import { openPath, revealItemInDir } from '@tauri-apps/plugin-opener'
 import { FolderGit2, Plus, RefreshCw, Search, Trash2 } from 'lucide-react'
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { toast } from 'sonner'
 import { Streamdown } from 'streamdown'
 import { draftSkill, sendRaw } from '@/components/chat/slash'
@@ -27,7 +27,7 @@ import { Textarea } from '@/components/ui/textarea'
 import { queryKeys, useApi } from '@/lib/rpc'
 import { cn } from '@/lib/utils'
 import type { SkillMeta } from '@/rpc/bindings/SkillMeta'
-import { useSessionField } from '@/store/sessions'
+import { useSessionField, useSessions } from '@/store/sessions'
 
 const WHAT = 'A skill is markdown the model pulls into context on demand: the system prompt lists every skill by name and description, the model loads the body when it needs it. Skills marked always are inlined into every prompt instead.'
 
@@ -45,6 +45,16 @@ export function SkillsPage({ name, session }: { name: string | null; session: st
   const loaded = useSessionField(session ?? '', 'skills')
   const agent = useSessionField(session ?? '', 'agent')
   const harnessCommands = useSessionField(session ?? '', 'harnessCommands')
+  const sessionLoaded = useSessionField(session ?? '', 'loaded')
+  // 141 R3 T12: opened cold (`/skills?session=…` as the first route) the slice is empty — the harness manifest
+  // only rides `load_session`, which the chat view would otherwise be the first to call.
+  useEffect(() => {
+    if (!session || sessionLoaded) return
+    api.load_session(session, null, 1).then(
+      (page) => useSessions.getState().loadHistory(session, page, 'replace'),
+      () => {},
+    )
+  }, [api, session, sessionLoaded])
   const [query, setQuery] = useState('')
   const [dialog, setDialog] = useState<'new' | 'repos' | null>(null)
   const all = skills.data ?? []

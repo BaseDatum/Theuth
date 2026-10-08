@@ -5343,7 +5343,22 @@ pub(crate) mod tests {
             "the first turn's cost.total"
         );
 
-        // omp finishes the job: the sidecar appears, then the yield entries.
+        // 141 R3 T10: feed 1 is silent, so the tail's counts fill the detail.
+        let o = rig
+            .observed(ObservedSource::OmpTask, "ReadA")
+            .await
+            .observed
+            .unwrap();
+        assert_eq!(o.detail["toolCount"], 1, "{:?}", o.detail);
+        assert_eq!(o.detail["tokens"], 4 + 77 + 8881, "{:?}", o.detail);
+        assert_eq!(o.detail["contextTokens"], 8962, "{:?}", o.detail);
+
+        // omp finishes the job: the yield call lands, then the sidecar (the
+        // terminal transition), and only then the yield's result — 141 R3 T7:
+        // the late result still finishes the stored call.
+        std::fs::write(&path, format!("{}\n", lines[..11].join("\n"))).unwrap();
+        rig.until(|e| matches!(e, AgentEvent::ToolCallStarted { session, call_id, .. } if *session == read_a && call_id == "toolu_01CcxeBFS3rftpne67JPvF8V"))
+            .await;
         std::fs::write(art.join("ReadA.md"), "alpha line one\n").unwrap();
         rig.until(|e| matches!(changed(e), Some((c, _, ObservedState::Completed)) if c == read_a))
             .await;
@@ -5376,6 +5391,27 @@ pub(crate) mod tests {
                 .any(|(r, t, calls)| *r == ChatRole::Assistant && t.is_empty() && calls.is_empty()),
             "no empty assistant rows: {rows:?}"
         );
+        let yield_result: Vec<String> = rig
+            .store
+            .messages(read_a)
+            .await
+            .unwrap()
+            .iter()
+            .flat_map(|(_, m)| m.content.tool_responses())
+            .filter(|r| r.call_id == "toolu_01CcxeBFS3rftpne67JPvF8V")
+            .map(|r| r.content.clone())
+            .collect();
+        assert_eq!(
+            yield_result,
+            ["Result submitted."],
+            "the late result replaced the placeholder"
+        );
+        let o = rig
+            .observed(ObservedSource::OmpTask, "ReadA")
+            .await
+            .observed
+            .unwrap();
+        assert_eq!(o.detail["toolCount"], 2, "{:?}", o.detail);
         let _ = std::fs::remove_dir_all(home);
     }
 
@@ -5405,8 +5441,25 @@ pub(crate) mod tests {
         up.name = Some("SlowA");
         up.state = Some(ObservedState::Running);
         let (slow_a, _) = rig.store.upsert_observed(up).await.unwrap();
+        // …and the transcript it had tailed so far: the `bash` call, stored
+        // without its result (141 R3 T7 case B); the cursor sits after the
+        // `tool_execution_start` entry.
+        rig.store
+            .append(
+                slow_a,
+                &ChatMessage::from(vec![genai::chat::ToolCall {
+                    call_id: "toolu_01TywjeFAqDnYMUonKBZbjxT".into(),
+                    fn_name: "bash".into(),
+                    fn_arguments: json!({"command": "sleep 50"}),
+                    thought_signatures: None,
+                }]),
+            )
+            .await
+            .unwrap();
         let lines = omp_fixture_lines("SlowA.aborted.jsonl");
         std::fs::write(art.join("SlowA.jsonl"), format!("{}\n", lines.join("\n"))).unwrap();
+        let tailed: u64 = lines[..5].iter().map(|l| l.len() as u64 + 1).sum();
+        rig.store.set_observed_cursor(slow_a, tailed).await.unwrap();
         std::fs::write(art.join("SlowA.md"), "").unwrap();
         rig.actor.tell(Shutdown).await.unwrap();
         rig.actor.wait_for_shutdown().await;
@@ -5452,6 +5505,22 @@ pub(crate) mod tests {
         let o = row.observed.unwrap();
         assert_eq!(o.state, ObservedState::Cancelled);
         assert_eq!(o.stop.as_deref(), Some("aborted"));
+        // 141 R3 T7: the drained `Command aborted` finished the stored call.
+        let results: Vec<String> = rig
+            .store
+            .messages(slow_a)
+            .await
+            .unwrap()
+            .iter()
+            .flat_map(|(_, m)| m.content.tool_responses())
+            .filter(|r| r.call_id == "toolu_01TywjeFAqDnYMUonKBZbjxT")
+            .map(|r| r.content.clone())
+            .collect();
+        assert_eq!(results, ["ERROR: Command aborted"]);
+        assert_eq!(
+            rig.store.observed_cursor(slow_a).await.unwrap(),
+            Some(std::fs::metadata(art.join("SlowA.jsonl")).unwrap().len())
+        );
         actor.tell(Shutdown).await.unwrap();
         let _ = std::fs::remove_dir_all(home);
     }

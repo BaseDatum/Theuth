@@ -204,6 +204,9 @@ impl Progress {
     }
 
     /// The §6.4 detail object: every live field omp sent, by its wire name.
+    /// A `pending` row's counters are omitted (141 R3 T10): omp sends zeros
+    /// before the child ran, and a zero is not a measurement — the UI shows
+    /// `—`, and the tail fills real numbers in when feed 1 falls silent.
     fn detail(&self, frame: &TaskFrame) -> Map<String, Value> {
         let mut d = Map::new();
         let mut put = |k: &str, v: Option<Value>| {
@@ -215,13 +218,15 @@ impl Progress {
         put("agent", self.agent.clone().map(Value::from));
         put("agentSource", self.agent_source.clone().map(Value::from));
         put("modelRole", self.model_role.clone().map(Value::from));
-        put("tokens", self.tokens.map(Value::from));
-        put("cost", self.cost.map(Value::from));
-        put("contextTokens", self.context_tokens.map(Value::from));
-        put("contextWindow", self.context_window.map(Value::from));
-        put("requests", self.requests.map(Value::from));
-        put("toolCount", self.tool_count.map(Value::from));
-        put("durationMs", self.duration_ms.map(Value::from));
+        if self.status != "pending" {
+            put("tokens", self.tokens.map(Value::from));
+            put("cost", self.cost.map(Value::from));
+            put("contextTokens", self.context_tokens.map(Value::from));
+            put("contextWindow", self.context_window.map(Value::from));
+            put("requests", self.requests.map(Value::from));
+            put("toolCount", self.tool_count.map(Value::from));
+            put("durationMs", self.duration_ms.map(Value::from));
+        }
         put("lastIntent", self.last_intent.clone().map(Value::from));
         put("currentTool", self.current_tool.clone().map(Value::from));
         put(
@@ -338,7 +343,10 @@ mod tests {
             assert_eq!(a.cost_rule, Some(CostRule::Counted));
             assert_eq!(a.tool_call.as_deref(), Some(stale.tool_call_id.as_str()));
             assert_eq!(a.model, None);
-            assert_eq!(a.detail["tokens"], 0);
+            // 141 R3 T10: nothing has been measured yet — not zeros.
+            assert!(a.detail.get("tokens").is_none(), "{:?}", a.detail);
+            assert!(a.detail.get("toolCount").is_none());
+            assert_eq!(a.detail["index"], r.index.unwrap());
         }
 
         let mid = rows("task.mid.json");

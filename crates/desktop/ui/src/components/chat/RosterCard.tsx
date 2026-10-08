@@ -1,13 +1,12 @@
-import { useQuery } from '@tanstack/react-query'
+import { useQueries } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
 import { ChevronDown, ChevronRight } from 'lucide-react'
 import { useMemo, useState } from 'react'
 import { describe } from '@/lib/describe'
-import { costShort, usd } from '@/lib/money'
 import { queryKeys, useApi } from '@/lib/rpc'
-import { detailOf, observedLabel } from '@/lib/session-tree'
+import { detailOf, observedLabel, watchCost } from '@/lib/session-tree'
 import { cn } from '@/lib/utils'
-import type { ChildCost } from '@/rpc/bindings/ChildCost'
+import type { CostBucket } from '@/rpc/bindings/CostBucket'
 import type { AgentInfo } from '@/rpc/extra'
 import type { Entry } from '@/store/sessions'
 import { k } from './CostPill'
@@ -36,20 +35,8 @@ export function rosterFooter(rows: readonly AgentInfo[]): string {
   return parts.join(' · ')
 }
 
-/** The row's money cell by its cost rule (§7.6): the meter's figure when counted, the harness's greyed when inside the parent, `—` otherwise. */
-export function rosterCost(row: AgentInfo, metered: ChildCost | undefined): { text: string; grey: boolean; title?: string } {
-  const rule = row.observed?.cost_rule
-  const reported = detailOf(row.observed).cost
-  if (rule === 'counted') {
-    const text = metered ? costShort(metered.total) : reported !== undefined ? usd(reported) : '—'
-    return { text, grey: false, title: 'counted — not in the harness’s own total' }
-  }
-  if (rule === 'inside_parent' && reported !== undefined) return { text: usd(reported), grey: true, title: 'inside parent — already in the harness’s own total' }
-  return { text: '—', grey: true, title: rule === 'display_only' ? 'reported by the harness, not counted' : 'not reported by the harness' }
-}
-
 /** The roster's body from facts: one link row per child — dot · name · agent/description · activity · tools · tokens · cost · ›. */
-export function RosterRows({ rows, costs }: { rows: readonly AgentInfo[]; costs?: readonly ChildCost[] }) {
+export function RosterRows({ rows, costs }: { rows: readonly AgentInfo[]; costs?: ReadonlyMap<string, CostBucket> }) {
   return (
     <ul className="divide-y divide-border-subtle">
       {rows.map((row) => {
@@ -58,7 +45,7 @@ export function RosterRows({ rows, costs }: { rows: readonly AgentInfo[]; costs?
         const who = d.agent ?? o?.description ?? undefined
         const activity = d.lastIntent ?? d.currentTool ?? (row.last || undefined)
         const tokens = d.tokens ?? d.contextTokens
-        const cost = rosterCost(row, costs?.find((c) => c.session === row.id))
+        const cost = watchCost(o, costs?.get(row.id))
         const label = `${row.name} · watching · ${o ? observedLabel[o.state] : ''}`
         return (
           <li key={row.id}>
@@ -82,10 +69,10 @@ export function RosterRows({ rows, costs }: { rows: readonly AgentInfo[]; costs?
                 </span>
               )}
               {(d.toolCount !== undefined || tokens !== undefined) && (
-                <span className="whitespace-nowrap text-xs tabular-nums text-fg-tertiary">
-                  {d.toolCount !== undefined && `${d.toolCount} tool${d.toolCount === 1 ? '' : 's'}`}
-                  {d.toolCount !== undefined && tokens !== undefined && ' · '}
-                  {tokens !== undefined && `${k(tokens)} tok`}
+                <span className="whitespace-nowrap text-xs tabular-nums text-fg-tertiary" title="tool calls · tokens (— until the harness or its transcript reports one)">
+                  {d.toolCount !== undefined ? `${d.toolCount} tool${d.toolCount === 1 ? '' : 's'}` : '— tools'}
+                  {' · '}
+                  {tokens !== undefined ? `${k(tokens)} tok` : '— tok'}
                 </span>
               )}
               <span className={cn('whitespace-nowrap text-xs tabular-nums', cost.grey ? 'text-fg-tertiary opacity-60' : 'text-fg-tertiary')} title={cost.title}>
@@ -103,13 +90,17 @@ export function RosterRows({ rows, costs }: { rows: readonly AgentInfo[]; costs?
 /**
  * 141 §9.2(b): the spawn tool call as a roster — one row per watch-only child it made (Q4: the roster replaces the
  * card body; the header keeps the tool's title and a disclosure to the raw arguments/output). Rows beat with their
- * children; money per the cost rule, from the parent's `session_cost` (warm from the sidebar tree) when counted.
+ * children; money per the cost rule from each child's own `session_cost` (R3 T8: the same figure the tree row and
+ * the child's header show).
  */
-export function RosterCard({ tool, session, rows }: { tool: Tool; session: string; rows: readonly AgentInfo[] }) {
+export function RosterCard({ tool, rows }: { tool: Tool; rows: readonly AgentInfo[] }) {
   const api = useApi()
   const [raw, setRaw] = useState(false)
   const lines = useMemo(() => describe(tool.name, tool.args), [tool.name, tool.args])
-  const { data: cost } = useQuery({ queryKey: queryKeys.sessionCost(session), queryFn: () => api.session_cost(session) })
+  const costs = useQueries({
+    queries: rows.map((r) => ({ queryKey: queryKeys.sessionCost(r.id), queryFn: () => api.session_cost(r.id) })),
+    combine: (results) => new Map(results.flatMap((q, i) => (q.data && rows[i] ? [[rows[i].id, q.data.total] as const] : []))),
+  })
   const live = rows.some((r) => r.observed?.state === 'running' || r.observed?.state === 'requires_action')
   const Chevron = raw ? ChevronDown : ChevronRight
   return (
@@ -123,7 +114,7 @@ export function RosterCard({ tool, session, rows }: { tool: Tool; session: strin
           <Chevron className="size-3.5" />
         </button>
       </div>
-      <RosterRows rows={rows} costs={cost?.children} />
+      <RosterRows rows={rows} costs={costs} />
       {raw && lines.length > 0 && <pre className="mt-2 w-full font-mono text-xs leading-5 wrap-anywhere whitespace-pre-wrap text-fg-secondary">{lines.join('\n')}</pre>}
       {raw && tool.result && (
         <pre className="mt-2 max-h-56 overflow-auto rounded-lg bg-layer-2 p-3 font-mono text-xs leading-5 wrap-anywhere whitespace-pre-wrap">{tool.result.output}</pre>

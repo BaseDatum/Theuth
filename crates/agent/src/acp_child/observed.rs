@@ -20,7 +20,9 @@ use acp::harness::opencode::task_v1;
 use acp::omp::{self, Entry, Tailer};
 use acp::{ChildAnnounce, ChildSource, ChildState, CostRule, Harness, Permission};
 use agent_client_protocol::schema::MaybeUndefined;
-use agent_client_protocol::schema::v1::{ContentChunk, SessionUpdate, Usage as AcpUsage};
+use agent_client_protocol::schema::v1::{
+    ContentChunk, SessionUpdate, ToolCallStatus, Usage as AcpUsage,
+};
 use genai::chat::{ChatMessage, MessageContent};
 use kameo::actor::ActorRef;
 use kameo::message::{Context, Message};
@@ -30,7 +32,7 @@ use tokio::task::AbortHandle;
 // follow a paused test clock like the actor's other timers.
 use tokio::time::Instant;
 
-use super::{AcpChild, Turn, meter_update, tokens_of, translate};
+use super::{AcpChild, NOT_FINISHED, Turn, meter_update, tokens_of, translate};
 use crate::cost::TokenTotals;
 use crate::store::ObservedUpsert;
 use crate::{AgentEvent, ObservedMeta, ObservedSource, ObservedState, Usage};
@@ -116,6 +118,9 @@ struct ObservedChild {
     // ponytail: not persisted; a child whose cost all lands after a restart
     // under-meters until feed 1 speaks again. Persist beside observed_cursor if that shows.
     tail_cost: f64,
+    /// omp: tool calls and Q3 tokens the tail has seen (141 R3 T10).
+    tail_tools: u64,
+    tail_tokens: u64,
 }
 
 impl ObservedChild {
@@ -251,6 +256,8 @@ impl AcpChild {
                         dirty: None,
                         last_emit: Instant::now(),
                         tail_cost: 0.0,
+                        tail_tools: 0,
+                        tail_tokens: 0,
                     },
                 );
             }
@@ -379,16 +386,17 @@ impl AcpChild {
             return;
         };
         let prev = self.observed.by_external.remove(&a.child);
-        let (turn, dirty, last_emit, before, prev_tail_cost) = match prev {
-            Some(p) => (
-                p.turn,
-                p.dirty,
-                p.last_emit,
-                Some((p.meta.state, p.name, p.model, p.meta.can_cancel)),
-                p.tail_cost,
-            ),
-            None => (None, None, Instant::now(), None, 0.0),
-        };
+        let (turn, dirty, last_emit, before, (prev_tail_cost, prev_tail_tools, prev_tail_tokens)) =
+            match prev {
+                Some(p) => (
+                    p.turn,
+                    p.dirty,
+                    p.last_emit,
+                    Some((p.meta.state, p.name, p.model, p.meta.can_cancel)),
+                    (p.tail_cost, p.tail_tools, p.tail_tokens),
+                ),
+                None => (None, None, Instant::now(), None, (0.0, 0, 0)),
+            };
         let mut c = ObservedChild {
             id,
             parent,
@@ -399,6 +407,8 @@ impl AcpChild {
             dirty,
             last_emit,
             tail_cost: prev_tail_cost,
+            tail_tools: prev_tail_tools,
+            tail_tokens: prev_tail_tokens,
         };
         let significant = created
             || before.as_ref().is_none_or(|(st, n, m, cc)| {
@@ -707,9 +717,35 @@ impl AcpChild {
     /// `translate` on the child's open turn; rows exist before the events (29 §4.2).
     async fn apply_child_update(&self, c: &mut ObservedChild, update: SessionUpdate) {
         let Some(turn) = &mut c.turn else { return };
+        // 141 R3 T7: a result for a call this turn does not hold — the call
+        // is in the child's stored transcript (an earlier turn closed it
+        // "not finished", or a previous engine life stored the call alone).
+        // Let `translate` pair it as usual, then patch the transcript
+        // instead of appending a dangling response.
+        let late = match &update {
+            SessionUpdate::ToolCallUpdate(u)
+                if matches!(
+                    u.fields.status,
+                    Some(ToolCallStatus::Completed | ToolCallStatus::Failed)
+                ) && !turn.open.iter().any(|o| **o == *u.tool_call_id.0) =>
+            {
+                let id = u.tool_call_id.0.to_string();
+                turn.open.push(id.clone());
+                Some(id)
+            }
+            _ => None,
+        };
         let events = translate(update, turn);
         for m in std::mem::take(&mut turn.messages) {
-            if let Err(e) = self.store.append(c.id, &m).await {
+            let r = match &late {
+                Some(id) if m.content.tool_responses().iter().any(|r| r.call_id == *id) => self
+                    .store
+                    .finish_tool_call(c.id, &m, NOT_FINISHED)
+                    .await
+                    .map(|_| ()),
+                _ => self.store.append(c.id, &m).await.map(|_| ()),
+            };
+            if let Err(e) = r {
                 tracing::error!(session = %c.id, "append: {e:#}");
             }
         }
@@ -996,6 +1032,7 @@ impl AcpChild {
         let Some(mut c) = self.observed.by_external.remove(ext) else {
             return;
         };
+        let mut context = None;
         for e in entries {
             match e {
                 Entry::User(text) if c.turn.is_none() => {
@@ -1017,17 +1054,23 @@ impl AcpChild {
                         .await;
                     }
                 }
-                Entry::Assistant { usage: Some(u), .. } => {
-                    self.record_child_tokens(&c, TurnId::new(), &omp_tokens(u))
-                        .await;
-                    if u.cost > 0.0 {
-                        c.tail_cost += u.cost;
-                        self.meter_child(&c, c.tail_cost).await;
+                Entry::Assistant { calls, usage, .. } => {
+                    c.tail_tools += calls.len() as u64;
+                    if let Some(u) = usage {
+                        self.record_child_tokens(&c, TurnId::new(), &omp_tokens(u))
+                            .await;
+                        c.tail_tokens += u.input + u.output + u.cache_write;
+                        context = Some(u.total_tokens);
+                        if u.cost > 0.0 {
+                            c.tail_cost += u.cost;
+                            self.meter_child(&c, c.tail_cost).await;
+                        }
                     }
                 }
                 _ => {}
             }
         }
+        self.omp_tail_stats(&mut c, context, me).await;
         self.observed.by_external.insert(ext.to_owned(), c);
         for u in omp::to_updates(entries) {
             self.observed_traffic(ext, u, me).await;
@@ -1046,6 +1089,49 @@ impl AcpChild {
             }
             self.observed.by_external.insert(ext.to_owned(), c);
         }
+    }
+
+    /// 141 R3 T10: the tail's own counts (tool calls, Q3 `tokens` =
+    /// input + output + cacheWrite, the last response's total as
+    /// `contextTokens`) go into the detail wherever they exceed what feed 1
+    /// reported — feed 1 falls silent once the parent's turn ends (F20), so
+    /// background children would otherwise read `0 tools · 0 tok` forever.
+    async fn omp_tail_stats(
+        &self,
+        c: &mut ObservedChild,
+        context: Option<u64>,
+        me: &ActorRef<Self>,
+    ) {
+        let stored = |k: &str| c.meta.detail.get(k).and_then(serde_json::Value::as_u64);
+        let mut d = serde_json::Map::new();
+        if c.tail_tools > stored("toolCount").unwrap_or(0) {
+            d.insert("toolCount".into(), c.tail_tools.into());
+        }
+        if c.tail_tokens > stored("tokens").unwrap_or(0) {
+            d.insert("tokens".into(), c.tail_tokens.into());
+        }
+        if let Some(ctx) = context
+            && ctx > 0
+            && stored("contextTokens") != Some(ctx)
+        {
+            d.insert("contextTokens".into(), ctx.into());
+        }
+        if d.is_empty() {
+            return;
+        }
+        let mut up = ObservedUpsert::new(c.parent, c.meta.source, &c.meta.external);
+        up.detail = Some(&d);
+        if let Err(e) = self.store.upsert_observed(up).await {
+            tracing::warn!(session = %c.id, "upsert_observed: {e:#}");
+            return;
+        }
+        if !c.meta.detail.is_object() {
+            c.meta.detail = serde_json::Value::Object(serde_json::Map::new());
+        }
+        for (k, v) in d {
+            c.meta.detail[k] = v;
+        }
+        self.emit_throttled(c, me).await;
     }
 }
 

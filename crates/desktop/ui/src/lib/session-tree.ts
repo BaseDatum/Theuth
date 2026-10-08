@@ -3,6 +3,8 @@ import type { ObservedState } from '@/rpc/bindings/ObservedState'
 import type { SessionKind } from '@/rpc/bindings/SessionKind'
 import type { SessionSummary } from '@/rpc/bindings/SessionSummary'
 import type { AgentInfo, AgentState } from '@/rpc/extra'
+import type { CostBucket } from '@/rpc/bindings/CostBucket'
+import { costShort, usd } from './money'
 
 /** How many subagent rows any parent shows before `Show more`. */
 export const TREE_CAP = 5
@@ -54,6 +56,8 @@ export type ObservedDetail = {
   toolCount?: number
   tokens?: number
   contextTokens?: number
+  /** omp: the child's model context limit (Q3: the ObservedBar/header meter reads `contextTokens/contextWindow`). */
+  contextWindow?: number
   /** USD as the harness reported it; shown by the cost rule (`inside_parent` greyed, `counted` via the meter). */
   cost?: number
   /** Q9: 18.8.4 progress, 0–100, when present. */
@@ -81,6 +85,7 @@ export function detailOf(o: Pick<ObservedMeta, 'detail'> | null | undefined): Ob
     toolCount: num('toolCount'),
     tokens: num('tokens'),
     contextTokens: num('contextTokens'),
+    contextWindow: num('contextWindow'),
     cost: num('cost'),
     completionPercent: num('completionPercent'),
   }
@@ -189,4 +194,20 @@ export function subtrees(sessions: readonly SessionSummary[]): Map<string, Sessi
     else out.set(root, [s])
   }
   return out
+}
+
+/**
+ * 141 §7.6 / R3 T8: the one money cell every surface shows for a watch-only child (tree row, roster row, header
+ * pill): `counted` → the child's own metered total (`session_cost(child)`), else the harness's figure; `inside_parent`
+ * → the harness's figure greyed; `display_only`/`unreported` → `—`. `metered` is the child's inclusive bucket.
+ */
+export function watchCost(o: Pick<ObservedMeta, 'cost_rule' | 'detail'> | null | undefined, metered: CostBucket | undefined): { text: string; grey: boolean; title: string } {
+  const rule = o?.cost_rule
+  const reported = detailOf(o).cost
+  const money = metered && (metered.returned.length > 0 || metered.estimated_for_unavailable.length > 0) ? costShort(metered) : undefined
+  if (rule === 'counted') {
+    return { text: money ?? (reported !== undefined ? usd(reported) : '—'), grey: false, title: 'counted — not in the harness’s own total' }
+  }
+  if (rule === 'inside_parent' && reported !== undefined) return { text: usd(reported), grey: true, title: 'inside parent — already in the harness’s own total' }
+  return { text: '—', grey: true, title: rule === 'display_only' ? 'reported by the harness, not counted' : 'not reported by the harness' }
 }

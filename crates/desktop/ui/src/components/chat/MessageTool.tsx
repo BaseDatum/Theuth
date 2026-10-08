@@ -133,7 +133,7 @@ export const MessageTool = memo(function MessageTool({ tool, session, readOnly }
   // An answered `ask_user` keeps its questions and the sent answers on screen (`AskCard` while it is pending).
   const asked = tool.name === 'ask_user' && tool.result && !tool.result.isError ? askQuestions(tool.args) : null
   if (asked && tool.result) return <AnsweredAskCard questions={asked} output={tool.result.output} session={session} callId={tool.callId} />
-  if (roster.length > 0) return <RosterCard tool={tool} session={session} rows={roster} />
+  if (roster.length > 0) return <RosterCard tool={tool} rows={roster} />
   const card =
     tool.name === 'show' || tool.name === 'app' || tool.name === 'task_draft' || tool.name === 'agent_draft' || tool.name === 'routine_draft' ? (
       <ArtifactCard tool={tool} session={session} />

@@ -7470,11 +7470,24 @@ impl Model {
     /// prefix-cache hit ratio of the last finished turn (design doc 07 §7),
     /// omitted until one has reported usage.
     pub fn header(&self, catalog: &Catalog) -> (String, Level) {
-        let used = format!(
-            "{}{}",
-            if self.context_estimated { "≈" } else { "" },
-            k(self.context)
-        );
+        // 141 R3 T14 (Q3): a watch-only omp child's meter is the harness's
+        // own `contextTokens/contextWindow` when it reported them.
+        let (context, estimated, own_limit) = match self
+            .observed
+            .as_ref()
+            .and_then(|o| o.detail["contextTokens"].as_u64())
+        {
+            Some(t) => (
+                u32::try_from(t).unwrap_or(u32::MAX),
+                false,
+                self.observed
+                    .as_ref()
+                    .and_then(|o| o.detail["contextWindow"].as_u64())
+                    .and_then(|w| u32::try_from(w).ok()),
+            ),
+            None => (self.context, self.context_estimated, None),
+        };
+        let used = format!("{}{}", if estimated { "≈" } else { "" }, k(context));
         let cache = match self.usage {
             Some(u) if u.prompt > 0 => {
                 format!(
@@ -7503,12 +7516,12 @@ impl Model {
             (None, Some(name)) => format!("↳ {name}  child · {model}"),
             (None, None) => model,
         };
-        let limit = self
-            .context_size
+        let limit = own_limit
+            .or(self.context_size)
             .or_else(|| catalog.closest(&self.model_id).map(|m| m.limit.context));
         match limit {
             Some(limit) if limit > 0 => {
-                let pct = u64::from(self.context) * 100 / u64::from(limit);
+                let pct = u64::from(context) * 100 / u64::from(limit);
                 let level = match pct {
                     0..75 => Level::Normal,
                     75..90 => Level::Warn,
@@ -11907,10 +11920,18 @@ pub fn agent_row(a: &AgentRow, spinner: &str, width: u16) -> String {
     // Glyph, name, state, gaps, age and the box take ~44 columns; the detail gets the rest.
     let room = usize::from(width).saturating_sub(44).max(16);
     let detail = match (&a.info.observed, &a.info.state) {
-        (Some(o), _) => match o.detail["lastIntent"].as_str() {
-            Some(intent) => format!("watch · {} · {intent}", source_tag(o.source)),
-            None => format!("watch · {}", source_tag(o.source)),
-        },
+        (Some(o), _) => {
+            let mut d = match o.detail["lastIntent"].as_str() {
+                Some(intent) => format!("watch · {} · {intent}", source_tag(o.source)),
+                None => format!("watch · {}", source_tag(o.source)),
+            };
+            // 141 R3 T13: the child's model when the column has room for it.
+            let m = &a.info.model;
+            if !m.is_empty() && d.chars().count() + 3 + m.chars().count() <= room {
+                d = format!("{d} · {m}");
+            }
+            d
+        }
         (None, AgentState::Running) => a.tool.clone().unwrap_or_else(|| "streaming".to_owned()),
         (None, AgentState::Awaiting { from }) => match &a.question {
             Some(q) => format!("{from}: \"{q}\""),
@@ -12208,8 +12229,20 @@ impl Model {
         }
     }
 
+    /// One `/agents` picker or board line: [`agent_row`] plus the child's
+    /// cost tag (141 R3 T13: watch rows carry their money like the desktop).
+    pub fn board_row(&self, a: &AgentRow, width: u16) -> String {
+        format!(
+            "{}{}",
+            agent_row(a, self.spinner(), width),
+            self.child_cost_tag(a.info.id)
+        )
+    }
+
     /// A direct child's inclusive total for its `/agents` row: `  ·  $0.123`
     /// (`~$` for an estimate, `—` when nothing was priced); empty for deeper rows and before the summary arrived.
+    // ponytail: `session_cost` is fetched for the shown session only, so a grandchild (a watch row under a
+    // harness that is not the shown session) has no figure here; fetch per row if that matters.
     pub fn child_cost_tag(&self, id: SessionId) -> String {
         let Some(child) = self
             .cost
@@ -13657,6 +13690,49 @@ mod tests {
             row.starts_with("◎ ReadA")
                 && row.contains("running   watch · omp task · Reading first line"),
             "{row}"
+        );
+        // 141 R3 T13: the model joins the detail where the column has room; the
+        // child's cost tag rides the board/picker line once `session_cost` lists it.
+        assert!(!row.contains("claude-fable"), "no room at 100 cols: {row}");
+        let wide = agent_row(&m.agents[&child], "⠹", 140);
+        assert!(
+            wide.contains("Reading first line · anthropic/claude-fable-5-1"),
+            "{wide}"
+        );
+        assert_eq!(m.board_row(&m.agents[&child], 100), row, "no cost yet");
+        let mut total = CostBucket::default();
+        total.calls = 1;
+        total.dispatched = 1;
+        total.returned = vec![Money {
+            currency: "USD".into(),
+            nanos: 121_280_250,
+        }];
+        m.apply(UiEvent::Cost(
+            root,
+            SessionCost {
+                session: root,
+                revision: 1,
+                history_coverage: Coverage::Complete,
+                scope: CostScope::Native,
+                direct: CostBucket::default(),
+                descendants: CostBucket::default(),
+                total: CostBucket::default(),
+                children: vec![agent::ChildCost {
+                    session: child,
+                    name: Some("ReadA".into()),
+                    deleted: false,
+                    total,
+                    scope: CostScope::Observed,
+                }],
+                remote_meter_gaps: 0,
+                delta_suspected: false,
+                remote_tokens: Vec::new(),
+            },
+        ));
+        assert!(
+            m.board_row(&m.agents[&child], 100).ends_with("  ·  $0.121"),
+            "{}",
+            m.board_row(&m.agents[&child], 100)
         );
         assert_eq!(m.board().len(), 1);
         m.apply_agent(AgentEvent::TurnFinished {
@@ -15919,6 +15995,17 @@ mod tests {
             m.header(&catalog).0,
             "◎ ReadA  watching · omp-model  ·  ctx 0"
         );
+        // 141 R3 T14 (Q3): the harness's own context figures, when it reported them.
+        if let Some(o) = &mut m.observed {
+            o.detail = serde_json::json!({ "contextTokens": 9037, "contextWindow": 1_000_000 });
+        }
+        assert_eq!(
+            m.header(&catalog).0,
+            "◎ ReadA  watching · omp-model  ·  ctx 9.0k / 1.0M (0%)"
+        );
+        if let Some(o) = &mut m.observed {
+            o.detail = serde_json::Value::Null;
+        }
         assert!(!m.input_focused());
         assert!(
             m.status()

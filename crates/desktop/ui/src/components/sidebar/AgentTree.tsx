@@ -3,11 +3,11 @@ import { Link } from '@tanstack/react-router'
 import { Hourglass, TriangleAlert } from 'lucide-react'
 import { Fragment, type ReactNode, memo, useEffect, useMemo, useState } from 'react'
 import { counts } from '@/components/chat/broadcast'
-import { EyeMark, SourceTag, WatchDot } from '@/components/chat/ObservedBar'
+import { EyeMark, SourceTag, WatchCostCell, WatchDot } from '@/components/chat/ObservedBar'
 import { useSessionDrag } from '@/components/chat/Panes'
-import { costLines, costShort, usd } from '@/lib/money'
+import { costLines, costShort } from '@/lib/money'
 import { queryKeys, useApi } from '@/lib/rpc'
-import { cappedTree, childrenOf, detailOf, live, observedLabel, withAncestors } from '@/lib/session-tree'
+import { cappedTree, childrenOf, live, observedLabel, withAncestors } from '@/lib/session-tree'
 import { cn } from '@/lib/utils'
 import type { CostBucket } from '@/rpc/bindings/CostBucket'
 import type { SessionSummary } from '@/rpc/bindings/SessionSummary'
@@ -51,8 +51,6 @@ export const SubagentRow = memo(function SubagentRow({
   const drag = useSessionDrag(row.id, row.name)
   const observed = row.observed ?? undefined
   const resting = observed && (observed.state === 'idle' || observed.state === 'pending' || observed.state === 'unknown')
-  // 141 §7.6: `inside_parent` shows the harness's own figure greyed; `unreported` shows nothing (the `—` is the roster's).
-  const detailCost = observed?.cost_rule === 'inside_parent' ? detailOf(observed).cost : undefined
   return (
     <Link
       to="/c/$session"
@@ -89,14 +87,14 @@ export const SubagentRow = memo(function SubagentRow({
           {row.cap === 'read_only' ? 'read-only' : row.cap}
         </span>
       )}
-      {cost && (cost.returned.length > 0 || cost.estimated_for_unavailable.length > 0) ? (
-        <span className="tabular-nums text-fg-tertiary" title={costLines(cost).secondary ?? costLines(cost).primary}>
-          {costShort(cost)}
-        </span>
+      {observed ? (
+        // 141 R3 T9: the child's own figure under its cost rule (the root's `session_cost` only lists direct children).
+        <WatchCostCell session={row.id} observed={observed} />
       ) : (
-        detailCost !== undefined && (
-          <span className="tabular-nums text-fg-tertiary opacity-60" title="inside parent — already in the harness's own total">
-            {usd(detailCost)}
+        cost &&
+        (cost.returned.length > 0 || cost.estimated_for_unavailable.length > 0) && (
+          <span className="tabular-nums text-fg-tertiary" title={costLines(cost).secondary ?? costLines(cost).primary}>
+            {costShort(cost)}
           </span>
         )
       )}

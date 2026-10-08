@@ -41,7 +41,8 @@ import { EyeMark } from './ObservedBar'
 
 /** `↳ parent` breadcrumb of a subagent's transcript; `row`: the compact menu's "Parent" line. A watch-only child (141 §9.2d)
  * shows the `Watching` chip and `inside <parent> · <source>` instead. */
-function Parent({ id, row, observed }: { id: string; row?: boolean; observed?: ObservedMeta | null }) {
+function Parent({ id, mode, observed }: { id: string; mode: Mode; observed?: ObservedMeta | null }) {
+  const row = mode === 'row'
   const api = useApi()
   const navigate = useNavigate()
   const { data: sessions } = useQuery({
@@ -63,12 +64,14 @@ function Parent({ id, row, observed }: { id: string; row?: boolean; observed?: O
   if (observed) {
     return (
       <>
-        <Badge variant="outline" className="shrink-0 gap-1 border-fg-accent/45 text-fg-accent">
+        <Badge variant="outline" className="shrink-0 gap-1 border-fg-accent/45 text-fg-accent" title={`watching · inside ${name} · ${sourceTag(observed)}`}>
           <Eye aria-hidden /> Watching
         </Badge>
-        <Link to="/c/$session" params={{ session: id }} className="truncate text-xs text-fg-secondary hover:text-foreground">
-          inside {name} · {sourceTag(observed)}
-        </Link>
+        {mode === 'full' && (
+          <Link to="/c/$session" params={{ session: id }} className="truncate text-xs text-fg-secondary hover:text-foreground">
+            inside {name} · {sourceTag(observed)}
+          </Link>
+        )}
       </>
     )
   }
@@ -221,7 +224,7 @@ export function Header({
    * live browser over terminals (a job detail); the others move behind the chevron.
    */
   const panel = artifacts?.size ? 'artifacts' : codemap ? 'codemap' : browser ? 'browser' : terminals ? 'terminals' : null
-  const { bar, menu } = layout(headerOrder(panel, canPopout() && !popped, chat), tier)
+  const { bar, menu } = layout(headerOrder(panel, canPopout() && !popped, chat, !!observed), tier)
 
   const render: Record<HeaderId, (mode: Mode) => ReactNode> = {
     search: (mode) =>
@@ -257,7 +260,7 @@ export function Header({
       </span>
     ),
     memory: (mode) => (session ? <MemoryBadge session={session} summary={row} row={mode === 'row'} open={memory} onToggle={() => setMemory((o) => !o)} /> : null),
-    parent: (mode) => (parent ? <Parent id={parent} row={mode === 'row'} observed={observed} /> : null),
+    parent: (mode) => (parent ? <Parent id={parent} mode={mode} observed={observed} /> : null),
     owner: (mode) =>
       row && !row.here ? (
         mode === 'row' ? (

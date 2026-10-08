@@ -2,8 +2,9 @@ import { Link } from '@tanstack/react-router'
 import { Eye } from 'lucide-react'
 import { toast } from 'sonner'
 import { Button } from '@/components/ui/button'
-import { useApi } from '@/lib/rpc'
-import { harnessName, observedLabel, sourceTag } from '@/lib/session-tree'
+import { useQuery } from '@tanstack/react-query'
+import { queryKeys, useApi } from '@/lib/rpc'
+import { harnessName, observedLabel, sourceTag, watchCost } from '@/lib/session-tree'
 import { cn } from '@/lib/utils'
 import type { ObservedMeta } from '@/rpc/bindings/ObservedMeta'
 import type { ObservedState } from '@/rpc/bindings/ObservedState'
@@ -47,6 +48,18 @@ export function EyeMark({ className }: { className?: string }) {
 }
 
 /** `omp task` / `opencode` / `ACP`: which feed describes the child. */
+/** 141 R3 T8/T9: the child's money cell from its own `session_cost` under its cost rule — the same figure in every surface. */
+export function WatchCostCell({ session, observed, className }: { session: string; observed: Pick<ObservedMeta, 'cost_rule' | 'detail'>; className?: string }) {
+  const api = useApi()
+  const { data } = useQuery({ queryKey: queryKeys.sessionCost(session), queryFn: () => api.session_cost(session) })
+  const cost = watchCost(observed, data?.total)
+  return (
+    <span className={cn('whitespace-nowrap tabular-nums text-fg-tertiary', cost.grey && 'opacity-60', className)} title={cost.title}>
+      {cost.text}
+    </span>
+  )
+}
+
 export function SourceTag({ observed, className }: { observed: Pick<ObservedMeta, 'source'>; className?: string }) {
   return <span className={cn('shrink-0 rounded-sm border border-border-subtle px-1 text-[10px] leading-4 text-fg-tertiary', className)}>{sourceTag(observed)}</span>
 }

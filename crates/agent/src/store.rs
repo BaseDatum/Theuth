@@ -1656,6 +1656,61 @@ impl Store {
         Ok(seq)
     }
 
+    /// 141 R3 T7: a tool result that arrives after its call's turn was
+    /// stored — the call's response row still reads `stale` (the turn
+    /// closed it unfinished) → that row is rewritten; the call has no
+    /// response row yet (an earlier engine life stored the call alone) →
+    /// `response` is appended. `Ok(false)` when the transcript has no such
+    /// call or already holds its real result (nothing to do).
+    pub async fn finish_tool_call(
+        &self,
+        id: SessionId,
+        response: &ChatMessage,
+        stale: &str,
+    ) -> anyhow::Result<bool> {
+        let Some(call_id) = response
+            .content
+            .tool_responses()
+            .first()
+            .map(|r| r.call_id.clone())
+        else {
+            return Ok(false);
+        };
+        let mut called = false;
+        let mut answered: Option<(i64, bool)> = None;
+        for (seq, m) in self.messages(id).await? {
+            if m.content.tool_calls().iter().any(|c| c.call_id == call_id) {
+                called = true;
+            }
+            if let Some(r) = m
+                .content
+                .tool_responses()
+                .iter()
+                .find(|r| r.call_id == call_id)
+            {
+                answered = Some((seq, r.content == stale));
+            }
+        }
+        match answered {
+            Some((seq, true)) => {
+                let body = serde_json::to_string(response)?;
+                sqlx::query("UPDATE messages SET body = ? WHERE session_id = ? AND seq = ?")
+                    .bind(body)
+                    .bind(id.to_string())
+                    .bind(seq)
+                    .execute(&self.write)
+                    .await?;
+                Ok(true)
+            }
+            Some((_, false)) => Ok(false),
+            None if called => {
+                self.append(id, response).await?;
+                Ok(true)
+            }
+            None => Ok(false),
+        }
+    }
+
     /// Append a vision consultation note with its typed metadata in one
     /// transaction (52 §6): the row, `updated_at` and the revision commit
     /// together, so a note is either durable and typed or absent.
