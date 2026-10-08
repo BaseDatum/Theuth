@@ -31,10 +31,10 @@ Three desk rounds: 04:30–04:48, 04:53–05:09, 05:11–05:16. Screenshots and 
 | Tests | `tests/Theuth.Companion.Core.Tests/PolishTests.cs` (new) | 16 tests: PinTip 7, failed-turn receipt 5, ToastActivation 2, PauseMenu 2 |
 | Tools | `w6-gate.ps1` (new) | build-service `script` helper: shell/companion logs, graceful WM_CLOSE quit of the installed or the slot companion, Debug launch, NotifyIconSettings read/promote/unpromote, `tip-reset`, `fx` (transparency via registry + `ImmersiveColorSet` broadcast, animations via `SPI_SETCLIENTAREAANIMATION` by value), `toast-reg` (AUMID/CLSID footprint, Application Error events, crash files), `hotkey`, `shot` |
 
-Mac: `bash crates/desktop/companion-windows/test.sh` → Core **141/141** (125 + 16 new), Rpc 35/35. `cargo fmt --check -p desktop` clean;
+Mac: `bash crates/desktop/companion-windows/test.sh` → Core **146/146** (125 + 16 new + 5 item-10), Rpc 35/35. `cargo fmt --check -p desktop` clean;
 `cargo clippy -p desktop --no-deps -- -D warnings` clean (windows.rs is `cfg(windows)`, so it is not compiled on the Mac).
 build-B: `cargo check -p desktop` at dd5a51c6 (the windows.rs change) 0 errors / 0 warnings in 2 m 35 s (job 20261008T032959-140);
-Debug builds 0 errors / 0 warnings — final 5faef575 (job 20261008T041442-191, 18 s).
+Debug builds 0 errors / 0 warnings — 5faef575 (job 20261008T041442-191, 18 s); item 10: 6805fa26 (20261008T061028-243, 27 s) and 877606e9 (20261008T061916-253, 24 s).
 
 ## 2. Items
 
@@ -158,6 +158,24 @@ The Mac menu (`NotificationsInstaller.swift appendMenu`) puts a check mark on th
 `isUntilTomorrow`: ends tomorrow and > 1 h away; "Off" when not paused) — mirrored as `PauseMenu.State` (2 tests) plus the parent
 row reads "Pause notifications (until HH:mm)". Live (d7c80279, 05:07): ✓ Off → "For 1 hour" → menu reads **Pause notifications
 (until 06:07)** with ✓ For 1 hour (`r2-0507-pause-for-1-hour-checked-until-0607.png`) → Off → ✓ Off (`r2-0507-pause-off-restored.png`).
+
+### Item 10 — spurious "theuth engine unreachable" toast on every intentional quit/update — PASS
+
+**Cause (packaged 2.12.3 log, orchestrator):** `06:49:56.502 quit theuth requested -> theuth://quit` → `.562 connection: reconnecting` → `.594 notifications: [live] post error … "theuth engine unreachable"` → `.596 host: WM_CLOSE — quitting`. The shell's quit handshake stops the engine (webview RPC shutdown) before `RunEvent::Exit` closes the companion, so the companion saw the engine drop ~60 ms before it was asked to quit and posted the error toast — after every whole-app quit and every update.
+
+**Fix (companion only, no shell change):**
+- Core `NotificationPolicy`: `Engine(connected: false)` now only records the loss (`engineLostAt`); the 1 Hz `Tick` posts the error banner once `EngineGrace` (5 s) has passed with the engine still gone. A reconnect inside the grace clears it silently. `Quitting()` drops a pending loss and suppresses later ones; `EngineLossPending` exposes the held state. The grace is 5 s because the shell's quit, an engine restart from the Settings page and an update swap each take well under that, while a real outage still notifies within a human "it's gone" interval (the old immediate toast was the only Error-class banner and fired on every 60 ms blip). `Policy.cs`.
+- App: `Surfaces.QuitRequested` fires before `theuth://quit` (tray › Quit theuth) and on tray › Quit theuth Companion; `NotificationsInstaller` wires it to `Notifier.Quitting()`, which marks the policy and logs `notifications: quitting — engine-loss toast suppressed`. The Notifier logs `engine lost — held for 5 s before the error toast` once per outage. `Surfaces.cs`, `Notifier.cs`, `NotificationsInstaller.cs`.
+- Tests (Core `EngineLossGraceTests`, 5): held inside the grace; posted by the tick after it (once, with sound); silent reconnect inside the grace; `Quitting()` before the drop → nothing, and after a drop → the pending loss is dropped; the `--probe-notify` replay's engine segment ticks past the grace so its "one banner" reading is unchanged. The W3 `EngineLostIsOneErrorBannerWithdrawnOnReconnect` test now ticks past the grace. Core **146/146**.
+
+**Live proof (Debug 6805fa26 on build-B, 07:12–07:16, desk held, installed companion quit first, restored after):**
+- Notification Center before: newest "theuth engine unreachable" at 6:12 AM (`r4-0712-notification-center-before.png`).
+- tray › **Quit theuth** at 07:13:47 → log `tray menu: Quit theuth` → `.160 notifications: quitting — engine-loss toast suppressed` → `.234 quit theuth requested -> theuth://quit` → `.300 connection: reconnecting` → `.306 host: WM_CLOSE — quitting` → `.346 terminate (exit 0)`; **no `[live] post error` line**; theuth-desktop and the companion both gone. Notification Center after: unchanged, newest still 6:12 AM (`r4-0714-notification-center-after-quit-theuth.png`).
+- Lasting loss still notifies: the Debug companion launched with no engine running at 07:14:43 → `07:14:45.735 connection: reconnecting` → `.736 engine lost — held for 5 s` → `07:14:51.660 [live] post error … "theuth engine unreachable"` (5.9 s = grace + the next 1 Hz tick) → toast on screen (`r4-0714-lasting-loss-toast-after-grace.png`).
+- tray › **Quit theuth Companion** at 07:15:49 → companion gone, no toast (`r4-0715-after-quit-companion-no-toast.png`).
+- Restore: `w5-gate.ps1 launch-logged` @ cab3145a → installed theuth-desktop 16972 + Theuth.Companion 2120 + 3 × t.exe at 07:16:03; desk released 07:17.
+
+Not exercised: a mid-grace reconnect on a live engine (unit-tested only — no safe way to drop and restore the engine inside 5 s without killing processes I do not own).
 
 ## 3. Deviations from the brief
 1. The installed companion was quit with `WM_CLOSE` to its `TheuthCompanionRail` host window (`w6-gate quit-installed`) in rounds
