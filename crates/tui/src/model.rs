@@ -22,7 +22,8 @@ use agent::{
 };
 use agent::{
     BroadcastReceipt, BroadcastRequest, BroadcastTargets, CleanupStatus, CloseResult, CostBucket,
-    CostScope, Coverage, CreateSessionOptions, Money, Retention, SessionCost, SessionOpen,
+    CostScope, Coverage, CreateSessionOptions, MemoryMode, Money, Retention, SessionCost,
+    SessionOpen,
 };
 use iocraft::{KeyCode, KeyModifiers};
 use knowledge::{Change, ChangeStatus, HarvestResult, History, Meta, Revision};
@@ -433,6 +434,13 @@ pub enum Command {
         session: SessionId,
         /// One-shot style; `None` = configured default.
         style: Option<CompactStyle>,
+    },
+    /// `set_session_memory` (137 §8.6 `/endless on|off`), or `session_memory` when `mode` is `None`.
+    Memory {
+        /// Target.
+        session: SessionId,
+        /// The mode to switch to; `None` = show the memory state.
+        mode: Option<MemoryMode>,
     },
     /// `compact_style`.
     GetCompactStyle,
@@ -1648,6 +1656,11 @@ pub const COMMANDS: &[(&str, &str, &str)] = &[
         "/compact",
         "[summary|cut|snap|style …]",
         "fold context; style sets the default",
+    ),
+    (
+        "/endless",
+        "[on|off]",
+        "endless memory: switch it, or show the view state",
     ),
     (
         "/shake",
@@ -6784,6 +6797,7 @@ impl Model {
             "/roster" => send(tx, Command::ListRoster),
             "/computer" => send(tx, Command::ComputerStatus),
             "/compact" => self.compact_cmd(arg, tx),
+            "/endless" => self.endless_cmd(arg, tx),
             "/shake" => self.shake_cmd(arg, tx),
             "/clear" => match self.session {
                 Some(session) => send(
@@ -8613,6 +8627,25 @@ impl Model {
                 "usage: /compact [summary|cut|snap|style …]".into(),
             )),
         }
+    }
+
+    /// `/endless [on|off]` (137 §8.6): switch the session's memory mode, or show it.
+    fn endless_cmd(&mut self, arg: &str, tx: &UnboundedSender<Command>) {
+        let Some(session) = self.session else {
+            self.entries.push(Entry::Info("no session".into()));
+            return;
+        };
+        let mode = match arg.trim() {
+            "" | "status" => None,
+            "on" => Some(MemoryMode::Endless),
+            "off" => Some(MemoryMode::Epochs),
+            _ => {
+                self.entries
+                    .push(Entry::Error("usage: /endless [on|off]".into()));
+                return;
+            }
+        };
+        send(tx, Command::Memory { session, mode });
     }
 
     /// Advance a prompt flow one field. An API key or a secret's value is

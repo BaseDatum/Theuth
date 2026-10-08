@@ -382,6 +382,14 @@ pub trait Api {
         session: SessionId,
         mode: MemoryMode,
     ) -> RpcResult<SessionMemory>;
+    /// 137 R1-D2b: the session's view budget in bytes (16_000..=256_000);
+    /// idle or running — it takes effect at the next turn boundary.
+    #[method(name = "set_session_view_bytes", with_extensions)]
+    async fn set_session_view_bytes(
+        &self,
+        session: SessionId,
+        bytes: u32,
+    ) -> RpcResult<SessionMemory>;
     /// Remove `targets` from the active context at `expected_revision`
     /// (design doc 48 §3.2). Atomic: stale revision, unknown targets or an
     /// incomplete protocol group refuse and write nothing. Refused while a
@@ -3079,46 +3087,93 @@ impl ApiServer for Server {
         ask::<Agents, _>(agent::AGENT_ACTOR, SessionContextBreakdown { session }).await
     }
 
-    // 137: W1 stubs — W2 replaces the bodies (137-contract.md §3).
+    // 137 §11.2 (137-contract.md §3): forwarded to the owning engine like
+    // `compact`, else asked of the supervisor.
     async fn session_memory(
         &self,
         ext: &Extensions,
         session: SessionId,
     ) -> RpcResult<SessionMemory> {
         self.authorize(ext, session).await?;
-        Err(ErrorObjectOwned::owned(ASK_FAILED, "not yet", None::<()>))
+        if let Some(r) = forward::route(ext, session, "session_memory", (session,)).await? {
+            return Ok(r);
+        }
+        ask::<Agents, _>(agent::AGENT_ACTOR, agent::SessionMemoryQuery { session }).await
     }
 
     async fn endless_zoom(
         &self,
         ext: &Extensions,
         session: SessionId,
-        _id: u64,
-        _n: u64,
+        id: u64,
+        n: u64,
     ) -> RpcResult<Vec<ViewLine>> {
         self.authorize(ext, session).await?;
-        Err(ErrorObjectOwned::owned(ASK_FAILED, "not yet", None::<()>))
+        if let Some(r) = forward::route(ext, session, "endless_zoom", (session, id, n)).await? {
+            return Ok(r);
+        }
+        ask::<Agents, _>(agent::AGENT_ACTOR, agent::EndlessZoom { session, id, n }).await
     }
 
     async fn endless_recall(
         &self,
         ext: &Extensions,
         session: SessionId,
-        _query: String,
-        _limit: Option<u8>,
+        query: String,
+        limit: Option<u8>,
     ) -> RpcResult<Vec<ViewLine>> {
         self.authorize(ext, session).await?;
-        Err(ErrorObjectOwned::owned(ASK_FAILED, "not yet", None::<()>))
+        if let Some(r) =
+            forward::route(ext, session, "endless_recall", (session, &query, limit)).await?
+        {
+            return Ok(r);
+        }
+        ask::<Agents, _>(
+            agent::AGENT_ACTOR,
+            agent::EndlessRecall {
+                session,
+                query,
+                limit,
+            },
+        )
+        .await
     }
 
     async fn set_session_memory(
         &self,
         ext: &Extensions,
         session: SessionId,
-        _mode: MemoryMode,
+        mode: MemoryMode,
     ) -> RpcResult<SessionMemory> {
         self.authorize(ext, session).await?;
-        Err(ErrorObjectOwned::owned(ASK_FAILED, "not yet", None::<()>))
+        if let Some(r) = forward::route(ext, session, "set_session_memory", (session, mode)).await?
+        {
+            return Ok(r);
+        }
+        ask::<Agents, _>(
+            agent::AGENT_ACTOR,
+            agent::SetSessionMemory { session, mode },
+        )
+        .await
+    }
+
+    async fn set_session_view_bytes(
+        &self,
+        ext: &Extensions,
+        session: SessionId,
+        bytes: u32,
+    ) -> RpcResult<SessionMemory> {
+        self.authorize(ext, session).await?;
+        if let Some(r) =
+            forward::route(ext, session, "set_session_view_bytes", (session, bytes)).await?
+        {
+            return Ok(r);
+        }
+        ask::<Agents, _>(
+            agent::AGENT_ACTOR,
+            agent::SetSessionViewBytes { session, bytes },
+        )
+        .await
     }
 
     async fn remove_context(

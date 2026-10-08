@@ -55,6 +55,7 @@ use crate::continuation::{
     DecideYield, InputConsumed, InputDropped, InputOrigin, InputTicket, Ledger, SessionUnknown,
     TurnEntered, TurnReturned, YieldDecision,
 };
+use crate::endless::{Attached, Endless, MemoryMode, SessionMemory, ViewLine};
 use crate::lifecycle::{
     Authorize, Authorized, CleanupStatus, CloseResult, CreateSession, LeaveSession, PrivateOwner,
     PrivateRoot, PrivateTrees, ResumePrivate, SessionOpen,
@@ -63,8 +64,9 @@ use crate::loop_::{
     CancelPeerScope, CancelTurn, CompactNow, CompactionOverride, ContextBreakdownNow,
     ContextHistoryNow, ContextItemsNow, GetToolset, HarvestNow, IsRunning, PEER_INTAKE, PeerInput,
     QueuedInputs, RedoTurn, RemoveContextNow, ResetRuntimeNow, RestartTurn, Session, SessionState,
-    SetCompactionOverride, SetPendingEffort, SetTitlePin, SetToolsetOverride, SuppressPeerInputs,
-    SwitchModel, TrimTurn, UndoTurn, UserInput, WithdrawInput, prompt_blocks, text_of,
+    SetCompactionOverride, SetMemoryNow, SetPendingEffort, SetTitlePin, SetToolsetOverride,
+    SuppressPeerInputs, SwitchModel, TrimTurn, UndoTurn, UserInput, WithdrawInput, prompt_blocks,
+    text_of,
 };
 use crate::peers::{
     DiscoverPeersTool, ListModelsTool, Nodes, PeerMessageTool, SendMessageTool, SpawnSubagentTool,
@@ -102,6 +104,9 @@ use crate::{
     UnloadSession,
 };
 use crate::{AwsProfiles, ListAwsProfiles, SetAwsProfile};
+use crate::{
+    EndlessRecall, EndlessZoom, SessionMemoryQuery, SetSessionMemory, SetSessionViewBytes,
+};
 use crate::{GetFavoriteModels, SetModelFavorite};
 use crate::{ListProjectStyles, SetProjectStyle, SetSessionProject, project};
 use crate::{attach, clock, frame, repl, search, spill};
@@ -267,6 +272,9 @@ pub struct Agents {
     /// 125 §6.5: the live `advisor:` section (the remembered pick and the
     /// three tuning keys), rewritten by the pickers and the setters.
     pub(crate) advisor_cfg: AdvisorConfig,
+    /// 137: the endless memory service (one per engine); every native
+    /// session attaches to it and the loop, tools and RPC call through it.
+    pub(crate) endless: Endless,
 }
 
 /// One pending `send_message{await_reply}` (50 §5.3).
@@ -752,6 +760,7 @@ impl Agents {
                 .await?;
             return Ok((id, actor));
         }
+        let desk = row.as_ref().and_then(|r| r.desk.clone());
         let (model, effort, state, parent, resumed) = match row {
             Some(row) => {
                 let (epoch, head, history) = store.frame(id).await?;
@@ -837,6 +846,22 @@ impl Agents {
             None => id,
         };
         let permits = self.tree_pools(root).native.clone();
+        // 137: register with the endless service — the pump starts when
+        // `sessions.memory` is `endless`; a private tree hands over its own
+        // store. A native child of a parent running the endless frame gets
+        // the R1-D1 note (its opener carries the view, `start_child_turn`).
+        let parent_view = parent
+            .as_ref()
+            .is_some_and(|(p, _)| self.endless.active(*p));
+        let attached = Attached {
+            model: model.0.clone(),
+            effort: effort.as_deref().and_then(effort_of),
+            agent: desk.unwrap_or_else(|| "theuth".to_owned()),
+            store: private_root.map(|_| store.clone()),
+        };
+        if let Err(e) = self.endless.attach(id, attached).await {
+            tracing::warn!(session = %id, "endless attach: {e:#}");
+        }
         // Unbounded (R2.6): `route` awaits `tell_input` inside a supervisor
         // handler; a full bounded mailbox here would stall the engine.
         let session = Session::new(
@@ -861,7 +886,9 @@ impl Agents {
             resources,
         )
         .with_kind(kind)
-        .with_advisor(advised);
+        .with_advisor(advised)
+        .with_endless(self.endless.clone())
+        .with_parent_view(parent_view);
         let actor = Session::spawn_with_mailbox(session, runtime::subscriber_mailbox());
         let actor = LiveActor::Native(actor);
         self.ledger
@@ -3857,6 +3884,24 @@ impl Agents {
         let Ok(scope) = self.claim_child_turn(child, ticket).await else {
             return;
         };
+        // 137 R1-D1: a native child of an endless parent opens with the
+        // parent's view before its brief (its prompt says so, R1-D1 note).
+        if let Some(Live {
+            actor: LiveActor::Native(actor),
+            parent: Some((parent, _)),
+        }) = self.sessions.get(&child)
+            && self.endless.active(*parent)
+        {
+            let (actor, parent) = (actor.clone(), *parent);
+            let blocks = crate::endless_ext::render_snapshot(&self.endless, parent).await;
+            if !blocks.is_empty() {
+                let _ = actor
+                    .tell(crate::loop_::OpenerContext(
+                        blocks.into_iter().map(|b| b.text).collect(),
+                    ))
+                    .await;
+            }
+        }
         let _ = self
             .route(child, None, text, Vec::new(), ticket, scope, false)
             .await;
@@ -5882,6 +5927,7 @@ impl Message<UnloadSession> for Agents {
         live.actor.tell_cancel(None).await;
         live.actor.kill().await;
         self.running.remove(&m.session);
+        self.endless.detach(m.session);
         true
     }
 }
@@ -6470,6 +6516,104 @@ impl Message<SessionContextBreakdown> for Agents {
     }
 }
 
+impl Message<SessionMemoryQuery> for Agents {
+    type Reply = Result<SessionMemory, String>;
+
+    /// 137 §11.2: a store read for any session this engine knows — `mode:
+    /// epochs` and an empty view when the session is not endless.
+    async fn handle(
+        &mut self,
+        m: SessionMemoryQuery,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        self.stored(m.session).await?;
+        self.endless
+            .memory(m.session)
+            .await
+            .map_err(|e| format!("{e:#}"))
+    }
+}
+
+impl Message<EndlessZoom> for Agents {
+    type Reply = Result<Vec<ViewLine>, String>;
+
+    async fn handle(&mut self, m: EndlessZoom, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        self.stored(m.session).await?;
+        self.endless.zoom(m.session, m.id, m.n).await
+    }
+}
+
+impl Message<EndlessRecall> for Agents {
+    type Reply = Result<Vec<ViewLine>, String>;
+
+    async fn handle(
+        &mut self,
+        m: EndlessRecall,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        self.stored(m.session).await?;
+        self.endless
+            .recall(m.session, m.query.trim(), m.limit.unwrap_or(8).max(1))
+            .await
+    }
+}
+
+impl Message<SetSessionMemory> for Agents {
+    type Reply = kameo::reply::DelegatedReply<Result<SessionMemory, String>>;
+
+    /// 137 §8.6: the switch runs on the session's actor as a mini-turn
+    /// ([`SetMemoryNow`]) so `off` can install the view head the way a
+    /// compaction does; the actor refuses with `busy` while a turn runs.
+    async fn handle(
+        &mut self,
+        m: SetSessionMemory,
+        ctx: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        let (reply, tx) = ctx.reply_sender();
+        let Some(tx) = tx else { return reply };
+        if self.running.contains(&m.session) {
+            tx.send(Err("busy".into()));
+            return reply;
+        }
+        let actor = match self
+            .actor(m.session)
+            .await
+            .and_then(|a| a.native().cloned())
+        {
+            Ok(actor) => actor,
+            Err(e) => {
+                tx.send(Err(e));
+                return reply;
+            }
+        };
+        // `off` rewrites the context (a new epoch): old candidates are stale.
+        self.ledger.bump(m.session);
+        tokio::spawn(async move {
+            tx.send(
+                actor
+                    .ask(SetMemoryNow { mode: m.mode })
+                    .await
+                    .map_err(|e| e.to_string()),
+            );
+        });
+        reply
+    }
+}
+
+impl Message<SetSessionViewBytes> for Agents {
+    type Reply = Result<SessionMemory, String>;
+
+    /// 137 R1-D2b: idle or running — it only takes effect at the next turn boundary.
+    async fn handle(
+        &mut self,
+        m: SetSessionViewBytes,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        self.stored(m.session).await?;
+        crate::endless_ext::set_view_bytes(&self.endless, m.session, m.bytes).await
+    }
+}
+
 impl Message<RemoveContext> for Agents {
     type Reply = Result<ContextRemoval, String>;
 
@@ -6662,6 +6806,7 @@ impl Message<DeleteSession> for Agents {
             if let Some(live) = self.sessions.remove(id) {
                 live.actor.kill().await;
             }
+            self.endless.detach(*id);
         }
         self.communication_changed(Some(m.session)).await;
         let removed = self
@@ -8232,6 +8377,17 @@ pub async fn start(rt: &Runtime) -> anyhow::Result<()> {
             .as_deref()
             .map_or_else(|| text.to_owned(), |v| v.redact(text).into_owned())
     });
+    let client = client(auth.clone())?;
+    // 137: one endless service per engine; its pumps restart from the rows
+    // once the actor is up (`resume_all` below).
+    let endless = Endless::new(
+        store.clone(),
+        rt.clone(),
+        client.clone(),
+        auth.clone(),
+        catalog.clone(),
+        cfg.endless.clone(),
+    );
     let agents = Agents::spawn_with_mailbox(
         Agents {
             rt: rt.clone(),
@@ -8249,8 +8405,9 @@ pub async fn start(rt: &Runtime) -> anyhow::Result<()> {
             pool,
             configured,
             store,
-            client: client(auth.clone())?,
+            client,
             auth,
+            endless: endless.clone(),
             sessions: HashMap::new(),
             running: HashSet::new(),
             communication: communication.clone(),
@@ -8289,6 +8446,12 @@ pub async fn start(rt: &Runtime) -> anyhow::Result<()> {
         runtime::subscriber_mailbox(),
     );
     agents.register(AGENT_ACTOR)?;
+    // 137 §8.7: pumps for every endless session with unbuilt nodes.
+    match endless.resume_all().await {
+        Ok(0) => {}
+        Ok(n) => tracing::info!(pumps = n, "endless: resumed"),
+        Err(e) => tracing::warn!("endless resume_all: {e:#}"),
+    }
     crate::advisor::Advisors::start(
         advisor_store,
         rt.clone(),
@@ -8774,6 +8937,7 @@ impl Agents {
                 live.actor.tell_cancel(None).await;
                 live.actor.kill().await;
             }
+            self.endless.detach(id);
         }
         self.expire_waits("session closed", |w| members.contains(&w.session));
         self.rt
@@ -8907,6 +9071,15 @@ impl Message<CreateSession> for Agents {
                 None => {}
             }
         }
+        // 137 D1: the memory mode — explicit, else `agent.endless.default_chat`.
+        let memory = m
+            .options
+            .memory
+            .unwrap_or(if self.cfg.endless.default_chat {
+                MemoryMode::Endless
+            } else {
+                MemoryMode::Epochs
+            });
         if m.options.retention == Retention::Durable {
             let id = self
                 .create_durable(
@@ -8924,6 +9097,15 @@ impl Message<CreateSession> for Agents {
                         }),
                 )
                 .await?;
+            // The actor is attached by now: `set_mode` sets the column and
+            // starts the (empty) tree, so the first turn is already endless.
+            if memory == MemoryMode::Endless {
+                self.endless
+                    .set_mode(id, memory, 0)
+                    .await
+                    .map_err(|e| format!("endless: {e:#}"))?;
+                tracing::info!(session = %id, "endless: created in endless mode");
+            }
             return Ok(SessionOpen {
                 session: id,
                 root: id,
@@ -8962,6 +9144,13 @@ impl Message<CreateSession> for Agents {
         if let Some(cwd) = &m.options.cwd {
             store
                 .set_cwd(root, Path::new(cwd))
+                .await
+                .map_err(|e| e.to_string())?;
+        }
+        // Before the actor attaches (below): it reads the mode from this store.
+        if memory == MemoryMode::Endless {
+            store
+                .set_session_memory(root, memory)
                 .await
                 .map_err(|e| e.to_string())?;
         }
@@ -9968,8 +10157,23 @@ pub(crate) mod tests {
         cfg.subagents.max_concurrent_external = 1;
         let cfg = Arc::new(cfg);
         let engine = engine.map(|e| mesh::EngineId(e.to_owned()));
+        let rt = Runtime::new(figment::Figment::new(), dir.clone());
+        let store = Store::open(&dir.join("sessions.sqlite"), engine)
+            .await
+            .unwrap();
+        let client = Client::new().unwrap();
+        let auth = Auth::stub(&dir);
+        let catalog = Arc::new(Catalog::load(&dir));
+        let endless = Endless::new(
+            store.clone(),
+            rt.clone(),
+            client.clone(),
+            auth.clone(),
+            catalog.clone(),
+            cfg.endless.clone(),
+        );
         Agents {
-            rt: Runtime::new(figment::Figment::new(), dir.clone()),
+            rt,
             default_model: cfg.model.clone(),
             default_effort: None,
             favorite_models: Vec::new(),
@@ -9980,14 +10184,13 @@ pub(crate) mod tests {
             vision_model: Arc::default(),
             escalate_model: Arc::default(),
             vision_error: None,
-            catalog: Arc::new(Catalog::load(&dir)),
+            catalog,
             pool: None,
             configured: Arc::new(|_: &str| false),
-            store: Store::open(&dir.join("sessions.sqlite"), engine)
-                .await
-                .unwrap(),
-            client: Client::new().unwrap(),
-            auth: Auth::stub(&dir),
+            store,
+            client,
+            auth,
+            endless,
             sessions: HashMap::new(),
             running: HashSet::new(),
             communication: SharedPolicy::new(Policy::new(communication, "config")),
@@ -11604,6 +11807,94 @@ pub(crate) mod tests {
             })
             .await
             .unwrap()
+    }
+
+    /// 137 §11.2 / §14: `session_memory` of an epochs session is `mode:
+    /// epochs` with an empty view; `create_session.options.memory` lands in
+    /// the column; `/endless` flips an idle session both ways; `view_bytes`
+    /// is range-checked. The tree itself is the service's (W1).
+    #[tokio::test]
+    async fn memory_mode_is_created_queried_and_switched() {
+        let agents = Agents::spawn(agents_with(false).await);
+        let open = |memory| {
+            agents.ask(CreateSession {
+                options: crate::CreateSessionOptions {
+                    memory,
+                    ..Default::default()
+                },
+                peer: None,
+            })
+        };
+        let plain = open(None).await.unwrap().session;
+        let m = agents
+            .ask(SessionMemoryQuery { session: plain })
+            .await
+            .unwrap();
+        assert_eq!(m.mode, MemoryMode::Epochs);
+        assert!(m.view.is_empty() && m.backfill.is_none());
+        assert_eq!(m.stats, crate::EndlessStats::default());
+
+        let endless = open(Some(MemoryMode::Endless)).await.unwrap().session;
+        let m = agents
+            .ask(SessionMemoryQuery { session: endless })
+            .await
+            .unwrap();
+        assert_eq!(m.mode, MemoryMode::Endless);
+        // Idle: `off` then `on` again, each a store write the query reflects.
+        let m = agents
+            .ask(SetSessionMemory {
+                session: endless,
+                mode: MemoryMode::Epochs,
+            })
+            .await
+            .unwrap();
+        assert_eq!(m.mode, MemoryMode::Epochs);
+        let m = agents
+            .ask(SetSessionMemory {
+                session: plain,
+                mode: MemoryMode::Endless,
+            })
+            .await
+            .unwrap();
+        assert_eq!(m.mode, MemoryMode::Endless);
+        assert_eq!(
+            agents
+                .ask(SessionMemoryQuery { session: plain })
+                .await
+                .unwrap()
+                .mode,
+            MemoryMode::Endless
+        );
+        // R1-D2b: the view budget is range-checked.
+        let e = agents
+            .ask(SetSessionViewBytes {
+                session: plain,
+                bytes: 1_000,
+            })
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(e.contains("out of range"), "{e}");
+        assert_eq!(
+            agents
+                .ask(SetSessionViewBytes {
+                    session: plain,
+                    bytes: 128_000,
+                })
+                .await
+                .unwrap()
+                .mode,
+            MemoryMode::Endless
+        );
+        // An unknown session is refused, not created.
+        assert!(
+            agents
+                .ask(SessionMemoryQuery {
+                    session: SessionId::new(),
+                })
+                .await
+                .is_err()
+        );
     }
 
     /// 67 §8: a root opened for a remote parent carries its `tools` ceiling
