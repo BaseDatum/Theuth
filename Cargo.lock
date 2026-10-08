@@ -1417,6 +1417,7 @@ dependencies = [
  "humantime",
  "kameo",
  "knowledge",
+ "platform",
  "runtime",
  "schedule",
  "schemars 1.2.2",
