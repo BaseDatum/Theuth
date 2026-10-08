@@ -151,8 +151,8 @@ impl Agents {
         if plan.last == crate::durability::LastStep::Finished {
             return;
         }
-        match self.store.session(session).await {
-            Ok(Some(row)) if row.here => {}
+        let row = match self.store.session(session).await {
+            Ok(Some(row)) if row.here => row,
             Ok(Some(row)) => {
                 return tracing::warn!(
                     session = %session, %turn, owner = %row.owner,
@@ -161,6 +161,24 @@ impl Agents {
             }
             Ok(None) => return tracing::warn!(session = %session, %turn, "109: no session row"),
             Err(e) => return tracing::warn!(session = %session, %turn, "109: session: {e:#}"),
+        };
+        // 146 D9: an ACP child's open turn is owed work; it comes back through
+        // the respawn (the boot pass routes these itself; this is the Resume
+        // button under `resume: ask`, a takeover, or the `resume_turn` RPC).
+        if row.agent.is_some() {
+            if self.live(session).is_some() {
+                return tracing::info!(session = %session, %turn, "146: ACP child already live; its harness continues");
+            }
+            match self
+                .relaunch_acp_child(session, super::acp_resume::Continue::Prompt)
+                .await
+            {
+                Ok(_) => {
+                    tracing::info!(session = %session, %turn, "146: ACP child respawned for its open turn")
+                }
+                Err(e) => tracing::warn!(session = %session, %turn, "146: ACP respawn: {e}"),
+            }
+            return;
         }
         // 139 §6.3: a pending system takeover resumed by the user's press.
         let (cause, from) = match (cause, self.pending_takeovers.remove(&session)) {
@@ -176,10 +194,7 @@ impl Agents {
         let lost_jobs = transfer::on_resume_here(self, session, cause, from.as_deref()).await;
         let actor = match self.session(Some(session), None, None, (None, None)).await {
             Ok((_, LiveActor::Native(actor))) => actor,
-            // W4: an ACP child with an open turn respawns through `session/load`.
-            Ok((_, LiveActor::Acp(_))) => {
-                return tracing::info!(session = %session, %turn, "109: ACP session left to its harness");
-            }
+            Ok((_, LiveActor::Acp(_))) => return,
             Err(e) => {
                 return tracing::warn!(session = %session, %turn, "109: session: {e:#}");
             }
