@@ -3,12 +3,12 @@ import { createElement, type ReactNode } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { expect, test, vi } from 'vitest'
 import type * as NbRpc from '@/lib/notebooks-rpc'
-import type { Source } from '@/lib/notebooks-types'
+import type { NotebookSource } from '@/rpc/bindings/NotebookSource'
 import type * as Rpc from '@/lib/rpc'
 import { SourcesColumn } from './SourcesColumn'
 
-const fixture: Source = {
-  doc: { id: 'src1', kind: 'source', title: 'ICD portal DR runbook v7', binding: 'notebook', created_ms: 0n, updated_ms: 0n, bytes: 0n } as unknown as Source['doc'],
+const fixture: NotebookSource = {
+  doc: { id: 'src1', kind: 'source', title: 'ICD portal DR runbook v7', binding: 'notebook', created_ms: 0n, updated_ms: 0n, bytes: 0n } as unknown as NotebookSource['doc'],
   origin: { kind: 'file', name: 'runbook.pdf', sha256: 'x', ext: 'pdf' },
   status: 'completed',
   progress: null,

@@ -4,9 +4,8 @@ import { Link } from '@tanstack/react-router'
 import type { ReactNode } from 'react'
 import { toast } from 'sonner'
 import { dragSource } from '@/components/chat/AttachChip'
-import type { Kind } from '@/lib/attach'
 import { notebookKeys, useNotebooksApi } from '@/lib/notebooks-rpc'
-import type { Source } from '@/lib/notebooks-types'
+import type { NotebookSource } from '@/rpc/bindings/NotebookSource'
 import { cn } from '@/lib/utils'
 import { LEVELS, type StatusTone, originGlyph, originLabel, originLine, sourceTitle, statusWord } from './origin'
 
@@ -19,7 +18,7 @@ const DOT: Record<StatusTone, string> = {
 
 const PILL = 'inline-flex items-center rounded-full border px-1.5 text-[10px] leading-4 whitespace-nowrap'
 
-export function SourceCard({ source, notebook, readOnly, onOpen }: { source: Source; notebook?: string; readOnly?: boolean; onOpen?: () => void }) {
+export function SourceCard({ source, notebook, readOnly, onOpen }: { source: NotebookSource; notebook?: string; readOnly?: boolean; onOpen?: () => void }) {
   const glyph = originGlyph(source.origin)
   const title = sourceTitle(source)
   const status = statusWord(source)
@@ -28,7 +27,7 @@ export function SourceCard({ source, notebook, readOnly, onOpen }: { source: Sou
   return (
     <article
       className="rounded-lg border border-border-subtle bg-background p-2.5"
-      {...dragSource(() => ({ kind: 'source' as Kind, id, title, meta: originLabel(source.origin) }))}
+      {...dragSource(() => ({ kind: 'source', id, title, meta: originLabel(source.origin) }))}
     >
       <div className="flex items-center gap-2 text-xs font-semibold">
         <span className={cn('flex size-[18px] shrink-0 items-center justify-center rounded text-[10px] font-bold text-white', glyph.className)}>{glyph.text}</span>

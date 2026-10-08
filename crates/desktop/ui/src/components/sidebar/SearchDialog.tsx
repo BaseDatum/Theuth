@@ -43,6 +43,7 @@ import type { ConceptSearchHit } from '@/rpc/bindings/ConceptSearchHit'
 import type { HistorySearchHit } from '@/rpc/bindings/HistorySearchHit'
 import type { MeetingSearchHit } from '@/rpc/bindings/MeetingSearchHit'
 import type { NoteSearchHit } from '@/rpc/bindings/NoteSearchHit'
+import type { BlockHit } from '@/rpc/bindings/BlockHit'
 import type { SearchCategory } from '@/rpc/bindings/SearchCategory'
 import type { SearchGroup } from '@/rpc/bindings/SearchGroup'
 import type { SearchHit } from '@/rpc/bindings/SearchHit'
@@ -114,8 +115,8 @@ function items(g: SearchGroup): Item[] {
       }))
     case 'notes':
       return g.page.hits.map((h) => ({
-        key: `notes:${h.doc.id}`,
-        dest: { category: 'notes', id: h.doc.id },
+        key: `notes:${h.doc.id}:${h.block}`,
+        dest: { category: 'notes', id: h.doc.id, block: h.block },
         node: <NoteRow hit={h} />,
         ref: toRef({ kind: 'note', doc: h.doc }),
       }))
@@ -127,8 +128,19 @@ function items(g: SearchGroup): Item[] {
         ref: toRef({ kind: 'meeting', meeting: h.meeting }),
       }))
     case 'sources':
+      return g.page.hits.map((h) => ({
+        key: `sources:${h.doc}:${h.block}`,
+        dest: { category: 'sources', id: h.doc, block: h.block },
+        node: <BlockRow hit={h} kind="source" />,
+        ref: toRef({ kind: 'source', hit: h }),
+      }))
     case 'notebooks':
-      return []
+      return g.page.hits.map((h) => ({
+        key: `notebooks:${h.doc}:${h.block}`,
+        dest: { category: 'notebooks', id: h.doc, block: h.block },
+        node: <BlockRow hit={h} kind="notebook" />,
+        ref: toRef({ kind: 'notebook', hit: h }),
+      }))
   }
 }
 
@@ -373,9 +385,13 @@ export function SearchDialog({ open, onOpenChange, request }: Props) {
           search: dest.snapshot === null ? { change: dest.commit } : { change: dest.commit, snapshot: dest.snapshot },
         })
       case 'notes':
-        return void navigate({ to: '/notes/$id', params: { id: dest.id }, search: {} })
+        return void navigate({ to: '/notes/$id', params: { id: dest.id }, search: {}, hash: dest.block })
       case 'meetings':
         return void navigate({ to: '/meetings/$id', params: { id: dest.id } })
+      case 'sources':
+        return void navigate({ to: '/sources/$id', params: { id: dest.id }, search: {}, hash: dest.block })
+      case 'notebooks':
+        return void navigate({ to: '/notebooks/$id', params: { id: dest.id }, search: {} })
     }
   }
 
@@ -941,7 +957,20 @@ function NoteRow({ hit }: { hit: NoteSearchHit }) {
     <Lines
       title={titled ? <Snippet text={m.snippet} ranges={m.ranges} /> : hit.doc.title || 'Untitled note'}
       snippet={titled ? null : <Snippet text={m.snippet} ranges={m.ranges} />}
-      meta={['note', ago(new Date(Number(hit.doc.updated_ms)).toISOString())]}
+      meta={['note', hit.heading ?? '', ago(new Date(Number(hit.doc.updated_ms)).toISOString())]}
+    />
+  )
+}
+
+/** 144 §7.4: one block of a source or a notebook description — title row or the block's snippet under its heading. */
+function BlockRow({ hit, kind }: { hit: BlockHit; kind: 'source' | 'notebook' }) {
+  const m = hit.match
+  const titled = m.field === 'title'
+  return (
+    <Lines
+      title={titled ? <Snippet text={m.snippet} ranges={m.ranges} /> : hit.title || `Untitled ${kind}`}
+      snippet={titled ? null : <Snippet text={m.snippet} ranges={m.ranges} />}
+      meta={[kind, hit.heading ?? '', hit.notebooks.length > 1 ? `in ${hit.notebooks.length} notebooks` : '']}
     />
   )
 }

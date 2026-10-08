@@ -4,7 +4,7 @@ import { renderToStaticMarkup } from 'react-dom/server'
 import { expect, test, vi } from 'vitest'
 import type * as NotebooksRpc from '@/lib/notebooks-rpc'
 import { notebookKeys } from '@/lib/notebooks-rpc'
-import type { Citation } from '@/lib/notebooks-types'
+import type { Citation } from '@/rpc/bindings/Citation'
 import { CitationLink, CitationsProvider, References, citationCount } from './Citations'
 
 const HREF = 'theuth://sources/s1#b12'

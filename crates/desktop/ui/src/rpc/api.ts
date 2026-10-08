@@ -139,6 +139,18 @@ import type { SecretInfo } from '@/rpc/bindings/SecretInfo'
 import type { SecretsList } from '@/rpc/bindings/SecretsList'
 import type { SessionId } from '@/rpc/bindings/SessionId'
 import type { SessionSummary } from '@/rpc/bindings/SessionSummary'
+import type { Notebook } from '@/rpc/bindings/Notebook'
+import type { NotebookDetail } from '@/rpc/bindings/NotebookDetail'
+import type { NotebookItem } from '@/rpc/bindings/NotebookItem'
+import type { NotebookSource } from '@/rpc/bindings/NotebookSource'
+import type { ItemKind } from '@/rpc/bindings/ItemKind'
+import type { ItemRemoved } from '@/rpc/bindings/ItemRemoved'
+import type { DeletePreview } from '@/rpc/bindings/DeletePreview'
+import type { SourceAddArgs } from '@/rpc/bindings/SourceAddArgs'
+import type { Citation } from '@/rpc/bindings/Citation'
+import type { NbSearchArgs } from '@/rpc/bindings/NbSearchArgs'
+import type { BlockHit } from '@/rpc/bindings/BlockHit'
+import type { SavedAnswer } from '@/rpc/bindings/SavedAnswer'
 import type { SessionOrphan } from '@/rpc/bindings/SessionOrphan'
 import type { SessionOwner } from '@/rpc/bindings/SessionOwner'
 import type { SessionsStatus } from '@/rpc/bindings/SessionsStatus'
@@ -363,6 +375,44 @@ export interface Api {
   doc_join(doc: DocId, proof: string, name: string | null): Promise<Joined>
   /** A member renames themself (editors only). */
   doc_set_name(doc: DocId, name: string): Promise<null>
+  /** 144 §13.3 — notebooks. Live ones newest first; `archived` includes archived. Any engine. */
+  notebook_list(archived: boolean | null): Promise<Notebook[]>
+  /** One notebook with counts and its live items; membership-checked for guests. */
+  notebook_get(id: DocId): Promise<NotebookDetail>
+  /** A new notebook document (body = description) plus its row. Hub only. */
+  notebook_create(title: string, description: string | null, project: string | null): Promise<Notebook>
+  /** Rename, re-project (`""` clears) or (un)archive. Hub only. */
+  notebook_update(id: DocId, title: string | null, project: string | null, archived: boolean | null): Promise<null>
+  /** What `notebook_delete` would do: notes kept, exclusive sources, sources shared elsewhere. */
+  notebook_delete_preview(id: DocId): Promise<DeletePreview>
+  /** Trash the notebook, soft-remove its items, and the exclusive sources when asked. Hub only. */
+  notebook_delete(id: DocId, delete_exclusive_sources: boolean): Promise<null>
+  /** Live items, oldest first; membership-checked for guests. */
+  notebook_items_list(notebook: DocId): Promise<NotebookItem[]>
+  /** Add (or revive) one item row. Hub only. */
+  notebook_item_add(notebook: DocId, kind: ItemKind, item: string): Promise<NotebookItem>
+  /** Soft-remove one item row; `also_in` = other live notebooks still holding it. Hub only. */
+  notebook_item_remove(notebook: DocId, kind: ItemKind, item: string): Promise<ItemRemoved>
+  /** Sessions bound to the notebook, newest first. Owner only. */
+  notebook_chats(notebook: DocId): Promise<SessionSummary[]>
+  /** Bind a session to a notebook, or unbind with `null`. Owner only. */
+  session_set_notebook(session: SessionId, notebook: DocId | null): Promise<null>
+  /** Add a source (exactly one origin field): the `new` card at once, then the ingest job (`SourceEvent`s). Hub only. */
+  source_add(args: SourceAddArgs): Promise<NotebookSource>
+  /** One source's card; membership-checked for guests. */
+  source_get(id: DocId): Promise<NotebookSource>
+  /** Sources of a notebook, or every source. */
+  source_list(notebook: DocId | null): Promise<NotebookSource[]>
+  /** Re-run the ingest; refused while queued or running. Hub only. */
+  source_refresh(id: DocId): Promise<NotebookSource>
+  /** Resolve `theuth://` hrefs to citations with their drift status, positionally. */
+  cite_resolve(hrefs: string[]): Promise<Citation[]>
+  /** Hybrid block search over notes, sources, insights and notebook descriptions (144 §7.4). */
+  nb_search(args: NbSearchArgs): Promise<BlockHit[]>
+  /** Save the assistant message at `turn` as a new note in `notebook`, chips intact. Owner only. */
+  save_answer_as_note(session: SessionId, turn: number, notebook: DocId): Promise<SavedAnswer>
+  /** Append the assistant message at `turn` to `note` under `## From chat · <date>`. Owner only. */
+  promote_answer(session: SessionId, turn: number, note: DocId): Promise<null>
   /** Rewrite a schedule's `enabled:` line (33 §3.5; the toggle); rejects with `no such schedule`. */
   enable_schedule(name: string, enabled: boolean): Promise<ScheduleInfo>
   /** Copy artifact `id`'s blob to `dest` (parent created; refuses to overwrite); returns `dest` (35 §3.5). */
@@ -969,6 +1019,7 @@ export const METHODS = [
   'browser_screenshot',
   'cancel',
   'cancel_job',
+  'cite_resolve',
   'code_locate',
   'codeindex_stats',
   'codemap_change',
@@ -1151,12 +1202,24 @@ export const METHODS = [
   'mesh_remove',
   'mesh_set_hub',
   'mesh_status',
+  'nb_search',
   'new_session',
+  'notebook_chats',
+  'notebook_create',
+  'notebook_delete',
+  'notebook_delete_preview',
+  'notebook_get',
+  'notebook_item_add',
+  'notebook_item_remove',
+  'notebook_items_list',
+  'notebook_list',
+  'notebook_update',
   'packet_get',
   'path_complete',
   'peer_deliver',
   'peer_message',
   'pin_session',
+  'promote_answer',
   'pty_input',
   'pty_resize',
   'pty_screen',
@@ -1200,6 +1263,7 @@ export const METHODS = [
   'sandbox_takeover',
   'sandbox_terminal',
   'sandboxes_list',
+  'save_answer_as_note',
   'schedule_history',
   'screen_context',
   'search',
@@ -1217,6 +1281,7 @@ export const METHODS = [
   'session_memory',
   'session_orphans',
   'session_owner',
+  'session_set_notebook',
   'session_take',
   'sessions_status',
   'set_advisor',
@@ -1267,6 +1332,10 @@ export const METHODS = [
   'slack_remove_allowed',
   'slack_remove_channel',
   'slack_status',
+  'source_add',
+  'source_get',
+  'source_list',
+  'source_refresh',
   'speak',
   'spend_report',
   'steer',

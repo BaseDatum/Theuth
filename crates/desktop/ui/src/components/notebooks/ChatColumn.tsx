@@ -11,7 +11,7 @@ import { useNotebook, useNotebookChats } from '@/components/notebooks/useNoteboo
 import { ago } from '@/components/sidebar/AgentTree'
 import { Button } from '@/components/ui/button'
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
-import type { AttachRef, Kind } from '@/lib/attach'
+import type { AttachRef } from '@/lib/attach'
 import { notebookKeys, useNotebooksApi } from '@/lib/notebooks-rpc'
 import { queryKeys, useApi } from '@/lib/rpc'
 import type { DocSummary } from '@/rpc/bindings/DocSummary'
@@ -75,7 +75,7 @@ export function ChatColumn({ notebook, title, notes, composerOnly = false }: { n
   useLoadSession(session)
   const row = useNotebook(notebook).data
   const sources = row?.sources ?? 0
-  const pinned: AttachRef = { kind: 'notebook' as Kind, id: notebook, title, meta: `${sources} sources · ${notes.length} notes` }
+  const pinned: AttachRef = { kind: 'notebook', id: notebook, title, meta: `${sources} sources · ${notes.length} notes` }
   const onChanged = () => {
     void qc.invalidateQueries({ queryKey: notebookKeys.items(notebook) })
     void qc.invalidateQueries({ queryKey: queryKeys.notes })

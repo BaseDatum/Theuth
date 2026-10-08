@@ -19,6 +19,7 @@ const s = (id: string, project: string | null, updated_at: string, pinned = fals
   pinned,
   archived,
   project,
+  notebook: null,
   retention: 'durable',
   running: false,
   owner: '',

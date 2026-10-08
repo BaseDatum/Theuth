@@ -10,13 +10,16 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSepara
 import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
 import { extFor, putAttachment } from '@/lib/files'
-import { type SourceSpec, notebookKeys, useNotebooksApi } from '@/lib/notebooks-rpc'
+import { notebookKeys, useNotebooksApi } from '@/lib/notebooks-rpc'
+import type { SourceAddArgs } from '@/rpc/bindings/SourceAddArgs'
 import { queryKeys, useApi } from '@/lib/rpc'
 import { formatAt } from '@/lib/time'
 import { detectFile, detectUrl, sourceTitle } from './origin'
 
 type Which = 'url' | 'meeting' | 'paste' | 'chat' | 'confluence' | 'jira'
 
+/** The one origin field of `source_add` (§13.2). */
+type SourceSpec = Partial<Pick<SourceAddArgs, 'path' | 'url' | 'text' | 'meeting' | 'session' | 'mcp'>>
 /** `source_add` payload; `lead` is a toast shown while the engine works (`Adding YouTube video…`), `as` words the success. */
 type Add = { spec: SourceSpec; title: string | null; lead?: string; as?: string }
 
@@ -29,7 +32,7 @@ export function AddSourceMenu({ notebook }: { notebook: string }) {
   const add = useMutation({
     mutationFn: ({ spec, title, lead }: Add) => {
       if (lead) toast(lead)
-      return nb.source_add(notebook, spec, title)
+      return nb.source_add({ notebook, path: null, url: null, text: null, meeting: null, session: null, mcp: null, title, ...spec })
     },
     onSuccess: (s, v) => {
       toast(`Added ${v.as ? `${v.as} ` : ''}“${sourceTitle(s)}”`)

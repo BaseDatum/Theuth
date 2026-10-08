@@ -22,7 +22,7 @@ import { Button } from '@/components/ui/button'
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { fmtBytes } from '@/lib/files'
 import { notebookKeys, useNotebooksApi } from '@/lib/notebooks-rpc'
-import type { Source } from '@/lib/notebooks-types'
+import type { NotebookSource } from '@/rpc/bindings/NotebookSource'
 import { useApi } from '@/lib/rpc'
 import { formatAt } from '@/lib/time'
 import { cn } from '@/lib/utils'
@@ -98,7 +98,7 @@ function Insights() {
   )
 }
 
-function Details({ source, nb }: { source: Source; nb?: string }) {
+function Details({ source, nb }: { source: NotebookSource; nb?: string }) {
   const api = useApi()
   const nbApi = useNotebooksApi()
   const qc = useQueryClient()

@@ -1,5 +1,7 @@
-// 144 §12.1–§12.2: the words and glyphs a source card and page draw from `Source` / `SourceOrigin`. Pure.
-import type { ContextLevel, Source, SourceOrigin } from '@/lib/notebooks-types'
+// 144 §12.1–§12.2: the words and glyphs a source card and page draw from `NotebookSource` / `SourceOrigin`. Pure.
+import type { ContextLevel } from '@/rpc/bindings/ContextLevel'
+import type { NotebookSource } from '@/rpc/bindings/NotebookSource'
+import type { SourceOrigin } from '@/rpc/bindings/SourceOrigin'
 
 export const LEVELS: readonly ContextLevel[] = ['off', 'mention', 'summary', 'full']
 
@@ -85,7 +87,7 @@ export function agoText(ms: number, now = Date.now()): string {
 const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? '' : 's'}`
 
 /** The card's second line: `file · 48 pages · fetched 3 d ago · 1 insight`, `youtube · 41 min · transcript route: audio → local STT`. */
-export function originLine(source: Source, now = Date.now()): string {
+export function originLine(source: NotebookSource, now = Date.now()): string {
   const parts = [originLabel(source.origin)]
   if (source.pages) parts.push(plural(source.pages, 'page'))
   else if (source.duration_ms) parts.push(`${Math.round(Number(source.duration_ms) / 60_000)} min`)
@@ -101,7 +103,7 @@ const TRANSCRIBED: Partial<Record<SourceOrigin['kind'], true>> = { youtube: true
 export type StatusTone = 'ok' | 'run' | 'fail' | 'muted'
 
 /** The status word at the card's right: `ready`, `transcribing 62 %`, `queued`, `failed · retry`. */
-export function statusWord(source: Source): { text: string; tone: StatusTone } {
+export function statusWord(source: NotebookSource): { text: string; tone: StatusTone } {
   switch (source.status) {
     case 'completed':
       return { text: 'ready', tone: 'ok' }
@@ -118,7 +120,7 @@ export function statusWord(source: Source): { text: string; tone: StatusTone } {
 }
 
 /** Audio/video/YouTube, or anything with a duration: shows the scrubber (§12.2). */
-export const isMedia = (source: Source): boolean =>
+export const isMedia = (source: NotebookSource): boolean =>
   source.origin.kind === 'youtube' || source.origin.kind === 'audio' || source.origin.kind === 'video' || source.duration_ms !== null
 
 /** `youtube.com/…` or `youtu.be/…`, with or without a scheme and `www.`. */
@@ -135,4 +137,4 @@ export function detectFile(name: string): 'audio' | 'video' | 'file' {
 }
 
 /** The document's title, else what the origin can say about itself. */
-export const sourceTitle = (source: Source): string => source.doc.title || originDetail(source.origin)
+export const sourceTitle = (source: NotebookSource): string => source.doc.title || originDetail(source.origin)

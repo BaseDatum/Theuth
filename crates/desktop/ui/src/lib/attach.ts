@@ -5,6 +5,7 @@
 // chip and the line the model reads all carry the same words.
 
 import type { DocSummary } from '@/rpc/bindings/DocSummary'
+import type { BlockHit } from '@/rpc/bindings/BlockHit'
 import type { HistorySearchHit } from '@/rpc/bindings/HistorySearchHit'
 import type { MeetingSummary } from '@/rpc/bindings/MeetingSummary'
 import type { Meta } from '@/rpc/bindings/Meta'
@@ -103,6 +104,8 @@ export type Source =
   | { kind: 'session'; session: SessionSummary }
   | { kind: 'session'; hit: SearchHit }
   | { kind: 'meeting'; meeting: MeetingSummary }
+  | { kind: 'notebook'; hit: BlockHit }
+  | { kind: 'source'; hit: BlockHit }
 
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
 
@@ -139,6 +142,9 @@ export function title(src: Source, now: Date = new Date()): string {
       return chatName('hit' in src ? src.hit : src.session, now)
     case 'meeting':
       return src.meeting.title || src.meeting.process_name || `Meeting · ${date(src.meeting.started_at, now)}`
+    case 'notebook':
+    case 'source':
+      return src.hit.title || `Untitled ${src.kind}`
   }
 }
 
@@ -171,6 +177,9 @@ export function subtitle(src: Source, now: Date = new Date()): string {
       if (m.state !== 'Done') parts.push(typeof m.state === 'string' ? m.state.toLowerCase() : 'processing')
       return parts.join(' · ')
     }
+    case 'notebook':
+    case 'source':
+      return [src.kind, src.hit.heading, src.hit.block ? `#${src.hit.block}` : ''].filter(Boolean).join(' · ')
   }
 }
 
@@ -187,6 +196,9 @@ export function idOf(src: Source): string {
       return 'hit' in src ? src.hit.session : src.session.id
     case 'meeting':
       return src.meeting.id
+    case 'notebook':
+    case 'source':
+      return src.hit.doc
   }
 }
 

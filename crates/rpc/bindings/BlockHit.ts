@@ -21,7 +21,7 @@ kind: DocKind,
  */
 title: string, 
 /**
- * The block id (an outline id; opens the editor at the block).
+ * The block id (an outline id; opens the editor at the block). Empty when the title matched.
  */
 block: string, 
 /**
@@ -33,7 +33,7 @@ heading: string | null,
  */
 score: number, 
 /**
- * Snippet with highlight ranges; `field` is `heading` or `text`.
+ * Snippet with highlight ranges; `field` is `title`, `heading` or `text`.
  */
 match: TextMatch, 
 /**

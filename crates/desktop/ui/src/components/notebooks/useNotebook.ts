@@ -1,16 +1,17 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useEffect } from 'react'
-import type { Source, SourceEvent, SourceStatus } from '@/lib/notebooks-types'
+import type { NotebookSource } from '@/rpc/bindings/NotebookSource'
+import type { SourceEvent } from '@/rpc/bindings/SourceEvent'
+import type { SourceStatus } from '@/rpc/bindings/SourceStatus'
 import { notebookKeys, useNotebooksApi } from '@/lib/notebooks-rpc'
 import { useApi } from '@/lib/rpc'
-import { fixtureMarkdown } from '@/dev/notebooks-fixture'
 import { on } from '@/store/sessions'
 import type { WireEvent } from '@/rpc/events'
 
-/** `notebook_get(id)` — the row with counts. */
+/** `notebook_get(id)` — the row with counts (the items come from `useNotebookItems`). */
 export function useNotebook(id: string) {
   const nb = useNotebooksApi()
-  return useQuery({ queryKey: notebookKeys.one(id), queryFn: () => nb.notebook_get(id) })
+  return useQuery({ queryKey: notebookKeys.one(id), queryFn: async () => (await nb.notebook_get(id)).notebook })
 }
 
 /** `notebook_items_list(id)` — live rows only (removed_ms null). */
@@ -30,8 +31,8 @@ export function useSources(notebook: string | null) {
     const apply = (raw: unknown) => {
       const ev = sourceEventOf(raw)
       if (!ev) return
-      qc.setQueriesData<Source[]>({ queryKey: ['notebooks', 'sources'] }, (rows) => rows?.map((s) => (s.doc.id === ev.source ? applySourceEvent(s, ev) : s)))
-      qc.setQueryData<Source>(notebookKeys.source(ev.source), (s) => (s ? applySourceEvent(s, ev) : s))
+      qc.setQueriesData<NotebookSource[]>({ queryKey: ['notebooks', 'sources'] }, (rows) => rows?.map((s) => (s.doc.id === ev.source ? applySourceEvent(s, ev) : s)))
+      qc.setQueryData<NotebookSource>(notebookKeys.source(ev.source), (s) => (s ? applySourceEvent(s, ev) : s))
       if (ev.type === 'Changed') void qc.invalidateQueries({ queryKey: ['notebooks', 'sources'] })
     }
     // The bus is typed by `WireEvent`, which predates `SourceEvent`; subscribe by the tags §13.1 writes.
@@ -56,7 +57,7 @@ export function useNotebookChats(id: string) {
 /** The notebook document's markdown — the description (§3.2). */
 export function useDescription(id: string) {
   const api = useApi()
-  return useQuery({ queryKey: notebookKeys.description(id), queryFn: () => fixtureMarkdown(id) ?? api.doc_markdown(id) })
+  return useQuery({ queryKey: notebookKeys.description(id), queryFn: () => api.doc_markdown(id) })
 }
 
 /** First non-empty, non-heading line of a markdown body, for the header and the Library row. */
@@ -80,7 +81,7 @@ export function sourceEventOf(raw: unknown): SourceEvent | null {
 }
 
 /** Pure: fold one event into a card. A `Changed` sets the status word; a `Progress` only the percent. */
-export function applySourceEvent(s: Source, ev: SourceEvent): Source {
+export function applySourceEvent(s: NotebookSource, ev: SourceEvent): NotebookSource {
   return ev.type === 'Changed'
     ? { ...s, status: ev.status, progress: ev.status === 'completed' || ev.status === 'failed' ? null : s.progress }
     : { ...s, status: 'running', progress: ev.percent }

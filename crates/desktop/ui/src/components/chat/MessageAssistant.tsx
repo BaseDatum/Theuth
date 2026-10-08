@@ -201,8 +201,8 @@ function NotebookActions({ session, turn, nbc }: { session: string; turn: number
   const nb = useNotebooksApi()
   const fail = (e: unknown) => toast.error(e instanceof Error ? e.message : String(e))
   const save = () =>
-    nb.save_answer_as_note(session, turn, nbc.notebook).then((doc) => {
-      toast(`Saved as “${doc.title}”`)
+    nb.save_answer_as_note(session, turn, nbc.notebook).then(() => {
+      toast('Saved as a note')
       nbc.onChanged()
     }, fail)
   const promote = (note: DocSummary) =>

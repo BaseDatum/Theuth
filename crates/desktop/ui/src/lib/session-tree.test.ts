@@ -24,6 +24,7 @@ const s = (id: string, parent: string | null = null, desk?: string): SessionSumm
   pinned: false,
   archived: false,
   project: null,
+  notebook: null,
   retention: 'durable',
   running: false,
   owner: '',

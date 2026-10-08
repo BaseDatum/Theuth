@@ -35,10 +35,6 @@ export function dragSource(ref: () => AttachRef): { draggable: boolean; onDragSt
 export function useOpenRef(): (ref: AttachRef) => void {
   const navigate = useNavigate()
   return (ref) => {
-    // 144 §12.4/§8: `notebook` and `source` refs exist before `Kind` lists them (the contract worker widens `lib/attach`).
-    const kind: string = ref.kind
-    if (kind === 'notebook') return void navigate({ to: '/notebooks/$id', params: { id: ref.id }, search: {} })
-    if (kind === 'source') return void navigate({ to: '/sources/$id', params: { id: ref.id }, search: {} })
     switch (ref.kind) {
       case 'note':
         return void navigate({ to: '/notes/$id', params: { id: ref.id }, search: {} })
@@ -56,6 +52,10 @@ export function useOpenRef(): (ref: AttachRef) => void {
         return void navigate({ to: '/c/$session', params: { session: ref.id }, search: {} })
       case 'meeting':
         return void navigate({ to: '/meetings/$id', params: { id: ref.id } })
+      case 'notebook':
+        return void navigate({ to: '/notebooks/$id', params: { id: ref.id }, search: {} })
+      case 'source':
+        return void navigate({ to: '/sources/$id', params: { id: ref.id }, search: {} })
     }
   }
 }

@@ -1,5 +1,5 @@
 // 144 §6.1: the `theuth://` citation grammar, pure. `Citations.tsx` renders; `BoardReader`/`Editor` route clicks.
-import type { CiteKind } from '@/lib/notebooks-types'
+import type { CiteKind } from '@/rpc/bindings/CiteKind'
 
 export type Cite = { href: string; kind: CiteKind; id: string; locator: string | null; sha8: string | null }
 

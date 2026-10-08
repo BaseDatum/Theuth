@@ -1,12 +1,13 @@
 import { expect, test } from 'vitest'
-import type { Source, SourceOrigin } from '@/lib/notebooks-types'
+import type { NotebookSource } from '@/rpc/bindings/NotebookSource'
+import type { SourceOrigin } from '@/rpc/bindings/SourceOrigin'
 import { agoText, detectFile, detectUrl, isMedia, originGlyph, originLabel, originLine, sourceTitle, statusWord } from './origin'
 
 const NOW = Date.UTC(2026, 9, 8, 12)
 const DAY = 86_400_000
 
-const source = (origin: SourceOrigin, extra: Partial<Source> = {}): Source => ({
-  doc: { id: 'd1', kind: 'source', title: 'T', binding: 'notebook', created_ms: 0n, updated_ms: 0n, bytes: 0n } as unknown as Source['doc'],
+const source = (origin: SourceOrigin, extra: Partial<NotebookSource> = {}): NotebookSource => ({
+  doc: { id: 'd1', kind: 'source', title: 'T', binding: 'notebook', created_ms: 0n, updated_ms: 0n, bytes: 0n } as unknown as NotebookSource['doc'],
   origin,
   status: 'completed',
   progress: null,
@@ -91,6 +92,6 @@ test('media detection, url/file detection, and the title fallback', () => {
   expect(detectFile('clip.mov')).toBe('video')
   expect(detectFile('runbook.pdf')).toBe('file')
   expect(detectFile('Makefile')).toBe('file')
-  expect(sourceTitle(source({ kind: 'url', url: 'https://x', canonical: 'https://x/c' }, { doc: { title: '' } as unknown as Source['doc'] }))).toBe('https://x/c')
+  expect(sourceTitle(source({ kind: 'url', url: 'https://x', canonical: 'https://x/c' }, { doc: { title: '' } as unknown as NotebookSource['doc'] }))).toBe('https://x/c')
   expect(sourceTitle(source({ kind: 'url', url: 'https://x', canonical: null }))).toBe('T')
 })

@@ -20,8 +20,9 @@ import {
 import { Button } from '@/components/ui/button'
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
 import { Skeleton } from '@/components/ui/skeleton'
-import type { Notebook } from '@/lib/notebooks-types'
-import { type NotebookDeletePreview, notebookKeys, useNotebooksApi } from '@/lib/notebooks-rpc'
+import type { Notebook } from '@/rpc/bindings/Notebook'
+import type { DeletePreview } from '@/rpc/bindings/DeletePreview'
+import { notebookKeys, useNotebooksApi } from '@/lib/notebooks-rpc'
 
 const route = getRouteApi('/notebooks')
 
@@ -90,7 +91,7 @@ function Row({ notebook: n, archived }: { notebook: Notebook; archived: boolean 
     },
     onError: (e) => toast.error(e.message),
   })
-  const [preview, setPreview] = useState<NotebookDeletePreview | null>(null)
+  const [preview, setPreview] = useState<DeletePreview | null>(null)
   const previewDelete = useMutation({
     mutationFn: () => nb.notebook_delete_preview(id),
     onSuccess: setPreview,
@@ -118,7 +119,7 @@ function Row({ notebook: n, archived }: { notebook: Notebook; archived: boolean 
     }
   }
   const desc = firstLine(description.data)
-  const exclusive = preview?.exclusive_sources ?? 0
+  const exclusive = preview?.sources_exclusive ?? 0
   return (
     <li className="group flex items-center gap-2 rounded-[10px] px-2.5 hover:bg-layer-2">
       <NotebookIcon className="size-4 shrink-0 text-fg-tertiary" />

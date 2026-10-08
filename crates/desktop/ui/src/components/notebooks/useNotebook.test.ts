@@ -1,12 +1,12 @@
 import { expect, test, vi } from 'vitest'
-import type { Source } from '@/lib/notebooks-types'
+import type { NotebookSource } from '@/rpc/bindings/NotebookSource'
 import { applySourceEvent, firstLine, sourceEventOf } from './useNotebook'
 
 vi.mock('@/lib/rpc', () => ({ useApi: () => ({}) }))
 vi.mock('@/store/sessions', () => ({ on: () => () => {} }))
 vi.mock('@/lib/notebooks-rpc', () => ({ notebookKeys: {}, useNotebooksApi: () => ({}) }))
 
-const running = { status: 'running', progress: 40 } as Source
+const running = { status: 'running', progress: 40 } as NotebookSource
 
 test('a bus frame becomes a SourceEvent only with the §13.1 fields; the tag case is tolerated', () => {
   expect(sourceEventOf({ type: 'Changed', source: 's1', status: 'completed' })).toEqual({ type: 'Changed', source: 's1', status: 'completed' })

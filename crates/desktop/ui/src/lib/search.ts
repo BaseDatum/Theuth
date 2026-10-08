@@ -76,8 +76,10 @@ export type SearchDestination =
   | { category: 'artifacts'; callId: string }
   | { category: 'knowledge'; id: string }
   | { category: 'knowledge_history'; id: string; commit: string; snapshot: string | null }
-  | { category: 'notes'; id: string }
+  | { category: 'notes'; id: string; block: string }
   | { category: 'meetings'; id: string }
+  | { category: 'sources'; id: string; block: string }
+  | { category: 'notebooks'; id: string; block: string }
 
 /** The search a destination was opened from; the query stays out of the URL. */
 export type SearchOrigin = { query: string; destination: SearchDestination }
@@ -169,7 +171,9 @@ export function isSearchDestination(origin: SearchOrigin | null, destination: Se
         o.snapshot === destination.snapshot
       )
     case 'notes':
-      return o.category === 'notes' && o.id === destination.id
+    case 'sources':
+    case 'notebooks':
+      return o.category === destination.category && o.id === destination.id && o.block === destination.block
     case 'meetings':
       return o.category === 'meetings' && o.id === destination.id
   }
