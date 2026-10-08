@@ -468,7 +468,7 @@ impl Indexer {
             };
             if let Some(fresh) = fresh {
                 for ((i, _), v) in pending.iter().zip(fresh) {
-                    blobs[i] = Some(db::to_blob(&v));
+                    blobs[*i] = Some(db::to_blob(&v));
                 }
                 vectors = chunks
                     .iter()
@@ -519,7 +519,7 @@ impl Indexer {
         for kind in INDEXABLE {
             docs.extend(self.store.list(Some(kind), WALK_LIMIT).await?);
         }
-        docs.sort_by(|a, b| b.updated_ms.cmp(&a.updated_ms));
+        docs.sort_by_key(|d| std::cmp::Reverse(d.updated_ms));
         let live: BTreeSet<&str> = docs.iter().map(|d| d.id.as_str()).collect();
         let model = self.model().await;
         let ix = Index::open(
@@ -616,7 +616,7 @@ impl Indexer {
                 .filter(|n| {
                     models
                         .get(&n.doc)
-                        .is_some_and(|mm| mm.as_deref() == Some(&m.model))
+                        .is_some_and(|mm| mm.as_deref() == Some(m.model.as_str()))
                 })
                 .map(|n| (n.doc, n.block))
                 .collect();

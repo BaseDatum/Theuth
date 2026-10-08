@@ -78,12 +78,12 @@ pub struct Lexical {
     pub hsnip: String,
 }
 
-/// A vector hit: cosine distance ascending is best.
+/// A vector hit, in cosine-distance order (nearest first); the distance itself is not read —
+/// RRF uses the rank.
 #[derive(Clone, Debug, sqlx::FromRow)]
 pub struct Nearest {
     pub doc: String,
     pub block: String,
-    pub distance: f64,
 }
 
 /// Register `vec0` for every connection this process opens from now on (once).
@@ -156,10 +156,11 @@ impl Index {
                 .execute(&db)
                 .await?;
         }
-        sqlx::query(&format!(
+        // Only the dims (a number) are interpolated.
+        sqlx::query(sqlx::AssertSqlSafe(format!(
             "CREATE VIRTUAL TABLE IF NOT EXISTS nb_vec USING vec0(\
              rowid INTEGER PRIMARY KEY, embedding {want}, doc TEXT, block TEXT, chunk INTEGER, sha TEXT)"
-        ))
+        )))
         .execute(&db)
         .await?;
         let ix = Index { db, dims };
@@ -182,16 +183,6 @@ impl Index {
                 .fetch_all(&self.db)
                 .await?;
         Ok(rows.into_iter().collect())
-    }
-
-    /// `(block, text_sha)` of `doc`'s rows.
-    pub async fn block_shas(&self, doc: &str) -> anyhow::Result<Vec<(String, String)>> {
-        Ok(
-            sqlx::query_as("SELECT block, text_sha FROM nb_blocks WHERE doc = ? ORDER BY ord")
-                .bind(doc)
-                .fetch_all(&self.db)
-                .await?,
-        )
     }
 
     /// `doc`'s vectors by chunk sha (reused across a re-index when the chunk text is unchanged).
@@ -305,7 +296,8 @@ impl Index {
         push_in(&mut sql, "doc", docs);
         push_in(&mut sql, "kind", kinds);
         sql.push_str(" ORDER BY bm25(nb_blocks, 0, 0, 0, 0, 3.0, 1.0) LIMIT ?");
-        let mut q = sqlx::query_as::<_, Lexical>(&sql).bind(fts);
+        // Only consts and `?` placeholder lists are interpolated; every value is bound.
+        let mut q = sqlx::query_as::<_, Lexical>(sqlx::AssertSqlSafe(sql)).bind(fts);
         for v in docs
             .into_iter()
             .flatten()
@@ -323,12 +315,14 @@ impl Index {
         docs: Option<&[String]>,
         k: u32,
     ) -> anyhow::Result<Vec<Nearest>> {
-        let mut sql = String::from(
-            "SELECT doc, block, distance FROM nb_vec WHERE embedding MATCH ? AND k = ?",
-        );
+        let mut sql =
+            String::from("SELECT doc, block FROM nb_vec WHERE embedding MATCH ? AND k = ?");
         push_in(&mut sql, "doc", docs);
         sql.push_str(" ORDER BY distance");
-        let mut q = sqlx::query_as::<_, Nearest>(&sql).bind(embedding).bind(k);
+        // Only the `?` placeholder list is interpolated; every value is bound.
+        let mut q = sqlx::query_as::<_, Nearest>(sqlx::AssertSqlSafe(sql))
+            .bind(embedding)
+            .bind(k);
         for v in docs.into_iter().flatten() {
             q = q.bind(v);
         }
@@ -390,7 +384,8 @@ mod tests {
     fn fts_query_quotes_words_and_drops_operators() {
         assert_eq!(
             fts_query("fail-over AND \"x\""),
-            "\"fail-over\" OR \"\"\"x\"\"\""
+            "\"fail-over\" OR \"AND\" OR \"\"\"x\"\"\"",
+            "operators are text"
         );
         assert_eq!(fts_query("  -  "), "");
     }
