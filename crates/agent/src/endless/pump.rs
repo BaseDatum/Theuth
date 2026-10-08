@@ -246,7 +246,7 @@ impl Live {
             mode: meta.mode,
             filter: meta.filter,
             base: meta.base,
-            view_bytes: None,
+            view_bytes: meta.view_bytes,
             units: Vec::new(),
             tree: Tree::default(),
             fold: None,
@@ -345,6 +345,7 @@ pub(crate) async fn attach(
             live.mode = meta.mode;
             live.filter = meta.filter;
             live.base = meta.base;
+            live.view_bytes = meta.view_bytes;
             live.invalidate();
             drop(live);
             state
@@ -801,12 +802,21 @@ pub(crate) fn nudge(inner: &Inner, session: SessionId) {
     }
 }
 
-pub(crate) fn set_view_bytes(inner: &Inner, session: SessionId, bytes: u32) {
+pub(crate) async fn set_view_bytes(
+    inner: &Inner,
+    session: SessionId,
+    bytes: Option<u32>,
+) -> anyhow::Result<()> {
+    inner
+        .store_for(session)
+        .set_endless_view_bytes(session, bytes)
+        .await?;
     if let Some(state) = state_of(inner, session) {
         let mut live = state.live.lock();
-        live.view_bytes = Some(bytes);
+        live.view_bytes = bytes;
         live.invalidate();
     }
+    Ok(())
 }
 
 /// R1-D1 / R1-D6: the view rendered now, under the session's budget or
@@ -1128,6 +1138,7 @@ pub(crate) async fn memory(inner: &Inner, session: SessionId) -> anyhow::Result<
         units: live.t(),
         stats,
         model: state.compactor.model_id().to_owned(),
+        view_bytes: live.fold_cfg(&state.cfg).view_bytes,
         backfill: live.backfill(),
     })
 }

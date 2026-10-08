@@ -331,7 +331,7 @@ fn wire_types_round_trip() {
     assert_eq!(v["type"], "EndlessProgress");
     assert_eq!(serde_json::from_value::<EndlessProgress>(v).unwrap(), ev);
     let mem: SessionMemory = serde_json::from_str(
-        r#"{"mode":"endless","view":[{"id":0,"n":2,"level":1,"text":"x","built":true}],"settling":false,"unbuilt":0,"units":2,"stats":{"calls":1,"guard_trips":{"copy":0,"grounding":0,"status":0,"format":0,"empty":0,"size":0},"input_tokens":1,"cache_read_tokens":0,"cache_write_tokens":0,"output_tokens":1,"usd_estimate":0.0},"model":"m","backfill":null}"#,
+        r#"{"mode":"endless","view":[{"id":0,"n":2,"level":1,"text":"x","built":true}],"settling":false,"unbuilt":0,"units":2,"stats":{"calls":1,"guard_trips":{"copy":0,"grounding":0,"status":0,"format":0,"empty":0,"size":0},"input_tokens":1,"cache_read_tokens":0,"cache_write_tokens":0,"output_tokens":1,"usd_estimate":0.0},"model":"m","view_bytes":128000,"backfill":null}"#,
     )
     .unwrap();
     assert_eq!(mem.view[0].n, 2);
@@ -404,6 +404,23 @@ async fn backfill_cap_sets_base_and_keeps_raw_history_reachable() {
         snap.iter().map(|b| b.text.as_str()).collect::<String>(),
         r.text()
     );
+    // R1b: the budget is the user's, persisted, and shown in `SessionMemory`.
+    assert_eq!(endless.memory(id).await.unwrap().view_bytes, 16_000);
+    endless.set_view_bytes(id, Some(40_000)).await.unwrap();
+    assert_eq!(
+        store.endless_meta(id).await.unwrap().view_bytes,
+        Some(40_000)
+    );
+    assert_eq!(endless.memory(id).await.unwrap().view_bytes, 40_000);
+    endless.detach(id);
+    endless.attach(id, attached()).await.unwrap();
+    assert_eq!(
+        endless.memory(id).await.unwrap().view_bytes,
+        40_000,
+        "survives a restart"
+    );
+    endless.set_view_bytes(id, None).await.unwrap();
+    assert_eq!(endless.memory(id).await.unwrap().view_bytes, 16_000);
     let small = endless.render_with_budget(id, 16_000).await.unwrap();
     assert!(!small.is_empty());
 }
