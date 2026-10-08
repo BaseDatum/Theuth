@@ -14318,6 +14318,7 @@ mod tests {
             log: "/tmp/j.log".into(),
             name: None,
             pty: false,
+            kind: tools::JobKind::Shell,
         }));
         let screen = |rows: &[&str]| {
             UiEvent::Job(JobEvent::Screen {
@@ -14732,6 +14733,7 @@ mod tests {
             log: "/tmp/j.log".into(),
             name: None,
             pty: false,
+            kind: tools::JobKind::Shell,
         };
         m.apply(UiEvent::Job(started(s, "j1")));
         m.apply(UiEvent::Job(started(s, "j2")));
@@ -14748,6 +14750,7 @@ mod tests {
             output: String::new(),
             inline: false,
             pty: false,
+            kind: tools::JobKind::Shell,
         }));
         assert!(m.status().ends_with("1 job(s)"), "{}", m.status());
         m.apply_agent(AgentEvent::MessageDelivered {
@@ -14795,6 +14798,7 @@ mod tests {
                 log: "/tmp/j.log".into(),
                 name: None,
                 pty: false,
+                kind: tools::JobKind::Shell,
             })
         };
         m.apply(started("j1", "c1"));
@@ -14854,6 +14858,7 @@ mod tests {
                 output: String::new(),
                 inline,
                 pty: false,
+                kind: tools::JobKind::Shell,
             })
         };
         m.apply(finished("j1", true));
