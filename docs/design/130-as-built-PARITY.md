@@ -57,9 +57,33 @@ Keys and legend: the new options use keys 1 and 2, which the grammar and legend 
 item, so no key table changed. `PanelView.swift:121` synthesises an "Open in theuth" row only for option-less cards —
 hire and blocked cards now show their real options instead, as on Windows (the O hint row is unchanged).
 
+### 1.4 Item 4 (addendum 04:15) — the Ask bar receipt shows a failed desk turn
+
+The receipt stayed at "sent — waiting for the desk" when the desk's turn failed (seen live on build-B 04:06:
+`model: Resolver error … ApiKeyEnvNotFound { env_name: "ANTHROPIC_API_KEY" }`): `AskRouter.observe` dropped
+`stop_reason` and required streamed text before a `TurnFinished` could end the reply, and the engine's live
+`AgentEvent::Error { session, turn, message }` (`crates/agent/src/lib.rs:2266`) was never decoded.
+
+- `Sources/CompanionCore/AskRouter.swift:73-106` — `ReplyEvent.turnFinished(session:stopReason:)` (the reason is
+  carried) and `ReplyEvent.error(session:message:)`. `observe`: `stop_reason == "error"` → failure "the turn failed";
+  `"cancelled"` → "the turn was cancelled" (both end the reply even with nothing streamed); any other reason keeps the
+  old "nothing streamed yet = not our turn" guard. An `Error` on the desk session ends the reply with the message's first
+  line clipped to 80 characters (`AskReply.clip`, `:130-135`); a trailing `TurnFinished` then changes nothing.
+- `AskRouter.swift:108-136` — `AskReply.failure: String?` and `receiptText`: `"couldn't reply — <failure>"` when set,
+  `firstTwoLines` otherwise. The row reads **"theuth · couldn't reply — model: Resolver error … "**, still a
+  `.reply` receipt, so `Open ⌘O` keeps working and the 12 s expiry applies; the Done-zone receipt gets the same line.
+- `Sources/Companion/AskBar/Store+Ask.swift:104,126-127,132` — the raw `Delta` also reads `stop_reason` and `message`;
+  `"Error"` events feed `.error`; the receipt text comes from `receiptText`.
+
+Tests (`AskTests.swift`): `replyCollectsOnlyTheDeskUntilItsTurnEnds` now passes `stopReason: "end_turn"` and checks a
+normal reply is unchanged; `aFailedOrCancelledDeskTurnEndsTheReplyWithTheReason` covers the `Error` event (other session
+ignored, first line clipped, trailing `TurnFinished` inert), `stop_reason: "error"` with nothing streamed,
+`"cancelled"` after partial text, and an empty error message. **91 tests in 21 suites** after this item.
+
 ## 2. Tests
 
-Before (main `ad153b20`): **81 tests in 18 suites**, green. After: **90 tests in 21 suites**, green
+Before (main `ad153b20`): **81 tests in 18 suites**, green. After: **90 tests in 21 suites** (items 1–3), **91** with
+item 4, green
 (`BUILD_LABEL=130-parity ~/.theuth/bin/build-lock bash test.sh`, Swift Testing, no XCTest). Release build:
 `BUILD_LABEL=130-parity ~/.theuth/bin/build-lock swift build -c release` → `Build complete!` (only the pre-existing
 `NSEvent`/`Sendable` warnings in Legend/AttentionPanel/AskBarPanel).
@@ -99,3 +123,8 @@ Changed, `Tests/CompanionCoreTests/CompanionCoreTests.swift`:
    protocols have no defaults to test, and a pre-W2 engine answers `rpc -32601` through the same `catch`.
 4. **Commit granularity**: `4383bca2` (defects + `Commit.swift`) does not build on its own — `Commit.run` already
    switches over the three new cases that land in `14a0c403`. Both commits together are the deliverable.
+5. **Item 4 wording and decoding.** `feat/134-w6-polish` was not on `basedatum` when this landed, so the addendum's
+   wording is used: `theuth · couldn't reply — <first line, ≤ 80 chars>` (the row's own "who · " prefix supplies
+   "theuth"). `TheuthKit.WireEvent` was not extended with an `Error` case: the Ask bar's reply stream decodes the raw
+   line in `Store+Ask.swift` (`Delta`, which also carries `TextDelta` — not a `WireEvent`), so the two new fields went
+   there; a `WireEvent.error` nobody reads would be dead weight. Add it when a second reader appears.
