@@ -1,0 +1,37 @@
+[package]
+name = "dreaming"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+description = "Dreaming: the nightly own-context routine that tidies knowledge, mines cases and tunes skills behind a gate (design doc 136)"
+
+[dependencies]
+runtime = { workspace = true }
+tools = { workspace = true }
+knowledge = { workspace = true }  # 136 §2.1 commands (Stats, Merge, …) and types
+agent = { workspace = true }  # 136 §2.2 `LedgerSince`, `SetBudget`, `AgentEvent`, the durable store handle
+schedule = { workspace = true }  # 136 §2.3 `FireWith` for `run_now`
+document = { workspace = true }  # 136 §2.4 the `Dreaming` journal document (W3)
+mesh = { workspace = true }  # the engine id written into signals.json (`home_engine`)
+kameo = { workspace = true }
+tokio = { workspace = true }
+parking_lot = { workspace = true }
+async-trait = { workspace = true }
+anyhow = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+serde_yaml = { workspace = true }  # 136 §2.7 `dreaming.set_settings` persists the section (W3)
+schemars = { workspace = true }
+chrono = { workspace = true }
+tracing = { workspace = true }
+ts-rs = { workspace = true, optional = true }
+
+[dev-dependencies]
+tempfile = "3"
+figment = { workspace = true }
+
+[features]
+ts = ["dep:ts-rs", "runtime/ts", "tools/ts", "knowledge/ts", "agent/ts", "schedule/ts"]
+
+[lints]
+workspace = true

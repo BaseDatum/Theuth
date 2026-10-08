@@ -64,6 +64,7 @@ talk = { path = "crates/talk" }  # live, interruptible spoken conversation over 
 meeting = { path = "crates/meeting" }  # meeting recorder: process tap + VPIO mic, three Opus tracks (53)
 decision = { path = "crates/decision" }  # local typed-probability oracle + selective gate (57)
 double = { path = "crates/double" }  # the owner's double: decision model + autonomy ladder (126)
+dreaming = { path = "crates/dreaming" }  # nightly own-context routine: knowledge tidy, cases, gated skill edits (136)
 codeindex = { path = "crates/codeindex" }  # tree-sitter tags → sqlite symbol/reference index per repo root (60)
 # Code index (design doc 60 §2.B): tree-sitter core + tags runner and the four grammar crates (each depends
 # only on `tree-sitter-language`); TS/TSX tags = the JS query + the TS supplement concatenated.
