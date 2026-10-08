@@ -272,7 +272,7 @@ export function AppSidebar({ session }: { session: string | undefined }) {
                 {/* Label in a span (see the Meeting row); the plus overhangs the icon wrapper like the Meeting dot. */}
                 <span className="relative inline-flex">
                   <StickyNote className="size-4" />
-                  <Plus className={cn('absolute -top-1 -right-1 size-2.5', NOTE_PLUS)} strokeWidth={3.5} aria-hidden />
+                  <Plus className={cn('absolute -top-1.5 -right-1.5 size-3', NOTE_PLUS)} strokeWidth={3.5} aria-hidden />
                 </span>
                 <span>Note</span>
               </button>
