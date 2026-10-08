@@ -1,0 +1,29 @@
+{
+ "jsonrpc": "2.0",
+ "id": 7,
+ "method": "session/request_permission",
+ "params": {
+  "sessionId": "sess_child_1",
+  "toolCall": {
+   "toolCallId": "call_child_2",
+   "title": "Write prices.md",
+   "kind": "edit",
+   "status": "pending",
+   "rawInput": {
+    "path": "prices.md"
+   }
+  },
+  "options": [
+   {
+    "optionId": "once",
+    "kind": "allow_once",
+    "name": "Allow once"
+   },
+   {
+    "optionId": "reject",
+    "kind": "reject_once",
+    "name": "Reject"
+   }
+  ]
+ }
+}

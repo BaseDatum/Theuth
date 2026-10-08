@@ -51,7 +51,10 @@ use crate::context::{
 use crate::loop_::text_of;
 use crate::todo::{Todo, TodoSnapshot, TodoSource};
 use crate::vision::{VisionImage, VisionNote};
-use crate::{ProjectStyle, SessionKind, SessionSummary};
+use crate::{
+    CostRule, ObservedMeta, ObservedSource, ObservedState, ProjectStyle, SessionKind,
+    SessionSummary,
+};
 
 pub mod accounting;
 pub mod advisor;
@@ -400,6 +403,15 @@ struct SessionRow {
     epoch: i64,
     kind: String,
     memory: String,
+    acp_session: Option<String>,
+    observed_source: Option<String>,
+    observed_state: Option<String>,
+    observed_stop: Option<String>,
+    observed_cancel: bool,
+    observed_description: Option<String>,
+    observed_tool_call: Option<String>,
+    observed_detail: Option<String>,
+    observed_cost_rule: Option<String>,
 }
 
 /// Scalar subquery: column `$col` of the root above the outer `sessions` row
@@ -432,7 +444,10 @@ macro_rules! session_cols {
             root_col!("archived"),
             " AS archived, ",
             root_col!("project"),
-            " AS project, sessions.owner, sessions.epoch, sessions.kind, sessions.memory"
+            " AS project, sessions.owner, sessions.epoch, sessions.kind, sessions.memory, \
+             sessions.acp_session, sessions.observed_source, sessions.observed_state, sessions.observed_stop, \
+             sessions.observed_cancel, sessions.observed_description, sessions.observed_tool_call, \
+             sessions.observed_detail, sessions.observed_cost_rule"
         )
     };
 }
@@ -442,6 +457,7 @@ impl SessionRow {
     /// lone engine), which decides `here` (68 §5).
     fn summary(self, me: &str) -> anyhow::Result<SessionSummary> {
         let r = self;
+        let observed = r.observed()?;
         Ok(SessionSummary {
             id: r.id.parse().context("bad session id")?,
             created_at: r.created_at.parse().context("bad created_at")?,
@@ -477,7 +493,111 @@ impl SessionRow {
             epoch: u32::try_from(r.epoch).context("bad epoch")?,
             kind: advisor::kind_of(&r.kind),
             memory: r.memory.parse().unwrap_or_default(),
+            observed,
         })
+    }
+
+    /// The watch-only facts (141 §5.1) when `observed_source` is set. Unknown
+    /// stored strings (a newer engine's values) fall back to `unknown` /
+    /// the source's default cost rule rather than failing the read.
+    fn observed(&self) -> anyhow::Result<Option<ObservedMeta>> {
+        let Some(source) = self.observed_source.as_deref() else {
+            return Ok(None);
+        };
+        let source: ObservedSource = source
+            .parse()
+            .map_err(|e: String| anyhow::anyhow!("{e} on session {}", self.id))?;
+        let state = self
+            .observed_state
+            .as_deref()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(ObservedState::Unknown);
+        let cost_rule = self
+            .observed_cost_rule
+            .as_deref()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or_else(|| default_cost_rule(source));
+        let detail = match self.observed_detail.as_deref() {
+            Some(raw) => serde_json::from_str(raw)
+                .with_context(|| format!("bad observed_detail on session {}", self.id))?,
+            None => serde_json::Value::Null,
+        };
+        Ok(Some(ObservedMeta {
+            source,
+            external: self.acp_session.clone().unwrap_or_default(),
+            state,
+            stop: self.observed_stop.clone(),
+            can_cancel: self.observed_cancel,
+            description: self.observed_description.clone(),
+            tool_call: self.observed_tool_call.clone(),
+            cost_rule,
+            detail,
+        }))
+    }
+}
+
+/// The cost rule a source implies when none was recorded (141 §7.6): omp
+/// background spawns count (sync spawns set `inside_parent` explicitly), RFD
+/// usage is display-only, opencode reports nothing.
+pub fn default_cost_rule(source: ObservedSource) -> CostRule {
+    match source {
+        ObservedSource::Rfd => CostRule::DisplayOnly,
+        ObservedSource::OpencodeExt | ObservedSource::OpencodeTask => CostRule::Unreported,
+        ObservedSource::OmpTask => CostRule::Counted,
+    }
+}
+
+/// One observation of a watch-only child for [`Store::upsert_observed`]
+/// (141 §11.2). Identity is `(parent, source, external)`; every other field
+/// is `None` = unchanged (`stop: Some(None)` clears the stop text). On
+/// creation the row gets `kind = observed`, no `agent`, `model` = the
+/// parent's `harness_model` (else its `model`) as the display fallback, and
+/// `harness_model` = `model` when given.
+#[derive(Clone, Debug)]
+pub struct ObservedUpsert<'a> {
+    /// The ACP child, or the observed parent when nested.
+    pub parent: SessionId,
+    /// Which feed describes the child.
+    pub source: ObservedSource,
+    /// The harness's own id for the child (`sessions.acp_session`).
+    pub external: &'a str,
+    /// Display name; also the title.
+    pub name: Option<&'a str>,
+    /// The child's own model (`harness_model`).
+    pub model: Option<&'a str>,
+    /// Lifecycle state.
+    pub state: Option<ObservedState>,
+    /// Stop reason / error text; `Some(None)` clears it.
+    pub stop: Option<Option<&'a str>>,
+    /// The harness accepts `session/cancel` for this child.
+    pub can_cancel: Option<bool>,
+    /// Roster card second line.
+    pub description: Option<&'a str>,
+    /// The spawning tool call id in the parent's transcript.
+    pub tool_call: Option<&'a str>,
+    /// Cost rule (141 §7.6); unset rows read as the source's default.
+    pub cost_rule: Option<CostRule>,
+    /// Live fields merged shallowly (top-level keys) into `observed_detail`.
+    pub detail: Option<&'a serde_json::Map<String, serde_json::Value>>,
+}
+
+impl<'a> ObservedUpsert<'a> {
+    /// Identity only; every other field unchanged.
+    pub fn new(parent: SessionId, source: ObservedSource, external: &'a str) -> Self {
+        Self {
+            parent,
+            source,
+            external,
+            name: None,
+            model: None,
+            state: None,
+            stop: None,
+            can_cancel: None,
+            description: None,
+            tool_call: None,
+            cost_rule: None,
+            detail: None,
+        }
     }
 }
 
@@ -1203,6 +1323,223 @@ impl Store {
         Ok(row.and_then(|(s,)| s))
     }
 
+    // ----- 141: watch-only children (`kind = 'observed'`) -----
+
+    /// Create or update a watch-only child (141 §11.2). Resolves the row by
+    /// `(parent, source, external)`; creates it (`kind = observed`, no
+    /// `agent`, cost owner under `parent`) when absent, else applies the
+    /// `Some` fields. `detail` merges shallowly into the stored JSON.
+    /// Returns the row id and whether it was created. One write transaction.
+    pub async fn upsert_observed(
+        &self,
+        u: ObservedUpsert<'_>,
+    ) -> anyhow::Result<(SessionId, bool)> {
+        let now = chrono::Utc::now().to_rfc3339();
+        let mut tx = self.begin_write().await?;
+        let found: Option<(String, Option<String>)> = sqlx::query_as(
+            "SELECT id, observed_detail FROM sessions \
+             WHERE parent = ? AND observed_source = ? AND acp_session = ?",
+        )
+        .bind(u.parent.to_string())
+        .bind(u.source.as_str())
+        .bind(u.external)
+        .fetch_optional(&mut *tx)
+        .await?;
+        let (id, created, stored_detail) = match found {
+            Some((id, detail)) => (
+                id.parse::<SessionId>().context("bad session id")?,
+                false,
+                detail,
+            ),
+            None => {
+                let parent: Option<(String, Option<String>)> =
+                    sqlx::query_as("SELECT model, harness_model FROM sessions WHERE id = ?")
+                        .bind(u.parent.to_string())
+                        .fetch_optional(&mut *tx)
+                        .await?;
+                let Some((parent_model, parent_harness_model)) = parent else {
+                    anyhow::bail!("observed child: parent {} has no row", u.parent);
+                };
+                let id = SessionId::new();
+                sqlx::query(
+                    "INSERT INTO sessions (id, created_at, updated_at, title, model, parent, name, owner, epoch, kind, \
+                     acp_session, observed_source, observed_state) \
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, 'observed', ?, ?, 'pending')",
+                )
+                .bind(id.to_string())
+                .bind(&now)
+                .bind(&now)
+                .bind(u.name.unwrap_or(""))
+                .bind(parent_harness_model.unwrap_or(parent_model))
+                .bind(u.parent.to_string())
+                .bind(u.name.unwrap_or(u.external))
+                .bind(&*self.me)
+                .bind(u.external)
+                .bind(u.source.as_str())
+                .execute(&mut *tx)
+                .await?;
+                accounting::ensure_owner_in(&mut tx, id, Some(u.parent)).await?;
+                (id, true, None)
+            }
+        };
+        let detail = match u.detail {
+            Some(patch) => {
+                let mut merged: serde_json::Map<String, serde_json::Value> = stored_detail
+                    .as_deref()
+                    .map(serde_json::from_str)
+                    .transpose()
+                    .with_context(|| format!("bad observed_detail on session {id}"))?
+                    .unwrap_or_default();
+                for (k, v) in patch {
+                    merged.insert(k.clone(), v.clone());
+                }
+                Some(serde_json::Value::Object(merged).to_string())
+            }
+            None => None,
+        };
+        // COALESCE(?, col) keeps a column when the bind is NULL; `stop` is the
+        // one field that can be cleared, so it binds a flag and a value.
+        sqlx::query(
+            "UPDATE sessions SET updated_at = ?, \
+             name = COALESCE(?, name), title = COALESCE(?, title), \
+             harness_model = COALESCE(?, harness_model), \
+             observed_state = COALESCE(?, observed_state), \
+             observed_stop = CASE WHEN ? THEN ? ELSE observed_stop END, \
+             observed_cancel = COALESCE(?, observed_cancel), \
+             observed_description = COALESCE(?, observed_description), \
+             observed_tool_call = COALESCE(?, observed_tool_call), \
+             observed_cost_rule = COALESCE(?, observed_cost_rule), \
+             observed_detail = COALESCE(?, observed_detail) \
+             WHERE id = ?",
+        )
+        .bind(&now)
+        .bind(u.name)
+        .bind(u.name)
+        .bind(u.model)
+        .bind(u.state.map(ObservedState::as_str))
+        .bind(u.stop.is_some())
+        .bind(u.stop.flatten())
+        .bind(u.can_cancel)
+        .bind(u.description)
+        .bind(u.tool_call)
+        .bind(u.cost_rule.map(CostRule::as_str))
+        .bind(detail)
+        .bind(id.to_string())
+        .execute(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        Ok((id, created))
+    }
+
+    /// The watch-only children directly under `parent` (not nested ones),
+    /// oldest first, each with its [`ObservedMeta`] (141 §7.2 seeds the
+    /// actor's map from this on `Connected`).
+    pub async fn observed_children(
+        &self,
+        parent: SessionId,
+    ) -> anyhow::Result<Vec<(SessionSummary, ObservedMeta)>> {
+        let rows: Vec<SessionRow> = sqlx::query_as(concat!(
+            "SELECT ",
+            session_cols!(),
+            " FROM sessions WHERE sessions.parent = ? AND sessions.observed_source IS NOT NULL \
+             ORDER BY sessions.created_at, sessions.id"
+        ))
+        .bind(parent.to_string())
+        .fetch_all(&self.read)
+        .await?;
+        rows.into_iter()
+            .map(|r| {
+                let s = r.summary(&self.me)?;
+                let m = s
+                    .observed
+                    .clone()
+                    .context("observed row without observed_source")?;
+                Ok((s, m))
+            })
+            .collect()
+    }
+
+    /// The row id of the watch-only child `(parent, source, external)` names, if any.
+    pub async fn observed_child(
+        &self,
+        parent: SessionId,
+        source: ObservedSource,
+        external: &str,
+    ) -> anyhow::Result<Option<SessionId>> {
+        let row: Option<(String,)> = sqlx::query_as(
+            "SELECT id FROM sessions WHERE parent = ? AND observed_source = ? AND acp_session = ?",
+        )
+        .bind(parent.to_string())
+        .bind(source.as_str())
+        .bind(external)
+        .fetch_optional(&self.read)
+        .await?;
+        row.map(|(id,)| id.parse().context("bad session id"))
+            .transpose()
+    }
+
+    /// The omp transcript byte offset read so far (`observed_cursor`); `None`
+    /// when nothing was read or the row is not observed.
+    pub async fn observed_cursor(&self, id: SessionId) -> anyhow::Result<Option<u64>> {
+        let row: Option<(Option<i64>,)> =
+            sqlx::query_as("SELECT observed_cursor FROM sessions WHERE id = ?")
+                .bind(id.to_string())
+                .fetch_optional(&self.read)
+                .await?;
+        row.and_then(|(c,)| c)
+            .map(|c| u64::try_from(c).context("negative observed_cursor"))
+            .transpose()
+    }
+
+    /// Persist the omp transcript byte offset after an applied batch (141 §7.3).
+    pub async fn set_observed_cursor(&self, id: SessionId, cursor: u64) -> anyhow::Result<()> {
+        let mut tx = self.begin_write().await?;
+        sqlx::query("UPDATE sessions SET observed_cursor = ? WHERE id = ?")
+            .bind(i64::try_from(cursor).context("observed_cursor overflows i64")?)
+            .bind(id.to_string())
+            .execute(&mut *tx)
+            .await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
+    /// Engine start (141 D11, §7.8): every non-terminal watch-only child whose
+    /// parent is not in `live_parents` becomes `unknown` / `"lost contact"`.
+    /// Terminal rows (`completed | failed | cancelled`) and already-`unknown`
+    /// rows are untouched. Returns the ids changed, for `ObservedChildChanged`.
+    pub async fn mark_observed_lost(
+        &self,
+        live_parents: &[SessionId],
+    ) -> anyhow::Result<Vec<SessionId>> {
+        let now = chrono::Utc::now().to_rfc3339();
+        let mut tx = self.begin_write().await?;
+        let rows: Vec<(String, Option<String>)> = sqlx::query_as(
+            "SELECT id, parent FROM sessions WHERE observed_source IS NOT NULL \
+             AND observed_state IN ('pending', 'running', 'requires_action', 'idle')",
+        )
+        .fetch_all(&mut *tx)
+        .await?;
+        let live: std::collections::HashSet<String> =
+            live_parents.iter().map(ToString::to_string).collect();
+        let mut lost = Vec::new();
+        for (id, parent) in rows {
+            if parent.is_some_and(|p| live.contains(&p)) {
+                continue;
+            }
+            sqlx::query(
+                "UPDATE sessions SET observed_state = 'unknown', observed_stop = 'lost contact', \
+                 updated_at = ? WHERE id = ?",
+            )
+            .bind(&now)
+            .bind(&id)
+            .execute(&mut *tx)
+            .await?;
+            lost.push(id.parse().context("bad session id")?);
+        }
+        tx.commit().await?;
+        Ok(lost)
+    }
+
     /// Record the model an external harness reports for this session
     /// (design doc 06 §8.2); published as [`crate::AgentEvent::HarnessModelChanged`].
     pub async fn set_harness_model(&self, id: SessionId, model: &str) -> anyhow::Result<()> {
@@ -1317,6 +1654,61 @@ impl Store {
         let seq = append_in(&mut tx, &id.to_string(), message).await?;
         tx.commit().await?;
         Ok(seq)
+    }
+
+    /// 141 R3 T7: a tool result that arrives after its call's turn was
+    /// stored — the call's response row still reads `stale` (the turn
+    /// closed it unfinished) → that row is rewritten; the call has no
+    /// response row yet (an earlier engine life stored the call alone) →
+    /// `response` is appended. `Ok(false)` when the transcript has no such
+    /// call or already holds its real result (nothing to do).
+    pub async fn finish_tool_call(
+        &self,
+        id: SessionId,
+        response: &ChatMessage,
+        stale: &str,
+    ) -> anyhow::Result<bool> {
+        let Some(call_id) = response
+            .content
+            .tool_responses()
+            .first()
+            .map(|r| r.call_id.clone())
+        else {
+            return Ok(false);
+        };
+        let mut called = false;
+        let mut answered: Option<(i64, bool)> = None;
+        for (seq, m) in self.messages(id).await? {
+            if m.content.tool_calls().iter().any(|c| c.call_id == call_id) {
+                called = true;
+            }
+            if let Some(r) = m
+                .content
+                .tool_responses()
+                .iter()
+                .find(|r| r.call_id == call_id)
+            {
+                answered = Some((seq, r.content == stale));
+            }
+        }
+        match answered {
+            Some((seq, true)) => {
+                let body = serde_json::to_string(response)?;
+                sqlx::query("UPDATE messages SET body = ? WHERE session_id = ? AND seq = ?")
+                    .bind(body)
+                    .bind(id.to_string())
+                    .bind(seq)
+                    .execute(&self.write)
+                    .await?;
+                Ok(true)
+            }
+            Some((_, false)) => Ok(false),
+            None if called => {
+                self.append(id, response).await?;
+                Ok(true)
+            }
+            None => Ok(false),
+        }
     }
 
     /// Append a vision consultation note with its typed metadata in one
@@ -3223,6 +3615,311 @@ mod tests {
         assert_eq!(h.messages.len(), 3);
         drop(store);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // ----- 141 §11.3: watch-only children -----
+
+    #[tokio::test]
+    async fn observed_upsert_is_idempotent_per_parent_source_external() {
+        let (store, root, dir) = fresh().await;
+        let acp = SessionId::new();
+        store
+            .create_session(acp, "m", Some(root), Some("omp"), None)
+            .await
+            .unwrap();
+        store.set_harness_model(acp, "anthropic/x").await.unwrap();
+
+        let mut first = ObservedUpsert::new(acp, ObservedSource::OmpTask, "ReadA");
+        first.name = Some("ReadA");
+        first.state = Some(ObservedState::Running);
+        first.tool_call = Some("toolu_1");
+        let detail = serde_json::json!({"tokens": 10, "agent": "scout"});
+        first.detail = detail.as_object();
+        let (child, created) = store.upsert_observed(first).await.unwrap();
+        assert!(created);
+
+        let row = store.session(child).await.unwrap().unwrap();
+        assert_eq!(row.kind, SessionKind::Observed);
+        assert_eq!(row.parent, Some(acp));
+        assert_eq!(row.agent, None, "nothing drives an observed row");
+        assert_eq!(
+            row.model, "anthropic/x",
+            "parent's harness model is the fallback"
+        );
+        assert_eq!(row.name.as_deref(), Some("ReadA"));
+        assert_eq!(row.title, "ReadA");
+        let m = row.observed.unwrap();
+        assert_eq!(m.source, ObservedSource::OmpTask);
+        assert_eq!(m.external, "ReadA");
+        assert_eq!(m.state, ObservedState::Running);
+        assert_eq!(m.cost_rule, CostRule::Counted, "omp default");
+        assert_eq!(m.tool_call.as_deref(), Some("toolu_1"));
+        assert_eq!(m.detail, detail);
+        assert_eq!(
+            store.acp_session(child).await.unwrap().as_deref(),
+            Some("ReadA")
+        );
+
+        // Same triple: the row is updated in place; `None` leaves fields alone,
+        // `detail` merges shallowly, `stop: Some(None)` clears.
+        let mut again = ObservedUpsert::new(acp, ObservedSource::OmpTask, "ReadA");
+        again.state = Some(ObservedState::Failed);
+        again.stop = Some(Some("boom"));
+        again.model = Some("anthropic/claude-x");
+        again.cost_rule = Some(CostRule::InsideParent);
+        let patch = serde_json::json!({"tokens": 99, "cost": 0.5});
+        again.detail = patch.as_object();
+        let (same, created) = store.upsert_observed(again).await.unwrap();
+        assert_eq!(same, child);
+        assert!(!created);
+        let row = store.session(child).await.unwrap().unwrap();
+        assert_eq!(row.harness_model.as_deref(), Some("anthropic/claude-x"));
+        let m = row.observed.unwrap();
+        assert_eq!(m.state, ObservedState::Failed);
+        assert_eq!(m.stop.as_deref(), Some("boom"));
+        assert_eq!(m.cost_rule, CostRule::InsideParent);
+        assert_eq!(m.tool_call.as_deref(), Some("toolu_1"));
+        assert_eq!(
+            m.detail,
+            serde_json::json!({"tokens": 99, "agent": "scout", "cost": 0.5})
+        );
+        let mut clear = ObservedUpsert::new(acp, ObservedSource::OmpTask, "ReadA");
+        clear.stop = Some(None);
+        store.upsert_observed(clear).await.unwrap();
+        let m = store
+            .session(child)
+            .await
+            .unwrap()
+            .unwrap()
+            .observed
+            .unwrap();
+        assert_eq!(m.stop, None);
+        assert_eq!(m.state, ObservedState::Failed);
+        assert_eq!(
+            store
+                .observed_child(acp, ObservedSource::OmpTask, "ReadA")
+                .await
+                .unwrap(),
+            Some(child)
+        );
+
+        // A different source with the same external id is another row.
+        let (other, created) = store
+            .upsert_observed(ObservedUpsert::new(acp, ObservedSource::Rfd, "ReadA"))
+            .await
+            .unwrap();
+        assert!(created);
+        assert_ne!(other, child);
+        let m = store
+            .session(other)
+            .await
+            .unwrap()
+            .unwrap()
+            .observed
+            .unwrap();
+        assert_eq!(
+            m.state,
+            ObservedState::Pending,
+            "created rows start pending"
+        );
+        assert_eq!(m.cost_rule, CostRule::DisplayOnly, "rfd default");
+        assert_eq!(m.detail, serde_json::Value::Null);
+        assert_eq!(
+            store
+                .observed_child(acp, ObservedSource::OpencodeExt, "ReadA")
+                .await
+                .unwrap(),
+            None
+        );
+
+        // A parent without a row is an error, not a silent orphan.
+        assert!(
+            store
+                .upsert_observed(ObservedUpsert::new(
+                    SessionId::new(),
+                    ObservedSource::Rfd,
+                    "x"
+                ))
+                .await
+                .is_err()
+        );
+        drop(store);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn observed_children_lists_under_the_acp_child_in_order() {
+        let (store, root, dir) = fresh().await;
+        let acp = SessionId::new();
+        store
+            .create_session(acp, "m", Some(root), Some("omp"), None)
+            .await
+            .unwrap();
+        let (a, _) = store
+            .upsert_observed(ObservedUpsert::new(acp, ObservedSource::OmpTask, "a"))
+            .await
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(2)).await;
+        // Nested: `a.b` hangs under `a`, not under the ACP child.
+        let (ab, _) = store
+            .upsert_observed(ObservedUpsert::new(a, ObservedSource::OmpTask, "a.b"))
+            .await
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(2)).await;
+        let (b, _) = store
+            .upsert_observed(ObservedUpsert::new(acp, ObservedSource::OmpTask, "b"))
+            .await
+            .unwrap();
+
+        let direct: Vec<(SessionId, String)> = store
+            .observed_children(acp)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|(s, m)| (s.id, m.external))
+            .collect();
+        assert_eq!(direct, [(a, "a".into()), (b, "b".into())]);
+        assert_eq!(
+            store
+                .observed_children(a)
+                .await
+                .unwrap()
+                .into_iter()
+                .map(|(s, _)| s.id)
+                .collect::<Vec<_>>(),
+            [ab]
+        );
+        assert!(store.observed_children(root).await.unwrap().is_empty());
+
+        // `descendants` is pre-order with the observed grandchild under `a`,
+        // and observed rows are visible to the plain readers (not advisors).
+        let tree: Vec<(u8, SessionId)> = store
+            .descendants(root)
+            .await
+            .unwrap()
+            .iter()
+            .map(|(d, s)| (*d, s.id))
+            .collect();
+        assert_eq!(tree, [(1, acp), (2, a), (3, ab), (2, b)]);
+        let listed = store.list_sessions().await.unwrap();
+        let obs = listed.iter().find(|s| s.id == ab).unwrap();
+        assert_eq!(obs.kind, SessionKind::Observed);
+        assert_eq!(obs.parent, Some(a));
+        assert!(obs.observed.is_some());
+        drop(store);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn kind_of_observed_round_trips() {
+        assert_eq!(advisor::kind_str(SessionKind::Observed), "observed");
+        assert_eq!(advisor::kind_of("observed"), SessionKind::Observed);
+        assert_eq!(advisor::kind_of("advisor"), SessionKind::Advisor);
+        assert_eq!(advisor::kind_of("chat"), SessionKind::Chat);
+        assert_eq!(advisor::kind_of("whatever"), SessionKind::Chat);
+        // The stored strings of the observed enums are their serde names.
+        assert_eq!("requires_action".parse(), Ok(ObservedState::RequiresAction));
+        assert_eq!(ObservedState::RequiresAction.as_str(), "requires_action");
+        assert_eq!("opencode_ext".parse(), Ok(ObservedSource::OpencodeExt));
+        assert_eq!("inside_parent".parse(), Ok(CostRule::InsideParent));
+        assert!(ObservedState::Cancelled.is_terminal());
+        assert!(!ObservedState::Unknown.is_terminal());
+    }
+
+    #[tokio::test]
+    async fn mark_observed_lost_touches_non_terminal_rows_only() {
+        let (owned, root, dir) = fresh().await;
+        let store = &owned;
+        let live = SessionId::new();
+        let gone = SessionId::new();
+        for (id, name) in [(live, "live"), (gone, "gone")] {
+            store
+                .create_session(id, "m", Some(root), Some(name), None)
+                .await
+                .unwrap();
+        }
+        let mk = |parent: SessionId, ext: &'static str, state: ObservedState| async move {
+            let mut u = ObservedUpsert::new(parent, ObservedSource::Rfd, ext);
+            u.state = Some(state);
+            u.stop = Some(Some("was"));
+            store.upsert_observed(u).await.unwrap().0
+        };
+        let live_running = mk(live, "r", ObservedState::Running).await;
+        let gone_running = mk(gone, "r", ObservedState::Running).await;
+        let gone_idle = mk(gone, "i", ObservedState::Idle).await;
+        let gone_done = mk(gone, "d", ObservedState::Completed).await;
+        let gone_unknown = mk(gone, "u", ObservedState::Unknown).await;
+
+        let lost: std::collections::HashSet<SessionId> = store
+            .mark_observed_lost(&[live])
+            .await
+            .unwrap()
+            .into_iter()
+            .collect();
+        assert_eq!(
+            lost,
+            std::collections::HashSet::from([gone_running, gone_idle])
+        );
+        let meta = |id| async move { store.session(id).await.unwrap().unwrap().observed.unwrap() };
+        assert_eq!(meta(live_running).await.state, ObservedState::Running);
+        let m = meta(gone_running).await;
+        assert_eq!(
+            (m.state, m.stop.as_deref()),
+            (ObservedState::Unknown, Some("lost contact"))
+        );
+        assert_eq!(meta(gone_idle).await.state, ObservedState::Unknown);
+        let m = meta(gone_done).await;
+        assert_eq!(
+            (m.state, m.stop.as_deref()),
+            (ObservedState::Completed, Some("was"))
+        );
+        assert_eq!(meta(gone_unknown).await.stop.as_deref(), Some("was"));
+        // A second sweep finds nothing new.
+        let again = store.mark_observed_lost(&[live]).await.unwrap();
+        assert!(again.is_empty());
+        drop(owned);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn observed_cursor_round_trip() {
+        let (store, root, dir) = fresh().await;
+        let acp = SessionId::new();
+        store
+            .create_session(acp, "m", Some(root), Some("omp"), None)
+            .await
+            .unwrap();
+        let (child, _) = store
+            .upsert_observed(ObservedUpsert::new(acp, ObservedSource::OmpTask, "ReadA"))
+            .await
+            .unwrap();
+        assert_eq!(store.observed_cursor(child).await.unwrap(), None);
+        store.set_observed_cursor(child, 4_096).await.unwrap();
+        assert_eq!(store.observed_cursor(child).await.unwrap(), Some(4_096));
+        store.set_observed_cursor(child, 0).await.unwrap();
+        assert_eq!(store.observed_cursor(child).await.unwrap(), Some(0));
+        assert_eq!(store.observed_cursor(acp).await.unwrap(), None);
+        drop(store);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn migration_0041_adds_the_observed_indexes() {
+        let store = Store::open_memory().await.unwrap();
+        let names: Vec<(String,)> = sqlx::query_as(
+            "SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'sessions' \
+             AND name IN ('sessions_parent', 'sessions_observed_identity') ORDER BY name",
+        )
+        .fetch_all(store.pool())
+        .await
+        .unwrap();
+        assert_eq!(
+            names,
+            [
+                ("sessions_observed_identity".to_owned(),),
+                ("sessions_parent".to_owned(),)
+            ]
+        );
     }
 
     #[tokio::test]

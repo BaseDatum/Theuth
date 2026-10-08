@@ -119,7 +119,9 @@ impl Store {
         for (id, parent_id, desk, unattended, kind, created_at, updated_at, title, finished_at) in
             &rows
         {
-            if kind == "advisor" {
+            // 141 R1.2 Q7: watch-only harness subagents are not dreamt about
+            // (their parent, the ACP child, still is). Lineage above keeps them.
+            if kind == "advisor" || kind == "observed" {
                 continue;
             }
             let in_window = created_at < &until

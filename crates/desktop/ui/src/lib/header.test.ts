@@ -103,6 +103,20 @@ test('the talk view keeps Back to chat inline top-left at every tier; the chat v
   expect(ids(headerOrder('artifacts', true))).not.toContain('chat')
 })
 
+test('141 R3 T11: a watch-only child keeps its Watching chip (the parent item) inline at every tier, ahead of shed items', () => {
+  const order = headerOrder('artifacts', true, false, true)
+  for (let t = 0; t < TIERS; t++) {
+    const bar = ids(layout(order, t).bar)
+    expect(bar).toContain('parent')
+    expect(bar.indexOf('parent')).toBeGreaterThan(bar.indexOf('title'))
+  }
+  // Tier 2 still lists it in the menu as the "Watching inside" row too, and sheds the context chip first.
+  expect(ids(layout(order, 2).menu)).toContain('parent')
+  expect(ids(layout(order, 2).bar)).not.toContain('context')
+  // A native child's parent crumb stays behind the chevron as before.
+  expect(ids(layout(headerOrder('artifacts', true), 1).bar)).not.toContain('parent')
+})
+
 test('the panel is centred on a wide pane and never wider than PANEL_MAX', () => {
   expect(panelGeometry(222, 1122, 1122)).toEqual({ left: 222 + 450 - PANEL_MAX / 2, width: PANEL_MAX })
 })
