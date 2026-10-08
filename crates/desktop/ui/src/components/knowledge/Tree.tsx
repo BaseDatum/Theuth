@@ -2,6 +2,7 @@ import { useQuery } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
 import { ChevronRight } from 'lucide-react'
 import { memo, useMemo } from 'react'
+import { changedByDreaming, statusBadge } from '@/components/knowledge/status'
 import { Badge } from '@/components/ui/badge'
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible'
 import { Skeleton } from '@/components/ui/skeleton'
@@ -38,10 +39,13 @@ function build(metas: Meta[]): Dir {
   return root
 }
 
-/** The concept tree (25 §8). ponytail: not virtualized; virtualize past ~2000 ids (today the bundle holds dozens). */
-export function Tree({ active }: { active: string | undefined }) {
+/** The concept tree (25 §8); `dreaming` keeps only entries dreaming touched (136 §8). ponytail: not virtualized; virtualize past ~2000 ids (today the bundle holds dozens). */
+export function Tree({ active, dreaming = false }: { active: string | undefined; dreaming?: boolean }) {
   const list = useKnowledgeList()
-  const root = useMemo(() => build([...(list.data ?? [])].sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))), [list.data])
+  const root = useMemo(
+    () => build((dreaming ? (list.data ?? []).filter(changedByDreaming) : [...(list.data ?? [])]).sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))),
+    [list.data, dreaming],
+  )
 
   if (list.isPending) {
     return (
@@ -53,7 +57,7 @@ export function Tree({ active }: { active: string | undefined }) {
     )
   }
   if (list.isError) return <p className="p-3 text-sm text-danger">{list.error.message}</p>
-  if (root.count === 0) return <p className="p-3 text-sm text-fg-tertiary">No documents yet</p>
+  if (root.count === 0) return <p className="p-3 text-sm text-fg-tertiary">{dreaming ? 'Nothing changed by dreaming' : 'No documents yet'}</p>
   return (
     <nav className="min-h-0 flex-1 overflow-y-auto px-1.5 py-1" aria-label="Documents">
       <DirBody dir={root} depth={0} active={active} />
@@ -104,9 +108,20 @@ const DocRow = memo(function DocRow({ meta, depth, active }: { meta: Meta; depth
       style={{ paddingLeft: 10 + depth * 14 + 22 }}
     >
       <span className="flex-1 truncate">{meta.title || meta.id.slice(meta.id.lastIndexOf('/') + 1)}</span>
+      <StatusBadge meta={meta} />
       <Badge variant="outline" className="shrink-0 text-[10px]">
         {meta.type}
       </Badge>
     </Link>
   )
 })
+
+/** `fresh` · `archived` · `superseded` · `stale` · `verified <date>` beside the type (136 §8); nothing for a plain tidy entry. */
+export function StatusBadge({ meta }: { meta: Pick<Meta, 'status' | 'superseded_by' | 'verified'> }) {
+  const s = statusBadge(meta)
+  return s === null ? null : (
+    <Badge variant="secondary" className="shrink-0 text-[10px]">
+      {s}
+    </Badge>
+  )
+}

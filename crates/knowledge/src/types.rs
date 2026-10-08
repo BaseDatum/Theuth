@@ -49,7 +49,7 @@ impl Visibility {
 
 /// Who a session reads and writes as (67 §9): an agent's sessions carry its
 /// owner string and reporting line; the user's and `theuth`'s carry none.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AgentScope {
     /// `agent:<name>`: what this session's writes are stamped with.
     pub owner: String,
@@ -102,6 +102,8 @@ pub enum Source {
     User,
     /// Found changed on disk by `sync`.
     Sync,
+    /// Written by the dreaming routine (136 §2.1).
+    Dreaming,
 }
 
 impl Source {
@@ -112,6 +114,7 @@ impl Source {
             Self::Model => "model",
             Self::User => "user",
             Self::Sync => "sync",
+            Self::Dreaming => "dreaming",
         }
     }
 
@@ -122,6 +125,7 @@ impl Source {
             "model" => Self::Model,
             "user" => Self::User,
             "sync" => Self::Sync,
+            "dreaming" => Self::Dreaming,
             _ => return None,
         })
     }
@@ -136,6 +140,117 @@ pub enum KnowledgeOp {
     Put,
     /// Removed.
     Delete,
+    /// Folded into a canonical entry (136 §2.1).
+    Merge,
+    /// A later claim replaced it (136 §2.1).
+    Supersede,
+    /// `status: archived, hint: false` (136 §2.1).
+    Archive,
+    /// `verified:` set or `status: stale` (136 §2.1).
+    Verify,
+    /// Title shortened, old title kept in the body (136 §2.1).
+    Retitle,
+}
+
+/// Where a concept is in its life (frontmatter `status`, 136 §5.1). Absent = `tidy`.
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema,
+)]
+#[cfg_attr(
+    feature = "ts",
+    derive(ts_rs::TS),
+    ts(export, rename = "KnowledgeStatus")
+)]
+#[serde(rename_all = "lowercase")]
+pub enum Status {
+    /// Written by the harvest, not yet tidied.
+    Fresh,
+    /// Reviewed by dreaming (or written before 136).
+    #[default]
+    Tidy,
+    /// A redirect stub; `merged_into` names the canonical.
+    Merged,
+    /// Kept searchable and restorable, never hinted.
+    Archived,
+    /// A verification failed; the body says what changed.
+    Stale,
+    /// Left the hint shelf for good (a warning whose trigger is gone).
+    Retired,
+}
+
+impl Status {
+    /// Frontmatter value.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Fresh => "fresh",
+            Self::Tidy => "tidy",
+            Self::Merged => "merged",
+            Self::Archived => "archived",
+            Self::Stale => "stale",
+            Self::Retired => "retired",
+        }
+    }
+
+    /// Inverse of [`Self::as_str`].
+    pub fn parse(s: &str) -> Option<Self> {
+        Some(match s.trim() {
+            "fresh" => Self::Fresh,
+            "tidy" => Self::Tidy,
+            "merged" => Self::Merged,
+            "archived" => Self::Archived,
+            "stale" => Self::Stale,
+            "retired" => Self::Retired,
+            _ => return None,
+        })
+    }
+
+    /// `hint_for` shows only these (136 §5.3).
+    pub fn is_live(self) -> bool {
+        matches!(self, Self::Fresh | Self::Tidy)
+    }
+}
+
+/// What `knowledge_verify` found (136 §2.1).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[serde(rename_all = "lowercase")]
+pub enum VerifyOutcome {
+    /// The claim still holds: `verified: <today>`.
+    Ok,
+    /// The claim no longer holds: `status: stale` plus the note.
+    Stale,
+}
+
+/// Usage counters of one concept (136 §5.1): the durable `uses` table, never frontmatter.
+#[derive(
+    Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema, kameo::Reply,
+)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+pub struct Uses {
+    /// Concept id.
+    pub id: String,
+    /// Times it appeared in a `<knowledge>` note.
+    pub shown: u64,
+    /// Times `knowledge_get` read it.
+    pub opened: u64,
+    /// RFC 3339 of the last impression.
+    pub last_shown: Option<String>,
+    /// RFC 3339 of the last open.
+    pub last_opened: Option<String>,
+}
+
+/// What `merge` / `supersede` / `archive` / `verify` / `retitle` report (136 §2.1).
+#[derive(
+    Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema, kameo::Reply,
+)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+pub struct Receipt {
+    /// The op, as `KnowledgeChanged.op` reports it.
+    pub op: KnowledgeOp,
+    /// Every concept id the op rewrote.
+    pub ids: Vec<String>,
+    /// Abbreviated commit id; `None` without a repo or when the commit failed.
+    pub commit: Option<String>,
 }
 
 /// A concept's frontmatter as the harness reads it (10 §2.2).
@@ -167,6 +282,66 @@ pub struct Meta {
     /// Frontmatter `visibility` (67 §9); `shared` when absent.
     #[serde(default)]
     pub visibility: Visibility,
+    /// Frontmatter `status` (136 §5.1); `tidy` when absent.
+    #[serde(default)]
+    pub status: Status,
+    /// Frontmatter `hint` (136 §5.1); `true` when absent. `false` = never in a `<knowledge>` note.
+    #[serde(default = "default_true")]
+    pub hint: bool,
+    /// Frontmatter `evidence`: session ids, or `user` for a typed instruction.
+    #[serde(default)]
+    pub evidence: Vec<String>,
+    /// Frontmatter `verified`: `YYYY-MM-DD` of the last read-tool check.
+    #[serde(default)]
+    pub verified: Option<String>,
+    /// Frontmatter `valid_until`: RFC 3339, set when superseded.
+    #[serde(default)]
+    pub valid_until: Option<String>,
+    /// Frontmatter `superseded_by`: the newer concept's id.
+    #[serde(default)]
+    pub superseded_by: Option<String>,
+    /// Frontmatter `merged_into`: the canonical's id, on a redirect stub.
+    #[serde(default)]
+    pub merged_into: Option<String>,
+    /// Frontmatter `consolidated_at` (136 D5): RFC 3339 of dreaming's last
+    /// write. Identity (`source`, `timestamp`) is never restamped by dreaming;
+    /// this is the only trace of its touch. Serialised only when set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub consolidated_at: Option<String>,
+}
+
+impl Default for Meta {
+    /// The frontmatter nobody wrote: empty id/type/title, the user's, shared,
+    /// `tidy`, hinted — exactly what a file without the optional keys reads
+    /// as. For test fixtures (`..Default::default()`); a real concept always
+    /// has an id and a type.
+    fn default() -> Self {
+        Self {
+            id: String::new(),
+            type_: String::new(),
+            title: String::new(),
+            description: String::new(),
+            tags: Vec::new(),
+            scope: None,
+            source: None,
+            timestamp: None,
+            owner: default_owner(),
+            visibility: Visibility::default(),
+            status: Status::default(),
+            hint: true,
+            evidence: Vec::new(),
+            verified: None,
+            valid_until: None,
+            superseded_by: None,
+            merged_into: None,
+            consolidated_at: None,
+        }
+    }
+}
+
+fn default_true() -> bool {
+    true
 }
 
 fn default_owner() -> String {
@@ -228,6 +403,27 @@ pub struct Put {
     /// session, `shared` otherwise.
     #[serde(default)]
     pub visibility: Option<Visibility>,
+    /// `status:` (136 §5.1); `None` keeps the file's value (absent on a new file = `tidy`).
+    #[serde(default)]
+    pub status: Option<Status>,
+    /// `hint:`; `None` keeps the file's value (absent = `true`).
+    #[serde(default)]
+    pub hint: Option<bool>,
+    /// `evidence:`; empty keeps the file's value.
+    #[serde(default)]
+    pub evidence: Vec<String>,
+    /// `verified:` `YYYY-MM-DD`; `None` keeps the file's value.
+    #[serde(default)]
+    pub verified: Option<String>,
+    /// `valid_until:` RFC 3339; `None` keeps the file's value.
+    #[serde(default)]
+    pub valid_until: Option<String>,
+    /// `superseded_by:`; `None` keeps the file's value.
+    #[serde(default)]
+    pub superseded_by: Option<String>,
+    /// `merged_into:`; `None` keeps the file's value.
+    #[serde(default)]
+    pub merged_into: Option<String>,
 }
 
 /// `sync` result (10 §3.2).

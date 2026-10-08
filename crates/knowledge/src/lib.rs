@@ -14,7 +14,9 @@
 //! - commands on the [`KNOWLEDGE_ACTOR`] actor ([`KnowledgeActor`]): [`Handle`],
 //!   [`Search`], [`Get`], [`List`], [`PutConcept`], [`Write`], [`Delete`], [`HistoryOf`],
 //!   [`RevisionOf`], [`Restore`], [`SyncNow`], [`RegisterScoper`], [`search::SearchConcepts`],
-//!   [`search::SearchHistory`], [`search::ReadRevision`], [`search::RefreshSearch`]
+//!   [`search::SearchHistory`], [`search::ReadRevision`], [`search::RefreshSearch`];
+//!   136 §2.1: [`Merge`], [`Supersede`], [`Archive`], [`Verify`], [`Retitle`], [`Stats`],
+//!   [`RegisterConsolidator`]
 //! - event: [`KnowledgeChanged`], published by the store after every write
 //!
 //! Design 59 §7.1: a concept open in the BlockNote editor is a `document`;
@@ -57,7 +59,8 @@ pub const BODY_MAX: usize = 16 * 1024;
 pub const HINT_DESCRIPTION_CHARS: usize = 120;
 
 /// `knowledge:` config section (12 §9.2). Loop policy (`hint_limit`, harvest
-/// cadence) lives in `agent.knowledge`; this section only switches the plugin.
+/// cadence) lives in `agent.knowledge`; this section switches the plugin and
+/// carries the type lifetimes of 136 §5.2.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default)]
 pub struct KnowledgeConfig {
@@ -66,6 +69,9 @@ pub struct KnowledgeConfig {
     /// Seconds between bundle syncs with every connected engine (67 §5.2);
     /// a sync also runs on each connect.
     pub sync_secs: u64,
+    /// `knowledge.lifetimes` (136 §5.2, days). The rank reads these; dreaming's
+    /// `lifetimes` mirror is for its archive/verify sampling only.
+    pub lifetimes: Lifetimes,
 }
 
 impl Default for KnowledgeConfig {
@@ -73,6 +79,32 @@ impl Default for KnowledgeConfig {
         Self {
             enabled: true,
             sync_secs: 300,
+            lifetimes: Lifetimes::default(),
+        }
+    }
+}
+
+/// Days a type stays on the hint shelf by age (136 §5.2).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Lifetimes {
+    /// `type: record` ranks 0 past this age.
+    pub record: u32,
+    /// Verify sample: facts whose `verified` is older than this.
+    pub fact: u32,
+    /// Procedures unopened this long are archive candidates.
+    pub procedure: u32,
+    /// Entities / hosts / projects unopened this long are archive candidates.
+    pub entity: u32,
+}
+
+impl Default for Lifetimes {
+    fn default() -> Self {
+        Self {
+            record: 14,
+            fact: 30,
+            procedure: 90,
+            entity: 60,
         }
     }
 }
@@ -89,6 +121,11 @@ pub struct KnowledgeChanged {
     pub op: KnowledgeOp,
     /// Who did it.
     pub source: Source,
+    /// The commit that recorded it (abbreviated); `None` without a repo or
+    /// when the commit failed. 136: dreaming's undo receipt restores to its
+    /// first parent, so the pre-change state is read without a history walk.
+    #[serde(default)]
+    pub commit: Option<String>,
 }
 
 /// The [`KNOWLEDGE_ACTOR`] actor: wraps the store. Handlers await the store on
@@ -202,6 +239,172 @@ pub struct Restore {
 /// `ask` → `Result<Sync, String>`: reconcile the index with the files now (10 §3.2).
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
 pub struct SyncNow;
+
+/// `ask` → `Result<Receipt, String>` (136 §2.1): fold `ids` into `into`.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Merge {
+    /// Ids folded into `into` (become redirect stubs).
+    pub ids: Vec<String>,
+    /// The canonical id (may be one of `ids` or new).
+    pub into: String,
+    /// The canonical's body.
+    pub body: String,
+    /// Session ids / `user` added to the canonical's `evidence`.
+    #[serde(default)]
+    pub evidence: Vec<String>,
+    /// Who is merging; the canonical keeps this scope's owner.
+    pub scope: AgentScope,
+}
+
+/// `ask` → `Result<Receipt, String>` (136 §2.1): `loser` is replaced by `winner`.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Supersede {
+    /// The outdated concept.
+    pub loser: String,
+    /// The newer claim.
+    pub winner: String,
+    /// RFC 3339 — when the loser stopped being true (from the evidence).
+    #[serde(default)]
+    pub valid_until: Option<String>,
+    /// One line for the loser's body.
+    #[serde(default)]
+    pub note: Option<String>,
+}
+
+/// `ask` → `Result<Receipt, String>` (136 §2.1): `status: archived, hint: false`.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Archive {
+    /// Concept id.
+    pub id: String,
+    /// Why; appended under `## Archived`.
+    pub reason: String,
+}
+
+/// `ask` → `Result<Receipt, String>` (136 §2.1): a read-tool check's verdict.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Verify {
+    /// Concept id.
+    pub id: String,
+    /// `ok` → `verified: <today>`; `stale` → `status: stale` + note.
+    pub outcome: VerifyOutcome,
+    /// What changed (stale) or what was checked (ok).
+    #[serde(default)]
+    pub note: Option<String>,
+    /// The sources the check read (paths, URLs, `session:`/`meeting:` ids);
+    /// unioned into the concept's `evidence`.
+    #[serde(default)]
+    pub evidence: Vec<String>,
+}
+
+/// `ask` → `Result<Receipt, String>` (136 §2.1): shorten a title.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Retitle {
+    /// Concept id.
+    pub id: String,
+    /// The new title (≤ 120 chars).
+    pub title: String,
+    /// The paragraph that keeps the old title's content at the top of the body.
+    pub summary: String,
+}
+
+/// `ask` → `Result<Vec<Uses>, String>` (136 §2.1): impressions and opens per id.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct Stats {
+    /// Concept ids; zeros for unknown ones.
+    pub ids: Vec<String>,
+}
+
+/// Answers "may this attended session consolidate" (136 §2.1 / D6): the
+/// five mutating `knowledge_*` tools of dreaming run only from the open
+/// night's dreaming session ([`Knowledge::register_consolidating_session`])
+/// or the owner's own root session. The agent plugin installs one with
+/// [`RegisterConsolidator`]; until then no attended session may.
+#[async_trait::async_trait]
+pub trait Consolidator: Send + std::marker::Sync {
+    /// `true` when `session` is the owner's own attended root (136 D6:
+    /// `scope = 'owner'`, no parent, no desk, not unattended). Unattended
+    /// sessions are answered by the store's registered night, never here.
+    async fn may_consolidate(&self, session: runtime::SessionId) -> bool;
+}
+
+/// `ask` → `()`: install the [`Consolidator`]; the agent plugin sends it once.
+pub struct RegisterConsolidator(pub Arc<dyn Consolidator>);
+
+impl Message<RegisterConsolidator> for KnowledgeActor {
+    type Reply = ();
+
+    async fn handle(&mut self, m: RegisterConsolidator, _: &mut Context<Self, Self::Reply>) {
+        self.k.set_consolidator(m.0);
+    }
+}
+
+impl Message<Merge> for KnowledgeActor {
+    type Reply = Result<Receipt, String>;
+
+    async fn handle(&mut self, m: Merge, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        self.k
+            .merge(&m.ids, &m.into, &m.body, &m.evidence, &m.scope)
+            .await
+            .map_err(|e| format!("{e:#}"))
+    }
+}
+
+impl Message<Supersede> for KnowledgeActor {
+    type Reply = Result<Receipt, String>;
+
+    async fn handle(&mut self, m: Supersede, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        self.k
+            .supersede(
+                &m.loser,
+                &m.winner,
+                m.valid_until.as_deref(),
+                m.note.as_deref(),
+            )
+            .await
+            .map_err(|e| format!("{e:#}"))
+    }
+}
+
+impl Message<Archive> for KnowledgeActor {
+    type Reply = Result<Receipt, String>;
+
+    async fn handle(&mut self, m: Archive, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        self.k
+            .archive(&m.id, &m.reason)
+            .await
+            .map_err(|e| format!("{e:#}"))
+    }
+}
+
+impl Message<Verify> for KnowledgeActor {
+    type Reply = Result<Receipt, String>;
+
+    async fn handle(&mut self, m: Verify, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        self.k
+            .verify(&m.id, m.outcome, m.note.as_deref(), &m.evidence)
+            .await
+            .map_err(|e| format!("{e:#}"))
+    }
+}
+
+impl Message<Retitle> for KnowledgeActor {
+    type Reply = Result<Receipt, String>;
+
+    async fn handle(&mut self, m: Retitle, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        self.k
+            .retitle(&m.id, &m.title, &m.summary)
+            .await
+            .map_err(|e| format!("{e:#}"))
+    }
+}
+
+impl Message<Stats> for KnowledgeActor {
+    type Reply = Result<Vec<Uses>, String>;
+
+    async fn handle(&mut self, m: Stats, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        self.k.stats(&m.ids).await.map_err(|e| format!("{e:#}"))
+    }
+}
 
 impl Message<document::Exported> for KnowledgeActor {
     type Reply = ();

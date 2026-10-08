@@ -181,6 +181,27 @@ enum Cmd {
         #[command(subcommand)]
         cmd: DoubleCmd,
     },
+    /// The nightly dreaming routine (design doc 136): offline jobs over a data dir, no engine needed.
+    Dreaming {
+        #[command(subcommand)]
+        cmd: DreamingCmd,
+    },
+}
+
+/// `t dreaming …` (136 §3.3 item 7).
+#[derive(clap::Subcommand, Debug)]
+enum DreamingCmd {
+    /// Recall plus the rule-only parts of Tidy over `--data-dir` (its `knowledge/`,
+    /// `knowledge.sqlite`, `sessions.sqlite`) with zero writes; prints the counts the
+    /// night's journal would show. Run it against a copy of a live data dir.
+    DryRun {
+        /// The data dir to read; defaults to the global `--data-dir`.
+        #[arg(long)]
+        data_dir: Option<PathBuf>,
+        /// Print the report as one JSON object instead of text.
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 /// `t double …` (126 §8.4, Revision 2): one-shot jobs, no running engine needed.
@@ -562,6 +583,7 @@ async fn cmd_67(data_dir: &Path, config: &Figment, cmd: Cmd) -> anyhow::Result<(
         // Dispatched by `run` before this: stdout is its protocol channel.
         Cmd::Mcp { .. } => unreachable!("t mcp is served by mcp::run"),
         Cmd::Double { .. } => unreachable!("t double runs without an engine"),
+        Cmd::Dreaming { .. } => unreachable!("t dreaming runs without an engine"),
     };
     match r {
         Ok(v) => {
@@ -873,6 +895,11 @@ agent:
 
 # knowledge:                 # design doc 10; the bundle lives in <data_dir>/knowledge/
 #   enabled: true            # false: no store, no knowledge_* tools, no hints, no harvest
+#   lifetimes:               # 136 §5.2, days: a `record` past its lifetime drops out of hints (dreaming archives it);
+#     record: 14             # `fact`/`procedure`/`entity` lifetimes pace dreaming's verification sample
+#     fact: 30
+#     procedure: 90
+#     entity: 60
 
 # documents:                 # design doc 59; Yjs documents under <data_dir>/documents/, the BlockNote editor
 #   enabled: true            # false: no store, no helper, no doc_* methods; concepts open as raw text
@@ -1165,6 +1192,23 @@ agent:
 #     checkpoint: default    # a `decision.checkpoints` name; restart
 #     adapter_rank: 8        # restart
 
+# dreaming:                  # the nightly own-context routine (design doc 136): tidies knowledge, mines the day's
+#                            # corrections into cases, proposes bounded skill edits behind a replay gate, journals; undo per night.
+#   enabled: true            # false: no routine file, no signals.json, no prompt block; the 136 knowledge keys still apply
+#   window: [\"01:00\", \"06:00\"]   # local; the sensor fires inside it when the Mac is idle
+#   idle_minutes: 20
+#   min_sessions: 1          # below this the night is Recall + Journal only
+#   heavy_day: { concepts: 300, sessions: 40 }   # allows a second window the same night
+#   budget_usd: 1            # per night; Settings › Dreaming; Dream now takes its own budget
+#   run_timeout: 45m
+#   models: { triage: null, tidy: null, propose: null, judge: null }   # null = the design's default per tier
+#   caps: { triage: 300, merges: 40, archives: 60, verifications: 15, cases: 60, edits_per_target: 4, targets: 3, rows_per_week: 3 }
+#   lifetimes: { record: 14, fact: 30, procedure: 90, entity: 60 }
+#   gate: { margin: 0.1, max_regression: 0.2, min_val_cases: 3, val_fraction: 0.34 }
+#   preferences: { auto_from_explicit: true, cap_lines: 20 }
+#   digest: \"Mon 08:00\"
+#   home_engine: null        # mesh: only this engine dreams; null = the engine that installed the routine
+
 # a2a:                       # remote agents over A2A 1.0 (design doc 50 §6); peers/exports live in <data_dir>/a2a/peers.yaml, `/a2a reload` applies edits
 #   enabled: false           # false: no actor, listener, card fetch or credential load. Needs agent.communication too.
 #   listen: 127.0.0.1:7780   # SDK HTTP listener; loopback only, restart to change
@@ -1237,7 +1281,10 @@ const HARNESS_SKILL: &str = include_str!("../harness.md");
 /// overwritten, except `skills/harness.md`, `skills/visualize.md`,
 /// `skills/pdf.md`, `skills/loops.md`, `skills/routines.md`, `skills/apps.md`,
 /// `skills/board.md`, `skills/decide.md` and `skills/double.md`, which the binary owns and rewrites so
-/// they always describe the running version.
+/// they always describe the running version. 136: `skills/dreaming.md`,
+/// `sensors/dreaming.py` (binary-owned) and `schedules/dreaming.md` (once)
+/// are written by `dreaming::DreamingPlugin::start`, which reads
+/// `dreaming.enabled` — this runs before the config is loaded.
 fn first_run(data_dir: &Path, config_path: &Path) -> std::io::Result<()> {
     std::fs::create_dir_all(data_dir.join("mcp"))?;
     std::fs::create_dir_all(data_dir.join("acp"))?;
@@ -1427,6 +1474,26 @@ async fn run() -> anyhow::Result<()> {
         .data_dir
         .or_else(|| dirs::home_dir().map(|h| h.join(".theuth")))
         .ok_or_else(|| anyhow::anyhow!("cannot determine data dir; pass --data-dir"))?;
+
+    // 136: the dry run reads a (copied) data dir and must write nothing — not
+    // even `first_run`'s config.yaml / prompt.md.
+    if let Some(Cmd::Dreaming {
+        cmd:
+            DreamingCmd::DryRun {
+                data_dir: dir,
+                json,
+            },
+    }) = &cli.cmd
+    {
+        let dir = dir.as_ref().unwrap_or(&data_dir);
+        let report = dreaming::dry_run(dir).await?;
+        if *json {
+            println!("{}", serde_json::to_string_pretty(&report)?);
+        } else {
+            print!("{}", dreaming::dry_run::render(&report));
+        }
+        return Ok(());
+    }
 
     let config_path = cli.config.unwrap_or_else(|| data_dir.join("config.yaml"));
     first_run(&data_dir, &config_path)?;
@@ -1676,6 +1743,8 @@ async fn run() -> anyhow::Result<()> {
             Box::new(app::AppPlugin),
             Box::new(search_providers::SearchProvidersPlugin),
             Box::new(agent::AgentPlugin),
+            // 136: the nightly routine's plugin (bundled skill/sensor/routine, signals, tools, RPC); after agent.
+            Box::new(dreaming::DreamingPlugin),
             // The `search` tool (49 §4.4): registration only.
             Box::new(rpc::SearchToolsPlugin),
             // 63 §6.4: attachable, on a loopback port; stdout untouched.
@@ -1790,6 +1859,8 @@ fn engine_plugins(headless: bool, serve: bool) -> Vec<Box<dyn Plugin>> {
         Box::new(app::AppPlugin),
         Box::new(search_providers::SearchProvidersPlugin),
         Box::new(agent::AgentPlugin),
+        // 136: the nightly routine's plugin (bundled skill/sensor/routine, signals, tools, RPC); after agent.
+        Box::new(dreaming::DreamingPlugin),
         Box::new(rpc::SearchToolsPlugin),
         Box::new(signal::SignalPlugin {
             channel: headless,

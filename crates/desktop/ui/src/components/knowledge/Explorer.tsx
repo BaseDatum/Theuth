@@ -1,6 +1,6 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { Outlet, getRouteApi, useParams } from '@tanstack/react-router'
-import { History as HistoryIcon, Plus, RefreshCw } from 'lucide-react'
+import { History as HistoryIcon, Moon, Plus, RefreshCw } from 'lucide-react'
 import { type ReactNode, useEffect, useState } from 'react'
 import { toast } from 'sonner'
 import { History } from '@/components/knowledge/History'
@@ -28,6 +28,8 @@ export function Explorer() {
   const { q, history } = route.useSearch()
   const { _splat: active } = useParams({ strict: false })
   const [creating, setCreating] = useState(false)
+  // 136 §8: the "changed by dreaming" filter — `source: dreaming` or a status other than `tidy`.
+  const [dreaming, setDreaming] = useState(false)
   // The rail's History opens beside whatever document is shown; only the bare route's `?history=true` is URL state.
   const [historyLocal, setHistoryLocal] = useState(false)
   const historyOpen = historyLocal || (!active && history === true)
@@ -50,10 +52,10 @@ export function Explorer() {
     return () => window.removeEventListener('focus', onFocus)
   }, [runSync])
 
-  const action = (label: string, icon: ReactNode, onClick: () => void, disabled = false) => (
+  const action = (label: string, icon: ReactNode, onClick: () => void, disabled = false, pressed?: boolean) => (
     <Tooltip>
       <TooltipTrigger asChild>
-        <Button variant="ghost" size="icon-sm" aria-label={label} disabled={disabled} onClick={onClick}>
+        <Button variant="ghost" size="icon-sm" aria-label={label} aria-pressed={pressed} disabled={disabled} className={pressed ? 'bg-layer-3' : undefined} onClick={onClick}>
           {icon}
         </Button>
       </TooltipTrigger>
@@ -84,12 +86,13 @@ export function Explorer() {
                     }),
                   sync.isPending,
                 )}
+                {action('Changed by dreaming', <Moon />, () => setDreaming((v) => !v), false, dreaming)}
                 {action('History', <HistoryIcon />, () => setHistoryOpen(true))}
                 {action('New document', <Plus />, () => setCreating(true))}
               </>
             }
           >
-            <Tree active={active} />
+            <Tree active={active} dreaming={dreaming} />
           </SearchBox>
         </aside>
         <main className={cn('min-w-0 flex-1 md:flex', active ? 'flex' : 'hidden')}>

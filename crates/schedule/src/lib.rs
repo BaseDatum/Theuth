@@ -119,6 +119,32 @@ pub struct Fire {
     pub name: String,
 }
 
+/// Per-run overrides of [`FireWith`] (136 §2.3); each `None` = the file's value.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FireOverrides {
+    /// Money cap for this run, in nanos of the file's currency (USD when the
+    /// file has no `budget:`); replaces `budget:` for this run only.
+    #[serde(default)]
+    pub budget_nanos: Option<u64>,
+    /// Time limit of this run; replaces `run_timeout:` for this run only.
+    #[serde(default)]
+    pub run_timeout_secs: Option<u64>,
+    /// Appended inside the `<schedule>` envelope as `<request>…</request>`
+    /// after the prompt.
+    #[serde(default)]
+    pub payload: Option<String>,
+}
+
+/// `ask` → `Result<SessionId, String>` (136 §2.3): [`Fire`] with `overrides`
+/// applied to that run only (`dreaming.run_now`). Same errors as [`Fire`].
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct FireWith {
+    /// File stem.
+    pub name: String,
+    /// What differs from the file for this run.
+    pub overrides: FireOverrides,
+}
+
 /// `ask` → `u64`: the live `schedule.run_timeout_secs` — seconds one run may
 /// take unless the file says `run_timeout:` (88).
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
@@ -1026,6 +1052,19 @@ impl Schedule {
         forced: bool,
         when: Option<WhenFire>,
     ) -> Result<Fired, String> {
+        self.fire_with(name, now, forced, when, None).await
+    }
+
+    /// [`Self::fire`] with 136 §2.3 per-run `overrides`: budget, run timeout,
+    /// a `<request>` payload inside the envelope.
+    async fn fire_with(
+        &mut self,
+        name: &str,
+        now: DateTime<Local>,
+        forced: bool,
+        when: Option<WhenFire>,
+        overrides: Option<&FireOverrides>,
+    ) -> Result<Fired, String> {
         let entry = self.entries.get(name).ok_or("no such schedule")?;
         let spec = entry.spec.as_ref().map_err(Clone::clone)?;
         let session = entry.session;
@@ -1039,7 +1078,20 @@ impl Schedule {
         let (agent, project) = (spec.agent.clone(), spec.project.clone());
         let (memory, sensor_file) = (spec.memory, spec.sensor.as_ref().map(|s| s.file.clone()));
         let reset_runtime = resets_runtime(spec);
-        let run_timeout = spec.run_timeout;
+        let run_timeout = overrides
+            .and_then(|o| o.run_timeout_secs)
+            .map(Duration::from_secs)
+            .or(spec.run_timeout);
+        // 136 §2.3: the run's money cap — the override, else the file's; `None` clears.
+        let budget_currency = spec
+            .budget
+            .as_ref()
+            .map_or_else(|| "USD".to_owned(), |b| b.currency.clone());
+        let budget_nanos = overrides
+            .and_then(|o| o.budget_nanos)
+            .or(spec.budget.as_ref().map(|b| b.nanos));
+        // 136 D4: the run's tool risk ceiling, applied beside approvals.
+        let cap = spec.cap;
         let one_shot = matches!(spec.when, file::When::At(_));
         let is_loop = until.is_some() || max_runs.is_some();
 
@@ -1108,6 +1160,12 @@ impl Schedule {
             let _ = write!(text, "<until exit=\"1\">\n{}\n</until>\n", tail.trim_end());
         }
         text.push_str(&prompt);
+        // 136 §2.3: a `run_now` request rides inside the envelope.
+        if let Some(p) = overrides.and_then(|o| o.payload.as_deref()) {
+            text.push_str("\n\n<request>\n");
+            text.push_str(p.trim_end());
+            text.push_str("\n</request>");
+        }
         // 40 §3.3: body, blank line, `<when>` block.
         if let (Some(w), Some(sensor)) = (&when, &sensor_file) {
             text.push_str("\n\n");
@@ -1214,22 +1272,47 @@ impl Schedule {
             }
             None => new_session(&agents, name, cwd.clone(), model, subject.as_deref()).await?,
         };
-        // 33 §3.5: in-memory in the registry, so every fire re-sends it.
-        if !approvals {
+        // 136 §2.2: in memory on the session, so every fire re-sends it (like approvals).
+        if let Err(e) = agents
+            .ask(agent::SetBudget {
+                session,
+                nanos: budget_nanos,
+                currency: budget_currency,
+            })
+            .await
+        {
+            tracing::warn!(%name, "budget not set: {e}");
+        }
+        // 33 §3.5 / 136 D4: in-memory in the registry, so every fire re-sends
+        // them. The cap is set before the first model turn: with
+        // `approvals: false` it is the only thing keeping destructive tools
+        // (`shell`, `knowledge_delete`) out of an unattended run.
+        if !approvals || cap.is_some() {
             match ActorRef::<::tools::ToolRegistry>::lookup(::tools::REGISTRY_ACTOR) {
                 Ok(Some(reg)) => {
-                    if let Err(e) = reg
-                        .ask(::tools::SetApprovals {
-                            session: Some(session),
-                            enabled: false,
-                        })
-                        .await
+                    if !approvals
+                        && let Err(e) = reg
+                            .ask(::tools::SetApprovals {
+                                session: Some(session),
+                                enabled: false,
+                            })
+                            .await
                     {
                         tracing::warn!(%name, "approvals not switched off: {e}");
                     }
+                    if let Some(cap) = cap
+                        && let Err(e) = reg
+                            .tell(::tools::SetCap {
+                                session,
+                                cap: Some(cap),
+                            })
+                            .await
+                    {
+                        tracing::warn!(%name, "cap not set: {e}");
+                    }
                 }
                 _ => {
-                    tracing::warn!(%name, "approvals not switched off: tool registry is not running")
+                    tracing::warn!(%name, "approvals/cap not applied: tool registry is not running")
                 }
             }
         }
@@ -2382,11 +2465,15 @@ impl Message<ListSchedules> for Schedule {
     }
 }
 
-impl Message<Fire> for Schedule {
-    type Reply = Result<SessionId, String>;
-
-    async fn handle(&mut self, m: Fire, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
-        let e = self.entries.get(&m.name).ok_or("no such schedule")?;
+impl Schedule {
+    /// The forced fire behind [`Fire`] and [`FireWith`]: enabled check, the
+    /// sensor's payload (verdict ignored), then [`Self::fire_with`].
+    async fn fire_now(
+        &mut self,
+        name: &str,
+        overrides: Option<&FireOverrides>,
+    ) -> Result<SessionId, String> {
+        let e = self.entries.get(name).ok_or("no such schedule")?;
         let spec = e.spec.as_ref().map_err(Clone::clone)?;
         if !spec.enabled {
             return Err("disabled".to_owned());
@@ -2397,7 +2484,7 @@ impl Message<Fire> for Schedule {
             None => None,
             Some(sensor) => {
                 let spec = spec.clone();
-                let state = self.state_of(&m.name).await;
+                let state = self.state_of(name).await;
                 let done = self
                     .check_future(&spec, &sensor, state)
                     .map_err(|e| format!("check broken: {e}"))?
@@ -2407,11 +2494,30 @@ impl Message<Fire> for Schedule {
             }
         };
         // Not gated on the hub (67 §4.4): *run now* is the user's ask on this engine.
-        match self.fire(&m.name, Local::now(), true, when).await? {
+        match self
+            .fire_with(name, Local::now(), true, when, overrides)
+            .await?
+        {
             Fired::Session(s) => Ok(s),
             // No session to open: the reply names the task instead (67 §7.4).
             Fired::Task(id) => Err(format!("created task {id}")),
         }
+    }
+}
+
+impl Message<Fire> for Schedule {
+    type Reply = Result<SessionId, String>;
+
+    async fn handle(&mut self, m: Fire, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        self.fire_now(&m.name, None).await
+    }
+}
+
+impl Message<FireWith> for Schedule {
+    type Reply = Result<SessionId, String>;
+
+    async fn handle(&mut self, m: FireWith, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        self.fire_now(&m.name, Some(&m.overrides)).await
     }
 }
 
@@ -2822,6 +2928,46 @@ mod fire_tests {
         assert_eq!(
             rec.calls.lock().unwrap()[1].1,
             now.timestamp_millis() as u64
+        );
+    }
+
+    /// 136 §2.3: a `FireWith` payload rides inside the envelope as `<request>`,
+    /// after the prompt; a plain fire has none.
+    #[tokio::test]
+    async fn fire_with_payload_is_a_request_block_inside_the_envelope() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut s, rec) = actor(
+            dir.path(),
+            &[(
+                "dreaming",
+                "---\nevery: 1h\nagent: ops\nbudget: 1 USD\n---\ndream tonight\n",
+            )],
+        )
+        .await;
+        let o = FireOverrides {
+            budget_nanos: Some(5_000_000_000),
+            run_timeout_secs: Some(4 * 3600),
+            payload: Some("mode: backlog\nbudget_usd: 5\n".into()),
+        };
+        s.fire_with("dreaming", Local::now(), true, None, Some(&o))
+            .await
+            .unwrap();
+        s.fire("dreaming", Local::now(), true, None).await.unwrap();
+        let calls = rec.calls.lock().unwrap().clone();
+        let with = &calls[0].3;
+        assert!(
+            with.contains(
+                "dream tonight\n\n<request>\nmode: backlog\nbudget_usd: 5\n</request>\n</schedule>"
+            ),
+            "{with}"
+        );
+        assert!(!calls[1].3.contains("<request>"), "{}", calls[1].3);
+        assert_eq!(
+            s.entries["dreaming"].spec.as_ref().unwrap().budget,
+            Some(file::Budget {
+                nanos: 1_000_000_000,
+                currency: "USD".into()
+            })
         );
     }
 

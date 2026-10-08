@@ -1562,6 +1562,42 @@ pub trait Api {
         &self,
         settings: double::DoubleConfig,
     ) -> RpcResult<double::DoubleConfig>;
+    /// 136 §2.7: dreaming's status — enabled, the last night, the next window, budget left tonight,
+    /// backlog, proposals pending, paused_until. Answers from `state.json` even when the plugin is
+    /// disabled (`enabled: false`, defaults otherwise).
+    #[method(name = "dreaming.status")]
+    async fn dreaming_status(&self) -> RpcResult<dreaming::DreamStatus>;
+    /// The last `limit` nights, newest first (136 §2.7).
+    #[method(name = "dreaming.nights")]
+    async fn dreaming_nights(&self, limit: u32) -> RpcResult<Vec<dreaming::NightSummary>>;
+    /// Dream now (136 §2.7): fire the routine's session with this run's budget and mode; returns the session.
+    #[method(name = "dreaming.run_now")]
+    async fn dreaming_run_now(&self, request: dreaming::RunRequest) -> RpcResult<SessionId>;
+    /// Undo a night or one group of it (136 §2.7).
+    #[method(name = "dreaming.undo")]
+    async fn dreaming_undo(
+        &self,
+        night: String,
+        group: Option<String>,
+    ) -> RpcResult<dreaming::UndoReport>;
+    /// Settings › Dreaming as running (136 §2.7); from the config section even when disabled.
+    #[method(name = "dreaming.settings")]
+    async fn dreaming_settings(&self) -> RpcResult<dreaming::DreamSettings>;
+    /// Persist the `dreaming:` section through the settings path and apply it live (136 §2.7).
+    #[method(name = "dreaming.set_settings")]
+    async fn dreaming_set_settings(
+        &self,
+        settings: dreaming::DreamSettings,
+    ) -> RpcResult<dreaming::DreamSettings>;
+    /// Proposals waiting for the user (136 §2.7).
+    #[method(name = "dreaming.proposals")]
+    async fn dreaming_proposals(&self) -> RpcResult<Vec<dreaming::Proposal>>;
+    /// The user pressed `choice` on a proposal (136 §2.7).
+    #[method(name = "dreaming.proposal_act")]
+    async fn dreaming_proposal_act(&self, id: String, choice: String) -> RpcResult<()>;
+    /// The 136 §13 series over `days`.
+    #[method(name = "dreaming.metrics")]
+    async fn dreaming_metrics(&self, days: u32) -> RpcResult<dreaming::Metrics>;
     /// 137 §11.1 `agent.endless` as in force (Settings › Memory).
     #[method(name = "endless_settings_get")]
     async fn endless_settings_get(&self) -> RpcResult<EndlessConfig>;
@@ -2125,6 +2161,11 @@ impl Server {
     fn double_config(&self) -> double::DoubleConfig {
         self.rt.section("double").unwrap_or_default()
     }
+
+    /// The `dreaming:` section as read at start (136 §9.2); defaults when absent.
+    fn dreaming_config(&self) -> dreaming::DreamConfig {
+        self.rt.section("dreaming").unwrap_or_default()
+    }
 }
 
 impl Server {
@@ -2184,6 +2225,16 @@ pub(crate) fn lookup<A: Actor>(name: &str) -> RpcResult<ActorRef<A>> {
             None::<()>,
         )),
     }
+}
+
+/// A `dreaming::rpc` error → JSON-RPC: "not running" is `NOT_RUNNING`, anything else `ASK_FAILED`.
+fn dreaming_err(e: String) -> ErrorObjectOwned {
+    let code = if e.ends_with("is not running") {
+        NOT_RUNNING
+    } else {
+        ASK_FAILED
+    };
+    ErrorObjectOwned::owned(code, e, None::<()>)
 }
 
 /// Look up `name`, `ask` it `msg`, map every failure to a JSON-RPC error.
@@ -5608,6 +5659,72 @@ impl ApiServer for Server {
         .await
     }
 
+    // 136 §2.7: every method asks the `dreaming` actor through `dreaming::rpc`; with
+    // `dreaming.enabled: false` the actor does not exist — `status` and `settings` then answer from
+    // the section and `state.json`, the rest report `NOT_RUNNING`.
+
+    async fn dreaming_status(&self) -> RpcResult<dreaming::DreamStatus> {
+        match dreaming::rpc::status().await {
+            Ok(s) => Ok(s),
+            Err(_) => Ok(dreaming::night::status(
+                &self.rt.data_dir,
+                &self.dreaming_config(),
+            )),
+        }
+    }
+
+    async fn dreaming_nights(&self, limit: u32) -> RpcResult<Vec<dreaming::NightSummary>> {
+        dreaming::rpc::nights(limit).await.map_err(dreaming_err)
+    }
+
+    async fn dreaming_run_now(&self, request: dreaming::RunRequest) -> RpcResult<SessionId> {
+        dreaming::rpc::run_now(request).await.map_err(dreaming_err)
+    }
+
+    async fn dreaming_undo(
+        &self,
+        night: String,
+        group: Option<String>,
+    ) -> RpcResult<dreaming::UndoReport> {
+        dreaming::rpc::undo(night, group)
+            .await
+            .map_err(dreaming_err)
+    }
+
+    async fn dreaming_settings(&self) -> RpcResult<dreaming::DreamSettings> {
+        match dreaming::rpc::settings().await {
+            Ok(s) => Ok(s),
+            Err(_) => Ok(dreaming::night::settings(
+                &self.rt.data_dir,
+                &self.dreaming_config(),
+                &dreaming::config::AgentDefaults::from_runtime(&self.rt),
+            )),
+        }
+    }
+
+    async fn dreaming_set_settings(
+        &self,
+        settings: dreaming::DreamSettings,
+    ) -> RpcResult<dreaming::DreamSettings> {
+        dreaming::rpc::set_settings(settings)
+            .await
+            .map_err(dreaming_err)
+    }
+
+    async fn dreaming_proposals(&self) -> RpcResult<Vec<dreaming::Proposal>> {
+        dreaming::rpc::proposals().await.map_err(dreaming_err)
+    }
+
+    async fn dreaming_proposal_act(&self, id: String, choice: String) -> RpcResult<()> {
+        dreaming::rpc::proposal_act(id, choice)
+            .await
+            .map_err(dreaming_err)
+    }
+
+    async fn dreaming_metrics(&self, days: u32) -> RpcResult<dreaming::Metrics> {
+        dreaming::rpc::metrics(days).await.map_err(dreaming_err)
+    }
+
     async fn endless_settings_get(&self) -> RpcResult<EndlessConfig> {
         ask::<Agents, _>(agent::AGENT_ACTOR, agent::GetEndlessSettings).await
     }
@@ -7011,6 +7128,16 @@ mod tests {
         assert!(names.contains(&"resume_turn"), "{names:?}");
     }
 
+    /// 136 §2.7: every `dreaming.*` method is registered under its dotted name.
+    #[tokio::test]
+    async fn dreaming_methods_are_registered() {
+        let rt = Runtime::new(figment::Figment::new(), std::env::temp_dir());
+        let names: Vec<&str> = Server::new(rt).into_rpc().method_names().collect();
+        for m in dreaming::rpc::METHODS {
+            assert!(names.contains(&m), "{m} missing from {names:?}");
+        }
+    }
+
     /// 139 §9.2 (D18): the owner side of a routed `resume_turn` / `answer_ask` /
     /// `resolve_approval` — dispatched exactly as `forward::serve` does (internal
     /// peer + `Forwarded` marker) with the positional params the forwarder sends.
@@ -7139,7 +7266,6 @@ mod tests {
         );
         store.close().await;
     }
-
     #[test]
     fn communication_changed_reaches_scoped_and_tree_subscribers() {
         let global =

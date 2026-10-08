@@ -791,6 +791,7 @@ mod tests {
             scope: None,
             body: body.into(),
             visibility: None,
+            ..Put::default()
         }
     }
 

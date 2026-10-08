@@ -271,7 +271,7 @@ Because the prompt already is the fossil record of past corrections (this harnes
 - **The `Dreaming` note** (one document): last night at the top — what changed, grouped, each group with an **Undo** action (`dreaming_undo(night, group)` → `git revert` of that group's commits + the skill backup); the proposals; the meta-note; budget and models. History collapses below.
 - **Attention rows**: at most three a week, each phrased as the thing to say back ("Make 'dev machine state at 08:30' a weekday routine?" · "Create and start / Create paused / Not this"), with the cost of being wrong stated (132).
 - **Library › Knowledge**: badges `archived`, `superseded`, `verified <date>`, `stale`, `learned`; a filter "changed by dreaming"; the gix history (10 §8) already shows each night's commits.
-- **Settings › Dreaming** `[sky]`: **enabled** (the same switch as the routine's toggle on the Routines page — Dreaming is a bundled routine, so turning it off is `enable_schedule(dreaming, false)` like any other; `dreaming.enabled: false` in config removes the file, the sensor, the prompt block and the signals writer) · window · **budget per night (default $1, any amount)** · **models per tier — four pickers (triage / tidy / propose / judge) over `list_models`, like the routines form** · "preferences: auto-promote from my explicit instructions" (default on) · digest day/time · "pause dreaming for 7 days" · **Dream now**: a button with its own budget field and a mode — *one pass* (tonight's phases once) or *backlog* (repeat passes until the fresh/untidied backlog is empty or the budget is spent) — so the 1,584-entry backlog is cleared when the user chooses, at the price he chooses, not by stealth over weeks.
+- **Settings › Dreaming** `[sky]`: **enabled** (the same switch as the routine's toggle on the Routines page — Dreaming is a bundled routine, so turning it off is `enable_schedule(dreaming, false)` like any other; `dreaming.enabled: false` in config switches the routine file off in place (`enabled: false` — as built after P2 D6: a deleted file would be projected back by the `schedules/` replica mirror at the next start), removes the sensor, the prompt block and the signals writer, and leaves the skill) · window · **budget per night (default $1, any amount)** · **models per tier — four pickers (triage / tidy / propose / judge) over `list_models`, like the routines form** · "preferences: auto-promote from my explicit instructions" (default on) · digest day/time · "pause dreaming for 7 days" · **Dream now**: a button with its own budget field and a mode — *one pass* (tonight's phases once) or *backlog* (repeat passes until the fresh/untidied backlog is empty or the budget is spent) — so the 1,584-entry backlog is cleared when the user chooses, at the price he chooses, not by stealth over weeks.
 - **Nothing else.** No nightly chat message, no per-merge approval, no questions it can answer itself. If undo is used more than twice in a month the digest says so and asks whether to pause.
 
 ## 9. The `dreaming` plugin and the amendments to `knowledge`, `agent`, `schedule`
@@ -282,7 +282,7 @@ State on disk (`dreaming/` with state, ledger, cases, journal, backups), its own
 ### 9.2 Config (`dreaming:` in config.yaml; read at startup like every section)
 ```yaml
 dreaming:
-  enabled: true                 # false: no routine file is installed, no signals.json, no prompt block; existing knowledge keys are still honoured
+  enabled: true                 # false: the routine file is switched off (enabled: false), the sensor removed, no signals.json, no prompt block; existing knowledge keys are still honoured
   window: ["01:00", "06:00"]    # local
   idle_minutes: 20
   min_sessions: 1               # below this the night is Recall + Journal only
@@ -292,7 +292,7 @@ dreaming:
   models:                       # [sky] all four configurable in Settings › Dreaming
     triage: null                # null = decide_many only, model tail off
     tidy: <provider/model>      # default: agent.title_model (the cheap one; anthropic/claude-haiku-4-5 here), else the subagent model
-    propose: <provider/model>   # default: agent.subagents.model (anthropic/claude-fable-5-1 here)
+    propose: <provider/model>   # default: agent.subagents.model (anthropic/claude-fable-5-1 here). v1 as built (Z): the proposer runs in the routine's own session, i.e. on the `tidy` model; this value is persisted and shown in Settings but no call reads it until `skill_learned_edit` gains a `propose` side call
     judge: <provider/model>     # default: agent.model when its vendor differs from propose (openai/gpt-5.6-sol here), else propose with another seed
   caps: {triage: 300, merges: 40, archives: 60, verifications: 15, cases: 60, edits_per_target: 4, targets: 3, rows_per_week: 3}
   lifetimes: {record: 14, fact: 30, procedure: 90, entity: 60}

@@ -75,6 +75,13 @@ const meta: Meta = {
   timestamp: new Date(2026, 8, 12).toISOString(),
   owner: 'user',
   visibility: 'shared',
+  status: 'tidy',
+  hint: true,
+  evidence: [],
+  verified: null,
+  valid_until: null,
+  superseded_by: null,
+  merged_into: null,
 }
 const revision: HistorySearchHit = {
   id: 'decisions/prod-dr',

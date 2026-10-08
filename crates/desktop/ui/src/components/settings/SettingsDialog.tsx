@@ -14,6 +14,7 @@ import {
   MessageCircle,
   MessageSquare,
   Mic,
+  Moon,
   Monitor,
   Radio,
   RefreshCw,
@@ -34,6 +35,7 @@ import { Communication } from '@/components/settings/Communication'
 import { Computer } from '@/components/settings/Computer'
 import { Connections } from '@/components/settings/Connections'
 import { Double } from '@/components/settings/Double'
+import { Dreaming } from '@/components/settings/Dreaming'
 import { General } from '@/components/settings/General'
 import { Link } from '@/components/settings/Link'
 import { Loop } from '@/components/settings/Loop'
@@ -53,6 +55,7 @@ const TABS = [
   ['chat', 'Chat', MessageCircle],
   ['loop', 'Agent loop', RefreshCw],
   ['advisor', 'Advisor', Eye],
+  ['dreaming', 'Dreaming', Moon],
   ['approvals', 'Approvals', ShieldCheck],
   ['communication', 'Communication', Radio],
   ['memory', 'Memory', InfinityIcon],
@@ -93,6 +96,7 @@ function Pane({ tab, session, peer, onClose }: Omit<Props, 'onTab'>) {
       {tab === 'chat' && <Chat />}
       {tab === 'loop' && <Loop />}
       {tab === 'advisor' && <Advisor />}
+      {tab === 'dreaming' && <Dreaming />}
       {tab === 'approvals' && <Approvals session={session} onClose={onClose} />}
       {tab === 'communication' && <Communication session={session} focus={peer} />}
       {tab === 'memory' && <Memory />}

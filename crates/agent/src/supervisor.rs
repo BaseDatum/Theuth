@@ -66,9 +66,9 @@ use crate::loop_::{
     CancelPeerScope, CancelTurn, CompactNow, CompactionOverride, ContextBreakdownNow,
     ContextHistoryNow, ContextItemsNow, GetToolset, HarvestNow, IsRunning, PEER_INTAKE, PeerInput,
     QueuedInputs, RedoTurn, RemoveContextNow, ResetRuntimeNow, RestartTurn, Session, SessionState,
-    SetCompactionOverride, SetMemoryNow, SetPendingEffort, SetTitlePin, SetToolsetOverride,
-    SuppressPeerInputs, SwitchModel, TrimTurn, UndoTurn, UserInput, WithdrawInput, prompt_blocks,
-    text_of,
+    SetBudgetNow, SetCompactionOverride, SetMemoryNow, SetPendingEffort, SetTitlePin,
+    SetToolsetOverride, SuppressPeerInputs, SwitchModel, TrimTurn, UndoTurn, UserInput,
+    WithdrawInput, prompt_blocks, text_of,
 };
 use crate::peers::{
     DiscoverPeersTool, ListModelsTool, Nodes, PeerMessageTool, SendMessageTool, SpawnSubagentTool,
@@ -787,6 +787,8 @@ impl Agents {
                 .await?;
             return Ok((id, actor));
         }
+        // 136 R-22: the cap set before a restart still meters the resumed turn.
+        let budget = store.budget(id).await?;
         let desk = row.as_ref().and_then(|r| r.desk.clone());
         let (model, effort, state, parent, resumed) = match row {
             Some(row) => {
@@ -914,6 +916,7 @@ impl Agents {
         )
         .with_kind(kind)
         .with_advisor(advised)
+        .with_budget(budget)
         .with_endless(self.endless.clone())
         .with_parent_view(parent_view);
         let actor = Session::spawn_with_mailbox(session, runtime::subscriber_mailbox());
@@ -3213,6 +3216,88 @@ impl Message<SetCompaction> for Agents {
             }))
             .await
             .map_err(|e| e.to_string())
+    }
+}
+
+impl Message<crate::SetBudget> for Agents {
+    type Reply = Result<(), String>;
+
+    /// 136 §2.2: a session's money cap. `since` is stamped here (the cap is
+    /// per night, R-1) and the cap is persisted on the session row so a
+    /// durability-resumed turn is still metered (R-22).
+    async fn handle(
+        &mut self,
+        m: crate::SetBudget,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Result<(), String> {
+        let budget = m.nanos.map(|nanos| crate::Budget {
+            nanos,
+            currency: m.currency,
+            since: chrono::Utc::now().to_rfc3339(),
+        });
+        let actor = self.actor(m.session).await?.native()?.clone();
+        self.store
+            .set_budget(m.session, budget.as_ref())
+            .await
+            .map_err(|e| format!("{e:#}"))?;
+        actor
+            .tell(SetBudgetNow(budget))
+            .await
+            .map_err(|e| e.to_string())
+    }
+}
+
+impl Message<crate::LedgerSince> for Agents {
+    type Reply = kameo::reply::DelegatedReply<Result<crate::Ledger, String>>;
+
+    /// 136 §2.2: the day ledger — the durable store's read-only aggregates
+    /// (`Store::ledger_since`; private trees live in their own stores and
+    /// are never in it) plus knowledge `Stats` for the ids the window's
+    /// `<knowledge>` notes showed. Knowledge off → `hints` empty. The scan
+    /// takes seconds on a large store, so it runs off the mailbox (R-21).
+    async fn handle(
+        &mut self,
+        m: crate::LedgerSince,
+        ctx: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        let (reply, tx) = ctx.reply_sender();
+        let Some(tx) = tx else { return reply };
+        let store = self.store.clone();
+        let vault = self.auth.vault.clone();
+        tokio::spawn(async move {
+            let redact = move |text: &str| -> String {
+                vault
+                    .as_deref()
+                    .map_or_else(|| text.to_owned(), |v| v.redact(text).into_owned())
+            };
+            let (mut ledger, hinted) = match store.ledger_since(&m, &redact).await {
+                Ok(r) => r,
+                Err(e) => {
+                    tx.send(Err(format!("ledger: {e:#}")));
+                    return;
+                }
+            };
+            if !hinted.is_empty()
+                && let Ok(Some(k)) =
+                    ActorRef::<knowledge::KnowledgeActor>::lookup(knowledge::KNOWLEDGE_ACTOR)
+            {
+                match k.ask(knowledge::Stats { ids: hinted }).await {
+                    Ok(uses) => {
+                        ledger.hints = uses
+                            .into_iter()
+                            .map(|u| crate::LedgerHintUse {
+                                id: u.id,
+                                shown: u.shown,
+                                opened: u.opened,
+                            })
+                            .collect();
+                    }
+                    Err(e) => tracing::warn!("ledger: knowledge stats: {e}"),
+                }
+            }
+            tx.send(Ok(ledger));
+        });
+        reply
     }
 }
 
@@ -8403,6 +8488,17 @@ fn agent_config(rt: &Runtime) -> anyhow::Result<AgentConfig> {
     }
 }
 
+/// 136 §2.1: knowledge's "may this session consolidate" answerer, backed by
+/// `sessions` ([`Store::may_consolidate`]).
+struct StoreConsolidator(Store);
+
+#[async_trait::async_trait]
+impl knowledge::Consolidator for StoreConsolidator {
+    async fn may_consolidate(&self, session: SessionId) -> bool {
+        self.0.may_consolidate(session).await.unwrap_or(false)
+    }
+}
+
 /// Open the store, spawn and register the supervisor.
 pub async fn start(rt: &Runtime) -> anyhow::Result<()> {
     let mut cfg = agent_config(rt)?;
@@ -8453,6 +8549,25 @@ pub async fn start(rt: &Runtime) -> anyhow::Result<()> {
                     "accounting: projects/cost_owners replicated ({n} row(s) announced)"
                 ),
                 Err(e) => tracing::info!("accounting: replication unavailable ({e}); local only"),
+            }
+        });
+    }
+    // 136 §2.1: knowledge's consolidation gate — "is this session an unattended
+    // root (the dreaming routine) or the owner's own root (no parent, no desk)?"
+    // answered from `sessions`. Knowledge starts before us; wait for its actor.
+    {
+        let rt2 = rt.clone();
+        let store = store.clone();
+        tokio::spawn(async move {
+            if let Some(k) = rt2
+                .lookup_when::<knowledge::KnowledgeActor>(knowledge::KNOWLEDGE_ACTOR)
+                .await
+            {
+                let _ = k
+                    .ask(knowledge::RegisterConsolidator(Arc::new(
+                        StoreConsolidator(store),
+                    )))
+                    .await;
             }
         });
     }
@@ -12778,6 +12893,56 @@ pub(crate) mod tests {
         );
     }
 
+    /// 136 R-22: a cap set through `SetBudget` is persisted, stamped `since`,
+    /// and reloaded onto the actor a restart rebuilds from the store — so a
+    /// durability-resumed turn is still metered before its first call.
+    #[tokio::test]
+    async fn budget_survives_a_rebuild_from_the_store() {
+        let mut a = agents().await;
+        let store = a.store.clone();
+        let (root, _) = a.session(None, None, None, (None, None)).await.unwrap();
+        let agents = Agents::spawn(a);
+        agents
+            .ask(crate::SetBudget {
+                session: root,
+                nanos: Some(1_000_000_000),
+                currency: "USD".into(),
+            })
+            .await
+            .unwrap();
+        let saved = store.budget(root).await.unwrap().expect("persisted");
+        assert_eq!(
+            (saved.nanos, saved.currency.as_str()),
+            (1_000_000_000, "USD")
+        );
+        assert!(
+            chrono::DateTime::parse_from_rfc3339(&saved.since).is_ok(),
+            "since is stamped server-side: {}",
+            saved.since
+        );
+        // The process "restarts": the live actor is gone, the row remains.
+        assert!(agents.ask(UnloadSession { session: root }).await.unwrap());
+        // Any route rebuilds the actor lazily; the cap rides along.
+        agents
+            .ask(PinTitle {
+                session: root,
+                pinned: false,
+            })
+            .await
+            .unwrap();
+        let actor = agents
+            .ask(With(move |a: &mut Agents| {
+                a.sessions[&root].actor.native().unwrap().clone()
+            }))
+            .await
+            .unwrap();
+        assert_eq!(
+            actor.ask(crate::loop_::BudgetOf).await.unwrap(),
+            Some(saved),
+            "the rebuilt actor is metered before its first call"
+        );
+    }
+
     /// A mesh of one: every row is ours, so `Deliver` takes today's local
     /// path — the exchange is enqueued here, no transport is consulted — and
     /// the directory carries this engine's name on every row.
@@ -13089,7 +13254,10 @@ pub(crate) mod tests {
     /// T2: a peer message to a queued child is held, not routed; when the
     /// running child's turn ends the queued child's first input is its
     /// brief and the held message comes second, under exactly one permit,
-    /// which frees when its turn ends.
+    /// which the supervisor lets go of when its turn ends. The semaphore
+    /// count is not read after that: the held message is a peer input, and
+    /// when y's actor has already opened it as a bounded turn its 50 §8 gate
+    /// takes the permit the instant it frees (a race the test must not pin).
     #[tokio::test]
     async fn held_message_follows_the_brief() {
         let a = agents_with(true).await;
@@ -13132,11 +13300,13 @@ pub(crate) mod tests {
             "y holds the one permit"
         );
         agents.tell(finished(y)).await.unwrap();
-        assert_eq!(
-            pool_state(&agents, p, y).await.0,
-            1,
-            "freed when y's turn ends"
-        );
+        let released = agents
+            .ask(With(move |a: &mut Agents| {
+                a.child_turns.get(&y).is_none_or(|ct| ct.permit.is_none())
+            }))
+            .await
+            .unwrap();
+        assert!(released, "the spawn permit goes when y's turn ends");
     }
 
     /// T3: a queued child stopped by the user never gets its brief: the

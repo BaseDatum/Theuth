@@ -42,6 +42,19 @@ pub async fn register(reg: &ActorRef<ToolRegistry>, knowledge: Arc<Knowledge>) {
     let _ = reg
         .ask(RegisterTool(Arc::new(RestoreTool(k.clone()))))
         .await;
+    // 136 §2.1: usage counters and the five consolidation ops (bodies W1's).
+    let _ = reg.ask(RegisterTool(Arc::new(StatsTool(k.clone())))).await;
+    let _ = reg.ask(RegisterTool(Arc::new(MergeTool(k.clone())))).await;
+    let _ = reg
+        .ask(RegisterTool(Arc::new(SupersedeTool(k.clone()))))
+        .await;
+    let _ = reg
+        .ask(RegisterTool(Arc::new(ArchiveTool(k.clone()))))
+        .await;
+    let _ = reg.ask(RegisterTool(Arc::new(VerifyTool(k.clone())))).await;
+    let _ = reg
+        .ask(RegisterTool(Arc::new(RetitleTool(k.clone()))))
+        .await;
 }
 
 /// Text for the transcript, the same data as a Python value for the runtime.
@@ -61,6 +74,17 @@ fn writable(cx: &ToolCx) -> anyhow::Result<()> {
     anyhow::ensure!(
         !cx.resources.is_private(),
         "knowledge mutations are disabled in a private session"
+    );
+    Ok(())
+}
+
+/// 136 §2.1: the five consolidation tools run only from the dreaming
+/// routine's session or the owner's own root session (plus [`writable`]).
+async fn consolidating(k: &Knowledge, name: &str, cx: &ToolCx) -> anyhow::Result<()> {
+    writable(cx)?;
+    anyhow::ensure!(
+        k.may_consolidate(cx.session).await,
+        "{name} runs only in the dreaming routine's session or the owner's own root session (136 §2.1)"
     );
     Ok(())
 }
@@ -108,8 +132,14 @@ impl Tool for SearchTool {
         let mut s = String::new();
         let mut rows = Vec::with_capacity(hits.len());
         for h in &hits {
+            // 136 §3.1: archived (and other non-live) items stay searchable, marked.
+            let mark = if h.meta.status.is_live() {
+                String::new()
+            } else {
+                format!(" [{}]", h.meta.status.as_str())
+            };
             s.push_str(&format!(
-                "`{}` — {} [{}] ({:.1}): {}\n",
+                "`{}` — {} [{}]{mark} ({:.1}): {}\n",
                 h.meta.id, h.meta.title, h.meta.type_, h.score, h.snippet
             ));
             // Frontmatter fields plus score and snippet, flat.
@@ -148,7 +178,7 @@ impl Tool for GetTool {
             .into()
     }
 
-    async fn call(&self, a: IdArgs, _cx: ToolCx) -> anyhow::Result<ToolOutput> {
+    async fn call(&self, a: IdArgs, cx: ToolCx) -> anyhow::Result<ToolOutput> {
         if let Some((id, commit)) = a.id.split_once('@') {
             let c = self.0.read_revision(id, commit).await?;
             let date = c.time.get(..10).unwrap_or(&c.time);
@@ -160,6 +190,14 @@ impl Tool for GetTool {
             )));
         }
         let c = self.0.get(&a.id).await?;
+        // 136 §5.3: every read is a vote for the hint shelf — except the
+        // night's own (R-28): Tidy reads hundreds of entries and would make
+        // `opened == 0` unreachable for anything it touched.
+        if !self.0.is_consolidating_session(cx.session)
+            && let Err(e) = self.0.record_opened(&c.meta.id, chrono::Utc::now()).await
+        {
+            tracing::debug!(id = %c.meta.id, "record_opened: {e:#}");
+        }
         let mut s = c.text;
         if !c.links.is_empty() {
             s.push_str("\nLinks: ");
@@ -263,8 +301,24 @@ impl Tool for PutTool {
     }
 
     async fn call(&self, p: Put, cx: ToolCx) -> anyhow::Result<ToolOutput> {
-        writable(&cx)?;
-        let (meta, created) = self.0.put_for(p, Source::Model, Some(cx.session)).await?;
+        // 136 §2.1: the consolidation keys are the night's (or the owner's):
+        // gated like the five ops and stamped `source: dreaming`, so the
+        // night's undo receipt sees the tidy puts and a live session cannot
+        // archive or un-hint a concept by hand through a plain put.
+        let consolidates = p.status.is_some()
+            || p.hint.is_some()
+            || p.verified.is_some()
+            || p.valid_until.is_some()
+            || p.superseded_by.is_some()
+            || p.merged_into.is_some();
+        let source = if consolidates {
+            consolidating(&self.0, "knowledge_put with a consolidation key", &cx).await?;
+            Source::Dreaming
+        } else {
+            writable(&cx)?;
+            Source::Model
+        };
+        let (meta, created) = self.0.put_for(p, source, Some(cx.session)).await?;
         let how = if created { "new" } else { "updated" };
         Ok(ToolOutput::ok(format!("put {} ({how})", meta.id)))
     }
@@ -410,6 +464,310 @@ impl Tool for RestoreTool {
     }
 }
 
+/// Arguments for [`StatsTool`].
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+pub struct StatsArgs {
+    /// Concept ids.
+    pub ids: Vec<String>,
+}
+
+/// `knowledge_stats` (136 §2.1): impressions and opens per id.
+pub struct StatsTool(pub Arc<Knowledge>);
+
+#[async_trait::async_trait]
+impl Tool for StatsTool {
+    const NAME: &'static str = "knowledge_stats";
+    const RETURNS: &'static str = "list[dict]";
+    const RISK: Risk = Risk::ReadOnly;
+    type Args = StatsArgs;
+
+    fn description(&self) -> String {
+        "Usage counters of knowledge concepts: how often each id was shown in a <knowledge> hint and opened \
+         with knowledge_get, with the last times. Unknown ids report zeros."
+            .into()
+    }
+
+    async fn call(&self, a: StatsArgs, _cx: ToolCx) -> anyhow::Result<ToolOutput> {
+        let uses = self.0.stats(&a.ids).await?;
+        let mut s = String::new();
+        for u in &uses {
+            s.push_str(&format!(
+                "`{}` shown {} (last {}) opened {} (last {})\n",
+                u.id,
+                u.shown,
+                u.last_shown.as_deref().unwrap_or("never"),
+                u.opened,
+                u.last_opened.as_deref().unwrap_or("never")
+            ));
+        }
+        if s.is_empty() {
+            s.push_str("no ids");
+        }
+        Ok(structured(s, uses))
+    }
+}
+
+/// Arguments for [`MergeTool`].
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+pub struct MergeArgs {
+    /// Ids folded into `into`; each becomes a redirect stub.
+    pub ids: Vec<String>,
+    /// The canonical id (one of `ids` or a new one).
+    pub into: String,
+    /// The canonical's body.
+    pub body: String,
+    /// Session ids (or `user`) to add to the canonical's `evidence`.
+    #[serde(default)]
+    pub evidence: Vec<String>,
+}
+
+/// `knowledge_merge` (136 §2.1): fold near-duplicates into one living entry.
+pub struct MergeTool(pub Arc<Knowledge>);
+
+#[async_trait::async_trait]
+impl Tool for MergeTool {
+    const NAME: &'static str = "knowledge_merge";
+    const RISK: Risk = Risk::Mutating;
+    type Args = MergeArgs;
+
+    fn description(&self) -> String {
+        "Dreaming only: merge several knowledge concepts into one canonical entry (`into`, with `body`); \
+         the folded ids become `status: merged` redirect stubs, evidence and tags are unioned, links retargeted."
+            .into()
+    }
+
+    async fn call(&self, a: MergeArgs, cx: ToolCx) -> anyhow::Result<ToolOutput> {
+        consolidating(&self.0, Self::NAME, &cx).await?;
+        // The session's agent scope (67 §9); the user's when it has none.
+        let scope =
+            self.0
+                .scope_for(Some(cx.session))
+                .unwrap_or_else(|| crate::types::AgentScope {
+                    owner: crate::types::USER_OWNER.to_owned(),
+                    line: Default::default(),
+                });
+        let r = self
+            .0
+            .merge(&a.ids, &a.into, &a.body, &a.evidence, &scope)
+            .await?;
+        Ok(structured(
+            format!("merged {} into {}", r.ids[1..].join(", "), r.ids[0]),
+            r,
+        ))
+    }
+}
+
+/// Arguments for [`SupersedeTool`].
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+pub struct SupersedeArgs {
+    /// The outdated concept.
+    pub loser: String,
+    /// The concept that replaces it.
+    pub winner: String,
+    /// RFC 3339: when the loser stopped being true (from the evidence, not now).
+    #[serde(default)]
+    pub valid_until: Option<String>,
+    /// One line for the loser's body.
+    #[serde(default)]
+    pub note: Option<String>,
+}
+
+/// `knowledge_supersede` (136 §2.1): a newer claim replaces an older one.
+pub struct SupersedeTool(pub Arc<Knowledge>);
+
+#[async_trait::async_trait]
+impl Tool for SupersedeTool {
+    const NAME: &'static str = "knowledge_supersede";
+    const RISK: Risk = Risk::Mutating;
+    type Args = SupersedeArgs;
+
+    fn description(&self) -> String {
+        "Dreaming only: mark `loser` as superseded by `winner` (`superseded_by`, `valid_until`, `hint: false`); \
+         the loser stays searchable and restorable."
+            .into()
+    }
+
+    async fn call(&self, a: SupersedeArgs, cx: ToolCx) -> anyhow::Result<ToolOutput> {
+        consolidating(&self.0, Self::NAME, &cx).await?;
+        let r = self
+            .0
+            .supersede(
+                &a.loser,
+                &a.winner,
+                a.valid_until.as_deref(),
+                a.note.as_deref(),
+            )
+            .await?;
+        Ok(structured(
+            format!("{} superseded by {}", a.loser, a.winner),
+            r,
+        ))
+    }
+}
+
+/// Arguments for [`ArchiveTool`].
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+pub struct ArchiveArgs {
+    /// Concept id.
+    pub id: String,
+    /// Why it leaves the hint shelf; appended under `## Archived`.
+    pub reason: String,
+}
+
+/// `knowledge_archive` (136 §2.1): off the hint shelf, still searchable.
+pub struct ArchiveTool(pub Arc<Knowledge>);
+
+#[async_trait::async_trait]
+impl Tool for ArchiveTool {
+    const NAME: &'static str = "knowledge_archive";
+    const RISK: Risk = Risk::Mutating;
+    type Args = ArchiveArgs;
+
+    fn description(&self) -> String {
+        "Dreaming only: archive a knowledge concept (`status: archived, hint: false`) with a reason; \
+         never deleted — still searchable and knowledge_restore-able."
+            .into()
+    }
+
+    async fn call(&self, a: ArchiveArgs, cx: ToolCx) -> anyhow::Result<ToolOutput> {
+        consolidating(&self.0, Self::NAME, &cx).await?;
+        let r = self.0.archive(&a.id, &a.reason).await?;
+        Ok(structured(format!("archived {}", a.id), r))
+    }
+}
+
+/// Arguments for [`VerifyTool`].
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+pub struct VerifyArgs {
+    /// Concept id.
+    pub id: String,
+    /// `ok` (the claim still holds) or `stale` (a read-tool check failed).
+    pub outcome: crate::types::VerifyOutcome,
+    /// What was checked, or what changed.
+    #[serde(default)]
+    pub note: Option<String>,
+    /// What the check read: a path (absolute or relative to the data dir) or
+    /// an http(s) URL. `ok` needs at least one of those; a `session:<uuid>` /
+    /// `meeting:<id>` id counts only in addition and only when the concept's
+    /// own `evidence` already cites it. `stale` accepts any one of the three.
+    /// All are added to the concept's `evidence`.
+    #[serde(default)]
+    pub evidence: Vec<String>,
+}
+
+/// 136 P gap 2: a path a read tool could have read, or an http(s) URL.
+fn is_read_source(e: &str, data_dir: &std::path::Path) -> bool {
+    let e = e.trim();
+    !e.is_empty()
+        && (e.starts_with("http://") || e.starts_with("https://") || data_dir.join(e).exists())
+}
+
+/// A well-formed `session:<uuid>` / `meeting:<id>` reference.
+fn is_ref(e: &str) -> bool {
+    let e = e.trim();
+    if let Some(s) = e.strip_prefix("session:") {
+        return s.parse::<runtime::SessionId>().is_ok();
+    }
+    e.strip_prefix("meeting:").is_some_and(|m| !m.is_empty())
+}
+
+/// 136 P2 D2: the evidence rule. `ok` must rest on a read (path or URL);
+/// a `session:`/`meeting:` id is accepted only alongside one and only when
+/// `cited` (the concept's own `evidence`) already names it — otherwise any
+/// session id would stamp `verified:` without a read. `stale` keeps the
+/// looser rule: one item of any kind.
+fn check_evidence(
+    outcome: crate::types::VerifyOutcome,
+    evidence: &[String],
+    cited: &[String],
+    data_dir: &std::path::Path,
+) -> anyhow::Result<()> {
+    let read = evidence.iter().any(|e| is_read_source(e, data_dir));
+    match outcome {
+        crate::types::VerifyOutcome::Ok => {
+            anyhow::ensure!(
+                read,
+                "verify ok needs a read: evidence must include a path that exists or an http(s) URL \
+                 (a session:/meeting: id counts only in addition, and only one the concept already cites)"
+            );
+            for e in evidence.iter().filter(|e| is_ref(e)) {
+                anyhow::ensure!(
+                    cited.iter().any(|c| c == e.trim()),
+                    "verify ok: `{e}` is not in the concept's evidence — a session:/meeting: id counts \
+                     only when the concept already cites it; cite the path or URL you read"
+                );
+            }
+        }
+        crate::types::VerifyOutcome::Stale => anyhow::ensure!(
+            read || evidence.iter().any(|e| is_ref(e)),
+            "verify needs evidence from a read: pass evidence with a path that exists, an http(s) URL, or a session:/meeting: id"
+        ),
+    }
+    Ok(())
+}
+
+/// `knowledge_verify` (136 §2.1): record a read-tool check's verdict.
+pub struct VerifyTool(pub Arc<Knowledge>);
+
+#[async_trait::async_trait]
+impl Tool for VerifyTool {
+    const NAME: &'static str = "knowledge_verify";
+    const RISK: Risk = Risk::Mutating;
+    type Args = VerifyArgs;
+
+    fn description(&self) -> String {
+        "Dreaming only: record the outcome of checking a knowledge concept against the world with read tools: \
+         `ok` sets `verified: <today>`, `stale` sets `status: stale` and keeps the note. Never a model's opinion: \
+         `ok` needs `evidence` with the path or http(s) URL you read this turn (a session:/meeting: id counts \
+         only in addition, and only when the concept already cites it); `stale` takes any of the three."
+            .into()
+    }
+
+    async fn call(&self, a: VerifyArgs, cx: ToolCx) -> anyhow::Result<ToolOutput> {
+        consolidating(&self.0, Self::NAME, &cx).await?;
+        let cited = self.0.get(&a.id).await?.meta.evidence;
+        check_evidence(a.outcome, &a.evidence, &cited, &cx.resources.root)?;
+        let r = self
+            .0
+            .verify(&a.id, a.outcome, a.note.as_deref(), &a.evidence)
+            .await?;
+        Ok(structured(format!("verified {}: {:?}", a.id, a.outcome), r))
+    }
+}
+
+/// Arguments for [`RetitleTool`].
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+pub struct RetitleArgs {
+    /// Concept id.
+    pub id: String,
+    /// New title, ≤ 120 chars — the first clause of the old one.
+    pub title: String,
+    /// Paragraph prepended to the body so nothing of the old title is lost.
+    pub summary: String,
+}
+
+/// `knowledge_retitle` (136 §2.1): a readable hint line.
+pub struct RetitleTool(pub Arc<Knowledge>);
+
+#[async_trait::async_trait]
+impl Tool for RetitleTool {
+    const NAME: &'static str = "knowledge_retitle";
+    const RISK: Risk = Risk::Mutating;
+    type Args = RetitleArgs;
+
+    fn description(&self) -> String {
+        "Dreaming only: shorten a knowledge concept's title (≤ 120 chars) and prepend the rest of the old \
+         title to the body as a Summary paragraph."
+            .into()
+    }
+
+    async fn call(&self, a: RetitleArgs, cx: ToolCx) -> anyhow::Result<ToolOutput> {
+        consolidating(&self.0, Self::NAME, &cx).await?;
+        let r = self.0.retitle(&a.id, &a.title, &a.summary).await?;
+        Ok(structured(format!("retitled {}", a.id), r))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -439,6 +797,35 @@ mod tests {
         assert_eq!(PutTool::RISK, Risk::ReadOnly);
         assert_eq!(DeleteTool::RISK, Risk::Destructive);
         assert_eq!(RestoreTool::RISK, Risk::Mutating);
+        // 136 §2.1
+        assert_eq!(
+            [
+                StatsTool::NAME,
+                MergeTool::NAME,
+                SupersedeTool::NAME,
+                ArchiveTool::NAME,
+                VerifyTool::NAME,
+                RetitleTool::NAME,
+            ],
+            [
+                "knowledge_stats",
+                "knowledge_merge",
+                "knowledge_supersede",
+                "knowledge_archive",
+                "knowledge_verify",
+                "knowledge_retitle",
+            ]
+        );
+        assert_eq!(StatsTool::RISK, Risk::ReadOnly);
+        for r in [
+            MergeTool::RISK,
+            SupersedeTool::RISK,
+            ArchiveTool::RISK,
+            VerifyTool::RISK,
+            RetitleTool::RISK,
+        ] {
+            assert_eq!(r, Risk::Mutating);
+        }
     }
 
     fn cx(private: bool) -> ToolCx {
@@ -469,6 +856,7 @@ mod tests {
             scope: None,
             body: "body".into(),
             visibility: None,
+            ..Put::default()
         }
     }
 
@@ -498,5 +886,281 @@ mod tests {
         assert!(k.get("facts/x").await.is_err());
         PutTool(k.clone()).call(put(), cx(false)).await.unwrap();
         assert!(k.get("facts/x").await.is_ok());
+    }
+
+    /// 136 §3.1: `knowledge_search` keeps archived items and marks them;
+    /// `knowledge_get` records an open.
+    #[tokio::test]
+    async fn search_marks_archived_and_get_records_an_open() {
+        let dir = std::env::temp_dir().join(format!("theuth-ktools-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let rt = runtime::Runtime::new(figment::Figment::new(), dir.clone());
+        let k = Knowledge::open(&dir, rt).await.unwrap();
+        k.put(put(), Source::Model).await.unwrap();
+        k.put(
+            Put {
+                id: "facts/y".into(),
+                status: Some(crate::types::Status::Archived),
+                ..put()
+            },
+            Source::Model,
+        )
+        .await
+        .unwrap();
+        let out = SearchTool(k.clone())
+            .call(
+                SearchArgs {
+                    query: "body".into(),
+                    limit: None,
+                },
+                cx(false),
+            )
+            .await
+            .unwrap();
+        let lines: Vec<&str> = out.content.lines().collect();
+        assert_eq!(lines.len(), 2);
+        let y = lines.iter().find(|l| l.starts_with("`facts/y`")).unwrap();
+        assert!(y.contains("[fact] [archived]"), "{y}");
+        let x = lines.iter().find(|l| l.starts_with("`facts/x`")).unwrap();
+        assert!(x.contains("[fact] (") && !x.contains("[archived]"), "{x}");
+
+        GetTool(k.clone())
+            .call(
+                IdArgs {
+                    id: "facts/x".into(),
+                },
+                cx(false),
+            )
+            .await
+            .unwrap();
+        let s = k.stats(&["facts/x".into()]).await.unwrap();
+        assert_eq!((s[0].shown, s[0].opened), (0, 1));
+    }
+
+    /// Says yes to exactly one session.
+    struct OneSession(runtime::SessionId);
+
+    #[async_trait::async_trait]
+    impl crate::Consolidator for OneSession {
+        async fn may_consolidate(&self, s: runtime::SessionId) -> bool {
+            s == self.0
+        }
+    }
+
+    /// 136 §2.1: the five consolidation tools refuse without a gate, refuse a
+    /// session the gate rejects, and reach the store (which wants a file) for one it
+    /// allows; `knowledge_stats` answers anywhere.
+    #[tokio::test]
+    async fn consolidation_tools_need_owner_root_or_unattended() {
+        let dir = std::env::temp_dir().join(format!("theuth-ktools-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let rt = runtime::Runtime::new(figment::Figment::new(), dir.clone());
+        let k = Knowledge::open(&dir, rt).await.unwrap();
+        let archive = || ArchiveArgs {
+            id: "facts/x".into(),
+            reason: "old".into(),
+        };
+        // No gate installed: nobody may.
+        let e = ArchiveTool(k.clone())
+            .call(archive(), cx(false))
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(e.contains("knowledge_archive runs only"), "{e}");
+        // Private sessions are refused first.
+        let e = ArchiveTool(k.clone())
+            .call(archive(), cx(true))
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(e.contains("private session"), "{e}");
+        // A gate: the allowed session reaches the store; another is refused.
+        let allowed = cx(false);
+        k.set_consolidator(Arc::new(OneSession(allowed.session)));
+        let e = ArchiveTool(k.clone())
+            .call(archive(), allowed.clone())
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(e.contains("no such concept: facts/x"), "{e}");
+        let e = VerifyTool(k.clone())
+            .call(
+                VerifyArgs {
+                    id: "facts/x".into(),
+                    outcome: crate::types::VerifyOutcome::Ok,
+                    note: None,
+                    evidence: Vec::new(),
+                },
+                cx(false),
+            )
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(e.contains("knowledge_verify runs only"), "{e}");
+        // A plain put is anyone's and `source: model`; a put that sets a
+        // consolidation key is gated the same way and, on an existing file,
+        // keeps `source` and marks `consolidated_at` (D5).
+        let tidy = || Put {
+            status: Some(crate::Status::Tidy),
+            ..put()
+        };
+        let e = PutTool(k.clone())
+            .call(tidy(), cx(false))
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(
+            e.contains("knowledge_put with a consolidation key runs only"),
+            "{e}"
+        );
+        PutTool(k.clone()).call(put(), cx(false)).await.unwrap();
+        assert_eq!(
+            k.get("facts/x").await.unwrap().meta.source,
+            Some(Source::Model)
+        );
+        PutTool(k.clone())
+            .call(tidy(), allowed.clone())
+            .await
+            .unwrap();
+        let m = k.get("facts/x").await.unwrap().meta;
+        assert_eq!(
+            (m.source, m.status, m.consolidated_at.is_some()),
+            (Some(Source::Model), crate::Status::Tidy, true)
+        );
+        // R-28: the registered dreaming session's own reads are not opens;
+        // a plain session's are.
+        let night = cx(false);
+        k.register_consolidating_session(night.session);
+        let get = GetTool(k.clone());
+        let read = |c: ToolCx| {
+            get.call(
+                IdArgs {
+                    id: "facts/x".into(),
+                },
+                c,
+            )
+        };
+        read(night.clone()).await.unwrap();
+        assert_eq!(k.stats(&["facts/x".into()]).await.unwrap()[0].opened, 0);
+        read(cx(false)).await.unwrap();
+        assert_eq!(k.stats(&["facts/x".into()]).await.unwrap()[0].opened, 1);
+        k.clear_consolidating_session();
+        read(night).await.unwrap();
+        assert_eq!(k.stats(&["facts/x".into()]).await.unwrap()[0].opened, 2);
+        // Stats is read-only and real.
+        let out = StatsTool(k.clone())
+            .call(
+                StatsArgs {
+                    ids: vec!["facts/x".into()],
+                },
+                cx(true),
+            )
+            .await
+            .unwrap();
+        assert!(out.content.contains("shown 0"), "{}", out.content);
+        assert_eq!(out.structured.unwrap()[0]["opened"], 2);
+    }
+
+    /// 136 P gap 2 + P2 D2: `knowledge_verify ok` refuses without a read
+    /// (a path that exists, relative to the data dir or absolute, or an
+    /// http(s) URL); a `session:`/`meeting:` id never carries `ok` alone and
+    /// counts only when the concept already cites it. `stale` takes any one
+    /// of the three kinds.
+    #[tokio::test]
+    async fn verify_needs_evidence_from_a_read() {
+        use crate::types::VerifyOutcome::{Ok as VOk, Stale};
+        let dir = std::env::temp_dir().join(format!("theuth-ktools-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(dir.join("conf")).unwrap();
+        std::fs::write(dir.join("conf/pg.toml"), "port = 5432\n").unwrap();
+        let rt = runtime::Runtime::new(figment::Figment::new(), dir.clone());
+        let k = Knowledge::open(&dir, rt).await.unwrap();
+        let cited = runtime::SessionId::new();
+        k.put(
+            Put {
+                evidence: vec![format!("session:{cited}")],
+                ..put()
+            },
+            Source::Model,
+        )
+        .await
+        .unwrap();
+        let night = ToolCx {
+            resources: Arc::new(tools::SessionResources {
+                root: dir.clone(),
+                retention: tools::Retention::Durable,
+                generation: 1,
+            }),
+            ..cx(false)
+        };
+        k.register_consolidating_session(night.session);
+        let tool = VerifyTool(k.clone());
+        let verify = |outcome, evidence: Vec<&str>| {
+            tool.call(
+                VerifyArgs {
+                    id: "facts/x".into(),
+                    outcome,
+                    note: None,
+                    evidence: evidence.into_iter().map(str::to_owned).collect(),
+                },
+                night.clone(),
+            )
+        };
+        let other = runtime::SessionId::new();
+        let cited_s = format!("session:{cited}");
+        let other_s = format!("session:{other}");
+        // No read at all: refused, whatever the ids say.
+        for bad in [
+            vec![],
+            vec!["I checked it"],
+            vec!["conf/missing.toml"],
+            vec!["session:not-a-uuid"],
+            vec!["meeting:"],
+            vec!["ftp://x"],
+            vec![cited_s.as_str()],
+            vec![other_s.as_str(), "meeting:06"],
+        ] {
+            let e = verify(VOk, bad.clone()).await.unwrap_err().to_string();
+            assert!(e.starts_with("verify ok needs a read:"), "{bad:?}: {e}");
+        }
+        // A read plus an id the concept does not cite: refused, naming the id.
+        let e = verify(VOk, vec!["conf/pg.toml", other_s.as_str()])
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(
+            e.starts_with(&format!(
+                "verify ok: `{other_s}` is not in the concept's evidence"
+            )),
+            "{e}"
+        );
+        assert!(k.get("facts/x").await.unwrap().meta.verified.is_none());
+        // One real source admits the call; every item is recorded (evidence
+        // items are whitespace-free tokens: the index column is space-joined).
+        verify(VOk, vec!["conf/pg.toml", "pg_isready"])
+            .await
+            .unwrap();
+        let m = k.get("facts/x").await.unwrap().meta;
+        assert!(m.verified.is_some());
+        assert_eq!(m.evidence, [cited_s.as_str(), "conf/pg.toml", "pg_isready"]);
+        for good in [
+            vec![dir.join("conf/pg.toml").to_string_lossy().into_owned()],
+            vec!["https://example.com/doc".into()],
+            vec!["https://example.com/doc".into(), cited_s.clone()],
+        ] {
+            verify(VOk, good.iter().map(String::as_str).collect())
+                .await
+                .unwrap();
+        }
+        // `stale` keeps the one-of-three rule: a bare id is enough, nothing is not.
+        let e = verify(Stale, vec!["ftp://x"])
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(e.starts_with("verify needs evidence from a read:"), "{e}");
+        verify(Stale, vec!["meeting:06"]).await.unwrap();
+        let m = k.get("facts/x").await.unwrap().meta;
+        assert_eq!(m.evidence.len(), 6, "{:?}", m.evidence);
+        assert_eq!(m.evidence[5], "meeting:06");
+        assert_eq!(m.status, crate::types::Status::Stale);
     }
 }

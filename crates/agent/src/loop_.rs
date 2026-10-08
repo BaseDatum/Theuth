@@ -367,6 +367,11 @@ pub struct SetPendingEffort(pub Option<ReasoningEffort>);
 /// read by the running turn at its next trigger check, so it applies mid-turn.
 pub struct SetCompactionOverride(pub CompactionOverride);
 
+/// `tell`: the session's money cap ([`crate::SetBudget`], 136 §2.2); stored on
+/// [`SessionState::budget`] when the state is home, else applied when the
+/// running turn hands it back. `None` clears.
+pub struct SetBudgetNow(pub Option<crate::Budget>);
+
 /// `ask` → `Result<repl::ResetReport, String>`: [`crate::ResetRuntime`] on the
 /// session actor — remove the saved python runtime while idle (131 D2). A
 /// `Repl` only exists inside a running turn, so "idle" is the whole guard.
@@ -565,6 +570,11 @@ pub struct SessionState {
     /// stops. Its puts are individual commits, so a cut-off harvest is partial,
     /// never inconsistent.
     pub harvest_task: Option<JoinHandle<()>>,
+    /// 136 §2.2: the money cap lives on [`Shared::budget`] (the turn's round
+    /// calls and the session's detached side calls read the same cell).
+    /// 136 §2.2: the `<budget>` note a refused call queued; appended once
+    /// before the next turn's first model call.
+    pub budget_note: Option<String>,
 }
 
 impl SessionState {
@@ -604,6 +614,7 @@ impl SessionState {
             last_view: None,
             title_task: None,
             harvest_task: None,
+            budget_note: None,
         }
     }
 
@@ -712,6 +723,11 @@ struct Shared {
     escalate_model: Arc<RwLock<Option<Resolved>>>,
     /// Preferred subagent model (`agent.subagents.model`); named in the system prompt. Shared with the supervisor.
     subagent_model: Arc<RwLock<Option<Resolved>>>,
+    /// 136 §2.2: the session's money cap from [`SetBudgetNow`] (persisted on
+    /// the session row by the supervisor, loaded by [`Session::with_budget`]
+    /// on resume — R-22). `Reserved::open` refuses any call of this owner —
+    /// round, harvest, compaction or a detached side call — that would pass it.
+    budget: Arc<parking_lot::RwLock<Option<crate::Budget>>>,
     store: Store,
     client: Client,
     auth: Auth,
@@ -867,6 +883,7 @@ impl Session {
                 vision_model,
                 escalate_model,
                 subagent_model,
+                budget: Arc::default(),
                 store,
                 client,
                 auth,
@@ -923,6 +940,12 @@ impl Session {
     /// [`SetAdvisorOn`] moves it later.
     pub(crate) fn with_advisor(self, on: bool) -> Self {
         self.shared.advisor.store(on, Ordering::Relaxed);
+        self
+    }
+
+    /// 136 R-22: the persisted money cap a resumed session still runs under.
+    pub(crate) fn with_budget(self, budget: Option<crate::Budget>) -> Self {
+        *self.shared.budget.write() = budget;
         self
     }
 
@@ -1298,6 +1321,19 @@ impl Message<PermitsOf> for Session {
 
     async fn handle(&mut self, _: PermitsOf, _: &mut Context<Self, Self::Reply>) -> usize {
         Arc::as_ptr(&self.shared.permits) as usize
+    }
+}
+
+/// `ask` → the session's live money cap. Test only.
+#[cfg(test)]
+pub(crate) struct BudgetOf;
+
+#[cfg(test)]
+impl Message<BudgetOf> for Session {
+    type Reply = Option<crate::Budget>;
+
+    async fn handle(&mut self, _: BudgetOf, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        self.shared.budget.read().clone()
     }
 }
 
@@ -2108,6 +2144,14 @@ impl Message<SetPendingEffort> for Session {
     }
 }
 
+impl Message<SetBudgetNow> for Session {
+    type Reply = ();
+
+    async fn handle(&mut self, SetBudgetNow(b): SetBudgetNow, _: &mut Context<Self, Self::Reply>) {
+        *self.shared.budget.write() = b;
+    }
+}
+
 impl Message<SetCompactionOverride> for Session {
     type Reply = ();
 
@@ -2585,6 +2629,56 @@ enum Abort {
         text: String,
         err: String,
     },
+    /// 136 §2.2: the session's budget would be passed; nothing was sent.
+    /// The turn ends `end_turn` and the next input carries one `<budget>` note.
+    Budget {
+        spent: u64,
+        cap: u64,
+        currency: String,
+    },
+}
+
+/// The `<budget spent="…" cap="…" currency="…">` note (136 §2.2): attributes
+/// in nanos of `currency`, one readable sentence inside.
+fn budget_note(spent: u64, cap: u64, currency: &str) -> String {
+    let units = |n: u64| n as f64 / crate::cost::NANOS_PER_UNIT as f64;
+    format!(
+        "<budget spent=\"{spent}\" cap=\"{cap}\" currency=\"{currency}\">\n\
+         This session's money budget is spent: {:.2} {currency} of a {:.2} {currency} cap. The last model call \
+         was refused and the turn ended; further calls are refused until the budget is raised. Finish \
+         with what is already written.\n\
+         </budget>",
+        units(spent),
+        units(cap)
+    )
+}
+
+/// Why [`Reserved::open`] refused; nothing was sent either way.
+enum Refused {
+    /// The store would not reserve or mark the row (51 §6.1): final, content-free.
+    Accounting(String),
+    /// 136 §2.2: `spent + estimate > cap`.
+    Budget {
+        spent: u64,
+        cap: u64,
+        currency: String,
+    },
+}
+
+impl std::fmt::Display for Refused {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Accounting(e) => f.write_str(e),
+            Self::Budget {
+                spent,
+                cap,
+                currency,
+            } => write!(
+                f,
+                "budget exhausted: spent {spent} + estimate > cap {cap} ({currency} nanos)"
+            ),
+        }
+    }
 }
 
 /// Outcome of one model call.
@@ -2632,6 +2726,11 @@ impl Reserved {
     /// refused once refuses the same request again. A `Round` call of a turn
     /// also journals `turn_steps(model_call)` in the reservation's
     /// transaction (109 §3.3 step 2).
+    ///
+    /// 136 §2.2: with `budget`, the call is refused before any row is written
+    /// when the owner's spend in that currency plus this call's estimate
+    /// ([`Store::budget_spent`]) would pass the cap. A ledger the store cannot
+    /// read is an accounting refusal, never a free pass.
     #[expect(clippy::too_many_arguments, reason = "one row, one call")]
     async fn open(
         store: &Store,
@@ -2642,7 +2741,21 @@ impl Reserved {
         turn: Option<TurnId>,
         kind: CallKind,
         model: &Resolved,
-    ) -> Result<Self, String> {
+        budget: Option<&crate::Budget>,
+    ) -> Result<Self, Refused> {
+        if let Some(b) = budget {
+            let (spent, estimate) = store
+                .budget_spent(owner, &b.currency, &model.id, &b.since)
+                .await
+                .map_err(|e| Refused::Accounting(format!("accounting: {e:#}")))?;
+            if spent.saturating_add(estimate) > b.nanos {
+                return Err(Refused::Budget {
+                    spent,
+                    cap: b.nanos,
+                    currency: b.currency.clone(),
+                });
+            }
+        }
         let reserved = match turn.filter(|_| kind == CallKind::Round) {
             Some(turn) => {
                 store
@@ -2671,7 +2784,7 @@ impl Reserved {
                     .await
             }
         };
-        let call = reserved.map_err(|e| format!("accounting: {e:#}"))?;
+        let call = reserved.map_err(|e| Refused::Accounting(format!("accounting: {e:#}")))?;
         crash_point(crash::MODEL_AFTER_RESERVE);
         if let Err(e) = store.mark_dispatched(&call).await {
             if let Err(e2) = store
@@ -2680,7 +2793,7 @@ impl Reserved {
             {
                 tracing::warn!(%call, "mark_not_dispatched: {e2:#}");
             }
-            return Err(format!("accounting: {e:#}"));
+            return Err(Refused::Accounting(format!("accounting: {e:#}")));
         }
         crash_point(crash::MODEL_AFTER_DISPATCH);
         Ok(Self {
@@ -3118,6 +3231,16 @@ impl Turn {
             return None;
         }
         self.shared.knowledge.clone()
+    }
+
+    /// The store a harvest may write to: [`Self::knowledge`] minus the
+    /// dreaming session itself (136 P2 D4) — a night's frame is the ledger
+    /// and hundreds of titles, and its harvest would land inside the night
+    /// outside the receipt. Every harvest entry (turn end, compaction,
+    /// `/knowledge harvest`) funnels through this `None`.
+    fn harvest_store(&self) -> Option<Arc<Knowledge>> {
+        self.knowledge()
+            .filter(|k| !k.is_consolidating_session(self.shared.id))
     }
 
     async fn publish(&self, event: AgentEvent) {
@@ -4154,6 +4277,7 @@ impl Turn {
         let mut tries = 0;
         let mut stripped = false;
         let mut shrunk = false;
+        let budget = self.shared.budget.read().clone();
         loop {
             let reserved = Reserved::open(
                 &self.shared.store,
@@ -4164,9 +4288,21 @@ impl Turn {
                 self.turn,
                 kind,
                 &current.model,
+                budget.as_ref(),
             )
             .await
-            .map_err(Abort::Model)?;
+            .map_err(|e| match e {
+                Refused::Accounting(e) => Abort::Model(e),
+                Refused::Budget {
+                    spent,
+                    cap,
+                    currency,
+                } => Abort::Budget {
+                    spent,
+                    cap,
+                    currency,
+                },
+            })?;
             let mut text = String::new();
             let mut calls = false;
             *thinking = None;
@@ -4917,7 +5053,7 @@ impl Turn {
         // previous one still runs is not queued.
         let harvestable = self.calls > 0 && !interrupted && self.shared.depth == 0;
         let every = self.shared.cfg.knowledge.harvest_every;
-        if harvestable && registry.is_some() && self.knowledge().is_some() {
+        if harvestable && registry.is_some() && self.harvest_store().is_some() {
             self.state.turns_since_harvest += 1;
             if every > 0 && self.state.turns_since_harvest >= every {
                 self.state.turns_since_harvest = 0;
@@ -5197,6 +5333,10 @@ impl Turn {
 
         // 07 §8.1 trigger, §8.7 pressure note, §9 todo reminder — all before the call.
         let window = self.window(&current.model);
+        // 136 §2.2: the note a refused call queued rides the next input.
+        if let Some(note) = self.state.budget_note.take() {
+            self.persist(ChatMessage::user(note)).await;
+        }
         let appended: u32 = self.state.history[self.since..]
             .iter()
             .map(|(_, m)| compact::est(m))
@@ -5286,6 +5426,7 @@ impl Turn {
         // 10 §4.2: hints at turn start against the input, then every `hint_rounds`
         // rounds against what was appended since; each id once per epoch. 06 §1.5:
         // the session's toolset may cap the lines or (`Some(0)`) drop hints entirely.
+        // 136 (P gap 1): the dreaming session gets no note and spends no impressions.
         let cfg = &self.shared.cfg.knowledge;
         let hint_limit = self
             .shared
@@ -5297,6 +5438,7 @@ impl Turn {
         if chat
             && hint_limit > 0
             && let Some(knowledge) = self.knowledge()
+            && !knowledge.is_consolidating_session(self.shared.id)
         {
             let query = if round == 0 {
                 Some(std::mem::take(&mut self.input_text))
@@ -5324,7 +5466,12 @@ impl Turn {
                     Ok(metas) if !metas.is_empty() => {
                         self.note("knowledge", &knowledge::harvest::render_hints(&metas))
                             .await;
-                        self.state.hinted.extend(metas.into_iter().map(|m| m.id));
+                        // 136 §5.3: every id shown is an impression (`uses.shown`).
+                        let ids: Vec<String> = metas.into_iter().map(|m| m.id).collect();
+                        if let Err(e) = knowledge.record_shown(&ids, chrono::Utc::now()).await {
+                            tracing::debug!(session = %self.shared.id, "record_shown: {e:#}");
+                        }
+                        self.state.hinted.extend(ids);
                     }
                     Ok(_) => {}
                     Err(e) => tracing::warn!(session = %self.shared.id, "knowledge hint: {e:#}"),
@@ -5421,6 +5568,17 @@ impl Turn {
                 }
                 self.error(format!("model: {e}")).await;
                 return Round::Stop("error".into());
+            }
+            // 136 §2.2: the budget is spent. Nothing was sent; the turn ends
+            // cleanly and the next input carries the note.
+            Err(Abort::Budget {
+                spent,
+                cap,
+                currency,
+            }) => {
+                tracing::info!(session = %self.shared.id, spent, cap, currency, "budget spent; turn ends");
+                self.state.budget_note = Some(budget_note(spent, cap, &currency));
+                return Round::Stop("end_turn".into());
             }
         };
 
@@ -6337,9 +6495,11 @@ impl Turn {
         reply: Option<oneshot::Sender<Result<HarvestResult, String>>>,
         chain: bool,
     ) -> Result<(), String> {
-        self.knowledge()
+        self.harvest_store()
             .ok_or(if self.shared.resources.is_private() {
                 "knowledge harvest is disabled in a private session"
+            } else if self.knowledge().is_some() {
+                "the dreaming session does not harvest itself"
             } else {
                 "knowledge is off"
             })?;
@@ -6506,7 +6666,7 @@ impl Turn {
             && self.shared.cfg.knowledge.harvest_every > 0
             && self.shared.depth == 0
             && (self.state.turns_since_harvest > 0 || self.calls > 0)
-            && self.knowledge().is_some()
+            && self.harvest_store().is_some()
         {
             self.state.turns_since_harvest = 0;
             self.calls = 0;
@@ -6896,6 +7056,11 @@ impl Turn {
                     return Err("cancelled".into());
                 }
                 Ok(Err(Abort::Model(e))) | Ok(Err(Abort::Partial { err: e, .. })) => return Err(e),
+                Ok(Err(Abort::Budget {
+                    spent,
+                    cap,
+                    currency,
+                })) => return Err(format!("budget: spent {spent} of {cap} {currency} nanos")),
             }
         }
     }
@@ -6956,18 +7121,27 @@ impl Turn {
             .take(max)
         {
             let fm = &doc.frontmatter;
+            // 136 §0.14: title ≤ 120 chars (the rest → a Summary paragraph),
+            // `evidence: [this session]`, `status: fresh`.
+            let (title, body) = knowledge::harvest::split_title(
+                &fm.title().unwrap_or_else(|| id.clone()),
+                &doc.body,
+            );
             let put = Put {
                 type_: fm.type_().unwrap_or_default(),
-                title: fm.title().unwrap_or_else(|| id.clone()),
+                title,
                 description: fm.description(),
                 tags: fm.tags(),
                 scope: fm
                     .get("scope")
                     .and_then(|v| v.as_display_string())
                     .map(PathBuf::from),
-                body: doc.body,
+                body,
                 id,
                 visibility: None,
+                evidence: vec![session.to_string()],
+                status: Some(knowledge::Status::Fresh),
+                ..Put::default()
             };
             match knowledge.put_for(put, Source::Harvest, Some(session)).await {
                 Ok((_, true)) => result.added += 1,
@@ -7307,6 +7481,11 @@ impl Turn {
             }
             Ok(Err(Abort::Cancelled | Abort::Interrupted { .. })) => return Err("cancelled".into()),
             Ok(Err(Abort::Model(e))) | Ok(Err(Abort::Partial { err: e, .. })) => return Err(e),
+            Ok(Err(Abort::Budget {
+                spent,
+                cap,
+                currency,
+            })) => return Err(format!("budget: spent {spent} of {cap} {currency} nanos")),
             Ok(Ok(end)) => end,
         };
         self.account(&end);
@@ -7657,6 +7836,10 @@ mod interrupt_tests;
 /// 81 MEETING-DIET: `Toolset.hint_limit` and the title pin, at the same fake provider.
 #[cfg(test)]
 mod meeting_diet_tests;
+
+/// 136 §2.2: the budget guard ends the turn `end_turn` and notes the next input, at the same fake provider.
+#[cfg(test)]
+mod budget_tests;
 
 /// 86 RUNTIME-BRIDGE: a guessed direct call of an indexed runtime function runs as python; the rest is refused.
 #[cfg(test)]
@@ -8313,7 +8496,8 @@ mod tests {
             pos("- later: Listed skill\n\n## Peers\npeer text\n\nPlugin block.\n\n## Guidance")
                 > pos("## Skills")
         );
-        // An `always` skill is inlined, never listed in the index.
+        // An `always` skill is inlined, never listed in the index (the header
+        // prose may say "rules" on its own).
         assert!(!full.contains("- rules:"), "{full}");
     }
 
@@ -9727,6 +9911,124 @@ mod tests {
         assert!(err.starts_with("accounting:"), "{err}");
         assert_eq!(hits.load(Ordering::SeqCst), 0);
         assert!(calls(&store, orphan).await.is_empty());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// 136 §2.2: a 1-cent budget. The first call (spend 0, no estimate yet)
+    /// goes out and settles at $0.25; the second is refused before any row
+    /// is written — `Abort::Budget` with the spend and the cap, no transport
+    /// hit. Clearing the budget lets the next call through again.
+    #[tokio::test]
+    async fn budget_refuses_the_call_that_would_pass_the_cap() {
+        let dir = std::env::temp_dir().join(format!("theuth-budget-{}", Uuid::now_v7()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let store = Store::open_memory().await.unwrap();
+        let id = SessionId::new();
+        store
+            .create_session(id, "fake/m", None, None, None)
+            .await
+            .unwrap();
+        let priced =
+            || sse(r#"{"prompt_tokens":10,"completion_tokens":5,"total_tokens":15,"cost":0.25}"#);
+        let (base_url, hits, _) = fake_openai(vec![priced(), priced()]).await;
+        let (turn, current, transport, _events) =
+            gateway_turn(&dir, store.clone(), id, base_url).await;
+        *turn.shared.budget.write() = Some(crate::Budget {
+            nanos: 10_000_000,
+            currency: "USD".into(),
+            since: "2000-01-01T00:00:00+00:00".into(),
+        });
+        let history = [ChatMessage::user("hi")];
+        let frame = || Frame {
+            tools: &[],
+            system: "s",
+            head: None,
+            history: &history,
+            vision: false,
+            strip_reasoning: false,
+            max_tokens: None,
+        };
+
+        let first = turn
+            .call(
+                &current,
+                frame(),
+                transport,
+                turn.turn,
+                id,
+                CallKind::Round,
+                &mut None,
+            )
+            .await;
+        assert!(first.is_ok(), "nothing spent yet: the first call goes out");
+        assert_eq!(hits.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            store
+                .budget_spent(id, "USD", "fake/m", "2000-01-01T00:00:00+00:00")
+                .await
+                .unwrap(),
+            (250_000_000, 250_000_000)
+        );
+
+        match turn
+            .call(
+                &current,
+                frame(),
+                transport,
+                turn.turn,
+                id,
+                CallKind::Round,
+                &mut None,
+            )
+            .await
+        {
+            Err(Abort::Budget {
+                spent,
+                cap,
+                currency,
+            }) => assert_eq!(
+                (spent, cap, currency.as_str()),
+                (250_000_000, 10_000_000, "USD")
+            ),
+            Ok(_) => panic!("the second call passes the cap and must be refused"),
+            Err(_) => panic!("a budget refusal is Abort::Budget"),
+        }
+        assert_eq!(hits.load(Ordering::SeqCst), 1, "nothing was sent");
+        assert_eq!(
+            calls(&store, id).await.len(),
+            1,
+            "no row for a refused call"
+        );
+        // A cleared budget is no cap; another currency never sees USD spend.
+        *turn.shared.budget.write() = None;
+        assert!(
+            turn.call(
+                &current,
+                frame(),
+                transport,
+                turn.turn,
+                id,
+                CallKind::Round,
+                &mut None
+            )
+            .await
+            .is_ok()
+        );
+        assert_eq!(hits.load(Ordering::SeqCst), 2);
+        assert_eq!(
+            store
+                .budget_spent(id, "EUR", "fake/m", "2000-01-01T00:00:00+00:00")
+                .await
+                .unwrap(),
+            (0, 0),
+            "other currencies are not counted"
+        );
+        let note = budget_note(250_000_000, 10_000_000, "USD");
+        assert!(
+            note.starts_with("<budget spent=\"250000000\" cap=\"10000000\" currency=\"USD\">\n")
+        );
+        assert!(note.contains("0.25 USD of a 0.01 USD cap"));
+        assert!(note.ends_with("\n</budget>"));
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

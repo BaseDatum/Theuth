@@ -2,6 +2,7 @@ import { Link, useNavigate } from '@tanstack/react-router'
 import { FlaskConical, MessageSquarePlus, Play, Plus } from 'lucide-react'
 import { toast } from 'sonner'
 import { Pulse } from '@/components/chat/Pulse'
+import { useDreamStatus } from '@/components/dreaming/queries'
 import { SectionBand } from '@/components/nav/SectionBand'
 import { SectionRow } from '@/components/nav/SectionRow'
 import { useAction } from '@/components/settings/shared'
@@ -9,6 +10,7 @@ import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Switch } from '@/components/ui/switch'
+import { nightLine } from '@/lib/dreaming'
 import { cn } from '@/lib/utils'
 import type { ScheduleInfo } from '@/rpc/bindings/ScheduleInfo'
 import type { SensorInfo } from '@/rpc/bindings/SensorInfo'
@@ -190,7 +192,7 @@ function RoutineRow({ s, sensors }: { s: ScheduleInfo; sensors: SensorInfo[] | u
           <StopChip s={s} />
         </div>
         <div className="mt-0.5 truncate text-[13px] text-fg-secondary" title={title}>
-          {s.error !== null ? <span className="text-danger">{s.error}</span> : sentence(r, sensorArgs(s, sensors))}
+          {s.error !== null ? <span className="text-danger">{s.error}</span> : s.name === 'dreaming' ? <DreamingSentence fallback={sentence(r, sensorArgs(s, sensors))} /> : sentence(r, sensorArgs(s, sensors))}
         </div>
         <div className="mt-0.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-fg-secondary">
           {s.next && (
@@ -230,4 +232,12 @@ function RoutineRow({ s, sensors }: { s: ScheduleInfo; sensors: SensorInfo[] | u
       </div>
     </li>
   )
+}
+
+/** 136 §8: the `dreaming` row says what last night did (`dreaming.status`) instead of its trigger sentence. */
+function DreamingSentence({ fallback }: { fallback: string }) {
+  const status = useDreamStatus()
+  if (!status.data) return <>{fallback}</>
+  const line = `runs at night when the Mac is idle; ${nightLine(status.data.last_night)}`
+  return <span title={line}>{line}</span>
 }

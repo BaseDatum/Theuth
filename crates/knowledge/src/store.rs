@@ -9,18 +9,21 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, UNIX_EPOCH};
 
-use anyhow::{Context, anyhow, bail};
+use anyhow::{Context, anyhow, bail, ensure};
 use okf::{ConceptId, Document, RESERVED_FILENAMES, Value};
 use runtime::{Runtime, SessionId};
 use sqlx::FromRow;
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePool, SqlitePoolOptions};
 
-use crate::repo::Repo;
+use crate::harvest;
+use crate::repo::{DREAMING_SIGNATURE, Repo, SIGNATURE};
 use crate::types::{
-    AgentScope, Change, Concept, History, Hit, KnowledgeOp, Meta, Put, Revision, Scoper, Source,
-    Sync, USER_OWNER, Visibility,
+    AgentScope, Change, Concept, History, Hit, KnowledgeOp, Meta, Put, Receipt, Revision, Scoper,
+    Source, Status, Sync, USER_OWNER, Uses, VerifyOutcome, Visibility,
 };
-use crate::{BODY_MAX, DIR, INDEX_FILE, KnowledgeChanged};
+use crate::{
+    BODY_MAX, Consolidator, DIR, INDEX_FILE, KnowledgeChanged, KnowledgeConfig, Lifetimes,
+};
 
 const LOG_FILE: &str = "log.md";
 const INDEX_MD: &str = "index.md";
@@ -42,13 +45,19 @@ const CREATE_CONCEPTS: &str = "CREATE VIRTUAL TABLE IF NOT EXISTS concepts USING
     id UNINDEXED, type, title, description, tags, body, \
     scope UNINDEXED, source UNINDEXED, timestamp UNINDEXED, \
     owner UNINDEXED, visibility UNINDEXED, \
+    status UNINDEXED, hint UNINDEXED, evidence UNINDEXED, verified UNINDEXED, \
+    valid_until UNINDEXED, superseded_by UNINDEXED, merged_into UNINDEXED, consolidated_at UNINDEXED, \
     path UNINDEXED, mtime UNINDEXED, size UNINDEXED, \
     tokenize = 'porter unicode61 remove_diacritics 2')";
 /// Columns of [`MetaRow`], in `SELECT` order.
-pub(crate) const META_COLS: &str =
-    "id, type, title, description, tags, scope, source, timestamp, owner, visibility";
+pub(crate) const META_COLS: &str = "id, type, title, description, tags, scope, source, timestamp, owner, visibility, \
+    status, hint, evidence, verified, valid_until, superseded_by, merged_into, consolidated_at";
 const CREATE_LINKS: &str = "CREATE TABLE IF NOT EXISTS links (src TEXT NOT NULL, dst TEXT NOT NULL, PRIMARY KEY (src, dst))";
 const CREATE_LINKS_DST: &str = "CREATE INDEX IF NOT EXISTS links_dst ON links(dst)";
+/// 136 §2.1: usage counters. DURABLE — `sync` never touches it; deleting the
+/// index file loses the counts (design 10's "deletable" rule is amended).
+const CREATE_USES: &str = "CREATE TABLE IF NOT EXISTS uses (id TEXT PRIMARY KEY, shown INTEGER NOT NULL DEFAULT 0, \
+    opened INTEGER NOT NULL DEFAULT 0, last_shown TEXT, last_opened TEXT)";
 
 /// Handle to `<data_dir>/knowledge/` and `<data_dir>/knowledge.sqlite`.
 /// Every write path runs under `write` (10 §2.3).
@@ -69,6 +78,15 @@ pub struct Knowledge {
     /// Which agent a session is (67 §9), from [`Knowledge::set_scoper`]; `None`
     /// = every session is the user's.
     scoper: std::sync::RwLock<Option<Arc<dyn Scoper>>>,
+    /// Who may run dreaming's consolidation ops as an attended owner root
+    /// (136 D6), from [`Knowledge::set_consolidator`]; `None` = nobody yet.
+    consolidator: std::sync::RwLock<Option<Arc<dyn Consolidator>>>,
+    /// 136 D6: the dreaming session of the open night, from
+    /// [`Knowledge::register_consolidating_session`]; the only unattended
+    /// session that may consolidate. `None` = no open night.
+    consolidating: std::sync::RwLock<Option<SessionId>>,
+    /// `knowledge.lifetimes` (136 §5.2): the rank's record cut-off.
+    lifetimes: Lifetimes,
 }
 
 /// Frontmatter columns of a row, as `list`/`search`/`get` read them ([`META_COLS`]).
@@ -85,6 +103,14 @@ pub(crate) struct MetaRow {
     timestamp: Option<String>,
     owner: String,
     visibility: String,
+    status: String,
+    hint: i64,
+    evidence: String,
+    verified: Option<String>,
+    valid_until: Option<String>,
+    superseded_by: Option<String>,
+    merged_into: Option<String>,
+    consolidated_at: Option<String>,
 }
 
 impl From<MetaRow> for Meta {
@@ -100,6 +126,14 @@ impl From<MetaRow> for Meta {
             timestamp: r.timestamp,
             owner: r.owner,
             visibility: Visibility::parse(&r.visibility).unwrap_or_default(),
+            status: Status::parse(&r.status).unwrap_or_default(),
+            hint: r.hint != 0,
+            evidence: r.evidence.split_whitespace().map(str::to_owned).collect(),
+            verified: r.verified,
+            valid_until: r.valid_until,
+            superseded_by: r.superseded_by,
+            merged_into: r.merged_into,
+            consolidated_at: r.consolidated_at,
         }
     }
 }
@@ -159,6 +193,19 @@ impl Indexed {
                 .and_then(Value::as_display_string)
                 .and_then(|v| Visibility::parse(&v))
                 .unwrap_or_default(),
+            // 136 §5.1: absent = tidy, hinted, no evidence, never verified.
+            status: fm
+                .get("status")
+                .and_then(Value::as_display_string)
+                .and_then(|s| Status::parse(&s))
+                .unwrap_or_default(),
+            hint: fm.get("hint").and_then(fm_bool).unwrap_or(true),
+            evidence: fm_strings(fm.get("evidence")),
+            verified: fm_string(fm.get("verified")),
+            valid_until: fm_string(fm.get("valid_until")),
+            superseded_by: fm_string(fm.get("superseded_by")),
+            merged_into: fm_string(fm.get("merged_into")),
+            consolidated_at: fm_string(fm.get("consolidated_at")),
             id,
         };
         let links: BTreeSet<String> = doc
@@ -182,6 +229,35 @@ impl Indexed {
         let text = std::fs::read_to_string(abs)?;
         let (mtime, size) = stat(abs)?;
         Self::new(root, abs, &Document::parse(&text)?, mtime, size)
+    }
+}
+
+/// A scalar frontmatter value as trimmed text; `None` when absent, empty or not a scalar.
+fn fm_string(v: Option<&Value>) -> Option<String> {
+    v.and_then(Value::as_display_string)
+        .map(|s| s.trim().to_owned())
+        .filter(|s| !s.is_empty())
+}
+
+/// `hint: true|false` as written, or `"true"`/`"false"` text.
+fn fm_bool(v: &Value) -> Option<bool> {
+    v.as_bool().or_else(|| match v.as_str().map(str::trim) {
+        Some("true") => Some(true),
+        Some("false") => Some(false),
+        _ => None,
+    })
+}
+
+/// A list value (`evidence: [a, b]`), or one scalar as a one-item list.
+fn fm_strings(v: Option<&Value>) -> Vec<String> {
+    match v {
+        Some(Value::Sequence(items)) => items
+            .iter()
+            .filter_map(Value::as_display_string)
+            .map(|s| s.trim().to_owned())
+            .filter(|s| !s.is_empty())
+            .collect(),
+        other => fm_string(other).into_iter().collect(),
     }
 }
 
@@ -229,13 +305,36 @@ fn body_within_limit(len: usize) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Set the writer and the write time (10 §2.3).
+/// Set the writer and the write time (10 §2.3) — the *creation* stamp. A
+/// dreaming write to an existing file uses [`touch`] instead (136 D5).
 fn stamp(fm: &mut okf::Frontmatter, source: Source) {
     fm.set("source", Value::String(source.as_str().to_owned()));
-    fm.set(
-        "timestamp",
-        Value::String(chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string()),
-    );
+    fm.set("timestamp", Value::String(now_rfc3339()));
+}
+
+fn now_rfc3339() -> String {
+    chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string()
+}
+
+/// 136 D5: dreaming's mark on an existing file. Identity — `owner`,
+/// `visibility`, `scope`, `source` and `timestamp` (the event date the rank
+/// and the archive rules read) — is left alone; `consolidated_at` records
+/// the write (git has the rest).
+fn touch(fm: &mut okf::Frontmatter) {
+    fm.set("consolidated_at", Value::String(now_rfc3339()));
+}
+
+/// 136 D5: a `source: user` concept is human-authored; dreaming may retitle
+/// or link it, never merge it away, supersede, archive or rewrite it.
+fn ensure_not_user(fm: &okf::Frontmatter, id: &str) -> anyhow::Result<()> {
+    let user = fm
+        .get("source")
+        .and_then(Value::as_display_string)
+        .is_some_and(|s| s.trim() == Source::User.as_str());
+    if user {
+        bail!("{id} is human-authored (source: user); dreaming never rewrites it");
+    }
+    Ok(())
 }
 
 /// `tmp` + rename; parents created.
@@ -440,9 +539,10 @@ async fn open_db(path: &Path) -> anyhow::Result<SqlitePool> {
         .max_connections(4)
         .connect_with(opts)
         .await?;
-    // 67 §9 added `owner`/`visibility`: an index from before lacks them. It
-    // is derived, so drop it and let `sync` rebuild.
-    if sqlx::query("SELECT owner, visibility FROM concepts LIMIT 0")
+    // 67 §9 added `owner`/`visibility`, 136 §2.1 the status columns: an index
+    // from before lacks them. `concepts` is derived, so drop it and let `sync`
+    // rebuild; `uses` is durable and is never dropped.
+    if sqlx::query("SELECT owner, visibility, status, hint, evidence, verified, valid_until, superseded_by, merged_into, consolidated_at FROM concepts LIMIT 0")
         .execute(&pool)
         .await
         .is_err()
@@ -451,7 +551,7 @@ async fn open_db(path: &Path) -> anyhow::Result<SqlitePool> {
             .execute(&pool)
             .await?;
     }
-    for sql in [CREATE_CONCEPTS, CREATE_LINKS, CREATE_LINKS_DST] {
+    for sql in [CREATE_CONCEPTS, CREATE_LINKS, CREATE_LINKS_DST, CREATE_USES] {
         sqlx::query(sql).execute(&pool).await?;
     }
     Ok(pool)
@@ -503,6 +603,10 @@ impl Knowledge {
                     .with_context(|| format!("open {}", db_path.display()))?
             }
         };
+        let lifetimes = rt
+            .section::<KnowledgeConfig>("knowledge")
+            .map(|c| c.lifetimes)
+            .unwrap_or_default();
         let k = Arc::new(Self {
             root,
             db,
@@ -513,6 +617,9 @@ impl Knowledge {
             stale: Mutex::new(HashMap::new()),
             search: crate::search::Caches::default(),
             scoper: std::sync::RwLock::new(None),
+            consolidator: std::sync::RwLock::new(None),
+            consolidating: std::sync::RwLock::new(None),
+            lifetimes,
         });
         let s = k.sync().await?;
         if !s.is_empty() {
@@ -593,16 +700,19 @@ impl Knowledge {
             names.push(format!("edit {}", ix.meta.id));
             events.push((ix.meta.id, KnowledgeOp::Put));
         }
-        if !names.is_empty() {
+        let commit = if names.is_empty() {
+            None
+        } else {
             self.commit(written, removed, format!("sync: {}", names.join(", ")))
-                .await;
-        }
+                .await
+        };
         for (id, op) in events {
             self.rt
                 .publish(KnowledgeChanged {
                     id,
                     op,
                     source: Source::Sync,
+                    commit: commit.clone(),
                 })
                 .await;
         }
@@ -658,8 +768,56 @@ impl Knowledge {
         *self.scoper.write().unwrap_or_else(|p| p.into_inner()) = Some(s);
     }
 
+    /// Install the "may this session consolidate" answerer (136 §2.1). Called
+    /// once by the agent plugin.
+    pub fn set_consolidator(&self, c: Arc<dyn Consolidator>) {
+        *self.consolidator.write().unwrap_or_else(|p| p.into_inner()) = Some(c);
+    }
+
+    /// 136 D6: the open night's dreaming session; `BeginNight` registers it,
+    /// the night's close clears it. Replaces any earlier registration.
+    pub fn register_consolidating_session(&self, session: SessionId) {
+        *self
+            .consolidating
+            .write()
+            .unwrap_or_else(|p| p.into_inner()) = Some(session);
+    }
+
+    /// 136 D6: no open night — unattended sessions may not consolidate.
+    pub fn clear_consolidating_session(&self) {
+        *self
+            .consolidating
+            .write()
+            .unwrap_or_else(|p| p.into_inner()) = None;
+    }
+
+    /// 136 D6 / R-28: is `session` the registered dreaming session? Its own
+    /// reads are not opens (the reader confirming itself).
+    pub fn is_consolidating_session(&self, session: SessionId) -> bool {
+        *self.consolidating.read().unwrap_or_else(|p| p.into_inner()) == Some(session)
+    }
+
+    /// 136 D6: may `session` run dreaming's consolidation ops? Unattended →
+    /// only the session registered by the open night; attended → what the
+    /// [`Consolidator`] says (the owner's own root). `false` until one is
+    /// installed.
+    pub async fn may_consolidate(&self, session: SessionId) -> bool {
+        if self.is_consolidating_session(session) {
+            return true;
+        }
+        let c = self
+            .consolidator
+            .read()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone();
+        match c {
+            Some(c) => c.may_consolidate(session).await,
+            None => false,
+        }
+    }
+
     /// The scope `session` reads and writes as; `None` = the user's (sees everything).
-    fn scope_for(&self, session: Option<SessionId>) -> Option<AgentScope> {
+    pub(crate) fn scope_for(&self, session: Option<SessionId>) -> Option<AgentScope> {
         let s = session?;
         self.scoper
             .read()
@@ -676,7 +834,10 @@ impl Knowledge {
     /// Validate, write atomically, index, `index.md`, `log.md`, commit, and
     /// report whether the concept was created (10 §2.3). From an agent's
     /// session the file is stamped `owner: agent:<name>` and, unless the put
-    /// says otherwise, `visibility: private` (67 §9).
+    /// says otherwise, `visibility: private` (67 §9). 136 §2.1: an existing
+    /// file's frontmatter is the starting point — every key the put does not
+    /// set (the seven 136 keys when `None`/empty, and any key the harness
+    /// does not know) round-trips verbatim.
     pub async fn put_for(
         &self,
         p: Put,
@@ -706,29 +867,95 @@ impl Knowledge {
             .map(|t| Value::String(t.to_owned()))
             .collect();
 
-        let mut fm = okf::Frontmatter::new();
+        let _g = self.write.lock().await;
+        // The existing frontmatter, so unknown keys survive (136 §15 amends 10 §3).
+        let existing = std::fs::read_to_string(cid.to_path(&self.root))
+            .ok()
+            .map(|text| {
+                Document::parse(&text)
+                    .map(|d| d.frontmatter)
+                    .unwrap_or_default()
+            });
+        let exists = existing.is_some();
+        let mut fm = existing.unwrap_or_default();
+        // 136 D5: a dreaming put never rewrites a human-authored entry.
+        if exists && source == Source::Dreaming {
+            ensure_not_user(&fm, &id)?;
+        }
         fm.set("type", Value::String(type_.to_owned()));
         fm.set("title", Value::String(title.to_owned()));
         fm.set("description", Value::String(description.to_owned()));
-        if !tags.is_empty() {
+        if tags.is_empty() {
+            fm.as_mapping_mut().remove("tags");
+        } else {
             fm.set("tags", Value::Sequence(tags));
         }
-        if let Some(scope) = &p.scope {
-            fm.set("scope", Value::String(scope.to_string_lossy().into_owned()));
+        // 136 D5: identity — `owner`, `visibility`, `scope`, `source`,
+        // `timestamp` — is set on create; an existing file keeps its own
+        // (R-5: the dreaming session's scope must not flip a desk's private
+        // entry to `owner: user, visibility: shared`). A put that names
+        // `visibility` still sets it; `scope` follows the put unless the
+        // writer is dreaming.
+        if !(exists && source == Source::Dreaming) {
+            match &p.scope {
+                Some(scope) => fm.set("scope", Value::String(scope.to_string_lossy().into_owned())),
+                None => {
+                    fm.as_mapping_mut().remove("scope");
+                }
+            }
         }
         let scope = self.scope_for(session);
-        let owner = scope.as_ref().map_or(USER_OWNER, |s| s.owner.as_str());
-        let visibility = p.visibility.unwrap_or(if scope.is_some() {
-            Visibility::Private
+        if !exists {
+            let owner = scope.as_ref().map_or(USER_OWNER, |s| s.owner.as_str());
+            fm.set("owner", Value::String(owner.to_owned()));
+        }
+        if let Some(v) = p.visibility {
+            fm.set("visibility", Value::String(v.as_str().to_owned()));
+        } else if !exists {
+            let v = if scope.is_some() {
+                Visibility::Private
+            } else {
+                Visibility::Shared
+            };
+            fm.set("visibility", Value::String(v.as_str().to_owned()));
+        }
+        // 136 §5.1: only what the put sets; `None`/empty keeps the file's value.
+        // R-23: `fresh` never demotes a consolidated entry (a harvest that
+        // re-emits a merged/tidied id), and evidence is a union.
+        if let Some(s) = p.status {
+            let current = fm
+                .get("status")
+                .and_then(Value::as_display_string)
+                .and_then(|s| Status::parse(&s));
+            if s != Status::Fresh || matches!(current, None | Some(Status::Fresh)) {
+                fm.set("status", Value::String(s.as_str().to_owned()));
+            }
+        }
+        if let Some(h) = p.hint {
+            fm.set("hint", Value::Bool(h));
+        }
+        if !p.evidence.is_empty() {
+            let mut ev = fm_strings(fm.get("evidence"));
+            union(&mut ev, p.evidence.clone());
+            set_list(&mut fm, "evidence", ev);
+        }
+        for (key, value) in [
+            ("verified", &p.verified),
+            ("valid_until", &p.valid_until),
+            ("superseded_by", &p.superseded_by),
+            ("merged_into", &p.merged_into),
+        ] {
+            if let Some(v) = value {
+                fm.set(key, Value::String(v.clone()));
+            }
+        }
+        if exists && source == Source::Dreaming {
+            touch(&mut fm);
         } else {
-            Visibility::Shared
-        });
-        fm.set("owner", Value::String(owner.to_owned()));
-        fm.set("visibility", Value::String(visibility.as_str().to_owned()));
-        stamp(&mut fm, source);
+            stamp(&mut fm, source);
+        }
         let text = Document::new(fm, p.body).serialize();
 
-        let _g = self.write.lock().await;
         let entry = format!("put {id}");
         let w = self.write_concept(&cid, text, &entry, &entry).await?;
         self.rt
@@ -736,6 +963,7 @@ impl Knowledge {
                 id,
                 op: KnowledgeOp::Put,
                 source,
+                commit: w.commit.clone(),
             })
             .await;
         Ok((w.meta, w.created))
@@ -778,6 +1006,7 @@ impl Knowledge {
                 id,
                 op: KnowledgeOp::Put,
                 source: Source::Model,
+                commit: w.commit.clone(),
             })
             .await;
         Ok(w.meta)
@@ -803,6 +1032,7 @@ impl Knowledge {
                 id,
                 op: KnowledgeOp::Put,
                 source: Source::User,
+                commit: w.commit.clone(),
             })
             .await;
         Ok(w.meta)
@@ -850,7 +1080,7 @@ impl Knowledge {
         .await??;
         self.remove_rows(&id).await?;
         removed.sort();
-        self.commit(written, removed, entry).await;
+        let commit = self.commit(written, removed, entry).await;
         if let Some(docs) = document::Handle::lookup() {
             let id = id.clone();
             tokio::spawn(async move {
@@ -866,6 +1096,7 @@ impl Knowledge {
                 id,
                 op: KnowledgeOp::Delete,
                 source: Source::User,
+                commit,
             })
             .await;
         Ok(())
@@ -929,7 +1160,7 @@ impl Knowledge {
     ) -> anyhow::Result<Vec<Hit>> {
         let scope = self.scope_for(session);
         Ok(self
-            .ranked(&terms(query), cwd, limit, scope.as_ref(), true)
+            .ranked(&terms(query), cwd, limit, scope.as_ref(), true, false)
             .await?
             .into_iter()
             .map(|(hit, _)| hit)
@@ -967,6 +1198,7 @@ impl Knowledge {
                 limit + exclude.len() as u32,
                 scope.as_ref(),
                 false,
+                true,
             )
             .await?;
         let mut out = Vec::new();
@@ -1074,8 +1306,62 @@ impl Knowledge {
                 id,
                 op: KnowledgeOp::Put,
                 source: Source::User,
+                commit: Some(sha.clone()),
             })
             .await;
+        Ok(Change {
+            commit: sha,
+            time: chrono::Local::now().format("%Y-%m-%d %H:%M").to_string(),
+            message,
+        })
+    }
+
+    /// [`Self::restore`] for several `(id, commit)` pairs in ONE commit
+    /// (`restore <n> concepts`): every file rewritten from its named commit,
+    /// indexes regenerated once, one [`KnowledgeChanged`] per id. Any pair
+    /// that cannot be read refuses the whole batch before a write (136 P gap
+    /// 6: the night's undo at ≈ 1 s per single restore).
+    pub async fn restore_many(&self, pairs: &[(String, String)]) -> anyhow::Result<Change> {
+        let Some(repo) = self.repo.clone() else {
+            bail!("restore unavailable: no repository")
+        };
+        if pairs.is_empty() {
+            bail!("restore_many: nothing to restore");
+        }
+        let mut wanted = Vec::with_capacity(pairs.len());
+        for (id, commit) in pairs {
+            wanted.push((concept_id(id)?, commit.clone()));
+        }
+        let files =
+            tokio::task::spawn_blocking(move || -> anyhow::Result<Vec<(ConceptId, String)>> {
+                let mut files = Vec::with_capacity(wanted.len());
+                for (cid, commit) in wanted {
+                    let rel = cid.to_path(Path::new(""));
+                    let bytes = repo
+                        .show(&rel, &commit)?
+                        .with_context(|| format!("{cid} is not in commit {commit}"))?;
+                    let text = String::from_utf8(bytes).context("concept is not UTF-8")?;
+                    files.push((cid, text));
+                }
+                Ok(files)
+            })
+            .await??;
+        let _g = self.write.lock().await;
+        let message = format!("restore {} concepts", files.len());
+        let (metas, commit) = self
+            .write_concepts(files, &message, &message, SIGNATURE)
+            .await?;
+        let sha = commit.context("restore: commit failed")?;
+        for m in metas {
+            self.rt
+                .publish(KnowledgeChanged {
+                    id: m.id,
+                    op: KnowledgeOp::Put,
+                    source: Source::User,
+                    commit: Some(sha.clone()),
+                })
+                .await;
+        }
         Ok(Change {
             commit: sha,
             time: chrono::Local::now().format("%Y-%m-%d %H:%M").to_string(),
@@ -1091,31 +1377,60 @@ impl Knowledge {
         log_entry: &str,
         message: &str,
     ) -> anyhow::Result<Written> {
-        let doc = Document::parse(&text)?;
-        doc.validate_conformance().map_err(|e| anyhow!("{e}"))?;
-        let root = self.root.clone();
-        let path = cid.to_path(&root);
-        let rel = path.strip_prefix(&root)?.to_path_buf();
-        let created = !path.exists();
-        let entry = log_entry.to_owned();
-        let (ix, mut touched) =
-            tokio::task::spawn_blocking(move || -> anyhow::Result<(Indexed, Vec<PathBuf>)> {
-                write_atomic(&path, text.as_bytes())
-                    .with_context(|| format!("write {}", path.display()))?;
-                let (mtime, size) = stat(&path)?;
-                let ix = Indexed::new(&root, &path, &doc, mtime, size)?;
-                Ok((ix, finish_files(&root, &entry)?))
-            })
-            .await??;
-        self.upsert(&ix).await?;
-        notify_document(cid.to_string(), cid.to_path(&self.root));
-        touched.push(rel);
-        let commit = self.commit(touched, Vec::new(), message.to_owned()).await;
+        let created = !cid.to_path(&self.root).exists();
+        let (mut metas, commit) = self
+            .write_concepts(vec![(cid.clone(), text)], log_entry, message, SIGNATURE)
+            .await?;
         Ok(Written {
-            meta: ix.meta,
+            meta: metas.pop().context("write_concepts wrote nothing")?,
             created,
             commit,
         })
+    }
+
+    /// [`Self::write_concept`] for several files at once: every file written
+    /// and indexed, `index.md`/`log.md` regenerated once, ONE commit as
+    /// `author`. Metas in the order given.
+    async fn write_concepts(
+        &self,
+        files: Vec<(ConceptId, String)>,
+        log_entry: &str,
+        message: &str,
+        author: (&'static str, &'static str),
+    ) -> anyhow::Result<(Vec<Meta>, Option<String>)> {
+        let mut docs = Vec::with_capacity(files.len());
+        for (cid, text) in files {
+            let doc = Document::parse(&text)?;
+            doc.validate_conformance()
+                .map_err(|e| anyhow!("{}: {e}", cid))?;
+            docs.push((cid, text, doc));
+        }
+        let root = self.root.clone();
+        let entry = log_entry.to_owned();
+        let (ixs, mut touched) =
+            tokio::task::spawn_blocking(move || -> anyhow::Result<(Vec<Indexed>, Vec<PathBuf>)> {
+                let mut ixs = Vec::with_capacity(docs.len());
+                for (cid, text, doc) in &docs {
+                    let path = cid.to_path(&root);
+                    write_atomic(&path, text.as_bytes())
+                        .with_context(|| format!("write {}", path.display()))?;
+                    let (mtime, size) = stat(&path)?;
+                    ixs.push(Indexed::new(&root, &path, doc, mtime, size)?);
+                }
+                Ok((ixs, finish_files(&root, &entry)?))
+            })
+            .await??;
+        let mut metas = Vec::with_capacity(ixs.len());
+        for ix in ixs {
+            self.upsert(&ix).await?;
+            notify_document(ix.meta.id.clone(), self.root.join(&ix.path));
+            touched.push(PathBuf::from(&ix.path));
+            metas.push(ix.meta);
+        }
+        let commit = self
+            .commit_as(touched, Vec::new(), message.to_owned(), author)
+            .await;
+        Ok((metas, commit))
     }
 
     /// Commit through the repo when present. A failure is logged, never
@@ -1126,8 +1441,23 @@ impl Knowledge {
         removed: Vec<PathBuf>,
         message: String,
     ) -> Option<String> {
+        self.commit_as(written, removed, message, SIGNATURE).await
+    }
+
+    /// [`Self::commit`] as `author` (136: `dreaming <dreaming@localhost>` for the five ops).
+    async fn commit_as(
+        &self,
+        written: Vec<PathBuf>,
+        removed: Vec<PathBuf>,
+        message: String,
+        author: (&'static str, &'static str),
+    ) -> Option<String> {
         let repo = self.repo.clone()?;
-        match tokio::task::spawn_blocking(move || repo.commit(&written, &removed, &message)).await {
+        match tokio::task::spawn_blocking(move || {
+            repo.commit_as(&written, &removed, &message, author)
+        })
+        .await
+        {
             Ok(Ok(id)) => Some(id),
             Ok(Err(e)) => {
                 tracing::warn!(error = format!("{e:#}"), "knowledge commit failed");
@@ -1149,8 +1479,9 @@ impl Knowledge {
             .execute(&mut *tx)
             .await?;
         sqlx::query(
-            "INSERT INTO concepts (id, type, title, description, tags, body, scope, source, timestamp, owner, visibility, path, mtime, size) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO concepts (id, type, title, description, tags, body, scope, source, timestamp, owner, visibility, \
+             status, hint, evidence, verified, valid_until, superseded_by, merged_into, consolidated_at, path, mtime, size) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(&m.id)
         .bind(&m.type_)
@@ -1163,6 +1494,14 @@ impl Knowledge {
         .bind(&m.timestamp)
         .bind(&m.owner)
         .bind(m.visibility.as_str())
+        .bind(m.status.as_str())
+        .bind(i64::from(m.hint))
+        .bind(m.evidence.join(" "))
+        .bind(&m.verified)
+        .bind(&m.valid_until)
+        .bind(&m.superseded_by)
+        .bind(&m.merged_into)
+        .bind(&m.consolidated_at)
         .bind(&ix.path)
         .bind(ix.mtime)
         .bind(ix.size)
@@ -1203,10 +1542,14 @@ impl Knowledge {
         Ok(())
     }
 
-    /// FTS query for `terms`, scope-adjusted and sorted, with each hit's body
-    /// (the ≥2-term rule needs it). Empty terms → nothing. With an agent
-    /// `scope` (67 §9): its own items rank first; items it may not read are
-    /// replaced by a stub (`stubs`) or dropped.
+    /// FTS query for `terms`, ranked by 136 §5.3 (`bm25 × scope × type_weight ×
+    /// freshness × use`), with each hit's body (the ≥2-term rule needs it).
+    /// Empty terms → nothing. With an agent `scope` (67 §9): its own items
+    /// rank first; items it may not read are replaced by a stub (`stubs`) or
+    /// dropped. `live_only` (the hint path, 136 §5.3): `hint: false`, a
+    /// non-live status and a record past its lifetime (rank 0) are filtered
+    /// BEFORE the bm25 cut, so stubs and archived rows never spend the window
+    /// (R-26).
     async fn ranked(
         &self,
         terms: &[String],
@@ -1214,6 +1557,7 @@ impl Knowledge {
         limit: u32,
         scope: Option<&AgentScope>,
         stubs: bool,
+        live_only: bool,
     ) -> anyhow::Result<Vec<(Hit, String)>> {
         if terms.is_empty() || limit == 0 {
             return Ok(Vec::new());
@@ -1223,16 +1567,27 @@ impl Knowledge {
             .map(|t| format!("\"{t}\""))
             .collect::<Vec<_>>()
             .join(" OR ");
-        // Only `META_COLS` (a const) is interpolated; the MATCH query and limit are bound.
+        // UNINDEXED columns are plain filters on an FTS5 table.
+        let live = if live_only {
+            " AND hint = 1 AND status IN ('fresh', 'tidy')"
+        } else {
+            ""
+        };
+        // Only `META_COLS` and the fixed `live` clause (consts) are
+        // interpolated; the MATCH query and limit are bound.
         let rows: Vec<HitRow> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
             "SELECT {META_COLS}, body, \
              bm25(concepts, 0, 3.0, 10.0, 5.0, 4.0, 1.0) AS s, snippet(concepts, 5, '', '', '…', 12) AS snip \
-             FROM concepts WHERE concepts MATCH ? ORDER BY s LIMIT ?"
+             FROM concepts WHERE concepts MATCH ?{live} ORDER BY s LIMIT ?"
         )))
         .bind(query)
         .bind(i64::from(limit) * 4)
         .fetch_all(&self.db)
         .await?;
+        let uses = self
+            .uses_of(rows.iter().map(|r| r.meta.id.as_str()))
+            .await?;
+        let now = chrono::Utc::now();
         let mut hits: Vec<(Hit, String)> = rows
             .into_iter()
             .filter_map(|r| {
@@ -1242,7 +1597,19 @@ impl Knowledge {
                     Some(_) => 0.5,
                     None => 1.0,
                 };
-                let score = (-r.s * boost) as f32;
+                let (shown, opened) = uses.get(&meta.id).copied().unwrap_or_default();
+                let weight = rank_weight(
+                    &meta.type_,
+                    age_days(meta.timestamp.as_deref(), now),
+                    shown,
+                    opened,
+                    &self.lifetimes,
+                );
+                let score = (-r.s * boost * weight) as f32;
+                // A record past its lifetime ranks 0: not for a note.
+                if live_only && score <= 0.0 {
+                    return None;
+                }
                 if AgentScope::sees(scope, &meta.owner, meta.visibility) {
                     Some((
                         Hit {
@@ -1275,6 +1642,68 @@ impl Knowledge {
         hits.truncate(limit as usize);
         Ok(hits)
     }
+
+    /// `(shown, opened)` per id from `uses`; ids without a row are absent.
+    async fn uses_of<'a>(
+        &self,
+        ids: impl Iterator<Item = &'a str>,
+    ) -> anyhow::Result<HashMap<String, (u64, u64)>> {
+        let ids: Vec<&str> = ids.collect();
+        if ids.is_empty() {
+            return Ok(HashMap::new());
+        }
+        let marks = vec!["?"; ids.len()].join(", ");
+        // Only the placeholder list is interpolated; every id is bound.
+        let mut q = sqlx::query_as::<_, (String, i64, i64)>(sqlx::AssertSqlSafe(format!(
+            "SELECT id, shown, opened FROM uses WHERE id IN ({marks})"
+        )));
+        for id in ids {
+            q = q.bind(id);
+        }
+        Ok(q.fetch_all(&self.db)
+            .await?
+            .into_iter()
+            .map(|(id, s, o)| (id, (s.max(0) as u64, o.max(0) as u64)))
+            .collect())
+    }
+}
+
+/// Whole days between `timestamp` (RFC 3339) and `now`; 0 when absent or unparsable.
+fn age_days(timestamp: Option<&str>, now: chrono::DateTime<chrono::Utc>) -> f64 {
+    timestamp
+        .and_then(|t| chrono::DateTime::parse_from_rfc3339(t).ok())
+        .map(|t| (now - t.with_timezone(&chrono::Utc)).num_seconds().max(0) as f64 / 86_400.0)
+        .unwrap_or(0.0)
+}
+
+/// 136 §5.3: the rank's multipliers beyond bm25 and the scope boost —
+/// `type_weight × freshness × use`. `type_weight`: decision 1.3 · warning 1.3
+/// · procedure 1.1 · fact 1.0 · entity/hosts/project 0.9 · record 0.6 (0 past
+/// `lifetimes.record` days) · anything else 1.0. `freshness = 0.5 +
+/// 0.5·exp(−age_days/45)` for record and fact, 1.0 otherwise. `use = 1 +
+/// ln(1 + opened) − 0.4·[shown ≥ 50 ∧ opened = 0 ∧ type ≠ warning]`.
+pub fn rank_weight(
+    type_: &str,
+    age_days: f64,
+    shown: u64,
+    opened: u64,
+    lifetimes: &Lifetimes,
+) -> f64 {
+    let type_weight = match type_ {
+        "decision" | "warning" => 1.3,
+        "procedure" => 1.1,
+        "entity" | "hosts" | "project" => 0.9,
+        "record" if age_days > f64::from(lifetimes.record) => return 0.0,
+        "record" => 0.6,
+        _ => 1.0,
+    };
+    let freshness = match type_ {
+        "record" | "fact" => 0.5 + 0.5 * (-age_days / 45.0).exp(),
+        _ => 1.0,
+    };
+    let ignored = shown >= 50 && opened == 0 && type_ != "warning";
+    let use_ = 1.0 + (1.0 + opened as f64).ln() - if ignored { 0.4 } else { 0.0 };
+    type_weight * freshness * use_
 }
 
 /// What a search reports about an item the caller may not read (67 §9):
@@ -1287,7 +1716,437 @@ fn stub(m: Meta) -> Meta {
         scope: None,
         source: None,
         timestamp: None,
+        evidence: Vec::new(),
         ..m
+    }
+}
+
+/// RFC 3339 seconds, UTC — the `uses` timestamp format.
+fn rfc3339(at: chrono::DateTime<chrono::Utc>) -> String {
+    at.format("%Y-%m-%dT%H:%M:%SZ").to_string()
+}
+
+impl Knowledge {
+    /// 136 §2.1: one impression per id — `uses.shown += 1`, `last_shown = at`.
+    /// Unknown ids get a row; nothing else is touched.
+    pub async fn record_shown(
+        &self,
+        ids: &[String],
+        at: chrono::DateTime<chrono::Utc>,
+    ) -> anyhow::Result<()> {
+        if ids.is_empty() {
+            return Ok(());
+        }
+        let at = rfc3339(at);
+        let mut tx = self.db.begin().await?;
+        for id in ids {
+            sqlx::query(
+                "INSERT INTO uses (id, shown, last_shown) VALUES (?, 1, ?) \
+                 ON CONFLICT(id) DO UPDATE SET shown = shown + 1, last_shown = excluded.last_shown",
+            )
+            .bind(id)
+            .bind(&at)
+            .execute(&mut *tx)
+            .await?;
+        }
+        tx.commit().await?;
+        Ok(())
+    }
+
+    /// 136 §2.1: one open — `uses.opened += 1`, `last_opened = at`.
+    pub async fn record_opened(
+        &self,
+        id: &str,
+        at: chrono::DateTime<chrono::Utc>,
+    ) -> anyhow::Result<()> {
+        sqlx::query(
+            "INSERT INTO uses (id, opened, last_opened) VALUES (?, 1, ?) \
+             ON CONFLICT(id) DO UPDATE SET opened = opened + 1, last_opened = excluded.last_opened",
+        )
+        .bind(id)
+        .bind(rfc3339(at))
+        .execute(&self.db)
+        .await?;
+        Ok(())
+    }
+
+    /// 136 §2.1: the counters of `ids`, in the order given; an id never shown
+    /// or opened reports zeros.
+    pub async fn stats(&self, ids: &[String]) -> anyhow::Result<Vec<Uses>> {
+        let mut out = Vec::with_capacity(ids.len());
+        for id in ids {
+            let row: Option<(i64, i64, Option<String>, Option<String>)> = sqlx::query_as(
+                "SELECT shown, opened, last_shown, last_opened FROM uses WHERE id = ?",
+            )
+            .bind(id)
+            .fetch_optional(&self.db)
+            .await?;
+            let (shown, opened, last_shown, last_opened) = row.unwrap_or_default();
+            out.push(Uses {
+                id: id.clone(),
+                shown: shown.max(0) as u64,
+                opened: opened.max(0) as u64,
+                last_shown,
+                last_opened,
+            });
+        }
+        Ok(out)
+    }
+
+    /// 136 §3.1 item 4: fold `ids` into `into` (body given; `evidence` and
+    /// tags = union; scope = the canonical's), rewrite each folded id as a
+    /// `status: merged, merged_into: <into>, hint: false` stub, retarget
+    /// `links` rows, one commit `dreaming merge <into>`. A new canonical takes
+    /// its type, title and description from the first folded file and its
+    /// owner from `scope`.
+    pub async fn merge(
+        &self,
+        ids: &[String],
+        into: &str,
+        body: &str,
+        evidence: &[String],
+        scope: &AgentScope,
+    ) -> anyhow::Result<Receipt> {
+        let into_cid = concept_id(into)?;
+        let into = into_cid.to_string();
+        body_within_limit(body.len())?;
+        let mut folded = Vec::new();
+        for id in ids {
+            let cid = concept_id(id)?;
+            if cid != into_cid && !folded.contains(&cid) {
+                folded.push(cid);
+            }
+        }
+        if folded.is_empty() {
+            bail!("merge: nothing to fold into {into}");
+        }
+        let _g = self.write.lock().await;
+        let docs = folded
+            .iter()
+            .map(|cid| {
+                let doc = self.load(cid)?;
+                // 136 D5: a human-authored entry is never merged away.
+                ensure_not_user(&doc.frontmatter, &cid.to_string())?;
+                Ok(doc)
+            })
+            .collect::<anyhow::Result<Vec<_>>>()?;
+        let mut canonical = match self.load(&into_cid) {
+            Ok(doc) => {
+                // … nor has its body replaced by a merge.
+                ensure_not_user(&doc.frontmatter, &into)?;
+                let mut doc = doc;
+                touch(&mut doc.frontmatter);
+                doc
+            }
+            Err(_) => {
+                let first = &docs[0].frontmatter;
+                let mut fm = okf::Frontmatter::new();
+                for key in ["type", "title", "description"] {
+                    if let Some(v) = first.get(key) {
+                        fm.set(key, v.clone());
+                    }
+                }
+                fm.set("owner", Value::String(scope.owner.clone()));
+                let vis = if scope.owner == USER_OWNER {
+                    Visibility::Shared
+                } else {
+                    Visibility::Private
+                };
+                fm.set("visibility", Value::String(vis.as_str().to_owned()));
+                // A new file: dreaming is its writer and now its event date.
+                stamp(&mut fm, Source::Dreaming);
+                touch(&mut fm);
+                Document::new(fm, String::new())
+            }
+        };
+        // Unions keep the canonical's order first, then each folded file's, then the given.
+        let mut tags = canonical.frontmatter.tags();
+        let mut ev = fm_strings(canonical.frontmatter.get("evidence"));
+        for d in &docs {
+            union(&mut tags, d.frontmatter.tags());
+            union(&mut ev, fm_strings(d.frontmatter.get("evidence")));
+        }
+        union(&mut ev, evidence.to_vec());
+        set_list(&mut canonical.frontmatter, "tags", tags);
+        set_list(&mut canonical.frontmatter, "evidence", ev);
+        // The canonical is live again whatever it was before (R-44: a
+        // previously archived/superseded canonical would otherwise keep
+        // `hint: false` and its `superseded_by`).
+        canonical
+            .frontmatter
+            .set("status", Value::String(Status::Tidy.as_str().to_owned()));
+        canonical.frontmatter.set("hint", Value::Bool(true));
+        for key in ["merged_into", "superseded_by", "valid_until"] {
+            canonical.frontmatter.as_mapping_mut().remove(key);
+        }
+        canonical.body = body.to_owned();
+
+        let mut files = vec![(into_cid.clone(), canonical.serialize())];
+        for (cid, mut doc) in folded.iter().cloned().zip(docs) {
+            doc.frontmatter
+                .set("status", Value::String(Status::Merged.as_str().to_owned()));
+            doc.frontmatter
+                .set("merged_into", Value::String(into.clone()));
+            doc.frontmatter.set("hint", Value::Bool(false));
+            touch(&mut doc.frontmatter);
+            doc.body = format!("Merged into [{into}](/{into}.md)\n");
+            files.push((cid, doc.serialize()));
+        }
+        // Old citations are rewritten in the citing files themselves (not only
+        // in the `links` index), so each citer is committed and published with
+        // the merge and `restore` undoes the retarget (136 P gap 4).
+        let mut citers: Vec<ConceptId> = Vec::new();
+        for cid in &folded {
+            let rows: Vec<(String,)> = sqlx::query_as("SELECT src FROM links WHERE dst = ?")
+                .bind(cid.to_string())
+                .fetch_all(&self.db)
+                .await?;
+            for (src,) in rows {
+                let Ok(scid) = concept_id(&src) else { continue };
+                if scid != into_cid && !folded.contains(&scid) && !citers.contains(&scid) {
+                    citers.push(scid);
+                }
+            }
+        }
+        for scid in citers {
+            let Ok(mut doc) = self.load(&scid) else {
+                continue;
+            };
+            let mut body = doc.body.clone();
+            for link in doc.links() {
+                if link.resolve(&scid).is_some_and(|t| folded.contains(&t)) {
+                    // ponytail: plain text replace; a code span quoting the same
+                    // `](target)` is rewritten too. Offsets if okf ever exposes them.
+                    body = body.replace(&format!("]({})", link.target), &format!("](/{into}.md)"));
+                }
+            }
+            if body != doc.body {
+                doc.body = body;
+                touch(&mut doc.frontmatter);
+                files.push((scid, doc.serialize()));
+            }
+        }
+        self.consolidate(KnowledgeOp::Merge, &into, files).await
+    }
+
+    /// 136 §3.1 item 4: `superseded_by`, `valid_until`, `hint: false` on the
+    /// loser; a "Superseded by" paragraph (with `note`) under the loser's body.
+    pub async fn supersede(
+        &self,
+        loser: &str,
+        winner: &str,
+        valid_until: Option<&str>,
+        note: Option<&str>,
+    ) -> anyhow::Result<Receipt> {
+        let cid = concept_id(loser)?;
+        let winner_cid = concept_id(winner)?;
+        let winner = winner_cid.to_string();
+        if cid == winner_cid {
+            bail!("supersede: {winner} cannot supersede itself");
+        }
+        let _g = self.write.lock().await;
+        if !winner_cid.to_path(&self.root).is_file() {
+            bail!("no such concept: {winner}");
+        }
+        let mut doc = self.load(&cid)?;
+        // 136 D5: a human-authored entry is never superseded.
+        ensure_not_user(&doc.frontmatter, &cid.to_string())?;
+        doc.frontmatter
+            .set("superseded_by", Value::String(winner.clone()));
+        if let Some(v) = valid_until.map(str::trim).filter(|v| !v.is_empty()) {
+            doc.frontmatter
+                .set("valid_until", Value::String(v.to_owned()));
+        }
+        doc.frontmatter.set("hint", Value::Bool(false));
+        touch(&mut doc.frontmatter);
+        let mut line = format!("Superseded by [{winner}](/{winner}.md)");
+        if let Some(n) = note.map(str::trim).filter(|n| !n.is_empty()) {
+            line.push_str(": ");
+            line.push_str(n);
+        }
+        append_paragraph(&mut doc.body, &line);
+        let id = cid.to_string();
+        self.consolidate(KnowledgeOp::Supersede, &id, vec![(cid, doc.serialize())])
+            .await
+    }
+
+    /// 136 §3.1 item 4: `status: archived, hint: false`; `reason` appended
+    /// under `## Archived`.
+    pub async fn archive(&self, id: &str, reason: &str) -> anyhow::Result<Receipt> {
+        let cid = concept_id(id)?;
+        let _g = self.write.lock().await;
+        let mut doc = self.load(&cid)?;
+        // 136 D5: a human-authored entry is never archived.
+        ensure_not_user(&doc.frontmatter, &cid.to_string())?;
+        doc.frontmatter.set(
+            "status",
+            Value::String(Status::Archived.as_str().to_owned()),
+        );
+        doc.frontmatter.set("hint", Value::Bool(false));
+        touch(&mut doc.frontmatter);
+        append_section(&mut doc.body, "## Archived", reason.trim());
+        let id = cid.to_string();
+        self.consolidate(KnowledgeOp::Archive, &id, vec![(cid, doc.serialize())])
+            .await
+    }
+
+    /// 136 §3.1 item 4: `verified: <today>` (ok) or `status: stale` + the note
+    /// under `## Stale` (stale); `evidence` (the sources the check read) is
+    /// unioned into the file's `evidence`.
+    pub async fn verify(
+        &self,
+        id: &str,
+        outcome: VerifyOutcome,
+        note: Option<&str>,
+        evidence: &[String],
+    ) -> anyhow::Result<Receipt> {
+        let cid = concept_id(id)?;
+        let _g = self.write.lock().await;
+        let mut doc = self.load(&cid)?;
+        match outcome {
+            VerifyOutcome::Ok => {
+                let today = chrono::Utc::now().format("%Y-%m-%d").to_string();
+                doc.frontmatter.set("verified", Value::String(today));
+            }
+            VerifyOutcome::Stale => {
+                doc.frontmatter
+                    .set("status", Value::String(Status::Stale.as_str().to_owned()));
+                let note = note
+                    .map(str::trim)
+                    .filter(|n| !n.is_empty())
+                    .unwrap_or("a read-tool check no longer confirms this");
+                append_section(&mut doc.body, "## Stale", note);
+            }
+        }
+        let mut ev = fm_strings(doc.frontmatter.get("evidence"));
+        union(&mut ev, evidence.to_vec());
+        set_list(&mut doc.frontmatter, "evidence", ev);
+        touch(&mut doc.frontmatter);
+        let id = cid.to_string();
+        self.consolidate(KnowledgeOp::Verify, &id, vec![(cid, doc.serialize())])
+            .await
+    }
+
+    /// 136 §3.1 item 4: set `title`; `summary` (the old title's content, or
+    /// the old title itself when empty) becomes a leading `## Summary`
+    /// paragraph of the body — inserted under an existing `## Summary`
+    /// heading rather than stacking a second one (R-44). Allowed on a
+    /// `source: user` entry (D5: retitle is not a rewrite); `timestamp`
+    /// keeps the event date (R-7).
+    pub async fn retitle(&self, id: &str, title: &str, summary: &str) -> anyhow::Result<Receipt> {
+        let cid = concept_id(id)?;
+        let title = title.trim();
+        if title.is_empty() {
+            bail!("retitle: title must not be empty");
+        }
+        let n = title.chars().count();
+        ensure!(
+            n <= harvest::TITLE_MAX,
+            "retitle: title is {n} chars, the cap is {}: choose a shorter title (the rest belongs in summary)",
+            harvest::TITLE_MAX
+        );
+        let _g = self.write.lock().await;
+        let mut doc = self.load(&cid)?;
+        let old = doc.frontmatter.title().unwrap_or_default();
+        let summary = match summary.trim() {
+            "" => old.as_str(),
+            s => s,
+        };
+        doc.frontmatter
+            .set("title", Value::String(title.to_owned()));
+        touch(&mut doc.frontmatter);
+        let rest = std::mem::take(&mut doc.body);
+        let rest = rest.trim_start();
+        doc.body = match rest.strip_prefix("## Summary\n") {
+            Some(under) => format!("## Summary\n\n{summary}\n\n{}", under.trim_start()),
+            None => format!("## Summary\n\n{summary}\n\n{rest}"),
+        };
+        body_within_limit(doc.body.len())?;
+        let id = cid.to_string();
+        self.consolidate(KnowledgeOp::Retitle, &id, vec![(cid, doc.serialize())])
+            .await
+    }
+
+    /// Read and parse `<id>.md`; "no such concept" when absent.
+    fn load(&self, cid: &ConceptId) -> anyhow::Result<Document> {
+        let text = std::fs::read_to_string(cid.to_path(&self.root))
+            .with_context(|| format!("no such concept: {cid}"))?;
+        Ok(Document::parse(&text)?)
+    }
+
+    /// Write `files` as one commit `dreaming <op> <subject>` authored
+    /// `dreaming <dreaming@localhost>`, publish [`KnowledgeChanged`] per id,
+    /// and report. The caller holds `write`.
+    async fn consolidate(
+        &self,
+        op: KnowledgeOp,
+        subject: &str,
+        files: Vec<(ConceptId, String)>,
+    ) -> anyhow::Result<Receipt> {
+        let name = serde_json::to_value(op)?
+            .as_str()
+            .unwrap_or_default()
+            .to_owned();
+        let message = format!("dreaming {name} {subject}");
+        let (metas, commit) = self
+            .write_concepts(files, &message, &message, DREAMING_SIGNATURE)
+            .await?;
+        let ids: Vec<String> = metas.into_iter().map(|m| m.id).collect();
+        for id in &ids {
+            self.rt
+                .publish(KnowledgeChanged {
+                    id: id.clone(),
+                    op,
+                    source: Source::Dreaming,
+                    commit: commit.clone(),
+                })
+                .await;
+        }
+        Ok(Receipt { op, ids, commit })
+    }
+}
+
+/// Append `items` to `acc`, skipping what it already has.
+fn union(acc: &mut Vec<String>, items: Vec<String>) {
+    for i in items {
+        if !acc.contains(&i) {
+            acc.push(i);
+        }
+    }
+}
+
+/// Set `key` to a YAML list, or remove it when empty.
+fn set_list(fm: &mut okf::Frontmatter, key: &str, items: Vec<String>) {
+    if items.is_empty() {
+        fm.as_mapping_mut().remove(key);
+    } else {
+        fm.set(
+            key,
+            Value::Sequence(items.into_iter().map(Value::String).collect()),
+        );
+    }
+}
+
+/// `body` + blank line + `text`.
+fn append_paragraph(body: &mut String, text: &str) {
+    let trimmed = body.trim_end();
+    let mut out = String::with_capacity(trimmed.len() + text.len() + 3);
+    out.push_str(trimmed);
+    if !trimmed.is_empty() {
+        out.push_str("\n\n");
+    }
+    out.push_str(text);
+    out.push('\n');
+    *body = out;
+}
+
+/// Append `text` under `heading`; the heading is added once.
+fn append_section(body: &mut String, heading: &str, text: &str) {
+    let has = body.lines().any(|l| l.trim_end() == heading);
+    if has {
+        append_paragraph(body, text);
+    } else {
+        append_paragraph(body, &format!("{heading}\n\n{text}"));
     }
 }
 
@@ -1359,6 +2218,7 @@ pub fn terms(text: &str) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chrono::TimeZone;
 
     fn tempdir() -> PathBuf {
         let d = std::env::temp_dir().join(format!("theuth-knowledge-{}", uuid::Uuid::new_v4()));
@@ -1382,7 +2242,1212 @@ mod tests {
             scope: None,
             body: body.into(),
             visibility: None,
+            ..Put::default()
         }
+    }
+
+    /// 136 §2.1: `put_for` keeps the seven keys and any unknown key of an
+    /// existing file; a put that sets one overwrites only that one.
+    #[tokio::test]
+    async fn put_for_round_trips_the_136_keys_and_unknown_keys() {
+        let (k, dir) = open().await;
+        let path = dir.join(DIR).join("facts").join("rt.md");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(
+            &path,
+            "---\ntype: fact\ntitle: Old title\nstatus: fresh\nhint: false\nevidence: [01abc, user]\n\
+             verified: 2026-10-01\nvalid_until: 2026-10-07T21:05:00Z\nsuperseded_by: facts/new\n\
+             merged_into: facts/canon\ncheck: ls /\nresource: https://x.example\n---\nold\n",
+        )
+        .unwrap();
+        k.sync().await.unwrap();
+        let m = k.get("facts/rt").await.unwrap().meta;
+        assert_eq!(m.status, Status::Fresh);
+        assert!(!m.hint);
+        assert_eq!(m.evidence, ["01abc", "user"]);
+        assert_eq!(m.verified.as_deref(), Some("2026-10-01"));
+        assert_eq!(m.valid_until.as_deref(), Some("2026-10-07T21:05:00Z"));
+        assert_eq!(m.superseded_by.as_deref(), Some("facts/new"));
+        assert_eq!(m.merged_into.as_deref(), Some("facts/canon"));
+
+        // A plain put (nothing of 136 set) keeps every key and the unknown ones verbatim.
+        let (m, created) = k
+            .put(put("facts/rt", "New title", "new body"), Source::Model)
+            .await
+            .unwrap();
+        assert!(!created);
+        assert_eq!(m.title, "New title");
+        assert_eq!(m.status, Status::Fresh);
+        assert!(!m.hint);
+        assert_eq!(m.evidence, ["01abc", "user"]);
+        assert_eq!(m.superseded_by.as_deref(), Some("facts/new"));
+        let text = std::fs::read_to_string(&path).unwrap();
+        for line in [
+            "check: ls /",
+            "resource: https://x.example",
+            "verified: 2026-10-01",
+            "merged_into: facts/canon",
+            "hint: false",
+        ] {
+            assert!(text.contains(line), "{line:?} missing from\n{text}");
+        }
+
+        // A put that sets a key overwrites that key only; evidence is a union
+        // (R-23); a dreaming put on an existing file keeps `source` and marks
+        // `consolidated_at` (D5).
+        let (m, _) = k
+            .put(
+                Put {
+                    status: Some(Status::Tidy),
+                    hint: Some(true),
+                    evidence: vec!["01def".into()],
+                    ..put("facts/rt", "New title", "new body")
+                },
+                Source::Dreaming,
+            )
+            .await
+            .unwrap();
+        assert_eq!(m.status, Status::Tidy);
+        assert!(m.hint);
+        assert_eq!(m.evidence, ["01abc", "user", "01def"]);
+        assert_eq!(m.verified.as_deref(), Some("2026-10-01"));
+        assert_eq!(m.source, Some(Source::Model));
+        assert!(m.consolidated_at.is_some());
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.contains("source: model"), "{text}");
+        assert!(text.contains("consolidated_at: "), "{text}");
+        assert!(text.contains("check: ls /"), "{text}");
+        // The row carries the columns too (list reads rows, not files).
+        let listed = k.list(Some("facts/rt"), None, None, 10).await.unwrap();
+        assert_eq!(listed[0].status, Status::Tidy);
+        assert_eq!(listed[0].evidence, ["01abc", "user", "01def"]);
+        assert_eq!(listed[0].consolidated_at, m.consolidated_at);
+
+        // A file without any 136 key reads as the defaults.
+        k.put(put("facts/plain", "Plain", "b"), Source::Model)
+            .await
+            .unwrap();
+        let m = k.get("facts/plain").await.unwrap().meta;
+        assert_eq!(m.status, Status::Tidy);
+        assert!(m.hint);
+        assert!(m.evidence.is_empty());
+        assert!(
+            !std::fs::read_to_string(dir.join(DIR).join("facts").join("plain.md"))
+                .unwrap()
+                .contains("status:")
+        );
+    }
+
+    /// 136 §2.1: `uses` counts impressions and opens, answers zeros for
+    /// unknown ids, and survives `sync`.
+    #[tokio::test]
+    async fn uses_table_records_shown_and_opened_and_survives_sync() {
+        let (k, _dir) = open().await;
+        k.put(put("facts/a", "A", "a"), Source::Model)
+            .await
+            .unwrap();
+        let t0 = chrono::Utc.with_ymd_and_hms(2026, 10, 8, 1, 0, 0).unwrap();
+        let t1 = t0 + chrono::Duration::minutes(5);
+        let ids = vec!["facts/a".to_owned(), "facts/ghost".to_owned()];
+        k.record_shown(&ids, t0).await.unwrap();
+        k.record_shown(&ids[..1], t1).await.unwrap();
+        k.record_opened("facts/a", t1).await.unwrap();
+        k.sync().await.unwrap();
+        let s = k
+            .stats(&["facts/a".into(), "facts/ghost".into(), "facts/none".into()])
+            .await
+            .unwrap();
+        assert_eq!((s[0].shown, s[0].opened), (2, 1));
+        assert_eq!(s[0].last_shown.as_deref(), Some("2026-10-08T01:05:00Z"));
+        assert_eq!(s[0].last_opened.as_deref(), Some("2026-10-08T01:05:00Z"));
+        assert_eq!((s[1].shown, s[1].opened), (1, 0));
+        assert_eq!(s[1].last_opened, None);
+        assert_eq!(
+            s[2],
+            Uses {
+                id: "facts/none".into(),
+                ..Uses::default()
+            }
+        );
+        k.record_shown(&[], t1).await.unwrap();
+    }
+
+    /// 136 §5.3: `hint: false` and a non-live status are filtered from hints
+    /// but stay searchable.
+    #[tokio::test]
+    async fn hint_for_skips_unhinted_and_non_live_but_search_keeps_them() {
+        let (k, _dir) = open().await;
+        k.put(
+            Put {
+                hint: Some(false),
+                ..put(
+                    "facts/quiet",
+                    "Quiet rust toolchain",
+                    "rust toolchain notes",
+                )
+            },
+            Source::Model,
+        )
+        .await
+        .unwrap();
+        k.put(
+            Put {
+                status: Some(Status::Archived),
+                ..put("facts/old", "Old rust toolchain", "rust toolchain notes")
+            },
+            Source::Model,
+        )
+        .await
+        .unwrap();
+        k.put(
+            put("facts/live", "Live rust toolchain", "rust toolchain notes"),
+            Source::Model,
+        )
+        .await
+        .unwrap();
+        let cwd = std::env::temp_dir();
+        let hints = k
+            .hint("rust toolchain", &cwd, &BTreeSet::new(), 5)
+            .await
+            .unwrap();
+        assert_eq!(
+            hints.iter().map(|m| m.id.as_str()).collect::<Vec<_>>(),
+            ["facts/live"]
+        );
+        let found = k.search("rust toolchain", &cwd, 10).await.unwrap();
+        assert_eq!(found.len(), 3);
+    }
+
+    /// 136 §3.1 item 1: every shape the live bundle has parses and reads as
+    /// the defaults: no `status`, pasted `Cited by:`/`Links:` lines in the
+    /// body, `architecture`/`tool` types, no `visibility`, a 1,500-char title.
+    #[tokio::test]
+    async fn live_shapes_parse_unchanged() {
+        let (k, _dir) = open().await;
+        let long_title = "x".repeat(1_500);
+        let files = [
+            (
+                "architecture/engine.md",
+                "---\ntype: architecture\ntitle: Engine layout\ntags: [theuth]\n---\nActors, see [the tool](/tools/t.md).\n\nLinks: /tools/t.md\nCited by: facts/a, facts/b\n".to_owned(),
+            ),
+            (
+                "tools/t.md",
+                "---\ntype: tool\ntitle: A tool\nsource: harvest\ntimestamp: 2026-10-01T00:00:00Z\n---\nbody\n".to_owned(),
+            ),
+            (
+                "facts/long.md",
+                format!("---\ntype: fact\ntitle: {long_title}\ndescription: d\n---\nbody\n"),
+            ),
+        ];
+        for (rel, text) in &files {
+            let path = k.root().join(rel);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(&path, text).unwrap();
+        }
+        let s = k.sync().await.unwrap();
+        assert_eq!(s.added, 3);
+        let a = k.get("architecture/engine").await.unwrap();
+        assert_eq!(a.meta.type_, "architecture");
+        assert_eq!(a.meta.status, Status::Tidy);
+        assert!(a.meta.hint);
+        assert_eq!(a.meta.visibility, Visibility::Shared);
+        assert_eq!(a.meta.owner, USER_OWNER);
+        assert!(a.text.contains("Cited by: facts/a, facts/b"));
+        assert_eq!(a.links, [("tools/t".to_owned(), true)]);
+        let t = k.get("tools/t").await.unwrap().meta;
+        assert_eq!(t.type_, "tool");
+        assert_eq!(t.source, Some(Source::Harvest));
+        let l = k.get("facts/long").await.unwrap().meta;
+        assert_eq!(l.title.len(), 1_500);
+        assert!(l.evidence.is_empty() && l.verified.is_none() && l.merged_into.is_none());
+        // A plain put over the long-title file keeps nothing it does not set and adds no 136 key.
+        k.put(put("facts/long", "short", "b2"), Source::Model)
+            .await
+            .unwrap();
+        let text = std::fs::read_to_string(k.root().join("facts/long.md")).unwrap();
+        assert!(
+            !text.contains("status:") && !text.contains("hint:"),
+            "{text}"
+        );
+    }
+
+    /// 136 §5.3 multipliers, pure.
+    #[test]
+    fn rank_weight_monotonicity() {
+        let lt = Lifetimes::default();
+        let w =
+            |ty: &str, age: f64, shown: u64, opened: u64| rank_weight(ty, age, shown, opened, &lt);
+        // More opens → higher.
+        assert!(w("fact", 0.0, 10, 3) > w("fact", 0.0, 10, 1));
+        assert!(w("fact", 0.0, 10, 1) > w("fact", 0.0, 10, 0));
+        // Shown ≥ 50 with 0 opens → lower; one open lifts the penalty.
+        assert!(w("fact", 0.0, 50, 0) < w("fact", 0.0, 49, 0));
+        assert!(w("fact", 0.0, 50, 1) > w("fact", 0.0, 50, 0));
+        // Warnings are exempt from the penalty.
+        assert_eq!(w("warning", 0.0, 500, 0), w("warning", 0.0, 0, 0));
+        // Type weights.
+        assert_eq!(w("decision", 0.0, 0, 0), 1.3);
+        assert_eq!(w("warning", 0.0, 0, 0), 1.3);
+        assert_eq!(w("procedure", 0.0, 0, 0), 1.1);
+        assert_eq!(w("fact", 0.0, 0, 0), 1.0);
+        assert_eq!(w("entity", 0.0, 0, 0), 0.9);
+        assert_eq!(w("hosts", 0.0, 0, 0), 0.9);
+        assert_eq!(w("project", 0.0, 0, 0), 0.9);
+        assert_eq!(w("record", 0.0, 0, 0), 0.6);
+        assert_eq!(w("architecture", 0.0, 0, 0), 1.0);
+        // Freshness decays for records and facts only; a record past its lifetime is 0.
+        assert!(w("fact", 45.0, 0, 0) < w("fact", 0.0, 0, 0));
+        assert!((w("fact", 45.0, 0, 0) - (0.5 + 0.5 * (-1.0f64).exp())).abs() < 1e-12);
+        assert_eq!(w("decision", 400.0, 0, 0), 1.3);
+        assert!(w("record", 14.0, 0, 0) > 0.0);
+        assert_eq!(w("record", 14.1, 0, 0), 0.0);
+        assert_eq!(
+            rank_weight("record", 20.0, 0, 0, &Lifetimes { record: 30, ..lt }),
+            0.6 * (0.5 + 0.5 * (-20.0f64 / 45.0).exp())
+        );
+        // Ages.
+        let now = chrono::Utc.with_ymd_and_hms(2026, 10, 8, 0, 0, 0).unwrap();
+        assert_eq!(age_days(Some("2026-10-06T00:00:00Z"), now), 2.0);
+        assert_eq!(age_days(Some("2026-10-09T00:00:00Z"), now), 0.0);
+        assert_eq!(age_days(Some("garbage"), now), 0.0);
+        assert_eq!(age_days(None, now), 0.0);
+    }
+
+    /// 136 §5.3 through `hint`: opens lift a twin above its sibling, 50
+    /// impressions without an open sink it, a record past `lifetimes.record`
+    /// leaves the shelf but stays searchable.
+    #[tokio::test]
+    async fn hint_rank_uses_opens_impressions_and_record_lifetime() {
+        let (k, _dir) = open().await;
+        for id in ["facts/one", "facts/two", "facts/three"] {
+            k.put(
+                put(id, "rustup toolchain pins", "the toolchain is pinned"),
+                Source::Model,
+            )
+            .await
+            .unwrap();
+        }
+        let cwd = std::env::temp_dir();
+        let ids = |ms: &[Meta]| ms.iter().map(|m| m.id.clone()).collect::<Vec<_>>();
+        let now = chrono::Utc::now();
+        k.record_opened("facts/two", now).await.unwrap();
+        k.record_opened("facts/two", now).await.unwrap();
+        let fifty = vec!["facts/three".to_owned()];
+        for _ in 0..50 {
+            k.record_shown(&fifty, now).await.unwrap();
+        }
+        let hints = k
+            .hint("rustup toolchain", &cwd, &BTreeSet::new(), 5)
+            .await
+            .unwrap();
+        assert_eq!(ids(&hints), ["facts/two", "facts/one", "facts/three"]);
+        // One open on the ignored twin lifts the penalty back above the untouched one.
+        k.record_opened("facts/three", now).await.unwrap();
+        let hints = k
+            .hint("rustup toolchain", &cwd, &BTreeSet::new(), 5)
+            .await
+            .unwrap();
+        assert_eq!(ids(&hints), ["facts/two", "facts/three", "facts/one"]);
+
+        // A record written 20 days ago: rank 0 → not hinted; still found by search.
+        let old = (now - chrono::Duration::days(20)).format("%Y-%m-%dT%H:%M:%SZ");
+        let path = k.root().join("records/old.md");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(
+            &path,
+            format!(
+                "---\ntype: record\ntitle: rustup toolchain pins\ntimestamp: {old}\n---\nold news\n"
+            ),
+        )
+        .unwrap();
+        k.sync().await.unwrap();
+        let hints = k
+            .hint("rustup toolchain", &cwd, &BTreeSet::new(), 5)
+            .await
+            .unwrap();
+        assert!(!ids(&hints).contains(&"records/old".to_owned()));
+        let found = k.search("rustup toolchain", &cwd, 10).await.unwrap();
+        let old = found.iter().find(|h| h.meta.id == "records/old").unwrap();
+        assert_eq!(old.score, 0.0);
+        assert_eq!(found.len(), 4);
+    }
+
+    /// The commit `Receipt.commit` names: `(author name, email, subject)`.
+    async fn commit_of(k: &Knowledge, r: &Receipt) -> (String, String, String) {
+        let repo = k.repo.clone().unwrap();
+        let sha = r.commit.clone().unwrap();
+        let (name, email) = repo.author(&sha).unwrap();
+        let subject = k.history(None, 1).await.unwrap().changes[0].message.clone();
+        (name, email, subject)
+    }
+
+    /// 136 §3.1 item 4: `merge` writes the canonical with the unions, turns
+    /// the folded ids into redirect stubs, retargets `links`, commits once as
+    /// `dreaming`; `restore` brings a stub back.
+    #[tokio::test]
+    async fn merge_folds_into_stubs_and_is_restorable() {
+        let (k, _dir) = open().await;
+        k.put(
+            Put {
+                evidence: vec!["s1".into()],
+                tags: vec!["dev".into(), "mac".into()],
+                ..put("records/state-2026-10-01", "State 1 Oct", "day one")
+            },
+            Source::Harvest,
+        )
+        .await
+        .unwrap();
+        k.put(
+            Put {
+                evidence: vec!["s2".into()],
+                tags: vec!["mac".into(), "arm".into()],
+                status: Some(Status::Fresh),
+                ..put("records/state-2026-10-02", "State 2 Oct", "day two")
+            },
+            Source::Harvest,
+        )
+        .await
+        .unwrap();
+        k.put(
+            put(
+                "facts/citer",
+                "Cites day one",
+                "see [day one](/records/state-2026-10-01.md)",
+            ),
+            Source::Model,
+        )
+        .await
+        .unwrap();
+        let scope = AgentScope {
+            owner: USER_OWNER.into(),
+            line: BTreeSet::new(),
+        };
+        let before = k.history(None, 10).await.unwrap().changes.len();
+        let r = k
+            .merge(
+                &[
+                    "records/state-2026-10-01".into(),
+                    "records/state-2026-10-02".into(),
+                ],
+                "entities/dev-machine",
+                "The living entry.",
+                &["s3".into()],
+                &scope,
+            )
+            .await
+            .unwrap();
+        assert_eq!(r.op, KnowledgeOp::Merge);
+        assert_eq!(
+            r.ids,
+            [
+                "entities/dev-machine",
+                "records/state-2026-10-01",
+                "records/state-2026-10-02",
+                "facts/citer"
+            ],
+            "the citer whose link was retargeted is in the receipt"
+        );
+        let (name, email, subject) = commit_of(&k, &r).await;
+        assert_eq!((name.as_str(), email.as_str()), DREAMING_SIGNATURE);
+        assert_eq!(subject, "dreaming merge entities/dev-machine");
+        assert_eq!(
+            k.history(None, 10).await.unwrap().changes.len(),
+            before + 1,
+            "one commit per op"
+        );
+
+        let c = k.get("entities/dev-machine").await.unwrap();
+        assert_eq!(c.meta.type_, "fact", "type from the first folded file");
+        assert_eq!(c.meta.title, "State 1 Oct");
+        assert_eq!(c.meta.tags, ["dev", "mac", "arm"]);
+        assert_eq!(c.meta.evidence, ["s1", "s2", "s3"]);
+        assert_eq!(c.meta.status, Status::Tidy);
+        assert_eq!(c.meta.source, Some(Source::Dreaming));
+        assert!(c.text.ends_with("The living entry.\n"), "{}", c.text);
+        assert_eq!(
+            c.cited_by,
+            [
+                "facts/citer",
+                "records/state-2026-10-01",
+                "records/state-2026-10-02"
+            ]
+        );
+
+        let s = k.get("records/state-2026-10-02").await.unwrap();
+        assert_eq!(s.meta.status, Status::Merged);
+        assert_eq!(s.meta.merged_into.as_deref(), Some("entities/dev-machine"));
+        assert!(!s.meta.hint);
+        assert_eq!(
+            s.meta.evidence,
+            ["s2"],
+            "the stub keeps its own frontmatter"
+        );
+        assert!(
+            s.text
+                .ends_with("Merged into [entities/dev-machine](/entities/dev-machine.md)\n"),
+            "{}",
+            s.text
+        );
+        assert!(
+            s.cited_by.is_empty(),
+            "the citer now points at the canonical"
+        );
+
+        // Stubs never reach a note; the canonical does.
+        let cwd = std::env::temp_dir();
+        let hinted = k
+            .hint("state oct", &cwd, &BTreeSet::new(), 5)
+            .await
+            .unwrap();
+        assert_eq!(
+            hinted.iter().map(|m| m.id.as_str()).collect::<Vec<_>>(),
+            ["entities/dev-machine"]
+        );
+
+        // Undo one stub through the ordinary restore.
+        k.restore("records/state-2026-10-02", None).await.unwrap();
+        let s = k.get("records/state-2026-10-02").await.unwrap();
+        assert_eq!(s.meta.status, Status::Fresh);
+        assert!(s.meta.merged_into.is_none() && s.meta.hint);
+        assert!(s.text.ends_with("day two\n"));
+
+        // Nothing to fold → refused; a missing id → refused before any write.
+        assert!(
+            k.merge(
+                &["entities/dev-machine".into()],
+                "entities/dev-machine",
+                "b",
+                &[],
+                &scope
+            )
+            .await
+            .is_err()
+        );
+        let e = k
+            .merge(
+                &["records/ghost".into()],
+                "entities/dev-machine",
+                "b",
+                &[],
+                &scope,
+            )
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(e.contains("no such concept: records/ghost"), "{e}");
+    }
+
+    /// Records every [`KnowledgeChanged`] it hears.
+    #[derive(kameo::Actor)]
+    struct Recorder(Arc<parking_lot::Mutex<Vec<KnowledgeChanged>>>);
+
+    impl kameo::message::Message<KnowledgeChanged> for Recorder {
+        type Reply = ();
+
+        async fn handle(
+            &mut self,
+            e: KnowledgeChanged,
+            _: &mut kameo::message::Context<Self, Self::Reply>,
+        ) {
+            self.0.lock().push(e);
+        }
+    }
+
+    /// Subscribe a recorder to `k`'s events; `heard(n)` waits for `n` of them.
+    async fn record(k: &Knowledge) -> Arc<parking_lot::Mutex<Vec<KnowledgeChanged>>> {
+        let heard = Arc::new(parking_lot::Mutex::new(Vec::new()));
+        use kameo::actor::Spawn;
+        let actor = Recorder::spawn(Recorder(heard.clone()));
+        k.rt.subscribe::<Recorder, KnowledgeChanged>(&actor).await;
+        heard
+    }
+
+    async fn heard(
+        rec: &Arc<parking_lot::Mutex<Vec<KnowledgeChanged>>>,
+        n: usize,
+    ) -> Vec<KnowledgeChanged> {
+        for _ in 0..200 {
+            if rec.lock().len() >= n {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        rec.lock().clone()
+    }
+
+    /// 136 P gap 4: merging A into B where C links to A rewrites C's file,
+    /// commits it with the merge, publishes `KnowledgeChanged{C, Merge, dreaming}`,
+    /// and `restore(C, before)` brings the old link back in the index too.
+    #[tokio::test]
+    async fn merge_rewrites_citers_and_publishes_them() {
+        let (k, _dir) = open().await;
+        k.put(put("facts/a", "A", "a body"), Source::Model)
+            .await
+            .unwrap();
+        k.put(put("facts/b", "B", "b body"), Source::Model)
+            .await
+            .unwrap();
+        k.put(
+            put(
+                "facts/c",
+                "C",
+                "see [a](/facts/a.md) and [again](../facts/a.md#top), not `[x](/facts/d.md)`",
+            ),
+            Source::Model,
+        )
+        .await
+        .unwrap();
+        let c_before = k.history(Some("facts/c"), 1).await.unwrap().changes[0]
+            .commit
+            .clone();
+        let c_text = k.get("facts/c").await.unwrap().text;
+        let rec = record(&k).await;
+        let scope = AgentScope {
+            owner: USER_OWNER.into(),
+            line: BTreeSet::new(),
+        };
+        let r = k
+            .merge(&["facts/a".into()], "facts/b", "ab", &[], &scope)
+            .await
+            .unwrap();
+        assert_eq!(r.ids, ["facts/b", "facts/a", "facts/c"]);
+        let events = heard(&rec, 3).await;
+        let mut ids: Vec<&str> = events.iter().map(|e| e.id.as_str()).collect();
+        ids.sort_unstable();
+        assert_eq!(ids, ["facts/a", "facts/b", "facts/c"]);
+        assert!(
+            events
+                .iter()
+                .all(|e| e.op == KnowledgeOp::Merge && e.source == Source::Dreaming),
+            "{events:?}"
+        );
+        let c = k.get("facts/c").await.unwrap();
+        assert!(
+            c.text
+                .contains("see [a](/facts/b.md) and [again](/facts/b.md), not `[x](/facts/d.md)`"),
+            "{}",
+            c.text
+        );
+        assert!(c.meta.consolidated_at.is_some());
+        assert_eq!(
+            c.links.iter().map(|(t, _)| t.as_str()).collect::<Vec<_>>(),
+            ["facts/b"],
+            "the code-span link is text, not a link"
+        );
+        // The file carries the retarget, so the citer's `restore` undoes it.
+        k.restore("facts/c", Some(&c_before)).await.unwrap();
+        let c = k.get("facts/c").await.unwrap();
+        assert_eq!(c.text, c_text);
+        assert_eq!(
+            c.links.iter().map(|(t, _)| t.as_str()).collect::<Vec<_>>(),
+            ["facts/a"]
+        );
+        assert_eq!(k.get("facts/a").await.unwrap().cited_by, ["facts/c"]);
+    }
+
+    /// `restore_many`: three ids from three different commits in ONE commit,
+    /// bodies equal to the named revisions, one `KnowledgeChanged` per id.
+    #[tokio::test]
+    async fn restore_many_restores_several_ids_in_one_commit() {
+        let (k, _dir) = open().await;
+        let ids = ["facts/x", "facts/y", "facts/z"];
+        let mut want = Vec::new();
+        for id in ids {
+            k.put(put(id, id, &format!("{id} v1")), Source::Model)
+                .await
+                .unwrap();
+            let commit = k.history(Some(id), 1).await.unwrap().changes[0]
+                .commit
+                .clone();
+            want.push((id.to_owned(), commit, k.get(id).await.unwrap().text));
+        }
+        for id in ids {
+            k.put(put(id, id, &format!("{id} v2")), Source::Model)
+                .await
+                .unwrap();
+        }
+        let before = k.history(None, 20).await.unwrap().changes.len();
+        let rec = record(&k).await;
+        let pairs: Vec<(String, String)> = want
+            .iter()
+            .map(|(id, c, _)| (id.clone(), c.clone()))
+            .collect();
+        let change = k.restore_many(&pairs).await.unwrap();
+        assert_eq!(change.message, "restore 3 concepts");
+        let history = k.history(None, 20).await.unwrap().changes;
+        assert_eq!(history.len(), before + 1, "one commit");
+        assert_eq!(history[0].commit, change.commit);
+        for (id, _, text) in &want {
+            assert_eq!(&k.get(id).await.unwrap().text, text, "{id}");
+        }
+        let events = heard(&rec, 3).await;
+        let mut heard_ids: Vec<&str> = events.iter().map(|e| e.id.as_str()).collect();
+        heard_ids.sort_unstable();
+        assert_eq!(heard_ids, ids);
+        assert!(
+            events
+                .iter()
+                .all(|e| e.op == KnowledgeOp::Put && e.source == Source::User)
+        );
+        // A pair that cannot be read refuses the batch before any write.
+        let e = k
+            .restore_many(&[
+                ("facts/x".into(), want[0].1.clone()),
+                ("facts/ghost".into(), want[0].1.clone()),
+            ])
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(e.contains("facts/ghost is not in commit"), "{e}");
+        assert_eq!(k.history(None, 20).await.unwrap().changes.len(), before + 1);
+    }
+
+    /// 136 §3.1 item 4: `supersede`, `archive`, `verify` (both outcomes) and
+    /// `retitle` — file effects, `dreaming` author, `dreaming <op> <id>`
+    /// subject, and `restore` undoing each.
+    #[tokio::test]
+    async fn supersede_archive_verify_retitle_effects_author_and_restore() {
+        let (k, _dir) = open().await;
+        k.put(put("facts/old", "Old claim", "was true"), Source::Model)
+            .await
+            .unwrap();
+        k.put(put("facts/new", "New claim", "is true"), Source::Model)
+            .await
+            .unwrap();
+        let original = k.get("facts/old").await.unwrap().text;
+        // The commit before each op — what dreaming's undo restores from.
+        async fn base(k: &Knowledge) -> String {
+            k.history(Some("facts/old"), 1).await.unwrap().changes[0]
+                .commit
+                .clone()
+        }
+
+        // supersede
+        let b = base(&k).await;
+        let r = k
+            .supersede(
+                "facts/old",
+                "facts/new",
+                Some("2026-10-07T21:05:00Z"),
+                Some("the port moved"),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            (r.op, r.ids.as_slice()),
+            (KnowledgeOp::Supersede, &["facts/old".to_owned()][..])
+        );
+        let (name, email, subject) = commit_of(&k, &r).await;
+        assert_eq!((name.as_str(), email.as_str()), DREAMING_SIGNATURE);
+        assert_eq!(subject, "dreaming supersede facts/old");
+        let c = k.get("facts/old").await.unwrap();
+        assert_eq!(c.meta.superseded_by.as_deref(), Some("facts/new"));
+        assert_eq!(c.meta.valid_until.as_deref(), Some("2026-10-07T21:05:00Z"));
+        assert!(!c.meta.hint);
+        assert_eq!(c.meta.status, Status::Tidy, "supersede leaves status alone");
+        assert!(
+            c.text.ends_with(
+                "was true\n\nSuperseded by [facts/new](/facts/new.md): the port moved\n"
+            ),
+            "{}",
+            c.text
+        );
+        assert_eq!(k.get("facts/new").await.unwrap().cited_by, ["facts/old"]);
+        assert!(
+            k.supersede("facts/old", "facts/none", None, None)
+                .await
+                .is_err()
+        );
+        assert!(
+            k.supersede("facts/old", "facts/old", None, None)
+                .await
+                .is_err()
+        );
+        k.restore("facts/old", Some(&b)).await.unwrap();
+        assert_eq!(k.get("facts/old").await.unwrap().text, original);
+
+        // archive
+        let b = base(&k).await;
+        let r = k.archive("facts/old", "superseded twice").await.unwrap();
+        assert_eq!(r.op, KnowledgeOp::Archive);
+        let (name, _, subject) = commit_of(&k, &r).await;
+        assert_eq!(name, "dreaming");
+        assert_eq!(subject, "dreaming archive facts/old");
+        let c = k.get("facts/old").await.unwrap();
+        assert_eq!(c.meta.status, Status::Archived);
+        assert!(!c.meta.hint);
+        assert!(
+            c.text
+                .ends_with("was true\n\n## Archived\n\nsuperseded twice\n"),
+            "{}",
+            c.text
+        );
+        // A second reason joins the same section.
+        k.archive("facts/old", "and again").await.unwrap();
+        let text = k.get("facts/old").await.unwrap().text;
+        assert_eq!(text.matches("## Archived").count(), 1);
+        assert!(text.ends_with("superseded twice\n\nand again\n"), "{text}");
+        k.restore("facts/old", Some(&b)).await.unwrap();
+        assert_eq!(k.get("facts/old").await.unwrap().text, original);
+
+        // verify ok
+        let b = base(&k).await;
+        let r = k
+            .verify(
+                "facts/old",
+                VerifyOutcome::Ok,
+                None,
+                &["conf/pg.toml".into(), "session:s1".into()],
+            )
+            .await
+            .unwrap();
+        assert_eq!(r.op, KnowledgeOp::Verify);
+        let (name, _, subject) = commit_of(&k, &r).await;
+        assert_eq!(name, "dreaming");
+        assert_eq!(subject, "dreaming verify facts/old");
+        let c = k.get("facts/old").await.unwrap();
+        let today = chrono::Utc::now().format("%Y-%m-%d").to_string();
+        assert_eq!(c.meta.verified.as_deref(), Some(today.as_str()));
+        assert_eq!(c.meta.status, Status::Tidy);
+        assert_eq!(
+            c.meta.evidence,
+            ["conf/pg.toml", "session:s1"],
+            "the read sources are recorded"
+        );
+        assert!(
+            c.text.ends_with("was true\n"),
+            "ok writes no note: {}",
+            c.text
+        );
+        // verify stale
+        k.verify(
+            "facts/old",
+            VerifyOutcome::Stale,
+            Some("port is 5433 now"),
+            &["session:s1".into(), "conf/pg.d/port".into()],
+        )
+        .await
+        .unwrap();
+        let c = k.get("facts/old").await.unwrap();
+        assert_eq!(
+            c.meta.evidence,
+            ["conf/pg.toml", "session:s1", "conf/pg.d/port"],
+            "union, in order"
+        );
+        assert_eq!(c.meta.status, Status::Stale);
+        assert_eq!(
+            c.meta.verified.as_deref(),
+            Some(today.as_str()),
+            "verified kept"
+        );
+        assert!(
+            c.text
+                .ends_with("was true\n\n## Stale\n\nport is 5433 now\n"),
+            "{}",
+            c.text
+        );
+        k.restore("facts/old", Some(&b)).await.unwrap();
+        assert_eq!(k.get("facts/old").await.unwrap().text, original);
+
+        // retitle
+        let b = base(&k).await;
+        let r = k
+            .retitle(
+                "facts/old",
+                "Old claim, short",
+                "Old claim — the long first version of the title.",
+            )
+            .await
+            .unwrap();
+        assert_eq!(r.op, KnowledgeOp::Retitle);
+        let (name, _, subject) = commit_of(&k, &r).await;
+        assert_eq!(name, "dreaming");
+        assert_eq!(subject, "dreaming retitle facts/old");
+        let c = k.get("facts/old").await.unwrap();
+        assert_eq!(c.meta.title, "Old claim, short");
+        // D5: identity is not restamped; the dreaming touch is `consolidated_at`.
+        assert_eq!(c.meta.source, Some(Source::Model));
+        assert!(c.meta.consolidated_at.is_some());
+        assert!(
+            c.text.ends_with(
+                "## Summary\n\nOld claim — the long first version of the title.\n\nwas true\n"
+            ),
+            "{}",
+            c.text
+        );
+        // An empty summary falls back to the old title, inserted under the
+        // existing `## Summary` (R-44: never a second heading).
+        k.retitle("facts/old", "Shorter", "").await.unwrap();
+        let text = k.get("facts/old").await.unwrap().text;
+        assert!(
+            text.ends_with(
+                "## Summary\n\nOld claim, short\n\nOld claim — the long first version of the title.\n\nwas true\n"
+            ),
+            "{text}"
+        );
+        assert_eq!(text.matches("## Summary").count(), 1, "{text}");
+        assert!(k.retitle("facts/old", "  ", "x").await.is_err());
+        let long = "x".repeat(harvest::TITLE_MAX + 1);
+        let e = k.retitle("facts/old", &long, "x").await.unwrap_err();
+        assert!(e.to_string().contains("121 chars, the cap is 120"), "{e}");
+        assert_eq!(k.get("facts/old").await.unwrap().text, text);
+        k.retitle("facts/old", &"y".repeat(harvest::TITLE_MAX), "")
+            .await
+            .unwrap();
+        k.restore("facts/old", Some(&b)).await.unwrap();
+        assert_eq!(k.get("facts/old").await.unwrap().text, original);
+
+        // Every op wants an existing file.
+        for e in [
+            k.archive("facts/none", "r").await.err(),
+            k.verify("facts/none", VerifyOutcome::Ok, None, &[])
+                .await
+                .err(),
+            k.retitle("facts/none", "t", "s").await.err(),
+            k.supersede("facts/none", "facts/new", None, None)
+                .await
+                .err(),
+        ] {
+            assert!(
+                e.unwrap()
+                    .to_string()
+                    .contains("no such concept: facts/none")
+            );
+        }
+    }
+
+    /// 136 R-5 / D5: the tidy-mark put from the dreaming session (no scope)
+    /// keeps a desk's `owner: agent:ops, visibility: private`, its `scope`,
+    /// `source` and `timestamp`; only `consolidated_at` moves.
+    #[tokio::test]
+    async fn dreaming_put_preserves_identity() {
+        let (k, _dir, ops, _cto, _mkt) = scoped().await;
+        k.put_for(
+            Put {
+                scope: Some(PathBuf::from("/work/relay")),
+                status: Some(Status::Fresh),
+                ..put("ops/p", "Private note", "body")
+            },
+            Source::Model,
+            Some(ops),
+        )
+        .await
+        .unwrap();
+        let before = k.get("ops/p").await.unwrap().meta;
+        assert_eq!(before.owner, "agent:ops");
+        let (m, created) = k
+            .put_for(
+                Put {
+                    status: Some(Status::Tidy),
+                    ..put("ops/p", "Private note, tidied", "tidy body")
+                },
+                Source::Dreaming,
+                None,
+            )
+            .await
+            .unwrap();
+        assert!(!created);
+        assert_eq!(m.owner, "agent:ops");
+        assert_eq!(m.visibility, Visibility::Private);
+        assert_eq!(m.scope, before.scope, "scope kept");
+        assert_eq!(m.source, Some(Source::Model), "source kept");
+        assert_eq!(m.timestamp, before.timestamp, "event date kept");
+        assert!(m.consolidated_at.is_some());
+        assert_eq!(m.status, Status::Tidy);
+        // A put that names `visibility` still sets it.
+        let (m, _) = k
+            .put_for(
+                Put {
+                    visibility: Some(Visibility::Team),
+                    ..put("ops/p", "Private note, tidied", "tidy body")
+                },
+                Source::Model,
+                Some(ops),
+            )
+            .await
+            .unwrap();
+        assert_eq!(m.visibility, Visibility::Team);
+        assert_eq!(m.owner, "agent:ops");
+    }
+
+    /// 136 R-7: `retitle` (and every op) keeps `timestamp`, so a 20-day-old
+    /// record is still past the hint shelf's lifetime after a retitle.
+    #[tokio::test]
+    async fn ops_do_not_restamp_timestamp() {
+        let (k, dir) = open().await;
+        let path = dir.join(DIR).join("records").join("old.md");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let old = (chrono::Utc::now() - chrono::Duration::days(20))
+            .format("%Y-%m-%dT%H:%M:%SZ")
+            .to_string();
+        std::fs::write(
+            &path,
+            format!(
+                "---\ntype: record\ntitle: Toolchain pinned rustup\nsource: harvest\ntimestamp: {old}\n---\nrustup toolchain pinned\n"
+            ),
+        )
+        .unwrap();
+        k.sync().await.unwrap();
+        let cwd = Path::new("/tmp");
+        assert!(
+            k.hint("rustup toolchain", cwd, &BTreeSet::new(), 5)
+                .await
+                .unwrap()
+                .is_empty(),
+            "a record past its lifetime is not hinted"
+        );
+        k.retitle("records/old", "Toolchain pinned", "rustup")
+            .await
+            .unwrap();
+        let m = k.get("records/old").await.unwrap().meta;
+        assert_eq!(m.timestamp.as_deref(), Some(old.as_str()));
+        assert_eq!(m.source, Some(Source::Harvest));
+        assert!(m.consolidated_at.is_some());
+        assert!(
+            k.hint("rustup toolchain", cwd, &BTreeSet::new(), 5)
+                .await
+                .unwrap()
+                .is_empty(),
+            "still past its lifetime after the retitle"
+        );
+    }
+
+    /// 136 R-23: a harvest that re-emits an id dreaming has merged keeps the
+    /// evidence union and the `merged` status.
+    #[tokio::test]
+    async fn harvest_reput_unions_evidence_and_never_demotes_status() {
+        let (k, dir) = open().await;
+        let path = dir.join(DIR).join("facts").join("m.md");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(
+            &path,
+            "---\ntype: fact\ntitle: M\nstatus: merged\nmerged_into: facts/canon\nhint: false\nevidence: [a, b]\n---\nMerged into [facts/canon](/facts/canon.md)\n",
+        )
+        .unwrap();
+        k.sync().await.unwrap();
+        let (m, _) = k
+            .put(
+                Put {
+                    status: Some(Status::Fresh),
+                    evidence: vec!["c".into(), "a".into()],
+                    ..put("facts/m", "M", "seen again")
+                },
+                Source::Harvest,
+            )
+            .await
+            .unwrap();
+        assert_eq!(m.evidence, ["a", "b", "c"]);
+        assert_eq!(m.status, Status::Merged);
+        assert_eq!(m.merged_into.as_deref(), Some("facts/canon"));
+        // A file with no status (or `fresh`) still takes `fresh`.
+        let (m, _) = k
+            .put(
+                Put {
+                    status: Some(Status::Fresh),
+                    ..put("facts/n", "N", "new")
+                },
+                Source::Harvest,
+            )
+            .await
+            .unwrap();
+        assert_eq!(m.status, Status::Fresh);
+    }
+
+    /// 136 R-25 / D5: a `source: user` entry is never merged away, superseded,
+    /// archived or rewritten by a dreaming put — the file stays byte-identical
+    /// — while a retitle is allowed.
+    #[tokio::test]
+    async fn user_authored_entries_are_refused_by_the_destructive_ops() {
+        let (k, dir) = open().await;
+        k.put(put("facts/h", "Human note", "typed by hand"), Source::User)
+            .await
+            .unwrap();
+        k.put(put("facts/other", "Other", "model"), Source::Model)
+            .await
+            .unwrap();
+        let path = dir.join(DIR).join("facts").join("h.md");
+        let before = std::fs::read(&path).unwrap();
+        let scope = AgentScope {
+            owner: USER_OWNER.into(),
+            line: BTreeSet::new(),
+        };
+        let errs = [
+            k.archive("facts/h", "noise").await.err(),
+            k.supersede("facts/h", "facts/other", None, None)
+                .await
+                .err(),
+            k.merge(&["facts/h".into()], "facts/other", "b", &[], &scope)
+                .await
+                .err(),
+            k.merge(&["facts/other".into()], "facts/h", "b", &[], &scope)
+                .await
+                .err(),
+            k.put_for(
+                Put {
+                    status: Some(Status::Archived),
+                    ..put("facts/h", "Human note", "rewritten")
+                },
+                Source::Dreaming,
+                None,
+            )
+            .await
+            .err(),
+        ];
+        for e in errs {
+            let e = e.expect("refused").to_string();
+            assert!(e.contains("human-authored (source: user)"), "{e}");
+        }
+        assert_eq!(std::fs::read(&path).unwrap(), before, "byte-identical");
+        assert_eq!(
+            k.get("facts/other").await.unwrap().meta.status,
+            Status::Tidy,
+            "the model entry was not folded either"
+        );
+        k.retitle("facts/h", "Human note, short", "Human note")
+            .await
+            .unwrap();
+        assert_eq!(
+            k.get("facts/h").await.unwrap().meta.source,
+            Some(Source::User)
+        );
+    }
+
+    /// 136 R-44: merging onto a previously archived canonical brings it back
+    /// live — `hint: true`, no `superseded_by`/`valid_until`.
+    #[tokio::test]
+    async fn merge_revives_an_archived_canonical() {
+        let (k, _dir) = open().await;
+        k.put(put("facts/canon", "Canon", "old"), Source::Model)
+            .await
+            .unwrap();
+        k.put(put("facts/dup", "Dup", "dup"), Source::Model)
+            .await
+            .unwrap();
+        k.put(put("facts/newer", "Newer", "n"), Source::Model)
+            .await
+            .unwrap();
+        k.supersede(
+            "facts/canon",
+            "facts/newer",
+            Some("2026-01-01T00:00:00Z"),
+            None,
+        )
+        .await
+        .unwrap();
+        k.archive("facts/canon", "superseded").await.unwrap();
+        let m = k.get("facts/canon").await.unwrap().meta;
+        assert!(!m.hint && m.status == Status::Archived && m.superseded_by.is_some());
+        let scope = AgentScope {
+            owner: USER_OWNER.into(),
+            line: BTreeSet::new(),
+        };
+        k.merge(
+            &["facts/dup".into()],
+            "facts/canon",
+            "merged body",
+            &[],
+            &scope,
+        )
+        .await
+        .unwrap();
+        let m = k.get("facts/canon").await.unwrap().meta;
+        assert!(m.hint);
+        assert_eq!(m.status, Status::Tidy);
+        assert!(m.superseded_by.is_none() && m.valid_until.is_none());
+        assert_eq!(
+            m.source,
+            Some(Source::Model),
+            "existing canonical keeps its source"
+        );
+    }
+
+    /// 136 R-26: dead rows are filtered before the bm25 cut, so a note with
+    /// room for five lines shows both live matches even when four archived
+    /// twins and a merge stub outrank them.
+    #[tokio::test]
+    async fn hint_window_is_not_spent_on_dead_rows() {
+        let (k, _dir) = open().await;
+        let cwd = Path::new("/tmp");
+        // Dead rows repeat the terms (better bm25) …
+        for i in 0..4 {
+            k.put(
+                Put {
+                    status: Some(Status::Archived),
+                    hint: Some(false),
+                    ..put(
+                        &format!("facts/dead{i}"),
+                        "pelican relay pelican relay",
+                        "pelican relay pelican relay pelican relay",
+                    )
+                },
+                Source::Dreaming,
+            )
+            .await
+            .unwrap();
+        }
+        k.put(
+            Put {
+                status: Some(Status::Merged),
+                merged_into: Some("facts/live0".into()),
+                ..put(
+                    "facts/stub",
+                    "pelican relay pelican",
+                    "pelican relay pelican relay",
+                )
+            },
+            Source::Dreaming,
+        )
+        .await
+        .unwrap();
+        // … the live ones mention them once.
+        for i in 0..2 {
+            k.put(
+                put(
+                    &format!("facts/live{i}"),
+                    "the pelican relay",
+                    "restart it from the relay host",
+                ),
+                Source::Model,
+            )
+            .await
+            .unwrap();
+        }
+        let hints = k
+            .hint("pelican relay", cwd, &BTreeSet::new(), 5)
+            .await
+            .unwrap();
+        let mut ids: Vec<&str> = hints.iter().map(|m| m.id.as_str()).collect();
+        ids.sort_unstable();
+        assert_eq!(ids, ["facts/live0", "facts/live1"]);
+        // `search` still sees everything.
+        assert_eq!(k.search("pelican relay", cwd, 10).await.unwrap().len(), 7);
+    }
+
+    /// 136 D6: an unattended session consolidates only while registered by
+    /// the open night; the attended answer comes from the `Consolidator`.
+    #[tokio::test]
+    async fn consolidating_session_is_the_registered_night_or_the_owner_root() {
+        struct OwnerRoot(SessionId);
+        #[async_trait::async_trait]
+        impl Consolidator for OwnerRoot {
+            async fn may_consolidate(&self, s: SessionId) -> bool {
+                s == self.0
+            }
+        }
+        let (k, _dir) = open().await;
+        let (owner, dreaming, routine) = (SessionId::new(), SessionId::new(), SessionId::new());
+        assert!(!k.may_consolidate(owner).await, "nobody until installed");
+        k.set_consolidator(Arc::new(OwnerRoot(owner)));
+        assert!(k.may_consolidate(owner).await);
+        assert!(!k.may_consolidate(dreaming).await, "no open night");
+        k.register_consolidating_session(dreaming);
+        assert!(k.may_consolidate(dreaming).await);
+        assert!(k.is_consolidating_session(dreaming));
+        assert!(!k.may_consolidate(routine).await, "another routine's root");
+        assert!(!k.is_consolidating_session(owner));
+        k.clear_consolidating_session();
+        assert!(!k.may_consolidate(dreaming).await, "night closed");
+        assert!(k.may_consolidate(owner).await);
     }
 
     /// A fixed session → scope table standing in for the roster (67 §9).

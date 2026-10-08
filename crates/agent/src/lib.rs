@@ -34,6 +34,7 @@ pub mod communication;
 pub mod compact;
 pub mod context;
 pub mod continuation;
+pub mod dreaming_ledger;
 pub mod durability;
 pub mod endless;
 pub mod endless_ext;
@@ -111,6 +112,10 @@ pub use cost::{
     CallId, CallKind, CallStatus, ChildCost, CostBucket, CostObservation, CostScope, Coverage,
     MeterUpdate, Money, Provenance, SessionCost, SpendDay, SpendOwner, SpendOwnerKind, SpendReport,
     TokenTotals,
+};
+pub use dreaming_ledger::{
+    Ledger, LedgerCount, LedgerHintUse, LedgerQuestion, LedgerRewind, LedgerSession, LedgerSince,
+    LedgerStop, LedgerToolError, LedgerUserMessage,
 };
 pub use endless::{
     Backfill, Endless, EndlessConfig, EndlessProgress, EndlessStats, GuardTrips, MemoryMode,
@@ -366,10 +371,15 @@ pub async fn answer_ask(
         }
         (Some(_), Some(_)) => Ok(true),
         (None, Some(answers)) if !answers.is_empty() => {
-            agents()?
-                .ask(LateAnswer { id, answers })
-                .await
-                .map_err(|e| anyhow::anyhow!("late answer: {e}"))?;
+            // No agent actor (a test harness without one): nowhere to
+            // deliver, still "not pending".
+            match agents() {
+                Ok(agents) => agents
+                    .ask(LateAnswer { id, answers })
+                    .await
+                    .map_err(|e| anyhow::anyhow!("late answer: {e}"))?,
+                Err(e) => tracing::warn!(ask = %id.0, "late answer dropped: {e}"),
+            }
             Ok(false)
         }
         (None, _) => Ok(false),
@@ -438,6 +448,45 @@ pub struct ResetRuntime {
 pub struct SetCompactStyle {
     /// New default style.
     pub style: CompactStyle,
+}
+
+/// A per-session money cap (136 §2.2): the routine's `budget:` key, or a
+/// one-off `run_now` budget. The cap is per night (136 R-1 / D1): only
+/// `model_calls` rows created at or after `since` count toward it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(
+    feature = "ts",
+    derive(ts_rs::TS),
+    ts(export, rename = "SessionBudget")
+)]
+pub struct Budget {
+    /// The cap, in nanos of `currency` (1 USD = 1_000_000_000).
+    pub nanos: u64,
+    /// ISO 4217 code, as `model_calls.returned_currency`.
+    pub currency: String,
+    /// RFC 3339 UTC instant the cap was set (stamped server-side by
+    /// [`SetBudget`]); spend before it is not counted. Not on the wire.
+    #[serde(default)]
+    #[cfg_attr(feature = "ts", ts(skip))]
+    pub since: String,
+}
+
+/// `ask` → `Result<(), String>` (136 §2.2): set or clear a session's money
+/// cap. The schedule plugin sends it on every fire (`None` when the file has
+/// no `budget:`); `Reserved::open` refuses any model call of the session —
+/// round, harvest, compaction or a detached side call — that would pass it;
+/// a refused round call ends the turn with one `<budget>` note (136 W2), a
+/// refused side call answers `budget exhausted: …`. The supervisor stamps
+/// [`Budget::since`] = now and persists the cap on the session row, so a
+/// durability-resumed turn runs under it (136 R-22).
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct SetBudget {
+    /// Target session.
+    pub session: SessionId,
+    /// The cap in nanos; `None` clears.
+    pub nanos: Option<u64>,
+    /// Currency of `nanos`.
+    pub currency: String,
 }
 
 /// `ask` → `Result<(), String>`: one session's compaction override, in memory

@@ -127,7 +127,15 @@ both optional, both ignored by any other OKF consumer:
 | key | meaning |
 |---|---|
 | `scope` | absolute directory this concept is specific to; the ranker boosts it when the session's cwd is under it and demotes it when the cwd is elsewhere (§3.3). Absent = global |
-| `source` | `harvest` (§5), `model` (`knowledge_put`), absent for hand-written files. Shown by `knowledge_get` so the model can weigh provenance |
+| `source` | `harvest` (§5), `model` (`knowledge_put`), `dreaming` (136's night and any `knowledge_put` that sets a consolidation key), absent for hand-written files. Shown by `knowledge_get` so the model can weigh provenance |
+| `status` | 136 §5.1: `fresh` (a harvest put, not yet tidied) · `tidy` (default when absent) · `merged` · `archived` · `stale` · `retired`; only `fresh`/`tidy` are hinted |
+| `hint` | 136 §5.1: `false` keeps the concept out of `<knowledge>` notes (still searchable); default `true` |
+| `evidence` | 136 §5.1: session ids (or `user`) that established the claim; the harvest writes `[this session]` |
+| `verified` | 136 §5.1: `YYYY-MM-DD` of the last read-tool check by the night's Verify phase |
+| `valid_until` | 136 §5.1: RFC 3339 — when a superseded claim stopped being true |
+| `superseded_by` / `merged_into` | 136 §5.1: the id that replaced / absorbed this concept; the file stays as a one-line redirect stub |
+
+136 §15: `put_for` preserves every key in §5.1 of 136 and drops nothing it does not know; unknown keys round-trip verbatim. `type` additionally names `record` (what happened on a date) and `warning` (a one-line never/always whose title is the whole payload); titles are ≤ 120 characters and the statement goes in the body (`knowledge::harvest::split_title`).
 
 Types are open (the spec is permissive) and the harness never validates them;
 the guidance names five and the model is told to prefer them: `fact`
@@ -242,9 +250,13 @@ CREATE TABLE IF NOT EXISTS links (src TEXT NOT NULL, dst TEXT NOT NULL, PRIMARY 
 CREATE INDEX IF NOT EXISTS links_dst ON links(dst);
 ```
 
-Run by `open_db` at every `Knowledge::open`; the index is derived, so it has
-no migration history — a schema change is `rm knowledge.sqlite`. An
-unopenable file is deleted (with `-wal`/`-shm`) and recreated. `type` is
+Run by `open_db` at every `Knowledge::open`; the index is derived — except
+the `uses` table (136): `concepts` and `links` rebuild from the files on every
+`sync`/`open`; `uses` (impressions and opens per id) is durable, is never
+touched by `sync`, survives a schema-mismatch rebuild of `concepts`, and is
+lost if the file is deleted. A schema change therefore drops and rebuilds
+`concepts`, not the file. An unopenable file is deleted (with
+`-wal`/`-shm`) and recreated. `type` is
 indexed so `knowledge_search("decision mutex")` works with no filter syntax;
 `id` is not (path punctuation is noise). `path`/`mtime`/`size` are the sync
 key. `links.dst` holds resolved concept ids (`okf::Link::resolve`), so a
@@ -295,7 +307,11 @@ body. Then, in Rust, on the top `4 × limit`:
 - truncate to `limit`.
 
 `hint(text, cwd, exclude, limit)` = `search` with the rule, minus `exclude`
-(the ids already hinted this epoch), returning metas only.
+(the ids already hinted this epoch), returning metas only. 136 §15: hints are
+ranked by 136 §5.3 (`bm25 × scope × type_weight × freshness × use`, read from
+`uses`); `hint: false` and non-live statuses are filtered; every id shown is
+recorded as an impression (`Knowledge::record_shown`, called by `agent` where
+the `<knowledge>` note is built) and every `knowledge_get` as an open.
 
 This FTS path is the model's retrieval and the hint source only. The human
 search of [49](49-search.md) does not issue FTS `MATCH`: `knowledge::search`

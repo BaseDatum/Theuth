@@ -17,6 +17,7 @@ use browser::BrowserEvent;
 use codeindex::CodeindexEvent;
 use document::DocumentChanged;
 use double::{DoubleAnswered, DoublePredicted, DoubleTrainingState, DoubleVersionActivated};
+use dreaming::{DreamNightFinished, DreamNightStarted, DreamUndone};
 use kameo::Actor;
 use kameo::actor::{ActorRef, Spawn};
 use kameo::message::{Context, Message};
@@ -144,6 +145,9 @@ forward!(
     DoubleVersionActivated,
     AttentionChanged,
     ReminderEvent,
+    DreamNightStarted,
+    DreamNightFinished,
+    DreamUndone,
     EndlessProgress
 );
 
@@ -205,6 +209,9 @@ pub async fn start(rt: &Runtime) -> broadcast::Sender<Event> {
     rt.subscribe::<Bridge, DoubleTrainingState>(&actor).await;
     rt.subscribe::<Bridge, DoubleVersionActivated>(&actor).await;
     rt.subscribe::<Bridge, AttentionChanged>(&actor).await;
+    rt.subscribe::<Bridge, DreamNightStarted>(&actor).await;
+    rt.subscribe::<Bridge, DreamNightFinished>(&actor).await;
+    rt.subscribe::<Bridge, DreamUndone>(&actor).await;
     rt.subscribe::<Bridge, ReminderEvent>(&actor).await;
     rt.subscribe::<Bridge, EndlessProgress>(&actor).await;
     tx

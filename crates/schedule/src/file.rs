@@ -18,6 +18,60 @@ pub const MIN_EVERY_WHEN: Duration = Duration::from_secs(30);
 pub const DEFAULT_SENSOR_TIMEOUT: Duration = Duration::from_secs(20);
 /// `timeout:` ceiling (40 §5); an explicit value is also checked `< every / 2`.
 pub const MAX_SENSOR_TIMEOUT: Duration = Duration::from_secs(60);
+/// Nanos per whole currency unit (`budget: 1 USD` = 1_000_000_000 nanos; 136 §2.3).
+pub const NANOS_PER_UNIT: u64 = 1_000_000_000;
+
+/// `budget: <number> <CUR>` (136 §2.3): the run's money cap, sent to the
+/// session as `agent::SetBudget` on every fire.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Budget {
+    /// The cap, in nanos of `currency`.
+    pub nanos: u64,
+    /// ISO 4217 code, upper-case.
+    pub currency: String,
+}
+
+impl Budget {
+    /// Parse `1 USD`, `0.5 USD`, `1.25 EUR`: a non-negative decimal (≤ 9
+    /// fractional digits), whitespace, a 3-letter code. `Err` is the
+    /// user-facing reason (`budget: expected <number> <CUR>`).
+    pub fn parse(s: &str) -> Result<Self, String> {
+        const ERR: &str = "budget: expected <number> <CUR>, e.g. `1 USD`";
+        let mut parts = s.split_whitespace();
+        let (Some(amount), Some(cur), None) = (parts.next(), parts.next(), parts.next()) else {
+            return Err(ERR.into());
+        };
+        if cur.len() != 3 || !cur.chars().all(|c| c.is_ascii_alphabetic()) {
+            return Err(ERR.into());
+        }
+        let (whole, frac) = amount.split_once('.').unwrap_or((amount, ""));
+        if whole.is_empty() && frac.is_empty()
+            || !whole.chars().all(|c| c.is_ascii_digit())
+            || !frac.chars().all(|c| c.is_ascii_digit())
+            || frac.len() > 9
+        {
+            return Err(ERR.into());
+        }
+        let whole: u64 = if whole.is_empty() {
+            0
+        } else {
+            whole.parse().map_err(|_| ERR.to_string())?
+        };
+        let frac: u64 = if frac.is_empty() {
+            0
+        } else {
+            format!("{frac:0<9}").parse().map_err(|_| ERR.to_string())?
+        };
+        let nanos = whole
+            .checked_mul(NANOS_PER_UNIT)
+            .and_then(|n| n.checked_add(frac))
+            .ok_or_else(|| ERR.to_string())?;
+        Ok(Self {
+            nanos,
+            currency: cur.to_ascii_uppercase(),
+        })
+    }
+}
 
 /// `when: <file>.py key=value …` (40 §1.2, §2): the sensor and its arguments.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -368,6 +422,11 @@ pub struct Spec {
     pub created: Option<DateTime<Local>>,
     /// `run_timeout:` — time limit of one run; `None` = `schedule.run_timeout_secs` (88).
     pub run_timeout: Option<Duration>,
+    /// `budget:` — the run's money cap (136 §2.3); `None` = no cap (`SetBudget{nanos: None}`).
+    pub budget: Option<Budget>,
+    /// `cap:` — the run's tool risk ceiling (136 D4): `read_only | mutating |
+    /// destructive` → `tools::SetCap` on every fire; `None` = unchanged.
+    pub cap: Option<::tools::Risk>,
 }
 
 #[derive(Deserialize, Default)]
@@ -398,6 +457,8 @@ struct FrontMatter {
     timeout: Option<String>,
     created: Option<String>,
     run_timeout: Option<String>,
+    budget: Option<String>,
+    cap: Option<String>,
 }
 
 /// Parse one file's text. `Err` is the user-facing reason (`cron: …`,
@@ -621,6 +682,18 @@ pub fn parse(name: &str, text: &str) -> Result<Spec, String> {
     if run_timeout.is_some_and(|t| t < Duration::from_secs(30)) {
         return Err("run_timeout: below 30s".into());
     }
+    // 136 §2.3: the run's money cap.
+    let budget = fm.budget.as_deref().map(Budget::parse).transpose()?;
+    // 136 D4: the run's tool risk ceiling.
+    let cap = fm
+        .cap
+        .as_deref()
+        .map(|s| {
+            s.trim()
+                .parse::<::tools::Risk>()
+                .map_err(|_| "cap: expected read_only|mutating|destructive".to_string())
+        })
+        .transpose()?;
 
     Ok(Spec {
         name: name.to_string(),
@@ -657,6 +730,8 @@ pub fn parse(name: &str, text: &str) -> Result<Spec, String> {
         timeout,
         created,
         run_timeout,
+        budget,
+        cap,
     })
 }
 
@@ -764,6 +839,10 @@ pub struct FileArgs<'a> {
     pub created: Option<&'a str>,
     /// `run_timeout:` — written only when present (88).
     pub run_timeout: Option<&'a str>,
+    /// `budget:` — written only when present (136 §2.3).
+    pub budget: Option<&'a str>,
+    /// `cap:` — written only when present (136 D4).
+    pub cap: Option<&'a str>,
     /// Body.
     pub prompt: &'a str,
 }
@@ -825,6 +904,13 @@ pub struct ScheduleFile {
     pub created: Option<String>,
     /// `run_timeout:` as written (88).
     pub run_timeout: Option<String>,
+    /// `budget:` as written (136 §2.3).
+    #[serde(default)]
+    pub budget: Option<String>,
+    /// `cap:` as written (136 D4).
+    #[serde(default)]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub cap: Option<String>,
     /// Body, trimmed.
     pub prompt: String,
 }
@@ -863,6 +949,8 @@ impl ScheduleFile {
             timeout: fm.timeout,
             created: fm.created,
             run_timeout: fm.run_timeout,
+            budget: fm.budget,
+            cap: fm.cap,
             prompt: parsed.content.trim().to_string(),
         })
     }
@@ -897,6 +985,8 @@ impl ScheduleFile {
             timeout: some(&self.timeout),
             created: some(&self.created),
             run_timeout: some(&self.run_timeout),
+            budget: some(&self.budget),
+            cap: some(&self.cap),
             prompt: &self.prompt,
         }
     }
@@ -966,6 +1056,12 @@ pub fn render(a: &FileArgs<'_>) -> String {
     }
     if let Some(v) = a.run_timeout {
         s.push_str(&format!("run_timeout: {}\n", v.trim()));
+    }
+    if let Some(v) = a.budget {
+        s.push_str(&format!("budget: {}\n", v.trim()));
+    }
+    if let Some(v) = a.cap {
+        s.push_str(&format!("cap: {}\n", v.trim()));
     }
     if let Some(c) = a.cwd {
         s.push_str(&format!("cwd: {}\n", yaml_str(c.trim())));
@@ -1187,6 +1283,8 @@ mod tests {
         timeout: None,
         created: None,
         run_timeout: None,
+        budget: None,
+        cap: None,
         prompt: "p",
     };
 
@@ -1220,6 +1318,68 @@ mod tests {
         // Broken semantics (no clause) still read: the editor can repair it.
         let broken = ScheduleFile::read("y", "---\nquiet: true\n---\n").unwrap();
         assert!(broken.cron.is_none() && broken.quiet && broken.prompt.is_empty());
+    }
+
+    #[test]
+    fn cap_key() {
+        // 136 D4: `cap: read_only|mutating|destructive` → the run's tool
+        // ceiling; absent → None (unchanged); anything else is refused.
+        let s = parse("x", &md("every: 1h\ncap: mutating", "p")).unwrap();
+        assert_eq!(s.cap, Some(::tools::Risk::Mutating));
+        assert_eq!(parse("x", &md("every: 1h", "p")).unwrap().cap, None);
+        assert_eq!(
+            parse("x", &md("every: 1h\ncap: all", "p")).unwrap_err(),
+            "cap: expected read_only|mutating|destructive"
+        );
+        // The editor's read → render round trip keeps the key.
+        let f = ScheduleFile::read("x", &md("every: 1h\ncap: mutating", "p")).unwrap();
+        assert_eq!(f.cap.as_deref(), Some("mutating"));
+        let text = render(&f.args());
+        assert!(text.contains("cap: mutating\n"), "{text}");
+        assert_eq!(
+            parse("x", &text).unwrap().cap,
+            Some(::tools::Risk::Mutating)
+        );
+    }
+
+    #[test]
+    fn budget_key() {
+        // 136 §2.3: `<number> <CUR>` → nanos + upper-case code; absent → None.
+        let s = parse("x", &md("every: 1h\nbudget: 1 USD", "p")).unwrap();
+        assert_eq!(
+            s.budget,
+            Some(Budget {
+                nanos: NANOS_PER_UNIT,
+                currency: "USD".into()
+            })
+        );
+        assert_eq!(parse("x", &md("every: 1h", "p")).unwrap().budget, None);
+        assert_eq!(Budget::parse("0.5 usd").unwrap().nanos, 500_000_000);
+        assert_eq!(Budget::parse("1.25 EUR").unwrap().nanos, 1_250_000_000);
+        assert_eq!(Budget::parse(".5 USD").unwrap().nanos, 500_000_000);
+        assert_eq!(Budget::parse("5. USD").unwrap().nanos, 5_000_000_000);
+        assert_eq!(Budget::parse("0.000000001 USD").unwrap().nanos, 1);
+        for bad in [
+            "1",
+            "USD 1",
+            "-1 USD",
+            "1 US",
+            "1 USD extra",
+            "1,5 USD",
+            "0.0000000001 USD",
+            "",
+        ] {
+            assert!(Budget::parse(bad).is_err(), "{bad:?}");
+        }
+        assert!(
+            parse("x", &md("every: 1h\nbudget: lots", "p"))
+                .unwrap_err()
+                .starts_with("budget:")
+        );
+        // The editor model keeps it and the renderer writes it.
+        let f = ScheduleFile::read("x", &md("every: 1h\nbudget: 1 USD", "p")).unwrap();
+        assert_eq!(f.budget.as_deref(), Some("1 USD"));
+        assert!(render(&f.args()).contains("budget: 1 USD\n"));
     }
 
     #[test]

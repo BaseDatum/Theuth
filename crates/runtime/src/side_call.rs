@@ -29,6 +29,8 @@ pub enum CallKind {
     Vision,
     /// Tier-2 side call of the local decision oracle (57 §0.9).
     Escalate,
+    /// A model call made by dreaming's tools (136 §2.2): replay, judge, propose.
+    Dream,
     /// 137: an endless-mode compactor call (one node of the summary tree).
     Endless,
 }
@@ -43,6 +45,7 @@ impl CallKind {
             Self::Title => "title",
             Self::Vision => "vision",
             Self::Escalate => "escalate",
+            Self::Dream => "dream",
             Self::Endless => "endless",
         }
     }
@@ -64,6 +67,7 @@ impl FromStr for CallKind {
             "title" => Ok(Self::Title),
             "vision" => Ok(Self::Vision),
             "escalate" => Ok(Self::Escalate),
+            "dream" => Ok(Self::Dream),
             "endless" => Ok(Self::Endless),
             _ => Err(format!("unknown CallKind: {s:?}")),
         }
@@ -135,6 +139,7 @@ mod tests {
             CallKind::Title,
             CallKind::Vision,
             CallKind::Escalate,
+            CallKind::Dream,
             CallKind::Endless,
         ] {
             assert_eq!(k.as_str().parse::<CallKind>().unwrap(), k);
