@@ -793,6 +793,25 @@ impl Message<Commit> for Night {
     async fn handle(&mut self, m: Commit, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
         let mut r = read_record(&self.data_dir, &m.night)
             .ok_or_else(|| format!("no night {} (call dreaming_ledger first)", m.night))?;
+        if m.phase == "journal" && !r.phases.iter().any(|p| p.starts_with("nudge: ")) {
+            let cap = read_state(&self.data_dir)
+                .run_request
+                .as_ref()
+                .map_or(self.cfg.budget_usd, |q| q.budget_usd);
+            let spent = self.spend_nanos(&r).await as f64 / 1e9;
+            if spent < cap * 0.75
+                && let Some(left) = left_undone(&self.data_dir, &r)
+            {
+                r.phases
+                    .push(format!("nudge: {}", crate::scrub::clip(&left, 400)));
+                write_record(&self.data_dir, &r).map_err(|e| e.to_string())?;
+                return Err(format!(
+                    "not closing yet — ${spent:.2} of ${cap:.2} spent and the ledger's lists are not worked: {left}. \
+                     Finish them (the lists are already capped), or write what you skipped and why under \
+                     section=\"Skipped\"; then call section=\"journal\" again (the second call closes the night)."
+                ));
+            }
+        }
         r.phases.push(format!(
             "{}: {}",
             m.phase,
@@ -805,6 +824,69 @@ impl Message<Commit> for Night {
         }
         Ok(())
     }
+}
+
+/// What tonight's ledger offered that no write touched: `None` when the lists
+/// are worked (or there is no ledger file), else one line for the refusal.
+/// A merge group counts as worked when any of its ids was written; an
+/// archive candidate when it was archived or re-typed (`put`); friction counts
+/// as worked when a case was filed.
+fn left_undone(data_dir: &Path, r: &NightRecord) -> Option<String> {
+    let day: ledger::DayLedger = serde_json::from_str(
+        &std::fs::read_to_string(ledger::path(data_dir, &r.summary.night)).ok()?,
+    )
+    .ok()?;
+    let touched = |id: &str| r.knowledge.iter().any(|t| t.id == id);
+    let mut left = Vec::new();
+    let n = day.tidy.retitle.iter().filter(|id| !touched(id)).count();
+    if n > 0 {
+        left.push(format!("{n} of {} retitles", day.tidy.retitle.len()));
+    }
+    let n = day
+        .tidy
+        .duplicate_stems
+        .iter()
+        .filter(|g| !g.iter().any(|id| touched(id)))
+        .count();
+    if n > 0 {
+        left.push(format!(
+            "{n} of {} merge groups",
+            day.tidy.duplicate_stems.len()
+        ));
+    }
+    let n = day
+        .tidy
+        .archive_by_use
+        .iter()
+        .filter(|id| !touched(id))
+        .count();
+    if n > 0 {
+        left.push(format!(
+            "{n} of {} archive-by-use ids",
+            day.tidy.archive_by_use.len()
+        ));
+    }
+    let n = day
+        .tidy
+        .verify_sample
+        .iter()
+        .filter(|id| !touched(id))
+        .count();
+    if n > 0 {
+        left.push(format!(
+            "{n} of {} verifications",
+            day.tidy.verify_sample.len()
+        ));
+    }
+    let friction =
+        day.ledger.user_messages.len() + day.ledger.tool_errors.len() + day.ledger.rewinds.len();
+    if friction > 0
+        && r.summary.counts.cases == 0
+        && cases::all(data_dir).map_or(true, |c| c.iter().all(|c| c.night != r.summary.night))
+    {
+        left.push(format!("0 cases from {friction} friction events (Mine)"));
+    }
+    (!left.is_empty()).then(|| left.join(", "))
 }
 
 /// The commit `undo` restores `e.id` to: the first parent of the commit the
@@ -1642,5 +1724,77 @@ mod tests {
         r.knowledge.clear();
         r.backups.clear();
         assert_eq!(receipt_line(&r, 1.0), "- nothing changed · $0.37 of $1.00");
+    }
+
+    /// The close gate names what the ledger offered and nobody wrote (night 2
+    /// live: 300/300 retitles done, 0 of 14 merge groups, 0 of 60 archives,
+    /// 0 cases from 487 friction events, $0.36 of $3 spent — closed anyway).
+    #[test]
+    fn left_undone_names_the_unworked_lists_and_is_none_when_worked() {
+        let dir = tempfile::tempdir().unwrap();
+        let night = "2026-10-08";
+        let mut day = ledger::DayLedger {
+            night: night.into(),
+            ..Default::default()
+        };
+        day.tidy.retitle = vec!["facts/a".into(), "facts/b".into()];
+        day.tidy.duplicate_stems = vec![vec!["facts/s-1".into(), "facts/s-2".into()]];
+        day.tidy.archive_by_use = vec!["facts/old".into()];
+        day.tidy.verify_sample = vec!["facts/v".into()];
+        day.ledger.tool_errors.push(agent::LedgerToolError {
+            session: SessionId::new(),
+            turn_id: String::new(),
+            name: "shell".into(),
+            attempt: 1,
+            at: String::new(),
+            output: "boom".into(),
+        });
+        std::fs::create_dir_all(ledger::dir(dir.path())).unwrap();
+        std::fs::write(
+            ledger::path(dir.path(), night),
+            serde_json::to_vec(&day).unwrap(),
+        )
+        .unwrap();
+        let touched = |ids: &[&str]| NightRecord {
+            summary: NightSummary {
+                night: night.into(),
+                started_at: String::new(),
+                finished_at: None,
+                counts: NightCounts::default(),
+                spend_usd: 0.0,
+                mode: "pass".into(),
+                undone: false,
+            },
+            session: None,
+            knowledge: ids
+                .iter()
+                .map(|id| Touched {
+                    id: (*id).into(),
+                    commit_before: "c".into(),
+                    group: "retitle".into(),
+                    undone: false,
+                })
+                .collect(),
+            backups: vec![],
+            phases: vec![],
+            proposals: vec![],
+            sidecars_undone: vec![],
+        };
+        assert_eq!(
+            left_undone(dir.path(), &touched(&["facts/a"])).as_deref(),
+            Some(
+                "1 of 2 retitles, 1 of 1 merge groups, 1 of 1 archive-by-use ids, 1 of 1 verifications, 0 cases from 1 friction events (Mine)"
+            )
+        );
+        // One id of a merge group counts for the group; a filed case settles Mine.
+        let r = touched(&["facts/a", "facts/b", "facts/s-2", "facts/old", "facts/v"]);
+        assert_eq!(
+            left_undone(dir.path(), &r).as_deref(),
+            Some("0 cases from 1 friction events (Mine)")
+        );
+        cases::append(dir.path(), &cases::sample("", "harness"), night).unwrap();
+        assert_eq!(left_undone(dir.path(), &r), None);
+        // No ledger file: nothing to gate on.
+        assert_eq!(left_undone(tempfile::tempdir().unwrap().path(), &r), None);
     }
 }
