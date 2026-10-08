@@ -21,6 +21,8 @@ test.each([
   ['macOS WKWebView', UA.mac, 0, 'macos', 'Mac'],
   ['WebKitGTK', UA.linux, 0, 'linux', 'Linux'],
   ['WebView2', UA.windows, 0, 'windows', 'Windows'],
+  ['WebView2 with touch (touchscreen, RDP touch redirection)', UA.windows, 10, 'windows', 'Windows'],
+  ['WebKitGTK with touch', UA.linux, 10, 'linux', 'Linux'],
   ['iPhone', UA.iphone, 5, 'ios', 'iPhone'],
   ['iPad (Macintosh UA, touch)', UA.mac, 5, 'ios', 'iPad'],
 ] as const)('%s → %s', (_, ua, touchPoints, expected, name) => {

@@ -15,6 +15,13 @@ release-s3.sh. Runs ON the Windows host from the repo root: `just package-window
      zip cached in target/) staged as a Tauri resource that lands beside t.exe in the install dir -
      first in `models::onnx::find_ort_lib`'s search order (<exe dir>\onnxruntime.dll before
      ~/.theuth/models/onnxruntime/). The WebGPU plugin DLLs are not bundled: the app downloads them.
+  3b. 134 W5: crates/desktop/companion-windows/build.ps1 -Configuration Release (dotnet publish, self-contained
+     WinUI 3) -> target/release/companion-windows/Theuth.Companion.exe; the S2 toast smoke
+     (`--probe-notify 3`: Register() + one Show, exit 0) runs on that release output; the folder is staged
+     as the Tauri resource dir `companion/` so NSIS installs %LOCALAPPDATA%\theuth\companion\ (stable path =
+     stable AUMID). Skipped with one line when build.ps1 is absent (the C# app lands from 134 W1).
+     crates/desktop/nsis/hooks.nsh (bundle.windows.nsis.installerHooks) kills a running companion before
+     install/uninstall and deletes HKCU\...\Run\TheuthCompanion on uninstall.
   4. cargo tauri build --config <rendered json>  (target nsis only; crates/desktop/tauri.windows.conf.json:
      currentUser install, WebView2 downloadBootstrapper)
   5. target/release/dist/theuth_<ver>_windows-x86_64-setup.exe
@@ -26,6 +33,7 @@ release-s3.sh on the Mac (cargo tauri signer sign), like the Linux tarballs. Nev
 Host tools: rustup (rust-toolchain.toml picks the channel; MSVC target), cargo-tauri, bun.
 Env:
   THEUTH_SKIP_BUN_INSTALL=1   skip `bun install` (desktop UI and both packages)
+  THEUTH_SKIP_COMPANION_SMOKE=1  stage the companion without running `--probe-notify` on it
 #>
 # Progress lines go to the host on purpose: Build-Helper returns a path through the output stream.
 [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSAvoidUsingWriteHost', '')]
@@ -172,6 +180,26 @@ try {
     [System.IO.Compression.ZipFileExtensions]::ExtractToFile($entry, (Join-Path $Binaries 'onnxruntime.dll'), $true)
 } finally { $archive.Dispose() }
 
+Write-Host "==> [3b/6] companion (Theuth.Companion.exe, 134 W5)"
+$CompanionBuild = Join-Path $Root 'crates/desktop/companion-windows/build.ps1'
+$CompanionOut = Join-Path $Root 'target/release/companion-windows'
+$CompanionExe = Join-Path $CompanionOut 'Theuth.Companion.exe'
+$Companion = $null
+if (Test-Path $CompanionBuild) {
+    Exec 'companion-windows/build.ps1' { pwsh -NoProfile -File $CompanionBuild -Configuration Release }
+    if (-not (Test-Path $CompanionExe)) { Fail "$CompanionExe not produced by build.ps1" }
+    if ($env:THEUTH_SKIP_COMPANION_SMOKE -ne '1') {
+        # S2 on the release publish output (§5.7): Register() must succeed from the layout NSIS will install.
+        $probe = Start-Process -FilePath $CompanionExe -ArgumentList '--probe-notify', '3' -PassThru
+        if (-not $probe.WaitForExit(60000)) { $probe.Kill(); Fail "$CompanionExe --probe-notify 3 did not exit within 60 s" }
+        if ($probe.ExitCode -ne 0) { Fail "$CompanionExe --probe-notify 3 exited $($probe.ExitCode) (Register() smoke)" }
+    }
+    $Companion = $CompanionOut
+    Write-Host ("    {0} files, {1}" -f (Get-ChildItem $CompanionOut -Recurse -File).Count, (Format-Size ((Get-ChildItem $CompanionOut -Recurse -File | Measure-Object Length -Sum).Sum)))
+} else {
+    Write-Host "    skipped: $CompanionBuild not present (134 W1); the installer ships without the companion"
+}
+
 Write-Host "==> [4/6] tauri build (nsis)"
 if ($env:THEUTH_SKIP_BUN_INSTALL -ne '1') {
     Push-Location (Join-Path $Desktop 'ui')
@@ -181,9 +209,13 @@ if ($env:THEUTH_SKIP_BUN_INSTALL -ne '1') {
 # the files); the helper names carry the library hash / protocol version, so the overlay is
 # rendered here - to a file, not inline, so no JSON survives Windows argument quoting.
 $BundleConf = Join-Path $Root 'target/tauri.windows.bundle.conf.json'
+# A directory key under resources is walked and lands under its value (tauri-utils resources.rs:
+# dest.join(path.strip_prefix(dir))), so the ~450-file publish folder becomes $INSTDIR\companion\.
+$resources = @{ 'binaries/onnxruntime.dll' = 'onnxruntime.dll' }
+if ($Companion) { $resources['../../target/release/companion-windows/'] = 'companion/' }
 @{ bundle = @{
     externalBin = @('binaries/t', "binaries/$Helper", "binaries/$DocHelper")
-    resources   = @{ 'binaries/onnxruntime.dll' = 'onnxruntime.dll' }
+    resources   = $resources
 } } | ConvertTo-Json -Depth 4 | Set-Content -Path $BundleConf -Encoding utf8
 if (Test-Path $BundleDir) { Remove-Item $BundleDir -Recurse -Force }
 Push-Location $Desktop
@@ -216,5 +248,6 @@ Write-Host ''
 Write-Host 'done:'
 foreach ($f in @($Setup, $Zip)) { Write-Host ("  {0}  {1}" -f (Format-Size (Get-Item $f).Length), $f) }
 Write-Host "  installer: unsigned NSIS, per-user (%LOCALAPPDATA%\theuth); silent: $($built[0].Name) /S"
+if ($Companion) { Write-Host "  companion: $CompanionExe -> %LOCALAPPDATA%\theuth\companion\ (Run value removed by nsis/hooks.nsh on uninstall)" } else { Write-Host '  companion: not bundled (build.ps1 absent)' }
 Write-Host "  zip: t.exe, $Helper.exe, $DocHelper.exe"
 Write-Host "  .sig files: release-s3.sh (cargo tauri signer sign) on the Mac"

@@ -46,7 +46,7 @@ platform = { workspace = true }
 # Speech model files from the release bucket at start (crates/desktop/src/models.rs).
 reqwest = { workspace = true }
 sha2 = { workspace = true }
-# 130 D10: `theuth://` on the desktop (registered on macOS only, `lib.rs`); same crate the mobile table pins.
+# 130 D10 / 134 D10: `theuth://` on the desktop (registered on macOS and Windows, `lib.rs`); same crate the mobile table pins.
 tauri-plugin-deep-link = "2"
 
 [dev-dependencies]
@@ -74,10 +74,13 @@ objc2-foundation = { workspace = true, features = ["NSURL", "NSError"] }
 libc = { workspace = true }
 
 # Windows only: the island's Win32 styles on the `HWND` `raw_window_handle` yields (58 §6.2). Same
-# `windows-sys` line as `crates/platform`.
+# `windows-sys` line as `crates/platform`. 134 D10 (`companion/windows.rs`): `Win32_System_Threading` for
+# the companion's alive mutex (`OpenMutexW`) and `TerminateProcess`; `tauri-plugin-single-instance` with
+# the `deep-link` bridge because a `theuth://` link starts a second `theuth-desktop.exe` with the URL in argv.
 [target.'cfg(target_os = "windows")'.dependencies]
 raw-window-handle = "0.6"
-windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging"] }
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging", "Win32_System_Threading"] }
+tauri-plugin-single-instance = { version = "2", features = ["deep-link"] }
 
 # iOS only: `UIApplication.beginBackgroundTask` so the relay socket outlives
 # backgrounding for the grace period iOS grants (31 §8), and the scene-configuration /
