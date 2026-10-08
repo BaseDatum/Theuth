@@ -23,6 +23,8 @@ use crate::profile::Profile;
 pub mod detect;
 pub mod export;
 pub mod generator;
+pub mod generator_facts;
+pub mod generator_write;
 pub mod import;
 pub mod skeleton;
 pub mod store;
@@ -40,11 +42,6 @@ pub const CHANGED_ELEMENTS: usize = 200;
 pub const LISTING_SYMBOLS: usize = 50;
 /// Per-call budget of one generator side call (§6.4).
 pub const CALL_BUDGET: std::time::Duration = std::time::Duration::from_secs(120);
-
-/// The typed "not built" error every stub returns until its owner lands.
-pub(crate) fn not_built(f: &str, worker: u8) -> anyhow::Error {
-    anyhow::anyhow!("codemap: {f} not built (147 W{worker})")
-}
 
 /// `cluster:<sha8>` for a model-made group (§4.2): SHA-256 over the member
 /// node ids sorted and joined by `\n`, first 8 hex. Keyed by what it

@@ -240,16 +240,10 @@ async fn stubs_report_their_owner() {
         .await
         .unwrap_err();
     assert!(e.to_string().contains("not indexed"), "{e}");
-    let e = generator::cancel(&ix, Cancel { root: dir.clone() })
-        .await
-        .unwrap_err();
-    assert_eq!(
-        e.to_string(),
-        "codemap: generator::cancel not built (147 W2)"
-    );
+    // W4 built: export refuses an unindexed root the same way (§10.2).
     let e = export::export(&ix, Export { root: dir.clone() })
         .await
         .unwrap_err();
-    assert_eq!(e.to_string(), "codemap: export::export not built (147 W4)");
+    assert!(e.to_string().contains("not indexed"), "{e}");
     let _ = std::fs::remove_dir_all(&dir);
 }

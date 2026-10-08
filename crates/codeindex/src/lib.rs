@@ -35,6 +35,7 @@ pub mod profile;
 pub mod rank;
 pub mod resolve;
 pub mod root;
+pub mod skill;
 pub mod store;
 pub mod tools;
 pub mod walk;
@@ -268,6 +269,10 @@ impl runtime::Plugin for CodeindexPlugin {
             tracing::info!("codeindex disabled by config");
             return Ok(());
         }
+        skill::install(&rt.data_dir).unwrap_or_else(|e| {
+            tracing::warn!("codeindex: bundled skill not written: {e}");
+            false
+        });
         let ix = match Codeindex::new(cfg, &rt.data_dir) {
             Ok(ix) => Arc::new(ix.with_runtime(rt.clone())),
             Err(e) => {
