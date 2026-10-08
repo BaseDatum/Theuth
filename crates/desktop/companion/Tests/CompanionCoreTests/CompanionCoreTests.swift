@@ -156,6 +156,20 @@ struct UndoQueueTests {
         let immediate = zero.tick(now: t0)
         #expect(immediate == "now")
     }
+
+    @Test func holdReArmsTheDelayAndKeepsTheDisplaced() {
+        // Store.hold used to replace the queue to pick up the delay setting, dropping the held action (134 W1 §7.2).
+        var q = UndoQueue<String>(delay: 3)
+        q.hold("first", now: t0)
+        let displaced = q.hold("second", now: t0.addingTimeInterval(1), delay: 1)
+        #expect(displaced == "first", "the earlier answer is committed, never dropped")
+        #expect(q.held?.action == "second")
+        #expect(q.delay == 1)
+        #expect(q.fireAt == t0.addingTimeInterval(2))
+        let third = q.hold("third", now: t0, delay: 9)
+        #expect(third == "second")
+        #expect(q.delay == 5, "clamped like init")
+    }
 }
 
 struct KeyGrammarTests {
@@ -257,7 +271,7 @@ struct CardModelTests {
         #expect(c.options.map(\.label) == ["Open a PR", "Fix the CLI"])
         #expect(c.recommended?.action == .sendNextStep(session: "s4", text: "Open a PR"))
         let hire = Card.make(item: item("hire:x", .hire, agent: "x"))
-        #expect(hire.options.isEmpty)
+        #expect(hire.options.map(\.label) == ["Hire", "Decline"])
         #expect(!(hire.clearable))
         #expect(hire.attentionURL.absoluteString == "theuth://attention/hire:x")
         #expect(Card.make(item: item("show:1", .show)).clearable)

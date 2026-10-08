@@ -44,8 +44,7 @@ final class Store: ObservableObject {
     private var refetchTimer: Timer?
     private var tickTimer: Timer?
     private var receiptTimer: Timer?
-    private var fetching = false
-    private var fetchAgain = false
+    private var fetchGate = FetchGate()
 
     /// Hooks the panel controller sets.
     var onCloseRequest: (() -> Void)?
@@ -108,11 +107,10 @@ final class Store: ObservableObject {
         }
     }
 
+    /// The three lists at once, then the packets; one in flight, a request during it runs once after it.
     func refetch() {
-        if fetching { fetchAgain = true; return }
-        fetching = true
+        guard fetchGate.begin() else { return }
         Task {
-            defer { fetching = false }
             do {
                 async let a = client.attentionList()
                 async let g = client.agentsList()
@@ -124,7 +122,7 @@ final class Store: ObservableObject {
             } catch {
                 Log.write("refetch failed: \(error)")
             }
-            if fetchAgain { fetchAgain = false; refetch() }
+            if fetchGate.end() { refetch() }
         }
     }
 
@@ -210,9 +208,10 @@ final class Store: ObservableObject {
         hold(Held(itemId: c.item.id, who: c.who, label: "sent back", action: .reviewSendBackNote(task: task, note: text)))
     }
 
+    /// Hold `h` for the undo delay, then commit it. A hold while another is held commits the displaced one at
+    /// once (130 §5.4); the delay setting is read at every hold.
     func hold(_ h: Held) {
-        undo = UndoQueue(delay: Settings.undoDelay)
-        if let displaced = undo.hold(h, now: Date()) { commit(displaced) }
+        if let displaced = undo.hold(h, now: Date(), delay: Settings.undoDelay) { commit(displaced) }
         receipt = .holding(h)
         receiptTimer?.invalidate()
         tickTimer?.invalidate()
@@ -240,37 +239,20 @@ final class Store: ObservableObject {
     private func commit(_ h: Held) {
         Task {
             if case .askTheuth(let text) = h.action { return await commitAsk(text) }
-            do {
-                let latest = try await client.attentionList()
-                guard StaleGuard.allows(id: h.itemId, latest: latest) else {
-                    receipt = .stale
-                    apply(items: latest, agents: agents, activity: activity)
-                    return expireReceipt(after: 3)
-                }
-                var ok = true
-                switch h.action {
-                case .answerAsk(let id, let answers): ok = try await client.answerAsk(id: id, answers: answers)
-                case .decide(let decision, let answer): try await client.taskDecide(decision: decision, answer: answer)
-                case .approve(let id, let decision): ok = try await client.resolveApproval(id: id, decision: decision)
-                case .reviewApprove(let task): try await client.taskMove(id: task, state: "done", note: nil)
-                case .reviewSendBackNote(let task, let note): try await client.taskMove(id: task, state: "todo", note: note)
-                case .reviewSendBack: return
-                case .sendNextStep(let session, let text):
-                    _ = try await client.sendInput(session: session, text: text)
-                    try await client.attentionDismiss(id: h.itemId)
-                case .dismiss(let id): try await client.attentionDismiss(id: id)
-                case .snooze(let id):
-                    let until = UInt64((Date().timeIntervalSince1970 + KeyGrammar.snoozeInterval) * 1000)
-                    try await client.attentionSnooze(id: id, untilMs: until)
-                case .denyWithNote(let id, let session, let note):
-                    ok = try await client.resolveApproval(id: id, decision: .deny)
-                    if ok, let session { _ = try await client.steer(session: session, text: note) }
-                case .askTheuth: return
-                }
-                receipt = ok ? .sent("\(h.who) · \(h.label)") : .stale
-                Log.write("committed \(h.action) ok=\(ok)")
-            } catch {
-                receipt = .failed("\(error)")
+            switch await Commit.run(itemId: h.itemId, action: h.action, engine: client, now: Date()) {
+            case .skipped: return
+            case .gone(let latest):
+                receipt = .stale
+                apply(items: latest, agents: agents, activity: activity)
+                return expireReceipt(after: 3)
+            case .sent:
+                receipt = .sent("\(h.who) · \(h.label)")
+                Log.write("committed \(h.action) ok=true")
+            case .stale:
+                receipt = .stale
+                Log.write("committed \(h.action) ok=false")
+            case .failed(let error):
+                receipt = .failed(error)
                 Log.write("commit failed: \(error)")
             }
             refetch()

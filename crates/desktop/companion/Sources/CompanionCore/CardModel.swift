@@ -17,6 +17,12 @@ public enum CardAction: Equatable, Sendable {
     case denyWithNote(approvalId: String, session: String?, note: String)
     /// W3 Ask bar: `send_input(theuth's desk, text)` after the hold; no item, so no stale guard.
     case askTheuth(text: String)
+    /// 130 §4.2 per-kind table — Hire: `agent_approve(name)` (the engine stamps the actor, E4).
+    case hireAgent(name: String)
+    /// Hire → Decline: `agent_remove(name, null)`.
+    case declineHire(name: String)
+    /// Blocked → Unblock: `task_move(task, todo)` (the ledger allows blocked → todo).
+    case unblock(task: String)
     /// Not sendable yet: the app must collect the note and hold `.reviewSendBackNote` instead.
     public var needsNote: Bool {
         if case .reviewSendBack = self { return true }
@@ -121,6 +127,17 @@ public struct Card: Equatable, Sendable {
                     CardOption(key: i + 1, label: t, detail: nil, recommended: i == 0, action: .sendNextStep(session: s, text: t))
                 }
             }
+        case .hire:
+            // 130 §4.2: Hire · Decline (· Open = O, as on every card). No pre-pick: a hire spends budget (P13).
+            guard let name = item.agent else { return card }
+            card.options = [
+                CardOption(key: 1, label: "Hire", detail: nil, recommended: false, action: .hireAgent(name: name)),
+                CardOption(key: 2, label: "Decline", detail: nil, recommended: false, action: .declineHire(name: name)),
+            ]
+        case .blocked:
+            // 130 §4.2: "one line + Open in theuth (and Unblock …)"; a decision blocker is the decision kind.
+            guard let task = item.task, item.decision == nil else { return card }
+            card.options = [CardOption(key: 1, label: "Unblock", detail: "back to todo", recommended: false, action: .unblock(task: task))]
         case .show:
             card.clearable = true
         default:
