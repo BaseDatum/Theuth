@@ -1297,16 +1297,24 @@ pub(crate) async fn scored_sample(
     };
     let id = env.store.insert_sample(req.slug, &pending).await?;
     let (slug, n) = (req.slug.to_owned(), req.n);
+    // `runner::sample` writes `runs/<n>/sample-<k>.log`; its tail is the Study view's live tail.
+    let log = req.runs_dir.join(format!("sample-{}.log", req.k));
     let fut = bench_sample(env, spec, req, cancel);
     tokio::pin!(fut);
     let mut tick = tokio::time::interval(SAMPLE_TICK);
     tick.tick().await;
+    let mut last_tail = String::new();
     let r = loop {
         tokio::select! {
             r = &mut fut => break r,
             _ = tick.tick() => {
+                // R-87: push only when the tail moved (the UI refetches the detail on progress).
                 if let Some(t) = ticks {
-                    progress(env, &slug, n, t.started_at, Phase::Sampling, t.sample, t.of).await;
+                    let tail = env.backend.tail(&log);
+                    if tail != last_tail {
+                        last_tail = tail;
+                        progress(env, &slug, n, t.started_at, Phase::Sampling, t.sample, t.of).await;
+                    }
                 }
             }
         }
@@ -1505,22 +1513,22 @@ pub fn result_card(
             "columns": ["changeset", "Δ alone", "Δ together", "files", "branch"], "rows": rows } });
     }
     elements["c"] = serde_json::json!({ "type": "Card", "props": { "title": format!("Study {} finished", study.slug) }, "children": children });
-    // A report document links as a note; a file-path fallback (no documents actor) is only named.
+    // `report_doc` is a document id (R-98: `None` when finalize had no documents actor).
     let report = study
         .report_doc
         .as_deref()
         .map(|d| {
-            let doc = if d.starts_with('/') {
-                format!("`{d}`")
-            } else {
-                format!("[/notes/{d}](/notes/{d})")
-            };
             format!(
-                "\n\nReport: {doc} · Study view: [/autoresearch/{slug}](/autoresearch/{slug})",
+                "\n\nReport: [/notes/{d}](/notes/{d}) · Study view: [/autoresearch/{slug}](/autoresearch/{slug})",
                 slug = study.slug
             )
         })
-        .unwrap_or_default();
+        .unwrap_or_else(|| {
+            format!(
+                "\n\nStudy view: [/autoresearch/{slug}](/autoresearch/{slug})",
+                slug = study.slug
+            )
+        });
     let holdout = headline
         .holdout
         .as_deref()
@@ -1852,6 +1860,12 @@ async fn baseline(
         match s.value {
             Some(_) if s.noisy => noisy += 1,
             Some(v) => values.push(v),
+            None if s.lost || cancel.is_cancelled() => {
+                // R-85: Stop now while preparing cancels the baseline; the card says so.
+                return Err(Error::refused(
+                    "stopped by you while the baseline was measured; nothing was kept",
+                ));
+            }
             None => {
                 let tail = s
                     .log_path
@@ -3769,10 +3783,13 @@ pub async fn finalize_task(env: Env, slug: String) {
             if let Err(e) = report_turn(&env, &study, &doc).await {
                 tracing::warn!(%slug, "report prose not written (tables stand): {e}");
             }
+            // R-98: `report_doc` is a document id or nothing — finalize's file-path fallback
+            // (no documents actor) is not a document the UI can open.
+            let report_doc = (!doc.starts_with('/')).then(|| doc.clone());
             let p = StudyPatch {
                 state: Some(StudyState::Finished),
                 finished_at: Some(now()),
-                report_doc: Some(doc.clone()),
+                report_doc: report_doc.clone(),
                 ..StudyPatch::default()
             };
             match env.store.patch_study(&slug, &p).await {
@@ -3799,7 +3816,7 @@ pub async fn finalize_task(env: Env, slug: String) {
                 slug: slug.clone(),
                 reason,
                 headline: headline.text,
-                report_doc: doc,
+                report_doc: report_doc.unwrap_or_default(),
             })
             .await;
         }

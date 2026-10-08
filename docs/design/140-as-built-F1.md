@@ -129,3 +129,15 @@ Branch `feat/140-f1`, cut from the integration head 78411fb3. Work list: `~/.the
 - **F3 (`tools.rs`, `study_draft.rs`)**: R-10; R-11 the "include my uncommitted changes" choice sets `StudySpec.include_dirty`.
 - **F3 (`brief.rs`)**: R-3 `n_i` and line 595's incumbent read must skip `SampleRole::Holdout` (use `actor::bench_values`); R-75 the advisor clause.
 - **F3 (UI)**: R-87 live tail (progress events now tick every 3 s while sampling); R-89 `holdoutSummary` over the per-`n` points.
+
+## R1 (orchestrator 17:55, hand-offs from F3)
+
+| item | disposition |
+|---|---|
+| R-3 actor side | already in the first round: every incumbent read goes through `incumbent_samples` / `bench_values` (x̄_i, n_i, guards, verdict line, `cases_moved` in `RunReport` and `ExperimentDetail`); `StudyInfo.incumbent.mean` is the ledger's `incumbent_mean`, written only from bench values |
+| R-85 | the actor **accepts** StopNow while `preparing`: the baseline is cancelled and the study ends `failed` with the explicit reason "stopped by you while the baseline was measured; nothing was kept" (`baseline` distinguishes a cancelled/lost sample from a crash); test `stop_now_while_preparing_cancels_the_baseline` |
+| R-87 | `scored_sample` now reads the running sample's log tail every 3 s and publishes `ExperimentProgress` only when the tail changed (not on a fixed cadence); the UI's 2 s poll can go once it subscribes |
+| R-96 | done in the first round (the " · Restore" suffix is gone from `needs_eyes`) |
+| R-98 | `report_doc` stays `None` when finalize returned a file path (no documents actor); `StudyFinished.report_doc` is `""` then; the result card links the note only when there is one; test `report_doc_is_none_when_finalize_has_no_document` |
+
+Gates re-run after `touch crates/autoresearch/src/lib.rs`: `cargo test -p autoresearch` 129 passed / 0 failed; clippy `-D warnings` clean; rustfmt clean.

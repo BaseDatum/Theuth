@@ -43,6 +43,8 @@ struct Fake {
     confirm_once: Mutex<Option<GateStep>>,
     tried: Mutex<Vec<(u32, String)>>,
     custody_from: Mutex<Vec<std::path::PathBuf>>,
+    /// What `finalize` returns as the report document (a path = the no-documents-actor fallback).
+    doc: Mutex<String>,
 }
 
 impl Default for Fake {
@@ -72,6 +74,7 @@ impl Default for Fake {
             confirm_once: Default::default(),
             tried: Default::default(),
             custody_from: Default::default(),
+            doc: Mutex::new("doc-1".into()),
         }
     }
 }
@@ -343,14 +346,15 @@ impl Backend for Fake {
         let rows = store.list_experiments(&study.slug, None, u32::MAX).await?;
         let report =
             crate::finalize::assemble(study, reason, headline.clone(), vec![], &rows, vec![]);
+        let doc = self.doc.lock().clone();
         store
             .append_event(
                 &study.slug,
                 crate::finalize::EVENT,
-                &serde_json::json!({ "step": "report", "doc": "doc-1", "report": report }),
+                &serde_json::json!({ "step": "report", "doc": doc, "report": report }),
             )
             .await?;
-        Ok((headline, "doc-1".into()))
+        Ok((headline, doc))
     }
     async fn report_prose(
         &self,
@@ -2378,6 +2382,76 @@ async fn create_and_discard_use_the_worktree_and_the_repo_cleanup() {
         .await
         .unwrap();
     assert_eq!(ev[0].payload["removed"][0], "autoresearch/t1");
+}
+
+/// R-85: Stop now while preparing cancels the baseline with an explicit reason.
+#[tokio::test]
+async fn stop_now_while_preparing_cancels_the_baseline() {
+    let fake = Fake::with_values(&[100.0, 100.0, 100.0]);
+    let mut h = harness(fake.clone(), AutoresearchConfig::default()).await;
+    fake.hang.store(true, std::sync::atomic::Ordering::SeqCst);
+    let sp = spec(&h, "t1", 10);
+    create(
+        &mut h.studies,
+        Create {
+            spec: sp,
+            origin: SessionId::new(),
+            start: StartWhen::Now,
+        },
+    )
+    .await
+    .unwrap();
+    for _ in 0..200 {
+        if *fake.samples_taken.lock() > 0 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    let i = control(
+        &mut h.studies,
+        Control {
+            slug: "t1".into(),
+            op: ControlOp::StopNow,
+            by: By::User,
+        },
+    )
+    .await
+    .unwrap();
+    assert!(matches!(
+        i.state,
+        StudyState::Preparing | StudyState::Failed { .. }
+    ));
+    let s = wait_state(&h.studies.store, "t1", |s| {
+        matches!(s, StudyState::Failed { .. })
+    })
+    .await;
+    let StudyState::Failed { reason } = s.state else {
+        unreachable!()
+    };
+    assert!(
+        reason.contains("stopped by you while the baseline"),
+        "{reason}"
+    );
+}
+
+/// R-98: a file-path fallback from finalize is not a document id.
+#[tokio::test]
+async fn report_doc_is_none_when_finalize_has_no_document() {
+    let fake = Fake::with_values(&[100.0, 100.0, 100.0, 95.0]);
+    *fake.doc.lock() = "/tmp/t1/report.md".into();
+    let mut h = harness(fake.clone(), AutoresearchConfig::default()).await;
+    let session = started(&mut h, "t1", 1).await;
+    begin(&mut h.studies, b(session)).await.unwrap();
+    fake.decide(Verdict::Improved, 5.0, 4.0);
+    run(&mut h.studies, r(session, "x")).await.unwrap();
+    log(&mut h.studies, l(session, Decision::Auto))
+        .await
+        .unwrap();
+    binding::on_turn_finished(&mut h.studies, session)
+        .await
+        .unwrap();
+    let s = wait_state(&h.studies.store, "t1", |s| *s == StudyState::Finished).await;
+    assert_eq!(s.report_doc, None);
 }
 
 #[tokio::test]
