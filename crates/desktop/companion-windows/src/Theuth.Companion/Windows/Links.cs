@@ -37,6 +37,33 @@ internal static class Links
     }
 
     /// <summary>
+    /// Tray › Quit theuth (Swift W7 parity: "the whole app, one quit"). When the main app runs in this session, ask it to
+    /// quit through <c>theuth://quit</c> — the shell's quit handshake shuts its engine down and then closes this companion
+    /// (<c>WM_CLOSE</c> to the rail class, §5.5). False when the main app is not running or the link could not be opened;
+    /// the caller then quits the companion itself.
+    /// </summary>
+    public static bool QuitTheuth()
+    {
+        int session = Process.GetCurrentProcess().SessionId;
+        if (!Process.GetProcessesByName("theuth-desktop").Any(p => p.SessionId == session))
+        {
+            Log.Write("quit theuth: the main app is not running; quitting the companion");
+            return false;
+        }
+        try
+        {
+            Process.Start(new ProcessStartInfo("theuth://quit") { UseShellExecute = true });
+            Log.Write("quit theuth requested -> theuth://quit");
+            return true;
+        }
+        catch (Exception e)
+        {
+            Log.Write($"quit theuth: theuth://quit failed: {e.GetType().Name}: {e.Message}");
+            return false;
+        }
+    }
+
+    /// <summary>
     /// Tray › Open theuth (Swift W7): the main app shows the view it had open last — start <c>theuth-desktop.exe</c> beside
     /// the <c>companion\</c> folder (the shell's single-instance plugin brings a running one forward); <c>theuth://new</c>
     /// only when it cannot be found.

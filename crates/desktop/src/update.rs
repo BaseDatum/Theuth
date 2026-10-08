@@ -125,12 +125,16 @@ pub fn exit(app: &AppHandle) {
     }
 }
 
-/// `RunEvent::Exit`, after `Launch::shutdown()`: swap the bundle (39 §3.3).
+/// `RunEvent::Exit`, after `Launch::shutdown()`: swap the bundle (39 §3.3). 134 D10: the companion goes
+/// first — on Windows `install` starts the NSIS setup (`/UPDATE`, in-place copy over `companion\`) and
+/// `process::exit(0)`s, and a running `Theuth.Companion.exe` would lock every file under it. Idempotent
+/// after the `RunEvent::Exit` call.
 pub fn install_pending(app: &AppHandle) {
     let pending = app.state::<Pending>();
     let Some((update, bytes)) = pending.update.lock().ok().and_then(|mut p| p.take()) else {
         return;
     };
+    crate::companion::terminate();
     match update.install(&bytes) {
         Ok(()) => tracing::info!("update: installed {}", update.version),
         Err(e) => tracing::error!("update: install: {e}"),
