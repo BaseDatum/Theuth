@@ -89,19 +89,20 @@ export const pauseUntil = (now: Date, days = PAUSE_DAYS): string => new Date(now
 export const isPaused = (pausedUntil: string | null, now: Date): boolean => pausedUntil !== null && new Date(pausedUntil).getTime() > now.getTime()
 
 /**
- * Why Dream now cannot run right now (R-46), for the button's `disabled` + `title`; `null` when it can. Config off beats
- * the routine switch beats the pause beats a running night.
+ * Why Dream now cannot run right now (R-46), as the tail of "Dream now is unavailable: …" for the button's tooltip and
+ * the note under the status card; `null` when it can. Config off beats the routine switch beats the pause beats a running night.
  */
 export function dreamNowBlocker(
   s: { enabled: boolean; routineEnabled: boolean | undefined; pausedUntil: string | null; running: boolean },
   now: Date,
 ): string | null {
-  if (!s.enabled) return 'Dreaming is off in config (dreaming.enabled: false).'
-  if (s.routineEnabled === false) return 'The dreaming routine is off; turn it on first.'
-  if (isPaused(s.pausedUntil, now)) return `Dreaming is paused until ${new Date(s.pausedUntil as string).toLocaleDateString()}; resume it first.`
-  if (s.running) return 'A night is already running.'
+  if (!s.enabled) return 'dreaming is off in config (dreaming.enabled: false)'
+  if (s.routineEnabled === false) return 'the dreaming routine is switched off'
+  if (isPaused(s.pausedUntil, now)) return `dreaming is paused until ${new Date(s.pausedUntil as string).toLocaleDateString()}`
+  if (s.running) return 'a night is already running'
   return null
 }
+export const dreamNowUnavailable = (blocker: string): string => `Dream now is unavailable: ${blocker}.`
 
 /** One edit of Settings › Dreaming; `set_settings` takes the whole object, so the reducer produces it. */
 export type SettingsChange =

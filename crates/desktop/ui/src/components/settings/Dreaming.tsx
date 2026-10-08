@@ -45,6 +45,7 @@ import {
   budgetFromInput,
   countsLine,
   dreamNowBlocker,
+  dreamNowUnavailable,
   isPaused,
   nightText,
   parseDigest,
@@ -111,6 +112,7 @@ export function Dreaming() {
             </Stat>
           </dl>
         )}
+        {blocker && <p className="mt-2 text-[13px] text-fg-tertiary">{dreamNowUnavailable(blocker)}</p>}
         <Row
           label="Enabled"
           description={
@@ -305,12 +307,7 @@ function DreamNow({ blocker, defaultBudget }: { blocker: string | null; defaultB
   const ok = amount !== null
   return (
     <>
-      {blocker && (
-        <span className="max-w-40 truncate text-[13px] text-fg-tertiary md:max-w-none" title={blocker}>
-          {blocker}
-        </span>
-      )}
-      <span title={blocker ?? undefined}>
+      <span title={blocker ? dreamNowUnavailable(blocker) : undefined}>
         <Button
           size="sm"
           disabled={blocker !== null}

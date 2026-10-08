@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'vitest'
 import { FIXTURES, NIGHT, QUIET_NIGHT, RESOLVED, RUNNING_NIGHT, SETTINGS, UNDONE_NIGHT } from '@/dev/dreaming-fixture'
-import { BUDGET_PROBLEM, MAX_BUDGET_USD, budgetFromInput, countsLine, dreamNowBlocker, formatDigest, isPaused, nightLine, nightText, parseDigest, pauseUntil, reduceSettings, resolvedDefault, undoLine, usd } from './dreaming'
+import { BUDGET_PROBLEM, MAX_BUDGET_USD, budgetFromInput, countsLine, dreamNowBlocker, dreamNowUnavailable, formatDigest, isPaused, nightLine, nightText, parseDigest, pauseUntil, reduceSettings, resolvedDefault, undoLine, usd } from './dreaming'
 
 describe('formatting', () => {
   test('counts line omits zeros, pluralises, and says so when nothing happened', () => {
@@ -110,10 +110,11 @@ describe('dreamNowBlocker (R-46)', () => {
     expect(dreamNowBlocker(live, now)).toBeNull()
     expect(dreamNowBlocker({ ...live, routineEnabled: undefined }, now)).toBeNull()
     expect(dreamNowBlocker({ ...live, enabled: false }, now)).toMatch(/off in config/)
-    expect(dreamNowBlocker({ ...live, routineEnabled: false }, now)).toMatch(/routine is off/)
-    expect(dreamNowBlocker({ ...live, pausedUntil: '2026-10-13T12:00:00Z' }, now)).toMatch(/^Dreaming is paused until /)
+    expect(dreamNowBlocker({ ...live, routineEnabled: false }, now)).toMatch(/routine is switched off/)
+    expect(dreamNowBlocker({ ...live, pausedUntil: '2026-10-13T12:00:00Z' }, now)).toMatch(/^dreaming is paused until /)
     expect(dreamNowBlocker({ ...live, pausedUntil: '2026-10-01T12:00:00Z' }, now)).toBeNull()
-    expect(dreamNowBlocker({ ...live, running: true }, now)).toBe('A night is already running.')
+    expect(dreamNowBlocker({ ...live, running: true }, now)).toBe('a night is already running')
+    expect(dreamNowUnavailable('a night is already running')).toBe('Dream now is unavailable: a night is already running.')
     expect(dreamNowBlocker({ ...live, enabled: false, running: true }, now)).toMatch(/off in config/)
   })
 })
