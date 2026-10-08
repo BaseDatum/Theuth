@@ -1092,9 +1092,7 @@ mod tests {
                 retention: tools::Retention::Durable,
                 generation: 1,
             }),
-            ..cx(false),
-            cancel: tools::CancellationToken::new(),
-            promote_after: None,
+            ..cx(false)
         };
         k.register_consolidating_session(night.session);
         let tool = VerifyTool(k.clone());
