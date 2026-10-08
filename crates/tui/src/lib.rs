@@ -372,10 +372,18 @@ async fn execute(api: &Engine, cmd: Command, tx: &UnboundedSender<UiEvent>) -> a
             session,
             text,
             files,
+            draft,
         } => {
-            let r = msg(api
-                .send_input(session, text.clone(), files, None, None)
-                .await);
+            let session = match draft {
+                Some(d) => open_draft(api, d, tx).await.map(Some),
+                None => Ok(session),
+            };
+            let r = match session {
+                Ok(session) => msg(api
+                    .send_input(session, text.clone(), files, None, None)
+                    .await),
+                Err(e) => Err(e),
+            };
             if r.is_err() {
                 let _ = tx.send(UiEvent::Unsent { id: None, text });
             }
@@ -663,13 +671,12 @@ async fn execute(api: &Engine, cmd: Command, tx: &UnboundedSender<UiEvent>) -> a
             }
         }
         Command::ListModels => UiEvent::Models(msg(api.list_models().await)?),
+        // 148 R1: this session only; the default is the Settings UI's to set.
         Command::SetModel { session, model } => {
-            // A pick in this TUI's picker or `/model`: manual, so also the default (82 §2).
-            UiEvent::ModelSet(msg(api.set_model(session, model, Some(true)).await)?)
+            UiEvent::ModelSet(msg(api.set_model(Some(session), model, None).await)?)
         }
         Command::SetEffort { session, effort } => {
-            // A pick in this TUI's picker or `/effort`: manual, so also the default (83 §2).
-            msg(api.set_effort(session, effort.clone(), Some(true)).await)?;
+            msg(api.set_effort(Some(session), effort.clone(), None).await)?;
             UiEvent::EffortSet(effort)
         }
         // 125 §7.1: `None` model = off; both replies carry the same status.
@@ -724,10 +731,12 @@ async fn execute(api: &Engine, cmd: Command, tx: &UnboundedSender<UiEvent>) -> a
             session,
             tools,
             hidden,
+            draft,
         } => {
-            let session = match session {
-                Some(s) => s,
-                None => {
+            let session = match (session, draft) {
+                (Some(s), _) => s,
+                (None, Some(d)) => open_draft(api, d, tx).await?,
+                (None, None) => {
                     let s = msg(api.new_session().await)?;
                     let _ = tx.send(UiEvent::SessionCreated(s));
                     s
@@ -791,7 +800,14 @@ async fn execute(api: &Engine, cmd: Command, tx: &UnboundedSender<UiEvent>) -> a
             session,
             name,
             args,
-        } => UiEvent::SessionCreated(msg(api.use_skill(session, name, args).await)?),
+            draft,
+        } => {
+            let session = match draft {
+                Some(d) => Some(open_draft(api, d, tx).await?),
+                None => session,
+            };
+            UiEvent::SessionCreated(msg(api.use_skill(session, name, args).await)?)
+        }
         Command::AddSkillRepo(url) => {
             UiEvent::SkillsAdded(msg(api.add_skill_repo(url, None).await)?)
         }
@@ -1073,7 +1089,7 @@ async fn execute(api: &Engine, cmd: Command, tx: &UnboundedSender<UiEvent>) -> a
             msg(api.dictation_stop(id).await)?;
             return Ok(());
         }
-        Command::TalkStart(session) => start_talk(api, session, tx).await,
+        Command::TalkStart { session, draft } => start_talk(api, session, draft, tx).await,
         Command::TalkStop(id) if talk_sim() => UiEvent::Talk(::talk::TalkEvent::TalkFinished {
             id,
             reason: ::talk::EndReason::Stopped,
@@ -1087,21 +1103,33 @@ async fn execute(api: &Engine, cmd: Command, tx: &UnboundedSender<UiEvent>) -> a
     Ok(())
 }
 
-/// `/talk` (76 §5.1): with no session, create one first — the model adopts it
-/// through `SessionOpened` before the talk id arrives — then `talk_start` with
-/// `sink: device`. `THEUTH_TALK_SIM` set: the scripted [`talk::sim`] stands in
-/// for the engine (the brief's development source).
+/// 148 R1: a draft with a pending model or effort opens its session through
+/// `create_session` (the picks ride on the options, never the default); the
+/// UI adopts it through `SessionCreated` before the command's own reply.
+async fn open_draft(
+    api: &Engine,
+    draft: agent::CreateSessionOptions,
+    tx: &UnboundedSender<UiEvent>,
+) -> anyhow::Result<SessionId> {
+    let s = msg(api.create_session(draft).await)?.session;
+    let _ = tx.send(UiEvent::SessionCreated(s));
+    Ok(s)
+}
+
+/// `/talk` (76 §5.1): with no session, create one first (on the draft's
+/// picks, 148 R1) — the model adopts it through `SessionOpened` before the
+/// talk id arrives — then `talk_start` with `sink: device`. `THEUTH_TALK_SIM`
+/// set: the scripted [`talk::sim`] stands in for the engine (the brief's
+/// development source).
 async fn start_talk(
     api: &Engine,
     session: Option<SessionId>,
+    draft: Option<agent::CreateSessionOptions>,
     tx: &UnboundedSender<UiEvent>,
 ) -> UiEvent {
     let session = match session {
         Some(s) => s,
-        None => match api
-            .create_session(agent::CreateSessionOptions::default())
-            .await
-        {
+        None => match api.create_session(draft.unwrap_or_default()).await {
             Ok(open) => {
                 let s = open.session;
                 let _ = tx.send(UiEvent::SessionOpened(open));
