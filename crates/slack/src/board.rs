@@ -5,7 +5,7 @@
 use std::fmt::Write as _;
 use std::time::{Duration, Instant};
 
-use agent::{AgentEvent, AgentInfo, AgentState};
+use agent::{AgentEvent, AgentInfo, AgentState, ObservedMeta, ObservedSource, ObservedState};
 use runtime::SessionId;
 
 /// Rows shown before `… n more`.
@@ -82,6 +82,9 @@ pub struct Row {
     pub since: Instant,
     /// Permalink of the child's thread, once known.
     pub link: Option<String>,
+    /// 141 §10.2: a watch-only harness subagent — its source tag (`omp task`
+    /// / `opencode` / `ACP`); the glyph is `◎` and there is no thread.
+    pub watch: Option<&'static str>,
 }
 
 impl Row {
@@ -101,6 +104,7 @@ impl Row {
             detail: String::new(),
             since: Instant::now(),
             link,
+            watch: None,
         }
     }
 
@@ -149,6 +153,33 @@ impl Row {
         }
     }
 
+    /// 141 §10.2: an `ObservedChildChanged` for this child — the `◎` row's
+    /// state from the harness's word for it, detail `watch · <src>` plus the
+    /// last intent when the source reports one. `true` when the row changed.
+    pub fn observed(&mut self, o: &ObservedMeta) -> bool {
+        let tag = match o.source {
+            ObservedSource::Rfd => "ACP",
+            ObservedSource::OpencodeExt | ObservedSource::OpencodeTask => "opencode",
+            ObservedSource::OmpTask => "omp task",
+        };
+        let was = self.watch.replace(tag);
+        let (state, note) = match o.state {
+            ObservedState::Running => (State::Running, None),
+            ObservedState::RequiresAction => (State::Approval, None),
+            ObservedState::Failed => (State::Error, o.stop.as_deref()),
+            ObservedState::Cancelled => (State::Cancelled, None),
+            ObservedState::Unknown => (State::Error, Some("lost contact")),
+            ObservedState::Pending | ObservedState::Idle | ObservedState::Completed => {
+                (State::Idle, None)
+            }
+        };
+        let mut detail = format!("watch · {tag}");
+        if let Some(more) = note.or_else(|| o.detail["lastIntent"].as_str()) {
+            let _ = write!(detail, " · {more}");
+        }
+        self.set(state, cut(&detail, DETAIL_MAX)) || was.is_none()
+    }
+
     /// Rebuild from `list_agents` after a restart: state and detail from the
     /// live `AgentState` and `last`, age from `started_at` (running) or
     /// `finished_at` (otherwise).
@@ -179,6 +210,9 @@ impl Row {
             .and_then(|t| (chrono::Utc::now() - t).to_std().ok())
             .and_then(|ago| now.checked_sub(ago))
             .unwrap_or(now);
+        if let Some(o) = &info.observed {
+            self.observed(o);
+        }
     }
 
     fn set(&mut self, state: State, detail: String) -> bool {
@@ -198,7 +232,7 @@ impl Row {
             out,
             "{:indent$}{} {:<14} {:<9} {:<40} {:>6}",
             "",
-            self.state.glyph(),
+            self.watch.map_or_else(|| self.state.glyph(), |_| "◎"),
             self.name,
             self.state.word(),
             self.detail,
@@ -453,6 +487,94 @@ mod tests {
         };
         r.seed(&info);
         assert_eq!((r.state, r.detail.as_str()), (State::Approval, "shell …"));
+    }
+
+    /// 141 §10.2: watch-only rows render `◎ name <state> watch · <src> [· more]`;
+    /// the harness's state word maps onto the board's (failed/lost linger
+    /// as errors, done is idle), and a seed from `list_agents` carries it.
+    #[test]
+    fn observed_rows_are_watch_rows() {
+        let meta = |state, stop: Option<&str>| ObservedMeta {
+            source: ObservedSource::OmpTask,
+            external: "ReadA".into(),
+            state,
+            stop: stop.map(str::to_owned),
+            can_cancel: false,
+            description: None,
+            tool_call: None,
+            cost_rule: agent::CostRule::Counted,
+            detail: json!({ "lastIntent": "Reading first line" }),
+        };
+        let mut r = row("ReadA");
+        assert!(
+            r.observed(&meta(ObservedState::Pending, None)),
+            "first sight changes the row"
+        );
+        assert_eq!(r.state, State::Idle);
+        assert!(r.observed(&meta(ObservedState::Running, None)));
+        let line = render(&[r.clone()], Instant::now());
+        assert!(
+            line.lines()
+                .nth(1)
+                .unwrap()
+                .starts_with("◎ ReadA          running   watch · omp task · Reading first line"),
+            "{line}"
+        );
+        assert!(
+            !r.observed(&meta(ObservedState::Running, None)),
+            "no change twice"
+        );
+        assert!(r.observed(&meta(ObservedState::Failed, Some("rate limited"))));
+        assert_eq!(
+            (r.state, r.detail.as_str()),
+            (State::Error, "watch · omp task · rate limited")
+        );
+        assert!(r.observed(&meta(ObservedState::Unknown, None)));
+        assert_eq!(r.detail, "watch · omp task · lost contact");
+        assert!(r.observed(&meta(ObservedState::RequiresAction, None)));
+        assert_eq!(r.state, State::Approval);
+        assert!(r.observed(&meta(ObservedState::Completed, None)));
+        assert_eq!(r.state, State::Idle);
+        assert_eq!(render(&[r], Instant::now()), "**agents** · all idle");
+
+        let mut r = row("x");
+        let mut info = AgentInfo {
+            id: r.session,
+            name: "ReadB".into(),
+            parent: SessionId::new(),
+            depth: 1,
+            agent: None,
+            model: "m".into(),
+            state: AgentState::Running,
+            started_at: None,
+            finished_at: None,
+            last: String::new(),
+            project: None,
+            retention: agent::Retention::Durable,
+            activity: Default::default(),
+            cap: None,
+            kind: agent::SessionKind::Observed,
+            observed: Some(ObservedMeta {
+                source: ObservedSource::OpencodeExt,
+                ..meta(ObservedState::Running, None)
+            }),
+        };
+        r.seed(&info);
+        assert_eq!(
+            (r.watch, r.state, r.detail.as_str()),
+            (
+                Some("opencode"),
+                State::Running,
+                "watch · opencode · Reading first line"
+            )
+        );
+        info.observed = None;
+        r.seed(&info);
+        assert_eq!(
+            r.watch,
+            Some("opencode"),
+            "a seed without meta leaves the tag"
+        );
     }
 
     #[test]
