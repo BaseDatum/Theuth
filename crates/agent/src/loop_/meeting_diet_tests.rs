@@ -82,7 +82,7 @@ async fn diet_scenarios() {
     // 136 §5.3: every `<knowledge>` note records one impression per id shown,
     // exactly the ids shown, none when no note is appended.
     let ids: Vec<String> = (1..=3).map(|n| format!("facts/failover-{n}")).collect();
-    let shown = |knowledge: knowledge::Knowledge, ids: Vec<String>| async move {
+    let shown = |knowledge: Arc<knowledge::Knowledge>, ids: Vec<String>| async move {
         knowledge
             .stats(&ids)
             .await

@@ -3173,7 +3173,7 @@ impl Message<crate::LedgerSince> for Agents {
                 ActorRef::<knowledge::KnowledgeActor>::lookup(knowledge::KNOWLEDGE_ACTOR)
         {
             match k.ask(knowledge::Stats { ids: hinted }).await {
-                Ok(Ok(uses)) => {
+                Ok(uses) => {
                     ledger.hints = uses
                         .into_iter()
                         .map(|u| crate::LedgerHintUse {
@@ -3183,7 +3183,6 @@ impl Message<crate::LedgerSince> for Agents {
                         })
                         .collect();
                 }
-                Ok(Err(e)) => tracing::warn!("ledger: knowledge stats: {e}"),
                 Err(e) => tracing::warn!("ledger: knowledge stats: {e}"),
             }
         }

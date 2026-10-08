@@ -350,6 +350,7 @@ pub fn add(dir: &Path, m: AddSkill) -> Result<SkillMeta, String> {
         name: Some(m.name.clone()),
         description: Some(m.description),
         always: m.always,
+        origin: None,
     })
     .map_err(|e| e.to_string())?;
     std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
