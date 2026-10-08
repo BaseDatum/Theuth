@@ -177,29 +177,27 @@ impl Docs {
     async fn edit(
         &self,
         doc: &str,
-        edits: Vec<BlockEdit>,
+        mut edits: Vec<BlockEdit>,
         cx: &ToolCx,
     ) -> anyhow::Result<ToolOutput> {
         let id = self.resolve(doc).await?;
-        for e in &edits {
+        let by = Principal::Agent {
+            session: cx.session.0,
+        };
+        for e in &mut edits {
             if let BlockEdit::Insert { markdown, .. } | BlockEdit::Replace { markdown, .. } = e {
                 if let Some(refused) = self.check_excerpts(&id, markdown).await {
                     return Ok(refused);
                 }
-                // 144 §6.6: dead `theuth://` targets are refused here once W3 fills `cite_check`.
-                let _cites = crate::cite_check::check_theuth_links(markdown);
+                // 144 §6.6: a dead `theuth://` target is refused; live block citations gain `?s=`.
+                if let Some(refused) =
+                    crate::cite_check::check(&self.actor, markdown, by.clone()).await
+                {
+                    return Ok(refused);
+                }
             }
         }
-        let r = self
-            .actor
-            .ask(Edit {
-                doc: id,
-                edits,
-                by: Principal::Agent {
-                    session: cx.session.0,
-                },
-            })
-            .await;
+        let r = self.actor.ask(Edit { doc: id, edits, by }).await;
         Ok(match r {
             Ok(o) => outcome(o),
             Err(kameo::error::SendError::HandlerError(e)) => ToolOutput::err(model_error(&e)),
@@ -821,7 +819,13 @@ impl Tool for CreateTool {
         let by = Principal::Agent {
             session: cx.session.0,
         };
-        let markdown = a.markdown.unwrap_or_default();
+        let mut markdown = a.markdown.unwrap_or_default();
+        // 144 §6.6 / §8: a saved answer's chips must point at live blocks and carry `?s=`.
+        if let Some(refused) =
+            crate::cite_check::check(&self.actor, &mut markdown, by.clone()).await
+        {
+            return Ok(refused);
+        }
         let (kind, summary) = match a.kind.as_deref().unwrap_or("note") {
             "note" => {
                 if a.root.is_some() {

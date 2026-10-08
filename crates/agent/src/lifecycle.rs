@@ -27,6 +27,9 @@ pub struct CreateSessionOptions {
     /// Root project label; `None` = ungrouped.
     #[serde(default)]
     pub project: Option<String>,
+    /// 144 §8: bind the new root to this notebook (`DocId` text); durable sessions only.
+    #[serde(default)]
+    pub notebook: Option<String>,
     /// The client's view id; required for a private root, which it owns.
     #[serde(default)]
     pub view: Option<String>,
