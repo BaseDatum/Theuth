@@ -31,8 +31,8 @@ export type MapListProps = {
 export function listTitle(el: MapElement): string {
   const parts = [elementStats(el)]
   if (el.provenance) parts.push(`written ${ago(el.provenance.generated_ms)}`)
-  else if (el.origin === 'Structure') parts.push('structure view')
-  else if (el.origin === 'Imported') parts.push('imported')
+  else if (el.origin === 'structure') parts.push('structure view')
+  else if (el.origin === 'imported') parts.push('imported')
   return parts.join(' · ')
 }
 

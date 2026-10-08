@@ -64,10 +64,10 @@ type Spec = {
 }
 type EdgeSpec = [from: string, to: string, label: string, evidence: MapEvidence[]]
 
-const manifest = (n: number, from: string, to: string): MapEvidence[] => Array.from({ length: n }, (_, i) => ({ Manifest: { from: `${from}/${i ? `x${i}` : 'Cargo.toml'}`, to, kind: 'cargo-path' } }))
-const imports = (count: number, sample: string): MapEvidence[] => [{ Imports: { count, sample } }]
-const refs = (count: number, sample: string): MapEvidence[] => [{ Refs: { count, sample, confidence: 0.9 } }]
-const inferred = (reason: string): MapEvidence[] => [{ Inferred: { reason } }]
+const manifest = (n: number, from: string, to: string): MapEvidence[] => Array.from({ length: n }, (_, i) => ({ type: 'manifest', from: `${from}/${i ? `x${i}` : 'Cargo.toml'}`, to, kind: 'cargo-path' }))
+const imports = (count: number, sample: string): MapEvidence[] => [{ type: 'imports', count, sample }]
+const refs = (count: number, sample: string): MapEvidence[] => [{ type: 'refs', count, sample, confidence: 0.9 }]
+const inferred = (reason: string): MapEvidence[] => [{ type: 'inferred', reason }]
 
 const CODEINDEX: Spec = {
   node: 'unit:crates/codeindex',
@@ -219,8 +219,8 @@ const LIFECYCLE: Spec = {
 }
 const LIFECYCLE_EDGES: EdgeSpec[] = [
   ['sym:ts:crates/desktop/ui/src/rpc/transport.ts#send(function)', 'sym:rust:crates/rpc/src/api.rs#send_input(method)', 'WebSocket frame', inferred('method name matches; no static edge across the socket')],
-  ['sym:rust:crates/rpc/src/api.rs#send_input(method)', 'sym:rust:crates/agent/src/supervisor.rs#Agents::handle(method)', 'ask', [{ Call: { site: 'crates/rpc/src/api.rs#L2607', from: 'send_input', to: 'Agents::handle' } }]],
-  ['sym:rust:crates/agent/src/supervisor.rs#Agents::handle(method)', 'sym:rust:crates/agent/src/loop_.rs#turn(function)', 'forward input', [{ Call: { site: 'crates/agent/src/supervisor.rs#L3660', from: 'Agents::handle', to: 'turn' } }]],
+  ['sym:rust:crates/rpc/src/api.rs#send_input(method)', 'sym:rust:crates/agent/src/supervisor.rs#Agents::handle(method)', 'ask', [{ type: 'call', site: 'crates/rpc/src/api.rs#L2607', from: 'send_input', to: 'Agents::handle' }]],
+  ['sym:rust:crates/agent/src/supervisor.rs#Agents::handle(method)', 'sym:rust:crates/agent/src/loop_.rs#turn(function)', 'forward input', [{ type: 'call', site: 'crates/agent/src/supervisor.rs#L3660', from: 'Agents::handle', to: 'turn' }]],
   ['sym:rust:crates/agent/src/loop_.rs#turn(function)', 'sym:rust:crates/runtime/src/events.rs#publish(function)', 'stream events', refs(40, 'crates/agent/src/loop_.rs#L5131')],
 ]
 EDGES['request-lifecycle'] = LIFECYCLE_EDGES
@@ -240,9 +240,9 @@ const IMPORTED: Spec = {
 }
 
 const PERSPECTIVES: { spec: Spec; kind: string; origin: MapOrigin }[] = [
-  { spec: TOP, kind: 'overall-architecture', origin: 'Generated' },
-  { spec: LIFECYCLE, kind: 'request-lifecycle', origin: 'Generated' },
-  { spec: IMPORTED, kind: 'imported', origin: 'Imported' },
+  { spec: TOP, kind: 'overall-architecture', origin: 'generated' },
+  { spec: LIFECYCLE, kind: 'request-lifecycle', origin: 'generated' },
+  { spec: IMPORTED, kind: 'imported', origin: 'imported' },
 ]
 
 const PROVENANCE = { model: 'claude-fable-5-1', git_head: '5cddad8e9f1a', index_state: '1278:1759900000000', generated_ms: Date.now() - 3 * 60_000, call_ids: ['req_1', 'req_2'], cost_nanos: 40_000_000, currency: 'USD', input_tokens: 12_400, output_tokens: 1_500, repaired: false, facts_hash: 'a1b2c3d4' }
@@ -269,7 +269,7 @@ const mermaidOf = (s: Spec): string | null =>
     : null
 
 class MockMap {
-  state: MapMeta['state'] = 'Structure'
+  state: MapMeta['state'] = 'structure'
   seq = 200
   job: MapJob | null = null
   /** Elements with prose so far (structure view before generation, S2). */
@@ -288,13 +288,13 @@ class MockMap {
       return { id: spec.node, kind, title: spec.name, origin, elements: tree.length, stale: tree.filter((r) => r.stale).length, tree }
     })
     // the generating index lists perspectives as they land; before any lands, only the structure perspective exists
-    const shown = this.state === 'Structure' ? perspectives.slice(0, 1) : perspectives
+    const shown = this.state === 'structure' ? perspectives.slice(0, 1) : perspectives
     return { meta: this.meta(root), perspectives: shown, profile: { name: 'theuth', languages: ['rust', 'ts'] } }
   }
   walk(s: Spec, pid: string, parent: string | null, depth: number, out: MapTreeRow[], origin: MapOrigin): void {
     for (const c of s.children ?? []) {
       const id = `${pid}/${c.node}`
-      const named = origin !== 'Generated' || this.state !== 'Structure' || this.named.has(id)
+      const named = origin !== 'generated' || this.state !== 'structure' || this.named.has(id)
       out.push({ id, node: c.node, parent, depth, name: named ? c.name : (c.path?.split('/').pop() ?? c.name), path: c.path, kind: c.kind ?? (c.children ? 'unit' : 'file'), children: c.children?.length ?? 0, leaf: !c.children, stale: !!c.stale, origin, marks: [] })
       if (depth < 3) this.walk(c, pid, id, depth + 1, out, origin)
     }
@@ -325,7 +325,7 @@ class MockMap {
     const hit = this.find(id)
     if (!hit) throw new Error(`no element ${id}`)
     const { spec, pid, origin, crumbs, parent } = hit
-    const named = origin !== 'Generated' || this.state !== 'Structure' || this.named.has(id)
+    const named = origin !== 'generated' || this.state !== 'structure' || this.named.has(id)
     const children: MapChild[] = (spec.children ?? []).map((c) => ({
       id: `${pid}/${c.node}`,
       node: c.node,
@@ -339,7 +339,7 @@ class MockMap {
       stale: !!c.stale,
       thumbnail: thumbnail(c),
     }))
-    const edges: MapEdge[] = (EDGES[spec.node] ?? []).map(([from, to, label, evidence]) => ({ from, to, label: named ? label : '', backed: !evidence.some((e) => 'Inferred' in e), evidence }))
+    const edges: MapEdge[] = (EDGES[spec.node] ?? []).map(([from, to, label, evidence]) => ({ from, to, label: named ? label : '', backed: !evidence.some((e) => e.type === 'inferred'), evidence }))
     const anchors = spec.path ? [{ path: spec.path, line_start: null, line_end: null, exists: spec.node !== 'ext:viewer' }] : children.filter((c) => c.path).map((c) => ({ path: c.path!, line_start: null, line_end: null, exists: true }))
     const also = PERSPECTIVES.filter((p) => p.spec.node !== pid && JSON.stringify(p.spec).includes(`"${spec.node}"`)).map((p) => `${p.spec.node}/${spec.node}`)
     return {
@@ -361,8 +361,8 @@ class MockMap {
       children,
       also_in: also,
       stale: !!spec.stale,
-      origin: named ? origin : 'Structure',
-      provenance: origin === 'Generated' && named ? PROVENANCE : null,
+      origin: named ? origin : 'structure',
+      provenance: origin === 'generated' && named ? PROVENANCE : null,
       listing: spec.children ? null : { files: [[spec.path ?? '', spec.lines, spec.lines / 420_000]], symbols: [], more: 0 },
     }
   }
@@ -373,12 +373,12 @@ class MockMap {
     const ids = element ? [element] : this.allIds()
     const job: MapJob = { id: `job_${this.seq}`, session, started_ms: Date.now(), stage: 'select', done: 0, total: ids.length, calls: 0, cost_nanos: 0, currency: 'USD', error: null }
     this.job = job
-    this.state = 'Generating'
+    this.state = 'generating'
     const step = (i: number) => {
       const id = ids[i]
       if (id === undefined) {
         job.stage = 'done'
-        this.state = 'Ready'
+        this.state = 'ready'
         this.emit({ type: 'CodeMapProgress', root, job: job.id, session, stage: 'done', done: job.done, total: job.total, element: null, calls: job.calls, cost_nanos: job.cost_nanos, currency: 'USD', error: null, seq: ++this.seq })
         this.emit({ type: 'CodeMapChanged', root, elements: ids, stale: [], more: 0, seq: ++this.seq })
         return
@@ -398,7 +398,7 @@ class MockMap {
   allIds(): string[] {
     const out: string[] = []
     for (const { spec, origin } of PERSPECTIVES) {
-      if (origin !== 'Generated') continue
+      if (origin !== 'generated') continue
       out.push(spec.node)
       const rows: MapTreeRow[] = []
       this.walk(spec, spec.node, null, 1, rows, origin)
@@ -410,7 +410,7 @@ class MockMap {
     for (const t of this.timers) clearTimeout(t)
     this.timers = []
     if (this.job) this.job.stage = 'cancelled'
-    this.state = this.named.size ? 'Partial' : 'Structure'
+    this.state = this.named.size ? 'partial' : 'structure'
     return this.job ?? { id: 'none', session: '', started_ms: 0, stage: 'cancelled', done: 0, total: 0, calls: 0, cost_nanos: 0, currency: 'USD', error: null }
   }
 }

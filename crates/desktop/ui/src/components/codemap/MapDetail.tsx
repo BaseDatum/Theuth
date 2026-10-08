@@ -140,7 +140,7 @@ export function MapDetail(p: MapDetailProps) {
             </Sec>
           ) : (
             <Sec title="Description">
-              <p className="m-0 text-fg-secondary">{el.origin === 'Structure' ? 'structure view — the model has not described this element yet' : 'no description'}</p>
+              <p className="m-0 text-fg-secondary">{el.origin === 'structure' ? 'structure view — the model has not described this element yet' : 'no description'}</p>
             </Sec>
           )}
           {FIELDS.map((f) =>
@@ -224,8 +224,8 @@ export function MapDetail(p: MapDetailProps) {
             <Action label="Snapshot to board" title="Copy a Graph fence and draft the ask" disabled={!el.diagram && el.children.length === 0} onClick={snapshot} />
             <Action
               label="Regenerate element"
-              title={el.origin === 'Imported' ? 'imported elements are read-only' : p.has.has('codemap_generate') ? 'Regenerate this subtree in this session' : 'codemap_generate is not available on this engine'}
-              disabled={el.origin === 'Imported' || !p.has.has('codemap_generate') || !p.live}
+              title={el.origin === 'imported' ? 'imported elements are read-only' : p.has.has('codemap_generate') ? 'Regenerate this subtree in this session' : 'codemap_generate is not available on this engine'}
+              disabled={el.origin === 'imported' || !p.has.has('codemap_generate') || !p.live}
               onClick={() => p.onRegenerate(el.id)}
             />
             <Action label="Copy Mermaid" title={el.mermaid ? 'Copy the diagram as Mermaid' : 'this element has no diagram'} disabled={!el.mermaid} onClick={() => el.mermaid && void copy(el.mermaid, 'Mermaid')} />

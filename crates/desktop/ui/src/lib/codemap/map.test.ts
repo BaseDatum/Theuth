@@ -59,7 +59,7 @@ test('tree builds from MapPerspective.tree: headers first, pre-order, folds hide
   expect(folded.find((r) => r.name === 'Content stores')).toMatchObject({ foldable: true, open: false, count: 5 })
   // perspective rows carry element counts, stale counts and the imported badge
   const imported = all.find((r) => r.id === 'imported:.omm')!
-  expect(imported).toMatchObject({ kind: 'perspective', origin: 'Imported', count: 3 })
+  expect(imported).toMatchObject({ kind: 'perspective', origin: 'imported', count: 3 })
   expect(all.find((r) => r.id === 'overall-architecture')!.staleCount).toBe(1)
   expect(all.find((r) => r.name === 'Git facts')).toMatchObject({ stale: true, leaf: true })
 })
@@ -149,19 +149,19 @@ test('evidence renders counts, never the model: Cargo deps, imports, refs, call 
     label: 'board anchors',
     backed: true,
     evidence: [
-      { Manifest: { from: 'crates/a/Cargo.toml', to: 'crates/b', kind: 'cargo-path' } },
-      { Manifest: { from: 'crates/c/Cargo.toml', to: 'crates/b', kind: 'cargo-path' } },
-      { Imports: { count: 37, sample: 'crates/rpc/src/api.rs#L1079' } },
-      { Refs: { count: 1, sample: 'x.rs#L1', confidence: 0.9 } },
-      { Call: { site: 'y.rs#L2', from: 'f', to: 'g' } },
+      { type: 'manifest', from: 'crates/a/Cargo.toml', to: 'crates/b', kind: 'cargo-path' },
+      { type: 'manifest', from: 'crates/c/Cargo.toml', to: 'crates/b', kind: 'cargo-path' },
+      { type: 'imports', count: 37, sample: 'crates/rpc/src/api.rs#L1079' },
+      { type: 'refs', count: 1, sample: 'x.rs#L1', confidence: 0.9 },
+      { type: 'call', site: 'y.rs#L2', from: 'f', to: 'g' },
     ],
   }
   expect(evidenceCount(e.evidence)).toBe('2 Cargo deps · 37 imports · 1 ref · 1 call site')
   expect(evidenceSummary(e)).toContain('sample crates/rpc/src/api.rs#L1079')
-  const inf: MapEdge = { from: 'a', to: 'b', label: 'WebSocket', backed: false, evidence: [{ Inferred: { reason: 'no manifest edge' } }] }
+  const inf: MapEdge = { from: 'a', to: 'b', label: 'WebSocket', backed: false, evidence: [{ type: 'inferred', reason: 'no manifest edge' }] }
   expect(evidenceCount(inf.evidence)).toBe('')
   expect(evidenceSummary(inf)).toBe('inferred: no manifest edge')
-  expect(evidenceCount([{ Bindings: { generator: 'ts-rs', output_dir: 'bindings/' } }, { Process: { site: 's', verb: 'spawn' } }])).toBe('generated bindings · spawn')
+  expect(evidenceCount([{ type: 'bindings', generator: 'ts-rs', output_dir: 'bindings/' }, { type: 'process', site: 's', verb: 'spawn' }])).toBe('generated bindings · spawn')
 })
 
 test('elementGraph: nodes re-labelled from children (name · path), inferred edges dashed with why · count labels, stale hatched, thumbnails on groups', () => {
@@ -214,17 +214,17 @@ test('lines: progress (stage · n of m · $ · calls), provenance (written by ·
   expect(money(4_000_000)).toBe('<0.01'.replace('<0.01', '$<0.01'))
   expect(money(0)).toBe('$0.00')
   const now = Date.now()
-  expect(provenanceLine('Generated', { ...stores.provenance!, generated_ms: now - 3 * 60_000, git_head: '5cddad8e9f', cost_nanos: 40_000_000, call_ids: ['a', 'b'] }, now)).toBe('written by claude-fable-5-1 · HEAD 5cddad8e · 3 min ago · $0.04 · 2 calls')
-  expect(provenanceLine('Imported', null)).toBe('imported · unknown freshness')
-  expect(provenanceLine('Structure', null)).toContain('structure view')
+  expect(provenanceLine('generated', { ...stores.provenance!, generated_ms: now - 3 * 60_000, git_head: '5cddad8e9f', cost_nanos: 40_000_000, call_ids: ['a', 'b'] }, now)).toBe('written by claude-fable-5-1 · HEAD 5cddad8e · 3 min ago · $0.04 · 2 calls')
+  expect(provenanceLine('imported', null)).toBe('imported · unknown freshness')
+  expect(provenanceLine('structure', null)).toContain('structure view')
   expect(listTitle(top)).toMatch(/^11 elements · 14 of 15 edges · written /)
 })
 
 test('mock generation: Structure (one perspective, basenames, no prose) → progress per element → done; CodeMapChanged names what to refetch', async () => {
-  expect(structure.meta.state).toBe('Structure')
+  expect(structure.meta.state).toBe('structure')
   expect(structure.perspectives.map((p) => p.id)).toEqual(['overall-architecture'])
   expect(structure.perspectives[0]!.tree.find((r) => r.node === 'cluster:9f3a1c2e')!.name).toBe('knowledge')
-  expect(unnamed.origin).toBe('Structure')
+  expect(unnamed.origin).toBe('structure')
   expect(unnamed.fields.description).toBe('')
   expect(job).toMatchObject({ stage: 'done', done: job.total })
   expect(job.total).toBeGreaterThan(10)
@@ -233,7 +233,7 @@ test('mock generation: Structure (one perspective, basenames, no prose) → prog
   expect(kinds).toContain('CodeMapChanged')
   expect(events.at(-1)).toMatchObject({ type: 'CodeMapChanged', root: ROOT })
   expect((events.filter((e) => e.type === 'CodeMapProgress') as CodeMapProgress[]).at(-1)!.stage).toBe('done')
-  expect(index.meta.state).toBe('Ready')
+  expect(index.meta.state).toBe('ready')
   expect(index.perspectives.map((p) => p.id)).toEqual(['overall-architecture', 'request-lifecycle', 'imported:.omm'])
   expect(stores.fields.description).toMatch(/^Durable content/)
   expect(stores.also_in).toEqual([])

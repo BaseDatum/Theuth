@@ -6,8 +6,8 @@
 import type { GraphProps } from '@/rpc/bindings/GraphProps'
 import type { MapRow } from '@/rpc/bindings/MapRow'
 
-export type MapState = 'None' | 'Structure' | 'Generating' | 'Ready' | 'Partial'
-export type MapOrigin = 'Structure' | 'Generated' | 'Imported'
+export type MapState = 'none' | 'structure' | 'generating' | 'ready' | 'partial'
+export type MapOrigin = 'structure' | 'generated' | 'imported'
 
 export type MapJob = {
   id: string
@@ -66,13 +66,13 @@ export type MapIndex = {
 }
 
 export type MapEvidence =
-  | { Manifest: { from: string; to: string; kind: string } }
-  | { Imports: { count: number; sample: string } }
-  | { Refs: { count: number; sample: string; confidence: number } }
-  | { Call: { site: string; from: string; to: string } }
-  | { Bindings: { generator: string; output_dir: string } }
-  | { Process: { site: string; verb: string } }
-  | { Inferred: { reason: string } }
+  | { type: 'manifest'; from: string; to: string; kind: string }
+  | { type: 'imports'; count: number; sample: string }
+  | { type: 'refs'; count: number; sample: string; confidence: number }
+  | { type: 'call'; site: string; from: string; to: string }
+  | { type: 'bindings'; generator: string; output_dir: string }
+  | { type: 'process'; site: string; verb: string }
+  | { type: 'inferred'; reason: string }
 
 export type MapEdge = { from: string; to: string; label: string; backed: boolean; evidence: MapEvidence[] }
 

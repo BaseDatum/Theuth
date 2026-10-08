@@ -37,7 +37,7 @@ export function RowBadges({ r, short }: { r: TreeRow; short?: string }) {
       {r.marks.includes('read') && <span className="codemap-mark read" title="read this session" aria-label="read" />}
       {r.stale && <span className="codemap-badge stale">stale</span>}
       {r.kind === 'perspective' && r.staleCount > 0 && <span className="codemap-badge stale">stale {r.staleCount}</span>}
-      {r.origin === 'Imported' && r.kind === 'perspective' && <span className="codemap-badge imp">imported</span>}
+      {r.origin === 'imported' && r.kind === 'perspective' && <span className="codemap-badge imp">imported</span>}
       {r.bundle && <span className="text-fg-secondary">+{r.count}</span>}
     </>
   )

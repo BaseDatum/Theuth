@@ -274,12 +274,12 @@ export function evidenceCount(evidence: readonly MapEvidence[]): string {
   let calls = 0
   const other: string[] = []
   for (const ev of evidence) {
-    if ('Manifest' in ev) manifest.set(ev.Manifest.kind, (manifest.get(ev.Manifest.kind) ?? 0) + 1)
-    else if ('Imports' in ev) imports += ev.Imports.count
-    else if ('Refs' in ev) refs += ev.Refs.count
-    else if ('Call' in ev) calls += 1
-    else if ('Bindings' in ev) other.push('generated bindings')
-    else if ('Process' in ev) other.push(ev.Process.verb)
+    if (ev.type === 'manifest') manifest.set(ev.kind, (manifest.get(ev.kind) ?? 0) + 1)
+    else if (ev.type === 'imports') imports += ev.count
+    else if (ev.type === 'refs') refs += ev.count
+    else if (ev.type === 'call') calls += 1
+    else if (ev.type === 'bindings') other.push('generated bindings')
+    else if (ev.type === 'process') other.push(ev.verb)
   }
   const parts: string[] = []
   for (const [kind, n] of manifest) parts.push(plural(n, MANIFEST[kind] ?? `${kind} dep`))
@@ -294,12 +294,12 @@ export function evidenceCount(evidence: readonly MapEvidence[]): string {
 export function evidenceSummary(e: MapEdge): string {
   const parts = [evidenceCount(e.evidence)].filter(Boolean)
   for (const ev of e.evidence) {
-    if ('Imports' in ev) parts.push(`sample ${ev.Imports.sample}`)
-    else if ('Refs' in ev) parts.push(`sample ${ev.Refs.sample} · confidence ${ev.Refs.confidence.toFixed(1)}`)
-    else if ('Call' in ev) parts.push(`at ${ev.Call.site}`)
-    else if ('Manifest' in ev) parts.push(`${ev.Manifest.from} → ${ev.Manifest.to}`)
-    else if ('Process' in ev) parts.push(`at ${ev.Process.site}`)
-    else if ('Bindings' in ev) parts.push(`${ev.Bindings.generator} → ${ev.Bindings.output_dir}`)
+    if (ev.type === 'imports') parts.push(`sample ${ev.sample}`)
+    else if (ev.type === 'refs') parts.push(`sample ${ev.sample} · confidence ${ev.confidence.toFixed(1)}`)
+    else if (ev.type === 'call') parts.push(`at ${ev.site}`)
+    else if (ev.type === 'manifest') parts.push(`${ev.from} → ${ev.to}`)
+    else if (ev.type === 'process') parts.push(`at ${ev.site}`)
+    else if (ev.type === 'bindings') parts.push(`${ev.generator} → ${ev.output_dir}`)
   }
   const reason = inferredReason(e)
   if (reason) parts.push(`inferred: ${reason}`)
@@ -307,7 +307,7 @@ export function evidenceSummary(e: MapEdge): string {
 }
 
 export function inferredReason(e: MapEdge): string | null {
-  for (const ev of e.evidence) if ('Inferred' in ev) return ev.Inferred.reason
+  for (const ev of e.evidence) if (ev.type === 'inferred') return ev.reason
   return null
 }
 
@@ -436,8 +436,8 @@ export function ago(ms: number, now = Date.now()): string {
 
 /** `written by claude-… · HEAD 5cddad8e · 3 min ago · $0.04 · 2 calls`; imported elements say so (§8). */
 export function provenanceLine(origin: MapOrigin, p: MapProvenance | null, now = Date.now()): string {
-  if (origin === 'Imported') return 'imported · unknown freshness'
-  if (!p) return origin === 'Structure' ? 'structure view · from the index, no model yet' : ''
+  if (origin === 'imported') return 'imported · unknown freshness'
+  if (!p) return origin === 'structure' ? 'structure view · from the index, no model yet' : ''
   const parts = [`written by ${p.model}`]
   if (p.git_head) parts.push(`HEAD ${p.git_head.slice(0, 8)}`)
   parts.push(ago(p.generated_ms, now))
@@ -451,8 +451,8 @@ export function provenanceLine(origin: MapOrigin, p: MapProvenance | null, now =
 export function detailChips(el: MapElement): string[] {
   const chips: string[] = []
   if (el.stale) chips.push('stale')
-  if (el.origin === 'Imported') chips.push('imported')
-  if (el.origin === 'Structure' && !el.fields.description) chips.push('needs model')
+  if (el.origin === 'imported') chips.push('imported')
+  if (el.origin === 'structure' && !el.fields.description) chips.push('needs model')
   const inferred = el.edges.filter((e) => !e.backed).length
   if (inferred) chips.push(`inferred edges: ${inferred}`)
   if (el.provenance?.repaired) chips.push('repaired')

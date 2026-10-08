@@ -94,7 +94,7 @@ export function MapTab(p: MapProps) {
       asked.current = true
       return
     }
-    if (m.state === 'Structure' || (m.stale_elements > 0 && !RUNNING(m.job?.stage))) {
+    if (m.state === 'structure' || (m.stale_elements > 0 && !RUNNING(m.job?.stage))) {
       asked.current = true
       void generate(null)
     }
@@ -234,7 +234,7 @@ export function MapTab(p: MapProps) {
           )}
         </div>
       )}
-      {!running && asked.current && data.meta.state === 'Structure' && !genError && (
+      {!running && asked.current && data.meta.state === 'structure' && !genError && (
         <div className="shrink-0 border-b border-border-subtle bg-layer-1 px-2 py-0.5 font-mono text-[11px] text-fg-secondary">Generating the map in this session’s cost… ($ shows in the session’s cost line)</div>
       )}
       {genError && (
