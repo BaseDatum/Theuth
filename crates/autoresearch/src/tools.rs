@@ -787,17 +787,24 @@ pub struct ControlArgs {
 /// belong to the user's chats. The Toolset normally hides this tool there;
 /// this holds when it does not (a first fire before the toolset lands).
 async fn refuse_study_sessions(session: SessionId) -> anyhow::Result<()> {
-    if crate::wave::slot_of(session).is_some() {
-        anyhow::bail!("autoresearch_control is not available inside a study session");
-    }
-    let studies = actor()?
-        .ask(Status { slug: None })
-        .await
-        .map_err(|e| anyhow::anyhow!("{e}"))?;
-    if studies.iter().any(|s| s.session == Some(session)) {
+    let studies = if crate::wave::is_child(session) {
+        Vec::new()
+    } else {
+        actor()?
+            .ask(Status { slug: None })
+            .await
+            .map_err(|e| anyhow::anyhow!("{e}"))?
+    };
+    if is_study_side(session, &studies) {
         anyhow::bail!("autoresearch_control is not available inside a study session");
     }
     Ok(())
+}
+
+/// `session` is a study's bound session or a registered wave child (bound to a
+/// slot or not yet: `wave::is_child`).
+pub fn is_study_side(session: SessionId, studies: &[StudyInfo]) -> bool {
+    crate::wave::is_child(session) || studies.iter().any(|s| s.session == Some(session))
 }
 
 /// `autoresearch_control` (140 §12.4).
@@ -1384,5 +1391,32 @@ mod tests {
         };
         let e = validate_spec(&spec).unwrap_err();
         assert!(e.contains("bench.repeats must be at least 2"), "{e}");
+    }
+
+    /// R-13: `autoresearch_control` is refused to a study's bound session and to
+    /// a wave child — even one that has not yet bound a slot (`wave::is_child`);
+    /// a root session passes.
+    #[test]
+    fn control_refuses_study_sessions_and_unbound_wave_children() {
+        let (root, bound, parent, child) = (
+            SessionId::new(),
+            SessionId::new(),
+            SessionId::new(),
+            SessionId::new(),
+        );
+        crate::wave::register_child(parent, child);
+        assert!(
+            crate::wave::slot_of(child).is_none(),
+            "registered, no slot yet"
+        );
+        let studies = [StudyInfo {
+            slug: "s".into(),
+            session: Some(bound),
+            ..Default::default()
+        }];
+        assert!(is_study_side(bound, &studies));
+        assert!(is_study_side(child, &studies));
+        assert!(is_study_side(child, &[]));
+        assert!(!is_study_side(root, &studies));
     }
 }
