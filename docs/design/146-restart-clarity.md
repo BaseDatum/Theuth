@@ -104,3 +104,33 @@ style. Worth its own ticket (config writer).
 | `cargo check --workspace --tests` (`BUILD_SLOTS=1`) | clean (after `just ts`: `nodes`' tests read `bindings/methods.json`, which only the export produces); one pre-existing future-incompat warning from the `block` dependency |
 | `just ts-desktop` + desktop `bun run check` (tsc) + `vitest run src/store/reduce.test.ts` | 682 bindings exported (`ChildResumed` via `rpc/src/export.rs`); tsc clean; 64 passed (+2 for D7) |
 | `just restart-clarity` | 25/25 checks (table above; ~4.5 min, two real `sleep 150` children) |
+
+## Fold of main 25553238
+
+`land/146` = `8f5362b2` (D8) + merge of `origin/main` `25553238` (145 TALK-PRESENCE `ea48854b` + 147 docs),
+commit `8b5e4580`. Fresh worktree `~/Develop/theuth-146-land`, every cargo gate through `build-lock mbx`
+(managed target, `CARGO_BUILD_JOBS=4`, label `146-land`), logs `/tmp/146-land-*.log`.
+
+Conflict shapes: none textual. The five files both designs touched auto-merged at hunk level —
+`durability/jobs.rs` (145's job cancel/promote next to 146's `turn_steps` journal), `supervisor.rs`
+(145's `SetTalk`/`TalkLive`/`InputsParked` + input parking above 146's `ActivityRegistered` boot pass,
+`ResumeChild` → `ChildResumed` and `relaunch_acp_child`), `rpc/src/api.rs` (talk RPCs + `resume_child`
+returning `ChildResumed`), `tui/src/lib.rs` (145 ignores `InputsParked`; 146's resume toast), desktop
+`reduce.test.ts` (145's `JobEvent.kind` fixtures + 146's two interrupt tests). The feared E0063 /
+exhaustive-match misses did not occur: 146 adds no `ToolCx`/`JobEvent` literals and 145's new
+`AgentEvent` arms sit in match sites 146 did not edit. No fix commit was needed. `<child_lost>` keeps
+going through `inject`, so it respects 145's talk-window parking without a special case.
+
+| gate | result |
+|---|---|
+| `mbx test -p agent --lib -- supervisor:: durability:: acp_resume::` | 115 passed, 0 failed (`resume_child_prompts_a_midprompt_child`, `respawn_decision_table`, `held_message_follows_the_brief` all green) |
+| `mbx test -p roster --lib` | 69 passed |
+| `mbx test -p rpc --lib` | 54 passed (incl. `engine::tests::second_acquire_in_one_process_is_running`) |
+| `mbx test -p tui --lib` | 146 passed |
+| `mbx test -p talk` | 29 passed |
+| `mbx clippy -p agent -p rpc -p tui -p roster -p theuth -p desktop -p talk --all-targets -- -D warnings` | clean; only the pre-existing `block v0.1.6` future-incompat note |
+| `cargo fmt --check` | 146's hunks clean; the `crates/theuth/src/main.rs:1478/1505/1515` diffs are identical on both parents (pre-existing) |
+| `BUILD_SLOTS=1 mbx test -p rpc --features ts --lib export_bindings` + `cp -R bindings/. crates/desktop/ui/src/rpc/bindings/` | 683 files exported, no diff against the committed bindings |
+| desktop `bun run check` (tsc) + `vitest run src/store/reduce.test.ts src/store/sessions.test.ts` | tsc clean (after `bun install --frozen-lockfile` for `@types/d3-sankey`); 66 passed |
+| `just restart-clarity` (`BACKUP_DB` = `.backup` of the live store, 29 469 `turn_steps` / 1 357 turns) | 25/25; P6 old 0.882 s → new 0.06 s |
+| `BUILD_SLOTS=1 mbx check --workspace --tests` | clean (same `block` note) |
