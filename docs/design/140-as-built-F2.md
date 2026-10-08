@@ -78,6 +78,11 @@ Fixer 140-F2, branch `feat/140-f2` from 78411fb3. Owns `crates/autoresearch/src/
 - R-59 without a schedule change: the `busy` fallback reports the session of the run the tick started.
 - Shared `./target` hazard for the closer: cargo's fingerprint for `autoresearch`'s test binary records the *last builder's* source paths, so a sibling's build makes `cargo test` in another worktree report "fresh" and run the sibling's binary (observed: 117-test binaries with F3's `brief::` tests and the old 89.65 % sim number). Every gate below ran as `cargo clean -p autoresearch -p schedule && cargo test …` inside one build-lock slot; the closer should do the same or use a private target.
 
+## R1 (orchestrator 17:55, F3 hand-offs)
+
+- `wave::is_child(session) -> bool`: a registered wave child (for F3's `tools.rs` root-only refusals).
+- R-8 rule as the skill states it: `custody::check_commands(spec, repo, drafts)` (pub, for Create-time validation in `study_draft`/`tools`) — a script token must be a repo file (relative or `./x`) or a draft script (by name or by its absolute path under `<root>/drafts/<slug>/`); a script path resolving anywhere else, including an absolute path outside the drafts dir, is refused; program paths (`/usr/bin/env`, `python3`) are not scripts. `take` calls it first, so prepare refuses what Create missed. Test `dot_slash_and_absolute_draft_tokens_enter_custody` extended.
+
 ## Gates
 
 All through `BUILD_LABEL=140-F2 build-lock`, stable rustc 1.96.1, `CARGO_BUILD_JOBS=4`, after `cargo clean -p autoresearch -p schedule` in the same slot.

@@ -65,6 +65,11 @@ pub fn register_child(parent: SessionId, child: SessionId) {
     CHILDREN.lock().insert(child, Child { parent, slot: None });
 }
 
+/// Is `session` a registered wave child (F3's tools refuse root-only ops from one)?
+pub fn is_child(session: SessionId) -> bool {
+    CHILDREN.lock().contains_key(&session)
+}
+
 /// The slot `session` bound itself to with `experiment_begin{slot}` (the tools fill `slot` from this).
 pub fn slot_of(session: SessionId) -> Option<u8> {
     CHILDREN.lock().get(&session).and_then(|c| c.slot)

@@ -44,24 +44,18 @@ pub fn take(
         ("checks", spec.checks.as_ref().map(|c| c.command.as_str())),
         ("holdout", spec.holdout.as_ref().map(|h| h.command.as_str())),
     ];
-    for (what, cmd) in &commands {
+    check_commands(spec, repo, &drafts)?;
+    for (_, cmd) in &commands {
         let Some(cmd) = cmd else { continue };
         for token in cmd.split_whitespace() {
-            let Some(path) = command_path(token, &drafts) else {
-                continue;
-            };
-            match path {
-                CommandPath::Repo(rel) if repo.join(rel).is_file() => {
+            match command_path(token, &drafts) {
+                Some(CommandPath::Repo(rel)) if repo.join(rel).is_file() => {
                     copy_file(repo, rel, evaluator_dir, &mut custody, "")?;
                 }
-                CommandPath::Repo(rel) | CommandPath::Draft(rel) if drafts.join(rel).is_file() => {
+                Some(CommandPath::Repo(rel) | CommandPath::Draft(rel))
+                    if drafts.join(rel).is_file() =>
+                {
                     copy_file(&drafts, rel, evaluator_dir, &mut custody, CUSTODY_ONLY)?;
-                }
-                CommandPath::Repo(rel) | CommandPath::Draft(rel) if looks_like_script(rel) => {
-                    return Err(Error::refused(format!(
-                        "{what}: `{token}` is not a file in the repo or in {}",
-                        drafts.display()
-                    )));
                 }
                 _ => {}
             }
@@ -300,17 +294,56 @@ pub(crate) fn command_path<'a>(token: &'a str, drafts: &Path) -> Option<CommandP
     relative(t).map(CommandPath::Repo)
 }
 
+/// The R-8 rule the skill states, for Create (`autoresearch_draft`) and
+/// [`take`]: a script a command names must be a repo file (relative, `./x`
+/// too) or a draft script (by name, or by its absolute path under `drafts`);
+/// a script path that resolves to no such file — including an absolute path
+/// anywhere else — is refused. Program names (`python3`, `/usr/bin/env`) are
+/// not scripts. `drafts` is `<root>/drafts/<slug>/`.
+pub fn check_commands(spec: &StudySpec, repo: &Path, drafts: &Path) -> Result<()> {
+    let commands = [
+        ("bench", Some(spec.bench.command.as_str())),
+        ("checks", spec.checks.as_ref().map(|c| c.command.as_str())),
+        ("holdout", spec.holdout.as_ref().map(|h| h.command.as_str())),
+    ];
+    for (what, cmd) in commands {
+        let Some(cmd) = cmd else { continue };
+        for token in cmd.split_whitespace() {
+            let ok = match command_path(token, drafts) {
+                Some(CommandPath::Repo(rel)) => {
+                    repo.join(rel).is_file()
+                        || drafts.join(rel).is_file()
+                        || !looks_like_script(rel)
+                }
+                Some(CommandPath::Draft(rel)) => drafts.join(rel).is_file(),
+                // An absolute path outside the drafts dir: a program unless it is a script.
+                None => !(token.starts_with('/') && has_script_extension(Path::new(token))),
+            };
+            if !ok {
+                return Err(Error::refused(format!(
+                    "{what}: `{token}` is not a file in the repo or in {} — the study only \
+                     runs scripts it holds in custody",
+                    drafts.display()
+                )));
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Does a relative command token look like a script path (so a miss is a
 /// misconfiguration, not a program name like `python3`)?
 fn looks_like_script(rel: &Path) -> bool {
+    rel.components().count() > 1 || has_script_extension(rel)
+}
+
+fn has_script_extension(p: &Path) -> bool {
     const EXT: [&str; 10] = [
         "sh", "bash", "zsh", "py", "rb", "js", "mjs", "ts", "pl", "lua",
     ];
-    rel.components().count() > 1
-        || rel
-            .extension()
-            .and_then(|e| e.to_str())
-            .is_some_and(|e| EXT.contains(&e))
+    p.extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(|e| EXT.contains(&e))
 }
 
 /// A token as a repo-relative path: no absolute paths, no `..`, no flags; trailing `/` dropped.
@@ -464,6 +497,17 @@ mod tests {
         let mut s = spec("toy");
         s.bench.command = "python3 -m pytest".into();
         assert!(take(&s, &repo, &evaluator).is_ok());
+        // An absolute script anywhere but the drafts dir points outside custody: refused.
+        let mut s = spec("toy");
+        s.bench.command = "bash /tmp/elsewhere/bench.sh".into();
+        let e = take(&s, &repo, &evaluator).unwrap_err().to_string();
+        assert!(e.contains("/tmp/elsewhere/bench.sh"), "{e}");
+        let mut s = spec("toy");
+        s.bench.command = "/usr/bin/env python3 -c pass".into();
+        assert!(
+            take(&s, &repo, &evaluator).is_ok(),
+            "a program path is not a script"
+        );
 
         let drafts = Path::new("/d/drafts/toy");
         assert_eq!(
