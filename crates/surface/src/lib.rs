@@ -16,7 +16,8 @@ mod elk_family;
 pub mod export;
 mod fences;
 mod flatten;
-mod graph;
+/// 147 §6.5: `graph::to_mermaid` / `graph::from_mermaid` for the CodeMap generator and export.
+pub mod graph;
 mod mermaid;
 pub mod prompt;
 mod render;

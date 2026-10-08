@@ -1,0 +1,638 @@
+{
+ "meta": {
+  "root": "/Users/sky/Develop/theuth",
+  "seq": 57,
+  "schema": 1,
+  "state": "ready",
+  "index_state": "3255:1759946400000000000",
+  "git_head": "5cddad8e",
+  "stale_elements": 1,
+  "job": null,
+  "ms": 4
+ },
+ "id": "overall-architecture/unit:crates/codeindex",
+ "node": "unit:crates/codeindex",
+ "perspective": "overall-architecture",
+ "parent": "overall-architecture/cluster:26b565b0",
+ "crumbs": [
+  [
+   "overall-architecture",
+   "Overall architecture"
+  ],
+  [
+   "overall-architecture/cluster:26b565b0",
+   "Content stores"
+  ],
+  [
+   "overall-architecture/unit:crates/codeindex",
+   "Code index"
+  ]
+ ],
+ "name": "Code index",
+ "path": "crates/codeindex",
+ "kind": "unit",
+ "members": [],
+ "anchors": [
+  {
+   "path": "crates/codeindex",
+   "line_start": null,
+   "line_end": null,
+   "exists": true
+  }
+ ],
+ "fields": {
+  "description": "The tree-sitter + SQLite code index (`crates/codeindex/`, 50 files / 16,056 lines; 5 languages). It walks a root, parses definitions/references/imports, resolves imports per language, ranks files PageRank-style, and serves both the `code_*` tools to the model and the Here/Fit/Change lenses to the CodeMap panel. The actor (`src/lib.rs` L127–L218) is a kameo plugin started by `CodeindexPlugin::start`; see the child diagram for module flow.",
+  "context": null,
+  "constraint": null,
+  "concern": "`tools.rs` (2,070 lines) and `lens.rs` both re-implement row→text rendering over the same store queries; `locate.rs`, `profile.rs`, `root.rs` and `outline_hook.rs` are left out of the diagram (under 12 nodes) and are described only here: locate resolves board anchors, profile reads manifests for project_profile, root picks the git root, outline_hook feeds read_file outlines.",
+  "todo": null,
+  "note": null
+ },
+ "diagram": {
+  "nodes": [
+   {
+    "id": "unit:crates/codeindex/src/walk.rs",
+    "label": "Walk",
+    "kind": "box",
+    "group": null,
+    "state": null,
+    "ref": "crates/codeindex/src/walk.rs",
+    "sub": "crates/codeindex/src/walk.rs",
+    "tag": null,
+    "icon": null
+   },
+   {
+    "id": "cluster:f61c2c5b",
+    "label": "Parse + resolve",
+    "kind": "box",
+    "group": null,
+    "state": null,
+    "ref": "crates/codeindex/src/parse.rs",
+    "sub": "crates/codeindex/src/parse.rs · crates/…",
+    "tag": null,
+    "icon": null
+   },
+   {
+    "id": "unit:crates/codeindex/src/store.rs",
+    "label": "SQLite store",
+    "kind": "box",
+    "group": null,
+    "state": null,
+    "ref": "crates/codeindex/src/store.rs",
+    "sub": "crates/codeindex/src/store.rs",
+    "tag": null,
+    "icon": null
+   },
+   {
+    "id": "unit:crates/codeindex/src/index.rs",
+    "label": "Codeindex / RootIndex",
+    "kind": "box",
+    "group": null,
+    "state": null,
+    "ref": "crates/codeindex/src/index.rs",
+    "sub": "crates/codeindex/src/index.rs",
+    "tag": null,
+    "icon": null
+   },
+   {
+    "id": "unit:crates/codeindex/src/git.rs",
+    "label": "Git facts",
+    "kind": "box",
+    "group": null,
+    "state": null,
+    "ref": "crates/codeindex/src/git.rs",
+    "sub": "crates/codeindex/src/git.rs",
+    "tag": "stale",
+    "icon": null
+   },
+   {
+    "id": "unit:crates/codeindex/src/rank.rs",
+    "label": "Rank",
+    "kind": "box",
+    "group": null,
+    "state": null,
+    "ref": "crates/codeindex/src/rank.rs",
+    "sub": "crates/codeindex/src/rank.rs",
+    "tag": null,
+    "icon": null
+   },
+   {
+    "id": "unit:crates/codeindex/src/lens.rs",
+    "label": "Lenses Here/Fit/Change",
+    "kind": "box",
+    "group": null,
+    "state": null,
+    "ref": "crates/codeindex/src/lens.rs",
+    "sub": "crates/codeindex/src/lens.rs",
+    "tag": null,
+    "icon": null
+   },
+   {
+    "id": "unit:crates/codeindex/src/tools.rs",
+    "label": "code_* tools",
+    "kind": "box",
+    "group": null,
+    "state": null,
+    "ref": "crates/codeindex/src/tools.rs",
+    "sub": "crates/codeindex/src/tools.rs",
+    "tag": null,
+    "icon": null
+   },
+   {
+    "id": "unit:crates/codeindex/src/event.rs",
+    "label": "Events",
+    "kind": "box",
+    "group": null,
+    "state": null,
+    "ref": "crates/codeindex/src/event.rs",
+    "sub": "crates/codeindex/src/event.rs",
+    "tag": null,
+    "icon": null
+   }
+  ],
+  "edges": [
+   {
+    "from": "unit:crates/codeindex/src/index.rs",
+    "to": "unit:crates/codeindex/src/walk.rs",
+    "label": "lists files under ignore",
+    "style": "solid",
+    "state": null,
+    "arrow": null
+   },
+   {
+    "from": "unit:crates/codeindex/src/index.rs",
+    "to": "cluster:f61c2c5b",
+    "label": "parse_chunk per changed file",
+    "style": "solid",
+    "state": null,
+    "arrow": null
+   },
+   {
+    "from": "unit:crates/codeindex/src/index.rs",
+    "to": "unit:crates/codeindex/src/store.rs",
+    "label": "writes rows, reads stale",
+    "style": "solid",
+    "state": null,
+    "arrow": null
+   },
+   {
+    "from": "unit:crates/codeindex/src/index.rs",
+    "to": "unit:crates/codeindex/src/git.rs",
+    "label": "HEAD and co-change history",
+    "style": "solid",
+    "state": null,
+    "arrow": null
+   },
+   {
+    "from": "unit:crates/codeindex/src/index.rs",
+    "to": "unit:crates/codeindex/src/event.rs",
+    "label": "emits CodeindexEvent",
+    "style": "solid",
+    "state": null,
+    "arrow": null
+   },
+   {
+    "from": "cluster:f61c2c5b",
+    "to": "unit:crates/codeindex/src/store.rs",
+    "label": "looks up import targets",
+    "style": "solid",
+    "state": null,
+    "arrow": null
+   },
+   {
+    "from": "unit:crates/codeindex/src/lens.rs",
+    "to": "unit:crates/codeindex/src/index.rs",
+    "label": "open_indexed → RootIndex",
+    "style": "solid",
+    "state": null,
+    "arrow": null
+   },
+   {
+    "from": "unit:crates/codeindex/src/lens.rs",
+    "to": "unit:crates/codeindex/src/rank.rs",
+    "label": "PageRank for Fit/Here",
+    "style": "solid",
+    "state": null,
+    "arrow": null
+   },
+   {
+    "from": "unit:crates/codeindex/src/lens.rs",
+    "to": "unit:crates/codeindex/src/store.rs",
+    "label": "symbol and ref rows",
+    "style": "solid",
+    "state": null,
+    "arrow": null
+   },
+   {
+    "from": "unit:crates/codeindex/src/lens.rs",
+    "to": "unit:crates/codeindex/src/tools.rs",
+    "label": "shares budget_render helpers",
+    "style": "solid",
+    "state": null,
+    "arrow": null
+   },
+   {
+    "from": "unit:crates/codeindex/src/tools.rs",
+    "to": "unit:crates/codeindex/src/index.rs",
+    "label": "opens the root index",
+    "style": "solid",
+    "state": null,
+    "arrow": null
+   },
+   {
+    "from": "unit:crates/codeindex/src/tools.rs",
+    "to": "unit:crates/codeindex/src/rank.rs",
+    "label": "code_map ranking",
+    "style": "solid",
+    "state": null,
+    "arrow": null
+   },
+   {
+    "from": "unit:crates/codeindex/src/tools.rs",
+    "to": "unit:crates/codeindex/src/store.rs",
+    "label": "rows for find/outline",
+    "style": "solid",
+    "state": null,
+    "arrow": null
+   },
+   {
+    "from": "unit:crates/codeindex/src/tools.rs",
+    "to": "unit:crates/codeindex/src/git.rs",
+    "label": "code_impact reads git ranges",
+    "style": "solid",
+    "state": null,
+    "arrow": null
+   },
+   {
+    "from": "unit:crates/codeindex/src/tools.rs",
+    "to": "unit:crates/codeindex/src/event.rs",
+    "label": "CodeToolSummary per call",
+    "style": "solid",
+    "state": null,
+    "arrow": null
+   },
+   {
+    "from": "unit:crates/codeindex/src/rank.rs",
+    "to": "unit:crates/codeindex/src/tools.rs",
+    "label": "estimate_tokens for budgets",
+    "style": "solid",
+    "state": null,
+    "arrow": null
+   }
+  ],
+  "groups": null,
+  "direction": "LR",
+  "legend": null,
+  "title": null
+ },
+ "mermaid": "flowchart LR\n    unit_crates_codeindex_src_walk_rs[\"Walk\\ncrates/codeindex/src/walk.rs\"]\n    cluster_f61c2c5b[\"Parse + resolve\\ncrates/codeindex/src/parse.rs · crates/…\"]\n    unit_crates_codeindex_src_store_rs[\"SQLite store\\ncrates/codeindex/src/store.rs\"]\n    unit_crates_codeindex_src_index_rs[\"Codeindex / RootIndex\\ncrates/codeindex/src/index.rs\"]\n    unit_crates_codeindex_src_git_rs[\"Git facts\\ncrates/codeindex/src/git.rs\"]\n    unit_crates_codeindex_src_rank_rs[\"Rank\\ncrates/codeindex/src/rank.rs\"]\n    unit_crates_codeindex_src_lens_rs[\"Lenses Here/Fit/Change\\ncrates/codeindex/src/lens.rs\"]\n    unit_crates_codeindex_src_tools_rs[\"code_* tools\\ncrates/codeindex/src/tools.rs\"]\n    unit_crates_codeindex_src_event_rs[\"Events\\ncrates/codeindex/src/event.rs\"]\n\n    unit_crates_codeindex_src_index_rs -->|\"lists files under ignore\"| unit_crates_codeindex_src_walk_rs\n    unit_crates_codeindex_src_index_rs -->|\"parse_chunk per changed file\"| cluster_f61c2c5b\n    unit_crates_codeindex_src_index_rs -->|\"writes rows, reads stale\"| unit_crates_codeindex_src_store_rs\n    unit_crates_codeindex_src_index_rs -->|\"HEAD and co-change history\"| unit_crates_codeindex_src_git_rs\n    unit_crates_codeindex_src_index_rs -->|\"emits CodeindexEvent\"| unit_crates_codeindex_src_event_rs\n    cluster_f61c2c5b -->|\"looks up import targets\"| unit_crates_codeindex_src_store_rs\n    unit_crates_codeindex_src_lens_rs -->|\"open_indexed → RootIndex\"| unit_crates_codeindex_src_index_rs\n    unit_crates_codeindex_src_lens_rs -->|\"PageRank for Fit/Here\"| unit_crates_codeindex_src_rank_rs\n    unit_crates_codeindex_src_lens_rs -->|\"symbol and ref rows\"| unit_crates_codeindex_src_store_rs\n    unit_crates_codeindex_src_lens_rs -->|\"shares budget_render helpers\"| unit_crates_codeindex_src_tools_rs\n    unit_crates_codeindex_src_tools_rs -->|\"opens the root index\"| unit_crates_codeindex_src_index_rs\n    unit_crates_codeindex_src_tools_rs -->|\"code_map ranking\"| unit_crates_codeindex_src_rank_rs\n    unit_crates_codeindex_src_tools_rs -->|\"rows for find/outline\"| unit_crates_codeindex_src_store_rs\n    unit_crates_codeindex_src_tools_rs -->|\"code_impact reads git ranges\"| unit_crates_codeindex_src_git_rs\n    unit_crates_codeindex_src_tools_rs -->|\"CodeToolSummary per call\"| unit_crates_codeindex_src_event_rs\n    unit_crates_codeindex_src_rank_rs -->|\"estimate_tokens for budgets\"| unit_crates_codeindex_src_tools_rs\n",
+ "edges": [
+  {
+   "from": "unit:crates/codeindex/src/index.rs",
+   "to": "unit:crates/codeindex/src/walk.rs",
+   "label": "lists files under ignore",
+   "backed": true,
+   "evidence": [
+    {
+     "type": "imports",
+     "count": 1,
+     "sample": "crates/codeindex/src/index.rs#L1"
+    }
+   ]
+  },
+  {
+   "from": "unit:crates/codeindex/src/index.rs",
+   "to": "cluster:f61c2c5b",
+   "label": "parse_chunk per changed file",
+   "backed": true,
+   "evidence": [
+    {
+     "type": "imports",
+     "count": 5,
+     "sample": "crates/codeindex/src/index.rs#L1"
+    }
+   ]
+  },
+  {
+   "from": "unit:crates/codeindex/src/index.rs",
+   "to": "unit:crates/codeindex/src/store.rs",
+   "label": "writes rows, reads stale",
+   "backed": true,
+   "evidence": [
+    {
+     "type": "imports",
+     "count": 1,
+     "sample": "crates/codeindex/src/index.rs#L1"
+    }
+   ]
+  },
+  {
+   "from": "unit:crates/codeindex/src/index.rs",
+   "to": "unit:crates/codeindex/src/git.rs",
+   "label": "HEAD and co-change history",
+   "backed": true,
+   "evidence": [
+    {
+     "type": "imports",
+     "count": 1,
+     "sample": "crates/codeindex/src/index.rs#L1"
+    }
+   ]
+  },
+  {
+   "from": "unit:crates/codeindex/src/index.rs",
+   "to": "unit:crates/codeindex/src/event.rs",
+   "label": "emits CodeindexEvent",
+   "backed": true,
+   "evidence": [
+    {
+     "type": "imports",
+     "count": 2,
+     "sample": "crates/codeindex/src/index.rs#L1"
+    }
+   ]
+  },
+  {
+   "from": "cluster:f61c2c5b",
+   "to": "unit:crates/codeindex/src/store.rs",
+   "label": "looks up import targets",
+   "backed": true,
+   "evidence": [
+    {
+     "type": "imports",
+     "count": 4,
+     "sample": "crates/codeindex/src/parse.rs#L1"
+    }
+   ]
+  },
+  {
+   "from": "unit:crates/codeindex/src/lens.rs",
+   "to": "unit:crates/codeindex/src/index.rs",
+   "label": "open_indexed → RootIndex",
+   "backed": true,
+   "evidence": [
+    {
+     "type": "imports",
+     "count": 3,
+     "sample": "crates/codeindex/src/lens.rs#L1"
+    }
+   ]
+  },
+  {
+   "from": "unit:crates/codeindex/src/lens.rs",
+   "to": "unit:crates/codeindex/src/rank.rs",
+   "label": "PageRank for Fit/Here",
+   "backed": true,
+   "evidence": [
+    {
+     "type": "imports",
+     "count": 1,
+     "sample": "crates/codeindex/src/lens.rs#L1"
+    }
+   ]
+  },
+  {
+   "from": "unit:crates/codeindex/src/lens.rs",
+   "to": "unit:crates/codeindex/src/store.rs",
+   "label": "symbol and ref rows",
+   "backed": true,
+   "evidence": [
+    {
+     "type": "imports",
+     "count": 2,
+     "sample": "crates/codeindex/src/lens.rs#L1"
+    }
+   ]
+  },
+  {
+   "from": "unit:crates/codeindex/src/lens.rs",
+   "to": "unit:crates/codeindex/src/tools.rs",
+   "label": "shares budget_render helpers",
+   "backed": true,
+   "evidence": [
+    {
+     "type": "imports",
+     "count": 3,
+     "sample": "crates/codeindex/src/lens.rs#L1"
+    }
+   ]
+  },
+  {
+   "from": "unit:crates/codeindex/src/tools.rs",
+   "to": "unit:crates/codeindex/src/index.rs",
+   "label": "opens the root index",
+   "backed": true,
+   "evidence": [
+    {
+     "type": "imports",
+     "count": 3,
+     "sample": "crates/codeindex/src/tools.rs#L1"
+    }
+   ]
+  },
+  {
+   "from": "unit:crates/codeindex/src/tools.rs",
+   "to": "unit:crates/codeindex/src/rank.rs",
+   "label": "code_map ranking",
+   "backed": true,
+   "evidence": [
+    {
+     "type": "imports",
+     "count": 2,
+     "sample": "crates/codeindex/src/tools.rs#L1"
+    }
+   ]
+  },
+  {
+   "from": "unit:crates/codeindex/src/tools.rs",
+   "to": "unit:crates/codeindex/src/store.rs",
+   "label": "rows for find/outline",
+   "backed": true,
+   "evidence": [
+    {
+     "type": "imports",
+     "count": 3,
+     "sample": "crates/codeindex/src/tools.rs#L1"
+    }
+   ]
+  },
+  {
+   "from": "unit:crates/codeindex/src/tools.rs",
+   "to": "unit:crates/codeindex/src/git.rs",
+   "label": "code_impact reads git ranges",
+   "backed": true,
+   "evidence": [
+    {
+     "type": "imports",
+     "count": 3,
+     "sample": "crates/codeindex/src/tools.rs#L1"
+    }
+   ]
+  },
+  {
+   "from": "unit:crates/codeindex/src/tools.rs",
+   "to": "unit:crates/codeindex/src/event.rs",
+   "label": "CodeToolSummary per call",
+   "backed": true,
+   "evidence": [
+    {
+     "type": "imports",
+     "count": 2,
+     "sample": "crates/codeindex/src/tools.rs#L1"
+    }
+   ]
+  },
+  {
+   "from": "unit:crates/codeindex/src/rank.rs",
+   "to": "unit:crates/codeindex/src/tools.rs",
+   "label": "estimate_tokens for budgets",
+   "backed": true,
+   "evidence": [
+    {
+     "type": "imports",
+     "count": 1,
+     "sample": "crates/codeindex/src/rank.rs#L1"
+    }
+   ]
+  }
+ ],
+ "children": [
+  {
+   "id": "overall-architecture/unit:crates/codeindex/src/walk.rs",
+   "node": "unit:crates/codeindex/src/walk.rs",
+   "name": "Walk",
+   "path": "crates/codeindex/src/walk.rs",
+   "kind": "file",
+   "files": 1,
+   "lines": 420,
+   "share": 0.0002,
+   "leaf": true,
+   "stale": false,
+   "thumbnail": null
+  },
+  {
+   "id": "overall-architecture/cluster:f61c2c5b",
+   "node": "cluster:f61c2c5b",
+   "name": "Parse + resolve",
+   "path": "crates/codeindex/src",
+   "kind": "cluster",
+   "files": 18,
+   "lines": 5200,
+   "share": 0.0015,
+   "leaf": true,
+   "stale": false,
+   "thumbnail": null
+  },
+  {
+   "id": "overall-architecture/unit:crates/codeindex/src/store.rs",
+   "node": "unit:crates/codeindex/src/store.rs",
+   "name": "SQLite store",
+   "path": "crates/codeindex/src/store.rs",
+   "kind": "file",
+   "files": 1,
+   "lines": 1900,
+   "share": 0.002,
+   "leaf": true,
+   "stale": false,
+   "thumbnail": null
+  },
+  {
+   "id": "overall-architecture/unit:crates/codeindex/src/index.rs",
+   "node": "unit:crates/codeindex/src/index.rs",
+   "name": "Codeindex / RootIndex",
+   "path": "crates/codeindex/src/index.rs",
+   "kind": "file",
+   "files": 1,
+   "lines": 1100,
+   "share": 0.003,
+   "leaf": true,
+   "stale": false,
+   "thumbnail": null
+  },
+  {
+   "id": "overall-architecture/unit:crates/codeindex/src/git.rs",
+   "node": "unit:crates/codeindex/src/git.rs",
+   "name": "Git facts",
+   "path": "crates/codeindex/src/git.rs",
+   "kind": "file",
+   "files": 1,
+   "lines": 640,
+   "share": 0.0002,
+   "leaf": true,
+   "stale": true,
+   "thumbnail": null
+  },
+  {
+   "id": "overall-architecture/unit:crates/codeindex/src/rank.rs",
+   "node": "unit:crates/codeindex/src/rank.rs",
+   "name": "Rank",
+   "path": "crates/codeindex/src/rank.rs",
+   "kind": "file",
+   "files": 1,
+   "lines": 380,
+   "share": 0.0003,
+   "leaf": true,
+   "stale": false,
+   "thumbnail": null
+  },
+  {
+   "id": "overall-architecture/unit:crates/codeindex/src/lens.rs",
+   "node": "unit:crates/codeindex/src/lens.rs",
+   "name": "Lenses Here/Fit/Change",
+   "path": "crates/codeindex/src/lens.rs",
+   "kind": "file",
+   "files": 1,
+   "lines": 1750,
+   "share": 0.004,
+   "leaf": true,
+   "stale": false,
+   "thumbnail": null
+  },
+  {
+   "id": "overall-architecture/unit:crates/codeindex/src/tools.rs",
+   "node": "unit:crates/codeindex/src/tools.rs",
+   "name": "code_* tools",
+   "path": "crates/codeindex/src/tools.rs",
+   "kind": "file",
+   "files": 1,
+   "lines": 2070,
+   "share": 0.006,
+   "leaf": true,
+   "stale": false,
+   "thumbnail": null
+  },
+  {
+   "id": "overall-architecture/unit:crates/codeindex/src/event.rs",
+   "node": "unit:crates/codeindex/src/event.rs",
+   "name": "Events",
+   "path": "crates/codeindex/src/event.rs",
+   "kind": "file",
+   "files": 1,
+   "lines": 210,
+   "share": 0.0001,
+   "leaf": true,
+   "stale": false,
+   "thumbnail": null
+  }
+ ],
+ "also_in": [],
+ "stale": false,
+ "origin": "generated",
+ "provenance": {
+  "model": "anthropic/claude-opus-4",
+  "git_head": "5cddad8e",
+  "index_state": "3255:1759946400000000000",
+  "generated_ms": 1759946710000,
+  "call_ids": [
+   "01J9ZQ6R7T2W9X4Y1Z3A5B8CDE",
+   "01J9ZQ7K3M6N1P8Q2R4S7T9UVF"
+  ],
+  "cost_nanos": 25000000,
+  "currency": "USD",
+  "input_tokens": 9400,
+  "output_tokens": 1120,
+  "repaired": false,
+  "facts_hash": "cf92886850e5a265b254aa1d35073085fef554e8ccc806d4f341b1e3dcfbb118"
+ },
+ "listing": null
+}

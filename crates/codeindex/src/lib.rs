@@ -28,6 +28,7 @@ pub mod index;
 pub mod lang;
 pub mod lens;
 pub mod locate;
+pub mod map;
 pub mod outline_hook;
 pub mod parse;
 pub mod profile;
@@ -45,6 +46,11 @@ pub use lens::{
     HereLens, LensMeta, MapRow, Touch,
 };
 pub use locate::{Locate, LocateAnchor, LocateStatus, Located};
+pub use map::{
+    MapAnchor, MapChild, MapEdge, MapElement, MapEvidence, MapExport, MapFields, MapHit, MapIndex,
+    MapJob, MapListing, MapMeta, MapOrigin, MapPerspective, MapProvenance, MapState, MapTreeRow,
+    ProfileLine,
+};
 
 /// Registry name of the [`CodeindexActor`].
 pub const CODEINDEX_ACTOR: &str = "codeindex";
@@ -67,6 +73,8 @@ pub struct CodeindexConfig {
     pub cochange_commits: u32,
     /// Languages to parse; others are files only. `typescript` covers TSX.
     pub languages: Vec<String>,
+    /// `codeindex.codemap` (147 §10.4): the generated map.
+    pub codemap: CodemapConfig,
 }
 
 impl Default for CodeindexConfig {
@@ -79,8 +87,18 @@ impl Default for CodeindexConfig {
             languages: ["rust", "typescript", "javascript", "python", "go"]
                 .map(str::to_owned)
                 .to_vec(),
+            codemap: CodemapConfig::default(),
         }
     }
+}
+
+/// `codeindex.codemap:` (147 §10.4, W2). Every field has a default.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct CodemapConfig {
+    /// Provider/model for generation (`ModelRole::Named`); empty → the
+    /// opening session's model (`ModelRole::Session`).
+    pub model: String,
 }
 
 /// Reply of [`Stats`] and [`Reconcile`] (60 §10); the `codeindex_stats` RPC payload.
@@ -204,7 +222,8 @@ impl Message<Locate> for CodeindexActor {
     }
 }
 
-/// The four lens messages (73 §5.2): store reads, no walk; `Touch` writes.
+/// The lens messages (73 §5.2) and the map messages (147 §10.3): store reads,
+/// no walk; `Touch` writes, `Generate`/`Cancel` drive the one job per root.
 macro_rules! lens_handler {
     ($($msg:ty => $reply:ty, $f:path;)*) => {$(
         impl Message<$msg> for CodeindexActor {
@@ -221,6 +240,12 @@ lens_handler! {
     Fit => FitLens, lens::fit;
     Change => ChangeLens, lens::change;
     Touch => LensMeta, lens::touch;
+    map::Overview => MapIndex, map::skeleton::overview;
+    map::Element => MapElement, map::skeleton::element;
+    map::Generate => MapJob, map::generator::generate;
+    map::Cancel => MapJob, map::generator::cancel;
+    map::Search => Vec<MapHit>, map::skeleton::search;
+    map::Export => MapExport, map::export::export;
 }
 
 /// The plugin: reads `codeindex`, creates `<data_dir>/codeindex/`, spawns

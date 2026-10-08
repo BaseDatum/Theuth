@@ -133,6 +133,52 @@ pub fn to_mermaid(p: &GraphProps) -> String {
     out
 }
 
+/// A located failure of [`from_mermaid`] (147 §6.5, §6.6): one line of the
+/// generator's repair message, `mermaid:<line>:<col> · <what> · <expected>`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MermaidError {
+    /// 1-based line in `src`; 0 when the error has no position.
+    pub line: u32,
+    /// 1-based column; 0 when unknown.
+    pub col: u32,
+    /// What is wrong (the parser's message, or `node id not issued`, …).
+    pub what: String,
+    /// What was expected (`one of g1, g2, …`, a `flowchart` header, …).
+    pub expected: String,
+}
+
+impl std::fmt::Display for MermaidError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "mermaid:{}:{} · {} · {}",
+            self.line, self.col, self.what, self.expected
+        )
+    }
+}
+
+impl std::error::Error for MermaidError {}
+
+/// The inverse of [`to_mermaid`] (147 §6.5, O2): a `flowchart`/`graph` source
+/// through merman's flowchart parser into a typed [`GraphProps`] — nodes with
+/// their labels and shapes, `-->`/`-.->` edges with labels (dashed =
+/// `Dashed`), `subgraph`s as groups; `classDef`/`style`/`click` ignored.
+/// `allowed` = the node ids the engine issued (`Some`) or any id (`None`,
+/// `.omm/` import); an id outside the set, a parse error or an edge to an
+/// undeclared node is returned located, once, for repair.
+/// `to_mermaid ∘ from_mermaid` is identity on node/edge sets (fixture-tested).
+///
+/// owner: W2 — design §6.5 (merman `Engine::parse_diagram_for_render_model_sync`).
+pub fn from_mermaid(src: &str, allowed: Option<&[&str]>) -> Result<GraphProps, MermaidError> {
+    let _ = (src, allowed);
+    Err(MermaidError {
+        line: 0,
+        col: 0,
+        what: "from_mermaid not built (147 W2)".to_owned(),
+        expected: "a flowchart parsed by merman".to_owned(),
+    })
+}
+
 /// The state glyph in front of a node line.
 fn glyph(state: Option<GraphState>) -> &'static str {
     match state.unwrap_or(GraphState::Default) {
