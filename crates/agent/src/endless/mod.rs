@@ -312,6 +312,8 @@ pub struct SessionMemory {
     pub stats: EndlessStats,
     /// Compactor model id; `""` for an epochs session.
     pub model: String,
+    /// The view budget in force (R1b: the session's own, else `agent.endless.view_bytes`).
+    pub view_bytes: u32,
     /// D14 progress while history is being covered.
     #[cfg_attr(feature = "ts", ts(optional = nullable))]
     pub backfill: Option<Backfill>,
@@ -437,7 +439,9 @@ impl Endless {
         self.store_for(session).session_memory(session).await
     }
 
-    /// The loop's switch (D14): attached ∧ `endless` ∧ backfill finished.
+    /// The loop's switch (D14): attached ∧ `endless` ∧ backfill finished ∧
+    /// filter ≠ `Meeting` (a meeting keeps head D + its verbatim tail; only the
+    /// pump and `render_with_budget` serve it).
     pub fn active(&self, session: SessionId) -> bool {
         self.inner
             .sessions
@@ -463,25 +467,33 @@ impl Endless {
         pump::nudge(&self.inner, session);
     }
 
-    /// R1-D2: a per-session view budget (agents file `view_bytes:`); until
-    /// called, `agent.endless.view_bytes`.
-    pub fn set_view_bytes(&self, session: SessionId, bytes: u32) {
-        pump::set_view_bytes(&self.inner, session, bytes);
+    /// R1-D2 / R1b: the session's view budget (a user control, persisted in
+    /// `sessions.endless_view_bytes`); `None` returns to `agent.endless.view_bytes`.
+    /// The fold re-fits at the next render: a smaller budget merges down, a
+    /// larger one re-folds at the new budget (never cuts text).
+    pub async fn set_view_bytes(
+        &self,
+        session: SessionId,
+        bytes: Option<u32>,
+    ) -> anyhow::Result<()> {
+        pump::set_view_bytes(&self.inner, session, bytes).await
     }
 
     /// R1-D1: the same render as the turn's, without freezing a context —
     /// a native child's first message.
     pub async fn render_snapshot(&self, session: SessionId) -> anyhow::Result<Vec<ViewBlock>> {
-        pump::render_with_budget(&self.inner, session, None).await
+        pump::render_snapshot(&self.inner, session).await
     }
 
-    /// R1-D6: the view folded to `bytes` (a meeting head's section).
+    /// R1-D6: the view re-folded to `bytes`, as lines (a meeting head's
+    /// `## Earlier in this meeting`); works for a `UnitFilter::Meeting`
+    /// session, whose `active()` is false.
     pub async fn render_with_budget(
         &self,
         session: SessionId,
         bytes: u32,
-    ) -> anyhow::Result<Vec<ViewBlock>> {
-        pump::render_with_budget(&self.inner, session, Some(bytes)).await
+    ) -> anyhow::Result<Vec<ViewLine>> {
+        pump::render_with_budget(&self.inner, session, bytes).await
     }
 
     /// R1-D4: ETA and cost of switching the session on (or of the backfill under way).

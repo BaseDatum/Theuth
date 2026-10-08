@@ -50,7 +50,9 @@ impl Handle {
     /// D14: the loop runs the endless frame only once the tree covers the history.
     pub(crate) fn active(&self) -> bool {
         let live = self.state.live.lock();
-        live.mode == MemoryMode::Endless && live.backfill().is_none()
+        live.mode == MemoryMode::Endless
+            && live.filter != UnitFilter::Meeting
+            && live.backfill().is_none()
     }
 }
 
@@ -246,7 +248,7 @@ impl Live {
             mode: meta.mode,
             filter: meta.filter,
             base: meta.base,
-            view_bytes: None,
+            view_bytes: meta.view_bytes,
             units: Vec::new(),
             tree: Tree::default(),
             fold: None,
@@ -345,6 +347,7 @@ pub(crate) async fn attach(
             live.mode = meta.mode;
             live.filter = meta.filter;
             live.base = meta.base;
+            live.view_bytes = meta.view_bytes;
             live.invalidate();
             drop(live);
             state
@@ -801,43 +804,61 @@ pub(crate) fn nudge(inner: &Inner, session: SessionId) {
     }
 }
 
-pub(crate) fn set_view_bytes(inner: &Inner, session: SessionId, bytes: u32) {
-    if let Some(state) = state_of(inner, session) {
-        let mut live = state.live.lock();
-        live.view_bytes = Some(bytes);
-        live.invalidate();
-    }
-}
-
-/// R1-D1 / R1-D6: the view rendered now, under the session's budget or
-/// `bytes`, without freezing a context or counting a turn.
-pub(crate) async fn render_with_budget(
+pub(crate) async fn set_view_bytes(
     inner: &Inner,
     session: SessionId,
     bytes: Option<u32>,
+) -> anyhow::Result<()> {
+    inner
+        .store_for(session)
+        .set_endless_view_bytes(session, bytes)
+        .await?;
+    if let Some(state) = state_of(inner, session) {
+        let mut live = state.live.lock();
+        live.view_bytes = bytes;
+        live.invalidate();
+    }
+    Ok(())
+}
+
+/// R1-D1: the view rendered now under the session's budget, without
+/// freezing a context or counting a turn (a native child's first message).
+pub(crate) async fn render_snapshot(
+    inner: &Inner,
+    session: SessionId,
 ) -> anyhow::Result<Vec<ViewBlock>> {
     let Some(state) = state_of(inner, session) else {
         anyhow::bail!("session {session} is not attached to endless");
     };
     ingest(&state).await?;
     let mut live = state.live.lock();
-    let f = match bytes {
-        Some(b) => {
-            let cfg = state.cfg.fold_cfg_for(b);
-            Fold::rebuild(
-                &live.tree,
-                live.base.min(live.t()),
-                live.t(),
-                cfg,
-                &live.units,
-            )
-        }
-        None => {
-            let cfg = live.fold_cfg(&state.cfg);
-            live.fold(cfg)
-        }
-    };
+    let cfg = live.fold_cfg(&state.cfg);
+    let f = live.fold(cfg);
     Ok(fold::render(&live.tree, &f, &live.units).blocks)
+}
+
+/// R1-D6: the view re-folded to `bytes` as lines (a meeting head's
+/// `## Earlier in this meeting`); the live fold is untouched. Serves a
+/// `UnitFilter::Meeting` session, for which `active()` is false.
+pub(crate) async fn render_with_budget(
+    inner: &Inner,
+    session: SessionId,
+    bytes: u32,
+) -> anyhow::Result<Vec<ViewLine>> {
+    let Some(state) = state_of(inner, session) else {
+        anyhow::bail!("session {session} is not attached to endless");
+    };
+    ingest(&state).await?;
+    let live = state.live.lock();
+    let cfg = state.cfg.fold_cfg_for(bytes);
+    let f = Fold::rebuild(
+        &live.tree,
+        live.base.min(live.t()),
+        live.t(),
+        cfg,
+        &live.units,
+    );
+    Ok(fold::render_lines(&live.tree, &f, &live.units))
 }
 
 /// Tree units of the rows (the filter applied), for sizing a backfill before any state exists.
@@ -1027,6 +1048,17 @@ pub(crate) async fn set_mode(
                 let t = count_units(&store, session, inner.cfg.cap_chars, filter).await?;
                 let base = t.saturating_sub(u64::from(inner.cfg.backfill_max_units));
                 store.set_endless_meta(session, filter, base).await?;
+                if filter != meta.filter {
+                    // The cache was derived under the old filter: re-derive from the rows.
+                    store.endless_units_clear(session).await?;
+                    if let Some(state) = state_of(inner, session) {
+                        let mut live = state.live.lock();
+                        live.units.clear();
+                        live.turns.clear();
+                        live.last_seq = -1;
+                        live.invalidate();
+                    }
+                }
             } else {
                 store
                     .set_endless_meta(session, meta.filter, meta.base)
@@ -1062,6 +1094,7 @@ pub(crate) async fn set_mode(
             // A fresh pump: `attach` reloads nothing for a known state but restarts the task.
             attach(inner, session, attached).await?;
             if let Some(state) = state_of(inner, session) {
+                ingest(&state).await?;
                 {
                     let mut live = state.live.lock();
                     live.backfill_total = live.history_unbuilt();
@@ -1128,6 +1161,7 @@ pub(crate) async fn memory(inner: &Inner, session: SessionId) -> anyhow::Result<
         units: live.t(),
         stats,
         model: state.compactor.model_id().to_owned(),
+        view_bytes: live.fold_cfg(&state.cfg).view_bytes,
         backfill: live.backfill(),
     })
 }

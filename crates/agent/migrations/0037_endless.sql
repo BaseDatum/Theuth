@@ -66,3 +66,5 @@ END;
 -- by recall) and the unit filter (`all` | `meeting`), both fixed at switch-on.
 ALTER TABLE sessions ADD COLUMN endless_base INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE sessions ADD COLUMN endless_filter TEXT NOT NULL DEFAULT 'all';
+-- 137 R1b: per-session view budget (the user's control); NULL = `agent.endless.view_bytes`.
+ALTER TABLE sessions ADD COLUMN endless_view_bytes INTEGER NULL;

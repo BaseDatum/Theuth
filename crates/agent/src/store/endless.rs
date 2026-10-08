@@ -23,6 +23,8 @@ pub struct EndlessMeta {
     pub filter: UnitFilter,
     /// `sessions.endless_base`: first unit the tree covers.
     pub base: u64,
+    /// `sessions.endless_view_bytes`: the user's per-session view budget (R1b).
+    pub view_bytes: Option<u32>,
 }
 
 /// One `endless_units` row (the unit without its text).
@@ -104,17 +106,18 @@ impl Store {
 
     /// `sessions.{memory, endless_filter, endless_base}`; defaults for an unknown session.
     pub async fn endless_meta(&self, id: SessionId) -> anyhow::Result<EndlessMeta> {
-        let row: Option<(String, String, i64)> = sqlx::query_as(
-            "SELECT memory, endless_filter, endless_base FROM sessions WHERE id = ?",
+        let row: Option<(String, String, i64, Option<i64>)> = sqlx::query_as(
+            "SELECT memory, endless_filter, endless_base, endless_view_bytes FROM sessions WHERE id = ?",
         )
         .bind(id.to_string())
         .fetch_optional(&self.read)
         .await?;
         Ok(row
-            .map(|(m, f, b)| EndlessMeta {
+            .map(|(m, f, b, v)| EndlessMeta {
                 mode: m.parse().unwrap_or_default(),
                 filter: f.parse().unwrap_or_default(),
                 base: u64::try_from(b).unwrap_or(0),
+                view_bytes: v.and_then(|v| u32::try_from(v).ok()),
             })
             .unwrap_or_default())
     }
@@ -130,6 +133,21 @@ impl Store {
         sqlx::query("UPDATE sessions SET endless_filter = ?, endless_base = ? WHERE id = ?")
             .bind(filter.as_str())
             .bind(i64::try_from(base).unwrap_or(i64::MAX))
+            .bind(id.to_string())
+            .execute(&mut *tx)
+            .await?;
+        tx.commit().await
+    }
+
+    /// R1b: the per-session view budget; `None` clears it.
+    pub async fn set_endless_view_bytes(
+        &self,
+        id: SessionId,
+        bytes: Option<u32>,
+    ) -> anyhow::Result<()> {
+        let mut tx = self.begin_write().await?;
+        sqlx::query("UPDATE sessions SET endless_view_bytes = ? WHERE id = ?")
+            .bind(bytes.map(i64::from))
             .bind(id.to_string())
             .execute(&mut *tx)
             .await?;
@@ -178,6 +196,16 @@ impl Store {
                 })
             })
             .collect()
+    }
+
+    /// Drop the unit cache (a first switch-on with a different filter re-derives it).
+    pub async fn endless_units_clear(&self, id: SessionId) -> anyhow::Result<()> {
+        let mut tx = self.begin_write().await?;
+        sqlx::query("DELETE FROM endless_units WHERE session_id = ?")
+            .bind(id.to_string())
+            .execute(&mut *tx)
+            .await?;
+        tx.commit().await
     }
 
     /// Append unit rows (idempotent on `i`).
@@ -475,6 +503,23 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(store.session_memory(id).await.unwrap(), MemoryMode::Endless);
+        store
+            .set_endless_meta(id, UnitFilter::Meeting, 40)
+            .await
+            .unwrap();
+        store
+            .set_endless_view_bytes(id, Some(48_000))
+            .await
+            .unwrap();
+        assert_eq!(
+            store.endless_meta(id).await.unwrap(),
+            EndlessMeta {
+                mode: MemoryMode::Endless,
+                filter: UnitFilter::Meeting,
+                base: 40,
+                view_bytes: Some(48_000)
+            }
+        );
         assert_eq!(store.endless_sessions().await.unwrap().len(), 1);
         assert_eq!(
             store.session(id).await.unwrap().unwrap().memory,

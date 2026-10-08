@@ -331,7 +331,7 @@ fn wire_types_round_trip() {
     assert_eq!(v["type"], "EndlessProgress");
     assert_eq!(serde_json::from_value::<EndlessProgress>(v).unwrap(), ev);
     let mem: SessionMemory = serde_json::from_str(
-        r#"{"mode":"endless","view":[{"id":0,"n":2,"level":1,"text":"x","built":true}],"settling":false,"unbuilt":0,"units":2,"stats":{"calls":1,"guard_trips":{"copy":0,"grounding":0,"status":0,"format":0,"empty":0,"size":0},"input_tokens":1,"cache_read_tokens":0,"cache_write_tokens":0,"output_tokens":1,"usd_estimate":0.0},"model":"m","backfill":null}"#,
+        r#"{"mode":"endless","view":[{"id":0,"n":2,"level":1,"text":"x","built":true}],"settling":false,"unbuilt":0,"units":2,"stats":{"calls":1,"guard_trips":{"copy":0,"grounding":0,"status":0,"format":0,"empty":0,"size":0},"input_tokens":1,"cache_read_tokens":0,"cache_write_tokens":0,"output_tokens":1,"usd_estimate":0.0},"model":"m","view_bytes":128000,"backfill":null}"#,
     )
     .unwrap();
     assert_eq!(mem.view[0].n, 2);
@@ -404,8 +404,26 @@ async fn backfill_cap_sets_base_and_keeps_raw_history_reachable() {
         snap.iter().map(|b| b.text.as_str()).collect::<String>(),
         r.text()
     );
+    // R1b: the budget is the user's, persisted, and shown in `SessionMemory`.
+    assert_eq!(endless.memory(id).await.unwrap().view_bytes, 16_000);
+    endless.set_view_bytes(id, Some(40_000)).await.unwrap();
+    assert_eq!(
+        store.endless_meta(id).await.unwrap().view_bytes,
+        Some(40_000)
+    );
+    assert_eq!(endless.memory(id).await.unwrap().view_bytes, 40_000);
+    endless.detach(id);
+    endless.attach(id, attached()).await.unwrap();
+    assert_eq!(
+        endless.memory(id).await.unwrap().view_bytes,
+        40_000,
+        "survives a restart"
+    );
+    endless.set_view_bytes(id, None).await.unwrap();
+    assert_eq!(endless.memory(id).await.unwrap().view_bytes, 16_000);
     let small = endless.render_with_budget(id, 16_000).await.unwrap();
-    assert!(!small.is_empty());
+    assert_eq!(small.len(), on.memory.view.len());
+    assert_eq!((small[0].id, small[0].n), (0, 3));
 }
 
 /// R1-D3 chain and R1-D6 filter are pure and testable alone.
@@ -443,4 +461,76 @@ fn compactor_chain_and_meeting_filter() {
         "meeting".parse::<UnitFilter>().unwrap(),
         UnitFilter::Meeting
     );
+}
+
+/// Addendum (W4): a `Meeting`-filter session keeps only meeting units, is
+/// never `active()` (head D + verbatim tail stay), and `render_with_budget`
+/// serves its lines.
+#[tokio::test]
+async fn meeting_filter_session_is_served_but_never_active() {
+    let (endless, store, _echo, id, _dir) = harness().await;
+    store
+        .append(
+            id,
+            &ChatMessage::user("[meeting batch 1] alice: let's ship on Friday"),
+        )
+        .await
+        .unwrap();
+    store
+        .append(id, &ChatMessage::assistant("noted"))
+        .await
+        .unwrap();
+    store
+        .append(
+            id,
+            &ChatMessage::assistant(MessageContent::from_parts(vec![ContentPart::ToolCall(
+                ToolCall {
+                    call_id: "c1".into(),
+                    fn_name: "meeting_topic".into(),
+                    fn_arguments: serde_json::json!({"title": "release"}),
+                    thought_signatures: None,
+                },
+            )])),
+        )
+        .await
+        .unwrap();
+    store
+        .append(id, &ChatMessage::from(vec![ToolResponse::new("c1", "ok")]))
+        .await
+        .unwrap();
+    store
+        .append(
+            id,
+            &ChatMessage::user("[meeting batch 2] bob: Friday works"),
+        )
+        .await
+        .unwrap();
+    endless.attach(id, attached()).await.unwrap();
+    endless
+        .set_mode(id, MemoryMode::Endless, UnitFilter::Meeting, 1)
+        .await
+        .unwrap();
+    assert_eq!(
+        store.endless_meta(id).await.unwrap().filter,
+        UnitFilter::Meeting
+    );
+    assert!(endless.settle(id, Duration::from_secs(10)).await);
+    assert!(!endless.active(id), "meetings never take the endless frame");
+    let mem = endless.memory(id).await.unwrap();
+    assert_eq!(
+        mem.units, 3,
+        "two batches + the topic call; talk and echo dropped"
+    );
+    let lines = endless.render_with_budget(id, 32_000).await.unwrap();
+    assert_eq!(lines.len(), 3);
+    assert!(lines[0].text.starts_with("user: [meeting batch 1]"));
+    assert!(lines[1].text.starts_with("tool: meeting_topic"));
+    // A restart keeps the filter: a new row that is not meeting material stays out.
+    endless.detach(id);
+    store
+        .append(id, &ChatMessage::assistant("chatter"))
+        .await
+        .unwrap();
+    endless.attach(id, attached()).await.unwrap();
+    assert_eq!(endless.memory(id).await.unwrap().units, 3);
 }
