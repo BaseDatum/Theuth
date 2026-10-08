@@ -452,45 +452,46 @@ function wrap(api: Api, s: State): Api {
       return d ? wait(d) : Promise.reject(new Error(`no experiment ${n}`))
     },
     'autoresearch.control': (slug, op) => {
+      // Never in place: React Query's structural sharing keeps the old reference when nothing new is allocated.
       const st = find(slug)
-      const i = st.info
       const set = (next: Partial<StudyInfo>) => {
-        Object.assign(i, next)
-        st.detail.info = { ...i }
+        st.info = { ...st.info, ...next }
+        st.detail = { ...st.detail, info: st.info }
+      }
+      const changeset = (k: number, f: (c: Changeset) => Changeset) => {
+        st.detail = { ...st.detail, changesets: st.detail.changesets?.map((c) => (c.k === k ? f(c) : c)) ?? null }
+      }
+      const dropReverted = (n: number) => {
+        st.detail = { ...st.detail, attention: st.detail.attention.filter((a) => !(a.kind === 'reverted' && a.n === n)) }
       }
       if (op === 'Pause') set({ state: 'paused', reason: 'user' })
       else if (op === 'Resume' || op === 'RunOnce') set({ state: 'running', reason: null })
       else if (op === 'StopAfter' || op === 'StopNow' || op === 'Finalize') set({ state: 'finalizing', reason: null })
       else if (op === 'Discard') set({ state: 'discarded', reason: null })
-      else if (typeof op === 'object' && 'Restore' in op) st.detail.attention = st.detail.attention.filter((a) => !(a.kind === 'reverted' && a.n === op.Restore.n))
-      else if (typeof op === 'object' && 'KeepReverted' in op) st.detail.attention = st.detail.attention.filter((a) => !(a.kind === 'reverted' && a.n === op.KeepReverted.n))
-      else if (typeof op === 'object' && 'OpenPr' in op) {
-        const c = st.detail.changesets?.find((x) => x.k === op.OpenPr.k)
-        if (c) c.pr_url = `https://github.com/Shopify/liquid/pull/${1900 + c.k}`
-      } else if (typeof op === 'object' && 'Merge' in op) {
-        const c = st.detail.changesets?.find((x) => x.k === op.Merge.k)
-        if (c) c.merged = true
-      }
-      return wait({ ...i })
+      else if (typeof op === 'object' && 'Restore' in op) dropReverted(op.Restore.n)
+      else if (typeof op === 'object' && 'KeepReverted' in op) dropReverted(op.KeepReverted.n)
+      else if (typeof op === 'object' && 'OpenPr' in op) changeset(op.OpenPr.k, (c) => ({ ...c, pr_url: `https://github.com/Shopify/liquid/pull/${1900 + c.k}` }))
+      else if (typeof op === 'object' && 'Merge' in op) changeset(op.Merge.k, (c) => ({ ...c, merged: true }))
+      return wait(st.info)
     },
     'autoresearch.steer': (slug, text) => {
       const st = find(slug)
       const id = `s${st.detail.steers.length + 1}`
-      st.detail.steers = [...st.detail.steers, { id, text, by: 'you', at: new Date().toISOString(), seen_in: null }]
+      st.detail = { ...st.detail, steers: [...st.detail.steers, { id, text, by: 'you', at: new Date().toISOString(), seen_in: null }] }
       return wait(id)
     },
     'autoresearch.idea': (slug, op) => {
       const st = find(slug)
       if ('Add' in op) {
         const idea: Idea = { id: `i${st.detail.ideas.length + 1}`, text: op.Add.text, category: op.Add.category, source: 'user', priority: op.Add.priority, status: 'open', tried_in: [], at: new Date().toISOString() }
-        st.detail.ideas = [idea, ...st.detail.ideas]
+        st.detail = { ...st.detail, ideas: [idea, ...st.detail.ideas] }
         return wait(idea)
       }
       const id = 'Close' in op ? op.Close.id : op.Priority.id
       const idea = st.detail.ideas.find((x) => x.id === id)
       if (!idea) return Promise.reject(new Error(`no idea ${id}`))
       const next: Idea = 'Close' in op ? { ...idea, status: 'closed' } : { ...idea, priority: op.Priority.priority }
-      st.detail.ideas = st.detail.ideas.map((x) => (x.id === id ? next : x))
+      st.detail = { ...st.detail, ideas: st.detail.ideas.map((x) => (x.id === id ? next : x)) }
       return wait(next)
     },
     'autoresearch.settings': () => wait(settings),

@@ -14,20 +14,24 @@ import type { Attention, Idea, Steer, StudyDetail } from './types'
 export function SidePanel({ detail, onPick }: { detail: StudyDetail; onPick: (n: number) => void }) {
   const live = detail.info.state === 'running' || detail.info.state === 'paused' || detail.info.state === 'preparing'
   return (
-    <div className="flex min-w-0 flex-col gap-3">
-      {live && <SteerBox slug={detail.info.slug} steers={detail.steers} />}
-      {detail.attention.length > 0 && <NeedsEyes detail={detail} onPick={onPick} />}
-      <Ideas slug={detail.info.slug} ideas={detail.ideas} live={live} />
-      {detail.playbook && (
-        <Panel title="Playbook" hint="kept by the study for its next experiments">
-          <pre className="max-h-64 overflow-auto font-sans text-[13px] leading-5 whitespace-pre-wrap text-fg-secondary">{detail.playbook}</pre>
-        </Panel>
-      )}
-      {!live && detail.steers.length > 0 && (
-        <Panel title="Your notes">
-          <SteerHistory steers={detail.steers} />
-        </Panel>
-      )}
+    <div className="grid min-w-0 grid-cols-1 gap-3 md:grid-cols-2 2xl:grid-cols-1">
+      <div className="flex min-w-0 flex-col gap-3">
+        {live && <SteerBox slug={detail.info.slug} steers={detail.steers} />}
+        {detail.attention.length > 0 && <NeedsEyes detail={detail} onPick={onPick} />}
+        {!live && detail.steers.length > 0 && (
+          <Panel title="Your notes">
+            <SteerHistory steers={detail.steers} />
+          </Panel>
+        )}
+      </div>
+      <div className="flex min-w-0 flex-col gap-3">
+        <Ideas slug={detail.info.slug} ideas={detail.ideas} live={live} />
+        {detail.playbook && (
+          <Panel title="Playbook" hint="kept by the study for its next experiments">
+            <pre className="max-h-64 overflow-auto font-sans text-[13px] leading-5 whitespace-pre-wrap text-fg-secondary">{detail.playbook}</pre>
+          </Panel>
+        )}
+      </div>
     </div>
   )
 }

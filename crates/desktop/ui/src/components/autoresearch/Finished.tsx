@@ -17,7 +17,7 @@ export function Finished({ detail }: { detail: StudyDetail }) {
   const sets = detail.changesets ?? []
   return (
     <Panel
-      title={detail.headline ? <span className="tabular-nums">{detail.headline}</span> : 'Finished'}
+      title="Finished"
       hint={detail.stop_reason ? STOP_REASON_LABEL[detail.stop_reason] : undefined}
       actions={
         <>
@@ -33,6 +33,7 @@ export function Finished({ detail }: { detail: StudyDetail }) {
       }
       className="border-success-border/40"
     >
+      {detail.headline && <p className="mb-3 text-[15px] font-semibold tabular-nums">{detail.headline}</p>}
       {sets.length === 0 ? (
         <p className="text-[13px] text-fg-tertiary">No changeset cleared the gate on its own; nothing to land.</p>
       ) : (
@@ -41,13 +42,13 @@ export function Finished({ detail }: { detail: StudyDetail }) {
             <thead>
               <tr className="text-left text-[11.5px] font-semibold text-fg-tertiary">
                 <th className="px-2 py-1.5">changeset</th>
-                <th className="px-2 py-1.5 text-right" title="Measured alone on the base, bench.repeats samples">
+                <th className="px-2 py-1.5 text-right whitespace-nowrap" title="Measured alone on the base, bench.repeats samples">
                   Δ alone
                 </th>
-                <th className="px-2 py-1.5 text-right" title="Its share of the final incumbent's improvement">
+                <th className="px-2 py-1.5 text-right whitespace-nowrap" title="Its share of the final incumbent's improvement">
                   Δ together
                 </th>
-                <th className="hidden px-2 py-1.5 md:table-cell">files</th>
+                <th className="hidden px-2 py-1.5 2xl:table-cell">files</th>
                 <th className="px-2 py-1.5">review</th>
                 <th className="px-2 py-1.5 text-right" />
               </tr>
@@ -71,18 +72,18 @@ function Row({ c, pending, onPr, onMerge }: { c: Changeset; pending: boolean; on
   return (
     <tr className={cn('border-t border-border-subtle align-top', !c.alone_clears && 'text-fg-secondary')}>
       <td className="px-2 py-1.5">
-        <div className="font-medium">
+        <div className="font-medium whitespace-nowrap">
           #{c.k} {c.name}
         </div>
         <div className="text-xs text-fg-tertiary">
-          {c.commits.length} {c.commits.length === 1 ? 'commit' : 'commits'}
+          {c.commits.length} {c.commits.length === 1 ? 'commit' : 'commits'} · {c.files.length} {c.files.length === 1 ? 'file' : 'files'}
           {!c.alone_clears && c.depends_on !== null && <span className="ml-1 text-warning">· only helps together with #{c.depends_on}</span>}
           {c.merged && <span className="ml-1 text-success">· merged</span>}
         </div>
       </td>
-      <td className={cn('px-2 py-1.5 text-right tabular-nums', c.alone_clears && 'text-success')}>{pct(c.delta_alone_pct)}</td>
-      <td className="px-2 py-1.5 text-right tabular-nums">{pct(c.delta_together_pct)}</td>
-      <td className="hidden max-w-[260px] px-2 py-1.5 md:table-cell">
+      <td className={cn('px-2 py-1.5 text-right tabular-nums whitespace-nowrap', c.alone_clears && 'text-success')}>{pct(c.delta_alone_pct)}</td>
+      <td className="px-2 py-1.5 text-right tabular-nums whitespace-nowrap">{pct(c.delta_together_pct)}</td>
+      <td className="hidden max-w-[260px] px-2 py-1.5 2xl:table-cell">
         <span className="line-clamp-2 font-mono text-xs text-fg-secondary" title={c.files.join('\n')}>
           {c.files.join(', ')}
         </span>
@@ -91,7 +92,7 @@ function Row({ c, pending, onPr, onMerge }: { c: Changeset; pending: boolean; on
         <span className={cn('rounded-full px-2 py-px text-[11px] font-semibold', c.review === 'clean' ? 'bg-success-bg text-success' : c.review === 'suspicious' ? 'bg-warning-bg text-warning' : 'bg-layer-2 text-fg-secondary')}>{c.review}</span>
       </td>
       <td className="px-2 py-1.5">
-        <div className="flex justify-end gap-1.5">
+        <div className="flex flex-col items-end gap-1 2xl:flex-row 2xl:items-center 2xl:justify-end">
           {c.pr_url ? (
             <Button asChild variant="outline" size="xs">
               <a href={c.pr_url} target="_blank" rel="noreferrer">

@@ -58,13 +58,13 @@ export function RunTable({ rows, metricName, pending, active, onPick }: { rows: 
                 <Th>verdict</Th>
                 <Th className="text-right">{metricName}</Th>
                 <Th className="text-right">Δ</Th>
-                <Th className="text-right" title="Standard deviations better than the incumbent">
+                <Th className="hidden text-right md:table-cell" title="Standard deviations better than the incumbent">
                   σ×
                 </Th>
                 <Th>idea</Th>
                 <Th className="hidden text-right md:table-cell">time</Th>
                 <Th className="hidden text-right md:table-cell">cost</Th>
-                <Th className="hidden lg:table-cell">commit</Th>
+                <Th className="hidden 2xl:table-cell">commit</Th>
               </tr>
             </thead>
             <tbody>
@@ -88,8 +88,8 @@ export function RunTable({ rows, metricName, pending, active, onPick }: { rows: 
                   </Td>
                   <Td className="text-right tabular-nums">{metric(r.metric, '')}</Td>
                   <Td className={cn('text-right tabular-nums', r.state === 'kept' && 'text-success')}>{pct(r.delta_pct)}</Td>
-                  <Td className="text-right tabular-nums">{sigmas(r.z)}</Td>
-                  <Td className="max-w-[320px]">
+                  <Td className="hidden text-right tabular-nums md:table-cell">{sigmas(r.z)}</Td>
+                  <Td className="max-w-[360px] min-w-[150px] whitespace-normal">
                     <span className="line-clamp-2">
                       {r.idea} <span className="text-[11px] text-fg-tertiary">[{r.category}]</span>
                       {r.deviations.length > 0 && (
@@ -101,7 +101,7 @@ export function RunTable({ rows, metricName, pending, active, onPick }: { rows: 
                   </Td>
                   <Td className="hidden text-right tabular-nums text-fg-secondary md:table-cell">{duration(r.duration_ms)}</Td>
                   <Td className="hidden text-right tabular-nums text-fg-secondary md:table-cell">{usd(r.cost_usd)}</Td>
-                  <Td className="hidden font-mono text-xs text-fg-tertiary lg:table-cell">{shortSha(r.commit_sha)}</Td>
+                  <Td className="hidden font-mono text-xs text-fg-tertiary 2xl:table-cell">{shortSha(r.commit_sha)}</Td>
                 </tr>
               ))}
             </tbody>
@@ -121,5 +121,5 @@ function Th({ children, className, title }: { children: ReactNode; className?: s
 }
 
 function Td({ children, className }: { children: ReactNode; className?: string }) {
-  return <td className={cn('px-3 py-1.5', className)}>{children}</td>
+  return <td className={cn('px-3 py-1.5 whitespace-nowrap', className)}>{children}</td>
 }

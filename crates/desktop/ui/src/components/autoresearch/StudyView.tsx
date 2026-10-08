@@ -61,17 +61,22 @@ export function StudyView() {
       <SectionRow
         back={back}
         title={
-          <span className="flex items-center gap-2">
+          <span className="flex min-w-0 items-center gap-2">
             <span className="truncate">{slug}</span>
             <StatePill info={info} currentN={d.current?.n} />
-            <span className="hidden rounded-full border border-border px-1.5 text-[10px] font-normal text-fg-secondary sm:inline">study</span>
           </span>
         }
       >
-        <Controls info={info} current={d.current} />
+        <div className="ml-auto hidden 2xl:flex">
+          <Controls info={info} current={d.current} />
+        </div>
       </SectionRow>
       <div className="min-h-0 flex-1 overflow-y-auto">
         <div className="mx-auto flex w-full max-w-6xl flex-col gap-3 px-4 py-4">
+          {/* Below 2xl the controls would crowd the slug out of the 44 px row: they get their own line here. */}
+          <div className="flex 2xl:hidden">
+            <Controls info={info} current={d.current} />
+          </div>
           <p className="text-[13px] text-fg-secondary">
             {info.goal} · <b className="text-foreground">{info.metric.name}</b>, {info.metric.direction} is better · {d.spec.repo.split('/').filter(Boolean).pop()} @ <code className="font-mono text-xs">{shortSha(d.base_sha)}</code>
             {d.spec.checks ? null : <span className="ml-1 text-warning">· no correctness check</span>}
@@ -86,7 +91,7 @@ export function StudyView() {
 
           {info.state === 'finished' && <Finished detail={d} />}
 
-          <div className="grid grid-cols-2 gap-2.5 md:grid-cols-4">
+          <div className="grid grid-cols-2 gap-2.5 2xl:grid-cols-4">
             <Stat label="Incumbent" sub={info.base_value !== null ? `base ${metric(info.base_value, unit)}` : 'measuring the baseline'}>
               {metric(info.incumbent_value, unit)} {info.delta_pct !== null && <span className={cn('text-sm font-semibold', better ? 'text-success' : 'text-fg-secondary')}>{pct(info.delta_pct)}</span>}
             </Stat>
@@ -113,13 +118,16 @@ export function StudyView() {
             <StudyChart detail={d} onPick={pick} />
           </Panel>
 
-          <div className="grid min-w-0 grid-cols-1 gap-3 lg:grid-cols-[minmax(0,1fr)_300px]">
-            <div className="flex min-w-0 flex-col gap-3">
-              {d.current && <Current cur={d.current} onOpen={() => pick(d.current?.n ?? null)} />}
-              {info.state === 'preparing' && !d.current && <Preparing detail={d} />}
+          {d.current && <Current cur={d.current} onOpen={() => pick(d.current?.n ?? null)} />}
+          {info.state === 'preparing' && !d.current && <Preparing detail={d} />}
+          {/* Below 2xl the side panel sits above the table as two columns (the steer box stays near the top); at 2xl it is the mock's 300 px column. */}
+          <div className="grid min-w-0 grid-cols-1 gap-3 2xl:grid-cols-[minmax(0,1fr)_300px]">
+            <div className="order-2 min-w-0 2xl:order-1">
               <RunTable rows={runs.data} metricName={info.metric.name} pending={runs.isPending} active={n ?? null} onPick={pick} />
             </div>
-            <SidePanel detail={d} onPick={pick} />
+            <div className="order-1 min-w-0 2xl:order-2">
+              <SidePanel detail={d} onPick={pick} />
+            </div>
           </div>
         </div>
       </div>
@@ -136,7 +144,7 @@ export function Controls({ info, current }: { info: StudyInfo; current: CurrentE
   const inFlight = current !== null
   if (info.state === 'running') {
     return (
-      <div className="ml-auto flex shrink-0 flex-wrap items-center justify-end gap-1.5">
+      <div className="flex flex-wrap items-center gap-1.5 2xl:ml-auto 2xl:shrink-0 2xl:justify-end">
         <Button variant="outline" size="xs" disabled={busy} onClick={run('Pause')} title="Finishes the experiment in flight; nothing new fires">
           <Pause /> Pause
         </Button>
@@ -144,8 +152,8 @@ export function Controls({ info, current }: { info: StudyInfo; current: CurrentE
           <SkipForward /> Stop after this
         </Button>
         <Button variant="outline" size="xs" className="text-danger hover:text-danger" disabled={busy} onClick={run('StopNow')} title="Cancels the session, resets the worktree, finalizes">
-          <OctagonX /> <span className="hidden xl:inline">Stop now — discard the experiment in flight</span>
-          <span className="xl:hidden">Stop now</span>
+          <OctagonX /> <span className="hidden 2xl:inline">Stop now — discard the experiment in flight</span>
+          <span className="2xl:hidden">Stop now — discards in flight</span>
         </Button>
         <Button variant="ghost" size="xs" disabled={busy || inFlight} onClick={run('Finalize')} title="Skip straight to confirm, changesets and the report">
           <Flag /> Finalize now
@@ -155,7 +163,7 @@ export function Controls({ info, current }: { info: StudyInfo; current: CurrentE
   }
   if (info.state === 'paused') {
     return (
-      <div className="ml-auto flex shrink-0 flex-wrap items-center justify-end gap-1.5">
+      <div className="flex flex-wrap items-center gap-1.5 2xl:ml-auto 2xl:shrink-0 2xl:justify-end">
         <Button size="xs" disabled={busy} onClick={run('Resume')}>
           <Play /> Resume
         </Button>
@@ -175,14 +183,14 @@ export function Controls({ info, current }: { info: StudyInfo; current: CurrentE
   }
   if (info.state === 'preparing') {
     return (
-      <div className="ml-auto flex shrink-0 items-center gap-1.5">
+      <div className="flex items-center gap-1.5 2xl:ml-auto">
         <Button variant="outline" size="xs" className="text-danger hover:text-danger" disabled={busy} onClick={run('StopNow')}>
           <OctagonX /> Stop now
         </Button>
       </div>
     )
   }
-  if (info.state === 'finalizing') return <span className="ml-auto text-xs text-fg-tertiary">finalizing: confirm runs, changesets, report…</span>
+  if (info.state === 'finalizing') return <span className="text-xs text-fg-tertiary 2xl:ml-auto">finalizing: confirm runs, changesets, report…</span>
   if (info.state === 'failed' || info.state === 'discarded') return <DiscardStudy slug={info.slug} pending={busy} onConfirm={run('Discard')} />
   return null
 }
@@ -214,7 +222,7 @@ function Stat({ label, sub, children }: { label: string; sub?: string; children:
     <div className="rounded-[10px] border border-border-subtle bg-layer-1 px-3 py-2">
       <div className="text-[11px] tracking-wide text-fg-tertiary uppercase">{label}</div>
       <div className="mt-0.5 text-lg font-semibold tabular-nums">{children}</div>
-      {sub && <div className="truncate text-xs text-fg-secondary" title={sub}>{sub}</div>}
+      {sub && <div className="line-clamp-2 text-xs text-fg-secondary" title={sub}>{sub}</div>}
     </div>
   )
 }
