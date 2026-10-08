@@ -477,6 +477,11 @@ pub struct Night {
     knowledge: Option<Arc<knowledge::Knowledge>>,
     /// [`ENDED_GRACE`]; tests shorten it.
     pub ended_grace: std::time::Duration,
+    /// The last `Fired{name: "dreaming"}`: `(at, session)`. `BeginNight` dates
+    /// the night from the fire, not from the ledger call, so the spend window
+    /// covers the first model call (live: the first call — $0.09–0.13, the
+    /// uncached prompt — fell before `started_at` and the receipt missed it).
+    fired: Option<(String, SessionId)>,
 }
 
 impl Night {
@@ -490,6 +495,7 @@ impl Night {
             active: None,
             knowledge: None,
             ended_grace: ENDED_GRACE,
+            fired: None,
         }
     }
 
@@ -743,6 +749,10 @@ impl Message<BeginNight> for Night {
             return Err(format!("paused until {until}"));
         }
         let now = cases::now_rfc3339();
+        let started_at = match (&self.fired, m.session) {
+            (Some((at, s)), Some(session)) if *s == session && *at <= now => at.clone(),
+            _ => now.clone(),
+        };
         let mut r = match read_record(&self.data_dir, &m.night) {
             Some(mut r) => {
                 if r.summary.finished_at.is_some() {
@@ -755,7 +765,7 @@ impl Message<BeginNight> for Night {
             None => NightRecord {
                 summary: NightSummary {
                     night: m.night.clone(),
-                    started_at: now,
+                    started_at,
                     finished_at: None,
                     counts: NightCounts::default(),
                     spend_usd: 0.0,
@@ -1390,6 +1400,25 @@ impl Message<MetricsOver> for Night {
     }
 }
 
+/// Remember the dreaming routine's fire so [`BeginNight`] can date the night
+/// from it (the spend window is `[started_at, now)` over `model_calls`).
+impl Message<schedule::ScheduleEvent> for Night {
+    type Reply = ();
+
+    async fn handle(&mut self, e: schedule::ScheduleEvent, _: &mut Context<Self, Self::Reply>) {
+        if let schedule::ScheduleEvent::Fired { name, session, at } = e
+            && name == "dreaming"
+        {
+            self.fired = Some((
+                at.with_timezone(&Utc)
+                    .format("%Y-%m-%dT%H:%M:%SZ")
+                    .to_string(),
+                session,
+            ));
+        }
+    }
+}
+
 /// Settling grace before an ended night is closed: the agent's ledger settles
 /// the last model call shortly after `TurnFinished` (live: a `$0.00 of $0.05`
 /// receipt when closed inline).
@@ -1484,6 +1513,8 @@ pub fn start(rt: &Runtime, cfg: DreamConfig, engine: &str) -> anyhow::Result<()>
         rt2.subscribe::<Night, knowledge::KnowledgeChanged>(&actor)
             .await;
         rt2.subscribe::<Night, agent::AgentEvent>(&actor).await;
+        rt2.subscribe::<Night, schedule::ScheduleEvent>(&actor)
+            .await;
     });
     Ok(())
 }
@@ -1900,6 +1931,15 @@ mod tests {
             run_timeout_secs: None,
         });
         write_state(dir.path(), &state).unwrap();
+        let fired_at = Utc::now() - chrono::Duration::seconds(20);
+        actor
+            .tell(schedule::ScheduleEvent::Fired {
+                name: "dreaming".into(),
+                session: mine,
+                at: fired_at.with_timezone(&Local),
+            })
+            .await
+            .unwrap();
         actor
             .ask(BeginNight {
                 night: "2026-10-08".into(),
@@ -1908,6 +1948,14 @@ mod tests {
             })
             .await
             .unwrap();
+        assert_eq!(
+            read_record(dir.path(), "2026-10-08")
+                .unwrap()
+                .summary
+                .started_at,
+            fired_at.format("%Y-%m-%dT%H:%M:%SZ").to_string(),
+            "the night is dated from the fire, so the first model call is inside the spend window"
+        );
         let finished = |session| agent::AgentEvent::TurnFinished {
             session,
             turn: runtime::TurnId::new(),
