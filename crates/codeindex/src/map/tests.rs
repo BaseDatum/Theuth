@@ -30,9 +30,42 @@ const PROGRESS: &str = fixture!("map-progress.json");
 fn round_trip<T: Serialize + DeserializeOwned>(src: &str) -> T {
     let raw: Value = serde_json::from_str(src).unwrap();
     let typed: T = serde_json::from_value(raw.clone()).unwrap();
-    let again = serde_json::to_value(&typed).unwrap();
-    assert_eq!(again, raw, "serde round trip changed the fixture");
+    // Through the wire string, not `to_value`: `f32` fields print shortest there.
+    let again: Value = serde_json::from_str(&serde_json::to_string(&typed).unwrap()).unwrap();
+    if let Some(d) = first_diff(&again, &raw, "") {
+        panic!("serde round trip changed the fixture: {d}");
+    }
     typed
+}
+
+/// `<pointer>: <typed> != <fixture>` for the first difference, depth-first.
+fn first_diff(a: &Value, b: &Value, path: &str) -> Option<String> {
+    match (a, b) {
+        (Value::Object(x), Value::Object(y)) => {
+            for k in x.keys().chain(y.keys()) {
+                let p = format!("{path}/{k}");
+                match (x.get(k), y.get(k)) {
+                    (Some(va), Some(vb)) => {
+                        if let Some(d) = first_diff(va, vb, &p) {
+                            return Some(d);
+                        }
+                    }
+                    (va, vb) => return Some(format!("{p}: {va:?} != {vb:?}")),
+                }
+            }
+            None
+        }
+        (Value::Array(x), Value::Array(y)) => {
+            if x.len() != y.len() {
+                return Some(format!("{path}: {} items != {} items", x.len(), y.len()));
+            }
+            x.iter()
+                .zip(y)
+                .enumerate()
+                .find_map(|(i, (va, vb))| first_diff(va, vb, &format!("{path}/{i}")))
+        }
+        _ => (a != b).then(|| format!("{path}: {a} != {b}")),
+    }
 }
 
 /// The fixture `Graph` as a json-render fence body the surface validator accepts.
@@ -158,7 +191,9 @@ fn progress_fixture_is_a_codeindex_event_sequence() {
     let mut last_seq = 0;
     let mut stages = Vec::new();
     for (ev, v) in events.iter().zip(&raw) {
-        assert_eq!(&serde_json::to_value(ev).unwrap(), v);
+        if let Some(d) = first_diff(&serde_json::to_value(ev).unwrap(), v, "") {
+            panic!("{d}");
+        }
         match ev {
             CodeindexEvent::CodeMapProgress { seq, stage, .. } => {
                 stages.push(stage.as_str());
