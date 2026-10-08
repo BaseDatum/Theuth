@@ -1090,6 +1090,8 @@ impl Schedule {
         let budget_nanos = overrides
             .and_then(|o| o.budget_nanos)
             .or(spec.budget.as_ref().map(|b| b.nanos));
+        // 136 D4: the run's tool risk ceiling, applied beside approvals.
+        let cap = spec.cap;
         let one_shot = matches!(spec.when, file::When::At(_));
         let is_loop = until.is_some() || max_runs.is_some();
 
@@ -1281,22 +1283,36 @@ impl Schedule {
         {
             tracing::warn!(%name, "budget not set: {e}");
         }
-        // 33 §3.5: in-memory in the registry, so every fire re-sends it.
-        if !approvals {
+        // 33 §3.5 / 136 D4: in-memory in the registry, so every fire re-sends
+        // them. The cap is set before the first model turn: with
+        // `approvals: false` it is the only thing keeping destructive tools
+        // (`shell`, `knowledge_delete`) out of an unattended run.
+        if !approvals || cap.is_some() {
             match ActorRef::<::tools::ToolRegistry>::lookup(::tools::REGISTRY_ACTOR) {
                 Ok(Some(reg)) => {
-                    if let Err(e) = reg
-                        .ask(::tools::SetApprovals {
-                            session: Some(session),
-                            enabled: false,
-                        })
-                        .await
+                    if !approvals
+                        && let Err(e) = reg
+                            .ask(::tools::SetApprovals {
+                                session: Some(session),
+                                enabled: false,
+                            })
+                            .await
                     {
                         tracing::warn!(%name, "approvals not switched off: {e}");
                     }
+                    if let Some(cap) = cap
+                        && let Err(e) = reg
+                            .tell(::tools::SetCap {
+                                session,
+                                cap: Some(cap),
+                            })
+                            .await
+                    {
+                        tracing::warn!(%name, "cap not set: {e}");
+                    }
                 }
                 _ => {
-                    tracing::warn!(%name, "approvals not switched off: tool registry is not running")
+                    tracing::warn!(%name, "approvals/cap not applied: tool registry is not running")
                 }
             }
         }

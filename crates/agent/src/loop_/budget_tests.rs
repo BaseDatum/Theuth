@@ -56,9 +56,11 @@ async fn scenario() {
         )
         .await
         .unwrap();
+    // The cap was set before the row (a lifetime window): the row counts.
     let budget = Some(crate::Budget {
         nanos: 10_000_000,
         currency: "USD".into(),
+        since: "2000-01-01T00:00:00+00:00".into(),
     });
 
     // Turn 1: refused at round 0; `end_turn`, no request, the note queued.
@@ -123,7 +125,7 @@ async fn scenario() {
     );
     assert_eq!(
         h.store
-            .budget_spent(h.id, "USD", "openai/textonly")
+            .budget_spent(h.id, "USD", "openai/textonly", "2000-01-01T00:00:00+00:00")
             .await
             .unwrap(),
         (250_000_000, 250_000_000),

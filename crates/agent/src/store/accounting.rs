@@ -440,27 +440,35 @@ impl Store {
         Ok(call)
     }
 
-    /// 136 §2.2: what `owner`'s own attempts have cost in `currency` —
-    /// `returned_nanos ?? estimated_nanos` of every row (a dispatched call is
-    /// money already committed), other currencies not counted — and the
-    /// estimate for its next call: the newest settled attempt of `model`
-    /// (same measure), 0 when there is none. Children are not counted.
+    /// 136 §2.2: what `owner`'s own attempts created at or after `since`
+    /// (RFC 3339, the night's budget stamp — 136 R-1) have cost in
+    /// `currency` — `returned_nanos ?? estimated_nanos` of every settled row,
+    /// other currencies not counted, plus one `estimate` per row still
+    /// `pending`/`dispatched` (money committed but not yet settled, 136
+    /// R-27) — and the estimate for its next call: the newest settled
+    /// attempt of `model` (same measure), 0 when there is none. Children are
+    /// not counted.
     // ponytail: owner's own rows only; sum the `cost_owners` subtree if routines grow children.
     pub async fn budget_spent(
         &self,
         owner: SessionId,
         currency: &str,
         model: &str,
+        since: &str,
     ) -> anyhow::Result<(u64, u64)> {
         let sid = owner.to_string();
-        let (spent,): (i64,) = sqlx::query_as(
+        let (settled, in_flight): (i64, i64) = sqlx::query_as(
             "SELECT COALESCE(SUM(CASE \
                 WHEN returned_nanos IS NOT NULL THEN IIF(returned_currency = ?2, returned_nanos, 0) \
-                WHEN estimated_currency = ?2 THEN estimated_nanos ELSE 0 END), 0) \
-             FROM model_calls WHERE owner_id = ?1",
+                WHEN estimated_currency = ?2 THEN estimated_nanos ELSE 0 END), 0), \
+                COALESCE(SUM(status IN (?4, ?5)), 0) \
+             FROM model_calls WHERE owner_id = ?1 AND created_at >= ?3",
         )
         .bind(&sid)
         .bind(currency)
+        .bind(since)
+        .bind(CallStatus::Pending.as_str())
+        .bind(CallStatus::Dispatched.as_str())
         .fetch_one(&self.read)
         .await?;
         /// `(returned_nanos, returned_currency, estimated_nanos, estimated_currency)`.
@@ -481,7 +489,12 @@ impl Store {
             })
             .filter(|m| m.currency == currency)
             .map_or(0, |m| m.nanos);
-        Ok((u64::try_from(spent).unwrap_or(0), estimate))
+        let settled = u64::try_from(settled).unwrap_or(0);
+        let in_flight = u64::try_from(in_flight).unwrap_or(0);
+        Ok((
+            settled.saturating_add(in_flight.saturating_mul(estimate)),
+            estimate,
+        ))
     }
 
     /// Mark a pending attempt dispatched; commit before invoking transport.
@@ -1562,5 +1575,93 @@ mod tests {
         // `days` is clamped: 0 → one day (today), 99 → 31.
         assert_eq!(store.spend_report(now_ms, 0).await.unwrap().days.len(), 1);
         assert_eq!(store.spend_report(now_ms, 99).await.unwrap().days.len(), 31);
+    }
+
+    /// 136 R-1: the cap is per night — spend before `since` is not counted.
+    /// A $0.90 night followed by a fresh $1 cap: the first call goes out,
+    /// settles at $0.20, and the call after it (estimate $0.20) is refused.
+    #[tokio::test]
+    async fn budget_spent_windows_from_since() {
+        let store = fresh().await;
+        let s = SessionId::new();
+        store.ensure_owner(s, None).await.unwrap();
+        charge(
+            &store,
+            s,
+            CostObservation {
+                returned: Some(usd(0.90)),
+                ..Default::default()
+            },
+        )
+        .await;
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        let since = now();
+        let cap = 1_000_000_000;
+        let (spent, est) = store.budget_spent(s, "USD", "m", &since).await.unwrap();
+        assert_eq!(spent, 0, "last night's $0.90 is not tonight's");
+        assert!(spent + est <= cap, "the first call of the night goes out");
+        charge(
+            &store,
+            s,
+            CostObservation {
+                returned: Some(usd(0.20)),
+                ..Default::default()
+            },
+        )
+        .await;
+        let (spent, est) = store.budget_spent(s, "USD", "m", &since).await.unwrap();
+        assert_eq!((spent, est), (200_000_000, 200_000_000));
+        // The lifetime view (since the epoch) still sees both rows.
+        let (all, _) = store
+            .budget_spent(s, "USD", "m", "2000-01-01T00:00:00+00:00")
+            .await
+            .unwrap();
+        assert_eq!(all, 1_100_000_000);
+    }
+
+    /// 136 R-27: a call in flight counts one estimate toward the spend, so
+    /// concurrent side calls cannot each pass the guard against the same total.
+    #[tokio::test]
+    async fn budget_spent_counts_in_flight_calls_at_the_estimate() {
+        let store = fresh().await;
+        let s = SessionId::new();
+        store.ensure_owner(s, None).await.unwrap();
+        let since = "2000-01-01T00:00:00+00:00";
+        charge(
+            &store,
+            s,
+            CostObservation {
+                returned: Some(usd(0.30)),
+                ..Default::default()
+            },
+        )
+        .await;
+        let a = store
+            .reserve_call(s, "r1", 0, None, CallKind::Dream, Some("p"), Some("m"))
+            .await
+            .unwrap();
+        store.mark_dispatched(&a).await.unwrap();
+        let _pending = store
+            .reserve_call(s, "r2", 0, None, CallKind::Dream, Some("p"), Some("m"))
+            .await
+            .unwrap();
+        let (spent, est) = store.budget_spent(s, "USD", "m", since).await.unwrap();
+        assert_eq!(est, 300_000_000);
+        assert_eq!(spent, 900_000_000, "settled + 2 in flight × estimate");
+        // Settling the dispatched row swaps its estimate for the real cost.
+        store
+            .settle_call(
+                &a,
+                CallStatus::Settled,
+                CostObservation {
+                    returned: Some(usd(0.10)),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        let (spent, est) = store.budget_spent(s, "USD", "m", since).await.unwrap();
+        assert_eq!(est, 100_000_000, "newest settled attempt");
+        assert_eq!(spent, 300_000_000 + 100_000_000 + 100_000_000);
     }
 }

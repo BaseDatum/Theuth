@@ -310,13 +310,16 @@ pub struct Stats {
     pub ids: Vec<String>,
 }
 
-/// Answers "may this session consolidate" (136 §2.1): the five mutating
-/// `knowledge_*` tools of dreaming run only from the dreaming routine's
-/// (unattended) session or the owner's own root session. The agent plugin
-/// installs one with [`RegisterConsolidator`]; until then nobody may.
+/// Answers "may this attended session consolidate" (136 §2.1 / D6): the
+/// five mutating `knowledge_*` tools of dreaming run only from the open
+/// night's dreaming session ([`Knowledge::register_consolidating_session`])
+/// or the owner's own root session. The agent plugin installs one with
+/// [`RegisterConsolidator`]; until then no attended session may.
 #[async_trait::async_trait]
 pub trait Consolidator: Send + std::marker::Sync {
-    /// `true` when `session` is an unattended root or the owner's own root.
+    /// `true` when `session` is the owner's own attended root (136 D6:
+    /// `scope = 'owner'`, no parent, no desk, not unattended). Unattended
+    /// sessions are answered by the store's registered night, never here.
     async fn may_consolidate(&self, session: runtime::SessionId) -> bool;
 }
 

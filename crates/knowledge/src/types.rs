@@ -303,6 +303,12 @@ pub struct Meta {
     /// Frontmatter `merged_into`: the canonical's id, on a redirect stub.
     #[serde(default)]
     pub merged_into: Option<String>,
+    /// Frontmatter `consolidated_at` (136 D5): RFC 3339 of dreaming's last
+    /// write. Identity (`source`, `timestamp`) is never restamped by dreaming;
+    /// this is the only trace of its touch. Serialised only when set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub consolidated_at: Option<String>,
 }
 
 impl Default for Meta {
@@ -329,6 +335,7 @@ impl Default for Meta {
             valid_until: None,
             superseded_by: None,
             merged_into: None,
+            consolidated_at: None,
         }
     }
 }
