@@ -1,6 +1,6 @@
 # 136 — As-built P (live proof)
 
-Status: as-built · 2026-10-08 · tree `~/Develop/theuth-136`, branch `feat/136-dreaming`, on top of Z's `aa9696fe`. Four real dreaming nights plus two budget-refusal runs on scratch engines built from this tree against APFS clones of the user's knowledge + sessions; `~/.theuth` was only ever copied. P's commits: `e4eff6a4` sensor · `14c1d064` uses bootstrap · `62ac8793` skill/routine · `53bbdc55` undo receipt + journal · `6c888466` close gate · `08feccab` turn-end close · `eb2e3058` no decisions by use · `2ff37cb3` settling grace (+ this file). Every number below is measured; no session text, private title or secret left the copies.
+Status: as-built · 2026-10-08 · tree `~/Develop/theuth-136`, branch `feat/136-dreaming`, on top of Z's `aa9696fe`. Three full dreaming nights plus four budget-refusal runs on scratch engines built from this tree against APFS clones of the user's knowledge + sessions (seven fresh clones, `/tmp/136/live1..7`); `~/.theuth` was only ever copied. P's commits: `e4eff6a4` sensor · `14c1d064` uses bootstrap · `62ac8793` skill/routine · `53bbdc55` undo receipt + journal · `6c888466` close gate · `08feccab` turn-end close · `eb2e3058` no decisions by use · `2ff37cb3` settling grace · `7f4160e2` fire-dated night (+ this file). Every number below is measured; no session text, private title or secret left the copies.
 
 ## 0. One screen
 
@@ -9,6 +9,7 @@ Status: as-built · 2026-10-08 · tree `~/Develop/theuth-136`, branch `feat/136-
 - **Archive-by-use went 95 → 0** the moment the live `uses` table had any row (16 of 1,664 ids): the fallback keyed on "table empty". Now per id — index rows win, the rest take the session-derived counts (`14c1d064`); nights 2/4 offered 60 (the cap).
 - **The model closed early.** Night 1 (skill as shipped): 20 of 300 retitles, 10 of 14 merges, 10 verifies in 1 s each with no read tool, Mine "skipped due to budget constraints" at $0.37 of $3, final reply `paused`. Night 2 (skill tightened, `62ac8793`): 300/300 retitles but 0 merges, 0 archives, 0 cases at $0.36. Night 4 (close gate, `6c888466`): the first `section="journal"` was refused with `12 of 14 merge groups, 50 of 60 archive-by-use ids, 0 cases from 490 friction events (Mine)`; the model then merged 13 groups and archived 60, wrote `Skipped`, closed at $0.66.
 - **A budget-ended night stayed open.** At `budget_usd: 0.05` the guard refused the second call and the turn ended `end_turn` — but the `<budget>` note is queued for a *next* turn a routine never has (`agent/src/loop_.rs:5174-5181`), so nothing journaled: `finished_at: null`, `run_request` left for the next night, `dreaming.nights` showed an open night. Fixed (`08feccab`, `2ff37cb3`): the actor closes the night on the session's `TurnFinished` after a 5 s settling grace — `Ended` line, `Receipt`, `run_request` cleared, `DreamNightFinished`.
+- **The receipt's spend missed the first model call.** `spend_nanos` asks the agent ledger for `[started_at, now)` over `model_calls.created_at`, and `started_at` was the `dreaming_ledger` call — after the first (uncached, $0.09–0.13) round. Every night under-read by that call; a refused night read `$0.00 of $0.05`. Fixed (`7f4160e2`): `Night` remembers the routine's `Fired{at, session}` and dates the night from it; live7's receipt reads `$0.09 of $0.05` = the guard's `spent=93165000`.
 - Also fixed: journal `## …` headings inside a section parsed as night boundaries (Undone landed above the model's text); a code-owned `Receipt` line on close; `decision`s offered as archive-by-use candidates (night 4 archived 5 of them).
 - Held as designed: `RunNow → FireWith` (`<request>` block, run row), every write `dreaming <dreaming@localhost>` / `dreaming <op> <id>`, scope rules (no delete; `visibility`/`scope`/`owner` untouched; stubs `status: merged` + `merged_into` + `hint: false`; canonical `status: tidy`; `links` retargeted; retitles keep the text as `## Summary`; archive = `status: archived, hint: false` + `## Archived` reason, body otherwise intact), `KnowledgeChanged` per write, `Dream*` events on the WS stream, one `Dreaming` document reused, second undo = no-op line, FTS consistent after undo, the guard at $0.05.
 
@@ -16,8 +17,8 @@ Status: as-built · 2026-10-08 · tree `~/Develop/theuth-136`, branch `feat/136-
 
 | | |
 |---|---|
-| Binary | `~/Develop/theuth-136-target/C/debug/t` rebuilt from HEAD first — Z's binary (03:42) predated Z's last code commit `4bc662e5` (03:50); `theuth-documents-59.5` beside it; rebuilt after every fix (`BUILD_SLOTS=1 BUILD_LABEL=136-P`) |
-| Clone | `/bin/cp -Rc` of `~/.theuth/knowledge` (1.2 GB with gix history), `knowledge.sqlite(+wal)`, `sessions.sqlite(+wal)` (872 MB), `acp/agents.yaml`; 2–14 min per clone (parallel clones contend); one fresh clone per run: `live1` night 1 · `live2` night 2 · `live3` $0.05 (Z-era close) · `live4` night 4 · `live5` $0.05 (turn-end close) · `live6` $0.05 (grace) |
+| Binary | `~/Develop/theuth-136-target/C/debug/t` rebuilt from HEAD first — Z's binary (03:42) predated Z's last code commit `4bc662e5` (03:50); `theuth-documents-59.5` beside it; rebuilt after every fix (`BUILD_SLOTS=1 BUILD_LABEL=136-P`; waits of up to 14 min behind other waves' builds) |
+| Clone | `/bin/cp -Rc` of `~/.theuth/knowledge` (1.2 GB with gix history), `knowledge.sqlite(+wal)`, `sessions.sqlite(+wal)` (872 MB), `acp/agents.yaml`; 2–16 min per clone (other waves' clones contend); one fresh clone per run: `live1` night 1 · `live2` night 2 · `live3` $0.05 (Z-era close) · `live4` night 4 · `live5` $0.05 (turn-end close) · `live6` $0.05 (grace) · `live7` $0.05 (fire-dated) |
 | Config | hand-written: `tools:` verbatim, `rpc.listen 127.0.0.1:1794x–1799x`, `dreaming: {enabled: true, budget_usd: 3 \| 0.05}`, `link/update/meeting/talk/signal/slack/telegram.enabled: false`, `mesh: {relay: none, discovery: false, bind: 127.0.0.1:…, hub: never}`, `secrets: {key_store: file}`. Log per engine: 9 × "disabled by config", `mesh: … relay none (discovery false)`, no connection attempt |
 | **Vault (deviation)** | the copied `secrets.sqlite` does not open in a scratch dir: `the mesh key does not open with this engine's key` — the vault key is a keychain item bound to the absolute data dir (`crates/secrets/src/key.rs:1-4`, `vault.rs:204-213`). Reported to the orchestrator as the brief's blocker (no answer); proceeded on the least-invasive path: **empty vault** (copied `secrets.sqlite` deleted — zero user secrets in `/tmp`) and **`agent.model: anthropic/claude-sonnet-4-5` on `ANTHROPIC_API_KEY` from the process environment** (genai's adapter fallback, `crates/agent/src/supervisor.rs:7951-7955`; the brief's `nohup env … $T` would have passed that env in). No key was extracted. Consequence: every night ran on Sonnet 4.5, not the user's `openai/gpt-5.6-sol`. Side effect: two `--secret-list` probes under `key_store: auto` minted a keychain item `theuth / secrets:/tmp/136/live1` and the rebuilt binary then blocked on a keychain-access prompt (`SecKeychainFindGenericPassword`); the item is harmless and can be deleted |
 | Engine | `t --headless --data-dir /tmp/136/liveN` as a supervised process (a first `nohup … &` start from the tool shell died with its process group after ≈ 3 min, `engine.json` left behind; the restart was clean) |
@@ -41,9 +42,9 @@ Status: as-built · 2026-10-08 · tree `~/Develop/theuth-136`, branch `feat/136-
 | Spend (ledger · `model_calls` estimate) | **$0.367** · $0.498 | **$0.361** · $0.500 | **$0.656** · $0.772 |
 | Undo | 50 restored, 0 errors, 21 s; **49/50** byte-identical (§0); 2nd undo no-op | 315 restored, 0 errors, 3 min 13 s; **315/315** identical; 2nd no-op | 390 restored, 0 errors, 7 min 12 s; **390/390** identical; 2nd no-op |
 
-Budget-refusal runs (`run_now {0.05, pass}`): **live3** (Z-era close): 1 model call $0.093 → `budget spent; turn ends spent=92733750 cap=50000000`, `end_turn` after 12 s, 0 writes, 0 commits — record left **open** (`finished_at: null`, `run_request` kept). **live5** (`08feccab`): same refusal after 19 s; the actor closed it: `phases ["ended: end_turn"]`, journal `### Ended` + `### Receipt — nothing changed · $0.00 of $0.05`, `run_request: null`, `nights: 1`, `DreamNightFinished` observed — spend read 0 because the last call had not settled yet. **live6** (`2ff37cb3`, 5 s grace): see §3.
+Budget-refusal runs (`run_now {0.05, pass}`, one model call of ≈ 23.5 k prompt tokens each, $0.093–0.094, then `budget spent; turn ends spent≈9.3e7 cap=5e7`, `TurnFinished end_turn`, 0 writes, 0 commits, 0 `KnowledgeChanged`): **live3** (Z-era close, 12 s): record left **open** — `finished_at: null`, `run_request` kept, `dreaming.nights[0].finished_at: null`. **live5** (`08feccab`, 19 s): closed inline — `phases ["ended: end_turn"]`, `### Ended` + `### Receipt — nothing changed · $0.00 of $0.05`, `run_request: null`, `nights: 1`, `DreamNightFinished` observed; spend 0. **live6** (`2ff37cb3`, 5 s grace): closed 5 s after `TurnFinished`; spend still `$0.00` — the window, not the settling, was the cause. **live7** (`7f4160e2`): `started_at 05:46:33Z` = `runs.fired_at`, closed at `05:46:58Z`, `### Receipt — nothing changed · $0.09 of $0.05`, `dreaming.nights[0].spend_usd 0.093165` = the guard's `spent=93165000`.
 
-Total model spend across all runs: ≈ $1.96 by `model_calls` estimates ($1.38 by the ledger, which does not see the two refused nights' single calls) — cap 10.
+Total model spend across all seven runs: **≈ $2.14** by `model_calls` estimates (0.498 + 0.500 + 0.093 + 0.772 + 0.094 + 0.094 + 0.093) — cap 10. The three full nights' ledger spend (0.367 / 0.361 / 0.656) under-read by their first call (§0).
 
 ### 2.1 Observations that are not in the table
 
@@ -54,9 +55,11 @@ Total model spend across all runs: ≈ $1.96 by `model_calls` estimates ($1.38 b
 - The receipt dedups by id: an id retitled then archived is one `retitle` row restored to the commit before the retitle (= before both). Counts in `NightCounts` are per op.
 - Restore commits are authored `theuth` (`restore <id> from <sha>`) — the ordinary write path, not `dreaming`.
 
-## 3. The grace check (live6)
+## 3. What the refusal runs proved about the frame
 
-LIVE6_SECTION
+- The guard is the real stop: on a one-turn routine the model never sees `<budget …>` (queued for a next turn) nor `budget exhausted:` (that is the side-call text); the turn simply ends `end_turn`. The skill's "on a `<budget>` note, skip to Journal" can only happen for `replay_case` refusals; the actor's turn-end close is what records a refused night.
+- `LedgerSince` windows `model_calls` by `created_at` (`crates/agent/src/store/dreaming.rs:296`); a night's spend is only right when `started_at` precedes the first call — hence the fire-dated night.
+- The refused night's one call is the uncached first prompt (≈ 23.5 k tokens: routine, skill via `load_skill`, `<knowledge>` note, tools); at the user's `openai/gpt-5.6-sol` price that first call alone can exceed a very small cap, so a `budget_usd` under ≈ $0.15 buys no work.
 
 ## 4. Acceptance checklist
 
@@ -75,7 +78,7 @@ LIVE6_SECTION
 | 11 | Journal: one document, counts, undo line later; `dreaming.nights` matches | PASS (shape fixed) | one `Dreaming` note per engine (`doc_list`), `state.json.journal` = its id, reused by every append; night 4 note: 6 sections (`tidy … suggest`), `journal`, `Skipped`, `Receipt — 300 retitled · 46 merged · 60 archived · 15 verified · $0.66 of $3.00 · undo: dreaming_undo("2026-10-08") or one group: archive, merge, retitle, verify`, then `### Undone` ×2; `dreaming.nights[0]` carries the same counts, `undone: true` after the undo |
 | 12 | Undo complete and idempotent | **FAIL → fixed** | night 1: 49/50; nights 2 and 4: 315/315 and 390/390 files byte-identical to BEFORE (only `index.md`/`log.md` differ); second undo `knowledge_restored: 0` and a second `Undone` line |
 | 13 | `DreamNightStarted/Finished/Undone` observed by a WS subscriber | PASS | per night: `DreamNightStarted{night}`, `DreamNightFinished{night, counts, spend_nanos, proposals: []}`, `DreamUndone{night, group: null}` ×2 |
-| 14 | Budget guard refuses at $0.05 with `budget exhausted`, clean end, night record says so, no write without receipt | **PARTIAL → fixed** | log `budget spent; turn ends spent=9.3e7 cap=5e7`, `TurnFinished end_turn`, 0 writes, 0 commits on all three runs; the `<budget>` note never reaches a one-turn routine (it is queued for the next turn) and the record stayed open until `08feccab`; live5/live6 close with `ended: end_turn` |
+| 14 | Budget guard refuses at $0.05 with `budget exhausted`, clean end, night record says so, no write without receipt | **PARTIAL → fixed** | log `budget spent; turn ends spent≈9.3e7 cap=5e7`, `TurnFinished end_turn`, 0 writes, 0 commits on all four runs; the `<budget>` note never reaches a one-turn routine (queued for the next turn) and the record stayed open until `08feccab`; live5–7 close with `ended: end_turn`, live7's receipt carries the real spend (`7f4160e2`) |
 | 15 | Privacy | PASS | ids, counts and knowledge titles only; no session text or secret in this file or in messages |
 
 ## 5. Bugs found and fixed
@@ -91,8 +94,9 @@ LIVE6_SECTION
 | 7 | the night closes with the lists unworked and the money unspent | `night.rs` `Commit{journal}` | `left_undone` → one refusal (< 75 % spent) naming what is left; `Skipped` section; test | `6c888466` |
 | 8 | a budget/error-ended night stays open | `night.rs` (no `TurnFinished` handler) | subscribe `AgentEvent`; `CloseEnded` after a 5 s grace → `Ended` line, `finish`; tests | `08feccab`, `2ff37cb3` |
 | 9 | decisions offered as archive-by-use | `tidy.rs:123` | exclude `decision` like `warning`; test | `eb2e3058` |
+| 10 | the spend window starts at the ledger call, after the first model call | `night.rs` `BeginNight`/`spend_nanos` | subscribe `ScheduleEvent`; `Fired{name: dreaming}` dates the night; test | `7f4160e2` |
 
-Gates after every fix (build-lock `136-P`): `cargo test -p dreaming` 42 passed (36 + 6), `cargo test -p knowledge` 44, `cargo clippy -p knowledge -p dreaming --tests -- -D warnings` clean, `cargo fmt -p knowledge -p dreaming --check` clean, `just ts-desktop` regenerated (`KnowledgeChanged.ts` gains `commit: string | null`; both bindings dirs are gitignored), `cargo build -p theuth`.
+Gates after every fix (build-lock `136-P`): `cargo test -p dreaming` 42 passed (36 + 6; the fire-dated and grace assertions live inside existing tests), `cargo test -p knowledge` 44, `cargo clippy -p knowledge -p dreaming --tests -- -D warnings` clean, `cargo fmt -p knowledge -p dreaming --check` clean, `just ts-desktop` regenerated (`KnowledgeChanged.ts` gains `commit: string | null`; both bindings dirs are gitignored), `cargo build -p theuth`.
 
 ## 6. Bugs and gaps left (file:line reason)
 
@@ -113,4 +117,5 @@ Gates after every fix (build-lock `136-P`): `cargo test -p dreaming` 42 passed (
 - `t dreaming dry-run --data-dir <copy>` first; with the uses merge its archive-by-use count is the one the night acts on.
 - The copied-store 109 resumes are a scratch artefact; on the live engine the open turns are its own.
 - Undo per night or per group (`dreaming_undo("<night>", "merge")`); after undoing merges, restart (or write the citing concepts) to refresh `links` (gap 4). An undo of a 390-id night takes ≈ 7 min.
+- Artefacts for the orchestrator: `/tmp/136/live1/dreaming/` (night 1: `ledger/`, `journal.md`, `journal-export.md`, `events.jsonl`, `undo1.json`) and `/tmp/136/nights/<liveN>-dreaming/` + `<liveN>-events.jsonl` for the other six runs; the data-dir clones themselves are removed.
 - Watch `uses.shown` growth on ids the night itself touched (gap 1) before trusting archive-by-use on night 2+.
