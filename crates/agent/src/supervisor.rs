@@ -6679,10 +6679,12 @@ impl Message<SetEndlessSettings> for Agents {
     ) -> Self::Reply {
         let cfg = m.0.validated()?;
         // One scalar per key through the comment-preserving writer; the
-        // struct is flat, so `serde_json::Value` lists every key once.
+        // struct is flat, so `serde_json::Value` lists every key once. A
+        // missing key is inserted at the top of the block, so writing in
+        // reverse leaves a fresh block in struct order.
         let path = self.rt.data_dir.join("config.yaml");
         let keys = serde_json::to_value(&cfg).map_err(|e| e.to_string())?;
-        for (key, value) in keys.as_object().into_iter().flatten() {
+        for (key, value) in keys.as_object().into_iter().flatten().rev() {
             let text = serde_yaml::to_string(value).map_err(|e| e.to_string())?;
             runtime::write_nested_config_value(&path, "agent", "endless", key, text.trim())
                 .map_err(|e| format!("config.yaml: {e}"))?;
