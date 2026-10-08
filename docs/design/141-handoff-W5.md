@@ -1,7 +1,7 @@
 # 141 hand-off — W5 (OMP)
 
 Branch `feat/141-w5`, base = contract `0b5f8aa2` (merged `feat/141-acp-subagents`
-again before the gate and before DONE; both times "Already up to date").
+again before the gate — "Already up to date" — and before DONE, merge `ada7378d`, which also brought the integration tree's W3 files; gate re-run green after it).
 Files: `crates/acp/src/omp/{mod,progress,tail}.rs` (C's single-file stub split
 per §7.1's module list; every public path `acp::omp::*` is unchanged),
 `crates/acp/fixtures/omp-18.3.1/**`, this file. Nothing outside the brief's list.
