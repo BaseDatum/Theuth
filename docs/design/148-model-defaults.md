@@ -88,7 +88,24 @@ Effort: in-chat / draft picks are session-only (R1); children use spawn
 
 ## Gates
 
-GATES_PLACEHOLDER
+All via build-lock + mbx (CARGO_BUILD_JOBS=4), re-run after the origin/main
+fold (`1d1579aa`, 78 commits: 144 NOTEBOOKS, 147, 135b; additive in our seams).
+
+- `mbx test -p agent`: 563 passed, 2 ignored (first run had 2 load-induced
+  timing flakes, `busy_retries_stop_at_the_deadline` and
+  `held_message_follows_the_brief`, green on rerun and post-fold).
+- `mbx test -p roster`: 70 passed. `-p rpc`: 55 + 1 (prompts). `-p tui`: 156 + 1 (no_emoji).
+- `mbx clippy --all-targets -- -D warnings`: agent, roster, rpc, tui clean
+  (tui needed `Box<Command>` in two local `Act` enums after `Command` grew,
+  and a struct literal in a test that clippy flagged).
+- `mbx check -p theuth` (pulls nodes, slack, signal, telegram, schedule, meeting): clean.
+- `cargo fmt --all -- --check`: 0 diffs in agent/roster/rpc/tui; 218
+  pre-existing diffs in untouched crates with rustfmt 1.9.0-stable (left alone).
+- Bindings: `mbx test -p rpc --features ts --lib export_bindings` 8 passed;
+  730 files copied, `methods.json` has `theuth_agent_model` / `set_theuth_agent_model`.
+- UI: `bun run check` 0 errors; `vitest run src/components/{settings,chat,agents} src/store src/lib`
+  156 files / 1183 tests passed; `bun run build` OK.
+- No live-engine smoke (rule); the UI surface is proven by static-render tests only.
 
 ## Deviations
 
