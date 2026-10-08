@@ -211,6 +211,10 @@ import type {
   ProviderInfo,
   VoiceStatus,
 } from '@/rpc/extra'
+import type { EndlessConfig } from '@/rpc/bindings/EndlessConfig'
+import type { MemoryMode } from '@/rpc/bindings/MemoryMode'
+import type { SessionMemory } from '@/rpc/bindings/SessionMemory'
+import type { ViewLine } from '@/rpc/bindings/ViewLine'
 
 /** `computer::PermissionStatus` (27 §6); hand-written until the bindings are regenerated. */
 export type PermissionStatus = {
@@ -696,6 +700,10 @@ export interface Api {
   double_settings_get(): Promise<DoubleConfig>
   /** Persist and apply the `double:` section live (`enabled` and `model.*` take a restart). */
   double_settings_set(settings: DoubleConfig): Promise<DoubleConfig>
+  /** 137 §11.1: the `agent.endless` section in force. */
+  endless_settings_get(): Promise<EndlessConfig>
+  /** Persist the whole `agent.endless` block and apply it live (the compactor model applies to sessions opened after). */
+  endless_settings_set(settings: EndlessConfig): Promise<EndlessConfig>
   meeting_tap(topic: TopicId): Promise<null>
   meeting_topics(): Promise<Topic[]>
   /** `transcript.json` (04 §3). */
@@ -740,6 +748,16 @@ export interface Api {
   leave_session(session: SessionId, lease_secret: string | null): Promise<CloseResult>
   /** Set or clear (`null`) the root's project label (51 §3); `SessionMetadataChanged` follows. */
   set_session_project(session: SessionId, project: string | null): Promise<void>
+  /** 137 §11.2: the session's memory mode, view, settle state, compactor stats and backfill; `mode: 'epochs'` with an empty view otherwise. */
+  session_memory(session: SessionId): Promise<SessionMemory>
+  /** 137 §9 `zoom`: `n = 1` → one line with the whole message; `n > 1` → the two children of `id+n`. */
+  endless_zoom(session: SessionId, id: number, n: number): Promise<ViewLine[]>
+  /** 137 §9 `recall`: FTS over the level-0 lines (raw fallback under 2 hits); `limit` null = 8. */
+  endless_recall(session: SessionId, query: string, limit: number | null): Promise<ViewLine[]>
+  /** 137 §8.6 `/endless on|off`; idle sessions only (`busy` otherwise). */
+  set_session_memory(session: SessionId, mode: MemoryMode): Promise<SessionMemory>
+  /** 137 R1-D2b: this session's view budget in bytes (16 000..=256 000); the next turn folds to it. */
+  set_session_view_bytes(session: SessionId, bytes: number): Promise<SessionMemory>
   /** Set project `name`'s icon (lucide name) and colour (palette key); both `null` clears. No event: refetch `list_project_styles`. */
   set_project_style(name: string, icon: string | null, color: string | null): Promise<null>
   /** Like `put_attachment`, but under `session`'s storage root (private scratch when private). */
@@ -1027,6 +1045,10 @@ export const METHODS = [
   'dreaming.undo',
   'edit_turn',
   'enable_schedule',
+  'endless_recall',
+  'endless_settings_get',
+  'endless_settings_set',
+  'endless_zoom',
   'escalate_model',
   'export_artifact',
   'fire_schedule',
@@ -1192,6 +1214,7 @@ export const METHODS = [
   'send_message',
   'session_context_breakdown',
   'session_cost',
+  'session_memory',
   'session_orphans',
   'session_owner',
   'session_take',
@@ -1225,7 +1248,9 @@ export const METHODS = [
   'set_pty_idle',
   'set_schedule_run_timeout',
   'set_secret',
+  'set_session_memory',
   'set_session_project',
+  'set_session_view_bytes',
   'set_stream_idle',
   'set_subagent_model',
   'set_subagent_timeout',

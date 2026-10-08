@@ -4,12 +4,15 @@ export type Container = 'macos' | 'linux' | 'windows' | 'ios' | 'web'
 export function container(): Container {
   if (typeof window === 'undefined' || !('__TAURI_INTERNALS__' in window)) return 'web'
   const ua = navigator.userAgent
-  // iPadOS sends a Macintosh UA; only the touch points tell it from a Mac.
-  if (/iPhone|iPad/.test(ua) || navigator.maxTouchPoints > 1) return 'ios'
+  if (/iPhone|iPad/.test(ua)) return 'ios'
+  // The UA decides Windows and Linux BEFORE the touch test: touchscreen laptops and RDP sessions with touch
+  // redirection report touch points too (build-B over RDP: 10), and an 'ios' verdict skips the local engine.
   // WebView2: "Windows NT 10.0; Win64; x64".
   if (/Windows NT/.test(ua)) return 'windows'
   // WebKitGTK: "X11; Linux x86_64" (also under Wayland).
-  return /Linux/.test(ua) ? 'linux' : 'macos'
+  if (/Linux/.test(ua)) return 'linux'
+  // iPadOS sends a Macintosh UA; only the touch points tell it from a Mac.
+  return navigator.maxTouchPoints > 1 ? 'ios' : 'macos'
 }
 
 /** A desktop shell with its own daemon beside it (macOS, Linux, Windows): host paths, native drop, autostart, tray, global shortcuts. */

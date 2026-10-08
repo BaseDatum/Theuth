@@ -1,7 +1,6 @@
 import { X } from "lucide-react";
 import {
   type CSSProperties,
-  type PointerEvent,
   useEffect,
   useMemo,
   useRef,
@@ -10,6 +9,7 @@ import {
 import { AppView, preloadAppView } from "@/components/apps/AppView";
 import { ArtifactView } from "@/components/artifacts/Viewer";
 import { Button } from "@/components/ui/button";
+import { ResizeHandle } from "@/components/ui/resize-handle";
 import {
   Select,
   SelectContent,
@@ -25,6 +25,7 @@ import {
   SheetTitle,
 } from "@/components/ui/sheet";
 import { fmtBytes } from "@/lib/files";
+import { clamp, PX_STEP } from "@/lib/resize-drag";
 import type { Artifact } from "@/rpc/extra";
 import {
   type AppDraft,
@@ -235,23 +236,8 @@ export function ArtifactPanel({ session }: { session: string }) {
     useSessions.getState().setArtifactPanel(session, null);
   };
 
-  // ponytail: plain pointer events on a 6 px strip; react-resizable-panels if a second panel ever needs it.
-  const drag = (e: PointerEvent<HTMLDivElement>) => {
-    e.currentTarget.setPointerCapture(e.pointerId);
-    const move = (ev: globalThis.PointerEvent) =>
-      setWidth(
-        Math.min(
-          Math.max(MIN_W, window.innerWidth - ev.clientX),
-          window.innerWidth / 2,
-        ),
-      );
-    const up = () => {
-      window.removeEventListener("pointermove", move);
-      window.removeEventListener("pointerup", up);
-    };
-    window.addEventListener("pointermove", move);
-    window.addEventListener("pointerup", up);
-  };
+  // The sheet hangs off the right edge: its width is the distance from the pointer to the window's right side.
+  const clampWidth = (w: number) => clamp(w, MIN_W, window.innerWidth / 2);
 
   return (
     <Sheet open={callId !== null} onOpenChange={(o) => !o && close()}>
@@ -261,9 +247,13 @@ export function ArtifactPanel({ session }: { session: string }) {
         className="w-full gap-0 transition-transform sm:w-(--panel-w) sm:max-w-[50vw]"
         style={{ "--panel-w": `${width}px` } as CSSProperties}
       >
-        <div
-          className="absolute inset-y-0 left-0 z-10 hidden w-1.5 cursor-col-resize hover:bg-border-strong sm:block"
-          onPointerDown={drag}
+        <ResizeHandle
+          orientation="vertical"
+          placement="start"
+          aria-label="Resize artifact panel"
+          className="absolute inset-y-0 left-0 hidden w-1.5 bg-transparent hover:bg-border-strong sm:block"
+          onMove={(x) => setWidth(clampWidth(window.innerWidth - x))}
+          onNudge={(d) => setWidth(clampWidth(width - d * PX_STEP))}
         />
         {callId && <Content key={callId} session={session} callId={callId} />}
       </SheetContent>

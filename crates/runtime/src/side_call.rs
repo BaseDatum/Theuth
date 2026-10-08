@@ -31,6 +31,8 @@ pub enum CallKind {
     Escalate,
     /// A model call made by dreaming's tools (136 §2.2): replay, judge, propose.
     Dream,
+    /// 137: an endless-mode compactor call (one node of the summary tree).
+    Endless,
 }
 
 impl CallKind {
@@ -44,6 +46,7 @@ impl CallKind {
             Self::Vision => "vision",
             Self::Escalate => "escalate",
             Self::Dream => "dream",
+            Self::Endless => "endless",
         }
     }
 }
@@ -65,6 +68,7 @@ impl FromStr for CallKind {
             "vision" => Ok(Self::Vision),
             "escalate" => Ok(Self::Escalate),
             "dream" => Ok(Self::Dream),
+            "endless" => Ok(Self::Endless),
             _ => Err(format!("unknown CallKind: {s:?}")),
         }
     }
@@ -136,6 +140,7 @@ mod tests {
             CallKind::Vision,
             CallKind::Escalate,
             CallKind::Dream,
+            CallKind::Endless,
         ] {
             assert_eq!(k.as_str().parse::<CallKind>().unwrap(), k);
         }

@@ -101,6 +101,7 @@ const summary = (id: string, over: Partial<SessionSummary> = {}): SessionSummary
   running: false,
   owner: '',
   epoch: 1,
+  memory: 'epochs',
   here: true,
   ...over,
 })

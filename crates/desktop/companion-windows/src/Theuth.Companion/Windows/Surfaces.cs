@@ -53,6 +53,8 @@ internal sealed class Surfaces : IDisposable
         {
             if (msg == PInvoke.WM_DISPLAYCHANGE || msg == PInvoke.WM_SETTINGCHANGE) rail?.Layout();
         };
+        // W6 item 3 (C13): the transparency / animation switches, live — the rail and the panel subscribe in their constructors.
+        var effects = SystemEffects.Start(dispatcher, host);
 
         tray = new Tray(host);
         tray.Activated += OnTrayClick;
@@ -71,6 +73,13 @@ internal sealed class Surfaces : IDisposable
         panel = new AttentionPanelWindow(store) { ProbeMode = probe };
         legend = new LegendWindow(store);
         menu = new TrayMenu(host);
+        SystemEffects.ApplyTransitions(legend.Hwnd, effects.AnimationsEnabled);
+        SystemEffects.ApplyTransitions(peek.Hwnd, effects.AnimationsEnabled);
+        effects.Changed += () =>
+        {
+            SystemEffects.ApplyTransitions(legend.Hwnd, effects.AnimationsEnabled);
+            SystemEffects.ApplyTransitions(peek.Hwnd, effects.AnimationsEnabled);
+        };
 
         store.PropertyChanged += OnStoreChanged;
         store.CloseRequested += () => panel.Close(returnFocus: true);
@@ -102,8 +111,17 @@ internal sealed class Surfaces : IDisposable
     /// <summary>The global hotkeys (W4: <c>Released</c> for hold-to-talk).</summary>
     public Hotkeys Hotkeys { get; }
 
+    /// <summary>W6 (item 1): when the tray icon's first <c>NIM_ADD</c> succeeded — the pin tip checks promotion ≥ 60 s later; null = no icon.</summary>
+    public DateTimeOffset? TrayAddedAt => tray.AddedAt;
+
     /// <summary>W3: Pause notifications ▸ "1h" · "tomorrow" · "off". The menu rows are disabled until something listens.</summary>
     public event Action<string>? PauseRequested;
+
+    /// <summary>W6 item 9: when notifications are paused until (null = not paused) — the submenu's check marks and the row's "(until HH:mm)".</summary>
+    public Func<DateTimeOffset?>? PausedUntil { get; set; }
+
+    /// <summary>W6 item 10: the companion is quitting on purpose (tray › Quit theuth / Quit theuth Companion) — the engine going away is expected.</summary>
+    public event Action? QuitRequested;
 
     /// <summary>W3: the Launch at login row was toggled to this value (the Run key + companion.json are W3's).</summary>
     public event Action<bool>? LaunchAtLoginToggled;
@@ -241,27 +259,48 @@ internal sealed class Surfaces : IDisposable
         menu.Show(BuildMenu(), at);
     }
 
-    /// <summary>§4.5: Open theuth · Ask theuth… · Pause notifications ▸ · Launch at login ✓ · Keyboard shortcuts… Ctrl+/ · Settings… · Quit theuth.</summary>
+    /// <summary>§4.5: Open theuth · Ask theuth… · Pause notifications ▸ · Launch at login ✓ · Keyboard shortcuts… Ctrl+/ · Settings… · Quit theuth
+    /// · Quit theuth Companion (Swift W7: Quit theuth is the whole app, the second item only the companion).</summary>
     private List<TrayMenu.Item> BuildMenu()
     {
         bool login = LaunchAtLoginState?.Invoke() ?? false;
+        // W6 item 9 (parity with the Mac menu, NotificationsInstaller.swift appendMenu): the active pause carries the check mark.
+        var now = DateTimeOffset.Now;
+        var pausedUntil = PausedUntil?.Invoke();
+        var pause = PauseMenu.State(pausedUntil, now, new DateTimeOffset(DateTime.Today.AddDays(1)));
         return new List<TrayMenu.Item>
         {
             new("Open theuth", Links.OpenTheuth),
             new("Ask theuth…", () => store.Perform(Intent.AskBar)),
-            new("Pause notifications", Enabled: PauseRequested is not null, Sub: new List<TrayMenu.Item>
+            new(PauseMenu.Title(pausedUntil, now), Enabled: PauseRequested is not null, Sub: new List<TrayMenu.Item>
             {
-                new("For 1 hour", () => PauseRequested?.Invoke("1h")),
-                new("Until tomorrow", () => PauseRequested?.Invoke("tomorrow")),
-                new("Off", () => PauseRequested?.Invoke("off")),
+                new("For 1 hour", () => PauseRequested?.Invoke("1h"), Checked: pause == PauseMenuState.Hour),
+                new("Until tomorrow", () => PauseRequested?.Invoke("tomorrow"), Checked: pause == PauseMenuState.Tomorrow),
+                new("Off", () => PauseRequested?.Invoke("off"), Checked: pause == PauseMenuState.Off),
             }),
             new("Launch at login", () => LaunchAtLoginToggled?.Invoke(!login), Enabled: LaunchAtLoginToggled is not null, Checked: login),
             TrayMenu.Item.Separator,
             new("Keyboard shortcuts…\tCtrl+/", () => ShowLegend(fromPanel: false)),
             new("Settings…", () => store.Perform(Intent.Settings)),
             TrayMenu.Item.Separator,
-            new("Quit theuth", () => quit(0)),
+            new("Quit theuth", QuitTheuth),
+            new("Quit theuth Companion", () => { QuitRequested?.Invoke(); quit(0); }),
         };
+    }
+
+    /// <summary>
+    /// Quit theuth = the whole app (Swift W7): the shell's quit handshake (<c>theuth://quit</c>) stops the engine and then
+    /// closes this companion. With no shell, or if the handshake has not closed the companion within 10 s, it quits itself.
+    /// </summary>
+    private void QuitTheuth()
+    {
+        QuitRequested?.Invoke(); // before theuth://quit: the shell stops the engine ~60 ms before it closes us (item 10)
+        if (!Links.QuitTheuth())
+        {
+            quit(0);
+            return;
+        }
+        _ = Task.Delay(TimeSpan.FromSeconds(10)).ContinueWith(_ => dispatcher.TryEnqueue(() => quit(0)));
     }
 
     private void OnMark(Mark m, RECT row)
@@ -375,6 +414,7 @@ internal sealed class Surfaces : IDisposable
         panel.Stop();
         Hotkeys.Dispose();
         tray.Dispose();
+        SystemEffects.Current?.Dispose();
         foreach (var w in new ToolWindow[] { legend, peek, panel, rail })
         {
             try { w.CloseForGood(); }

@@ -58,7 +58,7 @@ figment = { workspace = true }
 parking_lot = { workspace = true }
 
 [features]
-ts = ["dep:ts-rs", "runtime/ts", "tools/ts", "voice/ts", "decision/ts", "document/ts", "search/ts"]
+ts = ["dep:ts-rs", "runtime/ts", "agent/ts", "tools/ts", "voice/ts", "decision/ts", "document/ts", "search/ts"]
 
 [lints]
 workspace = true

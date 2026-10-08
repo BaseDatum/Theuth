@@ -43,4 +43,9 @@
   <PropertyGroup>
     <CsWin32Version>0.3.358</CsWin32Version>
   </PropertyGroup>
+
+  <!-- W4: NAudio.Wasapi (D7, R2-4) — the microphone for the Ask bar's live dictation. -->
+  <PropertyGroup>
+    <NAudioWasapiVersion>3.1.0</NAudioWasapiVersion>
+  </PropertyGroup>
 </Project>

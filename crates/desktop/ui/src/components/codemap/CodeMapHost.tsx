@@ -5,11 +5,13 @@
  * Availability = `codemap.roots` non-empty, exactly like `browser` / `terminal` (§0.2).
  */
 import { MapIcon } from 'lucide-react'
-import { type CSSProperties, type PointerEvent, type ReactNode, useEffect, useRef, useState } from 'react'
+import { type CSSProperties, type ReactNode, useEffect, useRef, useState } from 'react'
 import { MenuRow } from '@/components/chat/HeaderMenu'
 import { Button } from '@/components/ui/button'
+import { ResizeHandle } from '@/components/ui/resize-handle'
 import { Sheet, SheetClose, SheetContent, SheetTitle } from '@/components/ui/sheet'
 import { useIsMobile } from '@/hooks/use-mobile'
+import { PX_STEP } from '@/lib/resize-drag'
 import { useSessionField, useSessions } from '@/store/sessions'
 import { CodeMapPanel } from './CodeMapPanel'
 
@@ -54,24 +56,19 @@ export function CodeMapPane({ session, children }: { session: string; children: 
   })
   useEffect(() => localStorage.setItem(WIDTH_KEY, String(width)), [width])
   const paneRef = useRef<HTMLDivElement>(null)
-  // ponytail: plain pointer events on a 6 px strip, like ArtifactPanel/Panes; react-resizable-panels if a third pane ever needs it.
-  const drag = (e: PointerEvent<HTMLDivElement>) => {
-    const right = paneRef.current?.getBoundingClientRect().right ?? window.innerWidth
-    e.preventDefault()
-    e.currentTarget.setPointerCapture(e.pointerId)
-    const move = (ev: globalThis.PointerEvent) => setWidth(clampW(right - ev.clientX))
-    const up = () => {
-      window.removeEventListener('pointermove', move)
-      window.removeEventListener('pointerup', up)
-    }
-    window.addEventListener('pointermove', move)
-    window.addEventListener('pointerup', up)
-  }
+  const right = useRef(0)
   if (root === null || mobile) return <>{children}</>
   return (
     <div ref={paneRef} className="flex min-h-0 min-w-0 flex-1 flex-row">
       <div className="flex min-h-0 min-w-0 flex-1 flex-col">{children}</div>
-      <div role="separator" aria-orientation="vertical" onPointerDown={drag} className="z-10 w-1.5 shrink-0 cursor-col-resize bg-border-subtle hover:bg-fg-accent/60" />
+      <ResizeHandle
+        orientation="vertical"
+        aria-label="Resize CodeMap pane"
+        className="w-1.5"
+        onStart={() => (right.current = paneRef.current?.getBoundingClientRect().right ?? window.innerWidth)}
+        onMove={(x) => setWidth(clampW(right.current - x))}
+        onNudge={(d) => setWidth(clampW(width - d * PX_STEP))}
+      />
       <aside
         data-codemap-pane
         className="flex min-h-0 shrink-0 flex-col overflow-hidden border-l border-border-subtle bg-layer-1"

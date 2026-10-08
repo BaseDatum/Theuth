@@ -213,6 +213,17 @@ pub struct Roster {
     costs: budget::Tracker,
     /// 70 DESK-PROTOCOL (f): wake keys whose hold was already written to the thread.
     diagnosed: HashSet<String>,
+    /// 137 D12 / R1-D7: `agent.endless` as booted — the default memory mode
+    /// of desks without a `memory:` field and the default view budget.
+    endless: agent::EndlessConfig,
+}
+
+/// The `agent` config section's `endless` key alone (the roster reads
+/// another crate's section by name, as `handoff.rs` does for `sandbox`).
+#[derive(serde::Deserialize, Default)]
+#[serde(default)]
+struct AgentSection {
+    endless: agent::EndlessConfig,
 }
 
 /// ms since the Unix epoch.
@@ -230,6 +241,10 @@ impl Roster {
         store: store::Store,
         shared: Arc<Shared>,
     ) -> Self {
+        let endless = rt
+            .section::<AgentSection>("agent")
+            .map(|s| s.endless)
+            .unwrap_or_default();
         let mut me = Self {
             rt,
             cfg,
@@ -242,6 +257,7 @@ impl Roster {
             lease: lease::Follower::default(),
             costs: budget::Tracker::default(),
             diagnosed: HashSet::new(),
+            endless,
         };
         // ponytail: the previous run's open episodes are closed without a
         // journal turn (their sessions may be gone); their journals are the
@@ -371,6 +387,8 @@ impl Roster {
             .await
             .ok()
             .flatten();
+        // 137 D12: the file's `memory:`, else `agent.endless.default_desk`.
+        let wanted = self.desk_mode(f);
         let session = match existing {
             Some(s) => s,
             None => {
@@ -378,6 +396,7 @@ impl Roster {
                     .ask(agent::CreateSession {
                         options: agent::CreateSessionOptions {
                             model: f.model.clone(),
+                            memory: Some(wanted),
                             ..Default::default()
                         },
                         peer: None,
@@ -461,6 +480,21 @@ impl Roster {
                 String::new()
             }
         };
+        // 137 R1-D7 / D14: a reopened desk whose session is in the other
+        // mode switches at its next idle moment (backfill, then flip); a
+        // per-agent `view_bytes:` is applied the same way.
+        let memory = agents
+            .ask(agent::SessionMemoryQuery { session })
+            .await
+            .map(|m| m.mode)
+            .unwrap_or_default();
+        if let Some(bytes) = f.view_bytes
+            && let Err(e) = agents
+                .ask(agent::SetSessionViewBytes { session, bytes })
+                .await
+        {
+            tracing::warn!(agent = %name, bytes, "desk view_bytes not applied: {e}");
+        }
         self.shared.set_desk(name, session);
         self.desks.insert(
             name.to_owned(),
@@ -472,9 +506,67 @@ impl Roster {
                 primed: false,
                 model: f.model.clone(),
                 serving: None,
+                memory,
+                pending_memory: (memory != wanted).then_some(wanted),
             },
         );
-        tracing::info!(agent = %name, %session, "desk opened");
+        tracing::info!(agent = %name, %session, %memory, "desk opened");
+        self.apply_pending_memory(name).await;
+    }
+
+    /// 137 D12: the mode a desk of `f` runs in.
+    fn desk_mode(&self, f: &AgentFile) -> agent::MemoryMode {
+        f.memory.unwrap_or(if self.endless.default_desk {
+            agent::MemoryMode::Endless
+        } else {
+            agent::MemoryMode::Epochs
+        })
+    }
+
+    /// 137 R1-D7 / D14: switch the desk session to its pending mode if it is
+    /// idle now; `busy` keeps it pending for the next turn end or tick. One
+    /// `info!` with the backfill ETA (and model) when the switch lands.
+    /// Idempotent across restarts: the mode is a column, so a switched desk
+    /// has nothing pending the next time it opens.
+    async fn apply_pending_memory(&mut self, name: &str) {
+        let Some((session, mode)) = self
+            .desks
+            .get(name)
+            .filter(|d| !d.working)
+            .and_then(|d| d.pending_memory.map(|m| (d.session, m)))
+        else {
+            return;
+        };
+        let Ok(Some(agents)) = ActorRef::<agent::Agents>::lookup(agent::AGENT_ACTOR) else {
+            return;
+        };
+        match agents
+            .ask(agent::SetSessionMemory {
+                session,
+                mode,
+                filter: agent::UnitFilter::All,
+            })
+            .await
+        {
+            Ok(r) => {
+                let m = r.memory;
+                if let Some(d) = self.desks.get_mut(name) {
+                    d.memory = m.mode;
+                    d.pending_memory = None;
+                }
+                let est = agent::endless_ext::backfill_estimate(&m);
+                tracing::info!(agent = %name, %session, %mode, units = est.units, eta_secs = est.eta_secs, model = %est.model, usd = est.usd, "desk memory switched");
+            }
+            Err(e) if e.to_string().contains("busy") => {
+                tracing::debug!(agent = %name, "desk memory switch deferred: busy");
+            }
+            Err(e) => {
+                tracing::warn!(agent = %name, %mode, "desk memory not switched: {e}");
+                if let Some(d) = self.desks.get_mut(name) {
+                    d.pending_memory = None;
+                }
+            }
+        }
     }
 
     /// [`OpenDesk`]: the open desk's session, else open one now (theuth's
@@ -1183,6 +1275,16 @@ impl Roster {
     }
 }
 
+impl Message<agent::EndlessConfigChanged> for Roster {
+    type Reply = ();
+
+    /// 137 §11.3: Settings › Memory changed `agent.endless`; desks opened
+    /// from now on follow the new `default_desk`.
+    async fn handle(&mut self, m: agent::EndlessConfigChanged, _: &mut Context<Self, Self::Reply>) {
+        self.endless = m.0;
+    }
+}
+
 impl Message<Tick> for Roster {
     type Reply = ();
 
@@ -1219,6 +1321,16 @@ impl Message<Tick> for Roster {
         }
         // Desks that could not open earlier (the agent actor was not up).
         self.sync_desks().await;
+        // 137 R1-D7: idle desks with a memory switch still pending.
+        let pending: Vec<String> = self
+            .desks
+            .iter()
+            .filter(|(_, d)| d.pending_memory.is_some() && !d.working)
+            .map(|(n, _)| n.clone())
+            .collect();
+        for name in pending {
+            self.apply_pending_memory(&name).await;
+        }
     }
 }
 
@@ -1392,17 +1504,22 @@ impl Message<agent::AgentEvent> for Roster {
                 let Some(name) = self.desk_name(session) else {
                     return;
                 };
-                let model = {
+                let (model, endless) = {
                     let Some(d) = self.desks.get_mut(&name) else {
                         return;
                     };
                     d.working = false;
                     d.last_active_ms = now_ms();
-                    d.model.clone()
+                    (d.model.clone(), d.memory == agent::MemoryMode::Endless)
                 };
                 // 70 DESK-PROTOCOL 3: the nudge point.
                 self.judge_turn(&name, &stop_reason).await;
+                // 137 R1-D7: the idle moment a pending memory switch waits for.
+                self.apply_pending_memory(&name).await;
+                // 137 D12: an endless desk's frame is bounded by its view; the
+                // context trigger is off for it (idle/lease/thread-end stay).
                 if let Some(model) = model
+                    && !endless
                     && self.desks.contains_key(&name)
                 {
                     let window = self.window(&model).await;
@@ -1605,6 +1722,8 @@ impl Message<ListAgents> for Roster {
                             paused: true,
                             proposed_by: None,
                             runs_in: Default::default(),
+                            memory: None,
+                            view_bytes: None,
                             body: String::new(),
                         },
                         status: AgentStatus::Invalid,
@@ -2171,6 +2290,9 @@ impl runtime::Plugin for RosterPlugin {
         rt.subscribe::<Roster, mesh::MeshEvent>(&actor).await;
         // 79 §4.9: a VM that takes work again unblocks the tasks pinned to it.
         rt.subscribe::<Roster, sandbox::SandboxEvent>(&actor).await;
+        // 137 §11.3: `default_desk` follows Settings › Memory live.
+        rt.subscribe::<Roster, agent::EndlessConfigChanged>(&actor)
+            .await;
         let me = actor.clone();
         let rt2 = rt.clone();
         tokio::spawn(async move {
@@ -2422,6 +2544,8 @@ mod tests {
                 primed: false,
                 model: None,
                 serving: None,
+                memory: agent::MemoryMode::Epochs,
+                pending_memory: None,
             },
         );
         assert_eq!(r.desk_or_open("ops").await, Ok(session));

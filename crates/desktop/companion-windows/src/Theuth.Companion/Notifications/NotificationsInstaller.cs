@@ -24,6 +24,7 @@ internal sealed class NotificationsInstaller : IDisposable
     private readonly Store store;
     private readonly DispatcherQueue dispatcher;
     private NotifyProbe? probe;
+    private PinTipScheduler? pinTip; // W6 item 1
 
     /// <summary>Before any window (§4.4, C1): the handler, then <c>AppNotificationManager.Register()</c>.</summary>
     public static void RegisterNotifications() => Notifier.RegisterEarly();
@@ -71,6 +72,8 @@ internal sealed class NotificationsInstaller : IDisposable
             });
             ui.LaunchAtLoginToggled += on => model.Update(s => s.LaunchAtLogin = on);
             ui.LaunchAtLoginState = () => model.Value.LaunchAtLogin;
+            ui.PausedUntil = () => Notifier.PausedUntil; // W6 item 9: the submenu's check marks
+            ui.QuitRequested += Notifier.Quitting; // W6 item 10: no "engine unreachable" toast on an intentional quit
             ui.Redirected += Notifier.Redirected;
             store.OpenItemRequested += id => ui.OpenPanelOn(id);
         }
@@ -92,6 +95,13 @@ internal sealed class NotificationsInstaller : IDisposable
         if (model.Value.DoubleTapAlt && !DoubleTap.Install()) Log.Write("double-tap Alt: on in settings but the hook could not be installed");
 
         LoginItem.Reconcile(model.Value);
+
+        // W6 item 1 (§4.5): the first-run pin tip — armed from the tray's first NIM_ADD, not during probes (they exit in seconds).
+        if (!W3Flags.AnyProbe && ui is not null)
+        {
+            pinTip = new PinTipScheduler(Notifier, model, dispatcher, () => ui.TrayAddedAt);
+            pinTip.Start();
+        }
 
         if (W3Flags.RequestNotifications)
         {
@@ -126,6 +136,7 @@ internal sealed class NotificationsInstaller : IDisposable
     /// <summary>At exit: hooks off, the COM activator unregistered (a later click launches a new process).</summary>
     public void Dispose()
     {
+        pinTip?.Dispose();
         Breakpoints.Dispose();
         DoubleTap.Dispose();
         Notifier.Dispose();

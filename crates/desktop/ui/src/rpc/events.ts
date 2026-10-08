@@ -49,6 +49,7 @@ import type { ReminderEvent } from '@/rpc/bindings/ReminderEvent'
 import type { DreamNightStarted } from '@/rpc/bindings/DreamNightStarted'
 import type { DreamNightFinished } from '@/rpc/bindings/DreamNightFinished'
 import type { DreamUndone } from '@/rpc/bindings/DreamUndone'
+import type { EndlessProgress } from '@/rpc/bindings/EndlessProgress'
 
 /**
  * `AgentEvent` with the 25 §7 additions the bindings do not carry yet:
@@ -129,3 +130,5 @@ export type WireEvent =
   | DreamNightStarted
   | DreamNightFinished
   | DreamUndone
+  /** 137 §11.2: the compactor's build/settle progress for an endless session; the header badge and Memory panel refetch. */
+  | EndlessProgress

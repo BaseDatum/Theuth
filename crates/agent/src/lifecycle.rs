@@ -60,6 +60,10 @@ pub struct CreateSessionOptions {
     /// harness's model option; `effort` and `cap` do not apply.
     #[serde(default)]
     pub harness: Option<String>,
+    /// Memory mode (137 D1): `epochs` | `endless`; `None` = `agent.endless.default_chat`.
+    #[serde(default)]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub memory: Option<crate::endless::MemoryMode>,
 }
 
 /// Reply to `create_session` / `resume_private`: the opened session, its

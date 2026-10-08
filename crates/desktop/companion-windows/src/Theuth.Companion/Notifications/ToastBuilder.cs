@@ -16,9 +16,9 @@ namespace Theuth.Companion.Notifications;
 /// </summary>
 internal static class ToastBuilder
 {
-    public const string ArgAction = "action", ArgBanner = "banner", ArgItem = "item", ArgCategory = "kind";
-    public const string InputText = "text";
-    public static readonly string[] OptionActions = { "opt-1", "opt-2", "opt-3" };
+    public const string ArgAction = ToastActivation.ArgAction, ArgBanner = ToastActivation.ArgBanner, ArgItem = ToastActivation.ArgItem, ArgCategory = "kind";
+    public const string InputText = ToastActivation.InputText;
+    public static readonly string[] OptionActions = ToastActivation.OptionActions;
 
     /// <summary>Tags and groups are capped at 64 chars by the platform; long ids keep a readable head plus a stable hash.</summary>
     public static string TagFor(string id)
@@ -49,6 +49,26 @@ internal static class ToastBuilder
         if (!b.Sound) builder.MuteAudio();
         if (b.Level == BannerLevel.TimeSensitive && urgentSupported) builder.SetScenario(AppNotificationScenario.Urgent);
         if (!receipt) AddButtons(builder, b, options, b.ItemIds.Count == 1 ? b.ItemIds[0] : null);
+        return builder.BuildNotification();
+    }
+
+    /// <summary>
+    /// 134 W6 item 1: the first-run "pin theuth to the taskbar corner" tip (<see cref="PinTip"/>) — Default scenario (Do not
+    /// disturb applies), muted, body tap = <c>later</c> (nothing), one button that opens <c>ms-settings:taskbar</c> by protocol
+    /// activation (works whether or not the companion still runs; the Settings app, not the companion, is activated).
+    /// </summary>
+    public static AppNotification BuildPinTip()
+    {
+        var builder = new AppNotificationBuilder()
+            .AddArgument(ArgAction, "later")
+            .AddArgument(ArgBanner, PinTip.Tag)
+            .AddArgument(ArgCategory, "tip")
+            .AddText(PinTip.Title)
+            .AddText(PinTip.Body)
+            .SetTag(PinTip.Tag)
+            .SetGroup(PinTip.Group)
+            .MuteAudio()
+            .AddButton(new AppNotificationButton(PinTip.ButtonLabel).SetInvokeUri(new Uri(PinTip.SettingsUri)));
         return builder.BuildNotification();
     }
 

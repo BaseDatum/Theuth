@@ -35,11 +35,13 @@ import { extFor, putAttachment } from '@/lib/files'
 import { usePanes } from '@/lib/panes'
 import { type AttachRef, type AttachRequest, DRAG_TYPE, atTrigger, compose, toRef } from '@/lib/attach'
 import { loadRecents, pushRecents, saveRecents, stripAt } from '@/lib/attach-picker'
-import { attach, attachRef, drop, expand, type Pastes, reconcile, tokenize, untoken } from '@/lib/pastes'
+import { attach, attachRef, drop, expand, type Pastes, reconcileShelved, type Shelf, tokenize, untoken } from '@/lib/pastes'
+import { applyText } from '@/lib/text-edit'
 import { isDesktop, touch } from '@/lib/platform'
 import { type OwnerUnreachable, ownerUnreachable } from '@/lib/owner'
 import { VIEW, isPrivate, usePrivate } from '@/lib/private'
 import { queryKeys, useApi } from '@/lib/rpc'
+import type { CreateSessionOptions } from '@/rpc/bindings/CreateSessionOptions'
 import { EMPTY, useDrafts, useSkillDraft } from '@/lib/drafts'
 import { DEBOUNCE_MS as PATH_DEBOUNCE_MS, type PathPopup, accept as acceptPath, pathKey, pathTrigger, step as stepPath } from '@/lib/path-complete'
 import { useIsMobile } from '@/hooks/use-mobile'
@@ -75,8 +77,24 @@ import { analyserSource, tapOrLevels } from '@/lib/visual-source'
 import { QueuedChips } from './QueuedChips'
 import { type Ctx, FRESH, draftSkill, isCommand, matches, run } from './slash'
 
-/** New Chat options (51 §8.3): `private` selects memory-only retention; `project` is root metadata. */
-export type DraftCreate = { private: boolean; project: string | null }
+/** New Chat options (51 §8.3, 137 §11.3): `private` selects memory-only retention; `project` is root metadata; `endless` the summary-tree memory. */
+export type DraftCreate = { private: boolean; project: string | null; endless: boolean }
+
+/** The `create_session` options for a draft; `memory` is sent only when the ∞ switch is on (the engine's default otherwise). */
+export function createOptions(draft: DraftCreate): CreateSessionOptions {
+  return {
+    retention: draft.private ? 'private' : 'durable',
+    project: draft.project,
+    view: draft.private ? VIEW : null,
+    cwd: null,
+    model: null,
+    effort: null,
+    parent_session: null,
+    parent_engine: null,
+    harness: null,
+    memory: draft.endless ? 'endless' : undefined,
+  }
+}
 
 const NONE = EMPTY.pastes
 const IMAGE = /\.(png|jpe?g|gif|webp|bmp)$/i
@@ -330,8 +348,13 @@ export function Composer({
     dictation.reason(dict) ?? (dict.active !== null && !owner ? 'Dictating in another pane' : null)
   // 82 §B: the pill's wave — the dictation tap's analyser (remote engine) or frames from the engine's level packets.
   const dictSource = useVoiceSource(dictating && dict.phase === 'dictating', () => tapOrLevels(dictation.tap(), dictation.onLevels))
-  /** Caret to place once the textarea is back after a dictation. */
-  const [pendingCaret, setPendingCaret] = useState<number | null>(null)
+  /** Caret to place once the textarea is back after a dictation — with the dictated `text` to land there first (138 UNDO). */
+  const [pending, setPending] = useState<{ text?: string; caret: number } | null>(null)
+  /** 138 UNDO D3: text blocks whose token an undo or a chip ✕ took, waiting for a redo to bring the token back. Per draft. */
+  const shelf = useRef<Shelf>(new Map())
+  useEffect(() => {
+    shelf.current = new Map()
+  }, [draftKey])
   const { state: comm, exports } = useCommunication(session)
   // Owned private tree (51 §4.5): uploads go to its scratch root; a private draft has no root yet, so blob uploads
   // (which would land in the durable store) and voice notes (transcribed from the durable store) wait for the session.
@@ -418,9 +441,7 @@ export function Composer({
   useEffect(
     () =>
       dictation.onFinish(({ value, caret }) => {
-        if (!ownerRef.current) return
-        setText(value)
-        setPendingCaret(caret)
+        if (ownerRef.current) setPending({ text: value, caret })
       }),
     [],
   )
@@ -429,26 +450,45 @@ export function Composer({
   useEffect(() => {
     if (dict.phase === 'idle') setOwner(false)
   }, [dict.phase])
+  /** The chips `next` still carries, through the shelf (138 UNDO D3): a text block whose token left waits there for a redo. */
+  const reconcileHeld = (next: string) =>
+    setPastes((held) => {
+      const r = reconcileShelved(next, held, shelf.current)
+      shelf.current = r.shelf
+      return r.pastes
+    })
+  /** Keys taken on the shelf: a new chip never reuses one, or a redo would hand its token the newer block. */
+  const floor = () => Math.max(0, ...shelf.current.keys())
+  /**
+   * Make the box say `next` as one undo step (138 UNDO): the editing command's `input` runs `onChange`, so the store
+   * follows. The plain store write instead (not undoable) when the box cannot take it — unmounted, read-only, the
+   * command refused — or, under a finger, when it is not focused: focusing to edit would pop the keyboard for a chip ✕.
+   * `caret` overrides the command's (after the change) once React has rendered.
+   */
+  const edit = (next: string, caret?: number) => {
+    const ta = ref.current
+    if (!ta || (touch() && document.activeElement !== ta) || !applyText(ta, next)) {
+      setText(next)
+      reconcileHeld(next)
+    }
+    if (caret !== undefined) setPending({ caret })
+  }
   useEffect(() => {
     const ta = ref.current
-    if (pendingCaret === null || !ta) return
-    ta.setSelectionRange(pendingCaret, pendingCaret)
+    if (pending === null || !ta) return
+    // The dictation lands once the box is back: one undo step, so ⌘Z takes the dictated words (the steps from
+    // before the dictation did not survive the remount).
+    if (pending.text !== undefined && !applyText(ta, pending.text)) {
+      setText(pending.text)
+      reconcileHeld(pending.text)
+    }
+    ta.setSelectionRange(pending.caret, pending.caret)
     ta.focus()
-    setPendingCaret(null)
-  }, [pendingCaret, dictating])
-
-  /** Put `s` at the selection (replacing it), caret after it; a chip whose token the selection took goes too. */
-  const insert = (s: string, held: Pastes = pastes) => {
-    const ta = ref.current
-    const [a, b] = ta ? [ta.selectionStart, ta.selectionEnd] : [text.length, text.length]
-    const next = text.slice(0, a) + s + text.slice(b)
-    setText(next)
-    setPastes(reconcile(next, held))
-    setPendingCaret(a + s.length)
-  }
+    setPending(null)
+  }, [pending, dictating])
 
   const addFiles = (paths: string[], dims?: [number, number]) => {
-    setPastes(paths.reduce((held, path) => attach(path, dims?.[0] ?? 0, dims?.[1] ?? 0, held), pastes))
+    setPastes((h) => paths.reduce((held, path) => attach(path, dims?.[0] ?? 0, dims?.[1] ?? 0, held, floor()), h))
     const id = model ?? defaultModel
     const info = models?.find((m) => m.id === id)
     if (info && !info.image && paths.some((p) => IMAGE.test(p)))
@@ -460,7 +500,7 @@ export function Composer({
   }
 
   /** 66 §7.6: attach a reference; its chip stands above the box until send expands it to the marker line. */
-  const addRef = (ref: AttachRef) => setPastes((held) => attachRef(ref, held))
+  const addRef = (ref: AttachRef) => setPastes((held) => attachRef(ref, held, floor()))
   // `theuth:attach` (66 §7.8, §7.9): "Attach again", "Attach to this chat", the search dialog's row action — and
   // `theuth:attach-open` — land in the focused composer of that session, like `theuth:focus-composer`.
   useEffect(() => {
@@ -503,16 +543,11 @@ export function Composer({
   }
   /** The picker's result: chips for every picked reference, the `@word` gone (§7.8), focus back in the box (§7.7). */
   const picked = (refs: AttachRef[]) => {
-    const held = refs.reduce((h, r) => attachRef(r, h), pastes)
-    if (picking === 'at' && atWord) {
-      const next = stripAt(text, atWord.start, atWord.word)
-      setText(next)
-      setPastes(reconcile(next, held))
-      setPendingCaret(atWord.start)
-    } else setPastes(held)
+    setPastes((h) => refs.reduce((held, r) => attachRef(r, held, floor()), h))
+    ref.current?.focus()
+    if (picking === 'at' && atWord) edit(stripAt(text, atWord.start, atWord.word), atWord.start)
     setPicking(null)
     setAtWord(null)
-    ref.current?.focus()
   }
 
   // PATH-AC: `path` is the open list; `pathAsk` the debounced request behind it. The engine running the session
@@ -562,9 +597,7 @@ export function Composer({
     const item = path.items[i]
     if (!item) return
     const next = acceptPath(text, path, item)
-    setText(next.text)
-    setPastes(reconcile(next.text, pastes))
-    setPendingCaret(next.caret)
+    edit(next.text, next.caret)
     setPath(null)
     setPathAsk(item.is_dir ? { text: next.text, caret: next.caret, now: true } : null)
   }
@@ -622,13 +655,17 @@ export function Composer({
     const plain = e.clipboardData.getData('text/plain')
     if (!plain) return
     e.preventDefault()
-    const held = tokenize(plain, pastes)
-    insert(held.text, held.pastes)
+    // The block is held before the edit: the edit's `onChange` reconciles against the store, which must already have it.
+    const { selectionStart: a, selectionEnd: b } = e.currentTarget
+    const held = tokenize(plain, pastes, floor())
+    if (held.pastes !== pastes) setPastes(held.pastes)
+    edit(text.slice(0, a) + held.text + text.slice(b), a + held.text.length)
   }
 
   const reset = () => {
     setText('')
     setPastes(NONE)
+    shelf.current = new Map()
     setSelected(0)
   }
 
@@ -716,20 +753,10 @@ export function Composer({
         await deadline(api.send_input(id, body, files, null, clientId))
       } else {
         let id: string
-        if (draftCreate?.private || draftCreate?.project) {
+        if (draftCreate?.private || draftCreate?.project || draftCreate?.endless) {
           if (draftCreate.private && !usePrivate.getState().acknowledged)
             throw new Error('Acknowledge the private session notice first')
-          const open = await api.create_session({
-            retention: draftCreate.private ? 'private' : 'durable',
-            project: draftCreate.project,
-            view: draftCreate.private ? VIEW : null,
-            cwd: null,
-            model: null,
-            effort: null,
-            parent_session: null,
-            parent_engine: null,
-            harness: null,
-          })
+          const open = await api.create_session(createOptions(draftCreate))
           if (open.retention === 'private') usePrivate.getState().open(open)
           id = open.session
         } else id = await api.new_session()
@@ -746,6 +773,7 @@ export function Composer({
         await deadline(api.send_input(id, body, files, null, clientId))
       }
       useDrafts.getState().acked(draftKey, spoken ?? text)
+      shelf.current = new Map()
       setSelected(0)
       // A retry the engine already had starts no turn, so the row shown at once would stay a ghost: drop it. A
       // routed retry is either stamped by its `TurnStarted` already (then this is a no-op) or echoed by it after.
@@ -960,7 +988,7 @@ export function Composer({
 
   const pick = (name: string) => {
     const hint = matches(name)[0]?.hint ?? ''
-    setText(`${name} `)
+    edit(`${name} `)
     setSelected(0)
     if (hint === '') {
       reset()
@@ -1007,7 +1035,7 @@ export function Composer({
     if (session && queued?.length && chord(keys.withdraw, k)) {
       e.preventDefault()
       const last = queued[queued.length - 1]
-      if (last) void api.withdraw(session, last.id).then(setText, (err: unknown) => toast.error(err instanceof Error ? err.message : String(err)))
+      if (last) void api.withdraw(session, last.id).then(edit, (err: unknown) => toast.error(err instanceof Error ? err.message : String(err)))
       return
     }
     if (e.nativeEvent.isComposing) return
@@ -1051,7 +1079,7 @@ export function Composer({
           </Button>
         </div>
       )}
-      {session && <QueuedChips session={session} onEdit={(t) => setText(t)} />}
+      {session && <QueuedChips session={session} onEdit={edit} />}
       {skill && (
         <div className="flex justify-end pb-2">
           <span className="flex items-center gap-1.5 rounded-full bg-layer-2 px-3 py-1 text-sm text-fg-secondary">
@@ -1101,8 +1129,8 @@ export function Composer({
           pinned={pinned}
           onChange={setPastes}
           onRemove={(i) => {
-            setText(untoken(text, i))
-            setPastes(drop(i, pastes))
+            edit(untoken(text, i)) // a text block: its token goes and `reconcileHeld` shelves the block for a redo
+            setPastes((held) => drop(i, held)) // a file or reference chip has no token
           }}
         />
         <div className="flex items-end gap-1">
@@ -1203,7 +1231,7 @@ export function Composer({
                   value={text}
                   onChange={(e) => {
                     setText(e.target.value)
-                    setPastes(reconcile(e.target.value, pastes))
+                    reconcileHeld(e.target.value)
                     setSelected(0)
                     changed(e.target.value, e.target.selectionStart)
                     pathChanged(e.target.value, e.target.selectionStart)

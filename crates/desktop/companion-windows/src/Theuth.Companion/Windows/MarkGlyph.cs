@@ -19,15 +19,8 @@ internal static class MarkGlyph
 {
     private const double S = 10;
 
-    /// <summary>Windows' "Animation effects" switch (<c>UISettings.AnimationsEnabled</c>).</summary>
-    public static bool AnimationsEnabled
-    {
-        get
-        {
-            try { return new global::Windows.UI.ViewManagement.UISettings().AnimationsEnabled; }
-            catch (Exception) { return true; }
-        }
-    }
+    /// <summary>Windows' "Animation effects" switch (<c>UISettings.AnimationsEnabled</c>), live through <see cref="SystemEffects"/> (C13).</summary>
+    public static bool AnimationsEnabled => SystemEffects.AnimationsOn;
 
     public static FrameworkElement Create(MarkState state, ElementTheme theme, bool animate)
     {

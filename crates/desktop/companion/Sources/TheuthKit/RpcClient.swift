@@ -210,7 +210,7 @@ public actor RpcClient {
     private static func describe(_ v: Any) -> String { "\(v)" }
 }
 
-// MARK: the twelve calls the companion makes (params positional, in `crates/rpc/src/api.rs` trait order)
+// MARK: the fourteen calls the companion makes (params positional, in `crates/rpc/src/api.rs` trait order)
 
 public extension RpcClient {
     func attentionList() async throws -> [AttentionItem] { try await call("attention_list") }
@@ -245,6 +245,16 @@ public extension RpcClient {
     /// `state` is a `TaskState` word: `done` | `todo` | …
     func taskMove(id: String, state: String, note: String?) async throws {
         let _: JSONValue = try await call("task_move", [.init(id), .init(state), .init(note)])
+    }
+
+    /// `agent_approve(name)`: hire a proposed agent; the engine stamps the actor (E4).
+    func agentApprove(name: String) async throws {
+        let _: JSONValue = try await call("agent_approve", [.init(name)])
+    }
+
+    /// `agent_remove(name, note)`: decline a proposal (the note goes on its hire task) or delete an agent.
+    func agentRemove(name: String, note: String?) async throws {
+        let _: JSONValue = try await call("agent_remove", [.init(name), .init(note)])
     }
 
     /// `send_input(session, text, [], null, null)` → the session id.

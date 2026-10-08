@@ -36,6 +36,8 @@ pub mod context;
 pub mod continuation;
 pub mod dreaming_ledger;
 pub mod durability;
+pub mod endless;
+pub mod endless_ext;
 pub mod frame;
 pub mod loop_;
 pub mod peers;
@@ -114,6 +116,10 @@ pub use cost::{
 pub use dreaming_ledger::{
     Ledger, LedgerCount, LedgerHintUse, LedgerQuestion, LedgerRewind, LedgerSession, LedgerSince,
     LedgerStop, LedgerToolError, LedgerUserMessage,
+};
+pub use endless::{
+    Backfill, Endless, EndlessConfig, EndlessProgress, EndlessStats, GuardTrips, MemoryMode,
+    SessionMemory, SetMode, UnitFilter, ViewLine, resolved_compactor_model,
 };
 pub use lifecycle::{
     Authorize, Authorized, CreateSession, LeaveSession, PrivateTrees, ResumePrivate, TreeOpened,
@@ -838,6 +844,99 @@ pub struct SessionContextBreakdown {
     /// Target session.
     pub session: SessionId,
 }
+
+/// `ask` → `Result<SessionMemory, String>` (137 §11.2): the session's memory
+/// mode, view and compactor stats; `mode: epochs` with an empty view for an
+/// epochs session.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+pub struct SessionMemoryQuery {
+    /// Target session.
+    pub session: SessionId,
+}
+
+/// `ask` → `Result<Vec<ViewLine>, String>` (137 §9 `zoom`): the two lines
+/// under `id+n`, or the whole unit when `n == 1`.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+pub struct EndlessZoom {
+    /// Target session.
+    pub session: SessionId,
+    /// First message of the line.
+    pub id: u64,
+    /// Messages the line covers (a power of two).
+    pub n: u64,
+}
+
+/// `ask` → `Result<Vec<ViewLine>, String>` (137 §9 `recall`): FTS over the
+/// session's level-0 lines, raw units as fallback; `limit` default 8.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct EndlessRecall {
+    /// Target session.
+    pub session: SessionId,
+    /// Words to search for.
+    pub query: String,
+    /// Lines to return; `None` = 8.
+    pub limit: Option<u8>,
+}
+
+/// `ask` → `Result<SessionMemory, String>` (137 §8.6 `/endless on|off`):
+/// idle sessions only (`Err("busy")`). `endless` starts the backfill; `epochs`
+/// writes the view as the next epoch's head and stops the pump. `filter`
+/// (R1-D6) is fixed at switch-on: `All` for chats and desks, `Meeting` for a
+/// meeting session (transcript batches and topic/brief calls only).
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+pub struct SetSessionMemory {
+    /// Target session.
+    pub session: SessionId,
+    /// The mode to switch to.
+    pub mode: MemoryMode,
+    /// Which parts become units.
+    #[serde(default)]
+    pub filter: UnitFilter,
+}
+
+/// `ask` → `Result<Vec<ViewLine>, String>` (137 R1-D6): the session's view
+/// re-folded to `bytes`, as lines — a meeting head's `## Earlier in this
+/// meeting`. Works for a `UnitFilter::Meeting` session, whose turns never
+/// run the fresh-turn frame.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+pub struct RenderMemoryView {
+    /// Target session.
+    pub session: SessionId,
+    /// Budget in bytes for the rendered lines.
+    pub bytes: u32,
+}
+
+/// `ask` → `Result<SessionMemory, String>` (137 R1-D2b): the session's view
+/// budget in bytes (16_000..=256_000); takes effect at the next turn boundary.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+pub struct SetSessionViewBytes {
+    /// Target session.
+    pub session: SessionId,
+    /// View budget in bytes.
+    pub bytes: u32,
+}
+
+/// `ask` → `Result<EndlessConfig, String>` (137 §11.3): the live `agent.endless` section (never `Err`).
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+pub struct GetEndlessSettings;
+
+/// `ask` → `Result<EndlessConfig, String>` (137 §11.3): validate, persist
+/// every `agent.endless.*` key to config.yaml and apply it live — the
+/// service's shared config (`view_bytes`/`slack` re-fold at the next render,
+/// `settle_secs` per turn), `default_chat` for the next created session, and
+/// [`EndlessConfigChanged`] on the bus for the roster (`default_desk`) and
+/// the meeting plugin. The compactor model applies to sessions attached after
+/// the change. Returns what was stored.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct SetEndlessSettings {
+    /// The whole section.
+    pub config: EndlessConfig,
+}
+
+/// Bus event: `agent.endless` was changed through [`SetEndlessSettings`];
+/// the roster and the meeting plugin refresh their copies.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct EndlessConfigChanged(pub EndlessConfig);
 
 /// `ask` → `Result<ContextRemoval, String>`: remove `targets` from the
 /// session's effective context (design doc 48 §3.2) — masks beside the stored
@@ -1964,6 +2063,9 @@ pub struct SessionSummary {
     #[serde(default)]
     #[cfg_attr(feature = "ts", ts(optional = nullable))]
     pub kind: SessionKind,
+    /// Memory mode (137 D1): `epochs` from an older harness.
+    #[serde(default)]
+    pub memory: MemoryMode,
 }
 
 fn one() -> u32 {
@@ -2795,6 +2897,8 @@ pub struct AgentConfig {
     pub compaction: CompactionConfig,
     /// Request passthrough for the built-in OpenRouter provider (85 §0.6).
     pub openrouter: OpenRouterConfig,
+    /// Endless memory mode defaults and compactor settings (137 §11.1).
+    pub endless: EndlessConfig,
     /// The top-level `surface:` section (design doc 30 §12), filled by
     /// `supervisor::start` — not part of `agent:`.
     #[serde(skip)]
@@ -2832,6 +2936,7 @@ impl Default for AgentConfig {
             broadcast: BroadcastConfig::default(),
             compaction: CompactionConfig::default(),
             openrouter: OpenRouterConfig::default(),
+            endless: EndlessConfig::default(),
             surface: SurfaceConfig::default(),
             durability: durability::DurabilityConfig::default(),
             advisor: AdvisorConfig::default(),

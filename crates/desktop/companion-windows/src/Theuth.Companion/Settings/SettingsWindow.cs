@@ -2,6 +2,7 @@ using Microsoft.UI.Dispatching;
 using Microsoft.UI.Windowing;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Automation;
+using Microsoft.UI.Xaml.Automation.Peers;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Controls.Primitives;
 using Microsoft.UI.Xaml.Media;
@@ -70,6 +71,9 @@ internal sealed partial class SettingsWindow : Window
     private readonly NavigationView nav = new();
     private readonly ScrollViewer host = new() { Padding = new Thickness(24, 12, 24, 24), HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled };
     private readonly DispatcherQueueTimer refresh;
+    /// <summary>The current page's live texts (Engine counts, the Run value): refreshed in place every 2 s.</summary>
+    private readonly List<Action> live = new();
+    private ToggleSwitch? loginToggle;
 
     public string CurrentPage { get; private set; } = Pages[0];
 
@@ -107,11 +111,13 @@ internal sealed partial class SettingsWindow : Window
         model.NoticesChanged += OnNoticesChanged;
         notifier.Changed += OnNotifierChanged;
         store.PropertyChanged += OnStoreChanged;
-        // The Engine page's live counts and the notification setting re-read every 2 s while the window is up.
+        // The Engine page's live counts and the Login page's Run-value line re-read every 2 s while the window is up — text
+        // updated in place (W6 item 4, C12): rebuilding the page every 2 s replaced the controls under UI Automation, so a
+        // ToggleSwitch found by ui_find was detached by the time ui_click ran and UIA reported it off-screen.
         refresh = DispatcherQueue.CreateTimer();
         refresh.Interval = TimeSpan.FromSeconds(2);
         refresh.IsRepeating = true;
-        refresh.Tick += (_, _) => Guard.Run("settings refresh", () => { if (CurrentPage is "engine" or "login") ShowPage(CurrentPage); });
+        refresh.Tick += (_, _) => Guard.Run("settings refresh", () => { foreach (var update in live) update(); });
         refresh.Start();
         Closed += (_, _) =>
         {
@@ -139,7 +145,12 @@ internal sealed partial class SettingsWindow : Window
     private void OnSettingsChanged(CompanionSettings old, CompanionSettings now)
     {
         if (CurrentPage == "keys" && old.Keys != now.Keys) ShowPage(CurrentPage);
-        if (CurrentPage == "login" && old.LaunchAtLogin != now.LaunchAtLogin) ShowPage(CurrentPage);
+        if (CurrentPage == "login" && old.LaunchAtLogin != now.LaunchAtLogin)
+        {
+            // In place: the switch the user (or UI Automation) just toggled stays the same element.
+            if (loginToggle is { } t && t.IsOn != now.LaunchAtLogin) t.IsOn = now.LaunchAtLogin;
+            foreach (var update in live) update();
+        }
     }
 
     private void OnNoticesChanged()
@@ -154,13 +165,15 @@ internal sealed partial class SettingsWindow : Window
 
     private void OnStoreChanged(object? sender, System.ComponentModel.PropertyChangedEventArgs e)
     {
-        if (CurrentPage == "engine" && e.PropertyName is nameof(Store.Connection)) ShowPage(CurrentPage);
+        if (CurrentPage == "engine" && e.PropertyName is nameof(Store.Connection)) foreach (var update in live) update();
         if (CurrentPage == "keys" && e.PropertyName is nameof(Store.HotkeyNotice) or nameof(Store.Keys)) ShowPage(CurrentPage); // W2's resolution notice
     }
 
     private void ShowPage(string key)
     {
         CurrentPage = key;
+        live.Clear();
+        loginToggle = null;
         var page = new StackPanel { Spacing = 10, MaxWidth = 560, HorizontalAlignment = HorizontalAlignment.Left };
         AutomationProperties.SetAutomationId(page, $"settings-page-{key}");
         Guard.Run($"settings page {key}", () =>
@@ -313,11 +326,15 @@ internal sealed partial class SettingsWindow : Window
     private void Login(StackPanel page)
     {
         Heading(page, "Launch at login");
-        Toggle(page, "Launch at login", "settings-login-toggle", model.Value.LaunchAtLogin, on => model.Update(s => s.LaunchAtLogin = on));
-        var status = Caption(page, $"Run value: {(LoginItem.ReadRunValue() is { } v ? v : "absent")} · status={LoginItem.Status()}");
+        loginToggle = Toggle(page, "Launch at login", "settings-login-toggle", model.Value.LaunchAtLogin, on => model.Update(s => s.LaunchAtLogin = on));
+        var status = Caption(page, LoginStatusText());
         AutomationProperties.SetAutomationId(status, "settings-login-status");
+        AutomationProperties.SetLiveSetting(status, AutomationLiveSetting.Polite);
+        live.Add(() => { var t = LoginStatusText(); if (status.Text != t) status.Text = t; });
         Caption(page, $"Written by the companion itself to HKCU\\{LoginItemRegistration.RunKey}\\{LoginItemRegistration.ValueName} and mirrored to {LoginItem.FilePath}. Windows Settings › Apps › Startup can also switch it off; uninstalling theuth removes it.");
     }
+
+    private static string LoginStatusText() => $"Run value: {(LoginItem.ReadRunValue() is { } v ? v : "absent")} · status={LoginItem.Status()}";
 
     private void Engine(StackPanel page)
     {
@@ -328,26 +345,28 @@ internal sealed partial class SettingsWindow : Window
         var grid = new Grid { ColumnSpacing = 16, RowSpacing = 6 };
         grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-        void Row(string label, string text, string id)
+        void Row(string label, Func<string> text, string id, bool isLive = false)
         {
             int r = grid.RowDefinitions.Count;
             grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
             var l = new TextBlock { Text = label, Foreground = Theme.Brush("TextFillColorSecondaryBrush") };
-            var t = new TextBlock { Text = text, TextWrapping = TextWrapping.Wrap, IsTextSelectionEnabled = true };
+            var t = new TextBlock { Text = text(), TextWrapping = TextWrapping.Wrap, IsTextSelectionEnabled = true };
             AutomationProperties.SetAutomationId(t, $"settings-engine-{id}");
+            AutomationProperties.SetName(t, label);
             Grid.SetRow(l, r); Grid.SetColumn(l, 0);
             Grid.SetRow(t, r); Grid.SetColumn(t, 1);
             grid.Children.Add(l);
             grid.Children.Add(t);
+            if (isLive) live.Add(() => { var s = text(); if (t.Text != s) t.Text = s; });
         }
-        Row("Engine", engine, "url");
-        Row("Connection", store.Connection.ToString().ToLowerInvariant(), "connection");
-        Row("Data dir", EngineLocation.DataDir(), "data-dir");
-        Row("Client", "companion", "client");
-        Row("Hub", "— (Ask bar wave)", "hub");
-        Row("Items · desks · sessions", $"{store.Items.Count} · {store.Agents.Count} · {store.Activity.Count}", "counts");
-        Row("Version", $"{AppInfo.Version} · {AppInfo.WinUI} · .NET {Environment.Version}", "version");
-        Row("Log", Log.DailyFile, "log");
+        Row("Engine", () => engine, "url");
+        Row("Connection", () => store.Connection.ToString().ToLowerInvariant(), "connection", isLive: true);
+        Row("Data dir", () => EngineLocation.DataDir(), "data-dir");
+        Row("Client", () => "companion", "client");
+        Row("Hub", () => "— (Ask bar wave)", "hub");
+        Row("Items · desks · sessions", () => $"{store.Items.Count} · {store.Agents.Count} · {store.Activity.Count}", "counts", isLive: true);
+        Row("Version", () => $"{AppInfo.Version} · {AppInfo.WinUI} · .NET {Environment.Version}", "version");
+        Row("Log", () => Log.DailyFile, "log");
         page.Children.Add(grid);
     }
 

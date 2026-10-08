@@ -51,6 +51,9 @@ internal sealed class Tray : IDisposable
 
     public bool Added => added;
 
+    /// <summary>When the first successful <c>NIM_ADD</c> happened (W6: the pin tip's clock starts here); null until then.</summary>
+    public DateTimeOffset? AddedAt { get; private set; }
+
     public string Tooltip { get; private set; } = "theuth";
 
     public static string AssetsDir => Path.Combine(AppContext.BaseDirectory, "Assets", "tray");
@@ -78,6 +81,7 @@ internal sealed class Tray : IDisposable
         var d = Data(NOTIFY_ICON_DATA_FLAGS.NIF_MESSAGE | NOTIFY_ICON_DATA_FLAGS.NIF_ICON | NOTIFY_ICON_DATA_FLAGS.NIF_TIP | NOTIFY_ICON_DATA_FLAGS.NIF_SHOWTIP);
         added = PInvoke.Shell_NotifyIcon(NOTIFY_ICON_MESSAGE.NIM_ADD, in d);
         string addErr = Win32.LastError();
+        if (added) AddedAt ??= DateTimeOffset.Now;
         d.uVersion = PInvoke.NOTIFYICON_VERSION_4;
         bool v4 = added && PInvoke.Shell_NotifyIcon(NOTIFY_ICON_MESSAGE.NIM_SETVERSION, in d);
         Log.Write($"tray: Shell_NotifyIcon(NIM_ADD) -> {(added ? "true" : $"false {addErr}")}, NIM_SETVERSION 4 -> {(v4 ? "true" : "false")}; icon {Path.GetFileName(iconFile)} tooltip \"{Tooltip}\"");

@@ -12,6 +12,7 @@ use genai::chat::{
 };
 use runtime::SessionId;
 
+use crate::endless::ViewBlock;
 use crate::skills;
 
 /// Identity line the Claude Code login requires first in the system prompt (design doc 05 §2.3).
@@ -277,6 +278,45 @@ impl Frame<'_> {
     }
 }
 
+/// 137 §7.2 / D4: the rendered view as the user messages that precede the
+/// turn's input — one per block so each can carry its own cache mark. On
+/// [`Transport::Anthropic`] at most [`VIEW_MARKS`] of the marked blocks get
+/// `cache_control: ephemeral` — the system block (1 h) and the tail (5 min)
+/// take two of the provider's four breakpoints — chosen as the latest marked
+/// blocks that are not the final one (the newest band grows every turn, so
+/// a mark on it is never read back). Other transports cache implicitly on
+/// the stable prefix and get no message marks. Pure.
+pub fn view_messages(blocks: &[ViewBlock], t: Transport) -> Vec<ChatMessage> {
+    let mut marks: Vec<usize> = blocks
+        .iter()
+        .enumerate()
+        .take(blocks.len().saturating_sub(1))
+        .filter(|(_, b)| b.mark && t == Transport::Anthropic)
+        .map(|(i, _)| i)
+        .collect();
+    let keep = marks.len().saturating_sub(VIEW_MARKS);
+    marks.drain(..keep);
+    blocks
+        .iter()
+        .enumerate()
+        .map(|(i, b)| {
+            let m = ChatMessage::user(b.text.clone());
+            if marks.contains(&i) {
+                m.with_options(CacheControl::Ephemeral)
+            } else {
+                m
+            }
+        })
+        .collect()
+}
+
+/// Message-level cache marks the view may use on Anthropic (see [`view_messages`]).
+pub const VIEW_MARKS: usize = 2;
+
+/// 137 R1-D1: the paragraph a theuth-native child of an endless parent gets
+/// appended to its system prompt — its first message opens with the parent's view.
+pub const CHILD_VIEW_NOTE: &str = "Your first message holds the view below, then your task. The view shows what your parent knows: what the user wants, decided and taught. Use it as context only, and do what your task says.";
+
 /// Replaces every `ContentPart::Binary` in a user-role message with
 /// `Text("[image omitted: model is text-only]")` — `document` for a PDF
 /// (17 §3.3, 20 §2.5). In a tool-role message the images of each
@@ -358,6 +398,34 @@ pub fn baseline(
     attended: bool,
     advised: bool,
 ) -> String {
+    baseline_dated(
+        data_dir,
+        identity,
+        peer_line,
+        plugin_blocks,
+        claude_code,
+        subagent_model,
+        attended,
+        advised,
+        true,
+    )
+}
+
+/// [`baseline`] with the `Date:` line optional: an endless session (137
+/// §7.3) keeps its system prompt byte-identical across days and carries the
+/// date in the turn's input block instead (the `<time …/>` stamp).
+#[allow(clippy::too_many_arguments)]
+pub fn baseline_dated(
+    data_dir: &Path,
+    identity: Option<&str>,
+    peer_line: &str,
+    plugin_blocks: &str,
+    claude_code: bool,
+    subagent_model: Option<&str>,
+    attended: bool,
+    advised: bool,
+    dated: bool,
+) -> String {
     let cwd = std::env::current_dir()
         .map(|p| p.display().to_string())
         .unwrap_or_default();
@@ -371,10 +439,13 @@ pub fn baseline(
             ),
         ),
     };
-    let mut header = format!(
-        "{persona}\nWorking directory: {cwd}\nDate: {}",
-        chrono::Local::now().format("%Y-%m-%d")
-    );
+    let mut header = format!("{persona}\nWorking directory: {cwd}");
+    if dated {
+        header.push_str(&format!(
+            "\nDate: {}",
+            chrono::Local::now().format("%Y-%m-%d")
+        ));
+    }
     if let Some(m) = subagent_model {
         header.push_str(&format!(
             "\nPreferred subagent model: {m} (the user's choice; spawn_subagent uses it when you omit `model`, so pass \
@@ -617,6 +688,85 @@ mod tests {
             req.messages[0].options.as_ref().unwrap().cache_control,
             Some(CacheControl::Ephemeral1h)
         );
+    }
+
+    /// 137 §7.2: one user message per view block; on Anthropic at most
+    /// `VIEW_MARKS` marks, on the latest marked blocks before the final one
+    /// (system 1 h + tail 5 min take the other two breakpoints); other
+    /// transports get no message marks. The final block never carries one.
+    #[test]
+    fn view_blocks_become_marked_user_messages() {
+        let block = |t: &str, mark| ViewBlock {
+            text: t.into(),
+            mark,
+        };
+        let blocks = [
+            block("<chat>\na\n", true),
+            block("b\n", true),
+            block("c\n", true),
+            block("d\n</chat>", true),
+        ];
+        let marks = |t| -> Vec<bool> {
+            view_messages(&blocks, t)
+                .iter()
+                .map(|m| {
+                    m.options
+                        .as_ref()
+                        .is_some_and(|o| o.cache_control == Some(CacheControl::Ephemeral))
+                })
+                .collect()
+        };
+        assert_eq!(marks(Transport::Anthropic), [false, true, true, false]);
+        assert_eq!(marks(Transport::OpenAiLike), [false; 4]);
+        assert_eq!(marks(Transport::Plain), [false; 4]);
+        let msgs = view_messages(&blocks, Transport::Anthropic);
+        assert!(msgs.iter().all(|m| m.role == ChatRole::User));
+        assert_eq!(
+            msgs[0].content.joined_texts().as_deref(),
+            Some("<chat>\na\n")
+        );
+        // A single block is the final block: no mark; an unmarked block is skipped.
+        assert_eq!(marks_of(&[block("x", true)]), [false]);
+        assert_eq!(
+            marks_of(&[block("a", false), block("b", true), block("c", true)]),
+            [false, true, false]
+        );
+        // With the view in front, the Anthropic frame keeps system (1 h) first and the tail (5 min) last.
+        let mut history = view_messages(&blocks, Transport::Anthropic);
+        history.push(ChatMessage::user("input"));
+        let (req, _) = Frame {
+            tools: &[],
+            system: "sys",
+            head: None,
+            history: &history,
+            vision: true,
+            strip_reasoning: false,
+            max_tokens: None,
+        }
+        .request(Transport::Anthropic, SessionId::new(), None);
+        let cc: Vec<Option<CacheControl>> = req
+            .messages
+            .iter()
+            .map(|m| m.options.as_ref().and_then(|o| o.cache_control.clone()))
+            .collect();
+        assert_eq!(
+            cc,
+            [
+                Some(CacheControl::Ephemeral1h),
+                None,
+                Some(CacheControl::Ephemeral),
+                Some(CacheControl::Ephemeral),
+                None,
+                Some(CacheControl::Ephemeral)
+            ]
+        );
+    }
+
+    fn marks_of(blocks: &[ViewBlock]) -> Vec<bool> {
+        view_messages(blocks, Transport::Anthropic)
+            .iter()
+            .map(|m| m.options.is_some())
+            .collect()
     }
 
     #[test]

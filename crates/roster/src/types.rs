@@ -238,6 +238,16 @@ pub struct AgentFile {
     #[serde(default)]
     #[cfg_attr(feature = "ts", ts(type = "\"any\" | \"vm\" | `vm:${string}`"))]
     pub runs_in: RunsIn,
+    /// 137 D12 / §10: the memory mode of every desk session it opens;
+    /// `None` = `agent.endless.default_desk`.
+    #[serde(default)]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub memory: Option<agent::MemoryMode>,
+    /// 137 R1-D2: per-agent view budget in bytes (16_000..=256_000); `None` =
+    /// `agent.endless.view_bytes`.
+    #[serde(default)]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub view_bytes: Option<u32>,
     /// The charter (markdown body).
     pub body: String,
 }

@@ -107,6 +107,9 @@ pub struct Manifest {
     /// Model for the session (phase 2).
     #[serde(default)]
     pub session_model: Option<String>,
+    /// 137 R1-D6: the session's memory mode (`epochs` for meetings recorded before it).
+    #[serde(default)]
+    pub memory: agent::MemoryMode,
     /// The three files.
     #[serde(default)]
     pub tracks: Vec<TrackFile>,
@@ -133,6 +136,7 @@ impl Manifest {
             state: MeetingState::Starting,
             failure: None,
             session_model: None,
+            memory: agent::MemoryMode::Epochs,
             tracks: [Stem::Mic, Stem::System, Stem::Mix]
                 .into_iter()
                 .map(|t| TrackFile {

@@ -6,6 +6,7 @@ import {
   ChevronRight,
   Eye,
   FlaskConical,
+  Infinity as InfinityIcon,
   KeyRound,
   Keyboard,
   Link2,
@@ -39,6 +40,7 @@ import { General } from '@/components/settings/General'
 import { Link } from '@/components/settings/Link'
 import { Loop } from '@/components/settings/Loop'
 import { Labs, useLabsVisible } from '@/components/settings/Labs'
+import { Memory } from '@/components/settings/Memory'
 import { Meetings } from '@/components/settings/Meetings'
 import { Search } from '@/components/settings/Search'
 import { Mesh } from '@/components/settings/Mesh'
@@ -56,6 +58,7 @@ const TABS = [
   ['dreaming', 'Dreaming', Moon],
   ['approvals', 'Approvals', ShieldCheck],
   ['communication', 'Communication', Radio],
+  ['memory', 'Memory', InfinityIcon],
   ['computer', 'Computer', Monitor],
   ['meetings', 'Meetings', Mic],
   ['voice-key', 'Voice key', AudioLines],
@@ -96,6 +99,7 @@ function Pane({ tab, session, peer, onClose }: Omit<Props, 'onTab'>) {
       {tab === 'dreaming' && <Dreaming />}
       {tab === 'approvals' && <Approvals session={session} onClose={onClose} />}
       {tab === 'communication' && <Communication session={session} focus={peer} />}
+      {tab === 'memory' && <Memory />}
       {tab === 'computer' && <Computer />}
       {tab === 'meetings' && <Meetings />}
       {tab === 'voice-key' && <VoiceKey />}
