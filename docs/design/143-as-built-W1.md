@@ -44,6 +44,7 @@ Synthetic check of the float rule across pane widths (`/tmp/143/w1/ratio-test.ht
 
 - `bun run check` (`tsc -b --noEmit`): exit 0, 0 errors (baseline `tsc-baseline-theuth-143-w1.log`: 0).
 - `bunx vitest run src/lib src/components/sidebar src/components/meeting`: exit 0 — 79 files, 487 tests passed (includes the new "143 D4" and "143 D3" tests in `popout.test.ts`).
+- Per the orchestrator (13:14): gates are run by the orchestrator on the integrated tree; the two runs above completed before that rule and are not repeated.
 
 ## Deviations
 
