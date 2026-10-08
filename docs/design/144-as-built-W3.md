@@ -78,6 +78,17 @@ Worker 144-W3, branch `feat/144-w3`, cut from the contract skeleton `13bd3cc3`. 
   convention; exact refusal lines for missing/unavailable/turn/time/whole-id; `changed` accepted, `?s=` added only
   where absent and to every occurrence).
 
+### R1 (orchestrator, after C phase 2): `Notebook.chats` and session citations
+- `crates/agent/src/store.rs` `Store::notebook_chat_counts()` (`GROUP BY notebook` over bound roots — the rows
+  `notebook_chats` lists); `notebooks.rs` `NotebookChatCounts` message + `chat_counts(agents) -> HashMap`;
+  `SessionCite { title, turns }` + `session_cite(agents, id)` (`ReadSession` with `caller = session`; a private,
+  advisor or unknown session is `None`; title = `attach::session_title` with the first input line).
+- `crates/rpc/src/api.rs` (the glue C delegated): `notebook_chat_counts()` fills `Notebook.chats` in `notebook_list`
+  and `notebook_get` (0 when the agent actor is not running); `check_session_cites()` runs after `CiteResolve` in
+  `cite_resolve`: `theuth://sessions/<id>` with no readable session → `available: false`; `#<turn>` beyond
+  `session_read`'s turn count → `status: Missing`; the title becomes the session's display name. Test:
+  `notebooks_binding.rs` asserts the counts after bind (2) and unbind (1).
+
 ## Proof
 - `cargo test -p agent -p document --tests`: agent lib 522 passed (2 ignored, pre-existing) + `notebooks_binding` 1 +
   `notebooks_block` 5; document lib 47 + `tests/actor.rs` 11 + `cite_check_links` 4 — all green, 0 failed.
@@ -91,6 +102,9 @@ Worker 144-W3, branch `feat/144-w3`, cut from the contract skeleton `13bd3cc3`. 
 - `cargo clippy -p agent -p document --tests -- -D warnings` clean.
 - `cargo test -p document -p link -p rpc` (59 regression): document 47 + 11 + 4, link 27, rpc 54 + `tests/prompts.rs`
   1 — all green; no existing share/guest/replication test touched (`tests/actor.rs` unchanged).
+- R1: `cargo clippy -p agent -p rpc --tests -- -D warnings` clean; `cargo test -p agent -p rpc --tests` — agent
+  522 + 1 + 5, rpc 54 + 1 green. (The machine's disk filled mid-gate; my own
+  `theuth-144-target/W3/debug/incremental` was removed and builds continued with `CARGO_INCREMENTAL=0`.)
 
 ## Deviations
 - Document reads/writes from `agent::notebooks` go through the tool registry (`Invoke`, `quiet: true`) because `agent`

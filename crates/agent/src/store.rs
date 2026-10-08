@@ -2670,6 +2670,20 @@ impl Store {
         rows.into_iter().map(|r| r.summary(&self.me)).collect()
     }
 
+    /// 144 §8 (R1): bound roots per notebook — `Notebook.chats`, the same rows [`Store::notebook_chats`] lists.
+    pub async fn notebook_chat_counts(&self) -> anyhow::Result<Vec<(String, u32)>> {
+        let rows: Vec<(String, i64)> = sqlx::query_as(
+            "SELECT notebook, COUNT(*) FROM sessions \
+             WHERE notebook IS NOT NULL AND parent IS NULL GROUP BY notebook",
+        )
+        .fetch_all(&self.read)
+        .await?;
+        Ok(rows
+            .into_iter()
+            .map(|(n, c)| (n, u32::try_from(c).unwrap_or(u32::MAX)))
+            .collect())
+    }
+
     /// The style row of project `name`, if any (51 §3 as-built).
     pub async fn project_style(&self, name: &str) -> anyhow::Result<Option<ProjectStyle>> {
         Ok(
