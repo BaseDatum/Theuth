@@ -53,8 +53,17 @@ pub async fn get(slug: String) -> std::result::Result<StudyDetail, String> {
 }
 
 /// `autoresearch.experiments {slug, before?, limit}`.
-pub async fn experiments(slug: String, before: Option<u32>, limit: u32) -> std::result::Result<Vec<ExperimentRow>, String> {
-    ask(Experiments { slug, before, limit }).await
+pub async fn experiments(
+    slug: String,
+    before: Option<u32>,
+    limit: u32,
+) -> std::result::Result<Vec<ExperimentRow>, String> {
+    ask(Experiments {
+        slug,
+        before,
+        limit,
+    })
+    .await
 }
 
 /// `autoresearch.experiment {slug, n}`.
@@ -64,17 +73,32 @@ pub async fn experiment(slug: String, n: u32) -> std::result::Result<ExperimentD
 
 /// `autoresearch.control {slug, op}` (the user's buttons).
 pub async fn control(slug: String, op: ControlOp) -> std::result::Result<StudyInfo, String> {
-    ask(Control { slug, op, by: By::User }).await
+    ask(Control {
+        slug,
+        op,
+        by: By::User,
+    })
+    .await
 }
 
 /// `autoresearch.steer {slug, text}`.
 pub async fn steer(slug: String, text: String) -> std::result::Result<SteerId, String> {
-    ask(SteerMsg { slug, text, by: By::User }).await
+    ask(SteerMsg {
+        slug,
+        text,
+        by: By::User,
+    })
+    .await
 }
 
 /// `autoresearch.idea {slug, op}`.
 pub async fn idea(slug: String, op: IdeaChange) -> std::result::Result<Idea, String> {
-    ask(IdeaOp { slug, op, by: By::User }).await
+    ask(IdeaOp {
+        slug,
+        op,
+        by: By::User,
+    })
+    .await
 }
 
 /// `autoresearch.create {draft_id, start}` — the draft card's press.
@@ -88,6 +112,8 @@ pub async fn settings() -> std::result::Result<AutoresearchConfig, String> {
 }
 
 /// `autoresearch.settings.set`.
-pub async fn set_settings(cfg: AutoresearchConfig) -> std::result::Result<AutoresearchConfig, String> {
+pub async fn set_settings(
+    cfg: AutoresearchConfig,
+) -> std::result::Result<AutoresearchConfig, String> {
     ask(SetSettings(cfg)).await
 }

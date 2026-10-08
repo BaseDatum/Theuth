@@ -14,7 +14,11 @@ pub async fn open(_a: &mut Studies, _slug: &str, _wave: u32) -> Result<Vec<Slot>
 }
 
 /// Resolve `(session, slot)` to the slot's worktree and experiment number (140 §10 step 2).
-pub async fn resolve(_a: &Studies, _session: runtime::SessionId, _slot: u8) -> Result<(std::path::PathBuf, u32)> {
+pub async fn resolve(
+    _a: &Studies,
+    _session: runtime::SessionId,
+    _slot: u8,
+) -> Result<(std::path::PathBuf, u32)> {
     Err(Error::NotBuilt("W5"))
 }
 

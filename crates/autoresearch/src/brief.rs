@@ -24,7 +24,12 @@ pub struct Context {
 }
 
 /// Render the brief for `study` at experiment `cx.n` (140 §7.2).
-pub async fn render(_store: &Store, _study: &StudyRecord, _cfg: &crate::config::BriefConfig, _cx: &Context) -> Result<Brief> {
+pub async fn render(
+    _store: &Store,
+    _study: &StudyRecord,
+    _cfg: &crate::config::BriefConfig,
+    _cx: &Context,
+) -> Result<Brief> {
     Err(Error::NotBuilt("W6"))
 }
 

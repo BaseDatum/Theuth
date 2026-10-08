@@ -56,7 +56,9 @@ pub async fn register(reg: &ActorRef<ToolRegistry>, seams: Arc<Seams>) {
     let _ = reg.ask(RegisterTool(Arc::new(NotesTool(s.clone())))).await;
     let _ = reg.ask(RegisterTool(Arc::new(DraftTool(s.clone())))).await;
     let _ = reg.ask(RegisterTool(Arc::new(StatusTool(s.clone())))).await;
-    let _ = reg.ask(RegisterTool(Arc::new(ControlTool(s.clone())))).await;
+    let _ = reg
+        .ask(RegisterTool(Arc::new(ControlTool(s.clone()))))
+        .await;
 }
 
 /// Text for the transcript, the same data as a Python value for the runtime.
@@ -339,6 +341,9 @@ impl Tool for ControlTool {
             })
             .await
             .map_err(|e| anyhow::anyhow!("{e}"))?;
-        Ok(structured(format!("{}: {}", info.slug, info.headline), info))
+        Ok(structured(
+            format!("{}: {}", info.slug, info.headline),
+            info,
+        ))
     }
 }

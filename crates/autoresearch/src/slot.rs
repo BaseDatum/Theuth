@@ -18,7 +18,11 @@ pub struct Slot {
 }
 
 /// Take the builtin slot for `label`, waiting until it is free or `cancel` fires.
-pub async fn acquire(_cfg: &crate::config::Bench, _label: &str, _cancel: &CancellationToken) -> Result<Slot> {
+pub async fn acquire(
+    _cfg: &crate::config::Bench,
+    _label: &str,
+    _cancel: &CancellationToken,
+) -> Result<Slot> {
     Err(Error::NotBuilt("W1"))
 }
 
@@ -30,7 +34,11 @@ pub fn load() -> Option<f64> {
 
 /// Wait until `load() <= max_load` or `wait` elapses; `Ok(true)` = the
 /// precondition held, `Ok(false)` = ran out of patience (sample is `noisy`).
-pub async fn wait_for_load(_max_load: f64, _wait: Duration, _cancel: &CancellationToken) -> Result<bool> {
+pub async fn wait_for_load(
+    _max_load: f64,
+    _wait: Duration,
+    _cancel: &CancellationToken,
+) -> Result<bool> {
     Err(Error::NotBuilt("W1"))
 }
 

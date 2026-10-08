@@ -17,9 +17,14 @@ Worker 140-C, 2026-10-08, branch `feat/140-c` (cut from `feat/140-autoresearch` 
 - `crates/theuth`: `Box::new(autoresearch::AutoresearchPlugin)` at both plugin lists, the commented `# autoresearch:` config block with every §12.2 key and default.
 - Workspace `Cargo.toml` dependency line (members are `crates/*`), `docs/design/00-architecture.md` §10 line.
 
-## Gates
+## Gates (stable rustc 1.96.1, `build-lock`, `CARGO_BUILD_JOBS=4`, crate-level only)
 
-(filled below as run)
+- `cargo check -p autoresearch` green (first pass 173 s cold on the warm target; after fixes 4 s).
+- `cargo test -p autoresearch` — 9 passed, 0 failed (config ×3, types ×3, store ×2, lib ×1).
+- `cargo check -p rpc -p theuth` green (5 m 08 s first, 22 s after fmt/renames).
+- `cargo test -p rpc --features ts --lib export_bindings` — 8 passed; `just ts-desktop` copied 756 bindings into `crates/desktop/ui/src/rpc/bindings` (681 before + 75 `autoresearch` types, no file overwritten).
+- `cargo clippy -p autoresearch --all-targets` clean under the workspace's `clippy::all = deny`; `cargo fmt -p autoresearch` applied.
+- Skeleton commit `4aa41bdc` (`140 C: skeleton`), announced `SKELETON 140-C 4aa41bdc`; final commit below.
 
 ## Deviations (closest correct thing; none change the design's behaviour)
 
@@ -33,6 +38,7 @@ Worker 140-C, 2026-10-08, branch `feat/140-c` (cut from `feat/140-autoresearch` 
 8. **The skill is written by the plugin at start** (`install_skill`, dreaming's binary-owned pattern), not by `first_run`; an empty bundle writes nothing, so the skeleton leaves no empty `skills/autoresearch.md`.
 9. **`autoresearch.steer` returns `i64`** (the row id) — `SteerId` is a type alias; ts-rs gets `number` via `ts(type = "number")` on every 64-bit wire field.
 10. **`ExperimentState::Timeout`** added (§8.5 "records `timeout` on the experiment").
+11. **ts names differ from the Rust names where the bindings directory already had the name** (ts-rs writes `<Name>.ts`, last writer wins silently): `Verdict`→`ExperimentVerdict`, `Brief`→`StudyBrief`, `Decision`→`LogDecision`, `Direction`→`MetricDirection`, `Sample`→`BenchSample`, and pre-emptively `Phase`→`ExperimentPhase`, `Slot`→`WaveSlot`, `By`→`StudyActor`, `Idea`→`StudyIdea`, `Steer`→`StudySteer`, `Guard`→`MetricGuard`, `Changeset`→`StudyChangeset`, `Incumbent`→`StudyIncumbent`, `ChartPoint`/`ChartSeries`→`StudyChartPoint`/`StudyChartSeries`; every `config.rs` sub-struct is `Autoresearch<Name>`. Rust names are the design's. (Pre-existing, not mine: `dreaming::Verdict` and `schedule::Verdict` already overwrite each other.)
 
 ## Hand-offs
 

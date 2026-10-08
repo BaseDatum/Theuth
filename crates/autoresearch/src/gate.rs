@@ -45,7 +45,13 @@ pub fn drifted(_sigma: f64, _incumbent_mean: f64, _sample: f64) -> bool {
 
 /// The verdict in words and numbers (140 §5.2 step 5), e.g.
 /// `improved: 41.2 ms vs 42.3 ms (−2.6 %), 3.1σ over 3 samples, checks passed`.
-pub fn line(_step: &GateStep, _unit: &str, _candidate_mean: f64, _incumbent_mean: f64, _n: usize) -> String {
+pub fn line(
+    _step: &GateStep,
+    _unit: &str,
+    _candidate_mean: f64,
+    _incumbent_mean: f64,
+    _n: usize,
+) -> String {
     // stub: W1
     String::new()
 }

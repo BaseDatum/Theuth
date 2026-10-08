@@ -9,7 +9,17 @@ use crate::store::{Store, StudyRecord};
 use crate::types::{IdeaDraft, ReviewVerdict};
 
 /// The §9.1 rubric with the placeholders filled.
-pub fn prompt(_study: &StudyRecord, _n: u32, _idea: &str, _description: &str, _justification: Option<&str>, _line: &str, _deviations: &[String], _diff: &str) -> String {
+#[allow(clippy::too_many_arguments)]
+pub fn prompt(
+    _study: &StudyRecord,
+    _n: u32,
+    _idea: &str,
+    _description: &str,
+    _justification: Option<&str>,
+    _line: &str,
+    _deviations: &[String],
+    _diff: &str,
+) -> String {
     // stub: W6
     String::new()
 }
@@ -22,11 +32,22 @@ pub fn parse(_reply: &str) -> Option<ReviewVerdict> {
 }
 
 /// Review one keep (140 §9.1): the model call charged to the study session, retry once, fail open.
-pub async fn review(_store: &Store, _study: &StudyRecord, _n: u32, _model: &str, _rt: &runtime::Runtime) -> Result<ReviewVerdict> {
+pub async fn review(
+    _store: &Store,
+    _study: &StudyRecord,
+    _n: u32,
+    _model: &str,
+    _rt: &runtime::Runtime,
+) -> Result<ReviewVerdict> {
     Err(Error::NotBuilt("W6"))
 }
 
 /// The plateau consult (140 §9.2): five materially different ideas.
-pub async fn advise(_store: &Store, _study: &StudyRecord, _model: Option<&str>, _rt: &runtime::Runtime) -> Result<Vec<IdeaDraft>> {
+pub async fn advise(
+    _store: &Store,
+    _study: &StudyRecord,
+    _model: Option<&str>,
+    _rt: &runtime::Runtime,
+) -> Result<Vec<IdeaDraft>> {
     Err(Error::NotBuilt("W6"))
 }

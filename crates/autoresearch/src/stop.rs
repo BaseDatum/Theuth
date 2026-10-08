@@ -21,7 +21,12 @@ pub enum Rule {
 }
 
 /// Evaluate §8.4 for `study` from the ledger and `spend_usd` (the session tree's ledger sum).
-pub async fn evaluate(_store: &Store, _study: &StudyRecord, _cfg: &crate::config::AutoresearchConfig, _spend_usd: f64) -> Result<Rule> {
+pub async fn evaluate(
+    _store: &Store,
+    _study: &StudyRecord,
+    _cfg: &crate::config::AutoresearchConfig,
+    _spend_usd: f64,
+) -> Result<Rule> {
     Err(Error::NotBuilt("W3"))
 }
 

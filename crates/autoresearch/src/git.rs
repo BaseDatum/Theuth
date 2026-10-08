@@ -16,7 +16,12 @@ pub fn resolve_base(_repo: &Path, _base: &str, _include_dirty: bool) -> Result<S
 }
 
 /// `git worktree add -b autoresearch/<slug> <worktree> <base_sha>`; returns the worktree's HEAD.
-pub fn worktree_add(_repo: &Path, _spec: &StudySpec, _worktree: &Path, _base_sha: &str) -> Result<String> {
+pub fn worktree_add(
+    _repo: &Path,
+    _spec: &StudySpec,
+    _worktree: &Path,
+    _base_sha: &str,
+) -> Result<String> {
     Err(Error::NotBuilt("W2"))
 }
 
@@ -53,7 +58,12 @@ pub struct KeepMeta {
 }
 
 /// `git add -A -- . ':!<evaluator_paths>'` + commit with trailers; returns the new sha.
-pub fn keep(_worktree: &Path, _spec: &StudySpec, _meta: &KeepMeta, _author: Option<&str>) -> Result<String> {
+pub fn keep(
+    _worktree: &Path,
+    _spec: &StudySpec,
+    _meta: &KeepMeta,
+    _author: Option<&str>,
+) -> Result<String> {
     Err(Error::NotBuilt("W2"))
 }
 
@@ -66,7 +76,12 @@ pub fn discard(_worktree: &Path, _incumbent: &str, _patch_path: &Path) -> Result
 /// Drift repair at `experiment_begin` (140 §6): HEAD == incumbent, branch ==
 /// `autoresearch/<slug>`, clean tree; otherwise save `stray.patch`, reset,
 /// and return what was wrong (for the incident row and the brief).
-pub fn repair(_worktree: &Path, _spec: &StudySpec, _incumbent: &str, _stray_patch: &Path) -> Result<Option<String>> {
+pub fn repair(
+    _worktree: &Path,
+    _spec: &StudySpec,
+    _incumbent: &str,
+    _stray_patch: &Path,
+) -> Result<Option<String>> {
     Err(Error::NotBuilt("W2"))
 }
 

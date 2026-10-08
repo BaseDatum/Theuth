@@ -32,5 +32,6 @@ pub async fn on_turn_finished(_a: &mut Studies, _session: runtime::SessionId) ->
 
 /// The slug of a schedule name `autoresearch-<slug>`, if it is one of ours.
 pub fn slug_of(name: &str) -> Option<&str> {
-    name.strip_prefix(crate::SCHEDULE_PREFIX).filter(|s| !s.is_empty())
+    name.strip_prefix(crate::SCHEDULE_PREFIX)
+        .filter(|s| !s.is_empty())
 }

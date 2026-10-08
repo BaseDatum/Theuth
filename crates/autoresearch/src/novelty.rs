@@ -18,7 +18,14 @@ pub struct Novelty {
 }
 
 /// Check `args` + `patch_hash` against the study's past (140 §7.3 Novelty check).
-pub async fn check(_store: &Store, _slug: &str, _args: &RunArgs, _patch_hash: &str, _threshold: f64, _flagged_before: bool) -> Result<Novelty> {
+pub async fn check(
+    _store: &Store,
+    _slug: &str,
+    _args: &RunArgs,
+    _patch_hash: &str,
+    _threshold: f64,
+    _flagged_before: bool,
+) -> Result<Novelty> {
     Err(Error::NotBuilt("W6"))
 }
 

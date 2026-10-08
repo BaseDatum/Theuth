@@ -11,13 +11,22 @@ use crate::error::{Error, Result};
 use crate::types::{StartWhen, StudySpec};
 
 /// The file text for `spec` (140 §8.1).
-pub fn text(_spec: &StudySpec, _cfg: &crate::config::AutoresearchConfig, _worktree: &Path, _model: &str, _start: &StartWhen) -> String {
+pub fn text(
+    _spec: &StudySpec,
+    _cfg: &crate::config::AutoresearchConfig,
+    _worktree: &Path,
+    _model: &str,
+    _start: &StartWhen,
+) -> String {
     // stub: W3
     String::new()
 }
 
 /// `run_timeout` = `(crash_retries + confirm_runs + 2) × bench.timeout + checks.timeout + bench.wait + 15m`, at least 30 m.
-pub fn run_timeout(_spec: &StudySpec, _cfg: &crate::config::AutoresearchConfig) -> std::time::Duration {
+pub fn run_timeout(
+    _spec: &StudySpec,
+    _cfg: &crate::config::AutoresearchConfig,
+) -> std::time::Duration {
     // stub: W3
     std::time::Duration::from_secs(30 * 60)
 }

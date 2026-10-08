@@ -137,7 +137,9 @@ wire! {
 }
 
 /// `review.on_suspicious`.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema,
+)]
 #[cfg_attr(
     feature = "ts",
     derive(ts_rs::TS),
@@ -154,6 +156,7 @@ pub enum OnSuspicious {
 
 wire! {
     /// `models:` — `provider/model` per role; `None` = default (R1-D5).
+    #[derive(Default)]
     pub struct Models as "AutoresearchModels" {
         /// Default `agent.model`.
         pub executor: Option<String>,
@@ -214,6 +217,7 @@ wire! {
 
 wire! {
     /// `git:`.
+    #[derive(Default)]
     pub struct Git as "AutoresearchGit" {
         /// `None` = `theuth autoresearch <noreply@theuth.local>`.
         pub author: Option<String>,
@@ -222,6 +226,7 @@ wire! {
 
 wire! {
     /// `notify:`.
+    #[derive(Default)]
     pub struct Notify as "AutoresearchNotify" {
         /// Ping channels on a new best (R1-D6: off).
         pub new_best: bool,
@@ -311,15 +316,6 @@ impl Default for Review {
     }
 }
 
-impl Default for Models {
-    fn default() -> Self {
-        Self {
-            executor: None,
-            advisor: None,
-        }
-    }
-}
-
 impl Default for Effort {
     fn default() -> Self {
         Self {
@@ -359,18 +355,6 @@ impl Default for Bench {
     }
 }
 
-impl Default for Git {
-    fn default() -> Self {
-        Self { author: None }
-    }
-}
-
-impl Default for Notify {
-    fn default() -> Self {
-        Self { new_best: false }
-    }
-}
-
 /// What the `agent:` section offers as role defaults (R1-D5).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct AgentDefaults {
@@ -385,12 +369,16 @@ impl AgentDefaults {
     /// Read the `agent:` section (defaults when absent).
     pub fn from_runtime(rt: &runtime::Runtime) -> Self {
         let a: agent::AgentConfig = rt.section("agent").unwrap_or_default();
-        let others = [a.subagents.model.clone(), a.title_model.clone(), a.escalate_model.clone()]
-            .into_iter()
-            .flatten()
-            .map(|m| m.trim().to_owned())
-            .filter(|m| !m.is_empty())
-            .collect();
+        let others = [
+            a.subagents.model.clone(),
+            a.title_model.clone(),
+            a.escalate_model.clone(),
+        ]
+        .into_iter()
+        .flatten()
+        .map(|m| m.trim().to_owned())
+        .filter(|m| !m.is_empty())
+        .collect();
         Self {
             model: a.model,
             others,
@@ -423,7 +411,11 @@ impl AutoresearchConfig {
     /// The reviewer model (R1-D5): the study's pick, else `review.model`, else
     /// the first `agent:` model of another vendor than the executor, else the
     /// executor. `None` when reviewing is `off`.
-    pub fn reviewer(&self, spec: &crate::types::ModelsSpec, agent: &AgentDefaults) -> Option<String> {
+    pub fn reviewer(
+        &self,
+        spec: &crate::types::ModelsSpec,
+        agent: &AgentDefaults,
+    ) -> Option<String> {
         let executor = self.executor(spec, agent);
         let picked = pick(&spec.review).or_else(|| pick(&self.review.model));
         match picked {
@@ -514,7 +506,10 @@ mod tests {
         let cfg = AutoresearchConfig::default();
         let agent = AgentDefaults {
             model: "openai/gpt-5.6-sol".into(),
-            others: vec!["openai/gpt-5-mini".into(), "anthropic/claude-fable-5-1".into()],
+            others: vec![
+                "openai/gpt-5-mini".into(),
+                "anthropic/claude-fable-5-1".into(),
+            ],
         };
         let spec = crate::types::ModelsSpec::default();
         assert_eq!(cfg.executor(&spec, &agent), "openai/gpt-5.6-sol");
@@ -526,7 +521,10 @@ mod tests {
             model: "openai/gpt-5.6-sol".into(),
             others: vec!["openai/gpt-5-mini".into()],
         };
-        assert_eq!(cfg.reviewer(&spec, &same).as_deref(), Some("openai/gpt-5.6-sol"));
+        assert_eq!(
+            cfg.reviewer(&spec, &same).as_deref(),
+            Some("openai/gpt-5.6-sol")
+        );
         let off = crate::types::ModelsSpec {
             review: Some("off".into()),
             ..Default::default()
@@ -539,8 +537,11 @@ mod tests {
     fn persist_replaces_only_the_section() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("config.yaml");
-        std::fs::write(&path, "agent:\n  model: x\n\nautoresearch:\n  enabled: true\n\nweb:\n  a: 1\n")
-            .unwrap();
+        std::fs::write(
+            &path,
+            "agent:\n  model: x\n\nautoresearch:\n  enabled: true\n\nweb:\n  a: 1\n",
+        )
+        .unwrap();
         let cfg = AutoresearchConfig {
             enabled: false,
             ..Default::default()
@@ -550,7 +551,8 @@ mod tests {
         assert!(text.starts_with("agent:\n  model: x\n\nautoresearch:\n  enabled: false\n"));
         assert!(text.ends_with("web:\n  a: 1\n"));
         let back: serde_yaml::Value = serde_yaml::from_str(&text).unwrap();
-        let section: AutoresearchConfig = serde_yaml::from_value(back["autoresearch"].clone()).unwrap();
+        let section: AutoresearchConfig =
+            serde_yaml::from_value(back["autoresearch"].clone()).unwrap();
         assert_eq!(section, cfg);
     }
 }

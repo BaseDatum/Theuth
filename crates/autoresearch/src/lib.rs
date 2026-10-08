@@ -214,7 +214,9 @@ impl runtime::Plugin for AutoresearchPlugin {
             AutoresearchConfig::default()
         });
         if !cfg.enabled {
-            tracing::info!("autoresearch disabled by config; no tools, no actor, study files stay as they are");
+            tracing::info!(
+                "autoresearch disabled by config; no tools, no actor, study files stay as they are"
+            );
             return Ok(());
         }
         match install_skill(&rt.data_dir) {

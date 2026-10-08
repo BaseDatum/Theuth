@@ -12,7 +12,11 @@ use crate::types::StudySpec;
 
 /// Copy the evaluator into `evaluator_dir` and return `{path: sha256}` (140 §5.3 Custody).
 /// Commands that are not repo paths are frozen as text under `commands.json`.
-pub fn take(_spec: &StudySpec, _repo: &Path, _evaluator_dir: &Path) -> Result<BTreeMap<String, String>> {
+pub fn take(
+    _spec: &StudySpec,
+    _repo: &Path,
+    _evaluator_dir: &Path,
+) -> Result<BTreeMap<String, String>> {
     Err(Error::NotBuilt("W1"))
 }
 

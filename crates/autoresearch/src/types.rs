@@ -267,7 +267,9 @@ impl Effect {
             .parse()
             .map_err(|_| format!("effect `{s}`: not a number"))?;
         if !v.is_finite() || v < 0.0 {
-            return Err(format!("effect `{s}`: must be a finite non-negative number"));
+            return Err(format!(
+                "effect `{s}`: must be a finite non-negative number"
+            ));
         }
         Ok(if rel {
             Self::Relative(v / 100.0)
@@ -959,22 +961,17 @@ wire! {
 
 wire! {
     /// When a created study starts (the draft card's two Start buttons).
-    #[derive(Eq)]
+    #[derive(Default, Eq)]
     #[serde(tag = "when", rename_all = "snake_case")]
     pub enum StartWhen {
         /// Now.
+        #[default]
         Now,
         /// Only when the sensor says so (`window:`).
         Window {
             /// A 40 `when:` sensor (`sensors/idle.py`).
             sensor: String,
         },
-    }
-}
-
-impl Default for StartWhen {
-    fn default() -> Self {
-        Self::Now
     }
 }
 
@@ -1642,7 +1639,10 @@ window: null
 "#;
         let s: StudySpec = serde_yaml::from_str(yaml).unwrap();
         assert_eq!(s.metric.direction, Direction::Lower);
-        assert_eq!(Effect::parse(&s.metric.min_effect), Ok(Effect::Relative(0.005)));
+        assert_eq!(
+            Effect::parse(&s.metric.min_effect),
+            Ok(Effect::Relative(0.005))
+        );
         assert_eq!(s.holdout.as_ref().unwrap().every, 5);
         let back: StudySpec = serde_json::from_str(&serde_json::to_string(&s).unwrap()).unwrap();
         assert_eq!(back, s);

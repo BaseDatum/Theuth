@@ -8,7 +8,12 @@ use crate::error::{Error, Result};
 use crate::store::{Store, StudyRecord};
 
 /// Write the record for a finished study; returns its knowledge id.
-pub async fn write(_store: &Store, _study: &StudyRecord, _headline: &str, _rt: &runtime::Runtime) -> Result<String> {
+pub async fn write(
+    _store: &Store,
+    _study: &StudyRecord,
+    _headline: &str,
+    _rt: &runtime::Runtime,
+) -> Result<String> {
     Err(Error::NotBuilt("W2"))
 }
 

@@ -590,8 +590,7 @@ const EXPERIMENT_COLS: &str = "slug, n, wave, slot, segment, parent_sha, state, 
     description, learned, next, decision, justification, deviations, delta, delta_pct, z, n_samples, metric, \
     commit_sha, patch_path, patch_hash, review, line, cost_nanos, started_at, finished_at";
 
-const SAMPLE_COLS: &str =
-    "n, k, tree_sha, role, value, secondaries, cases, asi, exit, wall_ms, load, noisy, lost, log_path, at";
+const SAMPLE_COLS: &str = "n, k, tree_sha, role, value, secondaries, cases, asi, exit, wall_ms, load, noisy, lost, log_path, at";
 
 impl Store {
     /// Open or create `<root>/autoresearch.sqlite` and run the migrations.
@@ -738,7 +737,10 @@ impl Store {
     }
 
     /// The study a session is bound to (140 §8.2), if any.
-    pub async fn study_of_session(&self, session: runtime::SessionId) -> Result<Option<StudyRecord>> {
+    pub async fn study_of_session(
+        &self,
+        session: runtime::SessionId,
+    ) -> Result<Option<StudyRecord>> {
         let r: Option<StudyRaw> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
             "SELECT {STUDY_COLS} FROM studies WHERE session = ?1"
         )))
@@ -786,10 +788,11 @@ impl Store {
 
     /// The next free experiment number (1-based).
     pub async fn next_experiment_n(&self, slug: &str) -> Result<u32> {
-        let row = sqlx::query("SELECT COALESCE(MAX(n), 0) + 1 AS n FROM experiments WHERE slug = ?1")
-            .bind(slug)
-            .fetch_one(&self.pool)
-            .await?;
+        let row =
+            sqlx::query("SELECT COALESCE(MAX(n), 0) + 1 AS n FROM experiments WHERE slug = ?1")
+                .bind(slug)
+                .fetch_one(&self.pool)
+                .await?;
         Ok(row.try_get::<i64, _>("n")? as u32)
     }
 
@@ -880,7 +883,10 @@ impl Store {
         .await?
         .rows_affected();
         if n == 0 {
-            return Err(Error::refused(format!("no experiment #{} in `{}`", e.n, e.slug)));
+            return Err(Error::refused(format!(
+                "no experiment #{} in `{}`",
+                e.n, e.slug
+            )));
         }
         Ok(())
     }
@@ -1086,7 +1092,12 @@ impl Store {
     // ── events ──
 
     /// Append an event; returns its id.
-    pub async fn append_event(&self, slug: &str, kind: &str, payload: &serde_json::Value) -> Result<i64> {
+    pub async fn append_event(
+        &self,
+        slug: &str,
+        kind: &str,
+        payload: &serde_json::Value,
+    ) -> Result<i64> {
         let r = sqlx::query("INSERT INTO events (slug, kind, payload, at) VALUES (?1, ?2, ?3, ?4)")
             .bind(slug)
             .bind(kind)
@@ -1098,7 +1109,12 @@ impl Store {
     }
 
     /// Events newest first; `kind` filters; `limit` caps.
-    pub async fn list_events(&self, slug: &str, kind: Option<&str>, limit: u32) -> Result<Vec<EventRecord>> {
+    pub async fn list_events(
+        &self,
+        slug: &str,
+        kind: Option<&str>,
+        limit: u32,
+    ) -> Result<Vec<EventRecord>> {
         let rows = sqlx::query(
             "SELECT id, slug, kind, payload, at FROM events WHERE slug = ?1 AND (?2 IS NULL OR kind = ?2) \
              ORDER BY id DESC LIMIT ?3",
@@ -1199,7 +1215,9 @@ mod tests {
         e.idea = "cache the parsed template".into();
         e.state = ExperimentState::Kept;
         e.verdict = Some(Verdict::Improved);
-        e.review = Some(ReviewVerdict::Clean { reason: "fine".into() });
+        e.review = Some(ReviewVerdict::Clean {
+            reason: "fine".into(),
+        });
         e.decision = Some(Decision::Auto);
         e.deviations = vec!["README.md".into()];
         s.update_experiment(&e).await.unwrap();
@@ -1207,7 +1225,12 @@ mod tests {
         assert!(s.dangling_experiment("sort", None).await.unwrap().is_none());
         assert_eq!(s.next_experiment_n("sort").await.unwrap(), 2);
         assert_eq!(s.list_experiments("sort", None, 10).await.unwrap().len(), 1);
-        assert!(s.list_experiments("sort", Some(1), 10).await.unwrap().is_empty());
+        assert!(
+            s.list_experiments("sort", Some(1), 10)
+                .await
+                .unwrap()
+                .is_empty()
+        );
         let hits: i64 = sqlx::query_scalar(
             "SELECT count(*) FROM experiments_fts WHERE experiments_fts MATCH 'template'",
         )
@@ -1230,7 +1253,10 @@ mod tests {
             ..Default::default()
         };
         s.insert_sample("sort", &sample).await.unwrap();
-        assert_eq!(s.list_samples("sort", Some(1)).await.unwrap(), vec![sample.clone()]);
+        assert_eq!(
+            s.list_samples("sort", Some(1)).await.unwrap(),
+            vec![sample.clone()]
+        );
         assert_eq!(s.samples_of_tree("sort", "def").await.unwrap().len(), 1);
 
         let id = s
@@ -1249,20 +1275,33 @@ mod tests {
         idea.status = IdeaStatus::Tried;
         idea.tried_in = vec![1];
         s.update_idea(&idea).await.unwrap();
-        assert!(s.list_ideas("sort", Some(IdeaStatus::Open)).await.unwrap().is_empty());
+        assert!(
+            s.list_ideas("sort", Some(IdeaStatus::Open))
+                .await
+                .unwrap()
+                .is_empty()
+        );
         assert_eq!(s.list_ideas("sort", None).await.unwrap(), vec![idea]);
 
         let sid = s.insert_steer("sort", "try SIMD", By::User).await.unwrap();
         assert_eq!(s.list_steers("sort", true).await.unwrap()[0].id, sid);
         s.mark_steers_seen("sort", 2).await.unwrap();
         assert!(s.list_steers("sort", true).await.unwrap().is_empty());
-        assert_eq!(s.list_steers("sort", false).await.unwrap()[0].seen_in, Some(2));
+        assert_eq!(
+            s.list_steers("sort", false).await.unwrap()[0].seen_in,
+            Some(2)
+        );
 
         s.append_event("sort", "drift", &serde_json::json!({"n": 1}))
             .await
             .unwrap();
         let ev = s.list_events("sort", Some("drift"), 5).await.unwrap();
         assert_eq!(ev[0].payload["n"], 1);
-        assert!(s.list_events("sort", Some("overfit"), 5).await.unwrap().is_empty());
+        assert!(
+            s.list_events("sort", Some("overfit"), 5)
+                .await
+                .unwrap()
+                .is_empty()
+        );
     }
 }

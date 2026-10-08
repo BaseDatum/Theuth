@@ -25,7 +25,12 @@ pub struct Headline {
 
 /// Run every step of §11 for `study`, stopped for `reason`; returns the
 /// headline and the report document id. Idempotent per step.
-pub async fn run(_store: &Store, _study: &StudyRecord, _reason: StopReason, _rt: &runtime::Runtime) -> Result<(Headline, String)> {
+pub async fn run(
+    _store: &Store,
+    _study: &StudyRecord,
+    _reason: StopReason,
+    _rt: &runtime::Runtime,
+) -> Result<(Headline, String)> {
     Err(Error::NotBuilt("W2"))
 }
 
