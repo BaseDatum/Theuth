@@ -117,8 +117,124 @@ pub struct ScopeDiff {
 }
 
 /// `git status --porcelain=v2` + `git diff --numstat` of the worktree, classified against the spec's globs.
-pub fn scope_diff(_spec: &StudySpec, _worktree: &Path) -> Result<ScopeDiff> {
-    Err(Error::NotBuilt("W2"))
+///
+/// HEAD of the study worktree is the incumbent. `changed` includes untracked files;
+/// `deviations` = paths outside `scope` (an empty `scope` means everything is in scope);
+/// `off_limits` = paths matching `off_limits` **or** listed in `evaluator_paths` (either
+/// makes a keep impossible, 140 §5.3); `added`/`removed` from `git diff --numstat -w
+/// --ignore-blank-lines HEAD` plus the non-blank lines of untracked files as `added`.
+pub fn scope_diff(spec: &StudySpec, worktree: &Path) -> Result<ScopeDiff> {
+    let status = git(
+        worktree,
+        &["status", "--porcelain=v2", "--untracked-files=all", "-z"],
+    )?;
+    let mut changed: Vec<String> = Vec::new();
+    let mut untracked: Vec<String> = Vec::new();
+    let mut fields = status.split('\0').filter(|s| !s.is_empty());
+    while let Some(entry) = fields.next() {
+        let Some((kind, rest)) = entry.split_once(' ') else {
+            continue;
+        };
+        match kind {
+            // `1 <XY> <sub> <mH> <mI> <mW> <hH> <hI> <path>`
+            "1" => changed.extend(rest.splitn(8, ' ').nth(7).map(str::to_owned)),
+            // `2 <XY> <sub> <mH> <mI> <mW> <hH> <hI> <X><score> <path>` then `<origPath>` as its own NUL field
+            "2" => {
+                changed.extend(rest.splitn(9, ' ').nth(8).map(str::to_owned));
+                changed.extend(fields.next().map(str::to_owned));
+            }
+            // `u <XY> <sub> <m1> <m2> <m3> <mW> <h1> <h2> <h3> <path>`
+            "u" => changed.extend(rest.splitn(10, ' ').nth(9).map(str::to_owned)),
+            "?" => {
+                changed.push(rest.to_owned());
+                untracked.push(rest.to_owned());
+            }
+            _ => {}
+        }
+    }
+    changed.sort();
+    changed.dedup();
+
+    let (mut added, mut removed) = (0u32, 0u32);
+    for line in git(
+        worktree,
+        &["diff", "--numstat", "-w", "--ignore-blank-lines", "HEAD"],
+    )?
+    .lines()
+    {
+        let mut cols = line.split('\t');
+        let (Some(a), Some(r)) = (cols.next(), cols.next()) else {
+            continue;
+        };
+        added += a.parse::<u32>().unwrap_or(0); // `-` for binary
+        removed += r.parse::<u32>().unwrap_or(0);
+    }
+    for rel in &untracked {
+        if let Ok(text) = std::fs::read_to_string(worktree.join(rel)) {
+            added += text.lines().filter(|l| !l.trim().is_empty()).count() as u32;
+        }
+    }
+
+    let scope = globs(&spec.scope)?;
+    let off = globs(&spec.off_limits)?;
+    let evaluator: Vec<&Path> = spec
+        .evaluator_paths
+        .iter()
+        .filter_map(|e| relative(e))
+        .collect();
+    let deviations = changed
+        .iter()
+        .filter(|p| !spec.scope.is_empty() && !scope.is_match(p))
+        .cloned()
+        .collect();
+    let off_limits = changed
+        .iter()
+        .filter(|p| off.is_match(p) || evaluator.iter().any(|e| Path::new(p).starts_with(e)))
+        .cloned()
+        .collect();
+    Ok(ScopeDiff {
+        changed,
+        deviations,
+        off_limits,
+        added,
+        removed,
+    })
+}
+
+/// `git <args>` in `cwd`, stdout as text; a non-zero exit is `Refused` with stderr.
+fn git(cwd: &Path, args: &[&str]) -> Result<String> {
+    let out = std::process::Command::new("git")
+        .args(["-c", "core.hooksPath=/dev/null"])
+        .args(args)
+        .current_dir(cwd)
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .output()?;
+    if !out.status.success() {
+        return Err(Error::refused(format!(
+            "git {}: {}",
+            args.join(" "),
+            String::from_utf8_lossy(&out.stderr).trim()
+        )));
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+}
+
+/// The spec's globs as one matcher; a plain path or `dir/` also matches everything under it.
+fn globs(patterns: &[String]) -> Result<globset::GlobSet> {
+    let mut set = globset::GlobSetBuilder::new();
+    for p in patterns {
+        let p = p.trim_end_matches('/');
+        for pat in [p.to_owned(), format!("{p}/**")] {
+            set.add(
+                globset::GlobBuilder::new(&pat)
+                    .literal_separator(true)
+                    .build()
+                    .map_err(|e| Error::refused(format!("glob `{p}`: {e}")))?,
+            );
+        }
+    }
+    set.build()
+        .map_err(|e| Error::refused(format!("globs: {e}")))
 }
 
 /// sha256 hex of a file.
@@ -297,6 +413,86 @@ mod tests {
             take(&s, &repo, &evaluator),
             Err(Error::Refused(_))
         ));
+    }
+
+    fn sh(cwd: &Path, cmd: &str) {
+        let st = std::process::Command::new("/bin/bash")
+            .args(["-c", cmd])
+            .current_dir(cwd)
+            .env("GIT_AUTHOR_NAME", "t")
+            .env("GIT_AUTHOR_EMAIL", "t@t")
+            .env("GIT_COMMITTER_NAME", "t")
+            .env("GIT_COMMITTER_EMAIL", "t@t")
+            .status()
+            .unwrap();
+        assert!(st.success(), "{cmd}");
+    }
+
+    #[test]
+    fn scope_diff_classifies_paths_and_counts_lines() {
+        let tmp = tempfile::tempdir().unwrap();
+        let wt = tmp.path();
+        std::fs::create_dir_all(wt.join("lib/liquid")).unwrap();
+        std::fs::create_dir_all(wt.join("test")).unwrap();
+        std::fs::create_dir_all(wt.join("fixtures")).unwrap();
+        std::fs::write(wt.join("lib/liquid/a.rb"), "a\nb\nc\nd\n").unwrap();
+        std::fs::write(wt.join("lib/other.rb"), "x\n").unwrap();
+        std::fs::write(wt.join("test/a_test.rb"), "t\n").unwrap();
+        std::fs::write(wt.join("fixtures/in.json"), "[]\n").unwrap();
+        std::fs::write(wt.join("Rakefile"), "task\n").unwrap();
+        sh(wt, "git init -q && git add -A && git commit -qm base");
+        let spec = StudySpec {
+            scope: vec!["lib/liquid/**".into()],
+            off_limits: vec!["test/**".into()],
+            evaluator_paths: vec!["fixtures/".into(), "Rakefile".into()],
+            ..StudySpec::default()
+        };
+        assert_eq!(scope_diff(&spec, wt).unwrap(), ScopeDiff::default());
+
+        // In scope: 4 lines → 2 lines (one of them whitespace-only re-indented: not counted).
+        std::fs::write(wt.join("lib/liquid/a.rb"), "  a\nz\n").unwrap();
+        // Outside scope, untracked: 2 non-blank lines added.
+        std::fs::write(wt.join("lib/new.rb"), "n1\n\nn2\n").unwrap();
+        // Off-limits and evaluator paths.
+        std::fs::write(wt.join("test/a_test.rb"), "tt\n").unwrap();
+        std::fs::write(wt.join("fixtures/in.json"), "[1]\n").unwrap();
+        std::fs::write(wt.join("Rakefile"), "task2\n").unwrap();
+        let d = scope_diff(&spec, wt).unwrap();
+        assert_eq!(
+            d.changed,
+            vec![
+                "Rakefile",
+                "fixtures/in.json",
+                "lib/liquid/a.rb",
+                "lib/new.rb",
+                "test/a_test.rb"
+            ]
+        );
+        assert_eq!(
+            d.deviations,
+            vec![
+                "Rakefile",
+                "fixtures/in.json",
+                "lib/new.rb",
+                "test/a_test.rb"
+            ]
+        );
+        assert_eq!(
+            d.off_limits,
+            vec!["Rakefile", "fixtures/in.json", "test/a_test.rb"]
+        );
+        // a.rb: +1 (z) −3 (b, c, d; `a` → `  a` ignored); test +1 −1; fixtures +1 −1; Rakefile +1 −1; new.rb +2.
+        assert_eq!((d.added, d.removed), (6, 6));
+
+        // An empty scope makes nothing a deviation; a staged rename is one changed pair.
+        let open = StudySpec::default();
+        sh(wt, "git add -A && git mv lib/other.rb lib/moved.rb");
+        let d = scope_diff(&open, wt).unwrap();
+        assert!(d.deviations.is_empty());
+        assert!(
+            d.changed.contains(&"lib/moved.rb".to_owned())
+                && d.changed.contains(&"lib/other.rb".to_owned())
+        );
     }
 
     #[test]
