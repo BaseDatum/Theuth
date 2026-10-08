@@ -35,6 +35,7 @@ pub mod compact;
 pub mod context;
 pub mod continuation;
 pub mod durability;
+pub mod endless;
 pub mod frame;
 pub mod loop_;
 pub mod peers;
@@ -101,6 +102,10 @@ pub use communication::{
     SetPeerScope,
 };
 pub use compact::CompactStyle;
+pub use endless::{
+    Backfill, Endless, EndlessConfig, EndlessProgress, EndlessStats, GuardTrips, MemoryMode,
+    SessionMemory, ViewLine,
+};
 pub use context::{
     ContextAttachment, ContextBreakdown, ContextEntry, ContextItem, ContextKind, ContextOwner,
     ContextRemoval, ContextSnapshot, ContextTarget,
@@ -1915,6 +1920,9 @@ pub struct SessionSummary {
     #[serde(default)]
     #[cfg_attr(feature = "ts", ts(optional = nullable))]
     pub kind: SessionKind,
+    /// Memory mode (137 D1): `epochs` from an older harness.
+    #[serde(default)]
+    pub memory: MemoryMode,
 }
 
 fn one() -> u32 {
@@ -2746,6 +2754,8 @@ pub struct AgentConfig {
     pub compaction: CompactionConfig,
     /// Request passthrough for the built-in OpenRouter provider (85 §0.6).
     pub openrouter: OpenRouterConfig,
+    /// Endless memory mode defaults and compactor settings (137 §11.1).
+    pub endless: EndlessConfig,
     /// The top-level `surface:` section (design doc 30 §12), filled by
     /// `supervisor::start` — not part of `agent:`.
     #[serde(skip)]
@@ -2783,6 +2793,7 @@ impl Default for AgentConfig {
             broadcast: BroadcastConfig::default(),
             compaction: CompactionConfig::default(),
             openrouter: OpenRouterConfig::default(),
+            endless: EndlessConfig::default(),
             surface: SurfaceConfig::default(),
             durability: durability::DurabilityConfig::default(),
             advisor: AdvisorConfig::default(),
