@@ -15,6 +15,10 @@ surface = { workspace = true }
 codeindex = { workspace = true }
 mesh = { workspace = true }
 secrets = { workspace = true }
+web = { workspace = true }
+voice = { workspace = true }
+url = { workspace = true }
+html-to-markdown-rs = { workspace = true }
 kameo = { workspace = true }
 tokio = { workspace = true }
 tokio-util = { workspace = true, features = ["codec"] }
