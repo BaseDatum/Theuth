@@ -107,26 +107,85 @@ async fn open_ro(path: &Path) -> Option<sqlx::SqliteConnection> {
         .ok()
 }
 
-/// The `uses` table of `<data_dir>/knowledge.sqlite`, read-only.
+/// The `uses` table of `<data_dir>/knowledge.sqlite`, read-only. A store
+/// from before 136 has no rows yet (impressions start with the first 136
+/// build), so an empty table falls back to [`uses_from_sessions`].
 pub async fn read_uses(data_dir: &Path) -> Vec<Uses> {
-    let Some(mut c) = open_ro(&data_dir.join(knowledge::INDEX_FILE)).await else {
+    let from_index = match open_ro(&data_dir.join(knowledge::INDEX_FILE)).await {
+        Some(mut c) => sqlx::query_as::<_, (String, i64, i64, Option<String>, Option<String>)>(
+            "SELECT id, shown, opened, last_shown, last_opened FROM uses",
+        )
+        .fetch_all(&mut c)
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .map(|(id, shown, opened, last_shown, last_opened)| Uses {
+            id,
+            shown: shown.max(0) as u64,
+            opened: opened.max(0) as u64,
+            last_shown,
+            last_opened,
+        })
+        .collect::<Vec<_>>(),
+        None => Vec::new(),
+    };
+    if from_index.is_empty() {
+        uses_from_sessions(data_dir).await
+    } else {
+        from_index
+    }
+}
+
+/// Impressions and opens the way design §2.3 measured them before the
+/// `uses` table existed: `shown` = ids listed by `<knowledge>` notes in
+/// `messages`, `opened` = `knowledge_get{id}` rows in `inner_calls` and
+/// `tool_calls`. Read-only; no dates (`last_*` stay `None`).
+pub async fn uses_from_sessions(data_dir: &Path) -> Vec<Uses> {
+    let Some(mut c) = open_ro(&data_dir.join("sessions.sqlite")).await else {
         return Vec::new();
     };
-    sqlx::query_as::<_, (String, i64, i64, Option<String>, Option<String>)>(
-        "SELECT id, shown, opened, last_shown, last_opened FROM uses",
-    )
-    .fetch_all(&mut c)
-    .await
-    .unwrap_or_default()
-    .into_iter()
-    .map(|(id, shown, opened, last_shown, last_opened)| Uses {
-        id,
-        shown: shown.max(0) as u64,
-        opened: opened.max(0) as u64,
-        last_shown,
-        last_opened,
-    })
-    .collect()
+    let mut uses: std::collections::BTreeMap<String, (u64, u64)> = Default::default();
+    // The note's `` - `id` — title `` lines, matched on the raw JSON body
+    // (the newline is escaped there, so no line split).
+    let hint = regex::Regex::new(r"- `([a-z0-9][a-z0-9_-]*(?:/[a-z0-9][a-z0-9_-]*)*)`").unwrap();
+    let bodies: Vec<String> =
+        sqlx::query_scalar("SELECT body FROM messages WHERE body LIKE '%<knowledge>%'")
+            .fetch_all(&mut c)
+            .await
+            .unwrap_or_default();
+    for body in &bodies {
+        for m in hint.captures_iter(body) {
+            uses.entry(m[1].to_owned()).or_default().0 += 1;
+        }
+    }
+    for sql in [
+        "SELECT args FROM inner_calls WHERE name = 'knowledge_get'",
+        "SELECT args FROM tool_calls WHERE name = 'knowledge_get'",
+    ] {
+        let args: Vec<String> = sqlx::query_scalar(sql)
+            .fetch_all(&mut c)
+            .await
+            .unwrap_or_default();
+        for a in &args {
+            if let Some(id) = serde_json::from_str::<serde_json::Value>(a)
+                .ok()
+                .and_then(|v| v["id"].as_str().map(str::to_owned))
+            {
+                uses.entry(id.split('@').next().unwrap_or(&id).to_owned())
+                    .or_default()
+                    .1 += 1;
+            }
+        }
+    }
+    uses.into_iter()
+        .map(|(id, (shown, opened))| Uses {
+            id,
+            shown,
+            opened,
+            last_shown: None,
+            last_opened: None,
+        })
+        .collect()
 }
 
 /// `(sessions, friction events)` in `<data_dir>/sessions.sqlite` since
