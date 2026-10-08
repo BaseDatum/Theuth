@@ -856,3 +856,33 @@ None blocks the contract; defaults in brackets.
 | date | change |
 |---|---|
 | 2026-10-08 | Initial design from recon R1/R1B/R2A/R2B and rulings D1–D13 (Sky, 11:19/11:46). Recon reports copied verbatim as `141-recon-*.md`. |
+| 2026-10-08 12:40 | Revision 1 (orchestrator): Sky's mock approval; D14 MCP skills back-channel on by default; D15 skills UX; rulings on §14 Q1–Q10; migration re-check; shared-machine gate adjustments. |
+
+## Revision 1 — orchestrator rulings (2026-10-08 12:40)
+
+Sky approved the UI mock at 12:20 ("that looks good"; `~/.theuth/briefs/2026-10-08/141/141-mock.html`, which §9 matches) and at 12:22 said of "Let the child fetch theuth skills itself": "this should be on by default". The rulings below amend the body; where they differ from it, this section wins.
+
+### R1.1 New decisions
+
+- **D14 — MCP skills back-channel on by default.** The design-75 back-channel (`t --data-dir <d> mcp --session <id>` stdio shim exposing `list_skills` / `load_skill` / `send_message`, passed as `mcpServers` on `session/new` and `session/load`) becomes default-ON for every ACP harness; `mcp: false` in `~/.theuth/acp/agents.yaml` opts a harness out (today `mcp: true` opts in, and none of omp / opencode / opencode2 sets it). Owner W1 (the flag's default and doc comment in `crates/acp/src/agents.rs`, wherever crates/acp reads it). Robustness: if `session/new` or `session/load` carrying the back-channel fails, retry once without it, log a warning naming the harness, and continue (W1, `harness.rs`). Z proves `list_skills` + `load_skill` from omp 18.3.1, opencode 1.18.30 and opencode2 2.0.22; a harness that cannot use it gets a recorded built-in default off (a Closer ticket), never a silent failure. The Closer amends `docs/design/06-acp.md` and `docs/design/75-acp-deep.md` §9.
+- **D15 — skills UX.** (a) Desktop Skills panel: the harness's skill and command rows (`components/library/Skills.tsx`, `splitHarnessCommands`) become clickable and send that command to the session as raw text (`/<command name>`, e.g. `/skill:ponytail`), bypassing theuth's `/skill:` parking (`draftSkill`). (b) Desktop slash menu (`components/chat/slash.ts`, `Composer.tsx`): in an ACP session, list the session's harness commands next to theuth skills with a source label (theuth / the harness name); choosing a harness entry sends it raw; typed `/skill:<name>` keeps resolving to the theuth skill when both exist, and the menu hint says so. (c) TUI parity: harness commands appear in the slash completion with the harness label and are sent raw when chosen. Owners W3 (a, b) and W4 (c). Tests: a vitest for the raw-send path, a vitest for the merged/labelled slash list, a TUI test for (c).
+
+### R1.2 Rulings on §14
+
+- **Q1** default accepted: `idle` is not done — no check glyph, not in the strip (the strip shows `running | requires_action`), tree row greyed "idle"; ObservedBar "idle — <harness> may resume it".
+- **Q2** default accepted (greyed, rule label "inside parent").
+- **Q3** default accepted.
+- **Q4** default accepted (it is the approved mock).
+- **Q5** yes, for both RFD and opencode.
+- **Q6** default accepted.
+- **Q7** search yes; dreaming **no** by default — observed rows are excluded from dreaming's walk (`kind != 'observed'`; owner C when the walk's query lives in `store.rs`, else W2 — the contract hand-off says which), so the nightly budget is not spent on harness-internal chatter; the ACP child's own transcript stays in.
+- **Q8** after Z, and only on Sky's go (D13 stays a proposal).
+- **Q9** yes when present.
+- **Q10** default accepted.
+
+### R1.3 Cross-wave facts and gate adjustments
+
+- Migration **0041** re-checked at 12:38: main tops at `0040_harness_outbox.sql` (139-R2, cd4c8b5c) and no in-flight branch adds a migration. The Closer re-checks before landing; if another wave takes 0041 first, renumber ours (`git mv` + `sed`, our files only).
+- Gates follow the shared-machine rules in the wave briefs: workers run crate-level gates only. W3 runs `tsc --noEmit` and vitest on its own test files; the full `vitest run` and `vite build` move to the Closer. C's `cargo check --workspace --all-targets` is the one workspace-class run allowed before the Closer, taken under the workspace lock its brief names.
+- §12 ownership is unchanged by D14/D15: they fall inside W1's `crates/acp/src/**`, W3's `crates/desktop/ui/src/**` and W4's `crates/tui/**`.
+
