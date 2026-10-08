@@ -1101,7 +1101,10 @@ mod tests {
             data_dir,
             root,
             cfg: crate::config::AutoresearchConfig::default(),
-            agent: AgentDefaults::default(),
+            agent: AgentDefaults {
+                communication: true, // waves need spawn_subagent (140-P)
+                ..AgentDefaults::default()
+            },
             rt,
             store,
             backend: bench,
@@ -1598,7 +1601,10 @@ mod tests {
             data_dir: tmp.path().to_path_buf(),
             root: root.clone(),
             cfg: crate::config::AutoresearchConfig::default(),
-            agent: AgentDefaults::default(),
+            agent: AgentDefaults {
+                communication: true, // waves need spawn_subagent (140-P)
+                ..AgentDefaults::default()
+            },
             rt,
             store: Store::open(&root).await.unwrap(),
             backend: bench.clone(),

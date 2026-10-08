@@ -409,7 +409,10 @@ async fn harness(fake: Arc<Fake>, cfg: AutoresearchConfig) -> Harness {
         data_dir: dir.path().to_path_buf(),
         root,
         cfg,
-        agent: AgentDefaults::default(),
+        agent: AgentDefaults {
+            communication: true, // waves need spawn_subagent (140-P)
+            ..AgentDefaults::default()
+        },
         rt,
         store,
         backend: fake,
@@ -610,6 +613,22 @@ async fn invalid_specs_are_refused_before_anything_is_written() {
     .unwrap_err()
     .to_string();
     assert!(e.contains("bench.command"), "{e}");
+    // 140-P: a wave study needs `agent.communication` (spawn_subagent).
+    let mut wave = spec(&h, "wave", 10);
+    wave.parallel = 2;
+    h.studies.agent.communication = false;
+    let e = create(
+        &mut h.studies,
+        Create {
+            spec: wave,
+            origin: SessionId::new(),
+            start: StartWhen::Now,
+        },
+    )
+    .await
+    .unwrap_err()
+    .to_string();
+    assert!(e.contains("agent.communication"), "{e}");
     assert!(h.studies.store.list_studies().await.unwrap().is_empty());
 }
 

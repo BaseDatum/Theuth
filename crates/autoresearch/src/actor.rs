@@ -1639,6 +1639,14 @@ fn validate(spec: &StudySpec, cfg: &AutoresearchConfig) -> Result<()> {
 pub async fn create(a: &mut Studies, m: Create) -> Result<StudyInfo> {
     let env = a.env();
     validate(&m.spec, &env.cfg)?;
+    // 140-P live: `spawn_subagent` is gated by `agent.communication` (50 §2.1); without it
+    // every wave is abandoned ("spawn_subagent is not available in this session").
+    if m.spec.parallel > 1 && !env.agent.communication {
+        return Err(Error::refused(
+            "parallel > 1 needs `agent.communication: true` in config.yaml (spawn_subagent is off — a \
+             ceiling no session can override); start the study with parallel: 1 or switch it on",
+        ));
+    }
     // `git rev-parse` is a process spawn: never on the mailbox thread (R-100).
     let (backend, repo) = (env.backend.clone(), PathBuf::from(&m.spec.repo));
     let is_git = tokio::task::spawn_blocking(move || backend.is_git_repo(&repo))
@@ -4844,6 +4852,29 @@ pub async fn recover(env: &Env) -> Result<()> {
                     if let Err(e) = after_experiment(env, &slug).await {
                         tracing::warn!(%slug, "stop rules after recovery: {e}");
                     }
+                }
+                // 140-P live: 109's durability resumes the turn the crash interrupted — with
+                // none of the fire's in-memory settings (toolset, approvals off): the model
+                // went on unconfined (`python`, knowledge hints, 7 experiments in one turn).
+                // §8.5 wants a fresh fire instead: re-apply the toolset (a resume that has not
+                // started yet reads it at its rebase), then cancel the resumed turn; the
+                // schedule closes its run and `every: 0s` fires again, confined.
+                if let Some(session) = study.session
+                    && let Some(agents) = agents()
+                {
+                    let _ = agents
+                        .ask(agent::SetToolset {
+                            session,
+                            toolset: Some(crate::binding::toolset(study.spec.parallel)),
+                        })
+                        .await;
+                    let _ = agents
+                        .ask(agent::Cancel {
+                            session,
+                            keep: None,
+                            scope: agent::CancelScope::Tree,
+                        })
+                        .await;
                 }
                 // 140-P live: a loop the schedule ended (or a file removed by hand) left a
                 // live study with no file — nothing would ever fire again. Re-write it.
