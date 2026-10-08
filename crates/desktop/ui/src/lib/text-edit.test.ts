@@ -1,6 +1,11 @@
 import { expect, test, vi } from 'vitest'
 import { applyText, diffRange, editText } from './text-edit'
 
+// Astral code points, as escapes (no-emoji rule): SMILE D83D DE00 · GRIN D83D DE01 (same high) · SQ D83C DE00 (same low)
+const SMILE = '\u{1F600}'
+const GRIN = '\u{1F601}'
+const SQ = '\u{1F200}'
+
 test('diffRange: the smallest single replacement', () => {
   expect(diffRange('abc', 'abc')).toBeNull()
   expect(diffRange('', 'abc')).toEqual({ start: 0, end: 0, text: 'abc' })
@@ -22,17 +27,16 @@ test('diffRange: repeated characters never overlap prefix and suffix', () => {
 })
 
 test('diffRange: an astral emoji is never split', () => {
-  // 😀 D83D DE00 · 😁 D83D DE01 (same high) · 🈀 D83C DE00 (same low)
-  expect(diffRange('a😀b', 'a😁b')).toEqual({ start: 1, end: 3, text: '😁' })
-  expect(diffRange('😀', '🈀')).toEqual({ start: 0, end: 2, text: '🈀' })
-  expect(diffRange('ab', 'a😀b')).toEqual({ start: 1, end: 1, text: '😀' })
-  expect(diffRange('a😀b', 'ab')).toEqual({ start: 1, end: 3, text: '' })
-  expect(diffRange('😀😀', '😀')).toEqual({ start: 2, end: 4, text: '' })
+  expect(diffRange(`a${SMILE}b`, `a${GRIN}b`)).toEqual({ start: 1, end: 3, text: GRIN })
+  expect(diffRange(SMILE, SQ)).toEqual({ start: 0, end: 2, text: SQ })
+  expect(diffRange('ab', `a${SMILE}b`)).toEqual({ start: 1, end: 1, text: SMILE })
+  expect(diffRange(`a${SMILE}b`, 'ab')).toEqual({ start: 1, end: 3, text: '' })
+  expect(diffRange(SMILE + SMILE, SMILE)).toEqual({ start: 2, end: 4, text: '' })
   for (const [p, n] of [
-    ['a😀b', 'a😁b'],
-    ['😀', '🈀'],
-    ['😀😀', '😀'],
-    ['x😀', '😀😀x'],
+    [`a${SMILE}b`, `a${GRIN}b`],
+    [SMILE, SQ],
+    [SMILE + SMILE, SMILE],
+    [`x${SMILE}`, `${SMILE}${SMILE}x`],
   ] as const) {
     const d = diffRange(p, n)!
     expect(p.slice(0, d.start) + d.text + p.slice(d.end)).toBe(n)
