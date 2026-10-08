@@ -92,3 +92,19 @@ built against C's as-built (`125-as-built-C.md`). Everything under `crates/deskt
 - `Change model…` from the pill opens the header picker (`theuth:open-advisor`); in a split pane layout only the pane whose
   `ModelMenu`/`ModelDialog` is mounted for that session responds (both filter by session id).
 - No desktop `/advisor` slash command (design §13 item 6: none in v1).
+
+## F2 (phone picker footer)
+
+- **What/why.** On touch the model dialog is capped to `--visible-band` (127 §6) as a flex column; the shadcn `Command`
+  root is `h-full`, so the picker claimed the whole band and the sibling `Advisor · …` row was pushed past the cap and
+  clipped by `overflow-hidden` — under the keyboard the row was invisible. Now `dialogPlacement(touch)` also returns
+  `picker: 'h-auto min-h-0 flex-1'` (merged into the `ModelPicker` root, both the model and the Advisor level) and
+  `footer: 'shrink-0'` (new optional `className` on `AdvisorRow`), so the picker shrinks and the row is the band's last row.
+  Desktop / popover paths get empty strings and are unchanged.
+- **Files.** `src/components/chat/ModelMenu.tsx`, `src/components/chat/ModelMenu.test.ts` (placement assertions).
+- **Gates (build-lock, label 125-F2).** `bun run check` exit 0 (`tsc -b --noEmit`; the setup baseline's 958 errors were
+  missing generated bindings, cleared by copying them) · `vitest run src/components/chat src/store src/lib`:
+  `Test Files 133 passed (133)`, `Tests 1067 passed (1067)` · `bun run build`: `✓ built in 6.67s`.
+- **Proof.** Headless Chrome 390×844 mobile against the live engine, `--visible-band` forced to 420 px, existing chat,
+  picker opened from the compact header menu: `/tmp/125-f2-before.png` (picker 9–411 px, Advisor row not visible) →
+  `/tmp/125-f2-after.png` (picker 9–358 px, `Advisor · Off` at 374–411 px inside the band).

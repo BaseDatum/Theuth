@@ -1298,3 +1298,693 @@ stub returned a default. Section ownership: §4–§5 W1 · §7 W2 · §8 W3 · 
 | 6 | Desktop keyboard shortcut for the advisor popover | none in v1; `theuth:open-advisor` window event only |
 | 7 | Does the advisor see images/screenshots in the advised transcript | text summary only (`[image: …]` tags as rendered, `loop_::binary_tag`) |
 | 8 | Slack/Telegram `/advisor` | later (D8) |
+
+## Revision 1 — CONSULT (2026-10-08)
+
+Status: revision · 2026-10-08 · appended to the design above, which it extends and never rewrites. Every
+`file:line` in this revision was read on the `docs/125-r1` worktree at `origin/main` `cd4c8b5c`
+(2026-10-08), i.e. the advisor **as built** (merge `1098ae72`, 2026-10-07) rather than the planned paths
+§4-§8 cite. Research base: `/tmp/125-research/swarm-advisors.md` (2026-10-08), cited as `[R §n]`.
+Nothing in this revision has been executed.
+
+### R1.0 Status
+
+This revision adds **pull** to 125's **push**: a `consult` tool the advised model (and native subagents
+under it) can call to ask the session's advisor one concrete question and get a short synchronous answer
+back as the tool result. 125 itself stays as built — the watchdog still reads every step and still
+emits `<advisory>` notes; the consult path reuses its child session, its actor, its card type, its
+status and its settings. Sky's three rulings (ask_user, 2026-10-08 12:23), verbatim: (1) *"Build it:
+main model + native subagents may consult"* — external harness children get their own consultant (e.g.
+`claude --advisor`) through their briefs, never through theuth; (2) *"the carrier is the session's
+advisor model"* — no separate consult model, no second picker row; (3) *"Anthropic-style cadence + hard
+cap"* — a system-prompt cadence sentence, a `max_consults` cap, and the count visible in the advisor
+status. The orchestrator's defaults, decided for this revision and not reopened below:
+
+- **D-R1.1 Cap unit.** `advisor.max_consults` counts consults **per user turn** of the asking session
+  (reset on each user prompt; a native subagent's whole run is one turn), default **6**, range 0-32; `0`
+  removes the tool. Claude Code's `max_uses` is per request [R §2]; a lifetime cap would make the tool
+  vanish in a long session. The cadence paragraph (R1.6) aims at about two per turn.
+- **D-R1.2 Main-session routing.** The root session's consult goes to its existing advisor child: the
+  pending delta is flushed first, then a `### Consultation` user message carries the question; the child
+  answers in text; that text is the tool result. Its read-only tools stay (at most 3 calls); any `advise`
+  it makes during that turn is delivered as an ordinary note.
+- **D-R1.3 Subagent routing.** A native subagent (`depth > 0`) whose parent chain reaches a session with
+  an advisor link consults by a **stateless one-shot** on that advisor's model and effort: no advisor
+  session is created for subagents (125 non-goal "advising subagents" stands); no link anywhere in the
+  chain → the tool is absent.
+- **D-R1.4 Tool contract.** Name `consult`; args `question` (required, <= 2 000 chars) and `context`
+  (optional, <= 4 000 chars); result = the answer text (<= 12 lines asked of the advisor) or one of four
+  error strings; synchronous, 90 s timeout, one consultation in flight per asking session.
+- **D-R1.5 Pairing.** No refusal: theuth has no model ranking. One warning per link when the advisor
+  model's catalog output price is below the advised model's — a crude signal, labelled as such.
+- **D-R1.6 Persistence.** A consultation is one transcript entry of the **asking** session: the existing
+  `Advisory` type gains `kind: AdvisoryKind` (serde default `Review`, so migration-0034 rows parse
+  unchanged) and the answer is the card's single note with a new `AdvisorSeverity::Advice`; the row is
+  masked from the model (it already has the answer as the tool result). `AdvisoryAdded` is reused.
+  Channels stay silent.
+- **D-R1.7 Counts and config.** `AdvisorStatus` gains a sibling struct `consults: AdvisorConsultCounts
+  { turn, total, cap }`; `advisor.max_consults` joins the `advisor:` section, `SetAdvisorDefaults` and
+  `AdvisorDefaults`.
+- **D-R1.8 Ledger.** The child's consultation turn is priced as the child's calls already are (§4.14);
+  the subagent one-shot is a `SideCall` priced to the subagent session under a new `CallKind::Consult`.
+- **D-R1.9 Non-goals.** An architect role; a separate consult model; `/advisor ask` (the user asking the
+  advisor) — listed in R1.11 as a follow-up with its cost; consults from external harness children; the
+  advisor consulting anyone; retries of a failed consult; replaying history on enable (D1 stands).
+
+Path abbreviations used from here on: `AGENT/` = `crates/agent/src/`, `UI/` = `crates/desktop/ui/src/`,
+`TUI/` = `crates/tui/src/`, `RPC/` = `crates/rpc/src/`; `RT/` = `crates/runtime/src/`; `MODELS/` =
+`crates/models/src/`. Numbered sections `§n` refer to the design above; `R1.n` to this revision.
+
+### R1.1 Why pull on top of push
+
+Claude Code's shape, from [R §1-§2]: the executor calls a parameterless `advisor` server tool when *it*
+decides it needs guidance; a stronger model re-reads the whole transcript server-side — no tools, no
+memory, thinking dropped — and returns 400-700 tokens of advice synchronously inside the same request;
+configured by `/advisor [model|off]`, `advisorModel`, `--advisor`, killed by
+`CLAUDE_CODE_DISABLE_ADVISOR_TOOL=1`; the advisor must rank at or above the main model; **subagents
+inherit it**; the tool definition alone costs about 1k prompt tokens per request; Anthropic's suggested
+cadence is one consult before substantive work and one before declaring done (2-3 per task). There is
+no architect role anywhere in Claude Code [R §1 item 5]. 125 and oh-my-pi are push watchdogs [R §3].
+
+The evidence [R §4]: Sonnet 4.6 + Opus 4.6 advisor scored +2.7 pp on SWE-bench Multilingual at -11.9 %
+cost per task; Haiku + Opus advisor 41.2 % vs 19.7 % on BrowseComp; where the executor actually asks
+(DeepSWE, low-effort Sonnet 5) +23 points. The same source says the consult rate is fragile — Haiku 5.5
+and Sonnet 5.5 called the advisor on **0 of 198** GPQA questions without a steering prompt and still paid
++12 % / +25 % for the tool definition — a `low`-effort executor lost 7 points, and when the models are
+close the gain is noise (90.1 % vs 88.4 % at about 2.1x the money). Two 2026 papers [R §4, sources
+26-27] support escalation *at decision points* over up-front routing; none compares pull against push.
+
+What push cannot catch: the agent asking itself a question it cannot answer — which of two approaches,
+whether a recurring error is worth a third try, whether "done" is done — because the watchdog only sees
+what happened and speaks after the fact, at a step boundary, under a budget and an immune window
+(§4.9, §4.11). What pull cannot catch: what the agent does not know it got wrong — silent drift, a
+wrong cluster, wasted parallelism — because the agent never asks about what it is not unsure of; and it
+costs one stronger-model read of the transcript on the critical path per call [R §5]. The two address
+different failures, so this revision layers pull on the push child rather than replacing it, and it
+carries the three control knobs the evidence names: a cadence paragraph (under-asking), a hard cap
+(over-asking) and a visible count (so the rate can be measured before anyone believes it helps).
+
+### R1.2 User-visible behaviour
+
+Nothing changes until a session has an advisor (ruling 2 of §2 stands: no advisor, no `consult`).
+With one on, the advised model's prompt gains one paragraph (R1.6) and its tool list gains `consult`.
+
+| Situation | What happens | TUI | Desktop / mobile | Channels |
+|---|---|---|---|---|
+| Main model consults mid-turn | the tool call shows as any tool call; the advisor child's state goes `reviewing…` for the consultation turn; the answer returns as the tool result; one card lands in the transcript | tool row as today; status segment spinner; card `◎ consulted: <question, one line>` with the answer collapsed (Ctrl+O), info colour (SAND) | tool row as today; pill `reviewing…`; `AdvisorNoteCard` consultation variant: question as title, answer in the body, `Consulted` badge | nothing |
+| Subagent consults | the one-shot runs on the advisor's model; the answer is the child's tool result; the card lands in the **child's** transcript | the child's own view (attach) shows the card; the parent sees nothing new | the child's transcript shows the card; the strip dot blinks as for any step | nothing |
+| Cap reached | the tool returns `consult: cap reached (6/6 this turn)`; the model continues | nothing new | nothing new | nothing |
+| Advisor off (link removed mid-turn) | the tool is still in this turn's spec list; a call returns `consult: advisor off`; the next turn has no tool | nothing new | nothing new | nothing |
+| Advisor `paused` / `halted` | `consult: advisor unavailable (<detail first line>)` at once | status line already shows the state | pill already shows the state | nothing |
+| Advisor fails during the consultation (retriable error, quarantine) | `consult: advisor unavailable (<reason>)`; the link's §4.13 counters move as for a review | as a dropped review | as a dropped review | nothing |
+| Time-out (90 s) | `consult: timed out after 90 s`; the advisor's turn is cancelled; no card | nothing new | nothing new | nothing |
+| `/advisor status` | gains a fifth line `consults: N this turn · M total · cap 6` | the line | popover row `Consults N/6` | — |
+| Cap changed | `/advisor consults <n>` (TUI) or Settings › Advisor › `Consults per turn` (Off · 2 · 6 · 12) | `advisor consults → n` info line | Settings row | — |
+| Pairing warning | once per link when the advisor's catalog output price is below the advised model's | one `Entry::Info` line after `advisor → <model>` | popover note under the model row; Settings card note | — |
+
+The advisor's **unprompted** notes are unchanged by a consult; a `blocker` the advisor raises inside a
+consultation turn is still steered (§4.10) — the model gets the answer as a tool result *and* the card.
+
+### R1.3 The `consult` tool
+
+**Spec** (loop-local like `advise`, `AGENT/advisor/advise.rs:26-35`; new module `AGENT/advisor/consult.rs`):
+
+```json
+{ "name": "consult",
+  "description": "Ask the reviewer model that has read this transcript one concrete question and get a short answer. Use before committing to an approach that is not obvious, when an error recurs, and once before you declare a task done. One question per call.",
+  "parameters": { "type": "object", "required": ["question"], "properties": {
+    "question": { "type": "string", "maxLength": 2000, "description": "One concrete question. Name the decision, not the whole task." },
+    "context":  { "type": "string", "maxLength": 4000, "description": "What you want weighed: the options you see, the evidence you have, what you already tried." } } },
+  "risk": "read_only", "direct": true, "returns": "str" }
+```
+
+**Availability** (decided at tool-spec assembly, `AGENT/loop_.rs:4193-4205`, where `advise` is pushed
+for `kind == Advisor`): `consult` is pushed for a `SessionKind::Chat` session when
+`advisor.max_consults > 0` **and** (a) `self.shared.depth == 0` and `self.shared.advisor` is set
+(`AGENT/loop_.rs:703`, `:4154`; the flag `SetAdvisorOn` toggles, `:942`, `:1973`), or (b)
+`self.shared.depth > 0` and the Advisors actor answers `ConsultSource(session)` with `Some(..)` — the
+actor walks the parent chain (`SELECT parent FROM sessions`, the loop `Store::depth` runs,
+`AGENT/store.rs:2519-2531`) to the nearest ancestor in `Advisors.links` (`AGENT/advisor.rs:299`). The
+field that gives a session its parent is the `sessions.parent` column, carried as
+`parent: Option<(SessionId, String)>` into `Agents::session` (`AGENT/supervisor.rs:743`, `:859`) and
+reduced to `Shared.depth` by `store.depth(id)` (`:864`); no ancestor link → no spec. The `ConsultSource`
+ask is made once per `rebase`, so a link turned on mid-run reaches a subagent at its next turn. An
+advisor session itself (`kind == Advisor`) never gets `consult` (ruling: the advisor consults no one).
+The spec list stays sorted (`AGENT/loop_.rs:4204`).
+
+**Dispatch**: `consult` joins the `local` closure beside `advise` (`AGENT/loop_.rs:5857-5862`) and the
+loop-local arm (`:5927-5928`) — `Turn::consult(&args)` parses, checks the cap, and `ask`s
+`Advisors::Consult` under `tokio::time::timeout(CONSULT_TIMEOUT)`, the shape `advise()` uses
+(`:3276-3295`). Calls in one tool batch run in order (`:5920-5928`), so two `consult` calls in one batch
+are serialised by construction; both count against the cap.
+
+**Cap**: `Turn.consults: u32` for `depth == 0` (a `Turn` lives for one user turn, so the reset is free);
+`Shared.consults: Arc<AtomicU32>` for `depth > 0` (never reset: a subagent's run is one turn, D-R1.1).
+The check is `n >= max_consults` → the error string, no actor call.
+
+**Errors** (the tool result's whole text; never an `is_error` result, so the model reads it as data):
+
+| condition | result |
+|---|---|
+| no link (removed since the spec was built), or the asker is not a Chat session | `consult: advisor off` |
+| cap | `consult: cap reached (6/6 this turn)` (actual `n/cap`) |
+| link `paused` / `halted`, actor missing, child failed or was quarantined during the consultation, one-shot provider error | `consult: advisor unavailable (<reason, first line>)` |
+| no answer within `CONSULT_TIMEOUT` = 90 s | `consult: timed out after 90 s` |
+| `question` empty or over 2 000 chars, `context` over 4 000 | `consult: question must be 1-2000 chars` / `consult: context must be at most 4000 chars` |
+
+**One in flight**: `Link.consult: Option<PendingConsult>` holds at most one; a second `Consult` for the
+same asker while one is pending returns `consult: advisor unavailable (consultation in progress)` — only
+reachable from a second turn of the same session (parallel calls are serial, above).
+
+**Cadence** is a prompt paragraph (R1.6), not a mechanism: nothing forces a call.
+
+### R1.4 Main-session path through the advisor child
+
+The child already has the transcript (cursor, §4.4) and read-only tools (§4.1), so a consultation is one
+more turn of the same session with a different opener. Sequence, all inside the `Advisors` actor
+(`AGENT/advisor.rs:291-301`) unless named otherwise:
+
+1. **Ask.** `Turn::consult` sends `Consult { asker, question, context, partial, n }` where `partial` is
+   the asker's assistant text streamed so far this round — the rows of the current step are not in the
+   store yet (`append_batch` runs after the tools, §4.1 item 4), so without it the advisor would not see
+   the sentence that led to the question. `n` is the asker's count after this call (for the status).
+2. **Gate.** No link for `asker` → `Err("advisor off")`. `row.state` is `Paused` or `Halted` →
+   `Err("advisor unavailable (<detail>)")` (`Link.detail`, `:225`). `link.consult.is_some()` → in progress.
+3. **Flush, then ask.** The pending delta is rendered exactly as `send_update` does
+   (`:438-541`: `counted_rows` past the cursor, rewrite check, `render_update`, redact, cursor and
+   prefix advanced) and the `### Consultation` block below is appended to the **same** update text, so
+   the child receives one `AdvisorInput` (`:540`; routed by `impl Message<AdvisorInput> for Agents`,
+   `AGENT/supervisor/advisor.rs:306-318`). When nothing is pending the update is the block alone under a
+   `### Session update (0 steps)` heading. If a review is **in flight** (`link.reviewing.is_some()`) the
+   consult is parked in `Link.consult` and sent by `finish_review` (`AGENT/advisor.rs:621-752`) the moment that turn
+   ends — the brief's "flush first": the review's notes land as usual, then the consultation goes out;
+   the 90 s timeout runs from the ask, not from the send. `Review` gains `consult: bool`.
+4. **Block format** (after the update's `---` line, before any `[in progress …]` trailer):
+
+   ~~~
+   ### Consultation
+   The agent asks you directly. Answer in text (not with `advise`): <= 12 lines, the recommendation first.
+
+   _agent's current step (not yet in the transcript):_
+   <partial, <= 4 KiB, middle elided>
+
+   **question**: <question>
+   **context**: <context, or "(none)">
+   ~~~
+
+5. **Answer capture.** The actor already accumulates the advisor's `TextDelta`s per review
+   (`Review.text`, `AGENT/advisor.rs:1079-1088`, capped at `TEXT_CAP` 64 KiB `:53`) and decides at `TurnFinished`
+   (`:1135-1143` → `finish_review`). For a review with `consult == true` the `Good` arm (`:744-750`)
+   additionally: trims `review.text`, clips it to 12 lines + 1 500 chars (the advisor was asked for 12),
+   replies to the parked `Consult` with `Ok(answer)`, writes the card (step 6), and clears
+   `link.consult`. An empty text (the advisor only called `advise`, or said nothing) replies
+   `Ok("no objection")` — the prompt tells it to say so (R1.6), and an empty tool result would read as a
+   failure to the asker. Held nits of that turn are delivered as a card as today (`:745`); a `blocker`
+   raised during the consultation was already steered by `Advise` (`:1015-1022`).
+6. **Card + event.** `deliver`-like write through `DeliverAdvisory` (`AGENT/advisor.rs:589-618`,
+   `AGENT/supervisor/advisor.rs:322-361`) with `Advisory { kind: Consultation { question }, notes:
+   [AdvisoryNote { severity: Advice, note: answer }], .. }` and **`steer: false`, `passive`, masked**: the
+   asking session's `AppendAdvisory` handler (`AGENT/loop_.rs:1990-2004`) learns a `model_visible: false`
+   flag that makes `append_advisory` (`AGENT/store/advisor.rs:183-201`) also set `messages.excluded` to
+   `Mask { whole: true }` (`AGENT/store.rs:13-16`; `AGENT/context.rs:321-324`), so the row is a card for the
+   UIs (`render_with` reads `messages.advisory` regardless, `AGENT/store/advisor.rs:171-174`) and never
+   model context — the model already holds the answer as the tool result. When the asker is busy (it is:
+   it awaits the tool) the passive steer path would otherwise land the row at the next batch boundary
+   as context (`AGENT/loop_.rs:1998-2002`); the masked flag short-circuits to the idle append path (`:1089`) instead.
+   `AdvisoryAdded { seq, advisory }` is published as today (`AGENT/lib.rs:2804-2811`).
+7. **Tool result.** The awaiting `Turn::consult` returns `ToolOutput::ok(answer)`; the asker's model call
+   resumes. The advisor's cursor now sits after the consultation opener's row count, so its next review
+   delta begins with the asker's step that contained the `consult` call (the call and the answer render
+   as an ordinary tool line in the update, `AGENT/advisor/render.rs:207`; the masked row is not counted —
+   `counted()` already skips Advisory rows, `:51`).
+
+**Interactions.** *In-progress review*: parked (step 3); a `Reset::Replay` queued by a rewrite or a
+re-prime (`AGENT/advisor.rs:158-161`, `:1119-1126`) takes precedence — the consult is answered after the replayed turn,
+still under its own 90 s. *Immune window*: unaffected — the answer is a tool result, not a steer, and
+`immune_until` (`:601`, `:1014`) governs only `advise`. *Quarantine and latches* (§4.13): the
+consultation turn is scanned like any review (`injected_pattern` over `review.text` against the update,
+`:679-681`, `:74-78`); a tainted consultation replies `Err("advisor unavailable (quarantined)")`, writes
+no card, and moves `quarantines` as today; a retriable error replies `Err("advisor unavailable
+(<first line>)")` **without** the 3-attempt retry (D-R1.9: no consult retries — the pending review
+semantics `:662-675` stay for reviews only); `Paused`/`Halted` outcomes reply the same way and latch as
+today. *Timeout*: `Turn::consult`'s timeout fires → it returns the timeout string and `tell`s
+`CancelConsult(asker)`; the actor cancels the child's turn (`crate::Cancel`, as `:495-500`), clears
+`link.consult`, and treats the `TurnFinished { stop_reason: "cancelled" }` as `user_stopped` (`:678`):
+no counters move, no card. *User Stop* on the asker: the asker's turn cancels (`Cancel`, §3) and the
+loop drops the awaiting tool; the actor's existing `cancelled` arm for the advised session (`:1157-1178`)
+also clears `link.consult` and cancels the child's consultation turn. *Catch-up wait* (§4.12): a
+consultation turn counts as `reviewing`, so a terminal `AdvisorStep` parks as today (`AGENT/advisor.rs:936-944`).
+
+**Cost.** The child's consultation turn is a `model_calls` row of the child, as every review is
+(§4.14; `Reserved::open` on the advisor session), so `AdvisorStatus.cost` (`AGENT/advisor.rs:394-401`) and the advised
+session's `SessionCost.descendants` rise with it and nothing new is priced. `tokens_in/out` accumulate
+through the same `TurnFinished.usage` arm (`:1138-1141`). The cost of a consultation is therefore one
+re-read of the pending delta plus the block — not the whole transcript, because the child keeps context
+(its own compaction is the re-prime of §4.7); Claude Code re-reads the full transcript per call [R §2].
+
+### R1.5 Subagent path — the one-shot
+
+Why two paths: the root's advisor child has the root's context and tools; a native subagent is one of
+many parallel, short-lived sessions with its own transcript, and creating a hidden child per subagent
+would multiply sessions and cost for runs that last minutes (the 125 non-goal). Anthropic's advisor is
+itself stateless and tool-less [R §2], so the one-shot is the shape with evidence behind it.
+
+**Resolution up the chain.** `ConsultSource(session)` (R1.3) returns `Some(ConsultSource { advised,
+advisor, model, effort })` from the nearest ancestor link: the actor walks `sessions.parent` from the
+asker (`AGENT/store.rs:2519-2531` shape; a new `Store::ancestors(id) -> Vec<SessionId>` bounded like
+`root_of`'s `ROOT_HOPS`, `:2537-2552`) and stops at the first id in `Advisors.links`. Model and effort are
+the link's `row.model` / `row.effort` (`AdvisorLink`, `AGENT/lib.rs:1579-1593`) at call time — a re-pick
+on the root reaches the next subagent consult without restart.
+
+**The call.** `Consult` from a `depth > 0` asker is answered by the actor with a **`SideCall`**
+(`RT/side_call.rs:93-112`: one non-streaming, no-tools, no-history request on a role model, cost-attributed
+to `session` under `kind`), `role: ModelRole::Named(model)` (`:77-91`), `system` = the one-shot variant of
+the advisor prompt (R1.6), `user` = the rendered transcript + the `### Consultation` block, `budget` =
+`CONSULT_TIMEOUT` minus elapsed, `kind: CallKind::Consult` (new, `:19-36`, `:38-52`, `:60-75`; the
+`model_calls.kind` column is free text, `crates/agent/migrations/0015_session_lifecycle.sql:24`, so no
+migration). The call is sent to the **asker's** session actor (`impl Message<SideCall> for Session`,
+`AGENT/loop_.rs:2080-2102`, via `Agents`, `AGENT/supervisor.rs:3658-3679`) so the row's owner is the
+subagent and its `ModelUsageChanged` climbs to the root as every subagent call does (§4.14). Effort: the
+side-call path takes a model, not an effort; the one-shot runs at the advisor's effort only if
+`SideCall` grows `effort: Option<ReasoningEffort>` — named in R1.11, default "model's default effort".
+
+**Rendered-transcript budget.** `render_update` over the subagent's **whole** counted transcript
+(`rows_since(asker, 0)` filtered by `counted`, the `counted_rows` shape `AGENT/advisor.rs:361-372`) with
+`UpdateOpts { steps: 0, will_continue: true, preface: Some("_(a subagent's transcript; its brief is the
+first user message)_"), reasoning: true }` (`AGENT/advisor/render.rs:38-46`), under the existing
+`UPDATE_BYTES` 48 KiB cap (`:16`): oldest tool results elided first, then oldest rows (`:203-207`) — the
+brief is the first row and is **pinned** (never elided) by a new `UpdateOpts.pin_first: bool`. Plus the
+`### Consultation` block with the asker's `partial` (R1.4 step 4). The whole user message is redacted
+through the actor's `redact` (`AGENT/advisor.rs:295-296`).
+
+**Pricing.** One `model_calls` row, owner = the subagent, `kind = consult`, provider/model = the advisor's,
+settled by `side.call(...)` as `Title`/`Escalate` calls are (`AGENT/loop_.rs:2093`; `CallKind::Title` at
+`:5178`). It appears in the subagent's `session_cost` and, through `descendants`, in the root's total; it
+is **not** in `AdvisorStatus.cost` of the root (that is the child's `session_cost`, `AGENT/advisor.rs:394-401`),
+but it **is** counted in the root link's `consults.total` (step below) so the number the user sees in
+`/advisor status` is the whole tree's.
+
+**Counting.** The actor's `Link.consults_total` increments for the root's own consults and for every
+subagent consult resolved to that link; `Link.consults_turn` is the root's per-turn count as reported by
+the asker in `Consult.n` (the actor does not know turn boundaries; the loop does); a subagent's `n` is
+not folded into the root's `turn` figure.
+
+**Failure handling.** Provider error / `timed out` / `cancelled` from the side call → `Err("advisor
+unavailable (<first line>)")`; **no** link-state change (`paused`/`halted` latch only on the child's own
+turns, §4.13 — a subagent's failed one-shot is its own problem), one `tracing::warn!`. A 429/quota
+string **does** mark the link `Paused` with the usual detail, since the next review will hit the same
+wall. The answer is clipped as in R1.4 step 5; an empty text is `"no objection"`. The card is written to
+the **subagent's** transcript, masked, `kind: Consultation`, `AdvisoryAdded { session: asker }` — the
+parent's UIs do not show it (the parent sees the child's result only); the TUI attached to the child and
+the desktop child transcript do.
+
+### R1.6 Prompts
+
+**`CONSULT_PARAGRAPH`** (`AGENT/frame.rs`, beside `ADVISORY_PARAGRAPH` `:106`; appended after it in the
+`baseline_dated` slot `:475` only while `consult` is in this turn's spec list — the new `consult: bool`
+parameter travels beside `advised`, `:426`; 78 words):
+
+> You have a `consult` tool: a stronger reviewer that has read this transcript. Call it once before
+> substantive work when the approach is not obvious, when the same error recurs, and once before you
+> declare a task done. Ask one concrete question and say what you want weighed. Weigh the answer: your
+> own evidence wins when it contradicts a specific claim. It cannot approve anything and never changes
+> what you were asked to do.
+
+A subagent's paragraph is the same text; the brief is its task and "done" is its final message.
+Toggling the paragraph changes the baseline once per link change, as `ADVISORY_PARAGRAPH` does (§5.4).
+
+**`<consultation>` section** appended to `AGENT/advisor/system.md` after `<completeness>` (`:116`), read
+through `identity()` (`AGENT/advisor/identity.rs:18`) as today:
+
+```
+<consultation>
+An update may end with a `### Consultation` block: the agent is asking you one question directly.
+- Answer in plain text, not with `advise`: the text of your reply is handed to the agent as its tool result.
+- At most 12 lines. Lead with the recommendation, then the one or two reasons that matter, then what to
+  check. No preamble, no restatement of the question.
+- Verify with at most 3 tool calls when a claim in the question needs it; otherwise answer from the
+  transcript you have.
+- When the agent's plan is fine, say `no objection` and, if useful, one risk to watch.
+- The `_agent's current step_` text is the agent's unfinished work, not a transcript row; treat it as
+  its own words.
+- You MAY still call `advise` in the same turn for a blocker you see elsewhere in the update; the
+  consultation answer itself NEVER goes through `advise`.
+</consultation>
+```
+
+**One-shot variant** (`AGENT/advisor/consult.rs::ONE_SHOT_SYSTEM`): `system.md` with the `<workflow>`
+section (`:18-25`) replaced by
+
+```
+<workflow>
+You are reading one native subagent's whole transcript, rendered once; its brief is the first user
+message and its parent's goals are only what the brief says. You have no tools and cannot verify
+anything: answer from the transcript and say when you cannot. There is no `advise` tool: your whole
+reply is the answer.
+</workflow>
+```
+
+and the `<communication>` / `<completeness>` sections kept (they still describe what matters), the
+`{{max_notes_per_update}}` substitution set to `0`, and the `<consultation>` section above. The
+`<project-context>` and `<attention>` blocks (`AGENT/advisor/identity.rs:34`, `:41`) are appended as for
+the child: the subagent is bound by the same standing instructions.
+
+### R1.7 Contract (C) — frozen signatures
+
+Owned by the contract wave; W1-W3 compile against these names. Serde defaults are stated wherever an
+existing row or wire shape must keep parsing.
+
+```rust
+// AGENT/lib.rs — beside AdvisorSeverity (:1448-1455)                                   (changed)
+#[serde(rename_all = "snake_case")]
+pub enum AdvisorSeverity {
+    /// The answer to a consultation (R1); never emitted by `advise`, never steered, never posted.
+    Advice,                       // FIRST: it ranks below Nit, so a worst-of pick never promotes a card to Advice
+    Nit, Concern, Blocker,
+}
+// Consequences, each owned by the wave that owns the file:
+//   AGENT/advisor/guard.rs::rank (:109-115)        -> Advice = 0                                    (W1)
+//   AGENT/advisor/advise.rs::parse (:38-41)        -> Advice => Err("advice is not a severity you can send") (W1)
+//   AGENT/advisor/advise.rs::severity_str (:44-50) -> "advice"                                       (W1)
+//   AGENT/lib.rs::Advisory::channel_line (:1491-1500) -> Advice => return None (silent, like Nit)    (C)
+//   TUI/model.rs::severity_name (:1149-1155), TUI/ui.rs::severity_color (:2130) -> "advice", SAND    (W2)
+//   UI/lib/advisor-format.ts RANK (:11) and TONE (:21-25) -> advice: 0, info tone                    (W3)
+//   UI/lib/injected.ts:198 maps an unknown severity word to 'nit' already; consultations never
+//   arrive as `<advisory>` wrappers (the row is masked), so no change                                (none)
+
+// AGENT/lib.rs — new, beside Advisory (:1471-1484)                                      (new)
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum AdvisoryKind {
+    /// The watchdog's notes (every row written before R1).
+    #[default] Review,
+    /// The answer to a `consult` call; `notes` holds exactly one `Advice` note.
+    Consultation { question: String },
+}
+
+// AGENT/lib.rs::Advisory (:1471-1484)                                                   (changed)
+pub struct Advisory {
+    pub advisor: SessionId,
+    pub step: u32,
+    pub turn: Option<i64>,
+    pub at_ms: i64,
+    pub notes: Vec<AdvisoryNote>,
+    #[serde(default, flatten)] pub kind: AdvisoryKind,   // 0034 rows have no `kind` key -> Review
+}
+
+// AGENT/lib.rs — new, beside AdvisorNoteCounts (:1526-1533)                            (new)
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+pub struct AdvisorConsultCounts {
+    /// Consults in the advised session's current user turn (its own; subagents not folded in).
+    pub turn: u32,
+    /// Consults answered for this link since it was created: the root's and its subagents'.
+    pub total: u32,
+    /// The live `advisor.max_consults` (0 = tool absent).
+    pub cap: u8,
+}
+
+// AGENT/lib.rs::AdvisorStatus (:1540-1573)                                              (changed)
+pub struct AdvisorStatus {
+    /* every field as today, then: */
+    #[serde(default)] pub consults: AdvisorConsultCounts,
+    /// D-R1.5 pairing warning, set once at attach/re-pick when the advisor's catalog output price
+    /// (`MODELS/lib.rs:34-43` `Model.cost: Option<Cost>`, `:223-234` `Cost.output`, USD per million)
+    /// is below the advised session's model's; `None` when either price is unknown or the order is fine.
+    #[serde(default)] pub warning: Option<String>,   // "advisor model prices below the session model (crude signal)"
+}
+
+// AGENT/lib.rs::AdvisorConfig (:3102-3113) + Default (:3115-3125) + defaults() (:3129-3137)   (changed)
+pub struct AdvisorConfig { /* as today, then: */ pub max_consults: u8 }      // default 6, clamped 0-32
+// AGENT/lib.rs::AdvisorDefaults (:1623-1634)                                            (changed)
+pub struct AdvisorDefaults { /* as today, then: */ #[serde(default = "six")] pub max_consults: u8 }
+// AGENT/lib.rs::SetAdvisorDefaults (:1660-1669)                                         (changed)
+pub struct SetAdvisorDefaults { /* as today, then: */ pub max_consults: Option<u8> }
+// `Info.advisor` (RPC/api.rs:172, filled :2773) carries the new field without change.
+
+// AGENT/advisor.rs — actor messages, beside Advise (:120-127)                           (new)
+/// `ask` -> Result<String, String>: a `consult` call. `Ok(answer)` is the tool result; `Err(reason)`
+/// becomes `consult: advisor unavailable (<reason>)` or, for the three fixed reasons, the fixed string.
+pub struct Consult {
+    pub asker: SessionId,
+    pub depth: u8,                 // 0 -> child path (R1.4); > 0 -> one-shot (R1.5)
+    pub question: String,
+    pub context: Option<String>,
+    pub partial: String,           // the asker's streamed assistant text this round, <= 4 KiB
+    pub n: u32,                    // the asker's per-turn count including this call
+}
+/// `ask` -> Option<ConsultSource>: the nearest ancestor link of `session` (R1.3 availability).
+pub struct ConsultSource(pub SessionId);
+#[derive(Clone, Debug)]
+pub struct ConsultSourceInfo { pub advised: SessionId, pub advisor: SessionId, pub model: String, pub effort: Option<String> }
+/// `tell`: the asker gave up (timeout / Stop); cancel the pending consultation, no card, no counters.
+pub struct CancelConsult(pub SessionId);
+pub const CONSULT_TIMEOUT: Duration = Duration::from_secs(90);                 // beside CATCH_UP_WAIT :45
+
+// AGENT/advisor/consult.rs                                                              (new)
+pub const NAME: &str = "consult";
+pub struct ConsultArgs { pub question: String, pub context: Option<String> }  // schemars; maxLength 2000 / 4000
+pub fn spec() -> ToolSpec;                                                  // R1.3 JSON; Risk::ReadOnly, direct
+pub fn parse(args: &serde_json::Value) -> Result<(String, Option<String>), String>;
+pub fn block(partial: &str, question: &str, context: Option<&str>) -> String;  // the `### Consultation` text
+pub const ONE_SHOT_SYSTEM: &str;                                            // R1.6 variant, built from system.md at compile time
+pub const ERR_OFF: &str = "consult: advisor off";
+pub fn err_cap(n: u32, cap: u8) -> String;                                  // "consult: cap reached (6/6 this turn)"
+pub fn err_unavailable(reason: &str) -> String;                             // "consult: advisor unavailable (<reason>)"
+pub const ERR_TIMEOUT: &str = "consult: timed out after 90 s";
+
+// AGENT/advisor/render.rs::UpdateOpts (:38-46)                                          (changed)
+pub struct UpdateOpts<'a> { /* as today, then: */ pub pin_first: bool }    // never elide the first row (the brief)
+
+// AGENT/lib.rs::AppendAdvisory (:1686)                                                  (changed)
+pub struct AppendAdvisory { pub advisory: Advisory, pub text: String, pub model_visible: bool }
+// AGENT/advisor.rs::DeliverAdvisory (:144-153)                                          (changed)
+pub struct DeliverAdvisory { /* as today, then: */ pub model_visible: bool }   // false only for consultations
+// AGENT/store/advisor.rs::append_advisory (:183-201)                                    (changed)
+pub async fn append_advisory(&self, session: SessionId, text: &str, meta: &Advisory, model_visible: bool) -> anyhow::Result<i64>;
+// `model_visible == false` also writes `excluded = Mask { whole: true }` (AGENT/store.rs:13-16) in the same tx.
+// AGENT/store.rs — new, beside depth (:2519-2531)                                        (new)
+pub async fn ancestors(&self, id: SessionId) -> anyhow::Result<Vec<SessionId>>;   // nearest first, <= ROOT_HOPS
+
+// RT/side_call.rs::CallKind (:19-36, as_str :38-52, FromStr :60-75)                     (changed)
+pub enum CallKind { /* as today, then: */ Consult }                          // "consult"; model_calls.kind is free text
+
+// AGENT/loop_.rs                                                                        (changed, W1)
+//   Turn.consults: u32 (depth 0) · Shared.consults: Arc<AtomicU32> (depth > 0) · Turn::consult(&args) -> ToolOutput
+//   frame::baseline / baseline_dated gain `consult: bool` beside `advised` (AGENT/frame.rs:391-399, :418-428)
+pub const CONSULT_PARAGRAPH: &str = /* R1.6 text */;                           // AGENT/frame.rs beside :106
+```
+
+**RPC** (`RPC/api.rs`, beside the six of §6.3 `:686-710`, impl `:3950-4023`):
+
+| method | args | returns | engine ask | |
+|---|---|---|---|---|
+| `set_advisor_max_consults` | `n: u8` (0-32) | `AdvisorDefaults` | `SetAdvisorDefaults { max_consults: Some(n), .. }` | (new) |
+| `advisor_status` | unchanged | `AdvisorStatus` now with `consults` | unchanged | (changed) |
+
+**TS bindings** (`just ts-desktop`; `RPC/export.rs:48-57` gains `agent::AdvisoryKind`,
+`agent::AdvisorConsultCounts`; `CallKind` is exported from `RT/side_call.rs:17` already): `AdvisorSeverity.ts`
+becomes `"advice" | "nit" | "concern" | "blocker"`; `Advisory.ts` gains `kind: "review" | { kind:
+"consultation", question: string }` (the flattened tag renders as a union — W3 narrows with a type
+guard `isConsultation(a)` in `UI/lib/advisor-format.ts`); `AdvisorStatus.ts` gains `consults`;
+`AdvisorDefaults.ts` gains `max_consults`; `UI/rpc/api.ts` gains `set_advisor_max_consults` in `Api`
+(`:827-835` block) and in sorted `METHODS` (`:1222-1226` block); `bindings/methods.json` gains the one
+name. `UI/store/sessions.ts:150`'s `Entry` variant `{ kind: "advisory"; notes; seq? }` gains
+`question?: string` (set from `h.advisory.kind` in `historyEntries`, `UI/store/reduce.ts:463-464`, and from
+`e.advisory` in the `AdvisoryAdded` arm, `:668-669`).
+
+**Config** (`advisor:` section, §6.5): `advisor.max_consults` · `u8` 0-32 · default `6` · live · written by
+`set_advisor_max_consults` through `write_advisor_key` (`AGENT/supervisor/advisor.rs:62-67`); the
+`SetAdvisorDefaults` handler (`:244-290`) validates the range like `max_notes_per_update` (`:252-256`)
+and `tell`s `SetDefaults` (`:283-287`) so the actor's `cfg.max_consults` is live for the next spec
+assembly. `DEFAULT_CONFIG`'s commented `advisor:` block gains the key.
+
+### R1.8 Changes by place
+
+| File | Change | Wave |
+|---|---|---|
+| `AGENT/lib.rs` | `AdvisorSeverity::Advice` (first), `AdvisoryKind`, `Advisory.kind`, `AdvisorConsultCounts`, `AdvisorStatus.consults`, `AdvisorConfig/AdvisorDefaults/SetAdvisorDefaults.max_consults`, `AppendAdvisory.model_visible`, `channel_line` Advice arm | C |
+| `RT/side_call.rs` | `CallKind::Consult` + string forms + the round-trip test list (`:134-146`) | C |
+| `AGENT/advisor.rs` | message structs `Consult`, `ConsultSource`, `ConsultSourceInfo`, `CancelConsult`, `CONSULT_TIMEOUT`, `DeliverAdvisory.model_visible` — structs only, handlers stubbed `Err("consult: not built")` | C |
+| `AGENT/advisor/consult.rs` | new: `NAME`, `ConsultArgs`, `spec()`, `parse()`, `block()`, `ONE_SHOT_SYSTEM`, error strings (constants + unit tests) | C |
+| `AGENT/store/advisor.rs`, `AGENT/store.rs` | `append_advisory(.., model_visible)` + the mask write; `Store::ancestors` | C |
+| `RPC/api.rs`, `RPC/export.rs`, bindings, `UI/rpc/api.ts` | `set_advisor_max_consults`; two `export!` lines; regenerated bindings; `Api` + `METHODS` | C |
+| `crates/theuth/src/main.rs` | `DEFAULT_CONFIG` `advisor:` block gains `max_consults` | C |
+| `AGENT/advisor.rs` | handlers: `Consult` (gate, flush+block, park, one-shot), `ConsultSource`, `CancelConsult`; `Link.consult`, `Link.consults_turn/total`, `Review.consult`; `finish_review` consult arms; `status()` fills `consults`; `AgentEvent` cancelled arm clears the consult | W1 |
+| `AGENT/advisor/render.rs` | `UpdateOpts.pin_first`; the `### Consultation` block appended after `---` | W1 |
+| `AGENT/advisor/system.md`, `AGENT/advisor/identity.rs` | `<consultation>` section; `identity()` unchanged in signature | W1 |
+| `AGENT/advisor/guard.rs`, `AGENT/advisor/advise.rs` | `rank(Advice) = 0`; `parse` refuses `advice`; `severity_str` | W1 |
+| `AGENT/loop_.rs` | `consult` spec push (`:4193-4205`), `local` closure + dispatch arm (`:5857-5862`, `:5927-5928`), `Turn::consult`, `Turn.consults`, `Shared.consults`, `ConsultSource` ask in `rebase` for `depth > 0`, `CONSULT_PARAGRAPH` wiring (`:4146-4156`), `AppendAdvisory` masked path (`:1990-2004`, `:1089`) | W1 |
+| `AGENT/frame.rs` | `CONSULT_PARAGRAPH` (beside `:106`), `baseline`/`baseline_dated` `consult: bool` (`:391-399`, `:418-428`, slot `:475`), frame test beside `:1067` | W1 |
+| `AGENT/supervisor/advisor.rs` | `SetAdvisorDefaults` range check + key write for `max_consults` (`:244-290`); `DeliverAdvisory` passes `model_visible` (`:322-361`); pairing warning computed in `advisor_on` from `resolved.model.cost` and the advised session's model (`:88`, `:157`) into `AdvisorStatus.detail`-style `warning: Option<String>` | W1 |
+| `AGENT/supervisor.rs` | `impl Message<SideCall>` reuse — no change expected; `Agents::session` unchanged | W1 (verify) |
+| `TUI/model.rs` | `advisor_status_lines` fifth line (`:1206-1249`); `/advisor consults <n>` arm in `advisor_cmd` (`:7483-7519`) and the `COMMANDS` row text (`:1499-1503`); `Entry::Advisory` consultation title `◎ consulted: <question>` in `advisory_title` (`:1167-1173`) and `advisory_lines` (`:1177-1182`); `severity_name` (`:1149`); pairing-warning info line after `advisor_changed_line` (`:1186-1191`) | W2 |
+| `TUI/ui.rs` | `Entry::Advisory` arm renders the consultation variant: title, answer rows collapsed to `ADVISORY_COLLAPSED` lines, Ctrl+O expands (`:2083-2116`); `severity_color(Advice) = SAND` (`:2130`) | W2 |
+| `UI/lib/advisor-format.ts` | `RANK`/`TONE` advice entries (`:11`, `:21-25`); `cardTitle` consultation form; `isConsultation`; `consultsLine` (`N/6`) | W3 |
+| `UI/components/chat/AdvisorNoteCard.tsx` | consultation variant: question as the summary line, answer in the body, `Consulted` badge (`:22-48`) | W3 |
+| `UI/components/chat/AdvisorPill.tsx` | popover row `Consults` (`:77-82` block); pairing-warning note under `Model` | W3 |
+| `UI/components/settings/Advisor.tsx` | row `Consults per turn` — `Select` Off · 2 · 6 · 12 → `set_advisor_max_consults` (`:26-47` idiom) | W3 |
+| `UI/store/reduce.ts`, `UI/store/sessions.ts` | `question?` on the `advisory` entry (`reduce.ts:463-464`, `:668-669`; `sessions.ts:150`) | W3 |
+| `UI/store/advisor.test.ts`, `UI/lib/advisor-format.test.ts`, `UI/components/chat/AdvisorNoteCard.test.ts`, `UI/components/settings/Advisor.test.ts` | the R1.9 cases | W3 |
+| `crates/slack`, `crates/telegram`, `crates/signal` | nothing: `channel_line` returns `None` for `Advice` (`AGENT/lib.rs:1491-1500`; arms `crates/slack/src/channel.rs:2676-2677`, `crates/telegram/src/worker.rs:555-556`, `crates/signal/src/channel.rs:1791-1794`) | closer (verify only) |
+| `docs/design/125-as-built-R1.md` | the as-built note | closer |
+
+### R1.9 Tests and gates
+
+Crate-level only, under the shared build protocol of §11 (`build-lock`, `CARGO_BUILD_JOBS=4`, own
+`CARGO_TARGET_DIR`); the closer alone runs workspace-class gates with `BUILD_SLOTS=1`.
+
+**C** — `AGENT/lib.rs` serde tests: an `Advisory` JSON without `kind` parses as `Review`; a
+`Consultation` round-trips with its `question`; `AdvisorStatus` JSON without `consults`/`warning`
+parses; `AdvisorSeverity` orders `Advice < Nit < Concern < Blocker`; `channel_line` of an `Advice`
+card is `None`. `AGENT/store/advisor.rs`: `append_advisory(.., false)` writes `excluded = {"whole":true}`
+and the row is absent from `context_history` but present in `rows_since`; `ancestors` returns nearest
+first and stops at `ROOT_HOPS`. `RT/side_call.rs`: `CallKind::Consult` round-trips (`:134-146`).
+`AGENT/advisor/consult.rs`: `parse` bounds, `block` shape, error strings. `crates/rpc`: `export_bindings`
+emits `AdvisoryKind`, `AdvisorConsultCounts`, the widened `AdvisorSeverity`, and `methods.json` gains
+`set_advisor_max_consults`.
+```
+BUILD_LABEL=125R1-C /Users/Sky.Moore/.theuth/bin/build-lock cargo test -p runtime side_call
+BUILD_LABEL=125R1-C /Users/Sky.Moore/.theuth/bin/build-lock cargo test -p agent --lib store:: advisor::consult
+BUILD_LABEL=125R1-C /Users/Sky.Moore/.theuth/bin/build-lock cargo test -p rpc
+BUILD_LABEL=125R1-C BUILD_SLOTS=1 /Users/Sky.Moore/.theuth/bin/build-lock just ts-desktop
+```
+
+**W1** — `AGENT/advisor/tests.rs` + `AGENT/loop_/advisor_tests.rs` (fake provider and `Sink` as §11
+W1), pinning: (1) `consult` is in the spec list only for a Chat session with the flag set, or a
+`depth > 0` session whose chain has a link, and never for `kind == Advisor` or `max_consults == 0`;
+(2) a consult with an idle child sends one `AdvisorInput` whose text ends with the `### Consultation`
+block and whose heading counts the flushed steps; (3) with a review in flight the consult is parked
+and sent after `TurnFinished`, and the review's held nits still land as a card; (4) the advisor's text
+comes back as the tool result, clipped to 12 lines; an empty text is `no objection`; (5) the card is
+written with `kind: Consultation`, one `Advice` note, `excluded.whole = true`, and `AdvoryAdded`
+fires once; the next review update renders the asker's `consult` tool line and never the masked row;
+(6) the cap: the seventh call in a turn returns the cap string without an actor call and the eighth
+likewise; a new user turn resets; a `depth > 0` session never resets; (7) `paused`/`halted` link →
+unavailable string at once; link removed mid-turn → `advisor off`; (8) timeout → the timeout string,
+`Cancel` sent to the child, no card, no counter change; the asker's Stop does the same; (9) a
+consultation whose text matches an override pattern not in the update is quarantined: error string, no
+card, `quarantines += 1`; (10) `advise(severity: "advice")` is refused; a `blocker` raised during a
+consultation is steered **and** the answer returns; (11) `depth > 0`: `ConsultSource` resolves through
+two parent hops and `None` without a link; the one-shot is a `SideCall` with `CallKind::Consult`,
+`ModelRole::Named(<link model>)`, a user message that starts with the preface and keeps the first row
+under a 48 KiB cap; its `model_calls` row is owned by the subagent; a 429 pauses the link, any other
+error does not; `consults.total` on the root link counts it; (12) `AdvisorStatus.consults` and
+`warning` are filled; the warning is set only when both catalog prices are known and the advisor's
+output price is lower; (13) `CONSULT_PARAGRAPH` is in the baseline exactly when `consult` is in the
+specs, after `ADVISORY_PARAGRAPH` and before `## Guidance` (the `AGENT/frame.rs:1067-1074` pattern);
+(14) `tests/no_emoji.rs` of `crates/tui` passes over the new agent strings (it scans `agent` and `rpc`
+too, §7.4).
+```
+BUILD_LABEL=125R1-W1 /Users/Sky.Moore/.theuth/bin/build-lock cargo test -p agent --lib advisor:: loop_::advisor_tests
+BUILD_LABEL=125R1-W1 /Users/Sky.Moore/.theuth/bin/build-lock cargo test -p agent
+BUILD_LABEL=125R1-W1 /Users/Sky.Moore/.theuth/bin/build-lock cargo clippy -p agent --all-targets -- -D warnings
+```
+
+**W2** — `TUI/model.rs` tests beside `:18503`: `advisor_status_prints_five_lines`,
+`advisor_cmd_consults_sets_cap_and_rejects_out_of_range`, `consultation_card_titles_with_question`,
+`consultation_card_collapses_answer_lines`, `advice_severity_is_sand_and_never_promotes`,
+`pairing_warning_prints_once_per_link`; `TUI/ui.rs`: the consultation card is tight at any width (the
+`:2425` pattern); `tests/no_emoji.rs` unchanged and green.
+```
+BUILD_LABEL=125R1-W2 /Users/Sky.Moore/.theuth/bin/build-lock cargo test -p tui
+BUILD_LABEL=125R1-W2 /Users/Sky.Moore/.theuth/bin/build-lock cargo clippy -p tui --all-targets -- -D warnings
+```
+
+**W3** — vitest: `store/advisor.test.ts` (an `AdvisoryAdded` with `kind: consultation` yields one entry
+with `question`; idempotent on `seq`; the masked row arrives through history as `advisory` with
+`question`), `lib/advisor-format.test.ts` (`worstSeverity` never returns `advice` for a mixed card;
+`TONE.advice`; `cardTitle` consultation form; `consultsLine`), `components/chat/AdvisorNoteCard.test.ts`
+(question as summary, `Consulted` badge, answer body), `components/settings/Advisor.test.ts` (`Consults
+per turn` options map to 0/2/6/12 and call `set_advisor_max_consults`), `rpc/api.test.ts` green against
+the regenerated `methods.json`.
+```
+cd crates/desktop/ui && BUILD_LABEL=125R1-W3 /Users/Sky.Moore/.theuth/bin/build-lock bun run check
+cd crates/desktop/ui && BUILD_LABEL=125R1-W3 /Users/Sky.Moore/.theuth/bin/build-lock bunx vitest run src/store src/lib src/components/chat src/components/settings src/rpc
+```
+
+**Closer** — gates as §11's closer block (workspace check, `just ts-desktop`, `cargo test -p agent -p
+rpc -p tui`, `bun run test`; the three channel crates compile unchanged) **plus a scratch-engine smoke
+that forces a live consult**, on a fresh `--data-dir` with a cheap model as the session model and a
+different model as the advisor:
+
+1. `set_advisor(session, <advisor>, null)` → `advisor_status.consults == { turn: 0, total: 0, cap: 6 }`.
+2. Prompt: *"Before you do anything else, consult the advisor about whether to read `justfile` or
+   `README.md` first; then read the one it names and stop."*
+3. Assert, over RPC and sqlite (`sessions.sqlite` of the scratch dir, `sqlite3 -readonly`):
+   - events: one `ToolCallStarted`/`ToolCallFinished` pair with `name = "consult"` and a non-error output
+     that is not one of the error strings; one `AdvisoryAdded` whose `advisory.kind == "consultation"`
+     and whose single note has `severity == "advice"`; `AdvisorChanged` with `consults.turn == 1`,
+     `consults.total == 1`;
+   - `advisor_status(session).consults == { turn: 1, total: 1, cap: 6 }` after the turn, and
+     `{ turn: 0, total: 1, .. }` after a second, consult-free prompt;
+   - `SELECT seq, json_extract(advisory,'$.kind'), json_extract(excluded,'$.whole') FROM messages WHERE
+     session_id = <session> AND advisory IS NOT NULL` → one row, `consultation`, `1`;
+   - `SELECT body FROM messages WHERE session_id = <advisor id> ORDER BY seq` → the last user row contains
+     `### Consultation` and the question; the following assistant row's text equals the tool result;
+   - `SELECT kind, owner_id, status FROM model_calls WHERE owner_id = <advisor id> ORDER BY created_at` →
+     the consultation turn's `round` row(s) `settled`; `session_cost(session).descendants` grew;
+   - the desktop transcript shows the `Consulted` card with the question; `/advisor status` in the TUI
+     prints the fifth line `consults: 0 this turn · 1 total · cap 6`; the Slack-bound variant of the
+     session posts nothing for it.
+4. Subagent leg: prompt the root to `spawn_subagent` a native child told to *"consult the advisor
+   before answering: is 2 + 2 = 4?"*; assert one `model_calls` row with `kind = 'consult'` owned by the
+   child, `requested_model` = the advisor's id; one `AdvisoryAdded { session: child }` with
+   `kind == "consultation"`; the root's `advisor_status.consults.total` is 2 and `.turn` unchanged;
+   `list_sessions` shows no new advisor session.
+5. Cap leg: `set_advisor_max_consults(1)`, prompt *"consult the advisor twice, with two different
+   questions, then stop"* → one `consult` output is an answer, the other is
+   `consult: cap reached (1/1 this turn)`; `set_advisor_max_consults(0)` → the next turn's
+   `ToolCallStarted` set has no `consult` and the prompt's instruction yields a text explanation.
+6. Off leg: `set_advisor(session, null, null)` mid-prompt → `consult: advisor off`.
+
+### R1.10 Waves and seams
+
+```
+C (contract, ~3 h) ──► W1 engine (~10 h)  ─────────────┐
+                   ──► W2 TUI (~3 h) ───────────────────┼──► closer (~4 h: integration · smoke · as-built)
+                   ──► W3 desktop/mobile (~4 h) ────────┘
+```
+
+| Wave | Owns (files) | Starts when | Done when |
+|---|---|---|---|
+| C | `AGENT/lib.rs` (types), `RT/side_call.rs`, `AGENT/advisor.rs` **message structs and stubs only** (`:83-153` block), `AGENT/advisor/consult.rs`, `AGENT/store/advisor.rs`, `AGENT/store.rs` (`ancestors`), `RPC/api.rs`, `RPC/export.rs`, bindings, `UI/rpc/api.ts`, `crates/theuth/src/main.rs` | now | §R1.9 C gates green; one commit; R1.7 frozen |
+| W1 | `AGENT/advisor.rs` (handlers, from C's commit on), `AGENT/advisor/{render,guard,advise,identity}.rs`, `AGENT/advisor/system.md`, `AGENT/loop_.rs`, `AGENT/frame.rs`, `AGENT/supervisor/advisor.rs`, `AGENT/supervisor.rs` (if needed), tests | C on the integration branch | R1.9 W1 (1)-(14); `cargo test -p agent` green |
+| W2 | `TUI/src/{model.rs, ui.rs}` | C | R1.9 W2; `no_emoji` green |
+| W3 | `UI/**` except `rpc/api.ts` and `rpc/bindings/**` | C | R1.9 W3; `bun run check` green |
+| closer | `docs/design/125-as-built-R1.md`, fixes anywhere after W1-W3 merge, the smoke | all three merged | R1.9 closer gates + smoke legs 1-6 |
+
+**The one file two waves touch**: `AGENT/advisor.rs`. C inserts the new message structs after
+`DeliverAdvisory` (`:144-153`, insert at `:154`) and the stub `impl Message<Consult | ConsultSource |
+CancelConsult> for Advisors` blocks after `impl Message<Retry>` (`:1039-1063`, insert at `:1064`),
+plus `CONSULT_TIMEOUT` after `CATCH_UP_WAIT` (`:45`, insert at `:46`); W1 owns the file from C's commit
+onward and replaces the stub bodies in place. No other file is shared: W2 and W3 construct their own
+`Advisory { kind: Consultation { .. } }` / `AdvisorStatus { consults, warning }` fixtures and never rely
+on a stub's reply. `UI/lib/advisor-format.ts` `RANK`/`TONE` are `Record<AdvisorSeverity, ..>` — W3 must
+land the `advice` keys in the same commit that picks up C's regenerated `AdvisorSeverity.ts`, else
+`tsc` fails; C's `just ts-desktop` run makes that the first thing W3 sees.
+
+Section ownership: R1.3-R1.6 W1 · R1.2 TUI column W2 · R1.2 desktop column W3 · R1.7 C · R1.9 closer.
+
+### R1.11 Open questions
+
+| # | Question | Default |
+|---|---|---|
+| 1 | **Inconsistency — "Revision history" line.** The brief says to extend the document's existing *Revision history* line; the document had none (its status paragraph at `docs/design/125-advisor.md:3-15` carries the dates). This revision adds a `## Revision history` section at the end instead. | the new section; the status paragraph is left as written |
+| 2 | **Inconsistency — brief cites vs the tree.** The brief lists `AGENT/advisor.rs` handlers at `:765-1065` and `AGENT/supervisor/advisor.rs` handlers at `:208-325`; the tree has `AGENT/advisor.rs` `impl Message<…>` blocks at `AGENT/advisor.rs:765`, `:836`, `:869`, `:896`, `:914`, `:958`, `:1039`, `:1065` (the last runs to `:1187`) and `AGENT/supervisor/advisor.rs:205`, `:220`, `:244`, `:292`, `:306`, `:322` (to `:362`); `advisor_step` is at `AGENT/loop_.rs:3255-3272` (brief `:3250-3273`); the loop-local `advise` at `:3276-3295`; the spec push at `:4201-4205`. Cited as read. | none needed |
+| 3 | **Inconsistency — "store the answer as that advisory's single note" vs the model seeing it twice.** The brief's preferred shape (an `Advisory` row = a user row the model reads, §5.4) would put the answer into context a second time after the tool result. Resolved here by masking the row (`excluded.whole`, D-R1.6), which is a store-shape change the brief did not name. | masked row |
+| 4 | **Inconsistency — `AdvisorStatus.notes` vs a sibling struct.** The brief offers both; `notes` is summed by `noteCount()` (`UI/lib/advisor-format.ts:52`) and printed as "N notes", so folding consults into it would mislabel them. | sibling `consults` (R1.7) |
+| 5 | **Inconsistency — four error strings vs the fifth and sixth cases.** The brief fixes four results; argument-bound violations and "consultation in progress" have no string. Two more are specified (R1.3) rather than overloading `advisor unavailable`. | as R1.3 |
+| 6 | **Effort on the one-shot.** `SideCall` (`RT/side_call.rs:99-112`) carries a model role but no effort, so a subagent's consult runs at the provider's default effort while the root's runs at the advisor's picked effort — a visible asymmetry under ruling 2. Add `effort: Option<ReasoningEffort>` to `SideCall` (changes every consumer: title, escalate, dreaming) or accept it. | accept in R1; name it in the as-built |
+| 7 | **The advisor's view of its own consultation.** After a consultation the child's next review delta contains the asker's `consult` tool line with the answer the child itself wrote. Harmless (it recognises it), but it costs tokens every time. Elide `consult` results in `render_update` for the child's own answers? | render as any tool line in R1 |
+| 8 | **Per-turn semantics when the asker is a desk or a routine.** A desk serving wakes has long "turns"; a routine run is one turn. D-R1.1's unit is right for chats; for desks it may be too tight or too loose. No key in R1 (ruling 2 of §2 still excludes desks and routines from advisors). | none |
+| 9 | **`/advisor ask <question>` (the user asking the advisor).** Cheap on top of R1.4 (the same `Consult` with an `asker = user` origin and the answer as an `Entry::Info`/card, ~1 h W1 + ~1 h W2/W3), but it makes the advisor a chat partner, which §2 ruling 1 avoided. | later, if Sky asks |
+| 10 | **Pairing signal.** Catalog output price is the only ranking theuth has (`MODELS/lib.rs:223-234`); local or free models have `cost: None` and never warn; two models of one family at the same price never warn either. Keep, replace with an explicit `advisor.pairing_warn: bool`, or drop? | keep, labelled crude |
+| 11 | **Consult while the advisor is `reviewing` a long update.** The parked consult waits for the review turn (R1.4 step 3), so a slow advisor can burn most of the 90 s before the consultation is even sent. Cancel the in-flight review instead (losing its notes) when a consult arrives? | wait; the timeout string tells the asker what happened |
+| 12 | **Measuring whether it helps.** Nothing here measures outcomes; `consults.total` and the `model_calls` rows give the rate and the cost. A follow-up could join `kind = 'consult'` and the child's consultation turns against task completion in the as-built note after two or three real waves [R §6]. | measure by hand first |
+
+## Revision history
+
+- Design (2026-10-07): the push watchdog — hidden `advisor` session kind, `advise`, steers and asides, TUI and desktop surfaces, channels (§1-§13). Landed as merge `1098ae72`.
+- Revision 1 (2026-10-08): CONSULT — a pull-style `consult` tool for the main model and native subagents, carried by the session's advisor (main session through the advisor child, subagents by a stateless one-shot `SideCall`), Anthropic-style cadence paragraph + `advisor.max_consults` cap (default 6 per user turn), consultations stored as masked `Advisory { kind: Consultation }` rows with the new `Advice` severity, counts in `AdvisorStatus.consults`, pairing warning, silent channels (R1.0-R1.11).
