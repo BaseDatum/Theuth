@@ -79,7 +79,8 @@ function HostWindowOf([string] $exePath) {
     Native
     $h = [IntPtr]::Zero
     while ($true) {
-        $h = [W6Native]::FindWindowExW([IntPtr]::Zero, $h, 'TheuthCompanionRail', $null)
+        # PowerShell turns $null into "" for .NET string parameters; a real null (any title) needs [NullString]::Value.
+        $h = [W6Native]::FindWindowExW([IntPtr]::Zero, $h, 'TheuthCompanionRail', [NullString]::Value)
         if ($h -eq [IntPtr]::Zero) { return $null }
         $wpid = [uint32]0
         [void][W6Native]::GetWindowThreadProcessId($h, [ref]$wpid)
