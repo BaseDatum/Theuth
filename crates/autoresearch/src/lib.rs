@@ -72,11 +72,8 @@ pub fn drafts_dir(root: &Path, slug: &str) -> PathBuf {
 }
 
 /// Write `skills/autoresearch.md` when the bundled text differs (binary-owned,
-/// like dreaming's). An empty bundle (the skeleton) writes nothing.
+/// like dreaming's `loops.md`; `first_run` does not know this skill — R-120).
 pub fn install_skill(data_dir: &Path) -> std::io::Result<bool> {
-    if SKILL.trim().is_empty() {
-        return Ok(false);
-    }
     let path = data_dir.join(SKILL_PATH);
     if std::fs::read_to_string(&path).ok().as_deref() == Some(SKILL) {
         return Ok(false);
@@ -86,6 +83,33 @@ pub fn install_skill(data_dir: &Path) -> std::io::Result<bool> {
     }
     std::fs::write(&path, SKILL)?;
     Ok(true)
+}
+
+/// `enabled: false` (140 §12.2 "existing study files stay paused", R-6): flip
+/// `enabled: false` on every `schedules/autoresearch-*.md` so the schedule plugin
+/// does not fire sessions nobody binds. Returns the files flipped.
+pub fn disable_study_files(data_dir: &Path) -> std::io::Result<Vec<String>> {
+    let dir = data_dir.join(schedule::DIR);
+    let mut flipped = Vec::new();
+    let Ok(entries) = std::fs::read_dir(&dir) else {
+        return Ok(flipped);
+    };
+    for e in entries.flatten() {
+        let path = e.path();
+        let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else {
+            continue;
+        };
+        if !stem.starts_with(SCHEDULE_PREFIX) || path.extension().is_none_or(|x| x != "md") {
+            continue;
+        }
+        let text = std::fs::read_to_string(&path)?;
+        let off = schedule::file::set_enabled(&text, false);
+        if off != text {
+            schedule::file::write_atomic(&dir, stem, &off)?;
+            flipped.push(stem.to_owned());
+        }
+    }
+    Ok(flipped)
 }
 
 /// The `Studies` actor (140 §12.3): one per engine, registered as
@@ -132,18 +156,15 @@ delegate! {
     Create => StudyInfo, create;
     StartDraft => StudyInfo, start_draft;
     Notes => NotesReport, notes;
-    Control => StudyInfo, control;
     SteerMsg => SteerId, steer;
     IdeaOp => Idea, idea;
-    Status => Vec<StudyInfo>, status;
-    Detail => StudyDetail, detail;
-    Experiments => Vec<ExperimentRow>, experiments;
-    Experiment => ExperimentDetail, experiment;
 }
 
-/// Begin / Run / Log measure for minutes: they run off the mailbox on an
-/// [`actor::Env`] and reply through `DelegatedReply`, so Status, Control and
-/// a `StopNow` cancel keep flowing (the asker still sees `Result<T, String>`).
+/// Begin / Run / Log measure for minutes; Control waits for a cancelled run and asks
+/// the agent and schedule actors; Status / Detail / Experiment ask the agent actor for
+/// the spend or read git. They all run off the mailbox on an [`actor::Env`] and reply
+/// through `DelegatedReply` (plugins.md §3.2; R-115), so a `StopNow` cancel and every
+/// read keep flowing while a benchmark runs (the asker still sees `Result<T, String>`).
 macro_rules! delegate_off_mailbox {
     ($($msg:ty => $reply:ty, $f:ident;)*) => {$(
         impl Message<$msg> for Studies {
@@ -168,6 +189,11 @@ delegate_off_mailbox! {
     Begin => Brief, begin_env;
     Run => RunReport, run_env;
     Log => LogReport, log_env;
+    Control => StudyInfo, control_env;
+    Status => Vec<StudyInfo>, status_env;
+    Detail => StudyDetail, detail_env;
+    Experiments => Vec<ExperimentRow>, experiments_env;
+    Experiment => ExperimentDetail, experiment_env;
 }
 
 impl Message<Settings> for Studies {
@@ -182,6 +208,8 @@ impl Message<SetSettings> for Studies {
     type Reply = std::result::Result<AutoresearchConfig, String>;
 
     /// Persist the whole section and apply it live (`autoresearch.settings.set`).
+    /// `root` is fixed for the process (R-101): the store is open on it and the
+    /// cancel / phase maps are keyed by it.
     async fn handle(
         &mut self,
         SetSettings(cfg): SetSettings,
@@ -193,9 +221,14 @@ impl Message<SetSettings> for Studies {
         if cfg.max_parallel == 0 {
             return Err("max_parallel must be at least 1".into());
         }
+        if cfg.root(&self.data_dir) != self.root {
+            return Err(format!(
+                "root cannot change while the engine runs (the ledger is open at {}); it takes effect at restart",
+                self.root.display()
+            ));
+        }
         config::persist(&self.data_dir.join("config.yaml"), &cfg)
             .map_err(|e| format!("config.yaml: {e}"))?;
-        self.root = cfg.root(&self.data_dir);
         self.cfg = cfg;
         Ok(self.cfg.clone())
     }
@@ -262,9 +295,16 @@ impl runtime::Plugin for AutoresearchPlugin {
             AutoresearchConfig::default()
         });
         if !cfg.enabled {
-            tracing::info!(
-                "autoresearch disabled by config; no tools, no actor, study files stay as they are"
-            );
+            match disable_study_files(&rt.data_dir) {
+                Ok(flipped) if flipped.is_empty() => {
+                    tracing::info!("autoresearch disabled by config; no tools, no actor")
+                }
+                Ok(flipped) => tracing::info!(
+                    "autoresearch disabled by config; study schedules paused: {}",
+                    flipped.join(", ")
+                ),
+                Err(e) => tracing::warn!("autoresearch disabled; study schedules not paused: {e}"),
+            }
             return Ok(());
         }
         match install_skill(&rt.data_dir) {
@@ -273,8 +313,12 @@ impl runtime::Plugin for AutoresearchPlugin {
             Err(e) => tracing::warn!("autoresearch: {SKILL_PATH} not written: {e}"),
         }
         let agent = config::AgentDefaults::from_runtime(rt);
+        // R-117: without the actor the tools would only answer "not running"; register nothing.
         if let Err(e) = start(rt, cfg.clone(), agent.clone()).await {
-            tracing::warn!("autoresearch actor not started: {e:#}");
+            tracing::warn!(
+                "autoresearch actor not started; tools and prompt block not registered: {e:#}"
+            );
+            return Ok(());
         }
         let rt_tools = rt.clone();
         tokio::spawn(async move {
@@ -327,5 +371,56 @@ mod tests {
         assert!(dir.path().join("config.yaml").exists());
         assert_eq!(actor.ask(Settings).await.unwrap().keep_finished_days, 3);
         assert_eq!(rpc_impl::settings().await.unwrap().keep_finished_days, 3);
+    }
+
+    /// R-101: `root` cannot move under an open ledger.
+    #[tokio::test]
+    async fn settings_refuse_a_root_change_at_runtime() {
+        let dir = tempfile::tempdir().unwrap();
+        let rt = Runtime::new(figment::Figment::new(), dir.path().to_path_buf());
+        let actor = start(&rt, AutoresearchConfig::default(), Default::default())
+            .await
+            .unwrap();
+        let mut cfg = actor.ask(Settings).await.unwrap();
+        cfg.root = Some(dir.path().join("elsewhere").display().to_string());
+        let e = actor.ask(SetSettings(cfg)).await.unwrap_err().to_string();
+        assert!(e.contains("takes effect at restart"), "{e}");
+        assert_eq!(actor.ask(Settings).await.unwrap().root, None);
+    }
+
+    /// R-6: `enabled: false` leaves every study schedule paused, nothing else touched.
+    #[test]
+    fn disabled_plugin_pauses_study_schedule_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let sched = dir.path().join(schedule::DIR);
+        std::fs::create_dir_all(&sched).unwrap();
+        let study = "---\nevery: 0s\nmax_runs: 20\nenabled: true\n---\nRun the next experiment.\n";
+        std::fs::write(sched.join("autoresearch-sort.md"), study).unwrap();
+        std::fs::write(
+            sched.join("autoresearch-off.md"),
+            study.replace("enabled: true", "enabled: false"),
+        )
+        .unwrap();
+        std::fs::write(
+            sched.join("standup.md"),
+            "---\nat: 09:00\nenabled: true\n---\nStand up.\n",
+        )
+        .unwrap();
+        let flipped = disable_study_files(dir.path()).unwrap();
+        assert_eq!(flipped, vec!["autoresearch-sort".to_owned()]);
+        let sort = std::fs::read_to_string(sched.join("autoresearch-sort.md")).unwrap();
+        assert!(
+            sort.contains("enabled: false") && sort.contains("Run the next experiment."),
+            "{sort}"
+        );
+        assert!(
+            std::fs::read_to_string(sched.join("standup.md"))
+                .unwrap()
+                .contains("enabled: true")
+        );
+        assert!(
+            disable_study_files(dir.path()).unwrap().is_empty(),
+            "idempotent"
+        );
     }
 }

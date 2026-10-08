@@ -139,6 +139,113 @@ impl StudyRecord {
     }
 }
 
+/// Column-scoped study update (R-4): off-mailbox handlers patch the fields
+/// they own instead of writing back a whole row loaded minutes earlier.
+/// `None` = leave the column alone; the `Option<Option<_>>` columns can be
+/// set to NULL with `Some(None)`.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct StudyPatch {
+    /// Lifecycle (with its reason).
+    pub state: Option<StudyState>,
+    /// Resolved base.
+    pub base_sha: Option<String>,
+    /// `autoresearch/<slug>`.
+    pub branch: Option<String>,
+    /// The study worktree.
+    pub worktree: Option<String>,
+    /// The bound session.
+    pub session: Option<Option<runtime::SessionId>>,
+    /// Current incumbent.
+    pub incumbent_sha: Option<String>,
+    /// Its mean.
+    pub incumbent_mean: Option<Option<f64>>,
+    /// Segment σ.
+    pub sigma: Option<Option<f64>>,
+    /// Current segment.
+    pub segment: Option<u32>,
+    /// The playbook.
+    pub playbook: Option<String>,
+    /// RFC 3339.
+    pub started_at: Option<String>,
+    /// Time paused.
+    pub paused_ms: Option<u64>,
+    /// RFC 3339.
+    pub finished_at: Option<String>,
+    /// Why it stopped.
+    pub stop_reason: Option<StopReason>,
+    /// Report document id.
+    pub report_doc: Option<String>,
+}
+
+impl StudyPatch {
+    /// Only the state.
+    pub fn state(state: StudyState) -> Self {
+        Self {
+            state: Some(state),
+            ..Self::default()
+        }
+    }
+
+    /// Incumbent sha + mean (+ σ): the keep / revert / re-measure write.
+    pub fn incumbent(sha: &str, mean: Option<f64>, sigma: Option<f64>) -> Self {
+        Self {
+            incumbent_sha: Some(sha.to_owned()),
+            incumbent_mean: Some(mean),
+            sigma: Some(sigma),
+            ..Self::default()
+        }
+    }
+
+    /// Apply the patch to an in-memory record (keeps a handler's copy in step with the row).
+    pub fn apply_to(&self, s: &mut StudyRecord) {
+        if let Some(v) = &self.state {
+            s.state = v.clone();
+        }
+        if let Some(v) = &self.base_sha {
+            s.base_sha = Some(v.clone());
+        }
+        if let Some(v) = &self.branch {
+            s.branch = Some(v.clone());
+        }
+        if let Some(v) = &self.worktree {
+            s.worktree = Some(v.clone());
+        }
+        if let Some(v) = self.session {
+            s.session = v;
+        }
+        if let Some(v) = &self.incumbent_sha {
+            s.incumbent_sha = Some(v.clone());
+        }
+        if let Some(v) = self.incumbent_mean {
+            s.incumbent_mean = v;
+        }
+        if let Some(v) = self.sigma {
+            s.sigma = v;
+        }
+        if let Some(v) = self.segment {
+            s.segment = v;
+        }
+        if let Some(v) = &self.playbook {
+            s.playbook = v.clone();
+        }
+        if let Some(v) = &self.started_at {
+            s.started_at = Some(v.clone());
+        }
+        if let Some(v) = self.paused_ms {
+            s.paused_ms = v;
+        }
+        if let Some(v) = &self.finished_at {
+            s.finished_at = Some(v.clone());
+        }
+        if let Some(v) = &self.stop_reason {
+            s.stop_reason = Some(v.clone());
+        }
+        if let Some(v) = &self.report_doc {
+            s.report_doc = Some(v.clone());
+        }
+    }
+}
+
 #[derive(FromRow)]
 struct StudyRaw {
     slug: String,
@@ -592,6 +699,123 @@ const EXPERIMENT_COLS: &str = "slug, n, wave, slot, segment, parent_sha, state, 
 
 const SAMPLE_COLS: &str = "n, k, tree_sha, role, value, secondaries, cases, asi, exit, wall_ms, load, noisy, lost, log_path, at";
 
+type Q = sqlx::QueryBuilder<sqlx::Sqlite>;
+
+/// `AND state IN (…)` when `from` is non-empty.
+fn push_state_filter(q: &mut Q, from: &[ExperimentState]) {
+    if !from.is_empty() {
+        q.push(" AND state IN (");
+        let mut sep = q.separated(", ");
+        for s in from {
+            sep.push_bind(tag(s));
+        }
+        q.push(")");
+    }
+}
+
+/// `UPDATE studies SET <p's columns> WHERE slug = ? [AND state IN from]`.
+fn study_update(slug: &str, from: &[&str], p: &StudyPatch) -> Q {
+    let mut q = Q::new("UPDATE studies SET slug = slug");
+    if let Some(state) = &p.state {
+        let (tag, reason) = split_state(state);
+        q.push(", state = ").push_bind(tag);
+        q.push(", state_reason = ").push_bind(reason);
+    }
+    if let Some(v) = &p.base_sha {
+        q.push(", base_sha = ").push_bind(v.clone());
+    }
+    if let Some(v) = &p.branch {
+        q.push(", branch = ").push_bind(v.clone());
+    }
+    if let Some(v) = &p.worktree {
+        q.push(", worktree = ").push_bind(v.clone());
+    }
+    if let Some(v) = p.session {
+        q.push(", session = ").push_bind(v.map(|s| s.to_string()));
+    }
+    if let Some(v) = &p.incumbent_sha {
+        q.push(", incumbent_sha = ").push_bind(v.clone());
+    }
+    if let Some(v) = p.incumbent_mean {
+        q.push(", incumbent_mean = ").push_bind(v);
+    }
+    if let Some(v) = p.sigma {
+        q.push(", sigma = ").push_bind(v);
+    }
+    if let Some(v) = p.segment {
+        q.push(", segment = ").push_bind(i64::from(v));
+    }
+    if let Some(v) = &p.playbook {
+        q.push(", playbook = ").push_bind(v.clone());
+    }
+    if let Some(v) = &p.started_at {
+        q.push(", started_at = ").push_bind(v.clone());
+    }
+    if let Some(v) = p.paused_ms {
+        q.push(", paused_ms = ").push_bind(v as i64);
+    }
+    if let Some(v) = &p.finished_at {
+        q.push(", finished_at = ").push_bind(v.clone());
+    }
+    if let Some(v) = &p.stop_reason {
+        q.push(", stop_reason = ").push_bind(to_json(v));
+    }
+    if let Some(v) = &p.report_doc {
+        q.push(", report_doc = ").push_bind(v.clone());
+    }
+    q.push(" WHERE slug = ").push_bind(slug.to_owned());
+    if !from.is_empty() {
+        q.push(" AND state IN (");
+        let mut sep = q.separated(", ");
+        for s in from {
+            sep.push_bind((*s).to_owned());
+        }
+        q.push(")");
+    }
+    q
+}
+
+/// `UPDATE experiments SET <every column> WHERE slug = ? AND n = ? [AND state IN from]`.
+fn experiment_update(e: &ExperimentRecord, from: &[ExperimentState]) -> Q {
+    let mut q = Q::new("UPDATE experiments SET wave = ");
+    q.push_bind(e.wave.map(i64::from));
+    q.push(", slot = ").push_bind(e.slot.map(i64::from));
+    q.push(", segment = ").push_bind(i64::from(e.segment));
+    q.push(", parent_sha = ").push_bind(e.parent_sha.clone());
+    q.push(", state = ").push_bind(tag(&e.state));
+    q.push(", verdict = ")
+        .push_bind(e.verdict.as_ref().map(to_json));
+    q.push(", idea = ").push_bind(e.idea.clone());
+    q.push(", category = ").push_bind(e.category.clone());
+    q.push(", hypothesis = ").push_bind(e.hypothesis.clone());
+    q.push(", description = ").push_bind(e.description.clone());
+    q.push(", learned = ").push_bind(e.learned.clone());
+    q.push(", next = ").push_bind(e.next.clone());
+    q.push(", decision = ")
+        .push_bind(e.decision.as_ref().map(tag));
+    q.push(", justification = ")
+        .push_bind(e.justification.clone());
+    q.push(", deviations = ").push_bind(to_json(&e.deviations));
+    q.push(", delta = ").push_bind(e.delta);
+    q.push(", delta_pct = ").push_bind(e.delta_pct);
+    q.push(", z = ").push_bind(e.z);
+    q.push(", n_samples = ").push_bind(i64::from(e.n_samples));
+    q.push(", metric = ").push_bind(e.metric);
+    q.push(", commit_sha = ").push_bind(e.commit_sha.clone());
+    q.push(", patch_path = ").push_bind(e.patch_path.clone());
+    q.push(", patch_hash = ").push_bind(e.patch_hash.clone());
+    q.push(", review = ")
+        .push_bind(e.review.as_ref().map(to_json));
+    q.push(", line = ").push_bind(e.line.clone());
+    q.push(", cost_nanos = ").push_bind(e.cost_nanos as i64);
+    q.push(", started_at = ").push_bind(e.started_at.clone());
+    q.push(", finished_at = ").push_bind(e.finished_at.clone());
+    q.push(" WHERE slug = ").push_bind(e.slug.clone());
+    q.push(" AND n = ").push_bind(i64::from(e.n));
+    push_state_filter(&mut q, from);
+    q
+}
+
 impl Store {
     /// Open or create `<root>/autoresearch.sqlite` and run the migrations.
     pub async fn open(root: &Path) -> Result<Self> {
@@ -736,6 +960,26 @@ impl Store {
         Ok(())
     }
 
+    /// Patch only the columns `p` sets (R-4). `Err` when the study does not exist.
+    pub async fn patch_study(&self, slug: &str, p: &StudyPatch) -> Result<()> {
+        if self.patch_study_if(slug, &[], p).await? {
+            Ok(())
+        } else {
+            Err(Error::refused(format!("no study `{slug}`")))
+        }
+    }
+
+    /// [`patch_study`](Self::patch_study) only while the row's state tag is one of
+    /// `from` (empty = any); `Ok(false)` when it was not — the caller lost the race.
+    pub async fn patch_study_if(&self, slug: &str, from: &[&str], p: &StudyPatch) -> Result<bool> {
+        Ok(study_update(slug, from, p)
+            .build()
+            .execute(&self.pool)
+            .await?
+            .rows_affected()
+            > 0)
+    }
+
     /// The study a session is bound to (140 §8.2), if any.
     pub async fn study_of_session(
         &self,
@@ -842,52 +1086,79 @@ impl Store {
 
     /// Rewrite every column of an experiment by `(slug, n)`.
     pub async fn update_experiment(&self, e: &ExperimentRecord) -> Result<()> {
-        let n = sqlx::query(
-            "UPDATE experiments SET wave = ?3, slot = ?4, segment = ?5, parent_sha = ?6, state = ?7, verdict = ?8, \
-             idea = ?9, category = ?10, hypothesis = ?11, description = ?12, learned = ?13, next = ?14, decision = ?15, \
-             justification = ?16, deviations = ?17, delta = ?18, delta_pct = ?19, z = ?20, n_samples = ?21, metric = ?22, \
-             commit_sha = ?23, patch_path = ?24, patch_hash = ?25, review = ?26, line = ?27, cost_nanos = ?28, \
-             started_at = ?29, finished_at = ?30 WHERE slug = ?1 AND n = ?2",
+        if self.update_experiment_if(e, &[]).await? {
+            Ok(())
+        } else {
+            Err(Error::refused(format!(
+                "no experiment #{} in `{}`",
+                e.n, e.slug
+            )))
+        }
+    }
+
+    /// [`update_experiment`](Self::update_experiment) only while the row's state is one
+    /// of `from` (empty = any): the close-outs of Begin / StopNow / recover never
+    /// overwrite a row `run_env` already moved on (R-4). `Ok(false)` = lost the race.
+    pub async fn update_experiment_if(
+        &self,
+        e: &ExperimentRecord,
+        from: &[ExperimentState],
+    ) -> Result<bool> {
+        Ok(experiment_update(e, from)
+            .build()
+            .execute(&self.pool)
+            .await?
+            .rows_affected()
+            > 0)
+    }
+
+    /// Move `(slug, n)` to `to` only from one of `from` (R-60: two parallel
+    /// `experiment_run`s cannot both claim `measuring`). `Ok(false)` = not claimed.
+    pub async fn claim_experiment(
+        &self,
+        slug: &str,
+        n: u32,
+        from: &[ExperimentState],
+        to: ExperimentState,
+    ) -> Result<bool> {
+        let mut q = sqlx::QueryBuilder::<sqlx::Sqlite>::new("UPDATE experiments SET state = ");
+        q.push_bind(tag(&to));
+        q.push(" WHERE slug = ").push_bind(slug.to_owned());
+        q.push(" AND n = ").push_bind(i64::from(n));
+        push_state_filter(&mut q, from);
+        Ok(q.build().execute(&self.pool).await?.rows_affected() > 0)
+    }
+
+    /// A keep's ledger side in one transaction (R-50 / R-109): the candidate's
+    /// samples retagged to `sha`, the experiment row, the study's incumbent and a
+    /// `keep {n, sha}` event. Either all land or none.
+    pub async fn record_keep(
+        &self,
+        e: &ExperimentRecord,
+        sha: &str,
+        study: &StudyPatch,
+    ) -> Result<()> {
+        let mut tx = self.pool.begin().await?;
+        sqlx::query(
+            "UPDATE samples SET tree_sha = ?3 WHERE slug = ?1 AND n = ?2 AND role = 'candidate'",
         )
         .bind(&e.slug)
         .bind(i64::from(e.n))
-        .bind(e.wave.map(i64::from))
-        .bind(e.slot.map(i64::from))
-        .bind(i64::from(e.segment))
-        .bind(&e.parent_sha)
-        .bind(tag(&e.state))
-        .bind(e.verdict.as_ref().map(to_json))
-        .bind(&e.idea)
-        .bind(&e.category)
-        .bind(&e.hypothesis)
-        .bind(&e.description)
-        .bind(&e.learned)
-        .bind(&e.next)
-        .bind(e.decision.as_ref().map(tag))
-        .bind(&e.justification)
-        .bind(to_json(&e.deviations))
-        .bind(e.delta)
-        .bind(e.delta_pct)
-        .bind(e.z)
-        .bind(i64::from(e.n_samples))
-        .bind(e.metric)
-        .bind(&e.commit_sha)
-        .bind(&e.patch_path)
-        .bind(&e.patch_hash)
-        .bind(e.review.as_ref().map(to_json))
-        .bind(&e.line)
-        .bind(e.cost_nanos as i64)
-        .bind(&e.started_at)
-        .bind(&e.finished_at)
-        .execute(&self.pool)
-        .await?
-        .rows_affected();
-        if n == 0 {
-            return Err(Error::refused(format!(
-                "no experiment #{} in `{}`",
-                e.n, e.slug
-            )));
-        }
+        .bind(sha)
+        .execute(&mut *tx)
+        .await?;
+        experiment_update(e, &[]).build().execute(&mut *tx).await?;
+        study_update(&e.slug, &[], study)
+            .build()
+            .execute(&mut *tx)
+            .await?;
+        sqlx::query("INSERT INTO events (slug, kind, payload, at) VALUES (?1, 'keep', ?2, ?3)")
+            .bind(&e.slug)
+            .bind(serde_json::json!({ "n": e.n, "sha": sha }).to_string())
+            .bind(now())
+            .execute(&mut *tx)
+            .await?;
+        tx.commit().await?;
         Ok(())
     }
 
@@ -940,7 +1211,9 @@ impl Store {
 
     // ── samples ──
 
-    /// Append a sample; returns its row id.
+    /// Append a sample; returns its row id. A pending row (`value` and `exit`
+    /// both `None`) is inserted before the benchmark spawns so an engine crash
+    /// leaves a row to mark `lost` (R-34); [`update_sample`](Self::update_sample) fills it.
     pub async fn insert_sample(&self, slug: &str, s: &Sample) -> Result<i64> {
         let r = sqlx::query(
             "INSERT INTO samples (slug, n, k, tree_sha, role, value, secondaries, cases, asi, exit, wall_ms, load, \
@@ -965,6 +1238,31 @@ impl Store {
         .execute(&self.pool)
         .await?;
         Ok(r.last_insert_rowid())
+    }
+
+    /// Fill a pending sample row (by id) with the finished sample.
+    pub async fn update_sample(&self, id: i64, s: &Sample) -> Result<()> {
+        sqlx::query(
+            "UPDATE samples SET tree_sha = ?2, role = ?3, value = ?4, secondaries = ?5, cases = ?6, asi = ?7, \
+             exit = ?8, wall_ms = ?9, load = ?10, noisy = ?11, lost = ?12, log_path = ?13, at = ?14 WHERE id = ?1",
+        )
+        .bind(id)
+        .bind(&s.tree_sha)
+        .bind(s.role.as_ref().map(tag))
+        .bind(s.value)
+        .bind(to_json(&s.secondaries))
+        .bind(to_json(&s.cases))
+        .bind(to_json(&s.asi))
+        .bind(s.exit.map(i64::from))
+        .bind(s.wall_ms as i64)
+        .bind(s.load)
+        .bind(i64::from(s.noisy))
+        .bind(i64::from(s.lost))
+        .bind(&s.log_path)
+        .bind(&s.at)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
     }
 
     /// Samples of one experiment (`n`), or of the whole study, in order.

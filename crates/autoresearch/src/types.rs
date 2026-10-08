@@ -72,6 +72,9 @@ wire! {
         pub models: ModelsSpec,
         /// A 40 `when:` sensor confining the study to an idle window (140 §5.5).
         pub window: Option<String>,
+        /// §6 "include my uncommitted changes": a dirty checkout is snapshotted onto
+        /// the study branch (base must be HEAD) instead of refusing Start.
+        pub include_dirty: bool,
     }
 }
 
@@ -95,6 +98,7 @@ impl Default for StudySpec {
             parallel: 1,
             models: ModelsSpec::default(),
             window: None,
+            include_dirty: false,
         }
     }
 }
@@ -137,6 +141,8 @@ wire! {
         pub name: String,
         /// Largest allowed regression, relative (`5%`) or absolute; see [`Effect`].
         pub max_regression: String,
+        /// Which way this secondary improves (R-19: a memory guard in a throughput study is `lower`).
+        pub direction: Direction,
     }
 }
 

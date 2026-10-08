@@ -35,7 +35,7 @@ use crate::gate;
 use crate::git::KeepMeta;
 use crate::novelty::Novelty;
 use crate::runner::SampleRequest;
-use crate::store::{ExperimentRecord, SegmentRecord, Store, StudyRecord, now};
+use crate::store::{ExperimentRecord, SegmentRecord, Store, StudyPatch, StudyRecord, now};
 use crate::types::*;
 use crate::{binding, schedule_file, stop};
 
@@ -46,6 +46,15 @@ static CANCELS: LazyLock<Mutex<HashMap<String, CancellationToken>>> =
     LazyLock::new(Default::default);
 /// The experiment in flight and its phase, for `StudyInfo.current/phase` (derived display state).
 static PHASES: LazyLock<Mutex<HashMap<String, (u32, Phase)>>> = LazyLock::new(Default::default);
+/// Finalize tasks in flight (one per study; a deferred finalize and its fallback timer never run twice).
+static FINALIZING: LazyLock<Mutex<std::collections::HashSet<String>>> =
+    LazyLock::new(Default::default);
+/// Wall-clock budget of the §11.3 report side call.
+const REPORT_CALL_BUDGET: Duration = Duration::from_secs(300);
+/// A finalize deferred to the study turn's end runs anyway after this long (a missed `TurnFinished`).
+const FINALIZE_DEFER_MAX: Duration = Duration::from_secs(10 * 60);
+/// Live-tail cadence while a sample runs (the UI refetches the detail on every progress event).
+const SAMPLE_TICK: Duration = Duration::from_secs(3);
 
 /// Map key: the root makes two engines' (or two tests') studies distinct.
 fn key(root: &Path, slug: &str) -> String {
@@ -143,9 +152,9 @@ pub trait Backend: Send + Sync {
     fn is_git_repo(&self, repo: &Path) -> bool {
         crate::git::is_git_repo(repo)
     }
-    /// `base` → sha; a dirty tree is refused.
-    fn resolve_base(&self, repo: &Path, base: &str) -> Result<String> {
-        crate::git::resolve_base(repo, base, false)
+    /// `base` → sha; a dirty tree is refused unless the spec says `include_dirty` (140 §6).
+    fn resolve_base(&self, repo: &Path, base: &str, include_dirty: bool) -> Result<String> {
+        crate::git::resolve_base(repo, base, include_dirty)
     }
     /// `git worktree add -b autoresearch/<slug>`; returns HEAD.
     fn worktree_add(
@@ -174,6 +183,28 @@ pub trait Backend: Send + Sync {
     /// Save the candidate patch, `reset --hard`, `clean -fd`; the patch's sha256.
     fn discard(&self, worktree: &Path, incumbent: &str, patch_path: &Path) -> Result<String> {
         crate::git::discard(worktree, incumbent, patch_path)
+    }
+    /// Re-apply a saved patch as uncommitted changes (the candidate put back after an incumbent sample).
+    fn apply_patch(&self, worktree: &Path, patch_path: &Path) -> Result<()> {
+        crate::git::apply_patch(worktree, patch_path)
+    }
+    /// Discard study: every worktree under the study dir, `autoresearch/<slug>`, `+k` branches, rejected refs (140 §11.5).
+    fn discard_study(&self, repo: &Path, slug: &str, study_dir: &Path) -> Result<Vec<String>> {
+        crate::git::discard_study(repo, slug, study_dir)
+    }
+    /// First parent of `sha` (the keep-crash adoption check, R-50). Read-only.
+    fn commit_parent(&self, worktree: &Path, sha: &str) -> Result<String> {
+        // ponytail: one read-only `git` call here; F2's git.rs read helper is private (R-18 hand-off).
+        let out = std::process::Command::new("git")
+            .arg("-C")
+            .arg(worktree)
+            .args(["rev-parse", "--verify", "-q", &format!("{sha}^")])
+            .env("GIT_TERMINAL_PROMPT", "0")
+            .output()?;
+        if !out.status.success() {
+            return Err(Error::refused(format!("{sha} has no parent")));
+        }
+        Ok(String::from_utf8_lossy(&out.stdout).trim().to_owned())
     }
     /// Drift repair at begin; `Some(what)` when something was wrong.
     fn repair(
@@ -358,35 +389,81 @@ pub trait Backend: Send + Sync {
     ) -> Result<(Headline, String)> {
         crate::finalize::run(store, study, reason, rt).await
     }
-    /// The cross-study knowledge record.
-    async fn record(
-        &self,
-        store: &Store,
-        study: &StudyRecord,
-        headline: &str,
-        rt: &runtime::Runtime,
-    ) -> Result<String> {
-        crate::record::write(store, study, headline, rt).await
-    }
     /// The playbook of the last record for this repo.
     async fn seed_playbook(&self, repo: &str, rt: &runtime::Runtime) -> Result<Option<String>> {
         crate::record::seed_playbook(repo, rt).await
     }
+    /// §11.3's report turn as a side call charged to the study session: the
+    /// executor writes the prose around the numbers (the tables are inserted by
+    /// the plugin afterwards, so a number can never change).
+    async fn report_prose(
+        &self,
+        study: &StudyRecord,
+        model: &str,
+        system: &str,
+        user: String,
+    ) -> Result<String> {
+        let session = study.session.ok_or_else(|| {
+            Error::refused("the study has no bound session to charge the call to")
+        })?;
+        let agents = agents().ok_or_else(|| Error::refused("agent actor is not running"))?;
+        agents
+            .ask(runtime::SideCall {
+                session,
+                role: runtime::ModelRole::Named(model.to_owned()),
+                system: system.to_owned(),
+                user,
+                budget: REPORT_CALL_BUDGET,
+                kind: runtime::CallKind::Autoresearch,
+            })
+            .await
+            .map(|r| r.text)
+            .map_err(|e| Error::refused(e.to_string()))
+    }
+    /// Replace the report document's body (`doc` is a document id); `Ok(false)` when there is no documents actor.
+    async fn replace_report(&self, doc: &str, markdown: &str) -> Result<bool> {
+        let Some(docs) = ActorRef::<document::DocumentActor>::lookup(document::DOCUMENT_ACTOR)
+            .ok()
+            .flatten()
+        else {
+            return Ok(false);
+        };
+        docs.ask(document::ImportMarkdown {
+            doc: document::DocId(doc.to_owned()),
+            markdown: markdown.to_owned(),
+            by: document::Principal::Helper,
+            mode: document::ImportMode::Replace,
+        })
+        .await
+        .map_err(|e| Error::refused(e.to_string()))?;
+        Ok(true)
+    }
     // ── the engine ──
-    /// Study spend: `model_calls.cost` over the session tree (128's ledger via `SessionCostQuery`).
+    /// The session tree's spend in USD (128's ledger via `SessionCostQuery`):
+    /// provider-returned money plus the estimates for calls without one. `Err`
+    /// when the agent actor or the session is unknown — the money stop must not fail open (R-14).
+    async fn session_cost(&self, session: Option<SessionId>) -> Result<f64> {
+        let Some(session) = session else {
+            return Ok(0.0);
+        };
+        let agents = agents().ok_or_else(|| Error::refused("agent actor is not running"))?;
+        let cost = agents
+            .ask(agent::SessionCostQuery(session))
+            .await
+            .map_err(|e| Error::refused(format!("session cost: {e}")))?
+            .ok_or_else(|| Error::refused(format!("session cost: {session} is unknown")))?;
+        Ok(cost
+            .total
+            .returned
+            .iter()
+            .chain(cost.total.estimated_for_unavailable.iter())
+            .filter(|m| m.currency == "USD")
+            .map(|m| m.nanos as f64 / 1e9)
+            .sum())
+    }
+    /// Study spend as a plain number for callers that cannot refuse (W5's wave settle); `0.0` on error.
     async fn spend_usd(&self, session: Option<SessionId>) -> f64 {
-        let Some(session) = session else { return 0.0 };
-        let Some(agents) = agents() else { return 0.0 };
-        match agents.ask(agent::SessionCostQuery(session)).await {
-            Ok(Some(cost)) => cost
-                .total
-                .returned
-                .iter()
-                .filter(|m| m.currency == "USD")
-                .map(|m| m.nanos as f64 / 1e9)
-                .sum(),
-            _ => 0.0,
-        }
+        self.session_cost(session).await.unwrap_or(0.0)
     }
     /// `code_map(focus=scope, budget=…)` through the tool registry; `None` when unavailable.
     async fn code_map(
@@ -524,7 +601,42 @@ pub(crate) fn clean_values(samples: &[Sample]) -> Vec<f64> {
         .collect()
 }
 
-/// Pooled σ of the current segment: every tree measured more than once since the segment opened (140 §5.2 step 1).
+/// Clean values of the *benchmark* only: holdout rows never enter x̄_i, σ, the
+/// guards, a verdict line or anything the study session reads (140 §5.4, R-3).
+pub(crate) fn bench_values(samples: &[Sample]) -> Vec<f64> {
+    samples
+        .iter()
+        .filter(|s| !s.noisy && !s.lost && s.role != Some(SampleRole::Holdout))
+        .filter_map(|s| s.value)
+        .collect()
+}
+
+/// The incumbent's own benchmark samples in the current segment (its baseline /
+/// candidate samples since it became incumbent plus re-measures; never holdout
+/// rows, never rows from before the segment opened — R-3, R-28).
+pub(crate) async fn incumbent_samples(
+    env: &Env,
+    study: &StudyRecord,
+    incumbent: &str,
+) -> Result<Vec<Sample>> {
+    let opened = env
+        .store
+        .get_segment(&study.slug, study.segment)
+        .await?
+        .map(|s| s.opened_at)
+        .unwrap_or_default();
+    Ok(env
+        .store
+        .samples_of_tree(&study.slug, incumbent)
+        .await?
+        .into_iter()
+        .filter(|s| s.role != Some(SampleRole::Holdout) && s.at >= opened)
+        .collect())
+}
+
+/// Pooled σ of the current segment: every tree measured more than once since the
+/// segment opened (140 §5.2 step 1). Holdout rows and the repeats of `checks_failed`
+/// candidates (§5.1 "never counts toward σ") are left out.
 pub(crate) async fn segment_sigma(env: &Env, study: &StudyRecord) -> Result<f64> {
     let opened = env
         .store
@@ -532,12 +644,23 @@ pub(crate) async fn segment_sigma(env: &Env, study: &StudyRecord) -> Result<f64>
         .await?
         .map(|s| s.opened_at)
         .unwrap_or_default();
+    let checks_failed: std::collections::HashSet<u32> = env
+        .store
+        .list_experiments(&study.slug, None, u32::MAX)
+        .await?
+        .iter()
+        .filter(|e| e.state == ExperimentState::ChecksFailed)
+        .map(|e| e.n)
+        .collect();
     let samples = env.store.list_samples(&study.slug, None).await?;
     let mut trees: BTreeMap<String, Vec<f64>> = BTreeMap::new();
-    for s in samples
-        .iter()
-        .filter(|s| s.at >= opened && !s.noisy && !s.lost && s.role != Some(SampleRole::Holdout))
-    {
+    for s in samples.iter().filter(|s| {
+        s.at >= opened
+            && !s.noisy
+            && !s.lost
+            && s.role != Some(SampleRole::Holdout)
+            && !(s.role == Some(SampleRole::Candidate) && checks_failed.contains(&s.n))
+    }) {
         if let Some(v) = s.value {
             trees.entry(s.tree_sha.clone()).or_default().push(v);
         }
@@ -546,23 +669,79 @@ pub(crate) async fn segment_sigma(env: &Env, study: &StudyRecord) -> Result<f64>
     Ok(env.backend.pooled_sigma(&trees))
 }
 
+fn is_closed(e: &ExperimentRecord) -> bool {
+    !matches!(
+        e.state,
+        ExperimentState::Open | ExperimentState::Measuring | ExperimentState::Measured
+    )
+}
+
 /// Closed experiments, kept experiments.
 async fn counts(store: &Store, slug: &str) -> Result<(u32, u32)> {
     let all = store.list_experiments(slug, None, u32::MAX).await?;
-    let closed = all
-        .iter()
-        .filter(|e| {
-            !matches!(
-                e.state,
-                ExperimentState::Open | ExperimentState::Measuring | ExperimentState::Measured
-            )
-        })
-        .count() as u32;
+    let closed = all.iter().filter(|e| is_closed(e)).count() as u32;
     let kept = all
         .iter()
         .filter(|e| e.state == ExperimentState::Kept)
         .count() as u32;
     Ok((closed, kept))
+}
+
+/// The highest closed experiment number (the `after_n` scale the stop rules compare `n` against, R-64).
+async fn last_closed_n(store: &Store, slug: &str) -> Result<u32> {
+    Ok(store
+        .list_experiments(slug, None, u32::MAX)
+        .await?
+        .iter()
+        .filter(|e| is_closed(e))
+        .map(|e| e.n)
+        .max()
+        .unwrap_or(0))
+}
+
+/// Study spend (140 §8.4, R-14): Σ `cost_nanos` of the closed experiments plus what
+/// the live session tree has spent since its last attribution mark — the `begin` of
+/// the open experiment or the `closed` mark of the last one (both store the tree's
+/// total at that moment). A re-created session reads below its mark and adds
+/// nothing. `Err` when the live tree cannot be read: the money stop never fails open.
+pub(crate) async fn study_spend(env: &Env, study: &StudyRecord) -> Result<f64> {
+    let all = env
+        .store
+        .list_experiments(&study.slug, None, u32::MAX)
+        .await?;
+    let closed: f64 = all
+        .iter()
+        .filter(|e| is_closed(e))
+        .map(|e| e.cost_nanos as f64 / 1e9)
+        .sum();
+    let live = env.backend.session_cost(study.session).await?;
+    let mark = env
+        .store
+        .list_events(&study.slug, None, 200)
+        .await?
+        .iter()
+        .filter(|e| e.kind == "begin" || e.kind == "closed")
+        .find_map(|e| e.payload.get("spend_usd").and_then(|v| v.as_f64()))
+        .unwrap_or(0.0);
+    Ok(closed + (live - mark).max(0.0))
+}
+
+/// [`study_spend`] for displays that cannot refuse: the closed sum on error.
+async fn study_spend_or_closed(env: &Env, study: &StudyRecord) -> f64 {
+    match study_spend(env, study).await {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::debug!(slug = %study.slug, "live spend unavailable: {e}");
+            env.store
+                .list_experiments(&study.slug, None, u32::MAX)
+                .await
+                .unwrap_or_default()
+                .iter()
+                .filter(|e| is_closed(e))
+                .map(|e| e.cost_nanos as f64 / 1e9)
+                .sum()
+        }
+    }
 }
 
 /// Review reverts the user already acted on (`restore` or `kept_reverted` events): no row, no needs-eyes line.
@@ -619,6 +798,132 @@ async fn drift_pending(store: &Store, slug: &str) -> Result<bool> {
     Ok(doubled.first().is_none_or(|c| c.id < d.id))
 }
 
+/// A user `run_once` newer than the last `begin` (R-51): the one fire a paused study accepts.
+async fn run_once_pending(store: &Store, slug: &str) -> Result<bool> {
+    let once = store.list_events(slug, Some("run_once"), 1).await?;
+    let Some(o) = once.first() else {
+        return Ok(false);
+    };
+    let begun = store.list_events(slug, Some("begin"), 1).await?;
+    Ok(begun.first().is_none_or(|b| b.id < o.id))
+}
+
+/// Fold a fresh incumbent sample into x̄_i and σ and run the §5.2 step-4 drift
+/// check on it (every incumbent sample, scheduled or confirm-phase — R-20). The
+/// study row is patched column-wise (R-4). Returns the brief's drift note.
+async fn absorb_incumbent_sample(
+    env: &Env,
+    study: &mut StudyRecord,
+    incumbent: &str,
+    n: u32,
+    s: &Sample,
+) -> Result<Option<String>> {
+    let mut note = None;
+    if let (Some(v), Some(mean_i), Some(sigma)) = (s.value, study.incumbent_mean, study.sigma)
+        && !s.noisy
+        && sigma > 0.0
+        && env.backend.drifted(sigma, mean_i, v)
+    {
+        env.store
+            .append_event(
+                &study.slug,
+                "drift",
+                &serde_json::json!({ "n": n, "value": v, "mean": mean_i, "sigma": sigma }),
+            )
+            .await?;
+        note = Some(format!(
+            "an incumbent re-measure landed at {} {} vs mean {} (drift); the next confirm takes more samples.",
+            fmt_num(v),
+            study.spec.metric.unit,
+            fmt_num(mean_i)
+        ));
+    }
+    let inc = bench_values(&incumbent_samples(env, study, incumbent).await?);
+    let mean_i = if inc.is_empty() {
+        study.incumbent_mean
+    } else {
+        Some(mean(&inc))
+    };
+    let sigma = segment_sigma(env, study).await?;
+    patch(
+        env,
+        study,
+        StudyPatch {
+            incumbent_mean: Some(mean_i),
+            sigma: Some(Some(sigma)),
+            ..StudyPatch::default()
+        },
+    )
+    .await?;
+    Ok(note)
+}
+
+/// R-50: `experiment_log` records `keep_pending {n}` before `git commit` and the
+/// ledger side (`record_keep`) after it. A crash in between leaves the experiment
+/// `measured` while HEAD is a commit whose parent is the incumbent — adopt it as
+/// the keep instead of letting the drift repair reset it off the branch.
+async fn adopt_pending_keep(
+    env: &Env,
+    study: &mut StudyRecord,
+    worktree: &Path,
+) -> Result<Option<String>> {
+    let pending = env
+        .store
+        .list_events(&study.slug, Some("keep_pending"), 1)
+        .await?;
+    let Some(p) = pending.first() else {
+        return Ok(None);
+    };
+    let kept = env.store.list_events(&study.slug, Some("keep"), 1).await?;
+    if kept.first().is_some_and(|k| k.id > p.id) {
+        return Ok(None);
+    }
+    let Some(n) = p
+        .payload
+        .get("n")
+        .and_then(|v| v.as_u64())
+        .map(|n| n as u32)
+    else {
+        return Ok(None);
+    };
+    let Some(mut exp) = env.store.get_experiment(&study.slug, n).await? else {
+        return Ok(None);
+    };
+    let incumbent = incumbent_of(study)?;
+    if exp.state != ExperimentState::Measured || exp.parent_sha != incumbent {
+        return Ok(None);
+    }
+    let head = env.backend.head(worktree)?;
+    if head == incumbent || env.backend.commit_parent(worktree, &head)? != incumbent {
+        return Ok(None);
+    }
+    exp.state = ExperimentState::Kept;
+    exp.commit_sha = Some(head.clone());
+    exp.finished_at = Some(now());
+    exp.line = format!("{} (ledger recovered after a crash)", exp.line);
+    let mean_c = exp.metric;
+    env.store
+        .record_keep(
+            &exp,
+            &head,
+            &StudyPatch::incumbent(&head, mean_c.or(study.incumbent_mean), study.sigma),
+        )
+        .await?;
+    study.incumbent_sha = Some(head.clone());
+    study.incumbent_mean = mean_c.or(study.incumbent_mean);
+    env.store
+        .append_event(
+            &study.slug,
+            "incident",
+            &serde_json::json!({ "n": n, "what": format!("keep #{n} recovered: commit {} was on the branch, the ledger was not written", &head[..head.len().min(10)]) }),
+        )
+        .await?;
+    Ok(Some(format!(
+        "experiment {n} was kept (commit {}) but the engine stopped before the ledger recorded it; the ledger is now consistent.",
+        &head[..head.len().min(10)]
+    )))
+}
+
 /// §5.4: `holdout.repeats` samples of `holdout.command` on `tree` (role `Holdout`,
 /// through the slot). Clean values; a crashed sample is skipped, never fatal.
 /// Holdout numbers reach the ledger, the Study view and the report — never the brief.
@@ -640,25 +945,23 @@ async fn holdout(
     std::fs::create_dir_all(&runs)?;
     let mut values = Vec::new();
     for k in 1..=u32::from(h.repeats.unwrap_or(spec.bench.repeats).max(1)) {
-        let s = env
-            .backend
-            .sample(
-                &spec,
-                &env.cfg.bench,
-                SampleRequest {
-                    slug: &study.slug,
-                    n,
-                    k,
-                    tree_sha: tree,
-                    role: SampleRole::Holdout,
-                    worktree: &worktree,
-                    evaluator: &evaluator,
-                    runs_dir: &runs,
-                },
-                cancel,
-            )
-            .await?;
-        env.store.insert_sample(&study.slug, &s).await?;
+        let s = scored_sample(
+            env,
+            &spec,
+            SampleRequest {
+                slug: &study.slug,
+                n,
+                k,
+                tree_sha: tree,
+                role: SampleRole::Holdout,
+                worktree: &worktree,
+                evaluator: &evaluator,
+                runs_dir: &runs,
+            },
+            cancel,
+            None,
+        )
+        .await?;
         values.extend(s.value.filter(|_| !s.noisy && !s.lost));
     }
     Ok(values)
@@ -686,9 +989,16 @@ async fn check_overfit(
     if base_holdout.is_empty() || incumbent_holdout.is_empty() {
         return Ok(());
     }
-    let sigma = env
+    let mut sigma = env
         .backend
         .pooled_sigma(&[base_holdout.clone(), incumbent_holdout.to_vec()]);
+    if sigma <= 0.0 {
+        // Single-sample holdouts on both sides (R-43): judge against the search σ, never σ = 0.
+        sigma = study.sigma.unwrap_or(0.0);
+        if sigma <= 0.0 {
+            return Ok(());
+        }
+    }
     let direction = study.spec.metric.direction;
     let holdout_delta = gate::normalise(direction, mean(incumbent_holdout), mean(&base_holdout));
     let search_delta = match (
@@ -707,6 +1017,8 @@ async fn check_overfit(
                 "overfit",
                 &serde_json::json!({
                     "n": n,
+                    // `after_n` is the scale the stop rules read (R-44): overfit after keep `n`.
+                    "after_n": n,
                     "holdout_base": mean(&base_holdout),
                     "holdout_incumbent": mean(incumbent_holdout),
                     "sigma": sigma,
@@ -789,9 +1101,8 @@ fn stop_word(reason: &StopReason) -> String {
 
 /// `StudyInfo` from a ledger row (shared by status, control, create). Counts
 /// and spend need queries: see [`info_full`].
-pub fn info(a: &Studies, study: &StudyRecord) -> StudyInfo {
-    let _ = a;
-    info_from(study, &a.root, None, 0, 0.0)
+pub fn info(root: &Path, study: &StudyRecord) -> StudyInfo {
+    info_from(study, root, None, 0, 0.0)
 }
 
 fn info_from(
@@ -860,27 +1171,50 @@ pub async fn info_full(env: &Env, study: &StudyRecord) -> Result<StudyInfo> {
     let spend = if is_terminal(&study.state) {
         0.0
     } else {
-        env.backend.spend_usd(study.session).await
+        study_spend_or_closed(env, study).await
     };
     let mut i = info_from(study, &env.root, base_mean, closed, spend);
     i.incumbent.kept = kept;
     Ok(i)
 }
 
+/// Patch `study`'s state column (never the whole row, R-4) and publish `StudyChanged`.
 async fn set_state(
     env: &Env,
     study: &mut StudyRecord,
     state: StudyState,
     reason: Option<String>,
 ) -> Result<()> {
-    study.state = state.clone();
-    env.store.update_study(study).await?;
+    set_state_if(env, study, &[], state, reason).await.map(drop)
+}
+
+/// [`set_state`] only while the row is still in one of `from` (state tags);
+/// `Ok(false)` = another handler moved it first and nothing was written.
+async fn set_state_if(
+    env: &Env,
+    study: &mut StudyRecord,
+    from: &[&str],
+    state: StudyState,
+    reason: Option<String>,
+) -> Result<bool> {
+    let p = StudyPatch::state(state.clone());
+    if !env.store.patch_study_if(&study.slug, from, &p).await? {
+        return Ok(false);
+    }
+    p.apply_to(study);
     env.publish(StudyEvent::StudyChanged {
         slug: study.slug.clone(),
         state,
         reason,
     })
     .await;
+    Ok(true)
+}
+
+/// Patch a few columns and keep the handler's copy in step (R-4).
+async fn patch(env: &Env, study: &mut StudyRecord, p: StudyPatch) -> Result<()> {
+    env.store.patch_study(&study.slug, &p).await?;
+    p.apply_to(study);
     Ok(())
 }
 
@@ -931,6 +1265,105 @@ pub(crate) async fn bench_sample(
         None
     };
     env.backend.sample(spec, &env.cfg.bench, req, cancel).await
+}
+
+/// What the live-tail ticks of a sample publish (`ExperimentProgress` every [`SAMPLE_TICK`]).
+#[derive(Clone, Copy)]
+struct Ticks<'a> {
+    started_at: &'a str,
+    sample: u8,
+    of: u8,
+}
+
+/// One scored sample with its ledger row: a pending row is inserted before the
+/// benchmark spawns (an engine crash leaves it to be marked `lost`, §8.5 / R-34)
+/// and filled when the sample returns; a cancelled or failed spawn marks it lost
+/// itself. With `ticks`, progress is re-published every few seconds so the Study
+/// view's tail stays live (R-87).
+pub(crate) async fn scored_sample(
+    env: &Env,
+    spec: &StudySpec,
+    req: SampleRequest<'_>,
+    cancel: &CancellationToken,
+    ticks: Option<Ticks<'_>>,
+) -> Result<Sample> {
+    let pending = Sample {
+        n: req.n,
+        k: req.k,
+        tree_sha: req.tree_sha.to_owned(),
+        role: Some(req.role),
+        at: now(),
+        ..Sample::default()
+    };
+    let id = env.store.insert_sample(req.slug, &pending).await?;
+    let (slug, n) = (req.slug.to_owned(), req.n);
+    let fut = bench_sample(env, spec, req, cancel);
+    tokio::pin!(fut);
+    let mut tick = tokio::time::interval(SAMPLE_TICK);
+    tick.tick().await;
+    let r = loop {
+        tokio::select! {
+            r = &mut fut => break r,
+            _ = tick.tick() => {
+                if let Some(t) = ticks {
+                    progress(env, &slug, n, t.started_at, Phase::Sampling, t.sample, t.of).await;
+                }
+            }
+        }
+    };
+    match r {
+        Ok(s) => {
+            env.store.update_sample(id, &s).await?;
+            Ok(s)
+        }
+        Err(e) => {
+            let lost = Sample {
+                lost: true,
+                ..pending
+            };
+            env.store.update_sample(id, &lost).await?;
+            Err(e)
+        }
+    }
+}
+
+/// R-2: a confirm-phase incumbent sample measures the *incumbent tree*. The
+/// candidate's edits (tracked and untracked) are saved as `runs/<n>/stash-<k>.patch`,
+/// the worktree is reset to the incumbent, the sample runs in the same worktree
+/// (its build caches stay warm, unlike a fresh detached worktree), then the patch
+/// is re-applied. The sample is folded into x̄_i / σ with the drift check (R-20).
+#[allow(clippy::too_many_arguments)]
+async fn incumbent_sample_in_place(
+    env: &Env,
+    study: &mut StudyRecord,
+    paths: &Paths<'_>,
+    incumbent: &str,
+    k: u32,
+    cancel: &CancellationToken,
+    ticks: Ticks<'_>,
+) -> Result<Sample> {
+    let stash = paths.runs.join(format!("stash-{k}.patch"));
+    env.backend.discard(paths.worktree, incumbent, &stash)?;
+    let r = scored_sample(
+        env,
+        &study.spec,
+        paths.req(k, incumbent, SampleRole::Incumbent),
+        cancel,
+        Some(ticks),
+    )
+    .await;
+    env.backend
+        .apply_patch(paths.worktree, &stash)
+        .map_err(|e| {
+            Error::refused(format!(
+                "the candidate could not be re-applied after the incumbent sample ({e}); it is saved at {}",
+                stash.display()
+            ))
+        })?;
+    let _ = std::fs::remove_file(&stash);
+    let s = r?;
+    absorb_incumbent_sample(env, study, incumbent, paths.n, &s).await?;
+    Ok(s)
 }
 
 /// `Deliver` to the chat the draft card lived in, regardless of `quiet` (140 §13.1); off-mailbox.
@@ -986,7 +1419,7 @@ pub fn start_card(study: &StudyRecord, base_mean: f64, sigma: f64, sched: &str) 
         "g": { "type": "MetricGrid", "props": { "items": items } },
     });
     format!(
-        "**Autoresearch study `{}` started** — optimising `{}` ({}) in {} on `{}`; schedule `{}`.\n\n{}\n\nOpen study: /autoresearch/{}",
+        "**Autoresearch study `{}` started** — optimising `{}` ({}) in {} on `{}`; schedule `{}`.\n\n{}\n\nOpen study: [/autoresearch/{slug}](/autoresearch/{slug})",
         study.slug,
         m.name,
         match m.direction {
@@ -1001,7 +1434,7 @@ pub fn start_card(study: &StudyRecord, base_mean: f64, sigma: f64, sched: &str) 
             .unwrap_or("?"),
         sched,
         card(elements, "c"),
-        study.slug
+        slug = study.slug
     )
 }
 
@@ -1072,13 +1505,19 @@ pub fn result_card(
             "columns": ["changeset", "Δ alone", "Δ together", "files", "branch"], "rows": rows } });
     }
     elements["c"] = serde_json::json!({ "type": "Card", "props": { "title": format!("Study {} finished", study.slug) }, "children": children });
+    // A report document links as a note; a file-path fallback (no documents actor) is only named.
     let report = study
         .report_doc
         .as_deref()
         .map(|d| {
+            let doc = if d.starts_with('/') {
+                format!("`{d}`")
+            } else {
+                format!("[/notes/{d}](/notes/{d})")
+            };
             format!(
-                "\n\nReport: `{d}` · Study view: /autoresearch/{}",
-                study.slug
+                "\n\nReport: {doc} · Study view: [/autoresearch/{slug}](/autoresearch/{slug})",
+                slug = study.slug
             )
         })
         .unwrap_or_default();
@@ -1099,7 +1538,7 @@ pub fn result_card(
 
 // ───────────────────────────── Create ─────────────────────────────
 
-fn validate(spec: &StudySpec, cfg: &AutoresearchConfig, backend: &dyn Backend) -> Result<()> {
+fn validate(spec: &StudySpec, cfg: &AutoresearchConfig) -> Result<()> {
     let slug_ok = (1..=32).contains(&spec.slug.len())
         && spec
             .slug
@@ -1118,12 +1557,6 @@ fn validate(spec: &StudySpec, cfg: &AutoresearchConfig, backend: &dyn Backend) -
     if spec.repo.trim().is_empty() || !repo.is_dir() {
         return Err(Error::refused(format!(
             "repo `{}` is not a directory",
-            spec.repo
-        )));
-    }
-    if !backend.is_git_repo(repo) {
-        return Err(Error::refused(format!(
-            "repo `{}` is not a git repository (a pure jj repo needs git colocation)",
             spec.repo
         )));
     }
@@ -1171,7 +1604,18 @@ fn validate(spec: &StudySpec, cfg: &AutoresearchConfig, backend: &dyn Backend) -
 /// running → start card) runs off the mailbox; failures end in `failed`.
 pub async fn create(a: &mut Studies, m: Create) -> Result<StudyInfo> {
     let env = a.env();
-    validate(&m.spec, &env.cfg, env.backend.as_ref())?;
+    validate(&m.spec, &env.cfg)?;
+    // `git rev-parse` is a process spawn: never on the mailbox thread (R-100).
+    let (backend, repo) = (env.backend.clone(), PathBuf::from(&m.spec.repo));
+    let is_git = tokio::task::spawn_blocking(move || backend.is_git_repo(&repo))
+        .await
+        .unwrap_or(false);
+    if !is_git {
+        return Err(Error::refused(format!(
+            "repo `{}` is not a git repository (a pure jj repo needs git colocation)",
+            m.spec.repo
+        )));
+    }
     if let Some(existing) = env.store.get_study(&m.spec.slug).await? {
         return Err(Error::refused(format!(
             "slug `{}` is taken by a study that is {}",
@@ -1241,17 +1685,26 @@ async fn prepare_steps(env: &Env, study: &mut StudyRecord, start: &StartWhen) ->
     let repo = PathBuf::from(&spec.repo);
     let cancel = cancel_token(&env.root, &slug);
 
-    let base_sha = env.backend.resolve_base(&repo, &spec.base)?;
+    let base_sha = env
+        .backend
+        .resolve_base(&repo, &spec.base, spec.include_dirty)?;
     let worktree = env.study_dir(&slug).join("worktree");
     std::fs::create_dir_all(env.study_dir(&slug))?;
     let head = env
         .backend
         .worktree_add(&repo, &spec, &worktree, &base_sha)?;
-    study.base_sha = Some(base_sha.clone());
-    study.branch = Some(format!("autoresearch/{slug}"));
-    study.worktree = Some(worktree.display().to_string());
-    study.incumbent_sha = Some(head.clone());
-    env.store.update_study(study).await?;
+    patch(
+        env,
+        study,
+        StudyPatch {
+            base_sha: Some(base_sha.clone()),
+            branch: Some(format!("autoresearch/{slug}")),
+            worktree: Some(worktree.display().to_string()),
+            incumbent_sha: Some(head.clone()),
+            ..StudyPatch::default()
+        },
+    )
+    .await?;
 
     let evaluator = env.evaluator_dir(&slug, 0);
     let runs = env.runs_dir(&slug, 0);
@@ -1285,7 +1738,8 @@ async fn prepare_steps(env: &Env, study: &mut StudyRecord, start: &StartWhen) ->
         }
     }
 
-    let custody = env.backend.custody_take(&spec, &repo, &evaluator)?;
+    // Custody is taken from the study worktree — the tree `custody::verify` hashes later (R-7).
+    let custody = env.backend.custody_take(&spec, &worktree, &evaluator)?;
     env.store
         .put_segment(&SegmentRecord {
             slug: slug.clone(),
@@ -1299,7 +1753,15 @@ async fn prepare_steps(env: &Env, study: &mut StudyRecord, start: &StartWhen) ->
         })
         .await?;
     if let Ok(Some(p)) = env.backend.seed_playbook(&spec.repo, &env.rt).await {
-        study.playbook = p;
+        patch(
+            env,
+            study,
+            StudyPatch {
+                playbook: Some(p),
+                ..StudyPatch::default()
+            },
+        )
+        .await?;
     }
 
     let values = baseline(env, study, &head, 0, SampleRole::Baseline, &cancel).await?;
@@ -1320,15 +1782,31 @@ async fn prepare_steps(env: &Env, study: &mut StudyRecord, start: &StartWhen) ->
         seg.baseline_n = values.len() as u32;
         env.store.put_segment(&seg).await?;
     }
-    study.incumbent_mean = Some(m);
-    study.sigma = Some(sigma);
+    patch(
+        env,
+        study,
+        StudyPatch {
+            incumbent_mean: Some(Some(m)),
+            sigma: Some(Some(sigma)),
+            ..StudyPatch::default()
+        },
+    )
+    .await?;
     // §5.4: the base's holdout, the reference every later holdout is judged against.
     holdout(env, study, &head, 0, &cancel).await?;
 
     let model = env.cfg.executor(&spec.models, &env.agent);
     let text = schedule_file::text(&spec, &env.cfg, &worktree, &model, start);
     schedule_file::write(&env.data_dir, &slug, &text)?;
-    study.started_at = Some(now());
+    patch(
+        env,
+        study,
+        StudyPatch {
+            started_at: Some(now()),
+            ..StudyPatch::default()
+        },
+    )
+    .await?;
     set_state(env, study, StudyState::Running, None).await?;
     let sched = schedule_file::name(&slug);
     deliver(study.origin, &slug, start_card(study, m, sigma, &sched));
@@ -1336,6 +1814,8 @@ async fn prepare_steps(env: &Env, study: &mut StudyRecord, start: &StartWhen) ->
 }
 
 /// `repeats` samples of `tree` through the slot; a crash fails the whole thing.
+/// Samples flagged `noisy` (load precondition missed) are recorded but never
+/// enter the baseline mean / σ (R-32); fewer than two clean ones is a refusal.
 async fn baseline(
     env: &Env,
     study: &StudyRecord,
@@ -1350,27 +1830,27 @@ async fn baseline(
     let runs = env.runs_dir(&study.slug, n);
     std::fs::create_dir_all(&runs)?;
     let mut values = Vec::new();
+    let mut noisy = 0u32;
     for k in 1..=u32::from(spec.bench.repeats.max(1)) {
-        let s = env
-            .backend
-            .sample(
-                spec,
-                &env.cfg.bench,
-                SampleRequest {
-                    slug: &study.slug,
-                    n,
-                    k,
-                    tree_sha: tree,
-                    role,
-                    worktree: &worktree,
-                    evaluator: &evaluator,
-                    runs_dir: &runs,
-                },
-                cancel,
-            )
-            .await?;
-        env.store.insert_sample(&study.slug, &s).await?;
+        let s = scored_sample(
+            env,
+            spec,
+            SampleRequest {
+                slug: &study.slug,
+                n,
+                k,
+                tree_sha: tree,
+                role,
+                worktree: &worktree,
+                evaluator: &evaluator,
+                runs_dir: &runs,
+            },
+            cancel,
+            None,
+        )
+        .await?;
         match s.value {
+            Some(_) if s.noisy => noisy += 1,
             Some(v) => values.push(v),
             None => {
                 let tail = s
@@ -1384,6 +1864,13 @@ async fn baseline(
                 )));
             }
         }
+    }
+    if values.len() < 2.min(usize::from(spec.bench.repeats.max(1))) {
+        return Err(Error::refused(format!(
+            "only {} clean baseline sample(s) ({noisy} taken under load above bench.max_load); \
+             wait for a quieter machine or raise bench.wait",
+            values.len()
+        )));
     }
     Ok(values)
 }
@@ -1418,7 +1905,10 @@ pub async fn begin_env(env: &Env, m: Begin) -> Result<Brief> {
     }
     let mut study = study_of(env, m.session).await?;
     match &study.state {
-        StudyState::Running | StudyState::Paused { .. } => {}
+        StudyState::Running => {}
+        // R-51: a paused study fires only for the user's RunOnce (a `run_once` event newer
+        // than the last `begin`); a schedule that failed to disable does not keep it running.
+        StudyState::Paused { .. } if run_once_pending(&env.store, &study.slug).await? => {}
         s => {
             return Err(Error::refused(format!(
                 "study `{}` is {}; nothing to run",
@@ -1443,22 +1933,60 @@ pub async fn begin_env(env: &Env, m: Begin) -> Result<Brief> {
     };
 
     // §8.4: the money cap is checked again here so a fire after the cap ends at once.
-    let spend = env.backend.spend_usd(study.session).await;
+    // The spend must be known (R-14): an unreadable ledger refuses the fire instead of failing open.
+    let spend = study_spend(env, &study).await.map_err(|e| {
+        Error::refused(format!(
+            "study spend unknown ({e}); not starting an experiment"
+        ))
+    })?;
     if spend >= study.spec.budget.usd {
         begin_finalize(env, study, StopReason::Budget).await?;
         return Err(Error::refused("budget exhausted; the study is finalizing"));
     }
 
-    // §4.3 invariant: close a dangling experiment instead of blocking.
+    let worktree = worktree_of(&study)?;
+    // R-50: a keep whose commit landed but whose ledger write did not (crash in between) is
+    // adopted here, before the drift repair could reset the kept commit off the branch.
+    if let Some(note) = adopt_pending_keep(env, &mut study, &worktree).await? {
+        incidents.push(note);
+    }
+
+    // §4.3 invariant: close a dangling experiment instead of blocking. A measuring one has
+    // a bench group to kill and samples to mark lost (R-49); its change is saved as its own
+    // candidate.patch before the repair resets the tree (R-63).
     if let Some(mut dangling) = env.store.dangling_experiment(&slug, None).await? {
         let was_measuring = dangling.state == ExperimentState::Measuring;
+        if was_measuring {
+            cancel(&env.root, &slug);
+        }
+        if let Ok(inc) = incumbent_of(&study) {
+            let patch = env.runs_dir(&slug, dangling.n).join("candidate.patch");
+            let _ = std::fs::create_dir_all(env.runs_dir(&slug, dangling.n));
+            match env.backend.discard(&worktree, &inc, &patch) {
+                Ok(_) => {
+                    dangling.patch_path =
+                        Some(format!("{slug}/runs/{}/candidate.patch", dangling.n));
+                }
+                Err(e) => tracing::warn!(%slug, n = dangling.n, "dangling change not saved: {e}"),
+            }
+        }
+        let from = dangling.state;
         dangling.state = if was_measuring {
             ExperimentState::Interrupted
         } else {
             ExperimentState::Abandoned
         };
         dangling.finished_at = Some(now());
-        env.store.update_experiment(&dangling).await?;
+        if !env.store.update_experiment_if(&dangling, &[from]).await? {
+            // The cancelled run closed its own row first; only the saved patch is ours to add.
+            if let Some(mut cur) = env.store.get_experiment(&slug, dangling.n).await? {
+                cur.patch_path = dangling.patch_path.clone();
+                env.store.update_experiment(&cur).await?;
+            }
+        }
+        if was_measuring {
+            mark_lost(&env.store, &slug, dangling.n).await?;
+        }
         env.store
             .append_event(
                 &slug,
@@ -1473,7 +2001,6 @@ pub async fn begin_env(env: &Env, m: Begin) -> Result<Brief> {
     }
 
     // §6 drift repair.
-    let worktree = worktree_of(&study)?;
     let incumbent = incumbent_of(&study)?;
     let n = env.store.next_experiment_n(&slug).await?;
     let runs = env.runs_dir(&slug, n);
@@ -1505,61 +2032,45 @@ pub async fn begin_env(env: &Env, m: Begin) -> Result<Brief> {
         }
     }
 
-    // §5.2 step 4: one incumbent sample every `remeasure_every` keeps.
+    // §5.2 step 4: one incumbent sample every `remeasure_every` keeps, counted by its
+    // own `remeasure` event (confirm-phase incumbent samples share the role, R-20).
     let (closed, kept) = counts(&env.store, &slug).await?;
     if let Some(due) = kept.checked_div(env.cfg.gate.remeasure_every) {
         let remeasures = env
             .store
-            .list_samples(&slug, None)
+            .list_events(&slug, Some("remeasure"), 10_000)
             .await?
-            .iter()
-            .filter(|s| s.role == Some(SampleRole::Incumbent))
-            .count() as u32;
+            .len() as u32;
         if due > remeasures {
             let evaluator = env.evaluator_dir(&slug, study.segment);
-            let s = env
-                .backend
-                .sample(
-                    &study.spec,
-                    &env.cfg.bench,
-                    SampleRequest {
-                        slug: &slug,
-                        n,
-                        k: 0,
-                        tree_sha: &incumbent,
-                        role: SampleRole::Incumbent,
-                        worktree: &worktree,
-                        evaluator: &evaluator,
-                        runs_dir: &runs,
-                    },
-                    &cancel_token(&env.root, &slug),
+            // The tree is clean at the incumbent here (repair just ran): sample it in place.
+            let s = scored_sample(
+                env,
+                &study.spec,
+                SampleRequest {
+                    slug: &slug,
+                    n,
+                    k: 0,
+                    tree_sha: &incumbent,
+                    role: SampleRole::Incumbent,
+                    worktree: &worktree,
+                    evaluator: &evaluator,
+                    runs_dir: &runs,
+                },
+                &cancel_token(&env.root, &slug),
+                None,
+            )
+            .await?;
+            env.store
+                .append_event(
+                    &slug,
+                    "remeasure",
+                    &serde_json::json!({ "n": n, "value": s.value }),
                 )
                 .await?;
-            env.store.insert_sample(&slug, &s).await?;
-            if let (Some(v), Some(mean_i), Some(sigma)) =
-                (s.value, study.incumbent_mean, study.sigma)
-                && env.backend.drifted(sigma, mean_i, v)
-            {
-                env.store
-                    .append_event(
-                        &slug,
-                        "drift",
-                        &serde_json::json!({ "n": n, "value": v, "mean": mean_i, "sigma": sigma }),
-                    )
-                    .await?;
-                incidents.push(format!(
-                    "an incumbent re-measure landed at {} {} vs mean {} (drift); the next confirm takes more samples.",
-                    fmt_num(v),
-                    study.spec.metric.unit,
-                    fmt_num(mean_i)
-                ));
+            if let Some(note) = absorb_incumbent_sample(env, &mut study, &incumbent, n, &s).await? {
+                incidents.push(note);
             }
-            let inc = clean_values(&env.store.samples_of_tree(&slug, &incumbent).await?);
-            if !inc.is_empty() {
-                study.incumbent_mean = Some(mean(&inc));
-            }
-            study.sigma = Some(segment_sigma(env, &study).await?);
-            env.store.update_study(&study).await?;
         }
     }
 
@@ -1572,12 +2083,13 @@ pub async fn begin_env(env: &Env, m: Begin) -> Result<Brief> {
             None
         }
     };
-    // Study spend at open; `Log` subtracts it for the row's `cost_nanos`.
+    // The live session tree's spend at open; `Log` subtracts it for the row's `cost_nanos`.
+    let live = env.backend.session_cost(study.session).await.ok();
     env.store
         .append_event(
             &slug,
             "begin",
-            &serde_json::json!({ "n": n, "spend_usd": spend }),
+            &serde_json::json!({ "n": n, "spend_usd": live }),
         )
         .await?;
     set_phase(&env.root, &slug, n, Phase::Novelty);
@@ -1608,42 +2120,7 @@ pub async fn begin_env(env: &Env, m: Begin) -> Result<Brief> {
             .await?;
     }
 
-    // Explore mode after a plateau (§8.4), budget line, code map, incidents.
-    let events = env.store.list_events(&slug, Some("explore"), 1).await?;
-    let last_keep_n = env
-        .store
-        .list_experiments(&slug, None, u32::MAX)
-        .await?
-        .iter()
-        .find(|e| e.state == ExperimentState::Kept)
-        .map_or(0, |e| e.n);
-    let explore = events.first().is_some_and(|e| {
-        e.payload
-            .get("after_n")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(0) as u32
-            >= last_keep_n
-    });
-    let hours = stop::hours_running(&study, chrono::Utc::now());
-    let left = budget_left(&study.spec, closed, hours, spend);
-    let code_map = env
-        .backend
-        .code_map(
-            &env.rt,
-            &study.repo,
-            &study.spec.scope,
-            env.cfg.brief.code_map_tokens,
-        )
-        .await;
-    let cx = crate::brief::Context {
-        n,
-        explore,
-        incidents,
-        budget_left: (left.experiments, left.hours, left.usd),
-        code_map,
-        gate: env.cfg.gate.clone(),
-        crash_retries: env.cfg.defaults.crash_retries,
-    };
+    let cx = brief_context(env, &study, n, incidents, closed, spend).await?;
     let mut brief = env
         .backend
         .brief(&env.store, &study, &env.cfg.brief, &cx)
@@ -1654,9 +2131,11 @@ pub async fn begin_env(env: &Env, m: Begin) -> Result<Brief> {
     match (wave, slots) {
         (Some(w), Some(slots)) => {
             let ideas = env.store.list_ideas(&slug, Some(IdeaStatus::Open)).await?;
-            brief
-                .text
-                .push_str(&crate::wave::supervisor_block(&study, w, &slots, &ideas));
+            append_block(
+                &mut brief,
+                &crate::wave::supervisor_block(&study, w, &slots, &ideas),
+                env.cfg.brief.max_bytes as usize,
+            );
             for s in &slots {
                 env.publish(StudyEvent::ExperimentStarted {
                     slug: slug.clone(),
@@ -1679,6 +2158,74 @@ pub async fn begin_env(env: &Env, m: Begin) -> Result<Brief> {
     Ok(brief)
 }
 
+/// The brief's context for experiment `n`: explore mode after a plateau (§8.4),
+/// the budget line, the code map of the scope (focus = scope paths without their
+/// glob tails, rooted at the worktree — R-76), incidents. Shared by the single
+/// experiment and every wave slot (R-73).
+async fn brief_context(
+    env: &Env,
+    study: &StudyRecord,
+    n: u32,
+    incidents: Vec<String>,
+    closed: u32,
+    spend: f64,
+) -> Result<crate::brief::Context> {
+    let slug = &study.slug;
+    let events = env.store.list_events(slug, Some("explore"), 1).await?;
+    let last_keep_n = env
+        .store
+        .list_experiments(slug, None, u32::MAX)
+        .await?
+        .iter()
+        .find(|e| e.state == ExperimentState::Kept)
+        .map_or(0, |e| e.n);
+    let explore = events.first().is_some_and(|e| {
+        e.payload
+            .get("after_n")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0) as u32
+            >= last_keep_n
+    });
+    let hours = stop::hours_running(study, chrono::Utc::now());
+    let left = budget_left(&study.spec, closed, hours, spend);
+    let focus: Vec<String> = study
+        .spec
+        .scope
+        .iter()
+        .map(|g| {
+            g.split(['*', '?', '['])
+                .next()
+                .unwrap_or("")
+                .trim_end_matches('/')
+                .to_owned()
+        })
+        .filter(|f| !f.is_empty())
+        .collect();
+    let root = study.worktree.clone().unwrap_or_else(|| study.repo.clone());
+    let code_map = env
+        .backend
+        .code_map(&env.rt, &root, &focus, env.cfg.brief.code_map_tokens)
+        .await;
+    Ok(crate::brief::Context {
+        n,
+        explore,
+        incidents,
+        budget_left: (left.experiments, left.hours, left.usd),
+        code_map,
+        gate: env.cfg.gate.clone(),
+        crash_retries: env.cfg.defaults.crash_retries,
+    })
+}
+
+/// Append a wave block to a rendered brief without exceeding `brief.max_bytes`
+/// (R-74): the brief's own lists are trimmed first, never the block.
+fn append_block(brief: &mut Brief, block: &str, max_bytes: usize) {
+    if brief.text.len() + block.len() > max_bytes {
+        brief.text = crate::brief::trim(&brief.text, max_bytes.saturating_sub(block.len()));
+    }
+    brief.text.push_str(block);
+}
+
 /// `Begin{slot}` from a wave child (140 §10 step 2): bind the child to its
 /// slot and return the study brief for the slot's experiment plus its `<slot>` block.
 async fn begin_slot(env: &Env, session: SessionId, slot: u8) -> Result<Brief> {
@@ -1691,20 +2238,8 @@ async fn begin_slot(env: &Env, session: SessionId, slot: u8) -> Result<Brief> {
         return Err(Error::refused(format!("wave {wave} has no slot {slot}")));
     };
     let (closed, _) = counts(&env.store, &slug).await?;
-    let spend = env.backend.spend_usd(study.session).await;
-    let left = budget_left(
-        &study.spec,
-        closed,
-        stop::hours_running(&study, chrono::Utc::now()),
-        spend,
-    );
-    let cx = crate::brief::Context {
-        n: exp.n,
-        budget_left: (left.experiments, left.hours, left.usd),
-        gate: env.cfg.gate.clone(),
-        crash_retries: env.cfg.defaults.crash_retries,
-        ..Default::default()
-    };
+    let spend = study_spend_or_closed(env, &study).await;
+    let cx = brief_context(env, &study, exp.n, Vec::new(), closed, spend).await?;
     let mut brief = env
         .backend
         .brief(&env.store, &study, &env.cfg.brief, &cx)
@@ -1712,9 +2247,11 @@ async fn begin_slot(env: &Env, session: SessionId, slot: u8) -> Result<Brief> {
     brief.n = exp.n;
     brief.segment = study.segment;
     let ideas = env.store.list_ideas(&slug, Some(IdeaStatus::Open)).await?;
-    brief
-        .text
-        .push_str(&crate::wave::child_block(wave, &mine, &ideas));
+    append_block(
+        &mut brief,
+        &crate::wave::child_block(wave, &mine, &ideas),
+        env.cfg.brief.max_bytes as usize,
+    );
     brief.slots = Some(vec![mine]);
     Ok(brief)
 }
@@ -1782,13 +2319,15 @@ pub async fn run_env(env: &Env, m: Run) -> Result<RunReport> {
     };
     let slug = study.slug.clone();
     let retries = env.cfg.defaults.crash_retries;
-    let runs_so_far = env
-        .store
-        .list_events(&slug, Some("run"), 10_000)
-        .await?
-        .iter()
-        .filter(|e| e.payload.get("n").and_then(|v| v.as_u64()) == Some(u64::from(exp.n)))
-        .count() as u8;
+    let runs_so_far = u8::try_from(
+        env.store
+            .list_events(&slug, Some("run"), 10_000)
+            .await?
+            .iter()
+            .filter(|e| e.payload.get("n").and_then(|v| v.as_u64()) == Some(u64::from(exp.n)))
+            .count(),
+    )
+    .unwrap_or(u8::MAX);
     match (exp.state, exp.verdict.as_ref()) {
         (ExperimentState::Open, _) => {}
         (ExperimentState::Measured, Some(Verdict::Crash)) if runs_so_far <= retries => {}
@@ -1797,6 +2336,9 @@ pub async fn run_env(env: &Env, m: Run) -> Result<RunReport> {
                 "no retries left after {runs_so_far} crashed runs; call experiment_log"
             )));
         }
+        // R-1: experiment_log found the tree changed since the measurement → measure again.
+        (ExperimentState::Measured, _)
+            if tree_changed_pending(&env.store, &slug, exp.n).await? => {}
         (ExperimentState::Measured, _) => {
             return Err(Error::refused(
                 "this experiment is already measured; call experiment_log",
@@ -1816,6 +2358,15 @@ pub async fn run_env(env: &Env, m: Run) -> Result<RunReport> {
     if a.force && a.reason.as_deref().map(str::trim).unwrap_or("").is_empty() {
         return Err(Error::refused("force needs a reason"));
     }
+    // R-60: the claim is conditional — two parallel experiment_run calls cannot both measure.
+    let from = exp.state;
+    if !env
+        .store
+        .claim_experiment(&slug, exp.n, &[from], ExperimentState::Measuring)
+        .await?
+    {
+        return Err(Error::refused("already measuring"));
+    }
     env.store
         .append_event(&slug, "run", &serde_json::json!({ "n": exp.n }))
         .await?;
@@ -1824,22 +2375,79 @@ pub async fn run_env(env: &Env, m: Run) -> Result<RunReport> {
     exp.hypothesis = a.hypothesis.chars().take(300).collect();
     exp.state = ExperimentState::Measuring;
     env.store.update_experiment(&exp).await?;
+    let cancel = cancel_token(&env.root, &slug);
+    // R-52: whatever fails inside the measurement (a spawn, the store, a cancelled slot
+    // wait) must not leave the row `measuring`: a cancel closes it `interrupted`, any
+    // other error hands the experiment back (`open`) so the model can run again.
+    let r = measure_env(
+        env,
+        &mut study,
+        &mut exp,
+        &worktree,
+        a,
+        runs_so_far,
+        &cancel,
+    )
+    .await;
+    if let Err(e) = &r
+        && exp.state == ExperimentState::Measuring
+    {
+        if cancel.is_cancelled() {
+            let _ = interrupted(env, &mut exp, Vec::new()).await;
+        } else {
+            tracing::warn!(%slug, n = exp.n, "measurement failed, experiment reopened: {e}");
+            exp.state = ExperimentState::Open;
+            env.store
+                .update_experiment_if(&exp, &[ExperimentState::Measuring])
+                .await?;
+            mark_lost(&env.store, &slug, exp.n).await?;
+            clear_phase(&env.root, &slug);
+        }
+    }
+    r
+}
+
+/// A `tree_changed {n}` event newer than the last `run {n}` (R-1): the keep was
+/// refused because the worktree no longer matches the measured patch.
+async fn tree_changed_pending(store: &Store, slug: &str, n: u32) -> Result<bool> {
+    let events = store.list_events(slug, None, 10_000).await?;
+    let of_n = |e: &&crate::store::EventRecord| {
+        e.payload.get("n").and_then(|v| v.as_u64()) == Some(u64::from(n))
+    };
+    let changed = events
+        .iter()
+        .filter(of_n)
+        .find(|e| e.kind == "tree_changed")
+        .map(|e| e.id);
+    let ran = events
+        .iter()
+        .filter(of_n)
+        .find(|e| e.kind == "run")
+        .map(|e| e.id);
+    Ok(matches!((changed, ran), (Some(c), Some(r)) if c > r))
+}
+
+/// The measurement body of [`run_env`]: novelty → custody → scope → samples →
+/// gate → checks → verdict. `exp` is `measuring` on entry and `measured` on `Ok`.
+async fn measure_env(
+    env: &Env,
+    study: &mut StudyRecord,
+    exp: &mut ExperimentRecord,
+    worktree: &Path,
+    a: &RunArgs,
+    runs_so_far: u8,
+    cancel: &CancellationToken,
+) -> Result<RunReport> {
+    let slug = study.slug.clone();
+    let retries = env.cfg.defaults.crash_retries;
     let n = exp.n;
     let started = exp.started_at.clone();
-    let incumbent = incumbent_of(&study)?;
-    let cancel = cancel_token(&env.root, &slug);
+    let incumbent = incumbent_of(study)?;
     let retries_left = retries.saturating_sub(runs_so_far);
-    let _ = env
-        .backend
-        .mark_tried(&env.store, &slug, &exp.idea, n)
-        .await;
-
     // Novelty (§7.3).
     progress(env, &slug, n, &started, Phase::Novelty, 0, 1).await;
-    let patch_hash = env
-        .backend
-        .patch_hash(&worktree, &incumbent)
-        .unwrap_or_default();
+    // A git failure here is an error the model sees, never an empty hash fed to the novelty check (R-102).
+    let patch_hash = env.backend.patch_hash(worktree, &incumbent)?;
     exp.patch_hash = Some(patch_hash.clone());
     let flagged_before = env
         .store
@@ -1868,7 +2476,7 @@ pub async fn run_env(env: &Env, m: Run) -> Result<RunReport> {
     // A harness-applied Restore is a deliberate re-measure of a dead end (§9.1): never a duplicate.
     let restore_of = restoring(&env.store, &slug, n).await?;
     if let Some(reason) = novelty.refused.filter(|_| !a.force && restore_of.is_none()) {
-        return refuse_run(env, &mut exp, reason, vec![], novelty.similar).await;
+        return refuse_run(env, exp, reason, vec![], novelty.similar).await;
     }
 
     // Custody (§5.3).
@@ -1879,7 +2487,7 @@ pub async fn run_env(env: &Env, m: Run) -> Result<RunReport> {
         .await?
         .map(|s| s.custody)
         .unwrap_or_default();
-    let changed = env.backend.custody_verify(&custody, &worktree)?;
+    let changed = env.backend.custody_verify(&custody, worktree)?;
     if !changed.is_empty() {
         let reason = format!(
             "evaluator changed ({}) — revert with \"git checkout {} -- {}\" or ask the user for a new segment",
@@ -1887,34 +2495,39 @@ pub async fn run_env(env: &Env, m: Run) -> Result<RunReport> {
             incumbent,
             changed.join(" ")
         );
-        return refuse_run(env, &mut exp, reason, vec![], novelty.similar).await;
+        return refuse_run(env, exp, reason, vec![], novelty.similar).await;
     }
 
     // Scope (§5.3).
-    let scope = env.backend.scope_diff(&study.spec, &worktree)?;
+    let scope = env.backend.scope_diff(&study.spec, worktree)?;
     if !scope.off_limits.is_empty() {
         let reason = format!("touches off-limits {}", scope.off_limits.join(", "));
-        return refuse_run(
-            env,
-            &mut exp,
-            reason,
-            scope.deviations.clone(),
-            novelty.similar,
-        )
-        .await;
+        return refuse_run(env, exp, reason, scope.deviations.clone(), novelty.similar).await;
     }
     exp.deviations = scope.deviations.clone();
-    env.store.update_experiment(&exp).await?;
+    env.store.update_experiment(exp).await?;
+    // Only a run that will spend a sample marks the matching idea `tried` (R-69): a
+    // refused one leaves the idea open for the next brief.
+    let _ = env
+        .backend
+        .mark_tried(&env.store, &slug, &exp.idea, n)
+        .await;
 
-    // Samples with the sequential gate (§5.2).
+    // Samples with the sequential gate (§5.2). A re-run after a crash retry or a
+    // tree change gets its own tree name so σ never pools two measurements of
+    // different trees (R-1).
     let evaluator = env.evaluator_dir(&slug, study.segment);
     let runs = env.runs_dir(&slug, n);
     std::fs::create_dir_all(&runs)?;
-    let cand_tree = format!("exp:{n}");
+    let cand_tree = if runs_so_far == 0 {
+        format!("exp:{n}")
+    } else {
+        format!("exp:{n}r{runs_so_far}")
+    };
     let paths = Paths {
         slug: &slug,
         n,
-        worktree: &worktree,
+        worktree,
         evaluator: &evaluator,
         runs: &runs,
     };
@@ -1926,16 +2539,21 @@ pub async fn run_env(env: &Env, m: Run) -> Result<RunReport> {
         retries_left,
         ..RunReport::default()
     };
+    let metric_name = study.spec.metric.name.clone();
     let crash = |env: &Env, exp: &mut ExperimentRecord, report: &mut RunReport, s: &Sample| {
         let tail = s
             .log_path
             .as_deref()
             .map(|p| env.backend.tail(&env.root.join(p)))
             .unwrap_or_default();
-        exp.line = format!(
-            "crash: exit {} (tail below)",
-            s.exit.map_or("killed".to_owned(), |e| e.to_string())
-        );
+        // Exit 0 without a value = the primary line was missing or not a finite number (R-41).
+        exp.line = match s.exit {
+            Some(0) => format!(
+                "crash: exit 0 but no usable `METRIC {metric_name}=<number>` line (missing, nan or inf; tail below)"
+            ),
+            Some(e) => format!("crash: exit {e} (tail below)"),
+            None => "crash: killed (timeout or signal; tail below)".to_owned(),
+        };
         report.verdict = Verdict::Crash;
         report.line = exp.line.clone();
         report.tail = Some(tail);
@@ -1956,7 +2574,7 @@ pub async fn run_env(env: &Env, m: Run) -> Result<RunReport> {
                 smoke,
                 Duration::from_secs(120),
                 paths.req(0, &cand_tree, SampleRole::Candidate),
-                &cancel,
+                cancel,
             )
             .await?;
         if exit != Some(0) {
@@ -1964,7 +2582,7 @@ pub async fn run_env(env: &Env, m: Run) -> Result<RunReport> {
             report.verdict = Verdict::Crash;
             report.line = exp.line.clone();
             report.tail = Some(tail);
-            return finish_measure(env, &mut exp, report, taken, None).await;
+            return finish_measure(env, exp, report, taken, None).await;
         }
     }
 
@@ -1977,7 +2595,9 @@ pub async fn run_env(env: &Env, m: Run) -> Result<RunReport> {
         .filter_map(|e| e.delta)
         .fold(None, |m: Option<f64>, d| Some(m.map_or(d, |x| x.max(d))));
     let mut planned: u8 = 1;
-    let mut k: u32 = taken.len() as u32;
+    let mut k: u32 = 0;
+    // Incumbent samples taken in this call get their own `k` (sample-<k>.log is never overwritten, R-23).
+    let mut k_inc: u32 = 100;
     // Candidate samples before the gate is consulted again (`Confirm.more` is W1's count;
     // the drift rule's doubling is ours, §5.2 step 4).
     let mut need: u32 = 1;
@@ -1988,35 +2608,34 @@ pub async fn run_env(env: &Env, m: Run) -> Result<RunReport> {
     let max_samples = 1 + 2 * u32::from(env.cfg.gate.confirm_runs) + 1;
     while decision.is_none() && k < max_samples {
         if cancel.is_cancelled() {
-            return interrupted(env, &mut exp, taken).await;
+            return interrupted(env, exp, taken).await;
         }
         k += 1;
-        progress(
-            env,
-            &slug,
-            n,
-            &started,
-            Phase::Sampling,
-            k as u8,
-            planned.max(k as u8),
-        )
-        .await;
-        let s = bench_sample(
+        let (sample_no, of) = (
+            u8::try_from(k).unwrap_or(u8::MAX),
+            planned.max(u8::try_from(k).unwrap_or(u8::MAX)),
+        );
+        progress(env, &slug, n, &started, Phase::Sampling, sample_no, of).await;
+        let s = scored_sample(
             env,
             &study.spec,
             paths.req(k, &cand_tree, SampleRole::Candidate),
-            &cancel,
+            cancel,
+            Some(Ticks {
+                started_at: &started,
+                sample: sample_no,
+                of,
+            }),
         )
         .await?;
-        env.store.insert_sample(&slug, &s).await?;
         if cancel.is_cancelled() || s.lost {
             taken.push(s);
-            return interrupted(env, &mut exp, taken).await;
+            return interrupted(env, exp, taken).await;
         }
         taken.push(s.clone());
         if s.value.is_none() {
-            crash(env, &mut exp, &mut report, &s);
-            return finish_measure(env, &mut exp, report, taken, None).await;
+            crash(env, exp, &mut report, &s);
+            return finish_measure(env, exp, report, taken, None).await;
         }
         let cand_taken: Vec<Sample> = taken
             .iter()
@@ -2026,15 +2645,14 @@ pub async fn run_env(env: &Env, m: Run) -> Result<RunReport> {
         if (cand_taken.len() as u32) < need {
             continue;
         }
-        let inc_samples = env.store.samples_of_tree(&slug, &incumbent).await?;
+        let inc_samples = incumbent_samples(env, study, &incumbent).await?;
         let incumbent_age = inc_samples
             .iter()
-            .filter(|s| s.role != Some(SampleRole::Holdout))
             .map(|s| s.n)
             .max()
             .map_or(n, |newest| n.saturating_sub(newest).saturating_sub(1));
         let candidate = clean_values(&cand_taken);
-        let incumbent_vals = clean_values(&inc_samples);
+        let incumbent_vals = bench_values(&inc_samples);
         let secondaries = secondary_means(&cand_taken, &inc_samples);
         let input = GateInput {
             candidate,
@@ -2059,16 +2677,27 @@ pub async fn run_env(env: &Env, m: Run) -> Result<RunReport> {
                         .await?;
                 }
                 need = cand_taken.len() as u32 + more;
-                planned = need.min(u32::from(u8::MAX)) as u8;
+                planned = u8::try_from(need).unwrap_or(u8::MAX);
                 if incumbent_sample {
-                    let si = bench_sample(
+                    k_inc += 1;
+                    let si = incumbent_sample_in_place(
                         env,
-                        &study.spec,
-                        paths.req(k, &incumbent, SampleRole::Incumbent),
-                        &cancel,
+                        study,
+                        &paths,
+                        &incumbent,
+                        k_inc,
+                        cancel,
+                        Ticks {
+                            started_at: &started,
+                            sample: sample_no,
+                            of,
+                        },
                     )
                     .await?;
-                    env.store.insert_sample(&slug, &si).await?;
+                    if si.lost || cancel.is_cancelled() {
+                        taken.push(si);
+                        return interrupted(env, exp, taken).await;
+                    }
                     taken.push(si);
                 }
             }
@@ -2078,7 +2707,7 @@ pub async fn run_env(env: &Env, m: Run) -> Result<RunReport> {
     }
     // At the cap the gate decides on what was measured; with no measurable input it is no gain.
     let (verdict, delta, delta_pct, z) =
-        match decision.or_else(|| last_input.map(|i| env.backend.gate_step(&gcfg, &i))) {
+        match decision.or_else(|| last_input.as_ref().map(|i| env.backend.gate_step(&gcfg, i))) {
             Some(GateStep::Decide {
                 verdict,
                 delta,
@@ -2094,7 +2723,8 @@ pub async fn run_env(env: &Env, m: Run) -> Result<RunReport> {
             .cloned()
             .collect::<Vec<_>>(),
     );
-    let inc_vals = clean_values(&env.store.samples_of_tree(&slug, &incumbent).await?);
+    let inc_samples = incumbent_samples(env, study, &incumbent).await?;
+    let inc_vals = bench_values(&inc_samples);
     let cand_mean = mean(&cand_vals);
     let inc_mean = if inc_vals.is_empty() {
         study.incumbent_mean.unwrap_or(0.0)
@@ -2126,7 +2756,16 @@ pub async fn run_env(env: &Env, m: Run) -> Result<RunReport> {
             cand_vals.len()
         );
     }
-    report.cases_moved = cases_moved(&taken, &env.store.samples_of_tree(&slug, &incumbent).await?);
+    // §5.2 step 5: name the guard that failed (`alloc_mb +7.2 % > 5 %`), R-35.
+    if verdict == Verdict::GuardFailed
+        && let Some(input) = last_input.as_ref()
+    {
+        let failed = gate::guard_failures(&gcfg, input);
+        if !failed.is_empty() {
+            report.line = format!("guard failed: {}; {}", failed.join(", "), report.line);
+        }
+    }
+    report.cases_moved = cases_moved(&taken, &inc_samples);
     exp.metric = Some(cand_mean);
 
     // Checks only on a would-be keep (§5.1).
@@ -2140,8 +2779,8 @@ pub async fn run_env(env: &Env, m: Run) -> Result<RunReport> {
             .command(
                 &c.command,
                 timeout,
-                paths.req(0, &cand_tree, SampleRole::Candidate),
-                &cancel,
+                paths.req(1, &cand_tree, SampleRole::Candidate),
+                cancel,
             )
             .await?;
         let passed = exit == Some(0);
@@ -2157,10 +2796,18 @@ pub async fn run_env(env: &Env, m: Run) -> Result<RunReport> {
             report.line = format!("checks failed (exit {exit:?}); measured {}", report.line);
         }
     }
-    // σ absorbs this experiment's repeats.
-    study.sigma = Some(segment_sigma(env, &study).await?);
-    env.store.update_study(&study).await?;
-    finish_measure(env, &mut exp, report, taken, Some(cand_mean)).await
+    // σ absorbs this experiment's repeats (a column patch, never the whole row: R-4).
+    let sigma = segment_sigma(env, study).await?;
+    patch(
+        env,
+        study,
+        StudyPatch {
+            sigma: Some(Some(sigma)),
+            ..StudyPatch::default()
+        },
+    )
+    .await?;
+    finish_measure(env, exp, report, taken, Some(cand_mean)).await
 }
 
 /// Mean secondaries `(name, candidate, incumbent)` for the guards.
@@ -2201,7 +2848,10 @@ fn cases_moved(candidate: &[Sample], incumbent: &[Sample]) -> Vec<CaseDelta> {
     else {
         return vec![];
     };
-    let i = incumbent.iter().rev().find(|s| s.value.is_some());
+    let i = incumbent
+        .iter()
+        .rev()
+        .find(|s| s.value.is_some() && s.role != Some(SampleRole::Holdout));
     let mut out: Vec<CaseDelta> = c
         .cases
         .iter()
@@ -2244,7 +2894,15 @@ async fn finish_measure(
         .count() as u32;
     exp.metric = metric.or(exp.metric);
     exp.line = report.line.clone();
-    env.store.update_experiment(exp).await?;
+    if !env
+        .store
+        .update_experiment_if(exp, &[ExperimentState::Measuring])
+        .await?
+    {
+        // StopNow / recover closed the row while the last sample ran.
+        clear_phase(&env.root, &exp.slug);
+        return Err(Error::refused("cancelled: the study was stopped"));
+    }
     report.samples = taken;
     Ok(report)
 }
@@ -2258,7 +2916,10 @@ async fn interrupted(
     exp.finished_at = Some(now());
     exp.line = "interrupted".into();
     exp.n_samples += taken.len() as u32;
-    env.store.update_experiment(exp).await?;
+    // StopNow / recover may have closed the row first (R-4): never overwrite their close-out.
+    env.store
+        .update_experiment_if(exp, &[ExperimentState::Measuring])
+        .await?;
     mark_lost(&env.store, &exp.slug, exp.n).await?;
     clear_phase(&env.root, &exp.slug);
     Err(Error::refused("cancelled: the study was stopped"))
@@ -2324,12 +2985,44 @@ pub async fn log_env(env: &Env, m: Log) -> Result<LogReport> {
     exp.justification = a.justification.clone();
 
     // What the verdict and the decision make of it.
-    let verdict = exp.verdict.clone().unwrap_or(Verdict::Refused {
+    let mut verdict = exp.verdict.clone().unwrap_or(Verdict::Refused {
         reason: "not measured".into(),
     });
     let mut keep = verdict.is_keep_candidate() && a.decision != Decision::Discard;
-    if a.decision == Decision::KeepSimpler && !verdict.is_keep_candidate() {
-        keep = keep_simpler_granted(env, &study, &exp, &worktree, &incumbent).await?;
+    let wants_simpler = a.decision == Decision::KeepSimpler && !verdict.is_keep_candidate();
+    // R-1: a keep commits what is in the tree *now*. Before any keep (incl. keep-simpler)
+    // the tree must still be the measured patch, custody intact, nothing off-limits.
+    if (keep || wants_simpler) && exp.verdict.is_some() {
+        match verify_tree_for_keep(env, &study, &exp, &worktree, &incumbent).await? {
+            TreeCheck::Same => {}
+            TreeCheck::Changed => {
+                env.store
+                    .append_event(&slug, "tree_changed", &serde_json::json!({ "n": n }))
+                    .await?;
+                return Err(Error::refused(
+                    "the worktree changed since experiment_run measured it; nothing was kept. \
+                     Call experiment_run again to measure what is in the tree now (or undo the \
+                     edit first), then experiment_log.",
+                ));
+            }
+            TreeCheck::Refused(reason) => {
+                // Custody / off-limits at keep: the keep is impossible (§5.3); it closes as refused.
+                verdict = Verdict::Refused {
+                    reason: reason.clone(),
+                };
+                exp.verdict = Some(verdict.clone());
+                exp.line = format!("refused at keep: {reason}");
+                keep = false;
+                if stop::is_custody_refusal(&verdict) {
+                    env.store
+                        .append_event(&slug, "custody_refusal", &serde_json::json!({ "n": n }))
+                        .await?;
+                }
+            }
+        }
+    }
+    if wants_simpler && !matches!(verdict, Verdict::Refused { .. }) {
+        keep = keep_simpler_granted(env, &mut study, &mut exp, &worktree, &incumbent).await?;
         if keep {
             exp.verdict = Some(Verdict::KeepSimpler);
             exp.line = format!("keep-simpler granted; {}", exp.line);
@@ -2379,16 +3072,30 @@ pub async fn log_env(env: &Env, m: Log) -> Result<LogReport> {
             deviations: exp.deviations.clone(),
         };
         let previous_mean = study.incumbent_mean;
+        // R-50: the intent is recorded before the commit; `record_keep` writes the ledger side
+        // in one transaction after it. A crash in between is adopted by the next Begin.
+        env.store
+            .append_event(
+                &slug,
+                "keep_pending",
+                &serde_json::json!({ "n": n, "parent": incumbent }),
+            )
+            .await?;
         let sha = env
             .backend
             .keep(&worktree, &study.spec, &meta, env.cfg.git.author.as_deref())?;
-        retag_samples(&env.store, &slug, n, &sha).await?;
         exp.commit_sha = Some(sha.clone());
         exp.state = ExperimentState::Kept;
+        let new_mean = exp.metric.or(study.incumbent_mean);
+        env.store
+            .record_keep(
+                &exp,
+                &sha,
+                &StudyPatch::incumbent(&sha, new_mean, study.sigma),
+            )
+            .await?;
         study.incumbent_sha = Some(sha.clone());
-        study.incumbent_mean = exp.metric.or(study.incumbent_mean);
-        env.store.update_experiment(&exp).await?;
-        env.store.update_study(&study).await?;
+        study.incumbent_mean = new_mean;
         report.commit = Some(sha.clone());
 
         // §9.1: review inside the call, before the next fire can build on it.
@@ -2408,15 +3115,17 @@ pub async fn log_env(env: &Env, m: Log) -> Result<LogReport> {
                 ReviewVerdict::Flagged { reason }
                     if env.cfg.review.on_suspicious == OnSuspicious::Revert =>
                 {
-                    // Revert: incumbent ← previous, the commit stays as a rejected ref, the patch is kept.
-                    let patch = runs.join("candidate.patch");
-                    if let Ok(diff) = env.backend.diff_text(&worktree, &incumbent, &sha, 4 << 20) {
-                        let _ = std::fs::write(&patch, diff);
-                        exp.patch_path = Some(format!("{slug}/runs/{n}/candidate.patch"));
-                    }
+                    // Revert: incumbent ← previous, the commit stays as a rejected ref, the patch
+                    // is kept — and Restore must find it, so both writes are checked (R-103).
+                    let patch_file = runs.join("candidate.patch");
+                    let diff = env
+                        .backend
+                        .diff_text(&worktree, &incumbent, &sha, 4 << 20)?;
+                    std::fs::write(&patch_file, diff)?;
+                    exp.patch_path = Some(format!("{slug}/runs/{n}/candidate.patch"));
                     env.backend.reject(&worktree, &slug, n, &incumbent)?;
-                    study.incumbent_sha = Some(incumbent.clone());
-                    study.incumbent_mean = previous_mean;
+                    let back = StudyPatch::incumbent(&incumbent, previous_mean, study.sigma);
+                    patch(env, &mut study, back).await?;
                     exp.state = ExperimentState::RejectedByReview;
                     report.commit = None;
                     env.store
@@ -2433,27 +3142,19 @@ pub async fn log_env(env: &Env, m: Log) -> Result<LogReport> {
             exp.review = Some(rv.clone());
             report.review = Some(rv);
             env.store.update_experiment(&exp).await?;
-            env.store.update_study(&study).await?;
         }
     } else {
         let patch = runs.join("candidate.patch");
-        match env.backend.discard(&worktree, &incumbent, &patch) {
-            Ok(hash) => {
-                exp.patch_path = Some(format!("{slug}/runs/{n}/candidate.patch"));
-                if exp.patch_hash.as_deref().unwrap_or("").is_empty() {
-                    exp.patch_hash = Some(hash);
-                }
-            }
-            Err(e) => {
-                tracing::warn!(%slug, n, "discard failed: {e}");
-                env.store
-                    .append_event(
-                        &slug,
-                        "incident",
-                        &serde_json::json!({ "n": n, "what": format!("discard failed: {e}") }),
-                    )
-                    .await?;
-            }
+        // R-104: a failed discard (patch not saved, tree not reset) keeps the experiment
+        // `measured` and the candidate in the tree; the model can call experiment_log again.
+        let hash = env.backend.discard(&worktree, &incumbent, &patch).map_err(|e| {
+            Error::refused(format!(
+                "the candidate could not be saved and reverted ({e}); nothing was closed — call experiment_log again"
+            ))
+        })?;
+        exp.patch_path = Some(format!("{slug}/runs/{n}/candidate.patch"));
+        if exp.patch_hash.as_deref().unwrap_or("").is_empty() {
+            exp.patch_hash = Some(hash);
         }
         exp.state = match &verdict {
             Verdict::Crash => ExperimentState::Crashed,
@@ -2463,8 +3164,8 @@ pub async fn log_env(env: &Env, m: Log) -> Result<LogReport> {
         };
     }
     exp.finished_at = Some(now());
-    // Cost of this experiment = study spend now − spend at `Begin` (one ledger query each; already paid for).
-    let spend = env.backend.spend_usd(study.session).await;
+    // Cost of this experiment = the live session tree now − its mark at `Begin`; the
+    // `closed` mark hands the rest of the tree's spend to `study_spend` (R-14).
     let spend_at_begin = env
         .store
         .list_events(&slug, Some("begin"), 50)
@@ -2472,8 +3173,20 @@ pub async fn log_env(env: &Env, m: Log) -> Result<LogReport> {
         .iter()
         .find(|e| e.payload.get("n").and_then(|v| v.as_u64()) == Some(u64::from(n)))
         .and_then(|e| e.payload.get("spend_usd").and_then(|v| v.as_f64()));
-    if let Some(at_begin) = spend_at_begin {
-        exp.cost_nanos = ((spend - at_begin).max(0.0) * 1e9) as u64;
+    match env.backend.session_cost(study.session).await {
+        Ok(live) => {
+            if let Some(at_begin) = spend_at_begin {
+                exp.cost_nanos = ((live - at_begin).max(0.0) * 1e9) as u64;
+            }
+            env.store
+                .append_event(
+                    &slug,
+                    "closed",
+                    &serde_json::json!({ "n": n, "spend_usd": live }),
+                )
+                .await?;
+        }
+        Err(e) => tracing::warn!(%slug, n, "experiment cost unknown: {e}"),
     }
     env.store.update_experiment(&exp).await?;
     for id in &a.closes {
@@ -2508,6 +3221,7 @@ pub async fn log_env(env: &Env, m: Log) -> Result<LogReport> {
             Err(e) => tracing::warn!(%slug, n, "holdout failed: {e}"),
         }
     }
+    let spend = study_spend_or_closed(env, &study).await;
     report.applied = exp.state;
     report.incumbent = Incumbent {
         sha: study.incumbent_sha.clone().unwrap_or_default(),
@@ -2522,8 +3236,9 @@ pub async fn log_env(env: &Env, m: Log) -> Result<LogReport> {
     );
 
     // §8.4 stop rules after the experiment closed; a wave waits for its last slot, then promotes (§10 step 4).
+    // A stop from here defers finalize to the study turn's end (R-56): the model still has the turn.
     report.stop = match m.slot {
-        None => apply_rules(env, &slug, spend).await?,
+        None => apply_rules_from_turn(env, &slug, spend, true).await?,
         Some(_) => {
             let wave = exp.wave.unwrap_or(0);
             if crate::wave::wave_closed(env, &slug, wave).await? {
@@ -2539,7 +3254,7 @@ pub async fn log_env(env: &Env, m: Log) -> Result<LogReport> {
                     mean: after.incumbent_mean,
                     kept: counts(&env.store, &slug).await?.1,
                 };
-                apply_rules(env, &slug, spend).await?
+                apply_rules_from_turn(env, &slug, spend, true).await?
             } else {
                 None
             }
@@ -2566,36 +3281,101 @@ pub(crate) fn metric_line(study: &StudyRecord, exp: &ExperimentRecord) -> String
     )
 }
 
-/// §5.2 keep-simpler: not significantly worse, fewer lines, guards hold, checks pass.
+/// §5.2 keep-simpler: not significantly worse on means *after confirm*, fewer
+/// lines, guards hold, checks pass. The candidate is brought up to
+/// `1 + confirm_runs` samples first (R-21): one sample would pass a 1.5σ
+/// regression ≈ 36 % of the time, the means ≈ 7 %.
 async fn keep_simpler_granted(
     env: &Env,
-    study: &StudyRecord,
-    exp: &ExperimentRecord,
+    study: &mut StudyRecord,
+    exp: &mut ExperimentRecord,
     worktree: &Path,
     incumbent: &str,
 ) -> Result<bool> {
     let gcfg = gate_cfg(&env.cfg, &study.spec)?;
-    let cand: Vec<Sample> = env
+    let cand_tree = env
         .store
         .list_samples(&study.slug, Some(exp.n))
         .await?
         .into_iter()
-        .filter(|s| s.role == Some(SampleRole::Candidate))
-        .collect();
-    let inc = env.store.samples_of_tree(&study.slug, incumbent).await?;
-    if clean_values(&cand).is_empty() {
+        .rev()
+        .find(|s| s.role == Some(SampleRole::Candidate) && s.value.is_some())
+        .map(|s| s.tree_sha);
+    let Some(cand_tree) = cand_tree else {
         return Ok(false);
+    };
+    let scope = env.backend.scope_diff(&study.spec, worktree)?;
+    if scope.removed <= scope.added {
+        return Ok(false); // no samples spent on a change that is not simpler
     }
+    let slug = study.slug.clone();
+    let evaluator = env.evaluator_dir(&slug, study.segment);
+    let runs = env.runs_dir(&slug, exp.n);
+    std::fs::create_dir_all(&runs)?;
+    let paths = Paths {
+        slug: &slug,
+        n: exp.n,
+        worktree,
+        evaluator: &evaluator,
+        runs: &runs,
+    };
+    let cancel = cancel_token(&env.root, &study.slug);
+    let want = 1 + usize::from(env.cfg.gate.confirm_runs);
+    let mut cand: Vec<Sample> = env
+        .store
+        .list_samples(&study.slug, Some(exp.n))
+        .await?
+        .into_iter()
+        .filter(|s| s.role == Some(SampleRole::Candidate) && s.tree_sha == cand_tree)
+        .collect();
+    let mut k = cand.iter().map(|s| s.k).max().unwrap_or(0);
+    while clean_values(&cand).len() < want {
+        k += 1;
+        progress(
+            env,
+            &study.slug,
+            exp.n,
+            &exp.started_at,
+            Phase::Sampling,
+            u8::try_from(k).unwrap_or(u8::MAX),
+            u8::try_from(want).unwrap_or(u8::MAX),
+        )
+        .await;
+        let s = scored_sample(
+            env,
+            &study.spec,
+            paths.req(k, &cand_tree, SampleRole::Candidate),
+            &cancel,
+            None,
+        )
+        .await?;
+        exp.n_samples += 1;
+        if s.value.is_none() || s.lost {
+            return Ok(false);
+        }
+        cand.push(s);
+    }
+    let inc = incumbent_samples(env, study, incumbent).await?;
     let input = GateInput {
         candidate: clean_values(&cand),
-        incumbent: clean_values(&inc),
+        incumbent: bench_values(&inc),
         sigma: study.sigma.unwrap_or(0.0),
         largest_accepted_delta: None,
         incumbent_age: 0,
         keep_simpler: true,
         secondaries: secondary_means(&cand, &inc),
     };
-    let scope = env.backend.scope_diff(&study.spec, worktree)?;
+    exp.metric = Some(mean(&input.candidate));
+    let sigma = segment_sigma(env, study).await?;
+    patch(
+        env,
+        study,
+        StudyPatch {
+            sigma: Some(Some(sigma)),
+            ..StudyPatch::default()
+        },
+    )
+    .await?;
     if !env
         .backend
         .keep_simpler(&gcfg, &input, scope.added, scope.removed)
@@ -2605,33 +3385,81 @@ async fn keep_simpler_granted(
     let Some(c) = study.spec.checks.as_ref() else {
         return Ok(true);
     };
-    let evaluator = env.evaluator_dir(&study.slug, study.segment);
-    let runs = env.runs_dir(&study.slug, exp.n);
     let (exit, _, _) = env
         .backend
         .command(
             &c.command,
             schedule_file::duration(&c.timeout, Duration::from_secs(300)),
-            SampleRequest {
-                slug: &study.slug,
-                n: exp.n,
-                k: 0,
-                tree_sha: incumbent,
-                role: SampleRole::Candidate,
-                worktree,
-                evaluator: &evaluator,
-                runs_dir: &runs,
-            },
-            &cancel_token(&env.root, &study.slug),
+            paths.req(2, &cand_tree, SampleRole::Candidate),
+            &cancel,
         )
         .await?;
     Ok(exit == Some(0))
 }
 
+/// What [`verify_tree_for_keep`] found.
+enum TreeCheck {
+    /// The tree is the measured patch, custody intact, nothing off-limits.
+    Same,
+    /// The normalised patch hash differs from `experiment_run`'s.
+    Changed,
+    /// Custody or off-limits violated: the keep is impossible (the refusal text).
+    Refused(String),
+}
+
+/// R-1: the keep invariant re-checked at keep time. Between `experiment_run`
+/// returning and `experiment_log` the model has a full turn with edit tools;
+/// whatever is in the tree now is what `git add -A` would commit.
+async fn verify_tree_for_keep(
+    env: &Env,
+    study: &StudyRecord,
+    exp: &ExperimentRecord,
+    worktree: &Path,
+    incumbent: &str,
+) -> Result<TreeCheck> {
+    let custody = env
+        .store
+        .get_segment(&study.slug, study.segment)
+        .await?
+        .map(|s| s.custody)
+        .unwrap_or_default();
+    let changed = env.backend.custody_verify(&custody, worktree)?;
+    if !changed.is_empty() {
+        return Ok(TreeCheck::Refused(format!(
+            "evaluator changed ({}) after the measurement",
+            changed.join(", ")
+        )));
+    }
+    let scope = env.backend.scope_diff(&study.spec, worktree)?;
+    if !scope.off_limits.is_empty() {
+        return Ok(TreeCheck::Refused(format!(
+            "touches off-limits {}",
+            scope.off_limits.join(", ")
+        )));
+    }
+    let hash = env.backend.patch_hash(worktree, incumbent)?;
+    Ok(match exp.patch_hash.as_deref() {
+        Some(h) if !h.is_empty() && h != hash => TreeCheck::Changed,
+        _ => TreeCheck::Same,
+    })
+}
+
 // ───────────────────────────── stop rules, pause, finalize ─────────────────────────────
 
 /// Evaluate §8.4 for `slug` and act; returns the stop reason when the study is finalizing.
+/// Called from outside a study turn (abandoned / interrupted close-outs, wave settle).
 pub(crate) async fn apply_rules(env: &Env, slug: &str, spend: f64) -> Result<Option<StopReason>> {
+    apply_rules_from_turn(env, slug, spend, false).await
+}
+
+/// [`apply_rules`]; `in_turn` = the call comes from `experiment_log` while the model
+/// still has the turn, so a stop defers §11 to the turn's end (R-56).
+async fn apply_rules_from_turn(
+    env: &Env,
+    slug: &str,
+    spend: f64,
+    in_turn: bool,
+) -> Result<Option<StopReason>> {
     let mut study = study_by_slug(&env.store, slug).await?;
     if !matches!(study.state, StudyState::Running | StudyState::Paused { .. }) {
         return Ok(study.stop_reason.clone());
@@ -2639,9 +3467,9 @@ pub(crate) async fn apply_rules(env: &Env, slug: &str, spend: f64) -> Result<Opt
     match stop::evaluate(&env.store, &study, &env.cfg, spend).await? {
         stop::Rule::Continue => Ok(None),
         stop::Rule::Explore => {
-            let (closed, _) = counts(&env.store, slug).await?;
+            let after_n = last_closed_n(&env.store, slug).await?;
             env.store
-                .append_event(slug, "explore", &serde_json::json!({ "after_n": closed }))
+                .append_event(slug, "explore", &serde_json::json!({ "after_n": after_n }))
                 .await?;
             // §9.2: one advisor consult; its ideas enter the backlog as `advisor`, priority 2.
             let model = env.cfg.advisor(&study.spec.models);
@@ -2665,7 +3493,17 @@ pub(crate) async fn apply_rules(env: &Env, slug: &str, spend: f64) -> Result<Opt
                             .await;
                     }
                 }
-                Err(e) => tracing::warn!(%slug, "advisor consult failed: {e}"),
+                Err(e) => {
+                    // R-75: on the ledger, so the brief can drop "the advisor's suggestions".
+                    tracing::warn!(%slug, "advisor consult failed: {e}");
+                    env.store
+                        .append_event(
+                            slug,
+                            "advisor_failed",
+                            &serde_json::json!({ "after_n": after_n, "reason": e.to_string() }),
+                        )
+                        .await?;
+                }
             }
             Ok(None)
         }
@@ -2674,7 +3512,7 @@ pub(crate) async fn apply_rules(env: &Env, slug: &str, spend: f64) -> Result<Opt
             Ok(None)
         }
         stop::Rule::Stop(reason) => {
-            begin_finalize(env, study, reason.clone()).await?;
+            begin_finalize_with(env, study, reason.clone(), in_turn).await?;
             Ok(Some(reason))
         }
     }
@@ -2683,18 +3521,41 @@ pub(crate) async fn apply_rules(env: &Env, slug: &str, spend: f64) -> Result<Opt
 /// After an experiment closed outside `Log` (abandoned, interrupted): the stop rules.
 pub async fn after_experiment(env: &Env, slug: &str) -> Result<()> {
     let study = study_by_slug(&env.store, slug).await?;
-    let spend = env.backend.spend_usd(study.session).await;
+    let spend = study_spend_or_closed(env, &study).await;
     apply_rules(env, slug, spend).await.map(|_| ())
 }
 
-/// Is a user `stop_after` waiting (recorded after the last resume)?
+/// Does the study turn's end have finalize work waiting (140 §8.6 / §11)? Either a
+/// user `stop_after` recorded after the last resume, or a finalize that `experiment_log`
+/// deferred to the turn's end (R-56). `binding::on_turn_finished` calls
+/// [`begin_finalize`] when this is true.
 pub async fn stop_after_pending(env: &Env, study: &StudyRecord) -> Result<bool> {
+    if study.state == StudyState::Finalizing {
+        return finalize_deferred(&env.store, &study.slug).await;
+    }
     Ok(stop::view(&env.store, study, 0.0).await?.stop_after)
 }
 
+/// A `finalize_deferred` event newer than every `finalize_started`.
+async fn finalize_deferred(store: &Store, slug: &str) -> Result<bool> {
+    let deferred = store
+        .list_events(slug, Some("finalize_deferred"), 1)
+        .await?;
+    let Some(d) = deferred.first() else {
+        return Ok(false);
+    };
+    let started = store.list_events(slug, Some("finalize_started"), 1).await?;
+    Ok(started.first().is_none_or(|s| s.id < d.id))
+}
+
+/// `enabled: false` + a `paused` event + the state. A no-op on an already paused
+/// study (R-46: a rule re-pause must not re-stamp `paused.at`).
 async fn pause(env: &Env, study: &mut StudyRecord, reason: PauseReason) -> Result<()> {
+    if matches!(study.state, StudyState::Paused { .. }) {
+        return Ok(());
+    }
     if let Err(e) = schedule_file::set_enabled(&study.slug, false).await {
-        tracing::warn!(slug = %study.slug, "schedule not disabled (the ledger state still refuses fires): {e}");
+        tracing::warn!(slug = %study.slug, "schedule not disabled (Begin accepts only a RunOnce while paused): {e}");
     }
     env.store
         .append_event(
@@ -2704,10 +3565,20 @@ async fn pause(env: &Env, study: &mut StudyRecord, reason: PauseReason) -> Resul
         )
         .await?;
     let word = pause_word(&reason);
-    set_state(env, study, StudyState::Paused { reason }, Some(word)).await
+    // Only a running study pauses: a Finalizing / StopNow that landed meanwhile wins (R-4).
+    set_state_if(
+        env,
+        study,
+        &["running"],
+        StudyState::Paused { reason },
+        Some(word),
+    )
+    .await
+    .map(drop)
 }
 
 async fn resume(env: &Env, study: &mut StudyRecord) -> Result<()> {
+    let mut paused_ms = study.paused_ms;
     if let Some(e) = env
         .store
         .list_events(&study.slug, Some("paused"), 1)
@@ -2716,31 +3587,66 @@ async fn resume(env: &Env, study: &mut StudyRecord) -> Result<()> {
         && let Some(at) = e.payload.get("at").and_then(|v| v.as_str())
         && let Ok(t) = chrono::DateTime::parse_from_rfc3339(at)
     {
-        study.paused_ms += (chrono::Utc::now() - t.with_timezone(&chrono::Utc))
+        paused_ms += (chrono::Utc::now() - t.with_timezone(&chrono::Utc))
             .num_milliseconds()
             .max(0) as u64;
     }
-    let (closed, _) = counts(&env.store, &study.slug).await?;
+    let after_n = last_closed_n(&env.store, &study.slug).await?;
     env.store
         .append_event(
             &study.slug,
             "resumed",
-            &serde_json::json!({ "after_n": closed }),
+            &serde_json::json!({ "after_n": after_n }),
         )
         .await?;
     if let Err(e) = schedule_file::set_enabled(&study.slug, true).await {
         tracing::warn!(slug = %study.slug, "schedule not enabled: {e}");
     }
-    set_state(env, study, StudyState::Running, None).await
+    let p = StudyPatch {
+        state: Some(StudyState::Running),
+        paused_ms: Some(paused_ms),
+        ..StudyPatch::default()
+    };
+    if env
+        .store
+        .patch_study_if(&study.slug, &["paused"], &p)
+        .await?
+    {
+        p.apply_to(study);
+        env.publish(StudyEvent::StudyChanged {
+            slug: study.slug.clone(),
+            state: StudyState::Running,
+            reason: None,
+        })
+        .await;
+    }
+    Ok(())
 }
 
-/// Enter `finalizing` (140 §4.2) and run §11 off the mailbox.
-pub async fn begin_finalize(env: &Env, mut study: StudyRecord, reason: StopReason) -> Result<()> {
-    if matches!(study.state, StudyState::Finalizing) || is_terminal(&study.state) {
+/// Enter `finalizing` (140 §4.2) and run §11 off the mailbox. From outside a study
+/// turn; `experiment_log` uses the deferring variant. On a study already
+/// `finalizing` with a deferred §11 (the turn ended — `binding::on_turn_finished`),
+/// this starts the deferred task.
+pub async fn begin_finalize(env: &Env, study: StudyRecord, reason: StopReason) -> Result<()> {
+    begin_finalize_with(env, study, reason, false).await
+}
+
+async fn begin_finalize_with(
+    env: &Env,
+    mut study: StudyRecord,
+    reason: StopReason,
+    defer: bool,
+) -> Result<()> {
+    if study.state == StudyState::Finalizing {
+        if finalize_deferred(&env.store, &study.slug).await? {
+            spawn_finalize(env, &study.slug).await?;
+        }
+        return Ok(());
+    }
+    if is_terminal(&study.state) {
         return Ok(());
     }
     cancel(&env.root, &study.slug);
-    study.stop_reason = Some(reason.clone());
     env.store
         .append_event(
             &study.slug,
@@ -2748,13 +3654,26 @@ pub async fn begin_finalize(env: &Env, mut study: StudyRecord, reason: StopReaso
             &serde_json::json!({ "reason": reason }),
         )
         .await?;
-    set_state(
-        env,
-        &mut study,
-        StudyState::Finalizing,
-        Some(stop_word(&reason)),
-    )
-    .await?;
+    let p = StudyPatch {
+        state: Some(StudyState::Finalizing),
+        stop_reason: Some(reason.clone()),
+        ..StudyPatch::default()
+    };
+    // CAS from running/paused: two stop rules racing (Log's review vs StopNow) finalize once (R-4).
+    if !env
+        .store
+        .patch_study_if(&study.slug, &["running", "paused"], &p)
+        .await?
+    {
+        return Ok(());
+    }
+    p.apply_to(&mut study);
+    env.publish(StudyEvent::StudyChanged {
+        slug: study.slug.clone(),
+        state: StudyState::Finalizing,
+        reason: Some(stop_word(&reason)),
+    })
+    .await;
     // End the loop: `Done` from inside the run when it is still open, else delete the file.
     let ended = match study.session {
         Some(s) => schedule_file::done_run(s, &stop_word(&reason))
@@ -2765,41 +3684,108 @@ pub async fn begin_finalize(env: &Env, mut study: StudyRecord, reason: StopReaso
     if !ended && let Err(e) = schedule_file::done(&study.slug, &stop_word(&reason)).await {
         tracing::warn!(slug = %study.slug, "schedule file not removed: {e}");
     }
-    let env2 = env.clone();
-    tokio::spawn(async move { finalize_task(env2, study.slug).await });
+    if defer {
+        // R-56: the model still has the turn; §11 measures the tree once the turn is over
+        // (`on_turn_finished` → `begin_finalize`), or after FINALIZE_DEFER_MAX regardless.
+        env.store
+            .append_event(&study.slug, "finalize_deferred", &serde_json::json!({}))
+            .await?;
+        let (env2, slug) = (env.clone(), study.slug.clone());
+        tokio::spawn(async move {
+            tokio::time::sleep(FINALIZE_DEFER_MAX).await;
+            if finalize_deferred(&env2.store, &slug).await.unwrap_or(false) {
+                tracing::warn!(%slug, "study turn did not end; finalizing anyway");
+                let _ = spawn_finalize(&env2, &slug).await;
+            }
+        });
+        return Ok(());
+    }
+    spawn_finalize(env, &study.slug).await
+}
+
+/// Start [`finalize_task`] once per study (a `finalize_started` event + an in-process guard).
+async fn spawn_finalize(env: &Env, slug: &str) -> Result<()> {
+    if !FINALIZING.lock().insert(key(&env.root, slug)) {
+        return Ok(());
+    }
+    env.store
+        .append_event(slug, "finalize_started", &serde_json::json!({}))
+        .await?;
+    let (env2, slug) = (env.clone(), slug.to_owned());
+    tokio::spawn(async move {
+        finalize_task(env2.clone(), slug.clone()).await;
+        FINALIZING.lock().remove(&key(&env2.root, &slug));
+    });
     Ok(())
 }
 
-/// §11 steps through W2's `finalize::run`, then the record, the result card, the event.
+/// §11 steps through W2's `finalize::run` (confirm, changesets, tables, the
+/// knowledge record), then §11.3's report turn, the result card and the event.
 pub async fn finalize_task(env: Env, slug: String) {
-    let Ok(Some(mut study)) = env.store.get_study(&slug).await else {
+    // R-105: a transient store error must not leave the study `finalizing` until a restart.
+    let mut study = None;
+    for attempt in 1..=3u32 {
+        match env.store.get_study(&slug).await {
+            Ok(Some(s)) => {
+                study = Some(s);
+                break;
+            }
+            Ok(None) => {
+                tracing::warn!(%slug, "finalize: study row is gone");
+                return;
+            }
+            Err(e) => {
+                tracing::warn!(%slug, attempt, "finalize: study row unreadable: {e}");
+                tokio::time::sleep(Duration::from_secs(2)).await;
+            }
+        }
+    }
+    let Some(mut study) = study else {
         return;
     };
     let reason = study.stop_reason.clone().unwrap_or(StopReason::User);
+    // R-56: §11 measures the *final incumbent*. Whatever the model edited after its last
+    // experiment_log is saved as finalize/stray.patch and the tree reset before confirm.
+    if let (Ok(wt), Ok(inc)) = (worktree_of(&study), incumbent_of(&study)) {
+        let stray = env.study_dir(&slug).join("finalize").join("stray.patch");
+        let _ = std::fs::create_dir_all(stray.parent().expect("finalize dir"));
+        match env.backend.repair(&wt, &study.spec, &inc, &stray) {
+            Ok(Some(what)) => {
+                let _ = env
+                    .store
+                    .append_event(&slug, "incident", &serde_json::json!({ "what": what }))
+                    .await;
+            }
+            Ok(None) => {}
+            Err(e) => tracing::warn!(%slug, "finalize: worktree not reset: {e}"),
+        }
+    }
     match env
         .backend
         .finalize(&env.store, &study, reason.clone(), &env.rt)
         .await
     {
         Ok((headline, doc)) => {
-            study.finished_at = Some(now());
-            study.report_doc = Some(doc.clone());
-            if let Err(e) = set_state(
-                &env,
-                &mut study,
-                StudyState::Finished,
-                Some(headline.text.clone()),
-            )
-            .await
-            {
-                tracing::warn!(%slug, "finished state not recorded: {e}");
+            if let Err(e) = report_turn(&env, &study, &doc).await {
+                tracing::warn!(%slug, "report prose not written (tables stand): {e}");
             }
-            if let Err(e) = env
-                .backend
-                .record(&env.store, &study, &headline.text, &env.rt)
-                .await
-            {
-                tracing::warn!(%slug, "knowledge record not written: {e}");
+            let p = StudyPatch {
+                state: Some(StudyState::Finished),
+                finished_at: Some(now()),
+                report_doc: Some(doc.clone()),
+                ..StudyPatch::default()
+            };
+            match env.store.patch_study(&slug, &p).await {
+                Ok(()) => {
+                    p.apply_to(&mut study);
+                    env.publish(StudyEvent::StudyChanged {
+                        slug: slug.clone(),
+                        state: StudyState::Finished,
+                        reason: Some(headline.text.clone()),
+                    })
+                    .await;
+                }
+                Err(e) => tracing::warn!(%slug, "finished state not recorded: {e}"),
             }
             let series = chart_series(&env, &study).await.unwrap_or_default();
             let (closed, kept) = counts(&env.store, &slug).await.unwrap_or((0, 0));
@@ -2839,6 +3825,71 @@ pub async fn finalize_task(env: Env, slug: String) {
     clear_phase(&env.root, &slug);
 }
 
+const REPORT_SYSTEM: &str = "You write the closing report of an automated optimisation study for the person who \
+    commissioned it. Plain prose, markdown headings allowed, no tables: the harness inserts the tables with the \
+    numbers after your text. Never state a number that is not in the material you were given.";
+
+/// §11.3's report turn (R-45): the executor writes the prose around the numbers — what
+/// was asked, what the headline means, what the changesets do, what needs the user's
+/// eyes, how to land — from the final brief and the finalize tables; the plugin then
+/// stores prose + tables as the report document. Idempotent per study (`report_prose` step).
+async fn report_turn(env: &Env, study: &StudyRecord, doc: &str) -> Result<()> {
+    let done = env
+        .store
+        .list_events(&study.slug, Some("report_prose"), 1)
+        .await?;
+    if !done.is_empty() {
+        return Ok(());
+    }
+    let Some(report) = crate::finalize::report(&env.store, &study.slug).await? else {
+        return Err(Error::refused("no finalize report recorded"));
+    };
+    let tables = report.tables();
+    let (closed, _) = counts(&env.store, &study.slug).await?;
+    let n = env.store.next_experiment_n(&study.slug).await?;
+    let cx = brief_context(env, study, n, Vec::new(), closed, 0.0).await?;
+    let brief = env
+        .backend
+        .brief(&env.store, study, &env.cfg.brief, &cx)
+        .await?;
+    let user = format!(
+        "The study `{}` has finished. Below are the final brief (what the loop knew) and the report tables the \
+         harness computed. Write the report's prose in this order: what was asked and how it was measured; what \
+         the headline means for the goal (base → final, holdout when present); what the changesets do and which \
+         are worth landing alone; what needs the user's eyes (reverted or suspicious keeps, deviations, unreviewed \
+         keeps, holdout gap, drift); the dead ends worth remembering; how to land (the per-changeset branches). \
+         Under 600 words. Do not repeat the tables.\n\n<brief>\n{}\n</brief>\n\n<tables>\n{}\n</tables>",
+        study.slug, brief.text, tables
+    );
+    let model = env.cfg.executor(&study.spec.models, &env.agent);
+    let prose = env
+        .backend
+        .report_prose(study, &model, REPORT_SYSTEM, user)
+        .await?;
+    let prose = prose.trim();
+    if prose.is_empty() {
+        return Err(Error::refused("empty report prose"));
+    }
+    let title = tables.lines().next().unwrap_or_default();
+    let body = tables
+        .split_once('\n')
+        .map(|(_, rest)| rest.trim_start())
+        .unwrap_or("");
+    let text = format!("{title}\n\n{prose}\n\n---\n\n{body}");
+    std::fs::write(env.study_dir(&study.slug).join("report.md"), &text)?;
+    if !doc.starts_with('/') {
+        env.backend.replace_report(doc, &text).await?;
+    }
+    env.store
+        .append_event(
+            &study.slug,
+            "report_prose",
+            &serde_json::json!({ "bytes": prose.len(), "model": model }),
+        )
+        .await?;
+    Ok(())
+}
+
 /// Finalize's changesets, as W2 records them (`events.kind = "changeset"`, payload = `Changeset`).
 async fn changesets_of(env: &Env, slug: &str) -> Vec<Changeset> {
     let mut out: Vec<Changeset> = env
@@ -2868,8 +3919,15 @@ pub async fn notes(a: &mut Studies, m: Notes) -> Result<NotesReport> {
                 p.len()
             )));
         }
-        study.playbook = p;
-        env.store.update_study(&study).await?;
+        patch(
+            &env,
+            &mut study,
+            StudyPatch {
+                playbook: Some(p),
+                ..StudyPatch::default()
+            },
+        )
+        .await?;
     }
     let mut added = 0;
     for d in m.args.add_ideas {
@@ -2975,7 +4033,13 @@ pub async fn idea(a: &mut Studies, m: IdeaOp) -> Result<Idea> {
 
 /// `Control` → `StudyInfo` (140 §8.6).
 pub async fn control(a: &mut Studies, m: Control) -> Result<StudyInfo> {
-    let env = a.env();
+    control_env(&a.env(), m).await
+}
+
+/// [`control`] on an [`Env`] (off-mailbox, R-115: it asks the agent and schedule actors
+/// and waits for a cancelled run; the git writes go through `spawn_blocking`, R-100).
+pub async fn control_env(env: &Env, m: Control) -> Result<StudyInfo> {
+    let env = env.clone();
     let mut study = study_by_slug(&env.store, &m.slug).await?;
     let slug = study.slug.clone();
     match m.op {
@@ -3033,16 +4097,41 @@ pub async fn control(a: &mut Studies, m: Control) -> Result<StudyInfo> {
                     .await;
             }
             if let Some(mut exp) = env.store.dangling_experiment(&slug, None).await? {
-                exp.state = ExperimentState::Interrupted;
+                // R-58: a measuring run closes itself (`interrupted`) once the bench group is
+                // dead; wait for that before the reset, so no sample is still writing the tree.
+                if exp.state == ExperimentState::Measuring {
+                    let until = tokio::time::Instant::now() + Duration::from_secs(15);
+                    while tokio::time::Instant::now() < until
+                        && env
+                            .store
+                            .get_experiment(&slug, exp.n)
+                            .await?
+                            .is_some_and(|e| e.state == ExperimentState::Measuring)
+                    {
+                        tokio::time::sleep(Duration::from_millis(100)).await;
+                    }
+                }
+                // §4.3: `interrupted` only mid-measurement, else `abandoned` (R-66).
+                let from = exp.state;
+                exp.state = if from == ExperimentState::Measuring {
+                    ExperimentState::Interrupted
+                } else {
+                    ExperimentState::Abandoned
+                };
                 exp.finished_at = Some(now());
-                exp.line = "interrupted: stop now".into();
-                env.store.update_experiment(&exp).await?;
-                mark_lost(&env.store, &slug, exp.n).await?;
+                exp.line = format!("{}: stop now", exp.state.tag());
+                if env.store.update_experiment_if(&exp, &[from]).await? {
+                    mark_lost(&env.store, &slug, exp.n).await?;
+                }
                 // Reset the worktree to the incumbent now: finalize starts from a clean tree.
                 if let (Ok(w), Ok(i)) = (worktree_of(&study), incumbent_of(&study)) {
                     let patch = env.runs_dir(&slug, exp.n).join("candidate.patch");
-                    let _ = std::fs::create_dir_all(patch.parent().unwrap());
-                    if let Err(e) = env.backend.discard(&w, &i, &patch) {
+                    let _ = std::fs::create_dir_all(patch.parent().expect("runs dir"));
+                    let backend = env.backend.clone();
+                    let r = tokio::task::spawn_blocking(move || backend.discard(&w, &i, &patch))
+                        .await
+                        .map_err(|e| Error::Other(anyhow::anyhow!("discard task: {e}")))?;
+                    if let Err(e) = r {
                         tracing::warn!(%slug, "worktree not reset at stop now: {e}");
                     }
                 }
@@ -3058,6 +4147,10 @@ pub async fn control(a: &mut Studies, m: Control) -> Result<StudyInfo> {
                     state_word(&study.state)
                 )));
             }
+            // R-51: the one fire Begin accepts while paused is this event.
+            env.store
+                .append_event(&slug, "run_once", &serde_json::json!({ "by": m.by }))
+                .await?;
             schedule_file::fire(&slug, paused).await?;
         }
         ControlOp::Segment { reason } => {
@@ -3153,11 +4246,17 @@ pub async fn control(a: &mut Studies, m: Control) -> Result<StudyInfo> {
                 .into_iter()
                 .find(|c| c.k == changeset)
                 .ok_or_else(|| Error::refused(format!("no changeset #{changeset}")))?;
-            let sha = env.backend.merge_into_checkout(
-                Path::new(&study.repo),
-                &cs.branch,
-                env.cfg.git.author.as_deref(),
-            )?;
+            let (backend, repo, branch, author) = (
+                env.backend.clone(),
+                PathBuf::from(&study.repo),
+                cs.branch.clone(),
+                env.cfg.git.author.clone(),
+            );
+            let sha = tokio::task::spawn_blocking(move || {
+                backend.merge_into_checkout(&repo, &branch, author.as_deref())
+            })
+            .await
+            .map_err(|e| Error::Other(anyhow::anyhow!("merge task: {e}")))??;
             env.store
                 .append_event(
                     &slug,
@@ -3180,11 +4279,28 @@ pub async fn control(a: &mut Studies, m: Control) -> Result<StudyInfo> {
             if let Err(e) = schedule_file::done(&slug, "discarded").await {
                 tracing::debug!(%slug, "schedule file not removed on discard: {e}");
             }
-            if let Some(w) = study.worktree.as_deref().map(PathBuf::from)
-                && w.exists()
-                && let Err(e) = env.backend.worktree_remove(Path::new(&study.repo), &w)
+            // R-9: the study worktree, scratch worktrees, `autoresearch/<slug>`, its `+k`
+            // changeset branches and the rejected refs — everything the study put in the repo.
+            let (backend, repo, slug2, dir) = (
+                env.backend.clone(),
+                PathBuf::from(&study.repo),
+                slug.clone(),
+                env.study_dir(&slug),
+            );
+            match tokio::task::spawn_blocking(move || backend.discard_study(&repo, &slug2, &dir))
+                .await
+                .map_err(|e| Error::Other(anyhow::anyhow!("discard task: {e}")))?
             {
-                tracing::warn!(%slug, "worktree not removed: {e}");
+                Ok(removed) => {
+                    env.store
+                        .append_event(
+                            &slug,
+                            "discarded",
+                            &serde_json::json!({ "removed": removed }),
+                        )
+                        .await?;
+                }
+                Err(e) => tracing::warn!(%slug, "worktrees/branches not fully removed: {e}"),
             }
             set_state(&env, &mut study, StudyState::Discarded, None).await?;
         }
@@ -3199,9 +4315,11 @@ async fn segment_task(env: Env, mut study: StudyRecord, reason: String, by: By) 
     let r: Result<()> = async {
         let segment = study.segment + 1;
         let evaluator = env.evaluator_dir(&slug, segment);
+        let worktree = worktree_of(&study)?;
+        // The worktree is what `custody::verify` hashes (R-7), never the user's moving checkout.
         let custody = env
             .backend
-            .custody_take(&study.spec, Path::new(&study.repo), &evaluator)?;
+            .custody_take(&study.spec, &worktree, &evaluator)?;
         let mut seg = SegmentRecord {
             slug: slug.clone(),
             segment,
@@ -3213,8 +4331,15 @@ async fn segment_task(env: Env, mut study: StudyRecord, reason: String, by: By) 
             baseline_n: 0,
         };
         env.store.put_segment(&seg).await?;
-        study.segment = segment;
-        env.store.update_study(&study).await?;
+        patch(
+            &env,
+            &mut study,
+            StudyPatch {
+                segment: Some(segment),
+                ..StudyPatch::default()
+            },
+        )
+        .await?;
         let incumbent = incumbent_of(&study)?;
         let values = baseline(
             &env,
@@ -3228,9 +4353,17 @@ async fn segment_task(env: Env, mut study: StudyRecord, reason: String, by: By) 
         seg.baseline_mean = Some(mean(&values));
         seg.baseline_n = values.len() as u32;
         env.store.put_segment(&seg).await?;
-        study.incumbent_mean = Some(mean(&values));
-        study.sigma = Some(segment_sigma(&env, &study).await?);
-        env.store.update_study(&study).await?;
+        let sigma = segment_sigma(&env, &study).await?;
+        patch(
+            &env,
+            &mut study,
+            StudyPatch {
+                incumbent_mean: Some(Some(mean(&values))),
+                sigma: Some(Some(sigma)),
+                ..StudyPatch::default()
+            },
+        )
+        .await?;
         env.store
             .append_event(&slug, "segment", &serde_json::json!({ "segment": segment }))
             .await?;
@@ -3260,7 +4393,11 @@ async fn segment_task(env: Env, mut study: StudyRecord, reason: String, by: By) 
 
 /// `Status` → one or every `StudyInfo` (140 §12.5 `autoresearch.list`).
 pub async fn status(a: &mut Studies, m: Status) -> Result<Vec<StudyInfo>> {
-    let env = a.env();
+    status_env(&a.env(), m).await
+}
+
+/// [`status`] on an [`Env`] (off-mailbox: the spend asks the agent actor, R-115).
+pub async fn status_env(env: &Env, m: Status) -> Result<Vec<StudyInfo>> {
     let studies = match m.slug {
         Some(slug) => vec![study_by_slug(&env.store, &slug).await?],
         None => env.store.list_studies().await?,
@@ -3320,15 +4457,28 @@ async fn chart_series(env: &Env, study: &StudyRecord) -> Result<ChartSeries> {
             });
         }
     }
+    // Holdout: one point per run (the mean of its clean samples), not one per sample (R-89).
+    let mut holdout: BTreeMap<u32, (Vec<f64>, String)> = BTreeMap::new();
     for s in env.store.list_samples(&study.slug, None).await? {
-        if s.role == Some(SampleRole::Holdout) && s.value.is_some() {
-            series.holdout.push(ChartPoint {
-                n: s.n,
-                verdict: String::new(),
-                metric: s.value,
-                at: s.at,
-            });
+        if s.role == Some(SampleRole::Holdout)
+            && !s.noisy
+            && !s.lost
+            && let Some(v) = s.value
+        {
+            let e = holdout
+                .entry(s.n)
+                .or_insert_with(|| (Vec::new(), s.at.clone()));
+            e.0.push(v);
+            e.1 = s.at;
         }
+    }
+    for (n, (values, at)) in holdout {
+        series.holdout.push(ChartPoint {
+            n,
+            verdict: String::new(),
+            metric: Some(mean(&values)),
+            at,
+        });
     }
     for e in env
         .store
@@ -3347,10 +4497,14 @@ async fn chart_series(env: &Env, study: &StudyRecord) -> Result<ChartSeries> {
 
 /// `Detail` → `StudyDetail` with the chart series (140 §12.5 `autoresearch.get`).
 pub async fn detail(a: &mut Studies, m: Detail) -> Result<StudyDetail> {
-    let env = a.env();
+    detail_env(&a.env(), m).await
+}
+
+/// [`detail`] on an [`Env`] (off-mailbox).
+pub async fn detail_env(env: &Env, m: Detail) -> Result<StudyDetail> {
     let study = study_by_slug(&env.store, &m.slug).await?;
-    let info = info_full(&env, &study).await?;
-    let series = chart_series(&env, &study).await?;
+    let info = info_full(env, &study).await?;
+    let series = chart_series(env, &study).await?;
     let mut ideas = env.store.list_ideas(&study.slug, None).await?;
     ideas.sort_by_key(|i| {
         (
@@ -3372,7 +4526,7 @@ pub async fn detail(a: &mut Studies, m: Detail) -> Result<StudyDetail> {
             (ExperimentState::RejectedByReview, Some(ReviewVerdict::Reverted { reason }))
                 if !dismissed.contains(&u64::from(e.n)) =>
             {
-                needs_eyes.push(format!("#{} reverted by review — {reason} · Restore", e.n));
+                needs_eyes.push(format!("#{} reverted by review — {reason}", e.n));
             }
             (_, Some(ReviewVerdict::Flagged { reason })) => {
                 needs_eyes.push(format!("#{} flagged by review — {reason}", e.n))
@@ -3428,8 +4582,14 @@ pub async fn detail(a: &mut Studies, m: Detail) -> Result<StudyDetail> {
 
 /// `Experiments` → rows newest first (140 §12.5).
 pub async fn experiments(a: &mut Studies, m: Experiments) -> Result<Vec<ExperimentRow>> {
-    study_by_slug(&a.store, &m.slug).await?;
-    Ok(a.store
+    experiments_env(&a.env(), m).await
+}
+
+/// [`experiments`] on an [`Env`].
+pub async fn experiments_env(env: &Env, m: Experiments) -> Result<Vec<ExperimentRow>> {
+    study_by_slug(&env.store, &m.slug).await?;
+    Ok(env
+        .store
         .list_experiments(&m.slug, m.before, m.limit.clamp(1, 1000))
         .await?
         .iter()
@@ -3439,7 +4599,11 @@ pub async fn experiments(a: &mut Studies, m: Experiments) -> Result<Vec<Experime
 
 /// `Experiment` → `ExperimentDetail` (140 §12.5).
 pub async fn experiment(a: &mut Studies, m: Experiment) -> Result<ExperimentDetail> {
-    let env = a.env();
+    experiment_env(&a.env(), m).await
+}
+
+/// [`experiment`] on an [`Env`] (off-mailbox: it reads the diff through git, R-100).
+pub async fn experiment_env(env: &Env, m: Experiment) -> Result<ExperimentDetail> {
     let study = study_by_slug(&env.store, &m.slug).await?;
     let e = env
         .store
@@ -3472,7 +4636,7 @@ pub async fn experiment(a: &mut Studies, m: Experiment) -> Result<ExperimentDeta
         .map(|p| env.backend.tail(&env.root.join(p)))
         .filter(|t| !t.is_empty())
         .collect();
-    let inc = env.store.samples_of_tree(&m.slug, &e.parent_sha).await?;
+    let inc = incumbent_samples(env, &study, &e.parent_sha).await?;
     Ok(ExperimentDetail {
         row: e.row(),
         hypothesis: e.hypothesis.clone(),
@@ -3516,20 +4680,39 @@ pub async fn recover(env: &Env) -> Result<()> {
             }
             StudyState::Running | StudyState::Paused { .. } => {
                 if let Some(mut exp) = env.store.dangling_experiment(&slug, None).await? {
-                    exp.state = ExperimentState::Interrupted;
+                    let from = exp.state;
+                    // §4.3: a restart mid-measurement is `interrupted`; an open/measured row
+                    // whose turn died is `abandoned`.
+                    exp.state = if from == ExperimentState::Measuring {
+                        ExperimentState::Interrupted
+                    } else {
+                        ExperimentState::Abandoned
+                    };
                     exp.finished_at = Some(now());
-                    exp.line = "interrupted: engine restart".into();
-                    env.store.update_experiment(&exp).await?;
+                    exp.line = format!("{}: engine restart", exp.state.tag());
+                    env.store.update_experiment_if(&exp, &[from]).await?;
                     mark_lost(&env.store, &slug, exp.n).await?;
                     env.store
-                        .append_event(&slug, "incident", &serde_json::json!({ "n": exp.n, "what": "interrupted by an engine restart" }))
+                        .append_event(&slug, "incident", &serde_json::json!({ "n": exp.n, "what": format!("{} by an engine restart", exp.state.tag()) }))
                         .await?;
+                    // R-65: the same close-out as a turn end — event and stop rules.
+                    env.publish(StudyEvent::ExperimentFinished {
+                        slug: slug.clone(),
+                        n: exp.n,
+                        verdict: exp.verdict.clone().unwrap_or(Verdict::Refused {
+                            reason: exp.state.tag().to_owned(),
+                        }),
+                        metric: exp.metric,
+                        delta_pct: exp.delta_pct,
+                        z: exp.z,
+                    })
+                    .await;
+                    if let Err(e) = after_experiment(env, &slug).await {
+                        tracing::warn!(%slug, "stop rules after recovery: {e}");
+                    }
                 }
             }
-            StudyState::Finalizing => {
-                let env2 = env.clone();
-                tokio::spawn(async move { finalize_task(env2, slug).await });
-            }
+            StudyState::Finalizing => spawn_finalize(env, &slug).await?,
             _ => {}
         }
     }

@@ -15,7 +15,8 @@ use super::*;
 use crate::store::Store;
 
 /// The W1/W2/W6 double: scripted samples, a scripted gate, a scripted reviewer.
-#[derive(Default)]
+/// `sample` honours `hang`: with it set, samples block until `release` fires
+/// (the engine-dies-mid-sample scenario).
 struct Fake {
     values: Mutex<VecDeque<f64>>,
     decide: Mutex<Option<GateStep>>,
@@ -23,10 +24,56 @@ struct Fake {
     custody_changed: Mutex<Vec<String>>,
     scope: Mutex<ScopeDiff>,
     repair: Mutex<Option<String>>,
-    spend: Mutex<f64>,
+    /// `session_cost`: `Err` = the ledger is unreachable.
+    spend: Mutex<std::result::Result<f64, String>>,
     samples_taken: Mutex<u32>,
     restored: Mutex<Vec<u32>>,
     novelty_refusal: Mutex<Option<String>>,
+    include_dirty: Mutex<Option<bool>>,
+    discards: Mutex<u32>,
+    applied: Mutex<u32>,
+    patch_hash: Mutex<String>,
+    head: Mutex<String>,
+    parent: Mutex<String>,
+    report_user: Mutex<Option<String>>,
+    hang: std::sync::atomic::AtomicBool,
+    release: tokio::sync::Notify,
+    fail_next: std::sync::atomic::AtomicBool,
+    last_input: Mutex<Option<GateInput>>,
+    confirm_once: Mutex<Option<GateStep>>,
+    tried: Mutex<Vec<(u32, String)>>,
+    custody_from: Mutex<Vec<std::path::PathBuf>>,
+}
+
+impl Default for Fake {
+    fn default() -> Self {
+        Self {
+            values: Default::default(),
+            decide: Default::default(),
+            review: Default::default(),
+            custody_changed: Default::default(),
+            scope: Default::default(),
+            repair: Default::default(),
+            spend: Mutex::new(Ok(0.0)),
+            samples_taken: Default::default(),
+            restored: Default::default(),
+            novelty_refusal: Default::default(),
+            include_dirty: Default::default(),
+            discards: Default::default(),
+            applied: Default::default(),
+            patch_hash: Mutex::new("ph".into()),
+            head: Mutex::new("base0000".into()),
+            parent: Mutex::new(String::new()),
+            report_user: Default::default(),
+            hang: Default::default(),
+            release: Default::default(),
+            fail_next: Default::default(),
+            last_input: Default::default(),
+            confirm_once: Default::default(),
+            tried: Default::default(),
+            custody_from: Default::default(),
+        }
+    }
 }
 
 impl Fake {
@@ -50,7 +97,8 @@ impl Backend for Fake {
     fn is_git_repo(&self, _: &Path) -> bool {
         true
     }
-    fn resolve_base(&self, _: &Path, _: &str) -> Result<String> {
+    fn resolve_base(&self, _: &Path, _: &str, include_dirty: bool) -> Result<String> {
+        *self.include_dirty.lock() = Some(include_dirty);
         Ok("base0000".into())
     }
     fn worktree_add(
@@ -71,7 +119,25 @@ impl Backend for Fake {
     }
     fn discard(&self, _: &Path, _: &str, patch_path: &Path) -> Result<String> {
         std::fs::write(patch_path, "diff")?;
+        *self.discards.lock() += 1;
         Ok("patchhash".into())
+    }
+    fn apply_patch(&self, _: &Path, patch_path: &Path) -> Result<()> {
+        assert!(
+            patch_path.exists(),
+            "the stash must exist before it is re-applied"
+        );
+        *self.applied.lock() += 1;
+        Ok(())
+    }
+    fn discard_study(&self, _: &Path, slug: &str, _: &Path) -> Result<Vec<String>> {
+        Ok(vec![format!("autoresearch/{slug}")])
+    }
+    fn head(&self, _: &Path) -> Result<String> {
+        Ok(self.head.lock().clone())
+    }
+    fn commit_parent(&self, _: &Path, _: &str) -> Result<String> {
+        Ok(self.parent.lock().clone())
     }
     fn repair(&self, _: &Path, _: &StudySpec, _: &str, _: &Path) -> Result<Option<String>> {
         Ok(self.repair.lock().take())
@@ -84,7 +150,7 @@ impl Backend for Fake {
         Ok(())
     }
     fn patch_hash(&self, _: &Path, _: &str) -> Result<String> {
-        Ok("ph".into())
+        Ok(self.patch_hash.lock().clone())
     }
     fn diff_text(&self, _: &Path, _: &str, _: &str, _: usize) -> Result<String> {
         Ok("diff".into())
@@ -94,17 +160,39 @@ impl Backend for Fake {
         _: &StudySpec,
         _: &crate::config::Bench,
         req: SampleRequest<'_>,
-        _: &CancellationToken,
+        cancel: &CancellationToken,
     ) -> Result<Sample> {
         *self.samples_taken.lock() += 1;
-        let value = self.values.lock().pop_front();
+        if self
+            .fail_next
+            .swap(false, std::sync::atomic::Ordering::SeqCst)
+        {
+            return Err(Error::refused("bench could not spawn"));
+        }
+        let mut lost = false;
+        if self.hang.load(std::sync::atomic::Ordering::SeqCst) {
+            tokio::select! {
+                _ = self.release.notified() => {}
+                _ = cancel.cancelled() => lost = true,
+            }
+        }
+        let value = if lost {
+            None
+        } else {
+            self.values.lock().pop_front()
+        };
         Ok(Sample {
             n: req.n,
             k: req.k,
             tree_sha: req.tree_sha.to_owned(),
             role: Some(req.role),
             value,
-            exit: Some(if value.is_some() { 0 } else { 1 }),
+            exit: if lost {
+                None
+            } else {
+                Some(if value.is_some() { 0 } else { 1 })
+            },
+            lost,
             wall_ms: 1,
             at: now(),
             ..Sample::default()
@@ -125,9 +213,10 @@ impl Backend for Fake {
     fn custody_take(
         &self,
         _: &StudySpec,
-        _: &Path,
+        tree: &Path,
         dir: &Path,
     ) -> Result<BTreeMap<String, String>> {
+        self.custody_from.lock().push(tree.to_path_buf());
         std::fs::create_dir_all(dir)?;
         Ok([("bench.sh".to_owned(), "abc".to_owned())]
             .into_iter()
@@ -152,7 +241,12 @@ impl Backend for Fake {
             (ss / df as f64).sqrt()
         }
     }
-    fn gate_step(&self, _: &GateCfg, _: &GateInput) -> GateStep {
+    fn gate_step(&self, _: &GateCfg, input: &GateInput) -> GateStep {
+        *self.last_input.lock() = Some(input.clone());
+        // A scripted `Confirm` fires once, then the scripted decision (or no gain).
+        if let Some(step) = self.confirm_once.lock().take() {
+            return step;
+        }
         self.decide.lock().clone().unwrap_or(GateStep::Decide {
             verdict: Verdict::NoGain,
             delta: 0.0,
@@ -202,7 +296,8 @@ impl Backend for Fake {
             ..Novelty::default()
         })
     }
-    async fn mark_tried(&self, _: &Store, _: &str, _: &str, _: u32) -> Result<Vec<i64>> {
+    async fn mark_tried(&self, _: &Store, _: &str, idea: &str, n: u32) -> Result<Vec<i64>> {
+        self.tried.lock().push((n, idea.to_owned()));
         Ok(vec![])
     }
     async fn review(
@@ -232,36 +327,43 @@ impl Backend for Fake {
     }
     async fn finalize(
         &self,
-        _: &Store,
+        store: &Store,
         study: &StudyRecord,
-        _: StopReason,
+        reason: StopReason,
         _: &runtime::Runtime,
     ) -> Result<(Headline, String)> {
-        Ok((
-            Headline {
-                text: "time_ms 100 → 90 (−10.0 %)".into(),
-                base_mean: 100.0,
-                final_mean: study.incumbent_mean.unwrap_or(100.0),
-                delta_pct: -10.0,
-                ..Headline::default()
-            },
-            "doc-1".into(),
-        ))
+        let headline = Headline {
+            text: "time_ms 100 → 90 (−10.0 %)".into(),
+            base_mean: 100.0,
+            final_mean: study.incumbent_mean.unwrap_or(100.0),
+            delta_pct: -10.0,
+            ..Headline::default()
+        };
+        // W2 records the report step; the actor's §11.3 turn reads it back.
+        let rows = store.list_experiments(&study.slug, None, u32::MAX).await?;
+        let report =
+            crate::finalize::assemble(study, reason, headline.clone(), vec![], &rows, vec![]);
+        store
+            .append_event(
+                &study.slug,
+                crate::finalize::EVENT,
+                &serde_json::json!({ "step": "report", "doc": "doc-1", "report": report }),
+            )
+            .await?;
+        Ok((headline, "doc-1".into()))
     }
-    async fn record(
+    async fn report_prose(
         &self,
-        _: &Store,
         _: &StudyRecord,
         _: &str,
-        _: &runtime::Runtime,
+        _: &str,
+        user: String,
     ) -> Result<String> {
-        Ok("records/x".into())
+        *self.report_user.lock() = Some(user);
+        Ok("The study asked for speed and found it.".into())
     }
-    async fn seed_playbook(&self, _: &str, _: &runtime::Runtime) -> Result<Option<String>> {
-        Ok(None)
-    }
-    async fn spend_usd(&self, _: Option<SessionId>) -> f64 {
-        *self.spend.lock()
+    async fn session_cost(&self, _: Option<SessionId>) -> Result<f64> {
+        self.spend.lock().clone().map_err(Error::refused)
     }
     async fn code_map(
         &self,
@@ -936,6 +1038,24 @@ async fn experiment_budget_stops_and_finalizes_with_the_result_card_data() {
     .await
     .unwrap();
     assert_eq!(lr.stop, Some(StopReason::Experiments));
+    // R-56: §11 waits for the study turn to end; the study is `finalizing` meanwhile.
+    let s = h.studies.store.get_study("t1").await.unwrap().unwrap();
+    assert_eq!(s.state, StudyState::Finalizing);
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert_eq!(
+        h.studies
+            .store
+            .get_study("t1")
+            .await
+            .unwrap()
+            .unwrap()
+            .state,
+        StudyState::Finalizing,
+        "finalize does not start while the turn is live"
+    );
+    binding::on_turn_finished(&mut h.studies, session)
+        .await
+        .unwrap();
     let s = wait_state(&h.studies.store, "t1", |s| *s == StudyState::Finished).await;
     assert_eq!(s.report_doc.as_deref(), Some("doc-1"));
     assert_eq!(s.stop_reason, Some(StopReason::Experiments));
@@ -976,7 +1096,7 @@ async fn budget_cap_is_rechecked_at_begin() {
     let fake = Fake::with_values(&[100.0, 100.0, 100.0]);
     let mut h = harness(fake.clone(), AutoresearchConfig::default()).await;
     let session = started(&mut h, "t1", 10).await;
-    *fake.spend.lock() = 25.0;
+    *fake.spend.lock() = Ok(25.0);
     let e = begin(
         &mut h.studies,
         Begin {
@@ -1415,6 +1535,9 @@ async fn controls_pause_resume_stop_after_and_steer() {
     .await
     .unwrap();
     assert_eq!(lr.stop, Some(StopReason::User));
+    binding::on_turn_finished(&mut h.studies, session)
+        .await
+        .unwrap();
     wait_state(&h.studies.store, "t1", |s| *s == StudyState::Finished).await;
     let e = control(&mut h.studies, c(ControlOp::Pause))
         .await
@@ -1472,9 +1595,49 @@ async fn stop_now_interrupts_the_experiment_in_flight() {
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(e1.state, ExperimentState::Interrupted);
+    // §4.3: never measured → `abandoned`, not `interrupted` (R-66).
+    assert_eq!(e1.state, ExperimentState::Abandoned);
     let s = wait_state(&h.studies.store, "t1", |s| *s == StudyState::Finished).await;
     assert_eq!(s.stop_reason, Some(StopReason::UserNow));
+}
+
+/// A run blocked inside its benchmark, as another task (the model's tool call).
+async fn hanging_run(
+    h: &Harness,
+    fake: &Arc<Fake>,
+    session: SessionId,
+) -> tokio::task::JoinHandle<Result<RunReport>> {
+    fake.hang.store(true, std::sync::atomic::Ordering::SeqCst);
+    let env = h.studies.env();
+    let handle = tokio::spawn(async move {
+        run_env(
+            &env,
+            Run {
+                session,
+                slot: None,
+                args: RunArgs {
+                    idea: "slow".into(),
+                    ..RunArgs::default()
+                },
+            },
+        )
+        .await
+    });
+    // The pending sample row (R-34) is the sign the benchmark was spawned.
+    for _ in 0..200 {
+        if !h
+            .studies
+            .store
+            .list_samples("t1", Some(1))
+            .await
+            .unwrap()
+            .is_empty()
+        {
+            return handle;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    panic!("the run never inserted its pending sample row");
 }
 
 #[tokio::test]
@@ -1491,31 +1654,11 @@ async fn restart_recovery_marks_interrupted_and_lost() {
     )
     .await
     .unwrap();
-    // Simulate the engine dying mid-sample: the row says measuring, the sample never finished.
-    let mut e = h
-        .studies
-        .store
-        .get_experiment("t1", 1)
-        .await
-        .unwrap()
-        .unwrap();
-    e.state = ExperimentState::Measuring;
-    h.studies.store.update_experiment(&e).await.unwrap();
-    h.studies
-        .store
-        .insert_sample(
-            "t1",
-            &Sample {
-                n: 1,
-                k: 1,
-                tree_sha: "exp:1".into(),
-                role: Some(SampleRole::Candidate),
-                at: now(),
-                ..Sample::default()
-            },
-        )
-        .await
-        .unwrap();
+    // The engine dies mid-sample: the row says measuring, the pending sample row has no value.
+    let handle = hanging_run(&h, &fake, session).await;
+    let pending = h.studies.store.list_samples("t1", Some(1)).await.unwrap();
+    assert_eq!(pending.len(), 1);
+    assert!(pending[0].value.is_none() && pending[0].exit.is_none() && !pending[0].lost);
     let mut preparing = StudyRecord::new(spec(&h, "p", 5), None);
     preparing.state = StudyState::Preparing;
     h.studies.store.create_study(&preparing).await.unwrap();
@@ -1538,6 +1681,18 @@ async fn restart_recovery_marks_interrupted_and_lost() {
         "{:?}",
         p.state
     );
+    // The late sample (the engine is gone in production) cannot reopen the closed row.
+    fake.release.notify_waiters();
+    fake.hang.store(false, std::sync::atomic::Ordering::SeqCst);
+    assert!(handle.await.unwrap().is_err());
+    let e = h
+        .studies
+        .store
+        .get_experiment("t1", 1)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(e.state, ExperimentState::Interrupted);
     // The next begin repairs the worktree and goes on with #2.
     *fake.repair.lock() = Some("HEAD at exp:1".into());
     let b = begin(
@@ -1551,6 +1706,678 @@ async fn restart_recovery_marks_interrupted_and_lost() {
     .unwrap();
     assert_eq!(b.n, 2);
     assert!(b.text.contains("HEAD at exp:1"));
+}
+
+// ───────────────────────────── 140-R fix round regressions ─────────────────────────────
+
+fn b(session: SessionId) -> Begin {
+    Begin {
+        session,
+        slot: None,
+    }
+}
+
+fn r(session: SessionId, idea: &str) -> Run {
+    Run {
+        session,
+        slot: None,
+        args: RunArgs {
+            idea: idea.into(),
+            category: "c".into(),
+            ..RunArgs::default()
+        },
+    }
+}
+
+fn l(session: SessionId, decision: Decision) -> Log {
+    Log {
+        session,
+        slot: None,
+        args: LogArgs {
+            description: "d".into(),
+            learned: "l".into(),
+            decision,
+            ..LogArgs::default()
+        },
+    }
+}
+
+/// R-1: a keep commits the tree as it is now; a tree that no longer matches the
+/// measured patch is not kept, and the model is told to measure again.
+#[tokio::test]
+async fn keep_refuses_a_tree_changed_after_the_measurement() {
+    let fake = Fake::with_values(&[100.0, 100.0, 100.0, 90.0, 90.0, 90.0]);
+    let mut h = harness(fake.clone(), AutoresearchConfig::default()).await;
+    let session = started(&mut h, "t1", 10).await;
+    begin(&mut h.studies, b(session)).await.unwrap();
+    fake.decide(Verdict::Improved, 10.0, 4.0);
+    run(&mut h.studies, r(session, "x")).await.unwrap();
+    // The model edits after experiment_run returned.
+    *fake.patch_hash.lock() = "edited".into();
+    let e = log(&mut h.studies, l(session, Decision::Auto))
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(e.contains("changed since experiment_run"), "{e}");
+    let x = h
+        .studies
+        .store
+        .get_experiment("t1", 1)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        x.state,
+        ExperimentState::Measured,
+        "nothing was kept or closed"
+    );
+    assert_eq!(x.commit_sha, None);
+    assert_eq!(*fake.discards.lock(), 0, "the candidate stays in the tree");
+    // experiment_run is allowed again and measures the new tree; then the keep goes through.
+    let rep = run(&mut h.studies, r(session, "x")).await.unwrap();
+    assert_eq!(rep.verdict, Verdict::Improved);
+    assert_eq!(
+        rep.samples[0].tree_sha, "exp:1r1",
+        "a re-run is its own tree for σ"
+    );
+    let lr = log(&mut h.studies, l(session, Decision::Auto))
+        .await
+        .unwrap();
+    assert_eq!(lr.applied, ExperimentState::Kept);
+    assert!(
+        h.studies
+            .store
+            .list_events("t1", Some("keep"), 5)
+            .await
+            .unwrap()
+            .len()
+            == 1
+    );
+
+    // Custody changed after the measurement: the keep is impossible → refused, counted, reverted.
+    begin(&mut h.studies, b(session)).await.unwrap();
+    run(&mut h.studies, r(session, "y")).await.unwrap();
+    *fake.custody_changed.lock() = vec!["bench.sh".into()];
+    let lr = log(&mut h.studies, l(session, Decision::Auto))
+        .await
+        .unwrap();
+    assert_eq!(lr.applied, ExperimentState::Refused);
+    assert_eq!(lr.incumbent.sha, "keep0001");
+    assert_eq!(
+        h.studies
+            .store
+            .list_events("t1", Some("custody_refusal"), 5)
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
+    *fake.custody_changed.lock() = vec![];
+}
+
+/// R-2 / R-23 / R-20: a confirm-phase incumbent sample measures the incumbent tree
+/// (candidate stashed and re-applied), under its own `k`, and runs the drift check.
+#[tokio::test]
+async fn confirm_incumbent_sample_measures_the_incumbent_tree() {
+    let fake = Fake::with_values(&[100.0, 100.0, 100.0, 95.0, 100.0, 95.0]);
+    let mut h = harness(fake.clone(), AutoresearchConfig::default()).await;
+    let session = started(&mut h, "t1", 10).await;
+    begin(&mut h.studies, b(session)).await.unwrap();
+    *fake.confirm_once.lock() = Some(GateStep::Confirm {
+        more: 1,
+        incumbent_sample: true,
+    });
+    fake.decide(Verdict::Improved, 5.0, 3.0);
+    let rep = run(&mut h.studies, r(session, "x")).await.unwrap();
+    assert_eq!(rep.verdict, Verdict::Improved);
+    let inc: Vec<&Sample> = rep
+        .samples
+        .iter()
+        .filter(|s| s.role == Some(SampleRole::Incumbent))
+        .collect();
+    assert_eq!(inc.len(), 1);
+    assert_eq!((inc[0].tree_sha.as_str(), inc[0].k), ("base0000", 101));
+    assert_eq!(*fake.discards.lock(), 1, "the candidate was stashed once");
+    assert_eq!(*fake.applied.lock(), 1, "and re-applied once");
+    assert!(!h.studies.root.join("t1/runs/1/stash-101.patch").exists());
+    // The incumbent pool grew by the sample: 4 values, none of them the candidate's.
+    let input = fake.last_input.lock().clone().unwrap();
+    assert_eq!(input.incumbent, vec![100.0, 100.0, 100.0, 100.0]);
+    assert_eq!(input.candidate, vec![95.0, 95.0]);
+}
+
+/// R-3: holdout rows share the incumbent's tree sha and must never enter x̄_i.
+#[tokio::test]
+async fn holdout_values_never_enter_incumbent_statistics() {
+    // baseline 100 ×3, base holdout 500 ×3, candidate 90.
+    let fake = Fake::with_values(&[100.0, 100.0, 100.0, 500.0, 500.0, 500.0, 90.0]);
+    let mut h = harness(fake.clone(), AutoresearchConfig::default()).await;
+    let mut sp = spec(&h, "t1", 10);
+    sp.holdout = Some(HoldoutSpec {
+        command: "holdout.sh".into(),
+        every: 1,
+        repeats: None,
+    });
+    create(
+        &mut h.studies,
+        Create {
+            spec: sp,
+            origin: SessionId::new(),
+            start: StartWhen::Now,
+        },
+    )
+    .await
+    .unwrap();
+    wait_state(&h.studies.store, "t1", |s| *s == StudyState::Running).await;
+    let session = SessionId::new();
+    binding::on_fired(&mut h.studies, "autoresearch-t1", session)
+        .await
+        .unwrap();
+    let s = h.studies.store.get_study("t1").await.unwrap().unwrap();
+    assert_eq!(
+        s.incumbent_mean,
+        Some(100.0),
+        "the base holdout is not in the mean"
+    );
+    begin(&mut h.studies, b(session)).await.unwrap();
+    fake.decide(Verdict::Improved, 10.0, 4.0);
+    let rep = run(&mut h.studies, r(session, "x")).await.unwrap();
+    let input = fake.last_input.lock().clone().unwrap();
+    assert_eq!(input.incumbent, vec![100.0, 100.0, 100.0]);
+    assert!(rep.cases_moved.is_empty());
+    let x = experiment(
+        &mut h.studies,
+        Experiment {
+            slug: "t1".into(),
+            n: 1,
+        },
+    )
+    .await
+    .unwrap();
+    assert!(
+        x.samples
+            .iter()
+            .all(|s| s.role != Some(SampleRole::Holdout))
+    );
+}
+
+/// R-4: a Pause while a run is in flight is not reverted when the run writes its σ.
+#[tokio::test]
+async fn pause_during_a_run_survives_the_runs_write_back() {
+    let fake = Fake::with_values(&[100.0, 100.0, 100.0, 100.0]);
+    let mut h = harness(fake.clone(), AutoresearchConfig::default()).await;
+    let session = started(&mut h, "t1", 10).await;
+    begin(&mut h.studies, b(session)).await.unwrap();
+    let handle = hanging_run(&h, &fake, session).await;
+    let i = control(
+        &mut h.studies,
+        Control {
+            slug: "t1".into(),
+            op: ControlOp::Pause,
+            by: By::User,
+        },
+    )
+    .await
+    .unwrap();
+    assert!(matches!(i.state, StudyState::Paused { .. }));
+    fake.hang.store(false, std::sync::atomic::Ordering::SeqCst);
+    fake.release.notify_waiters();
+    let rep = handle.await.unwrap().unwrap();
+    assert_eq!(rep.verdict, Verdict::NoGain);
+    let s = h.studies.store.get_study("t1").await.unwrap().unwrap();
+    assert!(
+        matches!(s.state, StudyState::Paused { .. }),
+        "the run's σ write must not flip the state back: {:?}",
+        s.state
+    );
+    assert!(s.sigma.is_some());
+}
+
+/// R-14: the money stop does not fail open — an unreadable ledger refuses the fire.
+#[tokio::test]
+async fn begin_refuses_when_the_spend_is_unknown() {
+    let fake = Fake::with_values(&[100.0, 100.0, 100.0]);
+    let mut h = harness(fake.clone(), AutoresearchConfig::default()).await;
+    let session = started(&mut h, "t1", 10).await;
+    *fake.spend.lock() = Err("agent actor is not running".into());
+    let e = begin(&mut h.studies, b(session))
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(e.contains("spend unknown"), "{e}");
+    assert_eq!(
+        h.studies
+            .store
+            .get_study("t1")
+            .await
+            .unwrap()
+            .unwrap()
+            .state,
+        StudyState::Running
+    );
+}
+
+/// R-14: experiment costs are the per-row sums; the study total survives a session re-creation.
+#[tokio::test]
+async fn study_spend_sums_closed_rows_plus_the_live_tree() {
+    let fake = Fake::with_values(&[100.0, 100.0, 100.0, 100.0, 100.0]);
+    let mut h = harness(fake.clone(), AutoresearchConfig::default()).await;
+    let session = started(&mut h, "t1", 10).await;
+    *fake.spend.lock() = Ok(1.0);
+    begin(&mut h.studies, b(session)).await.unwrap();
+    run(&mut h.studies, r(session, "x")).await.unwrap();
+    *fake.spend.lock() = Ok(2.5);
+    let lr = log(&mut h.studies, l(session, Decision::Auto))
+        .await
+        .unwrap();
+    let e1 = h
+        .studies
+        .store
+        .get_experiment("t1", 1)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!((e1.cost_nanos as f64 / 1e9 - 1.5).abs() < 1e-9);
+    assert!(
+        (lr.budget_left.usd - 18.5).abs() < 1e-9,
+        "{}",
+        lr.budget_left.usd
+    );
+    // The schedule re-created the session: the live tree restarts at 0.2 — nothing is lost or double counted.
+    *fake.spend.lock() = Ok(0.2);
+    let s = h.studies.store.get_study("t1").await.unwrap().unwrap();
+    let total = study_spend(&h.studies.env(), &s).await.unwrap();
+    assert!((total - 1.5).abs() < 1e-9, "{total}");
+    begin(&mut h.studies, b(session)).await.unwrap();
+    *fake.spend.lock() = Ok(0.7);
+    let s = h.studies.store.get_study("t1").await.unwrap().unwrap();
+    let total = study_spend(&h.studies.env(), &s).await.unwrap();
+    assert!((total - 2.0).abs() < 1e-9, "{total}");
+}
+
+/// R-20: a confirm-phase incumbent sample does not consume the scheduled §5.2 step-4 re-measure.
+#[tokio::test]
+async fn scheduled_remeasure_is_counted_by_its_own_event() {
+    let mut cfg = AutoresearchConfig::default();
+    cfg.gate.remeasure_every = 1;
+    let fake = Fake::with_values(&[100.0, 100.0, 100.0, 90.0, 100.0, 90.0, 100.0]);
+    let mut h = harness(fake.clone(), cfg).await;
+    let session = started(&mut h, "t1", 10).await;
+    begin(&mut h.studies, b(session)).await.unwrap();
+    *fake.confirm_once.lock() = Some(GateStep::Confirm {
+        more: 1,
+        incumbent_sample: true,
+    });
+    fake.decide(Verdict::Improved, 10.0, 4.0);
+    run(&mut h.studies, r(session, "x")).await.unwrap();
+    log(&mut h.studies, l(session, Decision::Auto))
+        .await
+        .unwrap();
+    let before = *fake.samples_taken.lock();
+    begin(&mut h.studies, b(session)).await.unwrap();
+    assert_eq!(
+        *fake.samples_taken.lock(),
+        before + 1,
+        "one scheduled re-measure"
+    );
+    let ev = h
+        .studies
+        .store
+        .list_events("t1", Some("remeasure"), 5)
+        .await
+        .unwrap();
+    assert_eq!(ev.len(), 1);
+    let inc = h
+        .studies
+        .store
+        .samples_of_tree("t1", "keep0001")
+        .await
+        .unwrap();
+    assert!(
+        inc.iter()
+            .any(|s| s.role == Some(SampleRole::Incumbent) && s.k == 0)
+    );
+}
+
+/// R-21: keep-simpler is judged on means after `confirm_runs` more candidate samples.
+#[tokio::test]
+async fn keep_simpler_takes_confirm_samples_before_judging() {
+    let fake = Fake::with_values(&[100.0, 100.0, 100.0, 100.5, 100.2, 99.9]);
+    let mut h = harness(fake.clone(), AutoresearchConfig::default()).await;
+    let session = started(&mut h, "t1", 10).await;
+    begin(&mut h.studies, b(session)).await.unwrap();
+    run(&mut h.studies, r(session, "x")).await.unwrap();
+    *fake.scope.lock() = ScopeDiff {
+        added: 2,
+        removed: 10,
+        ..ScopeDiff::default()
+    };
+    let lr = log(&mut h.studies, l(session, Decision::KeepSimpler))
+        .await
+        .unwrap();
+    assert_eq!(lr.applied, ExperimentState::Kept);
+    let cand: Vec<Sample> = h
+        .studies
+        .store
+        .list_samples("t1", Some(1))
+        .await
+        .unwrap()
+        .into_iter()
+        .filter(|s| s.role == Some(SampleRole::Candidate))
+        .collect();
+    assert_eq!(cand.len(), 3, "1 + confirm_runs");
+    let input = fake.last_input.lock().clone().unwrap();
+    assert_eq!(
+        input.candidate.len(),
+        1,
+        "the gate saw the first sample; keep_simpler saw the means"
+    );
+    let x = h
+        .studies
+        .store
+        .get_experiment("t1", 1)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(x.n_samples, 3);
+    assert_eq!(x.verdict, Some(Verdict::KeepSimpler));
+}
+
+/// R-44: the overfit event reaches the stop view (plateau rule) through `after_n`.
+#[tokio::test]
+async fn overfit_event_feeds_the_stop_view() {
+    // baseline 100 ×3, base holdout 100 ×3, candidate 90, incumbent holdout 150 ×3 (worse).
+    let fake = Fake::with_values(&[
+        100.0, 101.0, 99.0, 100.0, 100.0, 100.0, 90.0, 150.0, 150.0, 150.0,
+    ]);
+    let mut h = harness(fake.clone(), AutoresearchConfig::default()).await;
+    let mut sp = spec(&h, "t1", 10);
+    sp.holdout = Some(HoldoutSpec {
+        command: "holdout.sh".into(),
+        every: 1,
+        repeats: None,
+    });
+    create(
+        &mut h.studies,
+        Create {
+            spec: sp,
+            origin: SessionId::new(),
+            start: StartWhen::Now,
+        },
+    )
+    .await
+    .unwrap();
+    wait_state(&h.studies.store, "t1", |s| *s == StudyState::Running).await;
+    let session = SessionId::new();
+    binding::on_fired(&mut h.studies, "autoresearch-t1", session)
+        .await
+        .unwrap();
+    begin(&mut h.studies, b(session)).await.unwrap();
+    fake.decide(Verdict::Improved, 10.0, 4.0);
+    run(&mut h.studies, r(session, "x")).await.unwrap();
+    log(&mut h.studies, l(session, Decision::Auto))
+        .await
+        .unwrap();
+    let ev = h
+        .studies
+        .store
+        .list_events("t1", Some("overfit"), 5)
+        .await
+        .unwrap();
+    assert_eq!(ev.len(), 1);
+    assert_eq!(ev[0].payload["after_n"], 1);
+    let s = h.studies.store.get_study("t1").await.unwrap().unwrap();
+    let view = stop::view(&h.studies.store, &s, 0.0).await.unwrap();
+    assert!(view.overfit, "{view:?}");
+}
+
+/// R-45: the report document is the executor's prose followed by the plugin's tables.
+#[tokio::test]
+async fn finalize_writes_the_report_prose_before_the_tables() {
+    let fake = Fake::with_values(&[100.0, 100.0, 100.0, 95.0]);
+    let mut h = harness(fake.clone(), AutoresearchConfig::default()).await;
+    let session = started(&mut h, "t1", 1).await;
+    begin(&mut h.studies, b(session)).await.unwrap();
+    fake.decide(Verdict::Improved, 5.0, 4.0);
+    run(&mut h.studies, r(session, "x")).await.unwrap();
+    log(&mut h.studies, l(session, Decision::Auto))
+        .await
+        .unwrap();
+    binding::on_turn_finished(&mut h.studies, session)
+        .await
+        .unwrap();
+    wait_state(&h.studies.store, "t1", |s| *s == StudyState::Finished).await;
+    let report = std::fs::read_to_string(h.studies.root.join("t1/report.md")).unwrap();
+    let prose = report
+        .find("The study asked for speed")
+        .expect("prose in the report");
+    let tables = report.find("**Headline.**").expect("tables in the report");
+    assert!(prose < tables, "{report}");
+    let user = fake.report_user.lock().clone().unwrap();
+    assert!(
+        user.contains("<brief>") && user.contains("<tables>"),
+        "{user}"
+    );
+    assert_eq!(
+        h.studies
+            .store
+            .list_events("t1", Some("report_prose"), 5)
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
+}
+
+/// R-49: Begin on a dangling measuring experiment kills the bench and marks its sample lost.
+#[tokio::test]
+async fn begin_cancels_a_dangling_measurement() {
+    let fake = Fake::with_values(&[100.0, 100.0, 100.0]);
+    let mut h = harness(fake.clone(), AutoresearchConfig::default()).await;
+    let session = started(&mut h, "t1", 10).await;
+    begin(&mut h.studies, b(session)).await.unwrap();
+    let handle = hanging_run(&h, &fake, session).await;
+    let brief = begin(&mut h.studies, b(session)).await.unwrap();
+    assert_eq!(brief.n, 2);
+    assert!(handle.await.unwrap().is_err(), "the run was cancelled");
+    let e1 = h
+        .studies
+        .store
+        .get_experiment("t1", 1)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(e1.state, ExperimentState::Interrupted);
+    assert_eq!(
+        e1.patch_path.as_deref(),
+        Some("t1/runs/1/candidate.patch"),
+        "R-63"
+    );
+    let s = h.studies.store.list_samples("t1", Some(1)).await.unwrap();
+    assert!(s.iter().all(|s| s.lost), "{s:?}");
+}
+
+/// R-50: a keep whose commit landed but whose ledger write did not is adopted at the next Begin.
+#[tokio::test]
+async fn keep_commit_without_ledger_is_adopted_at_begin() {
+    let fake = Fake::with_values(&[100.0, 100.0, 100.0, 90.0]);
+    let mut h = harness(fake.clone(), AutoresearchConfig::default()).await;
+    let session = started(&mut h, "t1", 10).await;
+    begin(&mut h.studies, b(session)).await.unwrap();
+    fake.decide(Verdict::Improved, 10.0, 4.0);
+    run(&mut h.studies, r(session, "x")).await.unwrap();
+    // The engine died between `git commit` and the ledger write.
+    h.studies
+        .store
+        .append_event(
+            "t1",
+            "keep_pending",
+            &serde_json::json!({ "n": 1, "parent": "base0000" }),
+        )
+        .await
+        .unwrap();
+    *fake.head.lock() = "deadbeef".into();
+    *fake.parent.lock() = "base0000".into();
+    let brief = begin(&mut h.studies, b(session)).await.unwrap();
+    assert!(
+        brief.text.contains("was kept (commit deadbeef)"),
+        "{}",
+        brief.text
+    );
+    let e1 = h
+        .studies
+        .store
+        .get_experiment("t1", 1)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        (e1.state, e1.commit_sha.as_deref()),
+        (ExperimentState::Kept, Some("deadbeef"))
+    );
+    let s = h.studies.store.get_study("t1").await.unwrap().unwrap();
+    assert_eq!(s.incumbent_sha.as_deref(), Some("deadbeef"));
+    assert_eq!(s.incumbent_mean, Some(90.0));
+    assert_eq!(
+        h.studies
+            .store
+            .samples_of_tree("t1", "deadbeef")
+            .await
+            .unwrap()
+            .len(),
+        1,
+        "the candidate's sample was retagged"
+    );
+    assert_eq!(brief.n, 2);
+}
+
+/// R-51: a paused study fires only for the user's RunOnce.
+#[tokio::test]
+async fn paused_study_accepts_only_a_run_once_fire() {
+    let fake = Fake::with_values(&[100.0, 100.0, 100.0]);
+    let mut h = harness(fake, AutoresearchConfig::default()).await;
+    let session = started(&mut h, "t1", 10).await;
+    let c = |op| Control {
+        slug: "t1".into(),
+        op,
+        by: By::User,
+    };
+    control(&mut h.studies, c(ControlOp::Pause)).await.unwrap();
+    let e = begin(&mut h.studies, b(session))
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(e.contains("paused"), "{e}");
+    // RunOnce records its intent before asking the schedule actor (absent in tests → Err).
+    let _ = control(&mut h.studies, c(ControlOp::RunOnce)).await;
+    let brief = begin(&mut h.studies, b(session)).await.unwrap();
+    assert_eq!(brief.n, 1);
+    let e = begin(&mut h.studies, b(session))
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(e.contains("paused"), "one fire per RunOnce: {e}");
+}
+
+/// R-52 / R-60: a failed spawn hands the experiment back open with its pending row lost;
+/// a claim is conditional.
+#[tokio::test]
+async fn failed_measurement_reopens_the_experiment() {
+    let fake = Fake::with_values(&[100.0, 100.0, 100.0, 100.0]);
+    let mut h = harness(fake.clone(), AutoresearchConfig::default()).await;
+    let session = started(&mut h, "t1", 10).await;
+    begin(&mut h.studies, b(session)).await.unwrap();
+    fake.fail_next
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    let e = run(&mut h.studies, r(session, "x"))
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(e.contains("could not spawn"), "{e}");
+    let e1 = h
+        .studies
+        .store
+        .get_experiment("t1", 1)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(e1.state, ExperimentState::Open);
+    let s = h.studies.store.list_samples("t1", Some(1)).await.unwrap();
+    assert!(s.len() == 1 && s[0].lost);
+    let rep = run(&mut h.studies, r(session, "x")).await.unwrap();
+    assert_eq!(rep.verdict, Verdict::NoGain);
+    assert!(
+        !h.studies
+            .store
+            .claim_experiment(
+                "t1",
+                1,
+                &[ExperimentState::Open],
+                ExperimentState::Measuring
+            )
+            .await
+            .unwrap(),
+        "a measured row cannot be claimed as open"
+    );
+}
+
+/// R-69: a refused run leaves its idea open; a measured one marks it tried.
+#[tokio::test]
+async fn refused_runs_do_not_mark_ideas_tried() {
+    let fake = Fake::with_values(&[100.0, 100.0, 100.0, 100.0]);
+    let mut h = harness(fake.clone(), AutoresearchConfig::default()).await;
+    let session = started(&mut h, "t1", 10).await;
+    begin(&mut h.studies, b(session)).await.unwrap();
+    *fake.novelty_refusal.lock() = Some("duplicate of #0".into());
+    run(&mut h.studies, r(session, "dup")).await.unwrap();
+    assert!(fake.tried.lock().is_empty());
+    log(&mut h.studies, l(session, Decision::Auto))
+        .await
+        .unwrap();
+    *fake.novelty_refusal.lock() = None;
+    begin(&mut h.studies, b(session)).await.unwrap();
+    run(&mut h.studies, r(session, "fresh")).await.unwrap();
+    assert_eq!(fake.tried.lock().clone(), vec![(2, "fresh".to_owned())]);
+}
+
+/// R-7 / R-9 / R-11: custody is taken from the worktree, `include_dirty` reaches git,
+/// Discard removes branches and refs.
+#[tokio::test]
+async fn create_and_discard_use_the_worktree_and_the_repo_cleanup() {
+    let fake = Fake::with_values(&[100.0, 100.0, 100.0]);
+    let mut h = harness(fake.clone(), AutoresearchConfig::default()).await;
+    let mut sp = spec(&h, "t1", 10);
+    sp.include_dirty = true;
+    create(
+        &mut h.studies,
+        Create {
+            spec: sp,
+            origin: SessionId::new(),
+            start: StartWhen::Now,
+        },
+    )
+    .await
+    .unwrap();
+    wait_state(&h.studies.store, "t1", |s| *s == StudyState::Running).await;
+    assert_eq!(*fake.include_dirty.lock(), Some(true));
+    let worktree = h.studies.root.join("t1/worktree");
+    assert_eq!(fake.custody_from.lock().clone(), vec![worktree]);
+    let c = |op| Control {
+        slug: "t1".into(),
+        op,
+        by: By::User,
+    };
+    control(&mut h.studies, c(ControlOp::Pause)).await.unwrap();
+    control(&mut h.studies, c(ControlOp::Discard))
+        .await
+        .unwrap();
+    let ev = h
+        .studies
+        .store
+        .list_events("t1", Some("discarded"), 1)
+        .await
+        .unwrap();
+    assert_eq!(ev[0].payload["removed"][0], "autoresearch/t1");
 }
 
 #[tokio::test]
@@ -1672,5 +2499,8 @@ fn cards_render_valid_json_render_fences() {
         labels.len()
     );
     assert_eq!(v["elements"]["t"]["type"], "Table");
-    assert!(result.contains("Report: `doc`"));
+    assert!(
+        result.contains("Report: [/notes/doc](/notes/doc)"),
+        "{result}"
+    );
 }
