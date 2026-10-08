@@ -676,7 +676,10 @@ impl Tool for JournalTool {
                 Ok(ToolOutput::ok("meta-note replaced"))
             }
             section => {
-                crate::journal::append(&self.0.data_dir, &a.night, section, &a.markdown).await?;
+                // P3 N1: the actor's `Commit` runs FIRST — a `journal` close the
+                // gate refuses must not leave its markdown in the document (the
+                // other sections never refuse, so the order is harmless for them).
+                let mut closed = false;
                 if let Some(actor) = actor {
                     let phase = section.to_lowercase();
                     actor
@@ -692,9 +695,11 @@ impl Tool for JournalTool {
                         })
                         .await
                         .map_err(|e| anyhow::anyhow!("{e}"))?;
-                    if phase == "journal" {
-                        return Ok(ToolOutput::ok(format!("journal {}: night closed", a.night)));
-                    }
+                    closed = phase == "journal";
+                }
+                crate::journal::append(&self.0.data_dir, &a.night, section, &a.markdown).await?;
+                if closed {
+                    return Ok(ToolOutput::ok(format!("journal {}: night closed", a.night)));
                 }
                 Ok(ToolOutput::ok(format!(
                     "journal {}: {}",
