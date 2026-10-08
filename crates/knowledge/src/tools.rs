@@ -132,8 +132,14 @@ impl Tool for SearchTool {
         let mut s = String::new();
         let mut rows = Vec::with_capacity(hits.len());
         for h in &hits {
+            // 136 §3.1: archived (and other non-live) items stay searchable, marked.
+            let mark = if h.meta.status.is_live() {
+                String::new()
+            } else {
+                format!(" [{}]", h.meta.status.as_str())
+            };
             s.push_str(&format!(
-                "`{}` — {} [{}] ({:.1}): {}\n",
+                "`{}` — {} [{}]{mark} ({:.1}): {}\n",
                 h.meta.id, h.meta.title, h.meta.type_, h.score, h.snippet
             ));
             // Frontmatter fields plus score and snippet, flat.
@@ -512,17 +518,20 @@ impl Tool for MergeTool {
 
     async fn call(&self, a: MergeArgs, cx: ToolCx) -> anyhow::Result<ToolOutput> {
         consolidating(&self.0, Self::NAME, &cx).await?;
-        // 136 W1: the store's `merge` (scope = the session's, user when none).
-        let scope = crate::types::AgentScope {
-            owner: crate::types::USER_OWNER.to_owned(),
-            line: Default::default(),
-        };
+        // The session's agent scope (67 §9); the user's when it has none.
+        let scope =
+            self.0
+                .scope_for(Some(cx.session))
+                .unwrap_or_else(|| crate::types::AgentScope {
+                    owner: crate::types::USER_OWNER.to_owned(),
+                    line: Default::default(),
+                });
         let r = self
             .0
             .merge(&a.ids, &a.into, &a.body, &a.evidence, &scope)
             .await?;
         Ok(structured(
-            format!("merged {} into {}", r.ids.join(", "), a.into),
+            format!("merged {} into {}", r.ids[1..].join(", "), r.ids[0]),
             r,
         ))
     }
@@ -794,6 +803,55 @@ mod tests {
         assert!(k.get("facts/x").await.is_ok());
     }
 
+    /// 136 §3.1: `knowledge_search` keeps archived items and marks them;
+    /// `knowledge_get` records an open.
+    #[tokio::test]
+    async fn search_marks_archived_and_get_records_an_open() {
+        let dir = std::env::temp_dir().join(format!("theuth-ktools-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let rt = runtime::Runtime::new(figment::Figment::new(), dir.clone());
+        let k = Knowledge::open(&dir, rt).await.unwrap();
+        k.put(put(), Source::Model).await.unwrap();
+        k.put(
+            Put {
+                id: "facts/y".into(),
+                status: Some(crate::types::Status::Archived),
+                ..put()
+            },
+            Source::Model,
+        )
+        .await
+        .unwrap();
+        let out = SearchTool(k.clone())
+            .call(
+                SearchArgs {
+                    query: "body".into(),
+                    limit: None,
+                },
+                cx(false),
+            )
+            .await
+            .unwrap();
+        let lines: Vec<&str> = out.content.lines().collect();
+        assert_eq!(lines.len(), 2);
+        let y = lines.iter().find(|l| l.starts_with("`facts/y`")).unwrap();
+        assert!(y.contains("[fact] [archived]"), "{y}");
+        let x = lines.iter().find(|l| l.starts_with("`facts/x`")).unwrap();
+        assert!(x.contains("[fact] (") && !x.contains("[archived]"), "{x}");
+
+        GetTool(k.clone())
+            .call(
+                IdArgs {
+                    id: "facts/x".into(),
+                },
+                cx(false),
+            )
+            .await
+            .unwrap();
+        let s = k.stats(&["facts/x".into()]).await.unwrap();
+        assert_eq!((s[0].shown, s[0].opened), (0, 1));
+    }
+
     /// Says yes to exactly one session.
     struct OneSession(runtime::SessionId);
 
@@ -805,7 +863,7 @@ mod tests {
     }
 
     /// 136 §2.1: the five consolidation tools refuse without a gate, refuse a
-    /// session the gate rejects, and reach the store (a W1 stub) for one it
+    /// session the gate rejects, and reach the store (which wants a file) for one it
     /// allows; `knowledge_stats` answers anywhere.
     #[tokio::test]
     async fn consolidation_tools_need_owner_root_or_unattended() {
@@ -839,7 +897,7 @@ mod tests {
             .await
             .unwrap_err()
             .to_string();
-        assert!(e.contains("not built: W1"), "{e}");
+        assert!(e.contains("no such concept: facts/x"), "{e}");
         let e = VerifyTool(k.clone())
             .call(
                 VerifyArgs {
