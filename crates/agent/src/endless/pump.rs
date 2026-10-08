@@ -9,7 +9,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use chrono::{DateTime, Utc};
-use parking_lot::Mutex;
+use parking_lot::{Mutex, RwLock};
 use runtime::SessionId;
 use tokio::sync::{Notify, watch};
 use tokio_util::sync::CancellationToken;
@@ -54,6 +54,13 @@ impl Handle {
             && live.filter != UnitFilter::Meeting
             && live.backfill().is_none()
     }
+
+    /// §9: the tree answers `zoom` / `recall` / `date` — attached ∧ `endless`,
+    /// whatever the filter or the backfill state (a meeting session and a
+    /// backfilling chat have a tree to search even though `active()` is false).
+    pub(crate) fn served(&self) -> bool {
+        self.state.live.lock().mode == MemoryMode::Endless
+    }
 }
 
 impl Drop for Handle {
@@ -67,7 +74,8 @@ pub(crate) struct State {
     session: SessionId,
     store: Store,
     rt: runtime::Runtime,
-    cfg: super::EndlessConfig,
+    /// Shared with [`Inner`]: Settings › Memory replaces it live.
+    cfg: Arc<RwLock<super::EndlessConfig>>,
     compactor: Arc<dyn Compactor>,
     live: Mutex<Live>,
     /// Pump loop wake-up (new rows, a finished job, a mode switch).
@@ -275,7 +283,8 @@ impl Live {
 /// The compactor for a session (R1-D3): `agent.endless.model` → else
 /// `agent.title_model` → else the session's own model with its effort.
 fn compactor_for(inner: &Inner, session: SessionId, attached: &Attached) -> ModelCompactor {
-    let (model, effort) = match inner.cfg.model.as_ref().or(inner.title_model.as_ref()) {
+    let model = inner.cfg.read().model.clone();
+    let (model, effort) = match model.as_ref().or(inner.title_model.as_ref()) {
         Some(id) => match inner
             .catalog
             .resolve(id, &*crate::supervisor::configured(inner.auth.clone()))
@@ -395,7 +404,7 @@ async fn load(state: &State) -> anyhow::Result<()> {
     let mut max_turn = 0;
     for r in &rows {
         let text = by_seq.get(&r.seq).and_then(|m| {
-            units::derive(m.seq, m.at, &m.message, state.cfg.cap_chars, 0)
+            units::derive(m.seq, m.at, &m.message, state.cfg.read().cap_chars, 0)
                 .into_iter()
                 .find(|u| u.part == r.part)
         });
@@ -449,7 +458,8 @@ async fn ingest(state: &State) -> anyhow::Result<()> {
         if m.excluded {
             continue;
         }
-        let mut units = units::derive(m.seq, m.at, &m.message, state.cfg.cap_chars, next_i);
+        let cap_chars = state.cfg.read().cap_chars;
+        let mut units = units::derive(m.seq, m.at, &m.message, cap_chars, next_i);
         units.retain(|u| filter.keeps(u));
         for (k, u) in units.iter_mut().enumerate() {
             u.i = next_i + k as u64;
@@ -509,7 +519,7 @@ fn schedule(state: &Arc<State>) {
     if live.mode != MemoryMode::Endless {
         return;
     }
-    let cfg = live.fold_cfg(&state.cfg);
+    let cfg = live.fold_cfg(&state.cfg.read());
     let t = live.t();
     let base = live.base;
     let now = Instant::now();
@@ -547,7 +557,7 @@ fn schedule(state: &Arc<State>) {
         }
         l += 1;
     }
-    let slots = usize::from(state.cfg.jobs.max(1)).saturating_sub(live.running.len());
+    let slots = usize::from(state.cfg.read().jobs.max(1)).saturating_sub(live.running.len());
     for key in candidates.into_iter().take(slots) {
         live.running.insert(key);
         spawn_build(state.clone(), key, &mut live);
@@ -557,7 +567,7 @@ fn schedule(state: &Arc<State>) {
 /// Assemble the step for `(l, i)` under the lock and run it on its own task.
 fn spawn_build(state: Arc<State>, key: (u8, u64), live: &mut Live) {
     let (l, i) = key;
-    let node_bytes = state.cfg.node_bytes;
+    let node_bytes = state.cfg.read().node_bytes;
     let (id, n) = id_n(l, i);
     let last_turn = live.unit_turn(id + n - 1);
     let (free_text, step) = if l == 0 {
@@ -599,7 +609,7 @@ fn spawn_build(state: Arc<State>, key: (u8, u64), live: &mut Live) {
     let ctx = match live.frozen.iter().find(|(t, _)| *t == last_turn) {
         Some((_, ctx)) => ctx.clone(),
         None => {
-            let f = live.fold(live.fold_cfg(&state.cfg));
+            let f = live.fold(live.fold_cfg(&state.cfg.read()));
             fold::render(&live.tree, &f, &live.units).text()
         }
     };
@@ -643,7 +653,11 @@ async fn call(state: &State, l: u8, i: u64, ctx: &str, step: &Step) -> Result<No
     if let Err(e) = state.store.mark_dispatched(&reserved).await {
         tracing::warn!(error = %e, "endless: mark_dispatched");
     }
-    let built = compactor::build(c, ctx, step, state.cfg.node_bytes, state.cfg.tries).await;
+    let (node_bytes, tries) = {
+        let cfg = state.cfg.read();
+        (cfg.node_bytes, cfg.tries)
+    };
+    let built = compactor::build(c, ctx, step, node_bytes, tries).await;
     let (status, usage) = match &built {
         Ok(b) => (CallStatus::Settled, b.usage()),
         Err(_) => (CallStatus::Failed, None),
@@ -696,7 +710,7 @@ async fn finish(state: &State, key: (u8, u64), outcome: Result<Node, String>, to
         Err(e) => {
             live.failed.insert(
                 key,
-                Instant::now() + Duration::from_secs(u64::from(state.cfg.retry_secs)),
+                Instant::now() + Duration::from_secs(u64::from(state.cfg.read().retry_secs)),
             );
             if live.reported.insert(key) {
                 tracing::warn!(session = %state.session, l = key.0, i = key.1, error = %e, "endless: node failed (will retry)");
@@ -734,7 +748,7 @@ fn emit_progress(state: &Arc<State>) -> Duration {
     }
     live.dirty = false;
     live.last_progress = Some(Instant::now());
-    let cfg = live.fold_cfg(&state.cfg);
+    let cfg = live.fold_cfg(&state.cfg.read());
     let (built, total) = live.totals();
     let unbuilt = live.fold(cfg).unbuilt(&live.tree);
     let ev = EndlessProgress {
@@ -768,7 +782,7 @@ pub(crate) async fn settle(inner: &Inner, session: SessionId, max: Duration) -> 
     loop {
         let unbuilt = {
             let mut live = state.live.lock();
-            let cfg = live.fold_cfg(&state.cfg);
+            let cfg = live.fold_cfg(&state.cfg.read());
             live.fold(cfg).unbuilt(&live.tree)
         };
         if unbuilt == 0 {
@@ -790,7 +804,7 @@ pub(crate) async fn render_for_turn(
     };
     ingest(&state).await?;
     let mut live = state.live.lock();
-    let cfg = live.fold_cfg(&state.cfg);
+    let cfg = live.fold_cfg(&state.cfg.read());
     let f = live.fold(cfg);
     let render = fold::render(&live.tree, &f, &live.units);
     live.turn += 1;
@@ -836,7 +850,7 @@ pub(crate) async fn render_snapshot(
     };
     ingest(&state).await?;
     let mut live = state.live.lock();
-    let cfg = live.fold_cfg(&state.cfg);
+    let cfg = live.fold_cfg(&state.cfg.read());
     let f = live.fold(cfg);
     Ok(fold::render(&live.tree, &f, &live.units).blocks)
 }
@@ -854,7 +868,7 @@ pub(crate) async fn render_with_budget(
     };
     ingest(&state).await?;
     let live = state.live.lock();
-    let cfg = state.cfg.fold_cfg_for(bytes);
+    let cfg = state.cfg.read().fold_cfg_for(bytes);
     let f = Fold::rebuild(
         &live.tree,
         live.base.min(live.t()),
@@ -895,8 +909,12 @@ pub(crate) async fn backfill_estimate(
     let store = inner.store_for(session);
     let Some(state) = state_of(inner, session) else {
         let meta = store.endless_meta(session).await?;
-        let t = count_units(&store, session, inner.cfg.cap_chars, meta.filter).await?;
-        let total = t.min(u64::from(inner.cfg.backfill_max_units));
+        let (cap_chars, max_units) = {
+            let cfg = inner.cfg.read();
+            (cfg.cap_chars, cfg.backfill_max_units)
+        };
+        let t = count_units(&store, session, cap_chars, meta.filter).await?;
+        let total = t.min(u64::from(max_units));
         return Ok(Backfill {
             done: 0,
             total,
@@ -915,7 +933,11 @@ pub(crate) async fn backfill_estimate(
         let span = live.t().saturating_sub(live.base);
         (span - live.unbuilt_level0(), span)
     } else {
-        (0, live.t().min(u64::from(state.cfg.backfill_max_units)))
+        (
+            0,
+            live.t()
+                .min(u64::from(state.cfg.read().backfill_max_units)),
+        )
     };
     let left = total - done;
     Ok(Backfill {
@@ -1015,7 +1037,7 @@ pub(crate) async fn recall(
                 };
                 let text = format!(
                     "{} (raw)",
-                    super::guards::cut_utf8(&u.tagged(), state.cfg.node_bytes as usize)
+                    super::guards::cut_utf8(&u.tagged(), state.cfg.read().node_bytes as usize)
                 );
                 out.push(view_line(Part { l: 0, i }, text, false, &live.units));
             }
@@ -1058,8 +1080,12 @@ pub(crate) async fn set_mode(
             let meta = store.endless_meta(session).await?;
             let has_tree = !store.endless_nodes(session).await?.is_empty();
             if !has_tree {
-                let t = count_units(&store, session, inner.cfg.cap_chars, filter).await?;
-                let base = t.saturating_sub(u64::from(inner.cfg.backfill_max_units));
+                let (cap_chars, max_units) = {
+                    let cfg = inner.cfg.read();
+                    (cfg.cap_chars, cfg.backfill_max_units)
+                };
+                let t = count_units(&store, session, cap_chars, filter).await?;
+                let base = t.saturating_sub(u64::from(max_units));
                 store.set_endless_meta(session, filter, base).await?;
                 if filter != meta.filter {
                     // The cache was derived under the old filter: re-derive from the rows.
@@ -1124,8 +1150,8 @@ pub(crate) async fn set_mode(
             let head = match state_of(inner, session) {
                 Some(state) => {
                     ingest(&state).await?;
-                    let cfg = state.cfg.fold_cfg();
                     let mut live = state.live.lock();
+                    let cfg = live.fold_cfg(&state.cfg.read());
                     let f = live.fold(cfg);
                     let view = fold::render(&live.tree, &f, &live.units).text();
                     live.mode = MemoryMode::Epochs;
@@ -1153,12 +1179,13 @@ pub(crate) async fn memory(inner: &Inner, session: SessionId) -> anyhow::Result<
     let Some(state) = state_of(inner, session) else {
         return Ok(SessionMemory {
             mode,
+            view_bytes: inner.cfg.read().view_bytes,
             ..Default::default()
         });
     };
     let stats = store.endless_stats(session).await?;
-    let cfg = state.cfg.fold_cfg();
     let mut live = state.live.lock();
+    let cfg = live.fold_cfg(&state.cfg.read());
     let f = live.fold(cfg);
     let view = if mode == MemoryMode::Endless {
         fold::render_lines(&live.tree, &f, &live.units)
@@ -1174,7 +1201,7 @@ pub(crate) async fn memory(inner: &Inner, session: SessionId) -> anyhow::Result<
         units: live.t(),
         stats,
         model: state.compactor.model_id().to_owned(),
-        view_bytes: live.fold_cfg(&state.cfg).view_bytes,
+        view_bytes: cfg.view_bytes,
         backfill: live.backfill(),
     })
 }

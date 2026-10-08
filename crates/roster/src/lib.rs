@@ -540,14 +540,19 @@ impl Roster {
         let Ok(Some(agents)) = ActorRef::<agent::Agents>::lookup(agent::AGENT_ACTOR) else {
             return;
         };
-        match agents.ask(agent::SetSessionMemory { session, mode }).await {
+        let switch = agent::SetSessionMemory {
+            session,
+            mode,
+            filter: agent::UnitFilter::All,
+        };
+        match agents.ask(switch).await {
             Ok(m) => {
                 if let Some(d) = self.desks.get_mut(name) {
                     d.memory = m.mode;
                     d.pending_memory = None;
                 }
-                let est = agent::endless_ext::backfill_estimate(&m);
-                tracing::info!(agent = %name, %session, %mode, units = est.units, eta_secs = est.eta_secs, model = %est.model, usd = ?est.usd, "desk memory switched");
+                let b = m.backfill.unwrap_or_default();
+                tracing::info!(agent = %name, %session, %mode, units = b.total - b.done, eta_secs = b.eta_secs, usd = b.usd_estimate, model = %m.model, "desk memory switched");
             }
             Err(e) if e.to_string().contains("busy") => {
                 tracing::debug!(agent = %name, "desk memory switch deferred: busy");
@@ -1264,6 +1269,16 @@ impl Roster {
                 .await;
             }
         }
+    }
+}
+
+impl Message<agent::EndlessConfigChanged> for Roster {
+    type Reply = ();
+
+    /// 137 §11.3: Settings › Memory changed `agent.endless`; desks opened
+    /// from now on follow the new `default_desk`.
+    async fn handle(&mut self, m: agent::EndlessConfigChanged, _: &mut Context<Self, Self::Reply>) {
+        self.endless = m.0;
     }
 }
 
@@ -2272,6 +2287,8 @@ impl runtime::Plugin for RosterPlugin {
         rt.subscribe::<Roster, mesh::MeshEvent>(&actor).await;
         // 79 §4.9: a VM that takes work again unblocks the tasks pinned to it.
         rt.subscribe::<Roster, sandbox::SandboxEvent>(&actor).await;
+        // 137 §11.3: `default_desk` follows Settings › Memory live.
+        rt.subscribe::<Roster, agent::EndlessConfigChanged>(&actor).await;
         let me = actor.clone();
         let rt2 = rt.clone();
         tokio::spawn(async move {

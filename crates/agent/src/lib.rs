@@ -36,7 +36,6 @@ pub mod context;
 pub mod continuation;
 pub mod durability;
 pub mod endless;
-pub mod endless_ext;
 pub mod frame;
 pub mod loop_;
 pub mod peers;
@@ -831,13 +830,29 @@ pub struct EndlessRecall {
 
 /// `ask` → `Result<SessionMemory, String>` (137 §8.6 `/endless on|off`):
 /// idle sessions only (`Err("busy")`). `endless` starts the backfill; `epochs`
-/// writes the view as the next epoch's head and stops the pump.
+/// writes the view as the next epoch's head and stops the pump. `filter`
+/// (R1-D6) is fixed at switch-on: `All` for chats and desks, `Meeting` for a
+/// meeting session (transcript batches and topic/brief calls only).
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 pub struct SetSessionMemory {
     /// Target session.
     pub session: SessionId,
     /// The mode to switch to.
     pub mode: MemoryMode,
+    /// Which parts become units.
+    pub filter: UnitFilter,
+}
+
+/// `ask` → `Result<Vec<ViewLine>, String>` (137 R1-D6): the session's view
+/// re-folded to `bytes`, as lines — a meeting head's `## Earlier in this
+/// meeting`. Works for a `UnitFilter::Meeting` session, whose turns never
+/// run the fresh-turn frame.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+pub struct RenderMemoryView {
+    /// Target session.
+    pub session: SessionId,
+    /// Budget in bytes for the rendered lines.
+    pub bytes: u32,
 }
 
 /// `ask` → `Result<SessionMemory, String>` (137 R1-D2b): the session's view
@@ -849,6 +864,24 @@ pub struct SetSessionViewBytes {
     /// View budget in bytes.
     pub bytes: u32,
 }
+
+/// `ask` → `EndlessConfig` (137 §11.1): the `agent.endless` section in force.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+pub struct EndlessSettings;
+
+/// `ask` → `Result<EndlessConfig, String>` (137 §11.3 Settings › Memory):
+/// persist the whole `agent.endless` block to `config.yaml` and apply it
+/// live — defaults for new chats/desks/meetings, the view budget, slack and
+/// settle at the next turn of every endless session. The compactor model
+/// applies to sessions attached after the change. A failed write changes
+/// nothing. [`EndlessConfigChanged`] follows on the bus.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct SetEndlessSettings(pub EndlessConfig);
+
+/// Bus event: `agent.endless` was changed through [`SetEndlessSettings`];
+/// the roster and the meeting plugin refresh their copies.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct EndlessConfigChanged(pub EndlessConfig);
 
 /// `ask` → `Result<ContextRemoval, String>`: remove `targets` from the
 /// session's effective context (design doc 48 §3.2) — masks beside the stored

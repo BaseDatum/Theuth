@@ -77,7 +77,7 @@ use crate::durability::{
     CallState, JournaledCall, LastStep, ResumeKind, ResumePlan, ResumeReportRow, StepKind, crash,
     crash_point,
 };
-use crate::endless::{Endless, MemoryMode, SessionMemory, ViewRender};
+use crate::endless::{Endless, MemoryMode, SessionMemory, UnitFilter, ViewRender};
 use crate::frame::{self, Frame, Transport};
 use crate::peers::SpawnSubagentTool;
 use crate::repl::{self, Repl, RunCx};
@@ -412,6 +412,8 @@ pub struct CompactNow {
 pub struct SetMemoryNow {
     /// The mode to switch to.
     pub mode: MemoryMode,
+    /// R1-D6: which parts become units (`Meeting` for a meeting session); fixed at switch-on.
+    pub filter: UnitFilter,
 }
 
 /// `ask` → `Result<HarvestResult, String>`: harvest the finished frame now
@@ -2201,7 +2203,7 @@ impl Message<SetMemoryNow> for Session {
         let mut turn = Turn::new(self.shared.clone(), None, cancel, state);
         let me = ctx.actor_ref().clone();
         tokio::spawn(async move {
-            let result = turn.set_memory(m.mode).await;
+            let result = turn.set_memory(m.mode, m.filter).await;
             let _ = me.tell(TurnDone(turn.state)).await;
             tx.send(result);
         });
@@ -3814,7 +3816,7 @@ impl Turn {
         if !endless.active(id) {
             return None;
         }
-        let max = Duration::from_secs(u64::from(self.shared.cfg.endless.settle_secs));
+        let max = Duration::from_secs(u64::from(endless.config().settle_secs));
         let started = Instant::now();
         let settled = tokio::select! {
             _ = self.cancel.cancelled() => return None,
@@ -3830,6 +3832,18 @@ impl Turn {
                 None
             }
         }
+    }
+
+    /// §9: this turn may run `zoom` / `recall` / `date` — the fresh-turn frame
+    /// is up (`view`), or the attached session is `endless` without it (a
+    /// `UnitFilter::Meeting` session, a chat still backfilling).
+    fn endless_tools_on(&self) -> bool {
+        self.view.is_some()
+            || self
+                .shared
+                .endless
+                .as_ref()
+                .is_some_and(|e| e.served(self.shared.id))
     }
 
     /// 137 §7.3: the `view_rebase` line, once per endless turn, with the
@@ -4007,10 +4021,19 @@ impl Turn {
             specs.push(advisor::advise::spec());
             specs.sort_by(|a, b| a.name.cmp(&b.name));
         }
-        // 137 §9: `zoom`, `recall`, `date` exist only in an endless turn; the
-        // list stays sorted so an epochs session's tools are untouched.
-        if self.view.is_some() {
-            specs.extend(endless_tools::specs());
+        // 137 §9: `zoom`, `recall`, `date` exist only while the session has a
+        // tree — the fresh-turn frame (`view`) or an attached endless session
+        // whose frame stays epochs-shaped (a meeting, R1-D6; a backfilling
+        // chat). A toolset is an allowlist: each spec only when it lists it.
+        // The list stays sorted so an epochs session's tools are untouched.
+        if self.endless_tools_on() {
+            let listed =
+                |name: &str| toolset.as_ref().is_none_or(|t| t.tools.iter().any(|n| n == name));
+            specs.extend(
+                endless_tools::specs()
+                    .into_iter()
+                    .filter(|s| listed(&s.name)),
+            );
             specs.sort_by(|a, b| a.name.cmp(&b.name));
         }
         self.tools = specs.into_iter().map(direct_tool).collect();
@@ -5606,7 +5629,7 @@ impl Turn {
         // `python` cell under the same call_id - the repl's own policy path
         // (86 RUNTIME-BRIDGE); anything else is refused.
         let advisor = self.shared.kind == SessionKind::Advisor;
-        let endless = self.view.is_some();
+        let endless = self.endless_tools_on();
         let local = |name: &str| {
             name == todo::NAME
                 || name == repl::NAME
@@ -6092,7 +6115,11 @@ impl Turn {
     /// the tail empty — the same `epochs` row a compaction writes, no model
     /// call — so the next epochs turn starts from it. Both directions log a
     /// `context_edit`-class event in 07 §0's vocabulary.
-    async fn set_memory(&mut self, mode: MemoryMode) -> Result<SessionMemory, String> {
+    async fn set_memory(
+        &mut self,
+        mode: MemoryMode,
+        filter: UnitFilter,
+    ) -> Result<SessionMemory, String> {
         let session = self.shared.id;
         let endless = self
             .shared
@@ -6104,19 +6131,14 @@ impl Turn {
             return endless.memory(session).await.map_err(|e| format!("{e:#}"));
         }
         let n = self.state.epoch + 1;
-        let r = crate::endless_ext::set_mode(
-            endless,
-            session,
-            mode,
-            n,
-            crate::endless_ext::UnitFilter::All,
-        )
-        .await
-        .map_err(|e| format!("{e:#}"))?;
+        let r = endless
+            .set_mode(session, mode, n, filter)
+            .await
+            .map_err(|e| format!("{e:#}"))?;
         match mode {
             MemoryMode::Endless => {
-                let est = crate::endless_ext::backfill_estimate(&r.memory);
-                tracing::info!(session = %session, units = est.units, eta_secs = est.eta_secs, model = %est.model, "context_edit: endless on");
+                let b = r.memory.backfill.unwrap_or_default();
+                tracing::info!(session = %session, ?filter, units = b.total - b.done, eta_secs = b.eta_secs, usd = b.usd_estimate, model = %r.memory.model, "context_edit: endless on");
             }
             MemoryMode::Epochs => {
                 let folded = match &r.head {

@@ -55,7 +55,7 @@ use crate::continuation::{
     DecideYield, InputConsumed, InputDropped, InputOrigin, InputTicket, Ledger, SessionUnknown,
     TurnEntered, TurnReturned, YieldDecision,
 };
-use crate::endless::{Attached, Endless, MemoryMode, SessionMemory, ViewLine};
+use crate::endless::{Attached, Endless, MemoryMode, SessionMemory, UnitFilter, ViewLine};
 use crate::lifecycle::{
     Authorize, Authorized, CleanupStatus, CloseResult, CreateSession, LeaveSession, PrivateOwner,
     PrivateRoot, PrivateTrees, ResumePrivate, SessionOpen,
@@ -105,7 +105,9 @@ use crate::{
 };
 use crate::{AwsProfiles, ListAwsProfiles, SetAwsProfile};
 use crate::{
-    EndlessRecall, EndlessZoom, SessionMemoryQuery, SetSessionMemory, SetSessionViewBytes,
+    EndlessConfig, EndlessConfigChanged, EndlessRecall, EndlessSettings, EndlessZoom,
+    RenderMemoryView, SessionMemoryQuery, SetEndlessSettings, SetSessionMemory,
+    SetSessionViewBytes,
 };
 use crate::{GetFavoriteModels, SetModelFavorite};
 use crate::{ListProjectStyles, SetProjectStyle, SetSessionProject, project};
@@ -3893,7 +3895,7 @@ impl Agents {
             && self.endless.active(*parent)
         {
             let (actor, parent) = (actor.clone(), *parent);
-            let blocks = crate::endless_ext::render_snapshot(&self.endless, parent).await;
+            let blocks = self.endless.render_snapshot(parent).await.unwrap_or_default();
             if !blocks.is_empty() {
                 let _ = actor
                     .tell(crate::loop_::OpenerContext(
@@ -6591,12 +6593,32 @@ impl Message<SetSessionMemory> for Agents {
         tokio::spawn(async move {
             tx.send(
                 actor
-                    .ask(SetMemoryNow { mode: m.mode })
+                    .ask(SetMemoryNow {
+                        mode: m.mode,
+                        filter: m.filter,
+                    })
                     .await
                     .map_err(|e| e.to_string()),
             );
         });
         reply
+    }
+}
+
+impl Message<RenderMemoryView> for Agents {
+    type Reply = Result<Vec<ViewLine>, String>;
+
+    /// 137 R1-D6: the meeting head's `## Earlier in this meeting` lines.
+    async fn handle(
+        &mut self,
+        m: RenderMemoryView,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        self.stored(m.session).await?;
+        self.endless
+            .render_with_budget(m.session, m.bytes)
+            .await
+            .map_err(|e| format!("{e:#}"))
     }
 }
 
@@ -6610,7 +6632,56 @@ impl Message<SetSessionViewBytes> for Agents {
         _: &mut Context<Self, Self::Reply>,
     ) -> Self::Reply {
         self.stored(m.session).await?;
-        crate::endless_ext::set_view_bytes(&self.endless, m.session, m.bytes).await
+        if !EndlessConfig::VIEW_BYTES.contains(&m.bytes) {
+            return Err(format!(
+                "view_bytes {} out of range {}..={}",
+                m.bytes,
+                EndlessConfig::VIEW_BYTES.start(),
+                EndlessConfig::VIEW_BYTES.end()
+            ));
+        }
+        self.endless
+            .set_view_bytes(m.session, m.bytes)
+            .await
+            .map_err(|e| format!("{e:#}"))?;
+        self.endless
+            .memory(m.session)
+            .await
+            .map_err(|e| format!("{e:#}"))
+    }
+}
+
+impl Message<EndlessSettings> for Agents {
+    type Reply = Result<EndlessConfig, String>;
+
+    async fn handle(&mut self, _: EndlessSettings, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        Ok(self.endless.config())
+    }
+}
+
+impl Message<SetEndlessSettings> for Agents {
+    type Reply = Result<EndlessConfig, String>;
+
+    /// 137 §11.3: persist `agent.endless` to `config.yaml`, then apply it live
+    /// and tell the roster and the meeting plugin ([`EndlessConfigChanged`]).
+    async fn handle(
+        &mut self,
+        m: SetEndlessSettings,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        let cfg = m.0.validated()?;
+        // One scalar per key through the comment-preserving writer; the
+        // struct is flat, so `serde_json::Value` lists every key once.
+        let path = self.rt.data_dir.join("config.yaml");
+        let keys = serde_json::to_value(&cfg).map_err(|e| e.to_string())?;
+        for (key, value) in keys.as_object().into_iter().flatten() {
+            let text = serde_yaml::to_string(value).map_err(|e| e.to_string())?;
+            runtime::write_nested_config_value(&path, "agent", "endless", key, text.trim())
+                .map_err(|e| format!("config.yaml: {e}"))?;
+        }
+        self.endless.set_config(cfg.clone());
+        self.rt.publish(EndlessConfigChanged(cfg.clone())).await;
+        Ok(cfg)
     }
 }
 
@@ -8387,6 +8458,7 @@ pub async fn start(rt: &Runtime) -> anyhow::Result<()> {
         auth.clone(),
         catalog.clone(),
         cfg.endless.clone(),
+        cfg.title_model.clone(),
     );
     let agents = Agents::spawn_with_mailbox(
         Agents {
@@ -9075,7 +9147,7 @@ impl Message<CreateSession> for Agents {
         let memory = m
             .options
             .memory
-            .unwrap_or(if self.cfg.endless.default_chat {
+            .unwrap_or(if self.endless.config().default_chat {
                 MemoryMode::Endless
             } else {
                 MemoryMode::Epochs
@@ -9101,7 +9173,7 @@ impl Message<CreateSession> for Agents {
             // starts the (empty) tree, so the first turn is already endless.
             if memory == MemoryMode::Endless {
                 self.endless
-                    .set_mode(id, memory, 0)
+                    .set_mode(id, memory, 0, UnitFilter::All)
                     .await
                     .map_err(|e| format!("endless: {e:#}"))?;
                 tracing::info!(session = %id, "endless: created in endless mode");
@@ -10171,6 +10243,7 @@ pub(crate) mod tests {
             auth.clone(),
             catalog.clone(),
             cfg.endless.clone(),
+            cfg.title_model.clone(),
         );
         Agents {
             rt,

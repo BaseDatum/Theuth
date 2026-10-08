@@ -44,7 +44,7 @@ use agent::{
 };
 use agent::{AwsProfiles, ListAwsProfiles, SetAwsProfile};
 use agent::{GetFavoriteModels, SetModelFavorite};
-use agent::{MemoryMode, SessionMemory, ViewLine};
+use agent::{EndlessConfig, MemoryMode, SessionMemory, ViewLine};
 use app::{
     AppDoc, AppToolResult, Apps, CallArgs, CallStatusOf, CallTool, CloseApp, GetApp, PublishFromUi,
 };
@@ -1562,6 +1562,15 @@ pub trait Api {
         &self,
         settings: double::DoubleConfig,
     ) -> RpcResult<double::DoubleConfig>;
+    /// 137 §11.1 `agent.endless` as in force (Settings › Memory).
+    #[method(name = "endless_settings_get")]
+    async fn endless_settings_get(&self) -> RpcResult<EndlessConfig>;
+    /// Persist the whole `agent.endless` block to config.yaml and apply it
+    /// live (defaults for new chats/desks/meetings, view budget, slack,
+    /// settle). The compactor model applies to sessions attached after the
+    /// change. A failed write changes nothing.
+    #[method(name = "endless_settings_set")]
+    async fn endless_settings_set(&self, settings: EndlessConfig) -> RpcResult<EndlessConfig>;
     /// Settings › Search (16 §8): the four external providers (enabled, base
     /// URL, secret name and whether it is set - never the value, timeout,
     /// priority, registered) plus the `web` read/budget defaults.
@@ -3152,7 +3161,11 @@ impl ApiServer for Server {
         }
         ask::<Agents, _>(
             agent::AGENT_ACTOR,
-            agent::SetSessionMemory { session, mode },
+            agent::SetSessionMemory {
+                session,
+                mode,
+                filter: agent::UnitFilter::All,
+            },
         )
         .await
     }
@@ -5492,6 +5505,14 @@ impl ApiServer for Server {
             double::sched::SetSettings(settings),
         )
         .await
+    }
+
+    async fn endless_settings_get(&self) -> RpcResult<EndlessConfig> {
+        ask::<Agents, _>(agent::AGENT_ACTOR, agent::EndlessSettings).await
+    }
+
+    async fn endless_settings_set(&self, settings: EndlessConfig) -> RpcResult<EndlessConfig> {
+        ask::<Agents, _>(agent::AGENT_ACTOR, agent::SetEndlessSettings(settings)).await
     }
 
     async fn meeting_oracle_mode(&self) -> RpcResult<decision::ModeInfo> {

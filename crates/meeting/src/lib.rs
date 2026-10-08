@@ -40,9 +40,7 @@ pub mod cache;
 pub mod capture;
 pub mod diar;
 pub mod endless;
-// 137 R1-D6 hand-off: enable once W2's `SetSessionMemory` / `RenderMemoryView` land
-// (137-as-built-W4.md §4 item 1), together with `endless_agent::install()` in `start`.
-// mod endless_agent;
+mod endless_agent;
 pub mod head;
 pub mod note;
 pub mod ogg;
@@ -3536,6 +3534,16 @@ impl Message<GetSummary> for Meeting {
     }
 }
 
+impl Message<agent::EndlessConfigChanged> for Meeting {
+    type Reply = ();
+
+    /// 137 §11.3: Settings › Memory changed `agent.endless`; meetings started
+    /// from now on follow the new default and budget.
+    async fn handle(&mut self, m: agent::EndlessConfigChanged, _: &mut Context<Self, Self::Reply>) {
+        self.endless = endless::Config::from(&m.0);
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Plugin
 
@@ -3582,7 +3590,8 @@ impl runtime::Plugin for MeetingPlugin {
                 None
             }
         };
-        // 137 R1-D6 hand-off (closer): `endless_agent::install();` here, with `mod endless_agent`.
+        // 137 R1-D6: the meeting's memory port is the agent actor (kameo messages).
+        endless_agent::install();
         let mut meeting = Meeting {
             rt: rt.clone(),
             cfg,
@@ -3605,6 +3614,8 @@ impl runtime::Plugin for MeetingPlugin {
         rt.subscribe::<Meeting, AgentEvent>(&actor).await;
         rt.subscribe::<Meeting, ApprovalRequested>(&actor).await;
         rt.subscribe::<Meeting, ApprovalResolved>(&actor).await;
+        // 137 §11.3: `default_meeting` / `meeting_view_bytes` follow Settings › Memory live.
+        rt.subscribe::<Meeting, agent::EndlessConfigChanged>(&actor).await;
         for m in settle {
             let _ = actor.tell(Resummarize(m)).await;
         }

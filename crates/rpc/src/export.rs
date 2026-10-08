@@ -473,7 +473,8 @@ async fn export_bindings() {
         agent::Backfill,
         agent::SessionMemory,
         agent::EndlessProgress,
-        agent::UnitFilter
+        agent::UnitFilter,
+        agent::EndlessConfig
     );
 
     use crate::ApiServer;
