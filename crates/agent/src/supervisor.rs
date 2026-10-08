@@ -55,6 +55,7 @@ use crate::continuation::{
     DecideYield, InputConsumed, InputDropped, InputOrigin, InputTicket, Ledger, SessionUnknown,
     TurnEntered, TurnReturned, YieldDecision,
 };
+use crate::endless::{Attached, Endless, MemoryMode, SessionMemory, ViewLine};
 use crate::lifecycle::{
     Authorize, Authorized, CleanupStatus, CloseResult, CreateSession, LeaveSession, PrivateOwner,
     PrivateRoot, PrivateTrees, ResumePrivate, SessionOpen,
@@ -103,13 +104,12 @@ use crate::{
     UnloadSession,
 };
 use crate::{AwsProfiles, ListAwsProfiles, SetAwsProfile};
-use crate::{GetFavoriteModels, SetModelFavorite};
-use crate::{ListProjectStyles, SetProjectStyle, SetSessionProject, project};
-use crate::{attach, clock, frame, repl, search, spill};
-use crate::endless::{Attached, Endless, MemoryMode, SessionMemory, ViewLine};
 use crate::{
     EndlessRecall, EndlessZoom, SessionMemoryQuery, SetSessionMemory, SetSessionViewBytes,
 };
+use crate::{GetFavoriteModels, SetModelFavorite};
+use crate::{ListProjectStyles, SetProjectStyle, SetSessionProject, project};
+use crate::{attach, clock, frame, repl, search, spill};
 use tools::{
     CloseTree, CloseTreeAll, OpenTree, ParticipantsReady, Retention, SessionResources, TreeOpened,
 };
@@ -9072,11 +9072,14 @@ impl Message<CreateSession> for Agents {
             }
         }
         // 137 D1: the memory mode — explicit, else `agent.endless.default_chat`.
-        let memory = m.options.memory.unwrap_or(if self.cfg.endless.default_chat {
-            MemoryMode::Endless
-        } else {
-            MemoryMode::Epochs
-        });
+        let memory = m
+            .options
+            .memory
+            .unwrap_or(if self.cfg.endless.default_chat {
+                MemoryMode::Endless
+            } else {
+                MemoryMode::Epochs
+            });
         if m.options.retention == Retention::Durable {
             let id = self
                 .create_durable(

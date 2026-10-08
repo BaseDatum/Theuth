@@ -1181,6 +1181,8 @@ Attached (read with the tool for the kind, see Attachments):\n\
             primed: true,
             model: None,
             serving: None,
+            memory: agent::MemoryMode::Epochs,
+            pending_memory: None,
         };
         let idle = 21_600;
         assert!(
@@ -1218,6 +1220,8 @@ Attached (read with the tool for the kind, see Attachments):\n\
             primed: true,
             model: None,
             serving: None,
+            memory: agent::MemoryMode::Epochs,
+            pending_memory: None,
         };
         assert!(d.idle_due(u64::MAX / 2, 1, false));
         assert!(!d.idle_due(u64::MAX / 2, 1, true));

@@ -130,8 +130,14 @@ mod tests {
         let names: Vec<&str> = s.iter().map(|t| t.name.as_str()).collect();
         assert_eq!(names, [ZOOM, RECALL, DATE]);
         assert!(s.iter().all(|t| t.direct && t.risk == Risk::ReadOnly));
-        assert!(s[0].description.starts_with("Open the line id+n of the view"));
-        assert!(s[1].description.starts_with("Search the one-line summaries"));
+        assert!(
+            s[0].description
+                .starts_with("Open the line id+n of the view")
+        );
+        assert!(
+            s[1].description
+                .starts_with("Search the one-line summaries")
+        );
         assert_eq!(s[2].description, "The date and time of message id.");
         assert!(s[0].schema["properties"]["id"].is_object());
         assert!(s[1].schema["properties"]["limit"].is_object());

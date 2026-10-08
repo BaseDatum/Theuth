@@ -6,6 +6,7 @@
 //! (D11); `/endless off` installs the view head (8.6). The view itself comes
 //! from the test hook (`Shared::test_view`): the service's rendering is W1's.
 
+use kameo::actor::Spawn;
 use serde_json::{Value, json};
 
 use super::vision_fallback_tests::{Fake, Harness, system, texts};
@@ -48,7 +49,10 @@ async fn actor(h: &Harness, endless: bool) -> ActorRef<Session> {
     let session = Session::new(
         h.id,
         0,
-        (h.catalog.resolve("openai/textonly", &|_| true).unwrap(), None),
+        (
+            h.catalog.resolve("openai/textonly", &|_| true).unwrap(),
+            None,
+        ),
         None,
         SessionState::resume(epoch, head, history),
         Arc::new(AgentConfig::default()),
@@ -99,6 +103,15 @@ fn tool_names(b: &Value) -> Vec<String> {
         .collect()
 }
 
+/// The main (round) calls: title, summary and harvest frames carry no `tools` key (07 §0).
+async fn main_calls(h: &Harness) -> Vec<Value> {
+    h.requests()
+        .await
+        .into_iter()
+        .filter(|r| r["tools"].is_array())
+        .collect()
+}
+
 #[test]
 fn endless_turns_rebuild_the_frame_from_the_view() {
     crate::with_test_registry(scenario_fresh_turns());
@@ -110,7 +123,7 @@ async fn scenario_fresh_turns() {
     let actor = actor(&h, true).await;
     send(&mut h, &actor, "First question.").await;
     send(&mut h, &actor, "Second question.").await;
-    let requests = h.requests().await;
+    let requests = main_calls(&h).await;
     assert_eq!(requests.len(), 2, "one call per turn");
     let (r1, r2) = (&requests[0], &requests[1]);
 
@@ -121,10 +134,7 @@ async fn scenario_fresh_turns() {
     assert!(system(r1).ends_with(Endless::view_doc()), "VIEW_DOC last");
     assert!(!system(r1).contains("\nDate: "), "{}", system(r1));
     let names = tool_names(r1);
-    assert!(
-        names.windows(2).all(|w| w[0] <= w[1]),
-        "sorted: {names:?}"
-    );
+    assert!(names.windows(2).all(|w| w[0] <= w[1]), "sorted: {names:?}");
     for t in ["zoom", "recall", "date"] {
         assert!(names.iter().any(|n| n == t), "{t} in {names:?}");
     }
@@ -134,7 +144,11 @@ async fn scenario_fresh_turns() {
     let t2 = texts(r2);
     assert_eq!(t2.len(), 4, "{t2:?}");
     assert_eq!(&t2[1..3], [BLOCK_A, BLOCK_B]);
-    assert!(t2[3].starts_with("<time now=\""), "the opener carries the date: {}", t2[3]);
+    assert!(
+        t2[3].starts_with("<time now=\""),
+        "the opener carries the date: {}",
+        t2[3]
+    );
     assert!(t2[3].ends_with("Second question."));
     assert!(!t2.iter().any(|t| t.contains("First question.")));
     assert!(!t2.iter().any(|t| t.contains("<context_summary")));
@@ -164,12 +178,17 @@ async fn scenario_epochs() {
     let actor = actor(&h, false).await;
     send(&mut h, &actor, "First question.").await;
     send(&mut h, &actor, "Second question.").await;
-    let requests = h.requests().await;
+    let requests = main_calls(&h).await;
     let r2 = &requests[1];
     assert!(system(r2).contains("\nDate: "));
     assert!(!system(r2).contains(Endless::view_doc()));
     let names = tool_names(r2);
-    assert!(!names.iter().any(|n| n == "zoom" || n == "recall" || n == "date"), "{names:?}");
+    assert!(
+        !names
+            .iter()
+            .any(|n| n == "zoom" || n == "recall" || n == "date"),
+        "{names:?}"
+    );
     // The carried history: turn 1's input and reply precede turn 2's input.
     let t2 = texts(r2);
     assert!(t2.iter().any(|t| t.contains("First question.")));
@@ -183,7 +202,11 @@ fn overflow_in_an_endless_turn_cuts_with_the_view_as_head() {
 
 async fn scenario_overflow() {
     let reg_dir = registry().await;
-    let mut h = Harness::new(Fake::tool_call_then_overflow("todo", &json!({"op": "view"}))).await;
+    let mut h = Harness::new(Fake::tool_call_then_overflow(
+        "todo",
+        &json!({"op": "view"}),
+    ))
+    .await;
     let actor = actor(&h, true).await;
     actor
         .tell(UserInput {
@@ -209,20 +232,23 @@ async fn scenario_overflow() {
         })
         .collect();
     assert_eq!(compacted, [(1, CompactStyle::Cut)], "{events:?}");
-    let requests = h.requests().await;
+    let requests = main_calls(&h).await;
     // tool round, the overflowing call, the retry after the cut — no summariser call.
     assert_eq!(requests.len(), 3, "{requests:?}");
     assert!(
-        !requests
+        !requests.iter().any(|r| texts(r)
             .iter()
-            .any(|r| texts(r).iter().any(|t| t.contains(compact::COMPACT_INSTRUCTION))),
+            .any(|t| t.contains(compact::COMPACT_INSTRUCTION))),
         "no summariser"
     );
     let retry = texts(&requests[2]);
     // D11: the head is the view (style cut), and the view blocks are no longer
     // prepended separately.
     let head = &retry[1];
-    assert!(head.starts_with("<context_summary epoch=\"1\" style=\"cut\">"), "{head}");
+    assert!(
+        head.starts_with("<context_summary epoch=\"1\" style=\"cut\">"),
+        "{head}"
+    );
     assert!(head.contains(BLOCK_A) && head.contains(BLOCK_B), "{head}");
     assert_eq!(retry.iter().filter(|t| t.as_str() == BLOCK_A).count(), 0);
     let (epoch, stored_head, _) = h.store.frame(h.id).await.unwrap();
@@ -253,7 +279,11 @@ async fn scenario_off() {
     assert_eq!(epoch, 1);
     assert_eq!(text_of(&head.unwrap().content), text);
     assert!(tail.is_empty());
-    assert_eq!(compact::style_of_head(text), CompactStyle::Summary, "an unknown style reads as summary");
+    assert_eq!(
+        compact::style_of_head(text),
+        CompactStyle::Summary,
+        "an unknown style reads as summary"
+    );
     // A session with no rows gets no head.
     let (mut empty, _) = h.turn("openai/textonly", CancellationToken::new()).await;
     empty.state.history.clear();

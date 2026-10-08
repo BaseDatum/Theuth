@@ -1521,7 +1521,11 @@ pub trait Api {
     /// Start a training run now (126 §8): `tier` a | b | c, `venue` auto | local | node | off.
     /// Returns the run id; `DoubleTrainingState` events follow.
     #[method(name = "double_train")]
-    async fn double_train(&self, tier: double::Tier, venue: double::Venue) -> RpcResult<double::RunId>;
+    async fn double_train(
+        &self,
+        tier: double::Tier,
+        venue: double::Venue,
+    ) -> RpcResult<double::RunId>;
     /// Pause / resume learning (126 §9): predictions and rungs continue, labels stop accruing.
     #[method(name = "double_pause")]
     async fn double_pause(&self, on: bool) -> RpcResult<double::DoubleStatus>;
@@ -3142,12 +3146,15 @@ impl ApiServer for Server {
         mode: MemoryMode,
     ) -> RpcResult<SessionMemory> {
         self.authorize(ext, session).await?;
-        if let Some(r) =
-            forward::route(ext, session, "set_session_memory", (session, mode)).await?
+        if let Some(r) = forward::route(ext, session, "set_session_memory", (session, mode)).await?
         {
             return Ok(r);
         }
-        ask::<Agents, _>(agent::AGENT_ACTOR, agent::SetSessionMemory { session, mode }).await
+        ask::<Agents, _>(
+            agent::AGENT_ACTOR,
+            agent::SetSessionMemory { session, mode },
+        )
+        .await
     }
 
     async fn set_session_view_bytes(
@@ -5408,9 +5415,16 @@ impl ApiServer for Server {
         ask::<double::actor::Double, _>(double::DOUBLE_ACTOR, double::actor::ClassDetail(key)).await
     }
 
-    async fn double_train(&self, tier: double::Tier, venue: double::Venue) -> RpcResult<double::RunId> {
-        ask::<double::sched::Scheduler, _>(double::sched::ACTOR, double::sched::Train { tier, venue })
-            .await
+    async fn double_train(
+        &self,
+        tier: double::Tier,
+        venue: double::Venue,
+    ) -> RpcResult<double::RunId> {
+        ask::<double::sched::Scheduler, _>(
+            double::sched::ACTOR,
+            double::sched::Train { tier, venue },
+        )
+        .await
     }
 
     async fn double_pause(&self, on: bool) -> RpcResult<double::DoubleStatus> {

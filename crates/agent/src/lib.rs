@@ -103,10 +103,6 @@ pub use communication::{
     SetPeerScope,
 };
 pub use compact::CompactStyle;
-pub use endless::{
-    Backfill, Endless, EndlessConfig, EndlessProgress, EndlessStats, GuardTrips, MemoryMode,
-    SessionMemory, ViewLine,
-};
 pub use context::{
     ContextAttachment, ContextBreakdown, ContextEntry, ContextItem, ContextKind, ContextOwner,
     ContextRemoval, ContextSnapshot, ContextTarget,
@@ -115,6 +111,10 @@ pub use cost::{
     CallId, CallKind, CallStatus, ChildCost, CostBucket, CostObservation, CostScope, Coverage,
     MeterUpdate, Money, Provenance, SessionCost, SpendDay, SpendOwner, SpendOwnerKind, SpendReport,
     TokenTotals,
+};
+pub use endless::{
+    Backfill, Endless, EndlessConfig, EndlessProgress, EndlessStats, GuardTrips, MemoryMode,
+    SessionMemory, ViewLine,
 };
 pub use lifecycle::{
     Authorize, Authorized, CreateSession, LeaveSession, PrivateTrees, ResumePrivate, TreeOpened,

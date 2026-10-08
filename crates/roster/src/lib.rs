@@ -540,10 +540,7 @@ impl Roster {
         let Ok(Some(agents)) = ActorRef::<agent::Agents>::lookup(agent::AGENT_ACTOR) else {
             return;
         };
-        match agents
-            .ask(agent::SetSessionMemory { session, mode })
-            .await
-        {
+        match agents.ask(agent::SetSessionMemory { session, mode }).await {
             Ok(m) => {
                 if let Some(d) = self.desks.get_mut(name) {
                     d.memory = m.mode;

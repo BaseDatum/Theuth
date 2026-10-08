@@ -2185,7 +2185,11 @@ impl Message<SetMemoryNow> for Session {
     /// `/endless on|off` (137 §8.6): the [`CompactNow`] shape — refused while
     /// a turn (or compaction/harvest) owns the state, otherwise a `Turn`-less
     /// task runs [`Turn::set_memory`] and hands the state back.
-    async fn handle(&mut self, m: SetMemoryNow, ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
+    async fn handle(
+        &mut self,
+        m: SetMemoryNow,
+        ctx: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
         let (reply, tx) = ctx.reply_sender();
         let Some(tx) = tx else { return reply };
         let Some(state) = self.claim().await.filter(|_| self.inflight.is_none()) else {
@@ -3765,10 +3769,7 @@ impl Turn {
         let (changed_from_byte, blocks_hit) = match &self.state.last_view {
             Some(prev) => (
                 Some(common_prefix(&prev.concat(), &blocks.concat())),
-                prev.iter()
-                    .zip(&blocks)
-                    .take_while(|(a, b)| a == b)
-                    .count(),
+                prev.iter().zip(&blocks).take_while(|(a, b)| a == b).count(),
             ),
             None => (None, 0),
         };
@@ -8212,7 +8213,8 @@ mod tests {
             pos("- later: Listed skill\n\n## Peers\npeer text\n\nPlugin block.\n\n## Guidance")
                 > pos("## Skills")
         );
-        assert!(!full.contains("rules"));
+        // An `always` skill is inlined, never listed in the index.
+        assert!(!full.contains("- rules:"), "{full}");
     }
 
     /// A live route generation between two owner roots, and the policy that

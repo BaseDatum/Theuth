@@ -73,7 +73,11 @@ pub async fn set_mode(
 /// cost unknown until the service exposes `backfill_estimate`.
 pub fn backfill_estimate(m: &SessionMemory) -> BackfillEstimate {
     let (units, eta_secs) = match m.backfill {
-        Some(Backfill { done, total, eta_secs }) => (total.saturating_sub(done), eta_secs),
+        Some(Backfill {
+            done,
+            total,
+            eta_secs,
+        }) => (total.saturating_sub(done), eta_secs),
         None => (0, 0),
     };
     BackfillEstimate {
@@ -139,6 +143,46 @@ pub fn reply(mode: MemoryMode, m: &SessionMemory) -> String {
     }
 }
 
+/// One line of memory state for `/endless` with no argument (and the
+/// header badge's tooltip): mode, view size, lines, settle state, backfill.
+pub fn status(m: &SessionMemory) -> String {
+    if m.mode != MemoryMode::Endless {
+        return "Memory: epochs (compaction). `/endless on` switches this session to endless memory."
+            .to_owned();
+    }
+    let bytes: usize = m.view.iter().map(|l| l.text.len()).sum();
+    let mut s = format!(
+        "Memory: endless · view {} KB · {} lines · {} messages · compactor {}",
+        bytes / 1000,
+        m.view.len(),
+        m.units,
+        if m.model.is_empty() {
+            "session model"
+        } else {
+            &m.model
+        }
+    );
+    if let Some(b) = m.backfill {
+        s.push_str(&format!(
+            " · backfill {}/{} (ETA {})",
+            b.done,
+            b.total,
+            eta(b.eta_secs)
+        ));
+    } else if m.settling {
+        s.push_str(&format!(" · settling {} lines", m.unbuilt));
+    } else {
+        s.push_str(" · up to date");
+    }
+    if m.stats.calls > 0 {
+        s.push_str(&format!(
+            " · {} compactor calls, ≈ ${:.2}",
+            m.stats.calls, m.stats.usd_estimate
+        ));
+    }
+    s
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -174,11 +218,23 @@ mod tests {
             eta_secs: 3_725,
         }));
         let est = backfill_estimate(&busy);
-        assert_eq!((est.units, est.eta_secs, est.model.as_str()), (1_200, 3_725, "p/haiku"));
+        assert_eq!(
+            (est.units, est.eta_secs, est.model.as_str()),
+            (1_200, 3_725, "p/haiku")
+        );
         let text = reply(MemoryMode::Endless, &busy);
-        assert!(text.contains("1200 messages") && text.contains("1h 02m") && text.contains("p/haiku"), "{text}");
+        assert!(
+            text.contains("1200 messages") && text.contains("1h 02m") && text.contains("p/haiku"),
+            "{text}"
+        );
         assert!(reply(MemoryMode::Epochs, &busy).starts_with("Endless memory off."));
         assert_eq!(eta(59), "59s");
         assert_eq!(eta(125), "2m 05s");
+        let s = status(&busy);
+        assert!(s.starts_with("Memory: endless · view 0 KB · 1 lines · 2 messages · compactor p/haiku · backfill 40/1240"), "{s}");
+        assert!(status(&memory(None)).ends_with("· up to date"));
+        let mut epochs = memory(None);
+        epochs.mode = MemoryMode::Epochs;
+        assert!(status(&epochs).starts_with("Memory: epochs"));
     }
 }

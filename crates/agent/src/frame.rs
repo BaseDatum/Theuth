@@ -708,7 +708,11 @@ mod tests {
         let marks = |t| -> Vec<bool> {
             view_messages(&blocks, t)
                 .iter()
-                .map(|m| m.options.as_ref().is_some_and(|o| o.cache_control == Some(CacheControl::Ephemeral)))
+                .map(|m| {
+                    m.options
+                        .as_ref()
+                        .is_some_and(|o| o.cache_control == Some(CacheControl::Ephemeral))
+                })
                 .collect()
         };
         assert_eq!(marks(Transport::Anthropic), [false, true, true, false]);
@@ -716,7 +720,10 @@ mod tests {
         assert_eq!(marks(Transport::Plain), [false; 4]);
         let msgs = view_messages(&blocks, Transport::Anthropic);
         assert!(msgs.iter().all(|m| m.role == ChatRole::User));
-        assert_eq!(msgs[0].content.joined_texts().as_deref(), Some("<chat>\na\n"));
+        assert_eq!(
+            msgs[0].content.joined_texts().as_deref(),
+            Some("<chat>\na\n")
+        );
         // A single block is the final block: no mark; an unmarked block is skipped.
         assert_eq!(marks_of(&[block("x", true)]), [false]);
         assert_eq!(
@@ -739,7 +746,7 @@ mod tests {
         let cc: Vec<Option<CacheControl>> = req
             .messages
             .iter()
-            .map(|m| m.options.as_ref().and_then(|o| o.cache_control))
+            .map(|m| m.options.as_ref().and_then(|o| o.cache_control.clone()))
             .collect();
         assert_eq!(
             cc,
