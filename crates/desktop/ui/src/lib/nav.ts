@@ -1,12 +1,12 @@
 // 97: the sidebar's two grouped buttons (Agents, Library) and the route-backed tab rows under their pages.
 // URLs do not change; a tab IS a navigation to its route.
 
-import { BookOpen, Bot, CalendarClock, FolderOpen, ListChecks, Lock, type LucideIcon, Mic, Sparkles, StickyNote, Wrench } from 'lucide-react'
+import { BookOpen, Bot, CalendarClock, FlaskConical, FolderOpen, ListChecks, Lock, type LucideIcon, Mic, Sparkles, StickyNote, Wrench } from 'lucide-react'
 
 export type Group = 'agents' | 'library'
 
 /** A tab's route, as a literal so `navigate({ to })` type-checks. */
-export type Tab = '/agents' | '/tasks' | '/routines' | '/artifacts' | '/knowledge' | '/notes' | '/meetings' | '/skills' | '/secrets' | '/tools'
+export type Tab = '/agents' | '/tasks' | '/routines' | '/artifacts' | '/knowledge' | '/notes' | '/meetings' | '/skills' | '/secrets' | '/tools' | '/autoresearch'
 
 export const GROUPS: Record<Group, readonly { to: Tab; label: string; icon: LucideIcon }[]> = {
   agents: [
@@ -23,6 +23,8 @@ export const GROUPS: Record<Group, readonly { to: Tab; label: string; icon: Luci
     { to: '/skills', label: 'Skills', icon: Sparkles },
     { to: '/secrets', label: 'Secrets', icon: Lock },
     { to: '/tools', label: 'Tools', icon: Wrench },
+    // 140 R1-D4: the Study view is the eighth Library tab, last.
+    { to: '/autoresearch', label: 'Autoresearch', icon: FlaskConical },
   ],
 }
 
