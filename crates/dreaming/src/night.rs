@@ -291,6 +291,20 @@ pub fn update_routine_file(
     Ok(())
 }
 
+/// A schedule file's text with `enabled: <on>` as the first front-matter
+/// line (any existing `enabled:` line dropped); trailing newline kept.
+pub fn set_routine_enabled(text: &str, on: bool) -> String {
+    let mut lines: Vec<String> = text
+        .lines()
+        .filter(|l| !l.starts_with("enabled:"))
+        .map(str::to_owned)
+        .collect();
+    if let Some(i) = lines.iter().position(|l| l == "---") {
+        lines.insert(i + 1, format!("enabled: {on}"));
+    }
+    lines.join("\n") + "\n"
+}
+
 /// One knowledge change of a night (the undo receipt).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Touched {
@@ -1376,11 +1390,12 @@ impl Message<SetSettings> for Night {
             .map_err(|e| format!("config.yaml: {e}"))?;
         let home = cfg.home_engine.clone().filter(|h| !h.is_empty());
         let engine = home.or_else(|| (!self.engine.is_empty()).then(|| self.engine.clone()));
-        // D11: off removes the routine, the sensor and the skill; on reinstalls them.
+        // D11 / P2 D6: off switches the routine off in place and removes the
+        // sensor; on restores both.
         let r = if cfg.enabled {
             crate::install_files(&self.data_dir, &cfg, engine.as_deref(), &self.agent).map(|_| ())
         } else {
-            crate::remove_files(&self.data_dir)
+            crate::disable_files(&self.data_dir)
         };
         if let Err(e) = r {
             tracing::warn!("dreaming: bundled files not updated: {e}");
@@ -1492,19 +1507,12 @@ impl Message<ProposalAct> for Night {
                         })
                         .ok_or("the draft has no valid `name:`")?;
                     let start = m.choice.to_lowercase().contains("start");
-                    let mut lines: Vec<String> = draft
-                        .lines()
-                        .filter(|l| !l.starts_with("enabled:"))
-                        .map(str::to_owned)
-                        .collect();
-                    if let Some(i) = lines.iter().position(|l| l == "---") {
-                        lines.insert(i + 1, format!("enabled: {start}"));
-                    }
+                    let lines = set_routine_enabled(&draft, start);
                     let path = self.data_dir.join(schedule::DIR).join(format!("{name}.md"));
                     if path.exists() {
                         return Err(format!("a schedule named {name} already exists"));
                     }
-                    write_atomic(&path, (lines.join("\n") + "\n").as_bytes())
+                    write_atomic(&path, lines.as_bytes())
                         .map_err(|e| e.to_string())?;
                     note.push_str(&format!(
                         " — `schedules/{name}.md` written, enabled: {start}"
@@ -2629,17 +2637,20 @@ mod tests {
                 .unwrap()
                 .contains("budget: 1000 USD\n")
         );
-        // D11: off removes the files; on brings them back.
+        // D11 / P2 D6: off switches the routine off in place and removes the
+        // sensor (the skill stays); on brings the sensor back and the routine on.
         s.enabled = false;
         actor.ask(SetSettings(s.clone())).await.unwrap();
-        for rel in crate::BUNDLED {
-            assert!(!d.join(rel).exists(), "{rel}");
-        }
+        assert!(!d.join("sensors/dreaming.py").exists());
+        assert!(d.join("skills/dreaming.md").exists());
+        assert!(!routine_enabled(d), "{}", std::fs::read_to_string(&routine).unwrap());
+        assert_eq!(model_of().as_deref(), Some("openai/gpt-5.6-sol"), "still parseable");
         s.enabled = true;
         actor.ask(SetSettings(s)).await.unwrap();
         for rel in crate::BUNDLED {
             assert!(d.join(rel).exists(), "{rel}");
         }
+        assert!(routine_enabled(d));
         assert_eq!(model_of().as_deref(), Some("openai/gpt-5.6-sol"));
     }
 

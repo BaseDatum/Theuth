@@ -133,29 +133,30 @@ pub fn routine_text(
 }
 
 /// The three bundled files, root-relative.
-pub const BUNDLED: [&str; 3] = [
-    "skills/dreaming.md",
-    "sensors/dreaming.py",
-    "schedules/dreaming.md",
-];
+pub const BUNDLED: [&str; 3] = ["skills/dreaming.md", SENSOR_PATH, "schedules/dreaming.md"];
+
+/// The sensor, root-relative — the one file [`disable_files`] removes.
+const SENSOR_PATH: &str = "sensors/dreaming.py";
 
 /// Write the bundled files (136 §2.4): `skills/dreaming.md` and
 /// `sensors/dreaming.py` are binary-owned (rewritten when the text differs);
 /// `schedules/dreaming.md` is written when absent and otherwise patched in
 /// place (`budget` / `when` / `run_timeout` / `model` / `cap` follow the
-/// config, R-47; `enabled:` and every other line survive). Returns the
-/// root-relative paths written.
+/// config, R-47; `enabled:` and every other line survive — except a
+/// routine [`disable_files`] switched off, which comes back on). Returns
+/// the root-relative paths written.
 pub fn install_files(
     data_dir: &Path,
     cfg: &DreamConfig,
     engine: Option<&str>,
     agent: &config::AgentDefaults,
 ) -> std::io::Result<Vec<String>> {
+    // P2 D6: only `disable_files` removes the sensor, so a switched-off
+    // routine without one was switched off by us (re-enable turns it back
+    // on); a hand toggle leaves the sensor in place and survives (R-47).
+    let disabled_by_us = !data_dir.join(SENSOR_PATH).exists();
     let mut written = Vec::new();
-    for (rel, body) in [
-        ("skills/dreaming.md", SKILL),
-        ("sensors/dreaming.py", SENSOR),
-    ] {
+    for (rel, body) in [("skills/dreaming.md", SKILL), (SENSOR_PATH, SENSOR)] {
         let path = data_dir.join(rel);
         if std::fs::read_to_string(&path).ok().as_deref() != Some(body) {
             if let Some(d) = path.parent() {
@@ -169,6 +170,10 @@ pub fn install_files(
     if routine.exists() {
         let before = std::fs::read_to_string(&routine)?;
         night::update_routine_file(data_dir, cfg, engine, agent)?;
+        if disabled_by_us && !night::routine_enabled(data_dir) {
+            let text = std::fs::read_to_string(&routine)?;
+            night::write_atomic(&routine, night::set_routine_enabled(&text, true).as_bytes())?;
+        }
         if std::fs::read_to_string(&routine)? != before {
             written.push(format!("{}/dreaming.md", schedule::DIR));
         }
@@ -180,18 +185,24 @@ pub fn install_files(
     Ok(written)
 }
 
-/// `dreaming.enabled: false` (136 D11, design §8): the routine, the sensor
-/// and the skill leave; the schedule's reconcile drops the removed entry.
-/// Absent files are fine.
-pub fn remove_files(data_dir: &Path) -> std::io::Result<()> {
-    for rel in BUNDLED {
-        match std::fs::remove_file(data_dir.join(rel)) {
-            Ok(()) => {}
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-            Err(e) => return Err(e),
+/// `dreaming.enabled: false` (136 D11, design §8 as amended by P2 D6): the
+/// routine stays on disk switched off (`enabled: false` — a hand edit the
+/// `schedules/` replica mirror keeps, where a deleted file is projected
+/// back), the sensor leaves, the skill stays (harmless without the
+/// routine). Absent files are fine.
+pub fn disable_files(data_dir: &Path) -> std::io::Result<()> {
+    let routine = data_dir.join(schedule::DIR).join("dreaming.md");
+    if let Ok(text) = std::fs::read_to_string(&routine) {
+        let off = night::set_routine_enabled(&text, false);
+        if off != text {
+            night::write_atomic(&routine, off.as_bytes())?;
         }
     }
-    Ok(())
+    match std::fs::remove_file(data_dir.join(SENSOR_PATH)) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(e),
+    }
 }
 
 /// `t dreaming dry-run --data-dir <copy>` (136 §3.3 item 7): Recall plus
@@ -217,12 +228,14 @@ impl runtime::Plugin for DreamingPlugin {
             DreamConfig::default()
         });
         if !cfg.enabled {
-            // D11: an installed routine must not keep firing with the plugin off.
-            match remove_files(&rt.data_dir) {
-                Ok(()) => tracing::info!("dreaming disabled by config; bundled files removed"),
-                Err(e) => {
-                    tracing::warn!("dreaming disabled by config; bundled files not removed: {e}")
-                }
+            // D11 / P2 D6: an installed routine must not keep firing with the
+            // plugin off — switched off in place (deleting it here races the
+            // `schedules/` replica mirror, which projects a never-seen file back).
+            match disable_files(&rt.data_dir) {
+                Ok(()) => tracing::info!(
+                    "dreaming disabled by config; routine switched off (enabled: false), sensor removed"
+                ),
+                Err(e) => tracing::warn!("dreaming disabled by config; files not switched off: {e}"),
             }
             return Ok(());
         }
@@ -424,19 +437,46 @@ mod tests {
         assert!(after.contains(" engine=eng9"), "{after}");
     }
 
-    /// R-13 (D11): `enabled: false` removes the three files (absent ones are fine).
+    /// R-13 (D11) as amended by P2 D6: `enabled: false` leaves the routine on
+    /// disk, parseable, with `enabled: false` (the replica mirror keeps a
+    /// hand edit; a deleted file it projects back), removes the sensor and
+    /// leaves the skill; absent files are fine. Re-enabling restores
+    /// `enabled: true` and the sensor, while a hand toggle (sensor present)
+    /// still survives a reinstall.
     #[test]
-    fn disabling_removes_the_bundled_files() {
+    fn disabling_switches_the_routine_off_in_place_and_drops_the_sensor() {
         let dir = tempfile::tempdir().unwrap();
-        install_files(dir.path(), &DreamConfig::default(), None, &agent()).unwrap();
-        for rel in BUNDLED {
-            assert!(dir.path().join(rel).exists(), "{rel}");
-        }
-        remove_files(dir.path()).unwrap();
-        for rel in BUNDLED {
-            assert!(!dir.path().join(rel).exists(), "{rel}");
-        }
-        remove_files(dir.path()).unwrap();
+        let d = dir.path();
+        let cfg = DreamConfig::default();
+        install_files(d, &cfg, Some("e"), &agent()).unwrap();
+        let routine = d.join("schedules/dreaming.md");
+        let parse = || {
+            schedule::file::parse("dreaming", &std::fs::read_to_string(&routine).unwrap())
+                .unwrap()
+        };
+        disable_files(d).unwrap();
+        assert!(!d.join(SENSOR_PATH).exists());
+        assert!(d.join("skills/dreaming.md").exists(), "the skill stays");
+        let spec = parse();
+        assert!(!spec.enabled, "{}", std::fs::read_to_string(&routine).unwrap());
+        assert_eq!(spec.when_text, "every 30m when dreaming.py", "the rest of the routine is intact");
+        assert!(!night::routine_enabled(d));
+        disable_files(d).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&routine).unwrap().matches("enabled:").count(),
+            1,
+            "idempotent"
+        );
+        // Re-enable: sensor back, routine on.
+        let w = install_files(d, &cfg, Some("e"), &agent()).unwrap();
+        assert_eq!(w, [SENSOR_PATH, "schedules/dreaming.md"]);
+        assert!(parse().enabled);
+        // A hand toggle with the sensor in place is the user's and survives.
+        std::fs::write(&routine, night::set_routine_enabled(&std::fs::read_to_string(&routine).unwrap(), false)).unwrap();
+        assert_eq!(install_files(d, &cfg, Some("e"), &agent()).unwrap(), Vec::<String>::new());
+        assert!(!parse().enabled);
+        // Nothing installed: disabling is a no-op.
+        disable_files(tempfile::tempdir().unwrap().path()).unwrap();
     }
 
     #[test]
