@@ -15,7 +15,7 @@ import { DRAG_TYPE, droppedRef } from '@/lib/attach'
 import { isProvenanceLine } from '@/lib/citations'
 import { notebookKeys, useNotebooksApi } from '@/lib/notebooks-rpc'
 import { canPopout, noteOpenMode, openPopout } from '@/lib/popout'
-import { queryKeys, useApi } from '@/lib/rpc'
+import { useApi } from '@/lib/rpc'
 import { cn } from '@/lib/utils'
 import type { DocSummary } from '@/rpc/bindings/DocSummary'
 

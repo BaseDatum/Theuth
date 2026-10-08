@@ -210,9 +210,11 @@ function GuestDocument({ provider, user, owner, client, engine }: { provider: En
         <h1 className="min-w-0 flex-1 truncate text-sm font-medium">{title || 'Untitled'}</h1>
         <ParticipantStrip provider={provider} />
       </header>
-      {/* 144 §12.5: a shared notebook is its three columns, not a paper (`notebook` joins `DocKind` with the bindings). */}
+      {/* 144 §12.5: a shared notebook is its three columns, not a paper (`notebook` joins `DocKind` with the bindings). Until `meta` lands with `doc_open` the kind is unknown, so nothing rather than an editor that flips. */}
       {provider.meta?.kind === ('notebook' as DocKind) ? (
         <NotebookGuest provider={provider} client={client} engine={engine} user={user} role={user.role} />
+      ) : !provider.meta && status.kind === 'connecting' ? (
+        <div className="flex-1" />
       ) : (
         <BlockEditor provider={provider} status={status} />
       )}

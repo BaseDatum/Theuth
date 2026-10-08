@@ -148,7 +148,7 @@ function Notebook({ id, isNew, tab }: { id: string; isNew: boolean; tab: Tab }) 
 }
 
 function Chip({ className, children }: { className?: string; children: ReactNode }) {
-  return <span className={cn('hidden whitespace-nowrap rounded-full border px-2 py-px text-[11px] sm:inline', className)}>{children}</span>
+  return <span className={cn('whitespace-nowrap rounded-full border px-2 py-px text-[11px]', className)}>{children}</span>
 }
 
 /** A side column, or its 12 px rail when collapsed (144 §12.1); the rail is the button that brings it back. */

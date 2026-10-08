@@ -15,7 +15,7 @@ test('toggle flips one side and persists both under notebook-columns', () => {
   vi.stubGlobal('localStorage', { getItem: (k: string) => stored[k] ?? null, setItem: (k: string, v: string) => (stored[k] = v) })
   useNotebookColumns.getState().toggle('notes')
   expect(useNotebookColumns.getState().collapsed).toEqual({ sources: false, notes: true })
-  expect(JSON.parse(stored['notebook-columns'])).toEqual({ sources: false, notes: true })
+  expect(JSON.parse(stored['notebook-columns'] ?? '')).toEqual({ sources: false, notes: true })
   useNotebookColumns.getState().toggle('notes')
   expect(useNotebookColumns.getState().collapsed.notes).toBe(false)
 })

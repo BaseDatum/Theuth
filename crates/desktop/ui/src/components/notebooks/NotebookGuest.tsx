@@ -1,4 +1,4 @@
-import { useQueries, useQuery } from '@tanstack/react-query'
+import { QueryClient, QueryClientProvider, useQueries, useQuery } from '@tanstack/react-query'
 import { ArrowLeft } from 'lucide-react'
 import { type ReactNode, useEffect, useMemo, useReducer, useRef, useState, useSyncExternalStore } from 'react'
 import { type DocBlock, type Inline, plainText, useBlocks } from '@/components/board/blocks'
@@ -35,11 +35,23 @@ export function promoted(blocks: readonly DocBlock[]): { promoted: boolean; cita
   return { promoted: isPromoted, citations }
 }
 
+type Props = { provider: EngineProvider; client: RpcClient; engine: string; user: GuestUser; role: Role }
+
 /**
  * 144 §12.5: the `/d` guest's notebook — Sources (read-only), "Answers the owner promoted", Notes (live, per role).
- * No composer, Add, dial, Overviews or Ask (D13). A note or source opens in place over the columns.
+ * No composer, Add, dial, Overviews or Ask (D13). A note or source opens in place over the columns. The guest
+ * container has no query client of its own (`GuestApp` mounts no engine scope), so this page brings one.
  */
-export function NotebookGuest({ provider, client, engine, user, role }: { provider: EngineProvider; client: RpcClient; engine: string; user: GuestUser; role: Role }) {
+export function NotebookGuest(props: Props) {
+  const [qc] = useState(() => new QueryClient())
+  return (
+    <QueryClientProvider client={qc}>
+      <Guest {...props} />
+    </QueryClientProvider>
+  )
+}
+
+function Guest({ provider, client, engine, user, role }: Props) {
   const api = useMemo(() => makeApi(client), [client])
   const nb = useMemo(() => notebooksApi(client), [client])
   const id = provider.id
