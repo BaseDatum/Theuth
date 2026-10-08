@@ -89,8 +89,8 @@ style. Worth its own ticket (config writer).
 | `cargo test -p agent --lib -- supervisor:: durability::` | 109 passed, 0 failed |
 | `cargo test -p roster --lib` | 69 passed (+ `boot_pass_item`) |
 | `cargo test -p theuth --lib` | n/a — `theuth` has no lib target |
-| `cargo clippy -p agent -p roster -p theuth --all-targets -- -D warnings` | clean |
+| `cargo clippy -p agent -p roster -p theuth -p desktop --all-targets -- -D warnings` | clean |
 | `rustfmt --check` on touched files | clean for 146's hunks; `crates/theuth/src/main.rs:1478/1505/1515` and `mcp.rs:259` were already unformatted on `origin/main` and are left alone |
-| `cargo check --workspace --tests` (`BUILD_SLOTS=1`) | see final message |
-| desktop `bun run check` (tsc) + `vitest run src/store/reduce.test.ts` | clean; 64 passed (+2 for D7) — bindings copied from the main worktree's generated set (no ts-exported type changed in 146) |
+| `cargo check --workspace --tests` (`BUILD_SLOTS=1`) | clean (after `just ts`: `nodes`' tests read `bindings/methods.json`, which only the export produces); one pre-existing future-incompat warning from the `block` dependency |
+| `just ts-desktop` + desktop `bun run check` (tsc) + `vitest run src/store/reduce.test.ts` | 681 bindings exported; tsc clean; 64 passed (+2 for D7) |
 | `just restart-clarity` | 19/19 checks (table above) |
