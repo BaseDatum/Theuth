@@ -40,7 +40,8 @@ Measurement: `document.querySelector('section[aria-label^="Chat about"]').getBou
 
 ## Gates
 
-Recorded in the final message (tsc `bun run check` and `vitest run src/lib src/components/notes` under build-lock).
+- `BUILD_LABEL=143-W2 nice -n 10 build-lock bun run check` → exit 0, 0 errors (baseline `tsc-baseline-theuth-143-w2.log`: 0).
+- `… build-lock bunx vitest run src/lib src/components/notes` → exit 0, 77 files / 480 tests passed (incl. `note-chat.test.ts`, `no-emoji.test.ts`).
 
 ## Deviations / decisions
 
