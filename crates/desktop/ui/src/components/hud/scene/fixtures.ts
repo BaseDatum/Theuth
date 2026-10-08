@@ -70,6 +70,7 @@ const session = (id: string, title: string, updated: number, extra: Partial<Sess
   running: false,
   owner: '',
   epoch: 0,
+  memory: 'epochs',
   here: true,
   ...extra,
 })

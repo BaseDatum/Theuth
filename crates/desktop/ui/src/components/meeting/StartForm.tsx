@@ -18,17 +18,31 @@ import { Label } from '@/components/ui/label'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Textarea } from '@/components/ui/textarea'
+import { Switch } from '@/components/ui/switch'
 import { isMacDesktop } from '@/lib/hotkeys'
 import { useMeetingSettings } from '@/lib/meeting-settings'
 import { queryKeys, useApi } from '@/lib/rpc'
 import type { PermissionState } from '@/rpc/bindings/PermissionState'
 import { useConnection } from '@/store/connection'
+import type { StartMeeting } from '@/rpc/bindings/StartMeeting'
 
 /** The picker's "System audio" row; `meeting_start` gets `process: null`. */
 const SYSTEM = 0
 const PRIVACY = 'x-apple.systempreferences:com.apple.preference.security'
 /** 53 decision 14, verbatim. */
 export const CONSENT = 'I acknowledge I understand the law and this recording is legal.'
+
+/** What `Start` sends (137 R1-D6 adds `memory`: `'endless'` with the ∞ switch on, else `null` = the engine's `default_meeting`). */
+export function startOptions(form: { pid: number; title: string; context: string; consent: boolean; model: string | null; endless: boolean }): StartMeeting {
+  return {
+    process: form.pid === SYSTEM ? null : form.pid,
+    title: form.title.trim() || null,
+    context: form.context.trim() || null,
+    consent: form.consent,
+    session_model: form.model,
+    memory: form.endless ? 'endless' : undefined,
+  }
+}
 
 export function StartForm() {
   const api = useApi()
@@ -47,15 +61,13 @@ export function StartForm() {
   const current = models.data?.find((m) => m.id === model)
   const { favorites, toggleFavorite } = useFavorites()
 
+  // 137 R1-D6: the ∞ switch starts at `agent.endless.default_meeting`, remembered for this form only.
+  const endlessSettings = useQuery({ queryKey: queryKeys.endlessSettings, queryFn: () => api.endless_settings_get() })
+  const [endless, setEndless] = useState<boolean | null>(null)
+  const endlessOn = endless ?? endlessSettings.data?.default_meeting ?? false
+
   const start = useAction(
-    (_: void) =>
-      api.meeting_start({
-        process: pid === SYSTEM ? null : pid,
-        title: title.trim() || null,
-        context: context.trim() || null,
-        consent,
-        session_model: saved,
-      }),
+    (_: void) => api.meeting_start(startOptions({ pid, title, context, consent, model: saved, endless: endlessOn })),
     {
       keys: [queryKeys.meetings, queryKeys.meetingStatus],
       onSuccess: (started) => void navigate({ to: '/meetings/$id', params: { id: started.meeting } }),
@@ -124,6 +136,19 @@ export function StartForm() {
               />
             </PopoverContent>
           </Popover>
+        </Row>
+        <Row
+          label={
+            <span className="flex items-center gap-2">
+              <span aria-hidden className="text-base leading-5 [font-feature-settings:normal]">
+                ∞
+              </span>
+              Endless memory
+            </span>
+          }
+          description="Keeps a compressed memory of the whole meeting behind the live transcript; zoom and recall bring any earlier moment back."
+        >
+          <Switch aria-label="Endless memory" checked={endlessOn} onCheckedChange={setEndless} />
         </Row>
         <Permission label="Microphone" state={perms.data?.microphone} pane="Privacy_Microphone" />
         <Permission label="System audio recording" state={perms.data?.audio_capture} pane="Privacy_AudioCapture" />

@@ -102,6 +102,8 @@ fn file_of(
         paused: false,
         proposed_by: None,
         runs_in: Default::default(),
+        memory: None,
+        view_bytes: None,
         body: a.charter,
     })
 }

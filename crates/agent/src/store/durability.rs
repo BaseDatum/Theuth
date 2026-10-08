@@ -304,8 +304,7 @@ fn question_of(r: QuestionTuple) -> anyhow::Result<QuestionRow> {
     })
 }
 
-const QUESTION_COLS: &str =
-    "id, session_id, tool_call_id, kind, payload, state, asked_at, deadline, answered_at, answer, answered_by";
+const QUESTION_COLS: &str = "id, session_id, tool_call_id, kind, payload, state, asked_at, deadline, answered_at, answer, answered_by";
 
 type WaitTuple = (String, String, String, String, Option<String>, String);
 

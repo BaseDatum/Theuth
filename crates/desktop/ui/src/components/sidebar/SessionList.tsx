@@ -336,6 +336,7 @@ export function SessionList({
                   owner={row.session.owner}
                   epoch={row.session.epoch}
                   here={row.session.here}
+                  endless={row.session.memory === 'endless'}
                   subagents={subs.get(row.session.id)}
                   active={row.session.id === active}
                   selected={selected.has(row.session.id)}

@@ -25,11 +25,13 @@ struct FrontMatter {
     paused: Option<bool>,
     proposed_by: Option<String>,
     runs_in: Option<String>,
+    memory: Option<String>,
+    view_bytes: Option<u32>,
 }
 
 /// Parse one file's text as the agent `name`. `Err` is the user-facing reason
 /// (`agent name …`, `front matter: …`, `budget: …`, `tools: …`, `runs_in: …`,
-/// `empty charter`, `theuth is reserved`).
+/// `memory: …`, `view_bytes: …`, `empty charter`, `theuth is reserved`).
 pub fn parse(name: &str, text: &str) -> Result<AgentFile, String> {
     let name = AgentName::new(name)?;
     if name.as_str() == AgentName::DEFAULT {
@@ -60,6 +62,18 @@ pub fn parse(name: &str, text: &str) -> Result<AgentFile, String> {
         ));
     }
     let budget = fm.budget.as_deref().map_or(Ok(Budget::None), str::parse)?;
+    // 137 §10: `memory: epochs | endless`; `view_bytes` within the fold's range.
+    let memory = trimmed(fm.memory)
+        .map(|m| {
+            m.parse::<agent::MemoryMode>()
+                .map_err(|_| format!("memory: expected epochs|endless, got {m:?}"))
+        })
+        .transpose()?;
+    if let Some(b) = fm.view_bytes
+        && !(16_000..=256_000).contains(&b)
+    {
+        return Err(format!("view_bytes: expected 16000..=256000, got {b}"));
+    }
     Ok(AgentFile {
         title: trimmed(fm.title).unwrap_or_else(|| name.as_str().to_owned()),
         name,
@@ -78,6 +92,8 @@ pub fn parse(name: &str, text: &str) -> Result<AgentFile, String> {
         paused: fm.paused.unwrap_or(false),
         proposed_by: trimmed(fm.proposed_by),
         runs_in: fm.runs_in.as_deref().map_or(Ok(RunsIn::Any), str::parse)?,
+        memory,
+        view_bytes: fm.view_bytes,
         body: body.to_owned(),
     })
 }
@@ -124,6 +140,12 @@ pub fn render(f: &AgentFile) -> String {
     }
     if !f.runs_in.is_any() {
         s.push_str(&format!("runs_in: {}\n", f.runs_in));
+    }
+    if let Some(m) = f.memory {
+        s.push_str(&format!("memory: {m}\n"));
+    }
+    if let Some(b) = f.view_bytes {
+        s.push_str(&format!("view_bytes: {b}\n"));
     }
     if !s.is_empty() {
         s.insert_str(0, "---\n");
@@ -214,6 +236,8 @@ pub fn default_agent(data_dir: &Path) -> AgentFile {
         paused: false,
         proposed_by: None,
         runs_in: RunsIn::Any,
+        memory: None,
+        view_bytes: None,
         body: body.to_owned(),
     }
 }
@@ -363,6 +387,25 @@ mod tests {
     }
 
     #[test]
+    fn memory_forms() {
+        // 137 §10: absent → default (the config decides), both modes, bad value → Err.
+        assert_eq!(parse("ops", "Ops.").unwrap().memory, None);
+        let on = parse("ops", "---\nmemory: endless\n---\nOps.").unwrap();
+        assert_eq!(on.memory, Some(agent::MemoryMode::Endless));
+        assert_eq!(render(&on), "---\nmemory: endless\n---\n\nOps.\n");
+        let off = parse("ops", "---\nmemory: epochs\nview_bytes: 32000\n---\nOps.").unwrap();
+        assert_eq!(
+            (off.memory, off.view_bytes),
+            (Some(agent::MemoryMode::Epochs), Some(32_000))
+        );
+        assert_eq!(parse("ops", &render(&off)).unwrap(), off);
+        let e = parse("ops", "---\nmemory: forever\n---\nOps.").unwrap_err();
+        assert!(e.starts_with("memory: "), "{e}");
+        let e = parse("ops", "---\nview_bytes: 1000\n---\nOps.").unwrap_err();
+        assert!(e.starts_with("view_bytes: "), "{e}");
+    }
+
+    #[test]
     fn render_parse_round_trip() {
         let f = AgentFile {
             name: AgentName::new("ops").unwrap(),
@@ -383,6 +426,8 @@ mod tests {
             paused: true,
             proposed_by: Some("agent:cto".into()),
             runs_in: RunsIn::Vm("lab".into()),
+            memory: Some(agent::MemoryMode::Endless),
+            view_bytes: Some(96_000),
             body: "You are Ops.\n\nYour charter is production.".into(),
         };
         assert_eq!(parse("ops", &render(&f)).unwrap(), f);
