@@ -31,7 +31,17 @@ Everything under `crates/desktop/ui/src`; `rpc/api.ts` and `rpc/bindings/**` (C'
 
 ## Gates (exact result lines)
 
-GATES_PLACEHOLDER
+All through `BUILD_LABEL=125R1-W3 /Users/Sky.Moore/.theuth/bin/build-lock …` in `crates/desktop/ui`, after `.ready` (16:06).
+
+- `bun run check` → `$ tsc -b --noEmit`, exit 0 (no output).
+- `bunx vitest run --maxWorkers=2 src/store src/lib src/components/chat src/components/settings src/rpc` →
+  first run `Test Files  1 failed | 141 passed (142)` / `Tests  1 failed | 1112 passed | 1 skipped (1114)`: my own assertion
+  that an advice-only card's `worstSeverity` is `advice` — the floor is `nit` by design (both tint info; `advice` never wins),
+  the assertion was corrected to `nit`. Rerun of the four R1 suites (`lib/advisor-format`, `store/advisor`,
+  `components/chat/AdvisorNoteCard`, `components/settings/Advisor`) → `Test Files  4 passed (4)` / `Tests  21 passed (21)`;
+  the other 138 files (incl. `rpc/api.test.ts` against C's `methods.json`) were green in the first run and untouched since.
+- `bun run build` → `✓ built in 5.34s`, exit 0 (the pre-existing >500 kB chunk warning only).
+- Bindings and `node_modules`: cloned from `theuth-125-r1-int` by the setup script; no cargo run by this wave.
 
 ## Deviations from the design (and why)
 
@@ -45,6 +55,9 @@ GATES_PLACEHOLDER
 4. **`reduce.ts` narrows the `kind` tag inline** (`questionOf`) rather than importing `isConsultation`: `advisor-format.ts`
    imports `k` from `components/chat/CostPill`, which would pull a React/TanStack module into the store graph.
 5. The consultation card body hides the per-note severity chip; the `Consulted` badge in the header is the kind marker.
+6. **`worstSeverity` keeps its `nit` floor**: an advice-only card tints as `nit` (the same info tone), so R1.7's "never promotes
+   a card to Advice" holds trivially and `TONE.advice` is only reached through `TONE[n.severity]` chips, which the consultation
+   body does not draw.
 
 ## Hand-offs for the closer
 

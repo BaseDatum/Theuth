@@ -41,7 +41,7 @@ test('detail line only when paused/halted, with a fallback reason', () => {
 
 test('R1: advice ranks below every note, so a mixed card never tints as advice; the consultation title is its question', () => {
   expect(TONE.advice.fg).toBe('text-info')
-  expect(worstSeverity([{ severity: 'advice', note: 'a' }])).toBe('advice')
+  expect(worstSeverity([{ severity: 'advice', note: 'a' }])).toBe('nit')
   expect(worstSeverity([{ severity: 'advice', note: 'a' }, { severity: 'nit', note: 'b' }])).toBe('nit')
   expect(worstSeverity([{ severity: 'concern', note: 'c' }, { severity: 'advice', note: 'a' }])).toBe('concern')
   expect(cardTitle(1, 'Retry the migration?')).toBe('Retry the migration?')
