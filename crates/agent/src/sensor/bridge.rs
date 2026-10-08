@@ -178,6 +178,8 @@ pub(super) async fn run(
             call_id: format!("sensor:{}", meta.name),
             quiet: true,
             resources: SessionResources::durable_arc(data_dir),
+            cancel: tokio_util::sync::CancellationToken::new(),
+            promote_after: None,
         },
         fetched: 0,
         pending: HashMap::new(),

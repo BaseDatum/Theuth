@@ -1,0 +1,1 @@
+`crates/desktop/ui/src/components/chat/Composer.tsx` (send at L750, L757, L777 with a client idempotency id), `ui/src/rpc/client.ts` (JSON-RPC envelope, L106), `ui/src/rpc/transport.ts` (WebSocket to the daemon, `?token=`), `ui/src/store/reduce.ts` (1,177+ lines of event folding). `lib/voice-key.ts` L219 picks `steer` instead of `send_input` when the session is already running.

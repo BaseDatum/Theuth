@@ -1,0 +1,1 @@
+The Yjs (yrs) authority for every block document — notes, boards, meeting notes, knowledge bodies and markdown artifacts (`crates/document/`, 15 files / 13,749 lines). It owns the `doc_*` tools, derives markdown from the CRDT and watches files with `notify`. Depends on `codeindex` to resolve `code:path#La-Lb` anchors on boards.

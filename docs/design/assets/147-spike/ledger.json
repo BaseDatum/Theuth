@@ -1,0 +1,750 @@
+{
+ "nodes": [
+  {
+   "diagram": "overall-architecture",
+   "id": "clients",
+   "name": "Clients",
+   "paths": [
+    "crates/desktop/",
+    "crates/tui/"
+   ],
+   "anchors_exist": true
+  },
+  {
+   "diagram": "overall-architecture",
+   "id": "rpc",
+   "name": "RPC facade",
+   "paths": [
+    "crates/rpc/"
+   ],
+   "anchors_exist": true
+  },
+  {
+   "diagram": "overall-architecture",
+   "id": "agent",
+   "name": "Agent loop",
+   "paths": [
+    "crates/agent/",
+    "crates/acp/",
+    "crates/cursor/"
+   ],
+   "anchors_exist": true
+  },
+  {
+   "diagram": "overall-architecture",
+   "id": "foundation",
+   "name": "Foundation",
+   "paths": [
+    "crates/runtime/",
+    "crates/platform/",
+    "crates/tools/",
+    "crates/surface/",
+    "crates/markdown/",
+    "crates/secrets/",
+    "crates/oauth/",
+    "crates/replica/"
+   ],
+   "anchors_exist": true
+  },
+  {
+   "diagram": "overall-architecture",
+   "id": "content-stores",
+   "name": "Content stores",
+   "paths": [
+    "crates/knowledge/",
+    "crates/document/",
+    "crates/artifact/",
+    "crates/search/",
+    "crates/codeindex/"
+   ],
+   "anchors_exist": true
+  },
+  {
+   "diagram": "overall-architecture",
+   "id": "local-models",
+   "name": "Local models + speech",
+   "paths": [
+    "crates/models/",
+    "crates/decision/",
+    "crates/voice/",
+    "crates/meeting/",
+    "crates/talk/"
+   ],
+   "anchors_exist": true
+  },
+  {
+   "diagram": "overall-architecture",
+   "id": "world-access",
+   "name": "World access",
+   "paths": [
+    "crates/web/",
+    "crates/browser/",
+    "crates/scrape/",
+    "crates/routes/",
+    "crates/search-providers/",
+    "crates/computer/"
+   ],
+   "anchors_exist": true
+  },
+  {
+   "diagram": "overall-architecture",
+   "id": "channels",
+   "name": "Channels + peers",
+   "paths": [
+    "crates/signal/",
+    "crates/slack/",
+    "crates/telegram/",
+    "crates/a2a/",
+    "crates/link/",
+    "crates/nodes/",
+    "crates/relay/"
+   ],
+   "anchors_exist": true
+  },
+  {
+   "diagram": "overall-architecture",
+   "id": "mesh",
+   "name": "Mesh + sync",
+   "paths": [
+    "crates/mesh/",
+    "crates/sessionsync/",
+    "crates/sandbox/"
+   ],
+   "anchors_exist": true
+  },
+  {
+   "diagram": "overall-architecture",
+   "id": "orchestration",
+   "name": "Orchestration",
+   "paths": [
+    "crates/roster/",
+    "crates/tasks/",
+    "crates/schedule/",
+    "crates/double/",
+    "crates/dreaming/",
+    "crates/app/",
+    "crates/update/"
+   ],
+   "anchors_exist": true
+  },
+  {
+   "diagram": "overall-architecture",
+   "id": "theuth-bin",
+   "name": "t binary",
+   "paths": [
+    "crates/theuth/"
+   ],
+   "anchors_exist": true
+  },
+  {
+   "diagram": "overall-architecture/content-stores",
+   "id": "document",
+   "name": "Document authority",
+   "paths": [
+    "crates/document/"
+   ],
+   "anchors_exist": true
+  },
+  {
+   "diagram": "overall-architecture/content-stores",
+   "id": "knowledge",
+   "name": "Knowledge bundle",
+   "paths": [
+    "crates/knowledge/"
+   ],
+   "anchors_exist": true
+  },
+  {
+   "diagram": "overall-architecture/content-stores",
+   "id": "artifact",
+   "name": "Artifacts",
+   "paths": [
+    "crates/artifact/"
+   ],
+   "anchors_exist": true
+  },
+  {
+   "diagram": "overall-architecture/content-stores",
+   "id": "search",
+   "name": "Search envelope",
+   "paths": [
+    "crates/search/"
+   ],
+   "anchors_exist": true
+  },
+  {
+   "diagram": "overall-architecture/content-stores",
+   "id": "codeindex",
+   "name": "Code index",
+   "paths": [
+    "crates/codeindex/"
+   ],
+   "anchors_exist": true
+  },
+  {
+   "diagram": "overall-architecture/content-stores/codeindex",
+   "id": "walk",
+   "name": "Walk",
+   "paths": [
+    "crates/codeindex/src/walk.rs"
+   ],
+   "anchors_exist": true
+  },
+  {
+   "diagram": "overall-architecture/content-stores/codeindex",
+   "id": "parse-resolve",
+   "name": "Parse + resolve",
+   "paths": [
+    "crates/codeindex/src/parse.rs",
+    "crates/codeindex/src/lang/",
+    "crates/codeindex/src/resolve/"
+   ],
+   "anchors_exist": true
+  },
+  {
+   "diagram": "overall-architecture/content-stores/codeindex",
+   "id": "store",
+   "name": "SQLite store",
+   "paths": [
+    "crates/codeindex/src/store.rs"
+   ],
+   "anchors_exist": true
+  },
+  {
+   "diagram": "overall-architecture/content-stores/codeindex",
+   "id": "index",
+   "name": "Codeindex / RootIndex",
+   "paths": [
+    "crates/codeindex/src/index.rs"
+   ],
+   "anchors_exist": true
+  },
+  {
+   "diagram": "overall-architecture/content-stores/codeindex",
+   "id": "git",
+   "name": "Git facts",
+   "paths": [
+    "crates/codeindex/src/git.rs"
+   ],
+   "anchors_exist": true
+  },
+  {
+   "diagram": "overall-architecture/content-stores/codeindex",
+   "id": "rank",
+   "name": "Rank",
+   "paths": [
+    "crates/codeindex/src/rank.rs"
+   ],
+   "anchors_exist": true
+  },
+  {
+   "diagram": "overall-architecture/content-stores/codeindex",
+   "id": "lens",
+   "name": "Lenses Here/Fit/Change",
+   "paths": [
+    "crates/codeindex/src/lens.rs"
+   ],
+   "anchors_exist": true
+  },
+  {
+   "diagram": "overall-architecture/content-stores/codeindex",
+   "id": "tools",
+   "name": "code_* tools",
+   "paths": [
+    "crates/codeindex/src/tools.rs"
+   ],
+   "anchors_exist": true
+  },
+  {
+   "diagram": "overall-architecture/content-stores/codeindex",
+   "id": "event",
+   "name": "Events",
+   "paths": [
+    "crates/codeindex/src/event.rs"
+   ],
+   "anchors_exist": true
+  },
+  {
+   "diagram": "overall-architecture/world-access",
+   "id": "web",
+   "name": "HTTP + extraction",
+   "paths": [
+    "crates/web/"
+   ],
+   "anchors_exist": true
+  },
+  {
+   "diagram": "overall-architecture/world-access",
+   "id": "browser",
+   "name": "Headless browser",
+   "paths": [
+    "crates/browser/"
+   ],
+   "anchors_exist": true
+  },
+  {
+   "diagram": "overall-architecture/world-access",
+   "id": "scrape",
+   "name": "Scrape / crawl / map",
+   "paths": [
+    "crates/scrape/",
+    "crates/firecrawl-native/"
+   ],
+   "anchors_exist": true
+  },
+  {
+   "diagram": "request-lifecycle",
+   "id": "web-ui",
+   "name": "Desktop UI",
+   "paths": [
+    "crates/desktop/ui/src/components/chat/Composer.tsx"
+   ],
+   "anchors_exist": true
+  },
+  {
+   "diagram": "request-lifecycle",
+   "id": "rpc-api",
+   "name": "RPC method send_input",
+   "paths": [
+    "crates/rpc/src/api.rs"
+   ],
+   "anchors_exist": true
+  },
+  {
+   "diagram": "request-lifecycle",
+   "id": "agent-session",
+   "name": "Agents \u2192 Session actor",
+   "paths": [
+    "crates/agent/src/supervisor.rs",
+    "crates/agent/src/loop_.rs"
+   ],
+   "anchors_exist": true
+  },
+  {
+   "diagram": "request-lifecycle",
+   "id": "model-provider",
+   "name": "Model backend (genai)",
+   "paths": [
+    "crates/agent/src/backend.rs"
+   ],
+   "anchors_exist": true
+  },
+  {
+   "diagram": "request-lifecycle",
+   "id": "tool-registry",
+   "name": "Tool registry",
+   "paths": [
+    "crates/tools/src/registry.rs"
+   ],
+   "anchors_exist": true
+  }
+ ],
+ "edges": [
+  {
+   "diagram": "overall-architecture",
+   "from": "clients",
+   "to": "rpc",
+   "label": "jsonrpsee WebSocket, ts-rs bindings (ui/src/rpc/transport.ts)",
+   "status": "inferred+partial",
+   "evidence": "desktop crate has NO Cargo dep on rpc (talks over WebSocket: ui/src/rpc/transport.ts#L22-L43, client.ts#L106); tui\u2192rpc is a Cargo dep"
+  },
+  {
+   "diagram": "overall-architecture",
+   "from": "rpc",
+   "to": "agent",
+   "label": "send_input \u2192 ask(AGENT_ACTOR, SendInput)",
+   "status": "index-backed",
+   "evidence": "Cargo rpc\u2192agent, rpc\u2192acp; call site crates/rpc/src/api.rs#L2806-L2810 ask::<Agents,_>(AGENT_ACTOR, SendInput)"
+  },
+  {
+   "diagram": "overall-architecture",
+   "from": "rpc",
+   "to": "content-stores",
+   "label": "lens, doc, knowledge, artifact methods (5 Cargo deps)",
+   "status": "index-backed",
+   "evidence": "Cargo path deps: rpc\u2192document, rpc\u2192knowledge, rpc\u2192codeindex, rpc\u2192search, rpc\u2192artifact"
+  },
+  {
+   "diagram": "overall-architecture",
+   "from": "rpc",
+   "to": "orchestration",
+   "label": "schedule, tasks, roster, double, app, update methods (7 deps)",
+   "status": "index-backed",
+   "evidence": "Cargo path deps: rpc\u2192schedule, rpc\u2192roster, rpc\u2192tasks, rpc\u2192app, rpc\u2192update, rpc\u2192double, rpc\u2192dreaming"
+  },
+  {
+   "diagram": "overall-architecture",
+   "from": "rpc",
+   "to": "channels",
+   "label": "channel settings and link/pairing methods (6 deps)",
+   "status": "index-backed",
+   "evidence": "Cargo path deps: rpc\u2192signal, rpc\u2192slack, rpc\u2192telegram, rpc\u2192link, rpc\u2192nodes, rpc\u2192a2a"
+  },
+  {
+   "diagram": "overall-architecture",
+   "from": "agent",
+   "to": "foundation",
+   "label": "registry.ask(Invoke(ToolCall)) via tools::registry",
+   "status": "index-backed",
+   "evidence": "Cargo agent\u2192tools/runtime/platform/oauth/surface/secrets/replica (8); call site crates/agent/src/loop_.rs#L5900 registry.ask(Invoke(..))"
+  },
+  {
+   "diagram": "overall-architecture",
+   "from": "agent",
+   "to": "world-access",
+   "label": "HTTP client for providers (agent\u2192web)",
+   "status": "index-backed",
+   "evidence": "Cargo path deps: agent\u2192web"
+  },
+  {
+   "diagram": "overall-architecture",
+   "from": "channels",
+   "to": "agent",
+   "label": "inbound messages become session input (6 deps)",
+   "status": "index-backed",
+   "evidence": "Cargo path deps: a2a\u2192agent, nodes\u2192acp, nodes\u2192agent, signal\u2192agent, slack\u2192agent, telegram\u2192agent"
+  },
+  {
+   "diagram": "overall-architecture",
+   "from": "channels",
+   "to": "orchestration",
+   "label": "desks, tasks, the owner's double (9 deps)",
+   "status": "index-backed",
+   "evidence": "Cargo path deps: signal\u2192double, signal\u2192roster, signal\u2192tasks, slack\u2192double, slack\u2192roster, slack\u2192tasks, telegram\u2192double, telegram\u2192roster, telegram\u2192tasks"
+  },
+  {
+   "diagram": "overall-architecture",
+   "from": "orchestration",
+   "to": "agent",
+   "label": "wake sessions, run prompts, spawn desks (7 deps)",
+   "status": "index-backed",
+   "evidence": "Cargo path deps: app\u2192agent, double\u2192agent, dreaming\u2192agent, roster\u2192agent, schedule\u2192agent, tasks\u2192agent, update\u2192agent"
+  },
+  {
+   "diagram": "overall-architecture",
+   "from": "orchestration",
+   "to": "mesh",
+   "label": "engine stats, sandboxes, replication (11 deps)",
+   "status": "index-backed",
+   "evidence": "Cargo path deps: double\u2192mesh, dreaming\u2192mesh, roster\u2192mesh, roster\u2192sandbox, schedule\u2192mesh, tasks\u2192mesh, tasks\u2192sessionsync"
+  },
+  {
+   "diagram": "overall-architecture",
+   "from": "content-stores",
+   "to": "mesh",
+   "label": "replica change feeds, mesh engine ids (4 deps)",
+   "status": "index-backed",
+   "evidence": "Cargo path deps: document\u2192mesh"
+  },
+  {
+   "diagram": "overall-architecture",
+   "from": "local-models",
+   "to": "agent",
+   "label": "meeting/talk drive a session (2 deps)",
+   "status": "index-backed",
+   "evidence": "Cargo path deps: meeting\u2192agent, talk\u2192agent"
+  },
+  {
+   "diagram": "overall-architecture",
+   "from": "world-access",
+   "to": "local-models",
+   "label": "browser_run picks actions with the decision model",
+   "status": "index-backed",
+   "evidence": "Cargo browser\u2192decision (1 edge); the 'browser_run' label comes from the tool's own description, not a read call site"
+  },
+  {
+   "diagram": "overall-architecture",
+   "from": "mesh",
+   "to": "agent",
+   "label": "sandbox + sessionsync own agent sessions (2 deps)",
+   "status": "index-backed",
+   "evidence": "Cargo path deps: sandbox\u2192agent, sessionsync\u2192agent"
+  },
+  {
+   "diagram": "overall-architecture",
+   "from": "theuth-bin",
+   "to": "foundation",
+   "label": "main() builds Runtime, starts every plugin",
+   "status": "index-backed",
+   "evidence": "Cargo theuth\u2192runtime/platform/tools/surface/secrets (5); main.rs builds Runtime (label 'starts every plugin' is inferred from 40 workspace deps, main.rs not read)"
+  },
+  {
+   "diagram": "overall-architecture/content-stores",
+   "from": "knowledge",
+   "to": "document",
+   "label": "concepts are block documents (Cargo dep)",
+   "status": "index-backed",
+   "evidence": "Cargo path dep knowledge\u2192document"
+  },
+  {
+   "diagram": "overall-architecture/content-stores",
+   "from": "artifact",
+   "to": "document",
+   "label": "markdown artifacts are documents (Cargo dep)",
+   "status": "index-backed",
+   "evidence": "Cargo path dep artifact\u2192document"
+  },
+  {
+   "diagram": "overall-architecture/content-stores",
+   "from": "document",
+   "to": "codeindex",
+   "label": "boards resolve code anchors through the index (Cargo dep)",
+   "status": "index-backed",
+   "evidence": "Cargo path dep document\u2192codeindex"
+  },
+  {
+   "diagram": "overall-architecture/content-stores",
+   "from": "knowledge",
+   "to": "search",
+   "label": "shared fuzzy match + snippets (Cargo dep)",
+   "status": "index-backed",
+   "evidence": "Cargo path dep knowledge\u2192search"
+  },
+  {
+   "diagram": "overall-architecture/content-stores",
+   "from": "artifact",
+   "to": "search",
+   "label": "shared fuzzy match + snippets (Cargo dep)",
+   "status": "index-backed",
+   "evidence": "Cargo path dep artifact\u2192search"
+  },
+  {
+   "diagram": "overall-architecture/content-stores",
+   "from": "document",
+   "to": "search",
+   "label": "shared fuzzy match + snippets (Cargo dep)",
+   "status": "index-backed",
+   "evidence": "Cargo path dep document\u2192search"
+  },
+  {
+   "diagram": "overall-architecture/content-stores/codeindex",
+   "from": "index",
+   "to": "walk",
+   "label": "lists files under ignore rules (use crate::walk)",
+   "status": "index-backed",
+   "evidence": "1 `use crate::walk` imports in src/index.rs (code_outline imports)"
+  },
+  {
+   "diagram": "overall-architecture/content-stores/codeindex",
+   "from": "index",
+   "to": "parse-resolve",
+   "label": "parse_chunk per changed file (3 uses)",
+   "status": "index-backed",
+   "evidence": "5 `use crate::parse-resolve` imports in src/index.rs (code_outline imports)"
+  },
+  {
+   "diagram": "overall-architecture/content-stores/codeindex",
+   "from": "index",
+   "to": "store",
+   "label": "writes symbols/refs/imports, reads stale rows",
+   "status": "index-backed",
+   "evidence": "1 `use crate::store` imports in src/index.rs (code_outline imports)"
+  },
+  {
+   "diagram": "overall-architecture/content-stores/codeindex",
+   "from": "index",
+   "to": "git",
+   "label": "HEAD, co-change history (use crate::git)",
+   "status": "index-backed",
+   "evidence": "1 `use crate::git` imports in src/index.rs (code_outline imports)"
+  },
+  {
+   "diagram": "overall-architecture/content-stores/codeindex",
+   "from": "index",
+   "to": "event",
+   "label": "emits Reconciled / CodeindexEvent (2 uses)",
+   "status": "index-backed",
+   "evidence": "2 `use crate::event` imports in src/index.rs (code_outline imports)"
+  },
+  {
+   "diagram": "overall-architecture/content-stores/codeindex",
+   "from": "parse-resolve",
+   "to": "store",
+   "label": "import targets looked up in the store (4 uses)",
+   "status": "index-backed",
+   "evidence": "4 `use crate::store` imports in src/parse-resolve.rs (code_outline imports)"
+  },
+  {
+   "diagram": "overall-architecture/content-stores/codeindex",
+   "from": "lens",
+   "to": "index",
+   "label": "open_indexed(ix, root) \u2192 RootIndex (3 uses)",
+   "status": "index-backed",
+   "evidence": "3 `use crate::index` imports in src/lens.rs (code_outline imports)"
+  },
+  {
+   "diagram": "overall-architecture/content-stores/codeindex",
+   "from": "lens",
+   "to": "rank",
+   "label": "PageRank + importers for Fit/Here rows",
+   "status": "index-backed",
+   "evidence": "1 `use crate::rank` imports in src/lens.rs (code_outline imports)"
+  },
+  {
+   "diagram": "overall-architecture/content-stores/codeindex",
+   "from": "lens",
+   "to": "store",
+   "label": "symbol and ref rows (2 uses)",
+   "status": "index-backed",
+   "evidence": "2 `use crate::store` imports in src/lens.rs (code_outline imports)"
+  },
+  {
+   "diagram": "overall-architecture/content-stores/codeindex",
+   "from": "lens",
+   "to": "tools",
+   "label": "shares budget_render, head_of, cache_state (3 uses)",
+   "status": "index-backed",
+   "evidence": "3 `use crate::tools` imports in src/lens.rs (code_outline imports)"
+  },
+  {
+   "diagram": "overall-architecture/content-stores/codeindex",
+   "from": "tools",
+   "to": "index",
+   "label": "open(...) the root's index (3 uses)",
+   "status": "index-backed",
+   "evidence": "3 `use crate::index` imports in src/tools.rs (code_outline imports)"
+  },
+  {
+   "diagram": "overall-architecture/content-stores/codeindex",
+   "from": "tools",
+   "to": "rank",
+   "label": "code_map ranking (2 uses)",
+   "status": "index-backed",
+   "evidence": "2 `use crate::rank` imports in src/tools.rs (code_outline imports)"
+  },
+  {
+   "diagram": "overall-architecture/content-stores/codeindex",
+   "from": "tools",
+   "to": "store",
+   "label": "rows for find/outline/refs/symbol (3 uses)",
+   "status": "index-backed",
+   "evidence": "3 `use crate::store` imports in src/tools.rs (code_outline imports)"
+  },
+  {
+   "diagram": "overall-architecture/content-stores/codeindex",
+   "from": "tools",
+   "to": "git",
+   "label": "code_impact reads git ranges (3 uses)",
+   "status": "index-backed",
+   "evidence": "3 `use crate::git` imports in src/tools.rs (code_outline imports)"
+  },
+  {
+   "diagram": "overall-architecture/content-stores/codeindex",
+   "from": "tools",
+   "to": "event",
+   "label": "CodeToolSummary after each call (2 uses)",
+   "status": "index-backed",
+   "evidence": "2 `use crate::event` imports in src/tools.rs (code_outline imports)"
+  },
+  {
+   "diagram": "overall-architecture/content-stores/codeindex",
+   "from": "rank",
+   "to": "tools",
+   "label": "estimate_tokens for budgets (1 use)",
+   "status": "index-backed",
+   "evidence": "1 `use crate::tools` imports in src/rank.rs (code_outline imports)"
+  },
+  {
+   "diagram": "overall-architecture/world-access",
+   "from": "scrape",
+   "to": "web",
+   "label": "plain fetch + html\u2192markdown first (Cargo dep)",
+   "status": "index-backed",
+   "evidence": "Cargo path dep scrape\u2192web"
+  },
+  {
+   "diagram": "overall-architecture/world-access",
+   "from": "scrape",
+   "to": "browser",
+   "label": "rendered: true falls back to the browser (Cargo dep)",
+   "status": "index-backed",
+   "evidence": "Cargo path dep scrape\u2192browser"
+  },
+  {
+   "diagram": "overall-architecture/world-access",
+   "from": "browser",
+   "to": "web",
+   "label": "shares the HTTP client and impersonation profile (Cargo dep)",
+   "status": "index-backed",
+   "evidence": "Cargo path dep browser\u2192web"
+  },
+  {
+   "diagram": "request-lifecycle",
+   "from": "web-ui",
+   "to": "rpc-api",
+   "label": "api.send_input(session, body, files, null, clientId) over WebSocket JSON-RPC",
+   "status": "index-backed",
+   "evidence": "crates/desktop/ui/src/components/chat/Composer.tsx#L750 api.send_input(...); rpc/client.ts#L106 JSON-RPC send"
+  },
+  {
+   "diagram": "request-lifecycle",
+   "from": "rpc-api",
+   "to": "agent-session",
+   "label": "authorize, forward::route to the owning engine, ask(AGENT_ACTOR, SendInput)",
+   "status": "index-backed",
+   "evidence": "crates/rpc/src/api.rs#L2790-L2810 authorize_opt \u2192 forward::route \u2192 ask SendInput; supervisor.rs#L2901"
+  },
+  {
+   "diagram": "request-lifecycle",
+   "from": "agent-session",
+   "to": "model-provider",
+   "label": "drive(turn): exec_chat_stream(spec, req) per round",
+   "status": "index-backed",
+   "evidence": "crates/agent/src/backend.rs#L233 exec_chat_stream; loop_.rs#L4901 drive()"
+  },
+  {
+   "diagram": "request-lifecycle",
+   "from": "model-provider",
+   "to": "agent-session",
+   "label": "streamed deltas + tool_use blocks",
+   "status": "inferred",
+   "evidence": "return path of the same stream (not a separate call site)"
+  },
+  {
+   "diagram": "request-lifecycle",
+   "from": "agent-session",
+   "to": "tool-registry",
+   "label": "registry.ask(Invoke(ToolCall)) gated by PermitGate",
+   "status": "index-backed",
+   "evidence": "crates/agent/src/loop_.rs#L5900 registry.ask(Invoke(tools::ToolCall{..})); PermitGate L1522"
+  },
+  {
+   "diagram": "request-lifecycle",
+   "from": "tool-registry",
+   "to": "agent-session",
+   "label": "ToolOutput appended to the transcript",
+   "status": "inferred",
+   "evidence": "return value of Invoke at loop_.rs#L5900 (not a separate call site)"
+  },
+  {
+   "diagram": "request-lifecycle",
+   "from": "agent-session",
+   "to": "rpc-api",
+   "label": "AgentEvent via rt.subscribe in rpc/src/bridge.rs",
+   "status": "index-backed",
+   "evidence": "crates/rpc/src/bridge.rs#L171 rt.subscribe::<Bridge, AgentEvent>"
+  },
+  {
+   "diagram": "request-lifecycle",
+   "from": "rpc-api",
+   "to": "web-ui",
+   "label": "notifications \u2192 store/reduce.ts",
+   "status": "inferred",
+   "evidence": "ui/src/store/reduce.ts folds events (reduce.ts#L1215 seen); exact push site in bridge.rs not read"
+  }
+ ],
+ "summary": {
+  "nodes": 33,
+  "edges": 49,
+  "by_status": {
+   "inferred+partial": 1,
+   "index-backed": 45,
+   "inferred": 3
+  },
+  "anchor_paths_checked": 66,
+  "missing_anchor_paths_after_fix": 0,
+  "fixed_during_ledger": [
+   "request-lifecycle/agent-session label 'loop_.rs' was relative \u2192 rewritten as crates/agent/src/{supervisor,loop_}.rs"
+  ]
+ }
+}

@@ -24,6 +24,7 @@ test('TalkState → orb: Holding keeps the speaking look, Interrupted drops to i
   expect(orbState('idle')).toBe('idle')
   expect(orbState('listening')).toBe('idle')
   expect(orbState('thinking')).toBe('thinking')
+  expect(orbState('working')).toBe('thinking')
   expect(orbState('speaking')).toBe('speaking')
   expect(orbState('holding')).toBe('speaking')
   expect(orbState('interrupted')).toBe('idle')
@@ -81,6 +82,7 @@ test('phase line above the orb and hint below it follow the state', () => {
   expect(phaseLine('listening', false, false)).toBe('Listening')
   expect(phaseLine('thinking', false, false)).toBe('Thinking…')
   expect(phaseLine('thinking', true, false)).toBe('Working…')
+  expect(phaseLine('working', false, false)).toBe('Working…')
   expect(phaseLine('speaking', false, true)).toBe('Speaking')
   expect(phaseLine('speaking', true, true)).toBe('Speaking')
   expect(phaseLine('speaking', true, false)).toBe('Working…')
@@ -88,8 +90,20 @@ test('phase line above the orb and hint below it follow the state', () => {
   expect(orbHint('idle')).toBe('Tap the orb to speak')
   expect(orbHint('listening')).toBe('Tap the orb to stop listening')
   expect(orbHint('thinking')).toBe('Tap the orb to stop')
+  expect(orbHint('working')).toBe('Tap the orb to stop')
   expect(orbHint('speaking')).toBe('Tap the orb to stop')
   expect(orbHint('holding')).toBe('Tap the orb to stop')
+})
+
+test('Announced: the harness sentence shows on the agent line until its Saying/SpeechFinished; frozen line holds', () => {
+  let s: Subtitles = applySubtitles(NO_SUBTITLES, { type: 'Announced', id, text: 'Waiting for your approval to run shell: git push.' })
+  expect(s.agent).toBe('Waiting for your approval to run shell: git push.')
+  s = applySubtitles(s, { type: 'Saying', id, speech: 'a1', text: 'Waiting for your approval to run shell: git push.' })
+  expect(s.speech).toBe('a1')
+  s = applySubtitles(s, { type: 'SpeechFinished', id: 'a1', session: 'x', reason: { reason: 'done' }, sink: 'device' })
+  expect(s.agent).toBe('')
+  const frozen = applySubtitles({ ...NO_SUBTITLES, agent: 'Cut.', frozen: true }, { type: 'Announced', id, text: 'Waiting.' })
+  expect(frozen.agent).toBe('Cut.')
 })
 
 test('user line: partials append, a shorter partial never shrinks it, the final replaces, Submitted clears', () => {

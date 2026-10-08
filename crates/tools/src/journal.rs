@@ -267,13 +267,20 @@ pub struct WaitRow {
 }
 
 /// `jobs.kind` (§5.1).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema,
+)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 #[serde(rename_all = "snake_case")]
 pub enum JobKind {
     /// `shell`.
+    #[default]
     Shell,
     /// `start`.
     Pty,
+    /// 145 §0.4: an inline tool call that outlived `promote_after`; `command`
+    /// is the tool name, there is no process and no log.
+    Promoted,
 }
 
 impl JobKind {
@@ -282,6 +289,7 @@ impl JobKind {
         match self {
             Self::Shell => "shell",
             Self::Pty => "pty",
+            Self::Promoted => "promoted",
         }
     }
 
@@ -290,6 +298,7 @@ impl JobKind {
         Some(match s {
             "shell" => Self::Shell,
             "pty" => Self::Pty,
+            "promoted" => Self::Promoted,
             _ => return None,
         })
     }
@@ -416,7 +425,7 @@ mod tests {
         ] {
             assert_eq!(WaitKind::parse(w.as_str()), Some(w));
         }
-        for j in [JobKind::Shell, JobKind::Pty] {
+        for j in [JobKind::Shell, JobKind::Pty, JobKind::Promoted] {
             assert_eq!(JobKind::parse(j.as_str()), Some(j));
         }
         for s in [JobState::Running, JobState::Settled, JobState::Lost] {

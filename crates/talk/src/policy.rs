@@ -67,6 +67,10 @@ pub enum Input {
     },
     /// Client sink: the highest `seq` the client finished playing (76 §4.6).
     PlayedSeq(u32),
+    /// Agent `ToolCallStarted` / `ToolCallFinished`: outstanding calls of the turn (145 §0.2).
+    Tools(u32),
+    /// `ApprovalRequested` on the talk's session: a one-line, pre-redacted summary (145 §0.6).
+    Approval(String),
 }
 
 /// What the actor does.
@@ -147,6 +151,13 @@ pub enum Action {
     /// The gate's speech threshold for the state just entered (76 §4.4:
     /// `talk.barge_in_vad` while `Speaking`/`Holding`, the gate's default otherwise).
     VadThreshold(f32),
+    /// `Agents::Steer { delivery: Steer }` with the utterance (145 §0.2): a
+    /// remark while `Working` joins the running turn.
+    Steer(String),
+    /// `Agents::SetTalk { live: Some(TalkLive { open, .. }) }`, on change only (145 §0.3).
+    Window(bool),
+    /// Publish `Announced`: a harness sentence was spoken.
+    Announced(String),
 }
 
 /// Where a sentence of the agent's turn is (76 §4.6).
@@ -171,6 +182,8 @@ pub struct Sentence {
     pub speech: Option<SpeechId>,
     /// Where it is.
     pub status: Status,
+    /// Harness speech (145 §0.6): never part of the heard prefix or a Trim.
+    pub harness: bool,
     /// Client sink: highest packet published.
     last_seq: Option<u32>,
 }
@@ -316,6 +329,11 @@ pub struct Policy {
     cancelled: bool,
     /// The committed candidate's first words, for `Interrupted.text`.
     cut_text: Option<String>,
+    /// Tool calls of the turn still running (145 §0.2), from `Input::Tools`.
+    tools: u32,
+    /// The spoken window as last told to the agent (145 §0.3); `true` is the
+    /// predicate's value for a fresh `Listening` policy, `start` tells the agent.
+    window: bool,
 }
 
 impl Policy {
@@ -339,6 +357,32 @@ impl Policy {
             speech_start: None,
             cancelled: false,
             cut_text: None,
+            tools: 0,
+            window: true,
+        }
+    }
+
+    /// The talk just started: the agent learns the talk is live with the window
+    /// closed, then the predicate's own value (145 §0.3).
+    pub fn start(&mut self) -> Vec<Action> {
+        let mut out = vec![Action::Window(false)];
+        self.window = false;
+        self.sync_window(&mut out);
+        out
+    }
+
+    /// 145 §0.3: harness inputs may start a turn only while nothing is being
+    /// heard or said and no turn is being built — `turn_start` is set from the
+    /// gate's first onset until the submit, so it covers both "the user is
+    /// speaking" and "a turn is pending". Emitted on change only.
+    fn sync_window(&mut self, out: &mut Vec<Action>) {
+        let open = self.state == State::Listening
+            && self.candidate.is_none()
+            && self.turn_start.is_none()
+            && !self.ledger.busy();
+        if open != self.window {
+            self.window = open;
+            out.push(Action::Window(open));
         }
     }
 
@@ -360,6 +404,8 @@ impl Policy {
         if let Some(s) = self.ledger.sentences.get_mut(index) {
             s.status = Status::Dropped;
             self.maybe_listen(&mut out);
+            self.maybe_work(&mut out);
+            self.sync_window(&mut out);
         }
         out
     }
@@ -392,6 +438,7 @@ impl Policy {
                     self.ledger = Ledger::default();
                     self.reset_md();
                     self.speech_start = None;
+                    self.tools = 0;
                     self.set(State::Thinking, &mut out);
                 }
                 self.ledger.turn = Some(turn);
@@ -406,7 +453,7 @@ impl Policy {
                         text: s.text.clone(),
                     });
                     self.speech_start.get_or_insert(now);
-                    if self.state == State::Thinking {
+                    if matches!(self.state, State::Thinking | State::Working) {
                         self.set(State::Speaking, &mut out);
                     }
                 }
@@ -422,6 +469,7 @@ impl Policy {
                         };
                     }
                     self.maybe_listen(&mut out);
+                    self.maybe_work(&mut out);
                 }
             }
             Input::Packet { speech, seq } => {
@@ -430,7 +478,23 @@ impl Policy {
                 }
             }
             Input::PlayedSeq(seq) => self.ledger.played_seq(seq),
+            // 145 §0.2: a tool batch runs with nothing to hear → `Working`;
+            // the batch returned → `Thinking` until the next block.
+            Input::Tools(n) => {
+                self.tools = n;
+                if n == 0 && self.state == State::Working {
+                    self.set(State::Thinking, &mut out);
+                }
+                self.maybe_work(&mut out);
+            }
+            Input::Approval(summary) => {
+                let text = format!("Waiting for your approval to run {summary}.");
+                if let Some(text) = self.say(text, true, &mut out) {
+                    out.push(Action::Announced(text));
+                }
+            }
         }
+        self.sync_window(&mut out);
         out
     }
 
@@ -462,7 +526,7 @@ impl Policy {
                 out.push(Action::Timer(Timer::EndOfTurn, None));
                 self.turn_start.get_or_insert(now);
             }
-            State::Thinking | State::Speaking => {
+            State::Thinking | State::Speaking | State::Working => {
                 self.candidate = Some(Candidate {
                     onset: now,
                     utterance: None,
@@ -515,6 +579,26 @@ impl Policy {
                 text: text.clone(),
                 is_final,
             });
+        }
+        // 145 §0.2: speech while `Working` joins the running turn once the
+        // utterance closes — no cancel, no submit, the work goes on.
+        if self.state == State::Working {
+            if let Some(c) = self
+                .candidate
+                .as_mut()
+                .filter(|c| !discarded && c.utterance.is_none_or(|u| u == utterance))
+            {
+                c.utterance = Some(utterance);
+                if is_final {
+                    let onset = c.onset;
+                    self.candidate = None;
+                    if !text.is_empty() && self.classify(&text).is_none() {
+                        let secs = now.duration_since(onset).as_millis().div_ceil(1000).max(1);
+                        out.push(Action::Steer(format!("[spoken, {secs} s] {text}")));
+                    }
+                }
+            }
+            return;
         }
         // A partial without a word yet ("I", "a") is not text for the
         // candidate: wait for the next one or the deadline.
@@ -589,6 +673,7 @@ impl Policy {
         self.speech_start = None;
         self.played = None;
         self.cancelled = false;
+        self.tools = 0;
         out.push(Action::Submit {
             text: marker + &body,
             interrupted,
@@ -613,7 +698,8 @@ impl Policy {
             // 76 §0.9, gated on a transcript: a noise the VAD opened on while
             // the model thinks must not throw the turn away (smoke, 2026-09-28).
             State::Thinking if has_text => self.late_addition(now, out),
-            State::Thinking => {}
+            // `Working`: the utterance steers once it closes (`text`).
+            State::Thinking | State::Working => {}
             State::Speaking => self.pause(now, out),
             _ => {
                 // The turn ended under the candidate: it is ordinary speech now.
@@ -653,6 +739,7 @@ impl Policy {
             (State::Holding, _) => self.decide(now, out),
             (State::Thinking, true) => self.late_addition(now, out),
             (State::Speaking, true) => self.pause(now, out),
+            (State::Working, _) => {}
             // Held for a noise that said nothing.
             _ => self.candidate = None,
         }
@@ -706,8 +793,10 @@ impl Policy {
         let mut out = Vec::new();
         let played = self.played.take().or(played);
         let heard = self.ledger.heard(self.sink, played);
+        // 145 §0.6: harness speech was never the model's words.
         let kept = self.ledger.sentences[..heard]
             .iter()
+            .filter(|s| !s.harness)
             .map(|s| s.text.as_str())
             .collect::<Vec<_>>()
             .join(" ");
@@ -737,6 +826,7 @@ impl Policy {
         self.set(State::Listening, &mut out);
         // A final that already arrived starts the end-of-turn clock now.
         self.arm_end_of_turn(&mut out);
+        self.sync_window(&mut out);
         out
     }
 
@@ -818,7 +908,7 @@ impl Policy {
         self.spoken_to = end;
         let streamed = std::mem::take(&mut self.streamed);
         for line in spoken.lines().flat_map(sentences).skip(streamed) {
-            self.say(line, out);
+            self.say(line, false, out);
         }
     }
 
@@ -837,7 +927,8 @@ impl Policy {
         // `spoken` trims the tail and ends it with punctuation: its last
         // sentence is complete only once the raw text has whitespace after
         // terminal punctuation — then the splitter sees that whitespace too.
-        let ended = tail.ends_with(char::is_whitespace) && tail.trim_end().ends_with(['.', '?', '!']);
+        let ended =
+            tail.ends_with(char::is_whitespace) && tail.trim_end().ends_with(['.', '?', '!']);
         let text = if ended { spoken + " " } else { spoken };
         let (done, _) = split(&text);
         for line in done.into_iter().skip(self.streamed) {
@@ -848,22 +939,26 @@ impl Policy {
                 break;
             }
             self.streamed += 1;
-            self.say(line, out);
+            self.say(line, false, out);
         }
     }
 
-    /// Hand one sentence to the speaker: ledger entry, then `Speak`.
-    fn say(&mut self, text: String, out: &mut Vec<Action>) {
+    /// Hand one sentence to the speaker through the envelope guard (145 §0.7):
+    /// ledger entry, then `Speak`. Returns the text as spoken, `None` if dropped.
+    fn say(&mut self, text: String, harness: bool, out: &mut Vec<Action>) -> Option<String> {
+        let text = guard(&text)?;
         self.ledger.sentences.push(Sentence {
             text: text.clone(),
             speech: None,
             status: Status::Queued,
+            harness,
             last_seq: None,
         });
         out.push(Action::Speak {
             index: self.ledger.sentences.len() - 1,
-            text,
+            text: text.clone(),
         });
+        Some(text)
     }
 
     /// Forget the block run.
@@ -886,6 +981,7 @@ impl Policy {
         if std::mem::take(&mut self.cancelled) {
             return;
         }
+        self.tools = 0;
         match reason {
             // Someone else cut the turn (Esc in the TUI): nothing more to say.
             "cancelled" | "interrupted" | "error" => {
@@ -904,7 +1000,7 @@ impl Policy {
                 out.push(Action::Timer(Timer::Decide, None));
                 if matches!(
                     self.state,
-                    State::Thinking | State::Speaking | State::Holding
+                    State::Thinking | State::Working | State::Speaking | State::Holding
                 ) {
                     self.set(State::Listening, out);
                 }
@@ -917,15 +1013,78 @@ impl Policy {
         }
     }
 
-    /// Turn finished and the queue drained → `Listening` (76 §4.8).
+    /// Turn finished and the queue drained → `Listening` (76 §4.8). A candidate
+    /// still held under the finished turn is ordinary speech now.
     fn maybe_listen(&mut self, out: &mut Vec<Action>) {
         if self.ledger.turn_done
             && !self.ledger.busy()
-            && matches!(self.state, State::Thinking | State::Speaking)
+            && matches!(
+                self.state,
+                State::Thinking | State::Working | State::Speaking
+            )
         {
+            if let Some(c) = self.candidate.take() {
+                self.turn_start.get_or_insert(c.onset);
+            }
             self.set(State::Listening, out);
         }
     }
+
+    /// 145 §0.2: calls of the turn are running and nothing is left to hear →
+    /// `Working`. From `Thinking` on `Tools(n > 0)`; from `Speaking` when the
+    /// queue drains under an outstanding call (the pre-tool narration ended),
+    /// so a remark then steers instead of cutting the work.
+    fn maybe_work(&mut self, out: &mut Vec<Action>) {
+        if self.tools > 0
+            && !self.ledger.busy()
+            && !self.ledger.turn_done
+            && matches!(self.state, State::Thinking | State::Speaking)
+        {
+            self.set(State::Working, out);
+        }
+    }
+}
+
+/// Harness envelope tags that must never be heard (145 §0.7).
+const ENVELOPES: &[&str] = &[
+    "job_result",
+    "job_idle",
+    "reminder",
+    "message",
+    "until",
+    "schedule",
+    "knowledge",
+    "surface_error",
+];
+
+/// 145 §0.7, the envelope guard: `None` for a sentence carrying a harness
+/// tag (`</?(job_result|…)\b`); otherwise the sentence with `_` inside a
+/// snake_case identifier (`[a-z0-9]+(_[a-z0-9]+)+`) read as a space.
+pub fn guard(text: &str) -> Option<String> {
+    let word = |c: char| c.is_ascii_lowercase() || c.is_ascii_digit();
+    let tagged = text.match_indices('<').any(|(i, _)| {
+        let rest = text[i + 1..].trim_start_matches('/');
+        ENVELOPES.iter().any(|t| {
+            rest.starts_with(t)
+                && !rest[t.len()..].starts_with(|c: char| c.is_alphanumeric() || c == '_')
+        })
+    });
+    if tagged {
+        return None;
+    }
+    let chars: Vec<char> = text.chars().collect();
+    let out = chars
+        .iter()
+        .enumerate()
+        .map(|(i, &c)| {
+            let snake = c == '_'
+                && i > 0
+                && word(chars[i - 1])
+                && chars.get(i + 1).is_some_and(|&n| word(n));
+            if snake { ' ' } else { c }
+        })
+        .collect();
+    Some(out)
 }
 
 /// Abbreviations whose `.` does not end a sentence, lowercased.
@@ -981,7 +1140,12 @@ fn is_abbreviation(s: &str) -> bool {
 /// commit the first — wait for that.
 fn is_prose(tail: &str) -> bool {
     use pulldown_cmark::{Event, Options, Parser, Tag, TagEnd};
-    if tail.trim_start().lines().next().is_none_or(|l| l.contains('|')) {
+    if tail
+        .trim_start()
+        .lines()
+        .next()
+        .is_none_or(|l| l.contains('|'))
+    {
         return false;
     }
     let opts = Options::ENABLE_STRIKETHROUGH
@@ -1166,12 +1330,14 @@ mod tests {
             text: "The build is green.".into(),
             speech: None,
             status: Status::Played,
+            harness: false,
             last_seq: None,
         });
         p.ledger.sentences.push(Sentence {
             text: "Two tests were skipped on the way.".into(),
             speech: None,
             status: Status::Playing,
+            harness: false,
             last_seq: None,
         });
         use ResumeReason::*;
@@ -1210,6 +1376,7 @@ mod tests {
                     2 => Status::Playing,
                     _ => Status::Queued,
                 },
+                harness: false,
                 last_seq: None,
             });
         }
@@ -1239,6 +1406,7 @@ mod tests {
                 } else {
                     Status::Playing
                 },
+                harness: false,
                 last_seq: Some([4, 9, 2, 7][i]),
             });
         }
@@ -1632,6 +1800,7 @@ mod tests {
             vec![
                 Action::State(State::Listening),
                 Action::VadThreshold(voice::vad::Gate::THRESHOLD),
+                Action::Window(true),
             ]
         );
 
@@ -1658,7 +1827,10 @@ mod tests {
         final_text(&mut p, 0, "Go.", ms(t0, 500));
         p.step(Input::Timer(Timer::EndOfTurn), ms(t0, 750));
         let a = p.step(Input::TurnFinished("end_turn".into()), ms(t0, 1000));
-        assert_eq!(a, vec![Action::State(State::Listening)]);
+        assert_eq!(
+            a,
+            vec![Action::State(State::Listening), Action::Window(true)]
+        );
     }
 
     /// Speak texts in `actions`, in order.
@@ -1698,23 +1870,50 @@ mod tests {
     fn a_paragraph_is_spoken_sentence_by_sentence_as_it_streams() {
         let (mut p, t0) = thinking();
         let a = p.step(Input::Delta("First one. Sti".into()), ms(t0, 1000));
-        assert_eq!(a, vec![Action::Speak { index: 0, text: "First one.".into() }]);
+        assert_eq!(
+            a,
+            vec![Action::Speak {
+                index: 0,
+                text: "First one.".into()
+            }]
+        );
         let a = p.step(Input::Delta("ll first. La".into()), ms(t0, 1100));
-        assert_eq!(a, vec![Action::Speak { index: 1, text: "Still first.".into() }]);
+        assert_eq!(
+            a,
+            vec![Action::Speak {
+                index: 1,
+                text: "Still first.".into()
+            }]
+        );
         assert!(p.step(Input::Delta("st".into()), ms(t0, 1200)).is_empty());
         let a = p.step(Input::TurnFinished("end_turn".into()), ms(t0, 1500));
-        assert!(a.contains(&Action::Speak { index: 2, text: "Last.".into() }));
+        assert!(a.contains(&Action::Speak {
+            index: 2,
+            text: "Last.".into()
+        }));
         // The ledger holds each sentence once, in order: echo rejection knows them all.
         let texts: Vec<&str> = p.ledger.sentences.iter().map(|s| s.text.as_str()).collect();
         assert_eq!(texts, vec!["First one.", "Still first.", "Last."]);
 
         // A paragraph that closes inside one delta: its rest at the commit, no repeat.
         let (mut p, t0) = thinking();
-        assert_eq!(said(&p.step(Input::Delta("One. Tw".into()), ms(t0, 1000))), vec!["One."]);
+        assert_eq!(
+            said(&p.step(Input::Delta("One. Tw".into()), ms(t0, 1000))),
+            vec!["One."]
+        );
         let a = p.step(Input::Delta("o.\n\nSecond".into()), ms(t0, 1100));
-        assert_eq!(a, vec![Action::Speak { index: 1, text: "Two.".into() }]);
+        assert_eq!(
+            a,
+            vec![Action::Speak {
+                index: 1,
+                text: "Two.".into()
+            }]
+        );
         let a = p.step(Input::TurnFinished("end_turn".into()), ms(t0, 1500));
-        assert!(a.contains(&Action::Speak { index: 2, text: "Second.".into() }));
+        assert!(a.contains(&Action::Speak {
+            index: 2,
+            text: "Second.".into()
+        }));
     }
 
     /// (a) 3-char deltas: each sentence at the delta that brings the
@@ -1725,7 +1924,11 @@ mod tests {
         let (mut p, t0) = thinking();
         let steps = stream(&mut p, t0, md, 3);
         let mut expected = vec![Vec::<String>::new(); steps.len()];
-        for s in ["The build is green.", "Two tests were skipped!", "Is that fine?"] {
+        for s in [
+            "The build is green.",
+            "Two tests were skipped!",
+            "Is that fine?",
+        ] {
             // The whitespace after the sentence is char `end`; it arrives in delta `end / 3`.
             let end = md.find(s).expect("in md") + s.len();
             expected[end / 3].push(s.into());
@@ -1742,10 +1945,16 @@ mod tests {
         let md = "Dr. Smith measured 3.5 s, e.g. on the second run. Then it stopped.";
         let (mut p, t0) = thinking();
         let steps: Vec<String> = stream(&mut p, t0, md, 3).into_iter().flatten().collect();
-        assert_eq!(steps, vec!["Dr. Smith measured 3.5 s, e.g. on the second run."]);
+        assert_eq!(
+            steps,
+            vec!["Dr. Smith measured 3.5 s, e.g. on the second run."]
+        );
         let a = p.step(Input::TurnFinished("end_turn".into()), ms(t0, 2000));
         assert_eq!(said(&a), vec!["Then it stopped."]);
-        assert_eq!(sentences("See (i.e. here) vs. there. Ok."), vec!["See (i.e. here) vs. there.", "Ok."]);
+        assert_eq!(
+            sentences("See (i.e. here) vs. there. Ok."),
+            vec!["See (i.e. here) vs. there.", "Ok."]
+        );
         // Known misses, pinned so a change is deliberate.
         assert_eq!(sentences("Ask J. Smith."), vec!["Ask J.", "Smith."]);
         assert_eq!(sentences("Main St. Next."), vec!["Main St. Next."]);
@@ -1778,7 +1987,10 @@ mod tests {
         assert_eq!(said(&a), vec!["a.", "b."]);
         // Half-arrived emphasis holds until it balances.
         let (mut p, t0) = thinking();
-        assert!(p.step(Input::Delta("**Bold. still".into()), ms(t0, 1000)).is_empty());
+        assert!(
+            p.step(Input::Delta("**Bold. still".into()), ms(t0, 1000))
+                .is_empty()
+        );
         let a = p.step(Input::Delta(" bold.** Plain. ".into()), ms(t0, 1100));
         assert_eq!(said(&a), vec!["Bold.", "still bold.", "Plain."]);
     }
@@ -1802,15 +2014,32 @@ mod tests {
             .collect();
         assert_eq!(ids.len(), 2);
         p.step(Input::SpeechStarted(ids[0]), ms(t0, 1100));
-        p.step(Input::SpeechFinished { speech: ids[0], done: true }, ms(t0, 1600));
+        p.step(
+            Input::SpeechFinished {
+                speech: ids[0],
+                done: true,
+            },
+            ms(t0, 1600),
+        );
         p.step(Input::SpeechStarted(ids[1]), ms(t0, 1601));
-        let a = p.commit(Some(Played { id: Some(ids[1]), seq: 2, samples: 0 }));
+        let a = p.commit(Some(Played {
+            id: Some(ids[1]),
+            seq: 2,
+            samples: 0,
+        }));
         assert_eq!(a[1], Action::Cancel(Some("One.".into())));
-        assert!(a.contains(&Action::Interrupted { heard: 1, dropped: 1, text: None }));
+        assert!(a.contains(&Action::Interrupted {
+            heard: 1,
+            dropped: 1,
+            text: None
+        }));
         assert_eq!(p.ledger.sentences[1].status, Status::Dropped);
         // The cancelled turn's last deltas and its `TurnFinished` say nothing.
         assert!(said(&p.step(Input::Delta("ee. Four. ".into()), ms(t0, 1700))).is_empty());
-        assert_eq!(p.step(Input::TurnFinished("interrupted".into()), ms(t0, 1800)), vec![]);
+        assert_eq!(
+            p.step(Input::TurnFinished("interrupted".into()), ms(t0, 1800)),
+            vec![]
+        );
         assert_eq!(p.ledger.sentences.len(), 2);
     }
 
@@ -1908,11 +2137,435 @@ mod tests {
         let (mut p, t0) = policy(Sink::Device);
         assert_eq!(
             p.step(Input::TurnStarted(3), t0),
-            vec![Action::State(State::Thinking)]
+            vec![Action::State(State::Thinking), Action::Window(false)]
         );
         p.step(Input::Delta("Typed.".into()), ms(t0, 100));
         let a = p.step(Input::TurnFinished("end_turn".into()), ms(t0, 200));
         assert!(matches!(a[0], Action::Speak { index: 0, .. }));
         assert_eq!(p.state, State::Thinking);
+    }
+
+    /// `Window` actions in `actions`, in order.
+    fn windows(actions: &[Action]) -> Vec<bool> {
+        actions
+            .iter()
+            .filter_map(|a| match a {
+                Action::Window(open) => Some(*open),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Speak `md` (one delta) and report its first sentence started.
+    fn playing(p: &mut Policy, t0: Instant, md: &str) -> SpeechId {
+        let a = p.step(Input::Delta(md.into()), ms(t0, 1000));
+        let index = a
+            .iter()
+            .find_map(|a| match a {
+                Action::Speak { index, .. } => Some(*index),
+                _ => None,
+            })
+            .expect("a sentence");
+        let id = SpeechId::new();
+        p.spoken(index, id);
+        p.step(Input::SpeechStarted(id), ms(t0, 1100));
+        id
+    }
+
+    /// 145 P1: `Thinking` + `Tools(1)` → `Working`; `Tools(0)` → `Thinking`;
+    /// `SpeechStarted` while `Working` → `Speaking`. Sentences still queued
+    /// keep `Thinking`; once the narration is heard out with a call still
+    /// running, `Working` (a remark then steers, 145 §0.2).
+    #[test]
+    fn p1_tools_move_thinking_to_working_and_back() {
+        let (mut p, t0) = thinking();
+        assert_eq!(
+            p.step(Input::Tools(1), ms(t0, 900)),
+            vec![Action::State(State::Working)]
+        );
+        assert_eq!(p.step(Input::Tools(2), ms(t0, 950)), vec![]);
+        assert_eq!(
+            p.step(Input::Tools(0), ms(t0, 1000)),
+            vec![Action::State(State::Thinking)]
+        );
+        p.step(Input::Tools(1), ms(t0, 1050));
+        assert_eq!(p.state, State::Working);
+        playing(&mut p, t0, "Checking. ");
+        assert_eq!(p.state, State::Speaking);
+        assert_eq!(p.step(Input::Tools(0), ms(t0, 1200)), vec![]);
+        // Queued but not yet playing: no `Working`; heard out under the call: `Working`.
+        let (mut p, t0) = thinking();
+        p.step(Input::Delta("One. ".into()), ms(t0, 1000));
+        assert_eq!(p.step(Input::Tools(1), ms(t0, 1100)), vec![]);
+        assert_eq!(p.state, State::Thinking);
+        let id = SpeechId::new();
+        p.spoken(0, id);
+        p.step(Input::SpeechStarted(id), ms(t0, 1200));
+        assert_eq!(p.state, State::Speaking);
+        let a = p.step(
+            Input::SpeechFinished {
+                speech: id,
+                done: true,
+            },
+            ms(t0, 1800),
+        );
+        assert_eq!(
+            a,
+            vec![
+                Action::State(State::Working),
+                Action::VadThreshold(voice::vad::Gate::THRESHOLD)
+            ]
+        );
+        // The turn ends with the call still counted (a `Finished` lost): listening, not working.
+        let a = p.step(Input::TurnFinished("end_turn".into()), ms(t0, 2000));
+        assert!(a.contains(&Action::State(State::Listening)));
+    }
+
+    /// 145 P2: an utterance committed while `Working` → exactly one `Steer`,
+    /// no `Cancel`, no `Submit`, state unchanged; backchannels and coughs are nothing.
+    #[test]
+    fn p2_speech_while_working_steers_into_the_running_turn() {
+        let (mut p, t0) = thinking();
+        p.step(Input::Tools(1), ms(t0, 900));
+        let a = p.step(Input::Onset, ms(t0, 2000));
+        assert_eq!(
+            timer(&a, Timer::Hold),
+            Some(Some(Duration::from_millis(400)))
+        );
+        assert_eq!(p.step(Input::Timer(Timer::Hold), ms(t0, 2400)), vec![]);
+        let a = p.step(
+            Input::Text {
+                utterance: 1,
+                text: "also check".into(),
+                is_final: false,
+            },
+            ms(t0, 2500),
+        );
+        assert!(a.iter().all(|a| matches!(a, Action::Heard { .. })), "{a:?}");
+        p.step(Input::Close, ms(t0, 3000));
+        let a = final_text(&mut p, 1, "also check the logs.", ms(t0, 3100));
+        assert_eq!(
+            a,
+            vec![
+                Action::Heard {
+                    utterance: 1,
+                    text: "also check the logs.".into(),
+                    is_final: true,
+                },
+                Action::Steer("[spoken, 2 s] also check the logs.".into()),
+            ]
+        );
+        assert_eq!(p.state, State::Working);
+        assert!(p.pending.is_empty());
+        // A backchannel while working is not a remark.
+        p.step(Input::Onset, ms(t0, 4000));
+        p.step(Input::Timer(Timer::Hold), ms(t0, 4400));
+        p.step(Input::Close, ms(t0, 4500));
+        let a = final_text(&mut p, 2, "Okay.", ms(t0, 4600));
+        assert!(a.iter().all(|a| matches!(a, Action::Heard { .. })), "{a:?}");
+        // Shorter than the hold: a cough.
+        p.step(Input::Onset, ms(t0, 5000));
+        p.step(Input::Close, ms(t0, 5200));
+        let a = final_text(&mut p, 3, "hm no wait", ms(t0, 5300));
+        assert!(a.iter().all(|a| matches!(a, Action::Heard { .. })), "{a:?}");
+        assert_eq!(p.state, State::Working);
+        // The batch returns and the turn ends: back to listening, nothing pending.
+        p.step(Input::Tools(0), ms(t0, 6000));
+        let a = p.step(Input::TurnFinished("end_turn".into()), ms(t0, 6100));
+        assert!(a.contains(&Action::State(State::Listening)));
+        assert!(timer(&a, Timer::EndOfTurn).is_none());
+    }
+
+    /// 145 P3: `Thinking` keeps 76 §0.9 — `Cancel(None)`, then the new text
+    /// is submitted on its own (`speech_while_thinking_cancels_and_submits_the_new_text`
+    /// has the long form); `Tools(0)` beforehand changes nothing.
+    #[test]
+    fn p3_speech_while_thinking_still_cancels() {
+        let (mut p, t0) = thinking();
+        p.step(Input::Tools(0), ms(t0, 900));
+        p.step(Input::Onset, ms(t0, 2000));
+        p.step(Input::Timer(Timer::Hold), ms(t0, 2400));
+        let a = p.step(
+            Input::Text {
+                utterance: 1,
+                text: "for two".into(),
+                is_final: false,
+            },
+            ms(t0, 2500),
+        );
+        assert_eq!(
+            a[1..],
+            [
+                Action::StopSpeech,
+                Action::Cancel(None),
+                Action::State(State::Listening)
+            ]
+        );
+        assert!(!a.iter().any(|a| matches!(a, Action::Steer(_))));
+        p.step(Input::Close, ms(t0, 3000));
+        final_text(&mut p, 1, "for two at eight.", ms(t0, 3100));
+        let a = p.step(Input::Timer(Timer::EndOfTurn), ms(t0, 3350));
+        assert!(matches!(a[0], Action::Submit { .. }));
+    }
+
+    /// 145 P4: a barge-in while `Speaking` with a tool call outstanding is the
+    /// five cuts of 76 §4.5, not a steer.
+    #[test]
+    fn p4_barge_in_while_speaking_with_tools_running_is_the_five_cuts() {
+        let (mut p, t0) = thinking();
+        let id = playing(&mut p, t0, "Let me check. ");
+        p.step(Input::BlockEnd, ms(t0, 1200));
+        assert_eq!(p.step(Input::Tools(1), ms(t0, 1300)), vec![]);
+        assert_eq!(p.state, State::Speaking);
+        p.step(Input::Onset, ms(t0, 2000));
+        let a = p.step(Input::Timer(Timer::Hold), ms(t0, 2400));
+        assert_eq!(a[0], Action::Pause);
+        assert_eq!(p.state, State::Holding);
+        let a = p.step(
+            Input::Text {
+                utterance: 1,
+                text: "no stop".into(),
+                is_final: false,
+            },
+            ms(t0, 2500),
+        );
+        assert!(a.contains(&Action::Commit));
+        let a = p.commit(Some(Played {
+            id: Some(id),
+            seq: 1,
+            samples: 0,
+        }));
+        assert_eq!(a[0], Action::StopSpeech);
+        assert_eq!(a[1], Action::Cancel(Some(String::new())));
+        assert!(a.contains(&Action::Interrupted {
+            heard: 0,
+            dropped: 1,
+            text: Some("no stop".into()),
+        }));
+        assert!(a.contains(&Action::State(State::Listening)));
+        assert!(!a.iter().any(|a| matches!(a, Action::Steer(_))));
+    }
+
+    /// 145 P5: the window closes on `Onset`, stays closed from `Submit` until
+    /// `maybe_listen`, reopens after a backchannel resume once the speech is
+    /// heard out, and is emitted only on change.
+    #[test]
+    fn p5_window_follows_the_user_the_speech_and_the_turn() {
+        let (mut p, t0) = policy(Sink::Device);
+        assert_eq!(p.start(), vec![Action::Window(false), Action::Window(true)]);
+        let mut seen = Vec::new();
+        seen.extend(windows(&p.step(Input::Onset, t0)));
+        assert_eq!(seen, vec![false]);
+        seen.extend(windows(&p.step(Input::Close, ms(t0, 500))));
+        seen.extend(windows(&final_text(&mut p, 0, "Hello.", ms(t0, 600))));
+        seen.extend(windows(
+            &p.step(Input::Timer(Timer::EndOfTurn), ms(t0, 850)),
+        ));
+        seen.extend(windows(&p.step(Input::TurnStarted(7), ms(t0, 900))));
+        let id = playing(&mut p, t0, "One. ");
+        seen.extend(windows(
+            &p.step(Input::TurnFinished("end_turn".into()), ms(t0, 1200)),
+        ));
+        assert_eq!(seen, vec![false], "closed from Submit until maybe_listen");
+        let a = p.step(
+            Input::SpeechFinished {
+                speech: id,
+                done: true,
+            },
+            ms(t0, 1500),
+        );
+        assert_eq!(
+            a,
+            vec![
+                Action::State(State::Listening),
+                Action::VadThreshold(voice::vad::Gate::THRESHOLD),
+                Action::Window(true),
+            ]
+        );
+        // A backchannel during the next reply: closed by the turn, open again
+        // only once the resumed speech has been heard out.
+        let t1 = ms(t0, 10_000);
+        let ids = speaking(&mut p, t1, &["One.", "Two."]);
+        let mut seen = Vec::new();
+        seen.extend(windows(&p.step(Input::Onset, ms(t1, 3000))));
+        seen.extend(windows(&p.step(Input::Timer(Timer::Hold), ms(t1, 3400))));
+        let a = p.step(
+            Input::Text {
+                utterance: 1,
+                text: "Mhm.".into(),
+                is_final: false,
+            },
+            ms(t1, 3500),
+        );
+        assert!(a.iter().any(|a| matches!(a, Action::Resume { .. })));
+        seen.extend(windows(&a));
+        p.step(Input::Close, ms(t1, 3600));
+        seen.extend(windows(&final_text(&mut p, 1, "Mhm.", ms(t1, 3700))));
+        seen.extend(windows(&p.step(
+            Input::SpeechFinished {
+                speech: ids[0],
+                done: true,
+            },
+            ms(t1, 4000),
+        )));
+        seen.extend(windows(&p.step(Input::SpeechStarted(ids[1]), ms(t1, 4001))));
+        assert_eq!(
+            seen,
+            Vec::<bool>::new(),
+            "nothing reopens while speech is queued or playing"
+        );
+        let a = p.step(
+            Input::SpeechFinished {
+                speech: ids[1],
+                done: true,
+            },
+            ms(t1, 5000),
+        );
+        assert_eq!(windows(&a), vec![true]);
+    }
+
+    /// 145 P6: an approval is announced as harness speech — one `Speak` with
+    /// `harness: true`, one `Announced` — and a barge-in afterwards computes
+    /// `keep` without it.
+    #[test]
+    fn p6_approval_is_announced_and_never_kept() {
+        let (mut p, t0) = thinking();
+        p.step(Input::Tools(1), ms(t0, 900));
+        let line = "Waiting for your approval to run shell: git push.";
+        let a = p.step(Input::Approval("shell: git push".into()), ms(t0, 1000));
+        assert_eq!(
+            a,
+            vec![
+                Action::Speak {
+                    index: 0,
+                    text: line.into()
+                },
+                Action::Announced(line.into()),
+            ]
+        );
+        assert!(p.ledger.sentences[0].harness);
+        let id = SpeechId::new();
+        p.spoken(0, id);
+        p.step(Input::SpeechStarted(id), ms(t0, 1100));
+        assert_eq!(p.state, State::Speaking);
+        p.step(
+            Input::SpeechFinished {
+                speech: id,
+                done: true,
+            },
+            ms(t0, 2000),
+        );
+        // The model goes on; the user cuts in while its sentence plays.
+        let a = p.step(Input::Delta("Pushing now. ".into()), ms(t0, 2100));
+        assert_eq!(said(&a), vec!["Pushing now."]);
+        assert!(!p.ledger.sentences[1].harness);
+        let id1 = SpeechId::new();
+        p.spoken(1, id1);
+        p.step(Input::SpeechStarted(id1), ms(t0, 2200));
+        let a = p.commit(Some(Played {
+            id: Some(id1),
+            seq: 1,
+            samples: 0,
+        }));
+        assert_eq!(a[1], Action::Cancel(Some(String::new())));
+        assert!(a.contains(&Action::Interrupted {
+            heard: 1,
+            dropped: 1,
+            text: None,
+        }));
+        // Snake_case in the summary is read with spaces.
+        let (mut p, t0) = thinking();
+        let a = p.step(Input::Approval("secret_request".into()), ms(t0, 1000));
+        assert_eq!(
+            a.last(),
+            Some(&Action::Announced(
+                "Waiting for your approval to run secret request.".into()
+            ))
+        );
+    }
+
+    /// 145 P7: the envelope guard — a harness tag is never spoken (stays in
+    /// the transcript), snake_case is read with spaces, ordinary words that
+    /// happen to be tag names are untouched.
+    #[test]
+    fn p7_envelope_guard() {
+        assert_eq!(guard("<job_result id=\"j1\">done</job_result>"), None);
+        assert_eq!(guard("Done, see </message>."), None);
+        assert_eq!(guard("<reminder>"), None);
+        assert_eq!(
+            guard("I ran search_web.").as_deref(),
+            Some("I ran search web.")
+        );
+        assert_eq!(
+            guard("The message arrived until noon; <messages> and a_B stay.").as_deref(),
+            Some("The message arrived until noon; <messages> and a_B stay.")
+        );
+        assert_eq!(
+            guard("__init__ and run_all_tests").as_deref(),
+            Some("__init__ and run all tests")
+        );
+        // Through the policy: the HTML block says nothing; a tag quoted in a
+        // code span reaches the guard and is dropped; the identifier is spaced.
+        let (mut p, t0) = thinking();
+        p.step(
+            Input::Delta("<job_result id=\"j1\">done</job_result>".into()),
+            ms(t0, 1000),
+        );
+        let a = p.step(Input::TurnFinished("end_turn".into()), ms(t0, 1100));
+        assert!(said(&a).is_empty(), "{a:?}");
+        let (mut p, t0) = thinking();
+        p.step(
+            Input::Delta("It came back as `<job_result>`. ".into()),
+            ms(t0, 1000),
+        );
+        let a = p.step(Input::TurnFinished("end_turn".into()), ms(t0, 1100));
+        assert!(said(&a).is_empty(), "{a:?}");
+        assert!(p.ledger.sentences.is_empty());
+        let (mut p, t0) = thinking();
+        p.step(Input::Delta("I ran search_web. ".into()), ms(t0, 1000));
+        let a = p.step(Input::TurnFinished("end_turn".into()), ms(t0, 1100));
+        assert_eq!(said(&a), vec!["I ran search web."]);
+    }
+
+    /// 145 P8: nothing is re-spoken after `Interrupted`; late `Delta`s after
+    /// our `Cancel` stay unspoken, and the next turn's ledger starts clean.
+    #[test]
+    fn p8_nothing_is_respoken_after_an_interruption() {
+        let (mut p, t0) = thinking();
+        let id = playing(&mut p, t0, "One. Two. Thr");
+        assert_eq!(p.ledger.sentences.len(), 2);
+        let a = p.commit(Some(Played {
+            id: Some(id),
+            seq: 0,
+            samples: 0,
+        }));
+        assert_eq!(a[1], Action::Cancel(Some(String::new())));
+        assert!(
+            p.ledger
+                .sentences
+                .iter()
+                .all(|s| s.status == Status::Dropped)
+        );
+        assert!(said(&p.step(Input::Delta("ee. Four. ".into()), ms(t0, 1700))).is_empty());
+        assert!(said(&p.step(Input::BlockEnd, ms(t0, 1750))).is_empty());
+        assert_eq!(
+            p.step(Input::TurnFinished("interrupted".into()), ms(t0, 1800)),
+            vec![]
+        );
+        assert_eq!(p.ledger.sentences.len(), 2);
+        // The next turn speaks from index 0 and sees none of the old sentences.
+        p.step(Input::Close, ms(t0, 2000));
+        final_text(&mut p, 1, "Again.", ms(t0, 2100));
+        p.step(Input::Timer(Timer::EndOfTurn), ms(t0, 2350));
+        p.step(Input::TurnStarted(8), ms(t0, 2400));
+        let a = p.step(Input::Delta("Fresh. ".into()), ms(t0, 2500));
+        assert_eq!(
+            a,
+            vec![Action::Speak {
+                index: 0,
+                text: "Fresh.".into()
+            }]
+        );
+        assert_eq!(p.ledger.sentences.len(), 1);
     }
 }

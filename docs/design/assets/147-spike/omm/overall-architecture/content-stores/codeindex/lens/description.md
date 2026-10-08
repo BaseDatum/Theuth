@@ -1,0 +1,1 @@
+`src/lens.rs` (879 lines): request types `Here`/`Fit`/`Change`/`Touch` (L36–L78) and reply shapes `HereLens`/`FitLens`/`ChangeLens` for the CodeMap panel, with caps `HERE_LIMIT=2000`, `FIT_LIMIT=20`, `CHANGE_CAPS` (L21–L26). Exposed over RPC via `lens_handler!` in lib.rs and `api.rs` ~L4943.

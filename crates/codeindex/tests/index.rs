@@ -1566,6 +1566,8 @@ async fn tools_envelope() {
         call_id: String::new(),
         quiet: false,
         resources: tools::SessionResources::durable_arc(&data.0),
+        cancel: tools::CancellationToken::new(),
+        promote_after: None,
     };
     let root = Some(repo_root());
 
@@ -1804,6 +1806,8 @@ async fn map_and_symbol() {
         call_id: String::new(),
         quiet: false,
         resources: tools::SessionResources::durable_arc(&data.0),
+        cancel: tools::CancellationToken::new(),
+        promote_after: None,
     };
     let root = Some(repo_root());
     let map = |focus: Option<Vec<&str>>, paths_only: bool, budget: u32| CodeMapArgs {
@@ -2199,6 +2203,8 @@ fn cx(data: &TempDir) -> tools::ToolCx {
         call_id: String::new(),
         quiet: false,
         resources: tools::SessionResources::durable_arc(&data.0),
+        cancel: tools::CancellationToken::new(),
+        promote_after: None,
     }
 }
 

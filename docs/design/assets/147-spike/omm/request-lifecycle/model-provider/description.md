@@ -1,0 +1,1 @@
+`crates/agent/src/backend.rs`: `exec_chat_stream` at L233 and L425 on the genai `Client` (`loop_.rs` L40), one call per model round; usage is folded into cost by `observe()` (`loop_.rs` L2871). Provider keys come from the vault through `secrets`. External: the actual model API is outside the repository.

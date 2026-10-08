@@ -33,7 +33,10 @@ live, voice notes) loads.
 2. **B, neutral filler without a classifier: documented, not built** (§2).
    Build it after A has landed and its first-sentence timing has been measured in
    a release build. If A brings the usual first sentence under ~700 ms, B plays
-   only on slow turns and tool turns. That is the intent.
+   only on slow turns and tool turns. That is the intent. *145 §0.8 amendment
+   (2026-10-08): when B is built, a filler may play only into idle silence —
+   the talk's spoken window open (user silent, nothing queued or pending) —
+   never over the user or over queued speech; progress itself stays visual.*
 3. **C, classifier-chosen filler with laya: documented, not built** (§3). It has
    a gate: a shadow benchmark on ≥ 150 real spoken turns. Without it, C is not
    built.

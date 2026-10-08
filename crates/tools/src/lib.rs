@@ -58,8 +58,8 @@ pub use ask::{
 pub use communication::{CommunicationAccess, Disabled};
 pub use jobs::CloseSessions;
 pub use jobs::{
-    CancelJob, CancelOrigin, InstallActivity, JOBS_ACTOR, JobCounts, JobEvent, JobExit, JobId,
-    JobView, Jobs, ListJobs, LiveCounts, LiveCountsRow,
+    Adopt, CancelJob, CancelOrigin, InstallActivity, JOBS_ACTOR, JobCounts, JobEvent, JobExit,
+    JobId, JobView, Jobs, ListJobs, LiveCounts, LiveCountsRow,
 };
 pub use journal::{
     Answerer, InstallJournal, JobKind, JobRow, JobState, Journal, NoopJournal, PtyScreenRow,
@@ -81,15 +81,22 @@ pub use registry::{
     SetHidden, SetParent, SetPtyIdle, ToolInspection, ToolRegistry, UnregisterPrompt,
     UnregisterTool, UserActivation,
 };
+pub use registry::{CancelCalls, InstallResources, RemoveResources, SetPromoteAfter};
 pub use registry::{
     CloseTreeAll, ExpectParticipants, OpenTree, ParticipantsReady, RegisterLifecycle,
 };
-pub use registry::{InstallResources, RemoveResources};
 pub use reminder::{
     CancelReminder, CancelReminders, RearmReminder, ReminderEvent, ReminderView, SetReminder,
 };
 pub use resources::{CloseAck, CloseTree, TreeOpened};
 pub use resources::{Retention, SessionResources};
+/// 145 §0.5: the cancellation token every [`ToolCx`] carries, re-exported so
+/// crates that build a `ToolCx` need no `tokio-util` dependency of their own.
+pub use tokio_util::sync::CancellationToken;
+
+/// What a tool body fails with (`Tool::call`'s error); the type a promoted
+/// call's future resolves to (145 §2.2).
+pub type ToolError = anyhow::Error;
 
 /// Registry name of the [`ToolRegistry`] actor.
 pub const REGISTRY_ACTOR: &str = "tools";
@@ -303,6 +310,10 @@ pub struct ToolCx {
     /// Where this session's owners put files (51 §4.5); durable unless the
     /// supervisor installed a private root.
     pub resources: Arc<SessionResources>,
+    /// 145 §0.5: cancelled when the turn or the promoted job is cancelled.
+    pub cancel: tokio_util::sync::CancellationToken,
+    /// 145 §0.4: promote to a job after this long; `None` never.
+    pub promote_after: Option<std::time::Duration>,
 }
 
 /// One struct per tool; the schema is derived from `Args`.
@@ -336,6 +347,14 @@ pub trait Tool: Send + Sync + 'static {
     /// Description shown to the model.
     fn description(&self) -> String;
 
+    /// A call may be promoted to a background job (145 §0.4). `false` for
+    /// shell/start/send/wait/screen/jobs/cancel_job (job-shaped), ask_user,
+    /// desktop_handoff, secret_request, secret_request_form, approval-shaped
+    /// tools, spawn_subagent, send_message (an explicit wait is the caller's).
+    fn promotable(&self) -> bool {
+        true
+    }
+
     /// Run it.
     async fn call(&self, args: Self::Args, cx: ToolCx) -> anyhow::Result<ToolOutput>;
 }
@@ -364,6 +383,11 @@ pub trait ErasedTool: Send + Sync + 'static {
     fn consumes_secrets(&self) -> bool {
         true
     }
+    /// [`Tool::promotable`]: `false` for interactive or job-shaped tools.
+    /// MCP tools may be promoted.
+    fn promotable(&self) -> bool {
+        true
+    }
     /// Invoke with raw args.
     fn call(
         &self,
@@ -386,6 +410,10 @@ impl<T: Tool> ErasedTool for T {
 
     fn consumes_secrets(&self) -> bool {
         T::CONSUMES_SECRETS
+    }
+
+    fn promotable(&self) -> bool {
+        Tool::promotable(self)
     }
 
     fn call(
