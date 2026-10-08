@@ -88,8 +88,9 @@ Worker 144-W3, branch `feat/144-w3`, cut from the contract skeleton `13bd3cc3`. 
 ## Gates
 - `cargo fmt` clean. `cargo check -p agent -p document --tests` clean.
 - `cargo test -p agent -p document --tests` green (numbers above).
-- `cargo clippy -p agent -p document --tests -- -D warnings`: see below.
-- `cargo test -p document -p link -p rpc` (59 regression): see below.
+- `cargo clippy -p agent -p document --tests -- -D warnings` clean.
+- `cargo test -p document -p link -p rpc` (59 regression): document 47 + 11 + 4, link 27, rpc 54 + `tests/prompts.rs`
+  1 — all green; no existing share/guest/replication test touched (`tests/actor.rs` unchanged).
 
 ## Deviations
 - Document reads/writes from `agent::notebooks` go through the tool registry (`Invoke`, `quiet: true`) because `agent`
