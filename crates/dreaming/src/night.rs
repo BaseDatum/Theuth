@@ -1986,7 +1986,7 @@ mod tests {
         .unwrap();
         let retitle = k.retitle("facts/a", "Short", "the rest").await.unwrap();
         // A later write to the same id, before the retitle event is handled.
-        k.verify("facts/a", knowledge::VerifyOutcome::Ok, None)
+        k.verify("facts/a", knowledge::VerifyOutcome::Ok, None, &[])
             .await
             .unwrap();
         let ev = |commit: Option<String>| knowledge::KnowledgeChanged {
