@@ -53,8 +53,11 @@ pub struct Track {
 /// What the page says about the video.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Details {
+    /// `videoDetails.title`.
     pub title: Option<String>,
+    /// `videoDetails.author`.
     pub channel: Option<String>,
+    /// `videoDetails.lengthSeconds` in ms.
     pub length_ms: Option<u64>,
 }
 

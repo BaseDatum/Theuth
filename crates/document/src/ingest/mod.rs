@@ -12,7 +12,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use kameo::actor::ActorRef;
+use kameo::actor::{ActorRef, Spawn};
 use kameo::message::{Context, Message};
 use serde::{Deserialize, Serialize};
 
@@ -23,8 +23,8 @@ use crate::store::{SourceRow, Store};
 
 pub mod captions;
 pub mod insights;
-pub mod job;
-pub mod routes;
+pub(crate) mod job;
+pub(crate) mod routes;
 
 /// Registry name of the [`IngestActor`].
 pub const INGEST_ACTOR: &str = "ingest";
@@ -436,20 +436,11 @@ impl IngestActor {
     }
 
     async fn gate(&self) -> Result<(), String> {
-        self.ctx
-            .docs
-            .ask(HubGate)
-            .await
-            .map_err(|e| e.to_string())?
+        flat(self.ctx.docs.ask(HubGate).await)
     }
 
     async fn get(&self, id: &DocId) -> Result<Source, String> {
-        let mut s = self
-            .ctx
-            .docs
-            .ask(SourceGet(id.clone()))
-            .await
-            .map_err(|e| e.to_string())??;
+        let mut s = flat(self.ctx.docs.ask(SourceGet(id.clone())).await)?;
         if self.active.contains(id) && s.status == SourceStatus::Completed {
             // The row is the last run's; the card is queued again.
             s.status = SourceStatus::Queued;
@@ -472,7 +463,7 @@ impl Message<Add> for IngestActor {
 
     async fn handle(&mut self, m: Add, ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
         self.gate().await?;
-        let c = &self.ctx;
+        let c = self.ctx.clone();
         let args = m.args;
         if c.store
             .notebook_row(&args.notebook)
@@ -483,7 +474,7 @@ impl Message<Add> for IngestActor {
             return Err(format!("no such notebook: {}", args.notebook));
         }
         // Pre-flight (§4.1 end): the origin and, when it cannot work, the permanent reason.
-        let (origin, refusal) = routes::preflight(c, &args)
+        let (origin, refusal) = routes::preflight(&c, &args)
             .await
             .map_err(|e| format!("{e:#}"))?;
         let key = origin.key();
@@ -493,26 +484,26 @@ impl Message<Add> for IngestActor {
             .filter(|t| !t.trim().is_empty())
             .unwrap_or_else(|| provisional_title(&origin));
         let binding = Binding::Source(key);
-        let existing = c
-            .docs
-            .ask(Lookup {
-                binding: binding.clone(),
-            })
-            .await
-            .map_err(|e| e.to_string())??;
+        let existing = flat(
+            c.docs
+                .ask(Lookup {
+                    binding: binding.clone(),
+                })
+                .await,
+        )?;
         let (id, fresh) = match existing {
             Some(id) => (id, false),
             None => {
-                let doc = c
-                    .docs
-                    .ask(Create {
-                        binding,
-                        title: title.clone(),
-                        markdown: String::new(),
-                        by: m.by.clone(),
-                    })
-                    .await
-                    .map_err(|e| e.to_string())??;
+                let doc = flat(
+                    c.docs
+                        .ask(Create {
+                            binding,
+                            title: title.clone(),
+                            markdown: String::new(),
+                            by: m.by.clone(),
+                        })
+                        .await,
+                )?;
                 (doc.id, true)
             }
         };
@@ -588,7 +579,7 @@ impl Message<Add> for IngestActor {
                 .source_set_status(&id, SourceStatus::Queued, None, row.attempts)
                 .await
                 .map_err(|e| format!("{e:#}"))?;
-            self.enqueue(ctx.actor_ref(), id.clone(), false);
+            self.enqueue(ctx.actor_ref().clone(), id.clone(), false);
         }
         c.rt.publish(SourceEvent::Changed {
             source: id.clone(),
@@ -630,7 +621,7 @@ impl Message<Refresh> for IngestActor {
             .source_set_status(&m.id, SourceStatus::Queued, None, row.attempts)
             .await
             .map_err(|e| format!("{e:#}"))?;
-        self.enqueue(ctx.actor_ref(), m.id.clone(), true);
+        self.enqueue(ctx.actor_ref().clone(), m.id.clone(), true);
         self.ctx
             .rt
             .publish(SourceEvent::Changed {
@@ -666,6 +657,25 @@ impl Message<Active> for IngestActor {
     }
 }
 
+/// A handler's `Err(String)` verbatim (a `NotHub:` refusal included); a dead actor as text.
+fn flat<M, T>(r: Result<T, kameo::error::SendError<M, String>>) -> Result<T, String>
+where
+    kameo::error::SendError<M, String>: std::fmt::Display,
+{
+    r.map_err(flat_err)
+}
+
+/// The text of a failed `ask` whose handler errs with a `String`.
+pub(crate) fn flat_err<M>(e: kameo::error::SendError<M, String>) -> String
+where
+    kameo::error::SendError<M, String>: std::fmt::Display,
+{
+    match e {
+        kameo::error::SendError::HandlerError(e) => e,
+        e => e.to_string(),
+    }
+}
+
 fn ingest() -> anyhow::Result<ActorRef<IngestActor>> {
     match ActorRef::<IngestActor>::lookup(INGEST_ACTOR) {
         Ok(Some(a)) => Ok(a),
@@ -683,20 +693,12 @@ pub async fn source_add(
     args: SourceAddArgs,
     by: Principal,
 ) -> anyhow::Result<Source> {
-    ingest()?
-        .ask(Add { args, by })
-        .await
-        .map_err(|e| anyhow::anyhow!("{e}"))?
-        .map_err(|e| anyhow::anyhow!(e))
+    flat(ingest()?.ask(Add { args, by }).await).map_err(|e| anyhow::anyhow!(e))
 }
 
 /// One source with its ingest state. Any engine.
 pub async fn source_get(actor: &ActorRef<DocumentActor>, id: DocId) -> anyhow::Result<Source> {
-    actor
-        .ask(SourceGet(id))
-        .await
-        .map_err(|e| anyhow::anyhow!("{e}"))?
-        .map_err(|e| anyhow::anyhow!(e))
+    flat(actor.ask(SourceGet(id)).await).map_err(|e| anyhow::anyhow!(e))
 }
 
 /// Sources of `notebook`, or every source (unfiled included). Any engine.
@@ -704,11 +706,7 @@ pub async fn source_list(
     actor: &ActorRef<DocumentActor>,
     notebook: Option<DocId>,
 ) -> anyhow::Result<Vec<Source>> {
-    actor
-        .ask(SourceList(notebook))
-        .await
-        .map_err(|e| anyhow::anyhow!("{e}"))?
-        .map_err(|e| anyhow::anyhow!(e))
+    flat(actor.ask(SourceList(notebook)).await).map_err(|e| anyhow::anyhow!(e))
 }
 
 /// Re-run the job from the origin or the blob (§4.2); refused while `running | queued`. Hub only.
@@ -717,11 +715,7 @@ pub async fn source_refresh(
     id: DocId,
     _by: Principal,
 ) -> anyhow::Result<Source> {
-    ingest()?
-        .ask(Refresh { id })
-        .await
-        .map_err(|e| anyhow::anyhow!("{e}"))?
-        .map_err(|e| anyhow::anyhow!(e))
+    flat(ingest()?.ask(Refresh { id }).await).map_err(|e| anyhow::anyhow!(e))
 }
 
 #[cfg(test)]

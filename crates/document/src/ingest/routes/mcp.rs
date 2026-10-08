@@ -81,13 +81,13 @@ pub async fn extract(
     })
 }
 
-/// HTML (Confluence storage format) → markdown through anydoc; markdown/plain text as is.
+/// HTML (Confluence storage format) → markdown; markdown/plain text as is.
 pub fn prose(text: &str) -> String {
     let t = text.trim();
-    if looks_like_html(t) {
-        if let Ok(md) = html_markdown(t) {
-            return md;
-        }
+    if looks_like_html(t)
+        && let Ok(md) = html_markdown(t)
+    {
+        return md;
     }
     t.to_owned()
 }

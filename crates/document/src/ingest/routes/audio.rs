@@ -57,8 +57,7 @@ pub async fn transcribe(path: &Path, progress: super::Progress) -> anyhow::Resul
     )
     .await
     .map_err(|_| anyhow::anyhow!("transcription timed out after {} s", DEADLINE.as_secs()))?
-    .map_err(|e| anyhow::anyhow!("transcriber: {e}"))?
-    .map_err(anyhow::Error::msg)?;
+    .map_err(|e| anyhow::anyhow!("transcriber: {}", crate::ingest::flat_err(e)))?;
     relay.abort();
     Ok(from_words(
         r.words.into_iter().map(|w| (w.t0_ms, w.text)),

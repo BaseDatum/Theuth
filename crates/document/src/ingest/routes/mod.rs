@@ -99,7 +99,7 @@ pub async fn extract(ctx: &Ctx, row: &SourceRow, progress: Progress) -> anyhow::
         SourceOrigin::File { .. } => file::extract(ctx, row).await,
         SourceOrigin::Url { url, .. } => url::extract(ctx, url).await,
         SourceOrigin::Meeting { meeting } => meeting::extract(ctx, meeting),
-        SourceOrigin::Text { .. } => text::extract(ctx, row),
+        SourceOrigin::Text { .. } => text::extract(ctx, row).await,
         SourceOrigin::Session { session } => session::extract(ctx, session).await,
         SourceOrigin::Mcp {
             server,

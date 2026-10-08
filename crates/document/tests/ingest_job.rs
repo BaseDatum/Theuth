@@ -124,6 +124,23 @@ async fn settled(docs: &ActorRef<DocumentActor>, id: &DocId) -> document::Source
     }
 }
 
+/// The title follows the `# ` heading at export (after the debounce): wait for it.
+async fn titled(docs: &ActorRef<DocumentActor>, id: &DocId, title: &str) {
+    let start = Instant::now();
+    loop {
+        let s = ingest::source_get(docs, id.clone()).await.unwrap();
+        if s.doc.title == title {
+            return;
+        }
+        assert!(
+            start.elapsed() < Duration::from_secs(5),
+            "title stayed {:?}, wanted {title:?}",
+            s.doc.title
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
 async fn markdown(docs: &ActorRef<DocumentActor>, id: &DocId) -> String {
     docs.ask(Markdown {
         doc: id.clone(),
@@ -131,7 +148,6 @@ async fn markdown(docs: &ActorRef<DocumentActor>, id: &DocId) -> String {
         annotate: false,
     })
     .await
-    .unwrap()
     .unwrap()
 }
 
@@ -440,7 +456,7 @@ async fn pdf_and_meeting_routes_complete_on_fixtures() {
     assert_eq!(s.doc.title, "Meeting 0199a000-0000-7000-8000-000000000001");
     let done = settled(&rig.docs, &s.doc.id).await;
     assert_eq!(done.status, SourceStatus::Completed, "{:?}", done.error);
-    assert_eq!(done.doc.title, "Failover sync", "renamed from the manifest");
+    titled(&rig.docs, &s.doc.id, "Failover sync").await;
     assert_eq!(done.duration_ms, Some(1_800_000));
     assert_eq!(done.meta["segments"].as_array().unwrap().len(), 3);
     let md = markdown(&rig.docs, &s.doc.id).await;

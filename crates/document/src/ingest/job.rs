@@ -8,7 +8,7 @@
 use std::sync::Arc;
 use std::time::Instant;
 
-use crate::actor::{ImportMarkdown, Rename, Snapshot, with_heading};
+use crate::actor::{ImportMarkdown, Snapshot};
 use crate::helper::ImportMode;
 use crate::ingest::{
     Ctx, cap_chars, insights, permanent, project, provisional_title, routes, summaries, word_count,
@@ -125,34 +125,24 @@ async fn step(
         } else {
             ImportMode::Replace
         };
+        // A `Source` is not free-standing: its title follows the first `# ` heading at export
+        // (`ExportDone`), so the heading carries the title — the caller's, or the origin's.
         ctx.docs
             .ask(ImportMarkdown {
                 doc: row.id.clone(),
-                markdown: with_heading(&title, &ex.markdown),
+                markdown: headed(&title, &ex.markdown),
                 by: Principal::Helper,
                 mode,
             })
             .await
-            .map_err(|e| anyhow::anyhow!("import: {e}"))?
-            .map_err(anyhow::Error::msg)?;
-        if title != current {
-            ctx.docs
-                .ask(Rename {
-                    doc: row.id.clone(),
-                    title: title.clone(),
-                })
-                .await
-                .map_err(|e| anyhow::anyhow!("rename: {e}"))?
-                .map_err(anyhow::Error::msg)?;
-        }
+            .map_err(|e| anyhow::anyhow!("import: {}", crate::ingest::flat_err(e)))?;
         ctx.docs
             .ask(Snapshot {
                 doc: row.id.clone(),
                 label: format!("ingest {attempts}"),
             })
             .await
-            .map_err(|e| anyhow::anyhow!("snapshot: {e}"))?
-            .map_err(anyhow::Error::msg)?;
+            .map_err(|e| anyhow::anyhow!("snapshot: {}", crate::ingest::flat_err(e)))?;
         if refresh && row.content_sha.is_some() {
             out.changed_since = row.fetched_ms;
         }
@@ -175,6 +165,25 @@ async fn step(
     Ok(Outcome { row: out, title })
 }
 
+/// `# title` first unless the markdown already opens with that very heading (a Jira issue, a paste
+/// that starts with its own `#`); a different first heading keeps its place under the title.
+pub fn headed(title: &str, markdown: &str) -> String {
+    let body = markdown.trim_start_matches('\n');
+    let first_h1 = body
+        .lines()
+        .find(|l| !l.trim().is_empty())
+        .and_then(|l| l.strip_prefix("# "))
+        .map(str::trim);
+    if first_h1 == Some(title.trim()) {
+        return body.to_owned();
+    }
+    if body.is_empty() {
+        format!("# {title}\n")
+    } else {
+        format!("# {title}\n\n{body}")
+    }
+}
+
 async fn set(ctx: &Ctx, id: &DocId, status: SourceStatus, error: Option<&str>, attempts: u32) {
     if let Err(e) = ctx
         .store
@@ -189,4 +198,17 @@ async fn set(ctx: &Ctx, id: &DocId, status: SourceStatus, error: Option<&str>, a
             status,
         })
         .await;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::headed;
+
+    #[test]
+    fn the_title_heads_the_text_unless_the_text_already_does() {
+        assert_eq!(headed("T", "body"), "# T\n\nbody");
+        assert_eq!(headed("T", "\n# T\n\nbody"), "# T\n\nbody");
+        assert_eq!(headed("T", "# Other\n\nbody"), "# T\n\n# Other\n\nbody");
+        assert_eq!(headed("T", ""), "# T\n");
+    }
 }
