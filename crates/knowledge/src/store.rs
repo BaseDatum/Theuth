@@ -9,12 +9,13 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, UNIX_EPOCH};
 
-use anyhow::{Context, anyhow, bail};
+use anyhow::{Context, anyhow, bail, ensure};
 use okf::{ConceptId, Document, RESERVED_FILENAMES, Value};
 use runtime::{Runtime, SessionId};
 use sqlx::FromRow;
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePool, SqlitePoolOptions};
 
+use crate::harvest;
 use crate::repo::{DREAMING_SIGNATURE, Repo, SIGNATURE};
 use crate::types::{
     AgentScope, Change, Concept, History, Hit, KnowledgeOp, Meta, Put, Receipt, Revision, Scoper,
@@ -2038,6 +2039,12 @@ impl Knowledge {
         if title.is_empty() {
             bail!("retitle: title must not be empty");
         }
+        let n = title.chars().count();
+        ensure!(
+            n <= harvest::TITLE_MAX,
+            "retitle: title is {n} chars, the cap is {}: choose a shorter title (the rest belongs in summary)",
+            harvest::TITLE_MAX
+        );
         let _g = self.write.lock().await;
         let mut doc = self.load(&cid)?;
         let old = doc.frontmatter.title().unwrap_or_default();
@@ -3080,6 +3087,13 @@ mod tests {
         );
         assert_eq!(text.matches("## Summary").count(), 1, "{text}");
         assert!(k.retitle("facts/old", "  ", "x").await.is_err());
+        let long = "x".repeat(harvest::TITLE_MAX + 1);
+        let e = k.retitle("facts/old", &long, "x").await.unwrap_err();
+        assert!(e.to_string().contains("121 chars, the cap is 120"), "{e}");
+        assert_eq!(k.get("facts/old").await.unwrap().text, text);
+        k.retitle("facts/old", &"y".repeat(harvest::TITLE_MAX), "")
+            .await
+            .unwrap();
         k.restore("facts/old", Some(&b)).await.unwrap();
         assert_eq!(k.get("facts/old").await.unwrap().text, original);
 
