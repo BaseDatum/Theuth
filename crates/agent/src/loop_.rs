@@ -74,8 +74,8 @@ use crate::continuation::{
 };
 use crate::cost::{CallId, CallKind, CallStatus, CostObservation, Money};
 use crate::durability::{
-    CallState, JournaledCall, LastStep, ResumeCause, ResumePlan, ResumeReportRow,
-    StepKind, crash, crash_point,
+    CallState, JournaledCall, LastStep, ResumeCause, ResumePlan, ResumeReportRow, StepKind, crash,
+    crash_point,
 };
 use crate::frame::{self, Frame, Transport};
 use crate::peers::SpawnSubagentTool;
@@ -3419,7 +3419,12 @@ impl Turn {
             };
             outputs.push(preset);
         }
-        let note = restart_note(plan, self.resume_from.as_deref(), replayed.len(), interrupted.len());
+        let note = restart_note(
+            plan,
+            self.resume_from.as_deref(),
+            replayed.len(),
+            interrupted.len(),
+        );
         let r = self
             .run_batch(registry, turn, 0, calls, outputs, Some(note))
             .await;

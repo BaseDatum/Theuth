@@ -714,7 +714,11 @@ mod tests {
         // dropped it) and B decided to resume it as a transfer from A.
         let plan = b.store.resume_plan(id, turn).await.unwrap();
         assert_eq!(plan.kind, ResumeKind::Suspended);
-        assert_eq!(plan.cause, ResumeCause::Transfer, "newest step is suspended{{release}}");
+        assert_eq!(
+            plan.cause,
+            ResumeCause::Transfer,
+            "newest step is suspended{{release}}"
+        );
         assert_eq!(resumed, ResumeOnTake::Resume(ResumeCause::Transfer));
         b.store.append(id, &agent_msg("u3 on b")).await.unwrap();
 
@@ -914,7 +918,13 @@ mod tests {
     async fn open_turn_on(store: &Store, id: SessionId) -> runtime::TurnId {
         let turn = runtime::TurnId::new();
         store
-            .step(id, turn, StepKind::InputAccepted, None, &serde_json::json!({}))
+            .step(
+                id,
+                turn,
+                StepKind::InputAccepted,
+                None,
+                &serde_json::json!({}),
+            )
             .await
             .unwrap();
         turn
@@ -948,12 +958,18 @@ mod tests {
     fn resume_policy_follows_the_table() {
         use ResumeOnTake::*;
         for reason in [TakeReason::User, TakeReason::Write, TakeReason::Orphan] {
-            assert_eq!(resume_policy(true, reason, ResumeMode::Auto), Resume(ResumeCause::Transfer));
+            assert_eq!(
+                resume_policy(true, reason, ResumeMode::Auto),
+                Resume(ResumeCause::Transfer)
+            );
             assert_eq!(resume_policy(true, reason, ResumeMode::Ask), Pending);
             assert_eq!(resume_policy(true, reason, ResumeMode::Off), Nothing);
         }
         for mode in [ResumeMode::Auto, ResumeMode::Ask, ResumeMode::Off] {
-            assert_eq!(resume_policy(false, TakeReason::User, mode), Resume(ResumeCause::Takeover));
+            assert_eq!(
+                resume_policy(false, TakeReason::User, mode),
+                Resume(ResumeCause::Takeover)
+            );
             assert_eq!(resume_policy(false, TakeReason::Write, mode), Pending);
             assert_eq!(resume_policy(false, TakeReason::Orphan, mode), Pending);
         }
@@ -995,10 +1011,22 @@ mod tests {
         );
         let messages = b.store.messages(id).await.unwrap();
         assert_eq!(messages.len(), before + 1);
-        let text = messages.last().unwrap().1.content.joined_texts().unwrap_or_default();
-        assert!(text.starts_with("taken from a at ") && text.contains("press Resume"), "{text}");
+        let text = messages
+            .last()
+            .unwrap()
+            .1
+            .content
+            .joined_texts()
+            .unwrap_or_default();
+        assert!(
+            text.starts_with("taken from a at ") && text.contains("press Resume"),
+            "{text}"
+        );
         // The turn is still open on B: the user's Resume runs it.
-        assert_eq!(b.store.open_turn(id).await.unwrap().map(|(t, _)| t), Some(turn));
+        assert_eq!(
+            b.store.open_turn(id).await.unwrap().map(|(t, _)| t),
+            Some(turn)
+        );
 
         // Orphan: the same, from a third engine; no open turn → nothing.
         let c = engine("c").await;

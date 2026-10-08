@@ -1627,7 +1627,7 @@ async fn release_drain_writes_suspended_or_finished(
     registry: &ActorRef<ToolRegistry>,
     holds: &Holds,
 ) {
-    use crate::supervisor::transfer::{DrainSession, SessionDrainReport, drain_session, RELEASE};
+    use crate::supervisor::transfer::{DrainSession, RELEASE, SessionDrainReport, drain_session};
     // (a) suspended.
     let mut h = Harness::new(BatchFake).await;
     journal(registry, &h.store).await;
@@ -1673,7 +1673,10 @@ async fn release_drain_writes_suspended_or_finished(
     );
     assert_eq!(open_turn(&h.store, h.id).await, tid);
     let plan = h.store.resume_plan(h.id, tid).await.unwrap();
-    assert_eq!((plan.kind, plan.cause), (ResumeKind::Suspended, ResumeCause::Transfer));
+    assert_eq!(
+        (plan.kind, plan.cause),
+        (ResumeKind::Suspended, ResumeCause::Transfer)
+    );
     assert_eq!(
         plan.last,
         LastStep::ToolBatch {
@@ -1690,7 +1693,10 @@ async fn release_drain_writes_suspended_or_finished(
     // The final call must be in flight (`model_call` reserved) before the
     // drain, or the first round would stop on `draining` instead.
     for _ in 0..200 {
-        if kinds(&h.store, h.id, tid).await.contains(&"model_call".to_owned()) {
+        if kinds(&h.store, h.id, tid)
+            .await
+            .contains(&"model_call".to_owned())
+        {
             break;
         }
         tokio::time::sleep(Duration::from_millis(10)).await;
@@ -1716,7 +1722,11 @@ async fn release_drain_writes_suspended_or_finished(
     );
     assert!(!actor.is_alive());
     let events = h.drain().await;
-    assert!(!events.iter().any(|e| matches!(e, AgentEvent::TurnSuspended { .. })));
+    assert!(
+        !events
+            .iter()
+            .any(|e| matches!(e, AgentEvent::TurnSuspended { .. }))
+    );
     let steps = kinds(&h.store, h.id, tid).await;
     assert_eq!(
         steps,
@@ -1784,7 +1794,10 @@ async fn cancel_while_draining_is_a_suspension(
     journal(registry, &h.store).await;
     h.store.unresolve_open_calls().await.unwrap();
     let plan = h.store.resume_plan(h.id, tid).await.unwrap();
-    assert_eq!((plan.kind, plan.cause), (ResumeKind::Suspended, ResumeCause::Transfer));
+    assert_eq!(
+        (plan.kind, plan.cause),
+        (ResumeKind::Suspended, ResumeCause::Transfer)
+    );
     let (mut turn, _) = h.turn("openai/textonly", CancellationToken::new()).await;
     turn.resume_from = Some("a".into());
     turn.resume(plan, None).await;
@@ -1803,7 +1816,11 @@ async fn cancel_while_draining_is_a_suspension(
         first.contains("kind=\"transfer\" from=\"a\" replayed=\"0\" interrupted=\"1\"/>"),
         "{first}"
     );
-    assert_eq!(hits_of(&hits_file(hits, h.id)), [PROBE, POKE], "poke ran once");
+    assert_eq!(
+        hits_of(&hits_file(hits, h.id)),
+        [PROBE, POKE],
+        "poke ran once"
+    );
     let got = normalised(&messages);
     assert_eq!(got.len(), reference.len());
     assert!(h.store.open_turns(Scope::Here).await.unwrap().is_empty());

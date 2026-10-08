@@ -8283,7 +8283,9 @@ pub async fn start(rt: &Runtime) -> anyhow::Result<()> {
             loop {
                 match store.journal_prune(store::Scope::Here, keep_days).await {
                     Ok(n) if n > 0 => {
-                        tracing::info!("109: pruned {n} finished turn(s) older than {keep_days} days")
+                        tracing::info!(
+                            "109: pruned {n} finished turn(s) older than {keep_days} days"
+                        )
                     }
                     Ok(_) => {}
                     Err(e) => tracing::warn!("109: journal prune: {e:#}"),

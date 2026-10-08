@@ -24,10 +24,10 @@ use tools::jobs::{LostJob, LostReason, Reaped};
 use tools::{JOBS_ACTOR, JobKind, Jobs};
 
 use super::{Agents, LiveActor, child_waits};
+use crate::AgentEvent;
 use crate::durability::{ResumeCause, StepKind};
 use crate::loop_::{CancelTurn, Draining};
 use crate::store::Store;
-use crate::AgentEvent;
 
 /// `ask` → [`SessionDrainReport`]: drain one session for `reason` within
 /// `deadline` (139 §6.1). Sent by `sessionsync::owner::release` in place of
@@ -99,8 +99,9 @@ impl Message<DrainSession> for Agents {
             let report = drain_session(&store, &rt, live, m).await;
             // Twice the taker's wait: the fence has moved (demote clears
             // it sooner) or the taker gave up (§6.2 "fence interplay").
-            let hold = (m.reason == RELEASE)
-                .then(|| (m.deadline.saturating_duration_since(started) + Duration::from_secs(1)) * 2);
+            let hold = (m.reason == RELEASE).then(|| {
+                (m.deadline.saturating_duration_since(started) + Duration::from_secs(1)) * 2
+            });
             let _ = me
                 .ask(SessionDrained {
                     session: m.session,
@@ -142,7 +143,9 @@ pub(crate) async fn drain_session(
     // (4) The session's jobs: rows `lost` and screens first, then the signal
     // (W3's body). Before the actor stops so the rows precede `flush`.
     if let Ok(Some(jobs)) = ActorRef::<Jobs>::lookup(JOBS_ACTOR)
-        && let Err(e) = jobs.ask(tools::jobs::KillSession { session: m.session }).await
+        && let Err(e) = jobs
+            .ask(tools::jobs::KillSession { session: m.session })
+            .await
     {
         tracing::warn!(session = %m.session, "139: drain: KillSession: {e}");
     }
@@ -242,7 +245,11 @@ pub struct ClearDraining(pub SessionId);
 impl Message<ClearDraining> for Agents {
     type Reply = ();
 
-    async fn handle(&mut self, ClearDraining(session): ClearDraining, _: &mut Context<Self, Self::Reply>) {
+    async fn handle(
+        &mut self,
+        ClearDraining(session): ClearDraining,
+        _: &mut Context<Self, Self::Reply>,
+    ) {
         self.draining_sessions.remove(&session);
     }
 }
@@ -301,7 +308,12 @@ async fn settle_transferred_jobs(agents: &mut Agents, session: SessionId, from: 
     let mut jobs = Vec::with_capacity(rows.len());
     for row in rows {
         let screen = match row.kind {
-            JobKind::Pty => agents.store.pty_screen(session, &row.id).await.ok().flatten(),
+            JobKind::Pty => agents
+                .store
+                .pty_screen(session, &row.id)
+                .await
+                .ok()
+                .flatten(),
             JobKind::Shell => None,
         };
         jobs.push(LostJob {
@@ -343,8 +355,14 @@ mod tests {
     fn draining_error_is_recognisable_by_its_prefix() {
         let id = SessionId::new();
         let e = draining_error(id, RELEASE);
-        assert!(e.starts_with(DRAINING_PREFIX) && e.contains("moving"), "{e}");
+        assert!(
+            e.starts_with(DRAINING_PREFIX) && e.contains("moving"),
+            "{e}"
+        );
         let e = draining_error(id, "update");
-        assert!(e.starts_with(DRAINING_PREFIX) && e.contains("pausing for update"), "{e}");
+        assert!(
+            e.starts_with(DRAINING_PREFIX) && e.contains("pausing for update"),
+            "{e}"
+        );
     }
 }
