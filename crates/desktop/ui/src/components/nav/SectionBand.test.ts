@@ -30,10 +30,10 @@ test('agents group: five full-width tabs, Tasks active under /tasks/abc, labels 
   expect(html).not.toContain('Show sidebar')
 })
 
-test('library group: five tabs, Meetings active under /meetings/briefs', () => {
+test('library group: six tabs (Notebooks after Notes, 144), Meetings active under /meetings/briefs', () => {
   env.pathname = '/meetings/briefs'
   const html = render('library')
-  expect(tabs(html)).toBe(5)
+  expect(tabs(html)).toBe(6)
   expect(active(html)).toEqual(['Meetings'])
   expect(html).toContain('title="Artifacts"')
 })
