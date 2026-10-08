@@ -120,4 +120,4 @@ Z ran the §13.3 matrix against the `INTEGRATED` binary (28/40 pass, 5 fail, 7 n
 
 New fixture: `crates/acp/fixtures/omp-18.3.1/SlowA.aborted.jsonl` (recorded 2026-10-08 after SIGTERM of the smoke engine; `title`/`session_init`/`model_usage` entries dropped, long strings trimmed to 60 chars). Test hook: `AcpChild.omp_home` (the tail root; `std::env::home_dir()` in production, a scratch dir in tests).
 
-Gates after R1: R1_GATES
+Gates after R1 (`BUILD_LABEL=141-closer build-lock`): `cargo test -p acp` ok — 46 passed; `cargo test -p agent --lib` ok — 542 passed, 0 failed, 2 ignored (pre-existing); `cargo clippy -p acp -p agent --all-targets -- -D warnings` clean; `cargo fmt -p acp -p agent --check` clean; `cargo build -p theuth` ok → `smoke/t` replaced, `FIXED-R1` written.
