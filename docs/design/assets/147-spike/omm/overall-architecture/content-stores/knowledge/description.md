@@ -1,0 +1,1 @@
+The knowledge base (`crates/knowledge/`, 9 files / 9,087 lines): OKF v0.1 concept files with local gix history, `knowledge_*` tools, hints injected per turn. `src/store.rs` holds the `Knowledge` struct (L64) and `src/lib.rs` the `Consolidator` trait (L323) used by dreaming.

@@ -1,0 +1,16 @@
+graph LR
+    document["Document authority\ncrates/document/"]
+    knowledge["Knowledge bundle\ncrates/knowledge/"]
+    artifact["Artifacts\ncrates/artifact/"]
+    search["Search envelope\ncrates/search/"]
+    codeindex["Code index\ncrates/codeindex/"]
+
+    knowledge -->|"concepts are block documents (Cargo dep)"| document
+    artifact -->|"markdown artifacts are documents (Cargo dep)"| document
+    document -->|"boards resolve code anchors through the index (Cargo dep)"| codeindex
+    knowledge -->|"shared fuzzy match + snippets (Cargo dep)"| search
+    artifact -->|"shared fuzzy match + snippets (Cargo dep)"| search
+    document -->|"shared fuzzy match + snippets (Cargo dep)"| search
+
+    classDef store fill:#a6e3a1,stroke:#a6e3a1,color:#1e1e2e
+    class document,knowledge,artifact,codeindex store

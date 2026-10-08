@@ -1,0 +1,10 @@
+graph LR
+    web["HTTP + extraction\ncrates/web/"]
+    browser["Headless browser\ncrates/browser/"]
+    scrape["Scrape / crawl / map\ncrates/scrape/, crates/firecrawl-native/"]
+
+    scrape -->|"plain fetch + html→markdown first (Cargo dep)"| web
+    scrape -->|"rendered: true falls back to the browser (Cargo dep)"| browser
+    browser -->|"shares the HTTP client and impersonation profile (Cargo dep)"| web
+
+    classDef external fill:#585b70,stroke:#585b70,color:#cdd6f4

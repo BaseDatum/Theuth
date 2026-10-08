@@ -1,0 +1,1 @@
+`src/store.rs` (1,507 lines): the SQLite schema and queries (files, symbols, refs, imports, co-change) behind one `sqlx` pool per root, under `~/.theuth/codeindex/`. Every other module reads or writes through it.
