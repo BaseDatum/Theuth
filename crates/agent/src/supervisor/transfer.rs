@@ -314,4 +314,82 @@ mod tests {
         assert_eq!(draining_error("update"), "SessionDraining:update");
         assert!(draining_error("update").starts_with(DRAINING_PREFIX));
     }
+
+    /// 139 R2 D4: `RearmReminders{session}` arms that session's stored rows
+    /// on this engine and no other session's; a row of a session owned
+    /// elsewhere is never armed here (it fires on its owner). The timers go
+    /// again with `CancelReminders` (the demote), rows untouched.
+    #[test]
+    fn rearm_reminders_for_arms_one_sessions_rows_here_only() {
+        crate::with_test_registry(async {
+            use crate::store::{ReminderRow, Store};
+            let dir = std::env::temp_dir().join(format!("theuth-139r2-{}", uuid::Uuid::now_v7()));
+            std::fs::create_dir_all(&dir).unwrap();
+            let far = chrono::Utc::now().timestamp() + 600;
+            let row = |session, id: &str| ReminderRow {
+                id: id.into(),
+                session,
+                message: "x".into(),
+                set_at: far - 600,
+                fires_at: far,
+                seconds: 600,
+            };
+            // Engine `a` owned `foreign` and set a reminder on it.
+            let foreign = SessionId::new();
+            let a = Store::open(&dir.join("sessions.sqlite"), Some(mesh::EngineId("a".into())))
+                .await
+                .unwrap();
+            a.create_session(foreign, "m", None, None, None).await.unwrap();
+            a.insert_reminder(&row(foreign, "r1")).await.unwrap();
+            a.close().await;
+
+            let mut b = super::super::tests::agents_on(dir.clone(), Some("b"), false).await;
+            let jobs = tools::jobs::start(&b.rt, Duration::ZERO, Duration::from_secs(30)).unwrap();
+            let (taken, other) = (SessionId::new(), SessionId::new());
+            for s in [taken, other] {
+                b.store.create_session(s, "m", None, None, None).await.unwrap();
+                b.store.insert_reminder(&row(s, "r1")).await.unwrap();
+            }
+            b.store.insert_reminder(&row(taken, "r2")).await.unwrap();
+            let armed = || async {
+                let mut v: Vec<(String, Vec<String>)> = jobs
+                    .ask(tools::jobs::LiveCounts)
+                    .await
+                    .unwrap()
+                    .into_iter()
+                    .filter(|r| !r.reminders.is_empty())
+                    .map(|r| (r.session.to_string(), r.reminders))
+                    .collect();
+                v.sort();
+                v
+            };
+
+            b.rearm_reminders_for(Some(taken)).await;
+            let mut want = Vec::new();
+            for _ in 0..100 {
+                want = armed().await;
+                if want.iter().any(|(_, r)| r.len() == 2) {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+            assert_eq!(want, vec![(taken.to_string(), vec!["r1".to_owned(), "r2".to_owned()])]);
+
+            b.rearm_reminders_for(Some(foreign)).await;
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            assert_eq!(armed().await.len(), 1, "a session owned by `a` arms nothing here");
+            assert_eq!(b.store.reminders().await.unwrap().len(), 4, "rows untouched");
+
+            jobs.tell(tools::CancelReminders { session: taken }).await.unwrap();
+            for _ in 0..100 {
+                if armed().await.is_empty() {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+            assert!(armed().await.is_empty());
+            assert_eq!(b.store.reminders().await.unwrap().len(), 4, "the demote deletes no row");
+            let _ = std::fs::remove_dir_all(&dir);
+        });
+    }
 }
