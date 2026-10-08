@@ -13,6 +13,9 @@ schedule = { workspace = true }  # 140 §8.1 the study's schedule file, `Schedul
 knowledge = { workspace = true }  # 140 §7.3 the cross-study record (W2 `record.rs`)
 document = { workspace = true }  # 140 §11.3 the report document (W2 `finalize.rs`)
 codeindex = { workspace = true }  # 140 §7.2 `code_map` of the scope in the brief (W6 `brief.rs`)
+roster = { workspace = true }  # 140 §13.1 attention rows (`roster::attention::Source`, W3 `actor.rs`)
+humantime = { workspace = true }  # 140 §4.1 spec durations (`600s`, `20m`) and §8.1 `run_timeout`
+parking_lot = { workspace = true }  # transient per-study cancel tokens and phases (W3 `actor.rs`)
 kameo = { workspace = true }
 tokio = { workspace = true }
 tokio-util = { workspace = true }  # `CancellationToken` for the bench runner (W1 `runner.rs`)
