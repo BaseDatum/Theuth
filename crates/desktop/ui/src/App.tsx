@@ -119,6 +119,33 @@ function seedLive(st: Stores): void {
 }
 
 /**
+ * 142 F4: `running`/`activity` and the subtree rows are advanced by live events only; a relay socket parked overnight
+ * loses the `TurnFinished`s that clear them, and nothing re-read them — the sidebar showed subagents running until a
+ * relaunch. Reset every slice to what the engine reports: `list_sessions` for the running marks, `list_live_counts`
+ * for the job/PTY/reminder glyphs. Called on reconnect, on a `Lagged` resync and on every return to the foreground.
+ */
+function reseedLiveness(st: Stores): void {
+  seedLive(st)
+  const api = st.connection.getState().api
+  if (!api) return
+  api.list_sessions().then(
+    (rows) => st.sessions.getState().seedRunning(rows),
+    (e: unknown) => console.warn('[live] list_sessions failed', e),
+  )
+}
+
+/** 142 F4: a foreground return with a socket that still looks `open` (iOS froze the page; the relay parked it) re-reads liveness — the gap's events are gone either way. */
+function useForegroundReseed(st: Stores): void {
+  useEffect(() => {
+    const onVisible = () => {
+      if (document.visibilityState === 'visible') reseedLiveness(st)
+    }
+    document.addEventListener('visibilitychange', onVisible)
+    return () => document.removeEventListener('visibilitychange', onVisible)
+  }, [st])
+}
+
+/**
  * 129 D3: `Lagged` is a resync, not a reset. The gap is lost, so every slice is labelled stale and the mounted
  * chats re-settle through their `contextStale → settle()` path; `loaded` stays, so nothing on screen empties.
  * The session list is the one query refetched (`TurnStarted`/`TurnFinished` may have been dropped).
@@ -128,7 +155,7 @@ function resync(st: Stores): void {
   sessions.resetLagged()
   sessions.markStale()
   void st.qc.invalidateQueries({ queryKey: queryKeys.sessions })
-  seedLive(st)
+  reseedLiveness(st)
   if (useEngines.getState().active === st.id)
     window.dispatchEvent(new CustomEvent('theuth:reload-session', { detail: { settled: true } }))
 }
@@ -155,7 +182,7 @@ function reload(st: Stores): void {
   void st.qc.invalidateQueries({ queryKey: ['terminals'] })
   const api = st.connection.getState().api
   if (api) void loadInfo(st, api).catch(() => undefined)
-  seedLive(st)
+  reseedLiveness(st)
   if (useEngines.getState().active === st.id)
     window.dispatchEvent(new Event('theuth:reload-session'))
 }
@@ -541,6 +568,7 @@ function Shell({ engine, onRelaunch }: { engine: string; onRelaunch(): void }) {
   useInvalidateOn()
   useEventSideEffects(scope(engine))
   useEventFocus(scope(engine))
+  useForegroundReseed(scope(engine))
   return ready ? (
     <RouterProvider router={router} />
   ) : (
