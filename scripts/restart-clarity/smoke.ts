@@ -72,14 +72,28 @@ class Engine {
     mkdirSync(`${DIR}/acp`, { recursive: true });
     writeFileSync(
       `${DIR}/config.yaml`,
+      // Block style: `set_model(…, persist)` / `add_provider` merge into an
+      // `agent:` block but append a second `agent:` after a flow mapping, and
+      // the duplicate key wins on the next boot (communication would go off).
       [
-        "secrets: { key_store: file }",
-        `mesh: { relay: none, discovery: false, name: smoke146, bind: 127.0.0.1:${PORT + 1} }`,
-        "slack: { enabled: false }",
-        "signal: { enabled: false }",
-        "agent: { communication: true }",
-        "tools: { approvals: false, login_path: false }",
-        "durability: { resume: auto }",
+        "secrets:",
+        "  key_store: file",
+        "mesh:",
+        "  relay: none",
+        "  discovery: false",
+        "  name: smoke146",
+        `  bind: 127.0.0.1:${PORT + 1}`,
+        "slack:",
+        "  enabled: false",
+        "signal:",
+        "  enabled: false",
+        "agent:",
+        "  communication: true",
+        "tools:",
+        "  approvals: false",
+        "  login_path: false",
+        "durability:",
+        "  resume: auto",
         "",
       ].join("\n"),
     );
@@ -315,7 +329,7 @@ async function P1(e: Engine) {
   const boot = Array.isArray(att) ? att.find((i) => isObj(i) && String(i.id).startsWith("resume:boot:")) : undefined;
   check("resume:boot item present with the counts", isObj(boot) && String(boot.title).includes("1 subagent back"), isObj(boot) ? String(boot.title) : "no item");
   current = "P2";
-  const done = await waitFor("parent receives DONE", async () => (await history(e, parent)).find((h) => h.role === "user" && (h.text ?? "").includes("DONE")) ?? null, (SLEEP_SECS + 240) * 1000, 2_000);
+  const done = await waitFor("parent receives DONE", async () => (await history(e, parent)).find((h) => h.role === "user" && !(h.text ?? "").startsWith("SMOKE") && (h.text ?? "").includes(child) && (h.text ?? "").includes("DONE")) ?? null, (SLEEP_SECS + 240) * 1000, 2_000);
   check("parent received the child's DONE after the respawn", true, (done.text ?? "").replace(/\s+/g, " ").slice(0, 160));
   current = "P1";
 }
@@ -376,8 +390,9 @@ async function P6() {
   const neu =
     "SELECT count(*) FROM (SELECT o.session_id FROM (SELECT session_id, turn_id, kind, ROW_NUMBER() OVER (PARTITION BY session_id, turn_id ORDER BY (kind = 'assistant_partial'), n DESC) AS rn, MAX(at) OVER (PARTITION BY session_id, turn_id) AS last_at FROM turn_steps) o JOIN sessions s ON s.id = o.session_id WHERE o.rn = 1 AND o.kind != 'turn_finished' AND (s.owner = '' OR s.owner = 'x') ORDER BY o.last_at DESC);";
   const time = (q: string) => {
-    const r = Bun.spawnSync(["sqlite3", BACKUP_DB, ".timer on", q]).stdout.toString();
-    return Number(r.match(/real (\d+\.\d+)/)?.[1] ?? NaN);
+    // `.timer on` only prints when the statements arrive on stdin.
+    const r = Bun.spawnSync(["sqlite3", BACKUP_DB], { stdin: Buffer.from(`.timer on\n${q}\n`) });
+    return Number((r.stdout.toString() + r.stderr.toString()).match(/real (\d+\.\d+)/)?.[1] ?? NaN);
   };
   const med = (xs: number[]) => xs.sort((a, b) => a - b)[Math.floor(xs.length / 2)];
   const rows = Bun.spawnSync(["sqlite3", BACKUP_DB, "SELECT count(*) || ' rows / ' || count(DISTINCT session_id || turn_id) || ' turns' FROM turn_steps"]).stdout.toString().trim();

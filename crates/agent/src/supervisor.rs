@@ -125,6 +125,7 @@ mod drain;
 mod resume;
 pub mod transfer; // 139 W2
 mod waits;
+pub use acp_resume::LastBootPass; // 146 D4
 pub use drain::{Drain, DrainReport, OpenTurns, drain_engine, draining}; // 109 W5
 pub use resume::{OpenTurn, ResumeTurn, TakeoverPending};
 pub use transfer::{DrainSession, SessionDrainReport}; // 139 C
@@ -176,6 +177,8 @@ pub struct Agents {
     running: HashSet<SessionId>,
     /// 146: the boot pass's ACP respawn queue and counts, until settled.
     boot: Option<acp_resume::Boot>,
+    /// 146 D4: the last `BootPass` published, for a late `LastBootPass` ask.
+    last_boot: Option<crate::durability::BootPass>,
     /// 139 D16: sessions mid-release-drain → the drain's reason; `route`
     /// refuses their inputs (`transfer::draining_error`) until the demote
     /// lands or the hold expires (`transfer::ClearDraining`).
@@ -8824,6 +8827,7 @@ pub async fn start(rt: &Runtime) -> anyhow::Result<()> {
             sessions: HashMap::new(),
             running: HashSet::new(),
             boot: None,
+            last_boot: None,
             draining_sessions: HashMap::new(),
             pending_takeovers: HashMap::new(),
             communication: communication.clone(),
@@ -10611,6 +10615,7 @@ pub(crate) mod tests {
             sessions: HashMap::new(),
             running: HashSet::new(),
             boot: None,
+            last_boot: None,
             draining_sessions: HashMap::new(),
             pending_takeovers: HashMap::new(),
             communication: SharedPolicy::new(Policy::new(communication, "config")),

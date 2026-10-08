@@ -1009,6 +1009,13 @@ impl Attention {
         rt.subscribe::<Self, tools::AskResolved>(&actor).await;
         rt.subscribe::<Self, tasks::activity::ActivityAppended>(&actor)
             .await;
+        // 146 D4: a pass that settled inside the agent plugin's start was
+        // published before this subscription; take it as if it arrived now.
+        if let Ok(Some(ag)) = ActorRef::<agent::Agents>::lookup(agent::AGENT_ACTOR)
+            && let Ok(Some(pass)) = ag.ask(agent::supervisor::LastBootPass).await
+        {
+            let _ = actor.tell(pass).await;
+        }
         Ok(actor)
     }
 

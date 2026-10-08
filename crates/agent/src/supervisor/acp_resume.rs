@@ -49,6 +49,25 @@ pub(super) struct Boot {
     inflight: HashMap<SessionId, (SessionId, String)>,
 }
 
+/// `ask` → `Option<BootPass>`: the latest counts this engine published (D4).
+/// The Attention actor starts after the agent plugin, so a pass that settled
+/// inside `ActivityRegistered` was published before anyone listened; it asks
+/// once at start.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct LastBootPass;
+
+impl kameo::message::Message<LastBootPass> for Agents {
+    type Reply = Option<BootPass>;
+
+    async fn handle(
+        &mut self,
+        _: LastBootPass,
+        _: &mut kameo::message::Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        self.last_boot.clone()
+    }
+}
+
 impl Agents {
     /// §4.6 step 10, after `resume_scan`. Trigger set (D1): every
     /// `child_result` wait of a parent owned here ∪ every mid-prompt ACP
@@ -214,7 +233,7 @@ impl Agents {
     }
 
     /// D4: the one INFO line and the bus event the Attention actor renders.
-    async fn announce(&self, pass: &BootPass) {
+    async fn announce(&mut self, pass: &BootPass) {
         tracing::info!(
             resuming = pass.resuming,
             respawned = pass.respawned,
@@ -223,6 +242,7 @@ impl Agents {
             lost_names = ?pass.lost.iter().map(|(_, n)| n.as_str()).collect::<Vec<_>>(),
             "146: boot pass"
         );
+        self.last_boot = Some(pass.clone());
         self.rt.publish(pass.clone()).await;
     }
 
@@ -645,12 +665,16 @@ mod tests {
         while let Ok(e) = rx.try_recv() {
             match e {
                 Seen::Boot(p) => passes.push(p),
-                Seen::Event(AgentEvent::MessageDelivered {
-                    session,
-                    from,
-                    text,
-                }) => delivered.push((session, from, text)),
-                Seen::Event(_) => {}
+                Seen::Event(ev) => {
+                    if let AgentEvent::MessageDelivered {
+                        session,
+                        from,
+                        text,
+                    } = *ev
+                    {
+                        delivered.push((session, from, text));
+                    }
+                }
             }
         }
         let last = passes.last().expect("boot pass published");
@@ -686,7 +710,7 @@ mod tests {
     /// What the fixture's bus carried.
     enum Seen {
         Boot(BootPass),
-        Event(AgentEvent),
+        Event(Box<AgentEvent>),
     }
 
     #[derive(kameo::Actor)]
@@ -710,7 +734,7 @@ mod tests {
             e: AgentEvent,
             _: &mut kameo::message::Context<Self, Self::Reply>,
         ) {
-            let _ = self.0.send(Seen::Event(e));
+            let _ = self.0.send(Seen::Event(Box::new(e)));
         }
     }
 }

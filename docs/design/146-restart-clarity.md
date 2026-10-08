@@ -44,6 +44,13 @@ nobody was told, and the dead children's dangling `ToolCall` rendered as a runni
   `<child_lost>`: two messages, both true; kept for uniformity of the lost rule.
 - **A quiet boot (0 resumed, 0 respawned, 0 lost) raises no item** — the brief did not say; a notice on
   every boot would be noise.
+- **A node's child (`<harness>@<node>`, or a registered node) stays *skipped*, not lost**: it runs on
+  another machine and is not this engine's to declare dead; a bare harness name no longer in
+  `agents.yaml` is lost.
+- **`LastBootPass` ask** (not in the brief): the roster plugin starts after the agent plugin, so a pass
+  that settles inside `ActivityRegistered` (P4: everything lost, nothing to wait for) was published
+  before the Attention actor subscribed and the item never appeared. `Agents` keeps the last pass;
+  `Attention::start` asks once and feeds itself the reply. Found by the smoke's first run.
 
 ## 4. Pacing ceiling (ponytail)
 
@@ -59,15 +66,31 @@ One scratch engine (`/tmp/146-smoke/engine`, fake OpenAI provider as the parent'
 delete the parent's `child_result` wait (the 125R1 shape), `kill -9`, boot. P4: same with the parent
 archived first. P5: second `t --headless` on the data dir. P6: `sqlite3` timing on a `.backup` copy.
 
+Run of 17:26–17:30 local (`/tmp/146-smoke.log`; binary `target/w/debug/t` at the final commit); an earlier run at 17:06 passed everything but P4's item (the `LastBootPass` fix, §3):
+
 | proof | result |
 |---|---|
-| P1 `146: boot pass` respawned=1 lost=0 (mid-prompt scan n=1, no wait row) | TBD |
-| P2 omp process back ≤ 30 s; parent receives DONE later | TBD |
-| P3 `list_sessions` child `running: true` during the respawned prompt | TBD |
-| P4 archived parent → child lost: note, `<child_lost name="w146b">` in the parent, `resume:boot:*` "1 lost (w146b)" | TBD |
-| P5 second engine exits 0 ≤ 1 s with the holder line; first unaffected | TBD |
-| P6 `open_turns` on the backup (25 581 rows / 1 027 turns): old 1.12 s → new 0.085 s; with 0042: old 0.069 s, new 0.085 s | measured 15:40 (sqlite3 `.timer`), result sets identical (EXCEPT both ways = 0) |
+| P1 `146: boot pass` respawned=1 lost=0 | ✓ `146: mid-prompt ACP children in the window n=1` → `boot pass … waiting=1 lost=0` → 0.76 s later (child's `TurnStarted`) `respawned=1 waiting=0 lost=0` |
+| P2 omp process back ≤ 30 s; parent receives DONE later | ✓ new `omp acp` pid 1.3 s after boot; `<message from="session:<w146>" …> DONE </message>` in the parent ~160 s after the reboot (the respawned child re-ran `sleep 150`) |
+| P3 `list_sessions` child `running: true` during the respawned prompt | ✓ `{"running":true,"name":"w146"}`; HUD item `Restarted 17:26 · 1 subagent back` |
+| P4 archived parent → child lost | ✓ `boot pass … lost=1 lost_names=["w146b"]`; child's last row `System: interrupted by the engine restart at 17:29; not respawned: its parent is archived`; parent's messages carry `<child_lost name="w146b" session=… at="17:29" why="its parent is archived">`; no `omp acp` process; `attention_list` → `resume:boot:<ts>` "Restarted 17:29 · 1 lost (w146b)" with `session` = w146b (Dismiss renders) |
+| P5 second `t --headless` | ✓ exit 0 after 37 ms, stderr `engine already running (pid 50760, headless, since 17:29, ws://127.0.0.1:7961) — run `t` to attach …`; first engine's `info` still answers |
+| P6 `open_turns` on the `.backup` copy (25 581 `turn_steps` rows / 1 027 turns) | ✓ old 1.12–1.26 s → new 0.085–0.09 s at 15:40/17:09 (cold-ish cache), old 0.63 s → new 0.052 s at 17:30 (warm): 12–14×; with the 0042 index the old query also drops to 0.04–0.07 s and the new is unchanged. Result sets identical (`EXCEPT` both ways = 0). The index pays for `open_turn` / `journal_prune` / `resume_report` (per-turn `at` seeks) |
 
-## 6. Gates
+Observed while proving, not fixed here: `set_model(…, persist = true)` / `add_provider` append a second
+top-level `agent:` block when the existing one is a flow mapping (`agent: { communication: true }`);
+the duplicate key wins on the next boot and communication silently turns off. The smoke writes block
+style. Worth its own ticket (config writer).
 
-TBD
+## 6. Gates (cold `target/w`, `CARGO_BUILD_JOBS=4`, through `build-lock` as `146`)
+
+| gate | result |
+|---|---|
+| `cargo test -p agent --lib -- supervisor:: durability::` | 109 passed, 0 failed |
+| `cargo test -p roster --lib` | 69 passed (+ `boot_pass_item`) |
+| `cargo test -p theuth --lib` | n/a — `theuth` has no lib target |
+| `cargo clippy -p agent -p roster -p theuth --all-targets -- -D warnings` | clean |
+| `rustfmt --check` on touched files | clean for 146's hunks; `crates/theuth/src/main.rs:1478/1505/1515` and `mcp.rs:259` were already unformatted on `origin/main` and are left alone |
+| `cargo check --workspace --tests` (`BUILD_SLOTS=1`) | see final message |
+| desktop `bun run check` (tsc) + `vitest run src/store/reduce.test.ts` | clean; 64 passed (+2 for D7) — bindings copied from the main worktree's generated set (no ts-exported type changed in 146) |
+| `just restart-clarity` | 19/19 checks (table above) |
