@@ -108,7 +108,11 @@ pub fn scan_line(line: &str, into: &mut Scanned) -> bool {
         let Some((key, text)) = kv(rest) else {
             return false;
         };
-        let used: usize = into.asi.iter().map(|(k, v)| k.len() + v.len()).sum::<usize>()
+        let used: usize = into
+            .asi
+            .iter()
+            .map(|(k, v)| k.len() + v.len())
+            .sum::<usize>()
             - into.asi.get(key).map_or(0, |v| key.len() + v.len());
         let room = ASI_CAP.saturating_sub(used + key.len());
         if room == 0 {
@@ -167,7 +171,10 @@ mod tests {
     fn nan_and_inf_are_bad_numbers() {
         assert_eq!(scan("METRIC t=nan\n").bad_number.as_deref(), Some("t=nan"));
         assert_eq!(scan("METRIC t=inf\n").bad_number.as_deref(), Some("t=inf"));
-        assert_eq!(scan("METRIC t=12ms\n").bad_number.as_deref(), Some("t=12ms"));
+        assert_eq!(
+            scan("METRIC t=12ms\n").bad_number.as_deref(),
+            Some("t=12ms")
+        );
         assert!(scan("METRIC t=nan\n").metrics.is_empty());
     }
 
@@ -188,7 +195,7 @@ mod tests {
         let out = scan(&format!("ASI a={big}\nASI b=more\n"));
         let total: usize = out.asi.iter().map(|(k, v)| k.len() + v.len()).sum();
         assert!(total <= ASI_CAP, "{total}");
-        assert!(out.asi["a"].len() <= ASI_CAP - 1);
+        assert_eq!(out.asi["a"].len(), ASI_CAP - 1);
         assert!(!out.asi.contains_key("b"));
     }
 

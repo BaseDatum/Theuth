@@ -46,7 +46,11 @@ impl Drop for Slot {
 }
 
 /// Take the builtin slot for `label`, waiting until it is free or `cancel` fires.
-pub async fn acquire(cfg: &crate::config::Bench, label: &str, cancel: &CancellationToken) -> Result<Slot> {
+pub async fn acquire(
+    cfg: &crate::config::Bench,
+    label: &str,
+    cancel: &CancellationToken,
+) -> Result<Slot> {
     if cfg.lock != BUILTIN {
         return Ok(Slot {
             _label: label.to_owned(),
@@ -80,7 +84,9 @@ async fn acquire_at(dir: &Path, label: &str, cancel: &CancellationToken) -> Resu
             Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
             Err(e) => return Err(e.into()),
         }
-        if owner_pid(dir).is_some_and(|pid| pid != std::process::id() && !platform::process::pid_alive(pid)) {
+        if owner_pid(dir)
+            .is_some_and(|pid| pid != std::process::id() && !platform::process::pid_alive(pid))
+        {
             // Dead owner: reclaim (build-lock's rule; a dir without an owner file is a taker mid-write).
             let _ = std::fs::remove_dir_all(dir);
             continue;
@@ -113,7 +119,11 @@ pub fn load() -> Option<f64> {
 
 /// Wait until `load() <= max_load` or `wait` elapses; `Ok(true)` = the
 /// precondition held, `Ok(false)` = ran out of patience (sample is `noisy`).
-pub async fn wait_for_load(max_load: f64, wait: Duration, cancel: &CancellationToken) -> Result<bool> {
+pub async fn wait_for_load(
+    max_load: f64,
+    wait: Duration,
+    cancel: &CancellationToken,
+) -> Result<bool> {
     let start = Instant::now();
     loop {
         if load().is_none_or(|l| l <= max_load) {
@@ -135,7 +145,9 @@ pub async fn wait_for_load(max_load: f64, wait: Duration, cancel: &CancellationT
 /// `bench.wait` is a total per experiment (140 §5.5); the runner has no experiment
 /// object, so the total lives here keyed by `(slug, n)`, one entry per study.
 pub fn wait_budget(slug: &str, n: u32, wait: Duration) -> Duration {
-    let ledger = WAITED.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let ledger = WAITED
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     match ledger.iter().find(|(s, k, _)| s == slug && *k == n) {
         Some((_, _, spent)) => wait.saturating_sub(*spent),
         None => wait,
@@ -144,7 +156,9 @@ pub fn wait_budget(slug: &str, n: u32, wait: Duration) -> Duration {
 
 /// Record `spent` waiting for the load precondition in experiment `n` of `slug`.
 pub fn charge_wait(slug: &str, n: u32, spent: Duration) {
-    let mut ledger = WAITED.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut ledger = WAITED
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     ledger.retain(|(s, k, _)| s != slug || *k == n); // only the current experiment per study
     match ledger.iter_mut().find(|(s, k, _)| s == slug && *k == n) {
         Some((_, _, total)) => *total += spent,
@@ -185,7 +199,10 @@ mod tests {
         let held = acquire_at(&dir, "bench:a", &cancel).await.unwrap();
         assert!(held.held());
         let owner = std::fs::read_to_string(dir.join("owner")).unwrap();
-        assert!(owner.starts_with(&format!("{} bench:a ", std::process::id())), "{owner}");
+        assert!(
+            owner.starts_with(&format!("{} bench:a ", std::process::id())),
+            "{owner}"
+        );
         assert_eq!(holders_in(tmp.path().join("slots").as_path()).len(), 1);
 
         // A second taker waits; cancelling it returns Refused without touching the slot.
@@ -209,7 +226,11 @@ mod tests {
         let cancel = CancellationToken::new();
         let held = acquire_at(&dir, "bench:c", &cancel).await.unwrap();
         assert!(held.held());
-        assert!(std::fs::read_to_string(dir.join("owner")).unwrap().contains("bench:c"));
+        assert!(
+            std::fs::read_to_string(dir.join("owner"))
+                .unwrap()
+                .contains("bench:c")
+        );
     }
 
     #[tokio::test]
@@ -228,11 +249,17 @@ mod tests {
         // max_load below any real load → patience runs out at `wait`.
         let cancel = CancellationToken::new();
         let t = Instant::now();
-        let ok = wait_for_load(-1.0, Duration::from_millis(50), &cancel).await.unwrap();
+        let ok = wait_for_load(-1.0, Duration::from_millis(50), &cancel)
+            .await
+            .unwrap();
         assert!(!ok || load().is_none());
         assert!(t.elapsed() < Duration::from_secs(5));
         // An infinite threshold passes at once.
-        assert!(wait_for_load(f64::INFINITY, Duration::ZERO, &cancel).await.unwrap());
+        assert!(
+            wait_for_load(f64::INFINITY, Duration::ZERO, &cancel)
+                .await
+                .unwrap()
+        );
     }
 
     #[test]

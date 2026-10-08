@@ -32,7 +32,10 @@ pub fn pooled_sigma(trees: &[Vec<f64>]) -> f64 {
     }
     let (ss, dof) = repeated.iter().fold((0.0, 0usize), |(ss, dof), t| {
         let m = mean(t);
-        (ss + t.iter().map(|x| (x - m).powi(2)).sum::<f64>(), dof + t.len() - 1)
+        (
+            ss + t.iter().map(|x| (x - m).powi(2)).sum::<f64>(),
+            dof + t.len() - 1,
+        )
     });
     (ss / dof as f64).sqrt()
 }
@@ -88,7 +91,10 @@ pub fn step(cfg: &GateCfg, input: &GateInput) -> GateStep {
     };
     let confirm = || GateStep::Confirm {
         more: cfg.confirm_runs,
-        incumbent_sample: input.incumbent_age >= cfg.remeasure_after,
+        // §5.2 says "older than remeasure_after"; also when the incumbent has a single
+        // sample (a fast keep): that sample was selected for being extreme, so x̄_i is
+        // biased and the next true gain is under-read (power 64 % → ~85 % at 3σ).
+        incumbent_sample: input.incumbent_age >= cfg.remeasure_after || n_i < 2,
     };
 
     // Deterministic metric: no z-tests, no confirm (140 §5.2 step 2).
@@ -158,11 +164,16 @@ pub fn keep_simpler(cfg: &GateCfg, input: &GateInput, added: u32, removed: u32) 
     if !guard_failures(cfg, input).is_empty() {
         return false;
     }
-    let delta = normalise(cfg.direction, mean(&input.candidate), mean(&input.incumbent));
+    let delta = normalise(
+        cfg.direction,
+        mean(&input.candidate),
+        mean(&input.incumbent),
+    );
     if input.sigma <= 0.0 {
         return delta >= 0.0;
     }
-    let se = input.sigma * (1.0 / input.candidate.len() as f64 + 1.0 / input.incumbent.len() as f64).sqrt();
+    let se = input.sigma
+        * (1.0 / input.candidate.len() as f64 + 1.0 / input.incumbent.len() as f64).sqrt();
     delta / se > -1.0
 }
 
@@ -173,9 +184,25 @@ pub fn drifted(sigma: f64, incumbent_mean: f64, sample: f64) -> bool {
 
 /// The verdict in words and numbers (140 §5.2 step 5), e.g.
 /// `improved: 41.2 ms vs 42.3 ms (−2.6 %), 3.1σ over 3 samples, checks passed`.
-pub fn line(step: &GateStep, unit: &str, candidate_mean: f64, incumbent_mean: f64, n: usize) -> String {
-    let samples = |n: usize| if n == 1 { "1 sample".to_owned() } else { format!("{n} samples") };
-    let unit = if unit.is_empty() { String::new() } else { format!(" {unit}") };
+pub fn line(
+    step: &GateStep,
+    unit: &str,
+    candidate_mean: f64,
+    incumbent_mean: f64,
+    n: usize,
+) -> String {
+    let samples = |n: usize| {
+        if n == 1 {
+            "1 sample".to_owned()
+        } else {
+            format!("{n} samples")
+        }
+    };
+    let unit = if unit.is_empty() {
+        String::new()
+    } else {
+        format!(" {unit}")
+    };
     let change = signed_pct(candidate_mean - incumbent_mean, incumbent_mean);
     let full = |z: Option<f64>| {
         let sig = z.map_or_else(|| "deterministic".to_owned(), |z| format!("{}σ", nice(z)));
@@ -187,7 +214,9 @@ pub fn line(step: &GateStep, unit: &str, candidate_mean: f64, incumbent_mean: f6
         )
     };
     match step {
-        GateStep::Confirm { more, .. } => format!("measuring: {} so far, {more} more to confirm", samples(n)),
+        GateStep::Confirm { more, .. } => {
+            format!("measuring: {} so far, {more} more to confirm", samples(n))
+        }
         GateStep::Decide { verdict, z, .. } => match verdict {
             Verdict::Improved => format!("improved: {}", full(*z)),
             Verdict::Suspicious => format!("suspicious: {} — flagged for review", full(*z)),
@@ -198,7 +227,10 @@ pub fn line(step: &GateStep, unit: &str, candidate_mean: f64, incumbent_mean: f6
                 z.map_or_else(|| "deterministic".to_owned(), |z| format!("{}σ", nice(z))),
                 samples(n)
             ),
-            Verdict::GuardFailed => format!("guard failed: a secondary regressed past its limit; primary {}", full(*z)),
+            Verdict::GuardFailed => format!(
+                "guard failed: a secondary regressed past its limit; primary {}",
+                full(*z)
+            ),
             Verdict::ChecksFailed => format!("checks failed: primary {}", full(*z)),
             Verdict::Crash => "crash (tail below)".to_owned(),
             Verdict::Refused { reason } => format!("refused: {reason}"),
@@ -297,7 +329,10 @@ mod tests {
     struct Rng(u64);
     impl Rng {
         fn next_u(&mut self) -> f64 {
-            self.0 = self.0.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            self.0 = self
+                .0
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
             ((self.0 >> 11) as f64 + 0.5) / (1u64 << 53) as f64
         }
         fn normal(&mut self) -> f64 {
@@ -313,7 +348,7 @@ mod tests {
         let cfg = cfg();
         let mut rng = Rng(seed);
         let sigma_true = 1.0;
-        let mut inc_true = 1000.0;
+        let mut inc_true = 100.0; // σ_true = 1 → 1 % noise, min_effect 0.5 % = 0.5σ (the §5.2 worked example)
         let draw = |rng: &mut Rng, mu: f64| mu + sigma_true * rng.normal();
         // `past` = trees no longer incumbent; the incumbent's own samples are pooled with them.
         let mut past: Vec<Vec<f64>> = Vec::new();
@@ -367,6 +402,7 @@ mod tests {
         // 100 studies × 100 experiments = 10,000 null experiments.
         let keeps: usize = (0..100).map(|s| simulate(1000 + s, 100, 0.0)).sum();
         let rate = keeps as f64 / 10_000.0;
+        eprintln!("null false-keep rate {rate:.4} ({keeps} / 10000)");
         assert!(rate <= 0.01, "false-keep rate {rate:.4} ({keeps} / 10000)");
     }
 
@@ -375,6 +411,7 @@ mod tests {
         // Each experiment carries a fresh 3σ improvement over the current incumbent.
         let keeps: usize = (0..40).map(|s| simulate(7000 + s, 50, 3.0)).sum();
         let rate = keeps as f64 / 2000.0;
+        eprintln!("3σ keep rate {rate:.4} ({keeps} / 2000)");
         assert!(rate >= 0.85, "keep rate {rate:.4}");
     }
 
@@ -386,7 +423,10 @@ mod tests {
         let s = pooled_sigma(&[vec![10.0, 12.0], vec![100.0, 102.0]]);
         assert!((s - 2f64.sqrt()).abs() < 1e-9, "{s}");
         // 12 repeated samples: robust path, immune to one outlier.
-        let mut t = vec![vec![10.0, 11.0, 10.0, 11.0, 10.0, 11.0], vec![20.0, 21.0, 20.0, 21.0, 20.0, 21.0]];
+        let mut t = vec![
+            vec![10.0, 11.0, 10.0, 11.0, 10.0, 11.0],
+            vec![20.0, 21.0, 20.0, 21.0, 20.0, 21.0],
+        ];
         let robust = pooled_sigma(&t);
         assert!((robust - 1.4826 * 0.5).abs() < 1e-9, "{robust}");
         t[0][0] = 1e6;
@@ -398,11 +438,29 @@ mod tests {
     #[test]
     fn deterministic_metric_uses_min_effect() {
         let cfg = cfg();
-        assert_eq!(*verdict(&step(&cfg, &input(&[990.0], &[1000.0], 0.0))), Verdict::Improved);
-        assert_eq!(*verdict(&step(&cfg, &input(&[997.0], &[1000.0], 0.0))), Verdict::NoGain);
-        assert_eq!(*verdict(&step(&cfg, &input(&[1000.0], &[1000.0], 0.0))), Verdict::NoGain);
-        assert_eq!(*verdict(&step(&cfg, &input(&[1001.0], &[1000.0], 0.0))), Verdict::Worse);
-        let GateStep::Decide { z, delta, delta_pct, .. } = step(&cfg, &input(&[990.0], &[1000.0], 0.0)) else {
+        assert_eq!(
+            *verdict(&step(&cfg, &input(&[990.0], &[1000.0], 0.0))),
+            Verdict::Improved
+        );
+        assert_eq!(
+            *verdict(&step(&cfg, &input(&[997.0], &[1000.0], 0.0))),
+            Verdict::NoGain
+        );
+        assert_eq!(
+            *verdict(&step(&cfg, &input(&[1000.0], &[1000.0], 0.0))),
+            Verdict::NoGain
+        );
+        assert_eq!(
+            *verdict(&step(&cfg, &input(&[1001.0], &[1000.0], 0.0))),
+            Verdict::Worse
+        );
+        let GateStep::Decide {
+            z,
+            delta,
+            delta_pct,
+            ..
+        } = step(&cfg, &input(&[990.0], &[1000.0], 0.0))
+        else {
             panic!()
         };
         assert_eq!(z, None);
@@ -415,9 +473,18 @@ mod tests {
         let cfg = cfg();
         // z1 = Δ / (σ √(1 + 1/3)) with σ = 10, n_i = 3 → se = 11.55.
         let inc = [1000.0, 1000.0, 1000.0];
-        assert_eq!(*verdict(&step(&cfg, &input(&[995.0], &inc, 10.0))), Verdict::NoGain);
-        assert_eq!(*verdict(&step(&cfg, &input(&[1030.0], &inc, 10.0))), Verdict::Worse);
-        assert_eq!(*verdict(&step(&cfg, &input(&[950.0], &inc, 10.0))), Verdict::Improved);
+        assert_eq!(
+            *verdict(&step(&cfg, &input(&[995.0], &inc, 10.0))),
+            Verdict::NoGain
+        );
+        assert_eq!(
+            *verdict(&step(&cfg, &input(&[1030.0], &inc, 10.0))),
+            Verdict::Worse
+        );
+        assert_eq!(
+            *verdict(&step(&cfg, &input(&[950.0], &inc, 10.0))),
+            Verdict::Improved
+        );
         assert_eq!(
             step(&cfg, &input(&[980.0], &inc, 10.0)),
             GateStep::Confirm {
@@ -437,8 +504,14 @@ mod tests {
         // Higher-is-better flips the sign.
         let mut up = cfg.clone();
         up.direction = Direction::Higher;
-        assert_eq!(*verdict(&step(&up, &input(&[1050.0], &inc, 10.0))), Verdict::Improved);
-        assert_eq!(*verdict(&step(&up, &input(&[950.0], &inc, 10.0))), Verdict::Worse);
+        assert_eq!(
+            *verdict(&step(&up, &input(&[1050.0], &inc, 10.0))),
+            Verdict::Improved
+        );
+        assert_eq!(
+            *verdict(&step(&up, &input(&[950.0], &inc, 10.0))),
+            Verdict::Worse
+        );
     }
 
     #[test]
@@ -446,11 +519,23 @@ mod tests {
         let cfg = cfg();
         let inc = [1000.0, 1000.0, 1000.0];
         // T = max(2 · 10 · √(2/3), 5) = 16.3: Δ̄ = 20 keeps, Δ̄ = 12 does not.
-        assert_eq!(*verdict(&step(&cfg, &input(&[980.0, 980.0, 980.0], &inc, 10.0))), Verdict::Improved);
-        assert_eq!(*verdict(&step(&cfg, &input(&[988.0, 988.0, 988.0], &inc, 10.0))), Verdict::NoGain);
-        assert_eq!(*verdict(&step(&cfg, &input(&[1020.0, 1020.0, 1020.0], &inc, 10.0))), Verdict::Worse);
+        assert_eq!(
+            *verdict(&step(&cfg, &input(&[980.0, 980.0, 980.0], &inc, 10.0))),
+            Verdict::Improved
+        );
+        assert_eq!(
+            *verdict(&step(&cfg, &input(&[988.0, 988.0, 988.0], &inc, 10.0))),
+            Verdict::NoGain
+        );
+        assert_eq!(
+            *verdict(&step(&cfg, &input(&[1020.0, 1020.0, 1020.0], &inc, 10.0))),
+            Verdict::Worse
+        );
         // min_effect floor beats the z threshold when σ is tiny.
-        assert_eq!(*verdict(&step(&cfg, &input(&[997.0, 997.0, 997.0], &inc, 0.1))), Verdict::NoGain);
+        assert_eq!(
+            *verdict(&step(&cfg, &input(&[997.0, 997.0, 997.0], &inc, 0.1))),
+            Verdict::NoGain
+        );
     }
 
     #[test]
@@ -459,8 +544,14 @@ mod tests {
         let inc = [1000.0, 1000.0, 1000.0];
         // z ≥ 8 on one sample: confirm first, then suspicious on means.
         let one = input(&[800.0], &inc, 10.0);
-        assert!(matches!(step(&cfg, &one), GateStep::Confirm { more: 2, .. }));
-        assert_eq!(*verdict(&step(&cfg, &input(&[800.0, 800.0, 800.0], &inc, 10.0))), Verdict::Suspicious);
+        assert!(matches!(
+            step(&cfg, &one),
+            GateStep::Confirm { more: 2, .. }
+        ));
+        assert_eq!(
+            *verdict(&step(&cfg, &input(&[800.0, 800.0, 800.0], &inc, 10.0))),
+            Verdict::Suspicious
+        );
         // 3× the largest earlier accepted Δ.
         let mut big = input(&[950.0], &inc, 10.0);
         big.largest_accepted_delta = Some(10.0);
@@ -479,7 +570,10 @@ mod tests {
         let mut inp = input(&[950.0], &inc, 10.0);
         inp.secondaries = vec![("alloc_mb".into(), 107.2, 100.0)];
         assert_eq!(*verdict(&step(&cfg, &inp)), Verdict::GuardFailed);
-        assert_eq!(guard_failures(&cfg, &inp), vec!["alloc_mb +7.20 % > 5.00 %"]);
+        assert_eq!(
+            guard_failures(&cfg, &inp),
+            vec!["alloc_mb +7.20 % > 5.00 %"]
+        );
         inp.secondaries = vec![("alloc_mb".into(), 104.0, 100.0)];
         assert_eq!(*verdict(&step(&cfg, &inp)), Verdict::Improved);
         inp.secondaries = vec![];
@@ -494,14 +588,22 @@ mod tests {
         let inp = input(&[1005.0, 1005.0, 1005.0], &inc, 10.0);
         assert!(keep_simpler(&cfg, &inp, 3, 10));
         assert!(!keep_simpler(&cfg, &inp, 10, 10));
-        assert!(!keep_simpler(&cfg, &input(&[1010.0, 1010.0, 1010.0], &inc, 10.0), 3, 10));
+        assert!(!keep_simpler(
+            &cfg,
+            &input(&[1010.0, 1010.0, 1010.0], &inc, 10.0),
+            3,
+            10
+        ));
         // Deterministic: equal is fine, worse is not.
         assert!(keep_simpler(&cfg, &input(&[1000.0], &inc, 0.0), 0, 1));
         assert!(!keep_simpler(&cfg, &input(&[1001.0], &inc, 0.0), 0, 1));
         // Asked for in the run: the one-sample step confirms so means exist.
         let mut asked = input(&[950.0], &inc, 10.0);
         asked.keep_simpler = true;
-        assert!(matches!(step(&cfg, &asked), GateStep::Confirm { more: 2, .. }));
+        assert!(matches!(
+            step(&cfg, &asked),
+            GateStep::Confirm { more: 2, .. }
+        ));
     }
 
     #[test]
@@ -518,9 +620,15 @@ mod tests {
         let cfg = cfg();
         let inc = [42.3, 42.3, 42.3];
         let st = step(&cfg, &input(&[41.2, 41.2, 41.2], &inc, 0.3));
-        assert_eq!(line(&st, "ms", 41.2, 42.3, 3), "improved: 41.2 ms vs 42.3 ms (-2.60 %), 4.49σ over 3 samples");
+        assert_eq!(
+            line(&st, "ms", 41.2, 42.3, 3),
+            "improved: 41.2 ms vs 42.3 ms (-2.60 %), 4.49σ over 3 samples"
+        );
         let st = step(&cfg, &input(&[42.5], &inc, 1.0));
-        assert_eq!(line(&st, "ms", 42.5, 42.3, 1), "no gain: +0.473 %, -0.173σ (1 sample)");
+        assert_eq!(
+            line(&st, "ms", 42.5, 42.3, 1),
+            "no gain: +0.473 %, -0.173σ (1 sample)"
+        );
         let st = GateStep::Decide {
             verdict: Verdict::Refused {
                 reason: "evaluator changed (bench.sh)".into(),
@@ -529,11 +637,17 @@ mod tests {
             delta_pct: 0.0,
             z: None,
         };
-        assert_eq!(line(&st, "ms", 0.0, 0.0, 0), "refused: evaluator changed (bench.sh)");
+        assert_eq!(
+            line(&st, "ms", 0.0, 0.0, 0),
+            "refused: evaluator changed (bench.sh)"
+        );
         let st = GateStep::Confirm {
             more: 2,
             incumbent_sample: false,
         };
-        assert_eq!(line(&st, "ms", 0.0, 0.0, 1), "measuring: 1 sample so far, 2 more to confirm");
+        assert_eq!(
+            line(&st, "ms", 0.0, 0.0, 1),
+            "measuring: 1 sample so far, 2 more to confirm"
+        );
     }
 }

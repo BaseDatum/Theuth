@@ -25,7 +25,11 @@ pub const CUSTODY_ONLY: &str = "custody/";
 
 /// Copy the evaluator into `evaluator_dir` and return `{path: sha256}` (140 §5.3 Custody).
 /// Commands that are not repo paths are frozen as text under `commands.json`.
-pub fn take(spec: &StudySpec, repo: &Path, evaluator_dir: &Path) -> Result<BTreeMap<String, String>> {
+pub fn take(
+    spec: &StudySpec,
+    repo: &Path,
+    evaluator_dir: &Path,
+) -> Result<BTreeMap<String, String>> {
     std::fs::create_dir_all(evaluator_dir)?;
     let drafts = drafts_dir(evaluator_dir, &spec.slug);
     let mut custody = BTreeMap::new();
@@ -48,7 +52,9 @@ pub fn take(spec: &StudySpec, repo: &Path, evaluator_dir: &Path) -> Result<BTree
     }
     for entry in &spec.evaluator_paths {
         let Some(rel) = relative(entry) else {
-            return Err(Error::refused(format!("evaluator_paths: `{entry}` is not a relative repo path")));
+            return Err(Error::refused(format!(
+                "evaluator_paths: `{entry}` is not a relative repo path"
+            )));
         };
         let src = repo.join(rel);
         if src.is_dir() {
@@ -59,10 +65,15 @@ pub fn take(spec: &StudySpec, repo: &Path, evaluator_dir: &Path) -> Result<BTree
         } else if src.is_file() {
             copy_file(repo, rel, evaluator_dir, &mut custody, "")?;
         } else {
-            return Err(Error::refused(format!("evaluator_paths: `{entry}` does not exist in the repo")));
+            return Err(Error::refused(format!(
+                "evaluator_paths: `{entry}` does not exist in the repo"
+            )));
         }
     }
-    let frozen: BTreeMap<&str, &str> = commands.iter().filter_map(|(k, v)| v.map(|v| (*k, v))).collect();
+    let frozen: BTreeMap<&str, &str> = commands
+        .iter()
+        .filter_map(|(k, v)| v.map(|v| (*k, v)))
+        .collect();
     let path = evaluator_dir.join("commands.json");
     std::fs::write(&path, serde_json::to_vec_pretty(&frozen)?)?;
     custody.insert(format!("{CUSTODY_ONLY}commands.json"), sha256_file(&path)?);
@@ -236,9 +247,13 @@ mod tests {
         );
         assert!(evaluator.join("bench.sh").is_file());
         assert!(evaluator.join("fixtures/deep/b.json").is_file());
-        assert_eq!(custody["fixtures/a.json"], sha256_file(&repo.join("fixtures/a.json")).unwrap());
+        assert_eq!(
+            custody["fixtures/a.json"],
+            sha256_file(&repo.join("fixtures/a.json")).unwrap()
+        );
         let frozen: BTreeMap<String, String> =
-            serde_json::from_slice(&std::fs::read(evaluator.join("commands.json")).unwrap()).unwrap();
+            serde_json::from_slice(&std::fs::read(evaluator.join("commands.json")).unwrap())
+                .unwrap();
         assert_eq!(frozen["bench"], "bash bench.sh --n 3");
         assert_eq!(frozen["checks"], "bash test.sh");
 
@@ -246,7 +261,10 @@ mod tests {
         assert_eq!(verify(&custody, &repo).unwrap(), Vec::<String>::new());
         std::fs::write(repo.join("fixtures/a.json"), "[1,2]").unwrap();
         std::fs::remove_file(repo.join("test.sh")).unwrap();
-        assert_eq!(verify(&custody, &repo).unwrap(), vec!["fixtures/a.json", "test.sh"]);
+        assert_eq!(
+            verify(&custody, &repo).unwrap(),
+            vec!["fixtures/a.json", "test.sh"]
+        );
         // Scope files are not custody.
         std::fs::write(repo.join("sorter.py"), "changed").unwrap();
         assert_eq!(verify(&custody, &repo).unwrap().len(), 2);
@@ -270,9 +288,15 @@ mod tests {
         let (_tmp, repo, evaluator, _root) = layout();
         let mut s = spec("toy");
         s.evaluator_paths = vec!["nope/".into()];
-        assert!(matches!(take(&s, &repo, &evaluator), Err(Error::Refused(_))));
+        assert!(matches!(
+            take(&s, &repo, &evaluator),
+            Err(Error::Refused(_))
+        ));
         s.evaluator_paths = vec!["../etc".into()];
-        assert!(matches!(take(&s, &repo, &evaluator), Err(Error::Refused(_))));
+        assert!(matches!(
+            take(&s, &repo, &evaluator),
+            Err(Error::Refused(_))
+        ));
     }
 
     #[test]

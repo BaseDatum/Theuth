@@ -66,10 +66,15 @@ pub async fn sample(
         None
     };
     let waited = Instant::now();
-    let held = slot::wait_for_load(cfg.max_load, slot::wait_budget(req.slug, req.n, wait), cancel).await?;
+    let held = slot::wait_for_load(
+        cfg.max_load,
+        slot::wait_budget(req.slug, req.n, wait),
+        cancel,
+    )
+    .await?;
     slot::charge_wait(req.slug, req.n, waited.elapsed());
     let load = slot::load();
-    let wrapper = (spec.bench.exclusive && cfg.lock != slot::BUILTIN).then(|| cfg.lock.as_str());
+    let wrapper = (spec.bench.exclusive && cfg.lock != slot::BUILTIN).then_some(cfg.lock.as_str());
 
     std::fs::create_dir_all(req.runs_dir)?;
     let log = req.runs_dir.join(format!("sample-{}.log", req.k));
@@ -121,10 +126,12 @@ pub fn tail(log: &Path) -> String {
     };
     let len = file.metadata().map_or(0, |m| m.len());
     let mut text = String::new();
-    if len > TAIL_BYTES {
-        if file.seek(std::io::SeekFrom::Start(len - TAIL_BYTES)).is_err() {
-            return String::new();
-        }
+    if len > TAIL_BYTES
+        && file
+            .seek(std::io::SeekFrom::Start(len - TAIL_BYTES))
+            .is_err()
+    {
+        return String::new();
     }
     let mut bytes = Vec::new();
     if file.read_to_end(&mut bytes).is_err() {
@@ -184,13 +191,14 @@ async fn run(
         .env("AUTORESEARCH_EVALUATOR", req.evaluator)
         .env("GIT_TERMINAL_PROMPT", "0");
     if wrapper.is_some() {
-        cmd.env("BUILD_SLOTS", "1").env("BUILD_LABEL", format!("bench:{}", req.slug));
+        cmd.env("BUILD_SLOTS", "1")
+            .env("BUILD_LABEL", format!("bench:{}", req.slug));
     }
     let started = Instant::now();
     let mut child = cmd.spawn()?;
     let tree = child.id().and_then(|pid| ProcessTree::adopt(pid).ok());
-    let kill = |tree: Option<ProcessTree>| {
-        if let Some(t) = tree {
+    let kill = |tree: &Option<ProcessTree>| {
+        if let Some(t) = tree.clone() {
             let _ = t.signal(Signal::Term);
             tokio::spawn(async move {
                 tokio::time::sleep(KILL_GRACE).await;
@@ -232,16 +240,16 @@ async fn run(
             () = &mut deadline, if !killed => {
                 killed = true;
                 let _ = file.write_all(format!("\n[autoresearch] timeout after {timeout:?}: process group killed\n").as_bytes()).await;
-                kill(tree);
+                kill(&tree);
             }
             () = cancel.cancelled(), if !killed => {
                 killed = true;
                 let _ = file.write_all(b"\n[autoresearch] cancelled: process group killed\n").await;
-                kill(tree);
+                kill(&tree);
             }
             () = &mut drain, if status.is_some() => {
                 // The leader is gone but something still holds the pipe: stop waiting for it.
-                if let Some(t) = tree { t.kill(); }
+                if let Some(t) = &tree { t.kill(); }
                 break;
             }
         }
@@ -279,7 +287,9 @@ fn resolve(command: &str, evaluator: &Path) -> String {
     command
         .split(' ')
         .map(|tok| match crate::custody::relative(tok) {
-            Some(rel) if evaluator.join(rel).is_file() => evaluator.join(rel).to_string_lossy().into_owned(),
+            Some(rel) if evaluator.join(rel).is_file() => {
+                evaluator.join(rel).to_string_lossy().into_owned()
+            }
             _ => tok.to_owned(),
         })
         .collect::<Vec<_>>()
@@ -366,7 +376,9 @@ mod tests {
             "echo METRIC time_ms=41.5; echo METRIC peak_kb=1024; echo CASE n500 time_ms=3; echo ASI run=$AUTORESEARCH_RUN-$AUTORESEARCH_SAMPLE-$AUTORESEARCH; echo \"ASI cwd=$PWD\"; echo noise >&2",
             "10s",
         );
-        let out = sample(&s, &bench_cfg(), req(&d, 1), &CancellationToken::new()).await.unwrap();
+        let out = sample(&s, &bench_cfg(), req(&d, 1), &CancellationToken::new())
+            .await
+            .unwrap();
         assert_eq!(out.value, Some(41.5));
         assert_eq!(out.exit, Some(0));
         assert_eq!(out.secondaries["peak_kb"], 1024.0);
@@ -387,27 +399,44 @@ mod tests {
     async fn crashes_are_samples_without_a_value() {
         let d = dirs();
         let s = spec("echo METRIC time_ms=5; echo boom >&2; exit 3", "10s");
-        let out = sample(&s, &bench_cfg(), req(&d, 1), &CancellationToken::new()).await.unwrap();
+        let out = sample(&s, &bench_cfg(), req(&d, 1), &CancellationToken::new())
+            .await
+            .unwrap();
         assert_eq!(out.value, None);
         assert_eq!(out.exit, Some(3));
         assert!(tail(&d.runs.join("sample-1.log")).contains("boom"));
         // Missing primary and a NaN primary are crashes too.
-        let out = sample(&spec("echo METRIC other=5", "10s"), &bench_cfg(), req(&d, 2), &CancellationToken::new())
-            .await
-            .unwrap();
+        let out = sample(
+            &spec("echo METRIC other=5", "10s"),
+            &bench_cfg(),
+            req(&d, 2),
+            &CancellationToken::new(),
+        )
+        .await
+        .unwrap();
         assert_eq!((out.value, out.exit), (None, Some(0)));
-        let out = sample(&spec("echo METRIC time_ms=nan", "10s"), &bench_cfg(), req(&d, 3), &CancellationToken::new())
-            .await
-            .unwrap();
+        let out = sample(
+            &spec("echo METRIC time_ms=nan", "10s"),
+            &bench_cfg(),
+            req(&d, 3),
+            &CancellationToken::new(),
+        )
+        .await
+        .unwrap();
         assert_eq!(out.value, None);
     }
 
     #[tokio::test]
     async fn timeout_kills_the_whole_group() {
         let d = dirs();
-        let s = spec("sleep 30 & echo PID=$!; sleep 30; echo METRIC time_ms=1", "300ms");
+        let s = spec(
+            "sleep 30 & echo PID=$!; sleep 30; echo METRIC time_ms=1",
+            "300ms",
+        );
         let t = Instant::now();
-        let out = sample(&s, &bench_cfg(), req(&d, 1), &CancellationToken::new()).await.unwrap();
+        let out = sample(&s, &bench_cfg(), req(&d, 1), &CancellationToken::new())
+            .await
+            .unwrap();
         assert!(t.elapsed() < Duration::from_secs(10), "{:?}", t.elapsed());
         assert_eq!(out.value, None);
         assert_eq!(out.exit, None);
@@ -421,7 +450,10 @@ mod tests {
             .parse()
             .unwrap();
         tokio::time::sleep(KILL_GRACE + Duration::from_millis(300)).await;
-        assert!(!platform::process::pid_alive(pid), "background child {pid} survived");
+        assert!(
+            !platform::process::pid_alive(pid),
+            "background child {pid} survived"
+        );
     }
 
     #[tokio::test]
@@ -438,17 +470,34 @@ mod tests {
         let out = sample(&s, &bench_cfg(), req(&d, 1), &cancel).await.unwrap();
         assert!(t.elapsed() < Duration::from_secs(10));
         assert_eq!(out.exit, None);
-        assert!(std::fs::read_to_string(d.runs.join("sample-1.log")).unwrap().contains("cancelled"));
+        assert!(
+            std::fs::read_to_string(d.runs.join("sample-1.log"))
+                .unwrap()
+                .contains("cancelled")
+        );
     }
 
     #[tokio::test]
     async fn custody_copy_wins_over_the_worktree_script() {
         let d = dirs();
-        std::fs::write(d.worktree.join("bench.sh"), "echo METRIC time_ms=1; echo ASI who=worktree").unwrap();
-        std::fs::write(d.evaluator.join("bench.sh"), "echo METRIC time_ms=2; echo ASI who=custody").unwrap();
-        let out = sample(&spec("bash bench.sh", "10s"), &bench_cfg(), req(&d, 1), &CancellationToken::new())
-            .await
-            .unwrap();
+        std::fs::write(
+            d.worktree.join("bench.sh"),
+            "echo METRIC time_ms=1; echo ASI who=worktree",
+        )
+        .unwrap();
+        std::fs::write(
+            d.evaluator.join("bench.sh"),
+            "echo METRIC time_ms=2; echo ASI who=custody",
+        )
+        .unwrap();
+        let out = sample(
+            &spec("bash bench.sh", "10s"),
+            &bench_cfg(),
+            req(&d, 1),
+            &CancellationToken::new(),
+        )
+        .await
+        .unwrap();
         assert_eq!(out.value, Some(2.0));
         assert_eq!(out.asi["who"], "custody");
     }
@@ -469,9 +518,14 @@ mod tests {
         assert!(tail.starts_with("line 21"));
         assert!(tail.ends_with("line 50"));
         assert!(wall < 10_000);
-        let (exit, ..) = command("true", Duration::from_secs(10), req(&d, 1), &CancellationToken::new())
-            .await
-            .unwrap();
+        let (exit, ..) = command(
+            "true",
+            Duration::from_secs(10),
+            req(&d, 1),
+            &CancellationToken::new(),
+        )
+        .await
+        .unwrap();
         assert_eq!(exit, Some(0));
     }
 
