@@ -919,7 +919,7 @@ pub(crate) async fn backfill_estimate(
     })
 }
 
-fn view_line(part: Part, text: String, built: bool) -> ViewLine {
+fn view_line(part: Part, text: String, built: bool, units: &[Unit]) -> ViewLine {
     let (id, n) = part.id_n();
     ViewLine {
         id,
@@ -927,6 +927,9 @@ fn view_line(part: Part, text: String, built: bool) -> ViewLine {
         level: part.l,
         text: text.replace('\n', " "),
         built,
+        at: (n == 1)
+            .then(|| units.get(id as usize).and_then(|u| u.at))
+            .flatten(),
     }
 }
 
@@ -953,6 +956,7 @@ pub(crate) async fn zoom(
             level: 0,
             text: u.tagged(),
             built: live.tree.built(0, i),
+            at: u.at,
         }]);
     }
     Ok([2 * i, 2 * i + 1]
@@ -960,7 +964,7 @@ pub(crate) async fn zoom(
         .map(|ci| {
             let part = Part { l: l - 1, i: ci };
             let (text, built) = fold::part_text(&live.tree, part, &live.units);
-            view_line(part, text, built)
+            view_line(part, text, built, &live.units)
         })
         .collect())
 }
@@ -980,10 +984,12 @@ pub(crate) async fn recall(
         .endless_recall(session, query, limit)
         .await
         .map_err(|e| e.to_string())?;
-    let mut out: Vec<ViewLine> = hits
-        .into_iter()
-        .map(|(i, text)| view_line(Part { l: 0, i }, text, true))
-        .collect();
+    let mut out: Vec<ViewLine> = {
+        let live = state.live.lock();
+        hits.into_iter()
+            .map(|(i, text)| view_line(Part { l: 0, i }, text, true, &live.units))
+            .collect()
+    };
     if out.len() < 2 {
         let needle = query.trim();
         if !needle.is_empty() {
@@ -1004,7 +1010,7 @@ pub(crate) async fn recall(
                     "{} (raw)",
                     super::guards::cut_utf8(&u.tagged(), state.cfg.node_bytes as usize)
                 );
-                out.push(view_line(Part { l: 0, i }, text, false));
+                out.push(view_line(Part { l: 0, i }, text, false, &live.units));
             }
         }
     }

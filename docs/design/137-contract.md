@@ -43,7 +43,7 @@ All: `#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, schemars::JsonSc
 pub enum MemoryMode { #[default] Epochs, Endless }        // as_str(): "epochs" | "endless"; FromStr; Default = Epochs
 pub enum UnitFilter { #[default] All, Meeting }           // R1-D6; "all" | "meeting"; `keeps(&Unit) -> bool`; stored in sessions.endless_filter
 pub struct BackfillEstimate { pub units: u64, pub eta_secs: u64, pub usd: f64 }   // R1-D4
-pub struct ViewLine { pub id: u64, pub n: u64, pub level: u8, pub text: String, pub built: bool }
+pub struct ViewLine { pub id: u64, pub n: u64, pub level: u8, pub text: String, pub built: bool, pub at: Option<DateTime<Utc>> /* row time, n == 1 only (W3 hand-off); ts `at: string | null` */ }
 pub struct GuardTrips { pub copy: u32, pub grounding: u32, pub status: u32, pub format: u32, pub empty: u32, pub size: u32 }
 pub struct EndlessStats { pub calls: u32, pub guard_trips: GuardTrips, pub input_tokens: u64, pub cache_read_tokens: u64, pub cache_write_tokens: u64, pub output_tokens: u64, pub usd_estimate: f64 }
 pub struct Backfill { pub done: u64, pub total: u64, pub eta_secs: u64 }

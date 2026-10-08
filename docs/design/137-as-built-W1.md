@@ -27,6 +27,8 @@ Revision 1b (03:10): `set_view_bytes(session, Option<u32>)` persisted in `sessio
 
 Addendum (03:38, W4 gap): `active()` false for `UnitFilter::Meeting`; `render_with_budget -> Vec<ViewLine>` (was blocks), live fold untouched; first switch-on with a different filter re-derives the unit cache (`Store::endless_units_clear`). Test `meeting_filter_session_is_served_but_never_active`.
 
+W3 hand-off (03:42): `ViewLine.at: Option<DateTime<Utc>>` (`ts(optional = nullable)`), set for `n == 1` lines in the view, zoom and recall from the unit's row time.
+
 Gates after the revision (R1 + R1b + addendum): endless filter → `22 passed; 0 failed`; clippy clean.
 
 Gates after the revision (R1 + R1b): `cargo test -p agent --lib --no-fail-fast endless` → `test result: ok. 21 passed; 0 failed; 0 ignored; 0 measured; 463 filtered out; finished in 0.54s`; `cargo clippy -p agent -p rpc --no-deps -- -D warnings` → `Finished \`dev\` profile [unoptimized + debuginfo] target(s) in 36.75s`; unfiltered `cargo test -p agent --lib --no-fail-fast` after R1 → `481 passed; 1 failed (pre-existing prompt_parts_in_order_with_blank_lines); 2 ignored`; `cargo fmt -p agent -p rpc` clean.

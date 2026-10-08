@@ -230,6 +230,10 @@ pub struct ViewLine {
     pub text: String,
     /// A built summary line (not a placeholder).
     pub built: bool,
+    /// The message's row time for an `n == 1` line (W3: zoom shows its date); `None` otherwise.
+    #[serde(default)]
+    #[cfg_attr(feature = "ts", ts(optional = nullable))]
+    pub at: Option<DateTime<Utc>>,
 }
 
 /// Guard trips by kind (§6).

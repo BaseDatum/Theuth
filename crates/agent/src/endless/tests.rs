@@ -221,6 +221,8 @@ async fn pump_builds_tree_and_tools_answer() {
         whole[0].text,
         "user: hello, please look at the nginx config"
     );
+    assert!(whole[0].at.is_some(), "n == 1 carries the row time");
+    assert!(mem.view.iter().all(|l| l.at.is_some() == (l.n == 1)));
     let children = endless.zoom(id, 0, 2).await.unwrap();
     assert_eq!((children[0].id, children[0].n, children[1].id), (0, 1, 1));
     assert_eq!(endless.zoom(id, 1, 2).await.unwrap_err(), "No line 1+2.");
