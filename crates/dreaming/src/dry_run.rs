@@ -107,9 +107,10 @@ async fn open_ro(path: &Path) -> Option<sqlx::SqliteConnection> {
         .ok()
 }
 
-/// The `uses` table of `<data_dir>/knowledge.sqlite`, read-only. A store
-/// from before 136 has no rows yet (impressions start with the first 136
-/// build), so an empty table falls back to [`uses_from_sessions`].
+/// The `uses` table of `<data_dir>/knowledge.sqlite`, read-only, completed
+/// per id from the session history ([`merge_uses`]): a store from before 136
+/// gains rows one hinted id at a time, so a table with a few rows is not
+/// "the counters exist" for the other 1,600 ids.
 pub async fn read_uses(data_dir: &Path) -> Vec<Uses> {
     let from_index = match open_ro(&data_dir.join(knowledge::INDEX_FILE)).await {
         Some(mut c) => sqlx::query_as::<_, (String, i64, i64, Option<String>, Option<String>)>(
@@ -129,11 +130,19 @@ pub async fn read_uses(data_dir: &Path) -> Vec<Uses> {
         .collect::<Vec<_>>(),
         None => Vec::new(),
     };
-    if from_index.is_empty() {
-        uses_from_sessions(data_dir).await
-    } else {
-        from_index
+    merge_uses(from_index, uses_from_sessions(data_dir).await)
+}
+
+/// Index rows win; an id without one takes its session-derived counts.
+// ponytail: the sessions scan (≈ 10 s on an 889 MB store) runs every night; skip it once every live id has a row if that ever shows.
+pub fn merge_uses(index: Vec<Uses>, sessions: Vec<Uses>) -> Vec<Uses> {
+    let mut out = index;
+    for u in sessions {
+        if !out.iter().any(|i| i.id == u.id) {
+            out.push(u);
+        }
     }
+    out
 }
 
 /// Impressions and opens the way design §2.3 measured them before the
@@ -261,4 +270,36 @@ pub fn render(r: &Report) -> String {
         r.archive_by_use_candidates,
         r.verification_sample
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A `uses` table with a few rows (the live store after the first 136
+    /// hours: 16 of 1,664 ids) must not hide the session-derived counts of
+    /// every other id — before this, archive-by-use went 95 → 0 the moment the
+    /// first impression was recorded.
+    #[test]
+    fn merge_uses_keeps_index_rows_and_fills_the_rest_from_sessions() {
+        let u = |id: &str, shown: u64, opened: u64| Uses {
+            id: id.into(),
+            shown,
+            opened,
+            last_shown: None,
+            last_opened: None,
+        };
+        let merged = merge_uses(
+            vec![u("facts/a", 2, 1)],
+            vec![u("facts/a", 368, 0), u("facts/b", 60, 0)],
+        );
+        assert_eq!(merged.len(), 2);
+        assert_eq!(
+            (merged[0].shown, merged[0].opened),
+            (2, 1),
+            "index row wins"
+        );
+        assert_eq!((merged[1].id.as_str(), merged[1].shown), ("facts/b", 60));
+        assert!(merge_uses(vec![], vec![]).is_empty());
+    }
 }

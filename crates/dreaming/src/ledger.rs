@@ -138,12 +138,20 @@ pub async fn candidates(
                     .filter(|m| m.status.is_live())
                     .map(|m| m.id.clone())
                     .collect();
-                let mut uses = k.stats(&ids).await.unwrap_or_default();
-                // A store from before 136 has no impressions yet; until the
-                // live counters exist, read them the way design §2.3 did.
-                if uses.iter().all(|u| u.shown == 0 && u.opened == 0) {
-                    uses = crate::dry_run::uses_from_sessions(data_dir).await;
-                }
+                // `stats` answers a zero row for every id; those are "no counter yet"
+                // and take the session-derived counts (a pre-136 store fills `uses`
+                // one hinted id at a time — the way design §2.3 measured them).
+                let counted: Vec<_> = k
+                    .stats(&ids)
+                    .await
+                    .unwrap_or_default()
+                    .into_iter()
+                    .filter(|u| u.shown > 0 || u.opened > 0)
+                    .collect();
+                let uses = crate::dry_run::merge_uses(
+                    counted,
+                    crate::dry_run::uses_from_sessions(data_dir).await,
+                );
                 cand = tidy::candidates(&metas, &uses, cfg, Utc::now());
             }
             Err(e) => tracing::warn!("dreaming: knowledge list failed: {e:#}"),
