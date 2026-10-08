@@ -845,9 +845,10 @@ pub struct SetSessionMemory {
     pub filter: UnitFilter,
 }
 
-/// `ask` → `anyhow::Result<Vec<ViewLine>>` (137 R1-D6): the session's view
-/// folded to a `bytes` budget, for a meeting head's "Earlier in this meeting"
-/// section (`Endless::render_with_budget`).
+/// `ask` → `anyhow::Result<Vec<ViewBlock>>` (137 R1-D6): the session's view
+/// folded to a `bytes` budget as `<chat>` blocks, for a meeting head's
+/// "Earlier in this meeting" section (`Endless::render_with_budget`); the
+/// caller maps blocks to lines.
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 pub struct RenderMemoryView {
     /// Target session.

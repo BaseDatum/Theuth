@@ -48,13 +48,31 @@ pub async fn set_mode(
     endless.set_mode(session, mode, epoch, filter).await
 }
 
-/// R1-D6: the view re-folded to `bytes`, as lines (a meeting head's section).
+/// R1-D6: the view re-folded to `bytes` as `<chat>` blocks (a meeting
+/// head's section; the pinned shape of `agent::RenderMemoryView`). The
+/// service folds and returns lines; they are rendered §7.2-style into one
+/// marked block, or none when the view is empty.
 pub async fn render_with_budget(
     endless: &Endless,
     session: SessionId,
     bytes: u32,
-) -> anyhow::Result<Vec<ViewLine>> {
-    endless.render_with_budget(session, bytes).await
+) -> anyhow::Result<Vec<ViewBlock>> {
+    let lines = endless.render_with_budget(session, bytes).await?;
+    Ok(blocks_of(&lines))
+}
+
+/// `<chat>` … `</chat>` with one `id+n|text` line per [`ViewLine`]
+/// (newlines → spaces), as one cache-marked block; empty for no lines.
+pub fn blocks_of(lines: &[ViewLine]) -> Vec<ViewBlock> {
+    if lines.is_empty() {
+        return Vec::new();
+    }
+    let mut text = String::from("<chat>\n");
+    for l in lines {
+        text.push_str(&format!("{}+{}|{}\n", l.id, l.n, l.text.replace('\n', " ")));
+    }
+    text.push_str("</chat>");
+    vec![ViewBlock { text, mark: true }]
 }
 
 /// R1-D3/R1-D4: the estimate `/endless on` replies with, from the state the
@@ -235,5 +253,9 @@ mod tests {
         let mut epochs = memory(None);
         epochs.mode = MemoryMode::Epochs;
         assert!(status(&epochs).starts_with("Memory: epochs"));
+        let blocks = blocks_of(&busy.view);
+        assert_eq!(blocks.len(), 1);
+        assert_eq!(blocks[0].text, "<chat>\n0+2|user: a b\n</chat>");
+        assert!(blocks[0].mark && blocks_of(&[]).is_empty());
     }
 }

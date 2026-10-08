@@ -56,7 +56,7 @@ use crate::continuation::{
     TurnEntered, TurnReturned, YieldDecision,
 };
 use crate::endless::{
-    Attached, Endless, EndlessConfig, MemoryMode, SessionMemory, SetMode, ViewLine,
+    Attached, Endless, EndlessConfig, MemoryMode, SessionMemory, SetMode, ViewBlock, ViewLine,
 };
 use crate::lifecycle::{
     Authorize, Authorized, CleanupStatus, CloseResult, CreateSession, LeaveSession, PrivateOwner,
@@ -6607,10 +6607,11 @@ impl Message<SetSessionMemory> for Agents {
 }
 
 impl Message<RenderMemoryView> for Agents {
-    type Reply = anyhow::Result<Vec<ViewLine>>;
+    type Reply = anyhow::Result<Vec<ViewBlock>>;
 
-    /// 137 R1-D6: the view folded to `bytes` for a meeting head; empty for a
-    /// non-endless session. Any session this engine knows.
+    /// 137 R1-D6: the view folded to `bytes` for a meeting head, as `<chat>`
+    /// blocks (W4 maps blocks to lines); empty for a non-endless session or
+    /// an empty view. Any session this engine knows.
     async fn handle(
         &mut self,
         m: RenderMemoryView,
@@ -12032,7 +12033,7 @@ pub(crate) mod tests {
             .await
             .unwrap();
         assert_eq!(m.memory.mode, MemoryMode::Endless);
-        // RenderMemoryView: lines within the budget (none yet in the skeleton tree).
+        // RenderMemoryView: `<chat>` blocks within the budget (an empty tree renders none).
         assert!(
             agents
                 .ask(RenderMemoryView {
