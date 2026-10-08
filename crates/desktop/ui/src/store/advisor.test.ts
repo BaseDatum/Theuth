@@ -110,3 +110,22 @@ test('setChildren drops an advisor child: no tree row, no strip dot', () => {
   useSessions.getState().setChildren(S, [row('worker'), row('advisor', 'advisor')])
   expect(Object.keys(useSessions.getState().sessions[S]?.children ?? {})).toEqual(['worker'])
 })
+
+const consultation = (question: string, answer: string): Advisory => ({ advisor: 'adv', step: 4, turn: 1, at_ms: 1_700_000_000_000, notes: [{ severity: 'advice', note: answer }], kind: 'consultation', question })
+
+test('R1: an AdvisoryAdded of kind consultation is one card with its question, once per seq', () => {
+  const added: WireEvent = { type: 'AdvisoryAdded', session: S, seq: 11, advisory: consultation('Retry the migration?', 'No: the column is gone.') }
+  const s = run([{ type: 'TurnStarted', session: S, turn: T, text: 'hi', model: 'm', turn_seq: 1 }, added, added])
+  const cards = s.entries.filter((e) => e.kind === 'advisory')
+  expect(cards).toHaveLength(1)
+  expect(cards[0]).toMatchObject({ kind: 'advisory', seq: 11, question: 'Retry the migration?', notes: [{ severity: 'advice', note: 'No: the column is gone.' }] })
+  const [review] = fromHistory({ role: 'advisory', advisory: advisory(concern), context: msg(7) })
+  expect(review).not.toHaveProperty('question', expect.anything())
+})
+
+test('R1: the masked consultation row arrives through history as an advisory card with its question', () => {
+  const removed: ContextEntry = { ...msg(12), removed: true }
+  const [card, ...rest] = fromHistory({ role: 'advisory', advisory: consultation('Which approach?', 'The second.'), context: removed })
+  expect(rest).toEqual([])
+  expect(card).toMatchObject({ kind: 'advisory', seq: 12, question: 'Which approach?', notes: [{ severity: 'advice', note: 'The second.' }], at: 1_700_000_000_000 })
+})
