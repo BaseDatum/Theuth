@@ -329,6 +329,8 @@ pub struct Policy {
     cancelled: bool,
     /// The committed candidate's first words, for `Interrupted.text`.
     cut_text: Option<String>,
+    /// Tool calls of the turn still running (145 §0.2), from `Input::Tools`.
+    tools: u32,
     /// The spoken window as last told to the agent (145 §0.3); `true` is the
     /// predicate's value for a fresh `Listening` policy, `start` tells the agent.
     window: bool,
@@ -355,6 +357,7 @@ impl Policy {
             speech_start: None,
             cancelled: false,
             cut_text: None,
+            tools: 0,
             window: true,
         }
     }
@@ -401,6 +404,7 @@ impl Policy {
         if let Some(s) = self.ledger.sentences.get_mut(index) {
             s.status = Status::Dropped;
             self.maybe_listen(&mut out);
+            self.maybe_work(&mut out);
             self.sync_window(&mut out);
         }
         out
@@ -434,6 +438,7 @@ impl Policy {
                     self.ledger = Ledger::default();
                     self.reset_md();
                     self.speech_start = None;
+                    self.tools = 0;
                     self.set(State::Thinking, &mut out);
                 }
                 self.ledger.turn = Some(turn);
@@ -464,6 +469,7 @@ impl Policy {
                         };
                     }
                     self.maybe_listen(&mut out);
+                    self.maybe_work(&mut out);
                 }
             }
             Input::Packet { speech, seq } => {
@@ -474,13 +480,13 @@ impl Policy {
             Input::PlayedSeq(seq) => self.ledger.played_seq(seq),
             // 145 §0.2: a tool batch runs with nothing to hear → `Working`;
             // the batch returned → `Thinking` until the next block.
-            Input::Tools(n) => match self.state {
-                State::Thinking if n > 0 && !self.ledger.busy() => {
-                    self.set(State::Working, &mut out);
+            Input::Tools(n) => {
+                self.tools = n;
+                if n == 0 && self.state == State::Working {
+                    self.set(State::Thinking, &mut out);
                 }
-                State::Working if n == 0 => self.set(State::Thinking, &mut out),
-                _ => {}
-            },
+                self.maybe_work(&mut out);
+            }
             Input::Approval(summary) => {
                 let text = format!("Waiting for your approval to run {summary}.");
                 if let Some(text) = self.say(text, true, &mut out) {
@@ -667,6 +673,7 @@ impl Policy {
         self.speech_start = None;
         self.played = None;
         self.cancelled = false;
+        self.tools = 0;
         out.push(Action::Submit {
             text: marker + &body,
             interrupted,
@@ -974,6 +981,7 @@ impl Policy {
         if std::mem::take(&mut self.cancelled) {
             return;
         }
+        self.tools = 0;
         match reason {
             // Someone else cut the turn (Esc in the TUI): nothing more to say.
             "cancelled" | "interrupted" | "error" => {
@@ -1019,6 +1027,20 @@ impl Policy {
                 self.turn_start.get_or_insert(c.onset);
             }
             self.set(State::Listening, out);
+        }
+    }
+
+    /// 145 §0.2: calls of the turn are running and nothing is left to hear →
+    /// `Working`. From `Thinking` on `Tools(n > 0)`; from `Speaking` when the
+    /// queue drains under an outstanding call (the pre-tool narration ended),
+    /// so a remark then steers instead of cutting the work.
+    fn maybe_work(&mut self, out: &mut Vec<Action>) {
+        if self.tools > 0
+            && !self.ledger.busy()
+            && !self.ledger.turn_done
+            && matches!(self.state, State::Thinking | State::Speaking)
+        {
+            self.set(State::Working, out);
         }
     }
 }
@@ -2152,7 +2174,8 @@ mod tests {
 
     /// 145 P1: `Thinking` + `Tools(1)` → `Working`; `Tools(0)` → `Thinking`;
     /// `SpeechStarted` while `Working` → `Speaking`. Sentences still queued
-    /// keep `Thinking`.
+    /// keep `Thinking`; once the narration is heard out with a call still
+    /// running, `Working` (a remark then steers, 145 §0.2).
     #[test]
     fn p1_tools_move_thinking_to_working_and_back() {
         let (mut p, t0) = thinking();
@@ -2170,11 +2193,32 @@ mod tests {
         playing(&mut p, t0, "Checking. ");
         assert_eq!(p.state, State::Speaking);
         assert_eq!(p.step(Input::Tools(0), ms(t0, 1200)), vec![]);
-        // Queued but not yet playing: no `Working`.
+        // Queued but not yet playing: no `Working`; heard out under the call: `Working`.
         let (mut p, t0) = thinking();
         p.step(Input::Delta("One. ".into()), ms(t0, 1000));
         assert_eq!(p.step(Input::Tools(1), ms(t0, 1100)), vec![]);
         assert_eq!(p.state, State::Thinking);
+        let id = SpeechId::new();
+        p.spoken(0, id);
+        p.step(Input::SpeechStarted(id), ms(t0, 1200));
+        assert_eq!(p.state, State::Speaking);
+        let a = p.step(
+            Input::SpeechFinished {
+                speech: id,
+                done: true,
+            },
+            ms(t0, 1800),
+        );
+        assert_eq!(
+            a,
+            vec![
+                Action::State(State::Working),
+                Action::VadThreshold(voice::vad::Gate::THRESHOLD)
+            ]
+        );
+        // The turn ends with the call still counted (a `Finished` lost): listening, not working.
+        let a = p.step(Input::TurnFinished("end_turn".into()), ms(t0, 2000));
+        assert!(a.contains(&Action::State(State::Listening)));
     }
 
     /// 145 P2: an utterance committed while `Working` → exactly one `Steer`,
