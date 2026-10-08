@@ -361,7 +361,7 @@ internal sealed partial class SettingsWindow : Window
         }
         Row("Engine", () => engine, "url");
         Row("Connection", () => store.Connection.ToString().ToLowerInvariant(), "connection", isLive: true);
-        Row("Data dir", EngineLocation.DataDir, "data-dir");
+        Row("Data dir", () => EngineLocation.DataDir(), "data-dir");
         Row("Client", () => "companion", "client");
         Row("Hub", () => "— (Ask bar wave)", "hub");
         Row("Items · desks · sessions", () => $"{store.Items.Count} · {store.Agents.Count} · {store.Activity.Count}", "counts", isLive: true);

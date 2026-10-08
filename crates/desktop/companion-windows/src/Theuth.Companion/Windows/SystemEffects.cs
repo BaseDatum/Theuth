@@ -113,7 +113,9 @@ internal sealed class SystemEffects : IDisposable
     public static void ApplyTransitions(Windows.Win32.Foundation.HWND hwnd, bool animations)
     {
         int disable = animations ? 0 : 1;
-        int hr = DwmSetWindowAttribute(hwnd.Value, DwmwaTransitionsForceDisabled, ref disable, sizeof(int));
+        nint h;
+        unsafe { h = (nint)hwnd.Value; }
+        int hr = DwmSetWindowAttribute(h, DwmwaTransitionsForceDisabled, ref disable, sizeof(int));
         if (hr != 0) Log.Write($"effects: DwmSetWindowAttribute(TRANSITIONS_FORCEDISABLED={disable}) hr=0x{hr:X8}");
     }
 
