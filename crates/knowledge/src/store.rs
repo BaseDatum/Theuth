@@ -17,10 +17,10 @@ use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePool, SqlitePo
 
 use crate::repo::Repo;
 use crate::types::{
-    AgentScope, Change, Concept, History, Hit, KnowledgeOp, Meta, Put, Revision, Scoper, Source,
-    Sync, USER_OWNER, Visibility,
+    AgentScope, Change, Concept, History, Hit, KnowledgeOp, Meta, Put, Receipt, Revision, Scoper,
+    Source, Status, Sync, USER_OWNER, Uses, VerifyOutcome, Visibility,
 };
-use crate::{BODY_MAX, DIR, INDEX_FILE, KnowledgeChanged};
+use crate::{BODY_MAX, Consolidator, DIR, INDEX_FILE, KnowledgeChanged};
 
 const LOG_FILE: &str = "log.md";
 const INDEX_MD: &str = "index.md";
@@ -42,13 +42,19 @@ const CREATE_CONCEPTS: &str = "CREATE VIRTUAL TABLE IF NOT EXISTS concepts USING
     id UNINDEXED, type, title, description, tags, body, \
     scope UNINDEXED, source UNINDEXED, timestamp UNINDEXED, \
     owner UNINDEXED, visibility UNINDEXED, \
+    status UNINDEXED, hint UNINDEXED, evidence UNINDEXED, verified UNINDEXED, \
+    valid_until UNINDEXED, superseded_by UNINDEXED, merged_into UNINDEXED, \
     path UNINDEXED, mtime UNINDEXED, size UNINDEXED, \
     tokenize = 'porter unicode61 remove_diacritics 2')";
 /// Columns of [`MetaRow`], in `SELECT` order.
-pub(crate) const META_COLS: &str =
-    "id, type, title, description, tags, scope, source, timestamp, owner, visibility";
+pub(crate) const META_COLS: &str = "id, type, title, description, tags, scope, source, timestamp, owner, visibility, \
+    status, hint, evidence, verified, valid_until, superseded_by, merged_into";
 const CREATE_LINKS: &str = "CREATE TABLE IF NOT EXISTS links (src TEXT NOT NULL, dst TEXT NOT NULL, PRIMARY KEY (src, dst))";
 const CREATE_LINKS_DST: &str = "CREATE INDEX IF NOT EXISTS links_dst ON links(dst)";
+/// 136 §2.1: usage counters. DURABLE — `sync` never touches it; deleting the
+/// index file loses the counts (design 10's "deletable" rule is amended).
+const CREATE_USES: &str = "CREATE TABLE IF NOT EXISTS uses (id TEXT PRIMARY KEY, shown INTEGER NOT NULL DEFAULT 0, \
+    opened INTEGER NOT NULL DEFAULT 0, last_shown TEXT, last_opened TEXT)";
 
 /// Handle to `<data_dir>/knowledge/` and `<data_dir>/knowledge.sqlite`.
 /// Every write path runs under `write` (10 §2.3).
@@ -69,6 +75,9 @@ pub struct Knowledge {
     /// Which agent a session is (67 §9), from [`Knowledge::set_scoper`]; `None`
     /// = every session is the user's.
     scoper: std::sync::RwLock<Option<Arc<dyn Scoper>>>,
+    /// Who may run dreaming's consolidation ops (136 §2.1), from
+    /// [`Knowledge::set_consolidator`]; `None` = nobody yet.
+    consolidator: std::sync::RwLock<Option<Arc<dyn Consolidator>>>,
 }
 
 /// Frontmatter columns of a row, as `list`/`search`/`get` read them ([`META_COLS`]).
@@ -85,6 +94,13 @@ pub(crate) struct MetaRow {
     timestamp: Option<String>,
     owner: String,
     visibility: String,
+    status: String,
+    hint: i64,
+    evidence: String,
+    verified: Option<String>,
+    valid_until: Option<String>,
+    superseded_by: Option<String>,
+    merged_into: Option<String>,
 }
 
 impl From<MetaRow> for Meta {
@@ -100,6 +116,13 @@ impl From<MetaRow> for Meta {
             timestamp: r.timestamp,
             owner: r.owner,
             visibility: Visibility::parse(&r.visibility).unwrap_or_default(),
+            status: Status::parse(&r.status).unwrap_or_default(),
+            hint: r.hint != 0,
+            evidence: r.evidence.split_whitespace().map(str::to_owned).collect(),
+            verified: r.verified,
+            valid_until: r.valid_until,
+            superseded_by: r.superseded_by,
+            merged_into: r.merged_into,
         }
     }
 }
@@ -159,6 +182,18 @@ impl Indexed {
                 .and_then(Value::as_display_string)
                 .and_then(|v| Visibility::parse(&v))
                 .unwrap_or_default(),
+            // 136 §5.1: absent = tidy, hinted, no evidence, never verified.
+            status: fm
+                .get("status")
+                .and_then(Value::as_display_string)
+                .and_then(|s| Status::parse(&s))
+                .unwrap_or_default(),
+            hint: fm.get("hint").and_then(fm_bool).unwrap_or(true),
+            evidence: fm_strings(fm.get("evidence")),
+            verified: fm_string(fm.get("verified")),
+            valid_until: fm_string(fm.get("valid_until")),
+            superseded_by: fm_string(fm.get("superseded_by")),
+            merged_into: fm_string(fm.get("merged_into")),
             id,
         };
         let links: BTreeSet<String> = doc
@@ -182,6 +217,36 @@ impl Indexed {
         let text = std::fs::read_to_string(abs)?;
         let (mtime, size) = stat(abs)?;
         Self::new(root, abs, &Document::parse(&text)?, mtime, size)
+    }
+}
+
+/// A scalar frontmatter value as trimmed text; `None` when absent, empty or not a scalar.
+fn fm_string(v: Option<&Value>) -> Option<String> {
+    v.and_then(Value::as_display_string)
+        .map(|s| s.trim().to_owned())
+        .filter(|s| !s.is_empty())
+}
+
+/// `hint: true|false` as written, or `"true"`/`"false"` text.
+fn fm_bool(v: &Value) -> Option<bool> {
+    v.as_bool()
+        .or_else(|| match v.as_str().map(str::trim) {
+            Some("true") => Some(true),
+            Some("false") => Some(false),
+            _ => None,
+        })
+}
+
+/// A list value (`evidence: [a, b]`), or one scalar as a one-item list.
+fn fm_strings(v: Option<&Value>) -> Vec<String> {
+    match v {
+        Some(Value::Sequence(items)) => items
+            .iter()
+            .filter_map(Value::as_display_string)
+            .map(|s| s.trim().to_owned())
+            .filter(|s| !s.is_empty())
+            .collect(),
+        other => fm_string(other).into_iter().collect(),
     }
 }
 
@@ -440,9 +505,10 @@ async fn open_db(path: &Path) -> anyhow::Result<SqlitePool> {
         .max_connections(4)
         .connect_with(opts)
         .await?;
-    // 67 §9 added `owner`/`visibility`: an index from before lacks them. It
-    // is derived, so drop it and let `sync` rebuild.
-    if sqlx::query("SELECT owner, visibility FROM concepts LIMIT 0")
+    // 67 §9 added `owner`/`visibility`, 136 §2.1 the status columns: an index
+    // from before lacks them. `concepts` is derived, so drop it and let `sync`
+    // rebuild; `uses` is durable and is never dropped.
+    if sqlx::query("SELECT owner, visibility, status, hint, evidence, verified, valid_until, superseded_by, merged_into FROM concepts LIMIT 0")
         .execute(&pool)
         .await
         .is_err()
@@ -451,7 +517,7 @@ async fn open_db(path: &Path) -> anyhow::Result<SqlitePool> {
             .execute(&pool)
             .await?;
     }
-    for sql in [CREATE_CONCEPTS, CREATE_LINKS, CREATE_LINKS_DST] {
+    for sql in [CREATE_CONCEPTS, CREATE_LINKS, CREATE_LINKS_DST, CREATE_USES] {
         sqlx::query(sql).execute(&pool).await?;
     }
     Ok(pool)
@@ -513,6 +579,7 @@ impl Knowledge {
             stale: Mutex::new(HashMap::new()),
             search: crate::search::Caches::default(),
             scoper: std::sync::RwLock::new(None),
+            consolidator: std::sync::RwLock::new(None),
         });
         let s = k.sync().await?;
         if !s.is_empty() {
@@ -658,6 +725,26 @@ impl Knowledge {
         *self.scoper.write().unwrap_or_else(|p| p.into_inner()) = Some(s);
     }
 
+    /// Install the "may this session consolidate" answerer (136 §2.1). Called
+    /// once by the agent plugin.
+    pub fn set_consolidator(&self, c: Arc<dyn Consolidator>) {
+        *self.consolidator.write().unwrap_or_else(|p| p.into_inner()) = Some(c);
+    }
+
+    /// 136 §2.1: is `session` the dreaming routine's (unattended) or the
+    /// owner's own root session? `false` until a [`Consolidator`] is installed.
+    pub async fn may_consolidate(&self, session: SessionId) -> bool {
+        let c = self
+            .consolidator
+            .read()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone();
+        match c {
+            Some(c) => c.may_consolidate(session).await,
+            None => false,
+        }
+    }
+
     /// The scope `session` reads and writes as; `None` = the user's (sees everything).
     fn scope_for(&self, session: Option<SessionId>) -> Option<AgentScope> {
         let s = session?;
@@ -676,7 +763,10 @@ impl Knowledge {
     /// Validate, write atomically, index, `index.md`, `log.md`, commit, and
     /// report whether the concept was created (10 §2.3). From an agent's
     /// session the file is stamped `owner: agent:<name>` and, unless the put
-    /// says otherwise, `visibility: private` (67 §9).
+    /// says otherwise, `visibility: private` (67 §9). 136 §2.1: an existing
+    /// file's frontmatter is the starting point — every key the put does not
+    /// set (the seven 136 keys when `None`/empty, and any key the harness
+    /// does not know) round-trips verbatim.
     pub async fn put_for(
         &self,
         p: Put,
@@ -706,15 +796,27 @@ impl Knowledge {
             .map(|t| Value::String(t.to_owned()))
             .collect();
 
-        let mut fm = okf::Frontmatter::new();
+        let _g = self.write.lock().await;
+        // The existing frontmatter, so unknown keys survive (136 §15 amends 10 §3).
+        let mut fm = match std::fs::read_to_string(cid.to_path(&self.root)) {
+            Ok(text) => Document::parse(&text)
+                .map(|d| d.frontmatter)
+                .unwrap_or_default(),
+            Err(_) => okf::Frontmatter::new(),
+        };
         fm.set("type", Value::String(type_.to_owned()));
         fm.set("title", Value::String(title.to_owned()));
         fm.set("description", Value::String(description.to_owned()));
-        if !tags.is_empty() {
+        if tags.is_empty() {
+            fm.as_mapping_mut().remove("tags");
+        } else {
             fm.set("tags", Value::Sequence(tags));
         }
-        if let Some(scope) = &p.scope {
-            fm.set("scope", Value::String(scope.to_string_lossy().into_owned()));
+        match &p.scope {
+            Some(scope) => fm.set("scope", Value::String(scope.to_string_lossy().into_owned())),
+            None => {
+                fm.as_mapping_mut().remove("scope");
+            }
         }
         let scope = self.scope_for(session);
         let owner = scope.as_ref().map_or(USER_OWNER, |s| s.owner.as_str());
@@ -725,10 +827,32 @@ impl Knowledge {
         });
         fm.set("owner", Value::String(owner.to_owned()));
         fm.set("visibility", Value::String(visibility.as_str().to_owned()));
+        // 136 §5.1: only what the put sets; `None`/empty keeps the file's value.
+        if let Some(s) = p.status {
+            fm.set("status", Value::String(s.as_str().to_owned()));
+        }
+        if let Some(h) = p.hint {
+            fm.set("hint", Value::Bool(h));
+        }
+        if !p.evidence.is_empty() {
+            fm.set(
+                "evidence",
+                Value::Sequence(p.evidence.iter().cloned().map(Value::String).collect()),
+            );
+        }
+        for (key, value) in [
+            ("verified", &p.verified),
+            ("valid_until", &p.valid_until),
+            ("superseded_by", &p.superseded_by),
+            ("merged_into", &p.merged_into),
+        ] {
+            if let Some(v) = value {
+                fm.set(key, Value::String(v.clone()));
+            }
+        }
         stamp(&mut fm, source);
         let text = Document::new(fm, p.body).serialize();
 
-        let _g = self.write.lock().await;
         let entry = format!("put {id}");
         let w = self.write_concept(&cid, text, &entry, &entry).await?;
         self.rt
@@ -974,7 +1098,8 @@ impl Knowledge {
             if out.len() >= limit as usize {
                 break;
             }
-            if exclude.contains(&hit.meta.id) {
+            // 136 §5.3: `hint: false` and a non-live status never reach a note (rank is W1's).
+            if exclude.contains(&hit.meta.id) || !hit.meta.hint || !hit.meta.status.is_live() {
                 continue;
             }
             let m = &hit.meta;
@@ -1149,8 +1274,9 @@ impl Knowledge {
             .execute(&mut *tx)
             .await?;
         sqlx::query(
-            "INSERT INTO concepts (id, type, title, description, tags, body, scope, source, timestamp, owner, visibility, path, mtime, size) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO concepts (id, type, title, description, tags, body, scope, source, timestamp, owner, visibility, \
+             status, hint, evidence, verified, valid_until, superseded_by, merged_into, path, mtime, size) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(&m.id)
         .bind(&m.type_)
@@ -1163,6 +1289,13 @@ impl Knowledge {
         .bind(&m.timestamp)
         .bind(&m.owner)
         .bind(m.visibility.as_str())
+        .bind(m.status.as_str())
+        .bind(i64::from(m.hint))
+        .bind(m.evidence.join(" "))
+        .bind(&m.verified)
+        .bind(&m.valid_until)
+        .bind(&m.superseded_by)
+        .bind(&m.merged_into)
         .bind(&ix.path)
         .bind(ix.mtime)
         .bind(ix.size)
@@ -1287,7 +1420,140 @@ fn stub(m: Meta) -> Meta {
         scope: None,
         source: None,
         timestamp: None,
+        evidence: Vec::new(),
         ..m
+    }
+}
+
+/// RFC 3339 seconds, UTC — the `uses` timestamp format.
+fn rfc3339(at: chrono::DateTime<chrono::Utc>) -> String {
+    at.format("%Y-%m-%dT%H:%M:%SZ").to_string()
+}
+
+impl Knowledge {
+    /// 136 §2.1: one impression per id — `uses.shown += 1`, `last_shown = at`.
+    /// Unknown ids get a row; nothing else is touched.
+    pub async fn record_shown(
+        &self,
+        ids: &[String],
+        at: chrono::DateTime<chrono::Utc>,
+    ) -> anyhow::Result<()> {
+        if ids.is_empty() {
+            return Ok(());
+        }
+        let at = rfc3339(at);
+        let mut tx = self.db.begin().await?;
+        for id in ids {
+            sqlx::query(
+                "INSERT INTO uses (id, shown, last_shown) VALUES (?, 1, ?) \
+                 ON CONFLICT(id) DO UPDATE SET shown = shown + 1, last_shown = excluded.last_shown",
+            )
+            .bind(id)
+            .bind(&at)
+            .execute(&mut *tx)
+            .await?;
+        }
+        tx.commit().await?;
+        Ok(())
+    }
+
+    /// 136 §2.1: one open — `uses.opened += 1`, `last_opened = at`.
+    pub async fn record_opened(
+        &self,
+        id: &str,
+        at: chrono::DateTime<chrono::Utc>,
+    ) -> anyhow::Result<()> {
+        sqlx::query(
+            "INSERT INTO uses (id, opened, last_opened) VALUES (?, 1, ?) \
+             ON CONFLICT(id) DO UPDATE SET opened = opened + 1, last_opened = excluded.last_opened",
+        )
+        .bind(id)
+        .bind(rfc3339(at))
+        .execute(&self.db)
+        .await?;
+        Ok(())
+    }
+
+    /// 136 §2.1: the counters of `ids`, in the order given; an id never shown
+    /// or opened reports zeros.
+    pub async fn stats(&self, ids: &[String]) -> anyhow::Result<Vec<Uses>> {
+        let mut out = Vec::with_capacity(ids.len());
+        for id in ids {
+            let row: Option<(i64, i64, Option<String>, Option<String>)> = sqlx::query_as(
+                "SELECT shown, opened, last_shown, last_opened FROM uses WHERE id = ?",
+            )
+            .bind(id)
+            .fetch_optional(&self.db)
+            .await?;
+            let (shown, opened, last_shown, last_opened) = row.unwrap_or_default();
+            out.push(Uses {
+                id: id.clone(),
+                shown: shown.max(0) as u64,
+                opened: opened.max(0) as u64,
+                last_shown,
+                last_opened,
+            });
+        }
+        Ok(out)
+    }
+
+    /// 136 §3.1 item 4: fold `ids` into `into` (body given; `evidence` and
+    /// tags = union; scope = the canonical's), rewrite each folded id as a
+    /// `status: merged, merged_into: <into>, hint: false` stub, retarget
+    /// `links` rows, one commit `dreaming merge <into>`.
+    pub async fn merge(
+        &self,
+        ids: &[String],
+        into: &str,
+        body: &str,
+        evidence: &[String],
+        scope: &AgentScope,
+    ) -> anyhow::Result<Receipt> {
+        // 136 W1
+        let _ = (ids, into, body, evidence, scope);
+        bail!("not built: W1 (knowledge merge)")
+    }
+
+    /// 136 §3.1 item 4: `superseded_by`, `valid_until`, `hint: false` on the
+    /// loser; `note` goes under the loser's body.
+    pub async fn supersede(
+        &self,
+        loser: &str,
+        winner: &str,
+        valid_until: Option<&str>,
+        note: Option<&str>,
+    ) -> anyhow::Result<Receipt> {
+        // 136 W1
+        let _ = (loser, winner, valid_until, note);
+        bail!("not built: W1 (knowledge supersede)")
+    }
+
+    /// 136 §3.1 item 4: `status: archived, hint: false`; `reason` appended
+    /// under `## Archived`.
+    pub async fn archive(&self, id: &str, reason: &str) -> anyhow::Result<Receipt> {
+        // 136 W1
+        let _ = (id, reason);
+        bail!("not built: W1 (knowledge archive)")
+    }
+
+    /// 136 §3.1 item 4: `verified: <today>` (ok) or `status: stale` + note (stale).
+    pub async fn verify(
+        &self,
+        id: &str,
+        outcome: VerifyOutcome,
+        note: Option<&str>,
+    ) -> anyhow::Result<Receipt> {
+        // 136 W1
+        let _ = (id, outcome, note);
+        bail!("not built: W1 (knowledge verify)")
+    }
+
+    /// 136 §3.1 item 4: set `title`; the old title becomes a leading
+    /// "Summary" paragraph (`summary` when given, else the old title text).
+    pub async fn retitle(&self, id: &str, title: &str, summary: &str) -> anyhow::Result<Receipt> {
+        // 136 W1
+        let _ = (id, title, summary);
+        bail!("not built: W1 (knowledge retitle)")
     }
 }
 
@@ -1359,6 +1625,7 @@ pub fn terms(text: &str) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chrono::TimeZone;
 
     fn tempdir() -> PathBuf {
         let d = std::env::temp_dir().join(format!("theuth-knowledge-{}", uuid::Uuid::new_v4()));
@@ -1382,7 +1649,161 @@ mod tests {
             scope: None,
             body: body.into(),
             visibility: None,
+            ..Put::default()
         }
+    }
+
+    /// 136 §2.1: `put_for` keeps the seven keys and any unknown key of an
+    /// existing file; a put that sets one overwrites only that one.
+    #[tokio::test]
+    async fn put_for_round_trips_the_136_keys_and_unknown_keys() {
+        let (k, dir) = open().await;
+        let path = dir.join(DIR).join("facts").join("rt.md");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(
+            &path,
+            "---\ntype: fact\ntitle: Old title\nstatus: fresh\nhint: false\nevidence: [01abc, user]\n\
+             verified: 2026-10-01\nvalid_until: 2026-10-07T21:05:00Z\nsuperseded_by: facts/new\n\
+             merged_into: facts/canon\ncheck: ls /\nresource: https://x.example\n---\nold\n",
+        )
+        .unwrap();
+        k.sync().await.unwrap();
+        let m = k.get("facts/rt").await.unwrap().meta;
+        assert_eq!(m.status, Status::Fresh);
+        assert!(!m.hint);
+        assert_eq!(m.evidence, ["01abc", "user"]);
+        assert_eq!(m.verified.as_deref(), Some("2026-10-01"));
+        assert_eq!(m.valid_until.as_deref(), Some("2026-10-07T21:05:00Z"));
+        assert_eq!(m.superseded_by.as_deref(), Some("facts/new"));
+        assert_eq!(m.merged_into.as_deref(), Some("facts/canon"));
+
+        // A plain put (nothing of 136 set) keeps every key and the unknown ones verbatim.
+        let (m, created) = k
+            .put(put("facts/rt", "New title", "new body"), Source::Model)
+            .await
+            .unwrap();
+        assert!(!created);
+        assert_eq!(m.title, "New title");
+        assert_eq!(m.status, Status::Fresh);
+        assert!(!m.hint);
+        assert_eq!(m.evidence, ["01abc", "user"]);
+        assert_eq!(m.superseded_by.as_deref(), Some("facts/new"));
+        let text = std::fs::read_to_string(&path).unwrap();
+        for line in [
+            "check: ls /",
+            "resource: https://x.example",
+            "verified: 2026-10-01",
+            "merged_into: facts/canon",
+            "hint: false",
+        ] {
+            assert!(text.contains(line), "{line:?} missing from\n{text}");
+        }
+
+        // A put that sets a key overwrites that key only.
+        let (m, _) = k
+            .put(
+                Put {
+                    status: Some(Status::Tidy),
+                    hint: Some(true),
+                    evidence: vec!["01def".into()],
+                    ..put("facts/rt", "New title", "new body")
+                },
+                Source::Dreaming,
+            )
+            .await
+            .unwrap();
+        assert_eq!(m.status, Status::Tidy);
+        assert!(m.hint);
+        assert_eq!(m.evidence, ["01def"]);
+        assert_eq!(m.verified.as_deref(), Some("2026-10-01"));
+        assert_eq!(m.source, Some(Source::Dreaming));
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.contains("source: dreaming"), "{text}");
+        assert!(text.contains("check: ls /"), "{text}");
+        // The row carries the columns too (list reads rows, not files).
+        let listed = k.list(Some("facts/rt"), None, None, 10).await.unwrap();
+        assert_eq!(listed[0].status, Status::Tidy);
+        assert_eq!(listed[0].evidence, ["01def"]);
+
+        // A file without any 136 key reads as the defaults.
+        k.put(put("facts/plain", "Plain", "b"), Source::Model)
+            .await
+            .unwrap();
+        let m = k.get("facts/plain").await.unwrap().meta;
+        assert_eq!(m.status, Status::Tidy);
+        assert!(m.hint);
+        assert!(m.evidence.is_empty());
+        assert!(!std::fs::read_to_string(dir.join(DIR).join("facts").join("plain.md"))
+            .unwrap()
+            .contains("status:"));
+    }
+
+    /// 136 §2.1: `uses` counts impressions and opens, answers zeros for
+    /// unknown ids, and survives `sync`.
+    #[tokio::test]
+    async fn uses_table_records_shown_and_opened_and_survives_sync() {
+        let (k, _dir) = open().await;
+        k.put(put("facts/a", "A", "a"), Source::Model).await.unwrap();
+        let t0 = chrono::Utc.with_ymd_and_hms(2026, 10, 8, 1, 0, 0).unwrap();
+        let t1 = t0 + chrono::Duration::minutes(5);
+        let ids = vec!["facts/a".to_owned(), "facts/ghost".to_owned()];
+        k.record_shown(&ids, t0).await.unwrap();
+        k.record_shown(&ids[..1], t1).await.unwrap();
+        k.record_opened("facts/a", t1).await.unwrap();
+        k.sync().await.unwrap();
+        let s = k
+            .stats(&["facts/a".into(), "facts/ghost".into(), "facts/none".into()])
+            .await
+            .unwrap();
+        assert_eq!((s[0].shown, s[0].opened), (2, 1));
+        assert_eq!(s[0].last_shown.as_deref(), Some("2026-10-08T01:05:00Z"));
+        assert_eq!(s[0].last_opened.as_deref(), Some("2026-10-08T01:05:00Z"));
+        assert_eq!((s[1].shown, s[1].opened), (1, 0));
+        assert_eq!(s[1].last_opened, None);
+        assert_eq!(s[2], Uses { id: "facts/none".into(), ..Uses::default() });
+        k.record_shown(&[], t1).await.unwrap();
+    }
+
+    /// 136 §5.3: `hint: false` and a non-live status are filtered from hints
+    /// but stay searchable.
+    #[tokio::test]
+    async fn hint_for_skips_unhinted_and_non_live_but_search_keeps_them() {
+        let (k, _dir) = open().await;
+        k.put(
+            Put {
+                hint: Some(false),
+                ..put("facts/quiet", "Quiet rust toolchain", "rust toolchain notes")
+            },
+            Source::Model,
+        )
+        .await
+        .unwrap();
+        k.put(
+            Put {
+                status: Some(Status::Archived),
+                ..put("facts/old", "Old rust toolchain", "rust toolchain notes")
+            },
+            Source::Model,
+        )
+        .await
+        .unwrap();
+        k.put(
+            put("facts/live", "Live rust toolchain", "rust toolchain notes"),
+            Source::Model,
+        )
+        .await
+        .unwrap();
+        let cwd = std::env::temp_dir();
+        let hints = k
+            .hint("rust toolchain", &cwd, &BTreeSet::new(), 5)
+            .await
+            .unwrap();
+        assert_eq!(
+            hints.iter().map(|m| m.id.as_str()).collect::<Vec<_>>(),
+            ["facts/live"]
+        );
+        let found = k.search("rust toolchain", &cwd, 10).await.unwrap();
+        assert_eq!(found.len(), 3);
     }
 
     /// A fixed session → scope table standing in for the roster (67 §9).

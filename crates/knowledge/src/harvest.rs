@@ -149,6 +149,13 @@ mod tests {
             timestamp: None,
             owner: crate::types::USER_OWNER.into(),
             visibility: Default::default(),
+            status: Default::default(),
+            hint: true,
+            evidence: vec![],
+            verified: None,
+            valid_until: None,
+            superseded_by: None,
+            merged_into: None,
         }
     }
 
