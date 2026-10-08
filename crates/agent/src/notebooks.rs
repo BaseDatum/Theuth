@@ -63,7 +63,7 @@ impl Budget {
     /// The configured section, defaults when absent or unreadable.
     pub fn from_runtime(rt: &Runtime) -> Self {
         if rt.config.contains("notebooks") {
-            rt.section("notebooks").unwrap_or_default()
+            rt.section::<Self>("notebooks").unwrap_or_default()
         } else {
             Self::default()
         }

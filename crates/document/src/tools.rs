@@ -822,7 +822,7 @@ impl Tool for CreateTool {
         let mut markdown = a.markdown.unwrap_or_default();
         // 144 §6.6 / §8: a saved answer's chips must point at live blocks and carry `?s=`.
         if let Some(refused) =
-            crate::cite_check::check(&self.actor, &mut markdown, by.clone()).await
+            crate::cite_check::check(&self.0.actor, &mut markdown, by.clone()).await
         {
             return Ok(refused);
         }

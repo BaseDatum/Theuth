@@ -14,6 +14,7 @@ fn item(kind: &str, id: &str, title: &str, body: Option<&str>, added_ms: i64) ->
         } else {
             String::new()
         },
+        body: body.map(str::to_owned),
         words: body.map_or(0, |b| {
             b.lines()
                 .filter(|l| !l.starts_with("<!-- "))
