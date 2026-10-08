@@ -43,9 +43,12 @@ pub struct Entry {
     /// (`.claude/skills` for Claude Code).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub skills_dir: Option<PathBuf>,
-    /// Give the child the theuth MCP shim (`load_skill`, `list_skills`,
-    /// `send_message`; 75 §9) in `session/new.mcpServers`; default true,
-    /// `mcp: false` opts out.
+    /// Give the child the theuth MCP skills back-channel (`list_skills`,
+    /// `load_skill`, `send_message`; 75 §9, 141 D14) in `session/new` |
+    /// `session/load` `mcpServers`. **Default on** for every harness — unset
+    /// or `mcp: true` sends it, `mcp: false` opts out; read via
+    /// [`Entry::mcp_enabled`]. A harness that rejects it is retried once
+    /// without it (`Harness::connect`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mcp: Option<bool>,
 }
@@ -62,6 +65,13 @@ impl Entry {
             .args(self.args.iter().cloned())
             .env("OPENCODE_PRINT_LOGS", "1")
             .envs(self.env.iter().map(|(k, v)| (k.clone(), v.clone())))
+    }
+
+    /// 141 D14: whether `session/new` | `session/load` carries the theuth
+    /// MCP back-channel — `mcp` unset is **on**; only `mcp: false` opts out.
+    #[must_use]
+    pub fn mcp_enabled(&self) -> bool {
+        self.mcp.unwrap_or(true)
     }
 }
 
@@ -210,6 +220,19 @@ mod tests {
         assert_eq!(cfg.arguments(), ["acp"]);
         assert_eq!(cfg.environment()["OPENCODE_CONFIG"], "/x.json");
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// 141 D14: the back-channel is on unless the entry says `mcp: false`.
+    #[test]
+    fn mcp_back_channel_defaults_on_and_false_opts_out() {
+        let entries: BTreeMap<String, Entry> = serde_yaml::from_str(
+            "omp:\n  command: omp\nquiet:\n  command: x\n  mcp: false\nloud:\n  command: y\n  mcp: true\n",
+        )
+        .unwrap();
+        assert_eq!(entries["omp"].mcp, None);
+        assert!(entries["omp"].mcp_enabled());
+        assert!(!entries["quiet"].mcp_enabled());
+        assert!(entries["loud"].mcp_enabled());
     }
 
     #[test]

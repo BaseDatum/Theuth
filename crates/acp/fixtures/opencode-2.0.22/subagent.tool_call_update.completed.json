@@ -1,0 +1,29 @@
+{
+ "jsonrpc": "2.0",
+ "method": "session/update",
+ "params": {
+  "sessionId": "ses_ee4d9b05effekZbnkfXPDosL35",
+  "update": {
+   "sessionUpdate": "tool_call_update",
+   "toolCallId": "toolu_018wLewXWWb6vBSf6pqKcnLn",
+   "status": "completed",
+   "locations": [],
+   "content": [
+    {
+     "type": "content",
+     "content": {
+      "type": "text",
+      "text": "<subagent sessionID=\"ses_ee4d9a752ffe2XT5Oz2Fldml2j\" state=\"completed\">\nalpha line one\n</subagent>"
+     }
+    }
+   ],
+   "rawOutput": {
+    "metadata": {
+     "sessionID": "ses_ee4d9a752ffe2XT5Oz2Fldml2j",
+     "status": "completed",
+     "truncated": false
+    }
+   }
+  }
+ }
+}

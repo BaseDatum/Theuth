@@ -1,0 +1,20 @@
+{
+ "jsonrpc": "2.0",
+ "method": "session/update",
+ "params": {
+  "sessionId": "ses_ee4d8bb5dffeS1akqW7B497imb",
+  "update": {
+   "sessionUpdate": "tool_call_update",
+   "toolCallId": "call_a062fdd9472f454ea6e45c9b",
+   "status": "in_progress",
+   "kind": "think",
+   "title": "Read first line of a.txt",
+   "locations": [],
+   "rawInput": {
+    "description": "Read first line of a.txt",
+    "prompt": "Read the file /private/tmp/recon-141/oc-scratch/a.txt and report its first line exactly as-is. Do not modify anything. Final message: just the first line (or note if the file is missing/empty).",
+    "subagent_type": "explore"
+   }
+  }
+ }
+}
