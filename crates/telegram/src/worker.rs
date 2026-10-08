@@ -1285,6 +1285,7 @@ mod tests {
                     severity,
                     note: note.into(),
                 }],
+                kind: Default::default(),
             },
         };
         r.ev(card(AdvisorSeverity::Nit, "nit: rename x")).await;

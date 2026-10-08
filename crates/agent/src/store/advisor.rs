@@ -11,7 +11,7 @@ use genai::chat::ChatMessage;
 use runtime::SessionId;
 use sqlx::FromRow;
 
-use super::{Store, insert_in, rows_in, turn_starts};
+use super::{Mask, Store, insert_in, rows_in, turn_starts};
 use crate::{AdvisorLink, AdvisorState, Advisory, HistoryEntry, SessionKind};
 
 /// `sessions.kind` text of a [`SessionKind`].
@@ -179,19 +179,31 @@ impl Store {
     /// Append an advisory user row with its metadata in one transaction;
     /// returns the seq. The row is model context (`updated_at` and the
     /// revision bump, like any append) but opens no turn and writes no
-    /// journal step.
+    /// journal step. `model_visible == false` (R1 consultations) also writes
+    /// `excluded = {"whole": true}`: a card for the UIs, never model context.
     pub async fn append_advisory(
         &self,
         session: SessionId,
         text: &str,
         meta: &Advisory,
+        model_visible: bool,
     ) -> anyhow::Result<i64> {
         let advisory = serde_json::to_string(meta)?;
+        let excluded = if model_visible {
+            None
+        } else {
+            Mask {
+                whole: true,
+                ..Default::default()
+            }
+            .encode()?
+        };
         let sid = session.to_string();
         let mut tx = self.begin_write().await?;
         let seq = insert_in(&mut tx, &sid, &ChatMessage::user(text), None, None).await?;
-        sqlx::query("UPDATE messages SET advisory = ? WHERE session_id = ? AND seq = ?")
+        sqlx::query("UPDATE messages SET advisory = ?, excluded = ? WHERE session_id = ? AND seq = ?")
             .bind(&advisory)
+            .bind(&excluded)
             .bind(&sid)
             .bind(seq)
             .execute(&mut *tx)
@@ -257,6 +269,7 @@ mod tests {
                 severity,
                 note: note.into(),
             }],
+            kind: Default::default(),
         }
     }
 
@@ -361,7 +374,7 @@ mod tests {
             .unwrap();
         let meta = card(advisor, AdvisorSeverity::Concern, "check the lock file");
         let seq = store
-            .append_advisory(id, "<advisory>check the lock file</advisory>", &meta)
+            .append_advisory(id, "<advisory>check the lock file</advisory>", &meta, true)
             .await
             .unwrap();
         assert_eq!(seq, 2);
@@ -556,6 +569,85 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(store.advisor_links().await.unwrap().len(), 1);
+        drop(store);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// R1 D-R1.6: a consultation row is masked — a card in `rows_since`,
+    /// `removed` in the context metadata, gone from the effective frame.
+    #[tokio::test]
+    async fn masked_advisory_is_a_card_but_not_model_context() {
+        let (store, id, dir) = fresh().await;
+        let advisor = advisor_of(&store, id).await;
+        store.append(id, &ChatMessage::user("u1")).await.unwrap();
+        let mut meta = card(advisor, AdvisorSeverity::Advice, "read the justfile first");
+        meta.kind = crate::AdvisoryKind::Consultation {
+            question: "justfile or README?".into(),
+        };
+        let seq = store
+            .append_advisory(id, "read the justfile first", &meta, false)
+            .await
+            .unwrap();
+        let (raw,): (Option<String>,) =
+            sqlx::query_as("SELECT excluded FROM messages WHERE session_id = ? AND seq = ?")
+                .bind(id.to_string())
+                .bind(seq)
+                .fetch_one(&store.read)
+                .await
+                .unwrap();
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&raw.unwrap()).unwrap()["whole"],
+            true
+        );
+        let h = store.context_history(id).await.unwrap();
+        assert!(h.entries[&seq].removed);
+        assert_eq!(store.effective_message(id, seq).await.unwrap(), None);
+        let rows = store.rows_since(id, seq).await.unwrap();
+        match &rows[0].1 {
+            HistoryEntry::Advisory { advisory, context } => {
+                assert_eq!(advisory, &meta);
+                assert!(context.as_ref().unwrap().removed);
+            }
+            other => panic!("{other:?}"),
+        }
+        // A visible card keeps its row in the frame.
+        let seq = store
+            .append_advisory(id, "x", &card(advisor, AdvisorSeverity::Nit, "x"), true)
+            .await
+            .unwrap();
+        assert!(!store.context_history(id).await.unwrap().entries[&seq].removed);
+        drop(store);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// R1.5: the parent chain nearest first, bounded like `root_of`.
+    #[tokio::test]
+    async fn ancestors_are_nearest_first_and_bounded() {
+        let (store, root, dir) = fresh().await;
+        let child = SessionId::new();
+        let grandchild = SessionId::new();
+        store
+            .create_session(child, "m", Some(root), None, None)
+            .await
+            .unwrap();
+        store
+            .create_session(grandchild, "m", Some(child), None, None)
+            .await
+            .unwrap();
+        assert_eq!(store.ancestors(grandchild).await.unwrap(), [child, root]);
+        assert_eq!(store.ancestors(child).await.unwrap(), [root]);
+        assert!(store.ancestors(root).await.unwrap().is_empty());
+        assert!(store.ancestors(SessionId::new()).await.unwrap().is_empty());
+        // A corrupt cycle stops at ROOT_HOPS instead of hanging.
+        sqlx::query("UPDATE sessions SET parent = ? WHERE id = ?")
+            .bind(grandchild.to_string())
+            .bind(root.to_string())
+            .execute(&store.write)
+            .await
+            .unwrap();
+        let chain = store.ancestors(grandchild).await.unwrap();
+        assert_eq!(chain.len(), super::super::ROOT_HOPS);
+        assert_eq!(chain[0], child);
         drop(store);
         let _ = std::fs::remove_dir_all(&dir);
     }

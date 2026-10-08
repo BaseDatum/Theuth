@@ -1091,7 +1091,7 @@ impl Session {
         match self
             .shared
             .store
-            .append_advisory(id, &text, &advisory)
+            .append_advisory(id, &text, &advisory, true)
             .await
         {
             Ok(seq) => {
@@ -4648,7 +4648,7 @@ impl Turn {
                 let r = self
                     .shared
                     .store
-                    .append_advisory(self.shared.id, &text, &advisory)
+                    .append_advisory(self.shared.id, &text, &advisory, true)
                     .await;
                 if let (Ok(_), Some(turn)) = (&r, turn)
                     && let Err(e) = self

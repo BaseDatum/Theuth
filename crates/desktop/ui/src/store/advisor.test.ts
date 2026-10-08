@@ -10,7 +10,7 @@ const S = 'sess'
 const T = 'turn'
 const ctx = (): Ctx => ({ sent: new Set(), now: 0 })
 const msg = (seq: number): ContextEntry => ({ target: { kind: 'message', seq }, active: true, removed: false, remove_with: [], attachments: [] })
-const advisory = (...notes: Advisory['notes']): Advisory => ({ advisor: 'adv', step: 3, turn: 1, at_ms: 1_700_000_000_000, notes })
+const advisory = (...notes: Advisory['notes']): Advisory => ({ advisor: 'adv', step: 3, turn: 1, at_ms: 1_700_000_000_000, notes, kind: 'review' })
 const concern = { severity: 'concern' as const, note: 'the migration drops a column' }
 const nit = { severity: 'nit' as const, note: 'prefer `let`' }
 const WRAPPED = '<advisory severity="concern" guidance="weigh, don\'t blindly obey">\nthe migration drops a column\n</advisory>'
@@ -81,6 +81,8 @@ test('AdvisorChanged prints one info line per model change, nothing for state ti
     backlog: 0,
     last_note: null,
     detail: null,
+    consults: { turn: 0, total: 0, cap: 6 },
+    warning: null,
   })
   const s = run([
     { type: 'AdvisorChanged', session: S, status: status('idle', 'openai/gpt-5') },

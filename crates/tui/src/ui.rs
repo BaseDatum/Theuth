@@ -2125,11 +2125,11 @@ fn entry(e: &Entry, spinner: &str, skip: usize, width: u16) -> AnyElement<'stati
     }
 }
 
-/// The advisor palette (125 §7.4): nit SAND (muted), concern OCHRE (warning),
-/// blocker CARNELIAN (danger).
+/// The advisor palette (125 §7.4): advice and nit SAND (muted), concern
+/// OCHRE (warning), blocker CARNELIAN (danger).
 fn severity_color(s: AdvisorSeverity) -> Color {
     match s {
-        AdvisorSeverity::Nit => SAND,
+        AdvisorSeverity::Advice | AdvisorSeverity::Nit => SAND,
         AdvisorSeverity::Concern => OCHRE,
         AdvisorSeverity::Blocker => CARNELIAN,
     }
@@ -2443,6 +2443,7 @@ mod tests {
                 turn: None,
                 at_ms: 0,
                 notes: notes(n),
+                kind: Default::default(),
             },
             expanded,
         };

@@ -12,6 +12,7 @@
 //! D5 catch-up wait parks it) and [`Advise`] (replied with the ack string).
 
 pub mod advise;
+pub mod consult;
 pub mod guard;
 pub mod identity;
 pub mod render;
@@ -43,6 +44,9 @@ pub const ADVISORS_ACTOR: &str = "advisors";
 
 /// D5: the longest a terminal step waits for the backlog.
 pub const CATCH_UP_WAIT: Duration = Duration::from_secs(30);
+
+/// R1 D-R1.4: the longest a `consult` call waits for its answer.
+pub const CONSULT_TIMEOUT: Duration = Duration::from_secs(90);
 
 /// Retriable failures before a backlog is dropped; dropped backlogs before `halted`.
 const MAX_FAILURES: u32 = 3;
@@ -150,7 +154,51 @@ pub struct DeliverAdvisory {
     pub text: String,
     /// Steer (concern outside the immune window, blocker) vs aside/preserve.
     pub steer: bool,
+    /// `false` only for consultations (R1): the row is masked from the model.
+    pub model_visible: bool,
 }
+
+// ---- R1 consult messages ------------------------------------------------------
+
+/// `ask` → `Result<String, String>`: a `consult` call (R1.3). `Ok(answer)`
+/// is the tool result; `Err(reason)` becomes
+/// `consult: advisor unavailable (<reason>)` or, for the three fixed
+/// reasons, the fixed string.
+pub struct Consult {
+    /// The asking session.
+    pub asker: SessionId,
+    /// `0` → the child path (R1.4); `> 0` → the one-shot (R1.5).
+    pub depth: u8,
+    /// The question (1–2000 chars).
+    pub question: String,
+    /// What the asker wants weighed (≤ 4000 chars).
+    pub context: Option<String>,
+    /// The asker's streamed assistant text this round, ≤ 4 KiB.
+    pub partial: String,
+    /// The asker's per-turn count including this call.
+    pub n: u32,
+}
+
+/// `ask` → `Option<ConsultSourceInfo>`: the nearest ancestor link of the
+/// session (R1.3 availability for `depth > 0`).
+pub struct ConsultSource(pub SessionId);
+
+/// The link a subagent's one-shot runs against.
+#[derive(Clone, Debug)]
+pub struct ConsultSourceInfo {
+    /// The advised ancestor.
+    pub advised: SessionId,
+    /// Its advisor session.
+    pub advisor: SessionId,
+    /// The link's `provider/model` at call time.
+    pub model: String,
+    /// The link's effort at call time.
+    pub effort: Option<String>,
+}
+
+/// `tell`: the asker gave up (timeout / Stop); cancel the pending
+/// consultation — no card, no counters.
+pub struct CancelConsult(pub SessionId);
 
 // ---- state ------------------------------------------------------------------
 
@@ -283,6 +331,9 @@ impl Link {
             backlog: self.backlog,
             last_note: self.last_note.clone(),
             detail: self.detail.clone(),
+            // 125 R1 C placeholder: W1 fills the counts and the pairing warning.
+            consults: crate::AdvisorConsultCounts::default(),
+            warning: None,
         }
     }
 }
@@ -606,6 +657,7 @@ impl Advisors {
             turn,
             at_ms: chrono::Utc::now().timestamp_millis(),
             notes,
+            kind: Default::default(),
         };
         let text = advise::card_text(&advisory.notes);
         self.tell_agents(DeliverAdvisory {
@@ -613,6 +665,7 @@ impl Advisors {
             advisory,
             text,
             steer,
+            model_visible: true,
         })
         .await;
     }
@@ -1005,7 +1058,10 @@ impl Message<Advise> for Advisors {
             severity: m.severity,
             note: m.note.trim().to_owned(),
         };
+        // 125 R1 C placeholder: `advise::parse` refuses `advice`; the arms only
+        // keep the match exhaustive until W1 lands.
         match m.severity {
+            AdvisorSeverity::Advice => {}
             AdvisorSeverity::Nit => link.notes.nit += 1,
             AdvisorSeverity::Concern => link.notes.concern += 1,
             AdvisorSeverity::Blocker => link.notes.blocker += 1,
@@ -1013,7 +1069,7 @@ impl Message<Advise> for Advisors {
         link.last_note = Some(note.clone());
         let immune = link.steps < link.immune_until;
         let steer = match m.severity {
-            AdvisorSeverity::Nit => false,
+            AdvisorSeverity::Advice | AdvisorSeverity::Nit => false,
             AdvisorSeverity::Concern => !immune,
             AdvisorSeverity::Blocker => true,
         };
@@ -1060,6 +1116,33 @@ impl Message<Retry> for Advisors {
             }
         }
     }
+}
+
+// 125 R1 C stubs: W1 replaces the bodies in place (R1.10).
+impl Message<Consult> for Advisors {
+    type Reply = Result<String, String>;
+
+    async fn handle(&mut self, _: Consult, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        Err("consult: not built".into())
+    }
+}
+
+impl Message<ConsultSource> for Advisors {
+    type Reply = Option<ConsultSourceInfo>;
+
+    async fn handle(
+        &mut self,
+        _: ConsultSource,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        None
+    }
+}
+
+impl Message<CancelConsult> for Advisors {
+    type Reply = ();
+
+    async fn handle(&mut self, _: CancelConsult, _: &mut Context<Self, Self::Reply>) {}
 }
 
 impl Message<AgentEvent> for Advisors {

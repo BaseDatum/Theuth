@@ -1145,9 +1145,10 @@ pub const ADVISORY_COLLAPSED: usize = 3;
 /// The advisor glyph (U+25CE; outside `tests/no_emoji.rs`' ranges, `◉` is Vision).
 pub const ADVISOR_GLYPH: &str = "◎";
 
-/// `nit` / `concern` / `blocker`: the badge word.
+/// `advice` / `nit` / `concern` / `blocker`: the badge word.
 pub fn severity_name(s: AdvisorSeverity) -> &'static str {
     match s {
+        AdvisorSeverity::Advice => "advice",
         AdvisorSeverity::Nit => "nit",
         AdvisorSeverity::Concern => "concern",
         AdvisorSeverity::Blocker => "blocker",
@@ -18472,6 +18473,7 @@ mod tests {
             turn: None,
             at_ms: 0,
             notes,
+            kind: Default::default(),
         }
     }
 

@@ -351,6 +351,7 @@ impl Message<DeliverAdvisory> for Agents {
                 .tell(AppendAdvisory {
                     advisory: m.advisory,
                     text: m.text,
+                    model_visible: m.model_visible,
                 })
                 .await
                 .map_err(|e| e.to_string())

@@ -6,7 +6,7 @@ import { formatAt, fullAt } from '@/lib/time'
 import type { AdvisorSeverity } from '@/rpc/bindings/AdvisorSeverity'
 import type { AdvisoryNote } from '@/rpc/bindings/AdvisoryNote'
 
-const ICON: Record<AdvisorSeverity, typeof Info> = { nit: Info, concern: TriangleAlert, blocker: CircleX }
+const ICON: Record<AdvisorSeverity, typeof Info> = { advice: Info, nit: Info, concern: TriangleAlert, blocker: CircleX }
 
 /** The notes a card lists: all of them when `expanded`, else the first `NOTES_SHOWN`; `hidden` is what `Show more (N)` reveals. */
 export function collapseNotes(notes: readonly AdvisoryNote[], expanded: boolean): { shown: AdvisoryNote[]; hidden: number } {

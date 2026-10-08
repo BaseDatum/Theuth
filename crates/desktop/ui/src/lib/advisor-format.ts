@@ -7,8 +7,8 @@ import type { AdvisorStatus } from '@/rpc/bindings/AdvisorStatus'
 import type { AdvisoryNote } from '@/rpc/bindings/AdvisoryNote'
 import { k } from '@/components/chat/CostPill'
 
-/** Severity order for the card's worst-of pick. */
-const RANK: Record<AdvisorSeverity, number> = { nit: 0, concern: 1, blocker: 2 }
+/** Severity order for the card's worst-of pick; `advice` (a consultation's answer, 125 R1) never wins. */
+const RANK: Record<AdvisorSeverity, number> = { advice: 0, nit: 1, concern: 2, blocker: 3 }
 
 /** The severity a card is tinted by: the worst of its notes (`nit` for none). */
 export function worstSeverity(notes: readonly AdvisoryNote[]): AdvisorSeverity {
@@ -17,8 +17,9 @@ export function worstSeverity(notes: readonly AdvisoryNote[]): AdvisorSeverity {
   return worst
 }
 
-/** The status tokens of `styles.css` by severity (§8.3): nit → info, concern → warning, blocker → danger. */
+/** The status tokens of `styles.css` by severity (§8.3): advice/nit → info, concern → warning, blocker → danger. */
 export const TONE: Record<AdvisorSeverity, { shell: string; fg: string; border: string }> = {
+  advice: { shell: 'border-info-border/30 bg-info-bg/40', fg: 'text-info', border: 'border-info-border/20' },
   nit: { shell: 'border-info-border/30 bg-info-bg/40', fg: 'text-info', border: 'border-info-border/20' },
   concern: { shell: 'border-warning-border/30 bg-warning-bg/40', fg: 'text-warning', border: 'border-warning-border/20' },
   blocker: { shell: 'border-danger-border/30 bg-danger-bg/40', fg: 'text-danger', border: 'border-danger-border/20' },

@@ -134,6 +134,7 @@ fn card(advisor: SessionId, severity: AdvisorSeverity, note: &str) -> (Advisory,
             turn: None,
             at_ms: 0,
             notes,
+            kind: Default::default(),
         },
         text,
     )
@@ -260,6 +261,7 @@ fn passive_cards_never_open_a_turn_and_land_at_the_boundary() {
             .tell(AppendAdvisory {
                 advisory: a,
                 text: t,
+                model_visible: true,
             })
             .await
             .unwrap();
@@ -322,6 +324,7 @@ fn passive_cards_never_open_a_turn_and_land_at_the_boundary() {
             .tell(AppendAdvisory {
                 advisory: a,
                 text: t.clone(),
+                model_visible: true,
             })
             .await
             .unwrap();

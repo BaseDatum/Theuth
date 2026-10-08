@@ -2530,6 +2530,26 @@ impl Store {
         Ok(depth)
     }
 
+    /// The parent chain of `id`, nearest first (empty for a top-level or
+    /// unknown session), at most [`ROOT_HOPS`] long — the walk `root_of`
+    /// runs, keeping every id (125 R1.5: the nearest advised ancestor).
+    pub async fn ancestors(&self, mut id: SessionId) -> anyhow::Result<Vec<SessionId>> {
+        let mut out = Vec::new();
+        while out.len() < ROOT_HOPS {
+            let Some((Some(parent),)) =
+                sqlx::query_as::<_, (Option<String>,)>("SELECT parent FROM sessions WHERE id = ?")
+                    .bind(id.to_string())
+                    .fetch_optional(&self.read)
+                    .await?
+            else {
+                break;
+            };
+            id = parent.parse().context("bad parent id")?;
+            out.push(id);
+        }
+        Ok(out)
+    }
+
     /// The top of `id`'s parent chain (`id` itself for a top-level or
     /// unknown session): the orchestrator tree's key (01 §2.6). The walk
     /// stops after [`ROOT_HOPS`] hops — a corrupt parent cycle warns once

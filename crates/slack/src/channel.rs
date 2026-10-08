@@ -4227,6 +4227,7 @@ pub(crate) mod tests {
                         note: (*note).into(),
                     })
                     .collect(),
+                kind: Default::default(),
             },
         }
     }
