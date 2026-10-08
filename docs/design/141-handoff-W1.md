@@ -107,7 +107,18 @@ rename keyed on `detail.sessionId`, not a transport change.
 or `Ok(())` (→ `process exited`). Dial transports have no slot. The SDK's own
 stderr-EOF wait after a non-zero exit is 1 s, hence 1.5 s.
 
-Did the `exit 17` test fail before the mitigation? — see §3.
+Did the `exit 17` test fail before the mitigation? — **Yes (settles R2A G1).**
+With `main` returning `Ok(())` straight after `incoming_closed` (the C-commit
+behaviour), `process_exit_status_and_stderr_reach_the_text` failed **10/10**
+when the test binary was run directly and 1/3 under `cargo test` (a race):
+the connect error was `Internal error: response to `initialize` never
+received: oneshot canceled` — on 3.1.0 a child that dies before answering
+surfaces as a dropped reply, **not** as an incoming-closed error, so the old
+`explain()` never consulted the connection task. Two changes together fix it:
+the `main` grace wait above, and `Link::explain` now waits up to `EXIT_GRACE`
+for the connection task on **any** failed request (not only incoming-closed)
+and uses its result when it arrives. With both: 0/10 failures direct, green
+under `cargo test`.
 
 ### 1.5 §4.4
 
@@ -147,7 +158,22 @@ Did the `exit 17` test fail before the mitigation? — see §3.
 
 ## 3. Gate output
 
-(filled in below)
+All through `BUILD_LABEL=141-W1 build-lock`, cold target (the warm clone never
+finished), stable toolchain, `CARGO_BUILD_JOBS=4`, after merging
+`feat/141-acp-subagents` at `63281cc4`/`5e375374` (C done + W5 merged):
+
+- `cargo test -p acp` → `45 passed; 0 failed` (+ 0 doctests), no warnings.
+  New: `agents::tests::mcp_back_channel_defaults_on_and_false_opts_out`,
+  `harness::rfd::tests::{running_announce_carries_identity_and_capabilities, idle_and_cancelled_states, nulls_clear_and_requires_action_maps, child_traffic_and_messages_deserialize_on_the_child_session}`,
+  `harness::opencode::tests::{child_update_fixtures_become_announces_and_child_traffic, child_update_implicit_announce_failed_interrupted_and_nesting, spawn_join_binds_the_subagent_call_to_the_announced_child, task_v1_fixtures_announce_one_child_through_its_lifecycle, task_v1_error_states}`,
+  `harness::tests::{initialize_advertises_subagents_and_opencode_child_updates, process_exit_status_and_stderr_reach_the_text, mcp_back_channel_is_retried_without_on_failure}`.
+  Removed: `child_update_fixtures_become_session_updates` (its re-pin is
+  `child_update_fixtures_become_announces_and_child_traffic` in `opencode.rs`).
+- `cargo check -p rpc --all-targets` → `Finished` clean.
+- `cargo test -p rpc --lib -- acp::` → `6 passed; 0 failed` (incl.
+  `child_session_over_the_mesh_loopback`).
+- `process_exit_status_and_stderr_reach_the_text` run 10× directly from the
+  test binary: 0 failures.
 
 ## 4. For the Closer
 
