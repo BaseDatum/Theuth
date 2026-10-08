@@ -285,6 +285,10 @@ pub struct Verify {
     /// What changed (stale) or what was checked (ok).
     #[serde(default)]
     pub note: Option<String>,
+    /// The sources the check read (paths, URLs, `session:`/`meeting:` ids);
+    /// unioned into the concept's `evidence`.
+    #[serde(default)]
+    pub evidence: Vec<String>,
 }
 
 /// `ask` → `Result<Receipt, String>` (136 §2.1): shorten a title.
@@ -372,7 +376,7 @@ impl Message<Verify> for KnowledgeActor {
 
     async fn handle(&mut self, m: Verify, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
         self.k
-            .verify(&m.id, m.outcome, m.note.as_deref())
+            .verify(&m.id, m.outcome, m.note.as_deref(), &m.evidence)
             .await
             .map_err(|e| format!("{e:#}"))
     }

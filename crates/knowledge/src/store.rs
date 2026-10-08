@@ -1307,6 +1307,58 @@ impl Knowledge {
         })
     }
 
+    /// [`Self::restore`] for several `(id, commit)` pairs in ONE commit
+    /// (`restore <n> concepts`): every file rewritten from its named commit,
+    /// indexes regenerated once, one [`KnowledgeChanged`] per id. Any pair
+    /// that cannot be read refuses the whole batch before a write (136 P gap
+    /// 6: the night's undo at ≈ 1 s per single restore).
+    pub async fn restore_many(&self, pairs: &[(String, String)]) -> anyhow::Result<Change> {
+        let Some(repo) = self.repo.clone() else {
+            bail!("restore unavailable: no repository")
+        };
+        if pairs.is_empty() {
+            bail!("restore_many: nothing to restore");
+        }
+        let mut wanted = Vec::with_capacity(pairs.len());
+        for (id, commit) in pairs {
+            wanted.push((concept_id(id)?, commit.clone()));
+        }
+        let files =
+            tokio::task::spawn_blocking(move || -> anyhow::Result<Vec<(ConceptId, String)>> {
+                let mut files = Vec::with_capacity(wanted.len());
+                for (cid, commit) in wanted {
+                    let rel = cid.to_path(Path::new(""));
+                    let bytes = repo
+                        .show(&rel, &commit)?
+                        .with_context(|| format!("{cid} is not in commit {commit}"))?;
+                    let text = String::from_utf8(bytes).context("concept is not UTF-8")?;
+                    files.push((cid, text));
+                }
+                Ok(files)
+            })
+            .await??;
+        let _g = self.write.lock().await;
+        let message = format!("restore {} concepts", files.len());
+        let (metas, commit) = self
+            .write_concepts(files, &message, &message, SIGNATURE)
+            .await?;
+        let sha = commit.context("restore: commit failed")?;
+        for m in metas {
+            self.rt
+                .publish(KnowledgeChanged {
+                    id: m.id,
+                    op: KnowledgeOp::Put,
+                    source: Source::User,
+                })
+                .await;
+        }
+        Ok(Change {
+            commit: sha,
+            time: chrono::Local::now().format("%Y-%m-%d %H:%M").to_string(),
+            message,
+        })
+    }
+
     /// Steps 2–6 of a write (10 §2.3); the caller holds `write` and publishes.
     async fn write_concept(
         &self,
@@ -1830,18 +1882,39 @@ impl Knowledge {
             doc.body = format!("Merged into [{into}](/{into}.md)\n");
             files.push((cid, doc.serialize()));
         }
-        // Old citations resolve to the canonical (rebuilt from the citing file on its next sync).
+        // Old citations are rewritten in the citing files themselves (not only
+        // in the `links` index), so each citer is committed and published with
+        // the merge and `restore` undoes the retarget (136 P gap 4).
+        let mut citers: Vec<ConceptId> = Vec::new();
         for cid in &folded {
-            let old = cid.to_string();
-            sqlx::query("UPDATE OR IGNORE links SET dst = ? WHERE dst = ?")
-                .bind(&into)
-                .bind(&old)
-                .execute(&self.db)
+            let rows: Vec<(String,)> = sqlx::query_as("SELECT src FROM links WHERE dst = ?")
+                .bind(cid.to_string())
+                .fetch_all(&self.db)
                 .await?;
-            sqlx::query("DELETE FROM links WHERE dst = ?")
-                .bind(&old)
-                .execute(&self.db)
-                .await?;
+            for (src,) in rows {
+                let Ok(scid) = concept_id(&src) else { continue };
+                if scid != into_cid && !folded.contains(&scid) && !citers.contains(&scid) {
+                    citers.push(scid);
+                }
+            }
+        }
+        for scid in citers {
+            let Ok(mut doc) = self.load(&scid) else {
+                continue;
+            };
+            let mut body = doc.body.clone();
+            for link in doc.links() {
+                if link.resolve(&scid).is_some_and(|t| folded.contains(&t)) {
+                    // ponytail: plain text replace; a code span quoting the same
+                    // `](target)` is rewritten too. Offsets if okf ever exposes them.
+                    body = body.replace(&format!("]({})", link.target), &format!("](/{into}.md)"));
+                }
+            }
+            if body != doc.body {
+                doc.body = body;
+                touch(&mut doc.frontmatter);
+                files.push((scid, doc.serialize()));
+            }
         }
         self.consolidate(KnowledgeOp::Merge, &into, files).await
     }
@@ -1908,12 +1981,14 @@ impl Knowledge {
     }
 
     /// 136 §3.1 item 4: `verified: <today>` (ok) or `status: stale` + the note
-    /// under `## Stale` (stale).
+    /// under `## Stale` (stale); `evidence` (the sources the check read) is
+    /// unioned into the file's `evidence`.
     pub async fn verify(
         &self,
         id: &str,
         outcome: VerifyOutcome,
         note: Option<&str>,
+        evidence: &[String],
     ) -> anyhow::Result<Receipt> {
         let cid = concept_id(id)?;
         let _g = self.write.lock().await;
@@ -1933,6 +2008,9 @@ impl Knowledge {
                 append_section(&mut doc.body, "## Stale", note);
             }
         }
+        let mut ev = fm_strings(doc.frontmatter.get("evidence"));
+        union(&mut ev, evidence.to_vec());
+        set_list(&mut doc.frontmatter, "evidence", ev);
         touch(&mut doc.frontmatter);
         let id = cid.to_string();
         self.consolidate(KnowledgeOp::Verify, &id, vec![(cid, doc.serialize())])
@@ -2547,8 +2625,10 @@ mod tests {
             [
                 "entities/dev-machine",
                 "records/state-2026-10-01",
-                "records/state-2026-10-02"
-            ]
+                "records/state-2026-10-02",
+                "facts/citer"
+            ],
+            "the citer whose link was retargeted is in the receipt"
         );
         let (name, email, subject) = commit_of(&k, &r).await;
         assert_eq!((name.as_str(), email.as_str()), DREAMING_SIGNATURE);
@@ -2638,6 +2718,171 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(e.contains("no such concept: records/ghost"), "{e}");
+    }
+
+    /// Records every [`KnowledgeChanged`] it hears.
+    #[derive(kameo::Actor)]
+    struct Recorder(Arc<parking_lot::Mutex<Vec<KnowledgeChanged>>>);
+
+    impl kameo::message::Message<KnowledgeChanged> for Recorder {
+        type Reply = ();
+
+        async fn handle(
+            &mut self,
+            e: KnowledgeChanged,
+            _: &mut kameo::message::Context<Self, Self::Reply>,
+        ) {
+            self.0.lock().push(e);
+        }
+    }
+
+    /// Subscribe a recorder to `k`'s events; `heard(n)` waits for `n` of them.
+    async fn record(k: &Knowledge) -> Arc<parking_lot::Mutex<Vec<KnowledgeChanged>>> {
+        let heard = Arc::new(parking_lot::Mutex::new(Vec::new()));
+        use kameo::actor::Spawn;
+        let actor = Recorder::spawn(Recorder(heard.clone()));
+        k.rt.subscribe::<Recorder, KnowledgeChanged>(&actor).await;
+        heard
+    }
+
+    async fn heard(
+        rec: &Arc<parking_lot::Mutex<Vec<KnowledgeChanged>>>,
+        n: usize,
+    ) -> Vec<KnowledgeChanged> {
+        for _ in 0..200 {
+            if rec.lock().len() >= n {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        rec.lock().clone()
+    }
+
+    /// 136 P gap 4: merging A into B where C links to A rewrites C's file,
+    /// commits it with the merge, publishes `KnowledgeChanged{C, Merge, dreaming}`,
+    /// and `restore(C, before)` brings the old link back in the index too.
+    #[tokio::test]
+    async fn merge_rewrites_citers_and_publishes_them() {
+        let (k, _dir) = open().await;
+        k.put(put("facts/a", "A", "a body"), Source::Model)
+            .await
+            .unwrap();
+        k.put(put("facts/b", "B", "b body"), Source::Model)
+            .await
+            .unwrap();
+        k.put(
+            put(
+                "facts/c",
+                "C",
+                "see [a](/facts/a.md) and [again](../facts/a.md#top), not `[x](/facts/d.md)`",
+            ),
+            Source::Model,
+        )
+        .await
+        .unwrap();
+        let c_before = k.history(Some("facts/c"), 1).await.unwrap().changes[0]
+            .commit
+            .clone();
+        let c_text = k.get("facts/c").await.unwrap().text;
+        let rec = record(&k).await;
+        let scope = AgentScope {
+            owner: USER_OWNER.into(),
+            line: BTreeSet::new(),
+        };
+        let r = k
+            .merge(&["facts/a".into()], "facts/b", "ab", &[], &scope)
+            .await
+            .unwrap();
+        assert_eq!(r.ids, ["facts/b", "facts/a", "facts/c"]);
+        let events = heard(&rec, 3).await;
+        let mut ids: Vec<&str> = events.iter().map(|e| e.id.as_str()).collect();
+        ids.sort_unstable();
+        assert_eq!(ids, ["facts/a", "facts/b", "facts/c"]);
+        assert!(
+            events
+                .iter()
+                .all(|e| e.op == KnowledgeOp::Merge && e.source == Source::Dreaming),
+            "{events:?}"
+        );
+        let c = k.get("facts/c").await.unwrap();
+        assert!(
+            c.text
+                .contains("see [a](/facts/b.md) and [again](/facts/b.md), not `[x](/facts/d.md)`"),
+            "{}",
+            c.text
+        );
+        assert!(c.meta.consolidated_at.is_some());
+        assert_eq!(
+            c.links.iter().map(|(t, _)| t.as_str()).collect::<Vec<_>>(),
+            ["facts/b"],
+            "the code-span link is text, not a link"
+        );
+        // The file carries the retarget, so the citer's `restore` undoes it.
+        k.restore("facts/c", Some(&c_before)).await.unwrap();
+        let c = k.get("facts/c").await.unwrap();
+        assert_eq!(c.text, c_text);
+        assert_eq!(
+            c.links.iter().map(|(t, _)| t.as_str()).collect::<Vec<_>>(),
+            ["facts/a"]
+        );
+        assert_eq!(k.get("facts/a").await.unwrap().cited_by, ["facts/c"]);
+    }
+
+    /// `restore_many`: three ids from three different commits in ONE commit,
+    /// bodies equal to the named revisions, one `KnowledgeChanged` per id.
+    #[tokio::test]
+    async fn restore_many_restores_several_ids_in_one_commit() {
+        let (k, _dir) = open().await;
+        let ids = ["facts/x", "facts/y", "facts/z"];
+        let mut want = Vec::new();
+        for id in ids {
+            k.put(put(id, id, &format!("{id} v1")), Source::Model)
+                .await
+                .unwrap();
+            let commit = k.history(Some(id), 1).await.unwrap().changes[0]
+                .commit
+                .clone();
+            want.push((id.to_owned(), commit, k.get(id).await.unwrap().text));
+        }
+        for id in ids {
+            k.put(put(id, id, &format!("{id} v2")), Source::Model)
+                .await
+                .unwrap();
+        }
+        let before = k.history(None, 20).await.unwrap().changes.len();
+        let rec = record(&k).await;
+        let pairs: Vec<(String, String)> = want
+            .iter()
+            .map(|(id, c, _)| (id.clone(), c.clone()))
+            .collect();
+        let change = k.restore_many(&pairs).await.unwrap();
+        assert_eq!(change.message, "restore 3 concepts");
+        let history = k.history(None, 20).await.unwrap().changes;
+        assert_eq!(history.len(), before + 1, "one commit");
+        assert_eq!(history[0].commit, change.commit);
+        for (id, _, text) in &want {
+            assert_eq!(&k.get(id).await.unwrap().text, text, "{id}");
+        }
+        let events = heard(&rec, 3).await;
+        let mut heard_ids: Vec<&str> = events.iter().map(|e| e.id.as_str()).collect();
+        heard_ids.sort_unstable();
+        assert_eq!(heard_ids, ids);
+        assert!(
+            events
+                .iter()
+                .all(|e| e.op == KnowledgeOp::Put && e.source == Source::User)
+        );
+        // A pair that cannot be read refuses the batch before any write.
+        let e = k
+            .restore_many(&[
+                ("facts/x".into(), want[0].1.clone()),
+                ("facts/ghost".into(), want[0].1.clone()),
+            ])
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(e.contains("facts/ghost is not in commit"), "{e}");
+        assert_eq!(k.history(None, 20).await.unwrap().changes.len(), before + 1);
     }
 
     /// 136 §3.1 item 4: `supersede`, `archive`, `verify` (both outcomes) and
@@ -2731,7 +2976,12 @@ mod tests {
         // verify ok
         let b = base(&k).await;
         let r = k
-            .verify("facts/old", VerifyOutcome::Ok, None)
+            .verify(
+                "facts/old",
+                VerifyOutcome::Ok,
+                None,
+                &["conf/pg.toml".into(), "session:s1".into()],
+            )
             .await
             .unwrap();
         assert_eq!(r.op, KnowledgeOp::Verify);
@@ -2742,16 +2992,31 @@ mod tests {
         let today = chrono::Utc::now().format("%Y-%m-%d").to_string();
         assert_eq!(c.meta.verified.as_deref(), Some(today.as_str()));
         assert_eq!(c.meta.status, Status::Tidy);
+        assert_eq!(
+            c.meta.evidence,
+            ["conf/pg.toml", "session:s1"],
+            "the read sources are recorded"
+        );
         assert!(
             c.text.ends_with("was true\n"),
             "ok writes no note: {}",
             c.text
         );
         // verify stale
-        k.verify("facts/old", VerifyOutcome::Stale, Some("port is 5433 now"))
-            .await
-            .unwrap();
+        k.verify(
+            "facts/old",
+            VerifyOutcome::Stale,
+            Some("port is 5433 now"),
+            &["session:s1".into(), "conf/pg.d/port".into()],
+        )
+        .await
+        .unwrap();
         let c = k.get("facts/old").await.unwrap();
+        assert_eq!(
+            c.meta.evidence,
+            ["conf/pg.toml", "session:s1", "conf/pg.d/port"],
+            "union, in order"
+        );
         assert_eq!(c.meta.status, Status::Stale);
         assert_eq!(
             c.meta.verified.as_deref(),
@@ -2811,7 +3076,9 @@ mod tests {
         // Every op wants an existing file.
         for e in [
             k.archive("facts/none", "r").await.err(),
-            k.verify("facts/none", VerifyOutcome::Ok, None).await.err(),
+            k.verify("facts/none", VerifyOutcome::Ok, None, &[])
+                .await
+                .err(),
             k.retitle("facts/none", "t", "s").await.err(),
             k.supersede("facts/none", "facts/new", None, None)
                 .await
