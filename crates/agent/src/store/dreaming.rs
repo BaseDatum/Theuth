@@ -207,7 +207,18 @@ impl Store {
             e.1 += u64::from(is_error);
             e.2.insert(session.to_owned());
         };
-        let calls: Vec<(String, String, String, String, i64, bool, String, Option<String>)> =
+        /// `(session_id, turn_id, name, args, attempt, is_error, at, output)`.
+        type CallRow = (
+            String,
+            String,
+            String,
+            String,
+            i64,
+            bool,
+            String,
+            Option<String>,
+        );
+        let calls: Vec<CallRow> =
             sqlx::query_as(
                 "SELECT session_id, turn_id, name, args, attempt, is_error, \
                         COALESCE(finished_at, started_at) AS at, output FROM tool_calls \
@@ -296,15 +307,23 @@ impl Store {
         }
 
         // --- questions.
-        let questions: Vec<(String, String, String, Option<String>, Option<String>, String)> =
-            sqlx::query_as(
-                "SELECT session_id, kind, state, answer, answered_by, asked_at FROM questions \
+        /// `(session_id, kind, state, answer, answered_by, asked_at)`.
+        type QuestionRow = (
+            String,
+            String,
+            String,
+            Option<String>,
+            Option<String>,
+            String,
+        );
+        let questions: Vec<QuestionRow> = sqlx::query_as(
+            "SELECT session_id, kind, state, answer, answered_by, asked_at FROM questions \
                  WHERE asked_at >= ?1 AND asked_at < ?2 ORDER BY asked_at",
-            )
-            .bind(&since)
-            .bind(&until)
-            .fetch_all(&self.read)
-            .await?;
+        )
+        .bind(&since)
+        .bind(&until)
+        .fetch_all(&self.read)
+        .await?;
         for (session, kind, state, answer, answered_by, asked_at) in questions {
             let Some(i) = by_id.get(&session).copied() else {
                 continue;
@@ -423,14 +442,26 @@ mod tests {
             SessionId::new(),
             SessionId::new(),
         );
-        for (id, parent) in [(user, None), (dream, None), (dream_child, Some(dream)), (desk, None)] {
+        for (id, parent) in [
+            (user, None),
+            (dream, None),
+            (dream_child, Some(dream)),
+            (desk, None),
+        ] {
             store
                 .create_session(id, "m", parent, None, None)
                 .await
                 .unwrap();
         }
         store
-            .create_session_kind(advisor, "m", Some(user), None, None, crate::SessionKind::Advisor)
+            .create_session_kind(
+                advisor,
+                "m",
+                Some(user),
+                None,
+                None,
+                crate::SessionKind::Advisor,
+            )
             .await
             .unwrap();
         store.set_desk(desk, Some("sre")).await.unwrap();
@@ -480,7 +511,11 @@ mod tests {
                 Risk::Mutating,
             ),
             (
-                call("c2", crate::skills::LOAD, serde_json::json!({"name": "caveman"})),
+                call(
+                    "c2",
+                    crate::skills::LOAD,
+                    serde_json::json!({"name": "caveman"}),
+                ),
                 Risk::ReadOnly,
             ),
         ];
@@ -504,8 +539,16 @@ mod tests {
             .await
             .unwrap();
         for (id, name, args) in [
-            ("c3.1", "knowledge_get", serde_json::json!({"id": "facts/a"})),
-            ("c3.2", crate::skills::LOAD, serde_json::json!({"name": "ponytail"})),
+            (
+                "c3.1",
+                "knowledge_get",
+                serde_json::json!({"id": "facts/a"}),
+            ),
+            (
+                "c3.2",
+                crate::skills::LOAD,
+                serde_json::json!({"name": "ponytail"}),
+            ),
         ] {
             store
                 .inner_call_started(user, id, name, &args)
@@ -518,7 +561,15 @@ mod tests {
         }
         // Money: one settled call at $0.25.
         let call = store
-            .reserve_call(user, "r", 0, Some(turn), CallKind::Round, Some("p"), Some("m"))
+            .reserve_call(
+                user,
+                "r",
+                0,
+                Some(turn),
+                CallKind::Round,
+                Some("p"),
+                Some("m"),
+            )
             .await
             .unwrap();
         store.mark_dispatched(&call).await.unwrap();
@@ -565,7 +616,11 @@ mod tests {
             .await
             .unwrap();
         let ids: Vec<SessionId> = l.sessions.iter().map(|s| s.id).collect();
-        assert_eq!(ids, [user], "dream tree excluded, desk dropped, advisor hidden");
+        assert_eq!(
+            ids,
+            [user],
+            "dream tree excluded, desk dropped, advisor hidden"
+        );
         let s = &l.sessions[0];
         assert_eq!(s.kind, "root");
         assert_eq!(s.title, "my [redacted] title");
@@ -587,15 +642,35 @@ mod tests {
         assert_eq!(
             l.inner_calls,
             [
-                LedgerCount { name: "knowledge_get".into(), calls: 1, errors: 0, sessions: 1 },
-                LedgerCount { name: crate::skills::LOAD.into(), calls: 1, errors: 0, sessions: 1 },
+                LedgerCount {
+                    name: "knowledge_get".into(),
+                    calls: 1,
+                    errors: 0,
+                    sessions: 1
+                },
+                LedgerCount {
+                    name: crate::skills::LOAD.into(),
+                    calls: 1,
+                    errors: 0,
+                    sessions: 1
+                },
             ]
         );
         assert_eq!(
             l.skill_loads,
             [
-                LedgerCount { name: "caveman".into(), calls: 1, errors: 0, sessions: 1 },
-                LedgerCount { name: "ponytail".into(), calls: 1, errors: 0, sessions: 1 },
+                LedgerCount {
+                    name: "caveman".into(),
+                    calls: 1,
+                    errors: 0,
+                    sessions: 1
+                },
+                LedgerCount {
+                    name: "ponytail".into(),
+                    calls: 1,
+                    errors: 0,
+                    sessions: 1
+                },
             ]
         );
         assert_eq!(l.questions.len(), 1);
@@ -636,7 +711,8 @@ mod tests {
     fn clip_and_hinted_ids() {
         assert_eq!(clip("héllo", 2), "h");
         assert_eq!(clip("abc", 3), "abc");
-        let ids: Vec<&str> = hinted_ids("lead\n- `a/b` — T [fact]: d\n- not an id\n- `c/d` — U\n").collect();
+        let ids: Vec<&str> =
+            hinted_ids("lead\n- `a/b` — T [fact]: d\n- not an id\n- `c/d` — U\n").collect();
         assert_eq!(ids, ["a/b", "c/d"]);
     }
 }

@@ -2508,7 +2508,10 @@ impl std::fmt::Display for Refused {
                 spent,
                 cap,
                 currency,
-            } => write!(f, "budget: spent {spent} + estimate > cap {cap} ({currency} nanos)"),
+            } => write!(
+                f,
+                "budget: spent {spent} + estimate > cap {cap} ({currency} nanos)"
+            ),
         }
     }
 }
@@ -9380,7 +9383,8 @@ mod tests {
             .create_session(id, "fake/m", None, None, None)
             .await
             .unwrap();
-        let priced = || sse(r#"{"prompt_tokens":10,"completion_tokens":5,"total_tokens":15,"cost":0.25}"#);
+        let priced =
+            || sse(r#"{"prompt_tokens":10,"completion_tokens":5,"total_tokens":15,"cost":0.25}"#);
         let (base_url, hits, _) = fake_openai(vec![priced(), priced()]).await;
         let (mut turn, current, transport, _events) =
             gateway_turn(&dir, store.clone(), id, base_url).await;
@@ -9400,7 +9404,15 @@ mod tests {
         };
 
         let first = turn
-            .call(&current, frame(), transport, turn.turn, id, CallKind::Round, &mut None)
+            .call(
+                &current,
+                frame(),
+                transport,
+                turn.turn,
+                id,
+                CallKind::Round,
+                &mut None,
+            )
             .await;
         assert!(first.is_ok(), "nothing spent yet: the first call goes out");
         assert_eq!(hits.load(Ordering::SeqCst), 1);
@@ -9410,25 +9422,48 @@ mod tests {
         );
 
         match turn
-            .call(&current, frame(), transport, turn.turn, id, CallKind::Round, &mut None)
+            .call(
+                &current,
+                frame(),
+                transport,
+                turn.turn,
+                id,
+                CallKind::Round,
+                &mut None,
+            )
             .await
         {
             Err(Abort::Budget {
                 spent,
                 cap,
                 currency,
-            }) => assert_eq!((spent, cap, currency.as_str()), (250_000_000, 10_000_000, "USD")),
+            }) => assert_eq!(
+                (spent, cap, currency.as_str()),
+                (250_000_000, 10_000_000, "USD")
+            ),
             Ok(_) => panic!("the second call passes the cap and must be refused"),
             Err(_) => panic!("a budget refusal is Abort::Budget"),
         }
         assert_eq!(hits.load(Ordering::SeqCst), 1, "nothing was sent");
-        assert_eq!(calls(&store, id).await.len(), 1, "no row for a refused call");
+        assert_eq!(
+            calls(&store, id).await.len(),
+            1,
+            "no row for a refused call"
+        );
         // A cleared budget is no cap; another currency never sees USD spend.
         turn.state.budget = None;
         assert!(
-            turn.call(&current, frame(), transport, turn.turn, id, CallKind::Round, &mut None)
-                .await
-                .is_ok()
+            turn.call(
+                &current,
+                frame(),
+                transport,
+                turn.turn,
+                id,
+                CallKind::Round,
+                &mut None
+            )
+            .await
+            .is_ok()
         );
         assert_eq!(hits.load(Ordering::SeqCst), 2);
         assert_eq!(
@@ -9437,7 +9472,9 @@ mod tests {
             "other currencies are not counted"
         );
         let note = budget_note(250_000_000, 10_000_000, "USD");
-        assert!(note.starts_with("<budget spent=\"250000000\" cap=\"10000000\" currency=\"USD\">\n"));
+        assert!(
+            note.starts_with("<budget spent=\"250000000\" cap=\"10000000\" currency=\"USD\">\n")
+        );
         assert!(note.contains("0.25 USD of a 0.01 USD cap"));
         assert!(note.ends_with("\n</budget>"));
         std::fs::remove_dir_all(&dir).unwrap();

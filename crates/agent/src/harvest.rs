@@ -70,12 +70,14 @@ mod tests {
     #[test]
     fn instruction_keeps_the_first_line_and_appends_the_amendment() {
         let s = instruction(&[], "/tmp/x");
-        assert!(s.starts_with(
-            knowledge::harvest::HARVEST_INSTRUCTION
-                .lines()
-                .next()
-                .unwrap()
-        ));
+        assert!(
+            s.starts_with(
+                knowledge::harvest::HARVEST_INSTRUCTION
+                    .lines()
+                    .next()
+                    .unwrap()
+            )
+        );
         assert!(s.ends_with(AMENDMENT));
         assert!(s.contains("/tmp/x"));
         assert!(!s.contains("{cwd}") && !s.contains("{related}"));

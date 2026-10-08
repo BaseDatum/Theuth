@@ -996,7 +996,14 @@ mod tests {
         );
         // ACP materialisation.
         let cwd = tmp();
-        let m = materialise(&dir, &cwd, Path::new(".agents/skills"), &["zeta".into()], "s").unwrap();
+        let m = materialise(
+            &dir,
+            &cwd,
+            Path::new(".agents/skills"),
+            &["zeta".into()],
+            "s",
+        )
+        .unwrap();
         let written = std::fs::read_to_string(cwd.join(".agents/skills/zeta/SKILL.md")).unwrap();
         assert!(written.ends_with("## Learned (dreaming)\n- lesson one\n- lesson two\n"));
         m.remove();

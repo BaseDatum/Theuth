@@ -30,7 +30,15 @@ async fn scenario() {
     // One settled round call of this session at $0.25 — the spend the guard reads.
     let call = h
         .store
-        .reserve_call(h.id, "r0", 0, None, CallKind::Round, Some("openai"), Some("openai/textonly"))
+        .reserve_call(
+            h.id,
+            "r0",
+            0,
+            None,
+            CallKind::Round,
+            Some("openai"),
+            Some("openai/textonly"),
+        )
         .await
         .unwrap();
     h.store.mark_dispatched(&call).await.unwrap();
@@ -63,7 +71,10 @@ async fn scenario() {
     let note = state.budget_note.clone().expect("the note is queued");
     assert!(note.starts_with("<budget spent=\"250000000\" cap=\"10000000\" currency=\"USD\">\n"));
     assert!(
-        !state.history.iter().any(|(_, m)| text_of(&m.content).starts_with("<budget")),
+        !state
+            .history
+            .iter()
+            .any(|(_, m)| text_of(&m.content).starts_with("<budget")),
         "not in this turn's frame yet"
     );
 
@@ -89,9 +100,15 @@ async fn scenario() {
         .collect();
     assert_eq!(notes.len(), 1, "one note: {texts:#?}");
     assert!(notes[0] > input_at, "after the input it rides: {texts:#?}");
-    assert!(state.budget_note.is_some(), "the second refusal queues again");
+    assert!(
+        state.budget_note.is_some(),
+        "the second refusal queues again"
+    );
     assert_eq!(
-        h.store.budget_spent(h.id, "USD", "openai/textonly").await.unwrap(),
+        h.store
+            .budget_spent(h.id, "USD", "openai/textonly")
+            .await
+            .unwrap(),
         (250_000_000, 250_000_000),
         "no row was written for a refused call"
     );

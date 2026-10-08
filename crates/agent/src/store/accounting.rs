@@ -463,17 +463,18 @@ impl Store {
         .bind(currency)
         .fetch_one(&self.read)
         .await?;
-        let last: Option<(Option<i64>, Option<String>, Option<i64>, Option<String>)> =
-            sqlx::query_as(
-                "SELECT returned_nanos, returned_currency, estimated_nanos, estimated_currency \
+        /// `(returned_nanos, returned_currency, estimated_nanos, estimated_currency)`.
+        type MoneyRow = (Option<i64>, Option<String>, Option<i64>, Option<String>);
+        let last: Option<MoneyRow> = sqlx::query_as(
+            "SELECT returned_nanos, returned_currency, estimated_nanos, estimated_currency \
                  FROM model_calls WHERE owner_id = ?1 AND requested_model = ?2 AND status = ?3 \
                  ORDER BY created_at DESC LIMIT 1",
-            )
-            .bind(&sid)
-            .bind(model)
-            .bind(CallStatus::Settled.as_str())
-            .fetch_optional(&self.read)
-            .await?;
+        )
+        .bind(&sid)
+        .bind(model)
+        .bind(CallStatus::Settled.as_str())
+        .fetch_optional(&self.read)
+        .await?;
         let estimate = last
             .and_then(|(rn, rc, en, ec)| {
                 money(rn, rc.as_deref()).or_else(|| money(en, ec.as_deref()))
