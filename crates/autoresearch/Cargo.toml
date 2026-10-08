@@ -24,6 +24,7 @@ serde_json = { workspace = true }
 serde_yaml = { workspace = true }  # `autoresearch.settings.set` persists the section
 schemars = { workspace = true }
 chrono = { workspace = true }
+humantime = { workspace = true }  # 140 §4.1 the spec's `timeout:` strings (draft validation, W6; the runner, W1)
 tracing = { workspace = true }
 sha2 = { workspace = true }  # 140 §5.3 custody hashes, §7.3 patch hashes
 sqlx = { workspace = true }  # 140 §12.6 `autoresearch.sqlite` (the workspace's sqlite crate)
