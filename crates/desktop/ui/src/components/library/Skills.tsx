@@ -5,7 +5,7 @@ import { FolderGit2, Plus, RefreshCw, Search, Trash2 } from 'lucide-react'
 import { useState } from 'react'
 import { toast } from 'sonner'
 import { Streamdown } from 'streamdown'
-import { draftSkill } from '@/components/chat/slash'
+import { draftSkill, sendRaw } from '@/components/chat/slash'
 import { Page } from '@/components/library/Page'
 import { LOCAL, groupSkills, isEditable, repoDir, splitHarnessCommands } from '@/components/library/grouping'
 import { errorText, toastSync, useAction } from '@/components/settings/shared'
@@ -35,10 +35,12 @@ const WHAT = 'A skill is markdown the model pulls into context on demand: the sy
  * `/skills` and `/skills/$name`: every skill under `<data_dir>/skills/` (local files and cloned repos) with
  * search, the selected one rendered on the right (below the list on phones). `session` (`?session=`) is the
  * chat the page was opened from: its loaded skills are marked and `Use` drafts into it. For an ACP child (`agent`
- * set) the harness's own manifest (75 §3) is listed first: loaded skills, then its commands — plain rows, nothing to open.
+ * set) the harness's own manifest (75 §3) is listed first: loaded skills, then its commands — each row sends its
+ * command to the session as typed (`/skill:<name>`, `/<command>`; 141 D15a), bypassing theuth's `/skill:` parking.
  */
 export function SkillsPage({ name, session }: { name: string | null; session: string | null }) {
   const api = useApi()
+  const navigate = useNavigate()
   const skills = useQuery({ queryKey: queryKeys.skills, queryFn: () => api.list_skills() })
   const loaded = useSessionField(session ?? '', 'skills')
   const agent = useSessionField(session ?? '', 'agent')
@@ -49,6 +51,12 @@ export function SkillsPage({ name, session }: { name: string | null; session: st
   const groups = groupSkills(all, query)
   const harness = agent && harnessCommands?.length ? splitHarnessCommands(harnessCommands, query) : null
   const harnessRows = harness ? harness.skills.length + harness.commands.length : 0
+  // D15 (a): the harness's command, verbatim, then the chat — never `draftSkill` (that parks theuth's skill of the same name).
+  const send = useAction(async (command: string) => {
+    if (!session) return
+    await sendRaw(api, session, `/${command}`)
+    await navigate({ to: '/c/$session', params: { session } })
+  })
   const shown = name ? all.find((s) => s.name === name) ?? null : null
 
   return (
@@ -101,9 +109,11 @@ export function SkillsPage({ name, session }: { name: string | null; session: st
               </h3>
               <ul>
                 {harness.skills.map((s) => (
-                  <li key={s.name} className="flex flex-col gap-0.5 px-2.5 py-2 text-sm">
-                    <span className="truncate font-medium">{s.name}</span>
-                    <span className="truncate text-[13px] text-fg-secondary">{s.description}</span>
+                  <li key={s.name}>
+                    <button type="button" className="flex w-full flex-col gap-0.5 rounded-md px-2.5 py-2 text-left text-sm hover:bg-layer-2" title={`send /skill:${s.name} to ${agent}`} onClick={() => send.mutate(`skill:${s.name}`)}>
+                      <span className="truncate font-medium">{s.name}</span>
+                      <span className="truncate text-[13px] text-fg-secondary">{s.description}</span>
+                    </button>
                   </li>
                 ))}
               </ul>
@@ -112,12 +122,14 @@ export function SkillsPage({ name, session }: { name: string | null; session: st
                   <h3 className="px-2.5 pt-2 pb-1 text-xs font-medium text-fg-tertiary">Commands</h3>
                   <ul>
                     {harness.commands.map((c) => (
-                      <li key={c.name} className="flex flex-col gap-0.5 px-2.5 py-2 text-sm">
-                        <span className="flex items-center gap-2">
-                          <span className="min-w-0 flex-1 truncate font-medium">{c.name}</span>
-                          {c.hint && <span className="truncate text-xs text-fg-tertiary">{c.hint}</span>}
-                        </span>
-                        <span className="truncate text-[13px] text-fg-secondary">{c.description}</span>
+                      <li key={c.name}>
+                        <button type="button" className="flex w-full flex-col gap-0.5 rounded-md px-2.5 py-2 text-left text-sm hover:bg-layer-2" title={`send /${c.name} to ${agent}`} onClick={() => send.mutate(c.name)}>
+                          <span className="flex items-center gap-2">
+                            <span className="min-w-0 flex-1 truncate font-medium">{c.name}</span>
+                            {c.hint && <span className="truncate text-xs text-fg-tertiary">{c.hint}</span>}
+                          </span>
+                          <span className="truncate text-[13px] text-fg-secondary">{c.description}</span>
+                        </button>
                       </li>
                     ))}
                   </ul>

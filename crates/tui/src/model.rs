@@ -25,6 +25,7 @@ use agent::{
     CostScope, Coverage, CreateSessionOptions, MemoryMode, Money, Retention, SessionCost,
     SessionOpen,
 };
+use double::{DoubleAnswered, DoublePredicted};
 use iocraft::{KeyCode, KeyModifiers};
 use knowledge::{Change, ChangeStatus, HarvestResult, History, Meta, Revision};
 use models::Catalog;
@@ -38,7 +39,6 @@ use tools::{
 };
 use tools::{JobId, Key, PtyPage, PtyScreenReply, PtyViewport, TerminalSummary};
 use uuid::Uuid;
-use double::{DoubleAnswered, DoublePredicted};
 
 use crate::broadcast::{Broadcast, BroadcastStage};
 use crate::clip::Image;
@@ -3917,7 +3917,8 @@ impl Model {
 
     /// The shown card is in an L2 grace: frames are needed for the countdown.
     fn double_counting_down(&self) -> bool {
-        self.shown_prediction().is_some_and(|p| p.will_act_at.is_some())
+        self.shown_prediction()
+            .is_some_and(|p| p.will_act_at.is_some())
     }
 
     /// The `secret_request` currently shown, if any.
@@ -12040,6 +12041,8 @@ impl Model {
             match c.scope {
                 CostScope::Native => "native",
                 CostScope::OpaqueRemoteInclusive => "includes hidden remote descendants",
+                // 141 §7.6: the harness's own total excluded this subagent.
+                CostScope::Observed => "watch-only subagent, counted beside the harness",
             }
         ));
         for ch in &c.children {
@@ -12051,6 +12054,7 @@ impl Model {
                 match ch.scope {
                     CostScope::Native => "",
                     CostScope::OpaqueRemoteInclusive => " · remote inclusive",
+                    CostScope::Observed => " · watch-only",
                 }
             ));
         }
@@ -17570,6 +17574,7 @@ mod tests {
             here: true,
             kind: Default::default(),
             memory: Default::default(),
+            observed: None,
         }
     }
 
@@ -18279,11 +18284,17 @@ mod tests {
         assert_eq!(DoubleCmd::parse("pause off"), Some(DoubleCmd::Pause(false)));
         assert_eq!(
             DoubleCmd::parse("train"),
-            Some(DoubleCmd::Train { tier: Tier::A, venue: Venue::Auto })
+            Some(DoubleCmd::Train {
+                tier: Tier::A,
+                venue: Venue::Auto
+            })
         );
         assert_eq!(
             DoubleCmd::parse("train b node:gpu"),
-            Some(DoubleCmd::Train { tier: Tier::B, venue: Venue::Node("gpu".into()) })
+            Some(DoubleCmd::Train {
+                tier: Tier::B,
+                venue: Venue::Node("gpu".into())
+            })
         );
         assert_eq!(
             DoubleCmd::parse("cap approval:shell:mutating:git push:root 2 opt-in"),
@@ -18293,8 +18304,20 @@ mod tests {
                 opt_in: true
             })
         );
-        assert_eq!(DoubleCmd::parse("rollback v3"), Some(DoubleCmd::Rollback("v3".into())));
-        for bad in ["train c", "train a off", "cap k 4", "cap k", "cap 2", "pause maybe", "rollback", "x"] {
+        assert_eq!(
+            DoubleCmd::parse("rollback v3"),
+            Some(DoubleCmd::Rollback("v3".into()))
+        );
+        for bad in [
+            "train c",
+            "train a off",
+            "cap k 4",
+            "cap k",
+            "cap 2",
+            "pause maybe",
+            "rollback",
+            "x",
+        ] {
             assert_eq!(DoubleCmd::parse(bad), None, "{bad}");
         }
     }
@@ -18341,7 +18364,11 @@ mod tests {
         m.apply(UiEvent::DoublePredicted(p));
         assert!(m.animating());
         // Resolution drops it; a later answer line names the choice.
-        m.apply(UiEvent::Resolved(ApprovalResolved { id, decision: Decision::Allow, timed_out: false }));
+        m.apply(UiEvent::Resolved(ApprovalResolved {
+            id,
+            decision: Decision::Allow,
+            timed_out: false,
+        }));
         assert_eq!(m.double_chip(), None);
         assert!(m.double.is_empty());
         m.apply(UiEvent::DoubleAnswered(double::DoubleAnswered {
@@ -18926,6 +18953,7 @@ mod tests {
             activity: Default::default(),
             cap: None,
             kind,
+            observed: None,
         };
         let worker = SessionId::new();
         m.apply(UiEvent::Agents(vec![

@@ -1074,6 +1074,7 @@ pub struct Loaded {
     /// session view hides the composer without a second RPC. `chat` from an
     /// older harness.
     #[serde(default)]
+    #[cfg_attr(feature = "ts", ts(optional = nullable))]
     pub kind: SessionKind,
     /// Watch-only facts when `kind == observed` (141 §5.1); `None` otherwise.
     #[serde(default)]

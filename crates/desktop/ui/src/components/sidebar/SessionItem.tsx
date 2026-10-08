@@ -86,9 +86,14 @@ function SessionPending({ id }: { id: string }) {
 
 const NONE: SessionSummary[] = []
 
-/** Descendants with a turn in flight: the live slice (`TurnStarted`…`TurnFinished`, every session is subscribed) or, before this client saw one, the `list_sessions` snapshot. */
+/** Descendants with a turn in flight: the live slice (`TurnStarted`…`TurnFinished`, every session is subscribed) or, before this client saw one, the `list_sessions` snapshot.
+ * A watch-only child (141) has no turn of its own; the harness's state (`running` / `requires_action`, live from `ObservedChildChanged`, else the snapshot) is its live bit. */
 export const runningSubagents = (subagents: readonly SessionSummary[], slices: Record<string, SessionSlice>): number =>
-  subagents.filter((d) => slices[d.id]?.running || d.running).length
+  subagents.filter((d) => {
+    const observed = slices[d.id]?.observed ?? d.observed
+    if (observed) return observed.state === 'running' || observed.state === 'requires_action'
+    return slices[d.id]?.running || d.running
+  }).length
 
 /** Subagent glyph: shown while any descendant (any depth) is running; the tree below a selected row (or a desk) shows which. */
 export function SessionSubagents({ subagents = NONE }: { subagents: readonly SessionSummary[] | undefined }) {

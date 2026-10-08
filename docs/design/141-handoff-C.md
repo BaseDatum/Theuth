@@ -1,6 +1,6 @@
 # 141 hand-off — C (CONTRACT)
 
-Branch `feat/141-acp-subagents`, commit `<sha>` (final). Workers W1–W5 cut from it.
+Branch `feat/141-acp-subagents`, commit `5ba6ace9` + the stamp commit after it. Workers W1–W5 cut from it.
 Everything below compiles workspace-wide; **no behaviour change** beyond the
 SDK bump and the carried-but-unrouted wire `sessionId`.
 
@@ -180,7 +180,7 @@ listed-sessions loop now skips `kind == "observed"` beside `"advisor"`; lineage
 | `crates/acp/src/omp/mod.rs` (whole module) | module doc + per-fn `141 C stub` | W5 |
 | `crates/agent/src/acp_child.rs` `impl Message<Update>`: `Update::Subagent(a) => debug!` arm; `Update::Session { update, .. }` ignores `session` | `// 141 C stub: W2 replaces` / `// 141 C:` | W2 |
 | `crates/tui/src/model.rs` transcript match: `AgentEvent::ObservedChildChanged { .. } => {}` | `// 141 C stub: W4 replaces` | W4 |
-| `crates/slack/src/channel.rs` `Thread::apply` silent arm gained `ObservedChildChanged` | `// 141 C stub` | W4 (stays silent per §10.2; W4 adds `route()` board row) |
+| `crates/slack/src/channel.rs` `Thread::apply` silent arm gained `ObservedChildChanged` | `// 141 C stub` | W4 (stays silent per §10.2; W4 adds the `route()` board row) |
 | `crates/telegram` | no exhaustive `AgentEvent` match → untouched | W4 |
 
 rpc `admitted`/`wanted` (`api.rs`) are **real**, not stubs: `announces_child()`
@@ -190,9 +190,11 @@ treats `ObservedChildChanged` like `SubagentSpawned`; test
 ## 7. Files touched outside C's list (mechanical, compile-only)
 
 - `crates/rpc/src/acp.rs:1267` loopback test: `Update::Session { session, update }` destructure (+ asserts `session == harness.session_id()`).
-- `crates/agent/src/store/dreaming.rs:122` (Q7, above).
+- `crates/agent/src/store/dreaming.rs:122` (Q7, §5).
 - `crates/agent/Cargo.toml` `ts` feature += `acp/ts`.
-- Struct-literal sites gaining `observed: None` / `kind` defaults — listed by the compiler, see §9.
+- `crates/agent/src/supervisor.rs` `info_row` (`observed: row.observed.clone()`) and `LoadSession` (`kind`, `observed` from the row) — plumbing only, so `list_agents`/`load_session` carry the fields; W2 owns the file from here.
+- `crates/tui/src/model.rs:12041-12057` `/cost` rows: `CostScope` is matched exhaustively there (F29 missed it); the `Observed` arms read "watch-only subagent, counted beside the harness" / " · watch-only" — W4 may reword.
+- Struct literals gaining `observed: None`: `agent/session_read.rs`, `slack/{board,ui}.rs`, `telegram/{commands,ui}.rs`, `tui/{model,attach}.rs`, `roster/desk.rs` (tests, plus the `SubagentSpawned` row at `tui/model.rs:5965`).
 
 ## 8. Bindings
 
@@ -203,8 +205,23 @@ is a stale tracked copy from 2026-09-26 that nothing reads (no `kind`, no
 `ObservedSource.ts`, `ObservedState.ts`, `CostRule.ts`; changed:
 `SessionKind.ts`, `AgentEvent.ts`, `AgentInfo.ts`, `SessionSummary.ts`,
 `Loaded.ts`, `CostScope.ts`. Hand-written `src/rpc/extra.ts` `AgentInfo` gained
-`observed?: ObservedMeta | null` and the `kind` doc line.
+`observed?: ObservedMeta | null` and the `kind` doc line. `Loaded.kind` is
+`ts(optional = nullable)` (→ `kind?: SessionKind`), matching `AgentInfo`/
+`SessionSummary`; three existing W3 `Loaded` literals would otherwise fail `tsc`.
 
-## 9. Gates run
+## 9. Gates run (all green)
 
-(filled in below after the runs)
+| gate | result |
+|---|---|
+| `cargo tree -p acp -e features -i agent-client-protocol` | default, process, stdio, unstable_end_turn_token_usage, unstable_subagents; no schemars |
+| `git diff Cargo.lock` | 15 lines: the three SDK packages + dropped `schemars`/`tracing` edges |
+| `cargo check -p acp --all-targets` | ok |
+| `cargo test -p acp` | 23 passed |
+| `cargo test -p agent --lib -- store::` | 93 passed (6 new, §4) |
+| `cargo test -p rpc --lib -- api::` | 26 passed (incl. `observed_child_changed_enrols_like_subagent_spawned`) |
+| `just ts-desktop` (`cargo test -p rpc --features ts export_bindings` + copy) | 8 passed; bindings in §8 written |
+| desktop `bun run check` (`tsc -b --noEmit`) | clean |
+| `cargo check -p tui -p slack -p telegram -p roster --all-targets` | ok |
+| `cargo check --workspace --all-targets` (under `/tmp/theuth-build.lock`, `BUILD_SLOTS=1`) | ok (only the pre-existing `block v0.1.6` future-incompat note) |
+
+Not run (not mine): clippy, `cargo test -p tui/slack/telegram`, vitest, vite build.
