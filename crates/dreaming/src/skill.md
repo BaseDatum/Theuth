@@ -46,9 +46,9 @@ A put that sets `status` (or `hint`, `verified`, `valid_until`, `superseded_by`,
 
 **Archive by use** (`L.tidy.archive_by_use`, ≤ 60). A `record` past 14 days → `knowledge_archive(id, "record past its lifetime")`. An entry with ≥ 50 impressions and 0 opens that is not a `warning`: if it *reads* as a warning (a never/always, a safety or secrets claim — e.g. `sky-atuin-history-contains-private-key`, typed `fact` before 136 existed), retype it instead (the tidy-mark put above with `type="warning"`); if the misses look like term collisions (`qartez-mcp-recon` matching every "mcp"), fix it first (retitle / tags / scope via `knowledge_put`); else `knowledge_archive(id, "shown N times, never opened")`. Never archive a `decision` or a `warning` by use. A pre-136 store has no `uses` rows yet: the first nights see impressions derived from the sessions store, later nights the live counters.
 
-**Verify** (`L.tidy.verify_sample`, ≤ 15). Read tools only: `knowledge_verify(id, "ok")` when the claim checks, `knowledge_verify(id, "stale", note="what changed")` when it does not; a stale fact about a tool bug cites the fix commit when `git log` shows it. Never let a model opinion set `verified`.
+**Verify** (`L.tidy.verify_sample`, ≤ 15). Read tools only, one id at a time: `knowledge_get` the entry, pick its checkable claim (a path, sha, version, hostname, "fixed in"), check it with `read_file` / `glob` / `code_find` / `session_read` **in the same cell**, then `knowledge_verify(id, "ok")` when the claim checks, `knowledge_verify(id, "stale", note="what changed")` when it does not; a stale fact about a tool bug cites the fix commit when `git log` shows it. Never let a model opinion set `verified`: a `knowledge_verify` with no read-tool call behind it is a false receipt — skip the id instead ("not checkable" in the journal).
 
-Stop rules: a cap reached → write what you did into your receipts and move on; any `knowledge_*` error → log it, skip the id.
+Stop rules: a cap reached → write what you did into your receipts and move on; any `knowledge_*` error → log it, skip the id. **Work the whole list**: every id in `L.tidy.retitle`, every group in `L.tidy.duplicate_stems`, every id in `L.tidy.archive_by_use` and `L.tidy.verify_sample` — the lists are already capped; a sample of 20 is not a pass. The only reasons to stop early are a `<budget>` note or `budget exhausted:`; "budget constraints" with most of the night's money unspent (`dreaming_state().budget_left_tonight_usd`) is not one.
 
 ## 3 · Mine (tidy model; cap 60 cases)
 
@@ -114,7 +114,7 @@ Nothing is created without the user's press.
 
 ## 7 · Journal (last)
 
-One section per phase you ran, then the meta-note, then close the night:
+One section per phase you ran (one `dreaming_journal` call each; bullets, no `#` headings — the note's headings are the night and the section), then the meta-note, then close the night:
 ```python
 await dreaming_journal(night=night, section="Tidy", markdown="- 3 merged (`undo merge`) · 12 archived (`undo archive`) · 40 retitled (`undo retitle`) · 2 superseded · 15 verified (1 stale)\n- …")
 await dreaming_journal(night=night, section="Mine", markdown="- 7 cases (3 correction, 2 rewind, …); 4 friction events without an ideal")
@@ -123,7 +123,7 @@ await dreaming_journal(night=night, section="Settle", markdown="…")
 await dreaming_journal(night=night, section="meta-note", markdown="<2–5 bullets: which kinds of edits helped or hurt, revised from tonight>")
 await dreaming_journal(night=night, section="journal", markdown="budget: $0.62 of $1.00 (stopped at: none) · models: tidy anthropic/claude-haiku-4-5, judge openai/gpt-5.6-sol")
 ```
-Undo handles are `dreaming_undo(night, group)` with `group` ∈ `merge | supersede | archive | verify | retitle | put | skill:<name> | preferences`, or no group for the whole night. `section="journal"` **closes the night** (counts, spend, `last_dream_at`, the `DreamNightFinished` event) — call it once, last. `quiet: true`: nothing reaches chat; proposals reach the inbox.
+Undo handles are `dreaming_undo(night, group)` with `group` ∈ `merge | supersede | archive | verify | retitle | put | skill:<name> | preferences`, or no group for the whole night. `section="journal"` **closes the night** (counts, spend, `last_dream_at`, the `DreamNightFinished` event; the harness appends its own `Receipt` line with the real counts and undo handles) — call it once, last. Then reply with that one line (`dreamt 2026-10-08: 20 retitled · …`); "paused" is only the reply when the ledger said so. `quiet: true`: nothing reaches chat; proposals reach the inbox.
 
 ## Tool contract
 
