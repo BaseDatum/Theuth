@@ -843,6 +843,8 @@ mod tests {
                 },
                 generation: 1,
             }),
+            cancel: tools::CancellationToken::new(),
+            promote_after: None,
         }
     }
 
@@ -1090,7 +1092,9 @@ mod tests {
                 retention: tools::Retention::Durable,
                 generation: 1,
             }),
-            ..cx(false)
+            ..cx(false),
+            cancel: tools::CancellationToken::new(),
+            promote_after: None,
         };
         k.register_consolidating_session(night.session);
         let tool = VerifyTool(k.clone());
