@@ -709,8 +709,7 @@ impl Advisors {
             fresh,
             UpdateOpts {
                 steps,
-                // A consultation is asked from inside the asker's turn.
-                will_continue: link.pending_continue || block.is_some(),
+                will_continue: link.pending_continue,
                 preface: preface.as_deref(),
                 reasoning: link.reasoning,
                 pin_first: false,
