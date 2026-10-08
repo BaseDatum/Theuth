@@ -101,7 +101,7 @@ extension Store {
 
     // MARK: the reply stream and the Done zone
 
-    private struct Delta: Decodable { let type: String; let session: String?; let text: String? }
+    private struct Delta: Decodable { let type: String; let session: String?; let text: String?; let stopReason: String?; let message: String? }
 
     /// 129 §3.2: a connection that never sets a focus gets every session's deltas; ours wants the desk's only.
     /// Re-applied on every `PendingPrompts` (the first item of each (re)subscription); pre-129 engines refuse, fine.
@@ -113,8 +113,8 @@ extension Store {
         }
     }
 
-    /// Every event, raw: `TextDelta`/`TurnFinished` on the desk feed the reply while one is being collected;
-    /// `Dictation*` (W6) feed the live dictation.
+    /// Every event, raw: `TextDelta`/`TurnFinished`/`Error` on the desk feed the reply while one is being collected
+    /// (a failed or cancelled turn ends it with the reason); `Dictation*` (W6) feed the live dictation.
     func askObserve(_ data: Data) {
         guard let d = try? TheuthJSON.decoder.decode(Delta.self, from: data) else { return }
         if d.type == "PendingPrompts" { return focusDeltas() }
@@ -123,12 +123,13 @@ extension Store {
         let event: ReplyEvent
         switch d.type {
         case "TextDelta": event = .textDelta(session: session, text: d.text ?? "")
-        case "TurnFinished": event = .turnFinished(session: session)
+        case "TurnFinished": event = .turnFinished(session: session, stopReason: d.stopReason ?? "")
+        case "Error": event = .error(session: session, message: d.message ?? "")
         default: return
         }
         guard ask.router.observe(event), let reply = ask.router.reply else { return }
         // ponytail: one publish per delta; coalesce on a timer if the stream ever makes the panel stutter.
-        let text = reply.firstTwoLines
+        let text = reply.receiptText
         if let id = ask.current { ask.receipts.update(id: id, text: text) }
         setReceipt(.reply(who: "theuth", text: text.isEmpty ? "…" : text, session: reply.session))
         if reply.finished { expireReceipt(after: 12) }

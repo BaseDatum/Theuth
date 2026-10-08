@@ -554,12 +554,17 @@ public sealed record WireEvent(string Type, object? Payload)
 
 // MARK: stream items the Swift app decodes ad hoc (Store+Ask.swift); typed here for W4 (design 134 §5.3).
 
-/// <summary><c>TextDelta</c> / <c>TurnFinished</c> as the Ask bar reads them: the type, the session, the text.</summary>
+/// <summary>
+/// <c>TextDelta</c> / <c>TurnFinished</c> / <c>Error</c> as the Ask bar reads them: the type, the session, the text, the
+/// turn's <c>stop_reason</c> (provider reason or <c>cancelled</c> / <c>error</c>) and the <c>Error</c> event's <c>message</c> (134 W6 item 7).
+/// </summary>
 public sealed record StreamDelta
 {
     [JsonRequired] public string Type { get; init; } = "";
     public string? Session { get; init; }
     public string? Text { get; init; }
+    [JsonPropertyName("stop_reason")] public string? StopReason { get; init; }
+    public string? Message { get; init; }
 
     public static StreamDelta Decode(ReadOnlySpan<byte> utf8) => TheuthJson.Deserialize<StreamDelta>(utf8);
 }

@@ -42,6 +42,7 @@
     "trayIcon": {
       "id": "main",
       "iconPath": "icons/tray.png",
+      "tooltip": "theuth",
       "showMenuOnLeftClick": false
     },
     "security": {

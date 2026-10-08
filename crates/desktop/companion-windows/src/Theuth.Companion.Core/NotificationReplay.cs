@@ -43,7 +43,10 @@ public static class NotificationReplay
         steps.Add(new Step(SegmentOne, "tick +181 s (rate window passed)", one.Tick(t0.AddSeconds(181))));
         steps.Add(new Step(SegmentOne, "answered elsewhere (all gone)", one.Update(Array.Empty<AttentionItem>(), t0.AddSeconds(182))));
         // Windows addition (134 D8 gate): the error class for real — Default scenario + sound, or Urgent under the opt-in.
-        steps.Add(new Step(SegmentEngine, "engine lost +183 s", one.Engine(false, t0.AddSeconds(183))));
+        // W6 item 10: the loss is held for NotificationPolicy.EngineGrace; the banner comes from the tick after it.
+        var lost = one.Engine(false, t0.AddSeconds(183));
+        lost.Merge(one.Tick(t0.AddSeconds(183) + NotificationPolicy.EngineGrace));
+        steps.Add(new Step(SegmentEngine, $"engine lost +183 s (+{(int)NotificationPolicy.EngineGrace.TotalSeconds} s grace)", lost));
         return steps;
     }
 

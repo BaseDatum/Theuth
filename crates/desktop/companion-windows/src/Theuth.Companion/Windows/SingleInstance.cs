@@ -14,6 +14,7 @@ internal static class SingleInstance
 {
     public const string Key = "io.theuth.companion";
 
+
     /// <summary>True: this process is the companion. False: the activation went to the running one — return 0.</summary>
     public static bool Claim(string[] args)
     {
@@ -28,6 +29,9 @@ internal static class SingleInstance
             Note($"single instance: FindOrRegisterForKey failed ({e.GetType().Name}: {e.Message}) — running anyway");
             return true;
         }
+        // The current instance's own activation (a toast click that LAUNCHED this process) is read by the Notifier right after
+        // AppNotificationManager.Register(): read before it, a toast-launched process fail-fasts in Microsoft.WindowsAppRuntime.dll
+        // (0xc0000409, build-B 2026-10-08 05:01–05:03). The redirect branch below is a different process and may read it.
         if (me.IsCurrent) return true;
         try
         {
