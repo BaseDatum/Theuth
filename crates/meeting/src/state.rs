@@ -202,6 +202,8 @@ pub struct Live {
     /// 02 §4.1: the compaction head last pushed to the session; a re-render that
     /// equals it is not pushed again.
     pub last_head: Option<String>,
+    /// 137 R1-D6: the endless view last rendered into the head; `None` in epochs mode.
+    pub earlier: Option<crate::head::Earlier>,
     /// `live.jsonl`, append-only.
     live_log: Option<File>,
     /// `briefs.jsonl`, append-only.
@@ -319,6 +321,7 @@ impl Recording {
                 captured: Vec::new(),
                 speakers: Vec::new(),
                 last_head: None,
+                earlier: None,
                 live_log: Live::open_log(dir, crate::LIVE_LOG),
                 briefs_log: Live::open_log(dir, crate::BRIEFS_LOG),
             },
@@ -351,6 +354,7 @@ mod tests {
             captured: Vec::new(),
             speakers: Vec::new(),
             last_head: None,
+            earlier: None,
             live_log: None,
             briefs_log: None,
         }

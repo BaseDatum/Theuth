@@ -226,13 +226,15 @@ public sealed class PolicyFloodPauseWithdrawTests
     public void EngineLostIsOneErrorBannerWithdrawnOnReconnect()
     {
         var p = PolicyFx.Primed();
-        var lost = p.Engine(connected: false, T0);
+        // W6 item 10: the drop is held for EngineGrace; the banner comes from the tick after it (EngineLossGraceTests cover the grace).
+        Assert.True(p.Engine(connected: false, T0).IsEmpty);
+        var lost = p.Tick(T0 + NotificationPolicy.EngineGrace);
         Assert.Equal(new[] { Banner.EngineId }, lost.Post.Select(b => b.Id));
         Assert.Equal(new[] { true }, lost.Post.Select(b => b.Sound));
-        var again = p.Engine(connected: false, At(1));
-        var refresh = p.Update(Array.Empty<AttentionItem>(), At(2));
+        var again = p.Engine(connected: false, T0 + NotificationPolicy.EngineGrace + TimeSpan.FromSeconds(1));
+        var refresh = p.Update(Array.Empty<AttentionItem>(), T0 + NotificationPolicy.EngineGrace + TimeSpan.FromSeconds(2));
         Assert.True(again.IsEmpty && refresh.Withdraw.Count == 0); // not repeated; an item refresh does not withdraw it
-        var back = p.Engine(connected: true, At(3));
+        var back = p.Engine(connected: true, T0 + NotificationPolicy.EngineGrace + TimeSpan.FromSeconds(3));
         Assert.Equal(new[] { Banner.EngineId }, back.Withdraw);
     }
 }

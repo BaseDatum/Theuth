@@ -37,15 +37,44 @@ struct AskRouterTests {
         r.resolved(session: "desk", hub: true)
         #expect(r.observe(.textDelta(session: "desk", text: "early")) == false, "nothing collected before a send")
         r.sent(on: "desk")
-        #expect(r.observe(.turnFinished(session: "desk")) == false, "an earlier turn ending with nothing streamed is not the reply")
+        #expect(r.observe(.turnFinished(session: "desk", stopReason: "end_turn")) == false, "an earlier turn ending with nothing streamed is not the reply")
         #expect(r.observe(.textDelta(session: "other", text: "noise")) == false)
         #expect(r.observe(.textDelta(session: "desk", text: "- handed to w3 — it owns crates/rpc\n")) == true)
         #expect(r.observe(.textDelta(session: "desk", text: "told w2 to wait\nthird line")) == true)
         #expect(r.reply?.firstTwoLines == "handed to w3 — it owns crates/rpc — told w2 to wait")
-        #expect(r.observe(.turnFinished(session: "desk")) == true)
+        #expect(r.observe(.turnFinished(session: "desk", stopReason: "end_turn")) == true)
+        #expect(r.reply?.failure == nil)
+        #expect(r.reply?.receiptText == "handed to w3 — it owns crates/rpc — told w2 to wait", "a normal reply reads as before")
         #expect(r.reply?.finished == true)
         #expect(r.observe(.textDelta(session: "desk", text: "late")) == false, "finished replies stay put")
         #expect(r.reply?.text.contains("late") == false)
+    }
+
+    /// A failed desk turn must end the receipt instead of leaving "sent — waiting for the desk" forever (134 W6).
+    @Test func aFailedOrCancelledDeskTurnEndsTheReplyWithTheReason() {
+        var r = AskRouter()
+        r.sent(on: "desk")
+        let long = "model: Resolver error for \"anthropic/claude\": no API key. Cause: ApiKeyEnvNotFound { env_name: \"ANTHROPIC_API_KEY\" }\nsecond line"
+        #expect(r.observe(.error(session: "other", message: long)) == false, "another session's error is not ours")
+        #expect(r.observe(.error(session: "desk", message: long)) == true)
+        #expect(r.reply?.finished == true)
+        #expect(r.reply?.failure == "model: Resolver error for \"anthropic/claude\": no API key. Cause: ApiKeyEnvNotFo…", "first line, clipped to 80")
+        #expect(r.reply?.receiptText.hasPrefix("couldn't reply — model: Resolver error") == true)
+        #expect(r.observe(.turnFinished(session: "desk", stopReason: "error")) == false, "the trailing TurnFinished changes nothing")
+
+        r.sent(on: "desk")
+        #expect(r.observe(.turnFinished(session: "desk", stopReason: "error")) == true, "stop_reason error with nothing streamed still ends it")
+        #expect(r.reply?.receiptText == "couldn't reply — the turn failed")
+
+        r.sent(on: "desk")
+        r.observe(.textDelta(session: "desk", text: "half an answ"))
+        #expect(r.observe(.turnFinished(session: "desk", stopReason: "cancelled")) == true)
+        #expect(r.reply?.receiptText == "couldn't reply — the turn was cancelled")
+        #expect(r.reply?.finished == true)
+
+        r.sent(on: "desk")
+        #expect(r.observe(.error(session: "desk", message: "  \n")) == true)
+        #expect(r.reply?.receiptText == "couldn't reply — the turn failed", "an empty message still reads")
     }
 
     @Test func replyActionsFollowTheKind() {

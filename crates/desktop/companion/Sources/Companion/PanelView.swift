@@ -130,6 +130,8 @@ struct CardView: View {
                 Hint("S", "snooze 30 m")
                 if card.clearable { Hint("E", "clear") }
                 if card.item.kind == .decision { Hint("O", "board") }
+                // 130 §4.2: Hire · Decline · Open — the real options replaced the "Open in theuth" row; O still opens the item.
+                else if card.item.kind == .hire || card.item.kind == .blocked { Hint("O", "open in theuth") }
                 if card.item.kind == .review || card.item.kind == .finished { Hint("D", "diff") }
                 if card.sessionURL != nil { Hint("⌘O", "session") }
                 if card.replyAction("") != nil { Hint("R", "reply") } // W3

@@ -146,6 +146,10 @@ public sealed class CompanionSettings : IEquatable<CompanionSettings>
     /// <summary>W6 (R2-4): every key binding's override, one table for the grammar, the legend and Settings › Keys.</summary>
     public KeyTable Keys { get; set; } = new();
 
+    /// <summary>134 W6 item 1: the exe path the first-run "pin theuth to the taskbar corner" tip was shown (or resolved as
+    /// already promoted) for; empty = never (<see cref="PinTip"/>). Not a Settings-window value.</summary>
+    public string PinTipShownFor { get; set; } = "";
+
     /// <summary>The store keys (Swift's <c>CompanionSettings.Key</c> raw values; <c>doubleTapAlt</c> replaces <c>doubleTapOption</c>).</summary>
     public static class Key
     {
@@ -157,10 +161,13 @@ public sealed class CompanionSettings : IEquatable<CompanionSettings>
         /// <summary>Windows only (design 134 D8, R2): Settings › Notifications "Errors break through Do not disturb" → <see cref="NotificationPrefs.TimeSensitiveAvailable"/>.</summary>
         public const string ErrorsBreakThroughDnd = "errorsBreakThroughDnd";
 
+        /// <summary>Windows only (134 W6): <see cref="PinTip.Key"/>.</summary>
+        public const string PinTipShownFor = PinTip.Key;
+
         public static readonly IReadOnlyList<string> All = new[]
         {
             RailSide, RailDisplay, RailCollapse, RailPresence, DoubleTapAlt, UndoDelay,
-            NotifyBlocking, NotifyDeferrable, NotifyError, SoundOnErrors, LaunchAtLogin, KeyOverrides, ErrorsBreakThroughDnd,
+            NotifyBlocking, NotifyDeferrable, NotifyError, SoundOnErrors, LaunchAtLogin, KeyOverrides, ErrorsBreakThroughDnd, PinTipShownFor,
         };
     }
 
@@ -183,6 +190,7 @@ public sealed class CompanionSettings : IEquatable<CompanionSettings>
         s.Notify = n;
         s.LaunchAtLogin = d.Bool(Key.LaunchAtLogin);
         if (d.String(Key.KeyOverrides) is { } j) s.Keys = new KeyTable(j);
+        s.PinTipShownFor = d.String(Key.PinTipShownFor) ?? "";
         return s;
     }
 
@@ -201,6 +209,8 @@ public sealed class CompanionSettings : IEquatable<CompanionSettings>
         d.Set(Key.ErrorsBreakThroughDnd, Notify.TimeSensitiveAvailable);
         d.Set(Key.LaunchAtLogin, LaunchAtLogin);
         d.Set(Key.KeyOverrides, Keys.Json);
+        if (PinTipShownFor.Length > 0) d.Set(Key.PinTipShownFor, PinTipShownFor);
+        else d.Remove(Key.PinTipShownFor);
         d.Flush();
     }
 
@@ -218,12 +228,12 @@ public sealed class CompanionSettings : IEquatable<CompanionSettings>
         o is not null
         && RailSide == o.RailSide && RailDisplay == o.RailDisplay && RailPresence == o.RailPresence
         && DoubleTapAlt == o.DoubleTapAlt && UndoDelay.Equals(o.UndoDelay) && Notify == o.Notify
-        && LaunchAtLogin == o.LaunchAtLogin && Keys == o.Keys;
+        && LaunchAtLogin == o.LaunchAtLogin && Keys == o.Keys && PinTipShownFor == o.PinTipShownFor;
 
     public override bool Equals(object? obj) => obj is CompanionSettings s && Equals(s);
 
     public override int GetHashCode() =>
-        HashCode.Combine(RailSide, RailDisplay, RailPresence, DoubleTapAlt, UndoDelay, Notify, LaunchAtLogin, Keys);
+        HashCode.Combine(RailSide, RailDisplay, RailPresence, DoubleTapAlt, UndoDelay, Notify, LaunchAtLogin, HashCode.Combine(Keys, PinTipShownFor));
 }
 
 /// <summary>

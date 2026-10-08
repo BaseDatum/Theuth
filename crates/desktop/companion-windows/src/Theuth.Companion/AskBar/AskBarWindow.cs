@@ -134,7 +134,7 @@ internal sealed partial class AskBarWindow : ToolWindow, IAskBarSurface
         hints.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         var hintText = new TextBlock { FontSize = 10.5, Foreground = sand, TextWrapping = TextWrapping.Wrap, MaxLines = 2, VerticalAlignment = VerticalAlignment.Center };
         AutomationProperties.SetAutomationId(hintText, "ask-hints");
-        AutomationProperties.SetName(hintText, "Ask bar hints");
+        // W6 (C12): no fixed Name — Narrator reads the hint text itself (a TextBlock's Name falls back to its Text).
         holdKey = Key("hold Ctrl+Shift+Space");
         escWords = Words(" cancel");
         hintText.Inlines.Add(Key("⏎"));
@@ -147,7 +147,7 @@ internal sealed partial class AskBarWindow : ToolWindow, IAskBarSurface
         var statusPanel = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6, VerticalAlignment = VerticalAlignment.Center };
         status = new TextBlock { FontSize = 10.5, Foreground = sand, TextTrimming = TextTrimming.CharacterEllipsis, MaxLines = 1, MaxWidth = 200, VerticalAlignment = VerticalAlignment.Center };
         AutomationProperties.SetAutomationId(status, "ask-status");
-        AutomationProperties.SetName(status, "Ask bar status");
+        AutomationProperties.SetLiveSetting(status, Microsoft.UI.Xaml.Automation.Peers.AutomationLiveSetting.Polite); // W6 (C12): read as its text, announced when it changes
         privacyLink = new HyperlinkButton { Content = "Settings › Privacy", FontSize = 10.5, Padding = new Thickness(2, 0, 2, 0), Visibility = Visibility.Collapsed, NavigateUri = new Uri(VoiceRecorder.PrivacySettingsUri) };
         AutomationProperties.SetAutomationId(privacyLink, "ask-privacy-link");
         statusPanel.Children.Add(status);

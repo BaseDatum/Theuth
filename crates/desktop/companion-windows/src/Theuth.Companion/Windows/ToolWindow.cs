@@ -140,10 +140,15 @@ internal abstract partial class ToolWindow : Window
         return PInvoke.DefSubclassProc(h, msg, w, l);
     }
 
+    /// <summary>Before the window is destroyed at quit: detach what must not outlive it (W6: the system backdrop controller).</summary>
+    protected virtual void OnClosingForGood() { }
+
     /// <summary>The app quits: really close (removes the subclass first).</summary>
     public void CloseForGood()
     {
         AllowClose = true;
+        try { OnClosingForGood(); }
+        catch (Exception e) { Log.Write($"{Title}: OnClosingForGood failed: {e.GetType().Name}: {e.Message}"); }
         PInvoke.RemoveWindowSubclass(Hwnd, subclass, SubclassId);
         Close();
     }

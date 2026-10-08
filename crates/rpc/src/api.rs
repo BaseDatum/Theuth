@@ -43,6 +43,7 @@ use agent::{
     SpendReportQuery,
 };
 use agent::{AwsProfiles, ListAwsProfiles, SetAwsProfile};
+use agent::{EndlessConfig, MemoryMode, SessionMemory, ViewLine};
 use agent::{GetFavoriteModels, SetModelFavorite};
 use app::{
     AppDoc, AppToolResult, Apps, CallArgs, CallStatusOf, CallTool, CloseApp, GetApp, PublishFromUi,
@@ -358,6 +359,37 @@ pub trait Api {
     /// Live figures from an idle actor; the stored frame otherwise.
     #[method(name = "session_context_breakdown", with_extensions)]
     async fn session_context_breakdown(&self, session: SessionId) -> RpcResult<ContextBreakdown>;
+    /// 137 §11.2: the session's memory mode, its view, settle state,
+    /// compactor stats and backfill progress; `mode: epochs` + an empty view
+    /// for an epochs session.
+    #[method(name = "session_memory", with_extensions)]
+    async fn session_memory(&self, session: SessionId) -> RpcResult<SessionMemory>;
+    /// 137 §9 `zoom`: the two children of line `id+n` (`n == 1`: the whole message).
+    #[method(name = "endless_zoom", with_extensions)]
+    async fn endless_zoom(&self, session: SessionId, id: u64, n: u64) -> RpcResult<Vec<ViewLine>>;
+    /// 137 §9 `recall`: FTS over the level-0 lines (raw fallback under 2 hits); `limit` default 8.
+    #[method(name = "endless_recall", with_extensions)]
+    async fn endless_recall(
+        &self,
+        session: SessionId,
+        query: String,
+        limit: Option<u8>,
+    ) -> RpcResult<Vec<ViewLine>>;
+    /// 137 8.6 `/endless on|off` over RPC; idle sessions only (error `busy`).
+    #[method(name = "set_session_memory", with_extensions)]
+    async fn set_session_memory(
+        &self,
+        session: SessionId,
+        mode: MemoryMode,
+    ) -> RpcResult<SessionMemory>;
+    /// 137 R1-D2b: the session's view budget in bytes (16_000..=256_000);
+    /// idle or running — it takes effect at the next turn boundary.
+    #[method(name = "set_session_view_bytes", with_extensions)]
+    async fn set_session_view_bytes(
+        &self,
+        session: SessionId,
+        bytes: u32,
+    ) -> RpcResult<SessionMemory>;
     /// Remove `targets` from the active context at `expected_revision`
     /// (design doc 48 §3.2). Atomic: stale revision, unknown targets or an
     /// incomplete protocol group refuse and write nothing. Refused while a
@@ -1489,7 +1521,11 @@ pub trait Api {
     /// Start a training run now (126 §8): `tier` a | b | c, `venue` auto | local | node | off.
     /// Returns the run id; `DoubleTrainingState` events follow.
     #[method(name = "double_train")]
-    async fn double_train(&self, tier: double::Tier, venue: double::Venue) -> RpcResult<double::RunId>;
+    async fn double_train(
+        &self,
+        tier: double::Tier,
+        venue: double::Venue,
+    ) -> RpcResult<double::RunId>;
     /// Pause / resume learning (126 §9): predictions and rungs continue, labels stop accruing.
     #[method(name = "double_pause")]
     async fn double_pause(&self, on: bool) -> RpcResult<double::DoubleStatus>;
@@ -1526,6 +1562,15 @@ pub trait Api {
         &self,
         settings: double::DoubleConfig,
     ) -> RpcResult<double::DoubleConfig>;
+    /// 137 §11.1 `agent.endless` as in force (Settings › Memory).
+    #[method(name = "endless_settings_get")]
+    async fn endless_settings_get(&self) -> RpcResult<EndlessConfig>;
+    /// Persist the whole `agent.endless` block to config.yaml and apply it
+    /// live (defaults for new chats/desks/meetings, view budget, slack,
+    /// settle). The compactor model applies to sessions attached after the
+    /// change. A failed write changes nothing.
+    #[method(name = "endless_settings_set")]
+    async fn endless_settings_set(&self, config: EndlessConfig) -> RpcResult<EndlessConfig>;
     /// Settings › Search (16 §8): the four external providers (enabled, base
     /// URL, secret name and whether it is set - never the value, timeout,
     /// priority, registered) plus the `web` read/budget defaults.
@@ -3141,6 +3186,100 @@ impl ApiServer for Server {
     ) -> RpcResult<ContextBreakdown> {
         self.authorize(ext, session).await?;
         ask::<Agents, _>(agent::AGENT_ACTOR, SessionContextBreakdown { session }).await
+    }
+
+    // 137 §11.2 (137-contract.md §3): forwarded to the owning engine like
+    // `compact`, else asked of the supervisor.
+    async fn session_memory(
+        &self,
+        ext: &Extensions,
+        session: SessionId,
+    ) -> RpcResult<SessionMemory> {
+        self.authorize(ext, session).await?;
+        if let Some(r) = forward::route(ext, session, "session_memory", (session,)).await? {
+            return Ok(r);
+        }
+        ask::<Agents, _>(agent::AGENT_ACTOR, agent::SessionMemoryQuery { session }).await
+    }
+
+    async fn endless_zoom(
+        &self,
+        ext: &Extensions,
+        session: SessionId,
+        id: u64,
+        n: u64,
+    ) -> RpcResult<Vec<ViewLine>> {
+        self.authorize(ext, session).await?;
+        if let Some(r) = forward::route(ext, session, "endless_zoom", (session, id, n)).await? {
+            return Ok(r);
+        }
+        ask::<Agents, _>(agent::AGENT_ACTOR, agent::EndlessZoom { session, id, n }).await
+    }
+
+    async fn endless_recall(
+        &self,
+        ext: &Extensions,
+        session: SessionId,
+        query: String,
+        limit: Option<u8>,
+    ) -> RpcResult<Vec<ViewLine>> {
+        self.authorize(ext, session).await?;
+        if let Some(r) =
+            forward::route(ext, session, "endless_recall", (session, &query, limit)).await?
+        {
+            return Ok(r);
+        }
+        ask::<Agents, _>(
+            agent::AGENT_ACTOR,
+            agent::EndlessRecall {
+                session,
+                query,
+                limit,
+            },
+        )
+        .await
+    }
+
+    async fn set_session_memory(
+        &self,
+        ext: &Extensions,
+        session: SessionId,
+        mode: MemoryMode,
+    ) -> RpcResult<SessionMemory> {
+        self.authorize(ext, session).await?;
+        if let Some(r) = forward::route(ext, session, "set_session_memory", (session, mode)).await?
+        {
+            return Ok(r);
+        }
+        ask::<Agents, _>(
+            agent::AGENT_ACTOR,
+            agent::SetSessionMemory {
+                session,
+                mode,
+                filter: agent::UnitFilter::All,
+            },
+        )
+        .await
+        .map(|r| r.memory)
+    }
+
+    async fn set_session_view_bytes(
+        &self,
+        ext: &Extensions,
+        session: SessionId,
+        bytes: u32,
+    ) -> RpcResult<SessionMemory> {
+        self.authorize(ext, session).await?;
+        if let Some(r) =
+            forward::route(ext, session, "set_session_view_bytes", (session, bytes)).await?
+        {
+            return Ok(r);
+        }
+        ask::<Agents, _>(
+            agent::AGENT_ACTOR,
+            agent::SetSessionViewBytes { session, bytes },
+        )
+        .await
     }
 
     async fn remove_context(
@@ -5390,9 +5529,16 @@ impl ApiServer for Server {
         ask::<double::actor::Double, _>(double::DOUBLE_ACTOR, double::actor::ClassDetail(key)).await
     }
 
-    async fn double_train(&self, tier: double::Tier, venue: double::Venue) -> RpcResult<double::RunId> {
-        ask::<double::sched::Scheduler, _>(double::sched::ACTOR, double::sched::Train { tier, venue })
-            .await
+    async fn double_train(
+        &self,
+        tier: double::Tier,
+        venue: double::Venue,
+    ) -> RpcResult<double::RunId> {
+        ask::<double::sched::Scheduler, _>(
+            double::sched::ACTOR,
+            double::sched::Train { tier, venue },
+        )
+        .await
     }
 
     async fn double_pause(&self, on: bool) -> RpcResult<double::DoubleStatus> {
@@ -5460,6 +5606,14 @@ impl ApiServer for Server {
             double::sched::SetSettings(settings),
         )
         .await
+    }
+
+    async fn endless_settings_get(&self) -> RpcResult<EndlessConfig> {
+        ask::<Agents, _>(agent::AGENT_ACTOR, agent::GetEndlessSettings).await
+    }
+
+    async fn endless_settings_set(&self, config: EndlessConfig) -> RpcResult<EndlessConfig> {
+        ask::<Agents, _>(agent::AGENT_ACTOR, agent::SetEndlessSettings { config }).await
     }
 
     async fn meeting_oracle_mode(&self) -> RpcResult<decision::ModeInfo> {

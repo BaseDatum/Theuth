@@ -32,6 +32,8 @@ export type HeaderId =
   | 'chat'
   | 'model'
   | 'title'
+  /** 137 §11.3: the ∞ badge of an endless session (opens the Memory panel); behind the chevron on a narrow pane. */
+  | 'memory'
   | 'parent'
   | 'owner'
   /** 79 §6.5: the owner engine is a sandbox VM — its desktop in a pop-out. */
@@ -75,6 +77,7 @@ export function headerOrder(panel: 'artifacts' | 'codemap' | 'browser' | 'termin
     ...(chat ? [{ id: 'chat', slot: 'bar' } as const] : []),
     { id: 'model', slot: 'menu' },
     { id: 'title', slot: 'bar' },
+    { id: 'memory', slot: 'menu' },
     { id: 'parent', slot: 'menu' },
     { id: 'owner', slot: 'menu' },
     { id: 'desktop', slot: 'menu' },

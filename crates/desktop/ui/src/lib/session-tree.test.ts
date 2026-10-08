@@ -28,6 +28,7 @@ const s = (id: string, parent: string | null = null, desk?: string): SessionSumm
   running: false,
   owner: '',
   epoch: 1,
+  memory: 'epochs',
   here: true,
   ...(desk === undefined ? {} : { desk }),
 })

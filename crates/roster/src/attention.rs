@@ -604,7 +604,8 @@ pub fn derive(inputs: &Inputs, states: &HashMap<String, State>, now_ms: u64) -> 
                 .and_then(|p| p.strip_prefix("agent:"))
                 .and_then(|n| inputs.agents.iter().find(|x| x.file.name.as_str() == n))
                 .and_then(|x| x.desk.clone());
-            let (priority, rank) = hire_task.map_or((None, tasks::Priority::Medium.weight()), ranked);
+            let (priority, rank) =
+                hire_task.map_or((None, tasks::Priority::Medium.weight()), ranked);
             out.push(AttentionItem {
                 task: hire_task.map(|t| t.id.clone()),
                 agent: Some(name.clone()),
@@ -1690,6 +1691,8 @@ mod tests {
                 paused,
                 proposed_by: proposed_by.map(Into::into),
                 runs_in: Default::default(),
+                memory: None,
+                view_bytes: None,
                 body: "x".into(),
             },
             status,
@@ -1958,7 +1961,11 @@ mod tests {
             Some("\u{201c}migrate\u{201d} \u{b7} by agent:ops")
         );
         assert_eq!(items.len(), 2, "a stray packet makes no item");
-        assert!(items.iter().all(|i| i.priority == Some(tasks::Priority::Medium) && i.rank == 5));
+        assert!(
+            items
+                .iter()
+                .all(|i| i.priority == Some(tasks::Priority::Medium) && i.rank == 5)
+        );
     }
 
     /// 119: a dismissal hides the version the user saw. A review re-submitted
@@ -2129,7 +2136,11 @@ mod tests {
         assert_eq!(items[0].packet.as_deref(), Some("decision:d2"));
         assert_eq!(items[0].title, "Cap retries at 3?");
         assert!(
-            items[0].detail.as_deref().unwrap().starts_with("agent:lead \u{b7} "),
+            items[0]
+                .detail
+                .as_deref()
+                .unwrap()
+                .starts_with("agent:lead \u{b7} "),
             "{:?}",
             items[0].detail
         );
@@ -2905,14 +2916,49 @@ mod tests {
     #[test]
     fn order_is_rank_then_waiting_then_newest() {
         let ops = tasks::Owner::Agent("ops".into());
-        let mut urgent = task("urgent one", tasks::TaskState::Blocked, ops.clone(), &["person:a"], None, 90);
+        let mut urgent = task(
+            "urgent one",
+            tasks::TaskState::Blocked,
+            ops.clone(),
+            &["person:a"],
+            None,
+            90,
+        );
         urgent.priority = tasks::Priority::Urgent;
-        let mut ranked = task("ranked", tasks::TaskState::Blocked, ops.clone(), &["person:b"], None, 95);
+        let mut ranked = task(
+            "ranked",
+            tasks::TaskState::Blocked,
+            ops.clone(),
+            &["person:b"],
+            None,
+            95,
+        );
         ranked.priority = tasks::Priority::Low;
         ranked.project = Some("sre".into());
-        let old = task("old medium", tasks::TaskState::Blocked, ops.clone(), &["person:c"], None, 10);
-        let new = task("new medium", tasks::TaskState::Blocked, ops.clone(), &["person:d"], None, 80);
-        let mut checked = task("checked out", tasks::TaskState::Doing, ops.clone(), &[], None, 5);
+        let old = task(
+            "old medium",
+            tasks::TaskState::Blocked,
+            ops.clone(),
+            &["person:c"],
+            None,
+            10,
+        );
+        let new = task(
+            "new medium",
+            tasks::TaskState::Blocked,
+            ops.clone(),
+            &["person:d"],
+            None,
+            80,
+        );
+        let mut checked = task(
+            "checked out",
+            tasks::TaskState::Doing,
+            ops.clone(),
+            &[],
+            None,
+            5,
+        );
         checked.priority = tasks::Priority::High;
         checked.checkout = Some(tasks::Checkout {
             session: "work-9".into(),
@@ -2930,7 +2976,13 @@ mod tests {
             next_steps: vec![],
         };
         let inputs = Inputs {
-            tasks: vec![urgent.clone(), ranked.clone(), old.clone(), new.clone(), checked],
+            tasks: vec![
+                urgent.clone(),
+                ranked.clone(),
+                old.clone(),
+                new.clone(),
+                checked,
+            ],
             handoffs: vec![handoff("h-checked", Some("ops"), 50, false)],
             shows: vec![shown("c1", "work-9", 60)],
             finished: vec![finished],
@@ -2946,15 +2998,24 @@ mod tests {
                 format!("blocked:{}", urgent.id).as_str(), // 9
                 "show:c1",                                 // 7: borrowed from the checkout task
                 format!("blocked:{}", old.id).as_str(),    // 5, waiting since 10
-                "handoff:h-checked",                       // 5, waiting since 50 (no checkout on its session)
-                format!("blocked:{}", new.id).as_str(),    // 5, waiting since 80
-                "finished:root-1:t1",                      // 5, waits on nobody → last
+                "handoff:h-checked", // 5, waiting since 50 (no checkout on its session)
+                format!("blocked:{}", new.id).as_str(), // 5, waiting since 80
+                "finished:root-1:t1", // 5, waits on nobody → last
             ],
             "{items:#?}"
         );
-        assert_eq!((items[0].priority, items[0].rank), (Some(tasks::Priority::Low), 102));
-        assert_eq!((items[1].priority, items[1].rank), (Some(tasks::Priority::Urgent), 9));
-        assert_eq!((items[2].priority, items[2].rank), (Some(tasks::Priority::High), 7));
+        assert_eq!(
+            (items[0].priority, items[0].rank),
+            (Some(tasks::Priority::Low), 102)
+        );
+        assert_eq!(
+            (items[1].priority, items[1].rank),
+            (Some(tasks::Priority::Urgent), 9)
+        );
+        assert_eq!(
+            (items[2].priority, items[2].rank),
+            (Some(tasks::Priority::High), 7)
+        );
         assert_eq!((items[4].priority, items[4].rank), (None, 5));
         assert_eq!((items[6].priority, items[6].rank), (None, 5));
     }
@@ -2983,14 +3044,37 @@ mod tests {
                 ),
             ],
             agents: vec![
-                agent("ops", AgentStatus::Idle, "40 USD/month".parse().unwrap(), 33.0, None, false),
-                agent("dev", AgentStatus::Idle, "40 USD/month".parse().unwrap(), 39.0, None, false),
+                agent(
+                    "ops",
+                    AgentStatus::Idle,
+                    "40 USD/month".parse().unwrap(),
+                    33.0,
+                    None,
+                    false,
+                ),
+                agent(
+                    "dev",
+                    AgentStatus::Idle,
+                    "40 USD/month".parse().unwrap(),
+                    39.0,
+                    None,
+                    false,
+                ),
             ],
             ..Default::default()
         };
         let items = derive(&inputs, &HashMap::new(), 100);
-        let at = |id: &str| items.iter().find(|i| i.id == id).map(|i| (i.at_ms, i.waiting_since_ms));
+        let at = |id: &str| {
+            items
+                .iter()
+                .find(|i| i.id == id)
+                .map(|i| (i.at_ms, i.waiting_since_ms))
+        };
         assert_eq!(at("budget:ops"), Some((42, Some(42))));
-        assert_eq!(at("budget:dev"), Some((100, Some(100))), "no filed task → now");
+        assert_eq!(
+            at("budget:dev"),
+            Some((100, Some(100))),
+            "no filed task → now"
+        );
     }
 }

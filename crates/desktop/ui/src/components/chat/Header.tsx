@@ -31,6 +31,7 @@ import { ContextMeter } from './ContextMeter'
 import { CostDialog, CostPill } from './CostPill'
 import { HeaderMenu, MenuRow, useHeaderMenuClose } from './HeaderMenu'
 import { ModelDialog, ModelMenu, ModelRow } from './ModelMenu'
+import { MemoryBadge, MemoryPanel } from './MemoryPanel'
 import { BrowserIndicator } from './Indicators'
 import { SessionMenu } from './SessionMenu'
 import { TerminalButton, TerminalViewer, useHasTerminals } from './TerminalViewer'
@@ -183,6 +184,7 @@ export function Header({
   const [cost, setCost] = useState(false)
   const [terminal, setTerminal] = useState(false)
   const [picker, setPicker] = useState(false)
+  const [memory, setMemory] = useState(false)
   const approvalsOff = info !== null && (!info.approvals.global || !info.approvals.session)
   const mac = isMacDesktop()
   const ref = useRef<HTMLElement>(null)
@@ -236,6 +238,7 @@ export function Header({
         {title}
       </span>
     ),
+    memory: (mode) => (session ? <MemoryBadge session={session} summary={row} row={mode === 'row'} open={memory} onToggle={() => setMemory((o) => !o)} /> : null),
     parent: (mode) => (parent ? <Parent id={parent} row={mode === 'row'} /> : null),
     owner: (mode) =>
       row && !row.here ? (
@@ -341,6 +344,7 @@ export function Header({
           <BrowserLive session={session} open={!!live} onOpenChange={(o) => useSessions.getState().setBrowserLive(session, o)} />
           <ArtifactPanel session={session} />
           <CodeMapSheet session={session} />
+          <MemoryPanel session={session} open={memory} onOpenChange={setMemory} />
         </>
       )}
     </header>

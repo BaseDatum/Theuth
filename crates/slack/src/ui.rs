@@ -801,6 +801,7 @@ mod tests {
             epoch: 1,
             here: true,
             kind: Default::default(),
+            memory: Default::default(),
         }
     }
 

@@ -28,6 +28,8 @@ internal sealed class Notifier : IDisposable
     private static Notifier? current;
     private static bool registered;
     private static bool urgentSupported;
+    /// <summary>W6 item 8: the toast activation that LAUNCHED this process, read right after <c>Register()</c> (the quickstart's order).</summary>
+    private static AppNotificationActivatedEventArgs? launchActivation;
 
     private readonly Store store;
     private readonly DispatcherQueue dispatcher;
@@ -87,6 +89,21 @@ internal sealed class Notifier : IDisposable
             registered = true;
             urgentSupported = AppNotificationBuilder.IsUrgentScenarioSupported();
             Log.Write($"notifications: Register() ok Setting={m.Setting} urgentSupported={(urgentSupported ? "true" : "false")} exe={Environment.ProcessPath}");
+            // A toast click that LAUNCHED this process delivers its arguments only here — never through NotificationInvoked
+            // (W6 item 8). Only after Register(): read earlier, the process fail-fasts in Microsoft.WindowsAppRuntime.dll.
+            try
+            {
+                var a = Microsoft.Windows.AppLifecycle.AppInstance.GetCurrent().GetActivatedEventArgs();
+                if (a.Kind == Microsoft.Windows.AppLifecycle.ExtendedActivationKind.AppNotification && a.Data is AppNotificationActivatedEventArgs la)
+                {
+                    launchActivation = la;
+                    Log.Write($"notifications: launched by a toast click — argument='{la.Argument}' input={la.UserInput.Count} (replayed after the surfaces are up)");
+                }
+            }
+            catch (Exception e)
+            {
+                Log.Write($"notifications: GetActivatedEventArgs failed ({e.GetType().Name}: {e.Message}) — plain launch");
+            }
         }
         catch (Exception e)
         {
@@ -142,6 +159,12 @@ internal sealed class Notifier : IDisposable
             Early.Clear();
         }
         foreach (var a in early) Invoked(a);
+        // W6 item 8: a toast click that LAUNCHED this process — its arguments arrive only through GetActivatedEventArgs (RegisterEarly).
+        if (launchActivation is { } la)
+        {
+            launchActivation = null;
+            Invoked(la, launched: true);
+        }
         Changed?.Invoke();
     }
 
@@ -176,7 +199,9 @@ internal sealed class Notifier : IDisposable
             case nameof(Store.Connection):
                 var s = store.Connection;
                 if (s == RpcClient.State.Connecting) return;
+                var wasPending = policy.EngineLossPending;
                 Run(p => p.Engine(s == RpcClient.State.Open, DateTimeOffset.Now));
+                if (!wasPending && policy.EngineLossPending) Log.Write($"notifications: engine lost — held for {(int)NotificationPolicy.EngineGrace.TotalSeconds} s before the error toast (item 10)");
                 break;
             case nameof(Store.Receipt):
                 Receipt(store.Receipt);
@@ -187,6 +212,8 @@ internal sealed class Notifier : IDisposable
     private void OnRefetched()
     {
         refetchedOnce = true;
+        heldFallback?.Stop();
+        heldFallback = null;
         if (pendingActivations.Count == 0) return;
         var pending = pendingActivations.ToList();
         pendingActivations.Clear();
@@ -206,6 +233,15 @@ internal sealed class Notifier : IDisposable
             Changed?.Invoke();
         }
     }
+
+    /// <summary>W6 item 10: an intentional quit — a pending engine loss is dropped and none is posted from here on.</summary>
+    public void Quitting()
+    {
+        policy.Quitting();
+        Log.Write("notifications: quitting — engine-loss toast suppressed");
+    }
+
+    public bool EngineLossPending => policy.EngineLossPending;
 
     public void Pause(DateTimeOffset? until)
     {
@@ -311,6 +347,34 @@ internal sealed class Notifier : IDisposable
         }
     }
 
+    /// <summary>W6 item 1: the pin tip's view of W3's rules — paused (nothing is posted) and the deferrable class switched off.</summary>
+    public bool IsPaused => policy.IsPaused(DateTimeOffset.Now);
+
+    public bool DeferrableOff => settings.Value.Notify.Deferrable == NotifyMode.Off;
+
+    /// <summary>Posts the first-run pin tip (<see cref="PinTip"/>); logged like every toast. False when not registered or <c>Show</c> threw.</summary>
+    public bool ShowPinTip()
+    {
+        if (!registered)
+        {
+            Log.Write("notifications: NOT registered — pin tip dropped");
+            return false;
+        }
+        try
+        {
+            var n = ToastBuilder.BuildPinTip();
+            manager.Show(n);
+            posted++;
+            Log.Write($"notifications: [tip] post tip level=passive sound=false thread={PinTip.Group} id={PinTip.Tag} tag={PinTip.Tag} group={PinTip.Group} title=\"{PinTip.Title}\" button=\"{PinTip.ButtonLabel}\" uri={PinTip.SettingsUri} toastId={n.Id}");
+            return true;
+        }
+        catch (Exception e)
+        {
+            Log.Write($"notifications: [tip] pin tip ERROR hr=0x{e.HResult:X8} {e.Message}");
+            return false;
+        }
+    }
+
     /// <summary>An item answered elsewhere (or a drained batch): the toast leaves the centre too (D8 — matters more than on macOS).</summary>
     private void Withdraw(string id)
     {
@@ -388,21 +452,39 @@ internal sealed class Notifier : IDisposable
         }
     }
 
-    private void Invoked(AppNotificationActivatedEventArgs args)
+    private void Invoked(AppNotificationActivatedEventArgs args, bool launched = false)
     {
-        var a = args.Arguments;
-        string action = a.TryGetValue(ToastBuilder.ArgAction, out var ac) ? ac : "open";
-        string? banner = a.TryGetValue(ToastBuilder.ArgBanner, out var bn) ? bn : null;
-        string? item = a.TryGetValue(ToastBuilder.ArgItem, out var it) ? it : null;
-        string? text = args.UserInput.TryGetValue(ToastBuilder.InputText, out var t) ? t.Trim() : null;
-        if (!refetchedOnce && store.Items.Count == 0 && action is not ("later" or "open"))
+        var t = ToastActivation.Parse(args.Arguments, args.UserInput);
+        if (t.IsNoop) return;
+        if (t.HoldUntilRefetch(launched, refetchedOnce, store.Items.Count))
         {
-            // Relaunched by the click (Kind=Launch): the Store has nothing yet — answer after the first refetch.
-            Log.Write($"notifications: action {action} held until the first refetch (relaunch path)");
-            pendingActivations.Add((action, banner, item, text));
+            // The Store has nothing yet (a process the click launched, or an answer before the first snapshot): act after the
+            // first refetch — or after 5 s if the engine never answers, so a click is never swallowed.
+            Log.Write($"notifications: action {t.Action} held until the first refetch ({(launched ? "launch" : "relaunch")} path)");
+            pendingActivations.Add((t.Action, t.Banner, t.Item, t.Text));
+            ArmHeldFallback();
             return;
         }
-        Handle(action, banner, item, text, fromRelaunch: false);
+        Handle(t.Action, t.Banner, t.Item, t.Text, fromRelaunch: launched);
+    }
+
+    private DispatcherQueueTimer? heldFallback;
+
+    private void ArmHeldFallback()
+    {
+        if (heldFallback is not null) return;
+        var timer = dispatcher.CreateTimer();
+        timer.Interval = TimeSpan.FromSeconds(5);
+        timer.IsRepeating = false;
+        timer.Tick += (_, _) => Guard.Run("held toast actions", () =>
+        {
+            heldFallback = null;
+            if (pendingActivations.Count == 0) return;
+            Log.Write($"notifications: no refetch within 5 s — handling {pendingActivations.Count} held action(s) now");
+            OnRefetched();
+        });
+        heldFallback = timer;
+        timer.Start();
     }
 
     private void Handle(string action, string? bannerId, string? itemId, string? text, bool fromRelaunch)
@@ -438,7 +520,7 @@ internal sealed class Notifier : IDisposable
             default:
             {
                 if (item is null) return;
-                int n = Array.IndexOf(ToastBuilder.OptionActions, action);
+                int n = Array.IndexOf(ToastActivation.OptionActions, action);
                 if (n < 0) return;
                 var options = store.CardFor(item).Options.Where(o => !o.Action.NeedsNote).ToList();
                 if (n >= options.Count) return;

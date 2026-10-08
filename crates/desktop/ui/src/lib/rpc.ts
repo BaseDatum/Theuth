@@ -7,12 +7,13 @@ import { useConnection } from '@/store/connection'
 import { on } from '@/store/sessions'
 import { isPopout, openPopout } from '@/lib/popout'
 import { applySandboxEvent } from '@/store/sandboxes'
+import { endlessFixture } from '@/dev/endless-fixture'
 
-/** The connected `Api`. Routes render only once connected, so a missing client is a bug. */
+/** The connected `Api`. Routes render only once connected, so a missing client is a bug. In dev the 137 fixture may answer the endless methods (`dev/endless-fixture.ts`). */
 export function useApi(): Api {
   const api = useConnection((s) => s.api)
   if (!api) throw new Error('useApi before the connection opened')
-  return api
+  return import.meta.env.DEV ? endlessFixture(api) : api
 }
 
 export const queryKeys = {
@@ -128,6 +129,10 @@ export const queryKeys = {
   briefsList: (tag: string | null) => ['briefs', 'list', tag] as const,
   briefsSearch: (q: string) => ['briefs', 'search', q] as const,
   briefTags: ['briefs', 'tags'] as const,
+  /** 137 §11.2 `session_memory(id)`: the header's ∞ badge and the Memory panel; refetched on `EndlessProgress`. */
+  sessionMemory: (id: string) => ['session-memory', id] as const,
+  /** 137 §11.1 `endless_settings_get()`: Settings → Memory and the New chat ∞ switch's initial state. */
+  endlessSettings: ['endless-settings'] as const,
 }
 
 /** One `list_sessions` row with `SessionOwnerChanged` applied; the list is returned as is when the session is not in it. */
@@ -278,6 +283,8 @@ export function useInvalidateOn(): void {
       // 67 §4, bridged since 79: the Mesh page's peers and lease follow the bus instead of the poll alone.
       on('peer', () => void qc.invalidateQueries({ queryKey: ['mesh'] })),
       on('lease', () => void qc.invalidateQueries({ queryKey: ['mesh'] })),
+      // 137 §11.2: the compactor advanced (throttled server-side to 2 Hz); the ∞ badge and Memory panel re-read the view.
+      on('EndlessProgress', (e) => void qc.invalidateQueries({ queryKey: queryKeys.sessionMemory(e.session) })),
     ]
     return () => {
       clearTimeout(timer)
