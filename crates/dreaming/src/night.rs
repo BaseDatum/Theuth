@@ -1080,8 +1080,7 @@ impl Message<knowledge::KnowledgeChanged> for Night {
         // R-35: a merge is one commit rewriting the canonical and every stub;
         // count it once (an event without a commit counts as its own merge).
         let counted_merge = e.op == knowledge::KnowledgeOp::Merge
-            && e
-                .commit
+            && e.commit
                 .as_ref()
                 .is_some_and(|c| !self.merge_commits.insert(c.clone()));
         match e.op {
@@ -1201,7 +1200,10 @@ impl Message<RunNow> for Night {
             return Err("dreaming is off in config (dreaming.enabled: false)".into());
         }
         if !routine_enabled(&self.data_dir) {
-            return Err("the dreaming routine is switched off (schedules/dreaming.md enabled: false)".into());
+            return Err(
+                "the dreaming routine is switched off (schedules/dreaming.md enabled: false)"
+                    .into(),
+            );
         }
         let state = read_state(&self.data_dir);
         if let Some(until) = state.paused_until.as_deref()
@@ -1839,7 +1841,13 @@ mod tests {
         let section: DreamConfig = serde_yaml::from_value(back["dreaming"].clone()).unwrap();
         assert_eq!(section, cfg);
         // The routine file: budget / when / run_timeout follow; `enabled: false` survives.
-        crate::install_files(dir.path(), &DreamConfig::default(), None, &AgentDefaults::default()).unwrap();
+        crate::install_files(
+            dir.path(),
+            &DreamConfig::default(),
+            None,
+            &AgentDefaults::default(),
+        )
+        .unwrap();
         let routine = dir.path().join("schedules/dreaming.md");
         let toggled = std::fs::read_to_string(&routine)
             .unwrap()
@@ -2202,6 +2210,11 @@ mod tests {
         let r = read_record(dir.path(), "2026-10-08").unwrap();
         assert!(r.summary.finished_at.is_some());
         assert_eq!(r.phases, ["ended: end_turn"]);
+        assert_eq!(
+            r.summary.status.as_deref(),
+            Some("incomplete"),
+            "D7: no agent ledger here, so not `budget`"
+        );
         let state = read_state(dir.path());
         assert!(state.run_request.is_none() && state.nights == 1);
         let j = journal::text(dir.path());
@@ -2210,8 +2223,316 @@ mod tests {
             "{j}"
         );
         assert!(
-            j.contains("### Receipt\n- nothing changed · $0.00 of $0.05"),
+            j.contains("### Receipt\n- nothing changed · $0.00 of $0.05 · ended: incomplete"),
             "{j}"
+        );
+        // R-11: a journal section after the close is refused and counts nothing twice.
+        let e = actor
+            .ask(Commit {
+                night: "2026-10-08".into(),
+                phase: "journal".into(),
+                summary: "again".into(),
+            })
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(e.contains("already closed"), "{e}");
+        assert_eq!(read_state(dir.path()).nights, 1);
+    }
+
+    /// D7/R-8: `last_dream_at` moves when the night STARTS; R-11: the close
+    /// runs once — a second `journal` is refused, `nights` stays 1.
+    #[tokio::test]
+    async fn begin_moves_last_dream_at_and_the_journal_closes_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let rt = Runtime::new(figment::Figment::new(), dir.path().to_owned());
+        let actor = Night::spawn(Night::new(
+            &rt,
+            DreamConfig::default(),
+            "e",
+            AgentDefaults::default(),
+        ));
+        assert!(read_state(dir.path()).last_dream_at.is_none());
+        actor
+            .ask(BeginNight {
+                night: "2026-10-08".into(),
+                mode: "nightly".into(),
+                session: None,
+            })
+            .await
+            .unwrap();
+        let started = read_state(dir.path()).last_dream_at;
+        assert!(started.is_some(), "D7: set at DreamNightStarted");
+        let close = || Commit {
+            night: "2026-10-08".into(),
+            phase: "journal".into(),
+            summary: "done".into(),
+        };
+        actor.ask(close()).await.unwrap();
+        let state = read_state(dir.path());
+        assert_eq!(state.nights, 1);
+        assert!(state.last_night.as_ref().unwrap().finished_at.is_some());
+        assert!(
+            state.last_night.as_ref().unwrap().status.is_none(),
+            "journaled by the model"
+        );
+        let e = actor.ask(close()).await.unwrap_err().to_string();
+        assert!(e.contains("already closed"), "{e}");
+        assert_eq!(read_state(dir.path()).nights, 1, "R-11: counted once");
+        assert_eq!(
+            journal::text(dir.path()).matches("### Receipt").count(),
+            1,
+            "one receipt line"
+        );
+    }
+
+    /// R-46 (D7): `RunNow` refuses while paused, with `dreaming.enabled:
+    /// false` and with the routine switched off; R-31: without a schedule
+    /// actor the fire fails and no `run_request` is left behind.
+    #[tokio::test]
+    async fn run_now_respects_the_switches_and_persists_nothing_without_a_fire() {
+        let dir = tempfile::tempdir().unwrap();
+        let d = dir.path();
+        let rt = Runtime::new(figment::Figment::new(), d.to_owned());
+        crate::install_files(d, &DreamConfig::default(), None, &AgentDefaults::default()).unwrap();
+        let actor = Night::spawn(Night::new(
+            &rt,
+            DreamConfig::default(),
+            "e",
+            AgentDefaults::default(),
+        ));
+        let req = RunRequest {
+            budget_usd: 1.0,
+            mode: RunMode::Pass,
+            run_timeout_secs: None,
+        };
+        // No schedule actor: the fire fails, the request is not persisted (R-31).
+        let e = actor
+            .ask(RunNow(req.clone()))
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(e.contains("schedule is not running"), "{e}");
+        assert!(read_state(d).run_request.is_none(), "R-31");
+        // Paused.
+        let mut state = read_state(d);
+        state.paused_until = Some("2999-01-01T00:00:00Z".into());
+        write_state(d, &state).unwrap();
+        let e = actor
+            .ask(RunNow(req.clone()))
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(e.contains("paused until 2999"), "{e}");
+        state.paused_until = None;
+        write_state(d, &state).unwrap();
+        // The routine row switched off.
+        let routine = d.join("schedules/dreaming.md");
+        let toggled = std::fs::read_to_string(&routine)
+            .unwrap()
+            .replace("---\nevery", "---\nenabled: false\nevery");
+        std::fs::write(&routine, &toggled).unwrap();
+        let e = actor
+            .ask(RunNow(req.clone()))
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(e.contains("switched off"), "{e}");
+        // Off in config.
+        let off = Night::spawn(Night::new(
+            &rt,
+            DreamConfig {
+                enabled: false,
+                ..DreamConfig::default()
+            },
+            "e",
+            AgentDefaults::default(),
+        ));
+        let e = off.ask(RunNow(req)).await.unwrap_err().to_string();
+        assert!(e.contains("off in config"), "{e}");
+        assert!(read_state(d).run_request.is_none());
+    }
+
+    /// R-14 (D12): `SetSettings` writes the resolved tidy model into the
+    /// routine (a pick, then the default again), answers `resolved`, bounds
+    /// the budget (D13) and, with `enabled: false`, removes the bundled
+    /// files (D11) — re-enabling reinstalls them.
+    #[tokio::test]
+    async fn set_settings_patches_the_routine_model_and_toggles_the_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let d = dir.path();
+        let rt = Runtime::new(figment::Figment::new(), d.to_owned());
+        let agent = AgentDefaults {
+            model: "openai/gpt-5.6-sol".into(),
+            escalate_model: Some("anthropic/claude-opus-4-1".into()),
+        };
+        std::fs::write(
+            d.join("config.yaml"),
+            "agent:\n  model: openai/gpt-5.6-sol\n",
+        )
+        .unwrap();
+        crate::install_files(d, &DreamConfig::default(), Some("e"), &agent).unwrap();
+        let routine = d.join("schedules/dreaming.md");
+        let model_of = || {
+            schedule::file::parse("dreaming", &std::fs::read_to_string(&routine).unwrap())
+                .unwrap()
+                .model
+        };
+        assert_eq!(model_of().as_deref(), Some("openai/gpt-5.6-sol"));
+        let actor = Night::spawn(Night::new(&rt, DreamConfig::default(), "e", agent.clone()));
+        let mut s = actor.ask(Settings).await.unwrap();
+        let resolved = s.resolved.clone().unwrap();
+        assert_eq!(
+            (
+                resolved.tidy.as_str(),
+                resolved.judge.as_str(),
+                resolved.target.as_str()
+            ),
+            (
+                "openai/gpt-5.6-sol",
+                "anthropic/claude-opus-4-1",
+                "openai/gpt-5.6-sol"
+            )
+        );
+        s.models.tidy = Some("anthropic/claude-haiku-4-5".into());
+        let back = actor.ask(SetSettings(s.clone())).await.unwrap();
+        assert_eq!(model_of().as_deref(), Some("anthropic/claude-haiku-4-5"));
+        assert_eq!(back.resolved.unwrap().tidy, "anthropic/claude-haiku-4-5");
+        assert!(
+            std::fs::read_to_string(d.join("config.yaml"))
+                .unwrap()
+                .contains("tidy: anthropic/claude-haiku-4-5")
+        );
+        s.models.tidy = None;
+        actor.ask(SetSettings(s.clone())).await.unwrap();
+        assert_eq!(
+            model_of().as_deref(),
+            Some("openai/gpt-5.6-sol"),
+            "the default again"
+        );
+        // D13: the budget is bounded.
+        for bad in [0.0, -1.0, 1000.01, f64::NAN] {
+            let mut b = s.clone();
+            b.budget_usd = bad;
+            assert!(actor.ask(SetSettings(b)).await.is_err(), "{bad}");
+        }
+        s.budget_usd = 1000.0;
+        actor.ask(SetSettings(s.clone())).await.unwrap();
+        assert!(
+            std::fs::read_to_string(&routine)
+                .unwrap()
+                .contains("budget: 1000 USD\n")
+        );
+        // D11: off removes the files; on brings them back.
+        s.enabled = false;
+        actor.ask(SetSettings(s.clone())).await.unwrap();
+        for rel in crate::BUNDLED {
+            assert!(!d.join(rel).exists(), "{rel}");
+        }
+        s.enabled = true;
+        actor.ask(SetSettings(s)).await.unwrap();
+        for rel in crate::BUNDLED {
+            assert!(d.join(rel).exists(), "{rel}");
+        }
+        assert_eq!(model_of().as_deref(), Some("openai/gpt-5.6-sol"));
+    }
+
+    /// D6: the fired session is registered as the consolidating session at
+    /// `ScheduleEvent::Fired` (and by `BeginNight` as a belt); the close
+    /// clears it. D14: `head_at_start` is the knowledge HEAD at `BeginNight`
+    /// and is the restore point for an event without a commit.
+    #[tokio::test]
+    async fn the_fired_session_consolidates_until_the_close() {
+        let dir = tempfile::tempdir().unwrap();
+        let d = dir.path();
+        let rt = Runtime::new(figment::Figment::new(), d.to_owned());
+        let k = knowledge::Knowledge::open(d, rt.clone()).await.unwrap();
+        k.put(
+            knowledge::Put {
+                id: "facts/a".into(),
+                type_: "fact".into(),
+                title: "A".into(),
+                body: "body".into(),
+                ..Default::default()
+            },
+            knowledge::Source::Model,
+        )
+        .await
+        .unwrap();
+        let head = k.history(None, 1).await.unwrap().changes[0].commit.clone();
+        let mut night = Night::new(&rt, DreamConfig::default(), "e", AgentDefaults::default());
+        night.knowledge = Some(k.clone());
+        night.ended_grace = std::time::Duration::from_millis(20);
+        let actor = Night::spawn(night);
+        let fired = SessionId::new();
+        actor
+            .tell(schedule::ScheduleEvent::Fired {
+                name: "dreaming".into(),
+                session: fired,
+                at: Local::now(),
+            })
+            .await
+            .unwrap();
+        actor
+            .tell(schedule::ScheduleEvent::Fired {
+                name: "other".into(),
+                session: SessionId::new(),
+                at: Local::now(),
+            })
+            .await
+            .unwrap();
+        actor.ask(Nights { limit: 1 }).await.unwrap();
+        assert!(k.is_consolidating_session(fired), "registered at fire time");
+        assert!(k.may_consolidate(fired).await);
+        // BeginNight without a session defaults to the fired one.
+        actor
+            .ask(BeginNight {
+                night: "2026-10-08".into(),
+                mode: "nightly".into(),
+                session: None,
+            })
+            .await
+            .unwrap();
+        let r = read_record(d, "2026-10-08").unwrap();
+        assert_eq!(r.session, Some(fired));
+        assert_eq!(r.head_at_start.as_deref(), Some(head.as_str()), "D14");
+        // An event without a commit restores to the HEAD at start.
+        actor
+            .tell(knowledge::KnowledgeChanged {
+                id: "facts/a".into(),
+                op: knowledge::KnowledgeOp::Retitle,
+                source: knowledge::Source::Dreaming,
+                commit: None,
+            })
+            .await
+            .unwrap();
+        actor.ask(Nights { limit: 1 }).await.unwrap();
+        let r = read_record(d, "2026-10-08").unwrap();
+        assert_eq!(r.knowledge[0].commit_before, head);
+        // The close clears the registration.
+        actor
+            .tell(agent::AgentEvent::TurnFinished {
+                session: fired,
+                turn: runtime::TurnId::new(),
+                stop_reason: "end_turn".into(),
+                usage: Default::default(),
+                context: 0,
+            })
+            .await
+            .unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        actor.ask(Nights { limit: 1 }).await.unwrap();
+        assert!(
+            read_record(d, "2026-10-08")
+                .unwrap()
+                .summary
+                .finished_at
+                .is_some()
+        );
+        assert!(!k.is_consolidating_session(fired), "cleared at the close");
+        assert!(
+            !k.may_consolidate(fired).await,
+            "an unattended unknown session"
         );
     }
 }

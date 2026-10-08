@@ -412,7 +412,10 @@ mod tests {
         let g = gate_from_rows(dir.path(), "2026-10-08", text, &cfg).unwrap();
         assert_eq!((g.verdict, g.val_cases), (Verdict::Accepted, 3));
         assert!((g.baseline - 0.4).abs() < 1e-9, "{g:?}");
-        assert!((g.candidate - (0.7 + 0.6 + 0.4) / 3.0).abs() < 1e-9, "{g:?}");
+        assert!(
+            (g.candidate - (0.7 + 0.6 + 0.4) / 3.0).abs() < 1e-9,
+            "{g:?}"
+        );
         // Two pairs only → unverified; whitespace around the candidate is not an identity change.
         log_row(dir.path(), &row("2026-10-09", "c1", None, 0.1)).unwrap();
         log_row(dir.path(), &row("2026-10-09", "c1", Some(&sha), 0.9)).unwrap();

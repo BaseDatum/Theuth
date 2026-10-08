@@ -453,7 +453,10 @@ mod tests {
         let root = SessionId::new();
         let routine = SessionId::new();
         let child = SessionId::new();
-        store.create_session(root, "m", None, None, None).await.unwrap();
+        store
+            .create_session(root, "m", None, None, None)
+            .await
+            .unwrap();
         store
             .create_session(routine, "m", None, None, None)
             .await

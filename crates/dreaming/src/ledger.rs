@@ -269,9 +269,8 @@ pub async fn build(
         }
     }
     let pending = pending(data_dir);
-    let mut pending_rewinds: Vec<agent::LedgerRewind> = earlier
-        .map(|e| e.pending_rewinds)
-        .unwrap_or_default();
+    let mut pending_rewinds: Vec<agent::LedgerRewind> =
+        earlier.map(|e| e.pending_rewinds).unwrap_or_default();
     pending_rewinds.extend(pending.iter().map(|(_, r)| r.clone()));
     let desk_journals = copy_desk_journals(data_dir, &night);
     let (mut tidy, backlog) = candidates(data_dir, cfg, knowledge).await;
@@ -390,7 +389,12 @@ mod tests {
         .unwrap();
         let again = build(d, &cfg, None, None, None).await.unwrap();
         assert_eq!(again.ledger.since, "2026-10-07T03:00:00Z");
-        assert_eq!(again.pending_rewinds.len(), 2, "{:?}", again.pending_rewinds);
+        assert_eq!(
+            again.pending_rewinds.len(),
+            2,
+            "{:?}",
+            again.pending_rewinds
+        );
         let on_disk: DayLedger =
             serde_json::from_str(&std::fs::read_to_string(path(d, &again.night)).unwrap()).unwrap();
         assert_eq!(on_disk.pending_rewinds.len(), 2);

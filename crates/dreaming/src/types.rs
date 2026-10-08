@@ -543,7 +543,11 @@ pub struct DreamModels {
 
 /// What runs each tier (136 D12): `provider/model` strings, never `None`.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
-#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export, rename = "DreamResolvedModels"))]
+#[cfg_attr(
+    feature = "ts",
+    derive(ts_rs::TS),
+    ts(export, rename = "DreamResolvedModels")
+)]
 pub struct ResolvedModels {
     /// The routine's `model:` (config `tidy`, else `agent.model`).
     pub tidy: String,

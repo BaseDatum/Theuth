@@ -333,7 +333,12 @@ mod tests {
         };
         let (r, same) = DreamConfig::default().resolve_models(&agent);
         assert_eq!(
-            (r.tidy.as_str(), r.propose.as_str(), r.judge.as_str(), r.target.as_str()),
+            (
+                r.tidy.as_str(),
+                r.propose.as_str(),
+                r.judge.as_str(),
+                r.target.as_str()
+            ),
             (
                 "openai/gpt-5.6-sol",
                 "openai/gpt-5.6-sol",
@@ -365,7 +370,10 @@ mod tests {
         let (r, same) = picked.resolve_models(&agent);
         assert_eq!(r.tidy, "anthropic/claude-haiku-4-5");
         assert_eq!(r.propose, "anthropic/claude-haiku-4-5", "propose v1 = tidy");
-        assert_eq!(r.judge, "anthropic/claude-opus-4-1", "a blank pick is no pick");
+        assert_eq!(
+            r.judge, "anthropic/claude-opus-4-1",
+            "a blank pick is no pick"
+        );
         assert!(!same);
     }
 }

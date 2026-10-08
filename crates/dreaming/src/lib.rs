@@ -220,7 +220,9 @@ impl runtime::Plugin for DreamingPlugin {
             // D11: an installed routine must not keep firing with the plugin off.
             match remove_files(&rt.data_dir) {
                 Ok(()) => tracing::info!("dreaming disabled by config; bundled files removed"),
-                Err(e) => tracing::warn!("dreaming disabled by config; bundled files not removed: {e}"),
+                Err(e) => {
+                    tracing::warn!("dreaming disabled by config; bundled files not removed: {e}")
+                }
             }
             return Ok(());
         }
@@ -319,7 +321,11 @@ mod tests {
         assert!(spec.quiet && !spec.approvals && spec.enabled);
         assert_eq!(spec.memory, schedule::file::Memory::Clear);
         assert_eq!(spec.cwd.as_deref(), Some(dir.path()));
-        assert_eq!(spec.cap, Some(::tools::Risk::Mutating), "D4: capped at mutating");
+        assert_eq!(
+            spec.cap,
+            Some(::tools::Risk::Mutating),
+            "D4: capped at mutating"
+        );
         assert_eq!(
             spec.model.as_deref(),
             Some("openai/gpt-5.6-sol"),

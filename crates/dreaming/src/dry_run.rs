@@ -108,7 +108,10 @@ async fn open_ro(path: &Path) -> Option<sqlx::SqliteConnection> {
         Ok(c) => Some(c),
         Err(e) => {
             // R-39: a store that does not open is not "zero uses".
-            tracing::warn!("dreaming dry-run: {} not opened read-only: {e}", path.display());
+            tracing::warn!(
+                "dreaming dry-run: {} not opened read-only: {e}",
+                path.display()
+            );
             None
         }
     }

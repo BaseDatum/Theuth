@@ -523,7 +523,9 @@ impl Tool for PreferencesSetTool {
             Some(n) => n
                 .ask(crate::night::Settings)
                 .await
-                .map_or(self.0.cfg.preferences.auto_from_explicit, |s| s.preferences_auto),
+                .map_or(self.0.cfg.preferences.auto_from_explicit, |s| {
+                    s.preferences_auto
+                }),
             None => self.0.cfg.preferences.auto_from_explicit,
         };
         if a.op.trim() == "add" && !auto {
@@ -543,7 +545,11 @@ impl Tool for PreferencesSetTool {
                         a.evidence.join(", ")
                     }
                 ),
-                options: vec!["confirm".into(), "not that".into(), "never save this".into()],
+                options: vec![
+                    "confirm".into(),
+                    "not that".into(),
+                    "never save this".into(),
+                ],
             };
             let rows = match actor {
                 Some(actor) => actor
@@ -935,19 +941,24 @@ mod tests {
             .await
             .unwrap();
         assert!(
-            out.content.starts_with("auto-promote is off: filed as a remember proposal"),
+            out.content
+                .starts_with("auto-promote is off: filed as a remember proposal"),
             "{}",
             out.content
         );
         assert!(!crate::preferences::path(d).exists());
-        let rows: Vec<crate::types::Proposal> = std::fs::read_to_string(crate::night::proposals_path(d))
-            .unwrap()
-            .lines()
-            .map(|l| serde_json::from_str(l).unwrap())
-            .collect();
+        let rows: Vec<crate::types::Proposal> =
+            std::fs::read_to_string(crate::night::proposals_path(d))
+                .unwrap()
+                .lines()
+                .map(|l| serde_json::from_str(l).unwrap())
+                .collect();
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].kind, crate::types::ProposalKind::Remember);
-        assert_eq!(rows[0].title, "I'll remember: never use ask_user; numbered text");
+        assert_eq!(
+            rows[0].title,
+            "I'll remember: never use ask_user; numbered text"
+        );
         // The switch on: the same call writes the block.
         let seams = Arc::new(Seams {
             data_dir: d.to_owned(),
@@ -966,7 +977,11 @@ mod tests {
             )
             .await
             .unwrap();
-        assert!(out.content.contains("- never use ask_user; numbered text"), "{}", out.content);
+        assert!(
+            out.content.contains("- never use ask_user; numbered text"),
+            "{}",
+            out.content
+        );
         assert!(crate::preferences::path(d).exists());
     }
 }

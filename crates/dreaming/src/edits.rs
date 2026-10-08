@@ -353,9 +353,10 @@ pub fn is_dreaming_made(text: &str) -> bool {
     let Some(end) = rest.find("\n---") else {
         return false;
     };
-    rest[..end]
-        .lines()
-        .any(|l| l.split_once(':').is_some_and(|(k, v)| k.trim() == "origin" && v.trim() == "dreaming"))
+    rest[..end].lines().any(|l| {
+        l.split_once(':')
+            .is_some_and(|(k, v)| k.trim() == "origin" && v.trim() == "dreaming")
+    })
 }
 
 /// `retire` (136 D4): move `skills/<skill>.md` (dreaming-made only) to
@@ -363,8 +364,8 @@ pub fn is_dreaming_made(text: &str) -> bool {
 /// the original is kept under `backups/<night>/retired/` for undo.
 fn retire(data_dir: &Path, night: &str, skill: &str, because: &str) -> anyhow::Result<String> {
     let src = skill_path(data_dir, skill);
-    let text = std::fs::read_to_string(&src)
-        .map_err(|e| anyhow::anyhow!("skills/{skill}.md: {e}"))?;
+    let text =
+        std::fs::read_to_string(&src).map_err(|e| anyhow::anyhow!("skills/{skill}.md: {e}"))?;
     anyhow::ensure!(
         is_dreaming_made(&text),
         "skills/{skill}.md is not a dreaming-made skill (no `origin: dreaming`); never retire a human skill"
@@ -482,7 +483,11 @@ pub fn apply(
         match retire(data_dir, night, skill, &e.rationale) {
             Ok(where_) => {
                 e.applied_at = Some(cases::now_rfc3339());
-                report.edits[i] = (e.id.clone(), ApplyStatus::Applied, format!("moved to {where_}"));
+                report.edits[i] = (
+                    e.id.clone(),
+                    ApplyStatus::Applied,
+                    format!("moved to {where_}"),
+                );
                 log(data_dir, &e)?;
             }
             Err(err) => report.edits[i] = (e.id.clone(), ApplyStatus::Error, err.to_string()),
@@ -729,7 +734,15 @@ mod tests {
             Some(Verdict::Accepted),
         );
         // Candidate pass: the text, no file, no log.
-        let r = apply(d, &cfg, "harness", &[add.clone()], &night, Pass::Candidate).unwrap();
+        let r = apply(
+            d,
+            &cfg,
+            "harness",
+            std::slice::from_ref(&add),
+            &night,
+            Pass::Candidate,
+        )
+        .unwrap();
         assert_eq!(r.edits[0].1, ApplyStatus::Applied);
         assert!(r.text.starts_with(
             "- Prefer numbered lists over ask_user forks [helpful: 0; harmful: 0; evidence: c1; since: "
@@ -737,16 +750,35 @@ mod tests {
         assert!(!sidecar_path(d, "harness").exists() && r.backup.is_none());
         assert!(all(d).unwrap().is_empty());
         // Record pass with the caller's `accepted` and no replays: refused, nothing written.
-        let e = apply(d, &cfg, "harness", &[add.clone()], &night, Pass::Record)
-            .unwrap_err()
-            .to_string();
+        let e = apply(
+            d,
+            &cfg,
+            "harness",
+            std::slice::from_ref(&add),
+            &night,
+            Pass::Record,
+        )
+        .unwrap_err()
+        .to_string();
         assert!(e.contains("no replays for this candidate"), "{e}");
         assert!(!sidecar_path(d, "harness").exists() && all(d).unwrap().is_empty());
         // Two pairs → unverified: logged, not applied, the case stays open.
         replays(d, &night, &r.text, &[(0.4, 0.7), (0.4, 0.7)]);
-        let r2 = apply(d, &cfg, "harness", &[add.clone()], &night, Pass::Record).unwrap();
+        let r2 = apply(
+            d,
+            &cfg,
+            "harness",
+            std::slice::from_ref(&add),
+            &night,
+            Pass::Record,
+        )
+        .unwrap();
         assert_eq!(r2.edits[0].1, ApplyStatus::SkippedUnmatched);
-        assert!(r2.edits[0].2.contains("gate unverified"), "{}", r2.edits[0].2);
+        assert!(
+            r2.edits[0].2.contains("gate unverified"),
+            "{}",
+            r2.edits[0].2
+        );
         assert!(!sidecar_path(d, "harness").exists());
         let logged = all(d).unwrap();
         assert_eq!(logged.len(), 1);
@@ -754,7 +786,15 @@ mod tests {
         assert_eq!(cases::get(d, "c1").unwrap().state, CaseState::Open);
         // A third pair → accepted: written, backed up, the case closed by the edit.
         replays(d, &night, &r.text, &[(0.4, 0.7), (0.4, 0.7), (0.4, 0.7)]);
-        let r3 = apply(d, &cfg, "harness", &[add.clone()], &night, Pass::Record).unwrap();
+        let r3 = apply(
+            d,
+            &cfg,
+            "harness",
+            std::slice::from_ref(&add),
+            &night,
+            Pass::Record,
+        )
+        .unwrap();
         assert_eq!(r3.edits[0].1, ApplyStatus::Applied);
         assert_eq!(
             r3.backup.as_deref(),
@@ -777,7 +817,15 @@ mod tests {
         );
         // A rejected candidate (a regression) lands in the buffer, even with `gate: accepted` asserted.
         let bad = edit(EditOp::Add, "Always say yes", None, Some(Verdict::Accepted));
-        let cand = apply(d, &cfg, "harness", &[bad.clone()], &night, Pass::Candidate).unwrap();
+        let cand = apply(
+            d,
+            &cfg,
+            "harness",
+            std::slice::from_ref(&bad),
+            &night,
+            Pass::Candidate,
+        )
+        .unwrap();
         replays(d, &night, &cand.text, &[(0.9, 0.2), (0.9, 0.2), (0.9, 0.2)]);
         let r4 = apply(d, &cfg, "harness", &[bad], &night, Pass::Record).unwrap();
         assert_eq!(r4.edits[0].1, ApplyStatus::SkippedUnmatched);
@@ -791,8 +839,28 @@ mod tests {
             st.rejected[0].reasons
         );
         // Bad names and empty calls.
-        assert!(apply(d, &cfg, "../etc", &[add.clone()], &night, Pass::Candidate).is_err());
-        assert!(apply(d, &cfg, "Harness_1", &[add.clone()], &night, Pass::Candidate).is_err());
+        assert!(
+            apply(
+                d,
+                &cfg,
+                "../etc",
+                std::slice::from_ref(&add),
+                &night,
+                Pass::Candidate
+            )
+            .is_err()
+        );
+        assert!(
+            apply(
+                d,
+                &cfg,
+                "Harness_1",
+                std::slice::from_ref(&add),
+                &night,
+                Pass::Candidate
+            )
+            .is_err()
+        );
         assert!(apply(d, &cfg, "harness", &[], &night, Pass::Candidate).is_err());
     }
 
@@ -800,8 +868,7 @@ mod tests {
     /// `- `, the metadata tail, a `read_file` line number, odd spacing.
     #[test]
     fn anchors_are_normalised_to_the_bullet_content() {
-        let mut b =
-            parse("- old rule [helpful: 0; harmful: 0; evidence: c1; since: 2026-10-08]\n");
+        let mut b = parse("- old rule [helpful: 0; harmful: 0; evidence: c1; since: 2026-10-08]\n");
         for anchor in [
             "old rule",
             "- old rule [helpful: 0; harmful: 0; evidence: c1; since: 2026-10-08]",

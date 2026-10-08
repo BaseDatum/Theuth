@@ -110,14 +110,16 @@ pub async fn undo(
             continue;
         }
         let backup = edits::retire_backup_path(data_dir, night, &skill);
-        let r = std::fs::read(&backup).map_err(anyhow::Error::from).and_then(|bytes| {
-            crate::night::write_atomic(&edits::skill_path(data_dir, &skill), &bytes)?;
-            match std::fs::remove_file(edits::retired_path(data_dir, &skill)) {
-                Ok(()) => Ok(()),
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
-                Err(e) => Err(e.into()),
-            }
-        });
+        let r = std::fs::read(&backup)
+            .map_err(anyhow::Error::from)
+            .and_then(|bytes| {
+                crate::night::write_atomic(&edits::skill_path(data_dir, &skill), &bytes)?;
+                match std::fs::remove_file(edits::retired_path(data_dir, &skill)) {
+                    Ok(()) => Ok(()),
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+                    Err(e) => Err(e.into()),
+                }
+            });
         match r {
             Ok(()) => {
                 report.skills_restored.push(handle.clone());
@@ -333,8 +335,15 @@ mod tests {
         cases::append(d, &cases::sample("c1", "harness"), &night).unwrap();
         // One accepted edit through the record pass: sidecar written, backup empty.
         let e = edit(EditOp::Add, "Prefer numbered lists", &night);
-        let cand = edits::apply(d, &cfg, "harness", &[e.clone()], &night, edits::Pass::Candidate)
-            .unwrap();
+        let cand = edits::apply(
+            d,
+            &cfg,
+            "harness",
+            std::slice::from_ref(&e),
+            &night,
+            edits::Pass::Candidate,
+        )
+        .unwrap();
         let sha = candidate_sha256(&cand.text);
         for i in 0..3 {
             for (s, score) in [(None, 0.3), (Some(sha.clone()), 0.8)] {
@@ -433,10 +442,17 @@ mod tests {
             std::fs::read_to_string(crate::preferences::path(d)).unwrap(),
             before
         );
-        let rep = undo(d, None, None, &night, Some("preferences")).await.unwrap();
+        let rep = undo(d, None, None, &night, Some("preferences"))
+            .await
+            .unwrap();
         assert_eq!(rep.skills_restored, ["preferences"]);
-        assert!(!crate::preferences::path(d).exists(), "empty backup removes the file");
-        let again = undo(d, None, None, &night, Some("preferences")).await.unwrap();
+        assert!(
+            !crate::preferences::path(d).exists(),
+            "empty backup removes the file"
+        );
+        let again = undo(d, None, None, &night, Some("preferences"))
+            .await
+            .unwrap();
         assert!(again.skills_restored.is_empty(), "{again:?}");
         // A night that started with a block restores that block.
         let night2 = "2026-10-09";
@@ -473,11 +489,21 @@ mod tests {
             edits::Pass::Record,
         )
         .unwrap();
-        assert_eq!(r.edits[0].1, crate::types::ApplyStatus::Applied, "{:?}", r.edits);
-        let rep = undo(d, None, None, &night, Some("skill:dreaming-x")).await.unwrap();
+        assert_eq!(
+            r.edits[0].1,
+            crate::types::ApplyStatus::Applied,
+            "{:?}",
+            r.edits
+        );
+        let rep = undo(d, None, None, &night, Some("skill:dreaming-x"))
+            .await
+            .unwrap();
         assert_eq!(rep.skills_restored, ["retired:dreaming-x"]);
         assert_eq!(rep.edits_undone.len(), 1);
-        assert_eq!(std::fs::read_to_string(edits::skill_path(d, "dreaming-x")).unwrap(), text);
+        assert_eq!(
+            std::fs::read_to_string(edits::skill_path(d, "dreaming-x")).unwrap(),
+            text
+        );
         assert!(!edits::retired_path(d, "dreaming-x").exists());
         assert!(edits::all(d).unwrap()[0].undone_at.is_some());
     }

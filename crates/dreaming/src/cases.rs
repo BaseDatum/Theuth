@@ -296,6 +296,9 @@ mod tests {
         transition(dir.path(), &second.id, CaseState::Closed, None).unwrap();
         assert!(transition(dir.path(), &second.id, CaseState::Closed, None).is_err());
         assert!(transition(dir.path(), "old-1", CaseState::Closed, None).is_err());
-        assert_eq!(get(dir.path(), &second.id).unwrap().state, CaseState::Closed);
+        assert_eq!(
+            get(dir.path(), &second.id).unwrap().state,
+            CaseState::Closed
+        );
     }
 }
