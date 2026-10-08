@@ -196,7 +196,6 @@ impl Codeindex {
         *slot = Some(p.clone());
         Ok(p)
     }
-
     /// Publish on the bus when the plugin owns one.
     pub(crate) async fn publish(&self, ev: CodeindexEvent) {
         if let Some(rt) = &self.rt {
