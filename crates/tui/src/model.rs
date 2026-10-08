@@ -1204,6 +1204,14 @@ pub fn advisory_rows(a: &Advisory) -> Vec<(Option<AdvisorSeverity>, &str)> {
     }
 }
 
+/// `advisory_rows(a).len()` without building them (`Entry::height`, Ctrl+O).
+pub fn advisory_row_count(a: &Advisory) -> usize {
+    match a.kind {
+        AdvisoryKind::Consultation { .. } => a.notes.iter().map(|n| n.note.lines().count()).sum(),
+        AdvisoryKind::Review => a.notes.len(),
+    }
+}
+
 /// `[concern] note text` / an answer line: one line per row (the headless
 /// printer; the renderer colours the badge itself).
 pub fn advisory_lines(a: &Advisory) -> Vec<String> {
@@ -1323,7 +1331,7 @@ impl Entry {
             Entry::Card { text, expanded, .. } => 4 + if *expanded { md(text, inner) } else { 0 },
             // 125 §7.4: border + title + margin, one row per note shown, the `… +N more` row.
             Entry::Advisory { advisory, expanded } => {
-                let n = advisory_rows(advisory).len();
+                let n = advisory_row_count(advisory);
                 if *expanded {
                     4 + n
                 } else {
@@ -4463,7 +4471,7 @@ impl Model {
                         summary: Some(_),
                         ..
                     }
-            ) || matches!(e, Entry::Advisory { advisory, .. } if advisory_rows(advisory).len() > ADVISORY_COLLAPSED)
+            ) || matches!(e, Entry::Advisory { advisory, .. } if advisory_row_count(advisory) > ADVISORY_COLLAPSED)
         }) else {
             return;
         };
