@@ -213,7 +213,7 @@ export function RoutineDetail({ name, section, chat }: { name: string | null; se
         </main>
         {paneOpen && !mobile && (
           <>
-            <Divider dir="row" onRatio={setRatio} />
+            <Divider dir="row" ratio={ratio} onRatio={setRatio} />
             <div className="flex min-h-0 min-w-0 flex-col" style={{ flex: `${1 - ratio} 1 0%` }}>
               {pane}
             </div>

@@ -4,7 +4,7 @@ import { expect, test, vi } from 'vitest'
 import type * as Rpc from '@/lib/rpc'
 import type { DoublePredicted } from '@/rpc/bindings/DoublePredicted'
 import { doubleStore } from '@/store/double'
-import { recommendedLabel, withDoublePick } from './AskCard'
+import { recommendedLabel, withDoublePick } from './ask-drafts'
 import { DoubleChip, chipText, countdownText, disagrees, preselect, rungGlyph, secondsLeft, takeOver } from './DoubleChip'
 
 const calls = vi.hoisted(() => ({ takeOver: [] as string[], takeOverReply: true }))

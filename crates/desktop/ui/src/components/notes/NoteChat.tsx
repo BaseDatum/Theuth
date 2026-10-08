@@ -1,14 +1,16 @@
 import { useQuery } from '@tanstack/react-query'
 import { useNavigate } from '@tanstack/react-router'
 import { ExternalLink, SquarePen, X } from 'lucide-react'
-import { type PointerEvent, useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { toast } from 'sonner'
 import { Composer } from '@/components/chat/Composer'
 import { Transcript } from '@/components/chat/Transcript'
 import { Button } from '@/components/ui/button'
+import { ResizeHandle } from '@/components/ui/resize-handle'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { EMPTY, MIN_HEIGHT, useNoteChat } from '@/lib/note-chat'
 import type { AttachRef } from '@/lib/attach'
+import { clamp, PX_STEP } from '@/lib/resize-drag'
 import { queryKeys, useApi } from '@/lib/rpc'
 import { useSessionField, useSessions } from '@/store/sessions'
 
@@ -41,35 +43,26 @@ export function NoteChat({ note, doc, about = 'this note' }: { note: string; doc
     return () => window.removeEventListener('theuth:note-ask', onAsk)
   }, [note])
 
-  // Drag the top edge: the panel grows upward, clamped to the pane.
-  const onPointerDown = (e: PointerEvent<HTMLDivElement>) => {
-    const startY = e.clientY
-    const startH = state.height
-    const el = e.currentTarget
-    const max = (el.parentElement?.parentElement?.clientHeight ?? 800) - 120
-    el.setPointerCapture(e.pointerId)
-    const move = (ev: globalThis.PointerEvent) => {
-      set(note, { height: Math.min(max, Math.max(MIN_HEIGHT, startH + (startY - ev.clientY))) })
-    }
-    const up = () => {
-      el.removeEventListener('pointermove', move)
-      el.removeEventListener('pointerup', up)
-    }
-    el.addEventListener('pointermove', move)
-    el.addEventListener('pointerup', up)
-  }
+  // Drag the top edge: the panel grows upward, clamped to the pane (the hit zone extends up over the editor, never down over the header buttons).
+  const section = useRef<HTMLElement>(null)
+  const start = useRef({ y: 0, height: 0 })
+  const clampHeight = (h: number) => clamp(h, MIN_HEIGHT, (section.current?.parentElement?.clientHeight ?? 800) - 120)
 
   return (
     <section
+      ref={section}
       className="flex shrink-0 flex-col border-t border-border-subtle bg-background"
       style={{ height: state.height }}
       aria-label={`Chat about ${about}`}
     >
-      <div
-        role="separator"
-        aria-orientation="horizontal"
-        onPointerDown={onPointerDown}
-        className="h-1.5 shrink-0 cursor-row-resize hover:bg-layer-2"
+      <ResizeHandle
+        orientation="horizontal"
+        placement="start"
+        aria-label="Resize chat panel"
+        className="h-1.5 bg-transparent hover:bg-layer-2"
+        onStart={(e) => (start.current = { y: e.clientY, height: state.height })}
+        onMove={(_, y) => set(note, { height: clampHeight(start.current.height + start.current.y - y) })}
+        onNudge={(d) => set(note, { height: clampHeight(state.height - d * PX_STEP) })}
       />
       <header className="flex h-8 shrink-0 items-center gap-1 px-2 text-xs text-fg-secondary">
         <span className="min-w-0 flex-1 truncate">{session ? title || 'Chat' : `New chat about ${about}`}</span>
