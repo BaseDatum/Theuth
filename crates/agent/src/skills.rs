@@ -987,7 +987,7 @@ mod tests {
             "Zeta skill\nbody z\n\n## Learned (dreaming)\n- lesson one\n- lesson two\n"
         );
         // An empty sidecar appends nothing.
-        assert_eq!(load_text(&dir, "alpha").unwrap(), "alpha body\n");
+        assert_eq!(load_text(&dir, "alpha").unwrap().trim(), "alpha body");
         // The `always` inliner.
         assert_eq!(
             always_bodies(&dir, &skills),

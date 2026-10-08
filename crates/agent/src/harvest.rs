@@ -96,8 +96,9 @@ mod tests {
         assert!(t.chars().count() <= TITLE_MAX);
         assert!(b.starts_with("Summary: Every worker wraps each cargo call"));
         assert!(b.ends_with("\n\nBody text."));
-        // Nothing lost: every word of the title is in title + body.
-        for w in long.split_whitespace() {
+        // Nothing lost: every word of the title is in title + body (the
+        // clause separator itself is the one character dropped).
+        for w in long.split_whitespace().map(|w| w.trim_end_matches('.')) {
             assert!(t.contains(w) || b.contains(w), "{w}");
         }
     }

@@ -152,7 +152,7 @@ impl Store {
                 model_cost_nanos: 0,
             });
         }
-        listed.sort_by(|a, b| a.created_at.cmp(&b.created_at).then(a.id.cmp(&b.id)));
+        listed.sort_by(|a, b| a.created_at.cmp(&b.created_at).then(a.id.0.cmp(&b.id.0)));
         if listed.len() > MAX_SESSIONS {
             listed.truncate(MAX_SESSIONS);
             ledger.truncated = true;
