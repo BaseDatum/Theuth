@@ -25,6 +25,10 @@ Added: config fields/defaults (view_bytes 128 KB, default_desk true, default_mee
 
 Revision 1b (03:10): `set_view_bytes(session, Option<u32>)` persisted in `sessions.endless_view_bytes` (migration 0037), loaded at attach, `SessionMemory.view_bytes` = the budget in force; test extension in `backfill_cap_sets_base_and_keeps_raw_history_reachable` (persist, survive detach/attach, clear). Deviation: a larger budget re-folds purely at the new budget rather than "stops merging" — contract §8 explains and names the one-line alternative.
 
+Addendum (03:38, W4 gap): `active()` false for `UnitFilter::Meeting`; `render_with_budget -> Vec<ViewLine>` (was blocks), live fold untouched; first switch-on with a different filter re-derives the unit cache (`Store::endless_units_clear`). Test `meeting_filter_session_is_served_but_never_active`.
+
+Gates after the revision (R1 + R1b + addendum): endless filter → `22 passed; 0 failed`; clippy clean.
+
 Gates after the revision (R1 + R1b): `cargo test -p agent --lib --no-fail-fast endless` → `test result: ok. 21 passed; 0 failed; 0 ignored; 0 measured; 463 filtered out; finished in 0.54s`; `cargo clippy -p agent -p rpc --no-deps -- -D warnings` → `Finished \`dev\` profile [unoptimized + debuginfo] target(s) in 36.75s`; unfiltered `cargo test -p agent --lib --no-fail-fast` after R1 → `481 passed; 1 failed (pre-existing prompt_parts_in_order_with_blank_lines); 2 ignored`; `cargo fmt -p agent -p rpc` clean.
 
 ## Gates before the revision (exact commands, result lines)

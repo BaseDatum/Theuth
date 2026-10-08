@@ -198,6 +198,16 @@ impl Store {
             .collect()
     }
 
+    /// Drop the unit cache (a first switch-on with a different filter re-derives it).
+    pub async fn endless_units_clear(&self, id: SessionId) -> anyhow::Result<()> {
+        let mut tx = self.begin_write().await?;
+        sqlx::query("DELETE FROM endless_units WHERE session_id = ?")
+            .bind(id.to_string())
+            .execute(&mut *tx)
+            .await?;
+        tx.commit().await
+    }
+
     /// Append unit rows (idempotent on `i`).
     pub async fn endless_units_put(&self, id: SessionId, rows: &[UnitRow]) -> anyhow::Result<()> {
         if rows.is_empty() {

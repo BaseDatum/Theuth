@@ -104,7 +104,8 @@ impl Endless {
 
     /// `sessions.memory` (a store read; works for unattached sessions).
     pub async fn mode(&self, session: SessionId) -> anyhow::Result<MemoryMode>;
-    /// The loop's switch (D14): attached ∧ mode == Endless ∧ backfill finished. Sync, cheap.
+    /// The loop's switch (D14): attached ∧ mode == Endless ∧ backfill finished ∧ filter ≠ Meeting
+    /// (addendum: a meeting keeps head D + verbatim tail; only the pump and `render_with_budget` serve it). Sync.
     pub fn active(&self, session: SessionId) -> bool;
 
     /// 8.1: wait until every view part is built, at most `max`. `true` = settled.
@@ -123,8 +124,9 @@ impl Endless {
     pub async fn set_view_bytes(&self, session: SessionId, bytes: Option<u32>) -> anyhow::Result<()>;
     /// R1-D1: the turn's render without freezing a context (a native child's first message).
     pub async fn render_snapshot(&self, session: SessionId) -> anyhow::Result<Vec<ViewBlock>>;
-    /// R1-D6: the view folded to `bytes` (W4: `agent.endless.meeting_view_bytes` for the meeting head).
-    pub async fn render_with_budget(&self, session: SessionId, bytes: u32) -> anyhow::Result<Vec<ViewBlock>>;
+    /// R1-D6 (+ addendum): the view re-folded to `bytes` as LINES (W4: `agent.endless.meeting_view_bytes`
+    /// for `## Earlier in this meeting`); the live fold is untouched; works for a `UnitFilter::Meeting` session.
+    pub async fn render_with_budget(&self, session: SessionId, bytes: u32) -> anyhow::Result<Vec<ViewLine>>;
     /// R1-D4: `{units, eta_secs, usd}` of the backfill a switch-on would start (or the one under way);
     /// first 20 built nodes calibrate, else 5 s / $0.02 per unit. Works for unattached sessions too.
     pub async fn backfill_estimate(&self, session: SessionId) -> anyhow::Result<BackfillEstimate>;
@@ -240,7 +242,8 @@ CREATE VIRTUAL TABLE endless_lines_fts USING fts5(text, session_id UNINDEXED, i 
 
 - Config: `view_bytes` 128_000, `default_desk` true, new `default_meeting`, `meeting_view_bytes`, `backfill_max_units`; `resolved_compactor_model(&AgentConfig, session_model)`; `Endless::new` takes `title_model`.
 - Base (R1-D4): the fold tiles `[base, T)`; the view's first line is `0+<base>|(earlier history, not summarized; recall searches it)` when `base > 0` (`fold::EARLIER`); `zoom(id, 1)` works for any unit, `zoom(id, n>1)` below the base is `No line`; recall's raw fallback searches every unit (it always did: `endless_units` caches units below the base too — they are derived and cached, just never built). `SessionMemory.view[0]` is that line (`built: false`, `n = base`).
-- Filter (R1-D6): applied at ingestion; dropped parts never become units (indexes stay dense). Fixed at first switch-on with the base, persisted in `sessions`.
+- Filter (R1-D6): applied at ingestion; dropped parts never become units (indexes stay dense). Fixed at first switch-on with the base, persisted in `sessions.endless_filter`. If the unit cache was built under another filter before that first switch-on (an attached epochs session), `set_mode` clears and re-derives it. `active()` is false for `Meeting`.
+- W2 wraps for `crates/meeting`: `set_mode(meeting, Endless, UnitFilter::Meeting, epoch)` and `render_with_budget(meeting, cfg.endless.meeting_view_bytes) -> Vec<ViewLine>` (render `id+n|text` yourself; lines carry `built` for the verbatim/unbuilt distinction).
 - Per-session budget (R1-D2 / R1b): `set_view_bytes(session, Option<u32>)` persists to `sessions.endless_view_bytes` and takes effect at the next render. Smaller budget: the re-fold merges down. Larger budget: because the live view is the pure `rebuild(tree, base, T, cfg)`, the re-fold at the new budget shows the view the fold *would* have produced at that budget — finer lines in the recent region, every one an existing built node, no text cut. This differs from the brief's "a larger one just stops merging": honouring that literally would make the view path-dependent (unreproducible after a restart); the closer may overrule by keeping the previous `Fold` and only updating `cfg` + `fit()` (one-line change in `Live::ensure_fold`).
 - `render_snapshot` / `render_with_budget(bytes)`: no turn counted, no context frozen; `render_with_budget` re-folds at `bytes` without disturbing the live fold.
 - Backfill ETA/cost: `backfill_estimate`; `Backfill.total` is now the covered span (`T − base` at switch-on), not `T`.
