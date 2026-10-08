@@ -436,8 +436,10 @@ are validated at spawn: an ambiguous bare id, a provider without
 credentials, or an unknown effort keyword is a tool error naming
 `list_models`; both are an error with `agent` set (an external harness has
 its own model). Unset, the `subagents.model`/`effort` config applies as
-before. The guidance text tells the model to match the model to the task
-and to err towards more capability. Rejected: a fixed tier map
+before. The guidance text told the model to match the model to the task
+and to err towards more capability; superseded by 148 MODEL-DEFAULTS
+(2026-10-08): agents leave `model`/`effort` unset unless the user asks.
+Rejected: a fixed tier map
 (`fast`/`smart` → ids) in config - the model already knows model names,
 and the list is one tool call away; a static list in the system prompt -
 it changes with logins and would be hundreds of lines for gateway providers.
