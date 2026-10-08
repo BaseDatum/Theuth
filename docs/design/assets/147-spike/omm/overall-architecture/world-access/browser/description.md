@@ -1,0 +1,1 @@
+`crates/browser/` (11 files / 4,945 lines): the obscura headless browser behind every `browser_*` tool, cookie import from installed browsers, and `browser_run`, which steps the page with the `decision` crate's local model (the one Cargo edge out of this layer into local-models).

@@ -1,0 +1,32 @@
+graph LR
+    walk["Walk\nsrc/walk.rs"]
+    parse-resolve["Parse + resolve\nsrc/parse.rs, src/lang/, src/resolve/"]
+    store["SQLite store\nsrc/store.rs"]
+    index["Codeindex / RootIndex\nsrc/index.rs"]
+    git["Git facts\nsrc/git.rs"]
+    rank["Rank\nsrc/rank.rs"]
+    lens["Lenses Here/Fit/Change\nsrc/lens.rs"]
+    tools["code_* tools\nsrc/tools.rs"]
+    event["Events\nsrc/event.rs"]
+
+    index -->|"lists files under ignore rules (use crate::walk)"| walk
+    index -->|"parse_chunk per changed file (3 uses)"| parse-resolve
+    index -->|"writes symbols/refs/imports, reads stale rows"| store
+    index -->|"HEAD, co-change history (use crate::git)"| git
+    index -->|"emits Reconciled / CodeindexEvent (2 uses)"| event
+    parse-resolve -->|"import targets looked up in the store (4 uses)"| store
+    lens -->|"open_indexed(ix, root) → RootIndex (3 uses)"| index
+    lens -->|"PageRank + importers for Fit/Here rows"| rank
+    lens -->|"symbol and ref rows (2 uses)"| store
+    lens -->|"shares budget_render, head_of, cache_state (3 uses)"| tools
+    tools -->|"open(...) the root's index (3 uses)"| index
+    tools -->|"code_map ranking (2 uses)"| rank
+    tools -->|"rows for find/outline/refs/symbol (3 uses)"| store
+    tools -->|"code_impact reads git ranges (3 uses)"| git
+    tools -->|"CodeToolSummary after each call (2 uses)"| event
+    rank -->|"estimate_tokens for budgets (1 use)"| tools
+
+    classDef store fill:#a6e3a1,stroke:#a6e3a1,color:#1e1e2e
+    classDef entry fill:#89b4fa,stroke:#89b4fa,color:#1e1e2e
+    class store store
+    class tools,lens entry

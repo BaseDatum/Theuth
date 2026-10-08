@@ -1,0 +1,1 @@
+`src/index.rs` (695 lines): `Codeindex` (L37, LRU of 8 open roots) and `RootIndex` (L53) with the reconcile loop — walk, diff against stored mtimes, `parse_chunk` (L671), write, then emit `Reconciled` (L108) gated at 250 ms. The entry point for lenses and tools.
