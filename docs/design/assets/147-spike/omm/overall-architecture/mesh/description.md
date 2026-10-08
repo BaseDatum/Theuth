@@ -1,0 +1,1 @@
+The multi-engine fabric (51 files / 19,592 lines). `mesh` is the iroh endpoint, pairing, hub lease and engine stats; `sessionsync` replicates transcripts with transferable ownership; `sandbox` creates VM/docker/ssh engines that join the mesh. `replica` (the change-feed primitive) is used from here but lives in foundation because `tools` and `secrets` import it.

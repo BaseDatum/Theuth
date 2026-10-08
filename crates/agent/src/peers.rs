@@ -192,6 +192,11 @@ impl Tool for SpawnSubagentTool {
     const DIRECT: bool = true;
     type Args = SpawnSubagentArgs;
 
+    /// Returns at once; its result is a `<message>` (145 §0.4).
+    fn promotable(&self) -> bool {
+        false
+    }
+
     fn description(&self) -> String {
         let mut s = String::from(
             "Delegate a complete, self-contained task to a subagent running in its own session while you continue. \
@@ -387,6 +392,11 @@ impl Tool for SendMessageTool {
     const DIRECT: bool = true;
     const RETURNS: &'static str = "dict";
     type Args = SendMessageArgs;
+
+    /// An explicit wait is the caller's (145 §0.4).
+    fn promotable(&self) -> bool {
+        false
+    }
 
     fn description(&self) -> String {
         format!(

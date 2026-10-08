@@ -14,7 +14,7 @@
 use std::collections::{HashMap, VecDeque};
 use std::io::{Read, Write};
 use std::path::PathBuf;
-use std::pin::pin;
+use std::pin::{Pin, pin};
 use std::sync::atomic::{AtomicBool, Ordering::SeqCst};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
@@ -62,7 +62,7 @@ pub(crate) const GROUP_POLL: Duration = Duration::from_millis(50);
 pub(crate) const PTY_BUDGET: usize = 512 << 20;
 
 /// `j{n}`, `n` per session starting at 1.
-#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema, kameo::Reply)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 #[serde(transparent)]
 pub struct JobId(pub String);
@@ -200,6 +200,10 @@ pub enum JobEvent {
         /// Runs on a pseudo-terminal (22).
         #[serde(default)]
         pty: bool,
+        /// 145 §0.4: `Promoted` for a tool call that outlived `promote_after`
+        /// (`command` is the tool name); `Shell` / `Pty` otherwise.
+        #[serde(default)]
+        kind: JobKind,
     },
     /// Bytes since the previous `Output`.
     #[serde(rename = "JobOutput")]
@@ -275,6 +279,9 @@ pub enum JobEvent {
         inline: bool,
         /// Ran on a pseudo-terminal (22): `output` is a screen, not a log.
         pty: bool,
+        /// 145 §0.4: `Promoted` → the agent wraps it as `<job_result tool="…">`.
+        #[serde(default)]
+        kind: JobKind,
     },
 }
 
@@ -626,6 +633,8 @@ pub(crate) struct Job {
     pub(crate) pty: Option<Arc<crate::pty::PtyHandle>>,
     /// `Some` for a job a previous engine lost (109 §5.4).
     pub(crate) lost: Option<Lost>,
+    /// The `jobs.kind` column; `Promoted` for an adopted tool call (145 §0.4).
+    pub(crate) kind: JobKind,
 }
 
 impl Job {
@@ -655,16 +664,12 @@ impl Job {
         JobRow {
             session,
             id: self.id.clone(),
-            kind: if self.on_pty {
-                JobKind::Pty
-            } else {
-                JobKind::Shell
-            },
+            kind: self.kind,
             call_id: self.call_id.clone(),
             command: self.command.clone(),
             name: self.name.clone(),
             pgid: lock(&self.pgids).first().map(|t| i64::from(t.id())),
-            log: Some(self.log_path.clone()),
+            log: (self.kind != JobKind::Promoted).then(|| self.log_path.clone()),
             started_ms: self.started_ms,
             state,
             exit,
@@ -1035,6 +1040,7 @@ impl Message<Launch<Start>> for Jobs {
                     on_pty: false,
                     pty: None,
                     lost: None,
+                    kind: JobKind::Shell,
                 },
             );
         }
@@ -1045,6 +1051,199 @@ impl Message<Launch<Start>> for Jobs {
             log_path,
         })
     }
+}
+
+/// `ask` → `JobId` (145 §0.4): run a tool call that outlived `promote_after`
+/// to completion as job `jN`. Publishes `JobEvent::Started { kind: Promoted, .. }`
+/// and `JobEvent::Finished` whose body is the tool's output (`is_error` → exit 1);
+/// `CancelJob` cancels `cancel` and aborts the task. Admission failure is the
+/// `ask`'s `Err` (kameo lifts it): the caller then awaits the call inline.
+pub struct Adopt {
+    /// Owning session.
+    pub session: SessionId,
+    /// Provider call id of the promoted call.
+    pub call_id: String,
+    /// Tool name (the job's `command`).
+    pub tool: String,
+    /// The call's [`ToolCx::cancel`]; cancelled by [`CancelJob`].
+    pub cancel: CancellationToken,
+    /// The running body; dropping it aborts the body's task.
+    pub work: Pin<Box<dyn Future<Output = Result<ToolOutput, crate::ToolError>> + Send>>,
+}
+
+impl Message<Adopt> for Jobs {
+    type Reply = DelegatedReply<Result<JobId, String>>;
+
+    async fn handle(&mut self, m: Adopt, ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        let (reply, tx) = ctx.reply_sender();
+        let Some(tx) = tx else { return reply };
+        let sj = self.sessions.entry(m.session).or_default();
+        sj.next += 1;
+        let id = JobId(format!("j{}", sj.next));
+        let sink = self.activity.clone();
+        let me = ctx.actor_ref().clone();
+        // Admission awaits the supervisor: off the mailbox. The invocation
+        // stays admitted until it gets this reply (47 §4.2 rule 3).
+        tokio::spawn(async move {
+            let activity =
+                match admit_job(None, sink.as_ref(), m.session, Kind::Job(id.clone())).await {
+                    Ok(a) => a,
+                    Err(why) => return tx.send(Err(why.to_string())),
+                };
+            // A handler `Err` arrives lifted as `SendError::HandlerError`.
+            tx.send(
+                me.ask(Launch { m, id, activity })
+                    .await
+                    .map_err(|e| e.to_string()),
+            );
+        });
+        reply
+    }
+}
+
+impl Message<Launch<Adopt>> for Jobs {
+    type Reply = Result<JobId, String>;
+
+    async fn handle(
+        &mut self,
+        l: Launch<Adopt>,
+        ctx: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        let Launch { m, id, activity } = l;
+        let cancel = Arc::new(Cancel::default());
+        let started = Instant::now();
+        let started_ms = chrono::Utc::now().timestamp_millis();
+        self.track(&activity);
+        let op = activity.id();
+        let task = tokio::spawn(run_adopted(Adopted {
+            rt: self.rt.clone(),
+            me: ctx.actor_ref().clone(),
+            session: m.session,
+            id: id.clone(),
+            tool: m.tool.clone(),
+            call_id: m.call_id.clone(),
+            token: m.cancel,
+            work: m.work,
+            cancel: cancel.clone(),
+            journal: self.journal.clone(),
+            started,
+            started_ms,
+            activity,
+        }))
+        .abort_handle();
+        self.push(
+            m.session,
+            Job {
+                id: id.clone(),
+                op,
+                command: m.tool,
+                call_id: m.call_id,
+                started,
+                started_ms,
+                exit: None,
+                secs: 0,
+                // No process, no log: the body's output is the result.
+                log_path: PathBuf::new(),
+                log: Arc::new(Mutex::new(Log::new(None))),
+                pgids: Arc::default(),
+                cancel,
+                task,
+                name: None,
+                on_pty: false,
+                pty: None,
+                lost: None,
+                kind: JobKind::Promoted,
+            },
+        );
+        Ok(id)
+    }
+}
+
+/// Everything one promoted job's task owns (145 §0.4).
+struct Adopted {
+    rt: Runtime,
+    me: ActorRef<Jobs>,
+    session: SessionId,
+    id: JobId,
+    tool: String,
+    call_id: String,
+    token: CancellationToken,
+    work: Pin<Box<dyn Future<Output = Result<ToolOutput, crate::ToolError>> + Send>>,
+    cancel: Arc<Cancel>,
+    journal: Arc<dyn crate::Journal>,
+    started: Instant,
+    started_ms: i64,
+    activity: Activity,
+}
+
+async fn run_adopted(j: Adopted) {
+    let mut row = JobRow {
+        session: j.session,
+        id: j.id.clone(),
+        kind: JobKind::Promoted,
+        call_id: j.call_id.clone(),
+        command: j.tool.clone(),
+        name: None,
+        pgid: None,
+        log: None,
+        started_ms: j.started_ms,
+        state: JobState::Running,
+        exit: None,
+        settled_ms: None,
+        engine: String::new(),
+    };
+    j.journal.job(row.clone()).await;
+    j.rt.publish(JobEvent::Started {
+        session: j.session,
+        id: j.id.clone(),
+        command: j.tool.clone(),
+        call_id: j.call_id,
+        log: PathBuf::new(),
+        name: None,
+        pty: false,
+        kind: JobKind::Promoted,
+    })
+    .await;
+    let (exit, output, origin) = tokio::select! {
+        biased;
+        origin = j.cancel.notified() => {
+            // The token tells a body that listens; dropping `work` aborts
+            // the body's task either way (`registry::invoke`).
+            j.token.cancel();
+            (JobExit::Killed, origin.notice().to_owned(), Some(origin))
+        }
+        r = j.work => match r {
+            Ok(out) => (JobExit::Exited(u8::from(out.is_error)), out.content, None),
+            Err(e) => (JobExit::Exited(1), format!("{}: {e:#}", j.tool), None),
+        }
+    };
+    let output = truncate(crate::secrets::redact(&output).into_owned());
+    let secs = j.started.elapsed().as_secs();
+    // The model that called `cancel_job` owes itself nothing (14 §1.2 as-built).
+    let inline = origin == Some(CancelOrigin::Tool);
+    let event = JobEvent::Finished {
+        session: j.session,
+        id: j.id.clone(),
+        command: j.tool,
+        exit: exit.clone(),
+        secs,
+        output,
+        inline,
+        pty: false,
+        kind: JobKind::Promoted,
+    };
+    row.state = JobState::Settled;
+    row.exit = Some(exit.clone());
+    row.settled_ms = Some(chrono::Utc::now().timestamp_millis());
+    j.journal.job(row).await;
+    let _ =
+        j.me.tell(Finished {
+            op: j.activity.id(),
+            row: Some((j.session, j.id.clone(), exit, secs)),
+            result: (!inline).then(|| event.clone()),
+        })
+        .await;
+    j.rt.publish(event).await;
 }
 
 impl Message<ListJobs> for Jobs {
@@ -1339,6 +1538,7 @@ impl Message<Reaped> for Jobs {
                 // its stub (§4.3): nothing to inject for it.
                 inline: deliver.is_none(),
                 pty,
+                kind: row.kind,
             };
             self.push(
                 session,
@@ -1365,6 +1565,7 @@ impl Message<Reaped> for Jobs {
                         reason,
                         screen,
                     }),
+                    kind: row.kind,
                 },
             );
             if deliver.is_some() {
@@ -1687,6 +1888,7 @@ async fn run(mut j: Run) {
             log: j.log_path,
             name: None,
             pty: false,
+            kind: JobKind::Shell,
         })
         .await;
     }
@@ -1818,6 +2020,7 @@ async fn run(mut j: Run) {
         output,
         inline,
         pty: false,
+        kind: JobKind::Shell,
     });
     if !j.quiet {
         flush(&j.rt, j.session, &j.id, &j.log).await;
@@ -1928,6 +2131,11 @@ impl Tool for JobsTool {
     const RISK: Risk = Risk::ReadOnly;
     type Args = JobsArgs;
 
+    /// Job-shaped already (145 §0.4).
+    fn promotable(&self) -> bool {
+        false
+    }
+
     fn description(&self) -> String {
         "List this session's background jobs: id, state, seconds, command, last output line.".into()
     }
@@ -1957,6 +2165,11 @@ impl Tool for CancelJobTool {
     const NAME: &'static str = "cancel_job";
     const RISK: Risk = Risk::Mutating;
     type Args = CancelJobArgs;
+
+    /// Job-shaped already (145 §0.4).
+    fn promotable(&self) -> bool {
+        false
+    }
 
     fn description(&self) -> String {
         "Kill a running background job by id. This reply is the whole acknowledgement: no <job_result> follows a job you killed.".into()
@@ -2087,6 +2300,119 @@ pub(crate) mod tests {
             })
             .await
             .unwrap()
+    }
+
+    /// 145 T1 (the jobs half): an adopted body runs as `jN` — `Started
+    /// { kind: Promoted }` naming the tool, then `Finished` carrying the
+    /// tool's output, `is_error` → exit 1, never inline.
+    #[tokio::test]
+    async fn adopted_call_runs_as_a_promoted_job() {
+        let fx = fixture(Duration::from_secs(1), Duration::from_secs(5)).await;
+        let id = fx
+            .jobs
+            .ask(Adopt {
+                session: fx.session,
+                call_id: "c1".into(),
+                tool: "search_web".into(),
+                cancel: CancellationToken::new(),
+                work: Box::pin(async {
+                    tokio::time::sleep(Duration::from_millis(50)).await;
+                    Ok(ToolOutput::err("nothing found"))
+                }),
+            })
+            .await
+            .unwrap();
+        assert_eq!(id.0, "j1");
+        let (exit, output, inline) = finished(&fx).await;
+        assert_eq!(
+            (exit, output.as_str(), inline),
+            (JobExit::Exited(1), "nothing found", false)
+        );
+        let events = lock(&fx.events).clone();
+        assert!(
+            matches!(
+                &events[0],
+                JobEvent::Started { kind: JobKind::Promoted, command, call_id, pty: false, .. }
+                    if command == "search_web" && call_id == "c1"
+            ),
+            "{events:?}"
+        );
+        assert!(matches!(
+            &events[1],
+            JobEvent::Finished {
+                kind: JobKind::Promoted,
+                ..
+            }
+        ));
+        let view = &fx.jobs.ask(ListJobs(fx.session)).await.unwrap()[0];
+        assert_eq!(
+            (view.command.as_str(), view.state.as_str(), view.pty),
+            ("search_web", "exited 1", false)
+        );
+    }
+
+    /// 145 T3: `cancel_job` on a promoted job cancels its token, drops the
+    /// body — it never completes — and finishes `killed` with the origin's
+    /// notice; a UI kill is injected, like any job's.
+    #[tokio::test]
+    async fn cancel_job_cancels_a_promoted_job() {
+        struct OnDrop(Arc<AtomicBool>);
+        impl Drop for OnDrop {
+            fn drop(&mut self) {
+                self.0.store(true, SeqCst);
+            }
+        }
+        let fx = fixture(Duration::from_secs(1), Duration::from_secs(5)).await;
+        let token = CancellationToken::new();
+        let completed = Arc::new(AtomicBool::new(false));
+        let dropped = Arc::new(AtomicBool::new(false));
+        let work = {
+            let (completed, dropped) = (completed.clone(), dropped.clone());
+            Box::pin(async move {
+                let _alive = OnDrop(dropped);
+                std::future::pending::<()>().await;
+                completed.store(true, SeqCst);
+                Ok(ToolOutput::ok("never"))
+            })
+        };
+        let id = fx
+            .jobs
+            .ask(Adopt {
+                session: fx.session,
+                call_id: "c2".into(),
+                tool: "slow".into(),
+                cancel: token.clone(),
+                work,
+            })
+            .await
+            .unwrap();
+        fx.jobs
+            .ask(CancelJob {
+                session: fx.session,
+                id: id.clone(),
+                origin: CancelOrigin::Ui,
+            })
+            .await
+            .unwrap();
+        let (exit, output, inline) = finished(&fx).await;
+        assert_eq!(
+            (exit, output.as_str(), inline),
+            (JobExit::Killed, CancelOrigin::Ui.notice(), false)
+        );
+        assert!(token.is_cancelled(), "the body's token fired");
+        assert!(dropped.load(SeqCst) && !completed.load(SeqCst));
+        assert_eq!(
+            fx.jobs
+                .ask(CancelJob {
+                    session: fx.session,
+                    id,
+                    origin: CancelOrigin::Ui,
+                })
+                .await
+                .unwrap_err()
+                .to_string(),
+            "j1 already finished"
+        );
     }
 
     /// A fixture with a real supervisor recipient installed, as the
@@ -2315,6 +2641,7 @@ pub(crate) mod tests {
             output: String::new(),
             inline: false,
             pty: false,
+            kind: JobKind::Shell,
         });
         let root = job.id();
         drop(job);
@@ -2573,6 +2900,8 @@ pub(crate) mod tests {
             call_id: String::new(),
             quiet: false,
             resources: crate::SessionResources::durable_arc(&fx.dir),
+            cancel: tokio_util::sync::CancellationToken::new(),
+            promote_after: None,
         };
         let cd = Tool::call(
             &tool,

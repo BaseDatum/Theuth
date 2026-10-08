@@ -615,6 +615,8 @@ mod tests {
                 retention: tools::Retention::Durable,
                 generation: 1,
             }),
+            cancel: tools::CancellationToken::new(),
+            promote_after: None,
         };
         let args: ScheduleArgs = serde_json::from_value(serde_json::json!({
             "name": "w", "prompt": "say hi", "every": "60s", "when": "missing.py", "max_runs": 3,

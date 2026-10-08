@@ -1,0 +1,1 @@
+`crates/scrape/` (8 files / 3,990 lines) implements `scrape_url`, `crawl` and `map_site` over `web` first and `browser` when a page needs JavaScript; `crates/firecrawl-native/` (75 files / 6,365 lines) is its dependency-free extraction library (readability, sitemap parsing). `routes` (site_learn/site_call) and `computer` complete the layer but are leaves not drawn here.

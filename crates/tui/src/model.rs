@@ -5732,15 +5732,18 @@ impl Model {
         Some(Command::TalkStart(self.session))
     }
 
-    /// Esc in the talk view (76 §5.2): while the agent is thinking, speaking
-    /// or held, it is the agent's cancel — the talk stays on and returns to
-    /// `Listening`; otherwise it leaves the view, the talk keeps running.
+    /// Esc in the talk view (76 §5.2): while the agent is thinking, working,
+    /// speaking or held, it is the agent's cancel — the talk stays on and
+    /// returns to `Listening`; otherwise it leaves the view, the talk keeps running.
     pub fn talk_escape(&mut self) -> Option<Command> {
         match &self.talk {
             Some(t)
                 if matches!(
                     t.state,
-                    talk::State::Thinking | talk::State::Speaking | talk::State::Holding
+                    talk::State::Thinking
+                        | talk::State::Working
+                        | talk::State::Speaking
+                        | talk::State::Holding
                 ) =>
             {
                 Some(Command::Cancel(t.session))
@@ -6466,7 +6469,10 @@ impl Model {
                 ));
             }
             // 125: handled before the streaming-tail bookkeeping above.
-            AgentEvent::AdvisorChanged { .. } | AgentEvent::AdvisoryAdded { .. } => {}
+            // 145 §0.3: parked harness inputs are the talk's business; no transcript row.
+            AgentEvent::AdvisorChanged { .. }
+            | AgentEvent::AdvisoryAdded { .. }
+            | AgentEvent::InputsParked { .. } => {}
             // 109 §10.3 / 139 §9.3: the divider and the status-line note, with
             // the previous owner after a transfer / takeover.
             AgentEvent::TurnResumed {
@@ -14376,6 +14382,7 @@ mod tests {
             log: "/tmp/j.log".into(),
             name: None,
             pty: false,
+            kind: tools::JobKind::Shell,
         }));
         let screen = |rows: &[&str]| {
             UiEvent::Job(JobEvent::Screen {
@@ -14789,6 +14796,7 @@ mod tests {
             log: "/tmp/j.log".into(),
             name: None,
             pty: false,
+            kind: tools::JobKind::Shell,
         };
         m.apply(UiEvent::Job(started(s, "j1")));
         m.apply(UiEvent::Job(started(s, "j2")));
@@ -14804,6 +14812,7 @@ mod tests {
             output: String::new(),
             inline: false,
             pty: false,
+            kind: tools::JobKind::Shell,
         }));
         assert!(m.status().ends_with("1 job(s)"), "{}", m.status());
         m.apply_agent(AgentEvent::MessageDelivered {
@@ -14850,6 +14859,7 @@ mod tests {
                 log: "/tmp/j.log".into(),
                 name: None,
                 pty: false,
+                kind: tools::JobKind::Shell,
             })
         };
         m.apply(started("j1", "c1"));
@@ -14908,6 +14918,7 @@ mod tests {
                 output: String::new(),
                 inline,
                 pty: false,
+                kind: tools::JobKind::Shell,
             })
         };
         m.apply(finished("j1", true));

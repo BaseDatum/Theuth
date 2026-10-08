@@ -88,6 +88,8 @@ fn cx() -> ToolCx {
         call_id: "live".into(),
         quiet: true,
         resources: tools::SessionResources::durable_arc(&std::env::temp_dir()),
+        cancel: tools::CancellationToken::new(),
+        promote_after: None,
     }
 }
 

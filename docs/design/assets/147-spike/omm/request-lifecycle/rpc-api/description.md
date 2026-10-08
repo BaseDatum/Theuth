@@ -1,0 +1,1 @@
+`crates/rpc/src/api.rs`: the trait method is declared at L194 and implemented at L2781–L2815; `authorize_opt` checks the client's session access, `forward::route` (`src/forward.rs`) relays to a remote engine in the mesh, `ask::<Agents,_>` (L2251 `send` helper) delivers `SendInput`. `src/bridge.rs` L171 is the reverse path: `rt.subscribe::<Bridge, AgentEvent>`.
