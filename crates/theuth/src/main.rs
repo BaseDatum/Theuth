@@ -927,6 +927,7 @@ agent:
 #   max_notes_per_update: 4  # non-blocker notes accepted per update (1–32)
 #   immune_turns: 3          # agent steps after a steer during which a concern is only an aside (0–10; 0 = off)
 #   sync_backlog: off        # off | 1 | 3 | 5: pending reviews the turn end waits for (≤ 30 s), never while the advisor is failing
+#   max_consults: 6          # `consult` calls the advised model (and its native subagents) may make per user turn (0–32; 0 removes the tool)
 
 # web:                       # search_web / read_url (design doc 16); Settings > Search edits the read/budget keys live
 #   enabled: true

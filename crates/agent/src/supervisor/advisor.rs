@@ -58,6 +58,19 @@ fn sync_backlog_str(v: SyncBacklog) -> &'static str {
     }
 }
 
+/// D-R1.5: one crude pairing signal — both catalog prices known and the
+/// advisor's output price below the advised model's.
+pub(crate) fn pairing_warning(
+    advisor: Option<models::Cost>,
+    advised: Option<models::Cost>,
+) -> Option<String> {
+    let (a, s) = (advisor?, advised?);
+    (a.output < s.output).then(|| PAIRING_WARNING.to_owned())
+}
+
+/// The D-R1.5 warning text.
+pub const PAIRING_WARNING: &str = "advisor model prices below the session model (crude signal)";
+
 impl Agents {
     fn write_advisor_key(&self, key: &str, value: &str) {
         let path = self.rt.data_dir.join("config.yaml");
@@ -155,6 +168,13 @@ impl Agents {
                 .map_or("~".to_owned(), |e| format!("\"{e}\"")),
         );
         let context_limit = resolved.model.as_ref().map_or(0, |m| m.limit.context);
+        let warning = pairing_warning(
+            resolved.model.as_ref().and_then(|m| m.cost),
+            self.catalog
+                .resolve(&row.model, &*self.configured)
+                .ok()
+                .and_then(|r| r.model.and_then(|m| m.cost)),
+        );
         let status = advisors()?
             .ask(Attach {
                 link: AdvisorLink {
@@ -166,6 +186,7 @@ impl Agents {
                     state: AdvisorState::Idle,
                 },
                 context_limit,
+                warning,
             })
             .await
             .map_err(|e| e.to_string())?;
@@ -259,6 +280,11 @@ impl Message<SetAdvisorDefaults> for Agents {
         {
             return Err("immune_turns must be 0–10".into());
         }
+        if let Some(n) = m.max_consults
+            && n > 32
+        {
+            return Err("max_consults must be 0–32".into());
+        }
         if let Some(effort) = m.effort {
             self.write_advisor_key(
                 "effort",
@@ -279,6 +305,10 @@ impl Message<SetAdvisorDefaults> for Agents {
         if let Some(v) = m.sync_backlog {
             self.write_advisor_key("sync_backlog", sync_backlog_str(v));
             self.advisor_cfg.sync_backlog = v;
+        }
+        if let Some(n) = m.max_consults {
+            self.write_advisor_key("max_consults", &n.to_string());
+            self.advisor_cfg.max_consults = n;
         }
         if let Ok(a) = advisors() {
             let _ = a
@@ -351,6 +381,7 @@ impl Message<DeliverAdvisory> for Agents {
                 .tell(AppendAdvisory {
                     advisory: m.advisory,
                     text: m.text,
+                    model_visible: m.model_visible,
                 })
                 .await
                 .map_err(|e| e.to_string())

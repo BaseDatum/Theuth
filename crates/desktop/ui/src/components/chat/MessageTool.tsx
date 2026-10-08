@@ -11,6 +11,7 @@ import { ArtifactCard, Progress } from './ArtifactCard'
 import { AnsweredAskCard, askQuestions } from './AskCard'
 import { BoardCard, isBoardCreate } from './BoardCard'
 import { ScrapeCard } from './ScrapeCard'
+import { RosterCard, rosterRows } from './RosterCard'
 import { Attachments } from './Attachments'
 import { fenced, plugins, shikiTheme } from './MessageAssistant'
 
@@ -126,9 +127,13 @@ function ReminderCard({ tool, session }: { tool: Tool; session: string }) {
  * Specialized cards draw their own previews; the stored, model-visible occurrences (48 §2.3) render beneath them with their removal controls, since an artifact on screen is not necessarily in the frame and removing an occurrence never deletes the artifact.
  * `readOnly` (an inspection page) shows the occurrences without removal controls. */
 export const MessageTool = memo(function MessageTool({ tool, session, readOnly }: { tool: Tool; session: string; readOnly?: boolean }) {
+  // 141 §9.2(b): a call that spawned watch-only children renders as their roster; until a child names it (`observed.tool_call`), the plain card.
+  const children = useSessions((s) => s.sessions[session]?.children)
+  const roster = useMemo(() => rosterRows(children ?? {}, tool.callId), [children, tool.callId])
   // An answered `ask_user` keeps its questions and the sent answers on screen (`AskCard` while it is pending).
   const asked = tool.name === 'ask_user' && tool.result && !tool.result.isError ? askQuestions(tool.args) : null
   if (asked && tool.result) return <AnsweredAskCard questions={asked} output={tool.result.output} session={session} callId={tool.callId} />
+  if (roster.length > 0) return <RosterCard tool={tool} rows={roster} />
   const card =
     tool.name === 'show' || tool.name === 'app' || tool.name === 'task_draft' || tool.name === 'agent_draft' || tool.name === 'routine_draft' ? (
       <ArtifactCard tool={tool} session={session} />

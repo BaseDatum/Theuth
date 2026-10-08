@@ -765,6 +765,8 @@ struct Shared {
     /// 125 §4.1 item 4: an advisor is linked to this session; the two step
     /// hooks cost one atomic load when it is not.
     advisor: Arc<std::sync::atomic::AtomicBool>,
+    /// 125 R1.3: a subagent's consults over its whole run (one turn, D-R1.1).
+    consults: Arc<std::sync::atomic::AtomicU32>,
     /// 137: the endless memory service; `None` in tests built without one
     /// (the session then runs the epochs frame whatever `sessions.memory` says).
     endless: Option<Endless>,
@@ -897,6 +899,7 @@ impl Session {
                 draining: Arc::default(),
                 kind: SessionKind::Chat,
                 advisor: Arc::default(),
+                consults: Arc::default(),
                 catalog,
                 pool,
                 knowledge: None,
@@ -1085,17 +1088,24 @@ impl Session {
 
     /// 125 §4.10 passive channel, idle path: append the Advisory row to the
     /// store and to the idle state's history without a turn, then announce
-    /// it. Callers check `idle()` first.
-    async fn append_advisory_idle(&mut self, advisory: Advisory, text: String) {
+    /// it. Callers check `idle()` first — except for a masked row (R1.4 step
+    /// 6, `model_visible: false`), which is never model context and so lands
+    /// here busy or idle.
+    async fn append_advisory_idle(
+        &mut self,
+        advisory: Advisory,
+        text: String,
+        model_visible: bool,
+    ) {
         let id = self.shared.id;
         match self
             .shared
             .store
-            .append_advisory(id, &text, &advisory)
+            .append_advisory(id, &text, &advisory, model_visible)
             .await
         {
             Ok(seq) => {
-                if let Some(state) = self.state.as_mut() {
+                if model_visible && let Some(state) = self.state.as_mut() {
                     state.history.push((seq, ChatMessage::user(text)));
                 }
                 self.shared
@@ -1991,8 +2001,11 @@ impl Message<AppendAdvisory> for Session {
     type Reply = ();
 
     async fn handle(&mut self, m: AppendAdvisory, _: &mut Context<Self, Self::Reply>) {
-        if self.idle() {
-            self.append_advisory_idle(m.advisory, m.text).await;
+        // R1.4 step 6: a masked card never joins a batch as context — it is
+        // written at once, busy or idle (the asker holds the answer already).
+        if !m.model_visible || self.idle() {
+            self.append_advisory_idle(m.advisory, m.text, m.model_visible)
+                .await;
             return;
         }
         self.shared
@@ -2049,7 +2062,7 @@ impl Message<SteerAdvisory> for Session {
             })
             .await;
         }
-        self.append_advisory_idle(m.advisory, m.text).await;
+        self.append_advisory_idle(m.advisory, m.text, true).await;
     }
 }
 
@@ -2350,7 +2363,7 @@ impl Message<TurnDone> for Session {
             if batch.iter().all(|(_, i)| i.passive) {
                 for (_, input) in batch {
                     if let Some(advisory) = input.advisory {
-                        self.append_advisory_idle(advisory, input.text).await;
+                        self.append_advisory_idle(advisory, input.text, true).await;
                     }
                 }
                 continue;
@@ -2552,6 +2565,12 @@ struct Turn {
     /// first request opens with, and what the `view_rebase` log line needs.
     /// `None` = the epochs frame.
     view: Option<EndlessView>,
+    /// 125 R1.3: the link this turn's `consult` runs against (`Some` iff the
+    /// tool is in the spec list), resolved once in [`Turn::rebase`].
+    consult: Option<advisor::ConsultSourceInfo>,
+    /// 125 R1.3 (D-R1.1): consults this user turn at `depth == 0`; a
+    /// subagent counts on [`Shared::consults`] instead.
+    consults: u32,
 }
 
 /// What an endless turn carries from `Turn::endless_start` (137 §7.3, §8.1).
@@ -3208,6 +3227,8 @@ impl Turn {
             resume_from: None,
             resume_lost_jobs: Vec::new(),
             view: None,
+            consult: None,
+            consults: 0,
         }
     }
 
@@ -3291,6 +3312,81 @@ impl Turn {
         {
             Ok(ack) => ToolOutput::ok(ack),
             Err(e) => ToolOutput::err(format!("advise: {e}")),
+        }
+    }
+
+    /// 125 R1.3: the loop-local `consult` tool — parse, cap, then `ask` the
+    /// `Advisors` actor under [`advisor::CONSULT_TIMEOUT`]. Every failure is
+    /// an `ok` result the model reads as data (the R1.3 errors table); a
+    /// timeout `tell`s [`advisor::CancelConsult`] so no card lands later.
+    /// (`Turn::consult` is the 52 §5 vision consultation.)
+    async fn consult_advisor(&mut self, args: &serde_json::Value) -> ToolOutput {
+        use advisor::consult::{ERR_OFF, ERR_TIMEOUT, err_cap, err_unavailable};
+        let (question, context) = match advisor::consult::parse(args) {
+            Ok(p) => p,
+            Err(e) => return ToolOutput::ok(e),
+        };
+        let Some(cap) = self.consult.as_ref().map(|s| s.cap) else {
+            return ToolOutput::ok(ERR_OFF.to_owned());
+        };
+        // D-R1.1: per user turn at the root (a `Turn` is one); a subagent's
+        // whole run is one turn, so its count lives on `Shared`.
+        let depth = self.shared.depth;
+        let n = if depth == 0 {
+            self.consults
+        } else {
+            self.shared.consults.load(Ordering::Relaxed)
+        };
+        if n >= u32::from(cap) {
+            return ToolOutput::ok(err_cap(n, cap));
+        }
+        let n = n + 1;
+        if depth == 0 {
+            self.consults = n;
+        } else {
+            self.shared.consults.store(n, Ordering::Relaxed);
+        }
+        let Some(advisors) = ActorRef::<Advisors>::lookup(ADVISORS_ACTOR).ok().flatten() else {
+            return ToolOutput::ok(err_unavailable("advisor actor not running"));
+        };
+        // The round's assistant text: the sentence that led to the question.
+        let partial = self
+            .state
+            .history
+            .last()
+            .filter(|(_, m)| m.role == ChatRole::Assistant)
+            .map(|(_, m)| text_of(&m.content))
+            .unwrap_or_default();
+        let ask = advisors.ask(advisor::Consult {
+            asker: self.shared.id,
+            depth,
+            question,
+            context,
+            partial,
+            n,
+        });
+        match tokio::time::timeout(advisor::CONSULT_TIMEOUT, ask).await {
+            Ok(Ok(answer)) => ToolOutput::ok(answer),
+            Ok(Err(kameo::error::SendError::HandlerError(reason))) => {
+                if reason == advisor::REASON_OFF {
+                    ToolOutput::ok(ERR_OFF.to_owned())
+                } else {
+                    ToolOutput::ok(err_unavailable(&reason))
+                }
+            }
+            Ok(Err(e)) => ToolOutput::ok(err_unavailable(&e.to_string())),
+            Err(_) => {
+                let _ = advisors.tell(advisor::CancelConsult(self.shared.id)).await;
+                ToolOutput::ok(ERR_TIMEOUT.to_owned())
+            }
+        }
+    }
+
+    /// The asker's Stop while a `consult` awaits its answer (R1.4): the
+    /// actor drops the consultation — no card, no counters.
+    async fn cancel_consult(&self) {
+        if let Some(advisors) = ActorRef::<Advisors>::lookup(ADVISORS_ACTOR).ok().flatten() {
+            let _ = advisors.tell(advisor::CancelConsult(self.shared.id)).await;
         }
     }
 
@@ -4126,6 +4222,19 @@ impl Turn {
             .as_ref()
             .map(|r| r.id.clone());
         let advisor = self.shared.kind == SessionKind::Advisor;
+        // 125 R1.3: `consult` is a Chat session's tool while a link serves it
+        // — its own (the flag) or an ancestor's (asked once per rebase, so a
+        // link turned on mid-run reaches a subagent at its next turn) — and
+        // the live cap allows it. The advisor itself consults no one.
+        self.consult = None;
+        if self.shared.kind == SessionKind::Chat
+            && (self.shared.depth > 0 || self.shared.advisor.load(Ordering::Relaxed))
+            && let Some(advisors) = ActorRef::<Advisors>::lookup(ADVISORS_ACTOR).ok().flatten()
+            && let Ok(Some(src)) = advisors.ask(advisor::ConsultSource(self.shared.id)).await
+            && src.cap > 0
+        {
+            self.consult = Some(src);
+        }
         // 125 §5.1: the advisor's prompt is its identity plus the header
         // lines — no skills, peers, plugin blocks or guidance. The supervisor
         // supplies it with the live `max_notes_per_update`; without one the
@@ -4152,6 +4261,7 @@ impl Turn {
                 subagent_model.as_deref(),
                 attended,
                 self.shared.advisor.load(Ordering::Relaxed),
+                self.consult.is_some(),
                 !endless,
             );
             // R1-D1: a native child of an endless parent opens with the parent's view.
@@ -4197,10 +4307,14 @@ impl Turn {
             self.shared.depth < self.shared.cfg.subagents.max_depth,
             toolset.as_ref(),
         );
-        // 125 §4.1: the advisor gets `advise` and no `todo`.
+        // 125 §4.1: the advisor gets `advise` and no `todo`; R1.3: an advised
+        // Chat session (or a subagent under one) gets `consult`.
         if advisor {
             specs.retain(|s| s.name != todo::NAME);
             specs.push(advisor::advise::spec());
+            specs.sort_by(|a, b| a.name.cmp(&b.name));
+        } else if self.consult.is_some() {
+            specs.push(advisor::consult::spec());
             specs.sort_by(|a, b| a.name.cmp(&b.name));
         }
         // 137 §9: `zoom`, `recall`, `date` exist only while the session has a
@@ -4648,7 +4762,7 @@ impl Turn {
                 let r = self
                     .shared
                     .store
-                    .append_advisory(self.shared.id, &text, &advisory)
+                    .append_advisory(self.shared.id, &text, &advisory, true)
                     .await;
                 if let (Ok(_), Some(turn)) = (&r, turn)
                     && let Err(e) = self
@@ -5853,11 +5967,13 @@ impl Turn {
         // `python` cell under the same call_id - the repl's own policy path
         // (86 RUNTIME-BRIDGE); anything else is refused.
         let advisor = self.shared.kind == SessionKind::Advisor;
+        let consulting = self.consult.is_some();
         let endless = self.endless_tools_on();
         let local = |name: &str| {
             name == todo::NAME
                 || name == repl::NAME
                 || (advisor && name == advisor::advise::NAME)
+                || (consulting && name == advisor::consult::NAME)
                 || (endless && endless_tools::is_local(name))
         };
         let mut bridged: Vec<Option<String>> = vec![None; calls.len()];
@@ -5932,6 +6048,17 @@ impl Turn {
             crash_point(&crash::call_point(i, crash::CALL_AFTER_STARTED));
             let out = if advisor && call.fn_name == advisor::advise::NAME {
                 self.advise(&call.fn_arguments).await
+            } else if consulting && call.fn_name == advisor::consult::NAME {
+                // 125 R1.3: the asker's Stop drops the awaiting call (§3) and
+                // tells the actor so no card lands later.
+                tokio::select! {
+                    _ = cancel.cancelled() => {
+                        self.cancel_consult().await;
+                        cancelled = true;
+                        continue
+                    }
+                    out = self.consult_advisor(&call.fn_arguments) => out,
+                }
             } else if endless && endless_tools::is_local(&call.fn_name) {
                 // 137 §9: the view's tools; `self.view` implies the service is attached.
                 match &self.shared.endless {
@@ -8474,7 +8601,7 @@ mod tests {
         let data_dir = std::env::temp_dir().join(format!("theuth-prompt-{}", uuid::Uuid::new_v4()));
         let skills_dir = skills::dir(&data_dir);
         std::fs::create_dir_all(&skills_dir).unwrap();
-        let bare = frame::baseline(&data_dir, None, "", "", false, None, true, false);
+        let bare = frame::baseline(&data_dir, None, "", "", false, None, true, false, false);
         assert!(bare.starts_with("You are theuth, a meta-harness"));
         assert!(!bare.contains("## Skills"));
 
@@ -8493,6 +8620,7 @@ mod tests {
             false,
             None,
             true,
+            false,
             false,
         );
         std::fs::remove_dir_all(&data_dir).unwrap();

@@ -1,0 +1,14 @@
+{
+ "jsonrpc": "2.0",
+ "method": "session/update",
+ "params": {
+  "sessionId": "sess_child_1",
+  "update": {
+   "sessionUpdate": "agent_message_chunk",
+   "content": {
+    "type": "text",
+    "text": "Basic is $9, Pro is $29, Team is $79."
+   }
+  }
+ }
+}

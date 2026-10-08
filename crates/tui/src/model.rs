@@ -12,13 +12,13 @@ use acp::registry::RegistryAgent;
 use agent::durability::{ResumeCause, ResumeKind};
 use agent::todo::{Status as TodoStatus, TodoSnapshot, TodoSource};
 use agent::{
-    AdvisorDefaults, AdvisorSeverity, AdvisorState, AdvisorStatus, Advisory, AgentEvent, AgentInfo,
-    AgentState, AwsProfiles, CommunicationChanged, CommunicationState, CompactStyle,
-    ContextAttachment, ContextEntry, ContextItem, ContextKind, ContextRemoval, ContextSnapshot,
-    ContextTarget, HistoryEntry, Loaded, ModelInfo, PeerDelivered, PeerInfo, PeerMessageChanged,
-    PeerMessagePage, PeerOrigin, PeerPage, PeerReceipt, PeerRecord, PeerScope, ProviderInfo,
-    QueuedInput, SessionKind, SessionSummary, SkillBody, SkillMeta, Usage, VisionNote, VisionStage,
-    VisionStatus,
+    AdvisorDefaults, AdvisorSeverity, AdvisorState, AdvisorStatus, Advisory, AdvisoryKind,
+    AgentEvent, AgentInfo, AgentState, AwsProfiles, CommunicationChanged, CommunicationState,
+    CompactStyle, ContextAttachment, ContextEntry, ContextItem, ContextKind, ContextRemoval,
+    ContextSnapshot, ContextTarget, HistoryEntry, Loaded, ModelInfo, ObservedMeta, ObservedSource,
+    ObservedState, PeerDelivered, PeerInfo, PeerMessageChanged, PeerMessagePage, PeerOrigin,
+    PeerPage, PeerReceipt, PeerRecord, PeerScope, ProviderInfo, QueuedInput, SessionKind,
+    SessionSummary, SkillBody, SkillMeta, Usage, VisionNote, VisionStage, VisionStatus,
 };
 use agent::{
     BroadcastReceipt, BroadcastRequest, BroadcastTargets, CleanupStatus, CloseResult, CostBucket,
@@ -547,6 +547,8 @@ pub enum Command {
     },
     /// `advisor_status` (125 §7.3).
     AdvisorStatus(SessionId),
+    /// `set_advisor_max_consults` (R1.2): the per-turn `consult` cap, 0-32.
+    SetAdvisorMaxConsults(u8),
     /// `set_model_favorite` (127 §3): star (`true`) or unstar `model` on the engine.
     SetModelFavorite {
         /// `provider/model` id.
@@ -1145,9 +1147,10 @@ pub const ADVISORY_COLLAPSED: usize = 3;
 /// The advisor glyph (U+25CE; outside `tests/no_emoji.rs`' ranges, `◉` is Vision).
 pub const ADVISOR_GLYPH: &str = "◎";
 
-/// `nit` / `concern` / `blocker`: the badge word.
+/// `advice` / `nit` / `concern` / `blocker`: the badge word.
 pub fn severity_name(s: AdvisorSeverity) -> &'static str {
     match s {
+        AdvisorSeverity::Advice => "advice",
         AdvisorSeverity::Nit => "nit",
         AdvisorSeverity::Concern => "concern",
         AdvisorSeverity::Blocker => "blocker",
@@ -1163,21 +1166,60 @@ pub fn advisory_severity(a: &Advisory) -> AdvisorSeverity {
         .unwrap_or(AdvisorSeverity::Nit)
 }
 
-/// `◎ advisor · 2 notes`: the card title.
+/// `◎ advisor · 2 notes`, or `◎ consulted: <question>` for a consultation
+/// (R1.2; the question collapsed to one line).
 pub fn advisory_title(a: &Advisory) -> String {
-    let n = a.notes.len();
-    format!(
-        "{ADVISOR_GLYPH} advisor · {n} note{}",
-        if n == 1 { "" } else { "s" }
-    )
+    match &a.kind {
+        AdvisoryKind::Consultation { question } => {
+            let q: Vec<&str> = question.split_whitespace().collect();
+            format!("{ADVISOR_GLYPH} consulted: {}", q.join(" "))
+        }
+        AdvisoryKind::Review => {
+            let n = a.notes.len();
+            format!(
+                "{ADVISOR_GLYPH} advisor · {n} note{}",
+                if n == 1 { "" } else { "s" }
+            )
+        }
+    }
 }
 
-/// `[concern] note text`: one line per note (the headless printer; the
-/// renderer colours the badge itself).
+/// The card's body rows: one per note with its badge for a review; one per
+/// line of the answer, unbadged, for a consultation (R1.2). `ADVISORY_COLLAPSED`
+/// of them show until Ctrl+O.
+pub fn advisory_rows(a: &Advisory) -> Vec<(Option<AdvisorSeverity>, &str)> {
+    match a.kind {
+        AdvisoryKind::Consultation { .. } => a
+            .notes
+            .iter()
+            .flat_map(|n| n.note.lines())
+            .map(|l| (None, l))
+            .collect(),
+        AdvisoryKind::Review => a
+            .notes
+            .iter()
+            .map(|n| (Some(n.severity), n.note.as_str()))
+            .collect(),
+    }
+}
+
+/// `advisory_rows(a).len()` without building them (`Entry::height`, Ctrl+O).
+pub fn advisory_row_count(a: &Advisory) -> usize {
+    match a.kind {
+        AdvisoryKind::Consultation { .. } => a.notes.iter().map(|n| n.note.lines().count()).sum(),
+        AdvisoryKind::Review => a.notes.len(),
+    }
+}
+
+/// `[concern] note text` / an answer line: one line per row (the headless
+/// printer; the renderer colours the badge itself).
 pub fn advisory_lines(a: &Advisory) -> Vec<String> {
-    a.notes
-        .iter()
-        .map(|n| format!("[{}] {}", severity_name(n.severity), n.note))
+    advisory_rows(a)
+        .into_iter()
+        .map(|(sev, text)| match sev {
+            Some(s) => format!("[{}] {text}", severity_name(s)),
+            None => text.to_owned(),
+        })
         .collect()
 }
 
@@ -1201,8 +1243,8 @@ pub fn advisor_state_name(s: AdvisorState) -> &'static str {
     }
 }
 
-/// `/advisor status` (125 §7.3): the four lines, `—` for unknowns; one
-/// line when off.
+/// `/advisor status` (125 §7.3 + R1.2): the five lines, `—` for unknowns;
+/// one line when off.
 pub fn advisor_status_lines(s: &AdvisorStatus) -> Vec<String> {
     if s.state == AdvisorState::Off {
         return vec!["advisor: off  ·  /advisor to pick a model".to_owned()];
@@ -1245,6 +1287,10 @@ pub fn advisor_status_lines(s: &AdvisorStatus) -> Vec<String> {
         Some(n) => format!("last: [{}] {}", severity_name(n.severity), n.note),
         None => "last: —".to_owned(),
     });
+    out.push(format!(
+        "consults: {} this turn · {} total · cap {}",
+        s.consults.turn, s.consults.total, s.consults.cap
+    ));
     out
 }
 
@@ -1284,7 +1330,7 @@ impl Entry {
             Entry::Card { text, expanded, .. } => 4 + if *expanded { md(text, inner) } else { 0 },
             // 125 §7.4: border + title + margin, one row per note shown, the `… +N more` row.
             Entry::Advisory { advisory, expanded } => {
-                let n = advisory.notes.len();
+                let n = advisory_row_count(advisory);
                 if *expanded {
                     4 + n
                 } else {
@@ -1498,8 +1544,8 @@ pub const COMMANDS: &[(&str, &str, &str)] = &[
     ),
     (
         "/advisor",
-        "[off|on|status|<provider/model>]",
-        "a second model that reviews this session (picker without argument)",
+        "[off|on|status|consults <n>|<provider/model>]",
+        "a second model that reviews this session and answers its consults (picker without argument)",
     ),
     (
         "/aws",
@@ -1738,6 +1784,20 @@ pub fn slash_matches(
         .iter()
         .filter(|c| c.0.starts_with(word) && (app_enabled || c.0 != "/apps"))
         .collect()
+}
+
+/// One slash popup row (`Model::slash_rows`): a theuth command, or a harness
+/// command (`raw`) that is sent as typed when picked (141 D15 c).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SlashRow {
+    /// `/name` as completed into the editor.
+    pub name: String,
+    /// Argument hint shown after the name; `<…>` means one is required.
+    pub hint: String,
+    /// Description; harness rows are prefixed `[<harness>]`.
+    pub desc: String,
+    /// Picked → `Command::Send`/`Steer` with the raw line, not `submit`.
+    pub raw: bool,
 }
 
 /// One `/double` subcommand (126 §10).
@@ -3438,6 +3498,14 @@ pub struct Model {
     /// `Loaded.agent`: the shown session runs on an external harness (75 §8);
     /// `/model` and `/effort` then pick from the harness's own options.
     pub agent: Option<String>,
+    /// 141 §10.1: the shown session is a watch-only harness subagent
+    /// (`Loaded.observed`, kept live by `ObservedChildChanged`): no input,
+    /// Esc stops it only when the harness accepts a per-child cancel.
+    pub observed: Option<ObservedMeta>,
+    /// 141 §10.1: `/` was typed in a watch-only view; the editor takes keys
+    /// for that one slash command (the way to `/parent`, `/agents`, …) and
+    /// lets go once the line no longer starts with `/`.
+    pub watch_slash: bool,
     /// Reasoning effort of the shown session (`default_effort` before the first turn);
     /// `None` = provider default.
     pub effort: Option<String>,
@@ -3767,6 +3835,9 @@ impl Model {
         self.harness_commands = loaded.harness_commands;
         self.context_size = loaded.context_size;
         self.agent = loaded.agent;
+        // 141 §10.1: `observed` is set iff the row is watch-only (`kind` alone
+        // is `chat` from an older engine), so it is the one flag to keep.
+        self.observed = loaded.observed;
         self.effort = loaded.effort;
         self.streaming = loaded.running;
         self.session_name = loaded.name;
@@ -3939,7 +4010,36 @@ impl Model {
         if let Some(a) = self.ask() {
             return a.typing;
         }
-        !self.todo_focus && !self.modal_menu() && self.inspect.is_none()
+        // 141 §10.1: a watch-only child takes no input (the status line says
+        // why) — except the one slash command `/` opened the editor for.
+        (self.observed.is_none() || self.watch_slash)
+            && !self.todo_focus
+            && !self.modal_menu()
+            && self.inspect.is_none()
+    }
+
+    /// 141 §10.1: the read-only reason of a watch-only view, for the status
+    /// line and as the one line typing gets; `None` for anything else.
+    pub fn watch_hint(&self) -> Option<String> {
+        let o = self.observed.as_ref()?;
+        let stop = if o.can_cancel {
+            "Esc stops it"
+        } else {
+            "cannot be stopped here"
+        };
+        Some(format!(
+            "watch-only — {} runs this subagent · {stop}",
+            harness_word(o.source)
+        ))
+    }
+
+    /// A key the watch-only view swallows: the hint, once per run of keys.
+    pub fn watch_swallow(&mut self) {
+        if let Some(hint) = self.watch_hint()
+            && !matches!(self.entries.last(), Some(Entry::Info(t)) if *t == hint)
+        {
+            self.entries.push(Entry::Info(hint));
+        }
     }
 
     /// A menu that takes the keys is open: every menu but the slash popup.
@@ -4425,7 +4525,7 @@ impl Model {
                         summary: Some(_),
                         ..
                     }
-            ) || matches!(e, Entry::Advisory { advisory, .. } if advisory.notes.len() > ADVISORY_COLLAPSED)
+            ) || matches!(e, Entry::Advisory { advisory, .. } if advisory_row_count(advisory) > ADVISORY_COLLAPSED)
         }) else {
             return;
         };
@@ -5982,6 +6082,7 @@ impl Model {
                             activity: Default::default(),
                             cap: *cap,
                             kind: Default::default(),
+                            observed: None,
                         }),
                     );
                 }
@@ -5993,6 +6094,82 @@ impl Model {
                 if self.session == Some(*parent) {
                     self.interject(Entry::Info(format!("↳ spawned {name}")));
                 }
+                return;
+            }
+            // 141 §10.1: a watch-only child is a `◎` board row, never a
+            // `↳ spawned` line. On the shown child itself only a state change
+            // says anything (one `watching · <state>` line); detail-only
+            // updates must not finish a streaming tail below.
+            AgentEvent::ObservedChildChanged {
+                parent,
+                child,
+                name,
+                model,
+                observed,
+            } => {
+                if self.session == Some(*child) {
+                    let changed = self
+                        .observed
+                        .as_ref()
+                        .is_none_or(|o| o.state != observed.state);
+                    self.observed = Some(observed.clone());
+                    if changed {
+                        self.interject(Entry::Info(format!(
+                            "watching · {}",
+                            observed_word(observed.state)
+                        )));
+                    }
+                    return;
+                }
+                let depth = if self.session == Some(*parent) {
+                    Some(1)
+                } else {
+                    self.agents.get(parent).map(|p| p.info.depth + 1)
+                };
+                let Some(depth) = depth else { return };
+                let state = observed_state(observed);
+                let row = self.agents.entry(*child).or_insert_with(|| {
+                    AgentRow::new(AgentInfo {
+                        id: *child,
+                        name: name.clone(),
+                        parent: *parent,
+                        depth,
+                        agent: None,
+                        model: String::new(),
+                        state: AgentState::Idle,
+                        started_at: None,
+                        finished_at: None,
+                        last: String::new(),
+                        project: None,
+                        retention: agent::Retention::Durable,
+                        activity: Default::default(),
+                        cap: None,
+                        kind: SessionKind::Observed,
+                        observed: None,
+                    })
+                });
+                row.info.name.clone_from(name);
+                if let Some(m) = model {
+                    row.info.model.clone_from(m);
+                }
+                if row.info.state != state {
+                    let now = Some(chrono::Utc::now());
+                    if state == AgentState::Running {
+                        row.info.started_at = row.info.started_at.or(now);
+                    } else {
+                        row.info.started_at = None;
+                        row.info.finished_at = now;
+                    }
+                    row.info.state = state;
+                }
+                // Terminal-bad and lost rows linger on the board like a
+                // cancelled native child (`fresh`); a finished one leaves it.
+                row.fresh = matches!(
+                    observed.state,
+                    ObservedState::Failed | ObservedState::Cancelled | ObservedState::Unknown
+                );
+                row.tool = None;
+                row.info.observed = Some(observed.clone());
                 return;
             }
             AgentEvent::MessageDelivered {
@@ -6367,6 +6544,9 @@ impl Model {
                 self.vision = None;
                 self.entries.push(Entry::Error(message));
             }
+            // 141 §10.1: handled in the roster match above (it returns before
+            // the tail-finishing rules, which a detail-only update must skip).
+            AgentEvent::ObservedChildChanged { .. } => {}
             // 91: the thinking block is already closed by the generic rule above
             // (any non-delta event); the TUI shows no thinking time.
             AgentEvent::ReasoningDone { .. }
@@ -6856,6 +7036,8 @@ impl Model {
                 ),
                 None => self.entries.push(Entry::Info("no session".into())),
             },
+            // On a watch-only child this is Esc's rule (141 §10.1): only when cancellable.
+            "/cancel" if self.observed.is_some() => self.cancel(tx),
             "/cancel" => {
                 if let Some(session) = self.session {
                     send(tx, Command::Cancel(session));
@@ -6877,49 +7059,56 @@ impl Model {
             "/nodes" => self.nodes_cmd(arg, tx),
             // `/<skill> [args]` hands the skill to the model (04 §2.4); any other `/word` — a path, a typo —
             // is message text and takes the arm below.
+            // A watch-only child takes neither (141 §10.1): the hint instead.
+            _ if self.observed.is_some() => self.watch_swallow(),
             c if c.starts_with('/') && self.skill_word(&c[1..]) => {
                 self.use_skill(c[1..].to_owned(), arg.to_owned(), tx);
             }
-            _ => {
-                let (text, files) = self.expand_pastes(line);
-                match self.session {
-                    // Mid-turn, or mid-`/compact` (a mini-turn without `TurnStarted`;
-                    // 07 §8.6): the card waits below the transcript until
-                    // `InputInjected` says where in the conversation it landed.
-                    Some(session) if self.streaming || self.compacting => {
-                        let id = InputId::new();
-                        self.queued.push(QueuedInput {
-                            id,
-                            text: text.clone(),
-                        });
-                        send(
-                            tx,
-                            Command::Steer {
-                                session,
-                                id,
-                                text,
-                                files,
-                                interject,
-                            },
-                        );
-                    }
-                    session => {
-                        self.entries.push(Entry::User {
-                            text: line.to_owned(),
-                            turn: None,
-                        });
-                        self.sent = Some(text.clone());
-                        self.awaiting_session = session.is_none();
-                        send(
-                            tx,
-                            Command::Send {
-                                session,
-                                text,
-                                files,
-                            },
-                        );
-                    }
-                }
+            _ => self.send_text(line, interject, tx),
+        }
+    }
+
+    /// Send `line` as message text: a steer mid-turn (interjecting when
+    /// asked), else the next turn's input. Also the raw path of a harness
+    /// slash command picked from the popup (141 D15 c): no `use_skill`.
+    fn send_text(&mut self, line: &str, interject: bool, tx: &UnboundedSender<Command>) {
+        let (text, files) = self.expand_pastes(line);
+        match self.session {
+            // Mid-turn, or mid-`/compact` (a mini-turn without `TurnStarted`;
+            // 07 §8.6): the card waits below the transcript until
+            // `InputInjected` says where in the conversation it landed.
+            Some(session) if self.streaming || self.compacting => {
+                let id = InputId::new();
+                self.queued.push(QueuedInput {
+                    id,
+                    text: text.clone(),
+                });
+                send(
+                    tx,
+                    Command::Steer {
+                        session,
+                        id,
+                        text,
+                        files,
+                        interject,
+                    },
+                );
+            }
+            session => {
+                self.entries.push(Entry::User {
+                    text: line.to_owned(),
+                    turn: None,
+                });
+                self.sent = Some(text.clone());
+                self.awaiting_session = session.is_none();
+                send(
+                    tx,
+                    Command::Send {
+                        session,
+                        text,
+                        files,
+                    },
+                );
             }
         }
     }
@@ -6969,6 +7158,16 @@ impl Model {
 
     /// [`Self::cancel`] with the clock injected.
     pub fn cancel_at(&mut self, now: std::time::Instant, tx: &UnboundedSender<Command>) {
+        // 141 §10.1: a watch-only child is the harness's; Esc reaches it only
+        // when the harness accepts a per-child cancel (RFD `capabilities.cancel`).
+        if let Some(can_cancel) = self.observed.as_ref().map(|o| o.can_cancel) {
+            match self.session {
+                Some(s) if can_cancel && self.streaming => send(tx, Command::Cancel(s)),
+                Some(_) if can_cancel => {}
+                _ => self.watch_swallow(),
+            }
+            return;
+        }
         let Some(session) = self.session.filter(|_| self.streaming || self.compacting) else {
             return;
         };
@@ -7307,8 +7506,11 @@ impl Model {
             .resume_note
             .as_deref()
             .map_or_else(String::new, |n| format!("  ·  {n}"));
+        let watch = self
+            .watch_hint()
+            .map_or_else(String::new, |h| format!("  ·  {h}"));
         format!(
-            "{session}  {state}{usage}{agents}{queued}{jobs}{skills}{editing}{scrolled}{todos}{talk}{attached}{resumed}"
+            "{session}  {state}{watch}{usage}{agents}{queued}{jobs}{skills}{editing}{scrolled}{todos}{talk}{attached}{resumed}"
         )
     }
 
@@ -7320,11 +7522,24 @@ impl Model {
     /// prefix-cache hit ratio of the last finished turn (design doc 07 §7),
     /// omitted until one has reported usage.
     pub fn header(&self, catalog: &Catalog) -> (String, Level) {
-        let used = format!(
-            "{}{}",
-            if self.context_estimated { "≈" } else { "" },
-            k(self.context)
-        );
+        // 141 R3 T14 (Q3): a watch-only omp child's meter is the harness's
+        // own `contextTokens/contextWindow` when it reported them.
+        let (context, estimated, own_limit) = match self
+            .observed
+            .as_ref()
+            .and_then(|o| o.detail["contextTokens"].as_u64())
+        {
+            Some(t) => (
+                u32::try_from(t).unwrap_or(u32::MAX),
+                false,
+                self.observed
+                    .as_ref()
+                    .and_then(|o| o.detail["contextWindow"].as_u64())
+                    .and_then(|w| u32::try_from(w).ok()),
+            ),
+            None => (self.context, self.context_estimated, None),
+        };
+        let used = format!("{}{}", if estimated { "≈" } else { "" }, k(context));
         let cache = match self.usage {
             Some(u) if u.prompt > 0 => {
                 format!(
@@ -7338,20 +7553,27 @@ impl Model {
             .effort
             .as_deref()
             .map_or_else(String::new, |e| format!("  ·  {e}"));
-        let model = match &self.harness_model {
-            Some(m) => format!("{} · {m}", self.model_id),
-            None => self.model_id.clone(),
+        // 141 §10.1: a watch-only child shows its own model when the harness
+        // reported one, else the parent's (what `Loaded.model` carries).
+        let model = match (&self.observed, &self.harness_model) {
+            (Some(_), Some(m)) => m.clone(),
+            (None, Some(m)) => format!("{} · {m}", self.model_id),
+            (_, None) => self.model_id.clone(),
         };
-        let model = match &self.session_name {
-            Some(name) => format!("↳ {name}  child · {model}"),
-            None => model,
+        let model = match (&self.observed, &self.session_name) {
+            (Some(_), name) => format!(
+                "{WATCH_GLYPH} {}  watching · {model}",
+                name.as_deref().unwrap_or("subagent")
+            ),
+            (None, Some(name)) => format!("↳ {name}  child · {model}"),
+            (None, None) => model,
         };
-        let limit = self
-            .context_size
+        let limit = own_limit
+            .or(self.context_size)
             .or_else(|| catalog.closest(&self.model_id).map(|m| m.limit.context));
         match limit {
             Some(limit) if limit > 0 => {
-                let pct = u64::from(self.context) * 100 / u64::from(limit);
+                let pct = u64::from(context) * 100 / u64::from(limit);
                 let level = match pct {
                     0..75 => Level::Normal,
                     75..90 => Level::Warn,
@@ -7499,6 +7721,17 @@ impl Model {
             send(tx, Command::ListModels);
             return;
         }
+        // R1.2: the cap is an engine default, not a per-session setting.
+        if let Some(n) = arg.strip_prefix("consults") {
+            match n.trim().parse::<u8>() {
+                Ok(n) if n <= 32 => send(tx, Command::SetAdvisorMaxConsults(n)),
+                _ => self.entries.push(Entry::Error(format!(
+                    "/advisor consults: expected a number 0-32, got {:?}",
+                    n.trim()
+                ))),
+            }
+            return;
+        }
         let Some(session) = self.session else {
             self.entries
                 .push(Entry::Error("no session yet: send a message first".into()));
@@ -7547,10 +7780,14 @@ impl Model {
 
     /// Install the shown session's advisor status (a reply or `AdvisorChanged`,
     /// whichever lands first): one `advisor → …` line when the model or the
-    /// off state changed (125 §7.5); a model remembers itself as the `/advisor on` default.
+    /// off state changed (125 §7.5), the D-R1.5 pairing warning once per link
+    /// after it; a model remembers itself as the `/advisor on` default.
     fn set_advisor_status(&mut self, status: AdvisorStatus) {
         let off = |s: &AdvisorStatus| s.state == AdvisorState::Off || s.model.is_none();
         let changed = status.model != self.advisor.model || off(&status) != off(&self.advisor);
+        let warn = status.warning.is_some()
+            && !off(&status)
+            && (changed || status.warning != self.advisor.warning);
         if status.model.is_some() {
             self.advisor_default.model.clone_from(&status.model);
             self.advisor_default.effort.clone_from(&status.effort);
@@ -7558,6 +7795,9 @@ impl Model {
         self.advisor = status;
         if changed {
             self.interject(Entry::Info(advisor_changed_line(&self.advisor)));
+        }
+        if let Some(w) = self.advisor.warning.as_deref().filter(|_| warn) {
+            self.interject(Entry::Info(format!("advisor: {w}")));
         }
     }
 
@@ -8815,11 +9055,44 @@ impl Model {
         if self.prompt.is_some() || self.ask().is_some() || self.secret_request().is_some() {
             return;
         }
+        // 141 §10.1: the watch-only editor lets go once the slash command is gone.
+        self.watch_slash &= input.starts_with('/');
         match (&self.menu, input.starts_with('/')) {
             (None, true) => self.menu = Some(Menu::Slash { cursor: 0 }),
             (Some(Menu::Slash { .. }), false) => self.menu = None,
             _ => {}
         }
+    }
+
+    /// Slash popup rows for the typed `word`: theuth's commands, then the
+    /// harness's own (141 D15 c) labelled with the harness name — those are
+    /// sent raw when picked (`raw`), never through `use_skill`.
+    pub fn slash_rows(&self, word: &str) -> Vec<SlashRow> {
+        let mut rows: Vec<SlashRow> = slash_matches(word, self.app_enabled)
+            .into_iter()
+            .map(|(name, hint, desc)| SlashRow {
+                name: (*name).to_owned(),
+                hint: (*hint).to_owned(),
+                desc: (*desc).to_owned(),
+                raw: false,
+            })
+            .collect();
+        let label = self.agent.as_deref().unwrap_or("harness");
+        rows.extend(
+            self.harness_commands
+                .iter()
+                .map(|c| SlashRow {
+                    name: match c.name.strip_prefix('/') {
+                        Some(_) => c.name.clone(),
+                        None => format!("/{}", c.name),
+                    },
+                    hint: c.hint.clone().unwrap_or_default(),
+                    desc: format!("[{label}] {}", c.description),
+                    raw: true,
+                })
+                .filter(|r| r.name.starts_with(word)),
+        );
+        rows
     }
 
     /// `/model` picker rows (124 §3, 127 §3): the favorites present in the
@@ -8970,39 +9243,44 @@ impl Model {
     }
 
     fn slash_key(&mut self, code: KeyCode, input: &str, tx: &UnboundedSender<Command>) -> MenuKey {
-        let Some(Menu::Slash { cursor }) = &mut self.menu else {
-            return MenuKey::Consumed;
-        };
         let (word, arg) = input
             .split_once(' ')
             .map_or((input, ""), |(w, a)| (w, a.trim()));
-        let matches = slash_matches(word, self.app_enabled);
-        *cursor = (*cursor).min(matches.len().saturating_sub(1));
-        let picked = matches.get(*cursor).copied();
+        let rows = self.slash_rows(word);
+        let Some(Menu::Slash { cursor }) = &mut self.menu else {
+            return MenuKey::Consumed;
+        };
+        *cursor = (*cursor).min(rows.len().saturating_sub(1));
+        let picked = rows.get(*cursor);
         match code {
             KeyCode::Up => *cursor = cursor.saturating_sub(1),
-            KeyCode::Down => *cursor = (*cursor + 1).min(matches.len().saturating_sub(1)),
+            KeyCode::Down => *cursor = (*cursor + 1).min(rows.len().saturating_sub(1)),
             KeyCode::Esc => self.menu = None,
             KeyCode::Tab => {
-                if let Some((name, hint, _)) = picked {
-                    let tail = if arg.is_empty() && hint.is_empty() {
+                if let Some(r) = picked {
+                    let tail = if arg.is_empty() && r.hint.is_empty() {
                         ""
                     } else {
                         " "
                     };
-                    return MenuKey::Input(format!("{name}{tail}{arg}"));
+                    return MenuKey::Input(format!("{}{tail}{arg}", r.name));
                 }
             }
             KeyCode::Enter => {
-                let line = match picked {
-                    Some((name, hint, _)) if hint.starts_with('<') && arg.is_empty() => {
-                        return MenuKey::Input(format!("{name} "));
+                let (line, raw) = match picked {
+                    Some(r) if r.hint.starts_with('<') && arg.is_empty() => {
+                        return MenuKey::Input(format!("{} ", r.name));
                     }
-                    Some((name, _, _)) => format!("{name} {arg}"),
-                    None => input.to_owned(),
+                    Some(r) => (format!("{} {arg}", r.name), r.raw),
+                    None => (input.to_owned(), false),
                 };
                 self.menu = None;
-                self.submit(&line, tx);
+                if raw {
+                    // 141 D15 c: the harness's own command, as typed.
+                    self.send_text(line.trim(), false, tx);
+                } else {
+                    self.submit(&line, tx);
+                }
                 return MenuKey::Input(String::new());
             }
             _ => {}
@@ -11691,7 +11969,14 @@ pub fn sort_agents(mut list: Vec<AgentRow>) -> Vec<AgentRow> {
 /// finished otherwise; the trailing counts and `last_active` age come from
 /// the snapshot's `activity` and appear only when known.
 pub fn agent_row(a: &AgentRow, spinner: &str, width: u16) -> String {
-    let glyph = crate::broadcast::glyph(&a.info.state, spinner);
+    // 141 §10.1: a watch-only child is `◎ name <observed state> watch · <src> [lastIntent]`.
+    let (glyph, word) = match &a.info.observed {
+        Some(o) => (WATCH_GLYPH, observed_word(o.state)),
+        None => (
+            crate::broadcast::glyph(&a.info.state, spinner),
+            a.info.state.word(),
+        ),
+    };
     let name = match a.info.depth {
         0 | 1 => a.info.name.clone(),
         d => format!("{}↳ {}", " ".repeat(2 * usize::from(d - 1)), a.info.name),
@@ -11704,15 +11989,27 @@ pub fn agent_row(a: &AgentRow, spinner: &str, width: u16) -> String {
     };
     // Glyph, name, state, gaps, age and the box take ~44 columns; the detail gets the rest.
     let room = usize::from(width).saturating_sub(44).max(16);
-    let detail = match &a.info.state {
-        AgentState::Running => a.tool.clone().unwrap_or_else(|| "streaming".to_owned()),
-        AgentState::Awaiting { from } => match &a.question {
+    let detail = match (&a.info.observed, &a.info.state) {
+        (Some(o), _) => {
+            let mut d = match o.detail["lastIntent"].as_str() {
+                Some(intent) => format!("watch · {} · {intent}", source_tag(o.source)),
+                None => format!("watch · {}", source_tag(o.source)),
+            };
+            // 141 R3 T13: the child's model when the column has room for it.
+            let m = &a.info.model;
+            if !m.is_empty() && d.chars().count() + 3 + m.chars().count() <= room {
+                d = format!("{d} · {m}");
+            }
+            d
+        }
+        (None, AgentState::Running) => a.tool.clone().unwrap_or_else(|| "streaming".to_owned()),
+        (None, AgentState::Awaiting { from }) => match &a.question {
             Some(q) => format!("{from}: \"{q}\""),
             None => from.clone(),
         },
-        AgentState::Approval { tool } => a.tool.clone().unwrap_or_else(|| tool.clone()),
-        AgentState::Error => a.error.clone().unwrap_or_else(|| a.info.last.clone()),
-        AgentState::Cancelled | AgentState::Idle => a.info.last.clone(),
+        (None, AgentState::Approval { tool }) => a.tool.clone().unwrap_or_else(|| tool.clone()),
+        (None, AgentState::Error) => a.error.clone().unwrap_or_else(|| a.info.last.clone()),
+        (None, AgentState::Cancelled | AgentState::Idle) => a.info.last.clone(),
     };
     let detail: String = detail.chars().take(room).collect();
     let active = match crate::broadcast::age(a.info.activity.last_active) {
@@ -11720,10 +12017,63 @@ pub fn agent_row(a: &AgentRow, spinner: &str, width: u16) -> String {
         s => format!(" ·{s}"),
     };
     format!(
-        "{glyph} {name:<14} {:<9} {detail:<room$}  {age}{}{active}",
-        a.info.state.word(),
+        "{glyph} {name:<14} {word:<9} {detail:<room$}  {age}{}{active}",
         crate::broadcast::counts(&a.info.activity),
     )
+}
+
+/// Row glyph of a watch-only child (141 §10.1).
+pub const WATCH_GLYPH: &str = "◎";
+
+/// The source tag of a watch-only child (141 §3 UI tags).
+pub fn source_tag(source: ObservedSource) -> &'static str {
+    match source {
+        ObservedSource::Rfd => "ACP",
+        ObservedSource::OpencodeExt | ObservedSource::OpencodeTask => "opencode",
+        ObservedSource::OmpTask => "omp task",
+    }
+}
+
+/// The harness that runs a watch-only child, for the read-only hint.
+fn harness_word(source: ObservedSource) -> &'static str {
+    match source {
+        ObservedSource::Rfd => "the harness",
+        ObservedSource::OpencodeExt | ObservedSource::OpencodeTask => "opencode",
+        ObservedSource::OmpTask => "omp",
+    }
+}
+
+/// A watch-only state as the row/status word (141 §5.2 labels; Q1: idle is not done).
+pub fn observed_word(state: ObservedState) -> &'static str {
+    match state {
+        ObservedState::Pending => "pending",
+        ObservedState::Running => "running",
+        ObservedState::RequiresAction => "waiting on you",
+        ObservedState::Idle => "idle",
+        ObservedState::Completed => "done",
+        ObservedState::Failed => "failed",
+        ObservedState::Cancelled => "stopped",
+        ObservedState::Unknown => "lost contact",
+    }
+}
+
+/// The board state a watch-only state maps to (141 §5.2 `state_of` column).
+fn observed_state(o: &ObservedMeta) -> AgentState {
+    match o.state {
+        ObservedState::Running => AgentState::Running,
+        ObservedState::RequiresAction => AgentState::Approval {
+            tool: o.detail["currentTool"]
+                .as_str()
+                .unwrap_or("permission")
+                .to_owned(),
+        },
+        ObservedState::Failed => AgentState::Error,
+        ObservedState::Cancelled => AgentState::Cancelled,
+        ObservedState::Pending
+        | ObservedState::Idle
+        | ObservedState::Completed
+        | ObservedState::Unknown => AgentState::Idle,
+    }
 }
 
 /// The first string argument of a tool call, cut to 40 chars: the `running
@@ -11949,8 +12299,20 @@ impl Model {
         }
     }
 
+    /// One `/agents` picker or board line: [`agent_row`] plus the child's
+    /// cost tag (141 R3 T13: watch rows carry their money like the desktop).
+    pub fn board_row(&self, a: &AgentRow, width: u16) -> String {
+        format!(
+            "{}{}",
+            agent_row(a, self.spinner(), width),
+            self.child_cost_tag(a.info.id)
+        )
+    }
+
     /// A direct child's inclusive total for its `/agents` row: `  ·  $0.123`
     /// (`~$` for an estimate, `—` when nothing was priced); empty for deeper rows and before the summary arrived.
+    // ponytail: `session_cost` is fetched for the shown session only, so a grandchild (a watch row under a
+    // harness that is not the shown session) has no figure here; fetch per row if that matters.
     pub fn child_cost_tag(&self, id: SessionId) -> String {
         let Some(child) = self
             .cost
@@ -12043,6 +12405,8 @@ impl Model {
             match c.scope {
                 CostScope::Native => "native",
                 CostScope::OpaqueRemoteInclusive => "includes hidden remote descendants",
+                // 141 §7.6: the harness's own total excluded this subagent.
+                CostScope::Observed => "watch-only subagent, counted beside the harness",
             }
         ));
         for ch in &c.children {
@@ -12054,6 +12418,7 @@ impl Model {
                 match ch.scope {
                     CostScope::Native => "",
                     CostScope::OpaqueRemoteInclusive => " · remote inclusive",
+                    CostScope::Observed => " · watch-only",
                 }
             ));
         }
@@ -13094,6 +13459,7 @@ mod tests {
                 },
                 cap: None,
                 kind: Default::default(),
+                observed: None,
             }
         };
         let busy = info("busy", None, AgentState::Running, 0);
@@ -13216,6 +13582,7 @@ mod tests {
             activity: Default::default(),
             cap: None,
             kind: Default::default(),
+            observed: None,
         };
         let list = vec![
             info("old", AgentState::Idle, Some(600)),
@@ -13358,6 +13725,129 @@ mod tests {
         ));
         assert!(matches!(m.menu, Some(Menu::Agents { .. })));
         assert!(m.board().iter().all(|r| r.info.id != a) && m.agents[&b].error.is_some());
+    }
+
+    /// 141 §10.1: a watch-only child is a `◎` row keyed by its observed
+    /// state — no `↳ spawned` line, pending off the board, failed and lost
+    /// lingering like a cancelled native child, done leaving it; the
+    /// child's own turn events keep driving the row; nesting by parent row.
+    #[test]
+    fn board_tracks_observed_children_as_watch_rows() {
+        let mut m = Model::default();
+        let root = SessionId::new();
+        m.session = Some(root);
+        let child = SessionId::new();
+        let ev = |state, intent| AgentEvent::ObservedChildChanged {
+            parent: root,
+            child,
+            name: "ReadA".into(),
+            model: Some("anthropic/claude-fable-5-1".into()),
+            observed: observed(ObservedSource::OmpTask, state, false, intent),
+        };
+        let before = m.entries.len();
+        m.apply_agent(ev(ObservedState::Pending, None));
+        assert_eq!(
+            m.entries.len(),
+            before,
+            "no ↳ spawned line: {:?}",
+            m.entries
+        );
+        assert!(m.board().is_empty(), "pending is not live");
+        assert_eq!(m.agents[&child].info.kind, SessionKind::Observed);
+        m.apply_agent(ev(ObservedState::Running, Some("Reading first line")));
+        let row = agent_row(&m.agents[&child], "⠹", 100);
+        assert!(
+            row.starts_with("◎ ReadA")
+                && row.contains("running   watch · omp task · Reading first line"),
+            "{row}"
+        );
+        // 141 R3 T13: the model joins the detail where the column has room; the
+        // child's cost tag rides the board/picker line once `session_cost` lists it.
+        assert!(!row.contains("claude-fable"), "no room at 100 cols: {row}");
+        let wide = agent_row(&m.agents[&child], "⠹", 140);
+        assert!(
+            wide.contains("Reading first line · anthropic/claude-fable-5-1"),
+            "{wide}"
+        );
+        assert_eq!(m.board_row(&m.agents[&child], 100), row, "no cost yet");
+        let mut total = CostBucket::default();
+        total.calls = 1;
+        total.dispatched = 1;
+        total.returned = vec![Money {
+            currency: "USD".into(),
+            nanos: 121_280_250,
+        }];
+        m.apply(UiEvent::Cost(
+            root,
+            SessionCost {
+                session: root,
+                revision: 1,
+                history_coverage: Coverage::Complete,
+                scope: CostScope::Native,
+                direct: CostBucket::default(),
+                descendants: CostBucket::default(),
+                total: CostBucket::default(),
+                children: vec![agent::ChildCost {
+                    session: child,
+                    name: Some("ReadA".into()),
+                    deleted: false,
+                    total,
+                    scope: CostScope::Observed,
+                }],
+                remote_meter_gaps: 0,
+                delta_suspected: false,
+                remote_tokens: Vec::new(),
+            },
+        ));
+        assert!(
+            m.board_row(&m.agents[&child], 100).ends_with("  ·  $0.121"),
+            "{}",
+            m.board_row(&m.agents[&child], 100)
+        );
+        assert_eq!(m.board().len(), 1);
+        m.apply_agent(AgentEvent::TurnFinished {
+            session: child,
+            turn: TurnId::new(),
+            stop_reason: "end_turn".into(),
+            usage: Usage::default(),
+            context: 0,
+        });
+        assert_eq!(m.agents[&child].info.state, AgentState::Idle);
+        m.apply_agent(ev(ObservedState::Failed, None));
+        assert_eq!(m.agents[&child].info.state, AgentState::Error);
+        assert!(
+            m.board().iter().any(|r| r.info.id == child),
+            "failed lingers"
+        );
+        assert!(agent_row(&m.agents[&child], "⠹", 100).contains("failed    watch · omp task"));
+        m.apply_agent(ev(ObservedState::Unknown, None));
+        assert!(agent_row(&m.agents[&child], "⠹", 100).contains("lost contact"));
+        assert!(
+            m.board().iter().any(|r| r.info.id == child),
+            "lost contact lingers"
+        );
+        m.apply_agent(ev(ObservedState::Completed, None));
+        assert!(m.board().is_empty(), "done leaves the board");
+        assert!(agent_row(&m.agents[&child], "⠹", 100).contains("done      watch · omp task"));
+        let grand = SessionId::new();
+        m.apply_agent(AgentEvent::ObservedChildChanged {
+            parent: child,
+            child: grand,
+            name: "ReadA.b".into(),
+            model: None,
+            observed: observed(
+                ObservedSource::OpencodeExt,
+                ObservedState::Running,
+                false,
+                None,
+            ),
+        });
+        assert_eq!(m.agents[&grand].info.depth, 2);
+        let row = agent_row(&m.agents[&grand], "⠹", 100);
+        assert!(
+            row.starts_with("◎   ↳ ReadA.b") && row.contains("watch · opencode"),
+            "{row}"
+        );
     }
 
     #[test]
@@ -14670,6 +15160,7 @@ mod tests {
             activity: Default::default(),
             cap: None,
             kind: Default::default(),
+            observed: None,
         };
         for state in [AgentState::Running, AgentState::Running, AgentState::Idle] {
             let i = info(state);
@@ -15521,6 +16012,202 @@ mod tests {
             },
         ));
         assert_eq!(m.header(&catalog).0, "omp · openai/gpt-5.4  ·  ctx 0");
+    }
+
+    fn observed(
+        source: ObservedSource,
+        state: ObservedState,
+        can_cancel: bool,
+        intent: Option<&str>,
+    ) -> ObservedMeta {
+        ObservedMeta {
+            source,
+            external: "ReadA".into(),
+            state,
+            stop: None,
+            can_cancel,
+            description: None,
+            tool_call: Some("toolu_1".into()),
+            cost_rule: agent::CostRule::Counted,
+            detail: intent.map_or(
+                serde_json::Value::Null,
+                |i| serde_json::json!({ "lastIntent": i }),
+            ),
+        }
+    }
+
+    /// 141 §10.1: a watch-only view has the `◎ … watching` header, no
+    /// editor, the read-only hint in the status line and once for typing;
+    /// a message is refused, a slash command still runs; Esc reaches the
+    /// child only when the harness accepts a per-child cancel.
+    #[test]
+    fn watch_only_view_is_read_only_and_esc_routes_only_when_cancellable() {
+        let catalog = Catalog::load(
+            std::env::temp_dir()
+                .join("theuth-tui-no-user-file")
+                .as_path(),
+        );
+        let (tx, mut rx) = unbounded_channel();
+        let mut m = Model::new("nobody/nothing".into(), true);
+        let (root, s) = (SessionId::new(), SessionId::new());
+        m.session = Some(s);
+        let loaded = |can_cancel| Loaded {
+            model: "omp-model".into(),
+            name: Some("ReadA".into()),
+            parent: Some(root),
+            running: true,
+            kind: SessionKind::Observed,
+            observed: Some(observed(
+                ObservedSource::Rfd,
+                ObservedState::Running,
+                can_cancel,
+                None,
+            )),
+            ..Loaded::default()
+        };
+        m.apply(UiEvent::History(s, loaded(false)));
+        assert_eq!(
+            m.header(&catalog).0,
+            "◎ ReadA  watching · omp-model  ·  ctx 0"
+        );
+        // 141 R3 T14 (Q3): the harness's own context figures, when it reported them.
+        if let Some(o) = &mut m.observed {
+            o.detail = serde_json::json!({ "contextTokens": 9037, "contextWindow": 1_000_000 });
+        }
+        assert_eq!(
+            m.header(&catalog).0,
+            "◎ ReadA  watching · omp-model  ·  ctx 9.0k / 1.0M (0%)"
+        );
+        if let Some(o) = &mut m.observed {
+            o.detail = serde_json::Value::Null;
+        }
+        assert!(!m.input_focused());
+        assert!(
+            m.status()
+                .contains("watch-only — the harness runs this subagent · cannot be stopped here"),
+            "{}",
+            m.status()
+        );
+        // Esc: nothing sent, the hint once per run of swallowed keys.
+        m.cancel(&tx);
+        assert!(rx.try_recv().is_err());
+        assert!(
+            matches!(m.entries.last(), Some(Entry::Info(t)) if t.starts_with("watch-only — the harness")),
+            "{:?}",
+            m.entries
+        );
+        let n = m.entries.len();
+        m.watch_swallow();
+        m.submit("hello", &tx);
+        assert!(rx.try_recv().is_err(), "a message is refused");
+        assert_eq!(m.entries.len(), n);
+        // `/` opens the editor for one slash command; it lets go with the text.
+        m.watch_slash = true;
+        m.sync_slash("/");
+        assert!(m.input_focused());
+        m.sync_slash("");
+        assert!(!m.input_focused());
+        m.submit("/parent", &tx);
+        assert!(matches!(rx.try_recv(), Ok(Command::Load { session, .. }) if session == root));
+        assert!(matches!(rx.try_recv(), Ok(Command::ListAgents(id)) if id == root));
+        // A state change on the shown child is one line; the same state again is silent.
+        m.session = Some(s);
+        m.apply(UiEvent::History(s, loaded(true)));
+        let n = m.entries.len();
+        let changed = |state| AgentEvent::ObservedChildChanged {
+            parent: root,
+            child: s,
+            name: "ReadA".into(),
+            model: Some("anthropic/claude-opus-4-8".into()),
+            observed: observed(ObservedSource::Rfd, state, true, None),
+        };
+        m.apply_agent(changed(ObservedState::Running));
+        assert_eq!(m.entries.len(), n);
+        m.apply_agent(changed(ObservedState::Idle));
+        assert!(matches!(m.entries.last(), Some(Entry::Info(t)) if t == "watching · idle"));
+        assert_eq!(m.entries.len(), n + 1);
+        // Cancellable (RFD `capabilities.cancel`): Esc is a plain `Cancel` of the child.
+        assert!(m.status().contains("· Esc stops it"));
+        m.cancel(&tx);
+        assert!(matches!(rx.try_recv(), Ok(Command::Cancel(id)) if id == s));
+        // Its own model, once reported, replaces the parent's in the header.
+        m.apply_agent(AgentEvent::HarnessModelChanged {
+            session: s,
+            model: "openai/gpt-5.4".into(),
+        });
+        assert!(
+            m.header(&catalog)
+                .0
+                .starts_with("◎ ReadA  watching · openai/gpt-5.4"),
+            "{}",
+            m.header(&catalog).0
+        );
+    }
+
+    /// 141 D15 c: the slash popup lists the harness's commands after
+    /// theuth's, labelled with the harness; picking one sends the line raw
+    /// (`Send`, or `Steer` mid-turn) — never through `use_skill`.
+    #[test]
+    fn slash_popup_lists_harness_commands_labelled_and_sends_them_raw() {
+        let (tx, mut rx) = unbounded_channel();
+        let mut m = Model::new("m".into(), true);
+        let s = SessionId::new();
+        m.session = Some(s);
+        let cmd = |name: &str| agent::HarnessCommand {
+            name: name.into(),
+            description: format!("{name} from omp"),
+            hint: None,
+        };
+        m.apply(UiEvent::History(
+            s,
+            Loaded {
+                model: "omp".into(),
+                agent: Some("omp".into()),
+                harness_commands: vec![cmd("skill:ponytail"), cmd("/init")],
+                ..Loaded::default()
+            },
+        ));
+        let rows = m.slash_rows("/");
+        assert_eq!(rows.len(), slash_matches("/", m.app_enabled).len() + 2);
+        assert!(!rows[0].raw);
+        let harness: Vec<(&str, &str)> = rows
+            .iter()
+            .filter(|r| r.raw)
+            .map(|r| (r.name.as_str(), r.desc.as_str()))
+            .collect();
+        assert_eq!(
+            harness,
+            [
+                ("/skill:ponytail", "[omp] skill:ponytail from omp"),
+                ("/init", "[omp] /init from omp"),
+            ]
+        );
+        assert_eq!(m.slash_rows("/skill:").len(), 1);
+        assert!(m.slash_rows("/zzz").is_empty());
+        // Picked with no skill index loaded (`/skill:ponytail` would otherwise be a skill word).
+        m.menu = Some(Menu::Slash { cursor: 0 });
+        assert_eq!(
+            m.menu_key(KeyCode::Enter, "/skill:ponytail", &tx),
+            MenuKey::Input(String::new())
+        );
+        assert!(m.menu.is_none());
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(Command::Send { session: Some(id), text, .. }) if id == s && text == "/skill:ponytail"
+        ));
+        assert!(
+            matches!(m.entries.last(), Some(Entry::User { text, .. }) if text == "/skill:ponytail")
+        );
+        // Mid-turn the same pick steers, argument kept.
+        m.streaming = true;
+        m.menu = Some(Menu::Slash { cursor: 0 });
+        m.menu_key(KeyCode::Enter, "/init now", &tx);
+        assert!(matches!(rx.try_recv(), Ok(Command::Steer { text, .. }) if text == "/init now"));
+        // A theuth row picked still goes through `submit`.
+        m.streaming = false;
+        m.menu = Some(Menu::Slash { cursor: 0 });
+        m.menu_key(KeyCode::Enter, "/quit", &tx);
+        assert!(m.quit);
     }
 
     /// Context bands (75 §5): the header prefers the harness's window over
@@ -17575,6 +18262,7 @@ mod tests {
             here: true,
             kind: Default::default(),
             memory: Default::default(),
+            observed: None,
         }
     }
 
@@ -18506,6 +19194,7 @@ mod tests {
             turn: None,
             at_ms: 0,
             notes,
+            kind: Default::default(),
         }
     }
 
@@ -18653,9 +19342,9 @@ mod tests {
         assert_eq!(info_lines(&m), ["advisor → openai/o3-pro", "advisor → off"]);
     }
 
-    /// 125 §7.3: the exact four lines; one line when off.
+    /// 125 §7.3 + R1.2: the exact five lines; one line when off.
     #[test]
-    fn advisor_status_prints_four_lines() {
+    fn advisor_status_prints_five_lines() {
         let (tx, mut rx) = unbounded_channel();
         let s = SessionId::new();
         let mut m = Model {
@@ -18697,6 +19386,11 @@ mod tests {
             AdvisorSeverity::Concern,
             "cite the loop_.rs line before claiming drain_steer runs after every batch",
         ));
+        status.consults = agent::AdvisorConsultCounts {
+            turn: 2,
+            total: 7,
+            cap: 6,
+        };
         m.apply(UiEvent::AdvisorStatus(status));
         assert_eq!(
             info_lines(&m),
@@ -18707,7 +19401,172 @@ mod tests {
                 // `k()` drops the decimal from 100k up (`120k`, not the design's illustrative `120.4k`).
                 "context: 38.2k / 200k (19%)  ·  in 120k · out 3.1k  ·  cost $0.412",
                 "last: [concern] cite the loop_.rs line before claiming drain_steer runs after every batch",
+                "consults: 2 this turn · 7 total · cap 6",
             ]
+        );
+    }
+
+    /// R1.2: `/advisor consults <n>` sends the cap (no session needed); anything
+    /// but 0-32 is an error and sends nothing.
+    #[test]
+    fn advisor_cmd_consults_sets_cap_and_rejects_out_of_range() {
+        let (tx, mut rx) = unbounded_channel();
+        let mut m = Model::default();
+        m.submit("/advisor consults 12", &tx);
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(Command::SetAdvisorMaxConsults(12))
+        ));
+        m.submit("/advisor consults 0", &tx);
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(Command::SetAdvisorMaxConsults(0))
+        ));
+        for bad in [
+            "/advisor consults 33",
+            "/advisor consults",
+            "/advisor consults six",
+        ] {
+            m.submit(bad, &tx);
+            assert!(rx.try_recv().is_err(), "{bad}");
+        }
+        let errors = m
+            .entries
+            .iter()
+            .filter(|e| matches!(e, Entry::Error(t) if t.starts_with("/advisor consults: expected a number 0-32")))
+            .count();
+        assert_eq!(errors, 3);
+    }
+
+    fn consultation(question: &str, answer: &str) -> Advisory {
+        Advisory {
+            kind: AdvisoryKind::Consultation {
+                question: question.into(),
+            },
+            ..advisory(
+                SessionId::new(),
+                vec![note(AdvisorSeverity::Advice, answer)],
+            )
+        }
+    }
+
+    /// R1.2: `◎ consulted: <question>` on one line; the printer's lines are
+    /// the answer's, unbadged.
+    #[test]
+    fn consultation_card_titles_with_question() {
+        let a = consultation(
+            "read justfile\n  or README first?",
+            "justfile\nit names the gates",
+        );
+        assert_eq!(
+            advisory_title(&a),
+            "◎ consulted: read justfile or README first?"
+        );
+        assert_eq!(advisory_lines(&a), ["justfile", "it names the gates"]);
+        assert_eq!(
+            advisory_lines(&advisory(
+                SessionId::new(),
+                vec![note(AdvisorSeverity::Nit, "x")]
+            )),
+            ["[nit] x"]
+        );
+    }
+
+    /// R1.2: the answer's lines collapse to `ADVISORY_COLLAPSED`; Ctrl+O expands.
+    #[test]
+    fn consultation_card_collapses_answer_lines() {
+        let mut m = Model::default();
+        m.entries.push(Entry::Advisory {
+            advisory: consultation("q", "1\n2\n3\n4\n5"),
+            expanded: false,
+        });
+        assert_eq!(m.entries[0].height(80), 4 + 3 + 1);
+        m.toggle_card();
+        assert!(matches!(
+            &m.entries[0],
+            Entry::Advisory { expanded: true, .. }
+        ));
+        assert_eq!(m.entries[0].height(80), 4 + 5);
+        m.entries.push(Entry::Advisory {
+            advisory: consultation("q", "1\n2"),
+            expanded: false,
+        });
+        assert_eq!(m.entries[1].height(80), 4 + 2);
+        m.toggle_card();
+        assert!(
+            matches!(
+                &m.entries[1],
+                Entry::Advisory {
+                    expanded: false,
+                    ..
+                }
+            ),
+            "nothing to expand"
+        );
+    }
+
+    /// R1.7: `Advice` is SAND and ranks lowest — a mixed card never shows as advice.
+    #[test]
+    fn advice_severity_is_sand_and_never_promotes() {
+        assert_eq!(severity_name(AdvisorSeverity::Advice), "advice");
+        assert_eq!(
+            crate::ui::severity_color(AdvisorSeverity::Advice),
+            crate::ui::SAND
+        );
+        let only = consultation("q", "a");
+        assert_eq!(advisory_severity(&only), AdvisorSeverity::Advice);
+        let mixed = advisory(
+            SessionId::new(),
+            vec![
+                note(AdvisorSeverity::Advice, "a"),
+                note(AdvisorSeverity::Nit, "n"),
+            ],
+        );
+        assert_eq!(advisory_severity(&mixed), AdvisorSeverity::Nit);
+        assert!(AdvisorSeverity::Advice < AdvisorSeverity::Nit);
+    }
+
+    /// R1.2 / D-R1.5: the pairing warning is one `Entry::Info` after
+    /// `advisor → <model>`, once per link — not on every counter change.
+    #[test]
+    fn pairing_warning_prints_once_per_link() {
+        let s = SessionId::new();
+        let mut m = Model {
+            session: Some(s),
+            ..Model::default()
+        };
+        let mut status = advisor_status(s, AdvisorState::Idle, "openai/gpt-5.4-mini");
+        status.warning = Some("advisor model prices below the session model (crude signal)".into());
+        m.apply_agent(AgentEvent::AdvisorChanged {
+            session: s,
+            status: status.clone(),
+        });
+        // The RPC reply carrying the same status prints nothing more.
+        m.apply(UiEvent::AdvisorStatus(status.clone()));
+        status.step = 3;
+        m.apply_agent(AgentEvent::AdvisorChanged {
+            session: s,
+            status: status.clone(),
+        });
+        assert_eq!(
+            info_lines(&m),
+            [
+                "advisor → openai/gpt-5.4-mini",
+                "advisor: advisor model prices below the session model (crude signal)",
+            ]
+        );
+        // Re-pick to a model with a sane pairing: no warning; back again: once more.
+        let mut fine = advisor_status(s, AdvisorState::Idle, "anthropic/claude-opus-4-1");
+        fine.step = 3;
+        m.apply_agent(AgentEvent::AdvisorChanged {
+            session: s,
+            status: fine,
+        });
+        m.apply_agent(AgentEvent::AdvisorChanged { session: s, status });
+        assert_eq!(info_lines(&m).len(), 5);
+        assert_eq!(
+            info_lines(&m)[4],
+            "advisor: advisor model prices below the session model (crude signal)"
         );
     }
 
@@ -18953,6 +19812,7 @@ mod tests {
             activity: Default::default(),
             cap: None,
             kind,
+            observed: None,
         };
         let worker = SessionId::new();
         m.apply(UiEvent::Agents(vec![

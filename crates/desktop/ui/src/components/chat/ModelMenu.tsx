@@ -99,6 +99,8 @@ type Props = {
 /** The picker's state shared by the header button, the compact row and the dialog. */
 type Model = {
   agent: string | null | undefined
+  /** 141: a watch-only harness subagent — the label is the harness's model (or `—`), nothing opens. */
+  watching: boolean
   harnessModel: string | null | undefined
   model: string | undefined
   effort: string | null | undefined
@@ -132,12 +134,14 @@ function useModel({ session }: Props, done: () => void): Model {
   const agent = useSessionField(session ?? '', 'agent')
   const harnessModel = useSessionField(session ?? '', 'harnessModel')
   const running = useSessionField(session ?? '', 'running')
+  // 141 §9.2(d): a watch-only child is the harness's — its model is shown, never picked; no `harness_options`/`resume_child` calls.
+  const watching = useSessionField(session ?? '', 'kind') === 'observed'
   const model = sessionModel ?? info?.default_model
   // 83 §3: the draft shows the engine's live default effort (`DefaultEffortChanged` keeps it current).
   const effort = session ? sessionEffort : info?.default_effort
-  const { data: models = [] } = useQuery({ queryKey: queryKeys.models, queryFn: () => api.list_models(), enabled: !agent })
+  const { data: models = [] } = useQuery({ queryKey: queryKeys.models, queryFn: () => api.list_models(), enabled: !agent && !watching })
   const current = models.find((m) => m.id === model)
-  const acp = !!agent && !!session
+  const acp = !!agent && !!session && !watching
   const { data: harness, isError } = useQuery({
     queryKey: harnessOptionsKey(session ?? ''),
     queryFn: () => api.harness_options(session ?? ''),
@@ -204,6 +208,7 @@ function useModel({ session }: Props, done: () => void): Model {
     favorites,
     toggleFavorite,
     agent,
+    watching,
     harnessModel,
     model,
     effort,
@@ -387,6 +392,13 @@ export function ModelMenu(props: Props) {
       <RotateCcw className="size-3.5" /> Resume
     </Button>
   )
+  if (m.watching) {
+    return (
+      <span className="flex h-9 max-w-full items-center px-2.5 text-lg font-medium text-fg-secondary" title="the harness runs this subagent; its model is not yours to pick" aria-disabled>
+        <span className="min-w-0 truncate">{m.harnessModel ?? '—'}</span>
+      </span>
+    )
+  }
   if (m.agent && !m.harness) {
     return (
       <span className="flex h-9 max-w-full items-center gap-1 px-2.5 text-lg font-medium text-fg-secondary" title={m.harness === null ? 'harness process not running' : 'External harness'}>
@@ -425,6 +437,7 @@ export function ModelMenu(props: Props) {
 /** The compact menu's line: the model and effort (opens `ModelDialog`); for an ACP child the harness's model, a picker while its process runs. */
 export function ModelRow({ onOpen, ...props }: Props & { onOpen(): void }) {
   const m = useModel(props, onOpen)
+  if (m.watching) return <MenuRow icon={Eye} label="Model" detail={m.harnessModel ?? '—'} />
   if (m.agent) {
     const { effort } = harnessGroups(m.harness ?? [])
     const lvl = harnessCurrent(effort, effort && m.pending[effort.id])
@@ -440,7 +453,7 @@ export function ModelDialog({ open, onOpenChange, ...props }: Props & { open: bo
   const m = useModel(props, () => onOpenChange(false))
   useOpenOnSlash(props.session, () => onOpenChange(true))
   useOpenAdvisor(props.session, () => (setAdvisor(true), onOpenChange(true)))
-  if (m.agent && !m.harness) return null
+  if (m.watching || (m.agent && !m.harness)) return null
   const place = dialogPlacement(touch())
   if (m.agent) {
     return (

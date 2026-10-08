@@ -4,7 +4,8 @@ import { codeEdited, codeToolRan, emptyCodemap } from "@/lib/codemap/slice";
 import { classify, humanSecs, type Injected } from "@/lib/injected";
 import { pushChunk } from "@/lib/jobTail";
 import { splitTime } from "@/lib/time";
-import { live } from "@/lib/session-tree";
+import { live, observedState } from "@/lib/session-tree";
+import type { Advisory as AdvisoryRow } from "@/rpc/bindings/Advisory";
 import type { AdvisoryNote } from "@/rpc/bindings/AdvisoryNote";
 import type { ContextEntry } from "@/rpc/bindings/ContextEntry";
 import type { PeerOrigin } from "@/rpc/bindings/PeerOrigin";
@@ -326,6 +327,9 @@ const notesKey = (notes: readonly AdvisoryNote[]): string => notes.map((n) => `$
 
 type Advisory = Extract<Entry, { kind: "advisory" }>;
 
+/** R1.7: the consultation's question (the flattened `kind` tag), `undefined` for a review. */
+const questionOf = (a: AdvisoryRow): string | undefined => (a.kind === "consultation" ? a.question : undefined);
+
 /**
  * 125 §8.3: show one Advisory card once. `AdvisoryAdded`, the `<advisory>` wrapper of a `TurnStarted`/`InputInjected`
  * and the settled reload all describe the same stored row: a card with the same `seq` is already there; a card parsed
@@ -469,7 +473,7 @@ function historyEntries(h: HistoryEntry): Entry[] {
       return [{ id: nextId(), kind: "interrupted", text: h.text }];
     // 125 §8.3: the typed card; `seq` is the stored row (the `AdvisoryAdded` idempotence key).
     case "advisory":
-      return [{ id: nextId(), kind: "advisory", notes: h.advisory.notes, seq: seqOf(context), context, at: h.advisory.at_ms }];
+      return [{ id: nextId(), kind: "advisory", notes: h.advisory.notes, seq: seqOf(context), context, at: h.advisory.at_ms, question: questionOf(h.advisory) }];
   }
 }
 
@@ -674,7 +678,7 @@ export function apply(
       );
     // 125 §8.3: one Advisory card per stored row, whichever of the event, the wrapper echo or the reload lands first.
     case "AdvisoryAdded":
-      return addAdvisory(slice, { id: nextId(), kind: "advisory", notes: e.advisory.notes, seq: e.seq, at: e.advisory.at_ms });
+      return addAdvisory(slice, { id: nextId(), kind: "advisory", notes: e.advisory.notes, seq: e.seq, at: e.advisory.at_ms, question: questionOf(e.advisory) });
     // 125 §3: one `advisor → <model | off>` line when the advisor's model changes; state ticks (reviewing/idle) print nothing.
     case "AdvisorChanged": {
       const model = e.status.state === "off" ? null : (e.status.model ?? null);
@@ -1350,6 +1354,48 @@ export function route(
               text: `↳ spawned ${e.name}`,
             })
           : next;
+      id = s.parent;
+    }
+    return true;
+  }
+  // 141 §9.1: a watch-only child the harness announced or moved — the child's slice and a row on every ancestor,
+  // no `↳ spawned` line (the roster card is the parent-transcript artefact). A repeat upserts the same row.
+  if (e.type === "ObservedChildChanged") {
+    const child = draft[e.child] ?? empty(e.child);
+    draft[e.child] = {
+      ...child,
+      name: e.name,
+      parent: e.parent,
+      kind: "observed",
+      observed: e.observed,
+      harnessModel: e.model ?? child.harnessModel,
+    };
+    const state = observedState(e.observed.state);
+    const terminal =
+      e.observed.state === "completed" ||
+      e.observed.state === "failed" ||
+      e.observed.state === "cancelled";
+    const now = new Date().toISOString();
+    for (let id: string | null | undefined = e.parent, depth = 1; id; depth++) {
+      const s: SessionSlice | undefined = draft[id];
+      if (!s) break;
+      const prev = s.children[e.child];
+      const row: AgentInfo = {
+        ...prev,
+        id: e.child,
+        name: e.name,
+        parent: e.parent,
+        depth,
+        agent: null,
+        model: e.model ?? prev?.model ?? "",
+        state,
+        started_at: prev?.started_at ?? now,
+        finished_at: terminal ? (prev?.finished_at ?? now) : null,
+        last: prev?.last ?? "",
+        kind: "observed",
+        observed: e.observed,
+      };
+      draft[id] = { ...s, children: { ...s.children, [e.child]: row } };
       id = s.parent;
     }
     return true;
