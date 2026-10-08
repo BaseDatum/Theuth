@@ -110,11 +110,19 @@ impl EndlessConfig {
             if r.contains(&v) {
                 Ok(())
             } else {
-                Err(format!("{name} {v} out of range {}..={}", r.start(), r.end()))
+                Err(format!(
+                    "{name} {v} out of range {}..={}",
+                    r.start(),
+                    r.end()
+                ))
             }
         };
         range("view_bytes", self.view_bytes, Self::VIEW_BYTES)?;
-        range("meeting_view_bytes", self.meeting_view_bytes, 4_000..=256_000)?;
+        range(
+            "meeting_view_bytes",
+            self.meeting_view_bytes,
+            4_000..=256_000,
+        )?;
         range("backfill_max_units", self.backfill_max_units, 0..=100_000)?;
         range("node_bytes", self.node_bytes, 128..=4_096)?;
         range("settle_secs", self.settle_secs, 0..=600)?;

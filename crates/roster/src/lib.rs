@@ -2288,7 +2288,8 @@ impl runtime::Plugin for RosterPlugin {
         // 79 §4.9: a VM that takes work again unblocks the tasks pinned to it.
         rt.subscribe::<Roster, sandbox::SandboxEvent>(&actor).await;
         // 137 §11.3: `default_desk` follows Settings › Memory live.
-        rt.subscribe::<Roster, agent::EndlessConfigChanged>(&actor).await;
+        rt.subscribe::<Roster, agent::EndlessConfigChanged>(&actor)
+            .await;
         let me = actor.clone();
         let rt2 = rt.clone();
         tokio::spawn(async move {

@@ -43,8 +43,8 @@ use agent::{
     SpendReportQuery,
 };
 use agent::{AwsProfiles, ListAwsProfiles, SetAwsProfile};
-use agent::{GetFavoriteModels, SetModelFavorite};
 use agent::{EndlessConfig, MemoryMode, SessionMemory, ViewLine};
+use agent::{GetFavoriteModels, SetModelFavorite};
 use app::{
     AppDoc, AppToolResult, Apps, CallArgs, CallStatusOf, CallTool, CloseApp, GetApp, PublishFromUi,
 };

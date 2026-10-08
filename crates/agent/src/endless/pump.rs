@@ -935,8 +935,7 @@ pub(crate) async fn backfill_estimate(
     } else {
         (
             0,
-            live.t()
-                .min(u64::from(state.cfg.read().backfill_max_units)),
+            live.t().min(u64::from(state.cfg.read().backfill_max_units)),
         )
     };
     let left = total - done;

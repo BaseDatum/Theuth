@@ -4027,8 +4027,11 @@ impl Turn {
         // chat). A toolset is an allowlist: each spec only when it lists it.
         // The list stays sorted so an epochs session's tools are untouched.
         if self.endless_tools_on() {
-            let listed =
-                |name: &str| toolset.as_ref().is_none_or(|t| t.tools.iter().any(|n| n == name));
+            let listed = |name: &str| {
+                toolset
+                    .as_ref()
+                    .is_none_or(|t| t.tools.iter().any(|n| n == name))
+            };
             specs.extend(
                 endless_tools::specs()
                     .into_iter()

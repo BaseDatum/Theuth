@@ -3895,7 +3895,11 @@ impl Agents {
             && self.endless.active(*parent)
         {
             let (actor, parent) = (actor.clone(), *parent);
-            let blocks = self.endless.render_snapshot(parent).await.unwrap_or_default();
+            let blocks = self
+                .endless
+                .render_snapshot(parent)
+                .await
+                .unwrap_or_default();
             if !blocks.is_empty() {
                 let _ = actor
                     .tell(crate::loop_::OpenerContext(
@@ -6654,7 +6658,11 @@ impl Message<SetSessionViewBytes> for Agents {
 impl Message<EndlessSettings> for Agents {
     type Reply = Result<EndlessConfig, String>;
 
-    async fn handle(&mut self, _: EndlessSettings, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+    async fn handle(
+        &mut self,
+        _: EndlessSettings,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
         Ok(self.endless.config())
     }
 }

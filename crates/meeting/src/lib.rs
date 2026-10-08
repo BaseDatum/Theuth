@@ -3615,7 +3615,8 @@ impl runtime::Plugin for MeetingPlugin {
         rt.subscribe::<Meeting, ApprovalRequested>(&actor).await;
         rt.subscribe::<Meeting, ApprovalResolved>(&actor).await;
         // 137 §11.3: `default_meeting` / `meeting_view_bytes` follow Settings › Memory live.
-        rt.subscribe::<Meeting, agent::EndlessConfigChanged>(&actor).await;
+        rt.subscribe::<Meeting, agent::EndlessConfigChanged>(&actor)
+            .await;
         for m in settle {
             let _ = actor.tell(Resummarize(m)).await;
         }
