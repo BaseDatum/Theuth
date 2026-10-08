@@ -1,6 +1,6 @@
 # 141 hand-off — C (CONTRACT)
 
-Branch `feat/141-acp-subagents`, commit `<sha>` (final). Workers W1–W5 cut from it.
+Branch `feat/141-acp-subagents`, commit `5ba6ace9` + the stamp commit after it. Workers W1–W5 cut from it.
 Everything below compiles workspace-wide; **no behaviour change** beyond the
 SDK bump and the carried-but-unrouted wire `sessionId`.
 
