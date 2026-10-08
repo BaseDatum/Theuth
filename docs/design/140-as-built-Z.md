@@ -57,7 +57,16 @@ Detached gate (`/tmp/140-z-gate.sh` → `/tmp/140-z-gate.log`), each step throug
 - Harness Restore is applied only when the study is not a wave (`wave.is_none()`): a wave's candidates live in slot worktrees, so the ★ idea alone carries it there (recorded limit).
 - Shared-target incident: after the merge `review.rs` failed on `CallKind::Autoresearch` although `crates/runtime/src/side_call.rs` had it — a sibling worktree had rebuilt `runtime` into the shared target from its own source; `touch` of the file rebuilt it (same class of incident W1/W2/W6 recorded).
 
-Gates after the merge: GATE2_TABLE
+Gates after the merge (`/tmp/140-z-gate4.log`; the merge touched only `crates/autoresearch`, `Cargo.lock` and docs, so no second workspace run):
+
+| step | rc | time | notes |
+|---|---|---|---|
+| `cargo fmt -p autoresearch -- --check` | 0 | 1574 s (26 min queued behind sessions 146 / 141-W1) | |
+| `cargo clippy -p autoresearch -p app --all-targets -- -D warnings` | 0 | 91 s | |
+| `cargo test -p autoresearch -p app` | 101 → **0** | 179 s / 122 s | first run: the two pre-140 `app::helper` spawn tests (`wrong_hash_or_missing_binary_never_serves`, `more_than_pending_queued_requests_are_busy_not_queued`, 2 s deadlines) timed out under load and fail-fast skipped autoresearch; foreground rerun with `--no-fail-fast`: **autoresearch 109 passed** (106 + W5's 3 wave tests), **app 46 + 1 passed** |
+| `bun run check` | 0 | 4 s | |
+| `bunx vitest run` (whole UI) | 0 | 63 s | 201 files, 1401 tests |
+| `bun run build` | 0 | 16 s | |
 
 ## Still open
 
