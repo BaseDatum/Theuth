@@ -60,7 +60,7 @@ Converter: `cargo install burn-onnx@0.22.0` = 178 crates, 3 m 17 s at `-j4` (plu
 
 | model | outcome | detail |
 |---|---|---|
-| TEN-VAD | **ok** | 318 lines of Rust + 308 KB `.bpk` (fp32), compiles unmodified in a spike crate (debug 4 m 19 s cold, 430 crates) |
+| TEN-VAD | **ok** | 318 lines of Rust + 308 KB `.bpk` (fp32), compiles unmodified in a spike crate (debug 4 m 19 s cold / 430 crates, release 9 m 08 s; release binary 130 MB unstripped / 80 MB stripped with flex+wgpu+metal) |
 | nemo128 | **panic** | `ArgType::Shape has no DType` in `RangeProcessor::infer_types` — Range fed by a Shape-typed input; same with `--no-simplify` |
 | pyannote segmentation | **type error** | `Conv1d expects input tensor of rank 3, got rank 4` — the SincNet first conv sits in an `If`; both branches are type-checked |
 | wespeaker CAM++ | **type error** | `AveragePool: ceil_mode requires opset 19+, got opset 14` — importer gate is wrong (ONNX has `ceil_mode` since opset 10) |
@@ -70,6 +70,8 @@ Converter: `cargo install burn-onnx@0.22.0` = 178 crates, 3 m 17 s at `-j4` (plu
 | Nemotron diariser | unsupported | MatMulNBits ×127, RotaryEmbedding ×62, SkipLayerNormalization ×62 (external data was read) |
 
 Three of the four graphs that are "fully covered" by the op table fail on importer bugs, not on missing ops.
+
+The one converted model, measured (one 16 ms VAD frame, parity vs ORT 1.30 max abs 5e-7, probability 0.828851 on both): `flex` CPU warm median **0.12–0.34 ms** (1 / 4 / 16 rayon threads; 16 under load was worst) vs ORT CPU **0.054 ms**; `wgpu` and `metal` warm **4–7 ms** (per-op dispatch and read-back dominate a 53-op, 300 KB model) with a 1.4–2.4 s first call and 0.1–3.4 s per new batch size. RSS 11–14 MB CPU, 84 MB GPU. Spike overhead on the shared machine: ≈ 92 min queued on build-lock vs ≈ 18 min compiling.
 
 ## 7. tract 0.23.8 on the same files (the runtime alternative)
 
@@ -130,4 +132,5 @@ Reading: on Apple silicon the Metal path is 4–6× faster than ORT CPU on fp32 
 ## 10. Changelog
 
 - 2026-10-08 13:40 — study written from the spike.
-- 2026-10-08 13:55 — `parakeet-burn-bench` final: Nemotron ORT fp32 rows (157–165 ms per chunk), Sortformer v3 on Metal (0.04–0.075 s vs ORT 0.15–0.385 s), MSL-vs-WGSL (2–3.8× warm), quiet-load Metal re-run (0.085 s per 5 s clip), cubecl cache location; §8 and §9.2 updated; appendix D replaced with the final report. Still pending: TEN-VAD flex/wgpu micro-bench vs ORT 0.054 ms/frame (`burn-build`).
+- 2026-10-08 13:55 — `parakeet-burn-bench` final: Nemotron ORT fp32 rows (157–165 ms per chunk), Sortformer v3 on Metal (0.04–0.075 s vs ORT 0.15–0.385 s), MSL-vs-WGSL (2–3.8× warm), quiet-load Metal re-run (0.085 s per 5 s clip), cubecl cache location; §8 and §9.2 updated; appendix D replaced with the final report. 
+- 2026-10-08 15:00 — `burn-build` final: TEN-VAD on flex 0.12–0.34 ms vs ORT 0.054 ms per frame (2.3–6×), wgpu/metal 4–7 ms (75–130×; dispatch-bound), parity 5e-7; release spike binary 130/80 MB; §6 updated. Spike complete.

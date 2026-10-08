@@ -1,5 +1,6 @@
 // 97: the sidebar's two grouped buttons (Agents, Library) and the route-backed tab rows under their pages.
-// URLs do not change; a tab IS a navigation to its route.
+// URLs do not change; a tab IS a navigation to its route. 143 R1: Skills and Tools sit under Agents (what agents
+// are made of), Library keeps the content pages.
 
 import { BookOpen, Bot, CalendarClock, FolderOpen, ListChecks, Lock, type LucideIcon, Mic, Notebook, Sparkles, StickyNote, Wrench } from 'lucide-react'
 
@@ -13,6 +14,8 @@ export const GROUPS: Record<Group, readonly { to: Tab; label: string; icon: Luci
     { to: '/agents', label: 'Agents', icon: Bot },
     { to: '/tasks', label: 'Tasks', icon: ListChecks },
     { to: '/routines', label: 'Routines', icon: CalendarClock },
+    { to: '/skills', label: 'Skills', icon: Sparkles },
+    { to: '/tools', label: 'Tools', icon: Wrench },
   ],
   // Artifacts first (Sky, 2026-09-27): the most-opened entry.
   library: [
@@ -21,9 +24,7 @@ export const GROUPS: Record<Group, readonly { to: Tab; label: string; icon: Luci
     { to: '/notes', label: 'Notes', icon: StickyNote },
     { to: '/notebooks', label: 'Notebooks', icon: Notebook },
     { to: '/meetings', label: 'Meetings', icon: Mic },
-    { to: '/skills', label: 'Skills', icon: Sparkles },
     { to: '/secrets', label: 'Secrets', icon: Lock },
-    { to: '/tools', label: 'Tools', icon: Wrench },
   ],
 }
 
