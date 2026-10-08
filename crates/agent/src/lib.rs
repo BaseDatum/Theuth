@@ -445,7 +445,8 @@ pub struct SetCompactStyle {
 }
 
 /// A per-session money cap (136 §2.2): the routine's `budget:` key, or a
-/// one-off `run_now` budget.
+/// one-off `run_now` budget. The cap is per night (136 R-1 / D1): only
+/// `model_calls` rows created at or after `since` count toward it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[cfg_attr(
     feature = "ts",
@@ -457,6 +458,11 @@ pub struct Budget {
     pub nanos: u64,
     /// ISO 4217 code, as `model_calls.returned_currency`.
     pub currency: String,
+    /// RFC 3339 UTC instant the cap was set (stamped server-side by
+    /// [`SetBudget`]); spend before it is not counted. Not on the wire.
+    #[serde(default)]
+    #[cfg_attr(feature = "ts", ts(skip))]
+    pub since: String,
 }
 
 /// `ask` → `Result<(), String>` (136 §2.2): set or clear a session's money
@@ -464,8 +470,9 @@ pub struct Budget {
 /// no `budget:`); `Reserved::open` refuses any model call of the session —
 /// round, harvest, compaction or a detached side call — that would pass it;
 /// a refused round call ends the turn with one `<budget>` note (136 W2), a
-/// refused side call answers `budget exhausted: …`. Kept in memory on the
-/// session; a restarted session has none until the next fire.
+/// refused side call answers `budget exhausted: …`. The supervisor stamps
+/// [`Budget::since`] = now and persists the cap on the session row, so a
+/// durability-resumed turn runs under it (136 R-22).
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SetBudget {
     /// Target session.

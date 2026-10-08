@@ -424,6 +424,9 @@ pub struct Spec {
     pub run_timeout: Option<Duration>,
     /// `budget:` — the run's money cap (136 §2.3); `None` = no cap (`SetBudget{nanos: None}`).
     pub budget: Option<Budget>,
+    /// `cap:` — the run's tool risk ceiling (136 D4): `read_only | mutating |
+    /// destructive` → `tools::SetCap` on every fire; `None` = unchanged.
+    pub cap: Option<::tools::Risk>,
 }
 
 #[derive(Deserialize, Default)]
@@ -455,6 +458,7 @@ struct FrontMatter {
     created: Option<String>,
     run_timeout: Option<String>,
     budget: Option<String>,
+    cap: Option<String>,
 }
 
 /// Parse one file's text. `Err` is the user-facing reason (`cron: …`,
@@ -680,6 +684,16 @@ pub fn parse(name: &str, text: &str) -> Result<Spec, String> {
     }
     // 136 §2.3: the run's money cap.
     let budget = fm.budget.as_deref().map(Budget::parse).transpose()?;
+    // 136 D4: the run's tool risk ceiling.
+    let cap = fm
+        .cap
+        .as_deref()
+        .map(|s| {
+            s.trim()
+                .parse::<::tools::Risk>()
+                .map_err(|_| "cap: expected read_only|mutating|destructive".to_string())
+        })
+        .transpose()?;
 
     Ok(Spec {
         name: name.to_string(),
@@ -717,6 +731,7 @@ pub fn parse(name: &str, text: &str) -> Result<Spec, String> {
         created,
         run_timeout,
         budget,
+        cap,
     })
 }
 
@@ -826,6 +841,8 @@ pub struct FileArgs<'a> {
     pub run_timeout: Option<&'a str>,
     /// `budget:` — written only when present (136 §2.3).
     pub budget: Option<&'a str>,
+    /// `cap:` — written only when present (136 D4).
+    pub cap: Option<&'a str>,
     /// Body.
     pub prompt: &'a str,
 }
@@ -890,6 +907,10 @@ pub struct ScheduleFile {
     /// `budget:` as written (136 §2.3).
     #[serde(default)]
     pub budget: Option<String>,
+    /// `cap:` as written (136 D4).
+    #[serde(default)]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub cap: Option<String>,
     /// Body, trimmed.
     pub prompt: String,
 }
@@ -929,6 +950,7 @@ impl ScheduleFile {
             created: fm.created,
             run_timeout: fm.run_timeout,
             budget: fm.budget,
+            cap: fm.cap,
             prompt: parsed.content.trim().to_string(),
         })
     }
@@ -964,6 +986,7 @@ impl ScheduleFile {
             created: some(&self.created),
             run_timeout: some(&self.run_timeout),
             budget: some(&self.budget),
+            cap: some(&self.cap),
             prompt: &self.prompt,
         }
     }
@@ -1036,6 +1059,9 @@ pub fn render(a: &FileArgs<'_>) -> String {
     }
     if let Some(v) = a.budget {
         s.push_str(&format!("budget: {}\n", v.trim()));
+    }
+    if let Some(v) = a.cap {
+        s.push_str(&format!("cap: {}\n", v.trim()));
     }
     if let Some(c) = a.cwd {
         s.push_str(&format!("cwd: {}\n", yaml_str(c.trim())));
@@ -1258,6 +1284,7 @@ mod tests {
         created: None,
         run_timeout: None,
         budget: None,
+        cap: None,
         prompt: "p",
     };
 
@@ -1291,6 +1318,25 @@ mod tests {
         // Broken semantics (no clause) still read: the editor can repair it.
         let broken = ScheduleFile::read("y", "---\nquiet: true\n---\n").unwrap();
         assert!(broken.cron.is_none() && broken.quiet && broken.prompt.is_empty());
+    }
+
+    #[test]
+    fn cap_key() {
+        // 136 D4: `cap: read_only|mutating|destructive` → the run's tool
+        // ceiling; absent → None (unchanged); anything else is refused.
+        let s = parse("x", &md("every: 1h\ncap: mutating", "p")).unwrap();
+        assert_eq!(s.cap, Some(::tools::Risk::Mutating));
+        assert_eq!(parse("x", &md("every: 1h", "p")).unwrap().cap, None);
+        assert_eq!(
+            parse("x", &md("every: 1h\ncap: all", "p")).unwrap_err(),
+            "cap: expected read_only|mutating|destructive"
+        );
+        // The editor's read → render round trip keeps the key.
+        let f = ScheduleFile::read("x", &md("every: 1h\ncap: mutating", "p")).unwrap();
+        assert_eq!(f.cap.as_deref(), Some("mutating"));
+        let text = render(&f.args());
+        assert!(text.contains("cap: mutating\n"), "{text}");
+        assert_eq!(parse("x", &text).unwrap().cap, Some(::tools::Risk::Mutating));
     }
 
     #[test]

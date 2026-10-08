@@ -689,9 +689,10 @@ struct Shared {
     escalate_model: Arc<RwLock<Option<Resolved>>>,
     /// Preferred subagent model (`agent.subagents.model`); named in the system prompt. Shared with the supervisor.
     subagent_model: Arc<RwLock<Option<Resolved>>>,
-    /// 136 §2.2: the session's money cap from [`SetBudgetNow`]; in memory
-    /// only. `Reserved::open` refuses any call of this owner — round, harvest,
-    /// compaction or a detached side call — that would pass it.
+    /// 136 §2.2: the session's money cap from [`SetBudgetNow`] (persisted on
+    /// the session row by the supervisor, loaded by [`Session::with_budget`]
+    /// on resume — R-22). `Reserved::open` refuses any call of this owner —
+    /// round, harvest, compaction or a detached side call — that would pass it.
     budget: Arc<parking_lot::RwLock<Option<crate::Budget>>>,
     store: Store,
     client: Client,
@@ -873,6 +874,12 @@ impl Session {
     /// [`SetAdvisorOn`] moves it later.
     pub(crate) fn with_advisor(self, on: bool) -> Self {
         self.shared.advisor.store(on, Ordering::Relaxed);
+        self
+    }
+
+    /// 136 R-22: the persisted money cap a resumed session still runs under.
+    pub(crate) fn with_budget(self, budget: Option<crate::Budget>) -> Self {
+        *self.shared.budget.write() = budget;
         self
     }
 
@@ -1244,6 +1251,19 @@ impl Message<PermitsOf> for Session {
 
     async fn handle(&mut self, _: PermitsOf, _: &mut Context<Self, Self::Reply>) -> usize {
         Arc::as_ptr(&self.shared.permits) as usize
+    }
+}
+
+/// `ask` → the session's live money cap. Test only.
+#[cfg(test)]
+pub(crate) struct BudgetOf;
+
+#[cfg(test)]
+impl Message<BudgetOf> for Session {
+    type Reply = Option<crate::Budget>;
+
+    async fn handle(&mut self, _: BudgetOf, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        self.shared.budget.read().clone()
     }
 }
 
@@ -2570,7 +2590,7 @@ impl Reserved {
     ) -> Result<Self, Refused> {
         if let Some(b) = budget {
             let (spent, estimate) = store
-                .budget_spent(owner, &b.currency, &model.id)
+                .budget_spent(owner, &b.currency, &model.id, &b.since)
                 .await
                 .map_err(|e| Refused::Accounting(format!("accounting: {e:#}")))?;
             if spent.saturating_add(estimate) > b.nanos {
@@ -9386,6 +9406,7 @@ mod tests {
         *turn.shared.budget.write() = Some(crate::Budget {
             nanos: 10_000_000,
             currency: "USD".into(),
+            since: "2000-01-01T00:00:00+00:00".into(),
         });
         let history = [ChatMessage::user("hi")];
         let frame = || Frame {
@@ -9412,7 +9433,10 @@ mod tests {
         assert!(first.is_ok(), "nothing spent yet: the first call goes out");
         assert_eq!(hits.load(Ordering::SeqCst), 1);
         assert_eq!(
-            store.budget_spent(id, "USD", "fake/m").await.unwrap(),
+            store
+                .budget_spent(id, "USD", "fake/m", "2000-01-01T00:00:00+00:00")
+                .await
+                .unwrap(),
             (250_000_000, 250_000_000)
         );
 
@@ -9462,7 +9486,10 @@ mod tests {
         );
         assert_eq!(hits.load(Ordering::SeqCst), 2);
         assert_eq!(
-            store.budget_spent(id, "EUR", "fake/m").await.unwrap(),
+            store
+                .budget_spent(id, "EUR", "fake/m", "2000-01-01T00:00:00+00:00")
+                .await
+                .unwrap(),
             (0, 0),
             "other currencies are not counted"
         );

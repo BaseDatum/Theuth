@@ -45,12 +45,12 @@ const CREATE_CONCEPTS: &str = "CREATE VIRTUAL TABLE IF NOT EXISTS concepts USING
     scope UNINDEXED, source UNINDEXED, timestamp UNINDEXED, \
     owner UNINDEXED, visibility UNINDEXED, \
     status UNINDEXED, hint UNINDEXED, evidence UNINDEXED, verified UNINDEXED, \
-    valid_until UNINDEXED, superseded_by UNINDEXED, merged_into UNINDEXED, \
+    valid_until UNINDEXED, superseded_by UNINDEXED, merged_into UNINDEXED, consolidated_at UNINDEXED, \
     path UNINDEXED, mtime UNINDEXED, size UNINDEXED, \
     tokenize = 'porter unicode61 remove_diacritics 2')";
 /// Columns of [`MetaRow`], in `SELECT` order.
 pub(crate) const META_COLS: &str = "id, type, title, description, tags, scope, source, timestamp, owner, visibility, \
-    status, hint, evidence, verified, valid_until, superseded_by, merged_into";
+    status, hint, evidence, verified, valid_until, superseded_by, merged_into, consolidated_at";
 const CREATE_LINKS: &str = "CREATE TABLE IF NOT EXISTS links (src TEXT NOT NULL, dst TEXT NOT NULL, PRIMARY KEY (src, dst))";
 const CREATE_LINKS_DST: &str = "CREATE INDEX IF NOT EXISTS links_dst ON links(dst)";
 /// 136 §2.1: usage counters. DURABLE — `sync` never touches it; deleting the
@@ -77,9 +77,13 @@ pub struct Knowledge {
     /// Which agent a session is (67 §9), from [`Knowledge::set_scoper`]; `None`
     /// = every session is the user's.
     scoper: std::sync::RwLock<Option<Arc<dyn Scoper>>>,
-    /// Who may run dreaming's consolidation ops (136 §2.1), from
-    /// [`Knowledge::set_consolidator`]; `None` = nobody yet.
+    /// Who may run dreaming's consolidation ops as an attended owner root
+    /// (136 D6), from [`Knowledge::set_consolidator`]; `None` = nobody yet.
     consolidator: std::sync::RwLock<Option<Arc<dyn Consolidator>>>,
+    /// 136 D6: the dreaming session of the open night, from
+    /// [`Knowledge::register_consolidating_session`]; the only unattended
+    /// session that may consolidate. `None` = no open night.
+    consolidating: std::sync::RwLock<Option<SessionId>>,
     /// `knowledge.lifetimes` (136 §5.2): the rank's record cut-off.
     lifetimes: Lifetimes,
 }
@@ -105,6 +109,7 @@ pub(crate) struct MetaRow {
     valid_until: Option<String>,
     superseded_by: Option<String>,
     merged_into: Option<String>,
+    consolidated_at: Option<String>,
 }
 
 impl From<MetaRow> for Meta {
@@ -127,6 +132,7 @@ impl From<MetaRow> for Meta {
             valid_until: r.valid_until,
             superseded_by: r.superseded_by,
             merged_into: r.merged_into,
+            consolidated_at: r.consolidated_at,
         }
     }
 }
@@ -198,6 +204,7 @@ impl Indexed {
             valid_until: fm_string(fm.get("valid_until")),
             superseded_by: fm_string(fm.get("superseded_by")),
             merged_into: fm_string(fm.get("merged_into")),
+            consolidated_at: fm_string(fm.get("consolidated_at")),
             id,
         };
         let links: BTreeSet<String> = doc
@@ -297,13 +304,36 @@ fn body_within_limit(len: usize) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Set the writer and the write time (10 §2.3).
+/// Set the writer and the write time (10 §2.3) — the *creation* stamp. A
+/// dreaming write to an existing file uses [`touch`] instead (136 D5).
 fn stamp(fm: &mut okf::Frontmatter, source: Source) {
     fm.set("source", Value::String(source.as_str().to_owned()));
-    fm.set(
-        "timestamp",
-        Value::String(chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string()),
-    );
+    fm.set("timestamp", Value::String(now_rfc3339()));
+}
+
+fn now_rfc3339() -> String {
+    chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string()
+}
+
+/// 136 D5: dreaming's mark on an existing file. Identity — `owner`,
+/// `visibility`, `scope`, `source` and `timestamp` (the event date the rank
+/// and the archive rules read) — is left alone; `consolidated_at` records
+/// the write (git has the rest).
+fn touch(fm: &mut okf::Frontmatter) {
+    fm.set("consolidated_at", Value::String(now_rfc3339()));
+}
+
+/// 136 D5: a `source: user` concept is human-authored; dreaming may retitle
+/// or link it, never merge it away, supersede, archive or rewrite it.
+fn ensure_not_user(fm: &okf::Frontmatter, id: &str) -> anyhow::Result<()> {
+    let user = fm
+        .get("source")
+        .and_then(Value::as_display_string)
+        .is_some_and(|s| s.trim() == Source::User.as_str());
+    if user {
+        bail!("{id} is human-authored (source: user); dreaming never rewrites it");
+    }
+    Ok(())
 }
 
 /// `tmp` + rename; parents created.
@@ -511,7 +541,7 @@ async fn open_db(path: &Path) -> anyhow::Result<SqlitePool> {
     // 67 §9 added `owner`/`visibility`, 136 §2.1 the status columns: an index
     // from before lacks them. `concepts` is derived, so drop it and let `sync`
     // rebuild; `uses` is durable and is never dropped.
-    if sqlx::query("SELECT owner, visibility, status, hint, evidence, verified, valid_until, superseded_by, merged_into FROM concepts LIMIT 0")
+    if sqlx::query("SELECT owner, visibility, status, hint, evidence, verified, valid_until, superseded_by, merged_into, consolidated_at FROM concepts LIMIT 0")
         .execute(&pool)
         .await
         .is_err()
@@ -587,6 +617,7 @@ impl Knowledge {
             search: crate::search::Caches::default(),
             scoper: std::sync::RwLock::new(None),
             consolidator: std::sync::RwLock::new(None),
+            consolidating: std::sync::RwLock::new(None),
             lifetimes,
         });
         let s = k.sync().await?;
@@ -739,9 +770,31 @@ impl Knowledge {
         *self.consolidator.write().unwrap_or_else(|p| p.into_inner()) = Some(c);
     }
 
-    /// 136 §2.1: is `session` the dreaming routine's (unattended) or the
-    /// owner's own root session? `false` until a [`Consolidator`] is installed.
+    /// 136 D6: the open night's dreaming session; `BeginNight` registers it,
+    /// the night's close clears it. Replaces any earlier registration.
+    pub fn register_consolidating_session(&self, session: SessionId) {
+        *self.consolidating.write().unwrap_or_else(|p| p.into_inner()) = Some(session);
+    }
+
+    /// 136 D6: no open night — unattended sessions may not consolidate.
+    pub fn clear_consolidating_session(&self) {
+        *self.consolidating.write().unwrap_or_else(|p| p.into_inner()) = None;
+    }
+
+    /// 136 D6 / R-28: is `session` the registered dreaming session? Its own
+    /// reads are not opens (the reader confirming itself).
+    pub fn is_consolidating_session(&self, session: SessionId) -> bool {
+        *self.consolidating.read().unwrap_or_else(|p| p.into_inner()) == Some(session)
+    }
+
+    /// 136 D6: may `session` run dreaming's consolidation ops? Unattended →
+    /// only the session registered by the open night; attended → what the
+    /// [`Consolidator`] says (the owner's own root). `false` until one is
+    /// installed.
     pub async fn may_consolidate(&self, session: SessionId) -> bool {
+        if self.is_consolidating_session(session) {
+            return true;
+        }
         let c = self
             .consolidator
             .read()
@@ -806,12 +859,19 @@ impl Knowledge {
 
         let _g = self.write.lock().await;
         // The existing frontmatter, so unknown keys survive (136 §15 amends 10 §3).
-        let mut fm = match std::fs::read_to_string(cid.to_path(&self.root)) {
-            Ok(text) => Document::parse(&text)
-                .map(|d| d.frontmatter)
-                .unwrap_or_default(),
-            Err(_) => okf::Frontmatter::new(),
-        };
+        let existing = std::fs::read_to_string(cid.to_path(&self.root))
+            .ok()
+            .map(|text| {
+                Document::parse(&text)
+                    .map(|d| d.frontmatter)
+                    .unwrap_or_default()
+            });
+        let exists = existing.is_some();
+        let mut fm = existing.unwrap_or_default();
+        // 136 D5: a dreaming put never rewrites a human-authored entry.
+        if exists && source == Source::Dreaming {
+            ensure_not_user(&fm, &id)?;
+        }
         fm.set("type", Value::String(type_.to_owned()));
         fm.set("title", Value::String(title.to_owned()));
         fm.set("description", Value::String(description.to_owned()));
@@ -820,33 +880,56 @@ impl Knowledge {
         } else {
             fm.set("tags", Value::Sequence(tags));
         }
-        match &p.scope {
-            Some(scope) => fm.set("scope", Value::String(scope.to_string_lossy().into_owned())),
-            None => {
-                fm.as_mapping_mut().remove("scope");
+        // 136 D5: identity — `owner`, `visibility`, `scope`, `source`,
+        // `timestamp` — is set on create; an existing file keeps its own
+        // (R-5: the dreaming session's scope must not flip a desk's private
+        // entry to `owner: user, visibility: shared`). A put that names
+        // `visibility` still sets it; `scope` follows the put unless the
+        // writer is dreaming.
+        if !(exists && source == Source::Dreaming) {
+            match &p.scope {
+                Some(scope) => {
+                    fm.set("scope", Value::String(scope.to_string_lossy().into_owned()))
+                }
+                None => {
+                    fm.as_mapping_mut().remove("scope");
+                }
             }
         }
         let scope = self.scope_for(session);
-        let owner = scope.as_ref().map_or(USER_OWNER, |s| s.owner.as_str());
-        let visibility = p.visibility.unwrap_or(if scope.is_some() {
-            Visibility::Private
-        } else {
-            Visibility::Shared
-        });
-        fm.set("owner", Value::String(owner.to_owned()));
-        fm.set("visibility", Value::String(visibility.as_str().to_owned()));
+        if !exists {
+            let owner = scope.as_ref().map_or(USER_OWNER, |s| s.owner.as_str());
+            fm.set("owner", Value::String(owner.to_owned()));
+        }
+        if let Some(v) = p.visibility {
+            fm.set("visibility", Value::String(v.as_str().to_owned()));
+        } else if !exists {
+            let v = if scope.is_some() {
+                Visibility::Private
+            } else {
+                Visibility::Shared
+            };
+            fm.set("visibility", Value::String(v.as_str().to_owned()));
+        }
         // 136 §5.1: only what the put sets; `None`/empty keeps the file's value.
+        // R-23: `fresh` never demotes a consolidated entry (a harvest that
+        // re-emits a merged/tidied id), and evidence is a union.
         if let Some(s) = p.status {
-            fm.set("status", Value::String(s.as_str().to_owned()));
+            let current = fm
+                .get("status")
+                .and_then(Value::as_display_string)
+                .and_then(|s| Status::parse(&s));
+            if s != Status::Fresh || matches!(current, None | Some(Status::Fresh)) {
+                fm.set("status", Value::String(s.as_str().to_owned()));
+            }
         }
         if let Some(h) = p.hint {
             fm.set("hint", Value::Bool(h));
         }
         if !p.evidence.is_empty() {
-            fm.set(
-                "evidence",
-                Value::Sequence(p.evidence.iter().cloned().map(Value::String).collect()),
-            );
+            let mut ev = fm_strings(fm.get("evidence"));
+            union(&mut ev, p.evidence.clone());
+            set_list(&mut fm, "evidence", ev);
         }
         for (key, value) in [
             ("verified", &p.verified),
@@ -858,7 +941,11 @@ impl Knowledge {
                 fm.set(key, Value::String(v.clone()));
             }
         }
-        stamp(&mut fm, source);
+        if exists && source == Source::Dreaming {
+            touch(&mut fm);
+        } else {
+            stamp(&mut fm, source);
+        }
         let text = Document::new(fm, p.body).serialize();
 
         let entry = format!("put {id}");
@@ -1061,7 +1148,7 @@ impl Knowledge {
     ) -> anyhow::Result<Vec<Hit>> {
         let scope = self.scope_for(session);
         Ok(self
-            .ranked(&terms(query), cwd, limit, scope.as_ref(), true)
+            .ranked(&terms(query), cwd, limit, scope.as_ref(), true, false)
             .await?
             .into_iter()
             .map(|(hit, _)| hit)
@@ -1099,6 +1186,7 @@ impl Knowledge {
                 limit + exclude.len() as u32,
                 scope.as_ref(),
                 false,
+                true,
             )
             .await?;
         let mut out = Vec::new();
@@ -1106,13 +1194,7 @@ impl Knowledge {
             if out.len() >= limit as usize {
                 break;
             }
-            // 136 §5.3: `hint: false`, a non-live status and a record past its
-            // lifetime (rank 0) never reach a note.
-            if exclude.contains(&hit.meta.id)
-                || !hit.meta.hint
-                || !hit.meta.status.is_live()
-                || hit.score <= 0.0
-            {
+            if exclude.contains(&hit.meta.id) {
                 continue;
             }
             let m = &hit.meta;
@@ -1332,8 +1414,8 @@ impl Knowledge {
             .await?;
         sqlx::query(
             "INSERT INTO concepts (id, type, title, description, tags, body, scope, source, timestamp, owner, visibility, \
-             status, hint, evidence, verified, valid_until, superseded_by, merged_into, path, mtime, size) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+             status, hint, evidence, verified, valid_until, superseded_by, merged_into, consolidated_at, path, mtime, size) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(&m.id)
         .bind(&m.type_)
@@ -1353,6 +1435,7 @@ impl Knowledge {
         .bind(&m.valid_until)
         .bind(&m.superseded_by)
         .bind(&m.merged_into)
+        .bind(&m.consolidated_at)
         .bind(&ix.path)
         .bind(ix.mtime)
         .bind(ix.size)
@@ -1397,7 +1480,10 @@ impl Knowledge {
     /// freshness × use`), with each hit's body (the ≥2-term rule needs it).
     /// Empty terms → nothing. With an agent `scope` (67 §9): its own items
     /// rank first; items it may not read are replaced by a stub (`stubs`) or
-    /// dropped.
+    /// dropped. `live_only` (the hint path, 136 §5.3): `hint: false`, a
+    /// non-live status and a record past its lifetime (rank 0) are filtered
+    /// BEFORE the bm25 cut, so stubs and archived rows never spend the window
+    /// (R-26).
     async fn ranked(
         &self,
         terms: &[String],
@@ -1405,6 +1491,7 @@ impl Knowledge {
         limit: u32,
         scope: Option<&AgentScope>,
         stubs: bool,
+        live_only: bool,
     ) -> anyhow::Result<Vec<(Hit, String)>> {
         if terms.is_empty() || limit == 0 {
             return Ok(Vec::new());
@@ -1414,11 +1501,18 @@ impl Knowledge {
             .map(|t| format!("\"{t}\""))
             .collect::<Vec<_>>()
             .join(" OR ");
-        // Only `META_COLS` (a const) is interpolated; the MATCH query and limit are bound.
+        // UNINDEXED columns are plain filters on an FTS5 table.
+        let live = if live_only {
+            " AND hint = 1 AND status IN ('fresh', 'tidy')"
+        } else {
+            ""
+        };
+        // Only `META_COLS` and the fixed `live` clause (consts) are
+        // interpolated; the MATCH query and limit are bound.
         let rows: Vec<HitRow> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
             "SELECT {META_COLS}, body, \
              bm25(concepts, 0, 3.0, 10.0, 5.0, 4.0, 1.0) AS s, snippet(concepts, 5, '', '', '…', 12) AS snip \
-             FROM concepts WHERE concepts MATCH ? ORDER BY s LIMIT ?"
+             FROM concepts WHERE concepts MATCH ?{live} ORDER BY s LIMIT ?"
         )))
         .bind(query)
         .bind(i64::from(limit) * 4)
@@ -1446,6 +1540,10 @@ impl Knowledge {
                     &self.lifetimes,
                 );
                 let score = (-r.s * boost * weight) as f32;
+                // A record past its lifetime ranks 0: not for a note.
+                if live_only && score <= 0.0 {
+                    return None;
+                }
                 if AgentScope::sees(scope, &meta.owner, meta.visibility) {
                     Some((
                         Hit {
@@ -1659,10 +1757,21 @@ impl Knowledge {
         let _g = self.write.lock().await;
         let docs = folded
             .iter()
-            .map(|cid| self.load(cid))
+            .map(|cid| {
+                let doc = self.load(cid)?;
+                // 136 D5: a human-authored entry is never merged away.
+                ensure_not_user(&doc.frontmatter, &cid.to_string())?;
+                Ok(doc)
+            })
             .collect::<anyhow::Result<Vec<_>>>()?;
         let mut canonical = match self.load(&into_cid) {
-            Ok(doc) => doc,
+            Ok(doc) => {
+                // … nor has its body replaced by a merge.
+                ensure_not_user(&doc.frontmatter, &into)?;
+                let mut doc = doc;
+                touch(&mut doc.frontmatter);
+                doc
+            }
             Err(_) => {
                 let first = &docs[0].frontmatter;
                 let mut fm = okf::Frontmatter::new();
@@ -1678,6 +1787,9 @@ impl Knowledge {
                     Visibility::Private
                 };
                 fm.set("visibility", Value::String(vis.as_str().to_owned()));
+                // A new file: dreaming is its writer and now its event date.
+                stamp(&mut fm, Source::Dreaming);
+                touch(&mut fm);
                 Document::new(fm, String::new())
             }
         };
@@ -1691,11 +1803,16 @@ impl Knowledge {
         union(&mut ev, evidence.to_vec());
         set_list(&mut canonical.frontmatter, "tags", tags);
         set_list(&mut canonical.frontmatter, "evidence", ev);
+        // The canonical is live again whatever it was before (R-44: a
+        // previously archived/superseded canonical would otherwise keep
+        // `hint: false` and its `superseded_by`).
         canonical
             .frontmatter
             .set("status", Value::String(Status::Tidy.as_str().to_owned()));
-        canonical.frontmatter.as_mapping_mut().remove("merged_into");
-        stamp(&mut canonical.frontmatter, Source::Dreaming);
+        canonical.frontmatter.set("hint", Value::Bool(true));
+        for key in ["merged_into", "superseded_by", "valid_until"] {
+            canonical.frontmatter.as_mapping_mut().remove(key);
+        }
         canonical.body = body.to_owned();
 
         let mut files = vec![(into_cid.clone(), canonical.serialize())];
@@ -1705,7 +1822,7 @@ impl Knowledge {
             doc.frontmatter
                 .set("merged_into", Value::String(into.clone()));
             doc.frontmatter.set("hint", Value::Bool(false));
-            stamp(&mut doc.frontmatter, Source::Dreaming);
+            touch(&mut doc.frontmatter);
             doc.body = format!("Merged into [{into}](/{into}.md)\n");
             files.push((cid, doc.serialize()));
         }
@@ -1745,6 +1862,8 @@ impl Knowledge {
             bail!("no such concept: {winner}");
         }
         let mut doc = self.load(&cid)?;
+        // 136 D5: a human-authored entry is never superseded.
+        ensure_not_user(&doc.frontmatter, &cid.to_string())?;
         doc.frontmatter
             .set("superseded_by", Value::String(winner.clone()));
         if let Some(v) = valid_until.map(str::trim).filter(|v| !v.is_empty()) {
@@ -1752,7 +1871,7 @@ impl Knowledge {
                 .set("valid_until", Value::String(v.to_owned()));
         }
         doc.frontmatter.set("hint", Value::Bool(false));
-        stamp(&mut doc.frontmatter, Source::Dreaming);
+        touch(&mut doc.frontmatter);
         let mut line = format!("Superseded by [{winner}](/{winner}.md)");
         if let Some(n) = note.map(str::trim).filter(|n| !n.is_empty()) {
             line.push_str(": ");
@@ -1770,12 +1889,14 @@ impl Knowledge {
         let cid = concept_id(id)?;
         let _g = self.write.lock().await;
         let mut doc = self.load(&cid)?;
+        // 136 D5: a human-authored entry is never archived.
+        ensure_not_user(&doc.frontmatter, &cid.to_string())?;
         doc.frontmatter.set(
             "status",
             Value::String(Status::Archived.as_str().to_owned()),
         );
         doc.frontmatter.set("hint", Value::Bool(false));
-        stamp(&mut doc.frontmatter, Source::Dreaming);
+        touch(&mut doc.frontmatter);
         append_section(&mut doc.body, "## Archived", reason.trim());
         let id = cid.to_string();
         self.consolidate(KnowledgeOp::Archive, &id, vec![(cid, doc.serialize())])
@@ -1808,7 +1929,7 @@ impl Knowledge {
                 append_section(&mut doc.body, "## Stale", note);
             }
         }
-        stamp(&mut doc.frontmatter, Source::Dreaming);
+        touch(&mut doc.frontmatter);
         let id = cid.to_string();
         self.consolidate(KnowledgeOp::Verify, &id, vec![(cid, doc.serialize())])
             .await
@@ -1816,7 +1937,10 @@ impl Knowledge {
 
     /// 136 §3.1 item 4: set `title`; `summary` (the old title's content, or
     /// the old title itself when empty) becomes a leading `## Summary`
-    /// paragraph of the body.
+    /// paragraph of the body — inserted under an existing `## Summary`
+    /// heading rather than stacking a second one (R-44). Allowed on a
+    /// `source: user` entry (D5: retitle is not a rewrite); `timestamp`
+    /// keeps the event date (R-7).
     pub async fn retitle(&self, id: &str, title: &str, summary: &str) -> anyhow::Result<Receipt> {
         let cid = concept_id(id)?;
         let title = title.trim();
@@ -1832,9 +1956,13 @@ impl Knowledge {
         };
         doc.frontmatter
             .set("title", Value::String(title.to_owned()));
-        stamp(&mut doc.frontmatter, Source::Dreaming);
+        touch(&mut doc.frontmatter);
         let rest = std::mem::take(&mut doc.body);
-        doc.body = format!("## Summary\n\n{summary}\n\n{}", rest.trim_start());
+        let rest = rest.trim_start();
+        doc.body = match rest.strip_prefix("## Summary\n") {
+            Some(under) => format!("## Summary\n\n{summary}\n\n{}", under.trim_start()),
+            None => format!("## Summary\n\n{summary}\n\n{rest}"),
+        };
         body_within_limit(doc.body.len())?;
         let id = cid.to_string();
         self.consolidate(KnowledgeOp::Retitle, &id, vec![(cid, doc.serialize())])
@@ -2646,7 +2774,9 @@ mod tests {
         assert_eq!(subject, "dreaming retitle facts/old");
         let c = k.get("facts/old").await.unwrap();
         assert_eq!(c.meta.title, "Old claim, short");
-        assert_eq!(c.meta.source, Some(Source::Dreaming));
+        // D5: identity is not restamped; the dreaming touch is `consolidated_at`.
+        assert_eq!(c.meta.source, Some(Source::Model));
+        assert!(c.meta.consolidated_at.is_some());
         assert!(
             c.text.ends_with(
                 "## Summary\n\nOld claim — the long first version of the title.\n\nwas true\n"
@@ -2654,13 +2784,17 @@ mod tests {
             "{}",
             c.text
         );
-        // An empty summary falls back to the old title.
+        // An empty summary falls back to the old title, inserted under the
+        // existing `## Summary` (R-44: never a second heading).
         k.retitle("facts/old", "Shorter", "").await.unwrap();
         let text = k.get("facts/old").await.unwrap().text;
         assert!(
-            text.contains("## Summary\n\nOld claim, short\n\n## Summary"),
+            text.ends_with(
+                "## Summary\n\nOld claim, short\n\nOld claim — the long first version of the title.\n\nwas true\n"
+            ),
             "{text}"
         );
+        assert_eq!(text.matches("## Summary").count(), 1, "{text}");
         assert!(k.retitle("facts/old", "  ", "x").await.is_err());
         k.restore("facts/old", Some(&b)).await.unwrap();
         assert_eq!(k.get("facts/old").await.unwrap().text, original);
@@ -2680,6 +2814,319 @@ mod tests {
                     .contains("no such concept: facts/none")
             );
         }
+    }
+
+    /// 136 R-5 / D5: the tidy-mark put from the dreaming session (no scope)
+    /// keeps a desk's `owner: agent:ops, visibility: private`, its `scope`,
+    /// `source` and `timestamp`; only `consolidated_at` moves.
+    #[tokio::test]
+    async fn dreaming_put_preserves_identity() {
+        let (k, _dir, ops, _cto, _mkt) = scoped().await;
+        k.put_for(
+            Put {
+                scope: Some(PathBuf::from("/work/relay")),
+                status: Some(Status::Fresh),
+                ..put("ops/p", "Private note", "body")
+            },
+            Source::Model,
+            Some(ops),
+        )
+        .await
+        .unwrap();
+        let before = k.get("ops/p").await.unwrap().meta;
+        assert_eq!(before.owner, "agent:ops");
+        let (m, created) = k
+            .put_for(
+                Put {
+                    status: Some(Status::Tidy),
+                    ..put("ops/p", "Private note, tidied", "tidy body")
+                },
+                Source::Dreaming,
+                None,
+            )
+            .await
+            .unwrap();
+        assert!(!created);
+        assert_eq!(m.owner, "agent:ops");
+        assert_eq!(m.visibility, Visibility::Private);
+        assert_eq!(m.scope, before.scope, "scope kept");
+        assert_eq!(m.source, Some(Source::Model), "source kept");
+        assert_eq!(m.timestamp, before.timestamp, "event date kept");
+        assert!(m.consolidated_at.is_some());
+        assert_eq!(m.status, Status::Tidy);
+        // A put that names `visibility` still sets it.
+        let (m, _) = k
+            .put_for(
+                Put {
+                    visibility: Some(Visibility::Team),
+                    ..put("ops/p", "Private note, tidied", "tidy body")
+                },
+                Source::Model,
+                Some(ops),
+            )
+            .await
+            .unwrap();
+        assert_eq!(m.visibility, Visibility::Team);
+        assert_eq!(m.owner, "agent:ops");
+    }
+
+    /// 136 R-7: `retitle` (and every op) keeps `timestamp`, so a 20-day-old
+    /// record is still past the hint shelf's lifetime after a retitle.
+    #[tokio::test]
+    async fn ops_do_not_restamp_timestamp() {
+        let (k, dir) = open().await;
+        let path = dir.join(DIR).join("records").join("old.md");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let old = (chrono::Utc::now() - chrono::Duration::days(20))
+            .format("%Y-%m-%dT%H:%M:%SZ")
+            .to_string();
+        std::fs::write(
+            &path,
+            format!(
+                "---\ntype: record\ntitle: Toolchain pinned rustup\nsource: harvest\ntimestamp: {old}\n---\nrustup toolchain pinned\n"
+            ),
+        )
+        .unwrap();
+        k.sync().await.unwrap();
+        let cwd = Path::new("/tmp");
+        assert!(
+            k.hint("rustup toolchain", cwd, &BTreeSet::new(), 5)
+                .await
+                .unwrap()
+                .is_empty(),
+            "a record past its lifetime is not hinted"
+        );
+        k.retitle("records/old", "Toolchain pinned", "rustup")
+            .await
+            .unwrap();
+        let m = k.get("records/old").await.unwrap().meta;
+        assert_eq!(m.timestamp.as_deref(), Some(old.as_str()));
+        assert_eq!(m.source, Some(Source::Harvest));
+        assert!(m.consolidated_at.is_some());
+        assert!(
+            k.hint("rustup toolchain", cwd, &BTreeSet::new(), 5)
+                .await
+                .unwrap()
+                .is_empty(),
+            "still past its lifetime after the retitle"
+        );
+    }
+
+    /// 136 R-23: a harvest that re-emits an id dreaming has merged keeps the
+    /// evidence union and the `merged` status.
+    #[tokio::test]
+    async fn harvest_reput_unions_evidence_and_never_demotes_status() {
+        let (k, dir) = open().await;
+        let path = dir.join(DIR).join("facts").join("m.md");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(
+            &path,
+            "---\ntype: fact\ntitle: M\nstatus: merged\nmerged_into: facts/canon\nhint: false\nevidence: [a, b]\n---\nMerged into [facts/canon](/facts/canon.md)\n",
+        )
+        .unwrap();
+        k.sync().await.unwrap();
+        let (m, _) = k
+            .put(
+                Put {
+                    status: Some(Status::Fresh),
+                    evidence: vec!["c".into(), "a".into()],
+                    ..put("facts/m", "M", "seen again")
+                },
+                Source::Harvest,
+            )
+            .await
+            .unwrap();
+        assert_eq!(m.evidence, ["a", "b", "c"]);
+        assert_eq!(m.status, Status::Merged);
+        assert_eq!(m.merged_into.as_deref(), Some("facts/canon"));
+        // A file with no status (or `fresh`) still takes `fresh`.
+        let (m, _) = k
+            .put(
+                Put {
+                    status: Some(Status::Fresh),
+                    ..put("facts/n", "N", "new")
+                },
+                Source::Harvest,
+            )
+            .await
+            .unwrap();
+        assert_eq!(m.status, Status::Fresh);
+    }
+
+    /// 136 R-25 / D5: a `source: user` entry is never merged away, superseded,
+    /// archived or rewritten by a dreaming put — the file stays byte-identical
+    /// — while a retitle is allowed.
+    #[tokio::test]
+    async fn user_authored_entries_are_refused_by_the_destructive_ops() {
+        let (k, dir) = open().await;
+        k.put(put("facts/h", "Human note", "typed by hand"), Source::User)
+            .await
+            .unwrap();
+        k.put(put("facts/other", "Other", "model"), Source::Model)
+            .await
+            .unwrap();
+        let path = dir.join(DIR).join("facts").join("h.md");
+        let before = std::fs::read(&path).unwrap();
+        let scope = AgentScope {
+            owner: USER_OWNER.into(),
+            line: BTreeSet::new(),
+        };
+        let errs = [
+            k.archive("facts/h", "noise").await.err(),
+            k.supersede("facts/h", "facts/other", None, None).await.err(),
+            k.merge(&["facts/h".into()], "facts/other", "b", &[], &scope)
+                .await
+                .err(),
+            k.merge(&["facts/other".into()], "facts/h", "b", &[], &scope)
+                .await
+                .err(),
+            k.put_for(
+                Put {
+                    status: Some(Status::Archived),
+                    ..put("facts/h", "Human note", "rewritten")
+                },
+                Source::Dreaming,
+                None,
+            )
+            .await
+            .err(),
+        ];
+        for e in errs {
+            let e = e.expect("refused").to_string();
+            assert!(e.contains("human-authored (source: user)"), "{e}");
+        }
+        assert_eq!(std::fs::read(&path).unwrap(), before, "byte-identical");
+        assert_eq!(
+            k.get("facts/other").await.unwrap().meta.status,
+            Status::Tidy,
+            "the model entry was not folded either"
+        );
+        k.retitle("facts/h", "Human note, short", "Human note")
+            .await
+            .unwrap();
+        assert_eq!(
+            k.get("facts/h").await.unwrap().meta.source,
+            Some(Source::User)
+        );
+    }
+
+    /// 136 R-44: merging onto a previously archived canonical brings it back
+    /// live — `hint: true`, no `superseded_by`/`valid_until`.
+    #[tokio::test]
+    async fn merge_revives_an_archived_canonical() {
+        let (k, _dir) = open().await;
+        k.put(put("facts/canon", "Canon", "old"), Source::Model)
+            .await
+            .unwrap();
+        k.put(put("facts/dup", "Dup", "dup"), Source::Model)
+            .await
+            .unwrap();
+        k.put(put("facts/newer", "Newer", "n"), Source::Model)
+            .await
+            .unwrap();
+        k.supersede("facts/canon", "facts/newer", Some("2026-01-01T00:00:00Z"), None)
+            .await
+            .unwrap();
+        k.archive("facts/canon", "superseded").await.unwrap();
+        let m = k.get("facts/canon").await.unwrap().meta;
+        assert!(!m.hint && m.status == Status::Archived && m.superseded_by.is_some());
+        let scope = AgentScope {
+            owner: USER_OWNER.into(),
+            line: BTreeSet::new(),
+        };
+        k.merge(&["facts/dup".into()], "facts/canon", "merged body", &[], &scope)
+            .await
+            .unwrap();
+        let m = k.get("facts/canon").await.unwrap().meta;
+        assert!(m.hint);
+        assert_eq!(m.status, Status::Tidy);
+        assert!(m.superseded_by.is_none() && m.valid_until.is_none());
+        assert_eq!(m.source, Some(Source::Model), "existing canonical keeps its source");
+    }
+
+    /// 136 R-26: dead rows are filtered before the bm25 cut, so a note with
+    /// room for five lines shows both live matches even when four archived
+    /// twins and a merge stub outrank them.
+    #[tokio::test]
+    async fn hint_window_is_not_spent_on_dead_rows() {
+        let (k, _dir) = open().await;
+        let cwd = Path::new("/tmp");
+        // Dead rows repeat the terms (better bm25) …
+        for i in 0..4 {
+            k.put(
+                Put {
+                    status: Some(Status::Archived),
+                    hint: Some(false),
+                    ..put(
+                        &format!("facts/dead{i}"),
+                        "pelican relay pelican relay",
+                        "pelican relay pelican relay pelican relay",
+                    )
+                },
+                Source::Dreaming,
+            )
+            .await
+            .unwrap();
+        }
+        k.put(
+            Put {
+                status: Some(Status::Merged),
+                merged_into: Some("facts/live0".into()),
+                ..put("facts/stub", "pelican relay pelican", "pelican relay pelican relay")
+            },
+            Source::Dreaming,
+        )
+        .await
+        .unwrap();
+        // … the live ones mention them once.
+        for i in 0..2 {
+            k.put(
+                put(
+                    &format!("facts/live{i}"),
+                    "the pelican relay",
+                    "restart it from the relay host",
+                ),
+                Source::Model,
+            )
+            .await
+            .unwrap();
+        }
+        let hints = k
+            .hint("pelican relay", cwd, &BTreeSet::new(), 5)
+            .await
+            .unwrap();
+        let mut ids: Vec<&str> = hints.iter().map(|m| m.id.as_str()).collect();
+        ids.sort_unstable();
+        assert_eq!(ids, ["facts/live0", "facts/live1"]);
+        // `search` still sees everything.
+        assert_eq!(k.search("pelican relay", cwd, 10).await.unwrap().len(), 7);
+    }
+
+    /// 136 D6: an unattended session consolidates only while registered by
+    /// the open night; the attended answer comes from the `Consolidator`.
+    #[tokio::test]
+    async fn consolidating_session_is_the_registered_night_or_the_owner_root() {
+        struct OwnerRoot(SessionId);
+        #[async_trait::async_trait]
+        impl Consolidator for OwnerRoot {
+            async fn may_consolidate(&self, s: SessionId) -> bool {
+                s == self.0
+            }
+        }
+        let (k, _dir) = open().await;
+        let (owner, dreaming, routine) = (SessionId::new(), SessionId::new(), SessionId::new());
+        assert!(!k.may_consolidate(owner).await, "nobody until installed");
+        k.set_consolidator(Arc::new(OwnerRoot(owner)));
+        assert!(k.may_consolidate(owner).await);
+        assert!(!k.may_consolidate(dreaming).await, "no open night");
+        k.register_consolidating_session(dreaming);
+        assert!(k.may_consolidate(dreaming).await);
+        assert!(k.is_consolidating_session(dreaming));
+        assert!(!k.may_consolidate(routine).await, "another routine's root");
+        assert!(!k.is_consolidating_session(owner));
+        k.clear_consolidating_session();
+        assert!(!k.may_consolidate(dreaming).await, "night closed");
+        assert!(k.may_consolidate(owner).await);
     }
 
     /// A fixed session → scope table standing in for the roster (67 §9).

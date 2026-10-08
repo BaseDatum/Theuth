@@ -1098,6 +1098,32 @@ impl Store {
         Ok(())
     }
 
+    /// 136 R-22: persist the session's money cap (`None` clears) so a
+    /// durability-resumed turn runs under it after a restart.
+    pub async fn set_budget(&self, id: SessionId, budget: Option<&crate::Budget>) -> anyhow::Result<()> {
+        let mut tx = self.begin_write().await?;
+        sqlx::query("UPDATE sessions SET budget = ? WHERE id = ?")
+            .bind(budget.map(serde_json::to_string).transpose()?)
+            .bind(id.to_string())
+            .execute(&mut *tx)
+            .await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
+    /// The cap recorded by [`Store::set_budget`]; `None` when unset.
+    pub async fn budget(&self, id: SessionId) -> anyhow::Result<Option<crate::Budget>> {
+        let row: Option<(Option<String>,)> =
+            sqlx::query_as("SELECT budget FROM sessions WHERE id = ?")
+                .bind(id.to_string())
+                .fetch_optional(&self.read)
+                .await?;
+        Ok(row
+            .and_then(|(s,)| s)
+            .map(|s| serde_json::from_str(&s))
+            .transpose()?)
+    }
+
     /// Mark `id` as an external harness session: `agent` is the `agents.yaml`
     /// key, `cwd` the harness's working directory (design doc 06 §3.6),
     /// `skills` the theuth skills named for it (75 §10: replayed by a resume).
@@ -1249,12 +1275,15 @@ impl Store {
         Ok(row.is_some_and(|(u,)| u))
     }
 
-    /// 136 §2.1: may this session run dreaming's consolidation ops — an
-    /// unattended root (a routine's session) or the owner's own root (no
-    /// parent, no desk)? `false` for an unknown id.
+    /// 136 D6: may this session run dreaming's consolidation ops as the
+    /// owner's own root — `scope = 'owner'`, no parent, no desk, attended?
+    /// Unattended (routine) sessions are never admitted here: only the open
+    /// night's registered dreaming session consolidates unattended, and
+    /// knowledge answers that itself. `false` for an unknown id.
     pub async fn may_consolidate(&self, id: SessionId) -> anyhow::Result<bool> {
         let row = sqlx::query_as::<_, (bool,)>(
-            "SELECT unattended OR (parent IS NULL AND desk IS NULL) FROM sessions WHERE id = ?",
+            "SELECT scope = 'owner' AND parent IS NULL AND desk IS NULL AND NOT unattended \
+             FROM sessions WHERE id = ?",
         )
         .bind(id.to_string())
         .fetch_optional(&self.read)
@@ -5774,6 +5803,56 @@ mod tests {
 
         store.close().await;
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 136 D6: only the owner's own attended root consolidates here — an
+    /// `isolated` root (ACP/channel/`NewSession`), a routine's unattended
+    /// root, a child and a desk are all refused. The dreaming session is
+    /// admitted by knowledge's registered night, never by this query.
+    #[tokio::test]
+    async fn may_consolidate_admits_only_the_attended_owner_root() {
+        use crate::communication::PeerScope;
+        let store = &Store::open_memory().await.unwrap();
+        let mk = |parent: Option<SessionId>| async move {
+            let id = SessionId::new();
+            store
+                .create_session(id, "m", parent, parent.map(|_| "kid"), None)
+                .await
+                .unwrap();
+            id
+        };
+        let isolated = mk(None).await;
+        assert!(!store.may_consolidate(isolated).await.unwrap(), "isolated root");
+
+        let owner = mk(None).await;
+        store
+            .set_root_scope(owner, PeerScope::Owner, None)
+            .await
+            .unwrap();
+        assert!(store.may_consolidate(owner).await.unwrap(), "owner root");
+
+        let routine = mk(None).await;
+        store
+            .set_root_scope(routine, PeerScope::Owner, None)
+            .await
+            .unwrap();
+        store.set_unattended(routine).await.unwrap();
+        assert!(
+            !store.may_consolidate(routine).await.unwrap(),
+            "a routine's unattended root is not the owner at the keyboard"
+        );
+
+        let child = mk(Some(owner)).await;
+        assert!(!store.may_consolidate(child).await.unwrap(), "child");
+
+        let desk = mk(None).await;
+        store
+            .set_root_scope(desk, PeerScope::Owner, None)
+            .await
+            .unwrap();
+        store.set_desk(desk, Some("builder")).await.unwrap();
+        assert!(!store.may_consolidate(desk).await.unwrap(), "desk");
+        assert!(!store.may_consolidate(SessionId::new()).await.unwrap(), "unknown");
     }
 
     /// `owner` starts as the opening engine's id (`''` when unknown), is
