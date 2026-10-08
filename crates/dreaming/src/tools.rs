@@ -386,8 +386,10 @@ pub struct SkillLearnedEditArgs {
     pub night: NightId,
     /// `candidate` (default): apply in memory, answer the text, write nothing.
     /// `record`: gate from tonight's `replay_case` rows of that text, then write.
-    #[serde(default)]
-    pub pass: Option<String>,
+    /// (`pass` is still accepted: it is a Python keyword, so a cell cannot
+    /// spell it as a kwarg — P2 D5.)
+    #[serde(default, alias = "pass")]
+    pub stage: Option<String>,
 }
 
 /// `skill_learned_edit`: apply bounded edits to a learned sidecar.
@@ -402,8 +404,8 @@ impl Tool for SkillLearnedEditTool {
 
     fn description(&self) -> String {
         "Dreaming only: apply ≤ 4 bounded edits (add | replace | delete with bullet-text anchors; retire for a \
-         dreaming-made skill) to a skill's learned sidecar `skills/learned/<skill>.md`. `pass: candidate` \
-         (default) applies in memory and returns the candidate `text` for `replay_case`; `pass: record` \
+         dreaming-made skill) to a skill's learned sidecar `skills/learned/<skill>.md`. `stage: candidate` \
+         (default) applies in memory and returns the candidate `text` for `replay_case`; `stage: record` \
          recomputes the gate from tonight's replays of exactly that text — refusing when none were logged — \
          and writes the edits only when it is accepted (backup first). Returns the apply report \
          (applied | skipped_unmatched | error per edit) and the text. Never touches the skill itself."
@@ -419,10 +421,10 @@ impl Tool for SkillLearnedEditTool {
                 self.0.cfg.caps.edits_per_target
             );
         }
-        let pass = match a.pass.as_deref().map(str::trim) {
+        let pass = match a.stage.as_deref().map(str::trim) {
             None | Some("") | Some("candidate") => crate::edits::Pass::Candidate,
             Some("record") => crate::edits::Pass::Record,
-            Some(other) => bail!("pass {other:?}: candidate | record"),
+            Some(other) => bail!("stage {other:?}: candidate | record"),
         };
         let r = crate::edits::apply(
             &self.0.data_dir,
@@ -468,7 +470,7 @@ impl Tool for ReplayTool {
         "Dreaming: replay one case — render its context with the candidate skill text, answer it with the target \
          model in a fresh context, judge the answer against the ideal and the user's words with the configured \
          judge. Returns {answer, score (0–1), reason} and logs the score to `dreaming/replays.jsonl`, which \
-         `skill_learned_edit(pass=\"record\")` gates on. Spends model budget."
+         `skill_learned_edit(stage=\"record\")` gates on. Spends model budget."
             .into()
     }
 
@@ -988,5 +990,26 @@ mod tests {
             out.content
         );
         assert!(crate::preferences::path(d).exists());
+    }
+
+    /// P2 D5: the argument is `stage` (`pass` is a Python keyword, so a
+    /// cell cannot spell it); `pass` still deserialises as an alias, and
+    /// the skill's recipes say `stage`.
+    #[test]
+    fn skill_learned_edit_stage_replaces_the_pass_keyword() {
+        let a: SkillLearnedEditArgs =
+            serde_json::from_value(serde_json::json!({"skill": "s", "edits": [], "night": "n", "stage": "record"}))
+                .unwrap();
+        assert_eq!(a.stage.as_deref(), Some("record"));
+        let a: SkillLearnedEditArgs =
+            serde_json::from_value(serde_json::json!({"skill": "s", "edits": [], "night": "n", "pass": "record"}))
+                .unwrap();
+        assert_eq!(a.stage.as_deref(), Some("record"), "the old spelling still lands");
+        let schema = serde_json::to_string(&schemars::schema_for!(SkillLearnedEditArgs)).unwrap();
+        assert!(schema.contains("\"stage\"") && !schema.contains("\"pass\""), "{schema}");
+        let skill = crate::SKILL;
+        assert!(!skill.contains("pass=") && !skill.contains("`pass`"), "skill.md still says pass=");
+        assert_eq!(skill.matches("stage=\"record\"").count(), 2);
+        assert!(skill.contains("{skill, edits, night, stage?}"));
     }
 }

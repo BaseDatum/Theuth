@@ -462,7 +462,7 @@ pub fn apply(
             let note = if pass == Pass::Record {
                 "pending".to_owned()
             } else {
-                "retire needs pass: record".to_owned()
+                "retire needs stage: record".to_owned()
             };
             report.edits.push((e.id.clone(), ApplyStatus::Error, note));
             if pass == Pass::Record {
