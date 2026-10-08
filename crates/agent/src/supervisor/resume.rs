@@ -140,7 +140,7 @@ impl Agents {
         }
         // 139 §7 (W2 dispatcher, W3 bodies): the taken session's jobs and
         // child waits settle on the new owner before its actor exists.
-        transfer::on_resume_here(self, session, cause, from.as_deref()).await;
+        let lost_jobs = transfer::on_resume_here(self, session, cause, from.as_deref()).await;
         let actor = match self.session(Some(session), None, None, (None, None)).await {
             Ok((_, LiveActor::Native(actor))) => actor,
             // W4: an ACP child with an open turn respawns through `session/load`.
@@ -157,6 +157,7 @@ impl Agents {
                 slots,
                 cause,
                 from,
+                lost_jobs,
             })
             .await
         {

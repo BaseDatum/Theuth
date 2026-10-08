@@ -1197,11 +1197,12 @@ impl Agents {
         }
         // 139 D16: a session mid-release-drain takes nothing — the fence is
         // about to move. Refused before any row is written (no error row
-        // in the transcript); the RPC layer maps the prefix to `-32011`.
+        // in the transcript); the RPC layer maps the prefix to
+        // `SESSION_DRAINING` (-32012).
         if let Some(reason) = self.draining_sessions.get(&sid).copied() {
             self.ledger.release(sid, ticket);
             self.network_input_dropped(ticket).await;
-            return Err(transfer::draining_error(sid, reason));
+            return Err(transfer::draining_error(reason));
         }
         let routed = match check_files(&files) {
             Ok(()) => self.session(Some(sid), None, None, (None, None)).await,

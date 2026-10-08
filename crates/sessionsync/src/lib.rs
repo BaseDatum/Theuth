@@ -80,14 +80,12 @@ pub struct TakeSession {
     pub id: runtime::SessionId,
     /// Why.
     pub reason: TakeReason,
-}
-
-/// `ask` → `Result<last_seq, String>`: a taker asked us to release `id`
-/// (stop the actor, flush the log; [`owner::release`]).
-#[derive(Clone, Debug)]
-pub struct ReleaseSession {
-    /// The session.
-    pub id: runtime::SessionId,
+    /// 139 Revision 1 Q10: a `Write` take made for a client's write on this
+    /// engine's front door (a human typed) resumes the taken open turn like
+    /// `User`; system takes (desk wakes, hub-failover plumbing) leave it.
+    /// Only the resume policy reads it — 68's `unseen_long_enough` gate
+    /// still keys on `reason`.
+    pub by_user: bool,
 }
 
 /// `ask` → the connected peers, as the transport reports them.
@@ -269,24 +267,11 @@ impl Message<TakeSession> for SessionSync {
             transport: self.transport.clone(),
             connected: self.peers.keys().cloned().collect(),
             peers,
+            by_user: m.by_user,
         };
         // Off the mailbox: waits on the owner's release and on the tail replicating.
         tokio::spawn(async move { tx.send(take.run(m.id, m.reason).await) });
         reply
-    }
-}
-
-impl Message<ReleaseSession> for SessionSync {
-    type Reply = Result<u64, String>;
-
-    async fn handle(
-        &mut self,
-        m: ReleaseSession,
-        _: &mut Context<Self, Self::Reply>,
-    ) -> Self::Reply {
-        owner::release(&self.store, m.id)
-            .await
-            .map_err(|e| format!("{e:#}"))
     }
 }
 

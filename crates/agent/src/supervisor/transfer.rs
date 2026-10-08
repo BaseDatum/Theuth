@@ -15,13 +15,11 @@
 
 use std::time::{Duration, Instant};
 
-use chrono::Utc;
 use kameo::actor::ActorRef;
 use kameo::message::{Context, Message};
 use kameo::reply::DelegatedReply;
 use runtime::{Runtime, SessionId, TurnId};
-use tools::jobs::{LostJob, LostReason, Reaped};
-use tools::{JOBS_ACTOR, JobKind, Jobs};
+use tools::{JOBS_ACTOR, JobId, Jobs};
 
 use super::{Agents, LiveActor, child_waits};
 use crate::AgentEvent;
@@ -59,19 +57,16 @@ pub struct SessionDrainReport {
 pub const RELEASE: &str = "release";
 
 /// Prefix of the `Err` string `Agents::route` answers for a session in
-/// `draining_sessions` (D16). The RPC layer maps it to
-/// `SESSION_DRAINING = -32011` (W4).
-pub const DRAINING_PREFIX: &str = "session draining:";
+/// `draining_sessions` (D16): `SessionDraining:<reason>` (the
+/// `DocError::NotHub` convention). The RPC layer (`api::session_draining`)
+/// maps it to `SESSION_DRAINING` with the user-facing wording.
+pub const DRAINING_PREFIX: &str = "SessionDraining:";
 
-/// The D16 refusal text: *moving to another engine* for a release (the owner
-/// side does not learn the taker's name — `Msg::Release` carries none),
-/// *pausing* otherwise.
-pub fn draining_error(session: SessionId, reason: &str) -> String {
-    if reason == RELEASE {
-        format!("{DRAINING_PREFIX} {session} is moving to another engine — retry in a moment")
-    } else {
-        format!("{DRAINING_PREFIX} {session} is pausing for {reason} — resumes on the next start")
-    }
+/// The D16 refusal in its wire form; `reason` is `release` on the ownership
+/// path (the owner side does not learn the taker's name — `Msg::Release`
+/// carries none, so no `:<next_owner>` suffix).
+pub fn draining_error(reason: &str) -> String {
+    format!("{DRAINING_PREFIX}{reason}")
 }
 
 impl Message<DrainSession> for Agents {
@@ -272,72 +267,25 @@ pub fn release_window(release_wait_secs: u64) -> Duration {
 /// 139 §7: the per-session pass on the new owner for a resumed turn —
 /// child waits settled or left to forwarding (`child_waits::settle_on_transfer`,
 /// W3), the previous owner's jobs settled `lost` with the owner-changed
-/// reason. A no-op for `crash | shutdown | update`.
+/// reason (`reaper::settle_transferred`, W3). Returns the lost job ids for
+/// the resume report. A no-op for `crash | shutdown | update`.
 pub async fn on_resume_here(
     agents: &mut Agents,
     session: SessionId,
     cause: ResumeCause,
     from: Option<&str>,
-) {
+) -> Vec<JobId> {
     if !matches!(cause, ResumeCause::Transfer | ResumeCause::Takeover) {
-        return;
+        return Vec::new();
     }
     child_waits::settle_on_transfer(agents, session, from).await;
-    settle_transferred_jobs(agents, session, from).await;
-}
-
-/// §7.1 on the new owner: every `running` row another engine spawned →
-/// `lost` through the store (no `adopt`, no `killpg`: I6), then the rows
-/// reach the jobs actor as `Reaped` with `LostReason::OwnerChanged`.
-/// W3's `reaper::settle_transferred` is not in the tree; this is the
-/// smallest body over C's `jobs_settle_transferred` (no `<job_result>`
-/// injection — the resumed batch reports its own `started` jobs).
-async fn settle_transferred_jobs(agents: &mut Agents, session: SessionId, from: Option<&str>) {
-    let now = Utc::now();
-    let rows = match agents
-        .store
-        .jobs_settle_transferred(session, agents.store.engine(), now.timestamp_millis())
-        .await
-    {
-        Ok(rows) => rows,
-        Err(e) => return tracing::warn!(%session, "139: jobs_settle_transferred: {e:#}"),
-    };
-    if rows.is_empty() {
-        return;
-    }
-    let mut jobs = Vec::with_capacity(rows.len());
-    for row in rows {
-        let screen = match row.kind {
-            JobKind::Pty => agents
-                .store
-                .pty_screen(session, &row.id)
-                .await
-                .ok()
-                .flatten(),
-            JobKind::Shell => None,
-        };
-        jobs.push(LostJob {
-            screen,
-            tail: String::new(),
-            deliver: None,
-            reason: LostReason::OwnerChanged {
-                engine: from.map_or_else(|| row.engine.clone(), str::to_owned),
-            },
-            row,
-        });
-    }
-    tracing::info!(%session, n = jobs.len(), "139: previous owner's jobs settled lost");
-    match ActorRef::<Jobs>::lookup(JOBS_ACTOR) {
-        Ok(Some(actor)) => {
-            let _ = actor
-                .tell(Reaped {
-                    restarted_at: now,
-                    jobs,
-                })
-                .await;
-        }
-        _ => tracing::warn!("139: jobs actor not running: transferred jobs not listed"),
-    }
+    let reaped = crate::durability::jobs::settle_transferred(
+        &agents.store,
+        session,
+        from.unwrap_or("another engine"),
+    )
+    .await;
+    reaped.jobs.into_iter().map(|j| j.row.id).collect()
 }
 
 #[cfg(test)]
@@ -352,17 +300,9 @@ mod tests {
     }
 
     #[test]
-    fn draining_error_is_recognisable_by_its_prefix() {
-        let id = SessionId::new();
-        let e = draining_error(id, RELEASE);
-        assert!(
-            e.starts_with(DRAINING_PREFIX) && e.contains("moving"),
-            "{e}"
-        );
-        let e = draining_error(id, "update");
-        assert!(
-            e.starts_with(DRAINING_PREFIX) && e.contains("pausing for update"),
-            "{e}"
-        );
+    fn draining_error_is_the_wire_form() {
+        assert_eq!(draining_error(RELEASE), "SessionDraining:release");
+        assert_eq!(draining_error("update"), "SessionDraining:update");
+        assert!(draining_error("update").starts_with(DRAINING_PREFIX));
     }
 }

@@ -52,6 +52,9 @@ pub struct Take {
     pub connected: Vec<PeerId>,
     /// The mesh's view of every peer (`last_seen_ms`); empty without a mesh.
     pub peers: Vec<mesh::Peer>,
+    /// 139 Q10: a `Write` take for a client's write here counts as the
+    /// user's for the resume policy (`TakeSession::by_user`).
+    pub by_user: bool,
 }
 
 /// 139 §6.2 step 9: what the taker did about the taken open turn.
@@ -69,20 +72,24 @@ pub enum ResumeOnTake {
 
 /// 139 §6.3 policy table (D5, Revision 1 Q10): a transfer follows
 /// `durability.resume`; a takeover resumes only when the user asked for it
-/// (`User` — the RPC passes `User` for a `Write` take from a real client
-/// peer, W4); system takes (`Write`, `Orphan`) leave the item.
-fn resume_policy(transferred: bool, reason: TakeReason, mode: ResumeMode) -> ResumeOnTake {
+/// — `User`, or a `Write` take the front door made for a client's input
+/// (`by_user`); system takes (`Write` from plumbing, `Orphan`) leave the item.
+fn resume_policy(
+    transferred: bool,
+    reason: TakeReason,
+    by_user: bool,
+    mode: ResumeMode,
+) -> ResumeOnTake {
     if transferred {
         match mode {
             ResumeMode::Auto => ResumeOnTake::Resume(ResumeCause::Transfer),
             ResumeMode::Ask => ResumeOnTake::Pending,
             ResumeMode::Off => ResumeOnTake::Nothing,
         }
+    } else if reason == TakeReason::User || (reason == TakeReason::Write && by_user) {
+        ResumeOnTake::Resume(ResumeCause::Takeover)
     } else {
-        match reason {
-            TakeReason::User => ResumeOnTake::Resume(ResumeCause::Takeover),
-            TakeReason::Write | TakeReason::Orphan => ResumeOnTake::Pending,
-        }
+        ResumeOnTake::Pending
     }
 }
 
@@ -177,7 +184,7 @@ impl Take {
                 return ResumeOnTake::NoOpenTurn;
             }
         };
-        let action = resume_policy(transferred, reason, self.durability().resume);
+        let action = resume_policy(transferred, reason, self.by_user, self.durability().resume);
         match &action {
             ResumeOnTake::Resume(cause) => {
                 match ActorRef::<agent::Agents>::lookup(agent::AGENT_ACTOR) {
@@ -629,6 +636,7 @@ mod tests {
                 transport,
                 connected,
                 peers,
+                by_user: false,
             }
         }
 
@@ -958,20 +966,28 @@ mod tests {
     fn resume_policy_follows_the_table() {
         use ResumeOnTake::*;
         for reason in [TakeReason::User, TakeReason::Write, TakeReason::Orphan] {
-            assert_eq!(
-                resume_policy(true, reason, ResumeMode::Auto),
-                Resume(ResumeCause::Transfer)
-            );
-            assert_eq!(resume_policy(true, reason, ResumeMode::Ask), Pending);
-            assert_eq!(resume_policy(true, reason, ResumeMode::Off), Nothing);
+            for by_user in [false, true] {
+                assert_eq!(
+                    resume_policy(true, reason, by_user, ResumeMode::Auto),
+                    Resume(ResumeCause::Transfer)
+                );
+                assert_eq!(resume_policy(true, reason, by_user, ResumeMode::Ask), Pending);
+                assert_eq!(resume_policy(true, reason, by_user, ResumeMode::Off), Nothing);
+            }
         }
         for mode in [ResumeMode::Auto, ResumeMode::Ask, ResumeMode::Off] {
             assert_eq!(
-                resume_policy(false, TakeReason::User, mode),
+                resume_policy(false, TakeReason::User, false, mode),
                 Resume(ResumeCause::Takeover)
             );
-            assert_eq!(resume_policy(false, TakeReason::Write, mode), Pending);
-            assert_eq!(resume_policy(false, TakeReason::Orphan, mode), Pending);
+            assert_eq!(resume_policy(false, TakeReason::Write, false, mode), Pending);
+            // Q10: the front door's take for a typing client is the user's.
+            assert_eq!(
+                resume_policy(false, TakeReason::Write, true, mode),
+                Resume(ResumeCause::Takeover)
+            );
+            assert_eq!(resume_policy(false, TakeReason::Orphan, false, mode), Pending);
+            assert_eq!(resume_policy(false, TakeReason::Orphan, true, mode), Pending);
         }
     }
 

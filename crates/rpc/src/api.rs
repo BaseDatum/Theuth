@@ -2165,9 +2165,9 @@ where
 
 /// 139 §6.1 (D16): the supervisor refuses an input to a session mid-release-drain
 /// with a handler error whose `Display` form is `SessionDraining:<reason>[:<next owner>]`
-/// (the `DocError::NotHub` convention, `doc_send`). Mapped here to the retryable
-/// [`forward::SESSION_DRAINING`] with the typed payload; the composer retries once.
-/// Anything else passes through.
+/// (`agent::supervisor::transfer::DRAINING_PREFIX`, the `DocError::NotHub` convention).
+/// Mapped here to the retryable [`forward::SESSION_DRAINING`] with the typed payload;
+/// the composer retries once. Anything else passes through.
 fn session_draining(session: SessionId, e: ErrorObjectOwned) -> ErrorObjectOwned {
     let Some(rest) = e.message().strip_prefix("SessionDraining:") else {
         return e;
@@ -2249,29 +2249,8 @@ async fn route_question_via<T: DeserializeOwned>(
     };
     match forward::to_peer(ext, &owner, method, params).await? {
         Some(v) => Ok(Some(v)),
-        None => Err(owner_unreachable(owner.0).await),
+        None => Err(forward::unreachable(owner.0, "not connected").await),
     }
-}
-
-/// [`forward::OWNER_UNREACHABLE`] for an owner this engine is not connected to,
-/// with the mesh's last sighting (`None` when the mesh is not running or never saw it).
-async fn owner_unreachable(owner: String) -> ErrorObjectOwned {
-    let last_seen = match mesh_actor() {
-        Ok(m) => m.ask(mesh::Status).await.ok().and_then(|s| {
-            s.peers
-                .into_iter()
-                .find(|p| p.id.0 == owner)
-                .map(|p| p.last_seen_ms)
-                .filter(|&ms| ms > 0)
-        }),
-        Err(_) => None,
-    };
-    let short = owner.get(..8).unwrap_or(&owner);
-    ErrorObjectOwned::owned(
-        forward::OWNER_UNREACHABLE,
-        format!("owner {short} unreachable: not connected"),
-        Some(forward::FrontDoorError::OwnerUnreachable { owner, last_seen }),
-    )
 }
 
 /// The nodes actor; absent when `nodes.enabled: false` or the plugin is not loaded.
@@ -3425,6 +3404,8 @@ impl ApiServer for Server {
             sessionsync::TakeSession {
                 id: session,
                 reason,
+                // The explicit `reason` is the caller's intent (`user` resumes).
+                by_user: false,
             },
         )
         .await?;
@@ -6836,7 +6817,7 @@ mod tests {
             }
             other => panic!("{other:?}"),
         }
-        // 139 §6.1: the -32011 payload in the external enum form the composer keys on.
+        // 139 §6.1: the SESSION_DRAINING payload in the external enum form the composer keys on.
         let session = SessionId::new();
         let e = session_draining(
             session,

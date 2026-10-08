@@ -1295,6 +1295,10 @@ pub struct Resume {
     /// 139 §6.3: the previous owner for `transfer` / `takeover`; W2 puts it
     /// on `TurnResumed.from` and in the `<engine_restart from>` note.
     pub from: Option<String>,
+    /// 139 §7.1: the previous owner's jobs the supervisor settled `lost`
+    /// before this actor existed (`transfer::on_resume_here`); the resume
+    /// report's `lost_jobs`.
+    pub lost_jobs: Vec<tools::JobId>,
 }
 
 impl Message<Resume> for Session {
@@ -1315,6 +1319,7 @@ impl Message<Resume> for Session {
         self.enter(cancel.clone(), Some(turn)).await;
         let mut task = Turn::new(self.shared.clone(), Some(turn), cancel, state);
         task.resume_from = m.from;
+        task.resume_lost_jobs = m.lost_jobs;
         let me = ctx.actor_ref().clone();
         let plan = ResumePlan {
             cause: m.cause,
@@ -2379,6 +2384,8 @@ struct Turn {
     /// 139 §6.3: the engine a resumed turn was taken from (`Resume::from`);
     /// `TurnResumed.from` and the `<engine_restart from>` note.
     resume_from: Option<String>,
+    /// 139 §7.1: `Resume::lost_jobs`, reported by `report()`.
+    resume_lost_jobs: Vec<tools::JobId>,
 }
 
 /// Execution accounting of a peer-opened turn (50 §8): the wall deadline of
@@ -2952,6 +2959,7 @@ impl Turn {
             resume_call: parking_lot::Mutex::new(None),
             finished_written: false,
             resume_from: None,
+            resume_lost_jobs: Vec::new(),
         }
     }
 
@@ -3608,8 +3616,9 @@ impl Turn {
 
     /// `ResumeReport` (109 §8.2) once the resumed step settled: the row
     /// first (`resume_reports`, so a desktop that connects later reads the
-    /// same counts from `Loaded.resume`), then the live event. The job and
-    /// ACP counts are W2 / W4's.
+    /// same counts from `Loaded.resume`), then the live event. `lost_jobs`
+    /// is 139 §7.1's owner-changed set (empty for a single-engine resume:
+    /// the reaper reports those by injection); the ACP counts are W4's.
     async fn report(
         &self,
         plan: &ResumePlan,
@@ -3620,7 +3629,7 @@ impl Turn {
         let report = crate::ResumeReport {
             replayed,
             interrupted,
-            lost_jobs: Vec::new(),
+            lost_jobs: self.resume_lost_jobs.clone(),
             children_restored: 0,
             children_handed_off: 0,
         };

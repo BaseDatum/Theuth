@@ -38,15 +38,15 @@ test('last seen renders as an age or never; the sentence names the engine twice'
   )
 })
 
-test('139 D16: SessionDraining is read from the refusal data only — -32011 alone is also NotHub', () => {
+test('139 D16: SessionDraining (-32012) is read from the refusal data; a NotHub (-32011) is not one', () => {
   expect(sessionDraining(new Error('x'))).toBeNull()
   expect(sessionDraining(new RpcError(-32011, 'another engine holds the hub lease', { NotHub: { hub: KEY } }))).toBeNull()
-  expect(sessionDraining(new RpcError(-32011, 'x', { SessionDraining: { session: 's1', reason: 'release', next_owner: KEY } }))).toEqual({
+  expect(sessionDraining(new RpcError(-32012, 'x', { SessionDraining: { session: 's1', reason: 'release', next_owner: KEY } }))).toEqual({
     session: 's1',
     reason: 'release',
     nextOwner: KEY,
   })
-  expect(sessionDraining(new RpcError(-32011, 'x', { SessionDraining: { session: 's1', reason: 'shutdown' } }))).toEqual({
+  expect(sessionDraining(new RpcError(-32012, 'x', { SessionDraining: { session: 's1', reason: 'shutdown' } }))).toEqual({
     session: 's1',
     reason: 'shutdown',
     nextOwner: null,

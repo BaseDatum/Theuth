@@ -34,8 +34,8 @@ export type SessionDraining = { session: string; reason: string; nextOwner: stri
 
 /**
  * 139 §6.1 (D16): `SessionDraining{session, reason, next_owner}` out of a failed send — the session is mid-release
- * on the engine we talk to; retryable. Read from the refusal's `data` (`{"SessionDraining": {…}}`), never from the
- * code alone: `-32011` is also `NotHub`. `null` for every other error.
+ * on the engine we talk to; retryable (code `-32012`). Read from the refusal's `data` (`{"SessionDraining": {…}}`),
+ * never from the code alone (`-32011` beside it is `NotHub`). `null` for every other error.
  */
 export function sessionDraining(e: unknown): SessionDraining | null {
   if (!(e instanceof RpcError) || typeof e.data !== 'object' || e.data === null) return null

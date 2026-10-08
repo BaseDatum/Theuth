@@ -43,9 +43,10 @@ pub const OWNER_UNREACHABLE: i32 = -32010;
 
 /// JSON-RPC error code (139 §6.1, D16): the session is mid-release-drain on
 /// this engine; retryable. `data` is [`FrontDoorError::SessionDraining`] in
-/// the same external enum form. W2 raises it from the input handler; W4
-/// maps it here and in the composer.
-pub const SESSION_DRAINING: i32 = -32011;
+/// the same external enum form. The supervisor raises
+/// `SessionDraining:<reason>` from the input handler; `api::session_draining`
+/// maps it here, the composer retries once. `-32011` is `NOT_HUB` (69 Y).
+pub const SESSION_DRAINING: i32 = -32012;
 
 /// How long a forwarded call waits for the owner's answer.
 pub const TIMEOUT: Duration = Duration::from_secs(30);
@@ -218,10 +219,15 @@ pub async fn route<T: DeserializeOwned>(
     {
         Route::Here => return Ok(None),
         Route::Take => {
+            // 139 Q10: a take made by the front door is a client's write on
+            // this engine — a human typed here (the one internal peer that
+            // reaches this point is the owner console; forwarded calls
+            // returned above; desk wakes take `Orphan` directly).
             let taken = sessions
                 .ask(sessionsync::TakeSession {
                     id: session,
                     reason: sessionsync::TakeReason::Write,
+                    by_user: true,
                 })
                 .await;
             return match taken {
@@ -375,7 +381,7 @@ async fn answer(
 
 /// An [`OWNER_UNREACHABLE`] error with the mesh's last sighting of `owner`
 /// (`None` when the mesh is not running or never saw it).
-async fn unreachable(owner: String, why: &str) -> ErrorObjectOwned {
+pub(crate) async fn unreachable(owner: String, why: &str) -> ErrorObjectOwned {
     let last_seen = match kameo::actor::ActorRef::<mesh::Mesh>::lookup(mesh::MESH_ACTOR) {
         Ok(Some(m)) => m
             .ask(mesh::Status)
