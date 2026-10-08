@@ -752,7 +752,7 @@ interrupted note per §7.3. All other 109 §4.3 wording unchanged.
 
 ## 10. Store and migration
 
-**Migration `0037_mesh_durability.sql`** (the latest is `0036_double.sql`; `0033`/`0035` are 109's)
+**Migration `0038_mesh_durability.sql`** (the latest is `0036_double.sql`; `0033`/`0035` are 109's)
 — two columns, no new table:
 
 ```sql
@@ -811,10 +811,10 @@ closer.
 
 | | |
 |---|---|
-| **owns** | `crates/agent/migrations/0037_mesh_durability.sql` (new, §10); `crates/agent/src/store/durability.rs` (`Scope`, `open_turns(Scope)`, `open_turn`, `jobs_open(Scope)` with the engine filter, `child_waits(Scope)`, `journal_prune(Scope, keep_days)`, `jobs_settle_transferred`, `JobRow.engine`, `ResumeReportRow.cause`, `pty_screen_put` doc line; the zero-arg forms **deleted**; test `open_turns_here_excludes_foreign_owners` + `jobs_open_here_filters_by_engine` in its test module); `crates/agent/src/store/capture.rs` (`+ pty_screens`, doc comment); `crates/agent/src/durability/mod.rs` (`ResumeCause` + `as_str/parse`); `crates/agent/src/durability/journal.rs` (`StoreJournal::job` stamps `engine = store.engine()`); `crates/agent/src/lib.rs` (`ResumeState.{owner,here,cause}`, `TurnResumed.{cause,from}`, `+ AgentEvent::ResumePending{session, turn, from}` in `session()`); `crates/rpc/src/forward.rs` (`SESSION_DRAINING = -32011`, `FrontDoorError::SessionDraining`); `crates/tools/src/jobs.rs` **types only**: `KillSession{session}` message + handler stub (no-op), `LostReason::{Restart, OwnerChanged{engine}}`, `LostJob.reason` (default `Restart`); new stub files `crates/agent/src/supervisor/transfer.rs` (`DrainSession` message + `pub async fn drain_session(..)` that today calls `UnloadSession`; `pub fn release_window(cfg)`; `pub async fn on_resume_here(agents, session, cause, from)` no-op) and `crates/agent/src/supervisor/child_waits.rs` (`child_spawned`, `child_result_delivered`, `settle_on_transfer` no-ops); one-line hook calls at the named insertion points: `sup.rs` `SpawnChild` success arm → `child_waits::child_spawned`, `sup.rs::hand_off` → `child_waits::child_result_delivered`, `resume.rs::resume_turn` after `resume_plan` → `transfer::on_resume_here`; `Resume { .., cause }` (`loop_.rs:1287-1292`) and `ResumeTurn { .., cause }` (`resume.rs`) fields with every caller passing the §6.3 boot rule; every `open_turns()`/`jobs_open()` caller updated to the §5.1 scope; `agent` Cargo feature `test-support` exposing `loop_::durability_tests::{BatchFake, Harness}` and `supervisor::tests::agents_on` as `pub mod testing` (for Z); `just ts-desktop` regenerated bindings committed |
+| **owns** | `crates/agent/migrations/0038_mesh_durability.sql` (new, §10); `crates/agent/src/store/durability.rs` (`Scope`, `open_turns(Scope)`, `open_turn`, `jobs_open(Scope)` with the engine filter, `child_waits(Scope)`, `journal_prune(Scope, keep_days)`, `jobs_settle_transferred`, `JobRow.engine`, `ResumeReportRow.cause`, `pty_screen_put` doc line; the zero-arg forms **deleted**; test `open_turns_here_excludes_foreign_owners` + `jobs_open_here_filters_by_engine` in its test module); `crates/agent/src/store/capture.rs` (`+ pty_screens`, doc comment); `crates/agent/src/durability/mod.rs` (`ResumeCause` + `as_str/parse`); `crates/agent/src/durability/journal.rs` (`StoreJournal::job` stamps `engine = store.engine()`); `crates/agent/src/lib.rs` (`ResumeState.{owner,here,cause}`, `TurnResumed.{cause,from}`, `+ AgentEvent::ResumePending{session, turn, from}` in `session()`); `crates/rpc/src/forward.rs` (`SESSION_DRAINING = -32011`, `FrontDoorError::SessionDraining`); `crates/tools/src/jobs.rs` **types only**: `KillSession{session}` message + handler stub (no-op), `LostReason::{Restart, OwnerChanged{engine}}`, `LostJob.reason` (default `Restart`); new stub files `crates/agent/src/supervisor/transfer.rs` (`DrainSession` message + `pub async fn drain_session(..)` that today calls `UnloadSession`; `pub fn release_window(cfg)`; `pub async fn on_resume_here(agents, session, cause, from)` no-op) and `crates/agent/src/supervisor/child_waits.rs` (`child_spawned`, `child_result_delivered`, `settle_on_transfer` no-ops); one-line hook calls at the named insertion points: `sup.rs` `SpawnChild` success arm → `child_waits::child_spawned`, `sup.rs::hand_off` → `child_waits::child_result_delivered`, `resume.rs::resume_turn` after `resume_plan` → `transfer::on_resume_here`; `Resume { .., cause }` (`loop_.rs:1287-1292`) and `ResumeTurn { .., cause }` (`resume.rs`) fields with every caller passing the §6.3 boot rule; every `open_turns()`/`jobs_open()` caller updated to the §5.1 scope; `agent` Cargo feature `test-support` exposing `loop_::durability_tests::{BatchFake, Harness}` and `supervisor::tests::agents_on` as `pub mod testing` (for Z); `just ts-desktop` regenerated bindings committed |
 | **non-goals** | any behaviour beyond the scope filter and the stamps: no drain change, no resume-on-take, no UI text, no reaper logic |
 | **gates** | `cargo build --workspace`; `cargo test -p agent --lib -- store::durability supervisor::` ; `cargo test -p sessionsync -p rpc -p tools --lib`; `cargo clippy --workspace --tests -- -D warnings`; `just ts-desktop` + `bun run check` in `crates/desktop/ui` |
-| **DONE** | the tree compiles with no zero-arg `open_turns`/`jobs_open` left (`git grep -n 'open_turns()' crates` → nothing); single-engine tests unchanged in count; `0037` applies to a copy of a live store; stub files exist with the signatures above and doc comments naming their wave |
+| **DONE** | the tree compiles with no zero-arg `open_turns`/`jobs_open` left (`git grep -n 'open_turns()' crates` → nothing); single-engine tests unchanged in count; `0038` applies to a copy of a live store; stub files exist with the signatures above and doc comments naming their wave |
 
 ### W1 — OWNER-SCOPE (D1, D2, D13 gate, D17)
 
@@ -870,7 +870,7 @@ list — R1 §8.14), `68-contract.md:46` (same), `109-durability.md` §3.5 (`pty
 and §14 ("resuming an in-flight turn on another engine" moves from Rejected to "built by 139"), §15
 Q7 (answered), `00-architecture.md` if it names `open_turns`. Writes `docs/design/139-as-built.md`
 in the shape of `109-as-built-*.md`. Rebuilt engine and desktop are owed after C lands (every
-running engine predates `0037`).
+running engine predates `0038`).
 
 ## 12. Open questions and inconsistencies
 
@@ -953,11 +953,11 @@ home.
   (`sup.rs:2144-2149`, 109 LIVE); B's sidebar renders A's children as `PeerState::Remote` rows
   (`sup.rs:4700-4703`). The parent's "N subagents running" glyph is therefore off on B while they
   run on A. Out of D1–D19; a follow-on if it matters.
-- **Q12 — a mixed-version mesh cannot apply `0037` changesets.** A `jobs`/`resume_reports` changeset
+- **Q12 — a mixed-version mesh cannot apply `0038` changesets.** A `jobs`/`resume_reports` changeset
   with the new column fails `sqlite3changeset_apply` on an unmigrated replica (same as 0033/0035
   had; `apply.rs:52-53` would return an error and the row would be retried forever). 68 has no
   version gate on `theuth/sessions/1`. Default: operational rule "upgrade every engine before the
-  first post-0037 write"; a schema version in `Hello` is a 68 follow-on.
+  first post-0038 write"; a schema version in `Hello` is a 68 follow-on.
 - **Q13 — Z's in-process harness needs agent test code exported.** D12 prefers in-process; R1 §7
   shows the sessionsync replica already runs in-process (`Loop`/`Switch`, `owner.rs:483-700` tests)
   and R2 §9 shows the 109 fakes are `cfg(test)`-private in
@@ -1021,3 +1021,27 @@ Every R1 §8 and R2 §10 item, where it is fixed or why it is not.
 - **v0** — 2026-10-08, theuth orchestrator from recon R1/R2 at `07f8e1f3` (R2 cites at `17769a5c`,
   verified unchanged). Rulings D1–D19 of the 03:22 brief and its Addendum A1 (03:50) written as
   decisions; §12 lists sixteen open points and the thirty-item recon ledger. No code changed.
+- **Revision 1** — 2026-10-08 04:15, orchestrator rulings on §12 Q1–Q16 and the migration number (0038), appended below.
+
+## Revision 1 — orchestrator rulings on §12 (2026-10-08 04:15)
+
+Rulings taken by the orchestrator (Sky delegated the flow at 03:25: "coordinate with the peers, get it done with omp agents, get it into main"). Each binds the wave named in §11.
+
+- **Q1** — `Scope::Here` is the store's `here` form (`owner = '' OR owner = me`), never the literal `= self`. (C)
+- **Q2** — fold: `parent_gone` and `drain` map to `shutdown`; no sixth cause. (C, W2)
+- **Q3** — add the `inject` owner guard to W1: `inject` → `remote_owner(to)` → forward as `Agents::deliver` does, never spawn an actor for a non-owned session; `rearm_reminders` runs under the same guard. (W1)
+- **Q4** — keep §6.1's owner-side window (`release_wait_secs − 1 s`) and ALSO raise the taker's first wait to `release_wait_secs + drain_secs`; the wire `Msg::Release` is unchanged; a mesh runs one `sessions.*` config (documented in the as-built). (W2)
+- **Q5** — D16 is narrowed to the per-session release drain (the fence moves); the global drain keeps 109 §9.2 step 1 (inputs accepted, no turn starts) and `draining_session_opens_no_model_call` stays as is. (W2)
+- **Q6** — log only (D17 as written); the copied-file guard is a follow-on. (W1)
+- **Q7** — `waits(peer_reply)` across engines: settle as interrupted + forwarded reply (the default). (W3)
+- **Q8** — `cut_journal_in` skips `kind = 'child_result'` (a 109 §3.6 retention change, accepted). (C)
+- **Q9** — accepted as W1's side effect.
+- **Q10** — a `Write` take requested by an RPC from a real client peer (not `RpcPeer::internal()`) counts as **User** (a human typed: resume now); internal/system takes (desk wakes, hub failover plumbing) stay system → `ResumePending`. (W2 policy table, W4 for the client-peer flag if the handler lacks it)
+- **Q11** — out of scope (follow-on).
+- **Q12** — operational rule, recorded in the as-built: upgrade every engine of a mesh before the first post-migration write ships.
+- **Q13** — decision point at the end of C as written: try the `test-support` feature; if the fakes cannot be exported without a refactor, Z keeps the unit tests and runs T1–T7 as the scripted two-engine smoke.
+- **Q14** — accepted.
+- **Q15** — the `resume_turn` RPC's intent is the user's: `ResumeTurn{Takeover}` after its `Write` take. (W4)
+- **Q16** — the closer owns the doc edits listed in §11.
+- **Migration number** — `0037` is taken by design 137 (in flight, lands before 139): this design's migration is **`0038_mesh_durability.sql`**; every `0037` in this document reads `0038`. C verifies the next free number on main AND in the in-flight branches at commit time.
+
