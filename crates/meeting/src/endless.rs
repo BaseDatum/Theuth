@@ -14,7 +14,6 @@
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
-use agent::endless::ViewBlock;
 use agent::{MemoryMode, ViewLine};
 use runtime::SessionId;
 
@@ -124,28 +123,6 @@ pub fn toolset(base: &agent::Toolset) -> agent::Toolset {
     t
 }
 
-/// The view lines of `render_with_budget`'s blocks (137 §7.2: `<chat>\n`, one
-/// `id+n|text` per line, `</chat>`). A line that is not `id+n|…` is skipped;
-/// `built` is not knowable from the text and is reported `true`.
-pub fn lines_of(blocks: &[ViewBlock]) -> Vec<ViewLine> {
-    blocks
-        .iter()
-        .flat_map(|b| b.text.lines())
-        .filter_map(|l| {
-            let (addr, text) = l.split_once('|')?;
-            let (id, n) = addr.split_once('+')?;
-            let (id, n) = (id.parse().ok()?, n.parse::<u64>().ok()?);
-            Some(ViewLine {
-                id,
-                n,
-                level: n.trailing_zeros() as u8,
-                text: text.to_owned(),
-                built: true,
-            })
-        })
-        .collect()
-}
-
 /// The head's `## Earlier in this meeting` input: the view within [`RENDER_WAIT`],
 /// else `None` (the caller keeps the last one). Never waits for the compactor.
 pub async fn earlier(port: &dyn Memory, session: SessionId, budget: u32) -> Option<Earlier> {
@@ -243,33 +220,6 @@ mod tests {
             Config::default().resolve(Some(MemoryMode::Endless)),
             MemoryMode::Endless
         );
-    }
-
-    /// `render_with_budget` blocks → view lines: tags and the cut between blocks are
-    /// transparent, `id+n` parsed, the backfill base line kept, junk skipped.
-    #[test]
-    fn lines_of_reads_the_rendered_blocks() {
-        let blocks = [
-            ViewBlock {
-                text: "<chat>\n0+2|(earlier history, not summarized; recall searches it)\n2+4|user: a | b\n".into(),
-                mark: true,
-            },
-            ViewBlock {
-                text: "6+1|tool: meeting_topic {\"label\":\"x\"}\nnot a line\n</chat>".into(),
-                mark: true,
-            },
-        ];
-        let lines = lines_of(&blocks);
-        assert_eq!(
-            lines
-                .iter()
-                .map(|l| (l.id, l.n, l.level))
-                .collect::<Vec<_>>(),
-            [(0, 2, 1), (2, 4, 2), (6, 1, 0)]
-        );
-        assert_eq!(lines[1].text, "user: a | b");
-        assert_eq!(lines[2].text, "tool: meeting_topic {\"label\":\"x\"}");
-        assert!(lines_of(&[]).is_empty());
         assert_eq!(
             Config::default(),
             Config {

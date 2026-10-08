@@ -5,8 +5,8 @@
 //! - `agent::SetSessionMemory { session, mode: MemoryMode, filter: UnitFilter }`
 //!   → `anyhow::Result<agent::SetMode>` (the agent passes `epoch` itself: a meeting
 //!   session has no epoch head to write)
-//! - `agent::RenderMemoryView { session, bytes: u32 }` → `anyhow::Result<Vec<agent::endless::ViewBlock>>`
-//!   (mapped to lines by [`crate::endless::lines_of`])
+//! - `agent::RenderMemoryView { session, bytes: u32 }` → `anyhow::Result<Vec<agent::ViewLine>>`
+//!   (what `Endless::render_with_budget` returns; `built` tells verbatim from summarized)
 //!
 //! Enabled by the closer once W2's commit is on the branch: `mod endless_agent;`
 //! in `lib.rs` and `endless_agent::install()` in `MeetingPlugin::start`
@@ -48,7 +48,6 @@ impl Memory for AgentsMemory {
         agents()?
             .ask(agent::RenderMemoryView { session, bytes })
             .await
-            .map(|blocks| crate::endless::lines_of(&blocks))
             .map_err(|e| e.to_string())
     }
 }
