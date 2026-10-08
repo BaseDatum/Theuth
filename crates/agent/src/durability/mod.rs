@@ -72,6 +72,9 @@ pub struct BootPass {
     pub resuming: u32,
     /// ACP children whose harness accepted the respawn prompt.
     pub respawned: u32,
+    /// Of those, the ones that came back on a fresh harness session because
+    /// `session/load` failed (D11: "restarted fresh").
+    pub fresh: u32,
     /// ACP children queued or connecting; `0` = the pass is settled.
     pub waiting: u32,
     /// `(session, name)` of every child that was not respawned (D3).

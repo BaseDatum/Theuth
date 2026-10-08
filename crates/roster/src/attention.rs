@@ -907,7 +907,7 @@ fn human_bytes(n: u64) -> String {
     }
 }
 
-/// 146 D4: "Restarted 14:12 · 3 sessions resumed · 2 subagents back · 1 waiting · 3 lost (a, b, c)".
+/// 146 D4: "Restarted 14:12 · 3 sessions resumed · 2 subagents back · 1 restarted fresh · 1 waiting · 3 lost (a, b, c)".
 pub fn boot_title(b: &agent::durability::BootPass) -> String {
     let plural = |n: u32, one: &str, many: &str| {
         if n == 1 {
@@ -928,12 +928,16 @@ pub fn boot_title(b: &agent::durability::BootPass) -> String {
             plural(b.resuming, "session", "sessions")
         ));
     }
-    if b.respawned > 0 {
+    if b.respawned > b.fresh {
+        let back = b.respawned - b.fresh;
         parts.push(format!(
             "{} {} back",
-            b.respawned,
-            plural(b.respawned, "subagent", "subagents")
+            back,
+            plural(back, "subagent", "subagents")
         ));
+    }
+    if b.fresh > 0 {
+        parts.push(format!("{} restarted fresh", b.fresh));
     }
     if b.waiting > 0 {
         parts.push(format!("{} waiting", b.waiting));
@@ -2572,7 +2576,8 @@ mod tests {
         let pass = BootPass {
             at_ms: 1_000,
             resuming: 3,
-            respawned: 1,
+            respawned: 2,
+            fresh: 1,
             waiting: 2,
             lost: vec![(w1, "omp-125R1-W1".into()), (w2, "omp-125R1-W2".into())],
         };
@@ -2586,7 +2591,7 @@ mod tests {
         assert_eq!(items[0].kind, AttentionKind::Resume);
         assert!(
             items[0].title.ends_with(
-                " · 3 sessions resumed · 1 subagent back · 2 waiting · 2 lost (omp-125R1-W1, omp-125R1-W2)"
+                " · 3 sessions resumed · 1 subagent back · 1 restarted fresh · 2 waiting · 2 lost (omp-125R1-W1, omp-125R1-W2)"
             ),
             "{}",
             items[0].title

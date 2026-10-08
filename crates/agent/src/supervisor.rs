@@ -1253,6 +1253,12 @@ impl Agents {
         };
         let sent = match routed {
             Ok((_, actor)) => {
+                // 146 D9: the harness owes work from this hand-off on
+                // (journaled before the tell: a crash in between reads as
+                // an owed prompt, which the respawn re-prompts).
+                if let LiveActor::Acp(_) = &actor {
+                    self.acp_journal_open(sid, "input", &text, None).await;
+                }
                 actor
                     .tell_input(UserInput {
                         id,
@@ -1691,6 +1697,11 @@ impl Agents {
         if let Some(q) = self.queued.get_mut(&to) {
             q.held.push(Held::Peer(Box::new(input)));
             return Ok(());
+        }
+        // 146 D9: the harness owes work from this hand-off on.
+        if let LiveActor::Acp(_) = &actor {
+            self.acp_journal_open(to, "peer", &input.record.text, Some(&input.record.from))
+                .await;
         }
         self.offer_peer(actor, to, input);
         Ok(())
@@ -2264,6 +2275,7 @@ impl Message<AgentEvent> for Agents {
     type Reply = ();
 
     async fn handle(&mut self, ev: AgentEvent, ctx: &mut Context<Self, Self::Reply>) {
+        self.acp_journal_event(&ev).await; // 146 D9
         if self.boot.is_some() {
             self.boot_child_event(&ev).await; // 146 D2
         }
@@ -2402,12 +2414,16 @@ impl Message<ActivityRegistered> for Agents {
             tracing::info!("109: reaper: {reaped:?}");
         }
         self.rebuild_waits(&open).await;
-        self.resume_scan(&open).await;
+        // 146 D9: one list, one pass — an ACP child's open turn (it owed a
+        // prompt when the engine died) is the respawn's, a native one the
+        // resume's.
+        let (acp_open, native) = self.split_acp_turns(&open).await;
+        self.resume_scan(&native).await;
         let resuming = match self.cfg.durability.resume {
-            crate::durability::ResumeMode::Auto => open.len() as u32,
+            crate::durability::ResumeMode::Auto => native.len() as u32,
             _ => 0,
         };
-        self.respawn_acp_children(resuming).await; // 109 W4 §7.3, 146 D1–D4
+        self.respawn_acp_children(resuming, acp_open).await; // 109 W4 §7.3, 146 D1–D4, D9
         // 109 §7.2: the spared child results, after the open turns are queued.
         self.deliver_spared_results(&open).await;
     }

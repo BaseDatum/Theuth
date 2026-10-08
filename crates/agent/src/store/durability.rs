@@ -468,6 +468,22 @@ const MIDPROMPT: &str = "(json_extract(m.body, '$.role') IN ('User', 'Tool') \
      OR (json_extract(m.body, '$.role') = 'Assistant' AND EXISTS \
          (SELECT 1 FROM json_each(m.body, '$.content') WHERE json_type(value, '$.ToolCall') IS NOT NULL)))";
 
+/// 146 D10/D11: `text` without its leading `<time …/>` line, whitespace
+/// collapsed, cut to `max` chars with an ellipsis.
+pub fn excerpt(text: &str, max: usize) -> String {
+    let body = text
+        .trim_start()
+        .strip_prefix("<time")
+        .and_then(|rest| rest.split_once("/>"))
+        .map_or(text, |(_, after)| after);
+    let flat: String = body.split_whitespace().collect::<Vec<_>>().join(" ");
+    if flat.chars().count() <= max {
+        return flat;
+    }
+    let cut: String = flat.chars().take(max.saturating_sub(1)).collect();
+    format!("{}…", cut.trim_end())
+}
+
 impl Store {
     /// [`step_in`] in its own transaction: the `suspended` row (§9), tests,
     /// and any step not piggy-backed on an existing write.
@@ -647,6 +663,65 @@ impl Store {
         .await?;
         row.map(|(t, at)| Ok((parse_turn(&t)?, parse_dt(&at)?)))
             .transpose()
+    }
+
+    /// 146 D9: the ACP child's journal. An ACP child owes work from the
+    /// moment the supervisor hands it a prompt (or its harness opens a turn)
+    /// until that turn ends; one `input_accepted` row marks it, so
+    /// `open_turns` lists a mid-prompt child like a native open turn. At
+    /// most one open turn per child: a second prompt while one is open
+    /// writes nothing. `Ok(Some(turn))` when a row was written.
+    pub async fn acp_turn_open(
+        &self,
+        session: SessionId,
+        payload: &Value,
+    ) -> anyhow::Result<Option<TurnId>> {
+        if self.open_turn(session).await?.is_some() {
+            return Ok(None);
+        }
+        let turn = TurnId::new();
+        self.step(session, turn, StepKind::InputAccepted, None, payload)
+            .await?;
+        Ok(Some(turn))
+    }
+
+    /// 146 D9: the ACP child's turn ended (`stop_reason`): its open journal
+    /// turn gets `turn_finished` (and `sessions.last_stop`). `Ok(false)` when
+    /// none was open.
+    pub async fn acp_turn_close(
+        &self,
+        session: SessionId,
+        stop_reason: &str,
+    ) -> anyhow::Result<bool> {
+        let Some((turn, _)) = self.open_turn(session).await? else {
+            return Ok(false);
+        };
+        let mut tx = self.begin_write().await?;
+        turn_finished_in(&mut tx, session, turn, stop_reason).await?;
+        tx.commit().await?;
+        Ok(true)
+    }
+
+    /// 146 D10/D11: the first and the last `User` row's text of `session`
+    /// — the child's original brief and the prompt it was interrupted in —
+    /// each capped to `max` chars (the `<time …/>` line dropped). Empty
+    /// strings when there is none.
+    pub async fn prompt_excerpts(&self, session: SessionId, max: usize) -> (String, String) {
+        let one = |order: &'static str| async move {
+            let row: Option<(Option<String>,)> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
+                "SELECT json_extract(body, '$.content[0].Text') FROM messages \
+                 WHERE session_id = ? AND json_extract(body, '$.role') = 'User' \
+                 ORDER BY seq {order} LIMIT 1"
+            )))
+            .bind(session.to_string())
+            .fetch_optional(&self.read)
+            .await
+            .ok()
+            .flatten();
+            row.and_then(|(t,)| t).unwrap_or_default()
+        };
+        let (first, last) = (one("ASC").await, one("DESC").await);
+        (excerpt(&first, max), excerpt(&last, max))
     }
 
     /// What `ResumeTurn` acts on (§4.1, §4.2): the newest step that is not
@@ -1325,7 +1400,9 @@ impl Store {
     /// ([`MIDPROMPT`] over their last `messages` row) with their parent,
     /// newest first; bounded to rows updated after `since`. A harness-made
     /// `System` note (the lost note, `append_local_note`) ends the match, so
-    /// a child marked lost is not scanned again.
+    /// a child marked lost is not scanned again. D9: the fallback for
+    /// children from before the ACP journal — a child with any `turn_steps`
+    /// row is the journal's (`open_turns`), never this heuristic's.
     pub async fn midprompt_acp_children(
         &self,
         since: DateTime<Utc>,
@@ -1336,6 +1413,7 @@ impl Store {
                AND m.seq = (SELECT MAX(seq) FROM messages WHERE session_id = c.id) \
              WHERE c.agent IS NOT NULL AND c.parent IS NOT NULL AND c.kind != 'advisor' \
                AND (c.owner = '' OR c.owner = ?1) AND c.updated_at > ?2 AND {MIDPROMPT} \
+               AND NOT EXISTS (SELECT 1 FROM turn_steps t WHERE t.session_id = c.id) \
              ORDER BY c.updated_at DESC"
         )))
         .bind(&*self.me)

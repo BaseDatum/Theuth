@@ -21,6 +21,7 @@ use crate::AgentEvent;
 use crate::acp_child::Respawn;
 use crate::durability::{BootPass, ResumeMode};
 use crate::store::Scope;
+use crate::store::durability::OpenTurnRow;
 
 /// `TurnStarted.text` of a respawn whose harness never connected — the
 /// child's `fail` turn, not a prompt accepted (`acp_child::RESPAWN_FAILED_INPUT`,
@@ -43,10 +44,10 @@ pub(super) enum Outcome {
 pub(super) struct Boot {
     at: DateTime<Utc>,
     pass: BootPass,
-    /// `(parent, child, name)` not yet spawned.
-    pending: VecDeque<(SessionId, SessionId, String)>,
+    /// `(parent, child, name)` not yet spawned; a root ACP session has no parent.
+    pending: VecDeque<(Option<SessionId>, SessionId, String)>,
     /// Spawned, harness not yet heard from: child → `(parent, name)`.
-    inflight: HashMap<SessionId, (SessionId, String)>,
+    inflight: HashMap<SessionId, (Option<SessionId>, String)>,
 }
 
 /// `ask` → `Option<BootPass>`: the latest counts this engine published (D4).
@@ -68,15 +69,28 @@ impl kameo::message::Message<LastBootPass> for Agents {
     }
 }
 
+/// Chars of a prompt kept in the ACP journal row (D9).
+const JOURNAL_EXCERPT: usize = 200;
+/// The fresh-session handoff's header ([`handoff::render`]): a respawned
+/// child whose first turn opens with it came back on a new harness session (D11).
+const FRESH_MARK: &str = "could not be loaded";
+
 impl Agents {
-    /// §4.6 step 10, after `resume_scan`. Trigger set (D1): every
-    /// `child_result` wait of a parent owned here ∪ every mid-prompt ACP
-    /// child here (bounded by `acp_respawn_window_days`). A child whose
-    /// parent is gone, archived or owned elsewhere is lost (D3); the rest
-    /// go through [`Self::respawn_acp_child`], `acp_respawn_parallel` at a
-    /// time (D2). `resuming` is the open-turn count the pass resumed.
-    /// Honours `durability.resume`: only `auto` respawns anything.
-    pub(super) async fn respawn_acp_children(&mut self, resuming: u32) {
+    /// §4.6 step 10, after `resume_scan`. Trigger set: every ACP child with
+    /// an open journal turn (D9, `acp_open` from the pass's one
+    /// `open_turns`) ∪ every `child_result` wait of a parent owned here ∪
+    /// — for children from before the journal — every mid-prompt ACP child
+    /// here by its last `messages` row (D1, bounded by
+    /// `acp_respawn_window_days`). A child whose parent is gone, archived
+    /// or owned elsewhere is lost (D3); the rest go through
+    /// [`Self::respawn_acp_child`], `acp_respawn_parallel` at a time (D2).
+    /// `resuming` is the native open-turn count the pass resumed. Honours
+    /// `durability.resume`: only `auto` respawns anything.
+    pub(super) async fn respawn_acp_children(
+        &mut self,
+        resuming: u32,
+        acp_open: Vec<(Option<SessionId>, SessionId)>,
+    ) {
         let at = Utc::now();
         let mut boot = Boot {
             at,
@@ -93,11 +107,16 @@ impl Agents {
             return;
         }
         let mut seen = HashSet::new();
-        let mut candidates: Vec<(SessionId, SessionId)> = Vec::new();
+        let mut candidates: Vec<(Option<SessionId>, SessionId)> = Vec::new();
+        tracing::info!(
+            n = acp_open.len(),
+            "146: ACP children with an open journal turn"
+        );
+        candidates.extend(acp_open.into_iter().filter(|(_, c)| seen.insert(*c)));
         match self.store.child_waits(Scope::Here).await {
             Ok(waits) => candidates.extend(waits.into_iter().filter_map(|w| {
                 let child = w.target.parse::<SessionId>().ok()?;
-                seen.insert(child).then_some((w.session, child))
+                seen.insert(child).then_some((Some(w.session), child))
             })),
             Err(e) => tracing::error!("109: child_waits: {e:#}"),
         }
@@ -109,7 +128,7 @@ impl Agents {
                 candidates.extend(
                     rows.into_iter()
                         .filter(|(c, _)| seen.insert(*c))
-                        .map(|(c, p)| (p, c)),
+                        .map(|(c, p)| (Some(p), c)),
                 );
             }
             Err(e) => tracing::error!("146: midprompt_acp_children: {e:#}"),
@@ -128,9 +147,29 @@ impl Agents {
         self.pump_respawns().await;
     }
 
+    /// D9: the pass's open turns split into the ACP children's (`(parent,
+    /// child)`, the respawn's) and the native ones (the resume's).
+    pub(super) async fn split_acp_turns(
+        &self,
+        open: &[OpenTurnRow],
+    ) -> (Vec<(Option<SessionId>, SessionId)>, Vec<OpenTurnRow>) {
+        let (mut acp, mut native) = (Vec::new(), Vec::new());
+        for row in open {
+            match self.store.session(row.0).await {
+                Ok(Some(s)) if s.agent.is_some() => acp.push((s.parent, row.0)),
+                _ => native.push(*row),
+            }
+        }
+        (acp, native)
+    }
+
     /// D1: the parent a lost child is reported to must exist, be owned here
-    /// and not be archived; `Err` says why not (the child's lost reason).
-    async fn parent_gate(&self, parent: SessionId) -> Result<(), String> {
+    /// and not be archived; `Err` says why not (the child's lost reason). A
+    /// root ACP session has no parent to gate on.
+    async fn parent_gate(&self, parent: Option<SessionId>) -> Result<(), String> {
+        let Some(parent) = parent else {
+            return Ok(());
+        };
         match self.store.session(parent).await {
             Ok(Some(row)) if !row.here => Err(format!("its parent is owned by {}", row.owner)),
             Ok(Some(row)) if row.archived => Err("its parent is archived".into()),
@@ -168,14 +207,15 @@ impl Agents {
     }
 
     /// The supervisor's `AgentEvent` hook: a connecting child's first real
-    /// `TurnStarted` means its harness accepted the prompt (respawned); a
+    /// `TurnStarted` means its harness accepted the prompt (respawned — on a
+    /// fresh harness session when the text is D11's RESUME brief); a
     /// `TurnFinished` before one is its `fail` turn (lost). Either frees a slot.
     pub(super) async fn boot_child_event(&mut self, ev: &AgentEvent) {
-        let (child, back) = match ev {
+        let (child, back, fresh) = match ev {
             AgentEvent::TurnStarted { session, text, .. } if text != RESPAWN_FAILED_INPUT => {
-                (*session, true)
+                (*session, true, text.contains(FRESH_MARK))
             }
-            AgentEvent::TurnFinished { session, .. } => (*session, false),
+            AgentEvent::TurnFinished { session, .. } => (*session, false, false),
             _ => return,
         };
         let Some(mut boot) = self.boot.take_if(|b| b.inflight.contains_key(&child)) else {
@@ -186,6 +226,10 @@ impl Agents {
         };
         if back {
             boot.pass.respawned += 1;
+            if fresh {
+                boot.pass.fresh += 1;
+                tracing::info!(session = %child, "146: child back on a fresh harness session (D11)");
+            }
         } else {
             self.lose(
                 &mut boot,
@@ -200,38 +244,103 @@ impl Agents {
         self.pump_respawns().await;
     }
 
+    /// D9: the ACP journal, written where the supervisor hands a prompt to
+    /// a harness child ([`Agents::route`], `enqueue_peer`): one open
+    /// `input_accepted` while the child owes work. Nothing else is journaled
+    /// for a harness; a failure is a log line, never a refused prompt.
+    pub(super) async fn acp_journal_open(
+        &self,
+        child: SessionId,
+        source: &str,
+        text: &str,
+        from: Option<&str>,
+    ) {
+        let parent = self
+            .sessions
+            .get(&child)
+            .and_then(|l| l.parent.as_ref().map(|p| p.0));
+        let payload = serde_json::json!({
+            "source": source,
+            "text": crate::store::durability::excerpt(text, JOURNAL_EXCERPT),
+            "parent": parent,
+            "from": from,
+        });
+        match self.store.acp_turn_open(child, &payload).await {
+            Ok(Some(turn)) => {
+                tracing::debug!(session = %child, %turn, source, "146: ACP turn journaled");
+            }
+            Ok(None) => {}
+            Err(e) => tracing::warn!(session = %child, "146: ACP journal: {e:#}"),
+        }
+    }
+
+    /// D9's other half, on the bus: an ACP child's `TurnStarted` opens its
+    /// journal turn when none is (a harness-queued or synthetic prompt the
+    /// hand-off never saw); its `TurnFinished` closes it — except while the
+    /// engine drains (D10): the `suspended{shutdown}` step the drain wrote
+    /// stays, so the next boot reads an owed prompt and sends the continue
+    /// prompt, never a cancel.
+    pub(super) async fn acp_journal_event(&self, ev: &AgentEvent) {
+        let is_acp = |s: &SessionId| matches!(self.sessions.get(s), Some(l) if matches!(l.actor, LiveActor::Acp(_)));
+        match ev {
+            AgentEvent::TurnStarted { session, text, .. } if is_acp(session) => {
+                self.acp_journal_open(*session, "turn_started", text, None)
+                    .await;
+            }
+            AgentEvent::TurnFinished {
+                session,
+                stop_reason,
+                ..
+            } if is_acp(session) => {
+                if super::drain::draining() {
+                    tracing::info!(session = %session, stop_reason, "146 D10: ACP turn cut by the engine's shutdown; journal left open");
+                    return;
+                }
+                if let Err(e) = self.store.acp_turn_close(*session, stop_reason).await {
+                    tracing::warn!(session = %session, "146: ACP journal close: {e:#}");
+                }
+            }
+            _ => {}
+        }
+    }
+
     /// D3: a note on the child and a `<child_lost>` input to the parent
     /// (`inject` forwards it when the parent lives on another engine, 139
-    /// R2; a parent that no longer exists is told nothing). The parent's
-    /// `child_result` wait on it is cleared: the note is the child's last
-    /// row (the mid-prompt scan skips it) and no wait row re-raises it, so a
-    /// lost child is reported once, not on every boot.
+    /// R2; a parent that no longer exists, or a root session, is told
+    /// nothing). The parent's `child_result` wait on it is cleared and its
+    /// journal turn closed `lost`: no row re-raises it, so a lost child is
+    /// reported once, not on every boot.
     async fn lose(
         &mut self,
         boot: &mut Boot,
-        parent: SessionId,
+        parent: Option<SessionId>,
         child: SessionId,
         name: String,
         why: String,
     ) {
         let at = crate::clock::hhmm(boot.at.with_timezone(&chrono::Local));
-        tracing::warn!(session = %child, %parent, "146: child not respawned: {why}");
+        tracing::warn!(session = %child, ?parent, "146: child not respawned: {why}");
         let note = format!("interrupted by the engine restart at {at}; not respawned: {why}");
         if let Err(e) = self.store.append_local_note(child, &note).await {
             tracing::warn!(session = %child, "146: lost note not written: {e:#}");
         }
-        super::child_waits::child_result_delivered(self, parent, child).await;
-        if !why.ends_with("no longer exists") {
-            let body = format!(
-                "{name} was mid-prompt when the engine restarted at {at} and was not respawned: {why}. \
-                 Resume it with send_message or spawn a fresh child with a RESUME brief."
-            );
-            let wrapped = format!(
-                "<child_lost name=\"{name}\" session=\"{child}\" at=\"{at}\" why=\"{}\">\n{body}\n</child_lost>",
-                why.replace('"', "'")
-            );
-            self.inject(parent, &format!("session:{child}"), body, wrapped, None)
-                .await;
+        if let Err(e) = self.store.acp_turn_close(child, "lost").await {
+            tracing::warn!(session = %child, "146: ACP journal close: {e:#}");
+        }
+        if let Some(parent) = parent {
+            super::child_waits::child_result_delivered(self, parent, child).await;
+            if !why.ends_with("no longer exists") {
+                let body = format!(
+                    "{name} was mid-prompt when the engine restarted at {at} and was not respawned: {why}. \
+                     Resume it with send_message or spawn a fresh child with a RESUME brief."
+                );
+                let wrapped = format!(
+                    "<child_lost name=\"{name}\" session=\"{child}\" at=\"{at}\" why=\"{}\">\n{body}\n</child_lost>",
+                    why.replace('"', "'")
+                );
+                self.inject(parent, &format!("session:{child}"), body, wrapped, None)
+                    .await;
+            }
         }
         boot.pass.lost.push((child, name));
     }
@@ -241,6 +350,7 @@ impl Agents {
         tracing::info!(
             resuming = pass.resuming,
             respawned = pass.respawned,
+            fresh = pass.fresh,
             waiting = pass.waiting,
             lost = pass.lost.len(),
             lost_names = ?pass.lost.iter().map(|(_, n)| n.as_str()).collect::<Vec<_>>(),
@@ -259,7 +369,7 @@ impl Agents {
     /// [`Respawn`].
     pub(super) async fn respawn_acp_child(
         &mut self,
-        parent: SessionId,
+        parent: Option<SessionId>,
         child: SessionId,
     ) -> Result<Outcome, String> {
         let row = match self.store.session(child).await {
@@ -310,17 +420,22 @@ impl Agents {
         }
         // §7.2: the child finished before the restart and its result is
         // spared `accepted` for the parent — nothing to respawn.
-        let from = format!("session:{child}");
-        let spared = self
-            .store
-            .pending_exchanges(parent, 64)
-            .await
-            .map_err(|e| format!("{e:#}"))?
-            .iter()
-            .any(|r| r.from == from);
-        if spared {
-            tracing::info!(session = %child, %parent, "109: child result already spared; not respawned");
-            return Ok(Outcome::Skipped);
+        if let Some(parent) = parent {
+            let from = format!("session:{child}");
+            let spared = self
+                .store
+                .pending_exchanges(parent, 64)
+                .await
+                .map_err(|e| format!("{e:#}"))?
+                .iter()
+                .any(|r| r.from == from);
+            if spared {
+                tracing::info!(session = %child, %parent, "109: child result already spared; not respawned");
+                if let Err(e) = self.store.acp_turn_close(child, "end_turn").await {
+                    tracing::warn!(session = %child, "146: ACP journal close: {e:#}");
+                }
+                return Ok(Outcome::Skipped);
+            }
         }
         match self.relaunch_acp_child(child, Continue::Prompt).await {
             Ok(_) => Ok(Outcome::Spawned),
@@ -352,6 +467,10 @@ impl Agents {
         if let LiveActor::Acp(a) = &actor {
             match first {
                 Continue::Prompt => {
+                    // D9: the continue prompt is owed work too — a crash
+                    // before the harness accepts it still reads as open.
+                    self.acp_journal_open(child, "respawn", "<resume_handoff>", None)
+                        .await;
                     let _ = a.tell(Respawn(self.cfg.durability.handoff_tokens)).await;
                 }
                 Continue::Cancelled => {
@@ -576,47 +695,101 @@ mod tests {
             .append(idle, &genai::chat::ChatMessage::assistant("done"))
             .await
             .unwrap();
+        // 146 D9: a child with an open journal turn and no messages at all
+        // (the hand-off was journaled, the harness never opened the turn),
+        // and one whose messages look mid-prompt but whose journal says its
+        // turn ended — the journal wins, the messages heuristic is only for
+        // children without one.
+        let (journaled, journaled_idle) = (SessionId::new(), SessionId::new());
+        for (id, name) in [(journaled, "journaled"), (journaled_idle, "journaled_idle")] {
+            store
+                .create_session(id, "omp", Some(parent), Some(name), None)
+                .await
+                .unwrap();
+            store.set_acp(id, "omp", Some(&dir), &[]).await.unwrap();
+        }
+        let payload = json!({"source": "input", "text": "go"});
+        assert!(
+            store
+                .acp_turn_open(journaled, &payload)
+                .await
+                .unwrap()
+                .is_some()
+        );
+        assert!(
+            store
+                .acp_turn_open(journaled, &payload)
+                .await
+                .unwrap()
+                .is_none(),
+            "one open turn per child"
+        );
+        store.acp_turn_open(journaled_idle, &payload).await.unwrap();
+        store
+            .append(journaled_idle, &genai::chat::ChatMessage::user("go"))
+            .await
+            .unwrap();
+        assert!(
+            store
+                .acp_turn_close(journaled_idle, "end_turn")
+                .await
+                .unwrap()
+        );
+        assert!(
+            !store
+                .acp_turn_close(journaled_idle, "end_turn")
+                .await
+                .unwrap()
+        );
         let since = chrono::Utc::now() - chrono::Duration::days(7);
         let found: Vec<_> = store.midprompt_acp_children(since).await.unwrap();
         assert_eq!(found.len(), 2, "{found:?}");
         assert!(found.contains(&(mid, parent)) && found.contains(&(orphan, arch)));
+        let open = b.open_here().await;
+        let (acp_open, native_open) = b.split_acp_turns(&open).await;
+        assert_eq!(acp_open, vec![(Some(parent), journaled)], "{open:?}");
+        assert_eq!(
+            native_open.len(),
+            1,
+            "the parent's own open turn: {native_open:?}"
+        );
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
         let sink = Sink::spawn_with_mailbox(Sink(tx), runtime::subscriber_mailbox());
         b.rt.subscribe::<Sink, BootPass>(&sink).await;
         b.rt.subscribe::<Sink, AgentEvent>(&sink).await;
 
         assert_eq!(
-            b.respawn_acp_child(parent, native).await,
+            b.respawn_acp_child(Some(parent), native).await,
             Ok(Outcome::Skipped)
         );
         assert_eq!(
-            b.respawn_acp_child(parent, node).await,
+            b.respawn_acp_child(Some(parent), node).await,
             Ok(Outcome::Skipped)
         );
         assert_eq!(
-            b.respawn_acp_child(parent, spared).await,
+            b.respawn_acp_child(Some(parent), spared).await,
             Ok(Outcome::Skipped)
         );
         assert_eq!(
-            b.respawn_acp_child(parent, ghost).await,
+            b.respawn_acp_child(Some(parent), ghost).await,
             Ok(Outcome::Skipped)
         );
         assert_eq!(
-            b.respawn_acp_child(parent, taken).await,
+            b.respawn_acp_child(Some(parent), taken).await,
             Ok(Outcome::Lost("it is owned by a".into()))
         );
         assert!(
-            matches!(b.respawn_acp_child(parent, bad_cwd).await, Ok(Outcome::Lost(w)) if w.contains("not a readable directory")),
+            matches!(b.respawn_acp_child(Some(parent), bad_cwd).await, Ok(Outcome::Lost(w)) if w.contains("not a readable directory")),
             "cwd not here"
         );
         assert!(b.sessions.is_empty(), "nothing spawned so far");
 
         std::sync::Arc::make_mut(&mut b.cfg).durability.resume = ResumeMode::Off;
-        b.respawn_acp_children(0).await;
+        b.respawn_acp_children(0, acp_open.clone()).await;
         assert!(b.sessions.is_empty(), "resume: off respawns nothing");
 
         std::sync::Arc::make_mut(&mut b.cfg).durability.resume = ResumeMode::Auto;
-        b.respawn_acp_children(3).await;
+        b.respawn_acp_children(3, acp_open).await;
         let acp_live = |b: &Agents, id: SessionId| {
             matches!(
                 b.sessions.get(&id),
@@ -631,21 +804,34 @@ mod tests {
             "the waited-on ACP child has a live actor"
         );
         assert!(acp_live(&b, mid), "the mid-prompt child has a live actor");
-        for id in [idle, orphan, taken, bad_cwd, native, node, spared] {
+        assert!(
+            acp_live(&b, journaled),
+            "the journaled child has a live actor"
+        );
+        for id in [
+            idle,
+            journaled_idle,
+            orphan,
+            taken,
+            bad_cwd,
+            native,
+            node,
+            spared,
+        ] {
             assert!(
                 !acp_live(&b, id),
                 "{id} must not be respawned: {:?}",
                 b.sessions.keys()
             );
         }
-        // D2: two connecting, none back yet; D3: taken, bad_cwd, orphan lost.
+        // D2: three connecting, none back yet; D3: taken, bad_cwd, orphan lost.
         let boot = b
             .boot
             .as_ref()
             .expect("pass not settled while children connect");
         assert_eq!(
             (boot.pass.resuming, boot.pass.respawned, boot.pass.waiting),
-            (3, 0, 2)
+            (3, 0, 3)
         );
         let mut lost: Vec<&str> = boot.pass.lost.iter().map(|(_, n)| n.as_str()).collect();
         lost.sort_unstable();
@@ -678,7 +864,21 @@ mod tests {
         })
         .await;
         let boot = b.boot.as_ref().unwrap();
-        assert_eq!((boot.pass.respawned, boot.pass.waiting), (1, 1));
+        assert_eq!((boot.pass.respawned, boot.pass.waiting), (1, 2));
+        // The journaled child comes back on a fresh harness session (D11).
+        b.boot_child_event(&AgentEvent::TurnStarted {
+            session: journaled,
+            turn: TurnId::new(),
+            text: "<resume_handoff>\nThe theuth engine restarted at 1 and your previous harness session s could not be loaded.".into(),
+            model: "omp".into(),
+            turn_seq: 0,
+        })
+        .await;
+        let boot = b.boot.as_ref().unwrap();
+        assert_eq!(
+            (boot.pass.respawned, boot.pass.fresh, boot.pass.waiting),
+            (2, 1, 1)
+        );
         // The other child's `fail` turn: lost, and the pass settles.
         b.boot_child_event(&AgentEvent::TurnStarted {
             session: acp_child,
@@ -745,9 +945,10 @@ mod tests {
         let last = passes.last().expect("boot pass published");
         assert_eq!(
             (last.resuming, last.respawned, last.waiting, last.lost.len()),
-            (3, 1, 0, 4)
+            (3, 2, 0, 4)
         );
-        assert!(passes.iter().any(|p| p.waiting == 2), "{passes:?}");
+        assert!(passes.iter().any(|p| p.waiting == 3), "{passes:?}");
+        assert_eq!(last.fresh, 1);
         let to_arch = delivered
             .iter()
             .find(|(s, f, _)| *s == arch && *f == format!("session:{orphan}"))
