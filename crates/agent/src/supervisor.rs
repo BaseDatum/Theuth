@@ -1304,7 +1304,11 @@ impl Agents {
     /// Inject `text` (already wrapped) into `to` and announce it. Harness-made,
     /// so `Automatic`: it never opens a new reminder budget (47 §4.5). A result
     /// of work an exported task started carries that task's `scope`, and is
-    /// the scope's work from admission (50 §6.3).
+    /// the scope's work from admission (50 §6.3). 139 Revision 1 Q3: a session
+    /// owned by another engine never gets an actor here on account of a
+    /// harness message — the sources (reaper, reminders, spared results) are
+    /// owner-scoped, so this is the backstop; see the as-built for why it
+    /// drops rather than forwards.
     async fn inject(
         &mut self,
         to: SessionId,
@@ -1313,6 +1317,9 @@ impl Agents {
         wrapped: String,
         scope: Option<Uuid>,
     ) {
+        if let Some(owner) = self.remote_owner(to).await {
+            return tracing::warn!(session = %to, %owner, "139: {from}: not injected into a session owned elsewhere");
+        }
         let ticket = self.ledger.admit(to, InputOrigin::Automatic, None);
         if let Some(scope) = scope
             && !self.network_input_queued(scope, ticket).await
@@ -2306,9 +2313,14 @@ impl Agents {
             return tracing::error!("jobs actor not running: stored reminders not re-armed");
         };
         for r in rows {
-            if !matches!(self.store.session(r.session).await, Ok(Some(_))) {
-                let _ = self.store.delete_reminder(r.session, &r.id).await;
-                continue;
+            match self.store.session(r.session).await {
+                Ok(Some(row)) if row.here => {}
+                // 139 Q3: the owner's reminder row replicated here; it fires there.
+                Ok(Some(_)) => continue,
+                _ => {
+                    let _ = self.store.delete_reminder(r.session, &r.id).await;
+                    continue;
+                }
             }
             let _ = jobs
                 .tell(RearmReminder {

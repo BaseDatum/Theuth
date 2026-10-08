@@ -102,8 +102,10 @@ impl Agents {
     /// creates it, the hand-off. A session already running (an input beat
     /// the scan) resumes lazily inside that turn (`Turn::settle_open_turns`).
     /// 139: `cause` overrides the plan's boot rule; `from` names the previous
-    /// owner. W1 adds `ensure!(row.here)` before `self.session` and the
-    /// `rebuild_waits_for` ordering around `transfer::on_resume_here`.
+    /// owner. I1's second line of defence: a session not `here` is never
+    /// resumed (the message also arrives from the RPC and `Take::run`). For
+    /// a transfer / takeover the taken turn's approvals and peer waits
+    /// re-arm here first (§7.3), then §7's jobs / child-waits pass.
     pub(super) async fn resume_turn(
         &mut self,
         session: SessionId,
@@ -121,9 +123,23 @@ impl Agents {
         if plan.last == crate::durability::LastStep::Finished {
             return;
         }
+        match self.store.session(session).await {
+            Ok(Some(row)) if row.here => {}
+            Ok(Some(row)) => {
+                return tracing::warn!(
+                    session = %session, %turn, owner = %row.owner,
+                    "139 I1: session owned elsewhere; not resumed here"
+                );
+            }
+            Ok(None) => return tracing::warn!(session = %session, %turn, "109: no session row"),
+            Err(e) => return tracing::warn!(session = %session, %turn, "109: session: {e:#}"),
+        }
         let cause = cause.unwrap_or(plan.cause);
-        // 139 §7 (W2 dispatcher, W3 bodies): the taken session's jobs, child
-        // waits and questions settle / re-arm on the new owner first.
+        if matches!(cause, ResumeCause::Transfer | ResumeCause::Takeover) {
+            self.rebuild_waits_for(session).await;
+        }
+        // 139 §7 (W2 dispatcher, W3 bodies): the taken session's jobs and
+        // child waits settle on the new owner before its actor exists.
         transfer::on_resume_here(self, session, cause, from.as_deref()).await;
         let actor = match self.session(Some(session), None, None, (None, None)).await {
             Ok((_, LiveActor::Native(actor))) => actor,
@@ -150,5 +166,97 @@ impl Agents {
             }
             Err(e) => tracing::warn!(session = %session, %turn, "109: resume refused: {e}"),
         }
+    }
+}
+
+#[cfg(test)]
+pub(crate) mod tests {
+    use std::path::PathBuf;
+
+    use super::*;
+    use crate::durability::{ResumeKind, StepKind};
+    use crate::store::Store;
+    use crate::supervisor::tests::agents_on;
+
+    /// 139 §11 W1's two-store shape: engine `a` writes a session with an
+    /// open turn and closes the file; engine `b` opens the same file (a
+    /// replica holding `a`'s rows) and gets an `Agents` over it. Returns
+    /// `b`, `a`'s session, its open turn and the dir.
+    pub(crate) async fn b_holding_a_turn(
+        communication: bool,
+    ) -> (Agents, SessionId, TurnId, PathBuf) {
+        let dir = std::env::temp_dir().join(format!("theuth-139-{}", uuid::Uuid::now_v7()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let a = Store::open(
+            &dir.join("sessions.sqlite"),
+            Some(mesh::EngineId("a".into())),
+        )
+        .await
+        .unwrap();
+        let (foreign, turn) = (SessionId::new(), TurnId::new());
+        a.create_session(foreign, "m", None, None, None)
+            .await
+            .unwrap();
+        a.step(
+            foreign,
+            turn,
+            StepKind::InputAccepted,
+            None,
+            &serde_json::json!({}),
+        )
+        .await
+        .unwrap();
+        a.close().await;
+        let b = agents_on(dir.clone(), Some("b"), communication).await;
+        (b, foreign, turn, dir)
+    }
+
+    /// `b`'s own open turn in the shared file.
+    pub(crate) async fn own_turn(b: &Agents) -> (SessionId, TurnId) {
+        let (mine, turn) = (SessionId::new(), TurnId::new());
+        b.store
+            .create_session(mine, "m", None, None, None)
+            .await
+            .unwrap();
+        b.store
+            .step(
+                mine,
+                turn,
+                StepKind::InputAccepted,
+                None,
+                &serde_json::json!({}),
+            )
+            .await
+            .unwrap();
+        (mine, turn)
+    }
+
+    /// I1: under `auto`, `b`'s scan resumes its own open turn and never
+    /// `a`'s; a `ResumeTurn` aimed at `a`'s turn (the RPC, a stale take)
+    /// spawns nothing either — the row is not `here`.
+    #[tokio::test]
+    async fn scan_and_resume_turn_skip_a_foreign_owners_turn() {
+        let (mut b, foreign, foreign_turn, _dir) = b_holding_a_turn(false).await;
+        let (mine, _) = own_turn(&b).await;
+        std::sync::Arc::make_mut(&mut b.cfg).durability.resume = ResumeMode::Auto;
+
+        b.resume_scan().await;
+        assert!(b.sessions.contains_key(&mine), "own turn resumed");
+        assert!(!b.sessions.contains_key(&foreign), "a's turn untouched");
+
+        b.resume_turn(
+            foreign,
+            foreign_turn,
+            None,
+            Some(ResumeCause::Takeover),
+            Some("a".into()),
+        )
+        .await;
+        assert!(
+            !b.sessions.contains_key(&foreign),
+            "ensure!(row.here) holds"
+        );
+        let plan = b.store.resume_plan(foreign, foreign_turn).await.unwrap();
+        assert_eq!(plan.kind, ResumeKind::Interrupted, "journal untouched");
     }
 }
