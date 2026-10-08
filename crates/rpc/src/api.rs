@@ -6943,16 +6943,16 @@ impl Backlog {
 
 /// Does `peer` get `ev` past private ownership (51 §4.2)? An event naming a
 /// private member in `session`, `parent` or `child` reaches only that tree's
-/// owner; a `SubagentSpawned` under a private parent enrols `child` first so
-/// its own later events are filtered too. Events naming no known member pass:
-/// durable trees are not tracked.
+/// owner; a `SubagentSpawned` (or 141 `ObservedChildChanged`) under a private
+/// parent enrols `child` first so its own later events are filtered too.
+/// Events naming no known member pass: durable trees are not tracked.
 fn admitted(ev: &serde_json::Value, peer: u64, private: &PrivateMap) -> bool {
     let id = |k: &str| {
         ev.get(k)
             .and_then(|v| v.as_str())
             .and_then(|s| s.parse::<SessionId>().ok())
     };
-    if ev.get("type").and_then(|t| t.as_str()) == Some("SubagentSpawned")
+    if announces_child(ev)
         && let (Some(parent), Some(child)) = (id("parent"), id("child"))
     {
         let known = private.read().get(&parent).copied();
@@ -6968,13 +6968,24 @@ fn admitted(ev: &serde_json::Value, peer: u64, private: &PrivateMap) -> bool {
         .all(|s| map.get(&s).is_none_or(|&(_, owner)| owner == peer))
 }
 
+/// `SubagentSpawned` or 141 `ObservedChildChanged`: the two events that
+/// introduce a `child` under a `parent` (the latter repeats on every change,
+/// which the enrolments below tolerate).
+fn announces_child(ev: &serde_json::Value) -> bool {
+    matches!(
+        ev.get("type").and_then(|t| t.as_str()),
+        Some("SubagentSpawned" | "ObservedChildChanged")
+    )
+}
+
 /// Does a subscription on `session` forward `ev`? With `tree` (descendants
 /// mode) an event passes when its `session` is in the tree, or it is a
-/// `SubagentSpawned` whose `parent` is — then `child` joins the tree.
-/// Without, everything passes unless both sides name a different session.
-/// `CommunicationChanged` always passes: a global or ancestor switch changes
-/// every descendant's effective state, the filter cannot see ancestry, and
-/// the event carries only a session id and a revision (50 §10).
+/// `SubagentSpawned` / `ObservedChildChanged` whose `parent` is — then
+/// `child` joins the tree. Without, everything passes unless both sides name
+/// a different session. `CommunicationChanged` always passes: a global or
+/// ancestor switch changes every descendant's effective state, the filter
+/// cannot see ancestry, and the event carries only a session id and a
+/// revision (50 §10).
 fn wanted(
     ev: &serde_json::Value,
     session: Option<&str>,
@@ -6993,7 +7004,7 @@ fn wanted(
     if field("session").is_some_and(|s| tree.contains(s)) {
         return true;
     }
-    if field("type") == Some("SubagentSpawned")
+    if announces_child(ev)
         && field("parent").is_some_and(|p| tree.contains(p))
         && let Some(child) = field("child")
     {
@@ -7366,6 +7377,38 @@ mod tests {
             assert!(admitted(&durable, peer, &private));
             assert!(admitted(&none, peer, &private));
         }
+    }
+
+    /// 141 §8.2: `ObservedChildChanged` is the watch-only twin of
+    /// `SubagentSpawned` for both filters — it enrols `child` in a private
+    /// tree and in a `descendants` subscription, so the child's transcript
+    /// events follow; a repeat (every state change re-announces) is harmless.
+    #[test]
+    fn observed_child_changed_enrols_like_subagent_spawned() {
+        let (p, c, other) = (SessionId::new(), SessionId::new(), SessionId::new());
+        let announce = serde_json::json!({
+            "type": "ObservedChildChanged", "parent": p, "child": c, "name": "ReadA",
+            "model": null, "observed": { "source": "omp_task", "external": "ReadA", "state": "running" }
+        });
+        let private: PrivateMap = Default::default();
+        private.write().insert(p, (p, 7));
+        assert!(!admitted(&announce, 8, &private));
+        assert!(admitted(&announce, 7, &private));
+        assert_eq!(private.read().get(&c), Some(&(p, 7)));
+        let child = serde_json::json!({ "type": "TextDelta", "session": c, "text": "hi" });
+        assert!(!admitted(&child, 8, &private));
+
+        let mut tree: HashSet<String> = HashSet::from([p.to_string()]);
+        assert!(!wanted(&child, Some(&p.to_string()), Some(&mut tree)));
+        assert!(wanted(&announce, Some(&p.to_string()), Some(&mut tree)));
+        assert!(
+            wanted(&announce, Some(&p.to_string()), Some(&mut tree)),
+            "repeat"
+        );
+        assert!(wanted(&child, Some(&p.to_string()), Some(&mut tree)));
+        let stranger = serde_json::json!({ "type": "ObservedChildChanged", "parent": other, "child": SessionId::new() });
+        assert!(!wanted(&stranger, Some(&p.to_string()), Some(&mut tree)));
+        assert_eq!(tree.len(), 2);
     }
 
     /// 129 §3: focus filter, delta merging, bounded backlog, `Lagged`.

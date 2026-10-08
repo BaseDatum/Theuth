@@ -9,8 +9,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
-use agent::AgentEvent;
 use agent::communication::PeerScope;
+use agent::{AgentEvent, ObservedMeta, ObservedSource, ObservedState};
 use artifact::ArtifactShown;
 use kameo::Actor;
 use kameo::actor::{ActorRef, Spawn};
@@ -188,6 +188,8 @@ struct ChildState {
     kind: ChildKind,
     detail: String,
     since: Instant,
+    /// 141 §10.3: a watch-only harness subagent (`◎` row, no topic/marker).
+    watch: bool,
 }
 
 impl ChildState {
@@ -197,7 +199,35 @@ impl ChildState {
             kind: ChildKind::Idle,
             detail: String::new(),
             since: Instant::now(),
+            watch: false,
         }
+    }
+
+    /// 141 §10.3: an `ObservedChildChanged` — state from the harness's word
+    /// (failed/lost are errors, done is idle), detail `watch · <src>` plus
+    /// the stop text or last intent (as `crates/slack/src/board.rs` `Row::observed`).
+    fn observed(&mut self, o: &ObservedMeta) -> bool {
+        let tag = match o.source {
+            ObservedSource::Rfd => "ACP",
+            ObservedSource::OpencodeExt | ObservedSource::OpencodeTask => "opencode",
+            ObservedSource::OmpTask => "omp task",
+        };
+        let first = !std::mem::replace(&mut self.watch, true);
+        let (kind, note) = match o.state {
+            ObservedState::Running => (ChildKind::Running, None),
+            ObservedState::RequiresAction => (ChildKind::Approval, None),
+            ObservedState::Failed => (ChildKind::Error, o.stop.as_deref()),
+            ObservedState::Cancelled => (ChildKind::Cancelled, None),
+            ObservedState::Unknown => (ChildKind::Error, Some("lost contact")),
+            ObservedState::Pending | ObservedState::Idle | ObservedState::Completed => {
+                (ChildKind::Idle, None)
+            }
+        };
+        let detail = match note.or_else(|| o.detail["lastIntent"].as_str()) {
+            Some(more) => format!("watch · {tag} · {more}"),
+            None => format!("watch · {tag}"),
+        };
+        self.set(kind, cut(&detail, DETAIL_MAX)) || first
     }
 
     /// `true` when the row changed (`crates/slack/src/board.rs` `Row::apply`).
@@ -255,7 +285,7 @@ impl ChildState {
     fn row(&self) -> (Row, bool) {
         (
             Row {
-                glyph: self.kind.glyph(),
+                glyph: if self.watch { "◎" } else { self.kind.glyph() },
                 name: self.name.clone(),
                 state: self.kind.word().to_owned(),
                 detail: self.detail.clone(),
@@ -449,7 +479,9 @@ async fn run(
     chan.rt.subscribe::<Bus, ArtifactShown>(&bus).await;
     chan.rt.subscribe::<Bus, secrets::SecretsEvent>(&bus).await;
     chan.rt.subscribe::<Bus, mesh::MeshEvent>(&bus).await;
-    chan.rt.subscribe::<Bus, double::DoublePredicted>(&bus).await;
+    chan.rt
+        .subscribe::<Bus, double::DoublePredicted>(&bus)
+        .await;
     chan.rt.subscribe::<Bus, double::DoubleAnswered>(&bus).await;
     if let Some(live) = &chan.live {
         let hook = Arc::clone(&chan);
@@ -2294,6 +2326,24 @@ impl Channel {
                 name,
                 ..
             }) => self.spawned(parent, child, name).await,
+            // 141 §10.3: a watch-only child is a board row on every bound
+            // ancestor and nothing else — no topic, no `↳ spawned` marker.
+            Event::Agent(AgentEvent::ObservedChildChanged {
+                parent,
+                child,
+                name,
+                observed,
+                ..
+            }) => {
+                {
+                    let mut s = self.lock();
+                    s.parent_of.insert(child, (parent, name.clone()));
+                    s.children
+                        .entry(child)
+                        .or_insert_with(|| ChildState::new(name));
+                }
+                self.child_row(child, |c| c.observed(&observed)).await;
+            }
             Event::Agent(ev) => {
                 let Some(session) = ev.session() else { return };
                 {
@@ -3562,6 +3612,81 @@ pub(crate) mod tests {
             }
         }
         assert!(seen_running);
+    }
+
+    /// 141 §10.3: a watch-only child is a `◎ … watch · <src>` row on the
+    /// parent's board, in the topics shape too — no topic, no `↳ spawned`
+    /// marker, no thread; the state follows the harness's word for it.
+    #[tokio::test]
+    async fn observed_child_is_a_watch_row_without_a_topic_or_marker() {
+        let f = fixture(true);
+        let parent = f.bind(&threads::key(OWNER_CHAT, Some(7)), OWNER);
+        let mut rx = f.tap_worker(&threads::key(OWNER_CHAT, Some(7)));
+        let child = SessionId::new();
+        let changed = |state, intent: Option<&str>| {
+            Event::Agent(AgentEvent::ObservedChildChanged {
+                parent,
+                child,
+                name: "ReadA".into(),
+                model: None,
+                observed: ObservedMeta {
+                    source: ObservedSource::OmpTask,
+                    external: "ReadA".into(),
+                    state,
+                    stop: None,
+                    can_cancel: false,
+                    description: None,
+                    tool_call: None,
+                    cost_rule: agent::CostRule::Counted,
+                    detail: intent.map_or(
+                        serde_json::Value::Null,
+                        |i| serde_json::json!({ "lastIntent": i }),
+                    ),
+                },
+            })
+        };
+        f.chan
+            .handle_event(changed(ObservedState::Running, Some("Reading first line")))
+            .await;
+        f.chan
+            .handle_event(changed(ObservedState::Failed, None))
+            .await;
+        assert!(
+            f.api.calls().is_empty(),
+            "no topic, no marker: {:?}",
+            f.api.calls()
+        );
+        assert!(f.chan.lock().threads.by_session(child).is_none());
+        assert!(!f.chan.lock().markers.values().any(|s| *s == child));
+        let mut rows = Vec::new();
+        while let Ok(m) = rx.try_recv() {
+            if let WorkerMsg::ChildRow {
+                child: c,
+                row,
+                idle,
+            } = m
+            {
+                assert_eq!(c, child);
+                rows.push((row.glyph, row.state, row.detail, idle));
+            }
+        }
+        assert_eq!(
+            rows,
+            [
+                (
+                    "◎",
+                    "running".to_owned(),
+                    "watch · omp task · Reading first line".to_owned(),
+                    false
+                ),
+                (
+                    "◎",
+                    "error".to_owned(),
+                    "watch · omp task".to_owned(),
+                    false
+                ),
+            ]
+        );
     }
 
     #[tokio::test]

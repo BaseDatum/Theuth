@@ -18,8 +18,8 @@ use crate::model::{
 };
 use crate::model::{
     APP_WHERE, AcpRow, CardKind, Command, Entry, Level, Menu, MenuKey, Model, Prompt, Row, Switch,
-    TodoCard, TurnAction, UiEvent, action_name, agent_row, artifact_row, artifact_size, describe,
-    gate_name, k, meta_line, now_ms, progress_line, result_line, short, slash_matches, window,
+    TodoCard, TurnAction, UiEvent, action_name, artifact_row, artifact_size, describe, gate_name,
+    k, meta_line, now_ms, progress_line, result_line, short, window,
 };
 use crate::pathac;
 use crate::search::{self, Focus, Preview};
@@ -558,7 +558,8 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
                 let text = input.read().to_string();
                 let cursor = handle.read().cursor_offset().min(text.len());
                 let slash_busy = matches!(m.menu, Some(Menu::Slash { .. }))
-                    && !slash_matches(text.split(' ').next().unwrap_or_default(), m.app_enabled)
+                    && !m
+                        .slash_rows(text.split(' ').next().unwrap_or_default())
                         .is_empty();
                 let session = m.session;
                 match m
@@ -602,6 +603,26 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
                     }
                 }
                 return;
+            }
+            // 141 §10.1: a watch-only child has no editor. `/` opens it for one
+            // slash command (`/parent`, `/agents`, … — the way out); anything
+            // else that would have been typed gets the read-only hint instead.
+            if m.observed.is_some()
+                && !m.input_focused()
+                && !modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
+            {
+                match code {
+                    KeyCode::Char('/') => {
+                        m.watch_slash = true;
+                        insert_at_cursor(&mut m, "/");
+                        return;
+                    }
+                    KeyCode::Char(_) | KeyCode::Enter | KeyCode::Backspace | KeyCode::Tab => {
+                        m.watch_swallow();
+                        return;
+                    }
+                    _ => {}
+                }
             }
             // `o` on an empty editor opens the newest artifact card's file with the OS (35 §6.1).
             if code == KeyCode::Char('o')
@@ -1009,9 +1030,10 @@ fn menu(m: &Model, input: &str, width: u16, height: u16) -> Option<AnyElement<'s
     let (title, rows, cursor): (String, Vec<String>, usize) = match m.menu.as_ref()? {
         Menu::Slash { cursor } => {
             let word = input.split(' ').next().unwrap_or_default();
-            let rows = slash_matches(word, m.app_enabled)
+            let rows = m
+                .slash_rows(word)
                 .into_iter()
-                .map(|(name, hint, desc)| format!("{:<30} {desc}", format!("{name} {hint}")))
+                .map(|r| format!("{:<30} {}", format!("{} {}", r.name, r.hint), r.desc))
                 .collect::<Vec<_>>();
             (
                 "↑↓ move  ⇥ complete  ⏎ run  esc close".to_owned(),
@@ -1140,7 +1162,7 @@ fn menu(m: &Model, input: &str, width: u16, height: u16) -> Option<AnyElement<'s
             "agents  ⏎ open  esc close  (the one you leave keeps running)".to_owned(),
             items
                 .iter()
-                .map(|a| format!("{}{}", agent_row(a, m.spinner(), width), m.child_cost_tag(a.info.id)))
+                .map(|a| m.board_row(a, width))
                 .collect(),
             *cursor,
         ),
@@ -1798,7 +1820,7 @@ fn board(m: &Model, width: u16) -> Option<AnyElement<'static>> {
             View(border_style: BorderStyle::Round, border_color: SAND, flex_direction: FlexDirection::Column, padding_left: 1, padding_right: 1) {
                 Text(content: "agents", color: SAND)
                 #(rows.iter().take(BOARD_ROWS).map(|r| {
-                    let row = agent_row(r, m.spinner(), width);
+                    let row = m.board_row(r, width);
                     let (glyph, rest) = split_chars(&row, 2);
                     let (name, rest) = split_chars(rest, 15);
                     element! {

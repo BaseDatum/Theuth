@@ -10,7 +10,9 @@ import type { HarnessCommand } from "@/rpc/bindings/HarnessCommand";
 import type { JobExit } from "@/rpc/bindings/JobExit";
 import type { LiveCountsRow } from "@/rpc/bindings/LiveCountsRow";
 import type { PeerOrigin } from "@/rpc/bindings/PeerOrigin";
+import type { ObservedMeta } from "@/rpc/bindings/ObservedMeta";
 import type { QueuedInput } from "@/rpc/bindings/QueuedInput";
+import type { SessionKind } from "@/rpc/bindings/SessionKind";
 import type { ResumeCause } from "@/rpc/bindings/ResumeCause";
 import type { SessionSummary } from "@/rpc/bindings/SessionSummary";
 import type { TodoSnapshot } from "@/rpc/bindings/TodoSnapshot";
@@ -234,6 +236,10 @@ export type SessionSlice = {
   name?: string | null;
   parent?: string | null;
   agent?: string | null;
+  /** 141 §5.1: `observed` is a watch-only harness subagent — no composer, no model menu, an `ObservedBar` instead. */
+  kind?: SessionKind;
+  /** 141: the watch-only facts (source, state, cost rule, live detail) when `kind === 'observed'`. */
+  observed?: ObservedMeta | null;
   /** Model the external engine reports for its session (06 §8.2); the header shows `agent · harnessModel`. */
   harnessModel?: string | null;
   /** The ACP child's command manifest (75 §3): `skill:<name>` entries are loaded skills, the rest commands. */
@@ -465,6 +471,8 @@ export const createSessions = (): SessionsApi =>
             queued: loaded.queued,
             undone: loaded.undone,
             agent: loaded.agent,
+            kind: loaded.kind,
+            observed: loaded.observed,
             harnessModel: loaded.harness_model ?? cur.harnessModel,
             harnessCommands: loaded.harness_commands ?? cur.harnessCommands,
             contextSize: loaded.context_size ?? cur.contextSize,

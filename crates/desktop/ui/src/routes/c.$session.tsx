@@ -8,6 +8,7 @@ import { useAdvisor } from '@/components/chat/advisor'
 import { CodeMapPane } from '@/components/codemap/CodeMapHost'
 import { Composer } from '@/components/chat/Composer'
 import { Header } from '@/components/chat/Header'
+import { ObservedBar } from '@/components/chat/ObservedBar'
 import { LinkBanner } from '@/components/link/LinkFailure'
 import { lastCode } from '@/components/chat/MessageAssistant'
 import { relistArtifacts } from '@/components/chat/ArtifactCard'
@@ -84,6 +85,8 @@ export function LiveSession({ session, first }: { session: string; first: boolea
   const { sessions: store } = useScope()
   const title = useSessionField(session, 'title')
   const running = useSessionField(session, 'running')
+  // 141 §9.2(d): a watch-only harness subagent has a transcript but nothing to say to — the bar stands where the composer would.
+  const watching = useSessionField(session, 'kind') === 'observed'
   // A title hit opened this chat (49 §7): offer the way back to the results; any other origin belongs to another destination.
   const origin = useSearchOrigin()
   const destination = useMemo<SearchDestination>(() => ({ category: 'sessions', session, seq: null }), [session])
@@ -145,7 +148,7 @@ export function LiveSession({ session, first }: { session: string; first: boolea
       <Transcript key={`t:${session}`} session={session} />
       <SubagentStrip session={session} trailing={advised ? <AdvisorPill session={session} /> : undefined} />
       <TodoCard key={`d:${session}`} session={session} />
-      <Composer key={`c:${session}`} session={session} />
+      {watching ? <ObservedBar session={session} /> : <Composer key={`c:${session}`} session={session} />}
     </>
   )
 }

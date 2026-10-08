@@ -1,6 +1,10 @@
+import type { ObservedMeta } from '@/rpc/bindings/ObservedMeta'
+import type { ObservedState } from '@/rpc/bindings/ObservedState'
 import type { SessionKind } from '@/rpc/bindings/SessionKind'
 import type { SessionSummary } from '@/rpc/bindings/SessionSummary'
 import type { AgentInfo, AgentState } from '@/rpc/extra'
+import type { CostBucket } from '@/rpc/bindings/CostBucket'
+import { costShort, usd } from './money'
 
 /** How many subagent rows any parent shows before `Show more`. */
 export const TREE_CAP = 5
@@ -10,6 +14,82 @@ export const live = (state: AgentState['state']): boolean => state === 'running'
 
 /** 125 §8.5: the hidden advisor child is never a tree row, a strip dot or a live session — the engine hides it; this is the belt. */
 export const notAdvisor = (r: { kind?: SessionKind }): boolean => r.kind !== 'advisor'
+
+/** 141 §3: the tag a watch-only child's row carries — which feed describes it. */
+export const sourceTag = (o: Pick<ObservedMeta, 'source'>): 'omp task' | 'opencode' | 'ACP' =>
+  o.source === 'omp_task' ? 'omp task' : o.source === 'rfd' ? 'ACP' : 'opencode'
+
+/** 141 §5.2: the tree/strip state of a watch-only child from the harness's own; `idle`/`completed`/`pending`/`unknown` all rest (Q1: idle is not done). */
+export const observedState = (s: ObservedState): AgentState =>
+  s === 'running'
+    ? { state: 'running' }
+    : s === 'requires_action'
+      ? { state: 'approval', tool: 'permission' }
+      : s === 'failed'
+        ? { state: 'error' }
+        : s === 'cancelled'
+          ? { state: 'cancelled' }
+          : { state: 'idle' }
+
+/** The word a watch-only row, dot or bar shows for its state (never "observed" in the UI). */
+export const observedLabel: Record<ObservedState, string> = {
+  pending: 'pending',
+  running: 'running',
+  requires_action: 'waiting on you',
+  idle: 'idle',
+  completed: 'finished',
+  failed: 'failed',
+  cancelled: 'stopped',
+  unknown: 'lost contact',
+}
+
+/** What runs the child: the parent's harness name when known, else the feed's product. */
+export const harnessName = (o: Pick<ObservedMeta, 'source'>, parentAgent: string | null | undefined): string =>
+  parentAgent || (o.source === 'omp_task' ? 'omp' : o.source === 'rfd' ? 'the harness' : 'opencode')
+
+/** 141 §6: the live fields a feed keeps in `observed.detail` — omp rows carry most; opencode/RFD rows carry none. */
+export type ObservedDetail = {
+  agent?: string
+  index?: number
+  lastIntent?: string
+  currentTool?: string
+  toolCount?: number
+  tokens?: number
+  contextTokens?: number
+  /** omp: the child's model context limit (Q3: the ObservedBar/header meter reads `contextTokens/contextWindow`). */
+  contextWindow?: number
+  /** USD as the harness reported it; shown by the cost rule (`inside_parent` greyed, `counted` via the meter). */
+  cost?: number
+  /** Q9: 18.8.4 progress, 0–100, when present. */
+  completionPercent?: number
+}
+
+/** `observed.detail` read defensively: the JSON is the harness's, so every field is checked, never trusted. */
+export function detailOf(o: Pick<ObservedMeta, 'detail'> | null | undefined): ObservedDetail {
+  const d: unknown = o?.detail
+  if (typeof d !== 'object' || d === null || Array.isArray(d)) return {}
+  const r = d as Record<string, unknown>
+  const num = (k: string) => {
+    const v = r[k]
+    return typeof v === 'number' && Number.isFinite(v) ? v : undefined
+  }
+  const str = (k: string) => {
+    const v = r[k]
+    return typeof v === 'string' && v !== '' ? v : undefined
+  }
+  return {
+    agent: str('agent'),
+    index: num('index'),
+    lastIntent: str('lastIntent'),
+    currentTool: str('currentTool'),
+    toolCount: num('toolCount'),
+    tokens: num('tokens'),
+    contextTokens: num('contextTokens'),
+    contextWindow: num('contextWindow'),
+    cost: num('cost'),
+    completionPercent: num('completionPercent'),
+  }
+}
 
 /** What every subagent list sorts by: live rows first, then most recent activity, then newest created. */
 export type Rank = { live: boolean; at: number; created: number }
@@ -114,4 +194,20 @@ export function subtrees(sessions: readonly SessionSummary[]): Map<string, Sessi
     else out.set(root, [s])
   }
   return out
+}
+
+/**
+ * 141 §7.6 / R3 T8: the one money cell every surface shows for a watch-only child (tree row, roster row, header
+ * pill): `counted` → the child's own metered total (`session_cost(child)`), else the harness's figure; `inside_parent`
+ * → the harness's figure greyed; `display_only`/`unreported` → `—`. `metered` is the child's inclusive bucket.
+ */
+export function watchCost(o: Pick<ObservedMeta, 'cost_rule' | 'detail'> | null | undefined, metered: CostBucket | undefined): { text: string; grey: boolean; title: string } {
+  const rule = o?.cost_rule
+  const reported = detailOf(o).cost
+  const money = metered && (metered.returned.length > 0 || metered.estimated_for_unavailable.length > 0) ? costShort(metered) : undefined
+  if (rule === 'counted') {
+    return { text: money ?? (reported !== undefined ? usd(reported) : '—'), grey: false, title: 'counted — not in the harness’s own total' }
+  }
+  if (rule === 'inside_parent' && reported !== undefined) return { text: usd(reported), grey: true, title: 'inside parent — already in the harness’s own total' }
+  return { text: '—', grey: true, title: rule === 'display_only' ? 'reported by the harness, not counted' : 'not reported by the harness' }
 }

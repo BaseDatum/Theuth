@@ -18,7 +18,9 @@
 //! - vision fallback for a text-only main model (design doc 52) in [`vision`]:
 //!   [`VisionNote`] on `HistoryEntry::User`, [`AgentEvent::VisionProgress`] live.
 
+use std::fmt;
 use std::path::PathBuf;
+use std::str::FromStr;
 use std::sync::Arc;
 
 use runtime::{InputId, SessionId, TurnId};
@@ -1094,6 +1096,16 @@ pub struct Loaded {
     #[serde(default)]
     #[cfg_attr(feature = "ts", ts(optional))]
     pub resume: Option<ResumeState>,
+    /// Row kind (141 §8.1): `observed` = a watch-only harness subagent; the
+    /// session view hides the composer without a second RPC. `chat` from an
+    /// older harness.
+    #[serde(default)]
+    #[cfg_attr(feature = "ts", ts(optional = nullable))]
+    pub kind: SessionKind,
+    /// Watch-only facts when `kind == observed` (141 §5.1); `None` otherwise.
+    #[serde(default)]
+    #[cfg_attr(feature = "ts", ts(optional = nullable))]
+    pub observed: Option<ObservedMeta>,
 }
 
 /// 109 §10.3: [`Loaded.resume`] — the session has an open turn (interrupted
@@ -1235,6 +1247,11 @@ pub struct AgentInfo {
     #[serde(default)]
     #[cfg_attr(feature = "ts", ts(optional = nullable))]
     pub kind: SessionKind,
+    /// Watch-only facts when `kind == observed` (141 §5.1): a subagent the
+    /// harness runs inside itself; `agent` is `None` and nothing drives it.
+    #[serde(default)]
+    #[cfg_attr(feature = "ts", ts(optional = nullable))]
+    pub observed: Option<ObservedMeta>,
 }
 
 /// Live facts about one session, computed on `Agents` (62 §0.5, §3.2).
@@ -2106,9 +2123,10 @@ pub struct SkillBody {
     pub files: Vec<String>,
 }
 
-/// What a `sessions` row is (125 §6.2): an ordinary chat, or the hidden
-/// `advisor` child that reviews its parent's transcript (ruling 1). Stored
-/// as `sessions.kind`; readers hide advisors unless asked.
+/// What a `sessions` row is (125 §6.2): an ordinary chat, the hidden
+/// `advisor` child that reviews its parent's transcript (ruling 1), or a
+/// watch-only `observed` subagent a harness runs inside itself (141 D2).
+/// Stored as `sessions.kind`; readers hide advisors unless asked.
 #[derive(
     Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema,
 )]
@@ -2120,6 +2138,91 @@ pub enum SessionKind {
     Chat,
     /// The hidden advisor session of its parent (125 §4).
     Advisor,
+    /// A watch-only child a harness runs inside itself (141 §5): `parent` =
+    /// the ACP child (or an observed parent when nested), no `agent`,
+    /// `acp_session` = the harness's own id. Never driven, never messaged.
+    Observed,
+}
+
+cost::str_enum! {
+    /// Which feed produced a watch-only child (141 §3 "Source"); stored as
+    /// `sessions.observed_source`.
+    ObservedSource {
+        /// ACP RFD `subagent_update` + child-addressed `session/update`s (UI tag `ACP`).
+        Rfd = "rfd",
+        /// opencode 2.x `opencode/session/child_update` (UI tag `opencode`).
+        OpencodeExt = "opencode_ext",
+        /// opencode 1.x `task` tool-call lifecycle only (UI tag `opencode`).
+        OpencodeTask = "opencode_task",
+        /// omp `task` progress rows + on-disk transcript tail (UI tag `omp task`).
+        OmpTask = "omp_task",
+    }
+}
+
+cost::str_enum! {
+    /// Lifecycle of a watch-only child as the harness reports it (141 §5.2);
+    /// stored as `sessions.observed_state`. Any observation may move any
+    /// state to any other; the restart sweep touches non-terminal rows only.
+    ObservedState {
+        /// Announced, not started.
+        Pending = "pending",
+        /// The harness is working on it.
+        Running = "running",
+        /// Waits on a human (permission/elicitation).
+        RequiresAction = "requires_action",
+        /// Turn ended; the harness may prompt it again (RFD).
+        Idle = "idle",
+        /// Finished successfully.
+        Completed = "completed",
+        /// Finished with an error.
+        Failed = "failed",
+        /// Stopped by a cancel.
+        Cancelled = "cancelled",
+        /// Lost contact / activity unobservable.
+        Unknown = "unknown",
+    }
+}
+
+impl ObservedState {
+    /// `completed | failed | cancelled`: kept on a later `unknown` mark (141 §5.2).
+    pub fn is_terminal(self) -> bool {
+        matches!(self, Self::Completed | Self::Failed | Self::Cancelled)
+    }
+}
+
+/// How a watch-only child's cost relates to its parent's (141 §7.6, D8); the
+/// acp adapters choose it per frame, so the one type lives there.
+pub use acp::CostRule;
+
+/// Watch-only facts of an `observed` row (141 §5.1), carried on
+/// [`AgentInfo`], [`SessionSummary`], [`Loaded`] and
+/// [`AgentEvent::ObservedChildChanged`].
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+pub struct ObservedMeta {
+    /// Which feed produced the row.
+    pub source: ObservedSource,
+    /// The harness's own id for the child (`sessions.acp_session`).
+    pub external: String,
+    /// Lifecycle as the harness reports it.
+    pub state: ObservedState,
+    /// Stop reason or error text (`observed_stop`); `"lost contact"` from the engine.
+    #[cfg_attr(feature = "ts", ts(optional = nullable))]
+    pub stop: Option<String>,
+    /// The harness accepts `session/cancel` for this child (RFD `capabilities.cancel`).
+    pub can_cancel: bool,
+    /// Roster card second line (`observed_description`).
+    #[cfg_attr(feature = "ts", ts(optional = nullable))]
+    pub description: Option<String>,
+    /// The spawning tool call id in the parent's transcript (`observed_tool_call`).
+    #[cfg_attr(feature = "ts", ts(optional = nullable))]
+    pub tool_call: Option<String>,
+    /// Cost rule applied (141 §7.6).
+    pub cost_rule: CostRule,
+    /// Source-specific live fields (`observed_detail`, 141 §6 mapping tables);
+    /// `null` when none were stored.
+    #[serde(default)]
+    pub detail: serde_json::Value,
 }
 
 /// One row of the session list.
@@ -2198,6 +2301,10 @@ pub struct SessionSummary {
     /// Memory mode (137 D1): `epochs` from an older harness.
     #[serde(default)]
     pub memory: MemoryMode,
+    /// Watch-only facts when `kind == observed` (141 §5.1); `None` otherwise.
+    #[serde(default)]
+    #[cfg_attr(feature = "ts", ts(optional = nullable))]
+    pub observed: Option<ObservedMeta>,
 }
 
 fn one() -> u32 {
@@ -2604,6 +2711,22 @@ pub enum AgentEvent {
         #[cfg_attr(feature = "ts", ts(optional))]
         cap: Option<tools::Risk>,
     },
+    /// A watch-only child of `parent` was created or changed (141 §7.5): an
+    /// upsert, also on every state/detail change (detail-only changes are
+    /// throttled ≥ 250 ms per child). Not [`Self::SubagentSpawned`]: nothing
+    /// here is drivable, so channels bind no thread/topic to it.
+    ObservedChildChanged {
+        /// The ACP child (or the observed parent when nested).
+        parent: SessionId,
+        /// The watch-only row.
+        child: SessionId,
+        /// Display name (RFD/opencode title, omp `progress[].id`).
+        name: String,
+        /// The child's own model when the source reports one.
+        model: Option<String>,
+        /// Source, external id, state, cost rule, detail.
+        observed: ObservedMeta,
+    },
     /// Text injected into `session` by the harness (subagent result, peer
     /// message, finished or quiet job), for transcripts.
     MessageDelivered {
@@ -2972,7 +3095,9 @@ impl AgentEvent {
             | Self::PartialDropped { session, .. }
             | Self::AdvisorChanged { session, .. }
             | Self::AdvisoryAdded { session, .. } => Some(*session),
-            Self::SubagentSpawned { child, .. } => Some(*child),
+            Self::SubagentSpawned { child, .. } | Self::ObservedChildChanged { child, .. } => {
+                Some(*child)
+            }
             Self::DefaultModelChanged { .. }
             | Self::DefaultEffortChanged { .. }
             | Self::FavoriteModelsChanged { .. } => None,

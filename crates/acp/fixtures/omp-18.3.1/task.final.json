@@ -1,0 +1,129 @@
+{
+ "jsonrpc": "2.0",
+ "method": "session/update",
+ "params": {
+  "sessionId": "01a11b25-d8f7-71b3-a309-a306e24281dc",
+  "update": {
+   "sessionUpdate": "tool_call_update",
+   "toolCallId": "toolu_013x6rgBK7MEUsQq79DoL4YK",
+   "status": "in_progress",
+   "rawOutput": {
+    "content": [
+     {
+      "type": "text",
+      "text": "Background task ReadA complete."
+     }
+    ],
+    "details": {
+     "projectAgentsDir": null,
+     "results": [],
+     "totalDurationMs": 4833,
+     "progress": [
+      {
+       "index": 0,
+       "id": "ReadA",
+       "agent": "scout",
+       "agentSource": "bundled",
+       "modelRole": "smol",
+       "status": "completed",
+       "task": "Complete assignment thoroughly:\n\n# Target\n`a.txt` in cwd.\n#…",
+       "assignment": "# Target\n`a.txt` in cwd.\n# Change\nRead it; report its first…",
+       "recentTools": [
+        {
+         "tool": "yield",
+         "args": "",
+         "endMs": 1791456837192
+        },
+        {
+         "tool": "read",
+         "args": "a.txt:1-1",
+         "endMs": 1791456834916
+        }
+       ],
+       "recentOutput": [],
+       "toolCount": 2,
+       "requests": 2,
+       "tokens": 9118,
+       "cost": 0.12128025,
+       "durationMs": 4819,
+       "resolvedModel": "anthropic/claude-fable-5-1:high",
+       "resolvedModelIdentity": "anthropic/claude-fable-5-1",
+       "resolvedThinkingLevel": "high",
+       "contextTokens": 9037,
+       "contextWindow": 1000000,
+       "lastIntent": "Reading first line",
+       "extractedToolData": {
+        "yield": [
+         {
+          "data": {
+           "first_line": "alpha line one"
+          },
+          "status": "success"
+         }
+        ]
+       }
+      },
+      {
+       "index": 1,
+       "id": "ReadB",
+       "agent": "scout",
+       "agentSource": "bundled",
+       "modelRole": "smol",
+       "status": "completed",
+       "task": "Complete assignment thoroughly:\n\n# Target\n`b.txt` in cwd.\n#…",
+       "assignment": "# Target\n`b.txt` in cwd.\n# Change\nRead it; report its first…",
+       "recentTools": [
+        {
+         "tool": "yield",
+         "args": "",
+         "endMs": 1791456836056
+        },
+        {
+         "tool": "read",
+         "args": "b.txt:1-1:raw",
+         "endMs": 1791456834430
+        }
+       ],
+       "recentOutput": [],
+       "toolCount": 2,
+       "requests": 2,
+       "tokens": 9143,
+       "cost": 0.12170525,
+       "durationMs": 3672,
+       "resolvedModel": "anthropic/claude-fable-5-1:high",
+       "resolvedModelIdentity": "anthropic/claude-fable-5-1",
+       "resolvedThinkingLevel": "high",
+       "contextTokens": 9059,
+       "contextWindow": 1000000,
+       "lastIntent": "Reading first line",
+       "extractedToolData": {
+        "yield": [
+         {
+          "data": {
+           "first_line": "bravo line one"
+          },
+          "status": "success"
+         }
+        ]
+       }
+      }
+     ],
+     "async": {
+      "state": "completed",
+      "jobId": "ReadA",
+      "type": "task"
+     }
+    }
+   },
+   "content": [
+    {
+     "type": "content",
+     "content": {
+      "type": "text",
+      "text": "Background task ReadA complete."
+     }
+    }
+   ]
+  }
+ }
+}
