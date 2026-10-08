@@ -1,6 +1,6 @@
 import { Link } from '@tanstack/react-router'
 import { Square, Volume2 } from 'lucide-react'
-import { memo, useCallback, useEffect, useState } from 'react'
+import { type Ref, memo, useCallback, useRef, useState } from 'react'
 import { toast } from 'sonner'
 import { head } from '@/components/attention/Bundle'
 import { usePacket } from '@/components/attention/queries'
@@ -16,48 +16,9 @@ import type { Packet } from '@/rpc/bindings/Packet'
 import type { Question } from '@/rpc/bindings/Question'
 import { useAsks } from '@/store/approvals'
 import { ActionButton } from './MessageAssistant'
-import { DoubleCard, DoubleChip, preselect } from './DoubleChip'
-import type { DoublePredicted } from '@/rpc/bindings/DoublePredicted'
+import { DoubleCard, DoubleChip } from './DoubleChip'
+import { type Draft, allAnswered, ownPick, recommendedLabel, toAnswer, useAskDraft } from './ask-drafts'
 import { usePrediction } from '@/store/double'
-
-/** Draft answer per question: an option, typed text, an explicit skip, or nothing yet. */
-export type Draft = Answer | null
-
-/** The starting drafts: the recommended option pre-picked, else nothing (the attention Ask screen starts the same way, 104). */
-export const draftsFor = (questions: readonly Question[]): Draft[] => questions.map((q) => (q.recommended === undefined ? null : { kind: 'choice', index: q.recommended }))
-
-/** Every question has an option, non-blank text, or an explicit skip. */
-export const allAnswered = (drafts: readonly Draft[]): boolean => drafts.every((d) => d !== null && !(d.kind === 'text' && d.text.trim() === ''))
-
-/**
- * 126 §9.2: the double's L1 pre-selection on a one-question ask — `drafts` with question 0 set to the double's option
- * when the owner has not touched it (it still holds the model's starting draft); the same array otherwise. The model's
- * `recommended` stays as rendered, so a disagreement shows both.
- */
-export function withDoublePick(drafts: readonly Draft[], questions: readonly Question[], p: DoublePredicted | undefined): Draft[] {
-  const q = questions.length === 1 ? questions[0] : undefined
-  if (!q) return drafts as Draft[]
-  const i = preselect(p, q.options.map((o) => o.label))
-  if (i === null) return drafts as Draft[]
-  const start = draftsFor(questions)[0] ?? null
-  const cur = drafts[0] ?? null
-  const untouched = cur === null ? start === null : start !== null && cur.kind === 'choice' && start.kind === 'choice' && cur.index === start.index
-  if (!untouched || (cur?.kind === 'choice' && cur.index === i)) return drafts as Draft[]
-  return [{ kind: 'choice', index: i }, ...drafts.slice(1)]
-}
-
-/** The model's `recommended` label of a one-question ask, for the chip's disagreement badge. */
-export function recommendedLabel(questions: readonly Question[]): string | undefined {
-  const q = questions.length === 1 ? questions[0] : undefined
-  return q?.recommended === undefined ? undefined : q.options[q.recommended]?.label
-}
-
-export function toAnswer(d: Draft): Answer {
-  if (!d) return { kind: 'skipped' }
-  if (d.kind === 'text' && d.text.trim() === '') return { kind: 'skipped' }
-  if (d.kind === 'text') return { kind: 'text', text: d.text.trim() }
-  return d
-}
 
 /** The question and its options, as one utterance for read-aloud. */
 function spoken(q: Question): string {
@@ -83,16 +44,32 @@ function ReadAloud({ session, entryKey, text }: { session: string; entryKey: str
   return <ActionButton icon={mine ? Square : Volume2} label={mine ? 'Stop' : 'Read aloud'} onClick={toggle} className="size-8 shrink-0 [&_svg]:size-4" />
 }
 
-/** The `Type your own…` box; the `Input` carries the dictation mic (54). */
-function OwnAnswer({ value, active, onChange }: { value: string; active: boolean; onChange: (v: string) => void }) {
-  return <Input placeholder="Type your own…" value={value} onChange={(e) => onChange(e.target.value)} className={cn('h-8 min-w-0 flex-1 text-base md:text-sm', active && 'border-fg-accent')} />
+/** The `Type your own…` box; the `Input` carries the dictation mic (54). `kept`: words that are not the pick stay visible but dimmed. */
+function OwnAnswer({ value, active, kept, onChange, onFocus, ref }: { value: string; active: boolean; kept: boolean; onChange: (v: string) => void; onFocus: () => void; ref: Ref<HTMLInputElement> }) {
+  return (
+    <Input
+      ref={ref}
+      placeholder="Type your own…"
+      value={value}
+      onChange={(e) => onChange(e.target.value)}
+      onFocus={onFocus}
+      className={cn('h-8 min-w-0 flex-1 text-base md:text-sm', active && 'border-fg-accent', kept && 'text-fg-secondary')}
+    />
+  )
 }
 
-/** One question. `locked`: the answer was sent; everything renders but nothing changes. 104: the attention Ask screen renders the same block. */
+/**
+ * One question. `locked`: the answer was sent; everything renders but nothing changes. 104: the attention Ask screen
+ * renders the same block. 138: `own` is what sits in the `Type your own…` box, independent of the pick (`draft`): an
+ * option or Skip changes the pick only; the words stay, dimmed, and are the pick again on focus or via the row's ○.
+ * Without `own`/`onOwn` the box is the text pick itself, as before.
+ */
 export function QuestionBlock({
   q,
   draft,
+  own,
   onChange,
+  onOwn,
   session,
   entryKey,
   voice,
@@ -100,7 +77,9 @@ export function QuestionBlock({
 }: {
   q: Question
   draft: Draft
+  own?: string
   onChange(d: Draft): void
+  onOwn?(text: string): void
   session: string
   entryKey: string
   voice: boolean
@@ -108,7 +87,15 @@ export function QuestionBlock({
 }) {
   const typing = draft?.kind === 'text'
   const skipped = draft?.kind === 'skipped'
-  const setText = useCallback((text: string) => onChange({ kind: 'text', text }), [onChange])
+  const ownText = own ?? (typing ? draft.text : '')
+  const box = useRef<HTMLInputElement>(null)
+  const setText = useCallback((text: string) => (onOwn ? onOwn(text) : onChange({ kind: 'text', text })), [onChange, onOwn])
+  // The box's words become the pick when they are non-blank and not already chosen; ○ on a blank box just focuses it.
+  const chooseOwn = (focusIfBlank: boolean) => {
+    const p = ownPick(draft, ownText)
+    if (p !== draft) onChange(p)
+    else if (focusIfBlank && !typing) box.current?.focus()
+  }
   return (
     <div className="flex flex-col gap-2">
       <div className="flex items-start gap-1">
@@ -152,7 +139,18 @@ export function QuestionBlock({
           )
         ) : (
           <div className="flex items-center gap-2">
-            <OwnAnswer value={typing ? draft.text : ''} active={typing} onChange={setText} />
+            <Button
+              type="button"
+              size="icon-sm"
+              variant="ghost"
+              aria-label="Use your answer"
+              aria-pressed={typing}
+              onClick={() => chooseOwn(true)}
+              className="text-xs text-fg-tertiary"
+            >
+              {typing ? '●' : '○'}
+            </Button>
+            <OwnAnswer ref={box} value={ownText} active={typing} kept={!typing && ownText.trim() !== ''} onChange={setText} onFocus={() => chooseOwn(false)} />
             <Button
               type="button"
               size="sm"
@@ -188,21 +186,21 @@ export const AskCard = memo(function AskCard({ ask }: { ask: AskRequested }) {
   const packet = usePacket(decisionKey(ask)).data ?? null
   const [expanded, setExpanded] = useState(false)
   const [busy, setBusy] = useState(false)
-  const [sent, setSent] = useState(false)
-  const [drafts, setDrafts] = useState<Draft[]>(() => draftsFor(ask.questions))
+  // After Send the card keeps what went on the wire and the store entry is dropped (138).
+  const [sent, setSent] = useState<Answer[] | null>(null)
   const prediction = usePrediction(ask.id)
-  useEffect(() => {
-    if (!sent) setDrafts((ds) => withDoublePick(ds, ask.questions, prediction))
-  }, [prediction, ask.questions, sent])
-  const answered = allAnswered(drafts)
+  const { draft, pick, typeOwn, drop } = useAskDraft(ask, prediction, sent === null)
+  const answered = allAnswered(draft.picks)
   const send = async (answers: Answer[] | null) => {
     setBusy(true)
     try {
       if (await api.answer_ask(ask.id, answers)) {
-        if (answers) setSent(true)
+        if (answers) setSent(answers)
+        drop()
       } else {
         // Answered elsewhere and the `AskResolved` was missed: the tool row's result is the answered state.
         useAsks.getState().resolve(ask.id)
+        drop()
         toast.error('That question had already closed — your answer went to the session as a message.')
       }
     } catch (e) {
@@ -224,19 +222,21 @@ export const AskCard = memo(function AskCard({ ask }: { ask: AskRequested }) {
         <QuestionBlock
           key={q.id}
           q={q}
-          draft={sent ? toAnswer(drafts[i] ?? null) : (drafts[i] ?? null)}
-          onChange={(d) => setDrafts((ds) => ds.map((x, j) => (j === i ? d : x)))}
+          draft={sent ? (sent[i] ?? null) : (draft.picks[i] ?? null)}
+          own={draft.own[i]}
+          onChange={(d) => pick(i, d)}
+          onOwn={(t) => typeOwn(i, t)}
           session={ask.session}
           entryKey={`${ask.id}/${q.id}`}
           voice={voice}
-          locked={sent}
+          locked={sent !== null}
         />
       ))}
       {sent ? (
         <span className="text-xs text-fg-tertiary">answered</span>
       ) : (
         <div className="flex gap-2">
-          <Button size="sm" disabled={busy || !answered} onClick={() => send(drafts.map(toAnswer))}>
+          <Button size="sm" disabled={busy || !answered} onClick={() => send(draft.picks.map(toAnswer))}>
             Send answers
           </Button>
           <Button size="sm" variant="outline" disabled={busy} onClick={() => send(null)}>
