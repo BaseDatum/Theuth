@@ -2737,6 +2737,7 @@ mod tests {
                         severity,
                         note: note.into(),
                     }],
+                    kind: Default::default(),
                 },
             })
         };

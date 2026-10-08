@@ -34,15 +34,20 @@ pub fn spec() -> ToolSpec {
     }
 }
 
-/// Parse the model's arguments; omitted severity is a nit.
+/// Parse the model's arguments; omitted severity is a nit. `advice` is the
+/// consultation answer's severity (R1), never one the advisor can send.
 pub fn parse(args: &serde_json::Value) -> Result<(String, AdvisorSeverity), String> {
     let a: AdviseArgs = serde_json::from_value(args.clone()).map_err(|e| e.to_string())?;
+    if a.severity == Some(AdvisorSeverity::Advice) {
+        return Err("advice is not a severity you can send".into());
+    }
     Ok((a.note, a.severity.unwrap_or(AdvisorSeverity::Nit)))
 }
 
 /// Wire name of a severity.
 pub fn severity_str(s: AdvisorSeverity) -> &'static str {
     match s {
+        AdvisorSeverity::Advice => "advice",
         AdvisorSeverity::Nit => "nit",
         AdvisorSeverity::Concern => "concern",
         AdvisorSeverity::Blocker => "blocker",

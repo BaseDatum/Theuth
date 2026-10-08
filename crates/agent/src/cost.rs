@@ -146,6 +146,7 @@ macro_rules! str_enum {
         }
     };
 }
+pub(crate) use str_enum;
 
 str_enum! {
     /// Where a monetary observation came from (§6.2).
@@ -208,6 +209,9 @@ str_enum! {
         Native = "native",
         /// A remote wrapper's inclusive charge; hidden descendants are inside it.
         OpaqueRemoteInclusive = "opaque_remote_inclusive",
+        /// A watch-only harness subagent's own charge (141 §7.6 `counted`):
+        /// omp background rows, excluded from the harness's `usage_update`.
+        Observed = "observed",
     }
 }
 

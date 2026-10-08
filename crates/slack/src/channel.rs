@@ -15,7 +15,7 @@ use std::time::Duration;
 
 use agent::{
     AGENT_ACTOR, AgentEvent, AgentInfo, Agents, Cancel, ListAgents, ListSessions, NewRootSession,
-    SendInput, SessionSummary, Steer,
+    ObservedMeta, SendInput, SessionSummary, Steer,
     communication::{PeerDelivered, PeerScope},
 };
 use artifact::{Artifact, ArtifactShown};
@@ -357,6 +357,14 @@ enum Out {
         link: String,
         depth: u8,
     },
+    /// 141 §10.2: a watch-only harness subagent changed: its `◎` board row
+    /// (no thread, no reply binding, no Cancel); `depth` 1 = direct child.
+    Observed {
+        child: SessionId,
+        name: String,
+        depth: u8,
+        observed: Box<ObservedMeta>,
+    },
     /// A child's event, for the board row (21 §9.2).
     Child(SessionId, AgentEvent),
     /// A child's approval pending (`Some(tool)`) or answered (`None`).
@@ -557,7 +565,9 @@ async fn run(
     chan.rt.subscribe::<Bus, secrets::SecretsEvent>(&bus).await;
     chan.rt.subscribe::<Bus, mesh::MeshEvent>(&bus).await;
     chan.rt.subscribe::<Bus, PeerDelivered>(&bus).await;
-    chan.rt.subscribe::<Bus, double::DoublePredicted>(&bus).await;
+    chan.rt
+        .subscribe::<Bus, double::DoublePredicted>(&bus)
+        .await;
     chan.rt.subscribe::<Bus, double::DoubleAnswered>(&bus).await;
     // 67 §4.7: learn our engine id once the mesh is up; the lease resolves then.
     let me = {
@@ -1558,6 +1568,25 @@ impl Channel {
             }) => {
                 self.spawned(parent, child, name).await;
             }
+            // 141 §10.2: a watch-only child gets a board row on every bound
+            // ancestor and nothing else — no `spawned()`, so no thread.
+            Event::Agent(AgentEvent::ObservedChildChanged {
+                parent,
+                child,
+                name,
+                observed,
+                ..
+            }) => {
+                self.lock().parent_of.insert(child, (parent, name.clone()));
+                for (key, thread, depth) in self.ancestors(child) {
+                    let _ = self.worker(&key, &thread).send(Out::Observed {
+                        child,
+                        name: name.clone(),
+                        depth,
+                        observed: Box::new(observed.clone()),
+                    });
+                }
+            }
             Event::Agent(ev) => {
                 let Some(session) = ev.session() else { return };
                 {
@@ -1718,13 +1747,18 @@ impl Channel {
                     }
                     return;
                 }
-                let ask = self.lock().asks.get(&AskId(id)).filter(|c| !c.ts.is_empty()).map(|c| {
-                    (
-                        c.channel.clone(),
-                        c.ts.clone(),
-                        asks::question_card(&c.req, c.current, c.context.as_deref()),
-                    )
-                });
+                let ask = self
+                    .lock()
+                    .asks
+                    .get(&AskId(id))
+                    .filter(|c| !c.ts.is_empty())
+                    .map(|c| {
+                        (
+                            c.channel.clone(),
+                            c.ts.clone(),
+                            asks::question_card(&c.req, c.current, c.context.as_deref()),
+                        )
+                    });
                 if let Some((channel, ts, blocks)) = ask
                     && let Err(e) = self
                         .api
@@ -1735,25 +1769,22 @@ impl Channel {
                 }
             }
             // 126 §10: one line where the card is — the session's thread, else the owner DM.
-            Event::DoubleAnswered(a) => {
-                match a.session.and_then(|s| self.bound(s)) {
-                    Some((key, thread)) => {
-                        let _ = self
-                            .worker(&key, &thread)
-                            .send(Out::Note(approvals::answered_text(&a)));
-                    }
-                    None => {
-                        let Some(dm) = self.identity.get().and_then(|i| i.owner_dm.as_deref())
-                        else {
-                            return;
-                        };
-                        let blocks = approvals::answered_blocks(&a);
-                        if let Err(e) = self.api.post_blocks(dm, None, blocks).await {
-                            tracing::debug!(error = %e, "owner double answered line failed");
-                        }
+            Event::DoubleAnswered(a) => match a.session.and_then(|s| self.bound(s)) {
+                Some((key, thread)) => {
+                    let _ = self
+                        .worker(&key, &thread)
+                        .send(Out::Note(approvals::answered_text(&a)));
+                }
+                None => {
+                    let Some(dm) = self.identity.get().and_then(|i| i.owner_dm.as_deref()) else {
+                        return;
+                    };
+                    let blocks = approvals::answered_blocks(&a);
+                    if let Err(e) = self.api.post_blocks(dm, None, blocks).await {
+                        tracing::debug!(error = %e, "owner double answered line failed");
                     }
                 }
-            }
+            },
             // 35 §8: the session's own thread, else the nearest bound ancestor's.
             Event::Artifact(m) => {
                 let target = self.bound(m.session).or_else(|| {
@@ -2123,6 +2154,7 @@ impl Worker {
                     Some(Out::Predicted(p)) => self.predicted(&p).await,
                     Some(Out::Ask(req, i)) => self.ask(*req, i).await,
                     Some(Out::Spawned { child, name, link, depth }) => self.spawned(child, name, link, depth),
+                    Some(Out::Observed { child, name, depth, observed }) => self.observed(child, name, depth, &observed),
                     Some(Out::Child(session, ev)) => self.child(session, &ev).await,
                     Some(Out::Artifact(a)) => self.artifact(*a).await,
                     Some(Out::Note(md)) => { self.post_markdown_in_thread(&md).await; }
@@ -2419,6 +2451,18 @@ impl Worker {
             .push(board::Row::new(child, name, depth, Some(link)));
     }
 
+    /// 141 §10.2: a watch-only descendant's row (`◎`), created on first sight.
+    fn observed(&mut self, child: SessionId, name: String, depth: u8, o: &ObservedMeta) {
+        let at = match self.rows.iter().position(|r| r.session == child) {
+            Some(at) => at,
+            None => {
+                self.rows.push(board::Row::new(child, name, depth, None));
+                self.rows.len() - 1
+            }
+        };
+        self.rows_dirty |= self.rows[at].observed(o);
+    }
+
     /// A descendant's event: its board row, plus one `alert` for a direct
     /// child's error or cancellation (21 §9.1, 110 §6).
     async fn child(&mut self, session: SessionId, ev: &AgentEvent) {
@@ -2639,7 +2683,10 @@ impl Worker {
             AgentEvent::ContextUsed {
                 size: Some(size), ..
             } => self.context_size = Some(size),
-            AgentEvent::SubagentSpawned { .. }
+            // 141 §10.2: a watch-only child never binds a thread; its board
+            // row comes from `route()`.
+            AgentEvent::ObservedChildChanged { .. }
+            | AgentEvent::SubagentSpawned { .. }
             | AgentEvent::InputQueued { .. }
             | AgentEvent::InputInjected { .. }
             | AgentEvent::InputWithdrawn { .. }
@@ -4104,6 +4151,100 @@ pub(crate) mod tests {
         );
     }
 
+    /// 141 §10.2: a watch-only child is a `◎ … watch · <src>` row on the
+    /// parent's board — no child root post, no thread, no `↳ spawned` line;
+    /// a nested one indents under it; failed lingers, done leaves.
+    #[tokio::test(start_paused = true)]
+    async fn observed_child_is_a_watch_row_on_the_board_and_gets_no_thread() {
+        let f = fixture();
+        f.bind(OWNER);
+        let (child, grand) = (SessionId::new(), SessionId::new());
+        let observed = |state, intent: Option<&str>| agent::ObservedMeta {
+            source: agent::ObservedSource::OmpTask,
+            external: "ReadA".into(),
+            state,
+            stop: None,
+            can_cancel: false,
+            description: None,
+            tool_call: None,
+            cost_rule: agent::CostRule::Counted,
+            detail: intent.map_or(
+                serde_json::Value::Null,
+                |i| serde_json::json!({ "lastIntent": i }),
+            ),
+        };
+        f.chan
+            .route(Event::Agent(AgentEvent::ObservedChildChanged {
+                parent: f.stub.session,
+                child,
+                name: "ReadA".into(),
+                model: None,
+                observed: observed(agent::ObservedState::Running, Some("Reading first line")),
+            }))
+            .await;
+        f.chan
+            .route(Event::Agent(AgentEvent::ObservedChildChanged {
+                parent: child,
+                child: grand,
+                name: "ReadA.b".into(),
+                model: None,
+                observed: observed(agent::ObservedState::Running, None),
+            }))
+            .await;
+        let board = format!("post_markdown {DM} 100.1 **agents**");
+        f.until(|calls| {
+            calls.iter().any(|c| {
+                c.starts_with(&board)
+                    && c.contains(
+                        "◎ ReadA          running   watch · omp task · Reading first line",
+                    )
+                    && c.contains("  ◎ ReadA.b        running   watch · omp task")
+            })
+        })
+        .await;
+        {
+            let s = f.chan.lock();
+            assert!(s.threads.by_session(child).is_none(), "no thread");
+            assert_eq!(
+                s.parent_of.get(&grand).map(|(p, _)| *p),
+                Some(child),
+                "routing link for the child's own events"
+            );
+        }
+        let calls = f.api.calls();
+        assert!(
+            !calls.iter().any(|c| c.contains("child of")
+                || c.contains("↳ spawned")
+                || c.contains("|thread>")),
+            "{calls:?}"
+        );
+        // The child's own transcript events still reach the parent's board
+        // through `parent_of` (board edits are `update_markdown`, text unseen).
+        f.chan
+            .route(Event::Agent(AgentEvent::Error {
+                turn: None,
+                session: child,
+                message: "boom".into(),
+            }))
+            .await;
+        let parent = format!("post_blocks {DM} 100.1 1 blocks");
+        f.until(|calls| calls.contains(&parent)).await;
+        assert!(
+            f.api
+                .blocks()
+                .iter()
+                .any(|b| alert_text(b) == Some("ReadA · error: boom"))
+        );
+        assert!(
+            !f.api
+                .calls()
+                .iter()
+                .any(|c| c.starts_with("post_blocks ") && !c.starts_with(&parent)),
+            "no child thread to alert in: {:?}",
+            f.api.calls()
+        );
+    }
+
     #[tokio::test]
     async fn child_turn_posts_its_task_and_the_parent_board_shows_it_running() {
         let f = fixture();
@@ -4229,6 +4370,7 @@ pub(crate) mod tests {
                         note: (*note).into(),
                     })
                     .collect(),
+                kind: Default::default(),
             },
         }
     }

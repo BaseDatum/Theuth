@@ -68,9 +68,10 @@ export type HeaderItem = {
  * session's output surface, over the live browser over terminals); the other two move behind the chevron. `popout`
  * (open in a new window) stays inline at every tier: it is how a narrow pane gets room — absent entirely where no
  * second window exists (`canPopout()` false, or this is already the popped window). `chat` (the talk view only) sits
- * top-left after the sidebar toggle and stays inline at every tier: it is the way back.
+ * top-left after the sidebar toggle and stays inline at every tier: it is the way back. `watching` (a watch-only
+ * child, 141) keeps the `parent` item — the `Watching` chip — inline at every tier.
  */
-export function headerOrder(panel: 'artifacts' | 'codemap' | 'browser' | 'terminals' | null, popout: boolean, chat = false): HeaderItem[] {
+export function headerOrder(panel: 'artifacts' | 'codemap' | 'browser' | 'terminals' | null, popout: boolean, chat = false, watching = false): HeaderItem[] {
   return [
     { id: 'search', slot: 'menu' },
     { id: 'sidebar', slot: 'bar' },
@@ -78,7 +79,8 @@ export function headerOrder(panel: 'artifacts' | 'codemap' | 'browser' | 'termin
     { id: 'model', slot: 'menu' },
     { id: 'title', slot: 'bar' },
     { id: 'memory', slot: 'menu' },
-    { id: 'parent', slot: 'menu' },
+    // 141 R3 T11: a watch-only child keeps its `Watching` chip inline at every tier; the crumb joins it in the full bar.
+    { id: 'parent', slot: watching ? 'both' : 'menu' },
     { id: 'owner', slot: 'menu' },
     { id: 'desktop', slot: 'menu' },
     { id: 'context', slot: 'both', shed: true },

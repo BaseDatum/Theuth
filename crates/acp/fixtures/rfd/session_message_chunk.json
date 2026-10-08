@@ -1,0 +1,17 @@
+{
+ "jsonrpc": "2.0",
+ "method": "session/update",
+ "params": {
+  "sessionId": "sess_parent",
+  "update": {
+   "sessionUpdate": "session_message_chunk",
+   "messageId": "msg_1",
+   "senderSessionId": "sess_child_1",
+   "recipientSessionId": "sess_parent",
+   "content": {
+    "type": "text",
+    "text": "Done: Basic $9, Pro $29, Team $79."
+   }
+  }
+ }
+}

@@ -1,6 +1,6 @@
 import { expect, test } from 'vitest'
 import type { SyncBacklog } from '@/rpc/bindings/SyncBacklog'
-import { BACKLOGS, IMMUNE_RANGE, NOTES_RANGE, asBacklog, backlogLabel } from './Advisor'
+import { BACKLOGS, CONSULTS, IMMUNE_RANGE, NOTES_RANGE, asBacklog, asConsults, backlogLabel, consultOptions, consultsLabel } from './Advisor'
 import { bounded } from './shared'
 
 test('notes per update accepts 1–32, immune turns 0–10; anything else leaves the field alone', () => {
@@ -24,4 +24,17 @@ test('SyncBacklog round-trips through the Catch-up select', () => {
   expect(asBacklog('')).toBeUndefined()
   expect(backlogLabel('off')).toBe('Off')
   expect(backlogLabel('3')).toBe('3')
+})
+
+test('R1: Consults per turn offers Off · 2 · 6 · 12 (plus an off-list live value), labelled, and parses back to the cap', () => {
+  expect([...CONSULTS]).toEqual([0, 2, 6, 12])
+  expect(CONSULTS.map(consultsLabel)).toEqual(['Off', '2', '6', '12'])
+  expect(consultOptions(6)).toEqual([0, 2, 6, 12])
+  expect(consultOptions(undefined)).toEqual([0, 2, 6, 12])
+  expect(consultOptions(32)).toEqual([0, 2, 6, 12, 32])
+  for (const v of CONSULTS) expect(asConsults(String(v))).toBe(v)
+  expect(asConsults('32')).toBe(32)
+  expect(asConsults('33')).toBeUndefined()
+  expect(asConsults('-1')).toBeUndefined()
+  expect(asConsults('')).toBeUndefined()
 })

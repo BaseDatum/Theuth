@@ -1,0 +1,22 @@
+{
+ "jsonrpc": "2.0",
+ "method": "session/update",
+ "params": {
+  "sessionId": "sess_parent",
+  "update": {
+   "sessionUpdate": "subagent_update",
+   "sessionId": "sess_child_1",
+   "state": {
+    "state": "idle",
+    "stopReason": "end_turn",
+    "usage": {
+     "inputTokens": 1200,
+     "outputTokens": 300,
+     "totalTokens": 1500,
+     "cachedReadTokens": 0,
+     "cachedWriteTokens": 0
+    }
+   }
+  }
+ }
+}

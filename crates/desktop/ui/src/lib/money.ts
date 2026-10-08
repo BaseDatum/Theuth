@@ -63,3 +63,6 @@ export function costShort(b: CostBucket): string {
   if (b.estimated_for_unavailable.length) return b.estimated_for_unavailable.map((m) => `~${formatMoney(m)}`).join(' + ')
   return '—'
 }
+
+/** 141 §7.6: a USD figure a harness reported as a float (omp `progress[].cost`), in `formatMoney`'s digits. */
+export const usd = (n: number): string => formatMoney({ currency: 'USD', nanos: String(Math.round(n * 1e9)) })

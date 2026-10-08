@@ -3,10 +3,11 @@ import { Link } from '@tanstack/react-router'
 import { Hourglass, TriangleAlert } from 'lucide-react'
 import { Fragment, type ReactNode, memo, useEffect, useMemo, useState } from 'react'
 import { counts } from '@/components/chat/broadcast'
+import { EyeMark, SourceTag, WatchCostCell, WatchDot } from '@/components/chat/ObservedBar'
 import { useSessionDrag } from '@/components/chat/Panes'
 import { costLines, costShort } from '@/lib/money'
 import { queryKeys, useApi } from '@/lib/rpc'
-import { cappedTree, childrenOf, live, withAncestors } from '@/lib/session-tree'
+import { cappedTree, childrenOf, live, observedLabel, withAncestors } from '@/lib/session-tree'
 import { cn } from '@/lib/utils'
 import type { CostBucket } from '@/rpc/bindings/CostBucket'
 import type { SessionSummary } from '@/rpc/bindings/SessionSummary'
@@ -32,7 +33,9 @@ export function ago(iso: string | null, now = Date.now()): string {
   return `${Math.floor(s / 86400)}d`
 }
 
-/** One subtree row: glyph · name · cap badge · cost · jobs · age, a link to the session's chat. Shared with the Agents page (100). */
+/** One subtree row: glyph · name · cap badge · cost · jobs · age, a link to the session's chat. Shared with the Agents page (100).
+ * A watch-only child (141 §9.2a) leads with its harness-state dot and an eye, carries its source tag after the name, and
+ * greys out while resting (`idle`, `pending`, `unknown` — Q1: idle is not done); its cost cell follows the cost rule. */
 export const SubagentRow = memo(function SubagentRow({
   row,
   active,
@@ -46,6 +49,8 @@ export const SubagentRow = memo(function SubagentRow({
   cost: CostBucket | undefined
 }) {
   const drag = useSessionDrag(row.id, row.name)
+  const observed = row.observed ?? undefined
+  const resting = observed && (observed.state === 'idle' || observed.state === 'pending' || observed.state === 'unknown')
   return (
     <Link
       to="/c/$session"
@@ -54,29 +59,44 @@ export const SubagentRow = memo(function SubagentRow({
       className={cn(
         'flex h-7 items-center gap-1.5 rounded-md pr-2 text-xs text-fg-secondary hover:bg-sidebar-accent',
         active && 'bg-sidebar-accent font-medium text-foreground',
+        resting && 'opacity-60',
       )}
       style={{ paddingLeft: 8 + row.depth * 12 }}
       title={
-        row.state.state === 'awaiting'
-          ? `awaiting ${row.state.from}`
-          : row.state.state === 'approval'
-            ? `approval: ${row.state.tool}`
-            : row.state.state
+        observed
+          ? `${row.name} · watching · ${observedLabel[observed.state]}${row.model ? ` · ${row.model}` : ''}`
+          : row.state.state === 'awaiting'
+            ? `awaiting ${row.state.from}`
+            : row.state.state === 'approval'
+              ? `approval: ${row.state.tool}`
+              : row.state.state
       }
     >
-      <span className={cn('w-4 text-center', row.state.state === 'running' && 'animate-pulse')}>
-        {GLYPH[row.state.state]}
-      </span>
+      {observed ? (
+        <>
+          <WatchDot state={observed.state} beat={row.beat} className="w-4" />
+          <EyeMark />
+        </>
+      ) : (
+        <span className={cn('w-4 text-center', row.state.state === 'running' && 'animate-pulse')}>{GLYPH[row.state.state]}</span>
+      )}
       <span className="flex-1 truncate">{row.name}</span>
+      {observed && <SourceTag observed={observed} />}
       {row.cap && (
         <span className="rounded-sm bg-sidebar-accent px-1 text-[10px] text-fg-tertiary" title={`tools capped at ${row.cap}`}>
           {row.cap === 'read_only' ? 'read-only' : row.cap}
         </span>
       )}
-      {cost && (cost.returned.length > 0 || cost.estimated_for_unavailable.length > 0) && (
-        <span className="tabular-nums text-fg-tertiary" title={costLines(cost).secondary ?? costLines(cost).primary}>
-          {costShort(cost)}
-        </span>
+      {observed ? (
+        // 141 R3 T9: the child's own figure under its cost rule (the root's `session_cost` only lists direct children).
+        <WatchCostCell session={row.id} observed={observed} />
+      ) : (
+        cost &&
+        (cost.returned.length > 0 || cost.estimated_for_unavailable.length > 0) && (
+          <span className="tabular-nums text-fg-tertiary" title={costLines(cost).secondary ?? costLines(cost).primary}>
+            {costShort(cost)}
+          </span>
+        )
       )}
       {row.activity && (row.activity.jobs > 0 || row.activity.ptys > 0) && (
         <span className="tabular-nums text-fg-tertiary" title="running jobs · PTYs">

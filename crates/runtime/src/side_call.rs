@@ -35,6 +35,8 @@ pub enum CallKind {
     Endless,
     /// 147 §6.4: a CodeMap generator side call, charged to the opening session.
     CodeMap,
+    /// 125 R1: a native subagent's one-shot consultation of its ancestor's advisor.
+    Consult,
 }
 
 impl CallKind {
@@ -50,6 +52,7 @@ impl CallKind {
             Self::Dream => "dream",
             Self::Endless => "endless",
             Self::CodeMap => "codemap",
+            Self::Consult => "consult",
         }
     }
 }
@@ -73,6 +76,7 @@ impl FromStr for CallKind {
             "dream" => Ok(Self::Dream),
             "endless" => Ok(Self::Endless),
             "codemap" => Ok(Self::CodeMap),
+            "consult" => Ok(Self::Consult),
             _ => Err(format!("unknown CallKind: {s:?}")),
         }
     }
@@ -146,6 +150,7 @@ mod tests {
             CallKind::Dream,
             CallKind::Endless,
             CallKind::CodeMap,
+            CallKind::Consult,
         ] {
             assert_eq!(k.as_str().parse::<CallKind>().unwrap(), k);
         }
