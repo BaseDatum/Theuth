@@ -63,7 +63,8 @@ use crate::loop_::{
     CancelPeerScope, CancelTurn, CompactNow, CompactionOverride, ContextBreakdownNow,
     ContextHistoryNow, ContextItemsNow, GetToolset, HarvestNow, IsRunning, PEER_INTAKE, PeerInput,
     QueuedInputs, RedoTurn, RemoveContextNow, ResetRuntimeNow, RestartTurn, Session, SessionState,
-    SetCompactionOverride, SetPendingEffort, SetTitlePin, SetToolsetOverride, SuppressPeerInputs,
+    SetBudgetNow, SetCompactionOverride, SetPendingEffort, SetTitlePin, SetToolsetOverride,
+    SuppressPeerInputs,
     SwitchModel, TrimTurn, UndoTurn, UserInput, WithdrawInput, prompt_blocks, text_of,
 };
 use crate::peers::{
@@ -3119,6 +3120,44 @@ impl Message<SetCompaction> for Agents {
             }))
             .await
             .map_err(|e| e.to_string())
+    }
+}
+
+impl Message<crate::SetBudget> for Agents {
+    type Reply = Result<(), String>;
+
+    /// 136 §2.2: a session's money cap, in memory on the session actor.
+    async fn handle(
+        &mut self,
+        m: crate::SetBudget,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Result<(), String> {
+        let budget = m.nanos.map(|nanos| crate::Budget {
+            nanos,
+            currency: m.currency,
+        });
+        self.actor(m.session)
+            .await?
+            .native()?
+            .tell(SetBudgetNow(budget))
+            .await
+            .map_err(|e| e.to_string())
+    }
+}
+
+impl Message<crate::LedgerSince> for Agents {
+    type Reply = Result<crate::Ledger, String>;
+
+    /// 136 §2.2: the day ledger. C answers the empty ledger of the window;
+    /// 136 W2 runs the read-only queries (`crate::dreaming_ledger` docs).
+    async fn handle(
+        &mut self,
+        m: crate::LedgerSince,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Result<crate::Ledger, String> {
+        // 136 W2
+        let _ = (&m.exclude, m.owner_only);
+        Ok(crate::Ledger::empty(&m.since, &m.until))
     }
 }
 
@@ -8070,6 +8109,17 @@ fn agent_config(rt: &Runtime) -> anyhow::Result<AgentConfig> {
     }
 }
 
+/// 136 §2.1: knowledge's "may this session consolidate" answerer, backed by
+/// `sessions` ([`Store::may_consolidate`]).
+struct StoreConsolidator(Store);
+
+#[async_trait::async_trait]
+impl knowledge::Consolidator for StoreConsolidator {
+    async fn may_consolidate(&self, session: SessionId) -> bool {
+        self.0.may_consolidate(session).await.unwrap_or(false)
+    }
+}
+
 /// Open the store, spawn and register the supervisor.
 pub async fn start(rt: &Runtime) -> anyhow::Result<()> {
     let mut cfg = agent_config(rt)?;
@@ -8120,6 +8170,23 @@ pub async fn start(rt: &Runtime) -> anyhow::Result<()> {
                     "accounting: projects/cost_owners replicated ({n} row(s) announced)"
                 ),
                 Err(e) => tracing::info!("accounting: replication unavailable ({e}); local only"),
+            }
+        });
+    }
+    // 136 §2.1: knowledge's consolidation gate — "is this session an unattended
+    // root (the dreaming routine) or the owner's own root (no parent, no desk)?"
+    // answered from `sessions`. Knowledge starts before us; wait for its actor.
+    {
+        let rt2 = rt.clone();
+        let store = store.clone();
+        tokio::spawn(async move {
+            if let Some(k) = rt2
+                .lookup_when::<knowledge::KnowledgeActor>(knowledge::KNOWLEDGE_ACTOR)
+                .await
+            {
+                let _ = k
+                    .ask(knowledge::RegisterConsolidator(Arc::new(StoreConsolidator(store))))
+                    .await;
             }
         });
     }

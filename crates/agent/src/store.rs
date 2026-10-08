@@ -1248,6 +1248,19 @@ impl Store {
         Ok(row.is_some_and(|(u,)| u))
     }
 
+    /// 136 §2.1: may this session run dreaming's consolidation ops — an
+    /// unattended root (a routine's session) or the owner's own root (no
+    /// parent, no desk)? `false` for an unknown id.
+    pub async fn may_consolidate(&self, id: SessionId) -> anyhow::Result<bool> {
+        let row = sqlx::query_as::<_, (bool,)>(
+            "SELECT unattended OR (parent IS NULL AND desk IS NULL) FROM sessions WHERE id = ?",
+        )
+        .bind(id.to_string())
+        .fetch_optional(&self.read)
+        .await?;
+        Ok(row.is_some_and(|(ok,)| ok))
+    }
+
     /// Append one message; returns its `seq` (max+1 within the session).
     /// Bumps `sessions.updated_at` (the list order).
     pub async fn append(&self, id: SessionId, message: &ChatMessage) -> anyhow::Result<i64> {

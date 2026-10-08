@@ -352,6 +352,11 @@ pub struct SetPendingEffort(pub Option<ReasoningEffort>);
 /// read by the running turn at its next trigger check, so it applies mid-turn.
 pub struct SetCompactionOverride(pub CompactionOverride);
 
+/// `tell`: the session's money cap ([`crate::SetBudget`], 136 §2.2); stored on
+/// [`SessionState::budget`] when the state is home, else applied when the
+/// running turn hands it back. `None` clears.
+pub struct SetBudgetNow(pub Option<crate::Budget>);
+
 /// `ask` → `Result<repl::ResetReport, String>`: [`crate::ResetRuntime`] on the
 /// session actor — remove the saved python runtime while idle (131 D2). A
 /// `Repl` only exists inside a running turn, so "idle" is the whole guard.
@@ -534,6 +539,9 @@ pub struct SessionState {
     /// stops. Its puts are individual commits, so a cut-off harvest is partial,
     /// never inconsistent.
     pub harvest_task: Option<JoinHandle<()>>,
+    /// 136 §2.2: the session's money cap from [`SetBudgetNow`]; in memory
+    /// only. `Reserved::open` refuses a call past it (136 W2).
+    pub budget: Option<crate::Budget>,
 }
 
 impl SessionState {
@@ -572,6 +580,7 @@ impl SessionState {
             clamp_warned: false,
             title_task: None,
             harvest_task: None,
+            budget: None,
         }
     }
 
@@ -621,6 +630,8 @@ pub struct Session {
     titled: bool,
     /// Effort set while a turn ran (or between turns); applied when the next turn starts.
     pending_effort: Option<Option<ReasoningEffort>>,
+    /// 136 §2.2: a budget set while a turn ran; applied when the state comes home.
+    pending_budget: Option<Option<crate::Budget>>,
     /// Scope of the in-flight turn (50 §6.3); meaningless when idle.
     scope: TurnScope,
     /// This session's slot is published to [`PermitGate`] (50 §8).
@@ -842,6 +853,7 @@ impl Session {
             entered: None,
             titled,
             pending_effort: None,
+            pending_budget: None,
             scope: TurnScope::default(),
             gated: false,
         }
@@ -2009,6 +2021,17 @@ impl Message<SetPendingEffort> for Session {
     }
 }
 
+impl Message<SetBudgetNow> for Session {
+    type Reply = ();
+
+    async fn handle(&mut self, SetBudgetNow(b): SetBudgetNow, _: &mut Context<Self, Self::Reply>) {
+        match self.state.as_mut() {
+            Some(state) => state.budget = b,
+            None => self.pending_budget = Some(b),
+        }
+    }
+}
+
 impl Message<SetCompactionOverride> for Session {
     type Reply = ();
 
@@ -2146,7 +2169,10 @@ impl Message<TurnDone> for Session {
     /// the next queued batch (50 §6.3: the oldest input's scope and what it
     /// admits), whose tickets stayed pending meanwhile. A batch of nothing
     /// but suppressed peer input starts no turn; the next batch is tried.
-    async fn handle(&mut self, TurnDone(state): TurnDone, ctx: &mut Context<Self, Self::Reply>) {
+    async fn handle(&mut self, TurnDone(mut state): TurnDone, ctx: &mut Context<Self, Self::Reply>) {
+        if let Some(b) = self.pending_budget.take() {
+            state.budget = b;
+        }
         self.state = Some(state);
         self.inflight = None;
         self.scope = TurnScope::default();
@@ -2488,6 +2514,10 @@ impl Reserved {
         kind: CallKind,
         model: &Resolved,
     ) -> Result<Self, String> {
+        // 136 W2: guard — refuse when `spent_nanos(owner) + estimate > SessionState.budget.nanos`
+        // (the owner's `model_calls`, returned ?? estimated); the turn then ends and the next
+        // input carries one `<budget spent="…" cap="…">` note. C stores the budget; W2 threads
+        // it here and writes the note.
         let reserved = match turn.filter(|_| kind == CallKind::Round) {
             Some(turn) => {
                 store
@@ -4964,7 +4994,12 @@ impl Turn {
                     Ok(metas) if !metas.is_empty() => {
                         self.note("knowledge", &knowledge::harvest::render_hints(&metas))
                             .await;
-                        self.state.hinted.extend(metas.into_iter().map(|m| m.id));
+                        // 136 §5.3: every id shown is an impression (`uses.shown`).
+                        let ids: Vec<String> = metas.into_iter().map(|m| m.id).collect();
+                        if let Err(e) = knowledge.record_shown(&ids, chrono::Utc::now()).await {
+                            tracing::debug!(session = %self.shared.id, "record_shown: {e:#}");
+                        }
+                        self.state.hinted.extend(ids);
                     }
                     Ok(_) => {}
                     Err(e) => tracing::warn!(session = %self.shared.id, "knowledge hint: {e:#}"),
@@ -6477,6 +6512,8 @@ impl Turn {
                 body: doc.body,
                 id,
                 visibility: None,
+                // 136 W2: `evidence: [session id]`, `status: Some(Fresh)`.
+                ..Put::default()
             };
             match knowledge.put_for(put, Source::Harvest, Some(session)).await {
                 Ok((_, true)) => result.added += 1,

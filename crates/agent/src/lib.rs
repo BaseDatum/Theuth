@@ -35,6 +35,7 @@ pub mod compact;
 pub mod context;
 pub mod continuation;
 pub mod durability;
+pub mod dreaming_ledger;
 pub mod frame;
 pub mod loop_;
 pub mod peers;
@@ -109,6 +110,10 @@ pub use cost::{
     CallId, CallKind, CallStatus, ChildCost, CostBucket, CostObservation, CostScope, Coverage,
     MeterUpdate, Money, Provenance, SessionCost, SpendDay, SpendOwner, SpendOwnerKind, SpendReport,
     TokenTotals,
+};
+pub use dreaming_ledger::{
+    Ledger, LedgerCount, LedgerHintUse, LedgerQuestion, LedgerRewind, LedgerSession, LedgerSince,
+    LedgerStop, LedgerToolError, LedgerUserMessage,
 };
 pub use lifecycle::{
     Authorize, Authorized, CreateSession, LeaveSession, PrivateTrees, ResumePrivate, TreeOpened,
@@ -432,6 +437,33 @@ pub struct ResetRuntime {
 pub struct SetCompactStyle {
     /// New default style.
     pub style: CompactStyle,
+}
+
+/// A per-session money cap (136 §2.2): the routine's `budget:` key, or a
+/// one-off `run_now` budget.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+pub struct Budget {
+    /// The cap, in nanos of `currency` (1 USD = 1_000_000_000).
+    pub nanos: u64,
+    /// ISO 4217 code, as `model_calls.returned_currency`.
+    pub currency: String,
+}
+
+/// `ask` → `Result<(), String>` (136 §2.2): set or clear a session's money
+/// cap. The schedule plugin sends it on every fire (`None` when the file has
+/// no `budget:`); `Reserved::open` refuses a model call that would pass it and
+/// the turn ends with one `<budget>` note (136 W2). Kept in memory on the
+/// session (`SessionState.budget`); a restarted session has none until the
+/// next fire.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct SetBudget {
+    /// Target session.
+    pub session: SessionId,
+    /// The cap in nanos; `None` clears.
+    pub nanos: Option<u64>,
+    /// Currency of `nanos`.
+    pub currency: String,
 }
 
 /// `ask` → `Result<(), String>`: one session's compaction override, in memory
