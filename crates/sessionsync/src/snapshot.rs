@@ -37,8 +37,12 @@ const CHUNK_ROWS: i64 = 1000;
 /// Payload per wire part: half a frame leaves room for postcard framing.
 const PART_BYTES: usize = MAX_FRAME / 2;
 
-/// One session id, owner and epoch of an applied `sessions` record.
-pub type AppliedSession = (String, String, u32);
+/// One applied `sessions` record: id, owner, epoch, and the local fence
+/// `(epoch, owner)` before it — `None` when the session was unknown here.
+/// A snapshot that raises the epoch of a session this engine owned must
+/// demote it like a log row does (68 §4.3; 139 T3: a partitioned owner
+/// re-syncing from a pruned outbox).
+pub type AppliedSession = (String, String, u32, Option<(u32, String)>);
 
 /// Build the snapshot of `origin`'s sessions this engine holds.
 pub async fn build(store: &Store, origin: &PeerId) -> anyhow::Result<Msg> {
@@ -214,10 +218,11 @@ pub async fn apply(
             for (id, own, ep) in
                 scan_sessions(changeset, idx, position("owner")?, position("epoch")?)?
             {
-                if local.get(&id).is_some_and(|&e| e > ep) {
-                    fenced.insert(id);
-                } else {
-                    applied.push((id, own, ep));
+                match local.get(&id) {
+                    Some((e, _)) if *e > ep => {
+                        fenced.insert(id);
+                    }
+                    before => applied.push((id, own, ep, before.cloned())),
                 }
             }
         }
@@ -255,18 +260,22 @@ pub async fn apply(
     Ok(applied)
 }
 
-/// `max(session_epochs, sessions row)` per session, as `Store::fence` sees it.
-async fn local_fences(tx: &mut ApplyTx<'_>) -> anyhow::Result<HashMap<String, u32>> {
-    let rows: Vec<(String, i64)> = sqlx::query_as(
-        "SELECT id, epoch FROM main.sessions UNION ALL SELECT session_id, epoch FROM main.session_epochs",
+/// `max(session_epochs, sessions row)` per session with its owner, as
+/// `Store::fence` sees it.
+async fn local_fences(tx: &mut ApplyTx<'_>) -> anyhow::Result<HashMap<String, (u32, String)>> {
+    let rows: Vec<(String, i64, String)> = sqlx::query_as(
+        "SELECT id, epoch, owner FROM main.sessions \
+         UNION ALL SELECT session_id, epoch, owner FROM main.session_epochs",
     )
     .fetch_all(&mut **tx)
     .await?;
-    let mut out: HashMap<String, u32> = HashMap::new();
-    for (id, epoch) in rows {
+    let mut out: HashMap<String, (u32, String)> = HashMap::new();
+    for (id, epoch, owner) in rows {
         let e = u32::try_from(epoch).unwrap_or(u32::MAX);
-        let slot = out.entry(id).or_insert(0);
-        *slot = (*slot).max(e);
+        let slot = out.entry(id).or_insert((0, String::new()));
+        if e >= slot.0 {
+            *slot = (e, owner);
+        }
     }
     Ok(out)
 }
@@ -427,7 +436,7 @@ fn scan_sessions(
     id: c_int,
     owner: c_int,
     epoch: c_int,
-) -> anyhow::Result<Vec<AppliedSession>> {
+) -> anyhow::Result<Vec<(String, String, u32)>> {
     let mut it = Iter::start(changeset)?;
     let mut out = Vec::new();
     while it.next()? {
