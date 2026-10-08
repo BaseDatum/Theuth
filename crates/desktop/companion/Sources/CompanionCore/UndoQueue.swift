@@ -9,7 +9,7 @@ public struct UndoQueue<Action: Equatable>: Equatable {
     }
 
     public static var defaultDelay: TimeInterval { 3 }
-    public let delay: TimeInterval
+    public private(set) var delay: TimeInterval
     public private(set) var held: Held?
 
     public init(delay: TimeInterval = 3) {
@@ -17,10 +17,12 @@ public struct UndoQueue<Action: Equatable>: Equatable {
     }
 
     /// Hold `action`. A second keystroke while one is held displaces it: the displaced action is returned
-    /// and the caller commits it at once (the receipt row says so).
+    /// and the caller commits it at once (the receipt row says so). `delay`, when given, re-arms the queue
+    /// with the current setting (clamped 0–5) for this and later holds — the queue itself is never replaced.
     @discardableResult
-    public mutating func hold(_ action: Action, now: Date) -> Action? {
+    public mutating func hold(_ action: Action, now: Date, delay: TimeInterval? = nil) -> Action? {
         let displaced = held?.action
+        if let delay { self.delay = min(5, max(0, delay)) }
         held = Held(action: action, since: now)
         return displaced
     }
