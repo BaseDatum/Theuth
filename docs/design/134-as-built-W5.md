@@ -139,11 +139,91 @@ in the NSIS zip Tauri downloads) — first exercised by the packaging gate.
 9. Update path (optional): with the previous version installed and running, run the new setup.exe by hand → the
    PREINSTALL hook's `taskkill` line appears in the install log and the copy over `companion\` succeeds.
 
+## Install gate results (orchestrator, build-B, 2026-10-08 01:50–04:10)
+
+Built by `scripts/package-windows.ps1` in build-B's warm release clone (one-shot headless scheduled task
+`theuth-pkg`, ~15 min warm), installed per-user into `%LOCALAPPDATA%\theuth`, UI phase by a theuth subagent with
+windows-mcp on the console session (`tscon 1 /dest:console` — an RDP disconnect leaves the session unrendered and
+breaks capture and input). Procedure: knowledge `procedures/build-b-theuth-windows-install-gate-2026-10-08`.
+Builds tested: e7ab8f56 (first round), f51e3bb3 (after the quit fix below).
+
+| Step | Result | Evidence |
+|---|---|---|
+| 1 clean box | done | old 1.16.0 install removed with its own `uninstall.exe /S`; leftovers moved aside; scratch engine task stopped (same data dir) |
+| 2 silent install | PASS | `setup.exe /S` exit 0 in 41–43 s; `companion\` 485 files; `t.exe`, `onnxruntime.dll`, `theuth-desktop.exe`, `uninstall.exe`; `HKCU\Software\Classes\theuth\shell\open\command` = `"…\theuth-desktop.exe" "%1"`; no `Run\TheuthCompanion` |
+| 3 launch | PASS | within ~4 s three `t.exe` (engine + 2 helpers) from the install dir, `engine.json` `"host": "desktop"`; companion launched by the shell (`companion: launched …`, `alive=true; tray hidden`) |
+| B1 one tray icon | PASS | exactly one theuth icon (the companion's) while the companion lives; rail + main window present (UIA) |
+| B2 deep link while running | PASS | `explorer.exe theuth://attention/gate-134` → the running window at `/attention/gate-134` in 4 s; still one `theuth-desktop` |
+| B3 launch at login | PASS | companion Settings › Launch at login → `Run\TheuthCompanion` = `"…\companion\Theuth.Companion.exe" --background`, mirrored to `~\.theuth\companion.json`; survives kill/relaunch |
+| B4 companion death/revival | PASS | kill → the shell's tray icon returns within the 2 s poll; relaunch → hidden again |
+| B5 quit from the companion tray | FAIL → fixed → PASS | e7ab8f56: "Quit theuth" ended only the companion; f51e3bb3: whole app in ≤ 1 s through the RPC shutdown (below) |
+| B6 nothing stray | PASS | no dialogs, crash boxes or toasts |
+| 7 launch at login | PASS | `Run\TheuthCompanion` = `"C:\Users\user\AppData\Local\theuth\companion\Theuth.Companion.exe" --background`; `companion.json` `{ "launch_at_login": true }` |
+| 8 uninstall | PASS | `uninstall.exe /S` exit 0, files gone in 1 s; `Run\TheuthCompanion` removed (POSTUNINSTALL), `HKCU\Software\Classes\theuth` removed, Uninstall key and both shortcuts removed; left: `companion\settings.json` + `companion\logs\` (see Open) |
+| 9 update path | PASS | f51e3bb3 `setup.exe /S` over the running app + engine + companion: exit 0 in 41 s, no theuth process left, `theuth-desktop.exe` carries the new code (string check), `companion\Theuth.Companion.dll` hash = the new build's |
+
+### Fix found by the gate: Quit theuth = the whole app (f51e3bb3)
+
+Design 130 W7 (Mac, as built): tray › "Quit theuth" quits the whole app — the companion `terminate()`s the shell,
+whose `applicationShouldTerminate` runs the `quit-requested` handshake (engine shutdown, then the companion with 2 s
+grace) — and a second item "Quit theuth Companion" quits only the companion. The Windows companion had one item that
+called its own `quit(0)`. Now:
+
+- shell: `theuth://quit` → `request_quit` (`is_quit_link`, unit test `quit_link_is_not_a_route`); the
+  single-instance plugin hands the link to the running shell;
+- companion: `Links.QuitTheuth()` opens `theuth://quit` when `theuth-desktop` runs in the same session; the tray's
+  "Quit theuth" uses it with a 10 s self-quit fallback (else quits itself); new item "Quit theuth Companion".
+
+Gates: Mac `cargo fmt --check`, `cargo test -p desktop --lib` (deep_link + quit_link 2 passed), `cargo clippy -p
+desktop --no-deps -D warnings`; build-B companion Debug build 0 errors / 0 warnings, `cargo check -p desktop`
+(Windows) 0 warnings; release package exit 0.
+
+### Installer: why the stock kill is enough for the sidecars
+
+The template's `CheckIfAppIsRunning` kills `theuth-desktop.exe` only and the PREINSTALL hook kills the companion only,
+yet `t.exe` and `theuth-documents-*.exe` (also in `$INSTDIR`) were never found locked: the shell holds the engine in a
+Job Object with `KILL_ON_JOB_CLOSE` and no breakaway (`launch.rs` `Daemon.tree`), so the kernel ends the engine, its
+`t subprocess` and the helper grandchildren the moment the shell dies by any route. Verified: killing
+`theuth-desktop` alone ended the engine and its three children within 8 s (the engine logged no shutdown — a kernel
+kill), only the companion (outside the job by design) survived — which is exactly what the hook covers. A path-based
+kill of everything under `$INSTDIR` was drafted and dropped: no failure to fix, and an installer spawning
+`powershell -ExecutionPolicy Bypass` invites AV heuristics.
+
+### B5 recheck on f51e3bb3 (03:44–03:47, windows-mcp subagent)
+
+- R1 tray menu, in order: Open theuth · Ask theuth… · Pause notifications ▸ · Launch at login ✓ · ― · Keyboard
+  shortcuts… Ctrl+/ · Settings… · ― · **Quit theuth · Quit theuth Companion**.
+- R2 "Quit theuth Companion": companion gone at +3 s; `theuth-desktop` + engine + helpers kept running; the shell's
+  tray icon back (overflow) at +16 s.
+- R3 relaunch the companion by hand: its tray icon back at +5 s, the shell's icon hidden again at +13 s.
+- R4 "Quit theuth": all six processes (shell, engine + 2 helpers, documents helper, companion) gone in the same
+  1 s sample; no theuth icon in the tray or the overflow, no dialogs. Engine log, 1 s after the click: `rpc::api:
+  shutdown requested over rpc` → `109: drain window closed reason="shutdown" running=0` → `t: exiting: shutdown
+  token cancelled (rpc shutdown, …)` — the shell's quit handshake, not a kill; the companion accepted the shell's
+  `WM_CLOSE` inside the 2 s grace.
+
+State left on build-B: f51e3bb3 build installed fresh after the uninstall and running in session 1 (console);
+the release clone back on its `main` (1354b6d8, clean); scratch engine task stopped (it shares `~\.theuth`).
+
+### Polish found by the gate (not blocking; next wave)
+
+1. The shell's tray icon (shown while no companion runs) has no tooltip and lands in the overflow; the companion's
+   icon is promoted. The §4.5 first-run tip "pin theuth to the taskbar corner" was not seen.
+2. Startup flicker: the supervisor logs `alive=true → false → true` within ~2 s of launch, so the shell's tray icon
+   shows for one poll.
+3. Companion Settings › Launch at login: UIA reports the ToggleSwitch off-screen (`ui_click` refused twice) while a
+   mouse click works — an accessibility defect (C12).
+4. The main window never appears in GDI/BitBlt screen captures although UIA reports it visible and foreground
+   (WebView2 composition); a human should confirm screen sharing shows it.
+5. No main-UI surface reads `companion_login_item_status` on any platform (only `companion_alive` is called), so the
+   packaging-gate plan's "the main UI's status reads `enabled`" has nothing to read; the Run value and
+   `companion.json` are the evidence.
+
 ## Open / unverified
 
-- Everything above the Mac gates is type-checked on build-B only; the behaviour (mutex visibility across the
-  shell/companion pair, `WM_CLOSE` acceptance by the rail, NSIS hooks, `nsExec`) is first exercised by the packaging
-  gate.
+- Verified by the install gate above: the single-instance pair (one shell per deep link), the companion accepting the
+  shell's `WM_CLOSE`, the NSIS hooks (`nsExec` taskkill before the copy, POSTUNINSTALL Run-value removal) and the
+  `theuth://` scheme registration and removal. Not exercised: two Windows user sessions at once (the mutex names).
 - The in-app updater is inert on Windows today: `update::check` requires a `.app` ancestor (`bundle_dir()`), so no
   update is ever parked and `install_pending` returns early; the terminate-before-install order is in place for when
   that changes.
