@@ -87,14 +87,14 @@ All through `BUILD_LABEL=141-closer build-lock`, stable toolchain, `CARGO_BUILD_
 | `cargo test -p slack` | ok — 146 passed |
 | `cargo test -p telegram` | ok — 124 passed |
 | `cargo test -p roster` | ok — 68 passed |
-| `cargo build -p theuth` → `t` | GATE_BUILD |
-| `just ts-desktop` | GATE_TS |
-| desktop `bun run check` (tsc) | GATE_TSC |
-| desktop `bunx vitest run` (full) | GATE_VITEST |
-| desktop `bun run build` (vite) | GATE_VITE |
-| `cargo clippy --workspace --all-targets -- -D warnings` (under `/tmp/theuth-build.lock`, `BUILD_SLOTS=1`) | GATE_CLIPPY |
-| `cargo fmt --all -- --check` | GATE_FMT |
-| `git diff $(git merge-base main HEAD) HEAD -- Cargo.lock` | GATE_LOCK |
+| `cargo build -p theuth` → `t` | ok — `target/debug/t` (`t 2.12.3`), copied to `~/.theuth/briefs/2026-10-08/141/smoke/t`; `INTEGRATED` = `c03ce741` + that path |
+| `just ts-desktop` | ok — `export_bindings` 8 passed; `ObservedMeta.ts`, `ObservedSource.ts`, `ObservedState.ts`, `CostRule.ts`, `SessionKind.ts` present |
+| desktop `bun run check` (tsc) | ok — clean |
+| desktop `bunx vitest run` (full) | ok — 203 files, 1400 tests passed |
+| desktop `bun run build` (vite) | ok — `✓ built in 10.13s` (chunk-size warning only, pre-existing) |
+| `cargo clippy --workspace --all-targets -- -D warnings` (under `/tmp/theuth-build.lock`, `BUILD_SLOTS=1`) | ok — `Finished`, no warnings (only the pre-existing `block v0.1.6` future-incompat note) |
+| `cargo fmt --all -- --check` | 26 files differ, **none touched by 141** (pre-existing on main under this rustfmt; not fixed — outside the wave) |
+| `git diff $(git merge-base main HEAD) HEAD -- Cargo.lock` | 15 lines: `agent-client-protocol` + `-derive` 2.2.0→3.1.0, `-schema` 1.9.1→1.10.2, dropped `schemars`/`tracing` edges — nothing else |
 | `grep -rn "141 C stub" crates` | empty |
 
 ## 4. Open items
