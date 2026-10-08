@@ -149,6 +149,12 @@ Front matter through `gray_matter` as skills do (04 §1.2). Exactly one of
 | `cron` | `croner::Cron::from_str(expr)` (croner 4, `chrono` feature) | 5 fields, or 6 with leading seconds (optional by default); `L`, `W`, `#` as croner accepts them; evaluated in `chrono::Local`. `Cron::describe()` gives the English line the table and the tool reply show |
 | `every` | `humantime::parse_duration` | `20s`, `30m`, `1h 30m`, `2d`; minimum `10s` |
 | `at` | `DateTime::parse_from_rfc3339`, else `NaiveDateTime` (`%Y-%m-%dT%H:%M[:%S]`) read as `Local` | past instants are an error at parse |
+| `budget` | `<amount> <currency>` (`1 USD`) | 136 §15: on every fire the plugin sends `agent::SetBudget{session, nanos, currency}` (`nanos: None` when the key is absent); enforced at `Reserved::open` — a model call that would pass the cap is refused, the turn ends with one `<budget>` note, a side call answers `budget exhausted`. `FireWith{name, overrides}` (RPC `dreaming.run_now`) fires once with a budget / `run_timeout` / `<request>` payload override for that run only |
+
+136 §15: the harness installs the bundled routine `schedules/dreaming.md`
+(written once, when absent, by `dreaming::DreamingPlugin::start`; the user's
+`enabled:` toggle survives restarts); `approvals: false` is permitted for it
+because its tool surface is the bounded set in 136 §9.4.
 
 A file that fails to parse is **listed with its error** (`/schedules`
 shows `morning-brief · error: cron: invalid day-of-week`) and never fires;

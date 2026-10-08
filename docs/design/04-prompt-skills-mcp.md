@@ -85,9 +85,18 @@ Front matter (`gray_matter`, as now):
 | `name`        | file stem / directory name           |     |
 | `description` | first non-empty body line            |     |
 | `always`      | `false`                              | yes — body inlined into the system prompt instead of indexed |
+| `origin`      | absent                               | 136: `dreaming` marks a skill the night wrote; the index lists these after the others |
 
 Unknown keys (`license`, `allowed-tools`, `metadata`, …) are ignored.
 Duplicate names: last by sorted path wins, warning as now.
+
+136 §15: `<data_dir>/skills/learned/<skill>.md` is a machine-owned sidecar
+appended to that skill's text by `load_skill`, the `always` inliner and ACP
+materialisation, under `## Learned (dreaming)` (as built: one read,
+`Skills::body`, so the `LoadSkill` RPC shows it too); bundled skills are
+rewritten at start, sidecars are not; `skills/learned/` and `skills/retired/`
+are not indexed; the index lists `origin: dreaming` skills last (136 §14.1
+dropped the trial state, so there is no `status: trial`).
 
 `Skills::load(dir)` becomes `Skills::index(dir) -> Vec<SkillMeta {name,
 description, path, always, source}>` reading only front matter (the first

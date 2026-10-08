@@ -2170,11 +2170,7 @@ impl Message<TurnDone> for Session {
     /// the next queued batch (50 §6.3: the oldest input's scope and what it
     /// admits), whose tickets stayed pending meanwhile. A batch of nothing
     /// but suppressed peer input starts no turn; the next batch is tried.
-    async fn handle(
-        &mut self,
-        TurnDone(state): TurnDone,
-        ctx: &mut Context<Self, Self::Reply>,
-    ) {
+    async fn handle(&mut self, TurnDone(state): TurnDone, ctx: &mut Context<Self, Self::Reply>) {
         self.state = Some(state);
         self.inflight = None;
         self.scope = TurnScope::default();
@@ -6602,8 +6598,10 @@ impl Turn {
             let fm = &doc.frontmatter;
             // 136 §0.14: title ≤ 120 chars (the rest → a Summary paragraph),
             // `evidence: [this session]`, `status: fresh`.
-            let (title, body) =
-                knowledge::harvest::split_title(&fm.title().unwrap_or_else(|| id.clone()), &doc.body);
+            let (title, body) = knowledge::harvest::split_title(
+                &fm.title().unwrap_or_else(|| id.clone()),
+                &doc.body,
+            );
             let put = Put {
                 type_: fm.type_().unwrap_or_default(),
                 title,

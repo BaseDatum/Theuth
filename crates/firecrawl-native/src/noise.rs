@@ -139,7 +139,7 @@ pub fn may_strip(node: &NodeRef) -> bool {
     if tag == "form" {
         return form_is_noise(attrs.get("class"), len);
     }
-    !(has_structural_id(attrs.get("id")) && !NOISE_TAGS.contains(&tag))
+    !has_structural_id(attrs.get("id")) || NOISE_TAGS.contains(&tag)
 }
 
 /// Whether `node` is noise for candidate scoring: by tag (`header`/`footer`/`nav`/`aside`), by

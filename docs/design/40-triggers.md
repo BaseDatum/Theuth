@@ -413,6 +413,13 @@ for the version it carries (`sensors(name, version, sha256)` in
 left alone, listed as `sensor: pr_watch.py (edited; shipped 2 available)`.
 To take the update the user deletes or renames their copy.
 
+136 §15: `sensors/dreaming.py` is a bundled sensor too, written binary-owned
+(rewritten every start, like a skill, not under the version rule above) by
+`dreaming::DreamingPlugin::start`; it reads only the clock and
+`<data_dir>/dreaming/signals.json` — a plugin may write the file a sensor
+reads (the `Signals` actor keeps it current from `TurnFinished`, roster and
+power events, so the sensor itself makes no tool calls).
+
 ### 4.6 `on: fs` — later, same gate
 
 A filesystem source (`notify` on a glob, 1 s debounce, matched paths as the

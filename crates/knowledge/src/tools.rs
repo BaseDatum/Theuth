@@ -297,8 +297,24 @@ impl Tool for PutTool {
     }
 
     async fn call(&self, p: Put, cx: ToolCx) -> anyhow::Result<ToolOutput> {
-        writable(&cx)?;
-        let (meta, created) = self.0.put_for(p, Source::Model, Some(cx.session)).await?;
+        // 136 §2.1: the consolidation keys are the night's (or the owner's):
+        // gated like the five ops and stamped `source: dreaming`, so the
+        // night's undo receipt sees the tidy puts and a live session cannot
+        // archive or un-hint a concept by hand through a plain put.
+        let consolidates = p.status.is_some()
+            || p.hint.is_some()
+            || p.verified.is_some()
+            || p.valid_until.is_some()
+            || p.superseded_by.is_some()
+            || p.merged_into.is_some();
+        let source = if consolidates {
+            consolidating(&self.0, "knowledge_put with a consolidation key", &cx).await?;
+            Source::Dreaming
+        } else {
+            writable(&cx)?;
+            Source::Model
+        };
+        let (meta, created) = self.0.put_for(p, source, Some(cx.session)).await?;
         let how = if created { "new" } else { "updated" };
         Ok(ToolOutput::ok(format!("put {} ({how})", meta.id)))
     }
@@ -911,6 +927,35 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(e.contains("knowledge_verify runs only"), "{e}");
+        // A plain put is anyone's and `source: model`; a put that sets a
+        // consolidation key is gated the same way and lands as `dreaming`.
+        let tidy = || Put {
+            status: Some(crate::Status::Tidy),
+            ..put()
+        };
+        let e = PutTool(k.clone())
+            .call(tidy(), cx(false))
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(
+            e.contains("knowledge_put with a consolidation key runs only"),
+            "{e}"
+        );
+        PutTool(k.clone()).call(put(), cx(false)).await.unwrap();
+        assert_eq!(
+            k.get("facts/x").await.unwrap().meta.source,
+            Some(Source::Model)
+        );
+        PutTool(k.clone())
+            .call(tidy(), allowed.clone())
+            .await
+            .unwrap();
+        let m = k.get("facts/x").await.unwrap().meta;
+        assert_eq!(
+            (m.source, m.status),
+            (Some(Source::Dreaming), crate::Status::Tidy)
+        );
         // Stats is read-only and real.
         let out = StatsTool(k.clone())
             .call(

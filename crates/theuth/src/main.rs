@@ -1478,7 +1478,11 @@ async fn run() -> anyhow::Result<()> {
     // 136: the dry run reads a (copied) data dir and must write nothing — not
     // even `first_run`'s config.yaml / prompt.md.
     if let Some(Cmd::Dreaming {
-        cmd: DreamingCmd::DryRun { data_dir: dir, json },
+        cmd:
+            DreamingCmd::DryRun {
+                data_dir: dir,
+                json,
+            },
     }) = &cli.cmd
     {
         let dir = dir.as_ref().unwrap_or(&data_dir);
