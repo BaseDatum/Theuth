@@ -18,6 +18,7 @@ public partial class App : Application
     private LogWindow? logWindow;
     private EngineProbe? probe;
     private Notifications.NotificationsInstaller? w3; // W3
+    private AskBar.AskBarInstall? askBar; // W4
 
     /// <summary>The engine state every surface renders (design 134 §5.4); created in <see cref="OnLaunched"/>, UI thread only.</summary>
     public Store? Store { get; private set; }
@@ -64,6 +65,9 @@ public partial class App : Application
         // W3: notifier (policy on the Store's items), breakpoint sources, Settings window, Run key, --probe-notify — after the
         // surfaces (it wires into Ui.Surfaces.Current's hooks), before Start (to see the first refetch).
         w3 = Notifications.NotificationsInstaller.Install(this, Store, dispatcher); // W3
+        // W4: the Ask bar (AskBar/AskBarInstall) binds to Store and to Ui.Surfaces.Current's hooks here (after W2 and W3, before Start);
+        // --ask-probe N / --mic-probe N / --ask-replay / --ask run through it.
+        askBar = AskBar.AskBarInstall.Install(Store, dispatcher, Quit);
         Store.Start();
     }
 

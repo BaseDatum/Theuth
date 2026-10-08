@@ -1,0 +1,570 @@
+using System.ComponentModel;
+using System.Runtime.CompilerServices;
+
+namespace Theuth.Companion.Core;
+
+/// <summary>The engine's streamed dictation as the Ask bar calls it (<see cref="AskRpc"/> in the app, a fake in tests).</summary>
+public interface IDictationCalls
+{
+    /// <summary><c>dictation_prewarm</c>: load the model; never opens a microphone.</summary>
+    Task PrewarmAsync();
+
+    /// <summary><c>dictation_start(16000)</c> → the dictation id (never null: null opens the engine's own microphone).</summary>
+    Task<string> StartAsync();
+
+    /// <summary><c>dictation_audio(id, base64 LE i16)</c>, ~100 ms per call, in order.</summary>
+    Task AudioAsync(string id, short[] pcm16);
+
+    /// <summary><c>dictation_stop(id)</c>: flush the open utterance; <c>DictationFinished</c> follows as an event.</summary>
+    Task StopAsync(string id);
+}
+
+/// <summary>The Ask bar's window and microphone as <see cref="AskBarModel"/> drives them (the app: AskBarWindow + VoiceRecorder).</summary>
+public interface IAskBarSurface
+{
+    /// <summary>Place and show; <paramref name="activate"/>: take the keyboard (summoned) and remember the previous foreground.</summary>
+    void Show(bool activate);
+
+    /// <summary>Hide; <paramref name="returnFocus"/>: hand the foreground back to the window it was taken from.</summary>
+    void Hide(bool returnFocus);
+
+    /// <summary>Open the default capture endpoint: null when it streams (chunks arrive through <see cref="AskBarModel.Feed"/>), else why not.</summary>
+    Task<string?> StartMicrophoneAsync();
+
+    /// <summary>Stop capturing; the tail under one chunk still arrives through <see cref="AskBarModel.Feed"/>.</summary>
+    void StopMicrophone();
+
+    /// <summary>Stop and drop whatever is buffered.</summary>
+    void CancelMicrophone();
+
+    /// <summary>A <c>theuth://</c> link for the main window (Ctrl+O on a reply).</summary>
+    void OpenUrl(Uri url);
+}
+
+/// <summary>
+/// The Ask bar (design 134 §4.3, D7; 130 §4.3 / W3 / W6) without a UI framework: the field state the window renders
+/// (Swift <c>AskBarState</c>) and the controller logic of Swift's <c>AskBarController</c> — open/close, the Ask-bar key
+/// scope, hold-to-talk on the hotkey (<see cref="AskVoiceMachine"/>), the live dictation over the engine's stream
+/// (<see cref="AskDictation"/> on the Store; strictly ordered calls, chunks before the id held, a release before the id
+/// remembered, the 5 s cap on "finishing…"), the synthetic probes. Sends go through the Store's hold
+/// (<see cref="StoreModel.SubmitAsk"/>: 3 s, Esc undoes, then the desk). One owner thread; portable (Mac-tested) — the
+/// app's <c>AskBar/AskBarWindow</c> renders it and <c>Voice/VoiceRecorder</c> is its microphone (design 134 W4).
+/// </summary>
+public sealed class AskBarModel : INotifyPropertyChanged
+{
+    /// <summary>The voice machine's tick while a press is in progress (Swift: a 0.05 s timer).</summary>
+    public static readonly TimeSpan VoiceTick = TimeSpan.FromMilliseconds(50);
+
+    /// <summary>"finishing…" never lasts longer: the text so far lands (Swift's ponytail cap).</summary>
+    public static readonly TimeSpan FinishCap = TimeSpan.FromSeconds(5);
+
+    private readonly StoreModel store;
+    private readonly IDictationCalls calls;
+    private readonly IAskBarSurface surface;
+    private readonly IStoreScheduler scheduler;
+    private readonly Func<DateTimeOffset> clock;
+    private readonly Action<string> log;
+    private readonly Func<KeyTable> keys;
+    private readonly AskVoiceMachine voice = new();
+    private IDisposable? voiceTimer;
+    private IDisposable? probeTimer;
+    private IDisposable? finishCap;
+    private DateTimeOffset openedAt = DateTimeOffset.MinValue;
+
+    /// <summary>A bar opened this recently by the same press (W2 opens it through <c>Store.AskBarRequested</c> before the press reaches here) counts as opened by the press.</summary>
+    public static readonly TimeSpan OpenedByPressWindow = TimeSpan.FromMilliseconds(100);
+    private Task sendTask = Task.CompletedTask;
+    private bool prewarmed;
+    private readonly List<short[]> pendingChunks = new();
+    private bool stopWanted;
+
+    private string text = "";
+    private string partial = "";
+    private bool live;
+    private bool recording;
+    private float level;
+    private string? status;
+    private bool isOpen;
+
+    public AskBarModel(StoreModel store, IDictationCalls calls, IAskBarSurface surface, IStoreScheduler scheduler,
+        Func<DateTimeOffset>? clock = null, Action<string>? log = null, Func<KeyTable>? keys = null, bool automated = false)
+    {
+        this.store = store;
+        this.calls = calls;
+        this.surface = surface;
+        this.scheduler = scheduler;
+        this.clock = clock ?? (() => DateTimeOffset.Now);
+        this.log = log ?? (_ => { });
+        this.keys = keys ?? (() => new KeyTable());
+        Automated = automated;
+        store.DictationChanged += DictationChanged;
+        store.AskBarRequested += Open; // Ctrl+L in the panel (130 W3)
+    }
+
+    /// <summary>
+    /// A probe run (Swift <c>AskFlags.automated</c>): the hotkey and the microphone are inert. Unlike the Swift probe a
+    /// typed Enter still sends — the W4 gate types a request into the bar and expects <c>send_input</c> to go out
+    /// (134 §7 W4); the synthetic dictation itself never sends (no voice press, so no <c>SetText</c>).
+    /// </summary>
+    public bool Automated { get; }
+
+    // MARK: field state (Swift AskBarState) — PropertyChanged on the owner thread
+
+    public event PropertyChangedEventHandler? PropertyChanged;
+
+    /// <summary>The field. While <see cref="Live"/> it holds the closed utterances; the open one is <see cref="Partial"/>.</summary>
+    public string Text { get => text; private set => Set(ref text, value); }
+
+    /// <summary>The open utterance of the live dictation, shown muted after <see cref="Text"/>.</summary>
+    public string Partial { get => partial; private set => Set(ref partial, value); }
+
+    /// <summary>The live dictation owns the field (finals + muted partial) until it lands.</summary>
+    public bool Live { get => live; private set => Set(ref live, value); }
+
+    public bool Recording { get => recording; private set => Set(ref recording, value); }
+
+    /// <summary>The last <c>DictationLevel</c> peak, 0–1: the mic glyph's pulse.</summary>
+    public float Level { get => level; private set => Set(ref level, value); }
+
+    /// <summary>"listening…" · "finishing…" · a failure; null when quiet.</summary>
+    public string? Status { get => status; private set => Set(ref status, value); }
+
+    public bool IsOpen { get => isOpen; private set => Set(ref isOpen, value); }
+
+    /// <summary>The dictated text whose hold is running: any other text means the user typed, which cancels it (§4.3).</summary>
+    public string? VoiceText { get; private set; }
+
+    /// <summary>The press that opened the bar must not close it on release.</summary>
+    public bool OpenedByPress { get; private set; }
+
+    public AskVoiceMachine.State VoiceState => voice.Current;
+
+    /// <summary>The hint under the field: the hold chord from the key table ("hold Ctrl+Shift+Space").</summary>
+    public string HoldHint => keys().ChordFor(KeyAction.OpenPanel) is { } c ? $"hold {c.Symbol}" : "hold the hotkey";
+
+    /// <summary>
+    /// What the field shows: while <see cref="Live"/> the closed utterances then the open one (the window mutes the
+    /// partial), else <see cref="Text"/>. UIA reads this as the transcript (the W4 gate's <c>ui_read("ask-field")</c>).
+    /// </summary>
+    public string FieldText => Live && Partial.Length > 0 ? (Text.Length > 0 ? Text + " " + Partial : Partial) : Text;
+
+    /// <summary>The field's placeholder: "Listening…" while the dictation has produced nothing yet, else the prompt.</summary>
+    public string Placeholder => Live && Text.Length == 0 && Partial.Length == 0 ? "Listening…" : "Ask theuth…";
+
+    /// <summary>
+    /// The receipt row's two columns (Swift <c>ReceiptView</c>): the words, and the trailing hint (the undo countdown,
+    /// "Open Ctrl+O"); null when there is no receipt. A desk reply shows <c>who · first two lines</c>.
+    /// </summary>
+    public static (string Text, string Trailing)? ReceiptLines(StoreModel.ReceiptRow? receipt, double remaining)
+    {
+        switch (receipt)
+        {
+            case null: return null;
+            case StoreModel.ReceiptRow.Holding h: return ($"{h.Held.Who} · {h.Held.Label} — sending", $"Esc undo · {(int)Math.Ceiling(remaining)}");
+            case StoreModel.ReceiptRow.Sent s: return ($"Sent · {s.Text}", "");
+            case StoreModel.ReceiptRow.Undone: return ("Taken back", "");
+            case StoreModel.ReceiptRow.Stale: return ("Already answered elsewhere", "");
+            case StoreModel.ReceiptRow.Failed f: return ($"Failed · {f.Error}", "");
+            case StoreModel.ReceiptRow.Reply r: return ($"{r.Who} · {r.Text}", r.Session is null ? "" : "Open Ctrl+O");
+            default: return null;
+        }
+    }
+
+    private void Set<T>(ref T field, T value, [CallerMemberName] string? name = null)
+    {
+        if (EqualityComparer<T>.Default.Equals(field, value)) return;
+        field = value;
+        PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(name));
+    }
+
+    // MARK: open / close
+
+    /// <summary>Summon: show, take the keyboard, prewarm the dictation model once.</summary>
+    public void Open()
+    {
+        if (!IsOpen) openedAt = clock();
+        IsOpen = true;
+        surface.Show(activate: true);
+        Prewarm();
+    }
+
+    /// <summary>Probe mode: on screen without taking the keyboard, the field pre-filled (Swift <c>showWithoutKey</c>).</summary>
+    public void ShowWithoutKey(string fieldText)
+    {
+        Text = fieldText;
+        IsOpen = true;
+        surface.Show(activate: false);
+    }
+
+    public void Close(bool returnFocus)
+    {
+        if (!IsOpen) return;
+        IsOpen = false;
+        if (voice.IsBusy) Apply(voice.Handle(new AskVoiceMachine.Event.Failed("cancelled")));
+        surface.Hide(returnFocus);
+    }
+
+    public void Toggle()
+    {
+        if (IsOpen) Close(returnFocus: true);
+        else Open();
+    }
+
+    // MARK: keys (the table's Ask-bar scope: Enter sends, Esc, Ctrl+O, Ctrl+/; the field takes the rest)
+
+    /// <summary>
+    /// A key in the bar; true when handled. Bare printable keys always type (a <c>?</c> in a question is text, not the
+    /// legend alias — the Swift bar swallowed it); the rest is looked up in the Ask-bar scope.
+    /// </summary>
+    public bool HandleKey(KeyPress press)
+    {
+        var chord = press.Chord;
+        if (chord.IsCharKey && (press.Modifiers & (ChordModifiers.Control | ChordModifiers.Alt | ChordModifiers.Win)) == 0) return false;
+        var intent = KeyGrammar.IntentFor(press, KeyScope.AskBar, keys());
+        switch (intent.Kind)
+        {
+            case IntentKind.Send:
+                Submit();
+                return true;
+            case IntentKind.Legend:
+                store.Perform(Intent.Legend);
+                return true;
+            case IntentKind.Escape:
+                if (store.HeldNow is not null)
+                {
+                    store.Perform(Intent.Escape); // undo: the text is still in the field
+                    return true;
+                }
+                Close(returnFocus: true);
+                return true;
+            case IntentKind.OpenSession:
+                if (store.Receipt is StoreModel.ReceiptRow.Reply { Session: { } s }) surface.OpenUrl(DeepLink.Session(s));
+                else if (store.Ask.Router.DeskSession is { } d) surface.OpenUrl(DeepLink.Session(d));
+                return true;
+            default:
+                return false;
+        }
+    }
+
+    /// <summary>Enter: the field goes to theuth's desk through the Store's hold (3 s, Esc undoes; then the desk routing).</summary>
+    public void Submit()
+    {
+        if (Automated) log($"probe: typed send ({Text.Trim().Length} chars)");
+        VoiceText = null;
+        store.SubmitAsk(Text);
+    }
+
+    /// <summary>The user edited the field (not the dictation): typing during a voice hold keeps editing instead of sending.</summary>
+    public void FieldEdited(string edited)
+    {
+        Text = edited;
+        if (VoiceText is not { } v || edited == v) return;
+        VoiceText = null;
+        store.Ask.Dictation.Handle(AskDictation.Event.Typed.Instance);
+        if (store.HeldNow is not null) store.Perform(Intent.Escape);
+    }
+
+    // MARK: the hotkey (W2's RegisterHotKey delivers the key-down; the release is observed by polling the key)
+
+    /// <summary>
+    /// The hotkey went down and was routed to the Ask bar (W2's handler opens the Attention panel instead while something
+    /// needs you, as Swift's <c>hotkeyDown</c>): a press on a closed bar opens it and starts a press — held past 0.25 s it
+    /// dictates straight into the fresh bar; on an open bar the press is a voice press.
+    /// </summary>
+    public void HotkeyDown()
+    {
+        if (Automated) return;
+        if (IsOpen && clock() - openedAt > OpenedByPressWindow)
+        {
+            OpenedByPress = false;
+            VoiceEvent(new AskVoiceMachine.Event.KeyDown(clock()));
+            return;
+        }
+        OpenedByPress = true;
+        Open();
+        VoiceEvent(new AskVoiceMachine.Event.KeyDown(clock()));
+    }
+
+    /// <summary>The hotkey came up: ends a voice press; otherwise a press that did not open the bar closes it.</summary>
+    public void HotkeyUp()
+    {
+        if (Automated) return;
+        if (voice.IsBusy)
+        {
+            VoiceEvent(new AskVoiceMachine.Event.KeyUp(clock()));
+            return;
+        }
+        if (OpenedByPress)
+        {
+            OpenedByPress = false;
+            return;
+        }
+        if (IsOpen) Close(returnFocus: true);
+    }
+
+    // MARK: voice (D7, W6 live): hold → microphone → dictation_audio every 100 ms → release → dictation_stop
+    // → DictationFinished → the text stays in the field → the hold
+
+    private void VoiceEvent(AskVoiceMachine.Event e)
+    {
+        Apply(voice.Handle(e));
+        if (voice.IsBusy && voiceTimer is null) voiceTimer = scheduler.Every(VoiceTick, VoiceTickFired);
+        else if (!voice.IsBusy) StopVoiceTimer();
+    }
+
+    private void VoiceTickFired()
+    {
+        Apply(voice.Handle(new AskVoiceMachine.Event.Tick(clock())));
+        Recording = voice.IsRecording;
+        if (!voice.IsBusy) StopVoiceTimer();
+    }
+
+    private void StopVoiceTimer()
+    {
+        voiceTimer?.Dispose();
+        voiceTimer = null;
+    }
+
+    private void Apply(IReadOnlyList<AskVoiceMachine.Effect> effects)
+    {
+        foreach (var fx in effects)
+        {
+            switch (fx.Kind)
+            {
+                case AskVoiceMachine.EffectKind.Tap:
+                    if (OpenedByPress) OpenedByPress = false;
+                    else Close(returnFocus: true);
+                    break;
+                case AskVoiceMachine.EffectKind.StartRecording:
+                    Recording = true;
+                    Status = "listening…";
+                    BeginDictation();
+                    _ = StartMicrophone();
+                    break;
+                case AskVoiceMachine.EffectKind.StopDictation:
+                    Recording = false;
+                    Status = "finishing…";
+                    surface.StopMicrophone(); // flushes the tail chunk through Feed
+                    EndDictation();
+                    break;
+                case AskVoiceMachine.EffectKind.SetText:
+                    Status = null;
+                    Live = false;
+                    VoiceText = fx.Text;
+                    Text = fx.Text ?? "";
+                    store.SubmitAsk(Text); // the same 3 s hold; typing or Esc keeps editing
+                    break;
+                case AskVoiceMachine.EffectKind.Fail:
+                    Recording = false;
+                    Live = false;
+                    surface.CancelMicrophone();
+                    if (store.Ask.Dictation.Id is { } id) Enqueue(() => calls.StopAsync(id));
+                    Status = fx.Text;
+                    log($"voice: {fx.Text}");
+                    break;
+            }
+        }
+    }
+
+    private async Task StartMicrophone()
+    {
+        string? why;
+        try { why = await surface.StartMicrophoneAsync(); }
+        catch (Exception e) { why = $"microphone failed to start: {e.Message}"; }
+        if (why is not null) VoiceEvent(new AskVoiceMachine.Event.Failed(why));
+    }
+
+    // MARK: the engine's dictation (design 54 §8): one id per hold; audio in order; the reducer on the Store
+
+    /// <summary>Raised with the reason when <c>dictation_start</c> is refused (the probe logs it).</summary>
+    public event Action<string>? StartRefused;
+
+    /// <summary>Calls run strictly in order (the start, the audio chunks, then the stop).</summary>
+    private void Enqueue(Func<Task> op) => sendTask = Chain(sendTask, op);
+
+    private async Task Chain(Task previous, Func<Task> op)
+    {
+        await previous;
+        try { await op(); }
+        catch (Exception e) { log($"dictation call failed: {Describe(e)}"); }
+    }
+
+    /// <summary>The ordered dictation calls drained (tests and the probe wait on it).</summary>
+    public Task Drained => sendTask;
+
+    /// <summary><c>dictation_prewarm</c> once, when the Ask bar first opens (not at launch).</summary>
+    public void Prewarm()
+    {
+        if (prewarmed) return;
+        prewarmed = true;
+        _ = PrewarmAsync();
+    }
+
+    private async Task PrewarmAsync()
+    {
+        try
+        {
+            await calls.PrewarmAsync();
+            log("dictation_prewarm ok");
+        }
+        catch (Exception e)
+        {
+            log($"dictation_prewarm failed: {Describe(e)}");
+        }
+    }
+
+    /// <summary><c>dictation_start(16000)</c>; chunks that arrive before the id are held and flushed in order.</summary>
+    public void BeginDictation()
+    {
+        store.Ask.Dictation.Handle(AskDictation.Event.Start.Instance);
+        Live = true;
+        Partial = "";
+        pendingChunks.Clear();
+        stopWanted = false;
+        Enqueue(async () =>
+        {
+            string id;
+            try
+            {
+                id = await calls.StartAsync();
+            }
+            catch (Exception e)
+            {
+                store.Ask.Dictation.Handle(new AskDictation.Event.StartFailed(Describe(e)));
+                var why = store.Ask.Dictation.Error ?? Describe(e);
+                log($"dictation_start failed: {Describe(e)}");
+                pendingChunks.Clear();
+                VoiceEvent(new AskVoiceMachine.Event.Failed(why));
+                StartRefused?.Invoke(why);
+                return;
+            }
+            log($"dictation_start → {id}");
+            store.Ask.Dictation.Handle(new AskDictation.Event.Started(id));
+            foreach (var c in pendingChunks) Send(c, id);
+            pendingChunks.Clear();
+            if (stopWanted)
+            {
+                stopWanted = false;
+                EndDictation(); // released before the start came back
+            }
+        });
+    }
+
+    /// <summary>One ~100 ms chunk from the microphone (or a probe's synthesizer), on the owner thread.</summary>
+    public void Feed(short[] chunk)
+    {
+        if (store.Ask.Dictation.Id is { } id) Send(chunk, id);
+        else if (store.Ask.Dictation.Phase.Kind == AskDictation.PhaseKind.Starting) pendingChunks.Add(chunk);
+    }
+
+    private void Send(short[] chunk, string id) => Enqueue(() => calls.AudioAsync(id, chunk));
+
+    /// <summary><c>dictation_stop</c> after every queued chunk; the text is final once <c>DictationFinished</c> arrives.</summary>
+    public void EndDictation()
+    {
+        if (store.Ask.Dictation.Id is not { } id)
+        {
+            stopWanted = store.Ask.Dictation.Phase.Kind == AskDictation.PhaseKind.Starting;
+            return;
+        }
+        store.Ask.Dictation.Handle(AskDictation.Event.Stop.Instance);
+        Enqueue(async () =>
+        {
+            await calls.StopAsync(id);
+            log($"dictation_stop({id}) ok");
+        });
+        // The engine never sent DictationFinished: after the cap the text so far lands.
+        finishCap?.Dispose();
+        finishCap = scheduler.After(FinishCap, () =>
+        {
+            finishCap = null;
+            if (voice.Current.Kind == AskVoiceMachine.StateKind.Stopping)
+            {
+                VoiceEvent(new AskVoiceMachine.Event.Dictated(store.Ask.Dictation.LiveText));
+            }
+        });
+    }
+
+    /// <summary>The microphone failed after it opened (unplugged, the device went away): the press fails like a refusal.</summary>
+    public void MicrophoneFailed(string why)
+    {
+        if (voice.IsBusy) VoiceEvent(new AskVoiceMachine.Event.Failed(why));
+    }
+
+    /// <summary>The Store reduced a <c>Dictation*</c> event: show the live text, pulse the mic, finish the machine.</summary>
+    private void DictationChanged(AskDictation d, bool take)
+    {
+        if (take && Live)
+        {
+            Text = d.FinalText;
+            Partial = d.PartialText;
+        }
+        Level = d.Levels.Count == 0 ? 0 : d.Levels.Max();
+        if (d.IsActive) return;
+        finishCap?.Dispose();
+        finishCap = null;
+        if (voice.Current.Kind == AskVoiceMachine.StateKind.Stopping)
+        {
+            VoiceEvent(d.Error is { } err ? new AskVoiceMachine.Event.Failed(err) : new AskVoiceMachine.Event.Dictated(d.LiveText));
+        }
+        else if (d.Error is { } e && Live)
+        {
+            Apply(new[] { AskVoiceMachine.Effect.Fail(e) }); // an Error finish while still recording
+        }
+        else if (Live && voice.Current.Kind == AskVoiceMachine.StateKind.Idle)
+        {
+            // A probe's dictation (no voice press): the text lands in the field, nothing is sent.
+            Live = false;
+            Text = d.LiveText;
+            Partial = "";
+        }
+    }
+
+    // MARK: probes: the same path without a microphone and without a send
+
+    /// <summary>
+    /// <c>--synthetic-dictation</c>: <paramref name="seconds"/> of the 440 Hz tone at 16 kHz in 100 ms chunks through
+    /// <c>dictation_start/audio/stop</c>, paced in real time (Swift <c>probeDictation</c>).
+    /// </summary>
+    public void ProbeTone(double seconds, Action done)
+    {
+        int total = (int)(seconds * 10);
+        int sent = 0;
+        ProbeStream(() => sent < total ? AskAudio.Tone(sent++ * AskAudio.ChunkSamples) : null, done);
+    }
+
+    /// <summary><c>--synthetic-speech</c>: arbitrary 16 kHz mono samples (e.g. synthesized speech) through the same path.</summary>
+    public void ProbeSamples(short[] pcm, Action done)
+    {
+        int offset = 0;
+        ProbeStream(() =>
+        {
+            if (offset >= pcm.Length) return null;
+            int n = Math.Min(AskAudio.ChunkSamples, pcm.Length - offset);
+            var c = pcm.AsSpan(offset, n).ToArray();
+            offset += n;
+            return c;
+        }, done);
+    }
+
+    private void ProbeStream(Func<short[]?> next, Action done)
+    {
+        Prewarm();
+        BeginDictation();
+        probeTimer?.Dispose();
+        probeTimer = scheduler.Every(TimeSpan.FromMilliseconds(100), () =>
+        {
+            if (next() is { } chunk)
+            {
+                Feed(chunk);
+                return;
+            }
+            probeTimer?.Dispose();
+            probeTimer = null;
+            EndDictation();
+            done();
+        });
+    }
+
+    private static string Describe(Exception e) => e is Rpc.RpcException r ? r.ToString() : e.Message;
+}
