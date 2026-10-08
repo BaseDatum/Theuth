@@ -7,6 +7,7 @@ use std::time::{Duration, Instant};
 
 use chrono::Utc;
 use futures::StreamExt;
+use futures::future::BoxFuture;
 use genai::chat::{
     CacheControl, ChatMessage, ChatOptions, ChatRequest, ChatStreamEvent, ReasoningEffort,
     StreamEnd, Usage,
@@ -105,15 +106,17 @@ pub struct Reply {
 /// the next assistant text. `convo` alternates user/assistant after the two
 /// opening user blocks (`ctx`, `step`).
 pub trait Compactor: Send + Sync {
-    fn compress(
-        &self,
-        ctx: &str,
-        convo: &[ChatMessage],
-    ) -> impl Future<Output = Result<Reply, String>> + Send;
+    fn compress<'a>(&'a self, ctx: &'a str, convo: &'a [ChatMessage]) -> BoxFuture<'a, Result<Reply, String>>;
+    /// The model (id for `endless_nodes.model`, rates for the USD estimate, provider for the ledger).
+    fn model(&self) -> &Resolved;
     /// Model id for `endless_nodes.model`.
-    fn model_id(&self) -> &str;
+    fn model_id(&self) -> &str {
+        &self.model().id
+    }
     /// The catalog rates for the USD estimate, if known.
-    fn rates(&self) -> Option<models::Cost>;
+    fn rates(&self) -> Option<models::Cost> {
+        self.model().model.as_ref().and_then(|m| m.cost)
+    }
 }
 
 /// One attempt's ledger row (`endless_calls`).
@@ -122,7 +125,7 @@ pub struct CallRow {
     pub try_no: u32,
     pub bytes: Option<u32>,
     pub guard: Option<&'static str>,
-    pub usage_json: Option<String>,
+    pub usage: Option<Usage>,
     pub usd_estimate: Option<f64>,
     pub latency_ms: u64,
 }
@@ -136,11 +139,35 @@ pub struct Built {
     pub calls: Vec<CallRow>,
 }
 
+impl Built {
+    /// The attempts' usage summed into one (for the node's `model_calls` row);
+    /// `None` when no attempt reported usage.
+    pub fn usage(&self) -> Option<Usage> {
+        let mut out: Option<Usage> = None;
+        for u in self.calls.iter().filter_map(|c| c.usage.as_ref()) {
+            let o = out.get_or_insert_with(Usage::default);
+            let add = |a: &mut Option<i32>, b: Option<i32>| {
+                if let Some(b) = b {
+                    *a = Some(a.unwrap_or(0).saturating_add(b));
+                }
+            };
+            add(&mut o.prompt_tokens, u.prompt_tokens);
+            add(&mut o.completion_tokens, u.completion_tokens);
+            if let Some(d) = &u.prompt_tokens_details {
+                let od = o.prompt_tokens_details.get_or_insert_with(Default::default);
+                add(&mut od.cached_tokens, d.cached_tokens);
+                add(&mut od.cache_creation_tokens, d.cache_creation_tokens);
+            }
+        }
+        out
+    }
+}
+
 /// Run the retry loop for one node: up to `tries` attempts, each guard or
 /// size failure answered in the same conversation; keep the shortest passing
 /// candidate, else the shortest of all.
 pub async fn build(
-    c: &impl Compactor,
+    c: &dyn Compactor,
     ctx: &str,
     step: &Step,
     node_bytes: u32,
@@ -166,7 +193,7 @@ pub async fn build(
             try_no,
             bytes: Some(raw.len() as u32),
             guard: check.as_ref().err().map(|t| t.as_str()),
-            usage_json: reply.usage.as_ref().and_then(|u| serde_json::to_string(u).ok()),
+            usage: reply.usage.clone(),
             usd_estimate: usd,
             latency_ms: reply.latency.as_millis() as u64,
         });
@@ -184,7 +211,6 @@ pub async fn build(
             Err(trip) => {
                 convo.push(ChatMessage::assistant(raw.clone()));
                 convo.push(ChatMessage::user(guards::correction(trip, &raw, &input, node_bytes)));
-                let _ = trip;
             }
         }
     }
@@ -316,7 +342,17 @@ impl ModelCompactor {
 }
 
 impl Compactor for ModelCompactor {
-    async fn compress(&self, ctx: &str, convo: &[ChatMessage]) -> Result<Reply, String> {
+    fn compress<'a>(&'a self, ctx: &'a str, convo: &'a [ChatMessage]) -> BoxFuture<'a, Result<Reply, String>> {
+        Box::pin(self.compress_inner(ctx, convo))
+    }
+
+    fn model(&self) -> &Resolved {
+        &self.model
+    }
+}
+
+impl ModelCompactor {
+    async fn compress_inner(&self, ctx: &str, convo: &[ChatMessage]) -> Result<Reply, String> {
         let transport = self.backend.transport(&self.model).await?;
         let (req, opts) = self.request(transport, ctx, convo);
         let started = Instant::now();
@@ -344,14 +380,6 @@ impl Compactor for ModelCompactor {
             latency: started.elapsed(),
         })
     }
-
-    fn model_id(&self) -> &str {
-        &self.model.id
-    }
-
-    fn rates(&self) -> Option<models::Cost> {
-        self.model.model.as_ref().and_then(|m| m.cost)
-    }
 }
 
 /// `created_at` for ledger rows.
@@ -368,6 +396,7 @@ mod tests {
     struct Fake {
         replies: Mutex<Vec<String>>,
         sent: Mutex<Vec<Vec<ChatMessage>>>,
+        model: Resolved,
     }
 
     impl Fake {
@@ -375,25 +404,25 @@ mod tests {
             Self {
                 replies: Mutex::new(replies.iter().rev().map(|s| (*s).to_owned()).collect()),
                 sent: Mutex::new(Vec::new()),
+                model: super::super::pump::resolved_for_tests("fake"),
             }
         }
     }
 
     impl Compactor for Fake {
-        async fn compress(&self, _ctx: &str, convo: &[ChatMessage]) -> Result<Reply, String> {
+        fn compress<'a>(&'a self, _ctx: &'a str, convo: &'a [ChatMessage]) -> BoxFuture<'a, Result<Reply, String>> {
             self.sent.lock().push(convo.to_vec());
-            let text = self.replies.lock().pop().ok_or("script exhausted")?;
-            Ok(Reply {
-                text,
-                usage: None,
-                latency: Duration::from_millis(1),
+            let text = self.replies.lock().pop().ok_or_else(|| "script exhausted".to_owned());
+            Box::pin(async move {
+                Ok(Reply {
+                    text: text?,
+                    usage: None,
+                    latency: Duration::from_millis(1),
+                })
             })
         }
-        fn model_id(&self) -> &str {
-            "fake"
-        }
-        fn rates(&self) -> Option<models::Cost> {
-            None
+        fn model(&self) -> &Resolved {
+            &self.model
         }
     }
 
@@ -462,8 +491,8 @@ mod tests {
                     provider: None,
                     model: None,
                 },
-                &genai::Client::default(),
-                &crate::supervisor::Auth::default(),
+                &genai::Client::builder().build().unwrap(),
+                &crate::supervisor::Auth::stub(&std::env::temp_dir()),
             ),
             system: prompt("theuth"),
             effort: None,

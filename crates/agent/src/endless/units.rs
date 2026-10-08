@@ -115,7 +115,7 @@ mod tests {
         assert_eq!(u.len(), 2, "reasoning dropped");
         assert_eq!((u[0].i, u[0].kind, u[0].part), (1, Kind::Talk, 1));
         assert_eq!((u[1].i, u[1].kind, u[1].part), (2, Kind::Tool, 2));
-        assert_eq!(u[1].text, r#"read {"n":1,"path":"a.rs"}"#);
+        assert_eq!(u[1].text, r#"read {"path":"a.rs","n":1}"#);
 
         let tool = ChatMessage::from(vec![ToolResponse::new("c1", "x".repeat(100))]);
         let json = serde_json::to_string(&tool).unwrap();

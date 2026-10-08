@@ -270,3 +270,186 @@ pub fn render(tree: &Tree, fold: &Fold, units: &[Unit]) -> ViewRender {
         unbuilt: fold.unbuilt(tree),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::endless::tree::{Kind, Node};
+
+    const TREE: &str = include_str!("../../tests/fixtures/endless/B.haiku.tree.jsonl");
+    const MAIN: &str = include_str!("../../tests/fixtures/endless/B.main.jsonl");
+    const CFG: FoldCfg = FoldCfg {
+        view_bytes: 32_000,
+        slack: 0.125,
+    };
+
+    /// The lab fixture: nodes in build order, units with kind/text/size.
+    fn fixture() -> (Vec<Node>, Vec<Unit>) {
+        let nodes = TREE
+            .lines()
+            .filter(|l| !l.trim().is_empty())
+            .map(|l| {
+                let v: serde_json::Value = serde_json::from_str(l).unwrap();
+                let text = v["text"].as_str().unwrap().to_owned();
+                Node {
+                    l: v["l"].as_u64().unwrap() as u8,
+                    i: v["i"].as_u64().unwrap(),
+                    size: text.len() as u32,
+                    text,
+                    free: v["free"].as_bool().unwrap_or(false),
+                    model: None,
+                    tries: 1,
+                }
+            })
+            .collect();
+        let units = MAIN
+            .lines()
+            .filter(|l| !l.trim().is_empty())
+            .map(|l| {
+                let v: serde_json::Value = serde_json::from_str(l).unwrap();
+                let kind: Kind = v["kind"].as_str().unwrap().parse().unwrap();
+                let text = v["text"].as_str().unwrap().to_owned();
+                Unit {
+                    i: v["i"].as_u64().unwrap(),
+                    seq: v["seq"].as_i64().unwrap_or(0),
+                    part: 0,
+                    kind,
+                    size: (kind.as_str().len() + 2 + text.len()) as u32,
+                    text,
+                    at: None,
+                }
+            })
+            .collect();
+        (nodes, units)
+    }
+
+    fn tiles(f: &Fold) {
+        let mut at = 0;
+        for p in &f.parts {
+            assert_eq!(p.start(), at, "parts tile [0, T) without gaps or overlap");
+            at = p.end();
+        }
+        assert_eq!(at, f.t);
+    }
+
+    fn mergeable_pair(f: &Fold, tree: &Tree) -> bool {
+        f.parts.windows(2).any(|w| {
+            w[0].l == w[1].l && w[0].i % 2 == 0 && w[1].i == w[0].i + 1 && tree.built(w[0].l + 1, w[0].i / 2)
+        })
+    }
+
+    /// §7.1 invariants on the fixture at VIEW 32,000: tiling, no split, the
+    /// slack band, and purity (re-fold == fold; append path == rebuild).
+    #[test]
+    fn fixture_fold_invariants_and_refold_equality() {
+        let (nodes, units) = fixture();
+        let t = units.len() as u64;
+        let tree = Tree::from_nodes(nodes);
+        let f = Fold::rebuild(&tree, t, CFG, &units);
+        tiles(&f);
+        for p in &f.parts {
+            assert!(exists(p.l, p.i, t), "a part is a whole node over [0, T)");
+        }
+        let size = f.size();
+        assert!(size <= CFG.high(), "size {size} within the upper band {}", CFG.high());
+        assert!(
+            size <= CFG.low() || !mergeable_pair(&f, &tree),
+            "after fit: under the lower band or nothing left to merge"
+        );
+        assert!(f.parts.len() > 20 && f.parts.len() < 200, "{} parts", f.parts.len());
+        assert!(f.parts.iter().any(|p| p.l >= 4), "deep bands exist");
+
+        // Purity: the same function twice, and incremental append == rebuild.
+        assert_eq!(Fold::rebuild(&tree, t, CFG, &units), f);
+        let mut inc = Fold::new(CFG);
+        for i in 0..t {
+            inc.append(&tree, i, &units);
+        }
+        assert_eq!(inc, f);
+
+        // Re-fold at a smaller T is a prefix-consistent fold too.
+        let half = Fold::rebuild(&tree, t / 2, CFG, &units);
+        tiles(&half);
+    }
+
+    /// D5 turn-to-turn stability on the fixture: the identical line prefix
+    /// between consecutive T is high (reported, bounded loosely).
+    #[test]
+    fn fixture_slack_fold_is_stable_turn_to_turn() {
+        let (nodes, units) = fixture();
+        let t = units.len() as u64;
+        let tree = Tree::from_nodes(nodes);
+        let mut prev = Fold::rebuild(&tree, 200, CFG, &units);
+        let (mut same, mut turns) = (0usize, 0usize);
+        for n in 201..=t {
+            let f = Fold::rebuild(&tree, n, CFG, &units);
+            let common = prev
+                .parts
+                .iter()
+                .zip(f.parts.iter())
+                .take_while(|(a, b)| a == b)
+                .count();
+            same += common;
+            turns += prev.parts.len();
+            prev = f;
+        }
+        let share = same as f64 / turns as f64;
+        assert!(share > 0.7, "identical part prefix share {share:.2}");
+    }
+
+    /// §7.2 render: ≤ 4 blocks, cut at the deepest band boundaries, `<chat>`
+    /// first and `</chat>` last, every block marked; lines are `id+n|text`.
+    #[test]
+    fn render_cuts_at_band_boundaries_and_marks() {
+        let (nodes, units) = fixture();
+        let t = units.len() as u64;
+        let tree = Tree::from_nodes(nodes);
+        let f = Fold::rebuild(&tree, t, CFG, &units);
+        let r = render(&tree, &f, &units);
+        assert!(r.blocks.len() <= 4 && r.blocks.len() >= 2);
+        assert!(r.blocks[0].text.starts_with("<chat>\n"));
+        assert!(r.blocks.last().unwrap().text.ends_with("</chat>"));
+        assert!(r.blocks.iter().all(|b| b.mark));
+        let text = r.text();
+        let lines: Vec<&str> = text.lines().collect();
+        assert_eq!(lines.len(), f.parts.len() + 2);
+        let (id, n) = f.parts[0].id_n();
+        assert!(lines[1].starts_with(&format!("{id}+{n}|")));
+        // Every block boundary (except the end) sits where n drops.
+        let mut at = 0;
+        for b in &r.blocks[..r.blocks.len() - 1] {
+            at += b.text.lines().count() - usize::from(b.text.starts_with("<chat>"));
+            assert!(f.parts[at].l < f.parts[at - 1].l, "cut {at} at a band boundary");
+        }
+        assert!(r.settled && r.unbuilt == 0);
+    }
+
+    /// D10: an unbuilt level-0 part renders verbatim when ≤ 2,048 bytes,
+    /// else as the placeholder; merged parts never render unbuilt.
+    #[test]
+    fn unbuilt_parts_render_verbatim_or_placeholder() {
+        let unit = |i: u64, text: &str| Unit {
+            i,
+            seq: i as i64,
+            part: 0,
+            kind: Kind::User,
+            size: (6 + text.len()) as u32,
+            text: text.to_owned(),
+            at: None,
+        };
+        let units = vec![unit(0, "short"), unit(1, &"x".repeat(3000))];
+        let tree = Tree::default();
+        let f = Fold::rebuild(&tree, 2, CFG, &units);
+        let r = render(&tree, &f, &units);
+        assert_eq!(r.unbuilt, 2);
+        assert!(!r.settled);
+        assert_eq!(r.blocks.len(), 1);
+        assert_eq!(
+            r.text(),
+            format!("<chat>\n0+1|user: short\n1+1|{PLACEHOLDER}\n</chat>")
+        );
+        let lines = render_lines(&tree, &f, &units);
+        assert_eq!((lines[0].built, lines[1].built), (false, false));
+        assert_eq!(lines[0].text, "user: short");
+    }
+}

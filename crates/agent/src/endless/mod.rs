@@ -18,6 +18,8 @@ use crate::store::Store;
 
 pub mod compactor;
 pub mod fold;
+#[cfg(test)]
+mod tests;
 pub mod guards;
 pub mod pump;
 pub mod tree;
@@ -246,6 +248,8 @@ pub(crate) struct Inner {
     pub(crate) cfg: EndlessConfig,
     /// Live sessions and their pumps.
     pub(crate) sessions: Mutex<HashMap<SessionId, pump::Handle>>,
+    /// Tests inject a scripted compactor here; `None` = the model (D8).
+    pub(crate) compactor_for_tests: Option<Arc<dyn compactor::Compactor>>,
 }
 
 /// The one handle for the endless mode (137-contract.md §4). Cheap to clone.
@@ -274,6 +278,7 @@ impl Endless {
                 catalog,
                 cfg,
                 sessions: Mutex::new(HashMap::new()),
+                compactor_for_tests: None,
             }),
         }
     }

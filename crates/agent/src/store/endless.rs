@@ -167,12 +167,16 @@ impl Store {
             .collect())
     }
 
-    /// Store one built node (the FTS triggers mirror level 0).
+    /// Store one built node (the FTS triggers mirror level 0). An upsert, not
+    /// `INSERT OR REPLACE`: REPLACE's implicit delete skips the delete trigger
+    /// and would leave the old line in the FTS index.
     pub async fn endless_node_put(&self, id: SessionId, node: &Node) -> anyhow::Result<()> {
         let mut tx = self.begin_write().await?;
         sqlx::query(
-            "INSERT OR REPLACE INTO endless_nodes (session_id, l, i, text, size, free, model, tries, created_at) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO endless_nodes (session_id, l, i, text, size, free, model, tries, created_at) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) \
+             ON CONFLICT(session_id, l, i) DO UPDATE SET text = excluded.text, size = excluded.size, \
+             free = excluded.free, model = excluded.model, tries = excluded.tries, created_at = excluded.created_at",
         )
         .bind(id.to_string())
         .bind(i64::from(node.l))
@@ -214,7 +218,7 @@ impl Store {
             .bind(i64::from(c.try_no))
             .bind(c.bytes.map(i64::from))
             .bind(c.guard)
-            .bind(&c.usage_json)
+            .bind(c.usage.as_ref().and_then(|u| serde_json::to_string(u).ok()))
             .bind(c.usd_estimate)
             .bind(c.latency_ms as i64)
             .bind(&now)
@@ -449,7 +453,7 @@ mod tests {
                         try_no: 0,
                         bytes: Some(600),
                         guard: Some("size"),
-                        usage_json: Some(r#"{"prompt_tokens":100,"completion_tokens":20,"prompt_tokens_details":{"cached_tokens":80}}"#.into()),
+                        usage: serde_json::from_str(r#"{"prompt_tokens":100,"completion_tokens":20,"prompt_tokens_details":{"cached_tokens":80}}"#).ok(),
                         usd_estimate: Some(0.001),
                         latency_ms: 10,
                     },
@@ -457,7 +461,7 @@ mod tests {
                         try_no: 1,
                         bytes: Some(400),
                         guard: None,
-                        usage_json: None,
+                        usage: None,
                         usd_estimate: Some(0.002),
                         latency_ms: 10,
                     },
