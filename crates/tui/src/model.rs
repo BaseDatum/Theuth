@@ -12,7 +12,8 @@ use acp::registry::RegistryAgent;
 use agent::durability::{ResumeCause, ResumeKind};
 use agent::todo::{Status as TodoStatus, TodoSnapshot, TodoSource};
 use agent::{
-    AdvisorDefaults, AdvisorSeverity, AdvisorState, AdvisorStatus, Advisory, AgentEvent, AgentInfo,
+    AdvisorDefaults, AdvisorSeverity, AdvisorState, AdvisorStatus, Advisory, AdvisoryKind,
+    AgentEvent, AgentInfo,
     AgentState, AwsProfiles, CommunicationChanged, CommunicationState, CompactStyle,
     ContextAttachment, ContextEntry, ContextItem, ContextKind, ContextRemoval, ContextSnapshot,
     ContextTarget, HistoryEntry, Loaded, ModelInfo, PeerDelivered, PeerInfo, PeerMessageChanged,
@@ -547,6 +548,8 @@ pub enum Command {
     },
     /// `advisor_status` (125 §7.3).
     AdvisorStatus(SessionId),
+    /// `set_advisor_max_consults` (R1.2): the per-turn `consult` cap, 0-32.
+    SetAdvisorMaxConsults(u8),
     /// `set_model_favorite` (127 §3): star (`true`) or unstar `model` on the engine.
     SetModelFavorite {
         /// `provider/model` id.
@@ -1164,21 +1167,52 @@ pub fn advisory_severity(a: &Advisory) -> AdvisorSeverity {
         .unwrap_or(AdvisorSeverity::Nit)
 }
 
-/// `◎ advisor · 2 notes`: the card title.
+/// `◎ advisor · 2 notes`, or `◎ consulted: <question>` for a consultation
+/// (R1.2; the question collapsed to one line).
 pub fn advisory_title(a: &Advisory) -> String {
-    let n = a.notes.len();
-    format!(
-        "{ADVISOR_GLYPH} advisor · {n} note{}",
-        if n == 1 { "" } else { "s" }
-    )
+    match &a.kind {
+        AdvisoryKind::Consultation { question } => {
+            let q: Vec<&str> = question.split_whitespace().collect();
+            format!("{ADVISOR_GLYPH} consulted: {}", q.join(" "))
+        }
+        AdvisoryKind::Review => {
+            let n = a.notes.len();
+            format!(
+                "{ADVISOR_GLYPH} advisor · {n} note{}",
+                if n == 1 { "" } else { "s" }
+            )
+        }
+    }
 }
 
-/// `[concern] note text`: one line per note (the headless printer; the
-/// renderer colours the badge itself).
+/// The card's body rows: one per note with its badge for a review; one per
+/// line of the answer, unbadged, for a consultation (R1.2). `ADVISORY_COLLAPSED`
+/// of them show until Ctrl+O.
+pub fn advisory_rows(a: &Advisory) -> Vec<(Option<AdvisorSeverity>, &str)> {
+    match a.kind {
+        AdvisoryKind::Consultation { .. } => a
+            .notes
+            .iter()
+            .flat_map(|n| n.note.lines())
+            .map(|l| (None, l))
+            .collect(),
+        AdvisoryKind::Review => a
+            .notes
+            .iter()
+            .map(|n| (Some(n.severity), n.note.as_str()))
+            .collect(),
+    }
+}
+
+/// `[concern] note text` / an answer line: one line per row (the headless
+/// printer; the renderer colours the badge itself).
 pub fn advisory_lines(a: &Advisory) -> Vec<String> {
-    a.notes
-        .iter()
-        .map(|n| format!("[{}] {}", severity_name(n.severity), n.note))
+    advisory_rows(a)
+        .into_iter()
+        .map(|(sev, text)| match sev {
+            Some(s) => format!("[{}] {text}", severity_name(s)),
+            None => text.to_owned(),
+        })
         .collect()
 }
 
@@ -1202,8 +1236,8 @@ pub fn advisor_state_name(s: AdvisorState) -> &'static str {
     }
 }
 
-/// `/advisor status` (125 §7.3): the four lines, `—` for unknowns; one
-/// line when off.
+/// `/advisor status` (125 §7.3 + R1.2): the five lines, `—` for unknowns;
+/// one line when off.
 pub fn advisor_status_lines(s: &AdvisorStatus) -> Vec<String> {
     if s.state == AdvisorState::Off {
         return vec!["advisor: off  ·  /advisor to pick a model".to_owned()];
@@ -1246,6 +1280,10 @@ pub fn advisor_status_lines(s: &AdvisorStatus) -> Vec<String> {
         Some(n) => format!("last: [{}] {}", severity_name(n.severity), n.note),
         None => "last: —".to_owned(),
     });
+    out.push(format!(
+        "consults: {} this turn · {} total · cap {}",
+        s.consults.turn, s.consults.total, s.consults.cap
+    ));
     out
 }
 
@@ -1285,7 +1323,7 @@ impl Entry {
             Entry::Card { text, expanded, .. } => 4 + if *expanded { md(text, inner) } else { 0 },
             // 125 §7.4: border + title + margin, one row per note shown, the `… +N more` row.
             Entry::Advisory { advisory, expanded } => {
-                let n = advisory.notes.len();
+                let n = advisory_rows(advisory).len();
                 if *expanded {
                     4 + n
                 } else {
@@ -1499,8 +1537,8 @@ pub const COMMANDS: &[(&str, &str, &str)] = &[
     ),
     (
         "/advisor",
-        "[off|on|status|<provider/model>]",
-        "a second model that reviews this session (picker without argument)",
+        "[off|on|status|consults <n>|<provider/model>]",
+        "a second model that reviews this session and answers its consults (picker without argument)",
     ),
     (
         "/aws",
@@ -4425,7 +4463,7 @@ impl Model {
                         summary: Some(_),
                         ..
                     }
-            ) || matches!(e, Entry::Advisory { advisory, .. } if advisory.notes.len() > ADVISORY_COLLAPSED)
+            ) || matches!(e, Entry::Advisory { advisory, .. } if advisory_rows(advisory).len() > ADVISORY_COLLAPSED)
         }) else {
             return;
         };
@@ -7493,6 +7531,17 @@ impl Model {
             send(tx, Command::ListModels);
             return;
         }
+        // R1.2: the cap is an engine default, not a per-session setting.
+        if let Some(n) = arg.strip_prefix("consults") {
+            match n.trim().parse::<u8>() {
+                Ok(n) if n <= 32 => send(tx, Command::SetAdvisorMaxConsults(n)),
+                _ => self.entries.push(Entry::Error(format!(
+                    "/advisor consults: expected a number 0-32, got {:?}",
+                    n.trim()
+                ))),
+            }
+            return;
+        }
         let Some(session) = self.session else {
             self.entries
                 .push(Entry::Error("no session yet: send a message first".into()));
@@ -7541,10 +7590,14 @@ impl Model {
 
     /// Install the shown session's advisor status (a reply or `AdvisorChanged`,
     /// whichever lands first): one `advisor → …` line when the model or the
-    /// off state changed (125 §7.5); a model remembers itself as the `/advisor on` default.
+    /// off state changed (125 §7.5), the D-R1.5 pairing warning once per link
+    /// after it; a model remembers itself as the `/advisor on` default.
     fn set_advisor_status(&mut self, status: AdvisorStatus) {
         let off = |s: &AdvisorStatus| s.state == AdvisorState::Off || s.model.is_none();
         let changed = status.model != self.advisor.model || off(&status) != off(&self.advisor);
+        let warn = status.warning.is_some()
+            && !off(&status)
+            && (changed || status.warning != self.advisor.warning);
         if status.model.is_some() {
             self.advisor_default.model.clone_from(&status.model);
             self.advisor_default.effort.clone_from(&status.effort);
@@ -7552,6 +7605,9 @@ impl Model {
         self.advisor = status;
         if changed {
             self.interject(Entry::Info(advisor_changed_line(&self.advisor)));
+        }
+        if let Some(w) = self.advisor.warning.as_deref().filter(|_| warn) {
+            self.interject(Entry::Info(format!("advisor: {w}")));
         }
     }
 
@@ -18621,9 +18677,9 @@ mod tests {
         assert_eq!(info_lines(&m), ["advisor → openai/o3-pro", "advisor → off"]);
     }
 
-    /// 125 §7.3: the exact four lines; one line when off.
+    /// 125 §7.3 + R1.2: the exact five lines; one line when off.
     #[test]
-    fn advisor_status_prints_four_lines() {
+    fn advisor_status_prints_five_lines() {
         let (tx, mut rx) = unbounded_channel();
         let s = SessionId::new();
         let mut m = Model {
@@ -18665,6 +18721,11 @@ mod tests {
             AdvisorSeverity::Concern,
             "cite the loop_.rs line before claiming drain_steer runs after every batch",
         ));
+        status.consults = agent::AdvisorConsultCounts {
+            turn: 2,
+            total: 7,
+            cap: 6,
+        };
         m.apply(UiEvent::AdvisorStatus(status));
         assert_eq!(
             info_lines(&m),
@@ -18675,7 +18736,159 @@ mod tests {
                 // `k()` drops the decimal from 100k up (`120k`, not the design's illustrative `120.4k`).
                 "context: 38.2k / 200k (19%)  ·  in 120k · out 3.1k  ·  cost $0.412",
                 "last: [concern] cite the loop_.rs line before claiming drain_steer runs after every batch",
+                "consults: 2 this turn · 7 total · cap 6",
             ]
+        );
+    }
+
+    /// R1.2: `/advisor consults <n>` sends the cap (no session needed); anything
+    /// but 0-32 is an error and sends nothing.
+    #[test]
+    fn advisor_cmd_consults_sets_cap_and_rejects_out_of_range() {
+        let (tx, mut rx) = unbounded_channel();
+        let mut m = Model::default();
+        m.submit("/advisor consults 12", &tx);
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(Command::SetAdvisorMaxConsults(12))
+        ));
+        m.submit("/advisor consults 0", &tx);
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(Command::SetAdvisorMaxConsults(0))
+        ));
+        for bad in ["/advisor consults 33", "/advisor consults", "/advisor consults six"] {
+            m.submit(bad, &tx);
+            assert!(rx.try_recv().is_err(), "{bad}");
+        }
+        let errors = m
+            .entries
+            .iter()
+            .filter(|e| matches!(e, Entry::Error(t) if t.starts_with("/advisor consults: expected a number 0-32")))
+            .count();
+        assert_eq!(errors, 3);
+    }
+
+    fn consultation(question: &str, answer: &str) -> Advisory {
+        Advisory {
+            kind: AdvisoryKind::Consultation {
+                question: question.into(),
+            },
+            ..advisory(
+                SessionId::new(),
+                vec![note(AdvisorSeverity::Advice, answer)],
+            )
+        }
+    }
+
+    /// R1.2: `◎ consulted: <question>` on one line; the printer's lines are
+    /// the answer's, unbadged.
+    #[test]
+    fn consultation_card_titles_with_question() {
+        let a = consultation("read justfile\n  or README first?", "justfile\nit names the gates");
+        assert_eq!(
+            advisory_title(&a),
+            "◎ consulted: read justfile or README first?"
+        );
+        assert_eq!(advisory_lines(&a), ["justfile", "it names the gates"]);
+        assert_eq!(
+            advisory_lines(&advisory(
+                SessionId::new(),
+                vec![note(AdvisorSeverity::Nit, "x")]
+            )),
+            ["[nit] x"]
+        );
+    }
+
+    /// R1.2: the answer's lines collapse to `ADVISORY_COLLAPSED`; Ctrl+O expands.
+    #[test]
+    fn consultation_card_collapses_answer_lines() {
+        let mut m = Model::default();
+        m.entries.push(Entry::Advisory {
+            advisory: consultation("q", "1\n2\n3\n4\n5"),
+            expanded: false,
+        });
+        assert_eq!(m.entries[0].height(80), 4 + 3 + 1);
+        m.toggle_card();
+        assert!(matches!(
+            &m.entries[0],
+            Entry::Advisory { expanded: true, .. }
+        ));
+        assert_eq!(m.entries[0].height(80), 4 + 5);
+        m.entries.push(Entry::Advisory {
+            advisory: consultation("q", "1\n2"),
+            expanded: false,
+        });
+        assert_eq!(m.entries[1].height(80), 4 + 2);
+        m.toggle_card();
+        assert!(
+            matches!(&m.entries[1], Entry::Advisory { expanded: false, .. }),
+            "nothing to expand"
+        );
+    }
+
+    /// R1.7: `Advice` is SAND and ranks lowest — a mixed card never shows as advice.
+    #[test]
+    fn advice_severity_is_sand_and_never_promotes() {
+        assert_eq!(severity_name(AdvisorSeverity::Advice), "advice");
+        assert_eq!(
+            crate::ui::severity_color(AdvisorSeverity::Advice),
+            crate::ui::SAND
+        );
+        let only = consultation("q", "a");
+        assert_eq!(advisory_severity(&only), AdvisorSeverity::Advice);
+        let mixed = advisory(
+            SessionId::new(),
+            vec![
+                note(AdvisorSeverity::Advice, "a"),
+                note(AdvisorSeverity::Nit, "n"),
+            ],
+        );
+        assert_eq!(advisory_severity(&mixed), AdvisorSeverity::Nit);
+        assert!(AdvisorSeverity::Advice < AdvisorSeverity::Nit);
+    }
+
+    /// R1.2 / D-R1.5: the pairing warning is one `Entry::Info` after
+    /// `advisor → <model>`, once per link — not on every counter change.
+    #[test]
+    fn pairing_warning_prints_once_per_link() {
+        let s = SessionId::new();
+        let mut m = Model {
+            session: Some(s),
+            ..Model::default()
+        };
+        let mut status = advisor_status(s, AdvisorState::Idle, "openai/gpt-5.4-mini");
+        status.warning = Some("advisor model prices below the session model (crude signal)".into());
+        m.apply_agent(AgentEvent::AdvisorChanged {
+            session: s,
+            status: status.clone(),
+        });
+        // The RPC reply carrying the same status prints nothing more.
+        m.apply(UiEvent::AdvisorStatus(status.clone()));
+        status.step = 3;
+        m.apply_agent(AgentEvent::AdvisorChanged {
+            session: s,
+            status: status.clone(),
+        });
+        assert_eq!(
+            info_lines(&m),
+            [
+                "advisor → openai/gpt-5.4-mini",
+                "advisor: advisor model prices below the session model (crude signal)",
+            ]
+        );
+        // Re-pick to a model with a sane pairing: no warning; back again: once more.
+        let mut fine = advisor_status(s, AdvisorState::Idle, "anthropic/claude-opus-4-1");
+        fine.step = 3;
+        m.apply_agent(AgentEvent::AdvisorChanged {
+            session: s,
+            status: fine,
+        });
+        m.apply_agent(AgentEvent::AdvisorChanged { session: s, status });
+        assert_eq!(info_lines(&m).len(), 5);
+        assert_eq!(
+            info_lines(&m)[4],
+            "advisor: advisor model prices below the session model (crude signal)"
         );
     }
 

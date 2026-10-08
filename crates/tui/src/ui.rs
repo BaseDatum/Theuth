@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use agent::todo::Status as TodoStatus;
-use agent::{AdvisorSeverity, AdvisorState, CompactStyle};
+use agent::{AdvisorSeverity, AdvisorState, AdvisoryKind, CompactStyle};
 use iocraft::prelude::*;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 use tools::{Decision, Risk};
@@ -13,8 +13,8 @@ use tools::{Decision, Risk};
 use crate::clip;
 use crate::dictation::{self, Dictating, Phase};
 use crate::model::{
-    ADVISORY_COLLAPSED, Grouped, ModelRow, PickTarget, advisory_severity, advisory_title,
-    providers, session_row, severity_name, terminal_row,
+    ADVISORY_COLLAPSED, Grouped, ModelRow, PickTarget, advisory_rows, advisory_severity,
+    advisory_title, providers, session_row, severity_name, terminal_row,
 };
 use crate::model::{
     APP_WHERE, AcpRow, CardKind, Command, Entry, Level, Menu, MenuKey, Model, Prompt, Row, Switch,
@@ -71,7 +71,7 @@ const BONE: Color = rgb(0xE8DCC8);
 /// Secondary text.
 const BONE_DIM: Color = rgb(0xC9B89A);
 /// Tertiary text, hints, quiet borders.
-const SAND: Color = rgb(0x9A8B72);
+pub(crate) const SAND: Color = rgb(0x9A8B72);
 /// Accent: focus borders, headings, hints, the human's turn.
 const OCHRE: Color = rgb(0xC47A2C);
 /// Success / done.
@@ -2078,11 +2078,13 @@ fn entry(e: &Entry, spinner: &str, skip: usize, width: u16) -> AnyElement<'stati
             }
             .into_any()
         }
-        // 125 §7.4: the Round card in its worst severity's colour; one row per
-        // note, badge coloured, text plain; three rows until Ctrl+O.
+        // 125 §7.4 / R1.2: the Round card in its worst severity's colour; one
+        // row per note (badge coloured, text plain) or per answer line of a
+        // consultation; three rows until Ctrl+O.
         Entry::Advisory { advisory, expanded } => {
             let color = severity_color(advisory_severity(advisory));
-            let n = advisory.notes.len();
+            let all = advisory_rows(advisory);
+            let n = all.len();
             let shown = if *expanded { n } else { n.min(ADVISORY_COLLAPSED) };
             let title = advisory_title(advisory);
             let header = if n <= ADVISORY_COLLAPSED {
@@ -2092,19 +2094,25 @@ fn entry(e: &Entry, spinner: &str, skip: usize, width: u16) -> AnyElement<'stati
             } else {
                 format!("{title}   ctrl+o expands")
             };
-            let rows: Vec<AnyElement<'static>> = advisory
-                .notes
+            let rows: Vec<AnyElement<'static>> = all
                 .iter()
                 .take(shown)
-                .map(|note| {
-                    element!(MixedText(contents: vec![
-                        MixedTextContent::new(format!("[{}]", severity_name(note.severity))).color(severity_color(note.severity)),
-                        MixedTextContent::new(format!(" {}", note.note)),
+                .map(|(sev, text)| match sev {
+                    Some(sev) => element!(MixedText(contents: vec![
+                        MixedTextContent::new(format!("[{}]", severity_name(*sev))).color(severity_color(*sev)),
+                        MixedTextContent::new(format!(" {text}")),
                     ], wrap: TextWrap::Wrap))
-                    .into_any()
+                    .into_any(),
+                    None => element!(Text(content: (*text).to_owned(), wrap: TextWrap::Wrap)).into_any(),
                 })
                 .collect();
-            let more = (n > shown).then(|| format!("… +{} more notes", n - shown));
+            let more = (n > shown).then(|| {
+                let noun = match advisory.kind {
+                    AdvisoryKind::Consultation { .. } => "lines",
+                    AdvisoryKind::Review => "notes",
+                };
+                format!("… +{} more {noun}", n - shown)
+            });
             element! {
                 View(flex_direction: FlexDirection::Column, border_style: BorderStyle::Round, border_color: color, padding_left: 1, padding_right: 1, margin_top: 1) {
                     Text(content: header, color, weight: Weight::Bold)
@@ -2127,7 +2135,7 @@ fn entry(e: &Entry, spinner: &str, skip: usize, width: u16) -> AnyElement<'stati
 
 /// The advisor palette (125 §7.4): advice and nit SAND (muted), concern
 /// OCHRE (warning), blocker CARNELIAN (danger).
-fn severity_color(s: AdvisorSeverity) -> Color {
+pub(crate) fn severity_color(s: AdvisorSeverity) -> Color {
     match s {
         AdvisorSeverity::Advice | AdvisorSeverity::Nit => SAND,
         AdvisorSeverity::Concern => OCHRE,
@@ -2471,6 +2479,66 @@ mod tests {
                 );
                 assert!(lines[top + 1].contains("◎ advisor ·"), "{frame}");
                 assert!(lines[top + 2].contains("[nit]") && lines[top + 3].contains("[concern]"));
+                if let Some(more) = more {
+                    assert!(lines[top + body].contains(more), "{frame}");
+                }
+            }
+        }
+    }
+
+    /// R1.2: the consultation card titles with the question, shows the
+    /// answer's lines unbadged (three until Ctrl+O, `… +N more lines`), in
+    /// SAND, and never exceeds the terminal width.
+    #[test]
+    fn consultation_card_is_tight_at_any_width() {
+        use agent::{Advisory, AdvisoryNote};
+        let answer = (0..5)
+            .map(|i| format!("answer line {i} stays short"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let card = |expanded: bool| Entry::Advisory {
+            advisory: Advisory {
+                advisor: runtime::SessionId::new(),
+                step: 1,
+                turn: None,
+                at_ms: 0,
+                notes: vec![AdvisoryNote {
+                    severity: AdvisorSeverity::Advice,
+                    note: answer.clone(),
+                }],
+                kind: AdvisoryKind::Consultation {
+                    question: "read justfile\nor README first?".into(),
+                },
+            },
+            expanded,
+        };
+        assert_eq!(severity_color(AdvisorSeverity::Advice), SAND);
+        for width in 60..=120u16 {
+            for (e, rows, more) in [
+                (card(false), 3, Some("… +2 more lines")),
+                (card(true), 5, None),
+            ] {
+                let frame = element! {
+                    View(flex_direction: FlexDirection::Column, width, height: 20u16) {
+                        #(Some(entry(&e, "⠋", 0, width)))
+                    }
+                }
+                .to_string();
+                let lines: Vec<&str> = frame.lines().collect();
+                let top = lines.iter().position(|l| l.starts_with('╭')).unwrap();
+                let bottom = lines.iter().position(|l| l.starts_with('╰')).unwrap();
+                let body = 1 + rows + usize::from(more.is_some());
+                assert_eq!(bottom - top, body + 1, "width {width}:\n{frame}");
+                assert!(
+                    lines
+                        .iter()
+                        .all(|l| l.chars().count() <= usize::from(width))
+                );
+                assert!(
+                    lines[top + 1].contains("◎ consulted: read justfile or README first?"),
+                    "{frame}"
+                );
+                assert!(lines[top + 2].contains("answer line 0") && !frame.contains("[advice]"));
                 if let Some(more) = more {
                     assert!(lines[top + body].contains(more), "{frame}");
                 }
