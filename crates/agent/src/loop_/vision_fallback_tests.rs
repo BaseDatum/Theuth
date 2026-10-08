@@ -136,8 +136,9 @@ pub(super) struct Fake {
     tool_call: Option<(&'static str, String)>,
 }
 
-/// The harvest call's reply: one well-formed concept.
-pub(super) const HARVEST_REPLY: &str = "<concept id=\"facts/detached-harvest\">\n---\ntype: fact\ntitle: Detached harvest\ndescription: The harvest ran off the turn\ntags: [test]\n---\nThe fake provider answered the harvest instruction.\n</concept>";
+/// The harvest call's reply: one well-formed concept — a 136 `record` whose
+/// title (≈ 400 chars) the agent must split (136 §0.14).
+pub(super) const HARVEST_REPLY: &str = "<concept id=\"facts/detached-harvest\">\n---\ntype: record\ntitle: Detached harvest landed on 2026-10-08. The harvest instruction was answered by the fake provider while the compaction had already returned; the detached task kept the pre-fold frame, published Harvesting before Compacted and Harvested once the held reply arrived, and the knowledge store received exactly one put whose evidence names the session that ran the turn and whose status is fresh until dreaming tidies it, at which point the title is checked again.\ndescription: The harvest ran off the turn\ntags: [test]\n---\nThe fake provider answered the harvest instruction.\n</concept>";
 
 impl Respond for Fake {
     fn respond(&self, req: &Request) -> ResponseTemplate {

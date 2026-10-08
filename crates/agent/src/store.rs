@@ -57,6 +57,7 @@ pub mod accounting;
 pub mod advisor;
 mod capture;
 pub mod communication;
+pub mod dreaming;
 pub mod durability;
 pub mod turn_usage;
 pub use capture::ATTACHED;

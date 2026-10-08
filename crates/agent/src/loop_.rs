@@ -540,8 +540,11 @@ pub struct SessionState {
     /// never inconsistent.
     pub harvest_task: Option<JoinHandle<()>>,
     /// 136 §2.2: the session's money cap from [`SetBudgetNow`]; in memory
-    /// only. `Reserved::open` refuses a call past it (136 W2).
+    /// only. `Reserved::open` refuses a call past it.
     pub budget: Option<crate::Budget>,
+    /// 136 §2.2: the `<budget>` note a refused call queued; appended once
+    /// before the next turn's first model call.
+    pub budget_note: Option<String>,
 }
 
 impl SessionState {
@@ -581,6 +584,7 @@ impl SessionState {
             title_task: None,
             harvest_task: None,
             budget: None,
+            budget_note: None,
         }
     }
 
@@ -2460,6 +2464,56 @@ enum Abort {
         text: String,
         err: String,
     },
+    /// 136 §2.2: the session's budget would be passed; nothing was sent.
+    /// The turn ends `end_turn` and the next input carries one `<budget>` note.
+    Budget {
+        spent: u64,
+        cap: u64,
+        currency: String,
+    },
+}
+
+/// The `<budget spent="…" cap="…" currency="…">` note (136 §2.2): attributes
+/// in nanos of `currency`, one readable sentence inside.
+fn budget_note(spent: u64, cap: u64, currency: &str) -> String {
+    let units = |n: u64| n as f64 / crate::cost::NANOS_PER_UNIT as f64;
+    format!(
+        "<budget spent=\"{spent}\" cap=\"{cap}\" currency=\"{currency}\">\n\
+         This session's money budget is spent: {:.2} {currency} of a {:.2} {currency} cap. The last model call \
+         was refused and the turn ended; further calls are refused until the budget is raised. Finish \
+         with what is already written.\n\
+         </budget>",
+        units(spent),
+        units(cap)
+    )
+}
+
+/// Why [`Reserved::open`] refused; nothing was sent either way.
+enum Refused {
+    /// The store would not reserve or mark the row (51 §6.1): final, content-free.
+    Accounting(String),
+    /// 136 §2.2: `spent + estimate > cap`.
+    Budget {
+        spent: u64,
+        cap: u64,
+        currency: String,
+    },
+}
+
+impl std::fmt::Display for Refused {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Accounting(e) => f.write_str(e),
+            Self::Budget {
+                spent,
+                cap,
+                currency,
+            } => write!(
+                f,
+                "budget: spent {spent} + estimate > cap {cap} ({currency} nanos)"
+            ),
+        }
+    }
 }
 
 /// Outcome of one model call.
@@ -2507,6 +2561,11 @@ impl Reserved {
     /// refused once refuses the same request again. A `Round` call of a turn
     /// also journals `turn_steps(model_call)` in the reservation's
     /// transaction (109 §3.3 step 2).
+    ///
+    /// 136 §2.2: with `budget`, the call is refused before any row is written
+    /// when the owner's spend in that currency plus this call's estimate
+    /// ([`Store::budget_spent`]) would pass the cap. A ledger the store cannot
+    /// read is an accounting refusal, never a free pass.
     #[expect(clippy::too_many_arguments, reason = "one row, one call")]
     async fn open(
         store: &Store,
@@ -2517,11 +2576,21 @@ impl Reserved {
         turn: Option<TurnId>,
         kind: CallKind,
         model: &Resolved,
-    ) -> Result<Self, String> {
-        // 136 W2: guard — refuse when `spent_nanos(owner) + estimate > SessionState.budget.nanos`
-        // (the owner's `model_calls`, returned ?? estimated); the turn then ends and the next
-        // input carries one `<budget spent="…" cap="…">` note. C stores the budget; W2 threads
-        // it here and writes the note.
+        budget: Option<&crate::Budget>,
+    ) -> Result<Self, Refused> {
+        if let Some(b) = budget {
+            let (spent, estimate) = store
+                .budget_spent(owner, &b.currency, &model.id)
+                .await
+                .map_err(|e| Refused::Accounting(format!("accounting: {e:#}")))?;
+            if spent.saturating_add(estimate) > b.nanos {
+                return Err(Refused::Budget {
+                    spent,
+                    cap: b.nanos,
+                    currency: b.currency.clone(),
+                });
+            }
+        }
         let reserved = match turn.filter(|_| kind == CallKind::Round) {
             Some(turn) => {
                 store
@@ -2550,7 +2619,7 @@ impl Reserved {
                     .await
             }
         };
-        let call = reserved.map_err(|e| format!("accounting: {e:#}"))?;
+        let call = reserved.map_err(|e| Refused::Accounting(format!("accounting: {e:#}")))?;
         crash_point(crash::MODEL_AFTER_RESERVE);
         if let Err(e) = store.mark_dispatched(&call).await {
             if let Err(e2) = store
@@ -2559,7 +2628,7 @@ impl Reserved {
             {
                 tracing::warn!(%call, "mark_not_dispatched: {e2:#}");
             }
-            return Err(format!("accounting: {e:#}"));
+            return Err(Refused::Accounting(format!("accounting: {e:#}")));
         }
         crash_point(crash::MODEL_AFTER_DISPATCH);
         Ok(Self {
@@ -3849,9 +3918,21 @@ impl Turn {
                 self.turn,
                 kind,
                 &current.model,
+                self.state.budget.as_ref(),
             )
             .await
-            .map_err(Abort::Model)?;
+            .map_err(|e| match e {
+                Refused::Accounting(e) => Abort::Model(e),
+                Refused::Budget {
+                    spent,
+                    cap,
+                    currency,
+                } => Abort::Budget {
+                    spent,
+                    cap,
+                    currency,
+                },
+            })?;
             let mut text = String::new();
             let mut calls = false;
             *thinking = None;
@@ -4874,6 +4955,10 @@ impl Turn {
 
         // 07 §8.1 trigger, §8.7 pressure note, §9 todo reminder — all before the call.
         let window = self.window(&current.model);
+        // 136 §2.2: the note a refused call queued rides the next input.
+        if let Some(note) = self.state.budget_note.take() {
+            self.persist(ChatMessage::user(note)).await;
+        }
         let appended: u32 = self.state.history[self.since..]
             .iter()
             .map(|(_, m)| compact::est(m))
@@ -5092,6 +5177,17 @@ impl Turn {
                 }
                 self.error(format!("model: {e}")).await;
                 return Round::Stop("error".into());
+            }
+            // 136 §2.2: the budget is spent. Nothing was sent; the turn ends
+            // cleanly and the next input carries the note.
+            Err(Abort::Budget {
+                spent,
+                cap,
+                currency,
+            }) => {
+                tracing::info!(session = %self.shared.id, spent, cap, currency, "budget spent; turn ends");
+                self.state.budget_note = Some(budget_note(spent, cap, &currency));
+                return Round::Stop("end_turn".into());
             }
         };
 
@@ -6444,6 +6540,11 @@ impl Turn {
                     return Err("cancelled".into());
                 }
                 Ok(Err(Abort::Model(e))) | Ok(Err(Abort::Partial { err: e, .. })) => return Err(e),
+                Ok(Err(Abort::Budget {
+                    spent,
+                    cap,
+                    currency,
+                })) => return Err(format!("budget: spent {spent} of {cap} {currency} nanos")),
             }
         }
     }
@@ -6483,7 +6584,7 @@ impl Turn {
                 Vec::new()
             });
         let cwd = self.cwd.to_string_lossy();
-        let instruction = knowledge::harvest::instruction(&related, &cwd);
+        let instruction = crate::harvest::instruction(&related, &cwd);
         let (head, mut full) = self.projected(images);
         full.push(ChatMessage::user(&instruction));
         let text = self
@@ -6504,19 +6605,24 @@ impl Turn {
             .take(max)
         {
             let fm = &doc.frontmatter;
+            // 136 §0.14: title ≤ 120 chars (the rest → a Summary paragraph),
+            // `evidence: [this session]`, `status: fresh`.
+            let (title, body) =
+                crate::harvest::split_title(&fm.title().unwrap_or_else(|| id.clone()), &doc.body);
             let put = Put {
                 type_: fm.type_().unwrap_or_default(),
-                title: fm.title().unwrap_or_else(|| id.clone()),
+                title,
                 description: fm.description(),
                 tags: fm.tags(),
                 scope: fm
                     .get("scope")
                     .and_then(|v| v.as_display_string())
                     .map(PathBuf::from),
-                body: doc.body,
+                body,
                 id,
                 visibility: None,
-                // 136 W2: `evidence: [session id]`, `status: Some(Fresh)`.
+                evidence: vec![session.to_string()],
+                status: Some(knowledge::Status::Fresh),
                 ..Put::default()
             };
             match knowledge.put_for(put, Source::Harvest, Some(session)).await {
@@ -6858,6 +6964,11 @@ impl Turn {
             }
             Ok(Err(Abort::Cancelled | Abort::Interrupted { .. })) => return Err("cancelled".into()),
             Ok(Err(Abort::Model(e))) | Ok(Err(Abort::Partial { err: e, .. })) => return Err(e),
+            Ok(Err(Abort::Budget {
+                spent,
+                cap,
+                currency,
+            })) => return Err(format!("budget: spent {spent} of {cap} {currency} nanos")),
             Ok(Ok(end)) => end,
         };
         self.account(&end);
@@ -7188,6 +7299,10 @@ mod interrupt_tests;
 /// 81 MEETING-DIET: `Toolset.hint_limit` and the title pin, at the same fake provider.
 #[cfg(test)]
 mod meeting_diet_tests;
+
+/// 136 §2.2: the budget guard ends the turn `end_turn` and notes the next input, at the same fake provider.
+#[cfg(test)]
+mod budget_tests;
 
 /// 86 RUNTIME-BRIDGE: a guessed direct call of an indexed runtime function runs as python; the rest is refused.
 #[cfg(test)]
@@ -9251,6 +9366,117 @@ mod tests {
         assert!(err.starts_with("accounting:"), "{err}");
         assert_eq!(hits.load(Ordering::SeqCst), 0);
         assert!(calls(&store, orphan).await.is_empty());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// 136 §2.2: a 1-cent budget. The first call (spend 0, no estimate yet)
+    /// goes out and settles at $0.25; the second is refused before any row
+    /// is written — `Abort::Budget` with the spend and the cap, no transport
+    /// hit. Clearing the budget lets the next call through again.
+    #[tokio::test]
+    async fn budget_refuses_the_call_that_would_pass_the_cap() {
+        let dir = std::env::temp_dir().join(format!("theuth-budget-{}", Uuid::now_v7()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let store = Store::open_memory().await.unwrap();
+        let id = SessionId::new();
+        store
+            .create_session(id, "fake/m", None, None, None)
+            .await
+            .unwrap();
+        let priced =
+            || sse(r#"{"prompt_tokens":10,"completion_tokens":5,"total_tokens":15,"cost":0.25}"#);
+        let (base_url, hits, _) = fake_openai(vec![priced(), priced()]).await;
+        let (mut turn, current, transport, _events) =
+            gateway_turn(&dir, store.clone(), id, base_url).await;
+        turn.state.budget = Some(crate::Budget {
+            nanos: 10_000_000,
+            currency: "USD".into(),
+        });
+        let history = [ChatMessage::user("hi")];
+        let frame = || Frame {
+            tools: &[],
+            system: "s",
+            head: None,
+            history: &history,
+            vision: false,
+            strip_reasoning: false,
+            max_tokens: None,
+        };
+
+        let first = turn
+            .call(
+                &current,
+                frame(),
+                transport,
+                turn.turn,
+                id,
+                CallKind::Round,
+                &mut None,
+            )
+            .await;
+        assert!(first.is_ok(), "nothing spent yet: the first call goes out");
+        assert_eq!(hits.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            store.budget_spent(id, "USD", "fake/m").await.unwrap(),
+            (250_000_000, 250_000_000)
+        );
+
+        match turn
+            .call(
+                &current,
+                frame(),
+                transport,
+                turn.turn,
+                id,
+                CallKind::Round,
+                &mut None,
+            )
+            .await
+        {
+            Err(Abort::Budget {
+                spent,
+                cap,
+                currency,
+            }) => assert_eq!(
+                (spent, cap, currency.as_str()),
+                (250_000_000, 10_000_000, "USD")
+            ),
+            Ok(_) => panic!("the second call passes the cap and must be refused"),
+            Err(_) => panic!("a budget refusal is Abort::Budget"),
+        }
+        assert_eq!(hits.load(Ordering::SeqCst), 1, "nothing was sent");
+        assert_eq!(
+            calls(&store, id).await.len(),
+            1,
+            "no row for a refused call"
+        );
+        // A cleared budget is no cap; another currency never sees USD spend.
+        turn.state.budget = None;
+        assert!(
+            turn.call(
+                &current,
+                frame(),
+                transport,
+                turn.turn,
+                id,
+                CallKind::Round,
+                &mut None
+            )
+            .await
+            .is_ok()
+        );
+        assert_eq!(hits.load(Ordering::SeqCst), 2);
+        assert_eq!(
+            store.budget_spent(id, "EUR", "fake/m").await.unwrap(),
+            (0, 0),
+            "other currencies are not counted"
+        );
+        let note = budget_note(250_000_000, 10_000_000, "USD");
+        assert!(
+            note.starts_with("<budget spent=\"250000000\" cap=\"10000000\" currency=\"USD\">\n")
+        );
+        assert!(note.contains("0.25 USD of a 0.01 USD cap"));
+        assert!(note.ends_with("\n</budget>"));
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

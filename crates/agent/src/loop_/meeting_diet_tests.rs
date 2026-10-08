@@ -79,14 +79,30 @@ async fn diet_scenarios() {
             hint_limit,
         })
     };
+    // 136 §5.3: every `<knowledge>` note records one impression per id shown,
+    // exactly the ids shown, none when no note is appended.
+    let ids: Vec<String> = (1..=3).map(|n| format!("facts/failover-{n}")).collect();
+    let shown = |knowledge: Arc<knowledge::Knowledge>, ids: Vec<String>| async move {
+        knowledge
+            .stats(&ids)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|u| u.shown)
+            .collect::<Vec<_>>()
+    };
     assert_eq!(
         run(None).await,
         Some(3),
         "no override: the configured limit"
     );
+    assert_eq!(shown(knowledge.clone(), ids.clone()).await, [1, 1, 1]);
     assert_eq!(run(live(None)).await, Some(3), "`None` defers to config");
     assert_eq!(run(live(Some(2))).await, Some(2), "`Some(2)`: two lines");
+    let after_two = shown(knowledge.clone(), ids.clone()).await;
+    assert_eq!(after_two.iter().sum::<u64>(), 3 + 3 + 2, "{after_two:?}");
     assert_eq!(run(live(Some(0))).await, None, "`Some(0)`: no note at all");
+    assert_eq!(shown(knowledge.clone(), ids.clone()).await, after_two);
 
     // A fresh session's first turn with user text is title-due (07 §15);
     // pinned, the titler is skipped and the counters it would reset stay put.

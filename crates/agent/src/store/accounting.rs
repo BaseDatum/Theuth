@@ -440,6 +440,50 @@ impl Store {
         Ok(call)
     }
 
+    /// 136 §2.2: what `owner`'s own attempts have cost in `currency` —
+    /// `returned_nanos ?? estimated_nanos` of every row (a dispatched call is
+    /// money already committed), other currencies not counted — and the
+    /// estimate for its next call: the newest settled attempt of `model`
+    /// (same measure), 0 when there is none. Children are not counted.
+    // ponytail: owner's own rows only; sum the `cost_owners` subtree if routines grow children.
+    pub async fn budget_spent(
+        &self,
+        owner: SessionId,
+        currency: &str,
+        model: &str,
+    ) -> anyhow::Result<(u64, u64)> {
+        let sid = owner.to_string();
+        let (spent,): (i64,) = sqlx::query_as(
+            "SELECT COALESCE(SUM(CASE \
+                WHEN returned_nanos IS NOT NULL THEN IIF(returned_currency = ?2, returned_nanos, 0) \
+                WHEN estimated_currency = ?2 THEN estimated_nanos ELSE 0 END), 0) \
+             FROM model_calls WHERE owner_id = ?1",
+        )
+        .bind(&sid)
+        .bind(currency)
+        .fetch_one(&self.read)
+        .await?;
+        /// `(returned_nanos, returned_currency, estimated_nanos, estimated_currency)`.
+        type MoneyRow = (Option<i64>, Option<String>, Option<i64>, Option<String>);
+        let last: Option<MoneyRow> = sqlx::query_as(
+            "SELECT returned_nanos, returned_currency, estimated_nanos, estimated_currency \
+                 FROM model_calls WHERE owner_id = ?1 AND requested_model = ?2 AND status = ?3 \
+                 ORDER BY created_at DESC LIMIT 1",
+        )
+        .bind(&sid)
+        .bind(model)
+        .bind(CallStatus::Settled.as_str())
+        .fetch_optional(&self.read)
+        .await?;
+        let estimate = last
+            .and_then(|(rn, rc, en, ec)| {
+                money(rn, rc.as_deref()).or_else(|| money(en, ec.as_deref()))
+            })
+            .filter(|m| m.currency == currency)
+            .map_or(0, |m| m.nanos);
+        Ok((u64::try_from(spent).unwrap_or(0), estimate))
+    }
+
     /// Mark a pending attempt dispatched; commit before invoking transport.
     pub async fn mark_dispatched(&self, call: &CallId) -> anyhow::Result<()> {
         let mut tx = self.begin_write().await?;

@@ -3148,16 +3148,45 @@ impl Message<crate::SetBudget> for Agents {
 impl Message<crate::LedgerSince> for Agents {
     type Reply = Result<crate::Ledger, String>;
 
-    /// 136 §2.2: the day ledger. C answers the empty ledger of the window;
-    /// 136 W2 runs the read-only queries (`crate::dreaming_ledger` docs).
+    /// 136 §2.2: the day ledger — the durable store's read-only aggregates
+    /// (`Store::ledger_since`; private trees live in their own stores and
+    /// are never in it) plus knowledge `Stats` for the ids the window's
+    /// `<knowledge>` notes showed. Knowledge off → `hints` empty.
     async fn handle(
         &mut self,
         m: crate::LedgerSince,
         _: &mut Context<Self, Self::Reply>,
     ) -> Result<crate::Ledger, String> {
-        // 136 W2
-        let _ = (&m.exclude, m.owner_only);
-        Ok(crate::Ledger::empty(&m.since, &m.until))
+        let vault = self.auth.vault.clone();
+        let redact = move |text: &str| -> String {
+            vault
+                .as_deref()
+                .map_or_else(|| text.to_owned(), |v| v.redact(text).into_owned())
+        };
+        let (mut ledger, hinted) = self
+            .store
+            .ledger_since(&m, &redact)
+            .await
+            .map_err(|e| format!("ledger: {e:#}"))?;
+        if !hinted.is_empty()
+            && let Ok(Some(k)) =
+                ActorRef::<knowledge::KnowledgeActor>::lookup(knowledge::KNOWLEDGE_ACTOR)
+        {
+            match k.ask(knowledge::Stats { ids: hinted }).await {
+                Ok(uses) => {
+                    ledger.hints = uses
+                        .into_iter()
+                        .map(|u| crate::LedgerHintUse {
+                            id: u.id,
+                            shown: u.shown,
+                            opened: u.opened,
+                        })
+                        .collect();
+                }
+                Err(e) => tracing::warn!("ledger: knowledge stats: {e}"),
+            }
+        }
+        Ok(ledger)
     }
 }
 

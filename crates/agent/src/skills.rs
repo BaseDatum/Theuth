@@ -1,12 +1,17 @@
-//! Skills: markdown with YAML front matter (`name`, `description`, `always`)
-//! under `<data_dir>/skills/` (design doc 04 §1.2, §2). The directory is the
-//! registry: every function reads it fresh, so the system prompt (rebuilt per
-//! round from [`index`]) reflects a change on the next model call.
+//! Skills: markdown with YAML front matter (`name`, `description`, `always`,
+//! `origin`) under `<data_dir>/skills/` (design doc 04 §1.2, §2). The
+//! directory is the registry: every function reads it fresh, so the system
+//! prompt (rebuilt per round from [`index`]) reflects a change on the next
+//! model call.
 //!
 //! Walk: a directory holding `SKILL.md` is one skill (its subtree is not
 //! walked); any other `*.md` is a skill unless it is a README/LICENSE/
 //! CHANGELOG/CONTRIBUTING; `.git/` is skipped. A skill inside a git clone
 //! directly under the dir has `repo = Some(<clone dir name>)`.
+//!
+//! 136 §7.1: `learned/<name>.md` is dreaming's sidecar for the skill `name`,
+//! appended to every body read ([`body`]) under `## Learned (dreaming)`;
+//! `retired/` holds skills dreaming retired. Neither directory is a skill.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
@@ -23,6 +28,15 @@ use crate::{AddSkill, SkillBody, SkillMeta};
 pub const LOAD: &str = "load_skill";
 
 const IGNORED_STEMS: [&str; 4] = ["readme", "license", "changelog", "contributing"];
+/// Top-level directories of `<data_dir>/skills/` that are not skills (136 §7.1).
+const NOT_SKILLS: [&str; 2] = ["learned", "retired"];
+/// Heading the sidecar is appended under.
+pub const LEARNED_HEADING: &str = "## Learned (dreaming)";
+
+/// `<dir>/learned/<name>.md`: the learned sidecar of skill `name`.
+pub fn learned_path(dir: &Path, name: &str) -> PathBuf {
+    dir.join("learned").join(format!("{name}.md"))
+}
 
 /// `<data_dir>/skills`.
 pub fn dir(data_dir: &Path) -> PathBuf {
@@ -37,6 +51,9 @@ struct FrontMatter {
     description: Option<String>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     always: bool,
+    /// `dreaming` for a skill the night made (136 §7.1); listed last.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    origin: Option<String>,
 }
 
 fn is_dir_skill(path: &Path) -> bool {
@@ -81,14 +98,16 @@ fn walk(dir: &Path, out: &mut Vec<PathBuf>) {
     }
 }
 
-/// Every skill under `dir`, sorted by name. Missing dir → empty. Duplicate
-/// names: last by sorted path wins, with a `tracing::warn!`.
+/// Every skill under `dir`: by name, dreaming-made ones (`origin: dreaming`)
+/// after the others (136 §7.1). Missing dir → empty. Duplicate names: last
+/// by sorted path wins, with a `tracing::warn!`.
 pub fn index(dir: &Path) -> Vec<SkillMeta> {
     let mut files = Vec::new();
     walk(dir, &mut files);
+    files.retain(|p| !NOT_SKILLS.iter().any(|d| p.starts_with(dir.join(d))));
     files.sort();
     let repos = tools::git::repos(dir);
-    let mut by_name: BTreeMap<String, SkillMeta> = BTreeMap::new();
+    let mut by_name: BTreeMap<String, (bool, SkillMeta)> = BTreeMap::new();
     for path in files {
         let (fm, body) = match parse(&path) {
             Ok(p) => p,
@@ -121,31 +140,45 @@ pub fn index(dir: &Path) -> Vec<SkillMeta> {
             .iter()
             .find(|r| path.starts_with(&r.path))
             .map(|r| r.name.clone());
+        let dreaming = fm.origin.as_deref() == Some("dreaming");
         by_name.insert(
             name.clone(),
-            SkillMeta {
-                name,
-                description,
-                path: path.display().to_string(),
-                always: fm.always,
-                repo,
-            },
+            (
+                dreaming,
+                SkillMeta {
+                    name,
+                    description,
+                    path: path.display().to_string(),
+                    always: fm.always,
+                    repo,
+                },
+            ),
         );
     }
-    by_name.into_values().collect()
+    let mut skills: Vec<(bool, SkillMeta)> = by_name.into_values().collect();
+    skills.sort_by_key(|(dreaming, _)| *dreaming);
+    skills.into_iter().map(|(_, s)| s).collect()
 }
 
-/// Body without front matter; for `SKILL.md` skills also the relative paths
-/// of the other files in its directory tree, sorted.
-pub fn body(meta: &SkillMeta) -> std::io::Result<SkillBody> {
+/// Body without front matter plus, when `<dir>/learned/<name>.md` exists and
+/// is non-empty, `\n\n## Learned (dreaming)\n` + its contents (136 §7.1 — the
+/// one read behind `load_skill`, the `always` inliner, ACP materialisation
+/// and the UI); for `SKILL.md` skills also the relative paths of the other
+/// files in its directory tree, sorted.
+pub fn body(dir: &Path, meta: &SkillMeta) -> std::io::Result<SkillBody> {
     let path = Path::new(&meta.path);
-    let (_, body) = parse(path)?;
+    let (_, mut body) = parse(path)?;
     let mut files = Vec::new();
     if is_dir_skill(path)
         && let Some(root) = path.parent()
     {
         collect_files(root, root, path, &mut files);
         files.sort();
+    }
+    if let Ok(learned) = std::fs::read_to_string(learned_path(dir, &meta.name))
+        && !learned.trim().is_empty()
+    {
+        body = format!("{}\n\n{LEARNED_HEADING}\n{learned}", body.trim_end());
     }
     Ok(SkillBody {
         name: meta.name.clone(),
@@ -180,14 +213,14 @@ pub fn find(dir: &Path, name: &str) -> Result<SkillMeta, String> {
 
 /// Body of the skill named `name`.
 pub fn load(dir: &Path, name: &str) -> Result<SkillBody, String> {
-    body(&find(dir, name)?).map_err(|e| format!("{name}: {e}"))
+    body(dir, &find(dir, name)?).map_err(|e| format!("{name}: {e}"))
 }
 
 /// What the model gets for a skill: the body and, for `SKILL.md` skills,
 /// the paths of its other files. Shared by `load_skill` and [`UseSkill`](crate::UseSkill).
 pub fn load_text(dir: &Path, name: &str) -> Result<String, String> {
     let meta = find(dir, name)?;
-    let b = body(&meta).map_err(|e| format!("{}: {e}", meta.path))?;
+    let b = body(dir, &meta).map_err(|e| format!("{}: {e}", meta.path))?;
     let mut s = b.body;
     if !b.files.is_empty() {
         let root = Path::new(&meta.path).parent().unwrap_or(dir);
@@ -279,11 +312,11 @@ pub fn prompt_index(skills: &[SkillMeta]) -> String {
 }
 
 /// Bodies of `always` skills in name order, blank-line separated (unreadable ones skipped).
-pub fn always_bodies(skills: &[SkillMeta]) -> String {
+pub fn always_bodies(dir: &Path, skills: &[SkillMeta]) -> String {
     skills
         .iter()
         .filter(|s| s.always)
-        .filter_map(|s| match body(s) {
+        .filter_map(|s| match body(dir, s) {
             Ok(b) => Some(b.body.trim().to_owned()),
             Err(e) => {
                 tracing::warn!(path = %s.path, %e, "always skill unreadable, skipped");
@@ -317,6 +350,7 @@ pub fn add(dir: &Path, m: AddSkill) -> Result<SkillMeta, String> {
         name: Some(m.name.clone()),
         description: Some(m.description),
         always: m.always,
+        origin: None,
     })
     .map_err(|e| e.to_string())?;
     std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
@@ -513,11 +547,12 @@ pub fn materialise(
             tracing::info!(path = %dest.display(), "skill directory exists, left as is");
             continue;
         }
-        let body = body(meta).map_err(|e| format!("{}: {e}", meta.name))?;
+        let body = body(dir, meta).map_err(|e| format!("{}: {e}", meta.name))?;
         let fm = serde_yaml::to_string(&FrontMatter {
             name: Some(meta.name.clone()),
             description: Some(meta.description.clone()),
             always: false,
+            origin: None,
         })
         .map_err(|e| e.to_string())?;
         let write = |m: &mut Materialised| -> std::io::Result<()> {
@@ -908,10 +943,71 @@ mod tests {
         std::fs::write(dir.join("later.md"), "Listed skill\n").unwrap();
         let skills = index(&dir);
         assert!(skills.iter().find(|s| s.name == "rules").unwrap().always);
-        assert_eq!(always_bodies(&skills), "Always rule.");
+        assert_eq!(always_bodies(&dir, &skills), "Always rule.");
         let idx = prompt_index(&skills);
         assert!(idx.contains("- later:"));
         assert!(!idx.contains("rules"));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// 136 §7.1: the sidecar rides every body read; `learned/` and
+    /// `retired/` are not skills; `origin: dreaming` skills list last.
+    #[test]
+    fn learned_sidecar_rides_every_read_and_dreaming_dirs_are_not_skills() {
+        let dir = tmp();
+        std::fs::write(dir.join("zeta.md"), "Zeta skill\nbody z\n").unwrap();
+        std::fs::write(
+            dir.join("rules.md"),
+            "---\nalways: true\n---\nAlways rule.\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("dreaming-alpha.md"),
+            "---\nname: alpha\ndescription: Made at night\norigin: dreaming\n---\nalpha body\n",
+        )
+        .unwrap();
+        std::fs::create_dir_all(dir.join("learned")).unwrap();
+        std::fs::create_dir_all(dir.join("retired")).unwrap();
+        std::fs::write(dir.join("learned/zeta.md"), "- lesson one\n- lesson two\n").unwrap();
+        std::fs::write(dir.join("learned/rules.md"), "- always lesson\n").unwrap();
+        std::fs::write(dir.join("learned/alpha.md"), "   \n").unwrap();
+        std::fs::write(dir.join("retired/old.md"), "Retired skill\n").unwrap();
+
+        let skills = index(&dir);
+        // `alpha` sorts before `rules`/`zeta` by name but lists last; `learned/` and
+        // `retired/` files are not skills.
+        assert_eq!(names(&skills), ["rules", "zeta", "alpha"]);
+        let idx = prompt_index(&skills);
+        assert!(idx.find("- zeta:").unwrap() < idx.find("- alpha:").unwrap());
+        assert!(!idx.contains("old"));
+        assert!(!idx.contains("lesson"));
+
+        // load_skill / UseSkill path.
+        assert_eq!(
+            load_text(&dir, "zeta").unwrap(),
+            "Zeta skill\nbody z\n\n## Learned (dreaming)\n- lesson one\n- lesson two\n"
+        );
+        // An empty sidecar appends nothing.
+        assert_eq!(load_text(&dir, "alpha").unwrap().trim(), "alpha body");
+        // The `always` inliner.
+        assert_eq!(
+            always_bodies(&dir, &skills),
+            "Always rule.\n\n## Learned (dreaming)\n- always lesson"
+        );
+        // ACP materialisation.
+        let cwd = tmp();
+        let m = materialise(
+            &dir,
+            &cwd,
+            Path::new(".agents/skills"),
+            &["zeta".into()],
+            "s",
+        )
+        .unwrap();
+        let written = std::fs::read_to_string(cwd.join(".agents/skills/zeta/SKILL.md")).unwrap();
+        assert!(written.ends_with("## Learned (dreaming)\n- lesson one\n- lesson two\n"));
+        m.remove();
+        std::fs::remove_dir_all(&cwd).unwrap();
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

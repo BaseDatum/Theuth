@@ -107,6 +107,9 @@ impl Side {
         };
         let (req, opts) = frame.request(transport, self.session, None);
         let request_id = Uuid::now_v7().to_string();
+        // 136 §2.2: a detached call is not refused by the session's budget
+        // (the state that holds it is the turn's); its cost still counts
+        // toward the next round call's check.
         let reserved = Reserved::open(
             &self.store,
             &self.rt,
@@ -116,8 +119,10 @@ impl Side {
             self.turn,
             kind,
             &current.model,
+            None,
         )
-        .await?;
+        .await
+        .map_err(|e| e.to_string())?;
         let started = Instant::now();
         let call = async {
             let mut stream = current
