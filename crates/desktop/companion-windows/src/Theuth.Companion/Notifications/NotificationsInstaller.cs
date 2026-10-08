@@ -73,6 +73,7 @@ internal sealed class NotificationsInstaller : IDisposable
             ui.LaunchAtLoginToggled += on => model.Update(s => s.LaunchAtLogin = on);
             ui.LaunchAtLoginState = () => model.Value.LaunchAtLogin;
             ui.PausedUntil = () => Notifier.PausedUntil; // W6 item 9: the submenu's check marks
+            ui.QuitRequested += Notifier.Quitting; // W6 item 10: no "engine unreachable" toast on an intentional quit
             ui.Redirected += Notifier.Redirected;
             store.OpenItemRequested += id => ui.OpenPanelOn(id);
         }

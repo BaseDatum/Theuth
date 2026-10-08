@@ -200,6 +200,7 @@ internal sealed class Notifier : IDisposable
                 var s = store.Connection;
                 if (s == RpcClient.State.Connecting) return;
                 Run(p => p.Engine(s == RpcClient.State.Open, DateTimeOffset.Now));
+                if (s != RpcClient.State.Open && policy.EngineLossPending) Log.Write($"notifications: engine lost — held for {(int)NotificationPolicy.EngineGrace.TotalSeconds} s before the error toast (item 10)");
                 break;
             case nameof(Store.Receipt):
                 Receipt(store.Receipt);
@@ -231,6 +232,15 @@ internal sealed class Notifier : IDisposable
             Changed?.Invoke();
         }
     }
+
+    /// <summary>W6 item 10: an intentional quit — a pending engine loss is dropped and none is posted from here on.</summary>
+    public void Quitting()
+    {
+        policy.Quitting();
+        Log.Write("notifications: quitting — engine-loss toast suppressed");
+    }
+
+    public bool EngineLossPending => policy.EngineLossPending;
 
     public void Pause(DateTimeOffset? until)
     {

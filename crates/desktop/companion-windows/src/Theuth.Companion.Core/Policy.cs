@@ -116,6 +116,22 @@ public sealed class NotificationPolicy
     private int floodShown;
     private int waitingNow;
     private bool engineLost;
+    /// <summary>A lost connection waiting out <see cref="EngineGrace"/> (134 W6 item 10); null when none is pending.</summary>
+    private DateTimeOffset? engineLostAt;
+    /// <summary>The companion is quitting on purpose (its own <c>theuth://quit</c>): the engine going away is expected, never an error.</summary>
+    private bool quitting;
+
+    /// <summary>
+    /// How long a lost connection is held before the error toast (134 W6 item 10). The shell's quit handshake stops the engine
+    /// ~60 ms before it closes the companion (WM_CLOSE), an update kills the engine seconds before the companion, and an engine
+    /// restart reconnects within a few seconds — each of those posted "theuth engine unreachable" into Notification Center for
+    /// nothing. 5 s is longer than the shell's 2 s TerminateProcess grace and an installer's kill sequence, and the rail already
+    /// dims the wordmark and shows the carnelian dot at once, so only the toast waits. A lasting loss notifies exactly as before.
+    /// </summary>
+    public static readonly TimeSpan EngineGrace = TimeSpan.FromSeconds(5);
+
+    /// <summary>Whether a lost connection is waiting out the grace (the app's probe reads it).</summary>
+    public bool EngineLossPending => engineLostAt is not null;
 
     /// <summary>Posted banner id → item ids still waiting.</summary>
     private readonly Dictionary<string, HashSet<string>> live = new(StringComparer.Ordinal);
@@ -251,34 +267,58 @@ public sealed class NotificationPolicy
         return output;
     }
 
-    /// <summary>The 1 Hz timer: the 2-minute cap, the rate window, the end of a pause.</summary>
+    /// <summary>The 1 Hz timer: the 2-minute cap, the rate window, the end of a pause, the engine-loss grace.</summary>
     public PolicyOutput Tick(DateTimeOffset now)
     {
         if (PausedUntil is { } until && now >= until) PausedUntil = null;
-        if (IsPaused(now)) return new PolicyOutput();
-        return Release(now, breakpoint: false);
+        var output = EngineDue(now);
+        if (IsPaused(now)) return output;
+        output.Merge(Release(now, breakpoint: false));
+        return output;
     }
 
-    /// <summary>Menu: Pause 1 h / until tomorrow; null resumes. Nothing is posted while paused; the rail is live.</summary>
-    public void Pause(DateTimeOffset? until) => PausedUntil = until;
+    /// <summary>The companion is quitting on purpose: drop a pending engine loss and never post one from here on.</summary>
+    public void Quitting()
+    {
+        quitting = true;
+        engineLostAt = null;
+    }
 
-    /// <summary>The RPC connection dropped (error class) / came back (withdraw).</summary>
-    public PolicyOutput Engine(bool connected, DateTimeOffset now)
+    /// <summary>A pending loss whose grace has passed becomes the error banner (unless paused, Off or quitting).</summary>
+    private PolicyOutput EngineDue(DateTimeOffset now)
     {
         var output = new PolicyOutput();
-        if (connected)
-        {
-            engineLost = false;
-            if (live.Remove(Banner.EngineId)) output.Withdraw.Add(Banner.EngineId);
-            return output;
-        }
-        if (engineLost) return output;
+        if (engineLostAt is not { } at || quitting || now - at < EngineGrace) return output;
+        engineLostAt = null;
         engineLost = true;
         if (IsPaused(now) || Prefs.Error == NotifyMode.Off) return output;
         var b = new Banner(Banner.EngineId, BannerCategory.Error, "theuth engine unreachable",
             "The companion lost the engine; reconnecting.", "theuth", ErrorLevel, Prefs.SoundOnErrors, new ValueList<string>());
         live[b.Id] = new HashSet<string>(StringComparer.Ordinal);
         output.Post.Add(b);
+        return output;
+    }
+
+    /// <summary>Menu: Pause 1 h / until tomorrow; null resumes. Nothing is posted while paused; the rail is live.</summary>
+    public void Pause(DateTimeOffset? until) => PausedUntil = until;
+
+    /// <summary>
+    /// The RPC connection dropped / came back. A drop is held for <see cref="EngineGrace"/> (the banner comes from
+    /// <see cref="Tick"/> when the grace has passed and the engine is still gone); a reconnect inside the grace drops it
+    /// silently; a reconnect after the banner withdraws it.
+    /// </summary>
+    public PolicyOutput Engine(bool connected, DateTimeOffset now)
+    {
+        var output = new PolicyOutput();
+        if (connected)
+        {
+            engineLostAt = null;
+            engineLost = false;
+            if (live.Remove(Banner.EngineId)) output.Withdraw.Add(Banner.EngineId);
+            return output;
+        }
+        if (engineLost || engineLostAt is not null || quitting) return output;
+        engineLostAt = now;
         return output;
     }
 
