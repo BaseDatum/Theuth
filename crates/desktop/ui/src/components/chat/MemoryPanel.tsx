@@ -1,5 +1,5 @@
 import { useQuery } from '@tanstack/react-query'
-import { Fragment, type KeyboardEvent, type ReactNode, useEffect, useMemo, useRef, useState } from 'react'
+import { Fragment, type KeyboardEvent, type ReactNode, useEffect, useMemo, useReducer, useRef, useState } from 'react'
 import { toast } from 'sonner'
 import { Badge } from '@/components/ui/badge'
 import { Input } from '@/components/ui/input'
@@ -49,12 +49,43 @@ export function flatten(view: readonly ViewLine[], kids: Kids, open: ReadonlySet
   return out
 }
 
+/** The panel's tree: fetched children per key, the open keys, and the current recall hits. */
+export type Tree = { kids: Kids; open: ReadonlySet<string>; hits: { query: string; lines: ViewLine[] } | null }
+export const INITIAL: Tree = { kids: {}, open: new Set(), hits: null }
+
+export type Action =
+  | { type: 'toggle'; key: string }
+  | { type: 'loaded'; key: string; lines: ViewLine[] }
+  /** The zoom failed: the line closes again (the toast is the component's). */
+  | { type: 'failed'; key: string }
+  | { type: 'hits'; hits: Tree['hits'] }
+
+export function reduce(t: Tree, a: Action): Tree {
+  switch (a.type) {
+    case 'toggle': {
+      const open = new Set(t.open)
+      if (!open.delete(a.key)) open.add(a.key)
+      return { ...t, open }
+    }
+    case 'loaded':
+      return { ...t, kids: { ...t.kids, [a.key]: a.lines } }
+    case 'failed': {
+      const open = new Set(t.open)
+      open.delete(a.key)
+      return { ...t, open }
+    }
+    case 'hits':
+      return { ...t, hits: a.hits }
+  }
+}
+
 /** `text` with every word of `query` (2+ chars, case-insensitive) wrapped in `<mark>`; the plain text when nothing matches. */
 export function highlight(text: string, query: string): ReactNode {
   const words = [...new Set(query.toLowerCase().split(/\s+/).filter((w) => w.length >= 2))]
   if (words.length === 0) return text
   const re = new RegExp(`(${words.map((w) => w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|')})`, 'gi')
   const parts = text.split(re)
+  if (parts.length === 1) return text
   return parts.map((p, i) =>
     i % 2 === 1 ? (
       <mark key={i} className="rounded-sm bg-info-bg px-0.5 text-foreground">
@@ -223,47 +254,34 @@ const HIT = 'hit:'
 export function MemoryPanel({ session, open, onOpenChange }: { session: string; open: boolean; onOpenChange(o: boolean): void }) {
   const api = endlessFixture(useApi())
   const memory = useSessionMemory(session, open)
-  const [kids, setKids] = useState<Kids>({})
-  const [opened, setOpened] = useState<ReadonlySet<string>>(new Set())
+  const [tree, dispatch] = useReducer(reduce, INITIAL)
+  const { kids, open: opened, hits } = tree
   const [query, setQuery] = useState('')
-  const [hits, setHits] = useState<{ query: string; lines: ViewLine[] } | null>(null)
   const [searching, setSearching] = useState(false)
   const [cursor, setCursor] = useState(0)
   const search = useRef<HTMLInputElement>(null)
-  const tree = useRef<HTMLDivElement>(null)
+  const treeEl = useRef<HTMLDivElement>(null)
 
   const view = memory.data?.view
   const rows = useMemo(() => [...(hits ? flatten(hits.lines, kids, opened, HIT) : []), ...(view ? flatten(view, kids, opened) : [])], [hits, view, kids, opened])
   const cursorKey = rows[cursor]?.key
 
   useEffect(() => {
-    tree.current?.querySelector(`[data-key="${CSS.escape(cursorKey ?? '')}"]`)?.scrollIntoView({ block: 'nearest' })
+    treeEl.current?.querySelector(`[data-key="${CSS.escape(cursorKey ?? '')}"]`)?.scrollIntoView({ block: 'nearest' })
   }, [cursorKey])
 
   const toggle = (line: ViewLine, key: string) => {
     setCursor(Math.max(0, rows.findIndex((r) => r.key === key)))
-    if (opened.has(key)) {
-      setOpened((s) => {
-        const next = new Set(s)
-        next.delete(key)
-        return next
-      })
-      return
-    }
-    setOpened((s) => new Set(s).add(key))
-    if (kids[key]) return
+    dispatch({ type: 'toggle', key })
+    if (opened.has(key) || kids[key]) return
     api
       .endless_zoom(session, line.id, line.n)
       .then((below) => {
         if (below.length === 0) throw new Error(`No line ${line.id}+${line.n}.`)
-        setKids((k) => ({ ...k, [key]: below }))
+        dispatch({ type: 'loaded', key, lines: below })
       })
       .catch((e: unknown) => {
-        setOpened((s) => {
-          const next = new Set(s)
-          next.delete(key)
-          return next
-        })
+        dispatch({ type: 'failed', key })
         toast.error(e instanceof Error ? e.message : String(e))
       })
   }
@@ -271,14 +289,14 @@ export function MemoryPanel({ session, open, onOpenChange }: { session: string; 
   const recall = (q: string) => {
     const trimmed = q.trim()
     if (!trimmed) {
-      setHits(null)
+      dispatch({ type: 'hits', hits: null })
       return
     }
     setSearching(true)
     api
       .endless_recall(session, trimmed, 20)
       .then((lines) => {
-        setHits({ query: trimmed, lines })
+        dispatch({ type: 'hits', hits: { query: trimmed, lines } })
         setCursor(0)
       })
       .catch((e: unknown) => toast.error(e instanceof Error ? e.message : String(e)))
@@ -333,7 +351,7 @@ export function MemoryPanel({ session, open, onOpenChange }: { session: string; 
         onKeyDown={onSheetKey}
         onOpenAutoFocus={(e) => {
           e.preventDefault()
-          tree.current?.focus()
+          treeEl.current?.focus()
         }}
       >
         <SheetHeader className="pb-3">
@@ -351,14 +369,14 @@ export function MemoryPanel({ session, open, onOpenChange }: { session: string; 
             disabled={!m || m.mode !== 'endless'}
             onChange={(e) => {
               setQuery(e.target.value)
-              if (!e.target.value.trim()) setHits(null)
+              if (!e.target.value.trim()) dispatch({ type: 'hits', hits: null })
             }}
             onKeyDown={(e) => {
               if (e.key === 'Enter') recall(query)
             }}
           />
         </div>
-        <div ref={tree} role="tree" aria-label="Memory view" tabIndex={0} className="min-h-0 flex-1 overflow-y-auto px-2 pb-3 outline-none focus-visible:ring-2 focus-visible:ring-ring/50 focus-visible:ring-inset" onKeyDown={onTreeKey}>
+        <div ref={treeEl} role="tree" aria-label="Memory view" tabIndex={0} className="min-h-0 flex-1 overflow-y-auto px-2 pb-3 outline-none focus-visible:ring-2 focus-visible:ring-ring/50 focus-visible:ring-inset" onKeyDown={onTreeKey}>
           {memory.isPending && (
             <div className="flex flex-col gap-2 px-2 pt-1">
               {[0, 1, 2, 3, 4, 5].map((i) => (
