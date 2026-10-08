@@ -1,10 +1,11 @@
 import { Link } from '@tanstack/react-router'
 import { type ReactNode, useMemo } from 'react'
 import { useSessionDrag } from '@/components/chat/Panes'
-import { stripRows } from '@/lib/session-tree'
+import { observedLabel, stripRows } from '@/lib/session-tree'
 import { cn } from '@/lib/utils'
 import type { AgentInfo, AgentState } from '@/rpc/extra'
 import { useSessionField } from '@/store/sessions'
+import { WatchDot } from './ObservedBar'
 
 /**
  * 93: `● ● ●` centred above the to-do card, else directly above the composer (no label — Sky, 2026-10-04; above the
@@ -40,11 +41,13 @@ const stateText = (s: AgentState): string =>
 /**
  * One subagent: the connected-state dot (green; amber when blocked on an approval) inside a 24 px link that opens
  * the subagent's chat or drags it into a pane. The circle is keyed on `beat`, so each beat remounts it and the
- * one-shot `subagent-blink` animation restarts — no timers.
+ * one-shot `subagent-blink` animation restarts — no timers. A watch-only child (141 §9.2c) is the same dot in its
+ * harness state's colour, titled `watching`.
  */
 function SubagentDot({ row }: { row: AgentInfo }) {
   const drag = useSessionDrag(row.id, row.name)
-  const label = `${row.name} · ${stateText(row.state)}${row.model ? ` · ${row.model}` : ''}`
+  const observed = row.observed ?? undefined
+  const label = `${row.name} · ${observed ? `watching · ${observedLabel[observed.state]}` : stateText(row.state)}${row.model ? ` · ${row.model}` : ''}`
   return (
     <Link
       to="/c/$session"
@@ -54,14 +57,18 @@ function SubagentDot({ row }: { row: AgentInfo }) {
       title={label}
       aria-label={label}
     >
-      <span
-        key={row.beat ?? 0}
-        className={cn(
-          'subagent-dot size-2 rounded-full',
-          row.state.state === 'approval' ? 'bg-warning' : 'bg-success',
-          row.beat !== undefined && 'subagent-blink',
-        )}
-      />
+      {observed ? (
+        <WatchDot state={observed.state} beat={row.beat} />
+      ) : (
+        <span
+          key={row.beat ?? 0}
+          className={cn(
+            'subagent-dot size-2 rounded-full',
+            row.state.state === 'approval' ? 'bg-warning' : 'bg-success',
+            row.beat !== undefined && 'subagent-blink',
+          )}
+        />
+      )}
     </Link>
   )
 }

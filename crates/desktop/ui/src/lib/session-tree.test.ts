@@ -7,7 +7,7 @@ import { buildRows } from '@/components/sidebar/SessionList'
 import type { SessionSummary } from '@/rpc/bindings/SessionSummary'
 import type { SessionActivity } from '@/rpc/bindings/SessionActivity'
 import type { AgentInfo } from '@/rpc/extra'
-import { STRIP_CAP, TREE_CAP, cappedTree, childrenOf, live, rankSummary, stripRows, withAncestors, rootOf, subtrees } from './session-tree'
+import { STRIP_CAP, TREE_CAP, cappedTree, childrenOf, detailOf, harnessName, live, observedState, rankSummary, sourceTag, stripRows, withAncestors, rootOf, subtrees } from './session-tree'
 
 const s = (id: string, parent: string | null = null, desk?: string): SessionSummary => ({
   id,
@@ -167,4 +167,28 @@ test('125 §8.5: an advisor child is never a strip dot, a tree row, a subtree me
   const root = { ...row('root', 'running', 'none'), depth: 0, parent: '' }
   expect(groupRows([root, worker, adv]).map((g) => [g.root.id, g.children.map((c) => c.id)])).toEqual([['root', ['worker']]])
   expect(buildRows([s('root'), { ...s('advisor-root'), kind: 'advisor' }], []).map((r) => r.key).filter((k) => !k.startsWith('h:'))).toEqual(['root'])
+})
+
+// 141 §9.1/§9.4: watch-only rows are subtree members and strip dots while the harness says `running`/`requires_action` (Q1: idle is not).
+test('observed rows: state mapping, strip membership, source tags, defensive detail', () => {
+  expect(observedState('running')).toEqual({ state: 'running' })
+  expect(observedState('requires_action')).toEqual({ state: 'approval', tool: 'permission' })
+  expect(observedState('failed')).toEqual({ state: 'error' })
+  expect(observedState('cancelled')).toEqual({ state: 'cancelled' })
+  expect((['pending', 'idle', 'completed', 'unknown'] as const).map((s) => observedState(s).state)).toEqual(['idle', 'idle', 'idle', 'idle'])
+  const meta = (state: 'running' | 'idle' | 'requires_action') => ({ source: 'omp_task' as const, external: state, state, can_cancel: false, cost_rule: 'counted' as const, detail: null })
+  const run = row('run', 'running', 'harness', { kind: 'observed', observed: meta('running'), started_at: '2026-01-01T00:00:01Z' })
+  const ask = row('ask', 'approval', 'harness', { kind: 'observed', observed: meta('requires_action'), started_at: '2026-01-01T00:00:02Z' })
+  const idle = row('idle', 'idle', 'harness', { kind: 'observed', observed: meta('idle') })
+  expect(stripRows({ run, ask, idle }).shown.map((r) => r.id)).toEqual(['run', 'ask'])
+  expect(childrenOf([run, idle]).get('harness')?.map((r) => r.id)).toEqual(['run', 'idle'])
+  expect(subtrees([s('root'), s('harness', 'root'), { ...s('kid', 'harness'), kind: 'observed' }]).get('root')?.map((d) => d.id)).toEqual(['harness', 'kid'])
+  expect((['omp_task', 'opencode_ext', 'opencode_task', 'rfd'] as const).map((source) => sourceTag({ source }))).toEqual(['omp task', 'opencode', 'opencode', 'ACP'])
+  expect(harnessName({ source: 'omp_task' }, 'opencode2')).toBe('opencode2')
+  expect(harnessName({ source: 'omp_task' }, null)).toBe('omp')
+  expect(harnessName({ source: 'rfd' }, undefined)).toBe('the harness')
+  // `detail` is the harness's JSON: wrong shapes read as absent, never throw.
+  expect(detailOf({ detail: null })).toEqual({})
+  expect(detailOf({ detail: [1] })).toEqual({})
+  expect(detailOf({ detail: { index: 1, agent: 'scout', tokens: '9k', cost: 0.12, lastIntent: '', completionPercent: 40 } })).toEqual({ index: 1, agent: 'scout', cost: 0.12, completionPercent: 40 })
 })

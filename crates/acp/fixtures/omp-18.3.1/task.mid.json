@@ -1,0 +1,99 @@
+{
+ "jsonrpc": "2.0",
+ "method": "session/update",
+ "params": {
+  "sessionId": "01a11b25-d8f7-71b3-a309-a306e24281dc",
+  "update": {
+   "sessionUpdate": "tool_call_update",
+   "toolCallId": "toolu_013x6rgBK7MEUsQq79DoL4YK",
+   "status": "in_progress",
+   "rawOutput": {
+    "content": [
+     {
+      "type": "text",
+      "text": "Running agent ReadA..."
+     }
+    ],
+    "details": {
+     "projectAgentsDir": null,
+     "results": [],
+     "totalDurationMs": 2553,
+     "progress": [
+      {
+       "index": 0,
+       "id": "ReadA",
+       "agent": "scout",
+       "agentSource": "bundled",
+       "modelRole": "smol",
+       "status": "running",
+       "task": "Complete assignment thoroughly:\n\n# Target\n`a.txt` in cwd.\n#…",
+       "assignment": "# Target\n`a.txt` in cwd.\n# Change\nRead it; report its first…",
+       "recentTools": [
+        {
+         "tool": "read",
+         "args": "a.txt:1-1",
+         "endMs": 1791456834916
+        }
+       ],
+       "recentOutput": [],
+       "toolCount": 1,
+       "requests": 1,
+       "tokens": 8962,
+       "cost": 0.1149025,
+       "durationMs": 0,
+       "resolvedModel": "anthropic/claude-fable-5-1:high",
+       "resolvedModelIdentity": "anthropic/claude-fable-5-1",
+       "resolvedThinkingLevel": "high",
+       "contextTokens": 8962,
+       "contextWindow": 1000000,
+       "lastIntent": "Reading first line"
+      },
+      {
+       "index": 1,
+       "id": "ReadB",
+       "agent": "scout",
+       "agentSource": "bundled",
+       "modelRole": "smol",
+       "status": "running",
+       "task": "Complete assignment thoroughly:\n\n# Target\n`b.txt` in cwd.\n#…",
+       "assignment": "# Target\n`b.txt` in cwd.\n# Change\nRead it; report its first…",
+       "recentTools": [
+        {
+         "tool": "read",
+         "args": "b.txt:1-1:raw",
+         "endMs": 1791456834430
+        }
+       ],
+       "recentOutput": [],
+       "toolCount": 1,
+       "requests": 1,
+       "tokens": 8965,
+       "cost": 0.1150525,
+       "durationMs": 0,
+       "resolvedModel": "anthropic/claude-fable-5-1:high",
+       "resolvedModelIdentity": "anthropic/claude-fable-5-1",
+       "resolvedThinkingLevel": "high",
+       "contextTokens": 8965,
+       "contextWindow": 1000000,
+       "lastIntent": "Reading first line"
+      }
+     ],
+     "async": {
+      "state": "running",
+      "jobId": "ReadA",
+      "type": "task"
+     }
+    }
+   },
+   "content": [
+    {
+     "type": "content",
+     "content": {
+      "type": "text",
+      "text": "Running agent ReadA..."
+     }
+    }
+   ]
+  }
+ }
+}

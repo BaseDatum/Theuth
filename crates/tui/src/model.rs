@@ -12302,6 +12302,8 @@ impl Model {
             match c.scope {
                 CostScope::Native => "native",
                 CostScope::OpaqueRemoteInclusive => "includes hidden remote descendants",
+                // 141 §7.6: the harness's own total excluded this subagent.
+                CostScope::Observed => "watch-only subagent, counted beside the harness",
             }
         ));
         for ch in &c.children {
@@ -12313,6 +12315,7 @@ impl Model {
                 match ch.scope {
                     CostScope::Native => "",
                     CostScope::OpaqueRemoteInclusive => " · remote inclusive",
+                    CostScope::Observed => " · watch-only",
                 }
             ));
         }
@@ -18097,6 +18100,7 @@ mod tests {
             here: true,
             kind: Default::default(),
             memory: Default::default(),
+            observed: None,
         }
     }
 
@@ -19475,6 +19479,7 @@ mod tests {
             activity: Default::default(),
             cap: None,
             kind,
+            observed: None,
         };
         let worker = SessionId::new();
         m.apply(UiEvent::Agents(vec![
