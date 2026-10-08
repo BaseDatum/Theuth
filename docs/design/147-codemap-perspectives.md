@@ -511,10 +511,10 @@ without prose. Never from `code_*` calls, never from the agent tool, never on a 
 
 | stage | calls | input (engine-assembled facts, JSON) | output JSON (validated) |
 |---|---|---|---|
-| **A. select perspectives** | 1 | `profile` (`project_profile`, `profile.rs:13`), units table (handle `n1…`, path, files, lines, share, in/out degree, entry, recent), hub list, per-perspective detector summary (`eligible`, hits, 3 samples), imported perspective names | `{ perspectives: [{ kind, title, why }] }`; must contain `overall-architecture`; `kind` ∈ eligible set; ≤ 6 (`ponytail:` raise if a repo evidences more) |
+| **A. select perspectives** | 1 | `profile` (`project_profile`, `profile.rs:13`), units table (handle `n1…`, path, files, lines, share, in/out degree, entry, recent), hub list, per-perspective detector summary (`eligible`, hits, 3 samples), imported perspective names | `{ perspectives: [{ kind, title, why }] }`; must contain `overall-architecture`; `kind` ∈ eligible set; any number up to the catalogue's 12 (S5 — no ceiling, S1 — no budget); every selected perspective is generated on this open |
 | **B. per-perspective top level** | 1 each | units + thresholded edges with evidence summaries (`e1…`), a candidate tiering, the perspective's detector facts, for flow perspectives the entry-point chains of stage D | `{ fields: {description, context?, constraint?, concern?}, nodes: [{ id: "g1", name, members: ["n3","n7"] }], mermaid: "flowchart LR …", edges: [{ from: "g1", to: "g2", label, evidence: ["e4","e9"] \| reason }] }` |
 | **C. drill-down naming** | ⌈elements / 10⌉ | per element: its sub-skeleton (children with path, files, lines, top-5 signatures; edges with counts and one sample) — ~1 k tokens each, 10 per call | `{ elements: [{ id, name, fields: {description, concern?}, edge_labels: { "e1": "…" } }] }` |
-| **D. flow perspectives** (`request-lifecycle`, `data-flow`, `pipeline`, `orchestration`) | 1 per entry point ≤ 4 | an entry point + its call chain from `callers_of`/`callees_of`-style ref walks (depth ≤ 6, best confidence first, ≤ 30 sites), handler/route detector hits | `{ steps: [{ id, name, site: "path#L", from, to }], mermaid, edges: [...] }` — return paths allowed as `inferred` with a reason (ICSA: flow views generate most reliably, E1) |
+| **D. flow perspectives** (`request-lifecycle`, `data-flow`, `pipeline`, `orchestration`) | 1 per entry point, ≤ 4 entry points per perspective (readability: one flow diagram per entry point is what a reader compares side by side; the model picks the four with the longest backed chains, the rest are listed as doors in the perspective's description) | an entry point + its call chain from `callers_of`/`callees_of`-style ref walks (depth ≤ 6, best confidence first, ≤ 30 sites), handler/route detector hits | `{ steps: [{ id, name, site: "path#L", from, to }], mermaid, edges: [...] }` — return paths allowed as `inferred` with a reason (ICSA: flow views generate most reliably, E1) |
 
 Order: A → B for every perspective (parallel, ≤ 3 in flight) → D for flow perspectives → C in batches, breadth-first, so the
 top level is readable after the second round-trip. Progress = `CodeMapProgress` per stage/element (§10).
@@ -939,8 +939,8 @@ The detail pane's **Snapshot to board** builds a `json-render` `Graph` fence fro
 | `codemap_search` | < 20 ms | `anchors_path` + `elements.name LIKE` |
 | first diagram on screen (structure view) | one RPC + ELK ≤ 100 ms warm (65 §9 step 3) | 12 nodes |
 | first model-written top level | **< 30 s** target (stage A + B for `overall-architecture`, ~12 k in / 1.5 k out each) | spike: 10 calls ≈ 1–2 min total |
-| full generation, theuth-size | 1–2 min; 5–8 min if depth 3 is dense | E6 |
-| calls / $ per repo (frontier model) | small (omm, 8 elements): 3–4 calls, **$0.05–0.10**; medium (portal/2gP, ~30 elements): 6–8 calls, **$0.30–0.50**; theuth (~61 elements at depth ≤ 3, ~120 if every unit is a group): 10–16 calls, **$0.70–1.50** | $0.015 per element + 1 call per perspective top level (E6); ≈ $0.05 total on a small tier for the describe batches (W2 knob) |
+| full generation, theuth-size | 2–4 min with the nine perspectives §7 expects; 5–8 min if depth 3 is dense | E6 |
+| calls / $ per repo (frontier model) | small (omm, 8 elements, 3 perspectives): 3–4 calls, **$0.05–0.10**; medium (portal/2gP, ~30 elements): 6–8 calls, **$0.30–0.50**; theuth (~61 elements at depth ≤ 3, ~120 if every unit is a group; nine perspectives → +8 top-level calls ≈ +$0.30): 18–24 calls, **$1.00–1.80** | $0.015 per element + 1 call per perspective top level (E6); ≈ $0.05 total on a small tier for the describe batches (W2 knob) |
 | refresh per typical commit | 0–2 calls, < $0.05 | E6 |
 | memory | engine: nothing resident beyond the job; UI: ≤ 150 tree rows + one element + 12 thumbnails ≈ 100 KB | — |
 | events | `CodeMapProgress` ≥ 250 ms apart; `CodeMapChanged` per stored element (≤ ~60 per generation) | 73 §5.1 gate |
@@ -999,9 +999,9 @@ across every wave: 73 §7's lens latencies (A16), availability flow (one `CodeTo
    see it move. Sky may prefer silence.
 3. **Export overwrite rules**: when `<root>/.omm/` exists and is not ours — refuse (v0), merge by element path, or write
    beside it as `.omm-theuth/`? Default: refuse with the reason; the UI offers "export anyway" only after Sky rules.
-4. **Perspective count ceiling** (stage A ≤ 6, `ponytail:`): theuth evidences nine; let the model take all nine on first
-   open (≈ +9 calls, ≈ +$0.30) or cap and offer the rest as *Generate* buttons per perspective (field L8)? Default: cap 6,
-   buttons for the rest.
+4. **Perspective count** — *resolved by S5/S1*: no perspective ceiling and no per-perspective *Generate* buttons; every
+   perspective the model selects from the eligible set is generated on first open (theuth: up to nine, ≈ +$0.30 against the
+   spike's cost model).
 5. **Description model tier** (W2's second key): one key or two?
 6. **Mark semantics** (O10): `read` from `code_*` targets only (today's slice) or also from `read_file`/`grep` paths (the
    reducer does not record them, `slice.ts:37-38`)? Default: `code_*` + edits, as the slice already holds.
