@@ -1,6 +1,6 @@
 import { useQuery } from '@tanstack/react-query'
 import { Link, useNavigate } from '@tanstack/react-router'
-import { AppWindow, CornerLeftUp, Gauge, LayoutGrid, MessageSquare, Monitor, Network, PanelLeft, Search, ShieldOff, X } from 'lucide-react'
+import { AppWindow, CornerLeftUp, Eye, Gauge, LayoutGrid, MessageSquare, Monitor, Network, PanelLeft, Search, ShieldOff, X } from 'lucide-react'
 import { Fragment, type ReactNode, type RefObject, useLayoutEffect, useRef, useState } from 'react'
 import { flushSync } from 'react-dom'
 import { SearchTrigger } from '@/components/sidebar/SearchTrigger'
@@ -17,6 +17,8 @@ import { canPopout, isPopout, openPopout, type PopoutTarget } from '@/lib/popout
 import { useEngineLabel } from '@/lib/owner'
 import { queryKeys, useApi } from '@/lib/rpc'
 import { cn } from '@/lib/utils'
+import { sourceTag } from '@/lib/session-tree'
+import type { ObservedMeta } from '@/rpc/bindings/ObservedMeta'
 import { parseSpoken } from '@/lib/injected'
 import { parseNote } from '@/lib/voice-note'
 import { useApprovals } from '@/store/approvals'
@@ -35,9 +37,11 @@ import { MemoryBadge, MemoryPanel } from './MemoryPanel'
 import { BrowserIndicator } from './Indicators'
 import { SessionMenu } from './SessionMenu'
 import { TerminalButton, TerminalViewer, useHasTerminals } from './TerminalViewer'
+import { EyeMark } from './ObservedBar'
 
-/** `↳ parent` breadcrumb of a subagent's transcript; `row`: the compact menu's "Parent" line. */
-function Parent({ id, row }: { id: string; row?: boolean }) {
+/** `↳ parent` breadcrumb of a subagent's transcript; `row`: the compact menu's "Parent" line. A watch-only child (141 §9.2d)
+ * shows the `Watching` chip and `inside <parent> · <source>` instead. */
+function Parent({ id, row, observed }: { id: string; row?: boolean; observed?: ObservedMeta | null }) {
   const api = useApi()
   const navigate = useNavigate()
   const { data: sessions } = useQuery({
@@ -49,11 +53,23 @@ function Parent({ id, row }: { id: string; row?: boolean }) {
   if (row) {
     return (
       <MenuRow
-        icon={CornerLeftUp}
-        label="Parent"
-        detail={name}
+        icon={observed ? Eye : CornerLeftUp}
+        label={observed ? 'Watching inside' : 'Parent'}
+        detail={observed ? `${name} · ${sourceTag(observed)}` : name}
         onSelect={() => void navigate({ to: '/c/$session', params: { session: id } })}
       />
+    )
+  }
+  if (observed) {
+    return (
+      <>
+        <Badge variant="outline" className="shrink-0 gap-1 border-fg-accent/45 text-fg-accent">
+          <Eye aria-hidden /> Watching
+        </Badge>
+        <Link to="/c/$session" params={{ session: id }} className="truncate text-xs text-fg-secondary hover:text-foreground">
+          inside {name} · {sourceTag(observed)}
+        </Link>
+      </>
     )
   }
   return (
@@ -167,6 +183,7 @@ export function Header({
   const info = useConnection((s) => s.info)
   const pending = useApprovals((s) => s.pending.length)
   const parent = useSessionField(session ?? '', 'parent')
+  const observed = useSessionField(session ?? '', 'observed')
   const browser = useSessionField(session ?? '', 'browser')
   const browserBusy = useBrowserBusy(session ?? '')
   const live = useSessionField(session ?? '', 'browserLive')
@@ -234,12 +251,13 @@ export function Header({
     // `w-0 flex-1`: takes the slack without counting towards the bar's natural width, so a long title never pushes
     // the controls out; it truncates to nothing before they move (or, in the full bar, before the tier drops).
     title: () => (
-      <span data-tauri-drag-region={mac || undefined} className="w-0 min-w-0 flex-1 truncate text-sm font-medium" title={title}>
-        {title}
+      <span data-tauri-drag-region={mac || undefined} className="flex w-0 min-w-0 flex-1 items-center gap-1.5 truncate text-sm font-medium" title={title}>
+        {observed && <EyeMark className="size-3.5" />}
+        <span className="truncate">{title}</span>
       </span>
     ),
     memory: (mode) => (session ? <MemoryBadge session={session} summary={row} row={mode === 'row'} open={memory} onToggle={() => setMemory((o) => !o)} /> : null),
-    parent: (mode) => (parent ? <Parent id={parent} row={mode === 'row'} /> : null),
+    parent: (mode) => (parent ? <Parent id={parent} row={mode === 'row'} observed={observed} /> : null),
     owner: (mode) =>
       row && !row.here ? (
         mode === 'row' ? (
