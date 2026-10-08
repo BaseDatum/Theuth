@@ -1639,6 +1639,14 @@ fn validate(spec: &StudySpec, cfg: &AutoresearchConfig) -> Result<()> {
 pub async fn create(a: &mut Studies, m: Create) -> Result<StudyInfo> {
     let env = a.env();
     validate(&m.spec, &env.cfg)?;
+    // 140-P live: `spawn_subagent` is gated by `agent.communication` (50 §2.1); without it
+    // every wave is abandoned ("spawn_subagent is not available in this session").
+    if m.spec.parallel > 1 && !env.agent.communication {
+        return Err(Error::refused(
+            "parallel > 1 needs `agent.communication: true` in config.yaml (spawn_subagent is off — a \
+             ceiling no session can override); start the study with parallel: 1 or switch it on",
+        ));
+    }
     // `git rev-parse` is a process spawn: never on the mailbox thread (R-100).
     let (backend, repo) = (env.backend.clone(), PathBuf::from(&m.spec.repo));
     let is_git = tokio::task::spawn_blocking(move || backend.is_git_repo(&repo))
@@ -1829,9 +1837,10 @@ async fn prepare_steps(env: &Env, study: &mut StudyRecord, start: &StartWhen) ->
     // §5.4: the base's holdout, the reference every later holdout is judged against.
     holdout(env, study, &head, 0, &cancel).await?;
 
-    let model = env.cfg.executor(&spec.models, &env.agent);
-    let text = schedule_file::text(&spec, &env.cfg, &worktree, &model, start);
-    schedule_file::write(&env.data_dir, &slug, &text)?;
+    // `running` first, then the file: a fire can follow the write at once (`every: 0s`
+    // plus the Reconcile the write asks for), and the confinement resolver ends the
+    // loop of a study that is not running or paused ("toolset gone", 140-P live).
+    // A failed write still lands in `failed` through `prepare`'s error path.
     patch(
         env,
         study,
@@ -1842,6 +1851,9 @@ async fn prepare_steps(env: &Env, study: &mut StudyRecord, start: &StartWhen) ->
     )
     .await?;
     set_state(env, study, StudyState::Running, None).await?;
+    let model = env.cfg.executor(&spec.models, &env.agent);
+    let text = schedule_file::text(&spec, &env.cfg, &worktree, &model, start);
+    schedule_file::write(&env.data_dir, &slug, &text).await?;
     let sched = schedule_file::name(&slug);
     deliver(study.origin, &slug, start_card(study, m, sigma, &sched));
     Ok(())
@@ -1866,7 +1878,7 @@ async fn baseline(
     let mut values = Vec::new();
     let mut noisy = 0u32;
     for k in 1..=u32::from(spec.bench.repeats.max(1)) {
-        let s = scored_sample(
+        let s = match scored_sample(
             env,
             spec,
             SampleRequest {
@@ -1882,7 +1894,18 @@ async fn baseline(
             cancel,
             None,
         )
-        .await?;
+        .await
+        {
+            Ok(s) => s,
+            // R-85: Stop now while the sample still waits for the slot or the load
+            // precondition surfaces as the slot's error, not a lost sample.
+            Err(_) if cancel.is_cancelled() => {
+                return Err(Error::refused(
+                    "stopped by you while the baseline was measured; nothing was kept",
+                ));
+            }
+            Err(e) => return Err(e),
+        };
         match s.value {
             Some(_) if s.noisy => noisy += 1,
             Some(v) => values.push(v),
@@ -1958,6 +1981,15 @@ pub async fn begin_env(env: &Env, m: Begin) -> Result<Brief> {
         }
     }
     let slug = study.slug.clone();
+    // One fire = one experiment (§0 D1): a `begin` newer than the newest `turn` event
+    // means this turn already ran an experiment — the model is told to end the turn
+    // (140-P live: one fire ran seven). Without turn events (no agent) the rule is off.
+    if second_begin_this_turn(&env.store, &slug).await? {
+        return Err(Error::refused(
+            "one experiment per fire: this turn already ran its experiment — end your turn now; \
+             the loop starts the next experiment in a fresh session",
+        ));
+    }
     let mut incidents = Vec::new();
     // §10: a wave study promotes the previous wave first (unlogged slots count as discard).
     let wave = if study.spec.parallel > 1 {
@@ -2254,6 +2286,7 @@ async fn brief_context(
         code_map,
         gate: env.cfg.gate.clone(),
         crash_retries: env.cfg.defaults.crash_retries,
+        worktree: None,
     })
 }
 
@@ -2279,7 +2312,10 @@ async fn begin_slot(env: &Env, session: SessionId, slot: u8) -> Result<Brief> {
     };
     let (closed, _) = counts(&env.store, &slug).await?;
     let spend = study_spend_or_closed(env, &study).await;
-    let cx = brief_context(env, &study, exp.n, Vec::new(), closed, spend).await?;
+    let mut cx = brief_context(env, &study, exp.n, Vec::new(), closed, spend).await?;
+    // The child edits its slot tree, not the study worktree (140-P live: a slot that
+    // followed the brief's Worktree line edited the study tree and measured nothing).
+    cx.worktree = Some(mine.worktree.clone());
     let mut brief = env
         .backend
         .brief(&env.store, &study, &env.cfg.brief, &cx)
@@ -2467,6 +2503,19 @@ async fn tree_changed_pending(store: &Store, slug: &str, n: u32) -> Result<bool>
     Ok(matches!((changed, ran), (Some(c), Some(r)) if c > r))
 }
 
+/// A `begin` event newer than the newest `turn` event: this turn already opened an
+/// experiment. `false` when the study has no `turn` events (no agent, tests).
+async fn second_begin_this_turn(store: &Store, slug: &str) -> Result<bool> {
+    let Some(turn) = store.list_events(slug, Some("turn"), 1).await?.pop() else {
+        return Ok(false);
+    };
+    Ok(store
+        .list_events(slug, Some("begin"), 1)
+        .await?
+        .pop()
+        .is_some_and(|b| b.id > turn.id))
+}
+
 /// The measurement body of [`run_env`]: novelty → custody → scope → samples →
 /// gate → checks → verdict. `exp` is `measuring` on entry and `measured` on `Ok`.
 async fn measure_env(
@@ -2484,6 +2533,22 @@ async fn measure_env(
     let started = exp.started_at.clone();
     let incumbent = incumbent_of(study)?;
     let retries_left = retries.saturating_sub(runs_so_far);
+    // Nothing to measure (140-P live): the model edited outside the worktree (file
+    // tools resolve relative paths against the engine's cwd), so the tree equals the
+    // incumbent. A named error, no sample, experiment still open — the model edits the
+    // right tree and runs again (a duplicate-of-#1 refusal hid the cause).
+    let scope = env.backend.scope_diff(&study.spec, worktree)?;
+    if scope == ScopeDiff::default() {
+        env.store
+            .append_event(&slug, "no_change", &serde_json::json!({ "n": n }))
+            .await?;
+        return Err(Error::refused(format!(
+            "no change in the worktree {} vs the incumbent — nothing to measure; edit files by \
+             absolute path under the worktree (relative paths resolve elsewhere), then call \
+             experiment_run again",
+            worktree.display()
+        )));
+    }
     // Novelty (§7.3).
     progress(env, &slug, n, &started, Phase::Novelty, 0, 1).await;
     // A git failure here is an error the model sees, never an empty hash fed to the novelty check (R-102).
@@ -2538,8 +2603,7 @@ async fn measure_env(
         return refuse_run(env, exp, reason, vec![], novelty.similar).await;
     }
 
-    // Scope (§5.3).
-    let scope = env.backend.scope_diff(&study.spec, worktree)?;
+    // Scope (§5.3), computed before the novelty check above.
     if !scope.off_limits.is_empty() {
         let reason = format!("touches off-limits {}", scope.off_limits.join(", "));
         return refuse_run(env, exp, reason, scope.deviations.clone(), novelty.similar).await;
@@ -3167,9 +3231,13 @@ pub async fn log_env(env: &Env, m: Log) -> Result<LogReport> {
                     reason: e.to_string(),
                 },
             };
+            // A keep the user restored (§9.1 Restore) was already judged by the user: a
+            // second SUSPICIOUS flags it (needs-eyes line) but cannot revert it again,
+            // or the user and the reviewer would take turns forever (140-P live).
+            let restored = restoring(&env.store, &slug, n).await?.is_some();
             let rv = match rv {
                 ReviewVerdict::Flagged { reason }
-                    if env.cfg.review.on_suspicious == OnSuspicious::Revert =>
+                    if env.cfg.review.on_suspicious == OnSuspicious::Revert && !restored =>
                 {
                     // Revert: incumbent ← previous, the commit stays as a rejected ref, the patch
                     // is kept — and Restore must find it, so both writes are checked (R-103).
@@ -3316,15 +3384,24 @@ pub async fn log_env(env: &Env, m: Log) -> Result<LogReport> {
 
 /// `Autoresearch-Metric: time_ms 42.3 -> 41.2 (-2.6%, 3.1 sigma, n=3)`.
 pub(crate) fn metric_line(study: &StudyRecord, exp: &ExperimentRecord) -> String {
+    // §6: `42.3 -> 41.2 (-2.6%)` — the raw relative change between the two numbers, so a
+    // lower-is-better win reads negative (the ledger's `delta_pct` is direction-normalised,
+    // positive = better; 140-P live wrote `8996 -> 39.0 (+99.6%)`).
+    let raw_pct = match (study.incumbent_mean, exp.metric) {
+        (Some(a), Some(b)) if a != 0.0 => (b - a) / a.abs() * 100.0,
+        _ => match study.spec.metric.direction {
+            Direction::Lower => -exp.delta_pct.unwrap_or(0.0),
+            Direction::Higher => exp.delta_pct.unwrap_or(0.0),
+        },
+    };
     format!(
-        "{} {} -> {} ({:+.1}%, {} sigma, n={})",
+        "{} {} -> {} ({raw_pct:+.1}%, {} sigma, n={})",
         study.spec.metric.name,
         study
             .incumbent_mean
             .map(fmt_num)
             .unwrap_or_else(|| "?".into()),
         exp.metric.map(fmt_num).unwrap_or_else(|| "?".into()),
-        exp.delta_pct.unwrap_or(0.0),
         exp.z
             .map(|z| format!("{z:.1}"))
             .unwrap_or_else(|| "—".into()),
@@ -4780,12 +4857,67 @@ pub async fn recover(env: &Env) -> Result<()> {
                         tracing::warn!(%slug, "stop rules after recovery: {e}");
                     }
                 }
+                // 140-P live: 109's durability resumes the turn the crash interrupted — with
+                // none of the fire's in-memory settings (toolset, approvals off): the model
+                // went on unconfined (`python`, knowledge hints, 7 experiments in one turn).
+                // §8.5 wants a fresh fire instead: re-apply the toolset (a resume that has not
+                // started yet reads it at its rebase), then cancel the resumed turn; the
+                // schedule closes its run and `every: 0s` fires again, confined.
+                if let Some(session) = study.session
+                    && let Some(agents) = agents()
+                {
+                    let _ = agents
+                        .ask(agent::SetToolset {
+                            session,
+                            toolset: Some(crate::binding::toolset(study.spec.parallel)),
+                        })
+                        .await;
+                    let _ = agents
+                        .ask(agent::Cancel {
+                            session,
+                            keep: None,
+                            scope: agent::CancelScope::Tree,
+                        })
+                        .await;
+                }
+                // 140-P live: a loop the schedule ended (or a file removed by hand) left a
+                // live study with no file — nothing would ever fire again. Re-write it.
+                let file = env
+                    .data_dir
+                    .join(schedule::DIR)
+                    .join(format!("{}.md", schedule_file::name(&slug)));
+                if !file.exists() {
+                    if let Err(e) = rewrite_schedule_file(env, &study).await {
+                        tracing::warn!(%slug, "schedule file not restored: {e}");
+                    } else {
+                        env.store
+                            .append_event(&slug, "incident", &serde_json::json!({ "what": "schedule file missing at restart; re-written" }))
+                            .await?;
+                    }
+                }
             }
             StudyState::Finalizing => spawn_finalize(env, &slug).await?,
             _ => {}
         }
     }
     Ok(())
+}
+
+/// The study's schedule file as `prepare` writes it, `enabled:` per the study state.
+async fn rewrite_schedule_file(env: &Env, study: &StudyRecord) -> Result<()> {
+    let worktree = worktree_of(study)?;
+    let start = match &study.spec.window {
+        Some(sensor) => StartWhen::Window {
+            sensor: sensor.clone(),
+        },
+        None => StartWhen::Now,
+    };
+    let model = env.cfg.executor(&study.spec.models, &env.agent);
+    let mut text = schedule_file::text(&study.spec, &env.cfg, &worktree, &model, &start);
+    if matches!(study.state, StudyState::Paused { .. }) {
+        text = schedule::file::set_enabled(&text, false);
+    }
+    schedule_file::write(&env.data_dir, &study.slug, &text).await
 }
 
 // ───────────────────────────── attention rows (§13.1) ─────────────────────────────

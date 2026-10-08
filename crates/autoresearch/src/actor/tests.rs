@@ -37,6 +37,8 @@ struct Fake {
     parent: Mutex<String>,
     report_user: Mutex<Option<String>>,
     hang: std::sync::atomic::AtomicBool,
+    /// With `hang`: a cancel surfaces as the slot's wait error instead of a lost sample.
+    hang_errs: std::sync::atomic::AtomicBool,
     release: tokio::sync::Notify,
     fail_next: std::sync::atomic::AtomicBool,
     last_input: Mutex<Option<GateInput>>,
@@ -54,7 +56,12 @@ impl Default for Fake {
             decide: Default::default(),
             review: Default::default(),
             custody_changed: Default::default(),
-            scope: Default::default(),
+            // The real diff is never empty when the model edited the worktree; an
+            // empty one is refused before novelty (140-P), so the double says "one file".
+            scope: Mutex::new(ScopeDiff {
+                changed: vec!["lib/a.rs".into()],
+                ..ScopeDiff::default()
+            }),
             repair: Default::default(),
             spend: Mutex::new(Ok(0.0)),
             samples_taken: Default::default(),
@@ -68,6 +75,7 @@ impl Default for Fake {
             parent: Mutex::new(String::new()),
             report_user: Default::default(),
             hang: Default::default(),
+            hang_errs: Default::default(),
             release: Default::default(),
             fail_next: Default::default(),
             last_input: Default::default(),
@@ -177,6 +185,11 @@ impl Backend for Fake {
             tokio::select! {
                 _ = self.release.notified() => {}
                 _ = cancel.cancelled() => lost = true,
+            }
+            if lost && self.hang_errs.load(std::sync::atomic::Ordering::SeqCst) {
+                return Err(Error::refused(
+                    "cancelled while waiting for the load precondition",
+                ));
             }
         }
         let value = if lost {
@@ -396,7 +409,10 @@ async fn harness(fake: Arc<Fake>, cfg: AutoresearchConfig) -> Harness {
         data_dir: dir.path().to_path_buf(),
         root,
         cfg,
-        agent: AgentDefaults::default(),
+        agent: AgentDefaults {
+            communication: true, // waves need spawn_subagent (140-P)
+            ..AgentDefaults::default()
+        },
         rt,
         store,
         backend: fake,
@@ -504,6 +520,35 @@ async fn create_prepares_to_running_with_baseline_sigma_and_schedule_file() {
     assert!(e.contains("taken"), "{e}");
 }
 
+/// 140-P: the schedule file appears only once the study is `running` — a fire that
+/// follows the write at once must find a study the confinement resolver owns.
+#[tokio::test]
+async fn study_is_running_before_its_schedule_file_exists() {
+    let fake = Fake::with_values(&[100.0, 101.0, 99.0]);
+    let mut h = harness(fake.clone(), AutoresearchConfig::default()).await;
+    let sp = spec(&h, "t1", 10);
+    create(
+        &mut h.studies,
+        Create {
+            spec: sp,
+            origin: SessionId::new(),
+            start: StartWhen::Now,
+        },
+    )
+    .await
+    .unwrap();
+    let file = h._dir.path().join("schedules/autoresearch-t1.md");
+    for _ in 0..500 {
+        if file.exists() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    assert!(file.exists(), "schedule file never written");
+    let s = h.studies.store.get_study("t1").await.unwrap().unwrap();
+    assert_eq!(s.state, StudyState::Running, "file written before running");
+}
+
 #[tokio::test]
 async fn noisy_baseline_fails_with_the_numbers() {
     let fake = Fake::with_values(&[100.0, 120.0, 80.0]);
@@ -568,6 +613,22 @@ async fn invalid_specs_are_refused_before_anything_is_written() {
     .unwrap_err()
     .to_string();
     assert!(e.contains("bench.command"), "{e}");
+    // 140-P: a wave study needs `agent.communication` (spawn_subagent).
+    let mut wave = spec(&h, "wave", 10);
+    wave.parallel = 2;
+    h.studies.agent.communication = false;
+    let e = create(
+        &mut h.studies,
+        Create {
+            spec: wave,
+            origin: SessionId::new(),
+            start: StartWhen::Now,
+        },
+    )
+    .await
+    .unwrap_err()
+    .to_string();
+    assert!(e.contains("agent.communication"), "{e}");
     assert!(h.studies.store.list_studies().await.unwrap().is_empty());
 }
 
@@ -1326,7 +1387,7 @@ async fn plateau_explores_once_then_stops() {
 
 #[tokio::test]
 async fn review_reverts_a_suspicious_keep_and_restore_queues_it() {
-    let fake = Fake::with_values(&[100.0, 100.0, 100.0, 50.0]);
+    let fake = Fake::with_values(&[100.0, 100.0, 100.0, 50.0, 50.0]);
     let mut h = harness(fake.clone(), AutoresearchConfig::default()).await;
     let session = started(&mut h, "t1", 10).await;
     begin(
@@ -1421,7 +1482,8 @@ async fn review_reverts_a_suspicious_keep_and_restore_queues_it() {
     let items = roster::attention::Source::items(&AttentionSource(h.studies.store.clone())).await;
     assert!(items.is_empty(), "no second restore is pending");
     *fake.novelty_refusal.lock() = Some("duplicate of #1".into());
-    fake.decide(Verdict::NoGain, 0.0, 0.1);
+    // The reviewer says SUSPICIOUS again: the user's Restore stands — flagged, not reverted.
+    fake.decide(Verdict::Suspicious, 50.0, 12.0);
     let r = run(
         &mut h.studies,
         Run {
@@ -1437,6 +1499,23 @@ async fn review_reverts_a_suspicious_keep_and_restore_queues_it() {
     .unwrap();
     assert!(!matches!(r.verdict, Verdict::Refused { .. }), "{r:?}");
     *fake.novelty_refusal.lock() = None;
+    let lr = log(
+        &mut h.studies,
+        Log {
+            session,
+            slot: None,
+            args: LogArgs::default(),
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(lr.applied, ExperimentState::Kept);
+    assert!(
+        matches!(lr.review, Some(ReviewVerdict::Flagged { .. })),
+        "{:?}",
+        lr.review
+    );
+    assert!(lr.commit.is_some());
     // Restore of an ordinary experiment is refused.
     let e = control(
         &mut h.studies,
@@ -1673,8 +1752,14 @@ async fn restart_recovery_marks_interrupted_and_lost() {
     let mut preparing = StudyRecord::new(spec(&h, "p", 5), None);
     preparing.state = StudyState::Preparing;
     h.studies.store.create_study(&preparing).await.unwrap();
+    // 140-P: the loop ended and took the file with it (or the user deleted it).
+    let file = h._dir.path().join("schedules/autoresearch-t1.md");
+    std::fs::remove_file(&file).unwrap();
 
     recover(&h.studies.env()).await.unwrap();
+
+    let text = std::fs::read_to_string(&file).expect("schedule file re-written at recovery");
+    assert!(text.contains("enabled: true"), "{text}");
 
     let e = h
         .studies
@@ -1751,6 +1836,106 @@ fn l(session: SessionId, decision: Decision) -> Log {
             ..LogArgs::default()
         },
     }
+}
+
+/// 140-P live: the commit trailer read `8996 -> 39.0 (+99.6%)`; §6 wants the raw change.
+#[test]
+fn metric_line_reads_the_raw_change() {
+    let mut study = StudyRecord::new(StudySpec::default(), None);
+    study.incumbent_mean = Some(8996.0);
+    let mut exp = ExperimentRecord::open("s", 2, 0, "inc");
+    exp.metric = Some(39.0);
+    exp.delta_pct = Some(99.6); // direction-normalised, positive = better
+    exp.z = Some(15.3);
+    exp.n_samples = 3;
+    let line = super::metric_line(&study, &exp);
+    assert!(
+        line.contains("8996 -> 39.0 (-99.6%, 15.3 sigma, n=3)"),
+        "{line}"
+    );
+}
+
+/// 140-P live: one fire ran seven experiments. A turn that already began an
+/// experiment cannot begin another; the next turn can.
+#[tokio::test]
+async fn second_begin_in_the_same_turn_is_refused() {
+    let fake = Fake::with_values(&[100.0, 100.0, 100.0, 100.0, 100.0]);
+    let mut h = harness(fake.clone(), AutoresearchConfig::default()).await;
+    let session = started(&mut h, "t1", 10).await;
+    let envelope = "<schedule name=\"autoresearch-t1\">\nrun\n</schedule>";
+    binding::on_turn_started(&mut h.studies, session, envelope)
+        .await
+        .unwrap();
+    begin(&mut h.studies, b(session)).await.unwrap();
+    fake.decide(Verdict::NoGain, 0.0, 0.1);
+    run(&mut h.studies, r(session, "x")).await.unwrap();
+    log(&mut h.studies, l(session, Decision::Auto))
+        .await
+        .unwrap();
+    let e = begin(&mut h.studies, b(session))
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(e.contains("one experiment per fire"), "{e}");
+    assert!(
+        h.studies
+            .store
+            .get_experiment("t1", 2)
+            .await
+            .unwrap()
+            .is_none(),
+        "no second experiment was opened"
+    );
+    // The next fire's turn begins #2.
+    binding::on_turn_started(&mut h.studies, session, envelope)
+        .await
+        .unwrap();
+    assert_eq!(begin(&mut h.studies, b(session)).await.unwrap().n, 2);
+}
+
+/// 140-P live: a worktree equal to the incumbent (the model edited elsewhere) is
+/// refused by name before novelty — no sample, no "duplicate of #1" riddle — and the
+/// experiment can be run again once the tree changed.
+#[tokio::test]
+async fn run_refuses_an_unchanged_worktree_by_name() {
+    let fake = Fake::with_values(&[100.0, 100.0, 100.0, 90.0]);
+    let mut h = harness(fake.clone(), AutoresearchConfig::default()).await;
+    let session = started(&mut h, "t1", 10).await;
+    begin(&mut h.studies, b(session)).await.unwrap();
+    *fake.scope.lock() = ScopeDiff::default();
+    let before = *fake.samples_taken.lock();
+    let e = run(&mut h.studies, r(session, "x"))
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(
+        e.starts_with("no change in the worktree") && e.contains("absolute path"),
+        "{e}"
+    );
+    assert_eq!(*fake.samples_taken.lock(), before, "no sample spent");
+    let x = h
+        .studies
+        .store
+        .get_experiment("t1", 1)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(x.state, ExperimentState::Open, "handed back to the model");
+    let ev = h
+        .studies
+        .store
+        .list_events("t1", Some("no_change"), 1)
+        .await
+        .unwrap();
+    assert_eq!(ev.len(), 1);
+    // Same experiment, the tree now differs: measured normally.
+    *fake.scope.lock() = ScopeDiff {
+        changed: vec!["lib/a.rs".into()],
+        ..ScopeDiff::default()
+    };
+    fake.decide(Verdict::Improved, 10.0, 4.0);
+    let rep = run(&mut h.studies, r(session, "x")).await.unwrap();
+    assert_eq!(rep.verdict, Verdict::Improved);
 }
 
 /// R-1: a keep commits the tree as it is now; a tree that no longer matches the
@@ -2415,9 +2600,19 @@ async fn incumbent_first_confirm_spends_no_candidate_sample() {
 /// R-85: Stop now while preparing cancels the baseline with an explicit reason.
 #[tokio::test]
 async fn stop_now_while_preparing_cancels_the_baseline() {
+    // Lost sample (cancel mid-bench) and the slot's wait error (cancel while waiting
+    // for the load precondition, 140-P live) both end with the R-85 reason.
+    for wait_err in [false, true] {
+        stop_now_while_preparing(wait_err).await;
+    }
+}
+
+async fn stop_now_while_preparing(wait_err: bool) {
     let fake = Fake::with_values(&[100.0, 100.0, 100.0]);
     let mut h = harness(fake.clone(), AutoresearchConfig::default()).await;
     fake.hang.store(true, std::sync::atomic::Ordering::SeqCst);
+    fake.hang_errs
+        .store(wait_err, std::sync::atomic::Ordering::SeqCst);
     let sp = spec(&h, "t1", 10);
     create(
         &mut h.studies,

@@ -641,12 +641,21 @@ impl Ctx<'_> {
             Effect::parse(&self.spec.metric.min_effect).unwrap_or(Effect::Absolute(0.0));
         let by_n: BTreeMap<u32, &ExperimentRecord> = kept.iter().map(|e| (e.n, e)).collect();
         let mut not_alone = Vec::new();
+        // Both changeset columns read like the headline: the raw relative change, negative
+        // for a lower-is-better win. The ledger's per-experiment `delta_pct` is
+        // direction-normalised (positive = better), so flip it for `lower` (140-P live:
+        // alone −99.6 % beside together +99.6 %).
+        let raw_sign = match self.spec.metric.direction {
+            Direction::Lower => -1.0,
+            Direction::Higher => 1.0,
+        };
         for c in &mut cs {
             c.delta_together_pct = Some(
-                c.experiments
-                    .iter()
-                    .filter_map(|n| by_n.get(n).and_then(|e| e.delta_pct))
-                    .sum(),
+                raw_sign
+                    * c.experiments
+                        .iter()
+                        .filter_map(|n| by_n.get(n).and_then(|e| e.delta_pct))
+                        .sum::<f64>(),
             );
             c.review = c
                 .experiments

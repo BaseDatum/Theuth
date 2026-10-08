@@ -34,6 +34,9 @@ pub struct Context {
     pub gate: GateConfig,
     /// `experiment_run` retries after a crash (protocol step 4); 0 → the config default 2.
     pub crash_retries: u8,
+    /// The tree this reader edits when it is not the study worktree (a wave slot's
+    /// `cand-<k>`, 140-P): the "Worktree:" line names it instead.
+    pub worktree: Option<String>,
 }
 
 /// Experiments in the category histogram.
@@ -103,6 +106,17 @@ pub async fn render(
         list_or_none(&spec.off_limits),
         list_or_none(&spec.evaluator_paths)
     ));
+    // 140-P live: the file tools resolve relative paths against the engine's
+    // process cwd (the frame header's "Working directory"), not the session's;
+    // the first live study edited the user's checkout. Name the worktree.
+    if let Some(w) = cx.worktree.as_ref().or(study.worktree.as_ref()) {
+        out.push_str(&format!(
+            "Worktree: {w} — read and edit files by ABSOLUTE path under this directory only \
+             (relative paths and the frame's working directory are not the worktree; the \
+             session shell already runs in it). Never touch the repository the study was \
+             created from.\n"
+        ));
+    }
     let (exp_left, hours_left, usd_left) = cx.budget_left;
     out.push_str(&format!(
         "Budget left: {exp_left} experiments, {} h, ${} (this experiment: ${}).\n",
@@ -760,6 +774,7 @@ mod tests {
         let mut study = StudyRecord::new(spec, None);
         study.state = StudyState::Running;
         study.incumbent_sha = Some("inc".into());
+        study.worktree = Some("/Users/x/.theuth/autoresearch/sort-speed/worktree".into());
         study.incumbent_mean = Some(41.2);
         study.sigma = Some(0.42);
         study.playbook = "build: `rake compile` (8 s)\nhot path: lib/liquid/parser.rb\n"
@@ -926,6 +941,7 @@ mod tests {
             "Noise: sigma 0.42 ms (1.02 %). A keep needs about",
             "or a confirmed 2-sigma gain.",
             "Scope: lib/liquid/**. Never keep changes to: fixtures/**, test/**. Evaluator files (refused if changed): fixtures/, test/, Rakefile.",
+            "Worktree: /Users/x/.theuth/autoresearch/sort-speed/worktree — read and edit files by ABSOLUTE path under this directory only",
             "Budget left: 106 experiments, 7.5 h, $14.25 (this experiment: $1.5).",
             "From the user (since experiment 0):",
             "try SIMD for the scanner",

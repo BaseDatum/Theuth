@@ -368,6 +368,9 @@ pub struct AgentDefaults {
     /// (R1-D5: `agent.model` is in the chain so an executor overridden to
     /// another vendor still gets the session model as its judge).
     pub others: Vec<String>,
+    /// `agent.communication` — `spawn_subagent` exists only when it is on (50 §2.1, a
+    /// ceiling no session overrides); a wave study (`parallel > 1`) needs it (140-P live).
+    pub communication: bool,
 }
 
 impl AgentDefaults {
@@ -391,6 +394,7 @@ impl AgentDefaults {
         Self {
             model: a.model,
             others,
+            communication: a.communication,
         }
     }
 }
@@ -522,6 +526,7 @@ mod tests {
                 "openai/gpt-5-mini".into(),
                 "anthropic/claude-fable-5-1".into(),
             ],
+            communication: false,
         };
         let spec = crate::types::ModelsSpec::default();
         assert_eq!(cfg.executor(&spec, &agent), "openai/gpt-5.6-sol");
@@ -532,6 +537,7 @@ mod tests {
         let same = AgentDefaults {
             model: "openai/gpt-5.6-sol".into(),
             others: vec!["openai/gpt-5-mini".into()],
+            communication: false,
         };
         assert_eq!(
             cfg.reviewer(&spec, &same).as_deref(),
@@ -563,6 +569,7 @@ mod tests {
                 "anthropic/claude-fable-5-1".into(),
                 "openai/gpt-5.6-sol".into(),
             ],
+            communication: false,
         };
         let spec = crate::types::ModelsSpec::default();
         assert_eq!(cfg.executor(&spec, &agent), "anthropic/claude-fable-5-1");

@@ -65,6 +65,15 @@ pub fn register_child(parent: SessionId, child: SessionId) {
     CHILDREN.lock().insert(child, Child { parent, slot: None });
 }
 
+/// Registered children of `parent` still alive (not yet `TurnFinished`).
+fn children_of(parent: SessionId) -> usize {
+    CHILDREN
+        .lock()
+        .values()
+        .filter(|c| c.parent == parent)
+        .count()
+}
+
 /// Is `session` a registered wave child (F3's tools refuse root-only ops from one)?
 pub fn is_child(session: SessionId) -> bool {
     CHILDREN.lock().contains_key(&session)
@@ -117,17 +126,27 @@ pub async fn on_agent_event(a: &mut Studies, e: &agent::AgentEvent) -> Result<()
         agent::AgentEvent::TurnFinished { session, .. } => {
             let child = CHILDREN.lock().remove(session);
             let env = a.env();
-            if let Some(c) = child {
-                if let (Some(k), Some(study)) = (c.slot, a.store.study_of_session(c.parent).await?)
-                    && let Some(exp) = a.store.dangling_experiment(&study.slug, Some(k)).await?
-                    && exp.state != ExperimentState::Measuring
-                {
-                    abandon(&env, exp).await?;
-                }
+            // 140-P live: `spawn_subagent` returns at once and the supervisor's turn ends
+            // while the slots still work (their results come back as later turns), so the
+            // wave settles when the *last slot child* has finished — never on the
+            // supervisor's own turn end while children are alive.
+            let (parent, slot) = match child {
+                Some(c) => (c.parent, c.slot),
+                None => (*session, None),
+            };
+            let Some(study) = a.store.study_of_session(parent).await? else {
+                return Ok(());
+            };
+            if let Some(k) = slot
+                && let Some(exp) = a.store.dangling_experiment(&study.slug, Some(k)).await?
+                && exp.state != ExperimentState::Measuring
+            {
+                abandon(&env, exp).await?;
+            }
+            if children_of(parent) > 0 {
                 return Ok(());
             }
-            if let Some(study) = a.store.study_of_session(*session).await?
-                && study.spec.parallel > 1
+            if study.spec.parallel > 1
                 && matches!(study.state, StudyState::Running | StudyState::Paused { .. })
             {
                 // Confirm samples take minutes: off the mailbox, like Begin/Run/Log.
@@ -1101,7 +1120,10 @@ mod tests {
             data_dir,
             root,
             cfg: crate::config::AutoresearchConfig::default(),
-            agent: AgentDefaults::default(),
+            agent: AgentDefaults {
+                communication: true, // waves need spawn_subagent (140-P)
+                ..AgentDefaults::default()
+            },
             rt,
             store,
             backend: bench,
@@ -1460,8 +1482,10 @@ mod tests {
         }
     }
 
+    /// 140-P: the wave settles when the last slot child's turn ends (the supervisor's
+    /// own turn ends right after spawning; a child's result arrives as a later turn).
     #[tokio::test]
-    async fn abandoned_slot_is_discarded_at_the_supervisors_turn_end_and_the_next_wave_opens() {
+    async fn abandoned_slot_is_discarded_when_the_last_child_ends_and_the_next_wave_opens() {
         // baseline ×3 · slot 1 · slot 2 (measured, never logged) · confirm #1
         let bench = Bench::with(&[100.0, 100.0, 100.0, 90.0, 96.0, 90.0]);
         let mut h = harness(bench.clone(), 2).await;
@@ -1502,7 +1526,18 @@ mod tests {
             base,
             "not promoted before the wave settles"
         );
+        // The supervisor's turn ends while slot 1's child is still alive: nothing settles.
         on_agent_event(&mut h.studies, &turn_finished(h.session))
+            .await
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        assert_eq!(
+            study(&h).await.incumbent_sha.unwrap(),
+            base,
+            "not promoted while a child is alive"
+        );
+        // The last child ends: the wave settles.
+        on_agent_event(&mut h.studies, &turn_finished(c1))
             .await
             .unwrap();
         wait_promoted(&h, 1).await;
@@ -1598,7 +1633,10 @@ mod tests {
             data_dir: tmp.path().to_path_buf(),
             root: root.clone(),
             cfg: crate::config::AutoresearchConfig::default(),
-            agent: AgentDefaults::default(),
+            agent: AgentDefaults {
+                communication: true, // waves need spawn_subagent (140-P)
+                ..AgentDefaults::default()
+            },
             rt,
             store: Store::open(&root).await.unwrap(),
             backend: bench.clone(),

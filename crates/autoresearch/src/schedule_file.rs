@@ -124,12 +124,21 @@ pub fn run_timeout(spec: &StudySpec, cfg: &crate::config::AutoresearchConfig) ->
 }
 
 /// Write the file (enabled) under `data_dir`, after the schedule crate's own
-/// parser accepted it — a broken file would otherwise sit silently in the dir.
-pub fn write(data_dir: &Path, slug: &str, text: &str) -> Result<()> {
+/// parser accepted it — a broken file would otherwise sit silently in the dir —
+/// then ask the schedule actor to re-read the directory: the dir watcher is a
+/// convenience, not something a study's start may depend on (no FSEvents under
+/// some launch environments, 140-P live). No actor (tests) = the watcher's job.
+pub async fn write(data_dir: &Path, slug: &str, text: &str) -> Result<()> {
     let name = name(slug);
     schedule::file::parse(&name, text)
         .map_err(|e| Error::refused(format!("schedule file {name}: {e}")))?;
     schedule::file::write_atomic(&data_dir.join(schedule::DIR), &name, text)?;
+    if let Ok(actor) = schedule_actor() {
+        actor
+            .ask(schedule::Reconcile)
+            .await
+            .map_err(|e| Error::refused(format!("schedule reload: {e}")))?;
+    }
     Ok(())
 }
 
@@ -351,17 +360,19 @@ mod tests {
         );
     }
 
-    #[test]
-    fn write_refuses_a_broken_file_and_writes_a_good_one() {
+    #[tokio::test]
+    async fn write_refuses_a_broken_file_and_writes_a_good_one() {
         let dir = tempfile::tempdir().unwrap();
         let data = dir.path().join("data");
         assert!(
-            write(&data, "x", "---\nevery: 0s\n---\n\nhi\n").is_err(),
+            write(&data, "x", "---\nevery: 0s\n---\n\nhi\n")
+                .await
+                .is_err(),
             "0s needs max_runs"
         );
         let cfg = AutoresearchConfig::default();
         let t = text(&spec(), &cfg, dir.path(), "", &StartWhen::Now);
-        write(&data, "sort-speed", &t).unwrap();
+        write(&data, "sort-speed", &t).await.unwrap();
         let on_disk =
             std::fs::read_to_string(data.join("schedules/autoresearch-sort-speed.md")).unwrap();
         assert_eq!(on_disk, t);
@@ -369,20 +380,20 @@ mod tests {
 
     /// R-6: with the plugin disabled every study file is paused in place;
     /// other schedules and already-paused studies are untouched.
-    #[test]
-    fn disable_all_pauses_study_files_only() {
+    #[tokio::test]
+    async fn disable_all_pauses_study_files_only() {
         let dir = tempfile::tempdir().unwrap();
         let data = dir.path().join("data");
         let cfg = AutoresearchConfig::default();
         let t = text(&spec(), &cfg, dir.path(), "", &StartWhen::Now);
-        write(&data, "sort-speed", &t).unwrap();
+        write(&data, "sort-speed", &t).await.unwrap();
         let mut other = spec();
         other.slug = "paused".into();
         let p = schedule::file::set_enabled(
             &text(&other, &cfg, dir.path(), "", &StartWhen::Now),
             false,
         );
-        write(&data, "paused", &p).unwrap();
+        write(&data, "paused", &p).await.unwrap();
         let sched = data.join(schedule::DIR);
         std::fs::write(sched.join("dreaming.md"), "---\nevery: 1h\n---\nx\n").unwrap();
 
