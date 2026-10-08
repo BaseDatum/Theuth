@@ -74,8 +74,8 @@ use crate::continuation::{
 };
 use crate::cost::{CallId, CallKind, CallStatus, CostObservation, Money};
 use crate::durability::{
-    CallState, JournaledCall, LastStep, ResumeCause, ResumeKind, ResumePlan, ResumeReportRow,
-    StepKind, crash, crash_point,
+    CallState, JournaledCall, LastStep, ResumeCause, ResumePlan, ResumeReportRow, StepKind, crash,
+    crash_point,
 };
 use crate::frame::{self, Frame, Transport};
 use crate::peers::SpawnSubagentTool;
@@ -1313,7 +1313,8 @@ impl Message<Resume> for Session {
         let turn = m.plan.turn;
         let cancel = self.shared.rt.shutdown.child_token();
         self.enter(cancel.clone(), Some(turn)).await;
-        let task = Turn::new(self.shared.clone(), Some(turn), cancel, state);
+        let mut task = Turn::new(self.shared.clone(), Some(turn), cancel, state);
+        task.resume_from = m.from;
         let me = ctx.actor_ref().clone();
         let plan = ResumePlan {
             cause: m.cause,
@@ -2375,6 +2376,9 @@ struct Turn {
     /// The `turn_finished` step rode the final assistant row (109 §3.3 step
     /// 4); `drive` writes it on its own otherwise.
     finished_written: bool,
+    /// 139 §6.3: the engine a resumed turn was taken from (`Resume::from`);
+    /// `TurnResumed.from` and the `<engine_restart from>` note.
+    resume_from: Option<String>,
 }
 
 /// Execution accounting of a peer-opened turn (50 §8): the wall deadline of
@@ -2947,7 +2951,19 @@ impl Turn {
             risks: HashMap::new(),
             resume_call: parking_lot::Mutex::new(None),
             finished_written: false,
+            resume_from: None,
         }
+    }
+
+    /// A cancel landing now is a suspension, not a stop (109 §9.2, 139
+    /// §6.1): the process is shutting down or this session is draining for
+    /// a release.
+    fn suspending(&self) -> bool {
+        self.shared.rt.shutdown.is_cancelled()
+            || self
+                .shared
+                .draining
+                .load(std::sync::atomic::Ordering::SeqCst)
     }
 
     /// The store when the knowledge plugin is up (12 §9.2) and the tree is
@@ -3296,7 +3312,7 @@ impl Turn {
                     interrupted += 1;
                 }
                 let outputs = vec![Some(ToolOutput::ok("")); dangling.len()];
-                let note = restart_note(&plan, 0, interrupted);
+                let note = restart_note(&plan, None, 0, interrupted);
                 self.finish_batch(turn, dangling.clone(), outputs, false, None, Some(note))
                     .await;
                 answered = true;
@@ -3403,7 +3419,12 @@ impl Turn {
             };
             outputs.push(preset);
         }
-        let note = restart_note(plan, replayed.len(), interrupted.len());
+        let note = restart_note(
+            plan,
+            self.resume_from.as_deref(),
+            replayed.len(),
+            interrupted.len(),
+        );
         let r = self
             .run_batch(registry, turn, 0, calls, outputs, Some(note))
             .await;
@@ -4448,8 +4469,7 @@ impl Turn {
                 resumed_at: chrono::Utc::now(),
                 partial_dropped: plan.partial.is_some(),
                 cause: plan.cause,
-                // 139 §6.3: W2 fills the previous owner for transfer/takeover.
-                from: None,
+                from: self.resume_from.clone(),
             })
             .await;
         }
@@ -4543,7 +4563,9 @@ impl Turn {
         // 109 §9.2: a cancel that came from the shutdown token (a drain's
         // deadline, SIGTERM) is a suspension — the turn stays open in the
         // journal and the next start resumes it; nothing below closes it.
-        if stop_reason == "cancelled" && self.shared.rt.shutdown.is_cancelled() {
+        // 139 §6.1: so is one that arrives while this session is draining
+        // for a release — the `suspended{release}` row written first stands.
+        if stop_reason == "cancelled" && self.suspending() {
             stop_reason = SUSPENDED.into();
         }
         let suspended = stop_reason == SUSPENDED;
@@ -5426,10 +5448,11 @@ impl Turn {
             crash_point(&crash::call_point(i, crash::CALL_AFTER_FINISHED));
             outputs[i] = Some(out);
         }
-        // 109 §9.2 step 3: a batch cut by the shutdown token (a drain's
-        // deadline) is left as the journal has it — `started` rows resume by
-        // the per-call rule, `planned` ones run then; no batch message.
-        if cancelled && self.shared.rt.shutdown.is_cancelled() {
+        // 109 §9.2 step 3 / 139 §6.1 step 4: a batch cut by the shutdown
+        // token or by the release drain's deadline is left as the journal
+        // has it — `started` rows resume by the per-call rule, `planned`
+        // ones run then; no batch message, no "cancelled by user" rows.
+        if cancelled && self.suspending() {
             return Round::Stop(SUSPENDED.into());
         }
         self.finish_batch(turn, calls, outputs, cancelled, plan, restart)
@@ -7003,16 +7026,24 @@ fn hhmmss(t: chrono::DateTime<chrono::Utc>) -> String {
 }
 
 /// 109 §4.3 restart note, prepended to the first response of a resumed
-/// batch: the only turn-level trace of the restart.
-fn restart_note(plan: &ResumePlan, replayed: usize, interrupted: usize) -> String {
+/// batch: the only turn-level trace of the restart. 139 §6.3: `kind` is
+/// the cause (`crash | shutdown | update | transfer | takeover`), and a
+/// transfer/takeover names the engine the turn came `from`.
+fn restart_note(
+    plan: &ResumePlan,
+    from: Option<&str>,
+    replayed: usize,
+    interrupted: usize,
+) -> String {
     let now = chrono::Utc::now();
     let after = (now - plan.interrupted_at).num_seconds().max(0);
-    let kind = match plan.kind {
-        ResumeKind::Interrupted => "crash",
-        ResumeKind::Suspended => "shutdown",
+    let kind = plan.cause.as_str();
+    let from = match (plan.cause, from) {
+        (ResumeCause::Transfer | ResumeCause::Takeover, Some(from)) => format!(" from=\"{from}\""),
+        _ => String::new(),
     };
     format!(
-        "<engine_restart at=\"{}\" after=\"{after}s\" kind=\"{kind}\" replayed=\"{replayed}\" interrupted=\"{interrupted}\"/>",
+        "<engine_restart at=\"{}\" after=\"{after}s\" kind=\"{kind}\"{from} replayed=\"{replayed}\" interrupted=\"{interrupted}\"/>",
         hhmmss(now)
     )
 }
