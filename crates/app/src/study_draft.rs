@@ -3,18 +3,19 @@
 //! buttons: *Start now*, *Start in idle window*, *Edit*, *Discard*. Same card
 //! pattern as [`crate::routine_draft`], one difference that is the design's
 //! invariant: **the press, not the model, starts the study.** The two Start
-//! buttons run a `Mutation("autoresearch_control", {slug, op: start|start_window})`
-//! — the `StartDraft` message `autoresearch.create {draft_id, start}` sends —
-//! and only on success tell the chat `study draft <slug>: started`; *Edit*
-//! and *Discard* are `@ToAssistant` only. The spec is written to
-//! `<autoresearch root>/drafts/<slug>/spec.json` (beside the setup's scripts,
-//! never the user's checkout) so the press can find it; nothing else exists
-//! until the press.
+//! buttons run a `Mutation("autoresearch_start", {draft_id, token})` — the
+//! `StartDraft` message `autoresearch.create {draft_id, start}` sends — with
+//! the press token the draft file holds and the model never sees, and only on
+//! success tell the chat `study draft <slug>: started`; *Edit* and *Discard*
+//! are `@ToAssistant` only. The spec is written to `<autoresearch
+//! root>/drafts/<slug>/spec.json` (beside the setup's scripts, never the user's
+//! checkout) so the press can find it; nothing else exists until the press.
+//! With the autoresearch plugin off (no actor) the tool refuses before writing.
 
 use std::sync::Arc;
 
-use autoresearch::tools::{IDLE_SENSOR, draft_spec_path, validate_spec, write_draft};
-use autoresearch::{AutoresearchConfig, Direction, StartWhen, StudySpec};
+use autoresearch::tools::{IDLE_SENSOR, draft_spec_path, live_cfg, validate_spec, write_draft};
+use autoresearch::{AutoresearchConfig, Direction, StudySpec};
 use tools::{Risk, Tool, ToolCx, ToolOutput};
 
 use crate::actor::Core;
@@ -28,18 +29,6 @@ const APP_NAME: &str = "study-drafts";
 pub struct StudyDraftTool {
     /// Shared with the actor.
     pub core: Arc<Core>,
-}
-
-/// What a Start press becomes (`autoresearch.create {draft_id, start}`); *Edit*
-/// and *Discard* are `None`: no study is created.
-pub fn approval(choice: &str) -> Option<StartWhen> {
-    match choice.trim() {
-        "start now" => Some(StartWhen::Now),
-        "start in idle window" => Some(StartWhen::Window {
-            sensor: IDLE_SENSOR.into(),
-        }),
-        _ => None,
-    }
 }
 
 /// The five plain lines of §4.1.
@@ -71,6 +60,29 @@ pub fn lines(spec: &StudySpec) -> [String; 5] {
         }
         _ => "no holdout".to_owned(),
     };
+    // R-19: each guard carries its own direction; the card shows it (read-only — Edit re-drafts).
+    let guards = if spec.secondary_guards.is_empty() {
+        String::new()
+    } else {
+        format!(
+            " · guards {}",
+            spec.secondary_guards
+                .iter()
+                .map(|g| {
+                    format!(
+                        "{} ≤ {} worse ({} is better)",
+                        g.name.trim(),
+                        g.max_regression.trim(),
+                        match g.direction {
+                            Direction::Lower => "lower",
+                            Direction::Higher => "higher",
+                        }
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join(", ")
+        )
+    };
     let list = |v: &[String], none: &str| {
         if v.is_empty() {
             none.to_owned()
@@ -95,7 +107,7 @@ pub fn lines(spec: &StudySpec) -> [String; 5] {
             spec.bench.command.trim(),
             spec.base.trim()
         ),
-        format!("{check} · {holdout}"),
+        format!("{check} · {holdout}{guards}"),
         format!(
             "may edit {} · never keeps {} · evaluator files {}",
             list(&spec.scope, "anything (scope empty)"),
@@ -188,10 +200,11 @@ fn trim_float(v: f64) -> String {
     s.trim_end_matches('0').trim_end_matches('.').to_owned()
 }
 
-/// The card's OpenUI source. The Start buttons run the `autoresearch_control`
-/// mutation first and tell the chat only when it succeeded (`@Run` stops the
-/// action on failure; the error shows under the buttons).
-pub fn source(spec: &StudySpec, warnings: &[String]) -> String {
+/// The card's OpenUI source. The Start buttons run the `autoresearch_start`
+/// mutation with the draft's press `token` first and tell the chat only when
+/// it succeeded (`@Run` stops the action on failure; the error shows under the
+/// buttons).
+pub fn source(spec: &StudySpec, warnings: &[String], token: &str) -> String {
     let slug = spec.slug.as_str();
     let [l1, l2, l3, l4, l5] = lines(spec);
     let sensor = spec
@@ -236,12 +249,14 @@ pub fn source(spec: &StudySpec, warnings: &[String]) -> String {
         ));
     }
     out.push_str(&format!(
-        "start = Mutation(\"autoresearch_control\", {{slug: {}, op: \"start\"}})\n",
-        lit(slug)
+        "start = Mutation(\"autoresearch_start\", {{draft_id: {}, token: {}}})\n",
+        lit(slug),
+        lit(token)
     ));
     out.push_str(&format!(
-        "startWindow = Mutation(\"autoresearch_control\", {{slug: {}, op: \"start_window\", text: {}}})\n",
+        "startWindow = Mutation(\"autoresearch_start\", {{draft_id: {}, token: {}, window: {}}})\n",
         lit(slug),
+        lit(token),
         lit(sensor)
     ));
     out.push_str("buttons = Buttons([bStart, bWindow, bEdit, bDiscard])\n");
@@ -274,7 +289,6 @@ impl Tool for StudyDraftTool {
     const NAME: &'static str = "autoresearch_draft";
     const RISK: Risk = Risk::ReadOnly;
     const RETURNS: &'static str = "dict";
-    const CONSUMES_SECRETS: bool = false;
     type Args = StudySpec;
 
     fn description(&self) -> String {
@@ -289,18 +303,26 @@ impl Tool for StudyDraftTool {
         if let Err(e) = validate_spec(&spec) {
             return Ok(ToolOutput::err(format!("autoresearch_draft: {e}")));
         }
-        let cfg: AutoresearchConfig = self.core.rt.section("autoresearch").unwrap_or_default();
+        // The live section from the actor: refuses when the plugin is off
+        // (plugins.md §3.5.1) and follows a `root:` changed by `settings.set`.
+        let cfg = match live_cfg().await {
+            Ok(c) => c,
+            Err(e) => return Ok(ToolOutput::err(format!("autoresearch_draft: {e}"))),
+        };
         let root = cfg.root(&self.core.rt.data_dir);
-        if let Err(e) = write_draft(&root, &spec, cx.session) {
-            return Ok(ToolOutput::err(format!(
-                "autoresearch_draft: cannot write {}: {e}",
-                draft_spec_path(&root, &spec.slug).display()
-            )));
-        }
+        let token = match write_draft(&root, &spec, cx.session) {
+            Ok(t) => t,
+            Err(e) => {
+                return Ok(ToolOutput::err(format!(
+                    "autoresearch_draft: cannot write {}: {e}",
+                    draft_spec_path(&root, &spec.slug).display()
+                )));
+            }
+        };
         let warnings = warnings(&spec, &cfg);
         let app = AppArgs {
             name: APP_NAME.into(),
-            source: source(&spec, &warnings),
+            source: source(&spec, &warnings, &token),
             title: Some("Study draft".into()),
             edit: false,
             base_call_id: None,
@@ -335,7 +357,6 @@ impl Tool for StudyDraftTool {
             structured: Some(serde_json::json!({
                 "record_call_id": loaded.artifact.call_id,
                 "draft_id": slug,
-                "spec_path": draft_spec_path(&root, slug),
                 "warnings": warnings,
             })),
             ..ToolOutput::ok(content)
@@ -346,7 +367,9 @@ impl Tool for StudyDraftTool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use autoresearch::{BenchSpec, BudgetSpec, CommandSpec, HoldoutSpec, MetricSpec, ModelsSpec};
+    use autoresearch::{
+        BenchSpec, BudgetSpec, CommandSpec, Guard, HoldoutSpec, MetricSpec, ModelsSpec,
+    };
 
     fn spec() -> StudySpec {
         StudySpec {
@@ -415,6 +438,26 @@ mod tests {
         assert!(l[2].starts_with("may edit anything (scope empty)"));
         assert!(l[3].ends_with("· waves of 3"));
         assert!(l[4].starts_with("starts in the idle window (`sensors/idle.py`)"));
+        // R-19: a guard says which way it improves, independent of the primary.
+        let guarded = StudySpec {
+            secondary_guards: vec![
+                Guard {
+                    name: "alloc_mb".into(),
+                    max_regression: "5%".into(),
+                    direction: Direction::Lower,
+                },
+                Guard {
+                    name: "hit_rate".into(),
+                    max_regression: "0.01".into(),
+                    direction: Direction::Higher,
+                },
+            ],
+            ..spec()
+        };
+        assert_eq!(
+            lines(&guarded)[1],
+            "check `bundle exec rake test` · holdout `holdout.sh` every 5 keeps · guards alloc_mb ≤ 5% worse (lower is better), hit_rate ≤ 0.01 worse (higher is better)"
+        );
     }
 
     #[test]
@@ -465,17 +508,20 @@ mod tests {
         assert!(warnings(&bytes, &cfg).is_empty());
     }
 
-    /// The press path: Start buttons run the control mutation then tell the chat; Edit/Discard only tell the chat.
+    /// The press path (R-10): Start buttons run `autoresearch_start` with the
+    /// draft's press token (never `autoresearch_control`) then tell the chat;
+    /// Edit/Discard only tell the chat.
     #[test]
-    fn source_wires_presses_and_approval_maps_them() {
-        let s = source(&spec(), &["No holdout".into()]);
+    fn source_wires_presses_through_the_token() {
+        let s = source(&spec(), &["No holdout".into()], "tok123");
         assert!(
             s.starts_with("root = Card([head, l1, l2, l3, l4, l5, warn, buttons, result])\n"),
             "{s}"
         );
         assert!(s.contains("head = CardHeader(\"sort-speed\", \"study draft sort-speed\")\n"));
-        assert!(s.contains("start = Mutation(\"autoresearch_control\", {slug: \"sort-speed\", op: \"start\"})\n"), "{s}");
-        assert!(s.contains("startWindow = Mutation(\"autoresearch_control\", {slug: \"sort-speed\", op: \"start_window\", text: \"sensors/idle.py\"})\n"), "{s}");
+        assert!(s.contains("start = Mutation(\"autoresearch_start\", {draft_id: \"sort-speed\", token: \"tok123\"})\n"), "{s}");
+        assert!(s.contains("startWindow = Mutation(\"autoresearch_start\", {draft_id: \"sort-speed\", token: \"tok123\", window: \"idle.py\"})\n"), "{s}");
+        assert!(!s.contains("autoresearch_control"), "{s}");
         assert!(s.contains("bStart = Button(\"Start now\", Action([@Run(start), @ToAssistant(\"study draft sort-speed: started\")]))\n"), "{s}");
         assert!(s.contains("bWindow = Button(\"Start in idle window\", Action([@Run(startWindow), @ToAssistant(\"study draft sort-speed: started\")]), \"secondary\")\n"), "{s}");
         assert!(s.contains("bEdit = Button(\"Edit\", Action([@ToAssistant(\"study draft sort-speed: edit\")]), \"tertiary\")\n"));
@@ -487,23 +533,13 @@ mod tests {
         // The spec's own sensor wins for the window button; no warnings → no callout member.
         let s2 = source(
             &StudySpec {
-                window: Some("sensors/night.py".into()),
+                window: Some("night.py".into()),
                 ..spec()
             },
             &[],
+            "t",
         );
-        assert!(s2.contains("text: \"sensors/night.py\"}"));
+        assert!(s2.contains("window: \"night.py\"}"));
         assert!(s2.starts_with("root = Card([head, l1, l2, l3, l4, l5, buttons, result])\n"));
-
-        assert_eq!(approval("start now"), Some(StartWhen::Now));
-        assert_eq!(
-            approval("start in idle window"),
-            Some(StartWhen::Window {
-                sensor: "sensors/idle.py".into()
-            })
-        );
-        assert_eq!(approval("edit"), None);
-        assert_eq!(approval("discard"), None);
-        assert_eq!(approval("started"), None);
     }
 }

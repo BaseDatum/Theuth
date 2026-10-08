@@ -979,7 +979,7 @@ async fn abandon_does_not_block_the_next_begin() {
         .unwrap();
     assert_eq!(incidents.len(), 2);
     // TurnFinished with #2 still open closes it too (and counts it as an experiment).
-    binding::on_turn_finished(&mut h.studies, session)
+    binding::on_turn_finished(&mut h.studies, session, "end_turn")
         .await
         .unwrap();
     let e2 = h
@@ -1000,7 +1000,7 @@ async fn abandon_does_not_block_the_next_begin() {
     .unwrap()[0];
     assert_eq!(info.experiments, 2);
     // A turn of a session that is not a study is a no-op.
-    binding::on_turn_finished(&mut h.studies, SessionId::new())
+    binding::on_turn_finished(&mut h.studies, SessionId::new(), "end_turn")
         .await
         .unwrap();
 }
@@ -1059,7 +1059,7 @@ async fn experiment_budget_stops_and_finalizes_with_the_result_card_data() {
         StudyState::Finalizing,
         "finalize does not start while the turn is live"
     );
-    binding::on_turn_finished(&mut h.studies, session)
+    binding::on_turn_finished(&mut h.studies, session, "end_turn")
         .await
         .unwrap();
     let s = wait_state(&h.studies.store, "t1", |s| *s == StudyState::Finished).await;
@@ -1209,44 +1209,49 @@ async fn crash_streak_pauses_with_attention_and_resume_counts_paused_time() {
         .await
         .unwrap();
     assert_eq!(ev[0].payload["after_n"], 2);
-    // The crash streak does not re-pause until two more crashes.
-    begin(
-        &mut h.studies,
-        Begin {
-            session,
-            slot: None,
-        },
-    )
-    .await
-    .unwrap();
-    run(
-        &mut h.studies,
-        Run {
-            session,
-            slot: None,
-            args: args.clone(),
-        },
-    )
-    .await
-    .unwrap();
-    log(
-        &mut h.studies,
-        Log {
-            session,
-            slot: None,
-            args: LogArgs::default(),
-        },
-    )
-    .await
-    .unwrap();
-    let s = h.studies.store.get_study("t1").await.unwrap().unwrap();
-    assert_eq!(
-        s.state,
-        StudyState::Paused {
-            reason: PauseReason::CrashStreak
-        },
-        "three in a row ≥ 2: pauses again"
-    );
+    // The crash streak counts from the resume (R-57): one more crash does not
+    // re-pause; the second does.
+    for (n, expect) in [
+        (3, StudyState::Running),
+        (
+            4,
+            StudyState::Paused {
+                reason: PauseReason::CrashStreak,
+            },
+        ),
+    ] {
+        begin(
+            &mut h.studies,
+            Begin {
+                session,
+                slot: None,
+            },
+        )
+        .await
+        .unwrap();
+        run(
+            &mut h.studies,
+            Run {
+                session,
+                slot: None,
+                args: args.clone(),
+            },
+        )
+        .await
+        .unwrap();
+        log(
+            &mut h.studies,
+            Log {
+                session,
+                slot: None,
+                args: LogArgs::default(),
+            },
+        )
+        .await
+        .unwrap();
+        let s = h.studies.store.get_study("t1").await.unwrap().unwrap();
+        assert_eq!(s.state, expect, "after crash #{n}");
+    }
 }
 
 #[tokio::test]
@@ -1541,7 +1546,7 @@ async fn controls_pause_resume_stop_after_and_steer() {
     .await
     .unwrap();
     assert_eq!(lr.stop, Some(StopReason::User));
-    binding::on_turn_finished(&mut h.studies, session)
+    binding::on_turn_finished(&mut h.studies, session, "end_turn")
         .await
         .unwrap();
     wait_state(&h.studies.store, "t1", |s| *s == StudyState::Finished).await;
@@ -2149,7 +2154,7 @@ async fn finalize_writes_the_report_prose_before_the_tables() {
     log(&mut h.studies, l(session, Decision::Auto))
         .await
         .unwrap();
-    binding::on_turn_finished(&mut h.studies, session)
+    binding::on_turn_finished(&mut h.studies, session, "end_turn")
         .await
         .unwrap();
     wait_state(&h.studies.store, "t1", |s| *s == StudyState::Finished).await;
@@ -2470,7 +2475,7 @@ async fn report_doc_is_none_when_finalize_has_no_document() {
     log(&mut h.studies, l(session, Decision::Auto))
         .await
         .unwrap();
-    binding::on_turn_finished(&mut h.studies, session)
+    binding::on_turn_finished(&mut h.studies, session, "end_turn")
         .await
         .unwrap();
     let s = wait_state(&h.studies.store, "t1", |s| *s == StudyState::Finished).await;

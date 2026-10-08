@@ -380,9 +380,7 @@ pub trait Backend: Send + Sync {
     }
     // ── W2 finalize / record ──
     /// Every §11 step; the headline and the report document id. `cfg`/`root` are the
-    /// actor's live values (R-106): the closer switches the body to F2's
-    /// `finalize::run_with(store, study, reason, cfg.clone(), root, rt.shutdown.clone())`
-    /// once the branches meet; until then `run` re-reads the startup snapshot.
+    /// actor's live values, not the startup snapshot (R-106).
     async fn finalize(
         &self,
         store: &Store,
@@ -392,8 +390,8 @@ pub trait Backend: Send + Sync {
         root: &Path,
         rt: &runtime::Runtime,
     ) -> Result<(Headline, String)> {
-        let _ = (cfg, root);
-        crate::finalize::run(store, study, reason, rt).await
+        crate::finalize::run_with(store, study, reason, cfg.clone(), root, rt.shutdown.clone())
+            .await
     }
     /// The playbook of the last record for this repo.
     async fn seed_playbook(&self, repo: &str, rt: &runtime::Runtime) -> Result<Option<String>> {
@@ -585,7 +583,7 @@ pub(crate) fn gate_cfg(cfg: &AutoresearchConfig, spec: &StudySpec) -> Result<Gat
         guards: spec
             .secondary_guards
             .iter()
-            .map(|g| Effect::parse(&g.max_regression).map(|e| (g.name.clone(), e)))
+            .map(|g| Effect::parse(&g.max_regression).map(|e| (g.name.clone(), e, g.direction)))
             .collect::<std::result::Result<_, _>>()
             .map_err(Error::refused)?,
     })
@@ -1192,27 +1190,15 @@ pub async fn info_full(env: &Env, study: &StudyRecord) -> Result<StudyInfo> {
     Ok(i)
 }
 
-/// Hours since Start excluding paused time *including the open pause* (R-46): the
-/// 2-arg `stop::hours_running` only subtracts `paused_ms`, which `resume` adds at the
-/// end of a pause; while paused, the interval since the last `paused` event is still open.
+/// Hours since Start excluding paused time, the open pause included (R-46: `stop::hours_running_live`).
 async fn hours_live(env: &Env, study: &StudyRecord) -> f64 {
-    let now = chrono::Utc::now();
-    let mut hours = stop::hours_running(study, now);
-    if matches!(study.state, StudyState::Paused { .. })
-        && let Ok(ev) = env.store.list_events(&study.slug, Some("paused"), 1).await
-        && let Some(at) = ev
-            .first()
-            .and_then(|e| e.payload.get("at"))
-            .and_then(|v| v.as_str())
-        && let Ok(t) = chrono::DateTime::parse_from_rfc3339(at)
-    {
-        let open = (now - t.with_timezone(&chrono::Utc))
-            .num_milliseconds()
-            .max(0) as f64
-            / 3_600_000.0;
-        hours = (hours - open).max(0.0);
+    match stop::hours_running_live(&env.store, study).await {
+        Ok(h) => h,
+        Err(e) => {
+            tracing::debug!(slug = %study.slug, "live hours unavailable: {e}");
+            stop::hours_running(study, chrono::Utc::now())
+        }
     }
-    hours
 }
 
 /// Patch `study`'s state column (never the whole row, R-4) and publish `StudyChanged`.

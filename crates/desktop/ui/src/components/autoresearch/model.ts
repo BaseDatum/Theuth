@@ -328,13 +328,36 @@ export function tally(rows: readonly ExperimentRow[]): { kept: number; reverted:
   return t
 }
 
-/** The Holdout card: first point = the base, last = the latest incumbent; direction-normalised Δ %. */
+/** The holdout series has one point per sample; the chart and the cards want one value per checkpoint: the mean per `n` (R-89), ordered by `n`. */
+export function holdoutByN(series: Pick<StudyChartSeries, 'holdout'>): { n: number; metric: number }[] {
+  const sums = new Map<number, { sum: number; count: number }>()
+  for (const h of series.holdout) {
+    if (h.metric === null || !Number.isFinite(h.metric)) continue
+    const e = sums.get(h.n) ?? { sum: 0, count: 0 }
+    e.sum += h.metric
+    e.count++
+    sums.set(h.n, e)
+  }
+  return [...sums].map(([n, e]) => ({ n, metric: e.sum / e.count })).sort((a, b) => a.n - b.n)
+}
+
+/** The Holdout card: first checkpoint = the base, last = the latest incumbent (means per `n`); raw Δ % (the caller judges the direction). */
 export function holdoutSummary(series: Pick<StudyChartSeries, 'holdout'>): { base: number; latest: number; delta_pct: number; n: number } | null {
-  const pts = series.holdout.filter((h): h is StudyChartPoint & { metric: number } => h.metric !== null)
+  const pts = holdoutByN(series)
   const first = pts[0]
   const last = pts.at(-1)
   if (!first || !last) return null
   return { base: first.metric, latest: last.metric, delta_pct: first.metric === 0 ? 0 : ((last.metric - first.metric) / Math.abs(first.metric)) * 100, n: last.n }
+}
+
+/** The tooltip of a mark (R-97): the run's verdict in words from its row — `#n improved +2.4 % 3.1σ · 41.2 ms · idea` — falling back to outcome · value. */
+export function markLabel(p: StudyChartPoint, unit: string, row: ExperimentRow | undefined): string {
+  const o = chartOutcome(p.verdict)
+  const value = p.metric === null ? '' : ` · ${metric(p.metric, unit)}`
+  if (!row) return `#${p.n} ${OUTCOME_WORDS[o]}${value}`
+  const numbers = [row.delta_pct !== null && pct(row.delta_pct), row.z !== null && sigmas(row.z)].filter(Boolean).join(' ')
+  const idea = row.idea.trim()
+  return `#${p.n} ${OUTCOME_WORDS[o]}${numbers ? ` ${numbers}` : ''}${value}${idea ? ` · ${idea}` : ''}`
 }
 
 /** Relative threshold a keep must clear (§5.2 step 2 at n = 1): `max(2σ·√2, min_effect)` over the incumbent. */
@@ -406,11 +429,12 @@ export function ticks(lo: number, hi: number, want = 6): number[] {
  * Pixel geometry of the chart from the detail's series. The left axis is the metric; the right one (when holdout
  * points exist) the holdout's own scale; x is the experiment number, 0 = the base. Pure so the SVG is a map over it.
  */
-export function layout(series: StudyChartSeries, opts: { width: number; height: number; unit: string; lastN?: number }): Layout {
+export function layout(series: StudyChartSeries, opts: { width: number; height: number; unit: string; lastN?: number; rows?: readonly ExperimentRow[] }): Layout {
   const { width, height } = opts
   const base = series.baseline_mean
   const sigma = series.sigma
-  const hasHoldout = series.holdout.some((h) => h.metric !== null)
+  const holdoutPts = holdoutByN(series)
+  const hasHoldout = holdoutPts.length > 0
   const left = 48
   const right = hasHoldout ? 56 : 16
   const top = 14
@@ -432,7 +456,7 @@ export function layout(series: StudyChartSeries, opts: { width: number; height: 
   let yh: Layout['yh'] = null
   let ticksH: number[] = []
   if (hasHoldout) {
-    const hv = series.holdout.map((h) => h.metric).filter((v): v is number => v !== null)
+    const hv = holdoutPts.map((h) => h.metric)
     let hlo = Math.min(...hv)
     let hhi = Math.max(...hv)
     if (hhi === hlo) {
@@ -454,10 +478,8 @@ export function layout(series: StudyChartSeries, opts: { width: number; height: 
     for (const s of steps.slice(1)) stair += ` H${x(s.n).toFixed(1)} V${y(s.metric).toFixed(1)}`
     stair += ` H${x(maxN).toFixed(1)}`
   }
-  const marks: Mark[] = series.experiments.map((p) => {
-    const o = chartOutcome(p.verdict)
-    return { n: p.n, x: x(p.n), y: p.metric === null ? null : y(p.metric), outcome: o, label: `#${p.n} ${OUTCOME_WORDS[o]}${p.metric === null ? '' : ` · ${metric(p.metric, opts.unit)}`}` }
-  })
+  const byN = new Map((opts.rows ?? []).map((r) => [r.n, r]))
+  const marks: Mark[] = series.experiments.map((p) => ({ n: p.n, x: x(p.n), y: p.metric === null ? null : y(p.metric), outcome: chartOutcome(p.verdict), label: markLabel(p, opts.unit, byN.get(p.n)) }))
   const xStep = Math.max(1, niceStep(maxN, 8))
   const ticksX: number[] = []
   for (let n = 0; n <= maxN; n += xStep) ticksX.push(n)
@@ -478,7 +500,7 @@ export function layout(series: StudyChartSeries, opts: { width: number; height: 
     band,
     stair,
     marks,
-    holdout: yhf ? series.holdout.filter((h): h is StudyChartPoint & { metric: number } => h.metric !== null).map((h) => ({ n: h.n, x: x(h.n), y: yhf(h.metric), metric: h.metric })) : [],
+    holdout: yhf ? holdoutPts.map((h) => ({ n: h.n, x: x(h.n), y: yhf(h.metric), metric: h.metric })) : [],
     drift: series.drift.filter((d): d is StudyChartPoint & { metric: number } => d.metric !== null).map((d) => ({ n: d.n, x: x(d.n), y: y(d.metric), metric: d.metric })),
   }
 }

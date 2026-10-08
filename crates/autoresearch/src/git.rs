@@ -21,9 +21,9 @@ use crate::types::StudySpec;
 /// Author of every commit the plugin makes unless `autoresearch.git.author`.
 pub const AUTHOR: &str = "theuth autoresearch <noreply@theuth.local>";
 
-/// Build a `git` command: `-C cwd`, hooks off, prompts off, signing off,
-/// author/committer fixed. `author` is `Name <email>`.
-fn cmd(cwd: &Path, author: Option<&str>, args: &[&str]) -> Command {
+/// Build a `git` command with no author override: `-C cwd`, hooks off,
+/// prompts off, signing off; the user's own identity applies (the landing merge).
+fn cmd_unsigned(cwd: &Path, args: &[&str]) -> Command {
     let mut c = Command::new("git");
     c.arg("-C")
         .arg(cwd)
@@ -41,6 +41,12 @@ fn cmd(cwd: &Path, author: Option<&str>, args: &[&str]) -> Command {
         .env_remove("GIT_WORK_TREE")
         .env_remove("GIT_INDEX_FILE")
         .stdin(Stdio::null());
+    c
+}
+
+/// [`cmd_unsigned`] with author/committer fixed. `author` is `Name <email>`.
+fn cmd(cwd: &Path, author: Option<&str>, args: &[&str]) -> Command {
+    let mut c = cmd_unsigned(cwd, args);
     let author = author.filter(|a| !a.trim().is_empty()).unwrap_or(AUTHOR);
     let (name, email) = match author.split_once('<') {
         Some((n, e)) => (n.trim(), e.trim_end_matches('>').trim()),
@@ -84,6 +90,12 @@ fn run(cwd: &Path, author: Option<&str>, args: &[&str]) -> Result<String> {
 /// [`run`] without the author override.
 fn git(cwd: &Path, args: &[&str]) -> Result<String> {
     run(cwd, None, args)
+}
+
+/// A read-only `git <args>` in `cwd` for other modules (custody's status and
+/// numstat): the same `-C`, hooks-off, env-scrubbed spelling as every write.
+pub fn read(cwd: &Path, args: &[&str]) -> Result<String> {
+    git(cwd, args)
 }
 
 /// `git diff` as bytes (binary patches are not UTF-8).
@@ -336,8 +348,10 @@ fn save_patch(worktree: &Path, incumbent: &str, patch_path: &Path) -> Result<Vec
     Ok(patch)
 }
 
-/// `reset --hard <sha>` + `clean -fd` (ignored files survive).
-fn reset_clean(worktree: &Path, sha: &str) -> Result<()> {
+/// `reset --hard <sha>` + `clean -fd` (ignored files survive). Finalize uses
+/// it so the "final" tree it measures is the kept incumbent, not whatever the
+/// study turn edited after `experiment_log` (R-56).
+pub fn reset_clean(worktree: &Path, sha: &str) -> Result<()> {
     git(worktree, &["reset", "-q", "--hard", sha])?;
     git(worktree, &["clean", "-fd", "-q"]).map(drop)
 }
@@ -559,8 +573,30 @@ pub fn cherry_pick_conflicts(worktree: &Path, sha: &str) -> Result<Vec<String>> 
     )))
 }
 
-/// Create or move a local branch at `sha` (finalize's per-changeset branches). Never pushed.
+/// Create a local branch at `sha` (finalize's per-changeset branches). Never
+/// pushed, never a force-move of a branch that is not ours (140 §6, R-16): an
+/// existing branch is moved only when its tip carries the plugin's
+/// `Autoresearch-Study:` trailer (a re-run finalize), else refused.
 pub fn branch_at(repo: &Path, name: &str, sha: &str) -> Result<()> {
+    let (exists, _, _) = run_status(
+        repo,
+        None,
+        &[
+            "show-ref",
+            "--verify",
+            "--quiet",
+            &format!("refs/heads/{name}"),
+        ],
+    )?;
+    if !exists {
+        return git(repo, &["branch", name, sha]).map(drop);
+    }
+    let tip = git(repo, &["log", "-1", "--format=%B", name])?;
+    if !tip.contains("Autoresearch-Study:") {
+        return Err(Error::refused(format!(
+            "branch `{name}` exists and was not made by autoresearch; not moved"
+        )));
+    }
     git(repo, &["branch", "-f", name, sha]).map(drop)
 }
 
@@ -581,8 +617,10 @@ pub fn checkout_state(repo: &Path) -> Result<(Option<String>, bool)> {
 /// Landing helper "Merge into my branch" (140 §11.5): `git merge --no-ff
 /// <branch>` into the repo's current branch; refused when the user's tree is
 /// dirty or detached. The one write the plugin ever makes in the user's
-/// checkout, and only on this explicit press.
-pub fn merge_into_checkout(repo: &Path, branch: &str, author: Option<&str>) -> Result<String> {
+/// checkout, and only on this explicit press — so the merge commit is
+/// authored by the user's own git identity, not the plugin's (R-15);
+/// `_author` stays for the `Backend` signature.
+pub fn merge_into_checkout(repo: &Path, branch: &str, _author: Option<&str>) -> Result<String> {
     let (current, clean) = checkout_state(repo)?;
     let Some(current) = current else {
         return Err(Error::refused(
@@ -595,9 +633,12 @@ pub fn merge_into_checkout(repo: &Path, branch: &str, author: Option<&str>) -> R
         ));
     }
     let msg = format!("Merge {branch} into {current} (theuth autoresearch)");
-    let (ok, _, err) = run_status(repo, author, &["merge", "--no-ff", "-m", &msg, branch])?;
-    if !ok {
+    let out = cmd_unsigned(repo, &["merge", "--no-ff", "-m", &msg, branch])
+        .output()
+        .map_err(|e| Error::Other(anyhow::anyhow!("git merge: {e}")))?;
+    if !out.status.success() {
         let _ = run_status(repo, None, &["merge", "--abort"]);
+        let err = String::from_utf8_lossy(&out.stderr);
         return Err(Error::refused(format!(
             "merge of {branch} into {current} did not apply cleanly: {}",
             err.trim().lines().last().unwrap_or("conflict")
@@ -1161,6 +1202,27 @@ mod tests {
         worktree_remove(&f.repo, &f.study).unwrap();
     }
 
+    /// R-16: `branch_at` never force-moves a branch the plugin did not make;
+    /// its own changeset branch (tip carries the study trailer) may be re-pointed.
+    #[test]
+    fn branch_at_refuses_to_move_a_user_branch() {
+        let f = fixture();
+        let base = resolve_base(&f.repo, "HEAD", false).unwrap();
+        worktree_add(&f.repo, &f.spec, &f.study, &base).unwrap();
+        std::fs::write(f.study.join("src/lib.rs"), "x\n").unwrap();
+        let sha = keep(&f.study, &f.spec, &meta(1), None).unwrap();
+        sh(&f.repo, &["branch", "mine", &base]);
+        let err = branch_at(&f.repo, "mine", &sha).unwrap_err().to_string();
+        assert!(err.contains("not made by autoresearch"), "{err}");
+        assert_eq!(sh(&f.repo, &["rev-parse", "mine"]), base);
+        branch_at(&f.repo, "autoresearch/s+1-lib", &sha).unwrap();
+        std::fs::write(f.study.join("src/lib.rs"), "y\n").unwrap();
+        let sha2 = keep(&f.study, &f.spec, &meta(2), None).unwrap();
+        branch_at(&f.repo, "autoresearch/s+1-lib", &sha2).unwrap();
+        assert_eq!(sh(&f.repo, &["rev-parse", "autoresearch/s+1-lib"]), sha2);
+        worktree_remove(&f.repo, &f.study).unwrap();
+    }
+
     #[test]
     fn merge_helper_refuses_dirty_and_merges_no_ff() {
         let f = fixture();
@@ -1175,8 +1237,15 @@ mod tests {
             .to_string();
         assert!(err.contains("uncommitted"), "{err}");
         std::fs::write(f.repo.join("src/lib.rs"), "fn a() {}\nfn b() {}\n").unwrap();
+        // R-15: the merge commit is the user's own, from their git identity.
+        sh(&f.repo, &["config", "user.name", "Sky"]);
+        sh(&f.repo, &["config", "user.email", "sky@x"]);
         let merged = merge_into_checkout(&f.repo, "autoresearch/s+1-lib", None).unwrap();
         assert_eq!(sh(&f.repo, &["rev-parse", "HEAD"]), merged);
+        assert_eq!(
+            sh(&f.repo, &["log", "-1", "--format=%an <%ae>"]),
+            "Sky <sky@x>"
+        );
         assert_eq!(
             sh(&f.repo, &["rev-list", "--parents", "-1", "HEAD"])
                 .split(' ')

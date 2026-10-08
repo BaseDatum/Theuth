@@ -1,7 +1,7 @@
 //! W6 — the seven tools (design doc 140 §12.4). The four study tools
 //! (`experiment_begin|run|log|notes`) are visible only through the study
 //! `Toolset` and refused elsewhere (the actor resolves the study from the
-//! calling session); the three root tools (`autoresearch_draft|status|control`)
+//! calling session); the root tools (`autoresearch_draft|status|control`)
 //! serve the user's chats. Every body asks the [`Studies`] actor and renders
 //! the reply as the text the model reads: the verdict line first, tails
 //! fenced as data. The descriptions are verbatim from §12.4.
@@ -9,9 +9,11 @@
 //! `autoresearch_draft` is registered by the `app` plugin
 //! (`crates/app/src/study_draft.rs`, the routine-draft card pattern): the card
 //! is an OpenUI app, and only `app` can commit one under the tool's call id.
-//! It writes the spec to [`draft_spec_path`]; the card's Start press calls
-//! `autoresearch_control {op: start | start_window}` which becomes
-//! [`StartDraft`] — the same message `autoresearch.create` sends.
+//! It writes the spec to [`draft_spec_path`] with a fresh press token; the
+//! card's Start press runs `autoresearch_start {draft_id, token}` — the only
+//! path that sends [`StartDraft`] besides the `autoresearch.create` RPC — and
+//! the token is what makes "the press, not the model, starts the study"
+//! (§12.4) true: the model never sees it (the draft tool's result omits it).
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -59,8 +61,9 @@ pub const CATEGORY_MAX: usize = 40;
 pub const SHORT_MAX: usize = 300;
 /// `description`, `learned`, `justification` of `experiment_log`.
 pub const LONG_MAX: usize = 500;
-/// The default idle-window sensor (140 §5.5) when the spec names none.
-pub const IDLE_SENSOR: &str = "sensors/idle.py";
+/// The default idle-window sensor (140 §5.5) when the spec names none: a bare
+/// sensor file name (40's `when:` grammar refuses path separators; W3 dev. 10).
+pub const IDLE_SENSOR: &str = "idle.py";
 
 /// Register the study and control tools and the prompt block (the draft tool is `app`'s).
 pub async fn register(reg: &ActorRef<ToolRegistry>, seams: Arc<Seams>) {
@@ -79,6 +82,7 @@ pub async fn register(reg: &ActorRef<ToolRegistry>, seams: Arc<Seams>) {
     let _ = reg
         .ask(RegisterTool(Arc::new(ControlTool(s.clone()))))
         .await;
+    let _ = reg.ask(RegisterTool(Arc::new(StartTool(s.clone())))).await;
 }
 
 /// Text for the transcript, the same data as a Python value for the runtime.
@@ -97,6 +101,16 @@ pub fn actor() -> anyhow::Result<ActorRef<Studies>> {
         .ok_or_else(|| anyhow::anyhow!("autoresearch is not running"))
 }
 
+/// The live section from the actor (`SetSettings` applies at runtime; `Seams.cfg`
+/// is the startup snapshot) — the root the drafts are written under and the
+/// playbook cap come from here.
+pub async fn live_cfg() -> anyhow::Result<AutoresearchConfig> {
+    actor()?
+        .ask(crate::types::Settings)
+        .await
+        .map_err(|e| anyhow::anyhow!("{e}"))
+}
+
 // ───────────────────────────── drafts on disk ─────────────────────────────
 
 /// `<root>/drafts/<draft_id>/spec.json` — the draft id is the spec's slug (140 §4.1, §12.6).
@@ -104,7 +118,8 @@ pub fn draft_spec_path(root: &Path, draft_id: &str) -> PathBuf {
     crate::drafts_dir(root, draft_id).join("spec.json")
 }
 
-/// The draft on disk: the spec and the chat it was drafted in (start and result cards go there).
+/// The draft on disk: the spec, the chat it was drafted in (start and result
+/// cards go there) and the press token the card's Start buttons carry.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Draft {
     /// The spec the card shows.
@@ -112,17 +127,28 @@ pub struct Draft {
     /// The session the card was drafted in.
     #[serde(default)]
     pub origin: Option<SessionId>,
+    /// Random per draft; `autoresearch_start` refuses without it. `None` on a
+    /// draft written before tokens existed (re-draft to start it).
+    #[serde(default)]
+    pub token: Option<String>,
 }
 
-/// Write a draft beside its setup scripts; returns the draft id (the slug).
+/// Write a draft beside its setup scripts (the draft id is the slug); returns
+/// the press token for the card.
+///
+/// ponytail: the token lives in the card source and in this file, both
+/// readable by a model with `read_file`/`shell`; it closes the ordinary path
+/// (a root tool the model calls), which is what §12.4 asks — a determined
+/// model is §8.3's acknowledged limit.
 pub fn write_draft(root: &Path, spec: &StudySpec, origin: SessionId) -> std::io::Result<String> {
     let path = draft_spec_path(root, &spec.slug);
     if let Some(d) = path.parent() {
         std::fs::create_dir_all(d)?;
     }
-    let draft = serde_json::json!({ "spec": spec, "origin": origin });
+    let token = SessionId::new().0.simple().to_string();
+    let draft = serde_json::json!({ "spec": spec, "origin": origin, "token": token });
     std::fs::write(&path, serde_json::to_vec_pretty(&draft)?)?;
-    Ok(spec.slug.clone())
+    Ok(token)
 }
 
 /// Read a draft (`StartDraft`); `Refused` names a missing draft.
@@ -175,8 +201,8 @@ pub fn validate_spec(spec: &StudySpec) -> Result<(), String> {
     if !(b.hours > 0.0 && b.hours.is_finite()) || b.experiments == 0 {
         return Err("budget.hours and budget.experiments must be positive".into());
     }
-    if spec.bench.repeats == 0 {
-        return Err("bench.repeats must be at least 1".into());
+    if spec.bench.repeats < 2 {
+        return Err("bench.repeats must be at least 2 (one sample cannot measure noise)".into());
     }
     if spec.parallel == 0 {
         return Err("parallel must be at least 1".into());
@@ -566,13 +592,16 @@ impl Tool for NotesTool {
     type Args = NotesArgs;
 
     fn description(&self) -> String {
-        "Update the study's playbook (replaces it; keep it under 4 KiB) or add ideas to the backlog for later \
-         experiments."
-            .into()
+        format!(
+            "Update the study's playbook (replaces it; keep it under {} KiB) or add ideas to the backlog for later \
+             experiments.",
+            self.0.cfg.brief.playbook_bytes.div_ceil(1024)
+        )
     }
 
     async fn call(&self, args: NotesArgs, cx: ToolCx) -> anyhow::Result<ToolOutput> {
-        check_notes_args(&args, self.0.cfg.brief.playbook_bytes as usize)?;
+        let cfg = live_cfg().await?;
+        check_notes_args(&args, cfg.brief.playbook_bytes as usize)?;
         let report = actor()?
             .ask(Notes {
                 session: cx.session,
@@ -588,32 +617,60 @@ impl Tool for NotesTool {
     }
 }
 
-/// `autoresearch_draft` (140 §12.4): the spec → the draft card. Read-only:
-/// nothing is written until the press (the Start buttons call
-/// `autoresearch.create {draft_id, start}`).
-///
-/// Not registered here: the card is an OpenUI app that only the `app` plugin
-/// can commit under the tool's call id, so `crates/app/src/study_draft.rs`
-/// registers the tool of this name. This type is the contract's placeholder.
-pub struct DraftTool(pub Arc<Seams>);
+/// `autoresearch_start` arguments: the draft card's press.
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+pub struct StartArgs {
+    /// The draft id (the spec's slug).
+    pub draft_id: String,
+    /// The press token `autoresearch_draft` wrote into the card.
+    pub token: String,
+    /// Start in an idle window: the 40 sensor file name (`idle.py`); omit to start now.
+    #[serde(default)]
+    pub window: Option<String>,
+}
+
+/// The draft card's Start press (140 §12.4): `StartDraft` only with the draft's
+/// press token. Registered like any tool (an OpenUI `Mutation` can only run
+/// installed tools), but useless to the model: it never sees the token.
+pub struct StartTool(pub Arc<Seams>);
 
 #[async_trait::async_trait]
-impl Tool for DraftTool {
-    const NAME: &'static str = "autoresearch_draft";
-    const RISK: Risk = Risk::ReadOnly;
+impl Tool for StartTool {
+    const NAME: &'static str = "autoresearch_start";
+    const RISK: Risk = Risk::Mutating;
     const RETURNS: &'static str = "dict";
-    type Args = StudySpec;
+    type Args = StartArgs;
 
     fn description(&self) -> String {
-        "Propose an autoresearch study for the user to approve: the goal, the metric and its direction, the \
-         benchmark command, the correctness check, an optional holdout, the scope and off-limits paths, budgets. \
-         Shows a draft card; the user's Start press creates the study — this call writes nothing. Benchmark scripts \
-         written during setup belong under the autoresearch drafts directory, never in the user's checkout."
+        "Internal: the Start press of an autoresearch draft card. It needs the press token the card holds, which \
+         you do not have — to start a study, call autoresearch_draft and wait for the user's press."
             .into()
     }
 
-    async fn call(&self, _spec: StudySpec, _cx: ToolCx) -> anyhow::Result<ToolOutput> {
-        anyhow::bail!("autoresearch_draft is served by the app plugin (app.enabled); it is off")
+    async fn call(&self, a: StartArgs, _cx: ToolCx) -> anyhow::Result<ToolOutput> {
+        let cfg = live_cfg().await?;
+        let root = cfg.root(&self.0.data_dir);
+        let draft = read_draft(&root, a.draft_id.trim()).map_err(|e| anyhow::anyhow!("{e}"))?;
+        if draft.token.is_none() || draft.token.as_deref() != Some(a.token.trim()) {
+            anyhow::bail!(
+                "autoresearch_start: not the draft card's press (token mismatch) — a study starts from the card's \
+                 Start button, not from a tool call; re-draft it with autoresearch_draft if the card is stale"
+            );
+        }
+        let start = match a.window.as_deref().map(str::trim).filter(|w| !w.is_empty()) {
+            Some(sensor) => StartWhen::Window {
+                sensor: sensor.to_owned(),
+            },
+            None => StartWhen::Now,
+        };
+        let info = actor()?
+            .ask(StartDraft {
+                draft_id: draft.spec.slug,
+                start,
+            })
+            .await
+            .map_err(|e| anyhow::anyhow!("{e}"))?;
+        Ok(structured(render_info(&info), info))
     }
 }
 
@@ -676,21 +733,8 @@ impl Tool for StatusTool {
             if !recent.is_empty() {
                 text.push_str("\nLast experiments (newest first):");
                 for e in &recent {
-                    text.push_str(&format!(
-                        "\n#{} {} {} [{}] {}",
-                        e.n,
-                        e.verdict.as_ref().map_or_else(
-                            || e.state.map(|s| words(&s)).unwrap_or_default(),
-                            |v| v.tag().to_owned()
-                        ),
-                        pct(e.delta_pct),
-                        if e.category.is_empty() {
-                            "—"
-                        } else {
-                            &e.category
-                        },
-                        e.idea.trim()
-                    ));
+                    text.push('\n');
+                    text.push_str(&render_row(e));
                 }
             }
         }
@@ -701,23 +745,66 @@ impl Tool for StatusTool {
     }
 }
 
-/// `autoresearch_control` arguments (140 §12.4): `op` includes `steer` and `idea`
-/// (and `start` / `start_window`, the draft card's press).
+/// One run-table row as a line: `#38 no_gain +0.1 % [caching] memoised slice 7` (the status tool and the TUI).
+pub fn render_row(e: &crate::types::ExperimentRow) -> String {
+    format!(
+        "#{} {} {} [{}] {}",
+        e.n,
+        e.verdict.as_ref().map_or_else(
+            || e.state.map(|s| words(&s)).unwrap_or_default(),
+            |v| v.tag().to_owned()
+        ),
+        pct(e.delta_pct),
+        if e.category.is_empty() {
+            "—"
+        } else {
+            &e.category
+        },
+        e.idea.trim()
+    )
+}
+
+/// `autoresearch_control` arguments (140 §12.4): `op` includes `steer` and `idea`.
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 pub struct ControlArgs {
-    /// The study (or the draft id — its slug — for `start`).
+    /// The study.
     pub slug: String,
-    /// `pause | resume | stop_after | stop_now | run_once | segment | finalize | restore | keep_reverted | merge | discard | steer | idea | start | start_window`.
+    /// `pause | resume | stop_after | stop_now | run_once | segment | finalize | restore | keep_reverted | merge | discard | steer | idea`.
     pub op: String,
-    /// For `segment` (why) and `restore`/`idea` details (idea: the category).
+    /// For `segment` (why) and `idea` details (the category).
     #[serde(default)]
     pub reason: Option<String>,
-    /// For `steer` (the text), `idea` (the idea) and `start_window` (the sensor; default sensors/idle.py).
+    /// For `steer` (the text) and `idea` (the idea).
     #[serde(default)]
     pub text: Option<String>,
     /// For `restore` / `keep_reverted`: the experiment number; for `merge`: the changeset's k.
     #[serde(default)]
     pub n: Option<u32>,
+}
+
+/// R-13: a bound study session or a wave child may not control studies —
+/// `segment` is the user's alone (§5.3), and `merge`/`discard`/`stop_now`
+/// belong to the user's chats. The Toolset normally hides this tool there;
+/// this holds when it does not (a first fire before the toolset lands).
+async fn refuse_study_sessions(session: SessionId) -> anyhow::Result<()> {
+    let studies = if crate::wave::is_child(session) {
+        Vec::new()
+    } else {
+        actor()?
+            .ask(Status { slug: None })
+            .await
+            .map_err(|e| anyhow::anyhow!("{e}"))?
+    };
+    if is_study_side(session, &studies) {
+        anyhow::bail!("autoresearch_control is not available inside a study session");
+    }
+    Ok(())
+}
+
+/// `session` is a study's bound session or a registered wave child (bound to a
+/// slot or not yet: `wave::is_child`).
+pub fn is_study_side(session: SessionId, studies: &[StudyInfo]) -> bool {
+    crate::wave::is_child(session) || studies.iter().any(|s| s.session == Some(session))
 }
 
 /// `autoresearch_control` (140 §12.4).
@@ -736,16 +823,17 @@ impl Tool for ControlTool {
          finalize, restore (re-measure a reverted keep; give n), keep_reverted (leave it reverted; give n), merge \
          (git merge --no-ff a finished study's changeset into the repo's current branch; n = the changeset; never pushes), \
          discard, steer (text reaches the next experiment \
-         without pausing) or idea (add to the backlog; text, optional category in reason). start / start_window \
-         start a drafted study — the draft card's buttons do that; call them yourself only when the user asks in words."
+         without pausing) or idea (add to the backlog; text, optional category in reason). Starting a study is the \
+         user's press on the draft card (autoresearch_draft), never an op here."
             .into()
     }
 
-    async fn call(&self, a: ControlArgs, _cx: ToolCx) -> anyhow::Result<ToolOutput> {
+    async fn call(&self, a: ControlArgs, cx: ToolCx) -> anyhow::Result<ToolOutput> {
         let slug = a.slug.trim().to_owned();
         if slug.is_empty() {
             anyhow::bail!("slug is required");
         }
+        refuse_study_sessions(cx.session).await?;
         let text = a.text.as_deref().map(str::trim).filter(|t| !t.is_empty());
         let op = match a.op.trim() {
             "pause" => ControlOp::Pause,
@@ -819,23 +907,9 @@ impl Tool for ControlTool {
                     idea,
                 ));
             }
-            "start" | "start_window" => {
-                let start = if a.op.trim() == "start" {
-                    StartWhen::Now
-                } else {
-                    StartWhen::Window {
-                        sensor: text.unwrap_or(IDLE_SENSOR).to_owned(),
-                    }
-                };
-                let info = actor()?
-                    .ask(StartDraft {
-                        draft_id: slug,
-                        start,
-                    })
-                    .await
-                    .map_err(|e| anyhow::anyhow!("{e}"))?;
-                return Ok(structured(render_info(&info), info));
-            }
+            "start" | "start_window" => anyhow::bail!(
+                "a study is started by the user's press on its draft card (autoresearch_draft), not by this tool"
+            ),
             other => anyhow::bail!("unknown op `{other}`"),
         };
         let info = actor()?
@@ -1261,8 +1335,10 @@ mod tests {
         }
     }
 
+    /// R-10: the draft carries a fresh press token; a token-less draft (written
+    /// before tokens) reads back with `None` so the press refuses it.
     #[test]
-    fn draft_spec_round_trips_on_disk() {
+    fn draft_spec_round_trips_on_disk_with_a_press_token() {
         let dir = tempfile::tempdir().unwrap();
         let spec = StudySpec {
             slug: "sort-speed".into(),
@@ -1270,15 +1346,77 @@ mod tests {
             ..Default::default()
         };
         let origin = SessionId::new();
-        let id = write_draft(dir.path(), &spec, origin).unwrap();
-        assert_eq!(id, "sort-speed");
+        let token = write_draft(dir.path(), &spec, origin).unwrap();
+        assert_eq!(token.len(), 32, "{token}");
         assert_eq!(
-            draft_spec_path(dir.path(), &id),
+            draft_spec_path(dir.path(), "sort-speed"),
             dir.path().join("drafts/sort-speed/spec.json")
         );
-        let d = read_draft(dir.path(), &id).unwrap();
-        assert_eq!((d.spec, d.origin), (spec, Some(origin)));
+        let d = read_draft(dir.path(), "sort-speed").unwrap();
+        assert_eq!(d.token.as_deref(), Some(token.as_str()));
+        assert_eq!((d.spec, d.origin), (spec.clone(), Some(origin)));
+        assert_ne!(
+            write_draft(dir.path(), &spec, origin).unwrap(),
+            token,
+            "a re-draft gets a new token"
+        );
         let e = read_draft(dir.path(), "nope").unwrap_err().to_string();
         assert!(e.starts_with("no draft `nope`"), "{e}");
+        std::fs::create_dir_all(dir.path().join("drafts/old")).unwrap();
+        std::fs::write(
+            draft_spec_path(dir.path(), "old"),
+            serde_json::to_vec(&serde_json::json!({ "spec": spec })).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(read_draft(dir.path(), "old").unwrap().token, None);
+    }
+
+    /// R-26: one repeat has no σ; the spec is refused before the card.
+    #[test]
+    fn one_repeat_is_refused() {
+        let spec = StudySpec {
+            slug: "s".into(),
+            goal: "g".into(),
+            repo: "/tmp/r".into(),
+            metric: MetricSpec {
+                name: "t".into(),
+                ..Default::default()
+            },
+            bench: BenchSpec {
+                command: "b".into(),
+                repeats: 1,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let e = validate_spec(&spec).unwrap_err();
+        assert!(e.contains("bench.repeats must be at least 2"), "{e}");
+    }
+
+    /// R-13: `autoresearch_control` is refused to a study's bound session and to
+    /// a wave child — even one that has not yet bound a slot (`wave::is_child`);
+    /// a root session passes.
+    #[test]
+    fn control_refuses_study_sessions_and_unbound_wave_children() {
+        let (root, bound, parent, child) = (
+            SessionId::new(),
+            SessionId::new(),
+            SessionId::new(),
+            SessionId::new(),
+        );
+        crate::wave::register_child(parent, child);
+        assert!(
+            crate::wave::slot_of(child).is_none(),
+            "registered, no slot yet"
+        );
+        let studies = [StudyInfo {
+            slug: "s".into(),
+            session: Some(bound),
+            ..Default::default()
+        }];
+        assert!(is_study_side(bound, &studies));
+        assert!(is_study_side(child, &studies));
+        assert!(is_study_side(child, &[]));
+        assert!(!is_study_side(root, &studies));
     }
 }

@@ -264,11 +264,20 @@ const DIFF = `diff --git a/lib/liquid/render.rb b/lib/liquid/render.rb
  end
 `
 
+/** One point per holdout *sample* (`holdout.repeats` = 3 per checkpoint), as `autoresearch.get` emits; the UI means them per `n` (R-89). */
 const HOLDOUT: StudyChartPoint[] = [
+  { n: 0, verdict: '', metric: 60.4, at: ago(5 * H) },
   { n: 0, verdict: '', metric: 61.0, at: ago(5 * H) },
+  { n: 0, verdict: '', metric: 61.6, at: ago(5 * H) },
+  { n: 11, verdict: '', metric: 55.9, at: ago(3.2 * H) },
   { n: 11, verdict: '', metric: 56.2, at: ago(3.2 * H) },
+  { n: 11, verdict: '', metric: 56.5, at: ago(3.2 * H) },
+  { n: 23, verdict: '', metric: 51.3, at: ago(1.6 * H) },
   { n: 23, verdict: '', metric: 51.6, at: ago(1.6 * H) },
+  { n: 23, verdict: '', metric: 51.9, at: ago(1.6 * H) },
+  { n: 31, verdict: '', metric: 49.1, at: ago(0.5 * H) },
   { n: 31, verdict: '', metric: 49.7, at: ago(0.5 * H) },
+  { n: 31, verdict: '', metric: 50.3, at: ago(0.5 * H) },
 ]
 
 const ideas = (slug: string): StudyIdea[] => [

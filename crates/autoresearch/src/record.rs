@@ -169,7 +169,7 @@ pub async fn body(store: &Store, study: &StudyRecord, headline: &str) -> Result<
     Ok(b)
 }
 
-/// Write the record for a finished study; returns its knowledge id.
+/// [`write_record`] — the `Backend::record` seam's shape (`rt` unused).
 pub async fn write(
     store: &Store,
     study: &StudyRecord,
@@ -177,6 +177,12 @@ pub async fn write(
     rt: &runtime::Runtime,
 ) -> Result<String> {
     let _ = rt;
+    write_record(store, study, headline).await
+}
+
+/// Write the record for a finished study; returns its knowledge id. Written
+/// once, by finalize's `record` step (R-62).
+pub async fn write_record(store: &Store, study: &StudyRecord, headline: &str) -> Result<String> {
     let date = study
         .finished_at
         .as_deref()

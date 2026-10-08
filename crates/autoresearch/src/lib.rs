@@ -85,33 +85,6 @@ pub fn install_skill(data_dir: &Path) -> std::io::Result<bool> {
     Ok(true)
 }
 
-/// `enabled: false` (140 §12.2 "existing study files stay paused", R-6): flip
-/// `enabled: false` on every `schedules/autoresearch-*.md` so the schedule plugin
-/// does not fire sessions nobody binds. Returns the files flipped.
-pub fn disable_study_files(data_dir: &Path) -> std::io::Result<Vec<String>> {
-    let dir = data_dir.join(schedule::DIR);
-    let mut flipped = Vec::new();
-    let Ok(entries) = std::fs::read_dir(&dir) else {
-        return Ok(flipped);
-    };
-    for e in entries.flatten() {
-        let path = e.path();
-        let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else {
-            continue;
-        };
-        if !stem.starts_with(SCHEDULE_PREFIX) || path.extension().is_none_or(|x| x != "md") {
-            continue;
-        }
-        let text = std::fs::read_to_string(&path)?;
-        let off = schedule::file::set_enabled(&text, false);
-        if off != text {
-            schedule::file::write_atomic(&dir, stem, &off)?;
-            flipped.push(stem.to_owned());
-        }
-    }
-    Ok(flipped)
-}
-
 /// The `Studies` actor (140 §12.3): one per engine, registered as
 /// [`AUTORESEARCH_ACTOR`]. Holds no state that is not a row (§8.5); the
 /// handlers delegate to [`actor`].
@@ -254,6 +227,8 @@ pub async fn start(
     let env = studies.env();
     let actor = Studies::spawn_with_mailbox(studies, runtime::subscriber_mailbox());
     actor.register(AUTORESEARCH_ACTOR)?;
+    // 140 §8.3 / R-5: the schedule applies the study toolset before every prompt.
+    schedule::confine(SCHEDULE_PREFIX, binding::confinement(env.store.clone()));
     // §8.2 / §12.3 subscriptions: binding on `Fired`, dangling experiments on `TurnFinished`.
     rt.subscribe::<Studies, schedule::ScheduleEvent>(&actor)
         .await;
@@ -295,15 +270,16 @@ impl runtime::Plugin for AutoresearchPlugin {
             AutoresearchConfig::default()
         });
         if !cfg.enabled {
-            match disable_study_files(&rt.data_dir) {
-                Ok(flipped) if flipped.is_empty() => {
+            // 140 §12.2 / R-6: the schedule plugin still runs; study files must not fire unconfined.
+            match schedule_file::disable_all(&rt.data_dir) {
+                Ok(off) if off.is_empty() => {
                     tracing::info!("autoresearch disabled by config; no tools, no actor")
                 }
-                Ok(flipped) => tracing::info!(
-                    "autoresearch disabled by config; study schedules paused: {}",
-                    flipped.join(", ")
+                Ok(off) => tracing::info!(
+                    "autoresearch disabled by config; no tools, no actor; study files paused: {}",
+                    off.join(", ")
                 ),
-                Err(e) => tracing::warn!("autoresearch disabled; study schedules not paused: {e}"),
+                Err(e) => tracing::warn!("autoresearch disabled; study files not paused: {e}"),
             }
             return Ok(());
         }
@@ -395,41 +371,5 @@ mod tests {
         let e = actor.ask(SetSettings(cfg)).await.unwrap_err().to_string();
         assert!(e.contains("takes effect at restart"), "{e}");
         assert_eq!(actor.ask(Settings).await.unwrap().root, None);
-    }
-
-    /// R-6: `enabled: false` leaves every study schedule paused, nothing else touched.
-    #[test]
-    fn disabled_plugin_pauses_study_schedule_files() {
-        let dir = tempfile::tempdir().unwrap();
-        let sched = dir.path().join(schedule::DIR);
-        std::fs::create_dir_all(&sched).unwrap();
-        let study = "---\nevery: 0s\nmax_runs: 20\nenabled: true\n---\nRun the next experiment.\n";
-        std::fs::write(sched.join("autoresearch-sort.md"), study).unwrap();
-        std::fs::write(
-            sched.join("autoresearch-off.md"),
-            study.replace("enabled: true", "enabled: false"),
-        )
-        .unwrap();
-        std::fs::write(
-            sched.join("standup.md"),
-            "---\nat: 09:00\nenabled: true\n---\nStand up.\n",
-        )
-        .unwrap();
-        let flipped = disable_study_files(dir.path()).unwrap();
-        assert_eq!(flipped, vec!["autoresearch-sort".to_owned()]);
-        let sort = std::fs::read_to_string(sched.join("autoresearch-sort.md")).unwrap();
-        assert!(
-            sort.contains("enabled: false") && sort.contains("Run the next experiment."),
-            "{sort}"
-        );
-        assert!(
-            std::fs::read_to_string(sched.join("standup.md"))
-                .unwrap()
-                .contains("enabled: true")
-        );
-        assert!(
-            disable_study_files(dir.path()).unwrap().is_empty(),
-            "idempotent"
-        );
     }
 }

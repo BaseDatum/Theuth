@@ -936,8 +936,8 @@ export interface Api {
   /** Answer a proposal with one of its `options`. */
   'dreaming.proposal_act'(id: string, choice: string): Promise<null>
   'dreaming.metrics'(days: number): Promise<Metrics>
-  // 140 §12.5: the autoresearch plugin, dotted on the wire like dreaming. Every method but `list` / `settings.get`
-  // is `NOT_RUNNING` while `autoresearch.enabled: false`.
+  // 140 §12.5: the autoresearch plugin, dotted on the wire like dreaming. While `autoresearch.enabled: false`
+  // `list` is `[]` and `settings.get` / `settings.set` work from config.yaml; every other method is `NOT_RUNNING`.
   /** Every study, newest first. */
   'autoresearch.list'(): Promise<StudyInfo[]>
   /** One study: spec, playbook, chart series, ideas, steers (newest first), changesets, needs-your-eyes lines. */

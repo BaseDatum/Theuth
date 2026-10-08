@@ -168,3 +168,9 @@ Gates re-run after `touch crates/autoresearch/src/lib.rs`: `cargo test -p autore
 - `actor.rs` `crash` closure in `measure_env`: prefer `s.failure` — `exp.line = match &s.failure { Some(f) => format!("crash: {f} (tail below)"), None => <current match> }`.
 
 Gates (after `touch crates/autoresearch/src/lib.rs`): `cargo test -p autoresearch` 130 passed / 0 failed (new: `incumbent_first_confirm_spends_no_candidate_sample`); clippy `-D warnings` clean; rustfmt clean.
+
+## R3 — merge of `feat/140-autoresearch` (92791fe8; F2 + F3)
+
+Conflicts: `lib.rs` (both sides implemented R-6 — kept F2's `schedule_file::disable_all`, dropped my identical `disable_study_files` + test), `types.rs` (the `Guard.direction` doc comment — kept F2's). Resolved in the same commit: the four extra `binding::on_turn_finished(.., "end_turn")` call sites in my tests; `Backend::finalize` default now calls F2's `finalize::run_with(store, study, reason, cfg.clone(), root, rt.shutdown.clone())` (R-106 closed); `hours_live` delegates to F2's `stop::hours_running_live` (R-46 closed). F2's `GateCfg.guards` triple + `gate_cfg` fill merged cleanly (R-19 closed). Still open for the closer: R-33/R-41 snippets above; `binding::on_fired` → `StudyPatch { session }`.
+
+Gates on the merged tree: `cargo test -p autoresearch` 151 passed / 0 failed; `cargo test -p schedule` 75 passed / 1 failed once — `watch_tests::expires_ends_the_file_and_still_running_is_a_row` (a timing test in F2's schedule crate) passed 3/3 when re-run alone; `cargo clippy -p autoresearch -p schedule --all-targets -- -D warnings` clean; `cargo fmt -p autoresearch` applied.

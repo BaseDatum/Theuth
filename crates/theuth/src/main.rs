@@ -1226,7 +1226,7 @@ agent:
 #   pause: { crash_streak: 4, custody_refusals: 2 }
 #   review: { model: null, on_suspicious: revert, pause_after: 3 }   # model: null = another vendor than the executor; \"off\" disables
 #   models: { executor: null, advisor: null }   # null = agent.model (R1-D5) / 125's advisor
-#   effort: { executor: high, review: low, advisor: high }
+#   effort: { executor: high, review: low, advisor: high }   # reserved: not applied yet (side calls and schedule files carry no effort)
 #   brief: { max_bytes: 12288, recent: 8, dead_ends: 30, ideas: 12, playbook_bytes: 4096, code_map_tokens: 1200 }
 #   novelty: { threshold: 0.6 }
 #   bench: { lock: builtin, max_load: 0.5, wait: 20m }   # lock: builtin | \"<wrapper command>\" (e.g. ~/.theuth/bin/build-lock)

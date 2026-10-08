@@ -25,6 +25,11 @@ pub const CUSTODY_ONLY: &str = "custody/";
 
 /// Copy the evaluator into `evaluator_dir` and return `{path: sha256}` (140 §5.3 Custody).
 /// Commands that are not repo paths are frozen as text under `commands.json`.
+/// A command token that names a script (`bench.sh`, `./bench.sh`,
+/// `<root>/drafts/<slug>/bench.sh`, `tools/run.py`) must resolve to a file in
+/// the repo (at `base`) or in the drafts dir, else the study is refused
+/// (R-8: the study always runs the custody copy, so a script copied nowhere
+/// would run from the worktree the model edits).
 pub fn take(
     spec: &StudySpec,
     repo: &Path,
@@ -39,14 +44,20 @@ pub fn take(
         ("checks", spec.checks.as_ref().map(|c| c.command.as_str())),
         ("holdout", spec.holdout.as_ref().map(|h| h.command.as_str())),
     ];
+    check_commands(spec, repo, &drafts)?;
     for (_, cmd) in &commands {
         let Some(cmd) = cmd else { continue };
         for token in cmd.split_whitespace() {
-            let Some(rel) = relative(token) else { continue };
-            if repo.join(rel).is_file() {
-                copy_file(repo, rel, evaluator_dir, &mut custody, "")?;
-            } else if drafts.join(rel).is_file() {
-                copy_file(&drafts, rel, evaluator_dir, &mut custody, CUSTODY_ONLY)?;
+            match command_path(token, &drafts) {
+                Some(CommandPath::Repo(rel)) if repo.join(rel).is_file() => {
+                    copy_file(repo, rel, evaluator_dir, &mut custody, "")?;
+                }
+                Some(CommandPath::Repo(rel) | CommandPath::Draft(rel))
+                    if drafts.join(rel).is_file() =>
+                {
+                    copy_file(&drafts, rel, evaluator_dir, &mut custody, CUSTODY_ONLY)?;
+                }
+                _ => {}
             }
         }
     }
@@ -204,20 +215,7 @@ pub fn scope_diff(spec: &StudySpec, worktree: &Path) -> Result<ScopeDiff> {
 
 /// `git <args>` in `cwd`, stdout as text; a non-zero exit is `Refused` with stderr.
 fn git(cwd: &Path, args: &[&str]) -> Result<String> {
-    let out = std::process::Command::new("git")
-        .args(["-c", "core.hooksPath=/dev/null"])
-        .args(args)
-        .current_dir(cwd)
-        .env("GIT_TERMINAL_PROMPT", "0")
-        .output()?;
-    if !out.status.success() {
-        return Err(Error::refused(format!(
-            "git {}: {}",
-            args.join(" "),
-            String::from_utf8_lossy(&out.stderr).trim()
-        )));
-    }
-    Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+    crate::git::read(cwd, args).map_err(|e| Error::refused(e.to_string()))
 }
 
 /// The spec's globs as one matcher; a plain path or `dir/` also matches everything under it.
@@ -254,12 +252,98 @@ pub fn sha256_file(path: &Path) -> Result<String> {
 }
 
 /// `<root>/drafts/<slug>/` from `<root>/<slug>/evaluator/<segment>/`.
-fn drafts_dir(evaluator_dir: &Path, slug: &str) -> PathBuf {
+pub(crate) fn drafts_dir(evaluator_dir: &Path, slug: &str) -> PathBuf {
     evaluator_dir
         .ancestors()
         .nth(3)
         .map_or_else(|| PathBuf::from("drafts"), |root| root.join("drafts"))
         .join(slug)
+}
+
+/// A command token as a path the custody knows (R-8).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum CommandPath<'a> {
+    /// Relative: a repo file, or a draft script by the same name.
+    Repo(&'a Path),
+    /// Absolute under the drafts dir: a custody-only script, named by its path under it.
+    Draft(&'a Path),
+}
+
+impl<'a> CommandPath<'a> {
+    /// The name the custody copy keeps (`evaluator/<segment>/<rel>`).
+    pub(crate) fn rel(self) -> &'a Path {
+        match self {
+            Self::Repo(p) | Self::Draft(p) => p,
+        }
+    }
+}
+
+/// Classify a whitespace token of a command: `./x` is `x`; an absolute path
+/// under `drafts` is a draft script; another absolute path, a flag, a `$var`
+/// or `..` is not a path the custody handles.
+pub(crate) fn command_path<'a>(token: &'a str, drafts: &Path) -> Option<CommandPath<'a>> {
+    let t = token.trim_end_matches('/');
+    if t.starts_with('/') {
+        let rel = Path::new(t).strip_prefix(drafts).ok()?;
+        return (!rel.as_os_str().is_empty()).then_some(CommandPath::Draft(rel));
+    }
+    let mut t = t;
+    while let Some(rest) = t.strip_prefix("./") {
+        t = rest;
+    }
+    relative(t).map(CommandPath::Repo)
+}
+
+/// The R-8 rule the skill states, for Create (`autoresearch_draft`) and
+/// [`take`]: a script a command names must be a repo file (relative, `./x`
+/// too) or a draft script (by name, or by its absolute path under `drafts`);
+/// a script path that resolves to no such file — including an absolute path
+/// anywhere else — is refused. Program names (`python3`, `/usr/bin/env`) are
+/// not scripts. `drafts` is `<root>/drafts/<slug>/`.
+pub fn check_commands(spec: &StudySpec, repo: &Path, drafts: &Path) -> Result<()> {
+    let commands = [
+        ("bench", Some(spec.bench.command.as_str())),
+        ("checks", spec.checks.as_ref().map(|c| c.command.as_str())),
+        ("holdout", spec.holdout.as_ref().map(|h| h.command.as_str())),
+    ];
+    for (what, cmd) in commands {
+        let Some(cmd) = cmd else { continue };
+        for token in cmd.split_whitespace() {
+            let ok = match command_path(token, drafts) {
+                Some(CommandPath::Repo(rel)) => {
+                    repo.join(rel).is_file()
+                        || drafts.join(rel).is_file()
+                        || !looks_like_script(rel)
+                }
+                Some(CommandPath::Draft(rel)) => drafts.join(rel).is_file(),
+                // An absolute path outside the drafts dir: a program unless it is a script.
+                None => !(token.starts_with('/') && has_script_extension(Path::new(token))),
+            };
+            if !ok {
+                return Err(Error::refused(format!(
+                    "{what}: `{token}` is not a file in the repo or in {} — the study only \
+                     runs scripts it holds in custody",
+                    drafts.display()
+                )));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Does a relative command token look like a script path (so a miss is a
+/// misconfiguration, not a program name like `python3`)?
+fn looks_like_script(rel: &Path) -> bool {
+    rel.components().count() > 1 || has_script_extension(rel)
+}
+
+fn has_script_extension(p: &Path) -> bool {
+    const EXT: [&str; 10] = [
+        "sh", "bash", "zsh", "py", "rb", "js", "mjs", "ts", "pl", "lua",
+    ];
+    p.extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(|e| EXT.contains(&e))
 }
 
 /// A token as a repo-relative path: no absolute paths, no `..`, no flags; trailing `/` dropped.
@@ -385,6 +469,58 @@ mod tests {
         // Scope files are not custody.
         std::fs::write(repo.join("sorter.py"), "changed").unwrap();
         assert_eq!(verify(&custody, &repo).unwrap().len(), 2);
+    }
+
+    /// R-8: `./bench.sh` and the skill's `<root>/drafts/<slug>/bench.sh` are
+    /// copied into custody under the plain name; a script path that resolves
+    /// nowhere refuses the study; program names (`python3`) are not paths.
+    #[test]
+    fn dot_slash_and_absolute_draft_tokens_enter_custody() {
+        let (_tmp, repo, evaluator, _root) = layout();
+        let mut s = spec("toy");
+        s.bench.command = "bash ./bench.sh --n 3".into();
+        let custody = take(&s, &repo, &evaluator).unwrap();
+        assert!(custody.contains_key("custody/bench.sh"));
+        assert!(evaluator.join("bench.sh").is_file());
+
+        let (_tmp, repo, evaluator, root2) = layout();
+        let mut s = spec("toy");
+        s.bench.command = format!("python3 {}", root2.join("drafts/toy/bench.sh").display());
+        let custody = take(&s, &repo, &evaluator).unwrap();
+        assert!(custody.contains_key("custody/bench.sh"), "{custody:?}");
+
+        let (_tmp, repo, evaluator, _root) = layout();
+        let mut s = spec("toy");
+        s.bench.command = "bash missing.sh".into();
+        let e = take(&s, &repo, &evaluator).unwrap_err().to_string();
+        assert!(e.contains("bench: `missing.sh` is not a file"), "{e}");
+        let mut s = spec("toy");
+        s.bench.command = "python3 -m pytest".into();
+        assert!(take(&s, &repo, &evaluator).is_ok());
+        // An absolute script anywhere but the drafts dir points outside custody: refused.
+        let mut s = spec("toy");
+        s.bench.command = "bash /tmp/elsewhere/bench.sh".into();
+        let e = take(&s, &repo, &evaluator).unwrap_err().to_string();
+        assert!(e.contains("/tmp/elsewhere/bench.sh"), "{e}");
+        let mut s = spec("toy");
+        s.bench.command = "/usr/bin/env python3 -c pass".into();
+        assert!(
+            take(&s, &repo, &evaluator).is_ok(),
+            "a program path is not a script"
+        );
+
+        let drafts = Path::new("/d/drafts/toy");
+        assert_eq!(
+            command_path("./x/y.sh", drafts),
+            Some(CommandPath::Repo(Path::new("x/y.sh")))
+        );
+        assert_eq!(
+            command_path("/d/drafts/toy/b.sh", drafts),
+            Some(CommandPath::Draft(Path::new("b.sh")))
+        );
+        assert_eq!(command_path("/usr/bin/python3", drafts), None);
+        assert_eq!(command_path("../x", drafts), None);
+        assert_eq!(command_path("--flag", drafts), None);
     }
 
     #[test]

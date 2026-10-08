@@ -60,23 +60,27 @@ test('chart: a study without holdout or σ draws no right axis and no band', () 
 test('controls: the buttons each state offers (§8.6)', () => {
   const running = by('sort-speed')
   let html = paint(createElement(Controls, { info: running.info }))
-  for (const label of ['Pause', 'Stop after this', 'Stop now — discard the experiment in flight', 'Finalize now']) expect(html).toContain(label)
+  for (const label of ['Pause', 'Stop after this', 'Stop now — discard the experiment in flight', 'Finalize now', 'New segment']) expect(html).toContain(label)
   expect(html).not.toContain('Resume')
   // Finalize now is disabled while an experiment is in flight (it is Stop-now's job then).
   expect(html).toMatch(/<button[^>]*disabled[^>]*>[^<]*<svg[^]*?Finalize now/)
 
   const paused = by('parse-alloc')
   html = paint(createElement(Controls, { info: paused.info }))
-  for (const label of ['Resume', 'Run one', 'Finalize now']) expect(html).toContain(label)
+  for (const label of ['Resume', 'Run one', 'Finalize now', 'New segment']) expect(html).toContain(label)
   expect(html).not.toContain('Pause<')
   expect(html).not.toContain('Stop now')
 
+  // R-85: `stop_now` is refused while preparing, so nothing is offered but the word.
   html = paint(createElement(Controls, { info: by('cold-start').info }))
-  expect(html).toContain('Stop now')
-  expect(html).not.toContain('Pause')
+  expect(html).toContain('preparing')
+  expect(html).not.toContain('<button')
 
   html = paint(createElement(Controls, { info: by('flaky-bench').info }))
   expect(html).toContain('Discard study')
+  // R-99: an already-discarded study offers nothing.
+  html = paint(createElement(Controls, { info: { ...by('flaky-bench').info, state: { state: 'discarded' } } }))
+  expect(html).not.toContain('Discard study')
 
   html = paint(createElement(Controls, { info: { ...running.info, state: { state: 'finalizing' }, current: null } }))
   expect(html).toContain('finalizing')
