@@ -379,14 +379,20 @@ pub trait Backend: Send + Sync {
         crate::review::advise(store, study, model, rt).await
     }
     // ── W2 finalize / record ──
-    /// Every §11 step; the headline and the report document id.
+    /// Every §11 step; the headline and the report document id. `cfg`/`root` are the
+    /// actor's live values (R-106): the closer switches the body to F2's
+    /// `finalize::run_with(store, study, reason, cfg.clone(), root, rt.shutdown.clone())`
+    /// once the branches meet; until then `run` re-reads the startup snapshot.
     async fn finalize(
         &self,
         store: &Store,
         study: &StudyRecord,
         reason: StopReason,
+        cfg: &AutoresearchConfig,
+        root: &Path,
         rt: &runtime::Runtime,
     ) -> Result<(Headline, String)> {
+        let _ = (cfg, root);
         crate::finalize::run(store, study, reason, rt).await
     }
     /// The playbook of the last record for this repo.
@@ -1102,7 +1108,14 @@ fn stop_word(reason: &StopReason) -> String {
 /// `StudyInfo` from a ledger row (shared by status, control, create). Counts
 /// and spend need queries: see [`info_full`].
 pub fn info(root: &Path, study: &StudyRecord) -> StudyInfo {
-    info_from(study, root, None, 0, 0.0)
+    info_from(
+        study,
+        root,
+        None,
+        0,
+        0.0,
+        stop::hours_running(study, chrono::Utc::now()),
+    )
 }
 
 fn info_from(
@@ -1111,6 +1124,7 @@ fn info_from(
     base_mean: Option<f64>,
     closed: u32,
     spend: f64,
+    hours: f64,
 ) -> StudyInfo {
     let delta_pct = match (study.incumbent_mean, base_mean) {
         (Some(i), Some(b)) => pct(gate::normalise(study.spec.metric.direction, i, b), b),
@@ -1118,7 +1132,6 @@ fn info_from(
     };
     let (current, phase) =
         phase_of(root, &study.slug).map_or((None, None), |(n, p)| (Some(n), Some(p)));
-    let hours = stop::hours_running(study, chrono::Utc::now());
     StudyInfo {
         slug: study.slug.clone(),
         goal: study.spec.goal.clone(),
@@ -1173,9 +1186,33 @@ pub async fn info_full(env: &Env, study: &StudyRecord) -> Result<StudyInfo> {
     } else {
         study_spend_or_closed(env, study).await
     };
-    let mut i = info_from(study, &env.root, base_mean, closed, spend);
+    let hours = hours_live(env, study).await;
+    let mut i = info_from(study, &env.root, base_mean, closed, spend, hours);
     i.incumbent.kept = kept;
     Ok(i)
+}
+
+/// Hours since Start excluding paused time *including the open pause* (R-46): the
+/// 2-arg `stop::hours_running` only subtracts `paused_ms`, which `resume` adds at the
+/// end of a pause; while paused, the interval since the last `paused` event is still open.
+async fn hours_live(env: &Env, study: &StudyRecord) -> f64 {
+    let now = chrono::Utc::now();
+    let mut hours = stop::hours_running(study, now);
+    if matches!(study.state, StudyState::Paused { .. })
+        && let Ok(ev) = env.store.list_events(&study.slug, Some("paused"), 1).await
+        && let Some(at) = ev
+            .first()
+            .and_then(|e| e.payload.get("at"))
+            .and_then(|v| v.as_str())
+        && let Ok(t) = chrono::DateTime::parse_from_rfc3339(at)
+    {
+        let open = (now - t.with_timezone(&chrono::Utc))
+            .num_milliseconds()
+            .max(0) as f64
+            / 3_600_000.0;
+        hours = (hours - open).max(0.0);
+    }
+    hours
 }
 
 /// Patch `study`'s state column (never the whole row, R-4) and publish `StudyChanged`.
@@ -1297,8 +1334,15 @@ pub(crate) async fn scored_sample(
     };
     let id = env.store.insert_sample(req.slug, &pending).await?;
     let (slug, n) = (req.slug.to_owned(), req.n);
-    // `runner::sample` writes `runs/<n>/sample-<k>.log`; its tail is the Study view's live tail.
-    let log = req.runs_dir.join(format!("sample-{}.log", req.k));
+    // `runner::sample` writes `runs/<n>/sample-<k>[-<role>].log` (candidates bare); its tail is
+    // the Study view's live tail.
+    let log = req.runs_dir.join(match req.role {
+        SampleRole::Candidate => format!("sample-{}.log", req.k),
+        SampleRole::Incumbent => format!("sample-{}-incumbent.log", req.k),
+        SampleRole::Baseline => format!("sample-{}-baseline.log", req.k),
+        SampleRole::Holdout => format!("sample-{}-holdout.log", req.k),
+        SampleRole::Final => format!("sample-{}-final.log", req.k),
+    });
     let fut = bench_sample(env, spec, req, cancel);
     tokio::pin!(fut);
     let mut tick = tokio::time::interval(SAMPLE_TICK);
@@ -1642,7 +1686,7 @@ pub async fn create(a: &mut Studies, m: Create) -> Result<StudyInfo> {
         reason: None,
     })
     .await;
-    let info = info_from(&study, &env.root, None, 0, 0.0);
+    let info = info_from(&study, &env.root, None, 0, 0.0, 0.0);
     let env2 = env.clone();
     tokio::spawn(async move { prepare(env2, study, m.start).await });
     Ok(info)
@@ -2200,7 +2244,7 @@ async fn brief_context(
             .unwrap_or(0) as u32
             >= last_keep_n
     });
-    let hours = stop::hours_running(study, chrono::Utc::now());
+    let hours = hours_live(env, study).await;
     let left = budget_left(&study.spec, closed, hours, spend);
     let focus: Vec<String> = study
         .spec
@@ -2613,52 +2657,58 @@ async fn measure_env(
     // Incumbent samples taken in this call get their own `k` (sample-<k>.log is never overwritten, R-23).
     let mut k_inc: u32 = 100;
     // Candidate samples before the gate is consulted again (`Confirm.more` is W1's count;
-    // the drift rule's doubling is ours, §5.2 step 4).
+    // the drift rule's doubling is ours, §5.2 step 4). `more == 0` with `incumbent_sample`
+    // is the incumbent-first step after a fast keep (R-25): re-judge on the same candidate
+    // samples once the incumbent has one more.
     let mut need: u32 = 1;
     let drift_double = drift_pending(&env.store, &slug).await?;
     let mut doubled = false;
     let mut decision: Option<GateStep> = None;
     let mut last_input: Option<GateInput> = None;
     let max_samples = 1 + 2 * u32::from(env.cfg.gate.confirm_runs) + 1;
+    let max_incumbent = 1 + u32::from(env.cfg.gate.confirm_runs);
+    let (mut sample_no, mut of) = (1u8, 1u8);
     while decision.is_none() && k < max_samples {
         if cancel.is_cancelled() {
             return interrupted(env, exp, taken).await;
         }
-        k += 1;
-        let (sample_no, of) = (
-            u8::try_from(k).unwrap_or(u8::MAX),
-            planned.max(u8::try_from(k).unwrap_or(u8::MAX)),
-        );
-        progress(env, &slug, n, &started, Phase::Sampling, sample_no, of).await;
-        let s = scored_sample(
-            env,
-            &study.spec,
-            paths.req(k, &cand_tree, SampleRole::Candidate),
-            cancel,
-            Some(Ticks {
-                started_at: &started,
-                sample: sample_no,
-                of,
-            }),
-        )
-        .await?;
-        if cancel.is_cancelled() || s.lost {
-            taken.push(s);
-            return interrupted(env, exp, taken).await;
-        }
-        taken.push(s.clone());
-        if s.value.is_none() {
-            crash(env, exp, &mut report, &s);
-            return finish_measure(env, exp, report, taken, None).await;
+        let cand_count = taken
+            .iter()
+            .filter(|s| s.role == Some(SampleRole::Candidate))
+            .count() as u32;
+        if cand_count < need {
+            k += 1;
+            sample_no = u8::try_from(k).unwrap_or(u8::MAX);
+            of = planned.max(sample_no);
+            progress(env, &slug, n, &started, Phase::Sampling, sample_no, of).await;
+            let s = scored_sample(
+                env,
+                &study.spec,
+                paths.req(k, &cand_tree, SampleRole::Candidate),
+                cancel,
+                Some(Ticks {
+                    started_at: &started,
+                    sample: sample_no,
+                    of,
+                }),
+            )
+            .await?;
+            if cancel.is_cancelled() || s.lost {
+                taken.push(s);
+                return interrupted(env, exp, taken).await;
+            }
+            taken.push(s.clone());
+            if s.value.is_none() {
+                crash(env, exp, &mut report, &s);
+                return finish_measure(env, exp, report, taken, None).await;
+            }
+            continue;
         }
         let cand_taken: Vec<Sample> = taken
             .iter()
             .filter(|s| s.role == Some(SampleRole::Candidate))
             .cloned()
             .collect();
-        if (cand_taken.len() as u32) < need {
-            continue;
-        }
         let inc_samples = incumbent_samples(env, study, &incumbent).await?;
         let incumbent_age = inc_samples
             .iter()
@@ -2682,8 +2732,15 @@ async fn measure_env(
                 more,
                 incumbent_sample,
             } => {
-                let mut more = u32::from(more.max(1));
-                if drift_double && !doubled {
+                let mut more = u32::from(more);
+                // An incumbent-first step is honoured only while the incumbent samples of this
+                // call stay within `1 + confirm_runs`; past that (or with nothing asked at all)
+                // a candidate sample is taken so the loop always advances.
+                let take_incumbent = incumbent_sample && k_inc - 100 < max_incumbent;
+                if more == 0 && !take_incumbent {
+                    more = 1;
+                }
+                if drift_double && !doubled && more > 0 {
                     more *= 2;
                     doubled = true;
                     env.store
@@ -2692,7 +2749,7 @@ async fn measure_env(
                 }
                 need = cand_taken.len() as u32 + more;
                 planned = u8::try_from(need).unwrap_or(u8::MAX);
-                if incumbent_sample {
+                if take_incumbent {
                     k_inc += 1;
                     let si = incumbent_sample_in_place(
                         env,
@@ -3242,12 +3299,7 @@ pub async fn log_env(env: &Env, m: Log) -> Result<LogReport> {
         mean: study.incumbent_mean,
         kept,
     };
-    report.budget_left = budget_left(
-        &study.spec,
-        closed,
-        stop::hours_running(&study, chrono::Utc::now()),
-        spend,
-    );
+    report.budget_left = budget_left(&study.spec, closed, hours_live(env, &study).await, spend);
 
     // §8.4 stop rules after the experiment closed; a wave waits for its last slot, then promotes (§10 step 4).
     // A stop from here defers finalize to the study turn's end (R-56): the model still has the turn.
@@ -3776,7 +3828,14 @@ pub async fn finalize_task(env: Env, slug: String) {
     }
     match env
         .backend
-        .finalize(&env.store, &study, reason.clone(), &env.rt)
+        .finalize(
+            &env.store,
+            &study,
+            reason.clone(),
+            &env.cfg,
+            &env.root,
+            &env.rt,
+        )
         .await
     {
         Ok((headline, doc)) => {

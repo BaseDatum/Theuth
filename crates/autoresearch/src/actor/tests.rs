@@ -333,6 +333,8 @@ impl Backend for Fake {
         store: &Store,
         study: &StudyRecord,
         reason: StopReason,
+        _: &AutoresearchConfig,
+        _: &Path,
         _: &runtime::Runtime,
     ) -> Result<(Headline, String)> {
         let headline = Headline {
@@ -2382,6 +2384,27 @@ async fn create_and_discard_use_the_worktree_and_the_repo_cleanup() {
         .await
         .unwrap();
     assert_eq!(ev[0].payload["removed"][0], "autoresearch/t1");
+}
+
+/// R-25: `Confirm { more: 0, incumbent_sample: true }` measures the incumbent once and
+/// re-judges the same candidate sample — no extra candidate sample is spent.
+#[tokio::test]
+async fn incumbent_first_confirm_spends_no_candidate_sample() {
+    let fake = Fake::with_values(&[100.0, 100.0, 100.0, 95.0, 100.0]);
+    let mut h = harness(fake.clone(), AutoresearchConfig::default()).await;
+    let session = started(&mut h, "t1", 10).await;
+    begin(&mut h.studies, b(session)).await.unwrap();
+    *fake.confirm_once.lock() = Some(GateStep::Confirm {
+        more: 0,
+        incumbent_sample: true,
+    });
+    fake.decide(Verdict::Improved, 5.0, 3.0);
+    let rep = run(&mut h.studies, r(session, "x")).await.unwrap();
+    assert_eq!(rep.verdict, Verdict::Improved);
+    let roles: Vec<SampleRole> = rep.samples.iter().filter_map(|s| s.role).collect();
+    assert_eq!(roles, vec![SampleRole::Candidate, SampleRole::Incumbent]);
+    let input = fake.last_input.lock().clone().unwrap();
+    assert_eq!((input.candidate.len(), input.incumbent.len()), (1, 4));
 }
 
 /// R-85: Stop now while preparing cancels the baseline with an explicit reason.

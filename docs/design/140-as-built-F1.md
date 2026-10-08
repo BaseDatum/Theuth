@@ -141,3 +141,30 @@ Branch `feat/140-f1`, cut from the integration head 78411fb3. Work list: `~/.the
 | R-98 | `report_doc` stays `None` when finalize returned a file path (no documents actor); `StudyFinished.report_doc` is `""` then; the result card links the note only when there is one; test `report_doc_is_none_when_finalize_has_no_document` |
 
 Gates re-run after `touch crates/autoresearch/src/lib.rs`: `cargo test -p autoresearch` 129 passed / 0 failed; clippy `-D warnings` clean; rustfmt clean.
+
+## R2 (orchestrator 18:54, hand-offs from F2 — `140-as-built-F2.md`)
+
+| item | disposition |
+|---|---|
+| R-7 | done in round 1 — `prepare_steps` and `segment_task` call `custody_take(&spec, &worktree, &evaluator)` |
+| R-9 | done in round 1 — `Backend::discard_study` → `git::discard_study(repo, slug, &study_dir)` in the Discard arm, `discarded {removed}` event |
+| R-25 | **gate loop rewritten**: a candidate sample is taken only while `cand_count < need`; `Confirm { more: 0, incumbent_sample: true }` takes one incumbent sample (in the incumbent tree, R-2) and re-judges the same candidate samples; `more == 0` without an incumbent sample, or past `1 + confirm_runs` incumbent samples in one call, falls back to one candidate sample so the loop always advances; drift doubling applies only to `more > 0` |
+| R-33 / R-41 | **not done here, by design**: both need `Sample` fields; `runner::sample` (F2) and the wave test `Bench::sample` (F2) build `Sample` exhaustively and would stop compiling in whichever tree adds the field first. Closer applies in one commit — exact changes below |
+| R-46 | `pause()` no-op done in round 1; `hours_live(env, study)` (actor.rs) subtracts the open pause since the newest `paused` event while `Paused` and feeds `StudyInfo.budget_used.hours`, the brief's `Budget left` line (`brief_context`) and `LogReport.budget_left`. Same arithmetic as F2's `stop::hours_running_live`; closer may replace the body with `stop::hours_running_live(&env.store, study).await.unwrap_or_else(…)` |
+| R-51 / R-111 | done in round 1 (`run_once` event, Begin gate, warn text) |
+| R-62 | done in round 1 — `Backend::record` and the actor's write are gone |
+| R-106 | `Backend::finalize(store, study, reason, cfg, root, rt)` now carries `env.cfg` / `env.root`; the default body still calls `finalize::run` (F2's `run_with` is not in this tree). **Closer**: body → `crate::finalize::run_with(store, study, reason, cfg.clone(), root, rt.shutdown.clone()).await` |
+| R-115 | done in round 1 — Control (incl. the StopNow `agent::Cancel` ask), Status, Detail, Experiments, Experiment run off the mailbox; the actor itself makes no agent ask on the mailbox |
+| `on_fired` setter | `Store::patch_study(slug, &StudyPatch { session: Some(Some(session)), ..Default::default() })` exists (round 1); binding.rs is F2's — closer swaps the `update_study` call |
+| F2's edits in `actor/tests.rs` | expected at merge: `binding::on_turn_finished(.., "end_turn")` at the two call sites; the R-57 assertion flip in `crash_streak_pauses_with_attention_and_resume_counts_paused_time`. My round-1 tests added more `on_turn_finished` call sites (`experiment_budget_stops…`, `controls_pause_resume…`, `finalize_writes_the_report_prose…`, `report_doc_is_none…`) — they take the same `"end_turn"` argument |
+| log names | `scored_sample`'s tail ticks read `sample-<k>.log` for candidates and `sample-<k>-<role>.log` otherwise, matching F2's `runner::sample_log_name` |
+
+### R-33 / R-41 for the closer (one commit)
+
+- `types.rs` `Sample` (inside the `wire!` block, after `at`): `/// Owners of the machine's build slots at start (`pid label epoch argv` lines; §5.5).` `pub slot_holders: Vec<String>,` and `/// Why there is no value: the runner's reason (`exit 1`, `bad number time_ms=nan`, `no METRIC time_ms line`).` `pub failure: Option<String>,` — the struct already has `#[serde(default)]`.
+- `migrations/0002_sample_detail.sql`: `ALTER TABLE samples ADD COLUMN slot_holders TEXT NOT NULL DEFAULT '[]'; ALTER TABLE samples ADD COLUMN failure TEXT;`
+- `store.rs`: `SAMPLE_COLS` += `, slot_holders, failure`; `SampleRaw` += `slot_holders: String, failure: Option<String>`; `From<SampleRaw>` += `slot_holders: serde_json::from_str(&r.slot_holders).unwrap_or_default(), failure: r.failure`; `insert_sample` and `update_sample` bind `to_json(&s.slot_holders)` and `&s.failure` as two more columns.
+- `runner.rs::sample` literal (the only exhaustive `Sample { .. }` in the crate; the test doubles use `..Sample::default()`): `slot_holders: slot::build_slot_holders(), failure: value.is_none().then(|| match (run.exit, &scanned.bad_number) { (Some(0), Some(b)) => format!("bad number {b}"), (Some(0), None) => format!("no METRIC {} line", spec.metric.name), (Some(e), _) => format!("exit {e}"), (None, _) => "killed".into() })`.
+- `actor.rs` `crash` closure in `measure_env`: prefer `s.failure` — `exp.line = match &s.failure { Some(f) => format!("crash: {f} (tail below)"), None => <current match> }`.
+
+Gates (after `touch crates/autoresearch/src/lib.rs`): `cargo test -p autoresearch` 130 passed / 0 failed (new: `incumbent_first_confirm_spends_no_candidate_sample`); clippy `-D warnings` clean; rustfmt clean.
