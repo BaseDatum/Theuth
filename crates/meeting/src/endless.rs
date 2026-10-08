@@ -136,6 +136,52 @@ pub async fn earlier(port: &dyn Memory, session: SessionId, budget: u32) -> Opti
 mod tests {
     use super::*;
 
+    /// A fake tree: answers with `lines`, fails, or never answers.
+    enum Double {
+        View(Vec<ViewLine>),
+        Down,
+        Stalled,
+    }
+
+    #[async_trait::async_trait]
+    impl Memory for Double {
+        async fn enable_meeting(&self, _: SessionId) -> Result<(), String> {
+            Ok(())
+        }
+        async fn render(&self, _: SessionId, _: u32) -> Result<Vec<ViewLine>, String> {
+            match self {
+                Self::View(lines) => Ok(lines.clone()),
+                Self::Down => Err("pump not attached".into()),
+                Self::Stalled => std::future::pending().await,
+            }
+        }
+    }
+
+    /// The head gets the view when it answers; an error or a stall keeps the last one
+    /// (`None` here) instead of delaying the batch.
+    #[tokio::test(start_paused = true)]
+    async fn earlier_is_the_view_or_none_without_waiting_on_the_compactor() {
+        let s = SessionId::new();
+        let line = ViewLine {
+            id: 0,
+            n: 1,
+            level: 0,
+            text: "user: [meeting 00:00:00] started. context: none".into(),
+            built: true,
+        };
+        assert_eq!(
+            earlier(&Double::View(vec![line.clone()]), s, 32_000).await,
+            Some(Earlier {
+                lines: vec![line],
+                budget: 32_000
+            })
+        );
+        assert_eq!(earlier(&Double::Down, s, 32_000).await, None);
+        let t = tokio::time::Instant::now();
+        assert_eq!(earlier(&Double::Stalled, s, 32_000).await, None);
+        assert_eq!(t.elapsed(), RENDER_WAIT, "gives up at the deadline");
+    }
+
     #[tokio::test]
     async fn config_reads_the_agent_section_and_defaults() {
         use figment::Figment;
