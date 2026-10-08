@@ -1489,7 +1489,11 @@ pub trait Api {
     /// Start a training run now (126 §8): `tier` a | b | c, `venue` auto | local | node | off.
     /// Returns the run id; `DoubleTrainingState` events follow.
     #[method(name = "double_train")]
-    async fn double_train(&self, tier: double::Tier, venue: double::Venue) -> RpcResult<double::RunId>;
+    async fn double_train(
+        &self,
+        tier: double::Tier,
+        venue: double::Venue,
+    ) -> RpcResult<double::RunId>;
     /// Pause / resume learning (126 §9): predictions and rungs continue, labels stop accruing.
     #[method(name = "double_pause")]
     async fn double_pause(&self, on: bool) -> RpcResult<double::DoubleStatus>;
@@ -5290,9 +5294,16 @@ impl ApiServer for Server {
         ask::<double::actor::Double, _>(double::DOUBLE_ACTOR, double::actor::ClassDetail(key)).await
     }
 
-    async fn double_train(&self, tier: double::Tier, venue: double::Venue) -> RpcResult<double::RunId> {
-        ask::<double::sched::Scheduler, _>(double::sched::ACTOR, double::sched::Train { tier, venue })
-            .await
+    async fn double_train(
+        &self,
+        tier: double::Tier,
+        venue: double::Venue,
+    ) -> RpcResult<double::RunId> {
+        ask::<double::sched::Scheduler, _>(
+            double::sched::ACTOR,
+            double::sched::Train { tier, venue },
+        )
+        .await
     }
 
     async fn double_pause(&self, on: bool) -> RpcResult<double::DoubleStatus> {
@@ -5912,7 +5923,18 @@ impl ApiServer for Server {
         let Some(turn) = send(&agents, agent::supervisor::OpenTurn(session)).await? else {
             return Ok(false);
         };
-        send(&agents, agent::supervisor::ResumeTurn { session, turn }).await?;
+        // 139 §6.3: `cause: None` = the boot rule from the journal. W4 routes
+        // this call to the owner (§9.2) and sends `Takeover` after a take.
+        send(
+            &agents,
+            agent::supervisor::ResumeTurn {
+                session,
+                turn,
+                cause: None,
+                from: None,
+            },
+        )
+        .await?;
         Ok(true)
     }
 
@@ -6639,6 +6661,9 @@ mod tests {
                 interrupted_at: at,
                 resumed: false,
                 report: None,
+                owner: None,
+                here: true,
+                cause: None,
             }),
             ..Default::default()
         };

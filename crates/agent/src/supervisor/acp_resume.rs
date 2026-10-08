@@ -13,6 +13,7 @@ use tools::WaitKind;
 use super::{Agents, LiveActor};
 use crate::acp_child::Respawn;
 use crate::durability::ResumeMode;
+use crate::store::Scope;
 
 impl Agents {
     /// §4.6 step 10, after `resume_scan`: for every open turn, every
@@ -25,7 +26,9 @@ impl Agents {
         if self.cfg.durability.resume != ResumeMode::Auto {
             return;
         }
-        let open = match self.store.open_turns().await {
+        // 139 §7.4 (W1): iterate `child_waits(Scope::Here)` instead, with the
+        // `row.here` + readable-`cwd` gates.
+        let open = match self.store.open_turns(Scope::Here).await {
             Ok(open) => open,
             Err(e) => {
                 tracing::error!("109: open_turns: {e:#}");

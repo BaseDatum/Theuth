@@ -355,6 +355,11 @@ pub struct JobRow {
     pub exit: Option<JobExit>,
     /// Settlement time, unix ms.
     pub settled_ms: Option<i64>,
+    /// 139 D14: the engine that spawned the process (`sessions.owner`
+    /// spelling, `''` on a lone engine). Left empty by the tools crate;
+    /// the agent's `Journal` stamps it. The reaper signals only its own.
+    #[serde(default)]
+    pub engine: String,
 }
 
 /// One `pty_screens` row (§3.1, §5.3).

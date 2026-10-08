@@ -60,6 +60,7 @@ pub mod communication;
 pub mod durability;
 pub mod turn_usage;
 pub use capture::ATTACHED;
+pub use durability::Scope;
 
 /// Handle to `<data_dir>/sessions.sqlite`. Cheap to clone.
 #[derive(Clone, kameo::Reply)]

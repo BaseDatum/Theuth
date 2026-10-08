@@ -14,11 +14,11 @@ use chrono::{DateTime, Local, Utc};
 use kameo::actor::ActorRef;
 use platform::ProcessTree;
 use runtime::SessionId;
-use tools::jobs::{LostJob, Reaped};
+use tools::jobs::{LostJob, LostReason, Reaped};
 use tools::{JOBS_ACTOR, JobExit, JobKind, JobRow, JobState, Jobs, PtyScreenRow};
 
 use crate::durability::CallState;
-use crate::store::Store;
+use crate::store::{Scope, Store};
 
 /// Bytes of a lost job's log quoted in its `<job_result>` (`jobs.rs::TAIL`).
 const TAIL: u64 = 8 * 1024;
@@ -59,7 +59,9 @@ pub(crate) async fn reap(store: &Store) -> (ReapReport, Reaped) {
         restarted_at,
         jobs: Vec::new(),
     };
-    let rows = match store.jobs_open().await {
+    // 139 D1/D14: sessions owned here, rows this engine spawned (the SQL
+    // carries the engine filter); W3 adds `settle_transferred` beside this.
+    let rows = match store.jobs_open(Scope::Here).await {
         Ok(rows) => rows,
         Err(e) => {
             tracing::error!("109 reaper: jobs_open: {e:#}");
@@ -72,7 +74,7 @@ pub(crate) async fn reap(store: &Store) -> (ReapReport, Reaped) {
     // A job whose call is a `started` row of an open turn is reported by the
     // job rule inside the resumed batch (§4.3): no `<job_result>` for it.
     let mut in_batch: HashSet<(SessionId, String)> = HashSet::new();
-    match store.open_turns().await {
+    match store.open_turns(Scope::Here).await {
         Ok(open) => {
             for (session, turn, _) in open {
                 if let Ok(calls) = store.calls_of(session, turn).await {
@@ -130,6 +132,7 @@ pub(crate) async fn reap(store: &Store) -> (ReapReport, Reaped) {
             screen,
             tail,
             deliver,
+            reason: LostReason::Restart,
         });
     }
     reaped.jobs = lost;
@@ -254,6 +257,7 @@ mod tests {
             state: JobState::Running,
             exit: None,
             settled_ms: None,
+            engine: String::new(),
         }
     }
 
@@ -321,7 +325,7 @@ mod tests {
                         "{}",
                         out.content
                     );
-                    let rows = store.jobs_open().await.unwrap();
+                    let rows = store.jobs_open(Scope::Here).await.unwrap();
                     assert_eq!(rows.len(), 1);
                     (rows[0].pgid.unwrap(), rows[0].log.clone().unwrap())
                 }
@@ -345,7 +349,7 @@ mod tests {
         tokio::time::timeout(Duration::from_secs(5), gone)
             .await
             .expect("killpg(pgid, 0) still succeeds after the reaper");
-        assert!(store.jobs_open().await.unwrap().is_empty());
+        assert!(store.jobs_open(Scope::Here).await.unwrap().is_empty());
         let row = &store.jobs_of(session).await.unwrap()[0];
         assert_eq!(
             (row.state, row.exit.clone()),
@@ -436,7 +440,7 @@ mod tests {
 
         let (report, reaped) = reap(&store).await;
         assert_eq!((report.killed, report.lost, report.orphaned), (0, 3, 0));
-        assert!(store.jobs_open().await.unwrap().is_empty());
+        assert!(store.jobs_open(Scope::Here).await.unwrap().is_empty());
         let by_id = |id: &str| reaped.jobs.iter().find(|j| j.row.id.0 == id).unwrap();
         assert!(by_id("j1").deliver.is_some());
         assert!(
@@ -509,6 +513,7 @@ mod tests {
         let plan = ResumePlan {
             turn: TurnId::new(),
             kind: ResumeKind::Interrupted,
+            cause: crate::durability::ResumeCause::Crash,
             interrupted_at: Utc::now(),
             last: LastStep::ToolBatch {
                 all_finished: false,

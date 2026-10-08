@@ -13,8 +13,9 @@ use libsqlite3_sys as ffi;
 /// (`sessions` itself by its primary key; the accounting tables by their
 /// `cost_owners.id`, which is the session id; `session_advisors` by the
 /// advised session, 125 §4.14). The 109 journal tables ride here too
-/// (§3.5), except `pty_screens`, which is engine-local.
-pub const ATTACHED: [(&str, &str); 16] = [
+/// (§3.5); `pty_screens` joined them in 139 §5.3 so a taker has the
+/// owner's last page, and is fenced like every other attached table.
+pub const ATTACHED: [(&str, &str); 17] = [
     ("sessions", "id"),
     ("messages", "session_id"),
     ("epochs", "session_id"),
@@ -29,6 +30,7 @@ pub const ATTACHED: [(&str, &str); 16] = [
     ("questions", "session_id"),
     ("waits", "session_id"),
     ("jobs", "session_id"),
+    ("pty_screens", "session_id"),
     ("resume_reports", "session_id"),
     ("session_advisors", "session"),
 ];

@@ -41,6 +41,12 @@ use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 /// — the shape U's desktop card and TUI parse.
 pub const OWNER_UNREACHABLE: i32 = -32010;
 
+/// JSON-RPC error code (139 §6.1, D16): the session is mid-release-drain on
+/// this engine; retryable. `data` is [`FrontDoorError::SessionDraining`] in
+/// the same external enum form. W2 raises it from the input handler; W4
+/// maps it here and in the composer.
+pub const SESSION_DRAINING: i32 = -32011;
+
 /// How long a forwarded call waits for the owner's answer.
 pub const TIMEOUT: Duration = Duration::from_secs(30);
 
@@ -58,6 +64,19 @@ pub enum FrontDoorError {
         /// Last time this engine heard from the owner (ms since epoch); `null` = never.
         #[cfg_attr(feature = "ts", ts(type = "number | null"))]
         last_seen: Option<u64>,
+    },
+    /// 139 D16: the session is draining for a release (or another reason)
+    /// on this engine; retry in a moment. *"<session> is moving to <taker> —
+    /// retry in a moment"* / *"<session> is pausing for <reason> — resumes on
+    /// the next start"*.
+    SessionDraining {
+        /// The draining session.
+        session: SessionId,
+        /// `release` on the ownership path; the drain's reason otherwise.
+        reason: String,
+        /// The taker, when known (`release`).
+        #[cfg_attr(feature = "ts", ts(optional))]
+        next_owner: Option<String>,
     },
 }
 

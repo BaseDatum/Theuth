@@ -112,11 +112,14 @@ use tools::{
 // 109: handler bodies in their own files so the waves do not collide.
 mod acp_resume; // 109 W4
 mod advisor; // 125 W1
+pub mod child_waits; // 139 W3
 mod drain;
 mod resume;
+pub mod transfer; // 139 W2
 mod waits;
 pub use drain::{Drain, DrainReport, OpenTurns, drain_engine, draining}; // 109 W5
 pub use resume::{OpenTurn, ResumeTurn};
+pub use transfer::{DrainSession, SessionDrainReport}; // 139 C
 // 109 W3: what a resumed human-wait / peer-wait call asks the supervisor for.
 pub(crate) use waits::{ResumeQuestion, ResumeWait, remaining};
 
@@ -490,6 +493,9 @@ pub struct SpawnChild {
     /// theuth skills (by name) materialised into an external harness's cwd
     /// on top of the `always` ones (design doc 75 §4); empty for the rest.
     pub skills: Vec<String>,
+    /// 139 §7.4: the `spawn_subagent` call's id — the `waits(child_result)`
+    /// row's key; empty when no tool call spawned it (tests, internal).
+    pub call_id: String,
 }
 
 /// `ask` → `Result<Delivered, String>`: route a peer message (50 §5.2). The
@@ -1775,6 +1781,8 @@ impl Agents {
         stop_reason: &str,
         owned: Option<&OwnedChild>,
     ) {
+        // 139 §7.4 (W3): the parent's `child_result` wait is consumed here.
+        child_waits::child_result_delivered(self, parent, child).await;
         let request = self.bound.remove(&(child, turn));
         let answered = self.delivered.remove(&(child, turn));
         let Some(mut text) = self.turn_text.remove(&(child, turn)) else {
@@ -3651,6 +3659,7 @@ impl Message<SpawnChild> for Agents {
             n += 1;
             name = format!("{base}-{n}");
         }
+        let agent_name = m.agent.clone();
         self.session(
             Some(id),
             Some((m.parent, &name)),
@@ -3659,6 +3668,8 @@ impl Message<SpawnChild> for Agents {
         )
         .await
         .map_err(|e| format!("{e:#}"))?;
+        // 139 §7.4 (W3): the parent's `waits(child_result)` row.
+        child_waits::child_spawned(self, m.parent, id, &m.call_id, agent_name.as_deref()).await;
         // Next to `inherit_approvals` in spirit: the ceiling is on the
         // registry before the child's first `ListTools`.
         if let Some(cap) = m.cap {
@@ -5873,15 +5884,23 @@ impl Message<UnloadSession> for Agents {
     type Reply = bool;
 
     async fn handle(&mut self, m: UnloadSession, _: &mut Context<Self, Self::Reply>) -> bool {
-        // As `DeleteSession` stops an actor (68 §4.2): cancel the turn, kill,
-        // forget the live entry; rows and peer state stay.
-        self.drop_queued(m.session).await;
-        let Some(live) = self.sessions.remove(&m.session) else {
+        self.unload_session(m.session).await
+    }
+}
+
+impl Agents {
+    /// As `DeleteSession` stops an actor (68 §4.2): cancel the turn, kill,
+    /// forget the live entry; rows and peer state stay. Also the C-contract
+    /// body of `transfer::drain_session` until W2 lands the drain; 139 D19
+    /// (W2) swaps `kill()` for `stop_gracefully` + `wait_for_shutdown`.
+    pub(super) async fn unload_session(&mut self, session: SessionId) -> bool {
+        self.drop_queued(session).await;
+        let Some(live) = self.sessions.remove(&session) else {
             return false;
         };
         live.actor.tell_cancel(None).await;
         live.actor.kill().await;
-        self.running.remove(&m.session);
+        self.running.remove(&session);
         true
     }
 }
@@ -12431,6 +12450,7 @@ pub(crate) mod tests {
             effort: None,
             cap: None,
             skills: Vec::new(),
+            call_id: String::new(),
         }
     }
 
@@ -12926,6 +12946,8 @@ pub(crate) mod tests {
             interrupted_at: now,
             resumed_at: now,
             partial_dropped: false,
+            cause: crate::durability::ResumeCause::Crash,
+            from: None,
         })
         .await;
         next_event(&mut rx, |e| matches!(e, AgentEvent::TurnResumed { .. })).await;

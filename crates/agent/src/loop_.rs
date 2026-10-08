@@ -74,8 +74,8 @@ use crate::continuation::{
 };
 use crate::cost::{CallId, CallKind, CallStatus, CostObservation, Money};
 use crate::durability::{
-    CallState, JournaledCall, LastStep, ResumeKind, ResumePlan, ResumeReportRow, StepKind, crash,
-    crash_point,
+    CallState, JournaledCall, LastStep, ResumeCause, ResumeKind, ResumePlan, ResumeReportRow,
+    StepKind, crash, crash_point,
 };
 use crate::frame::{self, Frame, Transport};
 use crate::peers::SpawnSubagentTool;
@@ -1289,6 +1289,12 @@ pub struct Resume {
     pub plan: ResumePlan,
     /// The boot scan's concurrency bound, if any.
     pub slots: Option<Arc<Semaphore>>,
+    /// 139 §6.3: why — the plan's boot rule from `resume_scan` / the RPC,
+    /// `Transfer` / `Takeover` from `Take::run`. Overrides `plan.cause`.
+    pub cause: ResumeCause,
+    /// 139 §6.3: the previous owner for `transfer` / `takeover`; W2 puts it
+    /// on `TurnResumed.from` and in the `<engine_restart from>` note.
+    pub from: Option<String>,
 }
 
 impl Message<Resume> for Session {
@@ -1309,8 +1315,12 @@ impl Message<Resume> for Session {
         self.enter(cancel.clone(), Some(turn)).await;
         let task = Turn::new(self.shared.clone(), Some(turn), cancel, state);
         let me = ctx.actor_ref().clone();
+        let plan = ResumePlan {
+            cause: m.cause,
+            ..m.plan
+        };
         tokio::spawn(async move {
-            let state = task.resume(m.plan, m.slots).await;
+            let state = task.resume(plan, m.slots).await;
             let _ = me.tell(TurnDone(state)).await;
         });
         true
@@ -3249,14 +3259,16 @@ impl Turn {
     /// `turn_finished` so the next boot does not resume it.
     async fn settle_open_turns(&mut self, current: TurnId) {
         let session = self.shared.id;
-        let open: Vec<TurnId> = match self.shared.store.open_turns().await {
+        // 139 §5.1 item 14: a per-session read; the actor exists only on
+        // the owner after D1, so the scope is implied.
+        let open: Vec<TurnId> = match self.shared.store.open_turn(session).await {
             Ok(open) => open
                 .into_iter()
-                .filter(|(s, t, _)| *s == session && *t != current)
-                .map(|(_, t, _)| t)
+                .filter(|(t, _)| *t != current)
+                .map(|(t, _)| t)
                 .collect(),
             Err(e) => {
-                tracing::warn!(session = %session, "open_turns: {e:#}");
+                tracing::warn!(session = %session, "open_turn: {e:#}");
                 Vec::new()
             }
         };
@@ -3595,6 +3607,7 @@ impl Turn {
             session,
             turn: plan.turn,
             kind: plan.kind,
+            cause: plan.cause,
             interrupted_at: plan.interrupted_at,
             at: chrono::Utc::now(),
             report,
@@ -4434,6 +4447,9 @@ impl Turn {
                 interrupted_at: plan.interrupted_at,
                 resumed_at: chrono::Utc::now(),
                 partial_dropped: plan.partial.is_some(),
+                cause: plan.cause,
+                // 139 §6.3: W2 fills the previous owner for transfer/takeover.
+                from: None,
             })
             .await;
         }

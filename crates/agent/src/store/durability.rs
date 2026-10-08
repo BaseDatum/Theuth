@@ -2,9 +2,9 @@
 //! `turn_steps`, `tool_calls`, `questions`, `waits`, `jobs`, `pty_screens`
 //! (migration `0033_durability.sql`) and `resume_reports` (0035, §8.2).
 //! Every write is one [`WriteTx`] or joins the caller's (`*_in`), so
-//! `session_log` gets its row (§3.5); `pty_screens` is the one table left
-//! out of `capture::ATTACHED`. `resume_plan` turns the newest step of an
-//! open turn into the [`ResumePlan`] §4.2 acts on.
+//! `session_log` gets its row (§3.5). `resume_plan` turns the newest step
+//! of an open turn into the [`ResumePlan`] §4.2 acts on. 139 §5.1: every
+//! reader of open turns / jobs / child waits takes an explicit [`Scope`].
 
 use std::path::PathBuf;
 
@@ -21,8 +21,8 @@ use tools::{
 use super::{InnerCall, Store, insert_in, put_todos};
 use crate::cost::{CallId, CallKind};
 use crate::durability::{
-    CallState, JournaledCall, LastStep, PartialContent, ResumeKind, ResumePlan, ResumeReportRow,
-    StepKind,
+    CallState, JournaledCall, LastStep, PartialContent, ResumeCause, ResumeKind, ResumePlan,
+    ResumeReportRow, StepKind,
 };
 use crate::todo::{Todo, TodoSnapshot, TodoSource};
 
@@ -182,8 +182,10 @@ pub(crate) async fn turn_finished_in(
 /// the messages a `commit_cut` removes (as `errors` / `inner_calls` do);
 /// `waits` by the removed calls' ids. The caller's transaction.
 pub(crate) async fn cut_journal_in(conn: &mut SqliteConnection, sid: &str) -> anyhow::Result<()> {
+    // 139 Q8: a `child_result` wait outlives its turn (the spawn returned
+    // long before the child finishes), so a compaction cut leaves it.
     sqlx::query(
-        "DELETE FROM waits WHERE session_id = ?1 AND tool_call_id IN \
+        "DELETE FROM waits WHERE session_id = ?1 AND kind != 'child_result' AND tool_call_id IN \
          (SELECT call_id FROM tool_calls WHERE session_id = ?1 \
           AND at_seq >= (SELECT cut_at FROM sessions WHERE id = ?1))",
     )
@@ -304,8 +306,7 @@ fn question_of(r: QuestionTuple) -> anyhow::Result<QuestionRow> {
     })
 }
 
-const QUESTION_COLS: &str =
-    "id, session_id, tool_call_id, kind, payload, state, asked_at, deadline, answered_at, answer, answered_by";
+const QUESTION_COLS: &str = "id, session_id, tool_call_id, kind, payload, state, asked_at, deadline, answered_at, answer, answered_by";
 
 type WaitTuple = (String, String, String, String, Option<String>, String);
 
@@ -334,11 +335,25 @@ type JobTuple = (
     String,
     Option<String>,
     Option<i64>,
+    String,
 );
 
 fn job_of(r: JobTuple) -> anyhow::Result<JobRow> {
-    let (session, id, kind, call_id, command, name, pgid, log, started_ms, state, exit, settled_ms) =
-        r;
+    let (
+        session,
+        id,
+        kind,
+        call_id,
+        command,
+        name,
+        pgid,
+        log,
+        started_ms,
+        state,
+        exit,
+        settled_ms,
+        engine,
+    ) = r;
     Ok(JobRow {
         session: parse_session(&session)?,
         id: JobId(id),
@@ -358,11 +373,12 @@ fn job_of(r: JobTuple) -> anyhow::Result<JobRow> {
             })
             .transpose()?,
         settled_ms,
+        engine,
     })
 }
 
-const JOB_COLS: &str =
-    "session_id, id, kind, call_id, command, name, pgid, log, started_ms, state, exit, settled_ms";
+const JOB_COLS: &str = "session_id, id, kind, call_id, command, name, pgid, log, started_ms, \
+     state, exit, settled_ms, engine";
 
 type ReportTuple = (
     String,
@@ -374,15 +390,23 @@ type ReportTuple = (
     String,
     i64,
     i64,
+    String,
 );
 
 fn report_of(session: SessionId, r: ReportTuple) -> anyhow::Result<ResumeReportRow> {
-    let (turn, kind, interrupted_at, at, replayed, interrupted, lost_jobs, restored, handed) = r;
+    let (turn, kind, interrupted_at, at, replayed, interrupted, lost_jobs, restored, handed, cause) =
+        r;
+    let kind =
+        ResumeKind::parse(&kind).ok_or_else(|| anyhow::anyhow!("resume_reports.kind {kind:?}"))?;
     Ok(ResumeReportRow {
         session,
         turn: parse_turn(&turn)?,
-        kind: ResumeKind::parse(&kind)
-            .ok_or_else(|| anyhow::anyhow!("resume_reports.kind {kind:?}"))?,
+        kind,
+        // 139 §10: `''` is a pre-139 row; the boot rule without a reason.
+        cause: ResumeCause::parse(&cause).unwrap_or(match kind {
+            ResumeKind::Interrupted => ResumeCause::Crash,
+            ResumeKind::Suspended => ResumeCause::Shutdown,
+        }),
         interrupted_at: parse_dt(&interrupted_at)?,
         at: parse_dt(&at)?,
         report: crate::ResumeReport {
@@ -396,7 +420,30 @@ fn report_of(session: SessionId, r: ReportTuple) -> anyhow::Result<ResumeReportR
 }
 
 const REPORT_COLS: &str = "turn_id, kind, interrupted_at, at, replayed, interrupted, lost_jobs, \
-     children_restored, children_handed_off";
+     children_restored, children_handed_off, cause";
+
+/// Which sessions a journal reader is asked about (139 §3, D1). Never
+/// implicit: there is no `Default`, so a new global consumer fails to
+/// compile rather than slipping past review (I9).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Scope {
+    /// Sessions `here`: `owner = '' OR owner = me` (Revision 1 Q1).
+    Here,
+    /// Every session in the file, whoever owns it.
+    All,
+}
+
+impl Scope {
+    /// The predicate over `s`, an alias of `sessions` joined on the row's
+    /// session. `?1` is `Store::engine()`, bound by the caller for both
+    /// scopes (`All` only references it so the bind count matches).
+    const fn sql(self) -> &'static str {
+        match self {
+            Self::Here => "(s.owner = '' OR s.owner = ?1)",
+            Self::All => "(?1 IS NOT NULL)",
+        }
+    }
+}
 
 /// The window that picks each turn's newest non-partial step and its last
 /// activity time (`last_at` includes partial rows).
@@ -551,16 +598,42 @@ impl Store {
 
     /// Every turn whose newest step is not `turn_finished`, most recently
     /// active first (§4.6 step 10's `resume_scan`). `suspended` is open.
-    pub async fn open_turns(&self) -> anyhow::Result<Vec<(SessionId, TurnId, DateTime<Utc>)>> {
+    /// `Scope::Here` keeps the turns of sessions this engine owns (139 D1):
+    /// a replica never lists the owner's live turn as its own to act on.
+    pub async fn open_turns(
+        &self,
+        scope: Scope,
+    ) -> anyhow::Result<Vec<(SessionId, TurnId, DateTime<Utc>)>> {
         let rows: Vec<(String, String, String)> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
-            "SELECT session_id, turn_id, last_at FROM ({NEWEST}) \
-             WHERE rn = 1 AND kind != 'turn_finished' ORDER BY last_at DESC"
+            "SELECT o.session_id, o.turn_id, o.last_at FROM ({NEWEST}) o \
+             JOIN sessions s ON s.id = o.session_id \
+             WHERE o.rn = 1 AND o.kind != 'turn_finished' AND {} ORDER BY o.last_at DESC",
+            scope.sql()
         )))
+        .bind(&*self.me)
         .fetch_all(&self.read)
         .await?;
         rows.into_iter()
             .map(|(s, t, at)| Ok((parse_session(&s)?, parse_turn(&t)?, parse_dt(&at)?)))
             .collect()
+    }
+
+    /// The one session's open turn, whoever owns it (139 §5.1 items 4, 12,
+    /// 14: a display or per-session read; the caller decides routing).
+    pub async fn open_turn(
+        &self,
+        session: SessionId,
+    ) -> anyhow::Result<Option<(TurnId, DateTime<Utc>)>> {
+        let row: Option<(String, String)> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
+            "SELECT turn_id, last_at FROM ({NEWEST}) \
+             WHERE rn = 1 AND kind != 'turn_finished' AND session_id = ? \
+             ORDER BY last_at DESC LIMIT 1"
+        )))
+        .bind(session.to_string())
+        .fetch_optional(&self.read)
+        .await?;
+        row.map(|(t, at)| Ok((parse_turn(&t)?, parse_dt(&at)?)))
+            .transpose()
     }
 
     /// What `ResumeTurn` acts on (§4.1, §4.2): the newest step that is not
@@ -597,11 +670,18 @@ impl Store {
             .max()
             .expect("non-empty");
         let mut kind = ResumeKind::Interrupted;
+        let mut suspended_reason = None;
         let mut newest = None;
         for s in steps.iter().rev() {
             match StepKind::parse(&s.kind) {
                 Some(StepKind::AssistantPartial) => continue,
-                Some(StepKind::Suspended) => kind = ResumeKind::Suspended,
+                Some(StepKind::Suspended) => {
+                    kind = ResumeKind::Suspended;
+                    // The newest `suspended` row's reason names the cause (139 §6.3).
+                    if suspended_reason.is_none() {
+                        suspended_reason = json(&s.payload)["reason"].as_str().map(str::to_owned);
+                    }
+                }
                 Some(k) => {
                     newest = Some((k, s));
                     break;
@@ -667,6 +747,7 @@ impl Store {
         Ok(ResumePlan {
             turn,
             kind,
+            cause: ResumeCause::from_journal(kind, suspended_reason.as_deref()),
             interrupted_at,
             last,
             calls,
@@ -1102,16 +1183,18 @@ impl Store {
 
     // ---- jobs and PTY screens (§5) -------------------------------------------
 
-    /// Upsert a `jobs` row by `(j.session, j.id)`.
+    /// Upsert a `jobs` row by `(j.session, j.id)`. `j.engine` is written as
+    /// given: the `tools::Journal` seam stamps it (`StoreJournal::job`),
+    /// 139 §10 — the tools crate never learns the engine id.
     pub async fn job_put(&self, j: &JobRow) -> anyhow::Result<()> {
         let mut tx = self.begin_write().await?;
         sqlx::query(
-            "INSERT INTO jobs (session_id, id, kind, call_id, command, name, pgid, log, started_ms, state, exit, settled_ms) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) \
+            "INSERT INTO jobs (session_id, id, kind, call_id, command, name, pgid, log, started_ms, state, exit, settled_ms, engine) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) \
              ON CONFLICT(session_id, id) DO UPDATE SET kind = excluded.kind, call_id = excluded.call_id, \
                  command = excluded.command, name = excluded.name, pgid = excluded.pgid, log = excluded.log, \
                  started_ms = excluded.started_ms, state = excluded.state, exit = excluded.exit, \
-                 settled_ms = excluded.settled_ms",
+                 settled_ms = excluded.settled_ms, engine = excluded.engine",
         )
         .bind(j.session.to_string())
         .bind(&j.id.0)
@@ -1125,6 +1208,7 @@ impl Store {
         .bind(j.state.as_str())
         .bind(j.exit.as_ref().map(ToString::to_string))
         .bind(j.settled_ms)
+        .bind(&j.engine)
         .execute(&mut *tx)
         .await?;
         tx.commit().await?;
@@ -1159,14 +1243,69 @@ impl Store {
         Ok(n > 0)
     }
 
-    /// Every `running` job row, across sessions (the reaper's input, §5.4).
-    pub async fn jobs_open(&self) -> anyhow::Result<Vec<JobRow>> {
+    /// Every `running` job row (the reaper's input, §5.4). `Scope::Here`
+    /// keeps the rows of sessions owned here **and** spawned by this engine
+    /// (`engine = '' OR engine = me`, 139 D14): a row this engine did not
+    /// spawn is never signalled, whatever its session's owner is now.
+    pub async fn jobs_open(&self, scope: Scope) -> anyhow::Result<Vec<JobRow>> {
+        let engine = match scope {
+            Scope::Here => "AND (engine = '' OR engine = ?1)",
+            Scope::All => "",
+        };
         let rows: Vec<JobTuple> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
-            "SELECT {JOB_COLS} FROM jobs WHERE state = 'running' ORDER BY started_ms, rowid"
+            "SELECT {JOB_COLS} FROM jobs WHERE state = 'running' \
+             AND session_id IN (SELECT s.id FROM sessions s WHERE {}) {engine} \
+             ORDER BY started_ms, rowid",
+            scope.sql()
         )))
+        .bind(&*self.me)
         .fetch_all(&self.read)
         .await?;
         rows.into_iter().map(job_of).collect()
+    }
+
+    /// 139 §7.1 (takeover): settle every `running` job of `session` that
+    /// another engine spawned (`engine NOT IN ('', me)` — a `''` row is
+    /// this engine's, Q14, as `jobs_open(Here)` reads it) as `lost`, and
+    /// return the rows as settled. No `adopt`, no `killpg` — the process is
+    /// not ours (I6); the caller (W3's `settle_transferred`) builds the
+    /// `Reaped`.
+    pub async fn jobs_settle_transferred(
+        &self,
+        session: SessionId,
+        me: &str,
+        now_ms: i64,
+    ) -> anyhow::Result<Vec<JobRow>> {
+        let mut tx = self.begin_write().await?;
+        let rows: Vec<JobTuple> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
+            "UPDATE jobs SET state = 'lost', exit = 'lost', settled_ms = ? \
+             WHERE session_id = ? AND state = 'running' AND engine != '' AND engine != ? \
+             RETURNING {JOB_COLS}"
+        )))
+        .bind(now_ms)
+        .bind(session.to_string())
+        .bind(me)
+        .fetch_all(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        rows.into_iter().map(job_of).collect()
+    }
+
+    /// Every `child_result` wait, scoped by the **parent's** owner (139
+    /// §7.4): the trigger for `respawn_acp_children`, which must not go
+    /// through `open_turns` — the parent's turn is usually finished by the
+    /// time the child is.
+    pub async fn child_waits(&self, scope: Scope) -> anyhow::Result<Vec<WaitRow>> {
+        let rows: Vec<WaitTuple> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
+            "SELECT w.session_id, w.tool_call_id, w.kind, w.target, w.deadline, w.payload \
+             FROM waits w JOIN sessions s ON s.id = w.session_id \
+             WHERE w.kind = 'child_result' AND {} ORDER BY w.rowid",
+            scope.sql()
+        )))
+        .bind(&*self.me)
+        .fetch_all(&self.read)
+        .await?;
+        rows.into_iter().map(wait_of).collect()
     }
 
     /// The session's job rows, oldest first (`jobs()` after a restart, §5.1).
@@ -1180,8 +1319,9 @@ impl Store {
         rows.into_iter().map(job_of).collect()
     }
 
-    /// Upsert the last screen of a PTY job (§5.3). Engine-local: not in the
-    /// capture, so it leaves no `session_log` row. The job row must exist.
+    /// Upsert the last screen of a PTY job (§5.3). Attached since 139 §5.3:
+    /// the row replicates and is fenced like every journal table, so only
+    /// the owner writes screens. The job row must exist.
     pub async fn pty_screen_put(&self, s: &PtyScreenRow) -> anyhow::Result<()> {
         let mut tx = self.begin_write().await?;
         sqlx::query(
@@ -1244,12 +1384,13 @@ impl Store {
         let mut tx = self.begin_write().await?;
         sqlx::query(
             "INSERT INTO resume_reports (session_id, turn_id, kind, interrupted_at, at, replayed, interrupted, \
-                 lost_jobs, children_restored, children_handed_off) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) \
+                 lost_jobs, children_restored, children_handed_off, cause) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) \
              ON CONFLICT(session_id, turn_id) DO UPDATE SET kind = excluded.kind, \
                  interrupted_at = excluded.interrupted_at, at = excluded.at, replayed = excluded.replayed, \
                  interrupted = excluded.interrupted, lost_jobs = excluded.lost_jobs, \
-                 children_restored = excluded.children_restored, children_handed_off = excluded.children_handed_off",
+                 children_restored = excluded.children_restored, children_handed_off = excluded.children_handed_off, \
+                 cause = excluded.cause",
         )
         .bind(r.session.to_string())
         .bind(r.turn.to_string())
@@ -1261,6 +1402,7 @@ impl Store {
         .bind(serde_json::to_string(&r.report.lost_jobs)?)
         .bind(i64::from(r.report.children_restored))
         .bind(i64::from(r.report.children_handed_off))
+        .bind(r.cause.as_str())
         .execute(&mut *tx)
         .await?;
         tx.commit().await?;
@@ -1305,18 +1447,24 @@ impl Store {
     /// Delete the journal of every **finished** turn whose last activity is
     /// older than `keep_days`, and every terminal question older than that.
     /// Open turns and pending questions are never pruned. Returns the number
-    /// of `turn_steps` rows removed.
-    pub async fn journal_prune(&self, keep_days: u32) -> anyhow::Result<u64> {
+    /// of `turn_steps` rows removed. 139 §5.3 (D15): `Scope::Here` on the
+    /// owner's hourly tick — the `DELETE`s travel to every replica as log
+    /// rows; a foreign session's journal is never pruned here (the fence
+    /// would refuse the write anyway, so the scope is what keeps the tick
+    /// from failing as a whole).
+    pub async fn journal_prune(&self, scope: Scope, keep_days: u32) -> anyhow::Result<u64> {
         let cutoff = (Utc::now() - chrono::Duration::days(i64::from(keep_days))).to_rfc3339();
+        let mine = format!("SELECT s.id FROM sessions s WHERE {}", scope.sql());
         let fin = format!(
             "WITH fin AS (SELECT session_id, turn_id FROM ({NEWEST}) \
-             WHERE rn = 1 AND kind = 'turn_finished' AND last_at < ?1)"
+             WHERE rn = 1 AND kind = 'turn_finished' AND last_at < ?2 AND session_id IN ({mine}))"
         );
         let mut tx = self.begin_write().await?;
         sqlx::query(sqlx::AssertSqlSafe(format!(
             "{fin} DELETE FROM waits WHERE (session_id, tool_call_id) IN \
              (SELECT c.session_id, c.call_id FROM tool_calls c JOIN fin USING (session_id, turn_id))"
         )))
+        .bind(&*self.me)
         .bind(&cutoff)
         .execute(&mut *tx)
         .await?;
@@ -1325,6 +1473,7 @@ impl Store {
             sqlx::query(sqlx::AssertSqlSafe(format!(
                 "{fin} DELETE FROM {table} WHERE (session_id, turn_id) IN (SELECT session_id, turn_id FROM fin)"
             )))
+            .bind(&*self.me)
             .bind(&cutoff)
             .execute(&mut *tx)
             .await?;
@@ -1332,13 +1481,16 @@ impl Store {
         let steps = sqlx::query(sqlx::AssertSqlSafe(format!(
             "{fin} DELETE FROM turn_steps WHERE (session_id, turn_id) IN (SELECT session_id, turn_id FROM fin)"
         )))
+        .bind(&*self.me)
         .bind(&cutoff)
         .execute(&mut *tx)
         .await?
         .rows_affected();
-        sqlx::query(
-            "DELETE FROM questions WHERE state != 'pending' AND COALESCE(answered_at, deadline) < ?",
-        )
+        sqlx::query(sqlx::AssertSqlSafe(format!(
+            "DELETE FROM questions WHERE state != 'pending' AND COALESCE(answered_at, deadline) < ?2 \
+             AND session_id IN ({mine})"
+        )))
+        .bind(&*self.me)
         .bind(&cutoff)
         .execute(&mut *tx)
         .await?;
@@ -1524,7 +1676,7 @@ mod tests {
         let p = store.resume_plan(s, t).await.unwrap();
         assert_eq!(p.last, LastStep::Finished);
         assert!(p.partial.is_none());
-        assert!(store.open_turns().await.unwrap().is_empty());
+        assert!(store.open_turns(Scope::Here).await.unwrap().is_empty());
         std::fs::remove_dir_all(dir).unwrap();
     }
 
@@ -1581,7 +1733,7 @@ mod tests {
         assert!(p.calls[2].started_at.is_none());
 
         // The open turn is listed until every row is terminal and the turn finishes.
-        let open = store.open_turns().await.unwrap();
+        let open = store.open_turns(Scope::Here).await.unwrap();
         assert_eq!(open.len(), 1);
         assert_eq!((open[0].0, open[0].1), (s, t));
 
@@ -1617,13 +1769,13 @@ mod tests {
             .unwrap();
         let old = batch_turn(&store, s).await;
         let newer = batch_turn(&store, other).await;
-        let open = store.open_turns().await.unwrap();
+        let open = store.open_turns(Scope::All).await.unwrap();
         assert_eq!(
             open.iter().map(|(s, t, _)| (*s, *t)).collect::<Vec<_>>(),
             vec![(other, newer), (s, old)]
         );
         // An open turn is never pruned, however old.
-        assert_eq!(store.journal_prune(0).await.unwrap(), 0);
+        assert_eq!(store.journal_prune(Scope::Here, 0).await.unwrap(), 0);
         // Finish `old`, give one call a wait, backdate it, and prune.
         store
             .wait_put(&WaitRow {
@@ -1640,11 +1792,11 @@ mod tests {
             .step(s, old, StepKind::TurnFinished, None, &json!({}))
             .await
             .unwrap();
-        assert_eq!(store.open_turns().await.unwrap().len(), 1);
+        assert_eq!(store.open_turns(Scope::Here).await.unwrap().len(), 1);
         // Fresh rows survive a 7-day keep; a 0-day keep (cutoff = now) takes them.
-        assert_eq!(store.journal_prune(7).await.unwrap(), 0);
+        assert_eq!(store.journal_prune(Scope::Here, 7).await.unwrap(), 0);
         assert_eq!(store.waits_of(s, old).await.unwrap().len(), 1);
-        let n = store.journal_prune(0).await.unwrap();
+        let n = store.journal_prune(Scope::Here, 0).await.unwrap();
         assert_eq!(n, 4);
         assert!(store.calls_of(s, old).await.unwrap().is_empty());
         assert!(store.waits_of(s, old).await.unwrap().is_empty());
@@ -1758,9 +1910,10 @@ mod tests {
             state: JobState::Running,
             exit: None,
             settled_ms: None,
+            engine: String::new(),
         };
         store.job_put(&j).await.unwrap();
-        assert_eq!(store.jobs_open().await.unwrap(), vec![j.clone()]);
+        assert_eq!(store.jobs_open(Scope::Here).await.unwrap(), vec![j.clone()]);
         let screen = PtyScreenRow {
             session: s,
             job_id: JobId("j1".into()),
@@ -1796,7 +1949,7 @@ mod tests {
                 .await
                 .unwrap()
         );
-        assert!(store.jobs_open().await.unwrap().is_empty());
+        assert!(store.jobs_open(Scope::Here).await.unwrap().is_empty());
         let rows = store.jobs_of(s).await.unwrap();
         assert_eq!(
             (rows[0].state, rows[0].exit.clone(), rows[0].settled_ms),
@@ -1821,8 +1974,10 @@ mod tests {
         std::fs::remove_dir_all(dir).unwrap();
     }
 
+    /// 139 §5.3 / §7.2: `pty_screens` is attached — a screen row logs like
+    /// every other journal row (inverts 109's `…_but_screens_do_not`).
     #[tokio::test]
-    async fn journal_rows_replicate_but_screens_do_not() {
+    async fn pty_screen_rows_replicate() {
         let (store, s, dir) = fresh().await;
         let before = store.log_after(0).await.unwrap().len();
         let t = TurnId::new();
@@ -1850,6 +2005,7 @@ mod tests {
                 state: JobState::Running,
                 exit: None,
                 settled_ms: None,
+                engine: String::new(),
             })
             .await
             .unwrap();
@@ -1869,7 +2025,173 @@ mod tests {
             })
             .await
             .unwrap();
-        assert_eq!(store.log_after(0).await.unwrap().len(), after_job);
+        assert_eq!(store.log_after(0).await.unwrap().len(), after_job + 1);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// A file written by engine `a` — one session with an open batch turn,
+    /// a finished turn, a running job spawned on `a` and a `child_result`
+    /// wait — reopened by engine `b` (the shape of
+    /// `store::tests::writes_on_a_foreign_session_are_refused_until_taken`).
+    async fn reopened_by_b() -> (Store, SessionId, TurnId, std::path::PathBuf) {
+        let dir = std::env::temp_dir().join(format!("theuth-dur-ab-{}", uuid::Uuid::now_v7()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("sessions.sqlite");
+        let a = Store::open(&path, Some(mesh::EngineId("a".into())))
+            .await
+            .unwrap();
+        let foreign = SessionId::new();
+        a.create_session(foreign, "m", None, None, None)
+            .await
+            .unwrap();
+        let done = TurnId::new();
+        a.step(foreign, done, StepKind::InputAccepted, None, &json!({}))
+            .await
+            .unwrap();
+        a.finish_turn(foreign, done, "end_turn").await.unwrap();
+        let open = batch_turn(&a, foreign).await;
+        a.job_put(&JobRow {
+            engine: "a".into(),
+            ..job(foreign, "j1")
+        })
+        .await
+        .unwrap();
+        a.wait_put(&child_wait(foreign, "c1", "child-of-a"))
+            .await
+            .unwrap();
+        a.close().await;
+        let b = Store::open(&path, Some(mesh::EngineId("b".into())))
+            .await
+            .unwrap();
+        (b, foreign, open, dir)
+    }
+
+    fn job(session: SessionId, id: &str) -> JobRow {
+        JobRow {
+            session,
+            id: JobId(id.into()),
+            kind: JobKind::Shell,
+            call_id: format!("call-{id}"),
+            command: "sleep 600".into(),
+            name: None,
+            pgid: Some(4242),
+            log: None,
+            started_ms: 1,
+            state: JobState::Running,
+            exit: None,
+            settled_ms: None,
+            engine: String::new(),
+        }
+    }
+
+    fn child_wait(session: SessionId, call_id: &str, child: &str) -> WaitRow {
+        WaitRow {
+            session,
+            tool_call_id: call_id.into(),
+            kind: WaitKind::ChildResult,
+            target: child.into(),
+            deadline: None,
+            payload: json!({"agent": null}),
+        }
+    }
+
+    /// 139 I1 / I9 (Revision 1 Q1): `Scope::Here` is the store's `here`
+    /// form — `a`'s open turn and child wait are not `b`'s to act on,
+    /// `Scope::All` lists them, `open_turn` (a display read) answers for
+    /// any owner, and `b`'s prune tick leaves `a`'s finished journal alone
+    /// (an `All` prune would hit the fence and fail as a whole).
+    #[tokio::test]
+    async fn open_turns_here_excludes_foreign_owners() {
+        let (b, foreign, foreign_turn, dir) = reopened_by_b().await;
+        let mine = SessionId::new();
+        b.create_session(mine, "m", None, None, None).await.unwrap();
+        let my_turn = batch_turn(&b, mine).await;
+        b.wait_put(&child_wait(mine, "c1", "child-of-b"))
+            .await
+            .unwrap();
+
+        let ids = |v: Vec<(SessionId, TurnId, DateTime<Utc>)>| {
+            v.into_iter().map(|(s, t, _)| (s, t)).collect::<Vec<_>>()
+        };
+        assert_eq!(
+            ids(b.open_turns(Scope::Here).await.unwrap()),
+            vec![(mine, my_turn)]
+        );
+        // Most recently active first: `mine` was written after `foreign`.
+        assert_eq!(
+            ids(b.open_turns(Scope::All).await.unwrap()),
+            vec![(mine, my_turn), (foreign, foreign_turn)]
+        );
+        assert_eq!(
+            b.open_turn(foreign).await.unwrap().map(|(t, _)| t),
+            Some(foreign_turn)
+        );
+        assert_eq!(
+            b.child_waits(Scope::Here)
+                .await
+                .unwrap()
+                .iter()
+                .map(|w| w.target.as_str())
+                .collect::<Vec<_>>(),
+            ["child-of-b"]
+        );
+        assert_eq!(b.child_waits(Scope::All).await.unwrap().len(), 2);
+
+        // `a`'s finished turn is older than a 0-day keep, yet `b` never prunes it.
+        assert_eq!(b.journal_prune(Scope::Here, 0).await.unwrap(), 0);
+        let kept: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM turn_steps WHERE session_id = ? AND kind = 'turn_finished'",
+        )
+        .bind(foreign.to_string())
+        .fetch_one(&b.read)
+        .await
+        .unwrap();
+        assert_eq!(kept, 1);
+        assert!(b.journal_prune(Scope::All, 0).await.is_err(), "fenced");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// 139 D14 / I6: `jobs_open(Here)` keeps the rows of sessions owned
+    /// here that this engine spawned (`engine IN ('', me)`); a foreign
+    /// session's row and a foreign engine's row are left to
+    /// `jobs_settle_transferred`, which settles the latter `lost` without
+    /// a signal and returns it settled.
+    #[tokio::test]
+    async fn jobs_open_here_filters_by_engine() {
+        let (b, _foreign, _, dir) = reopened_by_b().await;
+        let mine = SessionId::new();
+        b.create_session(mine, "m", None, None, None).await.unwrap();
+        for (id, engine) in [("j1", ""), ("j2", "b"), ("j3", "a")] {
+            b.job_put(&JobRow {
+                engine: engine.into(),
+                ..job(mine, id)
+            })
+            .await
+            .unwrap();
+        }
+        let ids = |rows: Vec<JobRow>| rows.into_iter().map(|j| j.id.0).collect::<Vec<_>>();
+        assert_eq!(ids(b.jobs_open(Scope::Here).await.unwrap()), ["j1", "j2"]);
+        assert_eq!(b.jobs_open(Scope::All).await.unwrap().len(), 4);
+
+        let settled = b.jobs_settle_transferred(mine, "b", 9_000).await.unwrap();
+        assert_eq!(settled.len(), 1);
+        assert_eq!(
+            (
+                settled[0].id.0.as_str(),
+                settled[0].state,
+                settled[0].exit.clone(),
+                settled[0].settled_ms,
+                settled[0].engine.as_str()
+            ),
+            ("j3", JobState::Lost, Some(JobExit::Lost), Some(9_000), "a")
+        );
+        assert_eq!(b.jobs_open(Scope::All).await.unwrap().len(), 3);
+        assert!(
+            b.jobs_settle_transferred(mine, "b", 9_001)
+                .await
+                .unwrap()
+                .is_empty()
+        );
         std::fs::remove_dir_all(dir).unwrap();
     }
 
@@ -1886,6 +2208,7 @@ mod tests {
             session: s,
             turn: t,
             kind: ResumeKind::Suspended,
+            cause: ResumeCause::Transfer,
             interrupted_at: now - chrono::Duration::seconds(5),
             at: now,
             report: crate::ResumeReport {
@@ -1928,7 +2251,7 @@ mod tests {
             Some(again.clone())
         );
         // Pruning the finished turn takes its report; the open turn's journal stays.
-        assert!(store.journal_prune(0).await.unwrap() > 0);
+        assert!(store.journal_prune(Scope::Here, 0).await.unwrap() > 0);
         assert!(store.resume_report(s, t).await.unwrap().is_none());
         assert!(store.resume_plan(s, t2).await.is_ok());
         // Deleting the session takes the open turn's report with the journal.

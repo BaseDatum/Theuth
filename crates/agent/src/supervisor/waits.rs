@@ -35,6 +35,7 @@ use uuid::Uuid;
 use super::Agents;
 use crate::communication::{PeerAddress, PeerMessageState, PeerReceipt, PeerRecord};
 use crate::durability::CallState;
+use crate::store::Scope;
 
 /// Receivers of the waits re-armed at boot, by exchange id, until the
 /// resumed call takes them ([`ResumeWait`]). A reply that arrives in between
@@ -108,7 +109,8 @@ impl Agents {
 
     /// [`Self::rebuild_waits`] with the approval actor the honoured answers go to.
     async fn rebuild_waits_with(&mut self, approval: Option<ActorRef<tools::Approval>>) {
-        let open = match self.store.open_turns().await {
+        // 139 §5.1 item 7: owner-scoped; W1 adds `rebuild_waits_for(session)`.
+        let open = match self.store.open_turns(Scope::Here).await {
             Ok(o) => o,
             Err(e) => return tracing::error!("109: open turns unreadable: {e:#}"),
         };
@@ -272,7 +274,8 @@ impl Agents {
         // A parent whose open turn waits on this child takes the result as
         // that wait's answer ([`ResumeWait`]), not as a new input.
         let mut awaited: Vec<(SessionId, String)> = Vec::new();
-        if let Ok(open) = self.store.open_turns().await {
+        // 139 §5.1 item 11: the "awaited" subtraction over sessions here.
+        if let Ok(open) = self.store.open_turns(Scope::Here).await {
             for (session, turn, _) in open {
                 let waits = self.store.waits_of(session, turn).await.unwrap_or_default();
                 awaited.extend(

@@ -16265,6 +16265,8 @@ mod tests {
             interrupted_at: at,
             resumed_at: at,
             partial_dropped: true,
+            cause: agent::durability::ResumeCause::Crash,
+            from: None,
         });
         assert!(
             matches!(m.entries.last(), Some(Entry::Divider(l)) if l == "resumed after restart"),

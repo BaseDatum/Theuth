@@ -430,6 +430,31 @@ pub(crate) struct Finished {
 /// can send it after its window instead of at the instant the token fires.
 pub struct KillAll;
 
+/// `ask` → `()`: the per-session form of [`KillAll`] (139 §6.1 step 4,
+/// §7.1): the session's live rows `exit = lost` first, PTY screens
+/// snapshotted, then `kill(pgids)`. Sent by the release drain
+/// (`supervisor::transfer::drain_session`, W2). **Handler body is W3's**;
+/// the C contract leaves it a no-op.
+pub struct KillSession {
+    /// The session whose jobs die with its actor.
+    pub session: SessionId,
+}
+
+/// Why a job is reported `lost` (139 §7.1): the banner / `lost_page` /
+/// `<job_result exit="lost">` wording keys on it (W3 renders it).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub enum LostReason {
+    /// "the engine restarted at hh:mm" — today's reaper (109 §5.4).
+    #[default]
+    Restart,
+    /// "owner changed (ran on `engine`)" — the session moved to this engine
+    /// while the process lived on `engine`.
+    OwnerChanged {
+        /// The engine that spawned it (`jobs.engine`).
+        engine: String,
+    },
+}
+
 /// `tell` from the agent's reaper (109 §5.4): the `jobs` rows a previous
 /// engine left `running`, settled `lost` in the store by the caller. Each
 /// becomes a `lost` row here — `jobs()`, `screen()` and `pty_screen` answer
@@ -455,6 +480,8 @@ pub struct LostJob {
     /// `<job_result exit="lost">` body to inject. `None` when the resumed
     /// batch reports the job itself (§4.3's job note).
     pub deliver: Option<String>,
+    /// Why it is lost (139 §7.1); `Restart` from the boot reaper.
+    pub reason: LostReason,
 }
 
 /// `ask` → `()`: the activity supervisor (47 §4.2 rule 7), forwarded by the
@@ -638,6 +665,7 @@ impl Job {
             state,
             exit,
             settled_ms,
+            engine: String::new(),
         }
     }
 
@@ -1236,6 +1264,14 @@ impl Message<KillAll> for Jobs {
     }
 }
 
+impl Message<KillSession> for Jobs {
+    type Reply = ();
+
+    /// 139 §7.1 — **W3 owns the body** (the per-session `KillAll`: rows
+    /// `lost` first, screens, then the signal). No-op in the C contract.
+    async fn handle(&mut self, _: KillSession, _: &mut Context<Self, Self::Reply>) {}
+}
+
 impl Message<Reaped> for Jobs {
     type Reply = ();
 
@@ -1245,6 +1281,8 @@ impl Message<Reaped> for Jobs {
             screen,
             tail,
             deliver,
+            // 139 §7.1: W3 keys the wording on it.
+            reason: _,
         } in m.jobs
         {
             let session = row.session;
@@ -1607,6 +1645,7 @@ async fn run(mut j: Run) {
         state: JobState::Running,
         exit: None,
         settled_ms: None,
+        engine: String::new(),
     });
     if let Some(r) = &row {
         j.journal.job(r.clone()).await;
@@ -2746,6 +2785,7 @@ pub(crate) mod tests {
             state: JobState::Lost,
             exit: Some(JobExit::Lost),
             settled_ms: Some(8_000),
+            engine: String::new(),
         }
     }
 
@@ -2767,12 +2807,14 @@ pub(crate) mod tests {
                         screen: None,
                         tail: "error: boom\n".into(),
                         deliver: Some("this job died with the engine".into()),
+                        reason: LostReason::Restart,
                     },
                     LostJob {
                         row: lost_row(fx.session, "j3", JobKind::Shell, &log),
                         screen: None,
                         tail: String::new(),
                         deliver: None,
+                        reason: LostReason::Restart,
                     },
                 ],
             })

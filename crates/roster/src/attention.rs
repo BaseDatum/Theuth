@@ -1042,9 +1042,13 @@ impl Attention {
             if let Ok(sessions) = ag.ask(agent::ListSessions).await {
                 desks.extend(desk_map(&sessions));
             }
-            // 109 §4.6: under `ask` every open turn waits for the button.
+            // 109 §4.6: under `ask` every open turn waits for the button;
+            // 139 §5.1 item 13: only the turns this engine owns (its button
+            // is `resume_turn`, which must run on the owner).
             if self.resume_ask
-                && let Ok(open) = ag.ask(agent::supervisor::OpenTurns).await
+                && let Ok(open) = ag
+                    .ask(agent::supervisor::OpenTurns(agent::store::Scope::Here))
+                    .await
             {
                 resumes.extend(open.into_iter().map(|(s, t, at)| ResumeNeed {
                     session: s.to_string(),

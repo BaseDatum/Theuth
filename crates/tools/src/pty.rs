@@ -2036,6 +2036,7 @@ async fn run(mut j: Run) {
         state: JobState::Running,
         exit: None,
         settled_ms: None,
+        engine: String::new(),
     };
     j.journal.job(row.clone()).await;
     j.rt.publish(JobEvent::Started {
@@ -4081,6 +4082,7 @@ mod tests {
             state: JobState::Lost,
             exit: Some(JobExit::Lost),
             settled_ms: Some(41_000),
+            engine: String::new(),
         };
         let stored = PtyScreenRow {
             session: fx.session,
@@ -4101,6 +4103,7 @@ mod tests {
                     screen: Some(stored.clone()),
                     tail: String::new(),
                     deliver: Some("gone".into()),
+                    reason: crate::jobs::LostReason::Restart,
                 }],
             })
             .await

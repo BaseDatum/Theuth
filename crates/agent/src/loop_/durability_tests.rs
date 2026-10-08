@@ -25,6 +25,7 @@ use super::vision_fallback_tests::{FINAL, Harness, MAIN_USAGE, body, sse};
 use super::*;
 use crate::durability::journal::StoreJournal;
 use crate::durability::{CallState, LastStep};
+use crate::store::Scope;
 
 const PROBE: &str = "probe";
 const POKE: &str = "poke";
@@ -234,12 +235,10 @@ async fn kinds(store: &Store, session: SessionId, turn: TurnId) -> Vec<String> {
 /// The session's one open turn.
 async fn open_turn(store: &Store, session: SessionId) -> TurnId {
     store
-        .open_turns()
+        .open_turn(session)
         .await
         .unwrap()
-        .into_iter()
-        .find(|(s, _, _)| *s == session)
-        .map(|(_, t, _)| t)
+        .map(|(t, _)| t)
         .expect("an open turn")
 }
 
@@ -341,7 +340,7 @@ async fn normal_turn_journals_every_write_point(
     assert_eq!(rows[1].risk, Risk::Mutating);
     let (stop, _) = h.store.last_stop(h.id).await.unwrap().expect("last_stop");
     assert_eq!(stop, "stop");
-    assert!(h.store.open_turns().await.unwrap().is_empty());
+    assert!(h.store.open_turns(Scope::Here).await.unwrap().is_empty());
     assert_eq!(hits_of(&hits_file(hits, h.id)), [PROBE, POKE]);
     let messages = h.store.messages(h.id).await.unwrap();
     let tools = tool_texts(&messages);
@@ -740,7 +739,7 @@ async fn stale_batch_closes_from_the_journal_and_pre_0033_repairs(
         kinds(&h.store, h.id, old).await.last().unwrap(),
         "turn_finished"
     );
-    assert!(h.store.open_turns().await.unwrap().is_empty());
+    assert!(h.store.open_turns(Scope::Here).await.unwrap().is_empty());
     let rows = h.store.calls_of(h.id, old).await.unwrap();
     assert_eq!(rows[1].state, CallState::Interrupted);
 
@@ -1042,14 +1041,7 @@ async fn second_life(
     journal(registry, &h.store).await;
     // Boot: accounting marks the lost attempt (§4.6 step 3).
     h.store.unresolve_open_calls().await.unwrap();
-    let open = h
-        .store
-        .open_turns()
-        .await
-        .unwrap()
-        .into_iter()
-        .find(|(s, _, _)| *s == h.id)
-        .map(|(_, t, _)| t);
+    let open = h.store.open_turn(h.id).await.unwrap().map(|(t, _)| t);
     check(
         open.is_some() == c.expect.resumed,
         format!(
@@ -1126,7 +1118,7 @@ async fn second_life(
         );
     }
     check(
-        h.store.open_turns().await.unwrap().is_empty(),
+        h.store.open_turns(Scope::Here).await.unwrap().is_empty(),
         "a turn is still open".into(),
     );
     let partials: i64 = sqlx::query_scalar(
@@ -1381,7 +1373,7 @@ async fn draining_session_opens_no_model_call(
         normalised(&h.store.messages(h.id).await.unwrap()),
         reference
     );
-    assert!(h.store.open_turns().await.unwrap().is_empty());
+    assert!(h.store.open_turns(Scope::Here).await.unwrap().is_empty());
 }
 
 /// §9.2 steps 3–4 then §4.2: the drain marked the turn `suspended`, the
@@ -1496,7 +1488,7 @@ async fn shutdown_token_leaves_the_batch_open(
         kinds(&h.store, h.id, tid).await.last().unwrap(),
         "turn_finished"
     );
-    assert!(h.store.open_turns().await.unwrap().is_empty());
+    assert!(h.store.open_turns(Scope::Here).await.unwrap().is_empty());
 }
 
 // ---- §5.4: the reaper's hand-off to the jobs actor -------------------------
@@ -1527,6 +1519,7 @@ async fn reaper_hands_lost_rows_to_the_live_jobs_actor(registry: &ActorRef<ToolR
             state: JobState::Running,
             exit: None,
             settled_ms: None,
+            engine: String::new(),
         })
         .await
         .unwrap();

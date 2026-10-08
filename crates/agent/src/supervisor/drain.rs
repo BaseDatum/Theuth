@@ -22,6 +22,7 @@ use runtime::{Runtime, SessionId, TurnId};
 use super::{Agents, LiveActor};
 use crate::durability::{DurabilityConfig, StepKind};
 use crate::loop_::Draining;
+use crate::store::Scope;
 use crate::{AGENT_ACTOR, AgentEvent, HistoryEntry, ResumeState};
 
 /// Set by the first [`Drain`]; a second one (the token-fired path in
@@ -51,16 +52,17 @@ pub struct DrainReport {
     pub finished: u32,
 }
 
-/// `ask` → every open turn `(session, turn, newest step at)`, most recent
-/// first (the attention inbox's `resume:` items, §8.3).
+/// `ask` → every open turn `(session, turn, newest step at)` in `Scope`,
+/// most recent first (the attention inbox's `resume:` items, §8.3; the
+/// schedule plugin). 139 §5.1 item 5: acting callers pass `Scope::Here`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct OpenTurns;
+pub struct OpenTurns(pub Scope);
 
 impl Message<OpenTurns> for Agents {
     type Reply = Vec<(SessionId, TurnId, DateTime<Utc>)>;
 
-    async fn handle(&mut self, _: OpenTurns, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
-        self.store.open_turns().await.unwrap_or_else(|e| {
+    async fn handle(&mut self, m: OpenTurns, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        self.store.open_turns(m.0).await.unwrap_or_else(|e| {
             tracing::error!("109: open_turns: {e:#}");
             Vec::new()
         })
@@ -90,7 +92,8 @@ impl Message<Drain> for Agents {
             // Mark first (§9.2 step 4), durably: a kill inside the window
             // still leaves the planned-stop wording; `turn_finished` closes
             // the row of a turn that makes it.
-            let open = store.open_turns().await.unwrap_or_else(|e| {
+            // 139 D16 (§5.1 item 6): a replica writes nothing for the owner's turn.
+            let open = store.open_turns(Scope::Here).await.unwrap_or_else(|e| {
                 tracing::error!("109: drain: open_turns: {e:#}");
                 Vec::new()
             });
@@ -124,7 +127,7 @@ impl Message<Drain> for Agents {
             );
             // Still open after the window: the UI's planned-stop wording (§8.2).
             let mut suspended = 0;
-            for (session, turn, _) in store.open_turns().await.unwrap_or_default() {
+            for (session, turn, _) in store.open_turns(Scope::Here).await.unwrap_or_default() {
                 suspended += 1;
                 rt.publish(AgentEvent::TurnSuspended {
                     session,
@@ -240,14 +243,16 @@ impl Agents {
         session: SessionId,
         running: bool,
     ) -> (Option<ResumeState>, Option<HistoryEntry>) {
-        let open = match self.store.open_turns().await {
+        // 139 §5.1 item 12: a display read, any owner. W1 fills `owner` and
+        // `here` from the `sessions` row.
+        let open = match self.store.open_turn(session).await {
             Ok(open) => open,
             Err(e) => {
-                tracing::error!(%session, "109: open_turns: {e:#}");
+                tracing::error!(%session, "109: open_turn: {e:#}");
                 return (None, None);
             }
         };
-        let Some((_, turn, _)) = open.into_iter().find(|(s, _, _)| *s == session) else {
+        let Some((turn, _)) = open else {
             return match self.store.latest_resume_report(session).await {
                 Ok(Some(row)) => (
                     Some(ResumeState {
@@ -256,6 +261,9 @@ impl Agents {
                         interrupted_at: row.interrupted_at,
                         resumed: true,
                         report: Some(row.report),
+                        owner: None,
+                        here: true,
+                        cause: Some(row.cause),
                     }),
                     None,
                 ),
@@ -281,6 +289,9 @@ impl Agents {
                     interrupted_at: plan.interrupted_at,
                     resumed: running,
                     report,
+                    owner: None,
+                    here: true,
+                    cause: Some(plan.cause),
                 }),
                 plan.partial.map(|p| HistoryEntry::Interrupted {
                     text: crate::loop_::text_of(&p.content),
@@ -455,6 +466,7 @@ mod tests {
             session: sid,
             turn,
             kind: relaunched.kind,
+            cause: relaunched.cause.unwrap(),
             interrupted_at: relaunched.interrupted_at,
             at: chrono::Utc::now(),
             report: crate::ResumeReport {
