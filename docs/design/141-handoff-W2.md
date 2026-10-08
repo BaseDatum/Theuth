@@ -64,7 +64,20 @@ Per source on this branch: RFD/opencode_ext/opencode_task/omp_task all follow 1�
 
 ## 4. Gate output
 
-(filled in below)
+All through `BUILD_LABEL=141-W2 build-lock`, stable toolchain, `CARGO_BUILD_JOBS=4`, `CARGO_INCREMENTAL=0`, `CARGO_TARGET_DIR=$PWD/target` (the warm clone never wrote `.ready`; built on the partial copy after `cargo clean -p sentencepiece-sys` cleared a foreign `CMakeCache.txt`).
+
+```
+cargo test -p agent --lib -- acp_child:: supervisor:: store::accounting store::turn_usage
+running 137 tests
+test acp_child::tests::raw_child_update_frame_reaches_the_observed_child ... ignored, 141: needs W1's opencode child_update adapter; Closer re-enables
+test result: ok. 136 passed; 0 failed; 1 ignored; 0 measured; 405 filtered out; finished in 12.77s
+
+cargo check -p rpc --all-targets      → Finished (4m 24s)
+cargo clippy -p agent --tests         → Finished, no warnings
+cargo fmt -p agent                    → clean
+```
+
+New tests: `acp_child::tests::{rfd_child_is_announced_watched_and_cancelled_on_its_own_id, opencode_child_updates_become_the_childs_transcript, child_permission_is_asked_on_the_child_and_flips_requires_action, opencode_task_provisional_row_is_rekeyed_to_the_real_id, omp_rows_count_their_cost_once_and_nest, omp_task_frames_announce_two_children_through_progress_rows, children_lose_contact_when_the_harness_stops, unknown_session_update_kinds_are_tolerated (§4.5 test 3), raw_child_update_frame_reaches_the_observed_child (§4.5 test 2, ignored)}`; `supervisor::tests::{observed_rows_are_refused_as_targets_and_listed_watch_only, cancel_of_an_observed_child_is_forwarded_to_its_harness}`; `store::accounting::tests::observed_meter_rows_keep_their_scope_and_roll_up`.
 
 ## 5. For the Closer
 
