@@ -96,9 +96,12 @@ Verified (gates in §7).
 
 Not verified: the engine running with a `budget:` routine end to end (no `t` against `~/.theuth`); the ledger over the live 829 MB store (fixture only — the `messages` scan decodes every windowed row's `ChatMessage`; a heavy day is thousands of rows, fine for a nightly job, but a window of weeks would be slow: `ponytail:` add `json_extract(body, '$.role')` pre-filtering if Z's dry run shows it); knowledge `Stats` through the real actor from the handler (unit-tested at the store seam; `meeting_diet_tests` covers `record_shown` → `stats` through the real actor).
 
-## 7. Gates
+## 7. Gates (through `build-lock`, target `~/Develop/theuth-136-target/W2`)
 
-_(filled after the runs)_
+- `cargo test -p agent --lib --no-fail-fast`: **470 passed, 1 failed, 2 ignored** — the failure is the pre-existing `loop_::tests::prompt_parts_in_order_with_blank_lines` (C's hand-off, not 136). Run three times: runs 2 and 3 as stated; run 1 died with `SIGSEGV` inside the parallel test binary after 364 passes (the last tests started were `store::tests::*` / `supervisor::tests::*`, none of W2's), not reproduced in the two following runs — noted for Z as a flake to watch, not attributed.
+- `cargo clippy -p agent -- -D warnings` and `cargo clippy -p agent --tests -- -D warnings`: green.
+- `cargo fmt -p agent --check`: green.
+- `cargo check -p agent --tests`: green. No workspace-class run (none allowed to W2); `crates/tui` / `crates/slack` `SkillMeta {` literals untouched and unaffected (no field added).
 
 ## 8. Hand-offs
 
