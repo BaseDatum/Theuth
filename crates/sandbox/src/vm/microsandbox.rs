@@ -28,7 +28,7 @@ use parking_lot::Mutex;
 
 use super::{
     ImageRef, Init, LogLine, Mount, NetPolicy, Pending, Port, Preflight, ResizeOutcome,
-    ResizeStatus, ResourceChange, SnapshotId, VmSnapshotInfo, VmHandle, VmMetrics, VmRuntime,
+    ResizeStatus, ResourceChange, SnapshotId, VmHandle, VmMetrics, VmRuntime, VmSnapshotInfo,
     VmSpec, VmStatus, install, preflight,
 };
 use crate::{Cmd, ExecOutput, Progress, types::VmConfig};
@@ -118,7 +118,9 @@ impl Microsandbox {
     }
 
     async fn handle(&self, name: &str) -> anyhow::Result<SandboxHandle> {
-        Sandbox::get(name).await.with_context(|| ctx(name, "lookup"))
+        Sandbox::get(name)
+            .await
+            .with_context(|| ctx(name, "lookup"))
     }
 
     async fn connect(&self, name: &str) -> anyhow::Result<Sandbox> {
@@ -213,9 +215,9 @@ impl Microsandbox {
         if !spec.files.is_empty() {
             let files = spec.files.clone();
             b = b.patch(|p| {
-                files.into_iter().fold(p, |p, f| {
-                    p.file(f.path, f.bytes, Some(f.mode), true)
-                })
+                files
+                    .into_iter()
+                    .fold(p, |p, f| p.file(f.path, f.bytes, Some(f.mode), true))
             });
         }
         b = b.network(|n| n.policy(policy(spec.network)));
@@ -235,7 +237,10 @@ impl Microsandbox {
     ) -> anyhow::Result<()> {
         let name = h.name().to_owned();
         let mut config = h.config().with_context(|| ctx(&name, "read config"))?;
-        if matches!(h.status_snapshot(), SandboxStatus::Running | SandboxStatus::Paused) {
+        if matches!(
+            h.status_snapshot(),
+            SandboxStatus::Running | SandboxStatus::Paused
+        ) {
             h.stop_with_timeout(Duration::from_secs(30))
                 .await
                 .with_context(|| ctx(&name, "stop before reconfigure"))?;
@@ -248,7 +253,10 @@ impl Microsandbox {
         Sandbox::remove(&name)
             .await
             .with_context(|| ctx(&name, "remove before reconfigure"))?;
-        out.say("start", format!("removed {name}; recreating with the new shares/ports"));
+        out.say(
+            "start",
+            format!("removed {name}; recreating with the new shares/ports"),
+        );
         // Patches were baked into the disk we keep; mounts/ports are replaced below.
         config.spec.patches.clear();
         if mounts.is_some() {
@@ -324,9 +332,13 @@ fn with_ports(mut b: SandboxBuilder, ports: &[Port]) -> SandboxBuilder {
 /// `host: 0`, so the caller picks; the race window is microseconds and `create` retries once.
 pub fn free_port(udp: bool) -> anyhow::Result<u16> {
     let port = if udp {
-        std::net::UdpSocket::bind((Ipv4Addr::LOCALHOST, 0))?.local_addr()?.port()
+        std::net::UdpSocket::bind((Ipv4Addr::LOCALHOST, 0))?
+            .local_addr()?
+            .port()
     } else {
-        std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0))?.local_addr()?.port()
+        std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0))?
+            .local_addr()?
+            .port()
     };
     Ok(port)
 }
@@ -338,7 +350,11 @@ pub fn resolve_ports(ports: &[Port]) -> anyhow::Result<Vec<Port>> {
         .iter()
         .map(|p| {
             Ok(Port {
-                host: if p.host == 0 { free_port(p.udp)? } else { p.host },
+                host: if p.host == 0 {
+                    free_port(p.udp)?
+                } else {
+                    p.host
+                },
                 ..p.clone()
             })
         })
@@ -409,7 +425,9 @@ impl VmRuntime for Microsandbox {
                 };
                 Preflight {
                     runtime: super::RuntimeState::Missing,
-                    virt: super::VirtState::Unsupported { why: format!("preflight probe failed: {e}") },
+                    virt: super::VirtState::Unsupported {
+                        why: format!("preflight probe failed: {e}"),
+                    },
                     defaults: super::Resources::derive(&host, &cfg2.defaults),
                     host,
                     blockers: vec![super::Blocker {
@@ -433,7 +451,10 @@ impl VmRuntime for Microsandbox {
         let name = spec.name.as_str();
         if !matches!(
             install::resolve(&self.sdk),
-            super::RuntimeState::Embedded { extracted: true, .. } | super::RuntimeState::Installed { .. }
+            super::RuntimeState::Embedded {
+                extracted: true,
+                ..
+            } | super::RuntimeState::Installed { .. }
         ) {
             self.setup_runtime(out).await?;
         }
@@ -450,15 +471,22 @@ impl VmRuntime for Microsandbox {
             if same_image {
                 out.say("create", format!("adopting existing sandbox {name}"));
                 if map_status(h.status_snapshot()) == VmStatus::Stopped {
-                    h.start_detached().await.with_context(|| ctx(name, "start"))?;
+                    h.start_detached()
+                        .await
+                        .with_context(|| ctx(name, "start"))?;
                 }
                 return Ok(VmHandle {
                     name: name.into(),
                     runtime_id: Some(h.id().to_string()),
                 });
             }
-            out.say("create", format!("replacing sandbox {name} (image changed)"));
-            h.destroy().await.with_context(|| ctx(name, "destroy stale"))?;
+            out.say(
+                "create",
+                format!("replacing sandbox {name} (image changed)"),
+            );
+            h.destroy()
+                .await
+                .with_context(|| ctx(name, "destroy stale"))?;
         }
         let auto_ports = spec.ports.iter().any(|p| p.host == 0);
         let mut ports = resolve_ports(&spec.ports)?;
@@ -478,7 +506,15 @@ impl VmRuntime for Microsandbox {
         if auto_ports {
             let picked: Vec<String> = ports
                 .iter()
-                .map(|p| format!("{}:{}->{}/{}", p.host_ip, p.host, p.guest, if p.udp { "udp" } else { "tcp" }))
+                .map(|p| {
+                    format!(
+                        "{}:{}->{}/{}",
+                        p.host_ip,
+                        p.host,
+                        p.guest,
+                        if p.udp { "udp" } else { "tcp" }
+                    )
+                })
                 .collect();
             out.say("create", format!("published {}", picked.join(", ")));
         }
@@ -515,9 +551,10 @@ impl VmRuntime for Microsandbox {
         let sh = self.handle(&h.name).await?;
         match sh.stop_with_timeout(grace).await {
             Ok(()) => Ok(()),
-            Err(MicrosandboxError::StopTimeout { .. }) => {
-                sh.kill().await.with_context(|| ctx(&h.name, "kill after grace"))
-            }
+            Err(MicrosandboxError::StopTimeout { .. }) => sh
+                .kill()
+                .await
+                .with_context(|| ctx(&h.name, "kill after grace")),
             Err(e) => Err(anyhow!(e)).with_context(|| ctx(&h.name, "stop")),
         }
     }
@@ -545,7 +582,9 @@ impl VmRuntime for Microsandbox {
             Ok(sh) => {
                 // `destroy` (like `remove`) refuses a paused VM: "still running".
                 if sh.status_snapshot() == SandboxStatus::Paused {
-                    sh.resume().await.with_context(|| ctx(&h.name, "resume before destroy"))?;
+                    sh.resume()
+                        .await
+                        .with_context(|| ctx(&h.name, "resume before destroy"))?;
                 }
                 sh.destroy().await.with_context(|| ctx(&h.name, "destroy"))
             }
@@ -580,12 +619,17 @@ impl VmRuntime for Microsandbox {
                 .await
                 .with_context(|| stage("mkdir"))?;
             if o.status().code != 0 {
-                bail!("{}", stage(&format!("mkdir failed: {}", o.stderr().unwrap_or_default())));
+                bail!(
+                    "{}",
+                    stage(&format!("mkdir failed: {}", o.stderr().unwrap_or_default()))
+                );
             }
         }
         let tmp = format!("{path}.theuth-tmp");
         let fs = sb.fs();
-        fs.write(&tmp, &bytes).await.with_context(|| stage("write"))?;
+        fs.write(&tmp, &bytes)
+            .await
+            .with_context(|| stage("write"))?;
         fs.set_stat(
             &tmp,
             false,
@@ -615,7 +659,10 @@ impl VmRuntime for Microsandbox {
             let current = match current {
                 Some(m) => m,
                 None => {
-                    let m = sh.metrics().await.with_context(|| ctx(&h.name, "metrics"))?;
+                    let m = sh
+                        .metrics()
+                        .await
+                        .with_context(|| ctx(&h.name, "metrics"))?;
                     let bytes = m.upper_used_bytes.unwrap_or(0) + m.upper_free_bytes.unwrap_or(0);
                     u32::try_from(bytes.div_ceil(256 << 20) * 256).unwrap_or(u32::MAX)
                 }
@@ -652,7 +699,9 @@ impl VmRuntime for Microsandbox {
         let mut live = ResourceChange::default();
         let mut later = ResourceChange::default();
         for c in &plan.changes {
-            let PlannedChange::Config(c) = c else { continue };
+            let PlannedChange::Config(c) = c else {
+                continue;
+            };
             let (dst, field) = match c.disposition {
                 ModificationDisposition::Live => (&mut live, c.field.as_str()),
                 ModificationDisposition::NextStart | ModificationDisposition::RequiresRestart => {
@@ -736,7 +785,11 @@ impl VmRuntime for Microsandbox {
 
     async fn set_mounts(&self, h: &VmHandle, mounts: &[Mount]) -> anyhow::Result<Pending> {
         let sh = self.handle(&h.name).await?;
-        self.pending.lock().entry(h.name.clone()).or_default().mounts = Some(mounts.to_vec());
+        self.pending
+            .lock()
+            .entry(h.name.clone())
+            .or_default()
+            .mounts = Some(mounts.to_vec());
         Ok(Pending {
             restart_required: map_status(sh.status_snapshot()) != VmStatus::Stopped,
         })
@@ -800,7 +853,9 @@ impl VmRuntime for Microsandbox {
             && map_status(sh.status_snapshot()) == VmStatus::Running
             && let Ok(sb) = sh.connect().await
             && let Ok(o) = sb
-                .shell(format!("journalctl -n {tail} --no-pager -o short-unix 2>/dev/null"))
+                .shell(format!(
+                    "journalctl -n {tail} --no-pager -o short-unix 2>/dev/null"
+                ))
                 .await
         {
             for l in o.stdout().unwrap_or_default().lines() {
@@ -861,9 +916,16 @@ impl VmRuntime for Microsandbox {
         let id = SnapshotId(format!("{}:{name}", h.name));
         // The SDK indexes on create but only warns when that write fails (smoke bug 2: `msb
         // snapshot ls` empty until `reindex`); fall back to its reindex when the id is missing.
-        if !self.snapshots(h).await.is_ok_and(|l| l.iter().any(|s| s.id == id)) {
+        if !self
+            .snapshots(h)
+            .await
+            .is_ok_and(|l| l.iter().any(|s| s.id == id))
+        {
             match microsandbox::Snapshot::reindex_default().await {
-                Ok(n) => out.say("snapshot", format!("{} was not indexed; reindexed {n} snapshots", id.0)),
+                Ok(n) => out.say(
+                    "snapshot",
+                    format!("{} was not indexed; reindexed {n} snapshots", id.0),
+                ),
                 Err(e) => tracing::warn!("snapshot {}: reindex: {e}", id.0),
             }
         }
@@ -940,7 +1002,12 @@ impl VmRuntime for Microsandbox {
             .await?
             .into_iter()
             .find(|s| s.id != *id)
-            .ok_or_else(|| anyhow!("{}: it is the group head and no other member was found", stage()))?;
+            .ok_or_else(|| {
+                anyhow!(
+                    "{}: it is the group head and no other member was found",
+                    stage()
+                )
+            })?;
         microsandbox::Snapshot::group_head(&other.id.0)
             .await
             .with_context(|| format!("{}: move head to {}", stage(), other.id.0))?;
@@ -963,9 +1030,7 @@ impl VmRuntime for Microsandbox {
             .await
             .context("sandbox list")?;
             for sh in page.sandboxes {
-                let ours = sh
-                    .config()
-                    .is_ok_and(|c| c.spec.labels.contains_key(LABEL));
+                let ours = sh.config().is_ok_and(|c| c.spec.labels.contains_key(LABEL));
                 if ours {
                     out.push(VmHandle {
                         name: sh.name().to_owned(),

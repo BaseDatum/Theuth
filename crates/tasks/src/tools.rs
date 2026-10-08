@@ -18,8 +18,7 @@ use crate::packet::{self, Check, Item, PacketOption, Pointer, Recommendation};
 use crate::place;
 use crate::thread::Thread;
 use crate::types::{
-    Disposition, DoneBecause, Owner, Priority, TaskCreate, TaskFilter, TaskId, TaskPatch,
-    TaskState,
+    Disposition, DoneBecause, Owner, Priority, TaskCreate, TaskFilter, TaskId, TaskPatch, TaskState,
 };
 use crate::{
     AnswerDecision, AwaitDecision, CheckBoard, CheckoutTask, CommentTask, CreateTask,
@@ -916,7 +915,9 @@ async fn review_gate(
         recommendation: None,
         items: vec![],
         to: None,
-        if_wrong: if_wrong.map(|w| w.trim().to_owned()).filter(|w| !w.is_empty()),
+        if_wrong: if_wrong
+            .map(|w| w.trim().to_owned())
+            .filter(|w| !w.is_empty()),
     };
     if who == Owner::User {
         packet::require_for_user(&p)?;
@@ -1624,9 +1625,21 @@ mod review_gate_tests {
         });
 
         // task_move {state: review}: the effective reviewer decides.
-        let e = review_gate(&actor, &lead.id, None, None, None, None, None, vec![], None, None, "agent:lead")
-            .await
-            .unwrap_err();
+        let e = review_gate(
+            &actor,
+            &lead.id,
+            None,
+            None,
+            None,
+            None,
+            None,
+            vec![],
+            None,
+            None,
+            "agent:lead",
+        )
+        .await
+        .unwrap_err();
         assert!(e.contains("needs a `board`"), "{e}");
         assert_eq!(
             flat(actor.ask(GetTask(lead.id.clone())).await)
@@ -1655,10 +1668,22 @@ mod review_gate_tests {
             "summary alone is not enough: {e}"
         );
         assert!(
-            review_gate(&actor, &ops.id, None, None, None, None, None, vec![], None, None, "agent:ops")
-                .await
-                .unwrap()
-                .is_none(),
+            review_gate(
+                &actor,
+                &ops.id,
+                None,
+                None,
+                None,
+                None,
+                None,
+                vec![],
+                None,
+                None,
+                "agent:ops"
+            )
+            .await
+            .unwrap()
+            .is_none(),
             "agent reviewer, nothing given: no packet"
         );
         // task_update {disposition: review {reviewer: user}} names the user outright.
