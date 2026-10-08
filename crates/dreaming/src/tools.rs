@@ -545,7 +545,6 @@ impl Tool for JournalTool {
                         drafts,
                     })
                     .await
-                    .map_err(|e| anyhow::anyhow!("{e}"))?
                     .map_err(|e| anyhow::anyhow!("{e}"))?;
                 let mut md: String = rows
                     .iter()
@@ -569,7 +568,6 @@ impl Tool for JournalTool {
                 let old = actor
                     .ask(crate::night::SetMetaNote(a.markdown.clone()))
                     .await
-                    .map_err(|e| anyhow::anyhow!("{e}"))?
                     .map_err(|e| anyhow::anyhow!("{e}"))?;
                 let md = format!(
                     "Before:\n{}\n\nAfter:\n{}\n",
@@ -590,7 +588,6 @@ impl Tool for JournalTool {
                             summary: a.markdown.lines().next().unwrap_or("").to_owned(),
                         })
                         .await
-                        .map_err(|e| anyhow::anyhow!("{e}"))?
                         .map_err(|e| anyhow::anyhow!("{e}"))?;
                     if phase == "journal" {
                         return Ok(ToolOutput::ok(format!(
@@ -640,7 +637,6 @@ impl Tool for UndoTool {
                     group: a.group.clone(),
                 })
                 .await
-                .map_err(|e| anyhow::anyhow!("{e}"))?
                 .map_err(|e| anyhow::anyhow!("{e}"))?,
             _ => {
                 crate::undo::undo(

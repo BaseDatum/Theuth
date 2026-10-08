@@ -1,8 +1,6 @@
 //! The `dreaming.*` RPC methods (design doc 136 §9.5, contract §2.7) as
 //! plain async fns the `rpc` crate's `ApiServer` delegates to: each asks the
-//! [`Night`] actor; absent actor → `Err("dreaming is not running")`. Wave C:
-//! `status` and `settings` are real (from `state.json` and the config);
-//! the rest answer the actor's `not built: W3`.
+//! [`Night`] actor; absent actor → `Err("dreaming is not running")`.
 
 use kameo::actor::ActorRef;
 use runtime::SessionId;

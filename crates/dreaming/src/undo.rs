@@ -256,7 +256,8 @@ mod tests {
         assert_eq!(cases::get(d, "c1").unwrap().state, crate::types::CaseState::Reopened);
         let logged = edits::all(d).unwrap();
         assert!(logged[0].undone_at.is_some());
-        assert!(journal::text(d).contains("### Undone\n- whole night: 0 concepts restored, 1 sidecars restored, 1 edits undone; 1 errors"));
+        let j = journal::text(d);
+        assert!(j.contains("### Undone\n- skill:other: 0 concepts restored, 0 sidecars restored, 0 edits undone\n- whole night: 0 concepts restored, 1 sidecars restored, 1 edits undone; 1 errors"), "{j}");
         // Not every entry was undone (the error), so the summary is not `undone`; a second run is a no-op.
         assert!(!read_record(d, &night).unwrap().summary.undone);
         let again = undo(d, None, None, &night, None).await.unwrap();

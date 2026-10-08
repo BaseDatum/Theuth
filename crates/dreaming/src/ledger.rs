@@ -189,7 +189,6 @@ pub async fn build(
                 session,
             })
             .await
-            .map_err(|e| anyhow::anyhow!("{e}"))?
             .map_err(|e| anyhow::anyhow!("{e}"))?;
     }
     let since = window_start(data_dir, since);
@@ -214,7 +213,6 @@ pub async fn build(
                 owner_only: true,
             })
             .await
-            .map_err(|e| anyhow::anyhow!("{e}"))?
             .map_err(|e| anyhow::anyhow!("LedgerSince: {e}"))?,
         None => agent::Ledger::empty(&since, &until),
     };
@@ -291,8 +289,8 @@ mod tests {
 
     #[tokio::test]
     async fn build_without_actors_folds_pending_copies_journals_and_writes_the_night_file() {
-        let dir = tempfile::tempdir().unwrap();
-        let d = dir.path();
+        let tmp = tempfile::tempdir().unwrap();
+        let d = tmp.path();
         let cfg = DreamConfig::default();
         let rewind = agent::LedgerRewind {
             session: SessionId::new(),

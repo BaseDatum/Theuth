@@ -516,7 +516,7 @@ impl Night {
             })
             .await
         {
-            Ok(Ok(l)) => l
+            Ok(l) => l
                 .sessions
                 .iter()
                 .filter(|s| ids.contains(&s.id))
@@ -891,7 +891,7 @@ impl Message<RunNow> for Night {
                 overrides,
             })
             .await
-            .map_err(|e| e.to_string())?
+            .map_err(|e| e.to_string())
     }
 }
 
@@ -1149,7 +1149,7 @@ impl Message<MetricsOver> for Night {
             }
         }
         if let Ok(Some(agents)) = ActorRef::<agent::Agents>::lookup(agent::AGENT_ACTOR)
-            && let Ok(Ok(l)) = agents
+            && let Ok(l) = agents
                 .ask(agent::LedgerSince {
                     since: since_s.clone(),
                     until: now.format("%Y-%m-%dT%H:%M:%SZ").to_string(),

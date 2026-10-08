@@ -299,6 +299,16 @@ mod tests {
         assert!(SENSOR.starts_with("# theuth-sensor: dreaming 1\n"));
     }
 
+    #[test]
+    fn skill_carries_the_judge_prompt_verbatim_and_stays_under_24kb() {
+        assert!(SKILL.contains(crate::replay::JUDGE_PROMPT), "skill.md and replay::JUDGE_PROMPT differ");
+        assert!(SKILL.len() < 24 * 1024, "{} bytes", SKILL.len());
+        for heading in ["## 0 · Gate", "## 1 · Recall", "## 2 · Tidy", "## 3 · Mine", "## 4 · Rehearse", "## 5 · Settle", "## 6 · Suggest", "## 7 · Journal", "### Proposer prompt", "### Judge prompt"] {
+            assert!(SKILL.contains(heading), "{heading}");
+        }
+        assert!(SKILL.contains("repeat passes while `dreaming_ledger()` reports backlog"));
+    }
+
     /// A hash of every regular file under `dir` (sqlite side files excluded).
     fn fingerprint(dir: &Path) -> std::collections::BTreeMap<String, u64> {
         use std::hash::{Hash as _, Hasher as _};

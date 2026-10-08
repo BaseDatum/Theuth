@@ -10,11 +10,12 @@ use serde::{Deserialize, Serialize};
 pub type NightId = String;
 
 /// Why a case exists (136 §6).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 #[serde(rename_all = "kebab-case")]
 pub enum CaseKind {
     /// The user corrected the assistant.
+    #[default]
     Correction,
     /// The user asked again.
     ReAsk,

@@ -124,36 +124,36 @@ pub async fn read_sessions(data_dir: &Path, since: &str) -> (u64, u64) {
     let Some(mut c) = open_ro(&data_dir.join("sessions.sqlite")).await else {
         return (0, 0);
     };
-    let count = |sql: &'static str, c: &mut sqlx::SqliteConnection, since: String| async move {
+    async fn count(c: &mut sqlx::SqliteConnection, sql: &'static str, since: &str) -> u64 {
         sqlx::query_scalar::<_, i64>(sql)
             .bind(since)
             .fetch_one(c)
             .await
             .unwrap_or(0)
             .max(0) as u64
-    };
+    }
     let sessions = count(
-        "SELECT count(*) FROM sessions WHERE created_at >= ?1 AND COALESCE(kind, 'chat') != 'advisor'",
         &mut c,
-        since.to_owned(),
+        "SELECT count(*) FROM sessions WHERE created_at >= ?1 AND COALESCE(kind, 'chat') != 'advisor'",
+        since,
     )
     .await;
     let errors = count(
-        "SELECT count(*) FROM tool_calls WHERE is_error = 1 AND COALESCE(finished_at, started_at, '') >= ?1",
         &mut c,
-        since.to_owned(),
+        "SELECT count(*) FROM tool_calls WHERE is_error = 1 AND COALESCE(finished_at, started_at, '') >= ?1",
+        since,
     )
     .await;
     let denials = count(
-        "SELECT count(*) FROM questions WHERE asked_at >= ?1 AND state = 'answered' AND answer LIKE '%deny%'",
         &mut c,
-        since.to_owned(),
+        "SELECT count(*) FROM questions WHERE asked_at >= ?1 AND state = 'answered' AND answer LIKE '%deny%'",
+        since,
     )
     .await;
     let stops = count(
-        "SELECT count(*) FROM turn_steps WHERE at >= ?1 AND kind = 'turn_finished' AND payload LIKE '%cancelled%'",
         &mut c,
-        since.to_owned(),
+        "SELECT count(*) FROM turn_steps WHERE at >= ?1 AND kind = 'turn_finished' AND payload LIKE '%cancelled%'",
+        since,
     )
     .await;
     (sessions, errors + denials + stops)

@@ -112,7 +112,6 @@ async fn call(
             kind: runtime::CallKind::Dream,
         })
         .await
-        .map_err(|e| anyhow::anyhow!("{e}"))?
         .map_err(|e| anyhow::anyhow!("{e}"))?;
     Ok(reply.text)
 }

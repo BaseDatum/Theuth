@@ -148,13 +148,12 @@ async fn mirror(data_dir: &Path, text: &str) {
                 })
                 .await
             {
-                Ok(Ok(summary)) => {
+                Ok(summary) => {
                     state.journal = Some(summary.id.as_str().to_owned());
                     if let Err(e) = write_state(data_dir, &state) {
                         tracing::warn!("dreaming: journal id not saved: {e}");
                     }
                 }
-                Ok(Err(e)) => tracing::warn!("dreaming: journal document not created: {e}"),
                 Err(e) => tracing::warn!("dreaming: journal document not created: {e}"),
             }
             return;
@@ -169,8 +168,7 @@ async fn mirror(data_dir: &Path, text: &str) {
         })
         .await
     {
-        Ok(Ok(_)) => {}
-        Ok(Err(e)) => tracing::warn!("dreaming: journal document not updated: {e}"),
+        Ok(_) => {}
         Err(e) => tracing::warn!("dreaming: journal document not updated: {e}"),
     }
 }

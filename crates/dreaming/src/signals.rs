@@ -155,7 +155,6 @@ impl Signals {
         let agents = tokio::time::timeout(Duration::from_secs(2), roster.ask(roster::ListAgents))
             .await
             .ok()?
-            .ok()?
             .ok()?;
         Some(
             agents
