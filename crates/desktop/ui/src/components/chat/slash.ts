@@ -70,6 +70,11 @@ export const COMMANDS: readonly { name: string; hint: string; desc: string }[] =
     desc: 'knowledge base: list, search, history, restore, harvest',
   },
   {
+    name: '/autoresearch',
+    hint: '[<goal> | status|pause|resume|stop|steer|segment <slug> …]',
+    desc: 'autoresearch studies (140): set one up from a goal, list them, or control one (hands the skill to the model)',
+  },
+  {
     name: '/login',
     hint: '[name]',
     desc: 'log in to a provider or MCP server (picker without name)',

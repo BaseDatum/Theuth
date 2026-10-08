@@ -1571,6 +1571,11 @@ pub const COMMANDS: &[(&str, &str, &str)] = &[
         "scheduled prompts: list, fire one now, show its runs, pause or resume a loop",
     ),
     (
+        "/autoresearch",
+        "[<goal> | status|pause|resume|stop|steer|segment <slug> …]",
+        "autoresearch studies (140): set one up from a goal, list them, or control one — hands the `autoresearch` skill to the model",
+    ),
+    (
         "/tasks",
         "",
         "this project's tasks: id, state, owner, title (67)",
@@ -6833,6 +6838,9 @@ impl Model {
                 }
                 _ => self.entries.push(Entry::Info(SCHEDULES_USAGE.into())),
             },
+            // 140: `/autoresearch <goal>` sets a study up, bare lists them, `status|pause|… <slug>` controls one —
+            // all through the `autoresearch` skill (the model calls autoresearch_draft/status/control).
+            "/autoresearch" => self.use_skill("autoresearch".into(), arg.to_owned(), tx),
             "/tasks" => send(tx, Command::ListTasks(self.project.clone())),
             "/roster" => send(tx, Command::ListRoster),
             "/computer" => send(tx, Command::ComputerStatus),
