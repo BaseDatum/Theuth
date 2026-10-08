@@ -27,7 +27,14 @@ fn cmd(cwd: &Path, author: Option<&str>, args: &[&str]) -> Command {
     let mut c = Command::new("git");
     c.arg("-C")
         .arg(cwd)
-        .args(["-c", "core.hooksPath=/dev/null", "-c", "commit.gpgsign=false", "-c", "advice.detachedHead=false"])
+        .args([
+            "-c",
+            "core.hooksPath=/dev/null",
+            "-c",
+            "commit.gpgsign=false",
+            "-c",
+            "advice.detachedHead=false",
+        ])
         .args(args)
         .env("GIT_TERMINAL_PROMPT", "0")
         .env_remove("GIT_DIR")
@@ -49,7 +56,10 @@ fn cmd(cwd: &Path, author: Option<&str>, args: &[&str]) -> Command {
 /// Run and return `(ok, stdout, stderr)` — for commands whose non-zero exit is an answer.
 fn run_status(cwd: &Path, author: Option<&str>, args: &[&str]) -> Result<(bool, String, String)> {
     let out = cmd(cwd, author, args).output().map_err(|e| {
-        Error::Other(anyhow::anyhow!("git {}: {e}", args.first().copied().unwrap_or("")))
+        Error::Other(anyhow::anyhow!(
+            "git {}: {e}",
+            args.first().copied().unwrap_or("")
+        ))
     })?;
     Ok((
         out.status.success(),
@@ -99,11 +109,13 @@ fn stage_intent(worktree: &Path) -> Result<()> {
 
 /// Tracked changes vs `HEAD` plus untracked non-ignored paths (`status --porcelain`), one per line.
 fn dirty_paths(repo: &Path) -> Result<Vec<String>> {
-    Ok(git(repo, &["status", "--porcelain", "--untracked-files=all"])?
-        .lines()
-        .filter(|l| l.len() > 3)
-        .map(|l| l[3..].trim().to_owned())
-        .collect())
+    Ok(
+        git(repo, &["status", "--porcelain", "--untracked-files=all"])?
+            .lines()
+            .filter(|l| l.len() > 3)
+            .map(|l| l[3..].trim().to_owned())
+            .collect(),
+    )
 }
 
 fn sha256_hex(bytes: &[u8]) -> String {
@@ -138,9 +150,21 @@ pub fn resolve_base(repo: &Path, base: &str, include_dirty: bool) -> Result<Stri
             repo.display()
         )));
     }
-    let spec = format!("{}^{{commit}}", if base.trim().is_empty() { "HEAD" } else { base.trim() });
+    let spec = format!(
+        "{}^{{commit}}",
+        if base.trim().is_empty() {
+            "HEAD"
+        } else {
+            base.trim()
+        }
+    );
     let sha = git(repo, &["rev-parse", "--verify", "-q", &spec])
-        .map_err(|_| Error::refused(format!("base `{base}` does not name a commit in {}", repo.display())))?
+        .map_err(|_| {
+            Error::refused(format!(
+                "base `{base}` does not name a commit in {}",
+                repo.display()
+            ))
+        })?
         .trim()
         .to_owned();
     let dirty = dirty_paths(repo)?;
@@ -170,13 +194,21 @@ pub fn resolve_base(repo: &Path, base: &str, include_dirty: bool) -> Result<Stri
 /// `include_dirty`, so `base_sha` is its HEAD) is snapshotted onto the study
 /// branch as `autoresearch(<slug>): base snapshot` — the user's checkout
 /// itself is only read (`diff`, `ls-files`).
-pub fn worktree_add(repo: &Path, spec: &StudySpec, worktree: &Path, base_sha: &str) -> Result<String> {
+pub fn worktree_add(
+    repo: &Path,
+    spec: &StudySpec,
+    worktree: &Path,
+    base_sha: &str,
+) -> Result<String> {
     if let Some(parent) = worktree.parent() {
         std::fs::create_dir_all(parent)?;
     }
     let branch = study_branch(&spec.slug);
     let wt = worktree.to_string_lossy();
-    git(repo, &["worktree", "add", "-q", "-b", &branch, &wt, base_sha])?;
+    git(
+        repo,
+        &["worktree", "add", "-q", "-b", &branch, &wt, base_sha],
+    )?;
     let head = git(repo, &["rev-parse", "HEAD"])?.trim().to_owned();
     if head == base_sha && !dirty_paths(repo)?.is_empty() {
         let patch = diff_bytes(repo, &["--binary", "HEAD"])?;
@@ -202,7 +234,11 @@ pub fn worktree_add(repo: &Path, spec: &StudySpec, worktree: &Path, base_sha: &s
 pub fn worktree_remove(repo: &Path, worktree: &Path) -> Result<()> {
     if worktree.exists() {
         let wt = worktree.to_string_lossy();
-        let (ok, _, _) = run_status(repo, None, &["worktree", "remove", "--force", "--force", &wt])?;
+        let (ok, _, _) = run_status(
+            repo,
+            None,
+            &["worktree", "remove", "--force", "--force", &wt],
+        )?;
         if !ok && worktree.exists() {
             std::fs::remove_dir_all(worktree)?;
         }
@@ -244,17 +280,31 @@ impl KeepMeta {
         let subject = self.description.lines().next().unwrap_or("").trim();
         let mut m = format!(
             "autoresearch({}) #{}: {}\n\nAutoresearch-Study: {}\nAutoresearch-Run: {}\nAutoresearch-Metric: {}\nAutoresearch-Category: {}\n",
-            self.slug, self.n, subject, self.slug, self.n, self.metric_line.trim(), self.category.trim()
+            self.slug,
+            self.n,
+            subject,
+            self.slug,
+            self.n,
+            self.metric_line.trim(),
+            self.category.trim()
         );
         if !self.deviations.is_empty() {
-            m.push_str(&format!("Autoresearch-Deviations: {}\n", self.deviations.join(", ")));
+            m.push_str(&format!(
+                "Autoresearch-Deviations: {}\n",
+                self.deviations.join(", ")
+            ));
         }
         m
     }
 }
 
 /// `git add -A -- . ':!<evaluator_paths>'` + commit with trailers; returns the new sha.
-pub fn keep(worktree: &Path, spec: &StudySpec, meta: &KeepMeta, author: Option<&str>) -> Result<String> {
+pub fn keep(
+    worktree: &Path,
+    spec: &StudySpec,
+    meta: &KeepMeta,
+    author: Option<&str>,
+) -> Result<String> {
     let mut args: Vec<String> = vec!["add".into(), "-A".into(), "--".into(), ".".into()];
     for p in &spec.evaluator_paths {
         let p = p.trim().trim_end_matches('/');
@@ -266,7 +316,9 @@ pub fn keep(worktree: &Path, spec: &StudySpec, meta: &KeepMeta, author: Option<&
     run(worktree, author, &argv)?;
     let staged = git(worktree, &["diff", "--cached", "--name-only"])?;
     if staged.trim().is_empty() {
-        return Err(Error::refused("nothing to keep: no changes outside the evaluator paths"));
+        return Err(Error::refused(
+            "nothing to keep: no changes outside the evaluator paths",
+        ));
     }
     let msg = meta.message();
     run(worktree, author, &["commit", "-q", "-m", &msg])?;
@@ -300,15 +352,25 @@ pub fn discard(worktree: &Path, incumbent: &str, patch_path: &Path) -> Result<St
 
 fn apply_bytes(worktree: &Path, patch: &[u8]) -> Result<()> {
     use std::io::Write as _;
-    let mut c = cmd(worktree, None, &["apply", "--binary", "--whitespace=nowarn"]);
-    c.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
+    let mut c = cmd(
+        worktree,
+        None,
+        &["apply", "--binary", "--whitespace=nowarn"],
+    );
+    c.stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
     let mut child = c.spawn()?;
     child.stdin.take().expect("piped").write_all(patch)?;
     let out = child.wait_with_output()?;
     if !out.status.success() {
         return Err(Error::refused(format!(
             "patch does not apply: {}",
-            String::from_utf8_lossy(&out.stderr).trim().lines().last().unwrap_or("")
+            String::from_utf8_lossy(&out.stderr)
+                .trim()
+                .lines()
+                .last()
+                .unwrap_or("")
         )));
     }
     Ok(())
@@ -327,14 +389,23 @@ pub fn apply_patch(worktree: &Path, patch_path: &Path) -> Result<()> {
 /// Drift repair at `experiment_begin` (140 §6): HEAD == incumbent, branch ==
 /// `autoresearch/<slug>`, clean tree; otherwise save `stray.patch`, reset,
 /// and return what was wrong (for the incident row and the brief).
-pub fn repair(worktree: &Path, spec: &StudySpec, incumbent: &str, stray_patch: &Path) -> Result<Option<String>> {
+pub fn repair(
+    worktree: &Path,
+    spec: &StudySpec,
+    incumbent: &str,
+    stray_patch: &Path,
+) -> Result<Option<String>> {
     let want = study_branch(&spec.slug);
     let head = head(worktree)?;
     let branch = branch(worktree)?;
     let dirty = dirty_paths(worktree)?;
     let mut wrong = Vec::new();
     if head != incumbent {
-        wrong.push(format!("HEAD was {} instead of the incumbent {}", &head[..7.min(head.len())], &incumbent[..7.min(incumbent.len())]));
+        wrong.push(format!(
+            "HEAD was {} instead of the incumbent {}",
+            &head[..7.min(head.len())],
+            &incumbent[..7.min(incumbent.len())]
+        ));
     }
     match &branch {
         Some(b) if *b == want => {}
@@ -342,7 +413,11 @@ pub fn repair(worktree: &Path, spec: &StudySpec, incumbent: &str, stray_patch: &
         None => wrong.push(format!("HEAD was detached instead of on `{want}`")),
     }
     if !dirty.is_empty() {
-        wrong.push(format!("{} uncommitted path(s): {}", dirty.len(), dirty.iter().take(5).cloned().collect::<Vec<_>>().join(", ")));
+        wrong.push(format!(
+            "{} uncommitted path(s): {}",
+            dirty.len(),
+            dirty.iter().take(5).cloned().collect::<Vec<_>>().join(", ")
+        ));
     }
     if wrong.is_empty() {
         return Ok(None);
@@ -357,7 +432,10 @@ pub fn repair(worktree: &Path, spec: &StudySpec, incumbent: &str, stray_patch: &
     } else {
         format!("{} bytes saved to {}", patch.len(), stray_patch.display())
     };
-    Ok(Some(format!("worktree drift repaired: {}; {saved}; reset to the incumbent", wrong.join("; "))))
+    Ok(Some(format!(
+        "worktree drift repaired: {}; {saved}; reset to the incumbent",
+        wrong.join("; ")
+    )))
 }
 
 /// Revert a reviewed keep: incumbent ← previous, the commit kept reachable as
@@ -388,7 +466,10 @@ pub fn restore_rejected(worktree: &Path, slug: &str, n: u32) -> Result<()> {
 /// `**` spans segments, `*`/`?` stay inside one; a bare path (`fixtures/`,
 /// `Rakefile`) matches itself and everything under it.
 pub fn path_matches(pattern: &str, path: &str) -> bool {
-    let pat = pattern.trim().trim_start_matches("./").trim_end_matches('/');
+    let pat = pattern
+        .trim()
+        .trim_start_matches("./")
+        .trim_end_matches('/');
     if pat.is_empty() {
         return false;
     }
@@ -408,7 +489,11 @@ pub fn path_matches(pattern: &str, path: &str) -> bool {
         match pats.first() {
             None => segs.is_empty(),
             Some(&"**") => (0..=segs.len()).any(|i| walk(&pats[1..], &segs[i..])),
-            Some(p) => !segs.is_empty() && seg(p.as_bytes(), segs[0].as_bytes()) && walk(&pats[1..], &segs[1..]),
+            Some(p) => {
+                !segs.is_empty()
+                    && seg(p.as_bytes(), segs[0].as_bytes())
+                    && walk(&pats[1..], &segs[1..])
+            }
         }
     }
     let pats: Vec<&str> = pat.split('/').collect();
@@ -510,12 +595,22 @@ pub fn diff_text(worktree: &Path, a: &str, b: &str, max_bytes: usize) -> Result<
 
 /// Files touched by commit `sha`.
 pub fn files_of(worktree: &Path, sha: &str) -> Result<Vec<String>> {
-    Ok(git(worktree, &["diff-tree", "--no-commit-id", "--name-only", "-r", "--root", sha])?
-        .lines()
-        .map(str::trim)
-        .filter(|l| !l.is_empty())
-        .map(str::to_owned)
-        .collect())
+    Ok(git(
+        worktree,
+        &[
+            "diff-tree",
+            "--no-commit-id",
+            "--name-only",
+            "-r",
+            "--root",
+            sha,
+        ],
+    )?
+    .lines()
+    .map(str::trim)
+    .filter(|l| !l.is_empty())
+    .map(str::to_owned)
+    .collect())
 }
 
 /// `git cherry-pick <sha>` in a scratch worktree; `Ok(false)` = conflict (aborted).
@@ -526,7 +621,16 @@ pub fn cherry_pick(worktree: &Path, sha: &str) -> Result<bool> {
 /// [`cherry_pick`] that names the conflicting paths (`ls-files -u`, git's
 /// `~HEAD`-style suffixes stripped); empty = applied. The pick is aborted on conflict.
 pub fn cherry_pick_conflicts(worktree: &Path, sha: &str) -> Result<Vec<String>> {
-    let (ok, _, err) = run_status(worktree, None, &["cherry-pick", "--allow-empty", "--keep-redundant-commits", sha])?;
+    let (ok, _, err) = run_status(
+        worktree,
+        None,
+        &[
+            "cherry-pick",
+            "--allow-empty",
+            "--keep-redundant-commits",
+            sha,
+        ],
+    )?;
     if ok {
         return Ok(Vec::new());
     }
@@ -547,7 +651,10 @@ pub fn cherry_pick_conflicts(worktree: &Path, sha: &str) -> Result<Vec<String>> 
         }
         return Ok(paths);
     }
-    Err(Error::Other(anyhow::anyhow!("git cherry-pick {sha}: {}", err.trim().lines().last().unwrap_or("failed"))))
+    Err(Error::Other(anyhow::anyhow!(
+        "git cherry-pick {sha}: {}",
+        err.trim().lines().last().unwrap_or("failed")
+    )))
 }
 
 /// Create or move a local branch at `sha` (finalize's per-changeset branches). Never pushed.
@@ -576,10 +683,14 @@ pub fn checkout_state(repo: &Path) -> Result<(Option<String>, bool)> {
 pub fn merge_into_checkout(repo: &Path, branch: &str, author: Option<&str>) -> Result<String> {
     let (current, clean) = checkout_state(repo)?;
     let Some(current) = current else {
-        return Err(Error::refused("your checkout is detached; check out a branch first"));
+        return Err(Error::refused(
+            "your checkout is detached; check out a branch first",
+        ));
     };
     if !clean {
-        return Err(Error::refused("your checkout has uncommitted changes; commit or stash them first"));
+        return Err(Error::refused(
+            "your checkout has uncommitted changes; commit or stash them first",
+        ));
     }
     let msg = format!("Merge {branch} into {current} (theuth autoresearch)");
     let (ok, _, err) = run_status(repo, author, &["merge", "--no-ff", "-m", &msg, branch])?;
@@ -619,7 +730,11 @@ pub fn discard_study(repo: &Path, slug: &str, study_dir: &Path) -> Result<Vec<St
         removed.push(b.to_owned());
     }
     let rej = format!("refs/autoresearch/{slug}/");
-    for r in git(repo, &["for-each-ref", "--format=%(refname)", &rej])?.lines().map(str::trim).filter(|r| !r.is_empty()) {
+    for r in git(repo, &["for-each-ref", "--format=%(refname)", &rej])?
+        .lines()
+        .map(str::trim)
+        .filter(|r| !r.is_empty())
+    {
         git(repo, &["update-ref", "-d", r])?;
         removed.push(r.to_owned());
     }
@@ -650,13 +765,29 @@ mod tests {
             .env("GIT_TERMINAL_PROMPT", "0")
             .output()
             .unwrap();
-        assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+        assert!(
+            out.status.success(),
+            "git {args:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
         String::from_utf8_lossy(&out.stdout).trim().to_owned()
     }
 
     fn commit_all(cwd: &Path, msg: &str) -> String {
         sh(cwd, &["add", "-A"]);
-        sh(cwd, &["-c", "user.name=u", "-c", "user.email=u@x", "commit", "-q", "-m", msg]);
+        sh(
+            cwd,
+            &[
+                "-c",
+                "user.name=u",
+                "-c",
+                "user.email=u@x",
+                "commit",
+                "-q",
+                "-m",
+                msg,
+            ],
+        );
         sh(cwd, &["rev-parse", "HEAD"])
     }
 
@@ -681,9 +812,19 @@ mod tests {
         std::fs::write(repo.join("bench.sh"), "echo METRIC t=1\n").unwrap();
         let hooks = repo.join(".githooks");
         std::fs::create_dir_all(&hooks).unwrap();
-        for h in ["pre-commit", "post-commit", "post-checkout", "post-merge", "pre-auto-gc"] {
+        for h in [
+            "pre-commit",
+            "post-commit",
+            "post-checkout",
+            "post-merge",
+            "pre-auto-gc",
+        ] {
             let p = hooks.join(h);
-            std::fs::write(&p, "#!/bin/sh\necho ran > \"$(git rev-parse --git-common-dir)/HOOK_RAN\"\n").unwrap();
+            std::fs::write(
+                &p,
+                "#!/bin/sh\necho ran > \"$(git rev-parse --git-common-dir)/HOOK_RAN\"\n",
+            )
+            .unwrap();
             #[cfg(unix)]
             {
                 use std::os::unix::fs::PermissionsExt as _;
@@ -694,7 +835,10 @@ mod tests {
         sh(&repo, &["config", "core.hooksPath", ".githooks"]);
         let remote = tmp.path().join("origin.git");
         sh(tmp.path(), &["init", "-q", "--bare", "origin.git"]);
-        sh(&repo, &["remote", "add", "origin", remote.to_str().unwrap()]);
+        sh(
+            &repo,
+            &["remote", "add", "origin", remote.to_str().unwrap()],
+        );
         sh(&repo, &["push", "-q", "origin", "main"]);
         let spec = StudySpec {
             slug: "s".into(),
@@ -704,7 +848,13 @@ mod tests {
             off_limits: vec!["fixtures/**".into()],
             ..Default::default()
         };
-        Fixture { study: tmp.path().join("data").join("s").join("worktree"), _tmp: tmp, repo, remote, spec }
+        Fixture {
+            study: tmp.path().join("data").join("s").join("worktree"),
+            _tmp: tmp,
+            repo,
+            remote,
+            spec,
+        }
     }
 
     /// Every file of the working tree (not `.git`) → bytes, plus HEAD and the porcelain status.
@@ -720,12 +870,21 @@ mod tests {
                 if p.is_dir() {
                     stack.push(p);
                 } else {
-                    m.insert(p.strip_prefix(repo).unwrap().to_string_lossy().into_owned(), std::fs::read(&p).unwrap());
+                    m.insert(
+                        p.strip_prefix(repo).unwrap().to_string_lossy().into_owned(),
+                        std::fs::read(&p).unwrap(),
+                    );
                 }
             }
         }
-        m.insert("<HEAD>".into(), sh(repo, &["rev-parse", "HEAD"]).into_bytes());
-        m.insert("<status>".into(), sh(repo, &["status", "--porcelain"]).into_bytes());
+        m.insert(
+            "<HEAD>".into(),
+            sh(repo, &["rev-parse", "HEAD"]).into_bytes(),
+        );
+        m.insert(
+            "<status>".into(),
+            sh(repo, &["status", "--porcelain"]).into_bytes(),
+        );
         m
     }
 
@@ -734,7 +893,10 @@ mod tests {
     }
 
     fn remote_refs(remote: &Path) -> String {
-        sh(remote, &["for-each-ref", "--format=%(refname) %(objectname)"])
+        sh(
+            remote,
+            &["for-each-ref", "--format=%(refname) %(objectname)"],
+        )
     }
 
     fn meta(n: u32) -> KeepMeta {
@@ -770,9 +932,15 @@ mod tests {
             let repaired = repair(&f.study, &f.spec, &incumbent, &stray).unwrap();
             if n == 7 {
                 // #6 kept with a dirty evaluator file left behind: repair saves and removes it.
-                assert!(repaired.is_some(), "evaluator edit left by #6 must be repaired");
+                assert!(
+                    repaired.is_some(),
+                    "evaluator edit left by #6 must be repaired"
+                );
                 assert!(stray.exists());
-                assert_eq!(std::fs::read_to_string(f.study.join("fixtures/a.txt")).unwrap(), "fixture\n");
+                assert_eq!(
+                    std::fs::read_to_string(f.study.join("fixtures/a.txt")).unwrap(),
+                    "fixture\n"
+                );
             } else {
                 assert_eq!(repaired, None, "experiment {n}");
             }
@@ -784,7 +952,10 @@ mod tests {
                 std::fs::write(f.study.join("fixtures/a.txt"), "tampered\n").unwrap();
             }
             let d = scope_diff(&f.study, &f.spec, &incumbent).unwrap();
-            assert!(d.touched.contains(&"src/lib.rs".to_owned()) && d.touched.contains(&format!("src/new{n}.rs")));
+            assert!(
+                d.touched.contains(&"src/lib.rs".to_owned())
+                    && d.touched.contains(&format!("src/new{n}.rs"))
+            );
             if n == 6 {
                 assert_eq!((d.added, d.removed), (3, 1));
                 assert_eq!(d.off_limits, vec!["fixtures/a.txt"]);
@@ -795,13 +966,31 @@ mod tests {
             }
             if n % 2 == 0 {
                 let sha = keep(&f.study, &f.spec, &meta(n), None).unwrap();
-                let shown = sh(&f.study, &["show", "--stat", "--format=%an <%ae>%n%B", &sha]);
-                assert!(shown.starts_with("theuth autoresearch <noreply@theuth.local>"), "{shown}");
+                let shown = sh(
+                    &f.study,
+                    &["show", "--stat", "--format=%an <%ae>%n%B", &sha],
+                );
+                assert!(
+                    shown.starts_with("theuth autoresearch <noreply@theuth.local>"),
+                    "{shown}"
+                );
                 assert!(shown.contains(&format!("autoresearch(s) #{n}: experiment {n}")));
-                assert!(shown.contains("Autoresearch-Study: s") && shown.contains(&format!("Autoresearch-Run: {n}")));
-                assert!(shown.contains("Autoresearch-Metric: t 2 -> 1") && shown.contains("Autoresearch-Category: algo"));
-                assert!(!shown.contains("fixtures/a.txt"), "evaluator path committed: {shown}");
-                assert_eq!(files_of(&f.study, &sha).unwrap(), vec!["src/lib.rs".to_owned(), format!("src/new{n}.rs")]);
+                assert!(
+                    shown.contains("Autoresearch-Study: s")
+                        && shown.contains(&format!("Autoresearch-Run: {n}"))
+                );
+                assert!(
+                    shown.contains("Autoresearch-Metric: t 2 -> 1")
+                        && shown.contains("Autoresearch-Category: algo")
+                );
+                assert!(
+                    !shown.contains("fixtures/a.txt"),
+                    "evaluator path committed: {shown}"
+                );
+                assert_eq!(
+                    files_of(&f.study, &sha).unwrap(),
+                    vec!["src/lib.rs".to_owned(), format!("src/new{n}.rs")]
+                );
                 incumbent = sha;
                 kept += 1;
             } else {
@@ -813,14 +1002,35 @@ mod tests {
                 assert!(!f.study.join(format!("src/new{n}.rs")).exists());
                 assert_eq!(sh(&f.study, &["status", "--porcelain"]), "");
             }
-            assert!(f.study.join("target/cache.bin").exists(), "ignored file lost at {n}");
+            assert!(
+                f.study.join("target/cache.bin").exists(),
+                "ignored file lost at {n}"
+            );
         }
         assert_eq!(kept, 10);
-        assert_eq!(sh(&f.study, &["rev-list", "--count", &format!("{base}..HEAD")]), "10");
+        assert_eq!(
+            sh(&f.study, &["rev-list", "--count", &format!("{base}..HEAD")]),
+            "10"
+        );
         assert_eq!(snapshot(&f.repo), before, "the user's checkout changed");
         assert!(!hook_ran(&f.repo), "a hook ran");
-        assert_eq!(remote_refs(&f.remote), remote_before, "something reached the remote");
-        assert_eq!(sh(&f.repo, &["branch", "--list", "--format=%(refname:short)", "autoresearch/*"]), "autoresearch/s");
+        assert_eq!(
+            remote_refs(&f.remote),
+            remote_before,
+            "something reached the remote"
+        );
+        assert_eq!(
+            sh(
+                &f.repo,
+                &[
+                    "branch",
+                    "--list",
+                    "--format=%(refname:short)",
+                    "autoresearch/*"
+                ]
+            ),
+            "autoresearch/s"
+        );
     }
 
     #[test]
@@ -865,12 +1075,18 @@ mod tests {
         std::fs::write(f.study.join("src/lib.rs"), "committed+dirty\n").unwrap();
         std::fs::write(f.study.join("src/stray.rs"), "stray\n").unwrap();
         let msg = repair(&f.study, &f.spec, &base, &stray).unwrap().unwrap();
-        assert!(msg.contains("HEAD was") && msg.contains("uncommitted path"), "{msg}");
+        assert!(
+            msg.contains("HEAD was") && msg.contains("uncommitted path"),
+            "{msg}"
+        );
         assert_eq!(head(&f.study).unwrap(), base);
         assert_eq!(branch(&f.study).unwrap().as_deref(), Some("autoresearch/s"));
         assert_eq!(sh(&f.study, &["status", "--porcelain"]), "");
         let p = std::fs::read_to_string(&stray).unwrap();
-        assert!(p.contains("committed+dirty") && p.contains("src/stray.rs"), "{p}");
+        assert!(
+            p.contains("committed+dirty") && p.contains("src/stray.rs"),
+            "{p}"
+        );
         // Detached and on another branch.
         sh(&f.study, &["checkout", "-q", "--detach"]);
         let msg = repair(&f.study, &f.spec, &base, &stray).unwrap().unwrap();
@@ -891,17 +1107,34 @@ mod tests {
         worktree_add(&f.repo, &f.spec, &f.study, &base).unwrap();
         std::fs::write(f.study.join("src/lib.rs"), "gamed\n").unwrap();
         let sha = keep(&f.study, &f.spec, &meta(4), Some("Custom Author <c@x>")).unwrap();
-        assert_eq!(sh(&f.study, &["log", "-1", "--format=%an"]), "Custom Author");
+        assert_eq!(
+            sh(&f.study, &["log", "-1", "--format=%an"]),
+            "Custom Author"
+        );
         reject(&f.study, "s", 4, &base).unwrap();
         assert_eq!(head(&f.study).unwrap(), base);
-        assert_eq!(sh(&f.study, &["rev-parse", "refs/autoresearch/s/rejected/4"]), sha);
-        assert_eq!(std::fs::read_to_string(f.study.join("src/lib.rs")).unwrap(), "fn a() {}\nfn b() {}\n");
+        assert_eq!(
+            sh(&f.study, &["rev-parse", "refs/autoresearch/s/rejected/4"]),
+            sha
+        );
+        assert_eq!(
+            std::fs::read_to_string(f.study.join("src/lib.rs")).unwrap(),
+            "fn a() {}\nfn b() {}\n"
+        );
         restore_rejected(&f.study, "s", 4).unwrap();
         assert_eq!(head(&f.study).unwrap(), base);
-        assert_eq!(std::fs::read_to_string(f.study.join("src/lib.rs")).unwrap(), "gamed\n");
+        assert_eq!(
+            std::fs::read_to_string(f.study.join("src/lib.rs")).unwrap(),
+            "gamed\n"
+        );
         assert_eq!(sh(&f.study, &["status", "--porcelain"]), "M src/lib.rs");
         // A conflicting restore is refused and leaves the tree clean.
-        discard(&f.study, &base, &f.study.parent().unwrap().join("runs/4/candidate.patch")).unwrap();
+        discard(
+            &f.study,
+            &base,
+            &f.study.parent().unwrap().join("runs/4/candidate.patch"),
+        )
+        .unwrap();
         std::fs::write(f.study.join("src/lib.rs"), "moved on\n").unwrap();
         let inc = keep(&f.study, &f.spec, &meta(5), None).unwrap();
         let err = restore_rejected(&f.study, "s", 4).unwrap_err().to_string();
@@ -913,21 +1146,41 @@ mod tests {
     #[test]
     fn resolve_base_refuses_dirty_unless_included_then_snapshots_on_the_study_branch() {
         let f = fixture();
-        assert!(resolve_base(&f.repo, "nope", false).unwrap_err().to_string().contains("does not name a commit"));
+        assert!(
+            resolve_base(&f.repo, "nope", false)
+                .unwrap_err()
+                .to_string()
+                .contains("does not name a commit")
+        );
         std::fs::write(f.repo.join("src/lib.rs"), "user edit\n").unwrap();
         std::fs::write(f.repo.join("src/untracked.rs"), "u\n").unwrap();
-        let err = resolve_base(&f.repo, "HEAD", false).unwrap_err().to_string();
+        let err = resolve_base(&f.repo, "HEAD", false)
+            .unwrap_err()
+            .to_string();
         assert!(err.contains("2 uncommitted path(s)"), "{err}");
         assert!(resolve_base(&f.repo, "HEAD~0", true).is_ok());
         let before = snapshot(&f.repo);
         let base = resolve_base(&f.repo, "HEAD", true).unwrap();
         let head = worktree_add(&f.repo, &f.spec, &f.study, &base).unwrap();
         assert_ne!(head, base);
-        assert_eq!(sh(&f.study, &["log", "-1", "--format=%s"]), "autoresearch(s): base snapshot");
-        assert_eq!(std::fs::read_to_string(f.study.join("src/lib.rs")).unwrap(), "user edit\n");
-        assert_eq!(std::fs::read_to_string(f.study.join("src/untracked.rs")).unwrap(), "u\n");
+        assert_eq!(
+            sh(&f.study, &["log", "-1", "--format=%s"]),
+            "autoresearch(s): base snapshot"
+        );
+        assert_eq!(
+            std::fs::read_to_string(f.study.join("src/lib.rs")).unwrap(),
+            "user edit\n"
+        );
+        assert_eq!(
+            std::fs::read_to_string(f.study.join("src/untracked.rs")).unwrap(),
+            "u\n"
+        );
         assert_eq!(sh(&f.study, &["status", "--porcelain"]), "");
-        assert_eq!(snapshot(&f.repo), before, "the user's dirty checkout was touched");
+        assert_eq!(
+            snapshot(&f.repo),
+            before,
+            "the user's dirty checkout was touched"
+        );
         assert_eq!(sh(&f.repo, &["rev-parse", "main"]), base, "main moved");
         assert!(!hook_ran(&f.repo));
         assert!(!is_git_repo(f.repo.parent().unwrap()));
@@ -977,11 +1230,19 @@ mod tests {
         std::fs::write(f.study.join("src/lib.rs"), "fn a() {}\n").unwrap();
         let d3 = scope_diff(&f.study, &f.spec, &base).unwrap();
         assert_ne!(d3.hash, d1.hash);
-        assert_eq!((d3.added, d3.removed), (1, 1), "README.md still counts: {d3:?}");
+        assert_eq!(
+            (d3.added, d3.removed),
+            (1, 1),
+            "README.md still counts: {d3:?}"
+        );
         assert!(!d3.simpler());
         std::fs::remove_file(f.study.join("README.md")).unwrap();
         let d4 = scope_diff(&f.study, &f.spec, &base).unwrap();
-        assert_eq!((d4.added, d4.removed, d4.touched.len()), (0, 1, 1), "{d4:?}");
+        assert_eq!(
+            (d4.added, d4.removed, d4.touched.len()),
+            (0, 1, 1),
+            "{d4:?}"
+        );
         assert!(d4.simpler());
         let text = diff_text(&f.study, &base, "HEAD", 10_000).unwrap();
         assert_eq!(text, "", "HEAD == base");
@@ -1004,10 +1265,20 @@ mod tests {
         sh(&f.repo, &["branch", "unrelated"]);
         let before = snapshot(&f.repo);
         let removed = discard_study(&f.repo, "s", f.study.parent().unwrap()).unwrap();
-        assert_eq!(removed, vec!["autoresearch/s", "autoresearch/s+1-lib", "refs/autoresearch/s/rejected/1"]);
+        assert_eq!(
+            removed,
+            vec![
+                "autoresearch/s",
+                "autoresearch/s+1-lib",
+                "refs/autoresearch/s/rejected/1"
+            ]
+        );
         assert!(!f.study.exists() && !scratch.exists());
         assert_eq!(sh(&f.repo, &["worktree", "list"]).lines().count(), 1);
-        assert_eq!(sh(&f.repo, &["branch", "--format=%(refname:short)"]), "main\nunrelated");
+        assert_eq!(
+            sh(&f.repo, &["branch", "--format=%(refname:short)"]),
+            "main\nunrelated"
+        );
         assert_eq!(snapshot(&f.repo), before);
         worktree_remove(&f.repo, &f.study).unwrap();
     }
@@ -1021,14 +1292,28 @@ mod tests {
         let sha = keep(&f.study, &f.spec, &meta(1), None).unwrap();
         branch_at(&f.repo, "autoresearch/s+1-lib", &sha).unwrap();
         std::fs::write(f.repo.join("src/lib.rs"), "user wip\n").unwrap();
-        let err = merge_into_checkout(&f.repo, "autoresearch/s+1-lib", None).unwrap_err().to_string();
+        let err = merge_into_checkout(&f.repo, "autoresearch/s+1-lib", None)
+            .unwrap_err()
+            .to_string();
         assert!(err.contains("uncommitted"), "{err}");
         std::fs::write(f.repo.join("src/lib.rs"), "fn a() {}\nfn b() {}\n").unwrap();
         let merged = merge_into_checkout(&f.repo, "autoresearch/s+1-lib", None).unwrap();
         assert_eq!(sh(&f.repo, &["rev-parse", "HEAD"]), merged);
-        assert_eq!(sh(&f.repo, &["rev-list", "--parents", "-1", "HEAD"]).split(' ').count(), 3, "a merge commit");
-        assert_eq!(std::fs::read_to_string(f.repo.join("src/lib.rs")).unwrap(), "better\n");
-        assert_eq!(checkout_state(&f.repo).unwrap(), (Some("main".into()), true));
+        assert_eq!(
+            sh(&f.repo, &["rev-list", "--parents", "-1", "HEAD"])
+                .split(' ')
+                .count(),
+            3,
+            "a merge commit"
+        );
+        assert_eq!(
+            std::fs::read_to_string(f.repo.join("src/lib.rs")).unwrap(),
+            "better\n"
+        );
+        assert_eq!(
+            checkout_state(&f.repo).unwrap(),
+            (Some("main".into()), true)
+        );
         assert!(!hook_ran(&f.repo));
         assert_eq!(remote_refs(&f.remote).lines().count(), 1, "nothing pushed");
     }
@@ -1044,12 +1329,27 @@ mod tests {
         let c2 = commit_all(&f.study, "two");
         let scratch = f.study.parent().unwrap().join("finalize/cs-1");
         worktree_add_detached(&f.repo, &scratch, &base).unwrap();
-        assert!(!cherry_pick(&scratch, &c2).unwrap(), "two on base conflicts");
+        assert!(
+            !cherry_pick(&scratch, &c2).unwrap(),
+            "two on base conflicts"
+        );
         assert_eq!(head(&scratch).unwrap(), base);
         assert_eq!(sh(&scratch, &["status", "--porcelain"]), "");
         assert!(cherry_pick(&scratch, &c1).unwrap());
         assert!(cherry_pick(&scratch, &c2).unwrap());
-        assert_eq!(std::fs::read_to_string(scratch.join("src/lib.rs")).unwrap(), "two\n");
-        assert_eq!(KeepMeta { deviations: vec!["README.md".into()], ..meta(2) }.message().lines().last(), Some("Autoresearch-Deviations: README.md"));
+        assert_eq!(
+            std::fs::read_to_string(scratch.join("src/lib.rs")).unwrap(),
+            "two\n"
+        );
+        assert_eq!(
+            KeepMeta {
+                deviations: vec!["README.md".into()],
+                ..meta(2)
+            }
+            .message()
+            .lines()
+            .last(),
+            Some("Autoresearch-Deviations: README.md")
+        );
     }
 }

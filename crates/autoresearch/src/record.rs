@@ -37,7 +37,11 @@ fn slugify(s: &str) -> String {
 
 /// The repo's directory name (`/Users/x/Develop/liquid` → `liquid`).
 pub fn repo_name(repo: &str) -> String {
-    let name = repo.trim_end_matches('/').rsplit('/').next().unwrap_or(repo);
+    let name = repo
+        .trim_end_matches('/')
+        .rsplit('/')
+        .next()
+        .unwrap_or(repo);
     let s = slugify(name);
     if s.is_empty() { "repo".into() } else { s }
 }
@@ -73,12 +77,23 @@ pub async fn body(store: &Store, study: &StudyRecord, headline: &str) -> Result<
     let rows = store.list_experiments(&study.slug, None, u32::MAX).await?;
     b.push_str("\n## Kept\n\n");
     if changesets.is_empty() {
-        let kept: Vec<_> = rows.iter().filter(|e| e.state == ExperimentState::Kept).collect();
+        let kept: Vec<_> = rows
+            .iter()
+            .filter(|e| e.state == ExperimentState::Kept)
+            .collect();
         if kept.is_empty() {
             b.push_str("Nothing kept.\n");
         }
         for e in kept.iter().rev() {
-            b.push_str(&format!("- #{} [{}] {} ({})\n", e.n, e.category, e.description.trim(), e.delta_pct.map(|d| format!("{d:+.1} %")).unwrap_or_default()));
+            b.push_str(&format!(
+                "- #{} [{}] {} ({})\n",
+                e.n,
+                e.category,
+                e.description.trim(),
+                e.delta_pct
+                    .map(|d| format!("{d:+.1} %"))
+                    .unwrap_or_default()
+            ));
         }
     }
     for c in &changesets {
@@ -86,10 +101,18 @@ pub async fn body(store: &Store, study: &StudyRecord, headline: &str) -> Result<
             "- {} `{}`: alone {}, together {}; files {}; experiments {}\n",
             c.name,
             c.branch,
-            c.delta_alone_pct.map(|d| format!("{d:+.1} %")).unwrap_or_else(|| "not measured".into()),
-            c.delta_together_pct.map(|d| format!("{d:+.1} %")).unwrap_or_else(|| "—".into()),
+            c.delta_alone_pct
+                .map(|d| format!("{d:+.1} %"))
+                .unwrap_or_else(|| "not measured".into()),
+            c.delta_together_pct
+                .map(|d| format!("{d:+.1} %"))
+                .unwrap_or_else(|| "—".into()),
             c.files.join(", "),
-            c.experiments.iter().map(|n| format!("#{n}")).collect::<Vec<_>>().join(" ")
+            c.experiments
+                .iter()
+                .map(|n| format!("#{n}"))
+                .collect::<Vec<_>>()
+                .join(" ")
         ));
     }
     b.push_str("\n## Dead ends\n\n");
@@ -98,7 +121,10 @@ pub async fn body(store: &Store, study: &StudyRecord, headline: &str) -> Result<
         .filter(|e| {
             matches!(
                 e.state,
-                ExperimentState::Discarded | ExperimentState::Crashed | ExperimentState::ChecksFailed | ExperimentState::RejectedByReview
+                ExperimentState::Discarded
+                    | ExperimentState::Crashed
+                    | ExperimentState::ChecksFailed
+                    | ExperimentState::RejectedByReview
             )
         })
         .take(DEAD_ENDS)
@@ -107,18 +133,30 @@ pub async fn body(store: &Store, study: &StudyRecord, headline: &str) -> Result<
         b.push_str("None.\n");
     }
     for e in dead {
-        let what = if e.idea.trim().is_empty() { e.description.trim() } else { e.idea.trim() };
+        let what = if e.idea.trim().is_empty() {
+            e.description.trim()
+        } else {
+            e.idea.trim()
+        };
         b.push_str(&format!(
             "- #{} [{}] {} — {}{}\n",
             e.n,
             e.category,
             e.verdict.as_ref().map(|v| v.tag()).unwrap_or("discarded"),
             what,
-            if e.learned.trim().is_empty() { String::new() } else { format!(" (learned: {})", e.learned.trim()) }
+            if e.learned.trim().is_empty() {
+                String::new()
+            } else {
+                format!(" (learned: {})", e.learned.trim())
+            }
         ));
     }
     b.push_str(&format!("\n{PLAYBOOK_HEADING}\n\n"));
-    b.push_str(if study.playbook.trim().is_empty() { "(empty)" } else { study.playbook.trim() });
+    b.push_str(if study.playbook.trim().is_empty() {
+        "(empty)"
+    } else {
+        study.playbook.trim()
+    });
     b.push('\n');
     if b.len() > knowledge::BODY_MAX {
         let mut cut = knowledge::BODY_MAX - 32;
@@ -132,7 +170,12 @@ pub async fn body(store: &Store, study: &StudyRecord, headline: &str) -> Result<
 }
 
 /// Write the record for a finished study; returns its knowledge id.
-pub async fn write(store: &Store, study: &StudyRecord, headline: &str, rt: &runtime::Runtime) -> Result<String> {
+pub async fn write(
+    store: &Store,
+    study: &StudyRecord,
+    headline: &str,
+    rt: &runtime::Runtime,
+) -> Result<String> {
     let _ = rt;
     let date = study
         .finished_at
@@ -143,20 +186,29 @@ pub async fn write(store: &Store, study: &StudyRecord, headline: &str, rt: &runt
     let id = record_id(&study.repo, &study.slug, &date);
     let body = body(store, study, headline).await?;
     let Some(k) = knowledge().await else {
-        return Err(Error::refused("knowledge plugin not running; record not written"));
+        return Err(Error::refused(
+            "knowledge plugin not running; record not written",
+        ));
     };
     let put = knowledge::Put {
         id: id.clone(),
         type_: "record".into(),
         title: format!("Autoresearch {}: {}", study.slug, headline.trim()),
-        description: Some(format!("Study `{}` on {}: {}", study.slug, repo_name(&study.repo), study.spec.goal.trim())),
+        description: Some(format!(
+            "Study `{}` on {}: {}",
+            study.slug,
+            repo_name(&study.repo),
+            study.spec.goal.trim()
+        )),
         tags: vec![TAG.into(), slugify(&study.slug), repo_name(&study.repo)],
         scope: Some(PathBuf::from(&study.repo)),
         body,
         status: Some(knowledge::Status::Tidy),
         ..Default::default()
     };
-    k.put(put, knowledge::Source::Harvest).await.map_err(Error::Other)?;
+    k.put(put, knowledge::Source::Harvest)
+        .await
+        .map_err(Error::Other)?;
     Ok(id)
 }
 
@@ -174,11 +226,18 @@ pub async fn seed_playbook(repo: &str, rt: &runtime::Runtime) -> Result<Option<S
         return Ok(None);
     };
     let prefix = format!("{PREFIX}{}-", repo_name(repo));
-    let mut metas = k.list(Some(&prefix), Some("record"), Some(TAG), 1000).await.map_err(Error::Other)?;
+    let mut metas = k
+        .list(Some(&prefix), Some("record"), Some(TAG), 1000)
+        .await
+        .map_err(Error::Other)?;
     metas.retain(|m| m.merged_into.is_none() && m.superseded_by.is_none());
     // Ids end in `YYYY-MM-DD`, so the newest record sorts last; ties by timestamp.
     let date = |id: &str| id[id.len().saturating_sub(10)..].to_owned();
-    metas.sort_by(|a, b| date(&a.id).cmp(&date(&b.id)).then_with(|| a.timestamp.cmp(&b.timestamp)));
+    metas.sort_by(|a, b| {
+        date(&a.id)
+            .cmp(&date(&b.id))
+            .then_with(|| a.timestamp.cmp(&b.timestamp))
+    });
     let Some(newest) = metas.last() else {
         return Ok(None);
     };
@@ -194,12 +253,21 @@ mod tests {
 
     #[test]
     fn ids_and_playbook_section() {
-        assert_eq!(record_id("/Users/x/Develop/My Liquid/", "sort-speed", "2026-10-08"), "records/autoresearch-my-liquid-sort-speed-2026-10-08");
+        assert_eq!(
+            record_id("/Users/x/Develop/My Liquid/", "sort-speed", "2026-10-08"),
+            "records/autoresearch-my-liquid-sort-speed-2026-10-08"
+        );
         assert_eq!(repo_name(""), "repo");
-        assert_eq!(playbook_of("x\n## Playbook\n\nbuild with make\nhot path: parse\n"), Some("build with make\nhot path: parse".into()));
+        assert_eq!(
+            playbook_of("x\n## Playbook\n\nbuild with make\nhot path: parse\n"),
+            Some("build with make\nhot path: parse".into())
+        );
         assert_eq!(playbook_of("x\n## Playbook\n\n(empty)\n"), None);
         assert_eq!(playbook_of("no section"), None);
-        assert_eq!(playbook_of("## Playbook\n\ntext\n## Later\nmore"), Some("text".into()));
+        assert_eq!(
+            playbook_of("## Playbook\n\ntext\n## Later\nmore"),
+            Some("text".into())
+        );
     }
 
     /// The body carries goal, result, kept, dead ends with lessons, and the playbook; stays under the cap.
@@ -207,7 +275,15 @@ mod tests {
     async fn body_from_the_ledger() {
         let dir = tempfile::tempdir().unwrap();
         let store = Store::open(dir.path()).await.unwrap();
-        let mut study = StudyRecord::new(StudySpec { slug: "s".into(), goal: "faster parse".into(), repo: "/r/liquid".into(), ..Default::default() }, None);
+        let mut study = StudyRecord::new(
+            StudySpec {
+                slug: "s".into(),
+                goal: "faster parse".into(),
+                repo: "/r/liquid".into(),
+                ..Default::default()
+            },
+            None,
+        );
         study.base_sha = Some("b".into());
         study.incumbent_sha = Some("f".into());
         study.playbook = "x".repeat(20_000);
@@ -226,7 +302,10 @@ mod tests {
         let b = body(&store, &study, "t 10 → 9 (−10 %)").await.unwrap();
         assert!(b.contains("Goal: faster parse") && b.contains("Result: t 10 → 9"));
         assert!(b.contains("- #1 [] unrolled loop (-4.0 %)"), "{b}");
-        assert!(b.contains("- #2 [] crash — SIMD (learned: no target feature)"), "{b}");
+        assert!(
+            b.contains("- #2 [] crash — SIMD (learned: no target feature)"),
+            "{b}"
+        );
         assert!(b.contains("## Playbook\n\nxxx"));
         assert!(b.len() <= knowledge::BODY_MAX, "{}", b.len());
         assert!(b.ends_with("(truncated)\n"));

@@ -34,10 +34,15 @@ Not here (W3): the Deliver message, the attention row, the finalize turn's prose
 
 ## Gates
 
-See the DONE message for the numbers of the final run: `cargo test -p autoresearch` (my 17 tests: 10 git, 5 finalize, 2 record), `cargo clippy -p autoresearch --all-targets`, `cargo fmt -p autoresearch` (only my three files changed).
+- `cargo test -p autoresearch`: 26 passed, 0 failed (mine: 10 git, 5 finalize, 2 record; C's 9). Temp-repo coverage: 20-experiment simulated study (10 keeps with trailers, 10 discards) leaves the user's checkout byte-identical and `main` unmoved; pre-commit/post-commit/post-checkout/post-merge hooks never run; ignored `target/` files survive every discard; saved patches re-apply to the pre-discard tree (binary file included); drift repair for commit-ahead, dirty, detached, wrong-branch; reject ref + restore (+ conflicting restore refused); include-dirty snapshot; scope diff/off-limits/evaluator hits, `-w` line counts, whitespace-stable hash; `discard_study`; `merge --no-ff` helper; cherry-pick conflict abort; changeset grouping disjoint/overlapping/conflicting (file→directory swap merges 3 → 2, branches created, scratch worktrees gone); a bare `origin` never receives a ref in any test.
+- `cargo clippy -p autoresearch --all-targets`: clean for my files. The crate as a whole fails on C's files — `derivable_impls` at `config.rs:314,362,368`, `types.rs:975`, `too_many_arguments` at `review.rs:12` (W3's stub) — verified by re-running with those two lints allowed: zero diagnostics.
+- `cargo fmt -p autoresearch -- --check`: my three files clean (formatted with `rustfmt --edition 2024` on them alone); 16 of C's/other stubs are not rustfmt-clean — left alone.
+
+One shared-target incident: a `cargo test` run interrupted by the tool's 2400 s deadline (while queued behind two other slots) left `either`/`sqlx-core` artifacts mismatched (E0460); the next `cargo check -p autoresearch` rebuilt them and the tests ran green.
 
 ## Deviations
 
+- **Changeset branches are `autoresearch/<slug>+<k>-<name>`, not `autoresearch/<slug>/<k>-<name>`** (design §11.2, §11.5, `Changeset.branch` doc in types.rs). Git refuses the design's name: `refs/heads/autoresearch/<slug>` is a file, so nothing can live under `autoresearch/<slug>/` while the study branch exists (`cannot lock ref … 'refs/heads/autoresearch/s' exists`). `+` is legal in a ref and no slug contains it; `git::changeset_branch` is the one place that spells it. UI/W4 and the report text should show `Changeset.branch` verbatim rather than reconstruct it.
 - Reads through the git CLI, not gix (design §6 text; brief allows it).
 - Untracked files reach a diff through intent-to-add on the study worktree's index (never the user's); the design's "`status --porcelain=v2` + `diff --numstat`" becomes `diff --name-only` + `diff -w --numstat` after that step — same information, one pass, commits past the incumbent included.
 - Glob matching is a local matcher, not `globset` (manifest is C's).
@@ -47,5 +52,6 @@ See the DONE message for the numbers of the final run: `cargo test -p autoresear
 ## Hand-offs
 
 - W3 (actor): call order at Start — `git::resolve_base` → `git::worktree_add` (its return is the base sha); per experiment `git::repair` at begin, `git::scope_diff` at run, `git::keep`/`git::discard` at log, `git::reject` on SUSPICIOUS, `git::restore_rejected` or `git::apply_patch` for Restore; `finalize::run` on stop (then Deliver + attention + the prose turn with `finalize::report(...).tables()`); `finalize::changesets` for `StudyDetail.changesets`; `git::merge_into_checkout` / `git::discard_study` for the landing buttons; `record::seed_playbook` at Create.
-- New public items (my files only): `git::{AUTHOR, study_branch, rejected_ref, apply_patch, restore_rejected, path_matches, ScopeDiff, scope_diff, worktree_add_detached, checkout_state, merge_into_checkout, discard_study}`, `KeepMeta::message`; `finalize::{EVENT, FinalReport, resolve, branch_all, changesets, report, assemble}`, `Headline` gained `sigma`, `n` and serde derives; `record::{TAG, PREFIX, repo_name, record_id, body, playbook_of}`.
+- New public items (my files only): `git::{AUTHOR, study_branch, changeset_branch, rejected_ref, apply_patch, restore_rejected, path_matches, ScopeDiff, scope_diff, worktree_add_detached, cherry_pick_conflicts, checkout_state, merge_into_checkout, discard_study}`, `KeepMeta::message`; `finalize::{EVENT, FinalReport, resolve, branch_all, changesets, report, assemble}`, `Headline` gained `sigma`, `n` and serde derives; `record::{TAG, PREFIX, repo_name, record_id, body, playbook_of}`.
+- C / closer: `types.rs` doc comment on `Changeset.branch` still says `autoresearch/<slug>/<k>-<name>`; the design doc §11.2/§11.5 likewise — one-line edits for whoever owns those files.
 - If a `Source::Autoresearch` variant is wanted in `crates/knowledge`, `record::write` is the one line to change.

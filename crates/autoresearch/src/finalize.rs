@@ -18,7 +18,9 @@ use crate::error::{Error, Result};
 use crate::git;
 use crate::runner::{self, SampleRequest};
 use crate::store::{ExperimentRecord, Store, StudyRecord};
-use crate::types::{Changeset, Direction, Effect, ExperimentState, ReviewVerdict, SampleRole, StopReason, StudySpec};
+use crate::types::{
+    Changeset, Direction, Effect, ExperimentState, ReviewVerdict, SampleRole, StopReason, StudySpec,
+};
 
 /// `events.kind` of every finalize step.
 pub const EVENT: &str = "finalize";
@@ -83,7 +85,10 @@ impl FinalReport {
     /// dead ends, cost, how to land. Inserted after the finalize turn; the model
     /// cannot change a number here.
     pub fn tables(&self) -> String {
-        let mut s = format!("# Autoresearch: {}\n\n**Goal.** {}\n\n**Headline.** {}", self.slug, self.goal, self.headline.text);
+        let mut s = format!(
+            "# Autoresearch: {}\n\n**Goal.** {}\n\n**Headline.** {}",
+            self.slug, self.goal, self.headline.text
+        );
         if let Some(h) = &self.headline.holdout {
             s.push_str(&format!(" · holdout {h}"));
         }
@@ -104,7 +109,15 @@ impl FinalReport {
             for c in &self.changesets {
                 let alone = match (c.delta_alone_pct, c.only_with.is_empty()) {
                     (Some(d), true) => pct(d),
-                    (Some(d), false) => format!("{} (only with {})", pct(d), c.only_with.iter().map(|k| format!("#{k}")).collect::<Vec<_>>().join(", ")),
+                    (Some(d), false) => format!(
+                        "{} (only with {})",
+                        pct(d),
+                        c.only_with
+                            .iter()
+                            .map(|k| format!("#{k}"))
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    ),
                     (None, _) => "not measured".into(),
                 };
                 s.push_str(&format!(
@@ -114,8 +127,15 @@ impl FinalReport {
                     alone,
                     c.delta_together_pct.map(pct).unwrap_or_else(|| "—".into()),
                     c.files.join(", "),
-                    c.experiments.iter().map(|n| format!("#{n}")).collect::<Vec<_>>().join(" "),
-                    c.review.as_ref().map(review_text).unwrap_or_else(|| "—".into()),
+                    c.experiments
+                        .iter()
+                        .map(|n| format!("#{n}"))
+                        .collect::<Vec<_>>()
+                        .join(" "),
+                    c.review
+                        .as_ref()
+                        .map(review_text)
+                        .unwrap_or_else(|| "—".into()),
                     c.branch
                 ));
             }
@@ -255,7 +275,11 @@ fn renumber(cs: &mut [Changeset]) {
 /// A short `[a-z0-9-]` name: the common directory's last segment, else the first file's stem.
 fn name_of(files: &[String]) -> String {
     fn dir(f: &str) -> Vec<&str> {
-        f.rsplit_once('/').map_or("", |(d, _)| d).split('/').filter(|s| !s.is_empty()).collect()
+        f.rsplit_once('/')
+            .map_or("", |(d, _)| d)
+            .split('/')
+            .filter(|s| !s.is_empty())
+            .collect()
     }
     let mut common: Vec<&str> = files.first().map(|f| dir(f)).unwrap_or_default();
     for f in files.iter().skip(1) {
@@ -267,7 +291,15 @@ fn name_of(files: &[String]) -> String {
         Some(dir) if files.len() > 1 => (*dir).to_owned(),
         _ => files
             .first()
-            .map(|f| f.rsplit('/').next().unwrap_or(f).split('.').next().unwrap_or("change").to_owned())
+            .map(|f| {
+                f.rsplit('/')
+                    .next()
+                    .unwrap_or(f)
+                    .split('.')
+                    .next()
+                    .unwrap_or("change")
+                    .to_owned()
+            })
             .unwrap_or_else(|| "change".into()),
     };
     let s: String = raw
@@ -279,7 +311,11 @@ fn name_of(files: &[String]) -> String {
         .filter(|p| !p.is_empty())
         .collect::<Vec<_>>()
         .join("-");
-    if s.is_empty() { "change".into() } else { s.chars().take(24).collect() }
+    if s.is_empty() {
+        "change".into()
+    } else {
+        s.chars().take(24).collect()
+    }
 }
 
 /// Merge changeset `from` into `into` (a cherry-pick dependency), then renumber.
@@ -307,10 +343,9 @@ fn merge(cs: &mut Vec<Changeset>, from: usize, into: usize) {
 fn partner(cs: &[Changeset], k: usize, n: u32, conflicts: &[String]) -> Option<usize> {
     let related = |c: &Changeset| {
         c.files.iter().any(|f| {
-            conflicts
-                .iter()
-                .filter(|p| !p.is_empty())
-                .any(|p| f == p || f.starts_with(&format!("{p}/")) || p.starts_with(&format!("{f}/")))
+            conflicts.iter().filter(|p| !p.is_empty()).any(|p| {
+                f == p || f.starts_with(&format!("{p}/")) || p.starts_with(&format!("{f}/"))
+            })
         })
     };
     let pick = |pool: &dyn Fn(&Changeset) -> bool| -> Option<usize> {
@@ -318,7 +353,13 @@ fn partner(cs: &[Changeset], k: usize, n: u32, conflicts: &[String]) -> Option<u
             .iter()
             .enumerate()
             .filter(|(i, c)| *i != k && pool(c))
-            .filter_map(|(i, c)| c.experiments.iter().filter(|&&m| m < n).max().map(|&m| (m, i)))
+            .filter_map(|(i, c)| {
+                c.experiments
+                    .iter()
+                    .filter(|&&m| m < n)
+                    .max()
+                    .map(|&m| (m, i))
+            })
             .max();
         if let Some((_, i)) = before {
             return Some(i);
@@ -326,7 +367,13 @@ fn partner(cs: &[Changeset], k: usize, n: u32, conflicts: &[String]) -> Option<u
         cs.iter()
             .enumerate()
             .filter(|(i, c)| *i != k && pool(c))
-            .filter_map(|(i, c)| c.experiments.iter().filter(|&&m| m > n).min().map(|&m| (m, i)))
+            .filter_map(|(i, c)| {
+                c.experiments
+                    .iter()
+                    .filter(|&&m| m > n)
+                    .min()
+                    .map(|&m| (m, i))
+            })
             .min()
             .map(|(_, i)| i)
     };
@@ -354,7 +401,11 @@ fn pooled_sigma(trees: &[&[f64]]) -> f64 {
             df += t.len() - 1;
         }
     }
-    if df == 0 { 0.0 } else { (ss / df as f64).sqrt() }
+    if df == 0 {
+        0.0
+    } else {
+        (ss / df as f64).sqrt()
+    }
 }
 
 /// What `run` carries between steps.
@@ -388,11 +439,21 @@ impl Ctx<'_> {
 
     async fn record_step(&self, step: &str, mut payload: serde_json::Value) -> Result<()> {
         payload["step"] = serde_json::Value::String(step.to_owned());
-        self.store.append_event(&self.study.slug, EVENT, &payload).await.map(drop)
+        self.store
+            .append_event(&self.study.slug, EVENT, &payload)
+            .await
+            .map(drop)
     }
 
     /// `repeats` samples of `spec.bench` (or `command` when given) on `tree` in `cwd`; valid values only.
-    async fn samples(&self, spec: &StudySpec, cwd: &Path, tree: &str, role: SampleRole, repeats: u8) -> Result<Vec<f64>> {
+    async fn samples(
+        &self,
+        spec: &StudySpec,
+        cwd: &Path,
+        tree: &str,
+        role: SampleRole,
+        repeats: u8,
+    ) -> Result<Vec<f64>> {
         let mut out = Vec::new();
         for k in 0..u32::from(repeats) {
             out.extend(self.one(spec, cwd, tree, role, k).await?);
@@ -400,11 +461,30 @@ impl Ctx<'_> {
         Ok(out)
     }
 
-    async fn one(&self, spec: &StudySpec, cwd: &Path, tree: &str, role: SampleRole, k: u32) -> Result<Option<f64>> {
-        let evaluator = self.study_dir.join("evaluator").join(self.study.segment.to_string());
+    async fn one(
+        &self,
+        spec: &StudySpec,
+        cwd: &Path,
+        tree: &str,
+        role: SampleRole,
+        k: u32,
+    ) -> Result<Option<f64>> {
+        let evaluator = self
+            .study_dir
+            .join("evaluator")
+            .join(self.study.segment.to_string());
         let runs = self.study_dir.join("runs").join("final");
         std::fs::create_dir_all(&runs)?;
-        let req = SampleRequest { slug: &self.study.slug, n: 0, k, tree_sha: tree, role, worktree: cwd, evaluator: &evaluator, runs_dir: &runs };
+        let req = SampleRequest {
+            slug: &self.study.slug,
+            n: 0,
+            k,
+            tree_sha: tree,
+            role,
+            worktree: cwd,
+            evaluator: &evaluator,
+            runs_dir: &runs,
+        };
         let s = runner::sample(spec, &self.cfg.bench, req, &self.cancel).await?;
         self.store.insert_sample(&self.study.slug, &s).await?;
         Ok(s.value.filter(|_| !s.noisy && !s.lost))
@@ -420,37 +500,70 @@ impl Ctx<'_> {
         git::worktree_add_detached(&self.repo, &base_wt, &self.base)?;
         let (mut b, mut f) = (Vec::new(), Vec::new());
         for k in 0..u32::from(self.spec.bench.repeats) {
-            b.extend(self.one(self.spec, &base_wt, &self.base, SampleRole::Final, k).await?);
-            f.extend(self.one(self.spec, &self.worktree, &self.final_sha, SampleRole::Final, k).await?);
+            b.extend(
+                self.one(self.spec, &base_wt, &self.base, SampleRole::Final, k)
+                    .await?,
+            );
+            f.extend(
+                self.one(
+                    self.spec,
+                    &self.worktree,
+                    &self.final_sha,
+                    SampleRole::Final,
+                    k,
+                )
+                .await?,
+            );
         }
         let mut notes = Vec::new();
         let base_mean = match mean(&b) {
             Some(m) => m,
             None => {
-                notes.push("confirmation: every base sample crashed; the ledger's baseline is used".to_owned());
-                self.store.get_segment(&self.study.slug, self.study.segment).await?.and_then(|s| s.baseline_mean).unwrap_or(f64::NAN)
+                notes.push(
+                    "confirmation: every base sample crashed; the ledger's baseline is used"
+                        .to_owned(),
+                );
+                self.store
+                    .get_segment(&self.study.slug, self.study.segment)
+                    .await?
+                    .and_then(|s| s.baseline_mean)
+                    .unwrap_or(f64::NAN)
             }
         };
         let final_mean = match mean(&f) {
             Some(m) => m,
             None => {
-                notes.push("confirmation: every final sample crashed; the ledger's incumbent mean is used".to_owned());
+                notes.push(
+                    "confirmation: every final sample crashed; the ledger's incumbent mean is used"
+                        .to_owned(),
+                );
                 self.study.incumbent_mean.unwrap_or(f64::NAN)
             }
         };
         let sigma = pooled_sigma(&[&b, &f]);
-        let delta_pct = if base_mean != 0.0 { (final_mean - base_mean) / base_mean.abs() * 100.0 } else { 0.0 };
+        let delta_pct = if base_mean != 0.0 {
+            (final_mean - base_mean) / base_mean.abs() * 100.0
+        } else {
+            0.0
+        };
         let (nb, nf) = (b.len() as u32, f.len() as u32);
         let ci = if nb > 0 && nf > 0 && base_mean != 0.0 {
-            1.96 * sigma * (1.0 / f64::from(nb) + 1.0 / f64::from(nf)).sqrt() / base_mean.abs() * 100.0
+            1.96 * sigma * (1.0 / f64::from(nb) + 1.0 / f64::from(nf)).sqrt() / base_mean.abs()
+                * 100.0
         } else {
             f64::NAN
         };
         let unit = &self.spec.metric.unit;
         let text = if ci.is_finite() {
-            format!("{} {:.4} → {:.4} {unit} ({:+.1} %, CI ±{:.1} %)", self.spec.metric.name, base_mean, final_mean, delta_pct, ci)
+            format!(
+                "{} {:.4} → {:.4} {unit} ({:+.1} %, CI ±{:.1} %)",
+                self.spec.metric.name, base_mean, final_mean, delta_pct, ci
+            )
         } else {
-            format!("{} {:.4} → {:.4} {unit} ({:+.1} %)", self.spec.metric.name, base_mean, final_mean, delta_pct)
+            format!(
+                "{} {:.4} → {:.4} {unit} ({:+.1} %)",
+                self.spec.metric.name, base_mean, final_mean, delta_pct
+            )
         };
         let mut holdout = None;
         if let Some(h) = &self.spec.holdout {
@@ -459,25 +572,52 @@ impl Ctx<'_> {
             let reps = h.repeats.unwrap_or(self.spec.bench.repeats);
             let (mut hb, mut hf) = (Vec::new(), Vec::new());
             for k in 0..u32::from(reps) {
-                hb.extend(self.one(&hs, &base_wt, &self.base, SampleRole::Holdout, k).await?);
-                hf.extend(self.one(&hs, &self.worktree, &self.final_sha, SampleRole::Holdout, k).await?);
+                hb.extend(
+                    self.one(&hs, &base_wt, &self.base, SampleRole::Holdout, k)
+                        .await?,
+                );
+                hf.extend(
+                    self.one(&hs, &self.worktree, &self.final_sha, SampleRole::Holdout, k)
+                        .await?,
+                );
             }
             holdout = Some(match (mean(&hb), mean(&hf)) {
-                (Some(a), Some(z)) if a != 0.0 => format!("{a:.4} → {z:.4} ({:+.1} %)", (z - a) / a.abs() * 100.0),
+                (Some(a), Some(z)) if a != 0.0 => {
+                    format!("{a:.4} → {z:.4} ({:+.1} %)", (z - a) / a.abs() * 100.0)
+                }
                 (Some(a), Some(z)) => format!("{a:.4} → {z:.4}"),
                 _ => "holdout crashed".to_owned(),
             });
         }
         git::worktree_remove(&self.repo, &base_wt)?;
-        let headline = Headline { text, base_mean, final_mean, delta_pct, holdout, sigma, n: (nb, nf) };
-        self.record_step("confirm", serde_json::json!({ "headline": headline, "notes": notes })).await?;
+        let headline = Headline {
+            text,
+            base_mean,
+            final_mean,
+            delta_pct,
+            holdout,
+            sigma,
+            n: (nb, nf),
+        };
+        self.record_step(
+            "confirm",
+            serde_json::json!({ "headline": headline, "notes": notes }),
+        )
+        .await?;
         Ok(headline)
     }
 
     /// Step 2 (140 §11.2): group, resolve cherry-pick dependencies, measure each alone, branch.
-    async fn changesets(&self, kept: &[ExperimentRecord], headline: &Headline) -> Result<(Vec<Changeset>, Vec<String>)> {
+    async fn changesets(
+        &self,
+        kept: &[ExperimentRecord],
+        headline: &Headline,
+    ) -> Result<(Vec<Changeset>, Vec<String>)> {
         if let Some(p) = self.step_done("changesets").await? {
-            return Ok((serde_json::from_value(p["changesets"].clone())?, serde_json::from_value(p["notes"].clone()).unwrap_or_default()));
+            return Ok((
+                serde_json::from_value(p["changesets"].clone())?,
+                serde_json::from_value(p["notes"].clone()).unwrap_or_default(),
+            ));
         }
         let input: Vec<(u32, String, Vec<String>)> = kept
             .iter()
@@ -489,30 +629,60 @@ impl Ctx<'_> {
             .collect();
         let dir = self.finalize_dir();
         let (mut cs, mut notes) = resolve(&self.repo, &self.base, &dir, &input)?;
-        let sigma = if headline.sigma > 0.0 { headline.sigma } else { self.study.sigma.unwrap_or(0.0) };
-        let min_effect = Effect::parse(&self.spec.metric.min_effect).unwrap_or(Effect::Absolute(0.0));
+        let sigma = if headline.sigma > 0.0 {
+            headline.sigma
+        } else {
+            self.study.sigma.unwrap_or(0.0)
+        };
+        let min_effect =
+            Effect::parse(&self.spec.metric.min_effect).unwrap_or(Effect::Absolute(0.0));
         let by_n: BTreeMap<u32, &ExperimentRecord> = kept.iter().map(|e| (e.n, e)).collect();
         let mut not_alone = Vec::new();
         for c in &mut cs {
-            c.delta_together_pct = Some(c.experiments.iter().filter_map(|n| by_n.get(n).and_then(|e| e.delta_pct)).sum());
-            c.review = c.experiments.iter().filter_map(|n| by_n.get(n).and_then(|e| e.review.clone())).max_by_key(review_rank);
+            c.delta_together_pct = Some(
+                c.experiments
+                    .iter()
+                    .filter_map(|n| by_n.get(n).and_then(|e| e.delta_pct))
+                    .sum(),
+            );
+            c.review = c
+                .experiments
+                .iter()
+                .filter_map(|n| by_n.get(n).and_then(|e| e.review.clone()))
+                .max_by_key(review_rank);
             let wt = scratch(&dir, c.k);
             if !wt.exists() {
                 continue;
             }
             let tree = git::head(&wt)?;
-            let xs = self.samples(self.spec, &wt, &tree, SampleRole::Final, self.spec.bench.repeats).await?;
+            let xs = self
+                .samples(
+                    self.spec,
+                    &wt,
+                    &tree,
+                    SampleRole::Final,
+                    self.spec.bench.repeats,
+                )
+                .await?;
             if let Some(m) = mean(&xs).filter(|_| headline.base_mean.is_finite()) {
                 let base = headline.base_mean;
-                c.delta_alone_pct = Some(if base != 0.0 { (m - base) / base.abs() * 100.0 } else { 0.0 });
+                c.delta_alone_pct = Some(if base != 0.0 {
+                    (m - base) / base.abs() * 100.0
+                } else {
+                    0.0
+                });
                 let delta = better(self.spec.metric.direction, base, m);
                 let nb = f64::from(headline.n.0.max(1));
-                let t = (self.cfg.gate.z * sigma * (1.0 / xs.len() as f64 + 1.0 / nb).sqrt()).max(min_effect.against(base));
+                let t = (self.cfg.gate.z * sigma * (1.0 / xs.len() as f64 + 1.0 / nb).sqrt())
+                    .max(min_effect.against(base));
                 if delta <= t {
                     not_alone.push(c.k);
                 }
             } else {
-                notes.push(format!("changeset {}: every sample crashed alone on the base", c.k));
+                notes.push(format!(
+                    "changeset {}: every sample crashed alone on the base",
+                    c.k
+                ));
             }
         }
         let all: Vec<u32> = cs.iter().map(|c| c.k).collect();
@@ -523,7 +693,11 @@ impl Ctx<'_> {
             }
         }
         branch_all(&self.repo, &self.study.slug, &dir, &mut cs)?;
-        self.record_step("changesets", serde_json::json!({ "changesets": cs, "notes": notes })).await?;
+        self.record_step(
+            "changesets",
+            serde_json::json!({ "changesets": cs, "notes": notes }),
+        )
+        .await?;
         Ok((cs, notes))
     }
 }
@@ -538,7 +712,12 @@ fn scratch(dir: &Path, k: u32) -> PathBuf {
 /// [`partner`] and starts over. Scratch worktrees of the resolved changesets
 /// are left in place for measurement ([`branch_all`] removes them). Returns
 /// the changesets and the notes for the report.
-pub fn resolve(repo: &Path, base: &str, dir: &Path, kept: &[(u32, String, Vec<String>)]) -> Result<(Vec<Changeset>, Vec<String>)> {
+pub fn resolve(
+    repo: &Path,
+    base: &str,
+    dir: &Path,
+    kept: &[(u32, String, Vec<String>)],
+) -> Result<(Vec<Changeset>, Vec<String>)> {
     let shas: BTreeMap<u32, &str> = kept.iter().map(|(n, sha, _)| (*n, sha.as_str())).collect();
     let mut cs = group(kept);
     let mut notes = Vec::new();
@@ -558,7 +737,10 @@ pub fn resolve(repo: &Path, base: &str, dir: &Path, kept: &[(u32, String, Vec<St
                 let k = c.k as usize - 1;
                 match partner(&cs, k, n, &conflicts) {
                     Some(into) if rounds <= kept.len() + 1 => {
-                        notes.push(format!("changeset {} (#{}) only applies together with changeset {}; merged", c.k, n, cs[into].k));
+                        notes.push(format!(
+                            "changeset {} (#{}) only applies together with changeset {}; merged",
+                            c.k, n, cs[into].k
+                        ));
                         merge(&mut cs, k, into);
                         for c in &cs {
                             git::worktree_remove(repo, &scratch(dir, c.k)).ok();
@@ -612,12 +794,22 @@ pub async fn report(store: &Store, slug: &str) -> Result<Option<FinalReport>> {
 }
 
 /// Build the report value from the ledger (pure over rows; no git, no bench).
-pub fn assemble(study: &StudyRecord, reason: StopReason, headline: Headline, changesets: Vec<Changeset>, rows: &[ExperimentRecord], notes: Vec<String>) -> FinalReport {
+pub fn assemble(
+    study: &StudyRecord,
+    reason: StopReason,
+    headline: Headline,
+    changesets: Vec<Changeset>,
+    rows: &[ExperimentRecord],
+    notes: Vec<String>,
+) -> FinalReport {
     let mut needs_eyes = notes;
     let mut dead_ends: BTreeMap<String, Vec<String>> = BTreeMap::new();
     let (mut experiments, mut kept, mut cost) = (0u32, 0u32, 0u64);
     for e in rows {
-        if matches!(e.state, ExperimentState::Open | ExperimentState::Measuring | ExperimentState::Measured) {
+        if matches!(
+            e.state,
+            ExperimentState::Open | ExperimentState::Measuring | ExperimentState::Measured
+        ) {
             continue;
         }
         experiments += 1;
@@ -627,8 +819,12 @@ pub fn assemble(study: &StudyRecord, reason: StopReason, headline: Headline, cha
             ExperimentState::Kept => {
                 kept += 1;
                 match &e.review {
-                    Some(ReviewVerdict::Flagged { reason }) => needs_eyes.push(format!("#{} flagged by review: {reason}", e.n)),
-                    Some(ReviewVerdict::Error { reason }) => needs_eyes.push(format!("#{} kept unreviewed: {reason}", e.n)),
+                    Some(ReviewVerdict::Flagged { reason }) => {
+                        needs_eyes.push(format!("#{} flagged by review: {reason}", e.n))
+                    }
+                    Some(ReviewVerdict::Error { reason }) => {
+                        needs_eyes.push(format!("#{} kept unreviewed: {reason}", e.n))
+                    }
                     _ => {}
                 }
                 if !e.deviations.is_empty() {
@@ -636,7 +832,10 @@ pub fn assemble(study: &StudyRecord, reason: StopReason, headline: Headline, cha
                         "#{} edited outside scope ({}) — {}",
                         e.n,
                         e.deviations.join(", "),
-                        e.justification.as_deref().filter(|j| !j.trim().is_empty()).unwrap_or("no justification given")
+                        e.justification
+                            .as_deref()
+                            .filter(|j| !j.trim().is_empty())
+                            .unwrap_or("no justification given")
                     ));
                 }
             }
@@ -645,17 +844,34 @@ pub fn assemble(study: &StudyRecord, reason: StopReason, headline: Headline, cha
                     Some(ReviewVerdict::Reverted { reason }) => reason.clone(),
                     _ => "suspicious".into(),
                 };
-                needs_eyes.push(format!("#{} reverted by review: {why} (Restore re-measures it)", e.n));
-                dead_ends.entry(cat(&e.category)).or_default().push(format!("#{} rejected by review {d} — {}", e.n, idea(e)));
+                needs_eyes.push(format!(
+                    "#{} reverted by review: {why} (Restore re-measures it)",
+                    e.n
+                ));
+                dead_ends.entry(cat(&e.category)).or_default().push(format!(
+                    "#{} rejected by review {d} — {}",
+                    e.n,
+                    idea(e)
+                ));
             }
-            ExperimentState::Discarded | ExperimentState::Crashed | ExperimentState::ChecksFailed | ExperimentState::Refused => {
-                let v = e.verdict.as_ref().map(|v| v.tag()).unwrap_or(match e.state {
-                    ExperimentState::Crashed => "crash",
-                    ExperimentState::ChecksFailed => "checks_failed",
-                    ExperimentState::Refused => "refused",
-                    _ => "discarded",
-                });
-                dead_ends.entry(cat(&e.category)).or_default().push(format!("#{} {v} {d} — {}", e.n, idea(e)).replace("  ", " "));
+            ExperimentState::Discarded
+            | ExperimentState::Crashed
+            | ExperimentState::ChecksFailed
+            | ExperimentState::Refused => {
+                let v = e
+                    .verdict
+                    .as_ref()
+                    .map(|v| v.tag())
+                    .unwrap_or(match e.state {
+                        ExperimentState::Crashed => "crash",
+                        ExperimentState::ChecksFailed => "checks_failed",
+                        ExperimentState::Refused => "refused",
+                        _ => "discarded",
+                    });
+                dead_ends
+                    .entry(cat(&e.category))
+                    .or_default()
+                    .push(format!("#{} {v} {d} — {}", e.n, idea(e)).replace("  ", " "));
             }
             _ => {}
         }
@@ -677,7 +893,12 @@ pub fn assemble(study: &StudyRecord, reason: StopReason, headline: Headline, cha
                 .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
                 .map(|t| t.with_timezone(&chrono::Utc))
                 .unwrap_or_else(chrono::Utc::now);
-            ((end - start.with_timezone(&chrono::Utc)).num_milliseconds().max(0) as f64 - study.paused_ms as f64).max(0.0) / 3.6e6
+            ((end - start.with_timezone(&chrono::Utc))
+                .num_milliseconds()
+                .max(0) as f64
+                - study.paused_ms as f64)
+                .max(0.0)
+                / 3.6e6
         })
         .unwrap_or(0.0);
     FinalReport {
@@ -699,21 +920,43 @@ pub fn assemble(study: &StudyRecord, reason: StopReason, headline: Headline, cha
 }
 
 fn cat(c: &str) -> String {
-    if c.trim().is_empty() { "uncategorised".into() } else { c.trim().to_owned() }
+    if c.trim().is_empty() {
+        "uncategorised".into()
+    } else {
+        c.trim().to_owned()
+    }
 }
 
 fn idea(e: &ExperimentRecord) -> String {
-    let t = if e.idea.trim().is_empty() { &e.description } else { &e.idea };
+    let t = if e.idea.trim().is_empty() {
+        &e.description
+    } else {
+        &e.idea
+    };
     let t = t.trim();
-    if t.chars().count() > 120 { format!("{}…", t.chars().take(119).collect::<String>()) } else { t.to_owned() }
+    if t.chars().count() > 120 {
+        format!("{}…", t.chars().take(119).collect::<String>())
+    } else {
+        t.to_owned()
+    }
 }
 
 /// Run every step of §11 for `study`, stopped for `reason`; returns the
 /// headline and the report document id. Idempotent per step.
-pub async fn run(store: &Store, study: &StudyRecord, reason: StopReason, rt: &runtime::Runtime) -> Result<(Headline, String)> {
+pub async fn run(
+    store: &Store,
+    study: &StudyRecord,
+    reason: StopReason,
+    rt: &runtime::Runtime,
+) -> Result<(Headline, String)> {
     let cfg: AutoresearchConfig = rt.section("autoresearch").unwrap_or_default();
-    let (Some(base), Some(final_sha), Some(worktree)) = (&study.base_sha, &study.incumbent_sha, &study.worktree) else {
-        return Err(Error::refused(format!("study `{}` has no worktree to finalize", study.slug)));
+    let (Some(base), Some(final_sha), Some(worktree)) =
+        (&study.base_sha, &study.incumbent_sha, &study.worktree)
+    else {
+        return Err(Error::refused(format!(
+            "study `{}` has no worktree to finalize",
+            study.slug
+        )));
     };
     let root = cfg.root(&rt.data_dir);
     let cx = Ctx {
@@ -731,7 +974,11 @@ pub async fn run(store: &Store, study: &StudyRecord, reason: StopReason, rt: &ru
     let headline = cx.confirm().await?;
     let rows = store.list_experiments(&study.slug, None, u32::MAX).await?;
     let kept: Vec<ExperimentRecord> = {
-        let mut k: Vec<ExperimentRecord> = rows.iter().filter(|e| e.state == ExperimentState::Kept && e.commit_sha.is_some()).cloned().collect();
+        let mut k: Vec<ExperimentRecord> = rows
+            .iter()
+            .filter(|e| e.state == ExperimentState::Kept && e.commit_sha.is_some())
+            .cloned()
+            .collect();
         k.sort_by_key(|e| e.n);
         k
     };
@@ -739,22 +986,42 @@ pub async fn run(store: &Store, study: &StudyRecord, reason: StopReason, rt: &ru
     let doc = match cx.step_done("report").await? {
         Some(p) => p["doc"].as_str().unwrap_or_default().to_owned(),
         None => {
-            let report = assemble(study, reason.clone(), headline.clone(), changesets, &rows, notes);
+            let report = assemble(
+                study,
+                reason.clone(),
+                headline.clone(),
+                changesets,
+                &rows,
+                notes,
+            );
             let text = report.tables();
             std::fs::create_dir_all(&cx.study_dir)?;
             let path = cx.study_dir.join("report.md");
             std::fs::write(&path, &text)?;
-            let doc = create_document(&study.slug, &text).await.unwrap_or_else(|| path.to_string_lossy().into_owned());
-            cx.record_step("report", serde_json::json!({ "doc": doc, "report": report })).await?;
+            let doc = create_document(&study.slug, &text)
+                .await
+                .unwrap_or_else(|| path.to_string_lossy().into_owned());
+            cx.record_step(
+                "report",
+                serde_json::json!({ "doc": doc, "report": report }),
+            )
+            .await?;
             doc
         }
     };
     if cx.step_done("record").await?.is_none() {
         match crate::record::write(store, study, &headline.text, rt).await {
-            Ok(id) => cx.record_step("record", serde_json::json!({ "id": id })).await?,
+            Ok(id) => {
+                cx.record_step("record", serde_json::json!({ "id": id }))
+                    .await?
+            }
             Err(e) => {
-                tracing::warn!("autoresearch {}: knowledge record not written: {e}", study.slug);
-                cx.record_step("record", serde_json::json!({ "error": e.to_string() })).await?;
+                tracing::warn!(
+                    "autoresearch {}: knowledge record not written: {e}",
+                    study.slug
+                );
+                cx.record_step("record", serde_json::json!({ "error": e.to_string() }))
+                    .await?;
             }
         }
     }
@@ -766,7 +1033,11 @@ pub async fn run(store: &Store, study: &StudyRecord, reason: StopReason, rt: &ru
 async fn create_document(slug: &str, markdown: &str) -> Option<String> {
     let docs = ActorRef::<document::DocumentActor>::lookup(document::DOCUMENT_ACTOR).ok()??;
     match docs
-        .ask(document::CreateNote { title: format!("Autoresearch: {slug}"), markdown: markdown.to_owned(), by: document::Principal::Helper })
+        .ask(document::CreateNote {
+            title: format!("Autoresearch: {slug}"),
+            markdown: markdown.to_owned(),
+            by: document::Principal::Helper,
+        })
         .await
     {
         Ok(summary) => Some(summary.id.as_str().to_owned()),
@@ -786,33 +1057,73 @@ mod tests {
     use crate::types::Verdict;
 
     fn sh(cwd: &Path, args: &[&str]) -> String {
-        let out = Command::new("git").arg("-C").arg(cwd).args(args).output().unwrap();
-        assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+        let out = Command::new("git")
+            .arg("-C")
+            .arg(cwd)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "git {args:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
         String::from_utf8_lossy(&out.stdout).trim().to_owned()
     }
 
     fn commit(cwd: &Path, msg: &str) -> String {
         sh(cwd, &["add", "-A"]);
-        sh(cwd, &["-c", "user.name=u", "-c", "user.email=u@x", "commit", "-q", "-m", msg]);
+        sh(
+            cwd,
+            &[
+                "-c",
+                "user.name=u",
+                "-c",
+                "user.email=u@x",
+                "commit",
+                "-q",
+                "-m",
+                msg,
+            ],
+        );
         sh(cwd, &["rev-parse", "HEAD"])
     }
 
     fn kept(n: u32, files: &[&str]) -> (u32, String, Vec<String>) {
-        (n, format!("sha{n}"), files.iter().map(|s| (*s).to_owned()).collect())
+        (
+            n,
+            format!("sha{n}"),
+            files.iter().map(|s| (*s).to_owned()).collect(),
+        )
     }
 
     /// Disjoint keeps stay apart; a shared file chains keeps into one changeset.
     #[test]
     fn group_disjoint_and_overlapping() {
-        let cs = group(&[kept(2, &["src/a.rs"]), kept(5, &["src/b.rs"]), kept(7, &["src/a.rs", "src/c.rs"]), kept(9, &["docs/x.md"]), kept(11, &["src/c.rs"])]);
+        let cs = group(&[
+            kept(2, &["src/a.rs"]),
+            kept(5, &["src/b.rs"]),
+            kept(7, &["src/a.rs", "src/c.rs"]),
+            kept(9, &["docs/x.md"]),
+            kept(11, &["src/c.rs"]),
+        ]);
         assert_eq!(cs.len(), 3);
         assert_eq!(cs[0].experiments, vec![2, 7, 11]);
         assert_eq!(cs[0].files, vec!["src/a.rs", "src/c.rs"]);
         assert_eq!((cs[0].k, cs[0].name.as_str()), (1, "src"));
-        assert_eq!((cs[1].experiments.clone(), cs[1].name.as_str()), (vec![5], "b"));
-        assert_eq!((cs[2].k, cs[2].experiments.clone(), cs[2].name.as_str()), (3, vec![9], "x"));
+        assert_eq!(
+            (cs[1].experiments.clone(), cs[1].name.as_str()),
+            (vec![5], "b")
+        );
+        assert_eq!(
+            (cs[2].k, cs[2].experiments.clone(), cs[2].name.as_str()),
+            (3, vec![9], "x")
+        );
         assert!(group(&[]).is_empty());
-        assert_eq!(name_of(&["lib/liquid/parse.rb".into(), "lib/liquid/render.rb".into()]), "liquid");
+        assert_eq!(
+            name_of(&["lib/liquid/parse.rb".into(), "lib/liquid/render.rb".into()]),
+            "liquid"
+        );
         assert_eq!(name_of(&["Weird Name!.RS".into()]), "weird-name");
     }
 
@@ -829,10 +1140,16 @@ mod tests {
         let base = commit(&repo, "base");
         let remote = tmp.path().join("origin.git");
         sh(tmp.path(), &["init", "-q", "--bare", "origin.git"]);
-        sh(&repo, &["remote", "add", "origin", remote.to_str().unwrap()]);
+        sh(
+            &repo,
+            &["remote", "add", "origin", remote.to_str().unwrap()],
+        );
         sh(&repo, &["push", "-q", "origin", "main"]);
         let wt = tmp.path().join("data/s/worktree");
-        let spec = StudySpec { slug: "s".into(), ..Default::default() };
+        let spec = StudySpec {
+            slug: "s".into(),
+            ..Default::default()
+        };
         git::worktree_add(&repo, &spec, &wt, &base).unwrap();
         std::fs::remove_file(wt.join("d")).unwrap();
         let a = commit(&wt, "#1 delete d");
@@ -856,29 +1173,84 @@ mod tests {
         assert_eq!(notes.len(), 1, "{notes:?}");
         assert!(notes[0].contains("only applies together"), "{notes:?}");
         assert!(dir.join("cs-1").exists() && dir.join("cs-2").exists());
-        assert_eq!(std::fs::read_to_string(dir.join("cs-1/d/x")).unwrap(), "x\n");
-        assert_eq!(std::fs::read_to_string(dir.join("cs-2/other.txt")).unwrap(), "o2\n");
-        assert_eq!(std::fs::read_to_string(dir.join("cs-2/d")).unwrap(), "file\n", "changeset 2 alone on the base");
+        assert_eq!(
+            std::fs::read_to_string(dir.join("cs-1/d/x")).unwrap(),
+            "x\n"
+        );
+        assert_eq!(
+            std::fs::read_to_string(dir.join("cs-2/other.txt")).unwrap(),
+            "o2\n"
+        );
+        assert_eq!(
+            std::fs::read_to_string(dir.join("cs-2/d")).unwrap(),
+            "file\n",
+            "changeset 2 alone on the base"
+        );
         branch_all(&repo, "s", &dir, &mut cs).unwrap();
         assert_eq!(cs[0].branch, "autoresearch/s+1-d");
         assert_eq!(cs[1].branch, "autoresearch/s+2-other");
         assert!(!dir.join("cs-1").exists() && !dir.join("cs-2").exists());
-        assert_eq!(sh(&repo, &["rev-list", "--count", &format!("{base}..autoresearch/s+1-d")]), "2");
-        assert_eq!(sh(&repo, &["rev-list", "--count", &format!("{base}..autoresearch/s+2-other")]), "1");
-        assert_eq!(sh(&repo, &["worktree", "list"]).lines().count(), 2, "repo + study worktree");
-        assert_eq!(sh(&remote, &["for-each-ref"]).lines().count(), 1, "nothing pushed");
+        assert_eq!(
+            sh(
+                &repo,
+                &[
+                    "rev-list",
+                    "--count",
+                    &format!("{base}..autoresearch/s+1-d")
+                ]
+            ),
+            "2"
+        );
+        assert_eq!(
+            sh(
+                &repo,
+                &[
+                    "rev-list",
+                    "--count",
+                    &format!("{base}..autoresearch/s+2-other")
+                ]
+            ),
+            "1"
+        );
+        assert_eq!(
+            sh(&repo, &["worktree", "list"]).lines().count(),
+            2,
+            "repo + study worktree"
+        );
+        assert_eq!(
+            sh(&remote, &["for-each-ref"]).lines().count(),
+            1,
+            "nothing pushed"
+        );
         assert_eq!(sh(&repo, &["status", "--porcelain"]), "");
     }
 
     #[test]
     fn partner_prefers_the_newest_earlier_keep() {
-        let cs = group(&[kept(1, &["a"]), kept(4, &["b"]), kept(6, &["c"]), kept(9, &["d"])]);
+        let cs = group(&[
+            kept(1, &["a"]),
+            kept(4, &["b"]),
+            kept(6, &["c"]),
+            kept(9, &["d"]),
+        ]);
         let none: Vec<String> = vec![String::new()];
         assert_eq!(partner(&cs, 2, 6, &none), Some(1));
-        assert_eq!(partner(&cs, 0, 1, &none), Some(1), "nothing earlier: the oldest later one");
+        assert_eq!(
+            partner(&cs, 0, 1, &none),
+            Some(1),
+            "nothing earlier: the oldest later one"
+        );
         assert_eq!(partner(&[cs[0].clone()], 0, 1, &none), None);
-        assert_eq!(partner(&cs, 2, 6, &["d".into()]), Some(3), "the changeset touching the conflicting path wins");
-        assert_eq!(partner(&cs, 2, 6, &["a/sub".into()]), Some(0), "a file above the conflict counts");
+        assert_eq!(
+            partner(&cs, 2, 6, &["d".into()]),
+            Some(3),
+            "the changeset touching the conflicting path wins"
+        );
+        assert_eq!(
+            partner(&cs, 2, 6, &["a/sub".into()]),
+            Some(0),
+            "a file above the conflict counts"
+        );
         let mut cs2 = cs.clone();
         merge(&mut cs2, 2, 1);
         assert_eq!(cs2.len(), 3);
@@ -888,7 +1260,11 @@ mod tests {
 
     #[test]
     fn pooled_sigma_is_within_tree() {
-        assert_eq!(pooled_sigma(&[&[1.0, 1.0, 1.0], &[5.0, 5.0]]), 0.0, "different trees do not inflate sigma");
+        assert_eq!(
+            pooled_sigma(&[&[1.0, 1.0, 1.0], &[5.0, 5.0]]),
+            0.0,
+            "different trees do not inflate sigma"
+        );
         let s = pooled_sigma(&[&[1.0, 3.0], &[10.0, 12.0]]);
         assert!((s - 2f64.sqrt()).abs() < 1e-9, "{s}");
         assert_eq!(pooled_sigma(&[&[1.0]]), 0.0);
@@ -900,7 +1276,14 @@ mod tests {
     /// lists what needs eyes; the tables name branches and the only-with note.
     #[test]
     fn assemble_and_tables() {
-        let mut study = StudyRecord::new(StudySpec { slug: "s".into(), goal: "faster".into(), ..Default::default() }, None);
+        let mut study = StudyRecord::new(
+            StudySpec {
+                slug: "s".into(),
+                goal: "faster".into(),
+                ..Default::default()
+            },
+            None,
+        );
         study.base_sha = Some("1234567890".into());
         study.incumbent_sha = Some("abcdefabcdef".into());
         study.started_at = Some("2026-10-08T00:00:00Z".into());
@@ -912,7 +1295,9 @@ mod tests {
         e.delta_pct = Some(-3.0);
         e.cost_nanos = 500_000_000;
         e.deviations = vec!["README.md".into()];
-        e.review = Some(ReviewVerdict::Clean { reason: "fine".into() });
+        e.review = Some(ReviewVerdict::Clean {
+            reason: "fine".into(),
+        });
         rows.push(e);
         let mut e = ExperimentRecord::open("s", 2, 0, "x");
         e.state = ExperimentState::Discarded;
@@ -924,24 +1309,74 @@ mod tests {
         rows.push(e);
         let mut e = ExperimentRecord::open("s", 3, 0, "x");
         e.state = ExperimentState::RejectedByReview;
-        e.review = Some(ReviewVerdict::Reverted { reason: "skips work".into() });
+        e.review = Some(ReviewVerdict::Reverted {
+            reason: "skips work".into(),
+        });
         e.category = "caching".into();
         rows.push(e);
         rows.push(ExperimentRecord::open("s", 4, 0, "x"));
-        let headline = Headline { text: "t 10 → 9 (−10.0 %)".into(), base_mean: 10.0, final_mean: 9.0, delta_pct: -10.0, holdout: Some("5 → 6 (+20.0 %)".into()), sigma: 0.1, n: (3, 3) };
-        let cs = vec![Changeset { k: 1, name: "lib".into(), branch: "autoresearch/s+1-lib".into(), files: vec!["src/lib.rs".into()], experiments: vec![1], delta_alone_pct: Some(-0.1), delta_together_pct: Some(-3.0), only_with: vec![2], review: None }];
-        let r = assemble(&study, StopReason::Plateau, headline, cs, &rows, vec!["note".into()]);
+        let headline = Headline {
+            text: "t 10 → 9 (−10.0 %)".into(),
+            base_mean: 10.0,
+            final_mean: 9.0,
+            delta_pct: -10.0,
+            holdout: Some("5 → 6 (+20.0 %)".into()),
+            sigma: 0.1,
+            n: (3, 3),
+        };
+        let cs = vec![Changeset {
+            k: 1,
+            name: "lib".into(),
+            branch: "autoresearch/s+1-lib".into(),
+            files: vec!["src/lib.rs".into()],
+            experiments: vec![1],
+            delta_alone_pct: Some(-0.1),
+            delta_together_pct: Some(-3.0),
+            only_with: vec![2],
+            review: None,
+        }];
+        let r = assemble(
+            &study,
+            StopReason::Plateau,
+            headline,
+            cs,
+            &rows,
+            vec!["note".into()],
+        );
         assert_eq!((r.experiments, r.kept), (3, 1));
         assert!((r.cost_usd - 1.0).abs() < 1e-9);
         assert!((r.hours - 2.0).abs() < 1e-9, "{}", r.hours);
         assert_eq!(r.dead_ends["caching"].len(), 2);
-        assert!(r.needs_eyes.iter().any(|l| l.contains("#3 reverted by review: skips work")), "{:?}", r.needs_eyes);
-        assert!(r.needs_eyes.iter().any(|l| l.contains("#1 edited outside scope (README.md) — no justification")), "{:?}", r.needs_eyes);
-        assert!(r.needs_eyes.iter().any(|l| l.contains("holdout moved against")), "{:?}", r.needs_eyes);
+        assert!(
+            r.needs_eyes
+                .iter()
+                .any(|l| l.contains("#3 reverted by review: skips work")),
+            "{:?}",
+            r.needs_eyes
+        );
+        assert!(
+            r.needs_eyes
+                .iter()
+                .any(|l| l.contains("#1 edited outside scope (README.md) — no justification")),
+            "{:?}",
+            r.needs_eyes
+        );
+        assert!(
+            r.needs_eyes
+                .iter()
+                .any(|l| l.contains("holdout moved against")),
+            "{:?}",
+            r.needs_eyes
+        );
         let t = r.tables();
         assert!(t.contains("| 1 | lib | -0.1 % (only with #2) | -3.0 % | src/lib.rs | #1 | — | `autoresearch/s+1-lib` |"), "{t}");
-        assert!(t.contains("### caching") && t.contains("#2 no_gain -0.2 % — memoise"), "{t}");
-        assert!(t.contains("git merge --no-ff autoresearch/s+1-lib") && t.contains("stopped: plateau"));
+        assert!(
+            t.contains("### caching") && t.contains("#2 no_gain -0.2 % — memoise"),
+            "{t}"
+        );
+        assert!(
+            t.contains("git merge --no-ff autoresearch/s+1-lib") && t.contains("stopped: plateau")
+        );
         let back: FinalReport = serde_json::from_value(serde_json::to_value(&r).unwrap()).unwrap();
         assert_eq!(back, r);
     }
