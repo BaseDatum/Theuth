@@ -298,7 +298,8 @@ impl Graph {
                 .fetch_all(pool)
                 .await?;
         let idx: HashMap<i64, usize> = files.iter().enumerate().map(|(i, f)| (f.id, i)).collect();
-        // Entry points: manifests on disk (60 §17 item 9) plus Go `package main`.
+        // Entry points: manifests on disk (60-as-built CI-RANK; 147 W4's
+        // build-dir → src mapping and convention fallbacks) plus Go `package main`.
         let manifests: Vec<String> = sqlx::query_scalar(
             "SELECT path FROM files WHERE path = 'Cargo.toml' OR path LIKE '%/Cargo.toml' \
              OR path = 'package.json' OR path LIKE '%/package.json' \
