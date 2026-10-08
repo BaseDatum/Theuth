@@ -1,6 +1,6 @@
 import { expect, test } from 'vitest'
 import type { AttachRef } from './attach'
-import { attach, attachRef, drop, expand, label, type Pastes, reconcile, retext, token, tokenize, untoken } from './pastes'
+import { attach, attachRef, drop, expand, label, type Pastes, reconcile, reconcileShelved, retext, type Shelf, token, tokenize, untoken } from './pastes'
 
 const none: Pastes = new Map()
 const X = 'x'.repeat(401)
@@ -92,4 +92,49 @@ test('ref chips expand to marker lines ahead of the text; the same kind+id attac
   // Dropping the chip drops its marker; a pasted block still lands at its token.
   const t = tokenize(X, drop(1, k))
   expect(expand(`hi ${t.text}`, t.pastes).text).toBe(`[attached knowledge facts/x "Facts"]\nhi ${X}`)
+})
+
+const bare: Shelf = new Map()
+
+test('shelf: an undone token shelves its block; a redo brings the block back with its content', () => {
+  const big = tokenize(X, none)
+  const typed = `intro ${big.text} outro`
+  expect(reconcileShelved(typed, big.pastes, bare)).toEqual({ pastes: big.pastes, shelf: bare })
+  // ⌘Z: the token is gone from the text.
+  const undone = reconcileShelved('intro  outro', big.pastes, bare)
+  expect([...undone.pastes.keys()]).toEqual([])
+  expect(undone.shelf.get(1)).toEqual({ kind: 'text', text: X })
+  expect(expand('intro  outro', undone.pastes).text).toBe('intro  outro')
+  // ⇧⌘Z: the token is back, so is the block.
+  const redone = reconcileShelved(typed, undone.pastes, undone.shelf)
+  expect(redone.shelf.size).toBe(0)
+  expect(expand(typed, redone.pastes).text).toBe(`intro ${X} outro`)
+})
+
+test('shelf: a chip ✕ goes through the same door, and a file chip is untouched by it', () => {
+  const held = attach('/d/a.png', 2, 2, tokenize(SIX, none).pastes)
+  const text = `see ${token(1)}`
+  const removed = reconcileShelved(untoken(text, 1), held, bare)
+  expect([...removed.pastes.keys()]).toEqual([2])
+  expect([...removed.shelf.keys()]).toEqual([1])
+  const back = reconcileShelved(text, removed.pastes, removed.shelf)
+  expect([...back.pastes.keys()].sort()).toEqual([1, 2])
+  expect(back.pastes.get(1)).toEqual({ kind: 'text', text: SIX })
+  expect(back.shelf.size).toBe(0)
+})
+
+test('shelf: a shelved key is never reassigned, so a redo cannot pick up a newer paste', () => {
+  const first = tokenize(X, none)
+  const shelved = reconcileShelved('', first.pastes, bare)
+  const floor = Math.max(0, ...shelved.shelf.keys())
+  const second = tokenize(SIX, shelved.pastes, floor)
+  expect(second.text).toBe(token(2))
+  expect([...attach('/d/a.png', 1, 1, second.pastes, floor).keys()]).toEqual([2, 3])
+  const ref: AttachRef = { kind: 'note', id: 'n', title: 'N', meta: '' }
+  expect([...attachRef(ref, shelved.pastes, floor).keys()]).toEqual([2])
+  // Without the floor the old key would be reused — the undo/redo bug the shelf exists for.
+  expect(tokenize(SIX, shelved.pastes).text).toBe(token(1))
+  // Redo of the first paste next to the second: both blocks, each with its own content.
+  const both = reconcileShelved(`${token(1)} ${token(2)}`, second.pastes, shelved.shelf)
+  expect(expand(`${token(1)} ${token(2)}`, both.pastes).text).toBe(`${X} ${SIX}`)
 })
