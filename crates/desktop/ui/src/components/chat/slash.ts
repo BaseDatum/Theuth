@@ -13,7 +13,7 @@ import type { LoadedPage } from '@/rpc/extra'
 import { useConnection } from '@/store/connection'
 import { active } from '@/store/engine-scope'
 import { useSessions } from '@/store/sessions'
-import { EMPTY, useDrafts, useSkillDraft } from '@/lib/drafts'
+import { EMPTY, useDraftPick, useDrafts, useSkillDraft } from '@/lib/drafts'
 import { openContextPicker, type ShakeCategory } from './ContextPicker'
 import { openBroadcastDialog } from './BroadcastDialog'
 
@@ -38,7 +38,7 @@ export const COMMANDS: readonly { name: string; hint: string; desc: string }[] =
   {
     name: '/subagent',
     hint: '[model|off]',
-    desc: "model for subagents spawned without an explicit one (off = the session's model)",
+    desc: 'default model for theuth subagents spawned without an explicit one (off = same as new sessions)',
   },
   {
     name: '/effort',
@@ -229,6 +229,7 @@ export function surfaceOf(e: Event): Surface | null {
 
 export type SettingsTab =
   | 'general'
+  | 'chat'
   | 'loop'
   | 'approvals'
   | 'communication'
@@ -351,12 +352,16 @@ export async function run(line: string, ctx: Ctx): Promise<void> {
     case '/new':
       await navigate({ to: '/new' })
       return
+    // 148 R1: a pick is this chat's only — the engine switches the session; with no session yet the draft keeps
+    // it until the first send creates the session (never `set_model(null, …)`, which would set the default).
     case '/model':
       if (!arg) return openSurface('model')
+      if (!session) return useDraftPick.getState().setModel(arg)
       await api.set_model(session, arg, true)
       return
     case '/effort':
       if (!arg) return openSurface('model')
+      if (!session) return useDraftPick.getState().setEffort(arg === 'clear' ? null : arg)
       await api.set_effort(session, arg === 'clear' ? null : arg, true)
       return
     case '/title': {
@@ -377,10 +382,10 @@ export async function run(line: string, ctx: Ctx): Promise<void> {
       return
     }
     case '/subagent': {
-      if (!arg) return settings(navigate, 'loop', session)
+      if (!arg) return settings(navigate, 'chat', session)
       const m = await api.set_subagent_model(arg === 'off' || arg === 'clear' ? null : arg)
       active().qc.setQueryData(queryKeys.subagentModel, m)
-      toast(m ? `subagent model: ${m.id}` : 'subagent model: off')
+      toast(m ? `subagent model: ${m.id}` : 'subagent model: same as new sessions')
       return
     }
     // 52 §3.2: the Agent loop dropdown's RPC and query; the server rejects unavailable/text-only ids.

@@ -33,10 +33,6 @@ export function Loop() {
     queryKey: queryKeys.titleModel,
     queryFn: () => api.title_model(),
   })
-  const subagentModel = useQuery({
-    queryKey: queryKeys.subagentModel,
-    queryFn: () => api.subagent_model(),
-  })
   const visionModel = useQuery({
     queryKey: queryKeys.visionModel,
     queryFn: () => api.vision_model(),
@@ -44,9 +40,6 @@ export function Loop() {
 
   const setTitleModel = useAction((id: string) => api.set_title_model(id === 'off' ? null : id), {
     keys: [queryKeys.titleModel, queryKeys.escalateModel],
-  })
-  const setSubagentModel = useAction((id: string) => api.set_subagent_model(id === 'off' ? null : id), {
-    keys: [queryKeys.subagentModel],
   })
   const setVisionModel = useAction((id: string) => api.set_vision_model(id === 'off' ? null : id), {
     keys: [queryKeys.visionModel],
@@ -169,20 +162,6 @@ export function Loop() {
             none={{ label: 'Off' }}
             disabled={titleModel.isPending || setTitleModel.isPending}
             onChange={(v) => setTitleModel.mutate(v ?? 'off')}
-          />
-        </Row>
-        <Row
-          label="Subagent model"
-          description="What spawn_subagent uses when the agent does not name a model. The agent is told your choice in its system prompt. Off = the session's model."
-        >
-          <ModelCombobox
-            aria-label="Subagent model"
-            className="max-w-64"
-            models={models.data ?? []}
-            value={subagentModel.data?.id}
-            none={{ label: 'Off' }}
-            disabled={subagentModel.isPending || setSubagentModel.isPending}
-            onChange={(v) => setSubagentModel.mutate(v ?? 'off')}
           />
         </Row>
         <Row

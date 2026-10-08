@@ -811,7 +811,7 @@ export function dispatch(events: WireEvent[], st: Stores = active()): void {
     else if (e.type === "AskResolved") asks.resolve(e.id);
     else if (e.type === "SecretRequested") secrets.add(e);
     else if (e.type === "SecretResolved") secrets.resolve(e.id);
-    // 82 §3 / 83 §3: the new-chat draft shows this engine's live defaults; a reconnect's `info()` agrees.
+    // 82 §3 / 83 §3 / 148: the new-chat draft (while nothing is picked) and Settings › Chat show this engine's live defaults; a reconnect's `info()` agrees.
     else if (e.type === "DefaultModelChanged") {
       const conn = st.connection.getState();
       if (conn.info) conn.setInfo({ ...conn.info, default_model: e.model });

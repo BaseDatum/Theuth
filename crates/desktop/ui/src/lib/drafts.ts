@@ -135,3 +135,26 @@ export const useSkillDraft = create<SkillStore>()((set) => ({
       return { by: name === null ? rest : { ...rest, [session]: name } }
     }),
 }))
+
+type PickStore = {
+  /** The catalog id picked for the next new chat; `null` = the engine's default model. */
+  model: string | null
+  /** The effort picked for it; `null` = the engine's default effort (a draft cannot ask for the provider default). */
+  effort: string | null
+  setModel(model: string | null): void
+  setEffort(effort: string | null): void
+  reset(): void
+}
+
+/**
+ * 148 R1: the new-chat draft's model/effort pick. It never touches the engine default: the first send creates
+ * the session with it (`create_session`), then `reset` clears it; a new draft resets it too.
+ * ponytail: one pick for every draft pane; per-pane picks if split drafts ever need to differ.
+ */
+export const useDraftPick = create<PickStore>()((set) => ({
+  model: null,
+  effort: null,
+  setModel: (model) => set({ model }),
+  setEffort: (effort) => set({ effort }),
+  reset: () => set({ model: null, effort: null }),
+}))

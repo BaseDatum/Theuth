@@ -43,7 +43,7 @@ import { VIEW, isPrivate, usePrivate } from '@/lib/private'
 import { queryKeys, useApi } from '@/lib/rpc'
 import { useMesh } from '@/components/tasks/queries'
 import type { CreateSessionOptions } from '@/rpc/bindings/CreateSessionOptions'
-import { EMPTY, useDrafts, useSkillDraft } from '@/lib/drafts'
+import { EMPTY, useDraftPick, useDrafts, useSkillDraft } from '@/lib/drafts'
 import { DEBOUNCE_MS as PATH_DEBOUNCE_MS, type PathPopup, accept as acceptPath, pathKey, pathTrigger, step as stepPath } from '@/lib/path-complete'
 import { useIsMobile } from '@/hooks/use-mobile'
 import { interrupt, phase, press } from '@/lib/composer-state'
@@ -80,16 +80,21 @@ import { type Ctx, FRESH, type HarnessMenu, type SlashItem, draftSkill, isComman
 
 /** New Chat options (51 §8.3, 137 §11.3): `private` selects memory-only retention; `project` is root metadata; `endless` the summary-tree memory. */
 export type DraftCreate = { private: boolean; project: string | null; endless: boolean }
+/** The draft with every switch off: what `new_session()` would create. */
+export const PLAIN_DRAFT: DraftCreate = { private: false, project: null, endless: false }
 
-/** The `create_session` options for a draft; `memory` is sent only when the ∞ switch is on (the engine's default otherwise). */
-export function createOptions(draft: DraftCreate): CreateSessionOptions {
+/**
+ * The `create_session` options for a draft; `memory` is sent only when the ∞ switch is on (the engine's default
+ * otherwise). `pick` is the draft's model/effort (148 R1): this session's only, `null` = the engine's default.
+ */
+export function createOptions(draft: DraftCreate, pick: { model: string | null; effort: string | null } = { model: null, effort: null }): CreateSessionOptions {
   return {
     retention: draft.private ? 'private' : 'durable',
     project: draft.project,
     view: draft.private ? VIEW : null,
     cwd: null,
-    model: null,
-    effort: null,
+    model: pick.model,
+    effort: pick.effort,
     parent_session: null,
     parent_engine: null,
     harness: null,
@@ -285,7 +290,7 @@ export function Composer({
   const agent = useSessionField(session ?? '', 'agent')
   const harnessCommands = useSessionField(session ?? '', 'harnessCommands')
   const defaultModel = useConnection((s) => s.info?.default_model)
-  // 83 §3: a new session starts on the engine's default effort (a draft pick set it via `set_effort(null, …)`).
+  // 148 R1: a new session starts on the draft's pick, else the engine's defaults (a draft pick never sets those).
   const defaultEffort = useConnection((s) => s.info?.default_effort)
   const { data: models } = useQuery({
     queryKey: queryKeys.models,
@@ -504,7 +509,7 @@ export function Composer({
 
   const addFiles = (paths: string[], dims?: [number, number]) => {
     setPastes((h) => paths.reduce((held, path) => attach(path, dims?.[0] ?? 0, dims?.[1] ?? 0, held, floor()), h))
-    const id = model ?? defaultModel
+    const id = model ?? (session ? defaultModel : (useDraftPick.getState().model ?? defaultModel))
     const info = models?.find((m) => m.id === id)
     if (info && !info.image && paths.some((p) => IMAGE.test(p)))
       toast.warning(
@@ -776,10 +781,12 @@ export function Composer({
         await deadline(api.send_input(id, body, files, null, clientId))
       } else {
         let id: string
-        if (draftCreate?.private || draftCreate?.project || draftCreate?.endless) {
-          if (draftCreate.private && !usePrivate.getState().acknowledged)
+        const pick = useDraftPick.getState()
+        // Anything `new_session()` cannot give — a switch on, or a model/effort pick — goes through `create_session`.
+        if (draftCreate?.private || draftCreate?.project || draftCreate?.endless || pick.model || pick.effort) {
+          if (draftCreate?.private && !usePrivate.getState().acknowledged)
             throw new Error('Acknowledge the private session notice first')
-          const open = await api.create_session(createOptions(draftCreate))
+          const open = await api.create_session(createOptions(draftCreate ?? PLAIN_DRAFT, pick))
           if (open.retention === 'private') usePrivate.getState().open(open)
           id = open.session
         } else id = await api.new_session()
@@ -788,9 +795,10 @@ export function Composer({
         // Seed before sending: a fast failure can finish before the RPC reply.
         loadHistory(
           id,
-          { ...FRESH, model: defaultModel ?? '', effort: defaultEffort ?? null },
+          { ...FRESH, model: pick.model ?? defaultModel ?? '', effort: pick.effort ?? defaultEffort ?? null },
           'replace',
         )
+        pick.reset()
         markSent(id, body, files)
         mode(id)
         await deadline(api.send_input(id, body, files, null, clientId))

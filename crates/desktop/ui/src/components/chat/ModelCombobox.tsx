@@ -1,5 +1,6 @@
 // 124 §5: the form field over the model catalog — an outline trigger plus the shared `ModelPicker`,
 // replacing the Radix `Select` of 388 rows. `none` is the "Engine default" / "Off" row; it reports `null`.
+// 148: `effort` passes through to the picker's effort levels; the trigger then reads `name · effort`.
 
 import { ChevronDown } from 'lucide-react'
 import { useState } from 'react'
@@ -12,10 +13,17 @@ import { ModelPicker } from './ModelPicker'
 
 const NONE = '__none__'
 
+/** The trigger's text: the model's name (else its id, else `none`'s label), with ` · <effort>` when one is set. */
+export function triggerLabel(current: ModelInfo | undefined, value: string | null | undefined, none: { label: string } | undefined, effort: string | null | undefined): string {
+  const name = current?.name ?? value ?? none?.label ?? 'Model'
+  return effort ? `${name} · ${effort}` : name
+}
+
 export function ModelCombobox({
   models,
   value,
   onChange,
+  effort,
   none,
   disabled,
   id,
@@ -27,6 +35,8 @@ export function ModelCombobox({
   /** The id on file; one missing from `models` stays selectable under the picker's `other` provider. */
   value: string | null | undefined
   onChange(id: string | null): void
+  /** The current model's effort levels (`ModelPicker.effort`); `onSelect(null)` clears. */
+  effort?: { levels: string[]; current: string | null | undefined; onSelect(level: string | null): void }
   none?: { label: string }
   disabled?: boolean
   id?: string
@@ -41,7 +51,7 @@ export function ModelCombobox({
     <Popover open={open} onOpenChange={setOpen}>
       <PopoverTrigger asChild>
         <Button id={id} variant="outline" size={size} disabled={disabled} aria-label={ariaLabel} className={cn('justify-between font-normal', className)}>
-          <span className="truncate">{current?.name ?? value ?? none?.label ?? 'Model'}</span>
+          <span className="truncate">{triggerLabel(current, value, none, effort?.current)}</span>
           <ChevronDown className="size-4 opacity-70" />
         </Button>
       </PopoverTrigger>
@@ -50,6 +60,7 @@ export function ModelCombobox({
           models={models}
           model={value ?? undefined}
           extra={value && !current ? [value] : undefined}
+          effort={effort && { ...effort, onSelect: (level) => (setOpen(false), effort.onSelect(level)) }}
           none={none && { value: NONE, label: none.label }}
           favorites={favorites}
           onToggleFavorite={(id) => void toggleFavorite(id)}
