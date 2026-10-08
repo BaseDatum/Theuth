@@ -12,22 +12,35 @@ use runtime::SessionId;
 use tools::{JobKind, JobRow, ToolOutput};
 
 use crate::durability::jobs::{hhmmss_ms, log_tail};
-use crate::durability::{JournaledCall, ResumeKind, ResumePlan};
+use crate::durability::{JournaledCall, ResumeCause, ResumeKind, ResumePlan};
 use crate::store::Store;
 use crate::supervisor::{DropWait, ResumeQuestion, ResumeWait, remaining};
 
 /// The §4.3 interrupted note: a `started` mutating call the restart must not
 /// repeat. `ERROR:`-prefixed so the model's tool-error handling applies.
+/// After a transfer / takeover (139 §6.3) the cause is the move, not a
+/// restart.
 pub(crate) fn interrupted_note(call: &JournaledCall, plan: &ResumePlan) -> ToolOutput {
     let started = call
         .started_at
         .map(|t| format!(" (started {})", hhmmss(t)))
         .unwrap_or_default();
     ToolOutput::err(format!(
-        "ERROR: interrupted: the engine restarted at {} while this call was running{started}; \
+        "ERROR: interrupted: {} while this call was running{started}; \
          its effect is unknown — check before repeating it.",
-        hhmmss(plan.interrupted_at)
+        how(plan)
     ))
+}
+
+/// Why the call was cut short, by cause: a restart, or the session moving
+/// to this engine (139 §6.3) — spelled for the `interrupted:` notes.
+fn how(plan: &ResumePlan) -> String {
+    let at = hhmmss(plan.interrupted_at);
+    match plan.cause {
+        ResumeCause::Transfer => format!("the session moved to this engine at {at}"),
+        ResumeCause::Takeover => format!("this engine took the session over at {at}"),
+        _ => format!("the engine restarted at {at}"),
+    }
 }
 
 /// Local `HH:MM:SS`, as §4.3's examples read.
@@ -84,7 +97,16 @@ pub(crate) async fn resume_job_call(
         }
         _ => return Some(interrupted_note(call, plan)),
     };
+    // 139 §7.1: a job another engine spawned did not die with a restart —
+    // the session moved here and the process stayed behind.
+    let me = store.engine();
+    let moved = !job.engine.is_empty() && job.engine != me;
     let how = match plan.kind {
+        _ if moved => format!(
+            "the session moved here from {} at {}",
+            job.engine,
+            hhmmss(plan.interrupted_at)
+        ),
         ResumeKind::Interrupted => {
             format!("the engine restarted at {}", hhmmss(plan.interrupted_at))
         }
@@ -93,9 +115,14 @@ pub(crate) async fn resume_job_call(
             hhmmss(plan.interrupted_at)
         ),
     };
+    let fate = if moved {
+        format!("the job stayed on {} and its exit code is unknown here", job.engine)
+    } else {
+        "the job died with the engine and its exit code is unknown".to_owned()
+    };
     let mut text = format!(
-        "ERROR: interrupted: {how} while this {what} ran (job {}, started {}); the job died with the \
-         engine and its exit code is unknown — check before repeating it.",
+        "ERROR: interrupted: {how} while this {what} ran (job {}, started {}); {fate} — check \
+         before repeating it.",
         job.id,
         hhmmss_ms(job.started_ms)
     );
@@ -120,11 +147,26 @@ async fn lost_wait_reply(
     };
     let mut content = format!("job {label} · lost · {secs}s\n");
     let screen = store.pty_screen(session, &job.id).await.ok().flatten();
+    // 139 §7.2: the page is the previous owner's, replicated.
+    let (gone, on) = if !job.engine.is_empty() && job.engine != store.engine() {
+        (
+            format!(
+                "the session moved from {} at {}",
+                job.engine,
+                hhmmss(plan.interrupted_at)
+            ),
+            format!(" on {}", job.engine),
+        )
+    } else {
+        (
+            format!("the engine restarted at {}", hhmmss(plan.interrupted_at)),
+            String::new(),
+        )
+    };
     match &screen {
         Some(s) => {
             content.push_str(&format!(
-                "[process gone — the engine restarted at {}; this is the last screen captured at {} (revision {})]\nscreen:\n{}",
-                hhmmss(plan.interrupted_at),
+                "[process gone — {gone}; this is the last screen captured{on} at {} (revision {})]\nscreen:\n{}",
                 hhmmss_ms(s.at_ms),
                 s.revision,
                 s.text
@@ -135,10 +177,7 @@ async fn lost_wait_reply(
                 s.cursor_col + 1
             ));
         }
-        None => content.push_str(&format!(
-            "[process gone — the engine restarted at {}; no screen was captured]",
-            hhmmss(plan.interrupted_at)
-        )),
+        None => content.push_str(&format!("[process gone — {gone}; no screen was captured]")),
     }
     let rows: Vec<&str> = screen
         .as_ref()
@@ -242,6 +281,11 @@ pub(crate) async fn resume_question_call(
 /// row's remaining deadline — a passed deadline is the tool's own timeout
 /// receipt. A `child_result` wait delivers the spared `result:` text. No
 /// `waits` row (nothing was accepted before the kill) → the interrupted note.
+///
+/// 139 §7.3 / Revision 1 Q7: after a transfer the exchange receipts live in
+/// the previous owner's engine-local `peer_exchanges`, so nothing re-arms
+/// here; the note says the reply, if any, arrives as a `<message>` (69 P
+/// forwards it to the owner).
 pub(crate) async fn resume_wait_call(
     session: SessionId,
     call: &JournaledCall,
@@ -265,13 +309,13 @@ pub(crate) async fn resume_wait_call(
         Err(e) => return ToolOutput::err(format!("{}: agent supervisor: {e}", call.name)),
     };
     let Some(row) = w.row.take() else {
-        return interrupted_note(call, plan);
+        return transfer_wait_note(call, plan).unwrap_or_else(|| interrupted_note(call, plan));
     };
     if !w.child_results.is_empty() {
         return ToolOutput::ok(w.child_results.join("\n\n"));
     }
     if w.receipts.is_empty() {
-        return interrupted_note(call, plan);
+        return transfer_wait_note(call, plan).unwrap_or_else(|| interrupted_note(call, plan));
     }
     let deadline = row
         .deadline
@@ -302,4 +346,151 @@ pub(crate) async fn resume_wait_call(
         }
     }
     crate::peers::receipts_output(&w.receipts)
+}
+
+/// 139 §7.3's wording for a peer wait cut by a transfer / takeover;
+/// `None` for every other cause (the §4.3 interrupted note applies).
+fn transfer_wait_note(call: &JournaledCall, plan: &ResumePlan) -> Option<ToolOutput> {
+    if !matches!(plan.cause, ResumeCause::Transfer | ResumeCause::Takeover) {
+        return None;
+    }
+    let started = call
+        .started_at
+        .map(|t| format!(" (started {})", hhmmss(t)))
+        .unwrap_or_default();
+    Some(ToolOutput::err(format!(
+        "ERROR: interrupted: waiting for a reply was interrupted{started} — {}; the reply, if any, \
+         arrives as a <message> and is not lost. Do not resend the message.",
+        how(plan)
+    )))
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+    use tools::{JobExit, JobKind, JobRow, JobState, Risk};
+
+    use super::*;
+    use crate::durability::{CallState, LastStep};
+    use runtime::TurnId;
+
+    fn plan(cause: ResumeCause) -> ResumePlan {
+        ResumePlan {
+            turn: TurnId::new(),
+            kind: ResumeKind::Suspended,
+            cause,
+            interrupted_at: Utc::now(),
+            last: LastStep::ToolBatch {
+                all_finished: false,
+            },
+            calls: Vec::new(),
+            partial: None,
+        }
+    }
+
+    fn call(id: &str, name: &str, args: serde_json::Value) -> JournaledCall {
+        JournaledCall {
+            call_id: id.into(),
+            name: name.into(),
+            args,
+            risk: Risk::Destructive,
+            state: CallState::Started,
+            attempt: 1,
+            started_at: None,
+            output: None,
+            is_error: false,
+            files: Vec::new(),
+        }
+    }
+
+    /// 139 §6.3 / §7.3 (Q7): the generic note and the peer-wait note name
+    /// the move for `transfer` / `takeover` and keep 109's restart wording
+    /// otherwise; the peer-wait note exists only for the move causes.
+    #[test]
+    fn notes_spell_the_cause() {
+        let c = call("c1", "send_message", json!({}));
+        let crash = interrupted_note(&c, &plan(ResumeCause::Crash));
+        assert!(
+            crash.content.starts_with("ERROR: interrupted: the engine restarted at "),
+            "{}",
+            crash.content
+        );
+        let moved = interrupted_note(&c, &plan(ResumeCause::Transfer));
+        assert!(
+            moved.content.starts_with("ERROR: interrupted: the session moved to this engine at "),
+            "{}",
+            moved.content
+        );
+        assert!(transfer_wait_note(&c, &plan(ResumeCause::Shutdown)).is_none());
+        let w = transfer_wait_note(&c, &plan(ResumeCause::Takeover)).unwrap();
+        assert!(w.is_error);
+        assert!(
+            w.content.starts_with("ERROR: interrupted: waiting for a reply was interrupted — this engine took the session over at "),
+            "{}",
+            w.content
+        );
+        assert!(w.content.contains("arrives as a <message>"), "{}", w.content);
+    }
+
+    /// 139 §7.1 / §7.2: on engine `b`, the job note and the lost `wait`
+    /// reply for a row with `engine = "a"` say the session moved from `a`
+    /// and that the page was captured there.
+    #[tokio::test]
+    async fn job_note_names_the_engine_that_ran_it() {
+        let dir = std::env::temp_dir().join(format!("theuth-139-w3-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let store = Store::open(
+            &dir.join("sessions.sqlite"),
+            Some(mesh::EngineId("b".into())),
+        )
+        .await
+        .unwrap();
+        let s = SessionId::new();
+        store
+            .create_session(s, "m", None, None, None)
+            .await
+            .unwrap();
+        let row = |id: &str, call_id: &str, kind: JobKind| JobRow {
+            session: s,
+            id: tools::JobId(id.into()),
+            kind,
+            call_id: call_id.into(),
+            command: "x".into(),
+            name: None,
+            pgid: None,
+            log: Some(std::path::PathBuf::from("/nonexistent/j.log")),
+            started_ms: 1_000,
+            state: JobState::Lost,
+            exit: Some(JobExit::Lost),
+            settled_ms: Some(9_000),
+            engine: "a".into(),
+        };
+        store.job_put(&row("j1", "c1", JobKind::Shell)).await.unwrap();
+        store.job_put(&row("j2", "c2", JobKind::Pty)).await.unwrap();
+        let p = plan(ResumeCause::Transfer);
+        let note = resume_job_call(&store, s, &call("c1", "shell", json!({})), &p)
+            .await
+            .unwrap();
+        assert!(
+            note.content.starts_with(&format!(
+                "ERROR: interrupted: the session moved here from a at {} while this command ran (job j1, started {}); the job stayed on a and its exit code is unknown here",
+                hhmmss(p.interrupted_at),
+                hhmmss_ms(1_000)
+            )),
+            "{}",
+            note.content
+        );
+        let wait = resume_job_call(&store, s, &call("c5", "wait", json!({"id": "j2"})), &p)
+            .await
+            .unwrap();
+        assert!(
+            wait.content.starts_with(&format!(
+                "job j2 · lost · 8s\n[process gone — the session moved from a at {}; no screen was captured]",
+                hhmmss(p.interrupted_at)
+            )),
+            "{}",
+            wait.content
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
 }
