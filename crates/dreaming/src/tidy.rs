@@ -29,7 +29,8 @@ pub struct Candidates {
     pub retitle: Vec<String>,
     /// Groups of live ids sharing a stem (date / `-vN` suffix stripped), ≥ 2 each.
     pub duplicate_stems: Vec<Vec<String>>,
-    /// Records past `lifetimes.record`, plus ≥ 50 shown / 0 opened non-warnings ≥ 14 days old.
+    /// Records past `lifetimes.record`, plus ≥ 50 shown / 0 opened entries ≥ 14 days old
+    /// that are neither warnings nor decisions (live night 4 archived 5 decisions by use).
     pub archive_by_use: Vec<String>,
     /// Entries whose `verified` is absent or older than `lifetimes.fact`, checkable types first (≤ caps.verifications).
     pub verify_sample: Vec<String>,
@@ -120,7 +121,8 @@ pub fn candidates(
         let age = age_days(m, now);
         let record_expired =
             m.type_ == "record" && age.is_some_and(|d| d > i64::from(cfg.lifetimes.record));
-        let noise = m.type_ != "warning"
+        // The skill never archives a decision or a warning by use; do not offer them.
+        let noise = !matches!(m.type_.as_str(), "warning" | "decision")
             && age.is_some_and(|d| d >= NOISE_DAYS)
             && used
                 .get(m.id.as_str())
@@ -225,6 +227,13 @@ mod tests {
                 Status::Tidy,
             ),
             meta("facts/young-noise", "fact", "new", 2, Status::Tidy),
+            meta(
+                "decisions/ruling",
+                "decision",
+                "no pulumi",
+                30,
+                Status::Tidy,
+            ),
             meta("facts/dead", "fact", &long, 40, Status::Archived),
             meta(
                 "facts/checkable",
@@ -250,6 +259,12 @@ mod tests {
             Uses {
                 id: "facts/young-noise".into(),
                 shown: 90,
+                opened: 0,
+                ..Default::default()
+            },
+            Uses {
+                id: "decisions/ruling".into(),
+                shown: 120,
                 opened: 0,
                 ..Default::default()
             },
