@@ -1679,8 +1679,10 @@ async fn tools_envelope() {
         root: root.clone(),
         budget,
     };
+    // 145+ call sites repo-wide; the default 4000-token cut would drop the
+    // alphabetical tail (`scrape`) — the budget is not what this asserts.
     let out = CodeRefsTool(ix.clone())
-        .call(refs("RegisterTool", None, None), cx())
+        .call(refs("RegisterTool", None, Some(20_000)), cx())
         .await
         .unwrap();
     assert!(!out.is_error, "{}", out.content);
