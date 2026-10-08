@@ -35,6 +35,24 @@ durability:
     CARGO_INCREMENTAL={{incremental}} cargo test -p agent --lib -- loop_::durability_tests durability:: store::durability supervisor::waits supervisor::drain supervisor::resume supervisor::acp_resume
     CARGO_INCREMENTAL={{incremental}} cargo test -p tools --lib -- --test-threads=1 jobs:: pty::
 
+# Design doc 139 §11 Z: the two-engine matrix. In-process: the two-store rows that need no running
+# turn (`sessionsync/tests/mesh_durability.rs`: T9 prune through the log, replica display/act
+# scope) plus the two-engine unit tests of each wave (owner.rs takes, release drain, reaper engine
+# filter, child waits, routed answers). The rows that need a live turn (T1–T8) are the scripted
+# smoke against two real engines: `just durability-mesh smoke` (not CI; ~4 min; needs bun and
+# free ports 7931/7932/7941/7942/7950; evidence in docs/design/139-smoke.md).
+durability-mesh *ARGS:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    set -- {{ARGS}}
+    export CARGO_INCREMENTAL={{incremental}}
+    cargo test -p sessionsync --test mesh_durability
+    cargo test -p sessionsync --lib -- owner::
+    cargo test -p agent --lib -- supervisor::transfer supervisor::resume supervisor::drain supervisor::waits supervisor::child_waits durability::jobs loop_::durability_tests::drain_suspends loop_::resume_calls store::durability
+    cargo test -p rpc --lib -- forward routed_methods answers_follow durability_wire_shapes
+    cargo test -p tools --lib -- --test-threads=1 jobs::tests::kill_session pty::tests::screen_after_transfer
+    if [ "${1:-}" = "smoke" ]; then shift; scripts/durability-mesh-smoke.sh "$@"; fi
+
 clippy:
     CARGO_INCREMENTAL={{incremental}} cargo clippy --workspace --all-targets -- -D warnings
 
