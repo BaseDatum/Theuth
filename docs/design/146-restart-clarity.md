@@ -84,17 +84,17 @@ One scratch engine (`/tmp/146-smoke/engine`, fake OpenAI provider as the parent'
 delete the parent's `child_result` wait (the 125R1 shape), `kill -9`, boot. P4: same with the parent
 archived first. P7: same with `acp_respawn_window_days: 0` (boot skips it), then `resume_child` over RPC. P8: SIGTERM instead of `kill -9` (wait row and nothing else removed: the journal is the only trigger). P9: `kill -9` after deleting the child's `~/.omp/agent/sessions/*/*_<acp_session>*`. P1 deletes the child's `turn_steps` too, so it proves the pre-journal fallback. P5: second `t --headless` on the data dir. P6: `sqlite3` timing on a `.backup` copy.
 
-Run of 19:54–19:58 local (`/tmp/146-smoke.log`; binary `target/w/debug/t` at the final commit); earlier runs: 17:06 failed P4's item (→ `LastBootPass`), 19:30 failed P7's first check (→ the wait-row clear, §3):
+Final run (`/tmp/146-smoke.log`; binary `target/w/debug/t` at the final commit); earlier runs: 17:06 failed P4's item (→ `LastBootPass`), 19:30 failed P7's first check (→ the wait-row clear), 20:52 failed P9's brief (it named the new harness id → `acp_previous`, 0043):
 
 | proof | result |
 |---|---|
-| P1 `146: boot pass` respawned=1 lost=0 | ✓ `146: mid-prompt ACP children in the window n=1` → `boot pass … waiting=1 lost=0` → 0.76 s later (child's `TurnStarted`) `respawned=1 waiting=0 lost=0` |
+| P1 `146: boot pass` respawned=1 lost=0 (pre-journal child: its `turn_steps` and wait row deleted) | ✓ `146: mid-prompt ACP children in the window n=1` → `boot pass … waiting=1 lost=0` → 0.76 s later (child's `TurnStarted`) `respawned=1 waiting=0 lost=0` |
 | P2 omp process back ≤ 30 s; parent receives DONE later | ✓ new `omp acp` pid 1.3 s after boot; `<message from="session:<w146>" …> DONE </message>` in the parent ~160 s after the reboot (the respawned child re-ran `sleep 150`) |
 | P3 `list_sessions` child `running: true` during the respawned prompt | ✓ `{"running":true,"name":"w146"}`; HUD item `Restarted 19:54 · 1 subagent back` |
 | P4 archived parent → child lost | ✓ `boot pass … lost=1 lost_names=["w146b"]`; child's last row `System: interrupted by the engine restart at 19:57; not respawned: its parent is archived`; parent's messages carry `<child_lost name="w146b" session=… at="19:57" why="its parent is archived">`; no `omp acp` process; `attention_list` → `resume:boot:<ts>` "Restarted 19:57 · 1 lost (w146b)" with `session` = w146b (Dismiss renders) |
 | P7 (D8) Resume button on a child the boot pass skipped (`acp_respawn_window_days: 0`, wait row deleted) | ✓ boot pass `respawned=0 waiting=0 lost=0`, no omp process; `resume_child` → `"prompted"`; new `omp acp` pid 3.9 s later; the child's next row is `User: <resume_handoff>… has been restored…`; `list_sessions` → `running: true` |
-| P8 (D9/D10) graceful quit (SIGTERM) with the child mid-prompt | see final run below |
-| P9 (D11) omp session file deleted before the reboot | see final run below |
+| P8 (D9/D10) graceful quit (SIGTERM) with the child mid-prompt | ✓ journal `input_accepted{source: input, text, parent}` while mid-prompt → after the quit `suspended{reason: shutdown}` (not `turn_finished`); boot `ACP children with an open journal turn n=…` → `respawned=n lost=0`; the child's next row and omp's own jsonl carry "restarted at <t> while you were working on: \"Run exactly one shell command: `sleep 150`…\" … Continue exactly where you left off"; parent got DONE; journal closed `turn_finished{end_turn}` |
+| P9 (D11) `~/.omp/agent/sessions/*/*_<acp>*` deleted before the reboot (run 21:30) | ✓ `respawned=1 fresh=1 lost=0`; the child's next row: "your previous harness session <old id> could not be loaded … read git log and git status first", `Your original brief: "Run exactly one shell command…"`; `sessions.acp_session` is a new id, `acp_previous` the old; HUD `Restarted 21:20 · 1 restarted fresh`; parent got DONE |
 | P5 second `t --headless` | ✓ exit 0 after 68 ms, stderr `engine already running (pid 49070, headless, since 19:57, ws://127.0.0.1:7961) — run `t` to attach …`; first engine's `info` still answers |
 | P6 `open_turns` on the `.backup` copy (25 581 `turn_steps` rows / 1 027 turns) | ✓ old 1.12–1.26 s → new 0.085–0.09 s at 15:40/17:09 (cold-ish cache), old 0.63 s → new 0.052 s at 17:30 (warm): 12–14×; with the 0042 index the old query also drops to 0.04–0.07 s and the new is unchanged. Result sets identical (`EXCEPT` both ways = 0). The index pays for `open_turn` / `journal_prune` / `resume_report` (per-turn `at` seeks) |
 
@@ -107,11 +107,11 @@ style. Worth its own ticket (config writer).
 
 | gate | result |
 |---|---|
-| `cargo test -p agent --lib -- supervisor:: durability::` | 110 passed, 0 failed (+`respawn_decision_table` extended, `resume_child_prompts_a_midprompt_child`) |
+| `cargo test -p agent --lib -- supervisor:: durability:: store:: acp_child::tests::respawn` | 193 passed, 0 failed (`respawn_decision_table` covers D1/D3/D9/D11, `resume_child_prompts_a_midprompt_child` D8, `restored_note_has_no_delta` D10/D11 wording) |
 | `cargo test -p roster --lib` | 69 passed (+ `boot_pass_item`) |
 | `cargo test -p theuth --lib` | n/a — `theuth` has no lib target |
 | `cargo clippy -p agent -p rpc -p tui -p roster -p theuth -p desktop --all-targets -- -D warnings` (rpc also with `--features ts`) | clean |
 | `rustfmt --check` on touched files | clean for 146's hunks; `crates/theuth/src/main.rs:1478/1505/1515` and `mcp.rs:259` were already unformatted on `origin/main` and are left alone |
 | `cargo check --workspace --tests` (`BUILD_SLOTS=1`) | clean (after `just ts`: `nodes`' tests read `bindings/methods.json`, which only the export produces); one pre-existing future-incompat warning from the `block` dependency |
 | `just ts-desktop` + desktop `bun run check` (tsc) + `vitest run src/store/reduce.test.ts` | 682 bindings exported (`ChildResumed` via `rpc/src/export.rs`); tsc clean; 64 passed (+2 for D7) |
-| `just restart-clarity` | 25/25 checks (table above; ~4.5 min, two real `sleep 150` children) |
+| `just restart-clarity` | 41/41 checks (table above; ~10 min, five real `sleep 150` children) |
