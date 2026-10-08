@@ -159,20 +159,6 @@ impl std::str::FromStr for UnitFilter {
     }
 }
 
-/// R1-D4: what a backfill would cost before it starts (the Memory panel's note).
-#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
-#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
-pub struct BackfillEstimate {
-    /// Units the tree would cover (after the `backfill_max_units` cap) that lack a line.
-    #[cfg_attr(feature = "ts", ts(type = "number"))]
-    pub units: u64,
-    /// Seconds, from the measured per-unit time (5 s before any node is built).
-    #[cfg_attr(feature = "ts", ts(type = "number"))]
-    pub eta_secs: u64,
-    /// USD, from the measured per-unit cost ($0.02 before any node is built).
-    pub usd: f64,
-}
-
 /// A session's memory mode (`sessions.memory`, D1).
 #[derive(
     Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize, schemars::JsonSchema,
@@ -280,21 +266,23 @@ pub struct EndlessStats {
     pub usd_estimate: f64,
 }
 
-/// Backfill progress (D14).
-#[derive(
-    Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema,
-)]
+/// Backfill progress (D14) and cost (R1-D4): also the shape of
+/// [`Endless::backfill_estimate`] before a backfill starts.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct Backfill {
     /// History units with a level-0 line.
     #[cfg_attr(feature = "ts", ts(type = "number"))]
     pub done: u64,
-    /// History units to cover.
+    /// History units to cover (after the `backfill_max_units` cap).
     #[cfg_attr(feature = "ts", ts(type = "number"))]
     pub total: u64,
-    /// Remaining × measured seconds per unit.
+    /// Remaining × measured seconds per unit (5 s before any node is built).
     #[cfg_attr(feature = "ts", ts(type = "number"))]
     pub eta_secs: u64,
+    /// Remaining × measured USD per unit ($0.02 before any node is built).
+    #[serde(default)]
+    pub usd_estimate: f64,
 }
 
 /// RPC `session_memory` (§11.2).
@@ -472,15 +460,11 @@ impl Endless {
     }
 
     /// R1-D2 / R1b: the session's view budget (a user control, persisted in
-    /// `sessions.endless_view_bytes`); `None` returns to `agent.endless.view_bytes`.
-    /// The fold re-fits at the next render: a smaller budget merges down, a
+    /// `sessions.endless_view_bytes`; clamped 16_000..=256_000 at use). The
+    /// fold re-fits at the next render: a smaller budget merges down, a
     /// larger one re-folds at the new budget (never cuts text).
-    pub async fn set_view_bytes(
-        &self,
-        session: SessionId,
-        bytes: Option<u32>,
-    ) -> anyhow::Result<()> {
-        pump::set_view_bytes(&self.inner, session, bytes).await
+    pub async fn set_view_bytes(&self, session: SessionId, bytes: u32) -> anyhow::Result<()> {
+        pump::set_view_bytes(&self.inner, session, Some(bytes)).await
     }
 
     /// R1-D1: the same render as the turn's, without freezing a context —
@@ -501,7 +485,7 @@ impl Endless {
     }
 
     /// R1-D4: ETA and cost of switching the session on (or of the backfill under way).
-    pub async fn backfill_estimate(&self, session: SessionId) -> anyhow::Result<BackfillEstimate> {
+    pub async fn backfill_estimate(&self, session: SessionId) -> anyhow::Result<Backfill> {
         pump::backfill_estimate(&self.inner, session).await
     }
 
@@ -532,8 +516,8 @@ impl Endless {
         &self,
         session: SessionId,
         mode: MemoryMode,
-        filter: UnitFilter,
         epoch: u32,
+        filter: UnitFilter,
     ) -> anyhow::Result<SetMode> {
         pump::set_mode(&self.inner, session, mode, filter, epoch).await
     }

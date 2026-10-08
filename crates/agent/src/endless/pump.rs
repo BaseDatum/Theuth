@@ -19,8 +19,8 @@ use super::fold::ViewBlock;
 use super::fold::{self, Fold, FoldCfg, Part, ViewRender};
 use super::tree::{self, Node, Tree, Unit, exists, id_n};
 use super::{
-    Attached, Backfill, BackfillEstimate, EndlessProgress, Inner, MemoryMode, SessionMemory,
-    SetMode, UnitFilter, ViewLine, units,
+    Attached, Backfill, EndlessProgress, Inner, MemoryMode, SessionMemory, SetMode, UnitFilter,
+    ViewLine, units,
 };
 use crate::backend::Backend;
 use crate::cost::{CallKind, CallStatus};
@@ -129,6 +129,8 @@ struct Live {
     backfill_total: u64,
     /// Measured level-0 build time (sum secs, count) for the ETA.
     build_secs: (f64, u32),
+    /// Measured USD per unit from the ledger (R1-D4), refreshed by `backfill_estimate`.
+    usd_per_unit: Option<f64>,
     /// Progress event throttle.
     last_progress: Option<Instant>,
     dirty: bool,
@@ -187,6 +189,7 @@ impl Live {
             done,
             total: span,
             eta_secs: ((span - done) as f64 * self.secs_per_unit()) as u64,
+            usd_estimate: (span - done) as f64 * self.usd_per_unit.unwrap_or(DEFAULT_UNIT_USD),
         })
     }
 
@@ -260,6 +263,7 @@ impl Live {
             last_seq: -1,
             backfill_total: 0,
             build_secs: (0.0, 0),
+            usd_per_unit: None,
             last_progress: None,
             dirty: false,
             pending_error: None,
@@ -881,41 +885,44 @@ async fn count_units(
         .sum())
 }
 
-/// R1-D4: cost of the backfill (pending or hypothetical) from the first
-/// `CALIBRATE_NODES` built nodes, else the static defaults.
+/// R1-D4: the backfill under way, or the one a switch-on would start, with
+/// its cost: the first `CALIBRATE_NODES` built nodes calibrate seconds and
+/// USD per unit, else 5 s / $0.02.
 pub(crate) async fn backfill_estimate(
     inner: &Inner,
     session: SessionId,
-) -> anyhow::Result<BackfillEstimate> {
+) -> anyhow::Result<Backfill> {
     let store = inner.store_for(session);
     let Some(state) = state_of(inner, session) else {
         let meta = store.endless_meta(session).await?;
         let t = count_units(&store, session, inner.cfg.cap_chars, meta.filter).await?;
-        let units = t.min(u64::from(inner.cfg.backfill_max_units));
-        return Ok(BackfillEstimate {
-            units,
-            eta_secs: (units as f64 * DEFAULT_UNIT_SECS) as u64,
-            usd: units as f64 * DEFAULT_UNIT_USD,
+        let total = t.min(u64::from(inner.cfg.backfill_max_units));
+        return Ok(Backfill {
+            done: 0,
+            total,
+            eta_secs: (total as f64 * DEFAULT_UNIT_SECS) as u64,
+            usd_estimate: total as f64 * DEFAULT_UNIT_USD,
         });
     };
     ingest(&state).await?;
     let stats = store.endless_stats(session).await?;
-    let live = state.live.lock();
-    let units = if live.mode == MemoryMode::Endless {
-        live.unbuilt_level0()
-    } else {
-        live.t().min(u64::from(state.cfg.backfill_max_units))
-    };
+    let mut live = state.live.lock();
     let built = live.tree.built_at(0).min(u64::from(CALIBRATE_NODES));
-    let usd_per = if built > 0 && stats.calls > 0 {
-        stats.usd_estimate / built as f64
+    if built > 0 && stats.calls > 0 {
+        live.usd_per_unit = Some(stats.usd_estimate / built as f64);
+    }
+    let (done, total) = if live.mode == MemoryMode::Endless {
+        let span = live.t().saturating_sub(live.base);
+        (span - live.unbuilt_level0(), span)
     } else {
-        DEFAULT_UNIT_USD
+        (0, live.t().min(u64::from(state.cfg.backfill_max_units)))
     };
-    Ok(BackfillEstimate {
-        units,
-        eta_secs: (units as f64 * live.secs_per_unit()) as u64,
-        usd: units as f64 * usd_per,
+    let left = total - done;
+    Ok(Backfill {
+        done,
+        total,
+        eta_secs: (left as f64 * live.secs_per_unit()) as u64,
+        usd_estimate: left as f64 * live.usd_per_unit.unwrap_or(DEFAULT_UNIT_USD),
     })
 }
 

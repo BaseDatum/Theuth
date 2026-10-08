@@ -27,6 +27,8 @@ Revision 1b (03:10): `set_view_bytes(session, Option<u32>)` persisted in `sessio
 
 Addendum (03:38, W4 gap): `active()` false for `UnitFilter::Meeting`; `render_with_budget -> Vec<ViewLine>` (was blocks), live fold untouched; first switch-on with a different filter re-derives the unit cache (`Store::endless_units_clear`). Test `meeting_filter_session_is_served_but_never_active`.
 
+Superseding list (03:55): signatures aligned — `set_mode(session, mode, epoch, filter)`, `set_view_bytes(session, u32)`, `backfill_estimate -> Backfill { done, total, eta_secs, usd_estimate }` (`BackfillEstimate` removed; `usd_estimate` also rides on `SessionMemory.backfill` / `EndlessProgress.backfill`). Compactor chain confirmed `agent.endless.model → agent.title_model → session model` (`pump::compactor_for`, `resolved_compactor_model`).
+
 W3 hand-off (03:42): `ViewLine.at: Option<DateTime<Utc>>` (`ts(optional = nullable)`), set for `n == 1` lines in the view, zoom and recall from the unit's row time.
 
 Gates after the revision (R1 + R1b + addendum): endless filter → `22 passed; 0 failed`; clippy clean.

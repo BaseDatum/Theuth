@@ -239,7 +239,7 @@ async fn pump_builds_tree_and_tools_answer() {
 
     // /endless off → head, then on → no backfill (the tree exists).
     let off = endless
-        .set_mode(id, MemoryMode::Epochs, UnitFilter::All, 3)
+        .set_mode(id, MemoryMode::Epochs, 3, UnitFilter::All)
         .await
         .unwrap();
     let head = off.head.unwrap();
@@ -249,7 +249,7 @@ async fn pump_builds_tree_and_tools_answer() {
     assert!(off.memory.view.is_empty());
     assert!(!endless.active(id));
     let on = endless
-        .set_mode(id, MemoryMode::Endless, UnitFilter::All, 3)
+        .set_mode(id, MemoryMode::Endless, 3, UnitFilter::All)
         .await
         .unwrap();
     assert!(on.head.is_none() && on.memory.backfill.is_none());
@@ -267,7 +267,7 @@ async fn history_backfills_then_activates_and_resumes_from_rows() {
     endless.attach(id, attached()).await.unwrap();
     assert!(!endless.active(id), "epochs session");
     let on = endless
-        .set_mode(id, MemoryMode::Endless, UnitFilter::All, 1)
+        .set_mode(id, MemoryMode::Endless, 1, UnitFilter::All)
         .await
         .unwrap();
     let mem = on.memory;
@@ -359,13 +359,13 @@ async fn backfill_cap_sets_base_and_keeps_raw_history_reachable() {
     seed(&store, id, "short tool output").await;
     endless.attach(id, attached()).await.unwrap();
     let est = endless.backfill_estimate(id).await.unwrap();
-    assert_eq!(est.units, 3, "{est:?}");
+    assert_eq!((est.done, est.total), (0, 3), "{est:?}");
     assert!(
-        (est.usd - 0.06).abs() < 1e-9 && est.eta_secs == 15,
+        (est.usd_estimate - 0.06).abs() < 1e-9 && est.eta_secs == 15,
         "static defaults: {est:?}"
     );
     let on = endless
-        .set_mode(id, MemoryMode::Endless, UnitFilter::All, 1)
+        .set_mode(id, MemoryMode::Endless, 1, UnitFilter::All)
         .await
         .unwrap();
     assert_eq!(store.endless_meta(id).await.unwrap().base, 3);
@@ -408,7 +408,7 @@ async fn backfill_cap_sets_base_and_keeps_raw_history_reachable() {
     );
     // R1b: the budget is the user's, persisted, and shown in `SessionMemory`.
     assert_eq!(endless.memory(id).await.unwrap().view_bytes, 16_000);
-    endless.set_view_bytes(id, Some(40_000)).await.unwrap();
+    endless.set_view_bytes(id, 40_000).await.unwrap();
     assert_eq!(
         store.endless_meta(id).await.unwrap().view_bytes,
         Some(40_000)
@@ -421,8 +421,20 @@ async fn backfill_cap_sets_base_and_keeps_raw_history_reachable() {
         40_000,
         "survives a restart"
     );
-    endless.set_view_bytes(id, None).await.unwrap();
-    assert_eq!(endless.memory(id).await.unwrap().view_bytes, 16_000);
+    store.set_endless_view_bytes(id, None).await.unwrap();
+    endless.detach(id);
+    endless.attach(id, attached()).await.unwrap();
+    assert_eq!(
+        endless.memory(id).await.unwrap().view_bytes,
+        16_000,
+        "NULL = config"
+    );
+    let est = endless.backfill_estimate(id).await.unwrap();
+    assert_eq!(
+        (est.done, est.total, est.usd_estimate),
+        (3, 3, 0.0),
+        "covered: {est:?}"
+    );
     let small = endless.render_with_budget(id, 16_000).await.unwrap();
     assert_eq!(small.len(), on.memory.view.len());
     assert_eq!((small[0].id, small[0].n), (0, 3));
@@ -509,7 +521,7 @@ async fn meeting_filter_session_is_served_but_never_active() {
         .unwrap();
     endless.attach(id, attached()).await.unwrap();
     endless
-        .set_mode(id, MemoryMode::Endless, UnitFilter::Meeting, 1)
+        .set_mode(id, MemoryMode::Endless, 1, UnitFilter::Meeting)
         .await
         .unwrap();
     assert_eq!(

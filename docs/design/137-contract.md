@@ -42,11 +42,10 @@ All: `#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, schemars::JsonSc
 ```rust
 pub enum MemoryMode { #[default] Epochs, Endless }        // as_str(): "epochs" | "endless"; FromStr; Default = Epochs
 pub enum UnitFilter { #[default] All, Meeting }           // R1-D6; "all" | "meeting"; `keeps(&Unit) -> bool`; stored in sessions.endless_filter
-pub struct BackfillEstimate { pub units: u64, pub eta_secs: u64, pub usd: f64 }   // R1-D4
+pub struct Backfill { pub done: u64, pub total: u64, pub eta_secs: u64, pub usd_estimate: f64 }   // R1-D4: also `backfill_estimate`'s reply
 pub struct ViewLine { pub id: u64, pub n: u64, pub level: u8, pub text: String, pub built: bool, pub at: Option<DateTime<Utc>> /* row time, n == 1 only (W3 hand-off); ts `at: string | null` */ }
 pub struct GuardTrips { pub copy: u32, pub grounding: u32, pub status: u32, pub format: u32, pub empty: u32, pub size: u32 }
 pub struct EndlessStats { pub calls: u32, pub guard_trips: GuardTrips, pub input_tokens: u64, pub cache_read_tokens: u64, pub cache_write_tokens: u64, pub output_tokens: u64, pub usd_estimate: f64 }
-pub struct Backfill { pub done: u64, pub total: u64, pub eta_secs: u64 }
 pub struct SessionMemory {
     pub mode: MemoryMode,
     pub view: Vec<ViewLine>,       // empty for an epochs session
@@ -121,15 +120,16 @@ impl Endless {
     /// (`None` clears it → `agent.endless.view_bytes`). Works attached or not. The fold re-fits at the next
     /// render/turn boundary: a smaller budget merges down; a larger one re-folds at the new budget — no
     /// text is ever cut (see §8 for the purity note). `SessionMemory.view_bytes` reports the value in force.
-    pub async fn set_view_bytes(&self, session: SessionId, bytes: Option<u32>) -> anyhow::Result<()>;
+    pub async fn set_view_bytes(&self, session: SessionId, bytes: u32) -> anyhow::Result<()>;   // `Store::set_endless_view_bytes(id, None)` clears
     /// R1-D1: the turn's render without freezing a context (a native child's first message).
     pub async fn render_snapshot(&self, session: SessionId) -> anyhow::Result<Vec<ViewBlock>>;
     /// R1-D6 (+ addendum): the view re-folded to `bytes` as LINES (W4: `agent.endless.meeting_view_bytes`
     /// for `## Earlier in this meeting`); the live fold is untouched; works for a `UnitFilter::Meeting` session.
     pub async fn render_with_budget(&self, session: SessionId, bytes: u32) -> anyhow::Result<Vec<ViewLine>>;
-    /// R1-D4: `{units, eta_secs, usd}` of the backfill a switch-on would start (or the one under way);
-    /// first 20 built nodes calibrate, else 5 s / $0.02 per unit. Works for unattached sessions too.
-    pub async fn backfill_estimate(&self, session: SessionId) -> anyhow::Result<BackfillEstimate>;
+    /// R1-D4: `Backfill { done, total, eta_secs, usd_estimate }` of the backfill under way (or the one a
+    /// switch-on would start: done = 0); first 20 built nodes calibrate, else 5 s / $0.02 per unit. Works
+    /// for unattached sessions too.
+    pub async fn backfill_estimate(&self, session: SessionId) -> anyhow::Result<Backfill>;
 
     /// Tools (§9). Errors are user-facing strings for the tool result.
     pub async fn zoom(&self, session: SessionId, id: u64, n: u64) -> Result<Vec<ViewLine>, String>;   // n==1 → one line, text = "kind: <whole unit>"
@@ -142,7 +142,7 @@ impl Endless {
     /// backfill (D14), returns `memory.backfill` with the ETA. `Epochs`: stops the pump, sets the column,
     /// returns `head = Some(text)` — the `<context_summary epoch=n style="endless">…</context_summary>`
     /// text W2 writes as the next epoch head. `filter` is ignored for `Epochs`.
-    pub async fn set_mode(&self, session: SessionId, mode: MemoryMode, filter: UnitFilter, epoch: u32) -> anyhow::Result<SetMode>;
+    pub async fn set_mode(&self, session: SessionId, mode: MemoryMode, epoch: u32, filter: UnitFilter) -> anyhow::Result<SetMode>;
 
     /// RPC `session_memory` body data; `mode: epochs` + empty view for a non-endless session.
     pub async fn memory(&self, session: SessionId) -> anyhow::Result<SessionMemory>;
@@ -243,8 +243,8 @@ CREATE VIRTUAL TABLE endless_lines_fts USING fts5(text, session_id UNINDEXED, i 
 - Config: `view_bytes` 128_000, `default_desk` true, new `default_meeting`, `meeting_view_bytes`, `backfill_max_units`; `resolved_compactor_model(&AgentConfig, session_model)`; `Endless::new` takes `title_model`.
 - Base (R1-D4): the fold tiles `[base, T)`; the view's first line is `0+<base>|(earlier history, not summarized; recall searches it)` when `base > 0` (`fold::EARLIER`); `zoom(id, 1)` works for any unit, `zoom(id, n>1)` below the base is `No line`; recall's raw fallback searches every unit (it always did: `endless_units` caches units below the base too — they are derived and cached, just never built). `SessionMemory.view[0]` is that line (`built: false`, `n = base`).
 - Filter (R1-D6): applied at ingestion; dropped parts never become units (indexes stay dense). Fixed at first switch-on with the base, persisted in `sessions.endless_filter`. If the unit cache was built under another filter before that first switch-on (an attached epochs session), `set_mode` clears and re-derives it. `active()` is false for `Meeting`.
-- W2 wraps for `crates/meeting`: `set_mode(meeting, Endless, UnitFilter::Meeting, epoch)` and `render_with_budget(meeting, cfg.endless.meeting_view_bytes) -> Vec<ViewLine>` (render `id+n|text` yourself; lines carry `built` for the verbatim/unbuilt distinction).
+- W2 wraps for `crates/meeting`: `set_mode(meeting, Endless, epoch, UnitFilter::Meeting)` and `render_with_budget(meeting, cfg.endless.meeting_view_bytes) -> Vec<ViewLine>` (render `id+n|text` yourself; lines carry `built` for the verbatim/unbuilt distinction).
 - Per-session budget (R1-D2 / R1b): `set_view_bytes(session, Option<u32>)` persists to `sessions.endless_view_bytes` and takes effect at the next render. Smaller budget: the re-fold merges down. Larger budget: because the live view is the pure `rebuild(tree, base, T, cfg)`, the re-fold at the new budget shows the view the fold *would* have produced at that budget — finer lines in the recent region, every one an existing built node, no text cut. This differs from the brief's "a larger one just stops merging": honouring that literally would make the view path-dependent (unreproducible after a restart); the closer may overrule by keeping the previous `Fold` and only updating `cfg` + `fit()` (one-line change in `Live::ensure_fold`).
 - `render_snapshot` / `render_with_budget(bytes)`: no turn counted, no context frozen; `render_with_budget` re-folds at `bytes` without disturbing the live fold.
-- Backfill ETA/cost: `backfill_estimate`; `Backfill.total` is now the covered span (`T − base` at switch-on), not `T`.
-- W2 call for R1-D7 desks at landing: `set_mode(desk, Endless, UnitFilter::All, next_epoch)` when idle; `info!` the `backfill_estimate` first. W4 meetings: `set_mode(meeting, Endless, UnitFilter::Meeting, …)`, head section from `render_with_budget(meeting, cfg.endless.meeting_view_bytes)`.
+- Backfill ETA/cost: `backfill_estimate -> Backfill` (`usd_estimate` is the new wire field, also on `SessionMemory.backfill` / `EndlessProgress.backfill`); `Backfill.total` is the covered span (`T − base`), not `T`.
+- W2 call for R1-D7 desks at landing: `set_mode(desk, Endless, next_epoch, UnitFilter::All)` when idle; `info!` the `backfill_estimate` first. W4 meetings: `set_mode(meeting, Endless, epoch, UnitFilter::Meeting)`, head section from `render_with_budget(meeting, cfg.endless.meeting_view_bytes)`.
