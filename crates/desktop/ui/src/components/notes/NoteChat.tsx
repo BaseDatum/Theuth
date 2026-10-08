@@ -1,26 +1,30 @@
 import { useQuery } from '@tanstack/react-query'
 import { useNavigate } from '@tanstack/react-router'
 import { ExternalLink, SquarePen, X } from 'lucide-react'
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { toast } from 'sonner'
 import { Composer } from '@/components/chat/Composer'
 import { Transcript } from '@/components/chat/Transcript'
 import { Button } from '@/components/ui/button'
 import { ResizeHandle } from '@/components/ui/resize-handle'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
-import { EMPTY, MIN_HEIGHT, useNoteChat } from '@/lib/note-chat'
+import { useIsMobile } from '@/hooks/use-mobile'
+import { EMPTY, panelHeight, useNoteChat } from '@/lib/note-chat'
 import type { AttachRef } from '@/lib/attach'
-import { clamp, PX_STEP } from '@/lib/resize-drag'
+import { isPopout, openPopout } from '@/lib/popout'
+import { PX_STEP } from '@/lib/resize-drag'
 import { queryKeys, useApi } from '@/lib/rpc'
 import { useSessionField, useSessions } from '@/store/sessions'
 
 const PAGE = 60
 
 /**
- * 59 §7.3: the chat under a note. A resizable bottom panel with the remembered session's transcript (`compact`)
- * and a composer whose every message leads with the note's `[attached note …]` marker (66 §3.3); the first message
- * creates a session titled like the note and the panel keeps it (`lib/note-chat`). "New chat" forgets the session; the
- * session itself stays in the normal chat list. `about` names the document in the copy (an agent's charter is one too).
+ * 59 §7.3: the chat under a note. Two shapes, chosen by the remembered session (143 D10): with none yet, an input
+ * bar — a header line and a composer whose first message creates a session titled like the note, which the panel then
+ * keeps (`lib/note-chat`); with one, a resizable bottom panel with that session's transcript (`compact`) over the same
+ * composer. Every message leads with the note's `[attached note …]` marker (66 §3.3). "New chat" forgets the session
+ * (back to the bar); the session itself stays in the normal chat list. `about` names the document in the copy (an
+ * agent's charter is one too).
  */
 export function NoteChat({ note, doc, about = 'this note' }: { note: string; doc: AttachRef; about?: string }) {
   const state = useNoteChat((s) => s.notes[note] ?? EMPTY)
@@ -44,15 +48,54 @@ export function NoteChat({ note, doc, about = 'this note' }: { note: string; doc
   }, [note])
 
   // Drag the top edge: the panel grows upward, clamped to the pane (the hit zone extends up over the editor, never down over the header buttons).
+  const mobile = useIsMobile()
   const section = useRef<HTMLElement>(null)
   const start = useRef({ y: 0, height: 0 })
-  const clampHeight = (h: number) => clamp(h, MIN_HEIGHT, (section.current?.parentElement?.clientHeight ?? 800) - 120)
+  const measure = () => section.current?.parentElement?.clientHeight ?? 800
+  // The pane for the rendered height: read once the panel is in the DOM (the drag reads it live).
+  const [pane, setPane] = useState(800)
+  useLayoutEffect(() => {
+    if (session) setPane(measure())
+  }, [session])
+  const height = panelHeight(state.height, pane, mobile)
+  const clampHeight = (h: number) => panelHeight(h, measure(), mobile)
+  // 143 D11: a popped note has no shell to navigate inside — its chat opens in its own window.
+  const popped = isPopout()
+
+  const close = (
+    <Button variant="ghost" size="icon-sm" aria-label="Close chat" onClick={() => set(note, { open: false })}>
+      <X />
+    </Button>
+  )
+  const composer = (
+    <Composer
+      key={`${session ?? 'new'}:${seed}`}
+      session={session}
+      pinned={doc}
+      sessionTitle={doc.title}
+      onCreated={(id) => set(note, { session: id })}
+      compact
+    />
+  )
+
+  if (!session)
+    return (
+      <section ref={section} className="flex shrink-0 flex-col border-t border-border-subtle bg-background" aria-label={`Chat about ${about}`}>
+        <header className="flex h-8 shrink-0 items-center gap-1 px-2 text-xs text-fg-secondary">
+          <span className="min-w-0 flex-1 truncate">
+            Ask theuth about {about} {'\u2014'} the first message starts a chat with it attached
+          </span>
+          {close}
+        </header>
+        {composer}
+      </section>
+    )
 
   return (
     <section
       ref={section}
       className="flex shrink-0 flex-col border-t border-border-subtle bg-background"
-      style={{ height: state.height }}
+      style={{ height }}
       aria-label={`Chat about ${about}`}
     >
       <ResizeHandle
@@ -60,54 +103,37 @@ export function NoteChat({ note, doc, about = 'this note' }: { note: string; doc
         placement="start"
         aria-label="Resize chat panel"
         className="h-1.5 bg-transparent hover:bg-layer-2"
-        onStart={(e) => (start.current = { y: e.clientY, height: state.height })}
+        onStart={(e) => (start.current = { y: e.clientY, height })}
         onMove={(_, y) => set(note, { height: clampHeight(start.current.height + start.current.y - y) })}
-        onNudge={(d) => set(note, { height: clampHeight(state.height - d * PX_STEP) })}
+        onNudge={(d) => set(note, { height: clampHeight(height - d * PX_STEP) })}
       />
       <header className="flex h-8 shrink-0 items-center gap-1 px-2 text-xs text-fg-secondary">
-        <span className="min-w-0 flex-1 truncate">{session ? title || 'Chat' : `New chat about ${about}`}</span>
-        {session && (
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <Button
-                variant="ghost"
-                size="icon-sm"
-                aria-label="Open chat"
-                onClick={() => void navigate({ to: '/c/$session', params: { session } })}
-              >
-                <ExternalLink />
-              </Button>
-            </TooltipTrigger>
-            <TooltipContent>Open in the chat list</TooltipContent>
-          </Tooltip>
-        )}
+        <span className="min-w-0 flex-1 truncate">{title || 'Chat'}</span>
         <Tooltip>
           <TooltipTrigger asChild>
-            <Button variant="ghost" size="icon-sm" aria-label="New chat" disabled={!session} onClick={() => set(note, { session: null })}>
+            <Button
+              variant="ghost"
+              size="icon-sm"
+              aria-label="Open chat"
+              onClick={() => (popped ? void openPopout({ kind: 'chat', session }) : void navigate({ to: '/c/$session', params: { session } }))}
+            >
+              <ExternalLink />
+            </Button>
+          </TooltipTrigger>
+          <TooltipContent>{popped ? 'Open in its own window' : 'Open in the chat list'}</TooltipContent>
+        </Tooltip>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <Button variant="ghost" size="icon-sm" aria-label="New chat" onClick={() => set(note, { session: null })}>
               <SquarePen />
             </Button>
           </TooltipTrigger>
           <TooltipContent>New chat</TooltipContent>
         </Tooltip>
-        <Button variant="ghost" size="icon-sm" aria-label="Close chat" onClick={() => set(note, { open: false })}>
-          <X />
-        </Button>
+        {close}
       </header>
-      {session ? (
-        <Transcript key={session} session={session} compact />
-      ) : (
-        <p className="m-auto px-6 text-center text-sm text-fg-tertiary">
-          Ask about {about}; the first message starts a chat with it attached.
-        </p>
-      )}
-      <Composer
-        key={`${session ?? 'new'}:${seed}`}
-        session={session}
-        pinned={doc}
-        sessionTitle={doc.title}
-        onCreated={(id) => set(note, { session: id })}
-        compact
-      />
+      <Transcript key={session} session={session} compact />
+      {composer}
     </section>
   )
 }
