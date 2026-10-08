@@ -59,6 +59,7 @@ export const NEW: ScheduleFile = {
   created: null,
   run_timeout: null,
   runtime: null,
+  budget: null,
   prompt: '',
 }
 
