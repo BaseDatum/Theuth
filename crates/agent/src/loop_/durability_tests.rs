@@ -24,7 +24,8 @@ use wiremock::{Request, Respond, ResponseTemplate};
 use super::vision_fallback_tests::{FINAL, Harness, MAIN_USAGE, body, sse};
 use super::*;
 use crate::durability::journal::StoreJournal;
-use crate::durability::{CallState, LastStep};
+use crate::durability::{CallState, LastStep, ResumeKind};
+use crate::store::Scope;
 
 const PROBE: &str = "probe";
 const POKE: &str = "poke";
@@ -234,12 +235,10 @@ async fn kinds(store: &Store, session: SessionId, turn: TurnId) -> Vec<String> {
 /// The session's one open turn.
 async fn open_turn(store: &Store, session: SessionId) -> TurnId {
     store
-        .open_turns()
+        .open_turn(session)
         .await
         .unwrap()
-        .into_iter()
-        .find(|(s, _, _)| *s == session)
-        .map(|(_, t, _)| t)
+        .map(|(t, _)| t)
         .expect("an open turn")
 }
 
@@ -341,7 +340,7 @@ async fn normal_turn_journals_every_write_point(
     assert_eq!(rows[1].risk, Risk::Mutating);
     let (stop, _) = h.store.last_stop(h.id).await.unwrap().expect("last_stop");
     assert_eq!(stop, "stop");
-    assert!(h.store.open_turns().await.unwrap().is_empty());
+    assert!(h.store.open_turns(Scope::Here).await.unwrap().is_empty());
     assert_eq!(hits_of(&hits_file(hits, h.id)), [PROBE, POKE]);
     let messages = h.store.messages(h.id).await.unwrap();
     let tools = tool_texts(&messages);
@@ -740,7 +739,7 @@ async fn stale_batch_closes_from_the_journal_and_pre_0033_repairs(
         kinds(&h.store, h.id, old).await.last().unwrap(),
         "turn_finished"
     );
-    assert!(h.store.open_turns().await.unwrap().is_empty());
+    assert!(h.store.open_turns(Scope::Here).await.unwrap().is_empty());
     let rows = h.store.calls_of(h.id, old).await.unwrap();
     assert_eq!(rows[1].state, CallState::Interrupted);
 
@@ -1042,14 +1041,7 @@ async fn second_life(
     journal(registry, &h.store).await;
     // Boot: accounting marks the lost attempt (§4.6 step 3).
     h.store.unresolve_open_calls().await.unwrap();
-    let open = h
-        .store
-        .open_turns()
-        .await
-        .unwrap()
-        .into_iter()
-        .find(|(s, _, _)| *s == h.id)
-        .map(|(_, t, _)| t);
+    let open = h.store.open_turn(h.id).await.unwrap().map(|(t, _)| t);
     check(
         open.is_some() == c.expect.resumed,
         format!(
@@ -1126,7 +1118,7 @@ async fn second_life(
         );
     }
     check(
-        h.store.open_turns().await.unwrap().is_empty(),
+        h.store.open_turns(Scope::Here).await.unwrap().is_empty(),
         "a turn is still open".into(),
     );
     let partials: i64 = sqlx::query_scalar(
@@ -1339,6 +1331,10 @@ async fn suspended_scenarios() {
     draining_session_opens_no_model_call(&registry, &hits, &reference).await;
     shutdown_token_leaves_the_batch_open(&registry, &hits, &holds, &reference).await;
     reaper_hands_lost_rows_to_the_live_jobs_actor(&registry).await;
+    // 139 W2
+    release_drain_writes_suspended_or_finished(&registry, &holds).await;
+    cancel_while_draining_is_a_suspension(&registry, &hits, &holds, &reference).await;
+    unload_always_lands_the_cancel(&registry, &holds).await;
     let _ = std::fs::remove_dir_all(&reg_dir);
 }
 
@@ -1381,7 +1377,7 @@ async fn draining_session_opens_no_model_call(
         normalised(&h.store.messages(h.id).await.unwrap()),
         reference
     );
-    assert!(h.store.open_turns().await.unwrap().is_empty());
+    assert!(h.store.open_turns(Scope::Here).await.unwrap().is_empty());
 }
 
 /// §9.2 steps 3–4 then §4.2: the drain marked the turn `suspended`, the
@@ -1496,7 +1492,7 @@ async fn shutdown_token_leaves_the_batch_open(
         kinds(&h.store, h.id, tid).await.last().unwrap(),
         "turn_finished"
     );
-    assert!(h.store.open_turns().await.unwrap().is_empty());
+    assert!(h.store.open_turns(Scope::Here).await.unwrap().is_empty());
 }
 
 // ---- §5.4: the reaper's hand-off to the jobs actor -------------------------
@@ -1527,6 +1523,7 @@ async fn reaper_hands_lost_rows_to_the_live_jobs_actor(registry: &ActorRef<ToolR
             state: JobState::Running,
             exit: None,
             settled_ms: None,
+            engine: String::new(),
         })
         .await
         .unwrap();
@@ -1559,4 +1556,300 @@ async fn reaper_hands_lost_rows_to_the_live_jobs_actor(registry: &ActorRef<ToolR
         crate::durability::jobs::reap_jobs(&h.store).await,
         crate::durability::jobs::ReapReport::default()
     );
+}
+
+// ---- 139 §6.1: the release drain (W2) ---------------------------------------
+
+/// [`FINAL`] after a delay: a turn whose last model call is in flight when
+/// the drain begins finishes inside the window.
+struct SlowFinal;
+
+impl Respond for SlowFinal {
+    fn respond(&self, _: &Request) -> ResponseTemplate {
+        sse(FINAL, "stop", MAIN_USAGE).set_delay(Duration::from_millis(600))
+    }
+}
+
+/// Start a turn on a real session actor over `h`.
+async fn start_turn(h: &Harness, text: &str) -> ActorRef<Session> {
+    let actor = h.actor("openai/textonly").await;
+    actor
+        .tell(UserInput {
+            id: None,
+            text: text.into(),
+            files: Vec::new(),
+            ticket: None,
+            scope: None,
+            defer: false,
+        })
+        .await
+        .unwrap();
+    actor
+}
+
+/// Wait until `held` is `started` and `done` is `finished` in the journal.
+async fn wait_mid_batch(h: &Harness, tid: TurnId, held: &str, done: &str) {
+    for _ in 0..200 {
+        let rows = h.store.calls_of(h.id, tid).await.unwrap();
+        if rows
+            .iter()
+            .any(|r| r.call_id == held && r.state == CallState::Started)
+            && rows
+                .iter()
+                .any(|r| r.call_id == done && r.state == CallState::Finished)
+        {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    panic!("the batch never reached {held} started / {done} finished");
+}
+
+/// Poll until the session has an open turn.
+async fn wait_open_turn(h: &Harness, what: &str) -> TurnId {
+    for _ in 0..200 {
+        if let Some((t, _)) = h.store.open_turn(h.id).await.unwrap() {
+            return t;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    panic!("{what}: no turn opened");
+}
+
+/// 139 I3: `DrainSession` over a live actor leaves exactly one of two
+/// states. (a) `poke` held past the deadline → `suspended{release}` written
+/// first stands, `TurnSuspended{release}` published, the actor is stopped,
+/// the cancelled turn wrote no `turn_finished`, and the resume plan reads
+/// `Suspended` / cause `Transfer`. (b) the final reply lands inside the
+/// window → `turn_finished` closes the row; the report says so. (c) no open
+/// turn → nothing written.
+async fn release_drain_writes_suspended_or_finished(
+    registry: &ActorRef<ToolRegistry>,
+    holds: &Holds,
+) {
+    use crate::supervisor::transfer::{DrainSession, RELEASE, SessionDrainReport, drain_session};
+    // (a) suspended.
+    let mut h = Harness::new(BatchFake).await;
+    journal(registry, &h.store).await;
+    holds.1.store(true, Ordering::SeqCst);
+    let actor = start_turn(&h, "go").await;
+    let tid = wait_open_turn(&h, "a").await;
+    wait_mid_batch(&h, tid, C2, C1).await;
+    let live = crate::supervisor::LiveActor::Native(actor.clone());
+    let report = drain_session(
+        &h.store,
+        &h.rt,
+        Some(live),
+        DrainSession {
+            session: h.id,
+            reason: RELEASE,
+            deadline: Instant::now() + Duration::from_millis(400),
+        },
+    )
+    .await;
+    assert_eq!(
+        report,
+        SessionDrainReport {
+            open: true,
+            finished: false,
+            suspended: true
+        }
+    );
+    assert!(!actor.is_alive(), "the actor is stopped");
+    let events = h
+        .drain_until(|e| matches!(e, AgentEvent::TurnSuspended { .. }))
+        .await;
+    assert!(events.iter().any(|e| matches!(
+        e,
+        AgentEvent::TurnSuspended { turn, reason, .. } if *turn == tid && reason == "release"
+    )));
+    // The cancelled turn task (detached from the actor) returns as a
+    // suspension: it writes no `turn_finished`; `poke` is still `started`
+    // (the hold is released only after the plan is read).
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    assert_eq!(
+        kinds(&h.store, h.id, tid).await,
+        ["input_accepted", "model_call", "tool_batch", "suspended"]
+    );
+    assert_eq!(open_turn(&h.store, h.id).await, tid);
+    let plan = h.store.resume_plan(h.id, tid).await.unwrap();
+    assert_eq!(
+        (plan.kind, plan.cause),
+        (ResumeKind::Suspended, ResumeCause::Transfer)
+    );
+    assert_eq!(
+        plan.last,
+        LastStep::ToolBatch {
+            all_finished: false
+        }
+    );
+    holds.1.store(false, Ordering::SeqCst);
+
+    // (b) finished inside the window.
+    let mut h = Harness::new(SlowFinal).await;
+    journal(registry, &h.store).await;
+    let actor = start_turn(&h, TALK).await;
+    let tid = wait_open_turn(&h, "b").await;
+    // The final call must be in flight (`model_call` reserved) before the
+    // drain, or the first round would stop on `draining` instead.
+    for _ in 0..200 {
+        if kinds(&h.store, h.id, tid)
+            .await
+            .contains(&"model_call".to_owned())
+        {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    let report = drain_session(
+        &h.store,
+        &h.rt,
+        Some(crate::supervisor::LiveActor::Native(actor.clone())),
+        DrainSession {
+            session: h.id,
+            reason: RELEASE,
+            deadline: Instant::now() + Duration::from_secs(5),
+        },
+    )
+    .await;
+    assert_eq!(
+        report,
+        SessionDrainReport {
+            open: true,
+            finished: true,
+            suspended: false
+        }
+    );
+    assert!(!actor.is_alive());
+    let events = h.drain().await;
+    assert!(
+        !events
+            .iter()
+            .any(|e| matches!(e, AgentEvent::TurnSuspended { .. }))
+    );
+    let steps = kinds(&h.store, h.id, tid).await;
+    assert_eq!(
+        steps,
+        ["input_accepted", "model_call", "suspended", "turn_finished"],
+        "the drain's mark, then the call that was in flight closes the row"
+    );
+    assert!(h.store.open_turn(h.id).await.unwrap().is_none());
+
+    // (c) nothing open: nothing written, no actor needed.
+    let report = drain_session(
+        &h.store,
+        &h.rt,
+        None,
+        DrainSession {
+            session: h.id,
+            reason: RELEASE,
+            deadline: Instant::now(),
+        },
+    )
+    .await;
+    assert_eq!(report, SessionDrainReport::default());
+    assert_eq!(kinds(&h.store, h.id, tid).await, steps, "nothing written");
+}
+
+/// 139 §6.1 loop change: a cancel that lands while the session is draining
+/// is a suspension, not `turn_finished{cancelled}` — the `suspended{release}`
+/// row stands, and the next owner resumes it with `kind="transfer" from="a"`.
+async fn cancel_while_draining_is_a_suspension(
+    registry: &ActorRef<ToolRegistry>,
+    hits: &Path,
+    holds: &Holds,
+    reference: &[(String, String)],
+) {
+    let h = Harness::new(BatchFake).await;
+    journal(registry, &h.store).await;
+    holds.1.store(true, Ordering::SeqCst);
+    let cancel = CancellationToken::new();
+    let (turn, tid) = h.turn("openai/textonly", cancel.clone()).await;
+    let draining = turn.shared.draining.clone();
+    let input = h.input("go", false);
+    let running = tokio::spawn(async move { turn.run(tid, vec![input]).await });
+    wait_mid_batch(&h, tid, C2, C1).await;
+    // The drain's step 1, then its step 5 cancel (not the shutdown token).
+    assert_eq!(
+        crate::supervisor::transfer::suspend_open_turn(&h.store, h.id, "release").await,
+        Some(tid)
+    );
+    draining.store(true, Ordering::SeqCst);
+    cancel.cancel();
+    tokio::time::timeout(Duration::from_secs(10), running)
+        .await
+        .expect("the turn returns on the cancel")
+        .unwrap();
+    holds.1.store(false, Ordering::SeqCst);
+    assert_eq!(
+        kinds(&h.store, h.id, tid).await,
+        ["input_accepted", "model_call", "tool_batch", "suspended"],
+        "no turn_finished{{cancelled}}"
+    );
+    assert_eq!(open_turn(&h.store, h.id).await, tid);
+
+    // The new owner: cause transfer, from the old one.
+    let server = h;
+    let mut h = Harness::attach(server.dir.clone(), &server.endpoint(), server.id).await;
+    journal(registry, &h.store).await;
+    h.store.unresolve_open_calls().await.unwrap();
+    let plan = h.store.resume_plan(h.id, tid).await.unwrap();
+    assert_eq!(
+        (plan.kind, plan.cause),
+        (ResumeKind::Suspended, ResumeCause::Transfer)
+    );
+    let (mut turn, _) = h.turn("openai/textonly", CancellationToken::new()).await;
+    turn.resume_from = Some("a".into());
+    turn.resume(plan, None).await;
+    let events = h.drain().await;
+    assert!(events.iter().any(|e| matches!(
+        e,
+        AgentEvent::TurnResumed { turn, cause: ResumeCause::Transfer, from: Some(f), .. }
+            if *turn == tid && f == "a"
+    )));
+    let (replayed, interrupted) = report(&events);
+    assert!(replayed.is_empty());
+    assert_eq!(interrupted, [C2]);
+    let messages = h.store.messages(h.id).await.unwrap();
+    let first = tool_texts(&messages)[0].lines().next().unwrap().to_owned();
+    assert!(
+        first.contains("kind=\"transfer\" from=\"a\" replayed=\"0\" interrupted=\"1\"/>"),
+        "{first}"
+    );
+    assert_eq!(
+        hits_of(&hits_file(hits, h.id)),
+        [PROBE, POKE],
+        "poke ran once"
+    );
+    let got = normalised(&messages);
+    assert_eq!(got.len(), reference.len());
+    assert!(h.store.open_turns(Scope::Here).await.unwrap().is_empty());
+}
+
+/// 139 D19: `tell(CancelTurn)` + `stop_gracefully` + `wait_for_shutdown`
+/// lands the cancel every time (`kill()` could drop it with the mailbox):
+/// a hundred live turns, each held in `poke`, each ends `cancelled`. A
+/// fresh session each time — the cancelled batch leaves a tool message the
+/// fake answers [`FINAL`] to, so a second turn there would open no batch.
+async fn unload_always_lands_the_cancel(registry: &ActorRef<ToolRegistry>, holds: &Holds) {
+    for i in 0..100 {
+        let mut h = Harness::new(BatchFake).await;
+        journal(registry, &h.store).await;
+        holds.1.store(true, Ordering::SeqCst);
+        let actor = start_turn(&h, "go").await;
+        let tid = wait_open_turn(&h, &format!("unload #{i}")).await;
+        wait_mid_batch(&h, tid, C2, C1).await;
+        crate::supervisor::transfer::stop_actor(&actor).await;
+        assert!(!actor.is_alive(), "#{i}: stopped");
+        let events = h.drain().await;
+        assert!(
+            events.iter().any(|e| matches!(
+                e,
+                AgentEvent::TurnFinished { turn, stop_reason, .. } if *turn == tid && stop_reason == "cancelled"
+            )),
+            "#{i}: the cancel landed: {events:?}"
+        );
+        holds.1.store(false, Ordering::SeqCst);
+        assert!(h.store.open_turns(Scope::Here).await.unwrap().is_empty());
+    }
 }

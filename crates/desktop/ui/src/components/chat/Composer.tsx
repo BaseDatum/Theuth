@@ -38,9 +38,10 @@ import { loadRecents, pushRecents, saveRecents, stripAt } from '@/lib/attach-pic
 import { attach, attachRef, drop, expand, type Pastes, reconcileShelved, type Shelf, tokenize, untoken } from '@/lib/pastes'
 import { applyText } from '@/lib/text-edit'
 import { isDesktop, touch } from '@/lib/platform'
-import { type OwnerUnreachable, ownerUnreachable } from '@/lib/owner'
+import { engineLabel, type OwnerUnreachable, ownerUnreachable, sessionDraining } from '@/lib/owner'
 import { VIEW, isPrivate, usePrivate } from '@/lib/private'
 import { queryKeys, useApi } from '@/lib/rpc'
+import { useMesh } from '@/components/tasks/queries'
 import type { CreateSessionOptions } from '@/rpc/bindings/CreateSessionOptions'
 import { EMPTY, useDrafts, useSkillDraft } from '@/lib/drafts'
 import { DEBOUNCE_MS as PATH_DEBOUNCE_MS, type PathPopup, accept as acceptPath, pathKey, pathTrigger, step as stepPath } from '@/lib/path-complete'
@@ -310,6 +311,9 @@ export function Composer({
   const [busy, setBusy] = useState(false)
   /** 68 §5: a send the owner could not take; the card above the composer offers to take the session here and resend. */
   const [offline, setOffline] = useState<OwnerUnreachable | null>(null)
+  /** 139 §9.3: the one automatic retry a `SessionDraining` refusal gets; reset by the next success. */
+  const retried = useRef(false)
+  const { data: mesh } = useMesh()
   const voice = speech.useVoice()
   const recorder = useRef<{ rec: MediaRecorder; discard: boolean } | null>(null)
   /** A release (send / cancel) that beat `getUserMedia`: applied the moment the recorder exists. */
@@ -773,6 +777,7 @@ export function Composer({
         await deadline(api.send_input(id, body, files, null, clientId))
       }
       useDrafts.getState().acked(draftKey, spoken ?? text)
+      retried.current = false
       shelf.current = new Map()
       setSelected(0)
       // A retry the engine already had starts no turn, so the row shown at once would stay a ghost: drop it. A
@@ -798,7 +803,16 @@ export function Composer({
       }
       if (e instanceof SendTimeout) useConnection.getState().client?.probe()
       const unreachable = ownerUnreachable(e)
-      if (unreachable && target) setOffline(unreachable)
+      const draining = sessionDraining(e)
+      if (draining && target && !retried.current) {
+        // 139 §9.3: the session is mid-release on this engine — one automatic retry after 2 s, no card.
+        retried.current = true
+        toast.message(
+          draining.nextOwner ? `moving to ${engineLabel(draining.nextOwner, mesh?.peers)} — retrying…` : `pausing for ${draining.reason} — retrying…`,
+          { duration: 2000 },
+        )
+        setTimeout(() => void submit(spoken, interject), 2000)
+      } else if (unreachable && target) setOffline(unreachable)
       else toast.error(e instanceof Error ? e.message : String(e))
     } finally {
       setBusy(false)

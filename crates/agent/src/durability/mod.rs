@@ -233,6 +233,63 @@ impl ResumeKind {
     }
 }
 
+/// Why a turn is being resumed (139 §3, §6.3): what the *engine* knows,
+/// beside [`ResumeKind`], which is what the *journal* says. Drives wording
+/// and the D5 policy; stored in `resume_reports.cause` (0038).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[serde(rename_all = "snake_case")]
+pub enum ResumeCause {
+    /// No `suspended` row: the engine died mid-turn.
+    Crash,
+    /// `suspended{shutdown | parent_gone | drain}` (Revision 1 Q2 folds them).
+    Shutdown,
+    /// `suspended{update}`.
+    Update,
+    /// Taken from a reachable owner that drained (`suspended{release}`).
+    Transfer,
+    /// Taken from an unreachable owner, which may still be executing.
+    Takeover,
+}
+
+impl ResumeCause {
+    /// The `resume_reports.cause` / `<engine_restart kind>` spelling.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Crash => "crash",
+            Self::Shutdown => "shutdown",
+            Self::Update => "update",
+            Self::Transfer => "transfer",
+            Self::Takeover => "takeover",
+        }
+    }
+
+    /// Inverse of [`Self::as_str`].
+    pub fn parse(s: &str) -> Option<Self> {
+        Some(match s {
+            "crash" => Self::Crash,
+            "shutdown" => Self::Shutdown,
+            "update" => Self::Update,
+            "transfer" => Self::Transfer,
+            "takeover" => Self::Takeover,
+            _ => return None,
+        })
+    }
+
+    /// §6.3's boot rule for a turn found in the journal (`resume_scan`, the
+    /// `resume_turn` RPC): the newest `suspended{reason}` → `shutdown` for
+    /// `shutdown` / `parent_gone` / `drain`, `update` for `update`,
+    /// `transfer` for `release`; no `suspended` row → `crash`.
+    pub fn from_journal(kind: ResumeKind, suspended_reason: Option<&str>) -> Self {
+        match (kind, suspended_reason) {
+            (ResumeKind::Interrupted, _) => Self::Crash,
+            (ResumeKind::Suspended, Some("update")) => Self::Update,
+            (ResumeKind::Suspended, Some("release")) => Self::Transfer,
+            (ResumeKind::Suspended, _) => Self::Shutdown,
+        }
+    }
+}
+
 /// The `assistant_partial` of an open model call (§8.1).
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct PartialContent {
@@ -252,8 +309,11 @@ pub struct PartialContent {
 pub struct ResumePlan {
     /// The open turn.
     pub turn: TurnId,
-    /// Crash or drain.
+    /// Crash or drain: what the journal says.
     pub kind: ResumeKind,
+    /// §6.3's boot rule from the journal (`ResumeCause::from_journal`);
+    /// the `Resume` message overrides it for `transfer` / `takeover`.
+    pub cause: ResumeCause,
     /// Newest journal row's `at`.
     pub interrupted_at: DateTime<Utc>,
     /// What to act on (§4.2).
@@ -276,6 +336,8 @@ pub struct ResumeReportRow {
     pub turn: TurnId,
     /// The plan's crash-or-drain.
     pub kind: ResumeKind,
+    /// Why the engine resumed it (139 §6.3); the boot rule for a `''` row.
+    pub cause: ResumeCause,
     /// The plan's newest journal row time.
     pub interrupted_at: DateTime<Utc>,
     /// When the resumed step settled.

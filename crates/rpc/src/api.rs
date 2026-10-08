@@ -2259,6 +2259,96 @@ where
     })
 }
 
+/// 139 §6.1 (D16): the supervisor refuses an input to a session mid-release-drain
+/// with a handler error whose `Display` form is `SessionDraining:<reason>[:<next owner>]`
+/// (`agent::supervisor::transfer::DRAINING_PREFIX`, the `DocError::NotHub` convention).
+/// Mapped here to the retryable [`forward::SESSION_DRAINING`] with the typed payload;
+/// the composer retries once. Anything else passes through.
+fn session_draining(session: SessionId, e: ErrorObjectOwned) -> ErrorObjectOwned {
+    let Some(rest) = e.message().strip_prefix("SessionDraining:") else {
+        return e;
+    };
+    let (reason, next_owner) = match rest.split_once(':') {
+        Some((r, o)) if !o.is_empty() => (r.to_owned(), Some(o.to_owned())),
+        Some((r, _)) => (r.to_owned(), None),
+        None => (rest.to_owned(), None),
+    };
+    let msg = match (reason.as_str(), &next_owner) {
+        ("release", Some(to)) => format!("{session} is moving to {to} — retry in a moment"),
+        ("release", None) => format!("{session} is moving to another engine — retry in a moment"),
+        (r, _) => format!("{session} is pausing for {r} — resumes on the next start"),
+    };
+    ErrorObjectOwned::owned(
+        forward::SESSION_DRAINING,
+        msg,
+        Some(forward::FrontDoorError::SessionDraining {
+            session,
+            reason,
+            next_owner,
+        }),
+    )
+}
+
+/// 139 §9.2 (D18): the engine owning a question's session, when it is another
+/// one — read from the replicated `questions` row, so an answer typed on any
+/// engine finds the actor holding the oneshot. `None`: no row (a pre-0033
+/// question or a non-journaled kind), or the session is unknown / ours.
+async fn question_owner(
+    store: &agent::store::Store,
+    id: &Uuid,
+) -> RpcResult<Option<replica::PeerId>> {
+    let Some(row) = store
+        .question_get(&id.to_string())
+        .await
+        .map_err(|e| failed(format!("{e:#}")))?
+    else {
+        return Ok(None);
+    };
+    let Some((owner, _)) = store
+        .owner(row.session)
+        .await
+        .map_err(|e| failed(format!("{e:#}")))?
+    else {
+        return Ok(None);
+    };
+    Ok((!owner.is_empty() && owner != store.engine()).then_some(replica::PeerId(owner)))
+}
+
+/// 139 §9.2: `answer_ask` / `resolve_approval` to the owner of the question's
+/// session — forward, never take: an answer must reach the actor holding the
+/// oneshot, and a take would kill it. `Ok(None)`: answer locally (lone engine,
+/// already forwarded once, no row, or the owner is here). Owner not connected
+/// → [`forward::OWNER_UNREACHABLE`], the card the desktop already renders.
+async fn route_question<T: DeserializeOwned>(
+    ext: &Extensions,
+    id: &Uuid,
+    method: &str,
+    params: impl Serialize,
+) -> RpcResult<Option<T>> {
+    if ext.get::<forward::Forwarded>().is_some() || sessionsync::actor().is_none() {
+        return Ok(None);
+    }
+    let store = ask::<Agents, _>(agent::AGENT_ACTOR, agent::DurableStore).await?;
+    route_question_via(ext, &store, id, method, params).await
+}
+
+/// [`route_question`] past the plugin gate, over a given store (testable without actors).
+async fn route_question_via<T: DeserializeOwned>(
+    ext: &Extensions,
+    store: &agent::store::Store,
+    id: &Uuid,
+    method: &str,
+    params: impl Serialize,
+) -> RpcResult<Option<T>> {
+    let Some(owner) = question_owner(store, id).await? else {
+        return Ok(None);
+    };
+    match forward::to_peer(ext, &owner, method, params).await? {
+        Some(v) => Ok(Some(v)),
+        None => Err(forward::unreachable(owner.0, "not connected").await),
+    }
+}
+
 /// The nodes actor; absent when `nodes.enabled: false` or the plugin is not loaded.
 fn nodes() -> RpcResult<ActorRef<nodes::NodesActor>> {
     lookup::<nodes::NodesActor>(nodes::NODES_ACTOR).map_err(|e| match e.code() {
@@ -2724,6 +2814,7 @@ impl ApiServer for Server {
             },
         )
         .await
+        .map_err(|e| session_draining(session, e))
     }
 
     async fn steer(
@@ -2758,7 +2849,8 @@ impl ApiServer for Server {
                 delivery: delivery.unwrap_or_default(),
             },
         )
-        .await?;
+        .await
+        .map_err(|e| session_draining(session, e))?;
         Ok(id)
     }
 
@@ -3502,6 +3594,8 @@ impl ApiServer for Server {
             sessionsync::TakeSession {
                 id: session,
                 reason,
+                // The explicit `reason` is the caller's intent (`user` resumes).
+                by_user: false,
             },
         )
         .await?;
@@ -3726,6 +3820,9 @@ impl ApiServer for Server {
         id: ApprovalId,
         decision: Decision,
     ) -> RpcResult<bool> {
+        if let Some(r) = route_question(ext, &id.0, "resolve_approval", (id, decision)).await? {
+            return Ok(r);
+        }
         let pending = ask::<Approval, _>(tools::APPROVAL_ACTOR, Resolve { id, decision }).await?;
         // 130 E4: the receipt the companion reads back (`activity_list`).
         if pending {
@@ -3751,6 +3848,9 @@ impl ApiServer for Server {
         id: AskId,
         answers: Option<Vec<Answer>>,
     ) -> RpcResult<bool> {
+        if let Some(r) = route_question(ext, &id.0, "answer_ask", (id, &answers)).await? {
+            return Ok(r);
+        }
         let what = if answers.is_some() {
             "answered"
         } else {
@@ -6179,11 +6279,32 @@ impl ApiServer for Server {
 
     async fn resume_turn(&self, ext: &Extensions, session: SessionId) -> RpcResult<bool> {
         self.authorize(ext, session).await?;
+        // 139 §9.2 (D18): an action, so it runs on the owner (I1). A desk's
+        // press is forwarded; a user session is taken here (`Write`) and —
+        // Revision 1 Q15 — the press *is* the user's decision, so the take is
+        // followed by `ResumeTurn{Takeover, from}`. Idempotent against W2's
+        // own resume-on-take: a turn already in flight answers "resumed lazily".
+        let from = forward::owner_peer(session).await;
+        if let Some(r) = forward::route(ext, session, "resume_turn", (session,)).await? {
+            return Ok(r);
+        }
         let agents = lookup::<Agents>(agent::AGENT_ACTOR)?;
         let Some(turn) = send(&agents, agent::supervisor::OpenTurn(session)).await? else {
             return Ok(false);
         };
-        send(&agents, agent::supervisor::ResumeTurn { session, turn }).await?;
+        // `cause: None` = the boot rule from the journal (§6.3) on the owner.
+        send(
+            &agents,
+            agent::supervisor::ResumeTurn {
+                session,
+                turn,
+                cause: from
+                    .is_some()
+                    .then_some(agent::durability::ResumeCause::Takeover),
+                from: from.map(|p| p.0),
+            },
+        )
+        .await?;
         Ok(true)
     }
 
@@ -6910,18 +7031,94 @@ mod tests {
                 interrupted_at: at,
                 resumed: false,
                 report: None,
+                owner: Some("engine-a".into()),
+                here: false,
+                cause: Some(agent::durability::ResumeCause::Transfer),
             }),
             ..Default::default()
         };
         let v = serde_json::to_value(&loaded).unwrap();
         assert_eq!(v["resume"]["kind"], "suspended");
         assert_eq!(v["resume"]["turn"], turn.to_string());
+        // 139 §9.1: the replica's banner fields, snake-case cause.
+        assert_eq!(v["resume"]["owner"], "engine-a");
+        assert_eq!(v["resume"]["here"], false);
+        assert_eq!(v["resume"]["cause"], "transfer");
         let back: agent::Loaded = serde_json::from_value(v).unwrap();
         assert_eq!(back.resume, loaded.resume);
         let mut pre109 = serde_json::to_value(agent::Loaded::default()).unwrap();
         pre109.as_object_mut().unwrap().remove("resume");
         let old: agent::Loaded = serde_json::from_value(pre109).unwrap();
         assert_eq!(old.resume, None, "a pre-109 engine's page still parses");
+        // 139 §5.2: a pre-139 engine's `resume` reads as owned here, cause unknown.
+        let pre139: agent::ResumeState = serde_json::from_value(serde_json::json!({
+            "turn": turn, "kind": "interrupted", "interrupted_at": at, "resumed": true
+        }))
+        .unwrap();
+        assert_eq!(
+            (pre139.owner, pre139.here, pre139.cause),
+            (None, true, None)
+        );
+        // 139 §9.1: `TurnResumed` carries `cause` + `from`; an old engine's omits both.
+        let ev = agent::AgentEvent::TurnResumed {
+            session: SessionId::new(),
+            turn,
+            kind: agent::durability::ResumeKind::Interrupted,
+            interrupted_at: at,
+            resumed_at: at,
+            partial_dropped: false,
+            cause: agent::durability::ResumeCause::Takeover,
+            from: Some("engine-a".into()),
+        };
+        let v = serde_json::to_value(&ev).unwrap();
+        assert_eq!(
+            (&v["cause"], &v["from"]),
+            (
+                &serde_json::json!("takeover"),
+                &serde_json::json!("engine-a")
+            )
+        );
+        let mut old = v.clone();
+        let o = old.as_object_mut().unwrap();
+        o.remove("cause");
+        o.remove("from");
+        match serde_json::from_value::<agent::AgentEvent>(old).unwrap() {
+            agent::AgentEvent::TurnResumed { cause, from, .. } => {
+                assert_eq!((cause, from), (agent::durability::ResumeCause::Crash, None));
+            }
+            other => panic!("{other:?}"),
+        }
+        // 139 §6.1: the SESSION_DRAINING payload in the external enum form the composer keys on.
+        let session = SessionId::new();
+        let e = session_draining(
+            session,
+            ErrorObjectOwned::owned(ASK_FAILED, "SessionDraining:release:engine-b", None::<()>),
+        );
+        assert_eq!(e.code(), forward::SESSION_DRAINING);
+        assert_eq!(
+            e.message(),
+            format!("{session} is moving to engine-b — retry in a moment")
+        );
+        let data: serde_json::Value = serde_json::from_str(e.data().unwrap().get()).unwrap();
+        assert_eq!(
+            data,
+            serde_json::json!({ "SessionDraining": { "session": session, "reason": "release", "next_owner": "engine-b" } })
+        );
+        let e = session_draining(
+            session,
+            ErrorObjectOwned::owned(ASK_FAILED, "SessionDraining:shutdown", None::<()>),
+        );
+        assert_eq!(e.code(), forward::SESSION_DRAINING);
+        assert_eq!(
+            e.message(),
+            format!("{session} is pausing for shutdown — resumes on the next start")
+        );
+        let other = ErrorObjectOwned::owned(ASK_FAILED, "runner unavailable", None::<()>);
+        assert_eq!(
+            session_draining(session, other.clone()),
+            other,
+            "anything else passes through"
+        );
         assert_eq!(
             serde_json::to_value(roster::attention::AttentionKind::Resume).unwrap(),
             "resume"
@@ -6941,6 +7138,134 @@ mod tests {
         }
     }
 
+    /// 139 §9.2 (D18): the owner side of a routed `resume_turn` / `answer_ask` /
+    /// `resolve_approval` — dispatched exactly as `forward::serve` does (internal
+    /// peer + `Forwarded` marker) with the positional params the forwarder sends.
+    /// Past the marker the call is local and reaches the actor lookup (no actors
+    /// here → `NOT_RUNNING` / `ASK_FAILED`), never a second hop and never
+    /// `INVALID_PARAMS`.
+    #[tokio::test]
+    async fn routed_methods_dispatch_on_the_owner_with_the_forwarders_params() {
+        let rt = Runtime::new(figment::Figment::new(), std::env::temp_dir());
+        let mut methods: jsonrpsee::Methods = Server::new(rt).into_rpc().into();
+        methods.extensions_mut().insert(link::RpcPeer::internal());
+        methods
+            .extensions_mut()
+            .insert(forward::Forwarded(replica::PeerId("engine-b".into())));
+        let session = SessionId::new();
+        let ask_id = AskId(Uuid::now_v7());
+        let approval = ApprovalId(Uuid::now_v7());
+        let answers: Option<Vec<Answer>> = None;
+        for (method, params, code) in [
+            (
+                "resume_turn",
+                serde_json::to_string(&(session,)).unwrap(),
+                NOT_RUNNING,
+            ),
+            (
+                "answer_ask",
+                serde_json::to_string(&(ask_id, &answers)).unwrap(),
+                ASK_FAILED,
+            ),
+            (
+                "resolve_approval",
+                serde_json::to_string(&(approval, Decision::Allow)).unwrap(),
+                NOT_RUNNING,
+            ),
+        ] {
+            let req =
+                format!(r#"{{"jsonrpc":"2.0","method":"{method}","params":{params},"id":1}}"#);
+            let (resp, _) = methods.raw_json_request(&req, 1).await.unwrap();
+            let v: serde_json::Value = serde_json::from_str(resp.get()).unwrap();
+            assert_eq!(
+                v["error"]["code"].as_i64(),
+                Some(i64::from(code)),
+                "{req} → {v}"
+            );
+        }
+    }
+
+    /// 139 §9.2 (D18), R1 §8.11: an answer to a question whose replicated row
+    /// names a session owned elsewhere goes to that owner — forward, never take
+    /// — and is `-32010` when the owner is not connected; a question of our own
+    /// session, or one with no row, is answered locally.
+    #[tokio::test]
+    async fn answers_follow_the_questions_row_to_its_owner_or_fail_unreachable() {
+        use tools::journal::{QuestionKind, QuestionRow, QuestionState};
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("sessions.sqlite");
+        let (theirs_s, mine_s) = (SessionId::new(), SessionId::new());
+        let (theirs_q, mine_q) = (Uuid::now_v7(), Uuid::now_v7());
+        let question = |id: Uuid, session: SessionId| QuestionRow {
+            id: id.to_string(),
+            session,
+            tool_call_id: None,
+            kind: QuestionKind::Ask,
+            payload: serde_json::json!({}),
+            state: QuestionState::Pending,
+            asked_at: chrono::Utc::now(),
+            deadline: chrono::Utc::now(),
+            answered_at: None,
+            answer: None,
+            answered_by: None,
+        };
+        let theirs = agent::store::Store::open(&path, Some(mesh::EngineId("them".into())))
+            .await
+            .unwrap();
+        theirs
+            .create_session(theirs_s, "m", None, None, None)
+            .await
+            .unwrap();
+        theirs
+            .question_put(&question(theirs_q, theirs_s))
+            .await
+            .unwrap();
+        theirs.close().await;
+        let store = agent::store::Store::open(&path, Some(mesh::EngineId("me".into())))
+            .await
+            .unwrap();
+        store
+            .create_session(mine_s, "m", None, None, None)
+            .await
+            .unwrap();
+        store.question_put(&question(mine_q, mine_s)).await.unwrap();
+
+        assert_eq!(
+            question_owner(&store, &theirs_q).await.unwrap(),
+            Some(replica::PeerId("them".into()))
+        );
+        assert_eq!(question_owner(&store, &mine_q).await.unwrap(), None);
+        assert_eq!(question_owner(&store, &Uuid::now_v7()).await.unwrap(), None);
+
+        let ext = Extensions::new();
+        let local: Option<bool> = route_question_via(
+            &ext,
+            &store,
+            &mine_q,
+            "answer_ask",
+            (AskId(mine_q), None::<Vec<Answer>>),
+        )
+        .await
+        .unwrap();
+        assert_eq!(local, None, "our own question: answered here");
+        // No replica transport in this process: the owner is not connected.
+        let e = route_question_via::<bool>(
+            &ext,
+            &store,
+            &theirs_q,
+            "answer_ask",
+            (AskId(theirs_q), None::<Vec<Answer>>),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(e.code(), forward::OWNER_UNREACHABLE);
+        let data: serde_json::Value = serde_json::from_str(e.data().unwrap().get()).unwrap();
+        assert_eq!(
+            data,
+            serde_json::json!({ "OwnerUnreachable": { "owner": "them", "last_seen": null } })
+        );
+        store.close().await;
+    }
     #[test]
     fn communication_changed_reaches_scoped_and_tree_subscribers() {
         let global =

@@ -2694,22 +2694,30 @@ mod tests {
     }
 
     /// 109 §10.3: the resume divider takes the `Compacted` shape — a
-    /// bordered `── label ──` line, 3 rows (`Entry::height` agrees).
+    /// bordered `── label ──` line, 3 rows (`Entry::height` agrees); 139 §9.3:
+    /// the transfer / takeover labels name the previous owner in the same shape.
     #[test]
     fn resume_divider_takes_the_compacted_shape() {
-        let e = Entry::Divider("resumed after restart".into());
-        let frame = element! {
-            View(flex_direction: FlexDirection::Column, width: 60u16) {
-                #(entry(&e, "", 0, 60))
+        for label in [
+            "resumed after restart",
+            "resumed after transfer from abcdef01",
+            "resumed after takeover from abcdef01",
+            "taken from abcdef01",
+        ] {
+            let e = Entry::Divider(label.into());
+            let frame = element! {
+                View(flex_direction: FlexDirection::Column, width: 60u16) {
+                    #(entry(&e, "", 0, 60))
+                }
             }
+            .to_string();
+            assert!(frame.contains(&format!("── {label} ──")), "{frame}");
+            assert!(frame.contains('╭') && frame.contains('╰'), "{frame}");
+            assert_eq!(
+                frame.trim_end_matches('\n').lines().count(),
+                4,
+                "margin + 3 rows: {frame}"
+            );
         }
-        .to_string();
-        assert!(frame.contains("── resumed after restart ──"), "{frame}");
-        assert!(frame.contains('╭') && frame.contains('╰'), "{frame}");
-        assert_eq!(
-            frame.trim_end_matches('\n').lines().count(),
-            4,
-            "margin + 3 rows: {frame}"
-        );
     }
 }

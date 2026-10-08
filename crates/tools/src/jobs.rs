@@ -430,12 +430,39 @@ pub(crate) struct Finished {
 /// can send it after its window instead of at the instant the token fires.
 pub struct KillAll;
 
+/// `ask` → `()`: the per-session form of [`KillAll`] (139 §6.1 step 4,
+/// §7.1): the session's live rows `exit = lost` first, PTY screens
+/// snapshotted, then `kill(pgids)`. Sent by the release drain
+/// (`supervisor::transfer::drain_session`, W2). The rows stay in this
+/// actor as `lost` so `jobs()` keeps listing them and their ids are not
+/// reused if the session comes back.
+pub struct KillSession {
+    /// The session whose jobs die with its actor.
+    pub session: SessionId,
+}
+
+/// Why a job is reported `lost` (139 §7.1): the banner / `lost_page` /
+/// `<job_result exit="lost">` wording keys on it (W3 renders it).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub enum LostReason {
+    /// "the engine restarted at hh:mm" — today's reaper (109 §5.4).
+    #[default]
+    Restart,
+    /// "owner changed (ran on `engine`)" — the session moved to this engine
+    /// while the process lived on `engine`.
+    OwnerChanged {
+        /// The engine that spawned it (`jobs.engine`).
+        engine: String,
+    },
+}
+
 /// `tell` from the agent's reaper (109 §5.4): the `jobs` rows a previous
 /// engine left `running`, settled `lost` in the store by the caller. Each
 /// becomes a `lost` row here — `jobs()`, `screen()` and `pty_screen` answer
 /// for it, its id is not reused — and, when [`LostJob::deliver`] is set,
 /// the model's `<job_result exit="lost">` goes through the activity ledger,
 /// the path every finished job's result takes (47 §4.1).
+#[derive(Clone, Debug)]
 pub struct Reaped {
     /// When this engine started: the banner's "restarted at".
     pub restarted_at: chrono::DateTime<chrono::Utc>,
@@ -444,6 +471,7 @@ pub struct Reaped {
 }
 
 /// One lost job for [`Reaped`].
+#[derive(Clone, Debug)]
 pub struct LostJob {
     /// The settled row (`state = lost`).
     pub row: JobRow,
@@ -455,6 +483,8 @@ pub struct LostJob {
     /// `<job_result exit="lost">` body to inject. `None` when the resumed
     /// batch reports the job itself (§4.3's job note).
     pub deliver: Option<String>,
+    /// Why it is lost (139 §7.1); `Restart` from the boot reaper.
+    pub reason: LostReason,
 }
 
 /// `ask` → `()`: the activity supervisor (47 §4.2 rule 7), forwarded by the
@@ -560,10 +590,11 @@ fn keep_last(buf: &mut VecDeque<u8>, chunk: &[u8]) {
 }
 
 /// 109 §5.4: what a job that died with a previous engine keeps in memory
-/// once the reaper reported it: when this engine started and, for a PTY,
-/// the last stored screen.
+/// once the reaper reported it: when this engine started, why it is lost
+/// (139 §7.1) and, for a PTY, the last stored screen.
 pub(crate) struct Lost {
     pub(crate) restarted_at: chrono::DateTime<chrono::Utc>,
+    pub(crate) reason: LostReason,
     pub(crate) screen: Option<PtyScreenRow>,
 }
 
@@ -638,6 +669,7 @@ impl Job {
             state,
             exit,
             settled_ms,
+            engine: String::new(),
         }
     }
 
@@ -1197,15 +1229,33 @@ impl Message<KillAll> for Jobs {
     type Reply = ();
 
     async fn handle(&mut self, _: KillAll, _: &mut Context<Self, Self::Reply>) {
-        // 109 §5.5: the truth goes to disk before the signal — a crash during
-        // the kill still leaves `exit = lost` on every running row, and the
-        // reaper (§5.4) settles and reports it on the next start as `killed
-        // at shutdown`. The row stays `running` so `jobs_open` finds it: the
-        // store has no "reported" mark, and a `lost` state would be final.
+        self.kill_lost(None).await;
+    }
+}
+
+impl Message<KillSession> for Jobs {
+    type Reply = ();
+
+    async fn handle(&mut self, m: KillSession, _: &mut Context<Self, Self::Reply>) {
+        self.kill_lost(Some(m.session)).await;
+    }
+}
+
+impl Jobs {
+    /// [`KillAll`] (`None`) / [`KillSession`] (`Some`): 109 §5.5 — the
+    /// truth goes to disk before the signal: a crash during the kill still
+    /// leaves `exit = lost` on every running row, and the reaper (§5.4) /
+    /// the taker's `settle_transferred` (139 §7.1) settles and reports it.
+    /// The row stays `running` so `jobs_open` finds it: the store has no
+    /// "reported" mark, and a `lost` state would be final.
+    async fn kill_lost(&mut self, only: Option<SessionId>) {
         let now = chrono::Utc::now().timestamp_millis();
         let mut rows = Vec::new();
         let mut screens = Vec::new();
         for (session, sj) in &self.sessions {
+            if only.is_some_and(|s| s != *session) {
+                continue;
+            }
             for job in sj.jobs.iter().filter(|j| j.exit.is_none()) {
                 rows.push(job.row(*session, JobState::Running, Some(JobExit::Lost), Some(now)));
                 if let Some(pty) = &job.pty {
@@ -1219,20 +1269,36 @@ impl Message<KillAll> for Jobs {
         for (pty, session, id) in screens {
             pty.snapshot_to_store(&*self.journal, session, &id).await;
         }
-        for job in self.sessions.values_mut().flat_map(|s| &mut s.jobs) {
-            if job.exit.is_none() {
-                kill(&job.pgids);
-                // Aborting the task skips its settlement, and an escapee may
-                // outlive the kill: say so before the guard can drop as `Finished`.
-                if let Some(a) = self.live.get(&job.op) {
-                    a.unknown(format!("{}: killed at shutdown before it settled", job.id));
-                }
-                job.task.abort();
+        for (session, sj) in &mut self.sessions {
+            if only.is_some_and(|s| s != *session) {
+                continue;
             }
-            // Nothing observes a terminal past shutdown: release every charge.
-            job.pty = None;
+            for job in &mut sj.jobs {
+                if job.exit.is_none() {
+                    kill(&job.pgids);
+                    if only.is_some() {
+                        // 139 §7.1: a transfer kill is a known outcome — the
+                        // row is `lost` on disk and the taker reports it to
+                        // the model — so the op retires as `Finished` (no
+                        // "outcome unknown" card on the old owner). This
+                        // actor lives on: list the job `lost` here.
+                        self.live.remove(&job.op);
+                        job.exit = Some(JobExit::Lost);
+                        job.secs = job.started.elapsed().as_secs();
+                    } else if let Some(a) = self.live.get(&job.op) {
+                        // Aborting the task skips its settlement, and an escapee may
+                        // outlive the kill: say so before the guard can drop as `Finished`.
+                        a.unknown(format!("{}: killed at shutdown before it settled", job.id));
+                    }
+                    job.task.abort();
+                }
+                // Nothing observes a terminal past shutdown / a transfer:
+                // release every charge.
+                if job.pty.take().is_some() {
+                    self.pty_bytes = self.pty_bytes.saturating_sub(crate::pty::RESERVE);
+                }
+            }
         }
-        self.pty_bytes = 0;
     }
 }
 
@@ -1245,6 +1311,7 @@ impl Message<Reaped> for Jobs {
             screen,
             tail,
             deliver,
+            reason,
         } in m.jobs
         {
             let session = row.session;
@@ -1295,6 +1362,7 @@ impl Message<Reaped> for Jobs {
                     pty: None,
                     lost: Some(Lost {
                         restarted_at: m.restarted_at,
+                        reason,
                         screen,
                     }),
                 },
@@ -1607,6 +1675,7 @@ async fn run(mut j: Run) {
         state: JobState::Running,
         exit: None,
         settled_ms: None,
+        engine: String::new(),
     });
     if let Some(r) = &row {
         j.journal.job(r.clone()).await;
@@ -2702,6 +2771,83 @@ pub(crate) mod tests {
         assert!(group_gone(&tree, Some(tokio::time::Instant::now() + KILL_WAIT)).await);
     }
 
+    /// 139 §7.1: `KillSession` is `KillAll` for one session — its running
+    /// row goes to disk `exit = lost` while the group is alive, then the
+    /// group dies and the job lists `lost` here; another session's job is
+    /// untouched.
+    #[tokio::test]
+    async fn kill_session_writes_lost_before_kill_and_spares_others() {
+        let (fx, journal) = journaled(Duration::ZERO, Duration::from_secs(600)).await;
+        let StartReply::Running { id, .. } = spawn_job(&fx, "sleep 600").await else {
+            panic!("expected Running");
+        };
+        let other = SessionId::new();
+        let StartReply::Running { .. } = fx
+            .jobs
+            .ask(Start {
+                session: other,
+                command: "sleep 600".into(),
+                call_id: String::new(),
+                quiet: false,
+                shell: ShellTool::build_shell(false).await.unwrap(),
+                put_back: Arc::new(|_| {}),
+                root: fx.dir.clone(),
+                activity: None,
+                timeout: None,
+            })
+            .await
+            .unwrap()
+        else {
+            panic!("expected Running");
+        };
+        let rows = rows_until(&journal, Duration::from_secs(5), |r| {
+            r.iter().filter(|(j, _)| j.pgid.is_some()).count() == 2
+        })
+        .await;
+        let pgid_of = |s: SessionId| {
+            rows.iter()
+                .find(|(j, _)| j.session == s && j.pgid.is_some())
+                .unwrap()
+                .0
+                .pgid
+                .unwrap() as u32
+        };
+        let tree = ProcessTree::adopt(pgid_of(fx.session)).unwrap();
+        let other_tree = ProcessTree::adopt(pgid_of(other)).unwrap();
+        assert!(tree.alive() && other_tree.alive());
+        fx.jobs
+            .ask(KillSession {
+                session: fx.session,
+            })
+            .await
+            .unwrap();
+        let rows = lock(&journal.jobs).clone();
+        let lost: Vec<_> = rows
+            .iter()
+            .filter(|(j, _)| j.exit == Some(JobExit::Lost))
+            .collect();
+        assert_eq!(lost.len(), 1, "{rows:?}");
+        let (lost, alive_at_write) = lost[0];
+        assert_eq!((lost.session, &lost.id), (fx.session, &id));
+        assert!(alive_at_write, "the row went to disk after the kill");
+        assert_eq!(lost.state, JobState::Running);
+        assert!(group_gone(&tree, Some(tokio::time::Instant::now() + KILL_WAIT)).await);
+        assert!(
+            other_tree.alive(),
+            "the other session's group was signalled"
+        );
+        let view = list(&fx).await.pop().unwrap();
+        assert_eq!((view.id, view.state.as_str()), (id, "lost"));
+        assert_eq!(
+            fx.jobs.ask(ListJobs(other)).await.unwrap()[0].state,
+            "running"
+        );
+        // Awaited, and the group's death observed: a live `sleep 600` would
+        // keep the runtime's pipe reader alive for the full ten minutes.
+        fx.jobs.ask(KillAll).await.unwrap();
+        assert!(group_gone(&other_tree, Some(tokio::time::Instant::now() + KILL_WAIT)).await);
+    }
+
     /// 109 §4.4: the `shell` grace wait is a `job` wait while it lasts.
     #[tokio::test]
     async fn grace_wait_writes_and_clears_a_job_wait() {
@@ -2746,6 +2892,7 @@ pub(crate) mod tests {
             state: JobState::Lost,
             exit: Some(JobExit::Lost),
             settled_ms: Some(8_000),
+            engine: String::new(),
         }
     }
 
@@ -2767,12 +2914,14 @@ pub(crate) mod tests {
                         screen: None,
                         tail: "error: boom\n".into(),
                         deliver: Some("this job died with the engine".into()),
+                        reason: LostReason::Restart,
                     },
                     LostJob {
                         row: lost_row(fx.session, "j3", JobKind::Shell, &log),
                         screen: None,
                         tail: String::new(),
                         deliver: None,
+                        reason: LostReason::Restart,
                     },
                 ],
             })

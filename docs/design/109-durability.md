@@ -49,7 +49,7 @@ Rulings (ask_user, 2026-10-06 11:54):
 | D6 | Graceful shutdown | **Drain up to `drain_secs` (10), checkpoint, mark open turns `suspended`, dump and release Monty, then `KillAll` the job groups as today (journaled `lost` first)**; SIGTERM, app close and `t update` converge on the same resume protocol (§9) | a planned stop should look like a crash to the resume code and only differ in wording |
 | D7 | UI | **One session banner, one Attention item (104) when a human is needed; `AgentEvent::TurnResumed` / `TurnSuspended` / `PartialDropped`** (§8) | engine-first; as-built UI docs follow |
 | D8 | Config | **`durability:` section** — `resume: auto \| ask \| off` (auto), `resume_parallel` 4, `drain_secs` 10, `partial_checkpoint_ms` 5000, `pty_snapshot_secs` 5 (§10); the job reaper has no key | `resume: ask` is the pause-and-ask behaviour as a setting, not the default |
-| D9 | Out of scope | detached job keeper (later), process-surviving jobs by adoption (rejected by Sky, D14), event-sourcing rewrite, cross-engine resume of an in-flight turn (follow-on), meeting live meters, replaying tool side effects | §14 |
+| D9 | Out of scope | detached job keeper (later), process-surviving jobs by adoption (rejected by Sky, D14), event-sourcing rewrite, cross-engine resume of an in-flight turn (follow-on — built by 139), meeting live meters, replaying tool side effects | §14 |
 | D10 | Verification | **crash-injection harness** `THEUTH_CRASH_AT=<step>` aborting at every journal boundary; transcript equality with the uninterrupted run; job reaper and PTY snapshot tests; manual smoke (§11) | the invariant is testable only by killing |
 | D11 | Build order | **W1 journal + safe replay → W2 jobs → W3 questions/waits → W4 ACP → W5 drain + UI → W6 crash suite**, seams in §12; W2 ∥ W3 and W4 ∥ W5 | file ownership keeps two omp waves apart |
 | D12 | `fail_interrupted` | **Narrowed**: `result:<turn>` exchanges from `session:*` senders stay `accepted` and are delivered on resume; other accepted exchanges and `a2a_tasks` keep today's behaviour (§7.2) | a child's finished result is the one accepted exchange a restart must not throw away (`109-recon.md §10` fact 8) |
@@ -347,13 +347,15 @@ per-inner-call journal the §4.2 python rule reads.
 `capture::ATTACHED` lists the nine tables whose changes the write connection's `sqlite3session`
 records (`capture.rs:15-25`); every attached table must have a column naming its session
 (`store.rs:2564-2567`). 109 attaches `turn_steps`, `tool_calls`, `questions`, `waits` and `jobs` by
-`session_id`. `pty_screens` is **not** attached `(call)`: a screen row rewrites up to ~5 KB every
-few seconds per live PTY and a process never outlives its engine anyway (R1), so the row is
-engine-local like `peer_exchanges` (68 decision 8). Consequences:
+`session_id`. `pty_screens` was **not** attached in 109 `(call)`: a screen row rewrites up to ~5 KB
+every few seconds per live PTY and a process never outlives its engine anyway (R1), so the row was
+engine-local like `peer_exchanges` (68 decision 8). **139 §5.3 reversed this**: `pty_screens` is
+attached since `139` (so a taker renders the owner's last page for a lost PTY) and the owner fence
+applies to it like every other journal table. Consequences:
 
 - A taken-over session (68 §4.2) arrives on the taker with its open turn, its tool-call states, its
-  questions and its waits — enough for the follow-on "resume on another engine" (§14) without a
-  further schema change.
+  questions and its waits — enough for "resume on another engine", built by 139 (§14) without a
+  further schema change beyond 139's two columns (`jobs.engine`, `resume_reports.cause`).
 - `WriteTx::commit`'s owner fence applies to journal rows (`store.rs:221-247`): a non-owner cannot
   journal, which is right.
 - Volume: `assistant_partial` upserts are the only new high-frequency write — ≤ 1 per second per
@@ -1169,9 +1171,10 @@ For the integrator, one list:
    `Agents.last_stop` is a cache of them. §7 (PTY observation): `pty_screens` is the retained
    screen's durable twin, engine-local; `pty_screen` for a lost job serves it with a banner.
 5. **68 §3 / §8** (`docs/design/68-sessions.md`): `capture::ATTACHED` grows by `turn_steps`,
-   `tool_calls`, `questions`, `waits`, `jobs` (not `pty_screens`); the "what each engine holds"
-   statement now includes the open-turn journal, which is what makes §4.4's resume-elsewhere a
-   follow-on rather than a redesign. **68-contract.md:46** attached-table list likewise.
+   `tool_calls`, `questions`, `waits`, `jobs` (not `pty_screens` — 139 §5.3 added it); the "what
+   each engine holds" statement now includes the open-turn journal, which is what made §4.4's
+   resume-elsewhere a follow-on (139) rather than a redesign. **68-contract.md:46** attached-table
+   list likewise.
 6. **00 §5** (`docs/design/00-architecture.md:484-485`): "restart makes unconsumed work `failed:
    interrupted_by_restart` and auto-runs nothing" → *"restart fails unconsumed peer work except a
    child's finished result, and resumes every open turn (109 §4)"*. **00 §4 tool contract**: add one
@@ -1221,10 +1224,13 @@ For the integrator, one list:
 - **A separate journal file outside `sessions.sqlite`** (a WAL of intents in `<data_dir>/journal/`).
   Loses D1's property that the journal and the transcript commit together (I7) and that 68 ships it;
   two files can disagree after a crash, one cannot.
-- **Resuming an in-flight turn on another engine** at the moment of takeover. 68 replicates the
+- **Resuming an in-flight turn on another engine** at the moment of takeover — *rejected here,
+  built by 139* (`docs/design/139-mesh-durability.md`, `139-as-built.md`). 68 replicates the
   journal, so a taker *could* run `ResumeTurn` on its copy; the local processes (jobs, PTYs, Monty
   dumps, ACP children) are not there, so the per-call rule would mark everything local interrupted.
-  Correct but blunt; a follow-on once the single-engine protocol has run for a while.
+  139 does exactly that, with the owner side draining first (`suspended{release}` before
+  `Released`), the taker resuming with a cause (`transfer` / `takeover`), jobs/PTYs settled "owner
+  changed" without a signal, and questions re-armed on the new owner.
 - **Marking every `started` call "not run" (today)** or every `started` call "done". Both lie half
   the time; the journal lets the engine say what it knows and no more.
 - **No `jobs` table at all** (14 §5's v0 ruling, kept until now). Without the row the model is never
@@ -1255,4 +1261,8 @@ Each with the default this design assumes.
    every row.
 7. **Resume ordering across engines in a mesh.** Two engines never own the same session (68), so
    there is no race; default: no cross-engine coordination, each engine resumes its own open turns.
+   **Answered by 139 (D1, I1)**: every acting journal reader takes an explicit `Scope::Here`
+   (`owner IN ('', me)`), so a replica never resumes, re-arms, reaps or drains the owner's turn; the
+   one cross-engine hand-off is the take itself (139 §6.2 step 9: the new owner resumes once,
+   immediately after `set_owner`).
 

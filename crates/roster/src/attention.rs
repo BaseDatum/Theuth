@@ -203,8 +203,11 @@ pub struct ResumeNeed {
     /// When the turn was interrupted (ms since epoch).
     pub at_ms: u64,
     /// What went wrong, from the `ResumeReport`; `None` under `resume: ask`,
-    /// where the turn simply waits for the button.
+    /// where the turn simply waits for the button; `"resume?"` for a takeover.
     pub detail: Option<String>,
+    /// 139 §6.3 (D5): the engine the session was taken from — a system
+    /// takeover found this open turn and left it for the button.
+    pub taken_from: Option<String>,
 }
 
 /// `ask` → `Result<Vec<Handoff>, String>`: unresolved hand-offs, newest first (`handoffs_list`).
@@ -739,9 +742,10 @@ pub fn derive(inputs: &Inputs, states: &HashMap<String, State>, now_ms: u64) -> 
     for r in &inputs.resumes {
         let agent = desk(&r.session);
         let name = who(agent.as_deref(), &r.session);
-        let title = match &r.detail {
-            Some(_) => format!("{name} resumed after a restart with gaps"),
-            None => format!("{name} was interrupted by a restart — resume?"),
+        let title = match (&r.taken_from, &r.detail) {
+            (Some(from), _) => format!("{name} was taken from {from}"),
+            (None, Some(_)) => format!("{name} resumed after a restart with gaps"),
+            (None, None) => format!("{name} was interrupted by a restart — resume?"),
         };
         let (priority, rank) = by_session(&r.session);
         out.push(AttentionItem {
@@ -1043,15 +1047,20 @@ impl Attention {
             if let Ok(sessions) = ag.ask(agent::ListSessions).await {
                 desks.extend(desk_map(&sessions));
             }
-            // 109 §4.6: under `ask` every open turn waits for the button.
+            // 109 §4.6: under `ask` every open turn waits for the button;
+            // 139 §5.1 item 13: only the turns this engine owns (its button
+            // is `resume_turn`, which must run on the owner).
             if self.resume_ask
-                && let Ok(open) = ag.ask(agent::supervisor::OpenTurns).await
+                && let Ok(open) = ag
+                    .ask(agent::supervisor::OpenTurns(agent::store::Scope::Here))
+                    .await
             {
                 resumes.extend(open.into_iter().map(|(s, t, at)| ResumeNeed {
                     session: s.to_string(),
                     turn: t.to_string(),
                     at_ms: at.timestamp_millis().max(0) as u64,
                     detail: None,
+                    taken_from: None,
                 }));
             }
         }
@@ -1419,17 +1428,58 @@ pub fn resume_need(ev: &agent::AgentEvent, now_ms: u64) -> Option<ResumeNeed> {
         turn: turn.to_string(),
         at_ms: now_ms,
         detail: Some(parts.join("; ")),
+        taken_from: None,
     })
+}
+
+/// 139 Q9 / D5: what an agent event does to the `resume:` map. A
+/// `ResumeReport` with gaps and a `ResumePending` (system takeover) raise
+/// the session's item; `TurnResumed` (the button was pressed, or the owner
+/// resumed) and `TurnFinished` clear it. `true` when the map changed.
+fn resume_transition(
+    reports: &mut HashMap<String, ResumeNeed>,
+    ev: &agent::AgentEvent,
+    now_ms: u64,
+) -> bool {
+    if let Some(need) = resume_need(ev, now_ms) {
+        reports.insert(need.session.clone(), need);
+        return true;
+    }
+    match ev {
+        agent::AgentEvent::ResumePending {
+            session,
+            turn,
+            from,
+        } => {
+            reports.insert(
+                session.to_string(),
+                ResumeNeed {
+                    session: session.to_string(),
+                    turn: turn.to_string(),
+                    at_ms: now_ms,
+                    detail: Some("resume?".into()),
+                    taken_from: Some(from.clone()),
+                },
+            );
+            true
+        }
+        agent::AgentEvent::TurnResumed { session, .. }
+        | agent::AgentEvent::TurnFinished { session, .. } => {
+            reports.remove(&session.to_string()).is_some()
+        }
+        _ => false,
+    }
 }
 
 impl Message<agent::AgentEvent> for Attention {
     type Reply = ();
 
     async fn handle(&mut self, m: agent::AgentEvent, _: &mut Context<Self, Self::Reply>) {
-        if let Some(need) = resume_need(&m, now_ms()) {
-            self.reports.insert(need.session.clone(), need);
+        if resume_transition(&mut self.reports, &m, now_ms()) {
             self.recheck_quietly().await;
-            return;
+            if !matches!(m, agent::AgentEvent::TurnFinished { .. }) {
+                return;
+            }
         }
         // 130 E3: the final text is what streamed after the last tool call.
         match m {
@@ -2339,6 +2389,7 @@ mod tests {
             turn: "t2".into(),
             at_ms: 90,
             detail: None,
+            taken_from: None,
         };
         let inputs = Inputs {
             resumes: vec![need.clone(), waiting.clone()],
@@ -2375,6 +2426,74 @@ mod tests {
             .map(|i| i.id)
             .collect();
         assert_eq!(left, [items[1].id.clone()]);
+    }
+
+    /// 139 D5 / Q9: a system takeover's `ResumePending` raises one `resume:`
+    /// item with the takeover title and a Resume button; `TurnResumed` (the
+    /// press, or the owner resuming) clears it, and so does `TurnFinished`
+    /// for a report with gaps — the map no longer grows forever.
+    #[test]
+    fn takeover_pending_item_raised_and_cleared() {
+        let session = runtime::SessionId::new();
+        let turn = runtime::TurnId::new();
+        let mut reports = HashMap::new();
+        let pending = agent::AgentEvent::ResumePending {
+            session,
+            turn,
+            from: "a".into(),
+        };
+        assert!(resume_transition(&mut reports, &pending, 70));
+        let inputs = Inputs {
+            resumes: reports.values().cloned().collect(),
+            ..Default::default()
+        };
+        let items = derive(&inputs, &HashMap::new(), 100);
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].kind, AttentionKind::Resume);
+        assert_eq!(items[0].id, format!("resume:{session}:{turn}"));
+        assert!(
+            items[0].title.ends_with("was taken from a"),
+            "{}",
+            items[0].title
+        );
+        assert_eq!(items[0].detail.as_deref(), Some("resume?"));
+
+        let resumed = agent::AgentEvent::TurnResumed {
+            session,
+            turn,
+            kind: agent::durability::ResumeKind::Interrupted,
+            interrupted_at: chrono::Utc::now(),
+            resumed_at: chrono::Utc::now(),
+            partial_dropped: false,
+            cause: agent::durability::ResumeCause::Takeover,
+            from: Some("a".into()),
+        };
+        assert!(resume_transition(&mut reports, &resumed, 80));
+        assert!(reports.is_empty());
+        assert!(
+            !resume_transition(&mut reports, &resumed, 81),
+            "nothing left to clear"
+        );
+
+        let gaps = agent::AgentEvent::ResumeReport {
+            session,
+            turn,
+            replayed: vec![],
+            interrupted: vec![("c2".into(), "git push".into())],
+            lost_jobs: vec![],
+            children_restored: 0,
+            children_handed_off: 0,
+        };
+        assert!(resume_transition(&mut reports, &gaps, 90));
+        let finished = agent::AgentEvent::TurnFinished {
+            session,
+            turn,
+            stop_reason: "end_turn".into(),
+            usage: agent::Usage::default(),
+            context: 0,
+        };
+        assert!(resume_transition(&mut reports, &finished, 95));
+        assert!(reports.is_empty());
     }
 
     #[tokio::test]

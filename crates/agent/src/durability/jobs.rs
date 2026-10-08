@@ -5,6 +5,11 @@
 //! [`Reaped`] — which lists them `lost`, serves a lost PTY's stored screen,
 //! and injects `<job_result exit="lost">` for the jobs whose stub the model
 //! already had (the resumed batch reports the others itself, §4.3).
+//!
+//! 139 §7.1 adds the transfer half: [`settle_transferred`] settles the rows
+//! another engine spawned (`jobs.engine != me`) as `lost` **without a
+//! signal** — the process is not ours (I6) — and reports them with
+//! `LostReason::OwnerChanged`.
 
 use std::collections::HashSet;
 use std::io::{Read, Seek, SeekFrom};
@@ -14,14 +19,26 @@ use chrono::{DateTime, Local, Utc};
 use kameo::actor::ActorRef;
 use platform::ProcessTree;
 use runtime::SessionId;
-use tools::jobs::{LostJob, Reaped};
+use tools::jobs::{LostJob, LostReason, Reaped};
 use tools::{JOBS_ACTOR, JobExit, JobKind, JobRow, JobState, Jobs, PtyScreenRow};
 
 use crate::durability::CallState;
-use crate::store::Store;
+use crate::store::{Scope, Store};
 
 /// Bytes of a lost job's log quoted in its `<job_result>` (`jobs.rs::TAIL`).
 const TAIL: u64 = 8 * 1024;
+
+/// Whether `jobs.call_id` belongs to tool call `call_id`. A direct `shell` /
+/// `start` the loop bridges into a python cell (`repl::bridge_cell`) spawns
+/// its job under the runtime's inner id `<call_id>.<n>` (`repl.rs`), so the
+/// plain equality the 109 rules used missed it: the call read as "never
+/// spawned" and was run again, and the job was reported twice.
+pub(crate) fn job_of_call(job_call_id: &str, call_id: &str) -> bool {
+    job_call_id == call_id
+        || job_call_id
+            .strip_prefix(call_id)
+            .is_some_and(|rest| rest.starts_with('.'))
+}
 
 /// What one reaper pass did.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -39,15 +56,88 @@ pub struct ReapReport {
 /// then hand the rows to the jobs actor. Nothing is skipped.
 pub async fn reap_jobs(store: &Store) -> ReapReport {
     let (report, reaped) = reap(store).await;
-    if !reaped.jobs.is_empty() {
-        match ActorRef::<Jobs>::lookup(JOBS_ACTOR) {
-            Ok(Some(jobs)) => {
-                let _ = jobs.tell(reaped).await;
-            }
-            _ => tracing::error!("jobs actor not running: lost jobs not reported"),
-        }
-    }
+    tell_jobs(reaped).await;
     report
+}
+
+/// Hand lost rows to the jobs actor (`Reaped`); logs when it is not running.
+async fn tell_jobs(reaped: Reaped) {
+    if reaped.jobs.is_empty() {
+        return;
+    }
+    match ActorRef::<Jobs>::lookup(JOBS_ACTOR) {
+        Ok(Some(jobs)) => {
+            let _ = jobs.tell(reaped).await;
+        }
+        _ => tracing::error!("jobs actor not running: lost jobs not reported"),
+    }
+}
+
+/// 139 §7.1, on the new owner of `session` after a transfer or takeover
+/// from `from`: every `running` row another engine spawned is settled
+/// `lost` in the store (`jobs_settle_transferred`: no `adopt`, no `killpg`
+/// — I6), handed to the jobs actor as [`Reaped`] with
+/// `LostReason::OwnerChanged`, and returned for the resume report's
+/// `lost_jobs`. A job whose call is `started` in the session's open turn
+/// gets no `deliver` body: the resumed batch reports it (`resume_job_call`).
+pub async fn settle_transferred(store: &Store, session: SessionId, from: &str) -> Reaped {
+    let now = Utc::now();
+    let mut reaped = Reaped {
+        restarted_at: now,
+        jobs: Vec::new(),
+    };
+    let rows = match store
+        .jobs_settle_transferred(session, store.engine(), now.timestamp_millis())
+        .await
+    {
+        Ok(rows) => rows,
+        Err(e) => {
+            tracing::error!(session = %session, "139 settle_transferred: {e:#}");
+            return reaped;
+        }
+    };
+    if rows.is_empty() {
+        return reaped;
+    }
+    let mut in_batch: HashSet<String> = HashSet::new();
+    if let Ok(Some((turn, _))) = store.open_turn(session).await
+        && let Ok(calls) = store.calls_of(session, turn).await
+    {
+        in_batch.extend(
+            calls
+                .into_iter()
+                .filter(|c| c.state == CallState::Started)
+                .map(|c| c.call_id),
+        );
+    }
+    for row in rows {
+        tracing::info!(
+            session = %session,
+            "139: job {} ran on {} (taken from {from}); settled lost here",
+            row.id,
+            row.engine
+        );
+        let screen = match row.kind {
+            JobKind::Pty => store.pty_screen(session, &row.id).await.ok().flatten(),
+            JobKind::Shell => None,
+        };
+        // The log lives on the engine that ran it: empty here.
+        let tail = row.log.as_deref().map(log_tail).unwrap_or_default();
+        let reason = LostReason::OwnerChanged {
+            engine: row.engine.clone(),
+        };
+        let deliver = (!in_batch.iter().any(|c| job_of_call(&row.call_id, c)))
+            .then(|| lost_body(&row, screen.as_ref(), &tail, now, &reason));
+        reaped.jobs.push(LostJob {
+            row,
+            screen,
+            tail,
+            deliver,
+            reason,
+        });
+    }
+    tell_jobs(reaped.clone()).await;
+    reaped
 }
 
 /// The store half of [`reap_jobs`]: kill, settle, and build what the jobs
@@ -59,7 +149,9 @@ pub(crate) async fn reap(store: &Store) -> (ReapReport, Reaped) {
         restarted_at,
         jobs: Vec::new(),
     };
-    let rows = match store.jobs_open().await {
+    // 139 D1/D14: sessions owned here, rows this engine spawned (the SQL
+    // carries the engine filter); `settle_transferred` handles the rest.
+    let rows = match store.jobs_open(Scope::Here).await {
         Ok(rows) => rows,
         Err(e) => {
             tracing::error!("109 reaper: jobs_open: {e:#}");
@@ -72,7 +164,7 @@ pub(crate) async fn reap(store: &Store) -> (ReapReport, Reaped) {
     // A job whose call is a `started` row of an open turn is reported by the
     // job rule inside the resumed batch (§4.3): no `<job_result>` for it.
     let mut in_batch: HashSet<(SessionId, String)> = HashSet::new();
-    match store.open_turns().await {
+    match store.open_turns(Scope::Here).await {
         Ok(open) => {
             for (session, turn, _) in open {
                 if let Ok(calls) = store.calls_of(session, turn).await {
@@ -119,8 +211,18 @@ pub(crate) async fn reap(store: &Store) -> (ReapReport, Reaped) {
             JobKind::Shell => None,
         };
         let tail = row.log.as_deref().map(log_tail).unwrap_or_default();
-        let deliver = (!in_batch.contains(&(row.session, row.call_id.clone())))
-            .then(|| lost_body(&row, screen.as_ref(), &tail, restarted_at));
+        let in_turn = in_batch
+            .iter()
+            .any(|(s, c)| *s == row.session && job_of_call(&row.call_id, c));
+        let deliver = (!in_turn).then(|| {
+            lost_body(
+                &row,
+                screen.as_ref(),
+                &tail,
+                restarted_at,
+                &LostReason::Restart,
+            )
+        });
         row.state = JobState::Lost;
         row.exit = Some(JobExit::Lost);
         // `KillAll` stamped the shutdown time (§5.5); a crash left none.
@@ -130,29 +232,39 @@ pub(crate) async fn reap(store: &Store) -> (ReapReport, Reaped) {
             screen,
             tail,
             deliver,
+            reason: LostReason::Restart,
         });
     }
     reaped.jobs = lost;
     (report, reaped)
 }
 
-/// The `<job_result exit="lost">` body (§5.4 / §5.5): why the job is gone,
-/// its log path, then the log tail — or the stored screen for a PTY.
+/// The `<job_result exit="lost">` body (§5.4 / §5.5, 139 §7.1): why the
+/// job is gone, its log path, then the log tail — or the stored screen for
+/// a PTY.
 pub(crate) fn lost_body(
     row: &JobRow,
     screen: Option<&PtyScreenRow>,
     tail: &str,
     restarted_at: DateTime<Utc>,
+    reason: &LostReason,
 ) -> String {
-    let mut body = match (row.exit.as_ref(), row.settled_ms) {
+    let mut body = match (reason, row.exit.as_ref(), row.settled_ms) {
+        // The session moved here while the process lived on `engine`
+        // (killed by its release drain, or still running after a takeover).
+        (LostReason::OwnerChanged { engine }, _, _) => format!(
+            "owner changed (ran on {engine}): the session moved here at {}; the job stayed behind \
+             and its exit code is unknown.",
+            hhmmss(restarted_at)
+        ),
         // `exit = lost` on a row the reaper found still `running`: the
         // shutdown path wrote it (§5.5) before the kill.
-        (Some(JobExit::Lost), Some(stopped_ms)) => format!(
+        (LostReason::Restart, Some(JobExit::Lost), Some(stopped_ms)) => format!(
             "killed at shutdown (engine stopped at {}, restarted at {})",
             hhmmss_ms(stopped_ms),
             hhmmss(restarted_at)
         ),
-        _ => format!(
+        (LostReason::Restart, _, _) => format!(
             "this job died with the engine (restarted at {}); its exit code is unknown.",
             hhmmss(restarted_at)
         ),
@@ -231,6 +343,18 @@ mod tests {
         dir
     }
 
+    /// 139 Z-fix: a bridged call's job (`<call_id>.<n>`) is that call's; a
+    /// sibling with a longer id or another call is not.
+    #[test]
+    fn job_of_call_accepts_the_bridged_inner_id() {
+        assert!(job_of_call("smoke_1_shell", "smoke_1_shell"));
+        assert!(job_of_call("smoke_1_shell.1", "smoke_1_shell"));
+        assert!(job_of_call("smoke_1_shell.12", "smoke_1_shell"));
+        assert!(!job_of_call("smoke_1_shell_b", "smoke_1_shell"));
+        assert!(!job_of_call("smoke_1_shell", "smoke_1_shell.1"));
+        assert!(!job_of_call("smoke_2_start.1", "smoke_1_shell"));
+    }
+
     async fn session(store: &Store) -> SessionId {
         let id = SessionId::new();
         store
@@ -254,6 +378,7 @@ mod tests {
             state: JobState::Running,
             exit: None,
             settled_ms: None,
+            engine: String::new(),
         }
     }
 
@@ -321,7 +446,7 @@ mod tests {
                         "{}",
                         out.content
                     );
-                    let rows = store.jobs_open().await.unwrap();
+                    let rows = store.jobs_open(Scope::Here).await.unwrap();
                     assert_eq!(rows.len(), 1);
                     (rows[0].pgid.unwrap(), rows[0].log.clone().unwrap())
                 }
@@ -345,7 +470,7 @@ mod tests {
         tokio::time::timeout(Duration::from_secs(5), gone)
             .await
             .expect("killpg(pgid, 0) still succeeds after the reaper");
-        assert!(store.jobs_open().await.unwrap().is_empty());
+        assert!(store.jobs_open(Scope::Here).await.unwrap().is_empty());
         let row = &store.jobs_of(session).await.unwrap()[0];
         assert_eq!(
             (row.state, row.exit.clone()),
@@ -436,7 +561,7 @@ mod tests {
 
         let (report, reaped) = reap(&store).await;
         assert_eq!((report.killed, report.lost, report.orphaned), (0, 3, 0));
-        assert!(store.jobs_open().await.unwrap().is_empty());
+        assert!(store.jobs_open(Scope::Here).await.unwrap().is_empty());
         let by_id = |id: &str| reaped.jobs.iter().find(|j| j.row.id.0 == id).unwrap();
         assert!(by_id("j1").deliver.is_some());
         assert!(
@@ -458,6 +583,173 @@ mod tests {
                 assert_eq!(row.state, JobState::Lost, "{}", row.id);
             }
         }
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// A live local process group standing in for one another engine
+    /// spawned (same pid namespace in the test): `(pgid, tree, child)` —
+    /// the caller kills the tree and `wait`s the child.
+    fn foreign_group() -> (i64, ProcessTree, std::process::Child) {
+        use std::os::unix::process::CommandExt;
+        let child = std::process::Command::new("sleep")
+            .arg("600")
+            .process_group(0)
+            .spawn()
+            .unwrap();
+        let pgid = child.id();
+        let tree = ProcessTree::adopt(pgid).unwrap();
+        assert!(tree.alive());
+        (i64::from(pgid), tree, child)
+    }
+
+    /// 139 I6 / D14: on engine `b`, a `running` row with `engine = "a"`
+    /// is neither adopted nor killed by the reaper — its group is not
+    /// ours — and is not reported; `b`'s own row is reaped as before.
+    #[tokio::test]
+    async fn reaper_ignores_foreign_engine_rows() {
+        let dir = temp();
+        let store = Store::open(
+            &dir.join("sessions.sqlite"),
+            Some(mesh::EngineId("b".into())),
+        )
+        .await
+        .unwrap();
+        let s = session(&store).await;
+        let (pgid, tree, mut child) = foreign_group();
+        let mut foreign = running(s, "j1", "c1", Some(pgid));
+        foreign.engine = "a".into();
+        store.job_put(&foreign).await.unwrap();
+        let mut mine = running(s, "j2", "c2", Some(1));
+        mine.engine = "b".into();
+        store.job_put(&mine).await.unwrap();
+
+        let (report, reaped) = reap(&store).await;
+        assert_eq!((report.killed, report.lost, report.orphaned), (0, 1, 0));
+        assert_eq!(reaped.jobs.len(), 1);
+        assert_eq!(reaped.jobs[0].row.id.0, "j2");
+        assert_eq!(reaped.jobs[0].reason, LostReason::Restart);
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert!(
+            tree.alive(),
+            "the reaper signalled a group it did not spawn"
+        );
+        let rows = store.jobs_of(s).await.unwrap();
+        let j1 = rows.iter().find(|r| r.id.0 == "j1").unwrap();
+        assert_eq!(
+            j1.state,
+            JobState::Running,
+            "foreign row settled by the reaper"
+        );
+        tree.kill();
+        let _ = child.wait();
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// 139 §7.1: `settle_transferred` on the new owner settles the
+    /// previous owner's rows `lost` with the owner-changed body — the
+    /// `started` call of the open turn gets no body (the batch reports it),
+    /// a PTY gets its replicated screen — and signals nothing; `b`'s own
+    /// row is not touched.
+    #[tokio::test]
+    async fn settle_transferred_never_signals() {
+        let dir = temp();
+        let store = Store::open(
+            &dir.join("sessions.sqlite"),
+            Some(mesh::EngineId("b".into())),
+        )
+        .await
+        .unwrap();
+        let s = session(&store).await;
+        let (pgid, tree, mut child) = foreign_group();
+        // j1: a's shell job, stub delivered. j2: a's PTY with a replicated
+        // screen, its call `c2` started in the open turn. j3: b's own.
+        let mut j1 = running(s, "j1", "c1", Some(pgid));
+        j1.engine = "a".into();
+        j1.exit = Some(JobExit::Lost);
+        j1.settled_ms = Some(5_000);
+        store.job_put(&j1).await.unwrap();
+        let mut j2 = running(s, "j2", "c2", None);
+        j2.engine = "a".into();
+        j2.kind = JobKind::Pty;
+        store.job_put(&j2).await.unwrap();
+        store
+            .pty_screen_put(&tools::PtyScreenRow {
+                session: s,
+                job_id: j2.id.clone(),
+                revision: 3,
+                rows: 40,
+                cols: 120,
+                cursor_row: 0,
+                cursor_col: 2,
+                text: "$ ".into(),
+                at_ms: 2_000,
+            })
+            .await
+            .unwrap();
+        let mut j3 = running(s, "j3", "c3", None);
+        j3.engine = "b".into();
+        store.job_put(&j3).await.unwrap();
+        let turn = TurnId::new();
+        let mut tx = store.begin_write().await.unwrap();
+        step_in(
+            &mut tx,
+            s,
+            turn,
+            StepKind::ToolBatch,
+            None,
+            &json!({"call_ids": ["c2"]}),
+        )
+        .await
+        .unwrap();
+        calls_planned_in(
+            &mut tx,
+            s,
+            turn,
+            0,
+            &[(
+                genai::chat::ToolCall {
+                    call_id: "c2".into(),
+                    fn_name: "start".into(),
+                    fn_arguments: json!({"command": "bash -l"}),
+                    thought_signatures: None,
+                },
+                Risk::Destructive,
+            )],
+        )
+        .await
+        .unwrap();
+        tx.commit().await.unwrap();
+        assert!(store.call_started(s, "c2").await.unwrap());
+
+        let reaped = settle_transferred(&store, s, "a").await;
+        assert_eq!(reaped.jobs.len(), 2);
+        let by_id = |id: &str| reaped.jobs.iter().find(|j| j.row.id.0 == id).unwrap();
+        let j1 = by_id("j1");
+        assert_eq!(j1.reason, LostReason::OwnerChanged { engine: "a".into() });
+        assert_eq!(
+            (j1.row.state, j1.row.exit.clone()),
+            (JobState::Lost, Some(JobExit::Lost))
+        );
+        let body = j1.deliver.as_deref().expect("stub delivered → body");
+        assert!(
+            body.starts_with("owner changed (ran on a): the session moved here at "),
+            "{body}"
+        );
+        let j2 = by_id("j2");
+        assert!(j2.deliver.is_none(), "the resumed batch reports j2");
+        assert_eq!(j2.screen.as_ref().map(|s| s.revision), Some(3));
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert!(tree.alive(), "settle_transferred signalled a's group");
+        let rows = store.jobs_of(s).await.unwrap();
+        let state = |id: &str| rows.iter().find(|r| r.id.0 == id).unwrap().state;
+        assert_eq!(
+            (state("j1"), state("j2"), state("j3")),
+            (JobState::Lost, JobState::Lost, JobState::Running)
+        );
+        // Idempotent: nothing left to settle.
+        assert!(settle_transferred(&store, s, "a").await.jobs.is_empty());
+        tree.kill();
+        let _ = child.wait();
         let _ = std::fs::remove_dir_all(dir);
     }
 
@@ -509,6 +801,7 @@ mod tests {
         let plan = ResumePlan {
             turn: TurnId::new(),
             kind: ResumeKind::Interrupted,
+            cause: crate::durability::ResumeCause::Crash,
             interrupted_at: Utc::now(),
             last: LastStep::ToolBatch {
                 all_finished: false,

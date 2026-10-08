@@ -22,6 +22,7 @@ use runtime::{Runtime, SessionId, TurnId};
 use super::{Agents, LiveActor};
 use crate::durability::{DurabilityConfig, StepKind};
 use crate::loop_::Draining;
+use crate::store::Scope;
 use crate::{AGENT_ACTOR, AgentEvent, HistoryEntry, ResumeState};
 
 /// Set by the first [`Drain`]; a second one (the token-fired path in
@@ -51,16 +52,17 @@ pub struct DrainReport {
     pub finished: u32,
 }
 
-/// `ask` → every open turn `(session, turn, newest step at)`, most recent
-/// first (the attention inbox's `resume:` items, §8.3).
+/// `ask` → every open turn `(session, turn, newest step at)` in `Scope`,
+/// most recent first (the attention inbox's `resume:` items, §8.3; the
+/// schedule plugin). 139 §5.1 item 5: acting callers pass `Scope::Here`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct OpenTurns;
+pub struct OpenTurns(pub Scope);
 
 impl Message<OpenTurns> for Agents {
     type Reply = Vec<(SessionId, TurnId, DateTime<Utc>)>;
 
-    async fn handle(&mut self, _: OpenTurns, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
-        self.store.open_turns().await.unwrap_or_else(|e| {
+    async fn handle(&mut self, m: OpenTurns, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        self.store.open_turns(m.0).await.unwrap_or_else(|e| {
             tracing::error!("109: open_turns: {e:#}");
             Vec::new()
         })
@@ -90,7 +92,8 @@ impl Message<Drain> for Agents {
             // Mark first (§9.2 step 4), durably: a kill inside the window
             // still leaves the planned-stop wording; `turn_finished` closes
             // the row of a turn that makes it.
-            let open = store.open_turns().await.unwrap_or_else(|e| {
+            // 139 D16 (§5.1 item 6): a replica writes nothing for the owner's turn.
+            let open = store.open_turns(Scope::Here).await.unwrap_or_else(|e| {
                 tracing::error!("109: drain: open_turns: {e:#}");
                 Vec::new()
             });
@@ -124,7 +127,7 @@ impl Message<Drain> for Agents {
             );
             // Still open after the window: the UI's planned-stop wording (§8.2).
             let mut suspended = 0;
-            for (session, turn, _) in store.open_turns().await.unwrap_or_default() {
+            for (session, turn, _) in store.open_turns(Scope::Here).await.unwrap_or_default() {
                 suspended += 1;
                 rt.publish(AgentEvent::TurnSuspended {
                     session,
@@ -240,14 +243,25 @@ impl Agents {
         session: SessionId,
         running: bool,
     ) -> (Option<ResumeState>, Option<HistoryEntry>) {
-        let open = match self.store.open_turns().await {
+        // 139 §5.1 item 12 / §5.2: a display read, any owner — the row says
+        // who runs the turn; `resumed` (this engine's flag) matters only when
+        // `here`.
+        let (owner, here) = match self.store.session(session).await {
+            Ok(Some(row)) => ((!row.owner.is_empty()).then_some(row.owner), row.here),
+            Ok(None) => (None, true),
+            Err(e) => {
+                tracing::error!(%session, "139: session: {e:#}");
+                (None, true)
+            }
+        };
+        let open = match self.store.open_turn(session).await {
             Ok(open) => open,
             Err(e) => {
-                tracing::error!(%session, "109: open_turns: {e:#}");
+                tracing::error!(%session, "109: open_turn: {e:#}");
                 return (None, None);
             }
         };
-        let Some((_, turn, _)) = open.into_iter().find(|(s, _, _)| *s == session) else {
+        let Some((turn, _)) = open else {
             return match self.store.latest_resume_report(session).await {
                 Ok(Some(row)) => (
                     Some(ResumeState {
@@ -256,6 +270,9 @@ impl Agents {
                         interrupted_at: row.interrupted_at,
                         resumed: true,
                         report: Some(row.report),
+                        owner,
+                        here,
+                        cause: Some(row.cause),
                     }),
                     None,
                 ),
@@ -281,6 +298,9 @@ impl Agents {
                     interrupted_at: plan.interrupted_at,
                     resumed: running,
                     report,
+                    owner,
+                    here,
+                    cause: Some(plan.cause),
                 }),
                 plan.partial.map(|p| HistoryEntry::Interrupted {
                     text: crate::loop_::text_of(&p.content),
@@ -305,6 +325,7 @@ mod tests {
     use tokio::sync::mpsc::{UnboundedSender, unbounded_channel};
 
     use super::*;
+    use crate::supervisor::resume::tests::{b_holding_a_turn, own_turn};
     use crate::supervisor::tests::agents_with;
 
     /// Idle once `Instant` passes.
@@ -354,31 +375,36 @@ mod tests {
         }
     }
 
-    /// An open turn in the journal gets the `suspended` step and the event;
-    /// the report counts it; a second drain in the same process is a no-op.
+    /// `b`'s own open turn gets the `suspended` step and the event and the
+    /// report counts it; `a`'s open turn in the same file (139 D16 / I1) gets
+    /// neither and `OpenTurns(Scope::Here)` does not list it; `resume_state`
+    /// names `a` as its owner with `here: false`. A second drain in the same
+    /// process is a no-op.
     #[tokio::test]
-    async fn drain_suspends_open_turns_once() {
-        let a = agents_with(false).await;
-        let (store, rt) = (a.store.clone(), a.rt.clone());
+    async fn drain_suspends_own_open_turns_once() {
+        let (b, foreign, foreign_turn, _dir) = b_holding_a_turn(false).await;
+        let (store, rt) = (b.store.clone(), b.rt.clone());
         let (tx, mut events) = unbounded_channel();
         let sink = Sink::spawn_with_mailbox(Sink(tx), runtime::subscriber_mailbox());
         rt.subscribe::<Sink, AgentEvent>(&sink).await;
-        let (sid, turn) = (SessionId::new(), TurnId::new());
-        store
-            .create_session(sid, "m", None, None, None)
+        let (sid, turn) = own_turn(&b).await;
+        let (state, _) = b.resume_state(foreign, false).await;
+        let state = state.unwrap();
+        assert_eq!((state.owner.as_deref(), state.here), (Some("a"), false));
+        let (state, _) = b.resume_state(sid, false).await;
+        let state = state.unwrap();
+        assert_eq!((state.owner.as_deref(), state.here), (Some("b"), true));
+        let agents = Agents::spawn(b);
+
+        let here: Vec<SessionId> = agents
+            .ask(OpenTurns(Scope::Here))
             .await
-            .unwrap();
-        store
-            .step(
-                sid,
-                turn,
-                StepKind::InputAccepted,
-                None,
-                &serde_json::json!({}),
-            )
-            .await
-            .unwrap();
-        let agents = Agents::spawn(a);
+            .unwrap()
+            .into_iter()
+            .map(|(s, _, _)| s)
+            .collect();
+        assert_eq!(here, [sid]);
+        assert_eq!(agents.ask(OpenTurns(Scope::All)).await.unwrap().len(), 2);
 
         let deadline = Instant::now() + Duration::from_millis(200);
         let report = agents
@@ -397,6 +423,12 @@ mod tests {
         );
         let plan = store.resume_plan(sid, turn).await.unwrap();
         assert_eq!(plan.kind, crate::durability::ResumeKind::Suspended);
+        let plan = store.resume_plan(foreign, foreign_turn).await.unwrap();
+        assert_eq!(
+            plan.kind,
+            crate::durability::ResumeKind::Interrupted,
+            "a's turn untouched"
+        );
         let ev = tokio::time::timeout(Duration::from_secs(2), events.recv())
             .await
             .unwrap();
@@ -404,6 +436,7 @@ mod tests {
             matches!(ev, Some(AgentEvent::TurnSuspended { session, turn: t, ref reason }) if session == sid && t == turn && reason == "update"),
             "{ev:?}"
         );
+        assert!(events.try_recv().is_err(), "no TurnSuspended for a's turn");
         assert!(draining());
         let again = agents
             .ask(Drain {
@@ -455,6 +488,7 @@ mod tests {
             session: sid,
             turn,
             kind: relaunched.kind,
+            cause: relaunched.cause.unwrap(),
             interrupted_at: relaunched.interrupted_at,
             at: chrono::Utc::now(),
             report: crate::ResumeReport {

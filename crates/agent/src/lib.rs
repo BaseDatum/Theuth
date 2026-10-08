@@ -1093,6 +1093,30 @@ pub struct ResumeState {
     #[serde(default)]
     #[cfg_attr(feature = "ts", ts(optional))]
     pub report: Option<ResumeReport>,
+    /// 139 §5.2 (D2): `sessions.owner` when non-empty — who runs the turn.
+    /// A replica displays it and never says "resuming".
+    #[serde(default)]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub owner: Option<String>,
+    /// 139 §5.2: the session is owned by the engine that answered
+    /// (`owner = '' OR owner = me`). `resumed` is meaningful only when
+    /// `here`. Old engines omit it: `true` renders as before.
+    #[serde(default = "crate::default_true")]
+    pub here: bool,
+    /// 139 §6.3: why the turn was / will be resumed — the `resume_reports`
+    /// row's, or the boot rule for an open turn. `None` from old engines.
+    #[serde(default)]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub cause: Option<durability::ResumeCause>,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+/// Wire default for `TurnResumed.cause` from a pre-139 engine (`EventRelay`).
+fn default_cause() -> durability::ResumeCause {
+    durability::ResumeCause::Crash
 }
 
 /// 109 §8.2: what a resumed turn's step settled with — the live
@@ -2712,6 +2736,25 @@ pub enum AgentEvent {
         resumed_at: chrono::DateTime<chrono::Utc>,
         /// An `assistant_partial` existed and was discarded.
         partial_dropped: bool,
+        /// 139 §6.3: why (`crash | shutdown | update | transfer | takeover`).
+        #[serde(default = "crate::default_cause")]
+        cause: durability::ResumeCause,
+        /// 139 §6.3: the previous owner for `transfer` / `takeover`.
+        #[serde(default)]
+        #[cfg_attr(feature = "ts", ts(optional))]
+        from: Option<String>,
+    },
+    /// 139 §6.3 (D5): a system-initiated takeover found an open turn and did
+    /// **not** resume it; the Attention actor raises `resume:<s>:<t>` with
+    /// the takeover detail and the user presses Resume (`resume_turn`).
+    /// Published by W2's `Take::run` step 9′; consumed by W1's attention.
+    ResumePending {
+        /// Session.
+        session: SessionId,
+        /// The open turn.
+        turn: TurnId,
+        /// The engine the session was taken from.
+        from: String,
     },
     /// 109 §8.2: the resumed batch was reassembled; the banner's counts.
     ResumeReport {
@@ -2807,6 +2850,7 @@ impl AgentEvent {
             | Self::ContextUsed { session, .. }
             | Self::SessionClosing { session, .. }
             | Self::TurnResumed { session, .. }
+            | Self::ResumePending { session, .. }
             | Self::ResumeReport { session, .. }
             | Self::TurnSuspended { session, .. }
             | Self::PartialDropped { session, .. }

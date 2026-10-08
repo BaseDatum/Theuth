@@ -2715,11 +2715,13 @@ impl runtime::Plugin for SchedulePlugin {
         ));
         // 109 §4.6 step 12: a run whose session has an open turn stays open
         // and re-attaches to the resumed turn's `TurnFinished`; `agent`
-        // started before us, so its answer is final.
+        // started before us, so its answer is final. 139 §5.1 item 5: only
+        // sessions this engine will resume — one owned elsewhere is not
+        // this engine's run to keep open.
         let open_sessions: HashSet<SessionId> =
             match ActorRef::<agent::Agents>::lookup(agent::AGENT_ACTOR) {
                 Ok(Some(agents)) => agents
-                    .ask(agent::supervisor::OpenTurns)
+                    .ask(agent::supervisor::OpenTurns(agent::store::Scope::Here))
                     .await
                     .map(|open| open.into_iter().map(|(s, _, _)| s).collect())
                     .unwrap_or_default(),

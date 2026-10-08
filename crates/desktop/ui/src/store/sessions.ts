@@ -11,6 +11,7 @@ import type { JobExit } from "@/rpc/bindings/JobExit";
 import type { LiveCountsRow } from "@/rpc/bindings/LiveCountsRow";
 import type { PeerOrigin } from "@/rpc/bindings/PeerOrigin";
 import type { QueuedInput } from "@/rpc/bindings/QueuedInput";
+import type { ResumeCause } from "@/rpc/bindings/ResumeCause";
 import type { TodoSnapshot } from "@/rpc/bindings/TodoSnapshot";
 import type { Usage } from "@/rpc/bindings/Usage";
 import type { WireEvent } from "@/rpc/events";
@@ -153,16 +154,25 @@ export type Entry = { id: string; context?: ContextEntry; at?: number } & (
 );
 
 /** 109 §8.2: the session banner's state — a turn interrupted by a restart (or suspended by a planned stop) and
- * what its resume did. From `Loaded.resume` on load, `TurnResumed` / `ResumeReport` / `TurnSuspended` live. */
+ * what its resume did. From `Loaded.resume` on load, `TurnResumed` / `ResumeReport` / `TurnSuspended` live.
+ * 139 §9.3: `owner`/`here` say who runs it (a replica displays, never "resuming…"); `cause`/`from` the transfer. */
 export type ResumeBanner = {
   turn: string;
   kind: "interrupted" | "suspended";
   /** When the turn was interrupted (ms since epoch). */
   at: number;
-  /** `TurnResumed` seen: the engine is replaying. */
+  /** `TurnResumed` seen: the engine is replaying. Meaningful only when `here`. */
   resumed: boolean;
   /** `ResumeReport` counts — live, or `Loaded.resume.report` persisted by the engine; absent until one arrives. */
   report?: { replayed: number; skipped: string[]; lostJobs: number };
+  /** 139 D2: the engine running the turn when it is not the one we talk to (`sessions.owner`). */
+  owner?: string;
+  /** 139 D2: the session is owned by the engine that answered; `true` from pre-139 engines. */
+  here: boolean;
+  /** 139 §6.3: why the turn was / will be resumed. */
+  cause?: ResumeCause;
+  /** 139 §6.3: the previous owner for `transfer` / `takeover` (live events only; a reload loses the name). */
+  from?: string;
 };
 
 /** What the status dot says. `harvesting` is never stored in `activity`: a

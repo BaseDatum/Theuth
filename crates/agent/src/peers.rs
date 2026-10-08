@@ -257,6 +257,7 @@ impl Tool for SpawnSubagentTool {
                     effort: args.effort,
                     cap,
                     skills: args.skills,
+                    call_id: cx.call_id.clone(),
                 })
                 .await
             {
