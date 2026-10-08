@@ -1,6 +1,6 @@
-# 143 R1 as-built — phone Meetings row · portrait pop-out for notes
+# 143 R1 as-built — phone Meetings row · portrait pop-out for notes · Skills/Tools under Agents
 
-Branch `fix/143b-followups` off `cb944b75`. Two independent fixes, two commits, this doc last.
+Branch `fix/143b-followups` off `cb944b75`. Three independent fixes (F3 added 14:24), three commits, this doc last.
 
 ## F1 — Meetings list row under `md` (`crates/desktop/ui/src/components/meeting/MeetingList.tsx`, `Row`)
 
@@ -25,10 +25,21 @@ Note: the vite dev server started by `/tmp/143/vite-dev.sh` did not pick up the 
 - Doc comment on `open_window` extended: notes (and a meeting's note pane) open portrait 880×1000 — the 800 px sheet plus canvas padding, a height most laptop screens fit; `tauri-plugin-window-state` restores per label afterwards.
 - Labels match `popoutLabel` in `crates/desktop/ui/src/lib/popout.ts` (`popout-<kind>-<id>`, kinds `note` / `meeting-note`). No constants module, no config key.
 
+## F3 — Skills and Tools move from the Library tabs to the Agents tabs
+
+- `lib/nav.ts`: `GROUPS.agents` = Agents · Tasks · Routines · Skills · Tools; `GROUPS.library` = Artifacts · Knowledge · Notes · Meetings · Secrets. Same icons, same routes. `tabOf`/`groupOf`/`sectionOf` unchanged in code — `/skills` and `/tools` now light the Agents row and `groupOf` returns `'agents'`.
+- `components/library/Page.tsx`: band follows the route — `groupOf(useRouterState({ select: (s) => s.location.pathname })) ?? 'library'` into `<SectionBand group={group} />`; doc comment reworded. `Column` unchanged.
+- `lib/nav.test.ts`: added `tabOf('library','/skills')` → null, `tabOf('agents','/tools')` → `/tools`, `groupOf('/skills')`/`groupOf('/tools/x')` → agents, `groupOf('/secrets')` → library, `sectionOf('/skills')`/`('/tools')` → agents, `sectionOf('/secrets')` → library; the old `sectionOf('/tools')` → library row replaced.
+- Comments/copy only: `components/library/moved.ts` header, `routes/settings.$tab.tsx` redirect comment, `components/chat/slash.test.ts` test name ("open their pages"), `AppSidebar.tsx` doc comment ("the five Agents pages and the five Library pages"). No route, URL or redirect change; the Skills page's phone back chevron to `/skills` stays.
+
+**Deviation:** `components/nav/SectionBand.test.ts` (not in the owned list) pinned the tab counts — `agents` 3 tabs / 3 labels, `library` 7 tabs — and would have failed the gate; updated to 5 / 5 / 5. No other assertion touched.
+
+**Proof** (`/tmp/143/b/`): `skills-1600.png`, `tools-1600.png` — Agents band, five equal tabs, Skills/Tools active, sidebar Agents row highlighted; `secrets-1600.png` — Library band, five tabs, Secrets active, Library row highlighted; `skills-390.png` — Agents band icons only, Skills active. (First `/skills` capture came back blank: cold vite transform of the skills route exceeded the 12 s settle; reshot warm.)
+
 ## Gates
 
-- `bun run check` (tsc -b): exit 0 (baseline 0).
-- `bunx vitest run src/components/meeting src/lib`: exit 0.
+- `bun run check` (tsc -b): exit 0 (baseline 0) — after F1, again after F3.
+- `bunx vitest run src/components/meeting src/lib`: exit 0 after F1; after F3 `bunx vitest run src/lib src/components/meeting src/components/library src/components/chat src/components/nav`: exit 0, 134 files / 1008 tests passed.
 - `cargo fmt -p desktop -- --check`: exit 0 (after applying fmt).
 - `cargo clippy -p desktop -- -D warnings` (stable 1.96.1, build-lock): exit 0.
 - clippy: `[build-lock] slot 1 acquired after 15s` · `Compiling desktop v2.12.3` · `Checking platform v2.12.3` · `Finished dev profile in 8.52s` · pre-existing `block v0.1.6` future-incompat note · `EXIT=0`. Log `/tmp/143/b-clippy.log`.
