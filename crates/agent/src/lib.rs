@@ -867,6 +867,21 @@ pub struct SetSessionViewBytes {
     pub bytes: u32,
 }
 
+/// `ask` → `Result<EndlessConfig, String>` (137 §11.3): the live `agent.endless` section (never `Err`).
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+pub struct GetEndlessSettings;
+
+/// `ask` → `Result<EndlessConfig, String>` (137 §11.3): validate, persist
+/// every `agent.endless.*` key to config.yaml and update the live config so
+/// the next created session (and desk) sees it; returns what was stored.
+/// Fold/compactor parameters reach the running service at the next engine
+/// start (its config is fixed at construction).
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct SetEndlessSettings {
+    /// The whole section.
+    pub config: EndlessConfig,
+}
+
 /// `ask` → `Result<ContextRemoval, String>`: remove `targets` from the
 /// session's effective context (design doc 48 §3.2) — masks beside the stored
 /// rows, no model call, no transcript deletion. Refuses a stale

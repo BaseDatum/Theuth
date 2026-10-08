@@ -55,7 +55,9 @@ use crate::continuation::{
     DecideYield, InputConsumed, InputDropped, InputOrigin, InputTicket, Ledger, SessionUnknown,
     TurnEntered, TurnReturned, YieldDecision,
 };
-use crate::endless::{Attached, Endless, MemoryMode, SessionMemory, SetMode, ViewLine};
+use crate::endless::{
+    Attached, Endless, EndlessConfig, MemoryMode, SessionMemory, SetMode, ViewLine,
+};
 use crate::lifecycle::{
     Authorize, Authorized, CleanupStatus, CloseResult, CreateSession, LeaveSession, PrivateOwner,
     PrivateRoot, PrivateTrees, ResumePrivate, SessionOpen,
@@ -105,8 +107,8 @@ use crate::{
 };
 use crate::{AwsProfiles, ListAwsProfiles, SetAwsProfile};
 use crate::{
-    EndlessRecall, EndlessZoom, RenderMemoryView, SessionMemoryQuery, SetSessionMemory,
-    SetSessionViewBytes,
+    EndlessRecall, EndlessZoom, GetEndlessSettings, RenderMemoryView, SessionMemoryQuery,
+    SetEndlessSettings, SetSessionMemory, SetSessionViewBytes,
 };
 use crate::{GetFavoriteModels, SetModelFavorite};
 use crate::{ListProjectStyles, SetProjectStyle, SetSessionProject, project};
@@ -6635,6 +6637,81 @@ impl Message<SetSessionViewBytes> for Agents {
     }
 }
 
+impl Message<GetEndlessSettings> for Agents {
+    type Reply = Result<EndlessConfig, String>;
+
+    /// Infallible; `Result` because a bare config struct is no kameo `Reply`.
+    async fn handle(
+        &mut self,
+        _: GetEndlessSettings,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        Ok(self.cfg.endless.clone())
+    }
+}
+
+impl Message<SetEndlessSettings> for Agents {
+    type Reply = Result<EndlessConfig, String>;
+
+    /// 137 §11.3: the Settings → Memory writer. Ranges as §11.1 documents
+    /// them; one `write_nested_config_value` per key (the writer is a scalar
+    /// writer); the live config is replaced so new sessions see it.
+    async fn handle(
+        &mut self,
+        m: SetEndlessSettings,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        let c = m.config;
+        if !(16_000..=256_000).contains(&c.view_bytes) {
+            return Err(format!(
+                "view_bytes {} out of range 16000..=256000",
+                c.view_bytes
+            ));
+        }
+        if !(0.0..=0.5).contains(&c.slack) {
+            return Err(format!("slack {} out of range 0.0..=0.5", c.slack));
+        }
+        if !(128..=4_096).contains(&c.node_bytes) {
+            return Err(format!(
+                "node_bytes {} out of range 128..=4096",
+                c.node_bytes
+            ));
+        }
+        if c.jobs == 0 || c.tries == 0 {
+            return Err("jobs and tries must be at least 1".into());
+        }
+        if let Some(id) = c.model.as_deref()
+            && let Err(e) = self.catalog.resolve(id, &*self.configured)
+        {
+            return Err(format!("model: {e}"));
+        }
+        let path = self.rt.data_dir.join("config.yaml");
+        let keys: [(&str, String); 11] = [
+            ("default_chat", c.default_chat.to_string()),
+            ("default_desk", c.default_desk.to_string()),
+            ("view_bytes", c.view_bytes.to_string()),
+            ("node_bytes", c.node_bytes.to_string()),
+            ("slack", c.slack.to_string()),
+            ("settle_secs", c.settle_secs.to_string()),
+            ("jobs", c.jobs.to_string()),
+            ("tries", c.tries.to_string()),
+            ("retry_secs", c.retry_secs.to_string()),
+            ("cap_chars", c.cap_chars.to_string()),
+            (
+                "model",
+                c.model.clone().unwrap_or_else(|| "null".to_owned()),
+            ),
+        ];
+        for (key, value) in &keys {
+            runtime::write_nested_config_value(&path, "agent", "endless", key, value)
+                .map_err(|e| format!("config.yaml: {e}"))?;
+        }
+        Arc::make_mut(&mut self.cfg).endless = c.clone();
+        tracing::info!(default_chat = c.default_chat, default_desk = c.default_desk, view_bytes = c.view_bytes, model = ?c.model, "endless settings written");
+        Ok(c)
+    }
+}
+
 impl Message<RemoveContext> for Agents {
     type Reply = Result<ContextRemoval, String>;
 
@@ -11828,6 +11905,66 @@ pub(crate) mod tests {
             })
             .await
             .unwrap()
+    }
+
+    /// 137 §11.3: the Settings → Memory writer persists every key, updates the
+    /// live config and refuses out-of-range values.
+    #[tokio::test]
+    async fn endless_settings_round_trip_and_validate() {
+        let a = agents_with(false).await;
+        let dir = a.rt.data_dir.clone();
+        let agents = Agents::spawn(a);
+        let before = agents.ask(GetEndlessSettings).await.unwrap();
+        assert_eq!(before.view_bytes, EndlessConfig::default().view_bytes);
+        let mut want = before.clone();
+        want.default_chat = true;
+        want.view_bytes = 96_000;
+        want.slack = 0.25;
+        let got = agents
+            .ask(SetEndlessSettings {
+                config: want.clone(),
+            })
+            .await
+            .unwrap();
+        assert!(got.default_chat && got.view_bytes == 96_000);
+        let live = agents.ask(GetEndlessSettings).await.unwrap();
+        assert!(live.default_chat && live.view_bytes == 96_000 && live.slack == 0.25);
+        let yaml = std::fs::read_to_string(dir.join("config.yaml")).unwrap();
+        for needle in [
+            "endless:",
+            "default_chat: true",
+            "view_bytes: 96000",
+            "slack: 0.25",
+            "model: null",
+        ] {
+            assert!(yaml.contains(needle), "{needle} in {yaml}");
+        }
+        // A new chat now starts endless by default.
+        let open = agents
+            .ask(CreateSession {
+                options: crate::CreateSessionOptions::default(),
+                peer: None,
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            agents
+                .ask(SessionMemoryQuery {
+                    session: open.session,
+                })
+                .await
+                .unwrap()
+                .mode,
+            MemoryMode::Endless
+        );
+        let mut bad = want.clone();
+        bad.view_bytes = 1_000;
+        let e = agents
+            .ask(SetEndlessSettings { config: bad })
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(e.contains("view_bytes"), "{e}");
     }
 
     /// 137 §11.2 / §14: `session_memory` of an epochs session is `mode:

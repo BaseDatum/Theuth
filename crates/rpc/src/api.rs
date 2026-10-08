@@ -43,8 +43,8 @@ use agent::{
     SpendReportQuery,
 };
 use agent::{AwsProfiles, ListAwsProfiles, SetAwsProfile};
+use agent::{EndlessConfig, MemoryMode, SessionMemory, ViewLine};
 use agent::{GetFavoriteModels, SetModelFavorite};
-use agent::{MemoryMode, SessionMemory, ViewLine};
 use app::{
     AppDoc, AppToolResult, Apps, CallArgs, CallStatusOf, CallTool, CloseApp, GetApp, PublishFromUi,
 };
@@ -433,6 +433,13 @@ pub trait Api {
     /// Persist `agent.compact_style` and update live sessions.
     #[method(name = "set_compact_style")]
     async fn set_compact_style(&self, style: CompactStyle) -> RpcResult<()>;
+    /// 137 §11.3 Settings → Memory: the live `agent.endless` section.
+    #[method(name = "endless_settings_get")]
+    async fn endless_settings_get(&self) -> RpcResult<EndlessConfig>;
+    /// Persist every `agent.endless.*` key to config.yaml and update the live
+    /// config (the next created session sees it); returns what was stored.
+    #[method(name = "endless_settings_set")]
+    async fn endless_settings_set(&self, config: EndlessConfig) -> RpcResult<EndlessConfig>;
     /// Persist `agent.subagents.max_runtime_secs` and use it for newly spawned turns.
     #[method(name = "set_subagent_timeout")]
     async fn set_subagent_timeout(&self, seconds: u64) -> RpcResult<()>;
@@ -3282,6 +3289,14 @@ impl ApiServer for Server {
 
     async fn set_compact_style(&self, style: CompactStyle) -> RpcResult<()> {
         ask::<Agents, _>(agent::AGENT_ACTOR, SetCompactStyle { style }).await
+    }
+
+    async fn endless_settings_get(&self) -> RpcResult<EndlessConfig> {
+        ask::<Agents, _>(agent::AGENT_ACTOR, agent::GetEndlessSettings).await
+    }
+
+    async fn endless_settings_set(&self, config: EndlessConfig) -> RpcResult<EndlessConfig> {
+        ask::<Agents, _>(agent::AGENT_ACTOR, agent::SetEndlessSettings { config }).await
     }
 
     async fn set_subagent_timeout(&self, seconds: u64) -> RpcResult<()> {
