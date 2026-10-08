@@ -16,7 +16,7 @@ use artifact::preview::{PagePreviewRequested, PagePreviewResolved};
 use autoresearch::StudyEvent;
 use browser::BrowserEvent;
 use codeindex::CodeindexEvent;
-use document::DocumentChanged;
+use document::{DocumentChanged, SourceEvent};
 use double::{DoubleAnswered, DoublePredicted, DoubleTrainingState, DoubleVersionActivated};
 use dreaming::{DreamNightFinished, DreamNightStarted, DreamUndone};
 use kameo::Actor;
@@ -121,6 +121,7 @@ forward!(
     TelegramEvent,
     KnowledgeChanged,
     DocumentChanged,
+    SourceEvent,
     BrowserEvent,
     LinkEvent,
     NodeEvent,
@@ -187,6 +188,7 @@ pub async fn start(rt: &Runtime) -> broadcast::Sender<Event> {
     rt.subscribe::<Bridge, TelegramEvent>(&actor).await;
     rt.subscribe::<Bridge, KnowledgeChanged>(&actor).await;
     rt.subscribe::<Bridge, DocumentChanged>(&actor).await;
+    rt.subscribe::<Bridge, SourceEvent>(&actor).await;
     rt.subscribe::<Bridge, BrowserEvent>(&actor).await;
     rt.subscribe::<Bridge, LinkEvent>(&actor).await;
     rt.subscribe::<Bridge, NodeEvent>(&actor).await;

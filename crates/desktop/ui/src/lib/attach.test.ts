@@ -127,6 +127,7 @@ const session: SessionSummary = {
   pinned: false,
   archived: false,
   project: 'theuth',
+  notebook: null,
   retention: 'durable',
   running: false,
   owner: '',

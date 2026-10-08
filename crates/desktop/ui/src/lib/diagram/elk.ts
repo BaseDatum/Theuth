@@ -177,6 +177,11 @@ let elk: ElkApi | null = null
 const pending = new Map<string, Promise<unknown>>()
 let fontsReady: Promise<unknown> | null = null
 
+/** 135 R2.3: the cached layout for `hash` now, no promise — a remounted diagram paints it on its first frame. */
+export function elkPeek<T>(hash: string): T | undefined {
+  return cache.get(hash) as T | undefined
+}
+
 /**
  * The layout keyed by `hash`: from the LRU when known, else `build()` (called after `document.fonts.ready`, so
  * `textWidth` measures the real font) is laid out in ELK's worker and `map`ped. Concurrent requests for one hash

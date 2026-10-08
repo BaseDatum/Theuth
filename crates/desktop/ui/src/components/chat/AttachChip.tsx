@@ -1,5 +1,5 @@
 import { useNavigate } from '@tanstack/react-router'
-import { AppWindow, BookOpen, Copy, ExternalLink, FileText, type LucideIcon, MessageSquare, Mic, Paperclip, StickyNote, X } from 'lucide-react'
+import { AppWindow, BookOpen, Copy, ExternalLink, FileSearch, FileText, type LucideIcon, MessageSquare, Mic, NotebookText, Paperclip, StickyNote, X } from 'lucide-react'
 import type { DragEvent } from 'react'
 import { toast } from 'sonner'
 import { Button } from '@/components/ui/button'
@@ -16,6 +16,8 @@ export const KIND_ICON: Record<Kind, LucideIcon> = {
   artifact: FileText,
   session: MessageSquare,
   meeting: Mic,
+  notebook: NotebookText,
+  source: FileSearch,
 }
 
 /** Props that make a row a drag source for the composer's drop (§7.8); desktop only — no HTML5 drag on iOS Safari. */
@@ -50,6 +52,10 @@ export function useOpenRef(): (ref: AttachRef) => void {
         return void navigate({ to: '/c/$session', params: { session: ref.id }, search: {} })
       case 'meeting':
         return void navigate({ to: '/meetings/$id', params: { id: ref.id } })
+      case 'notebook':
+        return void navigate({ to: '/notebooks/$id', params: { id: ref.id }, search: {} })
+      case 'source':
+        return void navigate({ to: '/sources/$id', params: { id: ref.id }, search: {} })
     }
   }
 }
@@ -66,6 +72,8 @@ export function popoutOf(ref: AttachRef): PopoutTarget | null {
     case 'meeting':
       return { kind: 'meeting', meeting: ref.id }
     case 'knowledge':
+    case 'notebook':
+    case 'source':
       return null
   }
 }
@@ -78,7 +86,8 @@ export function popoutOf(ref: AttachRef): PopoutTarget | null {
 export function AttachChip({ item: ref, again, onRemove, className }: { item: AttachRef; again?: string | null; onRemove?: () => void; className?: string }) {
   const popout = popoutOf(ref)
   const open = useOpenRef()
-  const Icon = KIND_ICON[ref.kind]
+  const Icon = KIND_ICON[ref.kind] ?? Paperclip
+  const label = KIND_LABEL[ref.kind] ?? ref.kind
   return (
     <Popover>
       <PopoverTrigger asChild>
@@ -88,11 +97,11 @@ export function AttachChip({ item: ref, again, onRemove, className }: { item: At
             'flex h-7 max-w-[240px] items-center gap-1 rounded-full bg-layer-2 px-2 text-xs hover:bg-layer-3 pointer-coarse:h-8',
             className,
           )}
-          aria-label={`${KIND_LABEL[ref.kind]}: ${ref.title}`}
+          aria-label={`${label}: ${ref.title}`}
         >
           <Icon className="size-3.5 shrink-0 text-fg-secondary" />
           <span className="truncate">{ref.title}</span>
-          <span className="shrink-0 text-fg-tertiary">{KIND_LABEL[ref.kind]}</span>
+          <span className="shrink-0 text-fg-tertiary">{label}</span>
           {onRemove && (
             <span
               role="button"

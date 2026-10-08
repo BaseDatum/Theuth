@@ -3409,6 +3409,7 @@ dependencies = [
  "serde_json",
  "sha2 0.10.9",
  "sqlx 0.9.0",
+ "surface",
  "tokio",
  "toml 1.1.5+spec-1.1.0",
  "tools",
@@ -5095,10 +5096,13 @@ dependencies = [
  "base64 0.22.1",
  "bytes",
  "codeindex",
+ "decision",
  "figment",
  "futures",
  "hmac 0.12.1",
+ "html-to-markdown-rs",
  "kameo",
+ "libsqlite3-sys",
  "mesh",
  "notify",
  "parking_lot",
@@ -5113,6 +5117,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.10.9",
+ "sqlite-vec",
  "sqlx 0.9.0",
  "surface",
  "tempfile",
@@ -5122,7 +5127,10 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "ts-rs",
+ "url",
  "uuid",
+ "voice",
+ "web",
  "yrs",
 ]
 
@@ -19931,6 +19939,15 @@ dependencies = [
  "sha2 0.10.9",
  "sorted-vec",
  "thiserror 2.0.20",
+]
+
+[[package]]
+name = "sqlite-vec"
+version = "0.1.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d0ba424237a9a5db2f6071f193319e2b6a32f7f3961debb2fbbfe67067abce3f"
+dependencies = [
+ "cc",
 ]
 
 [[package]]

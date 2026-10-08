@@ -41,7 +41,9 @@ export type Injected =
 const CARD: Record<string, string> = { subagent_result: 'name="', message: 'from="', job_result: 'id="', job_idle: 'id="', schedule: 'name="', desk: 'agent="', advisory: 'severity="' }
 // `surface_error` (30 §8): the correction round is quiet on the desktop — the fence shows its own failure state — so the
 // `<surface_error>` / `<surface_error final="true">` notes render nothing; the notice entry above stays for other clients.
-const HIDDEN: Record<string, true> = { context_summary: true, runtime: true, surface_error: true }
+// 144 §5.3: `<notebook id title>` is the bound chat's volatile context block — a harness note the context line already
+// summarises (`in context: N sources · M notes`), so it renders nothing, like `<runtime>`.
+const HIDDEN: Record<string, true> = { context_summary: true, runtime: true, surface_error: true, notebook: true }
 
 /** Value of `key` (`name="`) in an open tag, up to the closing quote. */
 const attr = (open: string, key: string) => open.split(key, 2)[1]?.split('"', 1)[0]

@@ -42,6 +42,7 @@ pub mod endless;
 pub mod endless_ext;
 pub mod frame;
 pub mod loop_;
+pub mod notebooks;
 pub mod peers;
 pub mod project;
 pub mod providers;
@@ -2277,6 +2278,9 @@ pub struct SessionSummary {
     /// row of its tree.
     #[serde(default)]
     pub project: Option<String>,
+    /// 144 §8: the notebook this chat is bound to (root metadata like `project`); `None` = plain chat.
+    #[serde(default)]
+    pub notebook: Option<String>,
     /// Storage class of the root (51 §4); durable unless created private.
     #[serde(default)]
     pub retention: tools::Retention,

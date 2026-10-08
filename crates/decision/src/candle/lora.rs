@@ -669,7 +669,7 @@ mod tests {
     #[cfg(not(feature = "train"))]
     #[test]
     fn default_build_cuts_the_graph_silently() {
-        assert!(!TRAIN_BUILD);
+        const { assert!(!TRAIN_BUILD) };
         let [q, k, v] = qkv_grad_norms(0);
         assert_eq!([q, k, v], [0., 0., 0.]);
     }

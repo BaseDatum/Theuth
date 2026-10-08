@@ -19,7 +19,11 @@ use sha2::Sha256;
 
 use crate::actor::DocumentActor;
 use crate::hub::DocError;
-use crate::meta::{DocEvent, DocId, Joined, Member, Members, PALETTE, Principal, Role, ShareLink};
+use crate::meta::{
+    DocEvent, DocId, DocKind, Joined, Member, Members, PALETTE, Principal, Role, SOURCE_READONLY,
+    ShareLink,
+};
+use crate::notebook::ItemKind;
 use crate::relay::{Client, Cmd};
 use crate::store::now_ms;
 use secrets::Vault;
@@ -127,7 +131,15 @@ impl DocumentActor {
     /// §8.1, checked on every member call: a `Principal::Member` must be in `doc`'s members
     /// (`not_member`), be an editor when `write` (`viewer_readonly`), and sharing must not be
     /// `disabled` (`sharing_disabled`). Owners, the agent and the file always pass.
-    pub(crate) fn admit(&mut self, doc: &DocId, by: &Principal, write: bool) -> Result<(), String> {
+    ///
+    /// 144 §11: a member of a live notebook holding `doc` as a `note` or `source` item is admitted at
+    /// the notebook's role (the best one when several notebooks hold it) — the derived grant.
+    pub(crate) async fn admit(
+        &mut self,
+        doc: &DocId,
+        by: &Principal,
+        write: bool,
+    ) -> Result<(), String> {
         let Some(pub_) = by.member() else {
             return Ok(());
         };
@@ -135,13 +147,104 @@ impl DocumentActor {
             return Err("sharing_disabled".to_owned());
         }
         let o = self.load(doc)?;
-        let Some(m) = o.meta.members.iter().find(|m| m.pub_ == pub_) else {
-            return Err("not_member".to_owned());
+        let role = match o.meta.members.iter().find(|m| m.pub_ == pub_) {
+            Some(m) => m.role,
+            None => {
+                let kind = o.meta.kind;
+                self.derived_role(doc, kind, pub_)
+                    .await
+                    .ok_or_else(|| "not_member".to_owned())?
+            }
         };
-        if write && m.role == Role::Viewer {
+        if write && role == Role::Viewer {
             return Err("viewer_readonly".to_owned());
         }
         Ok(())
+    }
+
+    /// 144 §11: the role `pub_` holds on `doc` through a notebook: `Editor` when any live notebook
+    /// holding it has them as an editor, `Viewer` when only as a viewer, `None` otherwise. Sessions
+    /// and artifacts never grant (D13); a notebook's own members are direct, never derived.
+    pub(crate) async fn derived_role(
+        &mut self,
+        doc: &DocId,
+        kind: DocKind,
+        pub_: &str,
+    ) -> Option<Role> {
+        let item_kind = match kind {
+            DocKind::Note | DocKind::Board | DocKind::MeetingNote => ItemKind::Note,
+            DocKind::Source => ItemKind::Source,
+            _ => return None,
+        };
+        let notebooks = self
+            .store
+            .notebooks_of(item_kind, doc.as_str(), true)
+            .await
+            .ok()?;
+        let mut best = None;
+        for nb in notebooks {
+            let members = match self.open.get(&nb) {
+                Some(o) => o.meta.members.clone(),
+                None => self.store.read_meta(&nb).ok()?.members,
+            };
+            match members.iter().find(|m| m.pub_ == pub_).map(|m| m.role) {
+                Some(Role::Editor) => return Some(Role::Editor),
+                Some(Role::Viewer) => best = Some(Role::Viewer),
+                None => {}
+            }
+        }
+        best
+    }
+
+    /// 144 §3.1 `source_readonly`: a `DocKind::Source` document is written by `Principal::Helper`
+    /// (ingest, the insight job) and `File` only; owners, members and the agent are refused.
+    pub(crate) fn source_writable(&mut self, doc: &DocId, by: &Principal) -> Result<(), String> {
+        let o = self.load(doc)?;
+        if o.meta.kind == DocKind::Source && !matches!(by, Principal::Helper | Principal::File) {
+            return Err(SOURCE_READONLY.to_owned());
+        }
+        Ok(())
+    }
+
+    /// 144 §11: after a notebook stops granting (item removed, member revoked or demoted, notebook
+    /// deleted), end every subscription to `doc` by a member who has no direct membership and no
+    /// remaining derived grant with `Closed{reason}`.
+    pub(crate) async fn revoke_derived(&mut self, doc: &DocId, reason: &str) {
+        let Some(subs) = self.subs.get(doc) else {
+            return;
+        };
+        let mut pubs: Vec<String> = subs.iter().filter_map(|s| s.member.clone()).collect();
+        pubs.sort_unstable();
+        pubs.dedup();
+        if pubs.is_empty() {
+            return;
+        }
+        let Ok(o) = self.load(doc) else { return };
+        let kind = o.meta.kind;
+        let direct: Vec<String> = o.meta.members.iter().map(|m| m.pub_.clone()).collect();
+        for pub_ in pubs {
+            if direct.contains(&pub_) {
+                continue;
+            }
+            if self.derived_role(doc, kind, &pub_).await.is_none() {
+                self.close_member(doc, &pub_, reason);
+            }
+        }
+    }
+
+    /// [`Self::revoke_derived`] over every live note and source item of `notebook` — what a member
+    /// revoke or demotion on the notebook, or its deletion, costs the member's open tabs.
+    pub(crate) async fn revoke_derived_of(&mut self, notebook: &DocId, reason: &str) {
+        let Ok(items) = self.store.items(notebook).await else {
+            return;
+        };
+        for item in items {
+            if matches!(item.kind, ItemKind::Note | ItemKind::Source)
+                && let Some(doc) = DocId::parse(&item.item)
+            {
+                self.revoke_derived(&doc, reason).await;
+            }
+        }
     }
 
     /// The owner's view (§6.1 `doc_members`): links without their hash.
@@ -195,6 +298,29 @@ impl DocumentActor {
         self.save_members(doc).await;
         if let Ok(Members { members, links }) = self.members_of(doc) {
             self.fan_out(doc, DocEvent::Members { members, links }, None);
+        }
+    }
+
+    /// `pub_`'s subscriptions to every note/source item of `notebook` that they hold only through it
+    /// end with `Closed{reason}` (a demotion on the notebook: the item tabs re-open at the new role).
+    async fn close_derived_member(&mut self, notebook: &DocId, pub_: &str, reason: &str) {
+        let Ok(items) = self.store.items(notebook).await else {
+            return;
+        };
+        for item in items {
+            if !matches!(item.kind, ItemKind::Note | ItemKind::Source) {
+                continue;
+            }
+            let Some(doc) = DocId::parse(&item.item) else {
+                continue;
+            };
+            let direct = self
+                .open
+                .get(&doc)
+                .is_some_and(|o| o.meta.members.iter().any(|m| m.pub_ == pub_));
+            if !direct {
+                self.close_member(&doc, pub_, reason);
+            }
         }
     }
 
@@ -442,6 +568,16 @@ impl Message<MemberSet> for DocumentActor {
         }
         if demoted {
             self.close_member(&m.doc, &m.pub_, "demoted");
+            // 144 §11: the derived editors on the notebook's items re-open read-only too.
+            if self
+                .open
+                .get(&m.doc)
+                .is_some_and(|o| o.meta.kind == DocKind::Notebook)
+            {
+                let nb = m.doc.clone();
+                let pub_ = m.pub_.clone();
+                self.close_derived_member(&nb, &pub_, "demoted").await;
+            }
         }
         self.members_changed(&m.doc).await;
         Ok(())
@@ -471,6 +607,14 @@ impl Message<MemberRevoke> for DocumentActor {
         }
         self.close_member(&m.doc, &m.pub_, "revoked");
         self.members_changed(&m.doc).await;
+        // 144 §11: a notebook member loses every derived grant the same way.
+        if self
+            .open
+            .get(&m.doc)
+            .is_some_and(|o| o.meta.kind == DocKind::Notebook)
+        {
+            self.revoke_derived_of(&m.doc, "revoked").await;
+        }
         Ok(())
     }
 }
@@ -516,7 +660,7 @@ impl DocumentActor {
             m.by.member()
                 .ok_or_else(|| "not_member".to_owned())?
                 .to_owned();
-        self.admit(&m.doc, &m.by, true)?;
+        self.admit(&m.doc, &m.by, true).await?;
         let name = m.name.trim();
         if name.is_empty() || name.chars().count() > 64 {
             return Err("bad_name".into());

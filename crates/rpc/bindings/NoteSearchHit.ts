@@ -3,7 +3,7 @@ import type { DocSummary } from "./DocSummary";
 import type { TextMatch } from "./TextMatch";
 
 /**
- * One note that matched.
+ * One block of a note that matched.
  */
 export type NoteSearchHit = { 
 /**
@@ -11,6 +11,18 @@ export type NoteSearchHit = {
  */
 doc: DocSummary, 
 /**
- * `field` is `title` or `body`.
+ * `field` is `title`, `heading` or `text`.
  */
-match: TextMatch, };
+match: TextMatch, 
+/**
+ * The block that matched (an outline id; opens the editor there); empty when the title did.
+ */
+block: string, 
+/**
+ * The nearest heading above the block.
+ */
+heading: string | null, 
+/**
+ * `theuth://notes/<id>#<block>?s=<sha8>` (144 §6.1); no locator for a title hit.
+ */
+href: string, };

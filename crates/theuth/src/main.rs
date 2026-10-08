@@ -1506,11 +1506,10 @@ async fn run() -> anyhow::Result<()> {
     // 136: the dry run reads a (copied) data dir and must write nothing — not
     // even `first_run`'s config.yaml / prompt.md.
     if let Some(Cmd::Dreaming {
-        cmd:
-            DreamingCmd::DryRun {
-                data_dir: dir,
-                json,
-            },
+        cmd: DreamingCmd::DryRun {
+            data_dir: dir,
+            json,
+        },
     }) = &cli.cmd
     {
         let dir = dir.as_ref().unwrap_or(&data_dir);
@@ -1533,7 +1532,12 @@ async fn run() -> anyhow::Result<()> {
             return mcp::run(&data_dir, &listen(&data_dir, &config), session).await;
         }
         Some(Cmd::Double {
-            cmd: DoubleCmd::TrainB { bundle, out, device },
+            cmd:
+                DoubleCmd::TrainB {
+                    bundle,
+                    out,
+                    device,
+                },
         }) => {
             let models_cfg: models::accelerator::ModelsConfig =
                 config.extract_inner("models").unwrap_or_default();
@@ -1543,7 +1547,14 @@ async fn run() -> anyhow::Result<()> {
             let double_cfg: double::DoubleConfig =
                 config.extract_inner("double").unwrap_or_default();
             let code = tokio::task::spawn_blocking(move || {
-                double_train_b(&data_dir, &decision_cfg, &double_cfg, &bundle, &out, &device)
+                double_train_b(
+                    &data_dir,
+                    &decision_cfg,
+                    &double_cfg,
+                    &bundle,
+                    &out,
+                    &device,
+                )
             })
             .await?;
             std::process::exit(code);
@@ -1952,6 +1963,20 @@ async fn start_plugins(rt: &Runtime, plugins: Vec<Box<dyn Plugin>>) -> anyhow::R
             let _ = reg.tell(tools::ExpectParticipants(owners)).await;
         }
     });
+    // 147 §6.4: the CodeMap generator's side calls reach the agent actor
+    // through the typed registry; only this crate knows both ends (the
+    // shape of `meeting::oracle::side_caller`). Looked up per call, so the
+    // order plugins start in does not matter.
+    codeindex::map::generator::install_side_caller(std::sync::Arc::new(|call| {
+        Box::pin(async move {
+            let agents =
+                runtime::kameo::actor::ActorRef::<agent::Agents>::lookup(agent::AGENT_ACTOR)
+                    .ok()
+                    .flatten()
+                    .ok_or_else(|| "agent is not running".to_owned())?;
+            agents.ask(call).await.map_err(|e| e.to_string())
+        })
+    }));
     for plugin in plugins {
         let name = plugin.name();
         plugin

@@ -49,6 +49,11 @@ import type { HereLens } from '@/rpc/bindings/HereLens'
 import type { FitLens } from '@/rpc/bindings/FitLens'
 import type { ChangeLens } from '@/rpc/bindings/ChangeLens'
 import type { LensMeta } from '@/rpc/bindings/LensMeta'
+import type { MapIndex } from '@/rpc/bindings/MapIndex'
+import type { MapElement } from '@/rpc/bindings/MapElement'
+import type { MapJob } from '@/rpc/bindings/MapJob'
+import type { MapHit } from '@/rpc/bindings/MapHit'
+import type { MapExport } from '@/rpc/bindings/MapExport'
 import type { JobView } from '@/rpc/bindings/JobView'
 import type { LiveCountsRow } from '@/rpc/bindings/LiveCountsRow'
 import type { McpProgress } from '@/rpc/bindings/McpProgress'
@@ -148,6 +153,18 @@ import type { SecretInfo } from '@/rpc/bindings/SecretInfo'
 import type { SecretsList } from '@/rpc/bindings/SecretsList'
 import type { SessionId } from '@/rpc/bindings/SessionId'
 import type { SessionSummary } from '@/rpc/bindings/SessionSummary'
+import type { Notebook } from '@/rpc/bindings/Notebook'
+import type { NotebookDetail } from '@/rpc/bindings/NotebookDetail'
+import type { NotebookItem } from '@/rpc/bindings/NotebookItem'
+import type { NotebookSource } from '@/rpc/bindings/NotebookSource'
+import type { ItemKind } from '@/rpc/bindings/ItemKind'
+import type { ItemRemoved } from '@/rpc/bindings/ItemRemoved'
+import type { DeletePreview } from '@/rpc/bindings/DeletePreview'
+import type { SourceAddArgs } from '@/rpc/bindings/SourceAddArgs'
+import type { Citation } from '@/rpc/bindings/Citation'
+import type { NbSearchArgs } from '@/rpc/bindings/NbSearchArgs'
+import type { BlockHit } from '@/rpc/bindings/BlockHit'
+import type { SavedAnswer } from '@/rpc/bindings/SavedAnswer'
 import type { SessionOrphan } from '@/rpc/bindings/SessionOrphan'
 import type { SessionOwner } from '@/rpc/bindings/SessionOwner'
 import type { SessionsStatus } from '@/rpc/bindings/SessionsStatus'
@@ -307,6 +324,18 @@ export interface Api {
   codemap_change(root: string, git_range: string | null, files: string[] | null, include_tests: boolean | null): Promise<ChangeLens>
   /** CodeMap touch (73 §5.2): re-parse only `paths` (root-relative), or force a full reconcile when `null`; publishes `CodeReconciled`. */
   codemap_touch(root: string, paths: string[] | null): Promise<LensMeta>
+  /** CodeMap overview (147 §10.2): every perspective of an indexed `root` with its element tree and `meta.state`; the first skeleton pass runs inline when the map file is missing. Never walks; errors when the root was never indexed. */
+  codemap_overview(root: string): Promise<MapIndex>
+  /** CodeMap element (147 §10.2): one element — diagram, prose, edges with evidence, children with thumbnails, listing for leaves. */
+  codemap_element(root: string, element: string): Promise<MapElement>
+  /** CodeMap generate (147 §10.2, S1/S2): start the root's one generation job charged to `session` (a live native session) or attach to the running one; `element` set regenerates that subtree only. */
+  codemap_generate(root: string, session: SessionId, element: string | null): Promise<MapJob>
+  /** CodeMap cancel (147 §6.7): abort the root's running job; stored elements stay. */
+  codemap_cancel(root: string): Promise<MapJob>
+  /** CodeMap search (147 §10.2): elements by name, or by a root-relative path → the element chain whose anchors contain it; `limit` default 20. */
+  codemap_search(root: string, query: string, limit: number | null): Promise<MapHit[]>
+  /** CodeMap export (147 §13.1, S3): write `<root>/.omm/` in oh-my-mermaid's layout; refuses when a foreign `.omm/` exists. */
+  codemap_export(root: string): Promise<MapExport>
   compact_style(): Promise<CompactStyle>
   /** Computer-control permissions and attached displays (27 §6); rejects when the plugin is disabled. */
   computer_permissions(): Promise<PermissionStatus>
@@ -372,6 +401,44 @@ export interface Api {
   doc_join(doc: DocId, proof: string, name: string | null): Promise<Joined>
   /** A member renames themself (editors only). */
   doc_set_name(doc: DocId, name: string): Promise<null>
+  /** 144 §13.3 — notebooks. Live ones newest first; `archived` includes archived. Any engine. */
+  notebook_list(archived: boolean | null): Promise<Notebook[]>
+  /** One notebook with counts and its live items; membership-checked for guests. */
+  notebook_get(id: DocId): Promise<NotebookDetail>
+  /** A new notebook document (body = description) plus its row. Hub only. */
+  notebook_create(title: string, description: string | null, project: string | null): Promise<Notebook>
+  /** Rename, re-project (`""` clears) or (un)archive. Hub only. */
+  notebook_update(id: DocId, title: string | null, project: string | null, archived: boolean | null): Promise<null>
+  /** What `notebook_delete` would do: notes kept, exclusive sources, sources shared elsewhere. */
+  notebook_delete_preview(id: DocId): Promise<DeletePreview>
+  /** Trash the notebook, soft-remove its items, and the exclusive sources when asked. Hub only. */
+  notebook_delete(id: DocId, delete_exclusive_sources: boolean): Promise<null>
+  /** Live items, oldest first; membership-checked for guests. */
+  notebook_items_list(notebook: DocId): Promise<NotebookItem[]>
+  /** Add (or revive) one item row. Hub only. */
+  notebook_item_add(notebook: DocId, kind: ItemKind, item: string): Promise<NotebookItem>
+  /** Soft-remove one item row; `also_in` = other live notebooks still holding it. Hub only. */
+  notebook_item_remove(notebook: DocId, kind: ItemKind, item: string): Promise<ItemRemoved>
+  /** Sessions bound to the notebook, newest first. Owner only. */
+  notebook_chats(notebook: DocId): Promise<SessionSummary[]>
+  /** Bind a session to a notebook, or unbind with `null`. Owner only. */
+  session_set_notebook(session: SessionId, notebook: DocId | null): Promise<null>
+  /** Add a source (exactly one origin field): the `new` card at once, then the ingest job (`SourceEvent`s). Hub only. */
+  source_add(args: SourceAddArgs): Promise<NotebookSource>
+  /** One source's card; membership-checked for guests. */
+  source_get(id: DocId): Promise<NotebookSource>
+  /** Sources of a notebook, or every source. */
+  source_list(notebook: DocId | null): Promise<NotebookSource[]>
+  /** Re-run the ingest; refused while queued or running. Hub only. */
+  source_refresh(id: DocId): Promise<NotebookSource>
+  /** Resolve `theuth://` hrefs to citations with their drift status, positionally. */
+  cite_resolve(hrefs: string[]): Promise<Citation[]>
+  /** Hybrid block search over notes, sources, insights and notebook descriptions (144 §7.4). */
+  nb_search(args: NbSearchArgs): Promise<BlockHit[]>
+  /** Save the assistant message at `turn` as a new note in `notebook`, chips intact. Owner only. */
+  save_answer_as_note(session: SessionId, turn: number, notebook: DocId): Promise<SavedAnswer>
+  /** Append the assistant message at `turn` to `note` under `## From chat · <date>`. Owner only. */
+  promote_answer(session: SessionId, turn: number, note: DocId): Promise<null>
   /** Rewrite a schedule's `enabled:` line (33 §3.5; the toggle); rejects with `no such schedule`. */
   enable_schedule(name: string, enabled: boolean): Promise<ScheduleInfo>
   /** Copy artifact `id`'s blob to `dest` (parent created; refuses to overwrite); returns `dest` (35 §3.5). */
@@ -1012,11 +1079,18 @@ export const METHODS = [
   'browser_screenshot',
   'cancel',
   'cancel_job',
+  'cite_resolve',
   'code_locate',
   'codeindex_stats',
+  'codemap_cancel',
   'codemap_change',
+  'codemap_element',
+  'codemap_export',
   'codemap_fit',
+  'codemap_generate',
   'codemap_here',
+  'codemap_overview',
+  'codemap_search',
   'codemap_touch',
   'compact',
   'compact_style',
@@ -1194,12 +1268,24 @@ export const METHODS = [
   'mesh_remove',
   'mesh_set_hub',
   'mesh_status',
+  'nb_search',
   'new_session',
+  'notebook_chats',
+  'notebook_create',
+  'notebook_delete',
+  'notebook_delete_preview',
+  'notebook_get',
+  'notebook_item_add',
+  'notebook_item_remove',
+  'notebook_items_list',
+  'notebook_list',
+  'notebook_update',
   'packet_get',
   'path_complete',
   'peer_deliver',
   'peer_message',
   'pin_session',
+  'promote_answer',
   'pty_input',
   'pty_resize',
   'pty_screen',
@@ -1243,6 +1329,7 @@ export const METHODS = [
   'sandbox_takeover',
   'sandbox_terminal',
   'sandboxes_list',
+  'save_answer_as_note',
   'schedule_history',
   'screen_context',
   'search',
@@ -1260,6 +1347,7 @@ export const METHODS = [
   'session_memory',
   'session_orphans',
   'session_owner',
+  'session_set_notebook',
   'session_take',
   'sessions_status',
   'set_advisor',
@@ -1311,6 +1399,10 @@ export const METHODS = [
   'slack_remove_allowed',
   'slack_remove_channel',
   'slack_status',
+  'source_add',
+  'source_get',
+  'source_list',
+  'source_refresh',
   'speak',
   'spend_report',
   'steer',

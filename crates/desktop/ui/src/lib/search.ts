@@ -16,6 +16,8 @@ export const CATEGORIES: readonly SearchCategory[] = [
   'knowledge_history',
   'notes',
   'meetings',
+  'sources',
+  'notebooks',
 ]
 
 export const CATEGORY_LABEL: Record<SearchCategory, string> = {
@@ -25,6 +27,8 @@ export const CATEGORY_LABEL: Record<SearchCategory, string> = {
   knowledge_history: 'Knowledge history',
   notes: 'Notes',
   meetings: 'Meetings',
+  sources: 'Sources',
+  notebooks: 'Notebooks',
 }
 
 /** Per-group page sizes Show more steps through (49 §2.3); the last is the backend cap. */
@@ -39,6 +43,8 @@ export const DEFAULT_LIMITS: Limits = {
   knowledge_history: 10,
   notes: 10,
   meetings: 10,
+  sources: 10,
+  notebooks: 10,
 }
 
 /** Dedupe into fixed order, dropping unknown values — the request identity the backend also computes. */
@@ -72,8 +78,10 @@ export type SearchDestination =
   | { category: 'artifacts'; callId: string }
   | { category: 'knowledge'; id: string }
   | { category: 'knowledge_history'; id: string; commit: string; snapshot: string | null }
-  | { category: 'notes'; id: string }
+  | { category: 'notes'; id: string; block: string }
   | { category: 'meetings'; id: string }
+  | { category: 'sources'; id: string; block: string }
+  | { category: 'notebooks'; id: string; block: string }
 
 /** The search a destination was opened from; the query stays out of the URL. */
 export type SearchOrigin = { query: string; destination: SearchDestination }
@@ -165,7 +173,9 @@ export function isSearchDestination(origin: SearchOrigin | null, destination: Se
         o.snapshot === destination.snapshot
       )
     case 'notes':
-      return o.category === 'notes' && o.id === destination.id
+    case 'sources':
+    case 'notebooks':
+      return o.category === destination.category && o.id === destination.id && o.block === destination.block
     case 'meetings':
       return o.category === 'meetings' && o.id === destination.id
   }

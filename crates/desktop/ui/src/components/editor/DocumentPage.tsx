@@ -34,7 +34,7 @@ export function Frame({
   band = true,
   children,
 }: {
-  backTo: '/knowledge' | '/notes' | '/tasks' | '/agents'
+  backTo: '/knowledge' | '/notes' | '/notebooks' | '/tasks' | '/agents'
   backLabel: string
   backAlways?: boolean
   title: ReactNode
@@ -150,7 +150,7 @@ export function DocumentPage({
   rail?: ReactNode
   below?: ReactNode
   children?: ReactNode
-  backTo: '/knowledge' | '/notes'
+  backTo: '/knowledge' | '/notes' | '/notebooks'
   backLabel: string
   title: ReactNode
   actions?: ReactNode

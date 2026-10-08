@@ -218,3 +218,105 @@ button. `wrap-anywhere` on the scroller stays (84 §SURFACE-TABLE).
 `docs/design/135-as-built.md`: files touched with line pointers, the commit-before-paint choice made and why,
 measured numbers (first-measure delta before/after `estimateRow` on a real session, absorbed px during a fling),
 gates as run, deviations from this document.
+
+
+---
+
+## Revision 1 — SMOOTH (2026-10-08)
+
+*Status: contract, 2026-10-08 21:50. Branch `feat/135b-smooth-scroll` off main. UI only.*
+
+### R0. The report
+
+The user's words (2026-10-08 21:50): "ever since you made this change, scrolling and sending messages seems a
+little more laggy than before. I'm not sure why. I think this could be optimized further. it still isn't just a
+smooth scrolling experience where everything is loaded before the viewport actually arrives to it. there must be
+a canonical solution to this."
+
+Two separate defects, both verified in the tree at a11fce5f (the 135 files are unchanged on main since):
+
+1. **A cost regression.** `virtual-core`'s `getMeasurementOptions` memo keys on the *identity* of `getItemKey`
+   (`dist/esm/index.js` ~597–609). `Transcript.tsx:261` passes an inline closure, so every render of the
+   transcript invalidates the memo, `pendingMin` is nulled and `getMeasurements` runs the **full** pass — and since
+   135 that pass calls `estimateSize(i)` → `recall ?? estimateRow` → `estimateText` (a line-by-line parse of the
+   message) for **every unmeasured row, on every render**. The transcript renders on every virtualizer range
+   change while scrolling and on every streaming delta while a reply arrives. Before 135 the same pass was a free
+   `() => 96`. A reopened day-long session has hundreds of loaded-but-never-mounted rows → milliseconds per
+   render → "scrolling and sending messages seem laggier". Two smaller costs ride along: `rest()` serialises and
+   writes `localStorage` synchronously (`persist`) at every scroll stop and every streaming pause, and
+   `track()` walks the anchor row's subtree with `getBoundingClientRect` every scrolled frame, fling or not.
+2. **No render-ahead.** `overscan: 4` mounts four rows past the visible range in *both* directions, counted in
+   rows, not distance. A fling at 3–5 000 px/s crosses four rows in well under the time a diagram takes to mount,
+   so rows become visible before their content is ready — "everything is loaded before the viewport arrives" is
+   exactly a lookahead window measured in viewports, biased toward the scroll direction. Also: `useElkLayout`
+   (`lib/graph-layout.ts:125`) starts from `null` even when `lib/diagram/elk.ts`'s LRU holds the layout, so a
+   remounted json-render diagram shows one placeholder frame (the mermaid cache from 135 already paints on the
+   first frame).
+
+The canonical shape for a media-heavy chat log (what Slack- and Discord-class clients do) is: windowed rendering
++ remembered heights (135) + cached heavy renderers (135, completed here) + **distance-based, direction-biased
+lookahead** + scroll anchoring that never fights the compositor (135). De-virtualising (render everything,
+`content-visibility: auto`) is the other canonical answer; it is rejected here because a long session with
+hundreds of SVG diagrams would keep every one of them in the iPad's DOM.
+
+### R1. Cost — `Transcript.tsx`, `lib/measured.ts`
+
+1. **Estimates are computed once per row, not per render.** `estimateRow` results are cached in a
+   `WeakMap<object, { width: number; px: number }>` keyed on the row's stable payload — `row.entry` for entry
+   rows, `row.run[0]` for run rows (the `run` array is rebuilt by `foldRuns`, its first entry object is not),
+   `row.prompt` for prompt rows; gap rows are constant. A streaming entry's object changes per delta, but that
+   row is mounted and measured, so `estimateSize` is never asked for it.
+2. **Stable callbacks.** `getItemKey` and `estimateSize` are `useCallback`s keyed on `[rows]` / `[rows, width,
+   session]`, and `estimateSize` reads the session's `Heights.h` map once (hoisted), not through
+   `recall → heights → bucket` per row. The measurement pass then runs only when rows or width change, and it is
+   a Float64Array walk with Map lookups.
+3. **`persist` is never synchronous in `rest`.** `rest()` only `remember`s the `fresh` keys; `remember` already
+   arms the ≥ 1 s debounce. Unmount still persists once.
+4. **`track()` reads the DOM only when it can matter.** Every scrolled frame keeps the anchor *row* from
+   virtual coordinates (`getVirtualItemForOffset`, no layout). The element walk + `getBoundingClientRect` runs
+   only when the scroller moved less than `clientHeight / 4` since the previous tracked frame (a slow scroll or
+   the tail of a fling) and once at rest; while flinging fast the anchor element is `null` and the anchor row's
+   own growth is treated as `moved: 0` (a few px at 4 000 px/s is below perception; the next slow frame re-anchors).
+5. **A DEV counter** `steady-scroll: estimates N · renders M` (in the existing `console.debug` line at rest) so
+   the fix is visible: after the first pass `estimates` must stay flat while scrolling and streaming.
+
+### R2. Render-ahead — `Transcript.tsx`, `lib/graph-layout.ts`, `lib/diagram/elk.ts`
+
+1. **Distance-based, direction-biased window** via the virtualizer's public `rangeExtractor` (a stable function
+   reading the instance through a ref). Let `h = clientHeight`, `top = scrollOffset`, `dir = scrollDirection`.
+   Mounted window in px: `[top − behind, top + h + ahead]` with `ahead = 2h`, `behind = 1h` in the scroll
+   direction (`backward` swaps them), and `1.5h` each side when `dir` is null (at rest). Indices come from
+   `getVirtualItemForOffset` at both edges; the library's own visible `startIndex..endIndex` are always
+   included. `overscan` is set to `0`; the window replaces it. The `behind` side is the keep-alive: a row stays
+   mounted for a full viewport after it leaves, so a short back-and-forth never re-mounts anything.
+2. **Two priorities.** The rows the library reports visible (plus one on each side) render as today; the rest
+   of the window renders through `useDeferredValue` (React 19), so a heavy mount two viewports ahead can never
+   block a scroll frame: React yields to the scroll update and resumes the lookahead. Absolute positioning makes
+   mount order irrelevant; `measureElement` refs work unchanged. If a row reaches the visible set before its
+   deferred mount committed, it simply renders urgently on that frame — today's behaviour as the floor.
+3. **Synchronous cache hits for ELK diagrams.** `lib/diagram/elk.ts` exports `elkPeek(hash): T | undefined`
+   (the LRU read, no promise); `useElkLayout` initialises `shown` from `elkPeek(hash)` when `enabled`, so a
+   remounted Graph / StateMachine / Entities / … paints its layout on the first frame like a cached mermaid
+   chart. The render-queue path is unchanged for misses and for streaming. Check the non-ELK Views (Sequence,
+   Sankey, charts) for the same first-frame gap and give them the same treatment where a cache exists; where the
+   layout is synchronous there is nothing to do.
+
+### R3. What must not change
+
+Everything in §3.4, and the 135 guarantees: zero shift during a fling (the 135 smoke, re-run), remembered
+heights (`theuth_heights:<session>`), the slack absorber, the iPad rest-only writes.
+
+### R4. Proof
+
+- Gates: `cd crates/desktop/ui && bun run check && bun run test && bun run build`, all green; new tests for the
+  estimate cache (same row object → one `estimateRow` call; a new width → recompute) and for the window math
+  (pure: `window(top, h, dir, total) → [from, to]` px edges, both directions and rest), `elkPeek`.
+- **Perf smoke** (dev browser against the running engine, as in the 135 as-built, read-only — do not send
+  prompts to the user's engine): on a session with ≥ 400 loaded rows after paging back, (a) the DEV counter:
+  `estimates` after the first pass vs after 40 scroll steps — must be unchanged; (b) `PerformanceObserver`
+  `longtask` count and p95 frame interval over a scripted 60-step fling, main a11fce5f vs this branch; (c) the
+  **lead** metric: at each sampled frame, does any row intersecting the viewport show "Rendering diagram…" or
+  a `Reserve` that is not ready? Count such frames over the fling at ~2 500 px/s; target 0, report the number.
+- Re-run the 135 zero-shift sampling on the same sessions (0 shifts expected).
+- As-built: `docs/design/135-as-built.md` gains a "Revision 1" section with the numbers above, the exact
+  window constants chosen, and any deviation.

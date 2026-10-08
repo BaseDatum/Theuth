@@ -21,13 +21,19 @@ export type { HereLens } from '@/rpc/bindings/HereLens'
 export type { LensMeta } from '@/rpc/bindings/LensMeta'
 export type { MapRow } from '@/rpc/bindings/MapRow'
 
-export type CodeTool = 'code_map' | 'code_find' | 'code_outline' | 'code_refs' | 'code_symbol' | 'code_impact'
+export type CodeTool = 'code_map' | 'code_find' | 'code_outline' | 'code_refs' | 'code_symbol' | 'code_impact' | 'code_overview'
 
 /** `CodeindexEvent::CodeToolRan` — once per `Tool::call`, after the envelope exists (errors too). */
 export type CodeToolRan = Extract<CodeindexEvent, { type: 'CodeToolRan' }>
 
 /** `CodeindexEvent::CodeReconciled` — no `session`: global; the UI filters by `root`. */
 export type CodeReconciled = Extract<CodeindexEvent, { type: 'CodeReconciled' }>
+
+/** 147 §10.1 `CodeindexEvent::CodeMapProgress` — global (no `session` scope); the UI filters by `root`. */
+export type CodeMapProgress = Extract<CodeindexEvent, { type: 'CodeMapProgress' }>
+
+/** 147 §10.1 `CodeindexEvent::CodeMapChanged` — element ids to refetch and the ones that went stale. */
+export type CodeMapChanged = Extract<CodeindexEvent, { type: 'CodeMapChanged' }>
 
 /** §5.2 — the four lens methods, positional params, flat names (a structural subset of `Api`). */
 export interface CodemapApi {

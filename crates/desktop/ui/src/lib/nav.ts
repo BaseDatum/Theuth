@@ -2,12 +2,12 @@
 // URLs do not change; a tab IS a navigation to its route. 143 R1: Skills and Tools sit under Agents (what agents
 // are made of), Library keeps the content pages.
 
-import { BookOpen, Bot, CalendarClock, FlaskConical, FolderOpen, ListChecks, Lock, type LucideIcon, Mic, Sparkles, StickyNote, Wrench } from 'lucide-react'
+import { BookOpen, Bot, CalendarClock, FlaskConical, FolderOpen, ListChecks, Lock, type LucideIcon, Mic, Notebook, Sparkles, StickyNote, Wrench } from 'lucide-react'
 
 export type Group = 'agents' | 'library'
 
 /** A tab's route, as a literal so `navigate({ to })` type-checks. */
-export type Tab = '/agents' | '/tasks' | '/routines' | '/artifacts' | '/knowledge' | '/notes' | '/meetings' | '/skills' | '/secrets' | '/tools' | '/autoresearch'
+export type Tab = '/agents' | '/tasks' | '/routines' | '/artifacts' | '/knowledge' | '/notes' | '/notebooks' | '/meetings' | '/skills' | '/secrets' | '/tools' | '/autoresearch'
 
 export const GROUPS: Record<Group, readonly { to: Tab; label: string; icon: LucideIcon }[]> = {
   agents: [
@@ -22,6 +22,7 @@ export const GROUPS: Record<Group, readonly { to: Tab; label: string; icon: Luci
     { to: '/artifacts', label: 'Artifacts', icon: FolderOpen },
     { to: '/knowledge', label: 'Knowledge', icon: BookOpen },
     { to: '/notes', label: 'Notes', icon: StickyNote },
+    { to: '/notebooks', label: 'Notebooks', icon: Notebook },
     { to: '/meetings', label: 'Meetings', icon: Mic },
     { to: '/secrets', label: 'Secrets', icon: Lock },
     // 140 R1-D4: the Study view is the last Library tab.
