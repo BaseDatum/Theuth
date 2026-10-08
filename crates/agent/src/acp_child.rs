@@ -1752,11 +1752,21 @@ impl Message<Update> for AcpChild {
     type Reply = ();
 
     async fn handle(&mut self, u: Update, ctx: &mut Context<Self, Self::Reply>) {
+        // 141 C: `session` (the wire sessionId) is carried but not yet routed —
+        // W2 adds the `Update::Subagent` upsert and the child-traffic arm
+        // (`session != own` → the observed child's turn, 141 §7.2) before the
+        // generic arm. Payload handling is unchanged.
         match u {
-            Update::Session(SessionUpdate::Plan(p)) => self.plan(&p).await,
+            Update::Session {
+                update: SessionUpdate::Plan(p),
+                ..
+            } => self.plan(&p).await,
             // 06 §8.2: a mid-session switch (`/switch` in omp); an update
             // without a model select keeps the last known value.
-            Update::Session(SessionUpdate::ConfigOptionUpdate(u)) => {
+            Update::Session {
+                update: SessionUpdate::ConfigOptionUpdate(u),
+                ..
+            } => {
                 if let Some(model) = acp::current_model(&u.config_options) {
                     self.set_harness_model(model).await;
                 }
@@ -1765,20 +1775,34 @@ impl Message<Update> for AcpChild {
             // (omp sends the manifest 50 ms after `session/new`; opencode's
             // usage may follow the prompt response). Handled before the turn
             // check; 06 §8.11's replay rule gets these two exceptions.
-            Update::Session(SessionUpdate::AvailableCommandsUpdate(u)) => {
+            Update::Session {
+                update: SessionUpdate::AvailableCommandsUpdate(u),
+                ..
+            } => {
                 self.set_harness_commands(u.available_commands).await;
             }
-            Update::Session(SessionUpdate::UsageUpdate(u)) => self.usage(u).await,
+            Update::Session {
+                update: SessionUpdate::UsageUpdate(u),
+                ..
+            } => self.usage(u).await,
             // 06 §8.4: opencode ≥ 2 marks a provider retry or a compaction
             // in `session_info_update._meta`; no event slot shows these yet.
-            Update::Session(SessionUpdate::SessionInfoUpdate(u)) => {
+            Update::Session {
+                update: SessionUpdate::SessionInfoUpdate(u),
+                ..
+            } => {
                 if let Some(meta) = &u.meta
                     && meta.keys().any(|k| k.starts_with("opencode/"))
                 {
                     tracing::debug!(session = %self.id, "session_info_update meta: {}", serde_json::Value::Object(meta.clone()));
                 }
             }
-            Update::Session(update) => {
+            // 141 C stub: W2 replaces — announces upsert the observed row
+            // (`Store::upsert_observed`) and publish `ObservedChildChanged`.
+            Update::Subagent(a) => {
+                tracing::debug!(session = %self.id, child = %a.child, "subagent announce (not yet ingested)");
+            }
+            Update::Session { update, .. } => {
                 // 06 §3.5 (2026-09-24): work after the prompt returned opens
                 // a continuation turn. Before any prompt on this connection
                 // the updates are `session/load` replay and stay dropped (§8 rule 11).

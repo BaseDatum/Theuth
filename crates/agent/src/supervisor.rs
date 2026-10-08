@@ -5717,6 +5717,7 @@ impl Agents {
             activity,
             cap: self.caps.get(&id).copied(),
             kind: row.kind,
+            observed: row.observed.clone(),
         }
     }
 
@@ -6449,7 +6450,18 @@ impl Message<LoadSession> for Agents {
             tracing::error!(session = %m.session, "hidden_turns: {e:#}");
             0
         });
-        let (model, effort, agent, harness_model, context_size, name, parent, project) = row
+        let (
+            model,
+            effort,
+            agent,
+            harness_model,
+            context_size,
+            name,
+            parent,
+            project,
+            kind,
+            observed,
+        ) = row
             .map(|r| {
                 (
                     r.model,
@@ -6460,6 +6472,8 @@ impl Message<LoadSession> for Agents {
                     r.name,
                     r.parent,
                     r.project,
+                    r.kind,
+                    r.observed,
                 )
             })
             .unwrap_or_default();
@@ -6513,6 +6527,8 @@ impl Message<LoadSession> for Agents {
             project,
             retention: self.retention_of(m.session),
             resume,
+            kind,
+            observed,
         }
     }
 }

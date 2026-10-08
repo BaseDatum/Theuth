@@ -5978,6 +5978,7 @@ impl Model {
                             activity: Default::default(),
                             cap: *cap,
                             kind: Default::default(),
+                            observed: None,
                         }),
                     );
                 }
@@ -6363,6 +6364,9 @@ impl Model {
                 self.vision = None;
                 self.entries.push(Entry::Error(message));
             }
+            // 141 C stub: W4 replaces — `Entry::Info("watching · <state>")` when
+            // this is the shown child and its state changed (141 §10.1).
+            AgentEvent::ObservedChildChanged { .. } => {}
             // 91: the thinking block is already closed by the generic rule above
             // (any non-delta event); the TUI shows no thinking time.
             AgentEvent::ReasoningDone { .. }
@@ -13087,6 +13091,7 @@ mod tests {
                 },
                 cap: None,
                 kind: Default::default(),
+                observed: None,
             }
         };
         let busy = info("busy", None, AgentState::Running, 0);
@@ -13209,6 +13214,7 @@ mod tests {
             activity: Default::default(),
             cap: None,
             kind: Default::default(),
+            observed: None,
         };
         let list = vec![
             info("old", AgentState::Idle, Some(600)),
@@ -14662,6 +14668,7 @@ mod tests {
             activity: Default::default(),
             cap: None,
             kind: Default::default(),
+            observed: None,
         };
         for state in [AgentState::Running, AgentState::Running, AgentState::Idle] {
             let i = info(state);

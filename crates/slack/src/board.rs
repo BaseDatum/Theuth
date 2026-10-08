@@ -435,6 +435,7 @@ mod tests {
             activity: Default::default(),
             cap: None,
             kind: Default::default(),
+            observed: None,
         };
         r.seed(&info);
         assert_eq!(

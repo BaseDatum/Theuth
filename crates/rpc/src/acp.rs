@@ -1264,7 +1264,15 @@ mod tests {
             .unwrap()
             .unwrap();
         match update {
-            acp::Update::Session(SessionUpdate::AgentMessageChunk(c)) => {
+            acp::Update::Session {
+                session,
+                update: SessionUpdate::AgentMessageChunk(c),
+            } => {
+                assert_eq!(
+                    session,
+                    harness.session_id(),
+                    "141 §7.1: the wire sessionId rides along"
+                );
                 assert_eq!(acp::content_block_text(&c.content), "hello from the child");
             }
             other => panic!("expected a message chunk, got {other:?}"),

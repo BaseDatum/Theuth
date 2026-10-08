@@ -45,12 +45,25 @@ use crate::PeerMessage;
 const PROBE_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// What the caller gets from the connection: `session/update` notifications,
-/// `session/request_permission` requests and `_theuth/peer_message`
-/// extension notifications (67 §8), in wire order.
+/// `session/request_permission` requests, subagent announces (141 §7.1) and
+/// `_theuth/peer_message` extension notifications (67 §8), in wire order.
 pub enum Update {
-    /// A `session/update` notification's payload.
-    Session(SessionUpdate),
+    /// A `session/update`. `session` is the wire `params.sessionId`: the
+    /// harness's own id for the driven session ([`Harness::session_id`]), or a
+    /// child's external id for RFD child traffic / an opencode
+    /// `child_update{type:"update"}` (141 §6.1, §6.2).
+    Session {
+        /// Wire `params.sessionId`.
+        session: String,
+        /// The notification's payload.
+        update: SessionUpdate,
+    },
+    /// A subagent announce/upsert from any source (141 §6): identity, state
+    /// and detail of a watch-only child the harness runs inside itself.
+    Subagent(ChildAnnounce),
     /// A `session/request_permission` request; answer it exactly once.
+    /// [`Permission::session`] is the asking session (a child's id for RFD
+    /// child asks).
     Permission(Permission),
     /// A remote theuth child's `send_message{to: "parent"}` ([`crate::PEER_MESSAGE_METHOD`]).
     Peer(PeerMessage),
@@ -62,16 +75,178 @@ pub enum Update {
 impl fmt::Debug for Update {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Update::Session(u) => f.debug_tuple("Session").field(u).finish(),
-            Update::Permission(p) => f.debug_tuple("Permission").field(&p.tool_call).finish(),
+            Update::Session { session, update } => f
+                .debug_struct("Session")
+                .field("session", session)
+                .field("update", update)
+                .finish(),
+            Update::Subagent(a) => f.debug_tuple("Subagent").field(a).finish(),
+            Update::Permission(p) => f
+                .debug_struct("Permission")
+                .field("session", &p.session)
+                .field("tool_call", &p.tool_call)
+                .finish(),
             Update::Peer(m) => f.debug_tuple("Peer").field(&m.id).finish(),
             Update::Closed(why) => f.debug_tuple("Closed").field(why).finish(),
         }
     }
 }
 
+/// Which feed produced a [`ChildAnnounce`] (141 §3 "Source"). The agent
+/// crate stores it as `ObservedSource` with the same `snake_case` names.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ChildSource {
+    /// ACP RFD `subagent_update` + child-addressed `session/update`s (any compliant agent).
+    Rfd,
+    /// opencode 2.x `opencode/session/child_update`.
+    OpencodeExt,
+    /// opencode 1.x `task` tool-call lifecycle only (no child traffic).
+    OpencodeTask,
+    /// omp `task` progress rows + on-disk transcript tail.
+    OmpTask,
+}
+
+/// How a watch-only child's cost relates to its parent's (141 §7.6, D8).
+/// Chosen by the adapter that sees the frame; stored by the agent crate.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[serde(rename_all = "snake_case")]
+pub enum CostRule {
+    /// The child's cost is its own meter rows and rolls up (omp background
+    /// spawns: excluded from the harness's `usage_update`).
+    Counted,
+    /// Already inside the parent's meter; display-only (omp sync spawns).
+    InsideParent,
+    /// Reported by the harness, not aggregated (RFD `idle.usage`).
+    DisplayOnly,
+    /// Not on the wire ("—"): opencode 1.x / 2.x.
+    Unreported,
+}
+
+impl CostRule {
+    /// The stored string form (`sessions.observed_cost_rule`).
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Counted => "counted",
+            Self::InsideParent => "inside_parent",
+            Self::DisplayOnly => "display_only",
+            Self::Unreported => "unreported",
+        }
+    }
+}
+
+impl fmt::Display for CostRule {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl std::str::FromStr for CostRule {
+    type Err = String;
+    fn from_str(s: &str) -> Result<Self, String> {
+        match s {
+            "counted" => Ok(Self::Counted),
+            "inside_parent" => Ok(Self::InsideParent),
+            "display_only" => Ok(Self::DisplayOnly),
+            "unreported" => Ok(Self::Unreported),
+            _ => Err(format!("unknown CostRule: {s:?}")),
+        }
+    }
+}
+
+/// Lifecycle of a watch-only child as one source reports it (141 §5.2).
+/// `Idle` carries the RFD stop reason and display-only usage; `Failed`
+/// carries the harness's error text.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "state", rename_all = "snake_case")]
+pub enum ChildState {
+    /// Announced, not started (omp `pending`, opencode `created`).
+    Pending,
+    /// The harness is working on it.
+    Running,
+    /// Waits on a human (permission/elicitation).
+    RequiresAction,
+    /// Turn ended; the harness may prompt it again (RFD `idle`).
+    Idle {
+        /// RFD `stopReason`; `"cancelled"` maps to the cancelled state downstream.
+        stop_reason: Option<String>,
+        /// RFD `idle.usage`, display-only (141 D8).
+        usage: Option<Usage>,
+    },
+    /// Finished successfully.
+    Completed,
+    /// Finished with an error.
+    Failed {
+        /// Error text (opencode `error.message`, omp `retryFailure.errorMessage`).
+        error: Option<String>,
+    },
+    /// Stopped by a cancel (opencode `interrupted`, omp `aborted`).
+    Cancelled,
+    /// Lost contact / activity unobservable (RFD `unknown`).
+    Unknown,
+}
+
+/// A subagent announce/upsert normalized from any source (141 §3 "Announce",
+/// §7.1). Identity is `(parent, source, child)`; every `Option` field is
+/// `None` = unchanged, so a status-only frame touches only `state`.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ChildAnnounce {
+    /// Which feed produced this announce.
+    pub source: ChildSource,
+    /// The harness's own id for the child (RFD `subagentUpdate.sessionId`,
+    /// opencode `childSessionId`, omp `progress[].id`, opencode 1.x
+    /// `task:<toolCallId>` until the real id is known).
+    pub child: String,
+    /// External id of the parent; `None` = the driven session (depth 1).
+    /// omp nested `a.b` → `Some("a")`; opencode `parentSessionId != root`.
+    pub parent: Option<String>,
+    /// Display name / title; `None` = unchanged.
+    pub title: Option<String>,
+    /// Roster card second line (RFD `description`, opencode prompt head, omp `assignment` head).
+    pub description: Option<String>,
+    /// The child's own model when the source reports one (omp `resolvedModel`,
+    /// opencode 1.x `metadata.model`).
+    pub model: Option<String>,
+    /// Lifecycle; `None` = unchanged.
+    pub state: Option<ChildState>,
+    /// The harness accepts `session/cancel` for this child (RFD `capabilities.cancel`); `None` = unchanged.
+    pub can_cancel: Option<bool>,
+    /// The spawning tool call id in the parent's transcript, when known.
+    pub tool_call: Option<String>,
+    /// Cost rule (141 §7.6); `None` = unchanged (the store defaults per source).
+    pub cost_rule: Option<CostRule>,
+    /// Source-specific live fields, merged shallowly into `observed_detail`
+    /// (141 §6 mapping tables). Empty = unchanged.
+    #[serde(default)]
+    pub detail: serde_json::Map<String, serde_json::Value>,
+}
+
+impl ChildAnnounce {
+    /// Identity only; every other field unchanged.
+    #[must_use]
+    pub fn new(source: ChildSource, child: impl Into<String>) -> Self {
+        Self {
+            source,
+            child: child.into(),
+            parent: None,
+            title: None,
+            description: None,
+            model: None,
+            state: None,
+            can_cancel: None,
+            tool_call: None,
+            cost_rule: None,
+            detail: serde_json::Map::new(),
+        }
+    }
+}
+
 /// A permission request; answer exactly once via [`Permission::respond`].
 pub struct Permission {
+    /// Wire `params.sessionId`: the driven session, or an RFD child's
+    /// external id when the child itself asks (141 §6.1).
+    pub session: String,
     /// The tool call asking (title/kind/raw_input live under `.fields`).
     pub tool_call: ToolCallUpdate,
     /// Options offered by the harness (`allow_once`, `reject_once`, …).
@@ -372,7 +547,10 @@ impl Link {
                     {
                         o.clone_from(&u.config_options);
                     }
-                    let _ = notify_tx.send(Update::Session(n.update));
+                    let _ = notify_tx.send(Update::Session {
+                        session: n.session_id.0.to_string(),
+                        update: n.update,
+                    });
                     Ok(())
                 },
                 agent_client_protocol::on_receive_notification!(),
@@ -380,12 +558,22 @@ impl Link {
             // Every other notification: the peer-message extension is ours
             // (67 §8), opencode's sub-agent updates ride as session updates
             // (06 §8.4); anything else is dropped, as the SDK would drop it.
+            // 141 C stub: W1 replaces the `child_update` branch with
+            // `opencode::child_update(&n) -> Vec<Update>` (announce + child
+            // traffic keyed by `childSessionId`, 141 §6.2). Until then the
+            // flattened update is attributed to the root session as before.
             .on_receive_notification(
                 async move |n: UntypedMessage, _cx| {
                     if let Some(m) = PeerMessage::parse(&n) {
                         let _ = peer_tx.send(Update::Peer(m));
                     } else if let Some(u) = child_update(&n) {
-                        let _ = peer_tx.send(Update::Session(u));
+                        let session = n
+                            .params
+                            .get("rootSessionId")
+                            .and_then(serde_json::Value::as_str)
+                            .unwrap_or_default()
+                            .to_owned();
+                        let _ = peer_tx.send(Update::Session { session, update: u });
                     }
                     Ok(())
                 },
@@ -394,6 +582,7 @@ impl Link {
             .on_receive_request(
                 async move |r: RequestPermissionRequest, responder, _cx| {
                     let _ = permission_tx.send(Update::Permission(Permission {
+                        session: r.session_id.0.to_string(),
                         tool_call: r.tool_call,
                         options: r.options,
                         responder,
@@ -746,6 +935,15 @@ impl Harness {
     pub fn cancel(&self) -> Result<(), String> {
         self.cx
             .send_notification(CancelNotification::new(self.session.clone()))
+            .map_err(|e| error_text(&e))
+    }
+
+    /// `session/cancel` for a child session the harness announced with
+    /// `capabilities.cancel` (141 §7.1, RFD); `child` is its external id.
+    /// The harness decides what cancelling means for it; theuth only asks.
+    pub fn cancel_session(&self, child: &str) -> Result<(), String> {
+        self.cx
+            .send_notification(CancelNotification::new(SessionId::new(child)))
             .map_err(|e| error_text(&e))
     }
 

@@ -2639,7 +2639,10 @@ impl Worker {
             AgentEvent::ContextUsed {
                 size: Some(size), ..
             } => self.context_size = Some(size),
-            AgentEvent::SubagentSpawned { .. }
+            // 141 C stub: W4 keeps this in the silent arm (no thread for a
+            // watch-only child); the board row comes from `route()`.
+            AgentEvent::ObservedChildChanged { .. }
+            | AgentEvent::SubagentSpawned { .. }
             | AgentEvent::InputQueued { .. }
             | AgentEvent::InputInjected { .. }
             | AgentEvent::InputWithdrawn { .. }

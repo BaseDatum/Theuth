@@ -1464,6 +1464,7 @@ pub(crate) mod testing {
             here: true,
             kind: Default::default(),
             memory: Default::default(),
+            observed: None,
         }
     }
 
@@ -1688,6 +1689,7 @@ mod tests {
             activity: Default::default(),
             cap: None,
             kind: Default::default(),
+            observed: None,
         };
         info.activity.state = agent::AgentState::Running;
         let port = FakePort {
