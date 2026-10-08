@@ -165,12 +165,17 @@ internal sealed partial class AttentionPanelWindow : ToolWindow
     /// <summary>C13 live (W6 item 3): the transparency switch attaches/detaches the material; the animation switch pins the window transitions.</summary>
     private void ApplyEffects(bool initial)
     {
+        // W6 (as-built §2): on build-B the MicaController painted Mica LIGHT (#F3F3F3, its light tint) under Theme=Dark with
+        // host.ActualTheme=Dark and app=Dark, and the host's 82 % dark surface tint did not show over it (rounds 2–3, 04:55–05:13;
+        // round 1's first open at 04:40 was dark) — dark-palette text on a light ground. Until that is understood the panel is
+        // W2's opaque surface; `--panel-mica` attaches the controller for a retest.
+        bool wantBackdrop = Environment.GetCommandLineArgs().Contains("--panel-mica");
         bool transparency = SystemEffects.TransparencyOn;
-        if (transparency && backdrop is null)
+        if (wantBackdrop && transparency && backdrop is null)
         {
             backdrop = Backdrop.Attach(this, BackdropKind.MicaBase, Palette.ColorOf(Palette.Surface, host.ActualTheme), host.ActualTheme, "panel");
         }
-        else if (!transparency && backdrop is not null)
+        else if ((!transparency || !wantBackdrop) && backdrop is not null)
         {
             backdrop.Dispose();
             backdrop = null;
