@@ -114,3 +114,39 @@ Engine stopped with SIGTERM; no leftover processes; `/tmp/137-smoke/` kept for t
 - **UI**: `set_session_memory` as a panel action beyond `/endless` (W3); `endless_recall` `limit` is `number | null` in `Api` — the engine takes `Option<u8>`.
 - **132**: `crates/rpc/tests/prompts.rs` red since `717708fa` (§3.1).
 - **Panel date** is live (`ViewLine.at`, W1 → W3) — nothing left there.
+
+## 8. Revision 1 integration (orchestrator's consolidated instruction, 06:47)
+
+The instruction: one merge of `feat/137-w2` at **0a65782e** (already an ancestor through `5485f38e`, which took the branch tip bcbe69a2 = 0a65782e + W2's as-built note), then in the conflicting files keep one implementation per seam — **W2's committed code where both exist**, with only the two closer-only things re-applied on top: the live `EndlessConfig` and `pump::memory()` folding at the session's own budget.
+
+Applied in `6fe5bde6` (diff against 0a65782e now = exactly the closer-only additions):
+
+| seam | W2's code kept | closer's re-applied on top |
+|---|---|---|
+| `crates/agent/src/endless_ext.rs` | restored as W2 left it: thin delegations to W1's `Endless` (`set_mode`, `render_snapshot`, `render_with_budget`, `set_view_bytes` with the 16 000..=256 000 check, `backfill_estimate`) + the `/endless` reply texts (`reply`, `status`, `eta`). My `endless/text.rs` deleted (W2's texts cover it); the TUI calls `agent::endless_ext::{reply,status}`. | — |
+| `lib.rs` | W2's `GetEndlessSettings` / `SetEndlessSettings { config }` message names, W1's `UnitFilter` + `SetMode` re-exports | `EndlessConfigChanged(EndlessConfig)` bus event |
+| `loop_.rs` | W2's `set_memory` body (`endless_ext::set_mode`, `backfill_estimate` log), `SetMemoryNow.filter`, meeting guard | `settle_secs` from the live `Endless::config()`; the `served()` tool gate through the toolset allowlist (W4 hand-off 3 — W2 gated on `view.is_some()`, which never admits a meeting session) |
+| `supervisor.rs` | W2's call sites (`endless_ext::render_snapshot` / `render_with_budget` / `set_view_bytes`), W2's settings handlers with W2's inline validation, catalog check of `model` and 14-key `write_nested_config_value` loop, W2's `endless_settings_round_trip_and_validate` test verbatim | `GetEndlessSettings` answers `Endless::config()` (live); `SetEndlessSettings` additionally calls `Endless::set_config` and publishes `EndlessConfigChanged`; `CreateSession` reads `default_chat` from the live config; `UnitFilter::All` in the create path |
+| `roster/src/lib.rs` | W2's `endless_ext::backfill_estimate` log line | `Message<EndlessConfigChanged>` + subscription |
+| `rpc/src/api.rs` | W2's trait/body shape (`config` param, `GetEndlessSettings` / `SetEndlessSettings { config }`) | — |
+| `endless/mod.rs` | — | ts-rs derive + `JsonSchema`/`PartialEq` on `EndlessConfig` (the W2 hand-off), `Inner.cfg: Arc<RwLock<_>>`, `config()`/`set_config()`, `served()`. My `EndlessConfig::validated` / `VIEW_BYTES` removed (W2's validation is the one). |
+| `endless/pump.rs` | — | shared live config reads; `memory()` folds at the session's own budget |
+| `store/capture.rs` | — | the `sqlite3_session` leak-on-drop fix (§3.2) |
+
+`origin/main` re-checked at the end: still **4606b76e** (already folded; 136 not landed). Gates and the smoke re-run on `6fe5bde6`: §8.1.
+
+### 8.1 Gates and smoke on the R1 tree
+
+| gate (R1 tree `6fe5bde6`) | result line |
+|---|---|
+| `cargo test -p agent -p rpc -p meeting -p roster -p runtime --no-fail-fast` | agent lib `test result: ok. 493 passed; 0 failed; 2 ignored; 0 measured; 0 filtered out; finished in 69.22s` · meeting `ok. 69 passed` / `ok. 1 passed` / `ok. 1 passed` · roster `ok. 67 passed` · rpc lib `ok. 51 passed` · rpc `tests/prompts.rs` `FAILED. 0 passed; 1 failed` (pre-existing, §3.1) · runtime `ok. 2 passed` |
+| `cargo clippy -p agent -p rpc -p meeting -p roster --no-deps -- -D warnings` | `Finished \`dev\` profile [unoptimized + debuginfo] target(s) in 2m 12s` (exit 0) |
+| `cargo fmt -p agent -p rpc -p meeting -p roster -- --check` | clean |
+| `cargo test -p tui --no-fail-fast` | `ok. 144 passed` · `tests/no_emoji.rs` `ok. 1 passed` |
+| `BUILD_SLOTS=1 … cargo check --workspace --tests` (mkdir lock) | `Finished \`dev\` profile [unoptimized + debuginfo] target(s) in 1m 31s` (exit 0) |
+| `cargo build -p theuth` (mkdir lock) | `Finished \`dev\` profile [unoptimized + debuginfo] target(s) in 2m 29s` |
+| UI (tsc / vitest / build) | unchanged since §3: no UI file and no ts-exported type changed in `6fe5bde6` (`export.rs` identical; `EndlessConfig` fields identical — only the closer's `validated`/`VIEW_BYTES` helpers left `endless/mod.rs`); the RPC method set is the same (`methods.json` unaffected by the `settings → config` param rename). |
+
+Smoke re-run on the R1 binary (`/tmp/137-smoke-r1/`, log `smoke-engine.log`, extracts `evidence.txt`; same recipe as §4): session `01a11a3f-b164-71a3-a70c-1bbb9c3559e1` created endless; T1/T2/T3 `usage {prompt 27144, cached 0}` / `{27223, cached 26749}` / `{27278, cached 26749}`; T3 reply `talk: The launch code word is **heron**.`; view 2 → 4 → 6 lines; `view_rebase … cache_read=0 cache_write=27134` / `… changed_from_byte=7 … cache_read=26749 cache_write=464` / `… changed_from_byte=243 … cache_read=26749 cache_write=519`; `endless_recall("code word")` → `5+1, 4+1, 0+1, 1+1`; `set_session_view_bytes 64000` → `view_bytes: 64000`, `1000` → `view_bytes 1000 out of range 16000..=256000` (W2's `endless_ext::set_view_bytes`); `/endless off` → `mode: epochs`, `context_edit: endless off … epoch=1 folded=2 head=true`, epoch row `n=1` head `<context_summary epoch="1" style="endless">…`, next turn "and 9×9?" answered (`prompt 26589`); `/endless on` → `units 8, lines 8, settling false`; `endless_settings_set{default_chat: true, view_bytes: 96000}` → `endless settings written default_chat=true … view_bytes=96000`, config.yaml block rewritten (all 14 keys), next `create_session` without `memory` → `sessions.memory = endless`; back to `default_chat: false`; `slack: 0.9` → `slack 0.9 out of range 0.0..=0.5` (W2's validation). Engine SIGTERMed, no leftover processes.
+
+`origin/main` at finish: 4606b76e (unchanged since the second fold; 136 not landed).
