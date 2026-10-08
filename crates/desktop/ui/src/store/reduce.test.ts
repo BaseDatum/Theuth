@@ -1121,8 +1121,8 @@ test('109 §8.2: the banner follows TurnResumed → ResumeReport, the next turn 
   expect(suspended.resume).toMatchObject({ turn: 'u', kind: 'suspended', resumed: false })
 
   let j = run([{ type: 'ToolCallStarted', session: S, turn: T, call_id: 'c1', name: 'shell', args: { command: 'make' } }])
-  j = apply(j, { type: 'JobStarted', session: S, id: 'j1', command: 'make', call_id: 'c1', log: '/l', name: null, pty: false }, ctx())
-  j = apply(j, { type: 'JobFinished', session: S, id: 'j1', command: 'make', exit: 'lost', secs: 4n, output: '', inline: false, pty: false }, ctx())
+  j = apply(j, { type: 'JobStarted', session: S, id: 'j1', command: 'make', kind: 'shell', call_id: 'c1', log: '/l', name: null, pty: false }, ctx())
+  j = apply(j, { type: 'JobFinished', session: S, id: 'j1', command: 'make', kind: 'shell', exit: 'lost', secs: 4n, output: '', inline: false, pty: false }, ctx())
   expect(j.entries[0]).toMatchObject({ job: { exit: { exit: 'lost', secs: 4 } } })
   expect(j.jobs.size).toBe(0)
 })
