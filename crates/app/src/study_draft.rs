@@ -102,10 +102,15 @@ pub fn lines(spec: &StudySpec) -> [String; 5] {
     };
     [
         format!(
-            "Optimise `{}` ({dir} is better{min_effect}) of `{}` in {repo} (base {})",
+            "Optimise `{}` ({dir} is better{min_effect}) of `{}` in {repo} (base {}{})",
             spec.metric.name.trim(),
             spec.bench.command.trim(),
-            spec.base.trim()
+            spec.base.trim(),
+            if spec.include_dirty {
+                " + your uncommitted changes"
+            } else {
+                ""
+            }
         ),
         format!("{check} · {holdout}{guards}"),
         format!(
@@ -259,7 +264,21 @@ pub fn source(spec: &StudySpec, warnings: &[String], token: &str) -> String {
         lit(token),
         lit(sensor)
     ));
-    out.push_str("buttons = Buttons([bStart, bWindow, bEdit, bDiscard])\n");
+    // R-11: a dirty checkout is refused at Start unless the user chooses to snapshot it onto the study
+    // branch (§6); the third Start button says so. Not shown when the spec already includes them.
+    let dirty = !spec.include_dirty;
+    if dirty {
+        out.push_str(&format!(
+            "startDirty = Mutation(\"autoresearch_start\", {{draft_id: {}, token: {}, include_dirty: true}})\n",
+            lit(slug),
+            lit(token)
+        ));
+    }
+    out.push_str(if dirty {
+        "buttons = Buttons([bStart, bWindow, bDirty, bEdit, bDiscard])\n"
+    } else {
+        "buttons = Buttons([bStart, bWindow, bEdit, bDiscard])\n"
+    });
     out.push_str(&format!(
         "bStart = Button(\"Start now\", Action([@Run(start), @ToAssistant({})]))\n",
         lit(&format!("study draft {slug}: started"))
@@ -268,6 +287,12 @@ pub fn source(spec: &StudySpec, warnings: &[String], token: &str) -> String {
         "bWindow = Button(\"Start in idle window\", Action([@Run(startWindow), @ToAssistant({})]), \"secondary\")\n",
         lit(&format!("study draft {slug}: started"))
     ));
+    if dirty {
+        out.push_str(&format!(
+            "bDirty = Button(\"Start with my uncommitted changes\", Action([@Run(startDirty), @ToAssistant({})]), \"secondary\")\n",
+            lit(&format!("study draft {slug}: started"))
+        ));
+    }
     out.push_str(&format!(
         "bEdit = Button(\"Edit\", Action([@ToAssistant({})]), \"tertiary\")\n",
         lit(&format!("study draft {slug}: edit"))
@@ -276,11 +301,23 @@ pub fn source(spec: &StudySpec, warnings: &[String], token: &str) -> String {
         "bDiscard = Button(\"Discard\", Action([@ToAssistant({})]), \"tertiary\", \"destructive\")\n",
         lit(&format!("study draft {slug}: discarded"))
     ));
-    out.push_str(
-        "result = TextContent(start.status == \"error\" ? (\"Could not start: \" + start.error) : \
-         (startWindow.status == \"error\" ? (\"Could not start: \" + startWindow.error) : \
-         (start.status == \"success\" || startWindow.status == \"success\" ? \"Started — preparing the worktree and the baseline.\" : \"\")), \"small\")\n",
-    );
+    let starts: &[&str] = if dirty {
+        &["start", "startWindow", "startDirty"]
+    } else {
+        &["start", "startWindow"]
+    };
+    // `a ? x : (b ? y : (ok ? started : ""))` — parenthesised like the two-button original.
+    let ok = starts
+        .iter()
+        .map(|s| format!("{s}.status == \"success\""))
+        .collect::<Vec<_>>()
+        .join(" || ");
+    let mut expr =
+        format!("({ok} ? \"Started — preparing the worktree and the baseline.\" : \"\")");
+    for s in starts.iter().rev() {
+        expr = format!("{s}.status == \"error\" ? (\"Could not start: \" + {s}.error) : ({expr})");
+    }
+    out.push_str(&format!("result = TextContent({expr}, \"small\")\n"));
     out
 }
 
@@ -526,6 +563,19 @@ mod tests {
         assert!(s.contains("bWindow = Button(\"Start in idle window\", Action([@Run(startWindow), @ToAssistant(\"study draft sort-speed: started\")]), \"secondary\")\n"), "{s}");
         assert!(s.contains("bEdit = Button(\"Edit\", Action([@ToAssistant(\"study draft sort-speed: edit\")]), \"tertiary\")\n"));
         assert!(s.contains("bDiscard = Button(\"Discard\", Action([@ToAssistant(\"study draft sort-speed: discarded\")]), \"tertiary\", \"destructive\")\n"));
+        // R-11: the third Start snapshots the user's dirty tree (`include_dirty`); the result line covers it.
+        assert!(s.contains("startDirty = Mutation(\"autoresearch_start\", {draft_id: \"sort-speed\", token: \"tok123\", include_dirty: true})\n"), "{s}");
+        assert!(
+            s.contains("buttons = Buttons([bStart, bWindow, bDirty, bEdit, bDiscard])\n"),
+            "{s}"
+        );
+        assert!(s.contains("bDirty = Button(\"Start with my uncommitted changes\", Action([@Run(startDirty), @ToAssistant(\"study draft sort-speed: started\")]), \"secondary\")\n"), "{s}");
+        assert!(
+            s.contains(
+                "startDirty.status == \"error\" ? (\"Could not start: \" + startDirty.error)"
+            ) && s.contains("|| startDirty.status == \"success\""),
+            "{s}"
+        );
         assert!(
             s.contains("warn = Callout(\"warning\", \"1 warning\", \"⚠ No holdout\")\n"),
             "{s}"
@@ -541,5 +591,17 @@ mod tests {
         );
         assert!(s2.contains("window: \"night.py\"}"));
         assert!(s2.starts_with("root = Card([head, l1, l2, l3, l4, l5, buttons, result])\n"));
+        // A spec that already includes the changes has no third button and says so in line 1.
+        let dirty = StudySpec {
+            include_dirty: true,
+            ..spec()
+        };
+        let s3 = source(&dirty, &[], "t");
+        assert!(!s3.contains("startDirty"), "{s3}");
+        assert!(
+            s3.contains("buttons = Buttons([bStart, bWindow, bEdit, bDiscard])\n"),
+            "{s3}"
+        );
+        assert!(lines(&dirty)[0].ends_with("(base HEAD + your uncommitted changes)"));
     }
 }

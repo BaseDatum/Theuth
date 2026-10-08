@@ -627,6 +627,24 @@ pub struct StartArgs {
     /// Start in an idle window: the 40 sensor file name (`idle.py`); omit to start now.
     #[serde(default)]
     pub window: Option<String>,
+    /// "Start with my uncommitted changes" (§6): the base is a snapshot commit of
+    /// the user's dirty tree on the study branch; sets `StudySpec.include_dirty`.
+    #[serde(default)]
+    pub include_dirty: Option<bool>,
+}
+
+/// Rewrite a draft's spec with `include_dirty: true` (the card's third Start
+/// button, R-11); the token and origin stay, so the press that follows verifies.
+pub fn mark_include_dirty(root: &Path, draft_id: &str) -> crate::Result<Draft> {
+    let mut draft = read_draft(root, draft_id)?;
+    if !draft.spec.include_dirty {
+        draft.spec.include_dirty = true;
+        std::fs::write(
+            draft_spec_path(root, draft_id),
+            serde_json::to_vec_pretty(&draft)?,
+        )?;
+    }
+    Ok(draft)
 }
 
 /// The draft card's Start press (140 §12.4): `StartDraft` only with the draft's
@@ -650,12 +668,16 @@ impl Tool for StartTool {
     async fn call(&self, a: StartArgs, _cx: ToolCx) -> anyhow::Result<ToolOutput> {
         let cfg = live_cfg().await?;
         let root = cfg.root(&self.0.data_dir);
-        let draft = read_draft(&root, a.draft_id.trim()).map_err(|e| anyhow::anyhow!("{e}"))?;
+        let mut draft = read_draft(&root, a.draft_id.trim()).map_err(|e| anyhow::anyhow!("{e}"))?;
         if draft.token.is_none() || draft.token.as_deref() != Some(a.token.trim()) {
             anyhow::bail!(
                 "autoresearch_start: not the draft card's press (token mismatch) — a study starts from the card's \
                  Start button, not from a tool call; re-draft it with autoresearch_draft if the card is stale"
             );
+        }
+        if a.include_dirty == Some(true) {
+            draft =
+                mark_include_dirty(&root, a.draft_id.trim()).map_err(|e| anyhow::anyhow!("{e}"))?;
         }
         let start = match a.window.as_deref().map(str::trim).filter(|w| !w.is_empty()) {
             Some(sensor) => StartWhen::Window {
@@ -1369,6 +1391,17 @@ mod tests {
         )
         .unwrap();
         assert_eq!(read_draft(dir.path(), "old").unwrap().token, None);
+        // R-11: the third Start button flips `include_dirty` on the draft; the token survives.
+        let token = write_draft(dir.path(), &spec, origin).unwrap();
+        let d = mark_include_dirty(dir.path(), "sort-speed").unwrap();
+        assert!(d.spec.include_dirty);
+        assert_eq!(d.token.as_deref(), Some(token.as_str()));
+        let d = read_draft(dir.path(), "sort-speed").unwrap();
+        assert!(d.spec.include_dirty);
+        assert_eq!(
+            (d.token.as_deref(), d.origin),
+            (Some(token.as_str()), Some(origin))
+        );
     }
 
     /// R-26: one repeat has no σ; the spec is refused before the card.

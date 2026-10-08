@@ -233,8 +233,29 @@ pub async fn render(
             .iter()
             .take_while(|e| e.state != ExperimentState::Kept)
             .count();
+        // R-75: the advisor clause only when the consult that opened this explore round succeeded —
+        // an `advisor_failed` event newer than the newest `explore` means no advisor ideas exist.
+        async fn newest(store: &Store, slug: &str, kind: &str) -> Result<Option<i64>> {
+            Ok(store
+                .list_events(slug, Some(kind), 1)
+                .await?
+                .first()
+                .map(|e| e.id))
+        }
+        let advisor_failed = matches!(
+            (
+                newest(store, slug, "advisor_failed").await?,
+                newest(store, slug, "explore").await?
+            ),
+            (Some(f), Some(x)) if f > x
+        );
         out.push_str(&format!(
-            "{since} experiments without a keep. Propose a substantially different approach; the ideas above include the advisor's suggestions.\n"
+            "{since} experiments without a keep. Propose a substantially different approach{}.\n",
+            if advisor_failed {
+                " (the advisor could not be consulted this time)"
+            } else {
+                "; the ideas above include the advisor's suggestions"
+            }
         ));
     }
     for i in &cx.incidents {
@@ -1106,6 +1127,61 @@ mod tests {
         assert!(b.text.contains("- none yet (the incumbent is the base)"));
         assert!(b.text.contains("Category balance: no experiments yet."));
         assert!(b.text.contains("(empty)"));
+    }
+
+    /// R-75: the explore line claims advisor ideas only when the consult succeeded;
+    /// an `advisor_failed` newer than the `explore` event drops the claim, a later
+    /// successful explore round restores it.
+    #[tokio::test]
+    async fn explore_line_drops_the_advisor_claim_when_the_consult_failed() {
+        let (_d, store, study) = fixture(0, 0, 0, 0).await;
+        let c = Context {
+            explore: true,
+            ..cx(1)
+        };
+        let claim = "the ideas above include the advisor's suggestions";
+        store
+            .append_event(
+                "sort-speed",
+                "explore",
+                &serde_json::json!({ "after_n": 12 }),
+            )
+            .await
+            .unwrap();
+        let b = render(&store, &study, &BriefConfig::default(), &c)
+            .await
+            .unwrap();
+        assert!(b.text.contains(claim), "{}", b.text);
+        store
+            .append_event(
+                "sort-speed",
+                "advisor_failed",
+                &serde_json::json!({ "after_n": 12 }),
+            )
+            .await
+            .unwrap();
+        let b = render(&store, &study, &BriefConfig::default(), &c)
+            .await
+            .unwrap();
+        assert!(!b.text.contains(claim), "{}", b.text);
+        assert!(
+            b.text
+                .contains("(the advisor could not be consulted this time)"),
+            "{}",
+            b.text
+        );
+        store
+            .append_event(
+                "sort-speed",
+                "explore",
+                &serde_json::json!({ "after_n": 24 }),
+            )
+            .await
+            .unwrap();
+        let b = render(&store, &study, &BriefConfig::default(), &c)
+            .await
+            .unwrap();
+        assert!(b.text.contains(claim), "{}", b.text);
     }
 
     /// Caps hold at every list size: total ≤ max_bytes and no line is ever cut.

@@ -24,7 +24,7 @@ Does not fit:
 Ask only what you cannot see. Read the repo first (`list_dir`, `read_file`, `code_map`, existing bench/test commands in `package.json`, `Cargo.toml`, `Makefile`, `Rakefile`, CI files). Then settle, in this order:
 
 1. **Goal** — one sentence ("make parse+render of the fixture set faster without changing output").
-2. **Repo and base** — the absolute path; `base: HEAD` unless told otherwise. Start refuses a dirty tree unless the user chooses "include my changes".
+2. **Repo and base** — the absolute path; `base: HEAD` unless told otherwise. Start refuses a dirty tree unless the user chooses to snapshot it: the card's **Start with my uncommitted changes** button (or `include_dirty: true` in the spec) commits the dirty tree as the base on the study branch only.
 3. **Metric** — `name` (the `METRIC <name>=` line), `unit`, `direction` (`lower`|`higher`), `min_effect`: the smallest gain the user would bother to merge (`0.5%` or an absolute like `2` ms). Below it nothing is kept.
 4. **Benchmark** — the command (see below), `timeout` per sample, `repeats` (3 default), `exclusive` (true for wall-clock metrics), optional `smoke`.
 5. **Check** — the test command filtered to the scope when the whole suite is slow; its timeout.
@@ -100,7 +100,7 @@ models: {executor: null, review: null, advisor: null}
 window: null                         # or a bare `when:` sensor file name (`idle.py`, no path) for "Start in idle window"
 ```
 
-The card shows five plain lines plus warnings (no check, no holdout, wall-clock without `exclusive`, empty scope, budget above the threshold) and the buttons **Start now · Start in idle window · Edit · Discard**. Then **stop and wait**. The press arrives as the user's next message beginning `[app study-drafts …]`:
+The card shows five plain lines plus warnings (no check, no holdout, wall-clock without `exclusive`, empty scope, budget above the threshold) and the buttons **Start now · Start in idle window · Start with my uncommitted changes · Edit · Discard** (the third only when the spec does not already say `include_dirty: true`). Then **stop and wait**. The press arrives as the user's next message beginning `[app study-drafts …]`:
 - `study draft <slug>: started` — the study is preparing (worktree, custody, baseline). Answer one line; the start card follows when the baseline is in.
 - `study draft <slug>: edit` — ask what to change, then call `autoresearch_draft` again with the amended spec.
 - `study draft <slug>: discarded` — nothing exists; answer one line.

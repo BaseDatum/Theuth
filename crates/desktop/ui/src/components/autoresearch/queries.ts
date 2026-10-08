@@ -19,7 +19,7 @@ export function useAutoresearchApi() {
 export const KEY = ['autoresearch'] as const
 export const PAGE = 200
 
-/** §12.3 events: state changes refetch the list and the study; `ExperimentProgress` updates the live progress cell only (the detail polls while an experiment is in flight, see `useStudy`). */
+/** §12.3 events: state changes refetch the list and the study; `ExperimentProgress` (re-published every ~3 s while a sample runs, R-87) updates the live progress cell and refetches the detail, whose `tail` is the newest sample log. */
 const EVENTS = ['StudyChanged', 'ExperimentStarted', 'ExperimentProgress', 'ExperimentFinished', 'StudyFinished'] as const satisfies readonly StudyEvent['type'][]
 
 /** Subscribe once: mounted by the Explorer (the Study view is its outlet, so it must not mount a second one). */
@@ -30,6 +30,7 @@ export function useAutoresearchEvents() {
       on(t, (e) => {
         if (e.type === 'ExperimentProgress') {
           qc.setQueryData<Progress>([...KEY, e.slug, 'progress'], { phase: e.phase, sample: e.sample, of: e.of, elapsed_ms: e.elapsed_ms })
+          void qc.invalidateQueries({ queryKey: [...KEY, e.slug, 'detail'] })
           return
         }
         if (e.type === 'ExperimentStarted' || e.type === 'ExperimentFinished') qc.removeQueries({ queryKey: [...KEY, e.slug, 'progress'] })
@@ -43,21 +44,15 @@ export function useAutoresearchEvents() {
   }, [qc])
 }
 
-/** While an experiment is in flight the detail is refetched this often: `StudyDetail.tail` is read at `get`, so this is what makes the sample log live (§13.1). */
-export const LIVE_MS = 2000
-
 export function useStudies() {
   const api = useAutoresearchApi()
   return useQuery({ queryKey: [...KEY, 'list'], queryFn: () => api['autoresearch.list']() })
 }
 
+/** The detail (with the live `tail`) is refetched by `ExperimentProgress` while a sample runs; no polling. */
 export function useStudy(slug: string) {
   const api = useAutoresearchApi()
-  return useQuery({
-    queryKey: [...KEY, slug, 'detail'],
-    queryFn: () => api['autoresearch.get'](slug),
-    refetchInterval: (q) => (q.state.data?.info.current != null ? LIVE_MS : false),
-  })
+  return useQuery({ queryKey: [...KEY, slug, 'detail'], queryFn: () => api['autoresearch.get'](slug) })
 }
 
 /** Every experiment, newest first, paged by `before` until a page comes back short: the table, the tally and the Restore lookup see the whole study. */

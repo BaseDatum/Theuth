@@ -135,7 +135,7 @@ window: null                         # or a 40 `when:` sensor, e.g. sensors/idle
 
 **Where the evaluator lives.** Scripts the setup writes (benchmark, holdout, a check wrapper) are written to `<data_dir>/autoresearch/drafts/<slug>/`, run by hand from there with the repo as `cwd` during setup, and moved into custody at Start; they never enter the user's checkout or the study branch, so no changeset can carry them and Start's clean-tree check is not tripped by the setup's own work. Repo files the evaluator reads (fixtures, tests, a `Rakefile`) stay where they are and are listed in `evaluator_paths`.
 
-The draft card renders this as five plain lines plus warnings, the 108 way: *"Optimise `time_ms` (lower) of `bench.sh` in liquid · check `bundle exec rake test` · may edit `lib/liquid/**` · up to 120 experiments, 10 h, $20 · starts now."* Warnings appear for: no check, no holdout, metric is wall-clock with `exclusive: false`, `scope` empty, budget above the configured confirmation threshold. Buttons: **Start now · Start in idle window · Edit · Discard**.
+The draft card renders this as five plain lines plus warnings, the 108 way: *"Optimise `time_ms` (lower) of `bench.sh` in liquid · check `bundle exec rake test` · may edit `lib/liquid/**` · up to 120 experiments, 10 h, $20 · starts now."* Warnings appear for: no check, no holdout, metric is wall-clock with `exclusive: false`, `scope` empty, budget above the configured confirmation threshold. Buttons: **Start now · Start in idle window · Start with my uncommitted changes · Edit · Discard** (the third sets `include_dirty`, §6, and is absent when the spec already has it; fix round R-11).
 
 ### 4.2 Lifecycle
 
@@ -497,7 +497,7 @@ Root-session tools (the user's chats; runtime functions, not direct):
 | tool | Risk | args → returns |
 |---|---|---|
 | `autoresearch_draft` | read_only (creates no study) | `StudySpec` → the draft card (`crates/app`, routine_draft pattern). Writes the spec and a random **press token** to `<root>/drafts/<slug>/spec.json`. Invariant: the press, not the model, starts the study — the Start buttons run `autoresearch_start {draft_id, token}` (an OpenUI `Mutation` can only run installed tools, so the RPC `autoresearch.create {draft_id, start}` is the desktop's path); the chat then sees `[app study-drafts <id> started \| discarded]` |
-| `autoresearch_start` | mutating (the card's press only) | `{draft_id, token, window?}` → `StudyInfo`; refuses without the draft's token, which the model never sees (R-10 fix round) |
+| `autoresearch_start` | mutating (the card's press only) | `{draft_id, token, window?, include_dirty?}` → `StudyInfo` (`include_dirty: true` rewrites the draft's spec first, R-11); refuses without the draft's token, which the model never sees (R-10 fix round) |
 | `autoresearch_status` | read_only | `{slug?}` → state, headline, last 5 experiments, budget left, current phase |
 | `autoresearch_control` | mutating | `{slug, op, reason?, text?, n?}`; op = `pause \| resume \| stop_after \| stop_now \| run_once \| segment \| finalize \| restore \| keep_reverted \| merge \| discard \| steer \| idea` → `StudyInfo`. Refused from a bound study session or a wave child (R-13). No `start` op |
 
