@@ -80,11 +80,21 @@ let settings: EndlessConfig = {
   model: null,
 }
 
-/** The engine's `Api` with the 137 methods answered here when the fixture is on; the same object otherwise. */
+const wrapped = new WeakMap<Api, Api>()
+
+/** The engine's `Api` with the 137 methods answered here when the fixture is on; the same object otherwise. One wrapper per `api` (`useApi` callers key effects on it). */
 export function endlessFixture(api: Api): Api {
   if (!endlessFixtureOn()) return api
-  return {
+  const hit = wrapped.get(api)
+  if (hit) return hit
+  const fixture: Api = {
     ...api,
+    // The two newest root chats (not desks, not archived) draw the sidebar's ∞ glyph (`SessionSummary.memory`).
+    list_sessions: () =>
+      api.list_sessions().then((rows) => {
+        let left = 2
+        return rows.map((r) => (r.parent === null && !r.archived && !r.desk && left-- > 0 ? { ...r, memory: 'endless' as const } : r))
+      }),
     session_memory: () => Promise.resolve(memory),
     endless_zoom: (_s, id, n) => Promise.resolve(children(id, n)),
     endless_recall: (_s, query) => {
@@ -102,4 +112,6 @@ export function endlessFixture(api: Api): Api {
       return Promise.resolve(settings)
     },
   }
+  wrapped.set(api, fixture)
+  return fixture
 }

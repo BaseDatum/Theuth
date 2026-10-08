@@ -3,7 +3,6 @@ import { useState } from 'react'
 import { ModelCombobox } from '@/components/chat/ModelCombobox'
 import { Count, Row, Section, useAction } from '@/components/settings/shared'
 import { Switch } from '@/components/ui/switch'
-import { endlessFixture } from '@/dev/endless-fixture'
 import { queryKeys, useApi } from '@/lib/rpc'
 import type { EndlessConfig } from '@/rpc/endless-stubs'
 
@@ -31,7 +30,7 @@ function Range({ value, min, max, step, onChange, onCommit, disabled, 'aria-labe
 
 /** Settings › Memory (137 §11.3): the endless defaults, view size, slack, settle wait and the compactor model (`agent.endless`). */
 export function Memory() {
-  const api = endlessFixture(useApi())
+  const api = useApi()
   const settings = useQuery({ queryKey: queryKeys.endlessSettings, queryFn: () => api.endless_settings_get() })
   const models = useQuery({ queryKey: queryKeys.models, queryFn: () => api.list_models() })
   const save = useAction((next: EndlessConfig) => api.endless_settings_set(next), { keys: [queryKeys.endlessSettings] })

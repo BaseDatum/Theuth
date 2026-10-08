@@ -7,12 +7,13 @@ import { useConnection } from '@/store/connection'
 import { on } from '@/store/sessions'
 import { isPopout, openPopout } from '@/lib/popout'
 import { applySandboxEvent } from '@/store/sandboxes'
+import { endlessFixture } from '@/dev/endless-fixture'
 
-/** The connected `Api`. Routes render only once connected, so a missing client is a bug. */
+/** The connected `Api`. Routes render only once connected, so a missing client is a bug. In dev the 137 fixture may answer the endless methods (`dev/endless-fixture.ts`). */
 export function useApi(): Api {
   const api = useConnection((s) => s.api)
   if (!api) throw new Error('useApi before the connection opened')
-  return api
+  return import.meta.env.DEV ? endlessFixture(api) : api
 }
 
 export const queryKeys = {

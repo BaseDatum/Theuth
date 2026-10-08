@@ -6,7 +6,6 @@ import { Input } from '@/components/ui/input'
 import { Sheet, SheetContent, SheetDescription, SheetFooter, SheetHeader, SheetTitle } from '@/components/ui/sheet'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
-import { endlessFixture, endlessFixtureOn } from '@/dev/endless-fixture'
 import { fmtBytes } from '@/lib/files'
 import { queryKeys, useApi } from '@/lib/rpc'
 import { cn } from '@/lib/utils'
@@ -99,12 +98,9 @@ export function highlight(text: string, query: string): ReactNode {
 
 /** `session_memory` (137 §11.2), shared by the badge and the panel; `useInvalidateOn` refetches it on `EndlessProgress`. */
 export function useSessionMemory(session: string, enabled: boolean) {
-  const api = endlessFixture(useApi())
+  const api = useApi()
   return useQuery({ queryKey: queryKeys.sessionMemory(session), queryFn: () => api.session_memory(session), enabled })
 }
-
-/** Whether the `list_sessions` row is an endless session (the dev fixture makes every session one). */
-export const isEndless = (row: SessionSummary | undefined): boolean => endlessFixtureOn() || (row !== undefined && memoryOf(row) === 'endless')
 
 /**
  * The header's `∞` badge (137 §11.3): muted pill after the title, same height as the cost pill; tooltip with view size
@@ -112,7 +108,7 @@ export const isEndless = (row: SessionSummary | undefined): boolean => endlessFi
  * `row`: the compact menu's line.
  */
 export function MemoryBadge({ session, summary, row, open, onToggle }: { session: string; summary: SessionSummary | undefined; row?: boolean; open: boolean; onToggle(): void }) {
-  const endless = isEndless(summary)
+  const endless = summary !== undefined && memoryOf(summary) === 'endless'
   const memory = useSessionMemory(session, endless)
   if (!endless) return null
   const m = memory.data
@@ -252,7 +248,7 @@ const HIT = 'hit:'
  * ← collapse (or up to the parent), Enter toggles, `/` focuses search, Esc closes (the sheet's own).
  */
 export function MemoryPanel({ session, open, onOpenChange }: { session: string; open: boolean; onOpenChange(o: boolean): void }) {
-  const api = endlessFixture(useApi())
+  const api = useApi()
   const memory = useSessionMemory(session, open)
   const [tree, dispatch] = useReducer(reduce, INITIAL)
   const { kids, open: opened, hits } = tree
@@ -362,7 +358,7 @@ export function MemoryPanel({ session, open, onOpenChange }: { session: string; 
         <div className="px-4 pb-3">
           <Input
             ref={search}
-            type="search"
+            type="text"
             placeholder="Recall: a word, an error, a path…"
             aria-label="Recall"
             value={query}
@@ -376,7 +372,7 @@ export function MemoryPanel({ session, open, onOpenChange }: { session: string; 
             }}
           />
         </div>
-        <div ref={treeEl} role="tree" aria-label="Memory view" tabIndex={0} className="min-h-0 flex-1 overflow-y-auto px-2 pb-3 outline-none focus-visible:ring-2 focus-visible:ring-ring/50 focus-visible:ring-inset" onKeyDown={onTreeKey}>
+        <div ref={treeEl} role="tree" aria-label="Memory view" tabIndex={0} className="min-h-0 flex-1 overflow-y-auto px-2 pb-3 outline-none focus-visible:ring-1 focus-visible:ring-ring/40 focus-visible:ring-inset" onKeyDown={onTreeKey}>
           {memory.isPending && (
             <div className="flex flex-col gap-2 px-2 pt-1">
               {[0, 1, 2, 3, 4, 5].map((i) => (
