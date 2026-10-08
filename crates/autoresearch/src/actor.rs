@@ -1973,6 +1973,15 @@ pub async fn begin_env(env: &Env, m: Begin) -> Result<Brief> {
         }
     }
     let slug = study.slug.clone();
+    // One fire = one experiment (§0 D1): a `begin` newer than the newest `turn` event
+    // means this turn already ran an experiment — the model is told to end the turn
+    // (140-P live: one fire ran seven). Without turn events (no agent) the rule is off.
+    if second_begin_this_turn(&env.store, &slug).await? {
+        return Err(Error::refused(
+            "one experiment per fire: this turn already ran its experiment — end your turn now; \
+             the loop starts the next experiment in a fresh session",
+        ));
+    }
     let mut incidents = Vec::new();
     // §10: a wave study promotes the previous wave first (unlogged slots count as discard).
     let wave = if study.spec.parallel > 1 {
@@ -2480,6 +2489,19 @@ async fn tree_changed_pending(store: &Store, slug: &str, n: u32) -> Result<bool>
         .find(|e| e.kind == "run")
         .map(|e| e.id);
     Ok(matches!((changed, ran), (Some(c), Some(r)) if c > r))
+}
+
+/// A `begin` event newer than the newest `turn` event: this turn already opened an
+/// experiment. `false` when the study has no `turn` events (no agent, tests).
+async fn second_begin_this_turn(store: &Store, slug: &str) -> Result<bool> {
+    let Some(turn) = store.list_events(slug, Some("turn"), 1).await?.pop() else {
+        return Ok(false);
+    };
+    Ok(store
+        .list_events(slug, Some("begin"), 1)
+        .await?
+        .pop()
+        .is_some_and(|b| b.id > turn.id))
 }
 
 /// The measurement body of [`run_env`]: novelty → custody → scope → samples →
@@ -3350,15 +3372,24 @@ pub async fn log_env(env: &Env, m: Log) -> Result<LogReport> {
 
 /// `Autoresearch-Metric: time_ms 42.3 -> 41.2 (-2.6%, 3.1 sigma, n=3)`.
 pub(crate) fn metric_line(study: &StudyRecord, exp: &ExperimentRecord) -> String {
+    // §6: `42.3 -> 41.2 (-2.6%)` — the raw relative change between the two numbers, so a
+    // lower-is-better win reads negative (the ledger's `delta_pct` is direction-normalised,
+    // positive = better; 140-P live wrote `8996 -> 39.0 (+99.6%)`).
+    let raw_pct = match (study.incumbent_mean, exp.metric) {
+        (Some(a), Some(b)) if a != 0.0 => (b - a) / a.abs() * 100.0,
+        _ => match study.spec.metric.direction {
+            Direction::Lower => -exp.delta_pct.unwrap_or(0.0),
+            Direction::Higher => exp.delta_pct.unwrap_or(0.0),
+        },
+    };
     format!(
-        "{} {} -> {} ({:+.1}%, {} sigma, n={})",
+        "{} {} -> {} ({raw_pct:+.1}%, {} sigma, n={})",
         study.spec.metric.name,
         study
             .incumbent_mean
             .map(fmt_num)
             .unwrap_or_else(|| "?".into()),
         exp.metric.map(fmt_num).unwrap_or_else(|| "?".into()),
-        exp.delta_pct.unwrap_or(0.0),
         exp.z
             .map(|z| format!("{z:.1}"))
             .unwrap_or_else(|| "—".into()),

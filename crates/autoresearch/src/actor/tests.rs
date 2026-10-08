@@ -1819,6 +1819,61 @@ fn l(session: SessionId, decision: Decision) -> Log {
     }
 }
 
+/// 140-P live: the commit trailer read `8996 -> 39.0 (+99.6%)`; §6 wants the raw change.
+#[test]
+fn metric_line_reads_the_raw_change() {
+    let mut study = StudyRecord::new(StudySpec::default(), None);
+    study.incumbent_mean = Some(8996.0);
+    let mut exp = ExperimentRecord::open("s", 2, 0, "inc");
+    exp.metric = Some(39.0);
+    exp.delta_pct = Some(99.6); // direction-normalised, positive = better
+    exp.z = Some(15.3);
+    exp.n_samples = 3;
+    let line = super::metric_line(&study, &exp);
+    assert!(
+        line.contains("8996 -> 39.0 (-99.6%, 15.3 sigma, n=3)"),
+        "{line}"
+    );
+}
+
+/// 140-P live: one fire ran seven experiments. A turn that already began an
+/// experiment cannot begin another; the next turn can.
+#[tokio::test]
+async fn second_begin_in_the_same_turn_is_refused() {
+    let fake = Fake::with_values(&[100.0, 100.0, 100.0, 100.0, 100.0]);
+    let mut h = harness(fake.clone(), AutoresearchConfig::default()).await;
+    let session = started(&mut h, "t1", 10).await;
+    let envelope = "<schedule name=\"autoresearch-t1\">\nrun\n</schedule>";
+    binding::on_turn_started(&mut h.studies, session, envelope)
+        .await
+        .unwrap();
+    begin(&mut h.studies, b(session)).await.unwrap();
+    fake.decide(Verdict::NoGain, 0.0, 0.1);
+    run(&mut h.studies, r(session, "x")).await.unwrap();
+    log(&mut h.studies, l(session, Decision::Auto))
+        .await
+        .unwrap();
+    let e = begin(&mut h.studies, b(session))
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(e.contains("one experiment per fire"), "{e}");
+    assert!(
+        h.studies
+            .store
+            .get_experiment("t1", 2)
+            .await
+            .unwrap()
+            .is_none(),
+        "no second experiment was opened"
+    );
+    // The next fire's turn begins #2.
+    binding::on_turn_started(&mut h.studies, session, envelope)
+        .await
+        .unwrap();
+    assert_eq!(begin(&mut h.studies, b(session)).await.unwrap().n, 2);
+}
+
 /// 140-P live: a worktree equal to the incumbent (the model edited elsewhere) is
 /// refused by name before novelty — no sample, no "duplicate of #1" riddle — and the
 /// experiment can be run again once the tree changed.
