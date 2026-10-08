@@ -71,6 +71,17 @@ struct PerKindOptionTests {
         #expect(Card.make(item: blocked("t-7", decision: "d-1")).options.isEmpty, "a decision blocker is the decision kind")
         #expect(Card.make(item: blocked(nil)).options.isEmpty)
     }
+
+    /// 130 §4.2 "Hire · Decline · Open": with real options the panel no longer synthesises an "Open in theuth" row,
+    /// so Open must stay one keystroke away — O → `.openBoard` → `Store` opens `card.attentionURL` on every card.
+    @Test func openStaysOneKeystrokeAwayOnHireAndBlockedCards() {
+        #expect(KeyGrammar.intent(for: KeyPress(chars: "o")) == .openBoard)
+        for card in [Card.make(item: hire("docs")), Card.make(item: blocked("t-7"))] {
+            #expect(card.attentionURL.absoluteString == "theuth://attention/\(card.item.id)")
+            #expect(!card.options.contains { $0.key == 0 }, "no option claims the O row's key")
+            #expect(card.options.allSatisfy { (1...3).contains($0.key) })
+        }
+    }
 }
 
 struct CommitDispatchTests {

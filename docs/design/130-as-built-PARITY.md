@@ -53,9 +53,15 @@ displaced action was always empty: the held answer vanished instead of being com
   outcome onto the same receipts, logs, `apply(latest)`, `refetch()` and `expireReceipt(after: 3)` as before. Behaviour
   for every pre-existing action is unchanged (the dispatch table test in §2 pins each RPC string).
 
-Keys and legend: the new options use keys 1 and 2, which the grammar and legend already have; `O` keeps opening the
-item, so no key table changed. `PanelView.swift:121` synthesises an "Open in theuth" row only for option-less cards —
-hire and blocked cards now show their real options instead, as on Windows (the O hint row is unchanged).
+Keys and legend: the new options use keys 1 and 2, which the grammar and legend already have, so no key table changed.
+**Open stays one keystroke away**: `O` → `KeyGrammar.intent` `.openBoard` (`KeyGrammar.swift`, pinned by
+`KeyGrammarTests.table`) → `Store.perform(.openBoard)` → `onOpenURL(card.attentionURL)` for *every* focused card
+(`Store.swift:184-186`), hire and blocked included. `PanelView.swift:121-126` synthesises an "Open in theuth" row only
+for option-less cards, so hire and blocked cards now show their real options instead; to keep the design's visible
+"Open", their hint row gains `O · open in theuth` (`PanelView.swift:132-134`; decisions keep `O · board`). Pinned by
+`PerKindOptionTests.openStaysOneKeystrokeAwayOnHireAndBlockedCards` (O intent, `theuth://attention/<id>`, no option on
+the O row's key). Windows shows the same `O · open` hint on every option-bearing non-review card
+(`AttentionPanelWindow.cs:462`); the Mac limits it to hire/blocked so ask/approval cards are unchanged (rule 3).
 
 ### 1.4 Item 4 (addendum 04:15) — the Ask bar receipt shows a failed desk turn
 
@@ -78,12 +84,12 @@ The receipt stayed at "sent — waiting for the desk" when the desk's turn faile
 Tests (`AskTests.swift`): `replyCollectsOnlyTheDeskUntilItsTurnEnds` now passes `stopReason: "end_turn"` and checks a
 normal reply is unchanged; `aFailedOrCancelledDeskTurnEndsTheReplyWithTheReason` covers the `Error` event (other session
 ignored, first line clipped, trailing `TurnFinished` inert), `stop_reason: "error"` with nothing streamed,
-`"cancelled"` after partial text, and an empty error message. **91 tests in 21 suites** after this item.
+`"cancelled"` after partial text, and an empty error message. **92 tests in 21 suites** after this item and the Open pin.
 
 ## 2. Tests
 
-Before (main `ad153b20`): **81 tests in 18 suites**, green. After: **90 tests in 21 suites** (items 1–3), **91** with
-item 4, green
+Before (main `ad153b20`): **81 tests in 18 suites**, green. After: **90 tests in 21 suites** (items 1–3), **92** with
+item 4 and the Open-path pin, green
 (`BUILD_LABEL=130-parity ~/.theuth/bin/build-lock bash test.sh`, Swift Testing, no XCTest). Release build:
 `BUILD_LABEL=130-parity ~/.theuth/bin/build-lock swift build -c release` → `Build complete!` (only the pre-existing
 `NSEvent`/`Sendable` warnings in Legend/AttentionPanel/AskBarPanel).
@@ -121,8 +127,8 @@ Changed, `Tests/CompanionCoreTests/CompanionCoreTests.swift`:
    receipt" branch for a note-less send-back is explicit; it is the same behaviour `Store.commit` had.
 3. **The failure test** uses a thrown `MethodNotFound` error rather than the C# default-interface-member trick: Swift
    protocols have no defaults to test, and a pre-W2 engine answers `rpc -32601` through the same `catch`.
-4. **Commit granularity**: `4383bca2` (defects + `Commit.swift`) does not build on its own — `Commit.run` already
-   switches over the three new cases that land in `14a0c403`. Both commits together are the deliverable.
+4. **History**: the branch was rewritten after review so every commit builds — the Store defects and the per-kind
+   actions (`Commit.run` switches over the new cases) land in one commit; item 4 and the review follow-ups in the next.
 5. **Item 4 wording and decoding.** `feat/134-w6-polish` was not on `basedatum` when this landed, so the addendum's
    wording is used: `theuth · couldn't reply — <first line, ≤ 80 chars>` (the row's own "who · " prefix supplies
    "theuth"). `TheuthKit.WireEvent` was not extended with an `Error` case: the Ask bar's reply stream decodes the raw
