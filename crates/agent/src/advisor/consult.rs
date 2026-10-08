@@ -75,7 +75,10 @@ pub fn parse(args: &serde_json::Value) -> Result<(String, Option<String>), Strin
     if question.is_empty() || question.chars().count() > QUESTION_CHARS {
         return Err(ERR_QUESTION.into());
     }
-    let context = a.context.map(|c| c.trim().to_owned()).filter(|c| !c.is_empty());
+    let context = a
+        .context
+        .map(|c| c.trim().to_owned())
+        .filter(|c| !c.is_empty());
     if context
         .as_ref()
         .is_some_and(|c| c.chars().count() > CONTEXT_CHARS)
@@ -103,7 +106,10 @@ pub fn block(partial: &str, question: &str, context: Option<&str>) -> String {
          \n\
          **question**: {question}\n\
          **context**: {}",
-        context.map(str::trim).filter(|c| !c.is_empty()).unwrap_or("(none)")
+        context
+            .map(str::trim)
+            .filter(|c| !c.is_empty())
+            .unwrap_or("(none)")
     )
 }
 
@@ -225,7 +231,8 @@ mod tests {
 
     #[test]
     fn parse_enforces_the_bounds() {
-        let ok = parse(&serde_json::json!({"question": " which first? ", "context": "  "})).unwrap();
+        let ok =
+            parse(&serde_json::json!({"question": " which first? ", "context": "  "})).unwrap();
         assert_eq!(ok, ("which first?".into(), None));
         let ok = parse(&serde_json::json!({"question": "q", "context": "a vs b"})).unwrap();
         assert_eq!(ok.1.as_deref(), Some("a vs b"));
@@ -248,7 +255,11 @@ mod tests {
 
     #[test]
     fn block_has_the_r1_4_shape_and_clips_the_partial() {
-        let b = block("I will read the justfile first.", "justfile or README?", None);
+        let b = block(
+            "I will read the justfile first.",
+            "justfile or README?",
+            None,
+        );
         assert_eq!(
             b,
             "### Consultation\n\
@@ -301,6 +312,15 @@ mod tests {
         assert!(!ONE_SHOT_SYSTEM.contains(CAP_PLACEHOLDER));
         assert_eq!(ONE_SHOT_SYSTEM.matches("<workflow>").count(), 1);
         assert!(ONE_SHOT_SYSTEM.contains("<completeness>"));
-        assert!(ONE_SHOT_SYSTEM.ends_with(SYSTEM.trim_end().rsplit_once("</completeness>").unwrap().1.trim()));
+        assert!(
+            ONE_SHOT_SYSTEM.ends_with(
+                SYSTEM
+                    .trim_end()
+                    .rsplit_once("</completeness>")
+                    .unwrap()
+                    .1
+                    .trim()
+            )
+        );
     }
 }

@@ -201,13 +201,15 @@ impl Store {
         let sid = session.to_string();
         let mut tx = self.begin_write().await?;
         let seq = insert_in(&mut tx, &sid, &ChatMessage::user(text), None, None).await?;
-        sqlx::query("UPDATE messages SET advisory = ?, excluded = ? WHERE session_id = ? AND seq = ?")
-            .bind(&advisory)
-            .bind(&excluded)
-            .bind(&sid)
-            .bind(seq)
-            .execute(&mut *tx)
-            .await?;
+        sqlx::query(
+            "UPDATE messages SET advisory = ?, excluded = ? WHERE session_id = ? AND seq = ?",
+        )
+        .bind(&advisory)
+        .bind(&excluded)
+        .bind(&sid)
+        .bind(seq)
+        .execute(&mut *tx)
+        .await?;
         tx.commit().await?;
         Ok(seq)
     }

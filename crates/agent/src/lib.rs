@@ -1499,9 +1499,14 @@ impl AdvisoryKind {
         match raw.kind.as_deref() {
             None | Some("review") => Ok(Self::Review),
             Some("consultation") => Ok(Self::Consultation {
-                question: raw.question.ok_or_else(|| D::Error::missing_field("question"))?,
+                question: raw
+                    .question
+                    .ok_or_else(|| D::Error::missing_field("question"))?,
             }),
-            Some(other) => Err(D::Error::unknown_variant(other, &["review", "consultation"])),
+            Some(other) => Err(D::Error::unknown_variant(
+                other,
+                &["review", "consultation"],
+            )),
         }
     }
 }

@@ -46,7 +46,33 @@ R1.8 C rows + R1.9 C gates + R1.10 seams. Nothing behavioural: types, message st
 
 ## Gates (exact result lines)
 
-GATES_PLACEHOLDER
+All through `BUILD_LABEL=125R1-C /Users/Sky.Moore/.theuth/bin/build-lock nice -n 10 …`, `CARGO_BUILD_JOBS=4`,
+`CARGO_INCREMENTAL=0`, `CARGO_TARGET_DIR=…/theuth-125-r1-int/target` (the APFS clone; `.ready` appeared 13:37).
+
+- `cargo test -p runtime side_call` → `test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out`
+  (`side_call::tests::call_kind_round_trips_its_string_form`).
+- `cargo test -p agent --lib -- store:: advisor::consult advisor_wire_tests` →
+  `test result: ok. 97 passed; 0 failed; 0 ignored; 0 measured; 437 filtered out` — the 5 `advisor::consult::tests`,
+  3 `advisor_wire_tests` and 7 `store::advisor::tests` (2 new) all listed `ok`. (R1.9 writes the filters without `--`;
+  cargo rejects a second positional, so they go after `--`.)
+- `cargo test -p rpc` → `test result: ok. 54 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out` (lib) +
+  `1 passed` + `0 passed` (the two other targets); no flake this time.
+- `BUILD_SLOTS=1 … just ts-desktop` → `test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 54 filtered out`
+  (export_bindings); `bindings/` has `AdvisoryKind.ts`, `AdvisorConsultCounts.ts`, `AdvisorSeverity.ts` =
+  `"advice" | "nit" | "concern" | "blocker"`, `Advisory.ts` = `{…} & ({ "kind": "review" } | { "kind": "consultation",
+  question: string })`, `AdvisorStatus.ts` with `consults` / `warning`, `AdvisorDefaults.ts` with `max_consults`;
+  `methods.json` has `set_advisor_max_consults` (381 lines); copied into `crates/desktop/ui/src/rpc/bindings/`.
+- `cd crates/desktop/ui && bun run check` → `tsc -b --noEmit` exit 0 (no output).
+- `cd crates/desktop/ui && bunx vitest run src/rpc src/store/advisor.test.ts src/lib/advisor-format.test.ts src/components/chat`
+  → `Test Files  54 passed (54)` / `Tests  529 passed (529)` (`rpc/api.test.ts` sees the regenerated `methods.json`).
+- `cargo fmt -p agent -p rpc -p runtime -- --check` → clean after `cargo fmt` on the three (fmt also wanted to
+  reflow pre-existing code in `slack`, `signal`, `telegram/channel.rs`, `tui/lib.rs`, `tui/model.rs`; those hunks were
+  reverted — not C's).
+- `cargo clippy -p runtime -p agent -p rpc -p tui -p slack -p telegram -p signal --all-targets -- -D warnings` →
+  `Finished dev profile` (first run failed on `telegram::worker::WorkerMsg` `large_enum_variant`, see
+  'Touched outside ownership'; clean after boxing).
+- `cargo check -p tui -p theuth` → `Finished dev profile`.
+- `cargo test -p telegram --lib` (after the `WorkerMsg` boxing) → `test result: ok. 122 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out`.
 
 ## Deviations from R1.7 (and why)
 
@@ -87,6 +113,10 @@ GATES_PLACEHOLDER
   `crates/tui/src/ui.rs`: `severity_color(Advice | Nit) = SAND`; test fixture `kind` (W2).
 - `crates/slack/src/channel.rs`, `crates/telegram/src/worker.rs`, `crates/signal/src/channel.rs`: test fixtures
   gain `kind: Default::default()` (closer — verify only).
+- `crates/telegram/src/worker.rs` `WorkerMsg::Agent(Box<AgentEvent>)` (+ `*ev` in `apply`, `Box::new(ev)` at
+  `channel.rs:2316`): `AdvisorStatus` grew by 36 bytes inside `AgentEvent::AdvisorChanged`, which pushed the
+  variant gap past clippy's `large_enum_variant` threshold (344 vs 113 bytes) under `-D warnings`; boxing is the
+  lint's own suggestion and changes no behaviour (closer — verify only).
 - `crates/desktop/ui/src/lib/advisor-format.ts`: `RANK.advice = 0` (nit 1, concern 2, blocker 3 — same order),
   `TONE.advice` = the info tone; `components/chat/AdvisorNoteCard.tsx` `ICON.advice = Info`;
   `store/advisor.test.ts` fixtures gain `kind: 'review'`, `consults`, `warning` (W3).
@@ -105,4 +135,9 @@ GATES_PLACEHOLDER
 
 ## Open items
 
-OPEN_PLACEHOLDER
+- `cargo test -p agent` as a whole was not run (W1's gate); `advisor::tests` compile (clippy `--all-targets`) and
+  nothing there constructs the changed structs without `..default()`.
+- `crates/desktop/ui/src/rpc/bindings/**` and the root `bindings/` are gitignored; only the tracked
+  `crates/rpc/bindings/AdvisorDefaults.ts` (ts-rs's per-type export test output) is committed regenerated.
+- The `ONE_SHOT_SYSTEM` const splice relies on `str::split_at` / `trim_ascii_end` being `const` (stable since 1.86 /
+  1.80; the toolchain is 1.96.1).
