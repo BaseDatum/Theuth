@@ -92,6 +92,13 @@ import type { TopicId } from '@/rpc/bindings/TopicId'
 import type { Track } from '@/rpc/bindings/Track'
 import type { Utterance } from '@/rpc/bindings/Utterance'
 import type { Meta } from '@/rpc/bindings/Meta'
+import type { DreamSettings } from '@/rpc/bindings/DreamSettings'
+import type { DreamStatus } from '@/rpc/bindings/DreamStatus'
+import type { Metrics } from '@/rpc/bindings/Metrics'
+import type { NightSummary } from '@/rpc/bindings/NightSummary'
+import type { Proposal } from '@/rpc/bindings/Proposal'
+import type { RunRequest } from '@/rpc/bindings/RunRequest'
+import type { UndoReport } from '@/rpc/bindings/UndoReport'
 import type { ModelState } from '@/rpc/bindings/ModelState'
 import type { ModelInfo } from '@/rpc/bindings/ModelInfo'
 import type { Node } from '@/rpc/bindings/Node'
@@ -886,6 +893,22 @@ export interface Api {
   /** Model state, voices and the utterance in flight (43 §6); `-32001` when the voice plugin is disabled. */
   voice_status(): Promise<VoiceStatus>
   withdraw(session: SessionId, id: InputId): Promise<string>
+  // 136 §2.7: the dreaming plugin's nine methods, dotted on the wire (`api['dreaming.status']()`). The actor absent
+  // (`dreaming.enabled: false`) → `NOT_RUNNING` for every method but `status` / `settings`.
+  /** Last night, next window, budget left, backlog, proposals pending. */
+  'dreaming.status'(): Promise<DreamStatus>
+  /** The most recent `limit` nights, newest first. */
+  'dreaming.nights'(limit: number): Promise<NightSummary[]>
+  /** Fire the routine now with its own budget and mode; the run's session. */
+  'dreaming.run_now'(request: RunRequest): Promise<SessionId>
+  /** Revert one night (or one group of it). */
+  'dreaming.undo'(night: string, group: string | null): Promise<UndoReport>
+  'dreaming.settings'(): Promise<DreamSettings>
+  'dreaming.set_settings'(settings: DreamSettings): Promise<DreamSettings>
+  'dreaming.proposals'(): Promise<Proposal[]>
+  /** Answer a proposal with one of its `options`. */
+  'dreaming.proposal_act'(id: string, choice: string): Promise<null>
+  'dreaming.metrics'(days: number): Promise<Metrics>
 }
 
 /** Every request method name, sorted; `api.test.ts` checks it against `bindings/methods.json`. */
@@ -993,6 +1016,15 @@ export const METHODS = [
   'double_status',
   'double_take_over',
   'double_train',
+  'dreaming.metrics',
+  'dreaming.nights',
+  'dreaming.proposal_act',
+  'dreaming.proposals',
+  'dreaming.run_now',
+  'dreaming.set_settings',
+  'dreaming.settings',
+  'dreaming.status',
+  'dreaming.undo',
   'edit_turn',
   'enable_schedule',
   'escalate_model',

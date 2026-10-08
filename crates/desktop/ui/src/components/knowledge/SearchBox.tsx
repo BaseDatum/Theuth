@@ -3,6 +3,7 @@ import { Link, useNavigate } from '@tanstack/react-router'
 import { Search } from 'lucide-react'
 import { type ReactNode, useEffect, useState } from 'react'
 import { SectionRow } from '@/components/nav/SectionRow'
+import { StatusBadge } from '@/components/knowledge/Tree'
 import { Badge } from '@/components/ui/badge'
 import { Input } from '@/components/ui/input'
 import { queryKeys, useApi } from '@/lib/rpc'
@@ -73,6 +74,7 @@ export function SearchBox({ initial, actions, children }: { initial: string; act
               >
                 <div className="flex items-center gap-2 text-sm">
                   <span className="flex-1 truncate">{h.meta.title || h.meta.id}</span>
+                  <StatusBadge meta={h.meta} />
                   <Badge variant="outline" className="shrink-0 text-[10px]">
                     {h.meta.type}
                   </Badge>

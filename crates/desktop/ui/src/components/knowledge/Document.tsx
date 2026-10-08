@@ -17,6 +17,7 @@ import { NewDocDialog } from '@/components/knowledge/NewDocDialog'
 import { scaffold, stripFrontmatter } from '@/components/knowledge/frontmatter'
 import { ChatPicker } from '@/components/notes/ChatPicker'
 import { SearchReturn } from '@/components/sidebar/SearchReturn'
+import { StatusBadge } from '@/components/knowledge/Tree'
 import {
   AlertDialog,
   AlertDialogAction,
@@ -369,6 +370,7 @@ function ReadOnly({ concept, reason, onMissing }: { concept: Concept; reason: st
           <div className="flex flex-wrap items-center gap-2">
             <h1 className="text-[24px] leading-8 font-semibold">{meta.title}</h1>
             <Badge variant="outline">{meta.type}</Badge>
+            <StatusBadge meta={meta} />
             {meta.tags.map((t) => (
               <Badge key={t} variant="secondary">
                 {t}
