@@ -30,17 +30,21 @@ import { Switch } from '@/components/ui/switch'
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
 import {
   BACKLOG_SENTENCE,
+  BUDGET_PROBLEM,
   DAYS,
+  DEFAULT_BUDGET_USD,
   type Day,
+  MAX_BUDGET_USD,
   PAUSE_DAYS,
   RUN_MODES,
-  RUN_NOW_BUDGET_USD,
   type SettingsChange,
   TIERS,
   type Tier,
   TIER_LABEL,
   USD_SYMBOL,
+  budgetFromInput,
   countsLine,
+  dreamNowBlocker,
   isPaused,
   nightText,
   parseDigest,
@@ -74,20 +78,22 @@ export function Dreaming() {
     if (next) save.mutate(next)
   }
   const busy = !settings.data || save.isPending
+  // R-34: an invalid budget keeps the saved value in the field and says why underneath.
+  const [budgetProblem, setBudgetProblem] = useState<string | null>(null)
 
   const models = useModels()
   const titleModel = useQuery({ queryKey: queryKeys.titleModel, queryFn: () => api.title_model() })
   const subagentModel = useQuery({ queryKey: queryKeys.subagentModel, queryFn: () => api.subagent_model() })
-  const defaults = { title: titleModel.data?.id ?? null, subagent: subagentModel.data?.id ?? null, session: info?.default_model ?? 'the default model' }
 
   const s = status.data
   const digest = settings.data ? parseDigest(settings.data.digest) : null
   const now = new Date()
   const paused = settings.data ? isPaused(settings.data.paused_until, now) : false
+  const blocker = s ? dreamNowBlocker({ enabled: s.enabled, routineEnabled: routine?.enabled, pausedUntil: settings.data?.paused_until ?? s.paused_until, running: routine?.running === true }, now) : null
 
   return (
     <>
-      <Section title="Dreaming" actions={<DreamNow disabled={s?.enabled === false} />}>
+      <Section title="Dreaming" actions={<DreamNow blocker={blocker} defaultBudget={settings.data?.budget_usd ?? DEFAULT_BUDGET_USD} />}>
         {status.isError ? (
           <Empty>{status.error.message}</Empty>
         ) : (
@@ -125,20 +131,39 @@ export function Dreaming() {
           <span className="text-fg-tertiary">–</span>
           <Input type="time" dictate={false} aria-label="Window end" className="w-36 tabular-nums" disabled={busy} value={settings.data?.window[1] ?? ''} onChange={(e) => change({ kind: 'window', index: 1, time: e.target.value })} />
         </WideRow>
-        <Row label="Budget per night" description={`Model spend a night may reach before it stops; default ${usd(1)}. Any amount.`}>
+        <Row
+          label="Budget per night"
+          description={
+            <>
+              Model spend a night may reach before it stops; default {usd(DEFAULT_BUDGET_USD)}, up to {usd(MAX_BUDGET_USD)}.
+              {budgetProblem && <span className="block text-destructive">{budgetProblem}</span>}
+            </>
+          }
+        >
           <span className="text-sm text-fg-secondary">{USD_SYMBOL}</span>
           <Input
             key={settings.data?.budget_usd}
             type="number"
             dictate={false}
             inputMode="decimal"
-            min={0}
+            min={0.01}
+            max={MAX_BUDGET_USD}
             step="0.5"
             aria-label="Budget per night in USD"
+            aria-invalid={budgetProblem !== null}
             className="w-28 text-right"
             disabled={busy}
             defaultValue={settings.data?.budget_usd}
-            onBlur={(e) => change({ kind: 'budget', usd: Number(e.currentTarget.value) })}
+            onBlur={(e) => {
+              const usd = budgetFromInput(e.currentTarget.value)
+              if (usd === null) {
+                e.currentTarget.value = String(settings.data?.budget_usd ?? '')
+                setBudgetProblem(BUDGET_PROBLEM)
+                return
+              }
+              setBudgetProblem(null)
+              change({ kind: 'budget', usd })
+            }}
             onKeyDown={(e) => {
               if (e.key === 'Enter') e.currentTarget.blur()
             }}
@@ -148,8 +173,15 @@ export function Dreaming() {
 
       <Section title="Models">
         {TIERS.map((tier) => {
-          const { model, seed } = resolvedDefault(tier, defaults)
-          const name = model === null ? 'rules only' : (models.data?.find((m) => m.id === model)?.name ?? model) + (seed ? ', another seed' : '')
+          const { model, same } = resolvedDefault(tier, {
+            resolved: settings.data?.resolved,
+            // The routine file's `model:` is the Tidy tier's ground truth while no pick overrides it.
+            routine: settings.data?.models.tidy == null ? (routine?.model ?? null) : null,
+            title: titleModel.data?.id ?? null,
+            subagent: subagentModel.data?.id ?? null,
+            session: info?.default_model ?? 'the default model',
+          })
+          const name = model === null ? 'rules only' : (models.data?.find((m) => m.id === model)?.name ?? model) + (same ? ', same as Propose' : '')
           return (
             <WideRow key={tier} label={TIER_LABEL[tier]} description={TIER_HELP[tier]}>
               <ModelCombobox
@@ -255,12 +287,12 @@ function Stat({ label, className, children }: { label: string; className?: strin
   )
 }
 
-/** The Dream now button and its dialog: budget (default $5) and mode (one pass | backlog) → `dreaming.run_now` → the run's chat. */
-function DreamNow({ disabled }: { disabled: boolean }) {
+/** The Dream now button and its dialog: budget (opens at the nightly budget) and mode (one pass | backlog) → `dreaming.run_now` → the run's chat. `blocker` disables the button and is its tooltip (R-46). */
+function DreamNow({ blocker, defaultBudget }: { blocker: string | null; defaultBudget: number }) {
   const api = useDreamingApi()
   const navigate = useNavigate()
   const [open, setOpen] = useState(false)
-  const [budget, setBudget] = useState(String(RUN_NOW_BUDGET_USD))
+  const [budget, setBudget] = useState('')
   const [mode, setMode] = useState<RunMode>('pass')
   const run = useAction((req: { budget_usd: number; mode: RunMode }) => api['dreaming.run_now']({ ...req, run_timeout_secs: null }), {
     keys: [KEY, SCHEDULES],
@@ -269,20 +301,34 @@ function DreamNow({ disabled }: { disabled: boolean }) {
       void navigate({ to: '/c/$session', params: { session } })
     },
   })
-  const amount = Number(budget)
-  const ok = Number.isFinite(amount) && amount > 0
+  const amount = budgetFromInput(budget)
+  const ok = amount !== null
   return (
     <>
-      <Button size="sm" disabled={disabled} onClick={() => setOpen(true)}>
-        <Moon /> Dream now
-      </Button>
+      {blocker && (
+        <span className="max-w-40 truncate text-[13px] text-fg-tertiary md:max-w-none" title={blocker}>
+          {blocker}
+        </span>
+      )}
+      <span title={blocker ?? undefined}>
+        <Button
+          size="sm"
+          disabled={blocker !== null}
+          onClick={() => {
+            setBudget(String(defaultBudget))
+            setOpen(true)
+          }}
+        >
+          <Moon /> Dream now
+        </Button>
+      </span>
       <Dialog open={open} onOpenChange={setOpen}>
         <DialogContent className="sm:max-w-md">
           <form
             className="contents"
             onSubmit={(e) => {
               e.preventDefault()
-              if (ok) run.mutate({ budget_usd: amount, mode })
+              if (amount !== null) run.mutate({ budget_usd: amount, mode })
             }}
           >
             <DialogHeader>
@@ -294,7 +340,7 @@ function DreamNow({ disabled }: { disabled: boolean }) {
                 <Label htmlFor="dream-budget">Budget</Label>
                 <div className="flex items-center gap-2">
                   <span className="text-sm text-fg-secondary">{USD_SYMBOL}</span>
-                  <Input id="dream-budget" type="number" dictate={false} inputMode="decimal" min={0} step="0.5" autoFocus className="w-32 text-right" value={budget} aria-invalid={!ok} onChange={(e) => setBudget(e.target.value)} />
+                  <Input id="dream-budget" type="number" dictate={false} inputMode="decimal" min={0.01} max={MAX_BUDGET_USD} step="0.5" autoFocus className="w-32 text-right" value={budget} aria-invalid={!ok} onChange={(e) => setBudget(e.target.value)} />
                 </div>
               </div>
               <div className="grid gap-2">
