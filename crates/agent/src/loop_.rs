@@ -74,7 +74,7 @@ use crate::continuation::{
 };
 use crate::cost::{CallId, CallKind, CallStatus, CostObservation, Money};
 use crate::durability::{
-    CallState, JournaledCall, LastStep, ResumeKind, ResumePlan, ResumeReportRow, StepKind, crash,
+    CallState, JournaledCall, LastStep, ResumeCause, ResumePlan, ResumeReportRow, StepKind, crash,
     crash_point,
 };
 use crate::endless::{Endless, MemoryMode, SetMode, UnitFilter, ViewRender};
@@ -1368,6 +1368,16 @@ pub struct Resume {
     pub plan: ResumePlan,
     /// The boot scan's concurrency bound, if any.
     pub slots: Option<Arc<Semaphore>>,
+    /// 139 §6.3: why — the plan's boot rule from `resume_scan` / the RPC,
+    /// `Transfer` / `Takeover` from `Take::run`. Overrides `plan.cause`.
+    pub cause: ResumeCause,
+    /// 139 §6.3: the previous owner for `transfer` / `takeover`; W2 puts it
+    /// on `TurnResumed.from` and in the `<engine_restart from>` note.
+    pub from: Option<String>,
+    /// 139 §7.1: the previous owner's jobs the supervisor settled `lost`
+    /// before this actor existed (`transfer::on_resume_here`); the resume
+    /// report's `lost_jobs`.
+    pub lost_jobs: Vec<tools::JobId>,
 }
 
 impl Message<Resume> for Session {
@@ -1386,10 +1396,16 @@ impl Message<Resume> for Session {
         let turn = m.plan.turn;
         let cancel = self.shared.rt.shutdown.child_token();
         self.enter(cancel.clone(), Some(turn)).await;
-        let task = Turn::new(self.shared.clone(), Some(turn), cancel, state);
+        let mut task = Turn::new(self.shared.clone(), Some(turn), cancel, state);
+        task.resume_from = m.from;
+        task.resume_lost_jobs = m.lost_jobs;
         let me = ctx.actor_ref().clone();
+        let plan = ResumePlan {
+            cause: m.cause,
+            ..m.plan
+        };
         tokio::spawn(async move {
-            let state = task.resume(m.plan, m.slots).await;
+            let state = task.resume(plan, m.slots).await;
             let _ = me.tell(TurnDone(state)).await;
         });
         true
@@ -2483,6 +2499,11 @@ struct Turn {
     /// The `turn_finished` step rode the final assistant row (109 §3.3 step
     /// 4); `drive` writes it on its own otherwise.
     finished_written: bool,
+    /// 139 §6.3: the engine a resumed turn was taken from (`Resume::from`);
+    /// `TurnResumed.from` and the `<engine_restart from>` note.
+    resume_from: Option<String>,
+    /// 139 §7.1: `Resume::lost_jobs`, reported by `report()`.
+    resume_lost_jobs: Vec<tools::JobId>,
     /// 137 D4: set at the start of an endless turn — the view this turn's
     /// first request opens with, and what the `view_rebase` log line needs.
     /// `None` = the epochs frame.
@@ -3071,8 +3092,21 @@ impl Turn {
             risks: HashMap::new(),
             resume_call: parking_lot::Mutex::new(None),
             finished_written: false,
+            resume_from: None,
+            resume_lost_jobs: Vec::new(),
             view: None,
         }
+    }
+
+    /// A cancel landing now is a suspension, not a stop (109 §9.2, 139
+    /// §6.1): the process is shutting down or this session is draining for
+    /// a release.
+    fn suspending(&self) -> bool {
+        self.shared.rt.shutdown.is_cancelled()
+            || self
+                .shared
+                .draining
+                .load(std::sync::atomic::Ordering::SeqCst)
     }
 
     /// The store when the knowledge plugin is up (12 §9.2) and the tree is
@@ -3386,8 +3420,10 @@ impl Turn {
     fn dangling_calls(&self) -> Vec<ToolCall> {
         for (_, m) in self.state.history.iter().rev() {
             match m.role {
-                // Inputs taken after the kill (a steer, a fresh turn's opener).
-                ChatRole::User => continue,
+                // Inputs taken after the kill (a steer, a fresh turn's opener)
+                // and harness notes (139 §6.3: the taker's "taken from A …
+                // press Resume" row) sit above the batch; neither answers it.
+                ChatRole::User | ChatRole::System => continue,
                 ChatRole::Assistant => {
                     return m.content.tool_calls().into_iter().cloned().collect();
                 }
@@ -3406,14 +3442,16 @@ impl Turn {
     /// `turn_finished` so the next boot does not resume it.
     async fn settle_open_turns(&mut self, current: TurnId) {
         let session = self.shared.id;
-        let open: Vec<TurnId> = match self.shared.store.open_turns().await {
+        // 139 §5.1 item 14: a per-session read; the actor exists only on
+        // the owner after D1, so the scope is implied.
+        let open: Vec<TurnId> = match self.shared.store.open_turn(session).await {
             Ok(open) => open
                 .into_iter()
-                .filter(|(s, t, _)| *s == session && *t != current)
-                .map(|(_, t, _)| t)
+                .filter(|(t, _)| *t != current)
+                .map(|(t, _)| t)
                 .collect(),
             Err(e) => {
-                tracing::warn!(session = %session, "open_turns: {e:#}");
+                tracing::warn!(session = %session, "open_turn: {e:#}");
                 Vec::new()
             }
         };
@@ -3441,7 +3479,7 @@ impl Turn {
                     interrupted += 1;
                 }
                 let outputs = vec![Some(ToolOutput::ok("")); dangling.len()];
-                let note = restart_note(&plan, 0, interrupted);
+                let note = restart_note(&plan, None, 0, interrupted);
                 self.finish_batch(turn, dangling.clone(), outputs, false, None, Some(note))
                     .await;
                 answered = true;
@@ -3548,7 +3586,12 @@ impl Turn {
             };
             outputs.push(preset);
         }
-        let note = restart_note(plan, replayed.len(), interrupted.len());
+        let note = restart_note(
+            plan,
+            self.resume_from.as_deref(),
+            replayed.len(),
+            interrupted.len(),
+        );
         let r = self
             .run_batch(registry, turn, 0, calls, outputs, Some(note))
             .await;
@@ -3732,8 +3775,9 @@ impl Turn {
 
     /// `ResumeReport` (109 §8.2) once the resumed step settled: the row
     /// first (`resume_reports`, so a desktop that connects later reads the
-    /// same counts from `Loaded.resume`), then the live event. The job and
-    /// ACP counts are W2 / W4's.
+    /// same counts from `Loaded.resume`), then the live event. `lost_jobs`
+    /// is 139 §7.1's owner-changed set (empty for a single-engine resume:
+    /// the reaper reports those by injection); the ACP counts are W4's.
     async fn report(
         &self,
         plan: &ResumePlan,
@@ -3744,7 +3788,7 @@ impl Turn {
         let report = crate::ResumeReport {
             replayed,
             interrupted,
-            lost_jobs: Vec::new(),
+            lost_jobs: self.resume_lost_jobs.clone(),
             children_restored: 0,
             children_handed_off: 0,
         };
@@ -3752,6 +3796,7 @@ impl Turn {
             session,
             turn: plan.turn,
             kind: plan.kind,
+            cause: plan.cause,
             interrupted_at: plan.interrupted_at,
             at: chrono::Utc::now(),
             report,
@@ -4742,6 +4787,8 @@ impl Turn {
                 interrupted_at: plan.interrupted_at,
                 resumed_at: chrono::Utc::now(),
                 partial_dropped: plan.partial.is_some(),
+                cause: plan.cause,
+                from: self.resume_from.clone(),
             })
             .await;
         }
@@ -4835,7 +4882,9 @@ impl Turn {
         // 109 §9.2: a cancel that came from the shutdown token (a drain's
         // deadline, SIGTERM) is a suspension — the turn stays open in the
         // journal and the next start resumes it; nothing below closes it.
-        if stop_reason == "cancelled" && self.shared.rt.shutdown.is_cancelled() {
+        // 139 §6.1: so is one that arrives while this session is draining
+        // for a release — the `suspended{release}` row written first stands.
+        if stop_reason == "cancelled" && self.suspending() {
             stop_reason = SUSPENDED.into();
         }
         let suspended = stop_reason == SUSPENDED;
@@ -5748,10 +5797,11 @@ impl Turn {
             crash_point(&crash::call_point(i, crash::CALL_AFTER_FINISHED));
             outputs[i] = Some(out);
         }
-        // 109 §9.2 step 3: a batch cut by the shutdown token (a drain's
-        // deadline) is left as the journal has it — `started` rows resume by
-        // the per-call rule, `planned` ones run then; no batch message.
-        if cancelled && self.shared.rt.shutdown.is_cancelled() {
+        // 109 §9.2 step 3 / 139 §6.1 step 4: a batch cut by the shutdown
+        // token or by the release drain's deadline is left as the journal
+        // has it — `started` rows resume by the per-call rule, `planned`
+        // ones run then; no batch message, no "cancelled by user" rows.
+        if cancelled && self.suspending() {
             return Round::Stop(SUSPENDED.into());
         }
         self.finish_batch(turn, calls, outputs, cancelled, plan, restart)
@@ -7436,16 +7486,24 @@ fn hhmmss(t: chrono::DateTime<chrono::Utc>) -> String {
 }
 
 /// 109 §4.3 restart note, prepended to the first response of a resumed
-/// batch: the only turn-level trace of the restart.
-fn restart_note(plan: &ResumePlan, replayed: usize, interrupted: usize) -> String {
+/// batch: the only turn-level trace of the restart. 139 §6.3: `kind` is
+/// the cause (`crash | shutdown | update | transfer | takeover`), and a
+/// transfer/takeover names the engine the turn came `from`.
+fn restart_note(
+    plan: &ResumePlan,
+    from: Option<&str>,
+    replayed: usize,
+    interrupted: usize,
+) -> String {
     let now = chrono::Utc::now();
     let after = (now - plan.interrupted_at).num_seconds().max(0);
-    let kind = match plan.kind {
-        ResumeKind::Interrupted => "crash",
-        ResumeKind::Suspended => "shutdown",
+    let kind = plan.cause.as_str();
+    let from = match (plan.cause, from) {
+        (ResumeCause::Transfer | ResumeCause::Takeover, Some(from)) => format!(" from=\"{from}\""),
+        _ => String::new(),
     };
     format!(
-        "<engine_restart at=\"{}\" after=\"{after}s\" kind=\"{kind}\" replayed=\"{replayed}\" interrupted=\"{interrupted}\"/>",
+        "<engine_restart at=\"{}\" after=\"{after}s\" kind=\"{kind}\"{from} replayed=\"{replayed}\" interrupted=\"{interrupted}\"/>",
         hhmmss(now)
     )
 }

@@ -120,11 +120,14 @@ use tools::{
 // 109: handler bodies in their own files so the waves do not collide.
 mod acp_resume; // 109 W4
 mod advisor; // 125 W1
+pub mod child_waits; // 139 W3
 mod drain;
 mod resume;
+pub mod transfer; // 139 W2
 mod waits;
 pub use drain::{Drain, DrainReport, OpenTurns, drain_engine, draining}; // 109 W5
-pub use resume::{OpenTurn, ResumeTurn};
+pub use resume::{OpenTurn, ResumeTurn, TakeoverPending};
+pub use transfer::{DrainSession, SessionDrainReport}; // 139 C
 // 109 W3: what a resumed human-wait / peer-wait call asks the supervisor for.
 pub(crate) use waits::{ResumeQuestion, ResumeWait, remaining};
 
@@ -171,6 +174,15 @@ pub struct Agents {
     sessions: HashMap<SessionId, Live>,
     /// Sessions with a turn in flight (from `TurnStarted`/`TurnFinished`).
     running: HashSet<SessionId>,
+    /// 139 D16: sessions mid-release-drain → the drain's reason; `route`
+    /// refuses their inputs (`transfer::draining_error`) until the demote
+    /// lands or the hold expires (`transfer::ClearDraining`).
+    draining_sessions: HashMap<SessionId, &'static str>,
+    /// 139 §6.3 (D5): sessions a system takeover left `ResumePending` →
+    /// the engine taken from; the user's `resume_turn` (boot-rule cause,
+    /// no `suspended` row) resumes them as `Takeover{from}` and runs the
+    /// §7 jobs / child-waits pass instead of reading as a `crash`.
+    pending_takeovers: HashMap<SessionId, String>,
     /// The communication policy (50 §2.1, §8), shared read-only with the
     /// tool registry; every mutation and admission happens in this mailbox.
     pub(crate) communication: SharedPolicy,
@@ -305,7 +317,7 @@ struct Live {
 /// What runs a session's turns: theuth's own loop, or an external ACP harness
 /// (design doc 06 §3.2). Both take [`UserInput`], [`CancelTurn`] and [`IsRunning`].
 #[derive(Clone)]
-enum LiveActor {
+pub(crate) enum LiveActor {
     Native(ActorRef<Session>),
     Acp(ActorRef<AcpChild>),
 }
@@ -337,6 +349,15 @@ impl LiveActor {
             Self::Acp(a) => {
                 let _ = a.tell(CancelTurn { keep }).await;
             }
+        }
+    }
+
+    /// 139 D19: cancel the turn, then stop once the cancel is processed —
+    /// never `kill()`, which drops the queued cancel with the mailbox.
+    async fn stop(&self) {
+        match self {
+            Self::Native(a) => transfer::stop_actor(a).await,
+            Self::Acp(a) => transfer::stop_actor(a).await,
         }
     }
 
@@ -501,6 +522,9 @@ pub struct SpawnChild {
     /// theuth skills (by name) materialised into an external harness's cwd
     /// on top of the `always` ones (design doc 75 §4); empty for the rest.
     pub skills: Vec<String>,
+    /// 139 §7.4: the `spawn_subagent` call's id — the `waits(child_result)`
+    /// row's key; empty when no tool call spawned it (tests, internal).
+    pub call_id: String,
 }
 
 /// `ask` → `Result<Delivered, String>`: route a peer message (50 §5.2). The
@@ -1206,6 +1230,15 @@ impl Agents {
             });
             return Ok(());
         }
+        // 139 D16: a session mid-release-drain takes nothing — the fence is
+        // about to move. Refused before any row is written (no error row
+        // in the transcript); the RPC layer maps the prefix to
+        // `SESSION_DRAINING` (-32012).
+        if let Some(reason) = self.draining_sessions.get(&sid).copied() {
+            self.ledger.release(sid, ticket);
+            self.network_input_dropped(ticket).await;
+            return Err(transfer::draining_error(reason));
+        }
         let routed = match check_files(&files) {
             Ok(()) => self.session(Some(sid), None, None, (None, None)).await,
             Err(e) => Err(anyhow::anyhow!(e)),
@@ -1328,7 +1361,11 @@ impl Agents {
     /// Inject `text` (already wrapped) into `to` and announce it. Harness-made,
     /// so `Automatic`: it never opens a new reminder budget (47 §4.5). A result
     /// of work an exported task started carries that task's `scope`, and is
-    /// the scope's work from admission (50 §6.3).
+    /// the scope's work from admission (50 §6.3). 139 Revision 1 Q3: a session
+    /// owned by another engine never gets an actor here on account of a
+    /// harness message — the sources (reaper, reminders, spared results) are
+    /// owner-scoped, so this is the backstop; see the as-built for why it
+    /// drops rather than forwards.
     async fn inject(
         &mut self,
         to: SessionId,
@@ -1337,6 +1374,9 @@ impl Agents {
         wrapped: String,
         scope: Option<Uuid>,
     ) {
+        if let Some(owner) = self.remote_owner(to).await {
+            return tracing::warn!(session = %to, %owner, "139: {from}: not injected into a session owned elsewhere");
+        }
         let ticket = self.ledger.admit(to, InputOrigin::Automatic, None);
         if let Some(scope) = scope
             && !self.network_input_queued(scope, ticket).await
@@ -1805,6 +1845,8 @@ impl Agents {
         stop_reason: &str,
         owned: Option<&OwnedChild>,
     ) {
+        // 139 §7.4 (W3): the parent's `child_result` wait is consumed here.
+        child_waits::child_result_delivered(self, parent, child).await;
         let request = self.bound.remove(&(child, turn));
         let answered = self.delivered.remove(&(child, turn));
         let Some(mut text) = self.turn_text.remove(&(child, turn)) else {
@@ -1946,6 +1988,23 @@ impl Agents {
                 self.peer_changed(&r).await;
             }
             self.enqueued.remove(&receipt.id);
+            return Ok(());
+        }
+        // 139 §8 "Children" (69 P): the parent moved to another engine — its
+        // owner runs the intake. `enqueue_peer` would spawn a local actor for
+        // a session this engine no longer owns, whose intake refuses the row.
+        if let Some(owner) = self.remote_owner(parent).await {
+            let m = Deliver {
+                from: child,
+                to: to_key,
+                text: text.to_owned(),
+                await_reply: false,
+                reply_to: None,
+                request_id: Some(request_id),
+                admitted: CancellationToken::new(),
+            };
+            self.forward_peer(owner, parent, &m, text.to_owned(), receipt, generation)
+                .await?;
             return Ok(());
         }
         let record = match self.store.peer_record(parent, receipt.id).await {
@@ -2328,9 +2387,14 @@ impl Agents {
             return tracing::error!("jobs actor not running: stored reminders not re-armed");
         };
         for r in rows {
-            if !matches!(self.store.session(r.session).await, Ok(Some(_))) {
-                let _ = self.store.delete_reminder(r.session, &r.id).await;
-                continue;
+            match self.store.session(r.session).await {
+                Ok(Some(row)) if row.here => {}
+                // 139 Q3: the owner's reminder row replicated here; it fires there.
+                Ok(Some(_)) => continue,
+                _ => {
+                    let _ = self.store.delete_reminder(r.session, &r.id).await;
+                    continue;
+                }
             }
             let _ = jobs
                 .tell(RearmReminder {
@@ -3681,6 +3745,7 @@ impl Message<SpawnChild> for Agents {
             n += 1;
             name = format!("{base}-{n}");
         }
+        let agent_name = m.agent.clone();
         self.session(
             Some(id),
             Some((m.parent, &name)),
@@ -3689,6 +3754,8 @@ impl Message<SpawnChild> for Agents {
         )
         .await
         .map_err(|e| format!("{e:#}"))?;
+        // 139 §7.4 (W3): the parent's `waits(child_result)` row.
+        child_waits::child_spawned(self, m.parent, id, &m.call_id, agent_name.as_deref()).await;
         // Next to `inherit_approvals` in spirit: the ceiling is on the
         // registry before the child's first `ListTools`.
         if let Some(cap) = m.cap {
@@ -5921,16 +5988,24 @@ impl Message<UnloadSession> for Agents {
     type Reply = bool;
 
     async fn handle(&mut self, m: UnloadSession, _: &mut Context<Self, Self::Reply>) -> bool {
-        // As `DeleteSession` stops an actor (68 §4.2): cancel the turn, kill,
-        // forget the live entry; rows and peer state stay.
-        self.drop_queued(m.session).await;
-        let Some(live) = self.sessions.remove(&m.session) else {
+        self.unload_session(m.session).await
+    }
+}
+
+impl Agents {
+    /// As `DeleteSession` stops an actor (68 §4.2): cancel the turn, stop
+    /// gracefully (139 D19: the cancel is processed, never dropped), forget
+    /// the live entry; rows and peer state stay. A demoted turn's
+    /// `finish_turn("cancelled")` is refused `NotOwner` by the fence, which
+    /// is correct — the new owner's rows stand.
+    pub(super) async fn unload_session(&mut self, session: SessionId) -> bool {
+        self.drop_queued(session).await;
+        let Some(live) = self.sessions.remove(&session) else {
             return false;
         };
-        live.actor.tell_cancel(None).await;
-        live.actor.kill().await;
-        self.running.remove(&m.session);
-        self.endless.detach(m.session);
+        live.actor.stop().await;
+        self.running.remove(&session);
+        self.endless.detach(session);
         true
     }
 }
@@ -8490,6 +8565,31 @@ pub async fn start(rt: &Runtime) -> anyhow::Result<()> {
             .as_deref()
             .map_or_else(|| text.to_owned(), |v| v.redact(text).into_owned())
     });
+    // 139 D15 (§5.3): finished-turn journal retention runs where the rows
+    // are owned — hourly, `Scope::Here`; the deletes replicate as log rows.
+    // ponytail: no config key for the interval (sessionsync's orphan sweep shape).
+    {
+        let store = store.clone();
+        let keep_days = cfg.durability.journal_keep_days;
+        let shutdown = rt.shutdown.clone();
+        tokio::spawn(async move {
+            loop {
+                match store.journal_prune(store::Scope::Here, keep_days).await {
+                    Ok(n) if n > 0 => {
+                        tracing::info!(
+                            "109: pruned {n} finished turn(s) older than {keep_days} days"
+                        )
+                    }
+                    Ok(_) => {}
+                    Err(e) => tracing::warn!("109: journal prune: {e:#}"),
+                }
+                tokio::select! {
+                    () = shutdown.cancelled() => return,
+                    () = tokio::time::sleep(Duration::from_secs(3600)) => {}
+                }
+            }
+        });
+    }
     let client = client(auth.clone())?;
     // 137: one endless service per engine; its pumps restart from the rows
     // once the actor is up (`resume_all` below).
@@ -8525,6 +8625,8 @@ pub async fn start(rt: &Runtime) -> anyhow::Result<()> {
             endless: endless.clone(),
             sessions: HashMap::new(),
             running: HashSet::new(),
+            draining_sessions: HashMap::new(),
+            pending_takeovers: HashMap::new(),
             communication: communication.clone(),
             network: network::NetworkState::default(),
             waits: HashMap::new(),
@@ -10309,6 +10411,8 @@ pub(crate) mod tests {
             endless,
             sessions: HashMap::new(),
             running: HashSet::new(),
+            draining_sessions: HashMap::new(),
+            pending_takeovers: HashMap::new(),
             communication: SharedPolicy::new(Policy::new(communication, "config")),
             network: network::NetworkState::default(),
             waits: HashMap::new(),
@@ -12914,6 +13018,7 @@ pub(crate) mod tests {
             effort: None,
             cap: None,
             skills: Vec::new(),
+            call_id: String::new(),
         }
     }
 
@@ -13409,6 +13514,8 @@ pub(crate) mod tests {
             interrupted_at: now,
             resumed_at: now,
             partial_dropped: false,
+            cause: crate::durability::ResumeCause::Crash,
+            from: None,
         })
         .await;
         next_event(&mut rx, |e| matches!(e, AgentEvent::TurnResumed { .. })).await;

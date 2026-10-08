@@ -9,7 +9,7 @@ use std::sync::{Arc, LazyLock};
 use ::search::SearchCategory;
 use acp::EntryInfo;
 use acp::registry::RegistryAgent;
-use agent::durability::ResumeKind;
+use agent::durability::{ResumeCause, ResumeKind};
 use agent::todo::{Status as TodoStatus, TodoSnapshot, TodoSource};
 use agent::{
     AdvisorDefaults, AdvisorSeverity, AdvisorState, AdvisorStatus, Advisory, AgentEvent, AgentInfo,
@@ -3513,6 +3513,10 @@ pub struct Model {
     /// 109 §10.3: the status-line note after a restart (`resumed · 2
     /// replayed · 1 skipped`); cleared by the next `TurnFinished`.
     pub resume_note: Option<String>,
+    /// 139 §9.3: the engine running the shown session's open turn when it is
+    /// not this one (`Loaded.resume.owner` with `here = false`); the
+    /// owner-offline line's `/take` then also resumes it.
+    owner_turn: Option<String>,
     /// The shown session's harvest is in flight (`Harvesting` … `Harvested`).
     /// Detached from the turn (10 §5.2 as built): survives `TurnFinished`,
     /// shown only while nothing else is.
@@ -3773,6 +3777,11 @@ impl Model {
         self.context_reason = loaded.context_reason;
         self.context_stale = false;
         self.project = loaded.project;
+        // 139 §9.3: a turn open on another engine (`Loaded.resume.here = false`).
+        self.owner_turn = loaded
+            .resume
+            .filter(|r| !r.here)
+            .map(|r| r.owner.unwrap_or_default());
         // The header's cost tag is the owner's summary, re-read on every load (51 §6.2).
         self.refresh_cost = true;
         // The link survives a restart (125 §3): re-read it with the transcript.
@@ -5486,6 +5495,11 @@ impl Model {
                     *error = Some(e);
                     return;
                 }
+                // 139 §9.3: the owner-offline line says when `/take` also resumes a turn.
+                let e = match &self.owner_turn {
+                    Some(owner) if e.ends_with("— /take") => format!("{e}{}", owner_turn_suffix(owner)),
+                    _ => e,
+                };
                 self.entries.push(Entry::Error(e));
             }
             // The owner's summary, never a local sum (51 §6.2): a reply for
@@ -6395,26 +6409,52 @@ impl Model {
             | AgentEvent::SessionOwnerChanged { .. }
             | AgentEvent::SessionClosing { .. }
             | AgentEvent::PartialDropped { .. } => {}
+            // 139 §9.3 (D5): a system takeover left the turn open here, not
+            // resumed; the engine's local note (W2) carries the Resume hint.
+            AgentEvent::ResumePending { from, .. } => {
+                let chip = engine_chip(&from);
+                self.interject(Entry::Divider(format!("taken from {chip}")));
+                self.resume_note = Some(format!(
+                    "taken from {chip} while a turn was running — not resumed"
+                ));
+            }
             // 125: handled before the streaming-tail bookkeeping above.
             AgentEvent::AdvisorChanged { .. } | AgentEvent::AdvisoryAdded { .. } => {}
-            // 109 §10.3: the divider and the status-line note.
+            // 109 §10.3 / 139 §9.3: the divider and the status-line note, with
+            // the previous owner after a transfer / takeover.
             AgentEvent::TurnResumed {
                 kind,
                 interrupted_at,
+                cause,
+                from,
                 ..
             } => {
                 let at = interrupted_at.with_timezone(&chrono::Local).format("%H:%M");
-                let (label, note) = match kind {
-                    ResumeKind::Interrupted => (
-                        "resumed after restart",
-                        format!("interrupted by a restart at {at} — resumed"),
-                    ),
-                    ResumeKind::Suspended => (
-                        "resumed after update",
-                        format!("paused for an update at {at} — resumed"),
-                    ),
+                let (label, note) = match (cause, from) {
+                    (ResumeCause::Transfer | ResumeCause::Takeover, from) => {
+                        let chip = engine_chip(from.as_deref().unwrap_or_default());
+                        let what = if cause == ResumeCause::Takeover {
+                            "takeover"
+                        } else {
+                            "transfer"
+                        };
+                        (
+                            format!("resumed after {what} from {chip}"),
+                            format!("taken from {chip} at {at} — resumed"),
+                        )
+                    }
+                    (_, _) => match kind {
+                        ResumeKind::Interrupted => (
+                            "resumed after restart".to_owned(),
+                            format!("interrupted by a restart at {at} — resumed"),
+                        ),
+                        ResumeKind::Suspended => (
+                            "resumed after update".to_owned(),
+                            format!("paused for an update at {at} — resumed"),
+                        ),
+                    },
                 };
-                self.interject(Entry::Divider(label.to_owned()));
+                self.interject(Entry::Divider(label));
                 self.resume_note = Some(note);
             }
             AgentEvent::ResumeReport {
@@ -11440,6 +11480,16 @@ pub fn owner_offline_line(owner: &str, last_seen: &str) -> String {
     )
 }
 
+/// 139 §9.3: appended to [`owner_offline_line`] when the loaded session has a
+/// turn open on its owner (`Loaded.resume` with `here = false`): the `/take`
+/// is a user takeover and resumes it here (D5).
+pub fn owner_turn_suffix(owner: &str) -> String {
+    format!(
+        " — a turn was running on {}; /take resumes it here",
+        engine_chip(owner)
+    )
+}
+
 /// `OwnerUnreachable{owner, last_seen}` out of a failed call's `data`: the
 /// serde external form (`{"OwnerUnreachable": {…}}`) or a flat object tagged
 /// `kind`/`type`. Returns the owner and `last_seen` as `ago` text.
@@ -16298,6 +16348,8 @@ mod tests {
             interrupted_at: at,
             resumed_at: at,
             partial_dropped: true,
+            cause: agent::durability::ResumeCause::Crash,
+            from: None,
         });
         assert!(
             matches!(m.entries.last(), Some(Entry::Divider(l)) if l == "resumed after restart"),
@@ -16351,6 +16403,134 @@ mod tests {
             m.entries
         );
         assert!(matches!(&m.entries[n - 1], Entry::Info(t) if t == "half a reply"));
+    }
+
+    /// 139 §9.3: a `TurnResumed` after a transfer / takeover names the
+    /// previous owner in the divider and the status note; a `ResumePending`
+    /// (system takeover, not resumed) draws its own divider; the boot causes
+    /// keep 109's strings.
+    #[test]
+    fn resume_divider_and_note_name_the_previous_owner() {
+        let owner = "abcdef0123456789".repeat(4);
+        let at = chrono::Utc::now();
+        let hhmm = at.with_timezone(&chrono::Local).format("%H:%M").to_string();
+        let resumed = |cause: ResumeCause, kind: ResumeKind, from: Option<&str>| {
+            let mut m = Model::new("m".into(), true);
+            let s = SessionId::new();
+            m.session = Some(s);
+            m.apply_agent(AgentEvent::TurnResumed {
+                session: s,
+                turn: TurnId::new(),
+                kind,
+                interrupted_at: at,
+                resumed_at: at,
+                partial_dropped: false,
+                cause,
+                from: from.map(str::to_owned),
+            });
+            let label = match m.entries.last() {
+                Some(Entry::Divider(l)) => l.clone(),
+                other => panic!("{other:?}"),
+            };
+            (label, m.resume_note.unwrap())
+        };
+        assert_eq!(
+            resumed(ResumeCause::Transfer, ResumeKind::Suspended, Some(&owner)),
+            (
+                "resumed after transfer from abcdef01".to_owned(),
+                format!("taken from abcdef01 at {hhmm} — resumed")
+            )
+        );
+        assert_eq!(
+            resumed(ResumeCause::Takeover, ResumeKind::Interrupted, Some(&owner)).0,
+            "resumed after takeover from abcdef01"
+        );
+        assert_eq!(
+            resumed(ResumeCause::Takeover, ResumeKind::Interrupted, None).0,
+            "resumed after takeover from ?",
+            "an old engine's event without `from`"
+        );
+        assert_eq!(
+            resumed(ResumeCause::Shutdown, ResumeKind::Suspended, None),
+            (
+                "resumed after update".to_owned(),
+                format!("paused for an update at {hhmm} — resumed")
+            )
+        );
+        assert_eq!(
+            resumed(ResumeCause::Crash, ResumeKind::Interrupted, None).0,
+            "resumed after restart"
+        );
+
+        let mut m = Model::new("m".into(), true);
+        let s = SessionId::new();
+        m.session = Some(s);
+        m.apply_agent(AgentEvent::ResumePending {
+            session: s,
+            turn: TurnId::new(),
+            from: owner.clone(),
+        });
+        assert!(
+            matches!(m.entries.last(), Some(Entry::Divider(l)) if l == "taken from abcdef01"),
+            "{:?}",
+            m.entries
+        );
+        assert!(
+            m.status()
+                .contains("taken from abcdef01 while a turn was running — not resumed"),
+            "{}",
+            m.status()
+        );
+    }
+
+    /// 139 §9.3: the owner-offline line gains the running-turn suffix only
+    /// when the loaded session's `resume` names a turn open on its owner
+    /// (`here = false`); other errors and a session owned here are untouched.
+    #[test]
+    fn owner_offline_line_names_the_running_turn() {
+        let owner = "abcdef0123456789".repeat(4);
+        let line = owner_offline_line(&owner, "3m ago");
+        let mut m = Model::new("m".into(), true);
+        let s = SessionId::new();
+        m.session = Some(s);
+        let resume = |here: bool| agent::ResumeState {
+            turn: TurnId::new(),
+            kind: ResumeKind::Interrupted,
+            interrupted_at: chrono::Utc::now(),
+            resumed: false,
+            report: None,
+            owner: (!here).then(|| owner.clone()),
+            here,
+            cause: None,
+        };
+        m.apply(UiEvent::History(
+            s,
+            Loaded {
+                resume: Some(resume(false)),
+                ..Loaded::default()
+            },
+        ));
+        m.apply(UiEvent::Error(line.clone()));
+        assert!(
+            matches!(m.entries.last(), Some(Entry::Error(e)) if *e == format!("{line} — a turn was running on abcdef01; /take resumes it here")),
+            "{:?}",
+            m.entries.last()
+        );
+        m.apply(UiEvent::Error("boom".into()));
+        assert!(matches!(m.entries.last(), Some(Entry::Error(e)) if e == "boom"));
+        // Owned here (or no open turn): the plain line.
+        m.apply(UiEvent::History(
+            s,
+            Loaded {
+                resume: Some(resume(true)),
+                ..Loaded::default()
+            },
+        ));
+        m.apply(UiEvent::Error(line.clone()));
+        assert!(matches!(m.entries.last(), Some(Entry::Error(e)) if *e == line));
+        m.apply(UiEvent::History(s, Loaded::default()));
+        m.apply(UiEvent::Error(line.clone()));
+        assert!(matches!(m.entries.last(), Some(Entry::Error(e)) if *e == line));
     }
 
     /// One consultation (52 §6): `Questioning` and `Inspecting` name the

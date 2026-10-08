@@ -2,7 +2,7 @@ import { expect, test } from 'vitest'
 import { withOwner } from '@/lib/rpc'
 import { RpcError } from '@/rpc/client'
 import type { SessionSummary } from '@/rpc/bindings/SessionSummary'
-import { engineLabel, lastSeenText, ownerOfflineText, ownerUnreachable } from './owner'
+import { engineLabel, lastSeenText, ownerMidTurnText, ownerOfflineText, ownerUnreachable, sessionDraining } from './owner'
 
 const KEY = 'abcdef0123456789'.repeat(4)
 
@@ -35,6 +35,24 @@ test('last seen renders as an age or never; the sentence names the engine twice'
   expect(lastSeenText('garbage', now)).toBe('garbage')
   expect(ownerOfflineText('desk', '3m ago')).toBe(
     'Owned by desk, last seen 3m ago. Continue here now? (turns not yet shipped from desk stay there)',
+  )
+})
+
+test('139 D16: SessionDraining (-32012) is read from the refusal data; a NotHub (-32011) is not one', () => {
+  expect(sessionDraining(new Error('x'))).toBeNull()
+  expect(sessionDraining(new RpcError(-32011, 'another engine holds the hub lease', { NotHub: { hub: KEY } }))).toBeNull()
+  expect(sessionDraining(new RpcError(-32012, 'x', { SessionDraining: { session: 's1', reason: 'release', next_owner: KEY } }))).toEqual({
+    session: 's1',
+    reason: 'release',
+    nextOwner: KEY,
+  })
+  expect(sessionDraining(new RpcError(-32012, 'x', { SessionDraining: { session: 's1', reason: 'shutdown' } }))).toEqual({
+    session: 's1',
+    reason: 'shutdown',
+    nextOwner: null,
+  })
+  expect(ownerMidTurnText('desk')).toBe(
+    'desk was mid-turn. Continue here and resume — desk may still be working; whatever it did after the last synced step will be discarded.',
   )
 })
 

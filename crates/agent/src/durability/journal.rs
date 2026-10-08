@@ -58,7 +58,9 @@ impl Journal for StoreJournal {
         })
     }
 
-    fn job(&self, j: JobRow) -> BoxFuture<'_, ()> {
+    fn job(&self, mut j: JobRow) -> BoxFuture<'_, ()> {
+        // 139 §10 (D14): the store knows the engine; the tools crate does not.
+        j.engine = self.0.engine().to_owned();
         Box::pin(async move { log("job", self.0.job_put(&j).await) })
     }
 

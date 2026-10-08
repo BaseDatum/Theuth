@@ -30,6 +30,20 @@ export function ownerUnreachable(e: unknown): OwnerUnreachable | null {
   return { owner: o.owner, lastSeen: typeof seen === 'string' || typeof seen === 'number' ? seen : null }
 }
 
+export type SessionDraining = { session: string; reason: string; nextOwner: string | null }
+
+/**
+ * 139 §6.1 (D16): `SessionDraining{session, reason, next_owner}` out of a failed send — the session is mid-release
+ * on the engine we talk to; retryable (code `-32012`). Read from the refusal's `data` (`{"SessionDraining": {…}}`),
+ * never from the code alone (`-32011` beside it is `NotHub`). `null` for every other error.
+ */
+export function sessionDraining(e: unknown): SessionDraining | null {
+  if (!(e instanceof RpcError) || typeof e.data !== 'object' || e.data === null) return null
+  const d = (e.data as Record<string, unknown>).SessionDraining as Record<string, unknown> | undefined
+  if (!d || typeof d.session !== 'string' || typeof d.reason !== 'string') return null
+  return { session: d.session, reason: d.reason, nextOwner: typeof d.next_owner === 'string' ? d.next_owner : null }
+}
+
 /** `3m ago` / `never` for a `last_seen` that is RFC 3339 text or ms since the epoch. */
 export function lastSeenText(v: string | number | null, now = Date.now()): string {
   if (v === null) return 'never'
@@ -40,3 +54,7 @@ export function lastSeenText(v: string | number | null, now = Date.now()): strin
 /** The owner-offline card's sentence (68 §5). */
 export const ownerOfflineText = (engine: string, lastSeen: string): string =>
   `Owned by ${engine}, last seen ${lastSeen}. Continue here now? (turns not yet shipped from ${engine} stay there)`
+
+/** 139 §9.3: the card's second sentence when `Loaded.resume` shows the owner mid-turn (D5: the take resumes it). */
+export const ownerMidTurnText = (engine: string): string =>
+  `${engine} was mid-turn. Continue here and resume — ${engine} may still be working; whatever it did after the last synced step will be discarded.`
