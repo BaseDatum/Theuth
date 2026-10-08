@@ -1,0 +1,102 @@
+[
+ {
+  "type": "CodeMapProgress",
+  "root": "/Users/sky/Develop/theuth",
+  "job": "0192a4f0-7c3e-7b21-9d4e-5a6b7c8d9e0f",
+  "session": "7d1c2e4a-9b3f-4c8d-a1e2-3f4b5c6d7e8f",
+  "stage": "select",
+  "done": 0,
+  "total": 61,
+  "element": null,
+  "calls": 0,
+  "cost_nanos": 0,
+  "currency": "USD",
+  "error": null,
+  "seq": 50
+ },
+ {
+  "type": "CodeMapProgress",
+  "root": "/Users/sky/Develop/theuth",
+  "job": "0192a4f0-7c3e-7b21-9d4e-5a6b7c8d9e0f",
+  "session": "7d1c2e4a-9b3f-4c8d-a1e2-3f4b5c6d7e8f",
+  "stage": "top",
+  "done": 0,
+  "total": 61,
+  "element": null,
+  "calls": 1,
+  "cost_nanos": 38000000,
+  "currency": "USD",
+  "error": null,
+  "seq": 51
+ },
+ {
+  "type": "CodeMapChanged",
+  "root": "/Users/sky/Develop/theuth",
+  "elements": [
+   "overall-architecture"
+  ],
+  "stale": [],
+  "more": 0,
+  "seq": 52
+ },
+ {
+  "type": "CodeMapProgress",
+  "root": "/Users/sky/Develop/theuth",
+  "job": "0192a4f0-7c3e-7b21-9d4e-5a6b7c8d9e0f",
+  "session": "7d1c2e4a-9b3f-4c8d-a1e2-3f4b5c6d7e8f",
+  "stage": "top",
+  "done": 1,
+  "total": 61,
+  "element": "overall-architecture",
+  "calls": 2,
+  "cost_nanos": 76000000,
+  "currency": "USD",
+  "error": null,
+  "seq": 53
+ },
+ {
+  "type": "CodeMapProgress",
+  "root": "/Users/sky/Develop/theuth",
+  "job": "0192a4f0-7c3e-7b21-9d4e-5a6b7c8d9e0f",
+  "session": "7d1c2e4a-9b3f-4c8d-a1e2-3f4b5c6d7e8f",
+  "stage": "describe",
+  "done": 1,
+  "total": 61,
+  "element": null,
+  "calls": 3,
+  "cost_nanos": 118000000,
+  "currency": "USD",
+  "error": null,
+  "seq": 54
+ },
+ {
+  "type": "CodeMapProgress",
+  "root": "/Users/sky/Develop/theuth",
+  "job": "0192a4f0-7c3e-7b21-9d4e-5a6b7c8d9e0f",
+  "session": "7d1c2e4a-9b3f-4c8d-a1e2-3f4b5c6d7e8f",
+  "stage": "describe",
+  "done": 14,
+  "total": 61,
+  "element": "overall-architecture/cluster:26b565b0",
+  "calls": 7,
+  "cost_nanos": 310000000,
+  "currency": "USD",
+  "error": null,
+  "seq": 55
+ },
+ {
+  "type": "CodeMapProgress",
+  "root": "/Users/sky/Develop/theuth",
+  "job": "0192a4f0-7c3e-7b21-9d4e-5a6b7c8d9e0f",
+  "session": "7d1c2e4a-9b3f-4c8d-a1e2-3f4b5c6d7e8f",
+  "stage": "done",
+  "done": 61,
+  "total": 61,
+  "element": null,
+  "calls": 12,
+  "cost_nanos": 480000000,
+  "currency": "USD",
+  "error": null,
+  "seq": 56
+ }
+]
