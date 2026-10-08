@@ -22,7 +22,7 @@ internal sealed class SystemEffects : IDisposable
     private readonly HostWindow? host;
     private readonly Action<uint>? onSystemChanged;
     private readonly Windows.Foundation.TypedEventHandler<global::Windows.UI.ViewManagement.UISettings, object>? onEffects;
-    private readonly Windows.Foundation.TypedEventHandler<global::Windows.UI.ViewManagement.UISettings, object>? onAnimations;
+    private readonly Windows.Foundation.TypedEventHandler<global::Windows.UI.ViewManagement.UISettings, global::Windows.UI.ViewManagement.UISettingsAnimationsEnabledChangedEventArgs>? onAnimations;
     private bool disposed;
 
     private SystemEffects(DispatcherQueue dispatcher, HostWindow? host)
