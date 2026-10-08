@@ -1228,6 +1228,12 @@ async fn set_state_if(
         return Ok(false);
     }
     p.apply_to(study);
+    // F4E: a study that is over releases its session's seat (write root, cwd).
+    if is_terminal(&state)
+        && let Some(s) = study.session
+    {
+        crate::binding::unseat(s);
+    }
     env.publish(StudyEvent::StudyChanged {
         slug: study.slug.clone(),
         state,
@@ -2311,10 +2317,15 @@ fn append_block(brief: &mut Brief, block: &str, max_bytes: usize) {
 }
 
 /// `Begin{slot}` from a wave child (140 §10 step 2): bind the child to its
-/// slot and return the study brief for the slot's experiment plus its `<slot>` block.
+/// slot, seat it in the slot worktree (F4E: its writes cannot reach the study
+/// tree or the user's checkout), and return the study brief for the slot's
+/// experiment plus its `<slot>` block.
 async fn begin_slot(env: &Env, session: SessionId, slot: u8) -> Result<Brief> {
     crate::wave::bind_slot(session, slot);
-    let (study, exp, _) = crate::wave::resolve_env(env, session, slot).await?;
+    let (study, exp, dir) = crate::wave::resolve_env(env, session, slot).await?;
+    if crate::wave::is_child(session) {
+        crate::binding::seat(session, &dir);
+    }
     let slug = study.slug.clone();
     let wave = exp.wave.unwrap_or(0);
     let slots = crate::wave::slots_of(env, &slug, wave).await?;
@@ -3928,6 +3939,9 @@ pub async fn finalize_task(env: Env, slug: String) {
             match env.store.patch_study(&slug, &p).await {
                 Ok(()) => {
                     p.apply_to(&mut study);
+                    if let Some(s) = study.session {
+                        crate::binding::unseat(s);
+                    }
                     env.publish(StudyEvent::StudyChanged {
                         slug: slug.clone(),
                         state: StudyState::Finished,
@@ -4874,6 +4888,9 @@ pub async fn recover(env: &Env) -> Result<()> {
                 if let Some(session) = study.session
                     && let Some(agents) = agents()
                 {
+                    if let Some(w) = study.worktree.as_deref() {
+                        crate::binding::seat(session, Path::new(w));
+                    }
                     let _ = agents
                         .ask(agent::SetToolset {
                             session,

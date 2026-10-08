@@ -2729,10 +2729,10 @@ impl Tool for StartTool {
 
     async fn call(&self, args: StartArgs, cx: ToolCx) -> anyhow::Result<ToolOutput> {
         let cwd = match &args.cwd {
-            Some(c) => c.clone(),
+            Some(c) => crate::seat::resolve(cx.session, c),
             None => match lock(&self.shells).get(&cx.session) {
                 Some(s) => s.working_dir().to_path_buf(),
-                None => std::env::current_dir()?,
+                None => crate::seat::cwd(cx.session)?,
             },
         };
         let idle_after = self.idle_after(args.idle_secs);

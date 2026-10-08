@@ -477,7 +477,8 @@ async fn wait_state(store: &Store, slug: &str, pred: impl Fn(&StudyState) -> boo
     panic!("study `{slug}` never reached the state");
 }
 
-/// Create, wait for `running`, bind a session (§8.2) and return it.
+/// Create, wait for `running`, bind a session (§8.2) and return it, seated as
+/// the schedule's fire seats it (F4E: the worktree is the write root).
 async fn started(h: &mut Harness, slug: &str, experiments: u32) -> SessionId {
     let origin = SessionId::new();
     let sp = spec(h, slug, experiments);
@@ -497,6 +498,19 @@ async fn started(h: &mut Harness, slug: &str, experiments: u32) -> SessionId {
     binding::on_fired(&mut h.studies, &format!("autoresearch-{slug}"), session)
         .await
         .unwrap();
+    let c = binding::confinement(h.studies.store.clone())(&format!("autoresearch-{slug}"))
+        .await
+        .unwrap()
+        .unwrap();
+    let worktree = c
+        .write_root
+        .expect("a running study fires with its worktree as write root");
+    assert_eq!(
+        worktree,
+        h.studies.root.join(slug).join("worktree"),
+        "write root is the study worktree"
+    );
+    binding::seat(session, &worktree);
     session
 }
 
@@ -1709,8 +1723,13 @@ async fn stop_now_interrupts_the_experiment_in_flight() {
         .unwrap();
     // §4.3: never measured → `abandoned`, not `interrupted` (R-66).
     assert_eq!(e1.state, ExperimentState::Abandoned);
+    // F4E: the write root holds through the stop (Finalizing) and is gone once finished.
+    if i.state == StudyState::Finalizing {
+        assert!(tools::seat::seat_of(session).write_root.is_some());
+    }
     let s = wait_state(&h.studies.store, "t1", |s| *s == StudyState::Finished).await;
     assert_eq!(s.stop_reason, Some(StopReason::UserNow));
+    assert_eq!(tools::seat::seat_of(session), tools::Seat::default());
 }
 
 /// A run blocked inside its benchmark, as another task (the model's tool call).
