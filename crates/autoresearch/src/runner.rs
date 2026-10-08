@@ -47,10 +47,12 @@ pub struct SampleRequest<'a> {
     pub runs_dir: &'a Path,
 }
 
-/// Run one scored sample of `spec.bench` (140 §5.1): bench slot + load wait
-/// (§5.5), stream and scan, parse `METRIC`/`CASE`/`ASI`, exit 0 with the
-/// primary present = a sample, anything else = a crash sample (`value: None`,
-/// tail in the log). `cancel` kills the process group.
+/// Run one scored sample of `spec.bench` (140 §5.1): load wait, then the bench
+/// slot, one re-check of the load under the slot (§5.5; R-31: the slot is not
+/// held while waiting for the machine), stream and scan, parse
+/// `METRIC`/`CASE`/`ASI`, exit 0 with the primary present = a sample, anything
+/// else = a crash sample (`value: None`, tail in the log). `cancel` kills the
+/// process group.
 pub async fn sample(
     spec: &StudySpec,
     cfg: &crate::config::Bench,
@@ -60,24 +62,34 @@ pub async fn sample(
     let timeout = parse_duration(&spec.bench.timeout)?;
     let wait = parse_duration(&cfg.wait)?;
     let label = format!("bench:{}", req.slug);
-    let _slot = if spec.bench.exclusive {
-        Some(slot::acquire(cfg, &label, cancel).await?)
-    } else {
-        None
-    };
     let waited = Instant::now();
-    let held = slot::wait_for_load(
+    let mut held = slot::wait_for_load(
         cfg.max_load,
         slot::wait_budget(req.slug, req.n, wait),
         cancel,
     )
     .await?;
     slot::charge_wait(req.slug, req.n, waited.elapsed());
+    let _slot = if spec.bench.exclusive {
+        let s = slot::acquire(cfg, &label, &spec.bench.command, cancel).await?;
+        // Another study's sample may have run while we queued: look once more.
+        let waited = Instant::now();
+        held = slot::wait_for_load(
+            cfg.max_load,
+            slot::wait_budget(req.slug, req.n, wait),
+            cancel,
+        )
+        .await?;
+        slot::charge_wait(req.slug, req.n, waited.elapsed());
+        Some(s)
+    } else {
+        None
+    };
     let load = slot::load();
     let wrapper = (spec.bench.exclusive && cfg.lock != slot::BUILTIN).then_some(cfg.lock.as_str());
 
     std::fs::create_dir_all(req.runs_dir)?;
-    let log = req.runs_dir.join(format!("sample-{}.log", req.k));
+    let log = req.runs_dir.join(sample_log_name(req.k, req.role));
     let run = run(&spec.bench.command, wrapper, timeout, &req, &log, cancel).await?;
     let mut scanned = run.scanned;
     let primary = scanned.metrics.remove(&spec.metric.name);
@@ -103,6 +115,26 @@ pub async fn sample(
         log_path: Some(root_relative(&log)),
         at: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
     })
+}
+
+/// `sample-<k>.log` for the candidate; `sample-<k>-<role>.log` for an
+/// incumbent / baseline / holdout / final sample sharing the run (R-23).
+fn sample_log_name(k: u32, role: SampleRole) -> String {
+    match role {
+        SampleRole::Candidate => format!("sample-{k}.log"),
+        other => format!("sample-{k}-{}.log", role_tag(other)),
+    }
+}
+
+/// The role's ledger tag for the log name.
+fn role_tag(role: SampleRole) -> &'static str {
+    match role {
+        SampleRole::Candidate => "candidate",
+        SampleRole::Incumbent => "incumbent",
+        SampleRole::Baseline => "baseline",
+        SampleRole::Holdout => "holdout",
+        SampleRole::Final => "final",
+    }
 }
 
 /// Run `command` (checks, smoke, warm, holdout) with the same environment and
@@ -170,7 +202,7 @@ async fn run(
     log: &Path,
     cancel: &CancellationToken,
 ) -> Result<Run> {
-    let resolved = resolve(command, req.evaluator);
+    let resolved = resolve(command, req.slug, req.evaluator);
     let script = match wrapper {
         Some(w) => format!("{w} /bin/bash -lc {}", quote(&resolved)),
         None => resolved,
@@ -196,16 +228,10 @@ async fn run(
     }
     let started = Instant::now();
     let mut child = cmd.spawn()?;
-    let tree = child.id().and_then(|pid| ProcessTree::adopt(pid).ok());
-    let kill = |tree: &Option<ProcessTree>| {
-        if let Some(t) = tree.clone() {
-            let _ = t.signal(Signal::Term);
-            tokio::spawn(async move {
-                tokio::time::sleep(KILL_GRACE).await;
-                t.kill();
-            });
-        }
-    };
+    // R-27: the group dies with this guard — an early `?`, a dropped future
+    // (the tool call cancelled, the engine shutting down) must not leave a
+    // benchmark running on the shared machine beside the next sample.
+    let mut group = Group(child.id().and_then(|pid| ProcessTree::adopt(pid).ok()));
 
     let (tx, mut rx) = tokio::sync::mpsc::channel::<Vec<u8>>(64);
     if let Some(out) = child.stdout.take() {
@@ -224,46 +250,85 @@ async fn run(
     tokio::pin!(drain);
     let mut status: Option<std::process::ExitStatus> = None;
     let mut killed = false;
+    let mut eof = false;
     loop {
         tokio::select! {
-            chunk = rx.recv() => match chunk {
+            chunk = rx.recv(), if !eof => match chunk {
                 Some(c) => {
                     file.write_all(&c).await?;
                     scanner.feed(&c);
                 }
-                None => break,
+                // R-22: pipe EOF (`exec >bench.log 2>&1`) is not the end of the
+                // run — keep waiting for the leader under the same deadline.
+                None => eof = true,
             },
             s = child.wait(), if status.is_none() => {
                 status = Some(s?);
+                if eof { break; }
                 drain.as_mut().reset(tokio::time::Instant::now() + DRAIN_GRACE);
             }
-            () = &mut deadline, if !killed => {
+            // R-29: a leader that already exited cannot time out; only pipe
+            // holders remain, and the drain below deals with them.
+            () = &mut deadline, if !killed && status.is_none() => {
                 killed = true;
                 let _ = file.write_all(format!("\n[autoresearch] timeout after {timeout:?}: process group killed\n").as_bytes()).await;
-                kill(&tree);
+                group.terminate();
             }
             () = cancel.cancelled(), if !killed => {
                 killed = true;
                 let _ = file.write_all(b"\n[autoresearch] cancelled: process group killed\n").await;
-                kill(&tree);
+                group.terminate();
             }
             () = &mut drain, if status.is_some() => {
                 // The leader is gone but something still holds the pipe: stop waiting for it.
-                if let Some(t) = &tree { t.kill(); }
                 break;
             }
         }
     }
-    if status.is_none() {
-        status = Some(child.wait().await?);
-    }
+    let status = match status {
+        Some(s) => s,
+        None => child.wait().await?,
+    };
+    // Whatever is left of the group (pipe holders, grandchildren) goes with the sample.
+    group.disarm_and_kill();
     file.flush().await?;
-    let exit = status.and_then(|s| if killed { None } else { s.code() });
+    let exit = if killed { None } else { status.code() };
     Ok(Run {
         exit,
         wall_ms: started.elapsed().as_millis() as u64,
         scanned: scanner.finish(),
     })
+}
+
+/// The benchmark's process group: `TERM` then `KILL` after [`KILL_GRACE`] on
+/// a timeout or cancel; killed outright when dropped unless the run completed.
+struct Group(Option<ProcessTree>);
+
+impl Group {
+    fn terminate(&self) {
+        if let Some(t) = self.0.clone() {
+            let _ = t.signal(Signal::Term);
+            tokio::spawn(async move {
+                tokio::time::sleep(KILL_GRACE).await;
+                t.kill();
+            });
+        }
+    }
+
+    /// The run is over: kill what remains now and stop guarding.
+    fn disarm_and_kill(&mut self) {
+        if let Some(t) = self.0.take() {
+            t.kill();
+        }
+    }
+}
+
+impl Drop for Group {
+    fn drop(&mut self) {
+        if let Some(t) = self.0.take() {
+            t.kill();
+        }
+    }
 }
 
 /// Copy a pipe into the channel in 64 KiB chunks until EOF.
@@ -281,14 +346,16 @@ async fn pump<R: tokio::io::AsyncRead + Unpin>(mut r: R, tx: tokio::sync::mpsc::
     }
 }
 
-/// Every whitespace token that names a file in custody is replaced by that
-/// copy's absolute path (140 §4.1 "Where the evaluator lives", §5.1).
-fn resolve(command: &str, evaluator: &Path) -> String {
+/// Every whitespace token that names a file in custody (`bench.sh`, `./bench.sh`,
+/// `<root>/drafts/<slug>/bench.sh`) is replaced by that copy's absolute path,
+/// shell-quoted (140 §4.1 "Where the evaluator lives", §5.1; R-8, R-17).
+fn resolve(command: &str, slug: &str, evaluator: &Path) -> String {
+    let drafts = crate::custody::drafts_dir(evaluator, slug);
     command
         .split(' ')
-        .map(|tok| match crate::custody::relative(tok) {
-            Some(rel) if evaluator.join(rel).is_file() => {
-                evaluator.join(rel).to_string_lossy().into_owned()
+        .map(|tok| match crate::custody::command_path(tok, &drafts) {
+            Some(p) if evaluator.join(p.rel()).is_file() => {
+                quote(&evaluator.join(p.rel()).to_string_lossy())
             }
             _ => tok.to_owned(),
         })
@@ -301,15 +368,20 @@ fn quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\\''"))
 }
 
-/// `<slug>/runs/<n>/<file>` from the absolute log path (the `samples.log_path` column).
+/// `<slug>/runs/<n>/…` from the absolute log path (the `samples.log_path`
+/// column): everything from the component before `runs`, however deep the
+/// log sits (`runs/<n>/holdout/sample-0-holdout.log` included, R-37).
 fn root_relative(log: &Path) -> String {
-    let parts: Vec<_> = log.components().rev().take(4).collect();
-    parts
+    let parts: Vec<String> = log
+        .components()
+        .map(|c| c.as_os_str().to_string_lossy().into_owned())
+        .collect();
+    let start = parts
         .iter()
-        .rev()
-        .map(|c| c.as_os_str().to_string_lossy())
-        .collect::<Vec<_>>()
-        .join("/")
+        .rposition(|c| c == "runs")
+        .and_then(|i| i.checked_sub(1))
+        .unwrap_or(parts.len().saturating_sub(4));
+    parts[start..].join("/")
 }
 
 #[cfg(test)]
@@ -500,6 +572,112 @@ mod tests {
         .unwrap();
         assert_eq!(out.value, Some(2.0));
         assert_eq!(out.asi["who"], "custody");
+    }
+
+    /// R-8/R-17: `./bench.sh` and the draft's absolute path resolve to the
+    /// custody copy, quoted — a space in the data dir does not break the
+    /// command (an absolute token cannot itself contain a space: it is split
+    /// like bash would split it, and custody then refuses the study at Start).
+    #[tokio::test]
+    async fn dot_slash_and_draft_paths_resolve_into_custody_quoted() {
+        for (sub, absolute) in [
+            ("data dir/autoresearch", false),
+            ("data/autoresearch", true),
+        ] {
+            let tmp = tempfile::tempdir().unwrap();
+            let root = tmp.path().join(sub);
+            let worktree = root.join("toy/worktree");
+            let evaluator = root.join("toy/evaluator/0");
+            let runs = root.join("toy/runs/3");
+            std::fs::create_dir_all(&worktree).unwrap();
+            std::fs::create_dir_all(&evaluator).unwrap();
+            std::fs::write(worktree.join("bench.sh"), "echo METRIC time_ms=1").unwrap();
+            std::fs::write(evaluator.join("bench.sh"), "echo METRIC time_ms=2").unwrap();
+            let req = SampleRequest {
+                slug: "toy",
+                n: 3,
+                k: 1,
+                tree_sha: "abc",
+                role: SampleRole::Candidate,
+                worktree: &worktree,
+                evaluator: &evaluator,
+                runs_dir: &runs,
+            };
+            let cmd = if absolute {
+                format!("bash {}", root.join("drafts/toy/bench.sh").display())
+            } else {
+                "bash ./bench.sh".to_owned()
+            };
+            let out = sample(
+                &spec(&cmd, "10s"),
+                &bench_cfg(),
+                req,
+                &CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+            assert_eq!(out.value, Some(2.0), "{cmd}");
+            let r = resolve("bash ./bench.sh --n 3", "toy", &evaluator);
+            assert_eq!(
+                r,
+                format!("bash '{}' --n 3", evaluator.join("bench.sh").display())
+            );
+        }
+    }
+
+    /// R-22: a benchmark that redirects its output closes the pipes at once;
+    /// the run must still end at the deadline, not hang on the leader.
+    #[tokio::test]
+    async fn redirected_output_still_times_out() {
+        let d = dirs();
+        let started = Instant::now();
+        let out = sample(
+            &spec(
+                "exec >/dev/null 2>&1; sleep 30; echo METRIC time_ms=1",
+                "1s",
+            ),
+            &bench_cfg(),
+            req(&d, 1),
+            &CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(out.exit, None);
+        assert!(out.value.is_none());
+        assert!(
+            started.elapsed() < Duration::from_secs(10),
+            "{:?}",
+            started.elapsed()
+        );
+    }
+
+    /// R-23/R-37: an incumbent sample sharing the run gets its own log; a
+    /// holdout log under `runs/<n>/holdout/` keeps the slug in `log_path`.
+    #[tokio::test]
+    async fn role_logs_and_root_relative_paths() {
+        let d = dirs();
+        let mut r = req(&d, 1);
+        r.role = SampleRole::Incumbent;
+        let out = sample(
+            &spec("echo METRIC time_ms=5", "10s"),
+            &bench_cfg(),
+            r,
+            &CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            out.log_path.as_deref(),
+            Some("toy/runs/3/sample-1-incumbent.log")
+        );
+        assert!(d.runs.join("sample-1-incumbent.log").is_file());
+        assert_eq!(
+            root_relative(Path::new(
+                "/x/y/autoresearch/toy/runs/7/holdout/sample-0-holdout.log"
+            )),
+            "toy/runs/7/holdout/sample-0-holdout.log"
+        );
+        assert_eq!(root_relative(Path::new("/a/b/c/d/e.log")), "b/c/d/e.log");
     }
 
     #[tokio::test]

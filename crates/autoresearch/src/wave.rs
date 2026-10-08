@@ -77,8 +77,10 @@ fn parent_of(session: SessionId) -> SessionId {
 
 /// `AgentEvent`s the wave cares about (called from `binding`'s subscription):
 /// a child of a bound wave study gets the study toolset minus `spawn_subagent`
-/// (140 §8.3); a child's turn end closes its slot; the supervisor's turn end
-/// settles the wave (abandoned slots count as discard, the wave is promoted).
+/// (140 §8.3) — off the mailbox, and a child that cannot be confined is
+/// cancelled and forgotten rather than left running with every tool (R-12);
+/// a child's turn end closes its slot; the supervisor's turn end settles the
+/// wave (abandoned slots count as discard, the wave is promoted).
 pub async fn on_agent_event(a: &mut Studies, e: &agent::AgentEvent) -> Result<()> {
     match e {
         agent::AgentEvent::SubagentSpawned { parent, child, .. } => {
@@ -89,22 +91,22 @@ pub async fn on_agent_event(a: &mut Studies, e: &agent::AgentEvent) -> Result<()
                 return Ok(());
             }
             register_child(*parent, *child);
-            match agents() {
-                Some(agents) => {
-                    if let Err(e) = agents
-                        .ask(agent::SetToolset {
-                            session: *child,
-                            toolset: Some(binding::toolset(1)),
-                        })
-                        .await
-                    {
-                        tracing::warn!(slug = %study.slug, "wave child toolset not applied: {e}");
+            let (child, slug) = (*child, study.slug);
+            tokio::spawn(async move {
+                if let Err(e) = confine_child(child).await {
+                    tracing::warn!(%slug, %child, "wave child not confined; cancelled: {e}");
+                    CHILDREN.lock().remove(&child);
+                    if let Some(agents) = agents() {
+                        let _ = agents
+                            .ask(agent::Cancel {
+                                session: child,
+                                keep: None,
+                                scope: agent::CancelScope::Tree,
+                            })
+                            .await;
                     }
                 }
-                None => {
-                    tracing::warn!(slug = %study.slug, "agent actor not running; wave child unconfined")
-                }
-            }
+            });
             Ok(())
         }
         agent::AgentEvent::TurnFinished { session, .. } => {
@@ -134,6 +136,18 @@ pub async fn on_agent_event(a: &mut Studies, e: &agent::AgentEvent) -> Result<()
         }
         _ => Ok(()),
     }
+}
+
+/// The study toolset (no `spawn_subagent`) on a wave child.
+async fn confine_child(child: SessionId) -> std::result::Result<(), String> {
+    let agents = agents().ok_or("agent actor not running")?;
+    agents
+        .ask(agent::SetToolset {
+            session: child,
+            toolset: Some(binding::toolset(1)),
+        })
+        .await
+        .map_err(|e| e.to_string())
 }
 
 fn agents() -> Option<kameo::actor::ActorRef<agent::Agents>> {
@@ -691,13 +705,12 @@ async fn lose(
     why: String,
 ) -> Result<()> {
     let patch = env.runs_dir(&exp.slug, exp.n).join("candidate.patch");
-    if let Ok(diff) = env
+    let diff = env
         .backend
-        .diff_text(study_wt, &exp.parent_sha, cand_sha, 4 << 20)
-    {
-        let _ = std::fs::write(&patch, diff);
-        exp.patch_path = Some(format!("{}/runs/{}/candidate.patch", exp.slug, exp.n));
-    }
+        .diff_text(study_wt, &exp.parent_sha, cand_sha, 4 << 20)?;
+    std::fs::create_dir_all(patch.parent().unwrap())?;
+    std::fs::write(&patch, diff)?;
+    exp.patch_path = Some(format!("{}/runs/{}/candidate.patch", exp.slug, exp.n));
     exp.state = ExperimentState::Discarded;
     exp.line = format!("{why}; {}", exp.line);
     exp.finished_at = Some(now());
@@ -892,10 +905,10 @@ async fn review(
         {
             let sha = exp.commit_sha.clone().unwrap_or_default();
             let patch = env.runs_dir(&slug, n).join("candidate.patch");
-            if let Ok(diff) = env.backend.diff_text(study_wt, previous, &sha, 4 << 20) {
-                let _ = std::fs::write(&patch, diff);
-                exp.patch_path = Some(format!("{slug}/runs/{n}/candidate.patch"));
-            }
+            let diff = env.backend.diff_text(study_wt, previous, &sha, 4 << 20)?;
+            std::fs::create_dir_all(patch.parent().unwrap())?;
+            std::fs::write(&patch, diff)?;
+            exp.patch_path = Some(format!("{slug}/runs/{n}/candidate.patch"));
             env.backend.reject(study_wt, &slug, n, previous)?;
             study.incumbent_sha = Some(previous.to_owned());
             study.incumbent_mean = previous_mean;

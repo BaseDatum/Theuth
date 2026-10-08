@@ -871,7 +871,7 @@ async fn abandon_does_not_block_the_next_begin() {
         .unwrap();
     assert_eq!(incidents.len(), 2);
     // TurnFinished with #2 still open closes it too (and counts it as an experiment).
-    binding::on_turn_finished(&mut h.studies, session)
+    binding::on_turn_finished(&mut h.studies, session, "end_turn")
         .await
         .unwrap();
     let e2 = h
@@ -892,7 +892,7 @@ async fn abandon_does_not_block_the_next_begin() {
     .unwrap()[0];
     assert_eq!(info.experiments, 2);
     // A turn of a session that is not a study is a no-op.
-    binding::on_turn_finished(&mut h.studies, SessionId::new())
+    binding::on_turn_finished(&mut h.studies, SessionId::new(), "end_turn")
         .await
         .unwrap();
 }
@@ -1083,44 +1083,49 @@ async fn crash_streak_pauses_with_attention_and_resume_counts_paused_time() {
         .await
         .unwrap();
     assert_eq!(ev[0].payload["after_n"], 2);
-    // The crash streak does not re-pause until two more crashes.
-    begin(
-        &mut h.studies,
-        Begin {
-            session,
-            slot: None,
-        },
-    )
-    .await
-    .unwrap();
-    run(
-        &mut h.studies,
-        Run {
-            session,
-            slot: None,
-            args: args.clone(),
-        },
-    )
-    .await
-    .unwrap();
-    log(
-        &mut h.studies,
-        Log {
-            session,
-            slot: None,
-            args: LogArgs::default(),
-        },
-    )
-    .await
-    .unwrap();
-    let s = h.studies.store.get_study("t1").await.unwrap().unwrap();
-    assert_eq!(
-        s.state,
-        StudyState::Paused {
-            reason: PauseReason::CrashStreak
-        },
-        "three in a row ≥ 2: pauses again"
-    );
+    // The crash streak counts from the resume (R-57): one more crash does not
+    // re-pause; the second does.
+    for (n, expect) in [
+        (3, StudyState::Running),
+        (
+            4,
+            StudyState::Paused {
+                reason: PauseReason::CrashStreak,
+            },
+        ),
+    ] {
+        begin(
+            &mut h.studies,
+            Begin {
+                session,
+                slot: None,
+            },
+        )
+        .await
+        .unwrap();
+        run(
+            &mut h.studies,
+            Run {
+                session,
+                slot: None,
+                args: args.clone(),
+            },
+        )
+        .await
+        .unwrap();
+        log(
+            &mut h.studies,
+            Log {
+                session,
+                slot: None,
+                args: LogArgs::default(),
+            },
+        )
+        .await
+        .unwrap();
+        let s = h.studies.store.get_study("t1").await.unwrap().unwrap();
+        assert_eq!(s.state, expect, "after crash #{n}");
+    }
 }
 
 #[tokio::test]

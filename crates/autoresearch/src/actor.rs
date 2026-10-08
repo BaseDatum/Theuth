@@ -502,7 +502,7 @@ pub(crate) fn gate_cfg(cfg: &AutoresearchConfig, spec: &StudySpec) -> Result<Gat
         guards: spec
             .secondary_guards
             .iter()
-            .map(|g| Effect::parse(&g.max_regression).map(|e| (g.name.clone(), e)))
+            .map(|g| Effect::parse(&g.max_regression).map(|e| (g.name.clone(), e, g.direction)))
             .collect::<std::result::Result<_, _>>()
             .map_err(Error::refused)?,
     })

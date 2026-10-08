@@ -45,10 +45,13 @@ impl Drop for Slot {
     }
 }
 
-/// Take the builtin slot for `label`, waiting until it is free or `cancel` fires.
+/// Take the builtin slot for `label`, waiting until it is free or `cancel`
+/// fires; `argv` is the command the owner file names (build-lock's
+/// `pid label epoch argv` layout, 140 §5.5).
 pub async fn acquire(
     cfg: &crate::config::Bench,
     label: &str,
+    argv: &str,
     cancel: &CancellationToken,
 ) -> Result<Slot> {
     if cfg.lock != BUILTIN {
@@ -58,11 +61,16 @@ pub async fn acquire(
         });
     }
     let dir = Path::new(SLOT_DIR).join("0");
-    acquire_at(&dir, label, cancel).await
+    acquire_at(&dir, label, argv, cancel).await
 }
 
 /// [`acquire`] on an explicit slot directory (tests).
-async fn acquire_at(dir: &Path, label: &str, cancel: &CancellationToken) -> Result<Slot> {
+async fn acquire_at(
+    dir: &Path,
+    label: &str,
+    argv: &str,
+    cancel: &CancellationToken,
+) -> Result<Slot> {
     let parent = dir.parent().expect("slot dir has a parent");
     let mut attempt = 0u64;
     loop {
@@ -74,7 +82,11 @@ async fn acquire_at(dir: &Path, label: &str, cancel: &CancellationToken) -> Resu
                     .map_or(0, |d| d.as_secs());
                 std::fs::write(
                     dir.join("owner"),
-                    format!("{} {label} {epoch} bench\n", std::process::id()),
+                    format!(
+                        "{} {label} {epoch} {}\n",
+                        std::process::id(),
+                        argv.split_whitespace().collect::<Vec<_>>().join(" ")
+                    ),
                 )?;
                 return Ok(Slot {
                     _label: label.to_owned(),
@@ -196,11 +208,14 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let dir = tmp.path().join("slots/0");
         let cancel = CancellationToken::new();
-        let held = acquire_at(&dir, "bench:a", &cancel).await.unwrap();
+        let held = acquire_at(&dir, "bench:a", "bash bench.sh", &cancel)
+            .await
+            .unwrap();
         assert!(held.held());
         let owner = std::fs::read_to_string(dir.join("owner")).unwrap();
         assert!(
-            owner.starts_with(&format!("{} bench:a ", std::process::id())),
+            owner.starts_with(&format!("{} bench:a ", std::process::id()))
+                && owner.trim_end().ends_with(" bash bench.sh"),
             "{owner}"
         );
         assert_eq!(holders_in(tmp.path().join("slots").as_path()).len(), 1);
@@ -208,7 +223,7 @@ mod tests {
         // A second taker waits; cancelling it returns Refused without touching the slot.
         let c2 = CancellationToken::new();
         c2.cancel();
-        let second = acquire_at(&dir, "bench:b", &c2).await;
+        let second = acquire_at(&dir, "bench:b", "bash bench.sh", &c2).await;
         assert!(matches!(second, Err(Error::Refused(_))));
         assert!(dir.join("owner").is_file());
 
@@ -224,7 +239,9 @@ mod tests {
         // pid 4_000_000 does not exist on macOS or Linux.
         std::fs::write(dir.join("owner"), "4000000 stale 0 bench\n").unwrap();
         let cancel = CancellationToken::new();
-        let held = acquire_at(&dir, "bench:c", &cancel).await.unwrap();
+        let held = acquire_at(&dir, "bench:c", "bash bench.sh", &cancel)
+            .await
+            .unwrap();
         assert!(held.held());
         assert!(
             std::fs::read_to_string(dir.join("owner"))
@@ -240,7 +257,9 @@ mod tests {
             max_load: 0.5,
             wait: "1s".into(),
         };
-        let s = acquire(&cfg, "x", &CancellationToken::new()).await.unwrap();
+        let s = acquire(&cfg, "x", "cmd", &CancellationToken::new())
+            .await
+            .unwrap();
         assert!(!s.held());
     }
 

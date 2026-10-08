@@ -495,6 +495,9 @@ impl Ctx<'_> {
         if let Some(p) = self.step_done("confirm").await? {
             return Ok(serde_json::from_value(p["headline"].clone())?);
         }
+        // R-56: the study turn may still be editing after `experiment_log`;
+        // the "final" tree is the kept incumbent, nothing newer.
+        git::reset_clean(&self.worktree, &self.final_sha)?;
         let base_wt = self.finalize_dir().join("base");
         git::worktree_remove(&self.repo, &base_wt).ok();
         git::worktree_add_detached(&self.repo, &base_wt, &self.base)?;
@@ -941,8 +944,9 @@ fn idea(e: &ExperimentRecord) -> String {
     }
 }
 
-/// Run every step of §11 for `study`, stopped for `reason`; returns the
-/// headline and the report document id. Idempotent per step.
+/// [`run_with`] on the startup snapshot of the `autoresearch:` section —
+/// the `Backend::finalize` seam's shape; the actor should pass its live
+/// `env.cfg` / `env.root` through [`run_with`] instead (R-106).
 pub async fn run(
     store: &Store,
     study: &StudyRecord,
@@ -950,6 +954,21 @@ pub async fn run(
     rt: &runtime::Runtime,
 ) -> Result<(Headline, String)> {
     let cfg: AutoresearchConfig = rt.section("autoresearch").unwrap_or_default();
+    let root = cfg.root(&rt.data_dir);
+    run_with(store, study, reason, cfg, &root, rt.shutdown.clone()).await
+}
+
+/// Run every step of §11 for `study`, stopped for `reason`, under the live
+/// `cfg` and `root`; returns the headline and the report document id.
+/// Idempotent per step. `cancel` ends a sample in flight (engine shutdown).
+pub async fn run_with(
+    store: &Store,
+    study: &StudyRecord,
+    reason: StopReason,
+    cfg: AutoresearchConfig,
+    root: &Path,
+    cancel: tokio_util::sync::CancellationToken,
+) -> Result<(Headline, String)> {
     let (Some(base), Some(final_sha), Some(worktree)) =
         (&study.base_sha, &study.incumbent_sha, &study.worktree)
     else {
@@ -958,17 +977,16 @@ pub async fn run(
             study.slug
         )));
     };
-    let root = cfg.root(&rt.data_dir);
     let cx = Ctx {
         store,
         study,
         spec: &study.spec,
         repo: PathBuf::from(&study.repo),
         worktree: PathBuf::from(worktree),
-        study_dir: crate::study_dir(&root, &study.slug),
+        study_dir: crate::study_dir(root, &study.slug),
         base: base.clone(),
         final_sha: final_sha.clone(),
-        cancel: rt.shutdown.clone(),
+        cancel,
         cfg,
     };
     let headline = cx.confirm().await?;
@@ -1010,7 +1028,7 @@ pub async fn run(
         }
     };
     if cx.step_done("record").await?.is_none() {
-        match crate::record::write(store, study, &headline.text, rt).await {
+        match crate::record::write_record(store, study, &headline.text).await {
             Ok(id) => {
                 cx.record_step("record", serde_json::json!({ "id": id }))
                     .await?
