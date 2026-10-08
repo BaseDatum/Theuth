@@ -1,6 +1,6 @@
-// 139 Z: the two-engine matrix (design 139 §11 Z, T1–T8) against two real
-// engines on one Mac, the shape of 68-two-engine-smoke.md §1 and
-// 109-as-built-W6.md §8. Not CI. Driven by `scripts/durability-mesh-smoke.sh`.
+// 139 Z: the two-engine matrix (design 139 §11 Z, T1–T8; R2 adds T10/T10b)
+// against two real engines on one Mac, the shape of 68-two-engine-smoke.md §1
+// and 109-as-built-W6.md §8. Not CI. Driven by `scripts/durability-mesh-smoke.sh`.
 //
 //   bun smoke.ts [T1 T2 …]      (default: every row)
 //
@@ -632,7 +632,91 @@ async function T8(A: Engine, B: Engine) {
   check("the refused input is in no transcript", !h.some((x) => /during the drain/.test(x.text ?? "")) && !(await history(A, sid)).some((x) => /during the drain/.test(x.text ?? "")));
 }
 
-const ROWS: Record<string, (A: Engine, B: Engine) => Promise<void>> = { T1, T2, T2c, T3, T4, T5, T6, T7, T8 };
+/// A PTY job that stays up `secs` seconds (never signalled by a takeover, T3).
+const ptyJob = (tag: string, secs: number): Call => ({ name: "start", args: { command: `printf 'HELLO-${tag}\\n'; sleep ${secs}; echo DONE-${tag}`, name: tag, ready: { log: "HELLO" } } });
+async function userTexts(e: Engine, sid: string, needle: string): Promise<string[]> {
+  return (await history(e, sid)).filter((x) => x.role === "user" && (x.text ?? "").includes(needle)).map((x) => x.text ?? "");
+}
+
+async function T10(A: Engine, B: Engine) {
+  // 139 R2 D4: reminders follow the owner on a connected transfer — armed on
+  // B from the replicated row, A's timer stopped by the release drain. The
+  // drain also kills A's job (§7.1), so no later result exists here; the
+  // harness envelope for a job that outlives the move is T10b's.
+  const sid = await newSession(A);
+  await sendBatch(A, sid, [ptyJob("T10", 300), { name: "remind_me_in", args: { seconds: 30, message: "follow the owner" } }], null, []);
+  await A.waitEv(sid, "TurnFinished", 30_000);
+  const t0 = now();
+  const rem = A.one<{ id: string }>("SELECT id FROM reminders WHERE session = ?", sid);
+  check("reminder row r1 on A", rem?.id === "r1", JSON.stringify(rem));
+  await waitFor("reminder row replicated to B", () => B.one("SELECT id FROM reminders WHERE session = ?", sid));
+  const take = await B.rpc("session_take", [sid, "user"]);
+  check("session_take(user) on B → B, epoch 2", isObj(take) && take.owner === B.id && take.epoch === 2, JSON.stringify(take));
+  await A.waitEv(sid, "SessionOwnerChanged", 20_000, (e) => e.here === false);
+  const fired = await B.waitEv(sid, "ReminderFired", 60_000);
+  const at = (now() - t0) / 1000;
+  check("the reminder fired on B, r1, about 30 s after it was set on A", fired.id === "r1" && at > 20 && at < 55, `+${at.toFixed(1)}s`);
+  const onB = await waitFor("<reminder> in B's transcript", async () => {
+    const t = await userTexts(B, sid, '<reminder id="r1"');
+    return t.length ? t : null;
+  }, 20_000, 500);
+  check("exactly one <reminder> on B, not late", onB.length === 1 && /late="false"/.test(onB[0]), onB[0]?.split("\n")[0]);
+  await B.waitEv(sid, "TurnFinished", 60_000, () => B.evs(sid, "TurnFinished").length >= 1);
+  check("A's timer never fired (no ReminderFired on A; the drain stopped it)", A.evs(sid, "ReminderFired").length === 0 && A.logText().includes("reminder timer(s) stopped"), `${A.evs(sid, "ReminderFired").length} fired on A`);
+  check("no reminder row left on either engine", !A.one("SELECT id FROM reminders WHERE session = ?", sid) && !B.one("SELECT id FROM reminders WHERE session = ?", sid));
+  const pty = jobs(A, sid).find((j) => j.kind === "pty");
+  check("A's PTY group dead after the transfer (release drain KillSession, §7.1)", !!pty && !pgAlive(pty.pgid), JSON.stringify(pty));
+  check("nothing queued in A's harness outbox", A.sql("SELECT id FROM harness_outbox").length === 0);
+}
+
+async function T10b(A: Engine, B: Engine) {
+  // 139 R2 D2/D3/D5: A partitioned, B takes over, the link returns → A
+  // demotes while its PTY job still runs (a takeover never signals it, T3).
+  // The job then finishes on A: its real <job_result> reaches B over
+  // Msg::Harness exactly once, naming A; the reminder set on A fires on B;
+  // A's timer stopped at the demote.
+  const sid = await newSession(A);
+  await sendBatch(A, sid, [ptyJob("T10b", 75), { name: "remind_me_in", args: { seconds: 90, message: "after the takeover" } }], null, []);
+  await A.waitEv(sid, "TurnFinished", 30_000);
+  const t0 = now();
+  const pty = jobs(A, sid).find((j) => j.kind === "pty");
+  check("a PTY job runs on A", !!pty && pgAlive(pty.pgid), JSON.stringify(pty));
+  await waitFor("rows replicated to B", () => B.one("SELECT id FROM reminders WHERE session = ?", sid) && jobs(B, sid).length === 1);
+  await A.partitionFrom(B);
+  const take = await B.rpc("session_take", [sid, "user"]);
+  check("session_take(user) on B with A partitioned → B, epoch 2", isObj(take) && take.owner === B.id && take.epoch === 2, JSON.stringify(take));
+  A.resume();
+  await A.waitEv(sid, "SessionOwnerChanged", 60_000, (e) => e.here === false);
+  const demotedAt = (now() - t0) / 1000;
+  check("A demoted while its job still ran", !!pty && pgAlive(pty.pgid), `demoted at +${demotedAt.toFixed(1)}s`);
+  const results = await waitFor("A's <job_result> on B", async () => {
+    const t = (await userTexts(B, sid, "<job_result")).filter((x) => x.includes("DONE-T10b"));
+    return t.length ? t : null;
+  }, 120_000, 500);
+  const arrivedAt = (now() - t0) / 1000;
+  const r = results[0] ?? "";
+  check("the job's real result arrived on B over the envelope: one <job_result exit=0> naming A, the note inside the element", results.length === 1 && /<job_result[^>]*exit="0"/.test(r) && r.includes(`produced on ${A.id} after the session moved to ${B.id}`) && r.trimEnd().endsWith("</job_result>"), `+${arrivedAt.toFixed(1)}s ${r.split("\n")[0].slice(0, 120)}`);
+  check("A queued it for the owner; B handed it to its supervisor", A.logText().includes("job j1: queued for the owner") && B.logText().includes("job j1 from") && B.logText().includes("handed to the supervisor"));
+  // Every harness-made input A produced after the move travelled the same way: the
+  // PTY's `<job_idle>` nudge (pty_idle_secs 60) and the `<job_result>` — one seen id each.
+  const envelopes = (await userTexts(B, sid, "(produced on ")).length;
+  check("A's outbox is empty (acked); B remembers exactly one id per envelope", A.sql("SELECT id FROM harness_outbox").length === 0 && envelopes >= 1 && B.sql("SELECT id FROM harness_seen").length === envelopes, `outbox=${A.sql("SELECT id FROM harness_outbox").length} seen=${B.sql("SELECT id FROM harness_seen").length} envelopes=${envelopes}`);
+  check("B's own copy of the job row stays as the take left it (never un-lost here)", jobs(B, sid).length === 1 && jobs(B, sid)[0].engine === A.id, JSON.stringify(jobs(B, sid)));
+  const fired = await B.waitEv(sid, "ReminderFired", 120_000);
+  const firedAt = (now() - t0) / 1000;
+  check("the reminder set on A fired on B about 90 s after it was set", fired.id === "r1" && firedAt > 80 && firedAt < 120, `+${firedAt.toFixed(1)}s`);
+  const onB = await waitFor("<reminder> in B's transcript", async () => {
+    const t = await userTexts(B, sid, '<reminder id="r1"');
+    return t.length ? t : null;
+  }, 20_000, 500);
+  await B.waitEv(sid, "TurnFinished", 60_000, () => B.evs(sid, "TurnFinished").length >= 1 + envelopes);
+  check("exactly one <reminder> and one <job_result> on B; B ran a turn on each input (the first turn ran on A)", onB.length === 1 && (await userTexts(B, sid, "<job_result")).length === 1 && B.evs(sid, "TurnFinished").length >= 1 + envelopes, `${B.evs(sid, "TurnFinished").length} TurnFinished on B`);
+  check("A's timer never fired", A.evs(sid, "ReminderFired").length === 0 && A.logText().includes("reminder timer(s) stopped"), `${A.evs(sid, "ReminderFired").length} fired on A`);
+  const ha = await history(A, sid);
+  check("A's transcript is B's (the result and the reminder came back replicated, nothing injected on A)", shape(ha) === shape(await history(B, sid)), shape(ha));
+}
+
+const ROWS: Record<string, (A: Engine, B: Engine) => Promise<void>> = { T1, T2, T2c, T3, T4, T5, T6, T7, T8, T10, T10b };
 
 // ---- main -------------------------------------------------------------------
 

@@ -1364,11 +1364,12 @@ impl Agents {
     /// Inject `text` (already wrapped) into `to` and announce it. Harness-made,
     /// so `Automatic`: it never opens a new reminder budget (47 §4.5). A result
     /// of work an exported task started carries that task's `scope`, and is
-    /// the scope's work from admission (50 §6.3). 139 Revision 1 Q3: a session
+    /// the scope's work from admission (50 §6.3). 139 Revision 2: a session
     /// owned by another engine never gets an actor here on account of a
-    /// harness message — the sources (reaper, reminders, spared results) are
-    /// owner-scoped, so this is the backstop; see the as-built for why it
-    /// drops rather than forwards.
+    /// harness message — the body is queued in the engine-local
+    /// `harness_outbox` and the shipper sends it to the owner over
+    /// `Msg::Harness` (re-resolving the owner at every attempt); the owner
+    /// runs this same function ([`HarnessDeliver`]).
     async fn inject(
         &mut self,
         to: SessionId,
@@ -1378,7 +1379,32 @@ impl Agents {
         scope: Option<Uuid>,
     ) {
         if let Some(owner) = self.remote_owner(to).await {
-            return tracing::warn!(session = %to, %owner, "139: {from}: not injected into a session owned elsewhere");
+            let me = self.store.engine();
+            let note = format!("(produced on {me} after the session moved to {owner})");
+            // Inside the closing tag, so the model and the UI read one element.
+            let cut = wrapped.rfind("\n</").unwrap_or(wrapped.len());
+            let wrapped = format!("{}\n{note}{}", &wrapped[..cut], &wrapped[cut..]);
+            let row = store::harness::HarnessRow {
+                id: Uuid::new_v4().to_string(),
+                session: to.to_string(),
+                kind: from.to_owned(),
+                origin: me.to_owned(),
+                text: format!("{text}\n{note}"),
+                wrapped,
+                scope: scope.map(|s| s.to_string()),
+                at: chrono::Utc::now().timestamp_millis(),
+                attempts: 0,
+                last_error: None,
+            };
+            match self.store.harness_enqueue(&row).await {
+                Ok(()) => {
+                    tracing::info!(session = %to, %owner, id = %row.id, "139: {from}: queued for the owner")
+                }
+                Err(e) => {
+                    tracing::warn!(session = %to, %owner, "139: {from}: not queued for the owner: {e:#}")
+                }
+            }
+            return;
         }
         let ticket = self.ledger.admit(to, InputOrigin::Automatic, None);
         if let Some(scope) = scope
@@ -2359,7 +2385,7 @@ impl Message<ActivityRegistered> for Agents {
 
     async fn handle(&mut self, _: ActivityRegistered, _: &mut Context<Self, Self::Reply>) {
         self.ledger.certify();
-        self.rearm_reminders().await;
+        self.rearm_reminders_for(None).await;
         // 109 §4.6 step 10, in this order: no `ResumeTurn` before the reaper.
         let reaped = crate::durability::jobs::reap_jobs(&self.store).await;
         if reaped != crate::durability::jobs::ReapReport::default() {
@@ -2374,15 +2400,22 @@ impl Message<ActivityRegistered> for Agents {
 }
 
 impl Agents {
-    /// Restore stored reminders after a restart (14 as-built 2026-09-23):
-    /// rows of sessions that no longer exist go; the rest are re-armed by
-    /// the jobs actor, which fires overdue ones at once as `late`. A `tell`:
-    /// the actor admits them off its mailbox by asking back into us.
-    async fn rearm_reminders(&mut self) {
+    /// Restore stored reminders after a restart (14 as-built 2026-09-23) —
+    /// every row when `session` is `None` — or arm one taken session's
+    /// ([`RearmReminders`], 139 Revision 2): rows of sessions that no longer
+    /// exist go; rows of sessions owned elsewhere stay unarmed, they fire on
+    /// the owner (139 Q3); the rest are re-armed by the jobs actor, which
+    /// fires overdue ones at once as `late`. A `tell`: the actor admits them
+    /// off its mailbox by asking back into us.
+    pub(crate) async fn rearm_reminders_for(&mut self, session: Option<SessionId>) {
         let rows = match self.store.reminders().await {
             Ok(rows) => rows,
             Err(e) => return tracing::error!("stored reminders unreadable: {e:#}"),
         };
+        let rows: Vec<_> = rows
+            .into_iter()
+            .filter(|r| session.is_none_or(|s| s == r.session))
+            .collect();
         if rows.is_empty() {
             return;
         }
@@ -2392,7 +2425,6 @@ impl Agents {
         for r in rows {
             match self.store.session(r.session).await {
                 Ok(Some(row)) if row.here => {}
-                // 139 Q3: the owner's reminder row replicated here; it fires there.
                 Ok(Some(_)) => continue,
                 _ => {
                     let _ = self.store.delete_reminder(r.session, &r.id).await;
@@ -2410,6 +2442,46 @@ impl Agents {
                 })
                 .await;
         }
+    }
+}
+
+/// `tell` from `sessionsync::owner::Take::take` once `set_owner` landed:
+/// the session's reminders now fire here (139 Revision 2 D4). The old
+/// owner's timers go with its demote (`tools::CancelReminders`).
+pub struct RearmReminders {
+    /// The taken session.
+    pub session: SessionId,
+}
+
+impl Message<RearmReminders> for Agents {
+    type Reply = ();
+
+    async fn handle(&mut self, m: RearmReminders, _: &mut Context<Self, Self::Reply>) {
+        self.rearm_reminders_for(Some(m.session)).await;
+    }
+}
+
+/// `tell` from the shipper for a received `Msg::Harness` (139 Revision 2):
+/// the body goes through `inject` like a local one — and on to the next
+/// owner if the session moved again meanwhile. The sender's request scope
+/// is its ledger's, not ours: delivered unscoped.
+pub struct HarnessDeliver {
+    /// The session.
+    pub session: SessionId,
+    /// The `from` label (`job j3`, `reminder r1`, `session:<child>`).
+    pub kind: String,
+    /// The bare body.
+    pub text: String,
+    /// The body as the model reads it.
+    pub wrapped: String,
+}
+
+impl Message<HarnessDeliver> for Agents {
+    type Reply = ();
+
+    async fn handle(&mut self, m: HarnessDeliver, _: &mut Context<Self, Self::Reply>) {
+        self.inject(m.session, &m.kind, m.text, m.wrapped, None)
+            .await;
     }
 }
 

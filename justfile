@@ -39,17 +39,19 @@ durability:
 # need no running turn (`sessionsync/tests/mesh_durability.rs`: T9 prune through the log, replica
 # display/act scope) plus the two-engine unit tests of each wave (owner.rs takes, release drain,
 # reaper engine filter, child waits, routed answers; the tools half — KillSession, lost PTY page —
-# is `just durability`'s). The rows that need a live turn (T1–T8) are the scripted smoke against
-# two real engines: `just durability-mesh smoke` (not CI; ~3 min; needs bun and free ports
-# 7931/7932/7941/7942/7950; evidence in docs/design/139-smoke.md).
+# is `just durability`'s; R2's harness outbox over the stream and reminders-follow-the-owner). The
+# rows that need a live turn (T1–T8, R2's T10/T10b) are the scripted smoke against two real engines:
+# `just durability-mesh smoke` (not CI; ~7 min; needs bun and free ports 7931/7932/7941/7942/7950;
+# evidence in docs/design/139-smoke.md and 139-as-built-R2.md).
 durability-mesh *ARGS:
     #!/usr/bin/env bash
     set -euo pipefail
     set -- {{ARGS}}
     export CARGO_INCREMENTAL={{incremental}}
     cargo test -p sessionsync --test mesh_durability
-    cargo test -p sessionsync --lib -- owner::
-    cargo test -p agent --lib -- supervisor::transfer supervisor::resume supervisor::drain supervisor::waits supervisor::child_waits durability::jobs loop_::durability_tests::drain_suspends loop_::resume_calls store::durability
+    cargo test -p sessionsync --lib -- owner:: harness_ types::
+    cargo test -p agent --lib -- supervisor::transfer supervisor::resume supervisor::drain supervisor::waits supervisor::child_waits durability::jobs loop_::durability_tests::drain_suspends loop_::resume_calls store::durability store::harness
+    cargo test -p tools --lib -- --test-threads=1 cancel_reminders_stops
     cargo test -p rpc --lib -- forward routed_methods answers_follow durability_wire_shapes
     if [ "${1:-}" = "smoke" ]; then shift; scripts/durability-mesh-smoke.sh "$@"; fi
 

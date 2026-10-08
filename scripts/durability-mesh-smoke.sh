@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 139 Z: the two-engine durability matrix (design 139 §11 Z, T1–T8) against
+# 139 Z: the two-engine durability matrix (design 139 §11 Z, T1–T8; R2's T10/T10b) against
 # two real `t --headless` engines on this Mac, paired over the loopback mesh,
 # with a scripted OpenAI-compatible provider as their model. Not CI; evidence
 # goes to docs/design/139-smoke.md. Shape: 68-two-engine-smoke.md §1,
