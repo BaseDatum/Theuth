@@ -12,6 +12,7 @@ import type { LiveCountsRow } from "@/rpc/bindings/LiveCountsRow";
 import type { PeerOrigin } from "@/rpc/bindings/PeerOrigin";
 import type { QueuedInput } from "@/rpc/bindings/QueuedInput";
 import type { ResumeCause } from "@/rpc/bindings/ResumeCause";
+import type { SessionSummary } from "@/rpc/bindings/SessionSummary";
 import type { TodoSnapshot } from "@/rpc/bindings/TodoSnapshot";
 import type { Usage } from "@/rpc/bindings/Usage";
 import type { WireEvent } from "@/rpc/events";
@@ -30,6 +31,7 @@ import {
   nextId,
   recordCall,
   reconcileTodos,
+  reseedRunning,
   resumeFromLoaded,
   route,
   settleCompacting,
@@ -368,6 +370,9 @@ type SessionsStore = {
   /** Install the `list_live_counts` snapshot: every row's session gets exactly its `jobs`/`ptys`/`reminders`; every
    * other slice with a non-empty set is emptied (the snapshot is the truth). Touches nothing else. */
   seedLive(rows: LiveCountsRow[]): void;
+  /** 142 F4: install `list_sessions`' `running` on every slice and subtree row (`reseedRunning`); a session the list
+   * lacks keeps its marks. Touches nothing else. */
+  seedRunning(rows: readonly SessionSummary[]): void;
 };
 
 export type SessionsApi = StoreApi<SessionsStore>;
@@ -650,19 +655,25 @@ export const createSessions = (): SessionsApi =>
         set({ lagged: 0 });
       },
       markStale(id) {
+        // 142 F4: a gap over every session (reconnect, `Lagged`) also lost the `TurnFinished`s; drop the running
+        // marks until `seedRunning` installs the engine's answer. One session leaving event focus keeps its events.
+        const now = new Date().toISOString();
         set((st) => ({
           sessions: Object.fromEntries(
-            Object.entries(st.sessions).map(([k, s]) => [
-              k,
-              (id === undefined || k === id) && s.loaded
-                ? {
-                    ...s,
-                    contextStale: true,
-                    todosStale: true,
-                    historyGeneration: s.historyGeneration + 1,
-                  }
-                : s,
-            ]),
+            Object.entries(st.sessions).map(([k, s]) => {
+              const dropped = id === undefined ? reseedRunning(s, () => false, now) : s;
+              return [
+                k,
+                (id === undefined || k === id) && s.loaded
+                  ? {
+                      ...dropped,
+                      contextStale: true,
+                      todosStale: true,
+                      historyGeneration: s.historyGeneration + 1,
+                    }
+                  : dropped,
+              ];
+            }),
           ),
         }));
       },
@@ -681,6 +692,21 @@ export const createSessions = (): SessionsApi =>
             ]),
           ),
         }));
+      },
+      seedRunning(rows) {
+        const running = new Map(rows.map((r) => [r.id, r.running]));
+        const now = new Date().toISOString();
+        set((st) => {
+          let changed = false;
+          const sessions = { ...st.sessions };
+          for (const [id, s] of Object.entries(sessions)) {
+            const next = reseedRunning(s, (k) => running.get(k), now);
+            if (next === s) continue;
+            sessions[id] = next;
+            changed = true;
+          }
+          return changed ? { sessions } : st;
+        });
       },
       seedLive(rows) {
         set((st) => {

@@ -4,6 +4,7 @@ import { codeEdited, codeToolRan, emptyCodemap } from "@/lib/codemap/slice";
 import { classify, humanSecs, type Injected } from "@/lib/injected";
 import { pushChunk } from "@/lib/jobTail";
 import { splitTime } from "@/lib/time";
+import { live } from "@/lib/session-tree";
 import type { AdvisoryNote } from "@/rpc/bindings/AdvisoryNote";
 import type { ContextEntry } from "@/rpc/bindings/ContextEntry";
 import type { PeerOrigin } from "@/rpc/bindings/PeerOrigin";
@@ -1241,6 +1242,36 @@ function trackRow(
     default:
       return null;
   }
+}
+
+/**
+ * 142 F4: the liveness a slice keeps in memory — its own `running`/`activity` and the live bit of every subtree row —
+ * is advanced by events only, and a relay socket parked overnight loses the `TurnFinished`s that clear it. Reset both
+ * to `running(id)`: the engine's `list_sessions` answer, or `() => false` to drop every mark until one lands. A session
+ * it has no answer for (`undefined`) keeps what it has. Returns `s` itself when nothing changes.
+ */
+export function reseedRunning(
+  s: SessionSlice,
+  running: (id: string) => boolean | undefined,
+  now: string,
+): SessionSlice {
+  let next = s;
+  const own = running(s.id);
+  if (own !== undefined && own !== s.running) {
+    next = own
+      ? { ...next, running: true, waiting: true, activity: "thinking" }
+      : { ...next, running: false, waiting: false, activity: "idle" };
+  }
+  let children: Record<string, AgentInfo> | undefined;
+  for (const [id, row] of Object.entries(s.children)) {
+    const r = running(id);
+    if (r === undefined || r === live(row.state.state)) continue;
+    children ??= { ...s.children };
+    children[id] = r
+      ? { ...row, state: { state: "running" }, started_at: row.started_at ?? now }
+      : { ...row, state: { state: "idle" }, started_at: null, finished_at: row.finished_at ?? now };
+  }
+  return children ? { ...next, children } : next;
 }
 
 /** 93: a child's streaming/activity events; each one beats the ancestors' rows for it (not `TurnFinished`: a finished row sits still). */
