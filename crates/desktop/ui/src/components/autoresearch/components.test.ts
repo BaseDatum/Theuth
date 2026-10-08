@@ -6,7 +6,7 @@ import type * as Rpc from '@/lib/rpc'
 import { RunTable } from './RunTable'
 import { StudyChart } from './StudyChart'
 import { StatePill } from './StudyList'
-import { Bars, Controls } from './StudyView'
+import { Bars, Controls, Current } from './StudyView'
 import { studies } from './fixtures'
 import { budgetBars } from './model'
 
@@ -37,6 +37,8 @@ test('chart: a mark per experiment coloured by outcome, × for crashes, hollow f
   expect(count(html, /data-outcome="lost"/g)).toBe(1)
   // 3 crashes drawn as × paths (a <g> each) + 1 checks-failed circle = 4 failed marks.
   expect(count(html, /data-outcome="failed"/g)).toBe(4)
+  // The experiment in flight (#35) is a hollow info dot pinned to the top.
+  expect(count(html, /data-outcome="open"/g)).toBe(1)
   expect(count(html, /<g [^>]*data-outcome="failed"[^>]*data-n="(5|16|29)"/g)).toBe(3)
   expect(html).toContain('stroke="var(--status-success-fg)" stroke-width="2.2"')
   expect(html).toContain('fill="var(--fg-accent)" fill-opacity="0.1"')
@@ -44,7 +46,7 @@ test('chart: a mark per experiment coloured by outcome, × for crashes, hollow f
   expect(html).toContain('>holdout<')
   expect(html).toContain('>drift<')
   // Every mark is keyboard reachable and labelled with its verdict line.
-  expect(count(html, /tabindex="0" role="button" aria-label="#\d+ /g)).toBe(d.chart.points.length)
+  expect(count(html, /tabindex="0" role="button" aria-label="#\d+ /g)).toBe(d.series.experiments.length)
   expect(html).toContain('aria-label="#3 kept · 50.4 ms"')
 })
 
@@ -57,48 +59,62 @@ test('chart: a study without holdout or σ draws no right axis and no band', () 
 
 test('controls: the buttons each state offers (§8.6)', () => {
   const running = by('sort-speed')
-  let html = paint(createElement(Controls, { info: running.info, current: running.detail.current }))
+  let html = paint(createElement(Controls, { info: running.info }))
   for (const label of ['Pause', 'Stop after this', 'Stop now — discard the experiment in flight', 'Finalize now']) expect(html).toContain(label)
   expect(html).not.toContain('Resume')
   // Finalize now is disabled while an experiment is in flight (it is Stop-now's job then).
   expect(html).toMatch(/<button[^>]*disabled[^>]*>[^<]*<svg[^]*?Finalize now/)
 
   const paused = by('parse-alloc')
-  html = paint(createElement(Controls, { info: paused.info, current: null }))
+  html = paint(createElement(Controls, { info: paused.info }))
   for (const label of ['Resume', 'Run one', 'Finalize now']) expect(html).toContain(label)
   expect(html).not.toContain('Pause<')
   expect(html).not.toContain('Stop now')
 
-  html = paint(createElement(Controls, { info: by('cold-start').info, current: null }))
+  html = paint(createElement(Controls, { info: by('cold-start').info }))
   expect(html).toContain('Stop now')
   expect(html).not.toContain('Pause')
 
-  html = paint(createElement(Controls, { info: by('flaky-bench').info, current: null }))
+  html = paint(createElement(Controls, { info: by('flaky-bench').info }))
   expect(html).toContain('Discard study')
 
-  html = paint(createElement(Controls, { info: { ...running.info, state: 'finalizing' }, current: null }))
+  html = paint(createElement(Controls, { info: { ...running.info, state: { state: 'finalizing' }, current: null } }))
   expect(html).toContain('finalizing')
   expect(html).not.toContain('<button')
 })
 
-test('state pill: words per state, the reason for a pause, the experiment while running', () => {
-  expect(paint(createElement(StatePill, { info: by('sort-speed').info, currentN: 35 }))).toContain('running · experiment 35')
-  expect(paint(createElement(StatePill, { info: by('fixture-guard').info }))).toContain('paused · evaluator files changed')
-  expect(paint(createElement(StatePill, { info: by('overnight-sim').info }))).toContain('paused · budget needs your OK')
-  expect(paint(createElement(StatePill, { info: by('lexer-tokens').info }))).toContain('finished · plateau')
+test('state pill: words per state, the reason for a pause, the experiment while running, the bare word in the rail', () => {
+  expect(paint(createElement(StatePill, { state: by('sort-speed').info.state, currentN: 35 }))).toContain('running · experiment 35')
+  expect(paint(createElement(StatePill, { state: by('fixture-guard').info.state }))).toContain('paused · evaluator files changed')
+  expect(paint(createElement(StatePill, { state: by('overnight-sim').info.state }))).toContain('paused · budget needs your OK')
+  expect(paint(createElement(StatePill, { state: by('lexer-tokens').info.state, stop: by('lexer-tokens').info.stop_reason }))).toContain('finished · plateau')
+  expect(paint(createElement(StatePill, { state: by('fixture-guard').info.state, short: true }))).toContain('>paused<')
+})
+
+test('current experiment: chips from the progress event, the idea once the row exists', () => {
+  const s = by('sort-speed')
+  const row = s.rows.find((r) => r.n === 35) ?? null
+  let html = paint(createElement(Current, { n: 35, row, progress: { phase: 'sampling', sample: 2, of: 3, elapsed_ms: 402_000 }, onOpen: () => {} }))
+  expect(html).toContain('measuring 2/3')
+  expect(html).toContain('Reuse the token buffer')
+  expect(html).toContain('6:42')
+  html = paint(createElement(Current, { n: 36, row: null, progress: { phase: null, sample: 0, of: 0, elapsed_ms: 0 }, onOpen: () => {} }))
+  expect(html).toContain('Experiment 36 · editing')
+  expect(html).toContain('the idea is declared at the first measurement')
 })
 
 test('run table: newest first, verdict badges, deviation marker, σ× and Δ columns', () => {
   const s = by('sort-speed')
   const html = paint(createElement(RunTable, { rows: s.rows, metricName: 'time_ms', pending: false, active: 14, onPick: () => {} }))
-  const order = [...html.matchAll(/<td class="px-3 py-1.5 tabular-nums text-fg-secondary">(\d+)<\/td>/g)].map((m) => Number(m[1]))
-  expect(order[0]).toBe(34)
+  const order = [...html.matchAll(/<tr[^>]*><td[^>]*>(\d+)<\/td>/g)].map((m) => Number(m[1]))
+  expect(order[0]).toBe(35)
   expect(order.at(-1)).toBe(1)
   expect(html).toContain('>kept<')
   expect(html).toContain('>reverted<')
   expect(html).toContain('>crash<')
   expect(html).toContain('>checks failed<')
   expect(html).toContain('>interrupted<')
+  expect(html).toContain('>measuring<')
   expect(html).toContain('· deviation')
   expect(html).toContain('aria-current="true"')
   expect(html).toContain('3.1σ')
@@ -112,7 +128,7 @@ test('run table: empty and pending states', () => {
 })
 
 test('budget bars: the fill turns warning near the cap and danger at it', () => {
-  const html = paint(createElement(Bars, { bars: budgetBars({ usd: 19.6, usd_cap: 20, hours: 10, hours_cap: 10, experiments: 3, experiments_cap: 120 }) }))
+  const html = paint(createElement(Bars, { bars: budgetBars({ usd: 19.6, hours: 10, experiments: 3 }, { usd: 20, per_experiment_usd: 1.5, hours: 10, experiments: 120 }) }))
   expect(html).toContain('bg-warning')
   expect(html).toContain('bg-danger')
   expect(html).toContain('bg-fg-accent')

@@ -2,9 +2,11 @@ import { Link } from '@tanstack/react-router'
 import { memo, useMemo } from 'react'
 import { Skeleton } from '@/components/ui/skeleton'
 import { cn } from '@/lib/utils'
-import { STATE_CLASS, experimentsText, matches, pct, sortStudies, stateLabel } from './model'
+import type { StopReason } from '@/rpc/bindings/StopReason'
+import type { StudyInfo } from '@/rpc/bindings/StudyInfo'
+import type { StudyState } from '@/rpc/bindings/StudyState'
+import { STATE_CLASS, experimentsText, improved, matches, pct, sortStudies, stateLabel } from './model'
 import { useStudies } from './queries'
-import type { StudyInfo } from './types'
 
 /** The rail body: every study as a row — slug, state pill, headline delta, experiments n/N, the goal. ponytail: not virtualized; studies are tens, not thousands. */
 export function StudyList({ q, active }: { q: string; active: string | undefined }) {
@@ -38,12 +40,12 @@ export function StudyList({ q, active }: { q: string; active: string | undefined
 }
 
 /** The pill of a study's state; shared by the rail, the header and the routines row. */
-export function StatePill({ info, currentN, className }: { info: Pick<StudyInfo, 'state' | 'reason' | 'experiments'>; currentN?: number | null; className?: string }) {
-  return <span className={cn('inline-flex h-5 shrink-0 items-center rounded-full border px-2 text-[11px] font-medium whitespace-nowrap', STATE_CLASS[info.state], className)}>{stateLabel(info, currentN)}</span>
+export function StatePill({ state, currentN, stop, short, className }: { state: StudyState; currentN?: number | null; stop?: StopReason | null; /** The bare word (the rail); the header spells out the reason. */ short?: boolean; className?: string }) {
+  return <span className={cn('inline-flex h-5 shrink-0 items-center rounded-full border px-2 text-[11px] font-medium whitespace-nowrap', STATE_CLASS[state.state], className)}>{short ? state.state : stateLabel(state, currentN, stop)}</span>
 }
 
 const Row = memo(function Row({ info: s, active }: { info: StudyInfo; active: boolean }) {
-  const better = s.delta_pct !== null && (s.metric.direction === 'lower' ? s.delta_pct < 0 : s.delta_pct > 0)
+  const better = improved(s.metric.direction, s.delta_pct)
   return (
     <Link
       to="/autoresearch/$slug"
@@ -54,10 +56,10 @@ const Row = memo(function Row({ info: s, active }: { info: StudyInfo; active: bo
     >
       <div className="flex items-center gap-2">
         <span className="min-w-0 flex-1 truncate font-medium">{s.slug}</span>
-        <StatePill info={{ state: s.state, reason: null, experiments: s.experiments }} />
+        <StatePill state={s.state} short />
       </div>
       <div className="flex items-center gap-2 text-xs text-fg-secondary">
-        <span className={cn('tabular-nums font-medium', s.delta_pct !== null && (better ? 'text-success' : 'text-fg-secondary'))}>{s.delta_pct === null ? (s.state === 'preparing' ? 'measuring baseline' : '—') : pct(s.delta_pct)}</span>
+        <span className={cn('tabular-nums font-medium', s.delta_pct !== null && (better ? 'text-success' : 'text-fg-secondary'))}>{s.delta_pct === null ? (s.state.state === 'preparing' ? 'measuring baseline' : '—') : pct(s.delta_pct)}</span>
         <span className="text-fg-tertiary">·</span>
         <span className="tabular-nums">{experimentsText(s)} experiments</span>
         <span className="min-w-0 flex-1 truncate text-fg-tertiary">{s.metric.name}</span>

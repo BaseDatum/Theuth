@@ -4,7 +4,6 @@ import { toast } from 'sonner'
 import { Pulse } from '@/components/chat/Pulse'
 import { useDreamStatus } from '@/components/dreaming/queries'
 import { useStudies } from '@/components/autoresearch/queries'
-import { routineSentence } from '@/components/autoresearch/model'
 import { SectionBand } from '@/components/nav/SectionBand'
 import { SectionRow } from '@/components/nav/SectionRow'
 import { useAction } from '@/components/settings/shared'
@@ -252,9 +251,8 @@ function RoutineRow({ s, sensors }: { s: ScheduleInfo; sensors: SensorInfo[] | u
 /** 140 §13.1: a study's row says its headline (`autoresearch.list`) instead of the loop's trigger sentence. */
 function StudySentence({ slug, fallback }: { slug: string; fallback: string }) {
   const studies = useStudies()
-  const info = studies.data?.find((s) => s.slug === slug)
-  if (!info) return <>{fallback}</>
-  const line = routineSentence(info)
+  const line = studies.data?.find((s) => s.slug === slug)?.headline
+  if (!line) return <>{fallback}</>
   return <span title={line}>{line}</span>
 }
 

@@ -2,38 +2,51 @@ import { Link } from '@tanstack/react-router'
 import { FlaskConical } from 'lucide-react'
 import type { ReactNode } from 'react'
 import { useModels } from '@/components/agents/queries'
-import { useAutoresearchApi, useAutoresearchSettings, KEY } from '@/components/autoresearch/queries'
-import type { AutoresearchSettings } from '@/components/autoresearch/types'
+import { KEY, useAutoresearchApi, useAutoresearchSettings } from '@/components/autoresearch/queries'
 import { ModelCombobox } from '@/components/chat/ModelCombobox'
-import { Button } from '@/components/ui/button'
 import { Count, Empty, Row, Section, bounded, useAction } from '@/components/settings/shared'
+import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
+import type { AutoresearchConfig } from '@/rpc/bindings/AutoresearchConfig'
 
-const ROLES = ['executor', 'review', 'advisor'] as const
-type Role = (typeof ROLES)[number]
+type Role = 'executor' | 'review' | 'advisor'
+const ROLES: Role[] = ['executor', 'review', 'advisor']
 const ROLE_LABEL: Record<Role, string> = { executor: 'Executor', review: 'Reviewer', advisor: 'Advisor' }
 const ROLE_HELP: Record<Role, string> = {
   executor: 'Runs the study session: reads, edits, calls the experiment tools. Default is the session default model (R1-D5).',
   review: 'Judges every kept diff with the fixed rubric. Default is a configured model of another vendor than the executor, else the executor.',
   advisor: 'Consulted once at a plateau for five materially different ideas. Default is the Advisor settings model, else the executor at high effort.',
 }
-/** What the `null` pick reads as when the engine has not told us what it resolves to. */
 const ROLE_NONE: Record<Role, string> = { executor: 'Session default', review: 'Other vendor (auto)', advisor: 'Advisor default' }
 
-/** Settings › Autoresearch (140 §13.1): defaults, model pickers, reviewer action, bench lock + load threshold, keep-finished days. Reads/writes `autoresearch.settings` / `set_settings`. */
+/** `models.executor` / `models.advisor` and `review.model` (§12.2) read as one picker row each. */
+const roleModel = (c: AutoresearchConfig, role: Role): string | null => (role === 'review' ? c.review.model : c.models[role])
+const withRoleModel = (c: AutoresearchConfig, role: Role, model: string | null): AutoresearchConfig => (role === 'review' ? { ...c, review: { ...c.review, model } } : { ...c, models: { ...c.models, [role]: model } })
+
+/** `600s` / `5m` / `1h` ↔ whole minutes (the spec's durations are humantime strings). */
+export function minutesOf(d: string): number | null {
+  const m = /^\s*(\d+(?:\.\d+)?)\s*(ms|s|m|min|h)?\s*$/.exec(d)
+  if (!m) return null
+  const v = Number(m[1])
+  const unit = m[2] ?? 's'
+  const secs = unit === 'ms' ? v / 1000 : unit === 's' ? v : unit === 'h' ? v * 3600 : v * 60
+  return Math.round(secs / 60)
+}
+
+/** Settings › Autoresearch (140 §13.1): defaults, model pickers, reviewer action, bench lock + load threshold, keep-finished days. Reads/writes `autoresearch.settings.get|set`. */
 export function Autoresearch() {
   const api = useAutoresearchApi()
   const settings = useAutoresearchSettings()
   const models = useModels()
-  const save = useAction((next: AutoresearchSettings) => api['autoresearch.set_settings'](next), { keys: [[...KEY, 'settings']] })
+  const save = useAction((next: AutoresearchConfig) => api['autoresearch.settings.set'](next), { keys: [[...KEY, 'settings']] })
   const s = settings.data
   const busy = !s || save.isPending
   /** Save the settings with one change applied; every control routes through here. */
-  const change = (f: (cur: AutoresearchSettings) => AutoresearchSettings) => {
+  const change = (f: (cur: AutoresearchConfig) => AutoresearchConfig) => {
     if (s) save.mutate(f(s))
   }
-  const count = (f: (cur: AutoresearchSettings, n: number) => AutoresearchSettings) => ({ mutate: (n: number) => change((cur) => f(cur, n)), isPending: save.isPending })
+  const count = (f: (cur: AutoresearchConfig, n: number) => AutoresearchConfig) => ({ mutate: (n: number) => change((cur) => f(cur, n)), isPending: save.isPending })
 
   return (
     <>
@@ -63,29 +76,25 @@ export function Autoresearch() {
           <Count value={s?.defaults.repeats} min={2} max={20} action={count((c, repeats) => ({ ...c, defaults: { ...c.defaults, repeats } }))} />
         </Row>
         <Row label="Timeouts" description="One benchmark sample · the correctness check, in minutes. A sample past its timeout is a crash.">
-          <Minutes value={s?.defaults.bench_timeout_secs} aria-label="Benchmark timeout in minutes" disabled={busy} onCommit={(secs) => change((c) => ({ ...c, defaults: { ...c.defaults, bench_timeout_secs: secs } }))} />
-          <Minutes value={s?.defaults.checks_timeout_secs} aria-label="Checks timeout in minutes" disabled={busy} onCommit={(secs) => change((c) => ({ ...c, defaults: { ...c.defaults, checks_timeout_secs: secs } }))} />
+          <Minutes value={s?.defaults.bench_timeout} aria-label="Benchmark timeout in minutes" disabled={busy} onCommit={(d) => change((c) => ({ ...c, defaults: { ...c.defaults, bench_timeout: d } }))} />
+          <Minutes value={s?.defaults.checks_timeout} aria-label="Checks timeout in minutes" disabled={busy} onCommit={(d) => change((c) => ({ ...c, defaults: { ...c.defaults, checks_timeout: d } }))} />
         </Row>
       </Section>
 
       <Section title="Models">
-        {ROLES.map((role) => {
-          const resolved = s?.resolved?.[role]
-          const name = resolved ? (models.data?.find((m) => m.id === resolved)?.name ?? resolved) : null
-          return (
-            <WideRow key={role} label={ROLE_LABEL[role]} description={ROLE_HELP[role]}>
-              <ModelCombobox
-                aria-label={`${ROLE_LABEL[role]} model`}
-                className="w-full max-w-72"
-                models={models.data ?? []}
-                value={s?.models[role]}
-                none={{ label: name ? `${ROLE_NONE[role]} (${name})` : ROLE_NONE[role] }}
-                disabled={busy}
-                onChange={(v) => change((c) => ({ ...c, models: { ...c.models, [role]: v } }))}
-              />
-            </WideRow>
-          )
-        })}
+        {ROLES.map((role) => (
+          <WideRow key={role} label={ROLE_LABEL[role]} description={ROLE_HELP[role]}>
+            <ModelCombobox
+              aria-label={`${ROLE_LABEL[role]} model`}
+              className="w-full max-w-72"
+              models={models.data ?? []}
+              value={s ? roleModel(s, role) : undefined}
+              none={{ label: ROLE_NONE[role] }}
+              disabled={busy}
+              onChange={(v) => change((c) => withRoleModel(c, role, v))}
+            />
+          </WideRow>
+        ))}
       </Section>
 
       <Section title="Review and the machine">
@@ -112,7 +121,7 @@ export function Autoresearch() {
             }}
           />
         </WideRow>
-        <Row label="Load threshold" description="1-minute load average ÷ cores a scored sample waits for (up to 20 minutes); past that it runs and is marked noisy.">
+        <Row label="Load threshold" description="1-minute load average ÷ cores a scored sample waits for (up to bench.wait); past that it runs and is marked noisy.">
           <Input
             key={s?.bench.max_load}
             type="number"
@@ -186,13 +195,13 @@ function Money({ value, disabled, onCommit, 'aria-label': ariaLabel }: { value: 
   )
 }
 
-/** Seconds on the wire, whole minutes in the field. */
-function Minutes({ value, disabled, onCommit, 'aria-label': ariaLabel }: { value: number | undefined; disabled: boolean; onCommit: (secs: number) => void; 'aria-label': string }) {
-  const minutes = value === undefined ? undefined : Math.round(value / 60)
+/** A humantime duration on the wire (`600s`), whole minutes in the field; written back as `<n>m`. */
+function Minutes({ value, disabled, onCommit, 'aria-label': ariaLabel }: { value: string | undefined; disabled: boolean; onCommit: (d: string) => void; 'aria-label': string }) {
+  const minutes = value === undefined ? undefined : (minutesOf(value) ?? undefined)
   return (
     <>
       <Input
-        key={minutes}
+        key={value}
         type="number"
         dictate={false}
         min={1}
@@ -203,7 +212,7 @@ function Minutes({ value, disabled, onCommit, 'aria-label': ariaLabel }: { value
         defaultValue={minutes}
         onBlur={(e) => {
           const n = bounded(e.currentTarget.value, 1, 240)
-          if (n !== undefined && n !== minutes) onCommit(n * 60)
+          if (n !== undefined && n !== minutes) onCommit(`${n}m`)
           else e.currentTarget.value = String(minutes ?? '')
         }}
         onKeyDown={(e) => {

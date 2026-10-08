@@ -100,8 +100,15 @@ import type { Proposal } from '@/rpc/bindings/Proposal'
 import type { RunRequest } from '@/rpc/bindings/RunRequest'
 import type { UndoReport } from '@/rpc/bindings/UndoReport'
 import type { ModelState } from '@/rpc/bindings/ModelState'
-// 140 §12.5: the autoresearch plugin's types, mirrored locally until the contract worker's bindings land.
-import type { AutoresearchSettings, ControlOp, ExperimentDetail, ExperimentRow, Idea, IdeaChange, StudyDetail, StudyInfo } from '@/components/autoresearch/types'
+import type { AutoresearchConfig } from '@/rpc/bindings/AutoresearchConfig'
+import type { ControlOp } from '@/rpc/bindings/ControlOp'
+import type { ExperimentDetail } from '@/rpc/bindings/ExperimentDetail'
+import type { ExperimentRow } from '@/rpc/bindings/ExperimentRow'
+import type { IdeaChange } from '@/rpc/bindings/IdeaChange'
+import type { StartWhen } from '@/rpc/bindings/StartWhen'
+import type { StudyDetail } from '@/rpc/bindings/StudyDetail'
+import type { StudyIdea } from '@/rpc/bindings/StudyIdea'
+import type { StudyInfo } from '@/rpc/bindings/StudyInfo'
 import type { ModelInfo } from '@/rpc/bindings/ModelInfo'
 import type { Node } from '@/rpc/bindings/Node'
 import type { Pairing } from '@/rpc/bindings/Pairing'
@@ -929,23 +936,28 @@ export interface Api {
   /** Answer a proposal with one of its `options`. */
   'dreaming.proposal_act'(id: string, choice: string): Promise<null>
   'dreaming.metrics'(days: number): Promise<Metrics>
-  // 140 §12.5: the autoresearch plugin, dotted on the wire like dreaming. Every method but `list` / `settings` is
-  // `NOT_RUNNING` while `autoresearch.enabled: false`.
+  // 140 §12.5: the autoresearch plugin, dotted on the wire like dreaming. Every method but `list` / `settings.get`
+  // is `NOT_RUNNING` while `autoresearch.enabled: false`.
   /** Every study, newest first. */
   'autoresearch.list'(): Promise<StudyInfo[]>
-  /** One study: spec, state, incumbent, σ, budget, chart series, the experiment in flight, ideas, steers, attention, changesets. */
+  /** One study: spec, playbook, chart series, ideas, steers (newest first), changesets, needs-your-eyes lines. */
   'autoresearch.get'(slug: string): Promise<StudyDetail>
   /** The run table, newest first; `before` pages by experiment number. */
   'autoresearch.experiments'(slug: string, before: number | null, limit: number): Promise<ExperimentRow[]>
   /** Samples, cases moved, deviations, review, diff (≤ 256 KiB) and log tails of one experiment. */
   'autoresearch.experiment'(slug: string, n: number): Promise<ExperimentDetail>
-  /** Pause · Resume · StopAfter · StopNow · RunOnce · Finalize · Discard · Segment · Restore · KeepReverted · OpenPr · Merge. */
+  /** pause · resume · stop_after · stop_now · run_once · segment · finalize · restore · discard (§8.6). */
   'autoresearch.control'(slug: string, op: ControlOp): Promise<StudyInfo>
-  /** Queue a note for the next brief; never pauses the loop. The steer id. */
-  'autoresearch.steer'(slug: string, text: string): Promise<string>
-  'autoresearch.idea'(slug: string, op: IdeaChange): Promise<Idea>
-  'autoresearch.settings'(): Promise<AutoresearchSettings>
-  'autoresearch.set_settings'(settings: AutoresearchSettings): Promise<AutoresearchSettings>
+  /** Queue a note for the next brief; never pauses the loop. The steer row id. */
+  'autoresearch.steer'(slug: string, text: string): Promise<number>
+  /** add · priority · close · reopen a backlog idea. */
+  'autoresearch.idea'(slug: string, op: IdeaChange): Promise<StudyIdea>
+  /** The draft card's Start press (§12.4). */
+  'autoresearch.create'(draft_id: string, start: StartWhen): Promise<StudyInfo>
+  /** The `autoresearch:` section as running; from config even when disabled. */
+  'autoresearch.settings.get'(): Promise<AutoresearchConfig>
+  /** Persist the whole section and apply it live. */
+  'autoresearch.settings.set'(config: AutoresearchConfig): Promise<AutoresearchConfig>
 }
 
 /** Every request method name, sorted; `api.test.ts` checks it against `bindings/methods.json`. */
@@ -979,13 +991,14 @@ export const METHODS = [
   'attention_list',
   'attention_snooze',
   'autoresearch.control',
+  'autoresearch.create',
   'autoresearch.experiment',
   'autoresearch.experiments',
   'autoresearch.get',
   'autoresearch.idea',
   'autoresearch.list',
-  'autoresearch.set_settings',
-  'autoresearch.settings',
+  'autoresearch.settings.get',
+  'autoresearch.settings.set',
   'autoresearch.steer',
   'brief_delete',
   'brief_get',

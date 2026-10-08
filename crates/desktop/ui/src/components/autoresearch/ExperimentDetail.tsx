@@ -3,10 +3,12 @@ import { Button } from '@/components/ui/button'
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from '@/components/ui/sheet'
 import { Skeleton } from '@/components/ui/skeleton'
 import { cn } from '@/lib/utils'
+import type { BenchSample } from '@/rpc/bindings/BenchSample'
+import type { ExperimentDetail as Detail } from '@/rpc/bindings/ExperimentDetail'
+import type { StudyDetail } from '@/rpc/bindings/StudyDetail'
 import { VerdictBadge } from './RunTable'
-import { clock, duration, metric, pct, shortSha, usd } from './model'
+import { clock, duration, metric, pct, reviewWord, rowDuration, shortSha, usd } from './model'
 import { useControl, useExperiment } from './queries'
-import type { ExperimentDetail as Detail, Sample, StudyDetail } from './types'
 
 /**
  * §13.1 experiment detail, as a sheet over the Study view (`?n=` in the URL, so it is linkable and Back closes it):
@@ -24,7 +26,7 @@ export function ExperimentSheet({ study, n, onClose }: { study: StudyDetail; n: 
             {q.data && <VerdictBadge row={q.data.row} />}
             {q.data?.row.commit_sha && <code className="font-mono text-xs text-fg-tertiary">{shortSha(q.data.row.commit_sha)}</code>}
           </SheetTitle>
-          <SheetDescription className="text-[13px]">{q.data ? q.data.row.line : q.isError ? q.error.message : '…'}</SheetDescription>
+          <SheetDescription className="text-[13px]">{q.data ? q.data.line : q.isError ? q.error.message : '…'}</SheetDescription>
         </SheetHeader>
         <div className="min-h-0 flex-1 overflow-y-auto px-5 py-4">
           {q.isPending ? (
@@ -47,40 +49,39 @@ function Body({ d, study }: { d: Detail; study: StudyDetail }) {
   const control = useControl(study.info.slug)
   const r = d.row
   const reverted = r.state === 'rejected_by_review'
+  const live = study.info.state.state === 'running' || study.info.state.state === 'paused'
+  const review = r.review ? reviewWord(r.review) : null
   return (
     <div className="flex flex-col gap-5 text-[13px]">
       <section>
         <p>
           <span className="text-[11px] text-fg-tertiary">[{r.category}]</span> <span className="font-medium">{r.idea}</span>
         </p>
-        <p className="mt-1 text-fg-secondary">{d.hypothesis}</p>
+        {d.hypothesis && <p className="mt-1 text-fg-secondary">{d.hypothesis}</p>}
         <dl className="mt-2 grid grid-cols-2 gap-x-4 gap-y-1 text-xs text-fg-secondary sm:grid-cols-4">
           <Stat label="Δ vs incumbent" value={pct(r.delta_pct)} className={r.state === 'kept' ? 'text-success' : undefined} />
           <Stat label="samples" value={String(r.n_samples)} />
-          <Stat label="took" value={duration(r.duration_ms)} />
+          <Stat label="took" value={r.finished_at ? duration(rowDuration(r)) : 'running'} />
           <Stat label="cost" value={usd(r.cost_usd)} />
         </dl>
       </section>
 
-      {(r.review || reverted) && (
-        <section className={cn('rounded-md border p-3', r.review?.verdict === 'suspicious' ? 'border-warning-border/50 bg-warning-bg' : 'border-border-subtle bg-layer-1')}>
+      {(review || reverted) && (
+        <section className={cn('rounded-md border p-3', review?.tone === 'suspicious' || reverted ? 'border-warning-border/50 bg-warning-bg' : 'border-border-subtle bg-layer-1')}>
           <h4 className="text-xs font-semibold tracking-wide text-fg-secondary uppercase">Review</h4>
           <p className="mt-1">
-            {r.review ? (
+            {review && r.review ? (
               <>
-                <b>{r.review.verdict === 'clean' ? 'CLEAN' : r.review.verdict === 'suspicious' ? 'SUSPICIOUS' : 'no verdict'}</b> — {r.review.reason}
+                <b>{review.word}</b> — {r.review.reason}
               </>
             ) : (
               'reverted by review'
             )}
           </p>
-          {reverted && (
+          {reverted && live && (
             <div className="mt-2 flex gap-1.5">
-              <Button size="xs" variant="outline" disabled={control.isPending} onClick={() => control.mutate({ Restore: { n: r.n } })} title="Re-applies the patch as the next experiment and measures it again">
+              <Button size="xs" variant="outline" disabled={control.isPending} onClick={() => control.mutate({ op: 'restore', n: r.n })} title="Re-applies the patch as the next experiment and measures it again">
                 Restore
-              </Button>
-              <Button size="xs" variant="ghost" disabled={control.isPending} onClick={() => control.mutate({ KeepReverted: { n: r.n } })}>
-                Keep reverted
               </Button>
             </div>
           )}
@@ -104,6 +105,7 @@ function Body({ d, study }: { d: Detail; study: StudyDetail }) {
           {d.description && <Note label="Did">{d.description}</Note>}
           {d.learned && <Note label="Learned">{d.learned}</Note>}
           {d.next && <Note label="Next">{d.next}</Note>}
+          {d.decision && d.decision !== 'auto' && <Note label="Asked">{d.decision === 'discard' ? 'discard — the model distrusted its own improvement' : 'keep simpler — equal performance, fewer lines (verified by the harness)'}</Note>}
         </section>
       )}
 
@@ -125,7 +127,7 @@ function Body({ d, study }: { d: Detail; study: StudyDetail }) {
             </thead>
             <tbody>
               {d.samples.map((s) => (
-                <SampleRow key={`${s.role}-${s.k}`} s={s} unit={unit} />
+                <SampleRow key={`${s.role}-${s.k}-${s.at}`} s={s} unit={unit} />
               ))}
             </tbody>
           </table>
@@ -142,7 +144,7 @@ function Body({ d, study }: { d: Detail; study: StudyDetail }) {
                 <span className="tabular-nums text-fg-secondary">
                   {metric(c.before, '')} → {metric(c.after, '')}
                 </span>
-                <span className={cn('w-16 text-right tabular-nums', c.delta_pct < 0 ? 'text-success' : c.delta_pct > 0 ? 'text-danger' : 'text-fg-tertiary')}>{pct(c.delta_pct)}</span>
+                <span className={cn('w-16 text-right tabular-nums', c.delta_pct === null ? 'text-fg-tertiary' : c.delta_pct < 0 ? 'text-success' : c.delta_pct > 0 ? 'text-danger' : 'text-fg-tertiary')}>{pct(c.delta_pct)}</span>
               </li>
             ))}
           </ul>
@@ -156,24 +158,26 @@ function Body({ d, study }: { d: Detail; study: StudyDetail }) {
         </section>
       )}
 
-      {d.logs.map((l) => (
-        <section key={l.name}>
-          <h4 className="mb-1 text-xs font-semibold tracking-wide text-fg-secondary uppercase">{l.name}</h4>
-          <pre className="max-h-48 overflow-auto rounded-md bg-layer-2 p-2 font-mono text-xs leading-5 whitespace-pre-wrap">{l.tail}</pre>
+      {d.tails.map((tail, i) => (
+        <section key={i}>
+          <h4 className="mb-1 text-xs font-semibold tracking-wide text-fg-secondary uppercase">{d.tails.length > 1 ? `log tail ${i + 1} of ${d.tails.length}` : 'log tail'}</h4>
+          <pre className="max-h-48 overflow-auto rounded-md bg-layer-2 p-2 font-mono text-xs leading-5 whitespace-pre-wrap">{tail}</pre>
         </section>
       ))}
     </div>
   )
 }
 
-function SampleRow({ s, unit }: { s: Sample; unit: string }) {
+function SampleRow({ s, unit }: { s: BenchSample; unit: string }) {
   return (
     <tr className="border-t border-border-subtle">
       <td className="py-1 pr-3 tabular-nums text-fg-secondary">{s.k}</td>
-      <td className="py-1 pr-3 text-fg-secondary">{s.role}</td>
+      <td className="py-1 pr-3 text-fg-secondary" title={s.tree_sha}>
+        {s.role ?? shortSha(s.tree_sha)}
+      </td>
       <td className="py-1 pr-3 text-right tabular-nums">{s.value === null ? (s.exit !== null ? `exit ${s.exit}` : '—') : metric(s.value, unit)}</td>
       <td className="py-1 pr-3 text-right tabular-nums text-fg-secondary">{clock(s.wall_ms)}</td>
-      <td className="py-1 pr-3 text-right tabular-nums text-fg-secondary">{s.load.toFixed(2)}</td>
+      <td className="py-1 pr-3 text-right tabular-nums text-fg-secondary">{s.load === null ? '—' : s.load.toFixed(2)}</td>
       <td className="py-1 text-fg-tertiary">{s.lost ? 'lost' : s.noisy ? 'noisy — excluded from σ' : ''}</td>
     </tr>
   )
@@ -195,4 +199,3 @@ function Note({ label, children }: { label: string; children: string }) {
     </p>
   )
 }
-

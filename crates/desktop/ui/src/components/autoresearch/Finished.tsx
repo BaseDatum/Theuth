@@ -1,39 +1,50 @@
 import { Link } from '@tanstack/react-router'
-import { ExternalLink, FileText, GitMerge, GitPullRequest, Trash2 } from 'lucide-react'
+import { Check, Copy, FileText, GitMerge, GitPullRequest, Trash2 } from 'lucide-react'
+import { type ReactNode, useState } from 'react'
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger } from '@/components/ui/alert-dialog'
 import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
+import type { StudyChangeset } from '@/rpc/bindings/StudyChangeset'
+import type { StudyDetail } from '@/rpc/bindings/StudyDetail'
 import { Panel } from './SidePanel'
-import { STOP_REASON_LABEL, pct } from './model'
+import { holdoutSummary, metric, pct, reviewWord, stopReasonLabel } from './model'
 import { useControl } from './queries'
-import type { Changeset, StudyDetail } from './types'
 
 /**
- * §11.5 the finished state: the headline, the changesets table (Δ alone / Δ together / files / review) with
- * Open PR · Merge into my branch per changeset, the report link, and Discard study (one confirmation of the label).
+ * §11.5 the finished state: the headline, the changesets table (Δ alone / Δ together / files / review), the report
+ * link, Discard study (one confirmation of the label). Open PR and Merge into my branch wait for their RPC (the
+ * contract has no landing method yet): until then each row copies its branch and the merge command.
  */
 export function Finished({ detail }: { detail: StudyDetail }) {
   const control = useControl(detail.info.slug)
-  const sets = detail.changesets ?? []
+  const sets = detail.changesets
+  const info = detail.info
+  const unit = info.metric.unit
+  const holdout = holdoutSummary(detail.series)
+  // §11.1's headline from the numbers the detail carries (`info.headline` is the routines-row sentence).
+  const headline =
+    info.baseline_mean !== null && info.incumbent.mean !== null
+      ? `${info.metric.name} ${metric(info.baseline_mean, '')} → ${metric(info.incumbent.mean, unit)} (${pct(info.delta_pct)})${holdout ? ` · holdout ${metric(holdout.base, '')} → ${metric(holdout.latest, unit)} (${pct(holdout.delta_pct)})` : ''}`
+      : null
   return (
     <Panel
       title="Finished"
-      hint={detail.stop_reason ? STOP_REASON_LABEL[detail.stop_reason] : undefined}
+      hint={detail.info.stop_reason ? stopReasonLabel(detail.info.stop_reason) : undefined}
       actions={
         <>
-          {detail.report_doc && (
+          {detail.info.report_doc && (
             <Button asChild variant="outline" size="xs">
-              <Link to="/notes/$id" params={{ id: detail.report_doc }} search={{}}>
+              <Link to="/notes/$id" params={{ id: detail.info.report_doc }} search={{}}>
                 <FileText /> Report
               </Link>
             </Button>
           )}
-          <DiscardStudy slug={detail.info.slug} pending={control.isPending} onConfirm={() => control.mutate('Discard')} />
+          <DiscardStudy slug={detail.info.slug} pending={control.isPending} onConfirm={() => control.mutate({ op: 'discard' })} />
         </>
       }
       className="border-success-border/40"
     >
-      {detail.headline && <p className="mb-3 text-[15px] font-semibold tabular-nums">{detail.headline}</p>}
+      {headline && <p className="mb-3 text-[15px] font-semibold tabular-nums">{headline}</p>}
       {sets.length === 0 ? (
         <p className="text-[13px] text-fg-tertiary">No changeset cleared the gate on its own; nothing to land.</p>
       ) : (
@@ -55,33 +66,34 @@ export function Finished({ detail }: { detail: StudyDetail }) {
             </thead>
             <tbody>
               {sets.map((c) => (
-                <Row key={c.k} c={c} pending={control.isPending} onPr={() => control.mutate({ OpenPr: { k: c.k } })} onMerge={() => control.mutate({ Merge: { k: c.k } })} />
+                <Row key={c.k} c={c} repo={detail.spec.repo} />
               ))}
             </tbody>
           </table>
         </div>
       )}
       <p className="mt-2 text-xs text-fg-tertiary">
-        Each changeset is a local branch <code className="font-mono">autoresearch/{detail.info.slug}/&lt;k&gt;-&lt;name&gt;</code>; nothing was pushed. Merge refuses while your checkout is dirty.
+        Each changeset is a local branch <code className="font-mono">autoresearch/{detail.info.slug}/&lt;k&gt;-&lt;name&gt;</code>; nothing was pushed.
       </p>
     </Panel>
   )
 }
 
-function Row({ c, pending, onPr, onMerge }: { c: Changeset; pending: boolean; onPr: () => void; onMerge: () => void }) {
+function Row({ c, repo }: { c: StudyChangeset; repo: string }) {
+  const alone = c.only_with.length === 0
+  const review = reviewWord(c.review)
   return (
-    <tr className={cn('border-t border-border-subtle align-top', !c.alone_clears && 'text-fg-secondary')}>
+    <tr className={cn('border-t border-border-subtle align-top', !alone && 'text-fg-secondary')}>
       <td className="px-2 py-1.5">
         <div className="font-medium whitespace-nowrap">
           #{c.k} {c.name}
         </div>
         <div className="text-xs text-fg-tertiary">
-          {c.commits.length} {c.commits.length === 1 ? 'commit' : 'commits'} · {c.files.length} {c.files.length === 1 ? 'file' : 'files'}
-          {!c.alone_clears && c.depends_on !== null && <span className="ml-1 text-warning">· only helps together with #{c.depends_on}</span>}
-          {c.merged && <span className="ml-1 text-success">· merged</span>}
+          {c.experiments.length} {c.experiments.length === 1 ? 'keep' : 'keeps'} · {c.files.length} {c.files.length === 1 ? 'file' : 'files'}
+          {!alone && <span className="ml-1 text-warning">· only helps together with #{c.only_with.join(', #')}</span>}
         </div>
       </td>
-      <td className={cn('px-2 py-1.5 text-right tabular-nums whitespace-nowrap', c.alone_clears && 'text-success')}>{pct(c.delta_alone_pct)}</td>
+      <td className={cn('px-2 py-1.5 text-right tabular-nums whitespace-nowrap', alone && 'text-success')}>{pct(c.delta_alone_pct)}</td>
       <td className="px-2 py-1.5 text-right tabular-nums whitespace-nowrap">{pct(c.delta_together_pct)}</td>
       <td className="hidden max-w-[260px] px-2 py-1.5 2xl:table-cell">
         <span className="line-clamp-2 font-mono text-xs text-fg-secondary" title={c.files.join('\n')}>
@@ -89,27 +101,45 @@ function Row({ c, pending, onPr, onMerge }: { c: Changeset; pending: boolean; on
         </span>
       </td>
       <td className="px-2 py-1.5">
-        <span className={cn('rounded-full px-2 py-px text-[11px] font-semibold', c.review === 'clean' ? 'bg-success-bg text-success' : c.review === 'suspicious' ? 'bg-warning-bg text-warning' : 'bg-layer-2 text-fg-secondary')}>{c.review}</span>
+        <span
+          className={cn('rounded-full px-2 py-px text-[11px] font-semibold', review.tone === 'clean' ? 'bg-success-bg text-success' : review.tone === 'suspicious' ? 'bg-warning-bg text-warning' : 'bg-layer-2 text-fg-secondary')}
+          title={c.review?.reason}
+        >
+          {review.word.toLowerCase()}
+        </span>
       </td>
       <td className="px-2 py-1.5">
         <div className="flex flex-col items-end gap-1 2xl:flex-row 2xl:items-center 2xl:justify-end">
-          {c.pr_url ? (
-            <Button asChild variant="outline" size="xs">
-              <a href={c.pr_url} target="_blank" rel="noreferrer">
-                <ExternalLink /> PR
-              </a>
-            </Button>
-          ) : (
-            <Button variant="outline" size="xs" disabled={pending || c.merged} onClick={onPr} title="A pull request from the changeset branch; its body is the report's section">
-              <GitPullRequest /> Open PR
-            </Button>
-          )}
-          <Button variant="outline" size="xs" disabled={pending || c.merged} onClick={onMerge} title="git merge --no-ff into the repo's current branch; refused if your tree is dirty">
-            <GitMerge /> Merge into my branch
-          </Button>
+          <CopyButton text={c.branch} label="Copy branch" icon={<GitPullRequest />}>
+            Open PR
+          </CopyButton>
+          <CopyButton text={`cd ${repo} && git merge --no-ff ${c.branch}`} label="Copy merge command" icon={<GitMerge />}>
+            Merge into my branch
+          </CopyButton>
         </div>
       </td>
     </tr>
+  )
+}
+
+/** Until the landing RPC exists the button puts the branch / the merge command on the clipboard and says so. */
+function CopyButton({ text, label, icon, children }: { text: string; label: string; icon: ReactNode; children: string }) {
+  const [done, setDone] = useState(false)
+  return (
+    <Button
+      variant="outline"
+      size="xs"
+      title={`${label}: ${text}`}
+      onClick={() => {
+        void navigator.clipboard?.writeText(text).then(() => {
+          setDone(true)
+          setTimeout(() => setDone(false), 1500)
+        })
+      }}
+    >
+      {done ? <Check /> : icon} {done ? 'Copied' : children}
+      {!done && <Copy className="size-3 text-fg-tertiary" />}
+    </Button>
   )
 }
 
@@ -125,7 +155,9 @@ export function DiscardStudy({ slug, pending, onConfirm }: { slug: string; pendi
       <AlertDialogContent>
         <AlertDialogHeader>
           <AlertDialogTitle>Discard study {slug}?</AlertDialogTitle>
-          <AlertDialogDescription>Removes its worktree and every <code className="font-mono">autoresearch/{slug}</code> branch. The ledger, the patches and the report stay. Your own checkout is not touched.</AlertDialogDescription>
+          <AlertDialogDescription>
+            Removes its worktree and every <code className="font-mono">autoresearch/{slug}</code> branch. The ledger, the patches and the report stay. Your own checkout is not touched.
+          </AlertDialogDescription>
         </AlertDialogHeader>
         <AlertDialogFooter>
           <AlertDialogCancel>Keep</AlertDialogCancel>

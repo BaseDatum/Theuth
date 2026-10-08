@@ -1,8 +1,8 @@
 import { type ReactNode, useMemo, useState } from 'react'
 import { Skeleton } from '@/components/ui/skeleton'
 import { cn } from '@/lib/utils'
-import { OUTCOME_CLASS, type RunFilter, duration, filterRuns, metric, outcome, outcomeLabel, pct, shortSha, sigmas, usd } from './model'
-import type { ExperimentRow } from './types'
+import type { ExperimentRow } from '@/rpc/bindings/ExperimentRow'
+import { OUTCOME_CLASS, type RunFilter, duration, filterRuns, metric, outcome, outcomeLabel, pct, rowDuration, shortSha, sigmas, usd } from './model'
 
 const FILTERS: { id: RunFilter; label: string }[] = [
   { id: 'all', label: 'all' },
@@ -99,7 +99,7 @@ export function RunTable({ rows, metricName, pending, active, onPick }: { rows: 
                       )}
                     </span>
                   </Td>
-                  <Td className="hidden text-right tabular-nums text-fg-secondary md:table-cell">{duration(r.duration_ms)}</Td>
+                  <Td className="hidden text-right tabular-nums text-fg-secondary md:table-cell">{r.finished_at ? duration(rowDuration(r)) : '…'}</Td>
                   <Td className="hidden text-right tabular-nums text-fg-secondary md:table-cell">{usd(r.cost_usd)}</Td>
                   <Td className="hidden font-mono text-xs text-fg-tertiary 2xl:table-cell">{shortSha(r.commit_sha)}</Td>
                 </tr>

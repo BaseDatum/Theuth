@@ -1,7 +1,7 @@
 import { useEffect, useId, useRef, useState } from 'react'
 import { cn } from '@/lib/utils'
 import { type Layout, OUTCOME_PAINT, layout } from './model'
-import type { StudyDetail } from './types'
+import type { StudyDetail } from '@/rpc/bindings/StudyDetail'
 
 const H = 260
 
@@ -24,15 +24,15 @@ export function StudyChart({ detail, onPick, className }: { detail: StudyDetail;
     ro.observe(el)
     return () => ro.disconnect()
   }, [])
-  const l = layout(detail.chart, { width: W, height: H, base: detail.info.base_value, sigma: detail.sigma, unit, lastN: detail.current?.n ?? undefined })
+  const l = layout(detail.series, { width: W, height: H, unit, lastN: detail.info.current ?? undefined })
   const [hover, setHover] = useState<{ x: number; y: number; text: string } | null>(null)
   const id = useId()
-  const rows = detail.chart.points.length
+  const rows = detail.series.experiments.length
   return (
     <figure ref={ref} className={cn('relative', className)}>
       <svg viewBox={`0 0 ${W} ${H}`} width={W} height={H} className="block max-w-full" role="img" aria-labelledby={`${id}-title`}>
         <title id={`${id}-title`}>
-          {detail.spec.metric.name} per experiment: {rows} experiments, {detail.counts.kept} kept
+          {detail.spec.metric.name} per experiment: {rows} experiments, {detail.info.incumbent.kept} kept
         </title>
         <Axes l={l} unit={unit} />
         {l.band && <rect x={l.left} width={W - l.left - l.right} y={l.band.y} height={l.band.height} fill="var(--fg-accent)" fillOpacity={0.1} />}

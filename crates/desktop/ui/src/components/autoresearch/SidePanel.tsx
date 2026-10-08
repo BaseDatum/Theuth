@@ -1,23 +1,26 @@
 import { Link } from '@tanstack/react-router'
 import { Plus, Star, X } from 'lucide-react'
 import { type ReactNode, useState } from 'react'
+import { relative } from '@/components/routines/helpers'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
-import { relative } from '@/components/routines/helpers'
 import { cn } from '@/lib/utils'
-import { pct } from './model'
+import type { ExperimentRow } from '@/rpc/bindings/ExperimentRow'
+import type { StudyDetail } from '@/rpc/bindings/StudyDetail'
+import type { StudyIdea } from '@/rpc/bindings/StudyIdea'
+import type { StudySteer } from '@/rpc/bindings/StudySteer'
 import { useControl, useIdea, useSteer } from './queries'
-import type { Attention, Idea, Steer, StudyDetail } from './types'
 
-/** §13.1 the side panel: Tell the study… · Ideas · Playbook · Needs your eyes. */
-export function SidePanel({ detail, onPick }: { detail: StudyDetail; onPick: (n: number) => void }) {
-  const live = detail.info.state === 'running' || detail.info.state === 'paused' || detail.info.state === 'preparing'
+/** §13.1 the side panel: Tell the study… · Needs your eyes · Ideas · Playbook. */
+export function SidePanel({ detail, rows, onPick }: { detail: StudyDetail; rows: ExperimentRow[]; onPick: (n: number) => void }) {
+  const st = detail.info.state.state
+  const live = st === 'running' || st === 'paused' || st === 'preparing'
   return (
     <div className="grid min-w-0 grid-cols-1 gap-3 md:grid-cols-2 2xl:grid-cols-1">
       <div className="flex min-w-0 flex-col gap-3">
         {live && <SteerBox slug={detail.info.slug} steers={detail.steers} />}
-        {detail.attention.length > 0 && <NeedsEyes detail={detail} onPick={onPick} />}
+        {(detail.needs_eyes.length > 0 || rows.some((r) => r.state === 'rejected_by_review')) && <NeedsEyes detail={detail} rows={rows} onPick={onPick} />}
         {!live && detail.steers.length > 0 && (
           <Panel title="Your notes">
             <SteerHistory steers={detail.steers} />
@@ -49,8 +52,8 @@ export function Panel({ title, hint, actions, children, className }: { title: Re
   )
 }
 
-/** The steer box: posts `autoresearch.steer`, clears on success, lists the steers underneath (new ones first, unseen marked). */
-function SteerBox({ slug, steers }: { slug: string; steers: Steer[] }) {
+/** The steer box: posts `autoresearch.steer`, clears on success, lists the steers underneath (newest first, unseen marked). */
+function SteerBox({ slug, steers }: { slug: string; steers: StudySteer[] }) {
   const [text, setText] = useState('')
   const steer = useSteer(slug, () => setText(''))
   const send = () => {
@@ -88,14 +91,15 @@ function SteerBox({ slug, steers }: { slug: string; steers: Steer[] }) {
   )
 }
 
-function SteerHistory({ steers }: { steers: Steer[] }) {
+function SteerHistory({ steers }: { steers: StudySteer[] }) {
   return (
     <ul className="flex flex-col gap-1.5">
-      {[...steers].reverse().map((s) => (
+      {steers.map((s) => (
         <li key={s.id} className="text-[13px]">
           <p className="text-foreground">{s.text}</p>
           <p className="text-xs text-fg-tertiary">
             {relative(s.at)}
+            {s.by !== 'user' && ` · ${s.by}`}
             {s.seen_in === null ? <span className="ml-1 text-info">· new — in the next brief</span> : <span className="ml-1">· seen by #{s.seen_in}</span>}
           </p>
         </li>
@@ -105,7 +109,7 @@ function SteerHistory({ steers }: { steers: Steer[] }) {
 }
 
 /** Ideas: open ones first (★ the user's, by priority), tried/closed under a line; add (priority 3, source user) and close. */
-function Ideas({ slug, ideas, live }: { slug: string; ideas: Idea[]; live: boolean }) {
+function Ideas({ slug, ideas, live }: { slug: string; ideas: StudyIdea[]; live: boolean }) {
   const [adding, setAdding] = useState(false)
   const [text, setText] = useState('')
   const [category, setCategory] = useState('')
@@ -115,11 +119,16 @@ function Ideas({ slug, ideas, live }: { slug: string; ideas: Idea[]; live: boole
   const add = () => {
     const t = text.trim()
     if (!t) return
-    act.mutate({ Add: { text: t, category: category.trim() || 'general', priority: 3 } }, { onSuccess: () => {
-      setText('')
-      setCategory('')
-      setAdding(false)
-    } })
+    act.mutate(
+      { op: 'add', text: t, category: category.trim() || 'general', priority: 3 },
+      {
+        onSuccess: () => {
+          setText('')
+          setCategory('')
+          setAdding(false)
+        },
+      },
+    )
   }
   return (
     <Panel
@@ -163,7 +172,7 @@ function Ideas({ slug, ideas, live }: { slug: string; ideas: Idea[]; live: boole
                 type="button"
                 aria-label={`Close idea: ${i.text}`}
                 disabled={act.isPending}
-                onClick={() => act.mutate({ Close: { id: i.id } })}
+                onClick={() => act.mutate({ op: 'close', id: i.id })}
                 className="shrink-0 rounded p-0.5 text-fg-tertiary opacity-0 transition-opacity group-hover/idea:opacity-100 hover:text-foreground focus-visible:opacity-100"
               >
                 <X className="size-3.5" />
@@ -177,9 +186,14 @@ function Ideas({ slug, ideas, live }: { slug: string; ideas: Idea[]; live: boole
           <summary className="cursor-pointer select-none">{done.length} tried or closed</summary>
           <ul className="mt-1 flex flex-col gap-1">
             {done.map((i) => (
-              <li key={i.id} className="line-through decoration-fg-tertiary/60">
-                {i.text}
-                {i.tried_in.length > 0 && <span className="ml-1 no-underline"> · #{i.tried_in.join(', #')}</span>}
+              <li key={i.id} className="flex items-start gap-1.5">
+                <span className="min-w-0 flex-1 line-through decoration-fg-tertiary/60">{i.text}</span>
+                {i.tried_in.length > 0 && <span className="shrink-0">#{i.tried_in.join(', #')}</span>}
+                {live && i.status === 'closed' && (
+                  <button type="button" className="shrink-0 hover:text-foreground" disabled={act.isPending} onClick={() => act.mutate({ op: 'reopen', id: i.id })}>
+                    reopen
+                  </button>
+                )}
               </li>
             ))}
           </ul>
@@ -189,71 +203,67 @@ function Ideas({ slug, ideas, live }: { slug: string; ideas: Idea[]; live: boole
   )
 }
 
-/** Needs your eyes: reverted by review (Restore / Keep reverted), deviations with justification, overfit, drift, unreviewed keeps. */
-function NeedsEyes({ detail, onPick }: { detail: StudyDetail; onPick: (n: number) => void }) {
+/**
+ * Needs your eyes: the plugin's lines (reverted, deviations, overfit, drift, unreviewed) plus a Restore button for
+ * every experiment the review reverted — `restore` re-applies the patch as the next experiment and measures it again.
+ */
+function NeedsEyes({ detail, rows, onPick }: { detail: StudyDetail; rows: ExperimentRow[]; onPick: (n: number) => void }) {
   const control = useControl(detail.info.slug)
-  const unit = detail.spec.metric.unit
-  const row = (a: Attention, i: number) => {
-    const n = 'n' in a ? a.n : null
-    const open = n !== null && (
-      <button type="button" className="font-semibold hover:underline" onClick={() => onPick(n)}>
-        #{n}
-      </button>
-    )
-    switch (a.kind) {
-      case 'reverted':
-        return (
-          <Item key={i} tone="warning">
-            {open} <b>reverted by review</b> — “{a.reason}”
-            <div className="mt-1.5 flex gap-1.5">
-              <Button size="xs" variant="outline" disabled={control.isPending} onClick={() => control.mutate({ Restore: { n: a.n } })} title="Re-applies the patch as the next experiment and measures it again">
-                Restore
-              </Button>
-              <Button size="xs" variant="ghost" disabled={control.isPending} onClick={() => control.mutate({ KeepReverted: { n: a.n } })}>
-                Keep reverted
-              </Button>
-            </div>
-          </Item>
-        )
-      case 'deviation':
-        return (
-          <Item key={i} tone="warning">
-            {open} <b>deviation</b> — touched {a.paths.map((p, j) => (
-              <code key={p} className="font-mono text-xs">
-                {j > 0 && ', '}
-                {p}
-              </code>
-            ))}{' '}
-            outside scope{a.justification ? <>; justification: “{a.justification}”</> : <>; no justification given</>}
-          </Item>
-        )
-      case 'overfit':
-        return (
-          <Item key={i} tone="danger">
-            <b>overfit</b> — the search metric improved {pct(a.search_delta_pct)} but the holdout moved {pct(a.holdout_delta_pct)}. The study treats this as a plateau.
-          </Item>
-        )
-      case 'drift':
-        return (
-          <Item key={i} tone="warning">
-            {open} <b>drift</b> — the incumbent re-measured at {a.metric} {unit}, expected ≈ {a.expected} {unit}; the next confirm doubled.
-          </Item>
-        )
-      case 'unreviewed':
-        return (
-          <Item key={i} tone="info">
-            {open} <b>unreviewed keep</b> — the reviewer failed twice; the keep stands on the metric, custody and checks alone.
-          </Item>
-        )
-    }
-  }
+  const live = detail.info.state.state === 'running' || detail.info.state.state === 'paused'
+  const reverted = rows.filter((r) => r.state === 'rejected_by_review')
+  const lines = detail.needs_eyes
   return (
-    <Panel title={`Needs your eyes · ${detail.attention.length}`}>
-      <ul className="flex flex-col gap-2">{detail.attention.map(row)}</ul>
-      {detail.info.state === 'finished' && detail.report_doc && (
+    <Panel title={`Needs your eyes · ${Math.max(lines.length, reverted.length)}`}>
+      <ul className="flex flex-col gap-2">
+        {lines.map((line, i) => {
+          const m = /^#(\d+)\b/.exec(line)
+          const n = m ? Number(m[1]) : null
+          const rev = n !== null && reverted.some((r) => r.n === n)
+          const tone = /overfit/i.test(line) ? 'danger' : /unreviewed/i.test(line) ? 'info' : 'warning'
+          return (
+            <Item key={`${i}-${line.slice(0, 24)}`} tone={tone}>
+              {n !== null ? (
+                <>
+                  <button type="button" className="font-semibold hover:underline" onClick={() => onPick(n)}>
+                    #{n}
+                  </button>
+                  {line.slice(m?.[0].length ?? 0)}
+                </>
+              ) : (
+                line
+              )}
+              {rev && live && (
+                <div className="mt-1.5">
+                  <Button size="xs" variant="outline" disabled={control.isPending} onClick={() => control.mutate({ op: 'restore', n })} title="Re-applies the patch as the next experiment and measures it again">
+                    Restore
+                  </Button>
+                </div>
+              )}
+            </Item>
+          )
+        })}
+        {reverted
+          .filter((r) => !lines.some((line) => line.startsWith(`#${r.n} `) || line.startsWith(`#${r.n}:`)))
+          .map((r) => (
+            <Item key={`rev-${r.n}`} tone="warning">
+              <button type="button" className="font-semibold hover:underline" onClick={() => onPick(r.n)}>
+                #{r.n}
+              </button>{' '}
+              reverted by review{r.review?.reason ? <> — “{r.review.reason}”</> : null}
+              {live && (
+                <div className="mt-1.5">
+                  <Button size="xs" variant="outline" disabled={control.isPending} onClick={() => control.mutate({ op: 'restore', n: r.n })} title="Re-applies the patch as the next experiment and measures it again">
+                    Restore
+                  </Button>
+                </div>
+              )}
+            </Item>
+          ))}
+      </ul>
+      {detail.info.state.state === 'finished' && detail.info.report_doc && (
         <p className="mt-2 text-xs text-fg-tertiary">
           The{' '}
-          <Link to="/notes/$id" params={{ id: detail.report_doc }} search={{}} className="underline">
+          <Link to="/notes/$id" params={{ id: detail.info.report_doc }} search={{}} className="underline">
             report
           </Link>{' '}
           lists the same rows.
