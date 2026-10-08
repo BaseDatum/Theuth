@@ -1342,11 +1342,7 @@ impl Meeting {
         {
             rec.live.earlier = Some(e);
         }
-        let head = head::render(&head::of(
-            rec,
-            chrono::Utc::now(),
-            rec.live.earlier.clone(),
-        ));
+        let head = head::render(&head::of(rec, chrono::Utc::now(), rec.live.earlier.clone()));
         if !head::changed(rec.live.last_head.as_deref(), &head) {
             return;
         }
@@ -1901,7 +1897,11 @@ async fn start_task(store: &Store, mut manifest: Manifest, setup: &Setup) -> Beg
             session,
             at_tokens: Some(setup.context_tokens),
             hint: Some(tools::COMPACTION_HINT.to_owned()),
-            head: Some(head::render(&head::initial(&manifest, &setup.title, earlier))),
+            head: Some(head::render(&head::initial(
+                &manifest,
+                &setup.title,
+                earlier,
+            ))),
         })
         .await
     {
@@ -3678,6 +3678,7 @@ mod tests {
         let meeting = Meeting {
             rt,
             cfg: MeetingConfig::default(),
+            endless: endless::Config::default(),
             store: store.clone(),
             cache: None,
             current: None,

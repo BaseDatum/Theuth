@@ -317,9 +317,17 @@ mod tests {
     /// A fake tree's view: four level-0 lines folded into one `0+4`, then singles.
     fn view() -> Vec<ViewLine> {
         vec![
-            line(0, 4, "user: meeting started, no context; roadmap and ACME-1234 raised\nby Speaker 1"),
+            line(
+                0,
+                4,
+                "user: meeting started, no context; roadmap and ACME-1234 raised\nby Speaker 1",
+            ),
             line(4, 1, "tool: meeting_topic {\"label\":\"Q4 roadmap\"}"),
-            line(5, 1, "user: [meeting 00:06:40] me: what did we promise sales"),
+            line(
+                5,
+                1,
+                "user: [meeting 00:06:40] me: what did we promise sales",
+            ),
         ]
     }
 
@@ -333,7 +341,10 @@ mod tests {
             }),
             ..input()
         });
-        assert!(on.starts_with(&off), "head D is unchanged before the section");
+        assert!(
+            on.starts_with(&off),
+            "head D is unchanged before the section"
+        );
         let section = &on[off.len()..];
         assert_eq!(
             section,
@@ -347,13 +358,17 @@ mod tests {
             )
         );
         assert!(!off.contains("Earlier in this meeting"));
-        assert_eq!(on, render(&HeadInput {
-            earlier: Some(Earlier {
-                lines: view(),
-                budget: 32_000,
+        assert_eq!(
+            on,
+            render(&HeadInput {
+                earlier: Some(Earlier {
+                    lines: view(),
+                    budget: 32_000,
+                }),
+                ..input()
             }),
-            ..input()
-        }), "deterministic");
+            "deterministic"
+        );
     }
 
     #[test]
@@ -392,13 +407,20 @@ mod tests {
         let mut rows = chat.lines();
         let marker = rows.next().unwrap();
         assert!(
-            marker.starts_with("0+") && marker.ends_with("|(earlier in this meeting, not shown; recall searches it)"),
+            marker.starts_with("0+")
+                && marker.ends_with("|(earlier in this meeting, not shown; recall searches it)"),
             "{marker}"
         );
         let skipped: u64 = marker[2..marker.find('|').unwrap()].parse().unwrap();
         assert!(skipped > 0 && skipped < 40);
-        assert_eq!(rows.next().unwrap(), format!("{skipped}+1|user: batch {skipped} {}", "x".repeat(60)));
-        assert_eq!(chat.lines().last().unwrap(), format!("39+1|user: batch 39 {}", "x".repeat(60)));
+        assert_eq!(
+            rows.next().unwrap(),
+            format!("{skipped}+1|user: batch {skipped} {}", "x".repeat(60))
+        );
+        assert_eq!(
+            chat.lines().last().unwrap(),
+            format!("39+1|user: batch 39 {}", "x".repeat(60))
+        );
         // Within budget → every line, no marker.
         let all = render(&HeadInput {
             earlier: Some(Earlier {

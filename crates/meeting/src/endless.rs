@@ -136,8 +136,8 @@ pub async fn earlier(port: &dyn Memory, session: SessionId, budget: u32) -> Opti
 mod tests {
     use super::*;
 
-    #[test]
-    fn config_reads_the_agent_section_and_defaults() {
+    #[tokio::test]
+    async fn config_reads_the_agent_section_and_defaults() {
         use figment::Figment;
         use figment::providers::{Format, Yaml};
         let rt = |yaml: &str| {
@@ -146,7 +146,10 @@ mod tests {
                 std::env::temp_dir(),
             )
         };
-        assert_eq!(Config::load(&rt("meeting:\n  enabled: true\n")), Config::default());
+        assert_eq!(
+            Config::load(&rt("meeting:\n  enabled: true\n")),
+            Config::default()
+        );
         let c = Config::load(&rt(
             "agent:\n  endless:\n    view_bytes: 128000\n    default_meeting: true\n    meeting_view_bytes: 8000\n",
         ));
@@ -166,6 +169,28 @@ mod tests {
         );
     }
 
+    /// `meeting_start` carries `memory`; absent means "the configured default".
+    #[test]
+    fn the_start_option_plumbs_memory() {
+        let s: crate::StartMeeting =
+            serde_json::from_str(r#"{"process":null,"consent":true,"memory":"endless"}"#).unwrap();
+        assert_eq!(s.memory, Some(MemoryMode::Endless));
+        let s: crate::StartMeeting =
+            serde_json::from_str(r#"{"process":null,"consent":true}"#).unwrap();
+        assert_eq!(s.memory, None);
+        let m = crate::store::Manifest::new(
+            crate::MeetingId::new(),
+            crate::system_audio(),
+            "2026-10-08T03:00:00+02:00".into(),
+        );
+        assert_eq!(m.memory, MemoryMode::Epochs);
+        // Manifests written before 137 have no `memory`.
+        let mut v = serde_json::to_value(&m).unwrap();
+        v.as_object_mut().unwrap().remove("memory");
+        let old: crate::store::Manifest = serde_json::from_value(v).unwrap();
+        assert_eq!(old.memory, MemoryMode::Epochs);
+    }
+
     #[test]
     fn toolset_gains_the_three_tools_once() {
         let base = crate::MeetingConfig::default().live_toolset();
@@ -175,7 +200,10 @@ mod tests {
         for name in TOOLS {
             assert_eq!(on.tools.iter().filter(|n| *n == name).count(), 1);
         }
-        assert_eq!((on.prompts, on.runtime, on.hint_limit), (base.prompts.clone(), base.runtime, base.hint_limit));
+        assert_eq!(
+            (&on.prompts, on.runtime, on.hint_limit),
+            (&base.prompts, base.runtime, base.hint_limit)
+        );
         assert_eq!(toolset(&on), on, "idempotent");
     }
 
