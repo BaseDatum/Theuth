@@ -192,7 +192,7 @@ export function ControlCenter({ id }: { id: string }) {
               </div>
               {session && (
                 <>
-                  {!mobile && <Divider dir="col" onRatio={setSplit} />}
+                  {!mobile && <Divider dir="col" ratio={ratio} onRatio={setSplit} />}
                   <div
                     className={cn('flex min-w-0 flex-col rounded-xl border border-border-subtle', block, mobile && 'mt-4')}
                     style={mobile ? undefined : { flex: `${1 - ratio} 1 0%` }}
