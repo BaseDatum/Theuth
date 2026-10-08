@@ -6,8 +6,18 @@
  */
 import type { GraphData } from '@/lib/graph-layout'
 import type { GraphProps } from '@/rpc/bindings/GraphProps'
+import type { MapChild } from '@/rpc/bindings/MapChild'
+import type { MapEdge } from '@/rpc/bindings/MapEdge'
+import type { MapElement } from '@/rpc/bindings/MapElement'
+import type { MapEvidence } from '@/rpc/bindings/MapEvidence'
+import type { MapHit } from '@/rpc/bindings/MapHit'
+import type { MapIndex } from '@/rpc/bindings/MapIndex'
+import type { MapJob } from '@/rpc/bindings/MapJob'
+import type { MapOrigin } from '@/rpc/bindings/MapOrigin'
+import type { MapProvenance } from '@/rpc/bindings/MapProvenance'
+import type { MapTreeRow } from '@/rpc/bindings/MapTreeRow'
 import { anchorOf } from './labels'
-import type { CodeMapProgress, MapChild, MapEdge, MapElement, MapEvidence, MapHit, MapIndex, MapJob, MapOrigin, MapProvenance, MapTreeRow } from './map-types'
+import type { CodeMapProgress } from './types'
 
 export type Mark = 'read' | 'edited'
 export type Tab = 'map' | 'here' | 'fit' | 'change'
@@ -414,11 +424,12 @@ export const money = (nanos: number, currency = 'USD'): string => {
 
 const STAGE: Record<string, string> = { select: 'Choosing perspectives', top: 'Mapping perspectives', flow: 'Tracing flows', describe: 'Describing elements', done: 'Map ready', failed: 'Generation failed', cancelled: 'Generation cancelled' }
 
-/** `Mapping perspectives · 14 of 61 · $0.31 · 7 calls` (Q2: the cost moves in the open; S1 folds it into the session). */
+/** `Mapping perspectives · 14 of 61 · 7 calls` — plus `$0.31` before the calls when the engine reports a cost (v0 sends `cost_nanos: 0`: never `$0.00`). */
 export function progressLine(p: Pick<CodeMapProgress, 'stage' | 'done' | 'total' | 'calls' | 'cost_nanos' | 'currency' | 'error'> | MapJob): string {
   const parts = [STAGE[p.stage] ?? p.stage]
   if (p.total) parts.push(`${p.done} of ${p.total}`)
-  if (p.calls) parts.push(money(p.cost_nanos, p.currency), plural(p.calls, 'call'))
+  if (p.cost_nanos) parts.push(money(p.cost_nanos, p.currency))
+  if (p.calls) parts.push(plural(p.calls, 'call'))
   if (p.error) parts.push(p.error)
   return parts.join(' · ')
 }

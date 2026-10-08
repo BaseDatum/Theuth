@@ -27,7 +27,8 @@ import {
   treeKey,
 } from './map'
 import { mockMapApi } from './map-adapter'
-import type { CodeMapChanged, CodeMapProgress, MapEdge } from './map-types'
+import type { CodeMapChanged, CodeMapProgress } from './types'
+import type { MapEdge } from '@/rpc/bindings/MapEdge'
 
 const ROOT = '/Users/sky/Develop/theuth'
 const STORES = 'overall-architecture/cluster:26b565b0'
@@ -184,9 +185,16 @@ test('elementGraph over the content-stores fixture: nodes from children, why · 
   const labels = new Map(d.graph.nodes.map((n) => [n.id, n.label]))
   expect(footnote(d, labels)).toBe('dashed = inferred (Knowledge bundle → Document authority)')
   expect(elementGraph(codeindex, 'TB').hatch).toEqual(['unit:crates/codeindex/src/git.rs'])
+  // the perspective's own element (ledger.json): 11 children, two with thumbnails, 16 edges of which one is inferred (dashed)
+  const t = elementGraph(top, 'TB')
+  expect(t.graph.nodes).toHaveLength(11)
+  expect(t.graph.edges).toHaveLength(16)
+  expect(t.graph.edges.filter((e) => e.style === 'dashed').map((e) => `${e.from}>${e.to}`)).toEqual(['cluster:df1efa65>unit:crates/rpc'])
+  expect([...t.thumbs.keys()].sort()).toEqual(['cluster:040101c3', 'cluster:26b565b0'])
+  expect(elementStats(top)).toBe('11 elements · 15 of 16 edges')
   // a synthesised (structure) element: children drawn, no edges
-  expect(elementGraph(top, 'TB').graph.nodes).toHaveLength(11)
-  expect(elementGraph(top, 'TB').graph.edges).toHaveLength(0)
+  expect(elementGraph(unnamed, 'TB').graph.nodes).toHaveLength(13)
+  expect(elementGraph(unnamed, 'TB').graph.edges).toHaveLength(0)
   expect(abbrevPath(['a/b', 'c/d', 'e', 'f'])).toBe('a/b · c/d +2')
   expect(abbrevPath(['a'])).toBe('a')
 })
@@ -211,17 +219,18 @@ test('route state: ?tab=map&el=<id> round-trips, defaults omitted, junk → Map 
   expect(decodeMapSearch(encodeMapSearch(s))).toEqual(s)
 })
 
-test('lines: progress (stage · n of m · $ · calls), provenance (written by · HEAD · ago · $ · calls), imported, structure, list title', () => {
+test('lines: progress (stage · n of m · [$] · calls; no $0.00 in v0), provenance (written by · HEAD · ago · $ · calls), imported, structure, list title', () => {
   expect(progressLine({ stage: 'top', done: 5, total: 9, calls: 7, cost_nanos: 310_000_000, currency: 'USD', error: null })).toBe('Mapping perspectives · 5 of 9 · $0.31 · 7 calls')
+  expect(progressLine({ stage: 'top', done: 5, total: 9, calls: 7, cost_nanos: 0, currency: 'USD', error: null })).toBe('Mapping perspectives · 5 of 9 · 7 calls')
   expect(progressLine({ stage: 'failed', done: 1, total: 9, calls: 0, cost_nanos: 0, currency: 'USD', error: 'session runs on an external harness' })).toBe('Generation failed · 1 of 9 · session runs on an external harness')
   expect(money(4_000_000)).toBe('$<0.01')
-  expect(money(0)).toBe('$0.00')
   const now = Date.now()
   expect(provenanceLine('generated', { ...stores.provenance!, generated_ms: now - 3 * 60_000 }, now)).toBe('written by anthropic/claude-opus-4 · HEAD 5cddad8e · 3 min ago · $0.04 · 2 calls')
   expect(provenanceLine('imported', null)).toBe('imported · unknown freshness')
   expect(provenanceLine('structure', null)).toContain('structure view')
   expect(listTitle(stores)).toMatch(/^5 elements · 6 edges · written /)
-  expect(listTitle(top)).toBe('11 elements · structure view')
+  expect(listTitle(top)).toMatch(/^11 elements · 15 of 16 edges · written /)
+  expect(listTitle(unnamed)).toBe('13 elements · structure view')
 })
 
 test('fixture mock: structure overview (basenames, no prose) → map-progress.json replay → generated overview and fixture elements', async () => {

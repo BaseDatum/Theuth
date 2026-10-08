@@ -9,13 +9,21 @@
  */
 import elementCodeindex from '@/components/codemap/__fixtures__/map-element-codeindex.json'
 import elementStores from '@/components/codemap/__fixtures__/map-element-content-stores.json'
+import elementTop from '@/components/codemap/__fixtures__/map-element-overall-architecture.json'
 import overviewStructure from '@/components/codemap/__fixtures__/map-overview-structure.json'
 import overviewReady from '@/components/codemap/__fixtures__/map-overview.json'
 import progressScript from '@/components/codemap/__fixtures__/map-progress.json'
 import type { Api } from '@/rpc/api'
 import type { GraphProps } from '@/rpc/bindings/GraphProps'
+import type { MapChild } from '@/rpc/bindings/MapChild'
+import type { MapElement } from '@/rpc/bindings/MapElement'
+import type { MapExport } from '@/rpc/bindings/MapExport'
+import type { MapHit } from '@/rpc/bindings/MapHit'
+import type { MapIndex } from '@/rpc/bindings/MapIndex'
+import type { MapJob } from '@/rpc/bindings/MapJob'
+import type { MapTreeRow } from '@/rpc/bindings/MapTreeRow'
 import { localSearch } from './map'
-import type { CodeMapChanged, CodeMapProgress, MapChild, MapElement, MapExport, MapHit, MapIndex, MapJob, MapTreeRow } from './map-types'
+import type { CodeMapChanged, CodeMapProgress } from './types'
 
 export interface MapApi {
   codemap_overview(root: string): Promise<MapIndex>
@@ -59,7 +67,7 @@ export function engineMapApi(api: Api | null): MapApi {
 const STRUCTURE = overviewStructure as unknown as MapIndex
 const READY = overviewReady as unknown as MapIndex
 const ELEMENTS: Record<string, MapElement> = {}
-for (const e of [elementStores, elementCodeindex] as unknown as MapElement[]) ELEMENTS[e.id] = e
+for (const e of [elementTop, elementStores, elementCodeindex] as unknown as MapElement[]) ELEMENTS[e.id] = e
 const SCRIPT = progressScript as unknown as (CodeMapProgress | CodeMapChanged)[]
 /** Spacing between replayed events (the engine gates `CodeMapProgress` at ≥ 250 ms; the replay reads better slower). */
 const STEP_MS = 700

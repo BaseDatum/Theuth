@@ -9,9 +9,9 @@ import { adjacencyText } from '@/components/chat/surface/Graph'
 import { Sheet, SheetContent, SheetTitle } from '@/components/ui/sheet'
 import { kindGlyph } from '@/lib/codemap/labels'
 import { ago, elementGraph, elementStats, type Mark } from '@/lib/codemap/map'
-import type { MapElement } from '@/lib/codemap/map-types'
 import type { GraphData } from '@/lib/graph-layout'
 import { cn } from '@/lib/utils'
+import type { MapElement } from '@/rpc/bindings/MapElement'
 import './codemap.css'
 
 export type MapListProps = {

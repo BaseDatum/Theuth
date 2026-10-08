@@ -12,10 +12,12 @@ import { toast } from 'sonner'
 import { Button } from '@/components/ui/button'
 import { buildTreeRows, chainOf, defaultOpen, localSearch, type Mark, marksFor, parentsOf, progressLine } from '@/lib/codemap/map'
 import type { MapApi } from '@/lib/codemap/map-adapter'
-import type { CodeMapChanged, CodeMapProgress, MapHit, MapIndex, MapJob } from '@/lib/codemap/map-types'
-import type { TrailRow } from '@/lib/codemap/types'
+import type { CodeMapChanged, CodeMapProgress, TrailRow } from '@/lib/codemap/types'
 import type { DiagramTokens } from '@/lib/diagram-theme'
 import { cn } from '@/lib/utils'
+import type { MapHit } from '@/rpc/bindings/MapHit'
+import type { MapIndex } from '@/rpc/bindings/MapIndex'
+import type { MapJob } from '@/rpc/bindings/MapJob'
 import { on } from '@/store/sessions'
 import { MapCanvas } from './MapCanvas'
 import { MapDetail } from './MapDetail'
@@ -115,7 +117,7 @@ export function MapTab(p: MapProps) {
     const offC = onMap<CodeMapChanged>('CodeMapChanged', (e) => {
       if (e.root !== root) return
       for (const id of [...e.elements, ...e.stale]) pending.current.add(id)
-      if (e.more > 0) pending.current.add('*')
+      if ((e.more ?? 0) > 0) pending.current.add('*')
       clearTimeout(flush.current)
       flush.current = window.setTimeout(() => {
         const ids = pending.current
@@ -235,7 +237,7 @@ export function MapTab(p: MapProps) {
         </div>
       )}
       {!running && asked.current && data.meta.state === 'structure' && !genError && (
-        <div className="shrink-0 border-b border-border-subtle bg-layer-1 px-2 py-0.5 font-mono text-[11px] text-fg-secondary">Generating the map in this session’s cost… ($ shows in the session’s cost line)</div>
+        <div className="shrink-0 border-b border-border-subtle bg-layer-1 px-2 py-0.5 font-mono text-[11px] text-fg-secondary">Generating the map in this session’s cost…</div>
       )}
       {genError && (
         <div role="alert" className="flex shrink-0 items-center gap-2 border-b border-border-subtle bg-layer-2 px-2 py-0.5 font-mono text-[11px]">

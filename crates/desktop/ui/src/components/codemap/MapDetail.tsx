@@ -11,8 +11,10 @@ import { appendDraft, prefillDraft } from '@/components/chat/Composer'
 import { anchorOf, kindGlyph } from '@/lib/codemap/labels'
 import { detailChips, draftHead, evidenceCount, inferredReason, mapFence, provenanceLine } from '@/lib/codemap/map'
 import type { MapApi } from '@/lib/codemap/map-adapter'
-import type { MapAnchor, MapEdge, MapElement } from '@/lib/codemap/map-types'
 import { cn } from '@/lib/utils'
+import type { MapAnchor } from '@/rpc/bindings/MapAnchor'
+import type { MapEdge } from '@/rpc/bindings/MapEdge'
+import type { MapElement } from '@/rpc/bindings/MapElement'
 
 export type MapDetailProps = {
   element: MapElement | null
