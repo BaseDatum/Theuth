@@ -137,5 +137,131 @@ streaming (no turn was sent to the user's engine), the mermaid cache in the brow
 5. Resize the window / toggle the sidebar: the transcript re-flows and settles without a stuck blank region.
 6. Quit, reopen, open the same session: scrolling back has no first-visit drift (heights come from
    `localStorage theuth_heights:<session>`).
-7. Dev build only: the console prints `steady-scroll: absorbed N px / wrote M` at each rest — `absorbed` grows while
-   you fling, `wrote` is the compensated rebase.
+7. Dev build only: the console prints `steady-scroll: absorbed N px / wrote M · estimates E · renders R` at each rest —
+   `absorbed` grows while you fling, `wrote` is the compensated rebase, `estimates` stays flat after the first pass (R1).
+
+---
+
+## Revision 1 — SMOOTH (as built)
+
+*Branch `feat/135b-smooth-scroll` off main 8cd9c323 (contract commit 8340ac6d); contract `135-steady-scroll.md` §Revision 1.
+UI only. Gates green: `tsc -b --noEmit` 0 errors · vitest 206 files / 1419 tests passed, 1 skipped (pre-existing) · `vite build`
+ok (17.4 s, 14 012 modules).*
+
+### Files touched
+
+- `src/lib/measured.ts` — R1.1 `counters` :153 (DEV `estimates` = cache misses), `estimated` :155 (`WeakMap<entry object,
+  { width, px }>`), `estimateRow` :158 reads the cache before `estimateText`. Test `measured.test.ts` "one computation per
+  entry object and width" (same entry object → one computation, a spread row wrapper hits, a new width or a new entry object
+  recomputes).
+- `src/components/chat/lookahead.ts` (new) — R2.1 window math: `AHEAD = 2`, `BEHIND = 1`, `REST = 1.5` viewports;
+  `window(top, h, dir, total) → [from, to]` px, clamped to `[0, total]`. Test `lookahead.test.ts` (both directions, rest,
+  clamps).
+- `src/lib/diagram/elk.ts` :181 — R2.3 `elkPeek<T>(hash)`: the LRU read, no promise.
+- `src/lib/graph-layout.ts` :126 — `useElkLayout` initialises `shown` from `elkPeek(hash)` when `enabled` (:128); `have`
+  :146 skips the queue request for a hash that is already shown with a layout. Test `lib/diagram/elk.test.ts` (ELK mocked as
+  an echo, `document.fonts.ready` stubbed): `elkPeek` undefined → defined after `elkLayout`; a `Probe` component rendered
+  with `react-dom/server` reads `miss` before and `hit` after the layout is cached.
+- `src/components/chat/Transcript.tsx`:
+  - R1.2 `getItemKey` :206 (`useCallback` on `[rows, width]`), `known` :207 (the session's `Heights.h` hoisted once per
+    `[session, width]`), `estimateSize` :208 (`known.get(key) ?? estimateRow`). R1.5 `stats.renders` :216.
+  - R2.1 `rangeExtractor` :269 (stable, reads `vRef.current`: `scrollOffset`, `scrollRect.height`, `scrollDirection`,
+    `getTotalSize`, `getVirtualItemForOffset` at both edges, union with the library's `startIndex..endIndex`); `overscan: 0`
+    :284.
+  - R1.4 `track(settled)` :318 — the anchor row from `getVirtualItemForOffset` every frame; the element walk only when
+    `|scrollTop − last tracked| < clientHeight / 4` or `settled`; otherwise `anchorEl = null`, `offset 0` (→ `moved: 0`).
+  - R1.3/R1.5 `rest` :341 — `track(true)` first, `remember` the `fresh` keys (no `persist`), the DEV line now
+    `steady-scroll: absorbed N px / wrote M · estimates E · renders R` at every rest.
+  - R2.2 two priorities :470–516 — `lo..hi` = `v.range` ± 1 rendered from the fresh `items`; `ahead` = the keys of the window
+    outside `lo..hi` (identity kept while the list is unchanged); `deferred = useDeferredValue(ahead)`; each deferred key is
+    resolved through `indexOf` (`Map<key, index>` memoised on `rows`) to `v.measurementsCache[i]`, so a deferred row always
+    carries the current `data-index` and `translateY`; a key now inside `lo..hi` is skipped there (it renders urgently).
+    `cell(item, row)` :477 is the one row renderer for both lists.
+
+### Window constants and shape
+
+`[top − behind·h, top + h + ahead·h]` with `(behind, ahead) = (1, 2)` scrolling forward, `(2, 1)` backward, `(1.5, 1.5)` when
+`scrollDirection` is null. Measured in the browser (`clientHeight` 664): forward → 678 px mounted above the viewport, 1 336
+below; backward → 1 410 above, 694 below; rows contiguous in every sample. The library runs the extractor only when the
+visible range changes (its memo keys on `rangeExtractor`, `overscan`, `count`, `startIndex`, `endIndex`), so the rest window
+applies on mount, after a jump and after any range change while `scrollDirection` is null — a plain stop keeps the last
+biased window (a superset of what is needed; nothing re-mounts).
+
+### Deviations from the contract
+
+1. **Only entry rows are cached in the `WeakMap`.** Run, prompt and gap rows are constants (96 / 160 / 96 after the floor);
+   caching a constant would cost more than computing it. `counters.estimates` counts entry computations only.
+2. **`getItemKey` also depends on `width`.** The library's measurement memo keys on `getItemKey` only (not `estimateSize`);
+   a stable key extractor alone would leave every unmounted row's estimate at the old bucket after a resize. Depending on
+   `width` makes the full pass run exactly when the contract says: when rows or the width change.
+3. **`useElkLayout` skips the queue request on a hit.** The contract says "initialises `shown` from `elkPeek`"; without the
+   skip the mount effect would still request the same hash and `setShown` an identical layout one frame later (an extra
+   render per remount). Misses, streaming (hash changes) and time-outs are unchanged.
+4. **The deferred value is a list of keys, not of `VirtualItem`s.** Deferring the items would mount a row with a stale
+   `data-index` after a prepend, and `measureElement` resolves the key through `data-index` — a resize observed in that
+   window would be written under the wrong key. Keys are stable; positions are read fresh.
+5. **No non-ELK View changed.** Survey of the 19 Views + `Graph`/`Sequence`: the six ELK-family Views (Graph, StateMachine,
+   Entities, Swimlane, GraphDelta, Tree nodes|org) all go through `useElkLayout`; Sequence, Sankey, every chart, Tree nested,
+   Heatmap/Kanban lay out synchronously in render — no first-frame gap, nothing to do (contract R2.3 last sentence).
+
+### Perf smoke (dev server `VITE_THEUTH_URL=ws://127.0.0.1:53379`, headless Chromium 1200×800, read-only; `theuth_heights:*`
+cleared before every run, so every run is a first visit)
+
+"Before" = the contract commit's `Transcript.tsx` / `measured.ts` / `graph-layout.ts` with a temporary (uncommitted)
+`estimateRow` call counter and render counter; "after" = branch tip, numbers from the DEV `steady-scroll` line. Load the
+session, page back 8× (scroll to 0, wait for `scrollHeight` to grow), rest at the bottom (first pass), 40 steps of
+`scrollTop −= 600` every 120 ms, rest; then from the bottom a 60-step fling at ~2 500 px/s (−300 / 120 ms) and one at
+~5 000 px/s (−600 / 120 ms), each sampled every rAF (`PerformanceObserver` `longtask`, frame intervals, the lead test on
+every row intersecting the viewport: "Rendering diagram…" text, a `Reserve` holding `min-height` (not ready), an `img` with
+`!complete`) and the 135 shift sampling (`elementFromPoint` 30 ms after each step, its `top` again 90 ms later; shift =
+|Δ| > 0.5 px). The machine was shared with other builds (load ~40) during every run.
+
+(a) `estimates` (session `01a0c956` "DR failover", 556 rows loaded before / 479 after; `01a0d418` "Decision models", 640 / 682 rows):
+
+| | after first pass | after 40 steps | after both flings |
+|---|---|---|---|
+| before, DR | 170 609 calls (556 renders) | 271 772 (796 renders) — **+421 per render** | 407 192 (1 208 renders) |
+| after, DR | **354** (554 renders) | **354** (890 renders) | **354** (1 518 renders) |
+| before, Decision models | 212 316 (552) | 356 005 (848) | 507 827 (1 290) |
+| after, Decision models | **537** (610) | **537** (1 020) | **537** (1 762) |
+
+Flat after the first pass, as required. (Renders are higher after: the deferred lookahead commits are counted too.)
+
+(b) `longtask` count / total ms and p95 frame interval over the 60-step fling:
+
+| session, speed | before | after |
+|---|---|---|
+| DR, 2 500 px/s | 15 tasks / 1 117 ms · p95 41.3 ms · max 101 | 10 / 710 ms · p95 25.0 ms · max 108 |
+| DR, 5 000 px/s | 18 / 1 532 ms · p95 34.1 · max 193 | 10 / 885 ms · p95 26.5 · max 184 |
+| Decision models, 2 500 | 15 / 862 ms · p95 33.3 · max 84 | 9 / 638 ms · p95 24.6 · max 75 |
+| Decision models, 5 000 | 23 / 1 818 ms · p95 49.7 · max 159 | 16 / 1 209 ms · p95 48.6 · max 209 |
+| Diagram lowerings (`01a11356`, 239 rows = whole history), 2 500 | 0 / 0 · p95 24.9 · max 43 | 0 / 0 · p95 25.0 · max 42 |
+| Diagram lowerings, 5 000 | 8 / 499 ms · p95 33.4 · max 91 | 2 / 124 ms · p95 25.1 · max 75 |
+
+p50 is 16.7 ms everywhere (60 Hz). The max frame is noise from the shared machine (one ~180 ms task in both DR runs).
+
+(c) Lead frames (a visible row showing "Rendering diagram…" / an un-ready `Reserve` / an incomplete `img`): **0 in every
+run at 2 500 px/s, before and after.** At 5 000 px/s before: 1 frame (Decision models: placeholder + reserve), 1 frame
+(Diagram lowerings: placeholder); after: **0 / 0**. Frames with an uncovered part of the viewport (a gap between mounted
+rows, outside the slack): 0 everywhere. The 2 500 px/s target was already met by `overscan: 4` on this machine; the
+difference shows at twice the speed.
+
+ELK first frame (Diagram lowerings, Graph block of 10 svgs, row height 1 324): mount → scroll 5 viewports + 3 000 px away
+(row unmounted) → back; the `MutationObserver` on the rows container saw `S10:1324 S10:1324` — the svgs and the full
+height on the first DOM frame, no placeholder (the 135 smoke saw `P315(315px) S315` for a Graph block round trip: a
+placeholder frame at the reserved height, then the svg — `elkPeek` removes the `P` frame).
+
+Zero-shift re-run (R3): 60 + 60 samples per session × 3 sessions, after: **0 shifts** everywhere, 0 console errors. Before:
+0 everywhere except one 713 px sample in Diagram lowerings at 5 000 px/s when the fling out-ran the whole history to
+`scrollTop 0` — the end-of-history slack removal of deviation 3 above (the rows slide up into blank slack), not a content
+shift; the after run of the same fling sampled 0. Prepends mid-fling (DR with one page loaded, pages landing during both
+flings, `scrollHeight` 15 776 → 60 766): 120 samples, 0 shifts; `estimates` grew only with the new rows (16 → 109 → 138).
+
+### Not exercised
+
+iPad / touch (no device); streaming and sending (read-only against the user's engine — the "sending messages" half of the
+report is covered by the same fix: a streaming delta re-renders the transcript, and the pass is now a Map walk with zero
+`estimateRow` calls); the mermaid cache in the browser (no mermaid fence in the sessions' loaded ranges; the 135 unit test
+stands); `useDeferredValue` yielding under a real pointer fling (the scripted fling steps `scrollTop` every 120 ms, so the
+deferred commits had idle time between steps — the headless profile shows the lower longtask totals, not interrupted
+transitions).
