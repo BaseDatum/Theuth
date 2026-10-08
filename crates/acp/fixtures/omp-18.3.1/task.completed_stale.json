@@ -1,0 +1,75 @@
+{
+ "jsonrpc": "2.0",
+ "method": "session/update",
+ "params": {
+  "sessionId": "01a11b25-d8f7-71b3-a309-a306e24281dc",
+  "update": {
+   "sessionUpdate": "tool_call_update",
+   "toolCallId": "toolu_013x6rgBK7MEUsQq79DoL4YK",
+   "status": "completed",
+   "rawOutput": {
+    "content": [
+     {
+      "type": "text",
+      "text": "Spawned 2 background agents using scout.\n- `ReadA` (job `Rea…"
+     }
+    ],
+    "details": {
+     "projectAgentsDir": null,
+     "results": [],
+     "totalDurationMs": 1,
+     "progress": [
+      {
+       "index": 0,
+       "id": "ReadA",
+       "agent": "scout",
+       "agentSource": "bundled",
+       "modelRole": "smol",
+       "status": "pending",
+       "task": "Complete assignment thoroughly:\n\n# Target\n`a.txt` in cwd.\n#…",
+       "assignment": "# Target\n`a.txt` in cwd.\n# Change\nRead it; report its first…",
+       "recentTools": [],
+       "recentOutput": [],
+       "toolCount": 0,
+       "requests": 0,
+       "tokens": 0,
+       "cost": 0,
+       "durationMs": 0
+      },
+      {
+       "index": 1,
+       "id": "ReadB",
+       "agent": "scout",
+       "agentSource": "bundled",
+       "modelRole": "smol",
+       "status": "pending",
+       "task": "Complete assignment thoroughly:\n\n# Target\n`b.txt` in cwd.\n#…",
+       "assignment": "# Target\n`b.txt` in cwd.\n# Change\nRead it; report its first…",
+       "recentTools": [],
+       "recentOutput": [],
+       "toolCount": 0,
+       "requests": 0,
+       "tokens": 0,
+       "cost": 0,
+       "durationMs": 0
+      }
+     ],
+     "async": {
+      "state": "running",
+      "jobId": "ReadA",
+      "type": "task"
+     }
+    }
+   },
+   "content": [
+    {
+     "type": "content",
+     "content": {
+      "type": "text",
+      "text": "Spawned 2 background agents using scout.\n- `ReadA` (job `ReadA`)\n- `ReadB` (job `ReadB`)\n\nResults auto-deliver; NEVER poll. Completely blocked? Call `wait` to receive the first settled job or peer message.\nCoordinate while peers run via `write agent://<id>` (or `agent://all` to broadcast).\n\n`read proc://` lists jobs/services; `read proc://<id>` inspects status/output without consuming delivery. `write proc://<id>/kill` cancels/stops; omit `content`.\n\nJob IDs are process-local; delivered results expire shortly (~30s), unconsumed results within ~5min. Agent output/transcripts remain readable at `agent://<id>` / `history://<id>`. `write agent://<id>` messages a live agent.\n\n`completed`: subagent yielded successfully; claimed artifacts unverified.\n\nCoordinate: 2 siblings are running together. If their work overlaps, have them message each other via `write agent://<id>` (`agent://all` broadcasts) before editing shared files. `read proc://` shows running jobs and agents."
+     }
+    }
+   ]
+  }
+ }
+}

@@ -1473,6 +1473,7 @@ impl Message<Launch<StartPty>> for Jobs {
                 on_pty: true,
                 pty: Some(Arc::clone(&pty)),
                 lost: None,
+                kind: JobKind::Pty,
             },
         );
         Ok(Running {
@@ -2067,6 +2068,7 @@ async fn run(mut j: Run) {
         log: j.log_path,
         name: j.name.clone(),
         pty: true,
+        kind: JobKind::Pty,
     })
     .await;
 
@@ -2223,6 +2225,7 @@ async fn run(mut j: Run) {
         output: origin.map_or(screen, |o| o.notice().to_owned()),
         inline,
         pty: true,
+        kind: JobKind::Pty,
     };
     // The result rides the guard unless the tool call already returned it
     // (14 / 47 §4.1); the bus event stays observation for UIs.
@@ -2715,6 +2718,11 @@ impl Tool for StartTool {
     const RISK: Risk = Risk::Destructive;
     type Args = StartArgs;
 
+    /// Job-shaped already (145 §0.4).
+    fn promotable(&self) -> bool {
+        false
+    }
+
     fn description(&self) -> String {
         "Run a command on a pseudo-terminal as a named job you can type into (REPLs, servers, TUIs, prompts). Returns the job id and the screen; with `ready`, waits for a log regex and/or a TCP port first. cwd defaults to the shell's; variables and functions do not carry over. Use `shell` for anything that just runs and exits. A job whose screen stops changing for `idle_secs` (default 60) wakes you with `<job_idle>` and the screen; `0` for a server you only need running.".into()
     }
@@ -2754,6 +2762,11 @@ impl Tool for SendTool {
     const RISK: Risk = Risk::Mutating;
     type Args = SendArgs;
 
+    /// Job-shaped already (145 §0.4).
+    fn promotable(&self) -> bool {
+        false
+    }
+
     fn description(&self) -> String {
         "Type into a PTY job: `text` (+ Enter unless `enter: false`), then `keys`, or deliver a `signal`. Returns the screen once output settles. After a `<job_idle>`, this is how you answer what the program is waiting for.".into()
     }
@@ -2780,6 +2793,11 @@ impl Tool for ScreenTool {
     const RISK: Risk = Risk::ReadOnly;
     type Args = ScreenArgs;
 
+    /// Job-shaped already (145 §0.4).
+    fn promotable(&self) -> bool {
+        false
+    }
+
     fn description(&self) -> String {
         "The current screen of a PTY job (120×40, blank rows dropped, cursor on the last line). For line output the log file under `read_file` is the full history.".into()
     }
@@ -2804,6 +2822,11 @@ impl Tool for WaitTool {
     const NAME: &'static str = "wait";
     const RISK: Risk = Risk::ReadOnly;
     type Args = WaitArgs;
+
+    /// An explicit wait is the caller's (145 §0.4).
+    fn promotable(&self) -> bool {
+        false
+    }
 
     fn description(&self) -> String {
         "Block until a PTY job (started with `start`) prints something matching `pattern`, or exits; at most `timeout` seconds (default 30). `pattern` matches output since your last `send` (or since the job started), so a prompt already on screen returns at once. Returns the match and the screen. Use it for prompts and readiness, not to babysit a build — end the turn and the `<job_result>` wakes you, or `<job_idle>` does once the screen stops changing. Not for `shell` jobs: those cannot be waited on and report as `<job_result>` on their own.".into()
@@ -2835,6 +2858,8 @@ mod tests {
             call_id: String::new(),
             quiet: false,
             resources: crate::SessionResources::durable_arc(&fx.dir),
+            cancel: tokio_util::sync::CancellationToken::new(),
+            promote_after: None,
         }
     }
 

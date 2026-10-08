@@ -462,6 +462,44 @@ test('93: a child\'s streaming events beat its row on every ancestor, throttled 
   expect(draft[S]?.children.kid).toMatchObject({ state: { state: 'idle' }, beat: 1300 })
 })
 
+// 141 §9.1: a watch-only child is a tree row on every ancestor and its own slice, with no `↳ spawned` line.
+test('ObservedChildChanged creates the child slice and ancestor rows without an interjection; a repeat updates in place; the child’s deltas beat its row', () => {
+  const observed = (state: 'pending' | 'running' | 'completed') => ({
+    source: 'omp_task' as const,
+    external: 'ReadA',
+    state,
+    can_cancel: false,
+    cost_rule: 'counted' as const,
+    tool_call: 'toolu_1',
+    detail: { index: 0, agent: 'scout', tokens: 8962, cost: 0.11 },
+  })
+  const draft: Record<string, SessionSlice> = { [S]: empty(S), harness: { ...empty('harness'), parent: S, agent: 'omp' } }
+  const ev = (state: 'pending' | 'running' | 'completed', model: string | null = 'anthropic/x') =>
+    ({ type: 'ObservedChildChanged', parent: 'harness', child: 'kidA', name: 'ReadA', model, observed: observed(state) }) as const
+  expect(route(draft, ev('pending'), ctx())).toBe(true)
+  expect(draft.kidA).toMatchObject({ name: 'ReadA', parent: 'harness', kind: 'observed', harnessModel: 'anthropic/x', observed: { state: 'pending' } })
+  // The ACP child lists it at depth 1, the root at depth 2; neither transcript gained a line.
+  expect(draft.harness?.children.kidA).toMatchObject({ depth: 1, agent: null, model: 'anthropic/x', state: { state: 'idle' }, kind: 'observed', observed: { source: 'omp_task', state: 'pending' } })
+  expect(draft[S]?.children.kidA).toMatchObject({ depth: 2, parent: 'harness' })
+  expect(draft.harness?.entries).toEqual([])
+  expect(draft[S]?.entries).toEqual([])
+  // Running: the same row moves (one row, not two), the strip's `live` bit flips on.
+  const started = draft.harness?.children.kidA?.started_at
+  route(draft, ev('running', null), ctx())
+  expect(Object.keys(draft.harness?.children ?? {})).toEqual(['kidA'])
+  expect(draft.harness?.children.kidA).toMatchObject({ state: { state: 'running' }, model: 'anthropic/x', started_at: started, observed: { state: 'running' } })
+  // 93: the child's own streaming events beat its rows on both ancestors.
+  route(draft, { type: 'TextDelta', session: 'kidA', turn: T, text: 'alpha' }, ctx(1000))
+  expect(draft.harness?.children.kidA?.beat).toBe(1000)
+  expect(draft[S]?.children.kidA?.beat).toBe(1000)
+  // Completed: the row rests and keeps its watch-only facts for the check glyph; a later `TurnFinished` on the child does not undo them.
+  route(draft, ev('completed'), ctx(2000))
+  expect(draft.harness?.children.kidA).toMatchObject({ state: { state: 'idle' }, observed: { state: 'completed' }, beat: 1000 })
+  expect(draft.harness?.children.kidA?.finished_at).not.toBeNull()
+  route(draft, { type: 'TurnFinished', session: 'kidA', turn: T, stop_reason: 'end_turn', usage, context: 1 }, ctx(3000))
+  expect(draft.harness?.children.kidA?.observed).toMatchObject({ state: 'completed' })
+})
+
 test('route leaves untouched slices alone and ignores foreign events', () => {
   const other = empty('other')
   const draft = { [S]: empty(S), other }
@@ -473,23 +511,23 @@ test('route leaves untouched slices alone and ignores foreign events', () => {
 
 test('job tail attaches to the tool card by call id, follows output, freezes or drops on finish', () => {
   let s = run([{ type: 'ToolCallStarted', session: S, turn: T, call_id: 'c1', name: 'shell', args: { command: 'make' } }])
-  s = apply(s, { type: 'JobStarted', session: S, id: 'j1', command: 'make', call_id: 'c1', log: '/l', name: null, pty: false }, ctx())
+  s = apply(s, { type: 'JobStarted', session: S, id: 'j1', command: 'make', kind: 'shell', call_id: 'c1', log: '/l', name: null, pty: false }, ctx())
   s = apply(s, { type: 'JobOutput', session: S, id: 'j1', chunk: '10%\r55%\ndone' }, ctx())
   expect(s.entries[0]).toMatchObject({ job: { id: 'j1', lines: ['55%', 'done'] } })
-  const inline = apply(s, { type: 'JobFinished', session: S, id: 'j1', command: 'make', exit: { exited: 0 }, secs: 2n, output: '', inline: true, pty: false }, ctx())
+  const inline = apply(s, { type: 'JobFinished', session: S, id: 'j1', command: 'make', kind: 'shell', exit: { exited: 0 }, secs: 2n, output: '', inline: true, pty: false }, ctx())
   expect(inline.entries[0]).not.toHaveProperty('job')
-  const late = apply(s, { type: 'JobFinished', session: S, id: 'j1', command: 'make', exit: 'timeout', secs: 9n, output: '', inline: false, pty: false }, ctx())
+  const late = apply(s, { type: 'JobFinished', session: S, id: 'j1', command: 'make', kind: 'shell', exit: 'timeout', secs: 9n, output: '', inline: false, pty: false }, ctx())
   expect(late.entries[0]).toMatchObject({ job: { exit: { exit: 'timeout', secs: 9 } } })
   expect(apply(s, { type: 'JobOutput', session: S, id: 'j9', chunk: 'x' }, ctx())).toBe(s)
   // Only a PTY job lights the header's terminals icon, like the globe follows `browser_*`.
   expect(s.terminal).toBe(false)
-  expect(apply(s, { type: 'JobStarted', session: S, id: 'j2', command: 'top', call_id: 'c9', log: '/l', name: null, pty: true }, ctx()).terminal).toBe(true)
+  expect(apply(s, { type: 'JobStarted', session: S, id: 'j2', command: 'top', kind: 'pty', call_id: 'c9', log: '/l', name: null, pty: true }, ctx()).terminal).toBe(true)
 })
 
 test('live PTY set follows screen changes: idle or exit drops a job, a new screen re-adds it', () => {
   let s = run([{ type: 'ToolCallStarted', session: S, turn: T, call_id: 'c1', name: 'shell', args: { command: 'top' } }])
   expect(s.ptys.size).toBe(0)
-  s = apply(s, { type: 'JobStarted', session: S, id: 'j1', command: 'top', call_id: 'c1', log: '/l', name: null, pty: true }, ctx())
+  s = apply(s, { type: 'JobStarted', session: S, id: 'j1', command: 'top', kind: 'pty', call_id: 'c1', log: '/l', name: null, pty: true }, ctx())
   expect([...s.ptys]).toEqual(['j1'])
   const idle = { type: 'JobIdle', session: S, id: 'j1', command: 'top', name: null, quiet_secs: 60n, secs: 90n, nudge: 1, user_typed_secs: null, output: '' } as const
   s = apply(s, idle, ctx())
@@ -497,13 +535,13 @@ test('live PTY set follows screen changes: idle or exit drops a job, a new scree
   expect(apply(s, idle, ctx())).toBe(s)
   s = apply(s, { type: 'JobScreen', session: S, id: 'j1', rows: ['$ '], cursor: [0, 2] }, ctx())
   expect([...s.ptys]).toEqual(['j1'])
-  s = apply(s, { type: 'JobFinished', session: S, id: 'j1', command: 'top', exit: { exited: 0 }, secs: 99n, output: '', inline: false, pty: true }, ctx())
+  s = apply(s, { type: 'JobFinished', session: S, id: 'j1', command: 'top', kind: 'pty', exit: { exited: 0 }, secs: 99n, output: '', inline: false, pty: true }, ctx())
   expect(s.ptys.size).toBe(0)
   // A plain job is a background job, not a terminal, until it finishes (inline or not).
-  s = apply(s, { type: 'JobStarted', session: S, id: 'j2', command: 'make', call_id: 'c1', log: '/l', name: null, pty: false }, ctx())
+  s = apply(s, { type: 'JobStarted', session: S, id: 'j2', command: 'make', kind: 'shell', call_id: 'c1', log: '/l', name: null, pty: false }, ctx())
   expect(s.ptys.size).toBe(0)
   expect([...s.jobs]).toEqual(['j2'])
-  s = apply(s, { type: 'JobFinished', session: S, id: 'j2', command: 'make', exit: { exited: 0 }, secs: 1n, output: '', inline: true, pty: false }, ctx())
+  s = apply(s, { type: 'JobFinished', session: S, id: 'j2', command: 'make', kind: 'shell', exit: { exited: 0 }, secs: 1n, output: '', inline: true, pty: false }, ctx())
   expect(s.jobs.size).toBe(0)
 })
 
@@ -531,7 +569,7 @@ test('LIVE-GLYPHS: seedLive installs the snapshot for a session with no slice an
   const stale = 'seed-stale'
   const fresh = 'seed-fresh'
   st.applyEvents([
-    { type: 'JobStarted', session: stale, id: 'j1', command: 'make', call_id: 'c1', log: '/l', name: null, pty: false },
+    { type: 'JobStarted', session: stale, id: 'j1', command: 'make', kind: 'shell', call_id: 'c1', log: '/l', name: null, pty: false },
     { type: 'ReminderSet', session: stale, id: 'r1', message: 'm', set_at: 1n, fires_at: 2n, seconds: 1n },
   ])
   const before = useSessions.getState().sessions[stale]!
@@ -1121,8 +1159,8 @@ test('109 §8.2: the banner follows TurnResumed → ResumeReport, the next turn 
   expect(suspended.resume).toMatchObject({ turn: 'u', kind: 'suspended', resumed: false })
 
   let j = run([{ type: 'ToolCallStarted', session: S, turn: T, call_id: 'c1', name: 'shell', args: { command: 'make' } }])
-  j = apply(j, { type: 'JobStarted', session: S, id: 'j1', command: 'make', call_id: 'c1', log: '/l', name: null, pty: false }, ctx())
-  j = apply(j, { type: 'JobFinished', session: S, id: 'j1', command: 'make', exit: 'lost', secs: 4n, output: '', inline: false, pty: false }, ctx())
+  j = apply(j, { type: 'JobStarted', session: S, id: 'j1', command: 'make', kind: 'shell', call_id: 'c1', log: '/l', name: null, pty: false }, ctx())
+  j = apply(j, { type: 'JobFinished', session: S, id: 'j1', command: 'make', kind: 'shell', exit: 'lost', secs: 4n, output: '', inline: false, pty: false }, ctx())
   expect(j.entries[0]).toMatchObject({ job: { exit: { exit: 'lost', secs: 4 } } })
   expect(j.jobs.size).toBe(0)
 })

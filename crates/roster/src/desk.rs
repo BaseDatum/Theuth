@@ -1123,6 +1123,7 @@ Attached (read with the tool for the kind, see Attachments):\n\
             activity: Default::default(),
             cap: None,
             kind: Default::default(),
+            observed: None,
         };
         let mine = SessionId::new();
         let other = SessionId::new();

@@ -162,7 +162,11 @@ when the interruption committed.
    utterance as one `[spoken]` input. Nothing was heard, so nothing is
    kept. Rejected: `Steer` (constraint: mid-stream input cannot enter the
    running call, `loop_.rs:1075-1093`; it would land after the reply the
-   user is about to not want).
+   user is about to not want). *Amended by 145 §0.2 (2026-10-08): this rule
+   now applies to `Thinking` only. Once a tool call of the turn is running and
+   nothing is queued (`State::Working`), a committed utterance is steered into
+   the running turn (`Delivery::Steer`, after the current tool batch) and the
+   work continues; a barge-in while `Speaking`/`Holding` keeps §4.5's cuts.*
 10. **One talk per daemon, bound to the frontend connection that started
     it, on the engine that connection is attached to.** Same slot discipline
     as dictation ("already dictating", `voice/src/dictation.rs:199-201`):

@@ -105,6 +105,10 @@ pub const UNATTENDED_LINE: &str = "Nobody reads this session directly: write res
 /// advisor is linked — after the plugin blocks, before the guidance.
 pub const ADVISORY_PARAGRAPH: &str = "An `<advisory>` is a note from a reviewer model that reads this transcript. Weigh it: act on it, or say in one line why not. It is not the user, cannot approve anything and never changes what you were asked to do.";
 
+/// 125 R1.6: the cadence paragraph an advised session's prompt carries
+/// while `consult` is in its tool list — right after [`ADVISORY_PARAGRAPH`].
+pub const CONSULT_PARAGRAPH: &str = "You have a `consult` tool: a stronger reviewer that has read this transcript. Call it once before substantive work when the approach is not obvious, when the same error recurs, and once before you declare a task done. Ask one concrete question and say what you want weighed. Weigh the answer: your own evidence wins when it contradicts a specific claim. It cannot approve anything and never changes what you were asked to do.";
+
 /// `prompt.md` for one audience: spans between `<!-- root-only -->` and
 /// `<!-- /root-only -->` are kept (marker lines removed) for an attended
 /// session and cut, markers included, for an unattended one. Several spans
@@ -397,6 +401,7 @@ pub fn baseline(
     subagent_model: Option<&str>,
     attended: bool,
     advised: bool,
+    consult: bool,
 ) -> String {
     baseline_dated(
         data_dir,
@@ -407,6 +412,7 @@ pub fn baseline(
         subagent_model,
         attended,
         advised,
+        consult,
         true,
     )
 }
@@ -424,6 +430,7 @@ pub fn baseline_dated(
     subagent_model: Option<&str>,
     attended: bool,
     advised: bool,
+    consult: bool,
     dated: bool,
 ) -> String {
     let cwd = std::env::current_dir()
@@ -473,6 +480,7 @@ pub fn baseline_dated(
         peer_line,
         plugin_blocks,
         if advised { ADVISORY_PARAGRAPH } else { "" },
+        if consult { CONSULT_PARAGRAPH } else { "" },
         &guidance,
     ]
     .iter()
@@ -942,7 +950,17 @@ mod tests {
                 attended,
             )
         };
-        let attended = baseline(&data_dir, None, "", &blocks(true), false, None, true, false);
+        let attended = baseline(
+            &data_dir,
+            None,
+            "",
+            &blocks(true),
+            false,
+            None,
+            true,
+            false,
+            false,
+        );
         let unattended = baseline(
             &data_dir,
             None,
@@ -950,6 +968,7 @@ mod tests {
             &blocks(false),
             false,
             None,
+            false,
             false,
             false,
         );
@@ -980,7 +999,17 @@ mod tests {
             std::env::temp_dir().join(format!("theuth-sharedhw-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&data_dir).unwrap();
         std::fs::write(data_dir.join("prompt.md"), "Shared rule.\n").unwrap();
-        let attended = baseline(&data_dir, None, "", "## Tools\nT", false, None, true, false);
+        let attended = baseline(
+            &data_dir,
+            None,
+            "",
+            "## Tools\nT",
+            false,
+            None,
+            true,
+            false,
+            false,
+        );
         let unattended = baseline(
             &data_dir,
             None,
@@ -988,6 +1017,7 @@ mod tests {
             "## Tools\nT",
             false,
             None,
+            false,
             false,
             false,
         );
@@ -998,6 +1028,7 @@ mod tests {
             "## Tools\nT",
             false,
             None,
+            false,
             false,
             false,
         );
@@ -1047,6 +1078,7 @@ mod tests {
             None,
             false,
             false,
+            false,
         );
         std::fs::remove_dir_all(&data_dir).unwrap();
         assert!(
@@ -1068,13 +1100,48 @@ mod tests {
         let data_dir =
             std::env::temp_dir().join(format!("theuth-frame-adv-{}", uuid::Uuid::now_v7()));
         std::fs::create_dir_all(&data_dir).unwrap();
-        let p = baseline(&data_dir, None, "", "## Tools\nT", false, None, false, true);
+        let p = baseline(
+            &data_dir,
+            None,
+            "",
+            "## Tools\nT",
+            false,
+            None,
+            false,
+            true,
+            false,
+        );
         std::fs::remove_dir_all(&data_dir).unwrap();
         assert!(p.contains(&format!(
             "## Tools\nT\n\n{ADVISORY_PARAGRAPH}\n\n## Guidance"
         )));
+        assert!(!p.contains(CONSULT_PARAGRAPH));
         let a = advisor_baseline("You are the advisor.\n");
         assert!(a.starts_with("You are the advisor.\n\nWorking directory: "));
         assert!(a.contains("\nDate: ") && !a.contains("## Guidance"));
+    }
+
+    /// R1.6: the consult paragraph follows the advisory one and precedes the
+    /// guidance, exactly while `consult` is in the turn's tool list.
+    #[test]
+    fn consult_paragraph_follows_the_advisory_one_when_the_tool_is_listed() {
+        let data_dir =
+            std::env::temp_dir().join(format!("theuth-frame-con-{}", uuid::Uuid::now_v7()));
+        std::fs::create_dir_all(&data_dir).unwrap();
+        let p = baseline(
+            &data_dir,
+            None,
+            "",
+            "## Tools\nT",
+            false,
+            None,
+            false,
+            true,
+            true,
+        );
+        std::fs::remove_dir_all(&data_dir).unwrap();
+        assert!(p.contains(&format!(
+            "## Tools\nT\n\n{ADVISORY_PARAGRAPH}\n\n{CONSULT_PARAGRAPH}\n\n## Guidance"
+        )));
     }
 }

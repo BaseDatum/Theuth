@@ -803,6 +803,7 @@ mod tests {
             here: true,
             kind: Default::default(),
             memory: Default::default(),
+            observed: None,
         }
     }
 
@@ -850,6 +851,7 @@ mod tests {
             activity: Default::default(),
             cap: None,
             kind: Default::default(),
+            observed: None,
         }];
         let models_rows = vec![
             ModelInfo {

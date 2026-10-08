@@ -415,10 +415,10 @@ async fn serve(
             },
             agent_client_protocol::on_receive_notification!(),
         )
-        .connect_with(transport, async move |cx: ConnectionTo<Client>| {
-            cx.incoming_closed().await;
-            Ok(())
-        })
+        // 141 §4.4 (R2A §5.3): `connect_to` waits for the owned `Stdio`
+        // driver, so the last stdout write is flushed at stdin EOF;
+        // `connect_with(.., incoming_closed)` on SDK 3.1 would not.
+        .connect_to(transport)
         .await;
     let _ = relay.tell(Unbind { id }).await;
     result
@@ -1264,7 +1264,15 @@ mod tests {
             .unwrap()
             .unwrap();
         match update {
-            acp::Update::Session(SessionUpdate::AgentMessageChunk(c)) => {
+            acp::Update::Session {
+                session,
+                update: SessionUpdate::AgentMessageChunk(c),
+            } => {
+                assert_eq!(
+                    session,
+                    harness.session_id(),
+                    "141 §7.1: the wire sessionId rides along"
+                );
                 assert_eq!(acp::content_block_text(&c.content), "hello from the child");
             }
             other => panic!("expected a message chunk, got {other:?}"),

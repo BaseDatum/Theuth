@@ -1,0 +1,1 @@
+`tools.rs` (2,070 lines) and `lens.rs` both re-implement row→text rendering over the same store queries; `locate.rs`, `profile.rs`, `root.rs` and `outline_hook.rs` are left out of the diagram (under 12 nodes) and are described only here: locate resolves board anchors, profile reads manifests for project_profile, root picks the git root, outline_hook feeds read_file outlines.

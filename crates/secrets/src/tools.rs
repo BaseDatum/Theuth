@@ -150,6 +150,11 @@ impl Tool for SecretRequestTool {
     const DIRECT: bool = true;
     type Args = RequestArgs;
 
+    /// A human wait (145 §0.4).
+    fn promotable(&self) -> bool {
+        false
+    }
+
     fn description(&self) -> String {
         "Ask the user to type a secret into a masked field and store it under `name`; you never see \
          the value. Say in `note` what it is for. Returns `stored NAME vN`, `declined` or `no answer`. \
@@ -335,6 +340,11 @@ impl Tool for SecretRequestFormTool {
     const DIRECT: bool = true;
     const CONSUMES_SECRETS: bool = false;
     type Args = FormArgs;
+
+    /// A human wait (145 §0.4).
+    fn promotable(&self) -> bool {
+        false
+    }
 
     fn description(&self) -> String {
         "Ask the user for several secrets on one card (username, password, one-time code) and store \

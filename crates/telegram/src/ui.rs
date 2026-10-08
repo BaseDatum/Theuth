@@ -923,6 +923,7 @@ mod tests {
             activity: Default::default(),
             cap: None,
             kind: Default::default(),
+            observed: None,
         };
         let rows = vec![
             mk("grep", AgentState::Running),

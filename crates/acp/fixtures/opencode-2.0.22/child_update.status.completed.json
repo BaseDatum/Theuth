@@ -1,0 +1,13 @@
+{
+ "jsonrpc": "2.0",
+ "method": "opencode/session/child_update",
+ "params": {
+  "rootSessionId": "ses_ee4d9b05effekZbnkfXPDosL35",
+  "childSessionId": "ses_ee4d9a752ffe2XT5Oz2Fldml2j",
+  "parentSessionId": "ses_ee4d9b05effekZbnkfXPDosL35",
+  "depth": 1,
+  "title": "Read a.txt first line",
+  "type": "status",
+  "status": "completed"
+ }
+}

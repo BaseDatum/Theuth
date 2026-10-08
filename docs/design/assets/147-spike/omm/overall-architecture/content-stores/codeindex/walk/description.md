@@ -1,0 +1,1 @@
+`src/walk.rs` (471 lines): enumerates a root with the `ignore` crate's rules and language filters and returns entries with mtimes for the index to diff. Serial today (noted in the glob-parallel wave).

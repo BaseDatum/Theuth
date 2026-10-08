@@ -214,7 +214,7 @@ async fn append_last_seen(text: &mut String, store: &Store, session: SessionId, 
                 log.display()
             )),
         },
-        JobKind::Shell => {
+        JobKind::Shell | JobKind::Promoted => {
             let tail = log_tail(log);
             let lines: Vec<&str> = tail.lines().collect();
             let last = &lines[lines.len().saturating_sub(40)..];

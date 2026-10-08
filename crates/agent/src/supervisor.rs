@@ -29,9 +29,9 @@ use tokio::task::AbortHandle;
 use tokio_util::sync::CancellationToken;
 use tools::{
     ActivitySink, Admission, Admit, ApprovalId, ApprovalRequested, ApprovalResolved,
-    InstallCommunicationAccess, JOBS_ACTOR, JobEvent, JobExit, JobId, Jobs, ListPrompts, ListTools,
-    Notice, REGISTRY_ACTOR, RearmReminder, RegisterActivity, RegisterPrompt, RegisterTool,
-    ReminderEvent, Risk, SetCap, SetParent, Settle, ToolRegistry,
+    InstallCommunicationAccess, JOBS_ACTOR, JobEvent, JobExit, JobId, JobKind, Jobs, ListPrompts,
+    ListTools, Notice, REGISTRY_ACTOR, RearmReminder, RegisterActivity, RegisterPrompt,
+    RegisterTool, ReminderEvent, Risk, SetCap, SetParent, SetPromoteAfter, Settle, ToolRegistry,
 };
 use uuid::Uuid;
 
@@ -46,7 +46,7 @@ use crate::communication::{
     mesh as peer_mesh, network,
 };
 
-use crate::acp_child::AcpChild;
+use crate::acp_child::{AcpChild, CancelObserved};
 use crate::context::{
     ContextBreakdown, ContextEntry, ContextHistory, ContextOwner, ContextRemoval, ContextSnapshot,
     ContextTarget, save_blob,
@@ -97,13 +97,13 @@ use crate::{
     ResetRuntime, SearchRefresh, SearchSessionPage, SendInput, SessionActivity,
     SessionContextBreakdown, SessionRead, SessionSummary, SetCompactStyle, SetCompaction,
     SetEffort, SetEscalateModel, SetMaxSalvages, SetMaxToolRounds, SetModel, SetStreamIdle,
-    SetSubagentModel, SetSubagentTimeout, SetTitleModel, SetToolset, SetVisionModel, ShowPrompt,
-    SideCall, SideReply, SkillBody, SkillMeta, Steer, SyncSkills, TrimAssistant, Undo, UseSkill,
-    Withdraw, effort_of,
+    SetSubagentModel, SetSubagentTimeout, SetTalk, SetTitleModel, SetToolset, SetVisionModel,
+    ShowPrompt, SideCall, SideReply, SkillBody, SkillMeta, Steer, SyncSkills, TALK_COALESCE_MS,
+    TALK_PARK_CAP_MS, TalkLive, TrimAssistant, Undo, UseSkill, Withdraw, effort_of,
 };
 use crate::{
-    AdvisorConfig, DurableStore, SessionCostQuery, SessionKind, SpendReportQuery, SubagentsConfig,
-    UnloadSession,
+    AdvisorConfig, DurableStore, ObservedState, SessionCostQuery, SessionKind, SpendReportQuery,
+    SubagentsConfig, UnloadSession,
 };
 use crate::{AwsProfiles, ListAwsProfiles, SetAwsProfile};
 use crate::{
@@ -119,7 +119,7 @@ use tools::{
 
 // 109: handler bodies in their own files so the waves do not collide.
 mod acp_resume; // 109 W4
-mod advisor; // 125 W1
+pub(crate) mod advisor; // 125 W1
 pub mod child_waits; // 139 W3
 mod drain;
 mod resume;
@@ -242,6 +242,8 @@ pub struct Agents {
     /// Input ids routed by this process (idempotent retries): id -> (session, when).
     // ponytail: process-local, lost on restart; persist beside the row if retries must survive engine restarts.
     seen: HashMap<InputId, (SessionId, Instant)>,
+    /// 145 §0.3: sessions with a live talk — its spoken window and what it parked.
+    talk: HashMap<SessionId, Talk>,
     /// Unanswered approvals per session: `(id, tool)` (design doc 19 §2.1).
     approvals: HashMap<SessionId, (ApprovalId, String, u64)>,
     /// Session search index (design doc 26), rebuilt after the rows change.
@@ -324,6 +326,11 @@ pub(crate) enum LiveActor {
 
 /// The refusal for every `Session`-only command on an ACP child.
 const NOT_NATIVE: &str = "not available for an external harness";
+/// 141 §5.4: the refusal for anything that would drive or message a
+/// watch-only child (`Agents::session()` is the one choke point).
+pub const OBSERVED: &str = "watch-only: the harness runs this subagent; open or message its parent";
+/// 141 §5.4: the peer-address refusal (`send_message`, peer intake).
+pub const OBSERVED_PEER: &str = "watch-only harness subagent — message its parent";
 
 impl LiveActor {
     fn is_alive(&self) -> bool {
@@ -476,6 +483,61 @@ enum Held {
     },
     /// A peer exchange admitted by [`Agents::enqueue_peer`].
     Peer(Box<PeerInput>),
+}
+
+/// 145 §0.3: a session's live talk and the harness inputs parked behind its
+/// spoken window. One timer at a time: the coalesce window while `open`,
+/// the cap while closed; `epoch` outdates a timer that fires after a release.
+struct Talk {
+    live: TalkLive,
+    parked: Vec<ParkedInput>,
+    timer: Option<AbortHandle>,
+    epoch: u64,
+    /// The supervisor, for the timer's [`ReleaseParked`].
+    me: ActorRef<Agents>,
+}
+
+impl Talk {
+    /// (Re)start the one timer: [`ReleaseParked`] for `session` after `delay` ms.
+    fn arm(&mut self, session: SessionId, delay: u64) {
+        self.disarm();
+        let (me, epoch) = (self.me.clone(), self.epoch);
+        self.timer = Some(
+            tokio::spawn(async move {
+                tokio::time::sleep(Duration::from_millis(delay)).await;
+                let _ = me.tell(ReleaseParked { session, epoch }).await;
+            })
+            .abort_handle(),
+        );
+    }
+
+    fn disarm(&mut self) {
+        if let Some(h) = self.timer.take() {
+            h.abort();
+        }
+    }
+
+    /// Take what was parked; a timer in flight is stale from here.
+    fn take(&mut self) -> Vec<ParkedInput> {
+        self.disarm();
+        self.epoch += 1;
+        std::mem::take(&mut self.parked)
+    }
+}
+
+/// One admitted `Automatic` input waiting for the spoken window (145 §0.3).
+struct ParkedInput {
+    text: String,
+    files: Vec<PathBuf>,
+    ticket: InputTicket,
+    scope: Option<Uuid>,
+}
+
+/// `tell` from a [`Talk`] timer: route what `session` parked, unless a
+/// release already happened (`epoch` moved on).
+struct ReleaseParked {
+    session: SessionId,
+    epoch: u64,
 }
 
 /// A child's result its parent could not take yet (R2.7).
@@ -768,6 +830,10 @@ impl Agents {
         // 125 §4.1/§4.2: the hidden advisor child is never a peer; the
         // advised session's loop hooks switch on when a link exists.
         let kind = row.as_ref().map(|r| r.kind).unwrap_or_default();
+        // 141 §5.4: a watch-only child is the harness's; nothing here drives it.
+        if kind == SessionKind::Observed || row.as_ref().is_some_and(|r| r.observed.is_some()) {
+            anyhow::bail!("{OBSERVED}");
+        }
         let advised = kind == SessionKind::Chat && store.advisor_link(id).await?.is_some();
         if kind == SessionKind::Advisor {
             self.advisors.insert(id);
@@ -1024,7 +1090,7 @@ impl Agents {
                             .clone()
                             .unwrap_or_else(|| acp::DEFAULT_SKILLS_DIR.into()),
                     )),
-                    entry.mcp.unwrap_or(true),
+                    entry.mcp_enabled(),
                 ),
                 // A node: native there, or its own `harness`; either way the
                 // instructions ride in `session/new` `_meta`.
@@ -1194,11 +1260,20 @@ impl Agents {
     ) -> Result<(), String> {
         let ticket = self.ledger.admit(sid, origin, id);
         let defer = matches!(delivery, Delivery::NextTurn);
+        // 145 §0.3: a harness input for an idle talk session waits for the
+        // spoken window; a human input takes what was parked along as steers.
+        if origin == InputOrigin::Automatic && self.parks(sid) {
+            self.park(sid, text, files, ticket, None).await;
+            return Ok(());
+        }
         // A human reaches a queued child (01 §2.6): its brief runs now,
         // permit-free, then this text, then whatever was held for it.
         let held = self.promote(sid).await;
         let r = self.route(sid, id, text, files, ticket, None, defer).await;
         self.replay(sid, held).await;
+        if origin == InputOrigin::External {
+            self.release_parked(sid).await;
+        }
         r
     }
 
@@ -1416,10 +1491,15 @@ impl Agents {
             tracing::info!(session = %to, "{from}: result dropped, its request scope is closed");
             return;
         }
-        // A failure is already an `AgentEvent::Error` on `to`.
-        let _ = self
-            .route(to, None, wrapped, Vec::new(), ticket, scope, false)
-            .await;
+        // 145 §0.3: an idle talk session hears results when its window opens.
+        if self.parks(to) {
+            self.park(to, wrapped, Vec::new(), ticket, scope).await;
+        } else {
+            // A failure is already an `AgentEvent::Error` on `to`.
+            let _ = self
+                .route(to, None, wrapped, Vec::new(), ticket, scope, false)
+                .await;
+        }
         self.rt
             .publish(AgentEvent::MessageDelivered {
                 session: to,
@@ -1427,6 +1507,92 @@ impl Agents {
                 text,
             })
             .await;
+    }
+
+    /// 145 §0.3: an `Automatic` input for `sid` waits for the spoken window —
+    /// a live talk and no running turn (the ledger's idle, the supervisor's
+    /// view of the busy test `defer` uses). A session without a talk, or a
+    /// busy one, routes as before.
+    fn parks(&self, sid: SessionId) -> bool {
+        self.talk.contains_key(&sid) && self.ledger.is_idle(sid)
+    }
+
+    /// Park an admitted input ([`Self::parks`] held). Open window: items
+    /// landing within [`TALK_COALESCE_MS`] of the latest join one turn.
+    /// Closed: parked until it opens, an `External` input, `live: None` or
+    /// the [`TALK_PARK_CAP_MS`] cap, counted from the first item; each
+    /// parked item publishes [`AgentEvent::InputsParked`].
+    async fn park(
+        &mut self,
+        sid: SessionId,
+        text: String,
+        files: Vec<PathBuf>,
+        ticket: InputTicket,
+        scope: Option<Uuid>,
+    ) {
+        let Some(t) = self.talk.get_mut(&sid) else {
+            return;
+        };
+        t.parked.push(ParkedInput {
+            text,
+            files,
+            ticket,
+            scope,
+        });
+        let count = u32::try_from(t.parked.len()).unwrap_or(u32::MAX);
+        let open = t.live.open;
+        if open {
+            t.arm(sid, TALK_COALESCE_MS);
+        } else if t.timer.is_none() {
+            t.arm(sid, TALK_PARK_CAP_MS);
+        }
+        if !open {
+            self.rt
+                .publish(AgentEvent::InputsParked {
+                    session: sid,
+                    count,
+                })
+                .await;
+        }
+    }
+
+    /// Route everything `sid` parked as one input per request scope (texts
+    /// joined by a blank line, files concatenated), on the first item's
+    /// ticket; the other tickets are released — their input rides the merged
+    /// one. Disarms the timer. No-op without a talk or parked items.
+    async fn release_parked(&mut self, sid: SessionId) {
+        let Some(t) = self.talk.get_mut(&sid) else {
+            return;
+        };
+        let parked = t.take();
+        self.route_parked(sid, parked).await;
+    }
+
+    async fn route_parked(&mut self, sid: SessionId, parked: Vec<ParkedInput>) {
+        // Scopes stay apart (50 §6.3), in first-appearance order.
+        let mut groups: Vec<(Option<Uuid>, Vec<ParkedInput>)> = Vec::new();
+        for p in parked {
+            match groups.iter_mut().find(|(s, _)| *s == p.scope) {
+                Some((_, g)) => g.push(p),
+                None => groups.push((p.scope, vec![p])),
+            }
+        }
+        for (scope, group) in groups {
+            let mut items = group.into_iter();
+            let Some(first) = items.next() else { continue };
+            let (mut text, mut files) = (first.text, first.files);
+            for p in items {
+                text.push_str("\n\n");
+                text.push_str(&p.text);
+                files.extend(p.files);
+                self.ledger.release(sid, p.ticket);
+                self.network_input_dropped(p.ticket).await;
+            }
+            // A failure is already an `AgentEvent::Error` on `sid`.
+            let _ = self
+                .route(sid, None, text, files, first.ticket, scope, false)
+                .await;
+        }
     }
 
     /// Resolve `to` relative to `from` (50 §5.1): `session:<uuid>` must be a
@@ -1442,6 +1608,10 @@ impl Agents {
                     // 125 §4.2: the hidden advisor child is never a peer.
                     Some(row) if row.kind == SessionKind::Advisor => {
                         Err(format!("`{to}` is not a peer"))
+                    }
+                    // 141 §5.4: nor is a watch-only harness subagent.
+                    Some(row) if row.kind == SessionKind::Observed || row.observed.is_some() => {
+                        Err(format!("`{to}`: {OBSERVED_PEER}"))
                     }
                     Some(_) => {
                         self.mirror(id).await;
@@ -1649,6 +1819,9 @@ impl Agents {
             .ok_or_else(|| format!("unknown peer `session:{to}`"))?;
         if row.kind == SessionKind::Advisor {
             return Err(format!("`session:{to}` is not a peer"));
+        }
+        if row.kind == SessionKind::Observed || row.observed.is_some() {
+            return Err(format!("`session:{to}`: {OBSERVED_PEER}"));
         }
         if isolated && row.agent.is_some() {
             return Err("an external harness cannot own an A2A task scope".into());
@@ -2394,6 +2567,8 @@ impl Message<ActivityRegistered> for Agents {
         self.rebuild_waits().await;
         self.resume_scan().await;
         self.respawn_acp_children().await; // 109 W4 §7.3
+        // 141 §7.8: watch-only children of a harness that did not come back.
+        self.mark_observed_lost().await;
         // 109 §7.2: the spared child results, after the open turns are queued.
         self.deliver_spared_results().await;
     }
@@ -2579,7 +2754,8 @@ impl Agents {
                     secs,
                     output,
                     inline: false,
-                    pty,
+                    kind,
+                    ..
                 } = result
                 {
                     // Same cap and dir as tool results in the loop (07 §6).
@@ -2590,8 +2766,15 @@ impl Agents {
                         self.cfg.max_tool_output_chars,
                         &self.rt.data_dir.join("spill"),
                     );
-                    let wrapped =
-                        job_result(&id, &command, &exit, secs, &text, pty, chrono::Local::now());
+                    let wrapped = job_result(
+                        &id,
+                        &command,
+                        &exit,
+                        secs,
+                        &text,
+                        kind,
+                        chrono::Local::now(),
+                    );
                     // A job an exported task's turn started reports to that
                     // task's scope, never to a private turn (50 §6.3).
                     let scope = self.network_operation_scope(op);
@@ -2820,14 +3003,15 @@ impl Message<GetTodos> for Agents {
 /// The `<job_result>` wrapper (14 §1.2): `command` cut to 120 chars and
 /// attribute-escaped; `exit` is the code, `timeout` or `killed`; `secs` the
 /// job's wall time; `at` the local delivery clock (74 §4). PTY jobs
-/// (22 §2.2) carry ` pty="true"` and `text` is the final screen.
+/// (22 §2.2) carry ` pty="true"` and `text` is the final screen. A promoted
+/// tool call (145 §0.4) names `tool="…"` instead of `command=`.
 pub(crate) fn job_result(
     id: &JobId,
     command: &str,
     exit: &JobExit,
     secs: u64,
     text: &str,
-    pty: bool,
+    kind: JobKind,
     now: chrono::DateTime<chrono::Local>,
 ) -> String {
     let cmd: String = command.chars().take(120).collect();
@@ -2837,9 +3021,13 @@ pub(crate) fn job_result(
         JobExit::Killed => "killed".into(),
         JobExit::Lost => "lost".into(),
     };
-    let pty = if pty { " pty=\"true\"" } else { "" };
+    let (what, pty) = match kind {
+        JobKind::Shell => ("command", ""),
+        JobKind::Pty => ("command", " pty=\"true\""),
+        JobKind::Promoted => ("tool", ""),
+    };
     format!(
-        "<job_result id=\"{id}\" command=\"{}\" exit=\"{exit}\" secs=\"{secs}\"{pty} at=\"{}\">\n{text}\n</job_result>",
+        "<job_result id=\"{id}\" {what}=\"{}\" exit=\"{exit}\" secs=\"{secs}\"{pty} at=\"{}\">\n{text}\n</job_result>",
         attr(&cmd),
         clock::hhmm(now)
     )
@@ -2996,6 +3184,67 @@ impl Message<Withdraw> for Agents {
             self.ledger.withdrawn(m.session, m.id);
         }
         r
+    }
+}
+
+impl Message<SetTalk> for Agents {
+    type Reply = ();
+
+    /// 145 §0.3–0.4. `open: true` and `live: None` release what was parked;
+    /// `open: false` with items held for coalescing re-arms the cap. The
+    /// registry learns the session's promotion delay (`None` switches
+    /// promotion off).
+    async fn handle(&mut self, m: SetTalk, ctx: &mut Context<Self, Self::Reply>) {
+        let sid = m.session;
+        let after = match m.live {
+            Some(live) => {
+                let me = ctx.actor_ref().clone();
+                let t = self.talk.entry(sid).or_insert_with(|| Talk {
+                    live,
+                    parked: Vec::new(),
+                    timer: None,
+                    epoch: 0,
+                    me,
+                });
+                let was_open = t.live.open;
+                t.live = live;
+                if live.open {
+                    self.release_parked(sid).await;
+                } else if was_open && !t.parked.is_empty() {
+                    t.arm(sid, TALK_PARK_CAP_MS);
+                }
+                live.promote_after_ms.map(Duration::from_millis)
+            }
+            None => {
+                if let Some(mut t) = self.talk.remove(&sid) {
+                    let parked = t.take();
+                    self.route_parked(sid, parked).await;
+                }
+                None
+            }
+        };
+        if let Ok(Some(reg)) = ActorRef::<ToolRegistry>::lookup(REGISTRY_ACTOR) {
+            let _ = reg
+                .tell(SetPromoteAfter {
+                    session: sid,
+                    after,
+                })
+                .await;
+        }
+    }
+}
+
+impl Message<ReleaseParked> for Agents {
+    type Reply = ();
+
+    async fn handle(&mut self, m: ReleaseParked, _: &mut Context<Self, Self::Reply>) {
+        if self
+            .talk
+            .get(&m.session)
+            .is_some_and(|t| t.epoch == m.epoch)
+        {
+            self.release_parked(m.session).await;
+        }
     }
 }
 
@@ -3183,6 +3432,22 @@ impl Message<Cancel> for Agents {
                 .await
                 .unwrap_or_default(),
         };
+        // 141 §7.7: a watch-only child has no actor; its stop goes to the
+        // harness that runs it. The target itself is always forwarded (the
+        // actor answers "cannot stop" when the harness offers no per-child
+        // cancel); tree descendants only when the harness said it can.
+        let mut observed: Vec<SessionSummary> = tree
+            .iter()
+            .filter(|(_, s)| s.observed.as_ref().is_some_and(|o| o.can_cancel))
+            .map(|(_, s)| s.clone())
+            .collect();
+        if m.scope == CancelScope::Root
+            && self.live(m.session).is_none()
+            && let Ok(Some(row)) = self.store_for(m.session).session(m.session).await
+            && row.observed.is_some()
+        {
+            observed.push(row);
+        }
         let ids: Vec<SessionId> = std::iter::once(m.session)
             .chain(tree.into_iter().map(|(_, s)| s.id))
             .collect();
@@ -3200,6 +3465,9 @@ impl Message<Cancel> for Agents {
                 let keep = if id == m.session { m.keep.take() } else { None };
                 live.actor.tell_cancel(keep).await;
             }
+        }
+        for row in observed {
+            self.cancel_observed(row).await;
         }
         // The cancelled turns' awaiting tool calls are gone: their waits
         // expire explicitly (50 §5.3), never left for a late reply.
@@ -4991,10 +5259,11 @@ impl Agents {
                     kind,
                     relationship,
                     state,
-                    send: true,
+                    // 141 D10: a watch-only child is listed, never messaged.
+                    send: r.observed.is_none(),
                     // An external harness cannot call theuth peer tools (50
                     // §6.4); a node child can, back over its conn (67 §8).
-                    reply: kind != PeerKind::Acp,
+                    reply: kind != PeerKind::Acp && r.observed.is_none(),
                     stream: false,
                     activity: None,
                     title,
@@ -5541,7 +5810,7 @@ impl Agents {
         for (depth, row) in &rows {
             let parent = row.parent.unwrap_or(session);
             // Names of cold siblings are known here; keep the two states equal.
-            let state = self.state_of(row.id, Some(parent), &names);
+            let state = self.state_of_row(row, Some(parent), &names);
             let mut activity = activity.remove(&row.id).unwrap_or_default();
             activity.state = state.clone();
             out.push(
@@ -5685,6 +5954,94 @@ impl Agents {
         }
     }
 
+    /// [`Self::state_of`] for a store row: a watch-only child's state comes
+    /// from the harness (141 §5.2 table) — except an unanswered permission
+    /// ask keyed to it, which is `Approval` like anyone's.
+    fn state_of_row(
+        &self,
+        row: &SessionSummary,
+        parent: Option<SessionId>,
+        names: &HashMap<SessionId, &str>,
+    ) -> AgentState {
+        let live = self.state_of(row.id, parent, names);
+        match &row.observed {
+            Some(o) if !matches!(live, AgentState::Approval { .. }) => match o.state {
+                ObservedState::Running => AgentState::Running,
+                ObservedState::RequiresAction => AgentState::Approval {
+                    tool: o.description.clone().unwrap_or_default(),
+                },
+                ObservedState::Failed => AgentState::Error,
+                ObservedState::Cancelled => AgentState::Cancelled,
+                ObservedState::Pending
+                | ObservedState::Idle
+                | ObservedState::Completed
+                | ObservedState::Unknown => AgentState::Idle,
+            },
+            _ => live,
+        }
+    }
+
+    /// 141 §7.7: stop watch-only `row` through the live harness actor that
+    /// runs it — its parent, or the nearest ACP ancestor when nested. No
+    /// live harness: nothing to tell; the row is already lost or terminal.
+    async fn cancel_observed(&self, row: SessionSummary) {
+        let mut parent = row.parent;
+        let mut hops = 0;
+        while let Some(p) = parent
+            && hops < 8
+        {
+            if let Some(LiveActor::Acp(a)) = self.live(p) {
+                let _ = a.tell(CancelObserved { child: row.id }).await;
+                return;
+            }
+            parent = self
+                .store_for(p)
+                .session(p)
+                .await
+                .ok()
+                .flatten()
+                .and_then(|r| r.parent);
+            hops += 1;
+        }
+        tracing::info!(session = %row.id, "cancel: watch-only child has no live harness");
+    }
+
+    /// Engine start (141 §7.8, D11): non-terminal watch-only children whose
+    /// harness is not live become `unknown` / "lost contact"; each is
+    /// published so an open UI updates.
+    async fn mark_observed_lost(&self) {
+        let live: Vec<SessionId> = self
+            .sessions
+            .iter()
+            .filter(|(_, l)| matches!(l.actor, LiveActor::Acp(_)) && l.actor.is_alive())
+            .map(|(id, _)| *id)
+            .collect();
+        let lost = match self.store.mark_observed_lost(&live).await {
+            Ok(lost) => lost,
+            Err(e) => {
+                tracing::warn!("mark_observed_lost: {e:#}");
+                return;
+            }
+        };
+        for id in lost {
+            let Ok(Some(row)) = self.store.session(id).await else {
+                continue;
+            };
+            let (Some(parent), Some(observed)) = (row.parent, row.observed) else {
+                continue;
+            };
+            self.rt
+                .publish(AgentEvent::ObservedChildChanged {
+                    parent,
+                    child: id,
+                    name: row.name.unwrap_or_default(),
+                    model: row.harness_model,
+                    observed,
+                })
+                .await;
+        }
+    }
+
     /// One roster row from its store row plus live state.
     async fn info_row(
         &self,
@@ -5717,6 +6074,7 @@ impl Agents {
             activity,
             cap: self.caps.get(&id).copied(),
             kind: row.kind,
+            observed: row.observed.clone(),
         }
     }
 
@@ -5756,7 +6114,11 @@ impl Agents {
                 continue;
             }
             let parent = row.parent.unwrap_or(row.id);
-            let state = a.state.clone();
+            let state = if row.observed.is_some() {
+                self.state_of_row(row, row.parent, &HashMap::new())
+            } else {
+                a.state.clone()
+            };
             out.push(
                 self.info_row(self.store_for(row.id), row, depth, parent, state, a)
                     .await,
@@ -6036,6 +6398,8 @@ impl Message<ShowPrompt> for Agents {
             subagent_model.as_deref(),
             attended,
             advised,
+            // 125 R1.6: the root's `consult` paragraph while the cap allows the tool.
+            advised && self.advisor_cfg.max_consults > 0,
         );
         if self.pool.is_some()
             && toolset.as_ref().is_none_or(|t| t.runtime)
@@ -6449,7 +6813,18 @@ impl Message<LoadSession> for Agents {
             tracing::error!(session = %m.session, "hidden_turns: {e:#}");
             0
         });
-        let (model, effort, agent, harness_model, context_size, name, parent, project) = row
+        let (
+            model,
+            effort,
+            agent,
+            harness_model,
+            context_size,
+            name,
+            parent,
+            project,
+            kind,
+            observed,
+        ) = row
             .map(|r| {
                 (
                     r.model,
@@ -6460,6 +6835,8 @@ impl Message<LoadSession> for Agents {
                     r.name,
                     r.parent,
                     r.project,
+                    r.kind,
+                    r.observed,
                 )
             })
             .unwrap_or_default();
@@ -6513,6 +6890,8 @@ impl Message<LoadSession> for Agents {
             project,
             retention: self.retention_of(m.session),
             resume,
+            kind,
+            observed,
         }
     }
 }
@@ -7614,6 +7993,9 @@ impl Message<ResumeChild> for Agents {
 
     async fn handle(&mut self, m: ResumeChild, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
         let row = self.stored(m.session).await?;
+        if row.observed.is_some() {
+            return Err(OBSERVED.into());
+        }
         let Some(agent) = row.agent.as_deref() else {
             return Err("not an external harness; only an ACP child can be resumed".into());
         };
@@ -8832,6 +9214,7 @@ pub async fn start(rt: &Runtime) -> anyhow::Result<()> {
             last_stop: HashMap::new(),
             last_input: HashMap::new(),
             seen: HashMap::new(),
+            talk: HashMap::new(),
             approvals: HashMap::new(),
             search: Arc::default(),
             nodes: nodes.clone(),
@@ -10396,7 +10779,7 @@ pub(crate) mod tests {
             &JobExit::Exited(0),
             7,
             "out",
-            false,
+            JobKind::Shell,
             at(),
         );
         assert_eq!(
@@ -10410,21 +10793,44 @@ pub(crate) mod tests {
             &JobExit::Exited(0),
             41,
             ">>> ",
-            true,
+            JobKind::Pty,
             at(),
         );
         assert_eq!(
             w,
             "<job_result id=\"j3\" command=\"python3 -q\" exit=\"0\" secs=\"41\" pty=\"true\" at=\"14:03\">\n>>> \n</job_result>"
         );
-        let w = job_result(&id, "sleep 9", &JobExit::Timeout, 1800, "", false, at());
+        let w = job_result(
+            &id,
+            "sleep 9",
+            &JobExit::Timeout,
+            1800,
+            "",
+            JobKind::Shell,
+            at(),
+        );
         assert!(w.contains(" exit=\"timeout\" "));
-        let w = job_result(&id, "x", &JobExit::Killed, 1, "", false, at());
+        let w = job_result(&id, "x", &JobExit::Killed, 1, "", JobKind::Shell, at());
         assert!(w.contains(" exit=\"killed\" "));
         let long = "a".repeat(200);
-        let w = job_result(&id, &long, &JobExit::Exited(1), 0, "", false, at());
+        let w = job_result(&id, &long, &JobExit::Exited(1), 0, "", JobKind::Shell, at());
         assert!(w.contains(&format!(" command=\"{}\" ", "a".repeat(120))));
         assert!(!w.contains(&"a".repeat(121)));
+        // 145 T1: a promoted call names its tool, never a command.
+        let w = job_result(
+            &id,
+            "search_web",
+            &JobExit::Exited(0),
+            12,
+            "hits",
+            JobKind::Promoted,
+            at(),
+        );
+        assert_eq!(
+            w,
+            "<job_result id=\"j3\" tool=\"search_web\" exit=\"0\" secs=\"12\" at=\"14:03\">\nhits\n</job_result>"
+        );
+        assert!(!w.contains("command="));
     }
 
     #[test]
@@ -10625,6 +11031,7 @@ pub(crate) mod tests {
             last_stop: HashMap::new(),
             last_input: HashMap::new(),
             seen: HashMap::new(),
+            talk: HashMap::new(),
             approvals: HashMap::new(),
             search: Arc::default(),
             nodes: Nodes::default(),
@@ -11756,6 +12163,7 @@ pub(crate) mod tests {
                 output: "out".into(),
                 inline,
                 pty: false,
+                kind: JobKind::Shell,
             },
         };
         let op = |owner: SessionId| tools::Operation {
@@ -13067,7 +13475,8 @@ pub(crate) mod tests {
 
     /// 75 §10: `resume_child` is refused with a clear error for a native
     /// session, for an ACP row whose harness is not in `agents.yaml` (a
-    /// node's session) and for one with no stored harness session id.
+    /// node's session), for one with no stored harness session id, and (141
+    /// §5.4) for a watch-only row with the watch-only text.
     #[tokio::test]
     async fn resume_child_refuses_native_node_and_unstored() {
         let a = agents().await;
@@ -13102,6 +13511,13 @@ pub(crate) mod tests {
             refused(agents.ask(ResumeChild { session: local }).await)
                 .contains("cannot be resumed here"),
             "no agents.yaml entry"
+        );
+        let mut up = crate::store::ObservedUpsert::new(local, crate::ObservedSource::OmpTask, "A");
+        up.state = Some(ObservedState::Running);
+        let (watched, _) = store.upsert_observed(up).await.unwrap();
+        assert_eq!(
+            refused(agents.ask(ResumeChild { session: watched }).await),
+            OBSERVED
         );
     }
 
@@ -13212,12 +13628,13 @@ pub(crate) mod tests {
         rx
     }
 
-    /// The text of the next `TurnStarted` on `session`, within 10 s.
+    /// The text of the next `TurnStarted` on `session`, within 60 s (the
+    /// failing test model is not instant under load; a logic error still fails).
     async fn next_turn(
         rx: &mut tokio::sync::mpsc::UnboundedReceiver<AgentEvent>,
         session: SessionId,
     ) -> String {
-        tokio::time::timeout(Duration::from_secs(10), async {
+        tokio::time::timeout(Duration::from_secs(60), async {
             loop {
                 match rx.recv().await.expect("bus open") {
                     AgentEvent::TurnStarted {
@@ -13233,12 +13650,12 @@ pub(crate) mod tests {
         .expect("a turn starts")
     }
 
-    /// The next event on `session` matching `pick`, within 10 s.
+    /// The next event on `session` matching `pick`, within 60 s (see `next_turn`).
     async fn next_event(
         rx: &mut tokio::sync::mpsc::UnboundedReceiver<AgentEvent>,
         pick: impl Fn(&AgentEvent) -> bool,
     ) -> AgentEvent {
-        tokio::time::timeout(Duration::from_secs(10), async {
+        tokio::time::timeout(Duration::from_secs(60), async {
             loop {
                 let e = rx.recv().await.expect("bus open");
                 if pick(&e) {
@@ -13536,6 +13953,211 @@ pub(crate) mod tests {
         );
     }
 
+    /// 145: a finished job's result for `p` — the `Settle` path `inject`s as
+    /// a `<job_result>` harness input (`Automatic`).
+    async fn job_done(agents: &ActorRef<Agents>, p: SessionId, id: &str, out: &str) {
+        let op = tools::Activity::untracked(p, tools::Kind::Command("t")).id();
+        agents
+            .ask(Settle::FinishedWithResult {
+                op,
+                result: JobEvent::Finished {
+                    session: p,
+                    id: JobId(id.into()),
+                    command: "echo".into(),
+                    exit: JobExit::Exited(0),
+                    secs: 1,
+                    output: out.into(),
+                    inline: false,
+                    pty: false,
+                    kind: JobKind::Shell,
+                },
+            })
+            .await
+            .unwrap();
+    }
+
+    async fn set_talk(agents: &ActorRef<Agents>, p: SessionId, open: bool) {
+        agents
+            .ask(SetTalk {
+                session: p,
+                live: Some(TalkLive {
+                    open,
+                    promote_after_ms: None,
+                }),
+            })
+            .await
+            .unwrap();
+    }
+
+    /// `true` when no `TurnStarted` for `session` arrives within `ms`.
+    async fn no_turn_within(
+        rx: &mut tokio::sync::mpsc::UnboundedReceiver<AgentEvent>,
+        session: SessionId,
+        ms: u64,
+    ) -> bool {
+        tokio::time::timeout(Duration::from_millis(ms), async {
+            loop {
+                if let AgentEvent::TurnStarted { session: s, .. } = rx.recv().await.expect("bus")
+                    && s == session
+                {
+                    return;
+                }
+            }
+        })
+        .await
+        .is_err()
+    }
+
+    /// Parked count on `p`.
+    async fn parked(agents: &ActorRef<Agents>, p: SessionId) -> usize {
+        agents
+            .ask(With(move |a: &mut Agents| {
+                a.talk.get(&p).map_or(0, |t| t.parked.len())
+            }))
+            .await
+            .unwrap()
+    }
+
+    /// 145 A1: a closed window parks harness inputs for an idle talk session
+    /// (`InputsParked` counts them, nothing is routed); opening it starts one
+    /// turn whose text holds both envelopes in arrival order.
+    #[tokio::test]
+    async fn closed_window_parks_and_opening_coalesces() {
+        let a = agents().await;
+        let mut rx = tap(&a.rt).await;
+        let (agents, p) = rooted(a).await;
+        set_talk(&agents, p, false).await;
+        job_done(&agents, p, "j1", "one").await;
+        job_done(&agents, p, "j2", "two").await;
+        let mut seen = Vec::new();
+        for _ in 0..2 {
+            if let AgentEvent::InputsParked { count, .. } =
+                next_event(&mut rx, |e| matches!(e, AgentEvent::InputsParked { .. })).await
+            {
+                seen.push(count);
+            }
+        }
+        assert_eq!(seen, [1, 2]);
+        assert_eq!(parked(&agents, p).await, 2);
+        assert!(no_turn_within(&mut rx, p, 300).await, "nothing routed");
+        set_talk(&agents, p, true).await;
+        let text = next_turn(&mut rx, p).await;
+        let (one, two) = (
+            text.find("id=\"j1\"").unwrap(),
+            text.find("id=\"j2\"").unwrap(),
+        );
+        assert!(one < two, "{text}");
+        assert!(text.contains("</job_result>\n\n<job_result"), "{text}");
+        assert_eq!(parked(&agents, p).await, 0);
+    }
+
+    /// 145 A2: on an open window two harness inputs 50 ms apart share one
+    /// turn; 500 ms apart they get one each.
+    #[tokio::test]
+    async fn open_window_coalesces_within_the_window_only() {
+        let a = agents().await;
+        let mut rx = tap(&a.rt).await;
+        let (agents, p) = rooted(a).await;
+        set_talk(&agents, p, true).await;
+        job_done(&agents, p, "j1", "one").await;
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        job_done(&agents, p, "j2", "two").await;
+        let text = next_turn(&mut rx, p).await;
+        assert!(
+            text.contains("id=\"j1\"") && text.contains("id=\"j2\""),
+            "{text}"
+        );
+        // The test model fails at once, but under load not instantly: the
+        // second pair starts from an idle actor, so a queued pair cannot be
+        // mistaken for a coalesced one.
+        next_event(
+            &mut rx,
+            |e| matches!(e, AgentEvent::TurnFinished { session, .. } if *session == p),
+        )
+        .await;
+        job_done(&agents, p, "j3", "three").await;
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        job_done(&agents, p, "j4", "four").await;
+        let third = next_turn(&mut rx, p).await;
+        assert!(
+            third.contains("id=\"j3\"") && !third.contains("id=\"j4\""),
+            "{third}"
+        );
+        let fourth = next_turn(&mut rx, p).await;
+        assert!(fourth.contains("id=\"j4\""), "{fourth}");
+    }
+
+    /// 145 A3: the cap releases a parked input with the window still closed.
+    #[tokio::test]
+    async fn cap_releases_parked_input_while_closed() {
+        let a = agents().await;
+        let mut rx = tap(&a.rt).await;
+        let (agents, p) = rooted(a).await;
+        set_talk(&agents, p, false).await;
+        job_done(&agents, p, "j1", "one").await;
+        assert_eq!(parked(&agents, p).await, 1);
+        tokio::time::pause();
+        tokio::time::advance(Duration::from_millis(TALK_PARK_CAP_MS + 1)).await;
+        tokio::time::resume();
+        let text = next_turn(&mut rx, p).await;
+        assert!(text.contains("id=\"j1\""), "{text}");
+        assert_eq!(parked(&agents, p).await, 0);
+    }
+
+    /// 145 A4: a human input on a session with parked items starts its own
+    /// turn first; the parked items follow it as steers (here: the next turn,
+    /// since the test model fails at once).
+    #[tokio::test]
+    async fn human_input_releases_parked_items_as_steers() {
+        let a = agents().await;
+        let mut rx = tap(&a.rt).await;
+        let (agents, p) = rooted(a).await;
+        set_talk(&agents, p, false).await;
+        job_done(&agents, p, "j1", "one").await;
+        agents
+            .ask(SendInput {
+                session: Some(p),
+                text: "hurry".into(),
+                files: Vec::new(),
+                delivery: Delivery::Steer,
+                id: None,
+            })
+            .await
+            .unwrap();
+        assert_eq!(next_turn(&mut rx, p).await, "hurry", "the human first");
+        assert_eq!(parked(&agents, p).await, 0);
+        let text = next_turn(&mut rx, p).await;
+        assert!(text.contains("id=\"j1\""), "{text}");
+    }
+
+    /// 145 A6: the talk ending releases parked items and forgets the session.
+    #[tokio::test]
+    async fn talk_ending_releases_parked_items() {
+        let a = agents().await;
+        let mut rx = tap(&a.rt).await;
+        let (agents, p) = rooted(a).await;
+        set_talk(&agents, p, false).await;
+        job_done(&agents, p, "j1", "one").await;
+        assert_eq!(parked(&agents, p).await, 1);
+        agents
+            .ask(SetTalk {
+                session: p,
+                live: None,
+            })
+            .await
+            .unwrap();
+        let text = next_turn(&mut rx, p).await;
+        assert!(text.contains("id=\"j1\""), "{text}");
+        let gone = agents
+            .ask(With(move |a: &mut Agents| !a.talk.contains_key(&p)))
+            .await
+            .unwrap();
+        assert!(gone);
+        // Without a talk the next result routes at once, as before.
+        job_done(&agents, p, "j2", "two").await;
+        assert!(next_turn(&mut rx, p).await.contains("id=\"j2\""));
+    }
+
     /// A fake node `box` on `a`: the harness side of its one connection.
     fn node(a: &Agents, name: &str) -> crate::acp_child::tests::Fake {
         let (fake, dialer) = crate::acp_child::tests::Fake::new();
@@ -13645,6 +14267,141 @@ pub(crate) mod tests {
             .await
             .unwrap();
         assert_eq!((free, turn), (1, false), "permit released with the turn");
+    }
+
+    /// 141 §5.4: a watch-only row is never driven — `session()` (the one
+    /// choke point behind send_input/steer/undo/compact/resume) refuses it
+    /// with [`OBSERVED`]; it is not a peer (`resolve`, `enqueue_peer`); the
+    /// directory lists it `send: false`; the roster state follows the
+    /// harness's state; a repeat announce is the same row.
+    #[tokio::test]
+    async fn observed_rows_are_refused_as_targets_and_listed_watch_only() {
+        let mut a = agents_with(true).await;
+        let (root, _) = a.session(None, None, None, (None, None)).await.unwrap();
+        let acp = SessionId::new();
+        a.store
+            .create_session(acp, "omp", Some(root), Some("omp"), None)
+            .await
+            .unwrap();
+        let mut up =
+            crate::store::ObservedUpsert::new(acp, crate::ObservedSource::OmpTask, "ReadA");
+        up.name = Some("ReadA");
+        up.state = Some(ObservedState::Running);
+        let (child, created) = a.store.upsert_observed(up).await.unwrap();
+        assert!(created);
+        let err = match a.session(Some(child), None, None, (None, None)).await {
+            Err(e) => e.to_string(),
+            Ok(_) => panic!("watch-only rows are never driven"),
+        };
+        assert_eq!(err, OBSERVED);
+        assert!(!a.sessions.contains_key(&child), "no actor was spawned");
+        let err = match a.resolve(root, &format!("session:{child}")).await {
+            Err(e) => e,
+            Ok(_) => panic!("not a peer"),
+        };
+        assert!(err.ends_with(OBSERVED_PEER), "{err}");
+        let rows = a.directory(root).await.unwrap();
+        let row = rows
+            .iter()
+            .find(|r| r.address == format!("session:{child}"))
+            .expect("listed");
+        assert!(!row.send && !row.reply, "{row:?}");
+        let infos = a.agents(root).await;
+        let info = infos.iter().find(|i| i.id == child).expect("in the tree");
+        assert_eq!(info.state, AgentState::Running, "{info:?}");
+        assert_eq!(info.kind, SessionKind::Observed);
+        assert_eq!(
+            info.observed.as_ref().map(|o| o.external.as_str()),
+            Some("ReadA")
+        );
+        assert_eq!(info.parent, acp);
+        // Engine restart with the harness gone: lost contact, published.
+        let rt = a.rt.clone();
+        let mut rx = tap(&rt).await;
+        a.mark_observed_lost().await;
+        let e = next_event(
+            &mut rx,
+            |e| matches!(e, AgentEvent::ObservedChildChanged { child: c, .. } if *c == child),
+        )
+        .await;
+        let AgentEvent::ObservedChildChanged { observed, .. } = e else {
+            unreachable!()
+        };
+        assert_eq!(observed.state, ObservedState::Unknown);
+        assert_eq!(observed.stop.as_deref(), Some("lost contact"));
+        let infos = a.agents(root).await;
+        let info = infos.iter().find(|i| i.id == child).unwrap();
+        assert_eq!(
+            info.state,
+            AgentState::Idle,
+            "unknown shows idle, labelled by the UI"
+        );
+    }
+
+    /// 141 §7.7: `Cancel` on a watch-only child (no actor of its own) is
+    /// forwarded to the harness actor that runs it; with
+    /// `capabilities.cancel` that is a `session/cancel` on the child's own
+    /// id. The parent's turn is untouched.
+    #[tokio::test]
+    async fn cancel_of_an_observed_child_is_forwarded_to_its_harness() {
+        let a = agents().await;
+        let mut fake = node(&a, "box");
+        let rt = a.rt.clone();
+        let (agents, p) = rooted(a).await;
+        rt.subscribe::<Agents, AgentEvent>(&agents).await;
+        let mut rx = tap(&rt).await;
+        let (_, e1, _) = agents.ask(spawn_on(p, "box", "e1", "go")).await.unwrap();
+        fake.handshake(Vec::new(), None).await;
+        let (id, _) = fake.prompt().await;
+        fake.end_turn(&id);
+        next_event(
+            &mut rx,
+            |e| matches!(e, AgentEvent::TurnFinished { session, .. } if *session == e1),
+        )
+        .await;
+        let actor = agents
+            .ask(With(move |a: &mut Agents| match &a.sessions[&e1].actor {
+                LiveActor::Acp(a) => a.clone(),
+                LiveActor::Native(_) => unreachable!(),
+            }))
+            .await
+            .unwrap();
+        let mut ann = acp::ChildAnnounce::new(acp::ChildSource::Rfd, "sess_child_1");
+        ann.title = Some("Reader".into());
+        ann.can_cancel = Some(true);
+        ann.state = Some(acp::ChildState::Running);
+        actor.tell(acp::Update::Subagent(ann)).await.unwrap();
+        let e = next_event(
+            &mut rx,
+            |e| matches!(e, AgentEvent::ObservedChildChanged { parent, .. } if *parent == e1),
+        )
+        .await;
+        let AgentEvent::ObservedChildChanged { child, .. } = e else {
+            unreachable!()
+        };
+        agents
+            .tell(Cancel {
+                session: child,
+                scope: CancelScope::Root,
+                keep: None,
+            })
+            .await
+            .unwrap();
+        let m = fake.next().await;
+        assert_eq!(m["method"], "session/cancel", "{m}");
+        assert_eq!(m["params"]["sessionId"], "sess_child_1", "{m}");
+        // `Tree` on the harness session reaches the cancellable child too.
+        agents
+            .tell(Cancel {
+                session: e1,
+                scope: CancelScope::Tree,
+                keep: None,
+            })
+            .await
+            .unwrap();
+        let m = fake.next().await;
+        assert_eq!(m["method"], "session/cancel", "{m}");
+        assert_eq!(m["params"]["sessionId"], "sess_child_1", "{m}");
     }
 
     /// T7: pools are per orchestrator tree — a queued child in tree A does

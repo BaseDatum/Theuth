@@ -1,0 +1,34 @@
+graph LR
+    clients["Clients\ncrates/desktop/, crates/tui/"]
+    rpc["RPC facade\ncrates/rpc/"]
+    agent["Agent loop\ncrates/agent/, crates/acp/, crates/cursor/"]
+    foundation["Foundation\ncrates/{runtime,platform,tools,surface,markdown,secrets,oauth,replica}/"]
+    content-stores["Content stores\ncrates/{knowledge,document,artifact,search,codeindex}/"]
+    local-models["Local models + speech\ncrates/{models,decision,voice,meeting,talk}/"]
+    world-access["World access\ncrates/{web,browser,scrape,routes,search-providers,computer}/"]
+    channels["Channels + peers\ncrates/{signal,slack,telegram,a2a,link,nodes,relay}/"]
+    mesh["Mesh + sync\ncrates/{mesh,sessionsync,sandbox}/"]
+    orchestration["Orchestration\ncrates/{roster,tasks,schedule,double,dreaming,app,update}/"]
+    theuth-bin["t binary\ncrates/theuth/"]
+
+    clients -->|"jsonrpsee WebSocket, ts-rs bindings (ui/src/rpc/transport.ts)"| rpc
+    rpc -->|"send_input → ask(AGENT_ACTOR, SendInput)"| agent
+    rpc -->|"lens, doc, knowledge, artifact methods (5 Cargo deps)"| content-stores
+    rpc -->|"schedule, tasks, roster, double, app, update methods (7 deps)"| orchestration
+    rpc -->|"channel settings and link/pairing methods (6 deps)"| channels
+    agent -->|"registry.ask(Invoke(ToolCall)) via tools::registry"| foundation
+    agent -->|"HTTP client for providers (agent→web)"| world-access
+    channels -->|"inbound messages become session input (6 deps)"| agent
+    channels -->|"desks, tasks, the owner's double (9 deps)"| orchestration
+    orchestration -->|"wake sessions, run prompts, spawn desks (7 deps)"| agent
+    orchestration -->|"engine stats, sandboxes, replication (11 deps)"| mesh
+    content-stores -->|"replica change feeds, mesh engine ids (4 deps)"| mesh
+    local-models -->|"meeting/talk drive a session (2 deps)"| agent
+    world-access -->|"browser_run picks actions with the decision model"| local-models
+    mesh -->|"sandbox + sessionsync own agent sessions (2 deps)"| agent
+    theuth-bin -->|"main() builds Runtime, starts every plugin"| foundation
+
+    classDef entry fill:#89b4fa,stroke:#89b4fa,color:#1e1e2e
+    classDef store fill:#a6e3a1,stroke:#a6e3a1,color:#1e1e2e
+    class clients,channels entry
+    class content-stores store

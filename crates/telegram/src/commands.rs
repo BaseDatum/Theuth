@@ -631,6 +631,17 @@ async fn cancel(cx: &CommandCx<'_>, arg: &str) -> anyhow::Result<Outcome> {
         .filter(|a| a.name == arg || path(a, &rows) == arg)
         .collect();
     match hits.as_slice() {
+        // 141 §10.3: a watch-only child is the harness's; only an RFD child
+        // that advertised `capabilities.cancel` can be stopped on its own.
+        [a] if a.observed.as_ref().is_some_and(|o| !o.can_cancel) => {
+            let parent = rows
+                .iter()
+                .find(|p| p.id == a.parent)
+                .map_or_else(|| short(a.parent), |p| p.name.clone());
+            text(format!(
+                "{arg} is a watch-only subagent of {parent}; stop the parent"
+            ))
+        }
         [a] => {
             cx.port.cancel(a.id).await.map_err(err)?;
             Ok(Outcome::Cancelled {
@@ -1465,6 +1476,7 @@ pub(crate) mod testing {
             here: true,
             kind: Default::default(),
             memory: Default::default(),
+            observed: None,
         }
     }
 
@@ -1689,6 +1701,7 @@ mod tests {
             activity: Default::default(),
             cap: None,
             kind: Default::default(),
+            observed: None,
         };
         info.activity.state = agent::AgentState::Running;
         let port = FakePort {
@@ -1722,6 +1735,69 @@ mod tests {
             text("no subagent named nope")
         );
         assert_eq!(port.cancelled.lock().as_slice(), &[s, s, child]);
+    }
+
+    /// 141 §10.3: `cancel <name>` on a watch-only child refuses with the
+    /// parent to stop instead, unless the harness accepts a per-child cancel.
+    #[tokio::test]
+    async fn cancel_refuses_a_watch_only_subagent_unless_cancellable() {
+        let s = SessionId::new();
+        let child = SessionId::new();
+        let observed = |can_cancel| agent::ObservedMeta {
+            source: agent::ObservedSource::Rfd,
+            external: "sess_child_1".into(),
+            state: agent::ObservedState::Running,
+            stop: None,
+            can_cancel,
+            description: None,
+            tool_call: None,
+            cost_rule: agent::CostRule::DisplayOnly,
+            detail: serde_json::Value::Null,
+        };
+        let info = |can_cancel| agent::AgentInfo {
+            id: child,
+            name: "ReadA".into(),
+            parent: s,
+            depth: 1,
+            agent: None,
+            model: "m".into(),
+            state: agent::AgentState::Running,
+            started_at: None,
+            finished_at: None,
+            last: String::new(),
+            project: None,
+            retention: tools::Retention::Durable,
+            activity: Default::default(),
+            cap: None,
+            kind: agent::SessionKind::Observed,
+            observed: Some(observed(can_cancel)),
+        };
+        let port = FakePort {
+            sessions: vec![summary(s, "root")],
+            agents: vec![info(false)],
+            ..Default::default()
+        };
+        assert_eq!(
+            handle(cx(&port, 2, Some(s)), "cancel", "ReadA").await,
+            text(&format!(
+                "ReadA is a watch-only subagent of {}; stop the parent",
+                short(s)
+            ))
+        );
+        assert!(port.cancelled.lock().is_empty());
+        let port = FakePort {
+            sessions: vec![summary(s, "root")],
+            agents: vec![info(true)],
+            ..Default::default()
+        };
+        assert_eq!(
+            handle(cx(&port, 2, Some(s)), "cancel", "ReadA").await,
+            Outcome::Cancelled {
+                session: child,
+                reply: Reply::text("cancelled ReadA")
+            }
+        );
+        assert_eq!(port.cancelled.lock().as_slice(), &[child]);
     }
 
     #[tokio::test]

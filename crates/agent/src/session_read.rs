@@ -377,6 +377,7 @@ mod tests {
             here: true,
             kind: Default::default(),
             memory: Default::default(),
+            observed: None,
         }
     }
 

@@ -88,6 +88,17 @@ test('running subagents: a live slice counts, so does the list snapshot for a ch
   expect(runningSubagents([], {})).toBe(0)
 })
 
+// 141 §9.4: a watch-only child has no turn of its own — the harness's state is its live bit, live from the slice, else the snapshot.
+test('running subagents: a watch-only child counts while the harness says running or waiting on you, not when idle or finished', () => {
+  const meta = (state: 'running' | 'requires_action' | 'idle' | 'completed') => ({ source: 'opencode_ext' as const, external: 'x', state, can_cancel: false, cost_rule: 'unreported' as const, detail: null })
+  const d = (id: string, state: 'running' | 'requires_action' | 'idle' | 'completed') => ({ ...s(id, null, '2026-01-01T00:00:00Z'), parent: 'a', running: false, kind: 'observed' as const, observed: meta(state) })
+  const subs = [d('run', 'running'), d('ask', 'requires_action'), d('idle', 'idle'), d('done', 'completed')]
+  expect(runningSubagents(subs, {})).toBe(2)
+  // The slice's live state outranks the snapshot: `run` finished since the list was read; `idle` was resumed.
+  const slice = (state: 'running' | 'completed') => ({ running: false, observed: meta(state) }) as SessionSlice
+  expect(runningSubagents(subs, { run: slice('completed'), idle: slice('running') })).toBe(2)
+})
+
 test('the virtualizer’s scrollMargin is the height of the content above the list, in scroll coordinates, and follows it as it grows', () => {
   // A scroller at viewport y=100 holding a menu of `above` px, then the list.
   let above = 200

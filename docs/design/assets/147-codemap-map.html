@@ -1,0 +1,381 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>147 · CodeMap Map tab</title><style>
+:root{--cm-bg:var(--background,#12100e);--cm-fg:var(--foreground,#e8dcc8);--cm-muted:var(--muted-foreground,var(--muted,#9a8b72));
+--cm-card:var(--card,#1c1915);--cm-l2:#2a241c;--cm-l3:#3a3228;--cm-border:var(--border,#2a241c);--cm-strong:#3a3228;
+--cm-accent:var(--primary,#c47a2c);--cm-accent2:var(--accent,#c47a2c);--cm-entry:var(--chart-2,#6f8fc0);--cm-store:var(--chart-3,#4a8a6e);
+--cm-danger:var(--chart-5,#c45a48);--cm-info:var(--chart-4,#5b8f8a);--cm-r:var(--radius,0.5rem);
+--sans:var(--font-sans,-apple-system,BlinkMacSystemFont,"Segoe UI",Helvetica,Arial,sans-serif);--mono:var(--font-mono,ui-monospace,SFMono-Regular,Menlo,Consolas,monospace);}
+*{box-sizing:border-box}
+body{margin:0;background:var(--cm-bg);color:var(--cm-fg);font-family:var(--sans);font-size:13px;line-height:1.45;padding:16px 12px 24px}
+.wrap{max-width:1280px;margin:0 auto}
+.cap{font:12px/1.4 var(--sans);color:var(--cm-muted);margin:22px 0 8px;display:flex;gap:8px;align-items:baseline}
+.cap b{color:var(--cm-fg);font-weight:600;letter-spacing:.02em}
+.cap:first-child{margin-top:0}
+.scrollx{overflow-x:auto;padding-bottom:4px}
+.pane{width:880px;height:660px;background:var(--cm-bg);border:1px solid var(--cm-strong);border-radius:8px;display:flex;flex-direction:column;overflow:hidden;font:11px/1.35 var(--mono);box-shadow:0 8px 32px #0006}
+.hdr{height:32px;flex:none;display:flex;align-items:center;gap:8px;padding:0 8px;border-bottom:1px solid var(--cm-border);white-space:nowrap}
+.hdr .title{font-weight:600}
+.chip{display:inline-flex;align-items:center;gap:4px;height:18px;padding:0 7px;border-radius:9px;background:var(--cm-l2);color:var(--cm-fg);font:11px var(--mono)}
+.chip.root{border:1px solid var(--cm-strong);background:transparent}
+.hdr .stats{color:var(--cm-muted)}
+.hdr nav{margin-left:auto;display:flex;gap:2px;align-items:center}
+.tab{position:relative;padding:2px 7px;border-radius:4px;color:var(--cm-fg);background:transparent}
+.tab.on{background:var(--cm-l3);font-weight:600}
+.tab .dot{position:absolute;top:3px;right:2px;width:5px;height:5px;border-radius:50%;background:var(--cm-accent)}
+.ico{padding:2px 6px;border-radius:4px;color:var(--cm-muted)}
+.prog{height:18px;flex:none;display:flex;align-items:center;gap:8px;padding:0 8px;color:var(--cm-muted);border-bottom:1px solid var(--cm-border);background:var(--cm-card);white-space:nowrap;overflow:hidden}
+.prog .bar{flex:none;width:120px;height:3px;border-radius:2px;background:var(--cm-l3);position:relative;overflow:hidden}
+.prog .bar i{position:absolute;left:0;top:0;bottom:0;width:56%;background:var(--cm-accent);border-radius:2px}
+.prog .bar i::after{content:"";position:absolute;left:100%;top:0;bottom:0;width:14px;background:linear-gradient(90deg,var(--cm-accent),transparent);opacity:.7}
+.body{flex:1;min-height:0;display:flex}
+.tree{width:180px;flex:none;border-right:1px solid var(--cm-border);display:flex;flex-direction:column;min-height:0}
+.search{margin:6px 6px 4px;height:22px;border:1px solid var(--cm-strong);border-radius:5px;background:var(--cm-l2);color:var(--cm-muted);display:flex;align-items:center;gap:6px;padding:0 7px;white-space:nowrap;overflow:hidden}
+.search svg{flex:none}
+.rows{flex:1;min-height:0;overflow:hidden;padding:0 0 4px;position:relative}
+.row{height:16px;display:flex;align-items:center;gap:4px;padding:0 6px;white-space:nowrap;overflow:hidden;color:var(--cm-fg)}
+.row.p{color:var(--cm-fg);font-weight:600}
+.row.p .n{color:var(--cm-muted);font-weight:400}
+.row .tw{width:9px;flex:none;color:var(--cm-muted);text-align:center}
+.row .lbl{overflow:hidden;text-overflow:ellipsis;flex:1;min-width:0}
+.row .n{color:var(--cm-muted);flex:none}
+.row.sel{background:var(--cm-l3);box-shadow:inset 2px 0 0 var(--cm-accent)}
+.row.d1{padding-left:14px}.row.d2{padding-left:26px}.row.d3{padding-left:38px}
+.row.q{color:var(--cm-muted)}
+.bdg{flex:none;font:9px/12px var(--mono);padding:0 4px;border-radius:3px;text-transform:uppercase;letter-spacing:.04em}
+.bdg.stale{color:var(--cm-danger);border:1px solid var(--cm-danger);background:repeating-linear-gradient(135deg,#c45a4822 0 2px,transparent 2px 4px)}
+.bdg.imp{color:var(--cm-info);border:1px solid var(--cm-info)}
+.adot{flex:none;width:6px;height:6px;border-radius:50%}
+.adot.edited{background:var(--cm-accent)}
+.adot.read{background:transparent;border:1.5px solid var(--cm-accent)}
+.spin{flex:none;width:9px;height:9px;border-radius:50%;border:1.5px solid var(--cm-l3);border-top-color:var(--cm-accent);animation:sp 1s linear infinite}
+@keyframes sp{to{transform:rotate(360deg)}}
+@media (prefers-reduced-motion:reduce){.spin{animation:none}}
+.canvas{flex:1;min-width:0;display:flex;flex-direction:column;position:relative;min-height:0}
+.crumb{height:30px;flex:none;display:flex;align-items:center;gap:6px;padding:0 10px;color:var(--cm-muted);white-space:nowrap;border-bottom:1px solid var(--cm-border)}
+.crumb b{color:var(--cm-fg);font-weight:600}
+.crumb .sep{opacity:.6}
+.crumb .back{margin-left:auto;color:var(--cm-fg);border:1px solid var(--cm-strong);border-radius:4px;padding:1px 7px}
+.crumb .back i{color:var(--cm-muted);font-style:normal;margin-left:4px}
+.stage{flex:1;min-height:0;position:relative;padding:10px 12px 36px}
+.stage svg.diag{display:block;width:100%;height:100%}
+.zoom{position:absolute;right:10px;bottom:6px;display:flex;align-items:center;gap:1px;background:var(--cm-card);border:1px solid var(--cm-strong);border-radius:5px;padding:1px;color:var(--cm-fg)}
+.zoom span{padding:1px 6px;border-radius:3px}
+.zoom .z{color:var(--cm-muted)}
+.foot{flex:none;display:block;padding:3px 12px 5px;color:var(--cm-muted);font-size:10.5px;line-height:1.3}
+.detail{width:260px;flex:none;border-left:1px solid var(--cm-border);display:flex;flex-direction:column;min-height:0;overflow:hidden;font:12px/1.45 var(--sans)}
+.detail .dh{padding:10px 12px 8px;border-bottom:1px solid var(--cm-border)}
+.detail h2{margin:0 0 6px;font:600 14px/1.2 var(--sans)}
+.anch{display:flex;flex-wrap:wrap;gap:4px}
+.anch span{font:10px/16px var(--mono);padding:0 6px;border-radius:4px;background:var(--cm-l2);color:var(--cm-entry);border:1px solid var(--cm-border)}
+.detail .sec{padding:8px 12px 0}
+.detail h3{margin:0 0 4px;font:600 9.5px/1.2 var(--mono);letter-spacing:.1em;text-transform:uppercase;color:var(--cm-muted)}
+.detail p{margin:0;color:var(--cm-fg)}
+.detail p code{font:11px var(--mono);color:var(--cm-entry)}
+.edges{list-style:none;margin:0;padding:0;font:11px/1.4 var(--mono)}
+.edges li{display:flex;gap:6px;align-items:baseline;padding:2px 0;white-space:nowrap;overflow:hidden}
+.edges .ev{color:var(--cm-muted);overflow:hidden;text-overflow:ellipsis}
+.ebdg{flex:none;font:9px/13px var(--mono);padding:0 4px;border-radius:3px;border:1px solid var(--cm-store);color:var(--cm-store)}
+.ebdg.inf{border-color:var(--cm-muted);color:var(--cm-muted);border-style:dashed}
+.prov{margin-top:auto;padding:8px 12px;border-top:1px solid var(--cm-border);color:var(--cm-muted);font:10.5px/1.4 var(--mono)}
+.acts{display:flex;flex-wrap:wrap;gap:4px;padding:0 12px 10px}
+.acts span{font:11px/20px var(--mono);padding:0 8px;border-radius:4px;border:1px solid var(--cm-strong);color:var(--cm-fg)}
+.acts span.pri{background:var(--cm-l3)}
+/* svg */
+svg.diag text{font-family:var(--sans)}
+svg.diag .nd-box{fill:var(--cm-card);stroke:var(--cm-strong);stroke-width:1}
+svg.diag .nd.sel .nd-box{stroke:var(--cm-accent);stroke-width:2}
+svg.diag .nd.entry .nd-tag{fill:var(--cm-entry)} svg.diag .nd.store .nd-tag{fill:var(--cm-store)}
+svg.diag .nd-name{font-size:13px;font-weight:600;fill:var(--cm-fg)}
+svg.diag .nd-path{font-family:var(--mono);font-size:10px;fill:var(--cm-muted)}
+svg.diag .nd.stale .nd-box{stroke:var(--cm-danger);stroke-dasharray:none}
+svg.diag .nd-stale{font-family:var(--mono);font-size:9.5px;fill:var(--cm-danger);letter-spacing:.08em}
+svg.diag .mark circle{fill:var(--cm-accent)} svg.diag .mark.read circle{fill:var(--cm-bg);stroke:var(--cm-accent);stroke-width:1.5}
+svg.diag .th rect{fill:var(--cm-l2);stroke:var(--cm-muted);stroke-width:.8} svg.diag .th line{stroke:var(--cm-muted);stroke-width:.8;opacity:.8}
+svg.diag .chip rect{fill:var(--cm-l3)} svg.diag .chip text{font-family:var(--mono);font-size:9.5px;fill:var(--cm-fg)}
+svg.diag .ed{fill:none;stroke:var(--cm-muted);stroke-width:1.2;opacity:.9}
+svg.diag .ed.inf{stroke-dasharray:5 4}
+svg.diag .ed.hi{stroke:var(--cm-accent);stroke-width:1.6;opacity:1}
+svg.diag .elab rect{fill:var(--cm-bg);stroke:var(--cm-border);stroke-width:1}
+svg.diag .elab text{font-size:9px;fill:var(--cm-fg)}
+svg.diag .elab.inf text{fill:var(--cm-muted)} svg.diag .elab.inf rect{stroke-dasharray:3 2}
+/* phone */
+.phone{width:380px;height:664px;background:var(--cm-bg);border:1px solid var(--cm-strong);border-radius:22px;overflow:hidden;display:flex;flex-direction:column;font:11px/1.35 var(--mono);box-shadow:0 8px 32px #0006}
+.phone .hdr{height:36px}
+.plist{flex:1;min-height:0;overflow:hidden;font-family:var(--sans)}
+.ptitle{padding:10px 14px 6px;border-bottom:1px solid var(--cm-border)}
+.ptitle h2{margin:0 0 2px;font:600 15px/1.2 var(--sans)}
+.ptitle p{margin:0;color:var(--cm-muted);font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.el{display:flex;align-items:center;gap:10px;padding:7px 14px;border-bottom:1px solid var(--cm-border);min-height:46px}
+.el .tag{flex:none;width:3px;height:28px;border-radius:2px;background:var(--cm-strong)}
+.el.entry .tag{background:var(--cm-entry)} .el.store .tag{background:var(--cm-store)}
+.el .t{flex:1;min-width:0}
+.el .nm{font:600 13px/1.25 var(--sans);display:flex;gap:6px;align-items:center;min-width:0}
+.el .nmt{white-space:nowrap;flex:none}
+.el .nm .pth{font:10px var(--mono);color:var(--cm-muted);font-weight:400;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;min-width:0}
+.el .ds{font-size:11.5px;color:var(--cm-muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.el .chev{flex:none;color:var(--cm-muted);font-size:14px}
+.el .cnt{flex:none;color:var(--cm-muted);font:10px var(--mono)}
+.legend{margin-top:26px;display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:8px 24px;max-width:1000px;font:11.5px/1.4 var(--sans);color:var(--cm-muted)}
+.legend .li{display:flex;align-items:center;gap:8px}
+.legend svg{flex:none}
+.legend b{color:var(--cm-fg);font-weight:600}
+</style></head><body><div class="wrap">
+<div class="cap"><b>A</b> Desktop side pane, 880 × 660 — Map tab, Overall architecture, content-stores selected, generation running</div>
+<div class="scrollx"><div class="pane" data-frame="A"><div class="hdr"><span class="title">CodeMap</span><span class="chip root">theuth ▾</span><span class="stats">1,278 files · 41,906 symbols</span><span class="stats">14 calls</span><nav aria-label="Lens"><span class="tab on">Map</span><span class="tab">Here</span><span class="tab">Fit<i class="dot" title="agent is here"></i></span><span class="tab">Change</span><span class="ico">⊡</span><span class="ico">⤢</span><span class="ico">✕</span></nav></div><div class="prog"><span class="bar"><i></i></span><span>Mapping perspectives · 5 of 9 · next: data-flow</span></div><div class="body"><aside class="tree"><div class="search"><svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.3"><circle cx="4.2" cy="4.2" r="3"/><path d="M6.5 6.5 9 9"/></svg><span>Find element or file…</span></div><div class="rows"><div class="row d0 p"><span class="tw">▾</span><span class="lbl">Overall architecture</span><span class="n">11</span></div>
+<div class="row d1 "><span class="tw"></span><span class="lbl">Clients</span></div>
+<div class="row d1 "><span class="tw"></span><span class="lbl">RPC facade</span><span class="adot read" title="read this session"></span></div>
+<div class="row d1 "><span class="tw"></span><span class="lbl">Agent loop</span></div>
+<div class="row d1 "><span class="tw"></span><span class="lbl">Foundation</span></div>
+<div class="row d1 sel"><span class="tw">▾</span><span class="lbl">Content stores</span><span class="adot edited" title="edited this session"></span><span class="n">5</span></div>
+<div class="row d2 "><span class="tw"></span><span class="lbl">Document authority</span></div>
+<div class="row d2 "><span class="tw"></span><span class="lbl">Knowledge bundle</span></div>
+<div class="row d2 "><span class="tw"></span><span class="lbl">Artifacts</span></div>
+<div class="row d2 "><span class="tw"></span><span class="lbl">Search envelope</span></div>
+<div class="row d2 "><span class="tw">▾</span><span class="lbl">Code index</span><span class="n">9</span></div>
+<div class="row d3 "><span class="tw"></span><span class="lbl">Walk</span></div>
+<div class="row d3 "><span class="tw"></span><span class="lbl">Parse + resolve</span></div>
+<div class="row d3 "><span class="tw"></span><span class="lbl">SQLite store</span></div>
+<div class="row d3 "><span class="tw"></span><span class="lbl">Codeindex / RootIndex</span></div>
+<div class="row d3 "><span class="tw"></span><span class="lbl">Git facts</span><span class="bdg stale">stale</span></div>
+<div class="row d3 "><span class="tw"></span><span class="lbl">Rank</span></div>
+<div class="row d3 "><span class="tw"></span><span class="lbl">Lenses Here/Fit/Change</span></div>
+<div class="row d3 "><span class="tw"></span><span class="lbl">code_* tools</span><span class="adot read" title="read this session"></span></div>
+<div class="row d3 "><span class="tw"></span><span class="lbl">Events</span></div>
+<div class="row d1 "><span class="tw"></span><span class="lbl">Local models + speech</span></div>
+<div class="row d1 "><span class="tw">▸</span><span class="lbl">World access</span><span class="n">3</span></div>
+<div class="row d1 "><span class="tw"></span><span class="lbl">Channels + peers</span></div>
+<div class="row d1 "><span class="tw"></span><span class="lbl">Mesh + sync</span></div>
+<div class="row d1 "><span class="tw"></span><span class="lbl">Orchestration</span></div>
+<div class="row d1 "><span class="tw"></span><span class="lbl">t binary</span></div>
+<div class="row d0 p"><span class="tw">▸</span><span class="lbl">Request lifecycle</span><span class="n">5</span></div>
+<div class="row d0 p q"><span class="spin"></span><span class="lbl">Data flow</span><span class="n">generating…</span></div>
+<div class="row d0 p"><span class="tw">▸</span><span class="lbl">Dependency map</span><span class="n">12</span></div>
+<div class="row d0 p"><span class="tw">▸</span><span class="lbl">Command surface</span><span class="n">14</span></div>
+<div class="row d0 p"><span class="tw">▸</span><span class="lbl">Storage</span><span class="n">7</span></div>
+<div class="row d0 p q"><span class="tw">·</span><span class="lbl">External integrations</span><span class="n">queued</span></div>
+<div class="row d0 p q"><span class="tw">·</span><span class="lbl">State transitions</span><span class="n">queued</span></div>
+<div class="row d0 p q"><span class="tw">·</span><span class="lbl">Error handling</span><span class="n">queued</span></div></div></aside>
+<section class="canvas"><div class="crumb"><b>Overall architecture</b><span class="sep">·</span>11 elements · 15 of 16 edges</div>
+<div class="stage"><svg class="diag" viewBox="0 0 470 596" preserveAspectRatio="xMidYMin meet" role="img" aria-label="architecture diagram"><defs>
+<marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 1 L9 5 L0 9 z" fill="var(--cm-muted,#9a8b72)"/></marker>
+<marker id="arrh" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 1 L9 5 L0 9 z" fill="var(--cm-accent,#c47a2c)"/></marker>
+<pattern id="hatch" width="6" height="6" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><rect width="6" height="6" fill="var(--cm-card,#1c1915)"/><line x1="0" y1="0" x2="0" y2="6" stroke="var(--cm-danger,#c45a48)" stroke-width="1.5" opacity=".55"/></pattern>
+</defs>
+<path class="ed inf" d="M75 68 L75 132" marker-end="url(#arr)"/><g class="elab inf" transform="translate(75 100)"><rect x="-51" y="-8" width="102" height="16" rx="4"/><text y="3.5" text-anchor="middle">WebSocket JSON-RPC</text></g>
+<path class="ed" d="M215 68 L215 132" marker-end="url(#arr)"/><g class="elab" transform="translate(215 100)"><rect x="-59" y="-8" width="117" height="16" rx="4"/><text y="3.5" text-anchor="middle">main() builds Runtime</text></g>
+<path class="ed" d="M380 92 L380 132" marker-end="url(#arr)"/><g class="elab" transform="translate(380 112)"><rect x="-59" y="-8" width="117" height="16" rx="4"/><text y="3.5" text-anchor="middle">browser_run decisions</text></g>
+<path class="ed" d="M75 176 L75 240" marker-end="url(#arr)"/><g class="elab" transform="translate(75 228)"><rect x="-51" y="-8" width="102" height="16" rx="4"/><text y="3.5" text-anchor="middle">settings + pairing</text></g>
+<path class="ed hi" d="M110 176 L110.0 183.0 Q110 190 117.0 190.0 L237.0 190.0 Q245 190 245.0 198.0 L245 216" marker-end="url(#arrh)"/><g class="elab" transform="translate(245 203)"><rect x="-56" y="-8" width="112" height="16" rx="4"/><text y="3.5" text-anchor="middle">lens, doc, knowledge</text></g>
+<path class="ed" d="M60 176 L60.0 200.0 Q60 208 68.0 208.0 L142.0 208.0 Q150 208 150.0 216.0 L150 348" marker-end="url(#arr)"/><g class="elab" transform="translate(115 208)"><rect x="-64" y="-8" width="127" height="16" rx="4"/><text y="3.5" text-anchor="middle">schedule, tasks, roster</text></g>
+<path class="ed" d="M35 176 L35.0 186.0 Q35 194 27.0 194.0 L14.0 194.0 Q6 194 6.0 202.0 L6.0 518.0 Q6 526 14.0 526.0 L190 526" marker-end="url(#arr)"/><g class="elab" transform="translate(100 526)"><rect x="-46" y="-8" width="92" height="16" rx="4"/><text y="3.5" text-anchor="middle">send_input → ask</text></g>
+<path class="ed" d="M40 284 L40.0 291.0 Q40 298 33.0 298.0 L24.0 298.0 Q16 298 16.0 306.0 L16.0 542.0 Q16 550 24.0 550.0 L190 550" marker-end="url(#arr)"/><g class="elab" transform="translate(100 550)"><rect x="-64" y="-8" width="127" height="16" rx="4"/><text y="3.5" text-anchor="middle">inbound → session input</text></g>
+<path class="ed" d="M75 284 L75 348" marker-end="url(#arr)"/><g class="elab" transform="translate(85 316)"><rect x="-39" y="-8" width="77" height="16" rx="4"/><text y="3.5" text-anchor="middle">desks + tasks</text></g>
+<path class="ed" d="M115 392 L115.0 476.0 Q115 484 123.0 484.0 L192.0 484.0 Q200 484 200.0 492.0 L200 516" marker-end="url(#arr)"/><g class="elab" transform="translate(115 438)"><rect x="-46" y="-8" width="92" height="16" rx="4"/><text y="3.5" text-anchor="middle">wake, run, spawn</text></g>
+<path class="ed" d="M150 392 L150.0 404.0 Q150 412 158.0 412.0 L217.0 412.0 Q225 412 225.0 420.0 L225 432" marker-end="url(#arr)"/><g class="elab" transform="translate(190 412)"><rect x="-46" y="-8" width="92" height="16" rx="4"/><text y="3.5" text-anchor="middle">stats, sandboxes</text></g>
+<path class="ed hi" d="M265 308 L265 432" marker-end="url(#arrh)"/><g class="elab" transform="translate(265 356)"><rect x="-66" y="-8" width="132" height="16" rx="4"/><text y="3.5" text-anchor="middle">change feeds, engine ids</text></g>
+<path class="ed" d="M380 176 L380.0 530.0 Q380 538 372.0 538.0 L300 538" marker-end="url(#arr)"/><g class="elab" transform="translate(380 396)"><rect x="-51" y="-8" width="102" height="16" rx="4"/><text y="3.5" text-anchor="middle">meeting/talk drive</text></g>
+<path class="ed" d="M245 476 L245 516" marker-end="url(#arr)"/><g class="elab" transform="translate(245 496)"><rect x="-51" y="-8" width="102" height="16" rx="4"/><text y="3.5" text-anchor="middle">own agent sessions</text></g>
+<path class="ed" d="M260 560 L260.0 570.0 Q260 578 268.0 578.0 L454.0 578.0 Q462 578 462.0 570.0 L462.0 49.5 Q462 46 458.5 46.0 L455 46" marker-end="url(#arr)"/><g class="elab" transform="translate(360 578)"><rect x="-56" y="-8" width="112" height="16" rx="4"/><text y="3.5" text-anchor="middle">provider HTTP client</text></g>
+<g class="nd entry" transform="translate(20 24)">
+<rect class="nd-box" width="110" height="44" rx="6"/>
+<rect class="nd-tag" x="0" y="0" width="3" height="44" rx="1.5"/>
+<text class="nd-name" x="10" y="17">Clients</text>
+<text class="nd-path" x="10" y="31">desktop/ · tui/</text>
+</g>
+<g class="nd " transform="translate(160 24)">
+<rect class="nd-box" width="110" height="44" rx="6"/>
+<text class="nd-name" x="10" y="17">t binary</text>
+<text class="nd-path" x="10" y="31">crates/theuth/</text>
+</g>
+<g class="nd " transform="translate(305 0)">
+<rect class="nd-box" width="150" height="92" rx="6"/>
+<text class="nd-name" x="10" y="17">World access</text>
+<text class="nd-path" x="10" y="31">web, browser, scrape…</text>
+<g class="thumb" transform="translate(10 40)"><g class="th"><line x1="11" y1="12" x2="51" y2="4"/><line x1="11" y1="12" x2="51" y2="20"/><line x1="51" y1="20" x2="51" y2="4"/><rect x="0" y="8" width="22" height="9" rx="2"/><rect x="40" y="0" width="22" height="9" rx="2"/><rect x="40" y="16" width="22" height="9" rx="2"/></g></g>
+<g class="chip" transform="translate(77 71)"><rect width="65" height="15" rx="7.5"/><text x="7" y="10.5">3 inside ›</text></g>
+</g>
+<g class="nd " transform="translate(20 132)">
+<rect class="nd-box" width="110" height="44" rx="6"/>
+<text class="nd-name" x="10" y="17">RPC facade</text>
+<text class="nd-path" x="10" y="31">crates/rpc/</text>
+<g class="mark read" transform="translate(102 7)"><circle r="3.5"/><title>read this session</title></g>
+</g>
+<g class="nd " transform="translate(160 132)">
+<rect class="nd-box" width="110" height="44" rx="6"/>
+<text class="nd-name" x="10" y="17">Foundation</text>
+<text class="nd-path" x="10" y="31">runtime, tools…</text>
+</g>
+<g class="nd " transform="translate(325 132)">
+<rect class="nd-box" width="110" height="44" rx="6"/>
+<text class="nd-name" x="10" y="17">Local models</text>
+<text class="nd-path" x="10" y="31">models, voice…</text>
+</g>
+<g class="nd entry" transform="translate(20 240)">
+<rect class="nd-box" width="110" height="44" rx="6"/>
+<rect class="nd-tag" x="0" y="0" width="3" height="44" rx="1.5"/>
+<text class="nd-name" x="10" y="17">Channels + peers</text>
+<text class="nd-path" x="10" y="31">signal, slack…</text>
+</g>
+<g class="nd store sel" transform="translate(170 216)">
+<rect class="nd-box" width="150" height="92" rx="6"/>
+<rect class="nd-tag" x="0" y="0" width="3" height="92" rx="1.5"/>
+<text class="nd-name" x="10" y="17">Content stores</text>
+<text class="nd-path" x="10" y="31">knowledge, document…</text>
+<g class="mark edited" transform="translate(142 7)"><circle r="3.5"/><title>edited this session</title></g>
+<g class="thumb" transform="translate(10 40)"><g class="th"><line x1="11" y1="4" x2="47" y2="12"/><line x1="11" y1="20" x2="47" y2="12"/><line x1="47" y1="12" x2="83" y2="20"/><line x1="11" y1="4" x2="83" y2="4"/><line x1="11" y1="20" x2="83" y2="4"/><line x1="47" y1="12" x2="83" y2="4"/><rect x="0" y="0" width="22" height="9" rx="2"/><rect x="0" y="16" width="22" height="9" rx="2"/><rect x="36" y="8" width="22" height="9" rx="2"/><rect x="72" y="0" width="22" height="9" rx="2"/><rect x="72" y="16" width="22" height="9" rx="2"/></g></g>
+<g class="chip" transform="translate(77 71)"><rect width="65" height="15" rx="7.5"/><text x="7" y="10.5">5 inside ›</text></g>
+</g>
+<g class="nd " transform="translate(60 348)">
+<rect class="nd-box" width="110" height="44" rx="6"/>
+<text class="nd-name" x="10" y="17">Orchestration</text>
+<text class="nd-path" x="10" y="31">roster, tasks…</text>
+</g>
+<g class="nd " transform="translate(190 432)">
+<rect class="nd-box" width="110" height="44" rx="6"/>
+<text class="nd-name" x="10" y="17">Mesh + sync</text>
+<text class="nd-path" x="10" y="31">mesh, sandbox…</text>
+</g>
+<g class="nd " transform="translate(190 516)">
+<rect class="nd-box" width="110" height="44" rx="6"/>
+<text class="nd-name" x="10" y="17">Agent loop</text>
+<text class="nd-path" x="10" y="31">agent, acp…</text>
+</g></svg><div class="zoom"><span>−</span><span class="z">86%</span><span>+</span><span class="z">fit</span></div></div>
+<div class="foot">foundation fan-in (9) and t-binary fan-out (10) hidden · dashed = inferred (clients → rpc)</div></section>
+<aside class="detail">
+<div class="dh"><h2>Content stores</h2>
+<div class="anch"><span>crates/knowledge</span><span>document</span><span>artifact</span><span>search</span><span>codeindex</span></div></div>
+<div class="sec"><h3>Description</h3><p>Durable content the agent reads and writes (119 files / 54,183 lines). <code>document</code> is the Yjs authority for notes, boards and artifacts; <code>knowledge</code> (OKF bundle + gix history) and <code>artifact</code> sit on it; <code>search</code> is the shared fuzzy/snippet envelope; <code>codeindex</code> is the tree-sitter + SQLite code index whose lenses feed this panel.</p></div>
+<div class="sec"><h3>Inside · 5</h3><p style="color:var(--cm-muted)">document · knowledge · artifact · search · codeindex <span style="color:var(--cm-fg)">›</span></p></div>
+<div class="sec"><h3>Edges · 2</h3><ul class="edges">
+<li><span>rpc → here</span><span class="ev">· 5 Cargo deps</span><span class="ebdg">backed</span></li>
+<li><span>→ mesh</span><span class="ev">· 4 deps · document→mesh</span><span class="ebdg">backed</span></li>
+</ul></div>
+<div class="prov">written by claude-fable-5-1 · HEAD 5cddad8e · 3 min ago · $0.04</div>
+<div class="acts"><span class="pri">Explain in chat</span><span>Snapshot to board</span><span>Regenerate</span><span>Copy Mermaid</span></div>
+</aside></div></div></div>
+<div class="cap"><b>B</b> Same pane, drilled: click/Enter on a group zooms into it; Esc goes up — detail pane closed, one stale node</div>
+<div class="scrollx"><div class="pane" data-frame="B"><div class="hdr"><span class="title">CodeMap</span><span class="chip root">theuth ▾</span><span class="stats">1,278 files · 41,906 symbols</span><span class="stats">14 calls</span><nav aria-label="Lens"><span class="tab on">Map</span><span class="tab">Here</span><span class="tab">Fit<i class="dot" title="agent is here"></i></span><span class="tab">Change</span><span class="ico">⊡</span><span class="ico">⤢</span><span class="ico">✕</span></nav></div><div class="prog"><span class="bar"><i></i></span><span>Mapping perspectives · 5 of 9 · next: data-flow</span></div><div class="body"><aside class="tree"><div class="search"><svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.3"><circle cx="4.2" cy="4.2" r="3"/><path d="M6.5 6.5 9 9"/></svg><span>Find element or file…</span></div><div class="rows"><div class="row d0 p"><span class="tw">▾</span><span class="lbl">Overall architecture</span><span class="n">11</span></div>
+<div class="row d1 "><span class="tw"></span><span class="lbl">Clients</span></div>
+<div class="row d1 "><span class="tw"></span><span class="lbl">RPC facade</span><span class="adot read" title="read this session"></span></div>
+<div class="row d1 "><span class="tw"></span><span class="lbl">Agent loop</span></div>
+<div class="row d1 "><span class="tw"></span><span class="lbl">Foundation</span></div>
+<div class="row d1 "><span class="tw">▾</span><span class="lbl">Content stores</span><span class="adot edited" title="edited this session"></span><span class="n">5</span></div>
+<div class="row d2 "><span class="tw"></span><span class="lbl">Document authority</span></div>
+<div class="row d2 "><span class="tw"></span><span class="lbl">Knowledge bundle</span></div>
+<div class="row d2 "><span class="tw"></span><span class="lbl">Artifacts</span></div>
+<div class="row d2 "><span class="tw"></span><span class="lbl">Search envelope</span></div>
+<div class="row d2 sel"><span class="tw">▾</span><span class="lbl">Code index</span><span class="n">9</span></div>
+<div class="row d3 "><span class="tw"></span><span class="lbl">Walk</span></div>
+<div class="row d3 "><span class="tw"></span><span class="lbl">Parse + resolve</span></div>
+<div class="row d3 "><span class="tw"></span><span class="lbl">SQLite store</span></div>
+<div class="row d3 "><span class="tw"></span><span class="lbl">Codeindex / RootIndex</span></div>
+<div class="row d3 "><span class="tw"></span><span class="lbl">Git facts</span><span class="bdg stale">stale</span></div>
+<div class="row d3 "><span class="tw"></span><span class="lbl">Rank</span></div>
+<div class="row d3 "><span class="tw"></span><span class="lbl">Lenses Here/Fit/Change</span></div>
+<div class="row d3 "><span class="tw"></span><span class="lbl">code_* tools</span><span class="adot read" title="read this session"></span></div>
+<div class="row d3 "><span class="tw"></span><span class="lbl">Events</span></div>
+<div class="row d1 "><span class="tw"></span><span class="lbl">Local models + speech</span></div>
+<div class="row d1 "><span class="tw">▸</span><span class="lbl">World access</span><span class="n">3</span></div>
+<div class="row d1 "><span class="tw"></span><span class="lbl">Channels + peers</span></div>
+<div class="row d1 "><span class="tw"></span><span class="lbl">Mesh + sync</span></div>
+<div class="row d1 "><span class="tw"></span><span class="lbl">Orchestration</span></div>
+<div class="row d1 "><span class="tw"></span><span class="lbl">t binary</span></div>
+<div class="row d0 p"><span class="tw">▸</span><span class="lbl">Request lifecycle</span><span class="n">5</span></div>
+<div class="row d0 p q"><span class="spin"></span><span class="lbl">Data flow</span><span class="n">generating…</span></div>
+<div class="row d0 p"><span class="tw">▸</span><span class="lbl">Dependency map</span><span class="n">12</span></div>
+<div class="row d0 p"><span class="tw">▸</span><span class="lbl">Command surface</span><span class="n">14</span></div>
+<div class="row d0 p"><span class="tw">▸</span><span class="lbl">Storage</span><span class="n">7</span></div>
+<div class="row d0 p q"><span class="tw">·</span><span class="lbl">External integrations</span><span class="n">queued</span></div>
+<div class="row d0 p q"><span class="tw">·</span><span class="lbl">State transitions</span><span class="n">queued</span></div>
+<div class="row d0 p q"><span class="tw">·</span><span class="lbl">Error handling</span><span class="n">queued</span></div></div></aside>
+<section class="canvas"><div class="crumb"><span>Overall architecture</span><span class="sep">›</span><span>Content stores</span><span class="sep">›</span><b>codeindex</b><span class="sep">·</span>9 elements · 16 edges<span class="back">‹ Back<i>Esc</i></span></div>
+<div class="stage"><svg class="diag" viewBox="0 0 934 312" preserveAspectRatio="xMidYMin meet" role="img" aria-label="architecture diagram"><defs>
+<marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 1 L9 5 L0 9 z" fill="var(--cm-muted,#9a8b72)"/></marker>
+<marker id="arrh" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 1 L9 5 L0 9 z" fill="var(--cm-accent,#c47a2c)"/></marker>
+<pattern id="hatch" width="6" height="6" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><rect width="6" height="6" fill="var(--cm-card,#1c1915)"/><line x1="0" y1="0" x2="0" y2="6" stroke="var(--cm-danger,#c45a48)" stroke-width="1.5" opacity=".55"/></pattern>
+</defs>
+<path class="ed" d="M110 130 L206 130" marker-end="url(#arr)"/><g class="elab" transform="translate(158 130)"><rect x="-39" y="-8" width="77" height="16" rx="4"/><text y="3.5" text-anchor="middle">budget_render</text></g>
+<path class="ed" d="M110 112 L132.0 112.0 Q140 112 140.0 104.0 L140.0 42.0 Q140 34 148.0 34.0 L412 34" marker-end="url(#arr)"/><g class="elab" transform="translate(280 34)"><rect x="-39" y="-8" width="77" height="16" rx="4"/><text y="3.5" text-anchor="middle">PageRank rows</text></g>
+<path class="ed" d="M110 118 L152.0 118.0 Q160 118 160.0 110.0 L160.0 98.0 Q160 90 168.0 90.0 L432.0 90.0 Q440 90 440.0 98.0 L440 108" marker-end="url(#arr)"/><g class="elab" transform="translate(300 90)"><rect x="-36" y="-8" width="72" height="16" rx="4"/><text y="3.5" text-anchor="middle">open_indexed</text></g>
+<path class="ed" d="M110 146 L122.0 146.0 Q130 146 130.0 154.0 L130.0 282.0 Q130 290 138.0 290.0 L871.0 290.0 Q879 290 879.0 282.0 L879 152" marker-end="url(#arr)"/><g class="elab" transform="translate(480 290)"><rect x="-44" y="-8" width="87" height="16" rx="4"/><text y="3.5" text-anchor="middle">symbol/ref rows</text></g>
+<path class="ed" d="M316 114 L352.0 114.0 Q360 114 360.0 106.0 L360.0 24.0 Q360 16 368.0 16.0 L412 16" marker-end="url(#arr)"/><g class="elab" transform="translate(386 16)"><rect x="-24" y="-8" width="47" height="16" rx="4"/><text y="3.5" text-anchor="middle">ranking</text></g>
+<path class="ed" d="M316 124 L412 124" marker-end="url(#arr)"/><g class="elab" transform="translate(364 124)"><rect x="-24" y="-8" width="47" height="16" rx="4"/><text y="3.5" text-anchor="middle">open(…)</text></g>
+<path class="ed" d="M316 132 L372.0 132.0 Q380 132 380.0 140.0 L380.0 238.0 Q380 246 388.0 246.0 L618 246" marker-end="url(#arr)"/><g class="elab" transform="translate(500 246)"><rect x="-44" y="-8" width="87" height="16" rx="4"/><text y="3.5" text-anchor="middle">CodeToolSummary</text></g>
+<path class="ed" d="M316 140 L332.0 140.0 Q340 140 340.0 148.0 L340.0 168.0 Q340 176 348.0 176.0 L618 176" marker-end="url(#arr)"/><g class="elab" transform="translate(470 176)"><rect x="-31" y="-8" width="62" height="16" rx="4"/><text y="3.5" text-anchor="middle">git ranges</text></g>
+<path class="ed" d="M316 148 L323.0 148.0 Q330 148 330.0 155.0 L330.0 262.0 Q330 270 338.0 270.0 L852.0 270.0 Q860 270 860.0 262.0 L860 152" marker-end="url(#arr)"/><g class="elab" transform="translate(600 270)"><rect x="-49" y="-8" width="97" height="16" rx="4"/><text y="3.5" text-anchor="middle">find/outline rows</text></g>
+<path class="ed" d="M467 44 L467.0 68.0 Q467 76 459.0 76.0 L288.0 76.0 Q280 76 280.0 84.0 L280 108" marker-end="url(#arr)"/><g class="elab" transform="translate(420 76)"><rect x="-44" y="-8" width="87" height="16" rx="4"/><text y="3.5" text-anchor="middle">estimate_tokens</text></g>
+<path class="ed" d="M522 112 L538.0 112.0 Q546 112 546.0 104.0 L546.0 30.0 Q546 22 554.0 22.0 L618 22" marker-end="url(#arr)"/><g class="elab" transform="translate(546 70)"><rect x="-34" y="-8" width="67" height="16" rx="4"/><text y="3.5" text-anchor="middle">lists files</text></g>
+<path class="ed" d="M522 122 L572.0 122.0 Q580 122 580.0 114.0 L580.0 102.0 Q580 94 588.0 94.0 L618 94" marker-end="url(#arr)"/><g class="elab" transform="translate(556 122)"><rect x="-34" y="-8" width="67" height="16" rx="4"/><text y="3.5" text-anchor="middle">parse_chunk</text></g>
+<path class="ed" d="M522 138 L586.0 138.0 Q594 138 594.0 146.0 L594.0 150.0 Q594 158 602.0 158.0 L618 158" marker-end="url(#arr)"/><g class="elab" transform="translate(562 138)"><rect x="-29" y="-8" width="57" height="16" rx="4"/><text y="3.5" text-anchor="middle">co-change</text></g>
+<path class="ed" d="M522 148 L538.0 148.0 Q546 148 546.0 156.0 L546.0 222.0 Q546 230 554.0 230.0 L618 230" marker-end="url(#arr)"/><g class="elab" transform="translate(546 200)"><rect x="-31" y="-8" width="62" height="16" rx="4"/><text y="3.5" text-anchor="middle">Reconciled</text></g>
+<path class="ed" d="M728 94 L768.0 94.0 Q776 94 776.0 102.0 L776.0 110.0 Q776 118 784.0 118.0 L824 118" marker-end="url(#arr)"/><g class="elab" transform="translate(776 106)"><rect x="-41" y="-8" width="82" height="16" rx="4"/><text y="3.5" text-anchor="middle">import targets</text></g>
+<path class="ed" d="M522 134 L824 134" marker-end="url(#arr)"/><g class="elab" transform="translate(776 134)"><rect x="-41" y="-8" width="82" height="16" rx="4"/><text y="3.5" text-anchor="middle">writes symbols</text></g>
+<g class="nd entry" transform="translate(0 108)">
+<rect class="nd-box" width="110" height="44" rx="6"/>
+<rect class="nd-tag" x="0" y="0" width="3" height="44" rx="1.5"/>
+<text class="nd-name" x="10" y="17">Lenses</text>
+<text class="nd-path" x="10" y="31">src/lens.rs</text>
+</g>
+<g class="nd entry" transform="translate(206 108)">
+<rect class="nd-box" width="110" height="44" rx="6"/>
+<rect class="nd-tag" x="0" y="0" width="3" height="44" rx="1.5"/>
+<text class="nd-name" x="10" y="17">code_* tools</text>
+<text class="nd-path" x="10" y="31">src/tools.rs</text>
+<g class="mark read" transform="translate(102 7)"><circle r="3.5"/><title>read this session</title></g>
+</g>
+<g class="nd " transform="translate(412 0)">
+<rect class="nd-box" width="110" height="44" rx="6"/>
+<text class="nd-name" x="10" y="17">Rank</text>
+<text class="nd-path" x="10" y="31">src/rank.rs</text>
+</g>
+<g class="nd " transform="translate(412 108)">
+<rect class="nd-box" width="110" height="44" rx="6"/>
+<text class="nd-name" x="10" y="17">RootIndex</text>
+<text class="nd-path" x="10" y="31">src/index.rs</text>
+</g>
+<g class="nd " transform="translate(618 0)">
+<rect class="nd-box" width="110" height="44" rx="6"/>
+<text class="nd-name" x="10" y="17">Walk</text>
+<text class="nd-path" x="10" y="31">src/walk.rs</text>
+</g>
+<g class="nd " transform="translate(618 72)">
+<rect class="nd-box" width="110" height="44" rx="6"/>
+<text class="nd-name" x="10" y="17">Parse+resolve</text>
+<text class="nd-path" x="10" y="31">parse.rs, lang/…</text>
+</g>
+<g class="nd  stale" transform="translate(618 144)">
+<rect class="nd-box" width="110" height="44" rx="6" fill="url(#hatch)"/>
+<rect class="nd-box" width="110" height="44" rx="6" fill="var(--card,#1c1915)" fill-opacity="0.55"/>
+<text class="nd-name" x="10" y="17">Git facts</text>
+<text class="nd-path" x="10" y="31">src/git.rs</text>
+<text class="nd-stale" x="102" y="17" text-anchor="end">stale</text>
+</g>
+<g class="nd " transform="translate(618 216)">
+<rect class="nd-box" width="110" height="44" rx="6"/>
+<text class="nd-name" x="10" y="17">Events</text>
+<text class="nd-path" x="10" y="31">src/event.rs</text>
+</g>
+<g class="nd store" transform="translate(824 108)">
+<rect class="nd-box" width="110" height="44" rx="6"/>
+<rect class="nd-tag" x="0" y="0" width="3" height="44" rx="1.5"/>
+<text class="nd-name" x="10" y="17">SQLite store</text>
+<text class="nd-path" x="10" y="31">src/store.rs</text>
+</g></svg><div class="zoom"><span>−</span><span class="z">72%</span><span>+</span><span class="z">fit</span></div></div>
+<div class="foot">git.rs changed since this diagram was written (5cddad8e → 7a1e02c3) · locate/profile/root/outline_hook live in the concern, not drawn</div></section>
+</div></div></div>
+<div class="cap"><b>C</b> Phone / narrow pane, 380 px — below 600 px the map is a list</div>
+<div class="phone"><div class="hdr"><span class="title">CodeMap</span><span class="chip root">theuth ▾</span><nav aria-label="Lens"><span class="tab on">Map</span><span class="tab">Here</span><span class="tab">Fit<i class="dot" title="agent is here"></i></span><span class="tab">Change</span><span class="ico">✕</span></nav></div><div class="prog"><span class="bar"><i></i></span><span>Mapping · 5 of 9 · next: data-flow</span></div>
+<div class="plist"><div class="crumb" style="height:28px"><span>theuth</span><span class="sep">›</span><b>Overall architecture</b></div>
+<div class="ptitle"><h2>Overall architecture</h2><p>49 crates in 11 layers · 15 of 16 edges · written 3 min ago</p></div>
+<div class="el entry"><span class="tag"></span><div class="t"><div class="nm"><span class="nmt">Clients</span><span class="pth">desktop/ · tui/</span></div><div class="ds">Desktop (Tauri + React) and TUI; talk to rpc over one WebSocket.</div></div></div>
+<div class="el "><span class="tag"></span><div class="t"><div class="nm"><span class="nmt">RPC facade</span><span class="adot read"></span><span class="pth">crates/rpc/</span></div><div class="ds">jsonrpsee methods for every plugin; forwards to the owning engine.</div></div></div>
+<div class="el "><span class="tag"></span><div class="t"><div class="nm"><span class="nmt">Agent loop</span><span class="pth">agent/ · acp/ · cursor/</span></div><div class="ds">Session actors, model backends, the tool loop, ACP children.</div></div></div>
+<div class="el "><span class="tag"></span><div class="t"><div class="nm"><span class="nmt">Foundation</span><span class="pth">runtime, tools, +6</span></div><div class="ds">Runtime, platform, tool registry, surface, secrets — imported by all.</div></div></div>
+<div class="el store"><span class="tag"></span><div class="t"><div class="nm"><span class="nmt">Content stores</span><span class="adot edited"></span><span class="pth">knowledge, document, +3</span></div><div class="ds">Durable content: document authority, knowledge, artifacts, search, code index.</div></div><span class="cnt">5 inside</span><span class="chev">›</span></div>
+<div class="el "><span class="tag"></span><div class="t"><div class="nm"><span class="nmt">Local models + speech</span><span class="pth">models, voice, +3</span></div><div class="ds">Decision model, voice, meeting and talk drive sessions.</div></div></div>
+<div class="el "><span class="tag"></span><div class="t"><div class="nm"><span class="nmt">World access</span><span class="pth">web, browser, scrape, +3</span></div><div class="ds">HTTP + extraction, headless browser, scrape/crawl/map, computer.</div></div><span class="cnt">3 inside</span><span class="chev">›</span></div>
+<div class="el entry"><span class="tag"></span><div class="t"><div class="nm"><span class="nmt">Channels + peers</span><span class="pth">signal, slack, +5</span></div><div class="ds">Signal, Slack, Telegram, A2A, link, nodes, relay → session input.</div></div></div>
+<div class="el "><span class="tag"></span><div class="t"><div class="nm"><span class="nmt">Mesh + sync</span><span class="pth">mesh, sessionsync, sandbox</span></div><div class="ds">Engines, replication, sandboxes; owns remote agent sessions.</div></div></div>
+<div class="el "><span class="tag"></span><div class="t"><div class="nm"><span class="nmt">Orchestration</span><span class="pth">roster, tasks, +5</span></div><div class="ds">Roster, tasks, schedules, the double, dreaming, app, update.</div></div></div>
+<div class="el "><span class="tag"></span><div class="t"><div class="nm"><span class="nmt">t binary</span><span class="pth">crates/theuth/</span></div><div class="ds">main() builds the Runtime and starts every plugin.</div></div></div></div></div>
+<div class="legend"><div class="li"><svg width="44" height="14"><line x1="2" y1="7" x2="38" y2="7" stroke="var(--cm-muted,#9a8b72)" stroke-width="1.4"/><path d="M34 3 42 7 34 11z" fill="var(--cm-muted,#9a8b72)"/></svg><span><b>backed edge</b> — index evidence (Cargo dep, import, call site)</span></div><div class="li"><svg width="44" height="14"><line x1="2" y1="7" x2="38" y2="7" stroke="var(--cm-muted,#9a8b72)" stroke-width="1.4" stroke-dasharray="5 4"/><path d="M34 3 42 7 34 11z" fill="var(--cm-muted,#9a8b72)"/></svg><span><b>inferred edge</b> — dashed; the model's claim, no index proof</span></div><div class="li"><svg width="44" height="18"><rect x="1" y="1" width="42" height="16" rx="3" fill="url(#lhatch)" stroke="var(--cm-danger,#c45a48)"/><defs><pattern id="lhatch" width="6" height="6" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><rect width="6" height="6" fill="var(--cm-card,#1c1915)"/><line x1="0" y1="0" x2="0" y2="6" stroke="var(--cm-danger,#c45a48)" stroke-width="1.5" opacity=".55"/></pattern></defs><text x="22" y="12.5" text-anchor="middle" font-size="8" font-family="monospace" fill="var(--cm-danger,#c45a48)">stale</text></svg><span><b>stale</b> — hatched + the word; anchors changed since written</span></div><div class="li"><svg width="44" height="14"><circle cx="14" cy="7" r="3.5" fill="var(--cm-accent,#c47a2c)"/><circle cx="30" cy="7" r="3.5" fill="none" stroke="var(--cm-accent,#c47a2c)" stroke-width="1.5"/></svg><span><b>edited · read</b> — the agent touched a file under this element this session</span></div><div class="li"><svg width="44" height="18"><rect x="1" y="1" width="42" height="16" rx="3" fill="var(--cm-card,#1c1915)" stroke="var(--cm-strong,#3a3228)"/><rect x="6" y="5" width="8" height="4" fill="var(--cm-l2,#2a241c)" stroke="var(--cm-muted,#9a8b72)" stroke-width=".6"/><rect x="18" y="9" width="8" height="4" fill="var(--cm-l2,#2a241c)" stroke="var(--cm-muted,#9a8b72)" stroke-width=".6"/><rect x="30" y="5" width="8" height="4" fill="var(--cm-l2,#2a241c)" stroke="var(--cm-muted,#9a8b72)" stroke-width=".6"/><line x1="14" y1="7" x2="18" y2="11" stroke="var(--cm-muted,#9a8b72)" stroke-width=".6"/><line x1="26" y1="11" x2="30" y2="7" stroke="var(--cm-muted,#9a8b72)" stroke-width=".6"/></svg><span><b>group thumbnail</b> — a child diagram inside; “n inside ›” drills</span></div><div class="li"><svg width="44" height="14"><text x="22" y="11" text-anchor="middle" font-size="9.5" font-family="monospace" fill="var(--cm-muted,#9a8b72)">fan-in (9)</text></svg><span><b>counted bundle</b> — edges hidden as a count in the footnote, never a hairball</span></div></div>
+</div></body></html>

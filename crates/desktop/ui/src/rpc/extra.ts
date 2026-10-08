@@ -11,6 +11,7 @@ import type { Loaded } from '@/rpc/bindings/Loaded'
 import type { Retention } from '@/rpc/bindings/Retention'
 import type { Risk } from '@/rpc/bindings/Risk'
 import type { SessionId } from '@/rpc/bindings/SessionId'
+import type { ObservedMeta } from '@/rpc/bindings/ObservedMeta'
 import type { SessionKind } from '@/rpc/bindings/SessionKind'
 import type { SessionActivity } from '@/rpc/bindings/SessionActivity'
 import type { HistoryEntry as BoundHistory } from '@/rpc/bindings/HistoryEntry'
@@ -114,8 +115,10 @@ export type AgentInfo = {
   activity?: SessionActivity
   /** `spawn_subagent(tools=…)` risk ceiling (12 §5); `#[serde(default)]`, absent when uncapped. */
   cap?: Risk | null
-  /** 125 §6.2: `chat` (default) or `advisor` — the hidden child the UI never lists; `#[serde(default)]`. */
+  /** 125 §6.2: `chat` (default), `advisor` — the hidden child the UI never lists — or `observed` (141): a watch-only harness subagent; `#[serde(default)]`. */
   kind?: SessionKind
+  /** 141 §5.1: watch-only facts when `kind === 'observed'` (source, external id, state, cost rule, live detail); `#[serde(default)]`, `null`/absent otherwise. */
+  observed?: ObservedMeta | null
   /** client clock (ms) of this subagent's last streaming event — UI only, never on the wire (93) */
   beat?: number
 }

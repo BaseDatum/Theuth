@@ -1,6 +1,7 @@
 import NumberFlow, { NumberFlowGroup } from '@number-flow/react'
 import { useQuery } from '@tanstack/react-query'
 import { queryKeys, useApi } from '@/lib/rpc'
+import { detailOf } from '@/lib/session-tree'
 import { cn } from '@/lib/utils'
 import { useSessionField } from '@/store/sessions'
 
@@ -28,16 +29,33 @@ const BAND = {
  * reported one, the catalog's otherwise. `compact`: the percent alone, for the narrow header;
  * the pane's own width decides that, not the viewport, so no `md:` gating here.
  */
+/**
+ * 141 R3 T14 (Q3): what the meter reads — a watch-only omp child's own `contextTokens/contextWindow` when the harness
+ * reported them (a real figure, never `≈`), else the session's context, estimate flag and stored size.
+ */
+export function meterSource(
+  observed: Parameters<typeof detailOf>[0],
+  context: number | undefined,
+  estimated: boolean | undefined,
+  size: number | undefined,
+): { used: number | undefined; estimated: boolean; limit: number | undefined } {
+  const d = detailOf(observed)
+  if (d.contextTokens !== undefined) return { used: d.contextTokens, estimated: false, limit: d.contextWindow ?? size }
+  return { used: context, estimated: !!estimated, limit: size }
+}
+
 export function ContextMeter({ session, compact }: { session: string; compact?: boolean }) {
   const api = useApi()
-  const used = useSessionField(session, 'context')
-  const estimated = useSessionField(session, 'contextEstimated')
+  const context = useSessionField(session, 'context')
+  const contextEstimated = useSessionField(session, 'contextEstimated')
   const usage = useSessionField(session, 'usage')
   const model = useSessionField(session, 'model')
   const size = useSessionField(session, 'contextSize')
+  const observed = useSessionField(session, 'observed')
   const { data: models } = useQuery({ queryKey: queryKeys.models, queryFn: () => api.list_models() })
+  const { used, estimated, limit: own } = meterSource(observed, context, contextEstimated, size ?? undefined)
   if (used === undefined) return null
-  const limit = size ?? models?.find((m) => m.id === model)?.context ?? 0
+  const limit = own ?? models?.find((m) => m.id === model)?.context ?? 0
   const pct = limit > 0 ? Math.round((used / limit) * 100) : null
   const cache = usage && usage.prompt > 0 ? Math.round((usage.cached / usage.prompt) * 100) : null
   const [tone, warn] = BAND[band(pct)]

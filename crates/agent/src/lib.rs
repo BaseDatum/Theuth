@@ -18,7 +18,9 @@
 //! - vision fallback for a text-only main model (design doc 52) in [`vision`]:
 //!   [`VisionNote`] on `HistoryEntry::User`, [`AgentEvent::VisionProgress`] live.
 
+use std::fmt;
 use std::path::PathBuf;
+use std::str::FromStr;
 use std::sync::Arc;
 
 use runtime::{InputId, SessionId, TurnId};
@@ -158,6 +160,32 @@ pub enum Delivery {
     /// Hold until the running turn ends; opens the next one.
     NextTurn,
 }
+
+/// `ask` → `()` (145 §0.3–0.4). A live talk tells the agent whether its spoken
+/// window is open; `None` when the talk ends. Only sessions that have received
+/// `Some(..)` park anything or promote tool calls.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+pub struct SetTalk {
+    /// The talk's session.
+    pub session: SessionId,
+    /// The live talk's window, or `None` when it ended.
+    pub live: Option<TalkLive>,
+}
+
+/// What a live talk tells the agent (145 §2.1).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TalkLive {
+    /// Open: harness-made inputs may start a turn (after `TALK_COALESCE_MS`).
+    /// Closed: they are parked.
+    pub open: bool,
+    /// `talk.promote_after_ms`; `None` never promotes.
+    pub promote_after_ms: Option<u64>,
+}
+
+/// Items landing within this window join one turn.
+pub const TALK_COALESCE_MS: u64 = 120;
+/// A closed window releases what it parked after this long regardless.
+pub const TALK_PARK_CAP_MS: u64 = 60_000;
 
 /// `ask` → [`SessionId`]. `session: None` creates a new session. Returns as
 /// soon as the turn is queued; progress arrives as [`AgentEvent`]s.
@@ -1069,6 +1097,16 @@ pub struct Loaded {
     #[serde(default)]
     #[cfg_attr(feature = "ts", ts(optional))]
     pub resume: Option<ResumeState>,
+    /// Row kind (141 §8.1): `observed` = a watch-only harness subagent; the
+    /// session view hides the composer without a second RPC. `chat` from an
+    /// older harness.
+    #[serde(default)]
+    #[cfg_attr(feature = "ts", ts(optional = nullable))]
+    pub kind: SessionKind,
+    /// Watch-only facts when `kind == observed` (141 §5.1); `None` otherwise.
+    #[serde(default)]
+    #[cfg_attr(feature = "ts", ts(optional = nullable))]
+    pub observed: Option<ObservedMeta>,
 }
 
 /// 109 §10.3: [`Loaded.resume`] — the session has an open turn (interrupted
@@ -1210,6 +1248,11 @@ pub struct AgentInfo {
     #[serde(default)]
     #[cfg_attr(feature = "ts", ts(optional = nullable))]
     pub kind: SessionKind,
+    /// Watch-only facts when `kind == observed` (141 §5.1): a subagent the
+    /// harness runs inside itself; `agent` is `None` and nothing drives it.
+    #[serde(default)]
+    #[cfg_attr(feature = "ts", ts(optional = nullable))]
+    pub observed: Option<ObservedMeta>,
 }
 
 /// Live facts about one session, computed on `Agents` (62 §0.5, §3.2).
@@ -1447,6 +1490,10 @@ pub struct GetDefaultEffort;
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 #[serde(rename_all = "snake_case")]
 pub enum AdvisorSeverity {
+    /// The answer to a consultation (125 R1); never emitted by `advise`,
+    /// never steered, never posted. First: it ranks below `Nit`, so a
+    /// worst-of pick never promotes a card to `Advice`.
+    Advice,
     /// Batched into one card at the next step boundary.
     Nit,
     /// Steered into the running turn; preserved as a card after a terminal answer.
@@ -1465,8 +1512,51 @@ pub struct AdvisoryNote {
     pub note: String,
 }
 
+/// What an Advisory row is (125 R1 D-R1.6): the watchdog's notes or the
+/// answer to a `consult` call. Flattened into [`Advisory`] under the `kind`
+/// tag; rows written before R1 have no `kind` key and read as `Review`.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum AdvisoryKind {
+    /// The watchdog's notes (every row written before R1).
+    #[default]
+    Review,
+    /// The answer to a `consult` call; `notes` holds exactly one `Advice` note.
+    Consultation {
+        /// The question the agent asked.
+        question: String,
+    },
+}
+
+impl AdvisoryKind {
+    /// Flattened deserialiser: a row without a `kind` key is a `Review`
+    /// (serde ignores `default` on flattened fields, so the tolerance lives here).
+    fn or_review<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        use serde::de::Error as _;
+        #[derive(Deserialize)]
+        struct Raw {
+            kind: Option<String>,
+            question: Option<String>,
+        }
+        let raw = Raw::deserialize(d)?;
+        match raw.kind.as_deref() {
+            None | Some("review") => Ok(Self::Review),
+            Some("consultation") => Ok(Self::Consultation {
+                question: raw
+                    .question
+                    .ok_or_else(|| D::Error::missing_field("question"))?,
+            }),
+            Some(other) => Err(D::Error::unknown_variant(
+                other,
+                &["review", "consultation"],
+            )),
+        }
+    }
+}
+
 /// One Advisory card: every note the advisor emitted for one step boundary
-/// (nits batched), or one steer (125 §6.2).
+/// (nits batched), one steer (125 §6.2), or one consultation's answer (R1).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct Advisory {
@@ -1482,6 +1572,9 @@ pub struct Advisory {
     pub at_ms: i64,
     /// At least one; the card's severity is the max.
     pub notes: Vec<AdvisoryNote>,
+    /// Review or consultation; 0034 rows have no `kind` key -> `Review`.
+    #[serde(default, flatten, deserialize_with = "AdvisoryKind::or_review")]
+    pub kind: AdvisoryKind,
 }
 
 impl Advisory {
@@ -1492,7 +1585,7 @@ impl Advisory {
     pub fn channel_line(&self) -> Option<String> {
         let top = self.notes.iter().max_by_key(|n| n.severity)?;
         let word = match top.severity {
-            AdvisorSeverity::Nit => return None,
+            AdvisorSeverity::Advice | AdvisorSeverity::Nit => return None,
             AdvisorSeverity::Concern => "concern",
             AdvisorSeverity::Blocker => "blocker",
         };
@@ -1533,6 +1626,18 @@ pub struct AdvisorNoteCounts {
     pub blocker: u32,
 }
 
+/// `consult` calls answered for one link (125 R1 D-R1.7).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+pub struct AdvisorConsultCounts {
+    /// Consults in the advised session's current user turn (its own; subagents not folded in).
+    pub turn: u32,
+    /// Consults answered for this link since it was created: the root's and its subagents'.
+    pub total: u32,
+    /// The live `advisor.max_consults` (0 = tool absent).
+    pub cap: u8,
+}
+
 /// Everything a UI shows about one session's advisor (125 §6.2): the pill,
 /// the popover and `/advisor status`. `state: Off` with everything else
 /// default when the session has none.
@@ -1571,6 +1676,14 @@ pub struct AdvisorStatus {
     pub last_note: Option<AdvisoryNote>,
     /// Why paused/halted, first line.
     pub detail: Option<String>,
+    /// `consult` counts (R1).
+    #[serde(default)]
+    pub consults: AdvisorConsultCounts,
+    /// D-R1.5 pairing warning, set once at attach/re-pick when the advisor's
+    /// catalog output price is below the advised session's model's; `None`
+    /// when either price is unknown or the order is fine.
+    #[serde(default)]
+    pub warning: Option<String>,
 }
 
 /// One `session_advisors` row (125 §6.1): the durable link between an
@@ -1632,6 +1745,13 @@ pub struct AdvisorDefaults {
     pub immune_turns: u8,
     /// `advisor.sync_backlog` (default `off`).
     pub sync_backlog: SyncBacklog,
+    /// `advisor.max_consults` (0–32, default 6; 0 removes the tool).
+    #[serde(default = "six")]
+    pub max_consults: u8,
+}
+
+fn six() -> u8 {
+    6
 }
 
 /// `ask` → `Result<AdvisorStatus, String>`: turn the advisor of `session` on
@@ -1667,6 +1787,8 @@ pub struct SetAdvisorDefaults {
     pub immune_turns: Option<u8>,
     /// `advisor.sync_backlog`.
     pub sync_backlog: Option<SyncBacklog>,
+    /// `advisor.max_consults` (0–32).
+    pub max_consults: Option<u8>,
 }
 
 /// `ask` → `AdvisorDefaults`: the live `advisor.*` defaults (the remembered
@@ -1689,6 +1811,9 @@ pub struct AppendAdvisory {
     pub advisory: Advisory,
     /// The model-facing text of the row.
     pub text: String,
+    /// `false` only for consultations (R1): the row is also masked
+    /// (`excluded.whole`), a card for the UIs and never model context.
+    pub model_visible: bool,
 }
 
 /// `ask` → `Vec<String>`: the favorite model ids (`agent.favorite_models`,
@@ -1999,9 +2124,10 @@ pub struct SkillBody {
     pub files: Vec<String>,
 }
 
-/// What a `sessions` row is (125 §6.2): an ordinary chat, or the hidden
-/// `advisor` child that reviews its parent's transcript (ruling 1). Stored
-/// as `sessions.kind`; readers hide advisors unless asked.
+/// What a `sessions` row is (125 §6.2): an ordinary chat, the hidden
+/// `advisor` child that reviews its parent's transcript (ruling 1), or a
+/// watch-only `observed` subagent a harness runs inside itself (141 D2).
+/// Stored as `sessions.kind`; readers hide advisors unless asked.
 #[derive(
     Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema,
 )]
@@ -2013,6 +2139,91 @@ pub enum SessionKind {
     Chat,
     /// The hidden advisor session of its parent (125 §4).
     Advisor,
+    /// A watch-only child a harness runs inside itself (141 §5): `parent` =
+    /// the ACP child (or an observed parent when nested), no `agent`,
+    /// `acp_session` = the harness's own id. Never driven, never messaged.
+    Observed,
+}
+
+cost::str_enum! {
+    /// Which feed produced a watch-only child (141 §3 "Source"); stored as
+    /// `sessions.observed_source`.
+    ObservedSource {
+        /// ACP RFD `subagent_update` + child-addressed `session/update`s (UI tag `ACP`).
+        Rfd = "rfd",
+        /// opencode 2.x `opencode/session/child_update` (UI tag `opencode`).
+        OpencodeExt = "opencode_ext",
+        /// opencode 1.x `task` tool-call lifecycle only (UI tag `opencode`).
+        OpencodeTask = "opencode_task",
+        /// omp `task` progress rows + on-disk transcript tail (UI tag `omp task`).
+        OmpTask = "omp_task",
+    }
+}
+
+cost::str_enum! {
+    /// Lifecycle of a watch-only child as the harness reports it (141 §5.2);
+    /// stored as `sessions.observed_state`. Any observation may move any
+    /// state to any other; the restart sweep touches non-terminal rows only.
+    ObservedState {
+        /// Announced, not started.
+        Pending = "pending",
+        /// The harness is working on it.
+        Running = "running",
+        /// Waits on a human (permission/elicitation).
+        RequiresAction = "requires_action",
+        /// Turn ended; the harness may prompt it again (RFD).
+        Idle = "idle",
+        /// Finished successfully.
+        Completed = "completed",
+        /// Finished with an error.
+        Failed = "failed",
+        /// Stopped by a cancel.
+        Cancelled = "cancelled",
+        /// Lost contact / activity unobservable.
+        Unknown = "unknown",
+    }
+}
+
+impl ObservedState {
+    /// `completed | failed | cancelled`: kept on a later `unknown` mark (141 §5.2).
+    pub fn is_terminal(self) -> bool {
+        matches!(self, Self::Completed | Self::Failed | Self::Cancelled)
+    }
+}
+
+/// How a watch-only child's cost relates to its parent's (141 §7.6, D8); the
+/// acp adapters choose it per frame, so the one type lives there.
+pub use acp::CostRule;
+
+/// Watch-only facts of an `observed` row (141 §5.1), carried on
+/// [`AgentInfo`], [`SessionSummary`], [`Loaded`] and
+/// [`AgentEvent::ObservedChildChanged`].
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+pub struct ObservedMeta {
+    /// Which feed produced the row.
+    pub source: ObservedSource,
+    /// The harness's own id for the child (`sessions.acp_session`).
+    pub external: String,
+    /// Lifecycle as the harness reports it.
+    pub state: ObservedState,
+    /// Stop reason or error text (`observed_stop`); `"lost contact"` from the engine.
+    #[cfg_attr(feature = "ts", ts(optional = nullable))]
+    pub stop: Option<String>,
+    /// The harness accepts `session/cancel` for this child (RFD `capabilities.cancel`).
+    pub can_cancel: bool,
+    /// Roster card second line (`observed_description`).
+    #[cfg_attr(feature = "ts", ts(optional = nullable))]
+    pub description: Option<String>,
+    /// The spawning tool call id in the parent's transcript (`observed_tool_call`).
+    #[cfg_attr(feature = "ts", ts(optional = nullable))]
+    pub tool_call: Option<String>,
+    /// Cost rule applied (141 §7.6).
+    pub cost_rule: CostRule,
+    /// Source-specific live fields (`observed_detail`, 141 §6 mapping tables);
+    /// `null` when none were stored.
+    #[serde(default)]
+    pub detail: serde_json::Value,
 }
 
 /// One row of the session list.
@@ -2094,6 +2305,10 @@ pub struct SessionSummary {
     /// Memory mode (137 D1): `epochs` from an older harness.
     #[serde(default)]
     pub memory: MemoryMode,
+    /// Watch-only facts when `kind == observed` (141 §5.1); `None` otherwise.
+    #[serde(default)]
+    #[cfg_attr(feature = "ts", ts(optional = nullable))]
+    pub observed: Option<ObservedMeta>,
 }
 
 fn one() -> u32 {
@@ -2480,6 +2695,13 @@ pub enum AgentEvent {
         /// The steer's id.
         id: InputId,
     },
+    /// 145 §0.3: harness inputs parked behind a closed spoken window.
+    InputsParked {
+        /// Session.
+        session: SessionId,
+        /// Items parked right now.
+        count: u32,
+    },
     /// A subagent session was created for `parent`.
     SubagentSpawned {
         /// Owning session.
@@ -2492,6 +2714,22 @@ pub enum AgentEvent {
         #[serde(default)]
         #[cfg_attr(feature = "ts", ts(optional))]
         cap: Option<tools::Risk>,
+    },
+    /// A watch-only child of `parent` was created or changed (141 §7.5): an
+    /// upsert, also on every state/detail change (detail-only changes are
+    /// throttled ≥ 250 ms per child). Not [`Self::SubagentSpawned`]: nothing
+    /// here is drivable, so channels bind no thread/topic to it.
+    ObservedChildChanged {
+        /// The ACP child (or the observed parent when nested).
+        parent: SessionId,
+        /// The watch-only row.
+        child: SessionId,
+        /// Display name (RFD/opencode title, omp `progress[].id`).
+        name: String,
+        /// The child's own model when the source reports one.
+        model: Option<String>,
+        /// Source, external id, state, cost rule, detail.
+        observed: ObservedMeta,
     },
     /// Text injected into `session` by the harness (subagent result, peer
     /// message, finished or quiet job), for transcripts.
@@ -2832,6 +3070,7 @@ impl AgentEvent {
             | Self::InputQueued { session, .. }
             | Self::InputInjected { session, .. }
             | Self::InputWithdrawn { session, .. }
+            | Self::InputsParked { session, .. }
             | Self::MessageDelivered { session, .. }
             | Self::ModelChanged { session, .. }
             | Self::HarnessCommandsChanged { session, .. }
@@ -2860,7 +3099,9 @@ impl AgentEvent {
             | Self::PartialDropped { session, .. }
             | Self::AdvisorChanged { session, .. }
             | Self::AdvisoryAdded { session, .. } => Some(*session),
-            Self::SubagentSpawned { child, .. } => Some(*child),
+            Self::SubagentSpawned { child, .. } | Self::ObservedChildChanged { child, .. } => {
+                Some(*child)
+            }
             Self::DefaultModelChanged { .. }
             | Self::DefaultEffortChanged { .. }
             | Self::FavoriteModelsChanged { .. } => None,
@@ -3114,6 +3355,8 @@ pub struct AdvisorConfig {
     pub immune_turns: u8,
     /// How many pending deltas the advised loop waits for at turn end.
     pub sync_backlog: SyncBacklog,
+    /// `consult` calls per user turn of the asking session (0–32; 0 removes the tool).
+    pub max_consults: u8,
 }
 
 impl Default for AdvisorConfig {
@@ -3124,6 +3367,7 @@ impl Default for AdvisorConfig {
             max_notes_per_update: 4,
             immune_turns: 3,
             sync_backlog: SyncBacklog::Off,
+            max_consults: 6,
         }
     }
 }
@@ -3137,6 +3381,7 @@ impl AdvisorConfig {
             max_notes_per_update: self.max_notes_per_update,
             immune_turns: self.immune_turns,
             sync_backlog: self.sync_backlog,
+            max_consults: self.max_consults,
         }
     }
 }
@@ -3190,5 +3435,92 @@ impl runtime::Plugin for AgentPlugin {
 
     async fn start(self: Box<Self>, rt: &runtime::Runtime) -> anyhow::Result<()> {
         supervisor::start(rt).await
+    }
+}
+
+/// 125 R1.9 (C): the wire shapes of the consultation types.
+#[cfg(test)]
+mod advisor_wire_tests {
+    use super::*;
+
+    fn card(kind: AdvisoryKind, severity: AdvisorSeverity) -> Advisory {
+        Advisory {
+            advisor: SessionId::new(),
+            step: 1,
+            turn: None,
+            at_ms: 0,
+            notes: vec![AdvisoryNote {
+                severity,
+                note: "answer\nmore".into(),
+            }],
+            kind,
+        }
+    }
+
+    #[test]
+    fn advisory_without_kind_is_a_review_and_consultation_round_trips() {
+        let review = card(AdvisoryKind::Review, AdvisorSeverity::Nit);
+        let mut json = serde_json::to_value(&review).unwrap();
+        assert_eq!(json["kind"], "review");
+        json.as_object_mut().unwrap().remove("kind");
+        assert_eq!(serde_json::from_value::<Advisory>(json).unwrap(), review);
+
+        let consultation = card(
+            AdvisoryKind::Consultation {
+                question: "which first?".into(),
+            },
+            AdvisorSeverity::Advice,
+        );
+        let json = serde_json::to_value(&consultation).unwrap();
+        assert_eq!(json["kind"], "consultation");
+        assert_eq!(json["question"], "which first?");
+        assert_eq!(
+            serde_json::from_value::<Advisory>(json).unwrap(),
+            consultation
+        );
+        assert!(
+            serde_json::from_str::<Advisory>(
+                r#"{"advisor":"00000000-0000-0000-0000-000000000000","step":1,"turn":null,"at_ms":0,"notes":[],"kind":"consultation"}"#
+            )
+            .is_err(),
+            "a consultation needs its question"
+        );
+    }
+
+    #[test]
+    fn advisor_status_and_defaults_parse_without_the_r1_fields() {
+        let s: AdvisorStatus = serde_json::from_str(
+            r#"{"session":"00000000-0000-0000-0000-000000000000","advisor":null,"state":"off","model":null,"effort":null,"notes":{"nit":0,"concern":0,"blocker":0},"context_used":0,"context_limit":0,"tokens_in":0,"tokens_out":0,"cost":null,"step":0,"backlog":0,"last_note":null,"detail":null}"#,
+        )
+        .unwrap();
+        assert_eq!(s.consults, AdvisorConsultCounts::default());
+        assert_eq!(s.warning, None);
+        let d: AdvisorDefaults = serde_json::from_str(
+            r#"{"model":null,"effort":null,"max_notes_per_update":4,"immune_turns":3,"sync_backlog":"off"}"#,
+        )
+        .unwrap();
+        assert_eq!(d.max_consults, 6);
+        assert_eq!(AdvisorConfig::default().defaults().max_consults, 6);
+    }
+
+    #[test]
+    fn advice_ranks_lowest_and_is_never_posted() {
+        assert!(AdvisorSeverity::Advice < AdvisorSeverity::Nit);
+        assert!(AdvisorSeverity::Nit < AdvisorSeverity::Concern);
+        assert!(AdvisorSeverity::Concern < AdvisorSeverity::Blocker);
+        assert_eq!(
+            serde_json::to_value(AdvisorSeverity::Advice).unwrap(),
+            "advice"
+        );
+        assert_eq!(
+            card(AdvisoryKind::Review, AdvisorSeverity::Advice).channel_line(),
+            None
+        );
+        assert_eq!(
+            card(AdvisoryKind::Review, AdvisorSeverity::Concern)
+                .channel_line()
+                .as_deref(),
+            Some("advisor · concern — answer")
+        );
     }
 }

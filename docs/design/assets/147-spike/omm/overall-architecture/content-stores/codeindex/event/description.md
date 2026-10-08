@@ -1,0 +1,1 @@
+`src/event.rs` (238 lines): `CodeindexEvent` and `CodeToolSummary` — what the engine broadcasts when an index reconciles or a tool ran, bridged to clients by `rpc/src/bridge.rs` for live CodeMap updates.

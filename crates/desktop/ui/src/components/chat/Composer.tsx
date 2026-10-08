@@ -76,7 +76,7 @@ import { RecordingBox, VoiceWave, useVoiceSource } from '@/components/voice/Voic
 import type { FrameSource, VisualFrame } from '@/lib/audio/types'
 import { analyserSource, tapOrLevels } from '@/lib/visual-source'
 import { QueuedChips } from './QueuedChips'
-import { type Ctx, FRESH, draftSkill, isCommand, matches, run } from './slash'
+import { type Ctx, FRESH, type HarnessMenu, type SlashItem, draftSkill, isCommand, run, sendRaw, slashMenu } from './slash'
 
 /** New Chat options (51 §8.3, 137 §11.3): `private` selects memory-only retention; `project` is root metadata; `endless` the summary-tree memory. */
 export type DraftCreate = { private: boolean; project: string | null; endless: boolean }
@@ -165,24 +165,24 @@ function useLongPress(onPress: () => void, onLong: () => void) {
   }
 }
 
-/** The slash popup: commands matching the typed word, one highlighted. */
+/** The slash popup: commands matching the typed word, one highlighted. D15: in an ACP session each row names its source (theuth / the harness). */
 function SlashList({
-  word,
+  items,
   selected,
   onPick,
 }: {
-  word: string
+  items: readonly SlashItem[]
   selected: number
-  onPick(name: string): void
+  onPick(item: SlashItem): void
 }) {
   return (
     <div className="absolute bottom-full left-0 mb-2 max-h-72 w-full overflow-y-auto rounded-xl border bg-popover p-1 text-sm shadow-md">
-      {matches(word).map((c, i) => (
+      {items.map((c, i) => (
         <button
           type="button"
-          key={c.name}
+          key={`${c.source ?? ''}:${c.name}`}
           onMouseDown={(e) => e.preventDefault()}
-          onClick={() => onPick(c.name)}
+          onClick={() => onPick(c)}
           className={cn(
             'flex w-full items-baseline gap-2 rounded-lg px-3 py-2 text-left',
             i === selected && 'bg-accent',
@@ -191,6 +191,7 @@ function SlashList({
           <span className="font-mono">{c.name}</span>
           {c.hint && <span className="font-mono text-fg-tertiary">{c.hint}</span>}
           <span className="ml-auto truncate text-fg-secondary">{c.desc}</span>
+          {c.source && <span className="shrink-0 rounded-sm border border-border-subtle px-1 text-[10px] leading-4 text-fg-tertiary">{c.source}</span>}
         </button>
       ))}
     </div>
@@ -282,6 +283,8 @@ export function Composer({
   const keys = useShortcuts((s) => s.chords)
   const model = useSessionField(session ?? '', 'model')
   const parent = useSessionField(session ?? '', 'parent')
+  const agent = useSessionField(session ?? '', 'agent')
+  const harnessCommands = useSessionField(session ?? '', 'harnessCommands')
   const defaultModel = useConnection((s) => s.info?.default_model)
   // 83 §3: a new session starts on the engine's default effort (a draft pick set it via `set_effort(null, …)`).
   const defaultEffort = useConnection((s) => s.info?.default_effort)
@@ -309,6 +312,8 @@ export function Composer({
   const skill = useSkillDraft((s) => (session ? s.by[session] : undefined))
   const setSkill = (name: string | null) => session && useSkillDraft.getState().set(session, name)
   const [selected, setSelected] = useState(0)
+  /** D15: a harness command picked from the menu that takes arguments; the next send goes to the harness verbatim. */
+  const [rawCmd, setRawCmd] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
   /** 68 §5: a send the owner could not take; the card above the composer offers to take the session here and resend. */
   const [offline, setOffline] = useState<OwnerUnreachable | null>(null)
@@ -368,7 +373,13 @@ export function Composer({
   const noUpload = priv && !session
 
   const slashWord = /^\/\S*$/.test(text) ? text : null
-  const slash = slashWord !== null && matches(slashWord).length > 0
+  // D15 (b): an ACP session's menu lists the harness's commands beside theuth's, each labelled.
+  const harnessMenu = useMemo<HarnessMenu | null>(
+    () => (session && agent && harnessCommands?.length ? { agent, commands: harnessCommands, skills: skillIndex?.map((s) => s.name) ?? null } : null),
+    [session, agent, harnessCommands, skillIndex],
+  )
+  const slashItems = useMemo(() => (slashWord === null ? [] : slashMenu(slashWord, harnessMenu)), [slashWord, harnessMenu])
+  const slash = slashItems.length > 0
   const held = pastes.size > 0
   /** The attach picker (66 §7.1): `'menu'` from `+`/`theuth:attach-open`, `'at'` from the `@` trigger (§7.8). */
   const [picking, setPicking] = useState<'menu' | 'at' | null>(null)
@@ -567,7 +578,7 @@ export function Composer({
   const isMobile = useIsMobile()
   const pathChanged = (next: string, caret: number) => {
     const t = pathTrigger(next, caret, pathWindows.current)
-    const slashNow = /^\/\S*$/.test(next) && matches(next).length > 0
+    const slashNow = /^\/\S*$/.test(next) && slashMenu(next, harnessMenu).length > 0
     if (!t || slashNow || picking !== null) {
       pathDismissed.current = null
       setPath(null)
@@ -702,6 +713,14 @@ export function Composer({
     let steered = false
     let body = ''
     try {
+      // D15: a harness command picked from the menu with its arguments typed after it — the harness's, sent as typed.
+      if (session && rawCmd && (line === rawCmd || line.startsWith(`${rawCmd} `))) {
+        reset()
+        setRawCmd(null)
+        await sendRaw(api, session, line)
+        return
+      }
+      setRawCmd(null)
       if (line.startsWith('/skill:')) {
         const [name = '', ...words] = line.slice('/skill:'.length).trim().split(/\s+/)
         if (!name) throw new Error('usage: /skill:<name>')
@@ -1001,19 +1020,30 @@ export function Composer({
     }
   }, [recording])
 
-  const pick = (name: string) => {
-    const hint = matches(name)[0]?.hint ?? ''
-    edit(`${name} `)
+  const fail = (e: unknown) => toast.error(e instanceof Error ? e.message : String(e))
+  /** A menu row: a harness command (D15) is sent to the harness as typed — at once, or after its arguments when it takes some. */
+  const pick = (c: SlashItem) => {
     setSelected(0)
-    if (hint === '') {
+    if (c.raw && session) {
+      if (c.hint) {
+        edit(`${c.name} `)
+        setRawCmd(c.name)
+        return
+      }
       reset()
-      void run(name, ctx).catch((e: unknown) => toast.error(e instanceof Error ? e.message : String(e)))
+      void sendRaw(api, session, c.name).catch(fail)
+      return
+    }
+    edit(`${c.name} `)
+    if (c.hint === '') {
+      reset()
+      void run(c.name, ctx).catch(fail)
     }
   }
 
   const onKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
     if (slash && slashWord) {
-      const list = matches(slashWord)
+      const list = slashItems
       if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
         e.preventDefault()
         setSelected((i) => (i + (e.key === 'ArrowDown' ? 1 : list.length - 1)) % list.length)
@@ -1022,7 +1052,7 @@ export function Composer({
       if (e.key === 'Tab' || (e.key === 'Enter' && !e.shiftKey)) {
         e.preventDefault()
         const c = list[selected] ?? list[0]
-        if (c) pick(c.name)
+        if (c) pick(c)
         return
       }
     }
@@ -1137,7 +1167,7 @@ export function Composer({
         onDragOver={(e) => e.preventDefault()}
         onDrop={onDrop}
       >
-        {slash && slashWord && <SlashList word={slashWord} selected={selected} onPick={pick} />}
+        {slash && <SlashList items={slashItems} selected={selected} onPick={pick} />}
         {path && pathOpen && <PathList popup={path} mobile={isMobile} onPick={pickPath} />}
         <HeldStrip
           pastes={pastes}
