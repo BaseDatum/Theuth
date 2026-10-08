@@ -1644,7 +1644,16 @@ async fn run() -> anyhow::Result<()> {
             let attach = matches!(host, Host::Tui | Host::Prompt | Host::Acp);
             if !attach || running.url.is_none() {
                 eprintln!("{running}");
-                std::process::exit(3);
+                // 146 D6: a second engine on one data dir is not a crash —
+                // headless / desktop daemons exit 0 so launchd
+                // (`SuccessfulExit=false`), systemd (`on-failure`) and the
+                // desktop do not restart-loop against the holder.
+                let code = if matches!(host, Host::Headless | Host::Desktop) {
+                    0
+                } else {
+                    3
+                };
+                std::process::exit(code);
             }
             match rpc::client::connect(&running).await {
                 Ok(ws) => Some((std::sync::Arc::new(ws), running)),

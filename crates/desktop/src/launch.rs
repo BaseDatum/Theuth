@@ -158,7 +158,15 @@ impl Launch {
         let ready = wait_ready(addr, &mut daemon.child, &self.log);
         // Kept either way: on timeout the transcript stays inspectable until relaunch.
         inner.daemon = Some(daemon);
-        ready?;
+        if let Err(e) = ready {
+            // 146 D6: the daemon exited 0 because another engine already holds
+            // `engine.lock` (a launcher race): attach to that one instead.
+            if let Some(conn) = probe(&data_dir) {
+                inner.connection = Some(conn.clone());
+                return Ok(conn);
+            }
+            return Err(e);
+        }
         let token = token(&data_dir).context("daemon did not write <data_dir>/token")?;
         let conn = Connection {
             url: ws_url(&addr.to_string(), &token),
