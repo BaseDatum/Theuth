@@ -60,6 +60,7 @@ pub mod communication;
 pub mod dreaming;
 pub mod durability;
 pub mod endless;
+pub mod harness;
 pub mod turn_usage;
 pub use capture::ATTACHED;
 pub use durability::Scope;
@@ -83,6 +84,8 @@ pub struct Store {
     clock: Arc<replica::Clock>,
     /// Last logged `seq`, for shippers waiting on new rows (68 §6; `log_watch`).
     log_tx: Arc<tokio::sync::watch::Sender<i64>>,
+    /// Bumped by every `harness_enqueue`, for shippers waiting on outbox rows (139 R2).
+    harness_tx: Arc<tokio::sync::watch::Sender<u64>>,
     /// Exactly one connection; every mutating statement runs on it.
     write: SqlitePool,
     /// Readers (four connections; the write pool itself on a private store).
@@ -614,6 +617,7 @@ impl Store {
             tables: Arc::new(tables),
             seq: Arc::new(AtomicI64::new(last_seq.unwrap_or(0))),
             log_tx: Arc::new(tokio::sync::watch::Sender::new(last_seq.unwrap_or(0))),
+            harness_tx: Arc::new(tokio::sync::watch::Sender::new(0)),
             write,
             read,
         })
@@ -649,6 +653,7 @@ impl Store {
             tables: Arc::new(Vec::new()),
             seq: Arc::new(AtomicI64::new(0)),
             log_tx: Arc::new(tokio::sync::watch::Sender::new(0)),
+            harness_tx: Arc::new(tokio::sync::watch::Sender::new(0)),
             clock: Arc::new(replica::Clock::new(hlc_origin(""), (0, 0))),
             write: pool.clone(),
             read: pool,
