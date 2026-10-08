@@ -33,9 +33,15 @@ const NOT_SKILLS: [&str; 2] = ["learned", "retired"];
 /// Heading the sidecar is appended under.
 pub const LEARNED_HEADING: &str = "## Learned (dreaming)";
 
-/// `<dir>/learned/<name>.md`: the learned sidecar of skill `name`.
-pub fn learned_path(dir: &Path, name: &str) -> PathBuf {
-    dir.join("learned").join(format!("{name}.md"))
+/// `<dir>/learned/<name>.md`: the learned sidecar of skill `name`. `None`
+/// unless `name` is `[a-z0-9-]{1,64}` (R-24: the name is front-matter text;
+/// `../x` or `/etc/passwd` must never become a path under `skills/`).
+pub fn learned_path(dir: &Path, name: &str) -> Option<PathBuf> {
+    let ok = (1..=64).contains(&name.len())
+        && name
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-');
+    ok.then(|| dir.join("learned").join(format!("{name}.md")))
 }
 
 /// `<data_dir>/skills`.
@@ -175,7 +181,8 @@ pub fn body(dir: &Path, meta: &SkillMeta) -> std::io::Result<SkillBody> {
         collect_files(root, root, path, &mut files);
         files.sort();
     }
-    if let Ok(learned) = std::fs::read_to_string(learned_path(dir, &meta.name))
+    if let Some(learned) =
+        learned_path(dir, &meta.name).and_then(|p| std::fs::read_to_string(p).ok())
         && !learned.trim().is_empty()
     {
         body = format!("{}\n\n{LEARNED_HEADING}\n{learned}", body.trim_end());
@@ -1008,6 +1015,50 @@ mod tests {
         assert!(written.ends_with("## Learned (dreaming)\n- lesson one\n- lesson two\n"));
         m.remove();
         std::fs::remove_dir_all(&cwd).unwrap();
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// R-24 (reader side): the sidecar path is built from front-matter text;
+    /// a name outside `[a-z0-9-]{1,64}` gets no sidecar at all — `../` never
+    /// reaches a file beside `learned/`, nor an absolute path.
+    #[test]
+    fn learned_sidecar_name_is_sanitised() {
+        let dir = tmp();
+        assert_eq!(
+            learned_path(Path::new("/s"), "pdf-2"),
+            Some(PathBuf::from("/s/learned/pdf-2.md"))
+        );
+        for bad in [
+            "",
+            "../secret",
+            "/etc/passwd",
+            "Pdf",
+            "a b",
+            "a.b",
+            "a_b",
+            "a/b",
+            &"x".repeat(65),
+        ] {
+            assert_eq!(learned_path(Path::new("/s"), bad), None, "{bad:?}");
+        }
+        // The traversal would resolve to `<dir>/secret.md`; plant it and prove
+        // the skill body never picks it up.
+        std::fs::write(
+            dir.join("secret.md"),
+            "---\nname: keep-out\n---\nTOP SECRET\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("evil.md"),
+            "---\nname: ../secret\ndescription: Evil\n---\nevil body\n",
+        )
+        .unwrap();
+        let text = load_text(&dir, "../secret").unwrap();
+        assert!(
+            text.contains("evil body") && !text.contains("TOP SECRET"),
+            "{text}"
+        );
+        assert!(!text.contains(LEARNED_HEADING), "{text}");
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
