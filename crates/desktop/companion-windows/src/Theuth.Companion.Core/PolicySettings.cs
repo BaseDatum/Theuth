@@ -154,10 +154,13 @@ public sealed class CompanionSettings : IEquatable<CompanionSettings>
         public const string NotifyBlocking = "notifyBlocking", NotifyDeferrable = "notifyDeferrable", NotifyError = "notifyError";
         public const string SoundOnErrors = "soundOnErrors", LaunchAtLogin = "launchAtLogin", KeyOverrides = "keyOverrides";
 
+        /// <summary>Windows only (design 134 D8, R2): Settings › Notifications "Errors break through Do not disturb" → <see cref="NotificationPrefs.TimeSensitiveAvailable"/>.</summary>
+        public const string ErrorsBreakThroughDnd = "errorsBreakThroughDnd";
+
         public static readonly IReadOnlyList<string> All = new[]
         {
             RailSide, RailDisplay, RailCollapse, RailPresence, DoubleTapAlt, UndoDelay,
-            NotifyBlocking, NotifyDeferrable, NotifyError, SoundOnErrors, LaunchAtLogin, KeyOverrides,
+            NotifyBlocking, NotifyDeferrable, NotifyError, SoundOnErrors, LaunchAtLogin, KeyOverrides, ErrorsBreakThroughDnd,
         };
     }
 
@@ -176,6 +179,7 @@ public sealed class CompanionSettings : IEquatable<CompanionSettings>
         n.Deferrable = NotifyModeText.FromRaw(d.String(Key.NotifyDeferrable)) ?? n.Deferrable;
         n.Error = NotifyModeText.FromRaw(d.String(Key.NotifyError)) ?? n.Error;
         if (d.Object(Key.SoundOnErrors) is not null) n.SoundOnErrors = d.Bool(Key.SoundOnErrors);
+        n.TimeSensitiveAvailable = d.Bool(Key.ErrorsBreakThroughDnd); // off by default (R2, Sky)
         s.Notify = n;
         s.LaunchAtLogin = d.Bool(Key.LaunchAtLogin);
         if (d.String(Key.KeyOverrides) is { } j) s.Keys = new KeyTable(j);
@@ -194,6 +198,7 @@ public sealed class CompanionSettings : IEquatable<CompanionSettings>
         d.Set(Key.NotifyDeferrable, Notify.Deferrable.RawValue());
         d.Set(Key.NotifyError, Notify.Error.RawValue());
         d.Set(Key.SoundOnErrors, Notify.SoundOnErrors);
+        d.Set(Key.ErrorsBreakThroughDnd, Notify.TimeSensitiveAvailable);
         d.Set(Key.LaunchAtLogin, LaunchAtLogin);
         d.Set(Key.KeyOverrides, Keys.Json);
         d.Flush();
@@ -219,4 +224,43 @@ public sealed class CompanionSettings : IEquatable<CompanionSettings>
 
     public override int GetHashCode() =>
         HashCode.Combine(RailSide, RailDisplay, RailPresence, DoubleTapAlt, UndoDelay, Notify, LaunchAtLogin, Keys);
+}
+
+/// <summary>
+/// Launch at login on Windows (design 134 D12, §5.5, C7): the companion itself owns
+/// <c>HKCU\Software\Microsoft\Windows\CurrentVersion\Run\TheuthCompanion = "&lt;exe&gt;" --background</c> and mirrors the
+/// toggle into <c>&lt;data_dir&gt;\companion.json</c> (<see cref="CompanionSettings.LoginItemJson"/>; the Tauri shell's
+/// <c>companion_login_item_status</c> reads it, W5's NSIS uninstall hook deletes the value — keep the value name).
+/// The pure halves live here (tested on the Mac); the registry calls are the app's (<c>Settings/LoginItem.cs</c>).
+/// </summary>
+public static class LoginItemRegistration
+{
+    public const string RunKey = @"Software\Microsoft\Windows\CurrentVersion\Run";
+    public const string ValueName = "TheuthCompanion";
+    public const string BackgroundFlag = "--background";
+    public const string FileName = "companion.json";
+
+    /// <summary>The Run value for this exe: <c>"C:\…\Theuth.Companion.exe" --background</c>.</summary>
+    public static string RunValue(string exePath) => $"\"{exePath}\" {BackgroundFlag}";
+
+    /// <summary>The exe a Run value launches (quoted, or the first token); null for an empty value.</summary>
+    public static string? ExeOf(string? runValue)
+    {
+        if (string.IsNullOrWhiteSpace(runValue)) return null;
+        var v = runValue.Trim();
+        if (v[0] == '"')
+        {
+            int end = v.IndexOf('"', 1);
+            return end > 1 ? v[1..end] : null;
+        }
+        int space = v.IndexOf(' ');
+        return space > 0 ? v[..space] : v;
+    }
+
+    /// <summary>True when the value launches <paramref name="exePath"/> (case-insensitive, as NTFS).</summary>
+    public static bool PointsAt(string? runValue, string exePath) =>
+        ExeOf(runValue) is { } exe && string.Equals(exe.Trim(), exePath.Trim(), StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>What the shell's <c>companion_login_item_status</c> answers: <c>enabled</c> when the value launches this exe.</summary>
+    public static string Status(string? runValue, string exePath) => PointsAt(runValue, exePath) ? "enabled" : "not_registered";
 }
