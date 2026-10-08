@@ -95,6 +95,12 @@ internal sealed partial class RailWindow : ToolWindow
     /// <summary>"acrylic-thin" while the material is attached (<c>--rail-acrylic</c> only); "opaque" otherwise (the default, transparency off, unsupported).</summary>
     public string BackdropText => backdrop?.Material ?? "opaque";
 
+    protected override void OnClosingForGood()
+    {
+        backdrop?.Dispose();
+        backdrop = null;
+    }
+
     /// <summary>
     /// C13 live (W6 item 3): "Transparency effects" decides the backdrop (attach / detach, the surface goes opaque),
     /// "Animation effects" decides the working beat and the window transitions; re-rendered on every change.

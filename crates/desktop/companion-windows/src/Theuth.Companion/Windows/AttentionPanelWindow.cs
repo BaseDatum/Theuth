@@ -155,6 +155,13 @@ internal sealed partial class AttentionPanelWindow : ToolWindow
     /// <summary>"mica-base" · "acrylic-base" while attached; "opaque" when transparency effects are off or nothing is supported.</summary>
     public string BackdropText => backdrop?.Material ?? "opaque";
 
+    /// <summary>At quit the controller goes before the window: a window destroyed under a live backdrop target faulted in Microsoft.UI.Xaml.dll (build-B, Application Error 1000).</summary>
+    protected override void OnClosingForGood()
+    {
+        backdrop?.Dispose();
+        backdrop = null;
+    }
+
     /// <summary>C13 live (W6 item 3): the transparency switch attaches/detaches the material; the animation switch pins the window transitions.</summary>
     private void ApplyEffects(bool initial)
     {

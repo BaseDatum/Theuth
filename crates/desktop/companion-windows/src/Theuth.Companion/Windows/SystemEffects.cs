@@ -21,6 +21,8 @@ internal sealed class SystemEffects : IDisposable
     private readonly global::Windows.UI.ViewManagement.UISettings? ui;
     private readonly HostWindow? host;
     private readonly Action<uint>? onSystemChanged;
+    private readonly Windows.Foundation.TypedEventHandler<global::Windows.UI.ViewManagement.UISettings, object>? onEffects;
+    private readonly Windows.Foundation.TypedEventHandler<global::Windows.UI.ViewManagement.UISettings, object>? onAnimations;
     private bool disposed;
 
     private SystemEffects(DispatcherQueue dispatcher, HostWindow? host)
@@ -32,8 +34,10 @@ internal sealed class SystemEffects : IDisposable
             ui = new global::Windows.UI.ViewManagement.UISettings();
             TransparencyEnabled = ui.AdvancedEffectsEnabled;
             AnimationsEnabled = ui.AnimationsEnabled;
-            ui.AdvancedEffectsEnabledChanged += (_, _) => Marshal("UISettings.AdvancedEffectsEnabledChanged");
-            ui.AnimationsEnabledChanged += (_, _) => Marshal("UISettings.AnimationsEnabledChanged");
+            onEffects = (_, _) => Marshal("UISettings.AdvancedEffectsEnabledChanged");
+            onAnimations = (_, _) => Marshal("UISettings.AnimationsEnabledChanged");
+            ui.AdvancedEffectsEnabledChanged += onEffects;
+            ui.AnimationsEnabledChanged += onAnimations;
         }
         catch (Exception e)
         {
@@ -127,5 +131,11 @@ internal sealed class SystemEffects : IDisposable
         if (disposed) return;
         disposed = true;
         if (host is not null && onSystemChanged is not null) host.SystemChanged -= onSystemChanged;
+        try
+        {
+            if (ui is not null && onEffects is not null) ui.AdvancedEffectsEnabledChanged -= onEffects;
+            if (ui is not null && onAnimations is not null) ui.AnimationsEnabledChanged -= onAnimations;
+        }
+        catch (Exception) { }
     }
 }

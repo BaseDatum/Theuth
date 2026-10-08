@@ -410,12 +410,12 @@ internal sealed class Surfaces : IDisposable
         panel.Stop();
         Hotkeys.Dispose();
         tray.Dispose();
+        SystemEffects.Current?.Dispose();
         foreach (var w in new ToolWindow[] { legend, peek, panel, rail })
         {
             try { w.CloseForGood(); }
             catch (Exception) { }
         }
-        SystemEffects.Current?.Dispose();
         host.Dispose();
         Log.Write("surfaces down: tray removed, hotkeys released");
     }

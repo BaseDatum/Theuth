@@ -28,6 +28,8 @@ internal sealed class Notifier : IDisposable
     private static Notifier? current;
     private static bool registered;
     private static bool urgentSupported;
+    /// <summary>W6 item 8: the toast activation that LAUNCHED this process, read right after <c>Register()</c> (the quickstart's order).</summary>
+    private static AppNotificationActivatedEventArgs? launchActivation;
 
     private readonly Store store;
     private readonly DispatcherQueue dispatcher;
@@ -87,6 +89,21 @@ internal sealed class Notifier : IDisposable
             registered = true;
             urgentSupported = AppNotificationBuilder.IsUrgentScenarioSupported();
             Log.Write($"notifications: Register() ok Setting={m.Setting} urgentSupported={(urgentSupported ? "true" : "false")} exe={Environment.ProcessPath}");
+            // A toast click that LAUNCHED this process delivers its arguments only here — never through NotificationInvoked
+            // (W6 item 8). Only after Register(): read earlier, the process fail-fasts in Microsoft.WindowsAppRuntime.dll.
+            try
+            {
+                var a = Microsoft.Windows.AppLifecycle.AppInstance.GetCurrent().GetActivatedEventArgs();
+                if (a.Kind == Microsoft.Windows.AppLifecycle.ExtendedActivationKind.AppNotification && a.Data is AppNotificationActivatedEventArgs la)
+                {
+                    launchActivation = la;
+                    Log.Write($"notifications: launched by a toast click — argument='{la.Argument}' input={la.UserInput.Count} (replayed after the surfaces are up)");
+                }
+            }
+            catch (Exception e)
+            {
+                Log.Write($"notifications: GetActivatedEventArgs failed ({e.GetType().Name}: {e.Message}) — plain launch");
+            }
         }
         catch (Exception e)
         {
@@ -142,10 +159,10 @@ internal sealed class Notifier : IDisposable
             Early.Clear();
         }
         foreach (var a in early) Invoked(a);
-        // W6 item 8: a toast click that LAUNCHED this process — its arguments arrive only through GetActivatedEventArgs.
-        if (Ui.SingleInstance.LaunchActivation is { } launch && launch.Data is AppNotificationActivatedEventArgs la)
+        // W6 item 8: a toast click that LAUNCHED this process — its arguments arrive only through GetActivatedEventArgs (RegisterEarly).
+        if (launchActivation is { } la)
         {
-            Log.Write($"notifications: launch activation argument='{la.Argument}' input={la.UserInput.Count}");
+            launchActivation = null;
             Invoked(la, launched: true);
         }
         Changed?.Invoke();

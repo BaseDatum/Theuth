@@ -14,12 +14,6 @@ internal static class SingleInstance
 {
     public const string Key = "io.theuth.companion";
 
-    /// <summary>
-    /// W6 item 8: the activation that LAUNCHED this process, when a toast click started it (<c>Kind = AppNotification</c>).
-    /// Windows delivers a launching toast's arguments only here (<c>GetActivatedEventArgs</c>), never through
-    /// <c>NotificationInvoked</c>; W3's Notifier replays it after <c>Register()</c> (<c>Notifier.Start</c>). Null otherwise.
-    /// </summary>
-    public static AppActivationArguments? LaunchActivation { get; private set; }
 
     /// <summary>True: this process is the companion. False: the activation went to the running one — return 0.</summary>
     public static bool Claim(string[] args)
@@ -35,11 +29,10 @@ internal static class SingleInstance
             Note($"single instance: FindOrRegisterForKey failed ({e.GetType().Name}: {e.Message}) — running anyway");
             return true;
         }
-        if (me.IsCurrent)
-        {
-            ReadLaunchActivation();
-            return true;
-        }
+        // The current instance's own activation (a toast click that LAUNCHED this process) is read by the Notifier right after
+        // AppNotificationManager.Register(): read before it, a toast-launched process fail-fasts in Microsoft.WindowsAppRuntime.dll
+        // (0xc0000409, build-B 2026-10-08 05:01–05:03). The redirect branch below is a different process and may read it.
+        if (me.IsCurrent) return true;
         try
         {
             var activation = AppInstance.GetCurrent().GetActivatedEventArgs();
@@ -53,23 +46,6 @@ internal static class SingleInstance
             Note($"single instance: redirect to pid {me.ProcessId} failed ({e.GetType().Name}: {e.Message}) — exit 0");
         }
         return false;
-    }
-
-    private static void ReadLaunchActivation()
-    {
-        try
-        {
-            var a = AppInstance.GetCurrent().GetActivatedEventArgs();
-            if (a.Kind == ExtendedActivationKind.AppNotification)
-            {
-                LaunchActivation = a;
-                Note("single instance: launched by a toast click (AppNotification activation) — replayed after Register()");
-            }
-        }
-        catch (Exception e)
-        {
-            Note($"single instance: GetActivatedEventArgs failed ({e.GetType().Name}: {e.Message}) — plain launch");
-        }
     }
 
     /// <summary>The log isn't started in a process that exits before XAML: append the line to the day's file directly.</summary>
