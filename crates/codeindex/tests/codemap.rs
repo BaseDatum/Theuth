@@ -129,7 +129,7 @@ fn tool_ran(ev: &CodeindexEvent) -> Option<(&str, &str, &codeindex::CodeToolSumm
             seq,
             ..
         } => Some((tool, call_id, summary, *seq)),
-        CodeindexEvent::CodeReconciled { .. } => None,
+        _ => None,
     }
 }
 

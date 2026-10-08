@@ -1,8 +1,10 @@
 /**
- * 73 §6 — the CodeMap panel body: status header · lens tabs · one lens (Here / Fit / Change) · activity trail · detail
- * line. Agent-driven with a user pin (§6.1); rows come from `codemap_*` RPCs (mock or engine, `lib/codemap/api.ts`),
- * events from the session slice (`CodeToolRan`) and `on('CodeReconciled')`; live edits reach the engine through
- * `codemap_touch` (500 ms coalesced, §0.7). Nothing here walks a tree or lays out more than the visible set.
+ * 73 §6 + 147 §11 — the CodeMap panel body: status header · tabs `Map | Here | Fit | Change` (Map default, pinned; 147
+ * O9) · one body (the Map tab or a lens) · activity trail · detail line. Lenses are agent-driven with a user pin (73
+ * §6.1); on Map a `CodeToolRan` only dots the lens it would show (147 §11.7). Rows come from `codemap_*` RPCs (mock or
+ * engine, `lib/codemap/api.ts`, `lib/codemap/map-adapter.ts`), events from the session slice (`CodeToolRan`) and
+ * `on('CodeReconciled')`; live edits reach the engine through `codemap_touch` (500 ms coalesced, §0.7). Nothing here
+ * walks a tree or lays out more than the visible set.
  */
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { type CSSProperties, type KeyboardEvent, type ReactNode, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
@@ -15,20 +17,27 @@ import { codemapMock, disconnectedCodemap, mockCodemap } from '@/lib/codemap/api
 import { toGraphFence } from '@/lib/codemap/fence'
 import { anchorOf, basename } from '@/lib/codemap/labels'
 import { type Lens, type LensState, follow, initialLens, onCodeToolRan, pin, replay } from '@/lib/codemap/lens'
+import { type Tab, TABS } from '@/lib/codemap/map'
+import { engineMapApi, type MapApi, mapMethodsOf, mockMapApi } from '@/lib/codemap/map-adapter'
 import type { Slots } from '@/lib/codemap/layout'
-import type { ChangeLens, CodemapApi, FitLens, HereLens, MapRow } from '@/lib/codemap/types'
+import type { ChangeLens, CodeMapChanged, CodeMapProgress, CodemapApi, FitLens, HereLens, MapRow } from '@/lib/codemap/types'
 import { diagramTokens } from '@/lib/diagram-theme'
 import { canPopout, isPopout, openPopout } from '@/lib/popout'
 import { createRenderQueue, type RenderQueue } from '@/lib/render-queue'
 import { subscribeDark } from '@/lib/theme'
 import { cn } from '@/lib/utils'
 import { useConnection } from '@/store/connection'
-import { on, useSessionField, useSessions } from '@/store/sessions'
+import { dispatch, on, useSessionField, useSessions } from '@/store/sessions'
 import { Change, ChangeList } from './Change'
 import { Fit, FitList } from './Fit'
 import { Here } from './Here'
+import { type MapNav, MapTab } from './Map'
 
 const LENSES: Lens[] = ['here', 'fit', 'change']
+/** 147 §11.5 / 73 §4: `{ tab, element }` per root, per window, never persisted. */
+const MEMORY = new Map<string, { tab: Tab; nav: MapNav }>()
+/** The pop-out handoff of the current `{ tab, nav }` (`lib/popout.ts` builds the URL without search params). */
+export const POPOUT_STATE_KEY = 'codemap-popout-state'
 const REFETCH_MS = 200
 const TOUCH_MS = 500
 /** §6.9: list forms under this panel width; the trail expands and Fit gets its context column above 1080. */
@@ -50,6 +59,19 @@ function useCodemapApi(): CodemapApi {
   return useMemo(() => (codemapMock() ? mockCodemap() : (api ?? disconnectedCodemap)), [api])
 }
 
+let mockMap: MapApi | null = null
+/** The map adapter: the mock (events replayed into the store) under the dev flag, else the engine's methods. */
+function useMapApi(): { api: MapApi; has: ReadonlySet<keyof MapApi> } {
+  const api = useConnection((s) => s.api)
+  return useMemo(() => {
+    if (codemapMock()) {
+      mockMap ??= mockMapApi((e: CodeMapProgress | CodeMapChanged) => dispatch([e as never]))
+      return { api: mockMap, has: new Set(['codemap_overview', 'codemap_element', 'codemap_generate', 'codemap_cancel', 'codemap_search'] as const) }
+    }
+    return { api: engineMapApi(api), has: mapMethodsOf(api) }
+  }, [api])
+}
+
 function useWidth(ref: React.RefObject<HTMLElement | null>): number {
   const [w, setW] = useState(0)
   useEffect(() => {
@@ -65,8 +87,11 @@ function useWidth(ref: React.RefObject<HTMLElement | null>): number {
 
 const hhmm = (at: number) => new Date(at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
 
-export function CodeMapPanel({ session, root, onClose, popped = false }: { session: string; root: string; onClose?(): void; popped?: boolean }) {
+export type PanelRoute = { tab: Tab; nav: MapNav; onRoute(tab: Tab, nav: MapNav, push: boolean): void }
+
+export function CodeMapPanel({ session, root, onClose, popped = false, route }: { session: string; root: string; onClose?(): void; popped?: boolean; route?: PanelRoute }) {
   const api = useCodemapApi()
+  const map = useMapApi()
   const qc = useQueryClient()
   const engine = useConnection((s) => s.api)
   const codemap = useSessionField(session, 'codemap')
@@ -86,6 +111,23 @@ export function CodeMapPanel({ session, root, onClose, popped = false }: { sessi
   })
   const realRoot = root === '?' ? (stats.data?.root ?? null) : root
 
+  // ── tabs (147 O9): Map first and default; `{ tab, nav }` per root per window (MEMORY), or the pop-out's URL (`route`) ──
+  const memKey = `${session}:${root}`
+  const [local, setLocal] = useState<{ tab: Tab; nav: MapNav }>(() => MEMORY.get(memKey) ?? { tab: 'map', nav: { view: null, selected: null } })
+  const tab = route ? route.tab : local.tab
+  const nav = route ? route.nav : local.nav
+  const setRoute = (next: { tab: Tab; nav: MapNav }, push = false) => {
+    if (route) route.onRoute(next.tab, next.nav, push)
+    else {
+      MEMORY.set(memKey, next)
+      setLocal(next)
+    }
+  }
+  const setTab = (t: Tab) => setRoute({ tab: t, nav })
+  /** seq of a `CodeToolRan` that arrived while Map was shown and no lens tab has been opened since → the auto-dot (§11.7). */
+  const [agentSeq, setAgentSeq] = useState<number | null>(null)
+  const tabRef = useRef(tab)
+  tabRef.current = tab
   // ── lens state machine (§6.1); seeded by replaying this root's trail oldest→newest, so a panel opened late shows what the
   // agent looked at and every lens already has the params of its last call ──
   const [lens, setLens] = useState<LensState>(() =>
@@ -100,6 +142,7 @@ export function CodeMapPanel({ session, root, onClose, popped = false }: { sessi
     const l = codemap?.last
     if (!l || l.seq === seenSeq.current || l.root !== realRoot) return
     seenSeq.current = l.seq
+    if (tabRef.current === 'map') setAgentSeq(l.seq)
     setLens((s) => onCodeToolRan(s, { type: 'CodeToolRan', session, root: l.root, call_id: l.callId, tool: l.tool, args: l.args as Record<string, unknown>, summary: l.summary, seq: l.seq }))
   }, [lastSeq, codemap, realRoot, session])
 
@@ -144,9 +187,9 @@ export function CodeMapPanel({ session, root, onClose, popped = false }: { sessi
   const meta = data[lens.lens]?.meta ?? data.here?.meta ?? data.fit?.meta ?? data.change?.meta
   const frozen = meta?.suspect_root === true
   useEffect(() => {
-    if (!frozen) queue.current?.request(lens)
+    if (!frozen && tab !== 'map') queue.current?.request(lens)
     // eslint-disable-next-line react-hooks/exhaustive-deps -- `key` names every param the fetch reads
-  }, [key, realRoot, frozen])
+  }, [key, realRoot, frozen, tab])
 
   // ── slots reset on a new picture (§6.6 rule 6): a new Fit focus or Change mode/range ──
   const slots = useMemo<Slots>(() => new Map(), [key])
@@ -247,15 +290,35 @@ export function CodeMapPanel({ session, root, onClose, popped = false }: { sessi
         setMenu(null)
         setSnap(false)
       } else onClose?.()
-    } else if (e.key === '1' || e.key === '2' || e.key === '3') setLens((s) => pin(s, LENSES[Number(e.key) - 1]!))
-    else if (e.key === 'p') setLens((s) => (s.mode === 'pinned' ? follow(s) : pin(s, s.lens)))
-    else return
+    } else if (e.key === '1') setTab('map')
+    else if (e.key === '2' || e.key === '3' || e.key === '4') showLens(LENSES[Number(e.key) - 2]!)
+    else if (e.key === 'p') {
+      if (tab === 'map' || lens.mode === 'pinned') followAgent()
+      else setLens((s) => pin(s, s.lens))
+    } else return
     e.stopPropagation()
+  }
+  /** Open a lens tab pinned (73 §6.1); the auto-dot clears because the user looked. */
+  const showLens = (l: Lens) => {
+    setAgentSeq(null)
+    setTab(l)
+    setLens((s) => pin(s, l))
+  }
+  /** *Follow agent*: the lens the last call would show, in `auto` (§11.7). */
+  const followAgent = () => {
+    setAgentSeq(null)
+    setTab(lens.auto)
+    setLens(follow)
+  }
+  const openPopped = () => {
+    if (!realRoot) return
+    localStorage.setItem(POPOUT_STATE_KEY, JSON.stringify({ key: `${session}:${realRoot}`, tab, nav }))
+    void openPopout({ kind: 'codemap', session, root: realRoot })
   }
 
   useEffect(() => {
-    if (popped && realRoot) document.title = `CodeMap · ${basename(realRoot)} · ${lens.lens}`
-  }, [popped, realRoot, lens.lens])
+    if (popped && realRoot) document.title = `CodeMap · ${basename(realRoot)} · ${tab}`
+  }, [popped, realRoot, tab])
 
   // ── render ──
   const trail = (codemap?.trail ?? []).filter((t) => t.root === realRoot)
@@ -266,7 +329,13 @@ export function CodeMapPanel({ session, root, onClose, popped = false }: { sessi
   const stale = useMemo(() => new Set<string>(data.change?.unindexed ?? []), [data.change])
 
   let body: ReactNode
-  if (error) body = <p className="p-3 font-mono text-[11px] text-fg-secondary">{/not indexed/i.test(error) ? 'run a code_* tool first' : error}</p>
+  if (tab === 'map')
+    body = realRoot ? (
+      <MapTab session={session} root={realRoot} api={map.api} has={map.has} live={engine !== null} width={width} mobile={mobile} popped={popped} tokens={tokens} trail={trail} edited={edited} nav={nav} onNav={(n, push) => setRoute({ tab: 'map', nav: n }, push)} />
+    ) : (
+      <p className="p-3 font-mono text-[11px] text-fg-secondary">resolving root…</p>
+    )
+  else if (error) body = <p className="p-3 font-mono text-[11px] text-fg-secondary">{/not indexed/i.test(error) ? 'run a code_* tool first' : error}</p>
   else if (lens.lens === 'here' && data.here)
     body = <Here here={data.here} focus={hereFocus} edited={edited} marker={marker} stale={!!meta?.stale} dim={frozen} onHover={(r) => setHover(r?.moniker ?? null)} onSelect={(r) => select(r.moniker)} onContext={(r, at) => openMenu(r.moniker, at)} />
   else if (lens.lens === 'fit' && data.fit) {
@@ -291,7 +360,7 @@ export function CodeMapPanel({ session, root, onClose, popped = false }: { sessi
   else body = <p className="p-3 font-mono text-[11px] text-fg-secondary">{busy ? 'loading…' : realRoot ? '' : 'resolving root…'}</p>
 
   return (
-    <div className="flex h-full min-h-0 flex-col font-mono text-[11px]" onKeyDown={keys} data-codemap-panel data-lens={lens.lens} data-mode={lens.mode}>
+    <div className="flex h-full min-h-0 flex-col font-mono text-[11px]" onKeyDown={keys} data-codemap-panel data-tab={tab} data-lens={lens.lens} data-mode={lens.mode}>
       <header className="flex h-8 shrink-0 items-center gap-2 overflow-hidden border-b border-border-subtle px-2 whitespace-nowrap">
         <span className="font-semibold">CodeMap</span>
         <RootPicker session={session} root={root} roots={codemap?.roots ?? []} popped={popped} />
@@ -303,31 +372,38 @@ export function CodeMapPanel({ session, root, onClose, popped = false }: { sessi
         )}
         {fresh && <Chip>{fresh}</Chip>}
         {meta?.truncated_walk && <Chip>walk capped</Chip>}
-        {busy && lens.lens === 'change' && data.change && <Chip>computing…</Chip>}
+        {busy && tab === 'change' && data.change && <Chip>computing…</Chip>}
         {width >= 520 && <span className="text-fg-secondary">{calls} calls</span>}
         <nav className="ml-auto flex items-center gap-1" aria-label="Lens">
-          {LENSES.map((l) => (
-            <button
-              key={l}
-              type="button"
-              aria-pressed={lens.lens === l}
-              onClick={() => setLens((s) => pin(s, l))}
-              className={cn('relative rounded px-1.5 py-0.5 hover:bg-layer-2', lens.lens === l && 'bg-layer-3 font-semibold')}
-            >
-              {l}
-              {lens.mode === 'pinned' && lens.auto === l && lens.lens !== l && <span aria-label="agent is here" className="ml-0.5 inline-block size-1.5 rounded-full bg-fg-accent align-middle" />}
-            </button>
-          ))}
-          {lens.mode === 'pinned' && (
-            <button type="button" className="rounded px-1.5 py-0.5 text-fg-secondary hover:bg-layer-2" onClick={() => setLens(follow)} title="Follow the agent (p)">
+          {TABS.map((t) => {
+            // 147 §11.7: on Map the lens a call would show gets the dot; on a lens tab 73's pinned rule stands
+            const dot = t !== 'map' && (tab === 'map' ? agentSeq !== null && lens.auto === t : lens.mode === 'pinned' && lens.auto === t && lens.lens !== t)
+            return (
+              <button
+                key={t}
+                type="button"
+                aria-pressed={tab === t}
+                onClick={() => (t === 'map' ? setTab('map') : showLens(t))}
+                className={cn('relative rounded px-1.5 py-0.5 hover:bg-layer-2', tab === t && 'bg-layer-3 font-semibold')}
+                title={`${t} (${TABS.indexOf(t) + 1})`}
+              >
+                {t}
+                {dot && <span aria-label="agent is here" className="ml-0.5 inline-block size-1.5 rounded-full bg-fg-accent align-middle" />}
+              </button>
+            )
+          })}
+          {(tab === 'map' ? agentSeq !== null : lens.mode === 'pinned') && (
+            <button type="button" className="rounded px-1.5 py-0.5 text-fg-secondary hover:bg-layer-2" onClick={followAgent} title="Follow the agent (p)">
               follow
             </button>
           )}
-          <button type="button" className="rounded px-1.5 py-0.5 hover:bg-layer-2" title="Snapshot to board" aria-label="Snapshot to board" onClick={() => setSnap((v) => !v)}>
-            ⊡
-          </button>
+          {tab !== 'map' && (
+            <button type="button" className="rounded px-1.5 py-0.5 hover:bg-layer-2" title="Snapshot to board" aria-label="Snapshot to board" onClick={() => setSnap((v) => !v)}>
+              ⊡
+            </button>
+          )}
           {!popped && !mobile && !isPopout() && canPopout() && realRoot && (
-            <button type="button" className="rounded px-1.5 py-0.5 hover:bg-layer-2" title="Open in new window" aria-label="Open in new window" onClick={() => void openPopout({ kind: 'codemap', session, root: realRoot })}>
+            <button type="button" className="rounded px-1.5 py-0.5 hover:bg-layer-2" title="Open in new window" aria-label="Open in new window" onClick={openPopped}>
               ⤢
             </button>
           )}
@@ -346,8 +422,8 @@ export function CodeMapPanel({ session, root, onClose, popped = false }: { sessi
           </Button>
         </div>
       )}
-      {lens.lens === 'fit' && data.fit && data.fit.candidates.length > 0 && <div className="shrink-0 px-2 py-0.5 text-fg-secondary">1 of {data.fit.candidates.length} candidates</div>}
-      {expand !== null && (
+      {tab === 'fit' && data.fit && data.fit.candidates.length > 0 && <div className="shrink-0 px-2 py-0.5 text-fg-secondary">1 of {data.fit.candidates.length} candidates</div>}
+      {tab !== 'map' && expand !== null && (
         <button type="button" className="shrink-0 px-2 py-0.5 text-left text-fg-secondary hover:bg-layer-2" onClick={() => setExpand(null)}>
           ← back to the picture
         </button>
@@ -385,7 +461,12 @@ export function CodeMapPanel({ session, root, onClose, popped = false }: { sessi
                   <button
                     type="button"
                     className={cn('w-full truncate text-left hover:bg-layer-2', t.callId === lens.callId && 'underline')}
-                    onClick={() => setLens((s) => replay(s, t))}
+                    onClick={() => {
+                      setAgentSeq(null)
+                      const next = replay(lens, t)
+                      setTab(next.lens)
+                      setLens(next)
+                    }}
                     title={`replay ${t.tool} as pinned`}
                   >
                     {hhmm(t.at)} {t.tool} {t.target ?? ''}
@@ -491,11 +572,11 @@ function MenuItem({ onClick, children }: { onClick(): void; children: ReactNode 
   )
 }
 
-/** The popped window (`routes/codemap.$session.$root.tsx`): the same body, full height, no close (§6.9). */
-export function PoppedCodeMap({ session, root }: { session: string; root: string }) {
+/** The popped window (`routes/codemap.$session.$root.tsx`): the same body, full height, no close (§6.9); `route` carries `{ tab, element }` (147 §11.5). */
+export function PoppedCodeMap({ session, root, route }: { session: string; root: string; route?: PanelRoute }) {
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <CodeMapPanel session={session} root={root} popped />
+      <CodeMapPanel session={session} root={root} popped route={route} />
     </div>
   )
 }

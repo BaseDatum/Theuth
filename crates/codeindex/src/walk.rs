@@ -218,19 +218,25 @@ pub fn subject_candidates(path: &str) -> Vec<String> {
     out
 }
 
-/// Entry points the manifests name (60 §17 item 9), root-relative and
-/// existing on disk: Cargo `[lib]`/`[[bin]]` targets (implicit `src/lib.rs`,
-/// `src/main.rs`, `src/bin/*.rs` included), `package.json` `main`/`bin`/
-/// `exports`, `pyproject.toml` `[project.scripts]` / `[tool.poetry.scripts]`
-/// modules. `manifests` are root-relative manifest paths. Go `package main`
-/// files come from the index, not from here.
+/// Entry points the manifests name (60-as-built CI-RANK §entry points; 147
+/// W4), root-relative and existing on disk: Cargo `[lib]`/`[[bin]]` targets
+/// (implicit `src/lib.rs`, `src/main.rs`, `src/bin/*.rs` included),
+/// `package.json` `main`/`bin`/`exports`, `pyproject.toml`
+/// `[project.scripts]` / `[tool.poetry.scripts]` modules. A JS target under
+/// a build directory (`dist/cli.js`) also names its source by stem
+/// (`src/cli.ts`) — the build output is usually gitignored and never indexed;
+/// a manifest that names nothing on disk falls back to the language's
+/// conventions ([`JS_CONVENTIONS`], [`PY_CONVENTIONS`]). `manifests` are
+/// root-relative manifest paths. Go `package main` files come from the
+/// index, not from here.
 pub fn entry_points(root: &Path, manifests: &[String]) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     for m in manifests {
         let dir = m.rsplit_once('/').map_or("", |(d, _)| d);
         let name = m.rsplit('/').next().unwrap_or(m);
         let abs = root.join(m);
-        let mut push = |rel: &str| {
+        let before = out.len();
+        let push = |out: &mut Vec<String>, rel: &str| {
             let rel = rel.trim_start_matches("./");
             let full = if dir.is_empty() {
                 rel.to_owned()
@@ -271,10 +277,13 @@ pub fn entry_points(root: &Path, manifests: &[String]) -> Vec<String> {
                         _ => Vec::new(),
                     }
                 };
-                push(paths("lib").first().copied().unwrap_or("src/lib.rs"));
-                push("src/main.rs");
+                push(
+                    &mut out,
+                    paths("lib").first().copied().unwrap_or("src/lib.rs"),
+                );
+                push(&mut out, "src/main.rs");
                 for b in paths("bin") {
-                    push(b);
+                    push(&mut out, b);
                 }
                 if let Ok(rd) = std::fs::read_dir(root.join(dir).join("src/bin")) {
                     let mut names: Vec<String> = rd
@@ -300,7 +309,7 @@ pub fn entry_points(root: &Path, manifests: &[String]) -> Vec<String> {
                         .collect();
                     names.sort_unstable();
                     for n in names {
-                        push(&n);
+                        push(&mut out, &n);
                     }
                 }
             }
@@ -315,7 +324,15 @@ pub fn entry_points(root: &Path, manifests: &[String]) -> Vec<String> {
                     let mut leaves = Vec::new();
                     json_strings(&v[key], &mut leaves);
                     for s in leaves {
-                        push(s);
+                        push(&mut out, s);
+                        for src in source_of_build_target(s) {
+                            push(&mut out, &src);
+                        }
+                    }
+                }
+                if out.len() == before {
+                    for c in JS_CONVENTIONS {
+                        push(&mut out, c);
                     }
                 }
             }
@@ -347,7 +364,21 @@ pub fn entry_points(root: &Path, manifests: &[String]) -> Vec<String> {
                         format!("src/{module}.py"),
                         format!("src/{module}/__init__.py"),
                     ] {
-                        push(&cand);
+                        push(&mut out, &cand);
+                    }
+                }
+                if out.len() == before {
+                    for c in PY_CONVENTIONS {
+                        push(&mut out, c);
+                    }
+                    if let Some(pkg) = v
+                        .get("project")
+                        .and_then(|p| p.get("name"))
+                        .and_then(toml::Value::as_str)
+                    {
+                        let pkg = pkg.replace('-', "_");
+                        push(&mut out, &format!("src/{pkg}/__main__.py"));
+                        push(&mut out, &format!("{pkg}/__main__.py"));
                     }
                 }
             }
@@ -367,6 +398,50 @@ fn json_strings<'a>(v: &'a serde_json::Value, out: &mut Vec<&'a str>) {
         serde_json::Value::Object(o) => o.values().for_each(|x| json_strings(x, out)),
         _ => {}
     }
+}
+
+/// JS/TS entry conventions tried when a `package.json` names nothing on disk.
+pub const JS_CONVENTIONS: [&str; 8] = [
+    "src/index.ts",
+    "src/index.tsx",
+    "src/main.ts",
+    "src/cli.ts",
+    "src/index.js",
+    "index.ts",
+    "index.js",
+    "main.js",
+];
+
+/// Python entry conventions tried when a `pyproject.toml` names no script;
+/// `src/<pkg>/__main__.py` and `<pkg>/__main__.py` follow from the project name.
+pub const PY_CONVENTIONS: [&str; 3] = ["main.py", "app.py", "manage.py"];
+
+/// Build directories whose JS targets map back to `src/` by stem.
+const BUILD_DIRS: [&str; 4] = ["dist", "build", "out", "lib"];
+
+/// `dist/cli.js` → `src/cli.ts`, `src/cli.tsx`, `src/cli.mts`, …: the source
+/// candidates of a manifest target under a build directory (`.d.ts` and
+/// `.js`/`.mjs`/`.cjs` outputs; nested paths keep their directories).
+fn source_of_build_target(target: &str) -> Vec<String> {
+    let t = target.trim_start_matches("./");
+    let Some((first, rest)) = t.split_once('/') else {
+        return Vec::new();
+    };
+    if !BUILD_DIRS.contains(&first) {
+        return Vec::new();
+    }
+    let stem = rest
+        .strip_suffix(".d.ts")
+        .or_else(|| rest.strip_suffix(".js"))
+        .or_else(|| rest.strip_suffix(".mjs"))
+        .or_else(|| rest.strip_suffix(".cjs"));
+    let Some(stem) = stem else {
+        return Vec::new();
+    };
+    ["ts", "tsx", "mts", "cts", "js", "jsx", "mjs"]
+        .iter()
+        .map(|ext| format!("src/{stem}.{ext}"))
+        .collect()
 }
 #[cfg(test)]
 mod tests {
@@ -467,5 +542,62 @@ mod tests {
                 "web/src/index.ts",
             ]
         );
+    }
+
+    #[test]
+    fn entry_points_fall_back_to_conventions() {
+        let d = std::env::temp_dir().join(format!("theuth-walk-{}", uuid::Uuid::new_v4()));
+        let w = |rel: &str, body: &str| {
+            let p = d.join(rel);
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(p, body).unwrap();
+        };
+        // omm-shaped: `bin` points at a gitignored build output; `dist/` may or
+        // may not exist on disk, the source is named either way.
+        w(
+            "package.json",
+            r#"{"name": "oh-my-mermaid", "bin": {"omm": "dist/cli.js"}, "main": "./dist/index.js", "types": "./dist/index.d.ts"}"#,
+        );
+        w("src/cli.ts", "");
+        w("src/index.ts", "");
+        w("src/commands/init.ts", "");
+        // A manifest naming nothing on disk: conventions.
+        w(
+            "web/package.json",
+            r#"{"name": "web", "main": "lib/missing.js"}"#,
+        );
+        w("web/src/main.ts", "");
+        w("web/src/other.ts", "");
+        // No scripts: `main.py` and `src/<pkg>/__main__.py`.
+        w("py/pyproject.toml", "[project]\nname = \"my-tool\"\n");
+        w("py/src/my_tool/__main__.py", "");
+        w("py/src/my_tool/core.py", "");
+        w("dj/pyproject.toml", "[project]\nname = \"site\"\n");
+        w("dj/manage.py", "");
+        let manifests: Vec<String> = [
+            "package.json",
+            "web/package.json",
+            "py/pyproject.toml",
+            "dj/pyproject.toml",
+        ]
+        .map(str::to_owned)
+        .to_vec();
+        let got = entry_points(&d, &manifests);
+        let _ = std::fs::remove_dir_all(&d);
+        assert_eq!(
+            got,
+            [
+                "dj/manage.py",
+                "py/src/my_tool/__main__.py",
+                "src/cli.ts",
+                "src/index.ts",
+                "web/src/main.ts",
+            ]
+        );
+        assert_eq!(
+            source_of_build_target("./build/commands/x.d.ts")[0],
+            "src/commands/x.ts"
+        );
+        assert!(source_of_build_target("bin/cli.js").is_empty());
     }
 }

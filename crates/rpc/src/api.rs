@@ -53,7 +53,7 @@ use base64::Engine as _;
 use browser::{BROWSER_ACTOR, Browsers, Screenshot};
 use codeindex::{
     CODEINDEX_ACTOR, ChangeLens, CodeindexActor, FitLens, HereLens, IndexStats, LensMeta,
-    LocateAnchor, Located,
+    LocateAnchor, Located, MapElement, MapExport, MapHit, MapIndex, MapJob,
 };
 use computer::{COMPUTER_ACTOR, Computer, Permissions, ScreenContext};
 use jsonrpsee::Extensions;
@@ -1229,6 +1229,43 @@ pub trait Api {
     /// `paths` is null. Publishes `CodeReconciled`.
     #[method(name = "codemap_touch")]
     async fn codemap_touch(&self, root: String, paths: Option<Vec<String>>) -> RpcResult<LensMeta>;
+    /// CodeMap overview (147 §10.2): every perspective of an indexed `root`
+    /// with its element tree and `meta.state`; the first skeleton pass runs
+    /// inline when the map file is missing. Store reads only, never a walk;
+    /// `ASK_FAILED` when the root was never indexed.
+    #[method(name = "codemap_overview")]
+    async fn codemap_overview(&self, root: String) -> RpcResult<MapIndex>;
+    /// CodeMap element (147 §10.2): one element — diagram, prose, edges with
+    /// evidence, children with thumbnails, listing for leaves.
+    #[method(name = "codemap_element")]
+    async fn codemap_element(&self, root: String, element: String) -> RpcResult<MapElement>;
+    /// CodeMap generate (147 §10.2, S1/S2): start the root's one generation
+    /// job charged to `session` (a live native session), or attach to the
+    /// running one; `element` set regenerates that subtree only.
+    #[method(name = "codemap_generate")]
+    async fn codemap_generate(
+        &self,
+        root: String,
+        session: SessionId,
+        element: Option<String>,
+    ) -> RpcResult<MapJob>;
+    /// CodeMap cancel (147 §6.7): abort the root's running job; stored
+    /// elements stay.
+    #[method(name = "codemap_cancel")]
+    async fn codemap_cancel(&self, root: String) -> RpcResult<MapJob>;
+    /// CodeMap search (147 §10.2): elements by name, or by a root-relative
+    /// path → the element chain whose anchors contain it; `limit` default 20.
+    #[method(name = "codemap_search")]
+    async fn codemap_search(
+        &self,
+        root: String,
+        query: String,
+        limit: Option<u32>,
+    ) -> RpcResult<Vec<MapHit>>;
+    /// CodeMap export (147 §13.1, S3): write `<root>/.omm/` in
+    /// oh-my-mermaid's layout; refuses when a foreign `.omm/` exists.
+    #[method(name = "codemap_export")]
+    async fn codemap_export(&self, root: String) -> RpcResult<MapExport>;
     /// Write `mcp/<name>.json` and connect; returns the server with its tools.
     #[method(name = "add_mcp_server")]
     async fn add_mcp_server(&self, name: String, entry: serde_json::Value) -> RpcResult<McpServer>;
@@ -5485,6 +5522,81 @@ impl ApiServer for Server {
             codeindex::Touch {
                 root: PathBuf::from(root),
                 paths,
+            },
+        )
+        .await
+    }
+
+    async fn codemap_overview(&self, root: String) -> RpcResult<MapIndex> {
+        send(
+            &codeindex()?,
+            codeindex::map::Overview {
+                root: PathBuf::from(root),
+            },
+        )
+        .await
+    }
+
+    async fn codemap_element(&self, root: String, element: String) -> RpcResult<MapElement> {
+        send(
+            &codeindex()?,
+            codeindex::map::Element {
+                root: PathBuf::from(root),
+                element,
+            },
+        )
+        .await
+    }
+
+    async fn codemap_generate(
+        &self,
+        root: String,
+        session: SessionId,
+        element: Option<String>,
+    ) -> RpcResult<MapJob> {
+        send(
+            &codeindex()?,
+            codeindex::map::Generate {
+                root: PathBuf::from(root),
+                session,
+                element,
+            },
+        )
+        .await
+    }
+
+    async fn codemap_cancel(&self, root: String) -> RpcResult<MapJob> {
+        send(
+            &codeindex()?,
+            codeindex::map::Cancel {
+                root: PathBuf::from(root),
+            },
+        )
+        .await
+    }
+
+    async fn codemap_search(
+        &self,
+        root: String,
+        query: String,
+        limit: Option<u32>,
+    ) -> RpcResult<Vec<MapHit>> {
+        send(
+            &codeindex()?,
+            codeindex::map::Search {
+                root: PathBuf::from(root),
+                query,
+                limit,
+            },
+        )
+        .await
+    }
+
+    async fn codemap_export(&self, root: String) -> RpcResult<MapExport> {
+        send(
+            &codeindex()?,
+            codeindex::map::Export {
+                root: PathBuf::from(root),
             },
         )
         .await

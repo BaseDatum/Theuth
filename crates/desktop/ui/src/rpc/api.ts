@@ -49,6 +49,11 @@ import type { HereLens } from '@/rpc/bindings/HereLens'
 import type { FitLens } from '@/rpc/bindings/FitLens'
 import type { ChangeLens } from '@/rpc/bindings/ChangeLens'
 import type { LensMeta } from '@/rpc/bindings/LensMeta'
+import type { MapIndex } from '@/rpc/bindings/MapIndex'
+import type { MapElement } from '@/rpc/bindings/MapElement'
+import type { MapJob } from '@/rpc/bindings/MapJob'
+import type { MapHit } from '@/rpc/bindings/MapHit'
+import type { MapExport } from '@/rpc/bindings/MapExport'
 import type { JobView } from '@/rpc/bindings/JobView'
 import type { LiveCountsRow } from '@/rpc/bindings/LiveCountsRow'
 import type { McpProgress } from '@/rpc/bindings/McpProgress'
@@ -310,6 +315,18 @@ export interface Api {
   codemap_change(root: string, git_range: string | null, files: string[] | null, include_tests: boolean | null): Promise<ChangeLens>
   /** CodeMap touch (73 §5.2): re-parse only `paths` (root-relative), or force a full reconcile when `null`; publishes `CodeReconciled`. */
   codemap_touch(root: string, paths: string[] | null): Promise<LensMeta>
+  /** CodeMap overview (147 §10.2): every perspective of an indexed `root` with its element tree and `meta.state`; the first skeleton pass runs inline when the map file is missing. Never walks; errors when the root was never indexed. */
+  codemap_overview(root: string): Promise<MapIndex>
+  /** CodeMap element (147 §10.2): one element — diagram, prose, edges with evidence, children with thumbnails, listing for leaves. */
+  codemap_element(root: string, element: string): Promise<MapElement>
+  /** CodeMap generate (147 §10.2, S1/S2): start the root's one generation job charged to `session` (a live native session) or attach to the running one; `element` set regenerates that subtree only. */
+  codemap_generate(root: string, session: SessionId, element: string | null): Promise<MapJob>
+  /** CodeMap cancel (147 §6.7): abort the root's running job; stored elements stay. */
+  codemap_cancel(root: string): Promise<MapJob>
+  /** CodeMap search (147 §10.2): elements by name, or by a root-relative path → the element chain whose anchors contain it; `limit` default 20. */
+  codemap_search(root: string, query: string, limit: number | null): Promise<MapHit[]>
+  /** CodeMap export (147 §13.1, S3): write `<root>/.omm/` in oh-my-mermaid's layout; refuses when a foreign `.omm/` exists. */
+  codemap_export(root: string): Promise<MapExport>
   compact_style(): Promise<CompactStyle>
   /** Computer-control permissions and attached displays (27 §6); rejects when the plugin is disabled. */
   computer_permissions(): Promise<PermissionStatus>
@@ -1024,9 +1041,15 @@ export const METHODS = [
   'cite_resolve',
   'code_locate',
   'codeindex_stats',
+  'codemap_cancel',
   'codemap_change',
+  'codemap_element',
+  'codemap_export',
   'codemap_fit',
+  'codemap_generate',
   'codemap_here',
+  'codemap_overview',
+  'codemap_search',
   'codemap_touch',
   'compact',
   'compact_style',
