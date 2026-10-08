@@ -201,6 +201,10 @@ brush-core = "0.5"
 brush-builtins = "0.2"
 rmcp = { version = "3", default-features = false, features = ["client", "transport-child-process", "transport-streamable-http-client-reqwest", "reqwest"] }
 sqlx = { version = "0.9", default-features = false, features = ["runtime-tokio", "sqlite", "migrate", "macros", "chrono", "uuid"] }
+# Notebooks (design doc 144 §7.1): the `vec0` virtual table beside `nb_blocks` FTS5 in `documents/index.sqlite`.
+# Static: the crate compiles sqlite-vec.c and exposes `sqlite3_vec_init`, registered once per process through
+# `libsqlite3_sys::sqlite3_auto_extension` (the vendored SQLCipher build above) before the index pool opens.
+sqlite-vec = "0.1"
 jsonrpsee = { version = "0.26", features = ["server", "macros"] }
 iocraft = "0.9"
 gray_matter = "0.3"

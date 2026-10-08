@@ -11,6 +11,7 @@
 //! any of them is routed to the one its family's gate names.
 
 pub mod candle;
+pub mod embed;
 pub mod engine;
 pub mod escalate;
 pub mod gate;
@@ -703,6 +704,16 @@ impl runtime::Plugin for DecisionPlugin {
                 engine = engine.with_config_path(rt.data_dir.join("config.yaml"));
             }
             Engine::spawn(engine).register(actor_name(&name))?;
+        }
+        // 144 §7.2: the retrieval embedder, registered even when no checkpoint is installed so the
+        // index learns `None` from `Info` instead of a registry miss; a bad name is a config error.
+        let section: embed::EmbedSection = rt.section("notebooks").unwrap_or_default();
+        match embed::model_dir(&rt.data_dir, &section.embedding_model) {
+            Ok(dir) => {
+                embed::EmbedActor::spawn(embed::EmbedActor::new(dir, cfg.device.gpu()))
+                    .register(embed::EMBED_ACTOR)?;
+            }
+            Err(e) => tracing::error!("embed: {e}; nb_search runs FTS5-only"),
         }
         // 92 §1.2: the `decide` tools, once the registry is up; absent when the plugin or the
         // `tool` family is off, and so is the prompt paragraph.
