@@ -6,11 +6,10 @@ Status: design v0 · 2026-10-08 · extends 59 (documents), 143 (note flow), 10 (
 decisions/theuth-notebooks-design-rulings-2026-10-08); recon evidence in 144-recon-*.md and 144-research-field.md.
 
 Scope: one new container (the notebook), one new persisted thing (the source), and the four behaviours a notebook
-product is judged on — what the model sees, how answers cite, how the corpus is searched, what the notebook can
-generate. Everything rides the document substrate 59 built and 69 replicated: a notebook and a source are
-`DocKind`s, membership is a replicated table, sharing is 59 §8 unchanged. Not here: images in documents (59 §15),
-wikilinks, comments, Discover/Deep Research into the container (a routine, 40/108), per-member chat in shared
-notebooks (D13 → §17).
+product is judged on — what the model sees, how answers cite, how the corpus is searched, what it can generate.
+Everything rides the document substrate 59 built and 69 replicated: a notebook and a source are `DocKind`s,
+membership is a replicated table, sharing is 59 §8 unchanged. Not here: images in documents (59 §15), wikilinks,
+comments, Discover/Deep Research into the container (a routine, 40/108), per-member chat in shared notebooks (D13 → §17).
 
 ## 0. Decisions in one screen
 
@@ -252,9 +251,7 @@ api/routers/sources.py:49-72` — never burn a retry on a type that cannot work)
 `too large`; a URL the fetcher's SSRF guard refuses (122 §5) → `refused: private address`; YouTube with neither
 captions nor `yt-dlp` → `no transcript route` naming the config key.
 
-#### 4.1.1 YouTube (writer's call W-d)
-
-`notebooks.youtube_route: auto | captions | audio` (default `auto` = captions, then audio on failure):
+#### 4.1.1 YouTube (writer's call W-d) — `notebooks.youtube_route: auto | captions | audio`, default `auto` = captions, then audio on failure
 
 1. **captions** — fetch the watch page through the stealth fetcher (122 R1-D1), read `captionTracks` from the
    embedded player JSON (122 D9's data-island rung is the precedent), fetch the track for `notebooks.youtube_langs`
