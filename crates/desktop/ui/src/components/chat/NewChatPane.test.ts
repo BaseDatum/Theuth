@@ -57,6 +57,6 @@ test('on: the neutral notice with the three sentences and the compactor line; th
 
 test('createOptions: memory is endless only when the switch is on; private and project ride along unchanged', () => {
   expect(createOptions({ private: false, project: null, endless: true })).toMatchObject({ retention: 'durable', project: null, view: null, memory: 'endless' })
-  expect(createOptions({ private: true, project: 'lab', endless: false })).toMatchObject({ retention: 'private', project: 'lab', memory: null })
+  expect(createOptions({ private: true, project: 'lab', endless: false })).toMatchObject({ retention: 'private', project: 'lab', memory: undefined })
   expect(createOptions({ private: true, project: null, endless: false }).view).not.toBeNull()
 })

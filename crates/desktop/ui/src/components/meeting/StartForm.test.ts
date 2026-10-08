@@ -39,5 +39,5 @@ test('startOptions sends memory only with the switch on; the rest is unchanged',
     session_model: 'm',
     memory: 'endless',
   })
-  expect(startOptions({ pid: 42, title: '', context: 'x', consent: false, model: null, endless: false })).toMatchObject({ process: 42, memory: null })
+  expect(startOptions({ pid: 42, title: '', context: 'x', consent: false, model: null, endless: false })).toMatchObject({ process: 42, memory: undefined })
 })

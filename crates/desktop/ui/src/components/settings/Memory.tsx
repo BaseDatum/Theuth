@@ -5,7 +5,7 @@ import { Count, Row, Section, useAction } from '@/components/settings/shared'
 import { Switch } from '@/components/ui/switch'
 import { tokenEstimate, useCompactorLabel } from '@/lib/endless'
 import { queryKeys, useApi } from '@/lib/rpc'
-import type { EndlessConfig } from '@/rpc/endless-stubs'
+import type { EndlessConfig } from '@/rpc/bindings/EndlessConfig'
 
 
 /** A native range: `onChange` follows the pointer (the label beside it previews), `onCommit` fires on release so a drag is one write. */

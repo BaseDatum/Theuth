@@ -40,7 +40,7 @@ import { isDesktop, touch } from '@/lib/platform'
 import { type OwnerUnreachable, ownerUnreachable } from '@/lib/owner'
 import { VIEW, isPrivate, usePrivate } from '@/lib/private'
 import { queryKeys, useApi } from '@/lib/rpc'
-import type { CreateSessionOptionsEndless } from '@/rpc/endless-stubs'
+import type { CreateSessionOptions } from '@/rpc/bindings/CreateSessionOptions'
 import { EMPTY, useDrafts, useSkillDraft } from '@/lib/drafts'
 import { DEBOUNCE_MS as PATH_DEBOUNCE_MS, type PathPopup, accept as acceptPath, pathKey, pathTrigger, step as stepPath } from '@/lib/path-complete'
 import { useIsMobile } from '@/hooks/use-mobile'
@@ -80,7 +80,7 @@ import { type Ctx, FRESH, draftSkill, isCommand, matches, run } from './slash'
 export type DraftCreate = { private: boolean; project: string | null; endless: boolean }
 
 /** The `create_session` options for a draft; `memory` is sent only when the ∞ switch is on (the engine's default otherwise). */
-export function createOptions(draft: DraftCreate): CreateSessionOptionsEndless {
+export function createOptions(draft: DraftCreate): CreateSessionOptions {
   return {
     retention: draft.private ? 'private' : 'durable',
     project: draft.project,
@@ -91,7 +91,7 @@ export function createOptions(draft: DraftCreate): CreateSessionOptionsEndless {
     parent_session: null,
     parent_engine: null,
     harness: null,
-    memory: draft.endless ? 'endless' : null,
+    memory: draft.endless ? 'endless' : undefined,
   }
 }
 

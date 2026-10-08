@@ -46,7 +46,7 @@ import type { DoubleTrainingState } from '@/rpc/bindings/DoubleTrainingState'
 import type { DoubleVersionActivated } from '@/rpc/bindings/DoubleVersionActivated'
 import type { AttentionChanged } from '@/rpc/bindings/AttentionChanged'
 import type { ReminderEvent } from '@/rpc/bindings/ReminderEvent'
-import type { EndlessProgress } from '@/rpc/endless-stubs'
+import type { EndlessProgress } from '@/rpc/bindings/EndlessProgress'
 
 /**
  * `AgentEvent` with the 25 §7 additions the bindings do not carry yet:

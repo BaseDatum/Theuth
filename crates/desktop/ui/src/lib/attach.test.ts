@@ -124,6 +124,7 @@ const session: SessionSummary = {
   running: false,
   owner: '',
   epoch: 1,
+  memory: 'epochs',
   here: true,
 }
 const meeting: MeetingSummary = {

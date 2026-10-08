@@ -12,7 +12,9 @@ import { EARLIER_HISTORY, tokenEstimate } from '@/lib/endless'
 import { queryKeys, useApi } from '@/lib/rpc'
 import { cn } from '@/lib/utils'
 import type { SessionSummary } from '@/rpc/bindings/SessionSummary'
-import { type GuardTrips, type SessionMemory, type ViewLine, memoryOf } from '@/rpc/endless-stubs'
+import type { GuardTrips } from '@/rpc/bindings/GuardTrips'
+import type { SessionMemory } from '@/rpc/bindings/SessionMemory'
+import type { ViewLine } from '@/rpc/bindings/ViewLine'
 import { MenuRow } from './HeaderMenu'
 
 /** `id+n`, the line's address in the view (137 §5.1); `prefix` keeps a recall hit apart from the same line in the view. */
@@ -110,7 +112,7 @@ export function useSessionMemory(session: string, enabled: boolean) {
  * `row`: the compact menu's line.
  */
 export function MemoryBadge({ session, summary, row, open, onToggle }: { session: string; summary: SessionSummary | undefined; row?: boolean; open: boolean; onToggle(): void }) {
-  const endless = summary !== undefined && memoryOf(summary) === 'endless'
+  const endless = summary?.memory === 'endless'
   const memory = useSessionMemory(session, endless)
   if (!endless) return null
   const m = memory.data

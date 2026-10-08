@@ -311,6 +311,7 @@ mod tests {
             level: n.trailing_zeros() as u8,
             text: text.into(),
             built: true,
+            at: None,
         }
     }
 

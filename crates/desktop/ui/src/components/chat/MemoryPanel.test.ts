@@ -6,7 +6,8 @@ import { TooltipProvider } from '@/components/ui/tooltip'
 import type * as Rpc from '@/lib/rpc'
 import { queryKeys } from '@/lib/rpc'
 import type { SessionSummary } from '@/rpc/bindings/SessionSummary'
-import type { SessionMemory, ViewLine } from '@/rpc/endless-stubs'
+import type { SessionMemory } from '@/rpc/bindings/SessionMemory'
+import type { ViewLine } from '@/rpc/bindings/ViewLine'
 import { INITIAL, MemoryBadge, badgeTip, flatten, highlight, reduce } from './MemoryPanel'
 
 const line = (id: number, n: number, text: string, built = true): ViewLine => ({ id, n, text, built, level: Math.log2(n) })

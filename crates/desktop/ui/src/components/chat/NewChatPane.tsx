@@ -12,7 +12,7 @@ import { draftProject, usePanes } from '@/lib/panes'
 import { useCompactorLabel } from '@/lib/endless'
 import { usePrivate } from '@/lib/private'
 import { queryKeys, useApi } from '@/lib/rpc'
-import type { EndlessConfig } from '@/rpc/endless-stubs'
+import type { EndlessConfig } from '@/rpc/bindings/EndlessConfig'
 
 /**
  * The new-chat body shared by the `/new` route and a draft pane: header, prompt, composer, create options.

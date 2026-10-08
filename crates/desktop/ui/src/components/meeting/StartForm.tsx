@@ -24,7 +24,7 @@ import { useMeetingSettings } from '@/lib/meeting-settings'
 import { queryKeys, useApi } from '@/lib/rpc'
 import type { PermissionState } from '@/rpc/bindings/PermissionState'
 import { useConnection } from '@/store/connection'
-import type { StartMeetingEndless } from '@/rpc/endless-stubs'
+import type { StartMeeting } from '@/rpc/bindings/StartMeeting'
 
 /** The picker's "System audio" row; `meeting_start` gets `process: null`. */
 const SYSTEM = 0
@@ -33,14 +33,14 @@ const PRIVACY = 'x-apple.systempreferences:com.apple.preference.security'
 export const CONSENT = 'I acknowledge I understand the law and this recording is legal.'
 
 /** What `Start` sends (137 R1-D6 adds `memory`: `'endless'` with the ∞ switch on, else `null` = the engine's `default_meeting`). */
-export function startOptions(form: { pid: number; title: string; context: string; consent: boolean; model: string | null; endless: boolean }): StartMeetingEndless {
+export function startOptions(form: { pid: number; title: string; context: string; consent: boolean; model: string | null; endless: boolean }): StartMeeting {
   return {
     process: form.pid === SYSTEM ? null : form.pid,
     title: form.title.trim() || null,
     context: form.context.trim() || null,
     consent: form.consent,
     session_model: form.model,
-    memory: form.endless ? 'endless' : null,
+    memory: form.endless ? 'endless' : undefined,
   }
 }
 

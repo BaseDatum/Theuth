@@ -3,7 +3,7 @@ import { createElement, type ReactNode } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { expect, test, vi } from 'vitest'
 import type * as Rpc from '@/lib/rpc'
-import type { EndlessConfig } from '@/rpc/endless-stubs'
+import type { EndlessConfig } from '@/rpc/bindings/EndlessConfig'
 import { tokenEstimate } from '@/lib/endless'
 import { Memory } from './Memory'
 

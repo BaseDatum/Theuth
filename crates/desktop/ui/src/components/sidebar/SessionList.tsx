@@ -24,7 +24,6 @@ import { queryKeys, useApi } from '@/lib/rpc'
 import { notAdvisor, rootOf, subtrees } from '@/lib/session-tree'
 import { nextSelection, type SelectMode } from '@/lib/selection'
 import type { SessionSummary } from '@/rpc/bindings/SessionSummary'
-import { memoryOf } from '@/rpc/endless-stubs'
 import { AgentTree } from './AgentTree'
 import { ProjectIcon, ProjectStyleDialog } from './ProjectStyle'
 import { SessionItem } from './SessionItem'
@@ -337,7 +336,7 @@ export function SessionList({
                   owner={row.session.owner}
                   epoch={row.session.epoch}
                   here={row.session.here}
-                  endless={memoryOf(row.session) === 'endless'}
+                  endless={row.session.memory === 'endless'}
                   subagents={subs.get(row.session.id)}
                   active={row.session.id === active}
                   selected={selected.has(row.session.id)}

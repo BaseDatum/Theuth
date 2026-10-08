@@ -151,6 +151,7 @@ mod tests {
             level: 0,
             text: "user: a\nb".into(),
             built: true,
+            at: None,
         }];
         assert_eq!(render(&lines), "4+1|user: a\nb");
         assert!(is_local(ZOOM) && is_local(RECALL) && is_local(DATE) && !is_local("todo"));

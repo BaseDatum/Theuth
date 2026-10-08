@@ -23,6 +23,7 @@ const s = (id: string, project: string | null, updated_at: string, pinned = fals
   running: false,
   owner: '',
   epoch: 1,
+  memory: 'epochs',
   here: true,
 })
 

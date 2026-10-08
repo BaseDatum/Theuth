@@ -11918,6 +11918,7 @@ pub(crate) mod tests {
             .ask(SetSessionMemory {
                 session: endless,
                 mode: MemoryMode::Epochs,
+                filter: UnitFilter::All,
             })
             .await
             .unwrap();
@@ -11926,6 +11927,7 @@ pub(crate) mod tests {
             .ask(SetSessionMemory {
                 session: plain,
                 mode: MemoryMode::Endless,
+                filter: UnitFilter::All,
             })
             .await
             .unwrap();

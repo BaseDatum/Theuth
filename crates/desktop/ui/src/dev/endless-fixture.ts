@@ -3,7 +3,9 @@
 // `localStorage.endless-fixture = "1"`); with it on, every session is treated as endless. The connection is still the engine's.
 
 import type { Api } from '@/rpc/api'
-import type { EndlessConfig, SessionMemory, ViewLine } from '@/rpc/endless-stubs'
+import type { EndlessConfig } from '@/rpc/bindings/EndlessConfig'
+import type { SessionMemory } from '@/rpc/bindings/SessionMemory'
+import type { ViewLine } from '@/rpc/bindings/ViewLine'
 
 /** `"1"` turns the fixture on; `"backfill"` also serves the R1-D4 capped-backfill memory. `null` = off. */
 const flag = (): string | null => (import.meta.env.DEV ? globalThis.localStorage?.getItem('endless-fixture') || import.meta.env.VITE_ENDLESS_FIXTURE || null : null)
