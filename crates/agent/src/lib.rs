@@ -114,8 +114,9 @@ pub use cost::{
 };
 pub use endless::{
     Backfill, Endless, EndlessConfig, EndlessProgress, EndlessStats, GuardTrips, MemoryMode,
-    SessionMemory, ViewLine,
+    SessionMemory, SetMode, ViewLine,
 };
+pub use endless_ext::UnitFilter;
 pub use lifecycle::{
     Authorize, Authorized, CreateSession, LeaveSession, PrivateTrees, ResumePrivate, TreeOpened,
 };
@@ -829,15 +830,31 @@ pub struct EndlessRecall {
     pub limit: Option<u8>,
 }
 
-/// `ask` → `Result<SessionMemory, String>` (137 §8.6 `/endless on|off`):
-/// idle sessions only (`Err("busy")`). `endless` starts the backfill; `epochs`
-/// writes the view as the next epoch's head and stops the pump.
+/// `ask` → `anyhow::Result<SetMode>` (137 §8.6 `/endless on|off`, R1-D6):
+/// idle sessions only (`Err("busy")`). `endless` starts the backfill over the
+/// units `filter` admits; `epochs` stops the pump, writes the view as the next
+/// epoch's head and returns it in `SetMode::head`. The meeting crate calls it
+/// with `UnitFilter::Meeting`; such a session never gets the fresh-turn frame.
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 pub struct SetSessionMemory {
     /// Target session.
     pub session: SessionId,
     /// The mode to switch to.
     pub mode: MemoryMode,
+    /// Which units the tree is built over.
+    #[serde(default)]
+    pub filter: UnitFilter,
+}
+
+/// `ask` → `anyhow::Result<Vec<ViewLine>>` (137 R1-D6): the session's view
+/// folded to a `bytes` budget, for a meeting head's "Earlier in this meeting"
+/// section (`Endless::render_with_budget`).
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+pub struct RenderMemoryView {
+    /// Target session.
+    pub session: SessionId,
+    /// View budget in bytes.
+    pub bytes: u32,
 }
 
 /// `ask` → `Result<SessionMemory, String>` (137 R1-D2b): the session's view

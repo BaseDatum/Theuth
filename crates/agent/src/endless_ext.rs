@@ -7,11 +7,14 @@
 
 use runtime::SessionId;
 
-use crate::endless::{Backfill, Endless, MemoryMode, SessionMemory, SetMode, ViewBlock};
+use serde::{Deserialize, Serialize};
+
+use crate::endless::{Backfill, Endless, MemoryMode, SessionMemory, SetMode, ViewBlock, ViewLine};
 
 /// Which units a tree is built over (R1-D6): everything, or a meeting's
 /// transcript batches and topic/brief tool calls only (W4's).
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum UnitFilter {
     /// Every unit (chats, desks).
     #[default]
@@ -51,6 +54,33 @@ pub async fn render_snapshot(endless: &Endless, session: SessionId) -> Vec<ViewB
     }
     text.push_str("</chat>");
     vec![ViewBlock { text, mark: true }]
+}
+
+/// R1-D6: the view folded to a `bytes` budget (a meeting head's "Earlier in
+/// this meeting" section). Adapter: the live view's lines, trimmed from the
+/// oldest end to fit `bytes` (the service's `render_with_budget` will fold
+/// the tree to the budget instead of cutting lines); unbuilt parts render as
+/// the service renders them.
+pub async fn render_with_budget(
+    endless: &Endless,
+    session: SessionId,
+    bytes: u32,
+) -> anyhow::Result<Vec<ViewLine>> {
+    let m = endless.memory(session).await?;
+    if m.mode != MemoryMode::Endless {
+        return Ok(Vec::new());
+    }
+    let budget = bytes as usize;
+    let mut total: usize = m.view.iter().map(|l| l.text.len()).sum();
+    let mut skip = 0;
+    while total > budget && skip < m.view.len() {
+        total -= m.view[skip].text.len();
+        skip += 1;
+    }
+    if skip > 0 {
+        tracing::debug!(session = %session, bytes, dropped = skip, "endless render_with_budget: adapter cut the oldest lines");
+    }
+    Ok(m.view.into_iter().skip(skip).collect())
 }
 
 /// `set_mode` with a unit filter (R1-D6). Adapter: the filter is recorded in

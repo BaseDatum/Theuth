@@ -3152,9 +3152,14 @@ impl ApiServer for Server {
         }
         ask::<Agents, _>(
             agent::AGENT_ACTOR,
-            agent::SetSessionMemory { session, mode },
+            agent::SetSessionMemory {
+                session,
+                mode,
+                filter: agent::UnitFilter::All,
+            },
         )
         .await
+        .map(|r| r.memory)
     }
 
     async fn set_session_view_bytes(

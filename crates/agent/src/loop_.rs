@@ -77,7 +77,7 @@ use crate::durability::{
     CallState, JournaledCall, LastStep, ResumeKind, ResumePlan, ResumeReportRow, StepKind, crash,
     crash_point,
 };
-use crate::endless::{Endless, MemoryMode, SessionMemory, ViewRender};
+use crate::endless::{Endless, MemoryMode, SessionMemory, SetMode, ViewRender};
 use crate::frame::{self, Frame, Transport};
 use crate::peers::SpawnSubagentTool;
 use crate::repl::{self, Repl, RunCx};
@@ -405,13 +405,17 @@ pub struct CompactNow {
     pub head: Option<String>,
 }
 
-/// `ask` → `Result<SessionMemory, String>` (137 §8.6): `/endless on|off`.
+/// `ask` → `Result<SetMode, String>` (137 §8.6, R1-D6): `/endless on|off`.
 /// `Err("busy")` while a turn runs. `endless` sets the column and starts the
-/// backfill; `epochs` stops the pump and writes the view as the next epoch's
-/// `<context_summary style="endless">` head, nothing of the tail kept.
+/// backfill over the units `filter` admits; `epochs` stops the pump and
+/// writes the view as the next epoch's `<context_summary style="endless">`
+/// head, nothing of the tail kept. A `Meeting` filter marks the session so
+/// it never runs the fresh-turn frame (the meeting head carries its view).
 pub struct SetMemoryNow {
     /// The mode to switch to.
     pub mode: MemoryMode,
+    /// Which units the tree is built over.
+    pub filter: crate::endless_ext::UnitFilter,
 }
 
 /// `ask` → `Result<HarvestResult, String>`: harvest the finished frame now
@@ -751,6 +755,11 @@ struct Shared {
     /// 137 R1-D1: a theuth-native child whose parent is endless — its first
     /// message opened with the parent's view, its prompt says so.
     parent_view: bool,
+    /// 137 R1-D6: the tree is built under `UnitFilter::Meeting` — the session
+    /// never runs the fresh-turn frame or gets VIEW_DOC (the meeting head
+    /// carries its view). Set by [`SetMemoryNow`]; W1's `active()` is the
+    /// durable guard.
+    meeting_filter: Arc<std::sync::atomic::AtomicBool>,
     /// Test hook: the view an endless turn renders instead of asking the service.
     #[cfg(test)]
     test_view: Arc<parking_lot::Mutex<Option<ViewRender>>>,
@@ -876,6 +885,7 @@ impl Session {
                 knowledge: None,
                 endless: None,
                 parent_view: false,
+                meeting_filter: Arc::default(),
                 #[cfg(test)]
                 test_view: Arc::default(),
                 permits,
@@ -2180,7 +2190,7 @@ impl Message<CompactNow> for Session {
 }
 
 impl Message<SetMemoryNow> for Session {
-    type Reply = kameo::reply::DelegatedReply<Result<SessionMemory, String>>;
+    type Reply = kameo::reply::DelegatedReply<Result<SetMode, String>>;
 
     /// `/endless on|off` (137 §8.6): the [`CompactNow`] shape — refused while
     /// a turn (or compaction/harvest) owns the state, otherwise a `Turn`-less
@@ -2196,12 +2206,17 @@ impl Message<SetMemoryNow> for Session {
             tx.send(Err("busy".into()));
             return reply;
         };
+        // R1-D6: the filter decides whether this session may run the fresh-turn frame.
+        self.shared.meeting_filter.store(
+            m.mode == MemoryMode::Endless && m.filter == crate::endless_ext::UnitFilter::Meeting,
+            Ordering::Relaxed,
+        );
         let cancel = self.shared.rt.shutdown.child_token();
         self.enter(cancel.clone(), None).await;
         let mut turn = Turn::new(self.shared.clone(), None, cancel, state);
         let me = ctx.actor_ref().clone();
         tokio::spawn(async move {
-            let result = turn.set_memory(m.mode).await;
+            let result = turn.set_memory(m.mode, m.filter).await;
             let _ = me.tell(TurnDone(turn.state)).await;
             tx.send(result);
         });
@@ -3811,7 +3826,8 @@ impl Turn {
         }
         let endless = self.shared.endless.as_ref()?;
         let id = self.shared.id;
-        if !endless.active(id) {
+        // R1-D6: a meeting-filtered tree enriches the meeting head, never the frame.
+        if self.shared.meeting_filter.load(Ordering::Relaxed) || !endless.active(id) {
             return None;
         }
         let max = Duration::from_secs(u64::from(self.shared.cfg.endless.settle_secs));
@@ -6092,7 +6108,11 @@ impl Turn {
     /// the tail empty — the same `epochs` row a compaction writes, no model
     /// call — so the next epochs turn starts from it. Both directions log a
     /// `context_edit`-class event in 07 §0's vocabulary.
-    async fn set_memory(&mut self, mode: MemoryMode) -> Result<SessionMemory, String> {
+    async fn set_memory(
+        &mut self,
+        mode: MemoryMode,
+        filter: crate::endless_ext::UnitFilter,
+    ) -> Result<SetMode, String> {
         let session = self.shared.id;
         let endless = self
             .shared
@@ -6101,22 +6121,20 @@ impl Turn {
             .ok_or("endless memory is not available in this process")?;
         let current = endless.mode(session).await.map_err(|e| format!("{e:#}"))?;
         if current == mode {
-            return endless.memory(session).await.map_err(|e| format!("{e:#}"));
+            let memory = endless
+                .memory(session)
+                .await
+                .map_err(|e| format!("{e:#}"))?;
+            return Ok(SetMode { memory, head: None });
         }
         let n = self.state.epoch + 1;
-        let r = crate::endless_ext::set_mode(
-            endless,
-            session,
-            mode,
-            n,
-            crate::endless_ext::UnitFilter::All,
-        )
-        .await
-        .map_err(|e| format!("{e:#}"))?;
+        let r = crate::endless_ext::set_mode(endless, session, mode, n, filter)
+            .await
+            .map_err(|e| format!("{e:#}"))?;
         match mode {
             MemoryMode::Endless => {
                 let est = crate::endless_ext::backfill_estimate(&r.memory);
-                tracing::info!(session = %session, units = est.units, eta_secs = est.eta_secs, model = %est.model, "context_edit: endless on");
+                tracing::info!(session = %session, ?filter, units = est.units, eta_secs = est.eta_secs, model = %est.model, "context_edit: endless on");
             }
             MemoryMode::Epochs => {
                 let folded = match &r.head {
@@ -6127,7 +6145,7 @@ impl Turn {
                 tracing::info!(session = %session, epoch = n, folded, head = r.head.is_some(), "context_edit: endless off");
             }
         }
-        Ok(r.memory)
+        Ok(r)
     }
 
     /// `/endless off` (8.6): `text` (the `<context_summary epoch=n
