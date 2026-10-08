@@ -119,7 +119,7 @@ pub async fn settle_transferred(store: &Store, session: SessionId, from: &str) -
         );
         let screen = match row.kind {
             JobKind::Pty => store.pty_screen(session, &row.id).await.ok().flatten(),
-            JobKind::Shell => None,
+            JobKind::Shell | JobKind::Promoted => None,
         };
         // The log lives on the engine that ran it: empty here.
         let tail = row.log.as_deref().map(log_tail).unwrap_or_default();
@@ -208,7 +208,7 @@ pub(crate) async fn reap(store: &Store) -> (ReapReport, Reaped) {
         }
         let screen = match row.kind {
             JobKind::Pty => store.pty_screen(row.session, &row.id).await.ok().flatten(),
-            JobKind::Shell => None,
+            JobKind::Shell | JobKind::Promoted => None,
         };
         let tail = row.log.as_deref().map(log_tail).unwrap_or_default();
         let in_turn = in_batch
@@ -280,6 +280,9 @@ pub(crate) fn lost_body(
                 s.revision,
                 s.text
             ));
+        }
+        None if row.kind == JobKind::Promoted => {
+            body.push_str("\nthe tool's result was never produced.");
         }
         None => {
             body.push_str("\nlast 8 KiB of the log:\n");
@@ -493,7 +496,7 @@ mod tests {
             &JobExit::Lost,
             0,
             body,
-            true,
+            JobKind::Pty,
             chrono::Local::now(),
         );
         assert!(wrapped.starts_with("<job_result id=\"j1\" command=\"trap &#39;&#39; HUP; exec sleep 600\" exit=\"lost\" secs=\"0\" pty=\"true\" at=\"") || wrapped.contains(" exit=\"lost\" "), "{wrapped}");

@@ -40,6 +40,8 @@ impl tools::fs::Outliner for OutlineHook {
             call_id: String::new(),
             quiet: true,
             resources: tools::SessionResources::durable_arc(&std::env::temp_dir()),
+            cancel: Default::default(),
+            promote_after: None,
         };
         let args = CodeOutlineArgs {
             path: path.to_owned(),

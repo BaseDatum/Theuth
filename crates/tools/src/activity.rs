@@ -730,6 +730,7 @@ mod tests {
             output: String::new(),
             inline: false,
             pty: false,
+            kind: crate::JobKind::Shell,
         };
 
         let a = sink

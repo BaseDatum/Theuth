@@ -266,6 +266,11 @@ impl Tool for ShellTool {
     const RISK: Risk = Risk::Destructive;
     type Args = ShellArgs;
 
+    /// Job-shaped already (145 §0.4).
+    fn promotable(&self) -> bool {
+        false
+    }
+
     fn description(&self) -> String {
         "Run a bash command as a background job. Returns the output if it finishes within a few seconds, otherwise a job id and log path; the result is delivered later as <job_result>. cwd, variables and functions persist between calls; `cwd`, `env` and `timeout_secs` apply to one call only.".into()
     }
