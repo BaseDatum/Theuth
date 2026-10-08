@@ -396,6 +396,7 @@ struct SessionRow {
     pinned: bool,
     archived: bool,
     project: Option<String>,
+    notebook: Option<String>,
     owner: String,
     epoch: i64,
     kind: String,
@@ -432,7 +433,9 @@ macro_rules! session_cols {
             root_col!("archived"),
             " AS archived, ",
             root_col!("project"),
-            " AS project, sessions.owner, sessions.epoch, sessions.kind, sessions.memory"
+            " AS project, ",
+            root_col!("notebook"),
+            " AS notebook, sessions.owner, sessions.epoch, sessions.kind, sessions.memory"
         )
     };
 }
@@ -470,6 +473,7 @@ impl SessionRow {
             pinned: r.pinned,
             archived: r.archived,
             project: r.project,
+            notebook: r.notebook,
             retention: tools::Retention::Durable,
             running: false,
             here: r.owner.is_empty() || r.owner == me,
@@ -2610,6 +2614,60 @@ impl Store {
         .await?;
         row.map(|(p,)| p)
             .ok_or_else(|| anyhow::anyhow!("no such session"))
+    }
+
+    /// 144 §8: bind the root above `session` to a notebook (`None` unbinds); the same root rule as
+    /// [`Store::set_project`]. Returns the root id; unknown `session` is an error.
+    pub async fn set_notebook(
+        &self,
+        session: SessionId,
+        notebook: Option<&str>,
+    ) -> anyhow::Result<SessionId> {
+        let mut tx = self.begin_write().await?;
+        let root: Option<(String,)> = sqlx::query_as(
+            "UPDATE sessions SET notebook = ? WHERE id = ( \
+                 WITH RECURSIVE up(id, parent) AS ( \
+                     SELECT id, parent FROM sessions WHERE id = ? \
+                     UNION ALL \
+                     SELECT p.id, p.parent FROM sessions p JOIN up ON p.id = up.parent) \
+                 SELECT id FROM up WHERE parent IS NULL) \
+             RETURNING id",
+        )
+        .bind(notebook)
+        .bind(session.to_string())
+        .fetch_optional(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        root.map(|(id,)| id.parse().context("bad session id"))
+            .transpose()?
+            .ok_or_else(|| anyhow::anyhow!("no such session"))
+    }
+
+    /// 144 §8: the notebook `session` is bound to — its root's value; `None` for a plain session.
+    pub async fn effective_notebook(&self, session: SessionId) -> anyhow::Result<Option<String>> {
+        let row: Option<(Option<String>,)> = sqlx::query_as(concat!(
+            "SELECT ",
+            root_col!("notebook"),
+            " FROM sessions WHERE id = ?"
+        ))
+        .bind(session.to_string())
+        .fetch_optional(&self.read)
+        .await?;
+        Ok(row.and_then(|(n,)| n))
+    }
+
+    /// 144 §8: the root sessions bound to `notebook`, newest first (the "Chats · 3 ▾" menu).
+    pub async fn notebook_chats(&self, notebook: &str) -> anyhow::Result<Vec<SessionSummary>> {
+        let rows: Vec<SessionRow> = sqlx::query_as(concat!(
+            "SELECT ",
+            session_cols!(),
+            " FROM sessions WHERE sessions.notebook = ? AND sessions.parent IS NULL \
+             ORDER BY created_at DESC, id DESC"
+        ))
+        .bind(notebook)
+        .fetch_all(&self.read)
+        .await?;
+        rows.into_iter().map(|r| r.summary(&self.me)).collect()
     }
 
     /// The style row of project `name`, if any (51 §3 as-built).
