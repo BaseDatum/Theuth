@@ -43,6 +43,7 @@ talk = { workspace = true }
 meeting = { workspace = true }
 decision = { workspace = true }
 double = { workspace = true }
+dreaming = { workspace = true }
 agent-client-protocol = { workspace = true }
 tokio = { workspace = true }
 tokio-util = { workspace = true }
@@ -75,7 +76,7 @@ tokio = { workspace = true, features = ["test-util"] }
 tempfile = "3"
 
 [features]
-ts = ["dep:ts-rs", "runtime/ts", "tools/ts", "document/ts", "knowledge/ts", "codeindex/ts", "search/ts", "agent/ts", "signal/ts", "slack/ts", "telegram/ts", "acp/ts", "browser/ts", "computer/ts", "surface/ts", "link/ts", "nodes/ts", "a2a/ts", "schedule/ts", "mesh/ts", "sessionsync/ts", "roster/ts", "tasks/ts", "sandbox/ts", "artifact/ts", "app/ts", "secrets/ts", "web/ts", "search-providers/ts", "update/ts", "voice/ts", "talk/ts", "meeting/ts", "decision/ts", "double/ts"]
+ts = ["dep:ts-rs", "runtime/ts", "tools/ts", "document/ts", "knowledge/ts", "codeindex/ts", "search/ts", "agent/ts", "signal/ts", "slack/ts", "telegram/ts", "acp/ts", "browser/ts", "computer/ts", "surface/ts", "link/ts", "nodes/ts", "a2a/ts", "schedule/ts", "mesh/ts", "sessionsync/ts", "roster/ts", "tasks/ts", "sandbox/ts", "artifact/ts", "app/ts", "secrets/ts", "web/ts", "search-providers/ts", "update/ts", "voice/ts", "talk/ts", "meeting/ts", "decision/ts", "double/ts", "dreaming/ts"]
 
 [lints]
 workspace = true
