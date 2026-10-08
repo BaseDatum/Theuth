@@ -1259,8 +1259,8 @@ impl Knowledge {
         }
         let root = self.root.clone();
         let entry = log_entry.to_owned();
-        let (ixs, mut touched) = tokio::task::spawn_blocking(
-            move || -> anyhow::Result<(Vec<Indexed>, Vec<PathBuf>)> {
+        let (ixs, mut touched) =
+            tokio::task::spawn_blocking(move || -> anyhow::Result<(Vec<Indexed>, Vec<PathBuf>)> {
                 let mut ixs = Vec::with_capacity(docs.len());
                 for (cid, text, doc) in &docs {
                     let path = cid.to_path(&root);
@@ -1270,9 +1270,8 @@ impl Knowledge {
                     ixs.push(Indexed::new(&root, &path, doc, mtime, size)?);
                 }
                 Ok((ixs, finish_files(&root, &entry)?))
-            },
-        )
-        .await??;
+            })
+            .await??;
         let mut metas = Vec::with_capacity(ixs.len());
         for ix in ixs {
             self.upsert(&ix).await?;
@@ -1425,7 +1424,9 @@ impl Knowledge {
         .bind(i64::from(limit) * 4)
         .fetch_all(&self.db)
         .await?;
-        let uses = self.uses_of(rows.iter().map(|r| r.meta.id.as_str())).await?;
+        let uses = self
+            .uses_of(rows.iter().map(|r| r.meta.id.as_str()))
+            .await?;
         let now = chrono::Utc::now();
         let mut hits: Vec<(Hit, String)> = rows
             .into_iter()
@@ -1769,8 +1770,10 @@ impl Knowledge {
         let cid = concept_id(id)?;
         let _g = self.write.lock().await;
         let mut doc = self.load(&cid)?;
-        doc.frontmatter
-            .set("status", Value::String(Status::Archived.as_str().to_owned()));
+        doc.frontmatter.set(
+            "status",
+            Value::String(Status::Archived.as_str().to_owned()),
+        );
         doc.frontmatter.set("hint", Value::Bool(false));
         stamp(&mut doc.frontmatter, Source::Dreaming);
         append_section(&mut doc.body, "## Archived", reason.trim());
@@ -1912,9 +1915,7 @@ fn append_paragraph(body: &mut String, text: &str) {
 
 /// Append `text` under `heading`; the heading is added once.
 fn append_section(body: &mut String, heading: &str, text: &str) {
-    let has = body
-        .lines()
-        .any(|l| l.trim_end() == heading);
+    let has = body.lines().any(|l| l.trim_end() == heading);
     if has {
         append_paragraph(body, text);
     } else {
@@ -2232,14 +2233,18 @@ mod tests {
             .await
             .unwrap();
         let text = std::fs::read_to_string(k.root().join("facts/long.md")).unwrap();
-        assert!(!text.contains("status:") && !text.contains("hint:"), "{text}");
+        assert!(
+            !text.contains("status:") && !text.contains("hint:"),
+            "{text}"
+        );
     }
 
     /// 136 §5.3 multipliers, pure.
     #[test]
     fn rank_weight_monotonicity() {
         let lt = Lifetimes::default();
-        let w = |ty: &str, age: f64, shown: u64, opened: u64| rank_weight(ty, age, shown, opened, &lt);
+        let w =
+            |ty: &str, age: f64, shown: u64, opened: u64| rank_weight(ty, age, shown, opened, &lt);
         // More opens → higher.
         assert!(w("fact", 0.0, 10, 3) > w("fact", 0.0, 10, 1));
         assert!(w("fact", 0.0, 10, 1) > w("fact", 0.0, 10, 0));
@@ -2318,7 +2323,9 @@ mod tests {
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(
             &path,
-            format!("---\ntype: record\ntitle: rustup toolchain pins\ntimestamp: {old}\n---\nold news\n"),
+            format!(
+                "---\ntype: record\ntitle: rustup toolchain pins\ntimestamp: {old}\n---\nold news\n"
+            ),
         )
         .unwrap();
         k.sync().await.unwrap();
@@ -2370,7 +2377,11 @@ mod tests {
         .await
         .unwrap();
         k.put(
-            put("facts/citer", "Cites day one", "see [day one](/records/state-2026-10-01.md)"),
+            put(
+                "facts/citer",
+                "Cites day one",
+                "see [day one](/records/state-2026-10-01.md)",
+            ),
             Source::Model,
         )
         .await
@@ -2412,26 +2423,41 @@ mod tests {
         );
 
         let c = k.get("entities/dev-machine").await.unwrap();
-        assert_eq!(c.meta.type_, "record", "type from the first folded file");
+        assert_eq!(c.meta.type_, "fact", "type from the first folded file");
         assert_eq!(c.meta.title, "State 1 Oct");
         assert_eq!(c.meta.tags, ["dev", "mac", "arm"]);
         assert_eq!(c.meta.evidence, ["s1", "s2", "s3"]);
         assert_eq!(c.meta.status, Status::Tidy);
         assert_eq!(c.meta.source, Some(Source::Dreaming));
         assert!(c.text.ends_with("The living entry.\n"), "{}", c.text);
-        assert_eq!(c.cited_by, ["facts/citer", "records/state-2026-10-01", "records/state-2026-10-02"]);
+        assert_eq!(
+            c.cited_by,
+            [
+                "facts/citer",
+                "records/state-2026-10-01",
+                "records/state-2026-10-02"
+            ]
+        );
 
         let s = k.get("records/state-2026-10-02").await.unwrap();
         assert_eq!(s.meta.status, Status::Merged);
         assert_eq!(s.meta.merged_into.as_deref(), Some("entities/dev-machine"));
         assert!(!s.meta.hint);
-        assert_eq!(s.meta.evidence, ["s2"], "the stub keeps its own frontmatter");
+        assert_eq!(
+            s.meta.evidence,
+            ["s2"],
+            "the stub keeps its own frontmatter"
+        );
         assert!(
-            s.text.ends_with("Merged into [entities/dev-machine](/entities/dev-machine.md)\n"),
+            s.text
+                .ends_with("Merged into [entities/dev-machine](/entities/dev-machine.md)\n"),
             "{}",
             s.text
         );
-        assert!(s.cited_by.is_empty(), "the citer now points at the canonical");
+        assert!(
+            s.cited_by.is_empty(),
+            "the citer now points at the canonical"
+        );
 
         // Stubs never reach a note; the canonical does.
         let cwd = std::env::temp_dir();
@@ -2453,12 +2479,24 @@ mod tests {
 
         // Nothing to fold → refused; a missing id → refused before any write.
         assert!(
-            k.merge(&["entities/dev-machine".into()], "entities/dev-machine", "b", &[], &scope)
-                .await
-                .is_err()
+            k.merge(
+                &["entities/dev-machine".into()],
+                "entities/dev-machine",
+                "b",
+                &[],
+                &scope
+            )
+            .await
+            .is_err()
         );
         let e = k
-            .merge(&["records/ghost".into()], "entities/dev-machine", "b", &[], &scope)
+            .merge(
+                &["records/ghost".into()],
+                "entities/dev-machine",
+                "b",
+                &[],
+                &scope,
+            )
             .await
             .unwrap_err()
             .to_string();
@@ -2496,7 +2534,10 @@ mod tests {
             )
             .await
             .unwrap();
-        assert_eq!((r.op, r.ids.as_slice()), (KnowledgeOp::Supersede, &["facts/old".to_owned()][..]));
+        assert_eq!(
+            (r.op, r.ids.as_slice()),
+            (KnowledgeOp::Supersede, &["facts/old".to_owned()][..])
+        );
         let (name, email, subject) = commit_of(&k, &r).await;
         assert_eq!((name.as_str(), email.as_str()), DREAMING_SIGNATURE);
         assert_eq!(subject, "dreaming supersede facts/old");
@@ -2506,13 +2547,23 @@ mod tests {
         assert!(!c.meta.hint);
         assert_eq!(c.meta.status, Status::Tidy, "supersede leaves status alone");
         assert!(
-            c.text.ends_with("was true\n\nSuperseded by [facts/new](/facts/new.md): the port moved\n"),
+            c.text.ends_with(
+                "was true\n\nSuperseded by [facts/new](/facts/new.md): the port moved\n"
+            ),
             "{}",
             c.text
         );
         assert_eq!(k.get("facts/new").await.unwrap().cited_by, ["facts/old"]);
-        assert!(k.supersede("facts/old", "facts/none", None, None).await.is_err());
-        assert!(k.supersede("facts/old", "facts/old", None, None).await.is_err());
+        assert!(
+            k.supersede("facts/old", "facts/none", None, None)
+                .await
+                .is_err()
+        );
+        assert!(
+            k.supersede("facts/old", "facts/old", None, None)
+                .await
+                .is_err()
+        );
         k.restore("facts/old", Some(&b)).await.unwrap();
         assert_eq!(k.get("facts/old").await.unwrap().text, original);
 
@@ -2527,7 +2578,8 @@ mod tests {
         assert_eq!(c.meta.status, Status::Archived);
         assert!(!c.meta.hint);
         assert!(
-            c.text.ends_with("was true\n\n## Archived\n\nsuperseded twice\n"),
+            c.text
+                .ends_with("was true\n\n## Archived\n\nsuperseded twice\n"),
             "{}",
             c.text
         );
@@ -2541,7 +2593,10 @@ mod tests {
 
         // verify ok
         let b = base(&k).await;
-        let r = k.verify("facts/old", VerifyOutcome::Ok, None).await.unwrap();
+        let r = k
+            .verify("facts/old", VerifyOutcome::Ok, None)
+            .await
+            .unwrap();
         assert_eq!(r.op, KnowledgeOp::Verify);
         let (name, _, subject) = commit_of(&k, &r).await;
         assert_eq!(name, "dreaming");
@@ -2550,16 +2605,25 @@ mod tests {
         let today = chrono::Utc::now().format("%Y-%m-%d").to_string();
         assert_eq!(c.meta.verified.as_deref(), Some(today.as_str()));
         assert_eq!(c.meta.status, Status::Tidy);
-        assert!(c.text.ends_with("was true\n"), "ok writes no note: {}", c.text);
+        assert!(
+            c.text.ends_with("was true\n"),
+            "ok writes no note: {}",
+            c.text
+        );
         // verify stale
         k.verify("facts/old", VerifyOutcome::Stale, Some("port is 5433 now"))
             .await
             .unwrap();
         let c = k.get("facts/old").await.unwrap();
         assert_eq!(c.meta.status, Status::Stale);
-        assert_eq!(c.meta.verified.as_deref(), Some(today.as_str()), "verified kept");
+        assert_eq!(
+            c.meta.verified.as_deref(),
+            Some(today.as_str()),
+            "verified kept"
+        );
         assert!(
-            c.text.ends_with("was true\n\n## Stale\n\nport is 5433 now\n"),
+            c.text
+                .ends_with("was true\n\n## Stale\n\nport is 5433 now\n"),
             "{}",
             c.text
         );
@@ -2593,7 +2657,10 @@ mod tests {
         // An empty summary falls back to the old title.
         k.retitle("facts/old", "Shorter", "").await.unwrap();
         let text = k.get("facts/old").await.unwrap().text;
-        assert!(text.contains("## Summary\n\nOld claim, short\n\n## Summary"), "{text}");
+        assert!(
+            text.contains("## Summary\n\nOld claim, short\n\n## Summary"),
+            "{text}"
+        );
         assert!(k.retitle("facts/old", "  ", "x").await.is_err());
         k.restore("facts/old", Some(&b)).await.unwrap();
         assert_eq!(k.get("facts/old").await.unwrap().text, original);
@@ -2603,9 +2670,15 @@ mod tests {
             k.archive("facts/none", "r").await.err(),
             k.verify("facts/none", VerifyOutcome::Ok, None).await.err(),
             k.retitle("facts/none", "t", "s").await.err(),
-            k.supersede("facts/none", "facts/new", None, None).await.err(),
+            k.supersede("facts/none", "facts/new", None, None)
+                .await
+                .err(),
         ] {
-            assert!(e.unwrap().to_string().contains("no such concept: facts/none"));
+            assert!(
+                e.unwrap()
+                    .to_string()
+                    .contains("no such concept: facts/none")
+            );
         }
     }
 

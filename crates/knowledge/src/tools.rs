@@ -519,13 +519,13 @@ impl Tool for MergeTool {
     async fn call(&self, a: MergeArgs, cx: ToolCx) -> anyhow::Result<ToolOutput> {
         consolidating(&self.0, Self::NAME, &cx).await?;
         // The session's agent scope (67 §9); the user's when it has none.
-        let scope = self
-            .0
-            .scope_for(Some(cx.session))
-            .unwrap_or_else(|| crate::types::AgentScope {
-                owner: crate::types::USER_OWNER.to_owned(),
-                line: Default::default(),
-            });
+        let scope =
+            self.0
+                .scope_for(Some(cx.session))
+                .unwrap_or_else(|| crate::types::AgentScope {
+                    owner: crate::types::USER_OWNER.to_owned(),
+                    line: Default::default(),
+                });
         let r = self
             .0
             .merge(&a.ids, &a.into, &a.body, &a.evidence, &scope)
