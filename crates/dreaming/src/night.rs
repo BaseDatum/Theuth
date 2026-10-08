@@ -859,6 +859,10 @@ impl Message<BeginNight> for Night {
                     r.summary.status = None;
                     r.summary.mode = m.mode.clone();
                     r.head_at_start = head_at_start;
+                    // P2 D3: the close gate re-arms — the last window's nudge and
+                    // its `Skipped` lines were about that window's lists.
+                    r.phases
+                        .retain(|p| !p.starts_with("nudge: ") && !p.starts_with("skipped: "));
                 }
                 r
             }
@@ -928,29 +932,45 @@ impl Message<Commit> for Night {
             // R-11: a second close (or a section after the close) counts nothing twice.
             return Err(format!("night {} is already closed", m.night));
         }
-        if m.phase == "journal" && !r.phases.iter().any(|p| p.starts_with("nudge: ")) {
-            let cap = read_state(&self.data_dir)
-                .run_request
-                .as_ref()
-                .map_or(self.cfg.budget_usd, |q| q.budget_usd);
-            let spent = self.spend_nanos(&r).await as f64 / 1e9;
-            if spent < cap * 0.75
-                && let Some(left) = left_undone(&self.data_dir, &r)
-            {
-                r.phases
-                    .push(format!("nudge: {}", crate::scrub::clip(&left, 400)));
-                write_record(&self.data_dir, &r).map_err(|e| e.to_string())?;
-                return Err(format!(
-                    "not closing yet — ${spent:.2} of ${cap:.2} spent and the ledger's lists are not worked: {left}. \
-                     Finish them (the lists are already capped), or write what you skipped and why under \
-                     section=\"Skipped\"; then call section=\"journal\" again (the second call closes the night)."
-                ));
+        if m.phase == "journal" {
+            let left = left_undone(&self.data_dir, &r);
+            if !r.phases.iter().any(|p| p.starts_with("nudge: ")) {
+                let cap = read_state(&self.data_dir)
+                    .run_request
+                    .as_ref()
+                    .map_or(self.cfg.budget_usd, |q| q.budget_usd);
+                let spent = self.spend_nanos(&r).await as f64 / 1e9;
+                if spent < cap * 0.75 && !left.is_empty() {
+                    let left = lines(&left);
+                    r.phases
+                        .push(format!("nudge: {}", crate::scrub::clip(&left, 400)));
+                    write_record(&self.data_dir, &r).map_err(|e| e.to_string())?;
+                    return Err(format!(
+                        "not closing yet — ${spent:.2} of ${cap:.2} spent and the ledger's lists are not worked: {left}. \
+                         Finish them (the lists are already capped), or write what you skipped and why under \
+                         section=\"Skipped\" (one line per list, naming it); then call section=\"journal\" again \
+                         (the second call closes the night)."
+                    ));
+                }
+            } else {
+                // P2 D3: after the nudge, the second close needs each list worked
+                // or named in a `Skipped` line.
+                let missing = not_skipped(&left, &r.phases);
+                if !missing.is_empty() {
+                    return Err(format!(
+                        "still not closing — no `Skipped` line for: {}. Work the list, or write one line per \
+                         list (naming it) under section=\"Skipped\"; then call section=\"journal\" again.",
+                        lines(&missing)
+                    ));
+                }
             }
         }
+        // `Skipped` keeps its lines (the close gate reads them); other sections keep their first line.
+        let clip_at = if m.phase == "skipped" { 600 } else { 200 };
         r.phases.push(format!(
             "{}: {}",
             m.phase,
-            crate::scrub::clip(&crate::scrub::scrub(&m.summary), 200)
+            crate::scrub::clip(&crate::scrub::scrub(&m.summary), clip_at)
         ));
         if m.phase == "journal" {
             self.finish(r, None).await.map_err(|e| e.to_string())?;
@@ -961,21 +981,52 @@ impl Message<Commit> for Night {
     }
 }
 
-/// What tonight's ledger offered that no write touched: `None` when the lists
-/// are worked (or there is no ledger file), else one line for the refusal.
+/// One undone ledger list: the stem a `Skipped` line must mention to cover
+/// it, and the refusal's wording.
+type Undone = (&'static str, String);
+
+/// The refusal line: `1 of 2 retitles, 1 of 1 merge groups, …`.
+fn lines(left: &[Undone]) -> String {
+    left.iter()
+        .map(|(_, l)| l.as_str())
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// P2 D3: the lists of `left` no `skipped: ` phase mentions (by stem,
+/// case-insensitive).
+fn not_skipped(left: &[Undone], phases: &[String]) -> Vec<Undone> {
+    let skipped: Vec<String> = phases
+        .iter()
+        .filter_map(|p| p.strip_prefix("skipped: "))
+        .map(str::to_ascii_lowercase)
+        .collect();
+    left.iter()
+        .filter(|(stem, _)| !skipped.iter().any(|s| s.contains(stem)))
+        .cloned()
+        .collect()
+}
+
+/// What tonight's ledger offered that no write touched: empty when the lists
+/// are worked (or there is no ledger file), else one entry per list.
 /// A merge group counts as worked when any of its ids was written; an
 /// archive candidate when it was archived or re-typed (`put`); friction counts
 /// as worked when a case was filed.
-fn left_undone(data_dir: &Path, r: &NightRecord) -> Option<String> {
-    let day: ledger::DayLedger = serde_json::from_str(
-        &std::fs::read_to_string(ledger::path(data_dir, &r.summary.night)).ok()?,
-    )
-    .ok()?;
+fn left_undone(data_dir: &Path, r: &NightRecord) -> Vec<Undone> {
+    let Some(day) = std::fs::read_to_string(ledger::path(data_dir, &r.summary.night))
+        .ok()
+        .and_then(|t| serde_json::from_str::<ledger::DayLedger>(&t).ok())
+    else {
+        return Vec::new();
+    };
     let touched = |id: &str| r.knowledge.iter().any(|t| t.id == id);
     let mut left = Vec::new();
     let n = day.tidy.retitle.iter().filter(|id| !touched(id)).count();
     if n > 0 {
-        left.push(format!("{n} of {} retitles", day.tidy.retitle.len()));
+        left.push((
+            "retitle",
+            format!("{n} of {} retitles", day.tidy.retitle.len()),
+        ));
     }
     let n = day
         .tidy
@@ -984,9 +1035,9 @@ fn left_undone(data_dir: &Path, r: &NightRecord) -> Option<String> {
         .filter(|g| !g.iter().any(|id| touched(id)))
         .count();
     if n > 0 {
-        left.push(format!(
-            "{n} of {} merge groups",
-            day.tidy.duplicate_stems.len()
+        left.push((
+            "merge",
+            format!("{n} of {} merge groups", day.tidy.duplicate_stems.len()),
         ));
     }
     let n = day
@@ -996,9 +1047,12 @@ fn left_undone(data_dir: &Path, r: &NightRecord) -> Option<String> {
         .filter(|id| !touched(id))
         .count();
     if n > 0 {
-        left.push(format!(
-            "{n} of {} archive-by-use ids",
-            day.tidy.archive_by_use.len()
+        left.push((
+            "archive",
+            format!(
+                "{n} of {} archive-by-use ids",
+                day.tidy.archive_by_use.len()
+            ),
         ));
     }
     let n = day
@@ -1008,9 +1062,9 @@ fn left_undone(data_dir: &Path, r: &NightRecord) -> Option<String> {
         .filter(|id| !touched(id))
         .count();
     if n > 0 {
-        left.push(format!(
-            "{n} of {} verifications",
-            day.tidy.verify_sample.len()
+        left.push((
+            "verif",
+            format!("{n} of {} verifications", day.tidy.verify_sample.len()),
         ));
     }
     let friction =
@@ -1019,9 +1073,12 @@ fn left_undone(data_dir: &Path, r: &NightRecord) -> Option<String> {
         && r.summary.counts.cases == 0
         && cases::all(data_dir).map_or(true, |c| c.iter().all(|c| c.night != r.summary.night))
     {
-        left.push(format!("0 cases from {friction} friction events (Mine)"));
+        left.push((
+            "case",
+            format!("0 cases from {friction} friction events (Mine)"),
+        ));
     }
-    (!left.is_empty()).then(|| left.join(", "))
+    left
 }
 
 /// The commit `undo` restores `e.id` to: the first parent of the commit the
@@ -2149,22 +2206,137 @@ mod tests {
             retired: vec![],
             preferences_touched: false,
         };
+        let all = left_undone(dir.path(), &touched(&["facts/a"]));
         assert_eq!(
-            left_undone(dir.path(), &touched(&["facts/a"])).as_deref(),
-            Some(
-                "1 of 2 retitles, 1 of 1 merge groups, 1 of 1 archive-by-use ids, 1 of 1 verifications, 0 cases from 1 friction events (Mine)"
+            lines(&all),
+            "1 of 2 retitles, 1 of 1 merge groups, 1 of 1 archive-by-use ids, 1 of 1 verifications, 0 cases from 1 friction events (Mine)"
+        );
+        // P2 D3: a `Skipped` line covers a list by naming it (any case).
+        let skipped = |s: &str| vec![format!("skipped: {s}"), "tidy: x".into()];
+        assert_eq!(not_skipped(&all, &[]).len(), 5);
+        assert_eq!(
+            lines(&not_skipped(
+                &all,
+                &skipped("- Retitles: out of budget\n- merge groups: all false positives\n- no cases: friction was noise")
+            )),
+            "1 of 1 archive-by-use ids, 1 of 1 verifications"
+        );
+        assert!(
+            not_skipped(
+                &all,
+                &skipped("retitle, merge, archive, verification and case lists skipped: budget")
             )
+            .is_empty()
         );
         // One id of a merge group counts for the group; a filed case settles Mine.
         let r = touched(&["facts/a", "facts/b", "facts/s-2", "facts/old", "facts/v"]);
         assert_eq!(
-            left_undone(dir.path(), &r).as_deref(),
-            Some("0 cases from 1 friction events (Mine)")
+            lines(&left_undone(dir.path(), &r)),
+            "0 cases from 1 friction events (Mine)"
         );
         cases::append(dir.path(), &cases::sample("", "harness"), night).unwrap();
-        assert_eq!(left_undone(dir.path(), &r), None);
+        assert!(left_undone(dir.path(), &r).is_empty());
         // No ledger file: nothing to gate on.
-        assert_eq!(left_undone(tempfile::tempdir().unwrap().path(), &r), None);
+        assert!(left_undone(tempfile::tempdir().unwrap().path(), &r).is_empty());
+    }
+
+    /// P2 D3: the close gate nudges once, then closes only when the lists are
+    /// worked or each is named in a `Skipped` line; a same-date reopen drops
+    /// the nudge and the `Skipped` lines so the next window is gated again.
+    #[tokio::test]
+    async fn close_gate_needs_skipped_lines_and_rearms_on_reopen() {
+        let dir = tempfile::tempdir().unwrap();
+        let d = dir.path();
+        let night = "2026-10-08";
+        let mut day = ledger::DayLedger {
+            night: night.into(),
+            ..Default::default()
+        };
+        day.tidy.retitle = vec!["facts/a".into()];
+        day.tidy.verify_sample = vec!["facts/v".into()];
+        std::fs::create_dir_all(ledger::dir(d)).unwrap();
+        std::fs::write(ledger::path(d, night), serde_json::to_vec(&day).unwrap()).unwrap();
+        let rt = Runtime::new(figment::Figment::new(), d.to_owned());
+        let actor = Night::spawn(Night::new(
+            &rt,
+            DreamConfig::default(),
+            "e",
+            AgentDefaults::default(),
+        ));
+        let begin = || BeginNight {
+            night: night.into(),
+            mode: "pass".into(),
+            session: None,
+        };
+        let commit = |phase: &str, summary: &str| Commit {
+            night: night.into(),
+            phase: phase.into(),
+            summary: summary.into(),
+        };
+        actor.ask(begin()).await.unwrap();
+        // First close: the nudge.
+        let e = actor.ask(commit("journal", "done")).await.unwrap_err().to_string();
+        assert!(
+            e.contains("not closing yet") && e.contains("1 of 1 retitles, 1 of 1 verifications"),
+            "{e}"
+        );
+        // Second close with nothing worked and no Skipped: refused again, naming both.
+        let e = actor.ask(commit("journal", "done")).await.unwrap_err().to_string();
+        assert!(
+            e.contains("still not closing — no `Skipped` line for: 1 of 1 retitles, 1 of 1 verifications"),
+            "{e}"
+        );
+        // A Skipped section covering one list: the other is still named.
+        actor
+            .ask(commit("skipped", "- retitles: titles already short\n"))
+            .await
+            .unwrap();
+        let e = actor.ask(commit("journal", "done")).await.unwrap_err().to_string();
+        assert!(
+            e.contains("no `Skipped` line for: 1 of 1 verifications") && !e.contains("retitles"),
+            "{e}"
+        );
+        // Covering the rest closes the night.
+        actor
+            .ask(commit("skipped", "- verifications: no read tool reached the sources"))
+            .await
+            .unwrap();
+        actor.ask(commit("journal", "done")).await.unwrap();
+        let r = read_record(d, night).unwrap();
+        assert!(r.summary.finished_at.is_some());
+        assert_eq!(
+            r.phases
+                .iter()
+                .filter(|p| p.starts_with("skipped: "))
+                .count(),
+            2
+        );
+        // Reopen (a second window the same date): nudge and Skipped lines gone,
+        // the gate fires again, and this time working the lists closes it.
+        actor.ask(begin()).await.unwrap();
+        let r = read_record(d, night).unwrap();
+        assert!(r.summary.finished_at.is_none());
+        assert!(
+            !r.phases
+                .iter()
+                .any(|p| p.starts_with("nudge: ") || p.starts_with("skipped: ")),
+            "{:?}",
+            r.phases
+        );
+        let e = actor.ask(commit("journal", "done")).await.unwrap_err().to_string();
+        assert!(e.contains("not closing yet"), "{e}");
+        let mut r = read_record(d, night).unwrap();
+        for (id, group) in [("facts/a", "retitle"), ("facts/v", "verify")] {
+            r.knowledge.push(Touched {
+                id: id.into(),
+                commit_before: "c".into(),
+                group: group.into(),
+                undone: false,
+            });
+        }
+        write_record(d, &r).unwrap();
+        actor.ask(commit("journal", "done")).await.unwrap();
+        assert!(read_record(d, night).unwrap().summary.finished_at.is_some());
     }
 
     /// A night whose turn ends without `section="journal"` (the budget guard

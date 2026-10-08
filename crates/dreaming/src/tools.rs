@@ -681,7 +681,12 @@ impl Tool for JournalTool {
                         .ask(crate::night::Commit {
                             night: a.night.clone(),
                             phase: phase.clone(),
-                            summary: a.markdown.lines().next().unwrap_or("").to_owned(),
+                            // P2 D3: `Skipped` is parsed line by line by the close gate.
+                            summary: if phase == "skipped" {
+                                a.markdown.clone()
+                            } else {
+                                a.markdown.lines().next().unwrap_or("").to_owned()
+                            },
                         })
                         .await
                         .map_err(|e| anyhow::anyhow!("{e}"))?;
