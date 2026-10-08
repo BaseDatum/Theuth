@@ -149,17 +149,24 @@ export function estimateText(text: string, contentWidth: number): number {
   return px
 }
 
+/** DEV (135 R1.5): `estimateRow` cache misses — flat after the first pass while scrolling and streaming. */
+export const counters = { estimates: 0 }
+/** 135 R1.1: an entry row's estimate, once per (entry object, width). Run, prompt and gap rows are constants. */
+const estimated = new WeakMap<object, { width: number; px: number }>()
+
 /** Content-based height guess for a row never measured at `contentWidth`: the point is a small first-measure delta. */
 export function estimateRow(row: Row, contentWidth: number): number {
-  let px: number
-  if ('gap' in row) px = 36
-  else if ('prompt' in row) px = 160
-  else if ('run' in row) px = 56
-  else {
-    const e = row.entry
-    px = 'text' in e && typeof e.text === 'string' ? 16 + estimateText(e.text, contentWidth) : 56
-    if (e.kind === 'assistant' && !e.open) px += 44 // the action bar
-    else if (e.kind === 'tool') px = 56
-  }
-  return Math.max(FLOOR, Math.round(px))
+  if ('gap' in row) return FLOOR
+  if ('prompt' in row) return 160
+  if ('run' in row) return FLOOR
+  const e = row.entry
+  const hit = estimated.get(e)
+  if (hit && hit.width === contentWidth) return hit.px
+  counters.estimates++
+  let px = 'text' in e && typeof e.text === 'string' ? 16 + estimateText(e.text, contentWidth) : 56
+  if (e.kind === 'assistant' && !e.open) px += 44 // the action bar
+  else if (e.kind === 'tool') px = 56
+  px = Math.max(FLOOR, Math.round(px))
+  estimated.set(e, { width: contentWidth, px })
+  return px
 }

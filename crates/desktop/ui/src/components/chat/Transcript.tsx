@@ -1,10 +1,10 @@
-import { type VirtualItem, type Virtualizer, useVirtualizer } from '@tanstack/react-virtual'
+import { defaultRangeExtractor, type Range, type VirtualItem, type Virtualizer, useVirtualizer } from '@tanstack/react-virtual'
 import { ArrowDown, ChevronDown, ChevronUp } from 'lucide-react'
-import { useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState } from 'react'
+import { useCallback, useDeferredValue, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState } from 'react'
 import { flushSync } from 'react-dom'
 import { Button } from '@/components/ui/button'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
-import { bucket, estimateRow, MeasuredContext, persist, recall, remember } from '@/lib/measured'
+import { bucket, counters, estimateRow, heights, MeasuredContext, persist, remember } from '@/lib/measured'
 import { useNudges } from '@/lib/nudges'
 import { useApi } from '@/lib/rpc'
 import { useToolRuns } from '@/lib/tool-runs'
@@ -20,6 +20,7 @@ import {
 } from '@/store/sessions'
 import { Message, PromptCard } from './Message'
 import { ActivityIndicator } from './Indicators'
+import { window as reach } from './lookahead'
 import { type Row, buildRows } from './rows'
 import { type Anchor, step } from './scroll-anchor'
 import { ToolRunCard } from './ToolRunCard'
@@ -195,15 +196,24 @@ export function Transcript({ session, compact = false }: { session: string; comp
   const touchEnd = useRef(0)
   /** `scrollTop` delta owed to the next commit: the compensated half of a rest write. */
   const pendingWrite = useRef(0)
-  const stats = useRef({ absorbed: 0, wrote: 0 })
+  const stats = useRef({ absorbed: 0, wrote: 0, renders: 0 })
 
   const collapse = useToolRuns((s) => s.collapse)
   const rows = useMemo(() => buildRows(entries, pending, session, children, collapse), [entries, pending, session, children, collapse])
-  const estimateSize = (i: number): number => {
-    const row = rows[i]
-    if (!row) return 96
-    return (width ? recall(session, width, row.key) : undefined) ?? estimateRow(row, (width || DEFAULT_WIDTH) - 32)
-  }
+  // R1.2: the library's measurement memo keys on `getItemKey`'s identity — a new one means a full pass, so it changes
+  // only when the rows do (and with the width, so the pass re-estimates at the new bucket). The remembered heights
+  // map is hoisted: `remember` mutates it in place; a new bucket makes a new one through `width`.
+  const getItemKey = useCallback((i: number) => rows[i]?.key ?? i, [rows, width])
+  const known = useMemo(() => (width ? heights(session, width).h : null), [session, width])
+  const estimateSize = useCallback(
+    (i: number): number => {
+      const row = rows[i]
+      if (!row) return 96
+      return known?.get(row.key) ?? estimateRow(row, (width || DEFAULT_WIDTH) - 32)
+    },
+    [rows, width, known],
+  )
+  if (import.meta.env.DEV) stats.current.renders++
 
   // Rows may move or be re-keyed (a prepend, a gap row, a loose prompt, a run refolded with the page before it):
   // the anchor follows the entry it was on.
@@ -253,12 +263,27 @@ export function Transcript({ session, compact = false }: { session: string; comp
     return e.library
   }
 
+  /** R2.1: the mounted window in viewports around the visible range, biased toward the scroll direction (`lookahead.ts`).
+   * Stable (the library memoises on its identity); reads the instance through the ref. Re-run on every visible-range
+   * change, so the rest window applies from the next range change after a stop (a mount, a jump, a resize). */
+  const rangeExtractor = useCallback((r: Range): number[] => {
+    const inst = vRef.current
+    if (!inst) return defaultRangeExtractor(r)
+    const [from, to] = reach(inst.scrollOffset ?? 0, inst.scrollRect?.height ?? 0, inst.scrollDirection, inst.getTotalSize())
+    const lo = Math.min(r.startIndex, inst.getVirtualItemForOffset(from)?.index ?? r.startIndex)
+    const hi = Math.max(r.endIndex, inst.getVirtualItemForOffset(to)?.index ?? r.endIndex)
+    const out: number[] = []
+    for (let i = lo; i <= hi; i++) out.push(i)
+    return out
+  }, [])
+
   const v = useVirtualizer({
     count: rows.length,
     getScrollElement: () => ref.current,
     estimateSize,
-    overscan: 4,
-    getItemKey: (i) => rows[i]?.key ?? i,
+    overscan: 0,
+    rangeExtractor,
+    getItemKey,
     // Keeps the row at the fold in place when a page is prepended above it.
     anchorTo: 'end',
     paddingStart: slack.current,
@@ -284,24 +309,53 @@ export function Transcript({ session, compact = false }: { session: string; comp
     pendingWrite.current = 0
   })
 
-  /** §3.3 rest: remember what was measured, then rebase the slack toward its target with one compensated write. */
+  /** §3.3 anchor: the row under the viewport's top edge, once per frame, from virtual coordinates (no layout). R1.4: the
+   * element walk (`getBoundingClientRect`) only on a slow frame — the scroller moved < `clientHeight / 4` since the
+   * last tracked one — and at rest (`settled`); mid-fling the anchor element is `null` and its row's growth counts as
+   * `moved: 0`. */
+  const tracking = useRef(0)
+  const tracked = useRef(0)
+  const track = (settled = false) => {
+    tracking.current = 0
+    const el = ref.current
+    if (!el) return
+    const top = el.scrollTop
+    const slow = settled || Math.abs(top - tracked.current) < el.clientHeight / 4
+    tracked.current = top
+    const item = v.getVirtualItemForOffset(top)
+    const row = item && rows[item.index]
+    if (!item || !row) {
+      anchor.current = null
+      anchorEl.current = null
+      return
+    }
+    const rowEl = slow ? v.elementsCache.get(item.key) : undefined
+    const edge = rowEl ? el.getBoundingClientRect().top : 0
+    const node = rowEl ? anchorElement(rowEl, edge) : null
+    anchorEl.current = node
+    anchor.current = { index: item.index, entry: rowEntry(row), offset: node ? node.getBoundingClientRect().top - edge : 0 }
+  }
+
+  /** §3.3 rest: remember what was measured, then rebase the slack toward its target with one compensated write.
+   * R1.3: no synchronous `persist` — `remember` arms the ≥ 1 s debounce; unmount persists once. */
   const rest = () => {
     const el = ref.current
     if (!el) return
     if (v.isScrolling || touching.current || Date.now() - touchEnd.current < 100) return armRest()
+    track(true)
     if (width) for (const key of fresh.current) {
       const h = v.itemSizeCache.get(key)
       if (h !== undefined) remember(session, width, key, h)
     }
     fresh.current.clear()
-    persist(session)
     const content = v.getTotalSize() - slack.current
     // §3.1: a page's worth of average rows, at least two viewports, only while there is more to load and it scrolls.
     const target = more && rows.length && content > el.clientHeight ? Math.min(SLACK_MAX, Math.max(2 * el.clientHeight, (PAGE * content) / rows.length)) : 0
     const [s, e] = step({ slack: slack.current, target, anchor: anchor.current }, { kind: 'rest', scrollTop: el.scrollTop })
-    if (import.meta.env.DEV && (stats.current.absorbed || e.write)) {
+    if (import.meta.env.DEV) {
       stats.current.wrote += Math.abs(e.write)
-      console.debug(`steady-scroll: absorbed ${Math.round(stats.current.absorbed)} px / wrote ${Math.round(stats.current.wrote)}`)
+      const { absorbed, wrote, renders } = stats.current
+      console.debug(`steady-scroll: absorbed ${Math.round(absorbed)} px / wrote ${Math.round(wrote)} · estimates ${counters.estimates} · renders ${renders}`)
     }
     if (e.write === 0 && s.slack === slack.current) return
     slack.current = s.slack
@@ -388,26 +442,6 @@ export function Transcript({ session, compact = false }: { session: string; comp
     if (el && more && el.scrollHeight - slack.current <= el.clientHeight) void page()
   })
 
-  /** §3.3 anchor: the row under the viewport's top edge and the deepest element straddling it, once per frame. */
-  const tracking = useRef(0)
-  const track = () => {
-    tracking.current = 0
-    const el = ref.current
-    if (!el) return
-    const item = v.getVirtualItemForOffset(el.scrollTop)
-    const row = item && rows[item.index]
-    if (!item || !row) {
-      anchor.current = null
-      anchorEl.current = null
-      return
-    }
-    const edge = el.getBoundingClientRect().top
-    const rowEl = v.elementsCache.get(item.key)
-    const node = rowEl ? anchorElement(rowEl, edge) : null
-    anchorEl.current = node
-    anchor.current = { index: item.index, entry: rowEntry(row), offset: node ? node.getBoundingClientRect().top - edge : 0 }
-  }
-
   const onScroll = () => {
     const el = ref.current
     if (!el) return
@@ -415,7 +449,7 @@ export function Transcript({ session, compact = false }: { session: string; comp
     stuck.current = gap <= STICK
     setUnstuck(!stuck.current)
     setAt(v.getVirtualItemForOffset(el.scrollTop + el.clientHeight / 2)?.index ?? 0)
-    if (!tracking.current) tracking.current = requestAnimationFrame(track)
+    if (!tracking.current) tracking.current = requestAnimationFrame(() => track())
     armRest()
     if (el.scrollTop < slack.current + TOP) void page()
   }
@@ -429,6 +463,34 @@ export function Transcript({ session, compact = false }: { session: string; comp
   }
 
   const items = v.getVirtualItems()
+  // R2.2: the rows the library reports visible (± 1) render now; the rest of the window one priority lower through
+  // `useDeferredValue`, so a heavy mount two viewports ahead never blocks a scroll frame. The deferred value is the
+  // list of keys (identity kept while the content is unchanged); each is looked up by key at render time, so a
+  // deferred row never carries a stale index or position. A key that reached the visible set renders urgently instead.
+  const lo = (v.range?.startIndex ?? 0) - 1
+  const hi = (v.range?.endIndex ?? -1) + 1
+  const aheadRef = useRef<string[]>([])
+  const next = items.filter((it) => it.index < lo || it.index > hi).map((it) => String(it.key))
+  const ahead = next.length === aheadRef.current.length && next.every((k, i) => k === aheadRef.current[i]) ? aheadRef.current : (aheadRef.current = next)
+  const deferred = useDeferredValue(ahead)
+  const indexOf = useMemo(() => new Map(rows.map((r, i) => [r.key, i])), [rows])
+  const cell = (item: VirtualItem, row: Row) => (
+    <div key={item.key} data-index={item.index} ref={v.measureElement} className="absolute top-0 left-0 w-full" style={{ transform: `translateY(${item.start}px)` }}>
+      {'entry' in row ? (
+        <Message entry={row.entry} prompts={row.prompts} session={session} />
+      ) : 'run' in row ? (
+        <ToolRunCard run={row.run} prompts={row.prompts} session={session} />
+      ) : 'gap' in row ? (
+        <div className="flex items-center gap-3 py-2 text-xs text-fg-tertiary">
+          <span className="h-px flex-1 bg-border-subtle" />
+          <span className="tabular-nums">{row.gap}</span>
+          <span className="h-px flex-1 bg-border-subtle" />
+        </div>
+      ) : (
+        <PromptCard prompt={row.prompt} from={row.from} />
+      )}
+    </div>
+  )
   const measured = useMemo(() => (width ? { session, width } : null), [session, width])
   return (
     <div className="relative min-h-0 flex-1">
@@ -442,31 +504,15 @@ export function Transcript({ session, compact = false }: { session: string; comp
           <MeasuredContext value={measured}>
             <div className="relative h-full w-full">
               {items.map((item) => {
-                const row = rows[item.index]
-                if (!row) return null
-                return (
-                  <div
-                    key={item.key}
-                    data-index={item.index}
-                    ref={v.measureElement}
-                    className="absolute top-0 left-0 w-full"
-                    style={{ transform: `translateY(${item.start}px)` }}
-                  >
-                    {'entry' in row ? (
-                      <Message entry={row.entry} prompts={row.prompts} session={session} />
-                    ) : 'run' in row ? (
-                      <ToolRunCard run={row.run} prompts={row.prompts} session={session} />
-                    ) : 'gap' in row ? (
-                      <div className="flex items-center gap-3 py-2 text-xs text-fg-tertiary">
-                        <span className="h-px flex-1 bg-border-subtle" />
-                        <span className="tabular-nums">{row.gap}</span>
-                        <span className="h-px flex-1 bg-border-subtle" />
-                      </div>
-                    ) : (
-                      <PromptCard prompt={row.prompt} from={row.from} />
-                    )}
-                  </div>
-                )
+                const row = item.index >= lo && item.index <= hi ? rows[item.index] : undefined
+                return row ? cell(item, row) : null
+              })}
+              {deferred.map((key) => {
+                const i = indexOf.get(key)
+                if (i === undefined || (i >= lo && i <= hi)) return null
+                const item = v.measurementsCache[i]
+                const row = rows[i]
+                return item && row ? cell(item, row) : null
               })}
             </div>
           </MeasuredContext>
