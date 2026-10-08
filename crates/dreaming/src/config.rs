@@ -43,7 +43,11 @@ pub struct DreamConfig {
 
 /// `heavy_day:`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
-#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[cfg_attr(
+    feature = "ts",
+    derive(ts_rs::TS),
+    ts(export, rename = "DreamHeavyDay")
+)]
 #[serde(default)]
 pub struct HeavyDay {
     /// New concepts since the last dream.
@@ -54,7 +58,11 @@ pub struct HeavyDay {
 
 /// `models:` — `provider/model` per tier; `None` = default (136 §9.2).
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
-#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[cfg_attr(
+    feature = "ts",
+    derive(ts_rs::TS),
+    ts(export, rename = "DreamConfigModels")
+)]
 #[serde(default)]
 pub struct Models {
     /// `None` = `decide_many` only, model tail off.
@@ -69,7 +77,7 @@ pub struct Models {
 
 /// `caps:`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
-#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export, rename = "DreamCaps"))]
 #[serde(default)]
 pub struct Caps {
     /// Fresh entries triaged per night.
@@ -92,7 +100,11 @@ pub struct Caps {
 
 /// `lifetimes:` in days.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
-#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[cfg_attr(
+    feature = "ts",
+    derive(ts_rs::TS),
+    ts(export, rename = "DreamLifetimes")
+)]
 #[serde(default)]
 pub struct Lifetimes {
     /// `record` archived after this.
@@ -107,7 +119,7 @@ pub struct Lifetimes {
 
 /// `gate:`.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
-#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export, rename = "DreamGate"))]
 #[serde(default)]
 pub struct Gate {
     /// Mean improvement required.
@@ -122,7 +134,11 @@ pub struct Gate {
 
 /// `preferences:`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
-#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[cfg_attr(
+    feature = "ts",
+    derive(ts_rs::TS),
+    ts(export, rename = "DreamPreferences")
+)]
 #[serde(default)]
 pub struct Preferences {
     /// A line backed by ≥ 2 explicit instructions is promoted without asking.
@@ -222,9 +238,23 @@ mod tests {
         assert_eq!((c.heavy_day.concepts, c.heavy_day.sessions), (300, 40));
         assert_eq!(c.run_timeout, "45m");
         assert_eq!(c.models, Models::default());
-        assert_eq!((c.caps.triage, c.caps.edits_per_target, c.caps.rows_per_week), (300, 4, 3));
-        assert_eq!((c.lifetimes.record, c.lifetimes.fact, c.lifetimes.procedure, c.lifetimes.entity), (14, 30, 90, 60));
-        assert_eq!((c.gate.margin, c.gate.max_regression, c.gate.min_val_cases), (0.1, 0.2, 3));
+        assert_eq!(
+            (c.caps.triage, c.caps.edits_per_target, c.caps.rows_per_week),
+            (300, 4, 3)
+        );
+        assert_eq!(
+            (
+                c.lifetimes.record,
+                c.lifetimes.fact,
+                c.lifetimes.procedure,
+                c.lifetimes.entity
+            ),
+            (14, 30, 90, 60)
+        );
+        assert_eq!(
+            (c.gate.margin, c.gate.max_regression, c.gate.min_val_cases),
+            (0.1, 0.2, 3)
+        );
         assert!(c.preferences.auto_from_explicit && c.preferences.cap_lines == 20);
         assert_eq!(c.digest, "Mon 08:00");
         assert!(c.home_engine.is_none());
@@ -232,9 +262,10 @@ mod tests {
 
     #[test]
     fn partial_section_keeps_other_defaults() {
-        let c: DreamConfig =
-            serde_yaml::from_str("budget_usd: 5\nmodels: {judge: openai/gpt-5.6-sol}\nwindow: ['23:00', '05:00']")
-                .unwrap();
+        let c: DreamConfig = serde_yaml::from_str(
+            "budget_usd: 5\nmodels: {judge: openai/gpt-5.6-sol}\nwindow: ['23:00', '05:00']",
+        )
+        .unwrap();
         assert_eq!(c.budget_usd, 5.0);
         assert_eq!(c.models.judge.as_deref(), Some("openai/gpt-5.6-sol"));
         assert!(c.models.tidy.is_none());

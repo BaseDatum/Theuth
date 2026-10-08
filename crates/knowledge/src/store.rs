@@ -229,12 +229,11 @@ fn fm_string(v: Option<&Value>) -> Option<String> {
 
 /// `hint: true|false` as written, or `"true"`/`"false"` text.
 fn fm_bool(v: &Value) -> Option<bool> {
-    v.as_bool()
-        .or_else(|| match v.as_str().map(str::trim) {
-            Some("true") => Some(true),
-            Some("false") => Some(false),
-            _ => None,
-        })
+    v.as_bool().or_else(|| match v.as_str().map(str::trim) {
+        Some("true") => Some(true),
+        Some("false") => Some(false),
+        _ => None,
+    })
 }
 
 /// A list value (`evidence: [a, b]`), or one scalar as a one-item list.
@@ -1733,9 +1732,11 @@ mod tests {
         assert_eq!(m.status, Status::Tidy);
         assert!(m.hint);
         assert!(m.evidence.is_empty());
-        assert!(!std::fs::read_to_string(dir.join(DIR).join("facts").join("plain.md"))
-            .unwrap()
-            .contains("status:"));
+        assert!(
+            !std::fs::read_to_string(dir.join(DIR).join("facts").join("plain.md"))
+                .unwrap()
+                .contains("status:")
+        );
     }
 
     /// 136 §2.1: `uses` counts impressions and opens, answers zeros for
@@ -1743,7 +1744,9 @@ mod tests {
     #[tokio::test]
     async fn uses_table_records_shown_and_opened_and_survives_sync() {
         let (k, _dir) = open().await;
-        k.put(put("facts/a", "A", "a"), Source::Model).await.unwrap();
+        k.put(put("facts/a", "A", "a"), Source::Model)
+            .await
+            .unwrap();
         let t0 = chrono::Utc.with_ymd_and_hms(2026, 10, 8, 1, 0, 0).unwrap();
         let t1 = t0 + chrono::Duration::minutes(5);
         let ids = vec!["facts/a".to_owned(), "facts/ghost".to_owned()];
@@ -1760,7 +1763,13 @@ mod tests {
         assert_eq!(s[0].last_opened.as_deref(), Some("2026-10-08T01:05:00Z"));
         assert_eq!((s[1].shown, s[1].opened), (1, 0));
         assert_eq!(s[1].last_opened, None);
-        assert_eq!(s[2], Uses { id: "facts/none".into(), ..Uses::default() });
+        assert_eq!(
+            s[2],
+            Uses {
+                id: "facts/none".into(),
+                ..Uses::default()
+            }
+        );
         k.record_shown(&[], t1).await.unwrap();
     }
 
@@ -1772,7 +1781,11 @@ mod tests {
         k.put(
             Put {
                 hint: Some(false),
-                ..put("facts/quiet", "Quiet rust toolchain", "rust toolchain notes")
+                ..put(
+                    "facts/quiet",
+                    "Quiet rust toolchain",
+                    "rust toolchain notes",
+                )
             },
             Source::Model,
         )

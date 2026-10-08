@@ -18,7 +18,11 @@ pub fn path(data_dir: &Path) -> PathBuf {
 /// file is absent or has no content line.
 pub fn block(data_dir: &Path) -> Option<String> {
     let text = std::fs::read_to_string(path(data_dir)).ok()?;
-    let lines: Vec<&str> = text.lines().map(str::trim_end).filter(|l| !l.trim().is_empty()).collect();
+    let lines: Vec<&str> = text
+        .lines()
+        .map(str::trim_end)
+        .filter(|l| !l.trim().is_empty())
+        .collect();
     if lines.is_empty() {
         return None;
     }
@@ -49,7 +53,11 @@ mod tests {
         std::fs::create_dir_all(crate::night::dir(dir.path())).unwrap();
         std::fs::write(path(dir.path()), "\n  \n").unwrap();
         assert_eq!(block(dir.path()), None);
-        std::fs::write(path(dir.path()), "- never use ask_user; numbered text\n\n- commit as you go  \n").unwrap();
+        std::fs::write(
+            path(dir.path()),
+            "- never use ask_user; numbered text\n\n- commit as you go  \n",
+        )
+        .unwrap();
         assert_eq!(
             block(dir.path()).unwrap(),
             "## Standing preferences (learned)\n- never use ask_user; numbered text\n- commit as you go"

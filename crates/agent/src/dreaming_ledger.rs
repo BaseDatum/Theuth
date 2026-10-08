@@ -231,9 +231,10 @@ mod tests {
 
     #[test]
     fn ledger_since_defaults_exclude_and_owner_only() {
-        let m: LedgerSince =
-            serde_json::from_str(r#"{"since":"2026-10-07T00:00:00Z","until":"2026-10-08T00:00:00Z"}"#)
-                .unwrap();
+        let m: LedgerSince = serde_json::from_str(
+            r#"{"since":"2026-10-07T00:00:00Z","until":"2026-10-08T00:00:00Z"}"#,
+        )
+        .unwrap();
         assert!(m.exclude.is_empty());
         assert!(!m.owner_only);
     }

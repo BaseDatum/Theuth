@@ -19,7 +19,7 @@ pub fn parse_hhmm(s: &str) -> Option<u32> {
 
 /// Minutes since local midnight of `now` shifted by `tz_offset_minutes`.
 pub fn local_minutes(now: DateTime<Utc>, tz_offset_minutes: i32) -> u32 {
-    let secs = now.timestamp().rem_euclid(86_400) as i64 + i64::from(tz_offset_minutes) * 60;
+    let secs = now.timestamp().rem_euclid(86_400) + i64::from(tz_offset_minutes) * 60;
     (secs.rem_euclid(86_400) / 60) as u32
 }
 
@@ -128,19 +128,59 @@ mod tests {
     fn rule_table() {
         let cfg = DreamConfig::default(); // window 01:00–06:00, idle 20
         let s = quiet_night();
-        let rows: Vec<(&str, DateTime<Utc>, i32, SignalsSnapshot, Result<(), &str>)> = vec![
-            ("fires at 02:00 local, idle 60 min", at(2, 0), 0, s.clone(), Ok(())),
+        type Row = (
+            &'static str,
+            DateTime<Utc>,
+            i32,
+            SignalsSnapshot,
+            Result<(), &'static str>,
+        );
+        let rows: Vec<Row> = vec![
+            (
+                "fires at 02:00 local, idle 60 min",
+                at(2, 0),
+                0,
+                s.clone(),
+                Ok(()),
+            ),
             (
                 "another engine",
                 at(2, 0),
                 0,
-                SignalsSnapshot { engine: "other".into(), ..s.clone() },
+                SignalsSnapshot {
+                    engine: "other".into(),
+                    ..s.clone()
+                },
                 Err("another engine owns dreaming"),
             ),
-            ("outside: 00:30 local", at(0, 30), 0, s.clone(), Err("outside the window")),
-            ("outside: 06:00 local (end exclusive)", at(6, 0), 0, s.clone(), Err("outside the window")),
-            ("tz: 02:00 UTC is 22:00 local at −240", at(2, 0), -240, s.clone(), Err("outside the window")),
-            ("tz: 23:00 UTC is 02:00 local at +180", at(23, 0), 180, s.clone(), Ok(())),
+            (
+                "outside: 00:30 local",
+                at(0, 30),
+                0,
+                s.clone(),
+                Err("outside the window"),
+            ),
+            (
+                "outside: 06:00 local (end exclusive)",
+                at(6, 0),
+                0,
+                s.clone(),
+                Err("outside the window"),
+            ),
+            (
+                "tz: 02:00 UTC is 22:00 local at −240",
+                at(2, 0),
+                -240,
+                s.clone(),
+                Err("outside the window"),
+            ),
+            (
+                "tz: 23:00 UTC is 02:00 local at +180",
+                at(23, 0),
+                180,
+                s.clone(),
+                Ok(()),
+            ),
             (
                 "idle: turned 10 min ago",
                 at(1, 10),
@@ -148,13 +188,34 @@ mod tests {
                 s.clone(),
                 Err("a root session turned recently"),
             ),
-            ("idle: no turn ever recorded", at(1, 10), 0, SignalsSnapshot { last_root_turn_at: None, ..s.clone() }, Ok(())),
-            ("desk doing", at(2, 0), 0, SignalsSnapshot { desks_doing: 1, ..s.clone() }, Err("a desk is doing")),
+            (
+                "idle: no turn ever recorded",
+                at(1, 10),
+                0,
+                SignalsSnapshot {
+                    last_root_turn_at: None,
+                    ..s.clone()
+                },
+                Ok(()),
+            ),
+            (
+                "desk doing",
+                at(2, 0),
+                0,
+                SignalsSnapshot {
+                    desks_doing: 1,
+                    ..s.clone()
+                },
+                Err("a desk is doing"),
+            ),
             (
                 "already dreamt at 01:30 this window",
                 at(3, 0),
                 0,
-                SignalsSnapshot { last_dream_at: Some("2026-10-08T01:30:00Z".into()), ..s.clone() },
+                SignalsSnapshot {
+                    last_dream_at: Some("2026-10-08T01:30:00Z".into()),
+                    ..s.clone()
+                },
                 Err("already dreamt this window"),
             ),
             (
@@ -172,42 +233,66 @@ mod tests {
                 "nothing new",
                 at(2, 0),
                 0,
-                SignalsSnapshot { new_concepts_since: 0, sessions_since: 0, ..s.clone() },
+                SignalsSnapshot {
+                    new_concepts_since: 0,
+                    sessions_since: 0,
+                    ..s.clone()
+                },
                 Err("nothing new since the last dream"),
             ),
             (
                 "one session is enough",
                 at(2, 0),
                 0,
-                SignalsSnapshot { new_concepts_since: 0, sessions_since: 1, ..s.clone() },
+                SignalsSnapshot {
+                    new_concepts_since: 0,
+                    sessions_since: 1,
+                    ..s.clone()
+                },
                 Ok(()),
             ),
             (
                 "battery 39 off mains",
                 at(2, 0),
                 0,
-                SignalsSnapshot { on_ac: Some(false), battery_pct: Some(39), ..s.clone() },
+                SignalsSnapshot {
+                    on_ac: Some(false),
+                    battery_pct: Some(39),
+                    ..s.clone()
+                },
                 Err("on battery below 40%"),
             ),
             (
                 "battery 40 off mains",
                 at(2, 0),
                 0,
-                SignalsSnapshot { on_ac: Some(false), battery_pct: Some(40), ..s.clone() },
+                SignalsSnapshot {
+                    on_ac: Some(false),
+                    battery_pct: Some(40),
+                    ..s.clone()
+                },
                 Ok(()),
             ),
             (
                 "off mains, battery unknown",
                 at(2, 0),
                 0,
-                SignalsSnapshot { on_ac: Some(false), battery_pct: None, ..s.clone() },
+                SignalsSnapshot {
+                    on_ac: Some(false),
+                    battery_pct: None,
+                    ..s.clone()
+                },
                 Err("on battery below 40%"),
             ),
             (
                 "power unknown (not macOS) fires",
                 at(2, 0),
                 0,
-                SignalsSnapshot { on_ac: None, battery_pct: None, ..s.clone() },
+                SignalsSnapshot {
+                    on_ac: None,
+                    battery_pct: None,
+                    ..s.clone()
+                },
                 Ok(()),
             ),
         ];
@@ -216,7 +301,16 @@ mod tests {
         }
         // No self engine given: the engine rule is skipped.
         assert_eq!(
-            gate(&cfg, &SignalsSnapshot { engine: "other".into(), ..s }, at(2, 0), 0, None),
+            gate(
+                &cfg,
+                &SignalsSnapshot {
+                    engine: "other".into(),
+                    ..s
+                },
+                at(2, 0),
+                0,
+                None
+            ),
             Ok(())
         );
     }
@@ -233,11 +327,20 @@ mod tests {
             ..quiet_night()
         };
         // 00:30 is inside a window that began at 23:00 yesterday; the 23:30 dream counts.
-        assert_eq!(gate(&cfg, &s, at(0, 30), 0, None), Err("already dreamt this window"));
+        assert_eq!(
+            gate(&cfg, &s, at(0, 30), 0, None),
+            Err("already dreamt this window")
+        );
         // The previous night's dream does not.
-        let earlier = SignalsSnapshot { last_dream_at: Some("2026-10-07T03:00:00Z".into()), ..s.clone() };
+        let earlier = SignalsSnapshot {
+            last_dream_at: Some("2026-10-07T03:00:00Z".into()),
+            ..s.clone()
+        };
         assert_eq!(gate(&cfg, &earlier, at(0, 30), 0, None), Ok(()));
-        assert_eq!(gate(&cfg, &s, at(12, 0), 0, None), Err("outside the window"));
+        assert_eq!(
+            gate(&cfg, &s, at(12, 0), 0, None),
+            Err("outside the window")
+        );
         assert_eq!(minutes_into_window(30, 23 * 60, 5 * 60), Some(90));
         assert_eq!(minutes_into_window(22 * 60, 23 * 60, 5 * 60), None);
         assert_eq!(parse_hhmm("24:00"), None);

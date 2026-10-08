@@ -1489,7 +1489,11 @@ pub trait Api {
     /// Start a training run now (126 §8): `tier` a | b | c, `venue` auto | local | node | off.
     /// Returns the run id; `DoubleTrainingState` events follow.
     #[method(name = "double_train")]
-    async fn double_train(&self, tier: double::Tier, venue: double::Venue) -> RpcResult<double::RunId>;
+    async fn double_train(
+        &self,
+        tier: double::Tier,
+        venue: double::Venue,
+    ) -> RpcResult<double::RunId>;
     /// Pause / resume learning (126 §9): predictions and rungs continue, labels stop accruing.
     #[method(name = "double_pause")]
     async fn double_pause(&self, on: bool) -> RpcResult<double::DoubleStatus>;
@@ -5341,9 +5345,16 @@ impl ApiServer for Server {
         ask::<double::actor::Double, _>(double::DOUBLE_ACTOR, double::actor::ClassDetail(key)).await
     }
 
-    async fn double_train(&self, tier: double::Tier, venue: double::Venue) -> RpcResult<double::RunId> {
-        ask::<double::sched::Scheduler, _>(double::sched::ACTOR, double::sched::Train { tier, venue })
-            .await
+    async fn double_train(
+        &self,
+        tier: double::Tier,
+        venue: double::Venue,
+    ) -> RpcResult<double::RunId> {
+        ask::<double::sched::Scheduler, _>(
+            double::sched::ACTOR,
+            double::sched::Train { tier, venue },
+        )
+        .await
     }
 
     async fn double_pause(&self, on: bool) -> RpcResult<double::DoubleStatus> {
@@ -5440,7 +5451,9 @@ impl ApiServer for Server {
         night: String,
         group: Option<String>,
     ) -> RpcResult<dreaming::UndoReport> {
-        dreaming::rpc::undo(night, group).await.map_err(dreaming_err)
+        dreaming::rpc::undo(night, group)
+            .await
+            .map_err(dreaming_err)
     }
 
     async fn dreaming_settings(&self) -> RpcResult<dreaming::DreamSettings> {

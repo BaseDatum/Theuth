@@ -156,7 +156,11 @@ pub enum KnowledgeOp {
 #[derive(
     Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema,
 )]
-#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[cfg_attr(
+    feature = "ts",
+    derive(ts_rs::TS),
+    ts(export, rename = "KnowledgeStatus")
+)]
 #[serde(rename_all = "lowercase")]
 pub enum Status {
     /// Written by the harvest, not yet tidied.

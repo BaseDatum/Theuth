@@ -2169,7 +2169,11 @@ impl Message<TurnDone> for Session {
     /// the next queued batch (50 §6.3: the oldest input's scope and what it
     /// admits), whose tickets stayed pending meanwhile. A batch of nothing
     /// but suppressed peer input starts no turn; the next batch is tried.
-    async fn handle(&mut self, TurnDone(mut state): TurnDone, ctx: &mut Context<Self, Self::Reply>) {
+    async fn handle(
+        &mut self,
+        TurnDone(mut state): TurnDone,
+        ctx: &mut Context<Self, Self::Reply>,
+    ) {
         if let Some(b) = self.pending_budget.take() {
             state.budget = b;
         }

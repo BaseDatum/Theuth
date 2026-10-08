@@ -7,10 +7,10 @@ use std::collections::BTreeMap;
 use std::path::Path;
 use std::time::Duration;
 
-use agent::sensor::{payload_hash, SensorError, SensorMeta, SensorRun, SensorRunner};
+use agent::sensor::{SensorError, SensorMeta, SensorRun, SensorRunner, payload_hash};
 
-use crate::file::{Fire, Spec};
 use crate::Verdict;
+use crate::file::{Fire, Spec};
 
 /// The three sensor calls the dry run makes, so tests can run it against a
 /// scripted runner; [`SensorRunner`] is the only production implementation.
@@ -87,7 +87,10 @@ pub async fn dry_run_with_subject(
 /// 108 §9.4: the verdict on an unsaved file — `render` + `parse` as `Put`
 /// does, then [`dry_run`] with no last hash. Nothing is written, bound or
 /// reconciled. `Err` with the parse error or `not a watcher`.
-pub async fn test_file(file: &crate::file::ScheduleFile, sensors: &SensorRunner) -> Result<Verdict, String> {
+pub async fn test_file(
+    file: &crate::file::ScheduleFile,
+    sensors: &SensorRunner,
+) -> Result<Verdict, String> {
     if !crate::file::valid_name(&file.name) {
         return Err("name: [a-z0-9][a-z0-9-]*, at most 40 chars".into());
     }
@@ -122,11 +125,13 @@ async fn run<R: Runner>(
     } else {
         None
     };
-    let would_fire = first.fire && (spec.fire != Fire::OnChange || last_hash != Some(hash.as_str()));
+    let would_fire =
+        first.fire && (spec.fire != Fire::OnChange || last_hash != Some(hash.as_str()));
     let subject = agent::sensor::parse_envelope(&first.payload).remove("subject");
     let verdict = Verdict {
         sensor: meta.name,
-        elapsed_ms: u64::try_from(first.elapsed.max(second.elapsed).as_millis()).unwrap_or(u64::MAX),
+        elapsed_ms: u64::try_from(first.elapsed.max(second.elapsed).as_millis())
+            .unwrap_or(u64::MAX),
         fire: first.fire,
         hash,
         flaps,
@@ -138,7 +143,11 @@ async fn run<R: Runner>(
     Ok((verdict, subject))
 }
 
-async fn check_once<R: Runner>(sensors: &R, meta: &SensorMeta, spec: &Spec) -> Result<SensorRun, SensorError> {
+async fn check_once<R: Runner>(
+    sensors: &R,
+    meta: &SensorMeta,
+    spec: &Spec,
+) -> Result<SensorRun, SensorError> {
     let sensor = spec.sensor.as_ref().expect("checked by caller");
     sensors
         .check(
@@ -197,8 +206,8 @@ pub fn render(v: &Verdict) -> String {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::VecDeque;
     use std::cell::RefCell;
+    use std::collections::VecDeque;
 
     use super::*;
     use crate::file;
@@ -279,9 +288,14 @@ mod tests {
 
     #[tokio::test]
     async fn two_equal_runs_give_a_stable_verdict() {
-        let v = run(&spec("say hi"), &fake(false, [ok(true, "p=1", 700), ok(true, "p=1", 1200)]), None)
-            .await
-            .unwrap().0;
+        let v = run(
+            &spec("say hi"),
+            &fake(false, [ok(true, "p=1", 700), ok(true, "p=1", 1200)]),
+            None,
+        )
+        .await
+        .unwrap()
+        .0;
         assert_eq!(v.sensor, "fs_exists.py");
         assert_eq!(v.elapsed_ms, 1200);
         assert!(v.fire && v.would_fire && !v.flaps && !v.needs_approvals_off);
@@ -291,22 +305,38 @@ mod tests {
 
     #[tokio::test]
     async fn differing_hashes_flap_and_last_hash_gates_on_change() {
-        let v = run(&spec("say hi"), &fake(false, [ok(true, "p=1", 1), ok(true, "p=2", 1)]), None)
-            .await
-            .unwrap().0;
+        let v = run(
+            &spec("say hi"),
+            &fake(false, [ok(true, "p=1", 1), ok(true, "p=2", 1)]),
+            None,
+        )
+        .await
+        .unwrap()
+        .0;
         assert!(v.flaps);
         let h = payload_hash("p=1");
-        let v = run(&spec("say hi"), &fake(false, [ok(true, "p=1", 1), ok(true, "p=1", 1)]), Some(&h))
-            .await
-            .unwrap().0;
-        assert!(v.fire && !v.would_fire, "on_change with the same hash is `unchanged`");
+        let v = run(
+            &spec("say hi"),
+            &fake(false, [ok(true, "p=1", 1), ok(true, "p=1", 1)]),
+            Some(&h),
+        )
+        .await
+        .unwrap()
+        .0;
+        assert!(
+            v.fire && !v.would_fire,
+            "on_change with the same hash is `unchanged`"
+        );
     }
 
     #[tokio::test]
     async fn probe_reason_and_failures_refuse() {
         let mut f = fake(true, [ok(false, "p", 1), ok(false, "p", 1)]);
         f.probe = Ok(Some("token invalid".into()));
-        assert_eq!(run(&spec("say hi"), &f, None).await.unwrap_err(), "probe: token invalid");
+        assert_eq!(
+            run(&spec("say hi"), &f, None).await.unwrap_err(),
+            "probe: token invalid"
+        );
 
         let f = fake(true, [ok(false, "p", 1), ok(false, "p", 1)]);
         let v = run(&spec("say hi"), &f, None).await.unwrap().0;
@@ -315,10 +345,22 @@ mod tests {
 
         let mut f = fake(false, [ok(false, "p", 1), ok(false, "p", 1)]);
         f.meta = Err(SensorError::NeedsCpython);
-        assert_eq!(run(&spec("say hi"), &f, None).await.unwrap_err(), "when: needs cpython, none found");
+        assert_eq!(
+            run(&spec("say hi"), &f, None).await.unwrap_err(),
+            "when: needs cpython, none found"
+        );
 
-        let f = fake(false, [ok(true, "p", 1), Err(SensorError::Timeout(Duration::from_secs(20)))]);
-        assert_eq!(run(&spec("say hi"), &f, None).await.unwrap_err(), "dry run: timeout after 20s");
+        let f = fake(
+            false,
+            [
+                ok(true, "p", 1),
+                Err(SensorError::Timeout(Duration::from_secs(20))),
+            ],
+        );
+        assert_eq!(
+            run(&spec("say hi"), &f, None).await.unwrap_err(),
+            "dry run: timeout after 20s"
+        );
     }
 
     #[test]
@@ -350,8 +392,14 @@ mod tests {
             dir.path(),
             &[
                 ("clock", "---\nevery: 1h\n---\nplain\n"),
-                ("gone", "---\nevery: 60s\nwhen: nope.py\nmax_runs: 3\n---\nwatch\n"),
-                ("w", "---\nevery: 60s\nwhen: fs_exists.py path=/tmp/x\nmax_runs: 3\n---\nwatch\n"),
+                (
+                    "gone",
+                    "---\nevery: 60s\nwhen: nope.py\nmax_runs: 3\n---\nwatch\n",
+                ),
+                (
+                    "w",
+                    "---\nevery: 60s\nwhen: fs_exists.py path=/tmp/x\nmax_runs: 3\n---\nwatch\n",
+                ),
             ],
         )
         .await;

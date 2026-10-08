@@ -8,7 +8,9 @@ use kameo::actor::ActorRef;
 use runtime::SessionId;
 
 use crate::night::{self, DREAMING_ACTOR, Night};
-use crate::types::{DreamSettings, DreamStatus, Metrics, NightSummary, Proposal, RunRequest, UndoReport};
+use crate::types::{
+    DreamSettings, DreamStatus, Metrics, NightSummary, Proposal, RunRequest, UndoReport,
+};
 
 /// The method names the `rpc` crate registers (contract §2.7).
 pub const METHODS: [&str; 9] = [
@@ -30,7 +32,9 @@ fn actor() -> Result<ActorRef<Night>, String> {
         .ok_or_else(|| "dreaming is not running".to_owned())
 }
 
-async fn ask<M>(m: M) -> Result<<<Night as kameo::message::Message<M>>::Reply as kameo::Reply>::Ok, String>
+async fn ask<M>(
+    m: M,
+) -> Result<<<Night as kameo::message::Message<M>>::Reply as kameo::Reply>::Ok, String>
 where
     Night: kameo::message::Message<M>,
     M: Send + 'static,

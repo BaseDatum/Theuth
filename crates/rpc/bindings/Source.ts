@@ -3,4 +3,4 @@
 /**
  * Who wrote a concept (frontmatter `source`; absent for hand-written files).
  */
-export type Source = "harvest" | "model" | "user" | "sync";
+export type Source = "harvest" | "model" | "user" | "sync" | "dreaming";

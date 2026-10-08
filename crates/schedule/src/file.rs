@@ -1310,7 +1310,16 @@ mod tests {
         assert_eq!(Budget::parse(".5 USD").unwrap().nanos, 500_000_000);
         assert_eq!(Budget::parse("5. USD").unwrap().nanos, 5_000_000_000);
         assert_eq!(Budget::parse("0.000000001 USD").unwrap().nanos, 1);
-        for bad in ["1", "USD 1", "-1 USD", "1 US", "1 USD extra", "1,5 USD", "0.0000000001 USD", ""] {
+        for bad in [
+            "1",
+            "USD 1",
+            "-1 USD",
+            "1 US",
+            "1 USD extra",
+            "1,5 USD",
+            "0.0000000001 USD",
+            "",
+        ] {
             assert!(Budget::parse(bad).is_err(), "{bad:?}");
         }
         assert!(

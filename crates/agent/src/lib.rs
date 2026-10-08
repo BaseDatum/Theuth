@@ -34,8 +34,8 @@ pub mod communication;
 pub mod compact;
 pub mod context;
 pub mod continuation;
-pub mod durability;
 pub mod dreaming_ledger;
+pub mod durability;
 pub mod frame;
 pub mod loop_;
 pub mod peers;
@@ -442,7 +442,11 @@ pub struct SetCompactStyle {
 /// A per-session money cap (136 §2.2): the routine's `budget:` key, or a
 /// one-off `run_now` budget.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
-#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[cfg_attr(
+    feature = "ts",
+    derive(ts_rs::TS),
+    ts(export, rename = "SessionBudget")
+)]
 pub struct Budget {
     /// The cap, in nanos of `currency` (1 USD = 1_000_000_000).
     pub nanos: u64,

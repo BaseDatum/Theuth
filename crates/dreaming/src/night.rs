@@ -17,8 +17,8 @@ use serde::{Deserialize, Serialize};
 use crate::config::DreamConfig;
 use crate::sensor_rules::{local_minutes, parse_hhmm};
 use crate::types::{
-    Backlog, DreamSettings, DreamState, DreamStatus, Metrics, NightId, NightReceipt,
-    NightSummary, Proposal, RunRequest, UndoReport,
+    Backlog, DreamSettings, DreamState, DreamStatus, Metrics, NightId, NightReceipt, NightSummary,
+    Proposal, RunRequest, UndoReport,
 };
 
 /// Registry name of the [`Night`] actor.
@@ -65,12 +65,18 @@ pub fn write_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
 /// (136 §2.7 `next_window`); `None` when `window[0]` is malformed.
 pub fn next_window(cfg: &DreamConfig, now: chrono::DateTime<Utc>) -> Option<String> {
     let start = parse_hhmm(&cfg.window[0])?;
-    let offset = Local.timestamp_opt(now.timestamp(), 0).single()?.offset().local_minus_utc() / 60;
+    let offset = Local
+        .timestamp_opt(now.timestamp(), 0)
+        .single()?
+        .offset()
+        .local_minus_utc()
+        / 60;
     let local = local_minutes(now, offset);
     let ahead = (start + 1440 - local) % 1440;
     let ahead = if ahead == 0 { 1440 } else { ahead };
     let secs_into_minute = now.timestamp().rem_euclid(60);
-    let next = now + chrono::Duration::minutes(i64::from(ahead)) - chrono::Duration::seconds(secs_into_minute);
+    let next = now + chrono::Duration::minutes(i64::from(ahead))
+        - chrono::Duration::seconds(secs_into_minute);
     Some(next.format("%Y-%m-%dT%H:%M:%SZ").to_string())
 }
 
@@ -373,7 +379,11 @@ mod tests {
         assert!(st.enabled && st.last_night.is_none() && st.proposals_pending == 0);
         assert_eq!(st.budget_usd, 1.0);
         assert_eq!(st.budget_left_tonight_usd, 1.0);
-        assert!(st.next_window.as_deref().is_some_and(|w| w.ends_with(":00Z")));
+        assert!(
+            st.next_window
+                .as_deref()
+                .is_some_and(|w| w.ends_with(":00Z"))
+        );
 
         let today = Local::now().format("%Y-%m-%d").to_string();
         let night = NightSummary {
@@ -411,11 +421,31 @@ mod tests {
         let cfg = DreamConfig::default();
         let now = Utc::now();
         let next = next_window(&cfg, now).unwrap();
-        let t = chrono::DateTime::parse_from_rfc3339(&next).unwrap().with_timezone(&Utc);
+        let t = chrono::DateTime::parse_from_rfc3339(&next)
+            .unwrap()
+            .with_timezone(&Utc);
         let ahead = t.signed_duration_since(now);
-        assert!(ahead > chrono::Duration::zero() && ahead <= chrono::Duration::hours(24), "{next}");
-        assert_eq!(local_minutes(t, Local.timestamp_opt(t.timestamp(), 0).single().unwrap().offset().local_minus_utc() / 60), 60);
-        let bad = DreamConfig { window: ["x".into(), "06:00".into()], ..cfg };
+        assert!(
+            ahead > chrono::Duration::zero() && ahead <= chrono::Duration::hours(24),
+            "{next}"
+        );
+        assert_eq!(
+            local_minutes(
+                t,
+                Local
+                    .timestamp_opt(t.timestamp(), 0)
+                    .single()
+                    .unwrap()
+                    .offset()
+                    .local_minus_utc()
+                    / 60
+            ),
+            60
+        );
+        let bad = DreamConfig {
+            window: ["x".into(), "06:00".into()],
+            ..cfg
+        };
         assert_eq!(next_window(&bad, now), None);
     }
 }

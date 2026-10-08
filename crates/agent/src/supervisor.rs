@@ -64,8 +64,8 @@ use crate::loop_::{
     ContextHistoryNow, ContextItemsNow, GetToolset, HarvestNow, IsRunning, PEER_INTAKE, PeerInput,
     QueuedInputs, RedoTurn, RemoveContextNow, ResetRuntimeNow, RestartTurn, Session, SessionState,
     SetBudgetNow, SetCompactionOverride, SetPendingEffort, SetTitlePin, SetToolsetOverride,
-    SuppressPeerInputs,
-    SwitchModel, TrimTurn, UndoTurn, UserInput, WithdrawInput, prompt_blocks, text_of,
+    SuppressPeerInputs, SwitchModel, TrimTurn, UndoTurn, UserInput, WithdrawInput, prompt_blocks,
+    text_of,
 };
 use crate::peers::{
     DiscoverPeersTool, ListModelsTool, Nodes, PeerMessageTool, SendMessageTool, SpawnSubagentTool,
@@ -8185,7 +8185,9 @@ pub async fn start(rt: &Runtime) -> anyhow::Result<()> {
                 .await
             {
                 let _ = k
-                    .ask(knowledge::RegisterConsolidator(Arc::new(StoreConsolidator(store))))
+                    .ask(knowledge::RegisterConsolidator(Arc::new(
+                        StoreConsolidator(store),
+                    )))
                     .await;
             }
         });

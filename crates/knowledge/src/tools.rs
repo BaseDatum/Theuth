@@ -521,7 +521,10 @@ impl Tool for MergeTool {
             .0
             .merge(&a.ids, &a.into, &a.body, &a.evidence, &scope)
             .await?;
-        Ok(structured(format!("merged {} into {}", r.ids.join(", "), a.into), r))
+        Ok(structured(
+            format!("merged {} into {}", r.ids.join(", "), a.into),
+            r,
+        ))
     }
 }
 
@@ -566,7 +569,10 @@ impl Tool for SupersedeTool {
                 a.note.as_deref(),
             )
             .await?;
-        Ok(structured(format!("{} superseded by {}", a.loser, a.winner), r))
+        Ok(structured(
+            format!("{} superseded by {}", a.loser, a.winner),
+            r,
+        ))
     }
 }
 

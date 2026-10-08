@@ -88,19 +88,16 @@ impl Message<agent::AgentEvent> for Signals {
     type Reply = ();
 
     async fn handle(&mut self, e: agent::AgentEvent, _: &mut Context<Self, Self::Reply>) {
-        match e {
-            agent::AgentEvent::TurnFinished { session, .. } => {
-                if self.attended_root(session).await {
-                    self.snap.last_root_turn_at =
-                        Some(Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string());
-                }
-                if self.seen.insert(session) {
-                    self.snap.sessions_since = self.seen.len() as u32;
-                }
-                self.flush();
+        // 136 W3: `ContextChanged { reason: "rewind", .. }` → snapshot the dropped tail.
+        if let agent::AgentEvent::TurnFinished { session, .. } = e {
+            if self.attended_root(session).await {
+                self.snap.last_root_turn_at =
+                    Some(Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string());
             }
-            // 136 W3: `ContextChanged { reason: "rewind", .. }` → snapshot the dropped tail.
-            _ => {}
+            if self.seen.insert(session) {
+                self.snap.sessions_since = self.seen.len() as u32;
+            }
+            self.flush();
         }
     }
 }
@@ -112,7 +109,10 @@ impl Message<knowledge::KnowledgeChanged> for Signals {
         // Harvest and model puts are the day's new entries; dreaming's own
         // writes and syncs are not.
         if e.op == knowledge::KnowledgeOp::Put
-            && matches!(e.source, knowledge::Source::Harvest | knowledge::Source::Model)
+            && matches!(
+                e.source,
+                knowledge::Source::Harvest | knowledge::Source::Model
+            )
         {
             self.snap.new_concepts_since += 1;
             self.flush();
@@ -152,7 +152,9 @@ pub async fn start(rt: &Runtime, engine: &str) -> anyhow::Result<()> {
         _ => None,
     };
     if store.is_none() {
-        tracing::warn!("dreaming: agent store unavailable; every finished turn counts as a root turn");
+        tracing::warn!(
+            "dreaming: agent store unavailable; every finished turn counts as a root turn"
+        );
     }
     let mut signals = Signals::new(&rt.data_dir, engine, store);
     signals.flush();
@@ -179,7 +181,10 @@ mod tests {
         let first = read();
         assert_eq!(first.engine, "engine-1");
         assert!(first.written_at.is_some() && first.last_root_turn_at.is_none());
-        assert_eq!(first.tz_offset_minutes, Local::now().offset().local_minus_utc() / 60);
+        assert_eq!(
+            first.tz_offset_minutes,
+            Local::now().offset().local_minus_utc() / 60
+        );
 
         let actor = Signals::spawn(s);
         let a = SessionId::new();
@@ -214,15 +219,24 @@ mod tests {
         assert_eq!((snap.sessions_since, snap.new_concepts_since), (2, 1));
         assert!(snap.last_root_turn_at.is_some());
         assert_eq!(read().sessions_since, 2);
-        actor.tell(Dreamt("2026-10-08T03:00:00Z".into())).await.unwrap();
+        actor
+            .tell(Dreamt("2026-10-08T03:00:00Z".into()))
+            .await
+            .unwrap();
         let snap = actor.ask(Snapshot).await.unwrap();
         assert_eq!((snap.sessions_since, snap.new_concepts_since), (0, 0));
         assert_eq!(snap.last_dream_at.as_deref(), Some("2026-10-08T03:00:00Z"));
-        assert_eq!(read().last_dream_at.as_deref(), Some("2026-10-08T03:00:00Z"));
+        assert_eq!(
+            read().last_dream_at.as_deref(),
+            Some("2026-10-08T03:00:00Z")
+        );
         // A restart keeps the counters.
         actor.tell(turn(SessionId::new())).await.unwrap();
         let _ = actor.ask(Snapshot).await.unwrap();
         let again = Signals::new(dir.path(), "engine-2", None);
-        assert_eq!((again.snap.sessions_since, again.snap.engine.as_str()), (1, "engine-2"));
+        assert_eq!(
+            (again.snap.sessions_since, again.snap.engine.as_str()),
+            (1, "engine-2")
+        );
     }
 }

@@ -59,7 +59,9 @@ pub async fn register(reg: &ActorRef<ToolRegistry>, seams: Arc<Seams>) {
     let s = &seams;
     let _ = reg.ask(RegisterTool(Arc::new(LedgerTool(s.clone())))).await;
     let _ = reg.ask(RegisterTool(Arc::new(StateTool(s.clone())))).await;
-    let _ = reg.ask(RegisterTool(Arc::new(CasePutTool(s.clone())))).await;
+    let _ = reg
+        .ask(RegisterTool(Arc::new(CasePutTool(s.clone()))))
+        .await;
     let _ = reg
         .ask(RegisterTool(Arc::new(CaseListTool(s.clone()))))
         .await;
@@ -70,7 +72,9 @@ pub async fn register(reg: &ActorRef<ToolRegistry>, seams: Arc<Seams>) {
     let _ = reg
         .ask(RegisterTool(Arc::new(PreferencesSetTool(s.clone()))))
         .await;
-    let _ = reg.ask(RegisterTool(Arc::new(JournalTool(s.clone())))).await;
+    let _ = reg
+        .ask(RegisterTool(Arc::new(JournalTool(s.clone()))))
+        .await;
     let _ = reg.ask(RegisterTool(Arc::new(UndoTool(s.clone())))).await;
 }
 
@@ -153,7 +157,10 @@ impl Tool for StateTool {
                 n.spend_usd,
                 st.budget_left_tonight_usd
             ),
-            None => format!("no night yet; budget tonight ${:.2}", st.budget_left_tonight_usd),
+            None => format!(
+                "no night yet; budget tonight ${:.2}",
+                st.budget_left_tonight_usd
+            ),
         };
         Ok(structured(text, st))
     }
@@ -217,8 +224,7 @@ impl Tool for CaseListTool {
     type Args = CaseListArgs;
 
     fn description(&self) -> String {
-        "Dreaming: list cases by state, skill_hint and split (newest first)."
-            .into()
+        "Dreaming: list cases by state, skill_hint and split (newest first).".into()
     }
 
     async fn call(&self, a: CaseListArgs, _cx: ToolCx) -> anyhow::Result<ToolOutput> {
@@ -271,7 +277,10 @@ impl Tool for SkillLearnedEditTool {
             );
         }
         let r = crate::edits::apply(&self.0.data_dir, &a.skill, &a.edits, &a.night)?;
-        Ok(structured(format!("{}: {} edits", r.target, r.edits.len()), r))
+        Ok(structured(
+            format!("{}: {} edits", r.target, r.edits.len()),
+            r,
+        ))
     }
 }
 
@@ -388,7 +397,10 @@ impl Tool for JournalTool {
     async fn call(&self, a: JournalArgs, cx: ToolCx) -> anyhow::Result<ToolOutput> {
         self.0.mutating(Self::NAME, &cx).await?;
         crate::journal::append(&self.0.data_dir, &a.night, &a.section, &a.markdown).await?;
-        Ok(ToolOutput::ok(format!("journal {}: {}", a.night, a.section)))
+        Ok(ToolOutput::ok(format!(
+            "journal {}: {}",
+            a.night, a.section
+        )))
     }
 }
 
@@ -463,7 +475,12 @@ mod tests {
                 "dreaming_undo",
             ]
         );
-        for r in [LedgerTool::RISK, StateTool::RISK, CaseListTool::RISK, ReplayTool::RISK] {
+        for r in [
+            LedgerTool::RISK,
+            StateTool::RISK,
+            CaseListTool::RISK,
+            ReplayTool::RISK,
+        ] {
             assert_eq!(r, Risk::ReadOnly);
         }
         for r in [
@@ -503,18 +520,31 @@ mod tests {
             cfg: DreamConfig::default(),
             knowledge: None,
         });
-        let out = StateTool(seams.clone()).call(NoArgs {}, cx(false)).await.unwrap();
+        let out = StateTool(seams.clone())
+            .call(NoArgs {}, cx(false))
+            .await
+            .unwrap();
         assert!(out.content.starts_with("no night yet"), "{}", out.content);
         assert_eq!(out.structured.unwrap()["budget_usd"], 1.0);
         let e = UndoTool(seams.clone())
-            .call(UndoArgs { night: "2026-10-08".into(), group: None }, cx(false))
+            .call(
+                UndoArgs {
+                    night: "2026-10-08".into(),
+                    group: None,
+                },
+                cx(false),
+            )
             .await
             .unwrap_err()
             .to_string();
         assert!(e.contains("dreaming_undo runs only"), "{e}");
         let e = JournalTool(seams.clone())
             .call(
-                JournalArgs { night: "n".into(), section: "s".into(), markdown: "m".into() },
+                JournalArgs {
+                    night: "n".into(),
+                    section: "s".into(),
+                    markdown: "m".into(),
+                },
                 cx(true),
             )
             .await
@@ -522,7 +552,14 @@ mod tests {
             .to_string();
         assert!(e.contains("private session"), "{e}");
         let e = ReplayTool(seams)
-            .call(ReplayArgs { case_id: "x".into(), candidate_text: None, target_model: None }, cx(false))
+            .call(
+                ReplayArgs {
+                    case_id: "x".into(),
+                    candidate_text: None,
+                    target_model: None,
+                },
+                cx(false),
+            )
             .await
             .unwrap_err()
             .to_string();

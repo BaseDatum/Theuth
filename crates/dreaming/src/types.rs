@@ -113,7 +113,11 @@ pub struct Case {
 
 /// A bounded edit op (136 §7.2).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
-#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[cfg_attr(
+    feature = "ts",
+    derive(ts_rs::TS),
+    ts(export, rename = "LearnedEditOp")
+)]
 #[serde(rename_all = "lowercase")]
 pub enum EditOp {
     /// Append a bullet (after `anchor` when given).
@@ -126,7 +130,7 @@ pub enum EditOp {
 
 /// The gate's verdict on an edit (136 §7.2 step 4).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
-#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export, rename = "GateVerdict"))]
 #[serde(rename_all = "lowercase")]
 pub enum Verdict {
     /// Applied, live.
@@ -209,7 +213,9 @@ pub struct ApplyReport {
 }
 
 /// Per-phase counts of a night (136 §2.7).
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema,
+)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct NightCounts {
     /// Fresh entries triaged.
@@ -256,7 +262,9 @@ pub struct NightSummary {
 
 /// What `BeginNight` hands back: the night id and, per knowledge id touched
 /// so far, the commit to restore to on undo (136 §3.3 item 5).
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema, kameo::Reply)]
+#[derive(
+    Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema, kameo::Reply,
+)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct NightReceipt {
     /// The night id.
@@ -281,7 +289,9 @@ pub enum ProposalKind {
 }
 
 /// One row for the attention inbox (136 §2.7).
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema, kameo::Reply)]
+#[derive(
+    Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema, kameo::Reply,
+)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct Proposal {
     /// Ulid.
@@ -299,7 +309,9 @@ pub struct Proposal {
 }
 
 /// `signals.json` (136 §2.5): what the sensor reads.
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, schemars::JsonSchema, kameo::Reply)]
+#[derive(
+    Clone, Debug, Default, PartialEq, Serialize, Deserialize, schemars::JsonSchema, kameo::Reply,
+)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 #[serde(default)]
 pub struct SignalsSnapshot {
@@ -327,7 +339,9 @@ pub struct SignalsSnapshot {
 }
 
 /// How a manual run proceeds (136 §4.1).
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema,
+)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 #[serde(rename_all = "lowercase")]
 pub enum RunMode {
@@ -395,7 +409,9 @@ pub struct DreamState {
 }
 
 /// What is waiting for tonight (136 §2.7).
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema,
+)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct Backlog {
     /// `status: fresh` entries.
@@ -429,7 +445,9 @@ pub struct DreamStatus {
 }
 
 /// `dreaming.undo` result (136 §3.3 item 5).
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema, kameo::Reply)]
+#[derive(
+    Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema, kameo::Reply,
+)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct UndoReport {
     /// The night.
@@ -481,7 +499,9 @@ pub struct DreamModels {
 }
 
 /// `dreaming.metrics(days)` (136 §13).
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, schemars::JsonSchema, kameo::Reply)]
+#[derive(
+    Clone, Debug, Default, PartialEq, Serialize, Deserialize, schemars::JsonSchema, kameo::Reply,
+)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct Metrics {
     /// The window.
@@ -508,7 +528,7 @@ pub struct Metrics {
 
 /// What `dry_run` prints (136 §3.3 item 7): the counts the journal would show, with zero writes.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
-#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export, rename = "DryRunReport"))]
 pub struct Report {
     /// `status: fresh` entries.
     pub fresh: u64,
@@ -542,7 +562,16 @@ mod tests {
         let c: Case = serde_json::from_value(case.clone()).unwrap();
         assert_eq!(c.kind, CaseKind::ReAsk);
         assert_eq!(serde_json::to_value(&c).unwrap(), case);
-        for k in ["correction", "disapproval", "rewind", "stop", "denial", "tool-chain", "hint-miss", "task-returned"] {
+        for k in [
+            "correction",
+            "disapproval",
+            "rewind",
+            "stop",
+            "denial",
+            "tool-chain",
+            "hint-miss",
+            "task-returned",
+        ] {
             let v: CaseKind = serde_json::from_value(serde_json::json!(k)).unwrap();
             assert_eq!(serde_json::to_value(v).unwrap(), serde_json::json!(k));
         }

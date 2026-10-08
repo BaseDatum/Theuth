@@ -92,7 +92,10 @@ pub fn routine_text(cfg: &DreamConfig, data_dir: &Path, engine: Option<&str>) ->
         .map_or(String::new(), |m| format!("model: {m}\n"));
     let engine_arg = engine.map_or(String::new(), |e| format!(" engine={e}"));
     ROUTINE_TEMPLATE
-        .replace("{{window}}", &format!("{}-{}", cfg.window[0], cfg.window[1]))
+        .replace(
+            "{{window}}",
+            &format!("{}-{}", cfg.window[0], cfg.window[1]),
+        )
         .replace("{{idle}}", &cfg.idle_minutes.to_string())
         .replace("{{heavy_concepts}}", &cfg.heavy_day.concepts.to_string())
         .replace("{{heavy_sessions}}", &cfg.heavy_day.sessions.to_string())
@@ -113,7 +116,10 @@ pub fn install_files(
     engine: Option<&str>,
 ) -> std::io::Result<Vec<String>> {
     let mut written = Vec::new();
-    for (rel, body) in [("skills/dreaming.md", SKILL), ("sensors/dreaming.py", SENSOR)] {
+    for (rel, body) in [
+        ("skills/dreaming.md", SKILL),
+        ("sensors/dreaming.py", SENSOR),
+    ] {
         let path = data_dir.join(rel);
         if std::fs::read_to_string(&path).ok().as_deref() != Some(body) {
             if let Some(d) = path.parent() {
@@ -217,7 +223,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let cfg = DreamConfig::default();
         let text = routine_text(&cfg, dir.path(), Some("eng1"));
-        let spec = schedule::file::parse("dreaming", &text).unwrap_or_else(|e| panic!("{e}\n{text}"));
+        let spec =
+            schedule::file::parse("dreaming", &text).unwrap_or_else(|e| panic!("{e}\n{text}"));
         assert_eq!(
             spec.budget,
             Some(schedule::file::Budget {
@@ -225,7 +232,10 @@ mod tests {
                 currency: "USD".into()
             })
         );
-        assert_eq!(spec.run_timeout, Some(std::time::Duration::from_secs(45 * 60)));
+        assert_eq!(
+            spec.run_timeout,
+            Some(std::time::Duration::from_secs(45 * 60))
+        );
         assert_eq!(spec.when_text, "every 30m when dreaming.py");
         let sensor = spec.sensor.unwrap();
         assert_eq!(sensor.args["window"], "01:00-06:00");
@@ -258,16 +268,34 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let cfg = DreamConfig::default();
         let w = install_files(dir.path(), &cfg, None).unwrap();
-        assert_eq!(w, ["skills/dreaming.md", "sensors/dreaming.py", "schedules/dreaming.md"]);
-        assert_eq!(install_files(dir.path(), &cfg, None).unwrap(), Vec::<String>::new());
+        assert_eq!(
+            w,
+            [
+                "skills/dreaming.md",
+                "sensors/dreaming.py",
+                "schedules/dreaming.md"
+            ]
+        );
+        assert_eq!(
+            install_files(dir.path(), &cfg, None).unwrap(),
+            Vec::<String>::new()
+        );
         // The user toggles the routine off and edits the skill: the toggle survives, the skill does not.
         let routine = dir.path().join("schedules/dreaming.md");
-        let toggled = std::fs::read_to_string(&routine).unwrap().replace("---\nevery", "---\nenabled: false\nevery");
+        let toggled = std::fs::read_to_string(&routine)
+            .unwrap()
+            .replace("---\nevery", "---\nenabled: false\nevery");
         std::fs::write(&routine, &toggled).unwrap();
         std::fs::write(dir.path().join("skills/dreaming.md"), "mine").unwrap();
-        assert_eq!(install_files(dir.path(), &cfg, None).unwrap(), ["skills/dreaming.md"]);
+        assert_eq!(
+            install_files(dir.path(), &cfg, None).unwrap(),
+            ["skills/dreaming.md"]
+        );
         assert_eq!(std::fs::read_to_string(&routine).unwrap(), toggled);
-        assert_eq!(std::fs::read_to_string(dir.path().join("skills/dreaming.md")).unwrap(), SKILL);
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("skills/dreaming.md")).unwrap(),
+            SKILL
+        );
         assert!(SENSOR.starts_with("# theuth-sensor: dreaming 1\n"));
     }
 

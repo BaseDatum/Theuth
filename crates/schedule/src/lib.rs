@@ -2938,7 +2938,9 @@ mod fire_tests {
         let calls = rec.calls.lock().unwrap().clone();
         let with = &calls[0].3;
         assert!(
-            with.contains("dream tonight\n\n<request>\nmode: backlog\nbudget_usd: 5\n</request>\n</schedule>"),
+            with.contains(
+                "dream tonight\n\n<request>\nmode: backlog\nbudget_usd: 5\n</request>\n</schedule>"
+            ),
             "{with}"
         );
         assert!(!calls[1].3.contains("<request>"), "{}", calls[1].3);
